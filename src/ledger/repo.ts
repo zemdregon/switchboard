@@ -177,6 +177,14 @@ export interface NewArtifactRow {
   mediaType: string;
 }
 
+export interface LeaseRow {
+  meta_session_id: string;
+  lease_run_id: string;
+  lease_expires_at: string | null;
+}
+
+export type CheckpointKind = "base" | "pre" | "post";
+
 export interface Ledger {
   createMetaSession(input: NewMetaSession): MetaSessionRow;
   getMetaSession(id: string): MetaSessionRow | undefined;
@@ -205,6 +213,12 @@ export interface Ledger {
   listRunsForMetaSession(metaSessionId: string): RunRecord[];
   setMetaSessionHead(metaSessionId: string, commit: string): void;
   insertArtifact(input: NewArtifactRow): string;
+
+  // ---- T1.9 additions ------------------------------------------------------------------------------------------
+  /** Every meta-session currently holding a write lease (LLD §5). */
+  listLeases(): LeaseRow[];
+  /** Commit of the run's first checkpoint of `kind` (the one the workspace manager uses), if any. */
+  getRunCheckpointCommit(runId: string, kind: CheckpointKind): string | undefined;
 }
 
 export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledger {
@@ -335,6 +349,22 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(id, input.runId, input.metaSessionId, input.kind, input.sha256, input.sizeBytes, input.mediaType, ts());
       return id;
+    },
+
+    listLeases() {
+      return db
+        .prepare(
+          `SELECT id AS meta_session_id, lease_run_id, lease_expires_at FROM meta_session
+           WHERE lease_run_id IS NOT NULL ORDER BY id`,
+        )
+        .all() as LeaseRow[];
+    },
+
+    getRunCheckpointCommit(runId, kind) {
+      const row = db
+        .prepare("SELECT commit_sha FROM workspace_checkpoint WHERE run_id = ? AND kind = ? ORDER BY rowid LIMIT 1")
+        .get(runId, kind) as { commit_sha: string } | undefined;
+      return row?.commit_sha;
     },
 
     createMetaSession(input) {
