@@ -51,10 +51,10 @@ of Terms-of-Service compliance, no automatic pushes or merges into the operator'
 ### 3.2 Target state
 
 An open-source, single-operator-per-installation controller for Linux and macOS that passes conformance and
-malicious-fixture suites for all seven providers (Kimi Code once its contract is pinned), is installable by other people
-from its README, exposes the MCP tools in [SRS §3.1](requirements/SRS.md#31-mcp-interface-fr-mcp), continues work across
-providers from controller-owned state, routes with explainable decisions, and reports capacity as confidence-weighted
-estimates. Architecture: [HLD](design/HLD.md).
+malicious-fixture suites for all seven providers (Kimi Code once it is un-deferred and its contract is pinned), is
+installable by other people from its README, exposes the MCP tools in [SRS
+§3.1](requirements/SRS.md#31-mcp-interface-fr-mcp), continues work across providers from controller-owned state, routes
+with explainable decisions, and reports capacity as confidence-weighted estimates. Architecture: [HLD](design/HLD.md).
 
 ## 4. Constraints, assumptions, decisions and conflicts
 
@@ -77,6 +77,9 @@ estimates. Architecture: [HLD](design/HLD.md).
    subscriptions (2026-10-12).
 5. Ender holds every subscription named in the research. All seven providers must be integrated; Claude Code and Codex
    are the first integrations (2026-10-12).
+6. Kimi Code is deferred, not removed (2026-10-12): its new CLI interface is not yet pinned. The Kimi adapter stays in
+   the architecture as a disabled slot (FR-ADP-09, Deferred). Revisit when B-1 clears: Moonshot publishes the new
+   automation contract or Ender validates an installed version, and Ender asks to re-enable it.
 
 ### 4.3 Stated intent (confirmed constraints)
 
@@ -120,7 +123,7 @@ introduction](research/headless-ai-coding-controller.md#introduction-to-the-cli-
 | A-2 | Linux is the first host; macOS follows in M4 because open-source users are likely to run it. | If most users turn out to be on macOS, move NFR-PORT-02 earlier. |
 | A-3 | *Resolved by owner decision 5:* Claude Code and Codex are the M2 adapters. | — |
 | A-4 | The first orchestrator is any stdio MCP client; acceptance tests use a scripted MCP test client rather than a specific product. | A specific orchestrator may need HTTP transport or different tool shapes. |
-| A-5 | *Resolved by owner decision 5:* all seven subscriptions are held and all seven adapters are Must. | — |
+| A-5 | *Resolved by owner decision 5, amended by decision 6:* all seven subscriptions are held; six adapters are Must and the Kimi Code adapter is Deferred. | — |
 
 ### 4.6 Conflicts between sources and how they were resolved
 
@@ -132,7 +135,7 @@ kept and only the mechanism changes.
 | --- | --- | --- | --- |
 | Permission flags | `--allowedTools "*"`, `--dangerously-skip-permissions`, `--yolo`, `--trust --approve-mcps --force` | `"*"` is skipped; bypass flags grant too much; trust, MCP approval, command approval and sandbox are separate | Trust profiles, no automatic bypass ([ADR-0004](adr/0004-trust-profiles-no-bypass-flags.md)) |
 | Codex interface | `codex -p`, custom JSON wrapper | `codex exec --json` emits JSONL natively | Use native JSONL (TDD §4) |
-| Kimi Code | `kimi run`, K2.7, 256K context | Legacy CLI archived 2026-09-23; new contract unknown | Adapter blocked until pinned (FR-ADP-09) |
+| Kimi Code | `kimi run`, K2.7, 256K context | Legacy CLI archived 2026-09-23; new contract unknown | Adapter deferred until pinned (FR-ADP-09) |
 | Context windows | Hard-coded per CLI | Model properties, change over time | Model registry (FR-ADP-05) |
 | Cross-provider state | Parse provider transcripts, summarize trajectories | Controller-owned state; Git is canonical | [ADR-0001](adr/0001-controller-owned-canonical-state.md); intent C-6 kept |
 | Quota / NCU | NCU as precise share of remaining quota | Only confidence-weighted estimates are defensible | [ADR-0007](adr/0007-capacity-as-confidence-estimate.md); intent C-5 kept |
@@ -174,7 +177,7 @@ set. Sizes are not estimated.
 | M1 | Foundation | Planned (next) | M0 | FR-ADP-01, FR-AUTH-01, FR-POL-10, FR-WS-01–06, FR-SES-01, 02 (schema), 05 (events), FR-CAP-04 (queue, global limit), FR-EXE-01, 02, 05–07, FR-SES-06, FR-TEL-01, 03, FR-OPS-01 (`doctor`, `runs`), 03, 04, NFR-SEC-01, 02, 04–06, NFR-REL-01–02, NFR-PERF-03 (global), NFR-PORT-01, NFR-PRIV-01 | A fake provider CLI runs through the full lifecycle transactionally; cancel kills the process tree; `SIGKILL` of the controller mid-run followed by restart leaves a consistent ledger; a failed run that mutated files is rolled back, not replayed; CI green on Linux | Automated integration and fault-injection tests in CI (§6.1) |
 | M2 | Claude Code and Codex adapters + MCP vertical slice | Planned | M1 | FR-MCP-01, 03–09, FR-ADP-02–04, 06, 11 (Claude Code, Codex), FR-POL-01 (two profiles), 02–05, 07, 08, FR-AUTH-02, FR-SES-03 (Claude Code, Codex), FR-RTE-01 (eligibility), FR-CAP-01 (record), FR-OPS-01 (`serve`), NFR-PERF-01, 02, NFR-OBS-01, NFR-PRIV-02, NFR-MAINT-03 | For each of Claude Code and Codex, a scripted MCP client delegates an edit task under `edit-untrusted`, polls to `SUCCEEDED`, retrieves a diff artifact and continues the same native session; a new user following the README reaches a passing `doctor`; missing login yields `AUTH_REQUIRED`; unknown CLI version yields `ADAPTER_VERSION_UNVERIFIED`; no bypass flag appears in any compiled invocation | Conformance suite on recorded fixtures in CI; one opt-in live smoke test run by the operator; argv inspection test |
 | M3 | Isolation | Planned | M2 | FR-POL-01 (all), 06, 09, FR-WS-07, FR-EXE-08, FR-OPS-02 (`approve`, `deny`), NFR-SEC-03 (Claude Code, Codex), NFR-DATA-01 | Malicious-fixture suite shows no escape for each profile on Claude Code and Codex; `privileged` runs wait for `approve` and end `CANCELLED` on `deny`; verification commands run and are recorded; retention deletes artifacts, worktrees and branches together | Malicious-fixture suite; integration tests |
-| M4 | Adapter expansion | Planned (Kimi Code part blocked by B-1) | M3 | FR-ADP-05, 07, 08, 09, 10, 11 (others), FR-EXE-03, FR-OPS-02 (`adapters validate`), NFR-SEC-03 (others), NFR-MAINT-01, NFR-PORT-02 | Grok Build, Antigravity, Cursor and OpenCode adapters pass conformance and malicious-fixture suites; the test suite passes on macOS; Kimi Code passes once B-1 clears (M4 may be marked `Partial` until then, with only Kimi outstanding); ACP transport used where it is the adapter's chosen surface; adding an adapter touched only its own module, manifest, fixtures and registry entry; `adapters validate` accepts a new CLI version only after its live checks pass | Conformance and fixture suites per adapter; diff inspection |
+| M4 | Adapter expansion | Planned (Kimi Code deferred; B-1) | M3 | FR-ADP-05, 07, 08, 09, 10, 11 (others), FR-EXE-03, FR-OPS-02 (`adapters validate`), NFR-SEC-03 (others), NFR-MAINT-01, NFR-PORT-02 | Grok Build, Antigravity, Cursor and OpenCode adapters pass conformance and malicious-fixture suites; the test suite passes on macOS; Kimi Code is deferred (FR-ADP-09, §8) and not required for M4 to be marked `Done`; ACP transport used where it is the adapter's chosen surface; adding an adapter touched only its own module, manifest, fixtures and registry entry; `adapters validate` accepts a new CLI version only after its live checks pass | Conformance and fixture suites per adapter; diff inspection |
 | M5 | Continuity | Planned | M4 | FR-SES-02 (populated), 03 (all), 04, 05 (handoff view) | Provider A edits and tests; provider B continues from the handoff bundle and completes the task; no provider transcript file is opened (verified by file-access test) | End-to-end test with two fake adapters plus one opt-in live pair |
 | M6 | Capacity and resilience | Planned | M5 | FR-MCP-02 (`get_capacity`), 10, FR-CAP-01 (use), 02–07, FR-OPS-05, NFR-PERF-03 (per provider) | Injected rate-limit, overload, quota and crash failures produce the behaviour in FRD WF-5, with successor runs linked to their predecessors; `get_capacity` and `switchboard capacity` never return `explicit_remaining` unless the provider reported it | Fault-injection tests with fake adapters |
 | M7 | Routing | Planned | M6 | FR-MCP-02 (`explain_route`), FR-RTE-01 (full), 02–04 | Given stored features and weights, re-running the scorer reproduces every stored decision; `explain_route` lists the deciding factors | Deterministic replay test |
@@ -227,7 +230,7 @@ preceding milestone completes.
 | R-3 | Same-user credential exfiltration by a prompt-injected agent | Credential theft | FR-POL-06; provider-native sandboxes; untrusted profiles without shell; M3 fixtures |
 | R-4 | Native sandbox support differs by platform | Fewer eligible providers on some hosts | Eligibility is per platform; Linux first |
 | R-5 | Capacity is opaque | Throttling mid-task | Confidence estimates, backpressure, checkpointed retries (ADR-0007) |
-| R-6 | Scope (seven adapters, all Must) is large for one maintainer | Slow delivery | Vertical slice with two adapters first; the rest added one at a time behind the same conformance suite; open-source contributors can add adapters (NFR-MAINT-01) |
+| R-6 | Scope (seven adapters; six Must, Kimi Code Deferred) is large for one maintainer | Slow delivery | Vertical slice with two adapters first; the rest added one at a time behind the same conformance suite; open-source contributors can add adapters (NFR-MAINT-01) |
 | R-7 | Research facts are dated 2026-10-12 and not re-verified here | Flags in TDD may be stale by implementation | Each adapter task starts by verifying against the installed CLI |
 | R-8 | No per-run disk or CPU limits | A runaway agent fills the disk or starves the host | Timeouts, concurrency limits and retention for now; revisit in M3 with the outer-sandbox evaluation ([TDD §3.4](design/TDD.md#34-security-engineering)) |
 | R-9 | MCP client identity over stdio is only as strong as the orchestrator's launch config (`serve --client <id>`) | A misconfigured orchestrator gets another client's trust ceiling | Keep ceilings low by default; `privileged` always needs operator approval (FR-POL-09) |
@@ -237,7 +240,7 @@ preceding milestone completes.
 
 | ID | Blocker | Blocks | Unblocked by |
 | --- | --- | --- | --- |
-| B-1 | Kimi Code's current automation contract is not pinned | FR-ADP-09 | Moonshot documentation or a validated installed version |
+| B-1 | Kimi Code's new CLI automation contract is not pinned (the reason Kimi Code is deferred, §8) | FR-ADP-09 | Moonshot documentation or a validated installed version |
 
 No blocker affects M1.
 
@@ -246,7 +249,7 @@ No blocker affects M1.
 | ID | Question | Default in force |
 | --- | --- | --- |
 | Q-1 | *Answered 2026-10-12:* built for Ender, published open source for others (owner decision 4). | — |
-| Q-2 | *Answered 2026-10-12:* all seven held; Claude Code and Codex first (owner decision 5). | — |
+| Q-2 | *Answered 2026-10-12:* all seven held; Claude Code and Codex first (owner decision 5); Kimi Code deferred (decision 6). | — |
 | Q-3 | Do you prefer a language other than TypeScript? | TypeScript (ADR-0010); cheapest to change before M1 |
 | Q-4 | Which orchestrator will you use first? | Any stdio MCP client (A-4) |
 
@@ -261,6 +264,7 @@ No blocker affects M1.
 | Native Windows host | Deferred | Linux first | NFR-PORT-03 |
 | HTTP/SSE MCP transport | Deferred | stdio fits local use | ADR-0002 |
 | Automatic merge of result branches | Deferred | Needs judgement | ADR-0006 |
+| Kimi Code adapter | Deferred | New CLI interface not yet pinned (B-1); stays in the architecture as a disabled adapter slot. Revisit when B-1 clears and Ender asks to re-enable it | FR-ADP-09 |
 | Multi-user or hosted operation | Excluded | Compliance and credential risk | ADR-0011 |
 
 ## 9. Next actionable milestone

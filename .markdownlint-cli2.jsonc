@@ -1,9 +1,7 @@
 {
   // Shared markdownlint-cli2 configuration.
-  // The blocking CI job lints every Markdown file except docs/ (see
-  // .github/workflows/docs-lint.yml). docs/ is linted by a separate,
-  // non-blocking advisory job because it has existing lint debt that
-  // is not being fixed in this pass.
+  // The blocking CI job lints every Markdown file, including docs/ (see
+  // .github/workflows/docs-lint.yml).
   "config": {
     "default": true,
     // Prose documents with long lines and wide tables are common in

@@ -149,7 +149,7 @@ Each adapter chooses the transport the provider documents ([R2] adapter matrix;
 | Antigravity | Subprocess `agy -p`, JSON/stream-JSON | None planned | M4 | Fails fast when unauthenticated. |
 | Cursor CLI | Subprocess `agent -p`, JSON/stream-JSON | ACP stdio (`agent acp`) | M4 | Trust, MCP approval, force and sandbox decided independently. |
 | OpenCode | Subprocess `opencode run` | Persistent local service `serve`/`attach` (deferred, FR-EXE-04) | M4 (Should) | Record harness and backing provider (FR-ADP-10). |
-| Kimi Code | Undetermined | Undetermined | Blocked | Disabled until the CLI contract is pinned (FR-ADP-09). |
+| Kimi Code | Undetermined | Undetermined | Deferred | Disabled until the new CLI contract is pinned (FR-ADP-09, deferred by owner decision 6). |
 
 Other interfaces: MCP stdio upstream (COMP-MCP); Git CLI against local repositories (COMP-WS); OTLP export (COMP-TEL,
 M8); operator CLI (COMP-OPS).

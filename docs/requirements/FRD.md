@@ -202,7 +202,7 @@ one reason is reported:
 
 | State | Condition | Eligible | Operator remedy | Source |
 | --- | --- | --- | --- | --- |
-| DISABLED | Operator config disables it, or adapter blocked (Kimi Code until contract pinned) | No | Enable in config; for Kimi, pin contract | FR-ADP-09 |
+| DISABLED | Operator config disables it, or adapter deferred (Kimi Code until contract pinned) | No | Enable in config; for Kimi, pin contract | FR-ADP-09 |
 | NO_MANIFEST | No compliance manifest covers the installed version | No | Add or update manifest | FR-POL-07 |
 | ADAPTER_VERSION_UNVERIFIED | Installed version outside validated range | No | `adapters validate <provider>` (WF-9) | FR-ADP-03, FR-OPS-02 |
 | AUTH_REQUIRED | Provider's own status command or smoke call reports no valid login | No | Run the native login command printed by `doctor` | FR-AUTH-02 |

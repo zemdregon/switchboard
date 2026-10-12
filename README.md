@@ -29,7 +29,7 @@ re-check them before relying on them.
 - Documents live under `docs/`. Changes there are reviewed like any other PR.
 - `node scripts/check-docs.mjs` checks links, anchors, requirement IDs and
   roadmap coverage across the specification set.
-- Markdown is checked by the `docs-lint` GitHub Actions workflow. The blocking
-  job covers Markdown outside `docs/`. The `docs/` job is advisory for now.
+- Markdown is checked by the `docs-lint` GitHub Actions workflow. The lint job
+  is blocking and covers all Markdown, including `docs/`.
 - Contribution steps and conventions are in [CONTRIBUTING.md](CONTRIBUTING.md).
 - To report a security concern, see [SECURITY.md](SECURITY.md).

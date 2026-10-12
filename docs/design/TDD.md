@@ -264,11 +264,12 @@ Version ranges come from compliance manifests, not this table (FR-ADP-03, FR-POL
 | Sandbox controls | None stated in [R2]: profiles needing confinement are ineligible until verified |
 | Known risks | Multiple backing providers: record harness and backing provider/model (FR-ADP-10) so two paths to one quota pool are not counted as independent capacity |
 
-### 4.7 Kimi Code (M4, blocked by B-1)
+### 4.7 Kimi Code (deferred, blocked by B-1)
 
-Disabled until the current Kimi Code CLI automation contract is pinned and passes conformance tests (FR-ADP-09, [ROADMAP
-§7](../ROADMAP.md#7-risks-blockers-and-open-questions)). The archived legacy CLI's syntax, models and permissions are
-not evidence for the replacement. Every row of this table: to be verified when the contract is pinned.
+Deferred by owner decision 6 (2026-10-12) and disabled until the new Kimi Code CLI automation contract is pinned and
+passes conformance tests (FR-ADP-09, [ROADMAP §7](../ROADMAP.md#7-risks-blockers-and-open-questions)). The archived
+legacy CLI's syntax, models and permissions are not evidence for the replacement. Every row of this table: to be
+verified when the contract is pinned.
 
 ## 5. Implementation strategy by milestone
 

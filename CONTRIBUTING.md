@@ -18,7 +18,7 @@ contributions are edits to research and design documents.
 3. Check your Markdown locally:
 
    ```sh
-   npx --yes markdownlint-cli2@0.23.3 "**/*.md" "!docs/**"
+   npx --yes markdownlint-cli2@0.23.3 "**/*.md"
    npx --yes markdown-link-check@3.13.7 --quiet README.md CONTRIBUTING.md SECURITY.md
    node scripts/check-docs.mjs
    ```
@@ -28,9 +28,7 @@ contributions are edits to research and design documents.
 
 ## Scope notes
 
-- Files under `docs/` are not yet held to the blocking lint rules. Their lint
-  results are reported by an advisory job. You may fix them, but keep such
-  changes separate from content changes.
+- Markdown lint is blocking for every Markdown file, including `docs/`.
 - Do not add application code, dependencies, or build tooling without first
   discussing it in an issue. Those decisions are not made yet.
 

@@ -136,14 +136,14 @@ The authoritative risk register, blockers and open questions are in [ROADMAP
 | The credential store and the agent share an OS user, so sandboxing may be weaker than hoped on some providers. | BO-3 | Arbitrary shell is disabled on untrusted profiles for adapters that cannot confine commands ([SRS FR-POL-06](SRS.md#33-policy-and-trust-profiles-fr-pol)). Some providers may be unusable under untrusted profiles. |
 | Quota information is incomplete, so capacity estimates are wrong. | BO-1, BO-5 | Capacity is modelled as a confidence-weighted estimate, not a fact ([ADR-0007](../adr/0007-capacity-as-confidence-estimate.md)). |
 | CLI churn outpaces validation. | BO-6 | Version gating makes failure visible and safe, at the cost of operator effort on each update. |
-| Kimi Code's automation contract is not pinned. | BO-1 | Kimi Code adapter is blocked until the contract is pinned ([SRS FR-ADP-09](SRS.md#32-provider-adapters-fr-adp)). |
+| Kimi Code's automation contract is not pinned. | BO-1 | Kimi Code adapter is deferred until the new CLI contract is pinned ([SRS FR-ADP-09](SRS.md#32-provider-adapters-fr-adp)). |
 | Sustained effort is required for seven adapters by a single maintainer. | BO-1 | Assumption: no staffing is committed. Sequencing in the [ROADMAP](../ROADMAP.md#6-milestones) delivers value from the first adapter. |
 
 ## 8. Personal tool and open-source project
 
 **Owner decision (2026-10-12):** Switchboard is built to solve Ender's own problem and is published as open source,
-built so other people can use it. Ender holds every subscription named in the research; all seven providers must be
-integrated, with Claude Code and Codex first.
+built so other people can use it. Ender holds every subscription named in the research; all seven providers are in
+scope, with Claude Code and Codex first; Kimi Code is deferred until its new CLI interface is pinned (owner decision 6).
 
 Consequences ([ADR-0011](../adr/0011-single-operator-local-deployment.md)): every user runs their own installation with
 their own logins. There are still no user accounts, no network listener, no hosted service and no sharing of credentials
