@@ -81,7 +81,7 @@ if (existsSync(srsPath)) {
     if (defined.has(cells[1])) err(srsPath, `duplicate requirement ${cells[1]}`);
     defined.set(cells[1], { priority, milestone });
     if (!priority) err(srsPath, `${cells[1]} has no priority`);
-    if (priority === "Must" && !/M\d/.test(milestone)) {
+    if (priority === "Must" && !/M\d+/.test(milestone)) {
       err(srsPath, `${cells[1]} is Must but has no delivery milestone`);
     }
   }
@@ -117,11 +117,11 @@ if (existsSync(roadmapPath)) {
   const listed = new Map();
   for (const line of readFileSync(roadmapPath, "utf8").split("\n")) {
     const cells = line.split("|").map((c) => c.trim());
-    if (/^M\d$/.test(cells[1] ?? "")) listed.set(cells[1], expandIds(cells[5] ?? ""));
+    if (/^M\d+$/.test(cells[1] ?? "")) listed.set(cells[1], expandIds(cells[5] ?? ""));
   }
   for (const [id, { priority, milestone }] of defined) {
     if (priority === "Deferred" || priority === "Withdrawn") continue;
-    const first = /M\d/.exec(milestone ?? "")?.[0];
+    const first = /M\d+/.exec(milestone ?? "")?.[0];
     if (!first) continue;
     if (!listed.get(first)?.has(id)) err(roadmapPath, `${id} (first delivery ${first}) missing from milestone ${first} row`);
   }
