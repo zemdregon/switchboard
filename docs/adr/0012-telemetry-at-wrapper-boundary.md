@@ -7,11 +7,17 @@
 
 ## Context
 
-The original blueprint proposed injecting global Claude hooks into `~/.claude/settings.json` before each run and reading transcript bytes from a `Stop` hook. The verified research notes hooks are documented (not "undocumented"), but rewriting global config per run races between concurrent sessions and makes cleanup failures security-relevant; every run already yields rich observable data at the wrapper boundary.
+The original blueprint proposed injecting global Claude hooks into `~/.claude/settings.json` before each run and reading
+transcript bytes from a `Stop` hook. The verified research notes hooks are documented (not "undocumented"), but
+rewriting global config per run races between concurrent sessions and makes cleanup failures security-relevant; every
+run already yields rich observable data at the wrapper boundary.
 
 ## Decision
 
-Telemetry is produced by the controller from what it observes: spawn parameters, adapter version, routing decision, structured stdout events, stderr, resource usage, exit status, workspace diff, verification results and reported usage. It is stored as run events and exported as OpenTelemetry traces when configured. Provider hooks may be used only through per-run or dedicated config directories, never by editing global provider config.
+Telemetry is produced by the controller from what it observes: spawn parameters, adapter version, routing decision,
+structured stdout events, stderr, resource usage, exit status, workspace diff, verification results and reported usage.
+It is stored as run events and exported as OpenTelemetry traces when configured. Provider hooks may be used only through
+per-run or dedicated config directories, never by editing global provider config.
 
 ## Alternatives considered
 

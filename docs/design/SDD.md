@@ -1,18 +1,20 @@
 # Software Design Document (SDD)
 
-| | |
-|---|---|
+| Field | Value |
+| --- | --- |
 | Status | Draft, baseline for milestone M1 |
 | Owns | How components collaborate per workflow, shared design patterns, interface responsibilities, error propagation, configuration model overview, requirement-to-design traceability |
 | Does not own | Components and boundaries ([HLD](HLD.md)), workflows and business rules ([FRD](../requirements/FRD.md)), requirements ([SRS](../requirements/SRS.md)), technology choices ([TDD](TDD.md)), schemas and contracts ([LLD](LLD.md)) |
 | Last reconciled | 2026-10-12 |
 
-Nothing here is implemented; no code, tests or configuration exist as of 2026-10-12. Component IDs (`COMP-*`) are defined in [HLD §2](HLD.md#2-components). Patterns marked **Proposed** are design choices made while planning and are not owner-approved; ADRs cited are "Delegated" decisions.
+Nothing here is implemented; no code, tests or configuration exist as of 2026-10-12. Component IDs (`COMP-*`) are
+defined in [HLD §2](HLD.md#2-components). Patterns marked **Proposed** are design choices made while planning and are
+not owner-approved; ADRs cited are "Delegated" decisions.
 
 ## 1. Shared design patterns
 
 | Pattern | Where it applies | Rule | Cites |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Ports and adapters | COMP-ADP, COMP-EXE | Core components depend on one adapter port and one transport interface; provider-specific argv, flags, parsing and resume rules live only in adapters. A new provider touches its adapter, manifest, fixtures and registry entry. | [ADR-0002](../adr/0002-mcp-upstream-acp-downstream.md), [ADR-0009](../adr/0009-version-gated-adapters.md), NFR-MAINT-01 |
 | Append-only event log plus materialized state | COMP-LED | `run_event` and `decision` rows are never updated. Current-state tables (`run`, `meta_session`, `provider_health`, capacity) are updated in the same transaction as the event that causes the change. Handoff views and explanations are projections that can be rebuilt. | [ADR-0005](../adr/0005-sqlite-ledger.md), FR-SES-05, FR-TEL-01 |
 | Ledger-first ordering (outbox-style) | COMP-LED with COMP-WS, COMP-EXE | Intent is committed to the ledger before the side effect (worktree creation, process spawn, branch commit) and the outcome is committed after it. A crash between the two leaves a non-terminal run with a recorded intent, which startup reconciliation resolves by inspecting the real state (process table, Git). Side effects are therefore re-derivable; they are never blindly repeated. | NFR-REL-01, FR-EXE-06, [ADR-0006](../adr/0006-worktree-checkpoints-no-blind-replay.md) |
@@ -27,10 +29,13 @@ Nothing here is implemented; no code, tests or configuration exist as of 2026-10
 
 ## 2. Component collaboration per workflow
 
-Workflow IDs refer to the [FRD](../requirements/FRD.md); step-level behaviour and business rules are defined there. This section states only which components collaborate and what crosses each call. Run states are those of the FRD state machine: QUEUED, PREFLIGHT, LEASED, RUNNING, VERIFYING, FINALIZING, then SUCCEEDED, FAILED or CANCELLED, with AWAITING_APPROVAL and WAITING_CAPACITY as side states.
+Workflow IDs refer to the [FRD](../requirements/FRD.md); step-level behaviour and business rules are defined there. This
+section states only which components collaborate and what crosses each call. Run states are those of the FRD state
+machine: QUEUED, PREFLIGHT, LEASED, RUNNING, VERIFYING, FINALIZING, then SUCCEEDED, FAILED or CANCELLED, with
+AWAITING_APPROVAL and WAITING_CAPACITY as side states.
 
 | WF | Collaboration | Notes |
-|---|---|---|
+| --- | --- | --- |
 | WF-1 Delegate task | COMP-MCP validates and asks COMP-POL to authorize and snapshot; COMP-LED records the run; COMP-RTE filters providers using COMP-ADP preflight state and COMP-POL manifests, persists the route decision, reserves capacity; COMP-WS creates the worktree and lease; COMP-EXE spawns via COMP-ADP compile, streams events through COMP-ADP parse into COMP-LED; COMP-EXE runs verification; COMP-WS records diff and checkpoint; COMP-LED commits the terminal state. | Sequence in [HLD §6.1](HLD.md#61-delegate-run-end-to-end-wf-1). The MCP call returns after the QUEUED insert. |
 | WF-2 Continue same provider | COMP-MCP resolves the meta-session in COMP-LED; COMP-RTE checks the bound provider is still eligible; COMP-ADP builds a native resume invocation from the stored native session id; the rest follows WF-1 on the existing worktree head. | If the native session is gone or resume fails, the outcome is a failure code, not a silent fresh start (Proposed; confirm in FRD). |
 | WF-3 Cross-provider handoff | COMP-RTE selects a different provider; COMP-LED and COMP-WS supply the handoff inputs (decisions, Git base/head, changed files, diff excerpts, diagnostics); COMP-ADP renders them as the new session prompt; a new binding is stored. | Inputs only from the ledger and Git (FR-SES-04). |
@@ -46,7 +51,7 @@ Workflow IDs refer to the [FRD](../requirements/FRD.md); step-level behaviour an
 ### 3.1 Who calls whom
 
 | Caller | Callee | Style | Data crossing | Responsibility boundary |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | Orchestrator | COMP-MCP | Sync request/response over stdio; long work async via polling | Validated tool arguments in, compact envelope out | COMP-MCP owns validation and shaping; it holds no domain logic beyond that. |
 | COMP-MCP | COMP-POL | Sync, in-process | Caller identity, requested profile, canonical path | Returns allow/deny plus a frozen policy snapshot. |
 | COMP-MCP, COMP-RTE, COMP-WS, COMP-EXE | COMP-LED | Sync transactions | Rows and events | Only COMP-LED writes the database (single-writer, [ADR-0005](../adr/0005-sqlite-ledger.md)). |
@@ -57,7 +62,9 @@ Workflow IDs refer to the [FRD](../requirements/FRD.md); step-level behaviour an
 | COMP-EXE, COMP-RTE, COMP-MCP | COMP-TEL | Async, fire-and-forget into the ledger transaction | Lifecycle observations | COMP-TEL redacts; exporter failure never fails a run. |
 | COMP-OPS | COMP-POL, COMP-LED, COMP-ADP | Sync | Approvals, queries, validation requests | CLI is a thin client; no logic duplicated from other components. |
 
-COMP-OPS commands run in their own short-lived process, write only operator records (approvals, denials, cancel requests) to the shared ledger, and leave all side effects to the `serve` daemon ([ADR-0005](../adr/0005-sqlite-ledger.md), [TDD §3](TDD.md)).
+COMP-OPS commands run in their own short-lived process, write only operator records (approvals, denials, cancel
+requests) to the shared ledger, and leave all side effects to the `serve` daemon
+([ADR-0005](../adr/0005-sqlite-ledger.md), [TDD §3](TDD.md)).
 
 ### 3.2 Error propagation
 
@@ -71,27 +78,40 @@ flowchart LR
     M --> O[Orchestrator]
 ```
 
-- Classification happens once, in COMP-ADP, using structured fields first; free-text matching is a last resort and only to refine a structured error (FR-ADP-04). Anything unclassifiable becomes `OUTPUT_PROTOCOL_ERROR` or `PROCESS_CRASH`, never success (NFR-SEC-06).
-- Controller-originated failures (`INVALID_REQUEST`, `PERMISSION_BLOCKED` from caller caps, `ELIGIBILITY_NONE`, `ADAPTER_VERSION_UNVERIFIED`) are produced by COMP-MCP, COMP-POL or COMP-RTE directly, using the same codes. `ELIGIBILITY_NONE` and `INVALID_REQUEST` were added during planning and are not in the original taxonomy list.
-- Each run ends in exactly one terminal state with at most one failure code; each tool error carries exactly one code plus a message (FR-MCP-07). Retries create new run records, so the history stays append-only.
+- Classification happens once, in COMP-ADP, using structured fields first; free-text matching is a last resort and only
+  to refine a structured error (FR-ADP-04). Anything unclassifiable becomes `OUTPUT_PROTOCOL_ERROR` or `PROCESS_CRASH`,
+  never success (NFR-SEC-06).
+- Controller-originated failures (`INVALID_REQUEST`, `PERMISSION_BLOCKED` from caller caps, `ELIGIBILITY_NONE`,
+  `ADAPTER_VERSION_UNVERIFIED`) are produced by COMP-MCP, COMP-POL or COMP-RTE directly, using the same codes.
+  `ELIGIBILITY_NONE` and `INVALID_REQUEST` were added during planning and are not in the original taxonomy list.
+- Each run ends in exactly one terminal state with at most one failure code; each tool error carries exactly one code
+  plus a message (FR-MCP-07). Retries create new run records, so the history stays append-only.
 - Messages returned upstream are redacted summaries; stderr and raw events stay in artifacts (FR-MCP-04, FR-TEL-03).
 - Taxonomy, retryability and mapping table: [LLD §4](LLD.md#4-failure-taxonomy).
 
 ### 3.3 Concurrency and ordering rules (Proposed)
 
-- Single writer: only COMP-LED writes the SQLite database; other components submit operations to it. Provider-process output handling is per-run and isolated, so one run's parser failure cannot corrupt another's (NFR-REL-02).
-- Per-run state transitions are compare-and-set on the previous state inside one transaction, so a cancel and a completion racing resolve to whichever commits first; the loser observes a terminal state and does nothing further.
-- A write lease is a ledger row plus the worktree on disk. Acquire: insert lease row, then create worktree. Release: finish Git work, then delete the lease row. Reconciliation (WF-8) treats any lease without a live run as stale and checks the worktree before reuse or removal.
-- Dispatch order for a run: policy snapshot, route decision, lease, spawn. Each step is recorded before the next begins, so any prefix of the sequence can be recovered from the ledger.
-- Capacity reservations (per-provider concurrency slots) are held for the duration of RUNNING and released in the same transaction that records a terminal state; reconciliation releases slots held by dead runs.
-- Verification commands (FR-EXE-08) run under the same profile and process-group rules as the agent itself, after the agent process has exited.
+- Single writer: only COMP-LED writes the SQLite database; other components submit operations to it. Provider-process
+  output handling is per-run and isolated, so one run's parser failure cannot corrupt another's (NFR-REL-02).
+- Per-run state transitions are compare-and-set on the previous state inside one transaction, so a cancel and a
+  completion racing resolve to whichever commits first; the loser observes a terminal state and does nothing further.
+- A write lease is a ledger row plus the worktree on disk. Acquire: insert lease row, then create worktree. Release:
+  finish Git work, then delete the lease row. Reconciliation (WF-8) treats any lease without a live run as stale and
+  checks the worktree before reuse or removal.
+- Dispatch order for a run: policy snapshot, route decision, lease, spawn. Each step is recorded before the next begins,
+  so any prefix of the sequence can be recovered from the ledger.
+- Capacity reservations (per-provider concurrency slots) are held for the duration of RUNNING and released in the same
+  transaction that records a terminal state; reconciliation releases slots held by dead runs.
+- Verification commands (FR-EXE-08) run under the same profile and process-group rules as the agent itself, after the
+  agent process has exited.
 
 ## 4. Configuration model overview
 
-Detail (format, keys, validation schema) is owned by [TDD](TDD.md) and [LLD](LLD.md); this section only fixes the shape. All configuration is schema-validated at load and invalid configuration prevents start (NFR-SEC-05, NFR-SEC-06).
+Detail (format, keys, validation schema) is owned by [TDD](TDD.md) and [LLD](LLD.md); this section only fixes the shape.
+All configuration is schema-validated at load and invalid configuration prevents start (NFR-SEC-05, NFR-SEC-06).
 
 | Group | Content (Proposed) | Consumed by |
-|---|---|---|
+| --- | --- | --- |
 | Roots and paths | Allowed workspace roots, data directory, worktree location | COMP-POL, COMP-WS, COMP-LED |
 | MCP clients | Named client entries with maximum trust profile | COMP-MCP, COMP-POL |
 | Profiles | Overrides to profile defaults (recorded in the policy snapshot; cannot go below the SRS defaults without that record, FR-POL-01) | COMP-POL |
@@ -102,14 +122,18 @@ Detail (format, keys, validation schema) is owned by [TDD](TDD.md) and [LLD](LLD
 | Retention | Artifact, event and worktree retention | COMP-LED, COMP-WS |
 | Telemetry | OTLP endpoint (absent by default), redaction rules | COMP-TEL |
 
-Defaults for numeric values are *(proposed target)* until measured, as in the SRS. Environment variables and global provider config are never an input path for policy (FR-POL-08).
+Defaults for numeric values are *(proposed target)* until measured, as in the SRS. Environment variables and global
+provider config are never an input path for policy (FR-POL-08).
 
 ## 5. Requirements to design traceability
 
-Every `FR-*` and `NFR-*` ID in the [SRS](../requirements/SRS.md) has one row. Priority and milestone remain in the SRS; "Deferred" requirements are listed with the extension point that keeps them possible. Components use the HLD IDs. "Detail" links point to the LLD or TDD section that will specify the mechanism; where no section anchor is assigned yet the cell says so.
+Every `FR-*` and `NFR-*` ID in the [SRS](../requirements/SRS.md) has one row. Priority and milestone remain in the SRS;
+"Deferred" requirements are listed with the extension point that keeps them possible. Components use the HLD IDs.
+"Detail" links point to the LLD or TDD section that will specify the mechanism; where no section anchor is assigned yet
+the cell says so.
 
 | ID | Component(s) | Design element / mechanism | ADR(s) | Detail |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | FR-MCP-01 | COMP-MCP | Tool registry on an MCP stdio server; handlers delegate to other components | [ADR-0002](../adr/0002-mcp-upstream-acp-downstream.md) | [LLD §3](LLD.md#3-mcp-tool-contracts) |
 | FR-MCP-02 | COMP-MCP, COMP-RTE | Read-only tools over capacity estimates and persisted route decisions | [ADR-0007](../adr/0007-capacity-as-confidence-estimate.md), [ADR-0008](../adr/0008-two-stage-routing.md) | [LLD §3](LLD.md#3-mcp-tool-contracts) |
 | FR-MCP-03 | COMP-MCP, COMP-LED, COMP-RTE | Async-first: insert meta-session/run in ledger, return ids, optional bounded wait by polling ledger state | [ADR-0002](../adr/0002-mcp-upstream-acp-downstream.md) | [LLD §3](LLD.md#3-mcp-tool-contracts), [LLD §1](LLD.md#1-data-model) |
@@ -211,7 +235,7 @@ Every `FR-*` and `NFR-*` ID in the [SRS](../requirements/SRS.md) has one row. Pr
 ## 6. Design questions settled during reconciliation
 
 | Question | Resolution |
-|---|---|
+| --- | --- |
 | Does the operator CLI act in-process or through `serve`? | Own short-lived process writing operator records only; the daemon performs side effects ([ADR-0005](../adr/0005-sqlite-ledger.md), [TDD §3.5](TDD.md#35-concurrency-model)). |
 | Where do worktrees live? | `<data_dir>/worktrees/<sess>/<run>` ([LLD §5](LLD.md#5-workspace-and-lease-algorithm)). |
 | Is reconciliation finished before MCP serves? | Yes (FR-EXE-06). |

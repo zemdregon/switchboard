@@ -7,11 +7,15 @@
 
 ## Context
 
-The original blueprint suggested "SQLite or RocksDB". The verified research recommends SQLite for a local, relational, transactional, modest-volume workload, with an append-only event table plus materialized current-state tables.
+The original blueprint suggested "SQLite or RocksDB". The verified research recommends SQLite for a local, relational,
+transactional, modest-volume workload, with an append-only event table plus materialized current-state tables.
 
 ## Decision
 
-One SQLite database file in WAL mode under the operator's data directory. `run_event` and `decision` are append-only. Current-state tables (`run`, `meta_session`, `provider_health`, capacity) are updated in the same transaction as the event that changes them. Large payloads go to a content-addressed artifact directory, referenced by SHA-256. Schema changes use numbered forward-only migrations.
+One SQLite database file in WAL mode under the operator's data directory. `run_event` and `decision` are append-only.
+Current-state tables (`run`, `meta_session`, `provider_health`, capacity) are updated in the same transaction as the
+event that changes them. Large payloads go to a content-addressed artifact directory, referenced by SHA-256. Schema
+changes use numbered forward-only migrations.
 
 ## Alternatives considered
 
@@ -21,7 +25,10 @@ One SQLite database file in WAL mode under the operator's data directory. `run_e
 
 ## Consequences
 
-- One long-running `serve` process per data directory, enforced by an exclusive lock file. Short-lived operator CLI commands write only operator records (approvals, denials, cancel requests) through the same ledger module, relying on SQLite WAL locking with a busy timeout; the daemon performs every side effect. Only Switchboard code writes the database.
+- One long-running `serve` process per data directory, enforced by an exclusive lock file. Short-lived operator CLI
+  commands write only operator records (approvals, denials, cancel requests) through the same ledger module, relying on
+  SQLite WAL locking with a busy timeout; the daemon performs every side effect. Only Switchboard code writes the
+  database.
 - One orchestrator per data directory at a time follows from this; a second orchestrator needs its own data directory.
 - Multi-host deployment would need a different store (out of scope, ADR-0011).
 

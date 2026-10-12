@@ -1,7 +1,7 @@
 # Switchboard Roadmap
 
-| | |
-|---|---|
+| Field | Value |
+| --- | --- |
 | Status | **Canonical.** Single source of truth for scope, priorities, dependencies, sequencing, status and completion criteria. |
 | Does not own | Requirements ([SRS](requirements/SRS.md)), behaviour ([FRD](requirements/FRD.md)), design ([HLD](design/HLD.md), [SDD](design/SDD.md), [TDD](design/TDD.md), [LLD](design/LLD.md)), decision rationale ([ADRs](adr/README.md)). |
 | Last reconciled | 2026-10-12 |
@@ -9,26 +9,38 @@
 
 ## 1. How to use this roadmap
 
-Read this first, then the documents it links for the milestone you are working on. Update the status column in §6 in the same change that completes or blocks work, citing evidence (a test, a file path, a PR). Do not mark anything done without evidence. Agent working rules are in [AGENTS.md](../AGENTS.md).
+Read this first, then the documents it links for the milestone you are working on. Update the status column in §6 in the
+same change that completes or blocks work, citing evidence (a test, a file path, a PR). Do not mark anything done
+without evidence. Agent working rules are in [AGENTS.md](../AGENTS.md).
 
 ## 2. Product summary
 
-**Purpose.** Switchboard is a local, headless controller that lets one primary AI orchestrator delegate coding tasks to the operator's existing AI coding subscriptions (Claude Code, Codex, Grok Build, Antigravity, Cursor CLI, OpenCode, Kimi Code) through each vendor's documented automation surface, behind one small MCP tool interface. It owns policy, workspace isolation, cross-provider task state, routing and capacity estimation, so the orchestrator does not have to.
+**Purpose.** Switchboard is a local, headless controller that lets one primary AI orchestrator delegate coding tasks to
+the operator's existing AI coding subscriptions (Claude Code, Codex, Grok Build, Antigravity, Cursor CLI, OpenCode, Kimi
+Code) through each vendor's documented automation surface, behind one small MCP tool interface. It owns policy,
+workspace isolation, cross-provider task state, routing and capacity estimation, so the orchestrator does not have to.
 
-**Users.** The *operator* (the account owner who installs Switchboard and logs in to each CLI; zemdregon first; Switchboard is published as open source so anyone can run their own installation with their own subscriptions) and the *orchestrator* (an MCP client agent such as OpenClaw or Grok Bot). See [PRD §2](requirements/PRD.md).
+**Users.** The *operator* (the account owner who installs Switchboard and logs in to each CLI; zemdregon first; Switchboard
+is published as open source so anyone can run their own installation with their own subscriptions) and the
+*orchestrator* (an MCP client agent such as OpenClaw or Grok Bot). See [PRD §2](requirements/PRD.md).
 
-**Desired outcomes.** BO-1 to BO-6 in the [BRD](requirements/BRD.md): more work per paid subscription, no credential handling, safe unattended runs, continuity across providers, visibility, and resilience to CLI churn.
+**Desired outcomes.** BO-1 to BO-6 in the [BRD](requirements/BRD.md): more work per paid subscription, no credential
+handling, safe unattended runs, continuity across providers, visibility, and resilience to CLI churn.
 
-**In scope.** Capabilities CAP-1 to CAP-9 in the [PRD](requirements/PRD.md). "Application" in this project means the MCP tool surface plus the operator CLI; "backend" means the controller daemon and its ledger, workspace manager, router and adapters.
+**In scope.** Capabilities CAP-1 to CAP-9 in the [PRD](requirements/PRD.md). "Application" in this project means the MCP
+tool surface plus the operator CLI; "backend" means the controller daemon and its ledger, workspace manager, router and
+adapters.
 
-**Non-goals.** Owned by [PRD §6](requirements/PRD.md#6-non-goals). In short: no web UI (a read-only usage dashboard is deferred), no login or OAuth handling, no hosted or multi-user service, no reimplementation of provider APIs, no claim of Terms-of-Service compliance, no automatic pushes or merges into the operator's branches.
+**Non-goals.** Owned by [PRD §6](requirements/PRD.md#6-non-goals). In short: no web UI (a read-only usage dashboard is
+deferred), no login or OAuth handling, no hosted or multi-user service, no reimplementation of provider APIs, no claim
+of Terms-of-Service compliance, no automatic pushes or merges into the operator's branches.
 
 ## 3. Current state and target state
 
 ### 3.1 Audit findings (2026-10-12)
 
 | Area | Finding | Evidence |
-|---|---|---|
+| --- | --- | --- |
 | Source code, tests, config, CI | None exist. Nothing is implemented. | Repository tree at commit `d41c10c`: only `LICENSE` and `docs/research/` |
 | Agent instructions | None existed before this change. Now [AGENTS.md](../AGENTS.md) (with `CLAUDE.md` importing it). | — |
 | Roadmap / plan | **No authoritative roadmap existed.** The plan was fragmented across two research documents. The closest thing to a plan was the eight-stage "production sequence" table at the end of the verified research. | [R2 § MCP, ACP, and the recommended production architecture](research/headless-ai-coding-controller-verified-2026-10-12.md#mcp-acp-and-the-recommended-production-architecture) |
@@ -38,14 +50,18 @@ Read this first, then the documents it links for the milestone you are working o
 
 ### 3.2 Target state
 
-An open-source, single-operator-per-installation controller for Linux and macOS that passes conformance and malicious-fixture suites for all seven providers (Kimi Code once its contract is pinned), is installable by other people from its README, exposes the MCP tools in [SRS §3.1](requirements/SRS.md#31-mcp-interface-fr-mcp), continues work across providers from controller-owned state, routes with explainable decisions, and reports capacity as confidence-weighted estimates. Architecture: [HLD](design/HLD.md).
+An open-source, single-operator-per-installation controller for Linux and macOS that passes conformance and
+malicious-fixture suites for all seven providers (Kimi Code once its contract is pinned), is installable by other people
+from its README, exposes the MCP tools in [SRS §3.1](requirements/SRS.md#31-mcp-interface-fr-mcp), continues work across
+providers from controller-owned state, routes with explainable decisions, and reports capacity as confidence-weighted
+estimates. Architecture: [HLD](design/HLD.md).
 
 ## 4. Constraints, assumptions, decisions and conflicts
 
 ### 4.1 How sources are classified
 
 | Class | Meaning | Where recorded |
-|---|---|---|
+| --- | --- | --- |
 | **Owner decision** | Explicitly decided by zemdregon. | Listed in §4.2 only. |
 | **Stated intent** | Requirements stated in the original blueprint's introduction, which zemdregon supplied as the project brief. Treated as approved intent, not as approved design. | §4.3 |
 | **Delegated decision** | Made by an agent during the 2026-10-12 planning task under zemdregon's delegation. Binding for implementation until revised, not owner-approved. | ADRs marked "Delegated", and §4.4 |
@@ -54,14 +70,18 @@ An open-source, single-operator-per-installation controller for Linux and macOS 
 ### 4.2 Owner decisions
 
 1. The two research documents are project research for Switchboard (PRs #1 and #2, merged).
-2. Agent work in this project routes model tiers by task difficulty (Haiku for simple, mechanical work; Opus or Fable only for demanding work). Recorded in [AGENTS.md](../AGENTS.md#subagent-routing-and-orchestration).
+2. Agent work in this project routes model tiers by task difficulty (Haiku for simple, mechanical work; Opus or Fable
+   only for demanding work). Recorded in [AGENTS.md](../AGENTS.md#subagent-routing-and-orchestration).
 3. The documentation set and roadmap in this change were requested by zemdregon. Their *content* is delegated, not approved.
-4. Switchboard is built for zemdregon's own use and published as open source so other people can run it with their own subscriptions (2026-10-12).
-5. zemdregon holds every subscription named in the research. All seven providers must be integrated; Claude Code and Codex are the first integrations (2026-10-12).
+4. Switchboard is built for zemdregon's own use and published as open source so other people can run it with their own
+   subscriptions (2026-10-12).
+5. zemdregon holds every subscription named in the research. All seven providers must be integrated; Claude Code and Codex
+   are the first integrations (2026-10-12).
 
 ### 4.3 Stated intent (confirmed constraints)
 
-From the [original blueprint's introduction](research/headless-ai-coding-controller.md#introduction-to-the-cli-native-orchestration-paradigm):
+From the [original blueprint's
+introduction](research/headless-ai-coding-controller.md#introduction-to-the-cli-native-orchestration-paradigm):
 
 - C-1 Wrap the seven provider CLIs through their headless or documented automation modes, not raw model APIs.
 - C-2 No web interface, except restricted dashboards purely for usage monitoring and telemetry.
@@ -74,7 +94,7 @@ From the [original blueprint's introduction](research/headless-ai-coding-control
 ### 4.4 Material delegated decisions
 
 | Decision | Record |
-|---|---|
+| --- | --- |
 | The verified research supersedes the original blueprint wherever they conflict (see §4.6). | This roadmap; banner on the original research doc |
 | Controller-owned canonical state; no transcript parsing | [ADR-0001](adr/0001-controller-owned-canonical-state.md) |
 | MCP upstream (async-first tools); ACP as downstream transport; upstream ACP deferred | [ADR-0002](adr/0002-mcp-upstream-acp-downstream.md) |
@@ -95,7 +115,7 @@ From the [original blueprint's introduction](research/headless-ai-coding-control
 ### 4.5 Assumptions
 
 | ID | Assumption | Impact if wrong |
-|---|---|---|
+| --- | --- | --- |
 | A-1 | *Resolved by owner decision 4.* Each installation serves one operator using that operator's own logins; open-source users run their own installations. Hosted or shared multi-user operation remains out of scope. | A hosted service would change compliance scope, auth model and deployment (ADR-0011, ADR-0003). |
 | A-2 | Linux is the first host; macOS follows in M4 because open-source users are likely to run it. | If most users turn out to be on macOS, move NFR-PORT-02 earlier. |
 | A-3 | *Resolved by owner decision 5:* Claude Code and Codex are the M2 adapters. | — |
@@ -104,10 +124,12 @@ From the [original blueprint's introduction](research/headless-ai-coding-control
 
 ### 4.6 Conflicts between sources and how they were resolved
 
-Resolution rule: the verified research is a direct, dated review of the original blueprint against provider documentation, so its technical findings win. Where the original carries zemdregon's *stated intent* (§4.3), the intent is kept and only the mechanism changes.
+Resolution rule: the verified research is a direct, dated review of the original blueprint against provider
+documentation, so its technical findings win. Where the original carries zemdregon's *stated intent* (§4.3), the intent is
+kept and only the mechanism changes.
 
 | Topic | Original blueprint | Verified research | Resolution |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Permission flags | `--allowedTools "*"`, `--dangerously-skip-permissions`, `--yolo`, `--trust --approve-mcps --force` | `"*"` is skipped; bypass flags grant too much; trust, MCP approval, command approval and sandbox are separate | Trust profiles, no automatic bypass ([ADR-0004](adr/0004-trust-profiles-no-bypass-flags.md)) |
 | Codex interface | `codex -p`, custom JSON wrapper | `codex exec --json` emits JSONL natively | Use native JSONL (TDD §4) |
 | Kimi Code | `kimi run`, K2.7, 256K context | Legacy CLI archived 2026-09-23; new contract unknown | Adapter blocked until pinned (FR-ADP-09) |
@@ -125,7 +147,7 @@ Resolution rule: the verified research is a direct, dated review of the original
 ## 5. Documentation map
 
 | Path | Purpose | Status | Authoritative for |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | [AGENTS.md](../AGENTS.md) | Agent instructions | Current | How agents work in this repo |
 | [docs/ROADMAP.md](ROADMAP.md) | This document | Canonical | Scope, priorities, sequencing, status |
 | [docs/requirements/BRD.md](requirements/BRD.md) | Business requirements | Draft baseline | Problem, outcomes `BO-*`, stakeholders, success measures |
@@ -143,10 +165,11 @@ Resolution rule: the verified research is a direct, dated review of the original
 
 ## 6. Milestones
 
-Status values: `Done`, `In progress`, `Partial`, `Planned`, `Blocked`, `Deferred`. No milestone has dates; none were set. Sizes are not estimated.
+Status values: `Done`, `In progress`, `Partial`, `Planned`, `Blocked`, `Deferred`. No milestone has dates; none were
+set. Sizes are not estimated.
 
 | ID | Milestone | Status | Depends on | Requirements delivered (first delivery) | Acceptance criteria | Verification |
-|---|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- | --- |
 | M0 | Documentation baseline | In progress (this change); Done on merge | — | NFR-MAINT-02, NFR-COMP-01 | Document set in §5 exists; `node scripts/check-docs.mjs` passes; AGENTS.md points here | Docs check script; review |
 | M1 | Foundation | Planned (next) | M0 | FR-ADP-01, FR-AUTH-01, FR-POL-10, FR-WS-01–06, FR-SES-01, 02 (schema), 05 (events), FR-CAP-04 (queue, global limit), FR-EXE-01, 02, 05–07, FR-SES-06, FR-TEL-01, 03, FR-OPS-01 (`doctor`, `runs`), 03, 04, NFR-SEC-01, 02, 04–06, NFR-REL-01–02, NFR-PERF-03 (global), NFR-PORT-01, NFR-PRIV-01 | A fake provider CLI runs through the full lifecycle transactionally; cancel kills the process tree; `SIGKILL` of the controller mid-run followed by restart leaves a consistent ledger; a failed run that mutated files is rolled back, not replayed; CI green on Linux | Automated integration and fault-injection tests in CI (§6.1) |
 | M2 | Claude Code and Codex adapters + MCP vertical slice | Planned | M1 | FR-MCP-01, 03–09, FR-ADP-02–04, 06, 11 (Claude Code, Codex), FR-POL-01 (two profiles), 02–05, 07, 08, FR-AUTH-02, FR-SES-03 (Claude Code, Codex), FR-RTE-01 (eligibility), FR-CAP-01 (record), FR-OPS-01 (`serve`), NFR-PERF-01, 02, NFR-OBS-01, NFR-PRIV-02, NFR-MAINT-03 | For each of Claude Code and Codex, a scripted MCP client delegates an edit task under `edit-untrusted`, polls to `SUCCEEDED`, retrieves a diff artifact and continues the same native session; a new user following the README reaches a passing `doctor`; missing login yields `AUTH_REQUIRED`; unknown CLI version yields `ADAPTER_VERSION_UNVERIFIED`; no bypass flag appears in any compiled invocation | Conformance suite on recorded fixtures in CI; one opt-in live smoke test run by the operator; argv inspection test |
@@ -159,10 +182,11 @@ Status values: `Done`, `In progress`, `Partial`, `Planned`, `Blocked`, `Deferred
 
 ### 6.1 M1 Foundation: tasks
 
-Each task lists objective, references, dependencies and completion checks. Tasks are in dependency order; T1.3 to T1.6 can run in parallel after T1.2.
+Each task lists objective, references, dependencies and completion checks. Tasks are in dependency order; T1.3 to T1.6
+can run in parallel after T1.2.
 
 | Task | Objective | References | Depends on | Done when |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | T1.1 | Scaffold the TypeScript project, lint/format, test runner and a GitHub Actions workflow running typecheck, lint, tests and `node scripts/check-docs.mjs` on Linux | [TDD §2](design/TDD.md#2-technology-choices), ADR-0010, NFR-PORT-01 | — | CI passes on an empty test; `npm test` works locally; versions pinned and recorded in TDD §2 |
 | T1.2 | Config file with schema validation: data directory, allowed workspace roots, concurrency, provider enablement and weights, named MCP client entries with max trust profile; data-directory lock so only one `serve` runs | FR-OPS-04, FR-POL-10, NFR-SEC-05, NFR-PERF-03, [TDD §3.1](design/TDD.md#31-configuration), [ADR-0005](adr/0005-sqlite-ledger.md) | T1.1 | Invalid config is rejected with a precise message; paths are canonicalized (symlink test); a second `serve` on the same data directory fails clearly |
 | T1.3 | SQLite ledger with forward-only migrations and the M1 tables; append-only `run_event` | [LLD §1](design/LLD.md#1-data-model), ADR-0005, FR-SES-01, 02, 05, FR-TEL-01 | T1.2 | Migration test from empty DB; append-only enforced (update/delete on `run_event` fails); WAL enabled |
@@ -178,7 +202,7 @@ Each task lists objective, references, dependencies and completion checks. Tasks
 ### 6.2 M2 Claude Code adapter and MCP slice: tasks
 
 | Task | Objective | References | Depends on | Done when |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | T2.1 | Pin the Claude Code and Codex version ranges and record their compliance manifests | FR-POL-07, FR-ADP-03, [LLD §6](design/LLD.md#6-compliance-manifest) | M1 | Manifest file exists and is loaded; unknown version → `ADAPTER_VERSION_UNVERIFIED` test |
 | T2.2 | Claude Code adapter, then Codex adapter: probe, auth preflight, compile for `inspect-untrusted` and `edit-untrusted`, parse structured output, resume | [TDD §4](design/TDD.md#4-provider-adapter-strategy), FR-ADP-02, 04, 06, FR-POL-02–05, 08, FR-AUTH-02, FR-SES-03 | T2.1 | Conformance suite passes on recorded fixtures; argv test proves no bypass flags and no global config writes |
 | T2.3 | Eligibility filter | FR-RTE-01, FR-MCP-05, ADR-0008 | T2.2 | Tests for each hard constraint available in M2 |
@@ -188,14 +212,15 @@ Each task lists objective, references, dependencies and completion checks. Tasks
 | T2.8 | User documentation: README with install, native login for Claude Code and Codex, config, trust profiles and `doctor` troubleshooting | NFR-MAINT-03, NFR-COMP-01 | T2.6 | A fresh machine reaches a passing `doctor` following only the README |
 | T2.7 | Measure NFR-PERF-01 and either confirm or revise the proposed target | NFR-PERF-01 | T2.4 | Benchmark result recorded in TDD |
 
-Later milestones (M3–M8) are intentionally kept at the level of the table in §6; break them into tasks when the preceding milestone completes.
+Later milestones (M3–M8) are intentionally kept at the level of the table in §6; break them into tasks when the
+preceding milestone completes.
 
 ## 7. Risks, blockers and open questions
 
 ### 7.1 Risks
 
 | ID | Risk | Effect on plan | Mitigation |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | R-1 | Provider CLIs change flags, output or auth behaviour (already happened with Kimi) | Adapters break or weaken security | Version gating, conformance suites, manifests (ADR-0009) |
 | R-2 | Provider terms restrict automated or third-party use for some plans | A provider may be unusable | Compliance manifest review per provider; each user runs their own installation with their own logins (ADR-0003, ADR-0011) |
 | R-11 | Publishing as open source invites users to run Switchboard in ways the terms do not allow (shared logins, hosted service) | Account risk for those users; reputational risk for the project | README states the single-operator model and that terms compliance is each user's responsibility (NFR-COMP-01, NFR-MAINT-03) |
@@ -211,7 +236,7 @@ Later milestones (M3–M8) are intentionally kept at the level of the table in �
 ### 7.2 Blockers
 
 | ID | Blocker | Blocks | Unblocked by |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | B-1 | Kimi Code's current automation contract is not pinned | FR-ADP-09 | Moonshot documentation or a validated installed version |
 
 No blocker affects M1.
@@ -219,7 +244,7 @@ No blocker affects M1.
 ### 7.3 Open questions for zemdregon (not blocking M1)
 
 | ID | Question | Default in force |
-|---|---|---|
+| --- | --- | --- |
 | Q-1 | *Answered 2026-10-12:* built for zemdregon, published open source for others (owner decision 4). | — |
 | Q-2 | *Answered 2026-10-12:* all seven held; Claude Code and Codex first (owner decision 5). | — |
 | Q-3 | Do you prefer a language other than TypeScript? | TypeScript (ADR-0010); cheapest to change before M1 |
@@ -228,7 +253,7 @@ No blocker affects M1.
 ## 8. Deferred and excluded work
 
 | Item | Status | Reason | Requirement |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Read-only usage dashboard | Deferred | Allowed by C-2 but not needed to deliver outcomes | FR-TEL-04 |
 | Upstream ACP server | Deferred | MCP satisfies C-7 | ADR-0002 |
 | Learned (contextual-bandit) routing | Deferred | Needs outcome data | FR-RTE-05 |
@@ -240,19 +265,26 @@ No blocker affects M1.
 
 ## 9. Next actionable milestone
 
-**M1 Foundation.** Prerequisites: this document set merged (M0); Q-3 (language) ideally answered, otherwise TypeScript stands. No provider CLI or login is needed for M1. M1 is complete when every task in §6.1 meets its completion check and the M1 acceptance criteria in §6 pass in CI.
+**M1 Foundation.** Prerequisites: this document set merged (M0); Q-3 (language) ideally answered, otherwise TypeScript
+stands. No provider CLI or login is needed for M1. M1 is complete when every task in §6.1 meets its completion check and
+the M1 acceptance criteria in §6 pass in CI.
 
 ### 9.1 How an agent picks up work
 
 1. Read [AGENTS.md](../AGENTS.md), then this roadmap's §6 to find the first milestone whose status is not `Done`.
-2. Take the first task in that milestone's task table whose dependencies are done. If the milestone has no task table yet (M3 onward), break it into tasks in the same format first, from its row in §6 and the requirements it lists, and add them here before coding.
-3. Read every reference in the task row: the SRS requirements, the FRD workflow or rule, the LLD/TDD section and the ADRs. Those are the contract; this roadmap only sequences them.
+2. Take the first task in that milestone's task table whose dependencies are done. If the milestone has no task table
+   yet (M3 onward), break it into tasks in the same format first, from its row in §6 and the requirements it lists, and
+   add them here before coding.
+3. Read every reference in the task row: the SRS requirements, the FRD workflow or rule, the LLD/TDD section and the
+   ADRs. Those are the contract; this roadmap only sequences them.
 4. Implement with tests that prove the task's "Done when" checks and the cited requirements' verification method.
-5. In the same change, update the task's status here with evidence, and fix any document the work proved wrong (or add an ADR if an architectural decision changed).
+5. In the same change, update the task's status here with evidence, and fix any document the work proved wrong (or add
+   an ADR if an architectural decision changed).
 6. Run `node scripts/check-docs.mjs` and the test suite before opening the pull request.
 
 ## 10. Keeping this roadmap current
 
 - Change status in §6 in the same change as the work, with evidence.
 - New scope goes through the PRD and SRS first, then gets a milestone here.
-- A conflict between documents is resolved in favour of the owner named in §5, and the losing document is corrected in the same change.
+- A conflict between documents is resolved in favour of the owner named in §5, and the losing document is corrected in
+  the same change.
