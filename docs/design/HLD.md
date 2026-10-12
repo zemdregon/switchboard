@@ -179,7 +179,7 @@ Data directory layout. **Proposed**; paths, names and the config format are not 
 | Path (proposed) | Contents |
 | --- | --- |
 | `<data>/ledger.db` (+ WAL files) | SQLite ledger ([ADR-0005](../adr/0005-sqlite-ledger.md)) |
-| `<data>/artifacts/<sha256-prefix>/<sha256>` | Content-addressed diffs, stdout events, stderr, verification output |
+| `<data>/artifacts/ab/cd/<sha256>` (first two byte pairs of the hash, per [LLD §1](LLD.md#1-data-model)) | Content-addressed diffs, stdout events, stderr, verification output |
 | `<data>/worktrees/<meta_session_id>/<run_id>/` | Controller-created Git worktrees (could alternatively live beside the source repo; open question) |
 | `<config>/` | Operator configuration: allowed roots, MCP client entries and maximum profiles, tier priors, routing weights, retention, compliance manifests |
 | `<data>/logs/` | Structured controller logs, free of secrets and prompts (FR-TEL-03) |
