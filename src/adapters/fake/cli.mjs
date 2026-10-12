@@ -5,6 +5,10 @@
 // hang_ignore_term. The prompt, if any, arrives on stdin and is ignored.
 import { writeFileSync } from "node:fs";
 
+// A hanging scenario must outlive a controller that died (SIGKILL): ignore EPIPE instead of crashing on a late write.
+process.stdout.on("error", () => {});
+process.stderr.on("error", () => {});
+
 const argv = process.argv.slice(2);
 const flagValue = (name) => {
   const i = argv.indexOf(name);
