@@ -40,6 +40,9 @@ export interface AdapterRunOutcome {
   exit: ExitInfo;
   stderrTail: string;
   groupEmpty: boolean;
+  /** Raw captured streams, for the provider_stdout / provider_stderr artifacts (FR-EXE-05). */
+  stdout: Buffer;
+  stderr: Buffer;
 }
 
 export interface AdapterRunOptions {
@@ -49,6 +52,8 @@ export interface AdapterRunOptions {
   baseEnv?: Readonly<Record<string, string | undefined>>;
   /** True only with a recorded approval (FR-POL-03); otherwise bypass flags make the run refuse to spawn. */
   bypassApproved?: boolean;
+  /** Passed to the supervisor: called after spawn, before any output is read, so pid/pgid can be persisted. */
+  onSpawn?: (info: { pid: number; pgid: number }) => void;
 }
 
 export interface AdapterRun {
@@ -78,6 +83,7 @@ export function startAdapterRun(adapter: ProviderAdapter, inv: Invocation, opts:
     idleMs: inv.timeouts.idleMs,
     killGraceMs: inv.timeouts.killGraceMs,
     maxLineBytes: inv.maxLineBytes,
+    ...(opts.onSpawn ? { onSpawn: opts.onSpawn } : {}),
     // The supervisor already parsed the line; the adapter contract takes the line text, so re-serialize.
     onEvent: (value) => {
       for (const ev of adapter.parseEvent(JSON.stringify(value), state)) {
@@ -101,6 +107,8 @@ export function startAdapterRun(adapter: ProviderAdapter, inv: Invocation, opts:
       exit,
       stderrTail: r.stderr.subarray(Math.max(0, r.stderr.length - STDERR_TAIL_BYTES)).toString("utf8"),
       groupEmpty: r.groupEmpty,
+      stdout: r.stdout,
+      stderr: r.stderr,
     };
   });
   return { cancel: () => run.cancel(), done };
