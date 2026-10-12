@@ -233,7 +233,10 @@ ability to split work into commits; it needs an operator opt-in per context.
 **Identity and message.** Author and committer come from the context's `identity`. Default (Proposed): when absent,
 `projects validate` reads the repository's effective `user.name` and `user.email` with `git config` (not credentials) and
 asks the operator to copy them into the configuration, so the identity is explicit and recorded in the policy snapshot.
-Commit signing is not delivered: a signing key is a credential, and Ender has not asked for it (deferred, ROADMAP §8).
+Commit signing is optional per context (`sign: true`, FR-GIT-10; Ender answered yes to Q-9). A signing key is a
+credential, so signing runs only in the controller process through the operator's existing Git configuration, is never
+stored or exported to an agent, and never falls back to unsigned ([LLD
+§12.3.1](LLD.md#1231-signing-fr-git-10-proposed)). Which signing formats work headlessly is settled in the M9 spike.
 The controller sets author and committer dates itself and adds no trailer. The existing checkpoint identity
 (`Switchboard <switchboard@localhost>` in `src/workspace/git.ts`) is for internal checkpoints only and must never be
 used for published commits.
@@ -256,22 +259,25 @@ user for a publisher helper (adds a privilege boundary and an installation step)
 
 ### 3.11 Container environments
 
-Implements FR-PRJ-04, 05, 07, 09 for M10. Status: **Proposed and gated**: the runtime and the provider-login question are
-open (ROADMAP Q-6), so this section fixes constraints, not choices.
+Implements FR-PRJ-04, 05, 07, 09 for M10. Status: **Proposed**. Ender left Q-6 to the agent ("the rest you pick"), so the
+choices below are Delegated, not owner-approved, and unverified until the M10 spike.
 
-- **Runtime.** Not chosen. Constraints: the controller must run unprivileged (NFR-SEC-04), so a root-owned daemon is out
-  unless rootless; the port is small (create, start, stop, remove, list by label) so the choice stays replaceable.
+- **Runtime.** A rootless OCI-compatible runtime that the controller drives through its CLI (Proposed; rootless Podman
+  is the likely candidate, unverified). The controller must run unprivileged (NFR-SEC-04), so a root-owned daemon is out;
+  the port is small (create, start, stop, remove, list by label) so the choice stays replaceable.
 - **Image.** Operator-supplied and pinned by digest (Proposed); the controller never builds images or pulls implicitly.
   The image contains the provider CLI the project uses.
 - **Mounts.** The run worktree (writable) and declared read-only contexts only. Not the home directory, data directory,
   runtime socket, or any Git credential store. The worktree's Git directory (under the main repository) is **not**
   mounted, which also keeps refs out of reach (layer 4 above); how Git works inside the container for read-only
   operations such as `git diff` is to be settled in the M10 spike (candidate: a read-only bind of the needed objects).
-- **Provider logins (open).** The provider CLI inside the container needs its native login. FR-AUTH-01 forbids the
+- **Provider logins (Proposed).** The provider CLI inside the container needs its native login. FR-AUTH-01 forbids the
   controller copying or moving credentials between identities or machines, so mounting the host's credential directory is
-  out unless Ender decides otherwise. Candidate: the operator runs the provider's native login command inside the
-  project's container volume once. Whether that is acceptable to each provider's terms is unreviewed (compliance manifest
-  review, R-2). Until Q-6 is answered, M10 does not start.
+  out unless Ender decides otherwise. Chosen (Proposed): the operator runs the provider's native login command inside the
+  project's container volume once (for example through a `projects login <id> <provider>` operator command that only
+  attaches the operator's terminal to that command; the controller never reads the result). Whether that is acceptable
+  to each provider's terms is unreviewed (compliance manifest
+  review, R-2). The M10 spike must confirm this with each provider before M10 is marked done.
 - **Network.** The run's profile maps to the container's network: off for untrusted profiles; allowlist only if the
   runtime can enforce one (to be verified).
 - **Limits.** CPU, memory and disk limits from the project, which partly answers R-8.
@@ -388,7 +394,7 @@ approach only.
 | M7 Routing | Feature extraction and heuristic classifier; static weighted scoring; persist `route_decision` rows; `explain_route` reads them. Scores deterministic for a given stored input (FR-RTE-03). |
 | M8 Hardening | OTel exporter driven from `run_event`/spans; version canaries (`adapters validate` ships in M4); |
 | M9 Projects and controlled commits | Project and context schema in the config loader; `COMP-PRJ` resolution and ceilings; `project_id` columns and the `git_commit` table; per-adapter Git-write denial and channel-support declarations; the shim subcommand and per-run socket; `COMP-GIT` (commit, sanitiser, publish ref, ref snapshots, push with policy); `projects` CLI; fake-adapter fixtures for every attempt in §3.6. Starts with a spike that settles §3.10's open mechanisms (per-run Git config, plumbing commands, socket access under sandboxes). |
-| M10 Container environments | Only after Q-6 is answered: runtime port, mounts, limits, labels and orphan sweep, container leg of the malicious-fixture suite, answer to the provider-login question ([§3.11](#311-container-environments)). |
+| M10 Container environments | After M9 (Q-6 settled by delegation, Proposed): runtime port, mounts, limits, labels and orphan sweep, container leg of the malicious-fixture suite, answer to the provider-login question ([§3.11](#311-container-environments)). |
 
 ## 6. Migration considerations
 
@@ -426,5 +432,5 @@ approach only.
 | No automatic permission-bypass flags | Fail-closed headless runs | Some tasks fail with `PERMISSION_BLOCKED` | ADR-0004 |
 | Tool-only commits over letting agents commit and rewriting afterwards | No provider attribution can reach published history; works without per-provider attribution switches | A per-run tool channel to verify per provider; some adapters fall back to controller-made commits | ADR-0014 |
 | Provenance in the ledger, not in Git | Commits stay indistinguishable from ordinary ones | Links by SHA break on an operator rebase (tree hash and patch ID are best-effort) | ADR-0014 |
-| Projects in configuration, not created over MCP | The orchestrator cannot mount host paths or start containers | The operator edits config to add a project | ADR-0013 |
+| Orchestrator-created projects need a client opt-in and operator approval for containers and push | A compromised orchestrator cannot mount host paths, start containers or enable push on its own | A project is approved on the CLI before it can use those | ADR-0013 |
 | Stdio MCP, single process | No network listener | One orchestrator per controller process (Assumption) | ADR-0011 |

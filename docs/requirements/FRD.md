@@ -46,7 +46,8 @@ planning and are marked "(planning)". Actors are defined in §2.
 | Touch the operator's checked-out branch | Yes (by hand) | No | Never | FR-WS-05 |
 | Create commits | Yes (by hand, in their own checkout) | No | Executes the agent's `commit` tool call, within policy (WF-11) | FR-GIT-01, 02, 04 |
 | Push to remotes | Yes (by hand, or an operator command) | No | Executes the agent's `push` tool call only if the context's push policy allows it (WF-12) | FR-GIT-05, FR-WS-05 |
-| Define or change projects, contexts, environments, push policy, commit identity | Yes (config) | No (may list the projects its client may use) | Snapshots into each run | FR-PRJ-01, 02, 03, 06 |
+| Define or change projects, contexts, environments, push policy, commit identity | Yes (config) | Only dynamic projects, only if its client entry sets `manage_projects`, within the client's limits (BR-32); never configured projects | Snapshots into each run | FR-PRJ-01, 02, 03, 06, 10 |
+| Approve a dynamic project that needs it (`container`, push policy other than `none`, any widening) | Yes (`projects approve`) | No, never through MCP | Records timestamp and revision | FR-PRJ-10 |
 | Emit permission-bypass flags | Only by approving a `privileged` run | No | Only under recorded approval | FR-POL-03 |
 
 Rules on the matrix: a caller's maximum trust profile is a ceiling per MCP client; a request above it ends with
@@ -90,6 +91,8 @@ Each rule elaborates the cited requirement and does not add to it.
 | BR-29 | **Push eligibility.** A push is accepted only if the context's policy is `branch`, the target ref is the publish ref pushed to the configured remote under the configured prefix, and the run's environment keeps push credentials out of the agent's reach (BR-31). It is never forced. Every attempt, accepted or refused, is a run event. With policy `none` (the default) the `push` tool is not offered. | FR-GIT-05, FR-GIT-06 | SRS |
 | BR-30 | **Finalize-only mode.** For an adapter that cannot receive the injected channel, and only if the operator enabled it for the context, FINALIZING makes one commit from the run's worktree changes with a message from the agent's structured final summary, under BR-26 and BR-28. Without the opt-in, such an adapter is ineligible for write-capable profiles on that context. | FR-GIT-09, FR-GIT-02 | FR-GIT-09 is Should; ineligible-without-opt-in is Proposed. |
 | BR-31 | **Credential reach.** A context with push policy `branch` is eligible for a run only if the agent cannot run commands that could read the push credentials: a `container` environment with none mounted, or a profile without arbitrary shell, or an adapter whose manifest declares credential confinement (FR-POL-06). Otherwise the `push` tool is withheld and the reason is recorded. | FR-GIT-06, FR-POL-06 | SRS |
+| BR-32 | **Orchestrator-managed projects.** `create_project`, `update_project` and `delete_project` are offered only to a client whose entry sets `manage_projects`. They touch dynamic projects only (an ID that collides with a configured project is refused). A revision is validated like configuration (V12 rules, FR-PRJ-02); its repository path must lie under an allowed root; its trust ceiling and providers may not exceed the client's; its push policy may not exceed the client's `max_push_policy`. A revision with a `container` environment, a push policy other than `none`, or any widening of an approved revision is stored as `pending_approval` and cannot start runs until the operator approves it with `projects approve`. A project is visible to, and usable by, the creating client only. Deletion with a non-terminal run is refused. Refusals are `PERMISSION_BLOCKED` (not allowed) or `INVALID_REQUEST` (malformed); every call is an event. | FR-PRJ-10, FR-MCP-06, FR-POL-10 | Delegated: gating limits, pending-approval state and creator-only visibility are Proposed. Ender answered only "yes" (Q-7). |
+| BR-33 | **Signing.** If a context sets `sign: true`, each published commit is signed by the controller using the operator's existing Git signing setup. A signing failure returns a tool error and creates no commit; nothing is committed unsigned as a fallback. Signing is refused where BR-31 would withhold `push`. | FR-GIT-10, FR-GIT-06 | Delegated mechanism; Ender asked for signing as part of Q-9 ("yes"). |
 
 ## 4. Canonical run state machine
 
@@ -272,7 +275,9 @@ FR-MCP-09).
 
 ### 7.3 Other tools
 
-`list_projects` takes no arguments and returns only the projects the calling client may use (FR-PRJ-03). The injected
+`list_projects` takes no arguments and returns only the projects the calling client may use (FR-PRJ-03).
+`create_project`, `update_project` and `delete_project` (M9, FR-PRJ-10) validate against the project schema and BR-32; an
+unknown project ID returns `INVALID_REQUEST`. The injected
 `commit` and `push` tools are validated by their own rules (BR-25, BR-29), not by §7.1. `get_run`, `get_artifacts`,
 `cancel_run`, `explain_route` and `get_capacity` validate IDs against the schema (V1) and an
 unknown ID returns `INVALID_REQUEST` (**Proposed**; no "not found" code exists in the taxonomy; SRS silent).
@@ -531,9 +536,12 @@ sequenceDiagram
   run worktree and declared read-only contexts mounted, COMP-EXE spawns the provider process inside it, and the
   container is removed when the run ends. The run's policy snapshot records the project, environment kind and image
   digest.
-- **Alternate paths:** the request is `continue_task` on a meta-session (the project is fixed, BR-23); the project is
+- **Alternate paths:** a client with `manage_projects` calls `create_project` first (BR-32), and for a `pending_approval`
+  revision the operator runs `projects approve` before the first run; the request is `continue_task` on a meta-session
+  (the project is fixed, BR-23); the project is
   removed from configuration between runs (history stays, new runs for it are refused, FR-PRJ-09).
-- **Failure paths:** unknown project or both/neither of project and workspace → `INVALID_REQUEST`; project not in the
+- **Failure paths:** project revision `pending_approval` → `PERMISSION_BLOCKED` with detail `approval_required`;
+  unknown project or both/neither of project and workspace → `INVALID_REQUEST`; project not in the
   client's list or profile above the project's ceiling → `PERMISSION_BLOCKED`; environment cannot start (runtime
   missing, image absent) → the run ends `FAILED` with `TOOL_FAILURE` at LEASED (Proposed: no new code), and the
   worktree is retained unchanged.

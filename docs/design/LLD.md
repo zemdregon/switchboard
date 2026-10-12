@@ -229,9 +229,10 @@ and startup reconciliation apply pending requests. No table was added because `r
 transactional with state changes, the CLI works with no daemon, and a pending request is just a request event without a
 matching applied or rejected event. This is Delegated, not owner-approved; it stays inside ADR-0005 (no new store).
 
-**M9 additions (Proposed).** Project definitions live in the configuration file and are snapshotted into
-`run.policy_snapshot_json`; the ledger adds only the project ID and one append-only provenance table, in a forward
-migration (ADR-0005). `git_commit` joins the append-only list above.
+**M9 additions (Proposed).** Project definitions live in the configuration file (operator) or in the ledger (projects an
+orchestrator created, FR-PRJ-10) and are snapshotted into `run.policy_snapshot_json`; the ledger adds the project ID, one
+append-only provenance table and one append-only project-revision table, in a forward migration (ADR-0005). `git_commit`
+and `project_revision` join the append-only list above.
 
 ```sql
 ALTER TABLE meta_session ADD COLUMN project_id TEXT;      -- NULL for runs delegated by workspace path (FR-PRJ-03)
@@ -259,6 +260,18 @@ CREATE TABLE git_commit (               -- append-only provenance (FR-GIT-07); t
 ) STRICT;
 CREATE INDEX git_commit_sha ON git_commit(commit_sha);
 CREATE INDEX git_commit_run ON git_commit(run_id);
+
+CREATE TABLE project_revision (         -- append-only; projects created over MCP (FR-PRJ-10). Current = highest revision
+  id             TEXT PRIMARY KEY,                       -- prefix prv_ (Proposed)
+  project_id     TEXT NOT NULL,                          -- never equal to a configured project ID
+  revision       INTEGER NOT NULL,
+  client_id      TEXT NOT NULL,                          -- creating MCP client; only it (and the operator) sees the project
+  definition_json TEXT NOT NULL CHECK (json_valid(definition_json)),   -- same schema as a configured project (§11.1)
+  status         TEXT NOT NULL CHECK (status IN ('ACTIVE','PENDING_APPROVAL','DELETED')),
+  approved_at    TEXT,                                   -- set by `projects approve`; NULL while PENDING_APPROVAL
+  created_at     TEXT NOT NULL,
+  UNIQUE (project_id, revision)
+) STRICT;
 
 CREATE TABLE git_push (                 -- append-only; one row per accepted or refused push (FR-GIT-05)
   id            TEXT PRIMARY KEY,
@@ -497,7 +510,16 @@ read-only tool:
 
 **`list_projects`** `{}` returns `{ projects: [{ id, name, environment_kind, contexts: [{ id, kind, push_policy }],
 max_trust_profile?, allowed_providers? }] }` for the projects the calling client may use. It never returns paths outside
-the allowed roots, credentials, remote URLs or image references beyond the digest (Proposed).
+the allowed roots, credentials, remote URLs or image references beyond the digest (Proposed). For a client with
+`manage_projects` (FR-PRJ-10, BR-32) three more tools exist; none is offered otherwise:
+
+**`create_project`** `{ project: <§11.1 project object without paths outside allowed roots> }` returns
+`{ id, revision, status: "ACTIVE" | "PENDING_APPROVAL", approval_needed?: string[] }`.
+**`update_project`** `{ id, project }` writes a new revision under the same rules; a revision that widens the ceiling,
+providers or push policy, or switches to `container`, is `PENDING_APPROVAL` and the previous approved revision stays in
+force until the operator approves. **`delete_project`** `{ id }` marks the project `DELETED` unless a non-terminal run
+uses it (`INVALID_REQUEST`). All three act only on projects created by the calling client; a configured project, or another
+client's, returns `PERMISSION_BLOCKED`. Names and shapes are Proposed.
 
 **Error envelope** (FR-MCP-07). Delivered as an MCP tool result with `isError: true`:
 
@@ -786,7 +808,7 @@ M6.
 
 ## 11. Projects, contexts and environments
 
-Implements FR-PRJ-01..09 and [ADR-0013](../adr/0013-projects-environments-and-contexts.md). **Proposed** shapes; M9
+Implements FR-PRJ-01..10 and [ADR-0013](../adr/0013-projects-environments-and-contexts.md). **Proposed** shapes; M9
 (`host`) and M10 (`container`).
 
 ### 11.1 Configuration shape
@@ -808,9 +830,12 @@ context kind aborts startup (NFR-SEC-06).
         "primary": true,                               // exactly one primary context; its worktree is the agent's cwd
         "writable": true,                              // non-primary contexts are read-only mounts (Proposed)
         "push": { "policy": "none" },                  // or { "policy": "branch", "remote": "origin", "branch_prefix": "switchboard/" }
-        "identity": { "name": "Operator Name", "email": "operator@example.com" }
+        "identity": { "name": "Operator Name", "email": "operator@example.com" },
+        "sign": false                                  // true: controller signs published commits (FR-GIT-10, §12.3.1)
     } ] } ],
-  "mcp_clients": [ { "id": "openclaw", "max_trust_profile": "edit-untrusted", "projects": ["web-app"] } ] }
+  "mcp_clients": [ { "id": "openclaw", "max_trust_profile": "edit-untrusted", "projects": ["web-app"],
+                     "manage_projects": false,           // default; true offers create/update/delete_project (FR-PRJ-10)
+                     "max_push_policy": "none" } ] }     // widest push policy a dynamic project of this client may use
 ```
 
 Only the primary context is writable in this design; additional writable contexts (multi-repository changes) are deferred
@@ -822,8 +847,15 @@ At admission (FRD BR-23): (1) resolve `project` to its definition, else `INVALID
 list, else `PERMISSION_BLOCKED`; (3) effective ceiling = the lower of the client's and the project's `max_trust_profile`
 on the order `inspect-untrusted` < `edit-untrusted` < `test-sandboxed` < `trusted-development` < `privileged`, and a
 request above it is `PERMISSION_BLOCKED`; (4) remove providers outside `allowed_providers` from the candidate set;
-(5) canonicalize the primary context's path against the allowed roots again (config may have changed); (6) freeze the
+(5) canonicalize the primary context's path against the allowed roots again (config may have changed); (5a) for a
+dynamic project use the highest `ACTIVE` revision with `approved_at` set where approval was required, else
+`PERMISSION_BLOCKED` with `approval_required`; (6) freeze the
 resolved project, environment (kind, image digest, limits), push policy and identity into `policy_snapshot_json`.
+
+A project created by an orchestrator uses the same shape and is validated by the same code. Its `identity` must be copied
+from a configured value the operator named in the client entry (`identities` list), so an orchestrator cannot invent an
+author (Proposed); the repository `path` must already exist under an allowed root. Approval is `projects approve <id>
+[--revision n]`, an operator CLI command that writes `approved_at`; it has no MCP counterpart (FRD BR-32).
 
 ### 11.3 Environment port
 
@@ -869,7 +901,8 @@ Served by the shim to the agent as MCP tools; every object has `additionalProper
 
 `push` takes no arguments on purpose, so an injected agent cannot choose a ref. Tool errors use short codes
 (`NOT_RUNNING`, `LEASE_LOST`, `PATH_OUTSIDE_WORKTREE`, `NOTHING_TO_COMMIT`, `MESSAGE_EMPTY_AFTER_SANITISING`,
-`PUSH_NOT_ALLOWED`, `CREDENTIALS_UNAVAILABLE`, `REMOTE_REJECTED`) and are `git_tool_denied` or `git_push` events. They are
+`PUSH_NOT_ALLOWED`, `CREDENTIALS_UNAVAILABLE`, `REMOTE_REJECTED`, `SIGNING_FAILED`) and are `git_tool_denied` or
+`git_push` events. They are
 returned to the agent and do not fail the run.
 
 ### 12.2 Channel
@@ -893,10 +926,21 @@ Refs (Proposed): the **publish ref** for a meta-session is `refs/heads/<prefix><
    `NOTHING_TO_COMMIT`.
 3. Sanitise the message (§12.4). If it is empty afterwards, `MESSAGE_EMPTY_AFTER_SANITISING`.
 4. Create the commit object with author and committer set to the context identity, current time, no trailers, no
-   signature, hooks disabled and a scrubbed environment (as in §5).
+   signature unless the context sets `sign: true` (§12.3.1), hooks disabled and a scrubbed environment (as in §5).
 5. Move the publish ref from the old head to the new commit with a compare-and-swap; on a lost race, retry from step 2
    once, then fail the call.
 6. In one ledger transaction insert the `git_commit` row and the `git_commit` run event.
+
+#### 12.3.1 Signing (FR-GIT-10, Proposed)
+
+With `sign: true` step 4 asks Git to sign the commit object using the operator's existing signing configuration
+(`user.signingkey`, `gpg.format`, and the operator's own agent or keyring), run by the controller process with the
+operator's environment, not the scrubbed one. The controller never reads, stores or logs the key, and never exports the
+agent socket or `SSH_AUTH_SOCK`/`GPG_*` variables to the provider process (FR-EXE-07). Failure (no key, locked agent,
+non-zero exit) returns `SIGNING_FAILED` to the agent and writes no commit. The BR-31 reach check applies: a context that
+signs needs an environment in which the agent cannot reach the key. Which signing formats work in a headless controller
+is verified in the M9 spike (T9.0); until then `sign` is accepted only if `projects validate` can produce a test
+signature in a scratch repository.
 
 The exact Git plumbing is fixed in the M9 spike. Nothing here touches the run branch, the worktree's index or the
 operator's checkout.
