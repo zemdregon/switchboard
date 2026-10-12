@@ -5,7 +5,7 @@
 | Status | **Canonical.** Single source of truth for scope, priorities, dependencies, sequencing, status and completion criteria. |
 | Does not own | Requirements ([SRS](requirements/SRS.md)), behaviour ([FRD](requirements/FRD.md)), design ([HLD](design/HLD.md), [SDD](design/SDD.md), [TDD](design/TDD.md), [LLD](design/LLD.md)), decision rationale ([ADRs](adr/README.md)). |
 | Last reconciled | 2026-10-12 |
-| Current milestone | M0 complete on merge of this document set; **next: M1 Foundation** |
+| Current milestone | M0 complete; **M1 Foundation in progress** (T1.1 done, next T1.2) |
 
 ## 1. How to use this roadmap
 
@@ -171,7 +171,7 @@ set. Sizes are not estimated.
 | ID | Milestone | Status | Depends on | Requirements delivered (first delivery) | Acceptance criteria | Verification |
 | --- | --- | --- | --- | --- | --- | --- |
 | M0 | Documentation baseline | In progress (this change); Done on merge | — | NFR-MAINT-02, NFR-COMP-01 | Document set in §5 exists; `node scripts/check-docs.mjs` passes; AGENTS.md points here | Docs check script; review |
-| M1 | Foundation | Planned (next) | M0 | FR-ADP-01, FR-AUTH-01, FR-POL-10, FR-WS-01–06, FR-SES-01, 02 (schema), 05 (events), FR-CAP-04 (queue, global limit), FR-EXE-01, 02, 05–07, FR-SES-06, FR-TEL-01, 03, FR-OPS-01 (`doctor`, `runs`), 03, 04, NFR-SEC-01, 02, 04–06, NFR-REL-01–02, NFR-PERF-03 (global), NFR-PORT-01, NFR-PRIV-01 | A fake provider CLI runs through the full lifecycle transactionally; cancel kills the process tree; `SIGKILL` of the controller mid-run followed by restart leaves a consistent ledger; a failed run that mutated files is rolled back, not replayed; CI green on Linux | Automated integration and fault-injection tests in CI (§6.1) |
+| M1 | Foundation | In progress (T1.1 done; see §6.1) | M0 | FR-ADP-01, FR-AUTH-01, FR-POL-10, FR-WS-01–06, FR-SES-01, 02 (schema), 05 (events), FR-CAP-04 (queue, global limit), FR-EXE-01, 02, 05–07, FR-SES-06, FR-TEL-01, 03, FR-OPS-01 (`doctor`, `runs`), 03, 04, NFR-SEC-01, 02, 04–06, NFR-REL-01–02, NFR-PERF-03 (global), NFR-PORT-01, NFR-PRIV-01 | A fake provider CLI runs through the full lifecycle transactionally; cancel kills the process tree; `SIGKILL` of the controller mid-run followed by restart leaves a consistent ledger; a failed run that mutated files is rolled back, not replayed; CI green on Linux | Automated integration and fault-injection tests in CI (§6.1) |
 | M2 | Claude Code and Codex adapters + MCP vertical slice | Planned | M1 | FR-MCP-01, 03–09, FR-ADP-02–04, 06, 11 (Claude Code, Codex), FR-POL-01 (two profiles), 02–05, 07, 08, FR-AUTH-02, FR-SES-03 (Claude Code, Codex), FR-RTE-01 (eligibility), FR-CAP-01 (record), FR-OPS-01 (`serve`), NFR-PERF-01, 02, NFR-OBS-01, NFR-PRIV-02, NFR-MAINT-03 | For each of Claude Code and Codex, a scripted MCP client delegates an edit task under `edit-untrusted`, polls to `SUCCEEDED`, retrieves a diff artifact and continues the same native session; a new user following the README reaches a passing `doctor`; missing login yields `AUTH_REQUIRED`; unknown CLI version yields `ADAPTER_VERSION_UNVERIFIED`; no bypass flag appears in any compiled invocation | Conformance suite on recorded fixtures in CI; one opt-in live smoke test run by the operator; argv inspection test |
 | M3 | Isolation | Planned | M2 | FR-POL-01 (all), 06, 09, FR-WS-07, FR-EXE-08, FR-OPS-02 (`approve`, `deny`), NFR-SEC-03 (Claude Code, Codex), NFR-DATA-01 | Malicious-fixture suite shows no escape for each profile on Claude Code and Codex; `privileged` runs wait for `approve` and end `CANCELLED` on `deny`; verification commands run and are recorded; retention deletes artifacts, worktrees and branches together | Malicious-fixture suite; integration tests |
 | M4 | Adapter expansion | Planned (Kimi Code part blocked by B-1) | M3 | FR-ADP-05, 07, 08, 09, 10, 11 (others), FR-EXE-03, FR-OPS-02 (`adapters validate`), NFR-SEC-03 (others), NFR-MAINT-01, NFR-PORT-02 | Grok Build, Antigravity, Cursor and OpenCode adapters pass conformance and malicious-fixture suites; the test suite passes on macOS; Kimi Code passes once B-1 clears (M4 may be marked `Partial` until then, with only Kimi outstanding); ACP transport used where it is the adapter's chosen surface; adding an adapter touched only its own module, manifest, fixtures and registry entry; `adapters validate` accepts a new CLI version only after its live checks pass | Conformance and fixture suites per adapter; diff inspection |
@@ -184,6 +184,12 @@ set. Sizes are not estimated.
 
 Each task lists objective, references, dependencies and completion checks. Tasks are in dependency order; T1.3 to T1.6
 can run in parallel after T1.2.
+
+Task status: **T1.1 Done** (2026-10-12): `package.json`, `package-lock.json`, `tsconfig.json`, `biome.json`,
+`vitest.config.ts`, `src/placeholder.test.ts`, `.github/workflows/ci.yml`; versions recorded in [TDD
+§2](design/TDD.md#2-technology-choices). Evidence: `npm ci`, typecheck, lint, test and `node scripts/check-docs.mjs`
+pass locally. Caveat: the first CI run is unconfirmed, and GitHub Actions are not yet pinned by SHA (`setup-node` uses a
+tag). T1.2 to T1.11 are Planned.
 
 | Task | Objective | References | Depends on | Done when |
 | --- | --- | --- | --- | --- |
