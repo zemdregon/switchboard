@@ -462,7 +462,7 @@ sequenceDiagram
 | State found | Action | Outcome |
 | --- | --- | --- |
 | AWAITING_APPROVAL, QUEUED, WAITING_CAPACITY | No process or lease exists; keep | Resume in queue, order preserved |
-| PREFLIGHT, LEASED (no process spawned) | Release any lease; discard empty worktree | Back to QUEUED (**Proposed**: preflight and lease are repeatable without side effects) |
+| PREFLIGHT, LEASED (no process spawned) | Release any lease; discard empty worktree | Back to QUEUED, recorded as rule T20 with cause `controller_restart` (**Proposed**: preflight and lease are repeatable without side effects). A LEASED run whose pre checkpoint already exists is not requeued (a second `pre` row would be appended); it ends FAILED `PROCESS_CRASH` through T10 |
 | RUNNING | Process group dead → FAILED `PROCESS_CRASH`, cause `controller_restart`; compare worktree with pre-run checkpoint | Unchanged: eligible for automatic retry (BR-7). Changed: evidence checkpoint, head rolled back, no retry (FR-WS-04) |
 | VERIFYING | Same as RUNNING (verification may have side effects, so it is not re-run) | FAILED `PROCESS_CRASH`, cause `controller_restart`; changes preserved as evidence |
 | FINALIZING | Redo finalization from worktree state (checkpoint creation is repeatable) | The pending outcome is applied; terminal |

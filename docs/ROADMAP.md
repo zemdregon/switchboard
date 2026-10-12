@@ -5,7 +5,7 @@
 | Status | **Canonical.** Single source of truth for scope, priorities, dependencies, sequencing, status and completion criteria. |
 | Does not own | Requirements ([SRS](requirements/SRS.md)), behaviour ([FRD](requirements/FRD.md)), design ([HLD](design/HLD.md), [SDD](design/SDD.md), [TDD](design/TDD.md), [LLD](design/LLD.md)), decision rationale ([ADRs](adr/README.md)). |
 | Last reconciled | 2026-10-12 |
-| Current milestone | M0 complete; **M1 Foundation in progress** (T1.1 done, next T1.2) |
+| Current milestone | M0 and M1 complete (M1 requirement gaps marked `Partial` in §6.1); **next: M2** |
 
 ## 1. How to use this roadmap
 
@@ -171,7 +171,7 @@ set. Sizes are not estimated.
 | ID | Milestone | Status | Depends on | Requirements delivered (first delivery) | Acceptance criteria | Verification |
 | --- | --- | --- | --- | --- | --- | --- |
 | M0 | Documentation baseline | In progress (this change); Done on merge | — | NFR-MAINT-02, NFR-COMP-01 | Document set in §5 exists; `node scripts/check-docs.mjs` passes; AGENTS.md points here | Docs check script; review |
-| M1 | Foundation | In progress (T1.1 done; see §6.1) | M0 | FR-ADP-01, FR-AUTH-01, FR-POL-10, FR-WS-01–06, FR-SES-01, 02 (schema), 05 (events), FR-CAP-04 (queue, global limit), FR-EXE-01, 02, 05–07, FR-SES-06, FR-TEL-01, 03, FR-OPS-01 (`doctor`, `runs`), 03, 04, NFR-SEC-01, 02, 04–06, NFR-REL-01–02, NFR-PERF-03 (global), NFR-PORT-01, NFR-PRIV-01 | A fake provider CLI runs through the full lifecycle transactionally; cancel kills the process tree; `SIGKILL` of the controller mid-run followed by restart leaves a consistent ledger; a failed run that mutated files is rolled back, not replayed; CI green on Linux | Automated integration and fault-injection tests in CI (§6.1) |
+| M1 | Foundation | **Done** (2026-10-12): every acceptance criterion has a passing test (166 tests locally); first CI run unconfirmed; requirement gaps marked `Partial` in §6.1 | M0 | FR-ADP-01, FR-AUTH-01, FR-POL-10, FR-WS-01–06, FR-SES-01, 02 (schema), 05 (events), FR-CAP-04 (queue, global limit), FR-EXE-01, 02, 05–07, FR-SES-06, FR-TEL-01, 03, FR-OPS-01 (`doctor`, `runs`), 03, 04, NFR-SEC-01, 02, 04–06, NFR-REL-01–02, NFR-PERF-03 (global), NFR-PORT-01, NFR-PRIV-01 | A fake provider CLI runs through the full lifecycle transactionally; cancel kills the process tree; `SIGKILL` of the controller mid-run followed by restart leaves a consistent ledger; a failed run that mutated files is rolled back, not replayed; CI green on Linux | Automated integration and fault-injection tests in CI; evidence in §6.1 |
 | M2 | Claude Code and Codex adapters + MCP vertical slice | Planned | M1 | FR-MCP-01, 03–09, FR-ADP-02–04, 06, 11 (Claude Code, Codex), FR-POL-01 (two profiles), 02–05, 07, 08, FR-AUTH-02, FR-SES-03 (Claude Code, Codex), FR-RTE-01 (eligibility), FR-CAP-01 (record), FR-OPS-01 (`serve`), NFR-PERF-01, 02, NFR-OBS-01, NFR-PRIV-02, NFR-MAINT-03 | For each of Claude Code and Codex, a scripted MCP client delegates an edit task under `edit-untrusted`, polls to `SUCCEEDED`, retrieves a diff artifact and continues the same native session; a new user following the README reaches a passing `doctor`; missing login yields `AUTH_REQUIRED`; unknown CLI version yields `ADAPTER_VERSION_UNVERIFIED`; no bypass flag appears in any compiled invocation | Conformance suite on recorded fixtures in CI; one opt-in live smoke test run by the operator; argv inspection test |
 | M3 | Isolation | Planned | M2 | FR-POL-01 (all), 06, 09, FR-WS-07, FR-EXE-08, FR-OPS-02 (`approve`, `deny`), NFR-SEC-03 (Claude Code, Codex), NFR-DATA-01 | Malicious-fixture suite shows no escape for each profile on Claude Code and Codex; `privileged` runs wait for `approve` and end `CANCELLED` on `deny`; verification commands run and are recorded; retention deletes artifacts, worktrees and branches together | Malicious-fixture suite; integration tests |
 | M4 | Adapter expansion | Planned (Kimi Code part blocked by B-1) | M3 | FR-ADP-05, 07, 08, 09, 10, 11 (others), FR-EXE-03, FR-OPS-02 (`adapters validate`), NFR-SEC-03 (others), NFR-MAINT-01, NFR-PORT-02 | Grok Build, Antigravity, Cursor and OpenCode adapters pass conformance and malicious-fixture suites; the test suite passes on macOS; Kimi Code passes once B-1 clears (M4 may be marked `Partial` until then, with only Kimi outstanding); ACP transport used where it is the adapter's chosen surface; adding an adapter touched only its own module, manifest, fixtures and registry entry; `adapters validate` accepts a new CLI version only after its live checks pass | Conformance and fixture suites per adapter; diff inspection |
@@ -185,11 +185,48 @@ set. Sizes are not estimated.
 Each task lists objective, references, dependencies and completion checks. Tasks are in dependency order; T1.3 to T1.6
 can run in parallel after T1.2.
 
-Task status: **T1.1 Done** (2026-10-12): `package.json`, `package-lock.json`, `tsconfig.json`, `biome.json`,
-`vitest.config.ts`, `src/placeholder.test.ts`, `.github/workflows/ci.yml`; versions recorded in [TDD
-§2](design/TDD.md#2-technology-choices). Evidence: `npm ci`, typecheck, lint, test and `node scripts/check-docs.mjs`
-pass locally. Caveat: the first CI run is unconfirmed, and GitHub Actions are not yet pinned by SHA (`setup-node` uses a
-tag). T1.2 to T1.11 are Planned.
+Task status: **T1.1 to T1.11 Done** (2026-10-12). Evidence is local: `npm test` passes (13 files, 166 tests),
+alongside typecheck, lint and `node scripts/check-docs.mjs`. Caveats: the first CI run is unconfirmed, and GitHub
+Actions are not yet pinned by SHA (`setup-node` uses a tag).
+
+- **T1.1:** `package.json`, `package-lock.json`, `tsconfig.json`, `biome.json`, `vitest.config.ts`,
+  `.github/workflows/ci.yml`; versions recorded in [TDD §2](design/TDD.md#2-technology-choices).
+- **T1.2:** `src/config/` and `src/lock/`; `src/config/config.test.ts` (precise rejection messages, symlink
+  canonicalization), `src/lock/lock.test.ts` (second acquisition fails clearly, stale lock recovered).
+- **T1.3:** `src/ledger/`, `src/ids/`; `src/ledger/ledger.test.ts` (migration from empty DB, WAL, append-only
+  triggers on `run_event`), `src/ids/ids.test.ts`.
+- **T1.4:** `src/artifacts/`; `src/artifacts/artifacts.test.ts` (SHA-256 addressing, redaction before write).
+- **T1.5:** `src/workspace/`; `src/workspace/workspace.test.ts` (second lease refused, operator tree untouched, mutated
+  failure rolled back, non-Git refused for write profiles).
+- **T1.6:** `src/exec/`; `src/exec/supervisor.test.ts` (child and grandchild killed on cancel, env allowlist, oversize
+  and malformed lines give `OUTPUT_PROTOCOL_ERROR`), `src/exec/jsonl.test.ts`.
+- **T1.7:** `src/adapters/`; `src/adapters/adapters.test.ts` (fake adapter scenarios, conformance harness, no bypass
+  flags in compiled argv).
+- **T1.8:** `src/lifecycle/`; `src/lifecycle/lifecycle.test.ts` (state-machine table, admission, queue bound,
+  priority, concurrency, one active run per meta-session, per-edge outcomes, cancel in each state).
+- **T1.9:** `src/reconcile/`; `src/reconcile/reconcile.test.ts` (real `SIGKILL` of a controller child during RUNNING,
+  restart ends `FAILED/PROCESS_CRASH`, orphan killed, PID-reuse guard, per-state WF-8 outcomes).
+- **T1.10:** `src/cli/`; `src/cli/cli.test.ts` (no login command, `doctor`, `runs list|show|cancel` with `--json`,
+  cancel with and without a lock holder, daemon-side application).
+- **T1.11:** this reconciliation; design-doc changes are listed in the change description and carried in the documents
+  named in §6.1.1.
+
+#### 6.1.1 M1 requirements not fully evidenced
+
+These requirements are in the M1 row of §6, but the evidence above does not fully cover them. They stay `Partial`
+until the gap closes; none blocks M2 work.
+
+| Requirement | Status | Gap |
+| --- | --- | --- |
+| FR-OPS-01 | Partial | `doctor`, `runs list`, `runs show`, `runs cancel` are tested; `serve` is M2 (T2.6) |
+| NFR-PORT-01 | Partial | CI targets `ubuntu-24.04` (x86-64) only, the first CI run is unconfirmed, and arm64 is untested (TDD §2 says an arm64 runner is to be confirmed) |
+| NFR-SEC-01 | Partial | Secret redaction is tested for artifacts only; no secret-pattern scan covers the ledger, CLI output or logs |
+| FR-TEL-03 | Partial | Same gap as NFR-SEC-01; no test asserts that `run_event` payloads and CLI output omit prompts and environment values |
+| NFR-SEC-04 | Partial | Inspection-only requirement; no check or recorded review that the controller runs unprivileged |
+| NFR-PRIV-01 | Partial | Inspection-only requirement; no recorded review (no network code exists, but nothing asserts it) |
+| NFR-SEC-06 | Partial | Fail-closed cases are tested (unreadable worktree, unreadable pending outcome, bypass flag, unknown schema version); "ledger cannot be opened, refuse to serve" waits for `serve` |
+
+All other requirements in the M1 row have at least one passing test named in the task notes above.
 
 | Task | Objective | References | Depends on | Done when |
 | --- | --- | --- | --- | --- |
@@ -238,6 +275,7 @@ preceding milestone completes.
 | R-8 | No per-run disk or CPU limits | A runaway agent fills the disk or starves the host | Timeouts, concurrency limits and retention for now; revisit in M3 with the outer-sandbox evaluation ([TDD §3.4](design/TDD.md#34-security-engineering)) |
 | R-9 | MCP client identity over stdio is only as strong as the orchestrator's launch config (`serve --client <id>`) | A misconfigured orchestrator gets another client's trust ceiling | Keep ceilings low by default; `privileged` always needs operator approval (FR-POL-09) |
 | R-10 | Claude Code has no documented native sandbox in the research | Claude may be ineligible for `test-sandboxed` (FR-POL-06); M2's two profiles are unaffected because they allow no arbitrary shell | Settle in M3 with the malicious-fixture suite; other adapters cover those profiles if needed |
+| R-12 | A controller crash between spawning a provider process and committing its `pid`, `pgid` and start ticks leaves an orphan that startup reconciliation cannot find (LLD §8) | An unsupervised provider process may keep writing to a worktree until it exits; the run is still assessed and ended | Known limit of M1 (the pid is only known after spawn). **Proposed:** revisit with a launcher or cgroup-based tracking if it matters in M3 |
 
 ### 7.2 Blockers
 
@@ -247,7 +285,7 @@ preceding milestone completes.
 
 No blocker affects M1.
 
-### 7.3 Open questions for zemdregon (not blocking M1)
+### 7.3 Open questions for zemdregon (not blocking M2 unless noted)
 
 | ID | Question | Default in force |
 | --- | --- | --- |
@@ -255,6 +293,7 @@ No blocker affects M1.
 | Q-2 | *Answered 2026-10-12:* all seven held; Claude Code and Codex first (owner decision 5). | — |
 | Q-3 | Do you prefer a language other than TypeScript? | TypeScript (ADR-0010); cheapest to change before M1 |
 | Q-4 | Which orchestrator will you use first? | Any stdio MCP client (A-4) |
+| Q-5 | `QUEUE_FULL` (bounded queue, FR-CAP-04) has no entry in the [LLD §4](design/LLD.md#4-failure-taxonomy) taxonomy; M1 raises it as an admission error before any row is written. Should it become a code (and which MCP error envelope), or map to an existing one? | Internal `LifecycleError` code `QUEUE_FULL`; to settle in T2.4 before the MCP error mapping |
 
 ## 8. Deferred and excluded work
 
@@ -271,9 +310,17 @@ No blocker affects M1.
 
 ## 9. Next actionable milestone
 
-**M1 Foundation.** Prerequisites: this document set merged (M0); Q-3 (language) ideally answered, otherwise TypeScript
-stands. No provider CLI or login is needed for M1. M1 is complete when every task in §6.1 meets its completion check and
-the M1 acceptance criteria in §6 pass in CI.
+**M2 Claude Code and Codex adapters + MCP vertical slice.** Prerequisites: M1 is `Done` (§6). No M2 task needs a
+provider login until the opt-in live smoke test (T2.6). Items that surfaced in M1 and must be handled in M2:
+
+- **Version gating (ADR-0009).** `src/adapters/registry.ts` is a skeleton with no version gating or enablement hook.
+  T2.1 and T2.2 add the manifest check, `ADAPTER_VERSION_UNVERIFIED` and enablement there, ahead of T2.3 eligibility.
+- **`QUEUE_FULL` has no failure code** in LLD §4; see Q-5. Settle it before T2.4 maps lifecycle errors to MCP errors.
+- **Idempotency keys** apply to new meta-sessions only (FRD §7.2 C6); T2.4 must not add a key to `continue_task`
+  without changing the FRD and SRS first (see the LLD §3 note).
+- **`serve`** (FR-OPS-01) must run reconciliation (`src/reconcile/`) before accepting MCP calls and call
+  `applyOperatorRequests` (`src/cli/operator.ts`) for pending operator cancels.
+- M1 `Partial` requirements in §6.1.1 (arm64 CI, secret scan beyond artifacts) should be closed alongside T2.x work.
 
 ### 9.1 How an agent picks up work
 
