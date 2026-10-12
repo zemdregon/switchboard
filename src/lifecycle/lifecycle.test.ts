@@ -71,7 +71,13 @@ else {
 }
 `;
 
-type Scenario = FakeScenario | "writer";
+/** Same as WRITER_CLI but the provider also reports usage (T2.5). */
+const USAGE_WRITER_CLI = WRITER_CLI.replace(
+  'emit({ type: "tool"',
+  'emit({ type: "usage", input_tokens: 7, output_tokens: 2 });\n  emit({ type: "tool"',
+);
+
+type Scenario = FakeScenario | "writer" | "writer-usage";
 
 /**
  * Test adapter: the objective names the scenario for that run, so one registered `fake` adapter can play several
@@ -86,9 +92,13 @@ class ScenarioAdapter implements ProviderAdapter {
   compileOverride: ((req: CompileRequest, inv: Invocation) => Invocation | Ineligible) | undefined;
   private readonly base = new FakeAdapter({ timeouts: SHORT });
 
-  constructor(private readonly writerScript: string) {}
+  constructor(
+    private readonly writerScript: string,
+    private readonly usageScript = writerScript,
+  ) {}
 
   private forScenario(s: Scenario): FakeAdapter {
+    if (s === "writer-usage") return new FakeAdapter({ script: this.usageScript, timeouts: SHORT });
     if (s === "writer") return new FakeAdapter({ script: this.writerScript, timeouts: SHORT });
     return new FakeAdapter({ scenario: s, timeouts: SHORT });
   }
@@ -186,7 +196,9 @@ beforeEach(() => {
   ledger = createLedger(db, { ids: createIdGenerator() });
   const writer = path.join(root, "writer-cli.mjs");
   writeFileSync(writer, WRITER_CLI);
-  adapter = new ScenarioAdapter(writer);
+  const usageWriter = path.join(root, "usage-writer-cli.mjs");
+  writeFileSync(usageWriter, USAGE_WRITER_CLI);
+  adapter = new ScenarioAdapter(writer, usageWriter);
   notices = [];
   lifecycle = makeLifecycle();
 });
@@ -195,6 +207,27 @@ afterEach(async () => {
   await lifecycle.shutdown();
   db.close();
   rmSync(root, { recursive: true, force: true });
+});
+
+describe("usage observations (T2.5, FR-CAP-01)", () => {
+  const usageRows = (runId: string) => ledger.listUsageObservationsForRun(runId);
+
+  it("stores provider-reported usage in the terminal transaction, on success", async () => {
+    lifecycle.start();
+    const ok = await submit("writer-usage");
+    expect((await lifecycle.waitForTerminal(ok.runId)).state).toBe("SUCCEEDED");
+    const rows = usageRows(ok.runId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ source: "provider_reported", provider: "fake", harness: "fake" });
+    expect(JSON.parse(rows[0]?.metrics_json ?? "{}")).toEqual({ input_tokens: 7, output_tokens: 2 });
+  });
+
+  it("stores nothing when the provider reported no usage", async () => {
+    lifecycle.start();
+    const r = await submit("writer");
+    await lifecycle.waitForTerminal(r.runId);
+    expect(usageRows(r.runId)).toEqual([]);
+  });
 });
 
 describe("state machine table (FRD §4.2)", () => {

@@ -198,6 +198,33 @@ export interface ArtifactRow {
   deleted_at: string | null;
 }
 
+/**
+ * `usage_observation` input (LLD §1, FR-CAP-01). Proposed (Delegated): until the M6 estimator exists the only writable
+ * source is `provider_reported`; `controller_estimated` is reserved by the schema CHECK but this repo refuses it, so an
+ * estimate can never be stored as, or next to, a reported figure by accident.
+ */
+export interface NewUsageObservation {
+  runId: string;
+  provider: string;
+  harness: string;
+  backingProvider?: string | null;
+  model?: string | null;
+  source: "provider_reported";
+  metrics: Record<string, number | string | null>;
+}
+
+export interface UsageObservationRow {
+  id: string;
+  run_id: string | null;
+  provider: string;
+  harness: string;
+  backing_provider: string | null;
+  model: string | null;
+  source: "provider_reported" | "controller_estimated";
+  metrics_json: string;
+  observed_at: string;
+}
+
 /** `route_decision` row (LLD §1; M2 writes eligibility only). JSON columns are pre-serialised by the router. */
 export interface NewRouteDecision {
   runId: string;
@@ -283,6 +310,10 @@ export interface Ledger {
   insertRouteDecision(input: NewRouteDecision): string;
   /** Latest route decision recorded for a run. */
   getRouteDecision(runId: string): RouteDecisionRow | undefined;
+  /** Append one provider-reported usage observation (append-only table, FR-CAP-01). Returns the new id. */
+  insertUsageObservation(input: NewUsageObservation): string;
+  /** Observations of a run, oldest first. */
+  listUsageObservationsForRun(runId: string): UsageObservationRow[];
   /**
    * Record (or refresh `last_used_at` of) a provider-native session for a meta-session (FR-SES-02, FR-SES-03). The id
    * comes from structured provider output only (FR-ADP-04).
@@ -473,6 +504,38 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
         ts(),
       );
       return id;
+    },
+
+    insertUsageObservation(input) {
+      if ((input.source as string) !== "provider_reported") {
+        throw new Error("usage_observation accepts only provider_reported rows (FR-CAP-01)");
+      }
+      const id = ids.id("use");
+      db.prepare(
+        `INSERT INTO usage_observation (id, run_id, provider, harness, backing_provider, model, source, metrics_json,
+                                        observed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        id,
+        input.runId,
+        input.provider,
+        input.harness,
+        input.backingProvider ?? null,
+        input.model ?? null,
+        input.source,
+        JSON.stringify(input.metrics),
+        ts(),
+      );
+      return id;
+    },
+
+    listUsageObservationsForRun(runId) {
+      return db
+        .prepare(
+          `SELECT id, run_id, provider, harness, backing_provider, model, source, metrics_json, observed_at
+           FROM usage_observation WHERE run_id = ? ORDER BY observed_at, id`,
+        )
+        .all(runId) as UsageObservationRow[];
     },
 
     getRouteDecision(runId) {

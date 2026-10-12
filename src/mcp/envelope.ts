@@ -4,11 +4,13 @@
  * artifacts are operator-CLI only and are left out of `artifacts`.
  *
  * Proposed (Delegated): `failure_detail` (redacted, bounded) so an asynchronous failure such as AUTH_REQUIRED still
- * names the native login command (FR-AUTH-02); route reasons are short strings derived from `route_decision`; `usage`
- * is all null until provider-reported usage is stored (T2.5).
+ * names the native login command (FR-AUTH-02); route reasons are short strings derived from `route_decision`; `usage.reported`
+ * lists stored provider-reported observations, each labelled with its source (T2.5), and is null when none exist
+ * (never zero); `estimated` and `capacity_confidence` stay null until the M6 estimator (FR-CAP-01..03).
  */
 import type { Ledger, RunRecord } from "../ledger/index.js";
 import { isTerminal } from "../lifecycle/index.js";
+import type { ReportedUsage } from "../usage/index.js";
 import { MCP_ARTIFACT_KINDS } from "./schemas.js";
 
 const MCP_KINDS: ReadonlySet<string> = new Set(MCP_ARTIFACT_KINDS);
@@ -26,7 +28,7 @@ export interface Envelope {
   route: { reasons: string[] };
   result: { summary?: string; changed_files?: number; verification: Record<string, unknown>[] };
   artifacts: Record<string, string>;
-  usage: { reported: null; estimated: null; capacity_confidence: null };
+  usage: { reported: ReportedUsage[] | null; estimated: null; capacity_confidence: null };
   replayed?: boolean;
   events?: { seq: number; ts: string; type: string; payload: unknown }[];
 }
@@ -65,8 +67,23 @@ export function buildEnvelope(ledger: Ledger, run: RunRecord, scrub: (s: string)
     route: { reasons: routeReasons(ledger, run.id) },
     result,
     artifacts,
-    usage: { reported: null, estimated: null, capacity_confidence: null },
+    usage: { reported: reportedUsage(ledger, run.id), estimated: null, capacity_confidence: null },
   };
+}
+
+function reportedUsage(ledger: Ledger, runId: string): ReportedUsage[] | null {
+  // Only provider_reported rows are exposed here; an estimate must never surface as a reported figure.
+  const rows = ledger.listUsageObservationsForRun(runId).filter((r) => r.source === "provider_reported");
+  if (rows.length === 0) return null;
+  return rows.map((r) => ({
+    source: "provider_reported",
+    provider: r.provider,
+    harness: r.harness,
+    backing_provider: r.backing_provider,
+    model: r.model,
+    observed_at: r.observed_at,
+    metrics: JSON.parse(r.metrics_json) as ReportedUsage["metrics"],
+  }));
 }
 
 interface Candidate {
