@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -228,6 +228,46 @@ describe("doctor", () => {
     const text = (await run(["doctor", ...cfg()], { adapters: registry })).out;
     expect(text).toContain("[FAIL] Codex (real provider)");
     expect(text).toContain("ineligible until an operator validates this version");
+  });
+
+  it("skips providers disabled in config without probing them and without affecting the exit code", async () => {
+    const script = path.join(tmp, "fake-codex-probed.mjs");
+    const marker = path.join(tmp, "probed");
+    writeFileSync(
+      script,
+      `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "x"); process.exit(2);`,
+    );
+    const raw = JSON.parse(readFileSync(configPath, "utf8"));
+    writeFileSync(
+      configPath,
+      JSON.stringify({ ...raw, providers: { codex: { enabled: false }, "claude-code": { enabled: false } } }),
+    );
+    const registry = new AdapterRegistry()
+      .register(new FakeAdapter())
+      .register(new CodexAdapter({ executable: process.execPath, launcherArgs: [script] }))
+      .register(new ClaudeAdapter({ binaryPath: path.join(tmp, "no-such-claude") }));
+    const r = await run(["doctor", "--json", ...cfg()], { adapters: registry });
+    expect(r.code).toBe(0);
+    const j = JSON.parse(r.out);
+    expect(j.ok).toBe(true);
+    const by = Object.fromEntries(j.adapters.map((a: { id: string }) => [a.id, a]));
+    expect(by.fake.status).toBe("ok");
+    for (const id of ["codex", "claude"]) {
+      expect(by[id]).toMatchObject({ status: "skip", version_gate: null });
+      expect(by[id].note).toContain("disabled in config");
+    }
+    expect(existsSync(marker)).toBe(false);
+    const text = (await run(["doctor", ...cfg()], { adapters: registry })).out;
+    expect(text).toContain("[skip] Codex (real provider): disabled in config");
+    expect(text).toContain("Result: OK");
+  });
+
+  it("still probes a provider that is explicitly enabled or unlisted", async () => {
+    const raw = JSON.parse(readFileSync(configPath, "utf8"));
+    writeFileSync(configPath, JSON.stringify({ ...raw, providers: { codex: { enabled: true } } }));
+    const registry = new AdapterRegistry().register(new CodexAdapter({ pathEnv: "" }));
+    const j = JSON.parse((await run(["doctor", "--json", ...cfg()], { adapters: registry })).out);
+    expect(j.adapters[0]).toMatchObject({ id: "codex", status: "warn" });
   });
 
   it("reports the lock holder and a migrated ledger", async () => {
