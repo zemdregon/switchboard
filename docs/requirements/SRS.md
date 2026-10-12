@@ -37,14 +37,21 @@
 | Run | One attempt to execute a delegated task on one provider. |
 | Meta-session | Controller-owned, provider-independent record of an engineering task across one or more runs. |
 | Trust profile | Named security posture (§3.3) compiled by each adapter into native controls. |
-| Checkpoint | Git commit recorded by the controller marking workspace state before or after a run. |
+| Checkpoint | Git commit recorded by the controller marking workspace state before or after a run. Internal evidence; never published (FR-GIT-08). |
+| Project | A named unit Switchboard manages: one environment (where agents run) plus one or more contexts (what they work on). Runs and meta-sessions belong to exactly one project (§3.12). |
+| Environment | Where a project's agent processes execute: `host` (directly on the operator's machine) or `container` (a controller-managed container). |
+| Context | A resource attached to a project that agents work with. Only the `repository` kind is delivered (FR-PRJ-02). |
+| Agent | The provider CLI process (and the model behind it) doing the coding work in a run. |
+| Injected tool | A tool the controller offers to an agent for one run through a controller-supplied MCP definition (FR-GIT-02). The `commit` and `push` tools are the only way agent work becomes a commit or reaches a remote. |
+| Publish ref | The controller-owned branch holding the commits made through the commit tool for one meta-session, separate from the internal run branches (FR-GIT-08). |
+| Provenance record | Append-only ledger record linking a published commit to the run, provider and model that produced it. The commit itself carries no such marker (FR-GIT-07). |
 
 ## 2. Scope of this specification
 
-In scope: the controller daemon, its MCP tool surface, provider adapters, policy engine, workspace manager, session
-ledger, router/scheduler, execution supervisor, telemetry pipeline and the operator CLI. The product boundary and
-non-goals are owned by the [PRD](PRD.md#6-non-goals); the system boundary is owned by the
-[HLD](../design/HLD.md#1-system-context).
+In scope: the controller daemon, its MCP tool surface, provider adapters, policy engine, workspace manager, project
+manager, git publisher, session ledger, router/scheduler, execution supervisor, telemetry pipeline and the operator
+CLI. The product boundary and non-goals are owned by the [PRD](PRD.md#6-non-goals); the system boundary is owned by
+the [HLD](../design/HLD.md#1-system-context).
 
 ## 3. Functional requirements
 
@@ -117,9 +124,9 @@ The five trust profiles and their intended semantics are:
 | --- | --- | --- | --- | --- | --- |
 | FR-WS-01 | Every write-capable run shall execute in a controller-created Git worktree created from a recorded base checkpoint. | Must | CAP-4, [ADR-0006](../adr/0006-worktree-checkpoints-no-blind-replay.md) | T | M1 |
 | FR-WS-02 | At most one write lease shall exist per worktree at a time; parallel tasks shall receive separate worktrees. | Must | CAP-4 | T | M1 |
-| FR-WS-03 | After each run the controller shall record the changed-file list, a diff artifact and a post-run checkpoint commit on a controller-owned branch. | Must | CAP-4 | T | M1 |
+| FR-WS-03 | After each run the controller shall record the changed-file list, a diff artifact and a post-run checkpoint commit on a controller-owned branch. Checkpoint commits are internal evidence and are never published (FR-GIT-08). | Must | CAP-4 | T | M1 |
 | FR-WS-04 | If a run fails after mutating the workspace, the controller shall either roll back to the pre-run checkpoint or continue via native resume; it shall never replay the original request against the mutated state. | Must | CAP-4, [R2] retry semantics | T | M1 |
-| FR-WS-05 | The controller shall not push to remotes, and shall not modify the operator's checked-out branch or working tree; results are delivered as controller-owned branches plus diff artifacts. | Must | BO-3 | T | M1 |
+| FR-WS-05 | The controller shall not modify the operator's checked-out branch or working tree, and shall not push to remotes except through the controlled publication in FR-GIT-05, which is off by default; results are delivered as controller-owned branches plus diff artifacts. *(Amended 2026-10-12 by owner decision 7: the blanket no-push rule became push-only-through-injected-tools; see [ADR-0014](../adr/0014-tool-only-commits-and-publication.md).)* | Must | BO-3 | T | M1 (no push by default), M9 (controlled publication) |
 | FR-WS-06 | Write-capable profiles shall require the workspace to be a Git repository; `inspect-untrusted` may operate on a non-Git directory read-only. | Must | CAP-4 | T | M1 |
 | FR-WS-07 | Worktrees and controller branches shall be garbage-collected according to a configurable retention policy. | Should | NFR-DATA-01 | T | M3 |
 
@@ -188,6 +195,46 @@ The five trust profiles and their intended semantics are:
 | FR-OPS-05 | The operator CLI shall provide `capacity`, showing the same estimates and sources as `get_capacity`. | Should | CAP-7, BO-5 | T | M6 |
 | FR-OPS-03 | The product shall have no web interface and no login commands. | Must | [R1] constraint, BO-2 | I | M1 (kept in all later milestones) |
 
+### 3.12 Projects and contexts (`FR-PRJ`)
+
+Added 2026-10-12 from owner decision 6 ([ADR-0013](../adr/0013-projects-environments-and-contexts.md)): Switchboard
+manages *projects*, the environments the coding agents operate from (likely containers) and the *contexts* of those
+projects, such as repositories. Everything about container runtimes is **Proposed** until the open questions Q-6 and Q-7
+in [ROADMAP §7.3](../ROADMAP.md#73-open-questions-for-ender-not-blocking-m2-unless-noted) are answered.
+
+| ID | Requirement | Priority | Source | Verify | Milestone |
+| --- | --- | --- | --- | --- | --- |
+| FR-PRJ-01 | The controller shall manage projects. A project has a stable ID, a name, exactly one environment definition (FR-PRJ-04) and one or more contexts (FR-PRJ-02), and is defined in the schema-validated configuration (FR-OPS-04). | Must | CAP-10, owner decision 6 | T | M9 |
+| FR-PRJ-02 | A context is a resource a project's agents work with. The only context kind delivered is `repository`: a local Git repository whose canonical path lies under an allowed root (FR-POL-10), with a base ref, a push policy (FR-GIT-05) and a commit identity (FR-GIT-04). A context of an unknown kind shall fail configuration validation. | Must | CAP-10, FR-POL-10, NFR-SEC-06 | T | M9 |
+| FR-PRJ-03 | `delegate_task` shall accept a project reference as an alternative to a workspace path, and a read-only `list_projects` tool shall list the projects the calling MCP client may use. Runs and meta-sessions shall record their project, and a meta-session shall stay in the project it was created in. A request naming both or neither of a project and a workspace path fails `INVALID_REQUEST`. | Must | CAP-10, CAP-1, FR-MCP-09 | T | M9 |
+| FR-PRJ-04 | The controller shall support the environment kinds `host` (agent processes run directly on the operator's machine, as in M1 to M3) and `container` (FR-PRJ-05). The environment kind and, for containers, the image digest shall be recorded in the run's policy snapshot. | Must | CAP-10, FR-POL-01 | T | M9 (`host`), M10 (`container`) |
+| FR-PRJ-05 | For a `container` environment the controller shall run the provider process inside a container that mounts only the run's worktree (writable) and declared read-only contexts. It shall not mount the operator's home directory, the controller data directory, Git push credentials or a container-runtime socket. How provider logins reach the container is open (Q-6), and no provider credential shall be copied or moved by the controller (FR-AUTH-01). It shall apply the run's network policy and configured CPU, memory and disk limits, and remove the container when the run ends. | Must | CAP-10, BO-3, FR-POL-06 | T, A | M10 |
+| FR-PRJ-06 | A project may declare a maximum trust profile and a set of allowed providers. The effective maximum profile of a request is the lower of the calling client's maximum (FR-MCP-06) and the project's; a client may use only the projects listed in its configuration entry. A request outside either limit fails `PERMISSION_BLOCKED` before any side effect. | Must | CAP-10, CAP-3, FR-MCP-06 | T | M9 |
+| FR-PRJ-07 | Environment lifecycle steps (create, start, stop, remove) shall be recorded as run events. Startup reconciliation (FR-EXE-06) shall find and remove containers left by a previous controller before assessing worktrees. | Must | CAP-10, NFR-REL-01 | T | M10 |
+| FR-PRJ-08 | The operator CLI shall provide `projects list`, `projects show <id>` and `projects validate`, which checks configuration, repository paths, base refs and environment availability without starting a run; plain text and `--json` as in FR-OPS-01. | Should | CAP-10, CAP-9 | T | M9 (`host`), M10 (`container` checks) |
+| FR-PRJ-09 | Removing a project from the configuration shall not delete its run history. Retention (FR-WS-07, NFR-DATA-01) shall remove a project's containers and volumes together with its worktrees, branches and artifacts. | Should | CAP-10, NFR-DATA-01 | T | M10 |
+
+### 3.13 Agent Git boundary, commits and publication (`FR-GIT`)
+
+Added 2026-10-12 from owner decision 7 ([ADR-0014](../adr/0014-tool-only-commits-and-publication.md)): agents have no
+commit or push ability. Commits and pushes are made only by Switchboard-injected tools, so a commit looks the same as any
+other commit: no co-author trailer, no "generated by" footer, no session ID. The controller still keeps an internal audit
+trail of which agent produced which commit (FR-GIT-07). Provider-specific switches that disable a provider's own commit
+or attribution behaviour are **not** documented in the verified research ([R2]); the per-provider mechanism is *to be
+verified* ([TDD §3.10](../design/TDD.md#310-git-commits-attribution-and-publication)).
+
+| ID | Requirement | Priority | Source | Verify | Milestone |
+| --- | --- | --- | --- | --- | --- |
+| FR-GIT-01 | Agents shall have no ability to create commits, create or move refs, or push. Each adapter shall compile every write-capable profile so that the provider's documented permission controls deny Git write operations and its own commit and attribution features are not used. Where a provider documents no such control the adapter shall declare that, and FR-GIT-03 and FR-GIT-06 become the remaining controls. | Must | CAP-11, BO-7, owner decision 7, FR-POL-02 | T, I | M2 (argv and policy inspection), M9 (malicious fixtures) |
+| FR-GIT-02 | The controller shall offer agents injected tools, `commit` and, where the context's push policy allows it, `push`, through a per-run channel (a controller-supplied MCP definition, written to no global provider config, FR-POL-08). The tools shall run in the controller, outside the agent's process tree, and shall be the only path by which agent work becomes a commit or reaches a remote. Each adapter shall declare whether it can receive the channel without a permission-bypass flag (FR-POL-03); one that cannot uses the finalize-only mode (FR-GIT-09). | Must | CAP-11, owner decision 7 | T | M9 |
+| FR-GIT-03 | The controller shall snapshot the repository's refs before and after each run and check the run branch. A ref created, moved or deleted, or a commit made, other than by the controller shall be a Git policy violation: its content is kept as working-tree changes, the commits are never published, a `git_policy_violation` run event is appended and `runs show` reports it. | Must | CAP-11, BO-3 | T | M9 |
+| FR-GIT-04 | A commit made through the commit tool shall use the context's configured author and committer identity and a message produced from the agent's text after sanitisation. The controller shall add no trailer, footer, signature line or identifier of its own. Sanitisation shall remove attribution trailers (for example `Co-authored-by:`), "generated by"-style footers and controller, provider, run or session identifiers, using a built-in pattern set plus operator-configured patterns. | Must | CAP-11, BO-7, owner decision 7 | T, I | M9 |
+| FR-GIT-05 | Pushes shall happen only through the push tool or an operator command, under the context's push policy: `none` (the default) or `branch` (push the publish ref to a configured remote under a configured branch-name prefix). The controller shall never force-push; push the operator's checked-out branch, the repository default branch, run branches, checkpoint commits, tags or notes; or push without recording the attempt and its result. | Must | CAP-11, BO-3, owner decision 7 | T | M9 |
+| FR-GIT-06 | Credentials used to push or sign (SSH keys and agent, credential helpers, tokens) shall be used only by controller-side Git operations through the operator's existing Git configuration. The controller shall not store them (NFR-SEC-01) or pass them to an agent (FR-EXE-07). A context whose push policy is not `none` is ineligible for a run whose agent can execute commands that could read those credentials (a `host` environment with shell access, mirroring FR-POL-06). | Must | CAP-11, BO-3, FR-POL-06 | T, A | M9 |
+| FR-GIT-07 | For every commit made through the commit tool the controller shall append a provenance record linking commit SHA, tree hash and patch ID to project, context, meta-session, run, provider, model, adapter version, the tool-call event and the sanitiser report (rule names and counts, never content), plus remote and ref once pushed. Records are append-only and retrievable through `runs show`; the commit itself shall not contain them. | Must | CAP-11, BO-5, BO-7 | T | M9 |
+| FR-GIT-08 | Checkpoint commits, run branches and other controller refs (FR-WS-03) are internal and shall never be pushed or used as published history. Published commits shall be created only by the commit tool, onto a publish ref separate from the run branches. | Must | CAP-11, FR-WS-03 | T | M9 |
+| FR-GIT-09 | For an adapter that cannot receive the injected channel (FR-GIT-02), and when the operator enables it for the context, the controller shall create the commit itself at finalization from the run's worktree changes, with a message taken from the agent's structured final summary, subject to FR-GIT-04 to FR-GIT-08. | Should | CAP-11, owner decision 7 | T | M9 |
+
 ## 4. Nonfunctional requirements
 
 ### 4.1 Security (`NFR-SEC`)
@@ -249,7 +296,9 @@ The five trust profiles and their intended semantics are:
 | MCP over stdio (tool schemas) | Orchestrator → controller | [LLD §3](../design/LLD.md#3-mcp-tool-contracts) |
 | Provider CLI subprocess (args, env, JSON/JSONL) | Controller → provider | [LLD §2](../design/LLD.md#2-adapter-contract), per-adapter notes in [TDD §4](../design/TDD.md#4-provider-adapter-strategy) |
 | ACP stdio client | Controller → provider | [TDD §4](../design/TDD.md#4-provider-adapter-strategy) (M4) |
-| Git (worktrees, commits) | Controller → local repo | [LLD §5](../design/LLD.md#5-workspace-and-lease-algorithm) |
+| Git (worktrees, checkpoint and published commits, push) | Controller → local repo and, under FR-GIT-05, a remote | [LLD §5](../design/LLD.md#5-workspace-and-lease-algorithm), [LLD §12](../design/LLD.md#12-injected-git-tools-commits-and-publication) |
+| Injected `commit` / `push` tools (per-run MCP channel) | Agent → controller | [LLD §12](../design/LLD.md#12-injected-git-tools-commits-and-publication) |
+| Container runtime (create, start, stop, remove; runtime not chosen, Q-6) | Controller → container runtime | [LLD §11](../design/LLD.md#11-projects-contexts-and-environments) |
 | OpenTelemetry OTLP export | Controller → operator endpoint | [LLD §7](../design/LLD.md#7-telemetry-spans) |
 | Operator CLI | Operator → controller | [FRD](FRD.md) workflows |
 
@@ -257,8 +306,10 @@ The five trust profiles and their intended semantics are:
 
 Persistent entities (schema owned by [LLD §1](../design/LLD.md#1-data-model)): `meta_session`, `provider_binding`,
 `run`, `run_event`, `decision`, `artifact`, `workspace_checkpoint`, `usage_observation`, `provider_health`,
-`route_decision`, `adapter_version`, `approval`. All live in one SQLite database in the operator's data directory
-([ADR-0005](../adr/0005-sqlite-ledger.md)); artifacts are files addressed by SHA-256 under the same directory.
+`route_decision`, `adapter_version`, `approval`, plus (M9) `git_commit` (provenance, FR-GIT-07). Project definitions
+live in the configuration file, not the ledger, and are snapshotted into each run (FR-PRJ-01). All live in one SQLite
+database in the operator's data directory ([ADR-0005](../adr/0005-sqlite-ledger.md)); artifacts are files addressed by
+SHA-256 under the same directory.
 
 ## 7. Traceability
 
@@ -270,10 +321,12 @@ Requirement → milestone mapping is in the tables above; milestone → requirem
 | --- | --- |
 | CAP-1 Task delegation | FR-MCP-01, 03–10, FR-EXE-01–02, 05–08 |
 | CAP-2 Provider adapters | FR-ADP-01–11, FR-AUTH-02 |
-| CAP-3 Policy and trust profiles | FR-POL-01–10, FR-MCP-06 |
+| CAP-3 Policy and trust profiles | FR-POL-01–10, FR-MCP-06, FR-PRJ-06 |
 | CAP-4 Workspace isolation | FR-WS-01–07 |
 | CAP-5 Continuity | FR-SES-01–06 |
 | CAP-6 Routing | FR-RTE-01–05, FR-MCP-02, 05 |
 | CAP-7 Capacity and backpressure | FR-CAP-01–07, FR-MCP-02, FR-ADP-10 |
 | CAP-8 Telemetry and audit | FR-TEL-01–04, NFR-OBS-01 |
-| CAP-9 Operator CLI | FR-OPS-01–05 |
+| CAP-9 Operator CLI | FR-OPS-01–05, FR-PRJ-08 |
+| CAP-10 Projects, contexts and environments | FR-PRJ-01–09 |
+| CAP-11 Controlled commits and publication | FR-GIT-01–09, FR-WS-05 |
