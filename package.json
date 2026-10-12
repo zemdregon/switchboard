@@ -1,0 +1,25 @@
+{
+  "name": "switchboard",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Headless controller that delegates coding work to AI coding CLIs behind one MCP tool surface.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "test": "vitest run",
+    "check-docs": "node scripts/check-docs.mjs"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@types/node": "22.20.5",
+    "typescript": "7.0.2",
+    "vitest": "5.0.4"
+  }
+}
