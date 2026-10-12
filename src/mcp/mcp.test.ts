@@ -79,6 +79,7 @@ else {
   process.stdin.on("end", () => {
     emit({ type: "session", session_id: resumed ?? "writer-1" });
     if (prompt.trim() === "hang") { setInterval(() => {}, 1000); return; }
+    if (prompt.trim() === "usage") emit({ type: "usage", input_tokens: 12, output_tokens: 3 });
     const prev = existsSync("feature.txt") ? readFileSync("feature.txt", "utf8") : "";
     writeFileSync("feature.txt", prev + (resumed ? "continued\\n" : "new feature\\n"));
     emit({ type: "tool", tool: "edit", name: "write_file", target: "feature.txt" });
@@ -328,6 +329,28 @@ describe("tool surface (FR-MCP-01, FR-MCP-09)", () => {
         config: { allowedRoots: [root], mcpClients },
       }),
     ).toThrow(/eligibility/);
+  });
+});
+
+describe("usage in get_run (T2.5)", () => {
+  it("shows provider-reported observations with their source label; null (not zero) when none were reported", async () => {
+    await setup({ adapters: [fakeWriter()] });
+    const none = await call("delegate_task", delegateArgs());
+    const noneDone = await pollTerminal(none.body.run_id);
+    expect(noneDone.usage).toEqual({ reported: null, estimated: null, capacity_confidence: null });
+
+    const d = await call("delegate_task", delegateArgs({ objective: "usage" }));
+    const done = await pollTerminal(d.body.run_id);
+    expect(done.status).toBe("SUCCEEDED");
+    expect(done.usage.estimated).toBeNull();
+    expect(done.usage.capacity_confidence).toBeNull();
+    expect(done.usage.reported).toHaveLength(1);
+    expect(done.usage.reported[0]).toMatchObject({
+      source: "provider_reported",
+      provider: "fake",
+      harness: "fake",
+      metrics: { input_tokens: 12, output_tokens: 3 },
+    });
   });
 });
 

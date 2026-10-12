@@ -57,6 +57,7 @@ import {
   failureCodeForReason,
   filterEligible,
 } from "../routing/index.js";
+import { usageObservationsFromEvents } from "../usage/index.js";
 import { gitText } from "../workspace/git.js";
 import type { PreparedWorkspace, WorkspaceManager } from "../workspace/index.js";
 import { requestHash } from "./request.js";
@@ -769,6 +770,14 @@ export class RunLifecycle {
     this.ledger.immediate(() => {
       this.opts.workspace.releaseLease(runId);
       const run = this.current(runId);
+      // FR-CAP-01 (T2.5): provider-reported usage is stored in the terminal transaction; nothing when none was reported.
+      for (const obs of usageObservationsFromEvents(out.events, {
+        runId,
+        provider: run.provider ?? "unknown",
+        model: run.model,
+      })) {
+        this.ledger.insertUsageObservation(obs);
+      }
       if (outcome.kind === "success") this.move(run, "SUCCEEDED", { finished_at: finished }, payload);
       else if (outcome.kind === "cancelled") {
         this.move(run, "CANCELLED", { finished_at: finished }, { ...payload, code: "CANCELLED" });
