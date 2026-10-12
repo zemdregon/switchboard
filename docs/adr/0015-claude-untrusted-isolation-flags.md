@@ -1,4 +1,4 @@
-# ADR-0013: Claude untrusted profiles use safe-mode isolation flags, not `--bare`
+# ADR-0015: Claude untrusted profiles use safe-mode isolation flags, not `--bare`
 
 - Status: Accepted
 - Date: 2026-10-12

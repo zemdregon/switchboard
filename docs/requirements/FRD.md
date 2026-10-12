@@ -3,7 +3,7 @@
 | Field | Value |
 | --- | --- |
 | Status | Draft, baseline for milestone M1 |
-| Owns | Workflows WF-1..WF-9, business rules BR-*, actor permissions, the canonical run state machine, meta-session and adapter availability states, input validation rules, normal/alternate/failure paths |
+| Owns | Workflows WF-1..WF-12, business rules BR-*, actor permissions, the canonical run state machine, meta-session and adapter availability states, input validation rules, normal/alternate/failure paths |
 | Does not own | Requirements and their IDs ([SRS](SRS.md)); outcomes ([BRD](BRD.md)); journeys and capabilities ([PRD](PRD.md)); components ([HLD](../design/HLD.md)); persistence and the failure taxonomy table ([LLD](../design/LLD.md)); sequencing ([ROADMAP](../ROADMAP.md)) |
 | Last reconciled | 2026-10-12 |
 
@@ -27,7 +27,7 @@ planning and are marked "(planning)". Actors are defined in §2.
 | Operator | The single human who installs, logs in natively, and configures policy ([ADR-0011](../adr/0011-single-operator-local-deployment.md)) | Operator CLI (COMP-OPS) | Local OS user running the CLI |
 | Orchestrator | Upstream agent (OpenClaw, Grok Bot) acting as MCP client | MCP over stdio (COMP-MCP) | Configured MCP client entry carrying a maximum trust profile (FR-MCP-06) |
 | Controller | The Switchboard process and its components | Internal | n/a |
-| Provider CLI | Subprocess driven by an adapter | Subprocess/ACP | Not trusted; confined by the run's trust profile |
+| Provider CLI (the agent) | Subprocess driven by an adapter | Subprocess/ACP; the injected `commit` and `push` tools (WF-11, WF-12) | Not trusted; confined by the run's trust profile; has no Git write ability of its own (FR-GIT-01) |
 
 ### 2.1 Permission matrix
 
@@ -43,7 +43,11 @@ planning and are marked "(planning)". Actors are defined in §2.
 | Accept a new provider CLI version | Yes (`adapters validate`) | No | Records `adapter_version` | FR-OPS-02, FR-ADP-03 |
 | Change policy, allowed roots, client max profile, weights | Yes (config) | No | Snapshots config into each run | FR-POL-01, FR-POL-10 |
 | Log in to a provider | Yes, natively, outside Switchboard | No | Never | FR-AUTH-01, FR-OPS-03 |
-| Push to remotes, touch the operator's checked-out branch | Yes (by hand) | No | Never | FR-WS-05 |
+| Touch the operator's checked-out branch | Yes (by hand) | No | Never | FR-WS-05 |
+| Create commits | Yes (by hand, in their own checkout) | No | Executes the agent's `commit` tool call, within policy (WF-11) | FR-GIT-01, 02, 04 |
+| Push to remotes | Yes (by hand, or an operator command) | No | Executes the agent's `push` tool call only if the context's push policy allows it (WF-12) | FR-GIT-05, FR-WS-05 |
+| Define or change projects, contexts, environments, push policy, commit identity | Yes (config) | Only dynamic projects, only if its client entry sets `manage_projects`, within the client's limits (BR-32); never configured projects | Snapshots into each run | FR-PRJ-01, 02, 03, 06, 10 |
+| Approve a dynamic project that needs it (`container`, push policy other than `none`, any widening) | Yes (`projects approve`) | No, never through MCP | Records timestamp and revision | FR-PRJ-10 |
 | Emit permission-bypass flags | Only by approving a `privileged` run | No | Only under recorded approval | FR-POL-03 |
 
 Rules on the matrix: a caller's maximum trust profile is a ceiling per MCP client; a request above it ends with
@@ -67,7 +71,7 @@ Each rule elaborates the cited requirement and does not add to it.
 | BR-9 | **Queue on known reset.** If failover is impossible or not permitted and the provider's `reset_at` is known and within the configured horizon, the run waits in `WAITING_CAPACITY` and is re-dispatched after reset. Otherwise the run ends `FAILED` with `QUOTA_EXHAUSTED`. | FR-CAP-06, FR-CAP-02 | SRS. Horizon value is configuration (proposed target; set in M6). |
 | BR-10 | **Idempotency keys** (mismatch and per-client scope now in FR-MCP-08). For `delegate_task` only: the same key with identical canonical parameters returns the original run (any state, including terminal) and starts nothing. Parameter identity is a hash of the validated request after canonicalization (workspace path canonicalized, defaults filled). The same key with different parameters returns `INVALID_REQUEST` (planning). A call without a key always starts a new run. The key is scoped to the calling MCP client and kept at least as long as the run record. | FR-MCP-08 | Mismatch error, scoping and retention Proposed: SRS defines only the identical-parameter case; failing loudly on mismatch avoids returning an unrelated run. |
 | BR-11 | **Cancellation.** `cancel_run` is accepted in every non-terminal state and takes effect as in §4.3. Cancelling a terminal run is a no-op that returns the run's terminal state. Cancellation of a running process terminates its whole process group (graceful signal, then forced kill after the grace period). | FR-EXE-01, FR-MCP-01 | SRS for the group kill; no-op on terminal runs Proposed: idempotent cancel is simpler for retrying clients. |
-| BR-12 | **Worktree disposition** on each terminal state is defined in §4.4. The controller never pushes, never touches the operator's checked-out branch, and removes worktrees only through retention GC. | FR-WS-03, FR-WS-04, FR-WS-05, FR-WS-07 | SRS; keep-until-GC for every terminal state Proposed: evidence for BO-5 outweighs disk cost at single-operator scale. |
+| BR-12 | **Worktree disposition** on each terminal state is defined in §4.4. The controller never touches the operator's checked-out branch, never pushes run branches or checkpoint commits, pushes the publish ref only under BR-26, and removes worktrees only through retention GC. | FR-WS-03, FR-WS-04, FR-WS-05, FR-WS-07, FR-GIT-05, FR-GIT-08 | SRS; keep-until-GC for every terminal state Proposed: evidence for BO-5 outweighs disk cost at single-operator scale. |
 | BR-13 | **Trust ceiling.** The requested profile is compared with the calling client's maximum profile before any side effect. Above it: `PERMISSION_BLOCKED`. `privileged` is above every ceiling for MCP-only authority and always enters AWAITING_APPROVAL if the client ceiling allows requesting it. | FR-MCP-06, FR-POL-09 | SRS. Treating a `privileged` request as allowed-to-request only when the client's ceiling is `privileged` is Proposed; SRS says only that approval cannot come from MCP. **Milestone note (M2):** the `privileged` profile and the approval flow arrive in M3 (FR-POL-09). Until then the policy resolver does not resolve `privileged`, so an MCP request for it is `PERMISSION_BLOCKED` even when the client ceiling is `privileged`, and no run enters AWAITING_APPROVAL (`src/policy/policy.test.ts`, `src/mcp/mcp.test.ts`). |
 | BR-14 | **Privileged approval.** A `privileged` run does not dispatch until the operator approves that specific run through the CLI. The approval stores timestamp and scope; bypass flags (FR-POL-03) are emitted only for an approved run and only within the approved scope. | FR-POL-09, FR-POL-03 | SRS |
 | BR-15 | **Fail closed.** An unknown adapter state, unparseable provider output, or unrecognized policy value denies, marks the provider ineligible, or ends the run with an error; it never proceeds. | NFR-SEC-06, FR-ADP-04 | SRS |
@@ -78,6 +82,17 @@ Each rule elaborates the cited requirement and does not add to it.
 | BR-20 | **Version re-check at dispatch.** Every dispatch consults the preflight cache; the cache entry is invalidated by a changed binary version or TTL expiry, so a CLI updated after routing is caught at PREFLIGHT, not after spawn. | FR-ADP-03, NFR-PERF-02 | SRS |
 | BR-21 | **Result envelope.** Every tool result is a compact envelope; raw transcripts, credentials and environment values never appear in it or in events. | FR-MCP-04, FR-TEL-03, NFR-SEC-01 | SRS |
 | BR-22 | **`wait_seconds`.** If supplied, `delegate_task` blocks up to that bound and returns the current envelope, terminal or not; otherwise it returns immediately with `run_id` and `meta_session_id`. A timeout of the wait never cancels the run. | FR-MCP-03 | SRS; "does not cancel" Proposed: the SRS is silent on wait expiry. |
+| BR-23 | **Project resolution and ceiling.** A request names a project or a workspace path, never both and never neither. For a project, the workspace is the primary repository context's canonical path (still under an allowed root); the effective maximum profile is the lower of the client's ceiling (BR-13) and the project's; a project outside the client's allowed list is refused with `PERMISSION_BLOCKED` before any side effect, and a provider outside the project's allowed set is ineligible under BR-1. A meta-session keeps its project for life. | FR-PRJ-03, FR-PRJ-06, FR-POL-10 | SRS. Treating a provider outside the project's set as an eligibility reason (BR-3 mapping) rather than a permission error is Proposed: it keeps one rule for "cannot use this provider here". |
+| BR-24 | **Agents do not write to Git.** Under every write-capable profile the compiled controls deny Git write operations (BR-5 applies: an adapter that cannot declare how is flagged and relies on BR-27). The only route from agent work to a commit is the `commit` tool (BR-25) or, for an adapter in finalize-only mode, the controller's commit at FINALIZING (BR-30). | FR-GIT-01, FR-GIT-02, FR-GIT-09 | SRS |
+| BR-25 | **Commit tool semantics.** A `commit` call carries a message and optionally a list of paths. The controller checks that the run holds the lease and is RUNNING, builds the commit from the worktree's current content for those paths (all changes if none given), parents it on the publish ref's head (or the run's base commit for the first one), writes it with the context's identity and the sanitised message (BR-26), advances the publish ref, and returns the new SHA. Calls outside RUNNING, a path outside the worktree, an empty change set or a message that is empty after sanitising return a tool error to the agent and change nothing; they do not fail the run. | FR-GIT-02, FR-GIT-04, FR-GIT-08 | SRS for the tool and identity; the lease and state checks, the path-subset behaviour and "errors do not fail the run" are Proposed. |
+| BR-26 | **Sanitisation.** Before a message is written, the controller removes attribution trailers, "generated by"-style footers and controller, provider, run or session identifiers, using built-in patterns plus the operator's configured patterns, and then trims blank lines left behind. It adds nothing. The rules that fired are recorded by name and count in the provenance record, never the removed text. | FR-GIT-04, FR-GIT-07 | SRS. Pattern list contents Proposed (LLD §12.4). |
+| BR-27 | **Violations.** If the post-run check finds a commit, ref change or tag not made by the controller (FR-GIT-03), the run does not fail for that reason alone: the changes are kept as working-tree content in the evidence checkpoint, the offending commits are never published, a `git_policy_violation` event names what was found, and `runs show` flags it. If the agent also pushed, the controller cannot detect or undo it from here; prevention (BR-29) is the control. | FR-GIT-03, FR-GIT-06 | Proposed: not failing the run keeps legitimate work. SRS requires only keeping content, not publishing and reporting. |
+| BR-28 | **Provenance.** Every commit made through the commit tool, or through BR-30, gets an append-only provenance record in the same transaction as the event that created it. Records never go into the commit. | FR-GIT-07 | SRS |
+| BR-29 | **Push eligibility.** A push is accepted only if the context's policy is `branch`, the target ref is the publish ref pushed to the configured remote under the configured prefix, and the run's environment keeps push credentials out of the agent's reach (BR-31). It is never forced. Every attempt, accepted or refused, is a run event. With policy `none` (the default) the `push` tool is not offered. | FR-GIT-05, FR-GIT-06 | SRS |
+| BR-30 | **Finalize-only mode.** For an adapter that cannot receive the injected channel, and only if the operator enabled it for the context, FINALIZING makes one commit from the run's worktree changes with a message from the agent's structured final summary, under BR-26 and BR-28. Without the opt-in, such an adapter is ineligible for write-capable profiles on that context. | FR-GIT-09, FR-GIT-02 | FR-GIT-09 is Should; ineligible-without-opt-in is Proposed. |
+| BR-31 | **Credential reach.** A context with push policy `branch` is eligible for a run only if the agent cannot run commands that could read the push credentials: a `container` environment with none mounted, or a profile without arbitrary shell, or an adapter whose manifest declares credential confinement (FR-POL-06). Otherwise the `push` tool is withheld and the reason is recorded. | FR-GIT-06, FR-POL-06 | SRS |
+| BR-32 | **Orchestrator-managed projects.** `create_project`, `update_project` and `delete_project` are offered only to a client whose entry sets `manage_projects`. They touch dynamic projects only (an ID that collides with a configured project is refused). A revision is validated like configuration (V12 rules, FR-PRJ-02); its repository path must lie under an allowed root; its trust ceiling and providers may not exceed the client's; its push policy may not exceed the client's `max_push_policy`. A revision with a `container` environment, a push policy other than `none`, or any widening of an approved revision is stored as `pending_approval` and cannot start runs until the operator approves it with `projects approve`. A project is visible to, and usable by, the creating client only. Deletion with a non-terminal run is refused. Refusals are `PERMISSION_BLOCKED` (not allowed) or `INVALID_REQUEST` (malformed); every call is an event. | FR-PRJ-10, FR-MCP-06, FR-POL-10 | Delegated: gating limits, pending-approval state and creator-only visibility are Proposed. zemdregon answered only "yes" (Q-7). |
+| BR-33 | **Signing.** If a context sets `sign: true`, each published commit is signed by the controller using the operator's existing Git signing setup. A signing failure returns a tool error and creates no commit; nothing is committed unsigned as a fallback. Signing is refused where BR-31 would withhold `push`. | FR-GIT-10, FR-GIT-06 | Delegated mechanism; zemdregon asked for signing as part of Q-9 ("yes"). |
 
 ## 4. Canonical run state machine
 
@@ -175,6 +190,16 @@ predecessors are unaffected (BR-11, BR-17).
 Garbage collection deletes artifacts, worktrees and controller branches together (NFR-DATA-01). The operator's
 checked-out branch and working tree are never modified (FR-WS-05).
 
+### 4.5 Git actions inside the run lifecycle
+
+*Proposed placement; the state machine above is unchanged.* Commit and push tool calls (WF-11, WF-12) happen only while
+the run is RUNNING and are recorded as `run_event` rows, not state changes. FINALIZING gains two steps ahead of the
+existing post-run checkpoint (T15 to T17): (1) compare the repository's refs and the run branch with the snapshot taken
+at LEASED, and handle anything the controller did not create under BR-27; (2) for an adapter in finalize-only mode,
+make the controller's commit (BR-30). The post-run checkpoint on the internal run branch is unchanged and is never
+published (FR-GIT-08). A cancelled or failed run keeps any commits already made through the tool on the publish ref;
+publication is not rolled back by a later failure, but a push needs a separate accepted call (BR-29).
+
 ## 5. Meta-session lifecycle
 
 *Proposed.* The SRS defines meta-sessions (FR-SES-01..05) but not lifecycle states; these three are a planning choice.
@@ -226,7 +251,7 @@ FR-MCP-09).
 | --- | --- | --- | --- | --- |
 | V1 | Whole request | Validates against the published JSON Schema; unknown fields rejected (**Proposed**, fail closed) | `INVALID_REQUEST` (planning) | FR-MCP-09, NFR-SEC-05, NFR-SEC-06 |
 | V2 | `objective` | Non-empty string, length bounded by config (value (proposed target)) | `INVALID_REQUEST` | FR-MCP-03, FR-MCP-09 |
-| V3 | `workspace` | Absolute path; symlinks resolved; result lies under an operator-configured allowed root | `INVALID_REQUEST` | FR-POL-10 |
+| V3 | `workspace` | Absolute path; symlinks resolved; result lies under an operator-configured allowed root. Exactly one of `workspace` and `project` is present (V12) | `INVALID_REQUEST` | FR-POL-10, FR-PRJ-03 |
 | V4 | `workspace` and `trust_profile` | Write-capable profile requires a Git repository; `inspect-untrusted` may use a non-Git directory | `INVALID_REQUEST` | FR-WS-06 |
 | V5 | `trust_profile` | One of the five profiles; not above the calling client's ceiling | `INVALID_REQUEST` if unknown name; `PERMISSION_BLOCKED` if above ceiling | FR-MCP-06, FR-POL-01 |
 | V6 | `constraints` | Schema-defined structure; cannot loosen the profile's defaults | `INVALID_REQUEST` (or `PERMISSION_BLOCKED` for loosening) | FR-POL-01 |
@@ -235,13 +260,14 @@ FR-MCP-09).
 | V9 | `wait_seconds` | Integer in `[0, configured max]` | `INVALID_REQUEST` | FR-MCP-03 |
 | V10 | `idempotency_key` | Bounded-length string; replay rules per BR-10 | `INVALID_REQUEST` on mismatch | FR-MCP-08 |
 | V11 | Routing | At least one provider passes BR-1 (or the required one does) | per BR-3 / `ELIGIBILITY_NONE` | FR-RTE-01, FR-MCP-05 |
+| V12 | `project` | Names a project in configuration that the calling client may use; mutually exclusive with `workspace`; the project's repository context resolves under an allowed root and its base ref exists | `INVALID_REQUEST` if unknown or malformed; `PERMISSION_BLOCKED` if not in the client's list or the profile exceeds the project's ceiling (BR-23) | FR-PRJ-03, FR-PRJ-06 |
 
 ### 7.2 `continue_task`
 
 | # | Rule | Failure code | FR |
 | --- | --- | --- | --- |
 | C1 | Schema validation as V1 | `INVALID_REQUEST` | FR-MCP-09 |
-| C2 | `meta_session_id` exists and is IDLE (not ACTIVE or CLOSED) | `INVALID_REQUEST` | FR-SES-01, BR-17 |
+| C2 | `meta_session_id` exists and is IDLE (not ACTIVE or CLOSED); a project cannot be changed on continue | `INVALID_REQUEST` | FR-SES-01, BR-17, FR-PRJ-03 |
 | C3 | Workspace is taken from the meta-session, then re-checked against current allowed roots (config may have changed) | `INVALID_REQUEST` | FR-POL-10 |
 | C4 | Trust profile defaults to the session's profile; a higher profile is checked against the ceiling as V5 | `PERMISSION_BLOCKED` | FR-MCP-06 |
 | C5 | Provider hints as V8; BR-18 selects native resume vs handoff | per BR-2/BR-3 | FR-SES-03, FR-SES-04, FR-MCP-05 |
@@ -249,7 +275,11 @@ FR-MCP-09).
 
 ### 7.3 Other tools
 
-`get_run`, `get_artifacts`, `cancel_run`, `explain_route` and `get_capacity` validate IDs against the schema (V1) and an
+`list_projects` takes no arguments and returns only the projects the calling client may use (FR-PRJ-03).
+`create_project`, `update_project` and `delete_project` (M9, FR-PRJ-10) validate against the project schema and BR-32; an
+unknown project ID returns `INVALID_REQUEST`. The injected
+`commit` and `push` tools are validated by their own rules (BR-25, BR-29), not by §7.1. `get_run`, `get_artifacts`,
+`cancel_run`, `explain_route` and `get_capacity` validate IDs against the schema (V1) and an
 unknown ID returns `INVALID_REQUEST` (**Proposed**; no "not found" code exists in the taxonomy; SRS silent).
 
 ## 8. Workflows
@@ -465,10 +495,11 @@ sequenceDiagram
 | PREFLIGHT, LEASED (no process spawned) | Release any lease; discard empty worktree | Back to QUEUED, recorded as rule T20 with cause `controller_restart` (**Proposed**: preflight and lease are repeatable without side effects). A LEASED run whose pre checkpoint already exists is not requeued (a second `pre` row would be appended); it ends FAILED `PROCESS_CRASH` through T10 |
 | RUNNING | Process group dead → FAILED `PROCESS_CRASH`, cause `controller_restart`; compare worktree with pre-run checkpoint | Unchanged: eligible for automatic retry (BR-7). Changed: evidence checkpoint, head rolled back, no retry (FR-WS-04) |
 | VERIFYING | Same as RUNNING (verification may have side effects, so it is not re-run) | FAILED `PROCESS_CRASH`, cause `controller_restart`; changes preserved as evidence |
-| FINALIZING | Redo finalization from worktree state (checkpoint creation is repeatable) | The pending outcome is applied; terminal |
+| FINALIZING | Redo finalization from worktree state (checkpoint creation is repeatable); the ref comparison (§4.5) and any finalize-only commit are repeatable, and a commit already recorded in the provenance table is not made twice | The pending outcome is applied; terminal |
 
 - **Alternate paths:** a process group still alive after restart is terminated before the worktree is assessed, because
-  the new controller cannot reattach to its streams (FR-EXE-06). Stale leases are released. An interrupted ledger
+  the new controller cannot reattach to its streams (FR-EXE-06). Containers left by the previous controller are found
+  and removed first (FR-PRJ-07, M10). Stale leases are released. An interrupted ledger
   transaction is rolled back by SQLite, leaving the last committed state.
 - **Failure paths:** worktree missing or unreadable → run FAILED `TOOL_FAILURE`, meta-session left IDLE; ledger cannot
   be opened → controller refuses to serve (NFR-SEC-06).
@@ -493,6 +524,66 @@ sequenceDiagram
 - **Postconditions:** acceptance is an auditable record of the version, time and suite result; routing never used the
   unverified version.
 
+### WF-10 Delegate to a project
+
+- **Actors:** Orchestrator, Operator (defines the project), COMP-MCP, COMP-POL, COMP-PRJ, COMP-WS, COMP-EXE.
+- **Preconditions:** The project is defined in configuration and `projects validate` passes; the calling client's entry
+  lists it; at least one allowed provider is READY.
+- **Realizes:** FR-PRJ-01 to 04, FR-PRJ-06, 08; FR-MCP-06; FR-POL-10; FR-WS-01; UJ-8.
+- **Normal path:** `list_projects` → `delegate_task` with `project` → V12 and the ceiling check (BR-23) → as WF-1, except
+  that COMP-PRJ supplies the repository context's path and base ref to COMP-WS and the environment to COMP-EXE. For
+  `host`, nothing changes in execution. For `container` (M10), COMP-PRJ creates and starts the container with only the
+  run worktree and declared read-only contexts mounted, COMP-EXE spawns the provider process inside it, and the
+  container is removed when the run ends. The run's policy snapshot records the project, environment kind and image
+  digest.
+- **Alternate paths:** a client with `manage_projects` calls `create_project` first (BR-32), and for a `pending_approval`
+  revision the operator runs `projects approve` before the first run; the request is `continue_task` on a meta-session
+  (the project is fixed, BR-23); the project is
+  removed from configuration between runs (history stays, new runs for it are refused, FR-PRJ-09).
+- **Failure paths:** project revision `pending_approval` → `PERMISSION_BLOCKED` with detail `approval_required`;
+  unknown project or both/neither of project and workspace → `INVALID_REQUEST`; project not in the
+  client's list or profile above the project's ceiling → `PERMISSION_BLOCKED`; environment cannot start (runtime
+  missing, image absent) → the run ends `FAILED` with `TOOL_FAILURE` at LEASED (Proposed: no new code), and the
+  worktree is retained unchanged.
+- **Postconditions:** as WF-1; the run and meta-session name the project; the environment lifecycle is in `run_event`
+  rows (FR-PRJ-07).
+
+### WF-11 Commit through the injected tool
+
+- **Actors:** Agent, injected `commit` tool, COMP-GIT, COMP-WS, COMP-LED, COMP-TEL.
+- **Preconditions:** The run is RUNNING and holds the lease; the adapter received the injected channel (otherwise WF-11
+  does not occur and BR-30 applies at FINALIZING); the context has a commit identity.
+- **Realizes:** FR-GIT-01 to 04, 07, 08; UJ-9; BO-7.
+- **Normal path:** the agent calls `commit(message, paths?)` → COMP-GIT validates (BR-25) → computes the tree from the
+  worktree for the requested paths → sanitises the message (BR-26) → writes the commit with the context identity, parented
+  on the publish ref → advances the publish ref → appends a provenance record and a `git_commit` run event in one
+  transaction (BR-28) → returns the SHA to the agent.
+- **Alternate paths:** (a) the agent tries to commit by itself: the profile's deny rules refuse it where the provider
+  honours them; if one gets through, FINALIZING finds it (BR-27). (b) The message is empty after sanitising: tool error,
+  no commit. (c) Several calls in one run produce a linear chain on the publish ref.
+- **Failure paths:** not RUNNING, lease lost, path outside the worktree, nothing changed → tool error to the agent, run
+  unaffected. A Git error inside the controller → tool error plus a `run_event`; it does not fail the run.
+- **Postconditions:** the commit has the configured identity and no marker; the provenance record names project, context,
+  meta-session, run, provider, model, adapter version, tool-call event and sanitiser report; the internal run branch and
+  its checkpoints are untouched.
+
+### WF-12 Publish (push)
+
+- **Actors:** Agent (via the `push` tool) or Operator (via an operator command), COMP-GIT, COMP-POL, COMP-LED.
+- **Preconditions:** The context's push policy is `branch`; the publish ref has at least one commit; BR-31 is satisfied.
+- **Realizes:** FR-GIT-05, 06, 08; FR-WS-05; UJ-9.
+- **Normal path:** `push()` → COMP-POL checks BR-29 and BR-31 → COMP-GIT pushes the publish ref to the configured remote
+  under the configured prefix using the operator's existing Git configuration, from the controller process, never the
+  agent's → the result (accepted, rejected by the remote) is appended as a `git_push` run event and recorded on each
+  provenance record pushed.
+- **Alternate paths:** policy `none` → the `push` tool is not offered, and an operator command is refused with a message
+  naming the policy; remote unreachable → tool error, nothing recorded as pushed.
+- **Failure paths:** target would be the default or checked-out branch, a run branch, a tag or a force → refused before
+  any Git call; credentials needed but unavailable → tool error naming the missing operator configuration (never asking
+  for or reading a credential).
+- **Postconditions:** only the publish ref (commits created by WF-11 or BR-30) can have reached the remote; checkpoint
+  commits and run branches never do (FR-GIT-08).
+
 ## 9. Traceability summary
 
 | Workflow | User journey | Capabilities | Primary requirements |
@@ -506,9 +597,12 @@ sequenceDiagram
 | WF-7 | UJ-6 | CAP-3, 9 | FR-POL-09, FR-OPS-02 |
 | WF-8 | (reliability) | CAP-1, 8 | FR-EXE-06, NFR-REL-01 |
 | WF-9 | UJ-7 | CAP-2, 9 | FR-ADP-03, FR-OPS-02 |
+| WF-10 | UJ-8 | CAP-10, 1, 3, 4 | FR-PRJ-01..04, FR-PRJ-06, FR-PRJ-08 |
+| WF-11 | UJ-9 | CAP-11, 8 | FR-GIT-01..04, FR-GIT-07, FR-GIT-08 |
+| WF-12 | UJ-9 | CAP-11 | FR-GIT-05, FR-GIT-06, FR-WS-05 |
 
 Milestone availability follows the SRS milestone column (for example WF-7 from M3, WF-5 automatic retry and failover
-from M6, WF-3 from M5, WF-9 `adapters validate` from M4); see [ROADMAP](../ROADMAP.md#6-milestones).
+from M6, WF-3 from M5, WF-9 `adapters validate` from M4, WF-10 to WF-12 from M9 with containers in M10); see [ROADMAP](../ROADMAP.md#6-milestones).
 
 ## 10. Open items in this document
 

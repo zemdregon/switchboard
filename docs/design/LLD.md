@@ -229,6 +229,69 @@ and startup reconciliation apply pending requests. No table was added because `r
 transactional with state changes, the CLI works with no daemon, and a pending request is just a request event without a
 matching applied or rejected event. This is Delegated, not owner-approved; it stays inside ADR-0005 (no new store).
 
+**M9 additions (Proposed).** Project definitions live in the configuration file (operator) or in the ledger (projects an
+orchestrator created, FR-PRJ-10) and are snapshotted into `run.policy_snapshot_json`; the ledger adds the project ID, one
+append-only provenance table and one append-only project-revision table, in a forward migration (ADR-0005). `git_commit`
+and `project_revision` join the append-only list above.
+
+```sql
+ALTER TABLE meta_session ADD COLUMN project_id TEXT;      -- NULL for runs delegated by workspace path (FR-PRJ-03)
+ALTER TABLE run          ADD COLUMN project_id TEXT;
+
+CREATE TABLE git_commit (               -- append-only provenance (FR-GIT-07); the commit itself carries none of this
+  id              TEXT PRIMARY KEY,                       -- prefix gcm_ (Proposed)
+  commit_sha      TEXT NOT NULL,
+  tree_sha        TEXT NOT NULL,
+  patch_id        TEXT,                                   -- git patch-id of the commit; best-effort re-linking after rebase
+  repo_root       TEXT NOT NULL,                          -- canonical context path
+  publish_ref     TEXT NOT NULL,
+  project_id      TEXT NOT NULL,
+  context_id      TEXT NOT NULL,
+  meta_session_id TEXT NOT NULL REFERENCES meta_session(id),
+  run_id          TEXT NOT NULL REFERENCES run(id),
+  provider        TEXT NOT NULL,
+  harness         TEXT NOT NULL,
+  model           TEXT,
+  adapter_version_id TEXT REFERENCES adapter_version(id),
+  origin          TEXT NOT NULL CHECK (origin IN ('commit_tool','finalize_only')),
+  tool_event_id   TEXT REFERENCES run_event(id),          -- the git_commit run event
+  sanitizer_json  TEXT NOT NULL CHECK (json_valid(sanitizer_json)),   -- rule ids and counts only, never removed text
+  created_at      TEXT NOT NULL
+) STRICT;
+CREATE INDEX git_commit_sha ON git_commit(commit_sha);
+CREATE INDEX git_commit_run ON git_commit(run_id);
+
+CREATE TABLE project_revision (         -- append-only; projects created over MCP (FR-PRJ-10). Current = highest revision
+  id             TEXT PRIMARY KEY,                       -- prefix prv_ (Proposed)
+  project_id     TEXT NOT NULL,                          -- never equal to a configured project ID
+  revision       INTEGER NOT NULL,
+  client_id      TEXT NOT NULL,                          -- creating MCP client; only it (and the operator) sees the project
+  definition_json TEXT NOT NULL CHECK (json_valid(definition_json)),   -- same schema as a configured project (§11.1)
+  status         TEXT NOT NULL CHECK (status IN ('ACTIVE','PENDING_APPROVAL','DELETED')),
+  approved_at    TEXT,                                   -- set by `projects approve`; NULL while PENDING_APPROVAL
+  created_at     TEXT NOT NULL,
+  UNIQUE (project_id, revision)
+) STRICT;
+
+CREATE TABLE git_push (                 -- append-only; one row per accepted or refused push (FR-GIT-05)
+  id            TEXT PRIMARY KEY,
+  run_id        TEXT REFERENCES run(id),                  -- NULL for an operator-initiated push
+  project_id    TEXT NOT NULL,
+  context_id    TEXT NOT NULL,
+  remote        TEXT NOT NULL,                            -- configured remote name, never a URL with credentials
+  ref           TEXT NOT NULL,
+  head_sha      TEXT NOT NULL,
+  outcome       TEXT NOT NULL CHECK (outcome IN ('ACCEPTED','REFUSED_POLICY','REJECTED_REMOTE','ERROR')),
+  detail        TEXT,                                     -- short, redacted
+  requested_by  TEXT NOT NULL CHECK (requested_by IN ('agent_tool','operator')),
+  created_at    TEXT NOT NULL
+) STRICT;
+```
+
+New `run_event.type` values (M9): `environment` (create, start, stop, remove; M10), `git_commit`, `git_push`,
+`git_policy_violation`, `git_tool_denied`. Payloads are bounded and hold no message text, only counts, SHAs and rule IDs.
+Both new tables get the same `BEFORE UPDATE`/`DELETE` guards as the other append-only tables.
+
 ## 2. Adapter contract
 
 Satisfies FR-ADP-01 (probe, auth preflight, compile, parse, resume, cancel). Adapters are pure with respect to I/O
@@ -347,6 +410,26 @@ bundles `{events, exit, stderrTail (bounded), timedOut, cancelled}`. A central b
 `Invocation.policyFlags` and `argv` before spawn (FR-POL-03). Per-adapter parsing specifics: to be detailed in M2
 (Claude) and M4 (others).
 
+**M9 additions to the adapter contract (Proposed).** Each adapter also declares how it meets FR-GIT-01 and FR-GIT-02:
+
+```ts
+export interface GitCapabilities {
+  /** FR-GIT-01: how Git write operations are denied under write-capable profiles. */
+  gitWrites: 'denied-by-provider-rules' | 'no-shell-profiles-only' | 'undeclared';   // 'undeclared' => FR-GIT-03/06 only
+  /** FR-GIT-02: can the per-run injected tool channel be supplied without a bypass flag (FR-POL-03)? */
+  commitChannel: 'injected' | 'finalize-only' | 'none';
+  /** Pure: the MCP definition for the shim, in the provider's own per-run form; never written to global config (FR-POL-08). */
+  channelArgs?(shim: ShimSpec, request: CompileRequest, profile: ResolvedProfile): Pick<Invocation, 'argv' | 'env'> | Ineligible;
+}
+export interface ShimSpec { command: string[]; socketPath: string; toolNames: ('commit' | 'push')[]; }
+```
+
+`compile` appends the deny rules and, for `commitChannel: 'injected'`, the `channelArgs` result. An adapter with
+`commitChannel: 'none'` is ineligible for write-capable profiles on a context unless the operator opts in to
+finalize-only mode (BR-30). The bypass-flag audit (FR-POL-03) treats any flag whose only purpose is approving the
+injected server as a bypass flag. Which providers fall in which category is **to be verified** per adapter
+([TDD §3.10](TDD.md#310-git-commits-attribution-and-publication)).
+
 ## 3. MCP tool contracts
 
 Schemas are published JSON Schema (draft 2020-12; version choice Proposed) validated with Ajv before any side effect
@@ -435,6 +518,25 @@ preflight (NFR-PERF-02).
 null unless provider-reported. To be detailed in M6.
 **`explain_route`** (M7) `{ run_id }` returns candidates, eligibility reasons, features, weights, scores from
 `route_decision`, no model reasoning. To be detailed in M7.
+
+**Project additions (M9, Proposed).** `delegate_task` gains an optional `project` (string, a configured project ID) and
+`workspace_path` becomes optional; exactly one of the two must be present (FRD V12, FR-PRJ-03). `continue_task` takes no
+project (it is fixed by the meta-session). The envelope gains `project_id` and, for runs that produced commits,
+`commits: [{ "sha": string, "pushed": boolean }]`; it never contains messages or provenance detail (FR-MCP-04). New
+read-only tool:
+
+**`list_projects`** `{}` returns `{ projects: [{ id, name, environment_kind, contexts: [{ id, kind, push_policy }],
+max_trust_profile?, allowed_providers? }] }` for the projects the calling client may use. It never returns paths outside
+the allowed roots, credentials, remote URLs or image references beyond the digest (Proposed). For a client with
+`manage_projects` (FR-PRJ-10, BR-32) three more tools exist; none is offered otherwise:
+
+**`create_project`** `{ project: <§11.1 project object without paths outside allowed roots> }` returns
+`{ id, revision, status: "ACTIVE" | "PENDING_APPROVAL", approval_needed?: string[] }`.
+**`update_project`** `{ id, project }` writes a new revision under the same rules; a revision that widens the ceiling,
+providers or push policy, or switches to `container`, is `PENDING_APPROVAL` and the previous approved revision stays in
+force until the operator approves. **`delete_project`** `{ id }` marks the project `DELETED` unless a non-terminal run
+uses it (`INVALID_REQUEST`). All three act only on projects created by the calling client; a configured project, or another
+client's, returns `PERMISSION_BLOCKED`. Names and shapes are Proposed.
 
 **Error envelope** (FR-MCP-07). Delivered as an MCP tool result with `isError: true`:
 
@@ -548,14 +650,19 @@ meta-session head back to the pre-run checkpoint; it does not run `git reset --h
 `WorkspaceManager.rollback` exists in `src/workspace/` but the lifecycle follows FRD §4.4. The reset-based wording above
 is superseded for the lifecycle path.
 
-**Push and operator tree.** No `git push`, no remotes touched, no writes to the operator's working tree or checked-out
-branch; the result is the branch plus diff artifact (FR-WS-05).
+**Push and operator tree.** The workspace manager never runs `git push`, touches no remote and writes nothing to the
+operator's working tree or checked-out branch; the result is the run branch plus diff artifact (FR-WS-05). Publication
+is a separate, policy-gated path owned by COMP-GIT ([§12](#12-injected-git-tools-commits-and-publication)). Checkpoint
+commits here carry the controller identity and the run ID in their message, which is acceptable only because they are
+internal: they are never pushed and never part of the publish ref (FR-GIT-08). *As built in M1* the checkpoints are
+made on the run branch `switchboard/<sess>/<run>` with the identity in `src/workspace/git.ts`; M9 must not change
+that, only add the publish ref beside it.
 
 **GC (FR-WS-07, NFR-DATA-01, M3; to be detailed in M3).** Retention job deletes, per expired terminal run, in one
-logical unit: worktree directory (`git worktree remove --force`, then `git worktree prune`), controller branch, artifact
-files (set `deleted_at`). Never touches branches outside `switchboard/`. Orphan sweep: worktree directories or
-`switchboard/*` branches with no matching `run` row are reported by `doctor` and removed only by GC after the retention
-period.
+logical unit: worktree directory (`git worktree remove --force`, then `git worktree prune`), controller branch,
+artifact files (set `deleted_at`). Never touches branches outside `switchboard/`. From M9 the publish refs (§12.3) are
+collected with the rest of their meta-session. Orphan sweep: worktree directories or `switchboard/*` branches with no
+matching `run` row are reported by `doctor` and removed only by GC after the retention period.
 
 **Crash safety.** Order is intent row, then Git action, then outcome row. On startup reconciliation (WF-8) a run in
 `LEASED`/`RUNNING` with a worktree but no outcome is assessed by the mutation check; a lease row is cleared only after
@@ -724,3 +831,192 @@ M6.
   state and writes an event once.
 - **Retention and migrations** interact with ordering only through `schema_migrations`; migrations run before any run
   processing starts (TDD §6).
+
+## 11. Projects, contexts and environments
+
+Implements FR-PRJ-01..10 and [ADR-0013](../adr/0013-projects-environments-and-contexts.md). **Proposed** shapes; M9
+(`host`) and M10 (`container`).
+
+### 11.1 Configuration shape
+
+Part of the config schema ([TDD §3.1](TDD.md#31-configuration)); validated with Ajv at startup; an unknown key or
+context kind aborts startup (NFR-SEC-06).
+
+```jsonc
+{ "projects": [ {
+    "id": "web-app",                                   // ^[a-z][a-z0-9-]{1,40}$
+    "name": "Web application",
+    "environment": { "kind": "host" },                 // or { "kind": "container", "image_digest": "sha256:...", "limits": { "cpus": 2, "memory_mb": 4096, "disk_mb": 8192 } }
+    "max_trust_profile": "edit-untrusted",             // optional; lowers the ceiling (FR-PRJ-06)
+    "allowed_providers": ["claude", "codex"],          // optional
+    "contexts": [ {
+        "id": "main", "kind": "repository",            // only kind in this design; others fail validation
+        "path": "/home/op/src/web-app",                // canonicalized, under allowed_roots (FR-POL-10)
+        "base_ref": "main",
+        "primary": true,                               // exactly one primary context; its worktree is the agent's cwd
+        "writable": true,                              // non-primary contexts are read-only mounts (Proposed)
+        "push": { "policy": "none" },                  // or { "policy": "branch", "remote": "origin", "branch_prefix": "switchboard/" }
+        "identity": { "name": "Operator Name", "email": "operator@example.com" },
+        "sign": false                                  // true: controller signs published commits (FR-GIT-10, §12.3.1)
+    } ] } ],
+  "mcp_clients": [ { "id": "openclaw", "max_trust_profile": "edit-untrusted", "projects": ["web-app"],
+                     "manage_projects": false,           // default; true offers create/update/delete_project (FR-PRJ-10)
+                     "max_push_policy": "none" } ] }     // widest push policy a dynamic project of this client may use
+```
+
+Only the primary context is writable in this design; additional writable contexts (multi-repository changes) are deferred
+(ROADMAP §8). A context with `push.policy` other than `none` must have an `identity`.
+
+### 11.2 Resolution and ceilings
+
+At admission (FRD BR-23): (1) resolve `project` to its definition, else `INVALID_REQUEST`; (2) check the client's project
+list, else `PERMISSION_BLOCKED`; (3) effective ceiling = the lower of the client's and the project's `max_trust_profile`
+on the order `inspect-untrusted` < `edit-untrusted` < `test-sandboxed` < `trusted-development` < `privileged`, and a
+request above it is `PERMISSION_BLOCKED`; (4) remove providers outside `allowed_providers` from the candidate set;
+(5) canonicalize the primary context's path against the allowed roots again (config may have changed); (5a) for a
+dynamic project use the highest `ACTIVE` revision with `approved_at` set where approval was required, else
+`PERMISSION_BLOCKED` with `approval_required`; (6) freeze the
+resolved project, environment (kind, image digest, limits), push policy and identity into `policy_snapshot_json`.
+
+A project created by an orchestrator uses the same shape and is validated by the same code. Its `identity` must be copied
+from a configured value the operator named in the client entry (`identities` list), so an orchestrator cannot invent an
+author (Proposed); the repository `path` must already exist under an allowed root. Approval is `projects approve <id>
+[--revision n]`, an operator CLI command that writes `approved_at`; it has no MCP counterpart (FRD BR-32).
+
+### 11.3 Environment port
+
+COMP-EXE reaches the provider process through one port, so `host` and `container` share the supervisor logic:
+
+```ts
+export interface Environment {
+  readonly kind: 'host' | 'container';
+  /** host: returns the invocation unchanged. container: wraps it so the process runs inside the container. */
+  prepare(run: RunContext, invocation: Invocation): Promise<PreparedInvocation>;   // creates the container (M10)
+  /** Always called, on every terminal path; idempotent. */
+  teardown(run: RunContext): Promise<void>;
+  /** Startup reconciliation: containers carrying switchboard labels with no matching live run (FR-PRJ-07). */
+  sweepOrphans(knownRunIds: ReadonlySet<string>): Promise<{ removed: string[] }>;
+}
+```
+
+`host` is the identity implementation and keeps today's behaviour. A `container` implementation must not mount more than
+FR-PRJ-05 allows, label every container `switchboard.run` and `switchboard.project`, and record `environment` run events.
+Container details: [TDD §3.11](TDD.md#311-container-environments).
+
+## 12. Injected Git tools, commits and publication
+
+Implements FR-GIT-01..09 and [ADR-0014](../adr/0014-tool-only-commits-and-publication.md). **Proposed** mechanisms; zemdregon
+decided that agents have no commit or push ability and that tools injected by Switchboard do both. Layers and
+per-provider unknowns: [TDD §3.10](TDD.md#310-git-commits-attribution-and-publication).
+
+### 12.1 Tool contracts
+
+Served by the shim to the agent as MCP tools; every object has `additionalProperties: false`.
+
+```jsonc
+// commit  (always offered under write-capable profiles when the adapter's commitChannel is "injected")
+{ "input": { "type": "object", "required": ["message"], "properties": {
+    "message": { "type": "string", "minLength": 1, "maxLength": 8192 },
+    "paths":   { "type": "array", "items": { "type": "string" }, "maxItems": 256 } } },     // worktree-relative; default: all changes
+  "output": { "sha": "string", "files_changed": "integer" } }
+
+// push  (offered only when the context policy is "branch" and BR-31 holds)
+{ "input": { "type": "object", "properties": {} },        // no arguments: the ref, remote and prefix come from configuration
+  "output": { "pushed": "boolean", "ref": "string", "head_sha": "string" } }
+```
+
+`push` takes no arguments on purpose, so an injected agent cannot choose a ref. Tool errors use short codes
+(`NOT_RUNNING`, `LEASE_LOST`, `PATH_OUTSIDE_WORKTREE`, `NOTHING_TO_COMMIT`, `MESSAGE_EMPTY_AFTER_SANITISING`,
+`PUSH_NOT_ALLOWED`, `CREDENTIALS_UNAVAILABLE`, `REMOTE_REJECTED`, `SIGNING_FAILED`) and are `git_tool_denied` or
+`git_push` events. They are
+returned to the agent and do not fail the run.
+
+### 12.2 Channel
+
+The controller creates `<data_dir>/runs/<run_id>/tools.sock` (directory mode `0700`, socket `0600`) and a random per-run
+capability token before spawn, and writes the provider-form MCP definition from `channelArgs`: a command that starts
+`switchboard tool-shim --socket <path>` with the token in the shim's environment. The shim speaks MCP on stdio to the agent
+and newline-delimited JSON to the controller. The controller accepts only connections presenting the token for a run that
+is RUNNING, and closes and removes the socket when the run leaves RUNNING. Nothing the agent sends is trusted beyond the
+validation in §12.3. Whether provider sandboxes permit the connect is verified per adapter; if not, that adapter is
+`finalize-only`.
+
+### 12.3 Commit algorithm and refs
+
+Refs (Proposed): the **publish ref** for a meta-session is `refs/heads/<prefix><sess>`, where `<prefix>` is the context's
+`push.branch_prefix` (default `switchboard/pub/`), kept apart from the internal run branches `switchboard/<sess>/<run>`.
+
+1. Verify the run is RUNNING and holds the lease; the path set is inside the worktree after canonicalization.
+2. Build a temporary index file seeded from the publish ref's tree (or the run's base commit for the first commit); add
+   the requested paths, or all worktree changes, from the worktree; write the tree. If the tree equals the parent's,
+   `NOTHING_TO_COMMIT`.
+3. Sanitise the message (§12.4). If it is empty afterwards, `MESSAGE_EMPTY_AFTER_SANITISING`.
+4. Create the commit object with author and committer set to the context identity, current time, no trailers, no
+   signature unless the context sets `sign: true` (§12.3.1), hooks disabled and a scrubbed environment (as in §5).
+5. Move the publish ref from the old head to the new commit with a compare-and-swap; on a lost race, retry from step 2
+   once, then fail the call.
+6. In one ledger transaction insert the `git_commit` row and the `git_commit` run event.
+
+#### 12.3.1 Signing (FR-GIT-10, Proposed)
+
+With `sign: true` step 4 asks Git to sign the commit object using the operator's existing signing configuration
+(`user.signingkey`, `gpg.format`, and the operator's own agent or keyring), run by the controller process with the
+operator's environment, not the scrubbed one. The controller never reads, stores or logs the key, and never exports the
+agent socket or `SSH_AUTH_SOCK`/`GPG_*` variables to the provider process (FR-EXE-07). Failure (no key, locked agent,
+non-zero exit) returns `SIGNING_FAILED` to the agent and writes no commit. The BR-31 reach check applies: a context that
+signs needs an environment in which the agent cannot reach the key. Which signing formats work in a headless controller
+is verified in the M9 spike (T9.0); until then `sign` is accepted only if `projects validate` can produce a test
+signature in a scratch repository.
+
+The exact Git plumbing is fixed in the M9 spike. Nothing here touches the run branch, the worktree's index or the
+operator's checkout.
+
+### 12.4 Message sanitisation
+
+Line-oriented. The built-in rules are illustrative starting points and **must be tested against fixtures** of typical agent
+output before M9 is Done; operator patterns are added through `git.sanitize_patterns` (JavaScript regular-expression
+sources, case-insensitive, validated at config load with a length limit; Proposed).
+
+| Rule ID | Removes | Basis |
+| --- | --- | --- |
+| `trailer.co-author` | Any line starting `Co-authored-by:` | zemdregon's decision: no co-author trailers |
+| `trailer.generated` | Lines starting `Generated-by:`, `Assisted-by:`, `Generated-with:` or `Assisted-with:` | Same; key list Proposed |
+| `footer.generated-by` | Lines of the form "generated with/by ..." that name an AI tool, assistant or a provider or product from this project's provider list or Switchboard | Same |
+| `id.controller` | Any token matching the controller's own ID formats (`sess_` or `run_` plus 26 ULID characters, [§3.0](#30-shared-types)) | Session IDs must not leak |
+| `id.native-session` | The run's own provider-native session ID, as read from structured output (FR-ADP-04), wherever it appears | Same; exact-match, so no guessing |
+| `url.session` | URLs whose path or query contains a session or conversation identifier of this run | Same |
+
+After removal, runs of blank lines collapse and leading and trailing blank lines are trimmed. The controller never
+adds a line. The removed text is **not** recorded: `sanitizer_json` holds only `{ "rules": { "<rule id>": <count> }
+}`. The rule set cannot catch what it does not describe, and it does not touch file contents (risk R-14).
+
+### 12.5 Ref snapshot and violation handling
+
+At LEASED the controller records `git for-each-ref` for the whole repository (all branches, tags and other refs, bounded
+in size) as a hash plus the list of ref names and SHAs in a `run_event` payload. At FINALIZING it repeats the listing and
+compares: expected differences are the run branch and the publish ref moved by the controller. For the run branch it also
+checks that every commit between the base and the head was made by the controller. Any other difference, or a foreign
+commit on the run branch, appends `git_policy_violation` (names of refs and SHAs, never messages), the foreign commits are
+not reachable from the publish ref, and the tree content is kept as the working-tree changes the post-run checkpoint
+records (FRD BR-27). The comparison reads the whole repository, so it also covers writes made through the main
+repository's Git directory.
+
+### 12.6 Push algorithm
+
+1. Policy `branch`; the BR-31 credential-reach rule holds; the run (or, for an operator command, the meta-session) has a
+   publish ref with at least one commit.
+2. Compute the refspec from configuration: the publish ref to `<branch_prefix><sess>` on the configured remote. Refuse if
+   the target equals the repository default branch or the checked-out branch, is a tag, or would not be a fast-forward
+   (never force).
+3. Run `git push` from the controller process with that explicit refspec, hooks disabled, using the operator's existing
+   Git configuration for the remote. Capture the outcome; redact the output (no URLs with userinfo).
+4. In one transaction insert the `git_push` row and event, and mark the pushed `git_commit` rows by recording the remote
+   and ref in the event payload (the table itself stays append-only).
+
+### 12.7 Provenance and audit
+
+`git_commit` rows are the audit trail (FR-GIT-07). `runs show <id>` joins them to the run's provider, model and adapter
+version and prints each commit's SHA, origin (`commit_tool` or `finalize_only`), push state and sanitiser counts.
+Re-linking after an operator rewrite: match first on `commit_sha`, then `tree_sha`, then `patch_id` (best effort; Git's
+`patch-id` command; to be verified against the pinned Git version). Records are never edited and the commit objects are
+never annotated (notes were rejected, ADR-0014).

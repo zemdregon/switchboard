@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Opt-in live smoke test (T2.6; TDD §3.6 "Live provider smoke"; ROADMAP R-13, R-14, Q-9). Runs ONE trivial edit task
+ * Opt-in live smoke test (T2.6; TDD §3.6 "Live provider smoke"; ROADMAP R-21, R-22, Q-13). Runs ONE trivial edit task
  * through the real `switchboard serve` MCP server against the operator's own installed and logged-in provider CLI, in
  * a throwaway Git repository under a temp directory, then reports which adapter Assumptions held.
  *
@@ -60,7 +60,7 @@ const checks = [];
 const record = (id, group, assumption, result, evidence) => checks.push({ id, group, assumption, result, evidence });
 const held = (ok) => (ok === undefined ? "NOT_CHECKED" : ok ? "HELD" : "FAILED");
 
-const GROUP = provider === "claude" ? "R-13" : "R-14";
+const GROUP = provider === "claude" ? "R-21" : "R-22";
 const runner = adapters.createProbeRunner(PROBE_ENV_ALLOWLIST);
 const adapter = provider === "claude" ? new adapters.ClaudeAdapter() : new adapters.CodexAdapter();
 const registry = new adapters.AdapterRegistry().register(adapter);
@@ -130,7 +130,7 @@ if (provider === "claude") {
 }
 record(
   `${provider === "claude" ? "C" : "X"}-V`,
-  "Q-8/T2.1",
+  "Q-12/T2.1",
   "the installed version is inside the manifest's validated range",
   held(binaryOk ? gate.eligible : undefined),
   gate.eligible ? `${probe.binaryVersion} in ${gate.evidence.validatedRange}` : gate.detail,
@@ -169,11 +169,11 @@ if (provider === "claude" && binaryOk) {
   );
 } else if (provider === "codex") {
   out(
-    "auth status: Codex documents no status command (Q-6); the adapter reports UNKNOWN, so routing is expected to refuse it",
+    "auth status: Codex documents no status command (Q-10); the adapter reports UNKNOWN, so routing is expected to refuse it",
   );
   record(
     "X-4",
-    "Q-6",
+    "Q-10",
     "a Codex auth status mechanism exists that the adapter can use",
     "NOT_CHECKED",
     "no documented command; adapter returns UNKNOWN (fail closed)",
@@ -469,13 +469,13 @@ record(
 
 // ---- 4. report -------------------------------------------------------------------------------------------------------
 
-out("\nAssumptions (ROADMAP R-13 / R-14 / Q-9):");
+out("\nAssumptions (ROADMAP R-21 / R-22 / Q-13):");
 for (const c of checks) out(`  [${c.result.padEnd(11)}] ${c.id} (${c.group}) ${c.assumption} -- ${c.evidence}`);
 const failed = checks.filter((c) => c.result === "FAILED");
 out(
   `\n${checks.filter((c) => c.result === "HELD").length} held, ${failed.length} failed, ${checks.filter((c) => c.result === "NOT_CHECKED").length} not checked.`,
 );
-out("Record the outcome in ROADMAP Q-9 and update the fixtures and TDD §4.1/§4.2 where an Assumption failed.");
+out("Record the outcome in ROADMAP Q-13 and update the fixtures and TDD §4.1/§4.2 where an Assumption failed.");
 
 const summaryPath = path.join(tmp, "live-smoke-summary.json");
 writeFileSync(
