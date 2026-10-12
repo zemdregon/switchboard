@@ -70,6 +70,10 @@ export interface NewRun {
   requestHash: string;
   clientId: string;
   idempotencyKey?: string | null;
+  /** Adapter id chosen at admission (T1.8; M1 has no router). */
+  provider?: string | null;
+  /** Higher dispatches first (LLD §1 `run.priority`, default 1). */
+  priority?: number;
 }
 
 export interface RunEventRow {
@@ -89,6 +93,90 @@ export interface NewRunEvent {
   artifactId?: string | null;
 }
 
+/** Every `run` column the lifecycle reads (T1.8). */
+export interface RunRecord extends RunRow {
+  parent_run_id: string | null;
+  attempt: number;
+  failure_detail: string | null;
+  provider: string | null;
+  model: string | null;
+  policy_snapshot_json: string;
+  request_json: string;
+  priority: number;
+  worktree_path: string | null;
+  branch: string | null;
+  base_checkpoint_id: string | null;
+  post_checkpoint_id: string | null;
+  pid: number | null;
+  pgid: number | null;
+  proc_start_ticks: number | null;
+  exit_code: number | null;
+  exit_signal: string | null;
+  next_attempt_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+/** Mutable `run` columns a transition may set alongside the state (state and version are managed by the helper). */
+export interface RunFieldPatch {
+  failure_code?: string | null;
+  failure_detail?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  pid?: number | null;
+  pgid?: number | null;
+  proc_start_ticks?: number | null;
+  exit_code?: number | null;
+  exit_signal?: string | null;
+  next_attempt_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+}
+
+const PATCHABLE: readonly (keyof RunFieldPatch)[] = [
+  "failure_code",
+  "failure_detail",
+  "provider",
+  "model",
+  "pid",
+  "pgid",
+  "proc_start_ticks",
+  "exit_code",
+  "exit_signal",
+  "next_attempt_at",
+  "started_at",
+  "finished_at",
+];
+
+export interface CasRunState {
+  runId: string;
+  from: RunState;
+  to: RunState;
+  /** Optimistic guard (LLD §10): the update applies only if `version` still equals this. */
+  expectedVersion: number;
+  set?: RunFieldPatch;
+  /** Payload of the `state_transition` event appended in the same transaction. */
+  payload?: Record<string, unknown>;
+}
+
+export type ArtifactKind =
+  | "provider_stdout"
+  | "provider_stderr"
+  | "diff"
+  | "test_report"
+  | "changed_files"
+  | "log_summary"
+  | "handoff_view";
+
+export interface NewArtifactRow {
+  runId: string | null;
+  metaSessionId: string | null;
+  kind: ArtifactKind;
+  sha256: string;
+  sizeBytes: number;
+  mediaType: string;
+}
+
 export interface Ledger {
   createMetaSession(input: NewMetaSession): MetaSessionRow;
   getMetaSession(id: string): MetaSessionRow | undefined;
@@ -97,6 +185,26 @@ export interface Ledger {
   /** Append the next event for a run: `seq` is per-run, gapless, starting at 1 (LLD §1). */
   appendRunEvent(input: NewRunEvent): RunEventRow;
   listRunEvents(runId: string): RunEventRow[];
+
+  // ---- T1.8 additions ------------------------------------------------------------------------------------------
+  /** Run `fn` in one `BEGIN IMMEDIATE` transaction (savepoint when nested). */
+  immediate<T>(fn: () => T): T;
+  getRunRecord(id: string): RunRecord | undefined;
+  /**
+   * Compare-and-set state transition plus its `state_transition` event in one transaction (LLD §10). Returns the
+   * updated row, or `undefined` (nothing written) when the run is no longer in `from` at `expectedVersion`. Does not
+   * know the FRD edges; callers guard legality first.
+   */
+  casRunState(input: CasRunState): RunRecord | undefined;
+  /** Update non-state columns and append one event, in one transaction. Returns false if the run does not exist. */
+  updateRunFields(runId: string, set: RunFieldPatch, event: { type: string; payload?: unknown }): boolean;
+  findRunByIdempotencyKey(clientId: string, key: string): RunRecord | undefined;
+  countRunsInStates(states: readonly RunState[], provider?: string): number;
+  /** Runs in `state`, highest priority first, then oldest (`created_at`, then ULID order). */
+  listRunsInState(state: RunState): RunRecord[];
+  listRunsForMetaSession(metaSessionId: string): RunRecord[];
+  setMetaSessionHead(metaSessionId: string, commit: string): void;
+  insertArtifact(input: NewArtifactRow): string;
 }
 
 export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledger {
@@ -125,10 +233,109 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
       )
       .all(runId) as RunEventRow[];
 
+  const RUN_RECORD_SQL = "SELECT * FROM run";
+  const getRunRecord = (id: string) => db.prepare(`${RUN_RECORD_SQL} WHERE id = ?`).get(id) as RunRecord | undefined;
+
+  /** Insert the next event inside the caller's transaction. */
+  const insertEvent = (runId: string, type: string, payload: unknown, when: string): void => {
+    const row = db.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM run_event WHERE run_id = ?").get(runId) as {
+      next: number;
+    };
+    db.prepare("INSERT INTO run_event (id, run_id, seq, ts, type, payload_json) VALUES (?, ?, ?, ?, ?, ?)").run(
+      ids.id("evt"),
+      runId,
+      row.next,
+      when,
+      type,
+      JSON.stringify(payload ?? {}),
+    );
+  };
+
+  const patchSql = (set: RunFieldPatch): { cols: string; values: unknown[] } => {
+    const keys = PATCHABLE.filter((k) => set[k] !== undefined);
+    return { cols: keys.map((k) => `, ${k} = ?`).join(""), values: keys.map((k) => set[k]) };
+  };
+
+  const immediate = <T>(fn: () => T): T => db.transaction(fn).immediate();
+
   return {
     getMetaSession,
     getRun,
     listRunEvents,
+    immediate,
+    getRunRecord,
+
+    casRunState(input) {
+      return immediate(() => {
+        const when = ts();
+        const { cols, values } = patchSql(input.set ?? {});
+        const res = db
+          .prepare(
+            `UPDATE run SET state = ?, version = version + 1, updated_at = ?${cols}
+             WHERE id = ? AND version = ? AND state = ?`,
+          )
+          .run(input.to, when, ...values, input.runId, input.expectedVersion, input.from);
+        if (res.changes !== 1) return undefined;
+        insertEvent(input.runId, "state_transition", { from: input.from, to: input.to, ...input.payload }, when);
+        return getRunRecord(input.runId);
+      });
+    },
+
+    updateRunFields(runId, set, event) {
+      return immediate(() => {
+        const when = ts();
+        const { cols, values } = patchSql(set);
+        const res = db
+          .prepare(`UPDATE run SET version = version + 1, updated_at = ?${cols} WHERE id = ?`)
+          .run(when, ...values, runId);
+        if (res.changes !== 1) return false;
+        insertEvent(runId, event.type, event.payload, when);
+        return true;
+      });
+    },
+
+    findRunByIdempotencyKey(clientId, key) {
+      return db.prepare(`${RUN_RECORD_SQL} WHERE client_id = ? AND idempotency_key = ?`).get(clientId, key) as
+        | RunRecord
+        | undefined;
+    },
+
+    countRunsInStates(states, provider) {
+      if (states.length === 0) return 0;
+      const marks = states.map(() => "?").join(", ");
+      const sql = `SELECT COUNT(*) AS n FROM run WHERE state IN (${marks})${provider === undefined ? "" : " AND provider = ?"}`;
+      const args: unknown[] = provider === undefined ? [...states] : [...states, provider];
+      return (db.prepare(sql).get(...args) as { n: number }).n;
+    },
+
+    listRunsInState(state) {
+      return db
+        .prepare(`${RUN_RECORD_SQL} WHERE state = ? ORDER BY priority DESC, created_at, id`)
+        .all(state) as RunRecord[];
+    },
+
+    listRunsForMetaSession(metaSessionId) {
+      return db
+        .prepare(`${RUN_RECORD_SQL} WHERE meta_session_id = ? ORDER BY created_at, id`)
+        .all(metaSessionId) as RunRecord[];
+    },
+
+    setMetaSessionHead(metaSessionId, commit) {
+      db.prepare("UPDATE meta_session SET head_commit = ?, version = version + 1, updated_at = ? WHERE id = ?").run(
+        commit,
+        ts(),
+        metaSessionId,
+      );
+    },
+
+    insertArtifact(input) {
+      const id = ids.id("art");
+      db.prepare(
+        `INSERT INTO artifact (id, run_id, meta_session_id, kind, sha256, size_bytes, media_type, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(id, input.runId, input.metaSessionId, input.kind, input.sha256, input.sizeBytes, input.mediaType, ts());
+      return id;
+    },
 
     createMetaSession(input) {
       const id = ids.id("sess");
@@ -145,8 +352,8 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
       const now = ts();
       db.prepare(
         `INSERT INTO run (id, meta_session_id, state, trust_profile, policy_snapshot_json, request_json, request_hash,
-                          client_id, idempotency_key, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                          client_id, idempotency_key, provider, priority, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         id,
         input.metaSessionId,
@@ -157,6 +364,8 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
         input.requestHash,
         input.clientId,
         input.idempotencyKey ?? null,
+        input.provider ?? null,
+        input.priority ?? 1,
         now,
         now,
       );
