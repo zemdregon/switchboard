@@ -185,6 +185,87 @@ export interface LeaseRow {
 
 export type CheckpointKind = "base" | "pre" | "post";
 
+/** `artifact` row (LLD §1). */
+export interface ArtifactRow {
+  id: string;
+  run_id: string | null;
+  meta_session_id: string | null;
+  kind: ArtifactKind;
+  sha256: string;
+  size_bytes: number;
+  media_type: string;
+  created_at: string;
+  deleted_at: string | null;
+}
+
+/**
+ * `usage_observation` input (LLD §1, FR-CAP-01). Proposed (Delegated): until the M6 estimator exists the only writable
+ * source is `provider_reported`; `controller_estimated` is reserved by the schema CHECK but this repo refuses it, so an
+ * estimate can never be stored as, or next to, a reported figure by accident.
+ */
+export interface NewUsageObservation {
+  runId: string;
+  provider: string;
+  harness: string;
+  backingProvider?: string | null;
+  model?: string | null;
+  source: "provider_reported";
+  metrics: Record<string, number | string | null>;
+}
+
+export interface UsageObservationRow {
+  id: string;
+  run_id: string | null;
+  provider: string;
+  harness: string;
+  backing_provider: string | null;
+  model: string | null;
+  source: "provider_reported" | "controller_estimated";
+  metrics_json: string;
+  observed_at: string;
+}
+
+/** `route_decision` row (LLD §1; M2 writes eligibility only). JSON columns are pre-serialised by the router. */
+export interface NewRouteDecision {
+  runId: string;
+  features_json: string;
+  candidates_json: string;
+  selected_provider: string | null;
+  reasons_json: string;
+  weights_json?: string | null;
+}
+
+export interface RouteDecisionRow {
+  id: string;
+  run_id: string;
+  features_json: string;
+  weights_json: string | null;
+  candidates_json: string;
+  selected_provider: string | null;
+  reasons_json: string;
+  created_at: string;
+}
+
+/** `provider_binding` row (LLD §1, ADR-0001): a provider-native session bound to a meta-session. */
+export interface ProviderBindingRow {
+  id: string;
+  meta_session_id: string;
+  provider: string;
+  harness: string;
+  backing_provider: string | null;
+  model: string | null;
+  native_session_id: string;
+  created_at: string;
+  last_used_at: string;
+}
+
+export interface NewProviderBinding {
+  metaSessionId: string;
+  provider: string;
+  nativeSessionId: string;
+  model?: string | null;
+}
+
 export interface Ledger {
   createMetaSession(input: NewMetaSession): MetaSessionRow;
   getMetaSession(id: string): MetaSessionRow | undefined;
@@ -219,6 +300,27 @@ export interface Ledger {
   listLeases(): LeaseRow[];
   /** Commit of the run's first checkpoint of `kind` (the one the workspace manager uses), if any. */
   getRunCheckpointCommit(runId: string, kind: CheckpointKind): string | undefined;
+
+  // ---- T2.4 additions (MCP read model, route decisions, native session bindings) -------------------------------
+  /** Events with `seq > afterSeq`, ascending, at most `limit`. */
+  listRunEventsAfter(runId: string, afterSeq: number, limit: number): RunEventRow[];
+  /** Artifacts of a run that retention GC has not deleted, oldest first. */
+  listArtifactsForRun(runId: string): ArtifactRow[];
+  /** Append-only route decision (FR-RTE-03). Returns the new id. */
+  insertRouteDecision(input: NewRouteDecision): string;
+  /** Latest route decision recorded for a run. */
+  getRouteDecision(runId: string): RouteDecisionRow | undefined;
+  /** Append one provider-reported usage observation (append-only table, FR-CAP-01). Returns the new id. */
+  insertUsageObservation(input: NewUsageObservation): string;
+  /** Observations of a run, oldest first. */
+  listUsageObservationsForRun(runId: string): UsageObservationRow[];
+  /**
+   * Record (or refresh `last_used_at` of) a provider-native session for a meta-session (FR-SES-02, FR-SES-03). The id
+   * comes from structured provider output only (FR-ADP-04).
+   */
+  recordProviderBinding(input: NewProviderBinding): void;
+  /** Most recently used binding of a meta-session, optionally for one provider. */
+  latestProviderBinding(metaSessionId: string, provider?: string): ProviderBindingRow | undefined;
 }
 
 export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledger {
@@ -365,6 +467,108 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
         .prepare("SELECT commit_sha FROM workspace_checkpoint WHERE run_id = ? AND kind = ? ORDER BY rowid LIMIT 1")
         .get(runId, kind) as { commit_sha: string } | undefined;
       return row?.commit_sha;
+    },
+
+    listRunEventsAfter(runId, afterSeq, limit) {
+      return db
+        .prepare(
+          `SELECT id, run_id, seq, ts, type, payload_json, artifact_id FROM run_event
+           WHERE run_id = ? AND seq > ? ORDER BY seq LIMIT ?`,
+        )
+        .all(runId, afterSeq, limit) as RunEventRow[];
+    },
+
+    listArtifactsForRun(runId) {
+      return db
+        .prepare(
+          `SELECT id, run_id, meta_session_id, kind, sha256, size_bytes, media_type, created_at, deleted_at
+           FROM artifact WHERE run_id = ? AND deleted_at IS NULL ORDER BY created_at, id`,
+        )
+        .all(runId) as ArtifactRow[];
+    },
+
+    insertRouteDecision(input) {
+      const id = ids.id("rte");
+      db.prepare(
+        `INSERT INTO route_decision (id, run_id, features_json, weights_json, candidates_json, selected_provider,
+                                     reasons_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        id,
+        input.runId,
+        input.features_json,
+        input.weights_json ?? null,
+        input.candidates_json,
+        input.selected_provider,
+        input.reasons_json,
+        ts(),
+      );
+      return id;
+    },
+
+    insertUsageObservation(input) {
+      if ((input.source as string) !== "provider_reported") {
+        throw new Error("usage_observation accepts only provider_reported rows (FR-CAP-01)");
+      }
+      const id = ids.id("use");
+      db.prepare(
+        `INSERT INTO usage_observation (id, run_id, provider, harness, backing_provider, model, source, metrics_json,
+                                        observed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        id,
+        input.runId,
+        input.provider,
+        input.harness,
+        input.backingProvider ?? null,
+        input.model ?? null,
+        input.source,
+        JSON.stringify(input.metrics),
+        ts(),
+      );
+      return id;
+    },
+
+    listUsageObservationsForRun(runId) {
+      return db
+        .prepare(
+          `SELECT id, run_id, provider, harness, backing_provider, model, source, metrics_json, observed_at
+           FROM usage_observation WHERE run_id = ? ORDER BY observed_at, id`,
+        )
+        .all(runId) as UsageObservationRow[];
+    },
+
+    getRouteDecision(runId) {
+      return db
+        .prepare("SELECT * FROM route_decision WHERE run_id = ? ORDER BY created_at DESC, id DESC LIMIT 1")
+        .get(runId) as RouteDecisionRow | undefined;
+    },
+
+    recordProviderBinding(input) {
+      const now = ts();
+      db.prepare(
+        `INSERT INTO provider_binding (id, meta_session_id, provider, harness, model, native_session_id, created_at,
+                                       last_used_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (meta_session_id, provider, native_session_id) DO UPDATE SET last_used_at = excluded.last_used_at,
+           model = COALESCE(excluded.model, provider_binding.model)`,
+      ).run(
+        ids.id("pbd"),
+        input.metaSessionId,
+        input.provider,
+        input.provider,
+        input.model ?? null,
+        input.nativeSessionId,
+        now,
+        now,
+      );
+    },
+
+    latestProviderBinding(metaSessionId, provider) {
+      const sql = `SELECT * FROM provider_binding WHERE meta_session_id = ?${provider === undefined ? "" : " AND provider = ?"}
+                   ORDER BY last_used_at DESC, rowid DESC LIMIT 1`;
+      const args = provider === undefined ? [metaSessionId] : [metaSessionId, provider];
+      return db.prepare(sql).get(...args) as ProviderBindingRow | undefined;
     },
 
     createMetaSession(input) {

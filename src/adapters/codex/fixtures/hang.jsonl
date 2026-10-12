@@ -1,0 +1,3 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written, not recorded from a real codex binary. Event and field names are Assumptions (R2 names only thread, turn, item, error and token-usage event families; TDD 4.2).","hang":"ignore_term"}}
+{"type":"thread.started","thread_id":"synthetic-thread-0008"}
+{"type":"turn.started"}

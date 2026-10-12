@@ -1,0 +1,5 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written, not recorded from a real codex binary. Event and field names are Assumptions (R2 names only thread, turn, item, error and token-usage event families; TDD 4.2).","exit":1}}
+{"type":"thread.started","thread_id":"synthetic-thread-0003"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"make","status":"failed","exit_code":2}}
+{"type":"turn.failed","error":{"message":"SYNTHETIC: the task could not be completed"}}

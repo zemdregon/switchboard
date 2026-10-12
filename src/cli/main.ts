@@ -1,25 +1,30 @@
 /**
  * Operator CLI entry (COMP-OPS, FR-OPS-01, FR-OPS-03). `main` returns the exit code and writes through injected
  * streams so tests call it directly. Exit codes (Proposed): 0 ok, 1 failure, 2 usage error.
- * There is deliberately no `login`/`auth` command (FR-OPS-03, ADR-0003); `serve` arrives in M2.
+ * There is deliberately no `login`/`auth` command (FR-OPS-03, ADR-0003). `serve` (T2.6) is the long-lived daemon: it
+ * never writes to stdout itself (MCP framing only, TDD §3.3), so it rejects `--json` and reports every error on stderr.
  */
 import { parseArgs } from "node:util";
 import { ConfigError } from "../config/index.js";
+import { LockError } from "../lock/index.js";
 import { renderDoctor, runDoctor } from "./doctor.js";
 import { type CliIo, JSON_SCHEMA_VERSION, UsageError } from "./io.js";
 import { UnknownRunError } from "./operator.js";
 import { cancelRun, listRuns, parseLimit, renderCancel, renderRun, renderRunList, showRun } from "./runs.js";
+import { serve } from "./serve.js";
 
 export const HELP = `Usage: switchboard <command> [options]
 
 Commands:
-  doctor              Check the environment and probe adapters (fake adapter only in M1)
+  serve --client <id> Run the MCP server on stdin/stdout for one configured MCP client (logs go to stderr)
+  doctor              Check the environment and probe adapters (Claude Code, Codex and the fake test adapter)
   runs list           List runs, newest first (--state <STATE>, --limit <n>)
   runs show <id>      Show one run and its events
   runs cancel <id>    Cancel a run (written as an operator record the daemon applies)
 
 Options:
-  --json              Machine-readable output
+  --json              Machine-readable output (not for serve)
+  --client <id>       serve only: the mcp_clients entry this stdio session is bound to
   --config <path>     Config file (default: $SWITCHBOARD_CONFIG, then $XDG_CONFIG_HOME/switchboard/config.json)
   -h, --help          Show this help
 
@@ -29,6 +34,7 @@ Exit codes: 0 success, 1 failure, 2 usage error.
 const OPTIONS = {
   json: { type: "boolean" },
   config: { type: "string" },
+  client: { type: "string" },
   state: { type: "string" },
   limit: { type: "string" },
   help: { type: "boolean", short: "h" },
@@ -47,6 +53,12 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
     // Re-pass the config flag to the loader in the form it parses.
     const loaderArgv = values.config !== undefined ? ["--config", values.config] : [];
     const [cmd, sub, ...rest] = positionals;
+    if (cmd === "serve") {
+      json = false; // stdout belongs to MCP framing; errors go to stderr
+      if (values.json) throw new UsageError("serve does not take --json (stdout carries MCP framing only)");
+    } else if (values.client !== undefined) {
+      throw new UsageError("--client is only valid with serve");
+    }
 
     if (values.help) {
       io.stdout.write(HELP);
@@ -60,6 +72,13 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
     const emit = (data: unknown, text: string) => io.stdout.write(json ? `${JSON.stringify(data, null, 2)}\n` : text);
 
     switch (cmd) {
+      case "serve": {
+        if (sub !== undefined) throw new UsageError("serve takes no positional arguments");
+        if (values.client === undefined || values.client === "") {
+          throw new UsageError("serve requires --client <id> naming an mcp_clients entry in the config");
+        }
+        return await serve(io, { clientId: values.client, loaderArgv });
+      }
       case "doctor": {
         if (sub !== undefined) throw new UsageError("doctor takes no arguments");
         const report = await runDoctor(io, loaderArgv);
@@ -104,7 +123,9 @@ function fail(err: unknown, io: CliIo, json: boolean): number {
       ? "NOT_FOUND"
       : err instanceof ConfigError
         ? "CONFIG"
-        : "ERROR";
+        : err instanceof LockError
+          ? "LOCKED"
+          : "ERROR";
   const message = err instanceof Error ? err.message : String(err);
   if (json)
     io.stdout.write(`${JSON.stringify({ schema_version: JSON_SCHEMA_VERSION, error: { code, message } }, null, 2)}\n`);

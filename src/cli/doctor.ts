@@ -3,13 +3,21 @@ import { accessSync, constants, existsSync, statSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { FakeAdapter } from "../adapters/fake/adapter.js";
-import { AdapterRegistry, type AuthResult, createProbeRunner, type ProbeResult } from "../adapters/index.js";
+import {
+  AdapterRegistry,
+  type AuthResult,
+  ClaudeAdapter,
+  CodexAdapter,
+  createProbeRunner,
+  type ProbeResult,
+} from "../adapters/index.js";
 import { loadConfig, type ResolvedConfig } from "../config/index.js";
 import { currentSchemaVersion, LEDGER_FILE_NAME, MIGRATIONS } from "../ledger/index.js";
 import { inspectDataDirLock } from "../lock/index.js";
+import { CONFIG_TO_ADAPTER_ID } from "../routing/index.js";
 import { gitText, parseGitVersion, versionAtLeast } from "../workspace/git.js";
 import { MIN_GIT_VERSION } from "../workspace/index.js";
-import { type CliIo, JSON_SCHEMA_VERSION } from "./io.js";
+import { type CliIo, JSON_SCHEMA_VERSION, PROBE_ENV_ALLOWLIST } from "./io.js";
 
 /** Minimum Node major from package.json `engines` (>=22). */
 export const MIN_NODE_MAJOR = 22;
@@ -25,10 +33,16 @@ export interface DoctorCheck {
 
 export interface DoctorAdapterReport {
   readonly id: string;
-  /** Proposed: M1 only registers the fake adapter, and says so. */
+  /** Proposed: says whether this is a real provider CLI or the fake test adapter. */
   readonly label: string;
+  /** `real` for a provider CLI, `fake` for the test stand-in. */
+  readonly kind: "real" | "fake";
   readonly probe: { readonly ok: boolean; readonly binary_version: string | null; readonly failed_steps: string[] };
   readonly auth: { readonly state: AuthResult["state"]; readonly instruction: string | null };
+  /** Version gate (ADR-0009); null when the probe did not produce a version to gate, or for the fake adapter. */
+  readonly version_gate: { readonly eligible: boolean; readonly code: string | null; readonly detail: string } | null;
+  /** Operator-facing explanation when status is not ok (not installed, version unverified, ...). */
+  readonly note: string | null;
   readonly status: CheckStatus;
 }
 
@@ -101,14 +115,46 @@ function checkLock(dataDir: string): DoctorCheck {
 }
 
 export function defaultAdapters(): AdapterRegistry {
-  return new AdapterRegistry().register(new FakeAdapter());
+  return new AdapterRegistry().register(new FakeAdapter()).register(new ClaudeAdapter()).register(new CodexAdapter());
 }
 
-async function probeAdapters(registry: AdapterRegistry): Promise<DoctorAdapterReport[]> {
-  const runner = createProbeRunner();
+const ADAPTER_LABELS: Readonly<Record<string, string>> = {
+  fake: "fake adapter (test stand-in, not a real provider)",
+  claude: "Claude Code (real provider)",
+  codex: "Codex (real provider)",
+};
+
+/**
+ * `providers.<config id>.enabled: false` disables a provider (default on). Doctor reports it as skipped without
+ * running it. The fake adapter and adapters with no config id are always probed, as before.
+ */
+function isDisabledInConfig(cfg: ResolvedConfig | undefined, adapterId: string): boolean {
+  if (cfg === undefined) return false;
+  const configId = (Object.keys(CONFIG_TO_ADAPTER_ID) as (keyof typeof CONFIG_TO_ADAPTER_ID)[]).find(
+    (k) => CONFIG_TO_ADAPTER_ID[k] === adapterId,
+  );
+  return configId !== undefined && cfg.providers.get(configId)?.enabled === false;
+}
+
+async function probeAdapters(registry: AdapterRegistry, cfg?: ResolvedConfig): Promise<DoctorAdapterReport[]> {
+  const runner = createProbeRunner(PROBE_ENV_ALLOWLIST);
   const out: DoctorAdapterReport[] = [];
   for (const a of registry.list()) {
-    const label = a.id === "fake" ? "fake adapter (M1 stand-in; real providers arrive in M2)" : a.id;
+    const kind = a.id === "fake" ? "fake" : "real";
+    const label = ADAPTER_LABELS[a.id] ?? `${a.id} (real provider)`;
+    if (isDisabledInConfig(cfg, a.id)) {
+      out.push({
+        id: a.id,
+        label,
+        kind,
+        probe: { ok: false, binary_version: null, failed_steps: [] },
+        auth: { state: "UNKNOWN", instruction: null },
+        version_gate: null,
+        note: "disabled in config (providers.enabled is false); not probed",
+        status: "skip",
+      });
+      continue;
+    }
     let probe: ProbeResult | undefined;
     let probeError: string | undefined;
     try {
@@ -128,13 +174,43 @@ async function probeAdapters(registry: AdapterRegistry): Promise<DoctorAdapterRe
     }
     const instruction =
       auth.state === "AUTH_REQUIRED" ? auth.loginCommand : auth.state === "UNKNOWN" ? auth.reason : null;
-    // Proposed: a failed probe fails doctor; missing auth is a warning (printed with its instruction, exit stays 0).
-    const status: CheckStatus = !probeOk ? "fail" : auth.state === "OK" ? "ok" : "warn";
+    const notInstalled = probe?.steps.some((s) => s.step === "binary" && !s.ok) === true;
+    // Version gate (ADR-0009) applies to real providers once a binary was found; the fake has no manifest.
+    let versionGate: DoctorAdapterReport["version_gate"] = null;
+    if (kind === "real" && probe !== undefined && !notInstalled) {
+      try {
+        const g = registry.gate(a.id, probe.binaryVersion);
+        versionGate = g.eligible
+          ? { eligible: true, code: null, detail: `version ${probe.binaryVersion} is in the validated range` }
+          : { eligible: false, code: g.code, detail: g.detail };
+      } catch (err) {
+        versionGate = { eligible: false, code: "ADAPTER_VERSION_UNVERIFIED", detail: (err as Error).message };
+      }
+    }
+    // Proposed: a real provider that is not installed is a warning (doctor does not require any one CLI). A fake or
+    // otherwise failed probe fails doctor. An installed real CLI that the version gate rejects fails, with the reason.
+    // Missing auth is a warning (printed with its instruction, exit stays 0).
+    let status: CheckStatus;
+    let note: string | null = null;
+    if (kind === "real" && notInstalled) {
+      status = "warn";
+      note = `not installed: ${a.id} CLI not found; install it and log in natively to use this provider`;
+    } else if (!probeOk) {
+      status = "fail";
+    } else if (versionGate !== null && !versionGate.eligible) {
+      status = "fail";
+      note = `${versionGate.code ?? "ADAPTER_VERSION_UNVERIFIED"}: ${versionGate.detail}; adapter is ineligible until an operator validates this version`;
+    } else {
+      status = auth.state === "OK" ? "ok" : "warn";
+    }
     out.push({
       id: a.id,
       label,
+      kind,
       probe: { ok: probeOk, binary_version: probe?.binaryVersion ?? null, failed_steps: failed.filter(() => !probeOk) },
       auth: { state: auth.state, instruction },
+      version_gate: versionGate,
+      note,
       status,
     });
   }
@@ -183,7 +259,7 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
     }
   }
 
-  const adapters = await probeAdapters(io.adapters ?? defaultAdapters());
+  const adapters = await probeAdapters(io.adapters ?? defaultAdapters(), cfg);
   const ok = checks.every((c) => c.status !== "fail") && adapters.every((a) => a.status !== "fail");
   return { schema_version: JSON_SCHEMA_VERSION, ok, checks, adapters };
 }
@@ -195,10 +271,16 @@ export function renderDoctor(r: DoctorReport): string {
   for (const c of r.checks) lines.push(`${MARK[c.status]} ${c.label}: ${c.detail}`);
   lines.push("", "Adapters (preflight):");
   for (const a of r.adapters) {
+    if (a.status === "skip") {
+      lines.push(`${MARK[a.status]} ${a.label}: disabled in config`);
+      if (a.note !== null) lines.push(`       ${a.note}`);
+      continue;
+    }
     const probe = a.probe.ok
       ? `probe ok${a.probe.binary_version ? ` (version ${a.probe.binary_version})` : ""}`
       : `probe failed (${a.probe.failed_steps.join(", ")})`;
     lines.push(`${MARK[a.status]} ${a.label}: ${probe}; auth ${a.auth.state}`);
+    if (a.note !== null) lines.push(`       ${a.note}`);
     if (a.auth.instruction !== null) {
       lines.push(
         `       ${a.auth.state === "AUTH_REQUIRED" ? "AUTH_REQUIRED, run natively" : "reason"}: ${a.auth.instruction}`,

@@ -1,11 +1,12 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeAdapter } from "../adapters/fake/adapter.js";
-import { AdapterRegistry, type AuthResult } from "../adapters/index.js";
+import { AdapterRegistry, type AuthResult, ClaudeAdapter, CodexAdapter } from "../adapters/index.js";
 import { createLedger, type Ledger, openLedger, type RunState } from "../ledger/index.js";
 import { acquireDataDirLock, LOCK_FILE_NAME } from "../lock/index.js";
+import { defaultAdapters } from "./doctor.js";
 import { applyOperatorRequests, HELP, listPendingCancels, main } from "./index.js";
 import type { CliIo } from "./io.js";
 
@@ -102,30 +103,48 @@ describe("help and command surface (FR-OPS-03)", () => {
 });
 
 describe("doctor", () => {
-  it("passes with the fake adapter and labels it as the M1 stand-in", async () => {
-    const r = await run(["doctor", ...cfg()]);
+  const fakeOnly = () => new AdapterRegistry().register(new FakeAdapter());
+
+  it("passes with the fake adapter and labels it as a test stand-in", async () => {
+    const r = await run(["doctor", ...cfg()], { adapters: fakeOnly() });
     expect(r.code).toBe(0);
-    expect(r.out).toContain("fake adapter (M1 stand-in");
+    expect(r.out).toContain("fake adapter (test stand-in, not a real provider)");
     expect(r.out).toContain("Result: OK");
     expect(r.out.includes(String.fromCharCode(27))).toBe(false); // no colour
   });
 
   it("has a stable --json schema", async () => {
-    const r = await run(["doctor", "--json", ...cfg()]);
+    const r = await run(["doctor", "--json", ...cfg()], { adapters: fakeOnly() });
     const j = JSON.parse(r.out);
     expect(Object.keys(j).sort()).toEqual(["adapters", "checks", "ok", "schema_version"]);
     expect(j.ok).toBe(true);
     expect(j.checks.map((c: { id: string }) => c.id)).toEqual(["node", "git", "config", "data_dir", "ledger", "lock"]);
     for (const c of j.checks) expect(Object.keys(c).sort()).toEqual(["detail", "id", "label", "status"]);
     expect(j.adapters).toHaveLength(1);
-    expect(Object.keys(j.adapters[0]).sort()).toEqual(["auth", "id", "label", "probe", "status"]);
-    expect(j.adapters[0]).toMatchObject({ id: "fake", status: "ok", auth: { state: "OK", instruction: null } });
+    expect(Object.keys(j.adapters[0]).sort()).toEqual([
+      "auth",
+      "id",
+      "kind",
+      "label",
+      "note",
+      "probe",
+      "status",
+      "version_gate",
+    ]);
+    expect(j.adapters[0]).toMatchObject({
+      id: "fake",
+      kind: "fake",
+      status: "ok",
+      auth: { state: "OK", instruction: null },
+      version_gate: null,
+      note: null,
+    });
     expect(Object.keys(j.adapters[0].probe).sort()).toEqual(["binary_version", "failed_steps", "ok"]);
   });
 
   it("fails (exit 1) on an invalid config and skips dependent checks", async () => {
     writeFileSync(configPath, "{}");
-    const r = await run(["doctor", "--json", ...cfg()]);
+    const r = await run(["doctor", "--json", ...cfg()], { adapters: fakeOnly() });
     expect(r.code).toBe(1);
     const j = JSON.parse(r.out);
     expect(j.ok).toBe(false);
@@ -149,6 +168,106 @@ describe("doctor", () => {
     const warn = await run(["doctor", ...cfg()], { adapters: new AdapterRegistry().register(noAuth) });
     expect(warn.code).toBe(0);
     expect(warn.out).toContain("AUTH_REQUIRED, run natively: fake-cli login");
+  });
+
+  it("registers the fake, Claude Code and Codex adapters by default", () => {
+    expect(
+      defaultAdapters()
+        .list()
+        .map((a) => a.id),
+    ).toEqual(["fake", "claude", "codex"]);
+  });
+
+  it("warns, not fails, when real provider CLIs are not installed, and labels real vs fake", async () => {
+    const registry = new AdapterRegistry()
+      .register(new FakeAdapter())
+      .register(new ClaudeAdapter({ binaryPath: path.join(tmp, "no-such-claude") }))
+      .register(new CodexAdapter({ pathEnv: "" }));
+    const r = await run(["doctor", "--json", ...cfg()], { adapters: registry });
+    expect(r.code).toBe(0);
+    const j = JSON.parse(r.out);
+    expect(j.ok).toBe(true);
+    const by = Object.fromEntries(j.adapters.map((a: { id: string }) => [a.id, a]));
+    expect(by.fake).toMatchObject({ kind: "fake", status: "ok" });
+    for (const id of ["claude", "codex"]) {
+      expect(by[id]).toMatchObject({ kind: "real", status: "warn", version_gate: null });
+      expect(by[id].label).toContain("(real provider)");
+      expect(by[id].note).toContain("not installed");
+    }
+    const text = (await run(["doctor", ...cfg()], { adapters: registry })).out;
+    expect(text).toContain("[warn] Claude Code (real provider): probe failed");
+    expect(text).toContain("not installed");
+  });
+
+  it("fails with an explained ADAPTER_VERSION_UNVERIFIED for an installed Codex (empty manifest range)", async () => {
+    const script = path.join(tmp, "fake-codex.mjs");
+    writeFileSync(
+      script,
+      [
+        "const a = process.argv.slice(2);",
+        'if (a[0] === "--version") console.log("codex-cli 0.1.0");',
+        'else if (a[0] === "exec" && a.includes("--help")) console.log("--json --sandbox --ignore-user-config --ignore-rules");',
+        "else process.exit(2);",
+      ].join("\n"),
+    );
+    const registry = new AdapterRegistry().register(
+      new CodexAdapter({ executable: process.execPath, launcherArgs: [script] }),
+    );
+    const r = await run(["doctor", "--json", ...cfg()], { adapters: registry });
+    expect(r.code).toBe(1);
+    const a = JSON.parse(r.out).adapters[0];
+    expect(a).toMatchObject({
+      id: "codex",
+      kind: "real",
+      status: "fail",
+      probe: { ok: true, binary_version: "codex-cli 0.1.0" },
+      auth: { state: "UNKNOWN" },
+      version_gate: { eligible: false, code: "ADAPTER_VERSION_UNVERIFIED" },
+    });
+    expect(a.note).toContain("ADAPTER_VERSION_UNVERIFIED");
+    const text = (await run(["doctor", ...cfg()], { adapters: registry })).out;
+    expect(text).toContain("[FAIL] Codex (real provider)");
+    expect(text).toContain("ineligible until an operator validates this version");
+  });
+
+  it("skips providers disabled in config without probing them and without affecting the exit code", async () => {
+    const script = path.join(tmp, "fake-codex-probed.mjs");
+    const marker = path.join(tmp, "probed");
+    writeFileSync(
+      script,
+      `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "x"); process.exit(2);`,
+    );
+    const raw = JSON.parse(readFileSync(configPath, "utf8"));
+    writeFileSync(
+      configPath,
+      JSON.stringify({ ...raw, providers: { codex: { enabled: false }, "claude-code": { enabled: false } } }),
+    );
+    const registry = new AdapterRegistry()
+      .register(new FakeAdapter())
+      .register(new CodexAdapter({ executable: process.execPath, launcherArgs: [script] }))
+      .register(new ClaudeAdapter({ binaryPath: path.join(tmp, "no-such-claude") }));
+    const r = await run(["doctor", "--json", ...cfg()], { adapters: registry });
+    expect(r.code).toBe(0);
+    const j = JSON.parse(r.out);
+    expect(j.ok).toBe(true);
+    const by = Object.fromEntries(j.adapters.map((a: { id: string }) => [a.id, a]));
+    expect(by.fake.status).toBe("ok");
+    for (const id of ["codex", "claude"]) {
+      expect(by[id]).toMatchObject({ status: "skip", version_gate: null });
+      expect(by[id].note).toContain("disabled in config");
+    }
+    expect(existsSync(marker)).toBe(false);
+    const text = (await run(["doctor", ...cfg()], { adapters: registry })).out;
+    expect(text).toContain("[skip] Codex (real provider): disabled in config");
+    expect(text).toContain("Result: OK");
+  });
+
+  it("still probes a provider that is explicitly enabled or unlisted", async () => {
+    const raw = JSON.parse(readFileSync(configPath, "utf8"));
+    writeFileSync(configPath, JSON.stringify({ ...raw, providers: { codex: { enabled: true } } }));
+    const registry = new AdapterRegistry().register(new CodexAdapter({ pathEnv: "" }));
+    const j = JSON.parse((await run(["doctor", "--json", ...cfg()], { adapters: registry })).out);
+    expect(j.adapters[0]).toMatchObject({ id: "codex", status: "warn" });
   });
 
   it("reports the lock holder and a migrated ledger", async () => {
