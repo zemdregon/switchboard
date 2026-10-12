@@ -1,0 +1,429 @@
+# Functional Requirements Document (FRD)
+
+| | |
+|---|---|
+| Status | Draft, baseline for milestone M1 |
+| Owns | Workflows WF-1..WF-9, business rules BR-*, actor permissions, the canonical run state machine, meta-session and adapter availability states, input validation rules, normal/alternate/failure paths |
+| Does not own | Requirements and their IDs ([SRS](SRS.md)); outcomes ([BRD](BRD.md)); journeys and capabilities ([PRD](PRD.md)); components ([HLD](../design/HLD.md)); persistence and the failure taxonomy table ([LLD](../design/LLD.md)); sequencing ([ROADMAP](../ROADMAP.md)) |
+| Last reconciled | 2026-10-12 |
+
+## 1. Purpose and conventions
+
+This document describes how Switchboard behaves, end to end, in terms of the requirements in the [SRS](SRS.md). It adds no obligations: every business rule (BR) cites the FR/NFR it elaborates. Where the SRS leaves a choice open, the rule is labelled **Proposed** with a one-line rationale; Proposed rules are design choices made during planning, are not owner-approved (the ADRs are "Delegated", see [ADR index](../adr/README.md)), and can change without an SRS change.
+
+Nothing described here is implemented. As of 2026-10-12 the repository contains documentation and research only.
+
+Conventions: components are `COMP-*` as named in the [HLD](../design/HLD.md#1-system-context). Failure codes are those of the [LLD §4](../design/LLD.md#4-failure-taxonomy); `ELIGIBILITY_NONE` and `INVALID_REQUEST` were added during planning and are marked "(planning)". Actors are defined in §2.
+
+## 2. Actors and permissions
+
+| Actor | Who | Channel | Identity basis |
+|---|---|---|---|
+| Operator | The single human who installs, logs in natively, and configures policy ([ADR-0011](../adr/0011-single-operator-local-deployment.md)) | Operator CLI (COMP-OPS) | Local OS user running the CLI |
+| Orchestrator | Upstream agent (OpenClaw, Grok Bot) acting as MCP client | MCP over stdio (COMP-MCP) | Configured MCP client entry carrying a maximum trust profile (FR-MCP-06) |
+| Controller | The Switchboard process and its components | Internal | n/a |
+| Provider CLI | Subprocess driven by an adapter | Subprocess/ACP | Not trusted; confined by the run's trust profile |
+
+### 2.1 Permission matrix
+
+| Action | Operator | Orchestrator | Controller | Governing FR |
+|---|---|---|---|---|
+| Delegate / continue a task | Not via CLI (CLI has no `delegate`) | Yes, up to the client's max trust profile | Executes | FR-MCP-03, FR-MCP-06 |
+| Request `privileged` profile | Approves via CLI | May request only; run stops in AWAITING_APPROVAL | Blocks until approval | FR-MCP-06, FR-POL-09 |
+| Approve a privileged run | Yes (`approve <run_id>`) | No, never through MCP | Records timestamp and scope | FR-POL-09, FR-OPS-02 |
+| Cancel a run | Yes (`runs cancel <id>`) | Yes (`cancel_run`) | Executes | FR-MCP-01, FR-OPS-01, FR-EXE-01 |
+| Read run status, artifacts, route explanation, capacity | Yes (`runs list/show`) | Yes (`get_run`, `get_artifacts`, `explain_route`, `get_capacity`) | n/a | FR-MCP-01/02, FR-OPS-01 |
+| List capabilities | Yes (`doctor`) | Yes (`list_capabilities`) | n/a | FR-MCP-01, FR-OPS-01 |
+| Run preflight for all adapters | Yes (`doctor`) | Indirectly (cached preflight at route time) | Yes | FR-OPS-01, FR-ADP-02 |
+| Accept a new provider CLI version | Yes (`adapters validate`) | No | Records `adapter_version` | FR-OPS-02, FR-ADP-03 |
+| Change policy, allowed roots, client max profile, weights | Yes (config) | No | Snapshots config into each run | FR-POL-01, FR-POL-10 |
+| Log in to a provider | Yes, natively, outside Switchboard | No | Never | FR-AUTH-01, FR-OPS-03 |
+| Push to remotes, touch the operator's checked-out branch | Yes (by hand) | No | Never | FR-WS-05 |
+| Emit permission-bypass flags | Only by approving a `privileged` run | No | Only under recorded approval | FR-POL-03 |
+
+Rules on the matrix: a caller's maximum trust profile is a ceiling per MCP client; a request above it ends with `PERMISSION_BLOCKED` before any side effect (BR-13). Privileged approval exists only on the operator CLI (BR-14). The orchestrator has no way to raise its own ceiling.
+
+## 3. Business rules
+
+Each rule elaborates the cited requirement and does not add to it.
+
+| ID | Rule | Elaborates | Status |
+|---|---|---|---|
+| BR-1 | Routing removes ineligible providers first (hard constraints), and only then ranks. A provider that fails any hard constraint is never chosen, regardless of hints or score. | FR-RTE-01, [ADR-0008](../adr/0008-two-stage-routing.md) | SRS |
+| BR-2 | **`require_provider` semantics.** The named provider is the only candidate. It still passes every check in BR-1 (auth, sandbox, workspace, compliance manifest, version, quota, concurrency, health). If it fails, `delegate_task`/`continue_task` returns one error and starts no run on another provider. Failover is also disabled for that run. The error carries the provider's specific eligibility reason (BR-3). | FR-MCP-05 | SRS |
+| BR-3 | **Eligibility reason to code mapping for `require_provider`.** `AUTH_REQUIRED` state returns `AUTH_REQUIRED`; `ADAPTER_VERSION_UNVERIFIED` returns `ADAPTER_VERSION_UNVERIFIED`; known quota exhaustion returns `QUOTA_EXHAUSTED`; profile unsupported, no manifest, disabled, circuit-open, or at concurrency returns `ELIGIBILITY_NONE` (planning) with the reason in the message. | FR-MCP-05, FR-MCP-07 | Proposed: FR-MCP-07 requires exactly one taxonomy code and the SRS names none for these reasons; mapping each to the closest existing code keeps clients' handling simple. |
+| BR-4 | **`provider_preference` and `minimum_capability`.** Preference never adds a provider to the candidate set; it acts as a ranking input among eligible providers. `minimum_capability` is a hard constraint evaluated against the model registry. | FR-MCP-03, FR-MCP-05, FR-RTE-01 | SRS (hints only narrow); ranking role Proposed: SRS does not define preference's weight; scoring arrives in M7, before which M2 uses configured order as tie-break. |
+| BR-5 | A profile is never silently downgraded. If an adapter cannot compile the requested profile, it is ineligible for that request. | FR-POL-02 | SRS |
+| BR-6 | **Dispatch order on a retry-or-recovery decision.** Evaluate in this order: (1) is the failure automatically retryable and the workspace unchanged (BR-7); (2) for `QUOTA_EXHAUSTED`, can the request fail over (BR-8); (3) else can it queue until a known reset within the horizon (BR-9); (4) else return the failure. | FR-CAP-05, FR-CAP-06 | Proposed ordering across the two FRs: they cover disjoint codes, so the order only matters for classification; stating it makes the sequence explicit. |
+| BR-7 | **Retry eligibility.** A failed attempt is retried automatically only if (a) its code is `RATE_LIMIT_TRANSIENT`, `PROVIDER_OVERLOADED`, or `PROCESS_CRASH` before any mutation, and (b) the worktree is byte-identical to the pre-run checkpoint (clean `git status` and head equals the checkpoint). Backoff is capped exponential with jitter. Any other code, or any change to the workspace, is not retried; FR-WS-04 applies (roll back or native resume, never replay). | FR-CAP-05, FR-WS-04, [ADR-0006](../adr/0006-worktree-checkpoints-no-blind-replay.md) | SRS. Backoff cap and attempt count are configuration (values (proposed target), set in M6). |
+| BR-8 | **Failover.** On `QUOTA_EXHAUSTED`, the controller re-routes to another eligible provider only if the request permits it: `require_provider` is not true, and a handoff is possible from controller-owned evidence. If the workspace is unchanged the new run starts from the same checkpoint. If it changed, the changed state is first preserved as a checkpoint and diff artifact, the meta-session head returns to the pre-run checkpoint, and the new run receives a handoff bundle listing the failed attempt (FR-SES-04). The original request is never replayed against mutated state. | FR-CAP-06, FR-WS-04, FR-SES-04 | SRS for failover permission; roll back before failover Proposed: it keeps the failover deterministic and leaves the discarded edits recoverable from the diff. |
+| BR-9 | **Queue on known reset.** If failover is impossible or not permitted and the provider's `reset_at` is known and within the configured horizon, the run waits in `WAITING_CAPACITY` and is re-dispatched after reset. Otherwise the run ends `FAILED` with `QUOTA_EXHAUSTED`. | FR-CAP-06, FR-CAP-02 | SRS. Horizon value is configuration (proposed target; set in M6). |
+| BR-10 | **Idempotency keys** (mismatch and per-client scope now in FR-MCP-08). For `delegate_task` only: the same key with identical canonical parameters returns the original run (any state, including terminal) and starts nothing. Parameter identity is a hash of the validated request after canonicalization (workspace path canonicalized, defaults filled). The same key with different parameters returns `INVALID_REQUEST` (planning). A call without a key always starts a new run. The key is scoped to the calling MCP client and kept at least as long as the run record. | FR-MCP-08 | Mismatch error, scoping and retention Proposed: SRS defines only the identical-parameter case; failing loudly on mismatch avoids returning an unrelated run. |
+| BR-11 | **Cancellation.** `cancel_run` is accepted in every non-terminal state and takes effect as in §4.3. Cancelling a terminal run is a no-op that returns the run's terminal state. Cancellation of a running process terminates its whole process group (graceful signal, then forced kill after the grace period). | FR-EXE-01, FR-MCP-01 | SRS for the group kill; no-op on terminal runs Proposed: idempotent cancel is simpler for retrying clients. |
+| BR-12 | **Worktree disposition** on each terminal state is defined in §4.4. The controller never pushes, never touches the operator's checked-out branch, and removes worktrees only through retention GC. | FR-WS-03, FR-WS-04, FR-WS-05, FR-WS-07 | SRS; keep-until-GC for every terminal state Proposed: evidence for BO-5 outweighs disk cost at single-operator scale. |
+| BR-13 | **Trust ceiling.** The requested profile is compared with the calling client's maximum profile before any side effect. Above it: `PERMISSION_BLOCKED`. `privileged` is above every ceiling for MCP-only authority and always enters AWAITING_APPROVAL if the client ceiling allows requesting it. | FR-MCP-06, FR-POL-09 | SRS. Treating a `privileged` request as allowed-to-request only when the client's ceiling is `privileged` is Proposed; SRS says only that approval cannot come from MCP. |
+| BR-14 | **Privileged approval.** A `privileged` run does not dispatch until the operator approves that specific run through the CLI. The approval stores timestamp and scope; bypass flags (FR-POL-03) are emitted only for an approved run and only within the approved scope. | FR-POL-09, FR-POL-03 | SRS |
+| BR-15 | **Fail closed.** An unknown adapter state, unparseable provider output, or unrecognized policy value denies, marks the provider ineligible, or ends the run with an error; it never proceeds. | NFR-SEC-06, FR-ADP-04 | SRS |
+| BR-16 | **Verification outcome.** When verification commands are supplied and any exits non-zero (or times out), the run ends `FAILED` with `TEST_FAILURE`; results are recorded either way. The agent's own result is kept in the envelope. | FR-EXE-08, FR-MCP-04 | Mapping to `TEST_FAILURE` Proposed: the SRS requires running and recording, not the failure semantics. |
+| BR-17 | **One active run per meta-session.** A meta-session has at most one non-terminal run; `continue_task` on a session with an active run is rejected with `INVALID_REQUEST`. | FR-SES-06, FR-WS-02 | SRS |
+| BR-18 | **Same-provider vs cross-provider continuation.** If the caller names no provider and the provider of the latest binding is eligible, continue with native resume (FR-SES-03). If the caller names a different provider, or the bound provider is ineligible and `require_provider` is not set, route normally and build a handoff bundle (FR-SES-04). If `require_provider` names the bound provider and it is ineligible, fail per BR-2. | FR-SES-03, FR-SES-04, FR-MCP-05 | Default of preferring the bound provider Proposed: native resume is cheaper and loses less context than a handoff. |
+| BR-19 | **Usage recording.** Every run records provider-reported usage with its source label, separate from controller estimates, regardless of outcome. | FR-CAP-01, FR-CAP-03 | SRS |
+| BR-20 | **Version re-check at dispatch.** Every dispatch consults the preflight cache; the cache entry is invalidated by a changed binary version or TTL expiry, so a CLI updated after routing is caught at PREFLIGHT, not after spawn. | FR-ADP-03, NFR-PERF-02 | SRS |
+| BR-21 | **Result envelope.** Every tool result is a compact envelope; raw transcripts, credentials and environment values never appear in it or in events. | FR-MCP-04, FR-TEL-03, NFR-SEC-01 | SRS |
+| BR-22 | **`wait_seconds`.** If supplied, `delegate_task` blocks up to that bound and returns the current envelope, terminal or not; otherwise it returns immediately with `run_id` and `meta_session_id`. A timeout of the wait never cancels the run. | FR-MCP-03 | SRS; "does not cancel" Proposed: the SRS is silent on wait expiry. |
+
+## 4. Canonical run state machine
+
+### 4.1 Diagram
+
+```mermaid
+stateDiagram-v2
+    [*] --> AWAITING_APPROVAL: privileged request accepted
+    [*] --> QUEUED: non-privileged request accepted
+    AWAITING_APPROVAL --> QUEUED: operator approve
+    AWAITING_APPROVAL --> CANCELLED: cancel_run or operator deny
+    QUEUED --> PREFLIGHT: slot free
+    QUEUED --> CANCELLED: cancel_run
+    WAITING_CAPACITY --> QUEUED: reset_at reached
+    WAITING_CAPACITY --> CANCELLED: cancel_run
+    PREFLIGHT --> LEASED: adapter ready and lease acquired
+    PREFLIGHT --> QUEUED: provider ineligible, other eligible
+    PREFLIGHT --> WAITING_CAPACITY: quota known, reset within horizon
+    PREFLIGHT --> FAILED: no eligible provider or required provider ineligible
+    PREFLIGHT --> CANCELLED: cancel_run
+    LEASED --> RUNNING: process spawned
+    LEASED --> CANCELLED: cancel_run
+    LEASED --> FAILED: spawn or compile error
+    RUNNING --> VERIFYING: exit ok and verification supplied
+    RUNNING --> FINALIZING: exit ok, no verification
+    RUNNING --> FINALIZING: failure, timeout, crash or cancel
+    VERIFYING --> FINALIZING: verification done, failed or cancelled
+    FINALIZING --> SUCCEEDED: outcome success
+    FINALIZING --> FAILED: outcome failure
+    FINALIZING --> CANCELLED: outcome cancelled
+    SUCCEEDED --> [*]
+    FAILED --> [*]
+    CANCELLED --> [*]
+```
+
+Retry and failover are not backward edges: the failed attempt becomes terminal `FAILED`, and the controller creates a successor run in the same meta-session that enters QUEUED or WAITING_CAPACITY (BR-6..BR-9). Successor runs carry a `retry_of` link and `get_run` on a superseded run reports its successor, so the caller's original `run_id` stays useful (FR-MCP-10).
+
+Every outcome that had a leased workspace passes through FINALIZING so the post-run checkpoint, diff and lease release happen once, in one place (FR-WS-03). **Proposed** for the same reason.
+
+### 4.2 Transition table
+
+| # | From | Event | Guard | To | Side effects | FR IDs |
+|---|---|---|---|---|---|---|
+| T1 | (new) | `delegate_task` / `continue_task` accepted | Schema valid, path allowed, ceiling ok, an eligible provider exists, `profile != privileged` | QUEUED | Create run and meta-session (or attach), persist policy snapshot and route decision, append `run_event` | FR-MCP-03, 07, 09, FR-POL-10, FR-CAP-04, FR-TEL-01 |
+| T2 | (new) | Same, `profile == privileged` | Client ceiling is `privileged` | AWAITING_APPROVAL | Create approval record (pending); no process, no worktree | FR-POL-09, FR-MCP-06 |
+| T3 | AWAITING_APPROVAL | Operator `approve` | Run not cancelled | QUEUED | Record approval (timestamp, scope) | FR-POL-09, FR-OPS-02 |
+| T4 | QUEUED | Dispatcher picks run | Global and per-provider concurrency slot free; provider breaker closed | PREFLIGHT | Reserve slot | FR-CAP-04, NFR-PERF-03 |
+| T5 | PREFLIGHT | Preflight passes | Adapter READY (version, manifest, auth, smoke test via cache); lease acquired | LEASED | Create worktree from base checkpoint (write-capable) and lease; record adapter version | FR-ADP-02, 03, FR-WS-01, 02, FR-POL-07 |
+| T6 | PREFLIGHT | Provider became ineligible | Not `require_provider`; another eligible provider | QUEUED | Exclude provider for this run; re-route; record reason | FR-RTE-01, FR-MCP-05 |
+| T7 | PREFLIGHT | Provider quota known exhausted | Failover not possible; `reset_at` within horizon | WAITING_CAPACITY | Release slot | FR-CAP-06 |
+| T8 | PREFLIGHT | No usable provider | `require_provider` ineligible, or none eligible, or reset beyond horizon | FAILED | Code per BR-3 (`AUTH_REQUIRED`, `ADAPTER_VERSION_UNVERIFIED`, `QUOTA_EXHAUSTED`, `ELIGIBILITY_NONE`) | FR-MCP-05, FR-AUTH-02, FR-ADP-03 |
+| T9 | LEASED | Process group spawned | Env built from allowlist; profile compiled without downgrade | RUNNING | Start timeout timer; capture stdout events and stderr separately | FR-EXE-01, 05, 07, FR-POL-02 |
+| T10 | LEASED | Compile/spawn error | Adapter cannot compile profile, or spawn fails | FAILED | Release lease; remove empty worktree; code `PROCESS_CRASH` or `PERMISSION_BLOCKED` | FR-POL-02, NFR-REL-02 |
+| T11 | RUNNING | Provider exits successfully | Verification commands supplied | VERIFYING | Parse final result from structured output | FR-ADP-04, FR-EXE-08 |
+| T12 | RUNNING | Provider exits successfully | No verification commands | FINALIZING (pending: success) | Parse result and usage | FR-ADP-04, FR-CAP-01 |
+| T13 | RUNNING | Failure, timeout, crash, policy denial, or cancel | Any | FINALIZING (pending: failure code or cancelled) | Kill process group on timeout/cancel; classify error | FR-EXE-01, FR-POL-05, FR-MCP-07 |
+| T14 | VERIFYING | Verification completes | All commands pass → pending success; else pending `TEST_FAILURE` (BR-16); cancel → pending cancelled | FINALIZING | Run in the worktree under the same profile; store results | FR-EXE-08 |
+| T15 | FINALIZING | Finalization done | Pending success | SUCCEEDED | Changed-file list, diff artifact, post-run checkpoint commit on controller branch; release lease; meta-session head advanced; usage recorded | FR-WS-03, FR-CAP-01 |
+| T16 | FINALIZING | Finalization done | Pending failure | FAILED (one code) | As T15 for the evidence checkpoint; BR-12 decides head; then BR-6 may create a successor run | FR-WS-03, 04, FR-CAP-05, 06, FR-MCP-07 |
+| T17 | FINALIZING | Finalization done | Pending cancelled | CANCELLED | As T15 for the evidence checkpoint; head stays at pre-run checkpoint | FR-WS-03, 04 |
+| T18 | WAITING_CAPACITY | `reset_at` reached | Provider still eligible, else re-route | QUEUED | Re-evaluate eligibility | FR-CAP-06, FR-RTE-01 |
+| T19 | any non-terminal | `cancel_run` | Per §4.3 | CANCELLED (directly, or via FINALIZING when a process or workspace exists) | Per §4.3 | FR-EXE-01 |
+| T20 | any non-terminal | Controller restart | Per WF-8 | Per WF-8 | Reconciliation | FR-EXE-06, NFR-REL-01 |
+
+### 4.3 Cancellation in each state
+
+| State at cancel | Effect | Result | Side effects |
+|---|---|---|---|
+| AWAITING_APPROVAL | Approval record closed as not granted | CANCELLED | None to workspace |
+| QUEUED, WAITING_CAPACITY | Removed from queue | CANCELLED | None to workspace |
+| PREFLIGHT | Probe and smoke test aborted if in flight | CANCELLED | Slot released; preflight cache unaffected |
+| LEASED | Spawn prevented or process terminated if just started | CANCELLED | Lease released; worktree retained, unchanged |
+| RUNNING | Process group terminated (graceful, then forced) | CANCELLED via FINALIZING | Partial changes checkpointed as evidence; head stays at pre-run checkpoint; usage recorded if reported |
+| VERIFYING | Verification process group terminated; agent result kept | CANCELLED via FINALIZING | Same as RUNNING |
+| FINALIZING | Finalization is allowed to finish (**Proposed:** interrupting it risks a half-written checkpoint); the recorded outcome stands | Existing pending outcome | `cancel_run` replies with the pending/terminal state |
+| SUCCEEDED, FAILED, CANCELLED | No-op | Unchanged | None |
+
+A run cancelled while a retry or failover successor is queued cancels the successor chain's active run; terminal predecessors are unaffected (BR-11, BR-17).
+
+### 4.4 Worktree disposition per terminal state
+
+| Terminal state | Workspace condition | Worktree and branch | Meta-session head |
+|---|---|---|---|
+| SUCCEEDED | Changed or unchanged | Retained on controller-owned branch with post-run checkpoint and diff artifact until retention GC (FR-WS-07, NFR-DATA-01); lease released | Advances to post-run checkpoint |
+| FAILED, unchanged | Equals pre-run checkpoint | Retained until GC (a retry successor may reuse it); lease released | Unchanged |
+| FAILED, changed | Differs from pre-run checkpoint | Post-failure state committed to the controller branch as an evidence checkpoint plus diff artifact; never replayed against; lease released | Rolled back to pre-run checkpoint, unless the caller continues via native resume (FR-WS-04) |
+| CANCELLED | Unchanged or changed | As FAILED, by condition | As FAILED, by condition |
+| Any, `inspect-untrusted` on non-Git directory | No worktree exists (FR-WS-06) | Nothing to retain; artifacts only | Not applicable |
+
+Garbage collection deletes artifacts, worktrees and controller branches together (NFR-DATA-01). The operator's checked-out branch and working tree are never modified (FR-WS-05).
+
+## 5. Meta-session lifecycle
+
+*Proposed.* The SRS defines meta-sessions (FR-SES-01..05) but not lifecycle states; these three are a planning choice.
+
+```mermaid
+stateDiagram-v2
+    [*] --> ACTIVE: first delegate_task creates meta-session and run
+    ACTIVE --> IDLE: all runs terminal
+    IDLE --> ACTIVE: continue_task starts a run
+    IDLE --> CLOSED: retention GC removed its artifacts
+    ACTIVE --> ACTIVE: retry or failover successor run
+```
+
+| State | Meaning | `continue_task` | Notes |
+|---|---|---|---|
+| ACTIVE | At least one non-terminal run | Rejected with `INVALID_REQUEST` (BR-17) | Holds the write lease |
+| IDLE | All runs terminal; ledger, checkpoints and provider bindings intact | Accepted (WF-2, WF-3) | Event log is append-only (FR-SES-05) |
+| CLOSED | Retention GC deleted artifacts, worktrees, branches (NFR-DATA-01); the ledger rows needed for audit remain | Rejected with `INVALID_REQUEST` | Closure by operator command is not in the SRS (SRS silent) |
+
+## 6. Adapter availability states
+
+*Defined during planning; the SRS names only `ADAPTER_VERSION_UNVERIFIED` (FR-ADP-03) and requires auth, manifest and health checks to gate eligibility.* The state is derived from preflight (WF-6), evaluated in this precedence order so one reason is reported:
+
+| State | Condition | Eligible | Operator remedy | Source |
+|---|---|---|---|---|
+| DISABLED | Operator config disables it, or adapter blocked (Kimi Code until contract pinned) | No | Enable in config; for Kimi, pin contract | FR-ADP-09 |
+| NO_MANIFEST | No compliance manifest covers the installed version | No | Add or update manifest | FR-POL-07 |
+| ADAPTER_VERSION_UNVERIFIED | Installed version outside validated range | No | `adapters validate <provider>` (WF-9) | FR-ADP-03, FR-OPS-02 |
+| AUTH_REQUIRED | Provider's own status command or smoke call reports no valid login | No | Run the native login command printed by `doctor` | FR-AUTH-02 |
+| DEGRADED | Per-provider circuit breaker open or smoke test failing (**Proposed** name for "circuit-open") | No until breaker half-open probe succeeds | Wait, or inspect `runs show` | FR-CAP-04 |
+| READY | All checks pass | Yes, subject to profile support and quota | none | FR-ADP-02 |
+
+Missing binary or missing automation command maps to DISABLED-by-probe in `doctor` output with its reason (**Proposed**: SRS lists these as preflight checks without naming a state). Transitions: any state is re-derived on a cache miss, version change or TTL expiry (NFR-PERF-02); `adapters validate` moves ADAPTER_VERSION_UNVERIFIED to READY only after the next full preflight passes; a breaker opens on repeated classified failures (FR-CAP-04, M6) and half-opens after a cool-down.
+
+## 7. Input validation rules
+
+All checks run before any side effect, in this order, and the first failure is returned as the single error (FR-MCP-07, FR-MCP-09).
+
+### 7.1 `delegate_task`
+
+| # | Field / rule | Check | Failure code | FR |
+|---|---|---|---|---|
+| V1 | Whole request | Validates against the published JSON Schema; unknown fields rejected (**Proposed**, fail closed) | `INVALID_REQUEST` (planning) | FR-MCP-09, NFR-SEC-05, NFR-SEC-06 |
+| V2 | `objective` | Non-empty string, length bounded by config (value (proposed target)) | `INVALID_REQUEST` | FR-MCP-03, FR-MCP-09 |
+| V3 | `workspace` | Absolute path; symlinks resolved; result lies under an operator-configured allowed root | `INVALID_REQUEST` | FR-POL-10 |
+| V4 | `workspace` and `trust_profile` | Write-capable profile requires a Git repository; `inspect-untrusted` may use a non-Git directory | `INVALID_REQUEST` | FR-WS-06 |
+| V5 | `trust_profile` | One of the five profiles; not above the calling client's ceiling | `INVALID_REQUEST` if unknown name; `PERMISSION_BLOCKED` if above ceiling | FR-MCP-06, FR-POL-01 |
+| V6 | `constraints` | Schema-defined structure; cannot loosen the profile's defaults | `INVALID_REQUEST` (or `PERMISSION_BLOCKED` for loosening) | FR-POL-01 |
+| V7 | `verification_commands` | Array of command strings; **Proposed:** rejected under `inspect-untrusted` (no shell), allowed otherwise and run under the same profile | `INVALID_REQUEST` | FR-EXE-08, FR-POL-01 |
+| V8 | `provider_preference`, `require_provider`, `minimum_capability` | Provider names exist in the adapter registry; `minimum_capability` is a registry value; `require_provider` must be a boolean accompanied by a provider | `INVALID_REQUEST` | FR-MCP-03, FR-MCP-05, FR-ADP-05 |
+| V9 | `wait_seconds` | Integer in `[0, configured max]` | `INVALID_REQUEST` | FR-MCP-03 |
+| V10 | `idempotency_key` | Bounded-length string; replay rules per BR-10 | `INVALID_REQUEST` on mismatch | FR-MCP-08 |
+| V11 | Routing | At least one provider passes BR-1 (or the required one does) | per BR-3 / `ELIGIBILITY_NONE` | FR-RTE-01, FR-MCP-05 |
+
+### 7.2 `continue_task`
+
+| # | Rule | Failure code | FR |
+|---|---|---|---|
+| C1 | Schema validation as V1 | `INVALID_REQUEST` | FR-MCP-09 |
+| C2 | `meta_session_id` exists and is IDLE (not ACTIVE or CLOSED) | `INVALID_REQUEST` | FR-SES-01, BR-17 |
+| C3 | Workspace is taken from the meta-session, then re-checked against current allowed roots (config may have changed) | `INVALID_REQUEST` | FR-POL-10 |
+| C4 | Trust profile defaults to the session's profile; a higher profile is checked against the ceiling as V5 | `PERMISSION_BLOCKED` | FR-MCP-06 |
+| C5 | Provider hints as V8; BR-18 selects native resume vs handoff | per BR-2/BR-3 | FR-SES-03, FR-SES-04, FR-MCP-05 |
+| C6 | Idempotency key: the SRS defines it only for `delegate_task`; `continue_task` accepts none (SRS silent) | n/a | FR-MCP-08 |
+
+### 7.3 Other tools
+
+`get_run`, `get_artifacts`, `cancel_run`, `explain_route` and `get_capacity` validate IDs against the schema (V1) and an unknown ID returns `INVALID_REQUEST` (**Proposed**; no "not found" code exists in the taxonomy; SRS silent).
+
+## 8. Workflows
+
+### WF-1 Delegate task (run lifecycle)
+
+- **Actors:** Orchestrator, COMP-MCP, COMP-POL, COMP-LED, COMP-RTE, COMP-ADP, COMP-WS, COMP-EXE; Operator for privileged runs.
+- **Preconditions:** Controller running via `serve`; target workspace under an allowed root; at least one adapter READY (else failure below).
+- **Realizes:** FR-MCP-01, 03, 04, 05, 06, 07, 08, 09; FR-POL-01, 02, 04, 05, 07, 10; FR-ADP-02, 03; FR-WS-01, 02, 03, 06; FR-EXE-01, 02, 05, 07, 08; FR-CAP-04; FR-RTE-01; FR-TEL-01; NFR-OBS-01, NFR-SEC-06, NFR-REL-02, NFR-PERF-01.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant O as Orchestrator
+    participant M as COMP-MCP
+    participant P as COMP-POL
+    participant L as COMP-LED
+    participant R as COMP-RTE
+    participant A as COMP-ADP
+    participant W as COMP-WS
+    participant X as COMP-EXE
+    participant C as Provider CLI
+    O->>M: delegate_task(objective, workspace, profile, hints)
+    M->>M: validate schema (V1..V10)
+    M->>P: check ceiling, allowed root, profile
+    P-->>M: ok / PERMISSION_BLOCKED
+    M->>L: idempotency lookup, create meta_session + run (QUEUED)
+    M->>R: route(eligibility filter, then score)
+    R->>L: persist route_decision
+    M-->>O: run_id, meta_session_id (or after wait_seconds)
+    R->>A: preflight (cached) for chosen provider
+    A-->>R: READY or ineligible reason
+    R->>W: acquire worktree + write lease from base checkpoint
+    W-->>R: LEASED
+    R->>X: run (compiled profile, allowlisted env)
+    X->>C: spawn in own process group
+    C-->>X: structured events (stdout), diagnostics (stderr)
+    X->>A: parse events, session id, usage
+    X->>X: run verification commands (if supplied)
+    X->>W: finalize: changed files, diff, post-run checkpoint
+    W->>L: checkpoint, artifacts, events, usage
+    O->>M: get_run(run_id)
+    M-->>O: normalized envelope (status, route reasons, summary, artifacts)
+```
+
+- **Normal path:** validation passes (T1) → QUEUED → PREFLIGHT → LEASED → RUNNING → [VERIFYING] → FINALIZING → SUCCEEDED (T4..T15). Each step appends a `run_event`. The orchestrator polls `get_run` or uses `wait_seconds` (BR-22).
+- **Alternate paths:** (a) `privileged` profile: T2, run waits in AWAITING_APPROVAL until WF-7. (b) Same idempotency key replayed: original run returned (BR-10). (c) Preferred provider ineligible at PREFLIGHT: re-route (T6) unless `require_provider`. (d) Quota known exhausted: WAITING_CAPACITY (T7, BR-9). (e) Non-Git workspace with `inspect-untrusted`: no worktree, read-only (FR-WS-06). (f) Cancel at any point: WF-4.
+- **Failure paths:** invalid input → `INVALID_REQUEST` (no run created); above ceiling → `PERMISSION_BLOCKED`; no eligible provider → `ELIGIBILITY_NONE`; required provider ineligible → per BR-3; auth lost mid-run → `AUTH_REQUIRED` naming the native login command (FR-AUTH-02); denied operation → `PERMISSION_BLOCKED` or `SANDBOX_VIOLATION` without hanging (FR-POL-05); `PROCESS_TIMEOUT`, `PROCESS_CRASH`, `OUTPUT_PROTOCOL_ERROR`, `TOOL_FAILURE`; verification failure → `TEST_FAILURE`. Further handling in WF-5.
+- **Postconditions:** the run is terminal or, if the caller did not wait, in a known non-terminal state; the ledger holds events, route decision, policy snapshot and adapter version (NFR-OBS-01); the operator's branch is untouched (FR-WS-05); the lease is released at FINALIZING.
+
+### WF-2 Continue on the same provider
+
+- **Actors:** Orchestrator, COMP-MCP, COMP-LED, COMP-WS, COMP-ADP, COMP-EXE.
+- **Preconditions:** Meta-session IDLE; a provider binding with a native session ID exists for an eligible adapter (BR-18).
+- **Realizes:** FR-SES-01, 02, 03, 05; FR-MCP-03, 05, 09; FR-ADP-04; FR-WS-01, 02, 03.
+- **Normal path:** `continue_task(meta_session_id, instruction)` → validation (§7.2) → T1 → same lifecycle as WF-1 with the adapter's `resume` using the stored native session ID. **Proposed:** the new run takes a new lease on the meta-session's worktree when it exists at the head checkpoint, otherwise a fresh worktree from the head checkpoint; rationale: native resume may be tied to the working directory (**Assumption**, to be checked per provider in M5). The new native session ID, if changed, updates the binding.
+- **Alternate paths:** caller names another provider or bound provider is ineligible → WF-3. Native resume rejected by the provider (stale or expired session) → `OUTPUT_PROTOCOL_ERROR` or the code the adapter classifies; **Proposed:** the controller does not auto-fall back to handoff on a rejected resume, because that would change the provider-visible context unnoticed (SRS silent).
+- **Failure paths:** session not IDLE or CLOSED → `INVALID_REQUEST`; `require_provider` provider ineligible → BR-3 code; run failures as WF-5.
+- **Postconditions:** an additional run in the same meta-session, head advanced on success, decision/event log appended.
+
+### WF-3 Cross-provider handoff
+
+- **Actors:** Orchestrator, COMP-MCP, COMP-LED, COMP-RTE, COMP-WS, COMP-ADP, COMP-EXE; target provider CLI.
+- **Preconditions:** Meta-session IDLE with canonical state (objective, constraints, decisions, base/head, changed files, verification results, open work); a different eligible provider exists, or the caller named one.
+- **Realizes:** FR-SES-02, 04, 05; FR-MCP-05; FR-RTE-01; FR-WS-01, 02, 03; FR-POL-02; FR-ADP-04, 10; BO-4.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant O as Orchestrator
+    participant M as COMP-MCP
+    participant L as COMP-LED
+    participant R as COMP-RTE
+    participant W as COMP-WS
+    participant A as COMP-ADP (provider B)
+    participant X as COMP-EXE
+    participant B as Provider B CLI
+    O->>M: continue_task(session, instruction, provider B or any)
+    M->>L: load canonical state, head checkpoint, bindings
+    M->>R: route excluding ineligible; BR-18 decides handoff
+    R-->>M: provider B (route reasons)
+    M->>L: regenerate handoff view from append-only events
+    L-->>M: handoff bundle (goal, constraints, decisions, base/head, changed files, diff excerpts, diagnostics, failed attempts, open tasks, paths)
+    M->>W: lease worktree at head checkpoint
+    W-->>M: LEASED
+    M->>A: compile profile + prompt = instruction + bundle ("inspect the repository first")
+    A->>X: argv, allowlisted env
+    X->>B: spawn (fresh session, no transcript import)
+    B-->>X: structured events, new native session id
+    X->>L: new provider_binding, usage (harness and backing provider), events
+    X->>W: finalize: diff, post-run checkpoint
+    M-->>O: envelope (provider B, route reasons, summary)
+```
+
+- **Normal path:** as WF-1 from T1, with a handoff bundle built solely from controller-owned evidence; the agent is told to inspect the repository, and no provider transcript file is read (FR-SES-04). The new provider gets a fresh native session; a second binding is added to the meta-session.
+- **Alternate paths:** (a) Failover after `QUOTA_EXHAUSTED` (BR-8) uses the same mechanism, with the failed attempt listed in the bundle. (b) Provider B is a multi-vendor harness (OpenCode, Cursor): the backing provider and model are recorded alongside the harness (FR-ADP-10). (c) Earlier work left uncommitted-then-rolled-back: the evidence diff is referenced in the bundle.
+- **Failure paths:** target provider cannot compile the session's trust profile → ineligible (FR-POL-02, BR-5), `ELIGIBILITY_NONE` if none remains; `require_provider` ineligible → BR-3; bundle cannot be generated from the ledger → `INVALID_REQUEST` is **not** used; **Proposed:** `TOOL_FAILURE` with a message, since the fault is internal and fails closed.
+- **Postconditions:** a second binding exists; the meta-session head reflects provider B's checkpoint; provider A's session is unchanged and still resumable.
+
+### WF-4 Cancel run
+
+- **Actors:** Orchestrator (`cancel_run`) or Operator (`runs cancel`), COMP-MCP or COMP-OPS, COMP-EXE, COMP-WS, COMP-LED.
+- **Preconditions:** Valid `run_id`.
+- **Realizes:** FR-MCP-01, FR-EXE-01, FR-WS-03, FR-WS-04, FR-TEL-01, NFR-REL-02.
+- **Normal path:** `cancel_run` → effect per §4.3 table → CANCELLED, failure code `CANCELLED`, evidence checkpoint if a workspace changed, lease released.
+- **Alternate paths:** run already terminal → no-op returning terminal state (BR-11); run in FINALIZING → outcome stands. If a process ignores the graceful signal, forced kill after the grace period (FR-EXE-01).
+- **Failure paths:** unknown `run_id` → `INVALID_REQUEST` (SRS silent). A process that cannot be killed is a controller fault: the run ends `PROCESS_CRASH` and the adapter is marked DEGRADED (**Proposed**).
+- **Postconditions:** no live process group for the run; slot released; worktree disposition per §4.4.
+
+### WF-5 Failure handling and retry
+
+- **Actors:** COMP-EXE, COMP-ADP (classifier), COMP-RTE, COMP-WS, COMP-LED.
+- **Preconditions:** A run enters FINALIZING with a pending failure.
+- **Realizes:** FR-MCP-07, FR-CAP-05, 06, FR-WS-04, FR-POL-05, FR-AUTH-02, FR-ADP-04, FR-CAP-04; NFR-REL-02.
+- **Normal path:** the adapter classifies the error from native structured output (never free-text matching, FR-ADP-04) into one taxonomy code; the controller diffs the worktree against the pre-run checkpoint; then applies BR-6 order:
+
+| Code | Workspace unchanged | Workspace changed |
+|---|---|---|
+| `RATE_LIMIT_TRANSIENT`, `PROVIDER_OVERLOADED` | Automatic retry as a successor run with capped backoff and jitter (BR-7) | Preserve evidence, roll back head, return failure; no auto retry (FR-WS-04) |
+| `PROCESS_CRASH` | Automatic retry only if before any mutation (BR-7) | As above |
+| `QUOTA_EXHAUSTED` | Failover (BR-8), else WAITING_CAPACITY (BR-9), else return | Roll back head, then same ladder |
+| `AUTH_REQUIRED` | Return code with provider and native login command; adapter becomes AUTH_REQUIRED | Same |
+| `ADAPTER_VERSION_UNVERIFIED`, `MODEL_UNAVAILABLE` | Return code; adapter ineligible / model excluded (**Proposed** for `MODEL_UNAVAILABLE`) | Same |
+| `PERMISSION_BLOCKED`, `SANDBOX_VIOLATION` | Return code; re-delegation with a broader profile is the orchestrator's decision ([ADR-0004](../adr/0004-trust-profiles-no-bypass-flags.md)) | Same |
+| `PROCESS_TIMEOUT`, `OUTPUT_PROTOCOL_ERROR`, `TOOL_FAILURE`, `TEST_FAILURE` | Return code; not automatically retried (not in FR-CAP-05's list) | Same |
+
+- **Alternate paths:** native resume of the failed session instead of rollback when the caller issues `continue_task` (FR-WS-04); retry attempts exhausted → return the last failure code; breaker opens after repeated failures (FR-CAP-04, M6).
+- **Failure paths:** unclassifiable output → `OUTPUT_PROTOCOL_ERROR`, fail closed (BR-15).
+- **Postconditions:** exactly one code on each FAILED run (FR-MCP-07); successor runs link to predecessors; no request replayed against mutated state.
+
+### WF-6 Adapter preflight and doctor
+
+- **Actors:** Operator (`doctor`), COMP-OPS, COMP-ADP, COMP-POL, COMP-RTE.
+- **Preconditions:** Provider CLIs installed and logged in natively by the operator; manifests present for the versions in use.
+- **Realizes:** FR-ADP-02, 03, 07, 09, FR-AUTH-01, 02, FR-POL-07, FR-OPS-01, NFR-PERF-02, UJ-1.
+- **Normal path:** for each adapter, in the FR-ADP-02 order: binary present → version → automation command → structured-output support → required permission/sandbox flags → auth status (provider's own status command) → harmless structured-output smoke test. Manifest coverage and DISABLED are checked with them. `doctor` prints each adapter's state (§6), versions, and for AUTH_REQUIRED the native login command. Results are cached and invalidated on version change or TTL (NFR-PERF-02). The same preflight runs at PREFLIGHT for a run.
+- **Alternate paths:** a failed step stops later steps and reports that step; the smoke test is skipped when auth is missing (no login is ever attempted, FR-AUTH-01).
+- **Failure paths:** states other than READY, with reason. At run time they surface as BR-3 codes.
+- **Postconditions:** adapter states persisted (`adapter_version`, `provider_health`); no provider config modified (FR-POL-08).
+
+### WF-7 Privileged approval
+
+- **Actors:** Orchestrator (requests), Operator (approves), COMP-POL, COMP-OPS, COMP-LED.
+- **Preconditions:** The calling client's ceiling allows requesting `privileged` (BR-13).
+- **Realizes:** FR-POL-03, FR-POL-09, FR-MCP-06, FR-OPS-02, UJ-6, BO-3.
+- **Normal path:** `delegate_task` with `privileged` → T2, run in AWAITING_APPROVAL with the requested scope (files, shell, network, hooks/MCP) recorded → operator runs `runs show <id>` to review → `approve <run_id>` → approval record with timestamp and scope → T3 → WF-1 continues; bypass flags emitted only now and only within scope (BR-14).
+- **Alternate paths:** operator runs `deny <run_id>`: denial recorded, run ends CANCELLED (FR-POL-09, FR-OPS-02). Operator never decides: the run stays AWAITING_APPROVAL until denied or cancelled (no expiry). Orchestrator cancels while waiting: CANCELLED, no side effects.
+- **Failure paths:** client ceiling below `privileged` → `PERMISSION_BLOCKED`; `approve` for a run not AWAITING_APPROVAL → CLI error (no run state change); an MCP attempt to approve does not exist as a tool (FR-MCP-06).
+- **Postconditions:** an `approval` row ties the approval to exactly one run.
+
+### WF-8 Startup reconciliation
+
+- **Actors:** Controller (COMP-LED, COMP-EXE, COMP-WS), Operator (reads result via `runs`).
+- **Preconditions:** Controller starts and finds runs not in SUCCEEDED/FAILED/CANCELLED, possibly after `SIGKILL`.
+- **Realizes:** FR-EXE-06, NFR-REL-01, FR-WS-02, 03, 04, FR-TEL-01, NFR-SEC-06.
+- **Normal path:** before serving MCP, scan runs by state:
+
+| State found | Action | Outcome |
+|---|---|---|
+| AWAITING_APPROVAL, QUEUED, WAITING_CAPACITY | No process or lease exists; keep | Resume in queue, order preserved |
+| PREFLIGHT, LEASED (no process spawned) | Release any lease; discard empty worktree | Back to QUEUED (**Proposed**: preflight and lease are repeatable without side effects) |
+| RUNNING | Process group dead → FAILED `PROCESS_CRASH`, cause `controller_restart`; compare worktree with pre-run checkpoint | Unchanged: eligible for automatic retry (BR-7). Changed: evidence checkpoint, head rolled back, no retry (FR-WS-04) |
+| VERIFYING | Same as RUNNING (verification may have side effects, so it is not re-run) | FAILED `PROCESS_CRASH`, cause `controller_restart`; changes preserved as evidence |
+| FINALIZING | Redo finalization from worktree state (checkpoint creation is repeatable) | The pending outcome is applied; terminal |
+
+- **Alternate paths:** a process group still alive after restart is terminated before the worktree is assessed, because the new controller cannot reattach to its streams (FR-EXE-06). Stale leases are released. An interrupted ledger transaction is rolled back by SQLite, leaving the last committed state.
+- **Failure paths:** worktree missing or unreadable → run FAILED `TOOL_FAILURE`, meta-session left IDLE; ledger cannot be opened → controller refuses to serve (NFR-SEC-06).
+- **Postconditions:** every run is terminal or correctly queued/resumed (NFR-REL-01); a `run_event` records each reconciliation action; no replay against mutated state.
+
+### WF-9 Adapter version revalidation
+
+- **Actors:** Operator, COMP-OPS, COMP-ADP, COMP-POL.
+- **Preconditions:** Provider CLI auto-updated or was upgraded by the operator; adapter's validated range no longer covers it (UJ-7).
+- **Realizes:** FR-ADP-03, FR-ADP-11, FR-OPS-02, FR-POL-07, NFR-PERF-02, BO-6.
+- **Normal path:** the next preflight sees a new version (cache invalidated, BR-20) → ADAPTER_VERSION_UNVERIFIED, adapter ineligible, `doctor` highlights it → the operator runs `adapters validate <provider>` → the adapter's conformance suite runs (success, task failure, native resume, auth missing, malformed output, cancellation) → on pass, the version is recorded as accepted in `adapter_version` → next preflight → READY.
+- **Alternate paths:** runs already RUNNING are not interrupted. QUEUED runs are re-evaluated at PREFLIGHT and re-routed (T6) or failed with `ADAPTER_VERSION_UNVERIFIED` if `require_provider`. A manifest not covering the new version yields NO_MANIFEST first (§6 precedence); the operator updates the manifest as part of acceptance.
+- **Failure paths:** conformance fails → the version is not accepted; adapter stays ADAPTER_VERSION_UNVERIFIED and the failing cases are printed. No fallback to "best effort" (ADR-0009).
+- **Postconditions:** acceptance is an auditable record of the version, time and suite result; routing never used the unverified version.
+
+## 9. Traceability summary
+
+| Workflow | User journey | Capabilities | Primary requirements |
+|---|---|---|---|
+| WF-1 | UJ-2 | CAP-1, 2, 3, 4, 6 | FR-MCP-03..09, FR-POL, FR-WS-01..03, FR-EXE |
+| WF-2 | UJ-3 | CAP-5 | FR-SES-03 |
+| WF-3 | UJ-3 | CAP-5, 6 | FR-SES-04, FR-MCP-05 |
+| WF-4 | UJ-2 | CAP-1 | FR-EXE-01 |
+| WF-5 | UJ-4 | CAP-7 | FR-CAP-05, 06, FR-WS-04 |
+| WF-6 | UJ-1, UJ-4 | CAP-2, 9 | FR-ADP-02, FR-OPS-01 |
+| WF-7 | UJ-6 | CAP-3, 9 | FR-POL-09, FR-OPS-02 |
+| WF-8 | (reliability) | CAP-1, 8 | FR-EXE-06, NFR-REL-01 |
+| WF-9 | UJ-7 | CAP-2, 9 | FR-ADP-03, FR-OPS-02 |
+
+Milestone availability follows the SRS milestone column (for example WF-7 from M3, WF-5 automatic retry and failover from M6, WF-3 from M5, WF-9 `adapters validate` from M4); see [ROADMAP](../ROADMAP.md#6-milestones).
+
+## 10. Open items in this document
+
+Items marked **Proposed** or **Assumption** above are candidates for confirmation in M1–M2 design review. Gaps in the SRS discovered while writing this document are reported to the SRS owner rather than resolved here.

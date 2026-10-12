@@ -6,13 +6,57 @@ Instructions for AI coding agents (Claude Code, Codex, Cursor, Grok Build, Kimi 
 
 Switchboard is a planned headless controller that lets one primary orchestrating agent delegate coding work to several AI coding CLIs (Claude Code, Codex, Grok Build, Antigravity, Cursor, OpenCode, Kimi Code) through their documented automation surfaces, behind a single MCP tool surface.
 
-The repository currently contains research only. There is no application code yet.
+The repository currently contains research and the specification set only. There is no application code yet.
+
+## Start here
+
+1. Read the canonical roadmap: [docs/ROADMAP.md](docs/ROADMAP.md). It owns scope, priorities, sequencing, status and completion criteria.
+2. Before planning or implementing anything, read the roadmap's task entry for your work and every requirement, design section and ADR it links.
+3. If a task is not on the roadmap, it is not in scope yet. Propose it (PRD and SRS first, then a roadmap entry) rather than building it.
+
+## Which document owns what
+
+| Subject | Owner | Path |
+|---|---|---|
+| Scope, priorities, sequencing, status | Roadmap | [docs/ROADMAP.md](docs/ROADMAP.md) |
+| Business problem and outcomes (`BO-*`) | BRD | [docs/requirements/BRD.md](docs/requirements/BRD.md) |
+| Users, journeys (`UJ-*`), capabilities (`CAP-*`), non-goals | PRD | [docs/requirements/PRD.md](docs/requirements/PRD.md) |
+| Workflows (`WF-*`), business rules (`BR-*`), run state machine | FRD | [docs/requirements/FRD.md](docs/requirements/FRD.md) |
+| Every requirement ID (`FR-*`, `NFR-*`) | SRS | [docs/requirements/SRS.md](docs/requirements/SRS.md) |
+| Components (`COMP-*`), boundaries, deployment, threats | HLD | [docs/design/HLD.md](docs/design/HLD.md) |
+| Component collaboration, requirement→design traceability | SDD | [docs/design/SDD.md](docs/design/SDD.md) |
+| Technology choices, testing strategy, adapter strategy | TDD | [docs/design/TDD.md](docs/design/TDD.md) |
+| Schemas, interfaces, tool contracts, algorithms | LLD | [docs/design/LLD.md](docs/design/LLD.md) |
+| Why architectural decisions were made | ADRs | [docs/adr/](docs/adr/README.md) |
+
+Other documents cite IDs from the owner instead of restating content. Never write a second definition of a requirement, state machine or schema.
+
+## Keeping documentation in sync
+
+- Update affected documents **in the same change** as the code. When you finish, block or descope roadmap work, update its status in [ROADMAP §6](docs/ROADMAP.md#6-milestones) with evidence (a test, a path, a PR link). Never mark work done without evidence.
+- Any change to a component boundary, persistence format, trust or security boundary, external interface or the technology stack needs a new ADR in [docs/adr/](docs/adr/README.md). Do not edit an accepted ADR's decision; supersede it with a new one and update the old one's status line.
+- Requirement IDs are stable: never renumber or reuse them. Withdraw a requirement by setting its priority to `Withdrawn`.
+- Run `node scripts/check-docs.mjs` before committing documentation changes. It checks links, anchors, requirement IDs, roadmap coverage and SDD traceability.
+
+## Conflicts, assumptions and superseded material
+
+- When documents disagree, the owner in the table above wins; fix the other document in the same change. When the owner itself looks wrong, say so and fix it with an ADR or roadmap note, not silently.
+- Precedence of sources: explicit decisions by zemdregon, then this file, then accepted ADRs, then the owning specification, then research. Code is evidence of what is implemented, not of what is intended.
+- Label anything you choose without a source as an **Assumption** or **Proposed**, and add open questions to [ROADMAP §7](docs/ROADMAP.md#7-risks-blockers-and-open-questions). Do not present invented numbers, dates, approvals or compliance obligations as fact.
+- Decisions agents make are "Delegated", not owner-approved. Never imply that zemdregon approved something zemdregon did not approve.
+- Never delete historical material. Mark superseded documents with a banner linking to their replacement, as on [the original research blueprint](docs/research/headless-ai-coding-controller.md).
 
 ## Repository layout
 
 | Path | Contents |
 |---|---|
-| `docs/research/` | Research inputs. Historical record; do not rewrite their findings. Mark them superseded rather than editing their conclusions. |
+| `docs/ROADMAP.md` | Canonical roadmap. |
+| `docs/requirements/` | BRD, PRD, FRD, SRS. |
+| `docs/design/` | HLD, SDD, TDD, LLD. |
+| `docs/adr/` | Architecture decision records and their index. |
+| `docs/research/` | Research inputs. Historical record; do not rewrite their findings. |
+| `scripts/check-docs.mjs` | Documentation consistency checker (Node.js, no dependencies). |
+| `CLAUDE.md` | Imports this file for Claude Code. Do not add separate instructions there. |
 | `LICENSE` | Apache License 2.0. |
 
 ## Subagent routing and orchestration
