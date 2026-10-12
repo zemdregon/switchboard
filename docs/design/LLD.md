@@ -393,14 +393,14 @@ returns the current non-terminal envelope on expiry.
     "meta_session_id": {"type":"string"}, "instruction": {"type":"string","maxLength":32768},
     "routing": {"$ref":"#/$defs/routing"},      // different provider => handoff bundle (FR-SES-04)
     "trust_profile": {"$ref":"#/$defs/trust_profile"},   // default: previous run's; may not exceed client max
-    "wait_seconds": {"type":"integer","minimum":0,"maximum":60}, "idempotency_key": {"type":"string"} } },
+    "wait_seconds": {"type":"integer","minimum":0,"maximum":60} } },
   "output": "envelope" }
 ```
 
-*Reconciled in M1:* the `idempotency_key` property above conflicts with [FRD §7.2](../requirements/FRD.md#72-continue_task)
-C6 and FR-MCP-08, which define keys for `delegate_task` only. The FRD wins: `continue_task` accepts no key, and the M1
-lifecycle rejects a key on a request that names an existing meta-session. Remove the property when T2.4 publishes the
-schema; adding it back needs an SRS change first.
+*Reconciled in M1, applied in T2.4:* an earlier draft gave `continue_task` an `idempotency_key`, which conflicts with
+[FRD §7.2](../requirements/FRD.md#72-continue_task) C6 and FR-MCP-08 (keys for `delegate_task` only). The FRD wins: the
+published schema (`src/mcp/schemas.ts`) has no key, so a key is rejected as an unknown property (`INVALID_REQUEST`).
+Adding it back needs an SRS change first.
 
 Fails `INVALID_REQUEST` if the session has a non-terminal run holding the lease.
 

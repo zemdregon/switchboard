@@ -17,6 +17,17 @@
  *   pre-run checkpoint (FRD §4.4); the run's own worktree keeps the evidence commit until GC. No automatic retry in
  *   M1: retry eligibility (BR-7) is recorded as an event only; successor runs arrive with FR-CAP-05 in M6.
  * - Controller-side exceptions are contained per run (NFR-REL-02) and end that run `TOOL_FAILURE`.
+ *
+ * T2.4 additions (Proposed, Delegated):
+ * - With `eligibility` set, PREFLIGHT runs the shared stage-1 filter (`src/routing`, FR-RTE-01) for the run's provider
+ *   as a required provider instead of the M1 probe/auth checks, so version, manifest, enablement, platform, auth and
+ *   profile support are all re-checked at dispatch (FRD BR-20, T8) and an exclusion ends the run with the FRD BR-3 code.
+ *   `checkEligibility` exposes the same evaluation to the MCP layer for admission (FRD V11). Without `eligibility` the M1
+ *   checks remain (kept for the M1 unit tests; `serve` must always pass it).
+ * - Callers may supply the idempotency `requestHash` (canonical validated tool input, BR-10) and a route decision that
+ *   is inserted in the admission transaction (FRD T1 side effects).
+ * - Native session ids reported by a run are recorded in `provider_binding`; a continuation naming one runs through the
+ *   adapter's `resumeArgs` (WF-2, FR-SES-03).
  */
 import { readFileSync } from "node:fs";
 import { realpath } from "node:fs/promises";
@@ -30,13 +41,22 @@ import {
   isIneligible,
   type NormalizedEvent,
   type ProbeRunner,
+  type ProviderAdapter,
   type ProviderId,
   type ResolvedProfile,
   startAdapterRun,
 } from "../adapters/index.js";
 import type { ArtifactStore } from "../artifacts/index.js";
 import { isUnderAllowedRoot, TRUST_PROFILES } from "../config/index.js";
-import type { Ledger, RunFieldPatch, RunRecord, RunState, TrustProfile } from "../ledger/index.js";
+import type { Ledger, NewRouteDecision, RunFieldPatch, RunRecord, RunState, TrustProfile } from "../ledger/index.js";
+import {
+  type CollectDeps,
+  collectFacts,
+  type EligibilityDecision,
+  type EligibilityInput,
+  failureCodeForReason,
+  filterEligible,
+} from "../routing/index.js";
 import { gitText } from "../workspace/git.js";
 import type { PreparedWorkspace, WorkspaceManager } from "../workspace/index.js";
 import { requestHash } from "./request.js";
@@ -87,6 +107,41 @@ export interface SubmitRequest {
   readonly priority?: RunPriority;
   /** New meta-sessions only (FR-MCP-08; FRD C6). */
   readonly idempotencyKey?: string;
+  /**
+   * Idempotency hash supplied by the caller (BR-10: canonical validated tool input, independent of the routed
+   * provider). Defaults to a hash of the stored request.
+   */
+  readonly requestHash?: string;
+  /** Route decision persisted with the run in the admission transaction (FRD T1). */
+  readonly routeDecision?: Omit<NewRouteDecision, "runId">;
+  /** Continue this provider-native session (WF-2, FR-SES-03); requires `metaSessionId`. */
+  readonly resume?: { readonly nativeSessionId: string };
+}
+
+/** Admission-time eligibility question (FRD V11); answered by the shared stage-1 filter. */
+export interface EligibilityQuestion {
+  readonly candidates: readonly ProviderId[];
+  readonly requiredProvider?: ProviderId;
+  readonly trustProfile: TrustProfile;
+  readonly clientMaxProfile: TrustProfile;
+  /** Canonical workspace path; used only to build the pure compile request. */
+  readonly cwd: string;
+}
+
+export interface MetaSessionContext {
+  readonly workspace: string;
+  readonly constraints: readonly string[];
+  readonly trustProfile: TrustProfile;
+  readonly provider: ProviderId;
+  readonly priority: RunPriority;
+  readonly clientId: string;
+  /** Non-terminal run holding the session, if any (BR-17). */
+  readonly activeRunId: string | undefined;
+}
+
+export interface EligibilityAnswer {
+  readonly input: EligibilityInput;
+  readonly decision: EligibilityDecision;
 }
 
 export interface SubmitResult {
@@ -106,6 +161,8 @@ interface StoredRequest {
   provider: ProviderId;
   priority: RunPriority;
   meta_session_id?: string;
+  /** Native session to resume (WF-2). */
+  resume_native_session_id?: string;
 }
 
 export interface TransitionNotice {
@@ -138,7 +195,21 @@ export interface RunLifecycleOptions {
   readonly onTransition?: (notice: TransitionNotice) => void;
   /** Injectable clock for `started_at` / `finished_at`. */
   readonly now?: () => Date;
+  /**
+   * Stage-1 eligibility (FR-RTE-01) at PREFLIGHT and for `checkEligibility`. The registry and probe runner are the
+   * lifecycle's own. `serve` must set it (fail closed, NFR-SEC-06); it is optional only for the M1 unit tests.
+   */
+  readonly eligibility?: Omit<CollectDeps, "registry" | "runner">;
 }
+
+type PreflightVerdict =
+  | { readonly ok: true; readonly binaryVersion: string | null }
+  | {
+      readonly ok: false;
+      readonly code: FailureCode;
+      readonly detail: string;
+      readonly extra?: Record<string, unknown>;
+    };
 
 type Pending =
   | { readonly kind: "success" }
@@ -204,7 +275,7 @@ export class RunLifecycle {
    */
   async submit(req: SubmitRequest): Promise<SubmitResult> {
     const stored = await this.validate(req);
-    const hash = requestHash(stored);
+    const hash = req.requestHash ?? requestHash(stored);
     const initial: RunState = req.trustProfile === "privileged" ? "AWAITING_APPROVAL" : "QUEUED";
     const profile = this.opts.resolveProfile(req.trustProfile);
 
@@ -245,6 +316,7 @@ export class RunLifecycle {
         provider: req.provider,
         priority: PRIORITY_VALUES[stored.priority],
       });
+      if (req.routeDecision) this.ledger.insertRouteDecision({ ...req.routeDecision, runId: run.id });
       const rule = initial === "QUEUED" ? "T1" : "T2";
       this.ledger.appendRunEvent({
         runId: run.id,
@@ -290,6 +362,76 @@ export class RunLifecycle {
     });
   }
 
+  /** The policy snapshot a profile resolves to (COMP-POL stand-in shared with the MCP layer). */
+  resolveProfile(name: TrustProfile): ResolvedProfile {
+    return this.opts.resolveProfile(name);
+  }
+
+  /** True when PREFLIGHT gates on the shared eligibility filter (`eligibility` option set). */
+  get gatesEligibility(): boolean {
+    return this.opts.eligibility !== undefined;
+  }
+
+  /** FRD V3/V4 (and C3): the canonical workspace path, or `LifecycleError` INVALID_REQUEST. */
+  canonicalWorkspace(workspace: string, profile: TrustProfile): Promise<string> {
+    return this.checkWorkspace(workspace, profile);
+  }
+
+  /**
+   * What a continuation inherits from the meta-session's latest run (FRD C3/C4, WF-2): workspace, constraints, profile,
+   * provider, priority and the client that owns it. Undefined for an unknown or empty meta-session.
+   */
+  metaSessionContext(metaSessionId: string): MetaSessionContext | undefined {
+    const runs = this.ledger.listRunsForMetaSession(metaSessionId);
+    const last = runs.at(-1);
+    if (!last) return undefined;
+    const stored = JSON.parse(last.request_json) as StoredRequest;
+    return {
+      workspace: stored.workspace,
+      constraints: stored.constraints,
+      trustProfile: last.trust_profile,
+      provider: stored.provider,
+      priority: stored.priority,
+      clientId: last.client_id,
+      activeRunId: runs.find((r) => !isTerminal(r.state))?.id,
+    };
+  }
+
+  /**
+   * BR-10 lookup before routing: the run already admitted for `(clientId, key)` when its hash matches, undefined when
+   * the key is unused, `LifecycleError` INVALID_REQUEST when the key was used with different parameters.
+   */
+  findIdempotentRun(clientId: string, key: string, hash: string): RunRecord | undefined {
+    const prior = this.ledger.findRunByIdempotencyKey(clientId, key);
+    if (prior && prior.request_hash !== hash) {
+      throw new LifecycleError("INVALID_REQUEST", "idempotency key reused with different parameters");
+    }
+    return prior;
+  }
+
+  /** Run the stage-1 eligibility filter with this lifecycle's registry, probe runner and eligibility deps. */
+  async checkEligibility(q: EligibilityQuestion): Promise<EligibilityAnswer> {
+    if (!this.opts.eligibility) throw new Error("eligibility dependencies are not configured");
+    const profile = this.opts.resolveProfile(q.trustProfile);
+    const input = await collectFacts(
+      {
+        candidates: q.candidates,
+        ...(q.requiredProvider !== undefined ? { requiredProvider: q.requiredProvider } : {}),
+        trustProfile: q.trustProfile,
+        clientMaxProfile: q.clientMaxProfile,
+        profile,
+        requirements: {
+          network: profile.network,
+          writable: q.trustProfile !== "inspect-untrusted",
+          ...(profile.shellAllowlist ? { shellAllowlist: profile.shellAllowlist } : {}),
+        },
+        cwd: q.cwd,
+      },
+      { ...this.opts.eligibility, registry: this.opts.adapters, runner: this.runner },
+    );
+    return { input, decision: filterEligible(input) };
+  }
+
   // ---- admission ----------------------------------------------------------------------------------------------
 
   private async validate(req: SubmitRequest): Promise<StoredRequest> {
@@ -304,6 +446,12 @@ export class RunLifecycle {
     if (!(priority in PRIORITY_VALUES)) bad(`unknown priority`);
     const constraints = [...(req.constraints ?? [])];
     if (constraints.some((c) => typeof c !== "string")) bad("constraints must be strings");
+    if (req.resume !== undefined) {
+      if (req.metaSessionId === undefined) bad("resume applies to an existing meta-session only");
+      if (typeof req.resume.nativeSessionId !== "string" || req.resume.nativeSessionId.length === 0) {
+        bad("resume requires a native session id");
+      }
+    }
     if (req.idempotencyKey !== undefined) {
       if (req.metaSessionId !== undefined) bad("idempotency keys apply to new meta-sessions only");
       if (req.idempotencyKey.length < 8 || req.idempotencyKey.length > 128) bad("idempotency key length out of range");
@@ -328,6 +476,7 @@ export class RunLifecycle {
       provider: req.provider,
       priority,
       ...(req.metaSessionId !== undefined ? { meta_session_id: req.metaSessionId } : {}),
+      ...(req.resume !== undefined ? { resume_native_session_id: req.resume.nativeSessionId } : {}),
     };
   }
 
@@ -401,23 +550,15 @@ export class RunLifecycle {
     if (!adapter) return this.fail(runId, "ELIGIBILITY_NONE", `adapter ${req.provider} is not registered`);
 
     // PREFLIGHT (WF-6 order: probe, then auth; no login is ever attempted).
-    const probe = await adapter.probe(this.runner);
+    const verdict = this.opts.eligibility
+      ? await this.preflightEligibility(req, run0)
+      : await this.preflightM1(req, adapter);
     if (exec.cancelRequested) return this.cancelEarly(runId);
-    const failedStep = probe.steps.find((s) => !s.ok);
-    if (failedStep) {
-      return this.fail(runId, "ELIGIBILITY_NONE", `${req.provider}: preflight step ${failedStep.step} failed`);
-    }
-    const auth = await adapter.authPreflight(this.runner);
-    if (exec.cancelRequested) return this.cancelEarly(runId);
-    if (auth.state === "AUTH_REQUIRED") {
-      return this.fail(runId, "AUTH_REQUIRED", `${req.provider} is not logged in; run \`${auth.loginCommand}\``, {
-        login_command: auth.loginCommand,
-      });
-    }
-    if (auth.state === "UNKNOWN") return this.fail(runId, "ELIGIBILITY_NONE", `${req.provider}: auth state unknown`);
+    if (!verdict.ok) return this.fail(runId, verdict.code, verdict.detail, verdict.extra);
+    const binaryVersion = verdict.binaryVersion;
 
     // LEASED (T5): intent committed before the lease and worktree are created.
-    this.move(this.current(runId), "LEASED", {}, { adapter_version: probe.binaryVersion });
+    this.move(this.current(runId), "LEASED", {}, { adapter_version: binaryVersion });
     let ws: PreparedWorkspace;
     try {
       ws = await this.opts.workspace.prepare({
@@ -433,15 +574,20 @@ export class RunLifecycle {
     if (exec.cancelRequested) return this.cancelEarly(runId);
 
     const cwd = ws.mode === "worktree" ? ws.worktreePath : ws.path;
-    const inv = adapter.compile(
-      {
-        runId,
-        objective: req.objective,
-        constraints: req.constraints,
-        workspace: { cwd, writable: ws.mode === "worktree" },
-      },
-      profile,
-    );
+    const compileReq = {
+      runId,
+      objective: req.objective,
+      constraints: req.constraints,
+      workspace: { cwd, writable: ws.mode === "worktree" },
+    };
+    const inv =
+      req.resume_native_session_id !== undefined
+        ? adapter.resumeArgs(
+            { provider: req.provider, nativeSessionId: req.resume_native_session_id },
+            compileReq,
+            profile,
+          )
+        : adapter.compile(compileReq, profile);
     if (exec.cancelRequested) return this.cancelEarly(runId);
     if (isIneligible(inv)) return this.fail(runId, "PERMISSION_BLOCKED", `${inv.reason}: ${inv.detail}`);
     if (ws.mode === "worktree") {
@@ -476,6 +622,14 @@ export class RunLifecycle {
       return this.fail(runId, "PROCESS_CRASH", `spawn failed (${out.exit.outcome})`, { artifacts: streams });
     }
 
+    if (out.result.nativeSessionId) {
+      // FR-SES-02/03: remember the native session (from structured output only) so continue_task can resume it.
+      this.ledger.recordProviderBinding({
+        metaSessionId: meta,
+        provider: req.provider,
+        nativeSessionId: out.result.nativeSessionId,
+      });
+    }
     const pending = pendingOf(exec, out);
     const rule = pending.kind === "success" ? "T12" : "T13";
     this.move(
@@ -491,6 +645,63 @@ export class RunLifecycle {
       rule,
     );
     await this.finalize(runId, meta, ws, pending, out, streams);
+  }
+
+  /** M1 preflight (no `eligibility` option): probe and auth only (T8 codes as in M1). */
+  private async preflightM1(req: StoredRequest, adapter: ProviderAdapter): Promise<PreflightVerdict> {
+    const probe = await adapter.probe(this.runner);
+    const failedStep = probe.steps.find((s) => !s.ok);
+    if (failedStep) {
+      return {
+        ok: false,
+        code: "ELIGIBILITY_NONE",
+        detail: `${req.provider}: preflight step ${failedStep.step} failed`,
+      };
+    }
+    const auth = await adapter.authPreflight(this.runner);
+    if (auth.state === "AUTH_REQUIRED") {
+      return {
+        ok: false,
+        code: "AUTH_REQUIRED",
+        detail: `${req.provider} is not logged in; run \`${auth.loginCommand}\``,
+        extra: { login_command: auth.loginCommand },
+      };
+    }
+    if (auth.state === "UNKNOWN")
+      return { ok: false, code: "ELIGIBILITY_NONE", detail: `${req.provider}: auth state unknown` };
+    return { ok: true, binaryVersion: probe.binaryVersion };
+  }
+
+  /**
+   * T2.4 preflight: the shared stage-1 filter with the run's provider as the required provider (BR-2, BR-20). The
+   * client ceiling was enforced at admission (BR-13), so the run's own profile is passed as the ceiling here (Proposed).
+   * An exclusion ends the run FAILED with the BR-3 code (T8) and the reasons in the event payload.
+   */
+  private async preflightEligibility(req: StoredRequest, run: RunRecord): Promise<PreflightVerdict> {
+    const { input, decision } = await this.checkEligibility({
+      candidates: [req.provider],
+      requiredProvider: req.provider,
+      trustProfile: run.trust_profile,
+      clientMaxProfile: run.trust_profile,
+      cwd: req.workspace,
+    });
+    const binaryVersion = input.facts.find((f) => f.provider === req.provider)?.probe?.binaryVersion ?? null;
+    if (decision.outcome.kind === "eligible") return { ok: true, binaryVersion };
+    const excluded = decision.excluded[0];
+    const code = excluded ? failureCodeForReason(excluded.primary.code) : decision.outcome.failureCode;
+    const login = excluded?.reasons.find((r) => r.code === "AUTH_REQUIRED")?.evidence.loginCommand;
+    // FR-AUTH-02: name the native login command the operator runs (never run by Switchboard).
+    const message =
+      typeof login === "string" ? `${decision.outcome.message}; run \`${login}\` natively` : decision.outcome.message;
+    return {
+      ok: false,
+      code,
+      detail: message.slice(0, 500),
+      extra: {
+        eligibility: (excluded?.reasons ?? []).map((r) => ({ code: r.code, detail: r.detail.slice(0, 300) })),
+        ...(typeof login === "string" ? { login_command: login } : {}),
+      },
+    };
   }
 
   /** FINALIZING → terminal (T15–T17): checkpoint, diff, head disposition (FRD §4.4), lease release. */
