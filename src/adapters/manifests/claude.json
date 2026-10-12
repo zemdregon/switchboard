@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "provider": "claude",
+  "validated_cli_version": "2.1.296",
+  "validated_version_range": ">=2.1.296 <2.2.0",
+  "validated_on": "2026-10-12",
+  "auth_modes_allowed": ["native_cached_subscription"],
+  "automation_surface": ["documented_headless"],
+  "credential_export_allowed": false,
+  "dashboard_scraping_allowed": false,
+  "network_protocol_reverse_engineering": false,
+  "commercial_multi_user_status": "requires-review",
+  "source_revision": "not-reviewed: provider terms not read; automation surface per docs/research/headless-ai-coding-controller-verified-2026-10-12.md (R2, 2026-10-12)",
+  "notes": "Automation surface: `claude -p` with structured output, resume and `claude auth status`, per R2 sections 'Verified provider adapter design' (adapter matrix) and 'Compliance and authentication boundary'; TDD 4.1. Version: 2.1.296 is what `claude --version` reported on the development host on 2026-10-12 (version flag only; no prompt run, no conformance suite yet). Assumption: the range >=2.1.296 <2.2.0 (same minor series) is a Proposed conservative bound, not a provider statement; R2 gives no version numbers. Credentials: Switchboard never reads, copies, logs or exports Claude Code credentials, never starts login and never scrapes dashboards or reimplements the network protocol; it asks the native CLI for status and returns AUTH_REQUIRED naming the native login (ADR-0003, FR-AUTH-02). Terms: this manifest records that the CLI documents headless use (technical evidence only); it makes no claim that any use complies with Anthropic's terms. Commercial, resale, multi-user or credential-sharing use requires a per-provider policy review first (NFR-COMP-01). Review date: 2026-10-12 (Delegated agent review, not owner-approved)."
+}
