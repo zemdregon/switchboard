@@ -152,6 +152,7 @@ startup reconciliation applies them. Run state transitions use an optimistic ver
 | MCP contract | Schema validation, error envelope, idempotency, `wait_seconds` bounds via an in-process MCP client | No | FR-MCP-* |
 | `serve` process tests (M2) | Spawn `switchboard serve` as a child with a temp config and data dir, drive it with an MCP stdio client: delegate → SUCCEEDED, stdout carries only MCP framing, a second `serve` on the same data dir fails, `SIGKILL` mid-run then restart ends the run `FAILED/PROCESS_CRASH` with no orphan (`src/cli/serve.test.ts`). The fake adapter is reachable only through the test-only switch below | No | FR-OPS-01, FR-EXE-06, NFR-REL-01 |
 | Live provider smoke | Opt-in only: `scripts/live-smoke.mjs` (`npm run test:live`) is skipped unless `SWITCHBOARD_LIVE_TESTS=1`; not part of `npm test`, never runs in CI (see below) | Yes | [AGENTS.md](../../AGENTS.md) |
+| Controller-overhead benchmark | `scripts/bench-perf.mjs` (`npm run bench`) times the real MCP server over the in-memory transport with the fake adapter; not part of `npm test` (see [§3.6.1](#361-controller-overhead-benchmark-t27)) | No | NFR-PERF-01, NFR-PERF-02 |
 | Docs check | `scripts/check-docs.mjs` must pass on every change (links, anchors, ID references) | No | NFR-MAINT-02 |
 
 Principles: tests pass with no provider CLI installed or logged in; secret-pattern scan over all test outputs
@@ -180,6 +181,59 @@ R-13, R-14 and Q-9. It never reads or prints credentials or prompt/response text
 Exit code 0 means the run succeeded and no checked Assumption failed. With the current manifests Codex is expected to be
 refused at eligibility (`ADAPTER_VERSION_UNVERIFIED` and auth `UNKNOWN`, Q-6 and Q-8); the script still reports the
 probe-level Assumptions.
+
+#### 3.6.1 Controller-overhead benchmark (T2.7)
+
+`npm run bench` builds, then runs `scripts/bench-perf.mjs` (`--n`, `--warmup`, `--json` options; defaults 30 timed
+iterations after 5 warm-up). It drives the real MCP server (`createSwitchboardServer`, real lifecycle, ledger,
+workspace manager and artifact store) through the SDK's in-memory transport, with the fake adapter's `success`
+scenario on a temporary Git repository, one run at a time. Provider time is excluded because the fake CLI does no
+work. Marks are taken by a thin adapter wrapper: `compile` (the last step before the provider process is spawned, used
+as the spawn mark) and `extractResult` (called as soon as process exit is observed). Metrics:
+
+- **delegate_task ack**: tool call to `run_id` returned.
+- **accepted to spawn**: tool call to the `compile` mark, reported in total and with the probe and auth preflight time
+  subtracted. This is the NFR-PERF-01 quantity, measured with preflight uncached.
+- **exit to terminal visible**: exit observed to the first `get_run` showing a terminal state (finalize: worktree
+  teardown, diff artifact, ledger commit), polled in a tight loop.
+- **get_run** and **list_capabilities**: tool call to result, 30 calls each against a finished run.
+
+**Result, 2026-10-12.** Host: sandbox container, not representative of an operator laptop (Node v22.22.0; Linux
+6.18.44-fc-v114 x64; Intel Xeon Processor @ 2.10 GHz, 4 vCPUs; 15.7 GiB RAM). Three consecutive invocations, each 30
+iterations after 5 warm-up; values are p50 / p95 / max in milliseconds.
+
+| Metric | Run 1 | Run 2 | Run 3 |
+| --- | --- | --- | --- |
+| delegate_task ack | 120.9 / 143.3 / 161.5 | 127.6 / 159.2 / 159.9 | 116.0 / 137.3 / 138.1 |
+| Accepted to spawn, total (uncached preflight) | 284.1 / 326.5 / 329.2 | 299.1 / 340.2 / 355.6 | 281.0 / 336.6 / 341.0 |
+| Accepted to spawn, excluding probe and auth | 67.5 / 85.3 / 90.9 | 72.1 / 101.1 / 104.0 | 66.5 / 95.7 / 129.1 |
+| Live probe and auth preflight (dispatch) | 216.5 / 252.9 / 256.7 | 222.3 / 256.2 / 261.1 | 211.9 / 246.6 / 268.0 |
+| Exit to terminal visible via get_run | 70.0 / 101.2 / 109.5 | 74.7 / 102.4 / 113.3 | 65.5 / 93.8 / 108.0 |
+| get_run | 1.6 / 2.5 / 6.6 | 1.3 / 1.8 / 2.1 | 1.1 / 1.5 / 1.9 |
+| list_capabilities (live probe) | 100.9 / 122.2 / 137.3 | 106.2 / 128.0 / 129.8 | 92.7 / 109.2 / 111.9 |
+
+Run-to-run spread of the p95 for accepted-to-spawn (total) is 326.5 to 340.2 ms, about 4%; the excluding-preflight
+p95 varies more (85.3 to 101.1 ms) because it is a small difference of two noisy figures on a shared container.
+
+**NFR-PERF-01 finding.** On this host the controller's accepted-to-spawn overhead is about 0.34 s at p95 with
+preflight uncached, against the proposed target of under 2 s at p95 in [SRS NFR-PERF-01](../requirements/SRS.md).
+The proposed target is **confirmed for the controller-owned work**, with margin of roughly 6x. Two limits on that
+conclusion: (1) the figure includes three trivial fake-CLI process spawns for the probes, so a real provider CLI's
+probe cost (not measured; Assumption that it is larger, since real CLIs start more slowly than a bare Node script)
+adds to it until preflight is cached, and NFR-PERF-01 itself excludes cached preflight; (2) this is a sandbox
+container, and the reference machine is not yet defined. The 2 s value should stay marked *(proposed target)* until a
+run with the live Claude Code and Codex probes (`npm run test:live` path) is available. No revision is proposed. The
+controller-owned part (about 70 to 100 ms p95 excluding probes) leaves headroom for adding gating work in later
+milestones.
+
+**NFR-PERF-02 finding.** Preflight is currently uncached and live in two places. `delegate_task` runs the stage-1
+eligibility check, including `probe` and `authPreflight`, before it returns, so its acknowledgement costs about 0.12 s
+(p50) on the fake adapter instead of a few milliseconds. The run then probes again at dispatch (PREFLIGHT), about 0.22
+s at p50 (two probe spawns, about 0.145 s, and one auth spawn, about 0.07 s). `list_capabilities` probes every
+registered provider live on each call (about 0.10 s per provider with the fake adapter). With caching, the
+acknowledgement and the dispatch probes would drop to the controller-only cost. The cache required by NFR-PERF-02
+(invalidated on binary version change or a configurable TTL) is not implemented, and no roadmap task owns it: T2.7 only
+measures. This is a gap to be assigned (reported to the roadmap owner), not a finished requirement.
 
 ### 3.7 Packaging and release
 
