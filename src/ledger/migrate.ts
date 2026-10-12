@@ -1,0 +1,66 @@
+import { createHash } from "node:crypto";
+import type Database from "better-sqlite3";
+import { MigrationError } from "./errors.js";
+import { MIGRATIONS, type Migration } from "./migrations/index.js";
+
+export function migrationChecksum(m: Migration): string {
+  return createHash("sha256").update(m.sql).digest("hex");
+}
+
+interface AppliedRow {
+  version: number;
+  name: string;
+  checksum: string;
+}
+
+function readApplied(db: Database.Database): AppliedRow[] {
+  const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").get();
+  if (!exists) return [];
+  return db.prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version").all() as AppliedRow[];
+}
+
+export function currentSchemaVersion(db: Database.Database): number {
+  return readApplied(db).reduce((max, r) => Math.max(max, r.version), 0);
+}
+
+/**
+ * Apply pending migrations in order, each in its own transaction together with its `schema_migrations` row.
+ * Forward-only: refuses a database that records a version this build does not know (written by a newer release) and
+ * aborts on a checksum mismatch of an already-applied migration (LLD §1). Returns the versions applied by this call.
+ * `migrations` is injectable for tests.
+ */
+export function migrate(
+  db: Database.Database,
+  now: () => Date = () => new Date(),
+  migrations: readonly Migration[] = MIGRATIONS,
+): number[] {
+  const known = new Map(migrations.map((m) => [m.version, m]));
+  const applied = readApplied(db);
+  for (const row of applied) {
+    const m = known.get(row.version);
+    if (!m) {
+      const newest = migrations.reduce((max, x) => Math.max(max, x.version), 0);
+      throw new MigrationError(
+        `database schema version ${row.version} is newer than this build supports (${newest}); refusing to open (forward-only migrations)`,
+      );
+    }
+    if (row.checksum !== migrationChecksum(m)) {
+      throw new MigrationError(`checksum mismatch for applied migration ${row.version} (${row.name}); aborting`);
+    }
+  }
+  const appliedVersions = new Set(applied.map((r) => r.version));
+  const done: number[] = [];
+  const insert = (m: Migration) =>
+    db
+      .prepare("INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)")
+      .run(m.version, m.name, migrationChecksum(m), now().toISOString());
+  for (const m of [...migrations].sort((a, b) => a.version - b.version)) {
+    if (appliedVersions.has(m.version)) continue;
+    db.transaction(() => {
+      db.exec(m.sql);
+      insert(m);
+    })();
+    done.push(m.version);
+  }
+  return done;
+}
