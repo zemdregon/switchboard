@@ -1,0 +1,2 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written, not recorded from a real codex binary. Event and field names are Assumptions (R2 names only thread, turn, item, error and token-usage event families; TDD 4.2).","exit":1}}
+{"type":"error","message":"SYNTHETIC: not signed in","code":"unauthorized"}

@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written, not recorded from a real codex binary. Event and field names are Assumptions (R2 names only thread, turn, item, error and token-usage event families; TDD 4.2).","exit":0}}
+{"type":"thread.started","thread_id":"synthetic-thread-0005"}
+SYNTHETIC this line is deliberately not JSON {
+{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}

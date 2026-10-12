@@ -30,7 +30,7 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | Area | Choice | Why | Tradeoff | Version |
 | --- | --- | --- | --- | --- |
 | Language and runtime | TypeScript with `strict` on current Node.js LTS ([ADR-0010](../adr/0010-typescript-node-stack.md)) | I/O-bound supervisor; MCP/ACP/JSON-schema-heavy surface; one language for adapters and schemas | Requires Node on the host; single-executable packaging is later work; Go or Rust would give easier distribution | TypeScript 7.0.2 (`strict`); Node 22 LTS (`engines` `>=22`, developed on 22.22.0); `@types/node` 22.20.5 |
-| Upstream protocol | Official MCP TypeScript SDK, stdio transport ([ADR-0002](../adr/0002-mcp-upstream-acp-downstream.md), FR-MCP-01) | Tracks the spec; avoids hand-rolled JSON-RPC | SDK churn can break tool registration; isolate behind `COMP-MCP` | Pinned later (with T2.4) |
+| Upstream protocol | Official MCP TypeScript SDK, stdio transport ([ADR-0002](../adr/0002-mcp-upstream-acp-downstream.md), FR-MCP-01) | Tracks the spec; avoids hand-rolled JSON-RPC | SDK churn can break tool registration; isolate behind `COMP-MCP` | `@modelcontextprotocol/sdk` 1.32.1 (exact-pinned runtime dependency, T2.4; latest on npm 2026-10-12). Its `McpServer.registerTool` helper takes zod schemas, so `src/mcp/server.ts` uses the lower-level `Server` with `tools/list` and `tools/call` handlers and publishes the Ajv-validated JSON Schemas from `src/mcp/schemas.ts`; zod arrives only as the SDK's own transitive dependency and is not imported (Delegated) |
 | Downstream ACP | Own thin ACP client over stdio JSON-RPC (M4); check for an official ACP client library first | FR-EXE-03 is Should; the surface needed is small | Maintaining protocol code vs adding a dependency; decide in M4 | M4 |
 | Database | SQLite via `better-sqlite3`, WAL mode ([ADR-0005](../adr/0005-sqlite-ledger.md)) | Synchronous API makes "check-then-write in one transaction" simple and keeps the single writer obvious (NFR-REL-01) | Native addon: needs prebuilt binary or a compiler toolchain per platform; blocks the event loop during a statement (acceptable at expected volume) | better-sqlite3 13.0.3 (exact-pinned runtime dependency, T1.3); `@types/better-sqlite3` 9.6.0 (dev); bundles SQLite 3.53.4 |
 | Database alternative | `node:sqlite` (built-in) | No native build step | Stability and feature level to be re-evaluated against the pinned Node LTS at M1 start; not adopted unless it supports needed features (WAL, STRICT, transactions, user functions not required) and is stable | Re-evaluated at T1.3 (2026-10-12, Delegated): **not adopted**. On Node 22.22.0 `node:sqlite` still emits an `ExperimentalWarning` ("might change at any time"), so it fails the stability condition; `better-sqlite3` 13.0.3 installed and ran here. Revisit at the single-executable hardening item or when `node:sqlite` is stable on the pinned LTS |
@@ -156,13 +156,92 @@ startup reconciliation applies them. Run state transitions use an optimistic ver
 | Fault injection | Kill controller with `SIGKILL` at each transition boundary (named crash points), restart, assert ledger consistency and terminal/resumed state | No | NFR-REL-01, FR-EXE-06 |
 | Malicious fixture repos (M3, M4) | Repos with prompt-injection files, repo hooks, repo MCP definitions, credential-path reads, out-of-worktree writes, network attempts, run per enabled adapter | Needed for adapter-level proof; sandbox-level parts can run without | NFR-SEC-03 |
 | MCP contract | Schema validation, error envelope, idempotency, `wait_seconds` bounds via an in-process MCP client | No | FR-MCP-* |
+| `serve` process tests (M2) | Spawn `switchboard serve` as a child with a temp config and data dir, drive it with an MCP stdio client: delegate → SUCCEEDED, stdout carries only MCP framing, a second `serve` on the same data dir fails, `SIGKILL` mid-run then restart ends the run `FAILED/PROCESS_CRASH` with no orphan (`src/cli/serve.test.ts`). The fake adapter is reachable only through the test-only switch below | No | FR-OPS-01, FR-EXE-06, NFR-REL-01 |
 | Git boundary (M9) | Fake adapter with scripted tool calls and scripted attempts to `git commit`, move refs or push, against real Git repos and a local bare remote; fixtures of typical attribution trailers, footers and session IDs through the sanitiser; assertion that no published commit contains them and that checkpoint commits never reach the remote | No | FR-GIT-01..09 |
 | Project and environment (M9, M10) | Configuration validation (unknown context kind, path outside allowed roots), ceiling arithmetic, `host` runs through a project; container tests need a container runtime and are opt-in (skipped in CI until Q-6 is settled) | No for `host`; runtime for `container` | FR-PRJ-01..09 |
-| Live provider smoke | Opt-in only; skipped unless an environment variable is set (name Proposed: `SWITCHBOARD_LIVE_TESTS=1`); never runs in CI by default | Yes | [AGENTS.md](../../AGENTS.md) |
+| Live provider smoke | Opt-in only: `scripts/live-smoke.mjs` (`npm run test:live`) is skipped unless `SWITCHBOARD_LIVE_TESTS=1`; not part of `npm test`, never runs in CI (see below) | Yes | [AGENTS.md](../../AGENTS.md) |
+| Controller-overhead benchmark | `scripts/bench-perf.mjs` (`npm run bench`) times the real MCP server over the in-memory transport with the fake adapter; not part of `npm test` (see [§3.6.1](#361-controller-overhead-benchmark-t27)) | No | NFR-PERF-01, NFR-PERF-02 |
 | Docs check | `scripts/check-docs.mjs` must pass on every change (links, anchors, ID references) | No | NFR-MAINT-02 |
 
 Principles: tests pass with no provider CLI installed or logged in; secret-pattern scan over all test outputs
 (NFR-SEC-01); coverage targets are not set until M1 measurement (no number proposed).
+
+**Test-only fake adapter in `serve` (Proposed, T2.6).** `serve` registers the fake adapter only when the environment
+variable `SWITCHBOARD_TEST_FAKE_ADAPTER` equals the exact sentinel `enable-test-only-fake-adapter` (scenario from
+`SWITCHBOARD_TEST_FAKE_SCENARIO`, default `success`). Any other non-empty value refuses to start, the config schema has
+no key or provider id that can enable it, and `serve` logs a warning on stderr when it is on. Production registers
+`claude` and `codex` only.
+
+**Running the live smoke test (operator, T2.6).** With the provider CLI installed and logged in natively (Switchboard
+never logs in for you):
+
+```sh
+SWITCHBOARD_LIVE_TESTS=1 SWITCHBOARD_LIVE_PROVIDER=claude npm run test:live   # or SWITCHBOARD_LIVE_PROVIDER=codex
+```
+
+It builds, creates a throwaway Git repository and data directory under the system temp directory, starts the real
+`switchboard serve` over stdio, runs one `edit-untrusted` task ("create `SMOKE.md`") against the operator's own CLI and
+prints: probe and version-gate results, the compiled policy flags with a bypass-flag audit, the auth status shape (exit
+code and key names only, never values), the run's terminal state, the native event types seen, and a HELD / FAILED /
+NOT_CHECKED line for each adapter Assumption tracked by [ROADMAP](../ROADMAP.md#7-risks-blockers-and-open-questions)
+R-21, R-22 and Q-13. It never reads or prints credentials or prompt/response text. Optional: `SWITCHBOARD_LIVE_TIMEOUT_MS`
+(default 600000) and `SWITCHBOARD_LIVE_KEEP=1` (keep the temp directory with the ledger, artifacts and `serve` log).
+Exit code 0 means the run succeeded and no checked Assumption failed. With the current manifests Codex is expected to be
+refused at eligibility (`ADAPTER_VERSION_UNVERIFIED` and auth `UNKNOWN`, Q-10 and Q-12); the script still reports the
+probe-level Assumptions.
+
+#### 3.6.1 Controller-overhead benchmark (T2.7)
+
+`npm run bench` builds, then runs `scripts/bench-perf.mjs` (`--n`, `--warmup`, `--json` options; defaults 30 timed
+iterations after 5 warm-up). It drives the real MCP server (`createSwitchboardServer`, real lifecycle, ledger,
+workspace manager and artifact store) through the SDK's in-memory transport, with the fake adapter's `success`
+scenario on a temporary Git repository, one run at a time. Provider time is excluded because the fake CLI does no
+work. Marks are taken by a thin adapter wrapper: `compile` (the last step before the provider process is spawned, used
+as the spawn mark) and `extractResult` (called as soon as process exit is observed). Metrics:
+
+- **delegate_task ack**: tool call to `run_id` returned.
+- **accepted to spawn**: tool call to the `compile` mark, reported in total and with the probe and auth preflight time
+  subtracted. This is the NFR-PERF-01 quantity, measured with preflight uncached.
+- **exit to terminal visible**: exit observed to the first `get_run` showing a terminal state (finalize: worktree
+  teardown, diff artifact, ledger commit), polled in a tight loop.
+- **get_run** and **list_capabilities**: tool call to result, 30 calls each against a finished run.
+
+**Result, 2026-10-12.** Host: sandbox container, not representative of an operator laptop (Node v22.22.0; Linux
+6.18.44-fc-v114 x64; Intel Xeon Processor @ 2.10 GHz, 4 vCPUs; 15.7 GiB RAM). Three consecutive invocations, each 30
+iterations after 5 warm-up; values are p50 / p95 / max in milliseconds.
+
+| Metric | Run 1 | Run 2 | Run 3 |
+| --- | --- | --- | --- |
+| delegate_task ack | 120.9 / 143.3 / 161.5 | 127.6 / 159.2 / 159.9 | 116.0 / 137.3 / 138.1 |
+| Accepted to spawn, total (uncached preflight) | 284.1 / 326.5 / 329.2 | 299.1 / 340.2 / 355.6 | 281.0 / 336.6 / 341.0 |
+| Accepted to spawn, excluding probe and auth | 67.5 / 85.3 / 90.9 | 72.1 / 101.1 / 104.0 | 66.5 / 95.7 / 129.1 |
+| Live probe and auth preflight (dispatch) | 216.5 / 252.9 / 256.7 | 222.3 / 256.2 / 261.1 | 211.9 / 246.6 / 268.0 |
+| Exit to terminal visible via get_run | 70.0 / 101.2 / 109.5 | 74.7 / 102.4 / 113.3 | 65.5 / 93.8 / 108.0 |
+| get_run | 1.6 / 2.5 / 6.6 | 1.3 / 1.8 / 2.1 | 1.1 / 1.5 / 1.9 |
+| list_capabilities (live probe) | 100.9 / 122.2 / 137.3 | 106.2 / 128.0 / 129.8 | 92.7 / 109.2 / 111.9 |
+
+Run-to-run spread of the p95 for accepted-to-spawn (total) is 326.5 to 340.2 ms, about 4%; the excluding-preflight
+p95 varies more (85.3 to 101.1 ms) because it is a small difference of two noisy figures on a shared container.
+
+**NFR-PERF-01 finding.** On this host the controller's accepted-to-spawn overhead is about 0.34 s at p95 with
+preflight uncached, against the proposed target of under 2 s at p95 in [SRS NFR-PERF-01](../requirements/SRS.md).
+The proposed target is **confirmed for the controller-owned work**, with margin of roughly 6x. Two limits on that
+conclusion: (1) the figure includes three trivial fake-CLI process spawns for the probes, so a real provider CLI's
+probe cost (not measured; Assumption that it is larger, since real CLIs start more slowly than a bare Node script)
+adds to it until preflight is cached, and NFR-PERF-01 itself excludes cached preflight; (2) this is a sandbox
+container, and the reference machine is not yet defined. The 2 s value should stay marked *(proposed target)* until a
+run with the live Claude Code and Codex probes (`npm run test:live` path) is available. No revision is proposed. The
+controller-owned part (about 70 to 100 ms p95 excluding probes) leaves headroom for adding gating work in later
+milestones.
+
+**NFR-PERF-02 finding.** Preflight is currently uncached and live in two places. `delegate_task` runs the stage-1
+eligibility check, including `probe` and `authPreflight`, before it returns, so its acknowledgement costs about 0.12 s
+(p50) on the fake adapter instead of a few milliseconds. The run then probes again at dispatch (PREFLIGHT), about 0.22
+s at p50 (two probe spawns, about 0.145 s, and one auth spawn, about 0.07 s). `list_capabilities` probes every
+registered provider live on each call (about 0.10 s per provider with the fake adapter). With caching, the
+acknowledgement and the dispatch probes would drop to the controller-only cost. The cache required by NFR-PERF-02
+(invalidated on binary version change or a configurable TTL) is not implemented, and no roadmap task owns it: T2.7 only
+measures. This is a gap to be assigned (reported to the roadmap owner), not a finished requirement.
 
 ### 3.7 Packaging and release
 
@@ -301,8 +380,8 @@ Version ranges come from compliance manifests, not this table (FR-ADP-03, FR-POL
 | Structured output | `--output-format json` or `stream-json`; partial deltas with `--verbose --include-partial-messages`; final result carries `session_id` |
 | Resume | `--resume <session>` and `--continue`; read `session_id` from structured output, never regex (FR-ADP-04) |
 | Auth preflight | `claude auth status` returns structured JSON and exit codes; on failure return `AUTH_REQUIRED` naming the native login (FR-AUTH-02) |
-| Trust profile compilation (Proposed) | Untrusted profiles: `--bare` (skips hooks, skills, commands, subagents, plugins, MCP, auto-memory, `CLAUDE.md`; FR-POL-04), fail-closed `dontAsk` (or `--permission-prompts none`), explicit `--tools`/allow-deny rules; never `--allowedTools "*"` (skipped by Claude). Exact tool names and rule syntax: to be verified in M2 against installed CLI |
-| Sandbox controls | None documented in [R2]; `--bare` is not a sandbox and Bash/read/edit remain. Credential confinement unproven, so `inspect-untrusted` and `edit-untrusted` compile with no arbitrary shell (only `edit-untrusted`'s narrow allowlist), and `test-sandboxed` is ineligible for Claude until confinement is shown (FR-POL-06; M3 evaluation) |
+| Trust profile compilation (Proposed) | Untrusted profiles: `--safe-mode --restricted --strict-mcp-config` (disable `CLAUDE.md`, skills, plugins, hooks and MCP servers, ignore settings files and confine file tools to the working directory; FR-POL-04), fail-closed `dontAsk` with `--permission-prompts none`, explicit `--tools`/`--allowedTools` rules; never `--allowedTools "*"` (skipped by Claude). **Not `--bare`:** the installed help says it makes auth strictly API-key based, which [ADR-0003](../adr/0003-no-credential-handling.md) and the Claude manifest forbid ([ADR-0015](../adr/0015-claude-untrusted-isolation-flags.md)). Verified against `claude --help` 2.1.296 text only; tool names beyond `Read`, `Edit` and `Bash(...)` rule syntax are Assumptions |
+| Sandbox controls | None documented in [R2]; `--safe-mode`/`--restricted` are not a sandbox and Bash/read/edit remain. Credential confinement unproven, so `inspect-untrusted` and `edit-untrusted` compile with no arbitrary shell (only `edit-untrusted`'s narrow allowlist), and `test-sandboxed` is ineligible for Claude until confinement is shown (FR-POL-06; M3 evaluation) |
 | Known risks | Version-gated features; `total_cost_usd` is a client-side estimate (record as reported, never as remaining quota, FR-CAP-01/03); `PreToolUse` hooks are supplemental only; `CLAUDE_CONFIG_DIR` isolates config *and* credentials, so use only if it keeps the operator's login reachable (to be verified in M2); structured error categories (`rate_limit`, `overloaded`, authentication, billing, server) feed `classifyFailure` |
 | Git writes and injected tools (M2, M9) | Git write denial through the explicit `--tools`/allow-deny rules [R2] names; rule syntax: to be verified in M2. No commit or attribution setting is documented in [R2]: to be verified in M2 against the installed CLI and Anthropic's documentation. `--bare` skips MCP discovery [R2], so the injected tools need an explicitly supplied per-run MCP definition (mechanism not in [R2]: to be verified in M9), and fail-closed `dontAsk` may require them pre-allowed |
 

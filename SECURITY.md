@@ -2,8 +2,9 @@
 
 ## Supported versions
 
-The repository has no released software yet. Only the `main` branch is
-maintained, and security fixes apply to it.
+The project is pre-release: nothing has been published to a package registry, and
+you build it from source. Only the `main` branch is maintained, and security
+fixes apply to it.
 
 ## Reporting a vulnerability
 
@@ -19,10 +20,10 @@ it if you have them.
 
 ## Scope
 
-This repository currently holds documents. Relevant reports include guidance
-that would lead an implementer to weaken credential handling, permission
-boundaries, or sandboxing, and exposed secrets or credentials in the
-repository history.
+This repository holds the specification set and early application code (the M1
+foundation, with M2 in progress). Relevant reports include guidance or code that
+would weaken credential handling, permission boundaries, or sandboxing, and
+exposed secrets or credentials in the repository history.
 
 ## Response times
 
