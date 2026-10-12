@@ -71,7 +71,7 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | `limits.global_concurrency`, `limits.per_provider_concurrency` | Defaults 4 and 1 (proposed target) | NFR-PERF-03 |
 | `timeouts.*` | Wall-clock, idle, grace, preflight TTL (proposed targets in [LLD §8](LLD.md#8-run-supervisor-details)) | FR-EXE-01, NFR-PERF-02 |
 | `retention.days` | Default 30 (proposed target) | NFR-DATA-01 |
-| `profiles.<name>` | Overrides that may only tighten defaults | FR-POL-01 |
+| `profiles.<name>` | Overrides of the [SRS §3.3](../requirements/SRS.md#33-policy-and-trust-profiles-fr-pol) defaults. They may tighten or loosen a default ([owner decision 12](../ROADMAP.md#42-owner-decisions)); a loosening must be explicit in the config, is validated, and is recorded in the run's policy snapshot and listed by `doctor` (M3, T3.2) | FR-POL-01 |
 | `providers.<id>` | `{enabled, binary_path, extra_env_allowlist[], model_overrides}` | FR-ADP-05, FR-EXE-07 |
 | `routing.weights`, `routing.minimum_capability_defaults` | Static weights | FR-RTE-02 |
 | `capacity.queue_horizon` | Max wait for a known reset | FR-CAP-06 |

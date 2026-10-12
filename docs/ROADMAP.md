@@ -5,7 +5,7 @@
 | Status | **Canonical.** Single source of truth for scope, priorities, dependencies, sequencing, status and completion criteria. |
 | Does not own | Requirements ([SRS](requirements/SRS.md)), behaviour ([FRD](requirements/FRD.md)), design ([HLD](design/HLD.md), [SDD](design/SDD.md), [TDD](design/TDD.md), [LLD](design/LLD.md)), decision rationale ([ADRs](adr/README.md)). |
 | Last reconciled | 2026-10-12 |
-| Current milestone | M0 and M1 complete (M1 gaps `Partial` in §6.1). **M2: `Partial`**: T2.1 to T2.8 are implemented and tested on fakes and synthetic fixtures; not `Done` until the operator's live smoke run (which now also covers the FR-GIT-01 checks), a recorded Codex version and the NFR-PERF-02 decision (§6.2, §6.2.1, §9). The FR-GIT-01 argv check is in place. M9 and M10 (projects, controlled commits, containers) follow M3 |
+| Current milestone | M0 and M1 complete (M1 gaps `Partial` in §6.1). **M2: `Partial`**: T2.1 to T2.8 are implemented and tested on fakes and synthetic fixtures; not `Done` until the operator's live smoke run (which now also covers the FR-GIT-01 checks), a recorded Codex version and the NFR-PERF-02 decision (§6.2, §6.2.1, §9). The FR-GIT-01 argv check is in place. **M3: `Planned`**, broken into tasks in §6.5 (2026-10-12) with owner decisions 10 to 13 recorded; wave A can start (§9). M9 and M10 (projects, controlled commits, containers) follow M3 |
 
 ## 1. How to use this roadmap
 
@@ -95,6 +95,30 @@ estimates. Architecture: [HLD](design/HLD.md).
    was taken for both. Branch scope, the per-context opt-in (push stays off until a context enables it) and the
    signing mechanism are delegated. Ender left Q-6 (container runtime and logins) and Q-8 (commit identity) to the agent,
    so those choices are delegated, not owner decisions.
+10. Codex under `inspect-untrusted` and `edit-untrusted`: the native Codex sandbox is accepted for now, and Codex stays
+    eligible for those profiles (2026-10-12). *Consequence for the plan:* commands that Codex runs inside its sandbox,
+    and whether that sandbox keeps them away from Codex's own credential store, are recorded as **unverified**, not as
+    confined; the FR-POL-06 gap for Codex stays open until the live malicious leg (T3.9) checks it; the README's "no
+    shell" wording is wrong for Codex and is corrected (T3.14). This answers the profile part of Q-11.
+11. Verification commands (FR-EXE-08) may run on the host under `edit-untrusted` (2026-10-12). *Consequence:* confined
+    verification through an outer sandbox (T3.11) is optional hardening, not a prerequisite for the verification stage
+    (T3.10). Verification under `inspect-untrusted` is still refused ([FRD V7](requirements/FRD.md#71-delegate_task),
+    Proposed; the SRS says nothing that overrides it).
+12. Profile overrides in configuration (`profiles.<name>`, FR-POL-01) may loosen the defaults when the change is
+    recorded in the run's policy snapshot (2026-10-12). *Consequence:* TDD §3.1's "may only tighten" contradicted
+    FR-POL-01 and is corrected in this change (T3.15); T3.2 requires a loosening to be explicit in the config,
+    validated, listed in the policy snapshot and reported by `doctor`.
+13. Provider permission-bypass flags (`--dangerously-skip-permissions`, `--yolo` and the others in FR-POL-03) may be
+    emitted only when the operator-approved `privileged` scope explicitly sets bypass and the approval row covers that
+    scope (2026-10-12). *Consequence:* this narrows FR-POL-03 and BR-14 rather than widening them, but it changes an
+    external interface and [AGENTS.md](../AGENTS.md#working-rules) allows a bypass flag only where a design document
+    calls for it. Before any code emits a bypass flag: an [LLD §3](design/LLD.md#3-mcp-tool-contracts) contract change
+    for the `privileged_scope` shape and a new ADR (Delegated wording, citing this decision) (T3.16), and the argv audit
+    and `BYPASS_FLAGS` tests changed to allow a bypass flag only for an approved privileged scope with `bypassApproved`
+    (T3.17).
+
+Decisions 10 to 13 each choose the less restrictive of the options put to Ender. Their residual risks are recorded for
+Ender as R-23 to R-26 in §7.1 (not blocking).
 
 ### 4.3 Stated intent (confirmed constraints)
 
@@ -194,7 +218,7 @@ commits).
 | M0 | Documentation baseline | In progress (this change); Done on merge | — | NFR-MAINT-02, NFR-COMP-01 | Document set in §5 exists; `node scripts/check-docs.mjs` passes; AGENTS.md points here | Docs check script; review |
 | M1 | Foundation | **Done** (2026-10-12): every acceptance criterion has a passing test (166 tests locally); first CI run unconfirmed; requirement gaps marked `Partial` in §6.1 | M0 | FR-ADP-01, FR-AUTH-01, FR-POL-10, FR-WS-01–06, FR-SES-01, 02 (schema), 05 (events), FR-CAP-04 (queue, global limit), FR-EXE-01, 02, 05–07, FR-SES-06, FR-TEL-01, 03, FR-OPS-01 (`doctor`, `runs`), 03, 04, NFR-SEC-01, 02, 04–06, NFR-REL-01–02, NFR-PERF-03 (global), NFR-PORT-01, NFR-PRIV-01 | A fake provider CLI runs through the full lifecycle transactionally; cancel kills the process tree; `SIGKILL` of the controller mid-run followed by restart leaves a consistent ledger; a failed run that mutated files is rolled back, not replayed; CI green on Linux | Automated integration and fault-injection tests in CI; evidence in §6.1 |
 | M2 | Claude Code and Codex adapters + MCP vertical slice | **Partial** (2026-10-12): T2.1 to T2.8 implemented with tests on fakes and synthetic fixtures (453 tests locally); not `Done`, see "Blocks Done" in §6.2. FR-GIT-01 (added on main, PR #11) is shown by argv and policy inspection: Claude Code compiles documented deny rules, Codex declares that none is documented; live behaviour is unverified (§6.2 item 4) | M1 | FR-MCP-01, 03–09, FR-ADP-02–04, 06, 11 (Claude Code, Codex), FR-POL-01 (two profiles), 02–05, 07, 08, FR-AUTH-02, FR-GIT-01 (Claude Code, Codex), FR-SES-03 (Claude Code, Codex), FR-RTE-01 (eligibility), FR-CAP-01 (record), FR-OPS-01 (`serve`), NFR-PERF-01, 02, NFR-OBS-01, NFR-PRIV-02, NFR-MAINT-03 | For each of Claude Code and Codex, a scripted MCP client delegates an edit task under `edit-untrusted`, polls to `SUCCEEDED`, retrieves a diff artifact and continues the same native session; a new user following the README reaches a passing `doctor`; missing login yields `AUTH_REQUIRED`; unknown CLI version yields `ADAPTER_VERSION_UNVERIFIED`; no bypass flag appears in any compiled invocation; no compiled invocation leaves a Git write operation (commit, ref change, push) permitted (FR-GIT-01) | Conformance suite on recorded fixtures in CI; one opt-in live smoke test run by the operator; argv inspection test |
-| M3 | Isolation | Planned | M2 | FR-POL-01 (all), 06, 09, FR-WS-07, FR-EXE-08, FR-OPS-02 (`approve`, `deny`), NFR-SEC-03 (Claude Code, Codex), NFR-DATA-01 | Malicious-fixture suite shows no escape for each profile on Claude Code and Codex; `privileged` runs wait for `approve` and end `CANCELLED` on `deny`; verification commands run and are recorded; retention deletes artifacts, worktrees and branches together | Malicious-fixture suite; integration tests |
+| M3 | Isolation | Planned; tasks in §6.5 (planning done 2026-10-12). Can reach only `Partial` without live provider runs (§6.5.2) | M2 | FR-POL-01 (all), 06, 09, FR-WS-07, FR-EXE-08, FR-OPS-02 (`approve`, `deny`), NFR-SEC-03 (Claude Code, Codex), NFR-DATA-01 | Malicious-fixture suite shows no escape for each profile on Claude Code and Codex; `privileged` runs wait for `approve` and end `CANCELLED` on `deny`; verification commands run and are recorded; retention deletes artifacts, worktrees and branches together | Malicious-fixture suite; integration tests |
 | M4 | Adapter expansion | Planned (Kimi Code part blocked by B-1) | M3, M9 (Proposed) | FR-ADP-05, 07, 08, 09, 10, 11 (others), FR-EXE-03, FR-OPS-02 (`adapters validate`), NFR-SEC-03 (others), NFR-MAINT-01, NFR-PORT-02 | Grok Build, Antigravity, Cursor and OpenCode adapters pass conformance and malicious-fixture suites; the test suite passes on macOS; Kimi Code passes once B-1 clears (M4 may be marked `Partial` until then, with only Kimi outstanding); ACP transport used where it is the adapter's chosen surface; adding an adapter touched only its own module, manifest, fixtures and registry entry; `adapters validate` accepts a new CLI version only after its live checks pass | Conformance and fixture suites per adapter; diff inspection |
 | M5 | Continuity | Planned | M4 | FR-SES-02 (populated), 03 (all), 04, 05 (handoff view) | Provider A edits and tests; provider B continues from the handoff bundle and completes the task; no provider transcript file is opened (verified by file-access test) | End-to-end test with two fake adapters plus one opt-in live pair |
 | M6 | Capacity and resilience | Planned | M5 | FR-MCP-02 (`get_capacity`), 10, FR-CAP-01 (use), 02–07, FR-OPS-05, NFR-PERF-03 (per provider) | Injected rate-limit, overload, quota and crash failures produce the behaviour in FRD WF-5, with successor runs linked to their predecessors; `get_capacity` and `switchboard capacity` never return `explicit_remaining` unless the provider reported it | Fault-injection tests with fake adapters |
@@ -367,7 +391,70 @@ other M10 task.
 | T10.2 | Startup orphan sweep and `environment` run events | FR-PRJ-07, FR-EXE-06 | T10.1 | Fault injection: `SIGKILL` mid-run, restart, container gone before worktree assessment |
 | T10.3 | Container leg of the malicious-fixture suite; `projects validate` checks; retention of containers and volumes | NFR-SEC-03, FR-PRJ-08, 09 | T10.1 | Fixtures show no escape; GC removes containers with worktrees |
 
-Later milestones (M3–M8) are intentionally kept at the level of the table in §6; break them into tasks when the
+### 6.5 M3 Isolation: tasks
+
+*Planned, Delegated breakdown (2026-10-12), reconciled with owner decisions 10 to 13 (§4.2).* No task has started.
+Claims about the code below were checked against branch `m2-git-write-deny` (PR #12, unmerged), on which M3 builds for
+its FR-GIT-01 work. Design: [SRS §3.3](requirements/SRS.md#33-policy-and-trust-profiles-fr-pol),
+[FRD WF-7](requirements/FRD.md#wf-7-privileged-approval), [FRD §4.2](requirements/FRD.md#42-transition-table),
+[TDD §3.4](design/TDD.md#34-security-engineering), [LLD §5](design/LLD.md#5-workspace-and-lease-algorithm).
+
+Facts the breakdown relies on (verified 2026-10-12): the `approval` table and its "changes only from `PENDING`" trigger
+already exist in `src/ledger/migrations/0001_initial.ts`, but `src/ledger/repo.ts` has no approval helpers; the config
+schema (`src/config/schema.ts`) has no `profiles` or `retention` keys; `src/policy/profiles.ts` resolves only the two M2
+profiles with `bypassApproved: false`; `src/adapters/run.ts` already refuses a bypass flag unless `bypassApproved`;
+the lifecycle's compile-time `Ineligible` ends `PERMISSION_BLOCKED` (`src/lifecycle/lifecycle.ts`, §6.2.1); there is no
+`approve` or `deny` command. On the development host `claude` and `prlimit` are installed; `codex` and `bwrap` are not.
+
+| Task | Objective | References | Depends on | Done when |
+| --- | --- | --- | --- | --- |
+| T3.0 | Spike: native controls per profile, provider and platform for Claude Code and Codex (file access, shell, network, repository config, sandbox, approval and bypass flags), from [R2] and the installed `claude --help`; Codex from documentation only (not installed), marked unverified | [TDD §4.1–4.2](design/TDD.md#4-provider-adapter-strategy), FR-POL-02, FR-POL-06, R-7, R-10, Q-11 | — | A per-profile, per-provider, per-platform matrix with a source for every cell is written into TDD §4.1 and §4.2; each cell that cannot be compiled names its `Ineligible` reason; nothing is stated from memory |
+| T3.1 | Outer-sandbox evaluation for R-8 and FR-POL-06: bubblewrap, Landlock and `prlimit` around the provider process and around verification commands; availability detection; fail closed where a profile or config requires it. **Optional hardening** after decisions 10 and 11, not a prerequisite for any other task | [TDD §3.4](design/TDD.md#34-security-engineering), R-8, R-10, FR-POL-06, Q-22 | — | New ADR (next free number) records the decision and its limits (credentials the CLI itself needs, network use it cannot tell apart); `doctor` reports availability; a test shows a configured-but-missing sandbox refuses the run rather than running unconfined |
+| T3.2 | COMP-POL defaults for all five profiles from SRS §3.3; `profiles.<name>` overrides that may tighten or, per decision 12, loosen; `retention.days` and `retention.interval` config keys | FR-POL-01, NFR-DATA-01, FR-WS-07, [TDD §3.1](design/TDD.md#31-configuration), `src/policy/profiles.ts`, `src/config/schema.ts`, Q-17 | — | Tests: every profile resolves to a frozen snapshot; an override that loosens a default is rejected unless written explicitly (Proposed form: a per-field override, no wildcard) and, when accepted, appears in the run's policy snapshot and in `doctor` output; unknown keys rejected; `privileged` resolves only with an approved scope (T3.4); contents SRS §3.3 leaves open use conservative Proposed defaults recorded in TDD §3.1 (Q-17); the `src/policy/profiles.ts` comment "may only tighten" is corrected |
+| T3.3 | Privileged admission: `delegate_task` with `privileged` and a `privileged_scope` enters AWAITING_APPROVAL (FRD T2) with a `PENDING` approval row (scope JSON and hash) in the same transaction; no process, no worktree; `get_run` and `runs show` show the requested scope and approval status; approval helpers in the ledger repo | FR-POL-09, FR-MCP-06, BR-13, BR-14, [FRD WF-7](requirements/FRD.md#wf-7-privileged-approval), [LLD §1](design/LLD.md#1-data-model), [LLD §3](design/LLD.md#3-mcp-tool-contracts) | T3.2, T3.16 | Tests: ceiling below `privileged` gives `PERMISSION_BLOCKED`; ceiling `privileged` gives AWAITING_APPROVAL and exactly one `PENDING` row; missing or malformed scope gives `INVALID_REQUEST`; idempotent replay returns the same run; BR-13's M2 milestone note is replaced |
+| T3.4 | Operator `approve <run_id>` and `deny <run_id>` as top-level commands (FR-OPS-02, FRD §2.1, WF-7; not `runs approve`), each with `--json`; written as an operator record applied by `serve`, or applied directly under the data-directory lock when no daemon runs (same pattern as `runs cancel`); startup reconciliation applies decided approvals; `bypassApproved` is set only from an `APPROVED` row whose scope hash matches the run's snapshot and whose scope sets bypass; no expiry and no automatic approval | FR-POL-09, FR-OPS-02, FR-POL-03, BR-14, WF-7, WF-8, [SDD §3](design/SDD.md#3-interface-responsibilities-and-error-propagation), Q-15 | T3.3 | Tests: `approve` moves the run to QUEUED and it runs; `deny` ends it `CANCELLED` with a decided row (timestamp, OS user); a second decision is refused; `approve` on a run not AWAITING_APPROVAL is a CLI error with no state change; a scope-hash mismatch leaves `bypassApproved` false; works with and without `serve`; restart applies a decision recorded while the daemon was down; no MCP tool can approve; orchestrator cancel while waiting ends `CANCELLED` (approval status per Q-15) |
+| T3.5 | Claude Code compile matrix for `test-sandboxed`, `trusted-development` and `privileged`, with an `Ineligible` reason for every cell it cannot compile; FR-GIT-01 deny rules kept in every write-capable profile; bypass flag only per T3.16 and T3.17 | FR-POL-01, 02, 03, 06, FR-GIT-01, [TDD §4.1](design/TDD.md#41-claude-code-m2), [ADR-0015](adr/0015-claude-untrusted-isolation-flags.md), R-10 | T3.0, T3.2; T3.4 and T3.17 for the `privileged` bypass cell | Argv tests per profile; `test-sandboxed` stays `Ineligible` for Claude until FR-POL-06 confinement is shown (R-10) or T3.1 supplies it; no Git write permitted in any compiled invocation; a bypass flag appears only for an approved scope that sets bypass |
+| T3.6 | Codex compile matrix for the same three profiles, as T3.5; Codex's in-sandbox command execution under the untrusted profiles is accepted per decision 10 and declared unverified | FR-POL-01, 02, 03, 06, FR-GIT-01, [TDD §4.2](design/TDD.md#42-codex-m2), Q-11, R-22 | T3.0, T3.2; T3.4 and T3.17 for the `privileged` bypass cell | As T3.5 for Codex; the manifest notes and `list_capabilities` say that credential confinement is unverified; network allowlists that Codex cannot express are `Ineligible`, never downgraded |
+| T3.7 | Profile-aware eligibility, and compile-time `Ineligible` in the lifecycle mapped to the BR-3 codes instead of `PERMISSION_BLOCKED` | FR-RTE-01, FR-POL-02, [FRD BR-3](requirements/FRD.md#3-business-rules), §6.2.1, `src/lifecycle/lifecycle.ts`, `src/routing/` | T3.2 (the BR-3 mapping alone has no dependency) | Tests: each profile filters providers by their compile result; a race-time compile `Ineligible` ends with the BR-3 code; the §6.2.1 row is closed |
+| T3.8 | Malicious-fixture suite, controller leg (CI, fake provider). Controller-side invariants first, with minimal benign fake-provider behaviours: environment allowlist holds; operator checkout refs and working tree unchanged; controller Git runs with hooks disabled; no canary token in the ledger, logs or MCP envelopes; symlinks handled safely in diffs, artifacts and GC; repository hooks, MCP definitions and agent instructions not loaded | NFR-SEC-03 (controller leg), FR-POL-04, FR-EXE-07, FR-WS-05, FR-TEL-03, NFR-SEC-01 | — (GC symlink cases after T3.12) | Each invariant has a test that fails when the invariant is broken (shown by a deliberately broken variant during review); runs in CI without any provider installed |
+| T3.8b | **Owner-reviewed sub-task.** Adversarial fake-provider scenarios (escape attempts beyond T3.8's benign behaviours). A previous drafting attempt was stopped partway by a safety classifier, so the scenario list and its content go to Ender for review before anything is written | NFR-SEC-03, R-3 | T3.8; Ender's review | Ender has approved the scenario list in writing; the scenarios then run in CI like T3.8 |
+| T3.9 | Live malicious leg for Claude Code and Codex: operator-run, opt-in (skipped unless the live-test variables are set), canary files and tokens only, never real credentials; each check reports `HELD`, `ESCAPED` or `NOT_CHECKED`. Covers FR-POL-06 for Codex (decision 10), Claude `test-sandboxed` confinement (R-10), FR-GIT-01 checks C-G2 and X-G1, and bypass behaviour under an approved scope | NFR-SEC-03, FR-POL-06, FR-GIT-01, [TDD §3.6](design/TDD.md#36-testing-strategy), Q-21 | T3.5, T3.6, T3.8; M2 live smoke run (§6.2 "Blocks Done"); for Codex, Q-10 and Q-12 | The operator has run it and the results are recorded here and in the manifest notes; every `ESCAPED` makes the affected cell `Ineligible` or opens a risk; CI skips it |
+| T3.10 | Verification stage: VERIFYING (FRD T11, T14) runs `verification_commands` as argv arrays (no shell) in the run worktree with the run's environment allowlist and timeout; any failure gives `TEST_FAILURE` (BR-16); results stored as a redacted `test_report` artifact and in the envelope; host execution under `edit-untrusted` allowed (decision 11); refused under `inspect-untrusted` (V7); cancel and crash handled per §4.3 and WF-8 | FR-EXE-08, BR-16, V7, WF-8, FR-TEL-03, NFR-SEC-01 | T3.2 | Tests: pass, fail, timeout, cancel during VERIFYING, crash during VERIFYING ends `PROCESS_CRASH` and is not re-run; output redacted; README no longer says verification is refused |
+| T3.11 | Optional confined verification: run verification commands inside the outer sandbox from T3.1 when configured | FR-EXE-08, FR-POL-06, decision 11 | T3.1, T3.10 | Opt-in tests (skipped when the sandbox is unavailable) show writes outside the worktree refused; unconfigured behaviour unchanged |
+| T3.12 | Retention and GC: configurable retention; the collected unit is a whole idle meta-session (Proposed, Q-18); crash-safe order (intent, Git action, outcome); worktrees, `switchboard/` branches and artifact files removed together; `run_event` rows kept (Q-19); orphan sweep reported by `doctor` | FR-WS-07, NFR-DATA-01, [LLD §5](design/LLD.md#5-workspace-and-lease-algorithm), FR-PRJ-09 (later) | T3.2 for the config keys (the algorithm can start earlier) | Tests: expired unit removed completely; active or recent units untouched; never touches branches outside `switchboard/`; `SIGKILL` mid-GC then restart completes or rolls forward; symlinked paths not followed out of the data directory; NFR-DATA-01 wording or Q-19 settled |
+| T3.13 | Documentation and status: README (profiles, approval, verification, retention), TDD §4 matrices, LLD §3 and §5 detail, this roadmap's status with evidence | NFR-MAINT-02, NFR-MAINT-03 | All other M3 tasks | §6 shows M3 `Partial` or `Done` with evidence per task; §6.5.2 updated |
+| T3.14 | Correct the README's "no shell" wording for Codex under `inspect-untrusted` and `edit-untrusted`: Codex runs commands inside its native sandbox, and credential confinement is unverified (decision 10); align the TDD §3.4 credential-boundary sentence and TDD §4.2 | Decision 10, FR-POL-06, NFR-COMP-01, R-23 | — | README and TDD state the Codex behaviour and its unverified status; `node scripts/check-docs.mjs` passes |
+| T3.15 | Correct TDD §3.1 `profiles.<name>` from "may only tighten" to FR-POL-01's rule (decision 12) | Decision 12, FR-POL-01 | — | **Done in this change** (2026-10-12): [TDD §3.1](design/TDD.md#31-configuration) row updated |
+| T3.16 | Design the privileged scope before any bypass code: [LLD §3](design/LLD.md#3-mcp-tool-contracts) `delegate_task` gains `privileged_scope` (files, shell, network, repository config, and an explicit `bypass` boolean), its validation and how its hash is computed; a new ADR (next free number, 0016 at planning time) records decision 13, Delegated wording citing Ender's decision, complementing [ADR-0004](adr/0004-trust-profiles-no-bypass-flags.md) | Decision 13, FR-POL-03, FR-POL-09, BR-14, FR-MCP-03, [AGENTS.md](../AGENTS.md#working-rules) | — | LLD §3 and the ADR are merged; FRD WF-7 and BR-14 cite them; `node scripts/check-docs.mjs` passes |
+| T3.17 | Change the argv audit and its tests: `BYPASS_FLAGS` stays the single list; a bypass flag is allowed only when the run's resolved profile is `privileged`, `bypassApproved` is true and the approved scope sets bypass; every other case still fails | Decision 13, FR-POL-03, `src/adapters/audit.ts`, `src/adapters/run.ts`, `src/policy/policy.test.ts`, adapter argv tests | T3.16 | Tests: a bypass flag in any non-privileged, unapproved or bypass-false invocation is refused before spawn; the approved, bypass-true case passes; the M2 tests asserting no bypass flag still pass for the other four profiles |
+
+#### 6.5.1 Order, waves and hot files
+
+- **Wave A (can start now; none needs a live provider):** T3.0, T3.1, T3.2, T3.7 (the BR-3 mapping part), T3.8, T3.12
+  (algorithm), T3.14, T3.16. T3.15 is done.
+- **Wave B:** T3.3 (after T3.2, T3.16), T3.17 (after T3.16), T3.10 (after T3.2), rest of T3.7 (after T3.2).
+- **Wave C:** T3.4 (after T3.3), T3.5 and T3.6 (after T3.0, T3.2; their `privileged` bypass cell after T3.4 and
+  T3.17), T3.11 (after T3.1, T3.10), T3.8b (after Ender's review).
+- **Wave D:** T3.9 (operator), T3.13.
+- **Hot files:** `src/lifecycle/lifecycle.ts` (T3.3, T3.4, T3.7, T3.10), `src/mcp/*` (T3.3, T3.10), `src/cli/serve.ts`
+  (T3.4, T3.12) and `src/ledger/repo.ts` (T3.3, T3.4, T3.10, T3.12). Tasks sharing a hot file run one after another,
+  never in parallel (AGENTS.md); T3.3 goes before T3.10 in the lifecycle and MCP code.
+- No code that emits a bypass flag merges before T3.16 and T3.17.
+
+#### 6.5.2 What M3 cannot complete without live providers
+
+M3 can reach `Partial` at best on fakes and fixtures. These need operator-run live checks (T3.9) and, for Codex, the M2
+items Q-10 (auth status) and Q-12 (version range) first:
+
+- NFR-SEC-03 for Claude Code and Codex: "no escape" on real CLIs.
+- FR-POL-06: Codex credential confinement (decision 10) and Claude `test-sandboxed` confinement (R-10).
+- FR-POL-02 per-profile compilation on real CLIs (flag spellings and behaviour, R-21, R-22).
+- FR-GIT-01 live checks C-G2 and X-G1.
+- Bypass behaviour under an approved `privileged` scope (decision 13).
+
+FR-POL-09, FR-OPS-02 (`approve`, `deny`), FR-EXE-08, FR-WS-07 and NFR-DATA-01 can be shown on fakes.
+
+Later milestones (M4–M8) are intentionally kept at the level of the table in §6; break them into tasks when the
 preceding milestone completes.
 
 ## 7. Risks, blockers and open questions
@@ -398,6 +485,10 @@ preceding milestone completes.
 | R-20 | An orchestrator that can create projects widens what a compromised or prompt-injected orchestrator can reach | New mounts, providers, ceilings or push rights through a project it created | `manage_projects` off by default; limits are the client's own; operator approval for containers, push and widening; creator-only visibility; every call recorded (FR-PRJ-10, HLD TB-9) |
 | R-21 | Claude stream-json event shapes and error category strings are unverified; the adapter was written against `claude --help` 2.1.296 text and synthetic fixtures (`src/adapters/claude/parse.ts`; [ADR-0015](adr/0015-claude-untrusted-isolation-flags.md)) | Misparsed events or misclassified failures on a real CLI | Live smoke test (T2.6) before M2 is called done; classify unknown shapes as `OUTPUT_PROTOCOL_ERROR`, never success |
 | R-22 | Codex event shapes and the `--sandbox read-only` spelling are unverified (`src/adapters/codex/protocol.ts`); no Codex binary was available | Misparsed events, or a sandbox flag that does not mean what the adapter assumes | Live smoke test (T2.6); the probe requires the flags in `codex exec --help` |
+| R-23 | *For Ender, not blocking.* Owner decision 10 keeps Codex eligible under the untrusted profiles on its native sandbox alone. A prompt-injected Codex agent runs commands inside that sandbox, and whether they can read `~/.codex` credentials (or reach other same-user files) is unverified | Credential exfiltration through a Codex run on an untrusted repository; FR-POL-06 stays open for Codex | Recorded as unverified in the README and manifest notes (T3.14, T3.6); live canary check (T3.9); outer sandbox as optional hardening (T3.1); the operator can disable Codex (`providers.codex.enabled`) |
+| R-24 | *For Ender, not blocking.* Owner decision 11 lets verification commands run on the host under `edit-untrusted`. Those commands execute code the untrusted agent just wrote (tests, build scripts) as the operator's user, outside any provider sandbox | Code from an untrusted run executes on the host with the operator's file access, including provider credential files and network | Argv only, no shell; environment allowlist; worktree cwd; timeout (T3.10); confined verification optional (T3.11); orchestrators should supply verification only for repositories they trust |
+| R-25 | *For Ender, not blocking.* Owner decision 12 lets `profiles.<name>` loosen defaults. A malicious or mistaken config change can widen every run of a profile (for example shell or network for `edit-untrusted`) | Weaker isolation than the profile name suggests, applied silently to later runs | Loosening must be explicit and validated, appears in every run's policy snapshot and in `doctor` (T3.2); the config file is operator-owned |
+| R-26 | *For Ender, not blocking.* Owner decision 13 allows bypass flags under an approved `privileged` scope. A bypass flag disables the provider's native approvals and some of its controls for that run, and a scope approved without careful reading grants that to an orchestrator's request | A privileged run can do whatever the provider allows without prompts, including Git writes the deny rules would otherwise block, if the provider's bypass overrides them | Bypass only when the scope sets it explicitly and the approval's scope hash matches (T3.4, T3.17); `runs show` displays the scope before `approve`; no expiry and no automatic approval; ADR from T3.16 records the limits |
 
 ### 7.2 Blockers
 
@@ -422,10 +513,18 @@ No blocker affects M1, M2 or M9.
 | Q-8 | *Answered by delegation 2026-10-12 ("the rest you pick"):* the operator's own Git identity, copied explicitly into each context's configuration (TDD §3.10). Not an owner decision. | — |
 | Q-9 | *Answered 2026-10-12:* yes (owner decision 9), read as push allowed and signing wanted. Push stays off until a context enables it; publish ref only, never the default branch; signing is controller-side (FR-GIT-10). | — |
 | Q-10 | Codex auth preflight returns `UNKNOWN` because no status command is documented (R2, TDD §4.2), so Codex runs are `ELIGIBILITY_NONE` until a status mechanism is verified. Which mechanism should be used, if any? | Ineligible (fail closed, NFR-SEC-06); a structured auth error mid-run still ends `AUTH_REQUIRED` |
-| Q-11 | Codex has no documented shell allowlist or model flag in the adapter's sources, which may conflict with FR-POL-02 (and the model constraint). Settle whether Codex meets FR-POL-02 or is limited to read-only profiles | Adapter compiles only what it can express and returns `Ineligible` otherwise; to settle in M3 |
+| Q-11 | *Profile part answered 2026-10-12 by owner decision 10: Codex stays eligible for `inspect-untrusted` and `edit-untrusted` on its native sandbox; the model-flag part stays open.* Codex has no documented shell allowlist or model flag in the adapter's sources, which may conflict with FR-POL-02 (and the model constraint). Settle whether Codex meets FR-POL-02 or is limited to read-only profiles | Adapter compiles only what it can express and returns `Ineligible` otherwise; to settle in M3 |
 | Q-12 | The Codex manifest range is empty, so every Codex binary is `ADAPTER_VERSION_UNVERIFIED`. Which `codex --version` will the operator validate? | Fail closed until the operator records one (T2.1 note, `adapters validate`) |
 | Q-13 | Are the Claude and Codex assumptions in R-21 and R-22 correct on real CLIs? | Unconfirmed; the opt-in live smoke test (T2.6) must confirm or correct each, and the fixtures and TDD §4.1–4.2 are updated with the result |
 | Q-14 | NFR-PERF-02 (Must, M2: cache adapter preflight, invalidate on binary version change or a configurable TTL) is unimplemented and no task owns it. Should it become a task, and in which milestone? **Proposed:** a task to add the cache in the probe and auth path used by `delegate_task`, dispatch and `list_capabilities`, with a version-change invalidation test | None; the requirement stays unmet and M2 stays `Partial` until Ender decides |
+| Q-15 | When a run in AWAITING_APPROVAL is cancelled (FRD §4.3 "approval record closed as not granted"), which `approval.status` is written? The schema allows `PENDING`, `APPROVED`, `DENIED`, `EXPIRED`; WF-7 says there is no expiry. A distinct `CANCELLED` status needs a forward migration | **Proposed:** `DENIED`, with the cancel and who requested it recorded in a `run_event`; no migration (T3.4) |
+| Q-16 | Does FR-POL-06 ("untrusted profiles") cover `test-sandboxed`, or only `inspect-untrusted` and `edit-untrusted`? | Treated as covering `test-sandboxed` (fail closed): Claude stays `Ineligible` for it until confinement is shown (R-10, T3.5) |
+| Q-17 | SRS §3.3 leaves profile contents unspecified: which build and test commands and which network hosts `test-sandboxed` allows; what "broader shell" and "policy-based" network mean for `trusted-development`; and the mechanism for "controller-approved" and "allowlisted" repository configuration | Conservative Proposed defaults in T3.2 (empty allowlists, network off), recorded in TDD §3.1; operators widen them through `profiles.<name>` (decision 12) |
+| Q-18 | What is the retention (GC) unit: a terminal run, or a whole meta-session idle past the retention period? Collecting single runs can break a meta-session's checkpoint chain | **Proposed:** a whole idle meta-session (T3.12) |
+| Q-19 | NFR-DATA-01 says events have configurable retention, but `run_event` is append-only by trigger (ADR-0005) and is the audit record. Should NFR-DATA-01 be amended to keep events, or should GC delete events through a migration that relaxes the trigger? | **Proposed:** keep `run_event` rows and amend NFR-DATA-01's wording in the SRS (T3.12); not changed until Ender decides |
+| Q-20 | A provider process that calls `setsid` leaves the process group the supervisor kills, and R-12 already leaves a crash window before the `pid` is recorded. Should M3 add a launcher or cgroup-based tracking? | Not in M3's task list; process-group kill and startup reconciliation only (R-12) |
+| Q-21 | Where may live canaries be placed for T3.9: only in a temporary `HOME` and worktree the test creates, or also beside the real provider credential directories, which would test confinement more faithfully but touches the operator's real home? | **Proposed:** temporary locations only; checks needing real credential paths report `NOT_CHECKED` |
+| Q-22 | Should an outer sandbox (bubblewrap or similar, T3.1) become a required host dependency for some profiles, or stay optional? | Optional hardening (decisions 10 and 11); nothing requires it |
 
 ## 8. Deferred and excluded work
 
@@ -457,21 +556,29 @@ operator or Ender, in this order:
 5. **Git write denial (FR-GIT-01).** Argv check done (T2.2 row; Delegated agent work, 2026-10-12). What remains is
    the live confirmation in step 1 (checks G-1, C-G2, X-G1) and the M9 detection layer (FR-GIT-03).
 
-Then start **M3 Isolation** (§6), breaking it into tasks first (§9.1). Notes carried from M2:
+**M3 Isolation is planned** (§6.5, 2026-10-12; owner decisions 10 to 13 in §4.2). Every remaining M2 item above needs
+the operator or Ender, so agent work proceeds meanwhile on M3 **wave A** (§6.5.1), none of which needs a live provider:
+T3.0 (native-controls spike), T3.1 (outer-sandbox evaluation), T3.2 (profile defaults and config keys), the BR-3
+mapping part of T3.7, T3.8 (controller-side malicious-fixture invariants), T3.12 (GC algorithm), T3.14 (README Codex
+correction) and T3.16 (privileged scope LLD change and ADR). No code that emits a bypass flag lands before T3.16 and
+T3.17. Open M3 questions for Ender: Q-15 to Q-22; residual risks of decisions 10 to 13: R-23 to R-26. Notes carried
+from M2:
 
 - **`QUEUE_FULL`** maps to `ELIGIBILITY_NONE` with a reason (Q-5, Proposed); a dedicated code needs an LLD §4 and SRS
   change.
 - **Idempotency keys** apply to new meta-sessions only (FRD §7.2 C6); `continue_task` rejects a key.
-- **Compile-time `Ineligible`** in the lifecycle still ends `PERMISSION_BLOCKED` (§6.2.1).
+- **Compile-time `Ineligible`** in the lifecycle still ends `PERMISSION_BLOCKED` (§6.2.1); T3.7 fixes it.
 - M1 `Partial` requirements in §6.1.1 (arm64 CI, secret scan beyond artifacts) remain open, as does NFR-SEC-04 for `serve`.
 - M9 (projects and the injected commit and push tools) follows M3 and is sequenced before M4.
 
 ### 9.1 How an agent picks up work
 
 1. Read [AGENTS.md](../AGENTS.md), then this roadmap's §6 to find the first milestone whose status is not `Done`. A
-   `Partial` milestone is closed from its "Blocks Done" list before the next one starts.
+   `Partial` milestone is closed from its "Blocks Done" list before the next one starts, unless every remaining item
+   needs the operator or Ender; agents then work on the next milestone's tasks that do not depend on those items (as M3
+   wave A does while M2 waits for the live smoke run).
 2. Take the first task in that milestone's task table whose dependencies are done. If the milestone has no task table
-   yet (M3 onward), break it into tasks in the same format first, from its row in §6 and the requirements it lists, and
+   yet (M4 onward), break it into tasks in the same format first, from its row in §6 and the requirements it lists, and
    add them here before coding.
 3. Read every reference in the task row: the SRS requirements, the FRD workflow or rule, the LLD/TDD section and the
    ADRs. Those are the contract; this roadmap only sequences them.
