@@ -113,7 +113,9 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
   path-prefix-with-separator against configured allowed roots before any side effect; re-checked immediately before
   worktree creation to narrow time-of-check/time-of-use gaps (FR-POL-10, NFR-SEC-05).
 - **No bypass flags and no global provider config.** A final argv audit in `COMP-EXE` rejects bypass flags unless the
-  run is `privileged` with a recorded approval (FR-POL-03); adapters never write global provider config such as
+  run is `privileged` with an approval whose scope sets `bypass` and whose scope hash matches the run's policy snapshot
+  (FR-POL-03, [LLD §3.1](LLD.md#31-privileged-scope-m3), [ADR-0016](../adr/0016-approved-privileged-scope-bypass.md);
+  audit change in T3.17); adapters never write global provider config such as
   `~/.claude/settings.json` (FR-POL-08, [ADR-0004](../adr/0004-trust-profiles-no-bypass-flags.md)).
 - **Repository hooks.** Controller Git operations run with repository hooks disabled and a clean Git environment
   (Proposed: `-c core.hooksPath=/dev/null`, `--no-verify`, no inherited `GIT_*` variables), because a malicious
@@ -125,7 +127,12 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
   lint rule (Proposed) forbidding references to known credential paths outside test fixtures.
 - **Same-account limitation [R2].** A dedicated OS user limits host blast radius but does not isolate provider
   credentials from commands the agent runs as the same user. Hence FR-POL-06: where an adapter cannot confine agent-run
-  commands away from credentials, untrusted profiles run without shell.
+  commands away from credentials, untrusted profiles should run without arbitrary shell. Claude Code does: its untrusted
+  profiles have no Bash tool unless the operator allowlists exact commands (§4.1). Codex does not: owner decision 10
+  keeps Codex eligible for `inspect-untrusted` and `edit-untrusted` on its native sandbox alone, and the Codex agent runs
+  commands inside that sandbox (read-only or `workspace-write`). Whether those commands can reach `~/.codex` credentials
+  or other same-user files is **unverified**, so FR-POL-06 stays open for Codex until the live malicious leg (T3.9)
+  checks it (R-23, §4.2).
 - **Outer sandbox (Proposed, dependent on M3 evaluation).** On Linux, `bubblewrap` or Landlock could wrap the *provider
   process* in addition to provider-native sandboxes, restricting filesystem writes to the run worktree and limiting
   reachable paths. Limits to evaluate: an outer wrapper cannot hide credentials from the provider CLI itself (it needs
@@ -286,7 +293,7 @@ its adapter declares ([§4.2](#42-codex-m2)). The deny set is `GIT_WRITE_SUBCOMM
 
 | # | Layer | What it does | Strength | Verified? |
 | --- | --- | --- | --- | --- |
-| 1 | Profile deny rules | Each adapter compiles Git write operations (commit, branch and tag changes, push) into the provider's *documented* permission controls: Claude Code `--disallowedTools` deny rules plus its explicit `--tools`/`--allowedTools` set, Grok Build `--allow`/`--deny`, OpenCode explicit deny rules, Antigravity `strict` mode. An adapter whose provider documents none declares it (`gitWriteControl`, reported by `list_capabilities`; Codex). Under `inspect-untrusted` and `edit-untrusted` there is no arbitrary shell anyway, and a shell allowlist entry that could write Git makes the run `Ineligible`. | Provider-enforced; only as strong as the provider's rule matching, and lexical | Claude: rule form from the `claude --help` 2.1.296 example only, matching semantics an Assumption (live check pending); Codex: none documented; M4 adapters: to be verified |
+| 1 | Profile deny rules | Each adapter compiles Git write operations (commit, branch and tag changes, push) into the provider's *documented* permission controls: Claude Code `--disallowedTools` deny rules plus its explicit `--tools`/`--allowedTools` set, Grok Build `--allow`/`--deny`, OpenCode explicit deny rules, Antigravity `strict` mode. An adapter whose provider documents none declares it (`gitWriteControl`, reported by `list_capabilities`; Codex). Under `inspect-untrusted` and `edit-untrusted` Claude Code has no arbitrary shell, and a shell allowlist entry that could write Git makes the run `Ineligible`; Codex runs commands inside its native sandbox under those profiles (owner decision 10, §4.2), so for Codex this layer is the sandbox's path scope only. | Provider-enforced; only as strong as the provider's rule matching, and lexical | Claude: rule form from the `claude --help` 2.1.296 example only, matching semantics an Assumption (live check pending); Codex: none documented; M4 adapters: to be verified |
 | 2 | No credentials in the agent's environment | The environment allowlist (FR-EXE-07) never carries `SSH_AUTH_SOCK`, token variables or credential-helper settings. In a `container` environment (M10) no credential store is mounted. | Strong in containers; in a `host` environment on-disk credentials stay readable by a same-user shell ([R2] limit) | Allowlist: tested in M1; container: M10 |
 | 3 | Git-level guard | Per-run Git configuration for agent processes that points hooks at a controller-owned directory whose hooks reject ref updates not carrying the controller's token. Candidate mechanisms: a per-run global config file, or `GIT_CONFIG_COUNT` environment entries (newer Git than the current 2.30 minimum, so adopting it raises `MIN_GIT_VERSION`; check Git's release notes). | A guard against provider-internal or accidental commits, **not** a boundary: an agent with a shell can override Git configuration | Mechanism: to be chosen in an M9 spike |
 | 4 | Git directory out of reach | A worktree's Git directory lives under the main repository's `.git/worktrees/`, outside the worktree. A provider sandbox that confines writes to the worktree therefore cannot edit refs. | Depends on each sandbox's path scope | Malicious fixtures per adapter (M9) |
@@ -398,6 +405,7 @@ Version ranges come from compliance manifests, not this table (FR-ADP-03, FR-POL
 | Auth preflight | Saved ChatGPT or API-key auth is reused; a dedicated status command is not stated in [R2]: to be verified in M2 against installed CLI. `~/.codex/auth.json` is sensitive and never read |
 | Trust profile compilation (Proposed) | `--sandbox workspace-write` or stricter, plus `--ignore-user-config` and `--ignore-rules` for full harness control. Read-only sandbox value spelling: to be verified in M4 |
 | Sandbox controls | Native: Seatbelt (macOS), bubblewrap (Linux/WSL2); explicit `--sandbox` |
+| Commands under untrusted profiles (owner decision 10) | Codex's agent runs shell commands inside its native sandbox under `inspect-untrusted` (`--sandbox read-only`) and `edit-untrusted` (`--sandbox workspace-write`); Switchboard has no documented Codex command allowlist to narrow them (Q-11), so "no shell" does not hold for Codex. Whether the sandbox keeps those commands away from `~/.codex` credentials and other same-user files is **unverified**: FR-POL-06 stays open for Codex (R-23) until the live malicious leg (T3.9); an outer sandbox (T3.1) is optional hardening. Network off is an Assumption ([R2] documents no Codex network switch) |
 | Known risks | `--full-auto` deprecated, `--yolo` never used outside approved `privileged`; do not expose `OPENAI_API_KEY`/`CODEX_API_KEY` to repo-controlled code; token usage does not reveal remaining subscription capacity |
 | Git writes and injected tools (M2, M9) | [R2] documents no per-command deny or allow rule and no commit or attribution setting; `--sandbox workspace-write` or stricter is the only documented control. The adapter declares this (`gitWriteControl` `none-documented`, T2.2), so FR-GIT-03 and FR-GIT-06 are the remaining controls, and a non-empty shell allowlist is `Ineligible`. Whether `workspace-write` blocks writes to a worktree's Git directory (outside the cwd) is an Assumption, unverified because Codex is not installed on the development host (live smoke check X-G1). Supplying a per-run MCP definition together with `--ignore-user-config`: not in [R2], to be verified in M9 |
 

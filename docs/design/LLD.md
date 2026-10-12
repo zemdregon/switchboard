@@ -209,8 +209,8 @@ CREATE TABLE route_decision (           -- append-only (FR-RTE-03); M2 writes el
 CREATE TABLE approval (                 -- privileged runs (FR-POL-09), M3
   id            TEXT PRIMARY KEY,
   run_id        TEXT NOT NULL REFERENCES run(id),
-  scope_json    TEXT NOT NULL CHECK (json_valid(scope_json)),   -- explicit files/shell/network/config scope
-  scope_hash    TEXT NOT NULL,
+  scope_json    TEXT NOT NULL CHECK (json_valid(scope_json)),   -- canonical privileged_scope (§3.1)
+  scope_hash    TEXT NOT NULL,          -- SHA-256 over scope, run ID and request_hash (§3.1)
   status        TEXT NOT NULL CHECK (status IN ('PENDING','APPROVED','DENIED','EXPIRED')),
   requested_at  TEXT NOT NULL,
   decided_at    TEXT,
@@ -220,7 +220,9 @@ CREATE TABLE approval (                 -- privileged runs (FR-POL-09), M3
 
 Triggers (shape, one per append-only table): `CREATE TRIGGER run_event_no_update BEFORE UPDATE ON run_event BEGIN SELECT
 RAISE(ABORT,'append-only'); END;` and the same for `DELETE`. An analogous guard allows `approval` to change only from
-`PENDING`.
+`PENDING`. The controller never writes `EXPIRED` (no expiry: WF-7,
+[ADR-0016](../adr/0016-approved-privileged-scope-bypass.md)); the value stays in the `CHECK` only so the M1 schema needs
+no migration.
 
 **Operator cancel requests (M1, Proposed).** `runs cancel` records a request as append-only `run_event` rows of type
 `operator_cancel_requested` (payload `requested_by`, `reason`), later followed by `operator_cancel_applied`
@@ -358,7 +360,8 @@ export interface ResolvedProfile {                       // from COMP-POL, snaps
   shell: 'none'|'allowlist'|'broad'|'scoped'; shellAllowlist?: string[];
   network: 'off'|'allowlist'|'policy'|'scoped'; networkAllowlist?: string[];
   repoConfig: 'disabled'|'approved-only'|'allowlisted'|'scoped';
-  bypassApproved: boolean;                               // true only with a recorded approval (FR-POL-03)
+  bypassApproved: boolean;                               // true only per §3.1 "Bypass" (FR-POL-03, ADR-0016)
+  privilegedScope?: { scope: PrivilegedScope; scopeHash: string };  // privileged only, from the run snapshot (§3.1)
 }
 
 export interface Invocation {
@@ -469,6 +472,8 @@ returns immediately unless `wait_seconds` is given ([ADR-0002](../adr/0002-mcp-u
           "changed_files": { "type": "integer" },
           "verification": { "type": "array", "items": { "type": "object" } } } },
       "artifacts": { "type": "object", "additionalProperties": { "type": "string" } },   // kind -> art_ id
+      "approval": { "type": "object", "required": ["status","requested_at"], "properties": {   // privileged only (M3, §3.1)
+          "status": { "enum": ["PENDING","APPROVED","DENIED"] }, "requested_at": { "type": "string" } } },
       "usage": { "type": "object", "properties": { "reported": {}, "estimated": {}, "capacity_confidence": { "type": ["number","null"] } } } } } } }
 ```
 
@@ -487,15 +492,16 @@ artifacts are operator-CLI only.
     "routing": { "$ref": "#/$defs/routing" },
     "priority": { "enum": ["interactive","normal","batch"], "default": "normal" },  // Proposed
     "wait_seconds": { "type": "integer", "minimum": 0, "maximum": 60, "default": 0 }, // max 60: proposed target
-    "idempotency_key": { "type": "string", "minLength": 8, "maxLength": 128 } } },
+    "idempotency_key": { "type": "string", "minLength": 8, "maxLength": 128 },
+    "privileged_scope": { "$ref": "#/$defs/privileged_scope" } } },  // M3; required iff trust_profile is privileged (§3.1)
   "output": "envelope (status is current state; terminal only if the run finished within wait_seconds)" }
 ```
 
 Behaviour: validation, path and profile checks, then in one transaction insert `meta_session` (new), `run` (`QUEUED`, or
-`AWAITING_APPROVAL` for `privileged`) and the first `run_event`; only then return or wait (§10). A repeated `(client,
-idempotency_key)` with identical `request_hash` returns the original run; the same key with different parameters fails
-`INVALID_REQUEST` (FR-MCP-08). `wait_seconds` is a bounded wait on run completion; it never holds a DB transaction and
-returns the current non-terminal envelope on expiry.
+`AWAITING_APPROVAL` for `privileged`, with its `PENDING` approval row, §3.1) and the first `run_event`; only then return
+or wait (§10). A repeated `(client, idempotency_key)` with identical `request_hash` returns the original run; the same
+key with different parameters fails `INVALID_REQUEST` (FR-MCP-08). `wait_seconds` is a bounded wait on run completion;
+it never holds a DB transaction and returns the current non-terminal envelope on expiry.
 
 **`continue_task`** (M2 same provider, M5 cross-provider)
 
@@ -557,9 +563,10 @@ client's, returns `PERMISSION_BLOCKED`. Names and shapes are Proposed.
              "run_id": "run_...", "details": { /* e.g. login_command, eligibility reasons, field path */ } } }
 ```
 
-Mapping: schema/path failures `INVALID_REQUEST`; profile above client maximum `PERMISSION_BLOCKED`; no eligible provider
-`ELIGIBILITY_NONE` with per-provider reasons; an ineligible `require_provider` target returns the code mapped from its
-eligibility reason per [FRD BR-3](../requirements/FRD.md#3-business-rules) (FR-MCP-05); unknown `run_id`
+Mapping: schema/path failures `INVALID_REQUEST`; profile above client maximum `PERMISSION_BLOCKED`; a
+`privileged_scope` with a non-`privileged` profile, or `privileged` without one, `INVALID_REQUEST` (§3.1); no eligible
+provider `ELIGIBILITY_NONE` with per-provider reasons; an ineligible `require_provider` target returns the code mapped
+from its eligibility reason per [FRD BR-3](../requirements/FRD.md#3-business-rules) (FR-MCP-05); unknown `run_id`
 `INVALID_REQUEST`.
 
 **Version gate and "no manifest" (M2 implementation note).** The version gate (`evaluateVersionGate`,
@@ -568,6 +575,69 @@ a missing manifest, and tells them apart only by `evidence.validatedRange` being
 routing filter (`src/routing/eligibility.ts`) reads that field and reports `NO_MANIFEST` (failure code
 `ELIGIBILITY_NONE`) when it is `null` and `ADAPTER_VERSION_UNVERIFIED` otherwise, as BR-3 requires. A shipped manifest
 with an empty range (Codex today, `<0.0.0`) is therefore `ADAPTER_VERSION_UNVERIFIED`, not `NO_MANIFEST`.
+
+### 3.1 Privileged scope (M3)
+
+Owner decision 13 and [ADR-0016](../adr/0016-approved-privileged-scope-bypass.md). Shape, hash and validation are
+Delegated (Proposed), not owner-approved. No code may emit a bypass flag until this contract and the argv audit change
+(T3.17) are both in place.
+
+```jsonc
+{ "$defs": { "privileged_scope": { "type": "object", "additionalProperties": false,
+    "required": ["files","shell","network","repository_config"], "properties": {
+      "files":   { "type": "string", "minLength": 1, "maxLength": 2000 },  // what the run may read and write
+      "shell":   { "type": "string", "minLength": 1, "maxLength": 2000 },  // which commands it may run
+      "network": { "type": "string", "minLength": 1, "maxLength": 2000 },  // which hosts or "none"
+      "repository_config": { "type": "string", "minLength": 1, "maxLength": 2000 }, // hooks, MCP, instructions allowed
+      "bypass":  { "type": "boolean", "default": false } } } } }          // provider bypass flag requested
+```
+
+Each dimension is an explicit allow description written by the orchestrator for the operator to read; an empty string
+is refused, so a dimension cannot be left implicit ("none" is a valid description). The descriptions are not compiled
+into native rules in M3: the adapter compiles `privileged` from the operator's resolved `privileged` profile (TDD §3.1,
+T3.2) and the `bypass` setting below. Whether the descriptions should become machine-readable is ROADMAP Q-23.
+Descriptions are stored and shown verbatim, so they must not contain secrets; they are never written to MCP envelopes
+or logs.
+
+**Validation** ([FRD §7.1](../requirements/FRD.md#71-delegate_task), in table order): a malformed scope fails schema
+validation (V1, `INVALID_REQUEST`); `privileged` above the client's ceiling is `PERMISSION_BLOCKED` (V5, BR-13) whether
+or not a scope is present; then V13: `privileged` without a scope, or a scope with any other profile, is
+`INVALID_REQUEST` (`details.field = "privileged_scope"`). `continue_task` takes no scope and refuses a run that would
+resolve to `privileged` (FRD C7, ROADMAP Q-24).
+
+**Canonical form and hash.** At admission (FRD T2), with defaults filled (`bypass` present, `false` when omitted):
+
+```text
+scope_json = canonicalJson(privileged_scope)                       // sorted keys, as request_hash (§10)
+scope_hash = hex(SHA-256(canonicalJson({ "v": 1, "run_id": run.id,
+                                         "request_hash": run.request_hash,
+                                         "scope": privileged_scope })))
+```
+
+`request_hash` already covers the whole validated request, scope included, so the hash binds the approval to this
+scope, this request and this one run (WF-7 postcondition). The run row, the `PENDING` approval row (`scope_json`,
+`scope_hash`, `requested_at`) and the first `run_event` are written in one transaction; the policy snapshot records
+`privilegedScope` with the same `scopeHash`. An idempotent replay (§10) returns the existing run and creates no second
+approval row.
+
+**Approve.** The operator reviews the scope and hash with `runs show`, then runs `approve <run_id>` (operator CLI
+only, FR-OPS-02). It recomputes the hash from the stored run (`id`, `request_hash`) and `scope_json`, and writes
+`APPROVED`, `decided_at` and `decided_by` only if the run is AWAITING_APPROVAL, the row is `PENDING` and the recomputed
+hash equals `scope_hash`; otherwise it is a CLI error and nothing changes. `deny` writes `DENIED` and the run ends
+CANCELLED (WF-7). No MCP tool, timer, configuration value or client ceiling approves, and nothing expires.
+
+**Bypass.** Before compiling a `privileged` run, COMP-POL loads its approval row and sets `bypassApproved = true` only
+if: the row is `APPROVED`; its `scope_hash` equals the policy snapshot's `scopeHash` and the hash recomputed as above;
+and the approved scope has `bypass: true`. Any mismatch fails the run `PERMISSION_BLOCKED` before spawn, with a
+`run_event` naming the mismatch (no process, no flag). With `bypassApproved` false the adapter compiles `privileged`
+without a bypass flag. The argv audit (T3.17) independently refuses any `BYPASS_FLAGS` entry unless the profile is
+`privileged`, `bypassApproved` is true and the snapshot's scope sets `bypass`. The compiled `policyFlags` are recorded in
+the run's events, so every bypass run's invocation and approval are in the audit trail.
+
+**What is shown where.** The envelope (`get_run`, `delegate_task`, `cancel_run`) carries only `approval.status` and
+`approval.requested_at` for a `privileged` run; it never contains the scope content, the hash or `decided_by`
+(FR-MCP-04). `runs show` (operator CLI) shows the full scope, the `bypass` value, the scope hash and the approval
+decision.
 
 ## 4. Failure taxonomy
 

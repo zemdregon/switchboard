@@ -171,13 +171,28 @@ adapter compiles the profile into the provider's own permission and sandbox cont
 
 | Profile | Available now | Effect in this version |
 | --- | --- | --- |
-| `inspect-untrusted` | yes | Read-only file access, no shell, network off, repository-provided config disabled. |
-| `edit-untrusted` | yes | Edits inside an isolated Git worktree, network off, repository config disabled. The shell allowlist is empty, so no shell command is allowed. |
+| `inspect-untrusted` | yes | Read-only file access, network off, repository-provided config disabled. Claude Code gets no shell. Codex runs commands inside its read-only native sandbox (see below). |
+| `edit-untrusted` | yes | Edits inside an isolated Git worktree, network off, repository config disabled. Claude Code gets no shell, because the shell allowlist is empty. Codex runs commands inside its `workspace-write` native sandbox (see below). |
 | `test-sandboxed`, `trusted-development` | no | Rejected with `ELIGIBILITY_NONE`. |
 | `privileged` | never granted | Rejected with `PERMISSION_BLOCKED`; it needs per-run operator approval, which this version does not provide. |
 
 A request above the client's `max_trust_profile` also fails `PERMISSION_BLOCKED`. Non-empty
 `verification_commands` are refused with `INVALID_REQUEST` until verification lands in milestone 3.
+
+**Codex and the shell.** Codex has no command allowlist that Switchboard can set, so under both untrusted profiles the
+Codex agent can run shell commands inside Codex's own sandbox. Whether that sandbox keeps those commands away from
+Codex's credential store (`~/.codex`) and other files your user can read has **not been verified**. If you delegate
+untrusted repositories, prefer Claude Code, or set `providers.codex.enabled` to `false`, until the live check planned
+for milestone 3 settles it (ROADMAP R-23).
+
+**Planned in milestone 3, not available yet:**
+
+- `profiles.<name>` overrides in the config may loosen a profile's defaults, but only explicitly, with the change
+  recorded in every run's policy snapshot and reported by `doctor`.
+- A `privileged` request will carry a `privileged_scope` (files, shell, network and repository configuration, plus a
+  `bypass` setting that defaults to off) and wait for `switchboard approve <run_id>`. A provider bypass flag such as
+  `--dangerously-skip-permissions` is passed only when the approved scope explicitly sets `bypass`
+  ([ADR-0016](docs/adr/0016-approved-privileged-scope-bypass.md)). Approvals never expire and are never automatic.
 
 ## Security model
 
@@ -188,7 +203,8 @@ A request above the client's `max_trust_profile` also fails `PERMISSION_BLOCKED`
 - **Untrusted profiles by default.** Both available profiles keep the network off and disable repository-provided
   configuration.
 - **No bypass flags.** Switchboard does not pass flags such as `--dangerously-skip-permissions`, `--yolo`, `--force` or
-  `--full-auto` to provider CLIs, and tests audit this.
+  `--full-auto` to provider CLIs, and tests audit this. Milestone 3 plans one exception: an operator-approved
+  `privileged` scope that explicitly sets `bypass` (see Trust profiles).
 - **Fail closed.** An invalid config, an unknown client id, an unverified CLI version or an unavailable profile refuses
   to run rather than weakening anything.
 

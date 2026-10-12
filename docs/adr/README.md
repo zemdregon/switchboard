@@ -51,3 +51,4 @@ scope and sequencing live in the [ROADMAP](../ROADMAP.md).
 | [0013](0013-projects-environments-and-contexts.md) | Projects own environments and contexts | Accepted (concept); container details Proposed | Ender (concept), Delegated (mechanism) |
 | [0014](0014-tool-only-commits-and-publication.md) | Agents never commit or push; Switchboard-injected tools do | Accepted; supersedes the no-push clause of ADR-0006 | Ender (decision), Delegated (mechanism) |
 | [0015](0015-claude-untrusted-isolation-flags.md) | Claude untrusted profiles use safe-mode isolation flags, not `--bare` | Accepted | Delegated |
+| [0016](0016-approved-privileged-scope-bypass.md) | Bypass flags only for an approved privileged scope that sets bypass; complements ADR-0004 | Accepted | Delegated (records owner decision 13) |

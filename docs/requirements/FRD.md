@@ -34,7 +34,7 @@ planning and are marked "(planning)". Actors are defined in §2.
 | Action | Operator | Orchestrator | Controller | Governing FR |
 | --- | --- | --- | --- | --- |
 | Delegate / continue a task | Not via CLI (CLI has no `delegate`) | Yes, up to the client's max trust profile | Executes | FR-MCP-03, FR-MCP-06 |
-| Request `privileged` profile | Approves via CLI | May request only; run stops in AWAITING_APPROVAL | Blocks until approval | FR-MCP-06, FR-POL-09 |
+| Request `privileged` profile | Approves via CLI | May request only, with a `privileged_scope` (V13); run stops in AWAITING_APPROVAL | Blocks until approval | FR-MCP-06, FR-POL-09 |
 | Approve a privileged run | Yes (`approve <run_id>`) | No, never through MCP | Records timestamp and scope | FR-POL-09, FR-OPS-02 |
 | Cancel a run | Yes (`runs cancel <id>`) | Yes (`cancel_run`) | Executes | FR-MCP-01, FR-OPS-01, FR-EXE-01 |
 | Read run status, artifacts, route explanation, capacity | Yes (`runs list/show`) | Yes (`get_run`, `get_artifacts`, `explain_route`, `get_capacity`) | n/a | FR-MCP-01/02, FR-OPS-01 |
@@ -48,7 +48,7 @@ planning and are marked "(planning)". Actors are defined in §2.
 | Push to remotes | Yes (by hand, or an operator command) | No | Executes the agent's `push` tool call only if the context's push policy allows it (WF-12) | FR-GIT-05, FR-WS-05 |
 | Define or change projects, contexts, environments, push policy, commit identity | Yes (config) | Only dynamic projects, only if its client entry sets `manage_projects`, within the client's limits (BR-32); never configured projects | Snapshots into each run | FR-PRJ-01, 02, 03, 06, 10 |
 | Approve a dynamic project that needs it (`container`, push policy other than `none`, any widening) | Yes (`projects approve`) | No, never through MCP | Records timestamp and revision | FR-PRJ-10 |
-| Emit permission-bypass flags | Only by approving a `privileged` run | No | Only under recorded approval | FR-POL-03 |
+| Emit permission-bypass flags | Only by approving a `privileged` run whose scope sets `bypass` | No | Only under a recorded approval whose scope sets `bypass` and whose hash matches (BR-14) | FR-POL-03 |
 
 Rules on the matrix: a caller's maximum trust profile is a ceiling per MCP client; a request above it ends with
 `PERMISSION_BLOCKED` before any side effect (BR-13). Privileged approval exists only on the operator CLI (BR-14). The
@@ -73,7 +73,7 @@ Each rule elaborates the cited requirement and does not add to it.
 | BR-11 | **Cancellation.** `cancel_run` is accepted in every non-terminal state and takes effect as in §4.3. Cancelling a terminal run is a no-op that returns the run's terminal state. Cancellation of a running process terminates its whole process group (graceful signal, then forced kill after the grace period). | FR-EXE-01, FR-MCP-01 | SRS for the group kill; no-op on terminal runs Proposed: idempotent cancel is simpler for retrying clients. |
 | BR-12 | **Worktree disposition** on each terminal state is defined in §4.4. The controller never touches the operator's checked-out branch, never pushes run branches or checkpoint commits, pushes the publish ref only under BR-26, and removes worktrees only through retention GC. | FR-WS-03, FR-WS-04, FR-WS-05, FR-WS-07, FR-GIT-05, FR-GIT-08 | SRS; keep-until-GC for every terminal state Proposed: evidence for BO-5 outweighs disk cost at single-operator scale. |
 | BR-13 | **Trust ceiling.** The requested profile is compared with the calling client's maximum profile before any side effect. Above it: `PERMISSION_BLOCKED`. `privileged` is above every ceiling for MCP-only authority and always enters AWAITING_APPROVAL if the client ceiling allows requesting it. | FR-MCP-06, FR-POL-09 | SRS. Treating a `privileged` request as allowed-to-request only when the client's ceiling is `privileged` is Proposed; SRS says only that approval cannot come from MCP. **Milestone note (M2):** the `privileged` profile and the approval flow arrive in M3 (FR-POL-09). Until then the policy resolver does not resolve `privileged`, so an MCP request for it is `PERMISSION_BLOCKED` even when the client ceiling is `privileged`, and no run enters AWAITING_APPROVAL (`src/policy/policy.test.ts`, `src/mcp/mcp.test.ts`). |
-| BR-14 | **Privileged approval.** A `privileged` run does not dispatch until the operator approves that specific run through the CLI. The approval stores timestamp and scope; bypass flags (FR-POL-03) are emitted only for an approved run and only within the approved scope. | FR-POL-09, FR-POL-03 | SRS |
+| BR-14 | **Privileged approval.** A `privileged` run does not dispatch until the operator approves that specific run through the CLI. The approval stores timestamp and scope; bypass flags (FR-POL-03) are emitted only for an approved run and only within the approved scope. A bypass flag is applied only from an `APPROVED` approval row whose scope hash matches the run's policy snapshot and whose scope sets `bypass: true` ([LLD §3.1](../design/LLD.md#31-privileged-scope-m3)); a `privileged` run without `bypass` compiles without one. Approval is never automatic (no MCP tool, timer, configuration value or ceiling grants it) and never expires. | FR-POL-09, FR-POL-03 | SRS; the bypass conditions are owner decision 13, recorded in [ADR-0016](../adr/0016-approved-privileged-scope-bypass.md) (mechanism Delegated, Proposed) |
 | BR-15 | **Fail closed.** An unknown adapter state, unparseable provider output, or unrecognized policy value denies, marks the provider ineligible, or ends the run with an error; it never proceeds. | NFR-SEC-06, FR-ADP-04 | SRS |
 | BR-16 | **Verification outcome.** When verification commands are supplied and any exits non-zero (or times out), the run ends `FAILED` with `TEST_FAILURE`; results are recorded either way. The agent's own result is kept in the envelope. | FR-EXE-08, FR-MCP-04 | Mapping to `TEST_FAILURE` Proposed: the SRS requires running and recording, not the failure semantics. |
 | BR-17 | **One active run per meta-session.** A meta-session has at most one non-terminal run; `continue_task` on a session with an active run is rejected with `INVALID_REQUEST`. | FR-SES-06, FR-WS-02 | SRS |
@@ -254,6 +254,7 @@ FR-MCP-09).
 | V3 | `workspace` | Absolute path; symlinks resolved; result lies under an operator-configured allowed root. Exactly one of `workspace` and `project` is present (V12) | `INVALID_REQUEST` | FR-POL-10, FR-PRJ-03 |
 | V4 | `workspace` and `trust_profile` | Write-capable profile requires a Git repository; `inspect-untrusted` may use a non-Git directory | `INVALID_REQUEST` | FR-WS-06 |
 | V5 | `trust_profile` | One of the five profiles; not above the calling client's ceiling | `INVALID_REQUEST` if unknown name; `PERMISSION_BLOCKED` if above ceiling | FR-MCP-06, FR-POL-01 |
+| V13 | `privileged_scope` | Required when `trust_profile` is `privileged`; refused with any other profile. Shape per [LLD §3.1](../design/LLD.md#31-privileged-scope-m3) (a malformed scope already fails V1). Evaluated here, after V5, so a client below the `privileged` ceiling gets `PERMISSION_BLOCKED` first (IDs are not renumbered; table order is evaluation order) | `INVALID_REQUEST` | FR-POL-09, FR-POL-03, FR-MCP-03 |
 | V6 | `constraints` | Schema-defined structure; cannot loosen the profile's defaults | `INVALID_REQUEST` (or `PERMISSION_BLOCKED` for loosening) | FR-POL-01 |
 | V7 | `verification_commands` | Array of command strings; **Proposed:** rejected under `inspect-untrusted` (no shell), allowed otherwise and run under the same profile | `INVALID_REQUEST` | FR-EXE-08, FR-POL-01 |
 | V8 | `provider_preference`, `require_provider`, `minimum_capability` | Provider names exist in the adapter registry; `minimum_capability` is a registry value; `require_provider` must be a boolean accompanied by a provider | `INVALID_REQUEST` | FR-MCP-03, FR-MCP-05, FR-ADP-05 |
@@ -272,6 +273,7 @@ FR-MCP-09).
 | C4 | Trust profile defaults to the session's profile; a higher profile is checked against the ceiling as V5 | `PERMISSION_BLOCKED` | FR-MCP-06 |
 | C5 | Provider hints as V8; BR-18 selects native resume vs handoff | per BR-2/BR-3 | FR-SES-03, FR-SES-04, FR-MCP-05 |
 | C6 | Idempotency key: the SRS defines it only for `delegate_task`; `continue_task` accepts none (SRS silent) | n/a | FR-MCP-08 |
+| C7 | **Proposed (M3):** `continue_task` accepts no `privileged_scope`, so a continuation whose resolved profile would be `privileged` (requested, or defaulted from a `privileged` run) is refused; privileged work starts with `delegate_task` and its own approval (ROADMAP Q-24). Checked after C4 | `INVALID_REQUEST` | FR-POL-09 |
 
 ### 7.3 Other tools
 
@@ -471,10 +473,13 @@ sequenceDiagram
 
 - **Actors:** Orchestrator (requests), Operator (approves), COMP-POL, COMP-OPS, COMP-LED.
 - **Preconditions:** The calling client's ceiling allows requesting `privileged` (BR-13).
-- **Realizes:** FR-POL-03, FR-POL-09, FR-MCP-06, FR-OPS-02, UJ-6, BO-3.
-- **Normal path:** `delegate_task` with `privileged` → T2, run in AWAITING_APPROVAL with the requested scope (files,
-  shell, network, hooks/MCP) recorded → operator runs `runs show <id>` to review → `approve <run_id>` → approval record
-  with timestamp and scope → T3 → WF-1 continues; bypass flags emitted only now and only within scope (BR-14).
+- **Realizes:** FR-POL-03, FR-POL-09, FR-MCP-06, FR-OPS-02, UJ-6, BO-3. Contract:
+  [LLD §3.1](../design/LLD.md#31-privileged-scope-m3); decision: [ADR-0016](../adr/0016-approved-privileged-scope-bypass.md).
+- **Normal path:** `delegate_task` with `privileged` and a `privileged_scope` (V13) → T2, run in AWAITING_APPROVAL with
+  the requested scope (files, shell, network, repository configuration, `bypass`) and its scope hash recorded in a
+  `PENDING` approval row → operator runs `runs show <id>` to review the scope and hash → `approve <run_id>` (hash
+  re-checked) → approval record with timestamp and scope → T3 → WF-1 continues; a bypass flag is emitted only now, only
+  if the approved scope sets `bypass` and the hash still matches the run's policy snapshot (BR-14).
 - **Alternate paths:** operator runs `deny <run_id>`: denial recorded, run ends CANCELLED (FR-POL-09, FR-OPS-02).
   Operator never decides: the run stays AWAITING_APPROVAL until denied or cancelled (no expiry). Orchestrator cancels
   while waiting: CANCELLED, no side effects.
