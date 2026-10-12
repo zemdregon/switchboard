@@ -1,0 +1,24 @@
+# Node tooling (if scripts or linters are run locally)
+node_modules/
+npm-debug.log*
+.npm/
+
+# Local scratch and editor files
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Tool output
+.cache/
+coverage/
+*.log

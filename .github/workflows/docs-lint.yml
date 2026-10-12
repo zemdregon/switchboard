@@ -1,0 +1,61 @@
+name: docs-lint
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  markdown-lint:
+    name: Markdown lint (blocking, excludes docs/)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Run markdownlint-cli2
+        run: npx --yes markdownlint-cli2@0.23.3 "**/*.md" "!docs/**"
+
+  link-check:
+    name: Link check (blocking, excludes docs/)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Check links with markdown-link-check
+        run: |
+          set -euo pipefail
+          mapfile -d '' files < <(find . -name '*.md' -not -path './docs/*' -not -path './.git/*' -print0)
+          # markdown-link-check 3.13.7 prints "ERROR:" for dead links but exits 0,
+          # so the exit status is checked through the output instead.
+          out="$(npx --yes markdown-link-check@3.13.7 --quiet --retry --config .github/markdown-link-check.json "${files[@]}" 2>&1)"
+          printf '%s\n' "$out"
+          if grep -q 'ERROR:' <<<"$out"; then
+            echo "Dead links found." >&2
+            exit 1
+          fi
+
+  docs-lint-advisory:
+    name: docs/ Markdown lint (advisory, non-blocking)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Run markdownlint-cli2 on docs/ (report only)
+        run: npx --yes markdownlint-cli2@0.23.3 "docs/**/*.md"
