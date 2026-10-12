@@ -129,7 +129,7 @@ Each adapter chooses the transport the provider documents ([R2] adapter matrix; 
 | Provider | Initial transport | Later or alternate transport | Milestone | Notes |
 |---|---|---|---|---|
 | Claude Code | Subprocess `claude -p`, JSON/stream-JSON | None planned | M2 | First adapter (FR-ADP-06). |
-| Codex | Subprocess `codex exec --json`, JSONL | None planned | M4 | Native events; no custom wrapper. |
+| Codex | Subprocess `codex exec --json`, JSONL | None planned | M2 | Native events; no custom wrapper. |
 | Grok Build | Subprocess `grok -p`, JSON/streaming-JSON | ACP stdio (`grok agent stdio`) | M4 | ACP via FR-EXE-03 (Should). |
 | Antigravity | Subprocess `agy -p`, JSON/stream-JSON | None planned | M4 | Fails fast when unauthenticated. |
 | Cursor CLI | Subprocess `agent -p`, JSON/stream-JSON | ACP stdio (`agent acp`) | M4 | Trust, MCP approval, force and sandbox decided independently. |

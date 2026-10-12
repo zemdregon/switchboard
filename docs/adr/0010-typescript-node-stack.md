@@ -7,7 +7,7 @@
 
 ## Context
 
-No code exists. The controller is I/O-bound: it supervises subprocesses, parses JSON/JSONL streams, speaks MCP and ACP, and writes to SQLite.
+No code exists. The controller is I/O-bound: it supervises subprocesses, parses JSON/JSONL streams, speaks MCP and ACP, and writes to SQLite. Switchboard is open source and other people will install it (ADR-0011), so ease of installation and of outside contribution matter as well as development speed.
 
 ## Decision
 
@@ -21,7 +21,8 @@ TypeScript (strict mode) on the current Node.js LTS line, using the official MCP
 
 ## Consequences
 
-- Requires Node.js on the host. Distribution as a single executable is a later hardening item.
+- Requires Node.js on the host. Installation is `npm`/`npx`, the usual way MCP servers are added to an orchestrator's config. Distribution as a single executable is a later hardening item.
+- SQLite access uses a native module or Node's built-in SQLite; prebuilt binaries for Linux and macOS must be confirmed in M1 so users never need a compiler.
 - Process-group and signal handling must be tested carefully on Linux and macOS.
 
 ## Revisit when

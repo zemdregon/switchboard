@@ -43,10 +43,11 @@ Each outcome is observable in operation and is served by one or more capabilitie
 | Stakeholder | Role | Interest | Influence |
 |---|---|---|---|
 | Ender (GitHub `zemdregon`) | Owner and, by assumption, sole operator ([ADR-0011](../adr/0011-single-operator-local-deployment.md)) | Installs and configures Switchboard, logs in to each provider natively, sets policy, approves privileged runs, reads audit data. | Owns all scope decisions. Ender's explicit decisions to date are limited to committing the two research documents as project research and preferring that model choice match task difficulty in project process. Every ADR is "Delegated" and has not been individually reviewed or approved by Ender. |
+| Open-source users | Other people who install and run their own Switchboard with their own subscriptions | Need clear install and setup documentation, safe defaults, and honest statements about provider terms. | Can report issues and contribute adapters; no say over scope. Their existence comes from Ender's decision of 2026-10-12 to publish Switchboard as open source. |
 | Orchestrator agent (for example OpenClaw, Grok Bot) | Machine consumer | Calls the MCP tools to delegate work and collect compact, predictable results; needs stable schemas, structured errors and bounded waits. | Shapes the tool surface; has no authority to raise its own trust level ([SRS FR-MCP-06](SRS.md#31-mcp-interface-fr-mcp)). |
 | Provider vendors (Anthropic, xAI, Google, OpenAI, Cursor, OpenCode, Moonshot AI) | External parties | Their terms, quotas and documented automation surfaces constrain what Switchboard may do. They are not consulted and have no relationship with the project. | Can change CLIs, limits or terms at any time (BO-6, risks in §7). |
 
-No other stakeholders are known. In particular no other users, team, customers, compliance function or funder has been identified (see the open question in §8).
+No other stakeholders are known: no team, customers, compliance function or funder has been identified.
 
 ## 4. Business constraints
 
@@ -113,11 +114,11 @@ The authoritative risk register, blockers and open questions are in [ROADMAP §7
 | Kimi Code's automation contract is not pinned. | BO-1 | Kimi Code adapter is blocked until the contract is pinned ([SRS FR-ADP-09](SRS.md#32-provider-adapters-fr-adp)). |
 | Sustained effort is required for seven adapters by a single maintainer. | BO-1 | Assumption: no staffing is committed. Sequencing in the [ROADMAP](../ROADMAP.md#6-milestones) delivers value from the first adapter. |
 
-## 8. Open question: personal tool or product
+## 8. Personal tool and open-source project
 
-It is not stated whether Switchboard is a personal tool or a product for others. **Assumption:** it is a personal tool for one operator ([ADR-0011](../adr/0011-single-operator-local-deployment.md), a delegated decision, not an owner decision). Consequences of the assumption: no user accounts, no network listener, no hosted service, no sharing of credentials or subscriptions between people, and no product-support obligations.
+**Owner decision (2026-10-12):** Switchboard is built to solve Ender's own problem and is published as open source, built so other people can use it. Ender holds every subscription named in the research; all seven providers must be integrated, with Claude Code and Codex first.
 
-If Ender intends otherwise, this BRD needs new stakeholders, outcomes and constraints, and the provider-terms review in [NFR-COMP-01](SRS.md#46-privacy-data-and-compliance-nfr-priv-nfr-data-nfr-comp) becomes a precondition. Ender's answer is needed; it is tracked in [ROADMAP §7](../ROADMAP.md#7-risks-blockers-and-open-questions).
+Consequences ([ADR-0011](../adr/0011-single-operator-local-deployment.md)): every user runs their own installation with their own logins. There are still no user accounts, no network listener, no hosted service and no sharing of credentials or subscriptions between people. What changes is that installation, configuration and the security model must be documented for strangers ([NFR-MAINT-03](SRS.md#45-maintainability-and-observability-nfr-maint-nfr-obs)), macOS support moves earlier, and the project must not suggest that using a subscription through Switchboard is compliant with any provider's terms ([NFR-COMP-01](SRS.md#46-privacy-data-and-compliance-nfr-priv-nfr-data-nfr-comp)). No support obligations are taken on.
 
 ## 9. Outcome to capability map
 
