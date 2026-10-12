@@ -62,12 +62,12 @@ In scope: the controller daemon, its MCP tool surface, provider adapters, policy
 | FR-ADP-03 | An installed binary whose version is outside the adapter's validated range shall put the adapter in `ADAPTER_VERSION_UNVERIFIED` and make it ineligible for routing until the operator validates it. | Must | BO-6, [ADR-0009](../adr/0009-version-gated-adapters.md) | T | M2 |
 | FR-ADP-04 | Adapters shall consume the provider's native structured output (JSON, JSONL or ACP messages) and shall not infer session IDs, status or usage by pattern-matching free text. | Must | [R2] | T, I | M2 |
 | FR-ADP-05 | Model identities, aliases and context limits shall come from a refreshable model registry (operator config plus provider listing commands where available), not from adapter source code. | Must | [R2] | I, T | M4 |
-| FR-ADP-06 | A Claude Code adapter shall be delivered first. | Must | CAP-2 | T | M2 |
-| FR-ADP-07 | Adapters for Codex, Grok Build, Antigravity and Cursor CLI shall be delivered. | Must | CAP-2 | T | M4 |
-| FR-ADP-08 | An OpenCode adapter shall be delivered, using `opencode run` first. | Should | CAP-2 | T | M4 |
-| FR-ADP-09 | A Kimi Code adapter shall exist only as a version-gated adapter that is disabled until the current Kimi Code CLI automation contract is pinned and passes conformance tests. | Could | CAP-2, [R2] Kimi | T | Blocked (see [ROADMAP §7](../ROADMAP.md#7-risks-blockers-and-open-questions)) |
+| FR-ADP-06 | Claude Code and Codex adapters shall be delivered first. | Must | CAP-2, owner decision 2026-10-12 | T | M2 |
+| FR-ADP-07 | Adapters for Grok Build, Antigravity and Cursor CLI shall be delivered. | Must | CAP-2 | T | M4 |
+| FR-ADP-08 | An OpenCode adapter shall be delivered, using `opencode run` first. | Must | CAP-2, owner decision 2026-10-12 | T | M4 |
+| FR-ADP-09 | A Kimi Code adapter shall exist only as a version-gated adapter that is disabled until the current Kimi Code CLI automation contract is pinned and passes conformance tests; it shall be enabled once that contract is pinned. | Must | CAP-2, [R2] Kimi, owner decision 2026-10-12 | T | M4 (blocked by B-1, see [ROADMAP §7](../ROADMAP.md#7-risks-blockers-and-open-questions)) |
 | FR-ADP-10 | For harnesses that can front several model vendors (OpenCode, Cursor), usage records shall store both the harness and the actual backing provider/model. | Must | CAP-7, [R2] OpenCode | T | M4 |
-| FR-ADP-11 | Each adapter shall pass a conformance suite covering success, task failure, native resume, auth missing, malformed output and cancellation, run against recorded fixtures without a live provider. | Must | BO-6 | T | M2 (Claude), M4 (others) |
+| FR-ADP-11 | Each adapter shall pass a conformance suite covering success, task failure, native resume, auth missing, malformed output and cancellation, run against recorded fixtures without a live provider. | Must | BO-6 | T | M2 (Claude Code, Codex), M4 (others) |
 
 ### 3.3 Policy and trust profiles (`FR-POL`)
 
@@ -186,7 +186,7 @@ The five trust profiles and their intended semantics are:
 |---|---|---|---|---|
 | NFR-SEC-01 | No provider credential value shall be stored in the controller database, artifacts, logs, telemetry or MCP responses. | Must | T (secret-pattern scan of fixtures and outputs), I | M1 |
 | NFR-SEC-02 | Subprocess environments follow FR-EXE-07; the allowlist is reviewed per adapter. | Must | T, I | M1 |
-| NFR-SEC-03 | A malicious-fixture repository suite (prompt-injection instructions, repo hooks, repo MCP definitions, attempts to read credential paths, write outside the worktree, or reach the network) shall show no escape from each profile's limits for every enabled adapter. | Must | T | M3 (Claude), M4 (others) |
+| NFR-SEC-03 | A malicious-fixture repository suite (prompt-injection instructions, repo hooks, repo MCP definitions, attempts to read credential paths, write outside the worktree, or reach the network) shall show no escape from each profile's limits for every enabled adapter. | Must | T | M3 (Claude Code, Codex), M4 (others) |
 | NFR-SEC-04 | The controller shall run as an unprivileged user and shall not require root. | Must | I, T | M1 |
 | NFR-SEC-05 | All MCP inputs and config files shall be schema-validated; workspace paths are canonicalized and checked against allowed roots (FR-POL-10). | Must | T | M1 |
 | NFR-SEC-06 | Unknown or unparseable states shall fail closed (deny, mark ineligible, or end the run with an error), never proceed. | Must | T | M1 |
@@ -211,7 +211,7 @@ The five trust profiles and their intended semantics are:
 | ID | Requirement | Priority | Verify | Milestone |
 |---|---|---|---|---|
 | NFR-PORT-01 | Linux (x86-64 and arm64) is the first supported host platform. | Must | T (CI) | M1 |
-| NFR-PORT-02 | macOS host support. | Should | T | M8 |
+| NFR-PORT-02 | macOS host support. | Must | T (CI) | M4 |
 | NFR-PORT-03 | Native Windows host support. | Deferred | — | Deferred |
 
 ### 4.5 Maintainability and observability (`NFR-MAINT`, `NFR-OBS`)
@@ -219,6 +219,7 @@ The five trust profiles and their intended semantics are:
 | ID | Requirement | Priority | Verify | Milestone |
 |---|---|---|---|---|
 | NFR-MAINT-01 | Adding a provider adapter shall require changes only to that adapter's module, its compliance manifest, its fixtures and the adapter registry entry. | Must | I | M4 |
+| NFR-MAINT-03 | Because Switchboard is published as open source for others to run with their own subscriptions, the repository shall include user documentation (install, native provider login, configuration, the trust-profile security model, and `doctor` troubleshooting) sufficient for a new user to reach a passing `doctor` run without reading the source. | Must | I, D | M2 |
 | NFR-MAINT-02 | The documentation set shall stay synchronized with implementation as described in [AGENTS.md](../../AGENTS.md); `scripts/check-docs.mjs` shall pass on every change. | Must | T | M0 |
 | NFR-OBS-01 | Every run's routing decision, policy snapshot, adapter version and outcome shall be retrievable after the fact via `get_run` and `runs show`. | Must | T | M2 |
 

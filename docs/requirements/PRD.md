@@ -17,10 +17,10 @@ Switchboard is a headless controller that sits between a primary orchestrating a
 
 | User | Description | Needs |
 |---|---|---|
-| Operator | The human who installs Switchboard, logs in to each provider with its native CLI, configures policy and allowed workspace roots, and reviews results. Assumed to be zemdregon and the sole operator ([ADR-0011](../adr/0011-single-operator-local-deployment.md)). | A reliable setup check, clear explanations when something is unavailable, visibility of runs, routing reasons and usage, control over privileged runs, and a safe path when a provider CLI updates. |
+| Operator | The human who installs Switchboard, logs in to each provider with its native CLI, configures policy and allowed workspace roots, and reviews results. zemdregon first; as an open-source project, anyone running their own installation ([ADR-0011](../adr/0011-single-operator-local-deployment.md)). | A reliable setup check, clear explanations when something is unavailable, visibility of runs, routing reasons and usage, control over privileged runs, and a safe path when a provider CLI updates. |
 | Orchestrator agent | A machine client (for example OpenClaw, Grok Bot) that spawns the controller and calls its MCP tools. | A small, stable tool set; compact results; one error code per failure; asynchronous runs with bounded waits; no way to exceed its permitted trust level. |
 
-No other users are known. Whether Switchboard should ever serve others is an open question in [BRD §8](BRD.md#8-open-question-personal-tool-or-product); the working assumption is that it will not.
+Switchboard is open source ([BRD §8](BRD.md#8-personal-tool-and-open-source-project)): other operators are people like zemdregon who install it on their own machines with their own subscriptions. There are no shared or hosted users.
 
 ## 3. Capabilities
 
@@ -29,7 +29,7 @@ Priorities are MoSCoW as in [SRS §1](SRS.md#1-conventions). Milestones are defi
 | ID | Capability | Description | Priority | Target milestone | BO served | SRS requirement groups |
 |---|---|---|---|---|---|---|
 | CAP-1 | Task delegation via MCP | The orchestrator delegates a task with objective, workspace, constraints and trust profile, gets a `run_id` and `meta_session_id` at once, and polls or waits a bounded time for a compact result. | Must | M2 (vertical slice); verification commands M3 | BO-1 | FR-MCP-01, 03–10, FR-EXE-01–02, 05–08 |
-| CAP-2 | Provider adapters with version/auth preflight | One adapter per provider translates requests to documented headless modes and normalizes structured output. Preflight checks binary, version, auth, flags and a smoke call; unvalidated versions are ineligible. | Must (Claude Code, Codex, Grok Build, Antigravity, Cursor); Should (OpenCode); Could, blocked (Kimi Code) | M1 (contract and fake adapter), M2 (Claude Code), M4 (others) | BO-1, BO-2, BO-6 | FR-ADP-01–11, FR-AUTH-02 |
+| CAP-2 | Provider adapters with version/auth preflight | One adapter per provider translates requests to documented headless modes and normalizes structured output. Preflight checks binary, version, auth, flags and a smoke call; unvalidated versions are ineligible. | Must, all seven (Kimi Code blocked until its contract is pinned) | M1 (contract and fake adapter), M2 (Claude Code, Codex), M4 (others) | BO-1, BO-2, BO-6 | FR-ADP-01–11, FR-AUTH-02 |
 | CAP-3 | Policy and trust profiles | Five named trust profiles compiled into each adapter's native controls, with no automatic bypass flags, no loading of repository-supplied agent config under untrusted profiles, and per-client maximum trust. | Must | M2 (`inspect-untrusted`, `edit-untrusted`); M3 (remaining profiles) | BO-2, BO-3 | FR-POL-01–10, FR-MCP-06 |
 | CAP-4 | Workspace isolation | Write-capable runs execute in a controller-created Git worktree from a recorded checkpoint, with one write lease per worktree, post-run checkpoints and diffs, rollback, and no remote pushes. | Must | M1 (retention and GC M3) | BO-3, BO-4 | FR-WS-01–07 |
 | CAP-5 | Meta-sessions and cross-provider continuity | A controller-owned task record outlives any provider session. Continuing on the same provider uses native resume; continuing elsewhere uses a handoff bundle built from controller evidence. | Must | M1 (schema, events), M2 (Claude resume), M5 (all adapters, handoff) | BO-4 | FR-SES-01–06 |
@@ -118,7 +118,7 @@ Plain-text output, `--json` and no colour-only signals are required by FR-OPS-01
 - A machine-readable `--json` option on read commands (`doctor`, `runs list`, `runs show`) so scripts and the orchestrator need not scrape text.
 - No information is carried by colour alone: statuses and failure codes appear as words (for example `SUCCEEDED`, `AUTH_REQUIRED`), with any colour only as reinforcement.
 - Errors name the failure code and the operator action, such as the native login command for `AUTH_REQUIRED`.
-- Linux (x86-64 and arm64) first (NFR-PORT-01); macOS later (NFR-PORT-02, M8); native Windows deferred (NFR-PORT-03).
+- Linux (x86-64 and arm64) first (NFR-PORT-01); macOS in M4 (NFR-PORT-02); native Windows deferred (NFR-PORT-03).
 
 ## 6. Non-goals
 
@@ -143,8 +143,8 @@ Each criterion is observable and is checked when the named milestone delivers. D
 |---|---|---|
 | CAP-1 | With the Claude Code adapter, an MCP client calls `delegate_task` and receives a `run_id` and `meta_session_id` without waiting for completion; `get_run` returns a compact envelope with no raw transcript or credential material; a tool error carries exactly one failure code. A repeated call with the same idempotency key returns the original run. | M2 |
 | CAP-1 | When verification commands are supplied, their results appear in the run result. | M3 |
-| CAP-2 | `switchboard doctor` reports, for each adapter, binary, version, auth status and eligibility; a missing login yields `AUTH_REQUIRED` with the native login command; an out-of-range version yields `ADAPTER_VERSION_UNVERIFIED` and no routed work. | M1 (fake adapter), M2 (Claude Code) |
-| CAP-2 | Codex, Grok Build, Antigravity and Cursor adapters each pass the recorded-fixture conformance suite. OpenCode does so if delivered. Kimi Code remains disabled until its contract is pinned. | M4 |
+| CAP-2 | `switchboard doctor` reports, for each adapter, binary, version, auth status and eligibility; a missing login yields `AUTH_REQUIRED` with the native login command; an out-of-range version yields `ADAPTER_VERSION_UNVERIFIED` and no routed work. | M1 (fake adapter), M2 (Claude Code, Codex) |
+| CAP-2 | Grok Build, Antigravity, Cursor and OpenCode adapters each pass the recorded-fixture conformance suite. Kimi Code does once its contract is pinned. | M4 |
 | CAP-3 | `inspect-untrusted` and `edit-untrusted` runs deny writes outside the worktree and arbitrary shell, do not load repository-supplied agent config, and end with `PERMISSION_BLOCKED` or `SANDBOX_VIOLATION` rather than hanging; a request above its client's maximum trust fails with `PERMISSION_BLOCKED`. | M2 |
 | CAP-3 | All five profiles work; the malicious-fixture suite shows no escape for Claude Code; a `privileged` run does not start without a recorded operator approval. | M3 |
 | CAP-4 | A write-capable run executes in its own worktree from a recorded checkpoint; the operator's checked-out branch and working tree are unchanged afterwards; no push occurs; the changed-file list, diff artifact and post-run checkpoint are recorded; a failed mutating run is rolled back or resumed, never replayed. | M1 |
