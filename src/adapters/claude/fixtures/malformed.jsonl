@@ -1,0 +1,4 @@
+{"_fixture":"SYNTHETIC: hand-written for Switchboard tests (T2.2), not a recorded transcript; no secrets. Event shapes are the Assumption documented in src/adapters/claude/parse.ts."}
+{"type":"system","subtype":"init","session_id":"{{SESSION_ID}}","model":"synthetic-model","cwd":".","tools":["Read","Grep","Glob","Edit","Write"],"permissionMode":"dontAsk"}
+this line is deliberately not json {
+{"type":"result","subtype":"success","is_error":false,"result":"never trusted","session_id":"{{SESSION_ID}}"}
