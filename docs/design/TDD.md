@@ -65,6 +65,9 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | `data_dir` | Ledger, artifacts, worktrees root | ADR-0005 |
 | `allowed_roots[]` | Canonical roots that workspaces must live under | FR-POL-10 |
 | `mcp_clients[]` | `{id, max_trust_profile}` entries; the orchestrator's MCP config launches `switchboard serve --client <id>`, which binds the session to that entry (FR-OPS-04). The binding is as strong as the operator's control over the orchestrator's launch config; there is no further authentication on stdio. | FR-MCP-06, FR-OPS-04 |
+| `projects[]` | `{id, name, environment{kind: host or container, image_digest?, limits?}, contexts[{id, kind: repository, path, base_ref, push{policy: none or branch, remote?, branch_prefix?}, identity{name, email}}], max_trust_profile?, allowed_providers?}` (Proposed shape; [LLD §11](LLD.md#11-projects-contexts-and-environments)) | FR-PRJ-01, 02, 04, 06, FR-GIT-04, 05 |
+| `mcp_clients[].projects` | Project IDs the client may use | FR-PRJ-03, 06 |
+| `git.sanitize_patterns[]` | Operator additions to the built-in attribution patterns ([LLD §12.4](LLD.md#124-message-sanitisation)) | FR-GIT-04 |
 | `limits.global_concurrency`, `limits.per_provider_concurrency` | Defaults 4 and 1 (proposed target) | NFR-PERF-03 |
 | `timeouts.*` | Wall-clock, idle, grace, preflight TTL (proposed targets in [LLD §8](LLD.md#8-run-supervisor-details)) | FR-EXE-01, NFR-PERF-02 |
 | `retention.days` | Default 30 (proposed target) | NFR-DATA-01 |
@@ -115,6 +118,9 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 - **Repository hooks.** Controller Git operations run with repository hooks disabled and a clean Git environment
   (Proposed: `-c core.hooksPath=/dev/null`, `--no-verify`, no inherited `GIT_*` variables), because a malicious
   repository could otherwise execute code in the controller's own commits.
+- **Agent Git boundary.** Agents get no Git write ability and no push credentials; see
+  [§3.10](#310-git-commits-attribution-and-publication) for the layers, the injected-tool channel and what is still
+  unverified per provider (FR-GIT-01..09).
 - **Credential boundary.** Nothing reads credential files or keyrings (ADR-0003, FR-AUTH-01). Code review gate plus a
   lint rule (Proposed) forbidding references to known credential paths outside test fixtures.
 - **Same-account limitation [R2].** A dedicated OS user limits host blast radius but does not isolate provider
@@ -150,6 +156,8 @@ startup reconciliation applies them. Run state transitions use an optimistic ver
 | Fault injection | Kill controller with `SIGKILL` at each transition boundary (named crash points), restart, assert ledger consistency and terminal/resumed state | No | NFR-REL-01, FR-EXE-06 |
 | Malicious fixture repos (M3, M4) | Repos with prompt-injection files, repo hooks, repo MCP definitions, credential-path reads, out-of-worktree writes, network attempts, run per enabled adapter | Needed for adapter-level proof; sandbox-level parts can run without | NFR-SEC-03 |
 | MCP contract | Schema validation, error envelope, idempotency, `wait_seconds` bounds via an in-process MCP client | No | FR-MCP-* |
+| Git boundary (M9) | Fake adapter with scripted tool calls and scripted attempts to `git commit`, move refs or push, against real Git repos and a local bare remote; fixtures of typical attribution trailers, footers and session IDs through the sanitiser; assertion that no published commit contains them and that checkpoint commits never reach the remote | No | FR-GIT-01..09 |
+| Project and environment (M9, M10) | Configuration validation (unknown context kind, path outside allowed roots), ceiling arithmetic, `host` runs through a project; container tests need a container runtime and are opt-in (skipped in CI until Q-6 is settled) | No for `host`; runtime for `container` | FR-PRJ-01..09 |
 | Live provider smoke | Opt-in only; skipped unless an environment variable is set (name Proposed: `SWITCHBOARD_LIVE_TESTS=1`); never runs in CI by default | Yes | [AGENTS.md](../../AGENTS.md) |
 | Docs check | `scripts/check-docs.mjs` must pass on every change (links, anchors, ID references) | No | NFR-MAINT-02 |
 
@@ -183,6 +191,99 @@ Package: SemVer, pre-1.0 until the MCP tool schemas stabilise after M2/M6. Indep
 `schema_version`, DB migration number, MCP tool schema version (in `list_capabilities`), per-adapter validated
 provider-version range ([LLD §6](LLD.md#6-compliance-manifest)).
 
+### 3.10 Git commits, attribution and publication
+
+Implements [ADR-0014](../adr/0014-tool-only-commits-and-publication.md) (FR-GIT-01..09). Everything here is
+**Proposed** design except zemdregon's decision itself (agents have no commit or push ability; Switchboard-injected tools
+make commits and pushes; commits look ordinary). The central constraint: [R2] documents **no** provider setting for
+commit behaviour or attribution, so none is named or assumed here. Each adapter's task begins by checking the installed
+CLI and the provider's documentation for (a) whether it can commit on its own, (b) any attribution setting, and (c) the
+exact deny-rule syntax for Git write commands, and records the answer in its manifest notes.
+
+**Layers.** Prevention first, then detection; none depends on a provider-specific attribution switch.
+
+| # | Layer | What it does | Strength | Verified? |
+| --- | --- | --- | --- | --- |
+| 1 | Profile deny rules | Each adapter compiles Git write operations (commit, branch and tag changes, push) into the provider's *documented* permission controls: Claude Code explicit `--tools`/allow-deny rules, Grok Build `--allow`/`--deny`, OpenCode explicit deny rules, Antigravity `strict` mode. Under `inspect-untrusted` and `edit-untrusted` there is no arbitrary shell anyway. | Provider-enforced; only as strong as the provider's rule matching | Rule syntax: to be verified per adapter (M2, M4) |
+| 2 | No credentials in the agent's environment | The environment allowlist (FR-EXE-07) never carries `SSH_AUTH_SOCK`, token variables or credential-helper settings. In a `container` environment (M10) no credential store is mounted. | Strong in containers; in a `host` environment on-disk credentials stay readable by a same-user shell ([R2] limit) | Allowlist: tested in M1; container: M10 |
+| 3 | Git-level guard | Per-run Git configuration for agent processes that points hooks at a controller-owned directory whose hooks reject ref updates not carrying the controller's token. Candidate mechanisms: a per-run global config file, or `GIT_CONFIG_COUNT` environment entries (newer Git than the current 2.30 minimum, so adopting it raises `MIN_GIT_VERSION`; check Git's release notes). | A guard against provider-internal or accidental commits, **not** a boundary: an agent with a shell can override Git configuration | Mechanism: to be chosen in an M9 spike |
+| 4 | Git directory out of reach | A worktree's Git directory lives under the main repository's `.git/worktrees/`, outside the worktree. A provider sandbox that confines writes to the worktree therefore cannot edit refs. | Depends on each sandbox's path scope | Malicious fixtures per adapter (M9) |
+| 5 | Detection | Snapshot all refs (`for-each-ref`, including tags and other branches) at LEASED and compare at FINALIZING, plus a check that the run branch holds only controller-made commits. Anything else is a violation: content kept as working-tree changes, commits never published (FR-GIT-03). | Catches what layers 1 to 4 miss; cannot undo a push | Tests in M9 |
+
+**Injected channel.** The controller writes a per-run MCP definition (no global provider config, FR-POL-08) naming a
+small stdio server, a subcommand of the `switchboard` binary (internal, not operator-facing). The shim exposes `commit`
+and, when policy allows, `push`, and forwards each call over a per-run Unix socket (mode `0600`, under the run
+directory) to COMP-GIT in the controller, with a per-run capability token. Git runs in the controller, never in the
+agent's process tree. Constraints to verify per provider:
+
+- how a per-run MCP definition is supplied: [R2] says Claude's `--bare` skips MCP discovery and shows no flag for
+  supplying one, so the mechanism is **to be verified in M2 and M9**;
+- whether a fail-closed mode (Claude `dontAsk`, which denies what would prompt) needs the injected tools pre-allowed in
+  the allow rules, and the exact rule form (verify);
+- whether the provider's sandbox lets the shim reach the socket (Landlock, Seatbelt and bubblewrap profiles may block
+  Unix-socket connects; verify per adapter in M9);
+- whether approving an injected MCP server needs a switch that FR-POL-03 treats as a bypass flag. [R2] lists Cursor's
+  `--approve-mcps` as a separate switch; if that is required, Cursor uses the finalize-only mode (FR-GIT-09) rather than
+  an exception to FR-POL-03.
+
+**Finalize-only mode (Proposed).** The controller makes one commit at FINALIZING from the worktree changes. The message
+is taken from the agent's structured final summary (the result event, FR-ADP-04), then sanitised. It loses the agent's
+ability to split work into commits; it needs an operator opt-in per context.
+
+**Identity and message.** Author and committer come from the context's `identity`. Default (Proposed): when absent,
+`projects validate` reads the repository's effective `user.name` and `user.email` with `git config` (not credentials) and
+asks the operator to copy them into the configuration, so the identity is explicit and recorded in the policy snapshot.
+Commit signing is optional per context (`sign: true`, FR-GIT-10; zemdregon answered yes to Q-9). A signing key is a
+credential, so signing runs only in the controller process through the operator's existing Git configuration, is never
+stored or exported to an agent, and never falls back to unsigned ([LLD
+§12.3.1](LLD.md#1231-signing-fr-git-10-proposed)). Which signing formats work headlessly is settled in the M9 spike.
+The controller sets author and committer dates itself and adds no trailer. The existing checkpoint identity
+(`Switchboard <switchboard@localhost>` in `src/workspace/git.ts`) is for internal checkpoints only and must never be
+used for published commits.
+
+**Building the commit.** On `commit(message, paths?)` COMP-GIT builds the tree with a temporary index file seeded from
+the publish ref's tree (or the run's base commit), adds the requested paths (or all changes) from the worktree, writes the
+tree, then creates the commit object with the context identity and moves the publish ref with a compare-and-swap. The
+run branch and its checkpoints are untouched. (Plain Git plumbing; exact commands: to be fixed in the M9 spike.)
+
+**Publication.** `push` runs `git push` from the controller process with an explicit refspec for the publish ref, never
+`--force`, to the configured remote under the configured prefix. It uses the operator's existing Git configuration (SSH
+agent, credential helper). The controller does not read, copy or store any of it (FR-GIT-06, NFR-SEC-01). The agent's
+environment is separate from the controller's. In a `host` environment with a shell, ambient credentials remain
+readable by the agent, so the `push` tool is withheld (BR-31). Candidate stronger answers, not adopted: a dedicated OS
+user for a publisher helper (adds a privilege boundary and an installation step), or container environments (M10).
+
+**Audit trail.** The ledger table `git_commit` ([LLD §1](LLD.md#1-data-model)) is written in the same transaction as the
+`git_commit` run event. It stores SHA, tree hash and patch ID so records can be re-linked after an operator rebase
+(best effort). `git notes` and trailers were rejected because they travel with the repository.
+
+### 3.11 Container environments
+
+Implements FR-PRJ-04, 05, 07, 09 for M10. Status: **Proposed**. zemdregon left Q-6 to the agent ("the rest you pick"), so the
+choices below are Delegated, not owner-approved, and unverified until the M10 spike.
+
+- **Runtime.** A rootless OCI-compatible runtime that the controller drives through its CLI (Proposed; rootless Podman
+  is the likely candidate, unverified). The controller must run unprivileged (NFR-SEC-04), so a root-owned daemon is out;
+  the port is small (create, start, stop, remove, list by label) so the choice stays replaceable.
+- **Image.** Operator-supplied and pinned by digest (Proposed); the controller never builds images or pulls implicitly.
+  The image contains the provider CLI the project uses.
+- **Mounts.** The run worktree (writable) and declared read-only contexts only. Not the home directory, data directory,
+  runtime socket, or any Git credential store. The worktree's Git directory (under the main repository) is **not**
+  mounted, which also keeps refs out of reach (layer 4 above); how Git works inside the container for read-only
+  operations such as `git diff` is to be settled in the M10 spike (candidate: a read-only bind of the needed objects).
+- **Provider logins (Proposed).** The provider CLI inside the container needs its native login. FR-AUTH-01 forbids the
+  controller copying or moving credentials between identities or machines, so mounting the host's credential directory is
+  out unless zemdregon decides otherwise. Chosen (Proposed): the operator runs the provider's native login command inside the
+  project's container volume once (for example through a `projects login <id> <provider>` operator command that only
+  attaches the operator's terminal to that command; the controller never reads the result). Whether that is acceptable
+  to each provider's terms is unreviewed (compliance manifest
+  review, R-2). The M10 spike must confirm this with each provider before M10 is marked done.
+- **Network.** The run's profile maps to the container's network: off for untrusted profiles; allowlist only if the
+  runtime can enforce one (to be verified).
+- **Limits.** CPU, memory and disk limits from the project, which partly answers R-8.
+- **Cleanup.** Every container carries labels with the run and project IDs. Removal at run end, and a label sweep at
+  startup before worktrees are assessed (FR-PRJ-07).
+
 ## 4. Provider adapter strategy
 
 Source of every fact in this section is [R2]. Anything not stated there reads "to be verified in Mx against installed
@@ -203,6 +304,7 @@ Version ranges come from compliance manifests, not this table (FR-ADP-03, FR-POL
 | Trust profile compilation (Proposed) | Untrusted profiles: `--bare` (skips hooks, skills, commands, subagents, plugins, MCP, auto-memory, `CLAUDE.md`; FR-POL-04), fail-closed `dontAsk` (or `--permission-prompts none`), explicit `--tools`/allow-deny rules; never `--allowedTools "*"` (skipped by Claude). Exact tool names and rule syntax: to be verified in M2 against installed CLI |
 | Sandbox controls | None documented in [R2]; `--bare` is not a sandbox and Bash/read/edit remain. Credential confinement unproven, so `inspect-untrusted` and `edit-untrusted` compile with no arbitrary shell (only `edit-untrusted`'s narrow allowlist), and `test-sandboxed` is ineligible for Claude until confinement is shown (FR-POL-06; M3 evaluation) |
 | Known risks | Version-gated features; `total_cost_usd` is a client-side estimate (record as reported, never as remaining quota, FR-CAP-01/03); `PreToolUse` hooks are supplemental only; `CLAUDE_CONFIG_DIR` isolates config *and* credentials, so use only if it keeps the operator's login reachable (to be verified in M2); structured error categories (`rate_limit`, `overloaded`, authentication, billing, server) feed `classifyFailure` |
+| Git writes and injected tools (M2, M9) | Git write denial through the explicit `--tools`/allow-deny rules [R2] names; rule syntax: to be verified in M2. No commit or attribution setting is documented in [R2]: to be verified in M2 against the installed CLI and Anthropic's documentation. `--bare` skips MCP discovery [R2], so the injected tools need an explicitly supplied per-run MCP definition (mechanism not in [R2]: to be verified in M9), and fail-closed `dontAsk` may require them pre-allowed |
 
 ### 4.2 Codex (M2)
 
@@ -215,6 +317,7 @@ Version ranges come from compliance manifests, not this table (FR-ADP-03, FR-POL
 | Trust profile compilation (Proposed) | `--sandbox workspace-write` or stricter, plus `--ignore-user-config` and `--ignore-rules` for full harness control. Read-only sandbox value spelling: to be verified in M4 |
 | Sandbox controls | Native: Seatbelt (macOS), bubblewrap (Linux/WSL2); explicit `--sandbox` |
 | Known risks | `--full-auto` deprecated, `--yolo` never used outside approved `privileged`; do not expose `OPENAI_API_KEY`/`CODEX_API_KEY` to repo-controlled code; token usage does not reveal remaining subscription capacity |
+| Git writes and injected tools (M2, M9) | `--sandbox workspace-write` or stricter is the documented control; whether it prevents `git commit` or writes to the Git directory is not stated in [R2]: to be verified in M2. No commit or attribution setting in [R2]. Supplying a per-run MCP definition together with `--ignore-user-config`: not in [R2], to be verified in M9 |
 
 ### 4.3 Grok Build (M4)
 
@@ -227,6 +330,7 @@ Version ranges come from compliance manifests, not this table (FR-ADP-03, FR-POL
 | Trust profile compilation (Proposed) | Two independent dimensions compiled together: `--allow`/`--deny` rules and a sandbox profile (strict/read-only/workspace named in [R2]; selection flag to be verified in M4). Always-approve only under approved `privileged` |
 | Sandbox controls | Landlock (Linux), Seatbelt (macOS); off unless enabled |
 | Known risks | Permissions and sandbox are separate; project hooks and trust semantics mean repository config is untrusted input; worktree/fork behaviour is a capability, not assumed per run |
+| Git writes and injected tools (M4, M9) | `--deny` rules for Git write commands (syntax: to be verified in M4); sandbox profile as a separate control. No commit or attribution setting in [R2]. Per-run MCP definition: not in [R2], to be verified |
 
 ### 4.4 Antigravity (`agy`, M4)
 
@@ -239,6 +343,7 @@ Version ranges come from compliance manifests, not this table (FR-ADP-03, FR-POL
 | Trust profile compilation (Proposed) | `toolPermission` modes `request-review`, `proceed-in-sandbox`, `always-proceed`, `strict` plus terminal sandbox controls; prefer `strict` or `proceed-in-sandbox`. How the setting is passed per run without editing global config: to be verified in M4 (FR-POL-08) |
 | Sandbox controls | Terminal sandbox controls (names to be verified in M4) |
 | Known risks | `--dangerously-skip-permissions` only under approved `privileged`; mapping `toolPermission` to profiles may force ineligibility |
+| Git writes and injected tools (M4, M9) | `strict` or `proceed-in-sandbox` `toolPermission`; whether Git writes can be denied separately: to be verified in M4. Per-run MCP definition without editing global config: not in [R2], to be verified (FR-POL-08); else finalize-only |
 
 ### 4.5 Cursor CLI (M4)
 
@@ -251,6 +356,7 @@ Version ranges come from compliance manifests, not this table (FR-ADP-03, FR-POL
 | Trust profile compilation (Proposed) | `--sandbox enabled`; `--trust`, `--approve-mcps`, `--force`/`--yolo` decided independently: `--trust` only after controller trust evaluation, never automatic `--approve-mcps` or `--force` |
 | Sandbox controls | `--sandbox enabled` or `--sandbox disabled`; sandbox subcommands support extra writable/read-only paths, blocked patterns, network switch (syntax to be verified in M4); `--worktree` with base-ref control exists but the controller owns worktrees |
 | Known risks | Can front several model vendors: record harness and backing provider/model (FR-ADP-10); `--list-models` feeds the model registry (FR-ADP-05) |
+| Git writes and injected tools (M4, M9) | `--sandbox enabled`; Git-write denial syntax: to be verified in M4. Cursor's `--worktree` creates worktrees and refs of its own and is not used (the controller owns worktrees). If supplying the injected MCP server needs `--approve-mcps` [R2], that is a bypass-class switch (FR-POL-03), so Cursor would use finalize-only mode (FR-GIT-09) |
 
 ### 4.6 OpenCode (M4)
 
@@ -263,10 +369,12 @@ Version ranges come from compliance manifests, not this table (FR-ADP-03, FR-POL
 | Trust profile compilation (Proposed) | Build explicit permissions first; `--auto` approves permissions not explicitly denied, so it is allowed only after explicit deny rules are in place, and then only if profile semantics permit (rule syntax: to be verified in M4) |
 | Sandbox controls | None stated in [R2]: profiles needing confinement are ineligible until verified |
 | Known risks | Multiple backing providers: record harness and backing provider/model (FR-ADP-10) so two paths to one quota pool are not counted as independent capacity |
+| Git writes and injected tools (M4, M9) | Explicit deny rules for Git write commands before anything else; `--auto` approves whatever is not denied, so the injected tools must be explicitly allowed and Git writes explicitly denied (syntax: to be verified in M4). `--fork` and session export are not used. No sandbox [R2], so only shell-less profiles qualify for push |
 
 ### 4.7 Kimi Code (M4, blocked by B-1)
 
-Disabled until the current Kimi Code CLI automation contract is pinned and passes conformance tests (FR-ADP-09, [ROADMAP
+Disabled until the current Kimi Code CLI automation contract is pinned and passes conformance tests (FR-ADP-09, Git
+write denial and tool injection included, FR-GIT-01, [ROADMAP
 §7](../ROADMAP.md#7-risks-blockers-and-open-questions)). The archived legacy CLI's syntax, models and permissions are
 not evidence for the replacement. Every row of this table: to be verified when the contract is pinned.
 
@@ -285,6 +393,8 @@ approach only.
 | M6 Capacity | Usage observation writers; estimator (rolling windows over `usage_observation` and `run`); per-provider breakers persisted in `provider_health`; retry scheduler using [LLD §9](LLD.md#9-retryback-off-algorithm); queue with `WAITING_CAPACITY` timers; `get_capacity`. |
 | M7 Routing | Feature extraction and heuristic classifier; static weighted scoring; persist `route_decision` rows; `explain_route` reads them. Scores deterministic for a given stored input (FR-RTE-03). |
 | M8 Hardening | OTel exporter driven from `run_event`/spans; version canaries (`adapters validate` ships in M4); |
+| M9 Projects and controlled commits | Project and context schema in the config loader; `COMP-PRJ` resolution and ceilings; `project_id` columns and the `git_commit` table; per-adapter Git-write denial and channel-support declarations; the shim subcommand and per-run socket; `COMP-GIT` (commit, sanitiser, publish ref, ref snapshots, push with policy); `projects` CLI; fake-adapter fixtures for every attempt in §3.6. Starts with a spike that settles §3.10's open mechanisms (per-run Git config, plumbing commands, socket access under sandboxes). |
+| M10 Container environments | After M9 (Q-6 settled by delegation, Proposed): runtime port, mounts, limits, labels and orphan sweep, container leg of the malicious-fixture suite, answer to the provider-login question ([§3.11](#311-container-environments)). |
 
 ## 6. Migration considerations
 
@@ -320,4 +430,7 @@ approach only.
 | Native provider sandboxes first, outer sandbox optional | Uses vendor-maintained controls | Uneven protection across providers; some profiles ineligible | [R2], FR-POL-06 |
 | Async-first tools with bounded wait | Survives client timeouts | Orchestrators must poll | ADR-0002 |
 | No automatic permission-bypass flags | Fail-closed headless runs | Some tasks fail with `PERMISSION_BLOCKED` | ADR-0004 |
+| Tool-only commits over letting agents commit and rewriting afterwards | No provider attribution can reach published history; works without per-provider attribution switches | A per-run tool channel to verify per provider; some adapters fall back to controller-made commits | ADR-0014 |
+| Provenance in the ledger, not in Git | Commits stay indistinguishable from ordinary ones | Links by SHA break on an operator rebase (tree hash and patch ID are best-effort) | ADR-0014 |
+| Orchestrator-created projects need a client opt-in and operator approval for containers and push | A compromised orchestrator cannot mount host paths, start containers or enable push on its own | A project is approved on the CLI before it can use those | ADR-0013 |
 | Stdio MCP, single process | No network listener | One orchestrator per controller process (Assumption) | ADR-0011 |
