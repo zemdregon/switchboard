@@ -90,6 +90,7 @@ else {
 
 const CLAUDE_HELP =
   "-p, --print\n--output-format stream-json\n--permission-mode dontAsk\n--permission-prompts\n--tools\n--allowedTools\n" +
+  "--disallowedTools\n" +
   "--safe-mode\n--restricted\n--strict-mcp-config\n--resume\n";
 
 /** Every invocation compiled during a test, for the bypass-flag audit. */
@@ -110,6 +111,7 @@ function recorded(inner: ProviderAdapter, auth?: AuthResult): Recorded {
   const adapter: ProviderAdapter = {
     id: inner.id,
     transports: inner.transports,
+    gitWriteControl: inner.gitWriteControl,
     probe: (r) => inner.probe(r),
     authPreflight: (r) => (auth ? Promise.resolve(auth) : inner.authPreflight(r)),
     compile: (req, p) => keep(inner.compile(req, p)),
@@ -514,6 +516,16 @@ describe("Claude and Codex adapters on recorded replay fixtures", () => {
       supported_profiles: ["inspect-untrusted", "edit-untrusted"],
     });
     expect(by.codex).toMatchObject({ adapter_status: "ADAPTER_VERSION_UNVERIFIED", auth_state: "NOT_CHECKED" });
+    // FR-GIT-01: Claude names its deny rules; Codex declares that no control is documented.
+    expect(by.claude.git_write_control).toMatchObject({
+      kind: "provider-deny-rules",
+      remaining_controls: ["FR-GIT-03", "FR-GIT-06"],
+    });
+    expect(by.codex.git_write_control).toMatchObject({
+      kind: "none-documented",
+      remaining_controls: ["FR-GIT-03", "FR-GIT-06"],
+    });
+    expect(by.codex.git_write_control.detail).toMatch(/no Codex per-command deny or allow rule/);
     for (const p of r.body.providers) expect(p.supported_profiles).not.toContain("privileged");
     const text = JSON.stringify(r.body);
     expect(text).not.toContain(process.execPath);

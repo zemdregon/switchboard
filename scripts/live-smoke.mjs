@@ -89,7 +89,7 @@ if (provider === "claude") {
   record(
     "C-2",
     GROUP,
-    "`claude --help` lists every flag the adapter emits (--safe-mode, --restricted, --permission-prompts, ...)",
+    "`claude --help` lists every flag the adapter emits (--safe-mode, --restricted, --disallowedTools, ...)",
     held(binaryOk ? step("flags")?.ok && step("output_format")?.ok : undefined),
     binaryOk ? (step("flags")?.detail ?? "all present") : "binary not found",
   );
@@ -192,6 +192,10 @@ else {
   out(`bypass-flag audit: ${bypass.length === 0 ? "none" : `FOUND ${bypass.join(", ")}`}`);
   if (bypass.length > 0) process.exit(1);
 }
+// FR-GIT-01 declaration (also reported by list_capabilities).
+out(
+  `git write control: ${adapter.gitWriteControl.kind} (remaining: ${adapter.gitWriteControl.remainingControls.join(", ")})`,
+);
 
 // ---- 2. one edit task through the real MCP server -------------------------------------------------------------------
 
@@ -214,6 +218,7 @@ git("init", "-q", "-b", "main");
 writeFileSync(path.join(repo, "README.md"), "# Throwaway repository for the Switchboard live smoke test\n");
 git("add", "-A");
 git("commit", "-q", "-m", "init");
+const initSha = git("rev-parse", "HEAD");
 const configPath = path.join(tmp, "config.json");
 writeFileSync(
   configPath,
@@ -372,6 +377,31 @@ out(
 
 const ran = lines > 0;
 const succeeded = final.status === "SUCCEEDED";
+
+// FR-GIT-01, passive: after a benign run, the only refs are `main` (unchanged) and the controller's run branches, and
+// every commit on a run branch carries the controller's checkpoint identity. Nothing is attempted against Git here.
+let gitRefsOk;
+let gitRefsEvidence = "provider never ran";
+if (ran) {
+  try {
+    const refs = git("for-each-ref", "--format=%(refname) %(objectname)").split("\n").filter(Boolean);
+    const foreign = refs.filter((l) => {
+      const [name, sha] = l.split(" ");
+      if (name === "refs/heads/main") return sha !== initSha;
+      return !name.startsWith("refs/heads/switchboard/");
+    });
+    const authors = refs
+      .map((l) => l.split(" ")[0])
+      .filter((n) => n.startsWith("refs/heads/switchboard/"))
+      .flatMap((n) => git("log", "--format=%ae %ce", `refs/heads/main..${n}`).split("\n").filter(Boolean));
+    const foreignCommits = authors.filter((a) => a !== "switchboard@localhost switchboard@localhost");
+    gitRefsOk = foreign.length === 0 && foreignCommits.length === 0;
+    gitRefsEvidence = `${refs.length} refs, ${foreign.length} unexpected, ${foreignCommits.length} non-controller commits`;
+  } catch (err) {
+    gitRefsOk = false;
+    gitRefsEvidence = `git inspection failed: ${String(err).slice(0, 120)}`;
+  }
+}
 if (provider === "claude") {
   record(
     "C-6",
@@ -457,6 +487,30 @@ if (provider === "claude") {
     "error `code` strings and the `declined` item status",
     "NOT_CHECKED",
     "needs a failing run; not provoked by this smoke test",
+  );
+}
+record(
+  "G-1",
+  "FR-GIT-01",
+  "after a benign run no ref other than the controller's changed and no commit was made by the agent",
+  held(gitRefsOk),
+  gitRefsEvidence,
+);
+if (provider === "claude") {
+  record(
+    "C-G2",
+    "FR-GIT-01",
+    "`--disallowedTools` Git deny rules (`Bash(git commit *)`, ...) are accepted with no Bash in --tools and deny a Git write",
+    "NOT_CHECKED",
+    "acceptance is covered by C-6 (the run starts); denial needs a deliberate Git write attempt, which this smoke test never makes (malicious fixtures: T9.5)",
+  );
+} else {
+  record(
+    "X-G1",
+    "FR-GIT-01",
+    "the workspace-write sandbox blocks writes to the worktree's Git directory (outside the cwd, under .git/worktrees/)",
+    "NOT_CHECKED",
+    "needs a deliberate `git commit` attempt inside the sandbox, which this smoke test never makes (malicious fixtures: T9.5)",
   );
 }
 record(

@@ -3,6 +3,7 @@ export * from "./claude/index.js";
 export * from "./codex/index.js";
 export * from "./conformance.js";
 export * from "./failure.js";
+export * from "./git-write.js";
 export * from "./manifest/index.js";
 export * from "./registry.js";
 export * from "./run.js";
