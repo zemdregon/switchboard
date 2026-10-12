@@ -12,13 +12,15 @@ contributions are edits to research and design documents.
 
 ## Making a change
 
-1. Create a branch from `main`.
+1. Create a branch from `main`. Read [AGENTS.md](AGENTS.md) and the
+   [roadmap](docs/ROADMAP.md) first; they say which document owns what.
 2. Make your edits. Keep each document focused on one topic.
 3. Check your Markdown locally:
 
    ```sh
    npx --yes markdownlint-cli2@0.23.3 "**/*.md" "!docs/**"
    npx --yes markdown-link-check@3.13.7 --quiet README.md CONTRIBUTING.md SECURITY.md
+   node scripts/check-docs.mjs
    ```
 
    The same checks run in the `docs-lint` workflow on every pull request.
