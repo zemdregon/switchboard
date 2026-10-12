@@ -443,3 +443,63 @@ it("test profiles match SRS §3.3 defaults", () => {
     expect(p).toMatchObject({ network: "off", repoConfig: "disabled", bypassApproved: false });
   }
 });
+
+describe("Git write operations (FR-GIT-01)", () => {
+  const all = (): Array<[string, Invocation]> => [
+    ["inspect", must(adapter().compile(request(), INSPECT_PROFILE))],
+    ["edit", must(adapter().compile(request(), EDIT_PROFILE))],
+    [
+      "edit, read-only workspace",
+      must(adapter().compile(request({ workspace: { cwd: "/w", writable: false } }), EDIT_PROFILE)),
+    ],
+    [
+      "resume-inspect",
+      must(adapter().resumeArgs({ provider: "codex", nativeSessionId: "t-1" }, request(), INSPECT_PROFILE)),
+    ],
+    ["resume-edit", must(adapter().resumeArgs({ provider: "codex", nativeSessionId: "t-1" }, request(), EDIT_PROFILE))],
+  ];
+
+  it("declares that Codex documents no Git write control, leaving FR-GIT-03 and FR-GIT-06", () => {
+    const c = adapter().gitWriteControl;
+    expect(c.kind).toBe("none-documented");
+    expect(c.remainingControls).toEqual(["FR-GIT-03", "FR-GIT-06"]);
+    expect(c.detail).toMatch(/no Codex per-command deny or allow rule/);
+    expect(c.detail).toMatch(/Assumption/);
+  });
+
+  it("every compiled invocation uses only the read-only or workspace-write sandbox and grants nothing else", () => {
+    for (const [name, inv] of all()) {
+      const i = inv.argv.indexOf("--sandbox");
+      expect(i, name).toBeGreaterThan(0);
+      expect(["read-only", "workspace-write"], name).toContain(inv.argv[i + 1]);
+      expect(
+        inv.argv.filter((a) => a === "--sandbox"),
+        name,
+      ).toHaveLength(1);
+      expect(auditInvocation(inv), name).toEqual([]);
+      // Nothing in argv names git or a command to run; the prompt is on stdin (FR-ADP-04 / FR-POL-02).
+      for (const a of inv.argv.slice(1)) expect(/\bgit\b|\bgh\b/.test(a), `${name}: ${a}`).toBe(false);
+      // No credential-bearing variable reaches the agent (FR-GIT-06).
+      expect(inv.envAllowlist, name).toEqual(["PATH", "HOME"]);
+    }
+  });
+
+  it.each([
+    "git commit",
+    "git push",
+    "git branch -f main",
+    "git update-ref refs/heads/x HEAD",
+    "git tag v1",
+    "gh pr create",
+  ])("allowlist entry %j is Ineligible (PROFILE_UNSUPPORTED)", (entry) => {
+    const r = adapter().compile(request(), { ...EDIT_PROFILE, shellAllowlist: [entry] });
+    expect(r).toMatchObject({ ineligible: true, reason: "PROFILE_UNSUPPORTED" });
+  });
+
+  it("any other non-empty allowlist is Ineligible: Codex documents no command allowlist (Q-11)", () => {
+    expect(adapter().compile(request(), { ...EDIT_PROFILE, shellAllowlist: ["npm test"] })).toMatchObject({
+      ineligible: true,
+      reason: "CAPABILITY_MISSING",
+    });
+  });
+});

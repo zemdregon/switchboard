@@ -306,6 +306,8 @@ export type TrustProfile = 'inspect-untrusted' | 'edit-untrusted' | 'test-sandbo
 export interface ProviderAdapter {
   readonly id: ProviderId;
   readonly transports: readonly Transport[];
+  /** FR-GIT-01 declaration (M2, T2.2), reported by list_capabilities. */
+  readonly gitWriteControl: GitWriteControl;
 
   /** FR-ADP-02 steps 1-5: binary, version, command, output formats, required flags. No auth, no model call. */
   probe(runner: ProbeRunner): Promise<ProbeResult>;
@@ -326,6 +328,14 @@ export interface ProviderAdapter {
 }
 
 export type Transport = 'subprocess-jsonl' | 'acp-stdio' | 'local-service'; // last deferred (FR-EXE-04)
+
+/** FR-GIT-01 (Proposed shape, implemented in M2). */
+export interface GitWriteControl {
+  kind: 'provider-deny-rules'     // compile() passes the provider's documented deny controls for Git writes
+      | 'none-documented';        // the provider documents none; FR-GIT-03 and FR-GIT-06 are what remains
+  detail: string;                 // mechanism and source, or why none is documented; known limits
+  remainingControls: string[];    // requirement IDs, e.g. ['FR-GIT-03', 'FR-GIT-06']
+}
 
 export interface ProbeResult {
   binaryPath: string; binaryVersion: string | null;
@@ -410,12 +420,13 @@ bundles `{events, exit, stderrTail (bounded), timedOut, cancelled}`. A central b
 `Invocation.policyFlags` and `argv` before spawn (FR-POL-03). Per-adapter parsing specifics: to be detailed in M2
 (Claude) and M4 (others).
 
-**M9 additions to the adapter contract (Proposed).** Each adapter also declares how it meets FR-GIT-01 and FR-GIT-02:
+**M9 additions to the adapter contract (Proposed).** Each adapter also declares how it meets FR-GIT-02. (The FR-GIT-01
+part, first drafted here as `gitWrites: 'denied-by-provider-rules' | 'no-shell-profiles-only' | 'undeclared'`, was
+implemented in M2 as `gitWriteControl` above; `undeclared` became `none-documented` because FR-GIT-01 requires the
+adapter to declare the absence.)
 
 ```ts
 export interface GitCapabilities {
-  /** FR-GIT-01: how Git write operations are denied under write-capable profiles. */
-  gitWrites: 'denied-by-provider-rules' | 'no-shell-profiles-only' | 'undeclared';   // 'undeclared' => FR-GIT-03/06 only
   /** FR-GIT-02: can the per-run injected tool channel be supplied without a bypass flag (FR-POL-03)? */
   commitChannel: 'injected' | 'finalize-only' | 'none';
   /** Pure: the MCP definition for the shim, in the provider's own per-run form; never written to global config (FR-POL-08). */
@@ -512,8 +523,9 @@ still be non-terminal. Cancelling a terminal run is a no-op returning its envelo
 max_inline_bytes?: int }` returns `[{artifact_id, kind, sha256, size_bytes, inline_text?}]`; inline only when under
 `max_inline_bytes` (default 65536, proposed target).
 **`list_capabilities`** `{}` returns `{ schema_version, providers: [{provider, adapter_status, binary_version,
-validated_range, auth_state, supported_profiles[], transports[], models[], sandbox_features[]}] }`; reads cached
-preflight (NFR-PERF-02).
+validated_range, auth_state, supported_profiles[], transports[], models[], sandbox_features[], git_write_control?}] }`;
+reads cached preflight (NFR-PERF-02). `git_write_control` is `{ kind: "provider-deny-rules" | "none-documented", detail,
+remaining_controls[] }`, the adapter's FR-GIT-01 declaration (Proposed, added in T2.2).
 **`get_capacity`** (M6) `{ provider? }` returns the FR-CAP-02 fields per provider with `source`; `explicit_remaining` is
 null unless provider-reported. To be detailed in M6.
 **`explain_route`** (M7) `{ run_id }` returns candidates, eligibility reasons, features, weights, scores from

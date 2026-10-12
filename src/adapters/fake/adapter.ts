@@ -14,6 +14,7 @@ import type {
   ExitInfo,
   FailureClassification,
   FailureEvidence,
+  GitWriteControl,
   Ineligible,
   Invocation,
   NativeBinding,
@@ -52,6 +53,12 @@ const str = (v: unknown): string | undefined => (typeof v === "string" ? v : und
 export class FakeAdapter implements ProviderAdapter {
   readonly id = "fake" as const;
   readonly transports = ["subprocess-jsonl"] as const;
+  /** Test double: no provider exists, so there is no provider control to declare (FR-GIT-01). */
+  readonly gitWriteControl: GitWriteControl = {
+    kind: "none-documented",
+    detail: "fake test adapter; no provider permission controls exist",
+    remainingControls: ["FR-GIT-03", "FR-GIT-06"],
+  };
   readonly #scenario: FakeScenario;
   readonly #exe: string;
   readonly #script: string;

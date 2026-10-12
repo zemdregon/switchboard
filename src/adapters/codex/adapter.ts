@@ -13,6 +13,7 @@ import {
   DEFAULT_WALL_CLOCK_MS,
 } from "../../exec/index.js";
 import { classifyCommon } from "../failure.js";
+import { gitWriteRisks } from "../git-write.js";
 import { parseVersion } from "../manifest/index.js";
 import type {
   AcpMessage,
@@ -21,6 +22,7 @@ import type {
   ExitInfo,
   FailureClassification,
   FailureEvidence,
+  GitWriteControl,
   Ineligible,
   Invocation,
   NativeBinding,
@@ -38,6 +40,7 @@ import {
   ERROR_CODE_CATEGORIES,
   EVENT,
   EXEC_SUBCOMMAND,
+  GIT_WRITE_CONTROL_DETAIL,
   HELP_FLAG,
   IGNORE_RULES_FLAG,
   IGNORE_USER_CONFIG_FLAG,
@@ -64,6 +67,13 @@ const MAX_SUMMARY_CHARS = 2_000;
 const MAX_TARGET_CHARS = 512;
 /** Native ids are passed as one argv element; refuse anything that could be read as a flag (Proposed). */
 const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+
+/** FR-GIT-01: Codex documents no Git write control, so the adapter declares that (see protocol.ts). */
+export const CODEX_GIT_WRITE_CONTROL: GitWriteControl = {
+  kind: "none-documented",
+  detail: GIT_WRITE_CONTROL_DETAIL,
+  remainingControls: ["FR-GIT-03", "FR-GIT-06"],
+};
 
 /** Profiles the Codex adapter compiles in M2 (FR-POL-01); the rest arrive with M3. */
 const SUPPORTED_PROFILES = new Set(["inspect-untrusted", "edit-untrusted"]);
@@ -109,6 +119,7 @@ const ineligible = (reason: Ineligible["reason"], detail: string): Ineligible =>
 export class CodexAdapter implements ProviderAdapter {
   readonly id = "codex" as const;
   readonly transports = ["subprocess-jsonl"] as const;
+  readonly gitWriteControl = CODEX_GIT_WRITE_CONTROL;
   readonly #exe: string | undefined;
   readonly #launcher: readonly string[];
   readonly #timeouts: Invocation["timeouts"];
@@ -205,6 +216,16 @@ export class CodexAdapter implements ProviderAdapter {
     if (profile.shell !== "none" && profile.shell !== "allowlist") {
       return ineligible("PROFILE_UNSUPPORTED", `shell=${profile.shell} is not compiled for Codex before M3`);
     }
+    const allowlist = profile.shellAllowlist ?? [];
+    const gitWrites = gitWriteRisks(allowlist);
+    if (gitWrites.length > 0) {
+      return ineligible(
+        "PROFILE_UNSUPPORTED",
+        `shell allowlist entries could write Git (FR-GIT-01): ${gitWrites.map((g) => g.command).join("; ")}`,
+      );
+    }
+    // R2 documents no Codex command allowlist (Q-11): a non-empty allowlist cannot be expressed, so it is not compiled.
+    if (allowlist.length > 0) return ineligible("CAPABILITY_MISSING", "no documented Codex command allowlist (Q-11)");
     // Assumption: Codex sandbox modes keep network off; R2 documents no network switch, so only `off` compiles.
     if (profile.network !== "off") return ineligible("CAPABILITY_MISSING", "no documented Codex network allowlist");
     // R2/TDD §4.2 name no model-selection flag; never silently run a different model.
