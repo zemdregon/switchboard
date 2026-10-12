@@ -199,8 +199,9 @@ The five trust profiles and their intended semantics are:
 
 Added 2026-10-12 from owner decision 6 ([ADR-0013](../adr/0013-projects-environments-and-contexts.md)): Switchboard
 manages *projects*, the environments the coding agents operate from (likely containers) and the *contexts* of those
-projects, such as repositories. Everything about container runtimes is **Proposed** until the open questions Q-6 and Q-7
-in [ROADMAP §7.3](../ROADMAP.md#73-open-questions-for-zemdregon-not-blocking-m2-unless-noted) are answered.
+projects, such as repositories. zemdregon answered Q-7 on 2026-10-12: the orchestrator may create and change projects over
+MCP (FR-PRJ-10). The container runtime and provider-login mechanism (Q-6) are a **Delegated, Proposed** choice, not an
+owner decision ([ROADMAP §7.3](../ROADMAP.md#73-open-questions-for-zemdregon-not-blocking-m2-unless-noted)).
 
 | ID | Requirement | Priority | Source | Verify | Milestone |
 | --- | --- | --- | --- | --- | --- |
@@ -208,11 +209,12 @@ in [ROADMAP §7.3](../ROADMAP.md#73-open-questions-for-zemdregon-not-blocking-m2
 | FR-PRJ-02 | A context is a resource a project's agents work with. The only context kind delivered is `repository`: a local Git repository whose canonical path lies under an allowed root (FR-POL-10), with a base ref, a push policy (FR-GIT-05) and a commit identity (FR-GIT-04). A context of an unknown kind shall fail configuration validation. | Must | CAP-10, FR-POL-10, NFR-SEC-06 | T | M9 |
 | FR-PRJ-03 | `delegate_task` shall accept a project reference as an alternative to a workspace path, and a read-only `list_projects` tool shall list the projects the calling MCP client may use. Runs and meta-sessions shall record their project, and a meta-session shall stay in the project it was created in. A request naming both or neither of a project and a workspace path fails `INVALID_REQUEST`. | Must | CAP-10, CAP-1, FR-MCP-09 | T | M9 |
 | FR-PRJ-04 | The controller shall support the environment kinds `host` (agent processes run directly on the operator's machine, as in M1 to M3) and `container` (FR-PRJ-05). The environment kind and, for containers, the image digest shall be recorded in the run's policy snapshot. | Must | CAP-10, FR-POL-01 | T | M9 (`host`), M10 (`container`) |
-| FR-PRJ-05 | For a `container` environment the controller shall run the provider process inside a container that mounts only the run's worktree (writable) and declared read-only contexts. It shall not mount the operator's home directory, the controller data directory, Git push credentials or a container-runtime socket. How provider logins reach the container is open (Q-6), and no provider credential shall be copied or moved by the controller (FR-AUTH-01). It shall apply the run's network policy and configured CPU, memory and disk limits, and remove the container when the run ends. | Must | CAP-10, BO-3, FR-POL-06 | T, A | M10 |
+| FR-PRJ-05 | For a `container` environment the controller shall run the provider process inside a container that mounts only the run's worktree (writable) and declared read-only contexts. It shall not mount the operator's home directory, the controller data directory, Git push credentials or a container-runtime socket. Provider logins reach the container only through the operator running the provider's native login inside the project's container volume (Proposed, ADR-0013); no provider credential shall be copied or moved by the controller (FR-AUTH-01). It shall apply the run's network policy and configured CPU, memory and disk limits, and remove the container when the run ends. | Must | CAP-10, BO-3, FR-POL-06 | T, A | M10 |
 | FR-PRJ-06 | A project may declare a maximum trust profile and a set of allowed providers. The effective maximum profile of a request is the lower of the calling client's maximum (FR-MCP-06) and the project's; a client may use only the projects listed in its configuration entry. A request outside either limit fails `PERMISSION_BLOCKED` before any side effect. | Must | CAP-10, CAP-3, FR-MCP-06 | T | M9 |
 | FR-PRJ-07 | Environment lifecycle steps (create, start, stop, remove) shall be recorded as run events. Startup reconciliation (FR-EXE-06) shall find and remove containers left by a previous controller before assessing worktrees. | Must | CAP-10, NFR-REL-01 | T | M10 |
 | FR-PRJ-08 | The operator CLI shall provide `projects list`, `projects show <id>` and `projects validate`, which checks configuration, repository paths, base refs and environment availability without starting a run; plain text and `--json` as in FR-OPS-01. | Should | CAP-10, CAP-9 | T | M9 (`host`), M10 (`container` checks) |
 | FR-PRJ-09 | Removing a project from the configuration shall not delete its run history. Retention (FR-WS-07, NFR-DATA-01) shall remove a project's containers and volumes together with its worktrees, branches and artifacts. | Should | CAP-10, NFR-DATA-01 | T | M10 |
+| FR-PRJ-10 | An MCP client whose configuration entry sets `manage_projects` (default off) shall be able to create, update and delete *dynamic projects* with `create_project`, `update_project` and `delete_project`. A dynamic project is validated exactly like a configured one (FR-PRJ-01, 02), is stored in the ledger as append-only revisions, is snapshotted into runs as in FR-PRJ-01, and is visible only to the client that created it plus the operator. Configured projects can never be changed over MCP. Its limits are the creating client's: the repository path under an allowed root (FR-POL-10); the trust ceiling and provider set no wider than the client's; a push policy no wider than the client's `max_push_policy` (default `none`). A `container` environment, any push policy other than `none`, and any later widening take effect only after the operator approves that revision through the CLI (`projects approve`, never through MCP); until then the project cannot start runs. Deleting a project with a non-terminal run fails `INVALID_REQUEST`; history is kept (FR-PRJ-09). Every call, accepted or refused, is recorded as an event. | Must | CAP-10, owner decision 8, FR-MCP-06, NFR-SEC-06 | T | M9 (`host`), M10 (`container` approval) |
 
 ### 3.13 Agent Git boundary, commits and publication (`FR-GIT`)
 
@@ -234,6 +236,7 @@ verified* ([TDD §3.10](../design/TDD.md#310-git-commits-attribution-and-publica
 | FR-GIT-07 | For every commit made through the commit tool the controller shall append a provenance record linking commit SHA, tree hash and patch ID to project, context, meta-session, run, provider, model, adapter version, the tool-call event and the sanitiser report (rule names and counts, never content), plus remote and ref once pushed. Records are append-only and retrievable through `runs show`; the commit itself shall not contain them. | Must | CAP-11, BO-5, BO-7 | T | M9 |
 | FR-GIT-08 | Checkpoint commits, run branches and other controller refs (FR-WS-03) are internal and shall never be pushed or used as published history. Published commits shall be created only by the commit tool, onto a publish ref separate from the run branches. | Must | CAP-11, FR-WS-03 | T | M9 |
 | FR-GIT-09 | For an adapter that cannot receive the injected channel (FR-GIT-02), and when the operator enables it for the context, the controller shall create the commit itself at finalization from the run's worktree changes, with a message taken from the agent's structured final summary, subject to FR-GIT-04 to FR-GIT-08. | Should | CAP-11, owner decision 7 | T | M9 |
+| FR-GIT-10 | A context may set `sign: true` (default off). The controller then signs each published commit through the operator's existing Git signing configuration, used only by controller-side Git operations (FR-GIT-06): the key or agent is never stored, never passed to an agent and never read by the controller. If signing fails the commit call returns a tool error and no unsigned commit is made; the controller never falls back. Signing is refused for a context whose environment lets the agent reach the signing key (the BR-31 rule). The signature carries only the operator's key identity, never a run or session identifier. | Should | CAP-11, owner decision 9, FR-GIT-06 | T | M9 |
 
 ## 4. Nonfunctional requirements
 
@@ -298,7 +301,7 @@ verified* ([TDD §3.10](../design/TDD.md#310-git-commits-attribution-and-publica
 | ACP stdio client | Controller → provider | [TDD §4](../design/TDD.md#4-provider-adapter-strategy) (M4) |
 | Git (worktrees, checkpoint and published commits, push) | Controller → local repo and, under FR-GIT-05, a remote | [LLD §5](../design/LLD.md#5-workspace-and-lease-algorithm), [LLD §12](../design/LLD.md#12-injected-git-tools-commits-and-publication) |
 | Injected `commit` / `push` tools (per-run MCP channel) | Agent → controller | [LLD §12](../design/LLD.md#12-injected-git-tools-commits-and-publication) |
-| Container runtime (create, start, stop, remove; runtime not chosen, Q-6) | Controller → container runtime | [LLD §11](../design/LLD.md#11-projects-contexts-and-environments) |
+| Container runtime (create, start, stop, remove; runtime Proposed in ADR-0013) | Controller → container runtime | [LLD §11](../design/LLD.md#11-projects-contexts-and-environments) |
 | OpenTelemetry OTLP export | Controller → operator endpoint | [LLD §7](../design/LLD.md#7-telemetry-spans) |
 | Operator CLI | Operator → controller | [FRD](FRD.md) workflows |
 
@@ -306,8 +309,10 @@ verified* ([TDD §3.10](../design/TDD.md#310-git-commits-attribution-and-publica
 
 Persistent entities (schema owned by [LLD §1](../design/LLD.md#1-data-model)): `meta_session`, `provider_binding`,
 `run`, `run_event`, `decision`, `artifact`, `workspace_checkpoint`, `usage_observation`, `provider_health`,
-`route_decision`, `adapter_version`, `approval`, plus (M9) `git_commit` (provenance, FR-GIT-07). Project definitions
-live in the configuration file, not the ledger, and are snapshotted into each run (FR-PRJ-01). All live in one SQLite
+`route_decision`, `adapter_version`, `approval`, plus (M9) `git_commit` (provenance, FR-GIT-07) and `project_revision`
+(FR-PRJ-10). Project definitions
+live in the configuration file, or, for projects an orchestrator created (FR-PRJ-10), in the ledger as append-only
+`project_revision` rows, and are snapshotted into each run (FR-PRJ-01). All live in one SQLite
 database in the operator's data directory ([ADR-0005](../adr/0005-sqlite-ledger.md)); artifacts are files addressed by
 SHA-256 under the same directory.
 
@@ -328,5 +333,5 @@ Requirement → milestone mapping is in the tables above; milestone → requirem
 | CAP-7 Capacity and backpressure | FR-CAP-01–07, FR-MCP-02, FR-ADP-10 |
 | CAP-8 Telemetry and audit | FR-TEL-01–04, NFR-OBS-01 |
 | CAP-9 Operator CLI | FR-OPS-01–05, FR-PRJ-08 |
-| CAP-10 Projects, contexts and environments | FR-PRJ-01–09 |
-| CAP-11 Controlled commits and publication | FR-GIT-01–09, FR-WS-05 |
+| CAP-10 Projects, contexts and environments | FR-PRJ-01–10 |
+| CAP-11 Controlled commits and publication | FR-GIT-01–10, FR-WS-05 |

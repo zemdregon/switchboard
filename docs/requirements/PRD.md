@@ -53,7 +53,7 @@ Priorities are MoSCoW as in [SRS §1](SRS.md#1-conventions). Milestones are defi
 
 Deferred capabilities, tracked in [ROADMAP §8](../ROADMAP.md#8-deferred-and-excluded-work): read-only usage dashboard
 (FR-TEL-04), upstream ACP server, learned routing (FR-RTE-05), OpenCode persistent service transport (FR-EXE-04), native
-Windows support (NFR-PORT-03), orchestrator-created projects, context kinds other than repositories, and multi-user or
+Windows support (NFR-PORT-03), context kinds other than repositories, and multi-user or
 hosted operation.
 
 ## 4. Use cases and user journeys
@@ -218,9 +218,9 @@ The following are out of scope. Sources: the stated intent in [R1], [ADR-0003](.
 - **Automatic merge into operator branches, and any push that is not policy-gated.** Results arrive as controller-owned
   branches and diffs; pushing happens only through the injected tool or an operator command, under a context policy that
   defaults to no push (FR-WS-05, FR-GIT-05). Agents never push or commit themselves (FR-GIT-01).
-- **Orchestrator-created projects, containers on arbitrary images and non-repository contexts**, for now. Projects are
-  defined by the operator; only `repository` contexts exist (FR-PRJ-02); the orchestrator can reference but not create
-  projects (Q-7).
+- **Containers on arbitrary images and non-repository contexts**, for now. Only `repository` contexts exist
+  (FR-PRJ-02). An orchestrator may create projects (FR-PRJ-10) but only within its client's limits, and a `container`
+  or push-enabled project waits for operator approval.
 - **Attribution inside file contents.** The controller keeps agent attribution out of commits (FR-GIT-04); it does not
   rewrite what an agent writes into source files.
 - **Windows**, for now (NFR-PORT-03, deferred).
