@@ -1,0 +1,383 @@
+/**
+ * Codex CLI adapter (T2.2, TDD §4.2, LLD §2). Native surface: `codex exec --json` (JSONL) and
+ * `codex exec resume <SESSION_ID>` (R2). Every native spelling lives in ./protocol.ts with its citation or an
+ * **Assumption** marker. The adapter never reads Codex credential or config files, never runs login, never writes
+ * provider configuration and never emits a bypass flag (FR-AUTH-01/02, FR-POL-03, FR-POL-08).
+ */
+import { accessSync, constants, statSync } from "node:fs";
+import { delimiter, isAbsolute, join } from "node:path";
+import {
+  DEFAULT_IDLE_MS,
+  DEFAULT_KILL_GRACE_MS,
+  DEFAULT_MAX_LINE_BYTES,
+  DEFAULT_WALL_CLOCK_MS,
+} from "../../exec/index.js";
+import { classifyCommon } from "../failure.js";
+import { parseVersion } from "../manifest/index.js";
+import type {
+  AcpMessage,
+  AuthResult,
+  CompileRequest,
+  ExitInfo,
+  FailureClassification,
+  FailureEvidence,
+  Ineligible,
+  Invocation,
+  NativeBinding,
+  NormalizedEvent,
+  ParseState,
+  ProbeResult,
+  ProbeRunner,
+  ProviderAdapter,
+  ResolvedProfile,
+  RunResult,
+} from "../types.js";
+import {
+  AUTH_UNKNOWN_REASON,
+  CODEX_BINARY,
+  ERROR_CODE_CATEGORIES,
+  EVENT,
+  EXEC_SUBCOMMAND,
+  HELP_FLAG,
+  IGNORE_RULES_FLAG,
+  IGNORE_USER_CONFIG_FLAG,
+  ITEM,
+  JSON_FLAG,
+  RESUME_SUBCOMMAND,
+  SANDBOX_FLAG,
+  SANDBOX_READ_ONLY,
+  SANDBOX_WORKSPACE_WRITE,
+  STATUS_DECLINED,
+  VERSION_FLAG,
+} from "./protocol.js";
+
+/**
+ * Environment names passed through to Codex (FR-EXE-07, NFR-SEC-02). Proposed: PATH for the binary and HOME so the
+ * CLI can find its own saved login (R2: saved CLI authentication is reused by `codex exec`; the auth file lives under
+ * the home directory). `OPENAI_API_KEY`/`CODEX_API_KEY` are deliberately excluded (R2: do not expose them broadly).
+ */
+export const CODEX_ENV_ALLOWLIST: readonly string[] = ["PATH", "HOME"];
+
+/** Proposed bounds. */
+const PROBE_TIMEOUT_MS = 10_000;
+const MAX_SUMMARY_CHARS = 2_000;
+const MAX_TARGET_CHARS = 512;
+/** Native ids are passed as one argv element; refuse anything that could be read as a flag (Proposed). */
+const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+
+/** Profiles the Codex adapter compiles in M2 (FR-POL-01); the rest arrive with M3. */
+const SUPPORTED_PROFILES = new Set(["inspect-untrusted", "edit-untrusted"]);
+
+export interface CodexAdapterOptions {
+  /** Absolute path of the codex binary. Defaults to the first executable `codex` on PATH, resolved once. */
+  executable?: string;
+  /**
+   * Test-only: arguments inserted between the executable and `exec` (recorded-fixture replay runs `node replay.mjs
+   * <fixture>` in place of the binary). Empty in production.
+   */
+  launcherArgs?: readonly string[];
+  timeouts?: Partial<Invocation["timeouts"]>;
+  /** PATH used to resolve `codex` when `executable` is absent. Defaults to process.env.PATH. */
+  pathEnv?: string;
+}
+
+type Json = Record<string, unknown>;
+type ProviderErrorEvent = Extract<NormalizedEvent, { kind: "provider_error" }>;
+const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+const obj = (v: unknown): Json | undefined =>
+  typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Json) : undefined;
+const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
+
+/** First executable regular file named `name` on `pathEnv`, as an absolute path. */
+export function resolveOnPath(name: string, pathEnv: string | undefined): string | undefined {
+  for (const dir of (pathEnv ?? "").split(delimiter)) {
+    if (!dir || !isAbsolute(dir)) continue;
+    const candidate = join(dir, name);
+    try {
+      if (!statSync(candidate).isFile()) continue;
+      accessSync(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // not here
+    }
+  }
+  return undefined;
+}
+
+const ineligible = (reason: Ineligible["reason"], detail: string): Ineligible => ({ ineligible: true, reason, detail });
+
+export class CodexAdapter implements ProviderAdapter {
+  readonly id = "codex" as const;
+  readonly transports = ["subprocess-jsonl"] as const;
+  readonly #exe: string | undefined;
+  readonly #launcher: readonly string[];
+  readonly #timeouts: Invocation["timeouts"];
+
+  constructor(opts: CodexAdapterOptions = {}) {
+    this.#exe = opts.executable ?? resolveOnPath(CODEX_BINARY, opts.pathEnv ?? process.env.PATH);
+    this.#launcher = [...(opts.launcherArgs ?? [])];
+    this.#timeouts = {
+      wallClockMs: DEFAULT_WALL_CLOCK_MS,
+      idleMs: DEFAULT_IDLE_MS,
+      killGraceMs: DEFAULT_KILL_GRACE_MS,
+      ...opts.timeouts,
+    };
+  }
+
+  /**
+   * FR-ADP-02 steps 1-5. Version and help output are probe evidence only (never session/status/usage, FR-ADP-04).
+   * Step 7 (structured-output smoke test) is not run: for Codex it would be a model call, which probe must not make;
+   * the operator's opt-in live smoke test covers it.
+   */
+  async probe(runner: ProbeRunner): Promise<ProbeResult> {
+    const exe = this.#exe;
+    if (exe === undefined) {
+      return {
+        binaryPath: CODEX_BINARY,
+        binaryVersion: null,
+        steps: [{ step: "binary", ok: false, detail: `${CODEX_BINARY} not found on PATH` }],
+      };
+    }
+    const run = (...args: string[]) => runner([exe, ...this.#launcher, ...args], { timeoutMs: PROBE_TIMEOUT_MS });
+    const ver = await run(VERSION_FLAG);
+    const binaryOk = ver.spawnError === undefined && !ver.timedOut && ver.exitCode === 0;
+    const line =
+      ver.stdout
+        .split("\n")
+        .find((l) => l.trim() !== "")
+        ?.trim() ?? "";
+    const version = binaryOk && parseVersion(line) ? line : null;
+    const steps: ProbeResult["steps"] = [
+      { step: "binary", ok: binaryOk, ...(binaryOk ? {} : { detail: ver.spawnError ?? `exit ${ver.exitCode}` }) },
+      { step: "version", ok: version !== null, ...(version === null ? { detail: "no parseable version" } : {}) },
+    ];
+    if (!binaryOk) return { binaryPath: exe, binaryVersion: null, steps };
+
+    const help = await run(EXEC_SUBCOMMAND, HELP_FLAG);
+    const commandOk = help.spawnError === undefined && !help.timedOut && help.exitCode === 0;
+    const flags = new Set(commandOk ? (help.stdout.match(/--[a-z][a-z0-9-]*/g) ?? []) : []);
+    const missing = [SANDBOX_FLAG, IGNORE_USER_CONFIG_FLAG, IGNORE_RULES_FLAG].filter((f) => !flags.has(f));
+    steps.push(
+      { step: "command", ok: commandOk, ...(commandOk ? {} : { detail: `\`${EXEC_SUBCOMMAND}\` unavailable` }) },
+      { step: "output_format", ok: flags.has(JSON_FLAG), ...(flags.has(JSON_FLAG) ? {} : { detail: JSON_FLAG }) },
+      {
+        step: "flags",
+        ok: missing.length === 0,
+        ...(missing.length ? { detail: `missing ${missing.join(" ")}` } : {}),
+      },
+    );
+    return { binaryPath: exe, binaryVersion: version, steps };
+  }
+
+  /**
+   * FR-AUTH-02: R2 and TDD §4.2 document no Codex auth status command, so the adapter runs nothing and returns
+   * UNKNOWN (ineligible, NFR-SEC-06) with the operator instruction. It never reads `~/.codex/auth.json` or any other
+   * file and never starts a login. A headless run that fails with a structured auth error still ends AUTH_REQUIRED
+   * through classifyFailure.
+   */
+  async authPreflight(_runner: ProbeRunner): Promise<AuthResult> {
+    return { state: "UNKNOWN", reason: AUTH_UNKNOWN_REASON };
+  }
+
+  compile(request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible {
+    return this.#build(request, profile, []);
+  }
+
+  /** FR-SES-03: `codex exec resume <SESSION_ID>` with the stored native id (R2; explicit id preferred over `--last`). */
+  resumeArgs(binding: NativeBinding, request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible {
+    if (binding.provider !== "codex") return ineligible("CAPABILITY_MISSING", `binding is for ${binding.provider}`);
+    if (!SESSION_ID_RE.test(binding.nativeSessionId)) {
+      return ineligible("CAPABILITY_MISSING", "native session id is not a safe single argument");
+    }
+    // Assumption: exec-level flags precede `resume <id>`, and the follow-up prompt is read from stdin as for `exec`.
+    return this.#build(request, profile, [RESUME_SUBCOMMAND, binding.nativeSessionId]);
+  }
+
+  /** Pure. Profile compilation is Proposed (TDD §4.2); anything not satisfiable is Ineligible, never downgraded. */
+  #build(request: CompileRequest, profile: ResolvedProfile, tail: string[]): Invocation | Ineligible {
+    if (profile.name === "privileged" || profile.bypassApproved) {
+      return ineligible("PROFILE_UNSUPPORTED", "Codex adapter never compiles privileged or bypass-approved runs");
+    }
+    if (!SUPPORTED_PROFILES.has(profile.name)) {
+      return ineligible("PROFILE_UNSUPPORTED", `${profile.name} is not compiled for Codex before M3`);
+    }
+    if (profile.fileAccess === "scoped") return ineligible("PROFILE_UNSUPPORTED", "scoped file access");
+    if (profile.shell !== "none" && profile.shell !== "allowlist") {
+      return ineligible("PROFILE_UNSUPPORTED", `shell=${profile.shell} is not compiled for Codex before M3`);
+    }
+    // Assumption: Codex sandbox modes keep network off; R2 documents no network switch, so only `off` compiles.
+    if (profile.network !== "off") return ineligible("CAPABILITY_MISSING", "no documented Codex network allowlist");
+    // R2/TDD §4.2 name no model-selection flag; never silently run a different model.
+    if (request.model !== undefined) return ineligible("CAPABILITY_MISSING", "no documented Codex model flag");
+    if (this.#exe === undefined) return ineligible("CAPABILITY_MISSING", `${CODEX_BINARY} not found on PATH`);
+
+    const readOnly =
+      profile.name === "inspect-untrusted" || profile.fileAccess === "read-only" || !request.workspace.writable;
+    const policyFlags = [
+      SANDBOX_FLAG,
+      readOnly ? SANDBOX_READ_ONLY : SANDBOX_WORKSPACE_WRITE,
+      IGNORE_USER_CONFIG_FLAG, // FR-POL-04/08: no host config changes the contract; nothing is written
+      IGNORE_RULES_FLAG,
+    ];
+    return {
+      transport: "subprocess-jsonl",
+      // Assumption: with no positional prompt, `codex exec` reads the prompt from stdin.
+      argv: [this.#exe, ...this.#launcher, EXEC_SUBCOMMAND, JSON_FLAG, ...policyFlags, ...tail],
+      env: {},
+      envAllowlist: [...CODEX_ENV_ALLOWLIST],
+      cwd: request.workspace.cwd,
+      stdin: { kind: "text", value: request.objective },
+      outputFormat: "jsonl",
+      timeouts: { ...this.#timeouts },
+      policyFlags,
+      expectedExitCodes: [0],
+      maxLineBytes: DEFAULT_MAX_LINE_BYTES,
+    };
+  }
+
+  /** One JSONL line -> normalized events. Structured fields only (FR-ADP-04); reasoning text is dropped. */
+  parseEvent(input: string | AcpMessage, state: ParseState): NormalizedEvent[] {
+    if (typeof input !== "string") return []; // no ACP transport for Codex
+    state.lines += 1;
+    let doc: unknown;
+    try {
+      doc = JSON.parse(input);
+    } catch {
+      return []; // the supervisor ends the run OUTPUT_PROTOCOL_ERROR on unparseable framing
+    }
+    const e = obj(doc);
+    const type = str(e?.type);
+    if (e === undefined || type === undefined) return this.#unknown(state, "none");
+    switch (type) {
+      case EVENT.threadStarted: {
+        const id = str(e.thread_id);
+        if (id === undefined || id === "") return this.#unknown(state, type);
+        state.nativeSessionId = id;
+        return [{ kind: "session_bound", nativeSessionId: id }];
+      }
+      case EVENT.turnStarted:
+        return [];
+      case EVENT.turnCompleted: {
+        const usage = obj(e.usage);
+        const out: NormalizedEvent[] = [];
+        if (usage) {
+          const metrics: Record<string, number | string | null> = {};
+          for (const [k, v] of Object.entries(usage)) if (typeof v === "number") metrics[k] = v;
+          out.push({ kind: "usage", source: "provider_reported", metrics });
+        }
+        out.push({ kind: "result", ok: true });
+        return out;
+      }
+      case EVENT.turnFailed:
+        return [this.#error(obj(e.error)), { kind: "result", ok: false }];
+      case EVENT.error:
+        return this.#errorEvents(e);
+      case EVENT.itemStarted:
+      case EVENT.itemUpdated:
+        return []; // actions are recorded once, on completion
+      case EVENT.itemCompleted:
+        return this.#item(obj(e.item), state);
+      default:
+        return this.#unknown(state, type);
+    }
+  }
+
+  #unknown(state: ParseState, rawType: string): NormalizedEvent[] {
+    state.unknownEvents += 1;
+    return [{ kind: "unknown", rawType }];
+  }
+
+  #error(err: Json | undefined): ProviderErrorEvent {
+    const code = str(err?.code);
+    const category = (code !== undefined ? ERROR_CODE_CATEGORIES[code] : undefined) ?? "unknown";
+    return { kind: "provider_error", category, message: clip(str(err?.message) ?? "", MAX_SUMMARY_CHARS) };
+  }
+
+  #errorEvents(err: Json): NormalizedEvent[] {
+    const ev = this.#error(err);
+    if (ev.category === "rate_limit") return [{ kind: "rate_limit", reportedCategory: str(err.code) ?? "" }, ev];
+    if (ev.category === "sandbox") return [{ kind: "sandbox_violation", detail: ev.message }, ev];
+    return [ev];
+  }
+
+  #item(item: Json | undefined, state: ParseState): NormalizedEvent[] {
+    const type = str(item?.type);
+    if (item === undefined || type === undefined) return this.#unknown(state, "item:none");
+    const declined = str(item.status) === STATUS_DECLINED;
+    const call = (tool: "read" | "edit" | "shell" | "other", name: string, target?: string): NormalizedEvent[] => {
+      const ev: NormalizedEvent = {
+        kind: "tool_call",
+        tool,
+        name,
+        ...(target ? { target: clip(target, MAX_TARGET_CHARS) } : {}),
+        ...(declined ? { denied: true } : {}),
+      };
+      return declined ? [ev, { kind: "permission_denied", tool: name }] : [ev];
+    };
+    switch (type) {
+      case ITEM.agentMessage:
+        return [{ kind: "message", role: "assistant", text: clip(str(item.text) ?? "", MAX_SUMMARY_CHARS) }];
+      case ITEM.reasoning:
+      case ITEM.todoList:
+        return []; // not observable actions (NFR-PRIV-02)
+      case ITEM.commandExecution:
+        return call("shell", ITEM.commandExecution, str(item.command));
+      case ITEM.fileChange: {
+        const changes = Array.isArray(item.changes) ? item.changes : [];
+        const paths = changes.map((c) => str(obj(c)?.path)).filter((p): p is string => p !== undefined);
+        if (paths.length === 0) return call("edit", ITEM.fileChange);
+        return paths.flatMap((p) => call("edit", ITEM.fileChange, p));
+      }
+      case ITEM.mcpToolCall:
+        return call("other", `mcp:${str(item.server) ?? "?"}/${str(item.tool) ?? "?"}`);
+      case ITEM.webSearch:
+        return call("other", ITEM.webSearch);
+      case ITEM.error:
+        return this.#errorEvents(item);
+      default:
+        return this.#unknown(state, `item:${type}`);
+    }
+  }
+
+  extractResult(events: readonly NormalizedEvent[], exit: ExitInfo): RunResult {
+    const unknownEventCount = events.filter((e) => e.kind === "unknown").length;
+    const bound = events.findLast((e) => e.kind === "session_bound");
+    const nativeSessionId = bound?.kind === "session_bound" ? bound.nativeSessionId : undefined;
+    const lastMessage = events.findLast((e) => e.kind === "message");
+    const summary = lastMessage?.kind === "message" && lastMessage.text ? lastMessage.text : undefined;
+    const final = events.findLast((e) => e.kind === "result");
+    const base = {
+      unknownEventCount,
+      ...(nativeSessionId ? { nativeSessionId } : {}),
+      ...(summary ? { summary } : {}),
+    };
+    // Proposed, fail closed: any error, denial or sandbox event fails the run even if a later turn completed.
+    const clean =
+      exit.outcome === "exited" &&
+      exit.exitCode !== null &&
+      exit.expectedExitCodes.includes(exit.exitCode) &&
+      final?.kind === "result" &&
+      final.ok &&
+      !events.some(
+        (e) =>
+          e.kind === "provider_error" ||
+          e.kind === "permission_denied" ||
+          e.kind === "sandbox_violation" ||
+          e.kind === "rate_limit",
+      );
+    if (clean) return { ok: true, ...base };
+    const c = this.classifyFailure({
+      events,
+      exit,
+      stderrTail: "",
+      timedOut: exit.outcome === "timeout",
+      cancelled: exit.outcome === "cancelled",
+    });
+    return { ok: false, failureCode: c.code, failureDetail: c.detail, ...base };
+  }
+
+  /** Shared precedence (failure.ts); native error codes are already normalized to the shared categories. */
+  classifyFailure(evidence: FailureEvidence): FailureClassification {
+    return classifyCommon(evidence);
+  }
+}

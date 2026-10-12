@@ -1,0 +1,6 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written, not recorded from a real codex binary. Event and field names are Assumptions (R2 names only thread, turn, item, error and token-usage event families; TDD 4.2).","exit":1}}
+{"type":"thread.started","thread_id":"synthetic-thread-0007"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"touch /etc/outside","status":"failed","exit_code":1}}
+{"type":"error","message":"SYNTHETIC: write outside the workspace blocked by sandbox","code":"sandbox_denied"}
+{"type":"turn.failed","error":{"message":"SYNTHETIC: sandbox denied","code":"sandbox_denied"}}
