@@ -17,6 +17,7 @@
     "lint": "biome check .",
     "format": "biome format --write .",
     "test": "vitest run",
+    "test:live": "npm run build && node scripts/live-smoke.mjs",
     "check-docs": "node scripts/check-docs.mjs"
   },
   "devDependencies": {
