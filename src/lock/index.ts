@@ -1,4 +1,4 @@
-import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import path from "node:path";
 
 export class LockError extends Error {
@@ -88,4 +88,21 @@ export function acquireDataDirLock(dataDir: string, pid: number = process.pid): 
     }
   }
   throw new LockError(`Could not acquire lock ${lockPath}: lost a race with another process`);
+}
+
+export type LockStatus =
+  | { state: "free" }
+  | { state: "held"; pid: number; lockPath: string }
+  | { state: "stale"; pid: number | undefined; lockPath: string };
+
+/**
+ * Read-only lock inspection for the operator CLI (T1.10): never creates, replaces or removes the lock file. `held`
+ * means the recorded PID is alive (Proposed: same liveness rule as {@link acquireDataDirLock}).
+ */
+export function inspectDataDirLock(dataDir: string): LockStatus {
+  const lockPath = path.join(dataDir, LOCK_FILE_NAME);
+  if (!existsSync(lockPath)) return { state: "free" };
+  const pid = readPid(lockPath);
+  if (pid !== undefined && pidAlive(pid)) return { state: "held", pid, lockPath };
+  return { state: "stale", pid, lockPath };
 }
