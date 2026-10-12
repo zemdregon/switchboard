@@ -16,7 +16,7 @@ import { currentSchemaVersion, LEDGER_FILE_NAME, MIGRATIONS } from "../ledger/in
 import { inspectDataDirLock } from "../lock/index.js";
 import { gitText, parseGitVersion, versionAtLeast } from "../workspace/git.js";
 import { MIN_GIT_VERSION } from "../workspace/index.js";
-import { type CliIo, JSON_SCHEMA_VERSION } from "./io.js";
+import { type CliIo, JSON_SCHEMA_VERSION, PROBE_ENV_ALLOWLIST } from "./io.js";
 
 /** Minimum Node major from package.json `engines` (>=22). */
 export const MIN_NODE_MAJOR = 22;
@@ -124,7 +124,7 @@ const ADAPTER_LABELS: Readonly<Record<string, string>> = {
 };
 
 async function probeAdapters(registry: AdapterRegistry): Promise<DoctorAdapterReport[]> {
-  const runner = createProbeRunner();
+  const runner = createProbeRunner(PROBE_ENV_ALLOWLIST);
   const out: DoctorAdapterReport[] = [];
   for (const a of registry.list()) {
     const kind = a.id === "fake" ? "fake" : "real";

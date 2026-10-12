@@ -33,7 +33,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, type CallToolResult, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { ErrorObject, ValidateFunction } from "ajv";
 import { Ajv2020 } from "ajv/dist/2020.js";
-import { type AdapterRegistry, isIneligible, type ProviderId } from "../adapters/index.js";
+import { type AdapterRegistry, isIneligible, type ProviderId, type ResolvedProfile } from "../adapters/index.js";
 import type { ArtifactStore } from "../artifacts/index.js";
 import type { ResolvedConfig } from "../config/index.js";
 import type { Ledger, RunRecord, TrustProfile } from "../ledger/index.js";
@@ -389,6 +389,12 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     if (adapter && probed) {
       for (const p of TRUST_PROFILE_ORDER) {
         if (p === "privileged") continue; // never grantable through MCP (FR-MCP-06)
+        let profile: ResolvedProfile;
+        try {
+          profile = lifecycle.resolveProfile(p);
+        } catch {
+          continue; // COMP-POL does not resolve this profile in this version (src/policy): unsupported, fail closed
+        }
         const inv = adapter.compile(
           {
             runId: "capability-check",
@@ -396,7 +402,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
             constraints: [],
             workspace: { cwd, writable: p !== "inspect-untrusted" },
           },
-          lifecycle.resolveProfile(p),
+          profile,
         );
         if (!isIneligible(inv)) supported.push(p);
       }

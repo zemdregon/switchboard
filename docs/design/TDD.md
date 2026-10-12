@@ -150,11 +150,36 @@ startup reconciliation applies them. Run state transitions use an optimistic ver
 | Fault injection | Kill controller with `SIGKILL` at each transition boundary (named crash points), restart, assert ledger consistency and terminal/resumed state | No | NFR-REL-01, FR-EXE-06 |
 | Malicious fixture repos (M3, M4) | Repos with prompt-injection files, repo hooks, repo MCP definitions, credential-path reads, out-of-worktree writes, network attempts, run per enabled adapter | Needed for adapter-level proof; sandbox-level parts can run without | NFR-SEC-03 |
 | MCP contract | Schema validation, error envelope, idempotency, `wait_seconds` bounds via an in-process MCP client | No | FR-MCP-* |
-| Live provider smoke | Opt-in only; skipped unless an environment variable is set (name Proposed: `SWITCHBOARD_LIVE_TESTS=1`); never runs in CI by default | Yes | [AGENTS.md](../../AGENTS.md) |
+| `serve` process tests (M2) | Spawn `switchboard serve` as a child with a temp config and data dir, drive it with an MCP stdio client: delegate → SUCCEEDED, stdout carries only MCP framing, a second `serve` on the same data dir fails, `SIGKILL` mid-run then restart ends the run `FAILED/PROCESS_CRASH` with no orphan (`src/cli/serve.test.ts`). The fake adapter is reachable only through the test-only switch below | No | FR-OPS-01, FR-EXE-06, NFR-REL-01 |
+| Live provider smoke | Opt-in only: `scripts/live-smoke.mjs` (`npm run test:live`) is skipped unless `SWITCHBOARD_LIVE_TESTS=1`; not part of `npm test`, never runs in CI (see below) | Yes | [AGENTS.md](../../AGENTS.md) |
 | Docs check | `scripts/check-docs.mjs` must pass on every change (links, anchors, ID references) | No | NFR-MAINT-02 |
 
 Principles: tests pass with no provider CLI installed or logged in; secret-pattern scan over all test outputs
 (NFR-SEC-01); coverage targets are not set until M1 measurement (no number proposed).
+
+**Test-only fake adapter in `serve` (Proposed, T2.6).** `serve` registers the fake adapter only when the environment
+variable `SWITCHBOARD_TEST_FAKE_ADAPTER` equals the exact sentinel `enable-test-only-fake-adapter` (scenario from
+`SWITCHBOARD_TEST_FAKE_SCENARIO`, default `success`). Any other non-empty value refuses to start, the config schema has
+no key or provider id that can enable it, and `serve` logs a warning on stderr when it is on. Production registers
+`claude` and `codex` only.
+
+**Running the live smoke test (operator, T2.6).** With the provider CLI installed and logged in natively (Switchboard
+never logs in for you):
+
+```sh
+SWITCHBOARD_LIVE_TESTS=1 SWITCHBOARD_LIVE_PROVIDER=claude npm run test:live   # or SWITCHBOARD_LIVE_PROVIDER=codex
+```
+
+It builds, creates a throwaway Git repository and data directory under the system temp directory, starts the real
+`switchboard serve` over stdio, runs one `edit-untrusted` task ("create `SMOKE.md`") against the operator's own CLI and
+prints: probe and version-gate results, the compiled policy flags with a bypass-flag audit, the auth status shape (exit
+code and key names only, never values), the run's terminal state, the native event types seen, and a HELD / FAILED /
+NOT_CHECKED line for each adapter Assumption tracked by [ROADMAP](../ROADMAP.md#7-risks-blockers-and-open-questions)
+R-13, R-14 and Q-9. It never reads or prints credentials or prompt/response text. Optional: `SWITCHBOARD_LIVE_TIMEOUT_MS`
+(default 600000) and `SWITCHBOARD_LIVE_KEEP=1` (keep the temp directory with the ledger, artifacts and `serve` log).
+Exit code 0 means the run succeeded and no checked Assumption failed. With the current manifests Codex is expected to be
+refused at eligibility (`ADAPTER_VERSION_UNVERIFIED` and auth `UNKNOWN`, Q-6 and Q-8); the script still reports the
+probe-level Assumptions.
 
 ### 3.7 Packaging and release
 
