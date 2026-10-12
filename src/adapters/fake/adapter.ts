@@ -37,7 +37,9 @@ export type FakeScenario =
   | "partial_mutation"
   | "malformed_output"
   | "hang"
-  | "hang_ignore_term";
+  | "hang_ignore_term"
+  /** Benign: reports the names (not values) of its environment variables (T3.8, FR-EXE-07). */
+  | "env_report";
 
 export interface FakeAdapterOptions {
   scenario?: FakeScenario;

@@ -2,7 +2,8 @@
 // Fake provider CLI for tests (T1.7, TDD §3.6). Needs no real provider, network or credentials.
 // Usage: cli.mjs [--scenario NAME] [--resume SESSION_ID] [--version | --auth-status | --smoke]
 // Scenarios: success, task_failure, auth_missing, rate_limit, partial_mutation, malformed_output, hang,
-// hang_ignore_term. The prompt, if any, arrives on stdin and is ignored.
+// hang_ignore_term, env_report. The prompt, if any, arrives on stdin and is ignored. `env_report` lists the NAMES (never
+// the values) of the environment variables the child received, for the environment-allowlist test (T3.8, FR-EXE-07).
 import { writeFileSync } from "node:fs";
 
 // A hanging scenario must outlive a controller that died (SIGKILL): ignore EPIPE instead of crashing on a late write.
@@ -67,6 +68,11 @@ if (argv.includes("--version")) {
       begin();
       process.stdout.write("this is not json {\n");
       emit({ type: "result", ok: true, summary: "never trusted" });
+      break;
+    case "env_report":
+      begin();
+      emit({ type: "message", text: JSON.stringify({ env_names: Object.keys(process.env).sort() }) });
+      emit({ type: "result", ok: true, summary: "env reported" });
       break;
     case "hang":
     case "hang_ignore_term":
