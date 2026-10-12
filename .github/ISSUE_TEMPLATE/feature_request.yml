@@ -1,0 +1,27 @@
+name: Feature or docs request
+description: Propose a new document, a change to the research, or a feature for later
+labels: ["needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The project is at the docs stage. Proposals are welcome, but no code is planned yet.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or question
+      description: What is unclear, missing, or wrong, and who is affected?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: What should change, and in which file or section if you know it?
+    validations:
+      required: true
+  - type: textarea
+    id: sources
+    attributes:
+      label: Sources
+      description: Links to provider documentation or other evidence, with the date you checked them.
