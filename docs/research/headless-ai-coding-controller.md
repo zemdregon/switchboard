@@ -1,3 +1,6 @@
+> **Status: Superseded where it conflicts with later research (2026-10-12).**
+> This blueprint is kept as the historical record of the project's stated intent (its introduction). Its technical details on provider flags, permissions, quota accounting, session handoff, rate limiting and telemetry are superseded by [the verified research](headless-ai-coding-controller-verified-2026-10-12.md). See the conflict table in [ROADMAP §4.6](../ROADMAP.md#46-conflicts-between-sources-and-how-they-were-resolved). The text below is unchanged.
+
 # Architectural Blueprint for a Unified, Headless AI Coding Controller
 
 ## Introduction to the CLI-Native Orchestration Paradigm
