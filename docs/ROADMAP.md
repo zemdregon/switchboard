@@ -5,7 +5,7 @@
 | Status | **Canonical.** Single source of truth for scope, priorities, dependencies, sequencing, status and completion criteria. |
 | Does not own | Requirements ([SRS](requirements/SRS.md)), behaviour ([FRD](requirements/FRD.md)), design ([HLD](design/HLD.md), [SDD](design/SDD.md), [TDD](design/TDD.md), [LLD](design/LLD.md)), decision rationale ([ADRs](adr/README.md)). |
 | Last reconciled | 2026-10-12 |
-| Current milestone | M0 and M1 complete (M1 requirement gaps marked `Partial` in §6.1); **next: M2** |
+| Current milestone | M0 and M1 complete (M1 gaps `Partial` in §6.1). **M2: `Partial`**: T2.1 to T2.8 are implemented and tested on fakes and synthetic fixtures; not `Done` until the operator's live smoke run, a recorded Codex version and the NFR-PERF-02 decision (§6.2, §6.2.1, §9) |
 
 ## 1. How to use this roadmap
 
@@ -172,7 +172,7 @@ set. Sizes are not estimated.
 | --- | --- | --- | --- | --- | --- | --- |
 | M0 | Documentation baseline | In progress (this change); Done on merge | — | NFR-MAINT-02, NFR-COMP-01 | Document set in §5 exists; `node scripts/check-docs.mjs` passes; AGENTS.md points here | Docs check script; review |
 | M1 | Foundation | **Done** (2026-10-12): every acceptance criterion has a passing test (166 tests locally); first CI run unconfirmed; requirement gaps marked `Partial` in §6.1 | M0 | FR-ADP-01, FR-AUTH-01, FR-POL-10, FR-WS-01–06, FR-SES-01, 02 (schema), 05 (events), FR-CAP-04 (queue, global limit), FR-EXE-01, 02, 05–07, FR-SES-06, FR-TEL-01, 03, FR-OPS-01 (`doctor`, `runs`), 03, 04, NFR-SEC-01, 02, 04–06, NFR-REL-01–02, NFR-PERF-03 (global), NFR-PORT-01, NFR-PRIV-01 | A fake provider CLI runs through the full lifecycle transactionally; cancel kills the process tree; `SIGKILL` of the controller mid-run followed by restart leaves a consistent ledger; a failed run that mutated files is rolled back, not replayed; CI green on Linux | Automated integration and fault-injection tests in CI; evidence in §6.1 |
-| M2 | Claude Code and Codex adapters + MCP vertical slice | In progress (T2.1, T2.2 done on fixtures; see §6.2) | M1 | FR-MCP-01, 03–09, FR-ADP-02–04, 06, 11 (Claude Code, Codex), FR-POL-01 (two profiles), 02–05, 07, 08, FR-AUTH-02, FR-SES-03 (Claude Code, Codex), FR-RTE-01 (eligibility), FR-CAP-01 (record), FR-OPS-01 (`serve`), NFR-PERF-01, 02, NFR-OBS-01, NFR-PRIV-02, NFR-MAINT-03 | For each of Claude Code and Codex, a scripted MCP client delegates an edit task under `edit-untrusted`, polls to `SUCCEEDED`, retrieves a diff artifact and continues the same native session; a new user following the README reaches a passing `doctor`; missing login yields `AUTH_REQUIRED`; unknown CLI version yields `ADAPTER_VERSION_UNVERIFIED`; no bypass flag appears in any compiled invocation | Conformance suite on recorded fixtures in CI; one opt-in live smoke test run by the operator; argv inspection test |
+| M2 | Claude Code and Codex adapters + MCP vertical slice | **Partial** (2026-10-12): T2.1 to T2.8 implemented with tests on fakes and synthetic fixtures (353 tests locally); not `Done`, see "Blocks Done" in §6.2 | M1 | FR-MCP-01, 03–09, FR-ADP-02–04, 06, 11 (Claude Code, Codex), FR-POL-01 (two profiles), 02–05, 07, 08, FR-AUTH-02, FR-SES-03 (Claude Code, Codex), FR-RTE-01 (eligibility), FR-CAP-01 (record), FR-OPS-01 (`serve`), NFR-PERF-01, 02, NFR-OBS-01, NFR-PRIV-02, NFR-MAINT-03 | For each of Claude Code and Codex, a scripted MCP client delegates an edit task under `edit-untrusted`, polls to `SUCCEEDED`, retrieves a diff artifact and continues the same native session; a new user following the README reaches a passing `doctor`; missing login yields `AUTH_REQUIRED`; unknown CLI version yields `ADAPTER_VERSION_UNVERIFIED`; no bypass flag appears in any compiled invocation | Conformance suite on recorded fixtures in CI; one opt-in live smoke test run by the operator; argv inspection test |
 | M3 | Isolation | Planned | M2 | FR-POL-01 (all), 06, 09, FR-WS-07, FR-EXE-08, FR-OPS-02 (`approve`, `deny`), NFR-SEC-03 (Claude Code, Codex), NFR-DATA-01 | Malicious-fixture suite shows no escape for each profile on Claude Code and Codex; `privileged` runs wait for `approve` and end `CANCELLED` on `deny`; verification commands run and are recorded; retention deletes artifacts, worktrees and branches together | Malicious-fixture suite; integration tests |
 | M4 | Adapter expansion | Planned (Kimi Code part blocked by B-1) | M3 | FR-ADP-05, 07, 08, 09, 10, 11 (others), FR-EXE-03, FR-OPS-02 (`adapters validate`), NFR-SEC-03 (others), NFR-MAINT-01, NFR-PORT-02 | Grok Build, Antigravity, Cursor and OpenCode adapters pass conformance and malicious-fixture suites; the test suite passes on macOS; Kimi Code passes once B-1 clears (M4 may be marked `Partial` until then, with only Kimi outstanding); ACP transport used where it is the adapter's chosen surface; adding an adapter touched only its own module, manifest, fixtures and registry entry; `adapters validate` accepts a new CLI version only after its live checks pass | Conformance and fixture suites per adapter; diff inspection |
 | M5 | Continuity | Planned | M4 | FR-SES-02 (populated), 03 (all), 04, 05 (handoff view) | Provider A edits and tests; provider B continues from the handoff bundle and completes the task; no provider transcript file is opened (verified by file-access test) | End-to-end test with two fake adapters plus one opt-in live pair |
@@ -244,11 +244,51 @@ All other requirements in the M1 row have at least one passing test named in the
 
 ### 6.2 M2 Claude Code adapter and MCP slice: tasks
 
-Status (2026-10-12): **T2.1 done**: manifests load and an unknown version yields `ADAPTER_VERSION_UNVERIFIED`
-(`src/adapters/manifest/manifest.test.ts`); the Codex manifest range is intentionally empty (`<0.0.0`) until an
-operator records a real `codex --version`. **T2.2 done on synthetic fixtures only**: conformance and argv tests in
-`src/adapters/claude/claude.test.ts` and `src/adapters/codex/codex.test.ts`; nothing is confirmed against a live
-provider (see R-13, Q-6 to Q-9). T2.3 to T2.8 are not started or in flight elsewhere.
+Status (2026-10-12), per task. Evidence is local (`npm test`: 22 files, 353 tests, plus build, typecheck, lint and
+`node scripts/check-docs.mjs`); the first CI run on this branch is unconfirmed. Every provider-facing result below is on
+fakes or **synthetic** fixtures; nothing has run against a real Claude Code or Codex binary.
+
+| Task | Status | Evidence | Caveat |
+| --- | --- | --- | --- |
+| T2.1 | Done on fixtures | `src/adapters/manifest/manifest.test.ts` ("shipped manifests", "version gate", "AdapterRegistry.gate": unknown version yields `ADAPTER_VERSION_UNVERIFIED`); manifests in `src/adapters/manifests/` | The Codex range is intentionally empty (`<0.0.0`), so Codex fails the gate (Q-8) |
+| T2.2 | Done on synthetic fixtures only | `src/adapters/claude/claude.test.ts` ("claude compile: argv policy", "claude conformance on recorded (synthetic) fixtures", probe and auth); `src/adapters/codex/codex.test.ts` ("Codex conformance suite", "compile: argv and policy", "probe (FR-ADP-02 steps 1-5)"); [ADR-0013](adr/0013-claude-untrusted-isolation-flags.md) | Event shapes and flags unverified (R-13, R-14, Q-6, Q-9); probe skips the FR-ADP-02 smoke step |
+| T2.3 | Done | `src/routing/routing.test.ts` ("eligibility filter (T2.3, FR-RTE-01, FR-MCP-05)": disabled, ceiling, binary missing, version, no manifest, auth, capability, shell allowlist, platform, `require_provider`) | Hard constraints available in M2 only |
+| T2.4 | Done against the fake adapter and replay fixtures | `src/mcp/mcp.test.ts` ("tool surface", "vertical slice against the fake adapter", "Claude and Codex adapters on recorded replay fixtures", "validation", "per-client trust ceiling", "idempotency", "cancel_run", "dispatch-time gate") | Claude runs use replay fixtures (synthetic); Codex end to end only with test doubles for version and auth |
+| T2.5 | Done | `src/usage/usage.test.ts` ("usageObservationsFromEvents", "usage_observation ledger helpers": `provider_reported` label, append-only, no estimates); `src/mcp/mcp.test.ts` ("usage in get_run (T2.5)") | Codex usage event shape is an Assumption |
+| T2.6 | Done on fakes; live run not performed | `src/cli/serve.test.ts` (stdio framing, end to end, lock, SIGKILL reconcile, operator cancel, SIGTERM, refuses to start); `test/live-smoke.test.ts` and `scripts/live-smoke.mjs` (`npm run test:live`, skipped unless `SWITCHBOARD_LIVE_TESTS=1`) | The operator has not run the live test (see "Blocks Done") |
+| T2.7 | Done, on the fake adapter | `scripts/bench-perf.mjs` (`npm run bench`); results and findings in [TDD §3.6.1](design/TDD.md#361-controller-overhead-benchmark-t27) | Target confirmed for controller-owned work only, on a sandbox host (see §6.2.1) |
+| T2.8 | Partial | `README.md` (install, native login, config, profiles, `doctor`, serve, live smoke, troubleshooting); `doctor` behaviour in `src/cli/cli.test.ts` | "A fresh machine reaches a passing `doctor`" is verified only for the no-provider case (see "Blocks Done") |
+| Policy (cross-task) | Done | `src/policy/policy.test.ts` ("resolveProfile (COMP-POL, M2)": two profiles, frozen snapshots, no `privileged`, fail closed, no bypass flag on Claude or Codex) | FR-POL-01 (all profiles) is M3 |
+
+**Blocks Done.** M2 stays `Partial` against its acceptance criteria because:
+
+1. The opt-in live smoke test (`npm run test:live`) has not been run by the operator against real Claude Code or Codex.
+   Event shapes, error categories, flag spellings and auth behaviour are therefore unconfirmed (R-13, R-14, Q-6, Q-9),
+   and the criteria "polls to `SUCCEEDED`, retrieves a diff artifact and continues the same native session" and
+   "missing login yields `AUTH_REQUIRED`" are shown on fakes and synthetic fixtures only.
+2. The Codex manifest range is empty, so Codex cannot pass the version gate or `doctor` until an operator records a real
+   `codex --version` (Q-8). No command exists to record one: `adapters validate` is scheduled for M4 (FR-OPS-02).
+3. "A new user following the README reaches a passing `doctor`" is verified only for the no-provider case (both
+   providers `[warn]`, exit 0, which proves the environment and config only). A machine with a provider installed has
+   not been checked, and an installed Codex fails `doctor` by design today.
+
+Criteria met on fakes or fixtures: "unknown CLI version yields `ADAPTER_VERSION_UNVERIFIED`" (manifest, routing, MCP and
+`doctor` tests) and "no bypass flag appears in any compiled invocation" (argv tests in `claude.test.ts`, `codex.test.ts`,
+`policy.test.ts`).
+
+#### 6.2.1 M2 requirements that are Partial or unowned
+
+| Requirement | Status | Gap and reason |
+| --- | --- | --- |
+| NFR-PERF-02 (Must, M2) | **Not implemented; no roadmap task owns it** | Preflight (`probe`, `authPreflight`) is uncached and runs live in `delegate_task`, at dispatch and in `list_capabilities` ([TDD §3.6.1](design/TDD.md#361-controller-overhead-benchmark-t27)). T2.7 only measured it. **Proposed task for Ender to decide** (see Q-10); no milestone is assigned here |
+| NFR-PERF-01 | Partial | The proposed 2 s p95 target is confirmed for controller-owned work on the fake adapter in a sandbox container only (about 0.34 s p95 uncached); real provider probe cost and a reference machine are unmeasured |
+| NFR-SEC-04 | Partial | `serve` does not refuse to run as root and nothing records a review; still inspection-only, as in §6.1.1 |
+| FR-ADP-02 | Partial | The probes cover binary, version, command, flags and (separately) auth; the harmless structured-output smoke test (step 7) is skipped by the probes |
+| FR-ADP-03, FR-ADP-04, FR-ADP-06, FR-ADP-11 (Claude Code, Codex) | Partial | Tested on synthetic fixtures only; unconfirmed against live CLIs (R-13, R-14, Q-9) |
+| FR-AUTH-02 | Partial | Claude parses `auth status --json` (assumed shape); Codex returns `UNKNOWN` because no status command is documented, so Codex is ineligible (Q-6) |
+| FR-POL-02 (Codex) | Partial | Codex has no documented shell allowlist or model flag in the adapter's sources; it returns `Ineligible` for those requirements (Q-7, settled in M3) |
+| FR-OPS-01 (`serve`) | Partial | `serve` is implemented and tested (`src/cli/serve.test.ts`, including refusing to start when the ledger cannot be opened) but has not been run against a live provider, and has no root check (NFR-SEC-04) |
+| Compile-time `Ineligible` in the lifecycle | Partial | After preflight, `src/lifecycle/lifecycle.ts` still ends a run on an adapter `Ineligible` from `compile` with `PERMISSION_BLOCKED`, not the [FRD BR-3](requirements/FRD.md#3-business-rules) code. The eligibility filter calls `compile` earlier and uses the BR-3 codes, so this path is a race-only fallback. Not changed here |
 
 | Task | Objective | References | Depends on | Done when |
 | --- | --- | --- | --- | --- |
@@ -301,11 +341,12 @@ No blocker affects M1.
 | Q-2 | *Answered 2026-10-12:* all seven held; Claude Code and Codex first (owner decision 5). | — |
 | Q-3 | Do you prefer a language other than TypeScript? | TypeScript (ADR-0010); cheapest to change before M1 |
 | Q-4 | Which orchestrator will you use first? | Any stdio MCP client (A-4) |
-| Q-5 | `QUEUE_FULL` (bounded queue, FR-CAP-04) has no entry in the [LLD §4](design/LLD.md#4-failure-taxonomy) taxonomy; M1 raises it as an admission error before any row is written. Should it become a code (and which MCP error envelope), or map to an existing one? | Internal `LifecycleError` code `QUEUE_FULL`; to settle in T2.4 before the MCP error mapping |
+| Q-5 | `QUEUE_FULL` (bounded queue, FR-CAP-04) has no entry in the [LLD §4](design/LLD.md#4-failure-taxonomy) taxonomy. **Resolved for M2 (Proposed, Delegated; not owner-approved):** MCP maps it to `ELIGIBILITY_NONE` with `details.reason = "QUEUE_FULL"` (`src/mcp/mcp.test.ts`, "a full ingress queue maps to ELIGIBILITY_NONE with reason QUEUE_FULL"). A dedicated code needs an [LLD §4](design/LLD.md#4-failure-taxonomy) and [SRS](requirements/SRS.md) decision first | `ELIGIBILITY_NONE` with `details.reason` `QUEUE_FULL`; internal `LifecycleError` code stays `QUEUE_FULL` |
 | Q-6 | Codex auth preflight returns `UNKNOWN` because no status command is documented (R2, TDD §4.2), so Codex runs are `ELIGIBILITY_NONE` until a status mechanism is verified. Which mechanism should be used, if any? | Ineligible (fail closed, NFR-SEC-06); a structured auth error mid-run still ends `AUTH_REQUIRED` |
 | Q-7 | Codex has no documented shell allowlist or model flag in the adapter's sources, which may conflict with FR-POL-02 (and the model constraint). Settle whether Codex meets FR-POL-02 or is limited to read-only profiles | Adapter compiles only what it can express and returns `Ineligible` otherwise; to settle in M3 |
 | Q-8 | The Codex manifest range is empty, so every Codex binary is `ADAPTER_VERSION_UNVERIFIED`. Which `codex --version` will the operator validate? | Fail closed until the operator records one (T2.1 note, `adapters validate`) |
 | Q-9 | Are the Claude and Codex assumptions in R-13 and R-14 correct on real CLIs? | Unconfirmed; the opt-in live smoke test (T2.6) must confirm or correct each, and the fixtures and TDD §4.1–4.2 are updated with the result |
+| Q-10 | NFR-PERF-02 (Must, M2: cache adapter preflight, invalidate on binary version change or a configurable TTL) is unimplemented and no task owns it. Should it become a task, and in which milestone? **Proposed:** a task to add the cache in the probe and auth path used by `delegate_task`, dispatch and `list_capabilities`, with a version-change invalidation test | None; the requirement stays unmet and M2 stays `Partial` until Ender decides |
 
 ## 8. Deferred and excluded work
 
@@ -322,21 +363,28 @@ No blocker affects M1.
 
 ## 9. Next actionable milestone
 
-**M2 Claude Code and Codex adapters + MCP vertical slice.** Prerequisites: M1 is `Done` (§6). No M2 task needs a
-provider login until the opt-in live smoke test (T2.6). Items that surfaced in M1 and must be handled in M2:
+**Close M2, then M3.** M2 is `Partial` (§6, §6.2). Its code and documentation are in place; the remaining work needs the
+operator or Ender, in this order:
 
-- **Version gating (ADR-0009).** `src/adapters/registry.ts` is a skeleton with no version gating or enablement hook.
-  T2.1 and T2.2 add the manifest check, `ADAPTER_VERSION_UNVERIFIED` and enablement there, ahead of T2.3 eligibility.
-- **`QUEUE_FULL` has no failure code** in LLD §4; see Q-5. Settle it before T2.4 maps lifecycle errors to MCP errors.
-- **Idempotency keys** apply to new meta-sessions only (FRD §7.2 C6); T2.4 must not add a key to `continue_task`
-  without changing the FRD and SRS first (see the LLD §3 note).
-- **`serve`** (FR-OPS-01) must run reconciliation (`src/reconcile/`) before accepting MCP calls and call
-  `applyOperatorRequests` (`src/cli/operator.ts`) for pending operator cancels.
-- M1 `Partial` requirements in §6.1.1 (arm64 CI, secret scan beyond artifacts) should be closed alongside T2.x work.
+1. **Operator live smoke run.** Run `SWITCHBOARD_LIVE_TESTS=1 SWITCHBOARD_LIVE_PROVIDER=claude npm run test:live` (and
+   `codex`) with native logins. Record which assumptions held; correct the fixtures, TDD §4.1 to §4.2, R-13, R-14, Q-6 and
+   Q-9 with the result.
+2. **Codex version (Q-8).** Record a real `codex --version` in the Codex manifest range. There is no command for this
+   yet (`adapters validate` is M4), so it is a reviewed manifest edit that must follow a passing live check.
+3. **NFR-PERF-02 decision (Q-10).** Ender decides whether and where the preflight cache is scheduled.
+4. Re-run `doctor` on a machine with a provider installed and update the "Blocks Done" list in §6.2.
+
+Then start **M3 Isolation** (§6), breaking it into tasks first (§9.1). Notes carried from M2:
+
+- **`QUEUE_FULL`** maps to `ELIGIBILITY_NONE` with a reason (Q-5, Proposed); a dedicated code needs an LLD §4 and SRS change.
+- **Idempotency keys** apply to new meta-sessions only (FRD §7.2 C6); `continue_task` rejects a key.
+- **Compile-time `Ineligible`** in the lifecycle still ends `PERMISSION_BLOCKED` (§6.2.1).
+- M1 `Partial` requirements in §6.1.1 (arm64 CI, secret scan beyond artifacts) remain open, as does NFR-SEC-04 for `serve`.
 
 ### 9.1 How an agent picks up work
 
-1. Read [AGENTS.md](../AGENTS.md), then this roadmap's §6 to find the first milestone whose status is not `Done`.
+1. Read [AGENTS.md](../AGENTS.md), then this roadmap's §6 to find the first milestone whose status is not `Done`. A
+   `Partial` milestone is closed from its "Blocks Done" list before the next one starts.
 2. Take the first task in that milestone's task table whose dependencies are done. If the milestone has no task table
    yet (M3 onward), break it into tasks in the same format first, from its row in §6 and the requirements it lists, and
    add them here before coding.

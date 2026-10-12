@@ -14,6 +14,7 @@ import {
 import { loadConfig, type ResolvedConfig } from "../config/index.js";
 import { currentSchemaVersion, LEDGER_FILE_NAME, MIGRATIONS } from "../ledger/index.js";
 import { inspectDataDirLock } from "../lock/index.js";
+import { CONFIG_TO_ADAPTER_ID } from "../routing/index.js";
 import { gitText, parseGitVersion, versionAtLeast } from "../workspace/git.js";
 import { MIN_GIT_VERSION } from "../workspace/index.js";
 import { type CliIo, JSON_SCHEMA_VERSION, PROBE_ENV_ALLOWLIST } from "./io.js";
@@ -123,12 +124,37 @@ const ADAPTER_LABELS: Readonly<Record<string, string>> = {
   codex: "Codex (real provider)",
 };
 
-async function probeAdapters(registry: AdapterRegistry): Promise<DoctorAdapterReport[]> {
+/**
+ * `providers.<config id>.enabled: false` disables a provider (default on). Doctor reports it as skipped without
+ * running it. The fake adapter and adapters with no config id are always probed, as before.
+ */
+function isDisabledInConfig(cfg: ResolvedConfig | undefined, adapterId: string): boolean {
+  if (cfg === undefined) return false;
+  const configId = (Object.keys(CONFIG_TO_ADAPTER_ID) as (keyof typeof CONFIG_TO_ADAPTER_ID)[]).find(
+    (k) => CONFIG_TO_ADAPTER_ID[k] === adapterId,
+  );
+  return configId !== undefined && cfg.providers.get(configId)?.enabled === false;
+}
+
+async function probeAdapters(registry: AdapterRegistry, cfg?: ResolvedConfig): Promise<DoctorAdapterReport[]> {
   const runner = createProbeRunner(PROBE_ENV_ALLOWLIST);
   const out: DoctorAdapterReport[] = [];
   for (const a of registry.list()) {
     const kind = a.id === "fake" ? "fake" : "real";
     const label = ADAPTER_LABELS[a.id] ?? `${a.id} (real provider)`;
+    if (isDisabledInConfig(cfg, a.id)) {
+      out.push({
+        id: a.id,
+        label,
+        kind,
+        probe: { ok: false, binary_version: null, failed_steps: [] },
+        auth: { state: "UNKNOWN", instruction: null },
+        version_gate: null,
+        note: "disabled in config (providers.enabled is false); not probed",
+        status: "skip",
+      });
+      continue;
+    }
     let probe: ProbeResult | undefined;
     let probeError: string | undefined;
     try {
@@ -233,7 +259,7 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
     }
   }
 
-  const adapters = await probeAdapters(io.adapters ?? defaultAdapters());
+  const adapters = await probeAdapters(io.adapters ?? defaultAdapters(), cfg);
   const ok = checks.every((c) => c.status !== "fail") && adapters.every((a) => a.status !== "fail");
   return { schema_version: JSON_SCHEMA_VERSION, ok, checks, adapters };
 }
@@ -245,6 +271,11 @@ export function renderDoctor(r: DoctorReport): string {
   for (const c of r.checks) lines.push(`${MARK[c.status]} ${c.label}: ${c.detail}`);
   lines.push("", "Adapters (preflight):");
   for (const a of r.adapters) {
+    if (a.status === "skip") {
+      lines.push(`${MARK[a.status]} ${a.label}: disabled in config`);
+      if (a.note !== null) lines.push(`       ${a.note}`);
+      continue;
+    }
     const probe = a.probe.ok
       ? `probe ok${a.probe.binary_version ? ` (version ${a.probe.binary_version})` : ""}`
       : `probe failed (${a.probe.failed_steps.join(", ")})`;
