@@ -222,6 +222,13 @@ Triggers (shape, one per append-only table): `CREATE TRIGGER run_event_no_update
 RAISE(ABORT,'append-only'); END;` and the same for `DELETE`. An analogous guard allows `approval` to change only from
 `PENDING`.
 
+**Operator cancel requests (M1, Proposed).** `runs cancel` records a request as append-only `run_event` rows of type
+`operator_cancel_requested` (payload `requested_by`, `reason`), later followed by `operator_cancel_applied`
+(`request_event_id`, `state_after`, `applied_by`) or `operator_cancel_rejected` (`request_event_id`, `detail`). The daemon
+and startup reconciliation apply pending requests. No table was added because `run_event` is already append-only and
+transactional with state changes, the CLI works with no daemon, and a pending request is just a request event without a
+matching applied or rejected event. This is Delegated, not owner-approved; it stays inside ADR-0005 (no new store).
+
 ## 2. Adapter contract
 
 Satisfies FR-ADP-01 (probe, auth preflight, compile, parse, resume, cancel). Adapters are pure with respect to I/O
@@ -390,6 +397,11 @@ returns the current non-terminal envelope on expiry.
   "output": "envelope" }
 ```
 
+*Reconciled in M1:* the `idempotency_key` property above conflicts with [FRD §7.2](../requirements/FRD.md#72-continue_task)
+C6 and FR-MCP-08, which define keys for `delegate_task` only. The FRD wins: `continue_task` accepts no key, and the M1
+lifecycle rejects a key on a request that names an existing meta-session. Remove the property when T2.4 publishes the
+schema; adding it back needs an SRS change first.
+
 Fails `INVALID_REQUEST` if the session has a non-terminal run holding the lease.
 
 **`get_run`** `{ run_id, include_events?: { after_seq, limit<=200 } }` returns the envelope plus optional compact events
@@ -505,6 +517,12 @@ worktree are out of Git's sight; the sandbox, not detection, bounds those.
 of the provider session on the same worktree, which counts as a continuation and never replays the original request.
 Choice is policy-driven; default rollback for `TOOL_FAILURE`/`OUTPUT_PROTOCOL_ERROR`, resume only when the adapter
 reports a resumable session (Proposed).
+
+*As built in M1 (FRD §4.4 owns the outcome, so it wins over the destructive reset above):* the run lifecycle commits the
+failed attempt's state to the run's own branch as an evidence checkpoint, stores the diff artifact, and moves the
+meta-session head back to the pre-run checkpoint; it does not run `git reset --hard` / `git clean` on the evidence.
+`WorkspaceManager.rollback` exists in `src/workspace/` but the lifecycle follows FRD §4.4. The reset-based wording above
+is superseded for the lifecycle path.
 
 **Push and operator tree.** No `git push`, no remotes touched, no writes to the operator's working tree or checked-out
 branch; the result is the branch plus diff artifact (FR-WS-05).
@@ -624,6 +642,11 @@ asserts it.
   `proc_start_ticks` exists, send the cancel sequence to its group (the controller cannot re-attach to its pipes); then
   run the mutation check (§5) and mark `PROCESS_CRASH` with cause `controller_restart` (FR-EXE-06). Killing a still-live
   orphan is a **Proposed** extension of FR-EXE-06, which speaks only of dead processes.
+  *As built in M1 (Proposed, Linux `/proc` based, `src/reconcile/process.ts`):* a live orphan group is terminated when
+  its leader's start ticks equal the recorded ticks, or when the leader is gone but the group still has live members
+  (Linux does not reuse a PID still in use as a group ID). A leader with different ticks (PID reuse) or with no recorded
+  ticks is never signalled. Known limit: a crash between spawn and the `pid`/`pgid` commit leaves an orphan that cannot
+  be found (ROADMAP R-12).
 
 ## 9. Retry/back-off algorithm
 
