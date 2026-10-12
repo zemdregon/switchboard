@@ -8,6 +8,10 @@
 // The synthetic version and help text below are test data, not a claim about the real CLI.
 import { readFileSync, writeFileSync } from "node:fs";
 
+// A hanging scenario must outlive a controller that died (SIGKILL): ignore EPIPE instead of crashing on a late write.
+process.stdout.on("error", () => {});
+process.stderr.on("error", () => {});
+
 // Mirrors BYPASS_FLAGS in src/adapters/audit.ts: the replay refuses to run if any appear (defence in depth).
 const BYPASS = [
   "--dangerously-skip-permissions",

@@ -9,6 +9,10 @@
 // arrive on stdin; otherwise the replay exits 64/65 so a wrong compile cannot pass silently.
 import { readFileSync, writeFileSync } from "node:fs";
 
+// A hanging scenario must outlive a controller that died (SIGKILL): ignore EPIPE instead of crashing on a late write.
+process.stdout.on("error", () => {});
+process.stderr.on("error", () => {});
+
 const all = process.argv.slice(2);
 const sep = all.indexOf("--");
 const own = sep >= 0 ? all.slice(0, sep) : all;
