@@ -465,3 +465,30 @@ describe("applyOperatorRequests (daemon side)", () => {
     s.close();
   });
 });
+
+describe("doctor profile overrides (T3.2)", () => {
+  const fakeOnly = () => new AdapterRegistry().register(new FakeAdapter());
+
+  it("lists applied overrides, warning on a loosening, and shows none by default", async () => {
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schema_version: 1,
+        data_dir: dataDir,
+        allowed_roots: [path.join(tmp, "repos")],
+        mcp_clients: [{ id: "c1", max_trust_profile: "edit-untrusted" }],
+        profiles: {
+          "edit-untrusted": { shell_allowlist: ["npm test"] },
+          "inspect-untrusted": { network: "off" },
+        },
+      }),
+    );
+    const j = JSON.parse((await run(["doctor", "--json", ...cfg()], { adapters: fakeOnly() })).out);
+    const c = j.checks.find((x: { id: string }) => x.id === "profiles");
+    expect(c.status).toBe("warn");
+    expect(c.detail).toBe("edit-untrusted.shellAllowlist [] -> [npm test] (loosen)");
+    expect(j.ok).toBe(true);
+    const text = (await run(["doctor", ...cfg()], { adapters: fakeOnly() })).out;
+    expect(text).toContain("Profile overrides: edit-untrusted.shellAllowlist");
+  });
+});

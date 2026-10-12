@@ -97,6 +97,52 @@ describe("loadConfig", () => {
   });
 });
 
+describe("retention and profiles config (T3.2)", () => {
+  it("defaults retention to 30 days and a 24 hour interval, and no overrides", () => {
+    const c = loadConfig({ configPath: write(base()) });
+    expect(c.retention).toEqual({ days: 30, intervalMs: 86_400_000 });
+    expect(c.profileOverrides).toEqual({});
+  });
+
+  it("parses retention.days and retention.interval and rejects bad values", () => {
+    const c = loadConfig({
+      configPath: write({ ...base(), retention: { days: 7, interval: "90m" } }),
+    });
+    expect(c.retention).toEqual({ days: 7, intervalMs: 5_400_000 });
+    for (const retention of [{ days: 0 }, { days: 1.5 }, { interval: "soon" }, { interval: "0h" }, { bogus: 1 }]) {
+      expect(() => loadConfig({ configPath: write({ ...base(), retention }) })).toThrow(ConfigError);
+    }
+  });
+
+  it("maps profiles.<name> overrides to the policy form", () => {
+    const profiles = {
+      "test-sandboxed": {
+        shell_allowlist: ["npm test"],
+        repo_config: "approved-only",
+      },
+    };
+    const c = loadConfig({ configPath: write({ ...base(), profiles }) });
+    expect(c.profileOverrides).toEqual({
+      "test-sandboxed": {
+        shellAllowlist: ["npm test"],
+        repoConfig: "approved-only",
+      },
+    });
+  });
+
+  it("rejects unknown profiles (privileged included), unknown fields, bad values and inconsistent overrides", () => {
+    const load = (profiles: unknown) => () => loadConfig({ configPath: write({ ...base(), profiles }) });
+    expect(load({ privileged: {} })).toThrow(/\$\.profiles\.privileged: unknown key/);
+    expect(load({ "*": {} })).toThrow(/\$\.profiles\.\*: unknown key/);
+    expect(load({ "edit-untrusted": { bypass_approved: true } })).toThrow(/unknown key/);
+    expect(load({ "edit-untrusted": { network: "everything" } })).toThrow(/network: must be one of/);
+    expect(load({ "edit-untrusted": { shell_allowlist: ["*"] } })).toThrow(
+      /\$\.profiles\.edit-untrusted\.shell_allowlist: a wildcard/,
+    );
+    expect(load({ "inspect-untrusted": { shell_allowlist: ["ls"] } })).toThrow(/requires shell to be "allowlist"/);
+  });
+});
+
 describe("resolveConfigPath", () => {
   it("prefers --config, then SWITCHBOARD_CONFIG, then XDG, then ~/.config", () => {
     const env = { SWITCHBOARD_CONFIG: "/e/c.json", XDG_CONFIG_HOME: "/x" };
