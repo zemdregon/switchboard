@@ -5,7 +5,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        The project is at the docs stage. Proposals are welcome, but no code is planned yet.
+        The project is pre-release: the specification set is written, and code exists for the M1 foundation and
+        parts of M2, M3 and M9. Check the roadmap's milestone status before you propose work; work that is not on the
+        roadmap is not in scope yet.
   - type: textarea
     id: problem
     attributes:

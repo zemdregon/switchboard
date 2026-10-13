@@ -7,7 +7,8 @@
 | Does not own | Components and boundaries ([HLD](HLD.md)), workflows and business rules ([FRD](../requirements/FRD.md)), requirements ([SRS](../requirements/SRS.md)), technology choices ([TDD](TDD.md)), schemas and contracts ([LLD](LLD.md)) |
 | Last reconciled | 2026-10-13 |
 
-Nothing here is implemented; no code, tests or configuration exist as of 2026-10-12. Component IDs (`COMP-*`) are
+Implementation status is owned by [ROADMAP §6](../ROADMAP.md#6-milestones); no code, tests or configuration existed as
+of 2026-10-12, and parts of this design are now implemented. Component IDs (`COMP-*`) are
 defined in [HLD §2](HLD.md#2-components). Patterns marked **Proposed** are design choices made while planning and are
 not owner-approved; ADRs cited are "Delegated" decisions.
 
