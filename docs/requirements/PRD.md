@@ -12,14 +12,14 @@ criteria are conditions to be checked when the named milestone delivers.
 
 ## 1. Product overview
 
-Switchboard is a headless controller that sits between a primary orchestrating agent (for example OpenClaw or Grok Bot)
-and up to seven AI coding CLIs: Claude Code, Grok Build, Antigravity (`agy`), Codex, Cursor CLI, OpenCode and Kimi Code.
-It exposes a small MCP tool surface, runs the chosen CLI through its documented headless mode inside an isolated
-workspace under a named trust profile, and keeps its own record of the work so tasks can move between providers. It
-never logs in to a provider and never handles credentials ([ADR-0003](../adr/0003-no-credential-handling.md)). It may also
-hand cheap, low-stakes text tasks to an *inner agent* the operator chooses, so the provider CLIs keep their capacity for
-coding (CAP-12). The
-business case is in the [BRD](BRD.md); the stated intent comes from the introduction of the [original
+Switchboard is a headless controller that sits between a primary orchestrating agent (for example OpenClaw or Grok
+Bot) and up to eight AI coding CLIs: Claude Code, Grok Build, Antigravity (`agy`), Codex, Cursor CLI, OpenCode, Kimi
+Code and, since 2026-10-13, Muse Code from Meta (FR-ADP-12). It exposes a small MCP tool surface, runs the chosen CLI
+through its documented headless mode inside an isolated workspace under a named trust profile, and keeps its own
+record of the work so tasks can move between providers. It never logs in to a provider and never handles credentials
+([ADR-0003](../adr/0003-no-credential-handling.md)). It may also hand cheap, low-stakes text tasks to an *inner agent*
+the operator chooses, so the provider CLIs keep their capacity for coding (CAP-12). The business case is in the
+[BRD](BRD.md); the stated intent comes from the introduction of the [original
 blueprint](../research/headless-ai-coding-controller.md) (superseded on technical details by the [verified
 research](../research/headless-ai-coding-controller-verified-2026-10-12.md)).
 
@@ -311,7 +311,7 @@ Each criterion is observable and is checked when the named milestone delivers. D
 | CAP-1 | With the Claude Code adapter, an MCP client calls `delegate_task` and receives a `run_id` and `meta_session_id` without waiting for completion; `get_run` returns a compact envelope with no raw transcript or credential material; a tool error carries exactly one failure code. A repeated call with the same idempotency key returns the original run. | M2 |
 | CAP-1 | When verification commands are supplied, their results appear in the run result. | M3 |
 | CAP-2 | `switchboard doctor` reports, for each adapter, binary, version, auth status and eligibility; a missing login yields `AUTH_REQUIRED` with the native login command; an out-of-range version yields `ADAPTER_VERSION_UNVERIFIED` and no routed work. | M1 (fake adapter), M2 (Claude Code, Codex) |
-| CAP-2 | Grok Build, Antigravity, Cursor and OpenCode adapters each pass the recorded-fixture conformance suite. Kimi Code does once its contract is pinned. | M4 |
+| CAP-2 | Grok Build, Antigravity, Cursor and OpenCode adapters each pass the recorded-fixture conformance suite. Kimi Code does once its contract is pinned. Muse Code does too (Should, FR-ADP-12). | M4 |
 | CAP-3 | `inspect-untrusted` and `edit-untrusted` runs deny writes outside the worktree and arbitrary shell, do not load repository-supplied agent config, and end with `PERMISSION_BLOCKED` or `SANDBOX_VIOLATION` rather than hanging; a request above its client's maximum trust fails with `PERMISSION_BLOCKED`. | M2 |
 | CAP-3 | All five profiles work; the malicious-fixture suite shows no escape for Claude Code; a `privileged` run does not start without a recorded operator approval. | M3 |
 | CAP-4 | A write-capable run executes in its own worktree from a recorded checkpoint; the operator's checked-out branch and working tree are unchanged afterwards; no push occurs by default; the changed-file list, diff artifact and post-run checkpoint are recorded; a failed mutating run is rolled back or resumed, never replayed. | M1 |

@@ -309,7 +309,7 @@ except `probe`/`authPreflight`, which execute the provider binary through a supe
 inject fakes). Adapters never read credential files (FR-AUTH-01).
 
 ```ts
-export type ProviderId = 'claude' | 'codex' | 'grok' | 'antigravity' | 'cursor' | 'opencode' | 'kimi' | 'fake';
+export type ProviderId = 'claude' | 'codex' | 'grok' | 'antigravity' | 'cursor' | 'opencode' | 'kimi' | 'muse' | 'fake';
 export type TrustProfile = 'inspect-untrusted' | 'edit-untrusted' | 'test-sandboxed'
                          | 'trusted-development' | 'privileged';
 
@@ -382,14 +382,15 @@ export interface Ineligible {
 ```
 
 **Provider ids.** Two id spaces exist (Proposed, M2; the single mapping table is `CONFIG_TO_ADAPTER_ID` in
-`src/routing/collect.ts`). Config files and `providers.<id>` use the seven provider names from the roadmap; the adapter
-contract, the ledger and MCP tools use the `ProviderId` above. They differ for three providers:
+`src/routing/collect.ts`). Config files and `providers.<id>` use the provider names from the roadmap; the adapter
+contract, the ledger and MCP tools use the `ProviderId` above. They differ for four providers:
 
 | Config provider id | Adapter `ProviderId` |
 | --- | --- |
 | `claude-code` | `claude` |
 | `grok-build` | `grok` |
 | `kimi-code` | `kimi` |
+| `muse-code` | `muse` |
 | `codex`, `antigravity`, `cursor`, `opencode` | the same string |
 
 `fake` is a test adapter with no config id.
