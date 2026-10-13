@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { ErrorObject } from "ajv";
 import { Ajv } from "ajv";
+import { validateOperatorPatterns } from "../git/safe-pattern.js";
 import { ProfileOverrideError, validateProfileOverrides } from "../policy/profiles.js";
 import type { ProfileOverride, ProfileOverrides } from "../policy/types.js";
 import { ConfigError } from "./errors.js";
@@ -48,6 +49,8 @@ export interface ResolvedConfig {
   profileOverrides: ProfileOverrides;
   /** Validated `projects[]` (FR-PRJ-01; T9.1); empty when the config has none. Paths are as written, not yet canonical. */
   projects: ResolvedProject[];
+  /** Validated `git.sanitize_patterns` (FR-GIT-04; T9.3): sources in the safe subset, in configuration order. */
+  sanitizePatterns: string[];
 }
 
 export interface ResolvedMcpClient {
@@ -231,6 +234,13 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
     throw err;
   }
 
+  const patternErrors = validateOperatorPatterns(cfg.git?.sanitize_patterns ?? []);
+  if (patternErrors.length > 0) {
+    throw new ConfigError(
+      `Invalid config:\n${patternErrors.map((l) => `  $.git.sanitize_patterns${l.startsWith("[") ? "" : ": "}${l}`).join("\n")}`,
+    );
+  }
+
   const projectErrors = checkProjects(cfg);
   if (projectErrors.length > 0) {
     throw new ConfigError(`Invalid config:\n${projectErrors.map((l) => `  ${l}`).join("\n")}`);
@@ -240,6 +250,7 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
     configPath,
     dataDir,
     projects: resolveProjects(cfg),
+    sanitizePatterns: [...(cfg.git?.sanitize_patterns ?? [])],
     allowedRoots,
     mcpClients: new Map(
       cfg.mcp_clients.map((c) => [

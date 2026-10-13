@@ -37,7 +37,25 @@ export interface GitRunOptions {
   readonly cwd?: string;
   /** Exit codes that are not errors (0 is always accepted). */
   readonly okCodes?: readonly number[];
+  /**
+   * Extra environment for this call, restricted to the plumbing variables the commit algorithm needs
+   * ({@link GIT_PLUMBING_ENV_KEYS}); any other key throws. Applied over {@link scrubbedGitEnv}, never over `process.env`.
+   */
+  readonly env?: Readonly<Record<string, string>>;
+  /** Written to the command's standard input (for example a commit message for `commit-tree -F -`). */
+  readonly input?: string | Buffer;
 }
+
+/** The only variables a caller may add to the scrubbed environment (T9.3): the temporary index and the commit identity. */
+export const GIT_PLUMBING_ENV_KEYS = new Set([
+  "GIT_INDEX_FILE",
+  "GIT_AUTHOR_NAME",
+  "GIT_AUTHOR_EMAIL",
+  "GIT_AUTHOR_DATE",
+  "GIT_COMMITTER_NAME",
+  "GIT_COMMITTER_EMAIL",
+  "GIT_COMMITTER_DATE",
+]);
 
 const MAX_BUFFER = 256 * 1024 * 1024;
 
@@ -88,11 +106,17 @@ function execGit(
   options: GitRunOptions,
   ok: ReadonlySet<number>,
 ): Promise<GitResult> {
+  const env = scrubbedGitEnv();
+  for (const [key, value] of Object.entries(options.env ?? {})) {
+    if (!GIT_PLUMBING_ENV_KEYS.has(key))
+      throw new GitError(`environment variable ${key} is not allowed`, args, null, "");
+    env[key] = value;
+  }
   return new Promise((resolve, reject) => {
-    execFile(
+    const child = execFile(
       "git",
       full,
-      { cwd: options.cwd, env: scrubbedGitEnv(), encoding: "buffer", maxBuffer: MAX_BUFFER },
+      { cwd: options.cwd, env, encoding: "buffer", maxBuffer: MAX_BUFFER },
       (err, stdout, stderr) => {
         const errCode = err ? (err as NodeJS.ErrnoException & { code?: unknown }).code : 0;
         const code = typeof errCode === "number" ? errCode : err ? null : 0;
@@ -110,6 +134,10 @@ function execGit(
         );
       },
     );
+    if (options.input !== undefined) {
+      child.stdin?.on("error", () => {});
+      child.stdin?.end(options.input);
+    }
   });
 }
 

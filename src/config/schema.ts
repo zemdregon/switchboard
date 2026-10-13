@@ -67,6 +67,12 @@ export interface SwitchboardConfig {
   profiles?: Partial<Record<Exclude<TrustProfile, "privileged">, ProfileOverrideConfig>>;
   /** Projects (FR-PRJ-01, LLD §11.1; T9.1). Absent means no projects, and every other command behaves as before. */
   projects?: ProjectConfig[];
+  /**
+   * Commit-message sanitiser additions (FR-GIT-04, LLD §12.4, TDD §3.1; T9.3). Each pattern is a JavaScript regular
+   * expression source in the restricted subset of `src/git/safe-pattern.ts` (at most 16, 200 characters each); a line
+   * that matches is removed from the message.
+   */
+  git?: { sanitize_patterns?: string[] };
 }
 
 /** Context kinds delivered in M9 (FR-PRJ-02); any other value fails validation. */
@@ -269,6 +275,13 @@ export const configSchema = {
       },
     },
     projects: { type: "array", items: projectSchema },
+    git: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        sanitize_patterns: { type: "array", maxItems: 16, items: { type: "string", minLength: 1, maxLength: 200 } },
+      },
+    },
     profiles: {
       type: "object",
       additionalProperties: false,
