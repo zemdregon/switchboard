@@ -24,7 +24,7 @@ afterAll(() => {
 const CLAUDE = "/opt/synthetic/bin/claude"; // never executed
 const CODEX = "/opt/synthetic/bin/codex"; // never executed
 const CLAUDE_HELP =
-  "-p, --print\n--output-format stream-json\n--permission-mode dontAsk\n--permission-prompts\n--tools\n--allowedTools\n--safe-mode\n--restricted\n--strict-mcp-config\n--resume\n";
+  "-p, --print\n--output-format stream-json\n--permission-mode dontAsk\n--permission-prompts\n--tools\n--allowedTools\n--disallowedTools\n--safe-mode\n--restricted\n--strict-mcp-config\n--resume\n";
 const CODEX_HELP = "--json --sandbox --ignore-user-config --ignore-rules";
 
 type Table = Record<string, Partial<ProbeOutput>>;

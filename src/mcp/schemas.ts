@@ -266,6 +266,17 @@ const CAPABILITIES = {
           transports: { type: "array", items: { type: "string" } },
           models: { type: "array", items: { type: "string" } },
           sandbox_features: { type: "array", items: { type: "string" } },
+          // FR-GIT-01: how the adapter denies Git writes, or its declaration that the provider documents no control.
+          git_write_control: {
+            type: "object",
+            additionalProperties: false,
+            required: ["kind", "detail", "remaining_controls"],
+            properties: {
+              kind: { type: "string", enum: ["provider-deny-rules", "none-documented"] },
+              detail: { type: "string" },
+              remaining_controls: { type: "array", items: { type: "string" } },
+            },
+          },
         },
       },
     },
@@ -298,7 +309,8 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
   get_artifacts:
     "List a run's artifacts (diff, changed_files, ...) with hashes; small ones are returned inline as text.",
   list_capabilities:
-    "Providers with adapter status, version, validated range, auth state, supported trust profiles and transports.",
+    "Providers with adapter status, version, validated range, auth state, supported trust profiles, transports and " +
+    "how Git writes are denied (FR-GIT-01).",
 };
 
 export interface ToolDescriptor {

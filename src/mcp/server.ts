@@ -418,6 +418,15 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       transports: [...(adapter?.transports ?? [])],
       models: [],
       sandbox_features: [],
+      ...(adapter
+        ? {
+            git_write_control: {
+              kind: adapter.gitWriteControl.kind,
+              detail: adapter.gitWriteControl.detail,
+              remaining_controls: [...adapter.gitWriteControl.remainingControls],
+            },
+          }
+        : {}),
     };
   };
 

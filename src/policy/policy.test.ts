@@ -95,8 +95,15 @@ describe("resolveProfile (COMP-POL, M2)", () => {
         const compiled = inv as Invocation;
         expect(auditInvocation(compiled)).toEqual([]);
         for (const flag of BYPASS_FLAGS) expect(compiled.argv.join(" ")).not.toContain(flag);
-        // No shell is granted by the default (empty) allowlist on Claude.
-        if (adapter.id === "claude") expect(compiled.argv.some((a) => a.startsWith("Bash"))).toBe(false);
+        // No shell is granted by the default (empty) allowlist on Claude: no Bash tool, no Bash allow rule. (Bash deny
+        // rules after --disallowedTools are expected, FR-GIT-01.)
+        if (adapter.id === "claude") {
+          const argv = compiled.argv;
+          expect(argv[argv.indexOf("--tools") + 1]?.split(",")).not.toContain("Bash");
+          const allow = argv.slice(argv.indexOf("--allowedTools") + 1, argv.indexOf("--disallowedTools"));
+          expect(allow.length).toBeGreaterThan(0);
+          expect(allow.some((a) => a.startsWith("Bash"))).toBe(false);
+        }
       }
     }
   });
