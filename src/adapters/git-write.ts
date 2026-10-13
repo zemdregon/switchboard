@@ -28,6 +28,14 @@ export const GIT_WRITE_SUBCOMMANDS: readonly string[] = [
   "notes",
   "filter-branch",
   "fast-import",
+  // rewrite or delete refs, reflogs and objects (R-43; each verified to change a throwaway repository on Git 2.43.0)
+  "reflog",
+  "pack-refs",
+  "gc",
+  "prune",
+  "maintenance",
+  "repack",
+  "hash-object",
   // create, move or delete refs
   "branch",
   "tag",
@@ -48,6 +56,42 @@ export const GIT_WRITE_SUBCOMMANDS: readonly string[] = [
   "svn",
   // configuration that can turn any later command into a write (aliases, hooks path, identity)
   "config",
+];
+
+/**
+ * Git global options (before the subcommand) that take a value, as `--opt value` or `--opt=value` (`-C` and `-c` only
+ * the first). R-43: the Git 2.43.0 usage text lists them; `--namespace`, `--config-env`, `--exec-path` and
+ * `--attr-source` each ran `git branch` or `update-ref` successfully in a throwaway repository, so none of them stops a
+ * write. Deny rules are compiled for every spelling.
+ */
+export const GIT_GLOBAL_OPTIONS_WITH_VALUE: readonly string[] = [
+  "-C",
+  "-c",
+  "--git-dir",
+  "--work-tree",
+  "--namespace",
+  "--config-env",
+  "--exec-path",
+  "--attr-source",
+];
+
+/**
+ * Git global options without a value. R-43: on Git 2.43.0 `git <option> branch t` created a ref for every one of these
+ * except `--bare`, which fails from a work tree but changes how the repository is found (it works from inside a Git
+ * directory or with `GIT_DIR`), so it is denied as well. `--super-prefix` is internal and rejected by Git 2.43.0.
+ */
+export const GIT_GLOBAL_FLAGS: readonly string[] = [
+  "--no-pager",
+  "-P",
+  "-p",
+  "--paginate",
+  "--no-optional-locks",
+  "--literal-pathspecs",
+  "--glob-pathspecs",
+  "--noglob-pathspecs",
+  "--icase-pathspecs",
+  "--no-replace-objects",
+  "--bare",
 ];
 
 /**

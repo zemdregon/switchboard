@@ -7,7 +7,13 @@ import type { ProfileOverride } from "../../policy/types.js";
 import { auditInvocation, BYPASS_FLAGS, BypassFlagError, findBypassFlags } from "../audit.js";
 import { missingRequiredKinds, runConformanceCase, runConformanceSuite } from "../conformance.js";
 import { LOOSE_SCOPE, privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
-import { GIT_PUBLISHING_PROGRAMS, GIT_WRITE_SUBCOMMANDS, gitWriteRisks } from "../git-write.js";
+import {
+  GIT_GLOBAL_FLAGS,
+  GIT_GLOBAL_OPTIONS_WITH_VALUE,
+  GIT_PUBLISHING_PROGRAMS,
+  GIT_WRITE_SUBCOMMANDS,
+  gitWriteRisks,
+} from "../git-write.js";
 import { evaluateVersionGate, tryLoadManifest } from "../manifest/index.js";
 import { startAdapterRun } from "../run.js";
 import {
@@ -316,6 +322,21 @@ describe("claude compile: no permitted Git write operation (FR-GIT-01)", () => {
         expect(deny).toContain(`Bash(git ${v} *)`);
       }
       for (const o of ["-C", "-c", "--git-dir", "--work-tree"]) expect(deny).toContain(`Bash(git ${o} *)`);
+      // R-43: every Git global option spelling, including ones that do not change the target (`--no-pager`, `-P`).
+      for (const o of [...GIT_GLOBAL_OPTIONS_WITH_VALUE, ...GIT_GLOBAL_FLAGS])
+        expect(deny).toContain(`Bash(git ${o} *)`);
+      for (const o of GIT_GLOBAL_OPTIONS_WITH_VALUE.filter((x) => x.startsWith("--")))
+        expect(deny).toContain(`Bash(git ${o}=*)`);
+      for (const o of [
+        "--no-pager",
+        "-P",
+        "--no-optional-locks",
+        "--literal-pathspecs",
+        "--no-replace-objects",
+        "--bare",
+      ])
+        expect(deny).toContain(`Bash(git ${o} *)`);
+      for (const v of ["reflog", "pack-refs", "gc", "prune", "maintenance"]) expect(deny).toContain(`Bash(git ${v} *)`);
       for (const p of GIT_PUBLISHING_PROGRAMS) expect(deny).toContain(`Bash(${p} *)`);
     });
 
@@ -354,6 +375,20 @@ describe("claude compile: no permitted Git write operation (FR-GIT-01)", () => {
     "git config alias.ci commit",
     "git -C . commit",
     "git -c alias.x=commit x",
+    "git --no-pager commit",
+    "git -P commit",
+    "git --no-optional-locks commit",
+    "git --literal-pathspecs commit",
+    "git --no-replace-objects branch x",
+    "git --bare update-ref refs/heads/x HEAD",
+    "git --namespace=x update-ref refs/heads/x HEAD",
+    "git --config-env=user.name=HOME commit",
+    "git --exec-path=/x commit",
+    "git reflog expire --all",
+    "git pack-refs --all",
+    "git gc",
+    "git prune",
+    "git maintenance run",
     "/usr/bin/git push",
     "git ci",
     "gh pr create",

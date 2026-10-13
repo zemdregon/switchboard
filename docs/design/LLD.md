@@ -1220,6 +1220,16 @@ is RUNNING, and closes and removes the socket when the run leaves RUNNING. Nothi
 validation in §12.3. Whether provider sandboxes permit the connect is verified per adapter; if not, that adapter is
 `finalize-only`.
 
+*Note 2026-10-13 (T9.0 spike; Delegated; findings only, owner text above unchanged).* For Claude Code the per-run
+definition is `--mcp-config <json file or string>` with `--strict-mcp-config` (`claude --help` 2.1.296); the JSON shape,
+the MCP tool's allow-rule form and whether `--safe-mode` also disables it are unverified, and `--mcp-config` is barred
+by ADR-0015 and the argv audit until a new ADR narrows that bar (ROADMAP Q-40). Codex: unverified (no installed binary,
+not in [R2]). Whether either provider's sandbox lets the shim connect: `Unknown: live check`. A UNIX socket path is
+limited to 108 bytes by the kernel (`/usr/include/linux/un.h`); `<data_dir>/runs/<run_id>/tools.sock` can exceed that
+under a long data directory, so the controller should check the length when it creates the socket (Python `bind` failed
+at 167 bytes and `gpg-agent` failed to start under a long path on this host; Node 22.22.0 accepted 157 bytes, behaviour
+not investigated). Details and sources: [TDD §3.10](TDD.md#310-git-commits-attribution-and-publication).
+
 ### 12.3 Commit algorithm and refs
 
 Refs (Proposed): the **publish ref** for a meta-session is `refs/heads/<prefix><sess>`, where `<prefix>` is the context's
@@ -1241,6 +1251,55 @@ Refs (Proposed): the **publish ref** for a meta-session is `refs/heads/<prefix><
    once, then fail the call.
 6. In one ledger transaction insert the `git_commit` row and the `git_commit` run event.
 
+**Note 2026-10-13 (T9.0 spike; Delegated; verified on Git 2.43.0 in a throwaway repository with a neutral configuration;
+owner text above unchanged).** The plumbing below built a commit from a path subset, with the worktree's own index file,
+`HEAD` and run branch byte-for-byte unchanged (`sha256sum` of the worktree index before and after was identical; `git
+status --porcelain` identical; `HEAD` and the run branch unchanged). The lab ran with `GIT_CONFIG_GLOBAL` set to an
+empty file and `GIT_CONFIG_SYSTEM=/dev/null`, not through `src/workspace/git.ts`; the controller adds `scrubbedGitEnv()`
+and `-c core.hooksPath=/dev/null` (see Hooks below). `cwd` was the worktree and `GIT_INDEX_FILE` an absolute path
+outside the worktree and its Git directory.
+
+| Step | Command | Observed on 2.43.0 |
+| --- | --- | --- |
+| Seed | `GIT_INDEX_FILE=$IDX git read-tree <publish head or base>` | temporary index holds the parent's tree |
+| Add | `GIT_INDEX_FILE=$IDX git --literal-pathspecs add -- <path>...` (or `--pathspec-from-file=- --pathspec-file-nul` with NUL-separated paths on stdin) | adds modified and new files and **stages deletions** (a deleted `sub/s.txt` left the tree); other changed files stay out of the tree |
+| Tree | `GIT_INDEX_FILE=$IDX git write-tree` | tree id; equal to the parent's `^{tree}` means `NOTHING_TO_COMMIT` (checked with a second identical add) |
+| Commit | `printf '%s' "$msg" \| GIT_AUTHOR_NAME=.. GIT_AUTHOR_EMAIL=.. GIT_AUTHOR_DATE=.. GIT_COMMITTER_NAME=.. GIT_COMMITTER_EMAIL=.. GIT_COMMITTER_DATE=.. git commit-tree <tree> -p <parent> -F -` | commit object with exactly the author, committer and dates given (`2026-10-13T10:00:00Z` gave `1791885600 +0000`), the message and no trailer |
+| Publish | `git update-ref refs/heads/<publish> <new> <old>`; `<old>` is 40 zeros for the first commit | succeeds with the right old value; with 40 zeros on an existing ref: `cannot lock ref ...: reference already exists`; with a wrong old value: `is at <sha> but expected <sha>` (rc 128 each), which is the compare-and-swap of step 5 |
+
+Observations the algorithm should respect:
+
+- **Pathspecs.** Without `--literal-pathspecs`, `git add -- '*.txt'` staged every matching file; with it, the same
+  argument matched nothing (`fatal: pathspec '*.txt' did not match any files`). A path that is literally `we*ird[1].txt`
+  staged only that file in both modes when named exactly (exact names win), so use the literal flag for safety, not
+  because exact names break. `git add -- ../outside.txt` is refused (`fatal: ... is outside repository`, rc 128);
+  a missing path is refused (`did not match any files`, rc 128); an ignored path is refused (`The following paths are
+  ignored by one of your .gitignore files`, rc 1) and `git add -- .` skips it. The commit tool's own
+  `PATH_OUTSIDE_WORKTREE` check still comes first.
+- **Checkpoints stay out of the publish history.** After a checkpoint commit was made on the run branch with the same
+  temporary-index method (author `Switchboard <switchboard@localhost>`), `git rev-list refs/heads/<publish>` listed only
+  the publish commits and the base, `git merge-base --is-ancestor <checkpoint> <publish>` returned 1, and
+  `git for-each-ref --contains <checkpoint> refs/heads/switchboard/pub/` printed nothing. This holds by construction:
+  each publish commit's parent is the previous publish commit or the base, never a run-branch commit.
+- **Second commit** seeded from `read-tree <publish ref>`, then `add -- c.txt`, gave a tree whose
+  `git diff-tree -r <first> <second>` was exactly `A c.txt`.
+- **Reflog.** `update-ref` without `-m` records an empty reflog message; with `-m 'x'` it records `x`. The reflog stays
+  local, but use no `-m`, or a fixed neutral text, so no identifier lands there.
+- **Hooks.** Only `update-ref` was seen to run a hook (`reference-transaction`): with the layer 3 guard of [TDD
+  §3.10](TDD.md#310-git-commits-attribution-and-publication) in the environment the update was refused, and with `-c
+  core.hooksPath=/dev/null` or an environment without the guard it succeeded. The controller therefore must not inherit
+  the guard variables. Whether `read-tree`, `write-tree` and `commit-tree` run any hook was not tested (none was configured
+  for them in the lab).
+- **Identity.** `commit-tree` takes identity from the four `GIT_AUTHOR_*`/`GIT_COMMITTER_*` variables; set all of them
+  (and the dates) rather than relying on configuration, because Git may derive an identity from the host name.
+- **Minimum versions.** Every command above exists on 2.43.0. Introduction versions are unverified, except
+  `--pathspec-from-file`, which the Git 2.25.0 release notes introduce for "a few commands" without naming `git add`,
+  so its availability for `add` below 2.43 is unverified. The decision on `MIN_GIT_VERSION` (raised to 2.32, ADR-0023) is
+  in TDD §3.10 and ROADMAP Q-39.
+- **Not tested.** Clean and smudge filters during `git add` (the controller already neutralises driver keys, TDD §3.4),
+  nested repositories (ADR-0022), submodules, symlinks, very large path sets, concurrent publishers beyond the
+  compare-and-swap above, and `-c core.hooksPath=/dev/null` under a Git older than 2.43.
+
 #### 12.3.1 Signing (FR-GIT-10, Proposed)
 
 With `sign: true` step 4 asks Git to sign the commit object using the operator's existing signing configuration
@@ -1251,6 +1310,15 @@ non-zero exit) returns `SIGNING_FAILED` to the agent and writes no commit. The B
 signs needs an environment in which the agent cannot reach the key. Which signing formats work in a headless controller
 is verified in the M9 spike (T9.0); until then `sign` is accepted only if `projects validate` can produce a test
 signature in a scratch repository.
+
+**Note 2026-10-13 (T9.0 spike; Delegated).** Verified on Git 2.43.0 with GnuPG: `git -c user.signingkey=<fpr>
+commit-tree <tree> -p <parent> -S -m signed` produced a commit with a `gpgsig` header and `git verify-commit` reported a
+good signature, using a throwaway unprotected Ed25519 key generated in a temporary `GNUPGHOME` (no real key was used).
+With `-c gpg.program=/nonexistent/gpg` the call exited 1 with `error: gpg failed to sign the data` and printed no commit
+id, so a signing failure yields no commit, as `SIGNING_FAILED` requires. `gpg-agent` did not start with a `GNUPGHOME`
+path longer than the socket limit (see §12.2). **Unverified:** SSH-format signing (`ssh-keygen` is not installed on this
+host; the Git 2.34.0 release notes introduce it and warn against OpenSSH 8.7), X.509, passphrase-protected or hardware
+keys, and signing with the operator's real agent. Only the unprotected-key GnuPG case counts as headless-verified.
 
 The exact Git plumbing is fixed in the M9 spike. Nothing here touches the run branch, the worktree's index or the
 operator's checkout.
