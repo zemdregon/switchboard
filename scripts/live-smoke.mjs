@@ -279,13 +279,14 @@ if (delegated.isError) {
   out(`delegate_task: run ${runId} ${final.status}`);
   const end = Date.now() + timeoutMs;
   while (!["SUCCEEDED", "FAILED", "CANCELLED"].includes(final.status) && Date.now() < end) {
-    final = (await call("get_run", { run_id: runId, wait_seconds: 30 })).body;
+    await new Promise((r) => setTimeout(r, 2000));
+    final = (await call("get_run", { run_id: runId })).body;
     out(`  get_run: ${final.status}`);
   }
   if (!["SUCCEEDED", "FAILED", "CANCELLED"].includes(final.status)) {
     out(`timed out after ${timeoutMs} ms; cancelling`);
     await call("cancel_run", { run_id: runId });
-    final = (await call("get_run", { run_id: runId, wait_seconds: 30 })).body;
+    final = (await call("get_run", { run_id: runId })).body;
   }
   out(
     `result: ${final.status}${final.failure_code ? ` ${final.failure_code}` : ""}${final.failure_detail ? ` (${final.failure_detail})` : ""}`,
