@@ -2,10 +2,11 @@
 import { fileURLToPath } from "node:url";
 import type { ConformanceCase } from "../../conformance.js";
 import { LOOSE_SCOPE, privilegedProfile } from "../../fixtures/privileged.js";
+import { REPLAY_SCRIPT, replayLauncher } from "../../fixtures/replay.js";
 import type { CompileRequest, ResolvedProfile } from "../../types.js";
 import { ClaudeAdapter } from "../adapter.js";
 
-export const REPLAY_SCRIPT = fileURLToPath(new URL("./replay.mjs", import.meta.url));
+export { REPLAY_SCRIPT };
 export const fixturePath = (name: string): string => fileURLToPath(new URL(`./${name}`, import.meta.url));
 
 export const DEFAULT_SESSION_ID = "00000000-0000-4000-8000-000000000001";
@@ -53,16 +54,12 @@ export interface ReplayOptions {
 export function replayAdapter(fixture: string, o: ReplayOptions = {}): ClaudeAdapter {
   return new ClaudeAdapter({
     binaryPath: process.execPath,
-    launcherArgs: [
-      REPLAY_SCRIPT,
-      "--fixture",
-      fixturePath(fixture),
+    launcherArgs: replayLauncher("claude", fixturePath(fixture), [
       ...(o.exitCode !== undefined ? ["--exit-code", String(o.exitCode)] : []),
       ...(o.write ? ["--write", o.write] : []),
       ...(o.hang ? ["--hang"] : []),
       ...(o.ignoreTerm ? ["--ignore-term"] : []),
-      "--",
-    ],
+    ]),
     timeouts: { ...SHORT, ...o.timeouts },
   });
 }

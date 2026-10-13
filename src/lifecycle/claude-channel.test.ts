@@ -2,7 +2,7 @@
  * T9.4b end to end with a fake `claude` (ADR-0029, ADR-0033; FR-GIT-02, FR-POL-08): the run lifecycle opens the per-run
  * tool channel for a Claude Code project run with the operator opt-in, and only for an approved privileged bypass run
  * (owner decision 41), the channel service writes the `--mcp-config` definition, `--safe-mode` is removed, the argv
- * audits admit both, and the replay script (`src/adapters/claude/fixtures/replay.mjs --mcp-commit`) stands in for
+ * audits admit both, and the replay script (`src/adapters/fixtures/replay.mjs --mcp-commit`) stands in for
  * Claude Code: it reads the definition, starts the real `switchboard tool-shim` from it and calls `commit`. What the
  * replay does with the definition is modelled on the operator live check (PR #41, a hand-made server), not on a real
  * Claude Code run through Switchboard. Every other profile gets no channel and the argv of the opt-in off. The real
@@ -16,7 +16,8 @@ import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ClaudeAdapter } from "../adapters/claude/adapter.js";
-import { fixturePath, REPLAY_SCRIPT } from "../adapters/claude/fixtures/cases.js";
+import { fixturePath } from "../adapters/claude/fixtures/cases.js";
+import { replayLauncher } from "../adapters/fixtures/replay.js";
 import {
   AdapterRegistry,
   type ProbeRunner,
@@ -113,7 +114,7 @@ let shims: ShimSpec[];
 function claude(gitChannel: boolean): ClaudeAdapter {
   return new ClaudeAdapter({
     binaryPath: process.execPath,
-    launcherArgs: [REPLAY_SCRIPT, "--fixture", fixturePath("success-edit.jsonl"), "--mcp-commit", record, "--"],
+    launcherArgs: replayLauncher("claude", fixturePath("success-edit.jsonl"), ["--mcp-commit", record]),
     timeouts: PATIENT,
     gitChannel,
   });
@@ -361,7 +362,7 @@ describe("Claude Code channel behind the opt-in (T9.4b, fake claude replay)", ()
   it("opt-in on, edit-untrusted with the project's finalize_commit: finalize-only makes the commit (FR-GIT-09)", async () => {
     const adapter = new ClaudeAdapter({
       binaryPath: process.execPath,
-      launcherArgs: [REPLAY_SCRIPT, "--fixture", fixturePath("success-edit.jsonl"), "--write", "edited.txt", "--"],
+      launcherArgs: replayLauncher("claude", fixturePath("success-edit.jsonl"), ["--write", "edited.txt"]),
       timeouts: PATIENT,
       gitChannel: true,
     });
