@@ -43,6 +43,11 @@ decision 13 settles the policy: a bypass flag is allowed only when the operator-
 the approval row covers that scope. That changes an external interface (`delegate_task` gains an input), so this ADR
 and an [LLD §3](../design/LLD.md#3-mcp-tool-contracts) contract are required before any code emits a bypass flag.
 
+Note (2026-10-13): "The M2 code emits no bypass flag" described the code when this ADR was written. Since the
+milestone 3 work, an approved `privileged` scope that sets `bypass` does emit the provider's bypass flag, as the
+decision below allows (see [ROADMAP §6.5](../ROADMAP.md#65-m3-isolation-tasks)); the argv audit still refuses every
+bypass flag otherwise. The decision text is unchanged.
+
 ## Decision
 
 1. `delegate_task` gains an optional `privileged_scope` object ([LLD §3.1](../design/LLD.md#31-privileged-scope-m3)).

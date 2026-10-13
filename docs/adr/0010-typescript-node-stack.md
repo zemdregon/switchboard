@@ -12,6 +12,10 @@ No code exists. The controller is I/O-bound: it supervises subprocesses, parses 
 and writes to SQLite. Switchboard is open source and other people will install it (ADR-0011), so ease of installation
 and of outside contribution matter as well as development speed.
 
+Note (2026-10-13): this paragraph describes the repository when the ADR was written. Application code now exists
+under `src/` and `test/`; milestone status is owned by [ROADMAP §6](../ROADMAP.md#6-milestones). The decision is
+unchanged.
+
 ## Decision
 
 TypeScript (strict mode) on the current Node.js LTS line, using the official MCP TypeScript SDK for the upstream server.

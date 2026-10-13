@@ -16,9 +16,14 @@ Pre-release. The package is private and is not published to any registry; you bu
 - **Milestone 2 (Claude Code and Codex adapters plus the MCP slice) is `Partial`.** The Claude Code and Codex
   adapters, the MCP server and `switchboard serve` exist and pass their tests on recorded or synthetic fixtures and a
   fake provider. They have **not** been confirmed against a live provider yet.
-- **Milestone 3 (isolation) and milestone 9 (projects and controlled commits) are `Partial`.** Parts of both are
-  implemented (approvals, privileged runs, retention, projects, the controller-side commit and push); the rest, including
-  the live malicious-fixture checks, is not. See [ROADMAP §6](docs/ROADMAP.md#6-milestones) for each task.
+- **Milestone 3 (isolation) is `Partial`.** Approvals, privileged runs and retention are implemented; the live
+  malicious-fixture checks are not. See [ROADMAP §6](docs/ROADMAP.md#6-milestones) for each task.
+- **Milestone 9 (projects and controlled commits) is `Partial`.** Projects, the agent `commit` tool, finalize-only
+  commits, ref snapshots, push, dynamic projects, signing and concurrent-run worktrees are implemented and tested for
+  `host` environments on a fake provider with real Git in temporary repositories. It is not `Done`: nothing has run
+  against a live provider through Switchboard's own tool channel, signing was tried only with a throwaway GnuPG key,
+  pushing from dynamic projects is not wired, and container environments need milestone 10. The exceptions are listed
+  in [ROADMAP §6.3](docs/ROADMAP.md#63-m9-projects-and-controlled-commits-tasks) (task T9.8).
 - Providers other than Claude Code and Codex are not implemented.
 
 What works today: `doctor`, `runs list|show|cancel`, `approve`, `deny`, `gc`, `projects list|show|validate|approve`,
@@ -177,6 +182,27 @@ Only one `serve` can hold a data directory at a time.
 
 Tool schemas are published through MCP `tools/list`.
 
+### How commits reach Git
+
+Agents are not given a way to commit or push: Git writes are denied where the provider documents a rule (Claude
+Code; Codex documents none), and Switchboard compares the repository's refs before and after each run and records any
+change as a `git_policy_violation`. Commits are made by the controller, on the host, in one of three ways, into a
+publish ref `refs/heads/switchboard/pub/<session>` that is kept apart from the run branches and checkpoint commits.
+This applies to runs started with `delegate_task`'s `project`.
+
+| Path | Who commits | Offered by |
+| --- | --- | --- |
+| The agent's `commit` tool | The controller, for the paths the agent names, through the stdio `switchboard tool-shim` the adapter gives the agent | The fake test adapter. Claude Code only behind the unsupported `providers.claude-code.git_channel` and only in an approved `privileged` bypass run. Not Codex |
+| Finalize-only commit | The controller, at the end of a successful run, from the run's changed files and the agent's summary | Any adapter without the tool, when the project's primary context sets `finalize_commit` (see below) |
+| No commit | Nobody; the work stays in the run's worktree, diff and checkpoint | The default for those adapters |
+
+Every commit uses the context's `identity`, passes the same sanitiser (attribution trailers, footers and session links
+removed, plus your `git.sanitize_patterns`) and is recorded with its provenance (run, provider, model); see `runs show`.
+Nothing leaves the host unless the context's push policy is `branch` (the default is `none`); the push never forces and
+its `remote` is a remote name, never a URL (details below). With `"sign": true` the controller signs each published
+commit with your own Git signing configuration; only GnuPG with a throwaway key has been tried. Approved bypass runs
+are exempt from the push credential rule and from the finalize-only size limits (owner decisions 37 and 44).
+
 ### Operator commands
 
 ```text
@@ -286,7 +312,8 @@ adapter compiles the profile into the provider's own permission and sandbox cont
 | --- | --- | --- |
 | `inspect-untrusted` | yes | Read-only file access, network off, repository-provided config disabled. Claude Code gets no shell. Codex runs commands inside its read-only native sandbox (see below). |
 | `edit-untrusted` | yes | Edits inside an isolated Git worktree, network off, repository config disabled. Claude Code gets no shell, because the shell allowlist is empty. Codex runs commands inside its `workspace-write` native sandbox (see below). |
-| `test-sandboxed`, `trusted-development` | per provider | Each adapter compiles what it can express and refuses the rest with `ELIGIBILITY_NONE`; `list_capabilities` shows which profiles each provider supports on this host. |
+| `test-sandboxed` | no | Both adapters refuse it (`PROFILE_UNSUPPORTED`, reported as `ELIGIBILITY_NONE`): neither provider shows confinement for it yet (`src/adapters/claude/adapter.ts`, `src/adapters/codex/adapter.ts`). |
+| `trusted-development` | only some settings | Each adapter compiles the settings it can express (for example Codex only with a `broad` shell) and refuses the rest with `ELIGIBILITY_NONE`; `list_capabilities` shows which profiles each provider supports on this host. |
 | `privileged` | yes, per provider | Above the client's `max_trust_profile`: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or, for a client with `privileged_approval: "not_required"`, starts at once). An approved run is compiled by its provider's adapter from the approved scope; a provider that cannot express the scope fails the run `ELIGIBILITY_NONE` before any process starts. |
 
 A request above the client's `max_trust_profile` also fails `PERMISSION_BLOCKED`. Non-empty
