@@ -492,6 +492,81 @@ bundles `{events, exit, stderrTail (bounded), timedOut, cancelled}`. A central b
 `Invocation.policyFlags` and `argv` before spawn (FR-POL-03). Per-adapter parsing specifics: to be detailed in M2
 (Claude) and M4 (others).
 
+**Transport kinds and the ACP plan (M4, Proposed, Delegated, T4.7,
+[ADR-0036](../adr/0036-per-run-acp-stdio-client.md)).** `subprocess-jsonl` (M1) and `acp-stdio` (M4, FR-EXE-03) are
+both one provider process per run; `local-service` stays deferred (FR-EXE-04). For `acp-stdio`, `compile` and
+`resumeArgs` return an `Invocation` with `transport: 'acp-stdio'`, `outputFormat: 'acp'`, the agent's argv (for example
+`grok agent stdio`, [TDD §4.3.1](TDD.md#431-grok-build-native-controls-per-profile-and-platform-t420)), no `stdin` text
+(the client owns stdin) and an `acp` plan. The shared client in `src/exec/acp/` speaks JSON-RPC; the adapter never
+does. Method, field and variant names below are from the ACP specification v1 (agentclientprotocol.com, retrieved
+2026-10-13; sources in ADR-0036); provider behaviour behind them is Unverified until each provider's operator capture.
+
+```ts
+export interface AcpPlan {                        // pure data: Invocation.acp when transport is 'acp-stdio'
+  protocolVersion: 1;                             // v2 is draft; any other answer -> OUTPUT_PROTOCOL_ERROR
+  prompt: string;                                 // sent as one `text` content block in `session/prompt`
+  session: { kind: 'new' }                        // `session/new`, cwd = Invocation.cwd
+         | { kind: 'resume'; nativeSessionId: string };  // `session/resume` if advertised, else `session/load`
+  mcpServers: AcpStdioServer[];                   // [] unless ADR-0036 item 7.3 holds (shim only)
+  modeId?: string;                                // `session/set_mode` value compiled for the profile, audited
+  configOptions?: Array<{ configId: string; value: string }>;  // `session/set_config_option`, audited (Unverified use)
+  loginCommand: string;                           // native login named on AUTH_REQUIRED (FR-AUTH-02)
+}
+export interface AcpStdioServer { name: string; command: string; args: string[]; env: [] }  // token never here
+export interface AcpDeclarations {                // on the provider registry entry, additive only (ADR-0035)
+  bypassModeIds: string[];                        // refused outside the approved bypass case (FR-POL-03)
+  bypassConfigValues: Array<{ configId: string; value: string }>;
+  /** Optional parsers from an agent-reported tool call to an argv or a host; used only to narrow (ADR-0036 9.2). */
+  parseExecute?(toolCall: unknown): string[] | null;
+  parseFetchHost?(toolCall: unknown): string | null;
+}
+export interface AcpPermissionSnapshot {          // from the frozen policy snapshot only
+  profile: ResolvedProfile; worktree: string; readOnlyContexts: string[];
+}
+
+/** Pure; COMP-POL (`src/policy/acp-permission.ts`). Inputs: the snapshot and the request only. Never throws. */
+export function decidePermission(request: AcpMessage, snapshot: AcpPermissionSnapshot,
+                                 decl: AcpDeclarations): AcpPermissionDecision;
+export type AcpPermissionDecision =
+  | { answer: 'allow_once'; optionId: string; reason: string }
+  | { answer: 'reject_once'; optionId: string; reason: string }
+  | { answer: 'cancel_turn'; reason: 'no_reject_option' | 'run_cancelling' };  // outcome `cancelled`
+```
+
+Rules (ADR-0036 items 6 to 11): the client never sends `authenticate`, `logout` or a `terminal` auth method;
+`clientCapabilities` advertise `fs` and `terminal` as `false` and nothing else, so `fs/*`, `terminal/*`,
+`elicitation/create`, `_`-prefixed and provider-specific methods get `-32601`; `decidePermission` denies by default,
+selects only `allow_once` or `reject_once`, never `allow_always` or `reject_always`; an allow-everything rule is
+bypass-class and reachable only in an approved bypass scope (open for zemdregon, ADR-0036 open item 1; until then an
+approved bypass run on `acp-stdio` is `Ineligible: PROFILE_UNSUPPORTED`). The pre-spawn audit also refuses an `acp`
+plan whose `modeId` or `configOptions` match the registry's declared bypass values outside that case, or whose
+`mcpServers` is not empty without ADR-0036 item 7.3.
+
+`parseEvent` receives the `session/update` notifications and the final `session/prompt` response as `AcpMessage`s.
+Mapping to `NormalizedEvent`:
+
+| ACP input | `NormalizedEvent` |
+| --- | --- |
+| `session/new` result `sessionId` (passed on by the client) | `session_bound` |
+| `agent_message_chunk` (joined per `messageId`, bounded) | `message` |
+| `agent_thought_chunk` | none (NFR-PRIV-02) |
+| `user_message_chunk`; updates replayed by `session/load` | none (counted) |
+| `tool_call`, `tool_call_update` | `tool_call`: `read`/`search` to `read`; `edit`/`delete`/`move` to `edit`; `execute` to `shell`; else `other`; `denied` when the client rejected it |
+| Client rejected a permission request | `permission_denied` (then `PERMISSION_BLOCKED`) |
+| `usage_update` (`used`, `size`, `cost`) | `usage` (`provider_reported`) |
+| `current_mode_update` to a declared bypass mode outside the bypass case | `permission_denied` (detail `acp_bypass_mode`; the client cancels) |
+| `plan`, `available_commands_update`, `config_option_update`, `session_info_update`, any other variant | `unknown` |
+| Prompt result `stopReason: end_turn` | `result` `ok: true` |
+| `max_tokens`, `max_turn_requests`, `refusal`; `cancelled` not requested by the controller | `result` `ok: false` (`TOOL_FAILURE` unless the adapter maps it, Proposed) |
+| `cancelled` after a controller cancel | run `CANCELLED` |
+| Error response `-32000` on any request | `AUTH_REQUIRED` |
+| Other error response | `provider_error` with the code as `category` |
+
+New run event types (ADR-0036): `acp_initialized` (agent capabilities, auth method ids and types only),
+`acp_permission` (tool kind, decision, reason code, option kind, location count; at most 256 per run, then counted),
+`acp_request_refused` (method name). The `cancel` hook of an `acp-stdio` adapter is the shared client's cancel sequence
+([§8](#8-run-supervisor-details)).
+
 **M9 additions to the adapter contract (Proposed).** Each adapter also declares how it meets FR-GIT-02. (The FR-GIT-01
 part, first drafted here as `gitWrites: 'denied-by-provider-rules' | 'no-shell-profiles-only' | 'undeclared'`, was
 implemented in M2 as `gitWriteControl` above; `undeclared` became `none-documented` because FR-GIT-01 requires the
@@ -1237,8 +1312,8 @@ asserts it.
 
 ## 8. Run supervisor details
 
-`COMP-EXE` implements FR-EXE-01..07 for the `subprocess-jsonl` transport (M1); `acp-stdio` is to be detailed in M4;
-`local-service` deferred (FR-EXE-04).
+`COMP-EXE` implements FR-EXE-01..07 for the `subprocess-jsonl` transport (M1); `acp-stdio` is Proposed in
+[§8.2](#82-acp-stdio-transport-m4-proposed-t47) (M4, ADR-0036); `local-service` deferred (FR-EXE-04).
 
 - **Spawn.** `spawn(argv[0], argv.slice(1), { cwd, env, detached: true, stdio: ['pipe' or 'ignore', 'pipe', 'pipe'],
   shell: false })`. `detached` puts the child in a new session and process group (`pgid = pid`). Persist `pid`, `pgid`
@@ -1276,7 +1351,7 @@ asserts it.
   its leader's start ticks equal the recorded ticks, or when the leader is gone but the group still has live members
   (Linux does not reuse a PID still in use as a group ID). A leader with different ticks (PID reuse) or with no recorded
   ticks is never signalled. Known limit: a crash between spawn and the `pid`/`pgid` commit leaves an orphan that cannot
-  be found (ROADMAP R-12). *Since T4.9* the start time and the group scan come from the platform port of §8.2, and a
+  be found (ROADMAP R-12). *Since T4.9* the start time and the group scan come from the platform port of §8.3, and a
   leader whose presence cannot be determined while its group still answers `kill(-pgid, 0)` is never signalled either
   (`unverifiable`).
 
@@ -1330,7 +1405,48 @@ T11, T14) in `src/lifecycle/verification.ts`, driven by `src/lifecycle/lifecycle
   operator cancel ends it CANCELLED instead.
 - **Workspace.** Files the commands write are part of the post-run checkpoint, like the agent's edits (§5).
 
-### 8.2 Process table per platform (M4, T4.9)
+### 8.2 ACP stdio transport (M4, Proposed, T4.7)
+
+*Proposed (Delegated, 2026-10-13), [ADR-0036](../adr/0036-per-run-acp-stdio-client.md); not built (T4.8). Names are from
+the ACP specification v1 (agentclientprotocol.com, retrieved 2026-10-13); numbers are proposed targets.* Everything in
+§8 above applies to `acp-stdio` unless replaced here.
+
+- **Process.** One agent process per run, spawned like a JSONL provider (own process group, `pid`, `pgid` and start
+  ticks persisted first, allowlisted environment, `cwd` = the run worktree) but with `stdio: ['pipe', 'pipe', 'pipe']`:
+  the client (`src/exec/acp/`) keeps stdin open and writes JSON-RPC to it. No process outlives its run or serves two
+  runs (not FR-EXE-04's persistent transport).
+- **Framing.** Each stdout line is one UTF-8 JSON-RPC 2.0 object (newline-delimited, no embedded newline, ACP
+  transports page). Max message 1 MiB (the JSONL `maxLineBytes`). `OUTPUT_PROTOCOL_ERROR` (kill the group, keep the
+  data) for: an oversize line, invalid UTF-8 or JSON, a JSON array, `jsonrpc` other than `"2.0"`, a response to an id
+  the client did not send, a message for another `sessionId`, more than 8 unanswered agent-to-client requests, or a
+  `protocolVersion` other than 1 in the `initialize` result. No line is ignorable: ACP forbids non-protocol stdout.
+  The client writes only its own messages, one per line; a write error is treated as process exit.
+- **Sequence.** `initialize` (version 1; `clientCapabilities` `fs.readTextFile` and `fs.writeTextFile` `false`,
+  `terminal` `false`, nothing else; `clientInfo`) within 30 s; then `session/new` (`cwd`, `mcpServers` from the plan)
+  or, for a resume, `session/resume` if `sessionCapabilities.resume` was advertised, else `session/load` if
+  `loadSession` was, else `TOOL_FAILURE` (`acp_resume_unsupported`), within 60 s, else `PROCESS_TIMEOUT`; an optional
+  audited `session/set_mode` or `session/set_config_option`; then exactly one `session/prompt` with one `text` block.
+  Never `authenticate`, `logout` or a terminal login; `-32000` on any request ends the run `AUTH_REQUIRED` naming
+  `AcpPlan.loginCommand`.
+- **Agent-to-client requests.** `session/request_permission`: answered at once from `decidePermission` (§2), with a
+  1 s bound after which the answer is a rejection; never left pending. Every other method (`fs/*`, `terminal/*`,
+  `elicitation/create`, `_`-prefixed, provider-specific such as `cursor/ask_question`): JSON-RPC error `-32601` at once
+  and an `acp_request_refused` event. Notifications other than `session/update` are recorded as `unknown`.
+- **End of turn.** The `session/prompt` result or error ends the turn (§2 mapping). The client then closes stdin, waits
+  up to `killGraceMs` for the process to exit, and runs the group kill sequence. The exit status after a result is
+  recorded and does not decide the outcome; an exit before a result is `PROCESS_CRASH`.
+- **Cancel and timeout.** On cancel or a wall-clock or idle timeout: answer every pending permission request with
+  `{"outcome":"cancelled"}`, send the `session/cancel` notification, wait up to `killGraceMs` for the `cancelled`
+  result, then `SIGTERM` and `SIGKILL` the group as above. The group kill never waits on the agent. Idle time counts
+  stdout bytes, as for JSONL; the client answers permission requests itself, so a pending request cannot hold the run
+  idle on the controller's side.
+- **Capture.** `provider_stdout` holds every received line; `provider_stderr` the agent's logs (never parsed); a
+  `provider_stdin` artifact holds what the client sent, after the redactor. `agent_thought_chunk` text stays only in
+  the raw artifact (NFR-PRIV-02).
+- **Backpressure.** As above; while stdout is paused, permission answers already decided are still written.
+- **Reconciliation.** Unchanged: an orphaned ACP agent group is terminated as a JSONL one (FR-EXE-06).
+
+### 8.3 Process table per platform (M4, T4.9)
 
 *Implemented 2026-10-13 (Delegated agent work, not owner-approved; every choice below is Proposed). The macOS path is
 **Unverified**: it was written and unit-tested on Linux against fixtures only, and runs on a real Mac first in the

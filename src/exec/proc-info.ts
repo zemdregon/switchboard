@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 
 /**
- * Platform port for the two process-table questions the controller asks (LLD §8.2, ROADMAP T4.9):
+ * Platform port for the two process-table questions the controller asks (LLD §8.3, ROADMAP T4.9):
  *
  * - the start time of a PID, recorded at spawn and compared at reconciliation to tell a live orphan from a reused PID
  *   (FR-EXE-06, NFR-REL-01); and
@@ -230,7 +230,7 @@ export function procInfoFor(platform: string): ProcInfo {
 export const hostProcInfo: ProcInfo = procInfoFor(process.platform);
 
 /**
- * Start time of `pid` for the ledger's `proc_start_ticks` column, or null when absent or unverifiable (LLD §8.2).
+ * Start time of `pid` for the ledger's `proc_start_ticks` column, or null when absent or unverifiable (LLD §8.3).
  * Linux: clock ticks since boot; macOS: UTC epoch seconds. Only ever compared for equality on the same host.
  */
 export function procStartTicks(pid: number, info: ProcInfo = hostProcInfo): number | null {

@@ -1754,7 +1754,7 @@ function compactEvent(ev: NormalizedEvent): Record<string, unknown> {
   }
 }
 
-/** Re-exported for callers that recorded start ticks through the lifecycle (LLD §8.2). */
+/** Re-exported for callers that recorded start ticks through the lifecycle (LLD §8.3). */
 export { procStartTicks };
 
 /** A Node.js file-system error (has a string `code` such as `EEXIST`). */

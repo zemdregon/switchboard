@@ -79,7 +79,7 @@ const POLL_MS = 20;
 const POST_KILL_WAIT_MS = 5_000;
 
 /**
- * Whether any live process remains in group `pgid`: `kill(-pgid, 0)`, then the platform process table (LLD §8.2)
+ * Whether any live process remains in group `pgid`: `kill(-pgid, 0)`, then the platform process table (LLD §8.3)
  * to ignore zombies, which were killed but not yet reaped and cannot run code. When the table cannot be read the
  * group counts as alive (fail closed: keep waiting, then escalate).
  */

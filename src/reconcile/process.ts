@@ -1,7 +1,7 @@
 /**
  * Orphan provider process groups at startup (FR-EXE-06, LLD §8). The previous controller started each provider in its
  * own process group (`pgid = pid`) and recorded `pid`, `pgid` and the leader's start time before reading output, so a
- * live orphan can be told apart from a reused PID. The start time comes from the platform port (LLD §8.2,
+ * live orphan can be told apart from a reused PID. The start time comes from the platform port (LLD §8.3,
  * `src/exec/proc-info.ts`): `/proc` on Linux, BSD `ps` on macOS (Unverified until T4.10), nothing elsewhere.
  *
  * Proposed identity rules:
