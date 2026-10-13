@@ -1111,7 +1111,9 @@ that, only add the publish ref beside it.
 
 **GC (FR-WS-07, NFR-DATA-01, M3; to be detailed in M3).** Retention job deletes, per expired terminal run, in one
 logical unit: worktree directory (`git worktree remove --force`, then `git worktree prune`), controller branch,
-artifact files (set `deleted_at`). Never touches branches outside `switchboard/`. From M9 the publish refs (§12.3) are
+artifact files (set `deleted_at`). Never touches branches outside `switchboard/`. *Proposed (FR-WS-09, owner decision
+41):* a concurrent run's worktree may also be removed on merge or abandon before retention; the branch and
+artifacts stay until GC. From M9 the publish refs (§12.3) are
 collected with the rest of their meta-session. Orphan sweep: worktree directories or `switchboard/*` branches with no
 matching `run` row are reported by `doctor` and removed only by GC after the retention period.
 

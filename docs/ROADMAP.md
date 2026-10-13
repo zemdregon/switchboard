@@ -545,8 +545,9 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
     be able to be subscribed to by an agent so that it can track it so that if anything changes like if CI passes or
     fails or another agent commits to their PR it notifies them so that they can make changes as necessary."
     *Delegated (agent), not owner-approved, and Proposed. Deferred (§8).* It is not planned work: it needs a PRD
-    use case, SRS requirements and a milestone before any build (AGENTS.md, "Start here"). No requirement ID is
-    reserved. The existing PR subscription in the agent tooling is not part of Switchboard's specification.
+    use case, SRS requirements and a milestone before any build (AGENTS.md, "Start here"). It is recorded as CAP-14
+    (PRD §3) and FR-SUB-01 (SRS §3.16), both Deferred. The existing PR subscription in the agent tooling is not part
+    of Switchboard's specification.
 
 Decisions 10 to 13, 17, 19, 21 and 22 each choose the less restrictive of the options put to zemdregon (decision 18 is the
 principle behind the 2026-10-13 ones); decisions 20 and 23 keep the stricter behaviour already implemented. Their residual
@@ -1385,7 +1386,7 @@ No blocker affects M1, M2 or M9.
 | Learned reranking of retrieved snippets | Deferred | No measurement yet that retrieval helps (R-57); no requirement | — |
 | Code-graph or symbol-level retrieval | Deferred | Not asked for; text chunks first | — |
 | Retrieval index shared across operators or installations | Excluded | Multi-user and hosted operation are excluded; the global index is one installation's | ADR-0011, FR-RAG-09 |
-| Agent subscriptions to PR and merge events (CI pass or fail, another agent's commit to the PR, merge) | Deferred (Proposed, optional; owner's words in decision 42) | Optional, after everything else in the plan. Needs PRD use case, SRS requirements and a milestone before it is built; the GitHub webhook path and its trust rules are unspecified | — (PRD and SRS to be proposed) |
+| Agent subscriptions to PR and merge events (CI pass or fail, another agent's commit to the PR, merge) | Deferred (Proposed, optional; owner's words in decision 42) | Optional, after everything else in the plan. Needs PRD use case, SRS requirements and a milestone before it is built; the GitHub webhook path and its trust rules are unspecified | CAP-14 (PRD §3); FR-SUB-01 (SRS §3.16, Deferred) |
 
 ## 9. Next actionable milestone
 
