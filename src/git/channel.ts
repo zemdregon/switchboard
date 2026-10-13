@@ -24,6 +24,14 @@
  * SHA-256 digest. It is never written to the ledger, an artifact, a log line or the file system. The artifact redactor
  * recognises its prefix (`src/artifacts/redact.ts`), so a provider that prints it does not persist it.
  *
+ * Commit-message task (T11.4, FR-INN-10, LLD §12.1): with an inner-agent service whose `commit_message` task is
+ * enabled with a mode other than `never`, and a project setting other than `off` when the channel opens, the channel is
+ * opened with `message` optional (the shim gets `--message-optional`) and every `commit` call hands the commit library a
+ * {@link CommitMessageTask} whose project setting is resolved again at call time (a later `off` or `local_only` then
+ * denies the draft in the inner pipeline's privacy gate, LLD §13.5). Without that, nothing here changes: the schema,
+ * the argument check and the library call are exactly as before. The service never sees the agent's message, and the
+ * library sanitises whatever it returns before Git sees it.
+ *
  * Channel files (T9.4b, ADR-0029): `OpenChannel.writeFile` writes one of `CHANNEL_FILE_NAMES` (the Claude Code
  * `--mcp-config` definition) into the same private directory, `0600`, exclusive create, no link following; it never
  * holds the token and is removed with the socket.
@@ -40,6 +48,8 @@ import net from "node:net";
 import path from "node:path";
 import type Database from "better-sqlite3";
 import type { ShimSpec } from "../adapters/types.js";
+import type { ProjectInnerSetting } from "../config/inner-agent.js";
+import { commitMessageMode, createCommitMessageTask, type InnerAgentService } from "../inner/index.js";
 import { createLedger, type Ledger } from "../ledger/index.js";
 import { bypassApprovedFor } from "../lifecycle/approval.js";
 import { CommitError, type GitPublisher } from "./commit.js";
@@ -54,6 +64,7 @@ import {
   MAX_REQUEST_BYTES,
   MAX_SOCKET_PATH_BYTES,
   MAX_TOOL_MESSAGE_CHARS,
+  MESSAGE_OPTIONAL_FLAG,
   PROTOCOL_VERSION,
   TOKEN_PREFIX,
   TOKEN_RANDOM_BYTES,
@@ -111,6 +122,16 @@ export interface GitToolServiceOptions {
   readonly fallbackDirs?: readonly string[];
   readonly limits?: Partial<ChannelLimits>;
   readonly now?: () => Date;
+  /**
+   * T11.4 (FR-INN-10): the inner-agent service. The `commit_message` task is offered only when it reports the task
+   * enabled with a mode other than `never`; absent, or off, the `commit` tool is exactly as before.
+   */
+  readonly innerAgent?: InnerAgentService;
+  /**
+   * T11.4 (LLD §13.1, T11.3 note): the effective project/context `inner_agent` setting, resolved from the current
+   * configuration at channel open and again at every call. Absent: `inherit`. A throw is read as `off` (fail closed).
+   */
+  readonly innerSettingFor?: (projectId: string, contextId: string) => ProjectInnerSetting;
 }
 
 /** Facts bound to the token when the channel opens, frozen at admission (policy snapshot) or at LEASED. */
@@ -184,6 +205,8 @@ interface ChannelState {
   readonly callTimes: number[];
   /** Absolute paths of the files written by `writeFile` (T9.4b). */
   readonly files: Set<string>;
+  /** T11.4: the `commit_message` mode this channel was opened with; undefined means `message` stays required. */
+  readonly messageMode: "draft_if_missing" | "always" | undefined;
   closed: boolean;
   closing: Promise<void> | undefined;
   calls: number;
@@ -203,6 +226,8 @@ const AGENT_MESSAGE_CODES: ReadonlySet<string> = new Set([
   "MESSAGE_EMPTY_AFTER_SANITISING",
   "SANITISER_FAILED",
   "INVALID_REQUEST",
+  // T11.4: a fixed text asking for a message; it never says why no draft was available.
+  "MESSAGE_REQUIRED",
   // T9.10: the message names only a fixed reason code (never Git's or the signing program's output).
   "SIGNING_FAILED",
 ]);
@@ -226,6 +251,7 @@ const GENERIC_MESSAGES: Readonly<Record<string, string>> = {
   PUBLISH_LINEAGE_VIOLATION: "the commit was refused by a history check",
   GIT_FAILED: "the commit failed in the controller",
   SIGNING_FAILED: "the commit could not be signed; nothing was committed",
+  MESSAGE_REQUIRED: "no commit message was given and none could be drafted; call commit again with a message",
   INTERNAL_ERROR: "the controller could not complete the call",
 };
 
@@ -270,6 +296,10 @@ export class GitToolService {
   async open(input: OpenChannelInput): Promise<OpenChannel> {
     if (this.channels.has(input.runId)) throw new ChannelOpenError(`run ${input.runId} already has a tool channel`);
     if (!/^run_[0-9A-Za-z]{1,64}$/u.test(input.runId)) throw new ChannelOpenError("invalid run id");
+    // T11.4: decided once per channel, before anything is created; an `off` project keeps `message` required.
+    const mode = commitMessageMode(this.options.innerAgent);
+    const messageMode =
+      mode !== undefined && this.innerSetting(input.projectId, input.contextId) !== "off" ? mode : undefined;
     const { dir, fallback } = await this.socketDir(input.runId);
     const socketPath = path.join(dir, SOCKET_FILE_NAME);
     const token = `${TOKEN_PREFIX}${randomBytes(TOKEN_RANDOM_BYTES).toString("base64url")}`;
@@ -290,6 +320,7 @@ export class GitToolService {
       inFlight: new Set(),
       callTimes: [],
       files: new Set(),
+      messageMode,
       closed: false,
       closing: undefined,
       calls: 0,
@@ -325,13 +356,21 @@ export class GitToolService {
         socket_dir: dir,
         fallback,
         ...(state.tools.includes("push") && input.pushReach !== undefined ? { credential_reach: input.pushReach } : {}),
+        ...(messageMode !== undefined ? { commit_message: messageMode } : {}),
       },
     });
     return {
       runId: input.runId,
       socketPath,
       shim: {
-        command: [...this.options.shimCommand, "--socket", socketPath, "--tools", state.tools.join(",")],
+        command: [
+          ...this.options.shimCommand,
+          "--socket",
+          socketPath,
+          "--tools",
+          state.tools.join(","),
+          ...(messageMode !== undefined ? [MESSAGE_OPTIONAL_FLAG] : []),
+        ],
         socketPath,
         dir,
         toolNames: [...state.tools],
@@ -340,6 +379,17 @@ export class GitToolService {
       writeFile: (name, contents) => this.writeChannelFile(state, name, contents),
       close: () => this.close(input.runId),
     };
+  }
+
+  /** {@link GitToolServiceOptions.innerSettingFor}, failing closed to `off`. */
+  private innerSetting(projectId: string, contextId: string): ProjectInnerSetting {
+    const resolve = this.options.innerSettingFor;
+    if (resolve === undefined) return "inherit";
+    try {
+      return resolve(projectId, contextId);
+    } catch {
+      return "off";
+    }
   }
 
   /** {@link OpenChannel.writeFile}. */
@@ -557,22 +607,35 @@ export class GitToolService {
       if (Object.keys(req.arguments).length !== 0) return this.refuse(state, "INVALID_ARGUMENTS", tool);
       return this.dispatchPush(state);
     }
-    const args = parseCommitArguments(req.arguments);
+    const args = parseCommitArguments(req.arguments, state.messageMode !== undefined);
     if ("code" in args) return this.refuse(state, args.code, tool);
     // 6. run state and binding.
     const bound = this.checkRun(state, tool);
     if ("error" in bound) return bound.error;
     // 7. the commit library.
+    const innerAgent = this.options.innerAgent;
+    const nativeSessionIds = state.input.nativeSessionIds?.() ?? [];
     try {
       const result = await this.options.publisher.commit({
         runId: state.input.runId,
-        message: args.message,
+        ...(args.message !== undefined ? { message: args.message } : {}),
+        ...(state.messageMode !== undefined && innerAgent !== undefined
+          ? {
+              messageTask: createCommitMessageTask(innerAgent, {
+                mode: state.messageMode,
+                runId: state.input.runId,
+                metaSessionId: state.input.metaSessionId,
+                projectSetting: this.innerSetting(state.input.projectId, state.input.contextId),
+                nativeSessionIds,
+              }),
+            }
+          : {}),
         ...(args.paths !== undefined ? { paths: args.paths } : {}),
         identity: state.input.identity,
         projectId: state.input.projectId,
         contextId: state.input.contextId,
         origin: "commit_tool",
-        nativeSessionIds: state.input.nativeSessionIds?.() ?? [],
+        nativeSessionIds,
         // T9.10: BR-31 for signing, evaluated at call time like `push`; the exemption input is the controller's own.
         ...(state.input.sign === true
           ? {
@@ -737,14 +800,19 @@ function parseRequest(line: Buffer): { token: string; tool: string; arguments: R
   return { token: doc.token, tool: doc.tool, arguments: doc.arguments };
 }
 
+/** `messageOptional` (T11.4): a missing `message` is accepted; a present one is checked exactly as before. */
 function parseCommitArguments(
   args: Record<string, unknown>,
-): { message: string; paths?: string[] } | { code: "INVALID_ARGUMENTS" | "MESSAGE_TOO_LONG" } {
+  messageOptional: boolean,
+): { message?: string; paths?: string[] } | { code: "INVALID_ARGUMENTS" | "MESSAGE_TOO_LONG" } {
   for (const k of Object.keys(args)) if (k !== "message" && k !== "paths") return { code: "INVALID_ARGUMENTS" };
   const { message, paths } = args;
-  if (typeof message !== "string" || message.length === 0) return { code: "INVALID_ARGUMENTS" };
-  if (message.length > MAX_TOOL_MESSAGE_CHARS) return { code: "MESSAGE_TOO_LONG" };
-  if (paths === undefined) return { message };
+  if (!(messageOptional && message === undefined)) {
+    if (typeof message !== "string" || message.length === 0) return { code: "INVALID_ARGUMENTS" };
+    if (message.length > MAX_TOOL_MESSAGE_CHARS) return { code: "MESSAGE_TOO_LONG" };
+  }
+  const msg = typeof message === "string" ? { message } : {};
+  if (paths === undefined) return msg;
   if (!Array.isArray(paths) || paths.length === 0 || paths.length > MAX_COMMIT_PATHS) {
     return { code: "INVALID_ARGUMENTS" };
   }
@@ -753,7 +821,7 @@ function parseCommitArguments(
       return { code: "INVALID_ARGUMENTS" };
     }
   }
-  return { message, paths: paths as string[] };
+  return { ...msg, paths: paths as string[] };
 }
 
 /** The directory must be a real directory (not a link), owned by this user, with no group or other access. */

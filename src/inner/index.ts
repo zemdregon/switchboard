@@ -20,12 +20,31 @@ import {
 import type { InnerBackend } from "./port.js";
 
 export * from "./breaker.js";
+export * from "./commit-message.js";
 export * from "./config.js";
 export * from "./fake-backend.js";
 export * from "./http-backend.js";
 export * from "./pipeline.js";
 export * from "./port.js";
 export * from "./truncate.js";
+
+/**
+ * Product and vendor names of the roadmap's provider list, scrubbed from every prompt in addition to the configured
+ * provider ids (LLD §13.4 step 2b, FR-INN-10 "no provider name"). Delegated (T11.4): the LLD says "the configured provider
+ * names"; config ids such as `claude-code` alone would miss the bare product name. Matched as whole words, case-insensitive.
+ */
+export const PROMPT_PROVIDER_NAMES: readonly string[] = [
+  "claude",
+  "anthropic",
+  "codex",
+  "openai",
+  "gemini",
+  "antigravity",
+  "cursor",
+  "grok",
+  "kimi",
+  "opencode",
+];
 
 /**
  * - `off`: no `inner_agent` section, or `enabled: false` (FR-INN-01). Every task uses its fallback.

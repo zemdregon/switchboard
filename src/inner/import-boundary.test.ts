@@ -4,7 +4,7 @@
  * the inner-agent service (`src/inner/`) or its types, so it cannot be injected into them. The check is on DIRECT imports
  * (static, type-only, re-export and dynamic forms) of each protected module. It is deliberately not transitive: a
  * protected module such as `lifecycle.ts` reaches most of the tree (for example `git/channel.ts`, where the commit-message
- * task of T11.4 will legitimately call the service), and reaching a caller is not being handed the service. Known gap
+ * task of T11.4 legitimately calls the service), and reaching a caller is not being handed the service. Known gap
  * (Assumption): a protected module that imports a helper which itself re-exports `src/inner/` would not be caught; no
  * such helper exists, and the helper's own import would have to be added in a reviewed change.
  *
@@ -18,6 +18,8 @@
  * - verification results: `src/lifecycle/verification.ts`;
  * - the push path and the sanitiser rule table: `src/git/push*.ts`, `publish-ref.ts`, `ref-guard.ts`,
  *   `credential-reach.ts`, `sanitize.ts`, `safe-pattern.ts`;
+ * - the commit algorithm (T11.4, Delegated): `src/git/commit.ts` applies the sanitiser to every message and receives the
+ *   commit-message task only as an injected function from `git/channel.ts`, so it never imports the service itself;
  * - redaction: `src/artifacts/redact.ts`;
  * - usage accounting (T11.5): `src/usage/`, `src/ledger/` and `src/mcp/envelope.ts`; the capacity estimator (M6) will live
  *   under `src/usage/` or `src/routing/` and is added here when it exists.
@@ -36,7 +38,7 @@ const PROTECTED: readonly RegExp[] = [
   /^lifecycle\/(lifecycle|states|approval|verification)\.ts$/,
   /^mcp\/errors\.ts$/,
   /^routing\/eligibility\.ts$/,
-  /^git\/(push[^/]*|publish-ref|ref-guard|credential-reach|sanitize|safe-pattern)\.ts$/,
+  /^git\/(push[^/]*|publish-ref|ref-guard|credential-reach|sanitize|safe-pattern|commit)\.ts$/,
   /^artifacts\/redact\.ts$/,
   // T11.5 (FR-INN-15): usage and capacity code, the ledger and the envelope that reads usage never see the service.
   /^usage\//,
@@ -139,6 +141,7 @@ describe("inner-agent import boundary (FR-INN-06)", () => {
       "routing/eligibility.ts",
       "git/push.ts",
       "git/sanitize.ts",
+      "git/commit.ts",
       "adapters/failure.ts",
       "artifacts/redact.ts",
       "usage/observations.ts",
