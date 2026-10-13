@@ -3,7 +3,7 @@
 | Field | Value |
 | --- | --- |
 | Status | Draft, baseline for milestone M1 |
-| Owns | Target users, use cases, user journeys UJ-1..UJ-9, capabilities CAP-1..CAP-11 and their priorities, the product surface, non-goals, and product-level acceptance criteria per capability. |
+| Owns | Target users, use cases, user journeys UJ-1..UJ-11, capabilities CAP-1..CAP-13 and their priorities, the product surface, non-goals, and product-level acceptance criteria per capability. |
 | Does not own | Business outcomes ([BRD](BRD.md)); requirements ([SRS](SRS.md)); workflows and business rules ([FRD](FRD.md)); milestone scope and status ([ROADMAP](../ROADMAP.md)); components ([HLD](../design/HLD.md)). |
 | Last reconciled | 2026-10-12 |
 
@@ -18,7 +18,9 @@ Code and, since 2026-10-13, Muse Code from Meta (FR-ADP-12). It exposes a small 
 through its documented headless mode inside an isolated workspace under a named trust profile, and keeps its own
 record of the work so tasks can move between providers. It never logs in to a provider and never handles credentials
 ([ADR-0003](../adr/0003-no-credential-handling.md)). It may also hand cheap, low-stakes text tasks to an *inner agent*
-the operator chooses, so the provider CLIs keep their capacity for coding (CAP-12). The business case is in the
+the operator chooses, so the provider CLIs keep their capacity for coding (CAP-12). It keeps a project on one provider
+and model and can index a project's files, so provider prompt caches stay warm and agents are sent less context (CAP-6,
+CAP-7, CAP-13). The business case is in the
 [BRD](BRD.md); the stated intent comes from the introduction of the [original
 blueprint](../research/headless-ai-coding-controller.md) (superseded on technical details by the [verified
 research](../research/headless-ai-coding-controller-verified-2026-10-12.md)).
@@ -46,18 +48,19 @@ Priorities are MoSCoW as in [SRS §1](SRS.md#1-conventions). Milestones are defi
 | CAP-3 | Policy and trust profiles | Five named trust profiles compiled into each adapter's native controls, with no automatic bypass flags, no loading of repository-supplied agent config under untrusted profiles, and per-client maximum trust. | Must | M2 (`inspect-untrusted`, `edit-untrusted`); M3 (remaining profiles) | BO-2, BO-3 | FR-POL-01–10, FR-MCP-06 |
 | CAP-4 | Workspace isolation | Write-capable runs execute in a controller-created Git worktree from a recorded checkpoint, with one write lease per worktree, post-run checkpoints and diffs, rollback, and no remote pushes except through controlled publication (CAP-11). | Must | M1 (retention and GC M3) | BO-3, BO-4 | FR-WS-01–07 |
 | CAP-5 | Meta-sessions and cross-provider continuity | A controller-owned task record outlives any provider session. Continuing on the same provider uses native resume; continuing elsewhere uses a handoff bundle built from controller evidence. | Must | M1 (schema, events), M2 (Claude resume), M5 (all adapters, handoff) | BO-4 | FR-SES-01–06 |
-| CAP-6 | Routing with explanation | Hard eligibility filtering first, then weighted scoring; every decision persisted and explainable; routing hints can only narrow the choice. | Must (eligibility); Should (heuristic classifier); learned routing Deferred | M2 (eligibility only), M7 (scoring, classifier, `explain_route`) | BO-1, BO-5 | FR-RTE-01–05, FR-MCP-02, 05 |
-| CAP-7 | Capacity estimation and backpressure | Usage is recorded as reported; a per-provider confidence-labelled capacity estimate feeds scheduling; bounded queue, concurrency limits, breakers, bounded retries and failover. | Must | M1 (queue, global limit), M2 (record usage), M6 | BO-1, BO-4, BO-5 | FR-CAP-01–07, FR-MCP-02, FR-ADP-10 |
+| CAP-6 | Routing with explanation | Hard eligibility filtering first, then weighted scoring; every decision persisted and explainable; routing hints can only narrow the choice. Sticky affinity (owner decision 40): a project stays on its last provider and model, and moves only for a listed reason (user request, capacity exhausted, ineligible, failed after retry), never for a better score, so provider prompt caches are not needlessly lost. | Must (eligibility); Should (heuristic classifier); learned routing Deferred | M2 (eligibility only), M7 (scoring, classifier, `explain_route`, affinity) | BO-1, BO-5, BO-9 | FR-RTE-01–09, FR-MCP-02, 05 |
+| CAP-7 | Capacity estimation and backpressure | Usage is recorded as reported; a per-provider confidence-labelled capacity estimate feeds scheduling; bounded queue, concurrency limits, breakers, bounded retries and failover. Cache token counts are recorded where a provider CLI reports them, and per project the runs that kept or switched provider and model are counted by reason (evidence, not a claim of cache hits). | Must | M1 (queue, global limit), M2 (record usage), M6 | BO-1, BO-4, BO-5, BO-9 | FR-CAP-01–08, FR-MCP-02, FR-ADP-10 |
 | CAP-8 | Telemetry and audit | Every lifecycle step appends a run event; secrets and raw prompts never reach telemetry; optional OpenTelemetry export; run records retrievable after the fact. | Must (events, redaction); Should (OTel export); read-only dashboard Deferred | M1 (events); M8 (OTel) | BO-2, BO-5 | FR-TEL-01–04, NFR-OBS-01 |
 | CAP-9 | Operator CLI | `serve`, `doctor`, `runs list/show/cancel`, `approve`, `deny`, `adapters validate`, `capacity`, `projects list/show/validate`, and the config file. No login commands and no web interface. | Must | M1 (config, `doctor`, `runs`), M2 (`serve`), M3 (`approve`, `deny`), M4 (`adapters validate`), M6 (`capacity`), M9 (`projects`) | BO-3, BO-5, BO-6 | FR-OPS-01–05, FR-PRJ-08 |
 | CAP-10 | Projects, contexts and environments | Switchboard manages *projects*: the environment the coding agents operate from (the operator's host or a container, both supported and chosen per project by the deployer, owner decision 24; host delivered first) and the *contexts* of that project, such as its repositories. The orchestrator delegates to a project instead of a bare path; a project can cap the trust profile and the providers. | Must | M9 (host environments, repository contexts); M10 (container environments; Q-6 settled by delegation, verified in the M10 spike) | BO-3, BO-4 | FR-PRJ-01–09 |
 | CAP-11 | Controlled commits and publication | Agents have no commit or push ability. Switchboard-injected tools make the commits and, only when a context's policy allows, the pushes, so commits carry no co-author trailer, "generated by" footer or session ID and look like any other commit. The controller keeps an internal record of which agent produced which commit. | Must | M2 (agents denied Git writes), M9 (tools, publication, audit) | BO-3, BO-7 | FR-GIT-01–09, FR-WS-05 |
 | CAP-12 | Inner agent | One optional cheap, free or self-hosted model of the operator's choosing, called by the controller (not by orchestrators) for opt-in low-stakes text tasks: commit messages, PR drafts, routing classification, handoff and log summaries, run titles. Stateless, no tools, no authority over security or run status; every output validated; a deterministic fallback for every task; usage kept apart from provider capacity; explicit privacy rules for local versus remote models. Owner decision 14. | Must (core, commit messages); Should (PR drafts, routing, summaries, `cli` backend, CLI views); Could (titles); model-assisted redaction Deferred | M11 | BO-8, BO-1 | FR-INN-01–18 |
+| CAP-13 | Retrieval index | Optional, automatic per-project index of a project's readable contexts, kept in the data directory and never in the repository, searched at admission to prepend a small, labelled context pack to the delegated prompt and through a read-only MCP tool, so agents are sent less context. An optional deployment-wide index holds operator-added knowledge and content that projects explicitly contribute, read only by projects that opt in. Retrieved text is untrusted data with no authority over security or results; secrets are excluded and redacted best effort; a remote embedding backend sees source only with both inner-agent gates. Inert with no embedding backend. Owner decision 40. | Should (core), Must (isolation, exclusions, untrusted-data and freshness rules); global index Should; agent-callable search Could | M12 | BO-9, BO-1 | FR-RAG-01–14 |
 
 Deferred capabilities, tracked in [ROADMAP §8](../ROADMAP.md#8-deferred-and-excluded-work): read-only usage dashboard
 (FR-TEL-04), upstream ACP server, learned routing (FR-RTE-05), OpenCode persistent service transport (FR-EXE-04), native
-Windows support (NFR-PORT-03), context kinds other than repositories, model-assisted redaction (FR-INN-18), and
-multi-user or hosted operation.
+Windows support (NFR-PORT-03), context kinds other than repositories, model-assisted redaction (FR-INN-18),
+approximate-nearest-neighbour indexes and learned reranking for retrieval, and multi-user or hosted operation.
 
 ### 3.1 Inner agent task catalogue
 
@@ -122,10 +125,12 @@ says the inner model draws on the same subscription as a routed provider, in whi
 | Approve one exceptional privileged run | Operator | CAP-3, CAP-9 |
 | Accept a new provider CLI version after conformance checks | Operator | CAP-2, CAP-9 |
 | Let a cheap or self-hosted model write commit messages, PR drafts and summaries instead of a premium provider | Operator | CAP-12 |
+| Keep a project on one provider and model so prompt caches stay warm, switching only when usage is maxed out or on request | Operator, Orchestrator | CAP-6, CAP-7 |
+| Give agents relevant project context from an index instead of re-sending large amounts of it | Operator | CAP-13 |
 
 ### 4.2 User journeys
 
-Workflows behind these journeys are specified in the [FRD](FRD.md) (WF-1 to WF-9); journeys only name the requirements
+Workflows behind these journeys are specified in the [FRD](FRD.md) (WF-1 to WF-14); journeys only name the requirements
 involved.
 
 #### UJ-1 First-time setup
@@ -242,6 +247,23 @@ involved.
   run may do depends on that model.
 - CAP: CAP-12, CAP-9, CAP-11. FR: FR-INN-01–17.
 
+#### UJ-11 Project stays on its provider, with retrieved context
+
+- Trigger: the operator works repeatedly on one project and wants fewer tokens per task (owner decision 40).
+- Steps: (1) the operator configures an embedding backend and leaves project retrieval at `auto`; `switchboard doctor`
+  reports the backend, its locality and the index state; (2) the daemon indexes the project's contexts in the
+  background, skipping secrets and ignored files; (3) the orchestrator delegates tasks; each routes to the provider and
+  model the project last used, and `get_run` shows that affinity held; (4) the prompt carries a few labelled snippets
+  from the index, marked as untrusted reference data, and the original request is unchanged; (5) when a provider's
+  usage is nearly spent, or the orchestrator names a provider, the project moves and the routing decision records why;
+  (6) `switchboard index status` and `capacity` show index state and kept-versus-switched counts.
+- Alternate: no backend is configured and everything behaves as before; the index is stale or a step fails and the run
+  goes ahead without snippets; a project sets `use_global: true` and also sees labelled snippets from the
+  deployment-wide index.
+- Outcome: the project does not bounce between providers, caches stay warm where providers support them, and agents are
+  sent less context. The saving is not measured by the product.
+- CAP: CAP-6, CAP-7, CAP-13. FR: FR-RTE-06–09, FR-CAP-08, FR-RAG-01–14.
+
 ## 5. Product surface
 
 The owner asked for an application plus a backend. In this product:
@@ -294,6 +316,12 @@ The following are out of scope. Sources: the stated intent in [R1], [ADR-0003](.
 - **An inner agent with authority or tools.** The inner agent writes text; it never decides permissions, eligibility,
   approvals, redaction, failure classes or run status, and orchestrators cannot call it directly ([ADR-0016](../adr/0016-inner-agent.md),
   FR-INN-02, FR-INN-06).
+- **Retrieved text with authority, and sharing between projects by default.** Indexed content is untrusted data that
+  never decides permissions, eligibility or approvals, and no project reads another's index unless the content's
+  project contributes it and the reading project opts in
+  ([ADR-0031](../adr/0031-retrieval-index.md), FR-RAG-07, FR-RAG-10).
+- **Round-robin or load-spreading of one project across providers.** A project moves only for a listed reason
+  ([ADR-0032](../adr/0032-provider-model-affinity.md), FR-RTE-06, FR-RTE-07).
 - **Storing a hosted model's API key in Switchboard**, for now (Q-23). Key-bearing services are reached through an
   operator-run local gateway or a CLI that holds its own login.
 - **Windows**, for now (NFR-PORT-03, deferred).
@@ -336,3 +364,9 @@ Each criterion is observable and is checked when the named milestone delivers. D
 | CAP-12 | An agent `commit` call without a message gets a drafted message that passes the sanitiser and contains no trailer, footer or identifier even when the fake backend returns them; with the task suspended or the backend down the tool returns an error asking for a message. | M11 |
 | CAP-12 | Inner usage appears only in `inner_call` records and never in `usage_observation` or `get_capacity`, unless `shares_subscription_with` is set, in which case the observation is labelled `inner_agent` and `doctor` warns. | M11 |
 | CAP-12 | A `remote` backend is unusable without `allow_remote`; diffs reach it only with the per-task opt-in; a project set to `local_only` never sends to it; a planted secret in a diff does not appear in the captured prompt; no inner-agent output reaches any policy component (import-boundary test). | M11 |
+| CAP-6 | A project's second and later runs use the same provider and model whatever the scores say; the only things that move it are the listed reasons, each recorded as `affinity_switch_reason` in the routing decision; replaying recorded decisions never finds a switch without a reason. | M7 |
+| CAP-7 | Cache read and creation token counts are recorded as usage observations with their source where a provider reports them; per project, the counts of runs that kept or switched provider and model by reason are shown; no output claims a cache hit. | M6 |
+| CAP-13 | With no embedding backend configured every behaviour is unchanged and all tests pass; with a fake backend, an indexed project's run prompt carries labelled, bounded snippets and the stored request text is unchanged. | M12 |
+| CAP-13 | Files outside a context root, ignored files, secret-denylist files, symlinks leaving the root and nested repositories are not indexed; a planted secret in an indexed file does not reach the fake backend's captured input; one project's search never returns another project's content. | M12 |
+| CAP-13 | Any retrieval failure leaves the run unaffected; a snippet whose file changed since indexing is dropped or flagged; no retrieved content reaches any policy, eligibility or approval component (import-boundary test). | M12 |
+| CAP-13 | A `remote` embedding backend is unusable without `allow_remote`, and sees source only with `allow_source_content`; the global index is off by default, and a run reads it only when its project sets `use_global`; `index clear` removes vectors and chunk text. | M12 |
