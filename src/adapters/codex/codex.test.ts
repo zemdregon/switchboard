@@ -8,6 +8,7 @@ import type { OverridableProfile, PrivilegedScope, ProfileOverride } from "../..
 import { auditInvocation, BYPASS_FLAGS, findBypassFlags } from "../audit.js";
 import { missingRequiredKinds, runConformanceCase, runConformanceSuite } from "../conformance.js";
 import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
+import { replayLauncher } from "../fixtures/replay.js";
 import { AdapterRegistry } from "../registry.js";
 import { createProbeRunner, startAdapterRun } from "../run.js";
 import {
@@ -22,14 +23,7 @@ import {
   type ResolvedProfile,
 } from "../types.js";
 import { CODEX_BYPASS_OUTSIDE_PRIVILEGED, CODEX_BYPASS_UNDOCUMENTED, CodexAdapter, resolveOnPath } from "./adapter.js";
-import {
-  codexConformanceCases,
-  EDIT_PROFILE,
-  fixturePath,
-  INSPECT_PROFILE,
-  REPLAY_PATH,
-  replayAdapter,
-} from "./fixtures/cases.js";
+import { codexConformanceCases, EDIT_PROFILE, fixturePath, INSPECT_PROFILE, replayAdapter } from "./fixtures/cases.js";
 import { CODEX_LOGIN_COMMAND } from "./protocol.js";
 
 const dirs: string[] = [];
@@ -400,7 +394,10 @@ describe("probe (FR-ADP-02 steps 1-5)", () => {
   });
 
   it("probes the replay binary through the real supervisor runner", async () => {
-    const a = new CodexAdapter({ executable: process.execPath, launcherArgs: [REPLAY_PATH, fixturePath("resume")] });
+    const a = new CodexAdapter({
+      executable: process.execPath,
+      launcherArgs: replayLauncher("codex", fixturePath("resume")),
+    });
     const r = await a.probe(createProbeRunner());
     expect(r.steps.every((s) => s.ok)).toBe(true);
     expect(r.binaryVersion).toMatch(/^codex-cli 0\.0\.1 /);

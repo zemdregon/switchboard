@@ -144,7 +144,7 @@ const servers: { mcp: SwitchboardMcpServer; client: Client }[] = [];
 /** Probe runner: the Claude replay script only replays streams, so its probe/auth commands are answered here. */
 const realRunner = createProbeRunner();
 const probeRunner: ProbeRunner = async (argv, opts) => {
-  if (argv.includes(REPLAY_SCRIPT)) {
+  if (argv.includes(REPLAY_SCRIPT) && argv[argv.indexOf("--provider") + 1] === "claude") {
     const tail = argv.slice(argv.indexOf("--") + 1).join(" ");
     const out = { exitCode: 0, stderr: "", timedOut: false };
     if (tail === "--version") return { ...out, stdout: "2.1.296 (Claude Code)\n" };

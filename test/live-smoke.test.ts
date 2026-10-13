@@ -3,8 +3,9 @@
  * and CI never reach a real provider (AGENTS.md "Live provider calls are opt-in"; TDD §3.6).
  */
 import { execFileSync } from "node:child_process";
+import { readdirSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts", "live-smoke.mjs");
@@ -34,5 +35,38 @@ describe("live smoke script (opt-in)", () => {
     }
     expect(status).toBe(2);
     expect(stderr).toContain("SWITCHBOARD_LIVE_PROVIDER must be one of claude, codex");
+  });
+});
+
+describe("live smoke provider plug-ins (T4.3)", () => {
+  const dir = path.join(path.dirname(SCRIPT), "live", "providers");
+  const ids = readdirSync(dir)
+    .filter((f) => f.endsWith(".mjs"))
+    .map((f) => f.slice(0, -4))
+    .sort();
+
+  it("has a plug-in for Claude Code and Codex, each exporting the whole contract", async () => {
+    expect(ids).toEqual(expect.arrayContaining(["claude", "codex"]));
+    for (const id of ids) {
+      const plugin = (await import(pathToFileURL(path.join(dir, `${id}.mjs`)).href)).default;
+      expect(plugin.id, id).toBe(id);
+      expect(typeof plugin.group, id).toBe("string");
+      expect(typeof plugin.checkPrefix, id).toBe("string");
+      for (const hook of [
+        "createAdapter",
+        "probeChecks",
+        "authChecks",
+        "observeEvent",
+        "streamChecks",
+        "gitWriteChecks",
+      ]) {
+        expect(typeof plugin[hook], `${id}.${hook}`).toBe("function");
+      }
+    }
+  });
+
+  it("the skip message lists the plug-ins found", () => {
+    const out = execFileSync(process.execPath, [SCRIPT], { env: { PATH: "/nonexistent" }, encoding: "utf8" });
+    expect(out).toContain(`SWITCHBOARD_LIVE_PROVIDER=${ids.join("|")}`);
   });
 });
