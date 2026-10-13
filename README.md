@@ -19,9 +19,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   the live malicious-fixture checks, is not. See [ROADMAP §6](docs/ROADMAP.md#6-milestones) for each task.
 - Providers other than Claude Code and Codex are not implemented.
 
-What works today: `doctor`, `runs list|show|cancel`, `approve`, `deny`, `gc`, `projects list|show|validate`,
-`git push`, and `serve` exposing seven MCP tools over stdio. The five trust profile names exist; which of them a
-provider can run is listed in [Trust profiles](#trust-profiles) and by `list_capabilities`. Read
+What works today: `doctor`, `runs list|show|cancel`, `approve`, `deny`, `gc`, `projects list|show|validate|approve`,
+`git push`, and `serve` exposing seven MCP tools over stdio (ten for a client with `manage_projects`). The five trust
+profile names exist; which of them a provider can run is listed in [Trust profiles](#trust-profiles) and by
+`list_capabilities`. Read
 [Known limitations](#known-limitations) before relying on it.
 
 ## Single operator, your own accounts
@@ -93,6 +94,8 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `allowed_roots` | yes | Non-empty list of directories. A task's `workspace_path` must be under one of them. Each must exist. Relative paths resolve against the config file's directory. |
 | `mcp_clients` | yes | Entries `{ "id", "max_trust_profile", "privileged_approval"?, "projects"? }`. `id` matches `^[a-z0-9][a-z0-9_-]{0,63}$` and must be unique. `serve --client <id>` binds a session to one entry. |
 | `mcp_clients[].projects` | no | Ids of the configured `projects` this client may use with `delegate_task`'s `project` input and see in `list_projects`. An id that names no project stops startup. A client without the list can use no project (workspace paths still work). |
+| `mcp_clients[].manage_projects` | no | `true` gives this client the `create_project`, `update_project` and `delete_project` tools for its own *dynamic projects* (see [Dynamic projects](#dynamic-projects)). Default `false`: the tools do not exist for it. |
+| `mcp_clients[].max_push_policy` | no | `"none"` (default) or `"branch"`: the widest push policy a dynamic project of this client may declare. Only with `manage_projects: true`. A push-enabled project still waits for `projects approve`. |
 | `mcp_clients[].privileged_approval` | no | `"required"` (default) or `"not_required"`. With `not_required`, that client's `privileged` requests run without `switchboard approve` (see [Trust profiles](#trust-profiles)). Allowed only when the client's `max_trust_profile` is `privileged`; `doctor` warns for every client that sets it. |
 | `data_dir` | no | Where the ledger, artifacts and worktrees live. Default `$XDG_DATA_HOME/switchboard` (`~/.local/share/switchboard`). |
 | `limits.global_concurrency` | no | Integer 1 to 64. Default 4. |
@@ -163,7 +166,8 @@ Only one `serve` can hold a data directory at a time.
 | `cancel_run` | Requests cancellation of a run (asynchronous; poll `get_run`). |
 | `get_artifacts` | Lists a run's artifacts (diff, changed files, test report, ...) with hashes; small ones inline. |
 | `list_capabilities` | Lists providers with adapter status, version, validated range, auth state and supported trust profiles. |
-| `list_projects` | Lists the configured projects this client may use (id, name, environment kind, contexts, trust ceiling, allowed providers). Read-only; returns no filesystem paths. |
+| `list_projects` | Lists the configured projects this client may use (id, name, environment kind, contexts, trust ceiling, allowed providers), plus its own dynamic projects marked `source: "dynamic"` with their revision and status. Read-only; returns no filesystem paths. |
+| `create_project`, `update_project`, `delete_project` | Only for a client with `manage_projects`. Create, revise or delete a dynamic project this client owns. See [Dynamic projects](#dynamic-projects). |
 
 Tool schemas are published through MCP `tools/list`.
 
@@ -180,6 +184,7 @@ switchboard git push <session_or_run_id>
 switchboard projects list
 switchboard projects show <id>
 switchboard projects validate [<id>]
+switchboard projects approve <id> [--revision <n>] [--reject]
 ```
 
 `runs cancel`, `approve` and `deny` write a request that a running `serve` applies; with no `serve` running they apply
@@ -234,6 +239,27 @@ work in this stage: a `container` project is listed but fails `validate` with "c
 implemented yet (M10)". `delegate_task` with `project` runs in the project's primary repository context, starting
 from its `base_ref`; a `container` project is refused before anything is written. A meta-session stays in the project it
 was created in, and runs and meta-sessions record the project in the ledger (schema version 2).
+`projects list|show` also show dynamic projects from the ledger (read-only), with `source` `config` or `dynamic`, the
+client that created them, the latest revision and its state, the revision in force and what a pending revision needs
+approval for.
+
+#### Dynamic projects
+
+A client whose entry sets `"manage_projects": true` can define its own projects with `create_project`, change them with
+`update_project` (each call writes a new revision) and remove them with `delete_project`. Such a project uses the same
+shape and the same checks as a configured one: the repository must be a Git repository under an allowed root (never
+inside `data_dir`), and `base_ref` must exist. Its trust ceiling, providers and push policy cannot exceed the client's
+own (`max_trust_profile`, the providers you have not disabled, `max_push_policy`). A client cannot touch your configured
+projects, or another client's: only the creator sees and uses a dynamic project, and an id that is already configured
+is refused. Every call, accepted or refused, is recorded in the ledger.
+
+A revision with a `container` environment, a push policy other than `none`, a commit `identity`, `sign: true`, or a
+wider trust ceiling or provider set than the revision in force is stored as `PENDING_APPROVAL` and cannot start runs
+until you approve it; until then the previous revision stays in force. Review it with `switchboard projects show <id>`,
+then run `switchboard projects approve <id>` (add `--revision <n>` once the project has more than one revision, and
+`--reject` to refuse it). There is no way to approve over MCP. `approve` works while `serve` runs. Deleting a project
+is refused while one of its runs is still going; its history stays. Not yet: pushing from a dynamic project (a push is
+refused even after approval) and container environments (milestone 10).
 
 `gc` is the retention clean-up. By default it is a dry run: it lists the idle meta-sessions older than
 `retention.days` (all their runs finished, no lease) and any orphans, and changes nothing. `gc --apply` removes each

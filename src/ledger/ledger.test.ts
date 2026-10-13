@@ -23,6 +23,9 @@ const EXPECTED_TABLES = [
   "git_commit",
   "git_push",
   "meta_session",
+  "project_event",
+  "project_revision",
+  "project_revision_decision",
   "provider_binding",
   "provider_health",
   "route_decision",
@@ -144,8 +147,8 @@ describe("ledger migrations", () => {
                         client_id, project_id, created_at, updated_at)
        VALUES (?, ?, 'RUNNING', 'edit-untrusted', '{}', '{}', 'h', 'c', 'web', ?, ?)`,
     ).run(run.id, session.id, now, now);
-    expect(migrate(db)).toEqual([3]);
-    expect(migrate(db)).toEqual([]); // idempotent
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 3))).toEqual([3]);
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 3))).toEqual([]); // idempotent
     expect(currentSchemaVersion(db)).toBe(3);
     expect(tables(db)).toEqual(expect.arrayContaining(["git_commit", "git_push"]));
     expect(db.prepare("SELECT project_id FROM run WHERE id = ?").get(run.id)).toEqual({ project_id: "web" });
