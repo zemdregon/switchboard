@@ -1772,10 +1772,16 @@ BR-30 were silent:
   checkpoint" is read as "before the terminal transition": the commit takes its path list from the checkpoint's
   changed-file list, and neither touches the other's refs.
 - **Input.** Paths: the changed-file list of the post-run checkpoint (pre to post, nested repositories excluded),
-  deletions included; at most 256 (§12.1), else no commit. Message: the adapter's structured final summary
+  deletions included; at most 256 (§12.1), else no commit (an approved bypass run has no count limit, decision 44).
+  Message: the adapter's structured final summary
   (`RunResult.summary`, FR-ADP-04), passed whole to the §12.4 sanitiser with the run's native session ids; empty,
   absent or empty after sanitising means no commit; over 8192 characters means no commit (no truncation, so an
-  identifier cannot be split past the sanitiser). Identity, project and context: the frozen snapshot.
+  identifier cannot be split past the sanitiser). *Approved bypass runs (ROADMAP decision 44, Q-45):* neither limit
+  applies. The publisher receives `looseLimits: true` (honoured only with `origin: "finalize_only"`; the `commit` tool
+  never sets it), skips its 256-path check, sanitises the whole message, and then cuts a message longer than 8192
+  characters at a line boundary (or at the limit when no boundary keeps half of it) and appends a one-line note; path
+  classification, the temporary index and the compare-and-swap are unchanged, with pathspecs passed on stdin. Identity,
+  project and context: the frozen snapshot.
 - **Never committed** (each a `git_finalize_commit` event `{outcome: "skipped", reason}`): the run is not about to end
   SUCCEEDED (`run_not_succeeded`); `environment_not_host` (M10); `context_not_writable`; `no_identity`; any
   `git_policy_violation` event in any run of the meta-session (`git_policy_violation`, BR-27); no publisher configured

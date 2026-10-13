@@ -506,6 +506,70 @@ describe("finalize-only mode (T9.7)", () => {
     expect(commitRows()).toEqual([expect.objectContaining({ commit_sha: sha, origin: "finalize_only" })]);
   });
 
+  describe("size limits (owner decision 44, ROADMAP Q-45)", () => {
+    const bigFiles = () => Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`bulk/f${i}.txt`, `${i}\n`]));
+    const longSummary = `Bulk change\n\n${"detail ".repeat(3000)}\n\nCo-Authored-By: Claude <noreply@anthropic.com>`;
+
+    it("a normal run still skips: 300 changed paths, then a 20000-character summary", async () => {
+      const lc = makeLifecycle();
+      const many = await runOnce(lc, plan({ files: bigFiles() }), project(true));
+      expect(finalizeEvent(many.runId)).toEqual({ outcome: "skipped", reason: "too_many_paths" });
+      const lng = await runOnce(lc, plan({ summary: longSummary }), project(true));
+      expect(finalizeEvent(lng.runId)).toEqual({ outcome: "skipped", reason: "message_too_long" });
+      expect(commitRows()).toEqual([]);
+    });
+
+    it("an approved bypass run commits all 300 paths with a sanitised, truncated, noted message", async () => {
+      class PrivilegedNoChannel extends FakeAdapter {
+        override compile(request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible {
+          return super.compile(request, { ...PROFILE, shell: profile.shell, bypassApproved: false });
+        }
+      }
+      const lc = makeLifecycle({
+        adapter: new PrivilegedNoChannel({ scenario: "edit_files", timeouts: PATIENT, commitChannel: "none" }),
+      });
+      const { runId, metaSessionId } = await lc.submit({
+        clientId: "c",
+        objective: plan({ files: bigFiles(), summary: longSummary }),
+        workspace: repo,
+        trustProfile: "privileged",
+        provider: "fake",
+        project: project(true),
+        privileged: {
+          scope: {
+            files: { access: "worktree" },
+            shell: { mode: "broad" },
+            network: { mode: "off" },
+            repository_config: { mode: "disabled" },
+            bypass: true,
+          },
+        },
+      });
+      lc.applyApprovalDecision({
+        requestEventId: `evt_test_${runId}`,
+        runId,
+        decision: "APPROVED",
+        requestedBy: "op",
+        requestedAt: "2026-10-13T00:00:00.000Z",
+        scopeHash: ledger.getApprovalForRun(runId)?.scope_hash ?? "",
+      });
+      const done = await lc.waitForTerminal(runId);
+      expect(done.state, done.failure_detail ?? "").toBe("SUCCEEDED");
+      expect(finalizeEvent(runId)).toMatchObject({ outcome: "committed", files_changed: 300 });
+      const sha = refSha(repo, publishRefFor(metaSessionId));
+      const message = g(repo, "log", "-1", "--format=%B", sha);
+      expect(message.length).toBeLessThanOrEqual(8192 + 2);
+      expect(message).toContain("truncated");
+      expect(message.toLowerCase()).not.toContain("co-authored");
+      expect(
+        g(repo, "ls-tree", "-r", "--name-only", sha)
+          .split("\n")
+          .filter((n) => n.startsWith("bulk/")),
+      ).toHaveLength(300);
+      expect(commitRows()).toEqual([expect.objectContaining({ commit_sha: sha, origin: "finalize_only" })]);
+    });
+  });
+
   it("push policy is unaffected: the operator command pushes the finalize commit; runs show marks it via finalize", async () => {
     const { runId, metaSessionId, done } = await runOnce(makeLifecycle(), plan(), project(true));
     expect(done.state).toBe("SUCCEEDED");
