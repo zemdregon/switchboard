@@ -701,6 +701,24 @@ bypass run's invocation and the approval it ran under are in the audit trail.
 `decided_by` (FR-MCP-04). `runs show` (operator CLI) shows the full scope, the `bypass` value, the scope hash, the
 approval decision and, for an approval, every run of the meta-session that ran under it.
 
+**Implementation notes (T3.3, Proposed, Delegated).** Code: `src/policy/scope.ts` (schema, list checks, canonical
+form, hash, spelling maps), `src/lifecycle/lifecycle.ts` (admission), `src/ledger/repo.ts` (approval helpers).
+
+- Spellings: neither enum is renamed. A `privileged` snapshot keeps `scoped` in the four scalar fields and the scope in
+  its own spellings; `src/policy/scope.ts` maps them (`on` and `enabled` have no profile value; `approved` is
+  `approved-only`) for the adapters (T3.5, T3.6).
+- `network.hosts` entries must match a bare host-name pattern (no scheme, port, path or wildcard).
+- V11 for `privileged` defers the adapter's compile verdict to dispatch ([FRD V11](../requirements/FRD.md#71-delegate_task));
+  until T3.5/T3.6 dispatch fails every `privileged` run `ELIGIBILITY_NONE` before any probe, lease, worktree or
+  process, so `bypassApproved` is never read.
+- Cancelling a run in AWAITING_APPROVAL closes its `PENDING` row as `DENIED` in the same transaction (ROADMAP Q-15
+  default): `decided_by` is `cancel_run` for the MCP tool and the requesting OS user for `runs cancel`, plus an
+  `approval_closed` `run_event` (approval ID and status only).
+- The §1 guard lets any column change while a row is `PENDING`. The repo helper updates only `status`, `decided_at` and
+  `decided_by`; the hash re-check (C7 here, `approve` in T3.4) catches a scope rewritten without its hash, but not a
+  writer with ledger access who rewrites both.
+- No index was added: the meta-session lookup joins `approval.run_id` to `run` and expects small tables.
+
 ## 4. Failure taxonomy
 
 `failure_code` on a `FAILED` run holds exactly one of these codes. `ELIGIBILITY_NONE` and `INVALID_REQUEST` were **added

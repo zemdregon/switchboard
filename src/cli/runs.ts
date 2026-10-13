@@ -30,6 +30,24 @@ export interface RunDetail extends RunSummary {
   cancel_requested: boolean;
 }
 
+/**
+ * The approval covering a `privileged` run (T3.3, LLD §3.1 "What is shown where"): operator CLI only, so it shows what
+ * the MCP envelope never does: the full scope, `bypass`, the scope hash, the decision and every run it covers.
+ */
+export interface ApprovalView {
+  id: string;
+  status: string;
+  /** The run that requested the approval (the one `approve`/`deny` act on, T3.4). */
+  requested_by_run: string;
+  requested_at: string;
+  decided_at: string | null;
+  decided_by: string | null;
+  scope: unknown;
+  bypass: boolean;
+  scope_hash: string;
+  covered_runs: { id: string; state: string; created_at: string }[];
+}
+
 export interface RunEventView {
   seq: number;
   ts: string;
@@ -73,7 +91,7 @@ export function showRun(
   io: CliIo,
   argv: readonly string[],
   runId: string,
-): { run: RunDetail; events: RunEventView[] } | undefined {
+): { run: RunDetail; events: RunEventView[]; approval?: ApprovalView } | undefined {
   const db = openReadOnly(dataDirFor(io, argv));
   if (!db) return undefined;
   try {
@@ -90,10 +108,46 @@ export function showRun(
         "seq" | "ts" | "type" | "payload_json"
       >[]
     ).map((e) => ({ seq: e.seq, ts: e.ts, type: e.type, payload: JSON.parse(e.payload_json) as unknown }));
-    return { run: { ...row, cancel_requested: listPendingCancels(db, runId).length > 0 }, events };
+    const approval = row.trust_profile === "privileged" ? approvalView(db, runId) : undefined;
+    return {
+      run: { ...row, cancel_requested: listPendingCancels(db, runId).length > 0 },
+      events,
+      ...(approval ? { approval } : {}),
+    };
   } finally {
     db.close();
   }
+}
+
+function approvalView(db: Database.Database, runId: string): ApprovalView | undefined {
+  const ledger = createLedger(db);
+  const run = ledger.getRunRecord(runId);
+  if (!run) return undefined;
+  let approvalId: unknown;
+  try {
+    approvalId = (JSON.parse(run.policy_snapshot_json) as { privilegedScope?: { approvalId?: unknown } })
+      .privilegedScope?.approvalId;
+  } catch {
+    approvalId = undefined;
+  }
+  const row =
+    (typeof approvalId === "string" ? ledger.getApproval(approvalId) : undefined) ?? ledger.getApprovalForRun(runId);
+  if (!row) return undefined;
+  const scope = JSON.parse(row.scope_json) as { bypass?: unknown };
+  return {
+    id: row.id,
+    status: row.status,
+    requested_by_run: row.run_id,
+    requested_at: row.requested_at,
+    decided_at: row.decided_at,
+    decided_by: row.decided_by,
+    scope,
+    bypass: scope.bypass === true,
+    scope_hash: row.scope_hash,
+    covered_runs: ledger
+      .listRunsCoveredByApproval(row.id)
+      .map((r) => ({ id: r.id, state: r.state, created_at: r.created_at })),
+  };
 }
 
 export type CancelReport = {
@@ -172,7 +226,7 @@ export function renderRunList(runs: readonly RunSummary[]): string {
   return `${[fmt(head), ...rows.map(fmt)].join("\n")}\n`;
 }
 
-export function renderRun(d: { run: RunDetail; events: RunEventView[] }): string {
+export function renderRun(d: { run: RunDetail; events: RunEventView[]; approval?: ApprovalView }): string {
   const r = d.run;
   const lines = [
     `Run ${r.id}`,
@@ -187,6 +241,20 @@ export function renderRun(d: { run: RunDetail; events: RunEventView[] }): string
     `  finished:    ${r.finished_at ?? "-"}`,
   ];
   if (r.failure_code) lines.push(`  failure:     ${r.failure_code}${r.failure_detail ? ` - ${r.failure_detail}` : ""}`);
+  const a = d.approval;
+  if (a) {
+    lines.push(
+      "",
+      `Approval ${a.id}`,
+      `  status:      ${a.status}`,
+      `  requested:   ${a.requested_at} by run ${a.requested_by_run}`,
+      `  decided:     ${a.decided_at ?? "-"}${a.decided_by ? ` by ${a.decided_by}` : ""}`,
+      `  bypass:      ${a.bypass ? "yes (provider bypass flag requested)" : "no"}`,
+      `  scope hash:  ${a.scope_hash}`,
+      `  scope:       ${JSON.stringify(a.scope)}`,
+      `  covers runs: ${a.covered_runs.map((c) => `${c.id} (${c.state})`).join(", ") || "-"}`,
+    );
+  }
   lines.push("", "Events:");
   for (const e of d.events)
     lines.push(`  ${String(e.seq).padStart(3)}  ${e.ts}  ${e.type}  ${JSON.stringify(e.payload)}`);

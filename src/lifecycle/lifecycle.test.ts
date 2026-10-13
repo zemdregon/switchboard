@@ -18,6 +18,7 @@ import { ArtifactStore } from "../artifacts/index.js";
 import { groupAlive } from "../exec/index.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger, type RunState, type TrustProfile } from "../ledger/index.js";
+import { canonicalScopeJson, parsePrivilegedScope, privilegedScopeHash } from "../policy/index.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import {
   assertTransition,
@@ -105,6 +106,7 @@ class ScenarioAdapter implements ProviderAdapter {
   }
 
   async probe(runner: ProbeRunner) {
+    probes++;
     if (this.probeGate) await this.probeGate;
     return this.base.probe(runner);
   }
@@ -112,6 +114,7 @@ class ScenarioAdapter implements ProviderAdapter {
     return new FakeAdapter({ scenario: this.authScenario }).authPreflight(runner);
   }
   compile(req: CompileRequest, profile: ResolvedProfile) {
+    compiles++;
     this.onCompile?.(req);
     const inv = this.forScenario(req.objective as Scenario).compile(req, profile);
     if (this.compileOverride && !("ineligible" in inv)) return this.compileOverride(req, inv);
@@ -131,6 +134,9 @@ let ledger: Ledger;
 let adapter: ScenarioAdapter;
 let lifecycle: RunLifecycle;
 let notices: TransitionNotice[];
+/** Adapter calls in this test (the privileged safety boundary: none for a privileged run). */
+let compiles = 0;
+let probes = 0;
 
 function makeLifecycle(over: Partial<RunLifecycleOptions> = {}): RunLifecycle {
   const ids = createIdGenerator();
@@ -159,6 +165,28 @@ const submit = (objective: Scenario | string, extra: Record<string, unknown> = {
     ...extra,
   });
 
+/** A valid structured privileged scope (LLD §3.1). */
+const SCOPE = {
+  files: { access: "worktree" },
+  shell: { mode: "allowlist", allowlist: [["npm", "test"]] },
+  network: { mode: "allowlist", hosts: ["registry.npmjs.org"] },
+  repository_config: { mode: "approved" },
+  bypass: true,
+};
+/** Stand-in for T3.4's `approve`: the FRD T3 edge written directly (tests only). */
+const approveDirect = (runId: string) => {
+  const run = ledger.getRunRecord(runId);
+  if (!run) throw new Error("no run");
+  ledger.casRunState({
+    runId,
+    from: "AWAITING_APPROVAL",
+    to: "QUEUED",
+    expectedVersion: run.version,
+    payload: { rule: "T3" },
+  });
+  notices.push({ runId, from: "AWAITING_APPROVAL", to: "QUEUED", rule: "T3" });
+};
+
 const path_ = (runId: string) =>
   notices
     .filter((n) => n.runId === runId)
@@ -184,6 +212,8 @@ const until = async (cond: () => boolean, ms = 10_000) => {
 };
 
 beforeEach(() => {
+  compiles = 0;
+  probes = 0;
   root = realpathSync(mkdtempSync(path.join(tmpdir(), "sb-life-")));
   repo = path.join(root, "repo");
   mkdirSync(repo);
@@ -297,13 +327,172 @@ describe("admission", () => {
   });
 
   it("T2: a privileged request waits in AWAITING_APPROVAL, is never dispatched, and can be cancelled", async () => {
-    const r = await submit("success", { trustProfile: "privileged" });
+    const r = await submit("success", { trustProfile: "privileged", privileged: { scope: SCOPE } });
     expect(r.state).toBe("AWAITING_APPROVAL");
     lifecycle.start();
     await new Promise((res) => setTimeout(res, 50));
     expect(ledger.getRunRecord(r.runId)?.state).toBe("AWAITING_APPROVAL");
+    expect(compiles).toBe(0);
     expect(await lifecycle.cancel(r.runId)).toBe("CANCELLED");
     expect(rules(r.runId)).toEqual(["T19"]);
+    // FRD §4.3 / Q-15 (Proposed): the PENDING approval is closed DENIED, decided by the cancel source.
+    expect(ledger.getApprovalForRun(r.runId)).toMatchObject({ status: "DENIED", decided_by: "cancel_run" });
+    expect(events(r.runId).map((e) => e.type)).toContain("approval_closed");
+  });
+
+  describe("privileged admission (T3.3, LLD §3.1)", () => {
+    it("T2 writes the run, one PENDING approval and the first event in one transaction; no process, no worktree", async () => {
+      const r = await submit("success", { trustProfile: "privileged", privileged: { scope: SCOPE } });
+      const run = ledger.getRunRecord(r.runId);
+      const approval = ledger.getApprovalForRun(r.runId);
+      expect(approval).toMatchObject({ status: "PENDING", decided_at: null, decided_by: null });
+      expect(ledger.listApprovals()).toHaveLength(1);
+      const parsed = parsePrivilegedScope(SCOPE);
+      if (!parsed.ok) throw new Error("bad fixture");
+      expect(approval?.scope_json).toBe(canonicalScopeJson(parsed.scope));
+      const hash = privilegedScopeHash({ clientId: "client-a", metaSessionId: r.metaSessionId, scope: parsed.scope });
+      expect(approval?.scope_hash).toBe(hash);
+      expect(JSON.parse(run?.policy_snapshot_json ?? "{}")).toEqual({
+        name: "privileged",
+        fileAccess: "scoped",
+        shell: "scoped",
+        network: "scoped",
+        repoConfig: "scoped",
+        bypassApproved: false,
+        privilegedScope: { scope: parsed.scope, scopeHash: hash, approvalId: approval?.id },
+      });
+      expect(events(r.runId).map((e) => e.p)).toEqual([
+        { from: null, to: "AWAITING_APPROVAL", rule: "T2", approval_id: approval?.id },
+      ]);
+      expect(run?.worktree_path).toBeNull();
+      expect(run?.pid).toBeNull();
+      expect(sessionRow(r.metaSessionId).lease_run_id).toBeNull();
+    });
+
+    it("refuses a missing or malformed scope, a scope with another profile and a scope on a continuation", async () => {
+      const count = () => (db.prepare("SELECT COUNT(*) AS n FROM run").get() as { n: number }).n;
+      await expect(submit("success", { trustProfile: "privileged" })).rejects.toMatchObject({
+        code: "INVALID_REQUEST",
+      });
+      await expect(
+        submit("success", { trustProfile: "privileged", privileged: { scope: { ...SCOPE, extra: 1 } } }),
+      ).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+      await expect(submit("success", { privileged: { scope: SCOPE } })).rejects.toMatchObject({
+        code: "INVALID_REQUEST",
+      });
+      const first = await submit("success");
+      lifecycle.start();
+      await lifecycle.waitForTerminal(first.runId);
+      await expect(
+        submit("success", {
+          trustProfile: "privileged",
+          metaSessionId: first.metaSessionId,
+          privileged: { scope: SCOPE },
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+      expect(count()).toBe(1);
+      expect(ledger.listApprovals()).toHaveLength(0);
+    });
+
+    it("idempotent replay returns the same run and writes no second approval row", async () => {
+      const opts = { trustProfile: "privileged", privileged: { scope: SCOPE }, idempotencyKey: "priv-key-1" };
+      const a = await submit("success", opts);
+      const b = await submit("success", opts);
+      expect(b).toEqual({ ...a, replayed: true });
+      expect(ledger.listApprovals()).toHaveLength(1);
+      // The scope is part of the request hash: the same key with another scope is a mismatch.
+      await expect(
+        submit("success", { ...opts, privileged: { scope: { ...SCOPE, bypass: false } } }),
+      ).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    });
+
+    it("an approved privileged run is refused at dispatch (T8) before any probe, lease, compile or process", async () => {
+      const r = await submit("success", { trustProfile: "privileged", privileged: { scope: SCOPE } });
+      const approval = ledger.getApprovalForRun(r.runId);
+      ledger.decideApproval({ id: approval?.id as string, status: "APPROVED", decidedBy: "op" });
+      approveDirect(r.runId); // stands in for T3.4's `approve`
+      lifecycle.start();
+      const done = await lifecycle.waitForTerminal(r.runId);
+      expect(done).toMatchObject({ state: "FAILED", failure_code: "ELIGIBILITY_NONE", pid: null, worktree_path: null });
+      expect(done.failure_detail).toContain("privileged compile not available until T3.5/T3.6");
+      expect(rules(r.runId)).toEqual(["T3", "T4", "T8"]);
+      expect(compiles).toBe(0);
+      expect(probes).toBe(0);
+      expect(JSON.parse(done.policy_snapshot_json).bypassApproved).toBe(false);
+      // A failed later run never changes the approval (owner decision 14).
+      expect(ledger.getApproval(approval?.id as string)?.status).toBe("APPROVED");
+    });
+
+    it("T1 continuation under an APPROVED approval copies the scope as is and writes no new approval row", async () => {
+      const r = await submit("success", { trustProfile: "privileged", privileged: { scope: SCOPE } });
+      const approval = ledger.getApprovalForRun(r.runId);
+      const cont = (over: Record<string, unknown> = {}) =>
+        submit("success", {
+          trustProfile: "privileged",
+          metaSessionId: r.metaSessionId,
+          privileged: { approvalId: approval?.id },
+          ...over,
+        });
+      // PENDING: refused (and the first run is still active).
+      await expect(cont()).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+      ledger.decideApproval({ id: approval?.id as string, status: "APPROVED", decidedBy: "op" });
+      approveDirect(r.runId);
+      lifecycle.start();
+      await lifecycle.waitForTerminal(r.runId);
+      // Another client is refused even with the right approval id.
+      await expect(cont({ clientId: "client-b" })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+      // An approval id from another meta-session is refused.
+      const other = await submit("success", { trustProfile: "privileged", privileged: { scope: SCOPE } });
+      await expect(
+        cont({ privileged: { approvalId: ledger.getApprovalForRun(other.runId)?.id } }),
+      ).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+      const before = ledger.listApprovals().length;
+      const c = await cont();
+      expect(c.state).toBe("QUEUED");
+      expect(ledger.listApprovals()).toHaveLength(before);
+      const snap = JSON.parse(ledger.getRunRecord(c.runId)?.policy_snapshot_json ?? "{}");
+      const first = JSON.parse(ledger.getRunRecord(r.runId)?.policy_snapshot_json ?? "{}");
+      expect(snap.privilegedScope).toEqual(first.privilegedScope);
+      expect(snap.bypassApproved).toBe(false);
+      expect(events(c.runId)[0]?.p).toEqual({ from: null, to: "QUEUED", rule: "T1", approval_id: approval?.id });
+      expect(ledger.listRunsCoveredByApproval(approval?.id as string).map((x) => x.id)).toEqual([r.runId, c.runId]);
+      const done = await lifecycle.waitForTerminal(c.runId);
+      expect(done).toMatchObject({ state: "FAILED", failure_code: "ELIGIBILITY_NONE" });
+      // Cancelling or failing a later run leaves the approval unchanged.
+      expect(ledger.getApproval(approval?.id as string)?.status).toBe("APPROVED");
+    });
+
+    it("a DENIED approval or a tampered scope hash refuses the continuation", async () => {
+      const r = await submit("success", { trustProfile: "privileged", privileged: { scope: SCOPE } });
+      const approval = ledger.getApprovalForRun(r.runId);
+      expect(await lifecycle.cancel(r.runId)).toBe("CANCELLED");
+      await expect(
+        submit("success", {
+          trustProfile: "privileged",
+          metaSessionId: r.metaSessionId,
+          privileged: { approvalId: approval?.id },
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_REQUEST", message: expect.stringContaining("DENIED") });
+
+      const t = await submit("success", { trustProfile: "privileged", privileged: { scope: SCOPE } });
+      const ta = ledger.getApprovalForRun(t.runId);
+      // Tamper while PENDING (the update-once trigger allows it), then approve.
+      db.prepare("UPDATE approval SET scope_json = ? WHERE id = ?").run(
+        JSON.stringify({ ...SCOPE, network: { mode: "on" } }),
+        ta?.id,
+      );
+      ledger.decideApproval({ id: ta?.id as string, status: "APPROVED", decidedBy: "op" });
+      approveDirect(t.runId);
+      lifecycle.start();
+      await lifecycle.waitForTerminal(t.runId);
+      await expect(
+        submit("success", {
+          trustProfile: "privileged",
+          metaSessionId: t.metaSessionId,
+          privileged: { approvalId: ta?.id },
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_REQUEST", message: expect.stringContaining("hash") });
+    });
   });
 
   it("idempotency keys: same parameters return the original run; different parameters fail; keys are per client", async () => {

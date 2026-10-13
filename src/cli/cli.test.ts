@@ -349,6 +349,103 @@ describe("runs list and show (read-only)", () => {
   });
 });
 
+/** A privileged meta-session (T3.3): first run AWAITING_APPROVAL with its PENDING row, optionally a covered later run. */
+function seedPrivileged(opts: { approved?: boolean } = {}) {
+  const db = openLedger(dataDir);
+  const ledger = createLedger(db);
+  const s = ledger.createMetaSession({ objective: "o" });
+  const scope = {
+    files: { access: "worktree" },
+    shell: { mode: "allowlist", allowlist: [["npm", "test"]] },
+    network: { mode: "off" },
+    repository_config: { mode: "disabled" },
+    bypass: true,
+  };
+  const approvalId = ledger.newApprovalId();
+  const snapshot = { name: "privileged", privilegedScope: { scope, scopeHash: "f".repeat(64), approvalId } };
+  const mk = (state: RunState, i: number) =>
+    ledger.createRun({
+      metaSessionId: s.id,
+      state,
+      trustProfile: "privileged",
+      policySnapshot: snapshot,
+      request: {},
+      requestHash: `p${i}`,
+      clientId: "c1",
+      provider: "fake",
+    }).id;
+  const first = mk(opts.approved ? "SUCCEEDED" : "AWAITING_APPROVAL", 0);
+  ledger.createApproval({ id: approvalId, runId: first, scopeJson: JSON.stringify(scope), scopeHash: "f".repeat(64) });
+  const ids = [first];
+  if (opts.approved) {
+    ledger.decideApproval({ id: approvalId, status: "APPROVED", decidedBy: "op" });
+    ids.push(mk("QUEUED", 1));
+  }
+  return { ids, approvalId, ledger, close: () => db.close() };
+}
+
+describe("privileged runs on the operator CLI (T3.3, LLD §3.1)", () => {
+  it("runs show prints the scope, bypass, scope hash, decision and the runs the approval covers", async () => {
+    const s = seedPrivileged({ approved: true });
+    s.close();
+    for (const id of s.ids) {
+      const j = JSON.parse((await run(["runs", "show", id, "--json", ...cfg()])).out);
+      expect(Object.keys(j)).toEqual(["schema_version", "run", "events", "approval"]);
+      expect(j.approval).toMatchObject({
+        id: s.approvalId,
+        status: "APPROVED",
+        requested_by_run: s.ids[0],
+        decided_by: "op",
+        bypass: true,
+        scope_hash: "f".repeat(64),
+        scope: { shell: { mode: "allowlist", allowlist: [["npm", "test"]] } },
+      });
+      expect(j.approval.covered_runs.map((r: { id: string }) => r.id)).toEqual(s.ids);
+    }
+    const human = (await run(["runs", "show", s.ids[1] as string, ...cfg()])).out;
+    expect(human).toContain(`Approval ${s.approvalId}`);
+    expect(human).toContain("bypass:      yes");
+    expect(human).toContain(`scope hash:  ${"f".repeat(64)}`);
+    expect(human).toContain('"allowlist":[["npm","test"]]');
+    expect(human).toContain(`covers runs: ${s.ids[0]} (SUCCEEDED), ${s.ids[1]} (QUEUED)`);
+  });
+
+  it("runs cancel of a run awaiting approval closes its PENDING row DENIED by the operator (Q-15)", async () => {
+    const s = seedPrivileged();
+    const id = s.ids[0] as string;
+    const j = JSON.parse((await run(["runs", "cancel", id, "--json", ...cfg()])).out);
+    expect(j).toMatchObject({ outcome: "cancelled", state: "CANCELLED" });
+    expect(s.ledger.getApproval(s.approvalId)).toMatchObject({ status: "DENIED", decided_by: "tester" });
+    s.close();
+  });
+
+  it("the daemon applying an operator cancel closes the row DENIED by the requester", async () => {
+    const s = seedPrivileged();
+    const id = s.ids[0] as string;
+    const lock = acquireDataDirLock(dataDir);
+    try {
+      expect(JSON.parse((await run(["runs", "cancel", id, "--json", ...cfg()])).out).outcome).toBe("requested");
+    } finally {
+      lock.release();
+    }
+    const db = openLedger(dataDir);
+    try {
+      const ledger = createLedger(db);
+      const applied: [string, string | undefined, string | undefined][] = [];
+      await applyOperatorRequests(db, ledger, {
+        cancel: async (runId, reason, decidedBy) => {
+          applied.push([runId, reason, decidedBy]);
+          return "CANCELLED";
+        },
+      });
+      expect(applied).toEqual([[id, "operator_cancel", "tester"]]);
+    } finally {
+      db.close();
+      s.close();
+    }
+  });
+});
+
 describe("runs cancel", () => {
   it("without a lock holder cancels a queued run directly and records the request", async () => {
     const s = seed(["QUEUED"]);

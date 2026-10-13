@@ -11,6 +11,7 @@
  */
 import type Database from "better-sqlite3";
 import type { Ledger, RunRecord, RunState } from "../ledger/index.js";
+import { denyApprovalOnCancel } from "../lifecycle/approval.js";
 import { assertTransition, isTerminal } from "../lifecycle/states.js";
 
 export const OPERATOR_CANCEL_REQUESTED = "operator_cancel_requested";
@@ -108,7 +109,7 @@ export function requestCancel(
       }).id;
 
     if (opts.direct && DIRECT_CANCEL_STATES.has(run.state)) {
-      const state = cancelDirect(ledger, run, opts.now);
+      const state = cancelDirect(ledger, run, opts.requestedBy, opts.now);
       ledger.appendRunEvent({
         runId,
         type: OPERATOR_CANCEL_APPLIED,
@@ -120,8 +121,15 @@ export function requestCancel(
   });
 }
 
-function cancelDirect(ledger: Ledger, run: RunRecord, now: () => Date = () => new Date()): RunState {
+function cancelDirect(
+  ledger: Ledger,
+  run: RunRecord,
+  requestedBy: string,
+  now: () => Date = () => new Date(),
+): RunState {
   const rule = assertTransition(run.state, "CANCELLED");
+  // FRD §4.3 / Q-15 (T3.3): a waiting privileged run's PENDING approval is closed DENIED, decided by the operator.
+  denyApprovalOnCancel(ledger, run, requestedBy);
   const moved = ledger.casRunState({
     runId: run.id,
     from: run.state,
@@ -135,7 +143,8 @@ function cancelDirect(ledger: Ledger, run: RunRecord, now: () => Date = () => ne
 }
 
 export interface CancelApplier {
-  cancel(runId: string, reason?: string): Promise<RunState>;
+  /** `decidedBy` closes a waiting run's PENDING approval (Q-15): the OS user who requested the cancel. */
+  cancel(runId: string, reason?: string, decidedBy?: string): Promise<RunState>;
 }
 
 export interface AppliedCancel {
@@ -157,7 +166,7 @@ export async function applyOperatorRequests(
   const out: AppliedCancel[] = [];
   for (const req of listPendingCancels(db)) {
     try {
-      const stateAfter = await lifecycle.cancel(req.runId, "operator_cancel");
+      const stateAfter = await lifecycle.cancel(req.runId, "operator_cancel", req.requestedBy);
       ledger.appendRunEvent({
         runId: req.runId,
         type: OPERATOR_CANCEL_APPLIED,

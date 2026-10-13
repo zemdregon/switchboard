@@ -4,14 +4,39 @@
 import type { ResolvedProfile, TrustProfile } from "../adapters/types.js";
 
 /**
- * The input that `privileged` resolves from (FR-POL-09). Deliberately minimal and open: the scope SHAPE is owned by the
- * `privileged_scope` contract designed in T3.16 (LLD §3) and consumed by T3.3; they extend this interface. COMP-POL only
- * requires that a scope object is supplied, stores a frozen copy in the snapshot, and never reads `bypass` from it:
- * `bypassApproved` is always false from the resolver (owner decision 13: bypass is applied later, only from an approved
- * row, T3.4).
+ * The structured `privileged_scope` (LLD §3.1, T3.3; FR-POL-09; owner decisions 13 and 14; ROADMAP Q-23 answered). Every
+ * dimension is required and closed; `shell.allowlist` exists exactly when `shell.mode` is `allowlist`, `network.hosts`
+ * exactly when `network.mode` is `allowlist` (checked by {@link parsePrivilegedScope} in `./scope.ts`). `bypass` is
+ * always present once defaults are filled (`false` when omitted). COMP-POL never derives `bypassApproved` from it: the
+ * resolver always returns `bypassApproved: false`; only an `APPROVED` approval row can set it (T3.4, owner decision 13).
+ *
+ * The scope keeps its own spellings, which differ from {@link ResolvedProfile}'s in three places; `./scope.ts` owns the
+ * mapping (`SCOPE_NETWORK_TO_PROFILE`, `SCOPE_REPO_CONFIG_TO_PROFILE`): network `on` has no profile counterpart (the
+ * profile value `policy` is not the same thing), repository configuration `approved` is the profile's `approved-only`,
+ * and `enabled` is scope-only.
  */
 export interface PrivilegedScope {
-  readonly [field: string]: unknown;
+  readonly files: { readonly access: "read-only" | "worktree" };
+  readonly shell:
+    | { readonly mode: "none" | "broad" }
+    /** Each entry is one exact argv (program and arguments); no wildcard, no shell string. */
+    | { readonly mode: "allowlist"; readonly allowlist: readonly (readonly string[])[] };
+  readonly network:
+    | { readonly mode: "off" | "on" }
+    /** Host names only (no scheme, port or path). */
+    | { readonly mode: "allowlist"; readonly hosts: readonly string[] };
+  readonly repository_config: { readonly mode: "disabled" | "approved" | "enabled" };
+  readonly bypass: boolean;
+}
+
+/**
+ * What a `privileged` policy snapshot records (LLD §2 `ResolvedProfile.privilegedScope`, §3.1): the canonical scope, the
+ * v2 scope hash bound to (client, meta-session, scope) and the approval row that covers the run.
+ */
+export interface PrivilegedScopeBinding {
+  readonly scope: PrivilegedScope;
+  readonly scopeHash: string;
+  readonly approvalId: string;
 }
 
 /** Profiles that accept `profiles.<name>` overrides. `privileged` is excluded: its contents come from the scope. */
@@ -56,10 +81,10 @@ export interface AppliedOverride {
 
 /**
  * The frozen snapshot stored on the run (`run.policy_snapshot_json`). A {@link ResolvedProfile} plus, only when
- * non-empty, `overrides` (the applied config overrides) and, for `privileged`, `scope`. Default profiles with no
- * overrides serialise exactly as a bare `ResolvedProfile`.
+ * non-empty, `overrides` (the applied config overrides); for `privileged`, `ResolvedProfile.privilegedScope` carries
+ * the scope, its hash and the approval ID (LLD §2, §3.1). Default profiles with no overrides serialise exactly as a bare
+ * `ResolvedProfile`.
  */
 export interface PolicySnapshot extends ResolvedProfile {
   readonly overrides?: readonly AppliedOverride[];
-  readonly scope?: PrivilegedScope;
 }

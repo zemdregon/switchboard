@@ -292,6 +292,39 @@ export interface GcArtifactPlan {
   keptHashes: string[];
 }
 
+/** `approval.status` (LLD §1). The controller never writes `EXPIRED` (no expiry: WF-7, owner decision 14). */
+export type ApprovalStatus = "PENDING" | "APPROVED" | "DENIED" | "EXPIRED";
+
+/** `approval` row (LLD §1, §3.1): one per meta-session in M3, created by its first `privileged` run. */
+export interface ApprovalRow {
+  id: string;
+  /** The run that requested the approval (the meta-session's first `privileged` run). */
+  run_id: string;
+  /** Canonical `privileged_scope` (LLD §3.1). */
+  scope_json: string;
+  /** v2 hash over client, meta-session and scope (LLD §3.1). */
+  scope_hash: string;
+  status: ApprovalStatus;
+  requested_at: string;
+  decided_at: string | null;
+  decided_by: string | null;
+}
+
+export interface NewApproval {
+  /** Pre-allocated with {@link Ledger.newApprovalId} when the run's policy snapshot must name it (LLD §3.1). */
+  id?: string;
+  runId: string;
+  scopeJson: string;
+  scopeHash: string;
+}
+
+export interface ApprovalDecision {
+  id: string;
+  status: "APPROVED" | "DENIED";
+  /** OS user of the operator CLI, or the cancel source when a waiting run is cancelled (ROADMAP Q-15, Proposed). */
+  decidedBy: string;
+}
+
 export interface Ledger {
   createMetaSession(input: NewMetaSession): MetaSessionRow;
   getMetaSession(id: string): MetaSessionRow | undefined;
@@ -363,6 +396,31 @@ export interface Ledger {
    * the outcome event (when the session has a run to attach it to). `run_event` rows are never touched (append-only).
    */
   completeGc(sessionId: string, at: string, outcome: { runId: string | null; payload: unknown }): void;
+
+  // ---- T3.3 additions (privileged approvals, LLD §1 and §3.1) ----------------------------------------------------
+  /** A fresh `apv_` id, so a run's policy snapshot can name its approval before the row exists (FK order). */
+  newApprovalId(): string;
+  /** Insert a `PENDING` approval row with `requested_at` now. Call inside the admission transaction. */
+  createApproval(input: NewApproval): ApprovalRow;
+  getApproval(id: string): ApprovalRow | undefined;
+  /** The approval a run requested (`approval.run_id`), if any. */
+  getApprovalForRun(runId: string): ApprovalRow | undefined;
+  /** Approvals, oldest first, optionally of one status. */
+  listApprovals(filter?: { status?: ApprovalStatus; limit?: number }): ApprovalRow[];
+  /**
+   * The approval of a meta-session for one MCP client (LLD §3.1 lookup): joins `approval.run_id` to `run` on the
+   * meta-session and client. At most one row exists per meta-session in M3; more than one is an invariant violation and
+   * throws (fail closed).
+   */
+  findApprovalForMetaSession(metaSessionId: string, clientId: string): ApprovalRow | undefined;
+  /**
+   * Decide a `PENDING` approval (update-once, LLD §1): sets status, `decided_at` (now) and `decided_by`. Returns the
+   * updated row, or `undefined` (nothing written) when the row is missing or already decided. Only these three columns
+   * are ever updated; `scope_json` and `scope_hash` are never rewritten.
+   */
+  decideApproval(input: ApprovalDecision): ApprovalRow | undefined;
+  /** Runs (oldest first) whose policy snapshot names this approval (`privilegedScope.approvalId`). */
+  listRunsCoveredByApproval(approvalId: string): RunRecord[];
 }
 
 export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledger {
@@ -415,6 +473,10 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
   };
 
   const immediate = <T>(fn: () => T): T => db.transaction(fn).immediate();
+
+  const APPROVAL_SQL =
+    "SELECT id, run_id, scope_json, scope_hash, status, requested_at, decided_at, decided_by FROM approval";
+  const getApproval = (id: string) => db.prepare(`${APPROVAL_SQL} WHERE id = ?`).get(id) as ApprovalRow | undefined;
 
   return {
     getMetaSession,
@@ -678,6 +740,69 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
         ).run(at, sessionId);
         if (outcome.runId !== null) insertEvent(outcome.runId, "gc_outcome", outcome.payload, at);
       });
+    },
+
+    newApprovalId() {
+      return ids.id("apv");
+    },
+
+    createApproval(input) {
+      const id = input.id ?? ids.id("apv");
+      db.prepare(
+        `INSERT INTO approval (id, run_id, scope_json, scope_hash, status, requested_at)
+         VALUES (?, ?, ?, ?, 'PENDING', ?)`,
+      ).run(id, input.runId, input.scopeJson, input.scopeHash, ts());
+      return getApproval(id) as ApprovalRow;
+    },
+
+    getApproval,
+
+    getApprovalForRun(runId) {
+      return db.prepare(`${APPROVAL_SQL} WHERE run_id = ? ORDER BY requested_at, id LIMIT 1`).get(runId) as
+        | ApprovalRow
+        | undefined;
+    },
+
+    listApprovals(filter = {}) {
+      const where = filter.status === undefined ? "" : " WHERE status = ?";
+      const args: unknown[] = filter.status === undefined ? [] : [filter.status];
+      return db
+        .prepare(`${APPROVAL_SQL}${where} ORDER BY requested_at, id LIMIT ?`)
+        .all(...args, filter.limit ?? -1) as ApprovalRow[];
+    },
+
+    findApprovalForMetaSession(metaSessionId, clientId) {
+      const rows = db
+        .prepare(
+          `SELECT a.id, a.run_id, a.scope_json, a.scope_hash, a.status, a.requested_at, a.decided_at, a.decided_by
+           FROM approval a JOIN run r ON r.id = a.run_id
+           WHERE r.meta_session_id = ? AND r.client_id = ? ORDER BY a.requested_at, a.id LIMIT 2`,
+        )
+        .all(metaSessionId, clientId) as ApprovalRow[];
+      if (rows.length > 1) {
+        throw new Error(`meta-session ${metaSessionId} has more than one approval row (invariant, LLD §3.1)`);
+      }
+      return rows[0];
+    },
+
+    decideApproval(input) {
+      if (input.status !== "APPROVED" && input.status !== "DENIED") {
+        throw new Error(`an approval can only be decided APPROVED or DENIED, not ${String(input.status)}`);
+      }
+      if (typeof input.decidedBy !== "string" || input.decidedBy.length === 0) throw new Error("decidedBy is required");
+      const res = db
+        .prepare("UPDATE approval SET status = ?, decided_at = ?, decided_by = ? WHERE id = ? AND status = 'PENDING'")
+        .run(input.status, ts(), input.decidedBy, input.id);
+      return res.changes === 1 ? getApproval(input.id) : undefined;
+    },
+
+    listRunsCoveredByApproval(approvalId) {
+      return db
+        .prepare(
+          `${RUN_RECORD_SQL} WHERE trust_profile = 'privileged'
+             AND json_extract(policy_snapshot_json, '$.privilegedScope.approvalId') = ? ORDER BY created_at, id`,
+        )
+        .all(approvalId) as RunRecord[];
     },
 
     createMetaSession(input) {
