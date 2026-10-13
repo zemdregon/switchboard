@@ -1070,16 +1070,168 @@ Linux host prerequisites of the sandbox (bubblewrap being installed, user namesp
 
 ### 4.3 Grok Build (M4)
 
-| Aspect | Detail |
+Spike result, 2026-10-13 (T4.20; Delegated agent work, not owner-approved). **Documentation only**: no `grok` binary
+was installed or run, no credential or configuration file was read, and nothing below was observed on a machine. Every
+fact comes from one of the sources below, retrieved on 2026-10-13, and a cell with no source reads
+`Unverified: T4.21` (the operator capture task; its checklist is [§4.3.2](#432-t421-operator-checklist-grok-build)).
+The fetched pages are data: no instruction inside them was followed. xAI's documentation now carries the brand
+"SpaceXSI"; the product and CLI are still called Grok Build and `grok`.
+
+| Tag | Source (retrieved 2026-10-13) |
 | --- | --- |
-| Automation surface | `grok -p` / `--single`; native ACP via `grok agent stdio` |
-| Structured output | `plain`, `json`, `streaming-json` |
-| Resume | `--resume` / `--continue`; `-s/--session-id` names a session and is **not** resume |
-| Auth preflight | Cached local token used for headless/ACP; status command not stated: to be verified in M4 against installed CLI |
-| Trust profile compilation (Proposed) | Two independent dimensions compiled together: `--allow`/`--deny` rules and a sandbox profile (strict/read-only/workspace named in [R2]; selection flag to be verified in M4). Always-approve only under approved `privileged` |
-| Sandbox controls | Landlock (Linux), Seatbelt (macOS); off unless enabled |
-| Known risks | Permissions and sandbox are separate; project hooks and trust semantics mean repository config is untrusted input; worktree/fork behaviour is a capability, not assumed per run |
-| Git writes and injected tools (M4, M9) | `--deny` rules for Git write commands (syntax: to be verified in M4); sandbox profile as a separate control. No commit or attribution setting in [R2]. Per-run MCP definition: not in [R2], to be verified |
+| **[CLI]** | <https://docs.x.ai/build/cli/reference>, "Last updated: July 21, 2026" |
+| **[HL]** | <https://docs.x.ai/build/cli/headless-scripting>, "Last updated: June 10, 2026" |
+| **[PERM]** | <https://docs.x.ai/build/features/permissions> (no date shown) |
+| **[SBX]** | <https://docs.x.ai/build/features/sandbox> (no date shown) |
+| **[HOOK]** | <https://docs.x.ai/build/features/hooks> (no date shown) |
+| **[MCP]** | <https://docs.x.ai/build/features/mcp-servers> (no date shown) |
+| **[SESS]** | <https://docs.x.ai/build/features/sessions> (no date shown) |
+| **[RULES]** | <https://docs.x.ai/build/features/project-rules> (no date shown) |
+| **[WT]** | <https://docs.x.ai/build/features/worktrees> (no date shown) |
+| **[SET]** | <https://docs.x.ai/build/settings> and <https://docs.x.ai/build/settings/reference> (no date shown) |
+| **[ENT]** | <https://docs.x.ai/build/enterprise> (no date shown) |
+| **[CL]** | <https://x.ai/changelog/build>, latest entry "Grok Build 1.0.52", October 11, 2026 |
+| **[R2 Lnn]** | A line of the [verified research](../research/headless-ai-coding-controller-verified-2026-10-12.md) |
+
+The pages are also served as Markdown by appending `.md` to the URL (listed in <https://docs.x.ai/llms.txt>).
+[CL] is a release history, not an installed version: no version has been validated (the manifest range admits none
+until T4.4). Each matrix cell is one of: **Documented**, with the source; **Could compile (Proposed)**, a design using
+only documented controls whose effect is unverified; **Ineligible: `<reason>`** with the
+[LLD §2](LLD.md#2-adapter-contract) code; or **`Unverified: T4.21`**.
+
+#### 4.3.1 Grok Build native controls per profile and platform (T4.20)
+
+**Transport decision (Proposed, Delegated).** The adapter drives one process per run,
+`grok -p <prompt> --output-format streaming-json`, not `grok agent stdio` (ACP). Reasons:
+
+1. Every control the policy layer must set is documented as a flag or environment variable of the headless command:
+   `--allow`, `--deny`, `--sandbox`, `--tools`, `--disallowed-tools`, `-m`, `-r`, `--cwd`, `--max-turns` ([CLI], [HL],
+   [ENT] example). For `grok agent stdio` the documentation shows no flag at all ([HL]), so whether the permission
+   and sandbox flags apply there is `Unverified: T4.21`. A third-party issue shows `grok agent --always-approve stdio`;
+   that is not xAI documentation and is not relied on.
+2. It matches the existing one-process-per-run adapters and needs no ACP client (T4.8). T4.23 then runs on JSONL
+   fixtures.
+3. The result and the session id are documented: `--output-format json` prints one JSON object at the end and the
+   session id is read from `.sessionId` ([HL], [SESS]); the session id is never taken from text (FR-ADP-04).
+
+Against it: the `streaming-json` event shapes are not documented (only that they carry tool calls, results and usage,
+[CL] 1.0.52), so T4.23 cannot be written until T4.21 supplies a capture. **ACP stays the fallback** and is the only
+documented route to a per-run MCP definition (`session/new` takes `mcpServers`, [HL]). Switch to ACP, and add T4.8 as a
+dependency of T4.23, if T4.21 shows that `streaming-json` lacks the session id, a permission-denial event or a usable
+exit code, or if M9 needs the tool channel through a per-run MCP definition (FR-GIT-09 allows `finalize-only` until
+then). [ADR-0002](../adr/0002-mcp-upstream-acp-downstream.md) allows the controller to be an ACP client to providers
+that expose ACP "alongside subprocess JSON/JSONL", so neither choice needs a new ADR; adding an ACP client (T4.8) is
+a separate roadmap decision.
+
+| Platform | Status |
+| --- | --- |
+| Linux | The matrix below. Sandbox is Landlock; child-network blocking is enforced on Linux only; a custom read `deny` list needs `bubblewrap` ([SBX], [SET]) |
+| macOS | Not supported yet (NFR-PORT-02, ROADMAP A-2): no cell evaluated. Documented differences: Seatbelt (`sandbox-exec`, [SBX], [CL] 1.0.44); child-network blocking is a no-op for `read-only` and `strict` ([SBX]) |
+| Windows | Not supported yet (NFR-PORT-03, Deferred): no cell evaluated. The documentation does not say whether any sandbox profile works on Windows: `Unverified: T4.21` if it is ever needed |
+
+**Items the T4.20 row lists, one line each** (details in the matrix and §4.3.2):
+
+| Item | Finding | Source |
+| --- | --- | --- |
+| Version command | `grok version` ("Print version information"); `grok update --check`. A `--version` flag is not in the page: `Unverified: T4.21` | [CLI] |
+| `-p` / `--single` | `-p, --single <PROMPT>` sends one prompt; a prompt on piped stdin is accepted ([CL] 1.0.50) | [HL] |
+| Output formats | `plain` (human-readable), `json` (one JSON object at the end), `streaming-json` (newline-delimited JSON events). Field names: only `.sessionId` is shown ([SESS]); token usage and cost per prompt and session, the worktree folder, and, in streaming, tool calls, results and usage are reported ([CL] 1.0.52). Event shapes: `Unverified: T4.21` | [HL], [SESS], [CL] |
+| Resume | `-r, --resume [<ID>]` (most recent when omitted), `-c, --continue` (most recent for the directory), `--fork-session` (when resuming); `-s, --session-id <UUID>` names a new session and does not resume | [CLI], [SESS], [R2 L287] |
+| Resume contradiction | [HL] describes `-s` as "Create or resume a named headless session"; [CLI] and [SESS] say it uses a UUID "for a new session" and "does not resume". The adapter uses `-r <id>` only and never `-s`. T4.21 checks it | [HL], [CLI], [SESS] |
+| Auth status command | None documented. `grok login` (`--device-auth`), `grok logout`, and `grok inspect [--json]` (shows discovered configuration; [ENT] says it shows which login policy loaded). ACP `initialize` returns `authMethods`, among them `cached_token` and `xai.api_key`. Preflight is `UNKNOWN` (fail closed) until T4.21 | [CLI], [ENT], [HL] |
+| Sandbox profile selection | `--sandbox <PROFILE>`; or `GROK_SANDBOX=<profile>`; or `[sandbox] profile` in config. Built-ins `off` (default), `workspace`, `devbox`, `read-only`, `strict`; custom profiles in `~/.grok/sandbox.toml` or project `.grok/sandbox.toml`. A managed `requirements.toml` pin can override the CLI | [SBX], [SET], [ENT] |
+| `--allow` / `--deny` | Rule form `Tool(pattern)`, for example `Bash(git *)`, `Read`, `Grep`, `Bash(rm -rf *)`; `--allow`/`--deny` "take the same patterns per invocation"; filters `Bash`, `Edit`, `Read`, `Grep`, `MCPTool`, `WebFetch`, `WebSearch`; "`deny` always wins over `allow`"; evaluation order deny, ask, allow. `--allowed-tools` is an alias of `--allow` in headless mode ([CL] 1.0.51) | [PERM], [SET], [ENT], [CL] |
+| Git-write denial | Syntax is documented only by analogy (a `Bash(<command> *)` pattern); no page shows a Git rule, and whether such a rule matches `git -C`, absolute paths, aliases or `sh -c` is `Unverified: T4.21` and T4.28. [PERM] adds that a CLI or config allow rule auto-approves `rm` and `git push`, and that under always-approve they run "unless you add a deny" | [PERM] |
+| Project hooks and trust | Project hooks `<project>/.grok/hooks/*.json` "require trust before they run"; grant with `/hooks-trust` or `--trust`; stored in `~/.grok/trusted_folders.toml`, which also covers project MCP and LSP servers. Claude (`.claude/settings.json`) and Cursor (`.cursor/hooks.json`) hook files are read as well. Only `PreToolUse` blocks, and every failure mode is fail-open | [HOOK] |
+| Per-run settings | Flags and `GROK_*` environment variables; see "Per-run settings" below | [CLI], [SET] |
+| Per-run MCP definition | Headless: no flag documented, `Unverified: T4.21`. ACP: `session/new` takes `mcpServers` (the example passes `[]`). `grok mcp add` and `config.toml` write persistent configuration and are never used | [HL], [MCP] |
+| Bypass-class flags | `--always-approve` (alias `--yolo`), `--dangerously-skip-permissions` (Claude alias), `--permission-mode bypassPermissions`; also bypass-class (Proposed): a catch-all `allow` rule (`*`, `**`) and `auto_allow_bash`/`GROK_SANDBOX_AUTO_ALLOW_BASH`. `deny` rules and `PreToolUse` hooks still apply under always-approve | [CLI], [PERM], [ENT], [SBX] |
+| Model listing | `grok models` ("List available models"); output format and a `--json` option: `Unverified: T4.21`. `-m, --model`; `GROK_DEFAULT_MODEL` | [CLI], [SET] |
+| JSONL or ACP | JSONL (`-p ... --output-format streaming-json`); ACP is the fallback. Reasons above | [HL], [R2 L73] |
+
+**Per-run settings without editing `~/.grok/config.toml`.** Documented: flags `--sandbox`, `--allow`, `--deny`,
+`--tools`, `--disallowed-tools`, `--rules`, `-m`, `--effort`, `--max-turns`, `--cwd`, `--no-plan`, `--no-subagents`,
+`--no-memory`, `--disable-web-search`, `--no-auto-update`, and `--permission-mode` (shown in [ENT] with `dontAsk`;
+absent from the [CLI] table, so its value list is `Unverified: T4.21`); environment variables `GROK_SANDBOX`,
+`GROK_WRITE_FILE=0` (disables the `write` tool), `GROK_WEB_FETCH=0` (default), `GROK_MEMORY=0` and `GROK_SUBAGENTS=0`
+(both default off), `GROK_DISABLE_AUTOUPDATER`, and the compatibility scanner switches `GROK_CLAUDE_HOOKS_ENABLED`,
+`GROK_CURSOR_HOOKS_ENABLED`, `GROK_CLAUDE_MCPS_ENABLED`, `GROK_CURSOR_MCPS_ENABLED`, `GROK_CLAUDE_RULES_ENABLED`,
+`GROK_CURSOR_RULES_ENABLED`, `GROK_CLAUDE_AGENTS_ENABLED`, `GROK_CLAUDE_SKILLS_ENABLED` and
+`GROK_CURSOR_SKILLS_ENABLED` ([SET]). Not usable: `GROK_HOME` is the home for "config, auth, sessions", so pointing it
+elsewhere hides the native login, and copying a login into it would be credential handling
+([ADR-0003](../adr/0003-no-credential-handling.md)). `XAI_API_KEY` is documented as an authentication route
+([ENT], [HL]) and stays out of the environment (ADR-0003). There is no documented way to disable the project
+`.grok/hooks/*.json`, `.grok/config.toml` or `.grok/sandbox.toml` sources other than withholding trust:
+`Unverified: T4.21`. Project `.grok/config.toml` contributes only `[mcp_servers]`, `[plugins]` and `[permission]`
+([SET]), so a repository can ship `allow` rules; whether they apply without trust is `Unverified: T4.21`.
+
+**Switchboard-side rules this matrix assumes (Proposed).** `-w`/`--worktree`, `--fork-session`, `grok worktree` and
+`--trust` are never emitted: Switchboard owns the worktree, and `--trust` writes `~/.grok/trusted_folders.toml`, which
+is global state. `grok import`, `grok setup`, `grok update` and `grok mcp add` are never run. `--no-auto-update` is
+always emitted so a run never self-updates (ADR-0009).
+
+| Dimension | `inspect-untrusted` | `edit-untrusted` | `test-sandboxed` | `trusted-development` | `privileged` |
+| --- | --- | --- | --- | --- | --- |
+| Today | Not implemented: no module until T4.22 | Not implemented | Not implemented | Not implemented | Not implemented |
+| Sandbox profile | Could compile (Proposed): `--sandbox strict` (reads limited to the working directory and system paths, writes to the working directory, `~/.grok/` and temp, child network blocked on Linux) [SBX]; `read-only` writes only `~/.grok/` and temp but reads everywhere, so `strict` is chosen. Whether the profile is enforced in a headless run: `Unverified: T4.21` | Could compile: `--sandbox strict` [SBX]; writes are inside the working directory by the profile [SBX] | Could compile: `--sandbox strict` for the test command; whether tests that need network or other paths run: `Unverified: T4.21`. Eligible only if the sandbox start is observed (R-7) | Could compile: `--sandbox workspace` (writes to the working directory, `~/.grok/`, temp; network allowed) [SBX], Proposed default | Compiled from the structured scope ([LLD §3.1](LLD.md#31-privileged-scope-m3)), never inferred (FR-POL-02); `--sandbox off` is the documented default [SBX] |
+| Permission rules | Could compile: `--permission-mode dontAsk` plus `--allow Read --allow Grep` (names from [PERM]), `--deny` for the Git rules; `dontAsk` "silently deny anything without an explicit allow rule" [ENT]. Flag value list: `Unverified: T4.21` | Could compile: as `inspect-untrusted` plus `--allow Edit` [PERM] | Could compile: plus `--allow 'Bash(<exact test command>)'` only for the operator's configured command (empty shell allowlist by default, ROADMAP Q-17) | Could compile: `dontAsk` with operator allowlists; no catch-all allow | Documented: `--always-approve`/`--yolo` only from an approved `privileged` scope that sets `bypass` (ADR-0017); `--deny` rules still apply [PERM] |
+| File access | Could compile: `--sandbox strict` read confinement [SBX]; `--tools`/`--disallowed-tools` to remove built-ins, tool names `Unverified: T4.21`. Built-ins "do not permanently protect paths such as `~/.ssh`" and `~/.grok/` stays writable [SBX]: whether the sandboxed process can read the native login under `~/.grok/` is `Unverified: T4.21` and is a credential-boundary question | Could compile: as left, plus `--allow Edit`; `GROK_WRITE_FILE=1` default [SET] | Could compile: as `edit-untrusted` | Could compile: `workspace` writes confined to the working directory [SBX] | Per scope; `off` is unrestricted [SBX] |
+| Shell | Could compile: no `--allow Bash`, so under `dontAsk` a shell call is denied [ENT]; `--disallowed-tools` for the shell tool, name `Unverified: T4.21` | Could compile: as left | Could compile: exact-command `Bash(...)` rule only [PERM] | Could compile: operator allowlist | Per scope |
+| Network | Could compile: child network blocked by `strict` on Linux only [SBX]. In-process network (model API, web tools) is not blocked by the sandbox; `--disable-web-search` and `GROK_WEB_FETCH=0` [CLI], [SET] close the web tools. A network allowlist does not exist (R-36, Q-34) | Could compile: as left | Could compile: `strict` blocks child network on Linux [SBX], so network-dependent tests fail; no per-domain control is documented | Could compile: `workspace` allows child network [SBX] | Per scope |
+| Repository config (`AGENTS.md`, `CLAUDE.md`, `.grok/`, `.mcp.json`, hooks) | Could compile: set the `GROK_CLAUDE_*_ENABLED=0` and `GROK_CURSOR_*_ENABLED=0` switches [SET]; do not pass `--trust` so project hooks, MCP and LSP do not run [HOOK]. `AGENTS.md`/`CLAUDE.md` rules are loaded "in full, with no size cap" [RULES] and have no documented off switch other than `GROK_CLAUDE_AGENTS_ENABLED`/`GROK_CLAUDE_RULES_ENABLED`; project `.grok/config.toml` `[permission]` and `.grok/sandbox.toml`: `Unverified: T4.21`. Until T4.21 shows project sources are inert, FR-POL-04 is not met and these profiles stay Ineligible: `PROFILE_UNSUPPORTED` | As left | As left | Operator-chosen (Proposed `disabled`, Q-17) | Allowed only per [ADR-0021](../adr/0021-repository-config-in-approved-bypass-runs.md) |
+| Native sandbox | Could compile: `strict` [SBX] | Could compile: `strict` | Could compile: `strict`; eligibility needs the observed start | Could compile: `workspace` | Per scope |
+| Approval behaviour | Could compile: `dontAsk`; a denial must end `PERMISSION_BLOCKED` (FR-POL-05). The denial event or exit code: `Unverified: T4.21`; `PermissionDenied` is a hook event [HOOK], not a stream event | Could compile: as left | Could compile: as left | Could compile: as left | `--always-approve` |
+| Bypass flag availability | Documented, never emitted (FR-POL-03): `--always-approve`/`--yolo`, `--dangerously-skip-permissions`, `--permission-mode bypassPermissions`, catch-all allow, `auto_allow_bash` [CLI], [ENT], [SBX] | Never emitted | Never emitted | Never emitted | Documented: `--always-approve` with the approved bypass scope only (ADR-0017); owner decision 46 lets the cell compile on `host` |
+| Git-write denial (FR-GIT-01) | Could compile: `--deny 'Bash(git commit*)'`, `--deny 'Bash(git push*)'` and the other write subcommands, syntax by analogy with [PERM]/[ENT]. **Not shown to hold**: `Unverified: T4.21` (rule matching) and T4.28 (live) | As left | As left | As left | `deny` "still applies" under always-approve [PERM], so the same rules are emitted; holding: `Unverified: T4.21`, T4.28 |
+| Per-run MCP | Headless: `Unverified: T4.21`. ACP `session/new` `mcpServers` [HL]. Until sourced, `commitChannel` stays `finalize-only` | As left | As left | As left | As left |
+| Resume | `-r <id>` from `.sessionId` of the previous run's JSON/stream; `-c` never (it selects "the most recent session for the current directory", not a named run); sandbox profile is preserved on resume ([CL] 0.2.56), permission flags on resume: `Unverified: T4.21` | As left | As left | As left | As left |
+| Auth preflight | `UNKNOWN` until T4.21 (fail closed); `AUTH_REQUIRED` names `grok login` (`--device-auth` on a headless host) | As left | As left | As left | As left |
+| Model listing | `grok models` [CLI]; parse format `Unverified: T4.21` | As left | As left | As left | As left |
+| Capacity and usage | JSON output reports token usage and cost per prompt and session ([CL] 1.0.52); field names `Unverified: T4.21`; limits and resets are not documented (FR-CAP-01) | As left | As left | As left | As left |
+
+**Cells that change profile eligibility today.** The sandbox's effect, project-source inertness and the
+Git rules are documented as features but unobserved. Proposed: the T4.22 module marks the four non-`privileged`
+profiles `Ineligible` (reason `PROFILE_UNSUPPORTED`, FR-POL-02) until T4.21 results are entered; `privileged` follows
+owner decision 46 and the approved scope (ADR-0017).
+
+**Surprises and differences from [R2] (recorded, not resolved here).**
+
+- [R2 L73] lists sandbox profiles "strict/read-only/workspace"; [SBX] also lists `devbox`.
+- [HL] and [SESS] disagree about `-s` (above); [R2 L287] agrees with [SESS].
+- `--trust`, `--permission-mode` and the `dontAsk` mode are documented in [HOOK] and [ENT] but are absent from the
+  [CLI] flag table, which defers to `grok --help` for the complete set.
+- The default-on compatibility scanners mean Grok reads a repository's `.claude/settings.json` hooks, `.mcp.json`,
+  `.cursor/*` and `CLAUDE.md` unless switched off ([HOOK], [MCP], [RULES], [SET]).
+- `PreToolUse` hooks fail open ([HOOK]), so a hook is never counted as a Git control.
+
+#### 4.3.2 T4.21 operator checklist (Grok Build)
+
+For the operator, on a scratch machine with an installed Grok Build and the native login (T4.21). Never commit or
+paste a credential, token, `auth.json`, session cookie or account identifier. Run everything in a throwaway empty
+directory (`git init` it), not in a real repository. Save each capture in a file, then scrub it before it enters the
+repository: replace session ids with `SESSION-1`, home paths with `/home/USER`, and delete any email, name, team
+UUID, token or URL carrying a query string. Record the output of step 1 as the version for every other result. Write
+results into `docs/research/live-checks-2026-10-13.md` under a "Grok Build" heading; the orchestrator then moves the
+cells of §4.3.1 from Unverified to observed.
+
+| Step | Commands (run each; record the exit code with `echo $?`) | Capture | Cell it settles |
+| --- | --- | --- | --- |
+| 1 Version | `grok version`; `grok --version`; `grok --help`; `grok -p --help`; `grok agent --help`; `grok agent stdio --help` | Full text of each, exit codes | Version command; `--version` flag; flag list for `--permission-mode`, `--trust`, `--json-schema`, `--no-auto-update`, `--allow`, `--deny`, `--sandbox`, any MCP flag; whether `grok agent stdio` takes the permission and sandbox flags (transport fallback) |
+| 2 Auth, logged in | `grok inspect --json`; `grok models`; `grok models --json` | Output with account and team fields removed; exit codes | Auth status candidate; model listing format and `--json` |
+| 3 Auth, logged out | Without touching the real login: `GROK_HOME=$(mktemp -d) grok inspect --json`; `GROK_HOME=$(mktemp -d) grok -p "hi" --output-format json` | Exit codes and stderr text | Auth exit code and the text that maps to `AUTH_REQUIRED`; `GROK_HOME` is documented only as the home of config, auth and sessions ([SET]), so state this assumption in the note. If the operator prefers, `grok logout` then repeat and log in again |
+| 4 Output shapes | In the scratch repo: `grok --no-auto-update -p "Reply with the word ok" --output-format json`; the same with `streaming-json`; one with `plain` | Whole stdout and stderr, scrubbed, as fixtures | Event shapes, `.sessionId` and usage fields, success marker, stderr use |
+| 5 Failures | A run with an invalid flag; with a bad model (`-m no-such-model`); interrupted with Ctrl+C | Exit codes, stdout, stderr | Exit code table; rate-limit and task-failure shapes (a rate limit cannot be forced: record `not observed`) |
+| 6 Resume | Take `.sessionId` from step 4; `grok --no-auto-update -p "What word did you reply with?" -r <id> --output-format json`; `-s <fresh-uuid>` twice with the same uuid; `-c` | Outputs, the session id returned each time | Resume form; the `-s` contradiction between [HL] and [SESS] |
+| 7 Sandbox start | `grok --no-auto-update -p "Run: touch ../outside-marker; then cat /etc/hostname" --sandbox strict --permission-mode dontAsk --allow 'Bash(*)' --output-format streaming-json`; repeat with `--sandbox read-only`, `--sandbox workspace`, and with `GROK_SANDBOX=strict` instead of the flag | Streams, `ls ..` before/after, exit codes | Sandbox profile selection by flag and by environment; whether the profile is enforced; the sandbox-violation shape; the value list of `--permission-mode` |
+| 8 Permission rules | In a fresh scratch repo: with `--permission-mode dontAsk` and no allow rules, ask for `echo hi`; then with `--allow 'Bash(echo *)'`; then with `--deny 'Bash(echo *)' --allow 'Bash(echo *)'` | Streams, exit codes | `dontAsk` denial shape (`PERMISSION_BLOCKED` mapping); deny wins; `--allow`/`--deny` syntax |
+| 9 Git deny | Scratch repo with one commit. With `--deny 'Bash(git commit*)' --deny 'Bash(git push*)'` and a permissive allow, ask the agent to run: `git commit --allow-empty -m x`; `git -C . commit --allow-empty -m x`; `/usr/bin/git commit --allow-empty -m x`; `sh -c 'git commit --allow-empty -m x'`; `git push` to a local bare remote. Then once with `--always-approve` in the same scratch repo | `git log` and the bare remote's refs after each; the stream | `HELD` or `ESCAPED` for each form (T4.28 repeats it live); deny under always-approve; whether `provider-deny-rules` may be declared |
+| 10 Project hooks and trust | Scratch repo with `.grok/hooks/probe.json` (a `PreToolUse` command hook that appends a line to a marker file outside the repo), `.claude/settings.json` with the same hook, `.mcp.json` and `.grok/config.toml` each defining a stdio MCP server that appends to a marker, and a `.grok/config.toml` `[permission]` allow rule. Run headless **without** `--trust`; then with `GROK_CLAUDE_HOOKS_ENABLED=0 GROK_CURSOR_HOOKS_ENABLED=0 GROK_CLAUDE_MCPS_ENABLED=0 GROK_CURSOR_MCPS_ENABLED=0`; then once with `--trust` (this writes the scratch path to `~/.grok/trusted_folders.toml`: delete that entry afterwards) | Which markers appeared in each run; whether the run prompted, failed or silently skipped; `grok inspect --json` of the scratch repo | Whether project hooks, MCP, LSP and permission rules are inert without trust in a headless run; whether the switches are enough (FR-POL-04); the untrusted-profile `Ineligible` reasons |
+| 11 Credential reach | In a `strict` and in a `workspace` run, ask the agent to list the names (not the contents) of files under `~/.grok/` | Names only, never contents | Whether the sandboxed process can reach the native login directory (credential boundary, ADR-0003) |
+| 12 Per-run MCP | Look in the step 1 help for any flag taking an MCP definition and try it with a benign stdio server that writes a marker. Then, if ACP is to be assessed, run the [HL] ACP example with `mcpServers` naming that server | Help text, marker, ACP transcript | Per-run MCP definition; `commitChannel` option; ACP fallback |
+| 13 ACP transcript (only if step 1 or 4 failed) | Run the [HL] ACP example unchanged except `cwd` (scratch repo) and the prompt (`Reply with the word ok`); record every JSON-RPC line | The transcript with the `authMethods` list kept and any token or id removed | ACP fixtures for T4.23, `initialize` `authMethods` as an auth probe |
+
+Mapping of results to the T4.22 to T4.28 tasks: steps 1 and 2 to T4.22 (manifest notes) and T4.24; steps 4 to 6 to
+T4.23; steps 7 to 11 to T4.22, T4.27 and T4.28; step 12 to T4.27 and the ACP decision.
 
 ### 4.4 Antigravity (`agy`, M4)
 
