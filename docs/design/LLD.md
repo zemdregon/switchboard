@@ -1780,6 +1780,14 @@ other provider aborts startup) is the operator opt-in for the Claude Code tool c
 [ADR-0033](../adr/0033-claude-channel-bypass-only-without-safe-mode.md)):* even with the key on, only an approved
 `privileged` bypass run gets the channel (and runs without `--safe-mode`); every other run is as with the key off.
 
+*As built (2026-10-13, Delegated, T11.3, [§13.1](#131-configuration-shape)):* a project and each context take an
+optional `"inner_agent": "off" | "local_only" | "inherit"` (strict schema; `projectSchema`, so a dynamic project's
+`project` input may carry it too, and it needs no operator approval because it can only restrict).
+`ResolvedProject.innerAgent` and `ResolvedContext.innerAgent` are present only when written;
+`effectiveInnerSetting(project, contextId?)` (`src/config/projects.ts`) returns the most restrictive of the two,
+`inherit` for no project. The value is not part of the policy snapshot; callers pass it to the pipeline as
+`project_setting`.
+
 ### 11.2 Resolution and ceilings
 
 At admission (FRD BR-23): (1) resolve `project` to its definition, else `INVALID_REQUEST`; (2) check the client's project
@@ -2554,6 +2562,23 @@ address (`127.0.0.0/8`, `::1`) or a Unix domain socket on the host; everything e
   call is denied (§13.5). A failure to resolve is `remote` (fail closed).
 - The `cli` kind is always `remote` (Proposed): the controller cannot see where the installed CLI sends the prompt.
 - The classification used for each call is stored in `inner_call.locality` and shown by `doctor`.
+
+*As built (2026-10-13, Delegated, T11.3; `src/inner/http-backend.ts`):* the points §13.2 left to T11.3, all **Proposed**
+and marked **Assumption**: (1) request: `POST <base_url>/v1/chat/completions` (`<base_url>/chat/completions` when the
+base path already ends in `/v1`), JSON body `{ model, messages: [{role: "system"}, {role: "user"}], max_tokens,
+temperature: 0, stream: false }`; `response_schema` is not sent, because structured-output parameters differ between
+servers and the pipeline validates the output either way; (2) answer: `choices[0].message.content` must be a string,
+usage is `usage.prompt_tokens` and `usage.completion_tokens` when non-negative integers (else unknown), the model id is
+the response's `model` or the configured one; (3) headers are fixed and none comes from configuration or the
+environment; the request asks for `identity` encoding and a compressed answer is a failure; (4) any 3xx is a failure and
+is not followed, no proxy variable is read, and each call uses its own connection; (5) the response may not exceed
+`max_output_tokens * 16` bytes plus 16 KiB (declared `content-length` is checked first); (6) locality: `resolveLocality`
+resolves the host once, and the address is pinned to the call's `AbortSignal` so `complete` connects to that exact
+address; the connected socket's peer is re-checked and a call gated `local` whose peer is not loopback is aborted before
+the body is written. `private` (RFC 1918, link-local, CGNAT, unique-local) is `remote`, as FR-INN-16 says "anything
+else"; (7) `probe` sends only a fixed canary, returns code-only `detail`, and does not contact an endpoint classified
+`remote` when `allow_remote` is false. The Unix-socket form of `base_url` mentioned in §13.1 remains undefined and
+unimplemented.
 
 ### 13.3 Data
 

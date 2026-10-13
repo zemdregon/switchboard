@@ -45,6 +45,25 @@ export type CommitMessageMode = (typeof COMMIT_MESSAGE_MODES)[number];
 /** The only `cli` provider FR-INN-04 names. */
 export const INNER_CLI_PROVIDERS = ["opencode"] as const;
 
+/**
+ * Per-project and per-context setting (LLD §13.1, FR-INN-16). There is deliberately no `on`: a project or context can only
+ * restrict what the installation-level configuration allows.
+ */
+export const PROJECT_INNER_SETTINGS = ["off", "local_only", "inherit"] as const;
+export type ProjectInnerSetting = (typeof PROJECT_INNER_SETTINGS)[number];
+
+/** Most restrictive first: `off` over `local_only` over `inherit` (LLD §13.1). */
+export function mostRestrictiveInnerSetting(
+  ...settings: readonly (ProjectInnerSetting | undefined)[]
+): ProjectInnerSetting {
+  let best: ProjectInnerSetting = "inherit";
+  for (const s of settings) {
+    if (s === undefined) continue;
+    if (PROJECT_INNER_SETTINGS.indexOf(s) < PROJECT_INNER_SETTINGS.indexOf(best)) best = s;
+  }
+  return best;
+}
+
 /** The file shape (snake_case), as written by the operator. */
 export interface InnerAgentConfig {
   enabled?: boolean;

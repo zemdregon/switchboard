@@ -8,6 +8,7 @@
  * one does. Callers receive the service by injection and always have a deterministic fallback.
  */
 import type { InnerAgentSettings, InnerTask } from "./config.js";
+import { createHttpBackend } from "./http-backend.js";
 import {
   createInnerPipeline,
   type InnerCallInput,
@@ -21,6 +22,7 @@ import type { InnerBackend } from "./port.js";
 export * from "./breaker.js";
 export * from "./config.js";
 export * from "./fake-backend.js";
+export * from "./http-backend.js";
 export * from "./pipeline.js";
 export * from "./port.js";
 export * from "./truncate.js";
@@ -89,4 +91,17 @@ export function createInnerAgent(
       return pipeline?.breakerState ?? "closed";
     },
   };
+}
+
+/**
+ * Build the service from resolved settings, constructing the `http` backend the configuration names (T11.3). The `cli`
+ * kind has no implementation yet (T11.13), so it stays `no_backend`. A test or tool may still hand in its own backend.
+ */
+export function createConfiguredInnerAgent(
+  settings: InnerAgentSettings | undefined,
+  deps: InnerAgentDeps = {},
+): InnerAgentService {
+  const b = settings?.enabled === true ? settings.backend : undefined;
+  const backend = deps.backend ?? (b?.kind === "http" && b.baseUrl !== undefined ? createHttpBackend(b) : undefined);
+  return createInnerAgent(settings, { ...deps, ...(backend !== undefined ? { backend } : {}) });
 }

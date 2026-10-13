@@ -19,13 +19,13 @@ import { createSecretRedactor, REDACTION_MARKER } from "../artifacts/redact.js";
 import { CONTROLLER_ID } from "../git/sanitize.js";
 import type { InnerCallEvents, InnerCallOutcome, InnerCallRow, NewInnerCall } from "../ledger/repo.js";
 import { type BreakerAdmission, type BreakerState, type BreakerTransition, CircuitBreaker } from "./breaker.js";
-import type { InnerAgentSettings, InnerTask } from "./config.js";
+import type { InnerAgentSettings, InnerTask, ProjectInnerSetting } from "./config.js";
 import type { InnerBackend, InnerResult, Locality } from "./port.js";
 import { truncateHeadTail } from "./truncate.js";
 
 /** Closed list of re-ask error classes (LLD §13.4 step 9). The rejected text is never echoed back. */
 export type ReaskClass = "not_json" | "schema" | "too_long" | "empty" | "rule";
-export type ProjectInnerSetting = "off" | "local_only" | "inherit";
+export type { ProjectInnerSetting };
 
 /** Per-task behaviour. Everything the pipeline cannot know generically lives here (LLD §13.6). */
 export interface InnerTaskContract<T, F> {
@@ -392,7 +392,9 @@ export function createInnerPipeline(deps: PipelineDeps): InnerPipeline {
     };
 
     try {
-      // Step 1 (gate): locality is resolved under the deadline; failure to resolve is `remote` (fail closed).
+      // Step 1 (gate): a project or context set to `off` needs no locality, so not even a name lookup happens.
+      if (input.project_setting === "off") return finish("fallback_disabled", "PROJECT_OFF");
+      // Locality is resolved under the deadline; failure to resolve is `remote` (fail closed).
       try {
         rec.locality = await race(backend.resolveLocality(signal));
       } catch (e) {
