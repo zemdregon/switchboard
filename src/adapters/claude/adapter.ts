@@ -37,6 +37,10 @@
  * `--bare` would make every run fail auth. FR-POL-04 is met instead with `--safe-mode --restricted
  * --strict-mcp-config`, all documented in [HELP]. TDD §4.1 needs updating to match (reported, not edited here).
  *
+ * Profiles (T3.5, TDD §4.1.1 matrix): `inspect-untrusted` and `edit-untrusted` (T2.2), and `trusted-development` with the
+ * same flags as `edit-untrusted`, no new flag; `test-sandboxed`, `privileged`, and the trusted-development cells with no
+ * documented control are `Ineligible` (see matrixIneligible).
+ *
  * Git writes (FR-GIT-01, ADR-0014): see CLAUDE_GIT_WRITE_CONTROL below. No flag documented in [HELP] turns off Claude
  * Code's own commit or attribution behaviour except `--bare` ("skip ... attribution"), which cannot be used (above);
  * settings files are never written (FR-POL-08). Those features are kept unused by denying every way to run Git writes.
@@ -179,6 +183,77 @@ function resolveOnPath(name: string): string | undefined {
 
 const ineligible = (reason: Ineligible["reason"], detail: string): Ineligible => ({ ineligible: true, reason, detail });
 
+/** Ineligible detail for `privileged` and any bypass-approved profile (T3.5 leaves this cell to T3.17). */
+export const CLAUDE_PRIVILEGED_DETAIL =
+  "claude adapter does not compile privileged or bypass-approved runs: bypass/privileged compile awaits T3.17";
+
+/**
+ * T3.5 compile matrix (TDD §4.1.1, Linux), the cells that are refused before any argv is built. Every refusal is a
+ * specific `Ineligible` (LLD §2); nothing is dropped or downgraded (FR-POL-02). Cells checked in this order, so a
+ * profile with several unsupported dimensions reports the first:
+ * 1. `privileged` or `bypassApproved`: PROFILE_UNSUPPORTED (out of scope here; T3.17).
+ * 2. `test-sandboxed`: PROFILE_UNSUPPORTED whatever its dimensions. [H] (`claude --help` 2.1.296) has no sandbox and
+ *    no network option, so FR-POL-06 confinement is not shown (R-10; Q-16 reads FR-POL-06 as covering this profile).
+ *    Proposed (fail closed): even the empty-allowlist default is refused, because the native-sandbox cell is
+ *    Ineligible for every dimension until T3.9 shows confinement or T3.1 supplies an outer sandbox.
+ * 3. A `scoped` dimension outside `privileged`: PROFILE_UNSUPPORTED (only the privileged scope may say `scoped`).
+ * 4. `trusted-development` (owner decisions 10-12: operator overrides may loosen it):
+ *    - network `allowlist` or `policy`: CAPABILITY_MISSING ([H] has no network or host control; R-29).
+ *    - shell `broad` (network `off`): CAPABILITY_MISSING, because nothing in [H] stops a command's network use
+ *      (Q-29 Proposed). With rule 4a this means `broad` never compiles for Claude today.
+ *    - repository configuration `approved-only` or `allowlisted`: CAPABILITY_MISSING. [H] has no per-item control for
+ *      approved hooks or instructions; `--setting-sources` selects whole sources, and `--mcp-config` (approved MCP
+ *      servers) is barred by ADR-0015.
+ *    What remains compiles as `edit-untrusted` (file access, exact shell allowlist, network off at the tool level,
+ *    repository configuration disabled with `--safe-mode --restricted --strict-mcp-config`).
+ * `inspect-untrusted` and `edit-untrusted` keep their M2 behaviour (T2.2; Q-29: network off at the tool level).
+ */
+export function matrixIneligible(profile: ResolvedProfile): Ineligible | undefined {
+  if (profile.bypassApproved || profile.name === "privileged") {
+    return ineligible("PROFILE_UNSUPPORTED", CLAUDE_PRIVILEGED_DETAIL);
+  }
+  if (profile.name === "test-sandboxed") {
+    return ineligible(
+      "PROFILE_UNSUPPORTED",
+      "test-sandboxed: claude --help 2.1.296 documents no per-run sandbox, so FR-POL-06 confinement is not shown " +
+        "(R-10, Q-16); awaits the live check T3.9 or an outer sandbox (T3.1)",
+    );
+  }
+  const scoped = (["fileAccess", "shell", "network", "repoConfig"] as const).filter((f) => profile[f] === "scoped");
+  if (scoped.length > 0) {
+    return ineligible("PROFILE_UNSUPPORTED", `${profile.name}: scoped ${scoped.join(", ")} belongs to privileged only`);
+  }
+  if (profile.name === "trusted-development") {
+    if (profile.network !== "off") {
+      return ineligible(
+        "CAPABILITY_MISSING",
+        `trusted-development network=${profile.network}: claude --help 2.1.296 documents no network or host control ` +
+          "(TDD §4.1.1, R-29)",
+      );
+    }
+    if (profile.shell === "broad") {
+      return ineligible(
+        "CAPABILITY_MISSING",
+        "trusted-development shell=broad with network=off: claude --help 2.1.296 documents nothing that stops a " +
+          "command's network use (Q-29, R-29)",
+      );
+    }
+    if (profile.repoConfig !== "disabled") {
+      return ineligible(
+        "CAPABILITY_MISSING",
+        `trusted-development repo_config=${profile.repoConfig}: claude --help 2.1.296 has no per-item control for ` +
+          "approved hooks, instructions or MCP servers; --setting-sources selects whole sources and --mcp-config is " +
+          "barred by ADR-0015 (TDD §4.1.1)",
+      );
+    }
+    return undefined;
+  }
+  if (profile.name !== "inspect-untrusted" && profile.name !== "edit-untrusted") {
+    return ineligible("PROFILE_UNSUPPORTED", `claude adapter does not support ${String(profile.name)}`);
+  }
+  return undefined;
+}
+
 export class ClaudeAdapter implements ProviderAdapter {
   readonly id = "claude" as const;
   readonly transports = ["subprocess-jsonl"] as const;
@@ -278,15 +353,9 @@ export class ClaudeAdapter implements ProviderAdapter {
   }
 
   #build(request: CompileRequest, profile: ResolvedProfile, extra: string[]): Invocation | Ineligible {
-    // FR-POL-02/03: never downgrade, never bypass. Only the two untrusted profiles are compiled in M2 (T2.2).
-    if (profile.bypassApproved || profile.name === "privileged") {
-      return ineligible("PROFILE_UNSUPPORTED", "claude adapter does not compile privileged or bypass-approved runs");
-    }
-    if (profile.name !== "inspect-untrusted" && profile.name !== "edit-untrusted") {
-      // TDD §4.1: test-sandboxed is ineligible until credential confinement is shown (FR-POL-06); trusted-development
-      // is not compiled in M2.
-      return ineligible("PROFILE_UNSUPPORTED", `claude adapter does not support ${profile.name} yet`);
-    }
+    // FR-POL-02/03: never downgrade, never bypass (T2.2 for the untrusted profiles, T3.5 for the M3 matrix).
+    const refused = matrixIneligible(profile);
+    if (refused !== undefined) return refused;
     if (this.#resolved === undefined) {
       return ineligible("CAPABILITY_MISSING", "claude binary path unresolved; run probe first");
     }
@@ -296,7 +365,9 @@ export class ClaudeAdapter implements ProviderAdapter {
 
     const tools = [...CLAUDE_READ_TOOLS];
     const allow = [...CLAUDE_READ_TOOLS];
-    if (profile.name === "edit-untrusted") {
+    // TDD §4.1.1: trusted-development "Could compile" as edit-untrusted (file access, allowlist shell, network off at
+    // tool level, repository configuration disabled); the cells it cannot compile were refused by matrixIneligible.
+    if (profile.name === "edit-untrusted" || profile.name === "trusted-development") {
       if (profile.fileAccess !== "read-only" && request.workspace.writable) {
         tools.push(...CLAUDE_EDIT_TOOLS);
         allow.push(...CLAUDE_EDIT_TOOLS);
@@ -323,7 +394,7 @@ export class ClaudeAdapter implements ProviderAdapter {
           allow.push(...entries.map((e) => `Bash(${e})`));
         }
       } else if (profile.shell !== "none") {
-        return ineligible("PROFILE_UNSUPPORTED", `edit-untrusted with shell=${profile.shell} is not narrow`);
+        return ineligible("PROFILE_UNSUPPORTED", `${profile.name} with shell=${profile.shell} is not narrow`);
       }
     } else if (profile.shell !== "none") {
       return ineligible("PROFILE_UNSUPPORTED", "inspect-untrusted must have no shell");

@@ -238,6 +238,15 @@ async function pollTerminal(runId: string, clientIndex = 0): Promise<Json> {
   }
 }
 
+/** A valid structured privileged scope (LLD §3.1). */
+const SCOPE = {
+  files: { access: "worktree" },
+  shell: { mode: "allowlist", allowlist: [["npm", "test"]] },
+  network: { mode: "allowlist", hosts: ["registry.npmjs.org"] },
+  repository_config: { mode: "disabled" },
+  bypass: true,
+};
+
 const runCount = () => (db.prepare("SELECT COUNT(*) AS n FROM run").get() as { n: number }).n;
 const newWriter = () => new FakeAdapter({ script: writerScript, timeouts: SHORT });
 /** The fake writer behind the recording wrapper, so every compiled argv is audited. */
@@ -574,7 +583,7 @@ describe("validation (FR-MCP-09, FRD §7)", () => {
 });
 
 describe("per-client trust ceiling (FR-MCP-06, BR-13)", () => {
-  it("a profile above the client's maximum is PERMISSION_BLOCKED, never downgraded; privileged is never available", async () => {
+  it("a profile above the client's maximum is PERMISSION_BLOCKED, never downgraded; privileged needs a scope", async () => {
     await setup({
       adapters: [fakeWriter()],
       clients: [
@@ -587,8 +596,15 @@ describe("per-client trust ceiling (FR-MCP-06, BR-13)", () => {
       code: "PERMISSION_BLOCKED",
       details: { requested: "edit-untrusted", client_max_profile: "inspect-untrusted" },
     });
+    // T3.3: with a privileged ceiling the request is no longer blocked, but V13 needs a scope (INVALID_REQUEST).
     const priv = await call("delegate_task", delegateArgs({ trust_profile: "privileged" }), 1);
-    expect(priv.body.error.code).toBe("PERMISSION_BLOCKED");
+    expect(priv.body.error).toMatchObject({ code: "INVALID_REQUEST", details: { field: "privileged_scope" } });
+    const below = await call(
+      "delegate_task",
+      delegateArgs({ trust_profile: "privileged", privileged_scope: SCOPE }),
+      0,
+    );
+    expect(below.body.error).toMatchObject({ code: "PERMISSION_BLOCKED", details: { requested: "privileged" } });
     expect(runCount()).toBe(0);
     // At the ceiling is fine.
     const ok = await call("delegate_task", delegateArgs({ trust_profile: "inspect-untrusted" }), 0);
@@ -602,6 +618,213 @@ describe("per-client trust ceiling (FR-MCP-06, BR-13)", () => {
       0,
     );
     expect(raise.body.error.code).toBe("PERMISSION_BLOCKED");
+  });
+});
+
+describe("privileged admission (T3.3; FR-POL-09, FR-MCP-06, BR-13, BR-14, V13, C7; LLD §3.1)", () => {
+  const PRIV_CLIENTS = [
+    { id: "root", max: "privileged" as const },
+    { id: "other", max: "privileged" as const },
+    { id: "editor", max: "edit-untrusted" as const },
+  ];
+  const privArgs = (over: Json = {}): Json =>
+    delegateArgs({ trust_profile: "privileged", privileged_scope: SCOPE, ...over });
+  const approvals = () => ledger.listApprovals();
+
+  it("a client ceiling below privileged gives PERMISSION_BLOCKED before V13, with nothing written", async () => {
+    await setup({ adapters: [fakeWriter()], clients: PRIV_CLIENTS, start: false });
+    for (const args of [privArgs(), delegateArgs({ trust_profile: "privileged" })]) {
+      const r = await call("delegate_task", args, 2);
+      expect(r.body.error).toMatchObject({
+        code: "PERMISSION_BLOCKED",
+        details: { requested: "privileged", client_max_profile: "edit-untrusted" },
+      });
+    }
+    expect(runCount()).toBe(0);
+    expect(approvals()).toHaveLength(0);
+  });
+
+  it("ceiling privileged: AWAITING_APPROVAL with exactly one PENDING row; the envelope shows status and time only", async () => {
+    await setup({ adapters: [fakeWriter()], clients: PRIV_CLIENTS });
+    const d = await call("delegate_task", privArgs());
+    expect(d.isError).toBe(false);
+    expect(d.body.status).toBe("AWAITING_APPROVAL");
+    const rows = approvals();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ run_id: d.body.run_id, status: "PENDING" });
+    expect(d.body.approval).toEqual({ status: "PENDING", requested_at: rows[0]?.requested_at });
+    // Never dispatched: no process, no worktree.
+    await new Promise((res) => setTimeout(res, 50));
+    const run = ledger.getRunRecord(d.body.run_id);
+    expect(run).toMatchObject({ state: "AWAITING_APPROVAL", pid: null, worktree_path: null });
+    // get_run (with events) never carries the scope content, the hash or decided_by.
+    const g = await call("get_run", { run_id: d.body.run_id, include_events: { after_seq: 0 } });
+    expect(g.body.approval).toEqual({ status: "PENDING", requested_at: rows[0]?.requested_at });
+    for (const body of [d.body, g.body]) {
+      const text = JSON.stringify(body);
+      expect(text).not.toContain(rows[0]?.scope_hash as string);
+      expect(text).not.toContain("registry.npmjs.org");
+      expect(text).not.toContain("allowlist");
+      expect(text).not.toContain("decided_by");
+    }
+    // No MCP tool approves or denies (FR-MCP-06, BR-14).
+    const client = servers[0]?.client;
+    if (!client) throw new Error("no client");
+    const { tools } = await client.listTools();
+    expect(tools.map((t) => t.name).filter((n) => /approv|deny/i.test(n))).toEqual([]);
+    expect(compiled).toEqual([]);
+  });
+
+  it("V1/V13: a missing scope, unknown key, missing dimension or allowlist mismatch is INVALID_REQUEST naming the field", async () => {
+    await setup({ adapters: [fakeWriter()], clients: PRIV_CLIENTS, start: false });
+    const cases: [Json, string][] = [
+      [delegateArgs({ trust_profile: "privileged" }), "privileged_scope"],
+      [delegateArgs({ privileged_scope: SCOPE }), "privileged_scope"],
+      [privArgs({ privileged_scope: { ...SCOPE, extra: true } }), "$.privileged_scope.extra"],
+      [
+        privArgs({ privileged_scope: { ...SCOPE, files: { access: "worktree", paths: ["/"] } } }),
+        "$.privileged_scope.files.paths",
+      ],
+      [
+        privArgs({ privileged_scope: { files: SCOPE.files, shell: SCOPE.shell, network: SCOPE.network } }),
+        "$.privileged_scope.repository_config",
+      ],
+      [
+        privArgs({ privileged_scope: { ...SCOPE, shell: { mode: "allowlist" } } }),
+        "$.privileged_scope.shell.allowlist",
+      ],
+      [
+        privArgs({ privileged_scope: { ...SCOPE, shell: { mode: "none", allowlist: [["ls"]] } } }),
+        "$.privileged_scope.shell.allowlist",
+      ],
+      [
+        privArgs({ privileged_scope: { ...SCOPE, network: { mode: "allowlist" } } }),
+        "$.privileged_scope.network.hosts",
+      ],
+      [
+        privArgs({ privileged_scope: { ...SCOPE, network: { mode: "on", hosts: ["a.example"] } } }),
+        "$.privileged_scope.network.hosts",
+      ],
+      [privArgs({ privileged_scope: { ...SCOPE, network: { mode: "policy" } } }), "$.privileged_scope.network.mode"],
+    ];
+    for (const [args, field] of cases) {
+      const r = await call("delegate_task", args);
+      expect(r.body.error, field).toMatchObject({ code: "INVALID_REQUEST", details: { field } });
+      expect(r.body.error.message, field).toContain(field);
+    }
+    expect(runCount()).toBe(0);
+    expect(approvals()).toHaveLength(0);
+  });
+
+  it("idempotent replay returns the same run; a new delegate_task with an identical scope gets a new meta-session and row", async () => {
+    await setup({ adapters: [fakeWriter()], clients: PRIV_CLIENTS, start: false });
+    const args = privArgs({ idempotency_key: "priv-0001" });
+    const a = await call("delegate_task", args);
+    const again = await call("delegate_task", args);
+    expect(again.body).toMatchObject({ run_id: a.body.run_id, replayed: true, status: "AWAITING_APPROVAL" });
+    expect(approvals()).toHaveLength(1);
+    const other = await call("delegate_task", privArgs());
+    expect(other.body.status).toBe("AWAITING_APPROVAL");
+    expect(other.body.meta_session_id).not.toBe(a.body.meta_session_id);
+    const rows = approvals();
+    expect(rows.map((r) => r.status)).toEqual(["PENDING", "PENDING"]);
+    expect(rows[0]?.scope_json).toBe(rows[1]?.scope_json);
+    expect(rows[0]?.scope_hash).not.toBe(rows[1]?.scope_hash); // bound to the meta-session (owner decision 14)
+  });
+
+  it("cancel_run while AWAITING_APPROVAL ends CANCELLED and closes the row DENIED by cancel_run (Q-15)", async () => {
+    await setup({ adapters: [fakeWriter()], clients: PRIV_CLIENTS, start: false });
+    const d = await call("delegate_task", privArgs());
+    const c = await call("cancel_run", { run_id: d.body.run_id, reason: "no longer needed" });
+    expect(c.body).toMatchObject({ status: "CANCELLED", approval: { status: "DENIED" } });
+    expect(ledger.getApprovalForRun(d.body.run_id)).toMatchObject({ status: "DENIED", decided_by: "cancel_run" });
+  });
+
+  it("continue_task: QUEUED under an APPROVED approval with the scope as is; refused when PENDING, DENIED, absent or another client", async () => {
+    await setup({ adapters: [fakeWriter()], clients: PRIV_CLIENTS, start: false });
+    const d = await call("delegate_task", privArgs());
+    const sess = d.body.meta_session_id as string;
+    const cont = (clientIndex = 0, over: Json = {}) =>
+      call("continue_task", { meta_session_id: sess, instruction: "go on", ...over }, clientIndex);
+    // The first run would need a native session to resume (M2 rule); record one as a completed run would.
+    ledger.recordProviderBinding({ metaSessionId: sess, provider: "fake", nativeSessionId: "writer-1" });
+
+    // PENDING (the first run is also still active): refused.
+    expect((await cont()).body.error.code).toBe("INVALID_REQUEST");
+    // Approve through the repo helper (stands in for T3.4) and let the first run reach its dispatch refusal.
+    const row = approvals()[0];
+    ledger.decideApproval({ id: row?.id as string, status: "APPROVED", decidedBy: "op" });
+    const first = ledger.getRunRecord(d.body.run_id);
+    ledger.casRunState({
+      runId: d.body.run_id,
+      from: "AWAITING_APPROVAL",
+      to: "QUEUED",
+      expectedVersion: first?.version as number,
+      payload: { rule: "T3" },
+    });
+    lifecycle.start();
+    const done = await pollTerminal(d.body.run_id);
+    expect(done).toMatchObject({
+      status: "FAILED",
+      failure_code: "ELIGIBILITY_NONE",
+      approval: { status: "APPROVED" },
+    });
+    expect(done.failure_detail).toContain("privileged compile not available until T3.5/T3.6");
+    await lifecycle.shutdown(); // stop dispatch so the continuation stays QUEUED for inspection
+
+    // Another client: the meta-session is not even visible to it (C2), so INVALID_REQUEST.
+    expect((await cont(1)).body.error.code).toBe("INVALID_REQUEST");
+    // A privileged_scope cannot be passed to continue_task (closed schema, C7).
+    expect((await cont(0, { privileged_scope: SCOPE })).body.error.code).toBe("INVALID_REQUEST");
+
+    const c = await cont();
+    expect(c.isError).toBe(false);
+    expect(c.body).toMatchObject({ status: "QUEUED", approval: { status: "APPROVED" } });
+    expect(approvals()).toHaveLength(1);
+    const snap = JSON.parse(ledger.getRunRecord(c.body.run_id)?.policy_snapshot_json ?? "{}");
+    expect(snap.privilegedScope).toEqual({
+      scope: JSON.parse(row?.scope_json as string),
+      scopeHash: row?.scope_hash,
+      approvalId: row?.id,
+    });
+    expect(snap.bypassApproved).toBe(false);
+    expect(JSON.stringify(c.body)).not.toContain(row?.scope_hash as string);
+
+    // DENIED: a second privileged meta-session cancelled while waiting.
+    const d2 = await call("delegate_task", privArgs());
+    await call("cancel_run", { run_id: d2.body.run_id });
+    ledger.recordProviderBinding({ metaSessionId: d2.body.meta_session_id, provider: "fake", nativeSessionId: "w" });
+    const denied = await call("continue_task", { meta_session_id: d2.body.meta_session_id, instruction: "x" });
+    expect(denied.body.error).toMatchObject({ code: "INVALID_REQUEST" });
+    expect(denied.body.error.message).toContain("DENIED");
+
+    // PENDING on an idle meta-session (its first run ended without a decision, written directly for the test).
+    const d3 = await call("delegate_task", privArgs());
+    const r3 = ledger.getRunRecord(d3.body.run_id);
+    ledger.casRunState({
+      runId: d3.body.run_id,
+      from: "AWAITING_APPROVAL",
+      to: "CANCELLED",
+      expectedVersion: r3?.version as number,
+      payload: { rule: "T19" },
+    });
+    ledger.recordProviderBinding({ metaSessionId: d3.body.meta_session_id, provider: "fake", nativeSessionId: "q" });
+    const pending = await call("continue_task", { meta_session_id: d3.body.meta_session_id, instruction: "x" });
+    expect(pending.body.error.code).toBe("INVALID_REQUEST");
+    expect(pending.body.error.message).toContain("PENDING");
+
+    // Absent: an ordinary meta-session continued as privileged.
+    const plain = await call("delegate_task", delegateArgs());
+    await call("cancel_run", { run_id: plain.body.run_id });
+    ledger.recordProviderBinding({ metaSessionId: plain.body.meta_session_id, provider: "fake", nativeSessionId: "p" });
+    const absent = await call("continue_task", {
+      meta_session_id: plain.body.meta_session_id,
+      instruction: "x",
+      trust_profile: "privileged",
+    });
+    expect(absent.body.error.code).toBe("INVALID_REQUEST");
+    expect(absent.body.error.message).toContain("absent");
+    expect(approvals()).toHaveLength(3);
   });
 });
 

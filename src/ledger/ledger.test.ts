@@ -230,3 +230,68 @@ describe("repository helpers", () => {
     expect(() => mk("b")).not.toThrow();
   });
 });
+
+describe("approval helpers (T3.3, LLD §1 and §3.1)", () => {
+  const mkRun = (ledger: ReturnType<typeof createLedger>, metaSessionId: string, clientId: string, snapshot = {}) =>
+    ledger.createRun({
+      metaSessionId,
+      state: "AWAITING_APPROVAL",
+      trustProfile: "privileged",
+      policySnapshot: snapshot,
+      request: {},
+      requestHash: `h-${Math.random()}`,
+      clientId,
+    });
+
+  it("creates, reads, lists and looks up approvals by meta-session and client", () => {
+    db = openLedger(dir);
+    const ledger = createLedger(db, { ids: createIdGenerator() });
+    const s1 = ledger.createMetaSession({ objective: "a" });
+    const s2 = ledger.createMetaSession({ objective: "b" });
+    const id = ledger.newApprovalId();
+    expect(id).toMatch(/^apv_[0-9A-HJKMNP-TV-Z]{26}$/);
+    const r1 = mkRun(ledger, s1.id, "c1", { privilegedScope: { approvalId: id } });
+    const a1 = ledger.createApproval({ id, runId: r1.id, scopeJson: '{"bypass":false}', scopeHash: "h1" });
+    expect(a1).toMatchObject({ id, run_id: r1.id, status: "PENDING", decided_at: null, decided_by: null });
+    const r2 = mkRun(ledger, s2.id, "c1");
+    const a2 = ledger.createApproval({ runId: r2.id, scopeJson: "{}", scopeHash: "h2" });
+    expect(ledger.getApproval(id)).toEqual(a1);
+    expect(ledger.getApprovalForRun(r2.id)?.id).toBe(a2.id);
+    expect(ledger.getApprovalForRun("run_nope")).toBeUndefined();
+    expect(ledger.listApprovals().map((a) => a.id)).toEqual([a1.id, a2.id]);
+    expect(ledger.listApprovals({ limit: 1 }).map((a) => a.id)).toEqual([a1.id]);
+    expect(ledger.findApprovalForMetaSession(s1.id, "c1")?.id).toBe(a1.id);
+    expect(ledger.findApprovalForMetaSession(s1.id, "c2")).toBeUndefined(); // another client never matches
+    expect(ledger.findApprovalForMetaSession(s2.id, "c1")?.id).toBe(a2.id);
+    // A later run of the meta-session names the approval in its snapshot and is listed as covered.
+    const later = mkRun(ledger, s1.id, "c1", { privilegedScope: { approvalId: id } });
+    expect(ledger.listRunsCoveredByApproval(id).map((r) => r.id)).toEqual([r1.id, later.id]);
+    expect(ledger.findApprovalForMetaSession(s1.id, "c1")?.id).toBe(a1.id); // still one row per meta-session
+    // A second row for one meta-session is an invariant violation: fail closed.
+    ledger.createApproval({ runId: later.id, scopeJson: "{}", scopeHash: "h3" });
+    expect(() => ledger.findApprovalForMetaSession(s1.id, "c1")).toThrow(/more than one approval/);
+  });
+
+  it("decides once: PENDING to APPROVED or DENIED, never again, never other columns", () => {
+    db = openLedger(dir);
+    const ledger = createLedger(db, { ids: createIdGenerator(), now: () => new Date("2026-10-13T00:00:00Z") });
+    const s = ledger.createMetaSession({ objective: "a" });
+    const a = ledger.createApproval({ runId: mkRun(ledger, s.id, "c1").id, scopeJson: "{}", scopeHash: "h" });
+    const approved = ledger.decideApproval({ id: a.id, status: "APPROVED", decidedBy: "op" });
+    expect(approved).toMatchObject({
+      status: "APPROVED",
+      decided_by: "op",
+      decided_at: "2026-10-13T00:00:00.000Z",
+      scope_json: "{}",
+      scope_hash: "h",
+    });
+    expect(ledger.decideApproval({ id: a.id, status: "DENIED", decidedBy: "op" })).toBeUndefined();
+    expect(ledger.getApproval(a.id)?.status).toBe("APPROVED");
+    expect(ledger.decideApproval({ id: "apv_missing", status: "DENIED", decidedBy: "op" })).toBeUndefined();
+    const b = ledger.createApproval({ runId: mkRun(ledger, s.id, "c1").id, scopeJson: "{}", scopeHash: "h" });
+    expect(() => ledger.decideApproval({ id: b.id, status: "EXPIRED" as never, decidedBy: "op" })).toThrow();
+    expect(() => ledger.decideApproval({ id: b.id, status: "DENIED", decidedBy: "" })).toThrow();
+    expect(ledger.decideApproval({ id: b.id, status: "DENIED", decidedBy: "cancel_run" })?.status).toBe("DENIED");
+    expect(ledger.listApprovals({ status: "DENIED" }).map((x) => x.id)).toEqual([b.id]);
+  });
+});

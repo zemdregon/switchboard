@@ -75,8 +75,13 @@ export const CODEX_GIT_WRITE_CONTROL: GitWriteControl = {
   remainingControls: ["FR-GIT-03", "FR-GIT-06"],
 };
 
-/** Profiles the Codex adapter compiles in M2 (FR-POL-01); the rest arrive with M3. */
-const SUPPORTED_PROFILES = new Set(["inspect-untrusted", "edit-untrusted"]);
+/** Owner decision 10: Codex stays eligible on its native sandbox for these two, confinement unverified (R-23). */
+const UNTRUSTED_PROFILES = new Set(["inspect-untrusted", "edit-untrusted"]);
+/** Every non-privileged profile the compile matrix evaluates (T3.6, TDD §4.2.1). */
+const MATRIX_PROFILES = new Set([...UNTRUSTED_PROFILES, "test-sandboxed", "trusted-development"]);
+
+/** T3.6 leaves the privileged cell to T3.17 (ADR-0016): no privileged or bypass-approved run compiles yet. */
+export const PRIVILEGED_DEFERRED = "bypass/privileged compile awaits T3.17";
 
 export interface CodexAdapterOptions {
   /** Absolute path of the codex binary. Defaults to the first executable `codex` on PATH, resolved once. */
@@ -204,18 +209,19 @@ export class CodexAdapter implements ProviderAdapter {
     return this.#build(request, profile, [RESUME_SUBCOMMAND, binding.nativeSessionId]);
   }
 
-  /** Pure. Profile compilation is Proposed (TDD §4.2); anything not satisfiable is Ineligible, never downgraded. */
+  /**
+   * Pure. The T3.6 compile matrix for the non-privileged profiles (TDD §4.2.1; Proposed, Delegated). Every dimension
+   * either maps to a documented control (`--sandbox`, `--ignore-user-config`, `--ignore-rules`, [R2]) or makes the run
+   * Ineligible with a reason naming it; nothing is downgraded or silently dropped (FR-POL-02). Checks run in a fixed
+   * order so the first failing dimension names the reason.
+   */
   #build(request: CompileRequest, profile: ResolvedProfile, tail: string[]): Invocation | Ineligible {
     if (profile.name === "privileged" || profile.bypassApproved) {
-      return ineligible("PROFILE_UNSUPPORTED", "Codex adapter never compiles privileged or bypass-approved runs");
+      return ineligible("PROFILE_UNSUPPORTED", `${PRIVILEGED_DEFERRED}; the Codex adapter emits no bypass option`);
     }
-    if (!SUPPORTED_PROFILES.has(profile.name)) {
-      return ineligible("PROFILE_UNSUPPORTED", `${profile.name} is not compiled for Codex before M3`);
-    }
-    if (profile.fileAccess === "scoped") return ineligible("PROFILE_UNSUPPORTED", "scoped file access");
-    if (profile.shell !== "none" && profile.shell !== "allowlist") {
-      return ineligible("PROFILE_UNSUPPORTED", `shell=${profile.shell} is not compiled for Codex before M3`);
-    }
+    if (!MATRIX_PROFILES.has(profile.name)) return ineligible("PROFILE_UNSUPPORTED", `unknown profile ${profile.name}`);
+    const scoped = (["fileAccess", "shell", "network", "repoConfig"] as const).filter((k) => profile[k] === "scoped");
+    if (scoped.length > 0) return ineligible("PROFILE_UNSUPPORTED", `scoped ${scoped.join(", ")} outside privileged`);
     const allowlist = profile.shellAllowlist ?? [];
     const gitWrites = gitWriteRisks(allowlist);
     if (gitWrites.length > 0) {
@@ -224,12 +230,30 @@ export class CodexAdapter implements ProviderAdapter {
         `shell allowlist entries could write Git (FR-GIT-01): ${gitWrites.map((g) => g.command).join("; ")}`,
       );
     }
-    // R2 documents no Codex command allowlist (Q-11): a non-empty allowlist cannot be expressed, so it is not compiled.
-    if (allowlist.length > 0) return ineligible("CAPABILITY_MISSING", "no documented Codex command allowlist (Q-11)");
-    // Assumption: Codex sandbox modes keep network off; R2 documents no network switch, so only `off` compiles.
-    if (profile.network !== "off") return ineligible("CAPABILITY_MISSING", "no documented Codex network allowlist");
-    // R2/TDD §4.2 name no model-selection flag; never silently run a different model.
+    const shellIneligible = this.#shell(profile, allowlist);
+    if (shellIneligible) return shellIneligible;
+    // Assumption: Codex sandbox modes keep network off; R2 documents no network switch, so only `off` compiles (R-29).
+    if (profile.network !== "off") {
+      return ineligible("CAPABILITY_MISSING", `network=${profile.network}: no documented Codex network control`);
+    }
+    // R2 documents only the two all-or-nothing harness flags, no per-item approval of repository config.
+    if (profile.repoConfig !== "disabled") {
+      return ineligible(
+        "CAPABILITY_MISSING",
+        `repoConfig=${profile.repoConfig}: Codex documents only all-or-nothing --ignore-user-config/--ignore-rules`,
+      );
+    }
+    // R2/TDD §4.2 name no model-selection flag; never silently run a different model (Q-11, model part open).
     if (request.model !== undefined) return ineligible("CAPABILITY_MISSING", "no documented Codex model flag");
+    // Q-27, Proposed (Delegated): decision 10 names only the two untrusted profiles, and Codex cannot limit commands
+    // to build and test commands, so test-sandboxed fails closed until Q-27 is answered or T3.9 records HELD.
+    if (profile.name === "test-sandboxed") {
+      return ineligible(
+        "PROFILE_UNSUPPORTED",
+        "test-sandboxed: owner decision 10 covers only inspect-untrusted and edit-untrusted; Codex credential " +
+          "confinement is unverified (Q-27, R-23, FR-POL-06)",
+      );
+    }
     if (this.#exe === undefined) return ineligible("CAPABILITY_MISSING", `${CODEX_BINARY} not found on PATH`);
 
     const readOnly =
@@ -254,6 +278,32 @@ export class CodexAdapter implements ProviderAdapter {
       expectedExitCodes: [0],
       maxLineBytes: DEFAULT_MAX_LINE_BYTES,
     };
+  }
+
+  /**
+   * Shell dimension. R2 documents no way to stop or narrow the commands Codex runs inside its sandbox (Q-11):
+   * - untrusted profiles: `none` or an empty allowlist compile (owner decision 10, commands run inside the sandbox,
+   *   confinement unverified, R-23); a non-empty allowlist is CAPABILITY_MISSING; `broad` is not compiled (Proposed).
+   * - test-sandboxed: a non-empty allowlist is CAPABILITY_MISSING; everything else falls to the Q-27 gate.
+   * - trusted-development: only `broad` compiles (commands inside the sandbox); `none` or any allowlist, empty
+   *   included, is CAPABILITY_MISSING, since decision 10 does not cover it (Proposed, as the privileged matrix cell).
+   */
+  #shell(profile: ResolvedProfile, allowlist: readonly string[]): Ineligible | undefined {
+    if (profile.name === "trusted-development") {
+      if (profile.shell === "broad") return undefined;
+      return ineligible(
+        "CAPABILITY_MISSING",
+        `shell=${profile.shell}: no documented Codex control to disable or narrow commands (Q-11)`,
+      );
+    }
+    if (allowlist.length > 0) return ineligible("CAPABILITY_MISSING", "no documented Codex command allowlist (Q-11)");
+    if (UNTRUSTED_PROFILES.has(profile.name) && profile.shell !== "none" && profile.shell !== "allowlist") {
+      return ineligible(
+        "PROFILE_UNSUPPORTED",
+        `shell=${profile.shell} is not compiled for Codex under ${profile.name}`,
+      );
+    }
+    return undefined;
   }
 
   /** One JSONL line -> normalized events. Structured fields only (FR-ADP-04); reasoning text is dropped. */

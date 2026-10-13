@@ -7,9 +7,16 @@
  * names the native login command (FR-AUTH-02); route reasons are short strings derived from `route_decision`; `usage.reported`
  * lists stored provider-reported observations, each labelled with its source (T2.5), and is null when none exist
  * (never zero); `estimated` and `capacity_confidence` stay null until the M6 estimator (FR-CAP-01..03).
+ *
+ * T3.3 (LLD §3.1 "What is shown where"): a `privileged` run carries `approval: { status, requested_at }` of the approval
+ * named by its policy snapshot, and nothing else of it: never the scope, the scope hash or `decided_by`. The policy
+ * snapshot itself is never read into the envelope beyond that ID.
+ *
+ * T3.4: the operator `approve`/`deny` record (`operator_decision_requested`) carries the deciding OS user and the scope
+ * hash for the operator CLI; `get_run include_events` drops both fields from that event (Proposed).
  */
 import type { Ledger, RunRecord } from "../ledger/index.js";
-import { isTerminal } from "../lifecycle/index.js";
+import { isTerminal, OPERATOR_DECISION_REQUESTED } from "../lifecycle/index.js";
 import type { ReportedUsage } from "../usage/index.js";
 import { MCP_ARTIFACT_KINDS } from "./schemas.js";
 
@@ -29,6 +36,7 @@ export interface Envelope {
   result: { summary?: string; changed_files?: number; verification: Record<string, unknown>[] };
   artifacts: Record<string, string>;
   usage: { reported: ReportedUsage[] | null; estimated: null; capacity_confidence: null };
+  approval?: { status: "PENDING" | "APPROVED" | "DENIED"; requested_at: string };
   replayed?: boolean;
   events?: { seq: number; ts: string; type: string; payload: unknown }[];
 }
@@ -68,6 +76,26 @@ export function buildEnvelope(ledger: Ledger, run: RunRecord, scrub: (s: string)
     result,
     artifacts,
     usage: { reported: reportedUsage(ledger, run.id), estimated: null, capacity_confidence: null },
+    ...approvalOf(ledger, run),
+  };
+}
+
+const SHOWN_APPROVAL_STATUSES: ReadonlySet<string> = new Set(["PENDING", "APPROVED", "DENIED"]);
+
+/** `{ approval }` for a privileged run whose snapshot names an approval; `{}` otherwise (fail closed: no guessing). */
+function approvalOf(ledger: Ledger, run: RunRecord): Pick<Envelope, "approval"> {
+  if (run.trust_profile !== "privileged") return {};
+  let approvalId: unknown;
+  try {
+    approvalId = (JSON.parse(run.policy_snapshot_json) as { privilegedScope?: { approvalId?: unknown } })
+      .privilegedScope?.approvalId;
+  } catch {
+    return {};
+  }
+  const row = typeof approvalId === "string" ? ledger.getApproval(approvalId) : undefined;
+  if (!row || !SHOWN_APPROVAL_STATUSES.has(row.status)) return {};
+  return {
+    approval: { status: row.status as "PENDING" | "APPROVED" | "DENIED", requested_at: row.requested_at },
   };
 }
 
@@ -116,7 +144,7 @@ export function compactEvents(
   scrub: (s: string) => string,
 ): NonNullable<Envelope["events"]> {
   return ledger.listRunEventsAfter(runId, afterSeq, limit).map((e) => {
-    const text = scrub(e.payload_json);
+    const text = scrub(e.type === OPERATOR_DECISION_REQUESTED ? operatorOnlyStripped(e.payload_json) : e.payload_json);
     let payload: unknown;
     if (text.length > EVENT_PAYLOAD_MAX) payload = { truncated: true, bytes: e.payload_json.length };
     else {
@@ -128,4 +156,14 @@ export function compactEvents(
     }
     return { seq: e.seq, ts: e.ts, type: e.type, payload };
   });
+}
+
+/** Operator-only fields of an `approve`/`deny` record (LLD §3.1 "What is shown where": no hash, no `decided_by`). */
+function operatorOnlyStripped(json: string): string {
+  try {
+    const { requested_by: _by, scope_hash: _hash, ...rest } = JSON.parse(json) as Record<string, unknown>;
+    return JSON.stringify(rest);
+  } catch {
+    return JSON.stringify({ unparseable: true });
+  }
 }
