@@ -1,5 +1,7 @@
 # Switchboard
 
+![Switchboard logo](assets/switchboard-logo.png)
+
 Switchboard is a headless controller that lets one orchestrating agent delegate coding work to AI coding CLIs
 (Claude Code and Codex in this stage) through their documented automation surfaces, behind a single MCP tool surface.
 It runs on your own machine and reuses the logins you already made with those CLIs. Switchboard itself never handles
@@ -65,7 +67,7 @@ each provider's own CLI, and Switchboard asks that CLI whether it is logged in.
 | Provider | Login step the adapter reports | Status of that step |
 | --- | --- | --- |
 | Claude Code | `claude auth login` (the adapter returns `AUTH_REQUIRED` naming it) | Taken from the adapter; check Anthropic's documentation |
-| Codex | `codex login` (the adapter calls it "believed to be", unverified) | **Unverified**; check OpenAI's documentation for the current login step |
+| Codex | `codex login`; status is read with `codex login status` (exit code 0 logged in, 1 not) | `codex login status` observed on codex-cli 0.162.1 (`docs/research/live-checks-2026-10-13.md`); output format undocumented, so only the exit code is used; check OpenAI's documentation for the login step |
 
 Do not copy credential files between machines or users. Do not put API keys or tokens in the Switchboard config; it has
 no place for them and rejects unknown keys.
@@ -110,8 +112,10 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `profiles.<name>` | no | Overrides for `inspect-untrusted`, `edit-untrusted`, `test-sandboxed` or `trusted-development`: `file_access`, `shell`, `shell_allowlist`, `network`, `network_allowlist`, `repo_config`. They may tighten or loosen a default; `doctor` lists them and every run records them. `privileged` has none. See the `edit-untrusted` limit under [Trust profiles](#trust-profiles). |
 
 `<id>` is one of `claude-code`, `codex`, `grok-build`, `antigravity`, `cursor`, `opencode`, `kimi-code`. Only
-`claude-code` and `codex` have adapters in this stage. `max_trust_profile` accepts any of the five profile names, but
-see [Trust profiles](#trust-profiles).
+`claude-code` and `codex` have adapters in this stage. `<id>` is the *config* id. The *provider* id used in
+`routing.provider_preference` of `delegate_task` is the adapter id: `claude`
+for Claude Code (config id `claude-code`), `codex` for Codex. `max_trust_profile` accepts any of the five profile
+names, but see [Trust profiles](#trust-profiles).
 
 ## Check the setup with `doctor`
 
@@ -133,8 +137,9 @@ otherwise. Markers:
 | `[skip]` | Skipped: because the config is not valid, or (for a provider) because `providers.<id>.enabled` is `false`. Skips never change the exit code. |
 
 Per adapter, the auth state is `OK`, `AUTH_REQUIRED` (doctor prints the native login command to run) or `UNKNOWN`
-(Switchboard could not tell; the reason is printed). `UNKNOWN` is expected for Codex until its status handling is
-verified (see [Troubleshooting](#troubleshooting)).
+(Switchboard could not tell; the reason is printed). `UNKNOWN` means the status command exited with
+neither of its two expected codes, timed out or could not start (see [Troubleshooting](#troubleshooting)). For Codex the
+state comes from the exit code of `codex login status` (0 is `OK`, 1 is `AUTH_REQUIRED`).
 
 A machine with no Claude Code or Codex installed gets `[warn]` for both and still exits 0. That proves only that the
 environment and config are sound, not that a provider works.
@@ -347,8 +352,10 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
 
 ## Known limitations
 
-- **Codex is unverified.** The Codex compliance manifest has an intentionally empty version range, so every Codex binary
-  fails the version gate (see Troubleshooting, ROADMAP Q-12). Codex login and status commands are assumptions.
+- **Codex is only lightly validated.** The Codex compliance manifest covers `>=0.162.1 <0.163.0` (an Assumption, ROADMAP
+  Q-12), validated only by `--version`, the flags in `--help` and the operator's live checks of 2026-10-13
+  (`docs/research/live-checks-2026-10-13.md`), not by a conformance suite. Any other Codex version fails the version
+  gate. The `codex login status` exit codes were observed on that version only; its output format is undocumented.
 - **Event shapes are unverified until the live smoke test passes.** The adapters were written against recorded or
   synthetic fixtures. Provider output formats, flags and the exact meaning of status commands may differ on a real CLI.
 - Linux only. Single operator only. No hosted or multi-user mode.
@@ -374,10 +381,10 @@ version gate.
 
 | Code or message | Where you see it | Meaning and what to do |
 | --- | --- | --- |
-| `AUTH_REQUIRED` | `doctor` adapter line (`[warn]`, "AUTH_REQUIRED, run natively"); a failed run | The provider CLI reports you are not logged in. Run the native login it prints (Claude Code: `claude auth login`; Codex: `codex login`, unverified, check the provider's documentation), then run `doctor` again. |
-| auth `UNKNOWN` | `doctor` adapter line | Switchboard could not determine login state; the reason is printed. Check the CLI runs on its own. For Codex this is expected until its status handling is verified. |
+| `AUTH_REQUIRED` | `doctor` adapter line (`[warn]`, "AUTH_REQUIRED, run natively"); a failed run | The provider CLI reports you are not logged in. Run the native login it prints (Claude Code: `claude auth login`; Codex: `codex login`, check the provider's documentation), then run `doctor` again. |
+| auth `UNKNOWN` | `doctor` adapter line | Switchboard could not determine login state; the reason is printed. Check the CLI runs on its own. For Codex it means `codex login status` exited with a code other than 0 or 1, timed out or could not start. |
 | `not installed: ... CLI not found` | `doctor` (`[warn]`) | The provider binary is not on `PATH`. Install it, or ignore it if you do not use that provider. |
-| `ADAPTER_VERSION_UNVERIFIED` | `doctor` (`[FAIL]`, exit 1); `list_capabilities` | The installed CLI version is outside the range recorded in the adapter's compliance manifest, so the adapter is ineligible. For Codex the range is deliberately empty (`<0.0.0`) because no Codex version has been verified on the development host (ROADMAP Q-12): **an installed Codex always fails `doctor` today**. Do not edit manifests to force a pass; the `adapters validate` command that would record a version does not exist yet. Use Claude Code, or set `providers.codex.enabled` to `false` (this stops dispatch to Codex, and `doctor` then reports it as `[skip]` and does not probe it). |
+| `ADAPTER_VERSION_UNVERIFIED` | `doctor` (`[FAIL]`, exit 1); `list_capabilities` | The installed CLI version is outside the range recorded in the adapter's compliance manifest, so the adapter is ineligible. For Codex the range is `>=0.162.1 <0.163.0`, the version the operator checked on 2026-10-13 (ROADMAP Q-12, an Assumption): another Codex version fails `doctor` until its manifest range is reviewed. Do not edit manifests to force a pass; the `adapters validate` command that would record a version does not exist yet. Use Claude Code, or set `providers.codex.enabled` to `false` (this stops dispatch to Codex, and `doctor` then reports it as `[skip]` and does not probe it). |
 | `ELIGIBILITY_NONE` | MCP error or failed run | No provider can take the task: none enabled, installed, version-verified and logged in for that profile; no provider can compile the profile or the approved `privileged` scope; or the queue or concurrency limit was hit. Run `doctor` and `list_capabilities` to see why. |
 | `ELIGIBILITY_NONE` with `details.reason = "QUEUE_FULL"` | MCP error | Switchboard reports a full waiting queue under `ELIGIBILITY_NONE` (a proposed mapping, ROADMAP Q-5). Wait for runs to finish or cancel some, then retry. |
 | `PERMISSION_BLOCKED` | MCP error or failed run | The requested `trust_profile` is above the client's `max_trust_profile`, a `privileged` run's approval check failed before start (for example a changed scope), or the provider denied an operation. Request a lower profile or re-delegate within what is allowed. |

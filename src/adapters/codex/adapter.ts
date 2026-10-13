@@ -42,8 +42,12 @@ import type {
   RunResult,
 } from "../types.js";
 import {
+  AUTH_STATUS_LINE_MAX,
+  AUTH_STATUS_TIMEOUT_MS,
   AUTH_UNKNOWN_REASON,
   CODEX_BINARY,
+  CODEX_LOGIN_COMMAND,
+  CODEX_LOGIN_STATUS_ARGS,
   ERROR_CODE_CATEGORIES,
   EVENT,
   EXEC_SUBCOMMAND,
@@ -221,13 +225,27 @@ export class CodexAdapter implements ProviderAdapter {
   }
 
   /**
-   * FR-AUTH-02: R2 and TDD §4.2 document no Codex auth status command, so the adapter runs nothing and returns
-   * UNKNOWN (ineligible, NFR-SEC-06) with the operator instruction. It never reads `~/.codex/auth.json` or any other
-   * file and never starts a login. A headless run that fails with a structured auth error still ends AUTH_REQUIRED
-   * through classifyFailure.
+   * FR-AUTH-02 via `codex login status` (observed on codex-cli 0.162.1, docs/research/live-checks-2026-10-13.md:
+   * exit 0 logged in, exit 1 not logged in; the output format is undocumented, so only the exit code decides).
+   * Exit 0 is OK, exit 1 is AUTH_REQUIRED, and any other exit code, a timeout or a spawn failure is UNKNOWN (ineligible,
+   * NFR-SEC-06, fail closed). The runner supplies the minimal probe environment. Output is never parsed or stored; at
+   * most the exit code and the first line, truncated, appear in an UNKNOWN reason. It never reads `~/.codex/auth.json`
+   * or any other file and never starts a login.
    */
-  async authPreflight(_runner: ProbeRunner): Promise<AuthResult> {
-    return { state: "UNKNOWN", reason: AUTH_UNKNOWN_REASON };
+  async authPreflight(runner: ProbeRunner): Promise<AuthResult> {
+    const exe = this.#exe;
+    if (exe === undefined) return { state: "UNKNOWN", reason: `${CODEX_BINARY} not found on PATH` };
+    const r = await runner([exe, ...this.#launcher, ...CODEX_LOGIN_STATUS_ARGS], { timeoutMs: AUTH_STATUS_TIMEOUT_MS });
+    if (r.spawnError !== undefined) return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (${r.spawnError})` };
+    if (r.timedOut) return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (timed out)` };
+    if (r.exitCode === 0) return { state: "OK" };
+    if (r.exitCode === 1) return { state: "AUTH_REQUIRED", loginCommand: CODEX_LOGIN_COMMAND };
+    const first = (r.stdout.split("\n").find((l) => l.trim() !== "") ?? "").trim();
+    const line = Array.from(first)
+      .filter((c) => c >= " " && c !== "\x7f")
+      .join("")
+      .slice(0, AUTH_STATUS_LINE_MAX);
+    return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (exit ${r.exitCode}${line ? `: ${line}` : ""})` };
   }
 
   compile(request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible {
