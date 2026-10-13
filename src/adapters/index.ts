@@ -5,6 +5,7 @@ export * from "./conformance.js";
 export * from "./failure.js";
 export * from "./git-write.js";
 export * from "./manifest/index.js";
+export * from "./preflight-cache.js";
 export * from "./registry.js";
 export * from "./run.js";
 export * from "./types.js";

@@ -8,7 +8,7 @@
  * - Queue depth counts QUEUED and WAITING_CAPACITY runs; a full queue rejects admission with `QUEUE_FULL` before any row
  *   is written (SDD §1 "retryable error"; the LLD §4 taxonomy has no code for it yet).
  * - Priority values: interactive 2, normal 1, batch 0 (LLD §3 names the enum, LLD §1 stores an integer).
- * - M1 preflight runs `probe` and `authPreflight` on every dispatch (no cache yet; NFR-PERF-02 caching is M2). Any
+ * - M1 preflight runs `probe` and `authPreflight` on every dispatch (cached by `preflightCache` when set, NFR-PERF-02). Any
  *   failed probe step or an UNKNOWN auth state ends the run `ELIGIBILITY_NONE`; AUTH_REQUIRED ends it `AUTH_REQUIRED`.
  * - PREFLIGHT → LEASED is committed before `WorkspaceManager.prepare`, which then takes the lease and creates the
  *   worktree (intent before effect, LLD §10). A workspace preparation failure uses the LEASED → FAILED edge with
@@ -81,6 +81,7 @@ import {
   type FailureCode,
   isIneligible,
   type NormalizedEvent,
+  type PreflightCache,
   type ProbeRunner,
   type ProviderAdapter,
   type ProviderId,
@@ -278,6 +279,11 @@ export interface RunLifecycleOptions {
    * lifecycle's own. `serve` must set it (fail closed, NFR-SEC-06); it is optional only for the M1 unit tests.
    */
   readonly eligibility?: Omit<CollectDeps, "registry" | "runner">;
+  /**
+   * NFR-PERF-02 / BR-20: shared preflight cache for the M1 preflight and (unless `eligibility.preflight` is set) the
+   * stage-1 eligibility collection. Unset means no caching.
+   */
+  readonly preflightCache?: PreflightCache;
 }
 
 type PreflightVerdict =
@@ -569,7 +575,14 @@ export class RunLifecycle {
         requirements: requirementsFor(q.trustProfile, profile),
         cwd: q.cwd,
       },
-      { ...this.opts.eligibility, registry: this.opts.adapters, runner: this.runner },
+      {
+        ...this.opts.eligibility,
+        ...(this.opts.preflightCache && !this.opts.eligibility.preflight
+          ? { preflight: this.opts.preflightCache }
+          : {}),
+        registry: this.opts.adapters,
+        runner: this.runner,
+      },
     );
     return { input, decision: filterEligible(input) };
   }
@@ -895,7 +908,8 @@ export class RunLifecycle {
 
   /** M1 preflight (no `eligibility` option): probe and auth only (T8 codes as in M1). */
   private async preflightM1(req: StoredRequest, adapter: ProviderAdapter): Promise<PreflightVerdict> {
-    const probe = await adapter.probe(this.runner);
+    const cache = this.opts.preflightCache;
+    const probe = cache ? await cache.probe(adapter, this.runner) : await adapter.probe(this.runner);
     const failedStep = probe.steps.find((s) => !s.ok);
     if (failedStep) {
       return {
@@ -904,7 +918,7 @@ export class RunLifecycle {
         detail: `${req.provider}: preflight step ${failedStep.step} failed`,
       };
     }
-    const auth = await adapter.authPreflight(this.runner);
+    const auth = cache ? await cache.authPreflight(adapter, this.runner) : await adapter.authPreflight(this.runner);
     if (auth.state === "AUTH_REQUIRED") {
       return {
         ok: false,
