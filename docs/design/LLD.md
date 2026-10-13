@@ -1141,7 +1141,9 @@ export interface Environment {
 ```
 
 `host` is the identity implementation and keeps today's behaviour. A `container` implementation must not mount more than
-FR-PRJ-05 allows, label every container `switchboard.run` and `switchboard.project`, and record `environment` run events.
+FR-PRJ-05 allows, refuse an image with a Git client (`git` or `gh` on the container's `PATH`, FR-PRJ-05), label every
+container `switchboard.run` and `switchboard.project`, and record `environment` run events. All Git operations for a
+container run stay in the controller on the host.
 Container details: [TDD §3.11](TDD.md#311-container-environments).
 
 ## 12. Injected Git tools, commits and publication

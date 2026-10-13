@@ -204,12 +204,16 @@ network hosts and repository configuration, plus a `bypass` setting that default
 approved scope explicitly sets `bypass` ([ADR-0017](docs/adr/0017-approved-privileged-scope-bypass.md)). For Claude
 Code an approved bypass run drops `--restricted`, which refuses bypass, and keeps the other isolation flags
 ([ADR-0018](docs/adr/0018-claude-bypass-omits-restricted.md)); whether Claude's Git deny rules still hold under bypass
-is not verified yet (ROADMAP R-38). Codex does not run `bypass: true` scopes yet (its bypass option is not documented
-in the sources the adapter relies on), and neither provider compiles every scope: `list_capabilities` shows whether a
-provider compiles `privileged` at all, and a scope it cannot express fails `ELIGIBILITY_NONE`. Approvals never
-expire: once approved, later `continue_task` runs of the same meta-session reuse the approved scope without asking
-again, so approve only scopes you are content to leave open for that session. A different scope or a new task asks
-again.
+is not verified yet (ROADMAP R-38). That gap concerns agents running on your host. Container environments, planned
+for milestone 10 and not available yet, are meant to close it: their image has no Git client, they mount neither the
+repository's Git directory nor any credentials, and Switchboard makes commits and pushes on the host through its own
+tools (ROADMAP owner decision 24). Host-run agents remain supported. Claude Code compiles a privileged scope only with
+the network `on`: it has no network control for commands, so a scope asking for network `off` is refused. Codex does
+not run `bypass: true` scopes yet (its bypass option is not documented in the sources the adapter relies on), and
+neither provider compiles every scope: `list_capabilities` shows whether a provider compiles `privileged` at all, and a
+scope it cannot express fails `ELIGIBILITY_NONE`. Approvals never expire: once approved, later `continue_task` runs of
+the same meta-session reuse the approved scope without asking again, so approve only scopes you are content to leave
+open for that session. A different scope or a new task asks again.
 
 **Skipping the approval for a client you trust.** The loose modes are meant for operators who want them; the defaults
 stay strict for everyone else. Setting `"privileged_approval": "not_required"` on an `mcp_clients` entry whose
