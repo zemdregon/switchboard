@@ -50,6 +50,12 @@ export interface InnerTaskContract<T, F> {
   max_output_bytes?: number;
   /** The deterministic fallback (LLD §13.7). Must not depend on a second model call. */
   fallback: () => F;
+  /**
+   * Store an accepted value and return the ID of the artifact that holds it (the `pr_draft` artifact, T11.8). Runs after
+   * the sanitiser and before the call is recorded, so the `inner_call` run event can reference the artifact (LLD §13.6).
+   * A throw or a null result is `fallback_unavailable` (`PERSIST_FAILED`): the value is not handed out unstored.
+   */
+  persist?: (value: T) => Promise<string | null>;
   /** Bounded, non-body fields merged into the `inner_call` run event of an accepted call (for example `run_title`). */
   event_payload?: (value: T) => Record<string, unknown>;
 }
@@ -324,6 +330,7 @@ export function createInnerPipeline(deps: PipelineDeps): InnerPipeline {
         );
       });
 
+    let persistedArtifactId: string | null = null;
     const finish = (outcome: InnerCallOutcome, reason: string | undefined, value?: T): InnerCallResult<T, F> => {
       const latency = rec.attempts === 0 ? 0 : Date.now() - started;
       let callId: string | undefined;
@@ -365,7 +372,7 @@ export function createInnerPipeline(deps: PipelineDeps): InnerPipeline {
             outcome === "accepted" && value !== undefined ? (contract.event_payload?.(value) ?? undefined) : undefined;
           callId = deps.ledger.recordInnerCall(row, {
             ...(callPayload !== undefined ? { callPayload } : {}),
-            artifactId: input.artifact_id ?? null,
+            artifactId: input.artifact_id ?? persistedArtifactId,
             extra,
           }).id;
         } catch {
@@ -502,6 +509,16 @@ export function createInnerPipeline(deps: PipelineDeps): InnerPipeline {
         const clean = contract.sanitise(value);
         if (clean === null) return finish("rejected_sanitiser", "EMPTY_AFTER_SANITISER");
         value = clean;
+      }
+      if (contract.persist !== undefined) {
+        let id: string | null = null;
+        try {
+          id = await contract.persist(value);
+        } catch {
+          id = null;
+        }
+        if (id === null) return finish("fallback_unavailable", "PERSIST_FAILED");
+        persistedArtifactId = id;
       }
       // Step 11 (suspension) is T11.6.
       return finish("accepted", undefined, value);

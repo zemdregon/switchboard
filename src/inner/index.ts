@@ -26,6 +26,7 @@ export * from "./fake-backend.js";
 export * from "./http-backend.js";
 export * from "./pipeline.js";
 export * from "./port.js";
+export * from "./pr-draft.js";
 export * from "./truncate.js";
 
 /**
