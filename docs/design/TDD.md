@@ -246,9 +246,10 @@ code and key names only, never values), the run's terminal state, the native eve
 NOT_CHECKED line for each adapter Assumption tracked by [ROADMAP](../ROADMAP.md#7-risks-blockers-and-open-questions)
 R-21, R-22 and Q-13. It never reads or prints credentials or prompt/response text. Optional: `SWITCHBOARD_LIVE_TIMEOUT_MS`
 (default 600000) and `SWITCHBOARD_LIVE_KEEP=1` (keep the temp directory with the ledger, artifacts and `serve` log).
-Exit code 0 means the run succeeded and no checked Assumption failed. With the current manifests Codex is expected to be
-refused at eligibility (`ADAPTER_VERSION_UNVERIFIED` and auth `UNKNOWN`, Q-10 and Q-12); the script still reports the
-probe-level Assumptions.
+Exit code 0 means the run succeeded and no checked Assumption failed. Codex is refused at eligibility
+(`ADAPTER_VERSION_UNVERIFIED`, Q-12) on a CLI outside the manifest range `>=0.162.1 <0.163.0`, and with auth `UNKNOWN`
+or `AUTH_REQUIRED` when `codex login status` does not exit 0 (Q-10); the script still reports the probe-level
+Assumptions.
 
 #### 3.6.1 Controller-overhead benchmark (T2.7)
 
@@ -1014,7 +1015,7 @@ customisations; they do not confine what an allowed command does (ADR-0015; [R2 
 | Automation surface | `codex exec` |
 | Structured output | `--json` emits JSONL (thread, turn, item, error and token-usage events) |
 | Resume | `codex exec resume <SESSION_ID>` or `--last` (prefer explicit ID) |
-| Auth preflight | Saved ChatGPT or API-key auth is reused; a dedicated status command is not stated in [R2]: to be verified in M2 against installed CLI. `~/.codex/auth.json` is sensitive and never read |
+| Auth preflight | Saved ChatGPT or API-key auth is reused. [R2] states no status command; `codex login status` was observed on codex-cli 0.162.1 (`docs/research/live-checks-2026-10-13.md` (PR #41), not a link: the file is not on this branch): exit 0 logged in, exit 1 not logged in, output format undocumented. The adapter keys on the exit code only; any other exit code, a timeout or a spawn failure is `UNKNOWN` (fail closed). `~/.codex/auth.json` is sensitive and never read |
 | Trust profile compilation (Proposed) | `--sandbox workspace-write` or stricter, plus `--ignore-user-config` and `--ignore-rules` for full harness control. Read-only sandbox value spelling: to be verified in M4 |
 | Sandbox controls | Native: Seatbelt (macOS), bubblewrap (Linux/WSL2); explicit `--sandbox`. Per profile and platform: [§4.2.1](#421-codex-native-controls-per-profile-and-platform-t30) |
 | Commands under untrusted profiles (owner decision 10) | Codex's agent runs shell commands inside its native sandbox under `inspect-untrusted` (`--sandbox read-only`) and `edit-untrusted` (`--sandbox workspace-write`); Switchboard has no documented Codex command allowlist to narrow them (Q-11), so "no shell" does not hold for Codex. Whether the sandbox keeps those commands away from `~/.codex` credentials and other same-user files is **unverified**: FR-POL-06 stays open for Codex (R-23) until the live malicious leg (T3.9); an outer sandbox (T3.1) is optional hardening. Network off is an Assumption ([R2] documents no Codex network switch) |

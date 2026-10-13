@@ -697,7 +697,8 @@ from its eligibility reason per [FRD BR-3](../requirements/FRD.md#3-business-rul
 a missing manifest, and tells them apart only by `evidence.validatedRange` being `null` when there is no manifest. The
 routing filter (`src/routing/eligibility.ts`) reads that field and reports `NO_MANIFEST` (failure code
 `ELIGIBILITY_NONE`) when it is `null` and `ADAPTER_VERSION_UNVERIFIED` otherwise, as BR-3 requires. A shipped manifest
-with an empty range (Codex today, `<0.0.0`) is therefore `ADAPTER_VERSION_UNVERIFIED`, not `NO_MANIFEST`.
+with an empty range (`<0.0.0`; Codex until 2026-10-13, see ROADMAP Q-12) is therefore `ADAPTER_VERSION_UNVERIFIED`, not
+`NO_MANIFEST`; so is a version outside a non-empty range.
 
 ### 3.1 Privileged scope (M3)
 

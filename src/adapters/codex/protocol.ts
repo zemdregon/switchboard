@@ -67,20 +67,33 @@ export const HELP_FLAG = "--help";
 /**
  * Native login instruction surfaced with AUTH_REQUIRED (FR-AUTH-02). Never executed by Switchboard.
  * **Assumption**: R2 says Codex supports ChatGPT-subscription login with cached credentials but does not spell the
- * command; `codex login` must be verified against the installed CLI.
+ * command; `codex login` exists in codex-cli 0.162.1 (`codex login --help` and `login status`, live-checks-2026-10-13)
+ * but running it was not observed.
  */
 export const CODEX_LOGIN_COMMAND = "codex login";
 
 /**
- * Auth preflight: R2 ("Compliance and authentication boundary") and TDD §4.2 state that saved auth is reused by
- * `codex exec` and that a dedicated status command is **not** documented. Per FR-AUTH-02 the adapter therefore
- * reports UNKNOWN (treated as ineligible, NFR-SEC-06) with this instruction rather than guessing or reading
- * `~/.codex/auth.json` (which R2 says must be treated like a password).
+ * Arguments of the status command run by the auth preflight. Observed (docs/research/live-checks-2026-10-13.md,
+ * codex-cli 0.162.1): `codex login --help` lists `status` ("Show login status").
+ */
+export const CODEX_LOGIN_STATUS_ARGS = ["login", "status"] as const;
+
+/** **Proposed**: short wall-clock bound for the status command, so a hung CLI fails closed to UNKNOWN. */
+export const AUTH_STATUS_TIMEOUT_MS = 5_000;
+
+/** **Proposed**: the only part of the status output that is logged, truncated (the format is undocumented). */
+export const AUTH_STATUS_LINE_MAX = 80;
+
+/**
+ * Auth preflight. Observed (docs/research/live-checks-2026-10-13.md, codex-cli 0.162.1): `codex login status` exits 0
+ * when logged in and 1 when not; only the exit code and the first output line were observed and the output format is
+ * undocumented, so the adapter keys on the exit code alone. Any other exit code, timeout or spawn failure is UNKNOWN
+ * (ineligible, NFR-SEC-06) and carries this instruction. Switchboard never reads `~/.codex/auth.json`.
  */
 export const AUTH_UNKNOWN_REASON =
-  "Codex documents no auth status command (R2, TDD §4.2), and Switchboard never reads Codex credential files. " +
-  `Log in natively with the Codex CLI (believed to be \`${CODEX_LOGIN_COMMAND}\`; unverified), then validate the ` +
-  "adapter against the installed CLI (`switchboard adapters validate codex`, FR-OPS-02) before routing to Codex.";
+  "`codex login status` gave no usable answer (not exit 0 or 1, timed out, or could not start), and Switchboard " +
+  "never reads Codex credential files. Check that `codex login status` runs on its own, log in natively with " +
+  `\`${CODEX_LOGIN_COMMAND}\` if needed, and validate the adapter (\`switchboard adapters validate codex\`, FR-OPS-02).`;
 
 /**
  * JSONL event and item vocabulary. R2 says only that `--json` emits "thread, turn, item, error, and token-usage
