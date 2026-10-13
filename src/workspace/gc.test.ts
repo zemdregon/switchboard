@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ArtifactStore } from "../artifacts/index.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger } from "../ledger/index.js";
-import { type GcStep, runRetentionGc } from "./gc.js";
+import { findOrphans, type GcStep, runRetentionGc } from "./gc.js";
 import { WorkspaceManager } from "./index.js";
 
 const GIT_ENV = {
@@ -305,5 +305,25 @@ describe("retention GC (T3.12)", () => {
       if (s === "intent") seen = { status: status(u.sess), worktree: existsSync(u.wt) };
     });
     expect(seen).toEqual({ status: "ARCHIVED", worktree: true });
+  });
+});
+
+describe("orphan sweep and publish refs (T9.7 follow-up)", () => {
+  it("does not report the publish ref of a known session, but still reports one of an unknown session", async () => {
+    const u = await unit(RECENT);
+    const head = g(repo, "rev-parse", "HEAD").trim();
+    g(repo, "update-ref", `refs/heads/switchboard/pub/${u.sess}`, head);
+    g(repo, "update-ref", "refs/heads/switchboard/pub/sess_unknown1", head);
+    g(repo, "update-ref", "refs/heads/switchboard/stray", head);
+    const o = await findOrphans({ db, dataDir });
+    expect(o.branches.map((b) => b.branch).sort()).toEqual(["switchboard/pub/sess_unknown1", "switchboard/stray"]);
+  });
+
+  it("honours a custom publish prefix", async () => {
+    const u = await unit(RECENT);
+    const head = g(repo, "rev-parse", "HEAD").trim();
+    g(repo, "update-ref", `refs/heads/switchboard/out/${u.sess}`, head);
+    const o = await findOrphans({ db, dataDir, publishPrefix: "switchboard/out/" });
+    expect(o.branches).toEqual([]);
   });
 });

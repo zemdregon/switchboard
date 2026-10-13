@@ -1014,6 +1014,14 @@ covered:** Claude Code and Codex runs (no live provider; their `commitChannel` s
 opted in), `container` environments (skipped as `environment_not_host` until M10), signing (T9.10), the inner agent's
 message drafting (M11), and reconciliation does not redo a finalize commit a crash interrupted before its intent.
 
+*Fix, 2026-10-13 (Delegated):* a live run showed `switchboard gc` and `doctor` reporting the publish refs
+`switchboard/pub/<sess>` of sessions that have ledger rows as orphans, because the orphan sweep (`findOrphans`,
+`src/workspace/gc.ts`) knew only run and checkpoint branches. It now skips a publish ref whose session exists (tests in
+`src/workspace/gc.test.ts`); an unknown session's publish ref is still reported. Open question: LLD §5 says retention
+GC collects the publish refs with their meta-session from M9, but `runRetentionGc` deletes only `switchboard/<sess>/`
+branches, so an expired session's publish ref is kept. That is deliberate for now (the ref holds the delivered
+commits); deleting it needs an owner decision.
+
 **T9.9 status (2026-10-13; Delegated, decision 39): Done** for `host` environments; every "Done when" clause has a
 test. *Tools absent without the flag:* `src/mcp/project-tools.test.ts` ("a client without the flag has no project
 tools ..."; the call is answered as an unknown tool and recorded). *Configured projects and other clients' projects
