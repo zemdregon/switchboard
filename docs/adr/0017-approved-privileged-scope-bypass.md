@@ -12,8 +12,8 @@
   operator-approved `privileged` scope explicitly sets bypass and the approval covers that scope. The mechanism in this
   ADR (the `privileged_scope` shape, the scope hash and the validation rules) is Delegated and not owner-approved.
   Amended by zemdregon's decision of 2026-10-13 (owner decision 17, "initial privileged approval lasts forever"; the
-  meta-session reading is the orchestrator's, recorded for zemdregon to correct) and by a Delegated decision of the same day
-  that makes the scope machine-readable (zemdregon left ROADMAP Q-28 to the agent).
+  meta-session reading is the orchestrator's, recorded for zemdregon to correct) and by a Delegated decision of the same
+  day that makes the scope machine-readable (zemdregon left ROADMAP Q-28 to the agent).
 - Related: FR-POL-03, FR-POL-09, FR-MCP-03, FR-MCP-06, FR-OPS-02, [FRD BR-13, BR-14](../requirements/FRD.md#3-business-rules),
   [FRD WF-7](../requirements/FRD.md#wf-7-privileged-approval), [LLD §3](../design/LLD.md#3-mcp-tool-contracts),
   [ADR-0004](0004-trust-profiles-no-bypass-flags.md), R-26, R-34, Q-30, T3.16, T3.17

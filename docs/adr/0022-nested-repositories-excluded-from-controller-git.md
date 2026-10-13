@@ -3,8 +3,8 @@
 - Status: Accepted
 - Date: 2026-10-13
 - Decided by: Delegated (agent), under [owner decision 25](../ROADMAP.md#42-owner-decisions) (best practice for a
-  decision that does not affect bypass mode). Not an zemdregon quote and not owner-approved. Recorded as owner decision 27 in
-  the roadmap for traceability only.
+  decision that does not affect bypass mode). Not an zemdregon quote and not owner-approved. Recorded as owner decision
+  27 in the roadmap for traceability only.
 - Related: NFR-SEC-03, FR-WS-05, [TDD §3.4](../design/TDD.md#34-security-engineering), ROADMAP Q-31, R-35, T3.8, T3.20
 
 ## Context
