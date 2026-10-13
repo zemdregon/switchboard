@@ -70,6 +70,7 @@ import { RunLifecycle } from "../lifecycle/index.js";
 import { acquireDataDirLock, type DataDirLock } from "../lock/index.js";
 import { type SwitchboardMcpServer, startStdioServer } from "../mcp/index.js";
 import { createProfileResolver } from "../policy/index.js";
+import { DynamicProjectStore } from "../projects/index.js";
 import { reconcile } from "../reconcile/index.js";
 import { CONFIG_TO_ADAPTER_ID } from "../routing/index.js";
 import { runRetentionGc, WorkspaceManager } from "../workspace/index.js";
@@ -431,8 +432,16 @@ async function runDaemon(
       ledger,
       artifacts,
       registry,
-      config: { allowedRoots: config.allowedRoots, mcpClients: config.mcpClients, projects: config.projects },
+      config: {
+        allowedRoots: config.allowedRoots,
+        mcpClients: config.mcpClients,
+        projects: config.projects,
+        // T9.9 (FR-PRJ-10, ADR-0030): no dynamic project inside the data directory; disabled providers are off-limits.
+        dataDir: config.dataDir,
+        providers: config.providers,
+      },
       clientId,
+      projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
     });
     mcp.server.onclose = () => resolveStop("mcp transport closed");
     log.info("serving MCP on stdio", {

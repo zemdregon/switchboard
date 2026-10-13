@@ -441,6 +441,31 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
     (still unmerged, so edited in place under "Amended before merge"); no requirement ID changes (dated notes on BR-31
     and FR-GIT-06). Residual risk: R-51 (not blocking).
 
+<!-- markdownlint-disable-next-line MD029 -->
+39. Orchestrator-managed projects, T9.9 (2026-10-13). **Delegated decision (agent), under owner decision 25; not an
+    Ender quote and not owner-approved.** Ender's only input is "yes" to Q-7 (decision 8); FR-PRJ-10 and FRD BR-32 were
+    already Proposed. None of these choices changes what a bypass run may do: they only narrow what an orchestrator can
+    define. Choices, all fail closed: (a) **persistence** ([ADR-0030](adr/0030-dynamic-project-revisions-and-approval.md),
+    migration 0004): append-only `project_revision` (without LLD §1's `approved_at`, which an append-only row cannot
+    take), `project_revision_decision` (the operator's approval or rejection) and `project_event` (every call, accepted
+    or refused, since `run_event` needs a run); state (in force, pending, approved, rejected, deleted) is derived;
+    deleted ids are never reused. (b) **config:** `mcp_clients[].manage_projects` (default off) and `max_push_policy`
+    (`none`/`branch`, default `none`, refused without `manage_projects`). (c) **limits:** the client's ceiling and
+    `max_push_policy`; with no client provider list in the SRS or LLD, the client's provider set is read as every
+    provider the operator has not disabled (Q-47); repositories under an allowed root and not inside `data_dir`; strings
+    free of control, separator and bidirectional characters; strings at most 4096 characters, arrays at most 32 items,
+    32 live projects per client and 100 revisions per project (Assumptions). (d) **approval:** besides `container`, push
+    and widening (BR-32), a commit `identity` and `sign: true` also wait for the operator (stricter than BR-32; LLD
+    §11.2's `identities` list is not built); widening is measured against the revision in force; `projects approve`
+    needs `--revision` once a project has more than one revision (time-of-check guard) and, like `approve`/`deny`, writes
+    its row while `serve` runs. (e) **use:** a configured id always wins; a dynamic project resolves only for its
+    creator and only while that client keeps `manage_projects`, to its in-force revision, after re-checking the client's
+    current limits and every filesystem rule; the snapshot shape is unchanged and the route decision names the revision.
+    (f) **codes:** a configured project and another client's get the same `PERMISSION_BLOCKED` message; delete with a
+    non-terminal run (or a request being admitted) is `INVALID_REQUEST` as SRS FR-PRJ-10 and LLD §3 say, read as
+    winning over BR-32's general sentence. (g) **not built:** push targets of approved dynamic projects (a push is
+    refused, Q-46). No requirement ID changes. Residual risks: R-53 and R-54 (not blocking).
+
 Decisions 10 to 13, 17, 19, 21 and 22 each choose the less restrictive of the options put to Ender (decision 18 is the
 principle behind the 2026-10-13 ones); decisions 20 and 23 keep the stricter behaviour already implemented. Their residual
 risks are recorded for Ender as R-23 to R-26, R-34, R-38 and R-39 in §7.1 (not blocking); decision 24's as R-38 and
@@ -901,6 +926,34 @@ records the exemption in event and row). Unchanged: the push process, refspec, n
 targets, limits, Q-44, the provider's Git-write denial (decision 22) and non-bypass runs. Still unverified: nothing ran
 against a live provider or a network remote.
 
+**T9.9 status (2026-10-13; Delegated, decision 39): Done** for `host` environments; every "Done when" clause has a
+test. *Tools absent without the flag:* `src/mcp/project-tools.test.ts` ("a client without the flag has no project
+tools ..."; the call is answered as an unknown tool and recorded). *Configured projects and other clients' projects
+refused:* "creates a host project, runs in it like a configured one, and shows it only to its creator" (another client's
+delegate, update, delete and create are `PERMISSION_BLOCKED` without any path or name in the answer) and "never touches
+a configured project, and a configured id always wins". *Path outside allowed roots, ceiling, provider and push beyond
+the client rejected:* "rejects ceiling, provider, push, paths outside the roots and inside the data dir" (including
+`..` and a symlink escape) and "a client cannot raise its own limits through a definition"; rule units in
+`src/projects/projects.test.ts`. *`container` and push revisions stay `PENDING_APPROVAL` until `projects approve`:* "a
+push or container revision is PENDING_APPROVAL and cannot start runs until approved" (no run row until the decision; an
+approved `container` revision still fails `ENVIRONMENT_NOT_IMPLEMENTED` until M10), and the command itself in
+`src/cli/projects-dynamic.test.ts` ("projects approve": single revision, `--revision` required with several, superseded
+and repeated decisions refused, `--reject`, configured and unknown ids, written while a daemon holds the lock).
+*Delete with an active run refused:* "delete is refused while a run is active, allowed after; history stays; the id is
+not reused". *Every call is an event:* "every call is one event, accepted or refused, and survives a new server on the
+same ledger" and the malformed-input case. Also covered: widening an approved revision returns to pending with the old
+revision in force and a narrowing needs no approval; rejection; revalidation at admission (a repository swapped for an
+escaping symlink, the client's `max_push_policy` lowered, `manage_projects` removed); the run's policy snapshot has the
+same shape as for a configured project; append-only guards and checks on all three tables and the upgrade from schema
+version 3 (`src/projects/projects.test.ts`); restart persistence; malformed input (oversized strings and arrays,
+look-alike and upper-case ids, `__proto__` and `constructor` keys, NUL, newline and bidirectional characters) is
+refused, stores no malformed id and pollutes no prototype; config keys in `src/config/config.test.ts`. Code:
+`src/projects/` (store, rules), `src/mcp/project-tools.ts`, `src/mcp/server.ts`, `src/mcp/schemas.ts`,
+`src/cli/projects-dynamic.ts`, `src/cli/main.ts`, `src/cli/serve.ts`, `src/config/schema.ts`, `src/config/load.ts`,
+`src/ledger/migrations/0004_project_revision.ts`. [ADR-0030](adr/0030-dynamic-project-revisions-and-approval.md).
+**Not covered:** pushing from an approved dynamic project (refused at push time, Q-46), `container` environments
+(M10), and adversarial escape scenarios beyond these validation cases (T3.8b). Nothing ran against a live provider.
+
 ### 6.4 M10 Container environments: tasks
 
 *Proposed.* Q-6 was left to the agent, so the runtime and login mechanism are delegated and verified by T10.0 before any
@@ -1079,6 +1132,8 @@ preceding milestone completes.
 | R-49 | *Delegated, not blocking (decision 35, ADR-0028).* `switchboard git push` refuses while `serve` holds the data-directory lock, and a repository whose own configuration sets a credential helper, `core.sshCommand` or `insteadOf` is refused (`REPO_CONFIG_UNSAFE`) | The operator must stop `serve` to push, and must move such settings to the global configuration | **Open, accepted.** Fail closed. Revisit if stopping `serve` proves impractical (a daemon-applied operator push request) or if repository-level credential settings are common |
 | R-50 | *Delegated, not blocking (decision 36).* Reliance on third-party observed behaviour that may be stale or wrong. The per-provider tool-injection leads in [TDD §3.10](design/TDD.md#310-git-commits-attribution-and-publication) come from reading another project's source at one commit (6524a8d) and from issue and documentation text; that project's own documentation was already stale for Codex (it describes `-c mcp_servers.*` with a bearer environment variable, while its code passes `config.mcp_servers` with `http_headers` at thread start). It drives SDKs and `codex app-server`, not the raw CLI argv Switchboard builds | An adapter built on a lead could fail, or be less safe than assumed (for example an allow rule that does not cover the tool, or a config merge that loads operator MCP servers) | **Open, accepted.** Every lead is a hypothesis for the T9.0 open items and the adapter tasks (T9.4b and later); the authority is the installed CLI's help, the provider's documentation and the opt-in live checks; nothing is declared `injected` on a lead alone; Switchboard copies no code, comments or documentation from that project |
 | R-51 | *Delegated reading of an owner decision, accepted by the owner for bypass (decision 37, ADR-0028 "Amended before merge").* An approved bypass agent with a shell can read the operator's push credentials (`~/.ssh`, a credential helper's store, `~/.git-credentials`) while the controller `push` tool is offered to it, because BR-31 no longer withholds `push` from approved bypass runs. This is the one place a bypass run's agent can reach push credentials by design of the owner's choice; the controller still never passes credentials to it and the controller's own push is unchanged | A bypass agent, or an injected prompt in one, could push with the operator's credentials around the tool (any ref, force, other remotes), bypassing the publish-ref-only rule | **Accepted by the owner for bypass runs; not blocking.** Controls that stay: bypass needs a per-meta-session approval of the exact scope (decision 17), policy `branch` is off by default per context, the provider's Git-write denial and FR-GIT-03 ref snapshots, worktree isolation, and the controller push itself (verified refspec, never forced). Non-bypass runs keep BR-31. Revisit with containers (M10, no credential store mounted) |
+| R-53 | *Delegated, not blocking (decision 39, ADR-0030).* A dynamic project lets an LLM orchestrator choose the repository agents run in. A prompt-injected or compromised orchestrator can point agents at any Git repository under the allowed roots (which a `workspace_path` request can already do) and, through a project, keep doing so across runs; a repository it points at can carry instructions that become a prompt-injection source for the agent | Agents edit (in their worktree) or read repositories the operator did not intend for that orchestrator; with an approved identity or push, commits could be published under that project | **Open, accepted.** Controls: `manage_projects` off by default; allowed roots re-checked at every admission (no `..` or symlink escape, nothing inside `data_dir`); limits never above the client's; `container`, push, identity, signing and any widening wait for `projects approve` on the CLI with `--revision` once there are several; creator-only visibility; every call recorded in `project_event`. Keep `allowed_roots` narrow for clients with `manage_projects` |
+| R-54 | *Delegated, not blocking (decision 39).* The widening gate compares a new revision with the revision in force of the same project. A client can create a new project with any ceiling up to its own instead of widening an old one, and FR-PRJ-10 lets a fresh `host` project without push or identity run at once | The approval gate on widening does not stop a client from reaching its own limits through a new project id | **Open, accepted.** The client's own limits are the bound (FR-PRJ-10); the gate only protects what the operator approved from being widened silently. Lower `max_trust_profile` for clients with `manage_projects` if that matters |
 
 Numbering: R-36, R-37 and Q-32 to Q-35 (§7.3) were written on the M3 wave B branch as R-29, R-30 and Q-27 to
 Q-30. PR #17 merged all but Q-30 into main under those numbers, which main already used for other items; they were
@@ -1142,6 +1197,8 @@ No blocker affects M1, M2 or M9.
 | Q-42 | *Delegated, open (T9.3).* LLD §12.3 first said the publish ref is `refs/heads/<push.branch_prefix><sess>`; the example prefix `switchboard/` would collide with run branches, so ADR-0025 fixes the local ref at `refs/heads/switchboard/pub/<sess>` and leaves `push.branch_prefix` as the remote branch prefix (LLD §12.6). T9.6 should confirm this reading when it builds the refspec | **Decided (T9.6, decision 35, Delegated):** confirmed. Local `refs/heads/switchboard/pub/<sess>`; remote `refs/heads/<push.branch_prefix><sess>` ([ADR-0028](adr/0028-controller-push-and-credential-reach.md)) |
 | Q-43 | *Delegated, open (T9.4).* LLD §2 says an adapter with `commitChannel: "none"` is ineligible for write-capable profiles on a context unless the operator opts in to finalize-only mode (FRD BR-30, Proposed there). T9.4 declares `none` for Claude Code and Codex but does not enforce that rule: enforcing it now would make both providers ineligible for every write-capable project run before T9.7 offers the opt-in | **Decided 2026-10-13 by [owner decision 36](#42-owner-decisions)** ("Finalize-only."): adapters with `commitChannel: "none"` are **not** made ineligible; they run write-capable runs and, when the project opts in to finalize-only (T9.7), the controller commits at FINALIZING through the same sanitiser and provenance. Ender wants the opt-in for his own projects. Earlier default: not enforced |
 | Q-44 | *Delegated, open (T9.5).* FRD BR-27 says offending commits are never published. T9.5 keeps them off the publish ref (restore), but the `push` tool and operator command (T9.6) do not exist yet. Should a meta-session with any `git_policy_violation` be refused a push until the operator reviews it, or is the restored publish ref enough? | **Decided (T9.6, decision 35, Delegated; fail closed, stricter than the proposal):** any `git_policy_violation` event in any run of the meta-session refuses every later push, from the `push` tool and from `switchboard git push`, recorded as `REFUSED_POLICY`/`GIT_POLICY_VIOLATION`. There is no "cleared" state in this stage; the operator can push by hand after review ([ADR-0028](adr/0028-controller-push-and-credential-reach.md)) |
+| Q-46 | *Delegated, open (T9.9, decision 39).* An approved dynamic project may declare push policy `branch` (FR-PRJ-10), but the `push` tool and `switchboard git push` still resolve push targets (remote, prefix, path) from the configuration only, so such a push is refused (`CONTEXT_UNKNOWN`). Should push targets be resolved from the in-force revision too (with the client's current `max_push_policy` re-checked at push time)? | **Default (fail closed):** not resolved; push from dynamic projects is refused until a task wires it |
+| Q-47 | *Delegated, open (T9.9, decision 39).* FR-PRJ-10 says a dynamic project's provider set may be no wider than the client's, but no client provider list exists (FR-MCP-06 and LLD §11.1 give a client only a trust ceiling and project list). Should `mcp_clients[]` gain an `allowed_providers` list (a requirement and routing change for every request of that client)? | **Default:** the client's provider set is every provider the operator has not disabled in `providers`; naming a disabled provider is `PERMISSION_BLOCKED` |
 
 ## 8. Deferred and excluded work
 
