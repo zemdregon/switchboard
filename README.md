@@ -174,7 +174,7 @@ adapter compiles the profile into the provider's own permission and sandbox cont
 | `inspect-untrusted` | yes | Read-only file access, network off, repository-provided config disabled. Claude Code gets no shell. Codex runs commands inside its read-only native sandbox (see below). |
 | `edit-untrusted` | yes | Edits inside an isolated Git worktree, network off, repository config disabled. Claude Code gets no shell, because the shell allowlist is empty. Codex runs commands inside its `workspace-write` native sandbox (see below). |
 | `test-sandboxed`, `trusted-development` | no | Rejected with `ELIGIBILITY_NONE`. |
-| `privileged` | never granted | Rejected with `PERMISSION_BLOCKED`; it needs per-run operator approval, which this version does not provide. |
+| `privileged` | never granted | Rejected with `PERMISSION_BLOCKED`; it needs operator approval, which this version does not provide. |
 
 A request above the client's `max_trust_profile` also fails `PERMISSION_BLOCKED`. Non-empty
 `verification_commands` are refused with `INVALID_REQUEST` until verification lands in milestone 3.
@@ -189,10 +189,13 @@ for milestone 3 settles it (ROADMAP R-23).
 
 - `profiles.<name>` overrides in the config may loosen a profile's defaults, but only explicitly, with the change
   recorded in every run's policy snapshot and reported by `doctor`.
-- A `privileged` request will carry a `privileged_scope` (files, shell, network and repository configuration, plus a
-  `bypass` setting that defaults to off) and wait for `switchboard approve <run_id>`. A provider bypass flag such as
-  `--dangerously-skip-permissions` is passed only when the approved scope explicitly sets `bypass`
-  ([ADR-0016](docs/adr/0016-approved-privileged-scope-bypass.md)). Approvals never expire and are never automatic.
+- A `privileged` request will carry a machine-readable `privileged_scope` (file access, shell commands, network hosts
+  and repository configuration, plus a `bypass` setting that defaults to off) and wait for
+  `switchboard approve <run_id>`. A provider bypass flag such as `--dangerously-skip-permissions` is passed only when
+  the approved scope explicitly sets `bypass` ([ADR-0016](docs/adr/0016-approved-privileged-scope-bypass.md)).
+  Approvals are never automatic and never expire: once approved, later `continue_task` runs of the same meta-session
+  reuse the approved scope without asking again, so approve only scopes you are content to leave open for that
+  session. A different scope or a new task asks again.
 
 ## Security model
 

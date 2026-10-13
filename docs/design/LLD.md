@@ -208,9 +208,9 @@ CREATE TABLE route_decision (           -- append-only (FR-RTE-03); M2 writes el
 
 CREATE TABLE approval (                 -- privileged runs (FR-POL-09), M3
   id            TEXT PRIMARY KEY,
-  run_id        TEXT NOT NULL REFERENCES run(id),
+  run_id        TEXT NOT NULL REFERENCES run(id),  -- the run that requested it; covers its meta-session (§3.1)
   scope_json    TEXT NOT NULL CHECK (json_valid(scope_json)),   -- canonical privileged_scope (§3.1)
-  scope_hash    TEXT NOT NULL,          -- SHA-256 over scope, run ID and request_hash (§3.1)
+  scope_hash    TEXT NOT NULL,          -- SHA-256 over client, meta-session and scope (§3.1, v2)
   status        TEXT NOT NULL CHECK (status IN ('PENDING','APPROVED','DENIED','EXPIRED')),
   requested_at  TEXT NOT NULL,
   decided_at    TEXT,
@@ -361,7 +361,7 @@ export interface ResolvedProfile {                       // from COMP-POL, snaps
   network: 'off'|'allowlist'|'policy'|'scoped'; networkAllowlist?: string[];
   repoConfig: 'disabled'|'approved-only'|'allowlisted'|'scoped';
   bypassApproved: boolean;                               // true only per §3.1 "Bypass" (FR-POL-03, ADR-0016)
-  privilegedScope?: { scope: PrivilegedScope; scopeHash: string };  // privileged only, from the run snapshot (§3.1)
+  privilegedScope?: { scope: PrivilegedScope; scopeHash: string; approvalId: string };  // privileged only (§3.1)
 }
 
 export interface Invocation {
@@ -509,7 +509,8 @@ it never holds a DB transaction and returns the current non-terminal envelope on
 { "input": { "required": ["meta_session_id","instruction"], "properties": {
     "meta_session_id": {"type":"string"}, "instruction": {"type":"string","maxLength":32768},
     "routing": {"$ref":"#/$defs/routing"},      // different provider => handoff bundle (FR-SES-04)
-    "trust_profile": {"$ref":"#/$defs/trust_profile"},   // default: previous run's; may not exceed client max
+    "trust_profile": {"$ref":"#/$defs/trust_profile"},   // default: previous run's; may not exceed client max;
+                                                         // privileged only with the meta-session's approval (§3.1)
     "wait_seconds": {"type":"integer","minimum":0,"maximum":60} } },
   "output": "envelope" }
 ```
@@ -564,7 +565,8 @@ client's, returns `PERMISSION_BLOCKED`. Names and shapes are Proposed.
 ```
 
 Mapping: schema/path failures `INVALID_REQUEST`; profile above client maximum `PERMISSION_BLOCKED`; a
-`privileged_scope` with a non-`privileged` profile, or `privileged` without one, `INVALID_REQUEST` (§3.1); no eligible
+`privileged_scope` with a non-`privileged` profile, `privileged` without one, or a `privileged` continuation without an
+`APPROVED` approval for its meta-session and client, `INVALID_REQUEST` (§3.1); no eligible
 provider `ELIGIBILITY_NONE` with per-provider reasons; an ineligible `require_provider` target returns the code mapped
 from its eligibility reason per [FRD BR-3](../requirements/FRD.md#3-business-rules) (FR-MCP-05); unknown `run_id`
 `INVALID_REQUEST`.
@@ -578,66 +580,126 @@ with an empty range (Codex today, `<0.0.0`) is therefore `ADAPTER_VERSION_UNVERI
 
 ### 3.1 Privileged scope (M3)
 
-Owner decision 13 and [ADR-0016](../adr/0016-approved-privileged-scope-bypass.md). Shape, hash and validation are
-Delegated (Proposed), not owner-approved. No code may emit a bypass flag until this contract and the argv audit change
-(T3.17) are both in place.
+Owner decisions 13 and 14 and [ADR-0016](../adr/0016-approved-privileged-scope-bypass.md). Shape, hash, lookup and
+validation are Delegated (Proposed), not owner-approved. No code may emit a bypass flag until this contract and the
+argv audit change (T3.17) are both in place. *Amended 2026-10-13, before merge:* the scope became machine-readable
+(Delegated, ROADMAP Q-23 answered, ROADMAP §4.4) and the approval binding moved from one run to the meta-session (owner
+decision 14, ROADMAP Q-24 answered).
 
 ```jsonc
 { "$defs": { "privileged_scope": { "type": "object", "additionalProperties": false,
     "required": ["files","shell","network","repository_config"], "properties": {
-      "files":   { "type": "string", "minLength": 1, "maxLength": 2000 },  // what the run may read and write
-      "shell":   { "type": "string", "minLength": 1, "maxLength": 2000 },  // which commands it may run
-      "network": { "type": "string", "minLength": 1, "maxLength": 2000 },  // which hosts or "none"
-      "repository_config": { "type": "string", "minLength": 1, "maxLength": 2000 }, // hooks, MCP, instructions allowed
-      "bypass":  { "type": "boolean", "default": false } } } } }          // provider bypass flag requested
+      "files": { "type": "object", "additionalProperties": false, "required": ["access"], "properties": {
+          "access": { "enum": ["read-only","worktree"] } } },
+      "shell": { "type": "object", "additionalProperties": false, "required": ["mode"], "properties": {
+          "mode": { "enum": ["none","allowlist","broad"] },
+          "allowlist": { "type": "array", "minItems": 1, "maxItems": 64, "items":       // required iff mode is allowlist
+              { "type": "array", "minItems": 1, "maxItems": 64,                          // one argv-exact command
+                "items": { "type": "string", "minLength": 1, "maxLength": 1024 } } } } },
+      "network": { "type": "object", "additionalProperties": false, "required": ["mode"], "properties": {
+          "mode": { "enum": ["off","allowlist","on"] },
+          "hosts": { "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true,  // required iff mode is allowlist
+              "items": { "type": "string", "minLength": 1, "maxLength": 253 } } } },       // host names, no scheme or path
+      "repository_config": { "type": "object", "additionalProperties": false, "required": ["mode"], "properties": {
+          "mode": { "enum": ["disabled","approved","enabled"] } } },  // hooks, MCP definitions, agent instructions
+      "bypass": { "type": "boolean", "default": false } } } } }      // provider bypass flag requested
 ```
 
-Each dimension is an explicit allow description written by the orchestrator for the operator to read; an empty string
-is refused, so a dimension cannot be left implicit ("none" is a valid description). The descriptions are not compiled
-into native rules in M3: the adapter compiles `privileged` from the operator's resolved `privileged` profile (TDD §3.1,
-T3.2) and the `bypass` setting below. Whether the descriptions should become machine-readable is ROADMAP Q-23.
-Descriptions are stored and shown verbatim, so they must not contain secrets; they are never written to MCP envelopes
-or logs.
+```ts
+// The structured type T3.3 narrows `PrivilegedScope` in src/policy/types.ts to (an open record today).
+export interface PrivilegedScope {
+  files: { access: 'read-only' | 'worktree' };
+  shell: { mode: 'none' | 'broad' } | { mode: 'allowlist'; allowlist: string[][] };
+  network: { mode: 'off' | 'on' } | { mode: 'allowlist'; hosts: string[] };
+  repository_config: { mode: 'disabled' | 'approved' | 'enabled' };
+  bypass: boolean;                                       // always present after defaults are filled
+}
+```
+
+Meaning of each value, and how it lines up with the profile fields of `ResolvedProfile` (§2, `src/policy/profiles.ts`):
+
+| Dimension | Values | Meaning | `ResolvedProfile` field |
+| --- | --- | --- | --- |
+| `files.access` | `read-only`, `worktree` | Read only, or edits confined to the run's worktree. There is no wider value: a `privileged` run still works in a worktree (FR-WS-01) | `fileAccess` (same values) |
+| `shell.mode` | `none`, `allowlist`, `broad` | No shell; only the listed commands; any command | `shell`, `shellAllowlist` (same values) |
+| `shell.allowlist` | argv arrays | Each entry is one exact argv (program and arguments); no wildcard, no shell string | `shellAllowlist` |
+| `network.mode` | `off`, `allowlist`, `on` | No network; only the listed hosts; unrestricted | `network`, `networkAllowlist`; `on` has no profile counterpart (the profile value `policy` is not offered in a scope, because it names no behaviour by itself) |
+| `repository_config.mode` | `disabled`, `approved`, `enabled` | Repository-provided hooks, MCP definitions and agent instructions not loaded; only those the operator's configuration approves; all loaded | `repoConfig` `disabled`, `approved-only`, and a scope-only `enabled` (wider than `allowlisted`) |
+| `bypass` | boolean, default `false` | The provider's bypass flag is requested; emitted only under the conditions in **Bypass** below | `bypassApproved` (set from the approval, never from the request) |
 
 **Validation** ([FRD §7.1](../requirements/FRD.md#71-delegate_task), in table order): a malformed scope fails schema
-validation (V1, `INVALID_REQUEST`); `privileged` above the client's ceiling is `PERMISSION_BLOCKED` (V5, BR-13) whether
-or not a scope is present; then V13: `privileged` without a scope, or a scope with any other profile, is
-`INVALID_REQUEST` (`details.field = "privileged_scope"`). `continue_task` takes no scope and refuses a run that would
-resolve to `privileged` (FRD C7, ROADMAP Q-24).
+validation (V1, `INVALID_REQUEST`, `details.field` naming the offending path): every dimension is required, unknown keys
+are refused at every level, `shell.allowlist` is present exactly when `shell.mode` is `allowlist` and `network.hosts`
+exactly when `network.mode` is `allowlist` (the JSON Schema above cannot say "iff", so T3.3 checks it in code as part
+of V1). `privileged` above the client's ceiling is `PERMISSION_BLOCKED` (V5, BR-13) whether or not a scope is present;
+then V13: `privileged` without a scope, or a scope with any other profile, is `INVALID_REQUEST`
+(`details.field = "privileged_scope"`). Entries are stored and shown verbatim, so they must not contain secrets; they are
+never written to MCP envelopes or logs.
+
+**Compilation.** The adapter compiles a `privileged` run from the scope in its policy snapshot, not from a configured
+profile: `privileged` has no `profiles.<name>` override (T3.2). Each dimension maps to the provider's native control
+(T3.5, T3.6). A dimension the provider cannot express makes the provider `Ineligible` for the run with a reason naming
+the dimension (FRD BR-3); it is never dropped, widened or narrowed silently. The FR-GIT-01 Git write deny rules apply to
+every compiled `privileged` invocation whatever the scope says; no scope value permits a Git write by the agent. If a
+bypass flag would override those rules on a provider, that is R-26, not something a scope can grant.
 
 **Canonical form and hash.** At admission (FRD T2), with defaults filled (`bypass` present, `false` when omitted):
 
 ```text
-scope_json = canonicalJson(privileged_scope)                       // sorted keys, as request_hash (§10)
-scope_hash = hex(SHA-256(canonicalJson({ "v": 1, "run_id": run.id,
-                                         "request_hash": run.request_hash,
+scope_json = canonicalJson(privileged_scope)                       // sorted keys, as request_hash (§10);
+                                                                   // list order kept as given
+scope_hash = hex(SHA-256(canonicalJson({ "v": 2,
+                                         "client_id": run.client_id,
+                                         "meta_session_id": run.meta_session_id,
                                          "scope": privileged_scope })))
 ```
 
-`request_hash` already covers the whole validated request, scope included, so the hash binds the approval to this
-scope, this request and this one run (WF-7 postcondition). The run row, the `PENDING` approval row (`scope_json`,
-`scope_hash`, `requested_at`) and the first `run_event` are written in one transaction; the policy snapshot records
-`privilegedScope` with the same `scopeHash`. An idempotent replay (§10) returns the existing run and creates no second
-approval row.
+`v: 1` (the hash over the run ID and `request_hash`) was never implemented and is withdrawn. The `v: 2` hash binds the
+approval to one MCP client, one meta-session and one canonical scope (owner decision 14), not to one run, so it is the
+same for every run of that meta-session that uses that scope, and different for any other client, meta-session or
+scope. The run row, the `PENDING` approval row (`run_id` = this first run, `scope_json`, `scope_hash`, `requested_at`)
+and the first `run_event` are written in one transaction; the policy snapshot records `privilegedScope` with the same
+`scopeHash` and the approval's `approvalId`. An idempotent replay (§10) returns the existing run and creates no second
+approval row. No schema change is needed: `approval.run_id` names the run that requested the approval, and the
+meta-session and client are read from that run.
+
+**Lookup.** A meta-session has at most one approval row in M3, because only `delegate_task` creates one and it always
+starts a new meta-session. The approval of a meta-session is found by joining `approval.run_id` to `run` with the
+meta-session ID and client ID (Proposed: T3.3 may add an index in a forward migration if the query needs one).
+
+- `delegate_task` with `privileged` always creates a new meta-session, so it always creates a new `PENDING` row and an
+  AWAITING_APPROVAL run, even when an identical scope was approved for another meta-session.
+- `continue_task` whose resolved profile is `privileged` (requested, or defaulted from the previous run, FRD C4) looks
+  up the meta-session's approval for the calling client. If it is `APPROVED`, the continuation takes the approved
+  scope as is: `continue_task` has no scope input, so it cannot widen, narrow or otherwise change the scope (FRD C7).
+  The new run is admitted to QUEUED (FRD T1) with `privilegedScope` copied from the approval (`scope`, `scopeHash`,
+  `approvalId`) and a `run_event` naming the approval; no new row is written. If the row is `PENDING`, `DENIED` or
+  absent, or the caller is a different client, the request is `INVALID_REQUEST` (C7) and nothing is written.
+- A different scope means a new `delegate_task`, and therefore a new meta-session and a new `PENDING` approval; a
+  different client never matches.
 
 **Approve.** The operator reviews the scope and hash with `runs show`, then runs `approve <run_id>` (operator CLI
-only, FR-OPS-02). It recomputes the hash from the stored run (`id`, `request_hash`) and `scope_json`, and writes
-`APPROVED`, `decided_at` and `decided_by` only if the run is AWAITING_APPROVAL, the row is `PENDING` and the recomputed
-hash equals `scope_hash`; otherwise it is a CLI error and nothing changes. `deny` writes `DENIED` and the run ends
-CANCELLED (WF-7). No MCP tool, timer, configuration value or client ceiling approves, and nothing expires.
+only, FR-OPS-02) on the run that requested the approval. It recomputes the hash from that run's `client_id`,
+`meta_session_id` and the stored `scope_json`, and writes `APPROVED`, `decided_at` and `decided_by` only if the run is
+AWAITING_APPROVAL, the row is `PENDING` and the recomputed hash equals `scope_hash`; otherwise it is a CLI error and
+nothing changes. `approve` on a later run of the meta-session is a CLI error: it is not AWAITING_APPROVAL and has no
+row of its own. `deny` writes `DENIED` and the run ends CANCELLED (WF-7). No MCP tool, timer, configuration value or
+client ceiling approves. An approval never expires and is never revoked automatically (owner decision 14); a manual
+revoke is ROADMAP Q-25.
 
-**Bypass.** Before compiling a `privileged` run, COMP-POL loads its approval row and sets `bypassApproved = true` only
-if: the row is `APPROVED`; its `scope_hash` equals the policy snapshot's `scopeHash` and the hash recomputed as above;
-and the approved scope has `bypass: true`. Any mismatch fails the run `PERMISSION_BLOCKED` before spawn, with a
-`run_event` naming the mismatch (no process, no flag). With `bypassApproved` false the adapter compiles `privileged`
-without a bypass flag. The argv audit (T3.17) independently refuses any `BYPASS_FLAGS` entry unless the profile is
-`privileged`, `bypassApproved` is true and the snapshot's scope sets `bypass`. The compiled `policyFlags` are recorded in
-the run's events, so every bypass run's invocation and approval are in the audit trail.
+**Bypass.** Before compiling any `privileged` run, COMP-POL loads the approval named by the snapshot's `approvalId` and
+sets `bypassApproved = true` only if: the row is `APPROVED`; its `scope_hash` equals the snapshot's `scopeHash` and the
+hash recomputed from this run's `client_id`, `meta_session_id` and snapshot scope; and the approved scope has
+`bypass: true`. Any mismatch fails the run `PERMISSION_BLOCKED` before spawn, with a `run_event` naming the mismatch
+(no process, no flag). With `bypassApproved` false the adapter compiles `privileged` without a bypass flag. The argv
+audit (T3.17) independently refuses any `BYPASS_FLAGS` entry unless the profile is `privileged`, `bypassApproved` is
+true and the snapshot's scope sets `bypass`. The compiled `policyFlags` are recorded in the run's events, so every
+bypass run's invocation and the approval it ran under are in the audit trail.
 
-**What is shown where.** The envelope (`get_run`, `delegate_task`, `cancel_run`) carries only `approval.status` and
-`approval.requested_at` for a `privileged` run; it never contains the scope content, the hash or `decided_by`
-(FR-MCP-04). `runs show` (operator CLI) shows the full scope, the `bypass` value, the scope hash and the approval
-decision.
+**What is shown where.** The envelope (`get_run`, `delegate_task`, `continue_task`, `cancel_run`) carries only
+`approval.status` and `approval.requested_at` for a `privileged` run; it never contains the scope content, the hash or
+`decided_by` (FR-MCP-04). `runs show` (operator CLI) shows the full scope, the `bypass` value, the scope hash, the
+approval decision and, for an approval, every run of the meta-session that ran under it.
 
 ## 4. Failure taxonomy
 
