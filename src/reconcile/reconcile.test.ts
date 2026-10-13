@@ -504,4 +504,24 @@ describe("operator cancel requests recorded while the controller was down (T1.10
     await runReconcile();
     expect(eventCount()).toBe(n);
   });
+
+  it("a run awaiting approval is cancelled and its PENDING approval closed DENIED by the requester (T3.3, Q-15)", async () => {
+    const sess = ledger.createMetaSession({ objective: "synthetic" });
+    const waiting = ledger.createRun({
+      metaSessionId: sess.id,
+      state: "AWAITING_APPROVAL",
+      trustProfile: "privileged",
+      policySnapshot: {},
+      request: {},
+      requestHash: "priv",
+      clientId: "c",
+      provider: "fake",
+    });
+    const approval = ledger.createApproval({ runId: waiting.id, scopeJson: "{}", scopeHash: "h" });
+    expect(requestCancel(db, ledger, waiting.id, { requestedBy: "op", direct: false }).outcome).toBe("requested");
+    const report = await runReconcile();
+    expect(report.cancelsApplied).toHaveLength(1);
+    expect(run(waiting.id).state).toBe("CANCELLED");
+    expect(ledger.getApproval(approval.id)).toMatchObject({ status: "DENIED", decided_by: "op" });
+  });
 });

@@ -7,6 +7,10 @@
  * names the native login command (FR-AUTH-02); route reasons are short strings derived from `route_decision`; `usage.reported`
  * lists stored provider-reported observations, each labelled with its source (T2.5), and is null when none exist
  * (never zero); `estimated` and `capacity_confidence` stay null until the M6 estimator (FR-CAP-01..03).
+ *
+ * T3.3 (LLD §3.1 "What is shown where"): a `privileged` run carries `approval: { status, requested_at }` of the approval
+ * named by its policy snapshot, and nothing else of it: never the scope, the scope hash or `decided_by`. The policy
+ * snapshot itself is never read into the envelope beyond that ID.
  */
 import type { Ledger, RunRecord } from "../ledger/index.js";
 import { isTerminal } from "../lifecycle/index.js";
@@ -29,6 +33,7 @@ export interface Envelope {
   result: { summary?: string; changed_files?: number; verification: Record<string, unknown>[] };
   artifacts: Record<string, string>;
   usage: { reported: ReportedUsage[] | null; estimated: null; capacity_confidence: null };
+  approval?: { status: "PENDING" | "APPROVED" | "DENIED"; requested_at: string };
   replayed?: boolean;
   events?: { seq: number; ts: string; type: string; payload: unknown }[];
 }
@@ -68,6 +73,26 @@ export function buildEnvelope(ledger: Ledger, run: RunRecord, scrub: (s: string)
     result,
     artifacts,
     usage: { reported: reportedUsage(ledger, run.id), estimated: null, capacity_confidence: null },
+    ...approvalOf(ledger, run),
+  };
+}
+
+const SHOWN_APPROVAL_STATUSES: ReadonlySet<string> = new Set(["PENDING", "APPROVED", "DENIED"]);
+
+/** `{ approval }` for a privileged run whose snapshot names an approval; `{}` otherwise (fail closed: no guessing). */
+function approvalOf(ledger: Ledger, run: RunRecord): Pick<Envelope, "approval"> {
+  if (run.trust_profile !== "privileged") return {};
+  let approvalId: unknown;
+  try {
+    approvalId = (JSON.parse(run.policy_snapshot_json) as { privilegedScope?: { approvalId?: unknown } })
+      .privilegedScope?.approvalId;
+  } catch {
+    return {};
+  }
+  const row = typeof approvalId === "string" ? ledger.getApproval(approvalId) : undefined;
+  if (!row || !SHOWN_APPROVAL_STATUSES.has(row.status)) return {};
+  return {
+    approval: { status: row.status as "PENDING" | "APPROVED" | "DENIED", requested_at: row.requested_at },
   };
 }
 

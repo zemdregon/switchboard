@@ -28,6 +28,19 @@
  *   is inserted in the admission transaction (FRD T1 side effects).
  * - Native session ids reported by a run are recorded in `provider_binding`; a continuation naming one runs through the
  *   adapter's `resumeArgs` (WF-2, FR-SES-03).
+ *
+ * T3.3 additions (privileged admission; LLD §3.1, FRD T1/T2, C7, WF-7; Proposed, Delegated):
+ * - `privileged` resolves only through a scope binding, never through `resolveProfile`. A new meta-session with a
+ *   `scope` is admitted by T2: the run (AWAITING_APPROVAL, snapshot `privilegedScope` with the v2 scope hash and a
+ *   pre-allocated approval ID), its `PENDING` approval row and the first `run_event` share one transaction; no process,
+ *   no worktree. A continuation with an `approvalId` is admitted by T1 (QUEUED) only if, inside the admission
+ *   transaction, that approval is `APPROVED`, was requested by a run of the same meta-session and client, and its stored
+ *   hash equals the hash recomputed from (client, meta-session, stored scope); the approved scope is copied as is.
+ * - Nothing compiles or spawns a `privileged` run yet: dispatch ends it FAILED `ELIGIBILITY_NONE` (T8) before any probe,
+ *   lease or worktree, with reason `PROFILE_UNSUPPORTED`, until the adapters compile the scope (T3.5, T3.6) and the bypass
+ *   check exists (T3.4, T3.17). `bypassApproved` stays false.
+ * - Cancelling a run in AWAITING_APPROVAL closes its `PENDING` approval as `DENIED` in the same transaction (Q-15,
+ *   `./approval.ts`).
  */
 import { readFileSync } from "node:fs";
 import { realpath } from "node:fs/promises";
@@ -50,6 +63,13 @@ import type { ArtifactStore } from "../artifacts/index.js";
 import { isUnderAllowedRoot, TRUST_PROFILES } from "../config/index.js";
 import type { Ledger, NewRouteDecision, RunFieldPatch, RunRecord, RunState, TrustProfile } from "../ledger/index.js";
 import {
+  canonicalScopeJson,
+  type PrivilegedScope,
+  parsePrivilegedScope,
+  privilegedScopeHash,
+  resolveTrustProfile,
+} from "../policy/index.js";
+import {
   type CollectDeps,
   collectFacts,
   type EligibilityDecision,
@@ -60,6 +80,7 @@ import {
 import { usageObservationsFromEvents } from "../usage/index.js";
 import { gitText } from "../workspace/git.js";
 import type { PreparedWorkspace, WorkspaceManager } from "../workspace/index.js";
+import { denyApprovalOnCancel } from "./approval.js";
 import { requestHash } from "./request.js";
 import {
   assertTransition,
@@ -117,7 +138,18 @@ export interface SubmitRequest {
   readonly routeDecision?: Omit<NewRouteDecision, "runId">;
   /** Continue this provider-native session (WF-2, FR-SES-03); requires `metaSessionId`. */
   readonly resume?: { readonly nativeSessionId: string };
+  /**
+   * Required with `trustProfile: "privileged"`, refused otherwise (FRD V13, C7; LLD §3.1). `scope` (new meta-session
+   * only): T2, AWAITING_APPROVAL with a new `PENDING` approval. `approvalId` (continuation only): T1 under the
+   * meta-session's `APPROVED` approval for this client, re-verified in the admission transaction.
+   */
+  readonly privileged?: { readonly scope: unknown } | { readonly approvalId: string };
 }
+
+/** Failure detail of a `privileged` run reaching dispatch before any adapter can compile a scope (T3.5, T3.6). */
+export const PRIVILEGED_NOT_COMPILABLE =
+  "privileged compile not available until T3.5/T3.6: no adapter compiles a privileged scope yet, so no process was " +
+  "started (no probe, lease or worktree, and no bypass flag)";
 
 /** Admission-time eligibility question (FRD V11); answered by the shared stage-1 filter. */
 export interface EligibilityQuestion {
@@ -127,6 +159,8 @@ export interface EligibilityQuestion {
   readonly clientMaxProfile: TrustProfile;
   /** Canonical workspace path; used only to build the pure compile request. */
   readonly cwd: string;
+  /** Resolved snapshot to compile against instead of `resolveProfile(trustProfile)` (`privileged`, T3.3). */
+  readonly profile?: ResolvedProfile;
 }
 
 export interface MetaSessionContext {
@@ -276,9 +310,11 @@ export class RunLifecycle {
    */
   async submit(req: SubmitRequest): Promise<SubmitResult> {
     const stored = await this.validate(req);
-    const hash = req.requestHash ?? requestHash(stored);
-    const initial: RunState = req.trustProfile === "privileged" ? "AWAITING_APPROVAL" : "QUEUED";
-    const profile = this.opts.resolveProfile(req.trustProfile);
+    const priv = privilegedInput(req);
+    const hash =
+      req.requestHash ?? requestHash(priv?.kind === "request" ? { ...stored, privileged_scope: priv.scope } : stored);
+    const initial: RunState = priv?.kind === "request" ? "AWAITING_APPROVAL" : "QUEUED";
+    const profile = priv === undefined ? this.opts.resolveProfile(req.trustProfile) : undefined;
 
     const result = this.ledger.immediate((): SubmitResult => {
       if (req.idempotencyKey !== undefined) {
@@ -305,11 +341,12 @@ export class RunLifecycle {
           constraints: stored.constraints,
         }).id;
       }
+      const privileged = priv === undefined ? undefined : this.bindPrivileged(priv, req.clientId, metaSessionId);
       const run = this.ledger.createRun({
         metaSessionId,
         state: initial,
         trustProfile: req.trustProfile,
-        policySnapshot: profile,
+        policySnapshot: privileged?.snapshot ?? profile,
         request: stored,
         requestHash: hash,
         clientId: req.clientId,
@@ -317,12 +354,22 @@ export class RunLifecycle {
         provider: req.provider,
         priority: PRIORITY_VALUES[stored.priority],
       });
+      if (priv?.kind === "request" && privileged) {
+        // FRD T2 / LLD §3.1: the PENDING row, in the same transaction as the run and its first event.
+        this.ledger.createApproval({
+          id: privileged.approvalId,
+          runId: run.id,
+          scopeJson: canonicalScopeJson(privileged.scope),
+          scopeHash: privileged.scopeHash,
+        });
+      }
       if (req.routeDecision) this.ledger.insertRouteDecision({ ...req.routeDecision, runId: run.id });
       const rule = initial === "QUEUED" ? "T1" : "T2";
       this.ledger.appendRunEvent({
         runId: run.id,
         type: "state_transition",
-        payload: { from: null, to: initial, rule },
+        // The approval is named by id only: never the scope or its hash (LLD §3.1 "What is shown where").
+        payload: { from: null, to: initial, rule, ...(privileged ? { approval_id: privileged.approvalId } : {}) },
       });
       return { runId: run.id, metaSessionId, state: initial, replayed: false };
     });
@@ -335,14 +382,25 @@ export class RunLifecycle {
    * is terminated, ending CANCELLED via FINALIZING asynchronously; FINALIZING and terminal runs are unchanged. Returns
    * the state after the call. A run in flight in no executor of this process is left to reconciliation (T1.9).
    */
-  async cancel(runId: string, reason = "cancel_run"): Promise<RunState> {
+  async cancel(runId: string, reason = "cancel_run", decidedBy = "cancel_run"): Promise<RunState> {
     const run = this.ledger.getRunRecord(runId);
     if (!run) throw new LifecycleError("INVALID_REQUEST", `unknown run ${runId}`);
     if (isTerminal(run.state) || run.state === "FINALIZING") return run.state;
     if (CANCELLABLE_DIRECT.has(run.state)) {
-      const moved = this.tryMove(run, "CANCELLED", { finished_at: this.nowIso() }, { reason }, "T19");
+      let moved: RunRecord | undefined;
+      try {
+        moved = this.ledger.immediate(() => {
+          // FRD §4.3 / Q-15: a waiting privileged run's PENDING approval is closed DENIED in the same transaction.
+          denyApprovalOnCancel(this.ledger, run, decidedBy);
+          const m = this.tryMove(run, "CANCELLED", { finished_at: this.nowIso() }, { reason }, "T19");
+          if (!m) throw LOST_RACE; // roll back the approval decision too
+          return m;
+        });
+      } catch (err) {
+        if (err !== LOST_RACE) throw err;
+      }
       if (moved) return moved.state;
-      return this.cancel(runId, reason); // lost a race (e.g. dispatched meanwhile): re-read and re-decide
+      return this.cancel(runId, reason, decidedBy); // lost a race (e.g. dispatched meanwhile): re-read and re-decide
     }
     const exec = this.inflight.get(runId);
     if (!exec) return run.state;
@@ -413,7 +471,7 @@ export class RunLifecycle {
   /** Run the stage-1 eligibility filter with this lifecycle's registry, probe runner and eligibility deps. */
   async checkEligibility(q: EligibilityQuestion): Promise<EligibilityAnswer> {
     if (!this.opts.eligibility) throw new Error("eligibility dependencies are not configured");
-    const profile = this.opts.resolveProfile(q.trustProfile);
+    const profile = q.profile ?? this.opts.resolveProfile(q.trustProfile);
     const input = await collectFacts(
       {
         candidates: q.candidates,
@@ -435,6 +493,46 @@ export class RunLifecycle {
 
   // ---- admission ----------------------------------------------------------------------------------------------
 
+  /**
+   * Builds the `privileged` policy snapshot inside the admission transaction (LLD §3.1). For a request: a fresh approval
+   * ID and the v2 hash over (client, new meta-session, scope). For a continuation: the approval must be `APPROVED`,
+   * belong to a run of this meta-session and client, and its stored hash must equal the recomputed one (FRD C7).
+   */
+  private bindPrivileged(
+    priv: PrivilegedInput,
+    clientId: string,
+    metaSessionId: string,
+  ): { snapshot: ResolvedProfile; scope: PrivilegedScope; scopeHash: string; approvalId: string } {
+    const bad = (msg: string): never => {
+      throw new LifecycleError("INVALID_REQUEST", msg);
+    };
+    let scope: PrivilegedScope;
+    let scopeHash: string;
+    let approvalId: string;
+    if (priv.kind === "request") {
+      scope = priv.scope;
+      scopeHash = privilegedScopeHash({ clientId, metaSessionId, scope });
+      approvalId = this.ledger.newApprovalId();
+    } else {
+      const approval = this.ledger.getApproval(priv.approvalId);
+      const owner = approval ? this.ledger.getRunRecord(approval.run_id) : undefined;
+      if (!approval || !owner || owner.meta_session_id !== metaSessionId || owner.client_id !== clientId) {
+        return bad(`meta-session ${metaSessionId} has no approval for this client (FRD C7)`);
+      }
+      if (approval.status !== "APPROVED") {
+        return bad(`meta-session ${metaSessionId} approval is ${approval.status}, not APPROVED (FRD C7)`);
+      }
+      const parsed = parsePrivilegedScope(JSON.parse(approval.scope_json) as unknown);
+      if (!parsed.ok) return bad(`approval ${approval.id} holds an invalid scope (${parsed.field})`);
+      scope = parsed.scope;
+      scopeHash = privilegedScopeHash({ clientId, metaSessionId, scope });
+      if (scopeHash !== approval.scope_hash) return bad(`approval ${approval.id} scope hash does not match (FRD C7)`);
+      approvalId = approval.id;
+    }
+    const snapshot = resolveTrustProfile("privileged", { privileged: { scope, scopeHash, approvalId } });
+    return { snapshot, scope, scopeHash, approvalId };
+  }
+
   private async validate(req: SubmitRequest): Promise<StoredRequest> {
     const bad = (msg: string): never => {
       throw new LifecycleError("INVALID_REQUEST", msg);
@@ -452,6 +550,18 @@ export class RunLifecycle {
       if (typeof req.resume.nativeSessionId !== "string" || req.resume.nativeSessionId.length === 0) {
         bad("resume requires a native session id");
       }
+    }
+    if (req.trustProfile === "privileged") {
+      const p = req.privileged;
+      if (p === undefined) bad("the privileged profile requires a privileged scope (FRD V13) or an approval (FRD C7)");
+      if (req.metaSessionId === undefined && !(p !== undefined && "scope" in p)) {
+        bad("a new privileged meta-session requires a privileged scope (FRD V13)");
+      }
+      if (req.metaSessionId !== undefined && !(p !== undefined && "approvalId" in p)) {
+        bad("a privileged continuation takes the meta-session's approved scope; it accepts no new scope (FRD C7)");
+      }
+    } else if (req.privileged !== undefined) {
+      bad("a privileged scope or approval applies only to the privileged profile (FRD V13)");
     }
     if (req.idempotencyKey !== undefined) {
       if (req.metaSessionId !== undefined) bad("idempotency keys apply to new meta-sessions only");
@@ -547,6 +657,14 @@ export class RunLifecycle {
     const run0 = this.current(runId);
     const req = JSON.parse(run0.request_json) as StoredRequest;
     const profile = JSON.parse(run0.policy_snapshot_json) as ResolvedProfile;
+    if (run0.trust_profile === "privileged") {
+      // T3.3 safety boundary: never probe, lease, compile or spawn a privileged run until T3.5/T3.6 compile the scope
+      // and T3.4/T3.17 own the bypass check. FRD T8 (PREFLIGHT -> FAILED), BR-3 code for "no provider can do this".
+      return this.fail(runId, "ELIGIBILITY_NONE", PRIVILEGED_NOT_COMPILABLE, {
+        reason: "PROFILE_UNSUPPORTED",
+        ...(profile.privilegedScope ? { approval_id: profile.privilegedScope.approvalId } : {}),
+      });
+    }
     const adapter = this.opts.adapters.get(req.provider);
     if (!adapter) return this.fail(runId, "ELIGIBILITY_NONE", `adapter ${req.provider} is not registered`);
 
@@ -911,6 +1029,23 @@ export class RunLifecycle {
   private nowIso(): string {
     return (this.opts.now ?? (() => new Date()))().toISOString();
   }
+}
+
+const LOST_RACE = Symbol("lost-race");
+
+type PrivilegedInput =
+  | { readonly kind: "request"; readonly scope: PrivilegedScope }
+  | { readonly kind: "approved"; readonly approvalId: string };
+
+/** The validated `privileged` input of a request (shape already checked by `validate`), or undefined. */
+function privilegedInput(req: SubmitRequest): PrivilegedInput | undefined {
+  const p = req.privileged;
+  if (req.trustProfile !== "privileged" || p === undefined) return undefined;
+  if ("approvalId" in p) return { kind: "approved", approvalId: p.approvalId };
+  const parsed = parsePrivilegedScope(p.scope);
+  if (!parsed.ok)
+    throw new LifecycleError("INVALID_REQUEST", `invalid privileged scope: ${parsed.field} ${parsed.message}`);
+  return { kind: "request", scope: parsed.scope };
 }
 
 function resolveRule(from: RunState, to: RunState, ruleId?: string): TransitionRule {

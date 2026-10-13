@@ -34,6 +34,7 @@ import { stat } from "node:fs/promises";
 import type Database from "better-sqlite3";
 import { listPendingCancels, OPERATOR_CANCEL_APPLIED } from "../cli/operator.js";
 import type { Ledger, RunFieldPatch, RunRecord, RunState } from "../ledger/index.js";
+import { denyApprovalOnCancel } from "../lifecycle/approval.js";
 import { RUN_STATES, SLOT_STATES, TERMINAL_STATES, TRANSITIONS } from "../lifecycle/states.js";
 import type { WorkspaceManager } from "../workspace/index.js";
 import { inspectOrphan, type OrphanStatus, terminateGroup } from "./process.js";
@@ -119,6 +120,9 @@ class Reconciler {
     if (WAITING.has(run0.state)) {
       if (!cancelRequested) return; // WF-8: keep; queue order preserved.
       this.ledger.immediate(() => {
+        // FRD §4.3 / Q-15 (T3.3): a waiting privileged run's PENDING approval is closed DENIED by the requester.
+        const requestedBy = listPendingCancels(this.opts.db, run0.id)[0]?.requestedBy ?? "operator";
+        denyApprovalOnCancel(this.ledger, run0, requestedBy);
         const moved = this.transition(run0, "CANCELLED", "T19", { finished_at: this.nowIso() }, { code: "CANCELLED" });
         this.markCancelsApplied(moved);
       });

@@ -12,8 +12,16 @@
  * (Delegated) choices, all fail-closed:
  * - Validation order follows FRD §7.1: schema (V1, V2, V9) → workspace (V3, V4) → ceiling (V5) → verification (V7) →
  *   routing hints (V8) → idempotency (V10) → eligibility (V11). The first failure is the single error.
- * - `privileged` is refused with PERMISSION_BLOCKED for every client in M2, even one whose ceiling is `privileged`:
- *   approval (FR-POL-09, WF-7) arrives in M3, so the request can never be honoured yet.
+ * - `privileged` (T3.3, LLD §3.1, FRD V13/C7/T1/T2): a client whose ceiling is below `privileged` gets
+ *   PERMISSION_BLOCKED (V5); then V13 refuses `privileged` without `privileged_scope` and a scope with any other profile
+ *   (INVALID_REQUEST, `details.field = "privileged_scope"`). A malformed scope already failed V1 (schema plus the
+ *   "present exactly when allowlist" check run right after Ajv). Admission is T2: AWAITING_APPROVAL plus one PENDING
+ *   approval row. `continue_task` resolving `privileged` (requested or defaulted, C4) needs the meta-session's APPROVED
+ *   approval for this client (C7, checked after the ceiling) and takes the approved scope as is.
+ * - Proposed: no adapter compiles `privileged` before T3.5/T3.6, so for a `privileged` request V11 defers the adapter
+ *   compile verdict to dispatch: a provider excluded only by PROFILE_UNSUPPORTED or CAPABILITY_MISSING is admissible
+ *   (it still has to pass binary, version, manifest, enablement, platform and auth). The run is refused at dispatch
+ *   until the adapters compile the scope (`PRIVILEGED_NOT_COMPILABLE` in the lifecycle).
  * - Non-empty `verification_commands` are refused with INVALID_REQUEST until verification (FR-EXE-08) lands in M3,
  *   rather than accepted and silently not run. `minimum_capability` fails ELIGIBILITY_NONE: it is a hard constraint
  *   (BR-4) and no model registry exists before M7.
@@ -38,6 +46,7 @@ import type { ArtifactStore } from "../artifacts/index.js";
 import type { ResolvedConfig } from "../config/index.js";
 import type { Ledger, RunRecord, TrustProfile } from "../ledger/index.js";
 import { type EligibilityAnswer, type RunLifecycle, type RunPriority, requestHash } from "../lifecycle/index.js";
+import { checkScopeLists, type PrivilegedScope, parsePrivilegedScope, resolveTrustProfile } from "../policy/index.js";
 import { profileRank, TRUST_PROFILE_ORDER, toRouteDecisionJson } from "../routing/index.js";
 import { buildEnvelope, compactEvents, type Envelope } from "./envelope.js";
 import { errorEnvelope, invalid, ToolError, toToolError } from "./errors.js";
@@ -116,14 +125,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     ...extra,
   });
 
+  /** FRD V5 / C4 / BR-13: `privileged` is requestable only by a client whose ceiling is `privileged`. */
   const checkCeiling = (profile: TrustProfile): void => {
-    if (profile === "privileged") {
-      throw new ToolError(
-        "PERMISSION_BLOCKED",
-        "the privileged profile needs per-run operator approval, which is not available through MCP in this version",
-        { requested: profile, client_max_profile: maxTrustProfile },
-      );
-    }
     if (profileRank(profile) > profileRank(maxTrustProfile)) {
       throw new ToolError(
         "PERMISSION_BLOCKED",
@@ -173,14 +176,32 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     });
   };
 
-  const selectProvider = (answer: EligibilityAnswer, preference: string | undefined) => {
-    const eligible = answer.decision.eligible;
+  /**
+   * Providers a request may be admitted to. For `privileged` (Proposed, T3.3) a provider excluded only by the adapter's
+   * compile verdict (PROFILE_UNSUPPORTED, CAPABILITY_MISSING) is admissible: compilation of the scope is deferred to
+   * dispatch (T3.5, T3.6), which refuses it until then. Every other exclusion (binary, version, manifest, enablement,
+   * platform, auth) still refuses admission.
+   */
+  const admissible = (answer: EligibilityAnswer, privileged: boolean): ProviderId[] => {
+    if (!privileged) return [...answer.decision.eligible];
+    const deferred = new Set(
+      answer.decision.excluded
+        .filter((e) => e.reasons.every((r) => r.code === "PROFILE_UNSUPPORTED" || r.code === "CAPABILITY_MISSING"))
+        .map((e) => e.provider),
+    );
+    const ok = new Set([...answer.decision.eligible, ...deferred]);
+    return answer.input.facts.map((f) => f.provider).filter((p) => ok.has(p));
+  };
+
+  const selectProvider = (answer: EligibilityAnswer, preference: string | undefined, privileged = false) => {
+    const eligible = admissible(answer, privileged);
+    const suffix = privileged && !answer.decision.eligible.length ? "; privileged compile deferred to dispatch" : "";
     if (preference !== undefined && eligible.includes(preference as ProviderId)) {
-      return { provider: preference as ProviderId, basis: "provider_preference" };
+      return { provider: preference as ProviderId, basis: `provider_preference${suffix}` };
     }
     const first = eligible[0];
     if (first === undefined) throw eligibilityError(answer);
-    return { provider: first, basis: "configured_order" };
+    return { provider: first, basis: `configured_order${suffix}` };
   };
 
   const routeRecord = (answer: EligibilityAnswer, provider: ProviderId, basis: string) => {
@@ -208,6 +229,19 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     const profile = a.trust_profile as TrustProfile;
     const workspace = await lifecycle.canonicalWorkspace(a.workspace_path as string, profile); // V3, V4
     checkCeiling(profile); // V5
+    // V13 (after V5): privileged_scope present exactly when the profile is privileged.
+    const scopeArg = a.privileged_scope;
+    if (profile === "privileged" && scopeArg === undefined) {
+      throw invalid("trust_profile privileged requires privileged_scope", { field: "privileged_scope" });
+    }
+    if (profile !== "privileged" && scopeArg !== undefined) {
+      throw invalid(`privileged_scope is allowed only with trust_profile privileged (got ${profile})`, {
+        field: "privileged_scope",
+      });
+    }
+    const scope = scopeArg === undefined ? undefined : parsePrivilegedScope(scopeArg);
+    if (scope && !scope.ok)
+      throw invalid(`invalid privileged_scope: ${scope.field} ${scope.message}`, { field: scope.field });
     if ((a.verification_commands as unknown[]).length > 0) {
       throw invalid("verification_commands are not supported before verification lands (M3)", {
         field: "verification_commands",
@@ -224,6 +258,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       verification_commands: a.verification_commands,
       routing: routing ?? {},
       priority: a.priority,
+      ...(scope?.ok ? { privileged_scope: scope.scope } : {}),
     };
     const hash = requestHash(canonical);
     const key = a.idempotency_key as string | undefined;
@@ -236,15 +271,20 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     }
 
     const required = routing?.require_provider === true ? (routing.provider_preference as ProviderId) : undefined;
+    const privileged = scope?.ok === true;
     const answer = await lifecycle.checkEligibility({
       candidates: candidates(),
       ...(required !== undefined ? { requiredProvider: required } : {}),
       trustProfile: profile,
       clientMaxProfile: maxTrustProfile,
       cwd: workspace,
+      ...(scope?.ok ? { profile: eligibilityProfile(scope.scope) } : {}),
     }); // V11
-    if (answer.decision.outcome.kind !== "eligible") throw eligibilityError(answer);
-    const { provider, basis } = selectProvider(answer, routing?.provider_preference);
+    if (answer.decision.outcome.kind !== "eligible" && admissible(answer, privileged).length === 0) {
+      throw eligibilityError(answer);
+    }
+    if (required !== undefined && !admissible(answer, privileged).includes(required)) throw eligibilityError(answer);
+    const { provider, basis } = selectProvider(answer, routing?.provider_preference, privileged);
 
     const submitted = await lifecycle.submit({
       clientId: deps.clientId,
@@ -257,6 +297,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       requestHash: hash,
       routeDecision: routeRecord(answer, provider, basis),
       ...(key !== undefined ? { idempotencyKey: key } : {}),
+      ...(scope?.ok ? { privileged: { scope: scope.scope } } : {}),
     });
     await waitBounded(submitted.runId, a.wait_seconds as number);
     return envelopeOf(submitted.runId, submitted.replayed ? { replayed: true } : {});
@@ -274,6 +315,21 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     const profile = (a.trust_profile as TrustProfile | undefined) ?? ctx.trustProfile; // C4
     const workspace = await lifecycle.canonicalWorkspace(ctx.workspace, profile); // C3
     checkCeiling(profile);
+    // C7 (after C4): a privileged continuation runs only under the meta-session's APPROVED approval for this client,
+    // with the approved scope as is. The lifecycle re-checks status, ownership and hash in the admission transaction.
+    let approval: { id: string; scope: unknown } | undefined;
+    if (profile === "privileged") {
+      const row = ledger.findApprovalForMetaSession(sessionId, deps.clientId);
+      if (row?.status !== "APPROVED") {
+        throw invalid(
+          `a privileged continuation needs an APPROVED approval for meta-session ${sessionId} (approval is ${
+            row?.status ?? "absent"
+          }); request a new privileged meta-session with delegate_task`,
+          { field: "trust_profile" },
+        );
+      }
+      approval = { id: row.id, scope: JSON.parse(row.scope_json) as unknown };
+    }
 
     const routing = a.routing as Routing | undefined;
     checkRouting(routing); // C5 (as V8)
@@ -286,14 +342,17 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     }
     if (!binding) throw invalid(`meta-session ${sessionId} has no native session to resume`);
 
+    const approvedScope = approval ? parsePrivilegedScope(approval.scope) : undefined;
+    if (approvedScope && !approvedScope.ok) throw invalid(`meta-session ${sessionId} approval holds an invalid scope`);
     const answer = await lifecycle.checkEligibility({
       candidates: [bound],
       requiredProvider: bound,
       trustProfile: profile,
       clientMaxProfile: maxTrustProfile,
       cwd: workspace,
+      ...(approvedScope?.ok ? { profile: eligibilityProfile(approvedScope.scope) } : {}),
     });
-    if (answer.decision.outcome.kind !== "eligible") throw eligibilityError(answer); // BR-18 → BR-2/BR-3
+    if (!admissible(answer, approval !== undefined).includes(bound)) throw eligibilityError(answer); // BR-18 → BR-2/BR-3
 
     const submitted = await lifecycle.submit({
       clientId: deps.clientId,
@@ -304,7 +363,12 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       constraints: [...ctx.constraints],
       priority: ctx.priority,
       resume: { nativeSessionId: binding.native_session_id },
-      routeDecision: routeRecord(answer, bound, "continuation"),
+      routeDecision: routeRecord(
+        answer,
+        bound,
+        approval ? "continuation; privileged compile deferred to dispatch" : "continuation",
+      ),
+      ...(approval ? { privileged: { approvalId: approval.id } } : {}),
     });
     await waitBounded(submitted.runId, a.wait_seconds as number);
     return envelopeOf(submitted.runId);
@@ -457,6 +521,11 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       const args = structuredClone(rawArgs ?? {}) as Args; // defaults are filled in place by Ajv
       const validate = validators[tool];
       if (!validate(args)) throw schemaError(validate.errors ?? []);
+      if (tool === "delegate_task" && args.privileged_scope !== undefined) {
+        // V1 continued (LLD §3.1): the list-presence rules the JSON Schema cannot express.
+        const lists = checkScopeLists(args.privileged_scope as never);
+        if (lists) throw invalid(`invalid arguments: ${lists.field} ${lists.message}`, { field: lists.field });
+      }
       return ok(await handlers[tool](args));
     } catch (err) {
       return fail(err);
@@ -489,6 +558,21 @@ export async function startStdioServer(deps: McpServerDeps): Promise<Switchboard
   return mcp;
 }
 
+/**
+ * The snapshot V11 compiles against for a `privileged` request: the scope resolved with placeholder hash and approval
+ * ID (the real ones exist only inside the admission transaction). Adapters refuse `privileged` today, which
+ * {@link admissible} defers to dispatch; `bypassApproved` is false whatever the scope says.
+ */
+function eligibilityProfile(scope: PrivilegedScope): ResolvedProfile {
+  return resolveTrustProfile("privileged", {
+    privileged: {
+      scope,
+      scopeHash: "0".repeat(64),
+      approvalId: "apv_00000000000000000000000000",
+    },
+  });
+}
+
 function compileValidators(): Record<ToolName, ValidateFunction> {
   const ajv = new Ajv2020({ allErrors: true, strict: true, useDefaults: true });
   return Object.fromEntries(TOOL_NAMES.map((n) => [n, ajv.compile(inputSchema(n))])) as Record<
@@ -512,5 +596,6 @@ function schemaError(errors: readonly ErrorObject[]): ToolError {
   const first = list[0];
   return invalid(`invalid arguments: ${first ? `${first.path} ${first.message}` : "schema validation failed"}`, {
     errors: list,
+    ...(first ? { field: first.path } : {}),
   });
 }

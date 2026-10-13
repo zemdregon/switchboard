@@ -13,14 +13,33 @@ import {
 import { TRUST_PROFILES } from "../config/index.js";
 import { toToolError } from "../mcp/errors.js";
 import {
+  canonicalScopeJson,
   createProfileResolver,
   M2_PROFILES,
+  type PrivilegedScope,
   ProfileOverrideError,
   ProfileUnavailableError,
+  parsePrivilegedScope,
+  privilegedScopeHash,
   resolveProfile,
   resolveTrustProfile,
+  SCOPE_FILES_TO_PROFILE,
+  SCOPE_NETWORK_TO_PROFILE,
+  SCOPE_REPO_CONFIG_TO_PROFILE,
+  SCOPE_SHELL_TO_PROFILE,
   validateProfileOverrides,
 } from "./index.js";
+
+/** A valid structured scope (LLD §3.1). */
+const SCOPE = {
+  files: { access: "worktree" },
+  shell: { mode: "allowlist", allowlist: [["npm", "test"]] },
+  network: { mode: "off" },
+  repository_config: { mode: "disabled" },
+  bypass: true,
+} as const satisfies PrivilegedScope;
+const HASH = "a".repeat(64);
+const APV = "apv_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 
 const request = (profile: TrustProfile): CompileRequest => ({
   runId: "run_1",
@@ -248,9 +267,9 @@ describe("resolveTrustProfile (COMP-POL, T3.2)", () => {
     expect(() => validateProfileOverrides({ "*": {} } as never)).toThrow(ProfileOverrideError);
   });
 
-  it("privileged resolves only from an explicit scope object and never approves a bypass", () => {
+  it("privileged resolves only from a structured scope binding and never approves a bypass", () => {
     for (const bad of [undefined, null, "scope", 1, [], new Map()]) {
-      expect(() => resolveTrustProfile("privileged", { scope: bad as never })).toThrow(ProfileUnavailableError);
+      expect(() => resolveTrustProfile("privileged", { privileged: bad as never })).toThrow(ProfileUnavailableError);
     }
     expect(() => resolveTrustProfile("privileged")).toThrow(ProfileUnavailableError);
     try {
@@ -258,8 +277,18 @@ describe("resolveTrustProfile (COMP-POL, T3.2)", () => {
     } catch (err) {
       expect((err as ProfileUnavailableError).code).toBe("PERMISSION_BLOCKED");
     }
-    const scope = { paths: ["/tmp/x"], bypass: true };
-    const snap = resolveTrustProfile("privileged", { scope });
+    // An open record (the pre-T3.3 shape), a bad hash or a bad approval id are refused (fail closed).
+    for (const binding of [
+      { scope: { paths: ["/tmp/x"], bypass: true }, scopeHash: HASH, approvalId: APV },
+      { scope: SCOPE, scopeHash: "nothex", approvalId: APV },
+      { scope: SCOPE, scopeHash: HASH, approvalId: "run_01ARZ3NDEKTSV4RRFFQ69G5FAV" },
+    ]) {
+      expect(() => resolveTrustProfile("privileged", { privileged: binding as never })).toThrow(
+        ProfileUnavailableError,
+      );
+    }
+    const binding = { scope: SCOPE, scopeHash: HASH, approvalId: APV };
+    const snap = resolveTrustProfile("privileged", { privileged: binding });
     expect(snap).toMatchObject({
       name: "privileged",
       fileAccess: "scoped",
@@ -268,10 +297,10 @@ describe("resolveTrustProfile (COMP-POL, T3.2)", () => {
       repoConfig: "scoped",
       bypassApproved: false,
     });
-    expect(snap.scope).toEqual(scope);
-    expect(snap.scope).not.toBe(scope);
+    expect(snap.privilegedScope).toEqual(binding);
+    expect(snap.privilegedScope?.scope).not.toBe(SCOPE);
     expect(Object.isFrozen(snap)).toBe(true);
-    expect(Object.isFrozen(snap.scope)).toBe(true);
+    expect(Object.isFrozen(snap.privilegedScope?.scope.shell)).toBe(true);
   });
 
   it("bypassApproved is never true from any profile, override or scope", () => {
@@ -282,15 +311,119 @@ describe("resolveTrustProfile (COMP-POL, T3.2)", () => {
       expect(resolveTrustProfile(p, { overrides }).bypassApproved).toBe(false);
     }
     expect(
-      resolveTrustProfile("privileged", {
-        scope: { bypassApproved: true, bypass: true },
-      }).bypassApproved,
+      resolveTrustProfile("privileged", { privileged: { scope: SCOPE, scopeHash: HASH, approvalId: APV } })
+        .bypassApproved,
     ).toBe(false);
+    // A smuggled bypassApproved inside the scope is an unknown key, not a grant.
+    expect(() =>
+      resolveTrustProfile("privileged", {
+        privileged: { scope: { ...SCOPE, bypassApproved: true } as never, scopeHash: HASH, approvalId: APV },
+      }),
+    ).toThrow(ProfileUnavailableError);
   });
 
   it("rejects unknown profile names", () => {
     for (const bogus of ["", "toString", "__proto__", "EDIT-UNTRUSTED"]) {
       expect(() => resolveTrustProfile(bogus as TrustProfile)).toThrow(ProfileUnavailableError);
     }
+  });
+});
+
+describe("structured privileged scope (T3.3, LLD §3.1)", () => {
+  const fail = (value: unknown) => {
+    const r = parsePrivilegedScope(value);
+    expect(r.ok, JSON.stringify(value)).toBe(false);
+    return r.ok ? "" : r.field;
+  };
+  const { bypass: _b, ...noBypass } = SCOPE;
+
+  it("accepts every dimension with closed enums and fills bypass false", () => {
+    const r = parsePrivilegedScope(noBypass);
+    expect(r).toEqual({ ok: true, scope: { ...noBypass, bypass: false } });
+    expect(noBypass).not.toHaveProperty("bypass"); // the input is never mutated
+    for (const scope of [
+      {
+        files: { access: "read-only" },
+        shell: { mode: "none" },
+        network: { mode: "on" },
+        repository_config: { mode: "enabled" },
+      },
+      {
+        files: { access: "worktree" },
+        shell: { mode: "broad" },
+        network: { mode: "allowlist", hosts: ["registry.npmjs.org", "github.com"] },
+        repository_config: { mode: "approved" },
+        bypass: false,
+      },
+    ]) {
+      expect(parsePrivilegedScope(scope).ok).toBe(true);
+    }
+  });
+
+  it("refuses unknown keys, missing dimensions, bad enums and the allowlist iff rules, naming the field", () => {
+    expect(fail({ ...SCOPE, extra: 1 })).toBe("$.privileged_scope.extra");
+    expect(fail({ ...SCOPE, shell: { mode: "none", wildcard: true } })).toBe("$.privileged_scope.shell.wildcard");
+    for (const dim of ["files", "shell", "network", "repository_config"] as const) {
+      const { [dim]: _gone, ...rest } = SCOPE;
+      expect(fail(rest)).toBe(`$.privileged_scope.${dim}`);
+    }
+    expect(fail({ ...SCOPE, network: { mode: "policy" } })).toBe("$.privileged_scope.network.mode");
+    expect(fail({ ...SCOPE, repository_config: { mode: "approved-only" } })).toBe(
+      "$.privileged_scope.repository_config.mode",
+    );
+    expect(fail({ ...SCOPE, bypass: "yes" })).toBe("$.privileged_scope.bypass");
+    // allowlist mode without its list, and a list without allowlist mode.
+    expect(fail({ ...SCOPE, shell: { mode: "allowlist" } })).toBe("$.privileged_scope.shell.allowlist");
+    expect(fail({ ...SCOPE, shell: { mode: "broad", allowlist: [["ls"]] } })).toBe(
+      "$.privileged_scope.shell.allowlist",
+    );
+    expect(fail({ ...SCOPE, network: { mode: "allowlist" } })).toBe("$.privileged_scope.network.hosts");
+    expect(fail({ ...SCOPE, network: { mode: "off", hosts: ["a.example"] } })).toBe("$.privileged_scope.network.hosts");
+    // argv-exact entries: arrays of non-empty strings, never a shell string.
+    expect(fail({ ...SCOPE, shell: { mode: "allowlist", allowlist: ["npm test"] } })).toBe(
+      "$.privileged_scope.shell.allowlist[0]",
+    );
+    expect(fail({ ...SCOPE, shell: { mode: "allowlist", allowlist: [[]] } })).toBe(
+      "$.privileged_scope.shell.allowlist[0]",
+    );
+    expect(fail({ ...SCOPE, shell: { mode: "allowlist", allowlist: [] } })).toBe("$.privileged_scope.shell.allowlist");
+    // Host names only (Proposed pattern): no scheme, path or wildcard.
+    for (const host of ["https://a.example", "a.example/x", "*.example"]) {
+      expect(fail({ ...SCOPE, network: { mode: "allowlist", hosts: [host] } })).toBe(
+        "$.privileged_scope.network.hosts[0]",
+      );
+    }
+    expect(fail(null)).toBe("$.privileged_scope");
+    expect(fail([])).toBe("$.privileged_scope");
+  });
+
+  it("canonical JSON sorts keys and keeps list order; the v2 hash binds client, meta-session and scope", () => {
+    const parsed = parsePrivilegedScope(SCOPE);
+    if (!parsed.ok) throw new Error("expected ok");
+    const json = canonicalScopeJson(parsed.scope);
+    expect(json).toBe(
+      '{"bypass":true,"files":{"access":"worktree"},"network":{"mode":"off"},' +
+        '"repository_config":{"mode":"disabled"},"shell":{"allowlist":[["npm","test"]],"mode":"allowlist"}}',
+    );
+    const base = { clientId: "c1", metaSessionId: "sess_A", scope: parsed.scope };
+    const h = privilegedScopeHash(base);
+    expect(h).toMatch(/^[0-9a-f]{64}$/);
+    expect(privilegedScopeHash({ ...base, scope: JSON.parse(json) })).toBe(h); // key order does not matter
+    expect(privilegedScopeHash({ ...base, clientId: "c2" })).not.toBe(h);
+    expect(privilegedScopeHash({ ...base, metaSessionId: "sess_B" })).not.toBe(h);
+    expect(privilegedScopeHash({ ...base, scope: { ...parsed.scope, bypass: false } })).not.toBe(h);
+    const reordered = { ...parsed.scope, shell: { mode: "allowlist" as const, allowlist: [["b"], ["a"]] } };
+    const ordered = { ...parsed.scope, shell: { mode: "allowlist" as const, allowlist: [["a"], ["b"]] } };
+    expect(privilegedScopeHash({ ...base, scope: reordered })).not.toBe(
+      privilegedScopeHash({ ...base, scope: ordered }),
+    );
+  });
+
+  it("documents the scope-to-profile spelling map; scope-only values have no profile counterpart", () => {
+    expect(SCOPE_FILES_TO_PROFILE).toEqual({ "read-only": "read-only", worktree: "worktree" });
+    expect(SCOPE_SHELL_TO_PROFILE).toEqual({ none: "none", allowlist: "allowlist", broad: "broad" });
+    // network "on" is not the profile's "policy"; repository "approved" is "approved-only"; "enabled" is scope-only.
+    expect(SCOPE_NETWORK_TO_PROFILE).toEqual({ off: "off", allowlist: "allowlist", on: null });
+    expect(SCOPE_REPO_CONFIG_TO_PROFILE).toEqual({ disabled: "disabled", approved: "approved-only", enabled: null });
   });
 });

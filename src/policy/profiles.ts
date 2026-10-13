@@ -4,9 +4,10 @@
  *
  * Two entry points:
  * - {@link resolveTrustProfile}: all five profiles, with `profiles.<name>` overrides and, for `privileged`, a scope.
- * - {@link resolveProfile} / {@link createProfileResolver}: the M2-gated resolver wired into `RunLifecycle`. Until
- *   T3.3/T3.7 the MCP layer must keep refusing every profile except the two M2 profiles, so these throw
- *   {@link ProfileUnavailableError} for the rest: fail closed (NFR-SEC-06), never a downgrade (FR-POL-02).
+ * - {@link resolveProfile} / {@link createProfileResolver}: the M2-gated, name-only resolver wired into `RunLifecycle`.
+ *   Until T3.7 it resolves only the two M2 profiles and throws {@link ProfileUnavailableError} for the rest: fail closed
+ *   (NFR-SEC-06), never a downgrade (FR-POL-02). `privileged` never resolves from a name alone: since T3.3 the run
+ *   lifecycle resolves it through {@link resolveTrustProfile} with the scope binding of the admission or approval path.
  *
  * `bypassApproved` is always false here (FR-POL-03, FR-POL-09; owner decision 13): a bypass is applied later only from
  * an approved `privileged` row (T3.4).
@@ -19,7 +20,7 @@
  * | `edit-untrusted` | worktree | allowlist | off | disabled |
  * | `test-sandboxed` | worktree | allowlist | off | disabled |
  * | `trusted-development` | worktree | allowlist | off | disabled |
- * | `privileged` | scoped | scoped | scoped | scoped (from the scope object only) |
+ * | `privileged` | scoped | scoped | scoped | scoped (from the structured scope only, LLD §3.1) |
  *
  * Proposed (Delegated, not owner-approved; ROADMAP Q-17), each the strictest reading of an unspecified SRS cell:
  * - `edit-untrusted` "narrow allowlist": empty, so no shell command until an operator override names commands.
@@ -29,6 +30,7 @@
  *   repository config: `disabled`. Operators loosen these per field through `profiles.<name>` (owner decision 12).
  */
 import type { ResolvedProfile, TrustProfile } from "../adapters/types.js";
+import { parsePrivilegedScope } from "./scope.js";
 import {
   type AppliedOverride,
   OVERRIDABLE_PROFILES,
@@ -36,12 +38,12 @@ import {
   type OverridableProfile,
   type OverrideField,
   type PolicySnapshot,
-  type PrivilegedScope,
+  type PrivilegedScopeBinding,
   type ProfileOverride,
   type ProfileOverrides,
 } from "./types.js";
 
-/** Profiles that the M2-gated resolver accepts (FR-POL-01). The MCP layer keeps refusing the rest until T3.3/T3.7. */
+/** Profiles that the M2-gated resolver accepts (FR-POL-01). The rest stay refused until T3.7 (`privileged`: see T3.3). */
 export const M2_PROFILES: readonly TrustProfile[] = ["inspect-untrusted", "edit-untrusted"];
 
 /** Thrown for a profile this build cannot resolve. Carries the taxonomy code the MCP layer reports (LLD section 4). */
@@ -60,7 +62,7 @@ export class ProfileUnavailableError extends Error {
     super(
       reason ??
         (privileged
-          ? "the privileged profile needs per-run operator approval, which this version does not provide"
+          ? "the privileged profile resolves only from an operator-approvable scope (privileged_scope), never from its name"
           : `trust profile ${JSON.stringify(profile)} is not available in this version (M2 supports ${M2_PROFILES.join(", ")})`),
     );
     this.code = privileged ? "PERMISSION_BLOCKED" : "ELIGIBILITY_NONE";
@@ -225,28 +227,43 @@ function deepFreezeCopy<T>(value: T): T {
 export interface ResolveOptions {
   /** `profiles.<name>` overrides from the config (owner decision 12). */
   overrides?: ProfileOverrides;
-  /** Required for `privileged`, forbidden meaning for every other profile (ignored). Opaque shape, T3.16. */
-  scope?: PrivilegedScope;
+  /**
+   * Required for `privileged` (FR-POL-09), ignored for every other profile: the structured scope (LLD §3.1), its v2
+   * scope hash and the approval ID that covers the run. The admission path (T3.3) computes the hash; this resolver only
+   * checks the shapes and stores a frozen copy.
+   */
+  privileged?: PrivilegedScopeBinding;
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v) && Object.getPrototypeOf(v) === Object.prototype;
 }
 
+const SCOPE_HASH_RE = /^[0-9a-f]{64}$/;
+const APPROVAL_ID_RE = /^apv_[0-9A-HJKMNP-TV-Z]{26}$/;
+
 /**
  * Resolves any of the five trust profiles to a deeply frozen {@link PolicySnapshot} (FR-POL-01). Overrides that changed
- * a default are listed in `snapshot.overrides` (only when non-empty). `privileged` resolves only from an explicit scope
- * object (FR-POL-09) and never sets `bypassApproved` (owner decision 13). Throws {@link ProfileUnavailableError} for an
- * unknown name or a missing/malformed scope, and {@link ProfileOverrideError} for an invalid override.
+ * a default are listed in `snapshot.overrides` (only when non-empty). `privileged` resolves only from a structured scope
+ * binding that passes {@link parsePrivilegedScope} (FR-POL-09); its scalar fields stay `scoped` and the scope is kept in
+ * its own spellings (see `./scope.ts` for the mapping). `bypassApproved` is always false here, whatever the scope's
+ * `bypass` says (owner decision 13). Throws {@link ProfileUnavailableError} for an unknown name or a missing/malformed
+ * binding, and {@link ProfileOverrideError} for an invalid override.
  */
 export function resolveTrustProfile(name: TrustProfile, options: ResolveOptions = {}): PolicySnapshot {
   if (name === "privileged") {
-    const scope = options.scope;
-    if (!isPlainObject(scope)) {
-      throw new ProfileUnavailableError(
-        "privileged",
-        "the privileged profile resolves only from an explicit scope object (FR-POL-09)",
-      );
+    const binding = options.privileged as Partial<PrivilegedScopeBinding> | undefined;
+    const refuse = (why: string): never => {
+      throw new ProfileUnavailableError("privileged", `the privileged profile resolves only from ${why} (FR-POL-09)`);
+    };
+    if (!isPlainObject(binding)) return refuse("an explicit scope binding");
+    const parsed = parsePrivilegedScope(binding.scope);
+    if (!parsed.ok) return refuse(`a valid structured scope (${parsed.field}: ${parsed.message})`);
+    if (typeof binding.scopeHash !== "string" || !SCOPE_HASH_RE.test(binding.scopeHash)) {
+      return refuse("a scope hash (64 hex digits)");
+    }
+    if (typeof binding.approvalId !== "string" || !APPROVAL_ID_RE.test(binding.approvalId)) {
+      return refuse("an approval ID");
     }
     return deepFreezeCopy<PolicySnapshot>({
       name: "privileged",
@@ -255,7 +272,7 @@ export function resolveTrustProfile(name: TrustProfile, options: ResolveOptions 
       network: "scoped",
       repoConfig: "scoped",
       bypassApproved: false,
-      scope: scope as PrivilegedScope,
+      privilegedScope: { scope: parsed.scope, scopeHash: binding.scopeHash, approvalId: binding.approvalId },
     });
   }
   if (!Object.hasOwn(DEFAULTS, name)) throw new ProfileUnavailableError(String(name));
@@ -265,7 +282,8 @@ export function resolveTrustProfile(name: TrustProfile, options: ResolveOptions 
 
 /**
  * The `resolveProfile` for `RunLifecycle` (COMP-POL): M2-gated, with config overrides. Only the M2 profiles resolve;
- * everything else, `privileged` included, throws {@link ProfileUnavailableError} until T3.3/T3.7 open the MCP path.
+ * everything else throws {@link ProfileUnavailableError} until T3.7; `privileged` always throws here, because it resolves
+ * only from a scope binding (the lifecycle calls {@link resolveTrustProfile} for it, T3.3).
  */
 export function createProfileResolver(overrides: ProfileOverrides = {}): (name: TrustProfile) => ResolvedProfile {
   return (name) => {
