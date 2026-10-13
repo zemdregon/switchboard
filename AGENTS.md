@@ -62,8 +62,8 @@ state machine or schema.
 - Label anything you choose without a source as an **Assumption** or **Proposed**, and add open questions to [ROADMAP
   §7](docs/ROADMAP.md#7-risks-blockers-and-open-questions). Do not present invented numbers, dates, approvals or
   compliance obligations as fact.
-- Decisions agents make are "Delegated", not owner-approved. Never imply that zemdregon approved something zemdregon did not
-  approve.
+- Decisions agents make are "Delegated", not owner-approved. Never imply that zemdregon approved something zemdregon did
+  not approve.
 - Never delete historical material. Mark superseded documents with a banner linking to their replacement, as on [the
   original research blueprint](docs/research/headless-ai-coding-controller.md).
 
@@ -136,8 +136,8 @@ analysis. Report results clearly so the orchestrator can verify and coordinate t
   decision does not change what a bypass run (an approved `privileged` scope with `bypass`, ADR-0017) may do, decide it
   yourself using industry best practice (least privilege, fail closed, defence in depth, no claim of a control that is
   not enforced), because the other modes are for people who deploy Switchboard. Record it as **Delegated** with its
-  reason, and do not ask zemdregon. Ask only when the choice would restrict or change bypass runs, the Git-write denial or
-  worktree isolation that bypass keeps, or a trust or credential boundary.
+  reason, and do not ask zemdregon. Ask only when the choice would restrict or change bypass runs, the Git-write denial
+  or worktree isolation that bypass keeps, or a trust or credential boundary.
 - **Live provider calls are opt-in.** Tests must pass without any provider CLI installed or logged in. Tests that call a
   real provider must be skipped unless explicitly enabled.
 - **Small, reviewable changes.** One logical change per commit, with a message that says what changed and why. Open pull

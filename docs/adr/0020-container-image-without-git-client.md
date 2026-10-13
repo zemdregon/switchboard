@@ -11,8 +11,8 @@
 
 ## Context
 
-Approved bypass runs (ADR-0017) let an agent act without permission prompts, which is zemdregon's main usability goal. On a
-host, Git-write denial depends on provider deny rules that are unverified under bypass (R-38). In a container, the
+Approved bypass runs (ADR-0017) let an agent act without permission prompts, which is zemdregon's main usability goal.
+On a host, Git-write denial depends on provider deny rules that are unverified under bypass (R-38). In a container, the
 guarantee can hold by construction: an agent with no Git client cannot commit, push or rewrite refs. ADR-0013 left the
 container image open beyond "operator-supplied and pinned by digest".
 

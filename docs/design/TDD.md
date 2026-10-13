@@ -715,8 +715,8 @@ documentation**; it implements from each provider's documentation and the instal
 
 ### 3.11 Container environments
 
-Implements FR-PRJ-04, 05, 07, 09 for M10. Status: **Proposed**. zemdregon left Q-6 to the agent ("the rest you pick"), so the
-choices below are Delegated, not owner-approved, and unverified until the M10 spike.
+Implements FR-PRJ-04, 05, 07, 09 for M10. Status: **Proposed**. zemdregon left Q-6 to the agent ("the rest you pick"),
+so the choices below are Delegated, not owner-approved, and unverified until the M10 spike.
 
 - **Runtime.** A rootless OCI-compatible runtime that the controller drives through its CLI (Proposed; rootless Podman
   is the likely candidate, unverified). The controller must run unprivileged (NFR-SEC-04), so a root-owned daemon is out;
@@ -732,9 +732,9 @@ choices below are Delegated, not owner-approved, and unverified until the M10 sp
   files only.
 - **Provider logins (Proposed).** The provider CLI inside the container needs its native login. FR-AUTH-01 forbids the
   controller copying or moving credentials between identities or machines, so mounting the host's credential directory is
-  out unless zemdregon decides otherwise. Chosen (Proposed): the operator runs the provider's native login command inside the
-  project's container volume once (for example through a `projects login <id> <provider>` operator command that only
-  attaches the operator's terminal to that command; the controller never reads the result). Whether that is acceptable
+  out unless zemdregon decides otherwise. Chosen (Proposed): the operator runs the provider's native login command
+  inside the project's container volume once (for example through a `projects login <id> <provider>` operator command
+  that only attaches the operator's terminal to that command; the controller never reads the result). Whether that is acceptable
   to each provider's terms is unreviewed (compliance manifest
   review, R-2). The M10 spike must confirm this with each provider before M10 is marked done.
 - **Network.** The run's profile maps to the container's network: off for untrusted profiles; allowlist only if the

@@ -16,8 +16,8 @@ FR-GIT-02 needs each adapter to hand the provider a per-run MCP definition for t
 ([ADR-0026](0026-per-run-tool-channel-socket-and-token.md)). For Claude Code the only per-run form seen in `claude
 --help` 2.1.296 is `--mcp-config <json file or string>` with `--strict-mcp-config`. [ADR-0015](0015-claude-untrusted-isolation-flags.md)
 says the adapter never emits `--mcp-config`, and `src/adapters/audit.ts` and `src/adapters/claude/claude.test.ts`
-enforce it, so the Claude adapter declares `commitChannel: "none"` (T9.4). zemdregon answered Q-40 on 2026-10-13: "Q-40 your
-recommendation." The recommendation was yes, narrowly: only the controller-generated shim definition, never operator
+enforce it, so the Claude adapter declares `commitChannel: "none"` (T9.4). zemdregon answered Q-40 on 2026-10-13: "Q-40
+your recommendation." The recommendation was yes, narrowly: only the controller-generated shim definition, never operator
 or repository definitions.
 
 A third-party open-source project (T3 Code) is noted in [TDD §3.10](../design/TDD.md#310-git-commits-attribution-and-publication)
@@ -63,7 +63,8 @@ is the reason for item 1 below. It is studied, not copied, and none of its behav
 
 ## Alternatives considered
 
-- **Keep the ban; Claude is finalize-only.** Rejected by zemdregon's answer to Q-40; remains the fallback if a live check fails.
+- **Keep the ban; Claude is finalize-only.** Rejected by zemdregon's answer to Q-40; remains the fallback if a live
+  check fails.
 - **Inline JSON in argv.** Rejected: world-readable argv.
 - **Wildcard allow rule `mcp__<server>__*`.** Rejected: least privilege; the tool set is two named tools.
 - **Writing the definition into the project's `.mcp.json` or the user's configuration.** Rejected: global or repository

@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   markdown-lint:
-    name: Markdown lint (blocking, excludes docs/)
+    name: Markdown lint (blocking)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -21,7 +21,7 @@ jobs:
           persist-credentials: false
 
       - name: Run markdownlint-cli2
-        run: npx --yes markdownlint-cli2@0.23.3 "**/*.md" "!docs/**"
+        run: npx --yes markdownlint-cli2@0.23.3 "**/*.md"
 
   link-check:
     name: Link check (blocking, excludes docs/)
@@ -58,17 +58,3 @@ jobs:
 
       - name: Check links, anchors, requirement IDs and roadmap coverage
         run: node scripts/check-docs.mjs
-
-  docs-lint-advisory:
-    name: docs/ Markdown lint (advisory, non-blocking)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    continue-on-error: true
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Run markdownlint-cli2 on docs/ (report only)
-        run: npx --yes markdownlint-cli2@0.23.3 "docs/**/*.md"
