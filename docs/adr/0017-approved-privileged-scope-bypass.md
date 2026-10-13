@@ -1,6 +1,8 @@
 # ADR-0017: Bypass flags only for an approved privileged scope that sets bypass
 
-- Status: Accepted (amended before merge, 2026-10-13)
+- Status: Accepted (amended before merge, 2026-10-13); approval requirement amended by
+  [ADR-0019](0019-per-client-privileged-approval.md) for MCP clients configured `privileged_approval: "not_required"`
+  (2026-10-13)
 - Date: 2026-10-12
 - Numbering: drafted as ADR-0016 on the M3 plan branch; renumbered ADR-0017 on 2026-10-13 when main, merged first,
   had already used 0016 for [the inner agent](0016-inner-agent.md). Owner decision 17 was numbered 14 on that branch

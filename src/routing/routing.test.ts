@@ -388,7 +388,9 @@ describe("per-profile eligibility (M3)", () => {
     "edit-untrusted": { claude: undefined, codex: undefined },
     "test-sandboxed": { claude: "PROFILE_UNSUPPORTED", codex: "PROFILE_UNSUPPORTED" },
     "trusted-development": { claude: undefined, codex: "CAPABILITY_MISSING" },
-    privileged: { claude: "PROFILE_UNSUPPORTED", codex: "PROFILE_UNSUPPORTED" },
+    // The narrowest scope (no shell, network off): Claude cannot express privileged network off beyond the tool level
+    // and Codex cannot disable commands, so both refuse it with CAPABILITY_MISSING (T3.5, T3.6).
+    privileged: { claude: "CAPABILITY_MISSING", codex: "CAPABILITY_MISSING" },
   };
 
   for (const trustProfile of TRUST_PROFILE_ORDER) {

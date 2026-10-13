@@ -175,7 +175,7 @@ interface Setup {
   passCodex?: boolean;
   /** Host platform injected into eligibility (T3.7); default linux. */
   platform?: string;
-  clients?: { id: string; max: TrustProfile }[];
+  clients?: { id: string; max: TrustProfile; approval?: "required" | "not_required" }[];
   lifecycle?: Partial<RunLifecycleOptions>;
   start?: boolean;
 }
@@ -201,7 +201,12 @@ async function setup(s: Setup): Promise<void> {
   const clients = s.clients ?? [{ id: "orchestrator", max: "edit-untrusted" }];
   const config = {
     allowedRoots: [root],
-    mcpClients: new Map(clients.map((c) => [c.id, { id: c.id, maxTrustProfile: c.max }])),
+    mcpClients: new Map(
+      clients.map((c) => [
+        c.id,
+        { id: c.id, maxTrustProfile: c.max, ...(c.approval ? { privilegedApproval: c.approval } : {}) },
+      ]),
+    ),
   };
   for (const c of clients) {
     const mcp = createSwitchboardServer({ lifecycle, ledger, artifacts, registry, config, clientId: c.id });
@@ -526,7 +531,8 @@ describe("Claude and Codex adapters on recorded replay fixtures", () => {
       adapter_status: "READY",
       binary_version: "2.1.296",
       validated_range: ">=2.1.296 <2.2.0",
-      supported_profiles: ["inspect-untrusted", "edit-untrusted"],
+      // privileged: Claude compiles a representative scope (network on; LLD §3.1 "Listing", Proposed).
+      supported_profiles: ["inspect-untrusted", "edit-untrusted", "privileged"],
     });
     expect(by.codex).toMatchObject({ adapter_status: "ADAPTER_VERSION_UNVERIFIED", auth_state: "NOT_CHECKED" });
     // FR-GIT-01: Claude names its deny rules; Codex declares that no control is documented.
@@ -539,7 +545,7 @@ describe("Claude and Codex adapters on recorded replay fixtures", () => {
       remaining_controls: ["FR-GIT-03", "FR-GIT-06"],
     });
     expect(by.codex.git_write_control.detail).toMatch(/no Codex per-command deny or allow rule/);
-    for (const p of r.body.providers) expect(p.supported_profiles).not.toContain("privileged");
+    expect(by.fake.supported_profiles).not.toContain("privileged"); // the fake adapter has no privileged mode
     const text = JSON.stringify(r.body);
     expect(text).not.toContain(process.execPath);
     expect(text).not.toContain(dataDir);
@@ -572,9 +578,15 @@ describe("list_capabilities supported_profiles (T3.7: the compile matrix on this
       start: false,
     });
     const by = await supportedBy();
-    // T3.5 / T3.6 matrices with the SRS defaults (TDD §4.1.1, §4.2.1); privileged never while it cannot compile.
-    expect(by.claude?.supported_profiles).toEqual(["inspect-untrusted", "edit-untrusted", "trusted-development"]);
-    expect(by.codex?.supported_profiles).toEqual(["inspect-untrusted", "edit-untrusted"]);
+    // T3.5 / T3.6 matrices with the SRS defaults (TDD §4.1.1, §4.2.1). privileged is listed when the adapter compiles
+    // any representative scope (LLD §3.1 "Listing", Proposed): Claude with network on, Codex with shell broad.
+    expect(by.claude?.supported_profiles).toEqual([
+      "inspect-untrusted",
+      "edit-untrusted",
+      "trusted-development",
+      "privileged",
+    ]);
+    expect(by.codex?.supported_profiles).toEqual(["inspect-untrusted", "edit-untrusted", "privileged"]);
     expect(by.fake?.supported_profiles).toEqual([...TRUST_PROFILE_ORDER]);
     // The same verdicts the eligibility filter gets from compileCheck (one code path).
     for (const [adapter, id] of [
@@ -582,11 +594,11 @@ describe("list_capabilities supported_profiles (T3.7: the compile matrix on this
       [codex, "codex"],
     ] as const) {
       const matrix = TRUST_PROFILE_ORDER.filter((p) => {
-        if (p === "privileged") return false; // both refuse every privileged scope until T3.17
+        if (p === "privileged") return false; // checked through the representative scopes above
         const snap = resolve(p);
         return !("ineligible" in compileCheck(adapter, snap, requirementsFor(p, snap), root));
       });
-      expect(by[id]?.supported_profiles).toEqual(matrix);
+      expect(by[id]?.supported_profiles.filter((p: string) => p !== "privileged")).toEqual(matrix);
     }
     expect(by.claude?.adapter_status).toBe("READY");
   });
@@ -862,12 +874,13 @@ describe("privileged admission (T3.3; FR-POL-09, FR-MCP-06, BR-13, BR-14, V13, C
     });
     lifecycle.start();
     const done = await pollTerminal(d.body.run_id);
+    // The fake adapter cannot compile privileged: the dispatch compile decides (BR-3 code), not a blanket refusal.
     expect(done).toMatchObject({
       status: "FAILED",
       failure_code: "ELIGIBILITY_NONE",
       approval: { status: "APPROVED" },
     });
-    expect(done.failure_detail).toContain("privileged compile not available until T3.5/T3.6");
+    expect(done.failure_detail).not.toContain("privileged compile not available");
     await lifecycle.shutdown(); // stop dispatch so the continuation stays QUEUED for inspection
 
     // Another client: the meta-session is not even visible to it (C2), so INVALID_REQUEST.
@@ -923,6 +936,94 @@ describe("privileged admission (T3.3; FR-POL-09, FR-MCP-06, BR-13, BR-14, V13, C
     expect(absent.body.error.code).toBe("INVALID_REQUEST");
     expect(absent.body.error.message).toContain("absent");
     expect(approvals()).toHaveLength(3);
+  });
+});
+
+describe("privileged_approval not_required (owner decision 22, ADR-0019)", () => {
+  const CLIENTS = [
+    { id: "zemdregon", max: "privileged" as const, approval: "not_required" as const },
+    { id: "ops", max: "privileged" as const, approval: "required" as const },
+    { id: "low", max: "edit-untrusted" as const, approval: "not_required" as const }, // loadConfig refuses this
+  ];
+  /** Fake writer that also compiles `privileged` (test double for T3.5/T3.6), for first runs and resumes. */
+  const privilegedCapable = (): ProviderAdapter => {
+    const inner = fakeWriter();
+    const map = (p: ResolvedProfile) => (p.name === "privileged" ? profileFor("edit-untrusted") : p);
+    return {
+      ...inner,
+      compile: (req, p) => inner.compile(req, map(p)),
+      resumeArgs: (b, req, p) => inner.resumeArgs(b, req, map(p)),
+    };
+  };
+  const privArgs = (over: Json = {}): Json =>
+    delegateArgs({ trust_profile: "privileged", privileged_scope: SCOPE, ...over });
+
+  it("not_required: QUEUED with an APPROVED client_policy row and runs; required: AWAITING_APPROVAL as before", async () => {
+    await setup({ adapters: [privilegedCapable()], clients: CLIENTS });
+    const d = await call("delegate_task", privArgs({ wait_seconds: 10 }));
+    expect(d.isError).toBe(false);
+    const row = ledger.getApprovalForRun(d.body.run_id);
+    expect(row).toMatchObject({ status: "APPROVED", decided_by: "client_policy:zemdregon" });
+    expect(d.body.approval).toEqual({ status: "APPROVED", requested_at: row?.requested_at });
+    const done = await pollTerminal(d.body.run_id);
+    expect(done).toMatchObject({ status: "SUCCEEDED", approval: { status: "APPROVED" } });
+    // The envelope never carries decided_by, the hash or the scope content (FR-MCP-04).
+    const g = await call("get_run", { run_id: d.body.run_id, include_events: { after_seq: 0 } });
+    for (const body of [d.body, g.body]) {
+      const text = JSON.stringify(body);
+      expect(text).not.toContain("client_policy:zemdregon");
+      expect(text).not.toContain(row?.scope_hash as string);
+      expect(text).not.toContain("registry.npmjs.org");
+    }
+    const waiting = await call("delegate_task", privArgs(), 1);
+    expect(waiting.body.status).toBe("AWAITING_APPROVAL");
+    expect(ledger.getApprovalForRun(waiting.body.run_id)?.status).toBe("PENDING");
+  });
+
+  it("the ceiling still applies: not_required below a privileged ceiling is PERMISSION_BLOCKED with nothing written", async () => {
+    await setup({ adapters: [privilegedCapable()], clients: CLIENTS, start: false });
+    const r = await call("delegate_task", privArgs(), 2);
+    expect(r.body.error).toMatchObject({
+      code: "PERMISSION_BLOCKED",
+      details: { requested: "privileged", client_max_profile: "edit-untrusted" },
+    });
+    expect(runCount()).toBe(0);
+    expect(ledger.listApprovals()).toHaveLength(0);
+    // V13 is unchanged too: privileged without a scope is INVALID_REQUEST.
+    const noScope = await call("delegate_task", delegateArgs({ trust_profile: "privileged" }));
+    expect(noScope.body.error).toMatchObject({ code: "INVALID_REQUEST", details: { field: "privileged_scope" } });
+  });
+
+  it("continue_task runs under the client_policy approval with the scope as is", async () => {
+    await setup({ adapters: [privilegedCapable()], clients: CLIENTS });
+    const d = await call("delegate_task", privArgs());
+    await pollTerminal(d.body.run_id);
+    const c = await call("continue_task", { meta_session_id: d.body.meta_session_id, instruction: "go on" });
+    expect(c.isError).toBe(false);
+    expect(c.body.approval).toMatchObject({ status: "APPROVED" });
+    const done = await pollTerminal(c.body.run_id);
+    expect(done.status).toBe("SUCCEEDED");
+    const row = ledger.getApprovalForRun(d.body.run_id);
+    expect(ledger.listApprovals()).toHaveLength(1);
+    const snap = JSON.parse(ledger.getRunRecord(c.body.run_id)?.policy_snapshot_json ?? "{}");
+    expect(snap.privilegedScope).toMatchObject({ scopeHash: row?.scope_hash, approvalId: row?.id });
+    expect(ledger.listRunsCoveredByApproval(row?.id as string).map((r) => r.id)).toEqual([
+      d.body.run_id,
+      c.body.run_id,
+    ]);
+  });
+
+  it("a tampered scope hash still fails PERMISSION_BLOCKED before spawn", async () => {
+    await setup({ adapters: [privilegedCapable()], clients: CLIENTS, start: false });
+    const d = await call("delegate_task", privArgs());
+    expect(d.body.status).toBe("QUEUED");
+    const snap = JSON.parse(ledger.getRunRecord(d.body.run_id)?.policy_snapshot_json ?? "{}");
+    snap.privilegedScope.scope.network = { mode: "on" };
+    db.prepare("UPDATE run SET policy_snapshot_json = ? WHERE id = ?").run(JSON.stringify(snap), d.body.run_id);
+    lifecycle.start();
+    const done = await pollTerminal(d.body.run_id);
+    expect(done).toMatchObject({ status: "FAILED", failure_code: "PERMISSION_BLOCKED" });
+    expect(ledger.getRunRecord(d.body.run_id)).toMatchObject({ pid: null, worktree_path: null });
   });
 });
 

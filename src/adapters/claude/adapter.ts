@@ -38,17 +38,29 @@
  * --strict-mcp-config`, all documented in [HELP]. TDD §4.1 needs updating to match (reported, not edited here).
  *
  * Profiles (T3.5, TDD §4.1.1 matrix): `inspect-untrusted` and `edit-untrusted` (T2.2), and `trusted-development` with the
- * same flags as `edit-untrusted`, no new flag; `test-sandboxed`, `privileged`, and the trusted-development cells with no
- * documented control are `Ineligible` (see matrixIneligible).
+ * same flags as `edit-untrusted`, no new flag; `test-sandboxed` and the trusted-development cells with no documented
+ * control are `Ineligible` (see matrixIneligible). `privileged` (T3.5, T3.17) compiles from the approved scope (see
+ * privilegedPlan), and only there may the one bypass flag below appear:
+ *   --dangerously-skip-permissions  [HELP]: "Bypass all permission checks. Recommended only for sandboxes with no
+ *                                   internet access." Emitted only when the profile is `privileged`, the scope sets
+ *                                   `bypass` and the run's bypassApproved is true (owner decision 13, ADR-0017,
+ *                                   LLD §3.1 "Bypass"); the argv audit (../audit.ts) checks the same three again.
+ *   In that bypass invocation `--restricted` is omitted ([HELP]: it "refuses bypassPermissions"; owner decision 19) and
+ *   so is `--permission-mode dontAsk` (Assumption: [HELP] does not say how an explicit mode combines with
+ *   --dangerously-skip-permissions, so the bypass flag is left as the only mode-setting input); `--safe-mode`,
+ *   `--strict-mcp-config`, `--permission-prompts none`, `--tools` and the FR-GIT-01 `--disallowedTools` Git deny rules
+ *   are kept, and `--add-dir`/`--worktree` are still never emitted. **Assumption (unverified, R-26, live check T3.9 and
+ *   live-smoke C-G2):** that `--disallowedTools` deny rules still deny under --dangerously-skip-permissions, and that
+ *   `--tools` still limits the available tools under it; [HELP] says neither.
  *
  * Git writes (FR-GIT-01, ADR-0014): see CLAUDE_GIT_WRITE_CONTROL below. No flag documented in [HELP] turns off Claude
  * Code's own commit or attribution behaviour except `--bare` ("skip ... attribution"), which cannot be used (above);
  * settings files are never written (FR-POL-08). Those features are kept unused by denying every way to run Git writes.
  *
- * Never emitted: any BYPASS_FLAGS entry, `--allow-dangerously-skip-permissions`, `--permission-mode
- * bypassPermissions|acceptEdits|auto`, `--settings`, `--setting-sources`, `--mcp-config`, `--plugin-dir`, `--add-dir`,
- * `--worktree`/`-w` (creates a Git worktree and branch, [HELP]), `--from-pr`, `--debug-file`, or any config-writing
- * subcommand (FR-POL-03, FR-POL-08, FR-GIT-01).
+ * Never emitted: any BYPASS_FLAGS entry other than the approved privileged bypass above,
+ * `--allow-dangerously-skip-permissions`, `--permission-mode bypassPermissions|acceptEdits|auto`, `--settings`,
+ * `--setting-sources`, `--mcp-config`, `--plugin-dir`, `--add-dir`, `--worktree`/`-w` (creates a Git worktree and
+ * branch, [HELP]), `--from-pr`, `--debug-file`, or any config-writing subcommand (FR-POL-03, FR-POL-08, FR-GIT-01).
  */
 import { accessSync, constants } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
@@ -58,6 +70,7 @@ import {
   DEFAULT_MAX_LINE_BYTES,
   DEFAULT_WALL_CLOCK_MS,
 } from "../../exec/index.js";
+import type { PrivilegedScope } from "../../policy/types.js";
 import { classifyCommon } from "../failure.js";
 import { GIT_PUBLISHING_PROGRAMS, GIT_WRITE_SUBCOMMANDS, gitWriteRisks } from "../git-write.js";
 import type {
@@ -97,6 +110,17 @@ export const CLAUDE_PERMISSION_FLAGS: readonly string[] = [
   "--permission-prompts",
   "none",
 ];
+/** [HELP] bypass flag, compiled only for an approved privileged scope with `bypass: true` (T3.17). */
+export const CLAUDE_BYPASS_FLAG = "--dangerously-skip-permissions";
+/** Isolation flags of an approved bypass run: `--restricted` "refuses bypassPermissions" ([HELP]; decision 19). */
+export const CLAUDE_BYPASS_ISOLATION_FLAGS: readonly string[] = ["--safe-mode", "--strict-mcp-config"];
+/**
+ * Permission flags of an approved bypass run: the bypass flag replaces `--permission-mode dontAsk` (Assumption, see the
+ * header); `--permission-prompts none` is kept (nobody answers a prompt, if any remains).
+ */
+export const CLAUDE_BYPASS_PERMISSION_FLAGS: readonly string[] = [CLAUDE_BYPASS_FLAG, "--permission-prompts", "none"];
+/** Network tool named in [HELP] (`--restricted` removes "WebFetch unless --tools names them"); privileged `on` only. */
+export const CLAUDE_NETWORK_TOOLS: readonly string[] = ["WebFetch"];
 
 /**
  * Git write deny rules, passed with `--disallowedTools` on every compiled invocation (FR-GIT-01), in the rule form of the
@@ -127,7 +151,9 @@ export const CLAUDE_GIT_WRITE_CONTROL: GitWriteControl = {
     "(3) --restricted with --permission-prompts none denies file-tool writes to git files. Limits: rule matching " +
     "(`*` semantics, deny-over-allow) is an Assumption; deny rules are lexical and cannot see aliases, scripts run by " +
     "an allowlisted build tool, or absolute paths to git; no flag disables Claude's own commit attribution (only " +
-    "--bare, unusable). Live behaviour unverified (live smoke test).",
+    "--bare, unusable). An approved privileged bypass run (--dangerously-skip-permissions) keeps (2) and drops (3) " +
+    "(--restricted refuses bypass); whether deny rules hold under bypass is an Assumption (R-26). Live behaviour " +
+    "unverified (live smoke test).",
   remainingControls: ["FR-GIT-03", "FR-GIT-06"],
 };
 
@@ -182,16 +208,24 @@ function resolveOnPath(name: string): string | undefined {
 }
 
 const ineligible = (reason: Ineligible["reason"], detail: string): Ineligible => ({ ineligible: true, reason, detail });
+/** `isIneligible` for any intermediate result, not only an Invocation. */
+const refused = <T extends object>(x: T | Ineligible): x is Ineligible => "ineligible" in x && x.ineligible === true;
 
-/** Ineligible detail for `privileged` and any bypass-approved profile (T3.5 leaves this cell to T3.17). */
-export const CLAUDE_PRIVILEGED_DETAIL =
-  "claude adapter does not compile privileged or bypass-approved runs: bypass/privileged compile awaits T3.17";
+/** Ineligible detail for a bypass approval on a profile other than `privileged` (FR-POL-03). */
+export const CLAUDE_BYPASS_OUTSIDE_PRIVILEGED =
+  "bypassApproved is set on a profile other than privileged: a bypass applies only to an approved privileged scope " +
+  "(FR-POL-03, ADR-0017)";
+/** Ineligible detail for a scope that sets `bypass` on a run whose `bypassApproved` is false (FR-POL-03). */
+export const CLAUDE_BYPASS_NOT_APPROVED =
+  "privileged scope sets bypass but the run's bypassApproved is false: --dangerously-skip-permissions is compiled only " +
+  "for an operator-approved scope (FR-POL-03, LLD §3.1 Bypass, ADR-0017)";
 
 /**
- * T3.5 compile matrix (TDD §4.1.1, Linux), the cells that are refused before any argv is built. Every refusal is a
- * specific `Ineligible` (LLD §2); nothing is dropped or downgraded (FR-POL-02). Cells checked in this order, so a
- * profile with several unsupported dimensions reports the first:
- * 1. `privileged` or `bypassApproved`: PROFILE_UNSUPPORTED (out of scope here; T3.17).
+ * T3.5 compile matrix (TDD §4.1.1, Linux), the non-privileged cells that are refused before any argv is built
+ * (`privileged` is {@link privilegedPlan}). Every refusal is a specific `Ineligible` (LLD §2); nothing is dropped or
+ * downgraded (FR-POL-02). Cells checked in this order, so a profile with several unsupported dimensions reports the
+ * first:
+ * 1. `bypassApproved` (profile or request) on a non-privileged profile: PROFILE_UNSUPPORTED (FR-POL-03).
  * 2. `test-sandboxed`: PROFILE_UNSUPPORTED whatever its dimensions. [H] (`claude --help` 2.1.296) has no sandbox and
  *    no network option, so FR-POL-06 confinement is not shown (R-10; Q-16 reads FR-POL-06 as covering this profile).
  *    Proposed (fail closed): even the empty-allowlist default is refused, because the native-sandbox cell is
@@ -208,9 +242,12 @@ export const CLAUDE_PRIVILEGED_DETAIL =
  *    repository configuration disabled with `--safe-mode --restricted --strict-mcp-config`).
  * `inspect-untrusted` and `edit-untrusted` keep their M2 behaviour (T2.2; Q-34: network off at the tool level).
  */
-export function matrixIneligible(profile: ResolvedProfile): Ineligible | undefined {
-  if (profile.bypassApproved || profile.name === "privileged") {
-    return ineligible("PROFILE_UNSUPPORTED", CLAUDE_PRIVILEGED_DETAIL);
+export function matrixIneligible(profile: ResolvedProfile, bypassApproved = false): Ineligible | undefined {
+  if (profile.bypassApproved || bypassApproved) {
+    return ineligible("PROFILE_UNSUPPORTED", CLAUDE_BYPASS_OUTSIDE_PRIVILEGED);
+  }
+  if (profile.name === "privileged") {
+    return ineligible("PROFILE_UNSUPPORTED", "privileged compiles only through its approved scope (privilegedPlan)");
   }
   if (profile.name === "test-sandboxed") {
     return ineligible(
@@ -252,6 +289,167 @@ export function matrixIneligible(profile: ResolvedProfile): Ineligible | undefin
     return ineligible("PROFILE_UNSUPPORTED", `claude adapter does not support ${String(profile.name)}`);
   }
   return undefined;
+}
+
+/** What a profile compiles to before the argv is assembled. */
+interface ClaudePlan {
+  readonly tools: readonly string[];
+  readonly allow: readonly string[];
+  /** True only for an approved privileged scope with `bypass: true` (T3.17). */
+  readonly bypass: boolean;
+}
+
+/** Exact `Bash(<entry>)` allow rules for an operator shell allowlist, or the specific refusal (FR-GIT-01). */
+function shellRules(entries: readonly string[]): string[] | Ineligible {
+  const bad = entries.filter((e) => !SHELL_ENTRY.test(e));
+  if (bad.length > 0) {
+    return ineligible("PROFILE_UNSUPPORTED", `shell allowlist entries not expressible narrowly: ${bad.join("; ")}`);
+  }
+  // FR-GIT-01: an allowlisted command that could write Git would leave a Git write permitted.
+  const gitWrites = gitWriteRisks(entries);
+  if (gitWrites.length > 0) {
+    return ineligible(
+      "PROFILE_UNSUPPORTED",
+      `shell allowlist entries could write Git (FR-GIT-01): ${gitWrites.map((g) => `${g.command} (${g.reason})`).join("; ")}`,
+    );
+  }
+  return entries.map((e) => `Bash(${e})`);
+}
+
+/** The M2/T3.5 profiles: inspect-untrusted, edit-untrusted and the compilable trusted-development cells. */
+function standardPlan(request: CompileRequest, profile: ResolvedProfile): ClaudePlan | Ineligible {
+  const matrix = matrixIneligible(profile, request.bypassApproved === true);
+  if (matrix !== undefined) return matrix;
+  const tools = [...CLAUDE_READ_TOOLS];
+  const allow = [...CLAUDE_READ_TOOLS];
+  // TDD §4.1.1: trusted-development "Could compile" as edit-untrusted (file access, allowlist shell, network off at the
+  // tool level, repository configuration disabled); the cells it cannot compile were refused by matrixIneligible.
+  if (profile.name === "edit-untrusted" || profile.name === "trusted-development") {
+    if (profile.fileAccess !== "read-only" && request.workspace.writable) {
+      tools.push(...CLAUDE_EDIT_TOOLS);
+      allow.push(...CLAUDE_EDIT_TOOLS);
+    }
+    if (profile.shell === "allowlist") {
+      const rules = shellRules(profile.shellAllowlist ?? []);
+      if (refused(rules)) return rules;
+      if (rules.length > 0) {
+        tools.push("Bash");
+        allow.push(...rules);
+      }
+    } else if (profile.shell !== "none") {
+      return ineligible("PROFILE_UNSUPPORTED", `${profile.name} with shell=${profile.shell} is not narrow`);
+    }
+  } else if (profile.shell !== "none") {
+    return ineligible("PROFILE_UNSUPPORTED", "inspect-untrusted must have no shell");
+  }
+  return { tools, allow, bypass: false };
+}
+
+/**
+ * The run's `bypassApproved` for a `privileged` compile: `CompileRequest.bypassApproved` or `ResolvedProfile.bypassApproved`
+ * (the LLD §2 carrier). Both are set only by the lifecycle from `evaluateBypass` (an `APPROVED`, hash-matching row whose
+ * scope sets bypass); the stored snapshot's value is reset to false before dispatch. Proposed (Delegated): either carrier
+ * is accepted so the adapter and the lifecycle agree whichever one the lifecycle fills; the argv audit checks again.
+ */
+export function bypassApprovedFor(request: CompileRequest, profile: ResolvedProfile): boolean {
+  return request.bypassApproved === true || profile.bypassApproved === true;
+}
+
+/** Proposed: one argv word of a scope allowlist entry; the entry is then joined with spaces into one Bash rule. */
+const SCOPE_ARG = /^[A-Za-z0-9_./=:@-]+$/;
+
+/**
+ * `privileged` (T3.5, T3.17; TDD §4.1.1 `privileged` column; LLD §3.1; owner decisions 13, 18, 19; Proposed,
+ * Delegated). Compiles the approved scope in `profile.privilegedScope.scope` (spellings per `src/policy/scope.ts`).
+ * Dimensions are checked in this order and the first that cannot be met is the `Ineligible` reason:
+ * 1. No scope binding: PROFILE_UNSUPPORTED.
+ * 2. network `off` or `allowlist`: CAPABILITY_MISSING ([HELP] has no network or host control, so a privileged scope's
+ *    network limit cannot be enforced, R-36). `on` compiles, naming `WebFetch` in `--tools`.
+ * 3. repository_config `approved`: CAPABILITY_MISSING (as trusted-development `approved-only`). `enabled`:
+ *    CAPABILITY_MISSING: it means omitting `--safe-mode` and `--restricted`, and without `--restricted` [HELP] documents
+ *    no confinement of file tools to the working directory (never beyond the worktree; decision 19 keeps `--safe-mode`
+ *    and `--strict-mcp-config` in bypass runs). `disabled` compiles with the isolation flags.
+ * 4. shell `allowlist` under bypass: CAPABILITY_MISSING ("Bypass all permission checks" [HELP]: allow rules no longer
+ *    narrow `Bash`). Otherwise `none` (no `Bash`), `allowlist` (exact `Bash(<argv joined by spaces>)` rules, each word
+ *    plain, no Git write), `broad` (`Bash` tool and the allow rule `Bash`).
+ * 5. files `read-only` with shell `broad`: CAPABILITY_MISSING (nothing in [HELP] stops a command writing files).
+ *    `worktree` adds `Edit,Write` for a writable workspace; `read-only` adds nothing.
+ * 6. scope `bypass: true` without an approval ({@link bypassApprovedFor}): PROFILE_UNSUPPORTED (FR-POL-03). With
+ *    it, the bypass invocation of the header; `bypass: false` compiles exactly like trusted-development (dontAsk,
+ *    `--restricted`).
+ * The Git deny rules are on every compiled privileged invocation, bypass or not.
+ */
+export function privilegedPlan(request: CompileRequest, profile: ResolvedProfile): ClaudePlan | Ineligible {
+  const scope: PrivilegedScope | undefined = profile.privilegedScope?.scope;
+  if (scope === undefined) {
+    return ineligible("PROFILE_UNSUPPORTED", "privileged without an approved scope binding (LLD §3.1)");
+  }
+  if (scope.network.mode !== "on") {
+    return ineligible(
+      "CAPABILITY_MISSING",
+      `privileged network=${scope.network.mode}: claude --help 2.1.296 documents no network or host control, so only ` +
+        "network on compiles (TDD §4.1.1, R-36)",
+    );
+  }
+  if (scope.repository_config.mode === "approved") {
+    return ineligible(
+      "CAPABILITY_MISSING",
+      "privileged repository_config=approved: claude --help 2.1.296 has no per-item control for approved hooks, " +
+        "instructions or MCP servers; --mcp-config is barred by ADR-0015 (TDD §4.1.1)",
+    );
+  }
+  if (scope.repository_config.mode === "enabled") {
+    return ineligible(
+      "CAPABILITY_MISSING",
+      "privileged repository_config=enabled: needs omitting --safe-mode and --restricted, and without --restricted " +
+        "claude --help 2.1.296 documents no confinement of file tools to the working directory (TDD §4.1.1)",
+    );
+  }
+  const bypass = scope.bypass && bypassApprovedFor(request, profile);
+  const tools = [...CLAUDE_READ_TOOLS];
+  const allow = [...CLAUDE_READ_TOOLS];
+  const shell = scope.shell;
+  if (shell.mode === "allowlist") {
+    if (scope.bypass) {
+      return ineligible(
+        "CAPABILITY_MISSING",
+        "privileged shell=allowlist with bypass: --dangerously-skip-permissions bypasses all permission checks " +
+          "(claude --help 2.1.296), so allow rules cannot narrow Bash to the listed commands",
+      );
+    }
+    const bad = shell.allowlist.filter((argv) => !argv.every((w) => SCOPE_ARG.test(w)));
+    if (bad.length > 0) {
+      return ineligible(
+        "PROFILE_UNSUPPORTED",
+        `privileged shell allowlist entries not expressible as one exact Bash rule: ${bad.map((a) => JSON.stringify(a)).join("; ")}`,
+      );
+    }
+    const rules = shellRules(shell.allowlist.map((argv) => argv.join(" ")));
+    if (refused(rules)) return rules;
+    tools.push("Bash");
+    allow.push(...rules);
+  } else if (shell.mode === "broad") {
+    if (scope.files.access === "read-only") {
+      return ineligible(
+        "CAPABILITY_MISSING",
+        "privileged files=read-only with shell=broad: claude --help 2.1.296 documents nothing that stops a command " +
+          "writing files",
+      );
+    }
+    tools.push("Bash");
+    allow.push("Bash");
+  }
+  if (scope.files.access === "worktree" && request.workspace.writable) {
+    // Edit tools before Bash, matching the trusted-development order.
+    const at = tools.indexOf("Bash");
+    tools.splice(at < 0 ? tools.length : at, 0, ...CLAUDE_EDIT_TOOLS);
+    const atAllow = allow.findIndex((r) => r === "Bash" || r.startsWith("Bash("));
+    allow.splice(atAllow < 0 ? allow.length : atAllow, 0, ...CLAUDE_EDIT_TOOLS);
+  }
+  tools.push(...CLAUDE_NETWORK_TOOLS);
+  allow.push(...CLAUDE_NETWORK_TOOLS);
+  if (scope.bypass && !bypass) return ineligible("PROFILE_UNSUPPORTED", CLAUDE_BYPASS_NOT_APPROVED);
+  return { tools, allow, bypass };
 }
 
 export class ClaudeAdapter implements ProviderAdapter {
@@ -353,9 +551,9 @@ export class ClaudeAdapter implements ProviderAdapter {
   }
 
   #build(request: CompileRequest, profile: ResolvedProfile, extra: string[]): Invocation | Ineligible {
-    // FR-POL-02/03: never downgrade, never bypass (T2.2 for the untrusted profiles, T3.5 for the M3 matrix).
-    const refused = matrixIneligible(profile);
-    if (refused !== undefined) return refused;
+    // FR-POL-02/03: never downgrade; a bypass flag only for an approved privileged scope (T2.2, T3.5, T3.17).
+    const plan = profile.name === "privileged" ? privilegedPlan(request, profile) : standardPlan(request, profile);
+    if (refused(plan)) return plan;
     if (this.#resolved === undefined) {
       return ineligible("CAPABILITY_MISSING", "claude binary path unresolved; run probe first");
     }
@@ -363,50 +561,14 @@ export class ClaudeAdapter implements ProviderAdapter {
       return ineligible("CAPABILITY_MISSING", "model name is not a plain identifier");
     }
 
-    const tools = [...CLAUDE_READ_TOOLS];
-    const allow = [...CLAUDE_READ_TOOLS];
-    // TDD §4.1.1: trusted-development "Could compile" as edit-untrusted (file access, allowlist shell, network off at
-    // tool level, repository configuration disabled); the cells it cannot compile were refused by matrixIneligible.
-    if (profile.name === "edit-untrusted" || profile.name === "trusted-development") {
-      if (profile.fileAccess !== "read-only" && request.workspace.writable) {
-        tools.push(...CLAUDE_EDIT_TOOLS);
-        allow.push(...CLAUDE_EDIT_TOOLS);
-      }
-      if (profile.shell === "allowlist") {
-        const entries = profile.shellAllowlist ?? [];
-        const bad = entries.filter((e) => !SHELL_ENTRY.test(e));
-        if (bad.length > 0) {
-          return ineligible(
-            "PROFILE_UNSUPPORTED",
-            `shell allowlist entries not expressible narrowly: ${bad.join("; ")}`,
-          );
-        }
-        // FR-GIT-01: an allowlisted command that could write Git would leave a Git write permitted.
-        const gitWrites = gitWriteRisks(entries);
-        if (gitWrites.length > 0) {
-          return ineligible(
-            "PROFILE_UNSUPPORTED",
-            `shell allowlist entries could write Git (FR-GIT-01): ${gitWrites.map((g) => `${g.command} (${g.reason})`).join("; ")}`,
-          );
-        }
-        if (entries.length > 0) {
-          tools.push("Bash");
-          allow.push(...entries.map((e) => `Bash(${e})`));
-        }
-      } else if (profile.shell !== "none") {
-        return ineligible("PROFILE_UNSUPPORTED", `${profile.name} with shell=${profile.shell} is not narrow`);
-      }
-    } else if (profile.shell !== "none") {
-      return ineligible("PROFILE_UNSUPPORTED", "inspect-untrusted must have no shell");
-    }
-
     const policyFlags = [
-      ...CLAUDE_ISOLATION_FLAGS,
-      ...CLAUDE_PERMISSION_FLAGS,
+      ...(plan.bypass ? CLAUDE_BYPASS_ISOLATION_FLAGS : CLAUDE_ISOLATION_FLAGS),
+      ...(plan.bypass ? CLAUDE_BYPASS_PERMISSION_FLAGS : CLAUDE_PERMISSION_FLAGS),
       "--tools",
-      tools.join(","),
+      plan.tools.join(","),
       "--allowedTools",
-      ...allow,
+      ...plan.allow,
+      // FR-GIT-01: on every invocation, bypass included (whether Claude honours them under bypass: Assumption, R-26).
       "--disallowedTools",
       ...CLAUDE_GIT_DENY_RULES,
     ];

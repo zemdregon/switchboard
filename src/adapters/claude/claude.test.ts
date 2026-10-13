@@ -4,10 +4,12 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { resolveTrustProfile } from "../../policy/profiles.js";
 import type { ProfileOverride } from "../../policy/types.js";
-import { auditInvocation, BYPASS_FLAGS } from "../audit.js";
+import { auditInvocation, BYPASS_FLAGS, BypassFlagError, findBypassFlags } from "../audit.js";
 import { missingRequiredKinds, runConformanceCase, runConformanceSuite } from "../conformance.js";
+import { LOOSE_SCOPE, privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
 import { GIT_PUBLISHING_PROGRAMS, GIT_WRITE_SUBCOMMANDS, gitWriteRisks } from "../git-write.js";
 import { evaluateVersionGate, tryLoadManifest } from "../manifest/index.js";
+import { startAdapterRun } from "../run.js";
 import {
   type CompileRequest,
   createParseState,
@@ -17,10 +19,18 @@ import {
   type ProbeRunner,
   type ResolvedProfile,
 } from "../types.js";
-import { CLAUDE_GIT_DENY_RULES, CLAUDE_LOGIN_COMMAND, CLAUDE_PRIVILEGED_DETAIL, ClaudeAdapter } from "./adapter.js";
+import {
+  CLAUDE_BYPASS_FLAG,
+  CLAUDE_BYPASS_NOT_APPROVED,
+  CLAUDE_BYPASS_OUTSIDE_PRIVILEGED,
+  CLAUDE_GIT_DENY_RULES,
+  CLAUDE_LOGIN_COMMAND,
+  ClaudeAdapter,
+} from "./adapter.js";
 import {
   claudeConformanceCases,
   claudeDenialCases,
+  claudePrivilegedDenialCases,
   DEFAULT_SESSION_ID,
   EDIT_UNTRUSTED,
   fixturePath,
@@ -209,8 +219,27 @@ describe("claude compile: argv policy", () => {
   ] as const)("%s (bypassApproved=%s) is Ineligible, never downgraded", (name, bypassApproved) => {
     const r = new ClaudeAdapter({ binaryPath: CLAUDE }).compile(request, { ...EDIT_UNTRUSTED, name, bypassApproved });
     expect(r).toMatchObject({ ineligible: true, reason: "PROFILE_UNSUPPORTED" });
-    if (name === "privileged" || bypassApproved) expect(r).toMatchObject({ detail: CLAUDE_PRIVILEGED_DETAIL });
+    // privileged without a scope binding; a bypass approval outside privileged (FR-POL-03).
+    if (name === "privileged") expect(r).toMatchObject({ detail: expect.stringMatching(/without an approved scope/) });
+    else if (bypassApproved) expect(r).toMatchObject({ detail: CLAUDE_BYPASS_OUTSIDE_PRIVILEGED });
   });
+
+  it.each([INSPECT_UNTRUSTED, EDIT_UNTRUSTED, TRUSTED_DEVELOPMENT])(
+    "$name with CompileRequest.bypassApproved is Ineligible (a bypass belongs to privileged only)",
+    (p) => {
+      const a = new ClaudeAdapter({ binaryPath: CLAUDE });
+      const req = { ...request, bypassApproved: true };
+      for (const r of [
+        a.compile(req, p),
+        a.resumeArgs({ provider: "claude", nativeSessionId: RESUMED_SESSION_ID }, req, p),
+      ])
+        expect(r).toEqual({
+          ineligible: true,
+          reason: "PROFILE_UNSUPPORTED",
+          detail: CLAUDE_BYPASS_OUTSIDE_PRIVILEGED,
+        });
+    },
+  );
 
   it("model goes through --model; option-like models and session ids are refused", () => {
     expect(valuesAfter(compiled(EDIT_UNTRUSTED, { ...request, model: "sonnet" }).argv, "--model")).toEqual(["sonnet"]);
@@ -517,25 +546,6 @@ describe("claude compile matrix (M3)", () => {
     }
   });
 
-  it("privileged stays Ineligible (T3.17), with or without bypass, from any shape", () => {
-    const scoped: ResolvedProfile = {
-      name: "privileged",
-      fileAccess: "scoped",
-      shell: "scoped",
-      network: "scoped",
-      repoConfig: "scoped",
-      bypassApproved: false,
-    };
-    for (const p of [scoped, { ...scoped, bypassApproved: true }, { ...TRUSTED_DEVELOPMENT, bypassApproved: true }]) {
-      expect(adapter.compile(request, p)).toEqual({
-        ineligible: true,
-        reason: "PROFILE_UNSUPPORTED",
-        detail: CLAUDE_PRIVILEGED_DETAIL,
-      });
-    }
-    expect(CLAUDE_PRIVILEGED_DETAIL).toContain("bypass/privileged compile awaits T3.17");
-  });
-
   it("a scoped dimension outside privileged is Ineligible", () => {
     expect(adapter.compile(request, { ...TRUSTED_DEVELOPMENT, network: "scoped" })).toMatchObject({
       ineligible: true,
@@ -579,6 +589,11 @@ describe("claude compile matrix (M3)", () => {
         const label = `${name} ${JSON.stringify(override)} writable=${writable}`;
         const profile = resolveTrustProfile(name, { overrides: { [name]: override } });
         const req: CompileRequest = { ...request, workspace: { cwd: "/tmp/work", writable } };
+        // FR-POL-03: a bypass approval on a non-privileged profile never compiles.
+        expect(adapter.compile({ ...req, bypassApproved: true }, profile), label).toMatchObject({
+          ineligible: true,
+          reason: "PROFILE_UNSUPPORTED",
+        });
         for (const inv of [
           adapter.compile(req, profile),
           adapter.resumeArgs({ provider: "claude", nativeSessionId: RESUMED_SESSION_ID }, req, profile),
@@ -634,6 +649,277 @@ describe("claude compile matrix (M3)", () => {
       "SANDBOX_VIOLATION",
     ]);
     expect(Date.now() - started).toBeLessThan(10_000);
+  });
+});
+
+describe("claude privileged compile matrix (T3.5, T3.17; TDD §4.1.1; decisions 13, 18, 19)", () => {
+  const adapter = new ClaudeAdapter({ binaryPath: CLAUDE });
+  const R = ["Read", "Grep", "Glob"];
+  const RW = [...R, "Edit", "Write"];
+  const rulesAfter = (argv: readonly string[], flag: string): string[] => {
+    const i = argv.indexOf(flag);
+    if (i < 0) return [];
+    const end = argv.findIndex((a, j) => j > i && a.startsWith("--"));
+    return argv.slice(i + 1, end < 0 ? undefined : end);
+  };
+  const head = [CLAUDE, "-p", "--output-format", "stream-json", "--verbose"];
+  const tail = (tools: readonly string[], allow: readonly string[]) => [
+    "--tools",
+    tools.join(","),
+    "--allowedTools",
+    ...allow,
+    "--disallowedTools",
+    ...CLAUDE_GIT_DENY_RULES,
+  ];
+  /** bypass false: exactly the trusted-development layout. */
+  const nativeArgv = (tools: readonly string[], allow: readonly string[]) => [
+    ...head,
+    "--safe-mode",
+    "--restricted",
+    "--strict-mcp-config",
+    "--permission-mode",
+    "dontAsk",
+    "--permission-prompts",
+    "none",
+    ...tail(tools, allow),
+  ];
+  /** Approved bypass: no --restricted, no --permission-mode; the rest kept (decision 19). */
+  const bypassArgv = (tools: readonly string[], allow: readonly string[]) => [
+    ...head,
+    "--safe-mode",
+    "--strict-mcp-config",
+    "--dangerously-skip-permissions",
+    "--permission-prompts",
+    "none",
+    ...tail(tools, allow),
+  ];
+
+  it("loose scope, bypass false: native rules like trusted-development, plus Bash and WebFetch", () => {
+    const inv = compiled(privilegedProfile(LOOSE_SCOPE));
+    const tools = [...RW, "Bash", "WebFetch"];
+    expect(inv.argv).toEqual(nativeArgv(tools, tools));
+    expect(findBypassFlags(inv)).toEqual([]);
+  });
+
+  it("loose scope, bypass true and approved: --dangerously-skip-permissions, no --restricted, Git deny rules kept", () => {
+    const profile = privilegedProfile({ ...LOOSE_SCOPE, bypass: true });
+    const req = { ...request, bypassApproved: true };
+    const tools = [...RW, "Bash", "WebFetch"];
+    for (const inv of [
+      compiled(profile, req),
+      adapter.resumeArgs({ provider: "claude", nativeSessionId: RESUMED_SESSION_ID }, req, profile) as Invocation,
+    ]) {
+      const resumed = inv.argv.includes("--resume");
+      expect(inv.argv).toEqual([...bypassArgv(tools, tools), ...(resumed ? ["--resume", RESUMED_SESSION_ID] : [])]);
+      expect(inv.policyFlags).toContain(CLAUDE_BYPASS_FLAG);
+      // The audit refuses it without the run context and admits it with the approved privileged context only.
+      expect(auditInvocation(inv)).toEqual([CLAUDE_BYPASS_FLAG]);
+      expect(auditInvocation(inv, { profile, bypassApproved: true })).toEqual([]);
+      expect(auditInvocation(inv, { profile, bypassApproved: false })).toEqual([CLAUDE_BYPASS_FLAG]);
+      expect(auditInvocation(inv, { profile: privilegedProfile(LOOSE_SCOPE), bypassApproved: true })).toEqual([
+        CLAUDE_BYPASS_FLAG,
+      ]);
+      expect(auditInvocation(inv, { profile: TRUSTED_DEVELOPMENT, bypassApproved: true })).toEqual([
+        CLAUDE_BYPASS_FLAG,
+      ]);
+      // startAdapterRun refuses before spawning in every context but the approved one (no process is started here).
+      expect(() => startAdapterRun(adapter, inv)).toThrow(BypassFlagError);
+      expect(() => startAdapterRun(adapter, inv, { profile, bypassApproved: false })).toThrow(BypassFlagError);
+      expect(() => startAdapterRun(adapter, inv, { profile: TRUSTED_DEVELOPMENT, bypassApproved: true })).toThrow(
+        BypassFlagError,
+      );
+    }
+  });
+
+  it("bypass true without approval is Ineligible with the FR-POL-03 reason, never compiled without the flag", () => {
+    const profile = privilegedProfile({ ...LOOSE_SCOPE, bypass: true });
+    for (const req of [request, { ...request, bypassApproved: false }]) {
+      expect(adapter.compile(req, profile)).toEqual({
+        ineligible: true,
+        reason: "PROFILE_UNSUPPORTED",
+        detail: CLAUDE_BYPASS_NOT_APPROVED,
+      });
+    }
+    // The LLD §2 carrier (profile.bypassApproved, set by the lifecycle at dispatch) approves exactly like the request's.
+    const viaProfile = compiled({ ...profile, bypassApproved: true });
+    expect(viaProfile.argv).toEqual(compiled(profile, { ...request, bypassApproved: true }).argv);
+    expect(findBypassFlags(viaProfile)).toEqual([CLAUDE_BYPASS_FLAG]);
+  });
+
+  it.each([
+    [
+      "read-only, no shell, network on",
+      { files: { access: "read-only" }, shell: { mode: "none" } },
+      [...R, "WebFetch"],
+    ],
+    [
+      "worktree, exact allowlist, network on",
+      {
+        shell: {
+          mode: "allowlist",
+          allowlist: [
+            ["npm", "test"],
+            ["git", "status"],
+          ],
+        },
+      },
+      [...RW, "Bash", "WebFetch"],
+    ],
+  ] as const)("bypass false, %s compiles natively", (_l, part, tools) => {
+    const inv = compiled(privilegedProfile({ ...LOOSE_SCOPE, ...part } as typeof LOOSE_SCOPE));
+    const allow = tools.flatMap((t) => (t === "Bash" ? ["Bash(npm test)", "Bash(git status)"] : [t]));
+    expect(inv.argv).toEqual(nativeArgv(tools, allow));
+  });
+
+  it.each([
+    [
+      "the list_capabilities narrowest scope (network off)",
+      { network: { mode: "off" } },
+      "CAPABILITY_MISSING",
+      /network=off/,
+    ],
+    [
+      "network allowlist",
+      { network: { mode: "allowlist", hosts: ["a.example.test"] } },
+      "CAPABILITY_MISSING",
+      /network=allowlist/,
+    ],
+    [
+      "repository_config approved",
+      { repository_config: { mode: "approved" } },
+      "CAPABILITY_MISSING",
+      /approved.*ADR-0015/,
+    ],
+    [
+      "repository_config enabled",
+      { repository_config: { mode: "enabled" } },
+      "CAPABILITY_MISSING",
+      /enabled.*--restricted/,
+    ],
+    ["read-only files with broad shell", { files: { access: "read-only" } }, "CAPABILITY_MISSING", /writing files/],
+    [
+      "allowlist with bypass",
+      { shell: { mode: "allowlist", allowlist: [["npm", "test"]] }, bypass: true },
+      "CAPABILITY_MISSING",
+      /allow rules cannot narrow Bash/,
+    ],
+    [
+      "allowlist entry that writes Git",
+      { shell: { mode: "allowlist", allowlist: [["git", "commit"]] } },
+      "PROFILE_UNSUPPORTED",
+      /FR-GIT-01/,
+    ],
+    [
+      "allowlist word that is not plain",
+      { shell: { mode: "allowlist", allowlist: [["sh", "-c", "a;b"]] } },
+      "PROFILE_UNSUPPORTED",
+      /not expressible/,
+    ],
+  ] as const)("%s is Ineligible", (_l, part, reason, detail) => {
+    for (const bypassApproved of [false, true]) {
+      const r = adapter.compile(
+        { ...request, bypassApproved },
+        privilegedProfile({ ...LOOSE_SCOPE, ...part } as typeof LOOSE_SCOPE),
+      );
+      expect(r).toMatchObject({ ineligible: true, reason });
+      if (isIneligible(r)) expect(r.detail).toMatch(detail);
+    }
+  });
+
+  it("table: every scope shape x bypass x bypassApproved x writable, compile and resume", () => {
+    let compiledCount = 0;
+    let bypassCount = 0;
+    for (const scope of scopeShapes()) {
+      // The approval reaches the adapter on the request or on the profile (LLD §2 carrier), or not at all.
+      const carriers = [
+        [undefined, "request"],
+        [false, "request"],
+        [true, "request"],
+        [false, "profile"],
+        [true, "profile"],
+      ] as const;
+      for (const [bypassApproved, via] of carriers) {
+        const base = privilegedProfile(scope);
+        const profile = via === "profile" ? { ...base, bypassApproved: bypassApproved === true } : base;
+        for (const writable of [true, false]) {
+          const label = `${JSON.stringify(scope)} approved=${bypassApproved} via=${via} writable=${writable}`;
+          const req: CompileRequest = {
+            ...request,
+            workspace: { cwd: "/tmp/work", writable },
+            ...(bypassApproved !== undefined && via === "request" ? { bypassApproved } : {}),
+          };
+          const approved = bypassApproved === true;
+          const shouldCompile =
+            scope.network.mode === "on" &&
+            scope.repository_config.mode === "disabled" &&
+            !(scope.shell.mode === "allowlist" && scope.bypass) &&
+            !(scope.shell.mode === "broad" && scope.files.access === "read-only") &&
+            !(scope.bypass && !approved);
+          for (const inv of [
+            adapter.compile(req, profile),
+            adapter.resumeArgs({ provider: "claude", nativeSessionId: RESUMED_SESSION_ID }, req, profile),
+          ]) {
+            if (isIneligible(inv)) {
+              expect(shouldCompile, `${label}: ${inv.detail}`).toBe(false);
+              expect(["PROFILE_UNSUPPORTED", "CAPABILITY_MISSING"], label).toContain(inv.reason);
+              expect(inv.detail, label).not.toBe("");
+              continue;
+            }
+            expect(shouldCompile, label).toBe(true);
+            compiledCount += 1;
+            const bypass = scope.bypass && approved;
+            if (bypass) bypassCount += 1;
+            // FR-POL-03: the bypass flag iff privileged ∧ scope.bypass ∧ bypassApproved; nothing else from the list.
+            expect(findBypassFlags(inv), label).toEqual(bypass ? [CLAUDE_BYPASS_FLAG] : []);
+            expect(auditInvocation(inv, { profile, bypassApproved: approved }), label).toEqual([]);
+            // Decision 19: --restricted absent iff bypass; dontAsk absent iff bypass; the rest always.
+            expect(inv.argv.includes("--restricted"), label).toBe(!bypass);
+            expect(valuesAfter(inv.argv, "--permission-mode"), label).toEqual(bypass ? [] : ["dontAsk"]);
+            for (const f of ["--safe-mode", "--strict-mcp-config"]) expect(inv.argv, label).toContain(f);
+            expect(valuesAfter(inv.argv, "--permission-prompts"), label).toEqual(["none"]);
+            // FR-GIT-01: the full Git deny rule set on every compiled invocation, bypass included.
+            expect(rulesAfter(inv.argv, "--disallowedTools"), label).toEqual([...CLAUDE_GIT_DENY_RULES]);
+            expect(rulesAfter(inv.policyFlags, "--disallowedTools"), label).toEqual([...CLAUDE_GIT_DENY_RULES]);
+            // Never beyond the worktree, nothing config-loading: no --bare/--settings/--mcp-config/--add-dir/--worktree.
+            for (const arg of inv.argv) expect(FORBIDDEN_ARGS, label).not.toContain(arg);
+            for (const f of ["--worktree", "-w", "--tmux", "--from-pr", "--add-dir"])
+              expect(inv.argv, label).not.toContain(f);
+            for (const sub of CONFIG_SUBCOMMANDS) expect(inv.argv.slice(1), label).not.toContain(sub);
+            const tools = (valuesAfter(inv.argv, "--tools")[0] ?? "").split(",");
+            expect(tools.includes("Edit"), label).toBe(scope.files.access === "worktree" && writable);
+            expect(tools.includes("Bash"), label).toBe(scope.shell.mode !== "none");
+            expect(tools, label).toContain("WebFetch");
+            const allow = rulesAfter(inv.argv, "--allowedTools");
+            for (const r of allow) expect(r, label).not.toContain("*");
+            expect(allow.includes("Bash"), label).toBe(scope.shell.mode === "broad");
+            const commands = allow.filter((r) => r.startsWith("Bash(")).map((r) => /^Bash\((.*)\)$/.exec(r)?.[1] ?? "");
+            expect(gitWriteRisks(commands), label).toEqual([]);
+            expect(inv.stdin).toEqual({ kind: "text", value: request.objective });
+          }
+        }
+      }
+    }
+    expect(compiledCount).toBeGreaterThan(0);
+    expect(bypassCount).toBeGreaterThan(0);
+  });
+
+  it("synthetic denial fixtures under privileged (bypass false, and approved bypass) pass the harness", async () => {
+    const cases = claudePrivilegedDenialCases(makeCwd);
+    const started = Date.now();
+    const report = await runConformanceSuite(cases);
+    const failing = report.cases.flatMap((c) =>
+      c.checks.filter((k) => !k.ok).map((k) => `${c.kind}: ${k.name} ${k.detail ?? ""}`),
+    );
+    expect(failing).toEqual([]);
+    expect(report.cases.map((c) => c.result?.failureCode)).toEqual([
+      undefined,
+      "PERMISSION_BLOCKED",
+      "SANDBOX_VIOLATION",
+      undefined,
+      "PERMISSION_BLOCKED",
+      "SANDBOX_VIOLATION",
+    ]);
+    expect(Date.now() - started).toBeLessThan(15_000);
   });
 });
 

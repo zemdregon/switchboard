@@ -2,13 +2,23 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { auditInvocation, BYPASS_FLAGS, BypassFlagError } from "./audit.js";
+import { resolveTrustProfile } from "../policy/profiles.js";
+import {
+  assertBypassAudit,
+  auditInvocation,
+  BYPASS_FLAGS,
+  type BypassContext,
+  BypassFlagError,
+  bypassPermitted,
+  findBypassFlags,
+} from "./audit.js";
 import { missingRequiredKinds, runConformanceCase, runConformanceSuite } from "./conformance.js";
 import { FakeAdapter } from "./fake/adapter.js";
 import { FAKE_PROFILE, fakeConformanceCases } from "./fake/cases.js";
+import { LOOSE_SCOPE, privilegedProfile } from "./fixtures/privileged.js";
 import { AdapterRegistry } from "./registry.js";
 import { createProbeRunner, startAdapterRun } from "./run.js";
-import { type Invocation, isIneligible } from "./types.js";
+import { type Invocation, isIneligible, type ResolvedProfile } from "./types.js";
 
 const dirs: string[] = [];
 const makeCwd = () => {
@@ -125,6 +135,81 @@ describe("compile and policy", () => {
     const inv = new FakeAdapter().compile(request, FAKE_PROFILE) as Invocation;
     const bad = { ...inv, argv: [...inv.argv, "--yolo"] };
     expect(() => startAdapterRun(new FakeAdapter(), bad)).toThrow(BypassFlagError);
+  });
+});
+
+describe("bypass audit gate (T3.17; FR-POL-03, owner decision 13, ADR-0017)", () => {
+  const request = { runId: "r", objective: "x", constraints: [], workspace: { cwd: "/tmp", writable: true } };
+  const fakeInv = () => new FakeAdapter().compile(request, FAKE_PROFILE) as Invocation;
+  const PRIV_BYPASS = privilegedProfile({ ...LOOSE_SCOPE, bypass: true });
+  const PRIV_NO_BYPASS = privilegedProfile(LOOSE_SCOPE);
+  const profiles: Array<[string, Pick<ResolvedProfile, "name" | "privilegedScope">]> = [
+    ["inspect-untrusted", resolveTrustProfile("inspect-untrusted")],
+    ["edit-untrusted", resolveTrustProfile("edit-untrusted")],
+    ["test-sandboxed", resolveTrustProfile("test-sandboxed")],
+    ["trusted-development", resolveTrustProfile("trusted-development")],
+    ["privileged, scope bypass false", PRIV_NO_BYPASS],
+    ["privileged, scope bypass true", PRIV_BYPASS],
+    ["privileged, no scope binding", { name: "privileged" }],
+    // A non-privileged profile carrying a bypass scope is still refused: the profile name is checked first.
+    ["edit-untrusted carrying a bypass scope", { ...PRIV_BYPASS, name: "edit-untrusted" }],
+  ];
+
+  // The full positive/negative matrix: profile x bypassApproved x each BYPASS_FLAGS entry (bare and `=value`).
+  for (const [label, profile] of profiles) {
+    for (const bypassApproved of [false, true]) {
+      const ctx: BypassContext = { profile, bypassApproved };
+      const allowed = label === "privileged, scope bypass true" && bypassApproved;
+      it(`${label}, bypassApproved=${bypassApproved}: bypass flags ${allowed ? "admitted" : "refused before spawn"}`, () => {
+        expect(bypassPermitted(ctx)).toBe(allowed);
+        for (const f of BYPASS_FLAGS) {
+          for (const arg of [f, `${f}=1`]) {
+            const inv = { ...fakeInv(), argv: [...fakeInv().argv, arg] };
+            expect(findBypassFlags(inv)).toEqual([f]);
+            expect(auditInvocation(inv, ctx)).toEqual(allowed ? [] : [f]);
+            if (allowed) expect(() => assertBypassAudit(inv, ctx)).not.toThrow();
+            else {
+              expect(() => assertBypassAudit(inv, ctx)).toThrow(BypassFlagError);
+              // startAdapterRun throws before any process exists.
+              expect(() => startAdapterRun(new FakeAdapter(), inv, { profile, bypassApproved })).toThrow(
+                BypassFlagError,
+              );
+            }
+          }
+        }
+        // A flag in policyFlags only is audited the same way.
+        const viaPolicy = { ...fakeInv(), policyFlags: ["--yolo"] };
+        expect(auditInvocation(viaPolicy, ctx)).toEqual(allowed ? [] : ["--yolo"]);
+      });
+    }
+  }
+
+  it("without a context every bypass flag is refused, bypassApproved alone admits nothing", () => {
+    const inv = { ...fakeInv(), argv: [...fakeInv().argv, "--dangerously-skip-permissions"] };
+    expect(bypassPermitted(undefined)).toBe(false);
+    expect(auditInvocation(inv)).toEqual(["--dangerously-skip-permissions"]);
+    expect(() => startAdapterRun(new FakeAdapter(), inv)).toThrow(BypassFlagError);
+    expect(() => startAdapterRun(new FakeAdapter(), inv, { bypassApproved: true })).toThrow(BypassFlagError);
+    expect(() => startAdapterRun(new FakeAdapter(), inv, { bypassApproved: false, profile: PRIV_BYPASS })).toThrow(
+      BypassFlagError,
+    );
+    expect(() => startAdapterRun(new FakeAdapter(), inv, { bypassApproved: true, profile: PRIV_NO_BYPASS })).toThrow(
+      BypassFlagError,
+    );
+  });
+
+  it("an invocation with no bypass flag passes the audit in every context", () => {
+    for (const [, profile] of profiles)
+      for (const bypassApproved of [false, true])
+        expect(auditInvocation(fakeInv(), { profile, bypassApproved })).toEqual([]);
+    expect(auditInvocation(fakeInv())).toEqual([]);
+  });
+
+  it("the approved, bypass-true case spawns (fake CLI) and leaves no process behind", async () => {
+    const inv = { ...fakeInv(), argv: [...fakeInv().argv, "--dangerously-skip-permissions"] };
+    const run = startAdapterRun(new FakeAdapter(), inv, { profile: PRIV_BYPASS, bypassApproved: true });
+    const out = await run.done;
+    expect(out.groupEmpty).toBe(true);
   });
 });
 

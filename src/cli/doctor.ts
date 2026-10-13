@@ -82,6 +82,23 @@ function checkProfileOverrides(cfg: ResolvedConfig): DoctorCheck | undefined {
   return check("profiles", "Profile overrides", loosened ? "warn" : "ok", text);
 }
 
+/**
+ * Lists the MCP clients configured with `privileged_approval: "not_required"` (owner decision 22, ADR-0019) as a warning:
+ * their `privileged` requests run without the operator's `approve` step. Absent when no client sets it, so the check
+ * list is unchanged for the default configuration.
+ */
+function checkPrivilegedApproval(cfg: ResolvedConfig): DoctorCheck | undefined {
+  const loose = [...cfg.mcpClients.values()].filter((c) => c.privilegedApproval === "not_required").map((c) => c.id);
+  if (loose.length === 0) return undefined;
+  return check(
+    "privileged_approval",
+    "Privileged approval",
+    "warn",
+    `not required for client${loose.length > 1 ? "s" : ""} ${loose.join(", ")}: their privileged requests run ` +
+      "without switchboard approve (scope still validated and recorded; Git-write denial and worktrees still apply)",
+  );
+}
+
 const check = (id: string, label: string, status: CheckStatus, detail: string): DoctorCheck => ({
   id,
   label,
@@ -274,6 +291,8 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
     checks.push(check("config", "Config", "ok", cfg.configPath));
     const overrides = checkProfileOverrides(cfg);
     if (overrides) checks.push(overrides);
+    const approval = checkPrivilegedApproval(cfg);
+    if (approval) checks.push(approval);
   } catch (err) {
     checks.push(check("config", "Config", "fail", (err as Error).message));
   }

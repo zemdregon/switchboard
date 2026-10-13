@@ -502,7 +502,9 @@ if (provider === "claude") {
     "FR-GIT-01",
     "`--disallowedTools` Git deny rules (`Bash(git commit *)`, ...) are accepted with no Bash in --tools and deny a Git write",
     "NOT_CHECKED",
-    "acceptance is covered by C-6 (the run starts); denial needs a deliberate Git write attempt, which this smoke test never makes (malicious fixtures: T9.5)",
+    "acceptance is covered by C-6 (the run starts); denial needs a deliberate Git write attempt, which this smoke test never makes (malicious fixtures: T9.5). " +
+      'Depends on bypass: an approved privileged run with `bypass: true` adds --dangerously-skip-permissions (`claude --help`: "Bypass all permission checks") and keeps these deny rules; ' +
+      "whether Claude still honours deny rules under that flag is an Assumption, unverified (R-26, TDD §4.1.1; live check T3.9), and this smoke test never runs a bypass invocation",
   );
 } else {
   record(

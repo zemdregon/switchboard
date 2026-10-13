@@ -3,9 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { resolveTrustProfile } from "../../policy/index.js";
-import type { OverridableProfile, ProfileOverride } from "../../policy/types.js";
-import { auditInvocation, BYPASS_FLAGS } from "../audit.js";
+import type { OverridableProfile, PrivilegedScope, ProfileOverride } from "../../policy/types.js";
+import { auditInvocation, BYPASS_FLAGS, findBypassFlags } from "../audit.js";
 import { missingRequiredKinds, runConformanceCase, runConformanceSuite } from "../conformance.js";
+import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
 import { AdapterRegistry } from "../registry.js";
 import { createProbeRunner, startAdapterRun } from "../run.js";
 import {
@@ -19,7 +20,7 @@ import {
   type ProbeRunner,
   type ResolvedProfile,
 } from "../types.js";
-import { CodexAdapter, PRIVILEGED_DEFERRED, resolveOnPath } from "./adapter.js";
+import { CODEX_BYPASS_OUTSIDE_PRIVILEGED, CODEX_BYPASS_UNDOCUMENTED, CodexAdapter, resolveOnPath } from "./adapter.js";
 import {
   codexConformanceCases,
   EDIT_PROFILE,
@@ -646,23 +647,17 @@ describe("compile matrix (M3, T3.6; TDD §4.2.1)", () => {
     }
   });
 
-  it("privileged stays Ineligible awaiting T3.17 and emits no bypass option, scope or approval notwithstanding", () => {
-    const priv: ResolvedProfile = {
-      name: "privileged",
-      fileAccess: "scoped",
-      shell: "scoped",
-      network: "scoped",
-      repoConfig: "scoped",
-      bypassApproved: false,
-    };
-    for (const p of [priv, { ...priv, bypassApproved: true }, { ...EDIT_PROFILE, bypassApproved: true }]) {
+  it("bypassApproved on a non-privileged profile (snapshot or request) is Ineligible, never a flag", () => {
+    for (const [p, req] of [
+      [{ ...EDIT_PROFILE, bypassApproved: true }, request()],
+      [EDIT_PROFILE, request({ bypassApproved: true })],
+      [INSPECT_PROFILE, request({ bypassApproved: true })],
+    ] as const) {
       for (const r of [
-        adapter().compile(request(), p),
-        adapter().resumeArgs({ provider: "codex", nativeSessionId: "t-1" }, request(), p),
+        adapter().compile(req, p),
+        adapter().resumeArgs({ provider: "codex", nativeSessionId: "t-1" }, req, p),
       ]) {
-        expect(r).toMatchObject({ ineligible: true, reason: "PROFILE_UNSUPPORTED" });
-        expect((r as { detail: string }).detail).toContain(PRIVILEGED_DEFERRED);
-        expect(JSON.stringify(r)).not.toMatch(/--yolo|--full-auto|--dangerously/);
+        expect(r).toEqual({ ineligible: true, reason: "PROFILE_UNSUPPORTED", detail: CODEX_BYPASS_OUTSIDE_PRIVILEGED });
       }
     }
   });
@@ -689,6 +684,141 @@ describe("compile matrix (M3, T3.6; TDD §4.2.1)", () => {
   it("the Git-write declaration is unchanged: none-documented", () => {
     expect(adapter().gitWriteControl.kind).toBe("none-documented");
   });
+});
+
+describe("privileged compile matrix (T3.6, T3.17; TDD §4.2.1)", () => {
+  const CODEX_SCOPE: PrivilegedScope = {
+    files: { access: "worktree" },
+    shell: { mode: "broad" },
+    network: { mode: "off" },
+    repository_config: { mode: "disabled" },
+    bypass: false,
+  };
+  const harness = (mode: "read-only" | "workspace-write") => [
+    "--sandbox",
+    mode,
+    "--ignore-user-config",
+    "--ignore-rules",
+  ];
+
+  it("the only compilable shape: shell broad, network off, repository configuration disabled, no bypass", () => {
+    const inv = must(adapter().compile(request(), privilegedProfile(CODEX_SCOPE)));
+    expect(inv.argv).toEqual([EXE, "exec", "--json", ...harness("workspace-write")]);
+    expect(inv.policyFlags).toEqual(harness("workspace-write"));
+    const ro = must(
+      adapter().compile(request(), privilegedProfile({ ...CODEX_SCOPE, files: { access: "read-only" } })),
+    );
+    expect(ro.policyFlags).toEqual(harness("read-only"));
+    const resumed = must(
+      adapter().resumeArgs({ provider: "codex", nativeSessionId: "t-1" }, request(), privilegedProfile(CODEX_SCOPE)),
+    );
+    expect(resumed.argv).toEqual([EXE, "exec", "--json", ...harness("workspace-write"), "resume", "t-1"]);
+  });
+
+  it("bypass true is Ineligible whatever the approval: R2 does not document the flag precisely enough to emit", () => {
+    const p = privilegedProfile({ ...CODEX_SCOPE, bypass: true });
+    for (const bypassApproved of [undefined, false, true]) {
+      const req = request(bypassApproved === undefined ? {} : { bypassApproved });
+      for (const r of [
+        adapter().compile(req, p),
+        adapter().resumeArgs({ provider: "codex", nativeSessionId: "t-1" }, req, p),
+      ]) {
+        expect(r).toEqual({ ineligible: true, reason: "PROFILE_UNSUPPORTED", detail: CODEX_BYPASS_UNDOCUMENTED });
+        expect(JSON.stringify(r)).not.toMatch(/--yolo|--full-auto|--dangerously/);
+      }
+    }
+    expect(CODEX_BYPASS_UNDOCUMENTED).toBe("bypass/privileged flag not documented in R2: verify live");
+  });
+
+  it.each([
+    ["shell none (the narrowest scope)", { shell: { mode: "none" } }, "CAPABILITY_MISSING", /shell=none.*Q-11/],
+    [
+      "shell allowlist",
+      { shell: { mode: "allowlist", allowlist: [["npm", "test"]] } },
+      "CAPABILITY_MISSING",
+      /shell=allowlist/,
+    ],
+    ["network on", { network: { mode: "on" } }, "CAPABILITY_MISSING", /network=on/],
+    [
+      "network allowlist",
+      { network: { mode: "allowlist", hosts: ["a.example.test"] } },
+      "CAPABILITY_MISSING",
+      /network=allowlist/,
+    ],
+    ["repository_config approved", { repository_config: { mode: "approved" } }, "CAPABILITY_MISSING", /approved/],
+    ["repository_config enabled", { repository_config: { mode: "enabled" } }, "CAPABILITY_MISSING", /enabled/],
+  ] as const)("%s is Ineligible", (_l, part, reason, detail) => {
+    const r = adapter().compile(request(), privilegedProfile({ ...CODEX_SCOPE, ...part } as PrivilegedScope));
+    expect(r).toMatchObject({ ineligible: true, reason });
+    expect((r as { detail: string }).detail).toMatch(detail);
+  });
+
+  it("a requested model and a missing scope binding are Ineligible", () => {
+    expect(adapter().compile(request({ model: "m" }), privilegedProfile(CODEX_SCOPE))).toMatchObject({
+      reason: "CAPABILITY_MISSING",
+    });
+    expect(adapter().compile(request(), { ...EDIT_PROFILE, name: "privileged" })).toMatchObject({
+      reason: "PROFILE_UNSUPPORTED",
+      detail: expect.stringMatching(/without an approved scope/),
+    });
+  });
+
+  it("table: every scope shape x bypassApproved x writable never carries a bypass flag", () => {
+    let compiled = 0;
+    for (const scope of scopeShapes()) {
+      const p = privilegedProfile(scope);
+      for (const bypassApproved of [undefined, false, true]) {
+        for (const writable of [true, false]) {
+          const label = `${JSON.stringify(scope)} approved=${bypassApproved} writable=${writable}`;
+          const req = request({
+            workspace: { cwd: "/work/tree", writable },
+            ...(bypassApproved === undefined ? {} : { bypassApproved }),
+          });
+          const shouldCompile =
+            !scope.bypass &&
+            scope.shell.mode === "broad" &&
+            scope.network.mode === "off" &&
+            scope.repository_config.mode === "disabled";
+          for (const r of [
+            adapter().compile(req, p),
+            adapter().resumeArgs({ provider: "codex", nativeSessionId: "t-1" }, req, p),
+          ]) {
+            if (isIneligible(r)) {
+              expect(shouldCompile, `${label}: ${r.detail}`).toBe(false);
+              expect(["PROFILE_UNSUPPORTED", "CAPABILITY_MISSING"], label).toContain(r.reason);
+              if (scope.bypass) expect(r.detail, label).toBe(CODEX_BYPASS_UNDOCUMENTED);
+              continue;
+            }
+            expect(shouldCompile, label).toBe(true);
+            compiled += 1;
+            expect(findBypassFlags(r), label).toEqual([]);
+            expect(auditInvocation(r), label).toEqual([]);
+            expect(r.policyFlags, label).toEqual(
+              harness(scope.files.access === "worktree" && writable ? "workspace-write" : "read-only"),
+            );
+          }
+        }
+      }
+    }
+    expect(compiled).toBeGreaterThan(0);
+  });
+
+  for (const [fixture, code] of [
+    ["sandbox_denied", "SANDBOX_VIOLATION"],
+    ["permission_denied", "PERMISSION_BLOCKED"],
+  ] as const) {
+    it(`privileged (bypass false): ${fixture} ends ${code} through the harness`, { timeout: 15_000 }, async () => {
+      const report = await runConformanceCase({
+        kind: "task_failure",
+        adapter: replayAdapter(fixture),
+        request: request({ workspace: { cwd: makeCwd(), writable: true } }),
+        profile: privilegedProfile(CODEX_SCOPE),
+        expect: { ok: false, failureCode: code },
+      });
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result?.failureCode).toBe(code);
+    });
+  }
 });
 
 describe("sandbox and permission denials per compilable profile (synthetic fixtures, conformance harness)", () => {

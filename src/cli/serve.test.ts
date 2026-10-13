@@ -391,6 +391,7 @@ describe("privileged end to end (fake adapter, T3.4; FRD WF-7, T3, T19; owner de
         mcp_clients: [
           { id: "orch", max_trust_profile: "edit-untrusted" },
           { id: "priv", max_trust_profile: "privileged" },
+          { id: "self", max_trust_profile: "privileged", privileged_approval: "not_required" },
         ],
       }),
     );
@@ -425,7 +426,7 @@ describe("privileged end to end (fake adapter, T3.4; FRD WF-7, T3, T19; owner de
     }
   }
 
-  it("waits 24 h (fake clock) across a restart, then approve -> QUEUED -> the documented dispatch refusal", async () => {
+  it("waits 24 h (fake clock) across a restart, then approve -> QUEUED -> the adapter's compile refusal", async () => {
     const a = await connect(undefined, { client: "priv" });
     const d = await delegatePrivileged(a.client);
     expect(d.isError, JSON.stringify(d.body)).toBe(false);
@@ -456,7 +457,9 @@ describe("privileged end to end (fake adapter, T3.4; FRD WF-7, T3, T19; owner de
       failure_code: "ELIGIBILITY_NONE",
       approval: { status: "APPROVED" },
     });
-    expect(done.failure_detail).toContain("privileged compile not available until T3.5/T3.6");
+    // The fake adapter has no privileged mode: its own compile refuses the scope (BR-3 code, owner decision 19 removed
+    // the blanket dispatch refusal), before any lease, worktree or process.
+    expect(done.failure_detail).toContain("PROFILE_UNSUPPORTED: fake adapter has no privileged mode");
     expect(JSON.stringify(done)).not.toContain(ap.body.scope_hash);
     const view = ledgerView(runId);
     expect(view.run).toMatchObject({ pid: null, pgid: null, worktree_path: null });
@@ -470,6 +473,28 @@ describe("privileged end to end (fake adapter, T3.4; FRD WF-7, T3, T19; owner de
     expect(JSON.stringify(evs)).not.toContain(ap.body.scope_hash);
     // A second decision is refused.
     expect((await operator("deny", runId)).code).toBe(1);
+  }, 60_000);
+
+  it("a client configured privileged_approval not_required is admitted to QUEUED under a client_policy approval", async () => {
+    const c = await connect(undefined, { client: "self" });
+    const d = await delegatePrivileged(c.client);
+    expect(d.isError, JSON.stringify(d.body)).toBe(false);
+    expect(d.body.approval).toMatchObject({ status: "APPROVED" });
+    const runId = d.body.run_id as string;
+    const done = await pollStatus(c.client, runId, TERMINAL);
+    // Admitted without the operator; then the (fake) adapter's compile decides, as for an operator-approved run.
+    expect(done).toMatchObject({
+      status: "FAILED",
+      failure_code: "ELIGIBILITY_NONE",
+      approval: { status: "APPROVED" },
+    });
+    const view = ledgerView(runId);
+    expect(view.approval).toMatchObject({ status: "APPROVED", decided_by: "client_policy:self" });
+    expect(view.run).toMatchObject({ pid: null, pgid: null, worktree_path: null });
+    // Nothing for the operator to decide: approve is refused and says why.
+    const ap = await operator("approve", runId);
+    expect(ap.code).toBe(1);
+    expect(JSON.stringify(ap.body)).toContain("client policy");
   }, 60_000);
 
   it("deny ends the run CANCELLED with a decided row, no worktree and no spawn; works with and without the daemon", async () => {

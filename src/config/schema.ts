@@ -4,6 +4,12 @@
  *
  * Proposed (not in the SRS): provider ids are limited to the seven providers named in AGENTS.md; `weight` is a number
  * in [0, 1]; client ids match `^[a-z0-9][a-z0-9_-]{0,63}$`; concurrency maxima are 64.
+ *
+ * `mcp_clients[].privileged_approval` (owner decisions 18 and 22, ADR-0019; the key, its values and its default are
+ * Delegated): `required` (default) keeps the operator's `approve`/`deny` step for this client's `privileged` requests;
+ * `not_required` admits them straight to QUEUED under an approval row written APPROVED by client policy. Only the
+ * per-scope approval is lifted: the ceiling, scope validation, scope hash, Git-write denial (FR-GIT-01) and worktree
+ * isolation (FR-WS-05) still apply. `load.ts` refuses `not_required` unless the client's ceiling is `privileged`.
  */
 
 export const TRUST_PROFILES = [
@@ -28,11 +34,16 @@ export type ProviderId = (typeof PROVIDER_IDS)[number];
 
 export const CONFIG_SCHEMA_VERSION = 1;
 
+/** `mcp_clients[].privileged_approval` values (ADR-0019). The restrictive value is the default. */
+export const PRIVILEGED_APPROVAL_MODES = ["required", "not_required"] as const;
+export type PrivilegedApprovalMode = (typeof PRIVILEGED_APPROVAL_MODES)[number];
+export const DEFAULT_PRIVILEGED_APPROVAL: PrivilegedApprovalMode = "required";
+
 export interface SwitchboardConfig {
   schema_version: 1;
   data_dir?: string;
   allowed_roots: string[];
-  mcp_clients: { id: string; max_trust_profile: TrustProfile }[];
+  mcp_clients: { id: string; max_trust_profile: TrustProfile; privileged_approval?: PrivilegedApprovalMode }[];
   limits?: { global_concurrency?: number; per_provider_concurrency?: number };
   providers?: Partial<Record<ProviderId, { enabled?: boolean; weight?: number }>>;
   /** Run retention (NFR-DATA-01, FR-WS-07). `interval` is `<n>m`, `<n>h` or `<n>d` (Proposed form). */
@@ -102,6 +113,7 @@ export const configSchema = {
         properties: {
           id: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,63}$" },
           max_trust_profile: { enum: [...TRUST_PROFILES] },
+          privileged_approval: { enum: [...PRIVILEGED_APPROVAL_MODES] },
         },
       },
     },

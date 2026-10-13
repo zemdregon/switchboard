@@ -832,3 +832,37 @@ describe("doctor profile overrides (T3.2)", () => {
     expect(text).toContain("Profile overrides: edit-untrusted.shellAllowlist");
   });
 });
+
+describe("doctor privileged approval (owner decision 22, ADR-0019)", () => {
+  const fakeOnly = () => new AdapterRegistry().register(new FakeAdapter());
+  const writeClients = (clients: Record<string, unknown>[]) =>
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schema_version: 1,
+        data_dir: dataDir,
+        allowed_roots: [path.join(tmp, "repos")],
+        mcp_clients: clients,
+      }),
+    );
+
+  it("warns, naming each client whose privileged requests skip approve; no line by default", async () => {
+    writeClients([
+      { id: "ops", max_trust_profile: "privileged" },
+      { id: "zemdregon", max_trust_profile: "privileged", privileged_approval: "not_required" },
+      { id: "lab", max_trust_profile: "privileged", privileged_approval: "not_required" },
+    ]);
+    const j = JSON.parse((await run(["doctor", "--json", ...cfg()], { adapters: fakeOnly() })).out);
+    const c = j.checks.find((x: { id: string }) => x.id === "privileged_approval");
+    expect(c.status).toBe("warn");
+    expect(c.detail).toMatch(/^not required for clients zemdregon, lab: /);
+    expect(c.detail).not.toContain("ops");
+    expect(j.ok).toBe(true);
+    const text = (await run(["doctor", ...cfg()], { adapters: fakeOnly() })).out;
+    expect(text).toMatch(/\[warn\] Privileged approval: not required for clients zemdregon, lab/);
+
+    writeClients([{ id: "ops", max_trust_profile: "privileged", privileged_approval: "required" }]);
+    const d = JSON.parse((await run(["doctor", "--json", ...cfg()], { adapters: fakeOnly() })).out);
+    expect(d.checks.map((x: { id: string }) => x.id)).not.toContain("privileged_approval");
+  });
+});
