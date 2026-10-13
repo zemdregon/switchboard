@@ -117,9 +117,23 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
   (FR-POL-03, [LLD §3.1](LLD.md#31-privileged-scope-m3), [ADR-0016](../adr/0016-approved-privileged-scope-bypass.md);
   audit change in T3.17); adapters never write global provider config such as
   `~/.claude/settings.json` (FR-POL-08, [ADR-0004](../adr/0004-trust-profiles-no-bypass-flags.md)).
-- **Repository hooks.** Controller Git operations run with repository hooks disabled and a clean Git environment
-  (Proposed: `-c core.hooksPath=/dev/null`, `--no-verify`, no inherited `GIT_*` variables), because a malicious
-  repository could otherwise execute code in the controller's own commits.
+- **Repository hooks, filters and diff drivers.** Controller Git operations run with repository hooks disabled and a
+  clean Git environment (Proposed: `-c core.hooksPath=/dev/null`, `-c core.fsmonitor=false`, `--no-verify`, no
+  inherited `GIT_*` variables, no global or system config), because a malicious repository could otherwise execute code
+  in the controller's own commits. The same applies to filter and diff drivers that the repository's configuration
+  defines and its `.gitattributes` selects (smudge on `worktree add`/`reset --hard`, clean or `process` on
+  `status`/`add`, textconv or an external diff on `diff`). Before every call, the runner (`src/workspace/git.ts`) lists
+  the configured `filter.<n>.{clean,smudge,process,required}`, `diff.<n>.{textconv,command}` and `diff.external` keys.
+  It reads without a scope flag, so `include`/`includeIf` files and `config.worktree` are covered. It then overrides
+  each with an empty value via `-c` (`required` becomes `false`). An empty filter command is skipped, and an empty diff
+  command fails instead of running (verified on Git 2.43). Every `git diff` also gets `--no-textconv --no-ext-diff`,
+  and `core.attributesFile` is `/dev/null`. A driver name that `-c` cannot express (one containing `=` or a newline)
+  makes the call fail closed. Delegated decision: `--attr-source`/`GIT_ATTR_SOURCE` is not used, because it needs Git
+  2.40 (above the 2.30 minimum) and still reads `info/attributes`. Known gap: nested repositories (gitlinks) inside a
+  run worktree can make `status`/`add` start a child Git that uses the nested repository's own drivers (see Q-26 in
+  [ROADMAP §7.3](../ROADMAP.md#73-open-questions-for-ender-not-blocking-m2-unless-noted) and R-28). Evidence:
+  `test/malicious/controller.test.ts` ('T3.8 repository-configured Git filter and diff drivers' and 'controller Git
+  runner vs. unhardened Git, operation by operation').
 - **Agent Git boundary.** Agents get no Git write ability and no push credentials; see
   [§3.10](#310-git-commits-attribution-and-publication) for the layers, the injected-tool channel and what is still
   unverified per provider (FR-GIT-01..09).
