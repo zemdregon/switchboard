@@ -47,6 +47,24 @@ export const MAX_COMMIT_PATH_CHARS = 4096;
  */
 export const MAX_SOCKET_PATH_BYTES = 100;
 
+/**
+ * T9.4b (ADR-0029 item 2; Delegated): the fixed MCP server name under which a provider is given the shim, so its tools
+ * are `mcp__switchboard-git__commit` and `mcp__switchboard-git__push` in Claude Code's `mcp__<server>__<tool>` form
+ * (that naming is an Assumption, live check). Prefixed with the product name to avoid colliding with a server an
+ * operator or repository might define. Shared by the Claude adapter and the argv audit (`src/adapters/audit.ts`).
+ */
+export const TOOL_SHIM_MCP_SERVER = "switchboard-git";
+
+/**
+ * T9.4b (ADR-0029 item 1): the one file name the channel service writes, on request of an adapter, into the run's
+ * private channel directory (`0600`, exclusive create, never following a link); removed when the channel closes and by
+ * the startup sweep. It holds the per-run MCP definition of the shim and never the token.
+ */
+export const CHANNEL_MCP_CONFIG_FILE = "mcp-config.json";
+
+/** Every file name the channel service accepts in `OpenChannel.writeFile` (and removes on close and sweep). */
+export const CHANNEL_FILE_NAMES: readonly string[] = [CHANNEL_MCP_CONFIG_FILE];
+
 export type ToolName = "commit" | "push";
 
 /**

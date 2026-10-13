@@ -214,7 +214,7 @@ predecessors are unaffected (BR-11, BR-17).
 | CANCELLED | Unchanged or changed | As FAILED, by condition | As FAILED, by condition |
 | Any, `inspect-untrusted` on non-Git directory | No worktree exists (FR-WS-06) | Nothing to retain; artifacts only | Not applicable |
 
-*Proposed, not accepted (FR-WS-09, owner decision 41):* a concurrent run's worktree of a project may be removed when its
+*Proposed, not accepted (FR-WS-09, owner decision 42):* a concurrent run's worktree of a project may be removed when its
 changes are merged or its meta-session is abandoned (CLOSED or an explicit operator command, Delegated); its branch and
 diff artifact stay to retention GC. Until accepted, the rows above apply unchanged.
 

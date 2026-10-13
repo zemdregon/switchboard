@@ -43,6 +43,11 @@ export interface ResolvedConfig {
    * does not enable collection.
    */
   retentionEnabled: boolean;
+  /**
+   * `providers.claude-code.git_channel` (T9.4b, ADR-0029 item 7): true only when the config sets it to true. Default
+   * false. UNSUPPORTED until the ADR-0029 live checks pass; `serve` logs a warning when it is on.
+   */
+  claudeCodeGitChannel: boolean;
   /** Adapter preflight cache TTL in milliseconds (NFR-PERF-02, T3.21); 0 disables the cache. */
   preflightTtlMs: number;
   /** Validated `profiles.<name>` overrides in COMP-POL's camelCase form (owner decision 12); empty when none. */
@@ -292,6 +297,7 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
     },
     retentionEnabled: cfg.retention?.days !== undefined,
     preflightTtlMs: (cfg.timeouts?.preflight_ttl_seconds ?? DEFAULT_PREFLIGHT_TTL_SECONDS) * 1000,
+    claudeCodeGitChannel: cfg.providers?.["claude-code"]?.git_channel === true,
     profileOverrides,
     // Proposed: a provider not listed is enabled with no explicit weight; listing it can disable it.
     providers: new Map(

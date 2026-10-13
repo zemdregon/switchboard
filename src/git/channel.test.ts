@@ -37,7 +37,13 @@ import {
   type OpenChannel,
 } from "./channel.js";
 import { GitPublisher, type GitPublisherOptions, publishRefFor } from "./index.js";
-import { MAX_REQUEST_BYTES, MAX_SOCKET_PATH_BYTES, TOKEN_PREFIX, TOOL_TOKEN_ENV } from "./tool-protocol.js";
+import {
+  CHANNEL_MCP_CONFIG_FILE,
+  MAX_REQUEST_BYTES,
+  MAX_SOCKET_PATH_BYTES,
+  TOKEN_PREFIX,
+  TOOL_TOKEN_ENV,
+} from "./tool-protocol.js";
 
 const GIT_ENV = {
   PATH: process.env.PATH ?? "",
@@ -442,6 +448,68 @@ describe("per-call checks (FR-GIT-02; stale, foreign, malformed calls refused wi
       .map((e) => JSON.parse(e.payload_json).reason);
     expect(aborted).toEqual(["publish_ref_moved"]);
     expect(ledger.listGitCommits(r.runId)).toHaveLength(2);
+  });
+});
+
+describe("channel files (T9.4b, ADR-0029 item 1)", () => {
+  it("writes the one allowed file 0600 in the private directory, refuses anything else, and removes it on close", async () => {
+    const r = await running();
+    const ch = await openFor(service(), r);
+    expect(ch.shim.dir).toBe(path.dirname(ch.socketPath));
+    const file = await ch.writeFile(CHANNEL_MCP_CONFIG_FILE, '{"mcpServers":{}}\n');
+    expect(file).toBe(path.join(ch.shim.dir, CHANNEL_MCP_CONFIG_FILE));
+    const st = lstatSync(file);
+    expect(st.isFile()).toBe(true);
+    expect(st.mode & 0o777).toBe(0o600);
+    expect(st.uid).toBe(process.getuid?.());
+    expect(readFileSync(file, "utf8")).toBe('{"mcpServers":{}}\n');
+    await expect(ch.writeFile(CHANNEL_MCP_CONFIG_FILE, "{}")).rejects.toThrow(/already written/u);
+    for (const name of ["other.json", "../mcp-config.json", "tools.sock", ""]) {
+      await expect(ch.writeFile(name, "{}"), name).rejects.toThrow(ChannelOpenError);
+    }
+    await expect(ch.writeFile(CHANNEL_MCP_CONFIG_FILE, `{"t":"${tokenOf(ch)}"}`)).rejects.toThrow(/token/u);
+    await ch.close();
+    expect(existsSync(file)).toBe(false);
+    expect(existsSync(ch.shim.dir)).toBe(false);
+    await expect(ch.writeFile(CHANNEL_MCP_CONFIG_FILE, "{}")).rejects.toThrow(ChannelOpenError);
+  });
+
+  it("never follows a link planted at the file name", async () => {
+    const r = await running();
+    const ch = await openFor(service(), r);
+    const target = path.join(root, "target.json");
+    writeFileSync(target, "original\n");
+    symlinkSync(target, path.join(ch.shim.dir, CHANNEL_MCP_CONFIG_FILE));
+    await expect(ch.writeFile(CHANNEL_MCP_CONFIG_FILE, "{}")).rejects.toThrow();
+    expect(readFileSync(target, "utf8")).toBe("original\n");
+    await ch.close();
+    expect(readFileSync(target, "utf8")).toBe("original\n"); // the link is not followed by the clean-up either
+  });
+
+  it("the startup sweep removes a definition file a crash left behind, then the directory", async () => {
+    const r = await running();
+    const dir = path.join(dataDir, "runs", r.runId);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(path.join(dir, CHANNEL_MCP_CONFIG_FILE), "{}", { mode: 0o600 });
+    ledger.appendRunEvent({
+      runId: r.runId,
+      type: GIT_CHANNEL_OPENED,
+      payload: { tools: ["commit"], socket_dir: dir },
+    });
+    const report = await service().sweepStale();
+    expect(report.cleaned).toEqual([r.runId]);
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it("reusing a crashed run's directory removes its stale definition file before the new one is written", async () => {
+    const r = await running();
+    const dir = path.join(dataDir, "runs", r.runId);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(path.join(dir, CHANNEL_MCP_CONFIG_FILE), "stale", { mode: 0o600 });
+    const ch = await openFor(service(), r);
+    expect(existsSync(path.join(dir, CHANNEL_MCP_CONFIG_FILE))).toBe(false);
+    await ch.writeFile(CHANNEL_MCP_CONFIG_FILE, "{}");
+    expect(readFileSync(path.join(dir, CHANNEL_MCP_CONFIG_FILE), "utf8")).toBe("{}");
   });
 });
 
