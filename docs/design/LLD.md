@@ -1349,8 +1349,21 @@ the manifest fails validation (fail closed); the run's auth mode is not in `auth
 `reviewed-prohibited`. In the single-operator deployment
 `requires-review` is recorded but does not block (Assumption,
 [ADR-0011](../adr/0011-single-operator-local-deployment.md)); multi-user or resale use is out of scope. The three
-`const: false` fields mean a manifest that claims otherwise cannot load. `adapters validate` (M4) updates range and
-`validated_on` only after the conformance suite passes (FR-OPS-02).
+`const: false` fields mean a manifest that claims otherwise cannot load.
+`switchboard adapters validate <provider>` (T4.4, FR-OPS-02) updates
+`validated_cli_version`, `validated_on`, `validated_version_range` and appends a dated evidence sentence to `notes`, and
+nothing else, only after the probe (FR-ADP-02 steps 1 to 5), an `OK` auth preflight and the conformance subset including
+the structured-output smoke call (step 7, one provider call) pass; on any failure it writes nothing.
+The range is the installed `X.Y.Z` to the next minor, `>=X.Y.Z <X.(Y+1).0` (Q-12; an Assumption, not a provider
+statement); a pre-release version is refused.
+
+**Manifest file location (Delegated, Assumption).** The command edits the manifest in the source tree, the file a
+contributor changes in a pull request, and the operator commits that change. It finds it from its own module location:
+the package root must hold `package.json`, a `.git` entry and `src/adapters/manifests/`. The copy that the built package
+loads from `dist/` is a build artefact (rebuild after committing), and an installed package has no source tree, so the
+command then fails closed and writes nothing. There is no option to point it elsewhere (only tests inject a directory).
+The write is a line-level text replacement of those four properties (`notes` is added as the last property if
+absent), checked by re-validating the result and comparing every other field, then a rename over the original.
 
 ## 7. Telemetry spans
 

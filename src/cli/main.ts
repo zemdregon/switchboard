@@ -8,6 +8,7 @@ import { parseArgs } from "node:util";
 import { ConfigError } from "../config/index.js";
 import { ApprovalRefusedError } from "../lifecycle/approval.js";
 import { LockError } from "../lock/index.js";
+import { renderValidate, runAdaptersValidate } from "./adapters-validate.js";
 import { renderDoctor, runDoctor } from "./doctor.js";
 import { renderGc, runGcCommand } from "./gc.js";
 import { renderGitPush, runGitPush } from "./git-push.js";
@@ -55,6 +56,12 @@ Commands:
                       Check project configuration and repository paths; exit 1 if any check fails
   git push <id>       Push a meta-session's published commits (sess_... or one of its run_...) to the context's
                       configured remote branch; only with push.policy "branch", never forced; refused while serve runs
+  adapters validate <provider>
+                      Accept the installed version of a provider CLI: runs its probe, status check and conformance
+                      checks, including a structured-output smoke test that makes ONE provider call (a trivial
+                      read-only prompt; may use your quota). Never starts a sign-in. On success only, writes the
+                      version, date, range and an evidence line into the provider's manifest file in the source
+                      checkout for you to review and commit; on any failure writes nothing. Exit 1 on failure
   approve <run_id>    Approve the privileged run that requested an approval (review it with runs show first)
   deny <run_id>       Deny the privileged run that requested an approval; the run ends CANCELLED
 
@@ -135,6 +142,18 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         if (sub !== undefined) throw new UsageError("doctor takes no arguments");
         const report = await runDoctor(io, loaderArgv);
         emit(report, renderDoctor(report));
+        return report.ok ? 0 : 1;
+      }
+      case "adapters": {
+        // T4.4 (FR-OPS-02): the only subcommand. No lock or ledger; it writes one manifest file, and only on success.
+        if (sub !== "validate") {
+          throw new UsageError(`unknown adapters subcommand ${JSON.stringify(sub ?? "")}; expected validate`);
+        }
+        const id = rest[0];
+        if (id === undefined || rest.length > 1)
+          throw new UsageError("adapters validate requires exactly one provider");
+        const report = await runAdaptersValidate(io, id);
+        emit(report, renderValidate(report));
         return report.ok ? 0 : 1;
       }
       case "gc": {
