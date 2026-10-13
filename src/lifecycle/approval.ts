@@ -19,6 +19,11 @@
  * - {@link evaluateBypass} is the only source of `bypassApproved` for a run: `true` only for an `APPROVED` row of the
  *   run's own meta-session and client whose hash equals the snapshot's hash and both recomputed hashes, and whose scope
  *   sets `bypass: true`. Any mismatch is reported so dispatch fails the run `PERMISSION_BLOCKED` before spawn.
+ *
+ * ADR-0019 (owner decision 22, mechanism Delegated): a row written `APPROVED` at admission for a client configured
+ * `privileged_approval: "not_required"` (`decided_by = "client_policy:<client_id>"`) is an ordinary `APPROVED` row
+ * here: the same hash checks and ownership checks apply to it, at dispatch and for continuations. Its run never waits
+ * in AWAITING_APPROVAL, so `approve`/`deny` refuse it (and say why).
  */
 import type { ApprovalRow, Ledger, RunRecord } from "../ledger/index.js";
 import { parsePrivilegedScope, privilegedScopeHash } from "../policy/index.js";
@@ -27,6 +32,8 @@ import { assertTransition } from "./states.js";
 
 /** `run_event` type recording the closure (payload `{ approval_id, status, reason }`; never the scope or hash). */
 export const APPROVAL_CLOSED_EVENT = "approval_closed";
+/** `decided_by` prefix of an approval granted by a client's `privileged_approval: "not_required"` (ADR-0019). */
+export const CLIENT_POLICY_DECIDER_PREFIX = "client_policy:";
 /** `run_event` type recording an operator decision written to the row (payload `{ approval_id, status }`). */
 export const APPROVAL_DECIDED_EVENT = "approval_decided";
 
@@ -135,7 +142,11 @@ export function checkDecidable(ledger: Ledger, run: RunRecord, expectedHash?: st
         ? ` (it runs under approval ${row.id}, which run ${row.run_id} requested and is ${row.status}; ` +
           "approve and deny act only on the run that requested an approval)"
         : "";
-    return refuse(`run ${run.id} is ${run.state}, not AWAITING_APPROVAL${reuse}`);
+    const byPolicy =
+      row && row.run_id === run.id && row.decided_by?.startsWith(CLIENT_POLICY_DECIDER_PREFIX)
+        ? " (its approval was granted by client policy: the client is configured privileged_approval not_required)"
+        : "";
+    return refuse(`run ${run.id} is ${run.state}, not AWAITING_APPROVAL${reuse}${byPolicy}`);
   }
   const row = ledger.getApprovalForRun(run.id);
   if (!row) return refuse(`run ${run.id} requested no approval`);

@@ -18,15 +18,19 @@
  *   "present exactly when allowlist" check run right after Ajv). Admission is T2: AWAITING_APPROVAL plus one PENDING
  *   approval row. `continue_task` resolving `privileged` (requested or defaulted, C4) needs the meta-session's APPROVED
  *   approval for this client (C7, checked after the ceiling) and takes the approved scope as is.
- * - Proposed: no adapter compiles `privileged` before T3.5/T3.6, so for a `privileged` request V11 defers the adapter
- *   compile verdict to dispatch: a provider excluded only by PROFILE_UNSUPPORTED or CAPABILITY_MISSING is admissible
- *   (it still has to pass binary, version, manifest, enablement, platform, the T3.7 profile-platform rule and auth).
- *   The run is refused at dispatch until the adapters compile the scope (`PRIVILEGED_NOT_COMPILABLE` in the
- *   lifecycle).
+ * - Owner decision 22 (ADR-0019, mechanism Delegated): for a client configured `privileged_approval: "not_required"`
+ *   the same validated, hashed scope is admitted by T1 to QUEUED with its approval row written APPROVED by
+ *   `client_policy:<client_id>` in the admission transaction. Nothing else is relaxed: the ceiling (V5), V13, the
+ *   scope validation, the dispatch-time hash checks, Git-write denial and worktree isolation all still apply.
+ * - Proposed: for a `privileged` request V11 defers the adapter compile verdict to dispatch, because at admission
+ *   `bypassApproved` is not known yet (it comes from the approval row at dispatch): a provider excluded only by
+ *   PROFILE_UNSUPPORTED or CAPABILITY_MISSING is admissible (it still has to pass binary, version, manifest,
+ *   enablement, platform, the T3.7 profile-platform rule and auth). At dispatch the adapter's compile, with
+ *   `bypassApproved` from the approval, decides; an `Ineligible` there ends the run with its BR-3 code.
  * - `list_capabilities` (T3.7): `supported_profiles` is each provider's compile matrix on this host: the
  *   profile-platform rule (`profilePlatformSupported`), then the adapter's own compile of each resolved profile
  *   (`compileCheck`, the same call the eligibility filter makes). `privileged` is listed only if the adapter compiles
- *   the narrowest scope (Proposed); no adapter does before T3.17.
+ *   any scope of a small representative set (`REPRESENTATIVE_PRIVILEGED_SCOPES`, Proposed, LLD §3.1 "Listing").
  * - Non-empty `verification_commands` are refused with INVALID_REQUEST until verification (FR-EXE-08) lands in M3,
  *   rather than accepted and silently not run. `minimum_capability` fails ELIGIBILITY_NONE: it is a hard constraint
  *   (BR-4) and no model registry exists before M7.
@@ -310,7 +314,15 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       requestHash: hash,
       routeDecision: routeRecord(answer, provider, basis),
       ...(key !== undefined ? { idempotencyKey: key } : {}),
-      ...(scope?.ok ? { privileged: { scope: scope.scope } } : {}),
+      ...(scope?.ok
+        ? {
+            privileged: {
+              scope: scope.scope,
+              // ADR-0019: the configured client policy, never anything in the request.
+              ...(client.privilegedApproval === "not_required" ? { approvedByClientPolicy: true } : {}),
+            },
+          }
+        : {}),
     });
     await waitBounded(submitted.runId, a.wait_seconds as number);
     return envelopeOf(submitted.runId, submitted.replayed ? { replayed: true } : {});
@@ -467,13 +479,18 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     if (adapter && probed) {
       for (const p of TRUST_PROFILE_ORDER) {
         if (!profilePlatformSupported(p, answer.input.platform)) continue;
-        let profile: ResolvedProfile;
+        let profiles: ResolvedProfile[];
         try {
-          profile = p === "privileged" ? eligibilityProfile(NARROWEST_PRIVILEGED_SCOPE) : lifecycle.resolveProfile(p);
+          profiles =
+            p === "privileged"
+              ? REPRESENTATIVE_PRIVILEGED_SCOPES.map((sc) => eligibilityProfile(sc))
+              : [lifecycle.resolveProfile(p)];
         } catch {
           continue; // COMP-POL does not resolve this profile: unsupported, fail closed
         }
-        if (!("ineligible" in compileCheck(adapter, profile, requirementsFor(p, profile), cwd))) supported.push(p);
+        const compiles = (profile: ResolvedProfile) =>
+          !("ineligible" in compileCheck(adapter, profile, requirementsFor(p, profile), cwd));
+        if (profiles.some(compiles)) supported.push(p);
       }
     }
     return {
@@ -571,23 +588,45 @@ const PER_PROFILE_REASONS: ReadonlySet<EligibilityReasonCode> = new Set([
 ]);
 
 /**
- * Proposed (T3.7): the scope `list_capabilities` compiles to decide whether a provider lists `privileged`: the narrowest
- * scope LLD §3.1 allows (read-only files, no shell, no network, repository configuration disabled, no bypass). A
- * provider that cannot compile even this scope cannot compile any; one that can is listed, and each request's own scope
- * is still compiled at admission and dispatch. Both adapters refuse `privileged` until T3.17, so neither lists it.
+ * Proposed (Delegated, 2026-10-13; LLD §3.1 "Listing"): the scopes `list_capabilities` compiles to decide whether a
+ * provider lists `privileged`. A provider is listed when its adapter compiles ANY of them, so `privileged` means "this
+ * provider compiles at least one privileged scope here"; each request's own scope is still compiled at dispatch, where
+ * an `Ineligible` ends the run with its BR-3 code. No single scope compiles for both adapters (T3.5: Claude has no
+ * network control, so it needs network `on`; T3.6: Codex cannot disable commands, so it needs shell `broad` with
+ * network `off`), hence a small set rather than the narrowest scope alone. All have `bypass: false`: listing never
+ * compiles with `bypassApproved`, which only an approval grants.
  */
-const NARROWEST_PRIVILEGED_SCOPE: PrivilegedScope = {
-  files: { access: "read-only" },
-  shell: { mode: "none" },
-  network: { mode: "off" },
-  repository_config: { mode: "disabled" },
-  bypass: false,
-};
+const REPRESENTATIVE_PRIVILEGED_SCOPES: readonly PrivilegedScope[] = [
+  // The narrowest scope LLD §3.1 allows.
+  {
+    files: { access: "read-only" },
+    shell: { mode: "none" },
+    network: { mode: "off" },
+    repository_config: { mode: "disabled" },
+    bypass: false,
+  },
+  // Worktree edits, no shell, unrestricted network (the shape a provider without a network control can express).
+  {
+    files: { access: "worktree" },
+    shell: { mode: "none" },
+    network: { mode: "on" },
+    repository_config: { mode: "disabled" },
+    bypass: false,
+  },
+  // Worktree edits, any command, network off (the shape a sandbox-only provider can express).
+  {
+    files: { access: "worktree" },
+    shell: { mode: "broad" },
+    network: { mode: "off" },
+    repository_config: { mode: "disabled" },
+    bypass: false,
+  },
+];
 
 /**
  * The snapshot V11 compiles against for a `privileged` request: the scope resolved with placeholder hash and approval
- * ID (the real ones exist only inside the admission transaction). Adapters refuse `privileged` today, which
- * {@link admissible} defers to dispatch; `bypassApproved` is false whatever the scope says.
+ * ID (the real ones exist only inside the admission transaction). `bypassApproved` is false whatever the scope says
+ * (it is known only at dispatch), so {@link admissible} defers an adapter's compile refusal to dispatch.
  */
 function eligibilityProfile(scope: PrivilegedScope): ResolvedProfile {
   return resolveTrustProfile("privileged", {

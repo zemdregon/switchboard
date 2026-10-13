@@ -143,6 +143,53 @@ describe("retention and profiles config (T3.2)", () => {
   });
 });
 
+describe("mcp_clients[].privileged_approval (owner decision 22, ADR-0019)", () => {
+  const clients = (...entries: Record<string, unknown>[]) => ({ ...base(), mcp_clients: entries });
+
+  it("defaults to required (the restrictive value) and accepts both values on a privileged ceiling", () => {
+    const c = loadConfig({
+      configPath: write(
+        clients(
+          { id: "plain", max_trust_profile: "edit-untrusted" },
+          { id: "ops", max_trust_profile: "privileged" },
+          { id: "strict", max_trust_profile: "privileged", privileged_approval: "required" },
+          { id: "loose", max_trust_profile: "privileged", privileged_approval: "not_required" },
+        ),
+      ),
+    });
+    expect(c.mcpClients.get("plain")).toEqual({
+      id: "plain",
+      maxTrustProfile: "edit-untrusted",
+      privilegedApproval: "required",
+    });
+    expect(c.mcpClients.get("ops")?.privilegedApproval).toBe("required");
+    expect(c.mcpClients.get("strict")?.privilegedApproval).toBe("required");
+    expect(c.mcpClients.get("loose")?.privilegedApproval).toBe("not_required");
+  });
+
+  it("is a closed enum: other values and types fail with the JSON path and the allowed values", () => {
+    for (const value of ["none", "NOT_REQUIRED", true, null, ""]) {
+      const cfg = clients({ id: "ops", max_trust_profile: "privileged", privileged_approval: value });
+      expect(() => loadConfig({ configPath: write(cfg) }), String(value)).toThrow(
+        /\$\.mcp_clients\[0\]\.privileged_approval: must be one of required, not_required/,
+      );
+    }
+  });
+
+  it("refuses not_required below a privileged ceiling, naming the entry, the client and its ceiling", () => {
+    const cfg = clients(
+      { id: "ops", max_trust_profile: "privileged" },
+      { id: "dev", max_trust_profile: "trusted-development", privileged_approval: "not_required" },
+    );
+    expect(() => loadConfig({ configPath: write(cfg) })).toThrow(
+      /\$\.mcp_clients\[1\]\.privileged_approval: not_required applies only to a client whose max_trust_profile is privileged \(client "dev" has trusted-development\)/,
+    );
+    // required below the ceiling is harmless and accepted.
+    const ok = clients({ id: "dev", max_trust_profile: "edit-untrusted", privileged_approval: "required" });
+    expect(loadConfig({ configPath: write(ok) }).mcpClients.get("dev")?.privilegedApproval).toBe("required");
+  });
+});
+
 describe("resolveConfigPath", () => {
   it("prefers --config, then SWITCHBOARD_CONFIG, then XDG, then ~/.config", () => {
     const env = { SWITCHBOARD_CONFIG: "/e/c.json", XDG_CONFIG_HOME: "/x" };
