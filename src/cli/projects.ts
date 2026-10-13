@@ -158,7 +158,12 @@ export async function validateProjects(io: CliIo, argv: readonly string[], only?
   };
 }
 
-async function checkProject(config: ResolvedConfig, p: ResolvedProject, at: string): Promise<ProjectFailure[]> {
+/** The T9.1 filesystem rules for one project; also run on dynamic projects (T9.9) at creation and at admission. */
+export async function checkProject(
+  config: Pick<ResolvedConfig, "allowedRoots">,
+  p: ResolvedProject,
+  at: string,
+): Promise<ProjectFailure[]> {
   const out: ProjectFailure[] = [];
   if (p.environment.kind === "container") {
     out.push({

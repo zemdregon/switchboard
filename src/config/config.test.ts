@@ -197,6 +197,9 @@ describe("mcp_clients[].privileged_approval (owner decision 22, ADR-0019)", () =
       maxTrustProfile: "edit-untrusted",
       privilegedApproval: "required",
       projects: [],
+      // T9.9 defaults: no project-management tools, no push for dynamic projects.
+      manageProjects: false,
+      maxPushPolicy: "none",
     });
     expect(c.mcpClients.get("ops")?.privilegedApproval).toBe("required");
     expect(c.mcpClients.get("strict")?.privilegedApproval).toBe("required");
@@ -223,6 +226,48 @@ describe("mcp_clients[].privileged_approval (owner decision 22, ADR-0019)", () =
     // required below the ceiling is harmless and accepted.
     const ok = clients({ id: "dev", max_trust_profile: "edit-untrusted", privileged_approval: "required" });
     expect(loadConfig({ configPath: write(ok) }).mcpClients.get("dev")?.privilegedApproval).toBe("required");
+  });
+});
+
+describe("mcp_clients[].manage_projects and max_push_policy (T9.9, FR-PRJ-10)", () => {
+  const clients = (...entries: Record<string, unknown>[]) => ({ ...base(), mcp_clients: entries });
+
+  it("defaults to off and none, and accepts both keys together", () => {
+    const c = loadConfig({
+      configPath: write(
+        clients(
+          { id: "plain", max_trust_profile: "edit-untrusted" },
+          { id: "mgr", max_trust_profile: "edit-untrusted", manage_projects: true },
+          { id: "pusher", max_trust_profile: "edit-untrusted", manage_projects: true, max_push_policy: "branch" },
+        ),
+      ),
+    });
+    expect(c.mcpClients.get("plain")).toMatchObject({ manageProjects: false, maxPushPolicy: "none" });
+    expect(c.mcpClients.get("mgr")).toMatchObject({ manageProjects: true, maxPushPolicy: "none" });
+    expect(c.mcpClients.get("pusher")).toMatchObject({ manageProjects: true, maxPushPolicy: "branch" });
+  });
+
+  it("is strict: wrong types and values fail with the JSON path", () => {
+    expect(() =>
+      loadConfig({
+        configPath: write(clients({ id: "a", max_trust_profile: "edit-untrusted", manage_projects: "yes" })),
+      }),
+    ).toThrow(/\$\.mcp_clients\[0\]\.manage_projects: must be boolean/);
+    expect(() =>
+      loadConfig({
+        configPath: write(
+          clients({ id: "a", max_trust_profile: "edit-untrusted", manage_projects: true, max_push_policy: "all" }),
+        ),
+      }),
+    ).toThrow(/\$\.mcp_clients\[0\]\.max_push_policy: must be one of none, branch/);
+  });
+
+  it("refuses max_push_policy branch without manage_projects (fail closed)", () => {
+    expect(() =>
+      loadConfig({
+        configPath: write(clients({ id: "a", max_trust_profile: "edit-untrusted", max_push_policy: "branch" })),
+      }),
+    ).toThrow(/\$\.mcp_clients\[0\]\.max_push_policy: applies only to a client with manage_projects: true/);
   });
 });
 

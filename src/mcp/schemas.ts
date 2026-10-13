@@ -18,10 +18,17 @@
  * exactly when the mode is allowlist" rules it cannot express are checked by the server right after Ajv, as part of V1.
  * The envelope gains `approval: { status, requested_at }` for `privileged` runs only (never the scope, hash or
  * `decided_by`, FR-MCP-04). No tool approves or denies: approval is operator-CLI only (FR-MCP-06, BR-14).
+ *
+ * T9.9 (FR-PRJ-10, FRD BR-32, ADR-0030): `create_project`, `update_project` and `delete_project` are published only to a
+ * client whose entry sets `manage_projects` (`toolDescriptors({ manageProjects: true })`); to any other client they do
+ * not exist. Their `project` input is the configuration's `projectSchema` (LLD §11.1) with Delegated bounds added
+ * (`boundedSchema`: strings at most 4096 characters, arrays at most 32 items), so an oversized definition fails V1.
+ * `list_projects` entries for dynamic projects carry `source: "dynamic"`, `revision` and `status` (Proposed additions;
+ * configured entries are unchanged and have no `source`).
  */
 
 import { FAILURE_CODES } from "../adapters/failure.js";
-import { PROJECT_ID_PATTERN } from "../config/schema.js";
+import { PROJECT_ID_PATTERN, projectSchema } from "../config/schema.js";
 import { PRIVILEGED_SCOPE_SCHEMA } from "../policy/scope.js";
 
 /** Bumped on any incompatible change to a published tool schema (Proposed). */
@@ -38,6 +45,30 @@ export const TOOL_NAMES = [
   "list_projects",
 ] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];
+
+/** T9.9: offered only to a client with `manage_projects` (FR-PRJ-10); absent from every other client's tool list. */
+export const PROJECT_TOOL_NAMES = ["create_project", "update_project", "delete_project"] as const;
+export type ProjectToolName = (typeof PROJECT_TOOL_NAMES)[number];
+
+/** Delegated bounds for an MCP-supplied project definition (the configuration schema itself has none). */
+export const MAX_DEFINITION_STRING = 4096;
+export const MAX_DEFINITION_ITEMS = 32;
+
+/** A deep copy of `schema` in which every string without `maxLength` and every array without `maxItems` gets one. */
+export function boundedSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(boundedSchema);
+  if (schema === null || typeof schema !== "object") return schema;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(schema)) out[k] = k === "enum" || k === "const" ? v : boundedSchema(v);
+  if (out.type === "string" && out.maxLength === undefined && out.pattern === undefined) {
+    out.maxLength = MAX_DEFINITION_STRING;
+  }
+  if (out.type === "array" && out.maxItems === undefined) out.maxItems = MAX_DEFINITION_ITEMS;
+  return out;
+}
+
+const PROJECT_DEFINITION = boundedSchema(projectSchema) as Record<string, unknown>;
+const PROJECT_REF = { type: "string", pattern: PROJECT_ID_PATTERN } as const;
 
 /** Artifact kinds an MCP client may read; `provider_stdout`/`provider_stderr` are operator-CLI only (LLD §3). */
 export const MCP_ARTIFACT_KINDS = ["diff", "test_report", "changed_files", "log_summary", "handoff_view"] as const;
@@ -246,6 +277,27 @@ const INPUTS = {
   list_projects: { type: "object", additionalProperties: false, properties: {} },
 } as const;
 
+const PROJECT_INPUTS = {
+  create_project: {
+    type: "object",
+    additionalProperties: false,
+    required: ["project"],
+    properties: { project: PROJECT_DEFINITION },
+  },
+  update_project: {
+    type: "object",
+    additionalProperties: false,
+    required: ["id", "project"],
+    properties: { id: PROJECT_REF, project: PROJECT_DEFINITION },
+  },
+  delete_project: {
+    type: "object",
+    additionalProperties: false,
+    required: ["id"],
+    properties: { id: PROJECT_REF },
+  },
+} as const;
+
 const ARTIFACT_LIST = {
   type: "object",
   additionalProperties: false,
@@ -350,10 +402,36 @@ const PROJECTS = {
           // Proposed: the ceiling this client gets here, the lower of its own and the project's.
           effective_max_profile: TRUST_PROFILE,
           allowed_providers: { type: "array", items: PROVIDER },
+          // T9.9 (Proposed): present on dynamic projects only.
+          source: { type: "string", enum: ["dynamic"] },
+          revision: { type: "integer", minimum: 1 },
+          status: { type: "string", enum: ["ACTIVE", "PENDING_APPROVAL", "REJECTED"] },
+          pending_revision: { type: "integer", minimum: 1 },
         },
       },
     },
   },
+} as const;
+
+/** `create_project` / `update_project` / `delete_project` result (LLD §3; `in_force_revision` and `message` Proposed). */
+const PROJECT_RESULT = {
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "revision", "status"],
+  properties: {
+    id: { type: "string" },
+    revision: { type: "integer", minimum: 1 },
+    status: { type: "string", enum: ["ACTIVE", "PENDING_APPROVAL", "DELETED"] },
+    approval_needed: { type: "array", items: { type: "string" } },
+    in_force_revision: { type: "integer", minimum: 1 },
+    message: { type: "string" },
+  },
+} as const;
+
+const PROJECT_OUTPUTS = {
+  create_project: withError(PROJECT_RESULT),
+  update_project: withError(PROJECT_RESULT),
+  delete_project: withError(PROJECT_RESULT),
 } as const;
 
 const OUTPUTS = {
@@ -395,27 +473,59 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
     "the project's trust ceiling, the ceiling this client gets there and allowed providers. Read-only; no paths.",
 };
 
+const PROJECT_DESCRIPTIONS: Readonly<Record<ProjectToolName, string>> = {
+  create_project:
+    "Create a dynamic project for this client (shape as list_projects describes, plus repository contexts with path " +
+    "and base_ref). The repository must be a Git repository under an allowed root; trust ceiling, providers and push " +
+    "policy may not exceed this client's. A container environment, a push policy other than none, a commit identity, " +
+    "signing or a widening returns PENDING_APPROVAL: the operator must approve it on the CLI before it can start runs.",
+  update_project:
+    "Write a new revision of a dynamic project this client created, under the same rules as create_project. A " +
+    "revision that needs approval stays PENDING_APPROVAL and the previous revision stays in force until then.",
+  delete_project:
+    "Delete a dynamic project this client created. Refused while a run in the project is not finished; history stays.",
+};
+
 export interface ToolDescriptor {
-  name: ToolName;
+  name: ToolName | ProjectToolName;
   description: string;
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
 }
 
-/** `tools/list` payload. Returns fresh copies so callers cannot mutate the published documents. */
-export function toolDescriptors(): ToolDescriptor[] {
-  return TOOL_NAMES.map((name) => ({
+/**
+ * `tools/list` payload. Returns fresh copies so callers cannot mutate the published documents. The project-management
+ * tools are included only with `manageProjects` (T9.9, FR-PRJ-10).
+ */
+export function toolDescriptors(opts: { manageProjects?: boolean } = {}): ToolDescriptor[] {
+  const base: ToolDescriptor[] = TOOL_NAMES.map((name) => ({
     name,
     description: DESCRIPTIONS[name],
     inputSchema: structuredClone(INPUTS[name]) as Record<string, unknown>,
     outputSchema: structuredClone(OUTPUTS[name]) as Record<string, unknown>,
   }));
+  if (opts.manageProjects !== true) return base;
+  return [
+    ...base,
+    ...PROJECT_TOOL_NAMES.map((name) => ({
+      name,
+      description: PROJECT_DESCRIPTIONS[name],
+      inputSchema: structuredClone(PROJECT_INPUTS[name]) as Record<string, unknown>,
+      outputSchema: structuredClone(PROJECT_OUTPUTS[name]) as Record<string, unknown>,
+    })),
+  ];
 }
 
-export function inputSchema(name: ToolName): Record<string, unknown> {
-  return structuredClone(INPUTS[name]) as Record<string, unknown>;
+export function inputSchema(name: ToolName | ProjectToolName): Record<string, unknown> {
+  const doc = (PROJECT_TOOL_NAMES as readonly string[]).includes(name)
+    ? PROJECT_INPUTS[name as ProjectToolName]
+    : INPUTS[name as ToolName];
+  return structuredClone(doc) as Record<string, unknown>;
 }
 
-export function outputSchema(name: ToolName): Record<string, unknown> {
-  return structuredClone(OUTPUTS[name]) as Record<string, unknown>;
+export function outputSchema(name: ToolName | ProjectToolName): Record<string, unknown> {
+  const doc = (PROJECT_TOOL_NAMES as readonly string[]).includes(name)
+    ? PROJECT_OUTPUTS[name as ProjectToolName]
+    : OUTPUTS[name as ToolName];
+  return structuredClone(doc) as Record<string, unknown>;
 }
