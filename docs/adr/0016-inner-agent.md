@@ -6,7 +6,8 @@
   of the user's choosing, for many cheap tasks such as commit and PR writing and task routing for auto mode, to lighten
   that load off the other models, with further tasks left to the drafter's judgement). Delegated (agent, 2026-10-13) for
   everything else: the backend kinds, which tasks are in scope, the validation, fallback and privacy rules, and the
-  milestone placement.
+  milestone placement. Ender then took the agent's recommendations on Q-23 to Q-26 (2026-10-13, owner decision
+  15).
 - Related: FR-INN-01–18, FR-GIT-04, FR-RTE-04, FR-SES-04, FR-CAP-01–03, NFR-PRIV-01, NFR-SEC-01,
   [ADR-0003](0003-no-credential-handling.md), [ADR-0007](0007-capacity-as-confidence-estimate.md),
   [ADR-0008](0008-two-stage-routing.md), [ADR-0012](0012-telemetry-at-wrapper-boundary.md),
@@ -79,7 +80,7 @@ fails closed on facts the controller checks itself (NFR-SEC-06).
   sending content to a model is itself the exposure, especially for a hosted model. Deterministic redaction stays the
   control. An add-only advisory pass on a `local` backend could be reconsidered later.
 - **Store a hosted-service API key in Switchboard's config or environment.** Not adopted: it would change ADR-0003 and
-  FR-AUTH-01 for a convenience a local gateway already provides. Left as an open question for Ender (Q-23).
+  FR-AUTH-01 for a convenience a local gateway already provides. Ender took the recommendation not to (Q-23, 2026-10-13).
 - **Count inner usage as provider usage with an NCU conversion.** Rejected: ADR-0007 already rejected precise
   compute-unit accounting, and mixing a cheap model's tokens into provider estimates would corrupt both.
 
@@ -101,6 +102,6 @@ fails closed on facts the controller checks itself (NFR-SEC-06).
 
 ## Revisit when
 
-A user needs a key-bearing hosted backend without a gateway (Q-23); several hundred inner calls show rejection or
-fallback rates that justify different defaults; a provider documents a tool-free one-shot mode that makes the `cli` kind
-verifiable; or a use appears that needs the inner agent exposed to orchestrators.
+A user needs a key-bearing hosted backend without a gateway (Q-23, answered no); several hundred inner calls show
+rejection or fallback rates that justify different defaults; a provider documents a tool-free one-shot mode that makes
+the `cli` kind verifiable; or a use appears that needs the inner agent exposed to orchestrators.

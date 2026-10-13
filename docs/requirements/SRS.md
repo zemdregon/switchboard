@@ -32,7 +32,7 @@
 | Controller | The Switchboard process. |
 | Orchestrator | The upstream AI agent (for example OpenClaw or Grok Bot) that calls the controller as an MCP client. |
 | Operator | The human who installs Switchboard, logs in to providers natively, and configures policy. Assumed to be the account owner. |
-| Provider | A vendor coding CLI/harness: Claude Code, Codex, Grok Build, Antigravity (`agy`), Cursor CLI, OpenCode, Kimi Code. |
+| Provider | A vendor coding CLI/harness: Claude Code, Codex, Grok Build, Antigravity (`agy`), Cursor CLI, OpenCode, Kimi Code, and (from 2026-10-13) Muse Code. |
 | Adapter | Controller module that translates normalized requests into one provider's documented automation surface and normalizes its output. |
 | Run | One attempt to execute a delegated task on one provider. |
 | Meta-session | Controller-owned, provider-independent record of an engineering task across one or more runs. |
@@ -90,6 +90,7 @@ system boundary is owned by the
 | FR-ADP-09 | A Kimi Code adapter shall exist only as a version-gated adapter that is disabled until the current Kimi Code CLI automation contract is pinned and passes conformance tests; it shall be enabled once that contract is pinned. | Must | CAP-2, [R2] Kimi, owner decision 2026-10-12 | T | M4 (blocked by B-1, see [ROADMAP §7](../ROADMAP.md#7-risks-blockers-and-open-questions)) |
 | FR-ADP-10 | For harnesses that can front several model vendors (OpenCode, Cursor), usage records shall store both the harness and the actual backing provider/model. | Must | CAP-7, [R2] OpenCode | T | M4 |
 | FR-ADP-11 | Each adapter shall pass a conformance suite covering success, task failure, native resume, auth missing, malformed output and cancellation, run against recorded fixtures without a live provider. | Must | BO-6 | T | M2 (Claude Code, Codex), M4 (others) |
+| FR-ADP-12 | A Muse Code (Meta) adapter shall be delivered as a version-gated adapter over the headless `muse exec --json` mode, with the CLI's approvals and sandbox left on, the controller-owned worktree (`-w off`), no bypass flag (`--yolo`, `--disable-approval`, `--disable-sandbox`, `--trust-workspace`) outside an approved `privileged` scope, and the operator's native login (the controller shall not pass `META_API_KEY`). The success of a run shall not be inferred from the exit code. *(Proposed; every flag and event shape is unverified, see the [research note](../research/muse-code-2026-10-13.md) and Q-27.)* | Should | CAP-2, owner decision 16, [ADR-0009](../adr/0009-version-gated-adapters.md) | T | M4 |
 
 ### 3.3 Policy and trust profiles (`FR-POL`)
 

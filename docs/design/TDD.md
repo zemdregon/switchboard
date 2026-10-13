@@ -520,6 +520,25 @@ write denial and tool injection included, FR-GIT-01, [ROADMAP
 §7](../ROADMAP.md#7-risks-blockers-and-open-questions)). The archived legacy CLI's syntax, models and permissions are
 not evidence for the replacement. Every row of this table: to be verified when the contract is pinned.
 
+### 4.8 Muse Code (M4)
+
+*Proposed, Should (FR-ADP-12, owner decision 16).* Every row is **unverified**: the sources are a user report and an SDK
+crate, not Meta's documentation ([research note](../research/muse-code-2026-10-13.md), R-33, Q-27). Verify each row
+against an installed binary and Meta's documentation before writing adapter code.
+
+| Aspect | Detail |
+| --- | --- |
+| Automation surface | `muse exec [OPTIONS] [PROMPT]` (headless, one turn); `muse` alone is the interactive TUI and is never used |
+| Structured output | `muse exec --json`: JSONL envelope records (command intake, run and task lifecycle, output deltas) ending in a `run_terminal` record. Unknown record kinds must be tolerated and logged, not fatal; the credential-free `--provider echo` mode is the source of recorded fixtures |
+| Resume | Sessions exist; flag spelling to be verified |
+| Auth preflight | To be verified. The adapter never reads `~/.config/muse/auth.json` and never passes `META_API_KEY`; a missing login yields `AUTH_REQUIRED` naming `muse login` |
+| Trust profile compilation | Leave approvals and sandbox on (`--approval-mode`, `--sandbox-network`: values to be verified against the five profiles); `-w off` always; no `--yolo`, `--disable-approval`, `--disable-sandbox` or `--trust-workspace` outside an approved `privileged` scope (add them to the argv audit list) |
+| Repository config | Reads `AGENTS.md`/`CLAUDE.md` and skills from the repository and from `~/.agents`, `~/.claude`, `~/.codex`; skipped when the workspace is untrusted (reported). Whether that is enough for FR-POL-04 under the untrusted profiles is to be verified |
+| Version gate | Self-updates hourly (reported); set `MUSE_NO_AUTO_UPDATE=1` if confirmed and revalidate on version change (ADR-0009) |
+| Success | Exit code `0` is not success; the terminal record and the controller's verification decide |
+| Git writes and injected tools (M4, M9) | No per-command deny control reported: declare `none-documented` until found (FR-GIT-01, as Codex); whether a per-run MCP definition can be supplied without a bypass flag: to be verified |
+| Capacity | Whether usage, limits or resets are reported: to be verified (FR-CAP-01) |
+
 ## 5. Implementation strategy by milestone
 
 Scope and exit criteria are owned by the [ROADMAP](../ROADMAP.md#6-milestones); this section gives the technical
