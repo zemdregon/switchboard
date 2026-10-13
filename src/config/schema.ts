@@ -10,6 +10,10 @@
  * `not_required` admits them straight to QUEUED under an approval row written APPROVED by client policy. Only the
  * per-scope approval is lifted: the ceiling, scope validation, scope hash, Git-write denial (FR-GIT-01) and worktree
  * isolation (FR-WS-05) still apply. `load.ts` refuses `not_required` unless the client's ceiling is `privileged`.
+ *
+ * `mcp_clients[].projects` (T9.2; FR-PRJ-06, LLD §11.1; the fail-closed reading of an absent list is Delegated): the
+ * ids of the configured projects the client may use. `load.ts` refuses an id that names no `projects[]` entry. An absent
+ * list means no project at all; a request that names a workspace path is unaffected.
  */
 
 export const TRUST_PROFILES = [
@@ -46,7 +50,13 @@ export interface SwitchboardConfig {
   schema_version: 1;
   data_dir?: string;
   allowed_roots: string[];
-  mcp_clients: { id: string; max_trust_profile: TrustProfile; privileged_approval?: PrivilegedApprovalMode }[];
+  mcp_clients: {
+    id: string;
+    max_trust_profile: TrustProfile;
+    privileged_approval?: PrivilegedApprovalMode;
+    /** Ids of the projects this client may use (FR-PRJ-06, T9.2). Absent or empty: no project (workspace paths only). */
+    projects?: string[];
+  }[];
   limits?: { global_concurrency?: number; per_provider_concurrency?: number };
   providers?: Partial<Record<ProviderId, { enabled?: boolean; weight?: number }>>;
   /** Run retention (NFR-DATA-01, FR-WS-07). `interval` is `<n>m`, `<n>h` or `<n>d` (Proposed form). */
@@ -226,6 +236,7 @@ export const configSchema = {
           id: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,63}$" },
           max_trust_profile: { enum: [...TRUST_PROFILES] },
           privileged_approval: { enum: [...PRIVILEGED_APPROVAL_MODES] },
+          projects: { type: "array", uniqueItems: true, items: { type: "string", pattern: PROJECT_ID_PATTERN } },
         },
       },
     },

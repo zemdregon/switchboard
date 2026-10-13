@@ -1,4 +1,5 @@
 import { sql as sql0001 } from "./0001_initial.js";
+import { sql as sql0002 } from "./0002_project_id.js";
 
 export interface Migration {
   readonly version: number;
@@ -7,4 +8,7 @@ export interface Migration {
 }
 
 /** Ordered, forward-only. Never edit or remove a released entry (ADR-0005); append a new one. */
-export const MIGRATIONS: readonly Migration[] = [{ version: 1, name: "initial", sql: sql0001 }];
+export const MIGRATIONS: readonly Migration[] = [
+  { version: 1, name: "initial", sql: sql0001 },
+  { version: 2, name: "project_id", sql: sql0002 },
+];

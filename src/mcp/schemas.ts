@@ -10,6 +10,8 @@
  * Proposed (not fixed by LLD §3, Delegated): provider-name pattern; `constraints` item length; `verification_commands`
  * bounds; `reason` length; `get_artifacts.max_inline_bytes` maximum (1 MiB); `get_run.include_events.limit` default 50;
  * output-only fields `failure_detail`, `replayed`, `events`, `client_max_profile`, `status_detail`, `schema_dialect`.
+ * T9.2: `delegate_task.project` (a configured project id; exactly one of it and `workspace_path`, enforced by `oneOf`),
+ * `project_id` in the envelope and the `list_projects` tool (Proposed output additions: `primary`, `effective_max_profile`).
  * `continue_task` has no `idempotency_key` (FRD §7.2 C6 and FR-MCP-08 win over the earlier LLD §3 draft).
  *
  * T3.3: `delegate_task.privileged_scope` is the closed LLD §3.1 schema owned by `src/policy/scope.ts`; the "present
@@ -19,6 +21,7 @@
  */
 
 import { FAILURE_CODES } from "../adapters/failure.js";
+import { PROJECT_ID_PATTERN } from "../config/schema.js";
 import { PRIVILEGED_SCOPE_SCHEMA } from "../policy/scope.js";
 
 /** Bumped on any incompatible change to a published tool schema (Proposed). */
@@ -32,6 +35,7 @@ export const TOOL_NAMES = [
   "cancel_run",
   "get_artifacts",
   "list_capabilities",
+  "list_projects",
 ] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];
 
@@ -82,6 +86,8 @@ const ENVELOPE = {
     run_id: RUN_ID,
     meta_session_id: SESSION_ID,
     status: STATUS,
+    // FR-PRJ-03 (LLD §3 project additions): the project of a run delegated to one; absent for a workspace path.
+    project_id: { type: "string" },
     failure_code: { type: "string" },
     failure_detail: { type: "string", maxLength: 1000 },
     provider: {
@@ -165,10 +171,17 @@ const INPUTS = {
   delegate_task: {
     type: "object",
     additionalProperties: false,
-    required: ["objective", "workspace_path", "trust_profile"],
+    required: ["objective", "trust_profile"],
+    // FRD V12 / FR-PRJ-03: exactly one of `workspace_path` and `project`; the server turns this into one clear message.
+    oneOf: [
+      { properties: { workspace_path: true }, required: ["workspace_path"] },
+      { properties: { project: true }, required: ["project"] },
+    ],
     properties: {
       objective: { type: "string", minLength: 1, maxLength: 32768 },
       workspace_path: { type: "string", minLength: 1, maxLength: 4096 },
+      // A configured project the calling client may use (FR-PRJ-03, LLD §3 project additions).
+      project: { type: "string", pattern: PROJECT_ID_PATTERN },
       constraints: { type: "array", maxItems: 64, items: { type: "string", maxLength: 4096 }, default: [] },
       trust_profile: TRUST_PROFILE,
       verification_commands: {
@@ -230,6 +243,7 @@ const INPUTS = {
     },
   },
   list_capabilities: { type: "object", additionalProperties: false, properties: {} },
+  list_projects: { type: "object", additionalProperties: false, properties: {} },
 } as const;
 
 const ARTIFACT_LIST = {
@@ -301,6 +315,47 @@ const CAPABILITIES = {
   },
 } as const;
 
+/** `list_projects` (LLD §3 project additions): no paths, remotes, identities or image references (FR-MCP-04). */
+const PROJECTS = {
+  type: "object",
+  additionalProperties: false,
+  required: ["projects"],
+  properties: {
+    projects: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "name", "environment_kind", "contexts", "effective_max_profile"],
+        properties: {
+          id: { type: "string" },
+          name: { type: "string" },
+          environment_kind: { type: "string", enum: ["host", "container"] },
+          contexts: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["id", "kind", "primary", "push_policy"],
+              properties: {
+                id: { type: "string" },
+                kind: { type: "string", enum: ["repository"] },
+                primary: { type: "boolean" },
+                push_policy: { type: "string", enum: ["none", "branch"] },
+              },
+            },
+          },
+          // The project's own ceiling when it declares one (FR-PRJ-06).
+          max_trust_profile: TRUST_PROFILE,
+          // Proposed: the ceiling this client gets here, the lower of its own and the project's.
+          effective_max_profile: TRUST_PROFILE,
+          allowed_providers: { type: "array", items: PROVIDER },
+        },
+      },
+    },
+  },
+} as const;
+
 const OUTPUTS = {
   delegate_task: withError(ENVELOPE),
   continue_task: withError(ENVELOPE),
@@ -308,6 +363,7 @@ const OUTPUTS = {
   cancel_run: withError(ENVELOPE),
   get_artifacts: withError(ARTIFACT_LIST),
   list_capabilities: withError(CAPABILITIES),
+  list_projects: withError(PROJECTS),
 } as const;
 
 const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
@@ -316,7 +372,9 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
     "QUEUED or later); poll get_run, or pass wait_seconds (0-60) for a bounded wait that never cancels the run. " +
     "trust_profile above this client's maximum fails PERMISSION_BLOCKED. Routing hints only narrow provider choice. " +
     "trust_profile privileged needs privileged_scope (files, shell, network, repository_config, optional bypass) and " +
-    "returns AWAITING_APPROVAL until the operator approves on the CLI; no tool can approve.",
+    "returns AWAITING_APPROVAL until the operator approves on the CLI; no tool can approve. Give exactly one of " +
+    "workspace_path and project (see list_projects); a project fixes the repository and caps trust_profile and " +
+    "providers at the project's limits.",
   continue_task:
     "Continue an idle meta-session on the same provider by resuming its native session. Asynchronous like " +
     "delegate_task. Cross-provider handoff is not available yet. A privileged continuation runs under the " +
@@ -332,6 +390,9 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
   list_capabilities:
     "Providers with adapter status, version, validated range, auth state, supported trust profiles, transports and " +
     "how Git writes are denied (FR-GIT-01).",
+  list_projects:
+    "Projects this client may use with delegate_task: id, name, environment kind, contexts (id, kind, push policy), " +
+    "the project's trust ceiling, the ceiling this client gets there and allowed providers. Read-only; no paths.",
 };
 
 export interface ToolDescriptor {

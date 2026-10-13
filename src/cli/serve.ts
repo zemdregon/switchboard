@@ -364,7 +364,7 @@ async function runDaemon(
       ledger,
       artifacts,
       registry,
-      config: { allowedRoots: config.allowedRoots, mcpClients: config.mcpClients },
+      config: { allowedRoots: config.allowedRoots, mcpClients: config.mcpClients, projects: config.projects },
       clientId,
     });
     mcp.server.onclose = () => resolveStop("mcp transport closed");

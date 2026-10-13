@@ -36,6 +36,8 @@ export interface MetaSessionRow {
   objective: string;
   status: "ACTIVE" | "ARCHIVED";
   repo_root: string | null;
+  /** Project the meta-session was created in (FR-PRJ-03); NULL when delegated by workspace path. Fixed for life. */
+  project_id: string | null;
   version: number;
   created_at: string;
   updated_at: string;
@@ -44,6 +46,8 @@ export interface MetaSessionRow {
 export interface NewMetaSession {
   objective: string;
   repoRoot?: string | null;
+  /** Project the meta-session belongs to (FR-PRJ-03). Omit for a workspace-path session. */
+  projectId?: string | null;
   constraints?: unknown[];
 }
 
@@ -56,6 +60,8 @@ export interface RunRow {
   request_hash: string;
   client_id: string;
   idempotency_key: string | null;
+  /** Project of the run (FR-PRJ-03); NULL for a workspace-path run. */
+  project_id: string | null;
   version: number;
   created_at: string;
   updated_at: string;
@@ -74,6 +80,8 @@ export interface NewRun {
   provider?: string | null;
   /** Higher dispatches first (LLD §1 `run.priority`, default 1). */
   priority?: number;
+  /** Project of the run (FR-PRJ-03); must equal the meta-session's. */
+  projectId?: string | null;
 }
 
 export interface RunEventRow {
@@ -461,7 +469,7 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
   const getMetaSession = (id: string) =>
     db
       .prepare(
-        "SELECT id, objective, status, repo_root, version, created_at, updated_at FROM meta_session WHERE id = ?",
+        "SELECT id, objective, status, repo_root, project_id, version, created_at, updated_at FROM meta_session WHERE id = ?",
       )
       .get(id) as MetaSessionRow | undefined;
 
@@ -469,7 +477,7 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
     db
       .prepare(
         `SELECT id, meta_session_id, state, failure_code, trust_profile, request_hash, client_id, idempotency_key,
-                version, created_at, updated_at FROM run WHERE id = ?`,
+                project_id, version, created_at, updated_at FROM run WHERE id = ?`,
       )
       .get(id) as RunRow | undefined;
 
@@ -859,9 +867,17 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
       const id = ids.id("sess");
       const now = ts();
       db.prepare(
-        `INSERT INTO meta_session (id, objective, constraints_json, repo_root, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?)`,
-      ).run(id, input.objective, JSON.stringify(input.constraints ?? []), input.repoRoot ?? null, now, now);
+        `INSERT INTO meta_session (id, objective, constraints_json, repo_root, project_id, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, ?)`,
+      ).run(
+        id,
+        input.objective,
+        JSON.stringify(input.constraints ?? []),
+        input.repoRoot ?? null,
+        input.projectId ?? null,
+        now,
+        now,
+      );
       return getMetaSession(id) as MetaSessionRow;
     },
 
@@ -870,8 +886,8 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
       const now = ts();
       db.prepare(
         `INSERT INTO run (id, meta_session_id, state, trust_profile, policy_snapshot_json, request_json, request_hash,
-                          client_id, idempotency_key, provider, priority, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                          client_id, idempotency_key, provider, priority, project_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         id,
         input.metaSessionId,
@@ -884,6 +900,7 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
         input.idempotencyKey ?? null,
         input.provider ?? null,
         input.priority ?? 1,
+        input.projectId ?? null,
         now,
         now,
       );

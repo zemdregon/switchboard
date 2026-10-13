@@ -51,6 +51,11 @@ export interface PrepareInput {
   readonly trustProfile: TrustProfile;
   /** Proposed default 30 minutes; the scheduler passes 2 x the wall-clock timeout (LLD §5). */
   readonly leaseTtlMs?: number;
+  /**
+   * Project base ref (FR-PRJ-02, T9.2): the first run of a meta-session starts from it instead of `HEAD`. Ignored once
+   * the meta-session has a head commit.
+   */
+  readonly baseRef?: string;
 }
 
 export type PreparedWorkspace =
@@ -156,7 +161,7 @@ export class WorkspaceManager {
       if (!session) throw new WorkspaceError("NOT_FOUND", `meta-session ${input.metaSessionId} not found`);
 
       const baseCommit = await gitText(
-        ["rev-parse", "--verify", "--end-of-options", `${session.head_commit ?? "HEAD"}^{commit}`],
+        ["rev-parse", "--verify", "--end-of-options", `${session.head_commit ?? input.baseRef ?? "HEAD"}^{commit}`],
         { cwd: repoRoot },
       );
       const branch = `switchboard/${input.metaSessionId}/${input.runId}`;
