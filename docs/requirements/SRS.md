@@ -145,7 +145,7 @@ The five trust profiles and their intended semantics are:
 | FR-SES-03 | Continuing a meta-session on the same provider shall use the provider's native resume with the stored native session ID. | Must | CAP-5 | T | M2 (Claude), M5 (all) |
 | FR-SES-04 | Continuing on a different provider shall build a handoff bundle solely from controller-owned evidence (goal, constraints, decisions, Git base/head, changed files, relevant diff excerpts, latest diagnostics, failed attempts, open tasks, paths to inspect) and instruct the new agent to inspect the repository; the controller shall not parse provider transcript files. Text fields of the bundle may be condensed by the inner agent only as FR-INN-13 allows. | Must | CAP-5, [ADR-0001](../adr/0001-controller-owned-canonical-state.md) | T, I | M5 |
 | FR-SES-05 | Decisions and run events shall be append-only; the handoff view shall be regenerable from them. | Must | CAP-5 | T | M1 (events), M5 (handoff view) |
-| FR-SES-06 | A meta-session shall have at most one non-terminal run at a time; `continue_task` on a meta-session with an active run fails with `INVALID_REQUEST`. | Must | CAP-5, FR-WS-02 | T | M1 |
+| FR-SES-06 | A meta-session shall have at most one non-terminal run at a time; `continue_task` on a meta-session with an active run fails with `INVALID_REQUEST`. *(Note 2026-10-13, Delegated decision 28, R-42: `continue_task` on an `ARCHIVED` meta-session, one that retention GC has collected or is collecting, also fails with `INVALID_REQUEST`.)* | Must | CAP-5, FR-WS-02 | T | M1 |
 
 ### 3.7 Routing (`FR-RTE`)
 
@@ -328,7 +328,7 @@ group first ship in M11.
 | --- | --- | --- | --- | --- |
 | NFR-PRIV-01 | All controller data shall stay on the host; nothing leaves it except provider traffic made by the provider CLIs themselves and telemetry the operator explicitly configures, and inner-agent calls to the backend the operator configured, under the locality rules of FR-INN-16. | Must | I, T | M1 |
 | NFR-PRIV-02 | The controller shall persist observable events (tool calls, file changes, errors, results), not provider-internal reasoning text. | Must | I | M2 |
-| NFR-DATA-01 | Run artifacts, events and worktrees shall have configurable retention, defaulting to 30 days *(proposed target)*; deletion shall remove artifacts, worktrees and controller branches together. | Should | T | M3 |
+| NFR-DATA-01 | Run artifacts, events and worktrees shall have configurable retention, defaulting to 30 days *(proposed target)*; deletion shall remove artifacts, worktrees and controller branches together. *(Amended 2026-10-13, Delegated decision under owner decision 25, recorded as [ROADMAP decision 28](../ROADMAP.md#42-owner-decisions) and Q-19: retention applies to worktrees, controller branches and artifact files, not to events; `run_event` rows are the append-only audit record ([ADR-0005](../adr/0005-sqlite-ledger.md)) and are kept. Not owner-approved.)* | Should | T | M3 |
 | NFR-COMP-01 | Product documentation and output shall describe Switchboard as using documented provider automation surfaces and shall not claim Terms-of-Service compliance; commercial, resale, multi-user or credential-sharing use requires a per-provider policy review recorded in the compliance manifest. | Must | I | M0 |
 
 ## 5. External interfaces
