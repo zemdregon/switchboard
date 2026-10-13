@@ -1078,7 +1078,7 @@ affinity ended.
 provider is claimed to reuse a prefix cache, and the benefit is unverified (Q-53).
 
 **Cache and switch accounting (FR-CAP-08, M6).** Where an adapter's parsed output reports cache read or creation token
-counts, they are stored in `usage_observation.usage_json` (shape owned by the adapter contract, §2) labelled with the
+counts, they are stored in `usage_observation.metrics_json` (shape owned by the adapter contract, §2) labelled with the
 existing `source`; an absent count stays absent and is never estimated. The per-project figures (runs that kept the
 previous provider and model, runs that switched, by reason) are a query over `route_decision.reasons_json`, exposed by
 `get_capacity` as an optional `affinity` block and by `doctor`; they are evidence for the operator, not a claim of hits.
@@ -1323,8 +1323,9 @@ asserts it.
   an adapter supports it, to keep them out of process listings (to be verified per adapter).
 - **Cancel and timeout.** On cancel, wall-clock or idle timeout: send `SIGTERM` to `-pgid`, wait `killGraceMs` (10 s,
   proposed target), then `SIGKILL` to `-pgid`; confirm group empty (`kill(-pgid, 0)` fails with ESRCH) before reporting
-  terminal. Defaults (proposed targets): wall-clock 30 min, idle (no stdout bytes) 5 min, preflight probe 30 s; all
-  configurable. Timeout yields `PROCESS_TIMEOUT`, cancel yields `CANCELLED`.
+  terminal. Defaults: wall-clock 30 min, idle (no stdout bytes) 5 min, preflight probe 10 s
+  (`DEFAULT_PROBE_TIMEOUT_MS` in `src/adapters/run.ts`); the wall-clock and idle values are configurable. Timeout yields
+  `PROCESS_TIMEOUT`, cancel yields `CANCELLED`.
 - **Line framing.** Stdout is decoded as UTF-8 and split on `\n` (tolerating `\r\n`); one JSON document per line for
   JSONL transports; for `json` output, the entire stdout is one document capped at the artifact limit. Max line size 1
   MiB (proposed target): an oversize line aborts the run as `OUTPUT_PROTOCOL_ERROR` (kill group, keep captured data),
@@ -1628,7 +1629,7 @@ identity in step 6):* the steps run in `resolveProject` and `projectCandidates` 
 (1) unknown id `INVALID_REQUEST`; (2) not in the client's list `PERMISSION_BLOCKED`; a `container` environment fails here
 (M10); (5) the primary context's path is canonicalised against the allowed roots again (`INVALID_REQUEST`) and its
 `base_ref` must resolve to a commit; (3) the profile is checked against `effectiveMaxProfile` (`src/config/projects.ts`);
-(4) candidates are filtered by `allowed_providers` (config ids mapped to adapter ids with `CONFIG_TO_ADAPTER_ID`;
+(4) candidates are filtered by `allowed_providers` (config ids mapped to adapter ids with `adapterIdForConfigId`;
 **Delegated reading of FR-PRJ-06 against FRD BR-23**: `require_provider` naming a provider outside the set is
 `PERMISSION_BLOCKED` before any write, a set that leaves no registered provider is `ELIGIBILITY_NONE` with
 `details.reason = "PROJECT_PROVIDERS"`, and a non-required preference outside the set is ignored); the excluded
