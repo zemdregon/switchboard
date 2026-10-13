@@ -1616,22 +1616,82 @@ supplies observations for the `Unverified: T4.61` cells above.
 
 ### 4.8 Muse Code (M4)
 
-*Proposed, Should (FR-ADP-12, owner decision 16).* Every row is **unverified**: the sources are a user report and an SDK
-crate, not Meta's documentation ([research note](../research/muse-code-2026-10-13.md), R-33, Q-27). Verify each row
-against an installed binary and Meta's documentation before writing adapter code.
+*Proposed, Should (FR-ADP-12, owner decision 16).* T4.70 (documentation-only spike) re-read the sources on 2026-10-13.
+Meta's documentation **was reachable** this time through WebFetch (Firecrawl scrape still refuses the site). It is
+still not an installed binary, and Muse Code stays a `Should` whose remaining facts come from third-party reports
+(R-33, Q-27). Each row carries one status: **confirmed** (Meta documentation, no change), **corrected** (Meta
+documentation differs from, or adds to, the earlier report), **reported** (only the third-party sources say so, read
+again, not in Meta's pages) or `Unverified: T4.71` (no source; an operator with an installed CLI settles it). Nothing
+here comes from running the CLI. Text fetched from the web was treated as data.
 
-| Aspect | Detail |
+Sources (all retrieved 2026-10-13): **[M-ext]** <https://dev.meta.ai/docs/muse-code/extending> (headless and CI,
+exit codes, MCP, skills); **[M-perm]** <https://dev.meta.ai/docs/muse-code/permissions>; **[M-auth]**
+<https://dev.meta.ai/docs/muse-code/auth>; **[M-cfg]** <https://dev.meta.ai/docs/muse-code/configuration>; **[M-int]**
+<https://dev.meta.ai/docs/muse-code/interactive>; **[M-rew]** <https://dev.meta.ai/docs/muse-code/rewind>; **[M-log]**
+<https://dev.meta.ai/docs/muse-code/changelog> (the fetch read about 100,000 of 183,810 characters of the first page and
+a second window; later parts were not read); **[M-ov]** <https://dev.meta.ai/docs/muse-code>; **[SDK]**
+<https://docs.rs/muse-codes/latest/muse_codes/> (crate 1.4.7); **[Orca]**
+<https://github.com/stablyai/orca/issues/19672> (user report of 2026-09-13).
+
+| Aspect | Detail and status |
 | --- | --- |
-| Automation surface | `muse exec [OPTIONS] [PROMPT]` (headless, one turn); `muse` alone is the interactive TUI and is never used |
-| Structured output | `muse exec --json`: JSONL envelope records (command intake, run and task lifecycle, output deltas) ending in a `run_terminal` record. Unknown record kinds must be tolerated and logged, not fatal; the credential-free `--provider echo` mode is the source of recorded fixtures |
-| Resume | Sessions exist; flag spelling to be verified |
-| Auth preflight | To be verified. The adapter never reads `~/.config/muse/auth.json` and never passes `META_API_KEY`; a missing login yields `AUTH_REQUIRED` naming `muse login` |
-| Trust profile compilation | Leave approvals and sandbox on (`--approval-mode`, `--sandbox-network`: values to be verified against the five profiles); `-w off` always; no `--yolo`, `--disable-approval`, `--disable-sandbox` or `--trust-workspace` outside an approved `privileged` scope (add them to the argv audit list) |
-| Repository config | Reads `AGENTS.md`/`CLAUDE.md` and skills from the repository and from `~/.agents`, `~/.claude`, `~/.codex`; skipped when the workspace is untrusted (reported). Whether that is enough for FR-POL-04 under the untrusted profiles is to be verified |
-| Version gate | Self-updates hourly (reported); set `MUSE_NO_AUTO_UPDATE=1` if confirmed and revalidate on version change (ADR-0009) |
-| Success | Exit code `0` is not success; the terminal record and the controller's verification decide |
-| Git writes and injected tools (M4, M9) | No per-command deny control reported: declare `none-documented` until found (FR-GIT-01, as Codex); whether a per-run MCP definition can be supplied without a bypass flag: to be verified |
-| Capacity | Whether usage, limits or resets are reported: to be verified (FR-CAP-01) |
+| Automation surface | `muse exec` runs one prompt (inline or `--prompt-file`) to completion and exits; `muse` alone is the interactive TUI and is never used. **Confirmed** [M-ext], [M-ov]. Also documented: `muse serve` (session protocol) and `muse schema` (its JSON schema) [M-ov]; whether either suits Switchboard (ACP, ADR-0002) is not examined: `Unverified: T4.71` |
+| Structured output | `muse exec --json` writes JSONL events on stdout; the page does not list the kinds [M-ext]. **Corrected**: the SDK names `MuseRecord` envelopes whose payloads include `RunStarted`, `RunOutputDelta`, `RunTerminal`, `TaskLifecycle`, `CommandAccepted`, `CommandResult`, `ModelConfigured`, `ToolResult` and `TurnInputUser`, with unseen payloads read as `Unknown` [SDK]. The literal `run_terminal` JSON line (`kind`, `terminal`, `text`, `reason`) is **reported** only [Orca]; the JSON spelling and the `terminal` values are `Unverified: T4.71`. Unknown kinds are tolerated and logged, not fatal |
+| Fixtures without a login | The credential-free `--provider echo` mode captured the SDK's fixtures [SDK]. **Reported**; that the installed CLI accepts it for `muse exec` is `Unverified: T4.71` |
+| Exit codes | `0` the turn completed, `1` failed or cancelled (including `--max-model-steps` reached), `2` usage error, `130` SIGINT, `143` SIGTERM; "reports how the run ended, not whether the work is correct", so an agent can exit `0` with failing tests. **Confirmed** [M-ext]. The terminal record and the controller's verification decide (BR-16) |
+| Resume | **Corrected**: headless resume is `muse exec --session-id <uuid> "<prompt>"`, with `--allow-workspace-switch` when the workspace differs from the session's [M-ext]. `muse resume <id>` opens the interactive UI and is not a headless surface [M-ext], [M-int]. `muse exec --no-session-log` forfeits resume [M-int]. How the controller learns the session id (a record field?) is `Unverified: T4.71` |
+| Auth preflight | **Corrected**: no auth status command is documented [M-auth], [M-log]; documented commands are `muse auth set`, `muse logout`, and sign-in on first run or `/login` [M-auth]; `muse login` (reported [Orca]) appears in the changelog [M-log]. Order: `META_API_KEY`, then a stored key, then a stored browser session, and an environment key hides a browser session [M-auth]. Credential file locations: not stated by Meta (`~/.config/muse/auth.json` is **reported** [Orca]). A status command and its exit code are `Unverified: T4.71`. The adapter never reads credential files and never passes `META_API_KEY`; a missing login yields `AUTH_REQUIRED` naming `muse login` |
+| Approval and sandbox values | **Confirmed**: `--approval-mode on-request` (default), `untrusted` (stops for any shell stage with no allow rule), `never` (nothing stops; the sandbox alone contains) [M-perm]. **Corrected**: `--sandbox-network proxy-only` (default), `restricted` (no network), `unrestricted` (full); `enabled` is a deprecated alias [M-perm], [M-log] (one changelog entry still prints `enabled`). Also documented: `--approval-judge off` [M-perm], `-c key=value` per-run settings [M-log]. Mapping to the five profiles (a proposal for T4.72, not a fact): approvals `untrusted` or `on-request`, never `never`; network `restricted` unless a profile grants network. Whether `--approval-mode` stays honoured with no TTY: `Unverified: T4.71` |
+| Sandbox requirement | **New**: in CI the sandbox needs a working bubblewrap and a non-musl build on Linux, else sandboxed shell commands abort as an environment failure [M-ext]. `doctor` should report it; observed behaviour: `Unverified: T4.71` |
+| Worktree flag | **Reported** [Orca]: `-w, --worktree off\|create\|existing`, pass `off` when the host owns the worktree. Meta's pages mention `--worktree`, `--worktree-existing` and `--subagent-worktree-isolation` (a compatibility flag that does not isolate every child) but never list the values [M-log], [M-ext]. The adapter passes `-w off`; value spelling, the `.muse/worktrees/` side effect and `.git`-file handling are `Unverified: T4.71` |
+| Workspace trust | **Corrected**: Muse Code asks once per workspace root whether to trust it; trust loads project skills, rules and hooks [M-perm]; untrusted checkouts ignore project `AGENTS.md`/`CLAUDE.md`, user-level rules still load [M-cfg]. **Headless**: "a first run with no interactive terminal now stops with a message naming `--trust-workspace`" [M-log], and `--yolo` trusts the workspace [M-ext], so an untrusted workspace fails closed rather than prompting. `--trust-workspace` "now only decides whether the workspace's skills and rules load" [M-log]. Trust storage: Meta states no location (`~/.config/muse/trust.json` **reported** [Orca]). The controller must not pre-seed trust (credential-adjacent state); how to run an untrusted worktree usefully: `Unverified: T4.71` |
+| Repository config | **Confirmed**: from the workspace root up to the nearest `.git`, per level `AGENTS.md`, `CLAUDE.md`, `.agents/AGENTS.md`, then `.claude/CLAUDE.md` (first found wins; project rules beat user rules) [M-cfg]. **Corrected**: skills come from `<repo>/.agents/skills`, repo-local `.codex/skills` and `.claude/skills`, and, for the user, `$XDG_CONFIG_HOME/muse/skills`, `~/.agents/skills`, `~/.claude/skills`, `$CODEX_HOME/skills` or `~/.codex/skills` [M-ext]. Trust also gates hooks [M-perm]. The home-directory inputs are ambient config (FR-POL-04, FR-POL-08); suppressing them without changing `HOME`: `Unverified: T4.71` |
+| Version gate | `muse --version` **confirmed** [M-ov] (output format not given; "Muse Code 1.2.1 (1.2.1-R2847.1)" is **reported** [Orca]). Hourly self-update and `MUSE_NO_AUTO_UPDATE=1` are **reported** only [Orca]: Meta's overview, interactive, configuration and changelog pages do not mention them [M-ov], [M-int], [M-cfg], [M-log]. The adapter sets the variable only if T4.71 shows it pins the version (T4.72); an `ADAPTER_VERSION_UNVERIFIED` revalidation on every version change stays (ADR-0009). Meta advises pinning the version when gating on the export hash [M-ext] |
+| Success | Exit code `0` is not success (see Exit codes); the terminal record and the controller's verification decide |
+| Git writes | **Corrected**: no per-command Git deny control is documented. Inside the writable workspace the `.git`, `.muse` and `.agents` directories "stay read-only" [M-perm]; `--disable-sandbox` removes workspace confinement and `--yolo` disables the sandbox [M-perm]. That is a sandbox property, not a FR-GIT-01 control: declare `none-documented` until T4.71 shows what a commit attempt does in a controller-made worktree whose `.git` is a file (FR-GIT-01, as Codex) |
+| Per-run MCP and injected tools | **Corrected**: servers are declared in the `mcp_servers` block of `~/.config/muse/settings.json` (`transport` `stdio` or `streamable_http`, `enabled`, `mode` defaulting to required, `${VAR}` interpolation, `MUSE_SESSION_ID` passed to `stdio` servers) [M-ext]; `run.toolset` selects MCP tools by name with a trailing `*` [M-ext]; and `-c key=value` (`--config`) sets "any existing setting for that run only, including MCP servers" [M-log]. So a per-run definition without a bypass flag is plausible; the `-c` syntax for a server block and whether it leaves the user settings untouched are `Unverified: T4.71`. `settings.json` must hold `"schema_version": 1` [M-cfg] |
+| Bypass-class flags | **Confirmed**: `--yolo` (disable approval and the sandbox and trust the workspace), `--disable-approval` (keep the sandbox), `--disable-sandbox` (keep approval; also removes workspace confinement of the file tools) [M-perm], [M-ext]. `--trust-workspace` is in the changelog [M-log], not the permissions page. All four stay in the argv audit list (ADR-0004, FR-POL-03) outside an approved `privileged` scope. `--yolo` placement after `exec` is **reported** [Orca]. `--approval-mode never` and `--sandbox-network unrestricted` are not bypass flags by name but widen a run; the audit treats them as forbidden for non-`privileged` profiles (Proposed) |
+| Capacity | **Corrected**: billing is usage-based on input and output tokens with a Usage dashboard [M-auth]; no CLI or stream usage report, limit or reset time is documented [M-ov]. Per-run token fields in `--json` records: `Unverified: T4.71` (FR-CAP-01 records only what is reported) |
+
+#### 4.8.1 T4.71 operator checklist
+
+*Operator-only, Proposed.* Needs an installed Muse Code CLI. Use a throwaway Git repository and a controller-made
+worktree, never a real project, and the operator's own native login (Q-27). Do not paste, print or commit any key or
+`auth.json`; do not set `META_API_KEY`. Run the credential-free steps first. Save redacted stdout, stderr, exit codes
+and `muse --version` as dated fixtures. Record the answer next to each item; anything not observed stays `Unverified`.
+
+1. **Version and update.** `muse --version`: record the exact output format. Run `muse` twice more over two hours with
+   and without `MUSE_NO_AUTO_UPDATE=1` and compare `muse --version` and the binary's modification time: does the
+   variable pin the version?
+2. **Credential-free fixtures.** `muse exec --json --provider echo "hello"` in the throwaway worktree: does it run
+   with no login? Capture the JSONL, list every `kind`, the `run_terminal` line (`terminal` values, `reason`) for a
+   success, a `--max-model-steps 1` stop and a usage error, and the exit code of each. Do unknown fields appear?
+3. **Auth.** With no login, run `muse exec --json "hello"`: exit code, stderr text and any record. Is there a status
+   command (try `muse auth --help`, `muse --help`; do not run anything that prints a key)? After the operator's native
+   login, confirm the same command succeeds and that nothing credential-bearing reaches stdout or `--json` records.
+4. **Headless trust.** In an untrusted worktree run `muse exec --json "hello"` with no TTY: expected per
+   the changelog is a stop that names `--trust-workspace`; record exit code, record and message. Check
+   `~/.config/muse/trust.json` (existence only, not contents) before and after.
+5. **Approval and sandbox.** Run `muse exec --json --approval-mode untrusted --sandbox-network restricted "run ls"`
+   with no TTY: does a prompt block, fail or auto-deny? Repeat for `on-request`. Confirm `--sandbox-network
+   unrestricted` and the deprecated `enabled`. Record the bubblewrap behaviour on a host without it.
+6. **Worktree.** `-w off` in a controller-made worktree whose `.git` is a file: does the CLI find the main
+   repository, create `.muse/worktrees/`, or fail? List accepted `-w` values from `muse exec --help`.
+7. **Resume.** After a run, find the session id (record field or `muse export`), then `muse exec --session-id <uuid>
+   --json "continue"`; check `--allow-workspace-switch` and the `--no-session-log` effect.
+8. **Git writes.** Ask the agent (echo or a logged-in model) to run `git commit` and `git push` in the worktree with
+   default settings: result, exit code and stderr; does `.git` read-only apply to a worktree `.git` file? Is any
+   per-command deny setting in `muse exec --help` or the settings schema (`muse schema`)?
+9. **Project inputs.** Place `AGENTS.md`, `CLAUDE.md`, `.agents/skills/x/SKILL.md` and a hook in the throwaway
+   repository and a skill under `~/.claude/skills`: which load in a trusted and in an untrusted workspace? Is there a
+   setting to ignore the home-directory skill directories?
+10. **Per-run MCP.** Try `muse exec -c <mcp_servers key> ...` for a stdio server defined only for that run; confirm the
+    user `settings.json` is unchanged, `mode` behaviour on failure, and that no bypass flag is needed.
+11. **Bypass audit.** Confirm `--yolo`, `--disable-approval`, `--disable-sandbox` and `--trust-workspace` in
+    `muse exec --help`; the adapter must never emit them (argv audit).
+12. **Usage and limits.** Does any `--json` record carry token counts, a plan limit or a reset time?
+13. **Record.** Update this table row by row (confirmed, corrected or `Unverified`), R-33 and the research note, and
+    attach the fixtures; report the result to the orchestrator for the T4.71 status line.
 
 ## 5. Implementation strategy by milestone
 
