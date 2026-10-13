@@ -339,6 +339,7 @@ describe("runs list and show (read-only)", () => {
         "failure_code",
         "failure_detail",
         "finished_at",
+        "git_policy_violations",
         "id",
         "meta_session_id",
         "provider",
@@ -349,6 +350,7 @@ describe("runs list and show (read-only)", () => {
       ].sort(),
     );
     expect(j.run.cancel_requested).toBe(false);
+    expect(j.run.git_policy_violations).toBe(0);
     expect(j.events).toEqual([]);
     const human = await run(["runs", "show", id, ...cfg()]);
     expect(human.out).toContain(`Run ${id}`);
@@ -360,6 +362,31 @@ describe("runs list and show (read-only)", () => {
 });
 
 /** A privileged meta-session (T3.3): first run AWAITING_APPROVAL with its PENDING row, optionally a covered later run. */
+describe("runs show flags Git policy violations (T9.5, FR-GIT-03, BR-27)", () => {
+  it("prints a VIOLATION line, the count in --json, and the LEASED snapshot without its ref list", async () => {
+    const s = seed(["SUCCEEDED"]);
+    const id = s.ids[0] as string;
+    s.ledger.appendRunEvent({
+      runId: id,
+      type: "git_ref_snapshot",
+      payload: { v: 1, phase: "leased", digest: "d", ref_count: 2, refs: [["refs/heads/secret-name", "a".repeat(40)]] },
+    });
+    s.ledger.appendRunEvent({
+      runId: id,
+      type: "git_policy_violation",
+      payload: { v: 1, violation_count: 1, violations: [{ scope: "other", kind: "created", ref: "refs/tags/x" }] },
+    });
+    s.close();
+    const j = JSON.parse((await run(["runs", "show", id, "--json", ...cfg()])).out);
+    expect(j.run.git_policy_violations).toBe(1);
+    const human = (await run(["runs", "show", id, ...cfg()])).out;
+    expect(human).toContain("git policy:  VIOLATION (1 git_policy_violation event(s)");
+    expect(human).toContain('"refs_listed":1');
+    expect(human).not.toContain("secret-name");
+    expect(human).toContain("refs/tags/x");
+  });
+});
+
 function seedPrivileged(opts: { approved?: boolean; realHash?: boolean } = {}) {
   const db = openLedger(dataDir);
   const ledger = createLedger(db);

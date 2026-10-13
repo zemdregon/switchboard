@@ -570,6 +570,33 @@ only).* The injected channel is built and tested end to end with the fake adapte
 - **Still open.** Live provider checks (R-18, Q-40), a provider sandbox's effect on the connect, `push` (T9.6),
   finalize-only (T9.7), and enforcement of "`none` is ineligible for write-capable profiles without opt-in" (Q-43).
 
+*T9.5 build notes (2026-10-13; Delegated; [ADR-0027](../adr/0027-ref-snapshots-and-violation-handling.md); layer 5 of
+the table above; fake adapter only, Git 2.43.0).* Mechanism in [LLD §12.5](LLD.md#125-ref-snapshot-and-violation-handling)
+(as-built note). Findings and test strategy:
+
+- **Layer 5 runs for every worktree run**, whatever the adapter, profile or bypass approval; it is not configurable. A
+  violation never fails the run (BR-27). The controller restores only its own refs (run branch, worktree `HEAD`, publish
+  ref) and reports the rest, because it cannot tell an agent's change from the operator's (R-47).
+- **Restoring the run branch with `update-ref`** (not `reset`) leaves the worktree files and index as the agent left
+  them; the checkpoint's `add -A` then records the agent's tree on top of the `pre` commit. After an agent `git commit`
+  the checkpoint holds the committed file; after `git reset --hard HEAD~1` it records the reversion as a deletion; after
+  `git checkout -b` the worktree `HEAD` is pointed back with `symbolic-ref` so the checkpoint lands on the run branch.
+- **`git push` to a configured remote** updated `refs/remotes/<remote>/<branch>` on Git 2.43.0 (checked in a scratch
+  repository with a worktree and a local bare remote), so a push through a configured remote is detected; a push to an
+  explicit path or URL leaves no local ref and is not.
+- **Tests (no provider CLI; temporary repositories; plain Git porcelain and plumbing only).** The fake scenario
+  `git_attempts` (`src/adapters/fake/cli.mjs`) runs `git commit`, `branch`, `tag`, `update-ref` (on the publish ref and
+  the default branch), `push` to a local bare repository, `reset --hard` and `checkout -b` inside the run worktree, plus
+  optional `commit` tool calls; `src/lifecycle/ref-guard.test.ts` asserts the events, restores and checkpoint content
+  for each, that legitimate tool commits and checkpoints are not flagged and that no-op runs are clean.
+  `src/git/ref-guard.test.ts` covers the cap (3000 and 6000 refs; tail digest), other runs' controller moves,
+  idempotence, `check_failed`, `snapshot_missing`, a privileged bypass run, and the ref list hidden from `get_run`.
+  `src/reconcile/reconcile.test.ts` SIGKILLs a controller child between LEASED and FINALIZING and shows reconciliation
+  using the stored snapshot. No test escapes the worktree, reads credentials or uses the network (adversarial cases are
+  T3.8b).
+- **Still open.** The same attempts through Claude Code and Codex (live checks C-G2 and X-G1), per-worktree refs, Git
+  versions other than 2.43.0, and whether a push should be refused after a violation (Q-44).
+
 ### 3.11 Container environments
 
 Implements FR-PRJ-04, 05, 07, 09 for M10. Status: **Proposed**. Ender left Q-6 to the agent ("the rest you pick"), so the

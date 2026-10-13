@@ -47,6 +47,13 @@ export type FakeScenario =
    * `commit` tool through the shim, as an agent would; the objective may be a JSON plan (see `cli.mjs`).
    */
   | "git_commit"
+  /**
+   * T9.5 (FR-GIT-03): plays an agent that writes to Git by itself with plain Git commands in its working directory (the
+   * run worktree, against temporary local repositories only): `git commit`, `branch`, `tag`, `update-ref`, `push` to a
+   * local bare repository, `reset --hard`, `checkout -b`, plus optional `commit` tool calls. The objective is a JSON
+   * plan (see `cli.mjs`). It never leaves the worktree, reads no credential and uses no network.
+   */
+  | "git_attempts"
   /** Benign: reports the names (not values) of its environment variables (T3.8, FR-EXE-07). */
   | "env_report";
 

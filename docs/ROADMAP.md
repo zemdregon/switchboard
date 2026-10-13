@@ -359,12 +359,26 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
     [ADR-0026](adr/0026-per-run-tool-channel-socket-and-token.md). No requirement ID changes. No bypass run is affected
     (no adapter that runs a bypass scope declares a channel). *Unverified:* nothing ran against a live provider.
 
+<!-- markdownlint-disable-next-line MD029 -->
+34. Ref snapshots and Git policy violation handling (2026-10-13). **Delegated decision (agent), under
+    [owner decision 25](#42-owner-decisions); not an Ender quote and not owner-approved.** At LEASED, before spawn, a
+    `git_ref_snapshot` run event (version 1) records every ref of the main repository as a digest plus a list bounded to
+    5000 refs and 1 MiB (a tail digest covers the rest), and the main and worktree `HEAD`s; a run whose repository cannot
+    be read fails `TOOL_FAILURE` before spawn. At FINALIZING, before the checkpoint, the controller compares, appends
+    `git_policy_violation` (ref names, kinds and SHAs only) before acting, and then restores only its own refs with a
+    compare-and-swap: the run branch to the `pre` checkpoint (the agent's tree stays as checkpoint content), the
+    worktree `HEAD` to the run branch, and the publish ref to the newest controller commit whose recorded chain reaches
+    the base. Every other ref (default branch, tags, remote-tracking refs, the operator's `HEAD`) is reported, never
+    changed (FR-WS-05). The run's outcome is unchanged (FRD BR-27). Bypass runs are handled identically (owner decision
+    22). A persistence format needs an ADR: [ADR-0027](adr/0027-ref-snapshots-and-violation-handling.md). No requirement
+    ID changes. *Unverified:* only Git 2.43.0 exercised; nothing ran against a live provider.
+
 Decisions 10 to 13, 17, 19, 21 and 22 each choose the less restrictive of the options put to Ender (decision 18 is the
 principle behind the 2026-10-13 ones); decisions 20 and 23 keep the stricter behaviour already implemented. Their residual
 risks are recorded for Ender as R-23 to R-26, R-34, R-38 and R-39 in §7.1 (not blocking); decision 24's as R-38 and
 R-40; decision 26's as R-41; decision 27's as R-35 (mitigated); decision 28's as R-42 (mitigated);
 decision 29 has none beyond the stale-for-TTL window noted in it; decision 30 closes R-44; decision 32's is R-45 (not blocking);
-decision 33's is R-46 (not blocking).
+decision 33's is R-46 (not blocking); decision 34's is R-47 (not blocking).
 
 ### 4.3 Stated intent (confirmed constraints)
 
@@ -571,10 +585,12 @@ fakes or **synthetic** fixtures; nothing has run against a real Claude Code or C
    `--disallowedTools` Git write deny rules and `--restricted`, has no Bash tool without an allowlist, and an allowlist
    entry that could write Git is `Ineligible`; that the CLI accepts and enforces the rules as assumed is unverified.
    Codex: no control is documented, so the adapter declares `none-documented` and a non-empty allowlist is
-   `Ineligible`; the remaining controls are FR-GIT-03 (M9, not yet built) and FR-GIT-06, and whether the
+   `Ineligible`; the remaining controls are FR-GIT-03 (built for every worktree run by T9.5 on 2026-10-13, tested with
+   the fake adapter only) and FR-GIT-06, and whether the
    `workspace-write` sandbox blocks the worktree's Git directory is an Assumption. The live smoke test now reports
    G-1 (no foreign ref or commit after a benign run), C-G2 and X-G1 (`NOT_CHECKED`: they need a deliberate Git write
-   attempt, left to the T9.5 malicious fixtures). No provider flag disables commit attribution (R-19).
+   attempt; T9.5 added the detection and fake-adapter fixtures, but C-G2 and X-G1 still need a live provider). No
+   provider flag disables commit attribution (R-19).
 
 Criteria met on fakes or fixtures: "unknown CLI version yields `ADAPTER_VERSION_UNVERIFIED`" (manifest, routing, MCP and
 `doctor` tests) and "no bypass flag appears in any compiled invocation" (argv tests in `claude.test.ts`, `codex.test.ts`,
@@ -730,6 +746,32 @@ from the provider sandbox) have not run; Codex is not installed. Scope kept out 
 and violation handling (T9.5), finalize-only (T9.7), signing (T9.10), and enforcing that a `none` adapter is ineligible
 for write-capable project runs without the finalize-only opt-in (Q-43). Peer credentials are not checked (no Node.js API;
 R-46).
+
+**T9.5 status (2026-10-13; Delegated): Done for `host` runs on fakes (Git 2.43.0); not run against a live provider.**
+"Done when", clause by clause, all in `src/lifecycle/ref-guard.test.ts` (fake adapter scenario `git_attempts`, plain Git
+commands in the run worktree against temporary local repositories and a local bare remote):
+*every scripted attempt leaves the publish ref unchanged* where it must: `git update-ref` on the publish ref is undone
+(deleted when the controller never published, put back to the tool commit otherwise), and a tool commit that T9.3
+parented on an agent-moved publish head is not kept published; `git commit` and `git reset --hard` on the run branch are
+put back to the pre-run commit, with the agent's tree kept as the checkpoint's content; `git checkout -b` gets the
+worktree `HEAD` pointed back; `git branch`, `git tag`, `git update-ref` on the default branch and `git push` to the bare
+remote (seen through the remote-tracking ref) are reported and left as they are (operator refs are never changed;
+FR-WS-05, ADR-0027). *Appends `git_policy_violation`*: every case above asserts the event and its entries (scope, kind,
+ref, old and new SHA, foreign commits; no message text). *Legitimate tool commits are not flagged*: "legitimate tool
+commits (T9.4 channel) and the controller checkpoint are not flagged". Also: no-op runs record a clean check; the
+violation does not change the outcome (BR-27) and the terminal payload and `runs show` flag it (`src/cli/cli.test.ts`,
+"runs show flags Git policy violations"); the LEASED snapshot survives a SIGKILL restart and reconciliation flags and
+restores before the evidence checkpoint (`src/reconcile/reconcile.test.ts`, "T9.5: the LEASED ref snapshot survives
+..."); large ref counts are capped (5000 refs, 1 MiB; tail digest) and other runs' controller moves are not flagged,
+the check is idempotent, an unreadable repository is `check_failed`, a missing snapshot is `snapshot_missing`, and a
+privileged bypass run is handled identically (`src/git/ref-guard.test.ts`). Code: `src/git/ref-guard.ts`, wiring in
+`src/lifecycle/lifecycle.ts` and `src/reconcile/reconcile.ts`, `runs show` in `src/cli/runs.ts`, snapshot list hidden
+from `get_run` in `src/mcp/envelope.ts`. Decision 34, [ADR-0027](adr/0027-ref-snapshots-and-violation-handling.md).
+**Not covered:** Claude Code and Codex runs (no live provider; their compiled deny rules are unchanged and the guard runs
+for every worktree run whatever the adapter, so C-G2 and X-G1 in the live smoke test remain to be run by the operator),
+per-worktree refs (`refs/worktree/`, `refs/bisect/`) and objects written without a ref (FR-GIT-03 is about refs), a
+push that updates no local ref, and adversarial escape scenarios (T3.8b, out of scope). False positives from operator
+activity are accepted (R-47); push after a violation is Q-44.
 
 ### 6.4 M10 Container environments: tasks
 
@@ -904,6 +946,7 @@ preceding milestone completes.
 | R-44 | *Delegated, not blocking; mitigated 2026-10-13 (decision 30, ADR-0023).* `MIN_GIT_VERSION` was 2.30 but `scrubbedGitEnv()` sets `GIT_CONFIG_GLOBAL=/dev/null`, which the Git 2.32.0 release notes introduce; on 2.30 or 2.31 the controller's Git calls might read the operator's global configuration (inferred from the notes; no such Git is installed to test) | A controller call could pick up an operator alias, identity, hook path or filter on an old Git that `doctor` accepts | **Mitigated:** floor raised to 2.32 (Q-39 decided; [ADR-0023](adr/0023-minimum-git-version-2-32.md); `src/workspace/git.ts`, `doctor` and the version-gate test). The 2.32 introduction version still rests on the release notes |
 | R-45 | *Delegated, not blocking (decision 32, ADR-0025).* The operator sanitiser patterns run on a backtracking engine (Node has no RE2) and are only protected by a validated subset, a cost estimate, 1024-character windows and a one-second budget; the cost model is an estimate from one measurement (`.*a.*b` took 36 s on 4096 characters), not a proof. A pattern in the subset can still be slow within the budget, and a pattern that is too slow fails closed (commits are refused) rather than slowing the controller further | An operator pattern could make every commit slow or refused; an accepted pattern cannot hang the controller beyond the budget plus one regular-expression call of at most about 67 million steps | **Open, accepted.** Revisit with an RE2 binding if the dependency is accepted; the built-in rules are linear or bounded (tests in `src/git/sanitize.test.ts`) |
 | R-46 | *Delegated, not blocking (decision 33, ADR-0026).* The tool channel cannot identify its peer (Node.js has no `SO_PEERCRED`), and the token reaches the provider process through its environment. Any process of the same OS user that can read that environment (or the shim's, which deletes it from its own copy only at start) can call `commit` for that run while it is RUNNING | A same-user process could make commits on the run's publish ref with the run's identity; it cannot push (no `push` tool yet), cannot reach another run (tokens are per run and bound to run, meta-session and worktree), cannot use the token after the run leaves RUNNING, and every commit still passes the path checks, sanitiser and provenance record | **Open, accepted.** Same reach the agent itself has. Controls: `0700` directory, `0600` socket, 256-bit per-run token compared in constant time, run-state re-check per call, rate limit. Revisit if Node.js gains a peer-credential API or when `push` is added (T9.6, BR-31) |
+| R-47 | *Delegated, not blocking (decision 34, ADR-0027).* The ref check cannot tell who changed a ref. The operator's own work in the repository during a run (a commit or fetch, a new tag, switching the main checkout's branch), refs beyond the 5000-ref listing cap, and a short window in which another run's checkpoint commit is in Git before its ledger row, all produce `git_policy_violation` events although the agent did nothing. Conversely a push the agent made with an explicit URL or to an unconfigured remote leaves no local ref and is not detected (BR-27) | False positives in `runs show` and `get_run`; no run fails and no operator ref is changed, so the cost is noise, not lost work. A missed push is not undone | **Open, accepted.** Prevention stays the control (FR-GIT-01 deny rules, no push credentials, BR-29/BR-31; containers in M10). Revisit with T9.6 (Q-44) or if false positives prove frequent (an attribution guard, TDD §3.10 layer 3) |
 
 Numbering: R-36, R-37 and Q-32 to Q-35 (§7.3) were written on the M3 wave B branch as R-29, R-30 and Q-27 to
 Q-30. PR #17 merged all but Q-30 into main under those numbers, which main already used for other items; they were
@@ -966,6 +1009,7 @@ No blocker affects M1, M2 or M9.
 | Q-41 | *Delegated, open (T9.3).* [ADR-0024](adr/0024-project-id-columns-and-project-snapshot.md) said push policy and commit identity join the policy snapshot "with T9.3". T9.3 has no caller (the commit library takes identity, project and context ids as arguments), so freezing them into `run.policy_snapshot_json` is left to T9.4, where the `COMP-GIT` service reads them. Until then a configuration edit between admission and a commit is not detected | **Decided (T9.4, decision 33, Delegated):** the snapshot's project block freezes `writable`, `identity` and `push.policy`; the channel uses only these. The push remote and branch prefix are not frozen (`remote` is not validated as a remote name and could hold a URL with credentials); T9.6 decides how the push target is resolved |
 | Q-42 | *Delegated, open (T9.3).* LLD §12.3 first said the publish ref is `refs/heads/<push.branch_prefix><sess>`; the example prefix `switchboard/` would collide with run branches, so ADR-0025 fixes the local ref at `refs/heads/switchboard/pub/<sess>` and leaves `push.branch_prefix` as the remote branch prefix (LLD §12.6). T9.6 should confirm this reading when it builds the refspec | **Open.** Default: local `switchboard/pub/`, remote `push.branch_prefix`; confirm or change when T9.6 starts |
 | Q-43 | *Delegated, open (T9.4).* LLD §2 says an adapter with `commitChannel: "none"` is ineligible for write-capable profiles on a context unless the operator opts in to finalize-only mode (FRD BR-30, Proposed there). T9.4 declares `none` for Claude Code and Codex but does not enforce that rule: enforcing it now would make both providers ineligible for every write-capable project run before T9.7 offers the opt-in | **Open.** Default: not enforced; a project run with a `none` adapter runs as before and its work stays in the worktree and diff artifacts; decide with T9.7 |
+| Q-44 | *Delegated, open (T9.5).* FRD BR-27 says offending commits are never published. T9.5 keeps them off the publish ref (restore), but the `push` tool and operator command (T9.6) do not exist yet. Should a meta-session with any `git_policy_violation` be refused a push until the operator reviews it, or is the restored publish ref enough? | **Proposed (fail closed):** T9.6 refuses `push` for a session whose latest run has an unresolved violation, with the reason recorded; decide when T9.6 starts |
 
 ## 8. Deferred and excluded work
 

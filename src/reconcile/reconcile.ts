@@ -38,6 +38,7 @@
 import { stat } from "node:fs/promises";
 import type Database from "better-sqlite3";
 import { listPendingCancels, listPendingDecisions, OPERATOR_CANCEL_APPLIED, rejectDecision } from "../cli/operator.js";
+import { RefGuard } from "../git/ref-guard.js";
 import type { Ledger, RunFieldPatch, RunRecord, RunState } from "../ledger/index.js";
 import { applyApprovalDecision, denyApprovalOnCancel } from "../lifecycle/approval.js";
 import { RUN_STATES, SLOT_STATES, TERMINAL_STATES, TRANSITIONS } from "../lifecycle/states.js";
@@ -59,6 +60,8 @@ export interface ReconcileOptions {
   /** SIGTERM → SIGKILL grace for orphan groups (LLD §8, default 10 s). */
   readonly killGraceMs?: number;
   readonly now?: () => Date;
+  /** T9.5 ref check before the evidence checkpoint (FR-GIT-03, BR-27); defaults to a guard over `ledger`. */
+  readonly refGuard?: RefGuard;
 }
 
 export interface ReconcileAction {
@@ -102,9 +105,11 @@ class Reconciler {
   private readonly terminated: number[] = [];
   private readonly cancelsApplied: string[] = [];
   private readonly decisionsApplied: string[] = [];
+  private readonly refGuard: RefGuard;
 
   constructor(private readonly opts: ReconcileOptions) {
     this.ledger = opts.ledger;
+    this.refGuard = opts.refGuard ?? new RefGuard({ ledger: opts.ledger });
   }
 
   async run(): Promise<ReconcileReport> {
@@ -308,6 +313,9 @@ class Reconciler {
   /** Mutation check, evidence/post checkpoint and head disposition (FRD §4.4, LLD §5). Returns `mutated`. */
   private async checkpoint(run: RunRecord, outcome: Pending): Promise<boolean> {
     const ws = this.opts.workspace;
+    // T9.5: the LEASED snapshot is in the ledger, so a restart between LEASED and FINALIZING still compares against it;
+    // controller-owned refs are put back before the evidence checkpoint (BR-27). Idempotent across passes.
+    await this.refGuard.checkAtFinalizing(run.id);
     const assessment = await ws.assessMutation(run.id);
     const success = outcome.kind === "success";
     const fin = await ws.finalize(run.id, { advanceHead: success });

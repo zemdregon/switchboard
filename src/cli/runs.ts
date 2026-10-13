@@ -33,6 +33,8 @@ export interface RunDetail extends RunSummary {
   started_at: string | null;
   finished_at: string | null;
   cancel_requested: boolean;
+  /** T9.5 (FR-GIT-03, BR-27): number of `git_policy_violation` events; `runs show` flags the run when non-zero. */
+  git_policy_violations: number;
 }
 
 /**
@@ -115,7 +117,11 @@ export function showRun(
     ).map((e) => ({ seq: e.seq, ts: e.ts, type: e.type, payload: JSON.parse(e.payload_json) as unknown }));
     const approval = row.trust_profile === "privileged" ? approvalView(db, runId) : undefined;
     return {
-      run: { ...row, cancel_requested: listPendingCancels(db, runId).length > 0 },
+      run: {
+        ...row,
+        cancel_requested: listPendingCancels(db, runId).length > 0,
+        git_policy_violations: events.filter((e) => e.type === "git_policy_violation").length,
+      },
       events,
       ...(approval ? { approval } : {}),
     };
@@ -320,6 +326,9 @@ export function renderRun(d: { run: RunDetail; events: RunEventView[]; approval?
     `  finished:    ${r.finished_at ?? "-"}`,
   ];
   if (r.failure_code) lines.push(`  failure:     ${r.failure_code}${r.failure_detail ? ` - ${r.failure_detail}` : ""}`);
+  if (r.git_policy_violations > 0) {
+    lines.push(`  git policy:  VIOLATION (${r.git_policy_violations} git_policy_violation event(s); FR-GIT-03)`);
+  }
   const a = d.approval;
   if (a) {
     lines.push(
@@ -336,8 +345,15 @@ export function renderRun(d: { run: RunDetail; events: RunEventView[]; approval?
   }
   lines.push("", "Events:");
   for (const e of d.events)
-    lines.push(`  ${String(e.seq).padStart(3)}  ${e.ts}  ${e.type}  ${JSON.stringify(e.payload)}`);
+    lines.push(`  ${String(e.seq).padStart(3)}  ${e.ts}  ${e.type}  ${JSON.stringify(eventForDisplay(e))}`);
   return `${lines.join("\n")}\n`;
+}
+
+/** The LEASED ref snapshot lists up to thousands of refs; the text view shows its digest and counts only. */
+function eventForDisplay(e: RunEventView): unknown {
+  if (e.type !== "git_ref_snapshot" || typeof e.payload !== "object" || e.payload === null) return e.payload;
+  const { refs, ...rest } = e.payload as { refs?: unknown };
+  return { ...rest, refs_listed: Array.isArray(refs) ? refs.length : 0 };
 }
 
 const OUTCOME_TEXT: Record<CancelReport["outcome"], string> = {
