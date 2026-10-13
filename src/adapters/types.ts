@@ -170,9 +170,25 @@ export interface TransportHandle {
   pid?: number;
 }
 
+/**
+ * How an adapter keeps Git write operations (commit, ref create/move/delete, push) away from the agent (FR-GIT-01).
+ * Proposed shape. `provider-deny-rules`: the adapter compiles the provider's documented permission controls so they deny
+ * Git writes. `none-documented`: the provider documents no such control, so the adapter declares that and the
+ * `remainingControls` (FR-GIT-03 detection and FR-GIT-06 credential separation) are what is left.
+ */
+export interface GitWriteControl {
+  readonly kind: "provider-deny-rules" | "none-documented";
+  /** Mechanism and its source, or why no control is documented; with the known limitations. */
+  readonly detail: string;
+  /** Requirement IDs of the controls that back up (or replace) the provider's own. */
+  readonly remainingControls: readonly string[];
+}
+
 export interface ProviderAdapter {
   readonly id: ProviderId;
   readonly transports: readonly Transport[];
+  /** FR-GIT-01 declaration, surfaced by `list_capabilities`. */
+  readonly gitWriteControl: GitWriteControl;
 
   /** FR-ADP-02 steps 1-5: binary, version, command, output formats, required flags. No auth, no model call. */
   probe(runner: ProbeRunner): Promise<ProbeResult>;

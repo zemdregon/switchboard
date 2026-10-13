@@ -14,11 +14,17 @@
  *   --permission-prompts none       nobody answers prompts; would-prompt is denied ([R2], [TDD], [HELP])
  *   --tools <list>                  explicit built-in tool set ([R2] "explicit --tools", [TDD], [HELP])
  *   --allowedTools <rules...>       explicit allow rules, never a wildcard ([R2], [TDD], [HELP])
+ *   --disallowedTools <rules...>    deny rules; [HELP]: "Comma or space-separated list of tool names to deny (e.g.
+ *                                   "Bash(git *) Edit")". Carries the Git write deny rules (FR-GIT-01); [R2] names
+ *                                   only "explicit --tools/allow-deny policy", not this spelling
  *   --safe-mode                     disables CLAUDE.md, skills, plugins, hooks, MCP servers, custom commands/agents;
  *                                   auth works normally ([HELP] only; see the --bare note below)
  *   --restricted                    removes code-running tools unless --tools names them, ignores user/project/local
  *                                   settings files, confines file tools to the working directory, refuses
- *                                   bypassPermissions ([HELP] only)
+ *                                   bypassPermissions, and "lets only a person or the configured permission handler
+ *                                   approve writes to settings, git and tool-configuration files" ([HELP] only); with
+ *                                   `--permission-prompts none` nobody approves, so file-tool writes to Git files are
+ *                                   denied (FR-GIT-01; which files count as "git files" is an Assumption)
  *   --strict-mcp-config             only MCP servers from --mcp-config (none are passed) ([HELP] only)
  *   --model <model>                 when the request names one ([HELP]; [R2] says the CLI accepts aliases and IDs)
  *   --resume <session-id>           native resume (FR-SES-03; [R2], [TDD], [HELP])
@@ -31,9 +37,14 @@
  * `--bare` would make every run fail auth. FR-POL-04 is met instead with `--safe-mode --restricted
  * --strict-mcp-config`, all documented in [HELP]. TDD §4.1 needs updating to match (reported, not edited here).
  *
+ * Git writes (FR-GIT-01, ADR-0014): see CLAUDE_GIT_WRITE_CONTROL below. No flag documented in [HELP] turns off Claude
+ * Code's own commit or attribution behaviour except `--bare` ("skip ... attribution"), which cannot be used (above);
+ * settings files are never written (FR-POL-08). Those features are kept unused by denying every way to run Git writes.
+ *
  * Never emitted: any BYPASS_FLAGS entry, `--allow-dangerously-skip-permissions`, `--permission-mode
  * bypassPermissions|acceptEdits|auto`, `--settings`, `--setting-sources`, `--mcp-config`, `--plugin-dir`, `--add-dir`,
- * `--worktree`, `--debug-file`, or any config-writing subcommand (FR-POL-03, FR-POL-08).
+ * `--worktree`/`-w` (creates a Git worktree and branch, [HELP]), `--from-pr`, `--debug-file`, or any config-writing
+ * subcommand (FR-POL-03, FR-POL-08, FR-GIT-01).
  */
 import { accessSync, constants } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
@@ -44,6 +55,7 @@ import {
   DEFAULT_WALL_CLOCK_MS,
 } from "../../exec/index.js";
 import { classifyCommon } from "../failure.js";
+import { GIT_PUBLISHING_PROGRAMS, GIT_WRITE_SUBCOMMANDS, gitWriteRisks } from "../git-write.js";
 import type {
   AcpMessage,
   AuthResult,
@@ -51,6 +63,7 @@ import type {
   ExitInfo,
   FailureClassification,
   FailureEvidence,
+  GitWriteControl,
   Ineligible,
   Invocation,
   NativeBinding,
@@ -81,6 +94,39 @@ export const CLAUDE_PERMISSION_FLAGS: readonly string[] = [
   "none",
 ];
 
+/**
+ * Git write deny rules, passed with `--disallowedTools` on every compiled invocation (FR-GIT-01), in the rule form of the
+ * [HELP] example `Bash(git *)`. For each subcommand in GIT_WRITE_SUBCOMMANDS: the bare form and the form with
+ * arguments; plus Git global options that redirect or reconfigure Git (`-C`, `-c`, `--git-dir`, `--work-tree`) and
+ * GitHub CLI pushes. Assumptions (not in [HELP] or [R2]): that `*` matches any suffix (including `=value`) and nothing
+ * else; that a deny rule wins over an allow rule; that deny rules naming a tool absent from `--tools` are accepted.
+ */
+export const CLAUDE_GIT_DENY_RULES: readonly string[] = [
+  ...GIT_WRITE_SUBCOMMANDS.flatMap((v) => [`Bash(git ${v})`, `Bash(git ${v} *)`]),
+  "Bash(git -C *)",
+  "Bash(git -c *)",
+  "Bash(git --git-dir *)",
+  "Bash(git --git-dir=*)",
+  "Bash(git --work-tree *)",
+  "Bash(git --work-tree=*)",
+  ...GIT_PUBLISHING_PROGRAMS.flatMap((p) => [`Bash(${p})`, `Bash(${p} *)`]),
+];
+
+/** FR-GIT-01 declaration for `list_capabilities` and the manifest notes. */
+export const CLAUDE_GIT_WRITE_CONTROL: GitWriteControl = {
+  kind: "provider-deny-rules",
+  detail:
+    "Layered, all from `claude --help` 2.1.296: (1) no Bash tool in --tools for inspect-untrusted and edit-untrusted " +
+    "unless the operator allowlists exact commands, and any allowlist entry that could write Git (commit, ref change, " +
+    "push, config, git global options, gh, command launchers, non-read-only subcommands) makes the run Ineligible; " +
+    "(2) --disallowedTools Git write deny rules on every invocation (`Bash(git commit)`, `Bash(git commit *)`, ...); " +
+    "(3) --restricted with --permission-prompts none denies file-tool writes to git files. Limits: rule matching " +
+    "(`*` semantics, deny-over-allow) is an Assumption; deny rules are lexical and cannot see aliases, scripts run by " +
+    "an allowlisted build tool, or absolute paths to git; no flag disables Claude's own commit attribution (only " +
+    "--bare, unusable). Live behaviour unverified (live smoke test).",
+  remainingControls: ["FR-GIT-03", "FR-GIT-06"],
+};
+
 /** Help-text markers the probe requires (FR-ADP-02 steps 3-5). All appear in the installed [HELP]. */
 const REQUIRED_HELP: Readonly<Record<"command" | "output_format" | "flags", readonly string[]>> = {
   command: ["--print"],
@@ -91,6 +137,7 @@ const REQUIRED_HELP: Readonly<Record<"command" | "output_format" | "flags", read
     "--permission-prompts",
     "--tools",
     "--allowedTools",
+    "--disallowedTools",
     "--safe-mode",
     "--restricted",
     "--strict-mcp-config",
@@ -135,6 +182,7 @@ const ineligible = (reason: Ineligible["reason"], detail: string): Ineligible =>
 export class ClaudeAdapter implements ProviderAdapter {
   readonly id = "claude" as const;
   readonly transports = ["subprocess-jsonl"] as const;
+  readonly gitWriteControl = CLAUDE_GIT_WRITE_CONTROL;
   readonly #configured: string;
   #resolved: string | undefined;
   readonly #launcherArgs: readonly string[];
@@ -262,6 +310,14 @@ export class ClaudeAdapter implements ProviderAdapter {
             `shell allowlist entries not expressible narrowly: ${bad.join("; ")}`,
           );
         }
+        // FR-GIT-01: an allowlisted command that could write Git would leave a Git write permitted.
+        const gitWrites = gitWriteRisks(entries);
+        if (gitWrites.length > 0) {
+          return ineligible(
+            "PROFILE_UNSUPPORTED",
+            `shell allowlist entries could write Git (FR-GIT-01): ${gitWrites.map((g) => `${g.command} (${g.reason})`).join("; ")}`,
+          );
+        }
         if (entries.length > 0) {
           tools.push("Bash");
           allow.push(...entries.map((e) => `Bash(${e})`));
@@ -280,6 +336,8 @@ export class ClaudeAdapter implements ProviderAdapter {
       tools.join(","),
       "--allowedTools",
       ...allow,
+      "--disallowedTools",
+      ...CLAUDE_GIT_DENY_RULES,
     ];
     const argv = [
       this.#resolved,

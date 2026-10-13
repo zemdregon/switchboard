@@ -86,6 +86,7 @@ type Scenario = FakeScenario | "writer" | "writer-usage";
 class ScenarioAdapter implements ProviderAdapter {
   readonly id = "fake" as const;
   readonly transports = ["subprocess-jsonl"] as const;
+  readonly gitWriteControl = new FakeAdapter().gitWriteControl;
   probeGate: Promise<void> | undefined;
   authScenario: FakeScenario = "success";
   onCompile: ((req: CompileRequest) => void) | undefined;

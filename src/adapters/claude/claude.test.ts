@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { auditInvocation, BYPASS_FLAGS } from "../audit.js";
 import { missingRequiredKinds, runConformanceCase, runConformanceSuite } from "../conformance.js";
+import { GIT_PUBLISHING_PROGRAMS, GIT_WRITE_SUBCOMMANDS, gitWriteRisks } from "../git-write.js";
 import { evaluateVersionGate, tryLoadManifest } from "../manifest/index.js";
 import {
   type CompileRequest,
@@ -14,7 +15,7 @@ import {
   type ProbeRunner,
   type ResolvedProfile,
 } from "../types.js";
-import { CLAUDE_LOGIN_COMMAND, ClaudeAdapter } from "./adapter.js";
+import { CLAUDE_GIT_DENY_RULES, CLAUDE_LOGIN_COMMAND, ClaudeAdapter } from "./adapter.js";
 import {
   claudeConformanceCases,
   DEFAULT_SESSION_ID,
@@ -237,6 +238,125 @@ describe("claude compile: argv policy", () => {
   });
 });
 
+describe("claude compile: no permitted Git write operation (FR-GIT-01)", () => {
+  const adapter = new ClaudeAdapter({ binaryPath: CLAUDE });
+  const READ_ONLY_ALLOWLIST: ResolvedProfile = {
+    ...EDIT_UNTRUSTED,
+    shell: "allowlist",
+    shellAllowlist: ["git status", "git diff --stat", "npm test"],
+  };
+  const profiles: Array<[string, ResolvedProfile]> = [
+    ["inspect-untrusted", INSPECT_UNTRUSTED],
+    ["edit-untrusted", EDIT_UNTRUSTED],
+    ["edit-untrusted, empty allowlist", { ...EDIT_UNTRUSTED, shell: "allowlist", shellAllowlist: [] }],
+    ["edit-untrusted, read-only allowlist", READ_ONLY_ALLOWLIST],
+  ];
+  const invocations = profiles.flatMap(([name, p]) => [
+    [`${name} compile`, adapter.compile(request, p)] as const,
+    [
+      `${name} compile, read-only workspace`,
+      adapter.compile({ ...request, workspace: { cwd: "/w", writable: false } }, p),
+    ] as const,
+    [
+      `${name} resume`,
+      adapter.resumeArgs({ provider: "claude", nativeSessionId: RESUMED_SESSION_ID }, request, p),
+    ] as const,
+  ]);
+  /** Values of a variadic option: everything after it up to the next `--` option. */
+  const rulesAfter = (argv: readonly string[], flag: string): string[] => {
+    const i = argv.indexOf(flag);
+    if (i < 0) return [];
+    const end = argv.findIndex((a, j) => j > i && a.startsWith("--"));
+    return argv.slice(i + 1, end < 0 ? undefined : end);
+  };
+  const bashCommand = (rule: string) => /^Bash\((.*)\)$/.exec(rule)?.[1];
+
+  for (const [label, inv] of invocations) {
+    it(`${label}: every Git write deny rule is passed with --disallowedTools`, () => {
+      if (isIneligible(inv)) throw new Error(inv.detail);
+      const deny = rulesAfter(inv.argv, "--disallowedTools");
+      expect(deny).toEqual([...CLAUDE_GIT_DENY_RULES]);
+      expect(rulesAfter(inv.policyFlags, "--disallowedTools")).toEqual([...CLAUDE_GIT_DENY_RULES]);
+      for (const v of GIT_WRITE_SUBCOMMANDS) {
+        expect(deny).toContain(`Bash(git ${v})`);
+        expect(deny).toContain(`Bash(git ${v} *)`);
+      }
+      for (const o of ["-C", "-c", "--git-dir", "--work-tree"]) expect(deny).toContain(`Bash(git ${o} *)`);
+      for (const p of GIT_PUBLISHING_PROGRAMS) expect(deny).toContain(`Bash(${p} *)`);
+    });
+
+    it(`${label}: no tool or allow rule grants a Git write`, () => {
+      if (isIneligible(inv)) throw new Error(inv.detail);
+      const tools = (valuesAfter(inv.argv, "--tools")[0] ?? "").split(",");
+      const allow = rulesAfter(inv.argv, "--allowedTools");
+      // A bare `Bash` allow rule (or a wildcard) would permit every command; only exact Bash(<command>) rules exist.
+      expect(allow).not.toContain("Bash");
+      const commands = allow.filter((r) => r.startsWith("Bash")).map((r) => bashCommand(r));
+      for (const c of commands) expect(c, `allow rule for ${c}`).toBeDefined();
+      expect(gitWriteRisks(commands as string[])).toEqual([]);
+      // Without an allowlist there is no shell at all.
+      if (commands.length === 0) expect(tools).not.toContain("Bash");
+      // [HELP]: --worktree creates a Git worktree (and branch); --from-pr resumes a PR-linked session. Never emitted.
+      for (const f of ["--worktree", "-w", "--tmux", "--from-pr", "--add-dir"]) expect(inv.argv).not.toContain(f);
+      // --restricted (file-tool writes to git files need an approver) with nobody to approve.
+      expect(inv.argv).toContain("--restricted");
+      expect(valuesAfter(inv.argv, "--permission-prompts")).toEqual(["none"]);
+      expect(auditInvocation(inv)).toEqual([]);
+    });
+  }
+
+  it.each([
+    "git commit",
+    "git commit -m wip",
+    "git push",
+    "git push origin main",
+    "git branch -f main",
+    "git branch feature",
+    "git update-ref refs/heads/main HEAD",
+    "git tag v1",
+    "git reset --hard",
+    "git checkout -b x",
+    "git stash",
+    "git config alias.ci commit",
+    "git -C . commit",
+    "git -c alias.x=commit x",
+    "/usr/bin/git push",
+    "git ci",
+    "gh pr create",
+    "env git commit",
+  ])("allowlist entry %j makes edit-untrusted Ineligible", (entry) => {
+    const r = adapter.compile(request, {
+      ...EDIT_UNTRUSTED,
+      shell: "allowlist",
+      shellAllowlist: ["git status", entry],
+    });
+    expect(r).toMatchObject({ ineligible: true, reason: "PROFILE_UNSUPPORTED" });
+    if (isIneligible(r)) expect(r.detail).toContain("FR-GIT-01");
+  });
+
+  it("declares provider deny rules with FR-GIT-03 and FR-GIT-06 as backing controls", () => {
+    expect(adapter.gitWriteControl).toMatchObject({
+      kind: "provider-deny-rules",
+      remainingControls: ["FR-GIT-03", "FR-GIT-06"],
+    });
+    expect(adapter.gitWriteControl.detail).toMatch(/--disallowedTools/);
+  });
+
+  it("probe fails the flags step when --disallowedTools is not in the help text", async () => {
+    const help =
+      "-p, --print\n--output-format stream-json\n--permission-mode dontAsk\n--permission-prompts\n--tools\n" +
+      "--allowedTools\n--safe-mode\n--restricted\n--strict-mcp-config\n--resume\n";
+    const runner: ProbeRunner = async (argv) => ({
+      exitCode: 0,
+      stdout: argv.at(-1) === "--version" ? "2.1.296 (Claude Code)\n" : help,
+      stderr: "",
+      timedOut: false,
+    });
+    const r = await adapter.probe(runner);
+    expect(r.steps.find((s) => s.step === "flags")).toMatchObject({ ok: false, detail: "missing: --disallowedTools" });
+  });
+});
+
 describe("claude parseEvent", () => {
   const lines = (name: string) =>
     readFileSync(fixturePath(name), "utf8")
@@ -369,7 +489,7 @@ describe("claude probe and auth preflight (injected runner; the real CLI is neve
     return fn;
   };
   const HELP =
-    "-p, --print\n--output-format stream-json\n--permission-mode dontAsk\n--permission-prompts\n--tools\n--allowedTools\n--safe-mode\n--restricted\n--strict-mcp-config\n--resume\n";
+    "-p, --print\n--output-format stream-json\n--permission-mode dontAsk\n--permission-prompts\n--tools\n--allowedTools\n--disallowedTools\n--safe-mode\n--restricted\n--strict-mcp-config\n--resume\n";
 
   it("probe uses only --version and --help and parses the version", async () => {
     const runner = fake({ "--version": { stdout: "2.1.296 (Claude Code)\n" }, "--help": { stdout: HELP } });
