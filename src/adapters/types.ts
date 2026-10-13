@@ -107,6 +107,51 @@ export interface Invocation {
   policyFlags: string[]; // every security-relevant flag, for the bypass-flag audit
   expectedExitCodes: number[];
   maxLineBytes: number;
+  /** Present exactly when `transport` is `acp-stdio` (LLD §2 "ACP plan", ADR-0036). Pure data; audited before spawn. */
+  acp?: AcpPlan;
+}
+
+/**
+ * The ACP session plan an `acp-stdio` adapter compiles (LLD §2, ADR-0036 items 5 to 10; T4.8). Method and field names
+ * are from the ACP specification v1 (agentclientprotocol.com, retrieved 2026-10-13, as cited in ADR-0036); what a real
+ * provider does with them is Unverified until its operator capture.
+ */
+export interface AcpPlan {
+  /** v2 is draft ([ACP-V2]); an `initialize` answer with any other version ends the run `OUTPUT_PROTOCOL_ERROR`. */
+  protocolVersion: 1;
+  /** Sent as one `text` content block in the single `session/prompt`. */
+  prompt: string;
+  /** `session/new` with `cwd` = `Invocation.cwd`, or a resume (`session/resume` if advertised, else `session/load`). */
+  session: { kind: "new" } | { kind: "resume"; nativeSessionId: string };
+  /** `[]` unless ADR-0036 item 7.3 holds; the pre-spawn audit refuses any entry until a per-provider ADR exists. */
+  mcpServers: AcpStdioServer[];
+  /** `session/set_mode` value compiled for the profile; audited against the registry's bypass-class mode ids. */
+  modeId?: string;
+  /** `session/set_config_option` values; audited against the registry's bypass-class values (use Unverified). */
+  configOptions?: Array<{ configId: string; value: string }>;
+  /** Native login command named on `AUTH_REQUIRED` (FR-AUTH-02). The client never logs in itself. */
+  loginCommand: string;
+}
+
+/** A stdio MCP server entry of `session/new` (ADR-0036 item 7.3). The tool token never travels here. */
+export interface AcpStdioServer {
+  name: string;
+  command: string;
+  args: string[];
+  env: [];
+}
+
+/**
+ * ACP facts a provider registry entry may declare (LLD §2, ADR-0036 items 9 and 10; additive only, as ADR-0035 item 2).
+ * The bypass-class mode ids and option values are refused before spawn outside the approved bypass case.
+ */
+export interface AcpDeclarations {
+  readonly bypassModeIds: readonly string[];
+  readonly bypassConfigValues: ReadonlyArray<{ readonly configId: string; readonly value: string }>;
+  /** Optional parser from an agent-reported tool call to an argv; used only to narrow (ADR-0036 item 9.2). */
+  readonly parseExecute?: (toolCall: unknown) => string[] | null;
+  /** Optional parser from an agent-reported tool call to a host name; used only to narrow (ADR-0036 item 9.2). */
+  readonly parseFetchHost?: (toolCall: unknown) => string | null;
 }
 
 export interface Ineligible {
@@ -137,6 +182,16 @@ export interface ParseState {
   lines: number;
   unknownEvents: number;
   nativeSessionId?: string;
+  /** ACP only (T4.8): scratch state of the shared `session/update` mapper (`src/exec/acp/events.ts`). */
+  acp?: AcpParseState;
+}
+
+/** Proposed (T4.8): what the shared ACP mapper keeps between messages. The client owns `deniedToolCallIds`. */
+export interface AcpParseState {
+  /** Tool call ids whose permission request the client rejected (their `tool_call` events get `denied: true`). */
+  readonly deniedToolCallIds: Set<string>;
+  /** The assistant message being joined from `agent_message_chunk` updates, flushed on any other update. */
+  message?: { id: string | undefined; text: string; truncated: boolean } | undefined;
 }
 
 export function createParseState(): ParseState {
@@ -148,7 +203,8 @@ export interface ExitInfo {
   outcome: "exited" | "timeout" | "cancelled" | "protocol_error" | "crashed" | "spawn_error" | "internal_error";
   exitCode: number | null;
   signal: string | null;
-  timeoutKind?: "wall_clock" | "idle";
+  /** `acp_initialize` and `acp_session` are the ACP handshake bounds (ADR-0036 item 4). */
+  timeoutKind?: "wall_clock" | "idle" | "acp_initialize" | "acp_session";
   expectedExitCodes: readonly number[];
 }
 

@@ -16,6 +16,8 @@ export interface JsonlReaderOptions {
   readonly maxLineBytes?: number;
   /** Lines for which this returns true are skipped (adapter-declared ignorable line types). */
   readonly isIgnorable?: (line: string) => boolean;
+  /** Treat a blank line as `invalid_json` instead of skipping it (ACP: no line is ignorable, ADR-0036 item 3). */
+  readonly rejectBlankLines?: boolean;
   readonly onEvent: (value: unknown, lineNumber: number) => void;
   /** Called at most once; the reader then stops consuming input. */
   readonly onProtocolError: (error: JsonlProtocolError) => void;
@@ -92,6 +94,10 @@ export class JsonlReader {
       text = this.#decoder.decode(bytes);
     } catch {
       this.#fail("invalid_utf8", `line ${this.#lineNumber} is not valid UTF-8`);
+      return;
+    }
+    if (text.trim() === "" && this.#opts.rejectBlankLines === true) {
+      this.#fail("invalid_json", `line ${this.#lineNumber} is blank`);
       return;
     }
     if (text.trim() === "" || this.#opts.isIgnorable?.(text)) return;
