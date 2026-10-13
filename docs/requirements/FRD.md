@@ -14,7 +14,8 @@ no obligations: every business rule (BR) cites the FR/NFR it elaborates. Where t
 labelled **Proposed** with a one-line rationale; Proposed rules are design choices made during planning, are not
 owner-approved (the ADRs are "Delegated", see [ADR index](../adr/README.md)), and can change without an SRS change.
 
-Nothing described here is implemented. As of 2026-10-12 the repository contains documentation and research only.
+Implementation status is owned by [ROADMAP §6](../ROADMAP.md#6-milestones). As of 2026-10-12 the repository contained
+documentation and research only; parts of the behaviour described here are now implemented.
 
 Conventions: components are `COMP-*` as named in the [HLD](../design/HLD.md#1-system-context). Failure codes are those
 of the [LLD §4](../design/LLD.md#4-failure-taxonomy); `ELIGIBILITY_NONE` and `INVALID_REQUEST` were added during

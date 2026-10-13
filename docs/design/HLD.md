@@ -7,7 +7,8 @@
 | Does not own | Requirements ([SRS](../requirements/SRS.md)), workflows and state machine ([FRD](../requirements/FRD.md)), collaboration patterns and traceability ([SDD](SDD.md)), technology choices ([TDD](TDD.md)), schemas and contracts ([LLD](LLD.md)), sequencing ([ROADMAP](../ROADMAP.md)) |
 | Last reconciled | 2026-10-13 |
 
-Nothing described here is implemented. No code, tests, CI or configuration exist as of 2026-10-12. Decisions cited from
+Implementation status is owned by [ROADMAP §6](../ROADMAP.md#6-milestones). No code, tests, CI or configuration existed
+as of 2026-10-12; the design below is now partly implemented (M1, and parts of M2, M3 and M9). Decisions cited from
 ADRs are "Delegated" (made by an agent under zemdregon's delegation) and have not been individually reviewed by zemdregon.
 
 ## 1. System context

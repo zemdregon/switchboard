@@ -7,8 +7,10 @@
 | Does not own | Capabilities, users and journeys ([PRD](PRD.md)); requirements ([SRS](SRS.md)); scope, priorities, sequencing and milestone status ([ROADMAP](../ROADMAP.md)); architecture decisions ([ADRs](../adr/README.md)). |
 | Last reconciled | 2026-10-12 |
 
-Nothing described here is implemented. As of 2026-10-12 the repository holds documentation only: no code, tests, CI or
-configuration. Every success measure below is a measure to be taken once the named milestone delivers, not a result.
+This document states business intent; implementation status is owned by [ROADMAP §6](../ROADMAP.md#6-milestones). On
+2026-10-12 the repository held documentation only (no code, tests, CI or configuration); it now also holds code for M1
+and parts of M2, M3 and M9. Every success measure below is a measure to be taken once the named milestone delivers,
+not a result.
 
 Sources: [R1] is the [original blueprint](../research/headless-ai-coding-controller.md), whose introduction carries
 zemdregon's stated intent and is superseded on technical details; [R2] is the [verified research of
