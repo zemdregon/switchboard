@@ -113,6 +113,11 @@ export interface ProjectSnapshot {
    * Present (and `true`) only when the context enabled it; absent means off (also on snapshots written before T9.7).
    */
   readonly finalize_commit?: true;
+  /**
+   * T9.10 (FR-GIT-10, FRD BR-33): the primary context's `sign` option, frozen at admission like the identity. Present
+   * (and `true`) only when the context enables signing; absent means unsigned (also on snapshots written before T9.10).
+   */
+  readonly sign?: true;
 }
 
 /**

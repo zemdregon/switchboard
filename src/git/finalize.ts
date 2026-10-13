@@ -1,6 +1,7 @@
 import type { Ledger } from "../ledger/index.js";
 import type { ProjectSnapshot } from "../policy/index.js";
 import { CommitError, type CommitErrorCode, type GitPublisher, MAX_PATHS, type PathRefusalReason } from "./commit.js";
+import type { CredentialReach } from "./credential-reach.js";
 import { GIT_POLICY_VIOLATION_EVENT } from "./ref-guard.js";
 
 /**
@@ -109,6 +110,11 @@ export interface FinalizeCommitRequest {
    * limits then no longer skip. Default false.
    */
   readonly approvedBypass?: boolean;
+  /**
+   * T9.10 (FR-GIT-10, BR-33): the BR-31 verdict for signing (`evaluateSigningReach`), set by the lifecycle when the
+   * snapshot has `sign: true`. A snapshot with `sign: true` and no verdict fails closed (`SIGNING_FAILED`).
+   */
+  readonly signReach?: CredentialReach;
 }
 
 /** Decide and, when every condition holds, make the finalize-only commit. Never throws. */
@@ -144,6 +150,9 @@ export async function makeFinalizeCommit(
       ...(bypass ? { looseLimits: true } : {}),
       nativeSessionIds: req.nativeSessionIds,
       ...(req.finalizingEventId !== undefined ? { finalizingEventId: req.finalizingEventId } : {}),
+      ...(p.sign === true
+        ? { sign: { reach: req.signReach ?? { ok: false, reason: "snapshot_unreadable" as const } } }
+        : {}),
     });
     return { outcome: "committed", commitSha: r.sha, provenanceId: r.provenanceId, filesChanged: r.filesChanged };
   } catch (err) {

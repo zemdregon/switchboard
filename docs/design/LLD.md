@@ -1796,7 +1796,7 @@ BR-30 were silent:
   tool-call event; `tool_event_id` keeps its T9.3 meaning (the `git_commit` event). No column or migration.
 - **Bypass.** An approved bypass run is handled identically; nothing in this path reads the profile.
 
-#### 12.3.1 Signing (FR-GIT-10, Proposed)
+#### 12.3.1 Signing (FR-GIT-10)
 
 With `sign: true` step 4 asks Git to sign the commit object using the operator's existing signing configuration
 (`user.signingkey`, `gpg.format`, and the operator's own agent or keyring), run by the controller process with the
@@ -1818,6 +1818,46 @@ keys, and signing with the operator's real agent. Only the unprotected-key GnuPG
 
 The exact Git plumbing is fixed in the M9 spike. Nothing here touches the run branch, the worktree's index or the
 operator's checkout.
+
+**As built (2026-10-13, Delegated, T9.10, [ADR-0034](../adr/0034-controller-side-commit-signing.md); owner text above
+unchanged).** Code: `src/git/sign.ts`, `GitPublisher.commit` (`src/git/commit.ts`, input `sign`),
+`evaluateSigningReach` (`src/git/credential-reach.ts`), the channel and finalize-only callers (`src/git/channel.ts`,
+`src/git/finalize.ts`, `src/lifecycle/lifecycle.ts`), the snapshot field `project.sign` (`src/mcp/server.ts`) and
+`projects validate` (`src/cli/projects.ts`). Choices where this section was silent, and where it differs:
+
+- **Environment.** Not "the operator's environment" wholesale: an allowlist (`SIGNING_ENV_ALLOWLIST`: `PATH`, `HOME`,
+  `USER`, `LOGNAME`, `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`, `GNUPGHOME`, `GPG_AGENT_INFO`, `SSH_AUTH_SOCK`) plus
+  `GIT_TERMINAL_PROMPT=0` and `LC_ALL=C`, given only to the controller's own `git commit-tree -S` child. No inherited
+  `GIT_*`. Own session, message on standard input, 60 s timeout (Proposed) killing the process group, hooks off at
+  command scope, standard error discarded. The provider process keeps its adapter allowlist (FR-EXE-07), which names
+  none of the agent variables.
+- **Configuration.** The operator's global and system configuration only. `commit-tree -S` runs with `GIT_DIR` set to a
+  scratch bare repository the controller creates and removes, and `GIT_OBJECT_DIRECTORY` set to the repository's object
+  store, so the repository's own configuration is never read for signing. Separately, a repository whose local or
+  worktree configuration (or an included file) sets `gpg.*` or `user.signingkey` is refused (`repo_config_unsafe`),
+  mirroring `REPO_CONFIG_UNSAFE` (§12.6). Limitation: an operator `includeIf "gitdir:..."` keyed on the repository path
+  does not match the scratch `GIT_DIR`.
+- **BR-31.** `evaluateSigningReach`: the push rule's environment, bypass and shell checks (same code), without the
+  push-policy precondition; the owner decision 37 exemption for a controller-verified approved bypass run applies
+  (Delegated reading, Q-56). Evaluated at each `commit` call (agent tool) and at FINALIZING (finalize-only).
+- **Order and failure.** Signing checks (BR-31, repository keys) come after the run, lease and worktree checks and
+  before the tree is built; the signed `commit-tree` replaces the plain one in step 3 of the T9.3 order. Any refusal,
+  non-zero exit, timeout or missing `gpgsig`/`gpgsig-sha256` header throws `SIGNING_FAILED` (agent message: a fixed
+  text with the reason code `credential_reach`, `repo_config_unsafe`, `sign_failed`, `timeout` or
+  `signature_missing`) and appends `git_commit_signing_failed` `{origin, reason, credential_reach?}`, before any
+  `git_commit_intent`: the compare-and-swap never runs, the publish ref is unchanged, nothing is committed unsigned.
+  Finalize-only records `{outcome: "failed", reason: "SIGNING_FAILED"}`. A signed commit adds `signed: true` to the
+  intent and the `git_commit` event; the commit differs from the unsigned one only by Git's signature header.
+- **Snapshot and configuration.** `project.sign: true` is frozen at admission (absent when off, so unsigned runs keep
+  the same snapshot and code path). The loader refuses `sign: true` without an `identity` or outside the primary
+  writable context.
+- **`projects validate`.** For a context with `sign: true` that passes the filesystem checks: `SIGNING_CONFIG_UNSAFE`
+  for repository signing keys, then one test signature of an empty root commit in a throwaway scratch repository with
+  the command's environment (`SIGNING_UNAVAILABLE` with the reason code on failure). Not run at admission or for
+  dynamic projects (their `sign` waits for `projects approve`, ADR-0030); every signed commit fails closed at run time.
+- **Not verified.** Only GnuPG with a throwaway unprotected key in a temporary `GNUPGHOME` (Git 2.43.0, GnuPG 2.4.4).
+  SSH-format, X.509, passphrase-protected and hardware keys and the operator's real agent are unverified; no live
+  provider was run.
 
 ### 12.4 Message sanitisation
 

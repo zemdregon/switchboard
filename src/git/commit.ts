@@ -5,8 +5,15 @@ import { defaultIds, type IdGenerator } from "../ids/index.js";
 import { createLedger, type GitCommitRow, type Ledger } from "../ledger/index.js";
 import { CONTROLLER_IDENTITY, GitError, git, gitText } from "../workspace/git.js";
 import { findNestedRepositories, nestedPathspecArgs } from "../workspace/nested.js";
+import type { CredentialReach } from "./credential-reach.js";
 import { DEFAULT_PUBLISH_PREFIX, PublishRefError, publishRefFor } from "./publish-ref.js";
 import { createSanitizer, type SanitizeReport, type Sanitizer, SanitizerError } from "./sanitize.js";
+import {
+  DEFAULT_SIGN_TIMEOUT_MS,
+  repoSigningConfigUnsafe,
+  type SigningFailureReason,
+  signedCommitTree,
+} from "./sign.js";
 
 /**
  * Controller-side commit algorithm (FR-GIT-04, FR-GIT-07, FR-GIT-08; LLD §12.3; ADR-0014, ADR-0025; T9.3). It builds one
@@ -22,6 +29,12 @@ import { createSanitizer, type SanitizeReport, type Sanitizer, SanitizerError } 
  * 2. append the `git_commit_intent` run event, which carries the whole provenance record (SHAs, ids, rule counts);
  * 3. `update-ref <publish ref> <new> <old>` (compare-and-swap);
  * 4. in ONE ledger transaction append the `git_commit` run event and insert the `git_commit` row.
+ *
+ * Signing (T9.10, FR-GIT-10, LLD §12.3.1, ADR-0034): with {@link CommitInput.sign} the commit object of step 1 is
+ * made by `src/git/sign.ts` with the operator's signing setup. The BR-31 verdict and the repository's own signing
+ * configuration are checked first; any refusal or signing failure is `SIGNING_FAILED` with a
+ * `git_commit_signing_failed` run event (reason code only), before any intent, so the publish ref never moves and no
+ * unsigned commit is made. Without `sign` nothing about this path changes.
  *
  * A crash before 3 leaves an unfinished intent and no published commit; a crash between 3 and 4 leaves a published
  * commit with an unfinished intent. {@link GitPublisher.recover} resolves each unfinished intent from the repository:
@@ -43,6 +56,7 @@ export type CommitErrorCode =
   | "PUBLISH_CONFLICT"
   | "PUBLISH_LINEAGE_VIOLATION"
   | "PROVENANCE_PENDING"
+  | "SIGNING_FAILED"
   | "GIT_FAILED";
 
 export type PathRefusalReason =
@@ -97,7 +111,20 @@ export interface GitPublisherOptions {
    * there (no cleanup writes, no abort record). Not for production use.
    */
   readonly testHooks?: { afterStep?(step: PublishStep): void | Promise<void> };
+  /**
+   * T9.10: environment the signing step copies its allowlisted variables from (`src/git/sign.ts`), read at each signed
+   * commit. Default `process.env`. Only the controller's own `git` child for that step receives them.
+   */
+  readonly signingEnv?: Readonly<Record<string, string | undefined>>;
+  /** T9.10: bound of one signing step (default {@link DEFAULT_SIGN_TIMEOUT_MS}). */
+  readonly signTimeoutMs?: number;
 }
+
+/** Run event appended when a signed commit is refused or signing fails (T9.10). Reason codes only, never key data. */
+export const GIT_COMMIT_SIGNING_FAILED_EVENT = "git_commit_signing_failed";
+
+/** Why a signed commit was not made (the `reason` of {@link GIT_COMMIT_SIGNING_FAILED_EVENT}). */
+export type SigningRefusalReason = "credential_reach" | "repo_config_unsafe" | SigningFailureReason;
 
 export interface CommitInput {
   readonly runId: string;
@@ -124,6 +151,12 @@ export interface CommitInput {
    * refusals, the sanitiser and the compare-and-swap are unchanged.
    */
   readonly looseLimits?: boolean;
+  /**
+   * T9.10 (FR-GIT-10, FRD BR-33): sign this commit with the operator's signing setup. Set by the caller only when the
+   * run's frozen project snapshot has `sign: true`, with the BR-31 verdict the caller evaluated for the run
+   * (`evaluateSigningReach`, the same rule and bypass exemption as `push`). Absent: unsigned, exactly as before.
+   */
+  readonly sign?: { readonly reach: CredentialReach };
 }
 
 export interface CommitResult {
@@ -163,6 +196,8 @@ interface IntentRecord {
   readonly expected_old: string | null;
   readonly publish_ref: string;
   readonly files_changed: number;
+  /** T9.10: present (and `true`) only for a signed commit. */
+  readonly signed?: true;
   /** T9.7: present only for a finalize-only commit. */
   readonly via?: "finalize";
   readonly finalizing_event_id?: string;
@@ -234,6 +269,7 @@ export class GitPublisher {
       await this.checkWorktree(ctx);
       await mkdir(this.options.scratchDir, { recursive: true, mode: 0o700 });
       await this.checkScratch(ctx);
+      if (input.sign !== undefined) await this.checkSigning(ctx, input);
       let sanitized: { message: string; report: SanitizeReport } | undefined;
       for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
         const done = await this.attempt(ctx, input, publishRef, () => {
@@ -436,22 +472,40 @@ export class GitPublisher {
     const sanitized = sanitizedMessage();
     const when = Math.floor(this.now().getTime() / 1000);
     const identity = input.identity;
-    const sha = (
-      await git(["commit-tree", tree, "-p", parent, "-F", "-"], {
+    const identityEnv = {
+      GIT_AUTHOR_NAME: identity.name,
+      GIT_AUTHOR_EMAIL: identity.email,
+      GIT_AUTHOR_DATE: `${when} +0000`,
+      GIT_COMMITTER_NAME: identity.name,
+      GIT_COMMITTER_EMAIL: identity.email,
+      GIT_COMMITTER_DATE: `${when} +0000`,
+    };
+    let sha: string;
+    if (input.sign !== undefined) {
+      // T9.10: the same tree, parent, identity, dates and message; only the signature header is added, by Git.
+      const signed = await signedCommitTree({
         cwd,
-        input: `${sanitized.message}\n`,
-        env: {
-          GIT_AUTHOR_NAME: identity.name,
-          GIT_AUTHOR_EMAIL: identity.email,
-          GIT_AUTHOR_DATE: `${when} +0000`,
-          GIT_COMMITTER_NAME: identity.name,
-          GIT_COMMITTER_EMAIL: identity.email,
-          GIT_COMMITTER_DATE: `${when} +0000`,
-        },
-      })
-    ).stdout
-      .toString("utf8")
-      .trim();
+        tree,
+        parent,
+        message: `${sanitized.message}\n`,
+        identityEnv,
+        sourceEnv: this.options.signingEnv ?? process.env,
+        timeoutMs: this.options.signTimeoutMs ?? DEFAULT_SIGN_TIMEOUT_MS,
+        scratchDir: this.options.scratchDir,
+      });
+      if (!signed.ok) this.signingFailed(ctx, input, signed.reason);
+      sha = signed.sha;
+    } else {
+      sha = (
+        await git(["commit-tree", tree, "-p", parent, "-F", "-"], {
+          cwd,
+          input: `${sanitized.message}\n`,
+          env: identityEnv,
+        })
+      ).stdout
+        .toString("utf8")
+        .trim();
+    }
     await this.options.testHooks?.afterStep?.("commit_created");
 
     // Defence in depth: the new commit must add exactly itself on top of the base and the old head, so no checkpoint
@@ -473,6 +527,7 @@ export class GitPublisher {
       expected_old: old ?? null,
       publish_ref: publishRef,
       files_changed: filesChanged,
+      ...(input.sign !== undefined ? { signed: true as const } : {}),
       ...(input.origin === "finalize_only"
         ? {
             via: "finalize" as const,
@@ -557,12 +612,44 @@ export class GitPublisher {
         publish_ref: r.publishRef,
         files_changed: intent.files_changed,
         origin: r.origin,
+        ...(intent.signed === true ? { signed: true } : {}),
         ...(intent.via !== undefined ? { via: intent.via } : {}),
         ...(intent.finalizing_event_id !== undefined ? { finalizing_event_id: intent.finalizing_event_id } : {}),
         sanitizer: r.sanitizer,
         ...(recovered ? { recovered: true } : {}),
       },
     }).row;
+  }
+
+  /**
+   * T9.10 checks before anything is built: the BR-31 verdict the caller evaluated (`evaluateSigningReach`) and the
+   * repository's own signing configuration (refused, `src/git/sign.ts`). Either refusal is `SIGNING_FAILED`.
+   */
+  private async checkSigning(ctx: RunContext, input: CommitInput): Promise<void> {
+    const reach = input.sign?.reach;
+    if (reach === undefined || !reach.ok) {
+      this.signingFailed(ctx, input, "credential_reach", reach && !reach.ok ? reach.reason : "not_evaluated");
+    }
+    if (await repoSigningConfigUnsafe(ctx.worktreePath)) this.signingFailed(ctx, input, "repo_config_unsafe");
+  }
+
+  /** Record the refusal (reason codes only, never Git's or the signing program's output) and throw `SIGNING_FAILED`. */
+  private signingFailed(
+    ctx: RunContext,
+    input: CommitInput,
+    reason: SigningRefusalReason,
+    reachReason?: string,
+  ): never {
+    this.ledger.appendRunEvent({
+      runId: ctx.runId,
+      type: GIT_COMMIT_SIGNING_FAILED_EVENT,
+      payload: {
+        origin: input.origin ?? "commit_tool",
+        reason,
+        ...(reachReason !== undefined ? { credential_reach: reachReason } : {}),
+      },
+    });
+    throw new CommitError("SIGNING_FAILED", `the commit could not be signed (${reason}); nothing was committed`);
   }
 
   /**

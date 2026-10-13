@@ -2,6 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { SIGNING_AGENT_VARIABLES } from "../../git/sign.js";
 import { resolveTrustProfile } from "../../policy/index.js";
 import type { OverridableProfile, PrivilegedScope, ProfileOverride } from "../../policy/types.js";
 import { auditInvocation, BYPASS_FLAGS, findBypassFlags } from "../audit.js";
@@ -166,6 +167,8 @@ describe("compile: argv and policy (FR-POL-02/03/04/08)", () => {
       expect(inv.env, name).toEqual({});
       expect(inv.envAllowlist, name).not.toContain("OPENAI_API_KEY");
       expect(inv.envAllowlist, name).not.toContain("CODEX_API_KEY");
+      // T9.10 (FR-GIT-10): the signing key and agent variables stay with the controller's own Git child.
+      for (const v of SIGNING_AGENT_VARIABLES) expect(inv.envAllowlist, name).not.toContain(v);
       for (const f of inv.policyFlags) expect(inv.argv).toContain(f);
     }
   });

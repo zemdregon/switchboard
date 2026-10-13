@@ -95,7 +95,7 @@ import type { ArtifactStore } from "../artifacts/index.js";
 import { isUnderAllowedRoot, TRUST_PROFILES } from "../config/index.js";
 import { ChannelOpenError, type GitToolService, type OpenChannel } from "../git/channel.js";
 import type { GitPublisher } from "../git/commit.js";
-import { credentialReachFromJson } from "../git/credential-reach.js";
+import { credentialReachFromJson, signingReachFromJson } from "../git/credential-reach.js";
 import {
   type FinalizeCommitOutcome,
   finalizeCommitEventPayload,
@@ -987,6 +987,7 @@ export class RunLifecycle {
             nativeSessionIds: () => nativeIds,
             offerPush,
             ...(offerPush && pushExempt ? { pushReach: "bypass_exempt" as const } : {}),
+            ...(plan.sign ? { sign: true as const } : {}),
           });
         } catch (err) {
           if (!(err instanceof ChannelOpenError)) throw err;
@@ -1335,6 +1336,14 @@ export class RunLifecycle {
         finalizingEventId: finalizing?.id,
         // Owner decision 44 (Q-45): the same ledger evaluation as the BR-31 exemption; fails closed.
         approvedBypass: approvedBypassFor(this.ledger, run),
+        // T9.10 (FR-GIT-10, BR-33): BR-31 for signing, with the same controller-verified bypass exemption as `push`.
+        ...(project.sign === true
+          ? {
+              signReach: signingReachFromJson(run.policy_snapshot_json, {
+                approvedBypass: approvedBypassFor(this.ledger, run),
+              }),
+            }
+          : {}),
       });
       this.ledger.appendRunEvent({
         runId,
@@ -1480,6 +1489,8 @@ type GitChannelPlan =
       readonly projectId: string;
       readonly contextId: string;
       readonly pushPolicy: "none" | "branch";
+      /** T9.10: the frozen snapshot has `sign: true`. */
+      readonly sign: boolean;
     };
 
 /**
@@ -1508,6 +1519,7 @@ function gitChannelPlan(adapter: ProviderAdapter, run: RunRecord, serviceConfigu
     projectId: project.id,
     contextId: project.context_id,
     pushPolicy: project.push?.policy === "branch" ? "branch" : "none",
+    sign: project.sign === true,
   };
 }
 

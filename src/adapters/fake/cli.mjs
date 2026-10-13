@@ -188,6 +188,10 @@ async function gitCommitScenario() {
       ],
     };
   }
+  // T9.10 environment inspection: report the variable NAMES this provider process received (never values).
+  if (plan.report_env === true) {
+    emit({ type: "message", text: JSON.stringify({ env_names: Object.keys(process.env).sort() }) });
+  }
   for (const [rel, content] of Object.entries(plan.files ?? {})) {
     mkdirSync(dirname(rel), { recursive: true });
     writeFileSync(rel, content); // relative to cwd, the run worktree
