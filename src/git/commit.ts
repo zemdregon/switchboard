@@ -117,6 +117,13 @@ export interface CommitInput {
    * event (`via: "finalize"`, `finalizing_event_id`), so recovery after a crash keeps it.
    */
   readonly finalizingEventId?: string;
+  /**
+   * Owner decision 44 (ROADMAP Q-45): set only by the finalize-only path for an approved bypass run, and honoured only
+   * with `origin: "finalize_only"` (the agent's own `commit` tool keeps its limits). Lifts the {@link MAX_PATHS} count
+   * and truncates a sanitised message longer than {@link LOOSE_MESSAGE_MAX} characters with a one-line note. Path
+   * refusals, the sanitiser and the compare-and-swap are unchanged.
+   */
+  readonly looseLimits?: boolean;
 }
 
 export interface CommitResult {
@@ -141,6 +148,10 @@ export interface RecoveryReport {
 }
 
 export const MAX_PATHS = 256;
+/** Length bound of a truncated finalize-only message of an approved bypass run (equals the `commit` tool's bound). */
+export const LOOSE_MESSAGE_MAX = 8192;
+const TRUNCATION_NOTE = "[Summary truncated by Switchboard; the provider's complete output is in the run's artifacts.]";
+const LS_TREE_CHUNK = 256; // paths per `git ls-tree` call, to keep the argument list bounded
 const MAX_PATH_LENGTH = 4096;
 const MAX_IDENTITY_FIELD = 256;
 const ATTEMPTS = 2; // LLD §12.3 step 5: retry once after a lost race
@@ -372,6 +383,10 @@ export class GitPublisher {
     if (result.message.trim() === "") {
       throw new CommitError("MESSAGE_EMPTY_AFTER_SANITISING", "the message is empty after sanitising");
     }
+    if (loosened(input) && result.message.length > LOOSE_MESSAGE_MAX) {
+      // The sanitiser has already seen the whole text, so a cut cannot split anything it would have removed.
+      return { message: truncateMessage(result.message), report: result.report };
+    }
     return result;
   }
 
@@ -399,7 +414,12 @@ export class GitPublisher {
         await git(["add", "-A", "--", ".", ...nestedPathspecArgs(nested).slice(2)], { cwd, env });
       } else {
         const accepted = await this.classifyPaths(ctx, parentTree, input.paths);
-        await git(["--literal-pathspecs", "add", "--", ...accepted], { cwd, env });
+        // Pathspecs on stdin (NUL separated), so a large finalize-only path list cannot exceed the argument limit.
+        await git(["--literal-pathspecs", "add", "--pathspec-from-file=-", "--pathspec-file-nul"], {
+          cwd,
+          env,
+          input: `${accepted.join("\0")}\0`,
+        });
       }
       tree = await gitText(["write-tree"], { cwd, env });
       if (tree === parentTree) throw new CommitError("NOTHING_TO_COMMIT", "nothing to commit");
@@ -591,14 +611,28 @@ export class GitPublisher {
     }
 
     if (live.length > 0) {
-      const listing = await git(
-        ["--literal-pathspecs", "ls-tree", "-r", "-z", "--name-only", parentTree, "--", ...live.map((l) => l.rel)],
-        { cwd },
-      );
-      const inParent = listing.stdout
-        .toString("utf8")
-        .split("\0")
-        .filter((n) => n !== "");
+      const inParent: string[] = [];
+      for (let i = 0; i < live.length; i += LS_TREE_CHUNK) {
+        const listing = await git(
+          [
+            "--literal-pathspecs",
+            "ls-tree",
+            "-r",
+            "-z",
+            "--name-only",
+            parentTree,
+            "--",
+            ...live.slice(i, i + LS_TREE_CHUNK).map((l) => l.rel),
+          ],
+          { cwd },
+        );
+        inParent.push(
+          ...listing.stdout
+            .toString("utf8")
+            .split("\0")
+            .filter((n) => n !== ""),
+        );
+      }
       const tracked = (rel: string) => inParent.some((n) => n === rel || n.startsWith(`${rel}/`));
       const untrackedExisting: string[] = [];
       for (const { rel, exists } of live) {
@@ -646,6 +680,21 @@ function firstLine(text: string): string {
   );
 }
 
+/** True only for the finalize-only commit of an approved bypass run (owner decision 44). */
+function loosened(input: CommitInput): boolean {
+  return input.looseLimits === true && input.origin === "finalize_only";
+}
+
+/** Cut an already sanitised message at a line boundary (or at the character limit) and append the one-line note. */
+function truncateMessage(message: string): string {
+  const room = LOOSE_MESSAGE_MAX - TRUNCATION_NOTE.length - 2;
+  const head = message.slice(0, room);
+  const cut = head.lastIndexOf("\n");
+  // A line boundary only when it keeps at least half of the room; one very long line is cut at the limit instead.
+  const kept = (cut >= room / 2 ? head.slice(0, cut) : head).trimEnd();
+  return `${kept}\n\n${TRUNCATION_NOTE}`;
+}
+
 function validateInput(input: CommitInput): void {
   if (typeof input.message !== "string" || input.message.trim() === "") {
     throw new CommitError("INVALID_REQUEST", "message must be a non-empty string");
@@ -654,7 +703,9 @@ function validateInput(input: CommitInput): void {
     if (!Array.isArray(input.paths) || input.paths.length === 0) {
       throw new CommitError("INVALID_REQUEST", "paths must be omitted (all changes) or a non-empty array");
     }
-    if (input.paths.length > MAX_PATHS) throw new CommitError("INVALID_REQUEST", `at most ${MAX_PATHS} paths`);
+    if (input.paths.length > MAX_PATHS && !loosened(input)) {
+      throw new CommitError("INVALID_REQUEST", `at most ${MAX_PATHS} paths`);
+    }
   }
   const { name, email } = input.identity ?? { name: "", email: "" };
   for (const v of [name, email]) {
