@@ -50,6 +50,8 @@ interface TransitionPayload {
   adapter_version?: string | null;
   summary?: string;
   changed_files?: number;
+  /** T3.10: per-command verification summaries (index, outcome, exit status; never argv or output). */
+  verification?: unknown;
 }
 
 export function buildEnvelope(ledger: Ledger, run: RunRecord, scrub: (s: string) => string): Envelope {
@@ -68,6 +70,11 @@ export function buildEnvelope(ledger: Ledger, run: RunRecord, scrub: (s: string)
   const result: Envelope["result"] = { verification: [] };
   if (typeof terminal?.summary === "string") result.summary = scrub(terminal.summary).slice(0, SUMMARY_MAX);
   if (typeof terminal?.changed_files === "number") result.changed_files = terminal.changed_files;
+  if (Array.isArray(terminal?.verification)) {
+    result.verification = terminal.verification.filter(
+      (v): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v),
+    );
+  }
 
   return {
     run_id: run.id,

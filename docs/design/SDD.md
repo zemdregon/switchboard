@@ -140,8 +140,9 @@ flowchart LR
   so any prefix of the sequence can be recovered from the ledger.
 - Capacity reservations (per-provider concurrency slots) are held for the duration of RUNNING and released in the same
   transaction that records a terminal state; reconciliation releases slots held by dead runs.
-- Verification commands (FR-EXE-08) run under the same profile and process-group rules as the agent itself, after the
-  agent process has exited.
+- Verification commands (FR-EXE-08) run under the same process-group, environment-allowlist and timeout rules as the
+  agent itself, after the agent process has exited. They run on the host, not inside the provider's sandbox (owner
+  decision 11; T3.10, [LLD §8.1](LLD.md#81-verification-stage-m3-t310)).
 
 ## 4. Configuration model overview
 
@@ -248,7 +249,7 @@ the cell says so.
 | FR-EXE-05 | COMP-EXE, COMP-LED | stdout events and stderr captured on separate streams, stored as artifacts | — | [LLD §1](LLD.md#1-data-model), [LLD §7](LLD.md#7-telemetry-spans) |
 | FR-EXE-06 | COMP-EXE, COMP-LED, COMP-WS | Startup reconciliation scan over non-terminal runs, then workspace mutation assessment | [ADR-0005](../adr/0005-sqlite-ledger.md), [ADR-0006](../adr/0006-worktree-checkpoints-no-blind-replay.md) | [LLD §1](LLD.md#1-data-model), [LLD §5](LLD.md#5-workspace-and-lease-algorithm) |
 | FR-EXE-07 | COMP-EXE, COMP-ADP | Environment built from explicit allowlist plus adapter-declared variables | — | [LLD §2](LLD.md#2-adapter-contract) |
-| FR-EXE-08 | COMP-EXE, COMP-WS, COMP-POL | Verification commands run in the run worktree under the run policy snapshot, results recorded | [ADR-0004](../adr/0004-trust-profiles-no-bypass-flags.md) | [LLD §3](LLD.md#3-mcp-tool-contracts), [LLD §5](LLD.md#5-workspace-and-lease-algorithm) |
+| FR-EXE-08 | COMP-EXE, COMP-WS, COMP-POL | Verification commands run in the run worktree under the run policy snapshot, results recorded | [ADR-0004](../adr/0004-trust-profiles-no-bypass-flags.md) | [LLD §3](LLD.md#3-mcp-tool-contracts), [LLD §5](LLD.md#5-workspace-and-lease-algorithm), [LLD §8.1](LLD.md#81-verification-stage-m3-t310) |
 | FR-TEL-01 | COMP-TEL, COMP-LED | Every lifecycle step appends a run_event in the same transaction as the state change | [ADR-0005](../adr/0005-sqlite-ledger.md), [ADR-0012](../adr/0012-telemetry-at-wrapper-boundary.md) | [LLD §1](LLD.md#1-data-model), [LLD §7](LLD.md#7-telemetry-spans) |
 | FR-TEL-02 | COMP-TEL | Span emitter and OTLP exporter configured by operator | [ADR-0012](../adr/0012-telemetry-at-wrapper-boundary.md) | [LLD §7](LLD.md#7-telemetry-spans) |
 | FR-TEL-03 | COMP-TEL | Redaction layer; large outputs stored as artifacts and referenced by id and hash | [ADR-0012](../adr/0012-telemetry-at-wrapper-boundary.md) | [LLD §7](LLD.md#7-telemetry-spans), [LLD §1](LLD.md#1-data-model) |

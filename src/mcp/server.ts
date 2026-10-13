@@ -31,9 +31,10 @@
  *   profile-platform rule (`profilePlatformSupported`), then the adapter's own compile of each resolved profile
  *   (`compileCheck`, the same call the eligibility filter makes). `privileged` is listed only if the adapter compiles
  *   any scope of a small representative set (`REPRESENTATIVE_PRIVILEGED_SCOPES`, Proposed, LLD §3.1 "Listing").
- * - Non-empty `verification_commands` are refused with INVALID_REQUEST until verification (FR-EXE-08) lands in M3,
- *   rather than accepted and silently not run. `minimum_capability` fails ELIGIBILITY_NONE: it is a hard constraint
- *   (BR-4) and no model registry exists before M7.
+ * - `verification_commands` (T3.10, FR-EXE-08): argv arrays run by the lifecycle after the agent (VERIFYING). V7
+ *   refuses a non-empty list under `inspect-untrusted` (INVALID_REQUEST, `details.field`), and re-checks the shape
+ *   (non-empty executable, no NUL). `minimum_capability` fails ELIGIBILITY_NONE: it is a hard constraint (BR-4) and no
+ *   model registry exists before M7.
  * - The idempotency hash covers the validated, defaults-filled input with the workspace canonicalised, excluding
  *   `idempotency_key` and `wait_seconds` (which do not change what runs) and independent of the routed provider.
  * - Provider choice among eligible candidates: `provider_preference` if eligible, else candidate (registration) order
@@ -78,7 +79,13 @@ import {
   type ResolvedProject,
 } from "../config/index.js";
 import type { Ledger, RunRecord, TrustProfile } from "../ledger/index.js";
-import { type EligibilityAnswer, type RunLifecycle, type RunPriority, requestHash } from "../lifecycle/index.js";
+import {
+  type EligibilityAnswer,
+  type RunLifecycle,
+  type RunPriority,
+  requestHash,
+  verificationCommandsProblem,
+} from "../lifecycle/index.js";
 import {
   checkScopeLists,
   type PrivilegedScope,
@@ -470,11 +477,15 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     const scope = scopeArg === undefined ? undefined : parsePrivilegedScope(scopeArg);
     if (scope && !scope.ok)
       throw invalid(`invalid privileged_scope: ${scope.field} ${scope.message}`, { field: scope.field });
-    if ((a.verification_commands as unknown[]).length > 0) {
-      throw invalid("verification_commands are not supported before verification lands (M3)", {
+    const verification = a.verification_commands as string[][];
+    if (verification.length > 0 && profile === "inspect-untrusted") {
+      // V7 (Proposed) and owner decision 11: host verification is refused only under inspect-untrusted.
+      throw invalid("verification_commands are refused under inspect-untrusted (FRD V7)", {
         field: "verification_commands",
-      }); // V7
+      });
     }
+    const verificationProblem = verificationCommandsProblem(verification);
+    if (verificationProblem !== undefined) throw invalid(verificationProblem, { field: "verification_commands" }); // V7
     checkRouting(routing); // V8
 
     const canonical = {
@@ -539,6 +550,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       ),
       ...(resolved ? { project: resolved.snapshot } : {}),
       ...(key !== undefined ? { idempotencyKey: key } : {}),
+      ...(verification.length > 0 ? { verificationCommands: verification } : {}),
       ...(scope?.ok
         ? {
             privileged: {

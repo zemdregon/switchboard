@@ -24,6 +24,8 @@ interface ChildConfig {
   privilegedScope?: unknown;
   /** T9.5: objective of the run (a fake-agent plan for the `git_attempts` scenario). */
   objective?: string;
+  /** T3.10: verification commands of the run (argv arrays). */
+  verificationCommands?: string[][];
 }
 
 const cfg = JSON.parse(process.argv[2] ?? "{}") as ChildConfig;
@@ -82,6 +84,7 @@ const submitted = await lifecycle.submit({
   workspace: cfg.repo,
   trustProfile: "edit-untrusted",
   provider: "fake",
+  ...(cfg.verificationCommands ? { verificationCommands: cfg.verificationCommands } : {}),
 });
 process.stderr.write(`submitted ${submitted.runId}\n`);
 lifecycle.start();

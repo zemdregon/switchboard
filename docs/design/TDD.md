@@ -171,6 +171,15 @@ repositories) and `src/cli/projects-dynamic.test.ts` (`projects list|show|approv
 - **Agent Git boundary.** Agents get no Git write ability and no push credentials; see
   [§3.10](#310-git-commits-attribution-and-publication) for the layers, the injected-tool channel and what is still
   unverified per provider (FR-GIT-01..09).
+- **Verification commands (T3.10, Delegated).** `verification_commands` are code the orchestrator chose, usually
+  running what the agent just wrote, executed on the host as the operator's user ([owner decision
+  11](../ROADMAP.md#42-owner-decisions), R-24). Controls: argv arrays only (no shell), refused under
+  `inspect-untrusted` (FRD V7), cwd the run worktree, the run's environment allowlist minus `GIT_*` and the signing and
+  agent variables, no adapter-declared variables, the run's wall-clock bound with process-group kill, 1 MiB output per
+  stream, redaction before storage, and the T9.5 ref check after the stage. They are not confined: they can read what
+  the operator's user can read (including provider credential files under `HOME`), use the network, and write or push
+  Git refs; ref changes are detected and controller-owned refs restored, pushes are not visible (R-61). Optional
+  confinement is T3.11. Detail: [LLD §8.1](LLD.md#81-verification-stage-m3-t310).
 - **Credential boundary.** Nothing reads credential files or keyrings (ADR-0003, FR-AUTH-01). Code review gate plus a
   lint rule (Proposed) forbidding references to known credential paths outside test fixtures.
 - **Same-account limitation [R2].** A dedicated OS user limits host blast radius but does not isolate provider
@@ -208,6 +217,7 @@ startup reconciliation applies them. Run state transitions use an optimistic ver
 | Adapter conformance | Per adapter: success, task failure, native resume, auth missing, malformed output, cancellation, run against **recorded fixtures** (captured provider output committed as files, scrubbed of credentials) | No | FR-ADP-11, ADR-0009 |
 | Fake provider CLI (M1) | A scripted executable emitting configurable JSONL, delays, crashes, mutations and ignoring SIGTERM; exercises supervisor, ledger, workspace, reconciliation end to end | No | FR-ADP-01, FR-EXE-01..07 |
 | Workspace and Git | Real Git repos in temp dirs: worktree create, lease, checkpoint, mutation detection, rollback, GC; concurrent runs of one project held RUNNING at once by a gated fake CLI (T9.11, `src/lifecycle/concurrent-worktrees.test.ts`); FR-WS-09 tests are skipped placeholders until the owner accepts it | No | FR-WS-01..09 |
+| Verification stage (M3, T3.10) | Fake adapter plus `node` commands in real Git worktrees: pass, fail (`TEST_FAILURE`, later commands `not_run`), timeout with group kill, cancel during VERIFYING, redaction of an invented canary token, truncation, argv with shell metacharacters passed literally, environment canary, a verification `git commit` flagged and removed from the run branch (`src/lifecycle/verification.test.ts`); `SIGKILL` of the controller during VERIFYING ends `PROCESS_CRASH` without re-running (`src/reconcile/reconcile.test.ts`); MCP envelope and V7 (`src/mcp/mcp.test.ts`) | No | FR-EXE-08, FRD BR-16, V7, WF-8 |
 | Fault injection | Kill controller with `SIGKILL` at each transition boundary (named crash points), restart, assert ledger consistency and terminal/resumed state | No | NFR-REL-01, FR-EXE-06 |
 | Malicious fixture repos (M3, M4) | Repos with prompt-injection files, repo hooks, repo MCP definitions, credential-path reads, out-of-worktree writes, network attempts, run per enabled adapter | Needed for adapter-level proof; sandbox-level parts can run without | NFR-SEC-03 |
 | MCP contract | Schema validation, error envelope, idempotency, `wait_seconds` bounds via an in-process MCP client | No | FR-MCP-* |

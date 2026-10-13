@@ -148,6 +148,16 @@ import {
   TRANSITIONS,
   type TransitionRule,
 } from "./states.js";
+import {
+  startVerification,
+  VERIFICATION_COMMAND_EVENT,
+  VERIFICATION_STARTED_EVENT,
+  type VerificationResult,
+  verificationCommandsProblem,
+  verificationEnvAllowlist,
+  verificationReport,
+  verificationSummary,
+} from "./verification.js";
 
 export type LifecycleErrorCode = "INVALID_REQUEST" | "QUEUE_FULL";
 
@@ -224,6 +234,11 @@ export interface SubmitRequest {
    * current resolution) and one created without a project must pass none; any other combination is INVALID_REQUEST.
    */
   readonly project?: ProjectSnapshot;
+  /**
+   * T3.10 (FR-EXE-08, FRD V7, T11, T14): argv arrays run in the run's worktree after the agent exits successfully.
+   * Refused under `inspect-untrusted`; an empty list means no verification. A continuation takes none (FRD §7.2).
+   */
+  readonly verificationCommands?: readonly (readonly string[])[];
 }
 
 /** `run_event` type recording the dispatch-time approval verdict of a `privileged` run (`approval_id`, `bypass_approved`). */
@@ -282,6 +297,8 @@ interface StoredRequest {
   project_id?: string;
   /** The project's base ref for the first worktree of the meta-session (FR-PRJ-02). */
   base_ref?: string;
+  /** T3.10: present only when non-empty, so the stored request (and its default hash) is unchanged otherwise. */
+  verification_commands?: string[][];
 }
 
 export interface TransitionNotice {
@@ -368,10 +385,20 @@ type Pending =
   | { readonly kind: "failure"; readonly code: FailureCode; readonly detail: string }
   | { readonly kind: "cancelled" };
 
+/** What the verification stage hands to T14 and finalization. */
+interface VerificationOutcomeRecord {
+  readonly pending: Pending;
+  /** Per-command summaries (no argv, no output). */
+  readonly summary: readonly Record<string, unknown>[];
+  /** `test_report` artifact id when stored. */
+  readonly artifacts: Record<string, string>;
+}
+
 interface Execution {
   readonly runId: string;
   cancelRequested: boolean;
-  handle: AdapterRun | undefined;
+  /** The provider process, then (T3.10) the verification stage: whatever `cancel` must stop now. */
+  handle: { cancel(): Promise<void> } | undefined;
   done: Promise<void>;
 }
 
@@ -751,6 +778,15 @@ export class RunLifecycle {
     } else if (req.privileged !== undefined) {
       bad("a privileged scope or approval applies only to the privileged profile (FRD V13)");
     }
+    const verification = (req.verificationCommands ?? []).map((c) => (Array.isArray(c) ? [...c] : c)) as string[][];
+    if (verification.length > 0) {
+      const problem = verificationCommandsProblem(verification);
+      if (problem !== undefined) bad(problem);
+      // FRD V7 (Proposed) and owner decision 11: host verification is allowed under every write-capable profile and
+      // refused under inspect-untrusted.
+      if (req.trustProfile === "inspect-untrusted") bad("verification commands are refused under inspect-untrusted");
+      if (req.metaSessionId !== undefined) bad("verification commands apply to delegate_task only");
+    }
     if (req.idempotencyKey !== undefined) {
       if (req.metaSessionId !== undefined) bad("idempotency keys apply to new meta-sessions only");
       if (req.idempotencyKey.length < 8 || req.idempotencyKey.length > 128) bad("idempotency key length out of range");
@@ -779,6 +815,7 @@ export class RunLifecycle {
       ...(req.metaSessionId !== undefined ? { meta_session_id: req.metaSessionId } : {}),
       ...(req.project ? { project_id: req.project.id, base_ref: req.project.base_ref } : {}),
       ...(req.resume !== undefined ? { resume_native_session_id: req.resume.nativeSessionId } : {}),
+      ...(verification.length > 0 ? { verification_commands: verification } : {}),
     };
   }
 
@@ -1052,8 +1089,9 @@ export class RunLifecycle {
     let spawned = false;
     let out: AdapterRunOutcome;
     try {
+      let agent: AdapterRun;
       try {
-        exec.handle = startAdapterRun(adapter, inv, {
+        agent = startAdapterRun(adapter, inv, {
           bypassApproved: profile.bypassApproved,
           // T3.17: the audit admits a bypass flag only for this profile being privileged with a scope that sets bypass.
           profile,
@@ -1092,7 +1130,8 @@ export class RunLifecycle {
         }
         throw err;
       }
-      out = await exec.handle.done;
+      exec.handle = agent;
+      out = await agent.done;
     } finally {
       // LLD §12.2: the socket is closed and removed when the run leaves RUNNING; calls in progress finish first.
       await channel?.close();
@@ -1111,24 +1150,131 @@ export class RunLifecycle {
         nativeSessionId: out.result.nativeSessionId,
       });
     }
-    const pending = pendingOf(exec, out);
-    const rule = pending.kind === "success" ? "T12" : "T13";
-    this.move(
-      this.current(runId),
-      "FINALIZING",
-      { exit_code: out.exit.exitCode, exit_signal: out.exit.signal },
+    let pending = pendingOf(exec, out);
+    const exitFields = { exit_code: out.exit.exitCode, exit_signal: out.exit.signal };
+    const exitPayload = { exit_outcome: out.exit.outcome, group_empty: out.groupEmpty };
+    const commands = req.verification_commands ?? [];
+    let verification: VerificationOutcomeRecord | undefined;
+    if (pending.kind === "success" && commands.length > 0) {
+      // T11 (FR-EXE-08): the agent exited successfully and verification was supplied.
+      this.move(this.current(runId), "VERIFYING", exitFields, { ...exitPayload, commands: commands.length }, "T11");
+      verification = await this.verify(exec, runId, meta, ws, inv, commands);
+      pending = verification.pending;
+      // T14: pending success, `TEST_FAILURE` (BR-16) or cancelled; the per-command summary is in the event.
+      this.move(
+        this.current(runId),
+        "FINALIZING",
+        {},
+        {
+          pending: pending.kind,
+          ...(pending.kind === "failure" ? { failure_code: pending.code } : {}),
+          verification: verification.summary,
+        },
+        "T14",
+      );
+    } else {
+      const rule = pending.kind === "success" ? "T12" : "T13";
+      this.move(
+        this.current(runId),
+        "FINALIZING",
+        exitFields,
+        {
+          pending: pending.kind,
+          ...(pending.kind === "failure" ? { failure_code: pending.code } : {}),
+          ...exitPayload,
+        },
+        rule,
+      );
+    }
+    await this.finalize(
+      runId,
+      meta,
+      ws,
+      pending,
+      out,
+      verification ? { ...streams, ...verification.artifacts } : streams,
       {
-        pending: pending.kind,
-        ...(pending.kind === "failure" ? { failure_code: pending.code } : {}),
-        exit_outcome: out.exit.outcome,
-        group_empty: out.groupEmpty,
+        commitChannel: runCommitChannel,
+        nativeSessionIds: nativeIds,
       },
-      rule,
+      verification?.summary,
     );
-    await this.finalize(runId, meta, ws, pending, out, streams, {
-      commitChannel: runCommitChannel,
-      nativeSessionIds: nativeIds,
+  }
+
+  /**
+   * VERIFYING (T3.10; FR-EXE-08, BR-16, LLD §8.1): run the commands in the worktree, record each command's process
+   * group on the run before reading output (reconciliation, WF-8), store the redacted `test_report` artifact and return
+   * the pending outcome for T14. Never throws for a command's failure; a controller-side failure ends TOOL_FAILURE.
+   */
+  private async verify(
+    exec: Execution,
+    runId: string,
+    metaSessionId: string,
+    ws: PreparedWorkspace,
+    inv: { envAllowlist: readonly string[]; timeouts: { wallClockMs: number; killGraceMs: number } },
+    commands: readonly (readonly string[])[],
+  ): Promise<VerificationOutcomeRecord> {
+    if (ws.mode !== "worktree") {
+      // Admission refuses verification under inspect-untrusted, the only profile without a worktree (fail closed).
+      const detail = "verification requires a run worktree";
+      return { pending: { kind: "failure", code: "TOOL_FAILURE", detail }, summary: [], artifacts: {} };
+    }
+    const { wallClockMs, killGraceMs } = inv.timeouts;
+    // The stage may take up to one more wall clock: keep the lease ahead of it (as at LEASED).
+    this.opts.workspace.extendLease(runId, 2 * wallClockMs + (commands.length + 1) * killGraceMs);
+    const stage = startVerification({
+      commands,
+      cwd: ws.worktreePath,
+      envAllowlist: verificationEnvAllowlist(inv.envAllowlist),
+      ...(this.opts.baseEnv ? { baseEnv: this.opts.baseEnv } : {}),
+      wallClockMs,
+      killGraceMs,
+      onSpawn: (index, { pid, pgid }) => {
+        // LLD §8: pid, pgid and start ticks persisted before any output is read, so a restart can kill an orphan.
+        this.ledger.updateRunFields(
+          runId,
+          { pid, pgid, proc_start_ticks: procStartTicks(pid) },
+          { type: VERIFICATION_STARTED_EVENT, payload: { index, pid, pgid } },
+        );
+      },
+      onCommandDone: (r) => {
+        this.ledger.appendRunEvent({ runId, type: VERIFICATION_COMMAND_EVENT, payload: verificationSummary(r) });
+      },
     });
+    exec.handle = stage;
+    if (exec.cancelRequested) void stage.cancel();
+    const result: VerificationResult = await stage.done;
+    const summary = result.commands.map(verificationSummary);
+    const artifacts: Record<string, string> = {};
+    try {
+      const body = verificationReport(result, (b) => this.opts.artifacts.redactContent(b));
+      const stored = await this.opts.artifacts.put(body);
+      artifacts.test_report = this.ledger.insertArtifact({
+        runId,
+        metaSessionId,
+        kind: "test_report",
+        sha256: stored.sha256,
+        sizeBytes: stored.sizeBytes,
+        mediaType: "application/json",
+      });
+    } catch (err) {
+      const detail = `verification report could not be stored: ${errorText(err)}`;
+      return { pending: { kind: "failure", code: "TOOL_FAILURE", detail }, summary, artifacts };
+    }
+    let pending: Pending;
+    if (result.outcome === "cancelled" || exec.cancelRequested) pending = { kind: "cancelled" };
+    else if (result.internalError) {
+      pending = { kind: "failure", code: "TOOL_FAILURE", detail: "controller error during verification" };
+    } else if (result.outcome === "failed") {
+      const first = result.commands.find((c) => c.outcome !== "passed");
+      const what = first ? `command ${first.index} ${first.outcome}` : "a command failed";
+      pending = {
+        kind: "failure",
+        code: "TEST_FAILURE",
+        detail: `verification failed: ${what}${first?.exitCode != null ? ` (exit ${first.exitCode})` : ""}`,
+      };
+    } else pending = { kind: "success" };
+    return { pending, summary, artifacts };
   }
 
   /** M1 preflight (no `eligibility` option): probe and auth only (T8 codes as in M1). */
@@ -1222,6 +1368,7 @@ export class RunLifecycle {
     out: AdapterRunOutcome,
     streams: Record<string, string>,
     git: { commitChannel: "injected" | "finalize-only" | "none"; nativeSessionIds: readonly string[] },
+    verification?: readonly Record<string, unknown>[],
   ): Promise<void> {
     let outcome = pending;
     const artifacts: Record<string, string> = { ...streams };
@@ -1303,6 +1450,7 @@ export class RunLifecycle {
       ...(nestedSkipped.length > 0 ? { nested_repositories_skipped: nestedSkipped } : {}),
       ...(out.result.summary ? { summary: out.result.summary.slice(0, SUMMARY_MAX) } : {}),
       ...(out.result.nativeSessionId ? { native_session_id: out.result.nativeSessionId } : {}),
+      ...(verification ? { verification } : {}),
     };
     const finished = this.nowIso();
     this.ledger.immediate(() => {
@@ -1439,7 +1587,8 @@ export class RunLifecycle {
         this.opts.workspace.releaseLease(exec.runId);
         let cur = this.current(exec.runId);
         if (cur.state === "RUNNING" || cur.state === "VERIFYING") {
-          cur = this.move(cur, "FINALIZING", {}, { pending: "failure", failure_code: "TOOL_FAILURE" }, "T13");
+          const rule = cur.state === "RUNNING" ? "T13" : "T14";
+          cur = this.move(cur, "FINALIZING", {}, { pending: "failure", failure_code: "TOOL_FAILURE" }, rule);
         }
         this.move(cur, "FAILED", { failure_code: "TOOL_FAILURE", failure_detail: detail, finished_at: this.nowIso() });
       });
