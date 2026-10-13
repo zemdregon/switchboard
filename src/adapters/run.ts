@@ -1,6 +1,6 @@
 /** Glue between an adapter and the exec supervisor: probe runner and a single-invocation runner. */
 import { supervise } from "../exec/index.js";
-import { auditInvocation, BypassFlagError } from "./audit.js";
+import { assertBypassAudit } from "./audit.js";
 import {
   createParseState,
   type ExitInfo,
@@ -8,6 +8,7 @@ import {
   type NormalizedEvent,
   type ProbeRunner,
   type ProviderAdapter,
+  type ResolvedProfile,
   type RunResult,
 } from "./types.js";
 
@@ -50,8 +51,16 @@ export interface AdapterRunOptions {
   onEvent?: (event: NormalizedEvent) => void;
   /** Base environment for allowlisted names. Defaults to process.env. */
   baseEnv?: Readonly<Record<string, string | undefined>>;
-  /** True only with a recorded approval (FR-POL-03); otherwise bypass flags make the run refuse to spawn. */
+  /**
+   * True only with a recorded approval (FR-POL-03, LLD §3.1 "Bypass"): computed by the lifecycle from an `APPROVED`
+   * approval row whose scope sets bypass. On its own it admits nothing: see {@link AdapterRunOptions.profile}.
+   */
   bypassApproved?: boolean;
+  /**
+   * The run's resolved profile (T3.17). A bypass flag passes the argv audit only when this is `privileged`,
+   * `bypassApproved` is true and `profile.privilegedScope.scope.bypass` is true; without it every bypass flag is refused.
+   */
+  profile?: Pick<ResolvedProfile, "name" | "privilegedScope">;
   /** Passed to the supervisor: called after spawn, before any output is read, so pid/pgid can be persisted. */
   onSpawn?: (info: { pid: number; pgid: number }) => void;
 }
@@ -63,12 +72,16 @@ export interface AdapterRun {
 
 /**
  * Spawn `inv` under the supervisor, feed each stdout JSONL document through `adapter.parseEvent`, and fold the
- * result with `adapter.extractResult`. Throws BypassFlagError before spawning if the audit finds a bypass flag.
+ * result with `adapter.extractResult`. Throws BypassFlagError before spawning if the audit refuses a bypass flag: every
+ * bypass flag is refused unless `opts.profile` is `privileged`, `opts.bypassApproved` is true and the profile's scope
+ * sets bypass (T3.17, `./audit.ts`).
  */
 export function startAdapterRun(adapter: ProviderAdapter, inv: Invocation, opts: AdapterRunOptions = {}): AdapterRun {
   if (inv.transport !== "subprocess-jsonl") throw new Error(`unsupported transport: ${inv.transport}`);
-  const flags = auditInvocation(inv);
-  if (flags.length > 0 && !opts.bypassApproved) throw new BypassFlagError(flags);
+  assertBypassAudit(
+    inv,
+    opts.profile !== undefined ? { profile: opts.profile, bypassApproved: opts.bypassApproved === true } : undefined,
+  );
 
   const state = createParseState();
   const events: NormalizedEvent[] = [];

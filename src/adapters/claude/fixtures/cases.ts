@@ -1,6 +1,7 @@
 /** Conformance cases for the Claude Code adapter replaying synthetic stream-json fixtures (T2.2, FR-ADP-11). */
 import { fileURLToPath } from "node:url";
 import type { ConformanceCase } from "../../conformance.js";
+import { LOOSE_SCOPE, privilegedProfile } from "../../fixtures/privileged.js";
 import type { CompileRequest, ResolvedProfile } from "../../types.js";
 import { ClaudeAdapter } from "../adapter.js";
 
@@ -209,4 +210,47 @@ export function claudeDenialCases(makeCwd: () => string): ConformanceCase[] {
       expect: { ok: false, failureCode: "SANDBOX_VIOLATION", mutatedPath: "partial.txt" },
     },
   ];
+}
+
+/**
+ * T3.5/T3.17: the same synthetic denials under `privileged` (the loose scope of decision 18), once with `bypass: false`
+ * and once with an approved `bypass: true` (the harness hands the run context to the argv audit). A denial still ends
+ * with its failure code, never success, and never hangs.
+ */
+export function claudePrivilegedDenialCases(makeCwd: () => string): ConformanceCase[] {
+  const out: ConformanceCase[] = [];
+  for (const bypass of [false, true]) {
+    const profile = privilegedProfile({ ...LOOSE_SCOPE, bypass });
+    const request = (): CompileRequest => ({
+      runId: "run_claude_privileged_fixture",
+      objective: "synthetic objective",
+      constraints: [],
+      workspace: { cwd: makeCwd(), writable: true },
+      bypassApproved: bypass,
+    });
+    out.push(
+      {
+        kind: "success",
+        profile,
+        adapter: replayAdapter("success-edit.jsonl", { write: "hello.txt" }),
+        request: request(),
+        expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID, mutatedPath: "hello.txt" },
+      },
+      {
+        kind: "task_failure",
+        profile,
+        adapter: replayAdapter("permission-denied-git.jsonl"),
+        request: request(),
+        expect: { ok: false, failureCode: "PERMISSION_BLOCKED" },
+      },
+      {
+        kind: "task_failure",
+        profile,
+        adapter: replayAdapter("sandbox-violation.jsonl", { exitCode: 1 }),
+        request: request(),
+        expect: { ok: false, failureCode: "SANDBOX_VIOLATION" },
+      },
+    );
+  }
+  return out;
 }

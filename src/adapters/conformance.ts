@@ -6,7 +6,7 @@
  */
 import { existsSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { auditInvocation, BYPASS_FLAGS } from "./audit.js";
+import { auditInvocation, BYPASS_FLAGS, type BypassContext } from "./audit.js";
 import { FAILURE_CODES, type FailureCode } from "./failure.js";
 import { startAdapterRun } from "./run.js";
 import {
@@ -67,6 +67,11 @@ export interface ConformanceReport {
   cases: ConformanceCaseReport[];
 }
 
+/** The run context the argv audit sees for a case: its profile and the request's bypassApproved (T3.17). */
+function bypassContext(c: ConformanceCase): BypassContext {
+  return { profile: c.profile, bypassApproved: c.request.bypassApproved === true };
+}
+
 /** Static checks that need no process: purity, argv shape, bypass audit, never-success classification. */
 export function checkAdapterStatics(c: ConformanceCase): ConformanceCheck[] {
   const checks: ConformanceCheck[] = [];
@@ -83,8 +88,9 @@ export function checkAdapterStatics(c: ConformanceCase): ConformanceCheck[] {
   check("argv[0] is absolute", isAbsolute(inv1.argv[0] ?? ""), inv1.argv[0]);
   check("cwd is the request cwd", inv1.cwd === c.request.workspace.cwd);
   check("exit code 0 is expected", inv1.expectedExitCodes.includes(0));
-  const bypass = auditInvocation(inv1);
-  check("no bypass flags in argv/policyFlags", bypass.length === 0, bypass.join(",") || BYPASS_FLAGS.join(" "));
+  // T3.17: a bypass flag passes only for an approved privileged scope with bypass (the case's own run context).
+  const bypass = auditInvocation(inv1, bypassContext(c));
+  check("no refused bypass flags in argv/policyFlags", bypass.length === 0, bypass.join(",") || BYPASS_FLAGS.join(" "));
   const ev = a.classifyFailure({
     events: [],
     exit: { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: inv1.expectedExitCodes },
@@ -93,8 +99,14 @@ export function checkAdapterStatics(c: ConformanceCase): ConformanceCheck[] {
     cancelled: false,
   });
   check("clean exit without a result event is not success", FAILURE_CODES.includes(ev.code), ev.code);
-  const priv = a.compile(c.request, { ...c.profile, name: "privileged", bypassApproved: false });
+  // Without an approval no compile may carry a bypass flag, whatever the profile (FR-POL-03).
+  const priv = a.compile(
+    { ...c.request, bypassApproved: false },
+    { ...c.profile, name: "privileged", bypassApproved: false },
+  );
   check("privileged profile is never silently downgraded", isIneligible(priv) || !auditInvocation(priv).length);
+  const unapproved = a.compile({ ...c.request, bypassApproved: false }, c.profile);
+  check("no bypass flag without bypassApproved", isIneligible(unapproved) || !auditInvocation(unapproved).length);
   return checks;
 }
 
@@ -114,6 +126,7 @@ export async function runConformanceCase(c: ConformanceCase): Promise<Conformanc
   });
   const events: NormalizedEvent[] = [];
   const run = startAdapterRun(c.adapter, inv, {
+    ...bypassContext(c),
     onEvent: (e) => {
       events.push(e);
       firstEvent?.();
