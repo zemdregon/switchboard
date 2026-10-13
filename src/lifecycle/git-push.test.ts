@@ -13,12 +13,18 @@ import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeAdapter } from "../adapters/fake/adapter.js";
-import { AdapterRegistry, type ResolvedProfile } from "../adapters/index.js";
+import {
+  AdapterRegistry,
+  type CompileRequest,
+  type Ineligible,
+  type Invocation,
+  type ResolvedProfile,
+} from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
 import { GIT_CHANNEL_CLOSED, GIT_CHANNEL_OPENED, GIT_TOOL_DENIED, GitToolService } from "../git/channel.js";
 import { GitPublisher, GitPusher, type PushContextConfig, publishRefFor } from "../git/index.js";
 import { createIdGenerator } from "../ids/index.js";
-import { createLedger, type Ledger, openLedger } from "../ledger/index.js";
+import { createLedger, type Ledger, openLedger, type RunRecord } from "../ledger/index.js";
 import type { ProjectSnapshot } from "../policy/index.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import { GIT_PUSH_WITHHELD_EVENT, RunLifecycle } from "./index.js";
@@ -116,6 +122,63 @@ function makeLifecycle(profile: ResolvedProfile): RunLifecycle {
     resolveProfile: () => profile,
     gitTools: service,
   });
+}
+
+/**
+ * A fake adapter that compiles the `privileged` profile as an `edit-untrusted` one (the fake CLI has no bypass flag and
+ * none is emitted); the lifecycle still evaluates the approval, so the run is a real approved bypass run for BR-31.
+ */
+class PrivilegedFake extends FakeAdapter {
+  override compile(request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible {
+    return super.compile(request, { ...NO_SHELL, shell: profile.shell, bypassApproved: false });
+  }
+}
+
+const BYPASS_SCOPE = {
+  files: { access: "worktree" },
+  shell: { mode: "broad" },
+  network: { mode: "off" },
+  repository_config: { mode: "disabled" },
+  bypass: true,
+};
+
+/** Submit a privileged run, approve it as `serve` would (applyApprovalDecision), and wait for it to end. */
+async function runPrivileged(scope: object, policy: "none" | "branch", approve = true) {
+  const ids = createIdGenerator();
+  const artifacts = new ArtifactStore(path.join(dataDir, "artifacts"));
+  const workspace = new WorkspaceManager({ db, artifacts, dataDir, allowedRoots: [root], ids });
+  lifecycle = new RunLifecycle({
+    ledger,
+    workspace,
+    artifacts,
+    adapters: new AdapterRegistry().register(new PrivilegedFake({ scenario: "git_commit", timeouts: PATIENT })),
+    allowedRoots: [root],
+    globalConcurrency: 1,
+    resolveProfile: () => NO_SHELL,
+    gitTools: service,
+  });
+  lifecycle.start();
+  const { runId, metaSessionId } = await lifecycle.submit({
+    clientId: "c",
+    objective: PLAN,
+    workspace: repo,
+    trustProfile: "privileged",
+    provider: "fake",
+    project: project(policy),
+    privileged: { scope },
+  });
+  if (approve) {
+    lifecycle.applyApprovalDecision({
+      requestEventId: `evt_test_${runId}`,
+      runId,
+      decision: "APPROVED",
+      requestedBy: "op",
+      requestedAt: "2026-10-13T00:00:00.000Z",
+      scopeHash: ledger.getApprovalForRun(runId)?.scope_hash ?? "",
+    });
+  }
+  const done = approve ? await lifecycle.waitForTerminal(runId) : (ledger.getRunRecord(runId) as RunRecord);
+  return { runId, metaSessionId, done };
 }
 
 async function runPlan(profile: ResolvedProfile, policy: "none" | "branch", plan = PLAN) {
@@ -283,5 +346,63 @@ describe("injected push tool (T9.6)", () => {
     // The refused argument is not echoed into any record (the objective itself holds the plan, so search the records).
     const records = JSON.stringify([ev, db.prepare("SELECT * FROM git_push").all()]);
     expect(records).not.toContain("evil.invalid");
+  });
+
+  describe("approved bypass runs (owner decision 37: BR-31 does not block Git operations on bypass)", () => {
+    it("an approved bypass run with a broad shell is offered push, pushes only the publish ref, and the exemption is recorded", async () => {
+      const { runId, metaSessionId, done } = await runPrivileged(BYPASS_SCOPE, "branch");
+      expect(done.state, done.failure_detail ?? "").toBe("SUCCEEDED");
+      const ev = events(runId);
+      expect(ev.find((e) => e.type === "privileged_dispatch")?.p).toMatchObject({ bypass_approved: true });
+      expect(ev.some((e) => e.type === GIT_PUSH_WITHHELD_EVENT)).toBe(false);
+      expect(ev.find((e) => e.type === GIT_CHANNEL_OPENED)?.p).toMatchObject({
+        tools: ["commit", "push"],
+        credential_reach: "bypass_exempt",
+      });
+      const head = refSha(repo, publishRefFor(metaSessionId));
+      const target = `refs/heads/agent/${metaSessionId}`;
+      // What is pushed is unchanged: the verified publish ref to the policy target, nothing else, no force.
+      expect(remoteRefs(bare).sort()).toEqual(["refs/heads/main", target].sort());
+      expect(refSha(bare, target)).toBe(head);
+      const push = ev.filter((e) => e.type === "git_push");
+      expect(push).toHaveLength(1);
+      expect(push[0]?.p).toMatchObject({
+        outcome: "ACCEPTED",
+        requested_by: "agent_tool",
+        ref: target,
+        commits: [head],
+        credential_reach: "bypass_exempt",
+      });
+      const row = db.prepare("SELECT * FROM git_push").get() as Record<string, unknown>;
+      expect(row).toMatchObject({ run_id: runId, outcome: "ACCEPTED" });
+      expect(String(row.detail)).toContain("credential_reach=bypass_exempt");
+    });
+
+    it("a bypass run whose policy is none is offered nothing", async () => {
+      const { runId, done } = await runPrivileged(BYPASS_SCOPE, "none");
+      expect(done.state).toBe("SUCCEEDED");
+      const ev = events(runId);
+      expect(ev.find((e) => e.type === GIT_CHANNEL_OPENED)?.p.tools).toEqual(["commit"]);
+      expect(ev.some((e) => e.type === GIT_PUSH_WITHHELD_EVENT || e.type === "git_push")).toBe(false);
+      expect(remoteRefs(bare)).toEqual(["refs/heads/main"]);
+    });
+
+    it("an approved privileged run whose scope does NOT set bypass keeps the BR-31 rule (broad shell withholds push)", async () => {
+      const { runId, done } = await runPrivileged({ ...BYPASS_SCOPE, bypass: false }, "branch");
+      expect(done.state, done.failure_detail ?? "").toBe("SUCCEEDED");
+      const ev = events(runId);
+      expect(ev.find((e) => e.type === GIT_PUSH_WITHHELD_EVENT)?.p).toEqual({ reason: "shell_broad" });
+      expect(ev.find((e) => e.type === GIT_CHANNEL_OPENED)?.p.credential_reach).toBeUndefined();
+      expect(remoteRefs(bare)).toEqual(["refs/heads/main"]);
+    });
+
+    it("bypass without an approval never runs, so it never reaches the channel or the remote", async () => {
+      const { runId, done } = await runPrivileged(BYPASS_SCOPE, "branch", false);
+      expect(done.state).toBe("AWAITING_APPROVAL");
+      await new Promise((res) => setTimeout(res, 50));
+      expect(ledger.getRunRecord(runId)?.state).toBe("AWAITING_APPROVAL");
+      expect(events(runId).some((e) => e.type === GIT_CHANNEL_OPENED || e.type === "git_push")).toBe(false);
+      expect(remoteRefs(bare)).toEqual(["refs/heads/main"]);
+    });
   });
 });

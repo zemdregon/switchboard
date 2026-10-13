@@ -1367,7 +1367,9 @@ configured; otherwise, for a `branch` policy, a `git_push_withheld` event record
 same checks as `commit` up to the run binding, must have empty `arguments` (`INVALID_ARGUMENTS`), counts against 10 push
 attempts per channel (`PUSH_LIMIT_REACHED`, a `git_tool_denied` event), and then runs §12.6. Its answer is
 `{"pushed":true,"ref","head_sha"}` or an error with a §12.1 code and the reason word (`push refused: <REASON>`).
-`git_channel_closed` counts `pushes`.
+`git_channel_closed` counts `pushes`. *Note 2026-10-13 (decision 37):* for an approved bypass run `push` is offered
+whatever the shell (§12.7 BR-31 note) and `git_channel_opened` carries `credential_reach: "bypass_exempt"`; the
+provider's Git-write denial and every other check are unchanged.
 
 ### 12.3 Commit algorithm and refs
 
@@ -1646,9 +1648,16 @@ callers `src/git/channel.ts` (agent tool) and `src/cli/git-push.ts` (operator co
   meta-session are serialised in the process. Agent tool codes: `PUSH_NOT_ALLOWED`, `NOTHING_TO_PUSH`,
   `REMOTE_REJECTED`, `CREDENTIALS_UNAVAILABLE`, `REMOTE_UNREACHABLE`, `GIT_FAILED`.
 - **BR-31** (`evaluateCredentialReach`, from the frozen snapshot, at channel open and at each call): `host` only (a
-  `container` snapshot is refused until M10), frozen policy `branch`, never `bypassApproved` or a scope with `bypass`,
-  and shell `none` or `allowlist` with an empty list (a `privileged` run by its scope's `shell`). No manifest declares
-  credential confinement, so that route is not implemented.
+  `container` snapshot is refused until M10), frozen policy `branch`, no `bypassApproved` or scope `bypass` claim
+  without a controller-verified approval, and shell `none` or `allowlist` with an empty list (a `privileged` run by its
+  scope's `shell`). No manifest declares credential confinement, so that route is not implemented. *Amended 2026-10-13
+  (owner decision 37, Delegated narrow reading; [ADR-0028](../adr/0028-controller-push-and-credential-reach.md)
+  "Amended before merge"):* the caller passes the controller-held fact `approvedBypass` (`bypassApprovedFor`: an
+  APPROVED, hash-matching approval row whose scope sets `bypass`, the same verdict as the argv audit gate); when true
+  and policy is `branch` on a `host` environment the verdict is `ok` with the reason `bypass_exempt`, whatever the
+  shell. The reason is recorded in `git_channel_opened.credential_reach`, `git_push.credential_reach` and the
+  `git_push` row `detail` (`<REASON>; credential_reach=bypass_exempt`). Nothing else in §12.6 changes. This is the one
+  place a bypass run's agent can reach push credentials, by the owner's choice (R-51).
 - **Operator command.** Same algorithm without BR-31; takes the data-directory lock and refuses (`LOCKED`) while `serve`
   holds it (ADR-0005, like `gc --apply`); exit 0 when the remote holds the head.
 - **Ref guard.** `refs/remotes/<remote>/<branch>` created or moved to a SHA that an ACCEPTED `git_push` row pushed to

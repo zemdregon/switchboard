@@ -9,10 +9,20 @@
  *    is refused (`shell_allowlist`): the controller cannot prove that an allowlisted program (an editor, an
  *    interpreter, `cat`) cannot read `~/.ssh` or a credential helper's store, so it does not count as "without
  *    arbitrary shell" (Delegated, ADR-0028). `broad` is refused (`shell_broad`). A `privileged` run is judged by its
- *    approved scope's `shell` dimension; a scope or approval that sets `bypass` is always refused (`bypass_run`),
- *    because a bypass run skips the provider's permission prompts, so nothing the profile names is enforced;
+ *    approved scope's `shell` dimension; a scope or snapshot that claims `bypass` without a controller-verified
+ *    approval is refused (`bypass_run`), because a bypass run skips the provider's permission prompts, so nothing the
+ *    profile names is enforced;
  * 3. an adapter whose manifest declares credential confinement: no manifest has such a field (the manifest schema in
  *    `src/adapters/manifest/schema.ts` defines none), so this path is never taken (Assumption, recorded in ADR-0028).
+ *
+ * Bypass exemption (owner decision 37, "BR-31. Don't block git operations on bypass mode"; Delegated narrow reading,
+ * ADR-0028 "Amended before merge"): a run whose bypass the CONTROLLER has verified (`approvedBypass`, computed by the
+ * caller from `bypassApprovedFor`, the same evaluation the argv audit gate relies on: an APPROVED, hash-matching
+ * approval row whose scope sets `bypass`) is `ok` with the recorded reason `bypass_exempt`, whatever its shell
+ * dimension says. Policy `branch` and a host environment are still required first. The flag is a controller-held
+ * fact passed in by code; nothing the agent or an MCP client can set reaches it, and a snapshot that merely says
+ * `bypass` is still refused. The exemption widens what the AGENT may reach (it may read the operator's push
+ * credentials if its shell can), never what the controller pushes: the push itself is unchanged.
  *
  * Pure: it reads only the frozen policy snapshot of the run. The operator command is not subject to this rule (the
  * operator is not the agent); it still goes through the policy, ref and never-force rules in `push.ts`.
@@ -33,10 +43,21 @@ export type CredentialReachReason =
   | "shell_allowlist"
   | "shell_unknown";
 
-export type CredentialReach = { readonly ok: true } | { readonly ok: false; readonly reason: CredentialReachReason };
+/** The reason recorded when a controller-verified approved bypass run is exempt from BR-31 (owner decision 37). */
+export const BYPASS_EXEMPT = "bypass_exempt";
+
+export type CredentialReach =
+  | { readonly ok: true; readonly reason?: typeof BYPASS_EXEMPT }
+  | { readonly ok: false; readonly reason: CredentialReachReason };
+
+/** Controller-held facts the rule may use beyond the frozen snapshot. */
+export interface CredentialReachFacts {
+  /** True only when the controller verified an approved bypass for this run (`bypassApprovedFor`). Default false. */
+  readonly approvedBypass?: boolean;
+}
 
 /** Parse `run.policy_snapshot_json` and apply {@link evaluateCredentialReach}; an unreadable snapshot fails closed. */
-export function credentialReachFromJson(policySnapshotJson: string): CredentialReach {
+export function credentialReachFromJson(policySnapshotJson: string, facts?: CredentialReachFacts): CredentialReach {
   let snap: unknown;
   try {
     snap = JSON.parse(policySnapshotJson);
@@ -44,15 +65,16 @@ export function credentialReachFromJson(policySnapshotJson: string): CredentialR
     return { ok: false, reason: "snapshot_unreadable" };
   }
   if (typeof snap !== "object" || snap === null) return { ok: false, reason: "snapshot_unreadable" };
-  return evaluateCredentialReach(snap as PolicySnapshot);
+  return evaluateCredentialReach(snap as PolicySnapshot, facts);
 }
 
 /** BR-31 for the agent `push` tool, from the run's frozen snapshot. Every unknown value refuses. */
-export function evaluateCredentialReach(snap: PolicySnapshot): CredentialReach {
+export function evaluateCredentialReach(snap: PolicySnapshot, facts?: CredentialReachFacts): CredentialReach {
   const project = snap.project;
   if (project === undefined) return { ok: false, reason: "no_project" };
   if (project.push?.policy !== "branch") return { ok: false, reason: "policy_not_branch" };
   if (project.environment_kind !== "host") return { ok: false, reason: "container_not_available" };
+  if (facts?.approvedBypass === true) return { ok: true, reason: BYPASS_EXEMPT };
   if (snap.bypassApproved === true) return { ok: false, reason: "bypass_run" };
   if (snap.shell === "scoped") {
     const scope = snap.privilegedScope?.scope;

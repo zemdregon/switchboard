@@ -195,9 +195,11 @@ sanitiser counts) and where it was pushed, never the message or a URL. Exit 0 wh
 1 otherwise.
 
 Agents get a `push` tool only for a context with policy `branch` and only when the run cannot read your push
-credentials (FRD BR-31): a profile with no shell or an empty shell allowlist, never an approved bypass run. Host runs
-with a shell, including bypass runs with broad shell, are not offered `push`; use `git push` above (or a container
-environment, once milestone 10 exists).
+credentials (FRD BR-31): a profile with no shell or an empty shell allowlist. Host runs with a shell are not offered
+`push`; use `git push` above (or a container environment, once milestone 10 exists). An approved bypass run is the
+exception (owner decision 37): it is offered `push` whatever its shell, and the run record shows `bypass_exempt`. That is
+the one place a bypass run's agent can reach your push credentials, by your choice; Switchboard still never hands them
+to it, and its Git-write denial is unchanged.
 
 `projects list|show|validate` read the `projects` section of the config (see below) and the filesystem only: no
 ledger, no lock, no provider process. `validate` checks every project (or the one named): the config rules, that each repository

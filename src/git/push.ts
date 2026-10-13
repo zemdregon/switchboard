@@ -381,6 +381,8 @@ export class GitPusher {
         att.reachReason = reach && !reach.ok ? reach.reason : "not_evaluated";
         throw new Refusal("CREDENTIAL_REACH");
       }
+      // Owner decision 37: an exempt approved bypass run is accepted here and the exemption is recorded.
+      if (reach.reason !== undefined) att.reachReason = reach.reason;
     }
     // Q-44 (Delegated, fail closed): any recorded Git policy violation in the meta-session refuses publication.
     if (this.hasViolation(session.id)) throw new Refusal("GIT_POLICY_VIOLATION");
@@ -501,7 +503,7 @@ export class GitPusher {
       ref: att.ref,
       headSha: att.headSha,
       outcome,
-      detail: reason,
+      detail: att.reachReason === "bypass_exempt" ? `${reason}; credential_reach=bypass_exempt` : reason,
       requestedBy: req.requestedBy,
       eventPayload: {
         outcome,

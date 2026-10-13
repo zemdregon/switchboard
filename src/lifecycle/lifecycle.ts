@@ -119,6 +119,7 @@ import type { PreparedWorkspace, WorkspaceManager } from "../workspace/index.js"
 import {
   APPROVAL_DECIDED_EVENT,
   applyApprovalDecision,
+  bypassApprovedFor,
   CLIENT_POLICY_DECIDER_PREFIX,
   type DecisionToApply,
   denyApprovalOnCancel,
@@ -929,11 +930,16 @@ export class RunLifecycle {
       } else if (plan.kind === "offer" && this.opts.gitTools) {
         // T9.6 (BR-29, BR-31): `push` only for a frozen `branch` policy whose run keeps credentials out of reach.
         let offerPush = false;
+        let pushExempt = false;
         if (plan.pushPolicy === "branch") {
-          const reach = credentialReachFromJson(run0.policy_snapshot_json);
+          // Owner decision 37: an approved bypass (the same evaluateBypass verdict as the argv audit gate) is exempt.
+          const approvedBypass = profile.bypassApproved && bypassApprovedFor(this.ledger, run0);
+          const reach = credentialReachFromJson(run0.policy_snapshot_json, { approvedBypass });
           const withheld = !reach.ok ? reach.reason : this.opts.gitTools.pushAvailable ? undefined : "push_unavailable";
-          if (withheld === undefined) offerPush = true;
-          else this.ledger.appendRunEvent({ runId, type: GIT_PUSH_WITHHELD_EVENT, payload: { reason: withheld } });
+          if (withheld === undefined) {
+            offerPush = true;
+            pushExempt = reach.ok && reach.reason === "bypass_exempt";
+          } else this.ledger.appendRunEvent({ runId, type: GIT_PUSH_WITHHELD_EVENT, payload: { reason: withheld } });
         }
         try {
           channel = await this.opts.gitTools.open({
@@ -945,6 +951,7 @@ export class RunLifecycle {
             contextId: plan.contextId,
             nativeSessionIds: () => nativeIds,
             offerPush,
+            ...(offerPush && pushExempt ? { pushReach: "bypass_exempt" as const } : {}),
           });
         } catch (err) {
           if (!(err instanceof ChannelOpenError)) throw err;

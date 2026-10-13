@@ -387,9 +387,32 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
     refuses every later push (Q-44). `switchboard git push` does the same push for the operator (without BR-31) under
     the data-directory lock. The T9.5 ref guard expects the remote-tracking ref of an accepted controller push. A trust
     boundary and an external interface need an ADR: [ADR-0028](adr/0028-controller-push-and-credential-reach.md). No
-    requirement ID changes. Bypass runs are never offered `push` (they always fail BR-31), so nothing a bypass run may do
-    changes. *Unverified:* only Git 2.43.0 and local bare remotes; no `https` or `ssh` remote, credential helper or SSH
-    agent was exercised; nothing ran against a live provider.
+    requirement ID changes. *Superseded in part by decision 37 (2026-10-13): approved bypass runs are exempt from BR-31
+    and are offered `push`; the "never a bypass run" wording here records the first reading.* *Unverified:* only Git
+    2.43.0 and local bare remotes; no `https` or `ssh` remote, credential helper or SSH agent was exercised; nothing ran
+    against a live provider.
+
+**37. BR-31 does not block Git operations on bypass mode (2026-10-13).** Ender's words, verbatim: "BR-31. Don't block
+git operations on bypass mode". **The words are Ender's; the narrow reading below is a Delegated interpretation
+(agent), recorded so Ender can correct it.** Ender's priority is that an approved bypass run is never blocked from
+Git operations through Switchboard. Reading: in an approved bypass run (scope `bypass` true AND an approval the
+controller verifies, the same `bypassApprovedFor`/`evaluateBypass` evaluation the argv audit gate uses), the
+controller-mediated `push` tool is offered and accepted regardless of the BR-31 credential-reach rule; the
+channel-open event and every `git_push` event and row carry the reason `bypass_exempt`, so `runs show` shows it.
+Everything else about `push` stays: the controller alone pushes (the agent never receives credentials; the push
+process's allowlisted environment is unchanged), policy `branch` is required (policy `none` offers nothing), the
+explicit verified refspec, never forced, provenance-verified commits only, protected targets and repository-config-
+unsafe refusals, limits, the Q-44 violation refusal and recording. Not relaxed: owner decision 22 keeps the provider's
+Git-write denial (the agent still cannot run `git commit` or `git push` itself; the `--disallowedTools` Git deny
+rules and the FR-GIT-03 ref snapshots stay) and the operator command is unchanged. Non-bypass runs keep BR-31
+exactly (the other profiles are for people who deploy Switchboard, decision 25). The exemption derives only from
+controller-held facts (the approval row and policy snapshot), never from anything the agent or an MCP client can
+set; a snapshot or scope that claims `bypass` without a verified approval is still refused (`bypass_run`). **This
+is the one place a bypass run's agent can reach push credentials by design of the owner's choice**: an approved
+bypass agent with a shell can read the operator's push credentials while the `push` tool is offered; the
+controller still never gives them to it. Amends [ADR-0028](adr/0028-controller-push-and-credential-reach.md)
+(still unmerged, so edited in place under "Amended before merge"); no requirement ID changes (dated notes on BR-31
+and FR-GIT-06). Residual risk: R-51 (not blocking). (Decision 36 is on another branch and is not in this file.)
 
 Decisions 10 to 13, 17, 19, 21 and 22 each choose the less restrictive of the options put to Ender (decision 18 is the
 principle behind the 2026-10-13 ones); decisions 20 and 23 keep the stricter behaviour already implemented. Their residual
@@ -397,7 +420,7 @@ risks are recorded for Ender as R-23 to R-26, R-34, R-38 and R-39 in §7.1 (not 
 R-40; decision 26's as R-41; decision 27's as R-35 (mitigated); decision 28's as R-42 (mitigated);
 decision 29 has none beyond the stale-for-TTL window noted in it; decision 30 closes R-44; decision 32's is R-45 (not blocking);
 decision 33's is R-46 (not blocking); decision 34's is R-47 (not blocking); decision 35's are R-48 and R-49 (not
-blocking).
+blocking); decision 37's is R-51 (accepted by the owner for bypass).
 
 ### 4.3 Stated intent (confirmed constraints)
 
@@ -831,8 +854,22 @@ decided. **Not covered:** a push over `https` or `ssh` with a real credential he
 tests; the stderr classification of those failures is unit-tested on fixed strings only), Claude Code and Codex (no
 channel, T9.4), container environments (M10), the operator pushing while `serve` runs (R-49), and the MCP
 envelope's `commits: [{sha, pushed}]` from LLD §3 "Project additions" (no task names it; it is not built, `get_run`
-still shows the `git_push` events). Host runs with a shell, including every approved bypass run with broad shell, cannot
+still shows the `git_push` events). Host runs with a shell cannot
 use the agent `push` tool (BR-31): the operator command, or a `container` environment once M10 exists, is the route.
+
+*Amendment 2026-10-13 (decision 37; Delegated reading of Ender's "BR-31. Don't block git operations on bypass mode").*
+An approved bypass run (scope `bypass` and a controller-verified approval) is exempt from BR-31 and is offered `push`
+whatever its shell: `evaluateCredentialReach` takes the controller-held `approvedBypass` fact (from `bypassApprovedFor`,
+at channel open in `src/lifecycle/lifecycle.ts` and at every call in `src/git/channel.ts`) and returns `ok` with the
+reason `bypass_exempt`, written to the `git_channel_opened` event and to each `git_push` event (`credential_reach`) and
+row (`detail`, so `runs show` shows it). Evidence: `src/lifecycle/git-push.test.ts` ("approved bypass runs ...": an
+approved bypass run with a broad shell pushes only the publish ref to a local bare remote and records the exemption;
+policy `none` offers nothing; an approved scope without `bypass` still gets `shell_broad`; an unapproved bypass run
+never starts) and `src/git/push.test.ts` ("credential-reach rule": exempt only with the controller fact, forged
+snapshot fields ignored, policy and container checks first; an exempt verdict still refuses after a violation and
+records the exemption in event and row). Unchanged: the push process, refspec, never-force, provenance, protected
+targets, limits, Q-44, the provider's Git-write denial (decision 22) and non-bypass runs. Still unverified: nothing ran
+against a live provider or a network remote.
 
 ### 6.4 M10 Container environments: tasks
 
@@ -1008,8 +1045,9 @@ preceding milestone completes.
 | R-45 | *Delegated, not blocking (decision 32, ADR-0025).* The operator sanitiser patterns run on a backtracking engine (Node has no RE2) and are only protected by a validated subset, a cost estimate, 1024-character windows and a one-second budget; the cost model is an estimate from one measurement (`.*a.*b` took 36 s on 4096 characters), not a proof. A pattern in the subset can still be slow within the budget, and a pattern that is too slow fails closed (commits are refused) rather than slowing the controller further | An operator pattern could make every commit slow or refused; an accepted pattern cannot hang the controller beyond the budget plus one regular-expression call of at most about 67 million steps | **Open, accepted.** Revisit with an RE2 binding if the dependency is accepted; the built-in rules are linear or bounded (tests in `src/git/sanitize.test.ts`) |
 | R-46 | *Delegated, not blocking (decision 33, ADR-0026).* The tool channel cannot identify its peer (Node.js has no `SO_PEERCRED`), and the token reaches the provider process through its environment. Any process of the same OS user that can read that environment (or the shim's, which deletes it from its own copy only at start) can call `commit` for that run while it is RUNNING | A same-user process could make commits on the run's publish ref with the run's identity; it cannot push (no `push` tool yet), cannot reach another run (tokens are per run and bound to run, meta-session and worktree), cannot use the token after the run leaves RUNNING, and every commit still passes the path checks, sanitiser and provenance record | **Open, accepted.** Same reach the agent itself has. Controls: `0700` directory, `0600` socket, 256-bit per-run token compared in constant time, run-state re-check per call, rate limit. Revisit if Node.js gains a peer-credential API or when `push` is added (T9.6, BR-31). *T9.6 (2026-10-13):* the token now also reaches `push` where BR-31 offers it, so a same-user process could push the run's verified publish ref to the configured remote while the run is RUNNING; it still cannot choose the remote, ref or content, force, or push after a violation, and runs with a shell are never offered `push` |
 | R-47 | *Delegated, not blocking (decision 34, ADR-0027).* The ref check cannot tell who changed a ref. The operator's own work in the repository during a run (a commit or fetch, a new tag, switching the main checkout's branch), refs beyond the 5000-ref listing cap, and a short window in which another run's checkpoint commit is in Git before its ledger row, all produce `git_policy_violation` events although the agent did nothing. Conversely a push the agent made with an explicit URL or to an unconfigured remote leaves no local ref and is not detected (BR-27) | False positives in `runs show` and `get_run`; no run fails and no operator ref is changed, so the cost is noise, not lost work. A missed push is not undone | **Open, accepted.** Prevention stays the control (FR-GIT-01 deny rules, no push credentials, BR-29/BR-31; containers in M10). Revisit with T9.6 (Q-44) or if false positives prove frequent (an attribution guard, TDD §3.10 layer 3) |
-| R-48 | *Delegated, not blocking (decision 35, ADR-0028).* BR-31 and FR-POL-06 speak of commands; a profile "without arbitrary shell" can still give the agent the provider's own file-read tool. Whether that tool can read `~/.ssh`, a credential helper's store or `~/.git-credentials` depends on the provider's path scoping, which is unverified. The controller offers `push` to such runs | An agent of a push-enabled context could read a push credential through a file-read tool and use it outside Switchboard | **Open.** Controls: `push` is off by default per context, only `shell: none` or an empty allowlist qualifies, never a bypass run; the credential itself is never in the agent's environment (FR-GIT-06). Revisit with the live checks (T3.8b) or containers (M10, which mount no credential store) |
+| R-48 | *Delegated, not blocking (decision 35, ADR-0028).* BR-31 and FR-POL-06 speak of commands; a profile "without arbitrary shell" can still give the agent the provider's own file-read tool. Whether that tool can read `~/.ssh`, a credential helper's store or `~/.git-credentials` depends on the provider's path scoping, which is unverified. The controller offers `push` to such runs | An agent of a push-enabled context could read a push credential through a file-read tool and use it outside Switchboard | **Open.** Controls: `push` is off by default per context, only `shell: none` or an empty allowlist qualifies, except an approved bypass run (decision 37, R-51); the credential itself is never in the agent's environment (FR-GIT-06). Revisit with the live checks (T3.8b) or containers (M10, which mount no credential store) |
 | R-49 | *Delegated, not blocking (decision 35, ADR-0028).* `switchboard git push` refuses while `serve` holds the data-directory lock, and a repository whose own configuration sets a credential helper, `core.sshCommand` or `insteadOf` is refused (`REPO_CONFIG_UNSAFE`) | The operator must stop `serve` to push, and must move such settings to the global configuration | **Open, accepted.** Fail closed. Revisit if stopping `serve` proves impractical (a daemon-applied operator push request) or if repository-level credential settings are common |
+| R-51 | *Delegated reading of an owner decision, accepted by the owner for bypass (decision 37, ADR-0028 "Amended before merge").* An approved bypass agent with a shell can read the operator's push credentials (`~/.ssh`, a credential helper's store, `~/.git-credentials`) while the controller `push` tool is offered to it, because BR-31 no longer withholds `push` from approved bypass runs. This is the one place a bypass run's agent can reach push credentials by design of the owner's choice; the controller still never passes credentials to it and the controller's own push is unchanged | A bypass agent, or an injected prompt in one, could push with the operator's credentials around the tool (any ref, force, other remotes), bypassing the publish-ref-only rule | **Accepted by the owner for bypass runs; not blocking.** Controls that stay: bypass needs a per-meta-session approval of the exact scope (decision 17), policy `branch` is off by default per context, the provider's Git-write denial and FR-GIT-03 ref snapshots, worktree isolation, and the controller push itself (verified refspec, never forced). Non-bypass runs keep BR-31. Revisit with containers (M10, no credential store mounted) |
 
 Numbering: R-36, R-37 and Q-32 to Q-35 (§7.3) were written on the M3 wave B branch as R-29, R-30 and Q-27 to
 Q-30. PR #17 merged all but Q-30 into main under those numbers, which main already used for other items; they were

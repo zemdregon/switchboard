@@ -35,6 +35,7 @@ import path from "node:path";
 import type Database from "better-sqlite3";
 import type { ShimSpec } from "../adapters/types.js";
 import { createLedger, type Ledger } from "../ledger/index.js";
+import { bypassApprovedFor } from "../lifecycle/approval.js";
 import { CommitError, type GitPublisher } from "./commit.js";
 import { credentialReachFromJson } from "./credential-reach.js";
 import type { GitPusher } from "./push.js";
@@ -120,6 +121,12 @@ export interface OpenChannelInput {
    * and BR-31 holds at open; ignored when the service has no pusher. Every call re-checks both.
    */
   readonly offerPush?: boolean;
+  /**
+   * Owner decision 37: set by the lifecycle only when `push` is offered because the controller verified an approved
+   * bypass (the exemption from BR-31). Recorded in `git_channel_opened` as `credential_reach: "bypass_exempt"`. It
+   * changes only that record: every call re-derives the verdict from the ledger and never reads this field.
+   */
+  readonly pushReach?: "bypass_exempt";
 }
 
 export interface OpenChannel {
@@ -196,6 +203,15 @@ const GENERIC_MESSAGES: Readonly<Record<string, string>> = {
   GIT_FAILED: "the commit failed in the controller",
   INTERNAL_ERROR: "the controller could not complete the call",
 };
+
+/** `bypassApprovedFor` that fails closed (false) when the ledger rows cannot be evaluated. */
+function approvedBypassOf(ledger: Ledger, run: Parameters<typeof bypassApprovedFor>[1]): boolean {
+  try {
+    return bypassApprovedFor(ledger, run);
+  } catch {
+    return false;
+  }
+}
 
 export class GitToolService {
   private readonly ledger: Ledger;
@@ -278,7 +294,12 @@ export class GitToolService {
     this.ledger.appendRunEvent({
       runId: input.runId,
       type: GIT_CHANNEL_OPENED,
-      payload: { tools: [...state.tools], socket_dir: dir, fallback },
+      payload: {
+        tools: [...state.tools],
+        socket_dir: dir,
+        fallback,
+        ...(state.tools.includes("push") && input.pushReach !== undefined ? { credential_reach: input.pushReach } : {}),
+      },
     });
     return {
       runId: input.runId,
@@ -544,7 +565,10 @@ export class GitToolService {
         metaSessionId: state.input.metaSessionId,
         requestedBy: "agent_tool",
         runId: state.input.runId,
-        agentReach: credentialReachFromJson(bound.run.policy_snapshot_json),
+        // Owner decision 37: the only exemption input is the controller's own approval evaluation, never agent data.
+        agentReach: credentialReachFromJson(bound.run.policy_snapshot_json, {
+          approvedBypass: approvedBypassOf(this.ledger, bound.run),
+        }),
       });
       if (result.pushed) {
         return { ok: true, result: { pushed: true, ref: result.ref, head_sha: result.headSha } };

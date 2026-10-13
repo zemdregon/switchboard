@@ -3,7 +3,8 @@
 - Status: Accepted
 - Date: 2026-10-13
 - Decided by: Delegated (agent), under [owner decision 25](../ROADMAP.md#42-owner-decisions) (best practice for a
-  decision that does not change what a bypass run may do: a bypass run is never offered `push`, BR-31). Not an Ender
+  decision that does not change what a bypass run may do: a bypass run is never offered `push`, BR-31; **amended before
+  merge** by [owner decision 37](../ROADMAP.md#42-owner-decisions), see "Amended before merge" below). Not an Ender
   quote and not owner-approved. Recorded as owner decision 35 in the roadmap for traceability only. That agents may push
   through the `push` tool is Ender's answer to Q-9 ([ADR-0014](0014-tool-only-commits-and-publication.md) item 5); the
   rules (FR-GIT-05, FR-GIT-06, BR-29, BR-31) and the algorithm ([LLD §12.6](../design/LLD.md#126-push-algorithm)) were
@@ -75,8 +76,10 @@ agent's.
    is `branch` and whose profile has no arbitrary shell: shell `none`, or `allowlist` with an **empty** allowlist. A
    non-empty allowlist is refused (`shell_allowlist`): the controller cannot prove that an allowlisted program cannot
    read `~/.ssh` or a credential store. `broad` is refused; a `privileged` run is judged by its approved scope's `shell`
-   and is always refused when the scope or approval sets `bypass` (a bypass run skips the provider's permission
-   prompts, so nothing the profile names is enforced). A `container` environment is refused until M10 exists. No
+   and is refused when the scope or snapshot sets `bypass` without a controller-verified approval (a bypass run skips
+   the provider's permission prompts, so nothing the profile names is enforced). *As first written this said "always
+   refused when the scope or approval sets `bypass`"; see "Amended before merge" for the exemption of an approved
+   bypass run.* A `container` environment is refused until M10 exists. No
    manifest declares credential confinement (the manifest schema has no such field), so that BR-31 route is never
    taken. When withheld, `push` is not offered and a `git_push_withheld` run event records the reason; the run is not
    otherwise affected (this reads FR-GIT-06's "ineligible" as "ineligible for push", as FRD BR-31 states).
@@ -127,8 +130,8 @@ agent's.
 
 ## Consequences
 
-- Host runs with a shell (including every approved bypass run with broad shell) cannot use the agent `push` tool; the
-  operator command, or a `container` environment once M10 exists, is the route.
+- Host runs with a shell cannot use the agent `push` tool, except an approved bypass run (see "Amended before merge");
+  for the others the operator command, or a `container` environment once M10 exists, is the route.
 - A repository whose own configuration sets a credential helper, `sshCommand` or `insteadOf` cannot be pushed through
   Switchboard until the operator moves that setting to the global configuration (R-49).
 - The operator must stop `serve` to run `switchboard git push` (R-49).
@@ -137,6 +140,39 @@ agent's.
 - Transport classification and the unsafe-key list are not exhaustive; BR-31 and the transport allowlist are the main
   controls. Verified on Git 2.43.0 with local bare remotes only: no `https` or `ssh` remote, credential helper, SSH agent
   or proxy was exercised (no network).
+
+## Amended before merge (2026-10-13): approved bypass runs are exempt from the credential-reach rule
+
+This ADR was not merged when Ender gave this direction (owner decision 37, verbatim: "BR-31. Don't block git operations
+on bypass mode"), so it is amended here in an explicit section rather than rewritten; the original text above is
+marked where it changed. **Ender's words are quoted; the narrow reading below is a Delegated interpretation (agent),
+recorded so Ender can correct it.**
+
+- **What changes.** In an approved bypass run (scope `bypass` true AND an approval the controller verifies, evaluated by
+  `bypassApprovedFor`, the same `evaluateBypass` verdict the argv audit gate uses) the controller-mediated `push` tool is
+  offered and accepted regardless of item 4. `evaluateCredentialReach` takes the controller-held fact `approvedBypass`
+  (passed by the lifecycle at channel open and by the channel at every call, computed from the ledger's approval row and
+  the run's policy snapshot) and returns `ok` with the reason `bypass_exempt`. Policy `branch` and a `host` environment
+  are still checked first (policy `none` offers nothing; a `container` snapshot stays refused until M10). The reason is
+  written to the `git_channel_opened` event (`credential_reach`), to each `git_push` event (`credential_reach`) and to
+  each `git_push` row (`detail`: `<REASON>; credential_reach=bypass_exempt`), so `runs show` displays it.
+- **What does not change.** The push is performed only by the controller; the agent never receives credentials and the
+  push process's allowlisted environment (item 3) is unchanged. Items 1, 2, 3, 5, 6, 7 and 8 stand: explicit verified
+  refspec, never forced, provenance-verified commits only, protected targets refused, repository-config-unsafe refusal,
+  the per-channel limit, the Q-44 violation refusal and recording. Owner decision 22 still keeps the provider's Git-write
+  denial: the agent cannot run `git commit` or `git push` itself (the `--disallowedTools` Git deny rules and the
+  FR-GIT-03 ref snapshots stay), and the operator command is unchanged. Non-bypass runs keep item 4 exactly.
+- **Trust boundary.** The exemption derives only from controller-held facts. A snapshot or scope that merely claims
+  `bypass` (`bypassApproved` true in a stored snapshot, a scope with `bypass: true` and no verified approval) is still
+  refused as `bypass_run`; nothing the agent or an MCP client sends reaches the input (the `push` tool takes no
+  arguments, the stored `bypassApproved` is never trusted, FR-POL-03).
+- **Plain statement of the cost.** This is the one place a bypass run's agent can reach push credentials by design of the
+  owner's choice: an approved bypass agent with a shell can read the operator's push credentials (`~/.ssh`, a credential
+  helper's store) while the `push` tool is offered. The controller still never gives them to it. Recorded as R-51
+  (accepted by the owner for bypass, not blocking) in the roadmap; R-48 now excludes approved bypass runs from its
+  controls.
+- **Alternative rejected.** Keeping the withhold and telling bypass runs to use the operator command: it blocks Git
+  operations for bypass runs through Switchboard, which is what Ender asked not to do.
 
 ## Revisit when
 

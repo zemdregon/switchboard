@@ -25,7 +25,9 @@ export {
   type RecoveryReport,
 } from "./commit.js";
 export {
+  BYPASS_EXEMPT,
   type CredentialReach,
+  type CredentialReachFacts,
   type CredentialReachReason,
   credentialReachFromJson,
   evaluateCredentialReach,

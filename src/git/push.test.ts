@@ -24,7 +24,7 @@ import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger } from "../ledger/index.js";
 import type { PolicySnapshot } from "../policy/types.js";
 import { WorkspaceManager } from "../workspace/index.js";
-import { evaluateCredentialReach } from "./credential-reach.js";
+import { credentialReachFromJson, evaluateCredentialReach } from "./credential-reach.js";
 import {
   classifyPush,
   classifyRemoteUrl,
@@ -566,6 +566,33 @@ describe("violations, agent reach and recording (Q-44, BR-31)", () => {
     expect(ok).toMatchObject({ outcome: "ACCEPTED", pushed: true });
   });
 
+  it("an exempt approved bypass verdict pushes only the publish ref and records the exemption in event and row", async () => {
+    const c = await committed();
+    const r = await pusher().push({
+      metaSessionId: c.sessionId,
+      requestedBy: "agent_tool",
+      runId: c.runId,
+      agentReach: { ok: true, reason: "bypass_exempt" },
+    });
+    expect(r).toMatchObject({ outcome: "ACCEPTED", pushed: true });
+    expect(pushEvents()[0]).toMatchObject({ run_id: c.runId, p: { credential_reach: "bypass_exempt" } });
+    expect(String(pushRows()[0]?.detail)).toContain("credential_reach=bypass_exempt");
+    expect(remoteRefs(bare).sort()).toEqual(["refs/heads/main", `refs/heads/sb/${c.sessionId}`].sort());
+  });
+
+  it("an exempt verdict does not bypass the other checks: a recorded violation still refuses", async () => {
+    const c = await committed();
+    ledger.appendRunEvent({ runId: c.runId, type: "git_policy_violation", payload: { v: 1, violation_count: 1 } });
+    const r = await pusher().push({
+      metaSessionId: c.sessionId,
+      requestedBy: "agent_tool",
+      runId: c.runId,
+      agentReach: { ok: true, reason: "bypass_exempt" },
+    });
+    expect(r).toMatchObject({ outcome: "REFUSED_POLICY", reason: "GIT_POLICY_VIOLATION" });
+    expect(remoteRefs(bare)).toEqual(["refs/heads/main"]);
+  });
+
   it("concurrent pushes of one meta-session run one at a time and every attempt is recorded", async () => {
     const c = await committed();
     const p = pusher();
@@ -610,6 +637,7 @@ describe("credential-reach rule (BR-31, FR-GIT-06)", () => {
       reason: "shell_allowlist",
     });
     expect(evaluateCredentialReach(base({ shell: "broad" }))).toEqual({ ok: false, reason: "shell_broad" });
+    // A snapshot that merely claims a bypass is not enough: only the controller's verified fact exempts (decision 37).
     expect(evaluateCredentialReach(base({ bypassApproved: true, shell: "none" }))).toEqual({
       ok: false,
       reason: "bypass_run",
@@ -627,7 +655,7 @@ describe("credential-reach rule (BR-31, FR-GIT-06)", () => {
     expect(evaluateCredentialReach(noProject)).toEqual({ ok: false, reason: "no_project" });
   });
 
-  it("judges a privileged run by its approved scope and always refuses bypass", () => {
+  it("judges a privileged run by its approved scope and refuses bypass that the controller has not verified", () => {
     const { shellAllowlist: _none, ...plain } = base();
     const scoped = (shell: unknown, bypass: boolean): PolicySnapshot => ({
       ...plain,
@@ -647,10 +675,52 @@ describe("credential-reach rule (BR-31, FR-GIT-06)", () => {
     });
     expect(evaluateCredentialReach(scoped({ mode: "none" }, false))).toEqual({ ok: true });
     expect(evaluateCredentialReach(scoped({ mode: "none" }, true))).toEqual({ ok: false, reason: "bypass_run" });
+    expect(evaluateCredentialReach(scoped({ mode: "none" }, true), { approvedBypass: false })).toEqual({
+      ok: false,
+      reason: "bypass_run",
+    });
     expect(evaluateCredentialReach(scoped({ mode: "broad" }, false))).toEqual({ ok: false, reason: "shell_broad" });
     expect(evaluateCredentialReach(scoped({ mode: "allowlist", allowlist: [["ls"]] }, false))).toEqual({
       ok: false,
       reason: "shell_allowlist",
+    });
+  });
+
+  it("an approved bypass run (controller-verified) is exempt whatever its shell, with the reason recorded (decision 37)", () => {
+    const facts = { approvedBypass: true };
+    const exempt = { ok: true, reason: "bypass_exempt" };
+    expect(evaluateCredentialReach(base({ shell: "broad", bypassApproved: true }), facts)).toEqual(exempt);
+    expect(evaluateCredentialReach(base({ shellAllowlist: ["npm test"] }), facts)).toEqual(exempt);
+    expect(credentialReachFromJson(JSON.stringify(base({ shell: "broad" })), facts)).toEqual(exempt);
+    // Policy branch and a host environment are still required first; policy none offers nothing.
+    const project = base().project as NonNullable<PolicySnapshot["project"]>;
+    expect(evaluateCredentialReach(base({ project: { ...project, push: { policy: "none" } } }), facts)).toEqual({
+      ok: false,
+      reason: "policy_not_branch",
+    });
+    expect(evaluateCredentialReach(base({ project: { ...project, environment_kind: "container" } }), facts)).toEqual({
+      ok: false,
+      reason: "container_not_available",
+    });
+    // Non-bypass runs keep the rule exactly (no facts, or facts that say false).
+    expect(evaluateCredentialReach(base({ shell: "broad" }))).toEqual({ ok: false, reason: "shell_broad" });
+    expect(evaluateCredentialReach(base({ shell: "broad" }), { approvedBypass: false })).toEqual({
+      ok: false,
+      reason: "shell_broad",
+    });
+  });
+
+  it("agent-supplied data cannot trigger the exemption: unknown fields in the snapshot JSON are ignored", () => {
+    const forged = {
+      ...base({ shell: "broad" }),
+      approvedBypass: true,
+      bypass_exempt: true,
+      facts: { approvedBypass: true },
+    };
+    expect(credentialReachFromJson(JSON.stringify(forged))).toEqual({ ok: false, reason: "shell_broad" });
+    expect(credentialReachFromJson(JSON.stringify({ ...forged, bypassApproved: true }))).toEqual({
+      ok: false,
+      reason: "bypass_run",
     });
   });
 });

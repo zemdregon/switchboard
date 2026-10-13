@@ -402,7 +402,8 @@ run branch and its checkpoints are untouched. (Plain Git plumbing; exact command
 `--force`, to the configured remote under the configured prefix. It uses the operator's existing Git configuration (SSH
 agent, credential helper). The controller does not read, copy or store any of it (FR-GIT-06, NFR-SEC-01). The agent's
 environment is separate from the controller's. In a `host` environment with a shell, ambient credentials remain
-readable by the agent, so the `push` tool is withheld (BR-31). Candidate stronger answers, not adopted: a dedicated OS
+readable by the agent, so the `push` tool is withheld (BR-31), except in an approved bypass run (owner decision 37,
+Delegated narrow reading, ADR-0028 "Amended before merge", R-51). Candidate stronger answers, not adopted: a dedicated OS
 user for a publisher helper (adds a privilege boundary and an installation step), or container environments (M10).
 
 **Audit trail.** The ledger table `git_commit` ([LLD §1](LLD.md#1-data-model)) is written in the same transaction as the
@@ -619,10 +620,14 @@ the table above; fake adapter only, Git 2.43.0).* Mechanism in [LLD §12.5](LLD.
   update prints `!\t<src>:<dst>\t[rejected] (non-fast-forward)` on stdout under `--porcelain`; a push through a
   configured remote updates `refs/remotes/<remote>/<branch>`, which the T9.5 ref guard now expects when an accepted
   `git_push` row matches it.
-- **BR-31.** A profile qualifies only with shell `none` or an empty allowlist, never in a bypass run; a non-empty
-  allowlist is refused because the controller cannot judge what a listed program can read (R-48 records the remaining
-  file-read-tool gap). Host runs with a shell, including approved bypass runs with broad shell, therefore cannot use the
-  agent `push` tool; the operator command `switchboard git push` (or a `container` environment, M10) is the route.
+- **BR-31.** A profile qualifies only with shell `none` or an empty allowlist; a non-empty allowlist is refused because
+  the controller cannot judge what a listed program can read (R-48 records the remaining file-read-tool gap). Host runs
+  with a shell therefore cannot use the agent `push` tool; the operator command `switchboard git push` (or a `container`
+  environment, M10) is the route. **Exception (owner decision 37, Ender: "BR-31. Don't block git operations on bypass
+  mode"; Delegated narrow reading):** an approved bypass run (scope `bypass` and a controller-verified approval, from
+  `bypassApprovedFor`, never from agent-supplied data) is offered `push` and accepted with the reason `bypass_exempt`
+  recorded; the push itself, the provider's Git-write denial and non-bypass runs are unchanged. The agent of such a run
+  can read push credentials if its shell can (R-51); the controller never gives them to it.
 - **Tests (no provider CLI, no network; temporary repositories and a local bare remote; the push's `HOME` is a temporary
   directory).** `src/git/push.test.ts` (policy, target, refusals, URL and remote classification, environment allowlist,
   hooks never run, repository command keys refused, remote hook output not stored, violation, BR-31 table, recording,
