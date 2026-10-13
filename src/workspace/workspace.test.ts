@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ArtifactStore } from "../artifacts/index.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger, type TrustProfile } from "../ledger/index.js";
+import { parseGitVersion, versionAtLeast } from "./git.js";
 import { MIN_GIT_VERSION, parseNameStatus, WorkspaceError, WorkspaceManager } from "./index.js";
 
 const GIT_ENV = {
@@ -79,7 +80,22 @@ async function prepared(profile: TrustProfile = "edit-untrusted") {
 
 describe("workspace manager", () => {
   it("documents a minimum git version", () => {
-    expect(MIN_GIT_VERSION).toEqual([2, 30, 0]);
+    expect(MIN_GIT_VERSION).toEqual([2, 32, 0]);
+  });
+
+  it("the version gate rejects Git 2.31 and accepts 2.32 (ADR-0023)", () => {
+    const gate = (out: string) => {
+      const v = parseGitVersion(out);
+      return v !== undefined && versionAtLeast(v, MIN_GIT_VERSION);
+    };
+    expect(gate("git version 2.30.2")).toBe(false);
+    expect(gate("git version 2.31.0")).toBe(false);
+    expect(gate("git version 2.31.9")).toBe(false);
+    expect(gate("git version 2.32.0")).toBe(true);
+    expect(gate("git version 2.43.0")).toBe(true);
+    expect(gate("git version 3.0.0")).toBe(true);
+    expect(gate("git version 2.39.5 (Apple Git-154)")).toBe(true);
+    expect(gate("not git")).toBe(false);
   });
 
   it("creates a worktree on a controller branch from a recorded base checkpoint", async () => {

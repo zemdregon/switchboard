@@ -73,7 +73,13 @@ import {
 } from "../../exec/index.js";
 import type { PrivilegedScope } from "../../policy/types.js";
 import { classifyCommon } from "../failure.js";
-import { GIT_PUBLISHING_PROGRAMS, GIT_WRITE_SUBCOMMANDS, gitWriteRisks } from "../git-write.js";
+import {
+  GIT_GLOBAL_FLAGS,
+  GIT_GLOBAL_OPTIONS_WITH_VALUE,
+  GIT_PUBLISHING_PROGRAMS,
+  GIT_WRITE_SUBCOMMANDS,
+  gitWriteRisks,
+} from "../git-write.js";
 import type {
   AcpMessage,
   AuthResult,
@@ -139,18 +145,18 @@ export const CLAUDE_NETWORK_TOOLS: readonly string[] = ["WebFetch"];
 /**
  * Git write deny rules, passed with `--disallowedTools` on every compiled invocation (FR-GIT-01), in the rule form of the
  * [HELP] example `Bash(git *)`. For each subcommand in GIT_WRITE_SUBCOMMANDS: the bare form and the form with
- * arguments; plus Git global options that redirect or reconfigure Git (`-C`, `-c`, `--git-dir`, `--work-tree`) and
- * GitHub CLI pushes. Assumptions (not in [HELP] or [R2]): that `*` matches any suffix (including `=value`) and nothing
+ * arguments; plus every Git global option before the subcommand (GIT_GLOBAL_OPTIONS_WITH_VALUE, GIT_GLOBAL_FLAGS; R-43:
+ * `git --no-pager commit` and `git -P commit` still commit) and GitHub CLI pushes. Whether Claude's matcher skips
+ * global options when matching `Bash(git commit *)` is unverified (live check C-G2), so the explicit spellings are
+ * denied as well. Assumptions (not in [HELP] or [R2]): that `*` matches any suffix (including `=value`) and nothing
  * else; that a deny rule wins over an allow rule; that deny rules naming a tool absent from `--tools` are accepted.
  */
 export const CLAUDE_GIT_DENY_RULES: readonly string[] = [
   ...GIT_WRITE_SUBCOMMANDS.flatMap((v) => [`Bash(git ${v})`, `Bash(git ${v} *)`]),
-  "Bash(git -C *)",
-  "Bash(git -c *)",
-  "Bash(git --git-dir *)",
-  "Bash(git --git-dir=*)",
-  "Bash(git --work-tree *)",
-  "Bash(git --work-tree=*)",
+  ...GIT_GLOBAL_OPTIONS_WITH_VALUE.flatMap((o) =>
+    o.startsWith("--") ? [`Bash(git ${o} *)`, `Bash(git ${o}=*)`] : [`Bash(git ${o} *)`],
+  ),
+  ...GIT_GLOBAL_FLAGS.map((o) => `Bash(git ${o} *)`),
   ...GIT_PUBLISHING_PROGRAMS.flatMap((p) => [`Bash(${p})`, `Bash(${p} *)`]),
 ];
 

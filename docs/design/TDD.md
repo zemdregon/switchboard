@@ -38,7 +38,7 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | Unit and integration tests | Vitest | TypeScript-native, fast, fake timers and mocking | Less ubiquitous than Jest; process-level tests still need a plain harness | Vitest 5.0.4 |
 | Lint and format | Biome (single tool) | One config, fast | Smaller rule set than ESLint plus typescript-eslint; type-aware lint rules may be missing, compensated by `tsc --noEmit` in CI | Biome 2.5.15 |
 | Package manager | npm with committed lockfile, `npm ci` in CI | Ships with Node; no extra tool for a single-maintainer project | No workspace-level conveniences of pnpm; adequate for a single package | npm 10.9.4 (bundled with local Node); `package-lock.json` committed |
-| Git access | `git` CLI via `execFile` (no shell), minimum version **2.30** (Proposed, fixed in T1.5; `src/workspace/git.ts` `MIN_GIT_VERSION`; developed against 2.43) | Worktree and diff semantics are Git's own ([ADR-0006](../adr/0006-worktree-checkpoints-no-blind-replay.md)); pure-JS Git libraries lack worktree support (Assumption) | Requires `git` on host; output parsing must use porcelain/`-z` formats | Min version M1 |
+| Git access | `git` CLI via `execFile` (no shell), minimum version **2.32** (raised from 2.30 on 2026-10-13 by [ADR-0023](../adr/0023-minimum-git-version-2-32.md); `src/workspace/git.ts` `MIN_GIT_VERSION`; developed against 2.43) | Worktree and diff semantics are Git's own ([ADR-0006](../adr/0006-worktree-checkpoints-no-blind-replay.md)); pure-JS Git libraries lack worktree support (Assumption) | Requires `git` on host; output parsing must use porcelain/`-z` formats | Min version M1 |
 | Process spawning | `node:child_process` `spawn` with `detached: true` | Needed for process groups (FR-EXE-01) | Signal and group semantics differ on macOS/Windows; Windows deferred (NFR-PORT-03) | Node LTS |
 | IDs | ULID, small dependency or in-house (about 30 lines) | Sortable, prefix-able, time-ordered | In-house needs a monotonic-within-millisecond test | M1 |
 | Logging | Structured JSON to stderr via `pino` with path-based redaction (Proposed) | Redaction support built in; stdout is reserved for MCP framing | One more dependency; redaction is a safety net, not the primary control (§3.3) | Pinned later (with first logging code) |
@@ -134,7 +134,7 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
   command fails instead of running (verified on Git 2.43). Every `git diff` also gets `--no-textconv --no-ext-diff`,
   and `core.attributesFile` is `/dev/null`. A driver name that `-c` cannot express (one containing `=` or a newline)
   makes the call fail closed. Delegated decision: `--attr-source`/`GIT_ATTR_SOURCE` is not used, because it needs Git
-  2.40 (above the 2.30 minimum) and still reads `info/attributes`.
+  2.40 (above the 2.32 minimum) and still reads `info/attributes`.
   Nested repositories: *Note (2026-10-13, Delegated, owner decision 27,
   [ADR-0022](../adr/0022-nested-repositories-excluded-from-controller-git.md)):* a directory in a run worktree that
   holds its own `.git` (directory, gitdir-pointer file or symlink) is found by `src/workspace/nested.ts` without
@@ -346,7 +346,7 @@ C-G2 (ROADMAP R-38).
 | --- | --- | --- | --- | --- |
 | 1 | Profile deny rules | Each adapter compiles Git write operations (commit, branch and tag changes, push) into the provider's *documented* permission controls: Claude Code `--disallowedTools` deny rules plus its explicit `--tools`/`--allowedTools` set, Grok Build `--allow`/`--deny`, OpenCode explicit deny rules, Antigravity `strict` mode. An adapter whose provider documents none declares it (`gitWriteControl`, reported by `list_capabilities`; Codex). Under `inspect-untrusted` and `edit-untrusted` Claude Code has no arbitrary shell, and a shell allowlist entry that could write Git makes the run `Ineligible`; Codex runs commands inside its native sandbox under those profiles (owner decision 10, §4.2), so for Codex this layer is the sandbox's path scope only. | Provider-enforced; only as strong as the provider's rule matching, and lexical | Claude: rule form from the `claude --help` 2.1.296 example only, matching semantics an Assumption (live check pending); Codex: none documented; M4 adapters: to be verified |
 | 2 | No credentials in the agent's environment | The environment allowlist (FR-EXE-07) never carries `SSH_AUTH_SOCK`, token variables or credential-helper settings. In a `container` environment (M10) no credential store is mounted. | Strong in containers; in a `host` environment on-disk credentials stay readable by a same-user shell ([R2] limit) | Allowlist: tested in M1; container: M10 |
-| 3 | Git-level guard | Per-run Git configuration for agent processes that points hooks at a controller-owned directory whose hooks reject ref updates not carrying the controller's token. Candidate mechanisms: a per-run global config file, or `GIT_CONFIG_COUNT` environment entries (newer Git than the current 2.30 minimum, so adopting it raises `MIN_GIT_VERSION`; check Git's release notes). | A guard against provider-internal or accidental commits, **not** a boundary: an agent with a shell can override Git configuration | Mechanism: to be chosen in an M9 spike |
+| 3 | Git-level guard | Per-run Git configuration for agent processes that points hooks at a controller-owned directory whose hooks reject ref updates not carrying the controller's token. Candidate mechanisms: a per-run global config file, or `GIT_CONFIG_COUNT` environment entries (2.31 inferred, below the 2.32 minimum set by [ADR-0023](../adr/0023-minimum-git-version-2-32.md); check Git's release notes). | A guard against provider-internal or accidental commits, **not** a boundary: an agent with a shell can override Git configuration | Mechanism: to be chosen in an M9 spike |
 | 4 | Git directory out of reach | A worktree's Git directory lives under the main repository's `.git/worktrees/`, outside the worktree. A provider sandbox that confines writes to the worktree therefore cannot edit refs. | Depends on each sandbox's path scope | Malicious fixtures per adapter (M9) |
 | 5 | Detection | Snapshot all refs (`for-each-ref`, including tags and other branches) at LEASED and compare at FINALIZING, plus a check that the run branch holds only controller-made commits. Anything else is a violation: content kept as working-tree changes, commits never published (FR-GIT-03). | Catches what layers 1 to 4 miss; cannot undo a push | Tests in M9 |
 
@@ -396,6 +396,110 @@ user for a publisher helper (adds a privilege boundary and an installation step)
 **Audit trail.** The ledger table `git_commit` ([LLD §1](LLD.md#1-data-model)) is written in the same transaction as the
 `git_commit` run event. It stores SHA, tree hash and patch ID so records can be re-linked after an operator rebase
 (best effort). `git notes` and trailers were rejected because they travel with the repository.
+
+**T9.0 spike findings (note, 2026-10-13; Delegated, not owner-approved; no mechanism here is adopted until the ADRs
+named below exist).** Scope: only what could be checked on this host without a model call, a login or a credential. The
+tools were Git 2.43.0 (`git --version`) in throwaway repositories with an isolated `HOME`, and the help text of `claude`
+2.1.296 (`claude --help`, `claude mcp --help`, `claude mcp add --help`; no prompt run, no `mcp list` or `mcp add`, which
+touch configuration). Codex is not installed. Git release-note citations are `Documentation/RelNotes/<version>.adoc` in
+the upstream `git/git` repository, read on 2026-10-13. Command transcripts are reproduced in [LLD
+§12.3](LLD.md#123-commit-algorithm-and-refs) (plumbing) and below (guards). Verified means "observed on Git 2.43.0 or
+read in the installed help"; a minimum version is stated only where a release note says so.
+
+*Layer 3, per-run Git configuration (verified on 2.43.0).* Each row is one command run in a linked worktree of a
+repository whose `$HOME/.gitconfig` held an identity, `alias.ci=commit` and `credential.helper=store`; `$G` is
+`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=<dir>`, and `<dir>` held an executable
+`reference-transaction` hook that exits 1 in state `prepared`, and a `pre-push` hook that exits 1.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| User config neutralised | `GIT_CONFIG_GLOBAL=<empty file> GIT_CONFIG_SYSTEM=/dev/null git config --get-regexp '^(user\|alias)\.'` and `... git ci -m x` | no keys (rc 1); `git: 'ci' is not a git command` (aliases from user config are gone) |
+| Credential helper neutralised | same neutral variables, `git config --get-all credential.helper` | no value (rc 1). Setting `credential.helper` to an empty value through `GIT_CONFIG_COUNT` only appends an empty entry after `store`; the reset semantics were not tested |
+| Guard blocks Git writes | `env $G git commit -m x`, `git branch sneaky`, `git update-ref refs/heads/sneaky2 HEAD`, `git tag t1`, `git commit --no-verify -m x` | every one: hook message, `fatal: ref updates aborted by hook`, rc 128; no ref created or moved. `--no-verify` does not skip `reference-transaction` |
+| Guard blocks push | `env $G git push origin run/1` | `pre-push` message, `error: failed to push some refs`, rc 1; nothing reached the bare remote |
+| Guard does not apply to the controller | the same commands with `SWITCHBOARD_TOKEN=x` in the environment | commit and push succeed. Note: controller Git calls already run with `scrubbedGitEnv()` and `-c core.hooksPath=/dev/null` (`src/workspace/git.ts`), so they never carry the guard variables and the hook could reject unconditionally; the token check is optional |
+| Agent override, `-c` | `env $G git -c core.hooksPath=/dev/null commit -m x` | **commit succeeds**: a command-line `-c` beats `GIT_CONFIG_COUNT` |
+| Agent override, repository config | `git config --local core.hooksPath /dev/null`, then `env $G git commit` | still refused: `GIT_CONFIG_COUNT` beats the repository's local config |
+| Agent override, environment | `env $G env -u GIT_CONFIG_COUNT git commit` | **commit succeeds**: the agent owns its environment |
+| File variant | `GIT_CONFIG_GLOBAL=<file with core.hooksPath and an identity> git commit` | refused; but after `git config --local core.hooksPath /dev/null` the commit **succeeds**: local config beats the global file, so the file variant is weaker than the environment variant |
+| No identity, no commit | neutral config, `git commit` with no `GIT_AUTHOR_*` | `Author identity unknown`, rc 128 (with no hostname FQDN; on a host that has one Git may derive an identity, so this is a side effect, not a control) |
+| Repository's own hooks | `git update-ref ...` with a repository `reference-transaction` hook, then with `-c core.hooksPath=/dev/null` | the repository hook ran and aborted the update; with the override the update succeeded (run in the main repository; whether a linked worktree reads the same hooks directory was not tested). This is why the controller always overrides `core.hooksPath` |
+
+Conclusions (Delegated, Proposed): (1) the environment variant (`GIT_CONFIG_COUNT`, `core.hooksPath` to a
+controller-owned directory) plus `GIT_CONFIG_GLOBAL` pointing at an identity-free file and `GIT_CONFIG_SYSTEM=/dev/null`
+blocks commits, branch and tag changes, ref updates and pushes made by any Git process that inherits the agent's
+environment, which includes provider-internal Git calls, and it holds against a repository-local config edit; (2) it is
+a guard, not a boundary, exactly as the table says: `-c` and an unset variable defeat it, so the Claude deny rule on
+`git -c` and FR-GIT-03 detection stay necessary; (3) the guard hooks fire on ref updates and pushes, so object-only and
+index-only operations (`git add`, and by inference `git commit-tree` and `hash-object -w`, which update no ref) are not
+covered and leave index changes or unreferenced objects that FR-GIT-03 (refs only) does not see. Versions:
+`GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` appear in the Git 2.32.0 release notes; the 2.31.0 notes say "Two new ways
+to feed configuration variable-value pairs via environment variables have been introduced" without naming them, so that
+`GIT_CONFIG_COUNT` needs 2.31 is **inferred**, not verified; the `reference-transaction` hook is already treated as
+existing in the 2.29.0 notes, and the version that introduced it is **unverified**. This host has no Git man pages or
+release notes, so the notes were fetched from upstream and nothing else about minimum versions could be checked.
+
+*`MIN_GIT_VERSION` revisited (finding; decided 2026-10-13, see the note after this paragraph).* `MIN_GIT_VERSION`
+was `[2, 30, 0]` (`src/workspace/git.ts`; the TDD §2 table above). `scrubbedGitEnv()` already sets
+`GIT_CONFIG_GLOBAL=/dev/null`, which the 2.32.0 release notes introduce; on 2.30 and 2.31 the variable would be
+unknown to Git, so the operator's global config would not be neutralised there (inferred from the notes, not tested:
+no such Git is installed).
+`GIT_CONFIG_NOSYSTEM=1`, also set there, is older. Adopting layer 3 as above needs 2.31 (inferred) and the neutral-file
+variable needs 2.32. Proposal: raise the minimum to **2.32.0**. That changes the technology stack's stated floor, so
+under AGENTS.md it needs an ADR. Nothing in the plumbing below needs more than 2.30 as far as could be checked, but
+their introduction versions are unverified for the reason above.
+
+*Decision (2026-10-13, Delegated, under owner decision 25; ROADMAP decision 30, Q-39, R-44;
+[ADR-0023](../adr/0023-minimum-git-version-2-32.md)):* `MIN_GIT_VERSION` is now `[2, 32, 0]` (`src/workspace/git.ts`);
+`doctor` and `WorkspaceManager.checkGit` use the constant and so reject 2.31 and older, and `src/workspace/workspace.test.ts`
+covers the gate with version strings. No requirement ID changes; no SRS requirement names a Git version. The 2.32
+introduction of `GIT_CONFIG_GLOBAL` rests on the release notes, not on a test against an old Git (none is installed).
+
+*Per-run MCP definition: Claude Code (help text of 2.1.296 only).* `--mcp-config <configs...>`: "Load MCP servers from
+JSON files or strings (space-separated)"; `--strict-mcp-config`: "Only use MCP servers from --mcp-config, ignoring all
+other MCP configurations". So a per-run definition is a file in the run directory or a JSON string on the command line,
+with the strict flag already in the compiled isolation set; no global configuration is written. `claude mcp add` and
+`add-json` write local, user or project configuration (`-s, --scope`), which FR-POL-08 forbids, so they are not the
+channel. Not in the help, therefore **Unverified (live check)**: the top-level JSON shape of `--mcp-config` (`add-json`
+documents only that a server may be "stdio, SSE, HTTP, or WebSocket"); the form an MCP tool takes in `--allowedTools` or
+`--tools`; whether a call to an MCP tool prompts under `--permission-mode dontAsk --permission-prompts none` when it is
+not pre-allowed; and whether `--safe-mode` (help: disables "MCP servers" among "all customizations") also disables a
+server given by `--mcp-config`. Those four decide whether Claude can receive the channel without a bypass flag
+(FR-GIT-02); until a live check answers them the Claude adapter must not claim `commitChannel: injected`. **ADR-0015
+conflict (trust boundary; reported, not decided).** [ADR-0015](../adr/0015-claude-untrusted-isolation-flags.md) says the
+adapter "never emits ... `--mcp-config`"; `FORBIDDEN_ARGS` in `src/adapters/audit.ts` (T3.17) and
+`src/adapters/claude/claude.test.ts` encode that. The injected channel needs exactly that flag. The narrow reading that
+fits ADR-0015's purpose (no repository or operator MCP definition in an untrusted run, FR-POL-04) is: `--mcp-config`
+carrying only the controller-generated shim definition, always together with `--strict-mcp-config`, so nothing else
+loads. That relaxes an accepted ADR and touches the argv audit, so it is a **proposed ADR** (ROADMAP Q-40), not a
+decision. For a trusted-development or approved-bypass run the same applies: `approved` repository configuration keeps
+`--strict-mcp-config`, so the shim would be the only server; `enabled` omits it (ADR-0021), so the repository's own
+definitions would load beside the shim. Under `--dangerously-skip-permissions` (help: "Bypass all permission checks") an
+unlisted MCP tool should need no allow rule (inference from the help text, unverified), but a bypass run is exactly
+where deny rules are unverified (R-38), so the shim is the sanctioned path there, not the only one.
+
+*Codex (documentation only; nothing verified).* Codex is not installed. [R2] documents `codex exec`, `--json`,
+`--sandbox`, `--ignore-user-config`, `--ignore-rules` and the platform sandboxes (bubblewrap, Seatbelt, a Windows
+sandbox), and says nothing about supplying an MCP definition, MCP tool approval, Unix-socket access from inside the
+sandbox, per-command Git deny rules or a commit or attribution setting. Every cell is **Unverified**; the Codex adapter
+keeps `gitWriteControl.kind = none-documented` and the finalize-only fallback (FR-GIT-09) is the only evidenced design
+for it until a binary is installed and T3.9 or a follow-up live check runs.
+
+| Question | Claude Code 2.1.296 | Codex |
+| --- | --- | --- |
+| Per-run MCP definition | `--mcp-config` with `--strict-mcp-config` (help); JSON shape Unverified | Unverified (not in [R2]) |
+| Allow-rule form for an MCP tool | Unverified (not in help) | Unverified |
+| Channel without a bypass flag | Unverified (depends on rows above and on `--safe-mode`) | Unverified |
+| Shim reaches a Unix socket from the sandbox | Unknown: live check. The help lists no sandbox option (T3.0), so none is applied by these flags; nothing says the shim is confined | Unverified: bubblewrap and Seatbelt profiles may block connects ([R2] names the sandboxes, not their socket rules) |
+| Deny-rule syntax for Git writes | Help example only: `"Bash(git *) Edit"` (`--disallowedTools`); matching semantics Assumption | None documented in [R2] |
+| Provider commit or attribution setting | None in help except `--bare` ("skip ... attribution"), unusable (ADR-0015); the FR-GIT-04 sanitiser stays necessary | None in [R2] |
+
+*Socket path length (observed).* A UNIX socket path is limited by the kernel (`UNIX_PATH_MAX` is 108 in
+`/usr/include/linux/un.h`); on this host Python's `bind` failed with "AF_UNIX path too long" at 167 bytes and
+`gpg-agent` would not start with a `GNUPGHOME` under the long scratchpad path, but started under `/tmp`. Node 22.22.0
+`listen` and `connect` both worked at 157 bytes yet left no file at that path, which was not investigated.
+`<data_dir>/runs/<run_id>/tools.sock` (LLD §12.2) can be long when the operator's data directory is, so the socket path
+needs a length check at startup, or a short directory; that is a T9.4 design point, not decided here.
 
 ### 3.11 Container environments
 

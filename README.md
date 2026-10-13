@@ -34,7 +34,7 @@ Commercial, resale, multi-user or credential-sharing use needs your own policy r
 
 - Linux. Other operating systems are not supported yet.
 - Node.js 22 or newer (`engines` in `package.json`).
-- Git 2.30.0 or newer (`MIN_GIT_VERSION` in `src/workspace/git.ts`). `doctor` checks both.
+- Git 2.32.0 or newer (`MIN_GIT_VERSION` in `src/workspace/git.ts`). `doctor` checks both.
 - For real work, at least one provider CLI installed and logged in natively: Claude Code and/or Codex. `doctor` does not
   require any particular one.
 
@@ -291,7 +291,7 @@ version gate.
 | `another switchboard serve (pid N) already holds the data directory` | `serve` stderr, exit 1 | Another `serve` uses this `data_dir`. Stop it, or point the second one at a different `data_dir`. A stale lock from a dead process is replaced automatically. |
 | `unknown MCP client "x"; configured clients: ...` | `serve` stderr, exit 1 | `--client` does not match any `mcp_clients` id in the config. |
 | `Invalid config ...` or `Cannot read config file ...` | `doctor`, `serve` | The message lists each problem with its JSON path. Fix the file; unknown keys are errors. A path in `allowed_roots` that does not exist is also an error. |
-| Git or Node `[FAIL]` | `doctor` | Install Node 22 or newer, or Git 2.30.0 or newer. |
+| Git or Node `[FAIL]` | `doctor` | Install Node 22 or newer, or Git 2.32.0 or newer. |
 
 ## Repository documents
 

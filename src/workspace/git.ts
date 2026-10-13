@@ -6,8 +6,12 @@ import { execFile } from "node:child_process";
  * output where they parse anything.
  */
 
-/** Proposed: Git >= 2.30 (needs `worktree add -b`, `status --porcelain=v2`, `init -b` for tests; 2.30 is a conservative floor). */
-export const MIN_GIT_VERSION = [2, 30, 0] as const;
+/**
+ * Git >= 2.32 (ADR-0023, Delegated decision 30, Q-39). `scrubbedGitEnv()` sets `GIT_CONFIG_GLOBAL=/dev/null`, which the
+ * Git 2.32.0 release notes introduce; on 2.30 and 2.31 the operator's global configuration would not be neutralised.
+ * Also needs `worktree add -b`, `status --porcelain=v2` and `init -b` for tests.
+ */
+export const MIN_GIT_VERSION = [2, 32, 0] as const;
 
 /** Proposed controller identity for checkpoint commits (LLD §5 "controller identity"). */
 export const CONTROLLER_IDENTITY = { name: "Switchboard", email: "switchboard@localhost" } as const;
