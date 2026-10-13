@@ -53,6 +53,7 @@ import path from "node:path";
 import type { FakeScenario } from "../adapters/fake/adapter.js";
 import {
   AdapterRegistry,
+  adapterIdForConfigId,
   configIdForAdapterId,
   createProbeRunner,
   PreflightCache,
@@ -70,6 +71,7 @@ import { createLedger, openLedger } from "../ledger/index.js";
 import { RunLifecycle } from "../lifecycle/index.js";
 import { acquireDataDirLock, type DataDirLock } from "../lock/index.js";
 import { type SwitchboardMcpServer, startStdioServer } from "../mcp/index.js";
+import { type ModelConfig, ModelRegistry } from "../models/index.js";
 import { createProfileResolver } from "../policy/index.js";
 import { DynamicProjectStore } from "../projects/index.js";
 import { reconcile } from "../reconcile/index.js";
@@ -153,6 +155,16 @@ export function stderrLogger(io: CliIo): Logger {
 }
 
 /** Provider enablement from config (`providers.<config id>.enabled`, default on); the fake follows the test switch. */
+/** T4.5 (FR-ADP-05, LLD §2.1): the model registry from `providers.<id>.models`, keyed by adapter id. */
+function modelRegistry(config: ResolvedConfig): ModelRegistry {
+  const byAdapter = new Map<string, ModelConfig>();
+  for (const [configId, models] of config.providerModels) {
+    const adapterId = adapterIdForConfigId(configId);
+    if (adapterId !== undefined) byAdapter.set(adapterId, models);
+  }
+  return new ModelRegistry(byAdapter);
+}
+
 function enablement(config: ResolvedConfig, fake: FakeSwitch): (id: ProviderId) => boolean {
   return (id) => {
     if (id === "fake") return fake.enabled;
@@ -408,7 +420,7 @@ async function runDaemon(
     resolveProfile: createProfileResolver(config.profileOverrides),
     probeRunner: createProbeRunner(PROBE_ENV_ALLOWLIST),
     baseEnv: io.env,
-    eligibility: { gate: gateFor(registry, fake), isEnabled: enablement(config, fake) },
+    eligibility: { gate: gateFor(registry, fake), isEnabled: enablement(config, fake), models: modelRegistry(config) },
     preflightCache: new PreflightCache({ ttlMs: config.preflightTtlMs }),
     gitTools,
     finalizePublisher,
