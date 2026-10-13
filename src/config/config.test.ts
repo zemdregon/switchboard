@@ -227,3 +227,30 @@ describe("resolveConfigPath", () => {
     expect(() => resolveConfigPath({ argv: ["--config"], env: {} })).toThrow(/requires a path/);
   });
 });
+
+describe("projects[] (T9.1, FR-PRJ-01, 02, 04)", () => {
+  const repoCtx = { id: "main", kind: "repository", path: "/x", base_ref: "main" };
+  const withProjects = (...projects: unknown[]) => write({ ...base(), projects });
+
+  it("loads without projects as before, and resolves defaults when present", () => {
+    expect(loadConfig({ configPath: write(base()) }).projects).toEqual([]);
+    const c = loadConfig({ configPath: withProjects({ id: "web-app", name: "Web", contexts: [repoCtx] }) });
+    expect(c.projects[0]).toMatchObject({
+      id: "web-app",
+      environment: { kind: "host" },
+      contexts: [{ primary: true, writable: true, push: { policy: "none" }, sign: false }],
+    });
+  });
+
+  it("rejects an unknown context kind with the path and allowed values", () => {
+    expect(() =>
+      loadConfig({ configPath: withProjects({ id: "web-app", name: "W", contexts: [{ ...repoCtx, kind: "db" }] }) }),
+    ).toThrow(/\$\.projects\[0\]\.contexts\[0\]\.kind: must be one of repository/);
+  });
+
+  it("rejects unknown keys and bad ids", () => {
+    expect(() => loadConfig({ configPath: withProjects({ id: "A", name: "W", contexts: [repoCtx], x: 1 }) })).toThrow(
+      /\$\.projects\[0\]\.x: unknown key[\s\S]*\$\.projects\[0\]\.id/,
+    );
+  });
+});

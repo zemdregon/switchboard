@@ -13,6 +13,15 @@ import { renderGc, runGcCommand } from "./gc.js";
 import { type CliIo, JSON_SCHEMA_VERSION, UsageError } from "./io.js";
 import { UnknownRunError } from "./operator.js";
 import {
+  listProjects,
+  renderProject,
+  renderProjectList,
+  renderValidation,
+  showProject,
+  UnknownProjectError,
+  validateProjects,
+} from "./projects.js";
+import {
   cancelRun,
   decideRun,
   listRuns,
@@ -35,6 +44,10 @@ Commands:
   runs cancel <id>    Cancel a run (written as an operator record the daemon applies)
   gc [--apply]        Retention clean-up: dry run by default (lists what would go); --apply collects, and is refused
                       while serve runs or when retention.days is not set in the config
+  projects list       List configured projects (host environments; read-only, no ledger)
+  projects show <id>  Show one project: environment and contexts
+  projects validate [<id>]
+                      Check project configuration and repository paths; exit 1 if any check fails
   approve <run_id>    Approve the privileged run that requested an approval (review it with runs show first)
   deny <run_id>       Deny the privileged run that requested an approval; the run ends CANCELLED
 
@@ -135,6 +148,32 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         }
         throw new UsageError(`unknown runs subcommand ${JSON.stringify(sub ?? "")}; expected list, show or cancel`);
       }
+      case "projects": {
+        // T9.1 (FR-PRJ-08): read-only config and filesystem checks; no ledger, no lock.
+        if (sub === "list") {
+          if (rest.length > 0) throw new UsageError("projects list takes no arguments");
+          const projects = listProjects(io, loaderArgv);
+          emit({ schema_version: JSON_SCHEMA_VERSION, projects }, renderProjectList(projects));
+          return 0;
+        }
+        if (sub === "show") {
+          const id = rest[0];
+          if (id === undefined || rest.length > 1)
+            throw new UsageError("projects show requires exactly one project id");
+          const project = showProject(io, loaderArgv, id);
+          emit({ schema_version: JSON_SCHEMA_VERSION, project }, renderProject(project));
+          return 0;
+        }
+        if (sub === "validate") {
+          if (rest.length > 1) throw new UsageError("projects validate takes at most one project id");
+          const report = await validateProjects(io, loaderArgv, rest[0]);
+          emit(report, renderValidation(report));
+          return report.ok ? 0 : 1;
+        }
+        throw new UsageError(
+          `unknown projects subcommand ${JSON.stringify(sub ?? "")}; expected list, show or validate`,
+        );
+      }
       case "approve":
       case "deny": {
         // T3.4 (FR-OPS-02, FRD WF-7): top-level operator commands; no MCP tool can approve (FR-MCP-06).
@@ -155,7 +194,7 @@ function fail(err: unknown, io: CliIo, json: boolean): number {
   const usage = err instanceof UsageError || isParseArgsError(err);
   const code = usage
     ? "USAGE"
-    : err instanceof UnknownRunError
+    : err instanceof UnknownRunError || err instanceof UnknownProjectError
       ? "NOT_FOUND"
       : err instanceof ApprovalRefusedError
         ? "REFUSED"
