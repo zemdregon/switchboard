@@ -391,6 +391,36 @@ describe("runs show flags Git policy violations (T9.5, FR-GIT-03, BR-27)", () =>
   });
 });
 
+describe("runs show lists harness and backing provider (T4.6, FR-ADP-10)", () => {
+  it("shows both in text and --json, and omits usage when none was reported", async () => {
+    const s = seed(["SUCCEEDED", "SUCCEEDED"]);
+    const id = s.ids[0] as string;
+    s.ledger.insertUsageObservation({
+      runId: id,
+      provider: "fake",
+      harness: "fake",
+      backingProvider: "backing-x",
+      model: "m-a",
+      source: "provider_reported",
+      metrics: { input_tokens: 7 },
+    });
+    s.close();
+    const j = JSON.parse((await run(["runs", "show", id, "--json", ...cfg()])).out);
+    expect(j.usage).toEqual([
+      expect.objectContaining({
+        harness: "fake",
+        backing_provider: "backing-x",
+        model: "m-a",
+        metrics: { input_tokens: 7 },
+      }),
+    ]);
+    const human = (await run(["runs", "show", id, ...cfg()])).out;
+    expect(human).toContain("harness fake  backing provider backing-x  model m-a");
+    const none = JSON.parse((await run(["runs", "show", s.ids[1] as string, "--json", ...cfg()])).out);
+    expect(none.usage).toBeUndefined();
+  });
+});
+
 function seedPrivileged(opts: { approved?: boolean; realHash?: boolean } = {}) {
   const db = openLedger(dataDir);
   const ledger = createLedger(db);

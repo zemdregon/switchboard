@@ -384,6 +384,25 @@ describe("usage in get_run (T2.5)", () => {
   });
 });
 
+describe("harness and backing provider in get_run (T4.6, FR-ADP-10)", () => {
+  it("stores both in usage_observation and shows both in get_run", async () => {
+    await setup({ adapters: [recorded(new FakeAdapter({ scenario: "fronted", timeouts: SHORT })).adapter] });
+    const d = await call("delegate_task", delegateArgs());
+    const done = await pollTerminal(d.body.run_id);
+    expect(done.status).toBe("SUCCEEDED");
+    expect(done.usage.reported).toHaveLength(1);
+    expect(done.usage.reported[0]).toMatchObject({
+      harness: "fake",
+      backing_provider: "backing-x",
+      model: "m-a",
+      metrics: { input_tokens: 7, output_tokens: 2 },
+    });
+    const rows = ledger.listUsageObservationsForRun(d.body.run_id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ harness: "fake", backing_provider: "backing-x", model: "m-a" });
+  });
+});
+
 describe("vertical slice against the fake adapter", () => {
   it("delegate_task → get_run until SUCCEEDED → get_artifacts diff → continue_task on the same native session", async () => {
     const fake = recorded(newWriter());
