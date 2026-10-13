@@ -9,9 +9,9 @@
 ## Context
 
 The research assumes the controller runs on a host where the operator's provider CLIs are installed and logged in.
-zemdregon's stated intent (2026-10-12): Switchboard solves zemdregon's own problem first and is published as open source, built
-so other people can use it. Shared or commercial use of subscriptions raises provider-terms questions the verified
-research explicitly flags as needing review.
+zemdregon's stated intent (2026-10-12): Switchboard solves zemdregon's own problem first and is published as open
+source, built so other people can use it. Shared or commercial use of subscriptions raises provider-terms questions the
+verified research explicitly flags as needing review.
 
 ## Decision
 

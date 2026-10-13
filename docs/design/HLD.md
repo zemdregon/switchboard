@@ -7,7 +7,8 @@
 | Does not own | Requirements ([SRS](../requirements/SRS.md)), workflows and state machine ([FRD](../requirements/FRD.md)), collaboration patterns and traceability ([SDD](SDD.md)), technology choices ([TDD](TDD.md)), schemas and contracts ([LLD](LLD.md)), sequencing ([ROADMAP](../ROADMAP.md)) |
 | Last reconciled | 2026-10-13 |
 
-Nothing described here is implemented. No code, tests, CI or configuration exist as of 2026-10-12. Decisions cited from
+Implementation status is owned by [ROADMAP §6](../ROADMAP.md#6-milestones). No code, tests, CI or configuration existed
+as of 2026-10-12; the design below is now partly implemented (M1, and parts of M2, M3 and M9). Decisions cited from
 ADRs are "Delegated" (made by an agent under zemdregon's delegation) and have not been individually reviewed by zemdregon.
 
 ## 1. System context
@@ -96,6 +97,8 @@ flowchart TB
     OPS --> LED
     OPS --> ADP
     OPS --> INN
+    OPS --> RAG
+    MCP --> RAG
     MCP[COMP-MCP<br/>MCP Front End] --> POL[COMP-POL<br/>Policy Engine]
     MCP --> PRJ[COMP-PRJ<br/>Project Manager]
     RTE --> PRJ
@@ -128,6 +131,11 @@ flowchart TB
     INN[COMP-INN<br/>Inner Agent Service]
     INN -. "inner_call records" .-> LED
     INN -.-> INNER{{Inner backend}}
+    MCP -. "context pack at admission" .-> RAG[COMP-RAG<br/>Retrieval Index Service]
+    RAG --> PRJ
+    RAG -. "index and retrieval records" .-> LED
+    RAG -.-> EMB{{Embedding backend}}
+    RAG -. "same locality gates" .-> INN
 ```
 
 | ID | Component | Responsibilities | Primary requirements |
@@ -138,12 +146,13 @@ flowchart TB
 | COMP-WS | Workspace Manager | Canonicalize paths against allowed roots; create worktrees and controller branches from recorded checkpoints; grant exclusive write leases; record diffs and post-run checkpoints (internal, never published); roll back; garbage-collect. Never touch the operator's checked-out branch; never push. | FR-WS-01..07, FR-POL-10, FR-GIT-08 |
 | COMP-PRJ | Project Manager | Resolve a project reference to its repository context, base ref, environment and ceilings; enforce the lower of client and project ceilings; list projects for a client; for `container` environments (M10) create, start, limit and remove the container and clean up orphans at startup. Holds no state of its own: definitions come from configuration and are snapshotted per run. | FR-PRJ-01..09 |
 | COMP-GIT | Git Publisher | Serve the per-run injected `commit` and `push` tools from outside the agent's process tree; build commits on the publish ref with the context identity and sanitised message; check refs before and after runs for violations; push the publish ref under policy; write provenance records; hold the only path to push credentials. Optionally obtain a draft message from COMP-INN when the commit-message task is enabled, and run it through the same sanitiser (FR-INN-10). | FR-GIT-01..09, FR-INN-10 |
-| COMP-RTE | Router/Scheduler | Hard eligibility filter, later weighted scoring and classifier; capacity estimator; bounded priority queue; per-provider concurrency and circuit breakers; retry and failover decisions; persist route decisions. May take stage-2 features from COMP-INN, labelled by source, never for eligibility (FR-INN-12). | FR-RTE-01..05, FR-CAP-01..07, FR-INN-12 |
+| COMP-RTE | Router/Scheduler | Hard eligibility filter, later weighted scoring and classifier; capacity estimator; bounded priority queue; per-provider concurrency and circuit breakers; retry and failover decisions; persist route decisions. Keeps a project on its last provider and model (affinity, M7) and moves it only for a reason from the closed list of FR-RTE-07; records cache and switch observations (FR-CAP-08). May take stage-2 features from COMP-INN, labelled by source, never for eligibility (FR-INN-12). | FR-RTE-01..09, FR-CAP-01..08, FR-INN-12 |
 | COMP-EXE | Execution Supervisor | Spawn provider processes (on the host or inside the project's container) in their own process group with allowlisted environment; subprocess JSON/JSONL and (M4) ACP client transports; timeouts, cancellation, grace-then-kill; capture stdout events and stderr separately; run verification commands; startup reconciliation of orphaned runs. | FR-EXE-01..08, FR-EXE-07, NFR-REL-02 |
 | COMP-ADP | Adapter Registry and provider adapters | Per provider: probe, version gate, auth preflight, compile trust profile to native controls, parse native structured output, resume, cancel; model registry; compliance manifests; conformance suites. | FR-ADP-01..11, FR-AUTH-02, NFR-MAINT-01 |
 | COMP-TEL | Telemetry Pipeline | Turn lifecycle observations into run events and OTel spans; redact prompts, environment and full shell output; export only to an operator-configured endpoint. | FR-TEL-01..03, NFR-OBS-01, NFR-PRIV-01 |
-| COMP-OPS | Operator CLI | `serve`, `doctor`, `runs list/show`, `approve`, `adapters validate`, `projects list/show/validate`, `inner status`, `inner test <task>`; the only path to privileged approval and version acceptance. | FR-OPS-01..03, FR-POL-09, FR-ADP-03, FR-PRJ-08, FR-INN-17 |
+| COMP-OPS | Operator CLI | `serve`, `doctor`, `runs list/show`, `approve`, `adapters validate`, `projects list/show/validate`, `inner status`, `inner test <task>`, `index status`, `index rebuild`, `index clear` (per project) and `affinity reset` (M7, M12); the only path to privileged approval and version acceptance. | FR-OPS-01..03, FR-POL-09, FR-ADP-03, FR-PRJ-08, FR-INN-17, FR-RAG-11, FR-RAG-14, FR-RTE-07 |
 | COMP-INN | Inner Agent Service (M11) | Optional, advisory text service behind one backend port (`http` or `cli` kind). Runs the per-task pipeline: deterministic redaction, input budget, call with per-call timeout and circuit breaker, parse and validate against the task schema, at most one re-ask, then accept or deterministic fallback. Applies locality gating (`local` or `remote`, `allow_remote`, `allow_source_content`, project `inner_agent` setting), tracks per-task rejection rate and suspends a task, and writes `inner_call` records (sizes and hashes only, never bodies) through COMP-LED. Holds **no policy authority**: its output reaches no decision in COMP-POL, eligibility, approvals, ceilings, push policy, sanitiser rules, redaction or failure classification, and it cannot change a run's status. Callers: COMP-GIT (commit and PR text), COMP-RTE (stage-2 route features), the handoff builder over COMP-LED and COMP-WS data, COMP-EXE (result and log summaries), COMP-OPS (`doctor`, `inner` commands). | FR-INN-01..17, FR-INN-06, NFR-PRIV-01 |
+| COMP-RAG | Retrieval Index Service (M12, Proposed) | Optional. Per project, builds and incrementally maintains an index of the project's readable contexts in the data directory (never in the repository), and optionally a separate deployment-wide index. Scans with exclusions and a secret denylist, redacts, chunks, embeds through one backend port (kinds `local` and `http`, same locality gates as COMP-INN), stores chunk text and vectors, and answers bounded top-k queries. Callers: admission (context pack prepended to the delegated prompt within a token budget), COMP-MCP (`search_project_context`, read-only), COMP-OPS (`index` commands, `doctor`), and later the per-run tool channel (FR-RAG-13). Building runs in the `serve` daemon and never blocks admission. Retrieved content is untrusted data and has **no policy authority**: it reaches no decision in COMP-POL, eligibility, approvals, ceilings, push or commit. Any failure falls back to no retrieval and never fails a run. Records counts and durations through COMP-LED, never content, and never as provider usage. | FR-RAG-01..14, FR-RAG-07, NFR-PRIV-01 |
 
 Collaboration per workflow, call direction and error propagation are in the [SDD](SDD.md); schemas and contracts are in
 the [LLD](LLD.md).
@@ -165,6 +174,7 @@ performed.
 | TB-8 | Controller → container runtime and container → host | A container with too many mounts or a runtime socket becomes a host escape; orphaned containers outlive the controller; provider logins get copied in | Mount only the run worktree and declared read-only contexts; never the home directory, data directory, push credentials or runtime socket; limits and network policy per run; removal at run end and at startup reconciliation; no controller copying of credentials (FR-AUTH-01) | FR-PRJ-05, 07, FR-AUTH-01, [ADR-0013](../adr/0013-projects-environments-and-contexts.md) |
 | TB-9 | Orchestrator (MCP client) → project definitions | A compromised or prompt-injected orchestrator creates a project that mounts or targets paths, providers, ceilings, push rights or containers beyond its own; or edits operator projects | `manage_projects` off by default; dynamic projects only, never configured ones; repository paths under allowed roots; ceiling, providers and push policy no wider than the client's entry; `container`, any push and any widening wait for operator approval on the CLI; creator-only visibility; every call recorded | FR-PRJ-10, FR-POL-10, FR-MCP-06, [ADR-0013](../adr/0013-projects-environments-and-contexts.md) |
 | TB-10 | Controller → inner backend (M11) | Data egress: repository content, diffs or log excerpts sent to a remote model; prompt injection through repository content, diffs or logs that steers the model; hostile, malformed or low-quality output reaching published history, routing or handoffs; consumption of a shared provider subscription or an unbounded call rate | One optional backend, no default; `local` versus `remote` classification with `allow_remote` and per-task `allow_source_content`, and project or context `inner_agent` off or `local_only`; deterministic redaction before every call and an input budget; stateless single-turn call with no tools; no credential in configuration; output parsed, bounded and stripped, at most one re-ask, commit and PR text through the FR-GIT-04 sanitiser, deterministic fallback on any failure; no inner output reaches policy, retry, push or run status, enforced by structure and an import-boundary test; `inner_call` records apart from provider usage, with a doctor warning for `shares_subscription_with`; no prompt or response bodies logged; per-call timeout and circuit breaker | FR-INN-02, 03, 06, 07, 08, 10, 15, 16, NFR-PRIV-01, NFR-SEC-01, [ADR-0016](../adr/0016-inner-agent.md) |
+| TB-11 | Controller → embedding backend, and project index → other projects (M12, Proposed) | Data egress: repository content sent to a remote embedding service; secrets or sensitive files indexed and stored unencrypted; prompt injection through indexed content steering a run; one project's content reaching another project's run through the deployment-wide index; stale or wrong snippets presented as current | One optional backend, no default, no credential handled (`local` or `http` kind, same classification as TB-10: `remote` sees source content only with `allow_remote` and `allow_source_content`); scanner limited to context roots with exclusions, built-in secret denylist and FR-INN-16 redaction before embedding and storage; one store per project, deleted with the project; the global index off by default, read only by a project with `use_global`, contributed to only by a project with `contribute_to_global`, snippets labelled with origin project; retrieved text labelled untrusted reference data and never an input to policy (import-boundary test as for TB-10); revision and file hash on every result, stale snippets dropped, failure falls back to no retrieval; operator `index clear` | FR-RAG-02..04, 07..10, 14, FR-INN-03, 16, NFR-PRIV-01, [ADR-0031](../adr/0031-retrieval-index.md) |
 
 Residual limitation (from [R2] credential boundary): a dedicated OS user limits host blast radius but does not isolate a
 credential from an agent running as the same user. Hence FR-POL-06 makes eligibility, not an outer wrapper, the control.
@@ -225,6 +235,7 @@ Data directory layout. **Proposed**; paths, names and the config format are not 
 | `<data>/worktrees/<meta_session_id>/<run_id>/` | Controller-created Git worktrees (could alternatively live beside the source repo; open question) |
 | `<data>/runs/<run_id>/tools.sock` | Per-run socket for the injected tools (directory `0700`, socket `0600`); removed when the provider process exits, or by the start-up sweep after a crash. When this path would exceed 100 bytes, a private `sb-git-XXXXXX` directory under `$XDG_RUNTIME_DIR` or the OS temporary directory holds it instead ([ADR-0026](../adr/0026-per-run-tool-channel-socket-and-token.md), T9.4) |
 | `<config>/` | Operator configuration: allowed roots, projects (environment, contexts, push policy, commit identity, sanitiser patterns), MCP client entries with maximum profiles and project lists, tier priors, routing weights, retention, compliance manifests |
+| `<data>/rag/<project>/index.db` and `<data>/rag/global/index.db` (M12) | Per-project and optional deployment-wide retrieval stores (chunk text and vectors); deleted with the project or by `index clear` (FR-RAG-03, FR-RAG-14) |
 | `<data>/logs/` | Structured controller logs, free of secrets and prompts (FR-TEL-03) |
 
 `<data>` and `<config>` are assumed to resolve to per-user directories chosen by the operator. Disk growth is bounded by
@@ -272,6 +283,13 @@ sequenceDiagram
 
 State names follow the [FRD](../requirements/FRD.md) state machine. Ledger-before-side-effect ordering is detailed in
 [SDD](SDD.md).
+
+**Affinity in the routing step (M7, FR-RTE-06..08, BR-44, BR-45).** "Eligibility filter, pick provider" above is: filter
+(FR-RTE-01), then, if the project has an affinity record and its provider is still eligible and not capacity-limited,
+choose it; only when a reason from the closed list of FR-RTE-07 applies (`user_request`, `capacity_exhausted`,
+`ineligible`, `failed_after_retry`) is the weighted score of FR-RTE-02 used, over the remaining eligible providers, and
+the new provider becomes the project's affinity. The route decision records which case held (FR-RTE-03). A score never
+moves a project by itself. Algorithm and table: [LLD §3.2](LLD.md#32-provider-and-model-affinity-m7).
 
 ### 6.2 Cross-provider handoff (WF-3)
 
@@ -380,6 +398,43 @@ sequenceDiagram
 The agent's own message always wins unless the operator chose mode `always`. No branch of this flow reaches COMP-POL,
 the retry logic or the push path (FR-INN-06). Contracts: [LLD §13](LLD.md#13-inner-agent).
 
+### 6.6 Retrieval for a run (WF-14, M12, Proposed)
+
+```mermaid
+sequenceDiagram
+    participant M as COMP-MCP
+    participant R as COMP-RAG
+    participant B as Embedding backend
+    participant S as Project index (and global, if enabled)
+    participant L as COMP-LED
+    participant E as COMP-EXE
+    Note over R,S: background in serve: scan, exclude, redact, chunk, embed changed files
+    R->>B: embed chunk batch (locality gate first)
+    B-->>R: vectors
+    R->>S: upsert chunks, set revision
+    R->>L: rag_index_built record (counts, durations, no content)
+    M->>R: admission: objective and project (context pack requested)
+    R->>R: gates, index fresh enough?
+    R->>B: embed query
+    R->>S: top-k within the project (plus global if use_global)
+    R->>R: drop stale snippets, fit token budget, label as untrusted
+    R-->>M: pack (snippet ids, hashes) or nothing
+    M->>L: run with original request text; rag_retrieval record (ids, hashes)
+    M->>E: dispatch, pack prepended after stable content (FR-RTE-09)
+```
+
+1. Index refresh is a background job in the `serve` daemon and never blocks admission (FR-RAG-11); a partial index is
+   marked incomplete.
+2. At admission COMP-RAG applies the mode, the locality gate and the freshness check (FR-RAG-08). A disabled feature, no
+   backend, an empty result, a stale index or any failure gives "no pack", and the run proceeds unchanged.
+3. The original request text is stored unchanged. The ledger holds snippet IDs and hashes, never copies (FR-RAG-05).
+4. The pack is untrusted reference data and reaches no decision in COMP-POL, routing eligibility, approvals, ceilings,
+   push or commit (FR-RAG-07). Another project's content appears only through the global index, with the origin label,
+and only when the contributing project allows it and the reading project asks for it (FR-RAG-09, FR-RAG-10, BR-46,
+BR-47).
+
+Contracts: [LLD §14](LLD.md#14-retrieval-index).
+
 ## 7. Threat scenarios
 
 Scenarios are design-time analysis, not test results. Residual risk is the drafter's assessment of what remains after
@@ -404,6 +459,10 @@ the cited controls.
 | Poisoned inner output reaches published history or handoffs (M11) | Output treated as untrusted data: schema, length bound, control-character stripping, one re-ask (FR-INN-07); commit and PR text through the FR-GIT-04 sanitiser and an empty result is a tool error, never an invented message (FR-INN-10, FR-INN-11); condensed handoff text is labelled and keeps a pointer to the raw artifact (FR-INN-13) | Misleading but well-formed prose can pass validation and the pattern-based sanitiser; reviewers must treat drafts as untrusted suggestions (R-14 applies) |
 | Inner agent low-quality or unavailable (M11) | Failure never fails a run; deterministic fallback per task; per-call timeout and circuit breaker; per-call outcomes recorded and automatic task suspension on a high rejection rate; `doctor` shows degraded state (FR-INN-08, FR-INN-09, FR-INN-17) | Plausible but poor output below the rejection threshold; suspension thresholds are proposed targets and untuned |
 | Inner agent used to weaken policy (M11) | No inner output is an input to profiles, eligibility, approvals, ceilings, push policy, sanitiser rules, redaction, retry or any run status (FR-INN-06); COMP-INN is not injectable into those components and an import-boundary test fails the build otherwise; routing features are scoring inputs only and cannot override `require_provider` (FR-INN-12) | A future change that adds a dependency edge must be caught by the boundary test and code review; the test covers imports, not data smuggled through a permitted caller |
+| Prompt injection through indexed content, own or another project's (M12) | Retrieved snippets carry an untrusted-data label and path, revision and origin; they are never an input to profile choice, policy snapshot, eligibility, approvals, ceilings, push or commit (FR-RAG-07); the global index is off by default and read only on `use_global` (FR-RAG-09, FR-RAG-10); the run keeps its profile, so an injected instruction has the same reach as any repository text (TB-5) | An agent may still follow injected text within its profile (R-55); labels do not stop that, the profile does |
+| Secrets or sensitive files indexed or embedded remotely (M12) | Context-root scope, symlink and nested-repository exclusions, built-in secret denylist plus operator `exclude`, FR-INN-16 redaction before embedding and storage, `remote` backend only with `allow_remote` and `allow_source_content`, `index clear`, `doctor` reports size and locality (FR-RAG-02, 04, 14) | The denylist and redaction are pattern-based and best effort; vectors and chunk text sit unencrypted in the data directory (R-56) |
+| Stale or misleading retrieval (M12) | Revision and file hash on each result, stale snippets dropped or re-read, base-ref mismatch flagged, empty or too-stale packs omitted, failure falls back to no retrieval (FR-RAG-05, 08) | Plausible but irrelevant snippets can still mislead; the token saving is unmeasured (R-57) |
+| Affinity concentrates a project on one provider (M7) | Closed list of switch reasons including capacity exhaustion and ineligibility, so a hard failure or a spent quota still moves the project (FR-RTE-07); `affinity reset` and `require_provider` on request; switch counts exposed (FR-CAP-08) | Quota of the affine provider is spent first, and "maxed out" is a confidence estimate, so the switch can fire late or early (R-58, ADR-0007) |
 
 ## 8. Open items for downstream documents
 
@@ -417,3 +476,9 @@ the cited controls.
   [TDD §3.12](TDD.md#312-inner-agent); prompt templates, schemas, budgets and the `inner_call` table in [LLD
   §13](LLD.md#13-inner-agent). Open: whether the `cli` kind can be shown tool-free (Q-26), locality classification of
   names that resolve to loopback, and rejection-rate thresholds (proposed targets, unmeasured).
+- Retrieval index (M12, Proposed, [ADR-0031](../adr/0031-retrieval-index.md)): storage and embedding backend are open
+  until the T12.0 spike (Q-48), in [TDD §3.13](TDD.md#313-retrieval-index); config, tables, tool contract and algorithms
+in [LLD §14](LLD.md#14-retrieval-index). Provider and model affinity (M7,
+[ADR-0032](../adr/0032-provider-model-affinity.md)): table, algorithm and keys in [LLD
+§3.2](LLD.md#32-provider-and-model-affinity-m7); idle expiry and the return after a capacity switch are open (Q-51,
+Q-52).

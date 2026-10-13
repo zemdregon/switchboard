@@ -5,11 +5,13 @@ this repository. Humans are welcome to read it too.
 
 ## What this repository is
 
-Switchboard is a planned headless controller that lets one primary orchestrating agent delegate coding work to several
+Switchboard is a headless controller that lets one primary orchestrating agent delegate coding work to several
 AI coding CLIs (Claude Code, Codex, Grok Build, Antigravity, Cursor, OpenCode, Kimi Code) through their documented
 automation surfaces, behind a single MCP tool surface.
 
-The repository currently contains research and the specification set only. There is no application code yet.
+The repository contains the research, the specification set and application code under `src/` and `test/`. The M1
+foundation is done; M2 and M3 are `Partial`, and parts of M9 are implemented. Milestone status is owned by
+[ROADMAP §6](docs/ROADMAP.md#6-milestones); code is evidence of what is implemented, not of what is intended.
 
 ## Start here
 
@@ -60,8 +62,8 @@ state machine or schema.
 - Label anything you choose without a source as an **Assumption** or **Proposed**, and add open questions to [ROADMAP
   §7](docs/ROADMAP.md#7-risks-blockers-and-open-questions). Do not present invented numbers, dates, approvals or
   compliance obligations as fact.
-- Decisions agents make are "Delegated", not owner-approved. Never imply that zemdregon approved something zemdregon did not
-  approve.
+- Decisions agents make are "Delegated", not owner-approved. Never imply that zemdregon approved something zemdregon did
+  not approve.
 - Never delete historical material. Mark superseded documents with a banner linking to their replacement, as on [the
   original research blueprint](docs/research/headless-ai-coding-controller.md).
 
@@ -74,7 +76,11 @@ state machine or schema.
 | `docs/design/` | HLD, SDD, TDD, LLD. |
 | `docs/adr/` | Architecture decision records and their index. |
 | `docs/research/` | Research inputs. Historical record; do not rewrite their findings. |
+| `package.json`, `package-lock.json` | Package metadata, scripts and pinned dependencies (`npm ci` installs them). |
+| `src/` | Application code: config, ledger, lifecycle, adapters (`claude`, `codex`, `fake`), MCP server, CLI, policy, Git. |
+| `test/` | Cross-cutting tests: live smoke test (opt-in) and the malicious-fixture suite. |
 | `scripts/check-docs.mjs` | Documentation consistency checker (Node.js, no dependencies). |
+| `scripts/copy-build-assets.mjs`, `scripts/bench-perf.mjs`, `scripts/live-smoke.mjs` | Build asset copy, the performance benchmark and the opt-in live smoke test. |
 | `CLAUDE.md` | Imports this file for Claude Code. Do not add separate instructions there. |
 | `LICENSE` | Apache License 2.0. |
 
@@ -130,8 +136,8 @@ analysis. Report results clearly so the orchestrator can verify and coordinate t
   decision does not change what a bypass run (an approved `privileged` scope with `bypass`, ADR-0017) may do, decide it
   yourself using industry best practice (least privilege, fail closed, defence in depth, no claim of a control that is
   not enforced), because the other modes are for people who deploy Switchboard. Record it as **Delegated** with its
-  reason, and do not ask zemdregon. Ask only when the choice would restrict or change bypass runs, the Git-write denial or
-  worktree isolation that bypass keeps, or a trust or credential boundary.
+  reason, and do not ask zemdregon. Ask only when the choice would restrict or change bypass runs, the Git-write denial
+  or worktree isolation that bypass keeps, or a trust or credential boundary.
 - **Live provider calls are opt-in.** Tests must pass without any provider CLI installed or logged in. Tests that call a
   real provider must be skipped unless explicitly enabled.
 - **Small, reviewable changes.** One logical change per commit, with a message that says what changed and why. Open pull

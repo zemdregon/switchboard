@@ -13,15 +13,16 @@ import { renderGc, runGcCommand } from "./gc.js";
 import { renderGitPush, runGitPush } from "./git-push.js";
 import { type CliIo, JSON_SCHEMA_VERSION, UsageError } from "./io.js";
 import { UnknownRunError } from "./operator.js";
+import { renderProject, renderValidation, UnknownProjectError, validateProjects } from "./projects.js";
 import {
-  listProjects,
-  renderProject,
-  renderProjectList,
-  renderValidation,
-  showProject,
-  UnknownProjectError,
-  validateProjects,
-} from "./projects.js";
+  approveProject,
+  listAllProjects,
+  parseRevision,
+  renderAllProjects,
+  renderDynamicDetail,
+  renderProjectApproval,
+  showAnyProject,
+} from "./projects-dynamic.js";
 import {
   cancelRun,
   decideRun,
@@ -45,8 +46,11 @@ Commands:
   runs cancel <id>    Cancel a run (written as an operator record the daemon applies)
   gc [--apply]        Retention clean-up: dry run by default (lists what would go); --apply collects, and is refused
                       while serve runs or when retention.days is not set in the config
-  projects list       List configured projects (host environments; read-only, no ledger)
-  projects show <id>  Show one project: environment and contexts
+  projects list       List configured and dynamic projects (source config|dynamic; read-only, no lock)
+  projects show <id>  Show one project: environment and contexts; for a dynamic project its creator and revisions
+  projects approve <id> [--revision <n>] [--reject]
+                      Approve (or reject) the revision of a dynamic project that waits for approval; --revision is
+                      required once the project has more than one revision (review it with projects show first)
   projects validate [<id>]
                       Check project configuration and repository paths; exit 1 if any check fails
   git push <id>       Push a meta-session's published commits (sess_... or one of its run_...) to the context's
@@ -70,6 +74,8 @@ const OPTIONS = {
   apply: { type: "boolean" },
   "dry-run": { type: "boolean" },
   state: { type: "string" },
+  revision: { type: "string" },
+  reject: { type: "boolean" },
   limit: { type: "string" },
   help: { type: "boolean", short: "h" },
 } as const;
@@ -102,6 +108,9 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
 
     if (cmd !== "gc" && (values.apply || values["dry-run"]))
       throw new UsageError("--apply and --dry-run are only valid with gc");
+    if (!(cmd === "projects" && sub === "approve") && (values.revision !== undefined || values.reject)) {
+      throw new UsageError("--revision and --reject are only valid with projects approve");
+    }
 
     if (values.help) {
       io.stdout.write(HELP);
@@ -158,19 +167,35 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         throw new UsageError(`unknown runs subcommand ${JSON.stringify(sub ?? "")}; expected list, show or cancel`);
       }
       case "projects": {
-        // T9.1 (FR-PRJ-08): read-only config and filesystem checks; no ledger, no lock.
+        // T9.1 (FR-PRJ-08): read-only config and filesystem checks, no lock. T9.9: list and show also read the
+        // dynamic projects from the ledger (read-only); approve writes one decision row (FR-PRJ-10, ADR-0030).
         if (sub === "list") {
           if (rest.length > 0) throw new UsageError("projects list takes no arguments");
-          const projects = listProjects(io, loaderArgv);
-          emit({ schema_version: JSON_SCHEMA_VERSION, projects }, renderProjectList(projects));
+          const projects = listAllProjects(io, loaderArgv);
+          emit({ schema_version: JSON_SCHEMA_VERSION, projects }, renderAllProjects(projects));
           return 0;
         }
         if (sub === "show") {
           const id = rest[0];
           if (id === undefined || rest.length > 1)
             throw new UsageError("projects show requires exactly one project id");
-          const project = showProject(io, loaderArgv, id);
-          emit({ schema_version: JSON_SCHEMA_VERSION, project }, renderProject(project));
+          const { project, revisions } = showAnyProject(io, loaderArgv, id);
+          emit(
+            { schema_version: JSON_SCHEMA_VERSION, project, ...(revisions ? { revisions } : {}) },
+            renderProject(project) + renderDynamicDetail(project, revisions),
+          );
+          return 0;
+        }
+        if (sub === "approve") {
+          const id = rest[0];
+          if (id === undefined || rest.length > 1) {
+            throw new UsageError("projects approve requires exactly one project id");
+          }
+          const report = approveProject(io, loaderArgv, id, {
+            ...(values.revision !== undefined ? { revision: parseRevision(values.revision) as number } : {}),
+            reject: values.reject === true,
+          });
+          emit(report, renderProjectApproval(report));
           return 0;
         }
         if (sub === "validate") {
@@ -180,7 +205,7 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
           return report.ok ? 0 : 1;
         }
         throw new UsageError(
-          `unknown projects subcommand ${JSON.stringify(sub ?? "")}; expected list, show or validate`,
+          `unknown projects subcommand ${JSON.stringify(sub ?? "")}; expected list, show, validate or approve`,
         );
       }
       case "git": {

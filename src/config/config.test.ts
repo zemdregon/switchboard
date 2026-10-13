@@ -127,6 +127,21 @@ describe("timeouts.preflight_ttl_seconds (T3.21)", () => {
   });
 });
 
+describe("providers.claude-code.git_channel (T9.4b, ADR-0029 item 7)", () => {
+  it("defaults to off, is true only when set to true, and is refused on other providers or as a non-boolean", () => {
+    expect(loadConfig({ configPath: write(base()) }).claudeCodeGitChannel).toBe(false);
+    const withKey = (v: unknown) => ({ ...base(), providers: { "claude-code": { git_channel: v } } });
+    expect(loadConfig({ configPath: write(withKey(false)) }).claudeCodeGitChannel).toBe(false);
+    const on = loadConfig({ configPath: write(withKey(true)) });
+    expect(on.claudeCodeGitChannel).toBe(true);
+    expect(on.providers.get("claude-code")?.enabled).toBe(true); // the key does not change enablement
+    for (const v of ["true", 1, null]) expect(() => loadConfig({ configPath: write(withKey(v)) })).toThrow(ConfigError);
+    expect(() => loadConfig({ configPath: write({ ...base(), providers: { codex: { git_channel: true } } }) })).toThrow(
+      /\$\.providers\.codex\.git_channel: unknown key/,
+    );
+  });
+});
+
 describe("retention and profiles config (T3.2)", () => {
   it("defaults retention to 30 days and a 24 hour interval, and no overrides", () => {
     const c = loadConfig({ configPath: write(base()) });
@@ -197,6 +212,9 @@ describe("mcp_clients[].privileged_approval (owner decision 22, ADR-0019)", () =
       maxTrustProfile: "edit-untrusted",
       privilegedApproval: "required",
       projects: [],
+      // T9.9 defaults: no project-management tools, no push for dynamic projects.
+      manageProjects: false,
+      maxPushPolicy: "none",
     });
     expect(c.mcpClients.get("ops")?.privilegedApproval).toBe("required");
     expect(c.mcpClients.get("strict")?.privilegedApproval).toBe("required");
@@ -223,6 +241,48 @@ describe("mcp_clients[].privileged_approval (owner decision 22, ADR-0019)", () =
     // required below the ceiling is harmless and accepted.
     const ok = clients({ id: "dev", max_trust_profile: "edit-untrusted", privileged_approval: "required" });
     expect(loadConfig({ configPath: write(ok) }).mcpClients.get("dev")?.privilegedApproval).toBe("required");
+  });
+});
+
+describe("mcp_clients[].manage_projects and max_push_policy (T9.9, FR-PRJ-10)", () => {
+  const clients = (...entries: Record<string, unknown>[]) => ({ ...base(), mcp_clients: entries });
+
+  it("defaults to off and none, and accepts both keys together", () => {
+    const c = loadConfig({
+      configPath: write(
+        clients(
+          { id: "plain", max_trust_profile: "edit-untrusted" },
+          { id: "mgr", max_trust_profile: "edit-untrusted", manage_projects: true },
+          { id: "pusher", max_trust_profile: "edit-untrusted", manage_projects: true, max_push_policy: "branch" },
+        ),
+      ),
+    });
+    expect(c.mcpClients.get("plain")).toMatchObject({ manageProjects: false, maxPushPolicy: "none" });
+    expect(c.mcpClients.get("mgr")).toMatchObject({ manageProjects: true, maxPushPolicy: "none" });
+    expect(c.mcpClients.get("pusher")).toMatchObject({ manageProjects: true, maxPushPolicy: "branch" });
+  });
+
+  it("is strict: wrong types and values fail with the JSON path", () => {
+    expect(() =>
+      loadConfig({
+        configPath: write(clients({ id: "a", max_trust_profile: "edit-untrusted", manage_projects: "yes" })),
+      }),
+    ).toThrow(/\$\.mcp_clients\[0\]\.manage_projects: must be boolean/);
+    expect(() =>
+      loadConfig({
+        configPath: write(
+          clients({ id: "a", max_trust_profile: "edit-untrusted", manage_projects: true, max_push_policy: "all" }),
+        ),
+      }),
+    ).toThrow(/\$\.mcp_clients\[0\]\.max_push_policy: must be one of none, branch/);
+  });
+
+  it("refuses max_push_policy branch without manage_projects (fail closed)", () => {
+    expect(() =>
+      loadConfig({
+        configPath: write(clients({ id: "a", max_trust_profile: "edit-untrusted", max_push_policy: "branch" })),
+      }),
+    ).toThrow(/\$\.mcp_clients\[0\]\.max_push_policy: applies only to a client with manage_projects: true/);
   });
 });
 

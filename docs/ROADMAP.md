@@ -5,7 +5,7 @@
 | Status | **Canonical.** Single source of truth for scope, priorities, dependencies, sequencing, status and completion criteria. |
 | Does not own | Requirements ([SRS](requirements/SRS.md)), behaviour ([FRD](requirements/FRD.md)), design ([HLD](design/HLD.md), [SDD](design/SDD.md), [TDD](design/TDD.md), [LLD](design/LLD.md)), decision rationale ([ADRs](adr/README.md)). |
 | Last reconciled | 2026-10-13 |
-| Current milestone | M0 and M1 complete (M1 gaps `Partial` in §6.1). **M2: `Partial`**: T2.1 to T2.8 are implemented and tested on fakes and synthetic fixtures; not `Done` until the operator's live smoke run (which now also covers the FR-GIT-01 checks), a recorded Codex version (NFR-PERF-02 is implemented by T3.21, Delegated decision 29; §6.2, §6.2.1, §9). The FR-GIT-01 argv check is in place. **M3: `Planned`**, broken into tasks in §6.5 (2026-10-12) with owner decisions 10 to 13 and 17 recorded (17 and the Delegated machine-readable scope on 2026-10-13); wave A is implemented in part (`Partial`: code for T3.2, T3.8's controller leg and T3.12's algorithm landed through PR #14 and its wiring (`doctor`, `switchboard gc`, `serve`) is `Partial` in §6.5; per-task status in §6.5, §9). M9 and M10 (projects, controlled commits, containers) follow M3; M11 (inner agent, owner decision 14) is planned after M9 |
+| Current milestone | M0 and M1 complete (M1 gaps `Partial` in §6.1). **M2: `Partial`**: T2.1 to T2.8 are implemented and tested on fakes and synthetic fixtures; not `Done` until the operator's live smoke run (which now also covers the FR-GIT-01 checks), a recorded Codex version (NFR-PERF-02 is implemented by T3.21, Delegated decision 29; §6.2, §6.2.1, §9). The FR-GIT-01 argv check is in place. **M3: `Partial`** (2026-10-13; the M3 row in §6 has the evidence), broken into tasks in §6.5 (2026-10-12) with owner decisions 10 to 13 and 17 recorded (17 and the Delegated machine-readable scope on 2026-10-13); wave A is implemented in part (`Partial`: code for T3.2, T3.8's controller leg and T3.12's algorithm landed through PR #14 and its wiring (`doctor`, `switchboard gc`, `serve`) is `Partial` in §6.5; per-task status in §6.5, §9). M9 and M10 (projects, controlled commits, containers) follow M3; M11 (inner agent, owner decision 14) is planned after M9; M12 (retrieval index, owner decision 40) is planned after M9 and M11's backend port, and provider/model affinity (owner decision 40) is planned inside M6/M7 |
 
 ## 1. How to use this roadmap
 
@@ -25,14 +25,15 @@ workspace isolation, cross-provider task state, routing and capacity estimation,
 is published as open source so anyone can run their own installation with their own subscriptions) and the
 *orchestrator* (an MCP client agent such as OpenClaw or Grok Bot). See [PRD §2](requirements/PRD.md).
 
-**Desired outcomes.** BO-1 to BO-8 in the [BRD](requirements/BRD.md): more work per paid subscription, no credential
+**Desired outcomes.** BO-1 to BO-9 in the [BRD](requirements/BRD.md): more work per paid subscription, no credential
 handling, safe unattended runs, continuity across providers, visibility, resilience to CLI churn, agent work that
 reaches the repository as ordinary commits with the audit record kept internally, and cheap text work handled by an
-operator-chosen inner model instead of premium capacity.
+operator-chosen inner model instead of premium capacity, and less context and fewer cache misses per run (BO-9: a
+retrieval index and sticky provider/model affinity, both planned).
 
-**In scope.** Capabilities CAP-1 to CAP-12 in the [PRD](requirements/PRD.md), including projects (the environments
+**In scope.** Capabilities CAP-1 to CAP-13 in the [PRD](requirements/PRD.md), including projects (the environments
 agents operate from and their contexts, CAP-10), controlled commits and publication (CAP-11) and the inner agent
-(CAP-12). "Application" in this
+(CAP-12), and the retrieval index (CAP-13, planned). "Application" in this
 project means the MCP tool surface plus the operator CLI; "backend" means the controller daemon and its ledger,
 workspace manager, router and adapters.
 
@@ -53,6 +54,7 @@ policy-gated Switchboard tool (off by default); agents never commit or push them
 | Original blueprint | Describes intent and an architecture, but many concrete flags, permission settings, quota assumptions and the transcript-extraction approach are contradicted by later verified research. Retained as historical record, marked **superseded where it conflicts**. | [headless-ai-coding-controller.md](research/headless-ai-coding-controller.md) |
 | Verified research | Current as of 2026-10-12. Reviews the blueprint point by point and recommends corrections. Used as the primary technical source. Not itself a requirements or design document. | [headless-ai-coding-controller-verified-2026-10-12.md](research/headless-ai-coding-controller-verified-2026-10-12.md) |
 | Requirements and design documents | None existed. Created in this change (see §5). | — |
+| Sticky provider/model sessions and retrieval (2026-10-13, owner decision 40) | **Sticky sessions were not planned or implemented.** Closest items: FR-SES-03 (native resume on the same provider, within one meta-session only), FR-RTE-02 (the score's handoff-cost term discourages a swap but never pins a provider) and FR-CAP-06 (failover on `QUOTA_EXHAUSTED`). Nothing kept a project on one provider and model across meta-sessions, nothing forbade score-driven swapping, and nothing tracked cache continuity. Extended, not duplicated: routing (FR-RTE-06 to 09) and capacity (FR-CAP-08), [ADR-0032](adr/0032-provider-model-affinity.md). **No RAG, vector or embedding material existed** in the research or the specifications; new capability CAP-13 and M12, [ADR-0031](adr/0031-retrieval-index.md). | Search of `docs/` at `e2b6f22`; SRS §3.6, §3.7, §3.8 |
 
 ### 3.2 Target state
 
@@ -123,8 +125,8 @@ estimates. Architecture: [HLD](design/HLD.md).
 14. Switchboard has an *inner agent*: a self-hosted model, a cheap or free OpenCode model, or another model of the
     user's choosing, used for many cheap tasks so the main provider CLIs do not have to do them: commit and PR writing,
     task routing for auto mode, and other tasks the drafter judges to fit (2026-10-13). Recorded in
-    [ADR-0016](adr/0016-inner-agent.md). zemdregon's wording covers only the product idea. Everything else is delegated and
-    Proposed: the backend kinds, which tasks are in scope ([PRD §3.1](requirements/PRD.md#31-inner-agent-task-catalogue)),
+    [ADR-0016](adr/0016-inner-agent.md). zemdregon's wording covers only the product idea. Everything else is delegated
+    and Proposed: the backend kinds, which tasks are in scope ([PRD §3.1](requirements/PRD.md#31-inner-agent-task-catalogue)),
     the rule that it has no authority over security or run status, validation, fallback, privacy and the M11
     placement. (Numbers 10 to 13 are used by the open M3 plan, PR #13.)
 <!-- markdownlint-disable-next-line MD029 -->
@@ -232,8 +234,8 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
     CLIs that need Git; a Git client fetched or Git files written by an agent with shell and network).
 
 <!-- markdownlint-disable-next-line MD029 -->
-25. Delegation rule, Q-34, Q-38 and the container-image ADR (2026-10-13). zemdregon, verbatim: "Q37: explain. Q34 unless it
-    affects bypass mode you make the decisions (add that to agents) my only concern is with bypass mode, other modes
+25. Delegation rule, Q-34, Q-38 and the container-image ADR (2026-10-13). zemdregon, verbatim: "Q37: explain. Q34 unless
+    it affects bypass mode you make the decisions (add that to agents) my only concern is with bypass mode, other modes
     are for other users, so choose the industry best choices/practices. Q38 you pick. Container ADR sure make it".
     *Owner direction:* (a) a decision that does not affect bypass mode is the agent's, made by industry best practice;
     this is now a working rule in [AGENTS.md](../AGENTS.md) ("Best-practice defaults outside bypass mode"); (b) Q-37
@@ -286,9 +288,9 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
 
 <!-- markdownlint-disable-next-line MD029 -->
 28. Answers to Q-18 and Q-19, and the fix for R-42: retention GC (2026-10-13). **Delegated decision (agent), under
-    [owner decision 25](#42-owner-decisions); not an zemdregon quote and not owner-approved.** None of it affects bypass mode
-    (retention touches only idle, terminal meta-sessions and refuses nothing a bypass run needs), so by decision 25 (a)
-    it is the agent's, by best practice. (a) **Q-18:** the retention unit is a whole idle meta-session (no lease, only
+    [owner decision 25](#42-owner-decisions); not an zemdregon quote and not owner-approved.** None of it affects bypass
+    mode (retention touches only idle, terminal meta-sessions and refuses nothing a bypass run needs), so by decision 25
+    (a) it is the agent's, by best practice. (a) **Q-18:** the retention unit is a whole idle meta-session (no lease, only
     terminal runs, newest activity older than `retention.days`), never a single run, because collecting one run can
     break the checkpoint chain of the rest. (b) **Q-19:** `run_event` rows are kept: the table is append-only by trigger
     ([ADR-0005](adr/0005-sqlite-ledger.md)) and is the audit record, so NFR-DATA-01 is amended (dated note in the SRS):
@@ -329,12 +331,12 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
     *Unverified:* the 2.32 introduction version rests on the release notes, not on a test against an old Git.
 <!-- markdownlint-disable-next-line MD029 -->
 31. Project columns and the project block in the policy snapshot (2026-10-13). **Delegated decision (agent), under
-    [owner decision 25](#42-owner-decisions); not an zemdregon quote and not owner-approved.** Ledger migration 0002 adds the
-    nullable `project_id` to `meta_session` and `run` (the DDL was already proposed in LLD §1); the resolved project is
-    frozen into the policy snapshot as `project`; `mcp_clients[].projects` is added to the config schema, with an absent
-    list meaning no project (fail closed, workspace-path requests unaffected). A persistence-format change needs an ADR:
-    [ADR-0024](adr/0024-project-id-columns-and-project-snapshot.md). No requirement ID changes. *Unverified:* nothing
-    ran against a live provider.
+    [owner decision 25](#42-owner-decisions); not an zemdregon quote and not owner-approved.** Ledger migration 0002
+    adds the nullable `project_id` to `meta_session` and `run` (the DDL was already proposed in LLD §1); the resolved
+    project is frozen into the policy snapshot as `project`; `mcp_clients[].projects` is added to the config schema,
+    with an absent list meaning no project (fail closed, workspace-path requests unaffected). A persistence-format
+    change needs an ADR: [ADR-0024](adr/0024-project-id-columns-and-project-snapshot.md). No requirement ID changes.
+    *Unverified:* nothing ran against a live provider.
 
 <!-- markdownlint-disable-next-line MD029 -->
 32. Commit provenance tables, publish ref, crash ordering and the sanitiser's pattern language (2026-10-13).
@@ -361,9 +363,9 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
 
 <!-- markdownlint-disable-next-line MD029 -->
 34. Ref snapshots and Git policy violation handling (2026-10-13). **Delegated decision (agent), under
-    [owner decision 25](#42-owner-decisions); not an zemdregon quote and not owner-approved.** At LEASED, before spawn, a
-    `git_ref_snapshot` run event (version 1) records every ref of the main repository as a digest plus a list bounded to
-    5000 refs and 1 MiB (a tail digest covers the rest), and the main and worktree `HEAD`s; a run whose repository cannot
+    [owner decision 25](#42-owner-decisions); not an zemdregon quote and not owner-approved.** At LEASED, before spawn,
+    a `git_ref_snapshot` run event (version 1) records every ref of the main repository as a digest plus a list bounded
+    to 5000 refs and 1 MiB (a tail digest covers the rest), and the main and worktree `HEAD`s; a run whose repository cannot
     be read fails `TOOL_FAILURE` before spawn. At FINALIZING, before the checkpoint, the controller compares, appends
     `git_policy_violation` (ref names, kinds and SHAs only) before acting, and then restores only its own refs with a
     compare-and-swap: the run branch to the `pre` checkpoint (the agent's tree stays as checkpoint content), the
@@ -403,8 +405,8 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
     (Delegated mechanism) in [ADR-0029](adr/0029-claude-code-receives-tool-shim-via-mcp-config.md): a `0600` file, never
     inline argv; exact-name `--allowedTools`; the token in the environment; shipped disabled behind an operator opt-in
     until the live checks pass; the argv audit rule and adapter work are task T9.4b (not implemented by this change).
-    ADR-0015 is partly superseded. (b) **Q-43 is decided finalize-only** (zemdregon's reply to the agent's explanation): an
-    adapter with `commitChannel: "none"` is **not** made ineligible for write-capable runs; it runs them, and when the
+    ADR-0015 is partly superseded. (b) **Q-43 is decided finalize-only** (zemdregon's reply to the agent's explanation):
+    an adapter with `commitChannel: "none"` is **not** made ineligible for write-capable runs; it runs them, and when the
     project opts in to finalize-only mode (T9.7, FR-GIT-09, FRD BR-30) the controller makes the commit at FINALIZING
     through the same sanitiser and provenance as the commit tool. The opt-in is per project; **zemdregon wants it enabled
     for his own projects**, and T9.7 is to be built. FR-GIT-09 keeps the priority the SRS gives it. (c) **Q-3:** yes,
@@ -421,10 +423,10 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
 <!-- markdownlint-disable-next-line MD029 -->
 37. BR-31 does not block Git operations on bypass mode (2026-10-13). zemdregon's words, verbatim: "BR-31. Don't block
     git operations on bypass mode". **The words are zemdregon's; the narrow reading below is a Delegated interpretation
-    (agent), recorded so zemdregon can correct it.** zemdregon's priority is that an approved bypass run is never blocked from
-    Git operations through Switchboard. Reading: in an approved bypass run (scope `bypass` true AND an approval the
-    controller verifies, the same `bypassApprovedFor`/`evaluateBypass` evaluation the argv audit gate uses), the
-    controller-mediated `push` tool is offered and accepted regardless of the BR-31 credential-reach rule; the
+    (agent), recorded so zemdregon can correct it.** zemdregon's priority is that an approved bypass run is never
+    blocked from Git operations through Switchboard. Reading: in an approved bypass run (scope `bypass` true AND an
+    approval the controller verifies, the same `bypassApprovedFor`/`evaluateBypass` evaluation the argv audit gate
+    uses), the controller-mediated `push` tool is offered and accepted regardless of the BR-31 credential-reach rule; the
     channel-open event and every `git_push` event and row carry the reason `bypass_exempt`, so `runs show` shows it.
     Everything else about `push` stays: the controller alone pushes (the agent never receives credentials; the push
     process's allowlisted environment is unchanged), policy `branch` is required (policy `none` offers nothing), the
@@ -462,6 +464,78 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
     trust or credential change. No requirement ID changes. Residual risk: R-52 (not blocking); open question Q-45.
     *Unverified:* nothing ran against a live provider; only the fake adapter and Git 2.43.0 were exercised.
 
+<!-- markdownlint-disable-next-line MD029 -->
+39. Orchestrator-managed projects, T9.9 (2026-10-13). **Delegated decision (agent), under owner decision 25; not an
+    zemdregon quote and not owner-approved.** zemdregon's only input is "yes" to Q-7 (decision 8); FR-PRJ-10 and FRD
+    BR-32 were already Proposed. None of these choices changes what a bypass run may do: they only narrow what an
+    orchestrator can define. Choices, all fail closed: (a) **persistence** ([ADR-0030](adr/0030-dynamic-project-revisions-and-approval.md),
+    migration 0004): append-only `project_revision` (without LLD §1's `approved_at`, which an append-only row cannot
+    take), `project_revision_decision` (the operator's approval or rejection) and `project_event` (every call, accepted
+    or refused, since `run_event` needs a run); state (in force, pending, approved, rejected, deleted) is derived;
+    deleted ids are never reused. (b) **config:** `mcp_clients[].manage_projects` (default off) and `max_push_policy`
+    (`none`/`branch`, default `none`, refused without `manage_projects`). (c) **limits:** the client's ceiling and
+    `max_push_policy`; with no client provider list in the SRS or LLD, the client's provider set is read as every
+    provider the operator has not disabled (Q-47); repositories under an allowed root and not inside `data_dir`; strings
+    free of control, separator and bidirectional characters; strings at most 4096 characters, arrays at most 32 items,
+    32 live projects per client and 100 revisions per project (Assumptions). (d) **approval:** besides `container`, push
+    and widening (BR-32), a commit `identity` and `sign: true` also wait for the operator (stricter than BR-32; LLD
+    §11.2's `identities` list is not built); widening is measured against the revision in force; `projects approve`
+    needs `--revision` once a project has more than one revision (time-of-check guard) and, like `approve`/`deny`, writes
+    its row while `serve` runs. (e) **use:** a configured id always wins; a dynamic project resolves only for its
+    creator and only while that client keeps `manage_projects`, to its in-force revision, after re-checking the client's
+    current limits and every filesystem rule; the snapshot shape is unchanged and the route decision names the revision.
+    (f) **codes:** a configured project and another client's get the same `PERMISSION_BLOCKED` message; delete with a
+    non-terminal run (or a request being admitted) is `INVALID_REQUEST` as SRS FR-PRJ-10 and LLD §3 say, read as
+    winning over BR-32's general sentence. (g) **not built:** push targets of approved dynamic projects (a push is
+    refused, Q-46). No requirement ID changes. Residual risks: R-53 and R-54 (not blocking).
+
+<!-- markdownlint-disable-next-line MD029 -->
+40. Retrieval index and sticky provider/model affinity (2026-10-13). **zemdregon's words, verbatim, are only this:**
+    "Add this to the plan: per project automatic RAG/Vector DB for reduced context requirements, as well as possibly a
+    deployment wide RAG for general info across all projects. If its not already planned or implemented, also sticky
+    sessions to increase cache hits. Generally only swapping providers and models when maxing out usage, or on user
+    request, so that we dont round Robin a single project all the time causing a ton of cache misses." *Everything below
+    is Delegated (agent), not owner-approved, and Proposed.* (The number 39, R-53, R-54, Q-46, Q-47 and ADR-0030 are
+    reserved by PR #36.)
+    - **Audit finding.** Sticky sessions were not previously planned or implemented (§3.1). The closest items are
+      FR-SES-03 (native resume on the same provider, within one meta-session), FR-RTE-02 (a handoff-cost term in the
+      score that never pins a provider) and FR-CAP-06 (failover on `QUOTA_EXHAUSTED`). They are extended, not replaced:
+      routing gains FR-RTE-06 to 09 and capacity gains FR-CAP-08. No RAG, vector or embedding material existed anywhere.
+    - **Retrieval (Delegated).** A per-project automatic index (FR-RAG-01 to 08, 11, 14) and an optional deployment-wide
+      index (FR-RAG-09, 10), new capability CAP-13, outcome BO-9, new milestone M12 (§6.7), after M9 and using the M11
+      backend port and its privacy gates. Mode `auto` means on if and only if an embedding backend is configured (the
+      reading of "automatic", Q-49). The deployment-wide index is "possibly" in zemdregon's words, so it is off by
+      default, holds operator-added sources and explicitly contributed project content, and is read only by projects
+      that set `use_global` (Q-50). Retrieved content is untrusted data and has no authority over any security or policy
+      decision (FR-RAG-07). Storage is Proposed as SQLite with in-process search, settled by the T12.0 spike (Q-48).
+      Decided in [ADR-0031](adr/0031-retrieval-index.md). Residual risks: R-55 to R-57 (not blocking).
+    - **Affinity (Delegated).** The controller keeps a project on its last provider and model across meta-sessions and
+      swaps only for a closed list of reasons: a user request, capacity exhausted (the confidence estimate of ADR-0007
+      or `QUOTA_EXHAUSTED`), ineligibility, or a failure after retry (FR-RTE-06 to 08). A better score, lower cost or
+      lower load is never a reason, and there is no round-robin for one project. This reads "maxing out usage, or on
+      user request" as the first two entries and adds the other two as safety floors; zemdregon did not name them. After
+      a switch the project stays on the new provider (Q-51). Thresholds are Assumptions and no number is invented. Lands
+      in M6/M7. Decided in [ADR-0032](adr/0032-provider-model-affinity.md). Residual risk: R-58 (not blocking).
+    - **Not claimed.** That any provider's cache is hit more often, or that retrieval reduces tokens, is unmeasured.
+      FR-CAP-08 records cache token counts where a CLI reports them (Q-53) so the operator can check.
+
+<!-- markdownlint-disable-next-line MD029 -->
+41. Claude Code tool channel only for approved bypass runs (2026-10-13). *Delegated wording of zemdregon's choice, not
+    his words:* the operator-machine live check (`docs/research/live-checks-2026-10-13.md`, PR #41, its first
+    recommendation) found that `--safe-mode` stops the injected MCP server from starting, while omitting it loads the
+    repository's `CLAUDE.md`, hooks and `.mcp.json` (R-41). The agent put options to zemdregon and **zemdregon chose
+    option A**: the Claude channel (T9.4b, ADR-0029) is offered **only** to an approved `privileged` run whose scope
+    sets `bypass` (ADR-0017), where decision 26 already treats repository configuration as acceptable and bypass is
+    deliberately loose. In that case, and only with the opt-in `providers.claude-code.git_channel`, the adapter omits
+    `--safe-mode` so the server can start (`--strict-mcp-config` kept except under decision 26's `enabled`). Every
+    other run (`inspect-untrusted`, `edit-untrusted`, `trusted-development`, `privileged` without bypass) keeps
+    `--safe-mode`, gets no channel and an unchanged argv, and commits through finalize-only (FR-GIT-09, T9.7).
+    Git-write denial (deny rules, `--tools`) and worktree isolation still apply in bypass (live check 14, R-38 HELD).
+    *Delegated mechanism:* [ADR-0033](adr/0033-claude-channel-bypass-only-without-safe-mode.md) (per-run
+    `offersChannel`, `removeFlags`, three new audit refusals). No requirement ID changes. The channel stays
+    UNSUPPORTED: it has not run end to end through Switchboard (the live check used a hand-made server). Residual
+    risk: R-59 (not blocking); open question Q-54.
+
 Decisions 10 to 13, 17, 19, 21 and 22 each choose the less restrictive of the options put to zemdregon (decision 18 is the
 principle behind the 2026-10-13 ones); decisions 20 and 23 keep the stricter behaviour already implemented. Their residual
 risks are recorded for zemdregon as R-23 to R-26, R-34, R-38 and R-39 in §7.1 (not blocking); decision 24's as R-38 and
@@ -469,7 +543,8 @@ R-40; decision 26's as R-41; decision 27's as R-35 (mitigated); decision 28's as
 decision 29 has none beyond the stale-for-TTL window noted in it; decision 30 closes R-44; decision 32's is R-45 (not blocking);
 decision 33's is R-46 (not blocking); decision 34's is R-47 (not blocking); decision 35's are R-48 and R-49 (not
 blocking); decision 36's is R-50 (not blocking); decision 37's is R-51 (accepted by the owner for bypass); decision
-38's is R-52 (not blocking).
+38's is R-52 (not blocking); decision 39's are R-53 and R-54 (not blocking); decision 40's are R-55 to R-58 (not
+blocking); decision 41's is R-59 (not blocking).
 
 ### 4.3 Stated intent (confirmed constraints)
 
@@ -521,8 +596,8 @@ introduction](research/headless-ai-coding-controller.md#introduction-to-the-cli-
 ### 4.6 Conflicts between sources and how they were resolved
 
 Resolution rule: the verified research is a direct, dated review of the original blueprint against provider
-documentation, so its technical findings win. Where the original carries zemdregon's *stated intent* (§4.3), the intent is
-kept and only the mechanism changes.
+documentation, so its technical findings win. Where the original carries zemdregon's *stated intent* (§4.3), the intent
+is kept and only the mechanism changes.
 
 | Topic | Original blueprint | Verified research | Resolution |
 | --- | --- | --- | --- |
@@ -554,8 +629,9 @@ kept and only the mechanism changes.
 | [docs/design/SDD.md](design/SDD.md) | Software design | Draft baseline | Component collaboration, shared patterns, requirement→design traceability |
 | [docs/design/TDD.md](design/TDD.md) | Technical design | Draft baseline | Technology choices, cross-cutting concerns, per-provider adapter strategy, test strategy |
 | [docs/design/LLD.md](design/LLD.md) | Low-level design | Draft baseline (M1–M2 detail) | Schemas, interfaces, tool contracts, failure taxonomy, algorithms |
-| [docs/adr/](adr/README.md) | Decision records | 17 accepted (13 and 14 record zemdregon's 2026-10-12 decisions and 16 his 2026-10-13 decision, mechanisms delegated; 15 is delegated; 17 is Delegated wording recording owner decisions 13 and 17) | Why each architectural decision was made |
+| [docs/adr/](adr/README.md) | Decision records | 31 accepted and 2 proposed (0031, 0032, owner decision 40; 0033 records owner decision 41), see the [index](adr/README.md) (13 and 14 record zemdregon's 2026-10-12 decisions and 16 his 2026-10-13 decision, mechanisms delegated; 15 is delegated; 17 is Delegated wording recording owner decisions 13 and 17) | Why each architectural decision was made |
 | [docs/research/headless-ai-coding-controller-verified-2026-10-12.md](research/headless-ai-coding-controller-verified-2026-10-12.md) | Verified research | Current reference | Evidence for provider behaviour as of 2026-10-12 |
+| [docs/research/muse-code-2026-10-13.md](research/muse-code-2026-10-13.md) | Muse Code research note | Research input; not verified against Meta's documentation | Muse Code as a Should provider (FR-ADP-12) |
 | [docs/research/headless-ai-coding-controller.md](research/headless-ai-coding-controller.md) | Original blueprint | **Superseded** where it conflicts (§4.6); retained for stated intent | Stated intent C-1 to C-7 only |
 | `scripts/check-docs.mjs` | Documentation link and ID checker | Current | Mechanical consistency of this set |
 
@@ -563,22 +639,25 @@ kept and only the mechanism changes.
 
 Status values: `Done`, `In progress`, `Partial`, `Planned`, `Blocked`, `Deferred`. No milestone has dates; none were
 set. Sizes are not estimated. M9 and M10 were added on 2026-10-12 for owner decisions 6 and 7 (projects; tool-only
-commits); M11 on 2026-10-13 for owner decision 14 (inner agent).
+commits); M11 on 2026-10-13 for owner decision 14 (inner agent); M12 on 2026-10-13 for owner decision 40 (retrieval
+index). Test count on 2026-10-13: `npm test` passes with 39 files and 983 tests (the per-milestone counts quoted below
+are dated when they were taken).
 
 | ID | Milestone | Status | Depends on | Requirements delivered (first delivery) | Acceptance criteria | Verification |
 | --- | --- | --- | --- | --- | --- | --- |
 | M0 | Documentation baseline | In progress (this change); Done on merge | — | NFR-MAINT-02, NFR-COMP-01 | Document set in §5 exists; `node scripts/check-docs.mjs` passes; AGENTS.md points here | Docs check script; review |
 | M1 | Foundation | **Done** (2026-10-12): every acceptance criterion has a passing test (166 tests locally); first CI run unconfirmed; requirement gaps marked `Partial` in §6.1 | M0 | FR-ADP-01, FR-AUTH-01, FR-POL-10, FR-WS-01–06, FR-SES-01, 02 (schema), 05 (events), FR-CAP-04 (queue, global limit), FR-EXE-01, 02, 05–07, FR-SES-06, FR-TEL-01, 03, FR-OPS-01 (`doctor`, `runs`), 03, 04, NFR-SEC-01, 02, 04–06, NFR-REL-01–02, NFR-PERF-03 (global), NFR-PORT-01, NFR-PRIV-01 | A fake provider CLI runs through the full lifecycle transactionally; cancel kills the process tree; `SIGKILL` of the controller mid-run followed by restart leaves a consistent ledger; a failed run that mutated files is rolled back, not replayed; CI green on Linux | Automated integration and fault-injection tests in CI; evidence in §6.1 |
 | M2 | Claude Code and Codex adapters + MCP vertical slice | **Partial** (2026-10-12): T2.1 to T2.8 implemented with tests on fakes and synthetic fixtures (453 tests locally); not `Done`, see "Blocks Done" in §6.2. FR-GIT-01 (added on main, PR #11) is shown by argv and policy inspection: Claude Code compiles documented deny rules, Codex declares that none is documented; live behaviour is unverified (§6.2 item 4) | M1 | FR-MCP-01, 03–09, FR-ADP-02–04, 06, 11 (Claude Code, Codex), FR-POL-01 (two profiles), 02–05, 07, 08, FR-AUTH-02, FR-GIT-01 (Claude Code, Codex), FR-SES-03 (Claude Code, Codex), FR-RTE-01 (eligibility), FR-CAP-01 (record), FR-OPS-01 (`serve`), NFR-PERF-01, 02, NFR-OBS-01, NFR-PRIV-02, NFR-MAINT-03 | For each of Claude Code and Codex, a scripted MCP client delegates an edit task under `edit-untrusted`, polls to `SUCCEEDED`, retrieves a diff artifact and continues the same native session; a new user following the README reaches a passing `doctor`; missing login yields `AUTH_REQUIRED`; unknown CLI version yields `ADAPTER_VERSION_UNVERIFIED`; no bypass flag appears in any compiled invocation; no compiled invocation leaves a Git write operation (commit, ref change, push) permitted (FR-GIT-01) | Conformance suite on recorded fixtures in CI; one opt-in live smoke test run by the operator; argv inspection test |
-| M3 | Isolation | Planned; tasks in §6.5 (planning done 2026-10-12). Can reach only `Partial` without live provider runs (§6.5.2) | M2 | FR-POL-01 (all), 06, 09, FR-WS-07, FR-EXE-08, FR-OPS-02 (`approve`, `deny`), NFR-SEC-03 (Claude Code, Codex), NFR-DATA-01 | Malicious-fixture suite shows no escape for each profile on Claude Code and Codex; `privileged` runs wait for `approve` and end `CANCELLED` on `deny`; verification commands run and are recorded; retention deletes artifacts, worktrees and branches together | Malicious-fixture suite; integration tests |
+| M3 | Isolation | **Partial** (2026-10-13): on main with tests are approvals (T3.4, `approve`/`deny`), privileged admission and compile matrices (T3.3, T3.5 to T3.7, T3.17, T3.18), profiles (T3.2), retention and GC (T3.12), the nested-repository fix (T3.20, `fb4dc1d`) and the preflight cache (T3.21). Not done: outer sandbox (T3.1), verification (T3.10, `verification_commands` still refused), live leg (T3.9), T3.11, T3.13. Tasks in §6.5. Can reach only `Partial` without live provider runs (§6.5.2) | M2 | FR-POL-01 (all), 06, 09, FR-WS-07, FR-EXE-08, FR-OPS-02 (`approve`, `deny`), NFR-SEC-03 (Claude Code, Codex), NFR-DATA-01 | Malicious-fixture suite shows no escape for each profile on Claude Code and Codex; `privileged` runs wait for `approve` and end `CANCELLED` on `deny`; verification commands run and are recorded; retention deletes artifacts, worktrees and branches together | Malicious-fixture suite; integration tests |
 | M4 | Adapter expansion | Planned (Kimi Code part blocked by B-1; Muse Code is Should) | M3, M9 (Proposed) | FR-ADP-05, 07, 08, 09, 10, 11 (others), 12, FR-EXE-03, FR-OPS-02 (`adapters validate`), NFR-SEC-03 (others), NFR-MAINT-01, NFR-PORT-02 | Grok Build, Antigravity, Cursor and OpenCode adapters pass conformance and malicious-fixture suites; the test suite passes on macOS; Kimi Code passes once B-1 clears (M4 may be marked `Partial` until then, with only Kimi outstanding); ACP transport used where it is the adapter's chosen surface; adding an adapter touched only its own module, manifest, fixtures and registry entry; `adapters validate` accepts a new CLI version only after its live checks pass | Conformance and fixture suites per adapter; diff inspection |
 | M5 | Continuity | Planned | M4 | FR-SES-02 (populated), 03 (all), 04, 05 (handoff view) | Provider A edits and tests; provider B continues from the handoff bundle and completes the task; no provider transcript file is opened (verified by file-access test) | End-to-end test with two fake adapters plus one opt-in live pair |
-| M6 | Capacity and resilience | Planned | M5 | FR-MCP-02 (`get_capacity`), 10, FR-CAP-01 (use), 02–07, FR-OPS-05, NFR-PERF-03 (per provider) | Injected rate-limit, overload, quota and crash failures produce the behaviour in FRD WF-5, with successor runs linked to their predecessors; `get_capacity` and `switchboard capacity` never return `explicit_remaining` unless the provider reported it | Fault-injection tests with fake adapters |
-| M7 | Routing | Planned | M6 | FR-MCP-02 (`explain_route`), FR-RTE-01 (full), 02–04 | Given stored features and weights, re-running the scorer reproduces every stored decision; `explain_route` lists the deciding factors | Deterministic replay test |
+| M6 | Capacity and resilience | Planned | M5 | FR-MCP-02 (`get_capacity`), 10, FR-CAP-01 (use), 02–07, FR-CAP-08 (cache observations and affinity counters; owner decision 40), FR-OPS-05, NFR-PERF-03 (per provider) | Injected rate-limit, overload, quota and crash failures produce the behaviour in FRD WF-5, with successor runs linked to their predecessors; `get_capacity` and `switchboard capacity` never return `explicit_remaining` unless the provider reported it; where a provider reports cache read or creation token counts they are recorded as labelled observations, and per project the runs that kept versus switched provider and model are counted by reason (FR-CAP-08, Proposed) | Fault-injection tests with fake adapters |
+| M7 | Routing | Planned | M6 | FR-MCP-02 (`explain_route`), FR-RTE-01 (full), 02–04, FR-RTE-06–09 (provider and model affinity; owner decision 40, Proposed) | Given stored features and weights, re-running the scorer reproduces every stored decision; `explain_route` lists the deciding factors; a project keeps its last provider and model across meta-sessions, and in a replay of stored routing decisions affinity changes only with an `affinity_switch_reason` from the closed list (`user_request`, `capacity_exhausted`, `ineligible`, `failed_after_retry`), never for a better score, lower cost or lower load; with several eligible providers and equal capacity no project is spread across providers | Deterministic replay test; property test over replayed decisions; fake-adapter fault injection |
 | M8 | Hardening | Planned | M7 | FR-TEL-02 | OTel traces reach a test collector with no forbidden attributes; a scheduled version canary on the operator's machine flags CLI updates before they reach routing | Collector test; version-bump test |
-| M9 | Projects and controlled commits | Planned. Numbered after M8 to keep existing milestone IDs stable; **sequenced after M3 and before M4** (Proposed) so new adapters declare their Git controls once | M3 | FR-PRJ-01–04, 06, 08, 10, FR-GIT-01 (fixtures), 02–10, FR-WS-05 (publication) | A scripted MCP client lists projects and delegates to one (`host` environment, one repository context) and the lower of client and project ceilings applies; the agent's `commit` tool call produces a commit on the publish ref with the configured identity and no trailer, footer or identifier even when the message contains them; an agent attempt to commit, move a ref or push (shell or provider built-in) leaves nothing on the publish ref and appears as `git_policy_violation`; with push `none` nothing leaves the host, with `branch` against a local bare remote only the publish ref arrives and never checkpoint commits or run branches; every published commit has a `git_commit` row naming run, provider and model; a client with `manage_projects` can create a `host` project within its limits and use it, a `container` or push-enabled revision stays unusable until `projects approve`, and a client without the flag has no project-management tools; with `sign: true` the published commit verifies against the operator's key and a failed signature creates no commit; adapters that cannot take the channel without a bypass flag run in finalize-only mode only on opt-in | Fake-adapter integration tests with real Git repos and a local bare remote; sanitiser fixtures; malicious-fixture additions for Claude Code and Codex; argv inspection |
+| M9 | Projects and controlled commits | **Partial** (2026-10-13): T9.0 to T9.3, T9.5, T9.6 and T9.7 are on main with tests; T9.4 covers the fake adapter only. Not done: the Claude Code channel's live check (T9.4b; implemented behind an unsupported opt-in), `manage_projects` (T9.9), signing (T9.10; `sign` is accepted but not enforced) and the T9.8 README/roadmap closure (§6.3). Numbered after M8 to keep existing milestone IDs stable; **sequenced after M3 and before M4** (Proposed) so new adapters declare their Git controls once | M3 | FR-PRJ-01–04, 06, 08, 10, FR-GIT-01 (fixtures), 02–10, FR-WS-05 (publication) | A scripted MCP client lists projects and delegates to one (`host` environment, one repository context) and the lower of client and project ceilings applies; the agent's `commit` tool call produces a commit on the publish ref with the configured identity and no trailer, footer or identifier even when the message contains them; an agent attempt to commit, move a ref or push (shell or provider built-in) leaves nothing on the publish ref and appears as `git_policy_violation`; with push `none` nothing leaves the host, with `branch` against a local bare remote only the publish ref arrives and never checkpoint commits or run branches; every published commit has a `git_commit` row naming run, provider and model; a client with `manage_projects` can create a `host` project within its limits and use it, a `container` or push-enabled revision stays unusable until `projects approve`, and a client without the flag has no project-management tools; with `sign: true` the published commit verifies against the operator's key and a failed signature creates no commit; adapters that cannot take the channel without a bypass flag run in finalize-only mode only on opt-in | Fake-adapter integration tests with real Git repos and a local bare remote; sanitiser fixtures; malicious-fixture additions for Claude Code and Codex; argv inspection |
 | M10 | Container environments | Planned; B-2 resolved by delegation (Proposed), starts with a spike. Route to zemdregon's bypass goal (owner decision 24, §6.4); order after M9 kept (Q-38, owner decision 25) | M9 | FR-PRJ-05, 07, 09, FR-GIT-01 (container environments, by construction) | A `container` project mounts only the run worktree and declared read-only contexts, applies its limits and network policy, and is removed at run end and after a controller crash; no home directory, data directory, push credential or runtime socket is mounted; the container leg of the malicious-fixture suite shows no escape | Opt-in container integration tests (skipped in CI until a runtime is chosen); fault injection; inspection of mounts |
 | M11 | Inner agent | Planned (Proposed). Owner decision 14; numbered after M10 to keep milestone IDs stable; **sequenced after M9** (Proposed). Tasks that use another milestone's output wait for it (§6.6) | M2 (configuration, ledger); M9 for commit and PR tasks; M3, M4, M5, M7 for the tasks that use them | FR-INN-01–17 | With no inner agent configured nothing changes and the suite passes; with a fake backend, enabled tasks are used and invalid, empty, slow or unreachable output falls back without failing or delaying a run beyond the bound; a commit with no agent message gets a sanitised drafted message with no trailer, footer or identifier even when the backend returns them; inner usage never appears in provider usage or capacity unless a shared subscription is declared; a `remote` backend needs `allow_remote` and diffs need the per-task opt-in, and a planted secret never reaches a captured prompt; no inner output reaches any policy component; `doctor` and `inner status` report state | Fake-backend integration and fault-injection tests; hostile-backend sanitiser fixtures; import-boundary test; secret-in-prompt test; inspection of the privacy gates; one opt-in live run against an operator-chosen backend |
+| M12 | Retrieval index | Planned (Proposed). Owner decision 40; numbered after M11 to keep milestone IDs stable; **sequenced after M9** and the M11 backend port (T11.1) (Proposed). Tasks in §6.7 | M2 (configuration, ledger); M9 (projects, contexts); M11 T11.1 and T11.3 (backend port, locality gates); T9.4b for the agent-callable tool | FR-RAG-01–14, CAP-13, BO-9 | With no embedding backend configured nothing changes and the suite passes; with a fake backend a project index is built in the background and incrementally, never blocks admission, and a failed or stale retrieval falls back to no retrieval without failing the run; excluded files (nested repositories, escaping symlinks, binary, oversized, denylisted) and a planted secret never reach the store or a captured embedding request; no project's index is readable from another project's run or query, and the global index is read only by a project with `use_global` and holds only contributed or operator-added content, each snippet labelled with its origin; retrieved content reaches no policy component (import-boundary test); `search_project_context` returns only the client's projects within the size bound; `index status\|rebuild\|clear` and `doctor` report state; the token saving is not asserted until measured | Fake-embedding-backend integration and fault-injection tests; exclusion and secret fixtures; cross-project isolation tests; import-boundary test; inspection of the privacy gates; one opt-in live run against an operator-chosen backend |
 
 ### 6.1 M1 Foundation: tasks
 
@@ -715,8 +794,11 @@ Criteria met on fakes or fixtures: "unknown CLI version yields `ADAPTER_VERSION_
 
 ### 6.3 M9 Projects and controlled commits: tasks
 
-*Proposed breakdown, written when M9 was added; revisit when M3 completes.* Each task lists its references and its
-completion check. Design: [LLD §11](design/LLD.md#11-projects-contexts-and-environments),
+*Proposed breakdown, written when M9 was added; revisit when M3 completes.* Status (2026-10-13, checked against `main`):
+T9.0 (`411c879`), T9.1 (`355109d`), T9.2 (`531a04f`), T9.3 (`fed85b2`), T9.4 for the fake adapter (`f035191`), T9.5
+(`ba07170`), T9.6 (`532d14e`) and T9.7 (`b2e34c9`) are implemented; T9.4b is implemented behind an unsupported opt-in
+with its live check not run. T9.4b, T9.8, T9.9 and T9.10 are not closed. Each task
+lists its references and its completion check. Design: [LLD §11](design/LLD.md#11-projects-contexts-and-environments),
 [LLD §12](design/LLD.md#12-injected-git-tools-commits-and-publication),
 [TDD §3.10](design/TDD.md#310-git-commits-attribution-and-publication).
 
@@ -747,7 +829,7 @@ note), [LLD §12.2–12.3.1](design/LLD.md#12-injected-git-tools-commits-and-pub
 | Plumbing for a commit from a path subset | Done for Git 2.43.0 | LLD §12.3 note: temporary index, `add --`, `write-tree`, `commit-tree`, `update-ref` with compare-and-swap, checkpoint commits unreachable from the publish ref, worktree index unchanged. Untested cases listed there |
 | `MIN_GIT_VERSION` revisited | Done (2026-10-13, Delegated decision 30) | Raised to 2.32 by [ADR-0023](adr/0023-minimum-git-version-2-32.md) (Q-39 decided, R-44 mitigated): `src/workspace/git.ts`, test `the version gate rejects Git 2.31 and accepts 2.32` in `src/workspace/workspace.test.ts`, README, TDD §2 and §3.10 |
 | Deny-rule syntax for Git writes | Partial | Help documents only the `Bash(git *)` example; emitted-rule gaps listed in R-43 are closed in code (2026-10-13: every global option spelling and the missing subcommands are denied; `src/adapters/git-write.ts`, `src/adapters/claude/adapter.ts`, tests in `git-write.test.ts` and `claude.test.ts`); matching semantics (including whether Claude normalises global options) still need the live check C-G2 (T3.9) |
-| Claude Code per-run MCP definition | Partial | Flags found in the help (`--mcp-config`, `--strict-mcp-config`); JSON shape, allow-rule form, permission behaviour and the `--safe-mode` interaction **unverified**; Q-40 decided yes (decision 36, [ADR-0029](adr/0029-claude-code-receives-tool-shim-via-mcp-config.md), partly superseding ADR-0015); adapter work and live check are T9.4b; a third-party project's observed approach (SDK control channel, allow rules `mcp__<server>__*`, additive MCP config) is a lead only (TDD §3.10 "External reference"); R-18 |
+| Claude Code per-run MCP definition | Partial | Flags found in the help (`--mcp-config`, `--strict-mcp-config`); *2026-10-13 live check (PR #41, hand-made server):* `mcpServers` shape, exact-name rules under `dontAsk`, `${VAR}` expansion confirmed, and `--safe-mode` stops the server, so the channel is bypass-only (decision 41, [ADR-0033](adr/0033-claude-channel-bypass-only-without-safe-mode.md)); through Switchboard still **unverified**; Q-40 decided yes (decision 36, [ADR-0029](adr/0029-claude-code-receives-tool-shim-via-mcp-config.md), partly superseding ADR-0015); adapter work and live check are T9.4b (adapter, audit rule and replay test implemented behind an unsupported opt-in, 2026-10-13; live check not run); a third-party project's observed approach (SDK control channel, allow rules `mcp__<server>__*`, additive MCP config) is a lead only (TDD §3.10 "External reference"); R-18 |
 | Sandbox reach to a Unix socket | `Unknown: live check` (both providers) | Help names no sandbox option for Claude; nothing in [R2] for Codex |
 | Provider commit or attribution setting | Done for Claude Code help text | None beyond `--bare` (unusable, ADR-0015); the FR-GIT-04 sanitiser stays necessary (R-19) |
 | Codex (all questions) | Not done: **Unverified** | `codex` is not installed and [R2] is silent; the adapter stays `none-documented`, finalize-only is the only evidenced design. Needs an installed binary |
@@ -839,7 +921,59 @@ freeze; `src/mcp/server.ts`, test "freezes the primary context's commit identity
 from the provider sandbox) have not run; Codex is not installed. Scope kept out on purpose: `push` (T9.6), ref snapshots
 and violation handling (T9.5), finalize-only (T9.7), signing (T9.10), and enforcing that a `none` adapter is ineligible
 for write-capable project runs without the finalize-only opt-in (Q-43). Peer credentials are not checked (no Node.js API;
-R-46).
+R-46). *Update 2026-10-13:* the Claude Code part is implemented behind an unsupported operator opt-in by T9.4b (below);
+Codex is unchanged.
+
+**T9.4b status (2026-10-13; Delegated): implementation Done behind the operator opt-in; live check NOT done, so the
+opt-in is UNSUPPORTED.** No provider CLI was run. Every implementation clause of "Done when" has a test:
+*`--mcp-config <0600 file>` with exactly one server, token only in the environment:*
+`src/lifecycle/claude-channel.test.ts` ("opt-in on: one-server 0600 definition ...": the Claude replay script stands in
+for `claude`, reads the definition, starts the real `tool-shim` from it and commits through the socket; its evidence
+record shows the argv, one server `switchboard-git`, file mode `0600` in a `0700` directory, the token variable in its
+environment and no token in argv or the file; the file and directory are gone after the run) and
+`src/adapters/claude/channel.test.ts` (fragment and file contents). *`--strict-mcp-config` omitted only under decision
+26:* `channel.test.ts` ("repository_config enabled ...", "disabled or approved ..."). *Exact-name `--allowedTools`:*
+`mcp__switchboard-git__commit` and, when `push` is offered, `mcp__switchboard-git__push`, never a wildcard. *Audit
+allows exactly this shape:* `auditMcpArgs` and `assertMcpAudit` in `src/adapters/audit.ts`, run before every spawn;
+negatives in `channel.test.ts` ("audit: everything but the one channel shape is refused": no channel, inline JSON, other
+and sibling paths, a second occurrence or value, the `=` form, server-wide, wildcard, foreign and unoffered MCP rules,
+MCP rules outside `--allowedTools` or in `policyFlags`, missing strictness, unsafe file modes and links) and in the
+lifecycle (a wrong path or a wildcard rule fails `PERMISSION_BLOCKED` before spawn). `BYPASS_FLAGS` behaviour is
+unchanged. *`injected` only with the opt-in:* `providers.claude-code.git_channel` (boolean, default `false`;
+`src/config/schema.ts`, `src/config/load.ts`, `src/config/config.test.ts`), passed by `src/cli/serve.ts` (warning logged
+when on); without it the adapter declares `none` and argv is byte-identical ("opt-in off ..." in both test files).
+Channel files: `OpenChannel.writeFile` in `src/git/channel.ts` (`0600`, exclusive create, no link following, removed on
+close, crash sweep and directory reuse; `src/git/channel.test.ts` "channel files ..."). Design: [LLD
+§12.2](design/LLD.md#122-channel) and [§11.1](design/LLD.md#111-configuration-shape) as-built notes, [TDD
+§3.10](design/TDD.md#310-git-commits-attribution-and-publication) "T9.4b build notes", README config table. **Not done:
+the live check.** R-18 and the T9.0 block stay Partial. The operator must run, with the installed `claude` (opt-in,
+never in CI) and a throwaway repository, and record each result here and in R-18: (a) `--mcp-config` with the stdio shim
+starts and serves `commit` headless under `-p`; (b) the exact-name rule `mcp__switchboard-git__commit` covers the tool
+under `--permission-mode dontAsk --permission-prompts none` and under an approved bypass; (c) whether `--safe-mode`
+drops the `--mcp-config` server; (d) the FR-GIT-01 Git deny rules still hold with the server present; (e) the shim
+reaches the Unix socket from inside whatever sandbox Claude applies; (f) what environment the stdio server inherits and
+whether the `${SWITCHBOARD_TOOL_TOKEN}` reference expands. Added by this task (Assumptions in the code, each failing
+closed): (g) a second `--allowedTools` occurrence adds to the first rather than replacing it; (h) `--tools` does not
+filter MCP tools; (i) the definition shape (`mcpServers`, `"type": "stdio"`) is accepted. If (a), (b) or (e) fails the
+opt-in stays unsupported and finalize-only (T9.7) remains the route (ADR-0029).
+
+*Update 2026-10-13 (live check and owner decision 41; Delegated).* The operator-machine live check
+(`docs/research/live-checks-2026-10-13.md`, added by PR #41; Claude Code 2.1.296 with a hand-made stdio server, not
+Switchboard's shim) answered: (a) works; (b) exact-name rules work under `dontAsk` (bypass not checked for the rule,
+moot because bypass skips permission checks); (c) **`--safe-mode` drops the server**, with or without
+`--strict-mcp-config`; (f) `${VAR}` expands, an unset variable stays literal, and the server inherits the whole claude
+environment; (i) the `mcpServers` wrapper is required and accepted. (d) and (e) were not run with the shim present; (g)
+and (h) were not checked. Following decision 41 ([ADR-0033](adr/0033-claude-channel-bypass-only-without-safe-mode.md)):
+the channel is offered only to an approved privileged bypass run (`offersChannel`), whose fragment removes `--safe-mode`
+(`removeFlags`); every other run with the opt-in on has no channel, the same argv as with it off, and the finalize-only
+commit path. The argv audit refuses `--mcp-config` outside an approved bypass run, `--mcp-config` without a non-empty
+`SWITCHBOARD_TOOL_TOKEN` in the provider environment, and a Claude argv without `--safe-mode` outside the approved
+bypass cases (decision 26 or the channel). Tests: `src/adapters/claude/channel.test.ts` (opt-in on, approved bypass;
+every other run; audit negatives) and `src/lifecycle/claude-channel.test.ts` (bypass run commits through the replayed
+channel with no `--safe-mode` and a child environment of only `PATH`, `HOME` and the token; `edit-untrusted` and
+`privileged` without bypass have an argv identical to the opt-in off; `edit-untrusted` with the project's
+`finalize_commit` gets its commit through finalize-only). **Still not done:** a live run through Switchboard with the
+real `claude` (shim start, socket reach, Git deny rules with the server present), so the opt-in stays UNSUPPORTED.
 
 **T9.5 status (2026-10-13; Delegated): Done for `host` runs on fakes (Git 2.43.0); not run against a live provider.**
 "Done when", clause by clause, all in `src/lifecycle/ref-guard.test.ts` (fake adapter scenario `git_attempts`, plain Git
@@ -951,14 +1085,50 @@ covered:** Claude Code and Codex runs (no live provider; their `commitChannel` s
 opted in), `container` environments (skipped as `environment_not_host` until M10), signing (T9.10), the inner agent's
 message drafting (M11), and reconciliation does not redo a finalize commit a crash interrupted before its intent.
 
+*Fix, 2026-10-13 (Delegated):* a live run showed `switchboard gc` and `doctor` reporting the publish refs
+`switchboard/pub/<sess>` of sessions that have ledger rows as orphans, because the orphan sweep (`findOrphans`,
+`src/workspace/gc.ts`) knew only run and checkpoint branches. It now skips a publish ref whose session exists (tests in
+`src/workspace/gc.test.ts`); an unknown session's publish ref is still reported. Open question: LLD §5 says retention
+GC collects the publish refs with their meta-session from M9, but `runRetentionGc` deletes only `switchboard/<sess>/`
+branches, so an expired session's publish ref is kept. That is deliberate for now (the ref holds the delivered
+commits); deleting it needs an owner decision.
+
+**T9.9 status (2026-10-13; Delegated, decision 39): Done** for `host` environments; every "Done when" clause has a
+test. *Tools absent without the flag:* `src/mcp/project-tools.test.ts` ("a client without the flag has no project
+tools ..."; the call is answered as an unknown tool and recorded). *Configured projects and other clients' projects
+refused:* "creates a host project, runs in it like a configured one, and shows it only to its creator" (another client's
+delegate, update, delete and create are `PERMISSION_BLOCKED` without any path or name in the answer) and "never touches
+a configured project, and a configured id always wins". *Path outside allowed roots, ceiling, provider and push beyond
+the client rejected:* "rejects ceiling, provider, push, paths outside the roots and inside the data dir" (including
+`..` and a symlink escape) and "a client cannot raise its own limits through a definition"; rule units in
+`src/projects/projects.test.ts`. *`container` and push revisions stay `PENDING_APPROVAL` until `projects approve`:* "a
+push or container revision is PENDING_APPROVAL and cannot start runs until approved" (no run row until the decision; an
+approved `container` revision still fails `ENVIRONMENT_NOT_IMPLEMENTED` until M10), and the command itself in
+`src/cli/projects-dynamic.test.ts` ("projects approve": single revision, `--revision` required with several, superseded
+and repeated decisions refused, `--reject`, configured and unknown ids, written while a daemon holds the lock).
+*Delete with an active run refused:* "delete is refused while a run is active, allowed after; history stays; the id is
+not reused". *Every call is an event:* "every call is one event, accepted or refused, and survives a new server on the
+same ledger" and the malformed-input case. Also covered: widening an approved revision returns to pending with the old
+revision in force and a narrowing needs no approval; rejection; revalidation at admission (a repository swapped for an
+escaping symlink, the client's `max_push_policy` lowered, `manage_projects` removed); the run's policy snapshot has the
+same shape as for a configured project; append-only guards and checks on all three tables and the upgrade from schema
+version 3 (`src/projects/projects.test.ts`); restart persistence; malformed input (oversized strings and arrays,
+look-alike and upper-case ids, `__proto__` and `constructor` keys, NUL, newline and bidirectional characters) is
+refused, stores no malformed id and pollutes no prototype; config keys in `src/config/config.test.ts`. Code:
+`src/projects/` (store, rules), `src/mcp/project-tools.ts`, `src/mcp/server.ts`, `src/mcp/schemas.ts`,
+`src/cli/projects-dynamic.ts`, `src/cli/main.ts`, `src/cli/serve.ts`, `src/config/schema.ts`, `src/config/load.ts`,
+`src/ledger/migrations/0004_project_revision.ts`. [ADR-0030](adr/0030-dynamic-project-revisions-and-approval.md).
+**Not covered:** pushing from an approved dynamic project (refused at push time, Q-46), `container` environments
+(M10), and adversarial escape scenarios beyond these validation cases (T3.8b). Nothing ran against a live provider.
+
 ### 6.4 M10 Container environments: tasks
 
 *Proposed.* Q-6 was left to the agent, so the runtime and login mechanism are delegated and verified by T10.0 before any
 other M10 task.
 
 **M10 and the bypass goal (note, 2026-10-13; not a re-sequencing).** Owner decision 24 makes container environments the
-route to zemdregon's stated main usability goal, bypass runs with no permission prompts and no Git risk: in a container the
-image has no Git client and neither the Git directory nor any credential store is mounted, so an approved bypass run
+route to zemdregon's stated main usability goal, bypass runs with no permission prompts and no Git risk: in a container
+the image has no Git client and neither the Git directory nor any credential store is mounted, so an approved bypass run
 there does not depend on provider Git deny rules holding under bypass (R-38). Host-run agents stay supported with the
 existing controls. The current sequence is unchanged: M3, then M9 (projects, `host` environments, the injected `commit`
 and `push` tools that container runs also need), then M10. Q-38 (bring M10 forward) was decided on 2026-10-13 (owner decision
@@ -976,7 +1146,10 @@ and `push` tools that container runs also need), then M10. Q-38 (bring M10 forwa
 *Planned, Delegated breakdown (2026-10-12), reconciled with owner decisions 10 to 13 (§4.2), and on 2026-10-13 with
 owner decision 17 (durable meta-session approval) and the Delegated machine-readable `privileged_scope` (§4.4, Q-28).*
 The documentation-only tasks T3.14, T3.15 and T3.16 are done; T3.8 is `Partial` (controller Git driver hardening
-landed on `m3-wave-a`); no other code task has started.
+landed on `m3-wave-a`). *Update 2026-10-13:* the sentence above is out of date. Code on `main` also has T3.2, T3.3,
+T3.4, T3.5 to T3.7 (compile matrices), T3.12, T3.17, T3.18, T3.20 and T3.21; see the M3 row in §6. The "Facts the
+breakdown relies on" paragraph below is a dated snapshot of 2026-10-12: `approve` and `deny` now exist (T3.4), and the
+config schema now has `profiles` and `retention` keys.
 Claims about the code below were checked against branch `m2-git-write-deny` (PR #12, unmerged), on which M3 builds for
 its FR-GIT-01 work. Design: [SRS §3.3](requirements/SRS.md#33-policy-and-trust-profiles-fr-pol),
 [FRD WF-7](requirements/FRD.md#wf-7-privileged-approval), [FRD §4.2](requirements/FRD.md#42-transition-table),
@@ -1069,6 +1242,27 @@ call a live model in the default test run.
 | T11.13 | `cli` backend using OpenCode (Should) | FR-INN-04, FR-ADP-08, FR-ADP-03 | T11.0, M4 (OpenCode adapter and manifest) | Runs only on a version inside the manifest range and only with the verified tool-free flags; otherwise reports `Ineligible`; no bypass flag in argv (argv audit) |
 | T11.14 | Update the README (configuration, privacy, `doctor`, `inner`), roadmap status and any document the work proved wrong | NFR-MAINT-02, NFR-MAINT-03 | T11.1–T11.8 | §6 shows M11 with status and links to tests |
 
+### 6.7 M12 Retrieval index: tasks
+
+*Proposed breakdown, written when M12 was added; revisit when M9 and T11.3 complete.* Design:
+[ADR-0031](adr/0031-retrieval-index.md), SRS §3.15 (`FR-RAG`). Order of delivery: the spike, then the per-project core,
+then retrieval at admission, then sharing. Provider/model affinity is not part of M12; it lands in M6/M7 (FR-RTE-06 to
+09, FR-CAP-08, [ADR-0032](adr/0032-provider-model-affinity.md)). No task here may call a live embedding model or embed
+real source in the default test run.
+
+| Task | Objective | References | Depends on | Done when |
+| --- | --- | --- | --- | --- |
+| T12.0 | Spike: storage and embedding backend. Measure in-process brute-force cosine search over SQLite BLOB vectors against a chunk cap, and pick the first `local` and `http` backend shapes and the default `max_context_tokens` | FR-RAG-04, 05, 11, Q-48 | — | The result, the measured sizes and timings, the chosen cap and the default are written into [TDD](design/TDD.md) with date and versions, or an approximate-nearest-neighbour index is recorded as needed; no number is stated before it is measured |
+| T12.1 | Config schema for `rag` (global section and per-project override), per-project store schema and migration, the disabled-by-default path | FR-RAG-01, 03, 09, 11 | M2, T9.1 | Config rejects unknown keys and a credential-looking value; with no backend the suite behaves as before; one store per project; the store is deleted with its project |
+| T12.2 | Scanner, exclusions, redaction and chunker | FR-RAG-02 | T12.1, T9.2 | Fixtures: nested repositories, escaping symlinks, binary, oversized, ignored and denylisted files are never read into a chunk; a planted secret is redacted before chunking output; the denylist is documented as best effort (R-56) |
+| T12.3 | Embedding port with a deterministic fake, `local` and `http` backends, locality classification and the `allow_remote` and `allow_source_content` gates; embedding calls recorded apart from usage | FR-RAG-04, 12, FR-INN-03, 16, T11.1, T11.3 | T12.1, T11.3 | Against a fake HTTP server a `remote` backend is refused without both flags; no embedding row enters `usage_observation` or capacity; a planted secret never appears in the captured request |
+| T12.4 | Incremental background build in `serve`, caps and incomplete marking, `index status\|rebuild\|clear`, `doctor` section | FR-RAG-11, 14 | T12.2, T12.3 | Build never blocks admission; a changed file re-indexes only itself; `clear` removes vectors and chunk text and the ledger keeps counts; plain-text and `--json` output |
+| T12.5 | Retrieval and context pack at admission: freshness checks, labelling, ledger records of snippet ids and hashes, fallback to no retrieval | FR-RAG-05, 07, 08 | T12.4 | Original request text stored unchanged; stale or deleted-source snippets dropped; any retrieval failure leaves the run unaffected; an import-boundary test fails if a policy, eligibility, approval, push or commit component imports the retrieval service |
+| T12.6 | MCP tool `search_project_context` | FR-RAG-06, [LLD](design/LLD.md#3-mcp-tool-contracts) | T12.5 | Read-only; returns only the client's projects; result count and size bounded; no path outside the project |
+| T12.7 | Global index and sharing rules (`rag.global`, `contribute_to_global`, `use_global`) | FR-RAG-09, 10 | T12.5 | Default off on every side; a snippet from project A reaches project B only if A contributes and B uses; `untrusted` contexts do not contribute by default; every global snippet names its origin; the same locality gates apply |
+| T12.8 | Update the README (configuration, privacy, `doctor`, `index`), roadmap status and any document the work proved wrong | NFR-MAINT-02, NFR-MAINT-03 | T12.1–T12.6 | §6 shows M12 with status and links to tests |
+| T12.9 | Agent-callable read-only search through the per-run tool channel (Could) | FR-RAG-13, ADR-0026 | T12.6, T9.4b | Same project scope and size limits as T12.6; offered only by an adapter with an injected channel |
+
 Later milestones (M4–M8) are intentionally kept at the level of the table in §6; break them into tasks when the
 preceding milestone completes.
 
@@ -1095,7 +1289,7 @@ preceding milestone completes.
 | R-15 | In a `host` environment a same-user agent shell can read ambient Git credentials | An agent could push around the tool | Withhold the `push` tool there (FR-GIT-06, BR-31); no credentials in the agent environment; containers in M10 |
 | R-16 | Removing provider attribution from commits may conflict with a provider's terms; not reviewed | Account or policy risk for the operator | Record the review in the compliance manifest notes (FR-POL-07); no compliance claim (NFR-COMP-01); the operator's call |
 | R-17 | Provenance links to commits by SHA; an operator rebase or squash breaks the link | Gaps in the audit trail | Also store tree hash and patch ID (FR-GIT-07); best effort |
-| R-18 | A per-run injected MCP channel may be impossible without a bypass flag, or blocked by a provider sandbox, for some providers | Those adapters fall back to controller-made commits | T9.0 spike; finalize-only mode (FR-GIT-09). *T9.0 spike (2026-10-13; Delegated, partial).* Claude Code: `claude --help` 2.1.296 documents `--mcp-config` and `--strict-mcp-config`, so a per-run definition needs no global configuration and, if an MCP tool needs no bypass flag, none; whether it does, the JSON shape, the allow-rule form and whether `--safe-mode` also disables the server are **unverified** (live check). ADR-0015 and the argv audit bar `--mcp-config`, so the channel needs a narrowing ADR first (Q-40). Socket reach from any provider sandbox: `Unknown: live check`. Codex: **Unverified** (not installed; nothing in [R2]). Until checked, no adapter may declare an injected channel and the finalize-only mode stays the fallback. *Update 2026-10-13 (decision 36):* Q-40 is decided yes ([ADR-0029](adr/0029-claude-code-receives-tool-shim-via-mcp-config.md); T9.4b), so the Claude channel no longer needs a further ADR, only the live checks; zemdregon chose finalize-only as the fallback and wants it for his projects (T9.7). *Leads from T3 Code (MIT; studied, not copied; observed in its source at commit 6524a8d, unverified on our CLIs; see [TDD §3.10](design/TDD.md#310-git-commits-attribution-and-publication)):* Claude via the SDK control channel with allow rules `mcp__<server>__*` and additive MCP config; Codex via thread-start `config.mcp_servers` to `codex app-server` (its own doc is stale); Cursor SDK `mcpServers`; OpenCode per-turn `client.mcp.add` with session allow/deny rules; Grok Build and Antigravity via an ACP stdio MCP bridge with the endpoint and credential in its environment; Kimi Code unknown. R-50 covers the staleness risk *Live check 2026-10-13 ([evidence](research/live-checks-2026-10-13.md), checks 6 to 8).* Claude Code: `--mcp-config` works headless with the `{"mcpServers": {...}}` shape, `${VAR}` expands, an exact `mcp__<server>__<tool>` allow rule runs the tool under `dontAsk` with no bypass flag, and `--strict-mcp-config` and `--restricted` keep the server. **`--safe-mode` drops the server**, so the channel conflicts with the compiled `--safe-mode` (recommendation 1 there). Codex: `-c mcp_servers.*` injects a stdio server per run; the call needs `approval_mode="approve"`; the sandbox blocks Unix sockets. |
+| R-18 | A per-run injected MCP channel may be impossible without a bypass flag, or blocked by a provider sandbox, for some providers | Those adapters fall back to controller-made commits | T9.0 spike; finalize-only mode (FR-GIT-09). *T9.0 spike (2026-10-13; Delegated, partial).* Claude Code: `claude --help` 2.1.296 documents `--mcp-config` and `--strict-mcp-config`, so a per-run definition needs no global configuration and, if an MCP tool needs no bypass flag, none; whether it does, the JSON shape, the allow-rule form and whether `--safe-mode` also disables the server are **unverified** (live check). ADR-0015 and the argv audit bar `--mcp-config`, so the channel needs a narrowing ADR first (Q-40). Socket reach from any provider sandbox: `Unknown: live check`. Codex: **Unverified** (not installed; nothing in [R2]). Until checked, no adapter may declare an injected channel and the finalize-only mode stays the fallback. *Update 2026-10-13 (decision 36):* Q-40 is decided yes ([ADR-0029](adr/0029-claude-code-receives-tool-shim-via-mcp-config.md); T9.4b), so the Claude channel no longer needs a further ADR, only the live checks; zemdregon chose finalize-only as the fallback and wants it for his projects (T9.7). *Update 2026-10-13 (T9.4b, Delegated):* the Claude channel is implemented behind the unsupported opt-in `providers.claude-code.git_channel` (default off); the live checks (a) to (i) listed under the T9.4b status in §6.3 have not run, so this risk is unchanged. *Leads from T3 Code (MIT; studied, not copied; observed in its source at commit 6524a8d, unverified on our CLIs; see [TDD §3.10](design/TDD.md#310-git-commits-attribution-and-publication)):* Claude via the SDK control channel with allow rules `mcp__<server>__*` and additive MCP config; Codex via thread-start `config.mcp_servers` to `codex app-server` (its own doc is stale); Cursor SDK `mcpServers`; OpenCode per-turn `client.mcp.add` with session allow/deny rules; Grok Build and Antigravity via an ACP stdio MCP bridge with the endpoint and credential in its environment; Kimi Code unknown. R-50 covers the staleness risk. *Update 2026-10-13 (live check on the operator's machine, `docs/research/live-checks-2026-10-13.md`, PR #41; Claude Code 2.1.296 with a hand-made stdio server, not Switchboard's shim):* the `mcpServers` wrapper is required; `${VAR}` expands and an unset variable stays literal; the server inherits the claude environment; exact-name rules work under `dontAsk` (wildcards too; still refused); **`--safe-mode` stops the server from starting**. Owner decision 41 ([ADR-0033](adr/0033-claude-channel-bypass-only-without-safe-mode.md)): the Claude channel is offered only to approved bypass runs, which omit `--safe-mode`; every other Claude run falls back to finalize-only (T9.7). Socket reach from the real provider and the Git deny rules with the shim present remain unverified through Switchboard, so this risk stays open |
 | R-19 | The verified research documents no provider setting for commit behaviour or attribution, nor how to supply a per-run MCP definition | Provider-specific controls cannot be relied on until checked | The layered design does not depend on them (TDD §3.10); each adapter verifies against the installed CLI (T2.2, T9.0). T2.2 result: `claude --help` 2.1.296 documents deny rules (`--disallowedTools`) but names attribution only under `--bare`, which is unusable (ADR-0015); Codex: nothing in [R2], CLI not installed. T9.0 result (2026-10-13): `claude mcp --help`, `claude mcp add --help` and `claude --help` 2.1.296 add `--mcp-config` and `--strict-mcp-config` (above) and nothing on commit behaviour; attribution is still named only under `--bare`. Codex: still nothing in [R2], CLI not installed, every cell Unverified |
 | R-20 | An orchestrator that can create projects widens what a compromised or prompt-injected orchestrator can reach | New mounts, providers, ceilings or push rights through a project it created | `manage_projects` off by default; limits are the client's own; operator approval for containers, push and widening; creator-only visibility; every call recorded (FR-PRJ-10, HLD TB-9) |
 | R-21 | Claude stream-json event shapes and error category strings are unverified; the adapter was written against `claude --help` 2.1.296 text and synthetic fixtures (`src/adapters/claude/parse.ts`; [ADR-0015](adr/0015-claude-untrusted-isolation-flags.md)) | Misparsed events or misclassified failures on a real CLI | Live smoke test (T2.6) before M2 is called done; classify unknown shapes as `OUTPUT_PROTOCOL_ERROR`, never success *Live check 2026-10-13 (checks 4a, 4b).* Held on Claude Code 2.1.296: C-1 to C-11 and G-1 (14 HELD); C-12 and C-G2 still need a failing run. The shipped smoke script polled `get_run` with an unsupported argument; fixed in the same branch. |
@@ -1118,7 +1312,7 @@ preceding milestone completes.
 | R-38 | *For zemdregon, not blocking (owner decision 19).* An approved `bypass: true` Claude Code run omits `--restricted` ([ADR-0018](adr/0018-claude-bypass-omits-restricted.md)), so it loses the protections `--restricted` gives the settings files and Git files, and runs with the provider's permission bypass. Whether the `--disallowedTools` Git deny rules (FR-GIT-01) still hold under bypass is **unverified**: the live check C-G2 in `scripts/live-smoke.mjs` reports `NOT_CHECKED` today and does not run a bypass run | If the deny rules do not hold under bypass, FR-GIT-01 is not enforced in bypass runs, and only FR-GIT-03 (ref snapshot and violation detection, M9) and FR-GIT-06 (no Git credentials in the agent environment) remain; the agent could commit, or alter Git configuration, inside its worktree | Bypass only for an approved scope that sets `bypass: true` (decisions 13, 22), worktree isolation (FR-WS-05), the argv audit (T3.17); extend C-G2 to a deliberate Git write in an approved bypass run (T3.9); if it fails, make Claude bypass runs `Ineligible` again or rely on FR-GIT-03 once M9 lands. *Scope (owner decision 24, 2026-10-13):* the risk does not apply in a `container` environment (M10, planned, not built), whose image has no Git client and which mounts neither the Git directory nor any credential store (FR-PRJ-05), so FR-GIT-01 does not rest on the deny rules there (R-40 covers what remains). For host-run bypass it stays open until C-G2 records a result *Live check 2026-10-13 (checks 14, 16).* **Held:** under `--dangerously-skip-permissions` the `--disallowedTools` Git deny rules denied all six tested spellings and `--tools` still removed unlisted tools, directly and through `serve` with an approved bypass scope. A control without the rules committed. |
 | R-39 | *For zemdregon, not blocking (owner decision 22, Delegated realisation).* A client configured `privileged_approval: "not_required"` gets `privileged` runs, including `bypass: true` runs, with no operator review of the scope ([ADR-0019](adr/0019-per-client-privileged-approval.md)). A prompt-injected or mistaken orchestrator on that client can start any scope it can express, at once, and continue it without limit (decision 17) | Broad, unattended privileged work on the operator's machine for anything that can reach that client's stdio session (R-9) | Off by default (`required`); refused by config validation unless the client's ceiling is `privileged`; `doctor` warns for every such client; the scope is still validated, hashed and recorded, the row names `client_policy:<client_id>`, and `runs show` lists it; Git-write denial (FR-GIT-01, subject to R-38) and worktree isolation (FR-WS-05) stay enforced; the operator can switch the client back to `required` or lower its ceiling and cancel runs |
 | R-40 | *For zemdregon, not blocking (owner decision 24, Delegated mechanism).* Two limits of "no Git client in the container image". (1) A provider CLI may need a Git client for its own work (repository detection, status or diff context); whether each one runs without it is unverified. (2) Absence of a Git client is a property of the image, not a boundary: an agent with a shell and network (a bypass run) can fetch a Git client or write Git files directly | (1) Some providers may be usable only in `host` environments. (2) The agent can create a nested repository in its worktree (which the controller's host-side Git calls would then meet, R-35), but cannot reach the operator's refs or credentials, because the Git directory and credential stores are not mounted (FR-PRJ-05) | (1) T10.0 checks each provider and marks one that needs Git `host`-only. (2) The no-Git-client check is for the image as supplied (T10.1); FR-GIT-01 in containers rests on the mounts, with FR-GIT-03 detection kept; the nested-repository default of Q-31 applies; container leg of the malicious-fixture suite (T10.3) |
-| R-41 | *For zemdregon, not blocking (owner decision 26, Delegated realisation).* An approved bypass run with `repository_config` `approved` or `enabled` loads repository content: instruction files, skills, plugins and hooks (no `--safe-mode`), and for `enabled` the repository's MCP definitions (no `--strict-mcp-config`), on top of the provider's permission bypass and the absent `--restricted` (R-38). Whether omitting those flags loads exactly those items is **unverified**: `claude --help` 2.1.296 does not say, and the live check is not yet written (T3.9) | Hostile or mistaken repository content (a hook that runs a command, an MCP server, instructions that steer the agent) executes or steers with the operator's permissions and without prompts; zemdregon accepts this for his own workloads | Only for an approved scope that sets `bypass: true` and `repository_config` `approved` or `enabled` (decisions 13, 22, 26); `approved` keeps `--strict-mcp-config`; Git-write denial (FR-GIT-01, subject to R-38), worktree isolation (FR-WS-05) and the argv audit (T3.17) unchanged; extend the T3.9 live check to a bypass run in a fixture repository with a hook, an instruction file and an `.mcp.json`; if the flags do not behave as assumed, make these cells `Ineligible` again *Live check 2026-10-13 (check 15).* Confirmed: omitting `--safe-mode` loads the repo `CLAUDE.md` and runs a repo hook under bypass; omitting `--strict-mcp-config` additionally starts the repo `.mcp.json` server. With both present none loaded. |
+| R-41 | *For zemdregon, not blocking (owner decision 26, Delegated realisation).* An approved bypass run with `repository_config` `approved` or `enabled` loads repository content: instruction files, skills, plugins and hooks (no `--safe-mode`), and for `enabled` the repository's MCP definitions (no `--strict-mcp-config`), on top of the provider's permission bypass and the absent `--restricted` (R-38). Whether omitting those flags loads exactly those items is **unverified**: `claude --help` 2.1.296 does not say, and the live check is not yet written (T3.9) | Hostile or mistaken repository content (a hook that runs a command, an MCP server, instructions that steer the agent) executes or steers with the operator's permissions and without prompts; zemdregon accepts this for his own workloads | Only for an approved scope that sets `bypass: true` and `repository_config` `approved` or `enabled` (decisions 13, 22, 26); `approved` keeps `--strict-mcp-config`; Git-write denial (FR-GIT-01, subject to R-38), worktree isolation (FR-WS-05) and the argv audit (T3.17) unchanged; extend the T3.9 live check to a bypass run in a fixture repository with a hook, an instruction file and an `.mcp.json`; if the flags do not behave as assumed, make these cells `Ineligible` again. *Update 2026-10-13 (live check 15, `docs/research/live-checks-2026-10-13.md`, PR #41; observed under `--dangerously-skip-permissions`):* with neither flag, `CLAUDE.md`, a hook and a repository `.mcp.json` server all loaded and the hook ran with no prompt; with `--strict-mcp-config` only, the first two loaded and the server did not; with `--safe-mode`, none loaded. So the flags behave as assumed. Owner decision 41 extends the `--safe-mode` omission to an approved bypass run carrying the Claude tool channel (R-59, ADR-0033) |
 | R-42 | *Delegated, not blocking; mitigated 2026-10-13 (decision 28).* Retention GC's `serve` interval pass was not excluded from `continue_task`: a meta-session idle past `retention.days` is chosen by the ledger query, and a `continue_task` admitted while that unit was being collected could find its worktree, checkpoint branches or artifacts gone. The startup pass cannot race it (it runs before MCP accepts calls) | Rare (needs a continuation of a session idle for the whole retention period, within one unit's collection window); before the fix the continued run failed or started from a missing checkpoint | **Mitigated:** GC marks first. `ledger.beginGc` re-checks idleness and sets `ARCHIVED` in one `BEGIN IMMEDIATE` transaction before any removal, so a session with a newly admitted run is skipped; admission refuses an `ARCHIVED` meta-session (`INVALID_REQUEST`, in validation and again inside the admission transaction); a marked but unfinished session rolls forward on the next pass. Evidence: `src/workspace/gc.test.ts`, `src/lifecycle/lifecycle.test.ts` (see T3.12). Residual: a refused client sees `INVALID_REQUEST` and must start a new task (a collected session cannot be continued by design); no process-level test of two real processes racing (SQLite serialises the two transactions) |
 | R-43 | *Delegated, not blocking; mitigated 2026-10-13 (T9.0 follow-up), matcher normalisation still unverified.* The Claude Git deny rules (`Bash(git <verb>)`, `Bash(git <verb> *)`) are lexical and list the subcommand directly after `git`. Git accepts global options before the subcommand: on Git 2.43.0 `git --no-pager commit`, `git -P commit` and `git --no-optional-locks commit` each created a commit in a test repository, and `--config-env`, `--exec-path`, `--namespace` and `--bare` are not denied either. `GIT_WRITE_SUBCOMMANDS` also lacks ref-affecting `reflog`, `pack-refs`, `gc`, `prune` and `maintenance` (`git pack-refs --all` and `git reflog expire` ran). Whether Claude's matcher normalises global options is unverified | A Claude run with a shell could still commit while the rules look complete; FR-GIT-01 on a host would rest on FR-GIT-03 detection and the layer 3 guard | **Mitigated (2026-10-13):** `src/adapters/git-write.ts` adds `GIT_GLOBAL_OPTIONS_WITH_VALUE` and `GIT_GLOBAL_FLAGS` (every global option in the Git 2.43.0 usage text: `-C`, `-c`, `--git-dir`, `--work-tree`, `--namespace`, `--config-env`, `--exec-path`, `--attr-source`, `-p`, `-P`, `--paginate`, `--no-pager`, `--no-optional-locks`, `--literal-pathspecs`, `--glob-pathspecs`, `--noglob-pathspecs`, `--icase-pathspecs`, `--no-replace-objects`, `--bare`) and the write subcommands `reflog`, `pack-refs`, `gc`, `prune`, `maintenance`, `repack`, `hash-object`; the Claude adapter emits `Bash(git <opt> *)` (and `Bash(git <opt>=*)` for long value options) for each, keeping the existing rule syntax; this only denies more and applies in bypass runs too (decision 22). Evidence: tests in `src/adapters/git-write.test.ts` and `src/adapters/claude/claude.test.ts`; behaviour probed on Git 2.43.0 in a throwaway repository (each listed option except `--bare` let `git branch` create a ref; each listed subcommand changed refs, packed-refs, reflogs or objects). `add`, `rm`, `mv`, `restore` and `clean` change the index or work tree only and are not FR-GIT-01 writes. **Still unverified:** whether Claude's matcher normalises global options (the help text does not say), so the explicit spellings are denied as belt and braces; a spelling not in the Git 2.43.0 usage text (a newer Git option) is not denied by the Claude rules; run the live check C-G2 (T3.9). The layer 3 guard (TDD §3.10) blocks the `-c`-less cases via the environment *Live check 2026-10-13 (checks 9, 10).* Claude's matcher does **not** normalise global options: with only `Bash(git commit *)` the `--no-pager`, `-P` and `--no-optional-locks` spellings committed. The explicit 99-rule list denied all tested spellings. |
 | R-44 | *Delegated, not blocking; mitigated 2026-10-13 (decision 30, ADR-0023).* `MIN_GIT_VERSION` was 2.30 but `scrubbedGitEnv()` sets `GIT_CONFIG_GLOBAL=/dev/null`, which the Git 2.32.0 release notes introduce; on 2.30 or 2.31 the controller's Git calls might read the operator's global configuration (inferred from the notes; no such Git is installed to test) | A controller call could pick up an operator alias, identity, hook path or filter on an old Git that `doctor` accepts | **Mitigated:** floor raised to 2.32 (Q-39 decided; [ADR-0023](adr/0023-minimum-git-version-2-32.md); `src/workspace/git.ts`, `doctor` and the version-gate test). The 2.32 introduction version still rests on the release notes |
@@ -1130,6 +1324,13 @@ preceding milestone completes.
 | R-50 | *Delegated, not blocking (decision 36).* Reliance on third-party observed behaviour that may be stale or wrong. The per-provider tool-injection leads in [TDD §3.10](design/TDD.md#310-git-commits-attribution-and-publication) come from reading another project's source at one commit (6524a8d) and from issue and documentation text; that project's own documentation was already stale for Codex (it describes `-c mcp_servers.*` with a bearer environment variable, while its code passes `config.mcp_servers` with `http_headers` at thread start). It drives SDKs and `codex app-server`, not the raw CLI argv Switchboard builds | An adapter built on a lead could fail, or be less safe than assumed (for example an allow rule that does not cover the tool, or a config merge that loads operator MCP servers) | **Open, accepted.** Every lead is a hypothesis for the T9.0 open items and the adapter tasks (T9.4b and later); the authority is the installed CLI's help, the provider's documentation and the opt-in live checks; nothing is declared `injected` on a lead alone; Switchboard copies no code, comments or documentation from that project |
 | R-51 | *Delegated reading of an owner decision, accepted by the owner for bypass (decision 37, ADR-0028 "Amended before merge").* An approved bypass agent with a shell can read the operator's push credentials (`~/.ssh`, a credential helper's store, `~/.git-credentials`) while the controller `push` tool is offered to it, because BR-31 no longer withholds `push` from approved bypass runs. This is the one place a bypass run's agent can reach push credentials by design of the owner's choice; the controller still never passes credentials to it and the controller's own push is unchanged | A bypass agent, or an injected prompt in one, could push with the operator's credentials around the tool (any ref, force, other remotes), bypassing the publish-ref-only rule | **Accepted by the owner for bypass runs; not blocking.** Controls that stay: bypass needs a per-meta-session approval of the exact scope (decision 17), policy `branch` is off by default per context, the provider's Git-write denial and FR-GIT-03 ref snapshots, worktree isolation, and the controller push itself (verified refspec, never forced). Non-bypass runs keep BR-31. Revisit with containers (M10, no credential store mounted) |
 | R-52 | *Delegated, not blocking (decision 38, T9.7).* Finalize-only mode publishes the agent's final summary as the commit message and the whole run as one commit. The sanitiser removes only what its rules describe (R-14), so a summary can carry text the operator would not have written (including text an injected prompt asked for); and the fail-closed limits (no commit for more than 256 changed paths, a summary over 8192 characters, any refused path, no usable summary, any violation in the meta-session) mean an opted-in run can end with no commit, only the diff and checkpoint | An unwanted message on the publish ref (visible once pushed), or an expected commit missing; neither changes the run's outcome, and each skip is recorded with its reason in `git_finalize_commit` and `runs show` | **Open, accepted.** Controls: opt-in per context (default off), the same FR-GIT-04 sanitiser and provenance as the `commit` tool, nothing pushed without the context's push policy and a separate push, the publish ref is separate from the operator's branches (FR-WS-05). A crash after the ref update leaves the commit published and recovery writes its row even though reconciliation then finishes the run; a crash before the intent leaves no commit (reconciliation does not retry it). Revisit the limits with Q-45 |
+| R-53 | *Delegated, not blocking (decision 39, ADR-0030).* A dynamic project lets an LLM orchestrator choose the repository agents run in. A prompt-injected or compromised orchestrator can point agents at any Git repository under the allowed roots (which a `workspace_path` request can already do) and, through a project, keep doing so across runs; a repository it points at can carry instructions that become a prompt-injection source for the agent | Agents edit (in their worktree) or read repositories the operator did not intend for that orchestrator; with an approved identity or push, commits could be published under that project | **Open, accepted.** Controls: `manage_projects` off by default; allowed roots re-checked at every admission (no `..` or symlink escape, nothing inside `data_dir`); limits never above the client's; `container`, push, identity, signing and any widening wait for `projects approve` on the CLI with `--revision` once there are several; creator-only visibility; every call recorded in `project_event`. Keep `allowed_roots` narrow for clients with `manage_projects` |
+| R-54 | *Delegated, not blocking (decision 39).* The widening gate compares a new revision with the revision in force of the same project. A client can create a new project with any ceiling up to its own instead of widening an old one, and FR-PRJ-10 lets a fresh `host` project without push or identity run at once | The approval gate on widening does not stop a client from reaching its own limits through a new project id | **Open, accepted.** The client's own limits are the bound (FR-PRJ-10); the gate only protects what the operator approved from being widened silently. Lower `max_trust_profile` for clients with `manage_projects` if that matters |
+| R-55 | *Delegated, not blocking (decision 40, ADR-0031).* Indexed repository content, and under the global index content from other projects, is untrusted text placed in later prompts, so it is a prompt-injection path into runs | A planted instruction in a file or another project's contribution can mislead an agent in a later run, within that run's profile | **Open, accepted.** Every snippet is labelled untrusted reference data with path and origin; retrieved content has no authority over any policy decision (FR-RAG-07, import-boundary test); the global index is off by default and opt-in on both sides; `untrusted` contexts do not contribute by default (FR-RAG-09) |
+| R-56 | *Delegated, not blocking (decision 40, ADR-0031).* Secrets or sensitive content may be indexed because the denylist and redaction are best effort, and chunk text and vectors sit unencrypted in the data directory; a remote embedding backend could receive them | A secret in a source file could be stored, retrieved into a prompt or sent to an embedding service | **Open, accepted.** Denylist and FR-INN-16 redaction before embedding (FR-RAG-02); `remote` needs both `allow_remote` and `allow_source_content` (FR-RAG-04); the store is outside the repository, per project, clearable (FR-RAG-14); `doctor` reports backend and locality |
+| R-57 | *Delegated, not blocking (decision 40, ADR-0031).* Retrieval may be stale or wrong, and the token saving is unmeasured; the in-process store and cap are unverified until T12.0 | Misleading context, or no real saving for the added complexity | **Open.** Freshness checks and index revisions (FR-RAG-08); fallback to no retrieval; snippet ids and hashes in the ledger; measure before claiming a saving; T12.0 sets the cap (Q-48) |
+| R-58 | *Delegated, not blocking (decision 40, ADR-0032).* Affinity concentrates a project on one provider so its quota is spent first; the cache benefit is provider-specific and unverified; "maxed out" is a confidence estimate (ADR-0007), so the switch can fire late or early | Earlier exhaustion of one provider while others sit idle; a failed run before the switch; a cache gain that does not appear | **Open, accepted.** Closed reason list including `failed_after_retry` and `ineligible` as floors (FR-RTE-07); `affinity_switch_reason` and kept-versus-switched counts are visible (FR-RTE-03, FR-CAP-08); thresholds are configurable and chosen in M6/M7; `explain_route` shows why; revisit with real data (Q-51 to Q-53) |
+| R-59 | *Delegated reading of an owner decision, not blocking (decision 41, ADR-0033).* An approved bypass run that carries the Claude tool channel runs without `--safe-mode`, so the repository's `CLAUDE.md`, skills, plugins and hooks load (live check 15 in `docs/research/live-checks-2026-10-13.md`, PR #41: a repository hook ran a command with no prompt) even when the scope says `repository_config: disabled`; and the injected server inherits the claude process environment | Hostile repository content steers or executes in that bypass run, on top of the bypass itself (R-26, R-41) | **Open, accepted for bypass.** Only with the operator opt-in and only for an approved scope that sets `bypass`; every other run keeps `--safe-mode` and has no channel (argv audit refuses `--mcp-config` and a missing `--safe-mode` outside that case); `--strict-mcp-config` kept except under decision 26 `enabled`; Git-write denial and worktree isolation unchanged (R-38 HELD in the live check); the child environment is only `PATH`, `HOME` and the token; the opt-in stays UNSUPPORTED until a live run through Switchboard |
 
 Numbering: R-36, R-37 and Q-32 to Q-35 (§7.3) were written on the M3 wave B branch as R-29, R-30 and Q-27 to
 Q-30. PR #17 merged all but Q-30 into main under those numbers, which main already used for other items; they were
@@ -1194,6 +1395,15 @@ No blocker affects M1, M2 or M9.
 | Q-43 | *Delegated, open (T9.4).* LLD §2 says an adapter with `commitChannel: "none"` is ineligible for write-capable profiles on a context unless the operator opts in to finalize-only mode (FRD BR-30, Proposed there). T9.4 declares `none` for Claude Code and Codex but does not enforce that rule: enforcing it now would make both providers ineligible for every write-capable project run before T9.7 offers the opt-in | **Decided 2026-10-13 by [owner decision 36](#42-owner-decisions)** ("Finalize-only."): adapters with `commitChannel: "none"` are **not** made ineligible; they run write-capable runs and, when the project opts in to finalize-only (T9.7), the controller commits at FINALIZING through the same sanitiser and provenance. zemdregon wants the opt-in for his own projects. Earlier default: not enforced |
 | Q-44 | *Delegated, open (T9.5).* FRD BR-27 says offending commits are never published. T9.5 keeps them off the publish ref (restore), but the `push` tool and operator command (T9.6) do not exist yet. Should a meta-session with any `git_policy_violation` be refused a push until the operator reviews it, or is the restored publish ref enough? | **Decided (T9.6, decision 35, Delegated; fail closed, stricter than the proposal):** any `git_policy_violation` event in any run of the meta-session refuses every later push, from the `push` tool and from `switchboard git push`, recorded as `REFUSED_POLICY`/`GIT_POLICY_VIOLATION`. There is no "cleared" state in this stage; the operator can push by hand after review ([ADR-0028](adr/0028-controller-push-and-credential-reach.md)) |
 | Q-45 | *Delegated, open (T9.7, decision 38).* Finalize-only mode skips the commit, rather than shortening anything, when a run changed more than 256 paths (the `commit` tool's limit) or the agent's final summary is over 8192 characters (the tool's message limit). Should the controller instead commit all changes in one pass for large runs, or use only the summary's first paragraph as the message? Both change what a bypass run of zemdregon's would publish | Skip and record the reason (`too_many_paths`, `message_too_long`); the diff and checkpoint remain, and the operator can commit by hand |
+| Q-46 | *Delegated, open (T9.9, decision 39).* An approved dynamic project may declare push policy `branch` (FR-PRJ-10), but the `push` tool and `switchboard git push` still resolve push targets (remote, prefix, path) from the configuration only, so such a push is refused (`CONTEXT_UNKNOWN`). Should push targets be resolved from the in-force revision too (with the client's current `max_push_policy` re-checked at push time)? | **Default (fail closed):** not resolved; push from dynamic projects is refused until a task wires it |
+| Q-47 | *Delegated, open (T9.9, decision 39).* FR-PRJ-10 says a dynamic project's provider set may be no wider than the client's, but no client provider list exists (FR-MCP-06 and LLD §11.1 give a client only a trust ceiling and project list). Should `mcp_clients[]` gain an `allowed_providers` list (a requirement and routing change for every request of that client)? | **Default:** the client's provider set is every provider the operator has not disabled in `providers`; naming a disabled provider is `PERMISSION_BLOCKED` |
+| Q-48 | *Delegated, open (decision 40, T12.0).* Storage and embedding backend for the retrieval index: SQLite per project with BLOB vectors and brute-force cosine search under a hard chunk cap (no new native dependency), or an approximate-nearest-neighbour index or vector extension. Which embedding backend shapes (`local`, `http`) first, and the default context-pack budget | **Proposed (Delegated):** SQLite brute force; the T12.0 spike measures and decides; no model, dimension, cap or latency is stated until then |
+| Q-49 | *Delegated, open (decision 40).* Is "automatic" in zemdregon's "automatic RAG" meant as mode `auto`: on if and only if an embedding backend is configured, with `off` and `on` available? | **Yes**, per project; inert with no backend (FR-RAG-01) |
+| Q-50 | *Delegated, open (decision 40).* What does the deployment-wide index hold? zemdregon wrote "possibly a deployment wide RAG for general info across all projects" | **Proposed:** off by default; operator-added local knowledge sources plus content that projects explicitly contribute (`contribute_to_global`, default false); a project reads it only with `use_global` (FR-RAG-09, 10) |
+| Q-51 | *Delegated, open (decision 40).* After a capacity switch, should the project stay on the new provider, or return to the old one when it recovers? | **Stay on the new provider** (no ping-pong, no extra cache miss); only a listed reason moves it again (FR-RTE-07) |
+| Q-52 | *Delegated, open (decision 40).* Should affinity expire after a project has been idle? | **None** (`idle_ttl` unset); the key exists for the operator |
+| Q-53 | *Delegated, open (decision 40, M6 spike).* Which provider CLIs report cache read or creation token counts in their output? Unverified for every provider | None assumed; FR-CAP-08 records cache counts only where a CLI reports them, labelled by source |
+| Q-54 | *Delegated, open (decision 41, ADR-0033).* Is there a Claude Code flag combination that keeps repository and user customisations off while still starting one `--mcp-config` server (untested candidates from the live check report: `--settings`, `--setting-sources`, `--disable-slash-commands`, plugin flags)? If so, non-bypass runs could get the channel without loading repository content | None: the channel stays bypass-only and every other Claude run keeps `--safe-mode` and uses finalize-only; a spike needs the installed `claude` (opt-in, never in CI) and, before any change to non-bypass runs, an owner decision |
 
 ## 8. Deferred and excluded work
 
@@ -1212,6 +1422,10 @@ No blocker affects M1, M2 or M9.
 | Model-assisted secret or PII redaction (inner agent) | Deferred | A miss is a silent leak and sending content to find secrets is itself exposure; deterministic redaction stays the control. Revisit as an add-only advisory pass on a `local` backend | FR-INN-18 |
 | Inner agent exposed to orchestrators as a tool | Excluded | Makes Switchboard a model proxy and widens TB-1; no requirement behind it | ADR-0016 |
 | Inner-agent tasks IT-10 to IT-14 (prompt rewriting, test selection, diff pre-review, commit splitting, changelogs) | Deferred or excluded | Each changes intent, verification or authority, or has no requirement; see [PRD §3.1](requirements/PRD.md#31-inner-agent-task-catalogue) | — |
+| Approximate-nearest-neighbour or vector-database index for retrieval | Deferred | The first version is SQLite with in-process search under a hard cap; revisit only if the T12.0 spike shows the cap is too low | FR-RAG-01, Q-48 |
+| Learned reranking of retrieved snippets | Deferred | No measurement yet that retrieval helps (R-57); no requirement | — |
+| Code-graph or symbol-level retrieval | Deferred | Not asked for; text chunks first | — |
+| Retrieval index shared across operators or installations | Excluded | Multi-user and hosted operation are excluded; the global index is one installation's | ADR-0011, FR-RAG-09 |
 
 ## 9. Next actionable milestone
 
@@ -1255,8 +1469,8 @@ Notes carried from M2:
 
 1. Read [AGENTS.md](../AGENTS.md), then this roadmap's §6 to find the first milestone whose status is not `Done`. A
    `Partial` milestone is closed from its "Blocks Done" list before the next one starts, unless every remaining item
-   needs the operator or zemdregon; agents then work on the next milestone's tasks that do not depend on those items (as M3
-   wave A does while M2 waits for the live smoke run).
+   needs the operator or zemdregon; agents then work on the next milestone's tasks that do not depend on those items (as
+   M3 wave A does while M2 waits for the live smoke run).
 2. Take the first task in that milestone's task table whose dependencies are done. If the milestone has no task table
    yet (M4 onward), break it into tasks in the same format first, from its row in §6 and the requirements it lists, and
    add them here before coding.

@@ -3,7 +3,7 @@
 | Field | Value |
 | --- | --- |
 | Status | Draft, baseline for milestone M1 |
-| Owns | Workflows WF-1..WF-13, business rules BR-*, actor permissions, the canonical run state machine, meta-session and adapter availability states, input validation rules, normal/alternate/failure paths |
+| Owns | Workflows WF-1..WF-14, business rules BR-*, actor permissions, the canonical run state machine, meta-session and adapter availability states, input validation rules, normal/alternate/failure paths |
 | Does not own | Requirements and their IDs ([SRS](SRS.md)); outcomes ([BRD](BRD.md)); journeys and capabilities ([PRD](PRD.md)); components ([HLD](../design/HLD.md)); persistence and the failure taxonomy table ([LLD](../design/LLD.md)); sequencing ([ROADMAP](../ROADMAP.md)) |
 | Last reconciled | 2026-10-12 |
 
@@ -14,7 +14,8 @@ no obligations: every business rule (BR) cites the FR/NFR it elaborates. Where t
 labelled **Proposed** with a one-line rationale; Proposed rules are design choices made during planning, are not
 owner-approved (the ADRs are "Delegated", see [ADR index](../adr/README.md)), and can change without an SRS change.
 
-Nothing described here is implemented. As of 2026-10-12 the repository contains documentation and research only.
+Implementation status is owned by [ROADMAP §6](../ROADMAP.md#6-milestones). As of 2026-10-12 the repository contained
+documentation and research only; parts of the behaviour described here are now implemented.
 
 Conventions: components are `COMP-*` as named in the [HLD](../design/HLD.md#1-system-context). Failure codes are those
 of the [LLD §4](../design/LLD.md#4-failure-taxonomy); `ELIGIBILITY_NONE` and `INVALID_REQUEST` were added during
@@ -96,7 +97,7 @@ Each rule elaborates the cited requirement and does not add to it.
 | BR-29 | **Push eligibility.** A push is accepted only if the context's policy is `branch`, the target ref is the publish ref pushed to the configured remote under the configured prefix, and the run's environment keeps push credentials out of the agent's reach (BR-31). It is never forced. Every attempt, accepted or refused, is a run event. With policy `none` (the default) the `push` tool is not offered. | FR-GIT-05, FR-GIT-06 | SRS |
 | BR-30 | **Finalize-only mode.** For an adapter that cannot receive the injected channel, and only if the operator enabled it for the context, FINALIZING makes one commit from the run's worktree changes with a message from the agent's structured final summary, under BR-26 and BR-28. Without the opt-in, such an adapter is ineligible for write-capable profiles on that context. | FR-GIT-09, FR-GIT-02 | FR-GIT-09 is Should; ineligible-without-opt-in is Proposed. |
 | BR-31 | **Credential reach.** A context with push policy `branch` is eligible for a run only if the agent cannot run commands that could read the push credentials: a `container` environment with none mounted, or a profile without arbitrary shell, or an adapter whose manifest declares credential confinement (FR-POL-06). Otherwise the `push` tool is withheld and the reason is recorded. *Note 2026-10-13 (owner decision 37, zemdregon: "BR-31. Don't block git operations on bypass mode"; Delegated narrow reading; no ID change):* an approved bypass run (scope `bypass` and a controller-verified approval) is exempt: `push` is offered and accepted, with the reason `bypass_exempt` recorded; non-bypass runs keep this rule. | FR-GIT-06, FR-POL-06 | SRS |
-| BR-32 | **Orchestrator-managed projects.** `create_project`, `update_project` and `delete_project` are offered only to a client whose entry sets `manage_projects`. They touch dynamic projects only (an ID that collides with a configured project is refused). A revision is validated like configuration (V12 rules, FR-PRJ-02); its repository path must lie under an allowed root; its trust ceiling and providers may not exceed the client's; its push policy may not exceed the client's `max_push_policy`. A revision with a `container` environment, a push policy other than `none`, or any widening of an approved revision is stored as `pending_approval` and cannot start runs until the operator approves it with `projects approve`. A project is visible to, and usable by, the creating client only. Deletion with a non-terminal run is refused. Refusals are `PERMISSION_BLOCKED` (not allowed) or `INVALID_REQUEST` (malformed); every call is an event. | FR-PRJ-10, FR-MCP-06, FR-POL-10 | Delegated: gating limits, pending-approval state and creator-only visibility are Proposed. zemdregon answered only "yes" (Q-7). |
+| BR-32 | **Orchestrator-managed projects.** `create_project`, `update_project` and `delete_project` are offered only to a client whose entry sets `manage_projects`. They touch dynamic projects only (an ID that collides with a configured project is refused). A revision is validated like configuration (V12 rules, FR-PRJ-02); its repository path must lie under an allowed root; its trust ceiling and providers may not exceed the client's; its push policy may not exceed the client's `max_push_policy`. A revision with a `container` environment, a push policy other than `none`, or any widening of an approved revision is stored as `pending_approval` and cannot start runs until the operator approves it with `projects approve`. A project is visible to, and usable by, the creating client only. Deletion with a non-terminal run is refused. Refusals are `PERMISSION_BLOCKED` (not allowed) or `INVALID_REQUEST` (malformed); every call is an event. | FR-PRJ-10, FR-MCP-06, FR-POL-10 | Delegated: gating limits, pending-approval state and creator-only visibility are Proposed. zemdregon answered only "yes" (Q-7). *Note 2026-10-13 (T9.9, decision 39, Delegated): deletion with a non-terminal run is `INVALID_REQUEST`, as FR-PRJ-10 states; the `PERMISSION_BLOCKED` sentence covers the limits. As built in [LLD §3](../design/LLD.md#3-mcp-tool-contracts) and [ADR-0030](../adr/0030-dynamic-project-revisions-and-approval.md).* |
 | BR-33 | **Signing.** If a context sets `sign: true`, each published commit is signed by the controller using the operator's existing Git signing setup. A signing failure returns a tool error and creates no commit; nothing is committed unsigned as a fallback. Signing is refused where BR-31 would withhold `push`. | FR-GIT-10, FR-GIT-06 | Delegated mechanism; zemdregon asked for signing as part of Q-9 ("yes"). |
 | BR-34 | **Inner agent is optional.** The inner agent is an optional, operator-configured backend with no default backend or model. Every inner task is disabled until the operator enables it individually. With no backend configured, or while it is off, unhealthy or suspended, each task uses its deterministic fallback and no other controller behaviour differs: the absence of an inner agent changes no route, eligibility result, policy decision, run status or tool contract other than as stated in BR-37. | FR-INN-01, FR-INN-05 | SRS |
 | BR-35 | **Authority boundary.** Inner output is untrusted data and never an input to trust-profile choice or compilation, the policy snapshot, provider eligibility, approvals, client or project ceilings, push policy, sanitiser rules, secret redaction, failure classification (retry) or the status, exit code or pass/fail of any run or verification command. COMP-INN is not reachable from COMP-POL, the profile compilers, the retry logic or the push path; the design enforces this structurally and an import-boundary test checks it. An inner call is a stateless single-turn text completion with no tools and no loop; the controller performs every action that follows. | FR-INN-02, FR-INN-06 | SRS. The import-boundary test is a Proposed mechanism ([TDD §3.12](../design/TDD.md#312-inner-agent)). |
@@ -108,9 +109,14 @@ Each rule elaborates the cited requirement and does not add to it.
 | BR-41 | **Usage is not capacity.** Every inner call is recorded in its own `inner_call` record (task, backend, model, tokens as reported or unknown, latency, outcome) and never as a provider `usage_observation`, in a capacity estimate or against `capacity_score`. Exception: if the operator declares `shares_subscription_with` for a routed provider, one additional `usage_observation` with source `inner_agent` is recorded for that provider and `doctor` warns that the inner agent is consuming its capacity. | FR-INN-15 | SRS |
 | BR-42 | **Inner-agent privacy gates.** A backend is `local` (loopback or Unix socket) or `remote`. A `remote` backend is unusable until `allow_remote` is set; a task that sends repository content (diffs, log excerpts) to a `remote` backend also needs that task's `allow_source_content`. A project or context may set `inner_agent` to `off` or `local_only`, which narrows what the global configuration allows and never widens it (BR-35 applies regardless). Deterministic redaction runs on the prompt before every call, and prompt and response bodies are not stored or logged beyond what the accepted result already is (sizes and hashes only). A refused call is a fallback (BR-36), not an error to the run. | FR-INN-16, FR-TEL-03 | SRS. "Narrows and never widens" is Proposed. |
 | BR-43 | **Quality monitoring and suspension.** The outcome of every inner call is recorded (accepted, rejected by validator, rejected by sanitiser, fallback used). When a task's rejection rate over the configured window exceeds the configured threshold, the task is suspended automatically and uses its fallback until the operator re-enables it. Window and threshold are configuration values (proposed targets), not fixed here. `doctor`, `inner status` and `inner test <task>` (built-in fixture, no repository data) expose state to the operator. | FR-INN-09, FR-INN-17 | Proposed (FR-INN-09 is Should and its thresholds are proposed targets). |
+| BR-44 | **Affinity before score.** After the hard constraints (BR-1), a project that has a recorded provider and model stays on them if that provider is eligible and not capacity-limited; the weighted score does not move a project and there is no round-robin or load spreading across providers for one project. The score ranks candidates only for a project's first run or after a switch reason (BR-45). | FR-RTE-06, FR-RTE-02, [ADR-0032](../adr/0032-provider-model-affinity.md) | Delegated, Proposed (owner decision 40) |
+| BR-45 | **Closed list of switch reasons.** Affinity ends only for `user_request`, `capacity_exhausted`, `ineligible` or `failed_after_retry`, each recorded as `affinity_switch_reason` in the routing decision. A better score, lower cost or lower load is never a reason. After a switch the new provider is the project's affinity and the controller does not return on its own (Q-51). A model changes only for `user_request` or `ineligible` (FR-RTE-08). BR-8 failover re-bases affinity on the provider it lands on. | FR-RTE-07, FR-RTE-08, FR-CAP-06 | Delegated, Proposed (thresholds for `capacity_exhausted` are an Assumption chosen in M6/M7) |
+| BR-46 | **Retrieved context is data.** Snippets from the retrieval index are untrusted reference data, labelled as such in the prompt, and are never an input to profile choice or compilation, the policy snapshot, eligibility, approvals, ceilings, push or commit. A retrieval failure means no retrieval; it never fails or delays a run beyond its bound. | FR-RAG-05, FR-RAG-07, FR-RAG-08 | Delegated, Proposed |
+| BR-47 | **Index isolation and opt-in sharing.** Each project has its own index and nothing reads another project's. The deployment-wide index is off by default; a project's content enters it only with `contribute_to_global`, and a run reads it only if its project sets `use_global`. Content of `untrusted` contexts does not contribute by default. | FR-RAG-03, FR-RAG-09, FR-RAG-10 | Delegated, Proposed (Q-50) |
+| BR-48 | **No remote embedding of source without both flags.** A `remote` embedding backend sees source content only with `allow_remote` and `allow_source_content` (the inner-agent gates of BR-42); chunk text is redacted first, and the exclusions of FR-RAG-02 apply. With no backend the feature is inert. | FR-RAG-02, FR-RAG-04 | Delegated, Proposed |
 
-*Note 2026-10-13 (owner decision 36, Q-43; BR-30's wording above unchanged).* zemdregon chose finalize-only for adapters with
-no injected channel ("Finalize-only."): such an adapter is **not** made ineligible for write-capable profiles. It runs
+*Note 2026-10-13 (owner decision 36, Q-43; BR-30's wording above unchanged).* zemdregon chose finalize-only for adapters
+with no injected channel ("Finalize-only."): such an adapter is **not** made ineligible for write-capable profiles. It runs
 them, and when the project opts in to finalize-only mode the controller commits at FINALIZING under BR-26 and BR-28.
 Without the opt-in its work stays in the worktree and the diff artifacts. The "ineligible without the opt-in" clause of
 BR-30 is therefore not applied. zemdregon wants the opt-in enabled for his own projects. Per-project opt-in; ROADMAP T9.7.
@@ -325,7 +331,7 @@ optional `message` on the injected `commit` tool follows BR-37.
 - **Preconditions:** Controller running via `serve`; target workspace under an allowed root; at least one adapter READY
   (else failure below).
 - **Realizes:** FR-MCP-01, 03, 04, 05, 06, 07, 08, 09; FR-POL-01, 02, 04, 05, 07, 10; FR-ADP-02, 03; FR-WS-01, 02, 03,
-  06; FR-EXE-01, 02, 05, 07, 08; FR-CAP-04; FR-RTE-01; FR-TEL-01; NFR-OBS-01, NFR-SEC-06, NFR-REL-02, NFR-PERF-01.
+  06; FR-EXE-01, 02, 05, 07, 08; FR-CAP-04; FR-RTE-01, 06, 07; FR-TEL-01; NFR-OBS-01, NFR-SEC-06, NFR-REL-02, NFR-PERF-01.
 
 ```mermaid
 sequenceDiagram
@@ -344,7 +350,7 @@ sequenceDiagram
     M->>P: check ceiling, allowed root, profile
     P-->>M: ok / PERMISSION_BLOCKED
     M->>L: idempotency lookup, create meta_session + run (QUEUED)
-    M->>R: route(eligibility filter, then score)
+    M->>R: route(eligibility filter, affinity, then score)
     R->>L: persist route_decision
     M-->>O: run_id, meta_session_id (or after wait_seconds)
     R->>A: preflight (cached) for chosen provider
@@ -371,7 +377,9 @@ sequenceDiagram
   `inspect-untrusted`: no worktree, read-only (FR-WS-06). (f) Cancel at any point: WF-4. (g) Route
   features: when the route_features task is enabled, the inner agent may supply the stage-2 scoring features instead of
   the heuristic; the value is stored in the route decision and never affects eligibility or `require_provider` (BR-39,
-  WF-13).
+  WF-13). (h) Affinity: after the hard constraints, a project with a recorded provider and model keeps them unless a
+  listed switch reason applies; the score ranks only on a first run or after a switch (BR-44, BR-45, WF-14 for
+  retrieval).
 - **Failure paths:** invalid input → `INVALID_REQUEST` (no run created); above ceiling → `PERMISSION_BLOCKED`; no
   eligible provider → `ELIGIBILITY_NONE`; required provider ineligible → per BR-3; auth lost mid-run → `AUTH_REQUIRED`
   naming the native login command (FR-AUTH-02); denied operation → `PERMISSION_BLOCKED` or `SANDBOX_VIOLATION` without
@@ -673,6 +681,29 @@ sequenceDiagram
   prompt or response body was stored or logged beyond the accepted result; no run status, route eligibility, policy
   snapshot or capacity estimate was influenced by the inner output.
 
+### WF-14 Retrieval for a run
+
+- **Actors:** COMP-RAG, COMP-MCP (admission), COMP-LED, COMP-TEL; the embedding backend; Operator for enabling,
+  `index` commands and `doctor`.
+- **Preconditions:** The project has retrieval enabled (`auto` with a configured backend, or `on`) and the backend is
+  allowed by its locality (BR-48). Otherwise the workflow does not start and the run proceeds unchanged (BR-46).
+- **Realizes:** FR-RAG-01 to 14; CAP-13; BO-9.
+- **Normal path:** the `serve` daemon builds or refreshes the project's index in the background (scanner, exclusions,
+  redaction, chunker, embeddings; FR-RAG-02, 11) → at admission COMP-MCP asks COMP-RAG for snippets for the request
+  text → COMP-RAG searches the project's store (and the global store only if BR-47 allows) → drops snippets whose file
+  changed or was deleted (FR-RAG-08) → builds a context pack within `max_context_tokens`, each snippet labelled with
+  path, index revision, score and an untrusted marker (FR-RAG-05) → the pack is prepended to the delegated prompt; the
+  request text is stored unchanged → COMP-LED appends a `rag_retrieval` event with snippet ids, hashes and counts, no
+  copies (FR-RAG-12).
+- **Alternate paths:** (a) Index still building: the partial index is marked incomplete and used as is, or skipped if
+  empty (FR-RAG-11). (b) Index built from a different base ref than the run's worktree: the pack is flagged (FR-RAG-08).
+  (c) Orchestrator calls `search_project_context`: same search, project-scoped and size-bounded (FR-RAG-06). (d)
+  Operator runs `index status|rebuild|clear`: operator records only (FR-RAG-11, 14).
+- **Failure paths:** backend unreachable, store missing or corrupt, search error or timeout: no retrieval, the run
+  continues, `doctor` shows degraded (BR-46). A `remote` backend without both flags is refused as a fallback (BR-48).
+- **Postconditions:** the run holds an unchanged request plus an optional labelled pack; no routing, policy, approval or
+  capacity decision read retrieved content; embedding calls are recorded apart from usage (FR-RAG-12).
+
 ## 9. Traceability summary
 
 | Workflow | User journey | Capabilities | Primary requirements |
@@ -690,10 +721,11 @@ sequenceDiagram
 | WF-11 | UJ-9 | CAP-11, 8 | FR-GIT-01..04, FR-GIT-07, FR-GIT-08 |
 | WF-12 | UJ-9 | CAP-11 | FR-GIT-05, FR-GIT-06, FR-WS-05 |
 | WF-13 | UJ-10 | CAP-12 | FR-INN-01..17 |
+| WF-14 | UJ-11 | CAP-13 | FR-RAG-01..14 |
 
 Milestone availability follows the SRS milestone column (for example WF-7 from M3, WF-5 automatic retry and failover
 from M6, WF-3 from M5, WF-9 `adapters validate` from M4, WF-10 to WF-12 from M9 with containers in M10, WF-13 from
-M11); see [ROADMAP](../ROADMAP.md#6-milestones).
+M11, WF-14 from M12); see [ROADMAP](../ROADMAP.md#6-milestones).
 
 ## 10. Open items in this document
 

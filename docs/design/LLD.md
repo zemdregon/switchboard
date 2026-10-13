@@ -3,11 +3,12 @@
 | Field | Value |
 | --- | --- |
 | Status | Draft, baseline for milestone M1 |
-| Owns | SQLite schema (DDL), adapter TypeScript contract, MCP tool schemas, failure taxonomy, workspace/lease algorithm, compliance manifest schema, telemetry span list, supervisor/retry/idempotency details, inner-agent configuration, backend port, tables, call pipeline and task contracts (§13) |
+| Owns | SQLite schema (DDL), adapter TypeScript contract, MCP tool schemas, failure taxonomy, workspace/lease algorithm, compliance manifest schema, telemetry span list, supervisor/retry/idempotency details, inner-agent configuration, backend port, tables, call pipeline and task contracts (§13), provider and model affinity table, algorithm and routing-decision fields (§3.2), retrieval-index configuration, stores, algorithms, tool contract and events (§14) |
 | Does not own | Requirements ([SRS](../requirements/SRS.md)); run state machine and workflows ([FRD](../requirements/FRD.md)); technology choices and per-provider strategy ([TDD](TDD.md)); component boundaries ([HLD](HLD.md)); scope and sequencing ([ROADMAP](../ROADMAP.md#6-milestones)) |
-| Last reconciled | 2026-10-12 |
+| Last reconciled | 2026-10-13 |
 
-Nothing here is implemented. M1 and M2 items are specified in detail; later items are marked "to be detailed in Mx".
+Implementation status is owned by [ROADMAP §6](../ROADMAP.md#6-milestones); parts of this design are now implemented.
+M1 and M2 items are specified in detail; later items are marked "to be detailed in Mx".
 Numbers marked *(proposed target)* are starting values, not established constraints. Types and column names are
 **Proposed** unless an SRS ID or ADR fixes them.
 
@@ -26,12 +27,11 @@ Conventions:
 - All tables are `STRICT`. Foreign keys `ON`. `PRAGMA journal_mode=WAL; synchronous=FULL` (Proposed: durability over
   speed for crash safety, NFR-REL-01); `busy_timeout` set although only one writer exists.
 - **Append-only** (enforced by `BEFORE UPDATE/DELETE` triggers that `RAISE(ABORT)`): `run_event`, `decision`,
-  `workspace_checkpoint`, `usage_observation`, `route_decision`, and (M11) `inner_call` (FR-SES-05, FR-RTE-03, FR-CAP-01,
-FR-INN-15). **Update-once**
-  (pending to decided): `approval`. **Mutable current-state**: `meta_session`, `run`, `provider_health`,
-  `adapter_version.validated_*`, (M11) `inner_task_state`, and `artifact.deleted_at` only. Retention GC removes artifact
-  files and worktrees and
-  sets `artifact.deleted_at`; it never deletes `run_event` rows (Assumption).
+`workspace_checkpoint`, `usage_observation`, `route_decision`, and (M11) `inner_call` and (M12) `rag_record` (FR-SES-05,
+FR-RTE-03, FR-CAP-01, FR-INN-15). **Update-once** (pending to decided): `approval`. **Mutable current-state**:
+`meta_session`, `run`, `provider_health`, `adapter_version.validated_*`, (M7) `project_affinity`, (M11)
+`inner_task_state`, and `artifact.deleted_at` only. Retention GC removes artifact files and worktrees and sets
+`artifact.deleted_at`; it never deletes `run_event` rows (Assumption).
 
 ```sql
 CREATE TABLE schema_migrations (
@@ -323,6 +323,20 @@ in [§12.5](#125-ref-snapshot-and-violation-handling).
 an operator push, whose event goes on the run of the newest published commit. New `run_event.type` value
 `git_push_withheld` (`{reason}`, BR-31). Payloads in [§12.6](#126-push-algorithm).
 
+*As built (2026-10-13, Delegated, T9.9, [ADR-0030](../adr/0030-dynamic-project-revisions-and-approval.md)):* migration
+`0004_project_revision` (`src/ledger/migrations/0004_project_revision.ts`; ledger schema version 4) creates
+`project_revision` with the DDL above **except** `approved_at` (an append-only row cannot be updated) and **plus**
+`approval_reasons_json TEXT NOT NULL DEFAULT '[]'` (why a `PENDING_APPROVAL` revision waits), an `id` check for the
+`prv_` prefix, `revision >= 1` and `CREATE INDEX project_revision_client ON project_revision(client_id, project_id)`.
+Two more append-only tables: `project_revision_decision` (`prd_`; `project_id`, `revision`, `decision`
+`APPROVED|REJECTED`, `decided_by`, `reason`, `decided_at`; unique `(project_id, revision)`, foreign key to the revision)
+holds the operator's decision that LLD §11.2 called `approved_at`, and `project_event` (`pev_`; `ts`, `actor`
+`mcp_client|operator`, `client_id`, `operator`, `action` `create_project|update_project|delete_project|approve|reject`,
+`project_id`, `revision`, `outcome` `ACCEPTED|REFUSED`, `code` (set exactly when refused), `reason`, bounded
+`payload_json`; index on `(project_id, ts)`) records every call, because `run_event.run_id` is `NOT NULL` and a project
+call has no run. All three have `<table>_no_update` / `<table>_no_delete` guards. The store is `DynamicProjectStore`
+(`src/projects/store.ts`); a project's state (in force, pending, approved, rejected, deleted) is derived from its rows.
+
 **M11 additions (Proposed).** One forward migration (ADR-0005) adds the append-only `inner_call` table and the mutable
 `inner_task_state` table (DDL in [§13.3](#133-data)), adds `pr_draft` to the `artifact.kind` check, adds `inner_agent` to
 the `usage_observation.source` check (FR-INN-15), and adds two columns to `git_commit` (§12.7). SQLite cannot alter a
@@ -330,6 +344,12 @@ the `usage_observation.source` check (FR-INN-15), and adds two columns to `git_c
 its column; only its content gains per-feature `source`, `model_id` and `template_version` (§13.6, `route_features`).
 The inner agent's entities are therefore `inner_call` (history) and `inner_task_state` (current suspension state per
 task), plus the columns above; no inner prompt or response body is stored anywhere (FR-INN-16).
+
+**M7 and M12 additions (Proposed).** The M7 forward migration adds the mutable `project_affinity` table
+([§3.2](#32-provider-and-model-affinity-m7)); `route_decision` keeps its columns and `reasons_json` gains an `affinity`
+object. The M12 migration adds the append-only `rag_record` table ([§14.10](#1410-events-and-records)); the per-project
+and global retrieval stores are separate SQLite files outside `ledger.db` ([§14.2](#142-stores-and-tables)).
+`rag_record` is added to the append-only list above.
 
 ## 2. Adapter contract
 
@@ -596,8 +616,9 @@ at admission and dispatch. An off-host profile is excluded from routing with the
 `PROFILE_PLATFORM_UNVERIFIED`, which maps to `ELIGIBILITY_NONE` (FRD BR-3).
 **`get_capacity`** (M6) `{ provider? }` returns the FR-CAP-02 fields per provider with `source`; `explicit_remaining` is
 null unless provider-reported. To be detailed in M6.
-**`explain_route`** (M7) `{ run_id }` returns candidates, eligibility reasons, features, weights, scores from
-`route_decision`, no model reasoning. To be detailed in M7.
+**`explain_route`** (M7) `{ run_id }` returns candidates, eligibility reasons, features, weights, scores and the
+`affinity` object ([§3.2](#32-provider-and-model-affinity-m7)) from `route_decision`, no model reasoning. To be detailed
+in M7.
 
 **Project additions (M9, Proposed).** `delegate_task` gains an optional `project` (string, a configured project ID) and
 `workspace_path` becomes optional; exactly one of the two must be present (FRD V12, FR-PRJ-03). `continue_task` takes no
@@ -631,6 +652,31 @@ reference. Errors: unknown project `INVALID_REQUEST`; project not in the client'
 `details.reason = "ENVIRONMENT_NOT_IMPLEMENTED"` before anything is written (M10; LLD §3 names no other code, so no new
 code is added); base ref that does not resolve `INVALID_REQUEST`. Implementation: `src/mcp/server.ts`,
 `src/mcp/schemas.ts`.
+
+*As built (2026-10-13, Delegated, T9.9, [ADR-0030](../adr/0030-dynamic-project-revisions-and-approval.md)):* the three
+tools are in `tools/list` only for a client with `manage_projects`; for any other client a call is answered exactly as
+an unknown tool (`INVALID_REQUEST`) and recorded as a refused `project_event` (`TOOL_NOT_OFFERED`). Inputs:
+`create_project { project }`, `update_project { id, project }` (`project.id` must equal `id`), `delete_project { id }`;
+`project` is the configuration's `projectSchema` (§11.1) with Delegated bounds (strings without a pattern at most 4096
+characters, arrays at most 32 items), closed, so a client-limit key such as `max_push_policy` is an unknown key. Result
+(create, update, delete): `{ id, revision, status: "ACTIVE" | "PENDING_APPROVAL" | "DELETED", approval_needed?,
+in_force_revision?, message? }` (`in_force_revision` and `message` Proposed). `approval_needed` values:
+`container_environment`, `push_policy`, `commit_identity`, `commit_signing`, `widened_trust_ceiling`,
+`widened_providers` (widening is measured against the revision in force). Errors, in check order: schema
+`INVALID_REQUEST`; a control, separator or bidirectional character in any string `INVALID_REQUEST`
+(`CONTROL_CHARACTER`); a configured id or another client's project `PERMISSION_BLOCKED` with one message for both
+(`NOT_MANAGEABLE`); unknown id for update/delete, deleted id, or an existing id for create `INVALID_REQUEST` (ids are
+never reused); the loader's structural rules `INVALID_REQUEST`; ceiling, provider or push above the client's
+`PERMISSION_BLOCKED` (`CEILING_ABOVE_CLIENT`, `PROVIDER_OUTSIDE_CLIENT`, `PUSH_ABOVE_CLIENT`); quotas (32 live projects
+per client, 100 revisions per project, Assumptions) `PERMISSION_BLOCKED`; filesystem: outside every allowed root (also
+through `..` or a symlink) or inside the data directory `PERMISSION_BLOCKED`, not absolute, missing, not Git or
+unresolvable `base_ref` `INVALID_REQUEST`, always with the field and a fixed text, never a resolved path. Deleting with
+a non-terminal run, or while a `delegate_task`/`continue_task` for the project is being admitted, is `INVALID_REQUEST`
+(`ACTIVE_RUN`; SRS FR-PRJ-10 and this section, read as winning over FRD BR-32's general "refusals are
+`PERMISSION_BLOCKED`"). `list_projects` appends the client's own dynamic projects (not deleted, not shadowed by a
+configured id) with `source: "dynamic"`, `revision` (the one in force, else the latest), `status`
+(`ACTIVE | PENDING_APPROVAL | REJECTED`) and `pending_revision?`; configured entries are unchanged. Implementation:
+`src/mcp/project-tools.ts`, `src/projects/`.
 
 **Error envelope** (FR-MCP-07). Delivered as an MCP tool result with `isError: true`:
 
@@ -853,6 +899,109 @@ bypass verdict), `src/cli/operator.ts` and `src/cli/runs.ts` (`approve`, `deny`)
 - `get_run include_events` drops `requested_by` and `scope_hash` from `operator_decision_requested` events.
 - An approved run is QUEUED without the ingress queue bound (FRD T3 has no such guard).
 
+### 3.2 Provider and model affinity (M7)
+
+Implements FR-RTE-06..09, FR-CAP-08 and [ADR-0032](../adr/0032-provider-model-affinity.md) (owner decision 40).
+Everything here is **Proposed**; thresholds are Assumptions with no value fixed, chosen in M6 and M7 and recorded then.
+The mechanism extends the two-stage routing of [ADR-0008](../adr/0008-two-stage-routing.md): the hard filter (FR-RTE-01)
+is unchanged and runs first, and `require_provider` and the hints of FR-MCP-05 narrow it as before.
+
+**Configuration.** Part of the `routing` object of the config schema (TDD §3.1):
+
+```jsonc
+{ "routing": { "affinity": {
+    "enabled": true,            // default true; false = M7 scoring behaviour unchanged, no affinity row is read or written
+    "low_water_mark": "<chosen in M6/M7>",   // FR-CAP-02 estimate at or below which the affine provider counts as maxed out
+    "min_confidence": "<chosen in M6/M7>",   // lowest estimate confidence at which the low-water mark counts (ADR-0007)
+    "idle_ttl": null            // default none: affinity never expires by time (Q-52)
+} } }
+```
+
+An unknown key or type error aborts startup (NFR-SEC-06). `low_water_mark` and `min_confidence` have no default; while
+either is unset, the estimate-based trigger is off and only `QUOTA_EXHAUSTED` (FR-CAP-06) triggers `capacity_exhausted`.
+
+**Table** (forward migration at M7, ADR-0005; mutable current state, history is the append-only `route_decision` rows
+and the `routing_affinity_*` run events):
+
+```sql
+CREATE TABLE project_affinity (         -- one row per project key (FR-RTE-06)
+  project_key        TEXT PRIMARY KEY,  -- project id, or 'ws:' || SHA-256 of the canonical workspace_path (no project)
+  provider           TEXT NOT NULL,
+  model              TEXT,              -- last model the provider ran for this project; NULL = adapter default (FR-RTE-08)
+  since              TEXT NOT NULL,     -- when this provider became the affinity
+  last_run_id        TEXT REFERENCES run(id),   -- last run that completed on it
+  last_switch_reason TEXT CHECK (last_switch_reason IS NULL OR last_switch_reason IN
+                       ('user_request','capacity_exhausted','ineligible','failed_after_retry')),
+  version            INTEGER NOT NULL DEFAULT 0
+) STRICT;
+```
+
+A per-provider model memory is kept in the same row's `model` and in `route_decision`; the controller reuses the last
+model for the chosen provider only (FR-RTE-08).
+
+**Algorithm** (runs inside the routing step of dispatch, one ledger transaction with the route decision):
+
+1. Resolve the project key. Read `project_affinity` (none if the row is missing or `enabled` is false).
+2. Run the hard filter (FR-RTE-01) to get candidates with reasons.
+3. Determine the **switch reason**, first match wins, in this order:
+   1. `user_request`: `require_provider`, an explicit provider or model in the request, or an operator `affinity reset`
+      since the last run. A `provider_preference` that only narrows or orders candidates is a hint, not a request for a
+      different provider, and is not a reason (FR-MCP-05).
+   2. `ineligible`: the affine provider is absent from the candidates for a reason other than capacity (capability,
+      profile, auth, version, manifest, circuit breaker open).
+   3. `capacity_exhausted`: the affine provider was removed for known quota exhaustion, a `QUOTA_EXHAUSTED` run just
+      failed over (FR-CAP-06), or the FR-CAP-02 estimate is at or below `low_water_mark` with confidence at least
+      `min_confidence`.
+   4. `failed_after_retry`: FR-CAP-05 retries on the affine provider are exhausted for this meta-session.
+4. If there is an affinity and **no** reason applies: select the affine provider, and (FR-RTE-08) the project's last
+   model for it unless the request names one. Scores are not used; the decision stores the candidate list and reasons as
+   usual.
+5. Otherwise (no affinity, or a reason applies): rank the remaining eligible candidates with the FR-RTE-02 score, select
+   the best, and write the new `project_affinity` row (`since` = now, `last_switch_reason` = the reason, or NULL for a
+   first run). A model changes only for `user_request` or `ineligible` (FR-RTE-08); otherwise the new provider uses its
+   adapter default or the project's remembered model for that provider.
+6. If the affinity was lost and no candidate remains, the outcome is `ELIGIBILITY_NONE` as today, with the reason
+   recorded; the affinity row is left unchanged.
+7. When a run reaches `SUCCEEDED`, set `last_run_id` and `model` (as reported by the adapter) on the row; a first run
+   that fails does not create affinity. The controller never moves affinity on recovery of the old provider (Q-51).
+
+`affinity reset` is an operator command that records an operator row (like `approve`); the daemon applies it at the next
+routing step as a `user_request` for that project. Scores, cost and load are never a reason.
+
+**Routing-decision fields (FR-RTE-03).** `route_decision.reasons_json` gains an `affinity` object (no new column):
+
+```jsonc
+{ "affinity": {
+    "enabled": true,
+    "project_key": "proj_x",
+    "provider": "<affine provider, or null>",
+    "model": "<affine model, or null>",
+    "held": true,                              // the affine provider and model were chosen
+    "affinity_switch_reason": null,            // 'user_request' | 'capacity_exhausted' | 'ineligible' | 'failed_after_retry' | null
+    "scored": false                            // the FR-RTE-02 score ranked candidates in this decision
+} }
+```
+
+Invariants checked by the replay test (TDD §3.13.3): `held` implies `affinity_switch_reason` is null and `scored` is
+false; a changed provider or model implies a non-null reason; `scored` is true only when there was no affinity or a
+reason applied. `explain_route` returns this object. The envelope's `route.reasons` list names the reason code when
+affinity ended.
+
+**Prompt assembly order (FR-RTE-09, Could).** The delegated prompt is assembled in a fixed order: stable content first
+(project instructions, constraints, trust and tool preamble), then volatile content (task text, retrieved snippets of
+§14.6) last. The order of stable parts is fixed per project and not shuffled between runs. This is a hygiene rule; no
+provider is claimed to reuse a prefix cache, and the benefit is unverified (Q-53).
+
+**Cache and switch accounting (FR-CAP-08, M6).** Where an adapter's parsed output reports cache read or creation token
+counts, they are stored in `usage_observation.usage_json` (shape owned by the adapter contract, §2) labelled with the
+existing `source`; an absent count stays absent and is never estimated. The per-project figures (runs that kept the
+previous provider and model, runs that switched, by reason) are a query over `route_decision.reasons_json`, exposed by
+`get_capacity` as an optional `affinity` block and by `doctor`; they are evidence for the operator, not a claim of hits.
+
+**Events** (`run_event.type`, M7, bounded payloads): `routing_affinity_held` (`project_key`, `provider`, `model`),
+`routing_affinity_switched` (`from_provider`, `to_provider`, `from_model`, `to_model`, `reason`),
+`routing_affinity_reset` (`project_key`, `by`). None is a failure code or changes a run's status.
+
 ## 4. Failure taxonomy
 
 `failure_code` on a `FAILED` run holds exactly one of these codes. `ELIGIBILITY_NONE` and `INVALID_REQUEST` were **added
@@ -971,8 +1120,10 @@ rows are kept, Q-19). It is wired three ways, none with a new config key. `docto
 the same by default (dry run); `--apply` collects, needs `retention.days` set in the config and the data-directory
 lock (so it is refused while `serve` runs). `serve` runs one pass after reconciliation, before the lifecycle starts or
 MCP accepts calls, and then every `retention.interval`, only when `retention.days` is set: unset means nothing is
-collected. Orphans are reported but not yet removed. GC marks first (R-42, decision 28): one transaction re-checks idleness,
-sets the meta-session `ARCHIVED` and appends the intent event, and admission refuses an `ARCHIVED` meta-session with
+collected. Orphans are reported but not yet removed. The sweep does not count a publish ref
+(`refs/heads/<prefix><sess>`, §12.3) of a meta-session that has a ledger row as an orphan; one whose session is
+unknown is still reported. GC marks first (R-42, decision 28): one transaction re-checks idleness, sets the
+meta-session `ARCHIVED` and appends the intent event, and admission refuses an `ARCHIVED` meta-session with
 `INVALID_REQUEST`; a marked, unfinished session is a candidate again and rolls forward.
 
 **Crash safety.** Order is intent row (with the `ARCHIVED` mark, one transaction), then Git action, then outcome
@@ -1031,6 +1182,7 @@ export is derived. Redaction is by construction: spans are built from an allowli
 | --- | --- | --- |
 | `controller.delegate` | root | one per `delegate_task`/`continue_task` |
 | `route.classify` | `controller.delegate` | M7 |
+| `rag.retrieve` | `controller.delegate` | M12; one per admission-time retrieval, attributes in [§14.10](#1410-events-and-records); never on a run's critical path beyond `admission_timeout_ms` |
 | `provider.acquire_capacity` | `controller.delegate` | queue wait, concurrency semaphore, breaker |
 | `workspace.create_checkpoint` | `controller.delegate` | lease + worktree + pre checkpoint |
 | `provider.spawn` | `controller.delegate` | process lifetime |
@@ -1208,6 +1360,15 @@ unknown project id`). **An absent or empty list means the client may use no proj
 the projects listed"); requests that name a workspace path are unaffected. `manage_projects` and `max_push_policy` are
 still not in the schema (T9.9).
 
+*As built (2026-10-13, Delegated, T9.9, [ADR-0030](../adr/0030-dynamic-project-revisions-and-approval.md)):*
+`mcp_clients[].manage_projects` (boolean, default `false`) and `mcp_clients[].max_push_policy` (`none | branch`, default
+`none`) are in the strict schema; `loadConfig` refuses `max_push_policy: "branch"` on a client without
+`manage_projects: true` (`$.mcp_clients[i].max_push_policy: applies only to a client with manage_projects: true`).
+`ResolvedMcpClient` gains `manageProjects` and `maxPushPolicy`; a hand-built entry without them reads as off and `none`.
+The project shape is exported as `projectSchema` (`src/config/schema.ts`) and is also the `project` input of
+`create_project` and `update_project` (§3). No client-level provider list exists, so a client's provider set is every
+provider not disabled in `providers` (Delegated).
+
 *As built (2026-10-13, Delegated, T9.6, [ADR-0028](../adr/0028-controller-push-and-credential-reach.md)):* `loadConfig`
 refuses a `push.remote` that is not a remote **name** (letters, digits, `.`, `_`, `-`, starting with a letter or digit,
 at most 100 characters; so never a URL or anything with `@` or `:`) and a `push.branch_prefix` that is not a branch-name
@@ -1220,6 +1381,15 @@ refuses it on a context without `identity` and on a context that is not the prim
 the run's policy snapshot as `project.finalize_commit: true` (absent when off) and shown by `projects show`. Example:
 `{ "id": "main", "kind": "repository", "path": "/home/op/src/web-app", "base_ref": "main", "identity": { "name":
 "Operator Name", "email": "operator@example.com" }, "finalize_commit": true }`.
+
+*As built (2026-10-13, Delegated, T9.4b, [ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md)):*
+`providers.claude-code.git_channel` (boolean, default `false`; accepted under `claude-code` only, so the key on any
+other provider aborts startup) is the operator opt-in for the Claude Code tool channel (§12.2). `ResolvedConfig` gains
+`claudeCodeGitChannel`; `serve` passes it to the Claude adapter and logs a warning when it is on. It does not change
+`providers.<id>.enabled`. **UNSUPPORTED** until the ADR-0029 live checks pass (ROADMAP T9.4b). Example:
+`"providers": { "claude-code": { "git_channel": true } }`. *Note 2026-10-13 (owner decision 41,
+[ADR-0033](../adr/0033-claude-channel-bypass-only-without-safe-mode.md)):* even with the key on, only an approved
+`privileged` bypass run gets the channel (and runs without `--safe-mode`); every other run is as with the key off.
 
 ### 11.2 Resolution and ceilings
 
@@ -1236,6 +1406,24 @@ A project created by an orchestrator uses the same shape and is validated by the
 from a configured value the operator named in the client entry (`identities` list), so an orchestrator cannot invent an
 author (Proposed); the repository `path` must already exist under an allowed root. Approval is `projects approve <id>
 [--revision n]`, an operator CLI command that writes `approved_at`; it has no MCP counterpart (FRD BR-32).
+
+*As built (2026-10-13, Delegated, T9.9, [ADR-0030](../adr/0030-dynamic-project-revisions-and-approval.md)):* step 5a runs
+in `resolveForRequest` (`src/mcp/project-tools.ts`) before the configured-project steps: a configured id always wins; a
+dynamic project resolves only for the client that created it and only while that client has `manage_projects`
+(otherwise `PERMISSION_BLOCKED`, `MANAGE_PROJECTS_OFF` for the creator); a deleted project is `INVALID_REQUEST`
+(FR-PRJ-09); with no revision in force it is `PERMISSION_BLOCKED` with `details.reason` `approval_required` (or
+`revision_rejected`). The in-force revision is re-checked against the client's current ceiling and `max_push_policy`
+and against all the filesystem rules of §11.1 for every context (step 5, extended), then steps 3, 4 and 6 run exactly as
+for a configured project; the client's `projects` list does not apply to its own dynamic projects. The snapshot shape is
+unchanged; the `route_decision` reasons' `project` object gains `revision`. The orchestrator-identity rule above is not
+built as an `identities` list: instead any revision with an `identity` (or `sign: true`) waits for the operator's
+approval (Delegated, stricter). Approval is `switchboard projects approve <id> [--revision n] [--reject]`: it decides the
+latest revision only when it is `PENDING_APPROVAL` and undecided, needs `--revision` once the project has more than one
+revision, and writes a `project_revision_decision` row and a `project_event` row instead of `approved_at`
+(`src/cli/projects-dynamic.ts`). `projects list|show` show dynamic projects (`source`, `creator`, `revision`, `state`,
+`in_force_revision`, `pending_revision`, `approval_needed`; `show` lists the revisions). Push targets of approved
+dynamic projects are not resolved yet: the `push` tool and `switchboard git push` read push contexts from configuration
+only, so such a push is refused (`CONTEXT_UNKNOWN`, fails closed; ROADMAP Q-46).
 
 *As built (2026-10-13, Delegated, T9.2; configured `host` projects only, no dynamic revisions, no step 5a, no push or
 identity in step 6):* the steps run in `resolveProject` and `projectCandidates` (`src/mcp/server.ts`) in this order:
@@ -1391,6 +1579,70 @@ attempts per channel (`PUSH_LIMIT_REACHED`, a `git_tool_denied` event), and then
 `git_channel_closed` counts `pushes`. *Note 2026-10-13 (decision 37):* for an approved bypass run `push` is offered
 whatever the shell (§12.7 BR-31 note) and `git_channel_opened` carries `credential_reach: "bypass_exempt"`; the
 provider's Git-write denial and every other check are unchanged.
+
+*As built (2026-10-13, Delegated, T9.4b, [ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md);
+UNSUPPORTED and unverified live).* Claude Code declares `injected` only with the operator opt-in
+`providers.claude-code.git_channel: true` (§11.1 note); without it, `none` and an unchanged argv as above. Code:
+`claudeChannelArgs` and `CLAUDE_GIT_CHANNEL_CAPABILITIES` in `src/adapters/claude/adapter.ts`, `auditMcpArgs` and
+`assertMcpAudit` in `src/adapters/audit.ts`, `OpenChannel.writeFile` in `src/git/channel.ts`. Choices:
+
+- **Contract.** `ShimSpec` gained `dir` (the run's private channel directory) and `channelArgs` may return `files`
+  (`ChannelFile`: a name and contents). The lifecycle has the channel service write them before spawn; an adapter never
+  writes a file. The service accepts only names in `CHANNEL_FILE_NAMES` (today `mcp-config.json`), creates the file with
+  `O_CREAT|O_EXCL|O_NOFOLLOW` and mode `0600` after re-checking the directory, refuses contents containing `sbt1_`, and
+  removes it on close, on the startup sweep and when a crashed run's directory is reused (regular files only).
+- **Fragment.** `--mcp-config <dir>/mcp-config.json --allowedTools mcp__switchboard-git__commit` (plus
+  `mcp__switchboard-git__push` when offered), appended after the compiled argv; environment exactly `ShimSpec.env`.
+  Server name `switchboard-git` (`TOOL_SHIM_MCP_SERVER`). The file (the `env` entry is a reference only, ADR-0029
+  item 3):
+
+  ```jsonc
+  { "mcpServers": { "switchboard-git": {
+      "type": "stdio",
+      "command": "<ShimSpec.command[0]>",
+      "args": ["<the rest of ShimSpec.command>"],
+      "env": { "SWITCHBOARD_TOOL_TOKEN": "${SWITCHBOARD_TOOL_TOKEN}" } } } }
+  ```
+
+- **Strictness.** No flag is added for it: the compiled argv already has `--strict-mcp-config` on every invocation but
+  an approved bypass run with `repository_config` `enabled` (decision 26), which is ADR-0029 item 5. `--safe-mode`,
+  `--restricted`, `--tools` and the Git deny rules are unchanged; the channel tools are not named in `--tools` (built-in
+  set only, per the help text).
+- **Audit.** Before every spawn, after the bypass audit, `assertMcpAudit` admits at most one `--mcp-config`, in argv
+  only, with exactly one value equal to the path the channel service wrote (absolute, normalised, named
+  `mcp-config.json`), with `--strict-mcp-config` unless the run context is an approved bypass with `repository_config`
+  `enabled`; and an `mcp__` token only as a value of `--allowedTools` equal to `mcp__switchboard-git__<tool>` for an
+  offered tool. It refuses the `--mcp-config=` form, inline JSON, other paths, a second occurrence or value,
+  server-wide, wildcard and foreign MCP rules, and any MCP rule without a channel; it then checks the file is a plain
+  `0600` file owned by this user in a private directory. A refusal fails the run `PERMISSION_BLOCKED`
+  (`reason: "MCP_CONFIG_REFUSED"`) and closes the channel (removing the file) before the run is terminal.
+- **Assumptions (live checks, ADR-0029 item 7 and ROADMAP T9.4b):** the JSON shape; `${VAR}` expansion; that a second
+  `--allowedTools` adds to the first (if it replaces it the run is denied more, not less); that `--tools` does not
+  filter MCP tools; the `mcp__<server>__<tool>` rule form. Each failure mode found so far leaves the agent without the
+  tool (fail closed), never with more permission.
+
+*Note 2026-10-13 (owner decision 41, [ADR-0033](../adr/0033-claude-channel-bypass-only-without-safe-mode.md); mechanism
+Delegated; still UNSUPPORTED).* An operator-machine live check (`docs/research/live-checks-2026-10-13.md`, PR #41; a
+hand-made server, not the shim) confirmed the `mcpServers` shape, `${VAR}` expansion (an unset variable stays literal),
+environment inheritance and exact-name rules under `dontAsk`, and found that `--safe-mode` stops the server from
+starting. So, superseding the "unchanged `--safe-mode`" bullet above for Claude:
+
+- **Bypass only.** `GitCapabilities` gained the optional, pure `offersChannel(request, profile)`. When it is false for
+  a run the lifecycle treats the adapter as `none` for that run: no channel, no `channelArgs` call, no event, argv
+  unchanged, and `finalize` receives `commitChannel: "none"` (so FR-GIT-09 applies). Claude's predicate
+  (`claudeChannelOffered`) is true only for `privileged` with a scope that sets `bypass` and `bypassApproved`;
+  `claudeChannelArgs` refuses every other run (`PROFILE_UNSUPPORTED`) as a second check.
+- **`--safe-mode` removed.** `ChannelArgs` gained the optional `removeFlags`: standalone flags (`--name`, no `=`) the
+  lifecycle drops from the compiled argv and `policyFlags` before appending the fragment (absent flags are a no-op; any
+  other spelling fails the run `ELIGIBILITY_NONE`, `reason: "GIT_CHANNEL_INELIGIBLE"`). Claude returns
+  `["--safe-mode"]`. `--strict-mcp-config`, the Git deny rules, `--tools` and worktree isolation are unchanged.
+- **Audit additions.** `auditMcpArgs` also refuses `--mcp-config` unless the run context admits a bypass, and when the
+  invocation's `env` lacks a non-empty `SWITCHBOARD_TOOL_TOKEN`. `auditSafeMode` (run before every Claude spawn, as
+  `assertSafeModeAudit`) refuses an argv without `--safe-mode` unless the run is an approved bypass run and either
+  `repository_config` is `approved` or `enabled` (decision 26) or the argv carries `--mcp-config`. A refusal fails the
+  run `PERMISSION_BLOCKED` (`reason: "ISOLATION_REFUSED"`) and closes the channel.
+- **Environment.** The stdio server inherits the claude process environment, which is the adapter's child environment:
+  `PATH`, `HOME` (its allowlist) and the token only.
 
 ### 12.3 Commit algorithm and refs
 
@@ -2073,3 +2325,288 @@ list, and a test asserts it.
 Calls with no run (`inner test`, the `doctor` canary) have no `run_event`; their record is the `inner_call` row, and
 `doctor` and `inner status` read `inner_call` and `inner_task_state`. None of these events or outcomes is a run failure
 code, appears in an envelope's `failure_code`, or influences retry (§4).
+
+## 14. Retrieval index
+
+Implements FR-RAG-01..14 and [ADR-0031](../adr/0031-retrieval-index.md) for M12 (COMP-RAG, trust boundary TB-11).
+Everything here is **Proposed** and unverified until T12.0; storage and the embedding backend are open (Q-48), no model
+name, vector dimension, latency or token saving is stated as fact, and every cap is `<chosen in T12.0>`. Retrieved text
+is untrusted reference data and is never an input to COMP-POL, profile compilation, eligibility, approvals, ceilings,
+push or commit (FR-RAG-07, BR-46); structure and an import-boundary test ([TDD §3.13](TDD.md#313-retrieval-index))
+enforce it. Any failure means "no pack" and an unchanged run (FR-RAG-08).
+
+### 14.1 Configuration shape
+
+Part of the config schema ([TDD §3.1](TDD.md#31-configuration)). Without a configured `embedding` backend the feature is
+inert and nothing else changes (`mode: "on"` without a backend is rejected at load, below) (FR-RAG-04).
+
+```jsonc
+{ "rag": {
+    "embedding": {                       // one backend; no default, no credential field (ADR-0003)
+      "kind": "http",                    // 'local' | 'http' (§14.4)
+      "base_url": "http://127.0.0.1:<port>",   // http only; no userinfo, no query; or the Unix socket path form of §13.2
+      "model": "<model>",                // operator-chosen placeholder; never defaulted
+      "allow_remote": false,             // required to use a backend classified remote (FR-RAG-04)
+      "allow_source_content": false,     // required, with allow_remote, for a remote backend to see source text
+      "timeout_ms": "<chosen in T12.0>", "max_concurrency": "<chosen in T12.0>"
+    },
+    "mode": "auto",                      // default; 'auto' = on iff embedding is configured and the project allows; 'off'; 'on'
+    "caps": { "max_files": "<..>", "max_file_bytes": "<..>", "max_chunks": "<..>", "max_total_bytes": "<..>",
+              "max_build_ms": "<..>" },  // FR-RAG-11; all required once the feature is on
+    "retrieval": { "top_k": "<..>", "max_context_tokens": "<fixed in T12.0>", "max_staleness": "<..>",
+                   "admission_timeout_ms": "<..>" },
+    "exclude": [ "<glob>" ],             // operator additions to the built-in denylist (§14.3)
+    "global": {                          // FR-RAG-09; absent or enabled:false = no global store exists
+      "enabled": false,
+      "sources": [ { "path": "<absolute path>", "label": "<name>" } ]   // operator-added local knowledge sources
+    }
+} }
+```
+
+The project object and each context object of [§11.1](#111-configuration-shape) gain an optional `rag` block with the
+same keys where meaningful: `mode`, `exclude`, `caps` (may only lower), `use_global` (default false, FR-RAG-10) and
+`contribute_to_global` (default false, FR-RAG-09). A context of trust `untrusted` never contributes to the global index
+unless the operator sets it explicitly (Q-50). A project can only restrict: `mode: "off"` wins over the installation
+default, and a project cannot enable a `remote` backend that the installation has not allowed.
+
+Rules (Ajv at startup; an unknown key or type error aborts startup, NFR-SEC-06):
+
+- No credential fields; `base_url` is rejected with userinfo or a query string, as in §13.1.
+- `mode: "on"` with no `embedding` is a configuration error (fail closed, not silent); `auto` with none is off.
+- `allow_source_content` is meaningless for a `local` backend and is ignored there.
+- `global.sources[].path` must be absolute, under an allowed root, and is read-only to the controller.
+
+`switchboard index status`, `index rebuild` and `index clear` (each optionally per project, plus `global`) write only
+operator records (rebuild and clear requests) read by the `serve` daemon, as `approve` does (FR-RAG-11, FR-RAG-14).
+
+### 14.2 Stores and tables
+
+One SQLite file per project, `<data>/rag/<project_key>/index.db`, and one global file `<data>/rag/global/index.db`
+(HLD §5). They are derived caches opened by COMP-RAG alone, never by the ledger module; `ledger.db` stays the single
+writer of canonical state (ADR-0005). Same conventions as §1 (`STRICT`, UTC millisecond timestamps, WAL). Deleting a
+project deletes its directory (FR-RAG-03).
+
+```sql
+CREATE TABLE rag_meta (                 -- one row
+  schema_version  INTEGER NOT NULL,
+  store_kind      TEXT NOT NULL CHECK (store_kind IN ('project','global')),
+  project_key     TEXT,                 -- NULL for global
+  embedding_model TEXT NOT NULL,        -- as configured; a change forces a rebuild
+  dimension       INTEGER NOT NULL,     -- as returned by the backend; a change forces a rebuild
+  revision        INTEGER NOT NULL,     -- bumped by every committed build step
+  complete        INTEGER NOT NULL CHECK (complete IN (0,1)),   -- 0 = partial (cap hit, timeout or interrupted)
+  base_ref_sha    TEXT,                 -- commit the contexts were read at, if Git
+  built_at        TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE rag_file (                 -- one row per indexed file
+  path        TEXT PRIMARY KEY,         -- relative to its context root
+  context_id  TEXT NOT NULL,
+  sha256      TEXT NOT NULL,            -- of the file content at indexing time
+  bytes       INTEGER NOT NULL,
+  mtime_ns    INTEGER NOT NULL,
+  origin_project TEXT,                  -- global store only: contributing project key, or NULL for an operator source
+  indexed_rev INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE rag_chunk (
+  id          TEXT PRIMARY KEY,         -- 'chk_' + SHA-256 prefix of (path, ordinal, content hash)  (Proposed)
+  path        TEXT NOT NULL REFERENCES rag_file(path) ON DELETE CASCADE,
+  ordinal     INTEGER NOT NULL,
+  start_line  INTEGER NOT NULL,
+  end_line    INTEGER NOT NULL,
+  text        BLOB NOT NULL,            -- redacted chunk text (UTF-8)
+  text_sha256 TEXT NOT NULL,
+  vector      BLOB NOT NULL             -- float32 little-endian, 'dimension' values
+) STRICT;
+```
+
+The store is not append-only and not part of the ledger's retention; `index clear` deletes every row and the file's
+contents (FR-RAG-14). The ledger keeps only counts (§14.10). Opening a store whose `schema_version`, model or dimension
+differs from the configuration marks it for rebuild and serves nothing from it meanwhile.
+
+### 14.3 Scanner, chunking and redaction
+
+Scan (FR-RAG-02), per context of the project, in a stable order:
+
+1. Only files whose `realpath` is inside the context root. Skip `.git`, any nested repository (ADR-0022), a symlink
+   whose target leaves the root, special files, binary files (NUL byte in the first block, Proposed), files over
+   `caps.max_file_bytes`, and files ignored by the repository's ignore rules (via `git ls-files` for a Git context; a
+   non-Git context uses the operator `exclude` only).
+2. Skip by name before reading: the built-in secret denylist (Proposed): environment files (`.env`, `.env.*`), private
+   key and certificate files (`*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `id_ed25519*`), credential-looking names
+   (names containing `credential`, `secret`, `token`, `password`, `auth`), keystore and `.netrc`-style files, and the
+   operator `exclude` globs. The list is best effort and is not a guarantee (R-56).
+3. Read at most `caps.max_file_bytes`. **Redact** every string with the telemetry redactor and the FR-INN-16 identifier
+   scrub (§13.4 step 2) before chunking, so neither the embedding request nor the store holds the unredacted text.
+4. **Chunk** (Proposed): split on line boundaries into windows bounded by a size target and a small overlap, preferring
+blank-line or top-level-declaration boundaries; sizes are `<chosen in T12.0>`. The `ordinal` is the window index in the
+file; a changed file is re-chunked whole.
+5. Stop adding chunks when `caps.max_chunks` or `caps.max_total_bytes` is reached; the store is marked incomplete.
+
+### 14.4 Embedding backend port and privacy gates
+
+```ts
+interface EmbeddingBackend {
+  readonly kind: 'local' | 'http';
+  resolveLocality(signal: AbortSignal): Promise<'local' | 'remote'>;       // same rule as InnerBackend (§13.2)
+  embed(texts: string[], signal: AbortSignal): Promise<{ vectors: Float32Array[]; model_id: string; dimension: number }>;
+  probe(signal: AbortSignal): Promise<{ reachable: boolean; dimension?: number; detail: string }>;
+}
+```
+
+Locality classification, the connect-time re-resolution and the unresolved-is-`remote` rule are those of
+[§13.2](#132-backend-port) and [§13.5](#135-privacy-gates); the kind `local` is in-process or a loopback or Unix-socket
+service, `http` is classified by its resolved address. Gate table (evaluated before any chunk text leaves the process,
+for builds, queries and `probe` with real text; the `doctor` canary uses a built-in fixture):
+
+| # | Effective project `rag` mode | Backend locality | `allow_remote` | `allow_source_content` | Result | Reason code |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | `off` | any | any | any | Denied | `PROJECT_OFF` |
+| 2 | `auto` or `on` | local | any | any | Allowed | n/a |
+| 3 | `auto` or `on` | remote | false | any | Denied | `REMOTE_NOT_ALLOWED` |
+| 4 | `auto` or `on` | remote | true | false | Denied | `SOURCE_CONTENT_NOT_ALLOWED` |
+| 5 | `auto` or `on` | remote | true | true | Allowed | n/a |
+
+Index content is always source content, so a `remote` backend needs both flags (FR-RAG-04, BR-48). A query string is the
+run's objective text, not repository content; embedding it needs rows 2 or 3 to 5 as for source (Assumption: stricter
+than the inner agent, for simplicity). A denial leaves the store untouched, the pack empty and the run unchanged. The
+`inner_agent` project setting does not apply to this feature; `rag` has its own, narrowing-only setting (§14.1).
+Switchboard handles no embedding credential: a keyed hosted service is reached through an operator-run local gateway
+(ADR-0003, Q-23).
+
+### 14.5 Incremental build
+
+Runs in the `serve` daemon as a background job per store, never inside the admission path (FR-RAG-11):
+
+1. **Trigger**: daemon start (reconcile), project config change, `index rebuild`, and a periodic freshness check; a
+   `delegate_task` for the project enqueues a refresh if the store's `base_ref_sha` or the contexts changed. The trigger
+   never waits for completion.
+2. **Diff**: scan (§14.3) into `(path, sha256, bytes, mtime_ns)`; compare with `rag_file`. New or changed files are
+   chunked and embedded; deleted files are removed (cascade); unchanged files (same `sha256`) are kept.
+3. **Embed** changed chunks in bounded batches under the gate (§14.4), yielding to the event loop between batches.
+4. **Commit** each batch in one SQLite transaction and bump `revision`; set `complete = 1` only when the scan reached
+   its end within all caps and `max_build_ms`; otherwise `complete = 0` with the reason in `rag_index_built`.
+5. A crash leaves a consistent store (each batch is a transaction); the next trigger resumes by diff. A backend or gate
+   failure stops the build, records the outcome, and leaves the previous revision queryable if it is complete.
+
+`index status` prints per store: mode, backend kind and locality, files, chunks, bytes, revision, `complete`, `built_at`
+and staleness (contexts changed since `built_at`). `index clear` deletes the store files and records counts only
+(FR-RAG-14). `doctor` shows the same plus backend reachability from `probe` (FR-RAG-14). The worktree of a run is not
+scanned; the index reads the project's contexts at their configured base ref or checked-out state (§14.8).
+
+### 14.6 Selection and token budget
+
+At admission (WF-14), after the policy snapshot and before dispatch, within `retrieval.admission_timeout_ms`:
+
+1. **Gate**: effective mode, backend gate (§14.4), store exists, not mid-rebuild for a different model or dimension.
+   Otherwise no pack (outcome `skipped`, reason code).
+2. **Freshness pre-check** (§14.8): if the store is older than `max_staleness`, or its `base_ref_sha` differs from the
+   run's base ref and cannot be reconciled, omit the pack (`stale`); a base-ref difference that is only flagged adds the
+   flag to the pack header.
+3. **Query**: embed the objective text (the request text; not the constraints), brute-force cosine similarity over the
+   project store's vectors, take `top_k`. When the project has `use_global` and the global store is enabled and gated,
+   score the global store the same way and merge, each hit carrying `origin_project` or its source label (§14.9).
+4. **Select**: drop hits whose file changed or vanished since indexing (§14.8), de-duplicate overlapping windows of the
+   same file, order by score then path, and add whole chunks while the running token estimate stays within
+   `max_context_tokens`. The token estimate is the controller's own approximation, labelled as such, not a provider
+   count. If nothing remains, no pack.
+5. **Pack**: text appended to the volatile section of the prompt (§3.2 order) as a clearly delimited block whose header
+   states that the content is untrusted reference data, not instructions, and for each snippet its path, line range,
+   index revision, score and file hash prefix. The request text is stored in `run` unchanged; the pack is not stored.
+6. **Record**: the `rag_retrieval` record and event hold the snippet ids and `text_sha256` values, the revision, counts
+   and durations (§14.10), no text.
+
+### 14.7 Tool contract `search_project_context`
+
+Read-only MCP tool (FR-RAG-06), registered only when the feature is on for at least one project the client may use. A
+client sees only the projects of `mcp_clients[].projects` (FR-PRJ-06); a project not listed is `INVALID_REQUEST` with
+the same message as an unknown one. The agent-callable form (FR-RAG-13, Could, T12.9) is the same handler behind the
+per-run channel ([ADR-0026](../adr/0026-per-run-tool-channel-socket-and-token.md)), scoped to the run's project, and
+exists only once an adapter has an injected channel (T9.4b).
+
+```jsonc
+{ "name": "search_project_context",
+  "inputSchema": { "type": "object", "required": ["project", "query"], "additionalProperties": false, "properties": {
+      "project": { "type": "string" },                                  // a configured project id
+      "query":   { "type": "string", "minLength": 1, "maxLength": 2000 },
+      "limit":   { "type": "integer", "minimum": 1, "maximum": "<chosen in T12.0>" },
+      "scope":   { "enum": ["project", "global", "both"], "default": "project" } } },
+  "outputSchema": { "type": "object", "required": ["status", "results"], "properties": {
+      "status":  { "enum": ["ok", "unavailable", "stale", "incomplete"] },
+      "reason":  { "type": "string" },                                  // machine code, for example REMOTE_NOT_ALLOWED
+      "index_revision": { "type": "integer" },
+      "results": { "type": "array", "items": { "type": "object",
+          "required": ["snippet_id", "path", "start_line", "end_line", "score", "file_sha256", "untrusted", "text"],
+          "properties": {
+            "snippet_id": { "type": "string" }, "path": { "type": "string" },   // relative to the context root, never absolute
+            "start_line": { "type": "integer" }, "end_line": { "type": "integer" },
+            "score": { "type": "number" }, "file_sha256": { "type": "string" },
+            "origin_project": { "type": "string" },                              // global results only
+            "untrusted": { "const": true },
+            "text": { "type": "string" } } } } } } }
+```
+
+Rules: `limit` and each `text` are bounded (`<chosen in T12.0>`), and the total response is bounded by the envelope
+limits of FR-MCP-04; `scope: "global"` or `"both"` requires the project to set `use_global` (else `INVALID_REQUEST`); no
+path outside the project's contexts is returned; the tool never reads another project's store; retrieval failure is
+`status: "unavailable"` with a reason code, not a tool error (FR-RAG-08). Text in `results` is untrusted data: the tool
+description says so, and a client must treat it as such. The call is recorded as a `rag_retrieval` row (§14.10).
+
+### 14.8 Freshness and fallback
+
+Per FR-RAG-08:
+
+- Each result carries `index_revision` and `file_sha256`. Before returning or packing a snippet, COMP-RAG compares the
+file's current `sha256` (cheap `mtime_ns` and size check first) with `rag_file.sha256`. A changed or deleted file drops
+the snippet; an optional re-read re-chunks that one file in place for the snippet text when budget allows (Proposed).
+- If the store's `base_ref_sha` differs from the base ref of the run's worktree, the pack header and the tool result are
+  flagged `base_ref_mismatch`; snippets from files whose content hash differs between the two refs are dropped.
+- An incomplete store (`complete = 0`) serves results marked `incomplete`; a store past `max_staleness` serves none to
+  admission and is flagged `stale` by the tool.
+- **Fallback**: any exception, timeout, gate denial, corrupt store, dimension mismatch or backend failure yields no pack
+  (admission) or `status: "unavailable"` (tool). It is never a run failure code, never changes run status, and never
+  delays dispatch beyond `admission_timeout_ms`. A corrupt store is marked for rebuild.
+
+### 14.9 Global index and sharing
+
+Optional, default off (FR-RAG-09, FR-RAG-10, BR-47, Q-50). When `rag.global.enabled`:
+
+- The global store holds (a) chunks of the operator-added `sources` (origin `NULL`, label from config), and (b) chunks
+  copied from a project's index only when that project sets `contribute_to_global: true`. Copying re-applies redaction
+  and the exclusions; content of `untrusted` contexts is excluded unless explicitly set. Removing the flag, or
+  `index clear` for the project, removes its contributions at the next build.
+- A run reads the global store only if its project sets `use_global: true` and the backend gate (§14.4) allows. Every
+  global snippet is labelled with `origin_project` or the source label in the pack and the tool result. A snippet from
+  project A never reaches project B unless A contributes and B uses; neither flag is implied by the other.
+- The same profile and policy of the run apply. Global content is data, with the same label and no authority.
+- The global store has its own caps (§14.1) and `index clear global`. It never holds credentials, and the denylist
+  applies to contributions and sources alike.
+
+### 14.10 Events and records
+
+Counts and durations only, no text (FR-RAG-12); never `usage_observation`, capacity, or a provider usage figure, as for
+`inner_call` (FR-INN-15). Added by the M12 migration:
+
+```sql
+CREATE TABLE rag_record (               -- append-only; counts and hashes only
+  id          TEXT PRIMARY KEY CHECK (id LIKE 'rag\_%' ESCAPE '\'),
+  kind        TEXT NOT NULL CHECK (kind IN ('index_built','retrieval','clear')),
+  project_key TEXT,                     -- NULL for global
+  run_id      TEXT REFERENCES run(id),  -- retrieval at admission only
+  backend_kind TEXT, model_id TEXT, locality TEXT,
+  outcome     TEXT NOT NULL,            -- 'ok','partial','skipped','stale','unavailable','fallback_disabled', ...
+  reason      TEXT,
+  revision    INTEGER,
+  files       INTEGER, chunks INTEGER, bytes INTEGER,
+  snippet_ids_json TEXT CHECK (snippet_ids_json IS NULL OR json_valid(snippet_ids_json)),   -- ids and text_sha256 only
+  duration_ms INTEGER, embed_calls INTEGER,
+  created_at  TEXT NOT NULL
+) STRICT;
+```
+
+Run events (`run_event.type`, bounded payloads, no text): `rag_index_built` (`project_key`, `revision`, `outcome`,
+`files`, `chunks`, `duration_ms`), `rag_retrieval` (`record_id`, `outcome`, `reason?`, `revision`, `snippets`,
+`tokens_est`, `duration_ms`; written only for a retrieval tied to a run), `rag_index_cleared` (`project_key`, `files`,
+`chunks`). A span `rag.retrieve` (attributes: outcome, snippet count, duration, backend kind and locality; never text or
+the query) is added to [§7](#7-telemetry-spans). None of these events is a run failure code or influences retry (§4).

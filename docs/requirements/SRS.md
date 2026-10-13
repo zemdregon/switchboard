@@ -16,8 +16,9 @@
   §8](../ROADMAP.md#8-deferred-and-excluded-work)).
 - **Verification**: `T` = automated test, `I` = inspection or review, `D` = demonstration, `A` = analysis.
 - **Milestone** is where the requirement is first delivered; see [ROADMAP §6](../ROADMAP.md#6-milestones).
-- **Verification status**: no requirement has been verified yet. There is no code and no test suite in the repository as
-  of 2026-10-12. Every verification below is *planned*, not *performed*.
+- **Verification status**: as of 2026-10-12 no requirement had been verified, because the repository had no code or test
+  suite then. Verification evidence is now recorded per milestone and task in [ROADMAP §6](../ROADMAP.md#6-milestones);
+  a requirement is verified only where that evidence names a passing test or check.
 - **Source** cites the business outcome or capability the requirement serves, and where relevant the research section
   that motivates it: `[R1]` = [original blueprint](../research/headless-ai-coding-controller.md) (superseded where it
   conflicts), `[R2]` = [verified research,
@@ -64,7 +65,7 @@ system boundary is owned by the
 
 | ID | Requirement | Priority | Source | Verify | Milestone |
 | --- | --- | --- | --- | --- | --- |
-| FR-MCP-01 | The controller shall expose an MCP server over the stdio transport offering the tools `delegate_task`, `continue_task`, `get_run`, `cancel_run`, `get_artifacts` and `list_capabilities`. | Must | CAP-1, [R2] MCP section | T | M2 |
+| FR-MCP-01 | The controller shall expose an MCP server over the stdio transport offering the tools `delegate_task`, `continue_task`, `get_run`, `cancel_run`, `get_artifacts` and `list_capabilities`, and the read-only `list_projects` tool of FR-PRJ-03. | Must | CAP-1, [R2] MCP section | T | M2 |
 | FR-MCP-02 | The controller shall additionally expose `get_capacity` and `explain_route`. | Must | CAP-6, CAP-7 | T | M6 (`get_capacity`), M7 (`explain_route`) |
 | FR-MCP-03 | `delegate_task` shall accept an objective, a workspace path, constraints, a trust profile, optional verification commands and optional routing hints (`provider_preference`, `require_provider`, `minimum_capability`), and, for `privileged` only, a privileged scope (from M3, FR-POL-09), and shall return a `run_id` and `meta_session_id` without waiting for the run to finish unless the caller supplies a bounded `wait_seconds`. *(Amended 2026-10-12: privileged scope input added for owner decision 13, [ADR-0017](../adr/0017-approved-privileged-scope-bypass.md).)* | Must | CAP-1, [ADR-0002](../adr/0002-mcp-upstream-acp-downstream.md) | T | M2 |
 | FR-MCP-04 | Tool results shall be compact normalized envelopes (status, provider, route reasons, summary, changed-file count, verification results, artifact references, reported and estimated usage) and shall never contain raw provider transcripts or credential material. | Must | CAP-1, BO-2 | T | M2 |
@@ -152,10 +153,14 @@ The five trust profiles and their intended semantics are:
 | ID | Requirement | Priority | Source | Verify | Milestone |
 | --- | --- | --- | --- | --- | --- |
 | FR-RTE-01 | Routing shall first remove ineligible providers using hard constraints: trust profile support, write/shell/network needs, sandbox strength, minimum capability, required tools, platform, auth state, version state, compliance manifest, known quota exhaustion, concurrency and health. | Must | CAP-6, [ADR-0008](../adr/0008-two-stage-routing.md) | T | M2 (eligibility only), M7 (full) |
-| FR-RTE-02 | Eligible providers shall be ranked by a weighted score over estimated success, latency, capacity risk, security risk, handoff cost and monetary cost, with operator-configurable static weights. | Must | CAP-6 | T | M7 |
-| FR-RTE-03 | Every routing decision shall be persisted with its input features, weights, candidate scores and outcome so it can be reproduced and explained. | Must | CAP-6, BO-5 | T | M7 |
+| FR-RTE-02 | Eligible providers shall be ranked by a weighted score over estimated success, latency, capacity risk, security risk, handoff cost and monetary cost, with operator-configurable static weights. *(Amended 2026-10-13, owner decision 40: the score ranks only the candidates left when affinity is absent or has ended, that is a project's first run or after a switch reason under FR-RTE-07; it never moves a project that has an eligible affine provider, FR-RTE-06.)* | Must | CAP-6 | T | M7 |
+| FR-RTE-03 | Every routing decision shall be persisted with its input features, weights, candidate scores and outcome so it can be reproduced and explained. *(Amended 2026-10-13, owner decision 40: the record also carries the project's affinity provider and model, whether affinity held, and the `affinity_switch_reason` when it did not.)* | Must | CAP-6, BO-5 | T | M7 |
 | FR-RTE-04 | A heuristic task classifier shall estimate context volume, tool/autonomy needs and reasoning depth from the request and repository metadata. *(Amended 2026-10-13: when the operator enables it, the inner agent may supply the same features as a labelled alternative source under FR-INN-12; the heuristic remains the baseline and the fallback.)* | Should | CAP-6, [R1], [R2] | T | M7 |
 | FR-RTE-05 | Empirical or contextual-bandit learning of routing weights. | Deferred | CAP-6, [R2] | — | Deferred |
+| FR-RTE-06 | For each project (the workspace for requests with `workspace_path`) the controller shall record the last provider and model that completed a run and keep routing the project there. Among providers that pass FR-RTE-01, the affine one shall be chosen; the weighted score of FR-RTE-02 shall not be used to move a project, and no round-robin or load spreading across providers for one project shall exist. This applies across meta-sessions in the project; FR-SES-03 still governs resume within one. | Must | CAP-6, BO-9, owner decision 40, [ADR-0032](../adr/0032-provider-model-affinity.md) | T | M7 |
+| FR-RTE-07 | Affinity shall end only for a reason in this closed list, each recorded as an enumerated `affinity_switch_reason` in the routing decision (FR-RTE-03): `user_request` (`require_provider`, an explicit provider or model in the request, or an operator `affinity reset`); `capacity_exhausted` (FR-CAP-06 `QUOTA_EXHAUSTED`, or the FR-CAP-02 estimate at or below a configured low-water mark with at least a configured confidence); `ineligible` (FR-RTE-01 removes the affine provider: capability, profile, auth, version, circuit breaker open); `failed_after_retry` (FR-CAP-05 exhausted). A better score, lower cost or lower load is not a reason. After a switch the new provider becomes the project's affinity; the controller shall not return to the old one on its own when it recovers (Q-51); only a reason from this list moves it again. | Must | CAP-6, BO-9, BO-5, owner decision 40, [ADR-0032](../adr/0032-provider-model-affinity.md) | T | M7 |
+| FR-RTE-08 | When the request names no model, the controller shall reuse the project's last model for the chosen provider, else the adapter default; a model changes only for `user_request` or `ineligible`. | Should | CAP-6, BO-9 | T | M7 |
+| FR-RTE-09 | Prompt assembly should be cache-friendly: stable content (project instructions, constraints) first, volatile content (task text, retrieved snippets) last, and no reordering between runs of a project. The cache benefit per provider is unverified. | Could | CAP-6, BO-9 | I | M7 |
 
 ### 3.8 Capacity, scheduling and resilience (`FR-CAP`)
 
@@ -166,8 +171,9 @@ The five trust profiles and their intended semantics are:
 | FR-CAP-03 | No interface or log shall present an estimate as provider-authoritative remaining quota. | Must | CAP-7, BO-5 | T, I | M6 |
 | FR-CAP-04 | Ingress shall use a bounded priority queue; each provider shall have a concurrency limit and a circuit breaker. | Must | CAP-7 | T | M1 (queue, global limit), M6 (per-provider breaker) |
 | FR-CAP-05 | Only `RATE_LIMIT_TRANSIENT`, `PROVIDER_OVERLOADED` and pre-mutation `PROCESS_CRASH` failures shall be retried automatically, with capped exponential backoff and jitter, and only when the workspace is unchanged since the pre-run checkpoint (otherwise FR-WS-04 applies). | Must | CAP-7, [R2] | T | M6 |
-| FR-CAP-06 | On `QUOTA_EXHAUSTED`, the controller shall fail over to another eligible provider if the request permits, queue if a reset time is known within a configured horizon, and otherwise return `QUOTA_EXHAUSTED`. | Must | CAP-7 | T | M6 |
+| FR-CAP-06 | On `QUOTA_EXHAUSTED`, the controller shall fail over to another eligible provider if the request permits, queue if a reset time is known within a configured horizon, and otherwise return `QUOTA_EXHAUSTED`. *(Amended 2026-10-13, owner decision 40: a capacity failover re-bases the project's affinity on the provider it lands on, with reason `capacity_exhausted`, FR-RTE-07.)* | Must | CAP-7 | T | M6 |
 | FR-CAP-07 | A token-bucket rate gate shall be applied to a provider only when that provider publishes enforceable rate limits for the auth mode in use. | Could | [R2] | T | M6 |
+| FR-CAP-08 | Where a provider CLI reports cache read or creation token counts, the controller shall record them as usage observations labelled by source (FR-CAP-01), and expose per project the count of runs that kept the previous provider and model versus switched, by reason. Which providers report cache tokens is unverified (Q-53). These figures are evidence for the operator, not a claim of cache hits. | Should | CAP-7, BO-9, BO-5, owner decision 40 | T | M6 |
 
 ### 3.9 Execution supervision (`FR-EXE`)
 
@@ -277,6 +283,31 @@ group first ship in M11.
 | FR-INN-17 | The operator CLI shall show the inner agent in `doctor` (reachable, locality, model answers a fixed canary within schema, enabled tasks, degraded or suspended state) and provide `inner status` (per-task counts and fallback rates from the ledger) `inner test <task>` (runs the task on a built-in fixture containing no repository data) and `inner resume <task>` (re-enables a task suspended under FR-INN-09). | Should | CAP-12, CAP-9 | T, D | M11 |
 | FR-INN-18 | Model-assisted secret or PII detection as an additional, add-only redaction pass. Redaction stays deterministic (FR-TEL-03); no inner-agent verdict may remove or skip a redaction. | Deferred | CAP-12, [ADR-0016](../adr/0016-inner-agent.md) | — | Deferred |
 
+### 3.15 Retrieval index (`FR-RAG`)
+
+Owner decision 40 (2026-10-13, [ROADMAP §4.2](../ROADMAP.md#42-owner-decisions)) asks for an automatic per-project
+retrieval index (RAG or vector store) to reduce context requirements, and possibly a deployment-wide one. Everything
+below that is not in that decision's wording is **Delegated** and **Proposed**: the modes, exclusions, gates, bounds and
+sharing rules. The design is in [ADR-0031](../adr/0031-retrieval-index.md); the privacy gates reuse those of the inner
+agent (FR-INN-03, FR-INN-16). All requirements in this group first ship in M12.
+
+| ID | Requirement | Priority | Source | Verify | Milestone |
+| --- | --- | --- | --- | --- | --- |
+| FR-RAG-01 | When a project has retrieval enabled, the controller shall build and incrementally maintain an index of the project's readable contexts in the data directory, never in the repository. Mode `auto` (the **Proposed** default) is on if and only if an embedding backend is configured; `off` and `on` also exist. | Should | CAP-13, BO-9, owner decision 40 | T | M12 |
+| FR-RAG-02 | Only files inside a context root shall be indexed. The scanner shall skip `.git`, nested repositories ([ADR-0022](../adr/0022-nested-repositories-excluded-from-controller-git.md)), symlinks leaving the root, binary files, files over a size cap, ignored files, and a built-in secret denylist (env files, key and certificate files, credential-looking names) plus operator `exclude`. Chunk text shall pass the same redaction as FR-INN-16 before embedding and storage. The denylist is best effort (R-56). | Must | CAP-13, BO-9, NFR-SEC-01 | T | M12 |
+| FR-RAG-03 | There shall be one store per project. No run, tool or query for one project shall read another project's index (except FR-RAG-09 and FR-RAG-10), and the store shall be deleted with its project. | Must | CAP-13, BO-9 | T | M12 |
+| FR-RAG-04 | Embeddings shall come from a backend port with kinds `local` and `http`, reusing the inner-agent locality classification and gates (FR-INN-03, FR-INN-16): a `remote` backend sees source content only with both `allow_remote` and `allow_source_content`. Switchboard shall handle no API key or credential ([ADR-0003](../adr/0003-no-credential-handling.md), Q-23). With no backend the feature shall be inert and every behaviour unchanged. | Should | CAP-13, BO-2, BO-9 | T | M12 |
+| FR-RAG-05 | At admission the controller may prepend retrieved snippets to the delegated prompt within `max_context_tokens` (**Proposed** default to be fixed in T12.0; no number is stated here), each snippet labelled with path, index revision, score and a marker that it is untrusted reference data. The pack shall be omitted when empty or too stale. The original request text shall be stored unchanged; the ledger records snippet ids and hashes, not copies. | Should | CAP-13, BO-9, BO-1 | T | M12 |
+| FR-RAG-06 | The MCP tool `search_project_context` shall be read-only, shall show a client only its projects (FR-PRJ), shall bound result count and size, and shall return no paths outside the project. | Should | CAP-13, BO-9 | T | M12 |
+| FR-RAG-07 | Retrieved content is untrusted data and shall never be an input to any security or policy decision: profile choice or compilation, policy snapshot, eligibility, approvals, ceilings, push or commit (mirrors FR-INN-06). | Must | CAP-13, BO-3 | T, I | M12 |
+| FR-RAG-08 | Results shall carry the index revision and the source file hash. A snippet whose file changed or was deleted since indexing shall be dropped or re-read; an index built from a different base ref than the run's worktree shall be flagged. Failure of any retrieval step shall fall back to no retrieval and never fail the run. | Must | CAP-13, BO-9 | T | M12 |
+| FR-RAG-09 | An optional deployment-wide index (`rag.global`, default off) shall be a separate store holding operator-added local knowledge sources and content that projects explicitly contribute (`contribute_to_global`, default false). Content of `untrusted` contexts shall not contribute by default. | Should | CAP-13, BO-9, owner decision 40 | T | M12 |
+| FR-RAG-10 | A run shall read the global index only if its project sets `use_global: true` (default false). Each global snippet shall be labelled with its origin project. A snippet from project A shall not reach project B unless A contributes and B uses. The same locality gates and the run's profile apply. | Must | CAP-13, BO-3, BO-9 | T | M12 |
+| FR-RAG-11 | Caps shall bound files, chunks, bytes and build time. Building shall run in the `serve` daemon in the background and never block admission; a partial index shall be marked incomplete. Operator commands `switchboard index {status,rebuild,clear} [project]` shall write only operator records. | Should | CAP-13, BO-9 | T | M12 |
+| FR-RAG-12 | Embedding calls shall be recorded separately (counts, durations, backend id; no content) and shall never enter `usage_observation` or capacity (as FR-INN-15). | Should | CAP-13, BO-5 | T | M12 |
+| FR-RAG-13 | Once an adapter has an injected channel (T9.4b), an agent may call a read-only search through the per-run tool channel ([ADR-0026](../adr/0026-per-run-tool-channel-socket-and-token.md)), with the same project scope and size limits as FR-RAG-06. | Could | CAP-13, BO-9 | T | M12 |
+| FR-RAG-14 | The operator can clear any index, which deletes vectors and chunk text; the ledger keeps only counts. `doctor` shall report backend, locality, index size, revision and staleness. | Must | CAP-13, BO-5 | T | M12 |
+
 ## 4. Nonfunctional requirements
 
 ### 4.1 Security (`NFR-SEC`)
@@ -370,10 +401,11 @@ Requirement → milestone mapping is in the tables above; milestone → requirem
 | CAP-3 Policy and trust profiles | FR-POL-01–10, FR-MCP-06, FR-PRJ-06 |
 | CAP-4 Workspace isolation | FR-WS-01–07 |
 | CAP-5 Continuity | FR-SES-01–06 |
-| CAP-6 Routing | FR-RTE-01–05, FR-MCP-02, 05 |
-| CAP-7 Capacity and backpressure | FR-CAP-01–07, FR-MCP-02, FR-ADP-10 |
+| CAP-6 Routing | FR-RTE-01–09, FR-MCP-02, 05 |
+| CAP-7 Capacity and backpressure | FR-CAP-01–08, FR-MCP-02, FR-ADP-10 |
 | CAP-8 Telemetry and audit | FR-TEL-01–04, NFR-OBS-01 |
 | CAP-9 Operator CLI | FR-OPS-01–05, FR-PRJ-08 |
 | CAP-10 Projects, contexts and environments | FR-PRJ-01–10 |
 | CAP-11 Controlled commits and publication | FR-GIT-01–10, FR-WS-05 |
 | CAP-12 Inner agent | FR-INN-01–18 |
+| CAP-13 Retrieval index | FR-RAG-01–14 |

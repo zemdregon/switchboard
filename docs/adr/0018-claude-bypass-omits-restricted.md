@@ -74,4 +74,5 @@ edited.
 ## Revisit when
 
 The live bypass check shows the Git deny rules do not hold (then make Claude bypass runs `Ineligible` again, or rely on
-FR-GIT-03 once M9 lands), a Claude release lets `--restricted` coexist with a bypass mode, or zemdregon revises decision 19.
+FR-GIT-03 once M9 lands), a Claude release lets `--restricted` coexist with a bypass mode, or zemdregon revises decision
+19.

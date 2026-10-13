@@ -70,6 +70,7 @@ import { RunLifecycle } from "../lifecycle/index.js";
 import { acquireDataDirLock, type DataDirLock } from "../lock/index.js";
 import { type SwitchboardMcpServer, startStdioServer } from "../mcp/index.js";
 import { createProfileResolver } from "../policy/index.js";
+import { DynamicProjectStore } from "../projects/index.js";
 import { reconcile } from "../reconcile/index.js";
 import { CONFIG_TO_ADAPTER_ID } from "../routing/index.js";
 import { runRetentionGc, WorkspaceManager } from "../workspace/index.js";
@@ -163,8 +164,14 @@ function enablement(config: ResolvedConfig, fake: FakeSwitch): (id: ProviderId) 
   };
 }
 
-export function buildRegistry(fake: FakeSwitch): AdapterRegistry {
-  const registry = new AdapterRegistry().register(new ClaudeAdapter()).register(new CodexAdapter());
+/**
+ * `claudeGitChannel` is `providers.claude-code.git_channel` (T9.4b, ADR-0029 item 7, ADR-0033): default false, so the
+ * Claude adapter declares no tool channel and its argv is unchanged; when true, only approved bypass runs get it.
+ */
+export function buildRegistry(fake: FakeSwitch, opts: { claudeGitChannel?: boolean } = {}): AdapterRegistry {
+  const registry = new AdapterRegistry()
+    .register(new ClaudeAdapter({ gitChannel: opts.claudeGitChannel === true }))
+    .register(new CodexAdapter());
   if (fake.enabled) registry.register(new FakeAdapter({ scenario: fake.scenario }));
   return registry;
 }
@@ -376,7 +383,14 @@ async function runDaemon(
       ...(fake.clockOffsetMs !== undefined ? { clock_offset_ms: fake.clockOffsetMs } : {}),
     });
   }
-  const registry = buildRegistry(fake);
+  if (config.claudeCodeGitChannel) {
+    log.warn(
+      "UNSUPPORTED opt-in providers.claude-code.git_channel is on: offered only to approved bypass runs, which then " +
+        "omit --safe-mode and load repository CLAUDE.md and hooks; not yet proven end to end",
+      { adr: "ADR-0033" },
+    );
+  }
+  const registry = buildRegistry(fake, { claudeGitChannel: config.claudeCodeGitChannel });
   const lifecycle = new RunLifecycle({
     ledger,
     workspace,
@@ -443,8 +457,16 @@ async function runDaemon(
       ledger,
       artifacts,
       registry,
-      config: { allowedRoots: config.allowedRoots, mcpClients: config.mcpClients, projects: config.projects },
+      config: {
+        allowedRoots: config.allowedRoots,
+        mcpClients: config.mcpClients,
+        projects: config.projects,
+        // T9.9 (FR-PRJ-10, ADR-0030): no dynamic project inside the data directory; disabled providers are off-limits.
+        dataDir: config.dataDir,
+        providers: config.providers,
+      },
       clientId,
+      projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
     });
     mcp.server.onclose = () => resolveStop("mcp transport closed");
     log.info("serving MCP on stdio", {

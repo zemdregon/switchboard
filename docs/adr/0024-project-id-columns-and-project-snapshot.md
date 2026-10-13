@@ -3,8 +3,8 @@
 - Status: Accepted
 - Date: 2026-10-13
 - Decided by: Delegated (agent), under [owner decision 25](../ROADMAP.md#42-owner-decisions) (best practice for a
-  decision that does not affect bypass mode). Not an zemdregon quote and not owner-approved. Recorded as owner decision 31
-  in the roadmap for traceability only. The tables and columns themselves were already proposed in
+  decision that does not affect bypass mode). Not an zemdregon quote and not owner-approved. Recorded as owner decision
+  31 in the roadmap for traceability only. The tables and columns themselves were already proposed in
   [LLD §1](../design/LLD.md#1-data-model) ("M9 additions"); this ADR records the persistence-format change that
   AGENTS.md requires.
 - Related: FR-PRJ-03, FR-PRJ-04, FR-PRJ-06, [ADR-0005](0005-sqlite-ledger.md), [ADR-0013](0013-projects-environments-and-contexts.md),

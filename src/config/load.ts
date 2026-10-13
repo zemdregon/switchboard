@@ -43,6 +43,11 @@ export interface ResolvedConfig {
    * does not enable collection.
    */
   retentionEnabled: boolean;
+  /**
+   * `providers.claude-code.git_channel` (T9.4b, ADR-0029 item 7): true only when the config sets it to true. Default
+   * false. UNSUPPORTED until the ADR-0029 live checks pass; `serve` logs a warning when it is on.
+   */
+  claudeCodeGitChannel: boolean;
   /** Adapter preflight cache TTL in milliseconds (NFR-PERF-02, T3.21); 0 disables the cache. */
   preflightTtlMs: number;
   /** Validated `profiles.<name>` overrides in COMP-POL's camelCase form (owner decision 12); empty when none. */
@@ -67,6 +72,16 @@ export interface ResolvedMcpClient {
    * has none); a hand-built entry without it is read as no project (fail closed).
    */
   readonly projects?: readonly string[];
+  /**
+   * `manage_projects` (FR-PRJ-10, T9.9): offers `create_project`, `update_project` and `delete_project`. `loadConfig`
+   * always sets it (default false); a hand-built entry without it is read as false (fail closed).
+   */
+  readonly manageProjects?: boolean;
+  /**
+   * `max_push_policy` (FR-PRJ-10, T9.9): the widest push policy a dynamic project of this client may declare. `loadConfig`
+   * always sets it (default `none`); a hand-built entry without it is read as `none` (fail closed).
+   */
+  readonly maxPushPolicy?: "none" | "branch";
 }
 
 const INTERVAL_UNIT_MS = { m: 60_000, h: 3_600_000, d: 86_400_000 } as const;
@@ -211,6 +226,13 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
           "set it to required",
       );
     }
+    // T9.9 (Delegated, fail closed): a push ceiling for dynamic projects means nothing without manage_projects.
+    if (c.max_push_policy !== undefined && c.max_push_policy !== "none" && c.manage_projects !== true) {
+      throw new ConfigError(
+        `Invalid config: $.mcp_clients[${i}].max_push_policy: applies only to a client with manage_projects: true ` +
+          `(client ${JSON.stringify(c.id)}); remove it or set manage_projects`,
+      );
+    }
   }
 
   // FR-PRJ-06 (T9.2): a client's project list may only name configured projects (NFR-SEC-06: unknown id aborts startup).
@@ -260,6 +282,8 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
           maxTrustProfile: c.max_trust_profile,
           privilegedApproval: c.privileged_approval ?? DEFAULT_PRIVILEGED_APPROVAL,
           projects: [...(c.projects ?? [])],
+          manageProjects: c.manage_projects === true,
+          maxPushPolicy: c.max_push_policy ?? "none",
         },
       ]),
     ),
@@ -273,6 +297,7 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
     },
     retentionEnabled: cfg.retention?.days !== undefined,
     preflightTtlMs: (cfg.timeouts?.preflight_ttl_seconds ?? DEFAULT_PREFLIGHT_TTL_SECONDS) * 1000,
+    claudeCodeGitChannel: cfg.providers?.["claude-code"]?.git_channel === true,
     profileOverrides,
     // Proposed: a provider not listed is enabled with no explicit weight; listing it can disable it.
     providers: new Map(

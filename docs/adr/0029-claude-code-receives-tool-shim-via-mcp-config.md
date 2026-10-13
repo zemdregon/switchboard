@@ -1,7 +1,10 @@
 # ADR-0029: Claude Code receives the controller-generated tool shim via `--mcp-config`
 
-- Status: Accepted (decision); implementation Proposed and unverified. Amends [ADR-0015](0015-claude-untrusted-isolation-flags.md)'s
-  ban on `--mcp-config` for the injected channel only
+- Status: Accepted (decision); implementation present behind an unsupported operator opt-in (T9.4b, 2026-10-13,
+  Delegated) and **unverified live** (no live check run). Amends [ADR-0015](0015-claude-untrusted-isolation-flags.md)'s
+  ban on `--mcp-config` for the injected channel only. Partly superseded by
+  [ADR-0033](0033-claude-channel-bypass-only-without-safe-mode.md) (2026-10-13, owner decision 41): the channel is
+  offered only to approved bypass runs, which omit `--safe-mode`
 - Date: 2026-10-13
 - Decided by: zemdregon (owner decision 36, answer to Q-40); mechanism Delegated (agent, 2026-10-13)
 - Related: FR-GIT-02, FR-GIT-01, FR-POL-03, FR-POL-08, [ADR-0014](0014-tool-only-commits-and-publication.md),
@@ -16,8 +19,8 @@ FR-GIT-02 needs each adapter to hand the provider a per-run MCP definition for t
 ([ADR-0026](0026-per-run-tool-channel-socket-and-token.md)). For Claude Code the only per-run form seen in `claude
 --help` 2.1.296 is `--mcp-config <json file or string>` with `--strict-mcp-config`. [ADR-0015](0015-claude-untrusted-isolation-flags.md)
 says the adapter never emits `--mcp-config`, and `src/adapters/audit.ts` and `src/adapters/claude/claude.test.ts`
-enforce it, so the Claude adapter declares `commitChannel: "none"` (T9.4). zemdregon answered Q-40 on 2026-10-13: "Q-40 your
-recommendation." The recommendation was yes, narrowly: only the controller-generated shim definition, never operator
+enforce it, so the Claude adapter declares `commitChannel: "none"` (T9.4). zemdregon answered Q-40 on 2026-10-13: "Q-40
+your recommendation." The recommendation was yes, narrowly: only the controller-generated shim definition, never operator
 or repository definitions.
 
 A third-party open-source project (T3 Code) is noted in [TDD §3.10](../design/TDD.md#310-git-commits-attribution-and-publication)
@@ -63,7 +66,8 @@ is the reason for item 1 below. It is studied, not copied, and none of its behav
 
 ## Alternatives considered
 
-- **Keep the ban; Claude is finalize-only.** Rejected by zemdregon's answer to Q-40; remains the fallback if a live check fails.
+- **Keep the ban; Claude is finalize-only.** Rejected by zemdregon's answer to Q-40; remains the fallback if a live
+  check fails.
 - **Inline JSON in argv.** Rejected: world-readable argv.
 - **Wildcard allow rule `mcp__<server>__*`.** Rejected: least privilege; the tool set is two named tools.
 - **Writing the definition into the project's `.mcp.json` or the user's configuration.** Rejected: global or repository
@@ -83,3 +87,17 @@ is the reason for item 1 below. It is studied, not copied, and none of its behav
 
 A live check contradicts items 3 to 5, Claude Code adds a flag that supplies a definition without a file, or the
 `--mcp-config` semantics change in a CLI release (the manifest range gates the adapter, ADR-0009).
+
+## Implementation note (2026-10-13, T9.4b; Delegated, not owner-approved)
+
+The decision text above is unchanged. Items 1 to 6 are implemented behind the operator opt-in
+`providers.claude-code.git_channel` (default `false`), which is documented as unsupported until the item 7 live checks
+pass; without it the adapter declares `none` and its argv is byte-identical. The server name chosen for item 2 is
+`switchboard-git` and the file is `mcp-config.json` in the run's private channel directory, written by the channel
+service (not the adapter) and removed on close and by the startup sweep. Item 5 needs no extra flag: the compiled argv
+already carries `--strict-mcp-config` everywhere except decision 26's case. Item 3: the file carries the `env` reference
+`${SWITCHBOARD_TOOL_TOKEN}`, never the value. Further Assumptions added by the implementation (a second `--allowedTools`
+occurrence accumulates, `--tools` does not filter MCP tools, the `mcpServers` / `"type": "stdio"` shape) are listed with
+the live checks under the T9.4b status in [ROADMAP §6.3](../ROADMAP.md#63-m9-projects-and-controlled-commits-tasks);
+each fails closed. Mechanism and tests: [LLD §12.2](../design/LLD.md#122-channel), [TDD
+§3.10](../design/TDD.md#310-git-commits-attribution-and-publication).

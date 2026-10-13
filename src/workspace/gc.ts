@@ -2,6 +2,7 @@ import { lstat, readdir, realpath, rm, rmdir } from "node:fs/promises";
 import path from "node:path";
 import type Database from "better-sqlite3";
 import type { ArtifactStore } from "../artifacts/index.js";
+import { DEFAULT_PUBLISH_PREFIX } from "../git/publish-ref.js";
 import { createLedger, type Ledger } from "../ledger/index.js";
 import { git } from "./git.js";
 
@@ -273,25 +274,33 @@ export function planRetentionGc(options: {
 export interface OrphanReport {
   /** Directories under `<dataDir>/worktrees/` with no matching `run` row (`<sess>/<run>`, or just `<sess>`). */
   readonly worktrees: string[];
-  /** `switchboard/*` branches (per recorded repository) that no `run` or `workspace_checkpoint` row names. */
+  /**
+   * `switchboard/*` branches (per recorded repository) that no `run` or `workspace_checkpoint` row names and that are
+   * not the publish ref of a meta-session in the ledger (`<publishPrefix><sess>`, FR-GIT-08, LLD §12.3).
+   */
   readonly branches: { readonly repoRoot: string; readonly branch: string }[];
   /** Why part of the sweep could not be done (unreadable repository, ...). */
   readonly warnings: string[];
 }
 
 /**
- * Orphan sweep (LLD §5): worktree directories and `switchboard/*` branches with no matching ledger row. Report only;
- * nothing is removed (T3.12: removal of orphans is not implemented). Symlinks are listed, never followed. A run being
- * prepared at this very moment can appear briefly as an orphan, so treat the report as advice, not as a delete list.
+ * Orphan sweep (LLD §5): worktree directories and `switchboard/*` branches with no matching ledger row. A publish ref
+ * whose meta-session exists is not an orphan (it is the deliverable); one whose session is unknown still is. Report
+ * only; nothing is removed (T3.12: removal of orphans is not implemented). Symlinks are listed, never followed. A run
+ * being prepared at this very moment can appear briefly as an orphan, so treat the report as advice, not as a delete
+ * list.
  */
 export async function findOrphans(options: {
   readonly db: Database.Database;
   readonly dataDir: string;
+  /** Local publish ref prefix; must match the publisher's (default `switchboard/pub/`). */
+  readonly publishPrefix?: string;
 }): Promise<OrphanReport> {
   const { db } = options;
   const warnings: string[] = [];
   const worktrees: string[] = [];
   const base = path.join(await realpath(options.dataDir).catch(() => path.resolve(options.dataDir)), "worktrees");
+  const publishPrefix = options.publishPrefix ?? DEFAULT_PUBLISH_PREFIX;
   const runsOf = db.prepare("SELECT id FROM run WHERE meta_session_id = ?");
   const sessionExists = db.prepare("SELECT 1 AS x FROM meta_session WHERE id = ?");
   for (const sess of await readdir(base).catch(() => [] as string[])) {
@@ -326,7 +335,9 @@ export async function findOrphans(options: {
       cwd: repoRoot,
     });
     for (const b of refs.stdout.toString("utf8").split("\n").filter(Boolean)) {
-      if (!named.has(b)) branches.push({ repoRoot, branch: b });
+      if (named.has(b)) continue;
+      if (b.startsWith(publishPrefix) && sessionExists.get(b.slice(publishPrefix.length))) continue;
+      branches.push({ repoRoot, branch: b });
     }
   }
   return { worktrees, branches, warnings };

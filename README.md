@@ -11,13 +11,19 @@ Pre-release. The package is private and is not published to any registry; you bu
 
 - **Milestone 1 (foundation) is done**: run ledger, workspaces, run lifecycle, reconciliation and the operator CLI
   (`doctor`, `runs`). See [ROADMAP §6](docs/ROADMAP.md#6-milestones) for the evidence.
-- **Milestone 2 (Claude Code and Codex adapters plus the MCP slice) is in progress.** The Claude Code and Codex
+- **Milestone 2 (Claude Code and Codex adapters plus the MCP slice) is `Partial`.** The Claude Code and Codex
   adapters, the MCP server and `switchboard serve` exist and pass their tests on recorded or synthetic fixtures and a
   fake provider. They have **not** been confirmed against a live provider yet.
+- **Milestone 3 (isolation) and milestone 9 (projects and controlled commits) are `Partial`.** Parts of both are
+  implemented (approvals, privileged runs, retention, projects, the controller-side commit and push); the rest, including
+  the live malicious-fixture checks, is not. See [ROADMAP §6](docs/ROADMAP.md#6-milestones) for each task.
 - Providers other than Claude Code and Codex are not implemented.
 
-What works today: `doctor`, `runs list|show|cancel`, `gc`, and `serve` exposing seven MCP tools over stdio, with two trust
-profiles (`inspect-untrusted`, `edit-untrusted`). Read [Known limitations](#known-limitations) before relying on it.
+What works today: `doctor`, `runs list|show|cancel`, `approve`, `deny`, `gc`, `projects list|show|validate|approve`,
+`git push`, and `serve` exposing seven MCP tools over stdio (ten for a client with `manage_projects`). The five trust
+profile names exist; which of them a provider can run is listed in [Trust profiles](#trust-profiles) and by
+`list_capabilities`. Read
+[Known limitations](#known-limitations) before relying on it.
 
 ## Single operator, your own accounts
 
@@ -80,7 +86,7 @@ Minimal example:
 }
 ```
 
-Keys (from `src/config/schema.ts`; no other keys exist yet):
+Keys (from `src/config/schema.ts`; the `projects` key is described below the table):
 
 | Key | Required | Meaning |
 | --- | --- | --- |
@@ -88,14 +94,19 @@ Keys (from `src/config/schema.ts`; no other keys exist yet):
 | `allowed_roots` | yes | Non-empty list of directories. A task's `workspace_path` must be under one of them. Each must exist. Relative paths resolve against the config file's directory. |
 | `mcp_clients` | yes | Entries `{ "id", "max_trust_profile", "privileged_approval"?, "projects"? }`. `id` matches `^[a-z0-9][a-z0-9_-]{0,63}$` and must be unique. `serve --client <id>` binds a session to one entry. |
 | `mcp_clients[].projects` | no | Ids of the configured `projects` this client may use with `delegate_task`'s `project` input and see in `list_projects`. An id that names no project stops startup. A client without the list can use no project (workspace paths still work). |
+| `mcp_clients[].manage_projects` | no | `true` gives this client the `create_project`, `update_project` and `delete_project` tools for its own *dynamic projects* (see [Dynamic projects](#dynamic-projects)). Default `false`: the tools do not exist for it. |
+| `mcp_clients[].max_push_policy` | no | `"none"` (default) or `"branch"`: the widest push policy a dynamic project of this client may declare. Only with `manage_projects: true`. A push-enabled project still waits for `projects approve`. |
 | `mcp_clients[].privileged_approval` | no | `"required"` (default) or `"not_required"`. With `not_required`, that client's `privileged` requests run without `switchboard approve` (see [Trust profiles](#trust-profiles)). Allowed only when the client's `max_trust_profile` is `privileged`; `doctor` warns for every client that sets it. |
 | `data_dir` | no | Where the ledger, artifacts and worktrees live. Default `$XDG_DATA_HOME/switchboard` (`~/.local/share/switchboard`). |
 | `limits.global_concurrency` | no | Integer 1 to 64. Default 4. |
 | `limits.per_provider_concurrency` | no | Integer 1 to 64. Default 1. |
 | `providers.<id>.enabled` | no | Boolean. A provider you do not list is enabled. |
 | `providers.<id>.weight` | no | Number from 0 to 1. Accepted by the schema. |
+| `providers.claude-code.git_channel` | no | Boolean, default `false`. **Unsupported, for testing only:** gives Claude Code the injected `commit` (and `push`) tool through a Switchboard-written `--mcp-config` file in the run's private directory, **only in an approved `privileged` run whose scope sets `bypass`**. Such a run then omits `--safe-mode` (it stops the tool server from starting), so the repository's `CLAUDE.md` and hooks load in it. Every other run is unaffected and can use `finalize_commit`. It has not been run end to end with the real `claude` (ROADMAP T9.4b); `serve` logs a warning when it is on. Only `claude-code` accepts the key. |
 | `retention.days`, `retention.interval` | no | How long idle meta-sessions are kept (integer days, default 30) and how often `serve` runs the clean-up pass (`30m`, `12h`, `7d`; default `24h`). **Nothing is deleted unless you set `retention.days`**; the default only applies once you do (or to `gc` dry runs). |
 | `projects` | no | List of `{ "id", "name", "environment"?, "contexts": [...] , "max_trust_profile"?, "allowed_providers"? }`. `id` matches `^[a-z][a-z0-9-]{1,40}$` and is unique. `environment` is `{ "kind": "host" }` (default) or a `container` shape that `projects validate` rejects until M10. Each context is `{ "id", "kind": "repository", "path", "base_ref", "primary"?, "writable"?, "push"?, "identity"?, "sign"?, "finalize_commit"? }` with an absolute `path` under an allowed root; exactly one context is primary. Unknown keys and context kinds stop startup. `push.remote` must be the name of a remote in the repository (not a URL), and `push.branch_prefix` a branch-name prefix such as `"switchboard/"`. `max_trust_profile` and `allowed_providers` apply to `delegate_task` with a `project`: the effective trust ceiling is the lower of the client's and the project's, and routing is limited to the listed providers (a request naming another provider with `require_provider` fails `PERMISSION_BLOCKED`); `sign` is accepted but not enforced yet. `finalize_commit` (default `false`; needs `identity`, primary writable context only) turns on finalize-only commits, described below. Full shape: LLD section 11.1. |
+| `timeouts.preflight_ttl_seconds` | no | Integer 0 to 3600. How long a successful adapter preflight is cached (default 60); 0 disables the cache. |
+| `git.sanitize_patterns` | no | Up to 16 extra regular-expression sources (200 characters each, restricted subset in `src/git/safe-pattern.ts`). A commit-message line that matches one is removed, in addition to the built-in attribution rules. |
 | `profiles.<name>` | no | Overrides for `inspect-untrusted`, `edit-untrusted`, `test-sandboxed` or `trusted-development`: `file_access`, `shell`, `shell_allowlist`, `network`, `network_allowlist`, `repo_config`. They may tighten or loosen a default; `doctor` lists them and every run records them. `privileged` has none. See the `edit-untrusted` limit under [Trust profiles](#trust-profiles). |
 
 `<id>` is one of `claude-code`, `codex`, `grok-build`, `antigravity`, `cursor`, `opencode`, `kimi-code`. Only
@@ -156,7 +167,8 @@ Only one `serve` can hold a data directory at a time.
 | `cancel_run` | Requests cancellation of a run (asynchronous; poll `get_run`). |
 | `get_artifacts` | Lists a run's artifacts (diff, changed files, test report, ...) with hashes; small ones inline. |
 | `list_capabilities` | Lists providers with adapter status, version, validated range, auth state and supported trust profiles. |
-| `list_projects` | Lists the configured projects this client may use (id, name, environment kind, contexts, trust ceiling, allowed providers). Read-only; returns no filesystem paths. |
+| `list_projects` | Lists the configured projects this client may use (id, name, environment kind, contexts, trust ceiling, allowed providers), plus its own dynamic projects marked `source: "dynamic"` with their revision and status. Read-only; returns no filesystem paths. |
+| `create_project`, `update_project`, `delete_project` | Only for a client with `manage_projects`. Create, revise or delete a dynamic project this client owns. See [Dynamic projects](#dynamic-projects). |
 
 Tool schemas are published through MCP `tools/list`.
 
@@ -173,6 +185,7 @@ switchboard git push <session_or_run_id>
 switchboard projects list
 switchboard projects show <id>
 switchboard projects validate [<id>]
+switchboard projects approve <id> [--revision <n>] [--reject]
 ```
 
 `runs cancel`, `approve` and `deny` write a request that a running `serve` applies; with no `serve` running they apply
@@ -201,9 +214,10 @@ exception (owner decision 37): it is offered `push` whatever its shell, and the 
 the one place a bypass run's agent can reach your push credentials, by your choice; Switchboard still never hands them
 to it, and its Git-write denial is unchanged.
 
-Providers that cannot receive the injected `commit` tool (Claude Code and Codex today) still run write-capable tasks;
-by default their work stays in the run's worktree, diff and checkpoint, with no commit. To have Switchboard commit it,
-set `"finalize_commit": true` on the project's primary context, next to its `identity`:
+Providers that cannot receive the injected `commit` tool (Codex, and Claude Code except in an approved bypass run with
+the unsupported `providers.claude-code.git_channel`) still run write-capable tasks; by default their work stays in the
+run's worktree, diff and checkpoint, with no commit. To have Switchboard commit it, set `"finalize_commit": true` on the
+project's primary context, next to its `identity`:
 
 ```json
 { "id": "main", "kind": "repository", "path": "/home/you/projects/web", "base_ref": "main",
@@ -227,6 +241,27 @@ work in this stage: a `container` project is listed but fails `validate` with "c
 implemented yet (M10)". `delegate_task` with `project` runs in the project's primary repository context, starting
 from its `base_ref`; a `container` project is refused before anything is written. A meta-session stays in the project it
 was created in, and runs and meta-sessions record the project in the ledger (schema version 2).
+`projects list|show` also show dynamic projects from the ledger (read-only), with `source` `config` or `dynamic`, the
+client that created them, the latest revision and its state, the revision in force and what a pending revision needs
+approval for.
+
+#### Dynamic projects
+
+A client whose entry sets `"manage_projects": true` can define its own projects with `create_project`, change them with
+`update_project` (each call writes a new revision) and remove them with `delete_project`. Such a project uses the same
+shape and the same checks as a configured one: the repository must be a Git repository under an allowed root (never
+inside `data_dir`), and `base_ref` must exist. Its trust ceiling, providers and push policy cannot exceed the client's
+own (`max_trust_profile`, the providers you have not disabled, `max_push_policy`). A client cannot touch your configured
+projects, or another client's: only the creator sees and uses a dynamic project, and an id that is already configured
+is refused. Every call, accepted or refused, is recorded in the ledger.
+
+A revision with a `container` environment, a push policy other than `none`, a commit `identity`, `sign: true`, or a
+wider trust ceiling or provider set than the revision in force is stored as `PENDING_APPROVAL` and cannot start runs
+until you approve it; until then the previous revision stays in force. Review it with `switchboard projects show <id>`,
+then run `switchboard projects approve <id>` (add `--revision <n>` once the project has more than one revision, and
+`--reject` to refuse it). There is no way to approve over MCP. `approve` works while `serve` runs. Deleting a project
+is refused while one of its runs is still going; its history stays. Not yet: pushing from a dynamic project (a push is
+refused even after approval) and container environments (milestone 10).
 
 `gc` is the retention clean-up. By default it is a dry run: it lists the idle meta-sessions older than
 `retention.days` (all their runs finished, no lease) and any orphans, and changes nothing. `gc --apply` removes each
