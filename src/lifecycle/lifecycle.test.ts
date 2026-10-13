@@ -409,6 +409,31 @@ describe("admission", () => {
       expect(ledger.listApprovals()).toHaveLength(0);
     });
 
+    it("refuses a continuation of a meta-session that retention GC has archived, before any run is written (R-42)", async () => {
+      const first = await submit("success");
+      lifecycle.start();
+      await lifecycle.waitForTerminal(first.runId);
+      const runs = ledger.listRunsForMetaSession(first.metaSessionId).length;
+      db.prepare("UPDATE meta_session SET status = 'ARCHIVED' WHERE id = ?").run(first.metaSessionId);
+      await expect(submit("success", { metaSessionId: first.metaSessionId })).rejects.toMatchObject({
+        code: "INVALID_REQUEST",
+        message: expect.stringContaining("archived"),
+      });
+      expect(ledger.listRunsForMetaSession(first.metaSessionId)).toHaveLength(runs);
+    });
+
+    it("refuses a continuation archived between validation and the admission transaction (R-42)", async () => {
+      const first = await submit("success");
+      lifecycle.start();
+      await lifecycle.waitForTerminal(first.runId);
+      const runs = ledger.listRunsForMetaSession(first.metaSessionId).length;
+      const pending = submit("success", { metaSessionId: first.metaSessionId });
+      // validate() awaits the workspace check; GC marks the session in that gap.
+      db.prepare("UPDATE meta_session SET status = 'ARCHIVED' WHERE id = ?").run(first.metaSessionId);
+      await expect(pending).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+      expect(ledger.listRunsForMetaSession(first.metaSessionId)).toHaveLength(runs);
+    });
+
     it("idempotent replay returns the same run and writes no second approval row", async () => {
       const opts = { trustProfile: "privileged", privileged: { scope: SCOPE }, idempotencyKey: "priv-key-1" };
       const a = await submit("success", opts);
