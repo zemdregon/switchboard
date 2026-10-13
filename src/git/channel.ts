@@ -9,11 +9,15 @@
  *   1. framing: one line, at most {@link MAX_REQUEST_BYTES}, within the read timeout;
  *   2. rate limit per channel (every request counts, refused ones too), then a JSON object of the exact shape;
  *   3. channel still open; token equal to this run's (SHA-256 digests compared with `timingSafeEqual`);
- *   4. tool offered on this channel (`commit` only until T9.6 adds `push`);
- *   5. arguments: exactly `message` (1..8192 characters) and optional `paths` (1..256 strings of at most 4096);
+ *   4. tool offered on this channel (`commit` always; `push` only when the run was offered it at open, T9.6);
+ *   5. arguments: `commit` takes exactly `message` (1..8192 characters) and optional `paths` (1..256 strings of at
+ *      most 4096); `push` takes none (an empty object);
  *   6. run exists, is RUNNING, and still has the meta-session and worktree the token was bound to;
- *   7. the commit library re-checks state and lease, refuses paths outside the worktree (`PATH_OUTSIDE_WORKTREE`,
- *      `PATH_REFUSED`), sanitises the message and writes provenance (FR-GIT-04, FR-GIT-07).
+ *   7. `commit`: the commit library re-checks state and lease, refuses paths outside the worktree
+ *      (`PATH_OUTSIDE_WORKTREE`, `PATH_REFUSED`), sanitises the message and writes provenance (FR-GIT-04, FR-GIT-07).
+ *      `push` (T9.6, ADR-0028): at most {@link ChannelLimits.maxPushesPerChannel} attempts per channel; the BR-31
+ *      credential-reach rule is evaluated again from the run's frozen policy snapshot; then {@link GitPusher.push}
+ *      applies the policy, violation, ref and never-force rules and records every attempt in `git_push`.
  *
  * Secrets: the token is created here, returned once (for the shim's environment) and kept in memory only as its
  * SHA-256 digest. It is never written to the ledger, an artifact, a log line or the file system. The artifact redactor
@@ -32,6 +36,8 @@ import type Database from "better-sqlite3";
 import type { ShimSpec } from "../adapters/types.js";
 import { createLedger, type Ledger } from "../ledger/index.js";
 import { CommitError, type GitPublisher } from "./commit.js";
+import { credentialReachFromJson } from "./credential-reach.js";
+import type { GitPusher } from "./push.js";
 import {
   type ChannelErrorCode,
   isTokenShaped,
@@ -68,6 +74,8 @@ export interface ChannelLimits {
   readonly requestTimeoutMs: number;
   /** `git_tool_denied` events written per channel; further refusals are only counted (in `git_channel_closed`). */
   readonly maxRefusalEvents: number;
+  /** `push` calls that reach the push library per channel (each writes a `git_push` row); later ones are refused. */
+  readonly maxPushesPerChannel: number;
 }
 
 export const DEFAULT_CHANNEL_LIMITS: ChannelLimits = {
@@ -75,6 +83,7 @@ export const DEFAULT_CHANNEL_LIMITS: ChannelLimits = {
   maxConnections: 8,
   requestTimeoutMs: 10_000,
   maxRefusalEvents: 32,
+  maxPushesPerChannel: 10,
 };
 
 export interface GitToolServiceOptions {
@@ -82,6 +91,8 @@ export interface GitToolServiceOptions {
   /** Controller data directory; sockets go under `<dataDir>/runs/<run_id>/` when the path is short enough. */
   readonly dataDir: string;
   readonly publisher: GitPublisher;
+  /** Push library (T9.6). Without it no channel offers `push`. */
+  readonly pusher?: GitPusher;
   /** argv prefix that starts the shim, ending in the `tool-shim` subcommand; `--socket <path>` is appended. */
   readonly shimCommand: readonly string[];
   /**
@@ -104,6 +115,11 @@ export interface OpenChannelInput {
   readonly contextId: string;
   /** Provider-native session ids known so far, removed from messages by exact match (FR-GIT-04). */
   readonly nativeSessionIds?: () => readonly string[];
+  /**
+   * T9.6: offer `push` on this channel. The lifecycle sets it only when the frozen snapshot's push policy is `branch`
+   * and BR-31 holds at open; ignored when the service has no pusher. Every call re-checks both.
+   */
+  readonly offerPush?: boolean;
 }
 
 export interface OpenChannel {
@@ -143,6 +159,7 @@ interface ChannelState {
   closing: Promise<void> | undefined;
   calls: number;
   commits: number;
+  pushes: number;
   refused: number;
   refusalsSuppressed: number;
 }
@@ -164,6 +181,7 @@ const GENERIC_MESSAGES: Readonly<Record<string, string>> = {
   REQUEST_TOO_LARGE: "the request is too large",
   REQUEST_TIMEOUT: "the request was not received in time",
   RATE_LIMITED: "too many tool calls; wait and try again",
+  PUSH_LIMIT_REACHED: "too many push attempts in this run",
   TOKEN_INVALID: "the tool channel refused this call",
   CHANNEL_CLOSED: "the tool channel is closed",
   UNKNOWN_TOOL: "no such tool",
@@ -194,6 +212,11 @@ export class GitToolService {
     this.limits = { ...DEFAULT_CHANNEL_LIMITS, ...options.limits };
   }
 
+  /** True when channels can offer `push` (a pusher is configured, T9.6). */
+  get pushAvailable(): boolean {
+    return this.options.pusher !== undefined;
+  }
+
   /** Number of channels open in this process (tests, shutdown checks). */
   get openCount(): number {
     return this.channels.size;
@@ -216,7 +239,7 @@ export class GitToolService {
     const state: ChannelState = {
       input,
       tokenDigest: digest(token),
-      tools: TOOL_NAMES,
+      tools: input.offerPush === true && this.options.pusher !== undefined ? TOOL_NAMES : ["commit"],
       dir,
       socketPath,
       fallback,
@@ -229,6 +252,7 @@ export class GitToolService {
       closing: undefined,
       calls: 0,
       commits: 0,
+      pushes: 0,
       refused: 0,
       refusalsSuppressed: 0,
     };
@@ -260,7 +284,7 @@ export class GitToolService {
       runId: input.runId,
       socketPath,
       shim: {
-        command: [...this.options.shimCommand, "--socket", socketPath],
+        command: [...this.options.shimCommand, "--socket", socketPath, "--tools", state.tools.join(",")],
         socketPath,
         toolNames: [...state.tools],
         env: { [TOOL_TOKEN_ENV]: token },
@@ -452,15 +476,15 @@ export class GitToolService {
     const tool = state.tools.find((n) => n === req.tool);
     if (!tool) return this.refuse(state, "UNKNOWN_TOOL", undefined);
     // 5. arguments.
+    if (tool === "push") {
+      if (Object.keys(req.arguments).length !== 0) return this.refuse(state, "INVALID_ARGUMENTS", tool);
+      return this.dispatchPush(state);
+    }
     const args = parseCommitArguments(req.arguments);
     if ("code" in args) return this.refuse(state, args.code, tool);
     // 6. run state and binding.
-    const run = this.ledger.getRunRecord(state.input.runId);
-    if (!run) return this.refuse(state, "RUN_NOT_FOUND", tool);
-    if (run.state !== "RUNNING") return this.refuse(state, "NOT_RUNNING", tool);
-    if (run.meta_session_id !== state.input.metaSessionId || run.worktree_path !== state.input.worktreePath) {
-      return this.refuse(state, "BINDING_MISMATCH", tool);
-    }
+    const bound = this.checkRun(state, tool);
+    if ("error" in bound) return bound.error;
     // 7. the commit library.
     try {
       const result = await this.options.publisher.commit({
@@ -486,6 +510,52 @@ export class GitToolService {
         return this.refuse(state, err.code, tool, message, err.refused.length);
       }
       return this.refuse(state, "INTERNAL_ERROR", tool);
+    }
+  }
+
+  /** Step 6 for any tool: the run exists, is RUNNING and still matches the token's binding. */
+  private checkRun(
+    state: ChannelState,
+    tool: ToolName,
+  ): { run: NonNullable<ReturnType<Ledger["getRunRecord"]>> } | { error: ToolResponse } {
+    const run = this.ledger.getRunRecord(state.input.runId);
+    if (!run) return { error: this.refuse(state, "RUN_NOT_FOUND", tool) };
+    if (run.state !== "RUNNING") return { error: this.refuse(state, "NOT_RUNNING", tool) };
+    if (run.meta_session_id !== state.input.metaSessionId || run.worktree_path !== state.input.worktreePath) {
+      return { error: this.refuse(state, "BINDING_MISMATCH", tool) };
+    }
+    return { run };
+  }
+
+  /**
+   * `push` (T9.6, LLD §12.6, ADR-0028): steps 6 and 7 for a push. BR-31 is evaluated again here from the run's frozen
+   * snapshot (it was evaluated when the channel opened); the push library re-reads the CURRENT configuration's
+   * policy, so an operator who sets `push.policy` back to `none` stops further pushes of a running run.
+   */
+  private async dispatchPush(state: ChannelState): Promise<ToolResponse> {
+    const pusher = this.options.pusher;
+    if (!pusher) return this.refuse(state, "UNKNOWN_TOOL", "push");
+    const bound = this.checkRun(state, "push");
+    if ("error" in bound) return bound.error;
+    if (state.pushes >= this.limits.maxPushesPerChannel) return this.refuse(state, "PUSH_LIMIT_REACHED", "push");
+    state.pushes += 1;
+    try {
+      const result = await pusher.push({
+        metaSessionId: state.input.metaSessionId,
+        requestedBy: "agent_tool",
+        runId: state.input.runId,
+        agentReach: credentialReachFromJson(bound.run.policy_snapshot_json),
+      });
+      if (result.pushed) {
+        return { ok: true, result: { pushed: true, ref: result.ref, head_sha: result.headSha } };
+      }
+      // Recorded in `git_push` by the library; the answer names the code and the fixed reason word only.
+      return {
+        ok: false,
+        error: { code: result.toolCode ?? "PUSH_NOT_ALLOWED", message: `push refused: ${result.reason}` },
+      };
+    } catch {
+      return this.refuse(state, "INTERNAL_ERROR", "push");
     }
   }
 
@@ -537,6 +607,7 @@ export class GitToolService {
         payload: {
           calls: state.calls,
           commits: state.commits,
+          pushes: state.pushes,
           refused: state.refused,
           ...(state.refusalsSuppressed > 0 ? { refusals_not_recorded: state.refusalsSuppressed } : {}),
           removed: !(await exists(state.dir)),

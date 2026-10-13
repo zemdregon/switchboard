@@ -201,7 +201,9 @@ describe("channel setup (LLD §12.2)", () => {
     expect(dir.mode & 0o777).toBe(0o700);
     expect(lstatSync(path.join(dataDir, "runs")).mode & 0o777).toBe(0o700);
     expect(dir.uid).toBe(process.getuid?.());
-    expect(ch.shim.command).toEqual([...SHIM, "--socket", ch.socketPath]);
+    // T9.6: without a pusher (or without offerPush) only `commit` is offered and named to the shim.
+    expect(ch.shim.command).toEqual([...SHIM, "--socket", ch.socketPath, "--tools", "commit"]);
+    expect(ch.shim.toolNames).toEqual(["commit"]);
     expect(ch.shim.toolNames).toEqual(["commit"]);
     expect(Object.keys(ch.shim.env)).toEqual([TOOL_TOKEN_ENV]);
     expect(tokenOf(ch)).toMatch(/^sbt1_[A-Za-z0-9_-]{43}$/u);
@@ -542,7 +544,11 @@ describe("token hygiene and the shim's own checks", () => {
   it("shimConfig needs an absolute short socket path and a token-shaped variable, and removes it from the environment", () => {
     const token = `${TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
     const env: Record<string, string | undefined> = { [TOOL_TOKEN_ENV]: token, PATH: "/bin" };
-    expect(shimConfig(["--socket", "/run/x/tools.sock"], env)).toEqual({ socketPath: "/run/x/tools.sock", token });
+    expect(shimConfig(["--socket", "/run/x/tools.sock"], env)).toEqual({
+      socketPath: "/run/x/tools.sock",
+      token,
+      tools: ["commit"],
+    });
     expect(env[TOOL_TOKEN_ENV]).toBeUndefined();
     expect(() => shimConfig(["--socket", "rel/tools.sock"], { [TOOL_TOKEN_ENV]: token })).toThrow();
     expect(() => shimConfig(["--socket", `/${"a".repeat(200)}`], { [TOOL_TOKEN_ENV]: token })).toThrow();

@@ -63,6 +63,7 @@ import { ArtifactStore } from "../artifacts/index.js";
 import { ConfigError, loadConfig, type ResolvedConfig } from "../config/index.js";
 import { GitToolService } from "../git/channel.js";
 import { GitPublisher } from "../git/commit.js";
+import { GitPusher, pushContextResolver } from "../git/push.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, openLedger } from "../ledger/index.js";
 import { RunLifecycle } from "../lifecycle/index.js";
@@ -296,6 +297,15 @@ async function runDaemon(
       db,
       dataDir: config.dataDir,
       publisher,
+      // T9.6 (ADR-0028): push targets come from this process's configuration at push time; the operator's Git
+      // configuration is used only by the controller's own `git push` (allowlisted environment, never the agent's).
+      pusher: new GitPusher({
+        db,
+        resolveContext: pushContextResolver(config.projects),
+        sourceEnv: io.env,
+        ids,
+        ...(now ? { now } : {}),
+      }),
       shimCommand: defaultShimCommand(),
       fallbackDirs: [io.env.XDG_RUNTIME_DIR, os.tmpdir()].filter((d): d is string => typeof d === "string" && d !== ""),
       ...(now ? { now } : {}),

@@ -316,6 +316,13 @@ T9.3: `git_commit_intent` and `git_commit_aborted` (see §12.3). `project_revisi
 New `run_event.type` values `git_ref_snapshot` and `git_ref_check`; `git_policy_violation` gets its first writer. Payloads
 in [§12.5](#125-ref-snapshot-and-violation-handling).
 
+*As built (2026-10-13, Delegated, T9.6, [ADR-0028](../adr/0028-controller-push-and-credential-reach.md)):* no migration.
+`git_push` gets its writer, `Ledger.recordGitPush`, which appends the `git_push` run event and inserts the row in one
+`BEGIN IMMEDIATE` transaction; `detail` holds a reason code from a fixed vocabulary (never Git output); `remote` and
+`ref` are empty strings when an attempt was refused before a valid remote name or target existed; `run_id` is NULL for
+an operator push, whose event goes on the run of the newest published commit. New `run_event.type` value
+`git_push_withheld` (`{reason}`, BR-31). Payloads in [§12.6](#126-push-algorithm).
+
 **M11 additions (Proposed).** One forward migration (ADR-0005) adds the append-only `inner_call` table and the mutable
 `inner_task_state` table (DDL in [§13.3](#133-data)), adds `pr_draft` to the `artifact.kind` check, adds `inner_agent` to
 the `usage_observation.source` check (FR-INN-15), and adds two columns to `git_commit` (§12.7). SQLite cannot alter a
@@ -1194,6 +1201,12 @@ unknown project id`). **An absent or empty list means the client may use no proj
 the projects listed"); requests that name a workspace path are unaffected. `manage_projects` and `max_push_policy` are
 still not in the schema (T9.9).
 
+*As built (2026-10-13, Delegated, T9.6, [ADR-0028](../adr/0028-controller-push-and-credential-reach.md)):* `loadConfig`
+refuses a `push.remote` that is not a remote **name** (letters, digits, `.`, `_`, `-`, starting with a letter or digit,
+at most 100 characters; so never a URL or anything with `@` or `:`) and a `push.branch_prefix` that is not a branch-name
+prefix (letters, digits, `.`, `_`, `-`, `/`; no `..`, `//`, leading `/`, `-` or `.`, no `refs/`, no component starting
+with `.` or ending in `.lock`), whatever the policy. The error names the JSON path and the rule, never the value.
+
 ### 11.2 Resolution and ceilings
 
 At admission (FRD BR-23): (1) resolve `project` to its definition, else `INVALID_REQUEST`; (2) check the client's project
@@ -1345,6 +1358,16 @@ the shim), `src/cli/tool-shim.ts` (the shim), lifecycle wiring in `src/lifecycle
   (Q-41; the push remote and prefix are not frozen because `remote` is not validated as a name).
 - **Adapters.** Only the fake adapter declares `injected`. Claude Code and Codex declare `none` with the reason (Q-40,
   unverified live behaviour, Codex not installed); their argv is unchanged.
+
+*As built (2026-10-13, Delegated, T9.6, [ADR-0028](../adr/0028-controller-push-and-credential-reach.md)).* The shim
+command is `switchboard tool-shim --socket <path> --tools commit[,push]`; the shim lists exactly those tools (the §12.1
+`push` schema has no properties) and the controller still refuses a tool it did not offer (`UNKNOWN_TOOL`). `push` is
+offered when the frozen snapshot's push policy is `branch`, the BR-31 rule holds (§12.6) and a push service is
+configured; otherwise, for a `branch` policy, a `git_push_withheld` event records the reason. A `push` call passes the
+same checks as `commit` up to the run binding, must have empty `arguments` (`INVALID_ARGUMENTS`), counts against 10 push
+attempts per channel (`PUSH_LIMIT_REACHED`, a `git_tool_denied` event), and then runs §12.6. Its answer is
+`{"pushed":true,"ref","head_sha"}` or an error with a §12.1 code and the reason word (`push refused: <REASON>`).
+`git_channel_closed` counts `pushes`.
 
 ### 12.3 Commit algorithm and refs
 
@@ -1580,6 +1603,59 @@ silent:
 4. In one transaction insert the `git_push` row and event, and mark the pushed `git_commit` rows by recording the remote
    and ref in the event payload (the table itself stays append-only).
 
+**As built (2026-10-13, Delegated, T9.6, [ADR-0028](../adr/0028-controller-push-and-credential-reach.md); owner text
+above unchanged).** Code: `src/git/push.ts` (`GitPusher`), `src/git/push-names.ts`, `src/git/credential-reach.ts`,
+callers `src/git/channel.ts` (agent tool) and `src/cli/git-push.ts` (operator command `switchboard git push
+<sess_...|run_...> [--json]`). Choices where this section was silent:
+
+- **Target.** The local publish ref `refs/heads/switchboard/pub/<sess>` (ADR-0025, Q-42 confirmed) is pushed to
+  `refs/heads/<push.branch_prefix><sess>`. The refspec is `<verified head sha>:<target>`: never a ref name as source,
+  never a leading `+`. Remote and prefix come from the CURRENT configuration at each push; the policy must be `branch`
+  there and, for the agent tool, also in the run's frozen snapshot.
+- **Order of checks** (each refusal is `REFUSED_POLICY` with a reason; nothing reaches Git before step 5): (1) the
+  meta-session has a project and its primary context is configured (`NO_PROJECT`, `CONTEXT_UNKNOWN`); (2) policy
+  `branch` (`POLICY_NONE`); (3) agent only: the BR-31 verdict passed (`CREDENTIAL_REACH`, with the rule's reason in the
+  event); (4) no `git_policy_violation` event in any run of the meta-session (`GIT_POLICY_VIOLATION`, Q-44); a valid
+  remote name and prefix (`REMOTE_INVALID`, `PREFIX_INVALID`); (5) through the hardened helper: the context path
+  (absolute) resolves to the meta-session's repository (`CONTEXT_MISMATCH`), `git check-ref-format` of the target and
+  not a run-branch name (`PREFIX_INVALID`), the remote is listed by `git remote` (`REMOTE_UNKNOWN`); (6) the publish ref
+  exists and differs from the base commit (`NOTHING_TO_PUSH`); the base is an ancestor of the head and every commit of
+  `rev-list <head> --not <base>` (at most 10 000) has a `git_commit` row of this meta-session
+  (`PUBLISH_HISTORY_UNVERIFIED`); (7) the target is not the base ref, the remote's `HEAD` branch
+  (`refs/remotes/<remote>/HEAD`), the main checkout's branch or any worktree's branch (`TARGET_PROTECTED`); (8) the
+  repository's own `local`/`worktree` configuration sets none of `core.sshCommand`, `core.gitProxy`, `core.askPass`,
+  `credential.*helper`, `remote.*.receivepack|uploadpack|vcs|mirror`, `url.*.insteadOf|pushInsteadOf`,
+  `http.*sslVerify`, `protocol.*` (`REPO_CONFIG_UNSAFE`; key names only); (9) every push URL of the remote
+  (`remote get-url --push --all`) is `https` without userinfo, `ssh`/`file` without a password, scp-like or a local path
+  (`REMOTE_URL_CREDENTIALS`, `REMOTE_TRANSPORT_NOT_ALLOWED`); the URL stays in memory.
+- **The push process** (the only Git call with the operator's configuration): environment allowlist `PATH`, `HOME`,
+  `USER`, `LOGNAME`, `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`, `SSH_AUTH_SOCK`, `DBUS_SESSION_BUS_ADDRESS`, `HTTPS_PROXY`,
+  `https_proxy`, `ALL_PROXY`, `all_proxy`, `NO_PROXY`, `no_proxy`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, plus
+  `GIT_TERMINAL_PROMPT=0`, `LC_ALL=C`; `detached` (own session, no terminal), standard input closed, 90 s timeout
+  killing the process group; `git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c push.default=nothing -c
+  push.followTags=false -c push.gpgSign=false -c push.recurseSubmodules=no -c protocol.allow=never -c
+  protocol.https.allow=always -c protocol.ssh.allow=always -c protocol.file.allow=always push --porcelain --no-verify
+  --no-follow-tags --no-signed --recurse-submodules=no -- <remote> <sha>:<target>` with `cwd` the main repository.
+- **Outcome.** From the `--porcelain` status line of the target: `*`, ` ` or `+` with exit 0 is `ACCEPTED`, `=` is
+  `ACCEPTED`/`UP_TO_DATE`, `!` is `REJECTED_REMOTE` with `NON_FAST_FORWARD` (`non-fast-forward`, `fetch first`),
+  `REMOTE_HOOK_DECLINED` (`hook declined`) or `REMOTE_REJECTED`. Without a status line, fixed substrings of standard
+  error give `ERROR` with `CREDENTIALS_UNAVAILABLE`, `REMOTE_UNREACHABLE`, `REMOTE_TRANSPORT_NOT_ALLOWED`, `TIMEOUT` or
+  `GIT_FAILED`. Git's output is then discarded.
+- **Record.** `git_push` row plus `git_push` event `{push_id, outcome, reason, requested_by, remote, ref, head_sha,
+  commit_count, commits (newest first, at most 500), commits_truncated?, credential_reach?}`. Pushes of one
+  meta-session are serialised in the process. Agent tool codes: `PUSH_NOT_ALLOWED`, `NOTHING_TO_PUSH`,
+  `REMOTE_REJECTED`, `CREDENTIALS_UNAVAILABLE`, `REMOTE_UNREACHABLE`, `GIT_FAILED`.
+- **BR-31** (`evaluateCredentialReach`, from the frozen snapshot, at channel open and at each call): `host` only (a
+  `container` snapshot is refused until M10), frozen policy `branch`, never `bypassApproved` or a scope with `bypass`,
+  and shell `none` or `allowlist` with an empty list (a `privileged` run by its scope's `shell`). No manifest declares
+  credential confinement, so that route is not implemented.
+- **Operator command.** Same algorithm without BR-31; takes the data-directory lock and refuses (`LOCKED`) while `serve`
+  holds it (ADR-0005, like `gc --apply`); exit 0 when the remote holds the head.
+- **Ref guard.** `refs/remotes/<remote>/<branch>` created or moved to a SHA that an ACCEPTED `git_push` row pushed to
+  `refs/heads/<branch>` on `<remote>` is an expected difference (§12.5).
+- **Not tested.** `https` and `ssh` remotes, credential helpers, SSH agents and proxies (no network in tests); Git
+  versions other than 2.43.0.
+
 ### 12.7 Provenance and audit
 
 `git_commit` rows are the audit trail (FR-GIT-07). `runs show <id>` joins them to the run's provider, model and adapter
@@ -1587,6 +1663,14 @@ version and prints each commit's SHA, origin (`commit_tool` or `finalize_only`),
 Re-linking after an operator rewrite: match first on `commit_sha`, then `tree_sha`, then `patch_id` (best effort; Git's
 `patch-id` command; to be verified against the pinned Git version). Records are never edited and the commit objects are
 never annotated (notes were rejected, ADR-0014).
+
+*As built (2026-10-13, Delegated, T9.6):* `runs show <run>` (`src/cli/runs.ts`) adds `run.commits`: per `git_commit` row
+of the run `sha`, `tree_sha`, `patch_id`, `origin`, `publish_ref`, `project_id`, `context_id`, `meta_session_id`,
+`run_id`, `provider`, `harness`, `model`, `adapter_version_id`, `adapter_version` (the `adapter_version.binary_version`),
+`tool_event_id`, `sanitizer` (rule ids and counts), `created_at` and `pushed_to` (remote name, ref, push id and time of
+every ACCEPTED `git_push` event of the meta-session whose commit list holds the SHA); and `run.pushes`: the `git_push`
+rows whose event is on this run (`id`, `outcome`, `reason`, `remote`, `ref`, `head_sha`, `requested_by`, `run_id`,
+`created_at`). Text and `--json`; never the message or a URL. A re-link after an operator rewrite is not implemented.
 
 **Inner-agent provenance (M11, Proposed).** `git_commit` gains `message_source` (`agent` or `inner`, default `agent`) and
 `inner_call_id` (the `inner_call` row of the accepted draft; NULL for an agent message). `runs show` prints both. The

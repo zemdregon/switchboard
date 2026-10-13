@@ -10,6 +10,7 @@ import { ApprovalRefusedError } from "../lifecycle/approval.js";
 import { LockError } from "../lock/index.js";
 import { renderDoctor, runDoctor } from "./doctor.js";
 import { renderGc, runGcCommand } from "./gc.js";
+import { renderGitPush, runGitPush } from "./git-push.js";
 import { type CliIo, JSON_SCHEMA_VERSION, UsageError } from "./io.js";
 import { UnknownRunError } from "./operator.js";
 import {
@@ -48,6 +49,8 @@ Commands:
   projects show <id>  Show one project: environment and contexts
   projects validate [<id>]
                       Check project configuration and repository paths; exit 1 if any check fails
+  git push <id>       Push a meta-session's published commits (sess_... or one of its run_...) to the context's
+                      configured remote branch; only with push.policy "branch", never forced; refused while serve runs
   approve <run_id>    Approve the privileged run that requested an approval (review it with runs show first)
   deny <run_id>       Deny the privileged run that requested an approval; the run ends CANCELLED
 
@@ -179,6 +182,17 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         throw new UsageError(
           `unknown projects subcommand ${JSON.stringify(sub ?? "")}; expected list, show or validate`,
         );
+      }
+      case "git": {
+        // T9.6 (FR-GIT-05, LLD §12.6, ADR-0028): the operator push; holds the data-directory lock while it runs.
+        if (sub !== "push") throw new UsageError(`unknown git subcommand ${JSON.stringify(sub ?? "")}; expected push`);
+        const id = rest[0];
+        if (id === undefined || rest.length > 1) {
+          throw new UsageError("git push requires exactly one meta-session or run id");
+        }
+        const report = await runGitPush(io, loaderArgv, id);
+        emit(report, renderGitPush(report));
+        return report.pushed ? 0 : 1;
       }
       case "approve":
       case "deny": {

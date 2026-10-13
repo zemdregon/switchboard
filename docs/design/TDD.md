@@ -597,6 +597,42 @@ the table above; fake adapter only, Git 2.43.0).* Mechanism in [LLD §12.5](LLD.
 - **Still open.** The same attempts through Claude Code and Codex (live checks C-G2 and X-G1), per-worktree refs, Git
   versions other than 2.43.0, and whether a push should be refused after a violation (Q-44).
 
+*T9.6 build notes (2026-10-13; Delegated; [ADR-0028](../adr/0028-controller-push-and-credential-reach.md); the
+**Publication** paragraph above; fake adapter and local bare remotes only, Git 2.43.0).* Mechanism in [LLD
+§12.6](LLD.md#126-push-algorithm) (as-built note). Findings and test strategy:
+
+- **The push is the one controller Git call with the operator's configuration.** Every check before it uses the hardened
+  helper; the push itself gets an allowlisted environment (where Git finds the operator's global configuration, SSH
+  agent, credential-helper session and proxy), no terminal (`detached`, standard input closed, so neither Git nor SSH
+  can prompt), command-scope `-c` settings that switch hooks, tag following, signing and submodule recursion off and
+  allow only `https`, `ssh` and `file`, and `--porcelain --no-verify`. A repository whose own configuration sets a
+  command or redirect key (`core.sshCommand`, `credential.helper`, `remote.*.receivepack`, `url.*.insteadOf`,
+  `protocol.*`, ...) is refused rather than overridden, because a multi-valued key cannot be reset at command scope
+  without also discarding the operator's global setting.
+- **Never forced by construction.** The refspec is `<verified sha>:refs/heads/<prefix><sess>`; Git refuses a
+  non-fast-forward itself, which is recorded. Only commits with a provenance row of the meta-session can be pushed, so
+  checkpoint and run-branch commits cannot, whatever the publish ref points at.
+- **Observed on Git 2.43.0** (scratch repositories, a local bare remote): `--show-scope` reports values from an
+  `include` file in `.git/config` as `local`, and values from `GIT_CONFIG_PARAMETERS` as `command` (this host's own
+  environment sets some; the hardened helper does not inherit them); `push -- <remote> <sha>:<ref>` works with `--`;
+  `protocol.allow=never` plus per-protocol `always` gives `fatal: transport 'ext' not allowed` (rc 128); a rejected
+  update prints `!\t<src>:<dst>\t[rejected] (non-fast-forward)` on stdout under `--porcelain`; a push through a
+  configured remote updates `refs/remotes/<remote>/<branch>`, which the T9.5 ref guard now expects when an accepted
+  `git_push` row matches it.
+- **BR-31.** A profile qualifies only with shell `none` or an empty allowlist, never in a bypass run; a non-empty
+  allowlist is refused because the controller cannot judge what a listed program can read (R-48 records the remaining
+  file-read-tool gap). Host runs with a shell, including approved bypass runs with broad shell, therefore cannot use the
+  agent `push` tool; the operator command `switchboard git push` (or a `container` environment, M10) is the route.
+- **Tests (no provider CLI, no network; temporary repositories and a local bare remote; the push's `HOME` is a temporary
+  directory).** `src/git/push.test.ts` (policy, target, refusals, URL and remote classification, environment allowlist,
+  hooks never run, repository command keys refused, remote hook output not stored, violation, BR-31 table, recording,
+  concurrency), `src/lifecycle/git-push.test.ts` (the fake agent's `commit` then `push` through the real shim; shell
+  profiles withhold `push`; policy `none`; configuration re-read; argument and limit refusals; the ref check stays
+  clean), `src/cli/git-push.test.ts` (operator command, lock, config refusal of a URL remote, `runs show` provenance).
+- **Still open.** `https` and `ssh` remotes with a real credential helper, SSH agent or proxy (the standard-error
+  classification is tested on fixed strings only), Claude Code and Codex channels (T9.4, Q-40), container environments
+  (M10), and pushing while `serve` runs (R-49).
+
 ### 3.11 Container environments
 
 Implements FR-PRJ-04, 05, 07, 09 for M10. Status: **Proposed**. Ender left Q-6 to the agent ("the rest you pick"), so the

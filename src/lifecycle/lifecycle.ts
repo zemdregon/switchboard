@@ -91,6 +91,7 @@ import {
 import type { ArtifactStore } from "../artifacts/index.js";
 import { isUnderAllowedRoot, TRUST_PROFILES } from "../config/index.js";
 import { ChannelOpenError, type GitToolService, type OpenChannel } from "../git/channel.js";
+import { credentialReachFromJson } from "../git/credential-reach.js";
 import { RefGuard } from "../git/ref-guard.js";
 import type { Ledger, NewRouteDecision, RunFieldPatch, RunRecord, RunState, TrustProfile } from "../ledger/index.js";
 import {
@@ -317,6 +318,11 @@ export interface RunLifecycleOptions {
 
 /** `run_event` type: a channel-capable run was not offered the commit tool, with a reason code (T9.4). */
 export const GIT_CHANNEL_NOT_OFFERED_EVENT = "git_channel_not_offered";
+/**
+ * `run_event` type (T9.6, FRD BR-31, ADR-0028): the context's push policy is `branch` but the run's environment does
+ * not keep push credentials out of the agent's reach (or no push service is configured), so `push` is withheld.
+ */
+export const GIT_PUSH_WITHHELD_EVENT = "git_push_withheld";
 
 type PreflightVerdict =
   | { readonly ok: true; readonly binaryVersion: string | null }
@@ -921,6 +927,14 @@ export class RunLifecycle {
       if (plan.kind === "not_offered") {
         this.ledger.appendRunEvent({ runId, type: GIT_CHANNEL_NOT_OFFERED_EVENT, payload: { reason: plan.reason } });
       } else if (plan.kind === "offer" && this.opts.gitTools) {
+        // T9.6 (BR-29, BR-31): `push` only for a frozen `branch` policy whose run keeps credentials out of reach.
+        let offerPush = false;
+        if (plan.pushPolicy === "branch") {
+          const reach = credentialReachFromJson(run0.policy_snapshot_json);
+          const withheld = !reach.ok ? reach.reason : this.opts.gitTools.pushAvailable ? undefined : "push_unavailable";
+          if (withheld === undefined) offerPush = true;
+          else this.ledger.appendRunEvent({ runId, type: GIT_PUSH_WITHHELD_EVENT, payload: { reason: withheld } });
+        }
         try {
           channel = await this.opts.gitTools.open({
             runId,
@@ -930,6 +944,7 @@ export class RunLifecycle {
             projectId: plan.projectId,
             contextId: plan.contextId,
             nativeSessionIds: () => nativeIds,
+            offerPush,
           });
         } catch (err) {
           if (!(err instanceof ChannelOpenError)) throw err;
@@ -1313,6 +1328,7 @@ type GitChannelPlan =
       readonly identity: { readonly name: string; readonly email: string };
       readonly projectId: string;
       readonly contextId: string;
+      readonly pushPolicy: "none" | "branch";
     };
 
 /**
@@ -1333,7 +1349,13 @@ function gitChannelPlan(adapter: ProviderAdapter, run: RunRecord, serviceConfigu
   if (project.environment_kind !== "host") return { kind: "not_offered", reason: "environment_not_host" };
   if (project.writable !== true) return { kind: "not_offered", reason: "context_not_writable" };
   if (project.identity === undefined) return { kind: "not_offered", reason: "no_identity" };
-  return { kind: "offer", identity: project.identity, projectId: project.id, contextId: project.context_id };
+  return {
+    kind: "offer",
+    identity: project.identity,
+    projectId: project.id,
+    contextId: project.context_id,
+    pushPolicy: project.push?.policy === "branch" ? "branch" : "none",
+  };
 }
 
 type PrivilegedInput =
