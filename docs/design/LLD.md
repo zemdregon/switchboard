@@ -1133,6 +1133,21 @@ preflight cache, NFR-PERF-02). The cache holds only successful `probe` and `OK` 
 the resolved binary's path, `mtime`, size and inode, so an upgraded binary is re-probed immediately and a failure or
 an unauthenticated state is re-checked on the next call (used by `delegate_task`, dispatch and `list_capabilities`; [§2](#2-adapter-contract)).
 
+*As built (2026-10-13, Delegated, T9.1):* `projects[]` is in the Ajv schema (`src/config/schema.ts`, strict: unknown keys
+and context kinds abort startup with the JSON path) and `loadConfig` adds the structural rules: unique project and
+context ids, exactly one primary context (a sole context is primary unless it says `"primary": false`), only the
+primary context writable (default: writable iff primary), `push.policy: "branch"` needs `remote` and `branch_prefix`
+(**Assumption**, from the example above), any push other than `none` needs `identity`, `image_digest` required for
+`container` and refused for `host`. `base_ref` is required (FR-PRJ-02). Context ids match `^[a-z][a-z0-9-]{0,40}$` and
+the image digest `^sha256:[0-9a-f]{64}$` (**Assumptions**). `allowed_providers` takes the provider IDs of
+`PROVIDER_IDS` (`claude-code`, `codex`, ...), not the short `claude` shown in the example. `max_trust_profile`,
+`allowed_providers` and `sign` are checked for shape only; enforcement is T9.2 and T9.10. The filesystem rules run only
+in `switchboard projects validate` (absolute path; `realpath` under an allowed root, so `..` and symlink escapes are
+refused; a Git repository whose top level is also under an allowed root; `base_ref` resolves to a commit; a `container`
+environment fails with "container environments are not implemented yet (M10)"), so `serve` starts on a config that
+lists projects exactly as before and never starts a container. `mcp_clients[].projects`, `manage_projects` and
+`max_push_policy` are not in the schema yet (T9.2, T9.9).
+
 ### 11.2 Resolution and ceilings
 
 At admission (FRD BR-23): (1) resolve `project` to its definition, else `INVALID_REQUEST`; (2) check the client's project

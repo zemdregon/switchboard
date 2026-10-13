@@ -55,6 +55,51 @@ export interface SwitchboardConfig {
   timeouts?: { preflight_ttl_seconds?: number };
   /** Per-field profile overrides (FR-POL-01, owner decision 12). `privileged` has none: it comes from its scope. */
   profiles?: Partial<Record<Exclude<TrustProfile, "privileged">, ProfileOverrideConfig>>;
+  /** Projects (FR-PRJ-01, LLD §11.1; T9.1). Absent means no projects, and every other command behaves as before. */
+  projects?: ProjectConfig[];
+}
+
+/** Context kinds delivered in M9 (FR-PRJ-02); any other value fails validation. */
+export const CONTEXT_KINDS = ["repository"] as const;
+export type ContextKind = (typeof CONTEXT_KINDS)[number];
+export const ENVIRONMENT_KINDS = ["host", "container"] as const;
+export type EnvironmentKind = (typeof ENVIRONMENT_KINDS)[number];
+export const PUSH_POLICIES = ["none", "branch"] as const;
+
+/** LLD §11.1 gives `^[a-z][a-z0-9-]{1,40}$` for project ids. Context ids reuse the shape with a 1 character minimum (Assumption). */
+export const PROJECT_ID_PATTERN = "^[a-z][a-z0-9-]{1,40}$";
+export const CONTEXT_ID_PATTERN = "^[a-z][a-z0-9-]{0,40}$";
+/** Assumption: an OCI-style digest, as in the LLD §11.1 example (`sha256:...`). */
+export const IMAGE_DIGEST_PATTERN = "^sha256:[0-9a-f]{64}$";
+
+export interface EnvironmentConfig {
+  kind: EnvironmentKind;
+  /** `container` only (M10; shape only in M9). */
+  image_digest?: string;
+  limits?: { cpus?: number; memory_mb?: number; disk_mb?: number };
+}
+
+export interface ContextConfig {
+  id: string;
+  kind: ContextKind;
+  path: string;
+  base_ref: string;
+  primary?: boolean;
+  writable?: boolean;
+  push?: { policy: (typeof PUSH_POLICIES)[number]; remote?: string; branch_prefix?: string };
+  identity?: { name: string; email: string };
+  /** Shape only until T9.10 (FR-GIT-10). */
+  sign?: boolean;
+}
+
+export interface ProjectConfig {
+  id: string;
+  name: string;
+  environment?: EnvironmentConfig;
+  /** Shape only until T9.2 (FR-PRJ-06 enforcement). */
+  max_trust_profile?: TrustProfile;
+  allowed_providers?: ProviderId[];
+  contexts: ContextConfig[];
 }
 
 export interface ProfileOverrideConfig {
@@ -91,6 +136,68 @@ const profileOverrideSchema = {
     network: { enum: ["off", "allowlist", "policy"] },
     network_allowlist: stringList,
     repo_config: { enum: ["disabled", "approved-only", "allowlisted"] },
+  },
+} as const;
+
+const contextSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "kind", "path", "base_ref"],
+  properties: {
+    id: { type: "string", pattern: CONTEXT_ID_PATTERN },
+    kind: { enum: [...CONTEXT_KINDS] },
+    path: { type: "string", minLength: 1 },
+    base_ref: { type: "string", minLength: 1 },
+    primary: { type: "boolean" },
+    writable: { type: "boolean" },
+    push: {
+      type: "object",
+      additionalProperties: false,
+      required: ["policy"],
+      properties: {
+        policy: { enum: [...PUSH_POLICIES] },
+        remote: { type: "string", minLength: 1 },
+        branch_prefix: { type: "string", minLength: 1 },
+      },
+    },
+    identity: {
+      type: "object",
+      additionalProperties: false,
+      required: ["name", "email"],
+      properties: { name: { type: "string", minLength: 1 }, email: { type: "string", minLength: 3 } },
+    },
+    sign: { type: "boolean" },
+  },
+} as const;
+
+const projectSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "name", "contexts"],
+  properties: {
+    id: { type: "string", pattern: PROJECT_ID_PATTERN },
+    name: { type: "string", minLength: 1 },
+    environment: {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind"],
+      properties: {
+        kind: { enum: [...ENVIRONMENT_KINDS] },
+        image_digest: { type: "string", pattern: IMAGE_DIGEST_PATTERN },
+        limits: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            cpus: { type: "number", exclusiveMinimum: 0 },
+            memory_mb: { type: "integer", minimum: 1 },
+            disk_mb: { type: "integer", minimum: 1 },
+          },
+        },
+      },
+    },
+    max_trust_profile: { enum: [...TRUST_PROFILES] },
+    allowed_providers: { type: "array", uniqueItems: true, items: { enum: [...PROVIDER_IDS] } },
+    contexts: { type: "array", minItems: 1, items: contextSchema },
   },
 } as const;
 
@@ -150,6 +257,7 @@ export const configSchema = {
         preflight_ttl_seconds: { type: "integer", minimum: 0, maximum: 3600 },
       },
     },
+    projects: { type: "array", items: projectSchema },
     profiles: {
       type: "object",
       additionalProperties: false,

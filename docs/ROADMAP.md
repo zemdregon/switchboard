@@ -618,6 +618,18 @@ Remaining before T9.0 can be marked Done: a live (opt-in) check of Claude's MCP 
 installed Codex, and the decision on Q-40 (Q-39 is decided, decision 30). T9.3 may start on the verified plumbing; T9.4
 must not assume an injected channel for any provider.
 
+**T9.1 status (2026-10-13; Delegated): Done** for `host` environments (the `container` kind is accepted as a shape and
+fails `projects validate` until M10). Done when: an unknown context kind and an out-of-root path are rejected
+(`src/cli/projects.test.ts`: `rejects an unknown context kind...`, `rejects a path outside every allowed root`,
+`rejects a .. escape and a symlink escape`, plus non-Git, missing base ref and duplicate id cases; loader cases in
+`src/config/config.test.ts`, `projects[]`); the commands have `--json` (`projects list|show|validate`,
+`src/cli/projects.ts`, `src/cli/main.ts`; shape tests in `src/cli/projects.test.ts`); the schema is published as
+`configSchema` (`src/config/schema.ts`, `$id` `https://switchboard.invalid/schemas/config.v1.json`, there is no separate
+schema file) and the shape is recorded in [LLD §11.1](design/LLD.md#111-configuration-shape) with an as-built note.
+Scope kept out on purpose: no ledger or `delegate_task` change, no `mcp_clients[].projects` key (T9.2), and
+`max_trust_profile`, `allowed_providers` and `sign` are validated for shape only (enforcement is T9.2 and T9.10). T9.1
+does not use any T9.0 finding, so T9.0 staying `Partial` does not affect it.
+
 ### 6.4 M10 Container environments: tasks
 
 *Proposed.* Q-6 was left to the agent, so the runtime and login mechanism are delegated and verified by T10.0 before any

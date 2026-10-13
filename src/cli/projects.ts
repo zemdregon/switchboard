@@ -1,0 +1,244 @@
+/**
+ * `switchboard projects list|show|validate` (FR-PRJ-08, T9.1; `host` environments only). All three read the config and
+ * the filesystem and nothing else: no ledger, no lock, no provider process, no container (M10). `validate` is the only
+ * place the filesystem rules run (FR-PRJ-02, FR-POL-10): absolute path, canonical path under an allowed root (the same
+ * `realpath` + `isUnderAllowedRoot` check workspaces use, so `..` and symlink escapes land outside), a Git repository
+ * whose top level is itself under an allowed root, and a base ref that resolves to a commit.
+ */
+import { realpath } from "node:fs/promises";
+import path from "node:path";
+import {
+  ConfigError,
+  isUnderAllowedRoot,
+  loadConfig,
+  type ResolvedConfig,
+  type ResolvedProject,
+} from "../config/index.js";
+import { gitText } from "../workspace/git.js";
+import { type CliIo, JSON_SCHEMA_VERSION } from "./io.js";
+
+export class UnknownProjectError extends Error {
+  override readonly name = "UnknownProjectError";
+}
+
+export const CONTAINER_NOT_IMPLEMENTED = "container environments are not implemented yet (M10)";
+
+export interface ProjectFailure {
+  /** JSON path into the config file, e.g. `$.projects[0].contexts[0].path`. */
+  path: string;
+  code: string;
+  message: string;
+}
+
+export interface ProjectContextView {
+  id: string;
+  kind: string;
+  path: string;
+  base_ref: string;
+  primary: boolean;
+  writable: boolean;
+  push: { policy: string; remote?: string; branch_prefix?: string };
+  identity?: { name: string; email: string };
+  sign: boolean;
+}
+
+export interface ProjectView {
+  id: string;
+  name: string;
+  environment: {
+    kind: string;
+    image_digest?: string;
+    limits?: { cpus?: number; memory_mb?: number; disk_mb?: number };
+  };
+  max_trust_profile?: string;
+  allowed_providers?: string[];
+  contexts: ProjectContextView[];
+}
+
+export interface ProjectsValidation {
+  schema_version: number;
+  ok: boolean;
+  projects: { id: string; ok: boolean; failures: ProjectFailure[] }[];
+  /** Failures that stop the config loading at all (schema, duplicate ids): no project can be checked then. */
+  config_failures: ProjectFailure[];
+}
+
+function load(io: CliIo, argv: readonly string[]): ResolvedConfig {
+  return loadConfig({ argv, env: io.env, ...(io.homedir !== undefined ? { homedir: io.homedir } : {}) });
+}
+
+export function toProjectView(p: ResolvedProject): ProjectView {
+  return {
+    id: p.id,
+    name: p.name,
+    environment: {
+      kind: p.environment.kind,
+      ...(p.environment.imageDigest !== undefined ? { image_digest: p.environment.imageDigest } : {}),
+      ...(p.environment.limits !== undefined
+        ? {
+            limits: {
+              ...(p.environment.limits.cpus !== undefined ? { cpus: p.environment.limits.cpus } : {}),
+              ...(p.environment.limits.memoryMb !== undefined ? { memory_mb: p.environment.limits.memoryMb } : {}),
+              ...(p.environment.limits.diskMb !== undefined ? { disk_mb: p.environment.limits.diskMb } : {}),
+            },
+          }
+        : {}),
+    },
+    ...(p.maxTrustProfile !== undefined ? { max_trust_profile: p.maxTrustProfile } : {}),
+    ...(p.allowedProviders !== undefined ? { allowed_providers: [...p.allowedProviders] } : {}),
+    contexts: p.contexts.map((c) => ({
+      id: c.id,
+      kind: c.kind,
+      path: c.path,
+      base_ref: c.baseRef,
+      primary: c.primary,
+      writable: c.writable,
+      push: {
+        policy: c.push.policy,
+        ...(c.push.remote !== undefined ? { remote: c.push.remote } : {}),
+        ...(c.push.branchPrefix !== undefined ? { branch_prefix: c.push.branchPrefix } : {}),
+      },
+      ...(c.identity !== undefined ? { identity: { ...c.identity } } : {}),
+      sign: c.sign,
+    })),
+  };
+}
+
+export function listProjects(io: CliIo, argv: readonly string[]): ProjectView[] {
+  return load(io, argv).projects.map(toProjectView);
+}
+
+export function showProject(io: CliIo, argv: readonly string[], id: string): ProjectView {
+  const p = load(io, argv).projects.find((x) => x.id === id);
+  if (!p) throw new UnknownProjectError(`unknown project ${id}`);
+  return toProjectView(p);
+}
+
+/** Turns a `ConfigError` message (`Invalid ...:` then `  $.path: text` lines) into per-path failures. */
+function configFailures(err: ConfigError): ProjectFailure[] {
+  const out: ProjectFailure[] = [];
+  for (const line of err.message.split("\n").slice(1)) {
+    const m = /^\s*(\$[^\s:]*): (.*)$/.exec(line);
+    out.push(
+      m
+        ? { path: m[1] as string, code: "CONFIG_INVALID", message: m[2] as string }
+        : { path: "$", code: "CONFIG_INVALID", message: line.trim() },
+    );
+  }
+  if (out.length === 0) out.push({ path: "$", code: "CONFIG_INVALID", message: err.message });
+  return out;
+}
+
+export async function validateProjects(io: CliIo, argv: readonly string[], only?: string): Promise<ProjectsValidation> {
+  let config: ResolvedConfig;
+  try {
+    config = load(io, argv);
+  } catch (err) {
+    if (!(err instanceof ConfigError)) throw err;
+    return { schema_version: JSON_SCHEMA_VERSION, ok: false, projects: [], config_failures: configFailures(err) };
+  }
+  if (only !== undefined && !config.projects.some((p) => p.id === only)) {
+    throw new UnknownProjectError(`unknown project ${only}`);
+  }
+  const projects: ProjectsValidation["projects"] = [];
+  for (const [i, p] of config.projects.entries()) {
+    if (only !== undefined && p.id !== only) continue;
+    const failures = await checkProject(config, p, `$.projects[${i}]`);
+    projects.push({ id: p.id, ok: failures.length === 0, failures });
+  }
+  return {
+    schema_version: JSON_SCHEMA_VERSION,
+    ok: projects.every((p) => p.ok),
+    projects,
+    config_failures: [],
+  };
+}
+
+async function checkProject(config: ResolvedConfig, p: ResolvedProject, at: string): Promise<ProjectFailure[]> {
+  const out: ProjectFailure[] = [];
+  if (p.environment.kind === "container") {
+    out.push({
+      path: `${at}.environment.kind`,
+      code: "ENVIRONMENT_NOT_IMPLEMENTED",
+      message: CONTAINER_NOT_IMPLEMENTED,
+    });
+  }
+  for (const [j, c] of p.contexts.entries()) {
+    const cat = `${at}.contexts[${j}]`;
+    const fail = (code: string, message: string) => out.push({ path: `${cat}.path`, code, message });
+    if (!path.isAbsolute(c.path)) {
+      fail("PATH_NOT_ABSOLUTE", `repository path ${JSON.stringify(c.path)} must be absolute`);
+      continue;
+    }
+    let canonical: string;
+    try {
+      canonical = await realpath(c.path);
+    } catch {
+      fail("PATH_NOT_FOUND", `repository path ${c.path} does not exist`);
+      continue;
+    }
+    if (!isUnderAllowedRoot(canonical, config.allowedRoots)) {
+      fail(
+        "OUTSIDE_ALLOWED_ROOT",
+        `repository path ${c.path} resolves to ${canonical}, which is not under an allowed root (FR-POL-10)`,
+      );
+      continue;
+    }
+    let top: string;
+    try {
+      top = await realpath(await gitText(["rev-parse", "--show-toplevel"], { cwd: canonical }));
+    } catch {
+      fail("NOT_A_GIT_REPO", `${canonical} is not a Git repository`);
+      continue;
+    }
+    if (!isUnderAllowedRoot(top, config.allowedRoots)) {
+      fail("OUTSIDE_ALLOWED_ROOT", `repository root ${top} is not under an allowed root`);
+      continue;
+    }
+    try {
+      await gitText(["rev-parse", "--verify", "--end-of-options", `${c.baseRef}^{commit}`], { cwd: canonical });
+    } catch {
+      out.push({
+        path: `${cat}.base_ref`,
+        code: "BASE_REF_NOT_FOUND",
+        message: `base ref ${JSON.stringify(c.baseRef)} does not resolve to a commit in ${canonical}`,
+      });
+    }
+  }
+  return out;
+}
+
+export function renderProjectList(projects: readonly ProjectView[]): string {
+  if (projects.length === 0) return "No projects configured.\n";
+  return `${projects
+    .map((p) => `${p.id}\t${p.environment.kind}\t${p.contexts.length} context(s)\t${p.name}`)
+    .join("\n")}\n`;
+}
+
+export function renderProject(p: ProjectView): string {
+  const lines = [`Project ${p.id}: ${p.name}`, `  environment: ${p.environment.kind}`];
+  if (p.environment.image_digest) lines.push(`  image_digest: ${p.environment.image_digest}`);
+  if (p.max_trust_profile) lines.push(`  max_trust_profile: ${p.max_trust_profile}`);
+  if (p.allowed_providers) lines.push(`  allowed_providers: ${p.allowed_providers.join(", ")}`);
+  for (const c of p.contexts) {
+    lines.push(
+      `  context ${c.id} (${c.kind}${c.primary ? ", primary" : ""}${c.writable ? ", writable" : ""})`,
+      `    path: ${c.path}`,
+      `    base_ref: ${c.base_ref}`,
+      `    push: ${c.push.policy}`,
+    );
+    if (c.identity) lines.push(`    identity: ${c.identity.name} <${c.identity.email}>`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+export function renderValidation(v: ProjectsValidation): string {
+  const lines: string[] = [];
+  for (const f of v.config_failures) lines.push(`[FAIL] ${f.path}: ${f.message}`);
+  for (const p of v.projects) {
+    lines.push(`[${p.ok ? "ok" : "FAIL"}] project ${p.id}`);
+    for (const f of p.failures) lines.push(`  ${f.path}: ${f.message} (${f.code})`);
+  }
+  if (v.projects.length === 0 && v.config_failures.length === 0) lines.push("No projects configured.");
+  return `${lines.join("\n")}\n`;
+}
