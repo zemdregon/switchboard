@@ -43,7 +43,7 @@ import { createLedger, openLedger } from "../ledger/index.js";
 import { RunLifecycle } from "../lifecycle/index.js";
 import { acquireDataDirLock, type DataDirLock } from "../lock/index.js";
 import { type SwitchboardMcpServer, startStdioServer } from "../mcp/index.js";
-import { resolveProfile } from "../policy/index.js";
+import { createProfileResolver } from "../policy/index.js";
 import { reconcile } from "../reconcile/index.js";
 import { CONFIG_TO_ADAPTER_ID } from "../routing/index.js";
 import { WorkspaceManager } from "../workspace/index.js";
@@ -239,7 +239,7 @@ async function runDaemon(
     allowedRoots: config.allowedRoots,
     globalConcurrency: config.limits.globalConcurrency,
     perProviderConcurrency: config.limits.perProviderConcurrency,
-    resolveProfile,
+    resolveProfile: createProfileResolver(config.profileOverrides),
     probeRunner: createProbeRunner(PROBE_ENV_ALLOWLIST),
     baseEnv: io.env,
     eligibility: { gate: gateFor(registry, fake), isEnabled: enablement(config, fake) },
