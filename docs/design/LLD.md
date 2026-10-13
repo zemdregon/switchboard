@@ -1898,6 +1898,29 @@ text asks the agent to call `commit` again with a `message`. The controller neve
 `MESSAGE_EMPTY_AFTER_SANITISING` keeps its meaning for a message the agent supplied. The tool call waits for the inner
 call at most the per-call bound ([§13.4](#134-call-pipeline)).
 
+*As built (2026-10-13, Delegated, T11.4; owner text above unchanged).* Code: `src/inner/commit-message.ts` (task
+contract and `createCommitMessageTask`), `src/git/commit.ts` (`CommitMessageTask`, `chooseMessage`),
+`src/git/channel.ts`, `src/git/tool-protocol.ts`, `src/cli/tool-shim.ts`, `src/projects/inner-setting.ts`, wiring in
+`src/cli/serve.ts`; tests `src/git/commit-message.test.ts`. Choices where this section was silent:
+
+- **Per-run schema.** The channel decides once, at open: the mode is `draft_if_missing` or `always` only when the
+  service is `ready`, the task is enabled, its mode is not `never`, and the effective project/context setting is not
+  `off`. Then the shim command ends with `--message-optional`, the shim serves the §12.1 schema without `required`
+  (`COMMIT_INPUT_SCHEMA_MESSAGE_OPTIONAL`), and `git_channel_opened` carries `commit_message: <mode>`. Otherwise the
+  command, schema, argument check and library call are byte-for-byte as before; a missing `message` stays
+  `INVALID_ARGUMENTS`. A present `message` is checked exactly as before in either case.
+- **Call time.** Every `commit` call re-resolves the project setting from the current configuration (or a dynamic
+  project's revision in force; an unknown project or a resolver error is `off`) and passes it as `project_setting`, so
+  a project restricted after open gets `PROJECT_OFF` or `PROJECT_LOCAL_ONLY` from the gate and `MESSAGE_REQUIRED`.
+- **Where the draft enters.** `src/git/commit.ts` never imports the service (it is now on the import-boundary test's
+  protected list): the channel injects a `CommitMessageTask` whose `draft` receives `git diff-tree --numstat` and
+  `-p` of the parent and new trees and up to five `git log --format=%s` subjects of the parent, after
+  `NOTHING_TO_COMMIT`. Whatever text it returns goes through the publisher's own sanitiser (built-in and operator
+  rules plus the run's native session ids), which is the only producer of the text `commit-tree` receives; its rule
+  counts are the `sanitizer_json`. A draft is requested once per call and reused after a lost compare-and-swap race.
+- **`MESSAGE_REQUIRED` text.** Fixed: "no commit message was given and none could be drafted; call commit again with a
+  message". It never says why (gate, timeout, validator).
+
 ### 12.2 Channel
 
 The controller creates `<data_dir>/runs/<run_id>/tools.sock` (directory mode `0700`, socket `0600`) and a random per-run
@@ -2441,6 +2464,15 @@ run's `git_finalize_commit` event (text line `finalize: ...`).
 message itself is never annotated or stored; the PR draft's provenance is its `pr_draft` artifact ID on the `inner_call`
 run event.
 
+*As built (2026-10-13, Delegated, T11.4):* migration `0007_git_commit_message_source`
+(`src/ledger/migrations/0007_git_commit_message_source.ts`; ledger schema version 7) adds `message_source TEXT NOT NULL
+DEFAULT 'agent' CHECK (message_source IN ('agent','inner'))` and `inner_call_id TEXT REFERENCES inner_call(id) CHECK
+(inner_call_id IS NULL OR message_source = 'inner')`; existing rows read `agent`/NULL and the append-only guards are
+unchanged. `inner_call_id` is NULL with `inner` only when the call row could not be written. The `git_commit_intent`
+record and the `git_commit` event payload gain `message_source: "inner"` and `inner_call_id` only for a drafted
+message, so an agent commit's records are unchanged. `runs show` adds `message_source` and `inner_call_id` (JSON) and a
+`message:` line (text).
+
 ## 13. Inner agent
 
 Implements FR-INN-01..17 and [ADR-0016](../adr/0016-inner-agent.md) for M11 (COMP-INN, trust boundary TB-10). Task
@@ -2639,6 +2671,12 @@ The accepted result lives where it is used, not in `inner_call`: a commit messag
 text in artifacts, route features in `route_decision.features_json`, a run title in a `run_event` payload (§13.6). The
 `usage_observation` exception for `shares_subscription_with` is in §13.4 step 13.
 
+**T11.4 note (Delegated).** The two `git_commit` columns ship as migration 0007
+(`src/ledger/migrations/0007_git_commit_message_source.ts`; [§12.7](#127-provenance-and-audit)). An `inner_call` row
+with outcome `accepted` exists for every draft handed to the publisher; when the commit then fails after the draft (a
+Git failure, a lineage or signing refusal, or a second lost compare-and-swap), that row stays and no `git_commit` row
+points to it.
+
 **T11.5 note (Delegated).** The `usage_observation.source` widening ships as migration 0006
 (`src/ledger/migrations/0006_usage_inner_agent.ts`, a table rebuild). The step 13 observation is written only when a
 backend request was made (`attempts >= 1`); `harness` is the provider id, `model` the call's `model_id`, and
@@ -2754,6 +2792,33 @@ message; `always` requests a draft in every commit and uses it when valid, other
 "template_version"?: string }` per feature; replay reads the stored value and never calls the model (FR-RTE-03,
 FR-INN-12). Handoff and log text always carry a visible source label so a reader can tell inner prose from controller
 facts.
+
+*As built (2026-10-13, Delegated, T11.4; table above unchanged), `commit_message`:* template `commit_message.v1`
+(`src/inner/commit-message.ts`), a fixed system text that names no product, provider, tool or identifier. Points this
+section left open, each an **Assumption**:
+
+- **Body trailer lines are removed, not rejected.** The validator column says "body has no `Co-authored-by`-style key
+  line (the sanitiser also removes them)". Rejecting would make a backend that always adds trailers produce no commit,
+  against the T11.4 Done-when ("yields a clean commit") and the M11 completion criterion in the ROADMAP, which owns
+  completion criteria. So such lines in the body are left to the §12.4 sanitiser, which removes them and counts them;
+  the subject, which must survive the sanitiser, is rejected when it is a trailer-shaped key line (`<key>-by:` or
+  `<key>-with:`). The other subject rules are as in the table; body control characters other than newline and tab are
+  refused.
+- **Input.** Under the fixed headings `Changed paths (added<TAB>deleted<TAB>path):` (`git diff-tree --numstat`),
+  `Recent subjects (style hint):` and `Diff:`. "Recent subjects of the publish ref" are those of the commit's parent,
+  which is the publish ref head, or the session's base commit before the first commit.
+- **Budget.** The diff-aware truncation of §13.4 step 3 keeps the part before `Diff:` whole, then whole hunks (each
+  with its file header) in path order, then the marker; if the header alone does not fit, head-and-tail over the
+  header with no hunk. The builder pre-caps the raw diff the same way at four times the budget so the redactor never
+  scans an unbounded text.
+- **Scrubbed names.** Besides the configured provider ids, the prompt scrub covers `PROMPT_PROVIDER_NAMES` (`claude`,
+  `anthropic`, `codex`, `openai`, `gemini`, `antigravity`, `cursor`, `grok`, `kimi`, `opencode`), because a config id
+  such as `claude-code` would miss the bare product name; a diff mentioning one of them reaches the model with
+  `[provider]` instead.
+- **Output cap.** The raw completion may be at most `4 * (72 + 2000) + 1024` bytes.
+- **Sanitiser in step 10.** The pipeline uses the publisher's sanitiser only to decide `rejected_sanitiser`; it hands
+  the validated, unsanitised text back, and the publisher sanitises it once more as the commit's message, so its rule
+  counts reach `sanitizer_json`.
 
 ### 13.7 Fallback table
 
