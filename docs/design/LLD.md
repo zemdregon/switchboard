@@ -564,6 +564,27 @@ bypass-class and reachable only in an approved bypass scope (open for zemdregon,
 approved bypass run on `acp-stdio` is `Ineligible: PROFILE_UNSUPPORTED`). The pre-spawn audit also refuses an `acp`
 plan whose `modeId` or `configOptions` match the registry's declared bypass values outside that case, or whose
 `mcpServers` is not empty without ADR-0036 item 7.3.
+*Note 2026-10-13 (owner decision 48; the sentence above stays as written):* open item 1 is answered, so in an approved
+bypass run `decidePermission` allows every request with `allow_once` (never `allow_always`), and an adapter may compile
+that run on `acp-stdio`.
+
+*As built (2026-10-13, Delegated, T4.8; not owner-approved).* `AcpPlan`, `AcpStdioServer` and `AcpDeclarations` are in
+`src/adapters/types.ts` (`Invocation.acp`); a registry entry declares `acp` (`src/adapters/providers.ts`; the fake entry
+declares a made-up mode and option for tests). `decidePermission(request, snapshot, decl?)` is in
+`src/policy/acp-permission.ts`; `request` is the `session/request_permission` params, and the snapshot gains
+`writable` (edits need a writable workspace). A privileged scope's `files`, `shell` (exact argv entries) and `network`
+(`on` or host list) are read in place of the profile's `scoped` fields; a profile shell allowlist entry is split on
+whitespace into an argv. The decision is `cancel_turn` with the denial reason when no `reject_once` option exists. It
+resolves symlinks in the longest existing prefix of each location (`realpathSync`), the one file-system read item 9.2
+needs. `auditAcpPlan` (`src/adapters/audit.ts`) refuses every non-empty `mcpServers`, because no per-provider ADR
+accepts an ACP channel yet (fail closed); declared bypass mode ids and option values are compared case-insensitively.
+The shared mapping is `mapAcpMessage` (`src/exec/acp/events.ts`): message chunks are joined per `messageId` up to 4,000
+characters (the Claude Code parser's bound) and flushed by any other update or the result; `tool_call` `target` is the
+first location; `usage_update` `cost` as an object becomes `cost_amount` and `cost_currency`; `current_mode_update` not
+caught by the client is `unknown`. The run events are written by the lifecycle through `run_event` (no migration):
+`acp_initialized` (`protocol_version`, boolean capability flags only, auth method `id` and `type`), `acp_permission`
+(`tool_kind`, `decision`, `reason`, `option_kind`, `location_count`; after 256, one `{summary, suppressed}` event) and
+`acp_request_refused` (`method`).
 
 `parseEvent` receives the `session/update` notifications and the final `session/prompt` response as `AcpMessage`s.
 Mapping to `NormalizedEvent`:
@@ -1504,6 +1525,23 @@ T11, T14) in `src/lifecycle/verification.ts`, driven by `src/lifecycle/lifecycle
 *Proposed (Delegated, 2026-10-13), [ADR-0036](../adr/0036-per-run-acp-stdio-client.md); not built (T4.8). Names are from
 the ACP specification v1 (agentclientprotocol.com, retrieved 2026-10-13); numbers are proposed targets.* Everything in
 §8 above applies to `acp-stdio` unless replaced here.
+
+*As built (2026-10-13, Delegated, T4.8; not owner-approved; tested only against the scripted fake ACP agent, so every
+provider behaviour stays Unverified).* `runAcpAgent` (`src/exec/acp/client.ts`) drives one `supervise` call
+(`src/exec/supervisor.ts`), which gained `keepStdinOpen` with `writeStdin` and `endStdin`, `fail` (protocol error or a
+named timeout: `acp_initialize`, `acp_session`), `complete` (close stdin, wait `killGraceMs`, group kill, outcome
+`exited`) and `beforeTerminate` (the graceful cancel step, raced against `killGraceMs`). Framing reuses the JSONL reader
+with blank lines refused; `classifyEnvelope` (`src/exec/acp/framing.ts`) adds the JSON-RPC checks. `startAdapterRun`
+(`src/adapters/run.ts`) runs the plan audit, then the client with `decidePermission` over the snapshot; the
+allow-everything answer needs both the snapshot's and the run's `bypassApproved` and the audit's bypass check. An
+asynchronous decision is raced against the 1 s bound and a synchronous one is measured, so either overrun is a
+rejection. The permission answer is sent as `result: {outcome: {outcome, optionId?}}` (the [ACP-TC] outcome object in
+the schema's response result; Unverified on a live provider); the mode field read is `currentModeId` ([ACP-MODE]).
+Exit before the turn ends is reported as outcome `crashed` (`PROCESS_CRASH`). The lifecycle passes the snapshot (no
+read-only contexts yet) and writes the three ACP run events. **Not built:** the `provider_stdin` artifact (the client
+keeps what it sent on `AdapterRunOutcome.stdin`, but storing it needs a new `artifact.kind`, that is a ledger
+migration); backpressure (as for JSONL, the supervisor does not pause stdout); `initialize` as a probe step; no adapter
+other than the fake compiles `acp-stdio`.
 
 - **Process.** One agent process per run, spawned like a JSONL provider (own process group, `pid`, `pgid` and start
   ticks persisted first, allowlisted environment, `cwd` = the run worktree) but with `stdio: ['pipe', 'pipe', 'pipe']`:

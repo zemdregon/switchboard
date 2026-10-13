@@ -1,5 +1,6 @@
 /** Fake provider adapter implementing the LLD §2 contract against fake/cli.mjs (T1.7). */
 import { fileURLToPath } from "node:url";
+import { acpRunSucceeded, mapAcpMessage } from "../../exec/acp/events.js";
 import {
   DEFAULT_IDLE_MS,
   DEFAULT_KILL_GRACE_MS,
@@ -9,6 +10,7 @@ import {
 import { classifyCommon } from "../failure.js";
 import type {
   AcpMessage,
+  AcpPlan,
   AuthResult,
   CompileRequest,
   ExitInfo,
@@ -26,9 +28,14 @@ import type {
   ProviderAdapter,
   ResolvedProfile,
   RunResult,
+  Transport,
 } from "../types.js";
 
 export const FAKE_CLI_PATH = fileURLToPath(new URL("./cli.mjs", import.meta.url));
+/** The scripted fake ACP agent (T4.8, ADR-0036 conformance plan). */
+export const FAKE_ACP_AGENT_PATH = fileURLToPath(new URL("./acp-agent.mjs", import.meta.url));
+/** Native login command the fake ACP plan names on AUTH_REQUIRED. */
+export const FAKE_ACP_LOGIN_COMMAND = "fake-acp login";
 
 /** Fake CLI flag that carries the shim command (JSON) for the injected tool channel (T9.4). */
 export const FAKE_TOOL_CHANNEL_FLAG = "--tool-channel";
@@ -76,6 +83,18 @@ export interface FakeAdapterOptions {
    * no `commit` tool and finalize-only mode can apply. Default `injected`.
    */
   commitChannel?: "injected" | "none";
+  /**
+   * T4.8 test variant (ADR-0036 conformance plan; ADR-0035 item 4 test-only entry): compile `acp-stdio` invocations
+   * that run the scripted fake ACP agent with this fixture, recording what it receives to `record`. Unlike the JSONL
+   * mode, every profile compiles (the fake has no native controls; the permission answers are what the tests exercise).
+   */
+  acp?: {
+    fixture: string;
+    record?: string;
+    modeId?: string;
+    configOptions?: Array<{ configId: string; value: string }>;
+    mcpServers?: AcpPlan["mcpServers"];
+  };
 }
 
 type Json = Record<string, unknown>;
@@ -83,7 +102,7 @@ const str = (v: unknown): string | undefined => (typeof v === "string" ? v : und
 
 export class FakeAdapter implements ProviderAdapter {
   readonly id = "fake" as const;
-  readonly transports = ["subprocess-jsonl"] as const;
+  readonly transports: readonly Transport[];
   /** Test double: no provider exists, so there is no provider control to declare (FR-GIT-01). */
   readonly gitWriteControl: GitWriteControl = {
     kind: "none-documented",
@@ -99,8 +118,11 @@ export class FakeAdapter implements ProviderAdapter {
   readonly #exe: string;
   readonly #script: string;
   readonly #timeouts: Invocation["timeouts"];
+  readonly #acp: FakeAdapterOptions["acp"];
 
   constructor(opts: FakeAdapterOptions = {}) {
+    this.#acp = opts.acp;
+    this.transports = opts.acp ? ["acp-stdio"] : ["subprocess-jsonl"];
     this.gitCapabilities =
       opts.commitChannel === "none"
         ? { commitChannel: "none", detail: "fake test adapter variant without a tool channel (T9.7 tests)" }
@@ -173,6 +195,7 @@ export class FakeAdapter implements ProviderAdapter {
   }
 
   #build(request: CompileRequest, profile: ResolvedProfile, extra: string[]): Invocation | Ineligible {
+    if (this.#acp) return this.#buildAcp(request, extra[1]);
     if (profile.name === "privileged" || profile.bypassApproved) {
       return { ineligible: true, reason: "PROFILE_UNSUPPORTED", detail: "fake adapter has no privileged mode" };
     }
@@ -191,8 +214,35 @@ export class FakeAdapter implements ProviderAdapter {
     };
   }
 
+  /** `acp-stdio` (T4.8): the fake ACP agent with the fixture; the client owns stdin, so no stdin text. */
+  #buildAcp(request: CompileRequest, resumeId: string | undefined): Invocation {
+    const a = this.#acp as NonNullable<FakeAdapterOptions["acp"]>;
+    return {
+      transport: "acp-stdio",
+      argv: [this.#exe, FAKE_ACP_AGENT_PATH, "--fixture", a.fixture, ...(a.record ? ["--record", a.record] : [])],
+      env: {},
+      envAllowlist: ["PATH"],
+      cwd: request.workspace.cwd,
+      stdin: { kind: "none" },
+      outputFormat: "acp",
+      timeouts: { ...this.#timeouts },
+      policyFlags: [],
+      expectedExitCodes: [0],
+      maxLineBytes: DEFAULT_MAX_LINE_BYTES,
+      acp: {
+        protocolVersion: 1,
+        prompt: request.objective,
+        session: resumeId === undefined ? { kind: "new" } : { kind: "resume", nativeSessionId: resumeId },
+        mcpServers: a.mcpServers ?? [],
+        ...(a.modeId !== undefined ? { modeId: a.modeId } : {}),
+        ...(a.configOptions ? { configOptions: a.configOptions } : {}),
+        loginCommand: FAKE_ACP_LOGIN_COMMAND,
+      },
+    };
+  }
+
   parseEvent(input: string | AcpMessage, state: ParseState): NormalizedEvent[] {
-    if (typeof input !== "string") return []; // no ACP transport
+    if (typeof input !== "string") return mapAcpMessage(input, state, FAKE_ACP_LOGIN_COMMAND);
     state.lines += 1;
     let doc: unknown;
     try {
@@ -261,15 +311,16 @@ export class FakeAdapter implements ProviderAdapter {
       ...(nativeSessionId ? { nativeSessionId } : {}),
       ...(summary ? { summary } : {}),
     };
-    const clean =
-      exit.outcome === "exited" &&
-      exit.exitCode !== null &&
-      exit.expectedExitCodes.includes(exit.exitCode) &&
-      final?.kind === "result" &&
-      final.ok &&
-      !events.some(
-        (e) => e.kind === "provider_error" || e.kind === "permission_denied" || e.kind === "sandbox_violation",
-      );
+    const clean = this.#acp
+      ? acpRunSucceeded(events, exit)
+      : exit.outcome === "exited" &&
+        exit.exitCode !== null &&
+        exit.expectedExitCodes.includes(exit.exitCode) &&
+        final?.kind === "result" &&
+        final.ok &&
+        !events.some(
+          (e) => e.kind === "provider_error" || e.kind === "permission_denied" || e.kind === "sandbox_violation",
+        );
     if (clean) return { ok: true, ...base };
     const c = this.classifyFailure({
       events,

@@ -27,7 +27,7 @@
 import { ClaudeAdapter } from "./claude/adapter.js";
 import { CodexAdapter } from "./codex/adapter.js";
 import { FakeAdapter, type FakeScenario } from "./fake/adapter.js";
-import type { ProviderAdapter } from "./types.js";
+import type { AcpDeclarations, ProviderAdapter } from "./types.js";
 
 /** What `serve` and `doctor` pass to an entry's factory. Fields are named after the provider they configure. */
 export interface ProviderFactoryOptions {
@@ -72,6 +72,12 @@ export interface ProviderEntry {
   readonly bypassShortFlags?: readonly string[];
   /** Bypass-class flag values (ADR-0037); counted only while the entry has `create`, as `bypassShortFlags`. */
   readonly bypassValues?: readonly BypassValue[];
+  /**
+   * ACP facts (ADR-0036 items 9 and 10; LLD §2 `AcpDeclarations`): bypass-class mode ids and config option values,
+   * refused in an `acp` plan outside the approved bypass case, and optional parsers that only narrow permission answers.
+   * Additive only, like the flags.
+   */
+  readonly acp?: AcpDeclarations;
   /** Absent while the provider has no adapter module yet (reserved id: accepted in config, never registered). */
   readonly create?: (opts: ProviderFactoryOptions) => ProviderAdapter;
 }
@@ -146,6 +152,12 @@ export const BUILTIN_PROVIDERS = [
     kind: "test",
     label: "fake adapter (test stand-in, not a real provider)",
     bypassFlags: [],
+    // T4.8: the fake ACP agent's made-up bypass-class mode and option value, so the plan audit and the
+    // `current_mode_update` check (ADR-0036 item 10) are exercised without a provider.
+    acp: {
+      bypassModeIds: ["fake-bypass-mode"],
+      bypassConfigValues: [{ configId: "fake-approval", value: "never-ask" }],
+    },
     create: (o: ProviderFactoryOptions): ProviderAdapter =>
       new FakeAdapter(o.fakeScenario !== undefined ? { scenario: o.fakeScenario } : {}),
   },
@@ -197,6 +209,24 @@ function valueProblems(v: unknown): string[] {
   return ok ? [] : [`malformed bypass value ${JSON.stringify(v)}`];
 }
 
+/** ACP declarations (T4.8, Delegated shape check): lists of 1 to 128 character strings without control characters. */
+function acpProblems(acp: AcpDeclarations): string[] {
+  const okString = (v: unknown) => typeof v === "string" && /^[^\p{Cc}]{1,128}$/u.test(v);
+  const problems: string[] = [];
+  if (!Array.isArray(acp.bypassModeIds) || !acp.bypassModeIds.every(okString)) {
+    problems.push("malformed acp.bypassModeIds");
+  }
+  if (
+    !Array.isArray(acp.bypassConfigValues) ||
+    !acp.bypassConfigValues.every(
+      (v) => typeof v === "object" && v !== null && okString(v.configId) && okString(v.value),
+    )
+  ) {
+    problems.push("malformed acp.bypassConfigValues");
+  }
+  return problems;
+}
+
 function entryProblems(entry: ProviderEntry, others: readonly ProviderEntry[]): string[] {
   const problems: string[] = [];
   if (!ID_PATTERN.test(entry.id)) problems.push(`id ${JSON.stringify(entry.id)} does not match ${ID_PATTERN.source}`);
@@ -226,6 +256,7 @@ function entryProblems(entry: ProviderEntry, others: readonly ProviderEntry[]): 
     if (!Array.isArray(entry.bypassValues)) problems.push("bypassValues must be an array");
     else for (const v of entry.bypassValues as unknown[]) problems.push(...valueProblems(v));
   }
+  if (entry.acp !== undefined) problems.push(...acpProblems(entry.acp));
   const ids = new Set(others.flatMap((o) => [o.id, ...(o.configId !== undefined ? [o.configId] : [])]));
   // Ids and config ids share one namespace across entries (`codex` is both for one provider, which is allowed).
   if (ids.has(entry.id)) problems.push(`id ${entry.id} is already registered`);
@@ -255,6 +286,12 @@ export class ProviderRegistrationError extends Error {
     if (e.bypassValues !== undefined) {
       for (const v of e.bypassValues) Object.freeze(v);
       Object.freeze(e.bypassValues);
+    }
+    if (e.acp !== undefined) {
+      Object.freeze(e.acp.bypassModeIds);
+      for (const v of e.acp.bypassConfigValues) Object.freeze(v);
+      Object.freeze(e.acp.bypassConfigValues);
+      Object.freeze(e.acp);
     }
     Object.freeze(e);
   }
@@ -321,6 +358,11 @@ export function adapterIdForConfigId(configId: string): string | undefined {
 /** Config id for an adapter id; undefined for the test-only fake and unknown ids. */
 export function configIdForAdapterId(id: string): string | undefined {
   return providerEntries().find((e) => e.id === id)?.configId;
+}
+
+/** The ACP declarations of adapter id `id`, if its entry has any (ADR-0036 items 9 and 10). */
+export function acpDeclarations(id: string): AcpDeclarations | undefined {
+  return providerEntry(id)?.acp;
 }
 
 /** Every adapter-declared bypass-class flag (deduplicated; the argv audit adds these to `BYPASS_FLAGS`). */
