@@ -3,8 +3,16 @@ import os from "node:os";
 import path from "node:path";
 import type { ErrorObject } from "ajv";
 import { Ajv } from "ajv";
+import { ProfileOverrideError, validateProfileOverrides } from "../policy/profiles.js";
+import type { ProfileOverride, ProfileOverrides } from "../policy/types.js";
 import { ConfigError } from "./errors.js";
-import { configSchema, type SwitchboardConfig, type TrustProfile } from "./schema.js";
+import {
+  configSchema,
+  DEFAULT_RETENTION_DAYS,
+  DEFAULT_RETENTION_INTERVAL,
+  type SwitchboardConfig,
+  type TrustProfile,
+} from "./schema.js";
 
 export { ConfigError } from "./errors.js";
 
@@ -22,6 +30,34 @@ export interface ResolvedConfig {
   mcpClients: ReadonlyMap<string, { id: string; maxTrustProfile: TrustProfile }>;
   limits: { globalConcurrency: number; perProviderConcurrency: number };
   providers: ReadonlyMap<string, { enabled: boolean; weight: number | undefined }>;
+  /** Retention (NFR-DATA-01, FR-WS-07; T3.12 consumes it). `intervalMs` is the GC pass period. */
+  retention: { days: number; intervalMs: number };
+  /** Validated `profiles.<name>` overrides in COMP-POL's camelCase form (owner decision 12); empty when none. */
+  profileOverrides: ProfileOverrides;
+}
+
+const INTERVAL_UNIT_MS = { m: 60_000, h: 3_600_000, d: 86_400_000 } as const;
+
+/** Parses a validated `<n>m|h|d` interval into milliseconds. */
+export function parseRetentionInterval(text: string): number {
+  const m = /^([1-9][0-9]*)([mhd])$/.exec(text);
+  if (!m) throw new ConfigError(`Invalid config:\n  $.retention.interval: must look like 30m, 12h or 7d`);
+  return Number(m[1]) * INTERVAL_UNIT_MS[m[2] as "m" | "h" | "d"];
+}
+
+function toOverrides(cfg: SwitchboardConfig): ProfileOverrides {
+  const out: ProfileOverrides = {};
+  for (const [name, o] of Object.entries(cfg.profiles ?? {})) {
+    const ov: ProfileOverride = {};
+    if (o.file_access !== undefined) ov.fileAccess = o.file_access;
+    if (o.shell !== undefined) ov.shell = o.shell;
+    if (o.shell_allowlist !== undefined) ov.shellAllowlist = [...o.shell_allowlist];
+    if (o.network !== undefined) ov.network = o.network;
+    if (o.network_allowlist !== undefined) ov.networkAllowlist = [...o.network_allowlist];
+    if (o.repo_config !== undefined) ov.repoConfig = o.repo_config;
+    out[name as keyof ProfileOverrides] = ov;
+  }
+  return out;
 }
 
 export interface ResolveEnv {
@@ -135,6 +171,14 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
     ids.add(c.id);
   }
 
+  const profileOverrides = toOverrides(cfg);
+  try {
+    validateProfileOverrides(profileOverrides);
+  } catch (err) {
+    if (err instanceof ProfileOverrideError) throw new ConfigError(`Invalid config:\n  ${err.message}`);
+    throw err;
+  }
+
   return {
     configPath,
     dataDir,
@@ -144,6 +188,11 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
       globalConcurrency: cfg.limits?.global_concurrency ?? DEFAULT_GLOBAL_CONCURRENCY,
       perProviderConcurrency: cfg.limits?.per_provider_concurrency ?? DEFAULT_PER_PROVIDER_CONCURRENCY,
     },
+    retention: {
+      days: cfg.retention?.days ?? DEFAULT_RETENTION_DAYS,
+      intervalMs: parseRetentionInterval(cfg.retention?.interval ?? DEFAULT_RETENTION_INTERVAL),
+    },
+    profileOverrides,
     // Proposed: a provider not listed is enabled with no explicit weight; listing it can disable it.
     providers: new Map(
       Object.entries(cfg.providers ?? {}).map(([id, p]) => [id, { enabled: p.enabled ?? true, weight: p.weight }]),

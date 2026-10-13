@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { chmod, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, rename, rm, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { defaultRedactor, type Redactor } from "./redact.js";
 
@@ -128,6 +128,22 @@ export class ArtifactStore {
     } catch (err) {
       if (err instanceof ArtifactError) throw err;
       return false;
+    }
+  }
+
+  /**
+   * Delete the stored object for `hash` (retention GC, T3.12). The caller must have established that no live artifact
+   * row references the hash. Removes the directory entry only (a symlink at that path is unlinked, never followed);
+   * returns whether a file was removed.
+   */
+  async remove(hash: string): Promise<boolean> {
+    const file = this.pathFor(hash);
+    try {
+      await unlink(file);
+      return true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw err;
     }
   }
 

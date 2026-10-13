@@ -266,6 +266,32 @@ export interface NewProviderBinding {
   model?: string | null;
 }
 
+/** A meta-session eligible for retention GC (T3.12, Proposed per Q-18). */
+export interface GcCandidate {
+  id: string;
+  repo_root: string | null;
+  /** Newest of the session's own `updated_at` and each run's `created_at` / `updated_at` / `finished_at`. */
+  last_activity: string;
+  /** Newest run (for the GC intent / outcome events, which `run_event` can only attach to a run), if any. */
+  newest_run_id: string | null;
+}
+
+export interface GcSessionTargets {
+  /** Recorded worktree paths of the session's runs. */
+  worktreePaths: string[];
+  /** Recorded `switchboard/<sess>/...` branch names (run rows and checkpoints), de-duplicated. */
+  branches: string[];
+}
+
+export interface GcArtifactPlan {
+  /** Live (not deleted) artifact rows owned by the session. */
+  artifactIds: string[];
+  /** Hashes referenced by no live row outside this session: their files may be deleted. */
+  deletableHashes: string[];
+  /** Hashes still referenced by a live row of another session: files must stay. */
+  keptHashes: string[];
+}
+
 export interface Ledger {
   createMetaSession(input: NewMetaSession): MetaSessionRow;
   getMetaSession(id: string): MetaSessionRow | undefined;
@@ -321,6 +347,22 @@ export interface Ledger {
   recordProviderBinding(input: NewProviderBinding): void;
   /** Most recently used binding of a meta-session, optionally for one provider. */
   latestProviderBinding(metaSessionId: string, provider?: string): ProviderBindingRow | undefined;
+
+  // ---- T3.12 additions (retention GC) --------------------------------------------------------------------------
+  /**
+   * ACTIVE meta-sessions holding no lease whose runs are all terminal and whose newest activity is older than
+   * `cutoffIso`. GC's own `gc_*` events are not activity (they live in `run_event`, which is not consulted).
+   */
+  listGcCandidates(cutoffIso: string): GcCandidate[];
+  /** Recorded worktree paths and `switchboard/<sessionId>/` branches of a meta-session. */
+  gcSessionTargets(sessionId: string): GcSessionTargets;
+  /** Which of the session's live artifact hashes are safe to delete from disk (content is shared across runs). */
+  gcArtifactPlan(sessionId: string): GcArtifactPlan;
+  /**
+   * One transaction: set `deleted_at` on the session's live artifact rows, mark the meta-session `ARCHIVED` and append
+   * the outcome event (when the session has a run to attach it to). `run_event` rows are never touched (append-only).
+   */
+  completeGc(sessionId: string, at: string, outcome: { runId: string | null; payload: unknown }): void;
 }
 
 export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledger {
@@ -569,6 +611,73 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
                    ORDER BY last_used_at DESC, rowid DESC LIMIT 1`;
       const args = provider === undefined ? [metaSessionId] : [metaSessionId, provider];
       return db.prepare(sql).get(...args) as ProviderBindingRow | undefined;
+    },
+
+    listGcCandidates(cutoffIso) {
+      return db
+        .prepare(
+          `SELECT m.id AS id, m.repo_root AS repo_root,
+                  (SELECT id FROM run WHERE meta_session_id = m.id ORDER BY created_at DESC, id DESC LIMIT 1)
+                    AS newest_run_id,
+                  MAX(m.updated_at, COALESCE((SELECT MAX(MAX(r.created_at, r.updated_at, COALESCE(r.finished_at, '')))
+                                              FROM run r WHERE r.meta_session_id = m.id), '')) AS last_activity
+           FROM meta_session m
+           WHERE m.status = 'ACTIVE' AND m.lease_run_id IS NULL
+             AND NOT EXISTS (SELECT 1 FROM run r WHERE r.meta_session_id = m.id
+                             AND r.state NOT IN ('SUCCEEDED','FAILED','CANCELLED'))
+             AND MAX(m.updated_at, COALESCE((SELECT MAX(MAX(r.created_at, r.updated_at, COALESCE(r.finished_at, '')))
+                                             FROM run r WHERE r.meta_session_id = m.id), '')) < ?
+           ORDER BY last_activity, m.id`,
+        )
+        .all(cutoffIso) as GcCandidate[];
+    },
+
+    gcSessionTargets(sessionId) {
+      const prefix = `switchboard/${sessionId}/`;
+      const runs = db.prepare("SELECT worktree_path, branch FROM run WHERE meta_session_id = ?").all(sessionId) as {
+        worktree_path: string | null;
+        branch: string | null;
+      }[];
+      const cps = db.prepare("SELECT branch FROM workspace_checkpoint WHERE meta_session_id = ?").all(sessionId) as {
+        branch: string;
+      }[];
+      const worktreePaths = [...new Set(runs.flatMap((r) => (r.worktree_path ? [r.worktree_path] : [])))];
+      const branches = [
+        ...new Set([...runs.map((r) => r.branch), ...cps.map((c) => c.branch)].filter((b): b is string => !!b)),
+      ].filter((b) => b.startsWith(prefix));
+      return { worktreePaths, branches };
+    },
+
+    gcArtifactPlan(sessionId) {
+      const own = db
+        .prepare(
+          `SELECT id, sha256 FROM artifact WHERE deleted_at IS NULL
+             AND (meta_session_id = ? OR run_id IN (SELECT id FROM run WHERE meta_session_id = ?))`,
+        )
+        .all(sessionId, sessionId) as { id: string; sha256: string }[];
+      const ownIds = new Set(own.map((a) => a.id));
+      const hashes = [...new Set(own.map((a) => a.sha256))];
+      const stillLive = db.prepare("SELECT id FROM artifact WHERE sha256 = ? AND deleted_at IS NULL");
+      const deletableHashes: string[] = [];
+      const keptHashes: string[] = [];
+      for (const h of hashes) {
+        const others = (stillLive.all(h) as { id: string }[]).filter((r) => !ownIds.has(r.id));
+        (others.length === 0 ? deletableHashes : keptHashes).push(h);
+      }
+      return { artifactIds: [...ownIds], deletableHashes, keptHashes };
+    },
+
+    completeGc(sessionId, at, outcome) {
+      immediate(() => {
+        db.prepare(
+          `UPDATE artifact SET deleted_at = ? WHERE deleted_at IS NULL
+             AND (meta_session_id = ? OR run_id IN (SELECT id FROM run WHERE meta_session_id = ?))`,
+        ).run(at, sessionId, sessionId);
+        db.prepare(
+          "UPDATE meta_session SET status = 'ARCHIVED', version = version + 1, updated_at = ? WHERE id = ?",
+        ).run(at, sessionId);
+        if (outcome.runId !== null) insertEvent(outcome.runId, "gc_outcome", outcome.payload, at);
+      });
     },
 
     createMetaSession(input) {
