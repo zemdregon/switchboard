@@ -20,7 +20,13 @@
 import { lstatSync } from "node:fs";
 import path from "node:path";
 import { CHANNEL_MCP_CONFIG_FILE, TOOL_SHIM_MCP_SERVER, TOOL_TOKEN_ENV } from "../git/tool-protocol.js";
-import { type BypassValue, declaredBypassFlags, declaredBypassShortFlags, declaredBypassValues } from "./providers.js";
+import {
+  acpDeclarations,
+  type BypassValue,
+  declaredBypassFlags,
+  declaredBypassShortFlags,
+  declaredBypassValues,
+} from "./providers.js";
 import type { Invocation, ResolvedProfile } from "./types.js";
 
 export const BYPASS_FLAGS: readonly string[] = [
@@ -328,4 +334,71 @@ export class IsolationAuditError extends Error {
 export function assertSafeModeAudit(inv: Pick<Invocation, "argv">, ctx?: BypassContext): void {
   const problems = auditSafeMode(inv, ctx);
   if (problems.length > 0) throw new IsolationAuditError(problems);
+}
+
+// ---- ACP plan audit (ADR-0036 items 3, 7.3 and 10; LLD §2 "Rules"; T4.8) -----------------------------------------
+
+/**
+ * Pre-spawn checks of an `acp-stdio` invocation's plan, independent of the adapter's own compile gate (FR-POL-03).
+ * Returns problems; empty means it passes. Refused:
+ * - an `acp-stdio` invocation without an `acp` plan, with an output format other than `acp`, with stdin text (the client
+ *   owns stdin) or with a protocol version other than 1; an `acp` plan on any other transport;
+ * - any `mcpServers` entry: ADR-0036 item 7.3 needs a per-provider ADR accepting that provider's ACP channel, and none
+ *   exists yet (Delegated, fail closed);
+ * - a `modeId` among the provider's declared bypass-class mode ids, or a `configOptions` pair among its declared
+ *   bypass-class values (both compared case-insensitively, deliberate over-refusal as in ADR-0037), except in the
+ *   approved bypass case ({@link bypassPermitted}).
+ */
+export function auditAcpPlan(
+  inv: Pick<Invocation, "transport" | "outputFormat" | "stdin" | "acp">,
+  adapterId: string,
+  ctx?: BypassContext,
+): string[] {
+  const problems: string[] = [];
+  if (inv.transport !== "acp-stdio") {
+    if (inv.acp !== undefined) problems.push("acp plan on a transport other than acp-stdio");
+    return problems;
+  }
+  const plan = inv.acp;
+  if (plan === undefined) return ["acp-stdio invocation without an acp plan"];
+  if (inv.outputFormat !== "acp") problems.push(`acp-stdio output format ${inv.outputFormat}`);
+  if (inv.stdin?.kind === "text") problems.push("acp-stdio invocation with stdin text (the client owns stdin)");
+  if (plan.protocolVersion !== 1) problems.push(`acp protocol version ${String(plan.protocolVersion)}`);
+  if (plan.mcpServers.length > 0) {
+    problems.push("acp mcpServers refused: no provider ACP channel is accepted by an ADR (ADR-0036 item 7.3)");
+  }
+  if (!bypassPermitted(ctx)) {
+    const decl = acpDeclarations(adapterId);
+    const lower = (v: string) => v.toLowerCase();
+    if (
+      plan.modeId !== undefined &&
+      (decl?.bypassModeIds ?? []).some((m) => lower(m) === lower(plan.modeId as string))
+    ) {
+      problems.push(`acp mode ${plan.modeId.slice(0, 64)} is bypass-class`);
+    }
+    for (const o of plan.configOptions ?? []) {
+      const hit = (decl?.bypassConfigValues ?? []).some(
+        (v) => lower(v.configId) === lower(o.configId) && lower(v.value) === lower(o.value),
+      );
+      if (hit) problems.push(`acp config option ${o.configId.slice(0, 64)}=${o.value.slice(0, 64)} is bypass-class`);
+    }
+  }
+  return problems;
+}
+
+export class AcpPlanAuditError extends Error {
+  constructor(readonly problems: readonly string[]) {
+    super(`acp plan refused: ${problems.join("; ")}`);
+    this.name = "AcpPlanAuditError";
+  }
+}
+
+/** Throws {@link AcpPlanAuditError} when {@link auditAcpPlan} finds a problem (used before every spawn). */
+export function assertAcpPlanAudit(
+  inv: Pick<Invocation, "transport" | "outputFormat" | "stdin" | "acp">,
+  adapterId: string,
+  ctx?: BypassContext,
+): void {
+  const problems = auditAcpPlan(inv, adapterId, ctx);
+  if (problems.length > 0) throw new AcpPlanAuditError(problems);
 }

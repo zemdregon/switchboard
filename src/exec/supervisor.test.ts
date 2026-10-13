@@ -324,3 +324,49 @@ setTimeout(() => process.exit(0), 100);`;
     expect(res.stderrTruncated).toBe(false);
   });
 });
+
+describe("supervise: acp-stdio primitives (T4.8)", () => {
+  it("complete() closes stdin, waits the grace, kills the group, and reports exited", async () => {
+    const r = run({
+      argv: node('process.on("SIGTERM",()=>{});process.stdin.resume();setInterval(()=>{},1000)'),
+      keepStdinOpen: true,
+    });
+    expect(r.writeStdin("hello\n")).toBe(true);
+    await r.complete();
+    const res = await r.result;
+    expect(res.outcome).toBe("exited");
+    expect(res.failureCode).toBeUndefined();
+    expect(res.escalatedToKill).toBe(true);
+    expect(res.groupEmpty).toBe(true);
+    expect(r.writeStdin("late\n")).toBe(false);
+  });
+
+  it("fail() ends a run as a protocol error or a named timeout", async () => {
+    const a = run({ argv: node("setInterval(()=>{},1000)") });
+    a.fail({ kind: "protocol_error", error: { kind: "unknown_response_id", lineNumber: 3, message: "x" } });
+    expect((await a.result).protocolError?.kind).toBe("unknown_response_id");
+    const b = run({ argv: node("setInterval(()=>{},1000)") });
+    b.fail({ kind: "timeout", timeoutKind: "acp_initialize" });
+    const rb = await b.result;
+    expect(rb.failureCode).toBe("PROCESS_TIMEOUT");
+    expect(rb.timeoutKind).toBe("acp_initialize");
+  });
+
+  it("beforeTerminate runs on cancel, bounded by the grace period", async () => {
+    let called: string | undefined;
+    const r = run({
+      argv: node("setInterval(()=>{},1000)"),
+      beforeTerminate: (why) => {
+        called = why;
+        return new Promise(() => {}); // never settles: the supervisor must not wait on it
+      },
+    });
+    const t0 = Date.now();
+    await r.cancel();
+    const res = await r.result;
+    expect(called).toBe("cancelled");
+    expect(res.outcome).toBe("cancelled");
+    expect(res.groupEmpty).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(3_000);
+  });
+});

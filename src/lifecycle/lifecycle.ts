@@ -72,6 +72,7 @@
  */
 import { realpath } from "node:fs/promises";
 import {
+  AcpPlanAuditError,
   type AdapterRegistry,
   type AdapterRun,
   type AdapterRunOutcome,
@@ -1098,6 +1099,16 @@ export class RunLifecycle {
           // T9.4b: `--mcp-config` and MCP allow rules only in the channel's exact shape (ADR-0029 item 6).
           ...(channelAudit ? { channel: channelAudit } : {}),
           ...(this.opts.baseEnv ? { baseEnv: this.opts.baseEnv } : {}),
+          // T4.8 (ADR-0036 item 9): an `acp-stdio` run answers permission requests from this frozen snapshot only.
+          // No read-only context is passed yet (fail closed: reads outside the worktree are rejected).
+          ...(inv.transport === "acp-stdio"
+            ? {
+                acp: {
+                  snapshot: { profile, worktree: inv.cwd, writable: ws.mode === "worktree", readOnlyContexts: [] },
+                  onRunEvent: (e) => this.ledger.appendRunEvent({ runId, type: e.type, payload: e.payload }),
+                },
+              }
+            : {}),
           onSpawn: ({ pid, pgid }) => {
             this.move(
               this.current(runId),
@@ -1123,6 +1134,10 @@ export class RunLifecycle {
         if (err instanceof McpConfigAuditError) {
           await channel?.close();
           return this.fail(runId, "PERMISSION_BLOCKED", err.message.slice(0, 500), { reason: "MCP_CONFIG_REFUSED" });
+        }
+        if (err instanceof AcpPlanAuditError) {
+          await channel?.close();
+          return this.fail(runId, "PERMISSION_BLOCKED", err.message.slice(0, 500), { reason: "ACP_PLAN_REFUSED" });
         }
         if (err instanceof IsolationAuditError) {
           await channel?.close();
