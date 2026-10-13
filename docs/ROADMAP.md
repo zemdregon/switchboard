@@ -112,8 +112,8 @@ estimates. Architecture: [HLD](design/HLD.md).
     `cli` kind stays Should until T11.0. The recommendations were already the defaults in force, so no requirement
     changed. They are now owner-chosen, not only delegated.
 <!-- markdownlint-disable-next-line MD029 -->
-16. Muse Code (Meta's `muse` CLI) is added to the provider support plan (2026-10-13). Ender gave no priority, so the
-    agent set FR-ADP-12 to `Should`, in M4, and recorded Q-27. Evidence is third-party and unverified
+16. Muse Code (Meta's `muse` CLI) is added to the provider support plan (2026-10-13). Ender said it is "not a must
+yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evidence is third-party and unverified
     ([research note](research/muse-code-2026-10-13.md)); the adapter design is delegated.
 
 ### 4.3 Stated intent (confirmed constraints)
@@ -479,7 +479,7 @@ No blocker affects M1, M2 or M9.
 | Q-24 | *Answered 2026-10-13:* M11 after M9, core, `http` backend and commit-message task first, as proposed (owner decision 15). | — |
 | Q-25 | *Answered 2026-10-13:* `draft_if_missing` with the agent's text winning; PR drafts are Should and off unless enabled, as proposed (owner decision 15). | — |
 | Q-26 | *Answered 2026-10-13* by taking the proposal: the `cli` kind stays Should and `Ineligible` until the T11.0 spike verifies a tool-free one-shot (owner decision 15). The technical question itself is still open. | — |
-| Q-27 | *Owner decision 16.* Does Ender hold Meta access for Muse Code, and by which login (device-code `muse login`, or an API key, which Switchboard cannot pass)? Should it be `Must` like the other providers? | `Should`, M4; no adapter work depends on it before M4 (FR-ADP-12) |
+| Q-27 | *Partly answered 2026-10-13:* Ender said Muse Code is "not a must yet", so FR-ADP-12 stays `Should` (owner decision 16). Still open: does Ender hold Meta access, and by which login (device-code `muse login`, or an API key, which Switchboard cannot pass)? | `Should`, M4; no adapter work depends on it before M4 (FR-ADP-12) |
 
 ## 8. Deferred and excluded work
 
