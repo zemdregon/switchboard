@@ -518,7 +518,9 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
       in M6/M7. Decided in [ADR-0032](adr/0032-provider-model-affinity.md). Residual risk: R-58 (not blocking).
     - **Not claimed.** That any provider's cache is hit more often, or that retrieval reduces tokens, is unmeasured.
       FR-CAP-08 records cache token counts where a CLI reports them (Q-53) so the operator can check.
-41. Per-run worktrees for concurrent agents in a project (2026-10-13). **zemdregon's words, verbatim, are only this:**
+
+
+41\. Per-run worktrees for concurrent agents in a project (2026-10-13). **zemdregon's words, verbatim, are only this:**
     "Is this already being tracked somewhere in the roadmap or documents? The anytime multiple agents spawn within
     the same project, they should be given their own work tree."
     *Everything below is Delegated (agent), not owner-approved, and Proposed.*
@@ -537,7 +539,8 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
     - **Task.** T9.11 in §6.3. **Open question:** Q-54. No ADR is needed: the worktree model is ADR-0006's and the
       boundary does not change. No numeric caps are set.
 
-42. Optional agent subscriptions to PR and merge events (2026-10-13). **zemdregon's words, verbatim, are only this:**
+
+42\. Optional agent subscriptions to PR and merge events (2026-10-13). **zemdregon's words, verbatim, are only this:**
     "Also, is an optional feature to add later once everything else is done. PRs and merges and stuff like that should
     be able to be subscribed to by an agent so that it can track it so that if anything changes like if CI passes or
     fails or another agent commits to their PR it notifies them so that they can make changes as necessary."
