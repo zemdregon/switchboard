@@ -1638,6 +1638,24 @@ over every declared flag). Limits: Claude Code and Codex stay exported from `src
 not added there); a runtime-registered id is outside the TypeScript `ProviderId` union, and the MCP dynamic-project
 schema keeps the built-in config ids.
 
+**T4.9 status note (2026-10-13, Delegated agent work, not owner-approved).** Implemented on branch `m4-macos`, not yet
+merged; the macOS path is **Unverified** (written on Linux, fixtures only) until T4.10 runs it. One platform port,
+`src/exec/proc-info.ts`, answers "start time of a PID" and "does this group have a live non-zombie member": `/proc` on
+Linux (the M1 behaviour, moved unchanged), BSD `/bin/ps -A` with fixed `-o` columns under `LC_ALL=C` and `TZ=UTC` on
+macOS (start time stored as UTC epoch seconds from `lstart`), and nothing elsewhere. Any failure or unparseable output
+means "cannot verify": the orphan check reports `unverifiable` and never signals (before, a missing `/proc` read as
+"leader gone"), and the cancel loop counts the group as alive. Mechanism, sources and limits: [LLD
+§8.2](design/LLD.md#82-process-table-per-platform-m4-t49); TDD §2 and the README requirements line updated. Evidence:
+`src/exec/proc-info.test.ts` (both parsers, grandchild by group, zombies, PID reuse by start time, unparseable or
+failed `ps`, unsupported platforms) and `src/reconcile/process.test.ts` (every orphan rule over injected Linux, macOS
+and unsupported tables). Further Linux-only assumptions, listed, not fixed: the `alive()` helper in
+`src/exec/supervisor.test.ts` reads `/proc` and returns false on macOS, so its child and grandchild kill checks would
+pass vacuously there (T4.10 must make it portable before using them as evidence); a Linux host whose `/proc` cannot
+be read still treats the leader as gone (M1 behaviour kept); the socket path cap of 100 bytes
+(`src/git/tool-protocol.ts`) is assumed to fit the macOS `sun_path` limit, which is not cited; case-insensitive APFS
+volumes were not examined for path and ref comparisons; the signing tests skip without `gpg` (T4.10 lists skips).
+`/dev/null`, `detached` sessions, `kill(-pgid, …)` and the data-directory lock are POSIX and need no change.
+
 #### 6.8.1 Order, waves and hot files
 
 - **Wave A (agents, now; nothing needs a provider CLI):** T4.1, T4.7, T4.9 and the spikes T4.20, T4.30, T4.40, T4.50,
