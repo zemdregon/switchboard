@@ -23,6 +23,7 @@ const EXPECTED_TABLES = [
   "git_commit",
   "git_push",
   "inner_call",
+  "inner_task_state",
   "meta_session",
   "project_event",
   "project_revision",
@@ -291,8 +292,8 @@ describe("ledger migrations", () => {
       return row.id;
     };
     const old = insert();
-    expect(migrate(db)).toEqual([7]);
-    expect(migrate(db)).toEqual([]);
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 7))).toEqual([7]);
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 7))).toEqual([]);
     expect(currentSchemaVersion(db)).toBe(7);
     // the existing row reads as an agent message with no inner call
     expect(d.prepare("SELECT message_source, inner_call_id FROM git_commit WHERE id = ?").get(old)).toEqual({
@@ -305,6 +306,32 @@ describe("ledger migrations", () => {
     insert({ message_source: "inner" }); // an accepted draft whose call row was not recorded
     expect(() => d.prepare("UPDATE git_commit SET message_source = 'inner'").run()).toThrow(/append-only/u);
     expect(() => d.prepare("DELETE FROM git_commit").run()).toThrow(/append-only/u);
+  });
+
+  it("inner_task_state (T11.6, LLD §13.3) upgrades from version 7, is mutable and enforces its checks", () => {
+    db = new Database(path.join(dir, LEDGER_FILE_NAME));
+    db.pragma("foreign_keys = ON");
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 7))).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(tables(db)).not.toContain("inner_task_state");
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 8))).toEqual([8]);
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 8))).toEqual([]);
+    expect(currentSchemaVersion(db)).toBeGreaterThanOrEqual(8);
+    const d = db;
+    expect(tables(d)).toContain("inner_task_state");
+    d.prepare("INSERT INTO inner_task_state (task) VALUES ('run_title')").run();
+    expect(d.prepare("SELECT suspended, version, resumed_at FROM inner_task_state").get()).toEqual({
+      suspended: 0,
+      version: 0,
+      resumed_at: null,
+    });
+    // mutable, unlike inner_call
+    d.prepare("UPDATE inner_task_state SET suspended = 1, suspended_basis_json = '{\"total\":20}'").run();
+    expect(() => d.prepare("INSERT INTO inner_task_state (task) VALUES ('made_up')").run()).toThrow(/CHECK/u);
+    expect(() => d.prepare("INSERT INTO inner_task_state (task) VALUES ('run_title')").run()).toThrow(
+      /UNIQUE|PRIMARY/u,
+    );
+    expect(() => d.prepare("UPDATE inner_task_state SET suspended = 2").run()).toThrow(/CHECK/u);
+    expect(() => d.prepare("UPDATE inner_task_state SET suspended_basis_json = 'not json'").run()).toThrow();
   });
 
   it("inner_call (T11.1, LLD §13.3) upgrades from version 4, is append-only and enforces its checks and keys", () => {

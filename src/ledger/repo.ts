@@ -491,6 +491,34 @@ export interface InnerCallEvents {
    * in the same transaction as the `inner_call` row. Absent or null: nothing is written to `usage_observation`.
    */
   sharedSubscriptionWith?: string | null;
+  /**
+   * T11.6 (FR-INN-09, LLD §13.4 step 11): the quality window. When set and the recorded outcome is a quality outcome
+   * (`accepted`, `rejected_validator`, `rejected_sanitiser`), the ledger evaluates the task's window in the same
+   * transaction and suspends the task when at least `minCalls` calls exist and the rejected share exceeds
+   * `rejectionThreshold`. Absent: no evaluation (callers that only record).
+   */
+  suspension?: { windowCalls: number; minCalls: number; rejectionThreshold: number };
+}
+
+/** Evidence of a suspension (`inner_task_state.suspended_basis_json`, the `inner_task_suspended` event payload). */
+export interface InnerSuspensionBasis {
+  window_calls: number;
+  rejected: number;
+  total: number;
+  threshold: number;
+}
+
+/** Result of `recordInnerCall`: the row, plus the basis when this very call suspended its task. Not a column. */
+export type RecordedInnerCall = InnerCallRow & { suspended_task?: InnerSuspensionBasis };
+
+/** One `inner_task_state` row (T11.6, LLD §13.3), with the basis decoded. */
+export interface InnerTaskStateRow {
+  task: string;
+  suspended: boolean;
+  suspended_at: string | null;
+  suspended_basis: InnerSuspensionBasis | null;
+  resumed_at: string | null;
+  version: number;
 }
 
 export interface Ledger {
@@ -632,9 +660,21 @@ export interface Ledger {
    * In ONE `BEGIN IMMEDIATE` transaction insert the append-only `inner_call` row and, only when `input.run_id` is set,
    * the `inner_call` run event (payload: ids, outcome and sizes, never text) plus any `events.extra`. Returns the row.
    */
-  recordInnerCall(input: NewInnerCall, events?: InnerCallEvents): InnerCallRow;
+  recordInnerCall(input: NewInnerCall, events?: InnerCallEvents): RecordedInnerCall;
   /** `inner_call` rows, oldest first, optionally of one run. */
   listInnerCalls(filter?: { runId?: string }): InnerCallRow[];
+
+  // ---- T11.6 additions (quality monitoring and suspension, FR-INN-09, LLD §13.3, §13.4 step 11) --------------------
+  /** The task's `inner_task_state` row; `undefined` when it was never suspended (equivalent to not suspended). */
+  getInnerTaskState(task: string): InnerTaskStateRow | undefined;
+  /** Every `inner_task_state` row, by task. */
+  listInnerTaskStates(): InnerTaskStateRow[];
+  /**
+   * Re-enable a suspended task in one transaction: `suspended = 0`, the suspension fields cleared, `resumed_at` set
+   * (quality counting restarts after it), `version` incremented. Returns the new state, or `undefined` when the task was
+   * not suspended (nothing is changed or recorded). Writes no run event (LLD §13.8).
+   */
+  resumeInnerTask(task: string): InnerTaskStateRow | undefined;
 }
 
 export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledger {
@@ -667,6 +707,65 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
   const getRunRecord = (id: string) => db.prepare(`${RUN_RECORD_SQL} WHERE id = ?`).get(id) as RunRecord | undefined;
 
   /** Insert the next event inside the caller's transaction. */
+  // ---- T11.6 helpers (inner_task_state) --------------------------------------------------------------------------
+  const QUALITY_OUTCOMES: readonly string[] = ["accepted", "rejected_validator", "rejected_sanitiser"];
+  const STATE_COLS = "task, suspended, suspended_at, suspended_basis_json, resumed_at, version";
+  interface InnerTaskStateDbRow {
+    task: string;
+    suspended: number;
+    suspended_at: string | null;
+    suspended_basis_json: string | null;
+    resumed_at: string | null;
+    version: number;
+  }
+  const toInnerTaskState = (r: InnerTaskStateDbRow): InnerTaskStateRow => ({
+    task: r.task,
+    suspended: r.suspended === 1,
+    suspended_at: r.suspended_at,
+    suspended_basis:
+      r.suspended_basis_json === null ? null : (JSON.parse(r.suspended_basis_json) as InnerSuspensionBasis),
+    resumed_at: r.resumed_at,
+    version: r.version,
+  });
+  const readInnerTaskState = (task: string): InnerTaskStateRow | undefined => {
+    const r = db.prepare(`SELECT ${STATE_COLS} FROM inner_task_state WHERE task = ?`).get(task) as
+      | InnerTaskStateDbRow
+      | undefined;
+    return r === undefined ? undefined : toInnerTaskState(r);
+  };
+  /**
+   * LLD §13.4 step 11: over the task's last `windowCalls` quality calls since `resumed_at` (strictly after it;
+   * `fallback_*` outcomes are not evidence), the basis when at least `minCalls` exist and the rejected share exceeds the
+   * threshold, else `undefined`. Nothing when the task is already suspended.
+   */
+  const evaluateInnerWindow = (
+    task: string,
+    w: { windowCalls: number; minCalls: number; rejectionThreshold: number },
+  ): InnerSuspensionBasis | undefined => {
+    const state = readInnerTaskState(task);
+    if (state?.suspended === true) return undefined;
+    const outcomes = db
+      .prepare(
+        `SELECT outcome FROM inner_call
+          WHERE task = ? AND outcome IN ('accepted','rejected_validator','rejected_sanitiser')
+            AND (? IS NULL OR created_at > ?)
+          ORDER BY created_at DESC, id DESC LIMIT ?`,
+      )
+      .all(task, state?.resumed_at ?? null, state?.resumed_at ?? null, w.windowCalls) as { outcome: string }[];
+    const total = outcomes.length;
+    const rejected = outcomes.filter((o) => o.outcome !== "accepted").length;
+    if (total < w.minCalls || total === 0 || rejected / total <= w.rejectionThreshold) return undefined;
+    return { window_calls: w.windowCalls, rejected, total, threshold: w.rejectionThreshold };
+  };
+  const suspendInnerTask = (task: string, basis: InnerSuspensionBasis, when: string) => {
+    db.prepare(
+      `INSERT INTO inner_task_state (task, suspended, suspended_at, suspended_basis_json, version)
+       VALUES (?, 1, ?, ?, 1)
+       ON CONFLICT(task) DO UPDATE SET suspended = 1, suspended_at = excluded.suspended_at,
+         suspended_basis_json = excluded.suspended_basis_json, version = version + 1`,
+    ).run(task, when, JSON.stringify(basis));
+  };
+
   const insertEvent = (
     runId: string,
     type: string,
@@ -1220,7 +1319,7 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
       return immediate(() => {
         const id = ids.id("inc");
         const when = ts();
-        const row: InnerCallRow = { ...input, id, created_at: when };
+        const row: RecordedInnerCall = { ...input, id, created_at: when };
         db.prepare(
           `INSERT INTO inner_call (id, task, backend_kind, model_id, locality, template_version, outcome, reason, attempts,
              latency_ms, tokens_in, tokens_out, input_bytes, output_bytes, input_sha256, run_id, meta_session_id, created_at)
@@ -1268,7 +1367,38 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
           );
           for (const e of events?.extra ?? []) insertEvent(row.run_id, e.type, e.payload, when);
         }
+        // Step 11: quality window. Same transaction, so the row and the state change are never seen apart.
+        const w = events?.suspension;
+        if (w !== undefined && QUALITY_OUTCOMES.includes(row.outcome)) {
+          const basis = evaluateInnerWindow(row.task, w);
+          if (basis !== undefined) {
+            suspendInnerTask(row.task, basis, when);
+            row.suspended_task = basis;
+            if (row.run_id !== null)
+              insertEvent(row.run_id, "inner_task_suspended", { task: row.task, ...basis }, when);
+          }
+        }
         return row;
+      });
+    },
+
+    getInnerTaskState: (task) => readInnerTaskState(task),
+
+    listInnerTaskStates() {
+      return (
+        db.prepare(`SELECT ${STATE_COLS} FROM inner_task_state ORDER BY task`).all() as InnerTaskStateDbRow[]
+      ).map(toInnerTaskState);
+    },
+
+    resumeInnerTask(task) {
+      return immediate(() => {
+        const cur = readInnerTaskState(task);
+        if (cur === undefined || !cur.suspended) return undefined;
+        db.prepare(
+          `UPDATE inner_task_state SET suspended = 0, suspended_at = NULL, suspended_basis_json = NULL,
+             resumed_at = ?, version = version + 1 WHERE task = ?`,
+        ).run(ts(), task);
+        return readInnerTaskState(task);
       });
     },
 

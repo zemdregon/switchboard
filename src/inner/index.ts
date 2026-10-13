@@ -7,6 +7,7 @@
  * logic, the push path or the sanitiser rule table may import this directory; `src/inner/import-boundary.test.ts` fails if
  * one does. Callers receive the service by injection and always have a deterministic fallback.
  */
+import type { InnerTaskStateRow } from "../ledger/repo.js";
 import type { InnerAgentSettings, InnerTask } from "./config.js";
 import { createHttpBackend } from "./http-backend.js";
 import {
@@ -68,6 +69,21 @@ export interface InnerAgentService {
   call<T, F>(contract: InnerTaskContract<T, F>, input: InnerCallInput): Promise<InnerCallResult<T, F>>;
   /** Circuit state of the backend; `closed` while there is no backend. */
   readonly breakerState: InnerPipeline["breakerState"];
+  /**
+   * T11.6 (FR-INN-09): the task's persisted suspension state, read from the ledger on every call, so it survives a
+   * restart and is shared by every process on the same ledger. `undefined` when the task was never suspended or no
+   * ledger was supplied.
+   */
+  taskState(task: InnerTask): InnerTaskStateRow | undefined;
+  /** True when the task is currently suspended (quality monitoring, FR-INN-09). */
+  isSuspended(task: InnerTask): boolean;
+  /**
+   * Operator action: re-enable a suspended task (FR-INN-09, FR-INN-17 `inner resume`; the CLI command itself is T11.7).
+   * Clears the suspension, records `resumed_at` (quality counting restarts after it) and returns the new state, or
+   * `undefined` when the task was not suspended or there is no ledger. Not callable by any inner output or policy path:
+   * it is an explicit method the operator surface invokes.
+   */
+  resumeTask(task: InnerTask): InnerTaskStateRow | undefined;
 }
 
 /** Optional collaborators of the pipeline (everything in {@link PipelineDeps} except settings and backend). */
@@ -85,7 +101,15 @@ export function createInnerAgent(
   const inner = deps.ledger;
   const ledger: PipelineDeps["ledger"] =
     inner !== undefined && shared !== null
-      ? { recordInnerCall: (row, events) => inner.recordInnerCall(row, { ...events, sharedSubscriptionWith: shared }) }
+      ? {
+          recordInnerCall: (row, events) => inner.recordInnerCall(row, { ...events, sharedSubscriptionWith: shared }),
+          ...(inner.getInnerTaskState !== undefined
+            ? { getInnerTaskState: (t: string) => inner.getInnerTaskState?.(t) }
+            : {}),
+          ...(inner.resumeInnerTask !== undefined
+            ? { resumeInnerTask: (t: string) => inner.resumeInnerTask?.(t) }
+            : {}),
+        }
       : inner;
   const pipeline =
     state === "ready" && settings !== undefined && backend !== undefined
@@ -109,6 +133,9 @@ export function createInnerAgent(
     get breakerState() {
       return pipeline?.breakerState ?? "closed";
     },
+    taskState: (task) => deps.ledger?.getInnerTaskState?.(task),
+    isSuspended: (task) => deps.ledger?.getInnerTaskState?.(task)?.suspended === true,
+    resumeTask: (task) => deps.ledger?.resumeInnerTask?.(task),
   };
 }
 

@@ -9,15 +9,22 @@
  *
  * Not in this task (see the ROADMAP): the `http` backend and the project/context override plumbing (T11.3; the pure gate
  * table is here because the pipeline must fail closed), task contracts (T11.4 onwards), usage accounting and the
- * `shares_subscription_with` observation (T11.5), and quality-window suspension with `inner_task_state` (T11.6; the
- * `fallback_suspended` outcome therefore is never produced yet).
+ * `shares_subscription_with` observation (T11.5). Quality-window suspension (T11.6, step 11): the window is evaluated by
+ * the ledger in the same transaction as the `inner_call` row, and the gate (step 1) reads `inner_task_state` on every call,
+ * so the state is shared with, and survives, other processes and restarts.
  */
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { Ajv, type ValidateFunction } from "ajv";
 import { createSecretRedactor, REDACTION_MARKER } from "../artifacts/redact.js";
 import { CONTROLLER_ID } from "../git/sanitize.js";
-import type { InnerCallEvents, InnerCallOutcome, InnerCallRow, NewInnerCall } from "../ledger/repo.js";
+import type {
+  InnerCallEvents,
+  InnerCallOutcome,
+  InnerCallRow,
+  InnerTaskStateRow,
+  NewInnerCall,
+} from "../ledger/repo.js";
 import { type BreakerAdmission, type BreakerState, type BreakerTransition, CircuitBreaker } from "./breaker.js";
 import type { InnerAgentSettings, InnerTask, ProjectInnerSetting } from "./config.js";
 import type { InnerBackend, InnerResult, Locality } from "./port.js";
@@ -86,7 +93,13 @@ export interface PipelineDeps {
   settings: InnerAgentSettings;
   backend: InnerBackend;
   /** Where `inner_call` rows and run events are written. Without one, nothing is recorded (tests, tooling). */
-  ledger?: { recordInnerCall(input: NewInnerCall, events?: InnerCallEvents): InnerCallRow };
+  ledger?: {
+    recordInnerCall(input: NewInnerCall, events?: InnerCallEvents): InnerCallRow & { suspended_task?: object };
+    /** T11.6: whether the task is suspended (`inner_task_state`). Absent: never suspended (tests, tooling). */
+    getInnerTaskState?(task: string): InnerTaskStateRow | undefined;
+    /** T11.6: operator re-enable (see `InnerAgentService.resumeTask`). */
+    resumeInnerTask?(task: string): InnerTaskStateRow | undefined;
+  };
   logger?: (entry: InnerLogEntry) => void;
   /** Breaker clock in ms (injectable for tests). */
   now?: () => number;
@@ -280,6 +293,17 @@ export function createInnerPipeline(deps: PipelineDeps): InnerPipeline {
     // LLD §13.4 step 1: master switch, task switch (no row).
     if (!settings.enabled || !task.enabled || backendSettings === undefined) return fallbackOnly("no_call");
 
+    // Step 1 (suspension, FR-INN-09): checked before any privacy gate or byte of input is touched. A state that cannot be
+    // read fails closed: the task's fallback, never a model call and never an exception.
+    let suspended = false;
+    let stateUnreadable = false;
+    try {
+      suspended = deps.ledger?.getInnerTaskState?.(contract.task)?.suspended === true;
+    } catch {
+      stateUnreadable = true;
+      log({ event: "inner.state_read_failed", task: contract.task });
+    }
+
     const started = Date.now();
     const timeoutMs = Math.min(task.timeoutMs ?? backendSettings.timeoutMs, backendSettings.timeoutMs);
     const ctrl = new AbortController();
@@ -363,11 +387,16 @@ export function createInnerPipeline(deps: PipelineDeps): InnerPipeline {
                 ];
           const callPayload =
             outcome === "accepted" && value !== undefined ? (contract.event_payload?.(value) ?? undefined) : undefined;
-          callId = deps.ledger.recordInnerCall(row, {
+          const recorded = deps.ledger.recordInnerCall(row, {
             ...(callPayload !== undefined ? { callPayload } : {}),
             artifactId: input.artifact_id ?? null,
             extra,
-          }).id;
+            suspension: settings.suspension,
+          });
+          callId = recorded.id;
+          if (recorded.suspended_task !== undefined) {
+            log({ event: "inner.task_suspended", task: contract.task });
+          }
         } catch {
           log({ event: "inner.record_failed", task: contract.task, outcome });
         }
@@ -392,6 +421,8 @@ export function createInnerPipeline(deps: PipelineDeps): InnerPipeline {
     };
 
     try {
+      if (stateUnreadable) return finish("fallback_unavailable", "STATE_UNREADABLE");
+      if (suspended) return finish("fallback_suspended", "TASK_SUSPENDED");
       // Step 1 (gate): a project or context set to `off` needs no locality, so not even a name lookup happens.
       if (input.project_setting === "off") return finish("fallback_disabled", "PROJECT_OFF");
       // Locality is resolved under the deadline; failure to resolve is `remote` (fail closed).
@@ -503,7 +534,7 @@ export function createInnerPipeline(deps: PipelineDeps): InnerPipeline {
         if (clean === null) return finish("rejected_sanitiser", "EMPTY_AFTER_SANITISER");
         value = clean;
       }
-      // Step 11 (suspension) is T11.6.
+      // Step 11 (quality window and suspension) runs inside `finish`, in the ledger transaction of the recorded row.
       return finish("accepted", undefined, value);
     } catch {
       // Every step is wrapped: an exception inside the pipeline is `fallback_unavailable`, never a throw (LLD §13.4).
