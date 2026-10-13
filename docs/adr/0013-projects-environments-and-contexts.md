@@ -3,8 +3,8 @@
 - Status: Accepted (the concept and orchestrator-managed projects); the container mechanism is Proposed (Delegated);
   the container image rule is amended by [ADR-0020](0020-container-image-without-git-client.md)
 - Date: 2026-10-12
-- Decided by: zemdregon (projects as first-class, an environment plus contexts, environments likely containers; message of
-  2026-10-12). Delegated (agent, 2026-10-12) for the mechanism: config-defined projects, two environment kinds, the
+- Decided by: zemdregon (projects as first-class, an environment plus contexts, environments likely containers; message
+  of 2026-10-12). Delegated (agent, 2026-10-12) for the mechanism: config-defined projects, two environment kinds, the
   ceiling rule and milestone placement. zemdregon answered Q-7 "yes" (2026-10-12): the orchestrator may create and change
   projects over MCP; the gating below is Delegated. zemdregon left Q-6 to the agent ("the rest you pick"): the container
   runtime and login mechanism below are Delegated and Proposed.
@@ -13,8 +13,8 @@
 
 ## Context
 
-Until now a delegation named a bare `workspace_path`. zemdregon wants Switchboard to manage *projects*: the environment the
-coding agents operate from, likely a container of some kind, and the *contexts* of that project, such as repositories.
+Until now a delegation named a bare `workspace_path`. zemdregon wants Switchboard to manage *projects*: the environment
+the coding agents operate from, likely a container of some kind, and the *contexts* of that project, such as repositories.
 A bare path says nothing about where the agent runs, which repositories belong together, or what ceiling applies to a
 given body of work, and it gives the orchestrator no stable thing to refer to.
 

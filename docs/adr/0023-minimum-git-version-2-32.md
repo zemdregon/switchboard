@@ -3,8 +3,8 @@
 - Status: Accepted
 - Date: 2026-10-13
 - Decided by: Delegated (agent), under [owner decision 25](../ROADMAP.md#42-owner-decisions) (best practice for a
-  decision that does not affect bypass mode). Not an zemdregon quote and not owner-approved. Recorded as owner decision 30 in
-  the roadmap for traceability only.
+  decision that does not affect bypass mode). Not an zemdregon quote and not owner-approved. Recorded as owner decision
+  30 in the roadmap for traceability only.
 - Related: [TDD §2](../design/TDD.md#2-technology-choices) and [§3.10](../design/TDD.md#310-git-commits-attribution-and-publication),
   NFR-SEC-03, ROADMAP Q-39, R-44, T9.0
 
