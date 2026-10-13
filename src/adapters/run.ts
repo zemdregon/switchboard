@@ -1,7 +1,19 @@
 /** Glue between an adapter and the exec supervisor: probe runner and a single-invocation runner. */
+import { type AcpDecide, type AcpRunEvent, runAcpAgent } from "../exec/acp/client.js";
+import { acpState } from "../exec/acp/events.js";
 import { supervise } from "../exec/index.js";
-import { assertBypassAudit, assertMcpAudit, assertSafeModeAudit, type ChannelAuditContext } from "./audit.js";
+import { type AcpPermissionSnapshot, approvedBypass, decidePermission } from "../policy/acp-permission.js";
 import {
+  assertAcpPlanAudit,
+  assertBypassAudit,
+  assertMcpAudit,
+  assertSafeModeAudit,
+  bypassPermitted,
+  type ChannelAuditContext,
+} from "./audit.js";
+import { acpDeclarations } from "./providers.js";
+import {
+  type AcpMessage,
   createParseState,
   type ExitInfo,
   type Invocation,
@@ -44,6 +56,23 @@ export interface AdapterRunOutcome {
   /** Raw captured streams, for the provider_stdout / provider_stderr artifacts (FR-EXE-05). */
   stdout: Buffer;
   stderr: Buffer;
+  /** `acp-stdio` only: every message the client wrote (for a `provider_stdin` artifact after the redactor, item 3). */
+  stdin?: Buffer;
+}
+
+/** What an `acp-stdio` run needs beyond the invocation (ADR-0036 item 9; T4.8). */
+export interface AdapterRunAcpOptions {
+  /** The frozen policy snapshot the permission answers are derived from. Required for `acp-stdio`. */
+  snapshot: AcpPermissionSnapshot;
+  /** Receives `acp_initialized`, `acp_permission` and `acp_request_refused` (persist as run events). */
+  onRunEvent?: (event: AcpRunEvent) => void;
+  /** Test seam: replaces `decidePermission`. Production callers never set it. */
+  decide?: AcpDecide;
+  /** Test seams for the Proposed bounds of ADR-0036 items 4 and 9.1. */
+  initializeTimeoutMs?: number;
+  sessionTimeoutMs?: number;
+  permissionDecisionMs?: number;
+  now?: () => number;
 }
 
 export interface AdapterRunOptions {
@@ -68,6 +97,8 @@ export interface AdapterRunOptions {
   channel?: ChannelAuditContext;
   /** Passed to the supervisor: called after spawn, before any output is read, so pid/pgid can be persisted. */
   onSpawn?: (info: { pid: number; pgid: number }) => void;
+  /** Required when the invocation's transport is `acp-stdio` (T4.8). */
+  acp?: AdapterRunAcpOptions;
 }
 
 export interface AdapterRun {
@@ -84,14 +115,20 @@ export interface AdapterRun {
  * a Claude Code argv lacks `--safe-mode` outside the approved bypass cases that omit it.
  */
 export function startAdapterRun(adapter: ProviderAdapter, inv: Invocation, opts: AdapterRunOptions = {}): AdapterRun {
-  if (inv.transport !== "subprocess-jsonl") throw new Error(`unsupported transport: ${inv.transport}`);
+  if (inv.transport !== "subprocess-jsonl" && inv.transport !== "acp-stdio") {
+    throw new Error(`unsupported transport: ${inv.transport}`);
+  }
   const ctx =
     opts.profile !== undefined ? { profile: opts.profile, bypassApproved: opts.bypassApproved === true } : undefined;
   assertBypassAudit(inv, ctx);
+  // T4.8 (ADR-0036 items 7.3 and 10): the ACP plan is audited like argv; an `acp` plan elsewhere is refused too.
+  assertAcpPlanAudit(inv, adapter.id, ctx);
   // T9.4b (ADR-0029 item 6): `--mcp-config` only in the controller's one channel shape; no other MCP rule.
   assertMcpAudit(inv, opts.channel, ctx);
   // ADR-0033 (owner decision 41): Claude Code keeps `--safe-mode` except in the approved bypass cases that omit it.
   if (adapter.id === "claude") assertSafeModeAudit(inv, ctx);
+
+  if (inv.transport === "acp-stdio") return startAcpRun(adapter, inv, opts, bypassPermitted(ctx));
 
   const state = createParseState();
   const events: NormalizedEvent[] = [];
@@ -132,6 +169,80 @@ export function startAdapterRun(adapter: ProviderAdapter, inv: Invocation, opts:
       groupEmpty: r.groupEmpty,
       stdout: r.stdout,
       stderr: r.stderr,
+    };
+  });
+  return { cancel: () => run.cancel(), done };
+}
+
+/**
+ * `acp-stdio` (FR-EXE-03, ADR-0036; T4.8): the shared ACP client drives the session; the adapter's `parseEvent` sees only
+ * `session/update` notifications and the `session/prompt` response. Permission answers come from `decidePermission`
+ * over the frozen snapshot, whose bypass carrier must agree with the run's (both `bypassApproved` values true and the
+ * audit's {@link bypassPermitted}) before the allow-everything answer of owner decision 48 is reachable.
+ */
+function startAcpRun(
+  adapter: ProviderAdapter,
+  inv: Invocation,
+  opts: AdapterRunOptions,
+  bypassAdmitted: boolean,
+): AdapterRun {
+  const acp = opts.acp;
+  if (acp === undefined) throw new Error("acp-stdio run without a permission snapshot");
+  const plan = inv.acp;
+  if (plan === undefined) throw new Error("acp-stdio invocation without an acp plan");
+  const snapshot: AcpPermissionSnapshot = {
+    ...acp.snapshot,
+    profile: { ...acp.snapshot.profile, bypassApproved: acp.snapshot.profile.bypassApproved && bypassAdmitted },
+  };
+  const decl = acpDeclarations(adapter.id);
+  const state = createParseState();
+  const deniedToolCallIds = acpState(state).deniedToolCallIds;
+  const events: NormalizedEvent[] = [];
+  const push = (ev: NormalizedEvent) => {
+    events.push(ev);
+    opts.onEvent?.(ev);
+  };
+  const run = runAcpAgent({
+    argv: inv.argv,
+    cwd: inv.cwd,
+    envAllowlist: inv.envAllowlist,
+    extraEnv: inv.env,
+    ...(opts.baseEnv ? { baseEnv: opts.baseEnv } : {}),
+    wallClockMs: inv.timeouts.wallClockMs,
+    idleMs: inv.timeouts.idleMs,
+    killGraceMs: inv.timeouts.killGraceMs,
+    maxLineBytes: inv.maxLineBytes,
+    ...(opts.onSpawn ? { onSpawn: opts.onSpawn } : {}),
+    plan,
+    parse: (msg: AcpMessage) => adapter.parseEvent(msg, state),
+    onEvent: push,
+    ...(acp.onRunEvent ? { onRunEvent: acp.onRunEvent } : {}),
+    decide: acp.decide ?? ((params) => decidePermission(params, snapshot, decl)),
+    deniedToolCallIds,
+    bypassModeIds: decl?.bypassModeIds ?? [],
+    approvedBypass: approvedBypass(snapshot.profile),
+    ...(acp.initializeTimeoutMs !== undefined ? { initializeTimeoutMs: acp.initializeTimeoutMs } : {}),
+    ...(acp.sessionTimeoutMs !== undefined ? { sessionTimeoutMs: acp.sessionTimeoutMs } : {}),
+    ...(acp.permissionDecisionMs !== undefined ? { permissionDecisionMs: acp.permissionDecisionMs } : {}),
+    ...(acp.now ? { now: acp.now } : {}),
+  });
+  const done = run.result.then((r): AdapterRunOutcome => {
+    const exit: ExitInfo = {
+      outcome: r.outcome,
+      exitCode: r.exitCode,
+      signal: r.signal,
+      ...(r.timeoutKind ? { timeoutKind: r.timeoutKind } : {}),
+      expectedExitCodes: inv.expectedExitCodes,
+    };
+    return {
+      result: adapter.extractResult(events, exit),
+      events,
+      exit,
+      stderrTail: r.stderr.subarray(Math.max(0, r.stderr.length - STDERR_TAIL_BYTES)).toString("utf8"),
+      groupEmpty: r.groupEmpty,
+      stdout: r.stdout,
+      stderr: r.stderr,
+      stdin: r.sent,
     };
   });
   return { cancel: () => run.cancel(), done };

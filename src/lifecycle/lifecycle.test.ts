@@ -1294,3 +1294,68 @@ describe("cancellation (WF-4, FRD §4.3)", () => {
     });
   }, 20_000);
 });
+
+describe("acp-stdio runs (T4.8, ADR-0036)", () => {
+  const fixtureFor = (steps: unknown[]) => {
+    const f = path.join(root, `acp-fixture-${Math.random().toString(36).slice(2)}.json`);
+    writeFileSync(f, JSON.stringify({ steps }));
+    return f;
+  };
+  const SID = "acp-sess-1";
+  const head = [
+    { recv: "initialize", reply: { result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [] } } },
+    { recv: "session/new", reply: { result: { sessionId: SID } } },
+    { recv: "session/prompt" },
+  ];
+  const end = { reply_to: "session/prompt", result: { stopReason: "end_turn" } };
+
+  it("records acp_initialized and acp_request_refused, and succeeds", async () => {
+    const fixture = fixtureFor([
+      ...head,
+      { send: { id: 5, method: "fs/read_text_file", params: { sessionId: SID, path: "/etc/passwd" } } },
+      { recv_response: 5 },
+      end,
+    ]);
+    const acpAdapter = new FakeAdapter({ acp: { fixture }, timeouts: PATIENT });
+    lifecycle = makeLifecycle({ adapters: new AdapterRegistry().register(acpAdapter) });
+    lifecycle.start();
+    const r = await submit("acp task");
+    expect((await lifecycle.waitForTerminal(r.runId)).state).toBe("SUCCEEDED");
+    const types = events(r.runId).map((e) => e.type);
+    expect(types).toContain("acp_initialized");
+    expect(events(r.runId).find((e) => e.type === "acp_request_refused")?.p).toEqual({ method: "fs/read_text_file" });
+  }, 30_000);
+
+  it("a permission request outside the profile ends PERMISSION_BLOCKED with an acp_permission event", async () => {
+    const fixture = fixtureFor([
+      ...head,
+      {
+        send: {
+          id: 6,
+          method: "session/request_permission",
+          params: {
+            sessionId: SID,
+            toolCall: { toolCallId: "t1", kind: "execute" },
+            options: [
+              { optionId: "a", name: "Allow", kind: "allow_once" },
+              { optionId: "r", name: "Reject", kind: "reject_once" },
+            ],
+          },
+        },
+      },
+      { recv_response: 6 },
+      end,
+    ]);
+    const acpAdapter = new FakeAdapter({ acp: { fixture }, timeouts: PATIENT });
+    lifecycle = makeLifecycle({ adapters: new AdapterRegistry().register(acpAdapter) });
+    lifecycle.start();
+    const r = await submit("acp task");
+    const final = await lifecycle.waitForTerminal(r.runId);
+    expect(final.state).toBe("FAILED");
+    expect(final.failure_code).toBe("PERMISSION_BLOCKED");
+    expect(events(r.runId).find((e) => e.type === "acp_permission")?.p).toMatchObject({
+      tool_kind: "execute",
+      decision: "reject_once",
+    });
+  }, 30_000);
+});

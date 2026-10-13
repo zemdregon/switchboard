@@ -2,7 +2,12 @@
 import { copyFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
-for (const rel of ["adapters/fake/cli.mjs", "adapters/manifests/claude.json", "adapters/manifests/codex.json"]) {
+for (const rel of [
+  "adapters/fake/cli.mjs",
+  "adapters/fake/acp-agent.mjs",
+  "adapters/manifests/claude.json",
+  "adapters/manifests/codex.json",
+]) {
   mkdirSync(dirname(`dist/${rel}`), { recursive: true });
   copyFileSync(`src/${rel}`, `dist/${rel}`);
 }
