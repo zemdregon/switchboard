@@ -32,6 +32,7 @@ import {
   providerGeneration,
 } from "../adapters/providers.js";
 import { MODEL_ID_PATTERN, type ModelConfig } from "../models/registry.js";
+import { type InnerAgentConfig, innerAgentSchema } from "./inner-agent.js";
 
 export const TRUST_PROFILES = [
   "inspect-untrusted",
@@ -92,6 +93,8 @@ export interface SwitchboardConfig {
    * that matches is removed from the message.
    */
   git?: { sanitize_patterns?: string[] };
+  /** Inner agent (M11, T11.1; FR-INN-01, LLD §13.1). Absent means off and nothing else changes. */
+  inner_agent?: InnerAgentConfig;
 }
 
 /** Context kinds delivered in M9 (FR-PRJ-02); any other value fails validation. */
@@ -332,6 +335,7 @@ export const configSchema = {
       },
     },
     projects: { type: "array", items: projectSchema },
+    inner_agent: innerAgentSchema,
     git: {
       type: "object",
       additionalProperties: false,

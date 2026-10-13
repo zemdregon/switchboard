@@ -26,7 +26,7 @@ export const DEFAULT_SECRET_PATTERNS: readonly RegExp[] = [
 ];
 
 /** Patterns that keep a prefix (the header or key name) and replace only the secret value. */
-const PREFIXED_PATTERNS: readonly RegExp[] = [
+export const PREFIXED_PATTERNS: readonly RegExp[] = [
   // Authorization: Bearer <token> / Basic <token>, and bare "Bearer <token>".
   /(\bBearer[ \t]+)[A-Za-z0-9._~+/=-]{8,}/gi,
   // key=value or "key": "value" for credential-looking names.

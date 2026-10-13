@@ -3,11 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import type { ErrorObject, ValidateFunction } from "ajv";
 import { Ajv } from "ajv";
+import { configProviderIds } from "../adapters/providers.js";
 import { validateOperatorPatterns } from "../git/safe-pattern.js";
 import type { ModelConfig } from "../models/registry.js";
 import { ProfileOverrideError, validateProfileOverrides } from "../policy/profiles.js";
 import type { ProfileOverride, ProfileOverrides } from "../policy/types.js";
 import { ConfigError } from "./errors.js";
+import { checkInnerAgent, type InnerAgentSettings, resolveInnerAgent } from "./inner-agent.js";
 import { checkProjects, type ResolvedProject, resolveProjects } from "./projects.js";
 import {
   currentConfigSchema,
@@ -59,6 +61,11 @@ export interface ResolvedConfig {
   projects: ResolvedProject[];
   /** Validated `git.sanitize_patterns` (FR-GIT-04; T9.3): sources in the safe subset, in configuration order. */
   sanitizePatterns: string[];
+  /**
+   * Validated `inner_agent` (T11.1; FR-INN-01, LLD §13.1), defaulted. Present only when the config has the section; absent
+   * means no inner agent and every behaviour is as before.
+   */
+  innerAgent?: InnerAgentSettings;
 }
 
 export interface ResolvedMcpClient {
@@ -282,11 +289,17 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
     throw new ConfigError(`Invalid config:\n${projectErrors.map((l) => `  ${l}`).join("\n")}`);
   }
 
+  const innerErrors = checkInnerAgent(cfg.inner_agent, configProviderIds());
+  if (innerErrors.length > 0) {
+    throw new ConfigError(`Invalid config:\n${innerErrors.map((l) => `  ${l}`).join("\n")}`);
+  }
+
   return {
     configPath,
     dataDir,
     projects: resolveProjects(cfg),
     sanitizePatterns: [...(cfg.git?.sanitize_patterns ?? [])],
+    ...(cfg.inner_agent !== undefined ? { innerAgent: resolveInnerAgent(cfg.inner_agent) } : {}),
     allowedRoots,
     mcpClients: new Map(
       cfg.mcp_clients.map((c) => [
