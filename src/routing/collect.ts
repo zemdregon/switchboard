@@ -11,6 +11,7 @@ import type { AdapterRegistry } from "../adapters/registry.js";
 import type {
   AuthResult,
   CompileRequest,
+  Ineligible,
   ProbeRunner,
   ProviderAdapter,
   ProviderId,
@@ -124,16 +125,42 @@ async function collectOne(
     const auth: AuthResult = await adapter.authPreflight(deps.runner);
     facts.auth = auth;
   }
+  facts.compile = compileCheck(adapter, req.profile, req.requirements, req.cwd);
+  return facts;
+}
+
+/**
+ * The adapter's own pure `compile` verdict for one resolved profile (T3.7). The single place the eligibility filter
+ * and `list_capabilities` (`supported_profiles`) ask an adapter whether it can compile a profile, so the two never
+ * disagree. No I/O; the adapter's binary path comes from an earlier `probe`.
+ */
+export function compileCheck(
+  adapter: ProviderAdapter,
+  profile: ResolvedProfile,
+  requirements: CapabilityRequirements,
+  cwd: string,
+): { ok: true } | Ineligible {
   const compileReq: CompileRequest = {
     runId: "route-check",
     objective: "eligibility check",
     constraints: [],
-    workspace: { cwd: req.cwd, writable: req.requirements.writable },
-    ...(req.requirements.model !== undefined ? { model: req.requirements.model } : {}),
+    workspace: { cwd, writable: requirements.writable },
+    ...(requirements.model !== undefined ? { model: requirements.model } : {}),
   };
-  const inv = adapter.compile(compileReq, req.profile);
-  facts.compile = "ineligible" in inv ? inv : { ok: true };
-  return facts;
+  const inv = adapter.compile(compileReq, profile);
+  return "ineligible" in inv ? inv : { ok: true };
+}
+
+/**
+ * Proposed (T3.7): the capability requirements for a profile with nothing beyond its resolved snapshot; the same
+ * derivation `RunLifecycle.checkEligibility` uses (`writable` unless `inspect-untrusted`).
+ */
+export function requirementsFor(trustProfile: TrustProfile, profile: ResolvedProfile): CapabilityRequirements {
+  return {
+    network: profile.network,
+    writable: trustProfile !== "inspect-untrusted",
+    ...(profile.shellAllowlist ? { shellAllowlist: profile.shellAllowlist } : {}),
+  };
 }
 
 /** Collect facts and run the filter. T2.4 calls this once per `delegate_task` before queueing. */

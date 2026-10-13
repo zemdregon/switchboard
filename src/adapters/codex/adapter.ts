@@ -80,7 +80,7 @@ const UNTRUSTED_PROFILES = new Set(["inspect-untrusted", "edit-untrusted"]);
 /** Every non-privileged profile the compile matrix evaluates (T3.6, TDD §4.2.1). */
 const MATRIX_PROFILES = new Set([...UNTRUSTED_PROFILES, "test-sandboxed", "trusted-development"]);
 
-/** T3.6 leaves the privileged cell to T3.17 (ADR-0016): no privileged or bypass-approved run compiles yet. */
+/** T3.6 leaves the privileged cell to T3.17 (ADR-0017): no privileged or bypass-approved run compiles yet. */
 export const PRIVILEGED_DEFERRED = "bypass/privileged compile awaits T3.17";
 
 export interface CodexAdapterOptions {
@@ -232,7 +232,7 @@ export class CodexAdapter implements ProviderAdapter {
     }
     const shellIneligible = this.#shell(profile, allowlist);
     if (shellIneligible) return shellIneligible;
-    // Assumption: Codex sandbox modes keep network off; R2 documents no network switch, so only `off` compiles (R-29).
+    // Assumption: Codex sandbox modes keep network off; R2 documents no network switch, so only `off` compiles (R-36).
     if (profile.network !== "off") {
       return ineligible("CAPABILITY_MISSING", `network=${profile.network}: no documented Codex network control`);
     }
@@ -245,13 +245,13 @@ export class CodexAdapter implements ProviderAdapter {
     }
     // R2/TDD §4.2 name no model-selection flag; never silently run a different model (Q-11, model part open).
     if (request.model !== undefined) return ineligible("CAPABILITY_MISSING", "no documented Codex model flag");
-    // Q-27, Proposed (Delegated): decision 10 names only the two untrusted profiles, and Codex cannot limit commands
-    // to build and test commands, so test-sandboxed fails closed until Q-27 is answered or T3.9 records HELD.
+    // Q-32, Proposed (Delegated): decision 10 names only the two untrusted profiles, and Codex cannot limit commands
+    // to build and test commands, so test-sandboxed fails closed until Q-32 is answered or T3.9 records HELD.
     if (profile.name === "test-sandboxed") {
       return ineligible(
         "PROFILE_UNSUPPORTED",
         "test-sandboxed: owner decision 10 covers only inspect-untrusted and edit-untrusted; Codex credential " +
-          "confinement is unverified (Q-27, R-23, FR-POL-06)",
+          "confinement is unverified (Q-32, R-23, FR-POL-06)",
       );
     }
     if (this.#exe === undefined) return ineligible("CAPABILITY_MISSING", `${CODEX_BINARY} not found on PATH`);
@@ -284,7 +284,7 @@ export class CodexAdapter implements ProviderAdapter {
    * Shell dimension. R2 documents no way to stop or narrow the commands Codex runs inside its sandbox (Q-11):
    * - untrusted profiles: `none` or an empty allowlist compile (owner decision 10, commands run inside the sandbox,
    *   confinement unverified, R-23); a non-empty allowlist is CAPABILITY_MISSING; `broad` is not compiled (Proposed).
-   * - test-sandboxed: a non-empty allowlist is CAPABILITY_MISSING; everything else falls to the Q-27 gate.
+   * - test-sandboxed: a non-empty allowlist is CAPABILITY_MISSING; everything else falls to the Q-32 gate.
    * - trusted-development: only `broad` compiles (commands inside the sandbox); `none` or any allowlist, empty
    *   included, is CAPABILITY_MISSING, since decision 10 does not cover it (Proposed, as the privileged matrix cell).
    */

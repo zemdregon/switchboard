@@ -371,7 +371,7 @@ describe("serve over stdio (process level)", () => {
   }, 60_000);
 });
 
-describe("privileged end to end (fake adapter, T3.4; FRD WF-7, T3, T19; owner decision 14)", () => {
+describe("privileged end to end (fake adapter, T3.4; FRD WF-7, T3, T19; owner decision 17)", () => {
   const SCOPE = {
     files: { access: "worktree" },
     shell: { mode: "none" },

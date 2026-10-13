@@ -6,6 +6,11 @@
  * gate, auth state, and adapter-compiled profile/capability support. Quota, concurrency, circuit-open and scoring are
  * M6/M7 and are not modelled here (BR-3 maps them to QUOTA_EXHAUSTED / ELIGIBILITY_NONE when they arrive).
  *
+ * T3.7 (profile-aware eligibility): per-profile support is the adapter's own `compile` verdict for the requested
+ * profile (the resolved snapshot, overrides included; see `compileCheck` in `collect.ts`), plus a host-platform rule
+ * for sandbox-dependent profiles (`PROFILE_PLATFORM_UNVERIFIED`, Proposed). `list_capabilities` reports the same
+ * verdicts per profile as `supported_profiles`.
+ *
  * Reason vocabulary follows FRD BR-3, not the LLD `Ineligible.reason` enum: BR-3 lists "no manifest" separately from
  * `ADAPTER_VERSION_UNVERIFIED`, while `registry.gate` returns `ADAPTER_VERSION_UNVERIFIED` for both. Proposed: the
  * filter distinguishes the two using the gate evidence (`validatedRange === null` means no valid manifest).
@@ -36,7 +41,12 @@ export type EligibilityReasonCode =
   | "AUTH_REQUIRED"
   | "AUTH_UNKNOWN"
   | "PROFILE_UNSUPPORTED"
-  | "CAPABILITY_MISSING";
+  | "CAPABILITY_MISSING"
+  /**
+   * T3.7 (Proposed): the requested profile depends on a sandbox whose behaviour on this host platform is unverified
+   * (see {@link profilePlatformSupported}). Per-profile, like the compile reasons; maps to ELIGIBILITY_NONE (BR-3).
+   */
+  | "PROFILE_PLATFORM_UNVERIFIED";
 
 export interface EligibilityReason {
   code: EligibilityReasonCode;
@@ -57,6 +67,57 @@ export function failureCodeForReason(code: EligibilityReasonCode): FailureCode {
     default:
       return "ELIGIBILITY_NONE";
   }
+}
+
+/**
+ * LLD §2 "Ineligible to failure code" (FRD BR-3): the taxonomy code for an adapter `Ineligible` reason. Used where an
+ * adapter refuses outside the filter, e.g. a race-time compile at dispatch (T3.7).
+ */
+export function failureCodeForIneligible(reason: Ineligible["reason"]): FailureCode {
+  return failureCodeForReason(reasonCodeForIneligible(reason));
+}
+
+/** Adapter `Ineligible.reason` to the filter's BR-3 vocabulary (one-to-one except VERSION_UNVERIFIED). */
+export function reasonCodeForIneligible(reason: Ineligible["reason"]): EligibilityReasonCode {
+  switch (reason) {
+    case "CAPABILITY_MISSING":
+      return "CAPABILITY_MISSING";
+    case "VERSION_UNVERIFIED":
+      return "ADAPTER_VERSION_UNVERIFIED";
+    case "NO_MANIFEST":
+      return "NO_MANIFEST";
+    case "AUTH_REQUIRED":
+      return "AUTH_REQUIRED";
+    default:
+      return "PROFILE_UNSUPPORTED";
+  }
+}
+
+/**
+ * T3.7, Proposed (Delegated): host platforms on which the per-profile compile matrices were evaluated. TDD §4.1.1 and
+ * §4.2.1 evaluate Linux cells only; macOS is "not supported yet" (NFR-PORT-02, M4) and Windows is Deferred
+ * (NFR-PORT-03).
+ */
+export const VERIFIED_PROFILE_PLATFORMS: readonly string[] = ["linux"];
+
+/**
+ * T3.7, Proposed (Delegated, fail closed): profiles whose confinement rests on a sandbox or on native controls whose
+ * behaviour was evaluated on Linux only. Every profile is listed: the untrusted profiles and `test-sandboxed` rely on
+ * FR-POL-06 confinement (Q-16) and Codex's native sandbox (owner decision 10); Codex compiles `trusted-development`
+ * to `--sandbox workspace-write`; a `privileged` scope's file dimension maps to the same controls. M4 narrows this
+ * set per verified cell when the macOS leg runs.
+ */
+export const SANDBOX_DEPENDENT_PROFILES: readonly TrustProfile[] = [
+  "inspect-untrusted",
+  "edit-untrusted",
+  "test-sandboxed",
+  "trusted-development",
+  "privileged",
+];
+
+/** True when `profile` may be compiled on `platform` at all (before asking the adapter). Pure. */
+export function profilePlatformSupported(profile: TrustProfile, platform: string): boolean {
+  return !SANDBOX_DEPENDENT_PROFILES.includes(profile) || VERIFIED_PROFILE_PLATFORMS.includes(platform);
 }
 
 export interface ProbeFact {
@@ -197,6 +258,22 @@ function checkProvider(f: ProviderFacts, input: EligibilityInput): EligibilityRe
     }
   }
 
+  // Host platform for the requested profile (T3.7, Proposed): sandbox-dependent profiles only where verified.
+  if (!profilePlatformSupported(input.trustProfile, input.platform)) {
+    reasons.push(
+      r(
+        "PROFILE_PLATFORM_UNVERIFIED",
+        `${input.trustProfile} on ${input.platform}: the ${f.provider} compile matrix is verified on ` +
+          `${VERIFIED_PROFILE_PLATFORMS.join(", ")} only (NFR-PORT-02, M4)`,
+        {
+          platform: input.platform,
+          trustProfile: input.trustProfile,
+          verifiedPlatforms: [...VERIFIED_PROFILE_PLATFORMS],
+        },
+      ),
+    );
+  }
+
   // Profile and capability support, as decided by the adapter's pure compile (BR-5: never downgraded).
   if (f.compile === undefined) {
     reasons.push(r("PROFILE_UNSUPPORTED", "adapter compile was not evaluated (fail closed)"));
@@ -213,17 +290,7 @@ function checkProvider(f: ProviderFacts, input: EligibilityInput): EligibilityRe
       },
     };
     // Adapter-side VERSION_UNVERIFIED / NO_MANIFEST / AUTH_REQUIRED keep their meaning; the rest map one-to-one.
-    const code: EligibilityReasonCode =
-      c.reason === "CAPABILITY_MISSING"
-        ? "CAPABILITY_MISSING"
-        : c.reason === "VERSION_UNVERIFIED"
-          ? "ADAPTER_VERSION_UNVERIFIED"
-          : c.reason === "NO_MANIFEST"
-            ? "NO_MANIFEST"
-            : c.reason === "AUTH_REQUIRED"
-              ? "AUTH_REQUIRED"
-              : "PROFILE_UNSUPPORTED";
-    reasons.push(r(code, c.detail, evidence));
+    reasons.push(r(reasonCodeForIneligible(c.reason), c.detail, evidence));
   }
   return reasons;
 }

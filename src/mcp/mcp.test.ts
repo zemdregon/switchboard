@@ -31,6 +31,8 @@ import { ArtifactStore } from "../artifacts/index.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger, type TrustProfile } from "../ledger/index.js";
 import { RunLifecycle, type RunLifecycleOptions } from "../lifecycle/index.js";
+import { createProfileResolver } from "../policy/index.js";
+import { compileCheck, requirementsFor, TRUST_PROFILE_ORDER } from "../routing/index.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import { createScrubber, createSwitchboardServer, type SwitchboardMcpServer, TOOL_NAMES } from "./index.js";
 
@@ -171,6 +173,8 @@ function gateFor(registry: AdapterRegistry, passCodex = false) {
 interface Setup {
   adapters: ProviderAdapter[];
   passCodex?: boolean;
+  /** Host platform injected into eligibility (T3.7); default linux. */
+  platform?: string;
   clients?: { id: string; max: TrustProfile }[];
   lifecycle?: Partial<RunLifecycleOptions>;
   start?: boolean;
@@ -190,7 +194,7 @@ async function setup(s: Setup): Promise<void> {
     globalConcurrency: 4,
     resolveProfile: profileFor,
     probeRunner,
-    eligibility: { platform: "linux", gate: gateFor(registry, s.passCodex) },
+    eligibility: { platform: s.platform ?? "linux", gate: gateFor(registry, s.passCodex) },
     ...s.lifecycle,
   });
   if (s.start !== false) lifecycle.start();
@@ -542,6 +546,100 @@ describe("Claude and Codex adapters on recorded replay fixtures", () => {
   });
 });
 
+describe("list_capabilities supported_profiles (T3.7: the compile matrix on this host)", () => {
+  /** Fake writer that also compiles `privileged` (test double): shows privileged is listed only when it compiles. */
+  const privilegedCapable = (): ProviderAdapter => {
+    const inner = fakeWriter();
+    return {
+      ...inner,
+      compile: (req, p) => inner.compile(req, p.name === "privileged" ? profileFor("edit-untrusted") : p),
+    };
+  };
+  const supportedBy = async () => {
+    const r = await call("list_capabilities");
+    expect(r.isError).toBe(false);
+    return Object.fromEntries(r.body.providers.map((p: Json) => [p.provider, p])) as Record<string, Json>;
+  };
+
+  it("linux, production profiles: equals each adapter's own compile of every profile", async () => {
+    const claude = recorded(claudeReplay("success-edit.jsonl")).adapter;
+    const codex = codexReplay("success_edit");
+    const resolve = createProfileResolver();
+    await setup({
+      adapters: [claude, codex, privilegedCapable()],
+      passCodex: true,
+      lifecycle: { resolveProfile: resolve },
+      start: false,
+    });
+    const by = await supportedBy();
+    // T3.5 / T3.6 matrices with the SRS defaults (TDD §4.1.1, §4.2.1); privileged never while it cannot compile.
+    expect(by.claude?.supported_profiles).toEqual(["inspect-untrusted", "edit-untrusted", "trusted-development"]);
+    expect(by.codex?.supported_profiles).toEqual(["inspect-untrusted", "edit-untrusted"]);
+    expect(by.fake?.supported_profiles).toEqual([...TRUST_PROFILE_ORDER]);
+    // The same verdicts the eligibility filter gets from compileCheck (one code path).
+    for (const [adapter, id] of [
+      [claude, "claude"],
+      [codex, "codex"],
+    ] as const) {
+      const matrix = TRUST_PROFILE_ORDER.filter((p) => {
+        if (p === "privileged") return false; // both refuse every privileged scope until T3.17
+        const snap = resolve(p);
+        return !("ineligible" in compileCheck(adapter, snap, requirementsFor(p, snap), root));
+      });
+      expect(by[id]?.supported_profiles).toEqual(matrix);
+    }
+    expect(by.claude?.adapter_status).toBe("READY");
+  });
+
+  it("non-Linux host: no sandbox-dependent profile is listed, and the provider status is unaffected", async () => {
+    await setup({
+      adapters: [recorded(claudeReplay("success-edit.jsonl")).adapter, privilegedCapable()],
+      lifecycle: { resolveProfile: createProfileResolver() },
+      platform: "darwin",
+      start: false,
+    });
+    const by = await supportedBy();
+    expect(by.claude).toMatchObject({ adapter_status: "READY", supported_profiles: [] });
+    expect(by.fake).toMatchObject({ adapter_status: "READY", supported_profiles: [] });
+  });
+
+  it("a delegate_task for a profile no provider compiles fails ELIGIBILITY_NONE with machine-readable reasons", async () => {
+    await setup({
+      adapters: [recorded(claudeReplay("success-edit.jsonl")).adapter],
+      clients: [{ id: "dev", max: "trusted-development" }],
+      lifecycle: { resolveProfile: createProfileResolver() },
+      start: false,
+    });
+    const r = await call("delegate_task", delegateArgs({ trust_profile: "test-sandboxed" }));
+    expect(r.body.error).toMatchObject({
+      code: "ELIGIBILITY_NONE",
+      details: { eligibility: [{ provider: "claude", code: "PROFILE_UNSUPPORTED" }] },
+    });
+    expect(runCount()).toBe(0);
+  });
+
+  it("privileged admission: still admitted when the only exclusion is the deferred compile; refused off Linux", async () => {
+    const clients = [{ id: "root", max: "privileged" as const }];
+    const args = delegateArgs({ trust_profile: "privileged", privileged_scope: SCOPE });
+    await setup({ adapters: [fakeWriter()], clients, start: false });
+    const ok = await call("delegate_task", args);
+    expect(ok.body.status).toBe("AWAITING_APPROVAL");
+    await lifecycle.shutdown();
+    for (const sv of servers.splice(0)) {
+      await sv.client.close();
+      await sv.mcp.close();
+    }
+    await setup({ adapters: [fakeWriter()], clients, platform: "darwin", start: false });
+    const before = runCount();
+    const refused = await call("delegate_task", args);
+    expect(refused.body.error).toMatchObject({
+      code: "ELIGIBILITY_NONE",
+      details: { eligibility: [{ provider: "fake", code: "PROFILE_PLATFORM_UNVERIFIED" }] },
+    });
+    expect(runCount()).toBe(before);
+  });
+});
+
 describe("validation (FR-MCP-09, FRD §7)", () => {
   it("schema, path and routing-hint failures are INVALID_REQUEST before any side effect", async () => {
     await setup({ adapters: [fakeWriter()] });
@@ -729,7 +827,7 @@ describe("privileged admission (T3.3; FR-POL-09, FR-MCP-06, BR-13, BR-14, V13, C
     const rows = approvals();
     expect(rows.map((r) => r.status)).toEqual(["PENDING", "PENDING"]);
     expect(rows[0]?.scope_json).toBe(rows[1]?.scope_json);
-    expect(rows[0]?.scope_hash).not.toBe(rows[1]?.scope_hash); // bound to the meta-session (owner decision 14)
+    expect(rows[0]?.scope_hash).not.toBe(rows[1]?.scope_hash); // bound to the meta-session (owner decision 17)
   });
 
   it("cancel_run while AWAITING_APPROVAL ends CANCELLED and closes the row DENIED by cancel_run (Q-15)", async () => {

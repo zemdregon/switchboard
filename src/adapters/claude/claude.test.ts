@@ -416,7 +416,7 @@ describe("claude compile matrix (M3)", () => {
       "trusted-development",
       { shell: "broad" },
       true,
-      { reason: "CAPABILITY_MISSING", detail: /shell=broad with network=off.*Q-29/ },
+      { reason: "CAPABILITY_MISSING", detail: /shell=broad with network=off.*Q-34/ },
     ],
     [
       "trusted-development network=policy",
@@ -590,7 +590,7 @@ describe("claude compile matrix (M3)", () => {
           }
           compiledCount += 1;
           expect(name, label).not.toBe("test-sandboxed"); // R-10, Q-16
-          expect(profile.shell, label).not.toBe("broad"); // Q-29: never compiled for Claude today
+          expect(profile.shell, label).not.toBe("broad"); // Q-34: never compiled for Claude today
           if (name === "trusted-development") {
             expect([profile.network, profile.repoConfig], label).toEqual(["off", "disabled"]);
           }

@@ -1,6 +1,6 @@
 /**
  * Privileged approval rules shared by the operator CLI, the `serve` daemon, startup reconciliation and dispatch
- * (FRD WF-7, BR-14, T3, T19; LLD §3.1 "Approve" and "Bypass"; ADR-0016; owner decisions 13 and 14).
+ * (FRD WF-7, BR-14, T3, T19; LLD §3.1 "Approve" and "Bypass"; ADR-0017; owner decisions 13 and 17).
  *
  * T3.3: a run cancelled while AWAITING_APPROVAL closes its own `PENDING` approval as `DENIED`, in the caller's
  * transaction; `decided_by` names the cancel source (`cancel_run` for the MCP tool, the requesting OS user for an operator
@@ -8,7 +8,7 @@
  * update-once trigger allows any change from `PENDING` (LLD §1).
  *
  * Only the approval the run itself requested is touched, and only from AWAITING_APPROVAL: cancelling a later run of an
- * approved meta-session leaves the approval unchanged (owner decision 14, T3.4).
+ * approved meta-session leaves the approval unchanged (owner decision 17, T3.4).
  *
  * T3.4 (Proposed, Delegated):
  * - `approve`/`deny` act only on the run that requested the approval, while it is AWAITING_APPROVAL and its row is
