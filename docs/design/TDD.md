@@ -1799,6 +1799,90 @@ and `muse --version` as dated fixtures. Record the answer next to each item; any
 13. **Record.** Update this table row by row (confirmed, corrected or `Unverified`), R-33 and the research note, and
     attach the fixtures; report the result to the orchestrator for the T4.71 status line.
 
+### 4.9 Adapter-addition checklist (T4.2)
+
+What a contributor supplies to add a provider. Requirements are cited, not restated: NFR-MAINT-01 (an addition touches
+only the adapter module, its compliance manifest, its fixtures and one registry entry), NFR-MAINT-03 (user
+documentation), FR-ADP-01, FR-ADP-02, FR-ADP-04, FR-ADP-11, FR-GIT-01 and FR-GIT-02. The adapter contract is
+[LLD §2](LLD.md#2-adapter-contract), the failure codes are [LLD §4](LLD.md#4-failure-taxonomy), and the registry rules
+are in `src/adapters/providers.ts` and [ADR-0035](../adr/0035-provider-registry-table-and-declared-bypass-flags.md).
+The roadmap's provider groups (T4.n0 to T4.n9) order the work; this list says what each must have produced.
+
+**Checklist.** Tick every item in the pull request; an item that does not apply says why.
+
+1. **Module.** A directory under `src/adapters/<id>/` whose adapter class implements `ProviderAdapter` (`id`,
+   `transports`, `gitWriteControl`, `gitCapabilities`, `probe`, `authPreflight`, `compile`, `parseEvent`,
+   `extractResult`, `resumeArgs`, `classifyFailure`, optional `cancel`). No edit outside the module, manifest, fixtures
+   and the registry entry (item 12), apart from the documents this change affects.
+2. **Manifest.** `src/adapters/manifests/<id>.json`, starting with the range that admits no version (`<0.0.0`), so the
+   adapter reports `ADAPTER_VERSION_UNVERIFIED` until `adapters validate` (T4.4) records a version. Never invent a
+   validated version or range.
+3. **Probe and auth preflight.** `probe` covers FR-ADP-02 steps 1 to 5 and `authPreflight` the auth step, both through
+   the supplied `ProbeRunner`; neither reads a credential file, starts a login or makes a model call.
+4. **Compile matrix.** `compile` is pure and returns an `Invocation` or an `Ineligible` for each of the five trust
+   profiles (`inspect-untrusted`, `edit-untrusted`, `test-sandboxed`, `trusted-development`, `privileged`). Every
+   `Ineligible` cell carries a reason (FR-POL-02: never a downgraded profile). The provider's TDD section holds the
+   matrix with the source of each cell.
+5. **Stream parser and failure mapping.** `parseEvent` and `extractResult` read only the provider's structured output
+   (FR-ADP-04). `classifyFailure` maps every piece of evidence to one [LLD §4](LLD.md#4-failure-taxonomy) code; unknown
+   evidence, unknown event kinds and a missing result never map to success.
+6. **Resume.** `resumeArgs` continues a native session from a `NativeBinding` (FR-SES-03) and is `Ineligible` with a
+   reason where the provider has no documented resume.
+7. **Replay fixtures.** Recorded-style fixtures under the adapter's `fixtures/` directory, replayed by the shared replay
+   helper (T4.3) rather than a per-adapter copy. Synthetic fixtures say so and are replaced by scrubbed captures from
+   the operator task (no credential, token, account identifier or private prompt text).
+8. **Conformance cases.** Cases for `ConformanceCaseKind` in `src/adapters/conformance.ts` covering at least
+   `REQUIRED_CASE_KINDS` (FR-ADP-11), run through `runConformanceSuite` with no live provider.
+9. **Malicious-fixture leg.** A per-adapter leg of the malicious-fixture suite in `test/malicious/` (T4.3), driven by the
+   compiled argv and replayed hostile streams. It proves compile and parse behaviour only; "no escape" on a real CLI is
+   the operator task (`T4.n8`).
+10. **Git declarations.** `gitWriteControl` (FR-GIT-01) and `gitCapabilities` (FR-GIT-02) at the fail-closed values:
+    `none-documented` unless the spike sources a deny control, and `commitChannel` `finalize-only` (FR-GIT-09). An
+    `injected` channel needs its own ADR, an operator opt-in and a live check.
+11. **Bypass-class flags.** Every flag, short spelling and flag value the provider documents as bypass-class
+    (FR-POL-03, "or equivalents") is declared as data in the registry entry: `bypassFlags` for long flags,
+    `bypassShortFlags` and `bypassValues` for short spellings and values
+    ([ADR-0037](../adr/0037-argv-audit-short-flags-and-bypass-values.md)), each with its source. The adapter emits
+    none of them outside an approved `privileged` scope that sets `bypass` (ADR-0017). Settings-file and environment
+    forms are outside what the argv audit sees (ADR-0037 limits) and are listed in the provider's section.
+12. **Registry entry and README login row.** One entry in `BUILTIN_PROVIDERS` (`src/adapters/providers.ts`) with `id`,
+    `configId`, `kind`, `label` and `create`, and a row in the README's login table (NFR-MAINT-03) giving the native
+    login step the adapter reports and the status of that step. The row states only what the spike sourced.
+
+**Conventions (from the §6.8 roadmap conventions, restated as obligations, not redefined).** Group numbering and the
+operator-only tasks follow the roadmap; no bypass-class flag is emitted outside an approved bypass scope; an approved
+bypass scope on a `host` project is `Ineligible` only for a reason other than the Git-write control (owner decision 46).
+
+**No provider fact from memory.** A flag, output field, exit code, version, model name, limit, price or login step is
+written only with a citation to the provider's documentation, a research note, or a dated spike or live check, or it is
+marked **Unverified** (naming the task that will verify it) or **Assumption**. This applies to code comments, manifests,
+fixtures, tests and the README as much as to this document.
+
+**No model names in adapter source (T4.5).** Adapter source contains no model name, alias or context limit as a
+literal. Models come from operator configuration and the provider's listing command, through the model registry.
+
+**State of automation (2026-10-13).** The T4.1 scratch adapter (`src/adapters/fixtures/scratch-provider.ts`, exercised
+by `src/adapters/providers.test.ts` and `src/adapters/bypass-forms.test.ts`) wraps the fake adapter. Against the
+checklist it automates:
+
+- items 1 and 12 (registry entry only): it is registered at runtime from a fixture module with no other source edit and
+  appears in `doctor`, `list_capabilities` and config validation;
+- item 3 in part: `doctor` probes it through the fake adapter's `probe`;
+- item 10 in part: `gitWriteControl.kind` is asserted `none-documented`;
+- item 11: long flag, short flag and flag value are refused before spawn except in the approved bypass case, and the
+  scratch adapter emits its flag only in that case (item 4 in part: only the `privileged` cells).
+
+**Not yet automated** (no test or lint checks it today; reviewers check it by hand):
+
+- item 2: the scratch adapter has no manifest (`doctor` reports `NO_MANIFEST`);
+- item 4: the `Ineligible` reason for each of the five profile cells (only `privileged` is asserted);
+- item 5: `parseEvent`, `extractResult` and `classifyFailure` are the fake's; no scratch-specific parser test exists;
+- items 6, 7, 8 and 9: no test runs resume, replay fixtures, `runConformanceSuite` or a malicious-fixture leg for the
+  scratch adapter, and the shared replay helper and per-adapter malicious leg are T4.3 work;
+- item 10 in part: `gitCapabilities` is not asserted for the scratch adapter;
+- item 12 in part: nothing checks the README login row;
+- the model-literal ban: no check exists (T4.5).
+
 ## 5. Implementation strategy by milestone
 
 Scope and exit criteria are owned by the [ROADMAP](../ROADMAP.md#6-milestones); this section gives the technical
