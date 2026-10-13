@@ -1627,6 +1627,17 @@ source, and where the research is silent the task is to find the fact, not to as
 | T4.79 | Muse Code in the README and status here | NFR-MAINT-02, NFR-MAINT-03 | T4.75 to T4.77 (final after T4.78) | As T4.29 |
 | T4.90 | M4 closure: the M4 row in §6 with evidence per acceptance criterion, README "Status", TDD §4 and §5, and any document the work proved wrong | NFR-MAINT-02, NFR-MAINT-03 | All other M4 tasks that are not blocked | §6 shows M4 `Done` or `Partial` with the open items named (§6.8.2) |
 
+**T4.1 status note (2026-10-13, Delegated agent work, not owner-approved).** Implemented on branch `m4-registry`, not
+yet merged: the provider registry table `BUILTIN_PROVIDERS` in `src/adapters/providers.ts` now derives `ProviderId`,
+`PROVIDER_IDS` and the provider parts of the config schema, `CONFIG_TO_ADAPTER_ID`, and the `serve` and `doctor`
+registrations; each entry declares its bypass-class flags, which the argv audit adds to the unchanged `BYPASS_FLAGS`
+([ADR-0035](adr/0035-provider-registry-table-and-declared-bypass-flags.md); [LLD §2](design/LLD.md#2-adapter-contract)
+table updated). Evidence: `src/adapters/providers.test.ts` (scratch adapter from
+`src/adapters/fixtures/scratch-provider.ts` in `doctor`, `list_capabilities` and config validation; the T3.17 matrix
+over every declared flag). Limits: Claude Code and Codex stay exported from `src/adapters/index.ts` (new adapters are
+not added there); a runtime-registered id is outside the TypeScript `ProviderId` union, and the MCP dynamic-project
+schema keeps the built-in config ids.
+
 #### 6.8.1 Order, waves and hot files
 
 - **Wave A (agents, now; nothing needs a provider CLI):** T4.1, T4.7, T4.9 and the spikes T4.20, T4.30, T4.40, T4.50,

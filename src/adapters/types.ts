@@ -5,8 +5,10 @@
  */
 import type { PrivilegedScopeBinding } from "../policy/types.js";
 import type { FailureCode } from "./failure.js";
+import type { BuiltinProviderId } from "./providers.js";
 
-export type ProviderId = "claude" | "codex" | "grok" | "antigravity" | "cursor" | "opencode" | "kimi" | "fake";
+/** Adapter ids, derived from the provider registry table `BUILTIN_PROVIDERS` (`./providers.ts`, T4.1, LLD §2). */
+export type ProviderId = BuiltinProviderId;
 export type TrustProfile =
   | "inspect-untrusted"
   | "edit-untrusted"

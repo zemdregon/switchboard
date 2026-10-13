@@ -443,19 +443,28 @@ export interface Ineligible {
 }
 ```
 
-**Provider ids.** Two id spaces exist (Proposed, M2; the single mapping table is `CONFIG_TO_ADAPTER_ID` in
-`src/routing/collect.ts`). Config files and `providers.<id>` use the provider names from the roadmap; the adapter
-contract, the ledger and MCP tools use the `ProviderId` above. They differ for four providers:
+**Provider ids.** Two id spaces exist (Proposed, M2). Config files and `providers.<id>` use the provider names from the
+roadmap; the adapter contract, the ledger and MCP tools use the `ProviderId` above. *As built (T4.1, 2026-10-13,
+Delegated, [ADR-0035](../adr/0035-provider-registry-table-and-declared-bypass-flags.md)):* both come from one provider
+registry table, `BUILTIN_PROVIDERS` in `src/adapters/providers.ts`; `ProviderId` in `src/adapters/types.ts`,
+`PROVIDER_IDS` and the `providers` and `allowed_providers` schema parts in `src/config/schema.ts`,
+`CONFIG_TO_ADAPTER_ID` in `src/routing/collect.ts` and the `serve` and `doctor` registrations are derived from it.
 
-| Config provider id | Adapter `ProviderId` |
-| --- | --- |
-| `claude-code` | `claude` |
-| `grok-build` | `grok` |
-| `kimi-code` | `kimi` |
-| `muse-code` | `muse` |
-| `codex`, `antigravity`, `cursor`, `opencode` | the same string |
+| Config provider id | Adapter `ProviderId` | In the table (T4.1) | Declared bypass-class flags (source) |
+| --- | --- | --- | --- |
+| `claude-code` | `claude` | Adapter | `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions` ([TDD §4.1.1](TDD.md#411-claude-code-native-controls-per-profile-and-platform-t30), `claude --help` 2.1.296) |
+| `codex` | `codex` | Adapter | `--yolo`, `--full-auto` ([R2] L28, L125, L126) |
+| `grok-build` | `grok` | Reserved (no adapter yet) | None yet (T4.20) |
+| `antigravity` | `antigravity` | Reserved | None yet (T4.30) |
+| `cursor` | `cursor` | Reserved | None yet (T4.40) |
+| `opencode` | `opencode` | Reserved | None yet (T4.50) |
+| `kimi-code` | `kimi` | Reserved | None yet (T4.60) |
+| `muse-code` | `muse` | Not yet: added with its adapter module (T4.72), as the `ProviderId` above anticipates | None yet (T4.70) |
+| none | `fake` | Test-only adapter (`serve` registers it only behind the test-only switch) | None |
 
-`fake` is a test adapter with no config id.
+A reserved entry is accepted in configuration and never registered. The argv audit refuses the shared `BYPASS_FLAGS`
+plus every flag the table declares, except in the approved bypass case (FR-POL-03, ADR-0017, ADR-0035); a declaration
+can only add to the shared list.
 
 **Ineligible to failure code.** The adapter reasons map to the codes in §4 per
 [FRD BR-3](../requirements/FRD.md#3-business-rules): `AUTH_REQUIRED` gives `AUTH_REQUIRED`; `VERSION_UNVERIFIED` gives

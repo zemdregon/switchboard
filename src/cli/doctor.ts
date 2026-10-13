@@ -2,20 +2,19 @@
 import { accessSync, constants, existsSync, statSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { FakeAdapter } from "../adapters/fake/adapter.js";
 import {
   AdapterRegistry,
   type AuthResult,
-  ClaudeAdapter,
-  CodexAdapter,
+  configIdForAdapterId,
   createProbeRunner,
   type ProbeResult,
+  providerEntries,
+  providerEntry,
 } from "../adapters/index.js";
 import { loadConfig, type ResolvedConfig } from "../config/index.js";
 import { currentSchemaVersion, LEDGER_FILE_NAME, MIGRATIONS } from "../ledger/index.js";
 import { inspectDataDirLock } from "../lock/index.js";
 import { type AppliedOverride, validateProfileOverrides } from "../policy/index.js";
-import { CONFIG_TO_ADAPTER_ID } from "../routing/index.js";
 import { gitText, parseGitVersion, versionAtLeast } from "../workspace/git.js";
 import { findOrphans, MIN_GIT_VERSION, planRetentionGc } from "../workspace/index.js";
 import { type CliIo, JSON_SCHEMA_VERSION, PROBE_ENV_ALLOWLIST } from "./io.js";
@@ -227,15 +226,17 @@ async function checkRetentionAndOrphans(cfg: ResolvedConfig, now: Date): Promise
   }
 }
 
+/**
+ * Every provider registry entry with an adapter (`src/adapters/providers.ts`, T4.1): test-only entries first (the
+ * fake), then the real providers in table order.
+ */
 export function defaultAdapters(): AdapterRegistry {
-  return new AdapterRegistry().register(new FakeAdapter()).register(new ClaudeAdapter()).register(new CodexAdapter());
+  const withAdapter = providerEntries().filter((e) => e.create !== undefined);
+  const ordered = [...withAdapter.filter((e) => e.kind === "test"), ...withAdapter.filter((e) => e.kind !== "test")];
+  const registry = new AdapterRegistry();
+  for (const e of ordered) if (e.create) registry.register(e.create({}));
+  return registry;
 }
-
-const ADAPTER_LABELS: Readonly<Record<string, string>> = {
-  fake: "fake adapter (test stand-in, not a real provider)",
-  claude: "Claude Code (real provider)",
-  codex: "Codex (real provider)",
-};
 
 /**
  * `providers.<config id>.enabled: false` disables a provider (default on). Doctor reports it as skipped without
@@ -243,9 +244,7 @@ const ADAPTER_LABELS: Readonly<Record<string, string>> = {
  */
 function isDisabledInConfig(cfg: ResolvedConfig | undefined, adapterId: string): boolean {
   if (cfg === undefined) return false;
-  const configId = (Object.keys(CONFIG_TO_ADAPTER_ID) as (keyof typeof CONFIG_TO_ADAPTER_ID)[]).find(
-    (k) => CONFIG_TO_ADAPTER_ID[k] === adapterId,
-  );
+  const configId = configIdForAdapterId(adapterId);
   return configId !== undefined && cfg.providers.get(configId)?.enabled === false;
 }
 
@@ -253,8 +252,9 @@ async function probeAdapters(registry: AdapterRegistry, cfg?: ResolvedConfig): P
   const runner = createProbeRunner(PROBE_ENV_ALLOWLIST);
   const out: DoctorAdapterReport[] = [];
   for (const a of registry.list()) {
-    const kind = a.id === "fake" ? "fake" : "real";
-    const label = ADAPTER_LABELS[a.id] ?? `${a.id} (real provider)`;
+    const entry = providerEntry(a.id);
+    const kind = entry?.kind === "test" ? "fake" : "real";
+    const label = entry?.label ?? `${a.id} (real provider)`;
     if (isDisabledInConfig(cfg, a.id)) {
       out.push({
         id: a.id,

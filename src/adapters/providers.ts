@@ -1,0 +1,232 @@
+/**
+ * Provider registry table (T4.1; NFR-MAINT-01, FR-POL-03, FR-ADP-01; LLD §2 "Provider ids"; ADR-0035). The single place
+ * a provider is named. Everything below is derived from {@link BUILTIN_PROVIDERS}:
+ * - the adapter id type `ProviderId` (`./types.ts`) and the config id type and list `PROVIDER_IDS`
+ *   (`src/config/schema.ts`), with the `providers.<id>` and `allowed_providers` parts of the config schema;
+ * - `CONFIG_TO_ADAPTER_ID` (`src/routing/collect.ts`) and the runtime lookups {@link adapterIdForConfigId} and
+ *   {@link configIdForAdapterId};
+ * - the adapters `serve` registers (`buildRegistry`) and `doctor` probes (`defaultAdapters`, with its labels);
+ * - the bypass-class flags the argv audit refuses on top of the shared `BYPASS_FLAGS` ({@link declaredBypassFlags}).
+ *
+ * Adding an adapter: its module, manifest and fixtures, plus one entry here. Per-adapter modules are not re-exported
+ * from `./index.ts`; Claude Code and Codex stay exported there for the code that already imports them.
+ *
+ * Module-evaluation rule (load-bearing): `./audit.ts` imports this module and the Claude adapter imports `./audit.ts`,
+ * so the import graph has a cycle. This module may touch the adapter modules' bindings only inside `create` closures,
+ * never at top level, so whichever module is loaded first, nothing here reads an uninitialised binding. The bypass
+ * flags are therefore literal data in each entry, with their source.
+ *
+ * Runtime registration ({@link registerProvider}) exists so a test can register a scratch adapter from a fixture
+ * module with no source edit (the T4.1 "Done when"). It can only add: it refuses an id or config id already in use,
+ * a test-only entry, and malformed flags; the shared `BYPASS_FLAGS` and every built-in declaration stay in force.
+ * Its static limit: TypeScript's `ProviderId` is the built-in union, so a runtime id needs a cast (tests only).
+ */
+import { ClaudeAdapter } from "./claude/adapter.js";
+import { CodexAdapter } from "./codex/adapter.js";
+import { FakeAdapter, type FakeScenario } from "./fake/adapter.js";
+import type { ProviderAdapter } from "./types.js";
+
+/** What `serve` and `doctor` pass to an entry's factory. Fields are named after the provider they configure. */
+export interface ProviderFactoryOptions {
+  /** `providers.claude-code.git_channel` (T9.4b, ADR-0029, ADR-0033); only the Claude Code factory reads it. */
+  readonly claudeGitChannel?: boolean;
+  /** Test-only fake scenario (`serve`'s fake switch); only the fake factory reads it. */
+  readonly fakeScenario?: FakeScenario;
+}
+
+/** One provider: static data plus, once its adapter module exists, a factory. */
+export interface ProviderEntry {
+  /** Adapter id (`ProviderId`): used by the adapter contract, the ledger and the MCP tools. */
+  readonly id: string;
+  /** Config id (`providers.<id>`, `allowed_providers`). Absent only for the test-only fake, which no config enables. */
+  readonly configId?: string;
+  /** `real` provider CLI, or `test` stand-in (registered by `serve` only behind the test-only switch). */
+  readonly kind: "real" | "test";
+  /** `doctor` label; absent means `<id> (real provider)`. */
+  readonly label?: string;
+  /**
+   * The provider's bypass-class flags ("or equivalents", FR-POL-03) with their source. The argv audit refuses each of
+   * them, as a bare flag or as `flag=value`, exactly as it refuses the shared `BYPASS_FLAGS`: everywhere except an
+   * approved `privileged` scope that sets `bypass` (ADR-0017, ADR-0035). Adds to the shared list; removes nothing.
+   */
+  readonly bypassFlags: readonly string[];
+  /** Absent while the provider has no adapter module yet (reserved id: accepted in config, never registered). */
+  readonly create?: (opts: ProviderFactoryOptions) => ProviderAdapter;
+}
+
+/**
+ * The built-in table, in the order `serve` registers adapters and config ids are listed. Reserved entries (no
+ * `create`) keep the config and adapter ids the code accepted before T4.1; each provider's spike (`T4.n0`) adds its
+ * sourced bypass-class flags, and its `T4.n2` task adds `create`. No id is added for a provider without an adapter
+ * task (LLD §2 lists `muse`/`muse-code`; they arrive with Muse Code's own module, T4.72).
+ */
+export const BUILTIN_PROVIDERS = [
+  {
+    id: "claude",
+    configId: "claude-code",
+    kind: "real",
+    label: "Claude Code (real provider)",
+    // `claude --help` 2.1.296 (TDD §4.1.1 "Bypass flag availability", [H]): `--dangerously-skip-permissions` ("Bypass
+    // all permission checks") and `--allow-dangerously-skip-permissions`. The mode value `bypassPermissions` is a
+    // value of `--permission-mode`, not a flag; the adapter never emits it (see its header).
+    bypassFlags: ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"],
+    create: (o: ProviderFactoryOptions): ProviderAdapter =>
+      new ClaudeAdapter({ gitChannel: o.claudeGitChannel === true }),
+  },
+  {
+    id: "codex",
+    configId: "codex",
+    kind: "real",
+    label: "Codex (real provider)",
+    // [R2] L28, L125 (`--yolo`, not to be built around) and L126 (`--full-auto`, deprecated compatibility option).
+    bypassFlags: ["--yolo", "--full-auto"],
+    create: (): ProviderAdapter => new CodexAdapter(),
+  },
+  { id: "grok", configId: "grok-build", kind: "real", bypassFlags: [] },
+  { id: "antigravity", configId: "antigravity", kind: "real", bypassFlags: [] },
+  { id: "cursor", configId: "cursor", kind: "real", bypassFlags: [] },
+  { id: "opencode", configId: "opencode", kind: "real", bypassFlags: [] },
+  { id: "kimi", configId: "kimi-code", kind: "real", bypassFlags: [] },
+  {
+    id: "fake",
+    kind: "test",
+    label: "fake adapter (test stand-in, not a real provider)",
+    bypassFlags: [],
+    create: (o: ProviderFactoryOptions): ProviderAdapter =>
+      new FakeAdapter(o.fakeScenario !== undefined ? { scenario: o.fakeScenario } : {}),
+  },
+] as const;
+// Annotated factories and this separate check (not `satisfies`) keep the inferred table type free of `ProviderAdapter`,
+// whose `id` is derived from this table (a `satisfies` here makes the type circular).
+const BUILTIN_ENTRIES: readonly ProviderEntry[] = BUILTIN_PROVIDERS;
+
+type Builtin = (typeof BUILTIN_PROVIDERS)[number];
+/** Adapter ids of the built-in table (`ProviderId` in `./types.ts`). */
+export type BuiltinProviderId = Builtin["id"];
+/** Config ids of the built-in table (`ProviderId` in `src/config/schema.ts`). */
+export type ConfigProviderId = Extract<Builtin, { readonly configId: string }>["configId"];
+
+/** Config ids of the built-in table, in table order. */
+export const BUILTIN_CONFIG_PROVIDER_IDS: readonly ConfigProviderId[] = Object.freeze(
+  BUILTIN_PROVIDERS.flatMap((e) => ("configId" in e ? [e.configId] : [])),
+);
+
+/** Config id to adapter id for the built-in table (LLD §2 "Provider ids"). */
+export const BUILTIN_CONFIG_TO_ADAPTER_ID: Readonly<Record<ConfigProviderId, BuiltinProviderId>> = Object.freeze(
+  Object.fromEntries(BUILTIN_PROVIDERS.flatMap((e) => ("configId" in e ? [[e.configId, e.id]] : []))) as Record<
+    ConfigProviderId,
+    BuiltinProviderId
+  >,
+);
+
+// ---- validation and runtime registration -------------------------------------------------------------------------
+
+/** Id shape (Delegated): lower-case, starts with a letter, at most 32 characters; covers every built-in id. */
+const ID_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
+/** Flag shape (Delegated): `-x` or `--name`, no value part (`=`), no whitespace. The audit also matches `flag=value`. */
+const FLAG_PATTERN = /^(?:-[A-Za-z0-9]|--[A-Za-z0-9][A-Za-z0-9-]*)$/;
+
+function entryProblems(entry: ProviderEntry, others: readonly ProviderEntry[]): string[] {
+  const problems: string[] = [];
+  if (!ID_PATTERN.test(entry.id)) problems.push(`id ${JSON.stringify(entry.id)} does not match ${ID_PATTERN.source}`);
+  if (entry.configId !== undefined && !ID_PATTERN.test(entry.configId)) {
+    problems.push(`config id ${JSON.stringify(entry.configId)} does not match ${ID_PATTERN.source}`);
+  }
+  if (entry.kind !== "real" && entry.kind !== "test") problems.push(`kind must be real or test`);
+  if (entry.kind === "test" && entry.configId !== undefined) problems.push("a test-only entry has no config id");
+  if (entry.kind === "real" && entry.configId === undefined) problems.push("a real provider needs a config id");
+  if (!Array.isArray(entry.bypassFlags)) problems.push("bypassFlags must be an array");
+  else {
+    for (const f of entry.bypassFlags) {
+      if (typeof f !== "string" || !FLAG_PATTERN.test(f)) problems.push(`malformed bypass flag ${JSON.stringify(f)}`);
+    }
+  }
+  const ids = new Set(others.flatMap((o) => [o.id, ...(o.configId !== undefined ? [o.configId] : [])]));
+  // Ids and config ids share one namespace across entries (`codex` is both for one provider, which is allowed).
+  if (ids.has(entry.id)) problems.push(`id ${entry.id} is already registered`);
+  if (entry.configId !== undefined && entry.configId !== entry.id && ids.has(entry.configId)) {
+    problems.push(`config id ${entry.configId} is already registered`);
+  }
+  return problems;
+}
+
+export class ProviderRegistrationError extends Error {
+  constructor(readonly problems: readonly string[]) {
+    super(`provider registration refused: ${problems.join("; ")}`);
+    this.name = "ProviderRegistrationError";
+  }
+}
+
+// Built-in table checked once at load (fail closed: a malformed built-in entry stops the process), then frozen so no
+// caller can shorten a declared flag list at runtime (defence in depth; the types already say readonly).
+{
+  const seen: ProviderEntry[] = [];
+  for (const e of BUILTIN_ENTRIES) {
+    const problems = entryProblems(e, seen);
+    if (problems.length > 0) throw new ProviderRegistrationError(problems);
+    seen.push(e);
+    Object.freeze(e.bypassFlags);
+    Object.freeze(e);
+  }
+  Object.freeze(BUILTIN_PROVIDERS);
+}
+
+const extra: ProviderEntry[] = [];
+let generation = 0;
+
+/**
+ * Registers a provider at runtime (tests: the T4.1 scratch adapter). Additive only: refused, with nothing changed,
+ * when the entry is test-only, reuses an id or config id, or declares a malformed flag. Returns the function that
+ * removes exactly this registration; callers in tests call it in `finally`/`afterEach` so module state does not leak.
+ */
+export function registerProvider(entry: ProviderEntry): () => void {
+  const problems = entryProblems(entry, providerEntries());
+  if (entry.kind === "test") problems.push("test-only entries are built in only (the fake adapter)");
+  if (problems.length > 0) throw new ProviderRegistrationError(problems);
+  const frozen: ProviderEntry = Object.freeze({ ...entry, bypassFlags: Object.freeze([...entry.bypassFlags]) });
+  extra.push(frozen);
+  generation += 1;
+  let removed = false;
+  return () => {
+    if (removed) return;
+    removed = true;
+    const i = extra.indexOf(frozen);
+    if (i >= 0) extra.splice(i, 1);
+    generation += 1;
+  };
+}
+
+/** Changes whenever a runtime registration is added or removed (config validation recompiles its schema on change). */
+export function providerGeneration(): number {
+  return generation;
+}
+
+/** Every entry: the built-in table, then runtime registrations in registration order. */
+export function providerEntries(): readonly ProviderEntry[] {
+  return [...BUILTIN_ENTRIES, ...extra];
+}
+
+/** The entry for an adapter id, if any. */
+export function providerEntry(id: string): ProviderEntry | undefined {
+  return providerEntries().find((e) => e.id === id);
+}
+
+/** Config ids of every entry (config validation). */
+export function configProviderIds(): string[] {
+  return providerEntries().flatMap((e) => (e.configId !== undefined ? [e.configId] : []));
+}
+
+/** Adapter id for a config id; undefined when no entry has it. */
+export function adapterIdForConfigId(configId: string): string | undefined {
+  return providerEntries().find((e) => e.configId === configId)?.id;
+}
+
+/** Config id for an adapter id; undefined for the test-only fake and unknown ids. */
+export function configIdForAdapterId(id: string): string | undefined {
+  return providerEntries().find((e) => e.id === id)?.configId;
+}
+
+/** Every adapter-declared bypass-class flag (deduplicated; the argv audit adds these to `BYPASS_FLAGS`). */
+export function declaredBypassFlags(): string[] {
+  return [...new Set(providerEntries().flatMap((e) => e.bypassFlags))];
+}
