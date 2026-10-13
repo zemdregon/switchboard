@@ -64,6 +64,15 @@ export class ArtifactStore {
     this.redact = options.redact ?? defaultRedactor;
   }
 
+  /**
+   * The store's own redactor, for callers that must redact text before they wrap it in a structure (for example JSON
+   * escaping, which could otherwise split a `key=value` secret so the prefixed patterns no longer match). `put` still
+   * redacts the final bytes.
+   */
+  redactContent(content: Buffer): Buffer {
+    return this.redact(content);
+  }
+
   /** Absolute path for a hash; validates the hash first so no input can escape the root. */
   pathFor(hash: string): string {
     assertHash(hash);

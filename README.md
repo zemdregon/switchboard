@@ -316,8 +316,19 @@ adapter compiles the profile into the provider's own permission and sandbox cont
 | `trusted-development` | only some settings | Each adapter compiles the settings it can express (for example Codex only with a `broad` shell) and refuses the rest with `ELIGIBILITY_NONE`; `list_capabilities` shows which profiles each provider supports on this host. |
 | `privileged` | yes, per provider | Above the client's `max_trust_profile`: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or, for a client with `privileged_approval: "not_required"`, starts at once). An approved run is compiled by its provider's adapter from the approved scope; a provider that cannot express the scope fails the run `ELIGIBILITY_NONE` before any process starts. |
 
-A request above the client's `max_trust_profile` also fails `PERMISSION_BLOCKED`. Non-empty
-`verification_commands` are refused with `INVALID_REQUEST` until verification lands in milestone 3.
+A request above the client's `max_trust_profile` also fails `PERMISSION_BLOCKED`.
+
+**Verification commands.** `delegate_task` may pass `verification_commands`, a list of argv arrays such as
+`[["npm", "test"]]`. After the agent finishes successfully, Switchboard runs them one after another in the run's
+worktree, with no shell (`;`, `$( )` and `*` are passed literally), the run's environment allowlist (no `GIT_*`,
+SSH-agent or GnuPG variables) and the run's wall-clock limit. The first command that fails, times out or cannot start
+ends the run `FAILED` with `TEST_FAILURE`; the agent's own summary is kept. `get_run` shows each command's outcome and
+exit code, and `get_artifacts` returns the full output as a `test_report` (at most 1 MiB per stream, secret patterns
+redacted). `cancel_run` stops a running command, and a controller restart ends the run `PROCESS_CRASH` without running
+the commands again. They are refused under `inspect-untrusted`. **They run on your host as your user, outside any
+provider sandbox** (ROADMAP owner decision 11, R-24): they can read your files and use the network. Supply them only for
+repositories you trust. A Git ref they move is reported as a policy violation and controller refs are put back, but a
+push they make cannot be seen.
 
 **Codex and the shell.** Codex has no command allowlist that Switchboard can set, so under both untrusted profiles the
 Codex agent can run shell commands inside Codex's own sandbox. Whether that sandbox keeps those commands away from

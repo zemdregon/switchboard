@@ -1,6 +1,6 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -200,7 +200,7 @@ async function inFlight(state: RunState, opts: { pid?: number; ticks?: number | 
     ["PREFLIGHT", "T4"],
     ["LEASED", "T5"],
     ["RUNNING", "T9"],
-    ["FINALIZING", "T13"],
+    state === "VERIFYING" ? ["VERIFYING", "T11"] : ["FINALIZING", "T13"],
   ];
   let cur = run(created.id);
   for (const [to, rule] of path_) {
@@ -400,6 +400,74 @@ describe("fault injection: SIGKILL the controller during RUNNING (T1.9, NFR-REL-
     expect(existsSync(path.join(repo, "partial.txt"))).toBe(false); // operator tree untouched (FR-WS-05)
     expectConsistentLedger();
   }, 60_000);
+});
+
+describe("controller crash during VERIFYING (T3.10; FRD WF-8, §4.3)", () => {
+  it("SIGKILL during a verification command: it is killed, PROCESS_CRASH, never re-run", async () => {
+    const marker = path.join(root, "verify-runs.log");
+    const script = path.join(root, "verify-hang.mjs");
+    // Appends its pid once per start, then hangs: the log shows how many times the command was started.
+    writeFileSync(
+      script,
+      `import { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(marker)}, process.pid + "\\n");\n` +
+        "setInterval(() => {}, 1000);\n",
+    );
+    db.close(); // the child is the only controller while it lives
+    const { child, running } = await startChildController({
+      scenario: "success",
+      verificationCommands: [[process.execPath, script]],
+    });
+    await until(() => existsSync(marker) && readFileSync(marker, "utf8").endsWith("\n"), 20_000);
+    const verifyPid = Number(readFileSync(marker, "utf8").trim());
+    cleanup.push(() => {
+      try {
+        process.kill(-verifyPid, "SIGKILL");
+      } catch {
+        // gone
+      }
+    });
+    await sigkill(child);
+    expect(groupAlive(verifyPid)).toBe(true); // the verification command outlived its controller
+
+    openController();
+    const before = run(running.runId);
+    expect(before.state).toBe("VERIFYING");
+    expect(before.pgid).toBe(verifyPid); // recorded before any output was read (LLD §8)
+
+    const report = await runReconcile();
+    expect(report.terminated).toEqual([verifyPid]);
+    expect(groupAlive(verifyPid)).toBe(false);
+    const after = run(running.runId);
+    expect(after.state).toBe("FAILED");
+    expect(after.failure_code).toBe("PROCESS_CRASH");
+    expect(after.failure_detail).toMatch(/controller_restart/);
+    const transitions = events(running.runId)
+      .filter((e) => e.type === "state_transition")
+      .map((e) => `${e.p.to}:${e.p.rule}`);
+    expect(transitions.slice(-4)).toEqual(["RUNNING:T9", "VERIFYING:T11", "FINALIZING:T14", "FAILED:T16"]);
+    expectConsistentLedger();
+
+    // Not re-run: neither by reconciliation nor by a lifecycle started afterwards (verification may have side effects).
+    const lifecycle = lifecycleWith(new FakeAdapter({ scenario: "success" }));
+    lifecycle.start();
+    await lifecycle.drain();
+    await lifecycle.shutdown();
+    expect(readFileSync(marker, "utf8").trim().split("\n")).toEqual([String(verifyPid)]);
+    expect(run(running.runId).state).toBe("FAILED");
+  }, 60_000);
+
+  it("an operator cancel recorded while down ends a VERIFYING run CANCELLED via FINALIZING (T14, T17)", async () => {
+    const verifying = await inFlight("VERIFYING");
+    expect(requestCancel(db, ledger, verifying.id, { requestedBy: "op", direct: false }).outcome).toBe("requested");
+    const report = await runReconcile();
+    expect(report.cancelsApplied).toHaveLength(1);
+    expect(run(verifying.id).state).toBe("CANCELLED");
+    const rules = events(verifying.id)
+      .filter((e) => e.type === "state_transition")
+      .map((e) => `${e.p.to}:${e.p.rule}`);
+    expect(rules.slice(-2)).toEqual(["FINALIZING:T14", "CANCELLED:T17"]);
+    expectConsistentLedger();
+  });
 });
 
 describe("orphan identity (LLD §8)", () => {

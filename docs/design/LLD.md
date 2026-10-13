@@ -543,7 +543,7 @@ returns immediately unless `wait_seconds` is given ([ADR-0002](../adr/0002-mcp-u
       "route": { "type": "object", "properties": { "reasons": { "type": "array", "items": { "type": "string" } } } },
       "result": { "type": "object", "properties": { "summary": { "type": "string", "maxLength": 4000 },
           "changed_files": { "type": "integer" },
-          "verification": { "type": "array", "items": { "type": "object" } } } },
+          "verification": { "type": "array", "items": { "type": "object" } } } },  // per command, §8.1
       "artifacts": { "type": "object", "additionalProperties": { "type": "string" } },   // kind -> art_ id
       "approval": { "type": "object", "required": ["status","requested_at"], "properties": {   // privileged only (M3, §3.1)
           "status": { "enum": ["PENDING","APPROVED","DENIED"] }, "requested_at": { "type": "string" } } },
@@ -1260,6 +1260,56 @@ asserts it.
   (Linux does not reuse a PID still in use as a group ID). A leader with different ticks (PID reuse) or with no recorded
   ticks is never signalled. Known limit: a crash between spawn and the `pid`/`pgid` commit leaves an orphan that cannot
   be found (ROADMAP R-12).
+
+### 8.1 Verification stage (M3, T3.10)
+
+*Implemented 2026-10-13 (Delegated agent work, not owner-approved; every choice below is Proposed).* `delegate_task`
+`verification_commands` (FR-EXE-08) run in VERIFYING ([FRD §4](../requirements/FRD.md#4-canonical-run-state-machine),
+T11, T14) in `src/lifecycle/verification.ts`, driven by `src/lifecycle/lifecycle.ts`:
+
+- **Admission (FRD V7, owner decision 11).** A non-empty list is refused `INVALID_REQUEST` (`details.field =
+  "verification_commands"`) under `inspect-untrusted` and accepted under every other profile; host execution is the only
+  kind, because `container` environments are not built (M10). Shape: at most 16 argv arrays of 1 to 64 strings of at
+  most 4096 characters, the first non-empty, none containing NUL (the schema plus a re-check in the lifecycle for
+  internal callers). The list is stored in `run.request_json` only when non-empty and is part of the idempotency hash.
+  `continue_task` takes none ([FRD §7.2](../requirements/FRD.md#72-continue_task)).
+- **When.** Only after the agent's process exited successfully (T11; otherwise T13 as before, nothing is run). The
+  commands run one after another; the first that does not pass ends the stage and the rest are recorded `not_run` (fail
+  fast).
+- **How.** Each command is spawned by the run supervisor (§8): argv only, `shell: false`, its own process group, stdin
+  closed, cwd the run's worktree. Its `pid`, `pgid` and start ticks are written to the `run` row (with a
+  `verification_command_started` event) before any output is read, so reconciliation can kill an orphan.
+- **Environment.** The names in the run's `Invocation.envAllowlist` (the adapter's allowlist, the same source as the
+  provider process), read from the controller's environment, minus every `GIT_*` name and the signing and agent
+  variables (`GNUPGHOME`, `GPG_AGENT_INFO`, `SSH_AUTH_SOCK`) even if an allowlist names them. Adapter-declared variables
+  (`Invocation.env`, which can carry the tool-channel token) are never passed. Today that leaves `PATH` and, for Claude
+  Code and Codex, `HOME`.
+- **Time.** The run's wall-clock bound (`Invocation.timeouts.wallClockMs`, 30 minutes by default) bounds the whole
+  stage; each command gets what is left of it, and there is no idle timeout. Timeout or cancel sends the §8 sequence
+  (SIGTERM to the group, the run's kill grace, SIGKILL). The lease is extended at the start of the stage. No new
+  configuration key: the bound is the existing per-run one.
+- **Outcome (BR-16).** All passed: pending success. Any non-zero exit, signal, timeout or start failure: pending
+  `TEST_FAILURE` with the failing command's index in `failure_detail`. Cancel (`cancel_run`, operator cancel, shutdown):
+  pending cancelled (FRD §4.3). A controller-side error: `TOOL_FAILURE`. T14 carries the pending outcome and the
+  per-command summary. The agent's own result (summary) is kept either way.
+- **Records.** Each command that ran appends a `verification_command` event; the terminal transition and the envelope's
+  `result.verification` carry one object per command: `{index, outcome: passed|failed|timeout|cancelled|error|not_run,
+  exit_code, signal?, duration_ms, output_truncated?}`. No argv and no output appear in events or the envelope
+  (FR-TEL-03). The `test_report` artifact (`application/json`, version 1) holds `{v, outcome, commands: [{index, argv,
+  outcome, exit_code, signal, duration_ms, stdout, stderr, stdout_truncated, stderr_truncated}]}`; it is stored even
+  when the stage was cancelled or failed, and `get_artifacts` returns it.
+- **Bounds and redaction.** Each stream is captured up to 1 MiB per command (`VERIFICATION_OUTPUT_CAP_BYTES`) and then
+  truncated with the marker `[switchboard: output truncated after <n> bytes]`. Argv and output pass through the artifact
+  store's redactor (FR-TEL-03, NFR-SEC-01) before they are put into JSON, and the store redacts the whole body again
+  when it is written. Redaction is pattern based and best effort (TDD §3.3).
+- **Git refs.** The T9.5 ref check (§12.5) runs at FINALIZING, after VERIFYING, so a ref a verification command moved (a
+  `git commit` on the run branch, a new tag) is recorded as `git_policy_violation` and controller-owned refs are put
+  back before the checkpoint, exactly as for the agent. Prevention is not possible: the commands are arbitrary code on
+  the host. A push to a remote cannot be seen (ROADMAP R-61).
+- **Restart (WF-8).** A VERIFYING run found at startup has its recorded command group killed and ends FAILED
+  `PROCESS_CRASH` (cause `controller_restart`) through T14 and T16; the commands are never run again. A recorded
+  operator cancel ends it CANCELLED instead.
+- **Workspace.** Files the commands write are part of the post-run checkpoint, like the agent's edits (§5).
 
 ## 9. Retry/back-off algorithm
 

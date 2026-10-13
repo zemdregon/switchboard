@@ -662,6 +662,47 @@ describe("list_capabilities supported_profiles (T3.7: the compile matrix on this
   });
 });
 
+describe("verification commands (T3.10, FR-EXE-08, FRD V7, BR-16)", () => {
+  it("runs them after the agent: the envelope carries per-command results and a test_report artifact", async () => {
+    await setup({ adapters: [fakeWriter()] });
+    const ok = await call(
+      "delegate_task",
+      delegateArgs({ verification_commands: [[process.execPath, "-e", "console.log('tests pass')"]] }),
+    );
+    expect(ok.isError).toBe(false);
+    const done = await pollTerminal(ok.body.run_id);
+    expect(done.status).toBe("SUCCEEDED");
+    expect(done.result.summary).toBe("wrote feature");
+    expect(done.result.verification).toEqual([expect.objectContaining({ index: 0, outcome: "passed", exit_code: 0 })]);
+    expect(Object.keys(done.artifacts).sort()).toEqual(["changed_files", "diff", "test_report"]);
+    expect(JSON.stringify(done)).not.toContain("tests pass"); // output only in the artifact (FR-TEL-03)
+    const arts = await call("get_artifacts", { run_id: ok.body.run_id, kinds: ["test_report"] });
+    const rep = JSON.parse(arts.body.artifacts[0].inline_text);
+    expect(rep.commands[0]).toMatchObject({ outcome: "passed", stdout: "tests pass\n" });
+
+    const bad = await call(
+      "delegate_task",
+      delegateArgs({ verification_commands: [[process.execPath, "-e", "process.exit(1)"]] }),
+    );
+    const failed = await pollTerminal(bad.body.run_id);
+    expect(failed).toMatchObject({ status: "FAILED", failure_code: "TEST_FAILURE" });
+    expect(failed.result.summary).toBe("wrote feature"); // the agent's own result is kept (BR-16)
+    expect(failed.result.verification).toEqual([expect.objectContaining({ outcome: "failed", exit_code: 1 })]);
+    expect(failed.artifacts.test_report).toMatch(/^art_/);
+  });
+
+  it("refuses them under inspect-untrusted with details.field, and writes no run", async () => {
+    await setup({ adapters: [fakeWriter()] });
+    const r = await call(
+      "delegate_task",
+      delegateArgs({ trust_profile: "inspect-untrusted", verification_commands: [["npm", "test"]] }),
+    );
+    expect(r.isError).toBe(true);
+    expect(r.body.error).toMatchObject({ code: "INVALID_REQUEST", details: { field: "verification_commands" } });
+    expect(runCount()).toBe(0);
+  });
+});
+
 describe("validation (FR-MCP-09, FRD §7)", () => {
   it("schema, path and routing-hint failures are INVALID_REQUEST before any side effect", async () => {
     await setup({ adapters: [fakeWriter()] });
@@ -678,7 +719,13 @@ describe("validation (FR-MCP-09, FRD §7)", () => {
         ["delegate_task", delegateArgs({ workspace_path: path.join(root, "missing") })],
         ["delegate_task", delegateArgs({ routing: { provider_preference: "nope" } })],
         ["delegate_task", delegateArgs({ routing: { require_provider: true } })],
-        ["delegate_task", delegateArgs({ verification_commands: [["npm", "test"]] })],
+        // V7: refused under inspect-untrusted (owner decision 11 allows host verification only for write profiles).
+        [
+          "delegate_task",
+          delegateArgs({ trust_profile: "inspect-untrusted", verification_commands: [["npm", "test"]] }),
+        ],
+        ["delegate_task", delegateArgs({ verification_commands: [[]] })],
+        ["delegate_task", delegateArgs({ verification_commands: [[""]] })],
         ["get_run", { run_id: "run_bogus" }],
         ["get_run", { run_id: `run_${"0".repeat(26)}` }],
         ["cancel_run", { run_id: `run_${"0".repeat(26)}` }],
