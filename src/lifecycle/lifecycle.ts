@@ -70,7 +70,6 @@
  *   PERMISSION_BLOCKED (ROADMAP §6.2.1). PERMISSION_BLOCKED remains only for the client ceiling (BR-13), the
  *   privileged approval check (T3.4) and a refused bypass flag in the argv audit.
  */
-import { readFileSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import {
   type AdapterRegistry,
@@ -93,6 +92,7 @@ import {
 } from "../adapters/index.js";
 import type { ArtifactStore } from "../artifacts/index.js";
 import { isUnderAllowedRoot, TRUST_PROFILES } from "../config/index.js";
+import { procStartTicks } from "../exec/proc-info.js";
 import { ChannelOpenError, type GitToolService, type OpenChannel } from "../git/channel.js";
 import type { GitPublisher } from "../git/commit.js";
 import { credentialReachFromJson, signingReachFromJson } from "../git/credential-reach.js";
@@ -1754,17 +1754,8 @@ function compactEvent(ev: NormalizedEvent): Record<string, unknown> {
   }
 }
 
-/** Linux: process start time in clock ticks (field 22 of /proc/<pid>/stat), guarding PID reuse (LLD §8). */
-export function procStartTicks(pid: number): number | null {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-    const ticks = Number(rest[19]);
-    return Number.isFinite(ticks) ? ticks : null;
-  } catch {
-    return null;
-  }
-}
+/** Re-exported for callers that recorded start ticks through the lifecycle (LLD §8.3). */
+export { procStartTicks };
 
 /** A Node.js file-system error (has a string `code` such as `EEXIST`). */
 function isFsError(err: unknown): boolean {

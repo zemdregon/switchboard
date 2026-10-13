@@ -1317,8 +1317,8 @@ asserts it.
 
 - **Spawn.** `spawn(argv[0], argv.slice(1), { cwd, env, detached: true, stdio: ['pipe' or 'ignore', 'pipe', 'pipe'],
   shell: false })`. `detached` puts the child in a new session and process group (`pgid = pid`). Persist `pid`, `pgid`
-  and process start ticks (from `/proc/<pid>/stat` on Linux) in `run` *before* reading any output, so reconciliation can
-  tell a live orphan from a reused PID.
+  and the process start time (`/proc/<pid>/stat` ticks on Linux, `ps` `lstart` on macOS: §8.2) in `run` *before*
+  reading any output, so reconciliation can tell a live orphan from a reused PID.
 - **Stdin.** Closed (`ignore`) unless the Invocation supplies stdin text; prompts passed on stdin rather than argv where
   an adapter supports it, to keep them out of process listings (to be verified per adapter).
 - **Cancel and timeout.** On cancel, wall-clock or idle timeout: send `SIGTERM` to `-pgid`, wait `killGraceMs` (10 s,
@@ -1351,7 +1351,9 @@ asserts it.
   its leader's start ticks equal the recorded ticks, or when the leader is gone but the group still has live members
   (Linux does not reuse a PID still in use as a group ID). A leader with different ticks (PID reuse) or with no recorded
   ticks is never signalled. Known limit: a crash between spawn and the `pid`/`pgid` commit leaves an orphan that cannot
-  be found (ROADMAP R-12).
+  be found (ROADMAP R-12). *Since T4.9* the start time and the group scan come from the platform port of §8.3, and a
+  leader whose presence cannot be determined while its group still answers `kill(-pgid, 0)` is never signalled either
+  (`unverifiable`).
 
 ### 8.1 Verification stage (M3, T3.10)
 
@@ -1443,6 +1445,63 @@ the ACP specification v1 (agentclientprotocol.com, retrieved 2026-10-13); number
   the raw artifact (NFR-PRIV-02).
 - **Backpressure.** As above; while stdout is paused, permission answers already decided are still written.
 - **Reconciliation.** Unchanged: an orphaned ACP agent group is terminated as a JSONL one (FR-EXE-06).
+
+### 8.3 Process table per platform (M4, T4.9)
+
+*Implemented 2026-10-13 (Delegated agent work, not owner-approved; every choice below is Proposed). The macOS path is
+**Unverified**: it was written and unit-tested on Linux against fixtures only, and runs on a real Mac first in the
+macOS CI leg (T4.10) and the operator's optional live check (T4.12).* The supervisor (§8) and reconciliation ask the
+host's process table two questions through one port, `src/exec/proc-info.ts` (`ProcInfo`, selected by
+`process.platform`):
+
+- `startTime(pid)` → `present` with a start time, `absent`, or `unknown` (cannot verify). Recorded at spawn into
+  `run.proc_start_ticks` and compared for equality at reconciliation (FR-EXE-06, NFR-REL-01).
+- `liveGroupMember(pgid)` → whether the group has a member that is not a zombie, or `undefined` (cannot tell). Polled
+  by the cancel sequence after `kill(-pgid, 0)` succeeds (FR-EXE-01); `undefined` counts as alive, so the controller
+  keeps waiting and then escalates to `SIGKILL`, as before.
+
+| Platform | Mechanism | Start time stored as | Cannot verify when |
+| --- | --- | --- | --- |
+| `linux` | `/proc/<pid>/stat`: field 22 `starttime`; a scan of every `/proc/<n>/stat` for `pgrp` and state `Z`/`X` | clock ticks since boot | `/proc` cannot be listed (group scan only). Any failure to read one PID's `stat` means absent: the M1 behaviour, unchanged |
+| `darwin` | one run of `/bin/ps -A -o pid= -o ppid= -o pgid= -o state= -o lstart=` per question, `execFileSync`, no shell, environment exactly `LC_ALL=C` and `TZ=UTC`, 5 s timeout, 16 MiB output cap | UTC epoch seconds parsed from `lstart` | `ps` is missing, exits non-zero, times out or prints any line outside the contract below; or `ps` does not list a PID that `kill(pid, 0)` says exists |
+| anything else (`win32`, BSDs, ...) | none | nothing (`null`) | always |
+
+**macOS sources** (retrieved 2026-10-13; fetched text is data). The macOS `ps(1)` manual page
+([mirror of the Xcode manual pages](https://keith.github.io/xcode-man-pages/ps.1.html), footer "Mac OS X 12") says:
+`-A` "Display information about other users' processes, including those without controlling terminals"; `-o` keywords
+may be given "in the form of more than one `-o` option" and "If all keywords have empty header texts, no header line is
+written"; the keywords `pid` ("process ID"), `ppid` ("parent process ID"), `pgid` ("process group number"), `state`
+("symbolic process state", first character `Z` "Marks a dead process (a 'zombie')") and `lstart` ("The exact time the
+command started, using the '%c' format described in strftime(3)"); and "When output is not to a terminal, an unlimited
+number of columns are always used". In the POSIX locale `%c` is `d_t_fmt`, `"%a %b %e %H:%M:%S %Y"`, with the English
+`abmon` names ([POSIX.1-2024 XBD 7.3.5](https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/V1_chap07.html)).
+POSIX `fork()`: "The child process ID also shall not match any active process group ID"
+([POSIX.1-2024 fork](https://pubs.opengroup.org/onlinepubs/9799919799/functions/fork.html)), which carries the
+"leader gone, group alive" rule of §8 from Linux to macOS.
+
+**Parsing contract (macOS).** Each non-blank line is `pid ppid pgid state lstart`, blank-separated, the first three
+non-negative decimal integers, `state` one token, and `lstart` matching `Www Mmm d HH:MM:SS YYYY` (any run of blanks
+between fields, since `%e` pads a one-digit day with a space) with a real calendar date. One line outside this
+contract, a header line or empty output makes the whole table unusable (`unknown`/`undefined`); nothing is guessed.
+
+**Assumptions and limits (Unverified until T4.10).**
+
+- `/bin/ps` is the base-system path on macOS (absolute, so `PATH` cannot substitute another program). The manual page
+  above names no path.
+- `LC_ALL=C` makes macOS `ps` print `%c` in the POSIX form, and `TZ=UTC` makes it print UTC. Both are standard C library
+  behaviour; neither is stated in `ps(1)`.
+- `lstart` has one-second resolution: a PID reused within the same second as the recorded process started would match.
+  macOS is not documented here to allocate PIDs in any order, so this is a residual risk, not a proven impossibility.
+- One `ps` run costs a process spawn (it blocks the event loop while it runs); the cancel sequence polls every 20 ms, so
+  a cancel on macOS may run `ps` many times. Acceptable for a single operator (ADR-0011); not measured.
+- `proc_start_ticks` keeps its name and `INTEGER` type; its unit is per host (Linux ticks, macOS seconds) and it is only
+  ever compared for equality on the host that wrote it. A ledger moved between operating systems reads every live
+  leader as `pid_reused`, which is never signalled (fail safe). No schema or trust-boundary change, so no ADR
+  (Delegated).
+- The supervisor's process-group handling itself (`detached` → `setsid`, `kill(-pgid, …)`) is POSIX and unchanged.
+  Windows has no such groups and stays Deferred (NFR-PORT-03). Routing refuses every profile off Linux anyway
+  (`VERIFIED_PROFILE_PLATFORMS` and `SANDBOX_DEPENDENT_PROFILES` in `src/routing/eligibility.ts`, ROADMAP Q-35), so
+  no provider run reaches this port on macOS until a profile's macOS cells are verified (T4.12).
 
 ## 9. Retry/back-off algorithm
 

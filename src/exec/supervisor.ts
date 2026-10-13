@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
 import { DEFAULT_MAX_LINE_BYTES, type JsonlProtocolError, JsonlReader } from "./jsonl.js";
+import { hostProcInfo, type ProcInfo } from "./proc-info.js";
 
 /** Failure codes from LLD §4 that the supervisor itself can determine. */
 export type ExecFailureCode = "PROCESS_TIMEOUT" | "PROCESS_CRASH" | "OUTPUT_PROTOCOL_ERROR";
@@ -79,38 +79,17 @@ const POLL_MS = 20;
 const POST_KILL_WAIT_MS = 5_000;
 
 /**
- * Linux only: true/false if /proc shows whether group `pgid` has a non-zombie member, undefined if /proc is
- * unusable. Zombies (killed but not yet reaped by init, which can take seconds in containers) cannot run code,
- * so they do not count as live.
+ * Whether any live process remains in group `pgid`: `kill(-pgid, 0)`, then the platform process table (LLD §8.3)
+ * to ignore zombies, which were killed but not yet reaped and cannot run code. When the table cannot be read the
+ * group counts as alive (fail closed: keep waiting, then escalate).
  */
-function liveMemberViaProc(pgid: number): boolean | undefined {
-  try {
-    for (const entry of readdirSync("/proc")) {
-      if (!/^\d+$/.test(entry)) continue;
-      let stat: string;
-      try {
-        stat = readFileSync(`/proc/${entry}/stat`, "utf8");
-      } catch {
-        continue; // exited while scanning
-      }
-      // Fields after the parenthesised comm: state, ppid, pgrp, ...
-      const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-      if (Number(rest[2]) === pgid && rest[0] !== "Z" && rest[0] !== "X") return true;
-    }
-    return false;
-  } catch {
-    return undefined;
-  }
-}
-
-/** Whether any live process remains in group `pgid` (`kill(-pgid, 0)`, ignoring zombies where /proc allows). */
-export function groupAlive(pgid: number): boolean {
+export function groupAlive(pgid: number, info: ProcInfo = hostProcInfo): boolean {
   try {
     process.kill(-pgid, 0);
   } catch (err) {
     return (err as NodeJS.ErrnoException).code === "EPERM";
   }
-  return liveMemberViaProc(pgid) ?? true;
+  return info.liveGroupMember(pgid) ?? true;
 }
 
 function signalGroup(pgid: number, signal: NodeJS.Signals): void {
