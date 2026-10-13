@@ -2597,6 +2597,11 @@ CREATE TABLE inner_task_state (         -- mutable current state, one row per ta
 ) STRICT;
 ```
 
+**T11.1 note (Delegated).** `inner_call` ships alone in migration 0005 (`src/ledger/migrations/0005_inner_call.ts`).
+`inner_task_state` arrives with T11.6, and the `git_commit` columns, the `usage_observation.source` widening and the
+`pr_draft` artifact kind with T11.4, T11.5 and T11.8, each as its own forward migration, because a released migration is
+immutable (ADR-0005).
+
 `inner_call` gets the same `BEFORE UPDATE`/`DELETE` guards as the other append-only tables. The outcomes mean: `accepted`
 (the output passed every check and was used); `rejected_validator` (not valid after the permitted re-ask);
 `rejected_sanitiser` (valid, but the sanitiser left nothing usable); `fallback_unavailable` (the call could not be made
