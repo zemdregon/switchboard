@@ -8,8 +8,10 @@ import type { ProfileOverride, ProfileOverrides } from "../policy/types.js";
 import { ConfigError } from "./errors.js";
 import {
   configSchema,
+  DEFAULT_PRIVILEGED_APPROVAL,
   DEFAULT_RETENTION_DAYS,
   DEFAULT_RETENTION_INTERVAL,
+  type PrivilegedApprovalMode,
   type SwitchboardConfig,
   type TrustProfile,
 } from "./schema.js";
@@ -27,13 +29,24 @@ export interface ResolvedConfig {
   dataDir: string;
   /** Canonical allowed workspace roots (FR-POL-10). */
   allowedRoots: string[];
-  mcpClients: ReadonlyMap<string, { id: string; maxTrustProfile: TrustProfile }>;
+  mcpClients: ReadonlyMap<string, ResolvedMcpClient>;
   limits: { globalConcurrency: number; perProviderConcurrency: number };
   providers: ReadonlyMap<string, { enabled: boolean; weight: number | undefined }>;
   /** Retention (NFR-DATA-01, FR-WS-07; T3.12 consumes it). `intervalMs` is the GC pass period. */
   retention: { days: number; intervalMs: number };
   /** Validated `profiles.<name>` overrides in COMP-POL's camelCase form (owner decision 12); empty when none. */
   profileOverrides: ProfileOverrides;
+}
+
+export interface ResolvedMcpClient {
+  readonly id: string;
+  readonly maxTrustProfile: TrustProfile;
+  /**
+   * `privileged_approval` (ADR-0019, default `required`). `not_required` admits this client's `privileged` requests to
+   * QUEUED under an approval written APPROVED by client policy; it is valid only with a `privileged` ceiling.
+   * `loadConfig` always sets it; a hand-built entry without it is read as `required` (fail closed).
+   */
+  readonly privilegedApproval?: PrivilegedApprovalMode;
 }
 
 const INTERVAL_UNIT_MS = { m: 60_000, h: 3_600_000, d: 86_400_000 } as const;
@@ -169,6 +182,15 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
     if (ids.has(c.id))
       throw new ConfigError(`Invalid config: $.mcp_clients[${i}].id: duplicate client id ${JSON.stringify(c.id)}`);
     ids.add(c.id);
+    // ADR-0019 (Proposed, fail closed): lifting the per-scope approval means nothing below a privileged ceiling, so a
+    // `not_required` there is a configuration mistake rather than a silent no-op.
+    if (c.privileged_approval === "not_required" && c.max_trust_profile !== "privileged") {
+      throw new ConfigError(
+        `Invalid config: $.mcp_clients[${i}].privileged_approval: not_required applies only to a client whose ` +
+          `max_trust_profile is privileged (client ${JSON.stringify(c.id)} has ${c.max_trust_profile}); remove it or ` +
+          "set it to required",
+      );
+    }
   }
 
   const profileOverrides = toOverrides(cfg);
@@ -183,7 +205,16 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
     configPath,
     dataDir,
     allowedRoots,
-    mcpClients: new Map(cfg.mcp_clients.map((c) => [c.id, { id: c.id, maxTrustProfile: c.max_trust_profile }])),
+    mcpClients: new Map(
+      cfg.mcp_clients.map((c) => [
+        c.id,
+        {
+          id: c.id,
+          maxTrustProfile: c.max_trust_profile,
+          privilegedApproval: c.privileged_approval ?? DEFAULT_PRIVILEGED_APPROVAL,
+        },
+      ]),
+    ),
     limits: {
       globalConcurrency: cfg.limits?.global_concurrency ?? DEFAULT_GLOBAL_CONCURRENCY,
       perProviderConcurrency: cfg.limits?.per_provider_concurrency ?? DEFAULT_PER_PROVIDER_CONCURRENCY,

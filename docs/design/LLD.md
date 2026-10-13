@@ -364,6 +364,8 @@ export interface CompileRequest {
   workspace: { cwd: string; writable: boolean };
   model?: string; verificationCommands?: string[][];
   handoff?: { bundleArtifactId: string };                // M5
+  bypassApproved?: boolean;  // T3.17, optional mirror of ResolvedProfile.bypassApproved (the carrier); adapters accept
+                             // either, never compute it; the lifecycle sets the profile's value (§3.1 "Bypass")
 }
 export interface ResolvedProfile {                       // from COMP-POL, snapshot stored on the run
   name: TrustProfile; fileAccess: 'read-only'|'worktree'|'scoped';
@@ -603,7 +605,11 @@ Owner decisions 13 and 17 and [ADR-0017](../adr/0017-approved-privileged-scope-b
 validation are Delegated (Proposed), not owner-approved. No code may emit a bypass flag until this contract and the
 argv audit change (T3.17) are both in place. *Amended 2026-10-13, before merge:* the scope became machine-readable
 (Delegated, ROADMAP Q-28 answered, ROADMAP §4.4) and the approval binding moved from one run to the meta-session (owner
-decision 17, ROADMAP Q-29 answered).
+decision 17, ROADMAP Q-29 answered). *Amended 2026-10-13* by owner decisions 19 and 22 (mechanism Delegated): a
+client configured `privileged_approval: "not_required"` is admitted without the operator's `approve` (**Client policy**
+below, [ADR-0019](../adr/0019-per-client-privileged-approval.md)), and the lifecycle no longer refuses every
+`privileged` run at dispatch: the adapter's compile decides ([ADR-0018](../adr/0018-claude-bypass-omits-restricted.md)
+for Claude Code bypass runs).
 
 ```jsonc
 { "$defs": { "privileged_scope": { "type": "object", "additionalProperties": false,
@@ -702,9 +708,22 @@ only, FR-OPS-02) on the run that requested the approval. It recomputes the hash 
 `meta_session_id` and the stored `scope_json`, and writes `APPROVED`, `decided_at` and `decided_by` only if the run is
 AWAITING_APPROVAL, the row is `PENDING` and the recomputed hash equals `scope_hash`; otherwise it is a CLI error and
 nothing changes. `approve` on a later run of the meta-session is a CLI error: it is not AWAITING_APPROVAL and has no
-row of its own. `deny` writes `DENIED` and the run ends CANCELLED (WF-7). No MCP tool, timer, configuration value or
-client ceiling approves. An approval never expires and is never revoked automatically (owner decision 17); a manual
-revoke is ROADMAP Q-30.
+row of its own. `deny` writes `DENIED` and the run ends CANCELLED (WF-7). No MCP tool, timer or client ceiling
+approves, and no configuration value does except the per-client `privileged_approval` setting below. An approval never
+expires and is never revoked automatically (owner decision 17); a manual revoke is ROADMAP Q-30.
+
+**Client policy (2026-10-13, owner decision 22; Delegated realisation, [ADR-0019](../adr/0019-per-client-privileged-approval.md)).**
+Each `mcp_clients[]` entry has `privileged_approval`: `"required"` (default) or `"not_required"`, the latter valid only
+with a `privileged` ceiling ([TDD §3.1](TDD.md#31-configuration)). For a `"required"` client everything above holds
+unchanged. For a `"not_required"` client a `privileged` `delegate_task` passes the same validation (V1, V5, V13), the
+same canonical form and the same `v: 2` hash, and is then admitted by FRD T1 to QUEUED instead of T2. In the admission
+transaction the controller writes the approval row as for T2 and decides it at once: `status = 'APPROVED'`,
+`decided_at` = admission time, `decided_by = "client_policy:<client_id>"`; the first `run_event` is the T1
+`state_transition` naming the approval (`approval_id`, `approval: "client_policy"`), followed by an `approval_decided`
+event (`approval_id`, `status`, `reason: "client_policy"`). No other check is relaxed: **Lookup**, C7 continuations and
+**Bypass** treat the row like an operator approval; the FR-GIT-01 deny rules and the run's worktree (FR-WS-05) apply.
+`approve` and `deny` refuse such a run (it is never AWAITING_APPROVAL) and name the client policy. The envelope shows
+`approval.status` `APPROVED` and never `decided_by`.
 
 **Bypass.** Before compiling any `privileged` run, COMP-POL loads the approval named by the snapshot's `approvalId` and
 sets `bypassApproved = true` only if: the row is `APPROVED`; its `scope_hash` equals the snapshot's `scopeHash` and the
@@ -712,8 +731,20 @@ hash recomputed from this run's `client_id`, `meta_session_id` and snapshot scop
 `bypass: true`. Any mismatch fails the run `PERMISSION_BLOCKED` before spawn, with a `run_event` naming the mismatch
 (no process, no flag). With `bypassApproved` false the adapter compiles `privileged` without a bypass flag. The argv
 audit (T3.17) independently refuses any `BYPASS_FLAGS` entry unless the profile is `privileged`, `bypassApproved` is
-true and the snapshot's scope sets `bypass`. The compiled `policyFlags` are recorded in the run's events, so every
-bypass run's invocation and the approval it ran under are in the audit trail.
+true and the snapshot's scope sets `bypass` (the lifecycle passes the run's resolved profile and `bypassApproved` to
+`startAdapterRun`, so the audit sees the same values the compile did). The compiled `policyFlags` are recorded in the
+run's events, so every bypass run's invocation and the approval it ran under are in the audit trail.
+
+**Listing (Proposed, Delegated, 2026-10-13).** `list_capabilities` lists `privileged` in a provider's
+`supported_profiles` when its adapter compiles **any** scope of a small representative set, all with `bypass: false`
+(listing never compiles with `bypassApproved`): (1) the narrowest scope (`read-only` files, shell `none`, network `off`,
+repository configuration `disabled`); (2) `worktree` files, shell `none`, network `on`, repository configuration
+`disabled`; (3) `worktree` files, shell `broad`, network `off`, repository configuration `disabled`. No single scope
+compiles for both M3 adapters (Claude Code has no network control, so it compiles network `on` only; Codex cannot
+disable commands, so it needs shell `broad` with network `off`), so the narrowest scope alone would list `privileged` for
+nobody. A listed `privileged` means "this provider compiles at least one privileged scope here"; each request's own
+scope is still compiled at dispatch, where an `Ineligible` ends the run with its BR-3 code. Code:
+`REPRESENTATIVE_PRIVILEGED_SCOPES` in `src/mcp/server.ts`.
 
 **What is shown where.** The envelope (`get_run`, `delegate_task`, `continue_task`, `cancel_run`) carries only
 `approval.status` and `approval.requested_at` for a `privileged` run; it never contains the scope content, the hash or
@@ -727,10 +758,13 @@ form, hash, spelling maps), `src/lifecycle/lifecycle.ts` (admission), `src/ledge
   its own spellings; `src/policy/scope.ts` maps them (`on` and `enabled` have no profile value; `approved` is
   `approved-only`) for the adapters (T3.5, T3.6).
 - `network.hosts` entries must match a bare host-name pattern (no scheme, port, path or wildcard).
-- V11 for `privileged` defers the adapter's compile verdict to dispatch ([FRD V11](../requirements/FRD.md#71-delegate_task));
-  until T3.5/T3.6 dispatch fails every `privileged` run `ELIGIBILITY_NONE` before any probe, lease, worktree or
-  process, so no compile reads `bypassApproved` (T3.4 computes it at dispatch and records it in the transition event
-  only).
+- V11 for `privileged` defers the adapter's compile verdict to dispatch ([FRD V11](../requirements/FRD.md#71-delegate_task)),
+  because `bypassApproved` is known only there. *Changed 2026-10-13 (T3.18, owner decisions 19 and 22):* the earlier
+  blanket dispatch refusal of every `privileged` run ("privileged compile not available until T3.5/T3.6") is removed.
+  After the **Bypass** check passes, the lifecycle appends a `privileged_dispatch` event (`approval_id`,
+  `bypass_approved`) and hands the snapshot with that `bypassApproved` to the preflight eligibility compile and the
+  LEASED compile; an adapter `Ineligible` ends the run with its BR-3 code (FRD T8 or T10), as for any profile. A stored
+  `bypassApproved` is never trusted: the lifecycle resets it to `false` for every run before the check.
 - Cancelling a run in AWAITING_APPROVAL closes its `PENDING` row as `DENIED` in the same transaction (ROADMAP Q-15
   default): `decided_by` is `cancel_run` for the MCP tool and the requesting OS user for `runs cancel`, plus an
   `approval_closed` `run_event` (approval ID and status only).
@@ -1107,7 +1141,9 @@ export interface Environment {
 ```
 
 `host` is the identity implementation and keeps today's behaviour. A `container` implementation must not mount more than
-FR-PRJ-05 allows, label every container `switchboard.run` and `switchboard.project`, and record `environment` run events.
+FR-PRJ-05 allows, refuse an image with a Git client (`git` or `gh` on the container's `PATH`, FR-PRJ-05), label every
+container `switchboard.run` and `switchboard.project`, and record `environment` run events. All Git operations for a
+container run stay in the controller on the host.
 Container details: [TDD §3.11](TDD.md#311-container-environments).
 
 ## 12. Injected Git tools, commits and publication

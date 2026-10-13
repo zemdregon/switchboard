@@ -86,12 +86,15 @@ Keys (from `src/config/schema.ts`; no other keys exist yet):
 | --- | --- | --- |
 | `schema_version` | yes | Must be `1`. |
 | `allowed_roots` | yes | Non-empty list of directories. A task's `workspace_path` must be under one of them. Each must exist. Relative paths resolve against the config file's directory. |
-| `mcp_clients` | yes | Entries `{ "id", "max_trust_profile" }`. `id` matches `^[a-z0-9][a-z0-9_-]{0,63}$` and must be unique. `serve --client <id>` binds a session to one entry. |
+| `mcp_clients` | yes | Entries `{ "id", "max_trust_profile", "privileged_approval"? }`. `id` matches `^[a-z0-9][a-z0-9_-]{0,63}$` and must be unique. `serve --client <id>` binds a session to one entry. |
+| `mcp_clients[].privileged_approval` | no | `"required"` (default) or `"not_required"`. With `not_required`, that client's `privileged` requests run without `switchboard approve` (see [Trust profiles](#trust-profiles)). Allowed only when the client's `max_trust_profile` is `privileged`; `doctor` warns for every client that sets it. |
 | `data_dir` | no | Where the ledger, artifacts and worktrees live. Default `$XDG_DATA_HOME/switchboard` (`~/.local/share/switchboard`). |
 | `limits.global_concurrency` | no | Integer 1 to 64. Default 4. |
 | `limits.per_provider_concurrency` | no | Integer 1 to 64. Default 1. |
 | `providers.<id>.enabled` | no | Boolean. A provider you do not list is enabled. |
 | `providers.<id>.weight` | no | Number from 0 to 1. Accepted by the schema. |
+| `retention.days`, `retention.interval` | no | How long finished runs are kept (integer days, default 30) and how often the clean-up pass runs (`30m`, `12h`, `7d`; default `24h`). |
+| `profiles.<name>` | no | Overrides for `inspect-untrusted`, `edit-untrusted`, `test-sandboxed` or `trusted-development`: `file_access`, `shell`, `shell_allowlist`, `network`, `network_allowlist`, `repo_config`. They may tighten or loosen a default; `doctor` lists them and every run records them. `privileged` has none. See the `edit-untrusted` limit under [Trust profiles](#trust-profiles). |
 
 `<id>` is one of `claude-code`, `codex`, `grok-build`, `antigravity`, `cursor`, `opencode`, `kimi-code`. Only
 `claude-code` and `codex` have adapters in this stage. `max_trust_profile` accepts any of the five profile names, but
@@ -177,8 +180,8 @@ adapter compiles the profile into the provider's own permission and sandbox cont
 | --- | --- | --- |
 | `inspect-untrusted` | yes | Read-only file access, network off, repository-provided config disabled. Claude Code gets no shell. Codex runs commands inside its read-only native sandbox (see below). |
 | `edit-untrusted` | yes | Edits inside an isolated Git worktree, network off, repository config disabled. Claude Code gets no shell, because the shell allowlist is empty. Codex runs commands inside its `workspace-write` native sandbox (see below). |
-| `test-sandboxed`, `trusted-development` | no | Rejected with `ELIGIBILITY_NONE`. |
-| `privileged` | request and approval only | Above the client's `max_trust_profile`: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny`; an approved run still fails `ELIGIBILITY_NONE` before any process starts, because no adapter compiles a `privileged` scope yet. |
+| `test-sandboxed`, `trusted-development` | per provider | Each adapter compiles what it can express and refuses the rest with `ELIGIBILITY_NONE`; `list_capabilities` shows which profiles each provider supports on this host. |
+| `privileged` | yes, per provider | Above the client's `max_trust_profile`: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or, for a client with `privileged_approval: "not_required"`, starts at once). An approved run is compiled by its provider's adapter from the approved scope; a provider that cannot express the scope fails the run `ELIGIBILITY_NONE` before any process starts. |
 
 A request above the client's `max_trust_profile` also fails `PERMISSION_BLOCKED`. Non-empty
 `verification_commands` are refused with `INVALID_REQUEST` until verification lands in milestone 3.
@@ -189,18 +192,37 @@ Codex's credential store (`~/.codex`) and other files your user can read has **n
 untrusted repositories, prefer Claude Code, or set `providers.codex.enabled` to `false`, until the live check planned
 for milestone 3 settles it (ROADMAP R-23).
 
-**Planned in milestone 3, not available yet:**
+**Profile overrides.** `profiles.<name>` in the config may loosen a profile's defaults, but only explicitly, with the
+change recorded in every run's policy snapshot and reported by `doctor`. **Known limit:** a `profiles.edit-untrusted`
+override that loosens `network` or `repo_config` is not enforced. Claude Code still runs `edit-untrusted` with the
+network off (at the tool level) and repository configuration disabled, whatever the override says; Codex refuses such a
+run (`ELIGIBILITY_NONE`). Use `trusted-development` or a `privileged` scope for that work (ROADMAP owner decision 20).
 
-- `profiles.<name>` overrides in the config may loosen a profile's defaults, but only explicitly, with the change
-  recorded in every run's policy snapshot and reported by `doctor`.
-- A `privileged` request carries a machine-readable `privileged_scope` (file access, shell commands, network hosts
-  and repository configuration, plus a `bypass` setting that defaults to off) and waits for
-  `switchboard approve <run_id>` (available now; running the approved work is not). A provider bypass flag such as
-  `--dangerously-skip-permissions` is passed only when the approved scope explicitly sets `bypass`
-  ([ADR-0017](docs/adr/0017-approved-privileged-scope-bypass.md)).
-  Approvals are never automatic and never expire: once approved, later `continue_task` runs of the same meta-session
-  reuse the approved scope without asking again, so approve only scopes you are content to leave open for that
-  session. A different scope or a new task asks again.
+**Privileged runs.** A `privileged` request carries a machine-readable `privileged_scope` (file access, shell commands,
+network hosts and repository configuration, plus a `bypass` setting that defaults to off) and waits for
+`switchboard approve <run_id>`. A provider bypass flag such as `--dangerously-skip-permissions` is passed only when the
+approved scope explicitly sets `bypass` ([ADR-0017](docs/adr/0017-approved-privileged-scope-bypass.md)). For Claude
+Code an approved bypass run drops `--restricted`, which refuses bypass, and keeps the other isolation flags
+([ADR-0018](docs/adr/0018-claude-bypass-omits-restricted.md)); whether Claude's Git deny rules still hold under bypass
+is not verified yet (ROADMAP R-38). That gap concerns agents running on your host. Container environments, planned
+for milestone 10 and not available yet, are meant to close it: their image has no Git client, they mount neither the
+repository's Git directory nor any credentials, and Switchboard makes commits and pushes on the host through its own
+tools (ROADMAP owner decision 24). Host-run agents remain supported. Claude Code compiles a privileged scope only with
+the network `on`: it has no network control for commands, so a scope asking for network `off` is refused. Codex does
+not run `bypass: true` scopes yet (its bypass option is not documented in the sources the adapter relies on), and
+neither provider compiles every scope: `list_capabilities` shows whether a provider compiles `privileged` at all, and a
+scope it cannot express fails `ELIGIBILITY_NONE`. Approvals never expire: once approved, later `continue_task` runs of
+the same meta-session reuse the approved scope without asking again, so approve only scopes you are content to leave
+open for that session. A different scope or a new task asks again.
+
+**Skipping the approval for a client you trust.** The loose modes are meant for operators who want them; the defaults
+stay strict for everyone else. Setting `"privileged_approval": "not_required"` on an `mcp_clients` entry whose
+`max_trust_profile` is `privileged` lifts the per-scope approval for that client only: its `privileged` requests are
+validated, hashed and recorded as usual, then start at once under an approval recorded as decided by
+`client_policy:<client id>` ([ADR-0019](docs/adr/0019-per-client-privileged-approval.md)). Git-write denial and the
+run's isolated worktree still apply. Anything that can launch that client's `serve --client` session can then run
+privileged work, including bypass scopes, without you reviewing it (ROADMAP R-39), so use it only for an orchestrator
+you control. `approve` and `deny` keep working for clients left at `"required"`.
 
 ## Security model
 
@@ -211,8 +233,9 @@ for milestone 3 settles it (ROADMAP R-23).
 - **Untrusted profiles by default.** Both available profiles keep the network off and disable repository-provided
   configuration.
 - **No bypass flags.** Switchboard does not pass flags such as `--dangerously-skip-permissions`, `--yolo`, `--force` or
-  `--full-auto` to provider CLIs, and tests audit this. Milestone 3 plans one exception: an operator-approved
-  `privileged` scope that explicitly sets `bypass` (see Trust profiles).
+  `--full-auto` to provider CLIs, and tests audit this. The one exception is an approved `privileged` scope that
+  explicitly sets `bypass` (approved by you, or by a client's `privileged_approval: "not_required"`; see Trust
+  profiles).
 - **Fail closed.** An invalid config, an unknown client id, an unverified CLI version or an unavailable profile refuses
   to run rather than weakening anything.
 
@@ -226,9 +249,9 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
 - **Event shapes are unverified until the live smoke test passes.** The adapters were written against recorded or
   synthetic fixtures. Provider output formats, flags and the exact meaning of status commands may differ on a real CLI.
 - Linux only. Single operator only. No hosted or multi-user mode.
-- Only Claude Code and Codex, only `inspect-untrusted` and `edit-untrusted`, and `continue_task` only on the same
-  provider.
-- No `adapters validate` or approval commands yet; they are scheduled for later milestones.
+- Only Claude Code and Codex; profiles beyond `inspect-untrusted` and `edit-untrusted` only where the adapter can
+  compile them (see `list_capabilities`); `continue_task` only on the same provider.
+- No `adapters validate` command yet; it is scheduled for milestone 4.
 
 ### Optional live smoke test
 
@@ -252,9 +275,9 @@ version gate.
 | auth `UNKNOWN` | `doctor` adapter line | Switchboard could not determine login state; the reason is printed. Check the CLI runs on its own. For Codex this is expected until its status handling is verified. |
 | `not installed: ... CLI not found` | `doctor` (`[warn]`) | The provider binary is not on `PATH`. Install it, or ignore it if you do not use that provider. |
 | `ADAPTER_VERSION_UNVERIFIED` | `doctor` (`[FAIL]`, exit 1); `list_capabilities` | The installed CLI version is outside the range recorded in the adapter's compliance manifest, so the adapter is ineligible. For Codex the range is deliberately empty (`<0.0.0`) because no Codex version has been verified on the development host (ROADMAP Q-12): **an installed Codex always fails `doctor` today**. Do not edit manifests to force a pass; the `adapters validate` command that would record a version does not exist yet. Use Claude Code, or set `providers.codex.enabled` to `false` (this stops dispatch to Codex, and `doctor` then reports it as `[skip]` and does not probe it). |
-| `ELIGIBILITY_NONE` | MCP error or failed run | No provider can take the task: none enabled, installed, version-verified and logged in for that profile; the profile is unavailable (`test-sandboxed`, `trusted-development`); or the queue or concurrency limit was hit. Run `doctor` and `list_capabilities` to see why. |
+| `ELIGIBILITY_NONE` | MCP error or failed run | No provider can take the task: none enabled, installed, version-verified and logged in for that profile; no provider can compile the profile or the approved `privileged` scope; or the queue or concurrency limit was hit. Run `doctor` and `list_capabilities` to see why. |
 | `ELIGIBILITY_NONE` with `details.reason = "QUEUE_FULL"` | MCP error | Switchboard reports a full waiting queue under `ELIGIBILITY_NONE` (a proposed mapping, ROADMAP Q-5). Wait for runs to finish or cancel some, then retry. |
-| `PERMISSION_BLOCKED` | MCP error or failed run | The requested `trust_profile` is above the client's `max_trust_profile`, is `privileged`, or the provider denied an operation. Request a lower profile or re-delegate within what is allowed. |
+| `PERMISSION_BLOCKED` | MCP error or failed run | The requested `trust_profile` is above the client's `max_trust_profile`, a `privileged` run's approval check failed before start (for example a changed scope), or the provider denied an operation. Request a lower profile or re-delegate within what is allowed. |
 | `another switchboard serve (pid N) already holds the data directory` | `serve` stderr, exit 1 | Another `serve` uses this `data_dir`. Stop it, or point the second one at a different `data_dir`. A stale lock from a dead process is replaced automatically. |
 | `unknown MCP client "x"; configured clients: ...` | `serve` stderr, exit 1 | `--client` does not match any `mcp_clients` id in the config. |
 | `Invalid config ...` or `Cannot read config file ...` | `doctor`, `serve` | The message lists each problem with its JSON path. Fix the file; unknown keys are errors. A path in `allowed_roots` that does not exist is also an error. |

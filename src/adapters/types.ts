@@ -66,6 +66,14 @@ export interface CompileRequest {
   model?: string;
   verificationCommands?: string[][];
   handoff?: { bundleArtifactId: string }; // M5
+  /**
+   * T3.17 (Proposed shape; LLD §3.1 "Bypass", ADR-0017): true only when the lifecycle found an `APPROVED`, hash-matching
+   * approval row whose scope sets bypass (`evaluateBypass`). Adapters never compute it. Equivalent to
+   * `ResolvedProfile.bypassApproved` (the LLD §2 carrier); adapters accept either. A provider bypass flag is compiled
+   * only when the run is approved, the profile is `privileged` and its scope sets `bypass`; a `privileged` scope with
+   * `bypass: true` and no approval is `Ineligible`, and an approval on any other profile is `Ineligible`.
+   */
+  bypassApproved?: boolean;
 }
 
 export interface ResolvedProfile {

@@ -97,6 +97,13 @@ class ScenarioAdapter implements ProviderAdapter {
   probeGate: Promise<void> | undefined;
   authScenario: FakeScenario = "success";
   onCompile: ((req: CompileRequest) => void) | undefined;
+  /** Every profile `compile` received (to check what dispatch hands the adapter). */
+  readonly compiledProfiles: ResolvedProfile[] = [];
+  /**
+   * Test double for the T3.5/T3.6 privileged compile: when set, a `privileged` profile compiles as this profile (the
+   * fake CLI has no privileged mode). Unset, the fake adapter refuses `privileged` (PROFILE_UNSUPPORTED).
+   */
+  privilegedAs: TrustProfile | undefined;
   compileOverride: ((req: CompileRequest, inv: Invocation) => Invocation | Ineligible) | undefined;
   private readonly base = new FakeAdapter({ timeouts: PATIENT });
 
@@ -122,7 +129,9 @@ class ScenarioAdapter implements ProviderAdapter {
   compile(req: CompileRequest, profile: ResolvedProfile) {
     compiles++;
     this.onCompile?.(req);
-    const inv = this.forScenario(req.objective as Scenario).compile(req, profile);
+    this.compiledProfiles.push(profile);
+    const effective = profile.name === "privileged" && this.privilegedAs ? profileFor(this.privilegedAs) : profile;
+    const inv = this.forScenario(req.objective as Scenario).compile(req, effective);
     if (this.compileOverride && !("ineligible" in inv)) return this.compileOverride(req, inv);
     return inv;
   }
@@ -412,21 +421,44 @@ describe("admission", () => {
       ).rejects.toMatchObject({ code: "INVALID_REQUEST" });
     });
 
-    it("an approved privileged run is refused at dispatch (T8) before any probe, lease, compile or process", async () => {
+    it("an approved privileged run is compiled by its adapter; an adapter that cannot compile it fails with the BR-3 code", async () => {
       const r = await submit("success", { trustProfile: "privileged", privileged: { scope: SCOPE } });
       const approval = ledger.getApprovalForRun(r.runId);
       ledger.decideApproval({ id: approval?.id as string, status: "APPROVED", decidedBy: "op" });
       approveDirect(r.runId); // stands in for T3.4's `approve`
       lifecycle.start();
       const done = await lifecycle.waitForTerminal(r.runId);
-      expect(done).toMatchObject({ state: "FAILED", failure_code: "ELIGIBILITY_NONE", pid: null, worktree_path: null });
-      expect(done.failure_detail).toContain("privileged compile not available until T3.5/T3.6");
-      expect(rules(r.runId)).toEqual(["T3", "T4", "T8"]);
-      expect(compiles).toBe(0);
-      expect(probes).toBe(0);
+      // The fake adapter has no privileged mode: compile decides (T3.7 path, FRD T10), never PERMISSION_BLOCKED.
+      expect(done).toMatchObject({ state: "FAILED", failure_code: "ELIGIBILITY_NONE", pid: null });
+      expect(done.failure_detail).toContain("fake cannot compile privileged: PROFILE_UNSUPPORTED");
+      expect(rules(r.runId)).toEqual(["T3", "T4", "T5", "T10"]);
+      expect(compiles).toBe(1);
+      // bypassApproved came from the approval (SCOPE sets bypass), never from the stored snapshot.
+      expect(adapter.compiledProfiles[0]).toMatchObject({ name: "privileged", bypassApproved: true });
       expect(JSON.parse(done.policy_snapshot_json).bypassApproved).toBe(false);
       // A failed later run never changes the approval (owner decision 17).
       expect(ledger.getApproval(approval?.id as string)?.status).toBe("APPROVED");
+    });
+
+    it("an approved privileged run whose adapter compiles the scope runs in its own worktree and succeeds", async () => {
+      adapter.privilegedAs = "edit-untrusted";
+      const r = await submit("writer", {
+        trustProfile: "privileged",
+        privileged: { scope: { ...SCOPE, bypass: false } },
+      });
+      const approval = ledger.getApprovalForRun(r.runId);
+      ledger.decideApproval({ id: approval?.id as string, status: "APPROVED", decidedBy: "op" });
+      approveDirect(r.runId);
+      lifecycle.start();
+      const done = await lifecycle.waitForTerminal(r.runId);
+      expect(done.state).toBe("SUCCEEDED");
+      expect(done.worktree_path).not.toBeNull(); // FR-WS-05: a worktree, never the operator's checkout
+      expect(existsSync(path.join(repo, "feature.txt"))).toBe(false);
+      expect(adapter.compiledProfiles[0]).toMatchObject({ name: "privileged", bypassApproved: false });
+      expect(events(r.runId).find((e) => e.type === "privileged_dispatch")?.p).toEqual({
+        approval_id: approval?.id,
+        bypass_approved: false,
+      });
     });
 
     it("T1 continuation under an APPROVED approval copies the scope as is and writes no new approval row", async () => {
@@ -527,7 +559,7 @@ describe("admission", () => {
       db.prepare("UPDATE run SET policy_snapshot_json = ? WHERE id = ?").run(JSON.stringify(snap), runId);
     };
 
-    it("approve moves the run AWAITING_APPROVAL -> QUEUED (T3) with a decided row; dispatch computes bypassApproved and still refuses to compile", async () => {
+    it("approve moves the run AWAITING_APPROVAL -> QUEUED (T3) with a decided row; dispatch computes bypassApproved for the compile", async () => {
       const r = await submit("success", { trustProfile: "privileged", privileged: { scope: SCOPE } });
       expect(decide(r.runId)).toBe("QUEUED");
       const row = ledger.getApprovalForRun(r.runId);
@@ -541,12 +573,14 @@ describe("admission", () => {
       expect(transitionPayload(r.runId, "QUEUED")).toMatchObject({ rule: "T3", reason: "operator_approve" });
       lifecycle.start();
       const done = await lifecycle.waitForTerminal(r.runId);
-      expect(done).toMatchObject({ state: "FAILED", failure_code: "ELIGIBILITY_NONE", pid: null, worktree_path: null });
-      expect(done.failure_detail).toContain("privileged compile not available until T3.5/T3.6");
-      expect(transitionPayload(r.runId, "FAILED")).toMatchObject({ approval_id: row?.id, bypass_approved: true });
-      expect(rules(r.runId)).toEqual(["T3", "T4", "T8"]);
-      expect(compiles).toBe(0);
-      expect(probes).toBe(0);
+      expect(done).toMatchObject({ state: "FAILED", failure_code: "ELIGIBILITY_NONE", pid: null });
+      expect(events(r.runId).find((e) => e.type === "privileged_dispatch")?.p).toEqual({
+        approval_id: row?.id,
+        bypass_approved: true,
+      });
+      expect(transitionPayload(r.runId, "FAILED")).toMatchObject({ rule: "T10", reason: "PROFILE_UNSUPPORTED" });
+      expect(rules(r.runId)).toEqual(["T3", "T4", "T5", "T10"]);
+      expect(adapter.compiledProfiles.map((p) => p.bypassApproved)).toEqual([true]);
       // The stored snapshot is never widened: bypassApproved is computed at dispatch, not written back.
       expect(JSON.parse(done.policy_snapshot_json).bypassApproved).toBe(false);
       // A second decision is refused and changes nothing.
@@ -629,7 +663,9 @@ describe("admission", () => {
       const contRec = ledger.getRunRecord(cont.runId) as NonNullable<ReturnType<typeof ledger.getRunRecord>>;
       expect(bypassApprovedFor(ledger, contRec)).toBe(true);
       await lifecycle.waitForTerminal(cont.runId);
-      expect(transitionPayload(cont.runId, "FAILED")).toMatchObject({ bypass_approved: true });
+      expect(events(cont.runId).find((e) => e.type === "privileged_dispatch")?.p).toMatchObject({
+        bypass_approved: true,
+      });
       // A run in another meta-session with an identical scope is not covered by it, even when its snapshot names it.
       const other = await submit("success", { trustProfile: "privileged", privileged: { scope: SCOPE } });
       setSnapshot(other.runId, (s) => {
@@ -684,6 +720,137 @@ describe("admission", () => {
       await lifecycle.cancel(cont.runId);
       expect(["CANCELLED", "FAILED"]).toContain((await lifecycle.waitForTerminal(cont.runId)).state);
       expect(ledger.getApproval(approvalId as string)?.status).toBe("APPROVED");
+    });
+  });
+
+  describe("approval by client policy (owner decision 22, ADR-0019: privileged_approval not_required)", () => {
+    const byPolicy = (objective: Scenario | string = "writer", scope: unknown = SCOPE, extra = {}) =>
+      submit(objective, { trustProfile: "privileged", privileged: { scope, approvedByClientPolicy: true }, ...extra });
+    // biome-ignore lint/suspicious/noExplicitAny: the stored snapshot is untyped JSON edited in place
+    const setSnapshot = (runId: string, edit: (snap: Record<string, any>) => void) => {
+      const snap = JSON.parse(ledger.getRunRecord(runId)?.policy_snapshot_json ?? "{}");
+      edit(snap);
+      db.prepare("UPDATE run SET policy_snapshot_json = ? WHERE id = ?").run(JSON.stringify(snap), runId);
+    };
+
+    it("T1 to QUEUED with the scope hashed and an APPROVED row decided by client_policy:<client>, in one transaction", async () => {
+      const r = await byPolicy();
+      expect(r.state).toBe("QUEUED");
+      const row = ledger.getApprovalForRun(r.runId);
+      const parsed = parsePrivilegedScope(SCOPE);
+      if (!parsed.ok) throw new Error("bad fixture");
+      expect(row).toMatchObject({
+        status: "APPROVED",
+        decided_by: "client_policy:client-a",
+        scope_json: canonicalScopeJson(parsed.scope),
+        scope_hash: privilegedScopeHash({ clientId: "client-a", metaSessionId: r.metaSessionId, scope: parsed.scope }),
+      });
+      expect(row?.decided_at).not.toBeNull();
+      expect(ledger.listApprovals()).toHaveLength(1);
+      const snap = JSON.parse(ledger.getRunRecord(r.runId)?.policy_snapshot_json ?? "{}");
+      expect(snap.privilegedScope).toEqual({ scope: parsed.scope, scopeHash: row?.scope_hash, approvalId: row?.id });
+      expect(snap.bypassApproved).toBe(false);
+      expect(events(r.runId).map((e) => [e.type, e.p])).toEqual([
+        ["state_transition", { from: null, to: "QUEUED", rule: "T1", approval_id: row?.id, approval: "client_policy" }],
+        ["approval_decided", { approval_id: row?.id, status: "APPROVED", reason: "client_policy" }],
+      ]);
+      expect(rules(r.runId)).toEqual([]); // admission notices are not transitions; nothing waited for approval
+      // Without the flag the same request still waits for the operator (required is unchanged).
+      const waiting = await submit("writer", { trustProfile: "privileged", privileged: { scope: SCOPE } });
+      expect(waiting.state).toBe("AWAITING_APPROVAL");
+      expect(ledger.getApprovalForRun(waiting.runId)?.status).toBe("PENDING");
+    });
+
+    it("dispatches like an operator-approved run: bypassApproved from the row, a worktree, and approve/deny refused", async () => {
+      adapter.privilegedAs = "edit-untrusted";
+      const r = await byPolicy();
+      expect(() =>
+        lifecycle.applyApprovalDecision({
+          requestEventId: "evt_policy",
+          runId: r.runId,
+          decision: "DENIED",
+          requestedBy: "op",
+          requestedAt: "2026-10-13T00:00:00.000Z",
+          scopeHash: ledger.getApprovalForRun(r.runId)?.scope_hash ?? "",
+        }),
+      ).toThrow(/granted by client policy/);
+      lifecycle.start();
+      const done = await lifecycle.waitForTerminal(r.runId);
+      expect(done.state).toBe("SUCCEEDED");
+      expect(done.worktree_path).not.toBeNull();
+      expect(existsSync(path.join(repo, "feature.txt"))).toBe(false);
+      expect(adapter.compiledProfiles[0]).toMatchObject({ name: "privileged", bypassApproved: true });
+      expect(events(r.runId).find((e) => e.type === "privileged_dispatch")?.p).toMatchObject({ bypass_approved: true });
+      expect(ledger.getApprovalForRun(r.runId)?.status).toBe("APPROVED");
+    });
+
+    it("the argv audit admits a bypass flag only for an approved scope that sets bypass (profile passed to spawn)", async () => {
+      adapter.privilegedAs = "edit-untrusted";
+      // Test double for T3.5: append the Claude bypass flag to every privileged invocation.
+      adapter.compileOverride = (_req, inv) => ({ ...inv, argv: [...inv.argv, "--dangerously-skip-permissions"] });
+      const yes = await byPolicy("writer", SCOPE);
+      const no = await byPolicy("writer", { ...SCOPE, bypass: false });
+      lifecycle.start();
+      expect((await lifecycle.waitForTerminal(yes.runId)).state).toBe("SUCCEEDED");
+      const refused = await lifecycle.waitForTerminal(no.runId);
+      expect(refused).toMatchObject({ state: "FAILED", failure_code: "PERMISSION_BLOCKED", pid: null });
+      expect(refused.failure_detail).toContain("--dangerously-skip-permissions");
+    });
+
+    it("a continuation runs under the client-policy approval as is; another client cannot use it", async () => {
+      adapter.privilegedAs = "edit-untrusted";
+      const r = await byPolicy();
+      lifecycle.start();
+      await lifecycle.waitForTerminal(r.runId);
+      const approvalId = ledger.getApprovalForRun(r.runId)?.id;
+      await expect(
+        submit("writer", {
+          clientId: "client-b",
+          trustProfile: "privileged",
+          metaSessionId: r.metaSessionId,
+          privileged: { approvalId },
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+      const cont = await submit("writer", {
+        trustProfile: "privileged",
+        metaSessionId: r.metaSessionId,
+        privileged: { approvalId },
+      });
+      expect(cont.state).toBe("QUEUED");
+      expect(ledger.listApprovals()).toHaveLength(1);
+      const done = await lifecycle.waitForTerminal(cont.runId);
+      expect(done.state).toBe("SUCCEEDED");
+      expect(ledger.listRunsCoveredByApproval(approvalId as string).map((x) => x.id)).toEqual([r.runId, cont.runId]);
+    });
+
+    it("a tampered snapshot or row still fails PERMISSION_BLOCKED before any probe, lease or spawn", async () => {
+      adapter.privilegedAs = "edit-untrusted";
+      const a = await byPolicy();
+      setSnapshot(a.runId, (snap) => (snap.privilegedScope.scope.network = { mode: "on" }));
+      const b = await byPolicy();
+      // The row is decided in the admission transaction, so the update-once trigger already refuses rewriting it.
+      expect(() =>
+        db.prepare("UPDATE approval SET scope_hash = ? WHERE run_id = ?").run("0".repeat(64), b.runId),
+      ).toThrow(/approval already decided/);
+      setSnapshot(b.runId, (snap) => (snap.privilegedScope.scopeHash = "0".repeat(64)));
+      lifecycle.start();
+      for (const id of [a.runId, b.runId]) {
+        const done = await lifecycle.waitForTerminal(id);
+        expect(done, id).toMatchObject({ state: "FAILED", failure_code: "PERMISSION_BLOCKED", pid: null });
+        expect(done.worktree_path).toBeNull();
+        expect(done.failure_detail).toContain("privileged approval check failed before spawn");
+      }
+      expect(compiles).toBe(0);
+      expect(probes).toBe(0);
+    });
+
+    it("idempotent replay returns the same run and writes no second row; the scope is still validated", async () => {
+      const a = await byPolicy("writer", SCOPE, { idempotencyKey: "policy-key-1" });
+      const b = await byPolicy("writer", SCOPE, { idempotencyKey: "policy-key-1" });
+      expect(b).toEqual({ ...a, replayed: true });
+      expect(ledger.listApprovals()).toHaveLength(1);
+      await expect(byPolicy("writer", { ...SCOPE, extra: 1 })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+      expect(ledger.listApprovals()).toHaveLength(1);
     });
   });
 

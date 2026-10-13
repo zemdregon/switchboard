@@ -3,6 +3,12 @@
  * `codex exec resume <SESSION_ID>` (R2). Every native spelling lives in ./protocol.ts with its citation or an
  * **Assumption** marker. The adapter never reads Codex credential or config files, never runs login, never writes
  * provider configuration and never emits a bypass flag (FR-AUTH-01/02, FR-POL-03, FR-POL-08).
+ *
+ * `privileged` (T3.6, T3.17): a scope with `bypass: false` compiles from the documented sandbox and harness flags only
+ * (see #privileged). A scope with `bypass: true` is Ineligible whatever its approval: [R2] names `--yolo` only as a
+ * posture the controller "should not be built around" (L28, L125) and `--full-auto` as "a deprecated compatibility
+ * option" (L126), and documents neither what they disable nor a dangerous sandbox mode, which is not precise enough to
+ * emit (AGENTS.md: no flag from memory). Verify live (T3.9) before any Codex bypass compiles.
  */
 import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
@@ -80,8 +86,12 @@ const UNTRUSTED_PROFILES = new Set(["inspect-untrusted", "edit-untrusted"]);
 /** Every non-privileged profile the compile matrix evaluates (T3.6, TDD §4.2.1). */
 const MATRIX_PROFILES = new Set([...UNTRUSTED_PROFILES, "test-sandboxed", "trusted-development"]);
 
-/** T3.6 leaves the privileged cell to T3.17 (ADR-0017): no privileged or bypass-approved run compiles yet. */
-export const PRIVILEGED_DEFERRED = "bypass/privileged compile awaits T3.17";
+/** Ineligible detail for a privileged scope with `bypass: true` (T3.17): R2 does not document the flag precisely. */
+export const CODEX_BYPASS_UNDOCUMENTED = "bypass/privileged flag not documented in R2: verify live";
+/** Ineligible detail for a bypass approval on a profile other than `privileged` (FR-POL-03). */
+export const CODEX_BYPASS_OUTSIDE_PRIVILEGED =
+  "bypassApproved is set on a profile other than privileged: a bypass applies only to an approved privileged scope " +
+  "(FR-POL-03, ADR-0017)";
 
 export interface CodexAdapterOptions {
   /** Absolute path of the codex binary. Defaults to the first executable `codex` on PATH, resolved once. */
@@ -120,6 +130,16 @@ export function resolveOnPath(name: string, pathEnv: string | undefined): string
 }
 
 const ineligible = (reason: Ineligible["reason"], detail: string): Ineligible => ({ ineligible: true, reason, detail });
+
+/** The documented sandbox and harness-control flags ([R2] L75, L126-128; read-only spelling an Assumption). */
+function harnessFlags(readOnly: boolean): string[] {
+  return [
+    SANDBOX_FLAG,
+    readOnly ? SANDBOX_READ_ONLY : SANDBOX_WORKSPACE_WRITE,
+    IGNORE_USER_CONFIG_FLAG, // FR-POL-04/08: no host config changes the contract; nothing is written
+    IGNORE_RULES_FLAG,
+  ];
+}
 
 export class CodexAdapter implements ProviderAdapter {
   readonly id = "codex" as const;
@@ -216,8 +236,12 @@ export class CodexAdapter implements ProviderAdapter {
    * order so the first failing dimension names the reason.
    */
   #build(request: CompileRequest, profile: ResolvedProfile, tail: string[]): Invocation | Ineligible {
-    if (profile.name === "privileged" || profile.bypassApproved) {
-      return ineligible("PROFILE_UNSUPPORTED", `${PRIVILEGED_DEFERRED}; the Codex adapter emits no bypass option`);
+    if (profile.name === "privileged") {
+      const priv = this.#privileged(request, profile);
+      return "ineligible" in priv ? priv : this.#invocation(request, priv.policyFlags, tail);
+    }
+    if (profile.bypassApproved || request.bypassApproved === true) {
+      return ineligible("PROFILE_UNSUPPORTED", CODEX_BYPASS_OUTSIDE_PRIVILEGED);
     }
     if (!MATRIX_PROFILES.has(profile.name)) return ineligible("PROFILE_UNSUPPORTED", `unknown profile ${profile.name}`);
     const scoped = (["fileAccess", "shell", "network", "repoConfig"] as const).filter((k) => profile[k] === "scoped");
@@ -258,12 +282,56 @@ export class CodexAdapter implements ProviderAdapter {
 
     const readOnly =
       profile.name === "inspect-untrusted" || profile.fileAccess === "read-only" || !request.workspace.writable;
-    const policyFlags = [
-      SANDBOX_FLAG,
-      readOnly ? SANDBOX_READ_ONLY : SANDBOX_WORKSPACE_WRITE,
-      IGNORE_USER_CONFIG_FLAG, // FR-POL-04/08: no host config changes the contract; nothing is written
-      IGNORE_RULES_FLAG,
-    ];
+    return this.#invocation(request, harnessFlags(readOnly), tail);
+  }
+
+  /**
+   * `privileged` (T3.6, T3.17; TDD §4.2.1 `privileged` column; LLD §3.1; Proposed, Delegated). Compiles the approved
+   * scope from the documented flags only; checks in this order, the first unmet one is the `Ineligible` reason:
+   * 1. No scope binding: PROFILE_UNSUPPORTED.
+   * 2. `bypass: true` (approved or not): PROFILE_UNSUPPORTED {@link CODEX_BYPASS_UNDOCUMENTED}; no bypass is emitted.
+   * 3. shell `none` or `allowlist`: CAPABILITY_MISSING ([R2] documents no way to disable or narrow commands; decision 10
+   *    does not cover a scope). `broad` compiles: commands run inside the sandbox.
+   * 4. network `allowlist` or `on`: CAPABILITY_MISSING (no documented switch, so `on` cannot be guaranteed either).
+   *    `off` compiles on the existing Assumption that the sandbox keeps network off.
+   * 5. repository_config `approved`: CAPABILITY_MISSING (only all-or-nothing flags). `enabled`: CAPABILITY_MISSING
+   *    (Proposed): it means omitting `--ignore-user-config`/`--ignore-rules`, and whether `--sandbox` still wins over a
+   *    loaded user configuration is not in [R2]. `disabled` compiles with both flags.
+   * 6. A requested model: CAPABILITY_MISSING (no documented model flag).
+   * Then files `read-only` (or a read-only workspace) is `--sandbox read-only`, `worktree` is `--sandbox workspace-write`.
+   * `bypassApproved` true on a `bypass: false` scope changes nothing (no flag).
+   */
+  #privileged(request: CompileRequest, profile: ResolvedProfile): { policyFlags: string[] } | Ineligible {
+    const scope = profile.privilegedScope?.scope;
+    if (scope === undefined) {
+      return ineligible("PROFILE_UNSUPPORTED", "privileged without an approved scope binding (LLD §3.1)");
+    }
+    if (scope.bypass) return ineligible("PROFILE_UNSUPPORTED", CODEX_BYPASS_UNDOCUMENTED);
+    if (scope.shell.mode !== "broad") {
+      return ineligible(
+        "CAPABILITY_MISSING",
+        `privileged shell=${scope.shell.mode}: no documented Codex control to disable or narrow commands (Q-11)`,
+      );
+    }
+    if (scope.network.mode !== "off") {
+      return ineligible(
+        "CAPABILITY_MISSING",
+        `privileged network=${scope.network.mode}: no documented Codex network control (R-36)`,
+      );
+    }
+    if (scope.repository_config.mode !== "disabled") {
+      return ineligible(
+        "CAPABILITY_MISSING",
+        `privileged repository_config=${scope.repository_config.mode}: Codex documents only all-or-nothing ` +
+          "--ignore-user-config/--ignore-rules, and whether --sandbox wins over loaded configuration is not in R2",
+      );
+    }
+    if (request.model !== undefined) return ineligible("CAPABILITY_MISSING", "no documented Codex model flag");
+    return { policyFlags: harnessFlags(scope.files.access === "read-only" || !request.workspace.writable) };
+  }
+
+  #invocation(request: CompileRequest, policyFlags: string[], tail: string[]): Invocation | Ineligible {
+    if (this.#exe === undefined) return ineligible("CAPABILITY_MISSING", `${CODEX_BINARY} not found on PATH`);
     return {
       transport: "subprocess-jsonl",
       // Assumption: with no positional prompt, `codex exec` reads the prompt from stdin.

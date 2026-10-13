@@ -588,7 +588,7 @@ describe("privileged approvals across restarts (T3.4, FRD WF-7, WF-8; owner deci
     expectConsistentLedger();
   }, 60_000);
 
-  it("an approve recorded while the daemon was down is applied at startup (T3), once, and dispatch keeps the privileged boundary", async () => {
+  it("an approve recorded while the daemon was down is applied at startup (T3), once, and dispatch lets the adapter's compile decide", async () => {
     const r = await submitPrivileged(lifecycleWith(new FakeAdapter()));
     const rec = requestDecision(db, ledger, r.runId, { decision: "APPROVED", requestedBy: "op", direct: false });
     expect(rec).toMatchObject({ outcome: "requested", state: "AWAITING_APPROVAL" });
@@ -612,11 +612,13 @@ describe("privileged approvals across restarts (T3.4, FRD WF-7, WF-8; owner deci
     await runReconcile();
     expect(eventCount()).toBe(n);
 
-    // Approved, it is dispatched, and refused before any process: privileged compile is T3.5/T3.6.
+    // Approved, it is dispatched; the fake adapter cannot compile privileged, so its compile refuses the run with the
+    // BR-3 code before any process starts (owner decision 19 removed the blanket dispatch refusal, T3.18).
     const lc = lifecycleWith(new FakeAdapter());
     lc.start();
     const done = await lc.waitForTerminal(r.runId);
-    expect(done).toMatchObject({ state: "FAILED", failure_code: "ELIGIBILITY_NONE", pid: null, worktree_path: null });
+    expect(done).toMatchObject({ state: "FAILED", failure_code: "ELIGIBILITY_NONE", pid: null });
+    expect(done.failure_detail).toContain("PROFILE_UNSUPPORTED");
   });
 
   it("a deny recorded while down, followed by a cancel, ends CANCELLED with both records applied", async () => {

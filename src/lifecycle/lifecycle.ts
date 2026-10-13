@@ -36,17 +36,29 @@
  *   no worktree. A continuation with an `approvalId` is admitted by T1 (QUEUED) only if, inside the admission
  *   transaction, that approval is `APPROVED`, was requested by a run of the same meta-session and client, and its stored
  *   hash equals the hash recomputed from (client, meta-session, stored scope); the approved scope is copied as is.
- * - Nothing compiles or spawns a `privileged` run yet: dispatch ends it FAILED `ELIGIBILITY_NONE` (T8) before any probe,
- *   lease or worktree, with reason `PROFILE_UNSUPPORTED`, until the adapters compile the scope (T3.5, T3.6) and the argv
- *   audit admits a bypass flag (T3.17). The snapshot's `bypassApproved` stays false.
+ * - The stored snapshot's `bypassApproved` is always false; it is computed at dispatch (T3.4 below).
  *
  * T3.4 additions (operator approval; LLD §3.1 "Approve" and "Bypass"; Proposed, Delegated):
  * - `applyApprovalDecision` applies an operator `approve`/`deny` record (T3 to QUEUED, T19 to CANCELLED) and pumps.
  * - At dispatch a `privileged` run is checked first by `evaluateBypass` (`./approval.ts`): a missing, undecided or
  *   mismatched approval ends it FAILED `PERMISSION_BLOCKED` (T8) before any probe, lease or process; otherwise the
- *   computed `bypassApproved` is recorded in the transition event and the T3.3 refusal above still applies.
+ *   computed `bypassApproved` is recorded in a `privileged_dispatch` event and is the only source of `bypassApproved`
+ *   for the compile and the argv audit.
  * - Cancelling a run in AWAITING_APPROVAL closes its `PENDING` approval as `DENIED` in the same transaction (Q-15,
  *   `./approval.ts`).
+ *
+ * Owner decisions 19 and 22 (2026-10-13; mechanism Delegated, ADR-0018, ADR-0019):
+ * - The T3.3/T3.4 dispatch refusal of every `privileged` run ("privileged compile not available until T3.5/T3.6") is
+ *   gone: the adapter's own compile decides, exactly as for any other profile. Preflight's eligibility compile and the
+ *   LEASED compile both receive the snapshot with `bypassApproved` from `evaluateBypass` (an `APPROVED` row, operator
+ *   or client policy, whose hashes all check and whose scope sets `bypass: true`); an `Ineligible` ends the run with
+ *   its BR-3 code through the T3.7 path below. A stored `bypassApproved` is never trusted (always reset to false).
+ * - A `privileged` request from a client configured `privileged_approval: "not_required"` (`approvedByClientPolicy`)
+ *   is admitted by T1 to QUEUED: the run, its approval row (written `PENDING`, then decided `APPROVED` with
+ *   `decided_by = "client_policy:<client_id>"`), the T1 event and an `approval_decided` event (reason
+ *   `client_policy`) share one transaction. The scope is validated, canonicalised and hashed exactly as for T2, and
+ *   the row is durable for the meta-session (owner decision 17), so `continue_task` and the dispatch-time hash checks
+ *   treat it like an operator approval. Only the per-scope approval is lifted (owner decision 22).
  *
  * T3.7 additions (profile-aware eligibility; FRD BR-3, BR-5, T8, T10; LLD §2):
  * - PREFLIGHT re-checks eligibility against the run's frozen policy snapshot, so its compile check is the same compile
@@ -99,7 +111,14 @@ import {
 import { usageObservationsFromEvents } from "../usage/index.js";
 import { gitText } from "../workspace/git.js";
 import type { PreparedWorkspace, WorkspaceManager } from "../workspace/index.js";
-import { applyApprovalDecision, type DecisionToApply, denyApprovalOnCancel, evaluateBypass } from "./approval.js";
+import {
+  APPROVAL_DECIDED_EVENT,
+  applyApprovalDecision,
+  CLIENT_POLICY_DECIDER_PREFIX,
+  type DecisionToApply,
+  denyApprovalOnCancel,
+  evaluateBypass,
+} from "./approval.js";
 import { requestHash } from "./request.js";
 import {
   assertTransition,
@@ -159,16 +178,18 @@ export interface SubmitRequest {
   readonly resume?: { readonly nativeSessionId: string };
   /**
    * Required with `trustProfile: "privileged"`, refused otherwise (FRD V13, C7; LLD §3.1). `scope` (new meta-session
-   * only): T2, AWAITING_APPROVAL with a new `PENDING` approval. `approvalId` (continuation only): T1 under the
-   * meta-session's `APPROVED` approval for this client, re-verified in the admission transaction.
+   * only): T2, AWAITING_APPROVAL with a new `PENDING` approval; with `approvedByClientPolicy` (the client is configured
+   * `privileged_approval: "not_required"`, ADR-0019; the caller checks the configuration) T1, QUEUED with the new
+   * approval decided `APPROVED` by `client_policy:<clientId>` in the same transaction. `approvalId` (continuation
+   * only): T1 under the meta-session's `APPROVED` approval for this client, re-verified in the admission transaction.
    */
-  readonly privileged?: { readonly scope: unknown } | { readonly approvalId: string };
+  readonly privileged?:
+    | { readonly scope: unknown; readonly approvedByClientPolicy?: boolean }
+    | { readonly approvalId: string };
 }
 
-/** Failure detail of a `privileged` run reaching dispatch before any adapter can compile a scope (T3.5, T3.6). */
-export const PRIVILEGED_NOT_COMPILABLE =
-  "privileged compile not available until T3.5/T3.6: no adapter compiles a privileged scope yet, so no process was " +
-  "started (no probe, lease or worktree, and no bypass flag)";
+/** `run_event` type recording the dispatch-time approval verdict of a `privileged` run (`approval_id`, `bypass_approved`). */
+export const PRIVILEGED_DISPATCH_EVENT = "privileged_dispatch";
 
 /** Admission-time eligibility question (FRD V11); answered by the shared stage-1 filter. */
 export interface EligibilityQuestion {
@@ -332,7 +353,7 @@ export class RunLifecycle {
     const priv = privilegedInput(req);
     const hash =
       req.requestHash ?? requestHash(priv?.kind === "request" ? { ...stored, privileged_scope: priv.scope } : stored);
-    const initial: RunState = priv?.kind === "request" ? "AWAITING_APPROVAL" : "QUEUED";
+    const initial: RunState = priv?.kind === "request" && !priv.clientPolicy ? "AWAITING_APPROVAL" : "QUEUED";
     const profile = priv === undefined ? this.opts.resolveProfile(req.trustProfile) : undefined;
 
     const result = this.ledger.immediate((): SubmitResult => {
@@ -373,6 +394,7 @@ export class RunLifecycle {
         provider: req.provider,
         priority: PRIORITY_VALUES[stored.priority],
       });
+      const byPolicy = priv?.kind === "request" && priv.clientPolicy;
       if (priv?.kind === "request" && privileged) {
         // FRD T2 / LLD §3.1: the PENDING row, in the same transaction as the run and its first event.
         this.ledger.createApproval({
@@ -381,6 +403,15 @@ export class RunLifecycle {
           scopeJson: canonicalScopeJson(privileged.scope),
           scopeHash: privileged.scopeHash,
         });
+        if (byPolicy) {
+          // ADR-0019: the client's configuration stands in for the operator's `approve`; the row says so.
+          const decided = this.ledger.decideApproval({
+            id: privileged.approvalId,
+            status: "APPROVED",
+            decidedBy: `${CLIENT_POLICY_DECIDER_PREFIX}${req.clientId}`,
+          });
+          if (!decided) throw new Error(`approval ${privileged.approvalId} could not be decided by client policy`);
+        }
       }
       if (req.routeDecision) this.ledger.insertRouteDecision({ ...req.routeDecision, runId: run.id });
       const rule = initial === "QUEUED" ? "T1" : "T2";
@@ -388,8 +419,21 @@ export class RunLifecycle {
         runId: run.id,
         type: "state_transition",
         // The approval is named by id only: never the scope or its hash (LLD §3.1 "What is shown where").
-        payload: { from: null, to: initial, rule, ...(privileged ? { approval_id: privileged.approvalId } : {}) },
+        payload: {
+          from: null,
+          to: initial,
+          rule,
+          ...(privileged ? { approval_id: privileged.approvalId } : {}),
+          ...(byPolicy ? { approval: "client_policy" } : {}),
+        },
       });
+      if (byPolicy && privileged) {
+        this.ledger.appendRunEvent({
+          runId: run.id,
+          type: APPROVAL_DECIDED_EVENT,
+          payload: { approval_id: privileged.approvalId, status: "APPROVED", reason: "client_policy" },
+        });
+      }
       return { runId: run.id, metaSessionId, state: initial, replayed: false };
     });
     if (!result.replayed) queueMicrotask(() => this.pump());
@@ -688,7 +732,11 @@ export class RunLifecycle {
     const runId = exec.runId;
     const run0 = this.current(runId);
     const req = JSON.parse(run0.request_json) as StoredRequest;
-    const profile = JSON.parse(run0.policy_snapshot_json) as ResolvedProfile;
+    // FR-POL-03: a stored `bypassApproved` is never trusted; only `evaluateBypass` below may set it.
+    let profile: ResolvedProfile = {
+      ...(JSON.parse(run0.policy_snapshot_json) as ResolvedProfile),
+      bypassApproved: false,
+    };
     if (run0.trust_profile === "privileged") {
       // T3.4 (LLD §3.1 "Bypass"): the approval check runs before anything is probed, leased, compiled or spawned. A
       // missing, undecided or mismatched approval fails the run PERMISSION_BLOCKED (PREFLIGHT -> FAILED, FRD T8) with
@@ -706,13 +754,14 @@ export class RunLifecycle {
           },
         );
       }
-      // T3.3/T3.4 safety boundary: never probe, lease, compile or spawn a privileged run until T3.5/T3.6 compile the
-      // scope and T3.17 lets the argv audit pass a bypass flag. `verdict.bypassApproved` is what T3.5/T3.6 will hand to
-      // the compile; nothing reads it yet and no bypass flag exists anywhere. FRD T8, BR-3 code for "no provider can".
-      return this.fail(runId, "ELIGIBILITY_NONE", PRIVILEGED_NOT_COMPILABLE, {
-        reason: "PROFILE_UNSUPPORTED",
-        approval_id: verdict.approvalId,
-        bypass_approved: verdict.bypassApproved,
+      // Owner decisions 19 and 22: the adapter's compile decides from here on (preflight eligibility, then LEASED), with
+      // `bypassApproved` taken only from the verdict. An adapter that cannot compile the scope ends the run with its
+      // BR-3 code (T3.7 path); the argv audit still refuses a bypass flag unless `bypassApproved` (T3.17).
+      profile = { ...profile, bypassApproved: verdict.bypassApproved };
+      this.ledger.appendRunEvent({
+        runId,
+        type: PRIVILEGED_DISPATCH_EVENT,
+        payload: { approval_id: verdict.approvalId, bypass_approved: verdict.bypassApproved },
       });
     }
     const adapter = this.opts.adapters.get(req.provider);
@@ -785,6 +834,8 @@ export class RunLifecycle {
     try {
       exec.handle = startAdapterRun(adapter, inv, {
         bypassApproved: profile.bypassApproved,
+        // T3.17: the audit admits a bypass flag only for this profile being privileged with a scope that sets bypass.
+        profile,
         ...(this.opts.baseEnv ? { baseEnv: this.opts.baseEnv } : {}),
         onSpawn: ({ pid, pgid }) => {
           this.move(
@@ -1107,7 +1158,7 @@ export class RunLifecycle {
 const LOST_RACE = Symbol("lost-race");
 
 type PrivilegedInput =
-  | { readonly kind: "request"; readonly scope: PrivilegedScope }
+  | { readonly kind: "request"; readonly scope: PrivilegedScope; readonly clientPolicy: boolean }
   | { readonly kind: "approved"; readonly approvalId: string };
 
 /** The validated `privileged` input of a request (shape already checked by `validate`), or undefined. */
@@ -1118,7 +1169,7 @@ function privilegedInput(req: SubmitRequest): PrivilegedInput | undefined {
   const parsed = parsePrivilegedScope(p.scope);
   if (!parsed.ok)
     throw new LifecycleError("INVALID_REQUEST", `invalid privileged scope: ${parsed.field} ${parsed.message}`);
-  return { kind: "request", scope: parsed.scope };
+  return { kind: "request", scope: parsed.scope, clientPolicy: p.approvedByClientPolicy === true };
 }
 
 function resolveRule(from: RunState, to: RunState, ruleId?: string): TransitionRule {
