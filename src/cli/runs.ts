@@ -1,13 +1,18 @@
-/** `switchboard runs list|show|cancel` (FR-OPS-01). list/show are read-only; cancel writes operator records only. */
+/**
+ * `switchboard runs list|show|cancel` (FR-OPS-01) and the top-level `approve`/`deny` (T3.4, FR-OPS-02, FRD WF-7).
+ * list/show are read-only; cancel, approve and deny write operator records, which they also apply directly only while
+ * they hold the data-directory lock (no daemon can be running then, ADR-0005).
+ */
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { loadConfig } from "../config/index.js";
 import { createLedger, LEDGER_FILE_NAME, openLedger, type RunEventRow } from "../ledger/index.js";
+import type { OperatorDecision } from "../lifecycle/approval.js";
 import { acquireDataDirLock, inspectDataDirLock, LockError } from "../lock/index.js";
 import { type CliIo, JSON_SCHEMA_VERSION, UsageError } from "./io.js";
-import { listPendingCancels, requestCancel, UnknownRunError } from "./operator.js";
+import { listPendingCancels, requestCancel, requestDecision, UnknownRunError } from "./operator.js";
 
 export interface RunSummary {
   id: string;
@@ -28,6 +33,24 @@ export interface RunDetail extends RunSummary {
   started_at: string | null;
   finished_at: string | null;
   cancel_requested: boolean;
+}
+
+/**
+ * The approval covering a `privileged` run (T3.3, LLD §3.1 "What is shown where"): operator CLI only, so it shows what
+ * the MCP envelope never does: the full scope, `bypass`, the scope hash, the decision and every run it covers.
+ */
+export interface ApprovalView {
+  id: string;
+  status: string;
+  /** The run that requested the approval (the one `approve`/`deny` act on, T3.4). */
+  requested_by_run: string;
+  requested_at: string;
+  decided_at: string | null;
+  decided_by: string | null;
+  scope: unknown;
+  bypass: boolean;
+  scope_hash: string;
+  covered_runs: { id: string; state: string; created_at: string }[];
 }
 
 export interface RunEventView {
@@ -73,7 +96,7 @@ export function showRun(
   io: CliIo,
   argv: readonly string[],
   runId: string,
-): { run: RunDetail; events: RunEventView[] } | undefined {
+): { run: RunDetail; events: RunEventView[]; approval?: ApprovalView } | undefined {
   const db = openReadOnly(dataDirFor(io, argv));
   if (!db) return undefined;
   try {
@@ -90,10 +113,46 @@ export function showRun(
         "seq" | "ts" | "type" | "payload_json"
       >[]
     ).map((e) => ({ seq: e.seq, ts: e.ts, type: e.type, payload: JSON.parse(e.payload_json) as unknown }));
-    return { run: { ...row, cancel_requested: listPendingCancels(db, runId).length > 0 }, events };
+    const approval = row.trust_profile === "privileged" ? approvalView(db, runId) : undefined;
+    return {
+      run: { ...row, cancel_requested: listPendingCancels(db, runId).length > 0 },
+      events,
+      ...(approval ? { approval } : {}),
+    };
   } finally {
     db.close();
   }
+}
+
+function approvalView(db: Database.Database, runId: string): ApprovalView | undefined {
+  const ledger = createLedger(db);
+  const run = ledger.getRunRecord(runId);
+  if (!run) return undefined;
+  let approvalId: unknown;
+  try {
+    approvalId = (JSON.parse(run.policy_snapshot_json) as { privilegedScope?: { approvalId?: unknown } })
+      .privilegedScope?.approvalId;
+  } catch {
+    approvalId = undefined;
+  }
+  const row =
+    (typeof approvalId === "string" ? ledger.getApproval(approvalId) : undefined) ?? ledger.getApprovalForRun(runId);
+  if (!row) return undefined;
+  const scope = JSON.parse(row.scope_json) as { bypass?: unknown };
+  return {
+    id: row.id,
+    status: row.status,
+    requested_by_run: row.run_id,
+    requested_at: row.requested_at,
+    decided_at: row.decided_at,
+    decided_by: row.decided_by,
+    scope,
+    bypass: scope.bypass === true,
+    scope_hash: row.scope_hash,
+    covered_runs: ledger
+      .listRunsCoveredByApproval(row.id)
+      .map((r) => ({ id: r.id, state: r.state, created_at: r.created_at })),
+  };
 }
 
 export type CancelReport = {
@@ -119,19 +178,7 @@ function osUser(io: CliIo): string {
  * start) a run without a process is cancelled directly. If a daemon holds it, only the operator record is written.
  */
 export function cancelRun(io: CliIo, argv: readonly string[], runId: string): CancelReport {
-  const dataDir = dataDirFor(io, argv);
-  if (!existsSync(path.join(dataDir, LEDGER_FILE_NAME))) throw new UnknownRunError(`unknown run ${runId}`);
-  let lock: ReturnType<typeof acquireDataDirLock> | undefined;
-  let daemon = false;
-  try {
-    lock = acquireDataDirLock(dataDir);
-  } catch (err) {
-    if (!(err instanceof LockError) || inspectDataDirLock(dataDir).state !== "held") throw err;
-    daemon = true;
-  }
-  const db = openLedger(dataDir);
-  try {
-    const ledger = createLedger(db, io.now ? { now: io.now } : {});
+  return withOperatorLedger(io, argv, runId, (db, ledger, daemon) => {
     const r = requestCancel(db, ledger, runId, {
       requestedBy: osUser(io),
       direct: !daemon,
@@ -145,10 +192,96 @@ export function cancelRun(io: CliIo, argv: readonly string[], runId: string): Ca
       daemon_running: daemon,
       request_event_id: r.requestEventId,
     };
+  });
+}
+
+/**
+ * ADR-0005 operator write: take the data-dir lock if it is free (then no daemon exists, and none can start while the
+ * callback runs, so it may apply its record directly); if a live daemon holds it, only records are written.
+ */
+function withOperatorLedger<T>(
+  io: CliIo,
+  argv: readonly string[],
+  runId: string,
+  fn: (db: Database.Database, ledger: ReturnType<typeof createLedger>, daemon: boolean) => T,
+): T {
+  const dataDir = dataDirFor(io, argv);
+  if (!existsSync(path.join(dataDir, LEDGER_FILE_NAME))) throw new UnknownRunError(`unknown run ${runId}`);
+  let lock: ReturnType<typeof acquireDataDirLock> | undefined;
+  let daemon = false;
+  try {
+    lock = acquireDataDirLock(dataDir);
+  } catch (err) {
+    if (!(err instanceof LockError) || inspectDataDirLock(dataDir).state !== "held") throw err;
+    daemon = true;
+  }
+  const db = openLedger(dataDir);
+  try {
+    return fn(db, createLedger(db, io.now ? { now: io.now } : {}), daemon);
   } finally {
     db.close();
     lock?.release();
   }
+}
+
+/** `approve`/`deny --json` (T3.4). Stable keys; `decided_at` is when this command recorded the decision. */
+export type DecisionReport = {
+  schema_version: number;
+  run_id: string;
+  decision: "approve" | "deny";
+  outcome: "approved" | "denied" | "requested";
+  state: string;
+  daemon_running: boolean;
+  approval_id: string;
+  request_event_id: string;
+  decided_by: string;
+  decided_at: string;
+  scope_hash: string;
+};
+
+/**
+ * `approve <run_id>` / `deny <run_id>` (FR-OPS-02, FRD WF-7, LLD §3.1 "Approve"): records the decision as an operator
+ * record and, when no daemon runs, applies it at once (approve: T3 to QUEUED; deny: T19 to CANCELLED). A run that is
+ * not a waiting `privileged` run with its own `PENDING` approval, a hash mismatch or a second decision is refused with
+ * `ApprovalRefusedError` and nothing is written.
+ */
+export function decideRun(
+  io: CliIo,
+  argv: readonly string[],
+  runId: string,
+  decision: OperatorDecision,
+): DecisionReport {
+  return withOperatorLedger(io, argv, runId, (db, ledger, daemon) => {
+    const r = requestDecision(db, ledger, runId, {
+      decision,
+      requestedBy: osUser(io),
+      direct: !daemon,
+      ...(io.now ? { now: io.now } : {}),
+    });
+    return {
+      schema_version: JSON_SCHEMA_VERSION,
+      run_id: r.runId,
+      decision: decision === "APPROVED" ? "approve" : "deny",
+      outcome: r.outcome,
+      state: r.state,
+      daemon_running: daemon,
+      approval_id: r.approvalId,
+      request_event_id: r.requestEventId,
+      decided_by: r.decidedBy,
+      decided_at: r.decidedAt,
+      scope_hash: r.scopeHash,
+    };
+  });
+}
+
+export function renderDecision(r: DecisionReport): string {
+  const what =
+    r.outcome === "requested"
+      ? `${r.decision} recorded; the serve daemon (or startup reconciliation) will apply it`
+      : r.outcome === "approved"
+        ? "approved (no daemon was running; applied directly)"
+        : "denied (no daemon was running; applied directly)";
+  return `${r.run_id}: ${what} [state ${r.state}; approval ${r.approval_id} by ${r.decided_by} at ${r.decided_at}]\n`;
 }
 
 export function parseLimit(raw: string | undefined): number {
@@ -172,7 +305,7 @@ export function renderRunList(runs: readonly RunSummary[]): string {
   return `${[fmt(head), ...rows.map(fmt)].join("\n")}\n`;
 }
 
-export function renderRun(d: { run: RunDetail; events: RunEventView[] }): string {
+export function renderRun(d: { run: RunDetail; events: RunEventView[]; approval?: ApprovalView }): string {
   const r = d.run;
   const lines = [
     `Run ${r.id}`,
@@ -187,6 +320,20 @@ export function renderRun(d: { run: RunDetail; events: RunEventView[] }): string
     `  finished:    ${r.finished_at ?? "-"}`,
   ];
   if (r.failure_code) lines.push(`  failure:     ${r.failure_code}${r.failure_detail ? ` - ${r.failure_detail}` : ""}`);
+  const a = d.approval;
+  if (a) {
+    lines.push(
+      "",
+      `Approval ${a.id}`,
+      `  status:      ${a.status}`,
+      `  requested:   ${a.requested_at} by run ${a.requested_by_run}`,
+      `  decided:     ${a.decided_at ?? "-"}${a.decided_by ? ` by ${a.decided_by}` : ""}`,
+      `  bypass:      ${a.bypass ? "yes (provider bypass flag requested)" : "no"}`,
+      `  scope hash:  ${a.scope_hash}`,
+      `  scope:       ${JSON.stringify(a.scope)}`,
+      `  covers runs: ${a.covered_runs.map((c) => `${c.id} (${c.state})`).join(", ") || "-"}`,
+    );
+  }
   lines.push("", "Events:");
   for (const e of d.events)
     lines.push(`  ${String(e.seq).padStart(3)}  ${e.ts}  ${e.type}  ${JSON.stringify(e.payload)}`);

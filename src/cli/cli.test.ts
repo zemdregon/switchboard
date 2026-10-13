@@ -6,8 +6,9 @@ import { FakeAdapter } from "../adapters/fake/adapter.js";
 import { AdapterRegistry, type AuthResult, ClaudeAdapter, CodexAdapter } from "../adapters/index.js";
 import { createLedger, type Ledger, openLedger, type RunState } from "../ledger/index.js";
 import { acquireDataDirLock, LOCK_FILE_NAME } from "../lock/index.js";
+import { canonicalScopeJson, parsePrivilegedScope, privilegedScopeHash } from "../policy/index.js";
 import { defaultAdapters } from "./doctor.js";
-import { applyOperatorRequests, HELP, listPendingCancels, main } from "./index.js";
+import { applyOperatorRequests, HELP, listPendingCancels, listPendingDecisions, main } from "./index.js";
 import type { CliIo } from "./io.js";
 
 let tmp: string;
@@ -346,6 +347,345 @@ describe("runs list and show (read-only)", () => {
     expect(missing.code).toBe(1);
     expect(JSON.parse(missing.out).error.code).toBe("NOT_FOUND");
     expect((await run(["runs", "show", ...cfg()])).code).toBe(2);
+  });
+});
+
+/** A privileged meta-session (T3.3): first run AWAITING_APPROVAL with its PENDING row, optionally a covered later run. */
+function seedPrivileged(opts: { approved?: boolean; realHash?: boolean } = {}) {
+  const db = openLedger(dataDir);
+  const ledger = createLedger(db);
+  const s = ledger.createMetaSession({ objective: "o" });
+  const scope = {
+    files: { access: "worktree" },
+    shell: { mode: "allowlist", allowlist: [["npm", "test"]] },
+    network: { mode: "off" },
+    repository_config: { mode: "disabled" },
+    bypass: true,
+  };
+  const parsed = parsePrivilegedScope(scope);
+  if (!parsed.ok) throw new Error("bad fixture");
+  // `realHash`: the v2 hash LLD §3.1 defines; otherwise a placeholder that every hash check rejects.
+  const hash = opts.realHash
+    ? privilegedScopeHash({ clientId: "c1", metaSessionId: s.id, scope: parsed.scope })
+    : "f".repeat(64);
+  const approvalId = ledger.newApprovalId();
+  const snapshot = { name: "privileged", privilegedScope: { scope, scopeHash: hash, approvalId } };
+  const mk = (state: RunState, i: number) =>
+    ledger.createRun({
+      metaSessionId: s.id,
+      state,
+      trustProfile: "privileged",
+      policySnapshot: snapshot,
+      request: {},
+      requestHash: `p${i}`,
+      clientId: "c1",
+      provider: "fake",
+    }).id;
+  const first = mk(opts.approved ? "SUCCEEDED" : "AWAITING_APPROVAL", 0);
+  ledger.createApproval({
+    id: approvalId,
+    runId: first,
+    scopeJson: opts.realHash ? canonicalScopeJson(parsed.scope) : JSON.stringify(scope),
+    scopeHash: hash,
+  });
+  const ids = [first];
+  if (opts.approved) {
+    ledger.decideApproval({ id: approvalId, status: "APPROVED", decidedBy: "op" });
+    ids.push(mk("QUEUED", 1));
+  }
+  return { ids, approvalId, ledger, close: () => db.close() };
+}
+
+describe("privileged runs on the operator CLI (T3.3, LLD §3.1)", () => {
+  it("runs show prints the scope, bypass, scope hash, decision and the runs the approval covers", async () => {
+    const s = seedPrivileged({ approved: true });
+    s.close();
+    for (const id of s.ids) {
+      const j = JSON.parse((await run(["runs", "show", id, "--json", ...cfg()])).out);
+      expect(Object.keys(j)).toEqual(["schema_version", "run", "events", "approval"]);
+      expect(j.approval).toMatchObject({
+        id: s.approvalId,
+        status: "APPROVED",
+        requested_by_run: s.ids[0],
+        decided_by: "op",
+        bypass: true,
+        scope_hash: "f".repeat(64),
+        scope: { shell: { mode: "allowlist", allowlist: [["npm", "test"]] } },
+      });
+      expect(j.approval.covered_runs.map((r: { id: string }) => r.id)).toEqual(s.ids);
+    }
+    const human = (await run(["runs", "show", s.ids[1] as string, ...cfg()])).out;
+    expect(human).toContain(`Approval ${s.approvalId}`);
+    expect(human).toContain("bypass:      yes");
+    expect(human).toContain(`scope hash:  ${"f".repeat(64)}`);
+    expect(human).toContain('"allowlist":[["npm","test"]]');
+    expect(human).toContain(`covers runs: ${s.ids[0]} (SUCCEEDED), ${s.ids[1]} (QUEUED)`);
+  });
+
+  it("runs cancel of a run awaiting approval closes its PENDING row DENIED by the operator (Q-15)", async () => {
+    const s = seedPrivileged();
+    const id = s.ids[0] as string;
+    const j = JSON.parse((await run(["runs", "cancel", id, "--json", ...cfg()])).out);
+    expect(j).toMatchObject({ outcome: "cancelled", state: "CANCELLED" });
+    expect(s.ledger.getApproval(s.approvalId)).toMatchObject({ status: "DENIED", decided_by: "tester" });
+    s.close();
+  });
+
+  it("the daemon applying an operator cancel closes the row DENIED by the requester", async () => {
+    const s = seedPrivileged();
+    const id = s.ids[0] as string;
+    const lock = acquireDataDirLock(dataDir);
+    try {
+      expect(JSON.parse((await run(["runs", "cancel", id, "--json", ...cfg()])).out).outcome).toBe("requested");
+    } finally {
+      lock.release();
+    }
+    const db = openLedger(dataDir);
+    try {
+      const ledger = createLedger(db);
+      const applied: [string, string | undefined, string | undefined][] = [];
+      await applyOperatorRequests(db, ledger, {
+        cancel: async (runId, reason, decidedBy) => {
+          applied.push([runId, reason, decidedBy]);
+          return "CANCELLED";
+        },
+      });
+      expect(applied).toEqual([[id, "operator_cancel", "tester"]]);
+    } finally {
+      db.close();
+      s.close();
+    }
+  });
+});
+
+describe("approve/deny (T3.4, FR-OPS-02, FRD WF-7, LLD §3.1 Approve)", () => {
+  const eventTypes = (ledger: Ledger, id: string) => ledger.listRunEvents(id).map((e) => e.type);
+  const DECISION_KEYS = [
+    "approval_id",
+    "daemon_running",
+    "decided_at",
+    "decided_by",
+    "decision",
+    "outcome",
+    "request_event_id",
+    "run_id",
+    "schema_version",
+    "scope_hash",
+    "state",
+  ];
+
+  it("is a top-level command (not `runs approve`) listed in the help", async () => {
+    expect(HELP).toContain("approve <run_id>");
+    expect(HELP).toContain("deny <run_id>");
+    expect((await run(["approve", ...cfg()])).code).toBe(2);
+    expect((await run(["deny", "a", "b", ...cfg()])).code).toBe(2);
+    const sub = await run(["runs", "approve", "run_x", ...cfg()]);
+    expect(sub.code).toBe(2);
+    expect(sub.err).toContain("unknown runs subcommand");
+  });
+
+  it("without a daemon: approve moves the run to QUEUED (T3) with a decided row; a second decision is refused", async () => {
+    const s = seedPrivileged({ realHash: true });
+    const id = s.ids[0] as string;
+    const r = await run(["approve", id, "--json", ...cfg()]);
+    expect(r.code, r.err).toBe(0);
+    const j = JSON.parse(r.out);
+    expect(Object.keys(j).sort()).toEqual(DECISION_KEYS);
+    const row = s.ledger.getApproval(s.approvalId);
+    expect(j).toMatchObject({
+      schema_version: 1,
+      run_id: id,
+      decision: "approve",
+      outcome: "approved",
+      state: "QUEUED",
+      daemon_running: false,
+      approval_id: s.approvalId,
+      decided_by: "tester",
+      decided_at: row?.decided_at,
+      scope_hash: row?.scope_hash,
+    });
+    expect(row).toMatchObject({ status: "APPROVED", decided_by: "tester" });
+    expect(s.ledger.getRun(id)?.state).toBe("QUEUED");
+    expect(eventTypes(s.ledger, id)).toEqual([
+      "operator_decision_requested",
+      "approval_decided",
+      "state_transition",
+      "operator_decision_applied",
+    ]);
+    const [req, , moved, applied] = s.ledger.listRunEvents(id).map((e) => JSON.parse(e.payload_json));
+    expect(req).toEqual({
+      decision: "APPROVED",
+      approval_id: s.approvalId,
+      requested_by: "tester",
+      scope_hash: row?.scope_hash,
+    });
+    expect(moved).toMatchObject({ from: "AWAITING_APPROVAL", to: "QUEUED", rule: "T3", applied_by: "cli_direct" });
+    expect(applied).toMatchObject({
+      state_after: "QUEUED",
+      applied_by: "cli_direct",
+      request_event_id: j.request_event_id,
+    });
+
+    // A second decision (either way) is refused: exit 1, REFUSED, nothing written.
+    for (const cmd of ["approve", "deny"]) {
+      const again = await run([cmd, id, "--json", ...cfg()]);
+      expect(again.code).toBe(1);
+      expect(JSON.parse(again.out).error).toMatchObject({ code: "REFUSED" });
+      expect(JSON.parse(again.out).error.message).toContain("QUEUED, not AWAITING_APPROVAL");
+    }
+    expect(s.ledger.listRunEvents(id)).toHaveLength(4);
+    expect(s.ledger.getApproval(s.approvalId)).toEqual(row);
+    s.close();
+  });
+
+  it("without a daemon: deny ends the run CANCELLED (T19) with a DENIED row (timestamp, OS user)", async () => {
+    const s = seedPrivileged({ realHash: true });
+    const id = s.ids[0] as string;
+    const r = await run(["deny", id, ...cfg()]);
+    expect(r.code, r.err).toBe(0);
+    expect(r.out).toContain("denied (no daemon was running; applied directly)");
+    const row = s.ledger.getApproval(s.approvalId);
+    expect(row).toMatchObject({ status: "DENIED", decided_by: "tester" });
+    expect(row?.decided_at).toMatch(/^\d{4}-\d\d-\d\dT/);
+    const after = s.ledger.getRunRecord(id);
+    expect(after).toMatchObject({ state: "CANCELLED", worktree_path: null, pid: null });
+    expect(after?.finished_at).not.toBeNull();
+    const moved = JSON.parse(s.ledger.listRunEvents(id)[2]?.payload_json ?? "{}");
+    expect(moved).toMatchObject({ from: "AWAITING_APPROVAL", to: "CANCELLED", rule: "T19", reason: "operator_deny" });
+    expect((await run(["approve", id, ...cfg()])).code).toBe(1);
+    expect(s.ledger.getApproval(s.approvalId)).toEqual(row);
+    s.close();
+  });
+
+  it("with a daemon: only the record is written; a second decision is refused; the daemon applies it once", async () => {
+    const s = seedPrivileged({ realHash: true });
+    const id = s.ids[0] as string;
+    const lock = acquireDataDirLock(dataDir);
+    let requestedAt: string;
+    try {
+      const j = JSON.parse((await run(["approve", id, "--json", ...cfg()])).out);
+      expect(j).toMatchObject({ outcome: "requested", state: "AWAITING_APPROVAL", daemon_running: true });
+      requestedAt = j.decided_at;
+      expect(s.ledger.getRun(id)?.state).toBe("AWAITING_APPROVAL");
+      expect(s.ledger.getApproval(s.approvalId)?.status).toBe("PENDING");
+      expect(eventTypes(s.ledger, id)).toEqual(["operator_decision_requested"]);
+      const second = await run(["deny", id, "--json", ...cfg()]);
+      expect(second.code).toBe(1);
+      expect(JSON.parse(second.out).error.message).toContain("already recorded");
+      expect(eventTypes(s.ledger, id)).toEqual(["operator_decision_requested"]);
+      // A cancel is still accepted as its own record (Q-15 behaviour unchanged).
+      expect(JSON.parse((await run(["runs", "cancel", id, "--json", ...cfg()])).out).outcome).toBe("requested");
+    } finally {
+      lock.release();
+    }
+    const db = openLedger(dataDir);
+    try {
+      const ledger = createLedger(db);
+      const cancelled: string[] = [];
+      const applied = await applyOperatorRequests(db, ledger, {
+        cancel: async (runId) => {
+          cancelled.push(runId);
+          return "CANCELLED";
+        },
+      });
+      expect(applied).toMatchObject([
+        { kind: "decision", runId: id, stateAfter: "QUEUED" },
+        { kind: "cancel", runId: id, stateAfter: "CANCELLED" },
+      ]);
+      expect(ledger.getApproval(s.approvalId)).toMatchObject({
+        status: "APPROVED",
+        decided_by: "tester",
+        decided_at: requestedAt,
+      });
+      expect(listPendingDecisions(db)).toEqual([]);
+      expect(await applyOperatorRequests(db, ledger, { cancel: async () => "CANCELLED" })).toEqual([]);
+    } finally {
+      db.close();
+      s.close();
+    }
+  });
+
+  it("a decision recorded for the daemon that no longer applies is rejected, not applied", async () => {
+    const s = seedPrivileged({ realHash: true });
+    const id = s.ids[0] as string;
+    const lock = acquireDataDirLock(dataDir);
+    try {
+      await run(["approve", id, ...cfg()]);
+    } finally {
+      lock.release();
+    }
+    // The orchestrator cancels before the daemon applies the record (FRD §4.3, Q-15: the row is closed DENIED).
+    s.ledger.immediate(() => {
+      const r = s.ledger.getRunRecord(id);
+      if (!r) throw new Error("no run");
+      s.ledger.decideApproval({ id: s.approvalId, status: "DENIED", decidedBy: "cancel_run" });
+      s.ledger.casRunState({ runId: id, from: r.state, to: "CANCELLED", expectedVersion: r.version, payload: {} });
+    });
+    const db = openLedger(dataDir);
+    try {
+      const ledger = createLedger(db);
+      const out = await applyOperatorRequests(db, ledger, { cancel: async () => "CANCELLED" });
+      expect(out).toMatchObject([{ kind: "decision", runId: id, stateAfter: null }]);
+      expect(out[0]?.error).toContain("CANCELLED, not AWAITING_APPROVAL");
+      expect(eventTypes(ledger, id).at(-1)).toBe("operator_decision_rejected");
+      expect(ledger.getApproval(s.approvalId)?.status).toBe("DENIED");
+    } finally {
+      db.close();
+      s.close();
+    }
+  });
+
+  it("refuses an unknown id, a non-privileged run, a later run reusing an approval and a hash mismatch, writing nothing", async () => {
+    const plain = seed(["QUEUED"]);
+    plain.close();
+    const approved = seedPrivileged({ approved: true, realHash: true });
+    approved.close();
+    const tampered = seedPrivileged(); // placeholder hash: fails every check
+    tampered.close();
+    const cases: [string, string, string][] = [
+      ["run_missing", "NOT_FOUND", "unknown run"],
+      [plain.ids[0] as string, "REFUSED", "not privileged"],
+      [approved.ids[1] as string, "REFUSED", "approve and deny act only on the run that requested an approval"],
+      [approved.ids[0] as string, "REFUSED", "SUCCEEDED, not AWAITING_APPROVAL"],
+      [tampered.ids[0] as string, "REFUSED", "scope hash check failed"],
+    ];
+    const snapshot = () => {
+      const db = openLedger(dataDir);
+      try {
+        return JSON.stringify([
+          db.prepare("SELECT id, state, version FROM run ORDER BY id").all(),
+          db.prepare("SELECT * FROM approval ORDER BY id").all(),
+          db.prepare("SELECT COUNT(*) AS n FROM run_event").get(),
+        ]);
+      } finally {
+        db.close();
+      }
+    };
+    const before = snapshot();
+    for (const [id, code, text] of cases) {
+      for (const cmd of ["approve", "deny"]) {
+        const r = await run([cmd, id, "--json", ...cfg()]);
+        expect(r.code, `${cmd} ${id}`).toBe(1);
+        expect(JSON.parse(r.out).error.code).toBe(code);
+        expect(JSON.parse(r.out).error.message).toContain(text);
+      }
+    }
+    const human = await run(["approve", tampered.ids[0] as string, ...cfg()]);
+    expect(human.code).toBe(1);
+    expect(human.err).toContain("nothing changed");
+    expect(snapshot()).toBe(before);
+    // A pending cancel also blocks a decision.
+    const lock = acquireDataDirLock(dataDir);
+    try {
+      const fresh = seedPrivileged({ realHash: true });
+      fresh.close();
+      await run(["runs", "cancel", fresh.ids[0] as string, ...cfg()]);
+      const r = await run(["approve", fresh.ids[0] as string, ...cfg()]);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain("a cancel request");
+    } finally {
+      lock.release();
+    }
   });
 });
 

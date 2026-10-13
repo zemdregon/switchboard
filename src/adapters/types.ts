@@ -3,6 +3,7 @@
  * NativeBinding, TransportHandle, AcpMessage, ExitInfo, RunResult, FailureEvidence, FailureClassification) are
  * Proposed shapes introduced by T1.7.
  */
+import type { PrivilegedScopeBinding } from "../policy/types.js";
 import type { FailureCode } from "./failure.js";
 
 export type ProviderId = "claude" | "codex" | "grok" | "antigravity" | "cursor" | "opencode" | "kimi" | "fake";
@@ -76,6 +77,12 @@ export interface ResolvedProfile {
   networkAllowlist?: string[];
   repoConfig: "disabled" | "approved-only" | "allowlisted" | "scoped";
   bypassApproved: boolean; // true only with a recorded approval (FR-POL-03)
+  /**
+   * `privileged` only (LLD §2, §3.1; T3.3): the approved scope, its v2 hash and the approval ID. The scalar fields above
+   * stay `scoped` for `privileged`; adapters compile from this scope (T3.5, T3.6), mapping its spellings through
+   * `src/policy/scope.ts`.
+   */
+  privilegedScope?: PrivilegedScopeBinding;
 }
 
 export interface Invocation {

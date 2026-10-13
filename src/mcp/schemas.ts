@@ -11,9 +11,15 @@
  * bounds; `reason` length; `get_artifacts.max_inline_bytes` maximum (1 MiB); `get_run.include_events.limit` default 50;
  * output-only fields `failure_detail`, `replayed`, `events`, `client_max_profile`, `status_detail`, `schema_dialect`.
  * `continue_task` has no `idempotency_key` (FRD §7.2 C6 and FR-MCP-08 win over the earlier LLD §3 draft).
+ *
+ * T3.3: `delegate_task.privileged_scope` is the closed LLD §3.1 schema owned by `src/policy/scope.ts`; the "present
+ * exactly when the mode is allowlist" rules it cannot express are checked by the server right after Ajv, as part of V1.
+ * The envelope gains `approval: { status, requested_at }` for `privileged` runs only (never the scope, hash or
+ * `decided_by`, FR-MCP-04). No tool approves or denies: approval is operator-CLI only (FR-MCP-06, BR-14).
  */
 
 import { FAILURE_CODES } from "../adapters/failure.js";
+import { PRIVILEGED_SCOPE_SCHEMA } from "../policy/scope.js";
 
 /** Bumped on any incompatible change to a published tool schema (Proposed). */
 export const TOOL_SCHEMA_VERSION = 1;
@@ -103,6 +109,16 @@ const ENVELOPE = {
       additionalProperties: false,
       properties: { reported: {}, estimated: {}, capacity_confidence: { type: ["number", "null"] } },
     },
+    // `privileged` runs only (LLD §3.0, §3.1): the covering approval's status and request time, nothing else.
+    approval: {
+      type: "object",
+      additionalProperties: false,
+      required: ["status", "requested_at"],
+      properties: {
+        status: { type: "string", enum: ["PENDING", "APPROVED", "DENIED"] },
+        requested_at: { type: "string" },
+      },
+    },
     replayed: { type: "boolean" },
     events: {
       type: "array",
@@ -165,6 +181,8 @@ const INPUTS = {
       priority: { type: "string", enum: ["interactive", "normal", "batch"], default: "normal" },
       wait_seconds: WAIT_SECONDS,
       idempotency_key: { type: "string", minLength: 8, maxLength: 128 },
+      // Required exactly when trust_profile is privileged (FRD V13, checked after the ceiling, V5); LLD §3.1.
+      privileged_scope: PRIVILEGED_SCOPE_SCHEMA,
     },
   },
   continue_task: {
@@ -296,10 +314,13 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
   delegate_task:
     "Start a coding task in a new meta-session. Asynchronous: returns run_id and meta_session_id at once (status " +
     "QUEUED or later); poll get_run, or pass wait_seconds (0-60) for a bounded wait that never cancels the run. " +
-    "trust_profile above this client's maximum fails PERMISSION_BLOCKED. Routing hints only narrow provider choice.",
+    "trust_profile above this client's maximum fails PERMISSION_BLOCKED. Routing hints only narrow provider choice. " +
+    "trust_profile privileged needs privileged_scope (files, shell, network, repository_config, optional bypass) and " +
+    "returns AWAITING_APPROVAL until the operator approves on the CLI; no tool can approve.",
   continue_task:
     "Continue an idle meta-session on the same provider by resuming its native session. Asynchronous like " +
-    "delegate_task. Cross-provider handoff is not available yet.",
+    "delegate_task. Cross-provider handoff is not available yet. A privileged continuation runs under the " +
+    "meta-session's operator-approved scope as is and is refused unless that approval exists for this client.",
   get_run:
     "Current envelope of a run: status, failure code, provider, route reasons, summary, changed-file count and " +
     "artifact ids. Optionally returns compact events after a sequence number.",
