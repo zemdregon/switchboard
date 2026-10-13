@@ -136,6 +136,8 @@ The five trust profiles and their intended semantics are:
 | FR-WS-05 | The controller shall not modify the operator's checked-out branch or working tree, and shall not push to remotes except through the controlled publication in FR-GIT-05, which is off by default; results are delivered as controller-owned branches plus diff artifacts. *(Amended 2026-10-12 by owner decision 7: the blanket no-push rule became push-only-through-injected-tools; see [ADR-0014](../adr/0014-tool-only-commits-and-publication.md).)* | Must | BO-3 | T | M1 (no push by default), M9 (controlled publication) |
 | FR-WS-06 | Write-capable profiles shall require the workspace to be a Git repository; `inspect-untrusted` may operate on a non-Git directory read-only. | Must | CAP-4 | T | M1 |
 | FR-WS-07 | Worktrees and controller branches shall be garbage-collected according to a configurable retention policy. | Should | NFR-DATA-01 | T | M3 |
+| FR-WS-08 | Concurrent runs of one project shall each execute in their own controller-created Git worktree and hold their own write lease. No two concurrent runs of a project, in different meta-sessions, may share a worktree, and a `container` environment (FR-PRJ-05) mounts each run's worktree alone. *(Added 2026-10-13, Delegated under owner decision 41; see [ROADMAP §4.2](../ROADMAP.md#42-owner-decisions).)* | Must | CAP-4, owner decision 41 | T | M9 |
+| FR-WS-09 | Worktrees created for concurrent runs of a project shall be removed when the run's changes are merged or its meta-session is abandoned, whichever happens first. The controller branch and diff artifact stay until retention GC (FR-WS-07). *(Proposed 2026-10-13, Delegated under owner decision 41, not accepted: until it is, [FRD §4.4](FRD.md#44-worktree-disposition-per-terminal-state) applies unchanged. Open question Q-54 asks how a merge is detected.)* | Should | CAP-4, owner decision 41 | T | M9 |
 
 ### 3.6 Meta-sessions and continuity (`FR-SES`)
 
@@ -399,7 +401,7 @@ Requirement → milestone mapping is in the tables above; milestone → requirem
 | CAP-1 Task delegation | FR-MCP-01, 03–10, FR-EXE-01–02, 05–08 |
 | CAP-2 Provider adapters | FR-ADP-01–11, FR-AUTH-02 |
 | CAP-3 Policy and trust profiles | FR-POL-01–10, FR-MCP-06, FR-PRJ-06 |
-| CAP-4 Workspace isolation | FR-WS-01–07 |
+| CAP-4 Workspace isolation | FR-WS-01–09 |
 | CAP-5 Continuity | FR-SES-01–06 |
 | CAP-6 Routing | FR-RTE-01–09, FR-MCP-02, 05 |
 | CAP-7 Capacity and backpressure | FR-CAP-01–08, FR-MCP-02, FR-ADP-10 |
