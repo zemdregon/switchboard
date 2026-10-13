@@ -136,8 +136,8 @@ The five trust profiles and their intended semantics are:
 | FR-WS-05 | The controller shall not modify the operator's checked-out branch or working tree, and shall not push to remotes except through the controlled publication in FR-GIT-05, which is off by default; results are delivered as controller-owned branches plus diff artifacts. *(Amended 2026-10-12 by owner decision 7: the blanket no-push rule became push-only-through-injected-tools; see [ADR-0014](../adr/0014-tool-only-commits-and-publication.md).)* | Must | BO-3 | T | M1 (no push by default), M9 (controlled publication) |
 | FR-WS-06 | Write-capable profiles shall require the workspace to be a Git repository; `inspect-untrusted` may operate on a non-Git directory read-only. | Must | CAP-4 | T | M1 |
 | FR-WS-07 | Worktrees and controller branches shall be garbage-collected according to a configurable retention policy. | Should | NFR-DATA-01 | T | M3 |
-| FR-WS-08 | Concurrent runs of one project shall each execute in their own controller-created Git worktree and hold their own write lease. No two concurrent runs of a project, in different meta-sessions, may share a worktree, and a `container` environment (FR-PRJ-05) mounts each run's worktree alone. *(Added 2026-10-13, Delegated under owner decision 41; see [ROADMAP §4.2](../ROADMAP.md#42-owner-decisions).)* | Must | CAP-4, owner decision 41 | T | M9 |
-| FR-WS-09 | Worktrees created for concurrent runs of a project shall be removed when the run's changes are merged or its meta-session is abandoned, whichever happens first. The controller branch and diff artifact stay until retention GC (FR-WS-07). *(Proposed 2026-10-13, Delegated under owner decision 41, not accepted: until it is, [FRD §4.4](FRD.md#44-worktree-disposition-per-terminal-state) applies unchanged. Open question Q-54 asks how a merge is detected.)* | Should | CAP-4, owner decision 41 | T | M9 |
+| FR-WS-08 | Concurrent runs of one project shall each execute in their own controller-created Git worktree and hold their own write lease. No two concurrent runs of a project, in different meta-sessions, may share a worktree, and a `container` environment (FR-PRJ-05) mounts each run's worktree alone. *(Added 2026-10-13, Delegated under owner decision 42; see [ROADMAP §4.2](../ROADMAP.md#42-owner-decisions).)* | Must | CAP-4, owner decision 42 | T | M9 |
+| FR-WS-09 | Worktrees created for concurrent runs of a project shall be removed when the run's changes are merged or its meta-session is abandoned, whichever happens first. The controller branch and diff artifact stay until retention GC (FR-WS-07). *(Proposed 2026-10-13, Delegated under owner decision 42, not accepted: until it is, [FRD §4.4](FRD.md#44-worktree-disposition-per-terminal-state) applies unchanged. Open question Q-55 asks how a merge is detected.)* | Should | CAP-4, owner decision 42 | T | M9 |
 
 ### 3.6 Meta-sessions and continuity (`FR-SES`)
 
@@ -312,13 +312,13 @@ agent (FR-INN-03, FR-INN-16). All requirements in this group first ship in M12.
 
 ### 3.16 PR and merge subscriptions (`FR-SUB`)
 
-Owner decision 42 (2026-10-13, [ROADMAP §4.2](../ROADMAP.md#42-owner-decisions)), recorded as optional and later. It is
+Owner decision 43 (2026-10-13, [ROADMAP §4.2](../ROADMAP.md#42-owner-decisions)), recorded as optional and later. It is
 not scheduled and has no milestone, so it stays `Deferred` until it is accepted and placed in
 [ROADMAP §6](../ROADMAP.md#6-milestones).
 
 | ID | Requirement | Priority | Source | Verify | Milestone |
 | --- | --- | --- | --- | --- | --- |
-| FR-SUB-01 | An agent may subscribe to a pull request or merge in a project's context. The controller shall deliver an event to it when CI on the head commit passes or fails, when another agent or a person commits to that pull request, and when it is merged or closed. Events carry untrusted text and never authorise an action on their own. | Deferred | CAP-14, owner decision 42 | — | Deferred |
+| FR-SUB-01 | An agent may subscribe to a pull request or merge in a project's context. The controller shall deliver an event to it when CI on the head commit passes or fails, when another agent or a person commits to that pull request, and when it is merged or closed. Events carry untrusted text and never authorise an action on their own. | Deferred | CAP-14, owner decision 43 | — | Deferred |
 
 ## 4. Nonfunctional requirements
 

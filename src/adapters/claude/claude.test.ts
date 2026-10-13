@@ -79,7 +79,11 @@ const valuesAfter = (argv: readonly string[], flag: string): string[] => {
   return out;
 };
 
-/** Flags or subcommands that load or write provider configuration, bypass policy or escape the worktree. */
+/**
+ * Flags or subcommands that load or write provider configuration, bypass policy or escape the worktree. `--mcp-config`
+ * stays here: `compile` never emits it; only the opt-in channel fragment does (T9.4b, ADR-0029), and its one admitted
+ * shape and every refused form are tested in `./channel.test.ts`.
+ */
 const FORBIDDEN_ARGS = [
   "--allow-dangerously-skip-permissions",
   "--settings",

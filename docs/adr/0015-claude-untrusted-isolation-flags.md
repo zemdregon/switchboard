@@ -3,7 +3,9 @@
 - Status: Accepted; partly superseded by [ADR-0018](0018-claude-bypass-omits-restricted.md) for approved bypass runs
   (2026-10-13: an approved `bypass: true` run omits `--restricted`) and partly superseded by
   [ADR-0029](0029-claude-code-receives-tool-shim-via-mcp-config.md) (2026-10-13: the adapter may emit `--mcp-config`
-  for the controller-generated tool shim only)
+  for the controller-generated tool shim only) and by
+  [ADR-0033](0033-claude-channel-bypass-only-without-safe-mode.md) (2026-10-13: an approved bypass run carrying that
+  shim omits `--safe-mode`)
 - Date: 2026-10-12
 - Decided by: Delegated (agent, 2026-10-12)
 - Related: FR-POL-02–04, FR-AUTH-01–02, [ADR-0003](0003-no-credential-handling.md),

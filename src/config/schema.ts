@@ -19,6 +19,11 @@
  * `manage_projects: true` offers the client `create_project`, `update_project` and `delete_project` for dynamic
  * projects (default false: the tools are absent). `max_push_policy` (default `none`) is the widest push policy a dynamic
  * project of this client may declare; `load.ts` refuses it without `manage_projects: true`.
+ *
+ * `providers.claude-code.git_channel` (T9.4b; ADR-0029 item 7, owner decision 36; key and default Delegated): the
+ * operator opt-in that lets the Claude Code adapter receive the injected tool channel through a controller-written
+ * `--mcp-config` file. Default false (argv unchanged, `commitChannel: "none"`). Accepted only under `claude-code`.
+ * UNSUPPORTED until the ADR-0029 live checks pass.
  */
 
 export const TRUST_PROFILES = [
@@ -67,7 +72,7 @@ export interface SwitchboardConfig {
     max_push_policy?: (typeof PUSH_POLICIES)[number];
   }[];
   limits?: { global_concurrency?: number; per_provider_concurrency?: number };
-  providers?: Partial<Record<ProviderId, { enabled?: boolean; weight?: number }>>;
+  providers?: Partial<Record<ProviderId, { enabled?: boolean; weight?: number; git_channel?: boolean }>>;
   /** Run retention (NFR-DATA-01, FR-WS-07). `interval` is `<n>m`, `<n>h` or `<n>d` (Proposed form). */
   retention?: { days?: number; interval?: string };
   /** Preflight cache TTL in seconds (NFR-PERF-02, T3.21). 0 disables the cache. */
@@ -147,7 +152,12 @@ const providerProps = Object.fromEntries(
     {
       type: "object",
       additionalProperties: false,
-      properties: { enabled: { type: "boolean" }, weight: { type: "number", minimum: 0, maximum: 1 } },
+      properties: {
+        enabled: { type: "boolean" },
+        weight: { type: "number", minimum: 0, maximum: 1 },
+        // T9.4b (ADR-0029): Claude Code only; any other provider refuses the key (additionalProperties: false).
+        ...(id === "claude-code" ? { git_channel: { type: "boolean" } } : {}),
+      },
     },
   ]),
 );
