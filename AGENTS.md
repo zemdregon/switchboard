@@ -71,6 +71,7 @@ state machine or schema.
 
 | Path | Contents |
 | --- | --- |
+| `assets/switchboard-logo.png` | Product logo (placeholder chosen by zemdregon, 2026-10-13); used by the README. |
 | `docs/ROADMAP.md` | Canonical roadmap. |
 | `docs/requirements/` | BRD, PRD, FRD, SRS. |
 | `docs/design/` | HLD, SDD, TDD, LLD. |
