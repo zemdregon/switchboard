@@ -35,6 +35,19 @@ export interface SwitchboardConfig {
   mcp_clients: { id: string; max_trust_profile: TrustProfile }[];
   limits?: { global_concurrency?: number; per_provider_concurrency?: number };
   providers?: Partial<Record<ProviderId, { enabled?: boolean; weight?: number }>>;
+  /** Run retention (NFR-DATA-01, FR-WS-07). `interval` is `<n>m`, `<n>h` or `<n>d` (Proposed form). */
+  retention?: { days?: number; interval?: string };
+  /** Per-field profile overrides (FR-POL-01, owner decision 12). `privileged` has none: it comes from its scope. */
+  profiles?: Partial<Record<Exclude<TrustProfile, "privileged">, ProfileOverrideConfig>>;
+}
+
+export interface ProfileOverrideConfig {
+  file_access?: "read-only" | "worktree";
+  shell?: "none" | "allowlist" | "broad";
+  shell_allowlist?: string[];
+  network?: "off" | "allowlist" | "policy";
+  network_allowlist?: string[];
+  repo_config?: "disabled" | "approved-only" | "allowlisted";
 }
 
 const providerProps = Object.fromEntries(
@@ -47,6 +60,27 @@ const providerProps = Object.fromEntries(
     },
   ]),
 );
+
+const stringList = {
+  type: "array",
+  items: { type: "string", minLength: 1 },
+} as const;
+const profileOverrideSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    file_access: { enum: ["read-only", "worktree"] },
+    shell: { enum: ["none", "allowlist", "broad"] },
+    shell_allowlist: stringList,
+    network: { enum: ["off", "allowlist", "policy"] },
+    network_allowlist: stringList,
+    repo_config: { enum: ["disabled", "approved-only", "allowlisted"] },
+  },
+} as const;
+
+/** Defaults (Proposed): 30 days (NFR-DATA-01), GC pass every 24 hours. */
+export const DEFAULT_RETENTION_DAYS = 30;
+export const DEFAULT_RETENTION_INTERVAL = "24h";
 
 export const configSchema = {
   $id: "https://switchboard.invalid/schemas/config.v1.json",
@@ -79,6 +113,25 @@ export const configSchema = {
         per_provider_concurrency: { type: "integer", minimum: 1, maximum: 64 },
       },
     },
-    providers: { type: "object", additionalProperties: false, properties: providerProps },
+    providers: {
+      type: "object",
+      additionalProperties: false,
+      properties: providerProps,
+    },
+    retention: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        days: { type: "integer", minimum: 1, maximum: 3650 },
+        interval: { type: "string", pattern: "^[1-9][0-9]{0,5}[mhd]$" },
+      },
+    },
+    profiles: {
+      type: "object",
+      additionalProperties: false,
+      properties: Object.fromEntries(
+        TRUST_PROFILES.filter((p) => p !== "privileged").map((p) => [p, profileOverrideSchema]),
+      ),
+    },
   },
 } as const;

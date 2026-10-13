@@ -124,7 +124,8 @@ analysis. Report results clearly so the orchestrator can verify and coordinate t
   either.
 - **Do not add bypass flags casually.** Code, tests and examples must not invoke provider CLIs with
   `--dangerously-skip-permissions`, `--yolo`, `--force`, `--always-approve`, `--approve-mcps` or `--full-auto` unless a
-  design document explicitly calls for it.
+  design document explicitly calls for it. Today only an operator-approved `privileged` scope that sets `bypass` does
+  ([ADR-0017](docs/adr/0017-approved-privileged-scope-bypass.md)).
 - **Live provider calls are opt-in.** Tests must pass without any provider CLI installed or logged in. Tests that call a
   real provider must be skipped unless explicitly enabled.
 - **Small, reviewable changes.** One logical change per commit, with a message that says what changed and why. Open pull

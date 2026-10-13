@@ -14,6 +14,7 @@ import {
 import { loadConfig, type ResolvedConfig } from "../config/index.js";
 import { currentSchemaVersion, LEDGER_FILE_NAME, MIGRATIONS } from "../ledger/index.js";
 import { inspectDataDirLock } from "../lock/index.js";
+import { type AppliedOverride, validateProfileOverrides } from "../policy/index.js";
 import { CONFIG_TO_ADAPTER_ID } from "../routing/index.js";
 import { gitText, parseGitVersion, versionAtLeast } from "../workspace/git.js";
 import { MIN_GIT_VERSION } from "../workspace/index.js";
@@ -37,10 +38,21 @@ export interface DoctorAdapterReport {
   readonly label: string;
   /** `real` for a provider CLI, `fake` for the test stand-in. */
   readonly kind: "real" | "fake";
-  readonly probe: { readonly ok: boolean; readonly binary_version: string | null; readonly failed_steps: string[] };
-  readonly auth: { readonly state: AuthResult["state"]; readonly instruction: string | null };
+  readonly probe: {
+    readonly ok: boolean;
+    readonly binary_version: string | null;
+    readonly failed_steps: string[];
+  };
+  readonly auth: {
+    readonly state: AuthResult["state"];
+    readonly instruction: string | null;
+  };
   /** Version gate (ADR-0009); null when the probe did not produce a version to gate, or for the fake adapter. */
-  readonly version_gate: { readonly eligible: boolean; readonly code: string | null; readonly detail: string } | null;
+  readonly version_gate: {
+    readonly eligible: boolean;
+    readonly code: string | null;
+    readonly detail: string;
+  } | null;
   /** Operator-facing explanation when status is not ok (not installed, version unverified, ...). */
   readonly note: string | null;
   readonly status: CheckStatus;
@@ -51,6 +63,23 @@ export interface DoctorReport {
   readonly ok: boolean;
   readonly checks: DoctorCheck[];
   readonly adapters: DoctorAdapterReport[];
+}
+
+const fmtValue = (v: AppliedOverride["to"]): string => (Array.isArray(v) ? `[${v.join(", ")}]` : String(v));
+
+/**
+ * Lists the `profiles.<name>` overrides that change a default (owner decision 12, T3.2). Absent when there are none, so
+ * the check list is unchanged for the default configuration. A loosening is a warning: it is valid but weakens the
+ * isolation a profile name suggests (R-25).
+ */
+function checkProfileOverrides(cfg: ResolvedConfig): DoctorCheck | undefined {
+  const applied = validateProfileOverrides(cfg.profileOverrides);
+  if (applied.length === 0) return undefined;
+  const text = applied
+    .map((o) => `${o.profile}.${o.field} ${fmtValue(o.from)} -> ${fmtValue(o.to)} (${o.direction})`)
+    .join("; ");
+  const loosened = applied.some((o) => o.direction === "loosen");
+  return check("profiles", "Profile overrides", loosened ? "warn" : "ok", text);
 }
 
 const check = (id: string, label: string, status: CheckStatus, detail: string): DoctorCheck => ({
@@ -243,6 +272,8 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
   try {
     cfg = loadConfig({ argv, env: io.env, ...(io.homedir !== undefined ? { homedir: io.homedir } : {}) });
     checks.push(check("config", "Config", "ok", cfg.configPath));
+    const overrides = checkProfileOverrides(cfg);
+    if (overrides) checks.push(overrides);
   } catch (err) {
     checks.push(check("config", "Config", "fail", (err as Error).message));
   }

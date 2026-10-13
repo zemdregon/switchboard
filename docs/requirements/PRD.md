@@ -186,7 +186,9 @@ involved.
 - Steps: (1) the request is held in `AWAITING_APPROVAL`; MCP alone cannot grant it; (2) operator reviews the requested
   scope with `runs show`; (3) operator runs `switchboard approve <run_id>`; (4) approval is recorded with timestamp and
   scope and the run proceeds.
-- Outcome: the run executes with explicit, recorded scope. Without approval it does not run.
+- Outcome: the run executes with explicit, recorded scope. Without approval it does not run. The approval also covers
+  later runs that continue the same meta-session with the same scope (owner decision 17); a different scope or a new
+  meta-session asks again.
 - CAP: CAP-3, CAP-9. FR: FR-POL-01, FR-POL-03, FR-POL-09, FR-MCP-06, FR-OPS-02.
 
 #### UJ-7 Provider CLI updates and the operator revalidates the adapter

@@ -12,7 +12,15 @@ import {
 } from "../adapters/index.js";
 import { TRUST_PROFILES } from "../config/index.js";
 import { toToolError } from "../mcp/errors.js";
-import { M2_PROFILES, ProfileUnavailableError, resolveProfile } from "./index.js";
+import {
+  createProfileResolver,
+  M2_PROFILES,
+  ProfileOverrideError,
+  ProfileUnavailableError,
+  resolveProfile,
+  resolveTrustProfile,
+  validateProfileOverrides,
+} from "./index.js";
 
 const request = (profile: TrustProfile): CompileRequest => ({
   runId: "run_1",
@@ -105,6 +113,184 @@ describe("resolveProfile (COMP-POL, M2)", () => {
           expect(allow.some((a) => a.startsWith("Bash"))).toBe(false);
         }
       }
+    }
+  });
+});
+
+describe("resolveTrustProfile (COMP-POL, T3.2)", () => {
+  const STRICT = {
+    fileAccess: "worktree",
+    shell: "allowlist",
+    shellAllowlist: [],
+    network: "off",
+    repoConfig: "disabled",
+    bypassApproved: false,
+  };
+
+  it("resolves all four non-privileged profiles to frozen snapshots with the Proposed strict defaults", () => {
+    expect(resolveTrustProfile("test-sandboxed")).toEqual({
+      name: "test-sandboxed",
+      ...STRICT,
+    });
+    expect(resolveTrustProfile("trusted-development")).toEqual({
+      name: "trusted-development",
+      ...STRICT,
+    });
+    expect(resolveTrustProfile("edit-untrusted")).toEqual({
+      name: "edit-untrusted",
+      ...STRICT,
+    });
+    expect(resolveTrustProfile("inspect-untrusted")).toMatchObject({
+      fileAccess: "read-only",
+      shell: "none",
+    });
+    for (const p of ["inspect-untrusted", "edit-untrusted", "test-sandboxed", "trusted-development"] as const) {
+      const snap = resolveTrustProfile(p);
+      expect(Object.isFrozen(snap)).toBe(true);
+      expect(snap.overrides).toBeUndefined();
+      expect(snap.bypassApproved).toBe(false);
+    }
+    expect(Object.isFrozen(resolveTrustProfile("test-sandboxed").shellAllowlist)).toBe(true);
+  });
+
+  it("keeps the M2-gated resolver refusing non-M2 profiles, with or without overrides", () => {
+    const resolver = createProfileResolver({
+      "test-sandboxed": { network: "policy" },
+    });
+    for (const p of ["test-sandboxed", "trusted-development", "privileged"] as const) {
+      expect(() => resolver(p)).toThrow(ProfileUnavailableError);
+    }
+    expect(resolver("edit-untrusted").name).toBe("edit-untrusted");
+  });
+
+  it("tightening and loosening need an explicit per-field override and both appear in the snapshot", () => {
+    const snap = resolveTrustProfile("edit-untrusted", {
+      overrides: {
+        "edit-untrusted": {
+          shellAllowlist: ["npm test"],
+          network: "allowlist",
+          networkAllowlist: ["registry.npmjs.org"],
+          fileAccess: "read-only",
+        },
+      },
+    });
+    expect(snap).toMatchObject({
+      fileAccess: "read-only",
+      shell: "allowlist",
+      shellAllowlist: ["npm test"],
+      network: "allowlist",
+      networkAllowlist: ["registry.npmjs.org"],
+      repoConfig: "disabled",
+      bypassApproved: false,
+    });
+    expect(snap.overrides).toEqual([
+      {
+        profile: "edit-untrusted",
+        field: "fileAccess",
+        from: "worktree",
+        to: "read-only",
+        direction: "tighten",
+      },
+      {
+        profile: "edit-untrusted",
+        field: "network",
+        from: "off",
+        to: "allowlist",
+        direction: "loosen",
+      },
+      {
+        profile: "edit-untrusted",
+        field: "shellAllowlist",
+        from: [],
+        to: ["npm test"],
+        direction: "loosen",
+      },
+      {
+        profile: "edit-untrusted",
+        field: "networkAllowlist",
+        from: [],
+        to: ["registry.npmjs.org"],
+        direction: "loosen",
+      },
+    ]);
+    expect(Object.isFrozen(snap.overrides)).toBe(true);
+    // Round-trips through the ledger's JSON column.
+    expect(JSON.parse(JSON.stringify(snap)).overrides).toHaveLength(4);
+  });
+
+  it("an override applies only to its own profile and only to the fields named", () => {
+    const overrides = { "trusted-development": { shell: "broad" as const } };
+    const td = resolveTrustProfile("trusted-development", { overrides });
+    expect(td.shell).toBe("broad");
+    expect(td.shellAllowlist).toBeUndefined();
+    expect(td.network).toBe("off");
+    expect(resolveTrustProfile("edit-untrusted", { overrides })).toEqual({
+      name: "edit-untrusted",
+      ...STRICT,
+    });
+  });
+
+  it("rejects invalid overrides: orphaned lists, wildcards, duplicates, bad values, unknown fields and profiles", () => {
+    const bad = (o: object, re: RegExp) =>
+      expect(() =>
+        resolveTrustProfile("edit-untrusted", {
+          overrides: { "edit-untrusted": o },
+        }),
+      ).toThrow(re);
+    bad({ shell: "none", shellAllowlist: ["ls"] }, /shell_allowlist: requires shell to be "allowlist"/);
+    bad({ shellAllowlist: ["*"] }, /shell_allowlist: a wildcard/);
+    bad({ shellAllowlist: ["ls", "ls"] }, /duplicate entry/);
+    bad({ networkAllowlist: ["example.com"] }, /network_allowlist: requires network/);
+    bad({ network: "everything" }, /network: must be one of off, allowlist, policy/);
+    bad({ bypassApproved: true }, /unknown override field bypassApproved/);
+    bad({ "*": "all" }, /unknown override field \*/);
+    expect(() => validateProfileOverrides({ privileged: {} } as never)).toThrow(/unknown or non-overridable/);
+    expect(() => validateProfileOverrides({ "*": {} } as never)).toThrow(ProfileOverrideError);
+  });
+
+  it("privileged resolves only from an explicit scope object and never approves a bypass", () => {
+    for (const bad of [undefined, null, "scope", 1, [], new Map()]) {
+      expect(() => resolveTrustProfile("privileged", { scope: bad as never })).toThrow(ProfileUnavailableError);
+    }
+    expect(() => resolveTrustProfile("privileged")).toThrow(ProfileUnavailableError);
+    try {
+      resolveTrustProfile("privileged");
+    } catch (err) {
+      expect((err as ProfileUnavailableError).code).toBe("PERMISSION_BLOCKED");
+    }
+    const scope = { paths: ["/tmp/x"], bypass: true };
+    const snap = resolveTrustProfile("privileged", { scope });
+    expect(snap).toMatchObject({
+      name: "privileged",
+      fileAccess: "scoped",
+      shell: "scoped",
+      network: "scoped",
+      repoConfig: "scoped",
+      bypassApproved: false,
+    });
+    expect(snap.scope).toEqual(scope);
+    expect(snap.scope).not.toBe(scope);
+    expect(Object.isFrozen(snap)).toBe(true);
+    expect(Object.isFrozen(snap.scope)).toBe(true);
+  });
+
+  it("bypassApproved is never true from any profile, override or scope", () => {
+    const overrides = {
+      "edit-untrusted": { shell: "broad" as const, network: "policy" as const },
+    };
+    for (const p of ["inspect-untrusted", "edit-untrusted", "test-sandboxed", "trusted-development"] as const) {
+      expect(resolveTrustProfile(p, { overrides }).bypassApproved).toBe(false);
+    }
+    expect(
+      resolveTrustProfile("privileged", {
+        scope: { bypassApproved: true, bypass: true },
+      }).bypassApproved,
+    ).toBe(false);
+  });
+
+  it("rejects unknown profile names", () => {
+    for (const bogus of ["", "toString", "__proto__", "EDIT-UNTRUSTED"]) {
+      expect(() => resolveTrustProfile(bogus as TrustProfile)).toThrow(ProfileUnavailableError);
     }
   });
 });
