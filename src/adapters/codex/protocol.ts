@@ -48,11 +48,14 @@ export const IGNORE_RULES_FLAG = "--ignore-rules";
  */
 export const GIT_WRITE_CONTROL_DETAIL =
   "R2 documents no Codex per-command deny or allow rule and no commit or attribution setting; the documented controls " +
-  "are `--sandbox` (read-only for inspect-untrusted, workspace-write for edit-untrusted), `--ignore-user-config` and " +
+  "are `--sandbox` (read-only for inspect-untrusted or a read-only workspace, workspace-write for edit-untrusted and " +
+  "trusted-development with shell broad), `--ignore-user-config` and " +
   "`--ignore-rules`. Whether workspace-write keeps the agent from writing the worktree's Git directory (outside the " +
   "cwd) is an Assumption, unverified on this host (codex not installed; live smoke test). R2 documents no way to " +
   "stop Codex running commands inside its sandbox, so a `git commit` or `git push` attempt is limited only by the " +
-  "sandbox; a non-empty shell allowlist is not compiled. Remaining controls: ref snapshots and " +
+  "sandbox; a non-empty shell allowlist is not compiled. Whether the sandbox keeps those commands away from Codex " +
+  "credentials (~/.codex) and other same-user files is unverified (owner decision 10, R-23, FR-POL-06 open; live " +
+  "check T3.9). Remaining controls: ref snapshots and " +
   "violation handling (FR-GIT-03, M9) and keeping push credentials out of the agent's environment (FR-GIT-06).";
 
 /** **Assumption**: `codex --version` prints a version line (not in R2). Used by probe only. */

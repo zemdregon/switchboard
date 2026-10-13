@@ -2,6 +2,8 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { resolveTrustProfile } from "../../policy/index.js";
+import type { OverridableProfile, ProfileOverride } from "../../policy/types.js";
 import { auditInvocation, BYPASS_FLAGS } from "../audit.js";
 import { missingRequiredKinds, runConformanceCase, runConformanceSuite } from "../conformance.js";
 import { AdapterRegistry } from "../registry.js";
@@ -17,7 +19,7 @@ import {
   type ProbeRunner,
   type ResolvedProfile,
 } from "../types.js";
-import { CodexAdapter, resolveOnPath } from "./adapter.js";
+import { CodexAdapter, PRIVILEGED_DEFERRED, resolveOnPath } from "./adapter.js";
 import {
   codexConformanceCases,
   EDIT_PROFILE,
@@ -207,14 +209,14 @@ describe("compile: argv and policy (FR-POL-02/03/04/08)", () => {
       "PROFILE_UNSUPPORTED",
     ],
     [
-      "test-sandboxed (M3)",
+      "test-sandboxed (Q-27)",
       () => adapter().compile(request(), { ...EDIT_PROFILE, name: "test-sandboxed" }),
       "PROFILE_UNSUPPORTED",
     ],
     [
-      "trusted-development (M3)",
+      "trusted-development with an empty allowlist",
       () => adapter().compile(request(), { ...EDIT_PROFILE, name: "trusted-development" }),
-      "PROFILE_UNSUPPORTED",
+      "CAPABILITY_MISSING",
     ],
     ["broad shell", () => adapter().compile(request(), { ...EDIT_PROFILE, shell: "broad" }), "PROFILE_UNSUPPORTED"],
     [
@@ -502,4 +504,218 @@ describe("Git write operations (FR-GIT-01)", () => {
       reason: "CAPABILITY_MISSING",
     });
   });
+});
+
+describe("compile matrix (M3, T3.6; TDD §4.2.1)", () => {
+  type Expected = { argv: string[] } | { reason: "PROFILE_UNSUPPORTED" | "CAPABILITY_MISSING"; detail?: RegExp };
+  type Row = [
+    label: string,
+    profile: OverridableProfile,
+    override: ProfileOverride | undefined,
+    req: Partial<CompileRequest>,
+    expected: Expected,
+  ];
+  const argv = (mode: "read-only" | "workspace-write") => [
+    EXE,
+    "exec",
+    "--json",
+    "--sandbox",
+    mode,
+    "--ignore-user-config",
+    "--ignore-rules",
+  ];
+  const RO = { workspace: { cwd: "/work/tree", writable: false } };
+  const CAP = (detail?: RegExp): Expected => ({ reason: "CAPABILITY_MISSING", ...(detail ? { detail } : {}) });
+  const UNSUP = (detail?: RegExp): Expected => ({ reason: "PROFILE_UNSUPPORTED", ...(detail ? { detail } : {}) });
+  const BROAD = { shell: "broad" } as const;
+  const rows: Row[] = [
+    // inspect-untrusted: decision 10, commands inside --sandbox read-only (confinement unverified, R-23)
+    ["default", "inspect-untrusted", undefined, {}, { argv: argv("read-only") }],
+    ["shell allowlist, empty", "inspect-untrusted", { shell: "allowlist" }, {}, { argv: argv("read-only") }],
+    [
+      "shell allowlist [npm test]",
+      "inspect-untrusted",
+      { shell: "allowlist", shellAllowlist: ["npm test"] },
+      {},
+      CAP(/Q-11/),
+    ],
+    ["shell broad", "inspect-untrusted", BROAD, {}, UNSUP(/shell=broad/)],
+    [
+      "network allowlist",
+      "inspect-untrusted",
+      { network: "allowlist", networkAllowlist: ["example.com"] },
+      {},
+      CAP(/network/),
+    ],
+    ["network policy", "inspect-untrusted", { network: "policy" }, {}, CAP(/network/)],
+    ["repoConfig approved-only", "inspect-untrusted", { repoConfig: "approved-only" }, {}, CAP(/repoConfig/)],
+    ["model requested", "inspect-untrusted", undefined, { model: "m" }, CAP(/model/)],
+    // edit-untrusted: decision 10, commands inside --sandbox workspace-write
+    ["default", "edit-untrusted", undefined, {}, { argv: argv("workspace-write") }],
+    ["read-only workspace", "edit-untrusted", undefined, RO, { argv: argv("read-only") }],
+    ["fileAccess read-only", "edit-untrusted", { fileAccess: "read-only" }, {}, { argv: argv("read-only") }],
+    ["shell none", "edit-untrusted", { shell: "none" }, {}, { argv: argv("workspace-write") }],
+    ["shell allowlist [npm test]", "edit-untrusted", { shellAllowlist: ["npm test"] }, {}, CAP(/Q-11/)],
+    ["shell allowlist [git commit]", "edit-untrusted", { shellAllowlist: ["git commit"] }, {}, UNSUP(/FR-GIT-01/)],
+    ["shell broad", "edit-untrusted", BROAD, {}, UNSUP(/shell=broad/)],
+    ["network allowlist", "edit-untrusted", { network: "allowlist", networkAllowlist: ["a.example"] }, {}, CAP()],
+    ["repoConfig allowlisted", "edit-untrusted", { repoConfig: "allowlisted" }, {}, CAP(/repoConfig/)],
+    ["model requested", "edit-untrusted", undefined, { model: "m" }, CAP(/model/)],
+    // test-sandboxed: Q-27 Proposed fail closed; capability gaps name their own reason first
+    ["default", "test-sandboxed", undefined, {}, UNSUP(/Q-27/)],
+    ["shell none", "test-sandboxed", { shell: "none" }, {}, UNSUP(/Q-27/)],
+    ["shell broad", "test-sandboxed", BROAD, {}, UNSUP(/Q-27/)],
+    ["read-only workspace", "test-sandboxed", undefined, RO, UNSUP(/Q-27/)],
+    ["shell allowlist [npm test]", "test-sandboxed", { shellAllowlist: ["npm test"] }, {}, CAP(/Q-11/)],
+    ["shell allowlist [git push]", "test-sandboxed", { shellAllowlist: ["git push"] }, {}, UNSUP(/FR-GIT-01/)],
+    ["network allowlist", "test-sandboxed", { network: "allowlist", networkAllowlist: ["a.example"] }, {}, CAP()],
+    ["repoConfig approved-only", "test-sandboxed", { repoConfig: "approved-only" }, {}, CAP(/repoConfig/)],
+    ["model requested", "test-sandboxed", undefined, { model: "m" }, CAP(/model/)],
+    // trusted-development: only documented controls compile; shell must be broad (commands inside the sandbox)
+    ["default (empty allowlist)", "trusted-development", undefined, {}, CAP(/shell=allowlist/)],
+    ["shell none", "trusted-development", { shell: "none" }, {}, CAP(/shell=none/)],
+    ["shell allowlist [npm test]", "trusted-development", { shellAllowlist: ["npm test"] }, {}, CAP(/shell=allowlist/)],
+    ["shell allowlist [git commit]", "trusted-development", { shellAllowlist: ["git commit"] }, {}, UNSUP(/FR-GIT-01/)],
+    ["shell broad", "trusted-development", BROAD, {}, { argv: argv("workspace-write") }],
+    ["shell broad, read-only workspace", "trusted-development", BROAD, RO, { argv: argv("read-only") }],
+    [
+      "shell broad, fileAccess read-only",
+      "trusted-development",
+      { ...BROAD, fileAccess: "read-only" },
+      {},
+      { argv: argv("read-only") },
+    ],
+    [
+      "shell broad, network allowlist",
+      "trusted-development",
+      { ...BROAD, network: "allowlist", networkAllowlist: ["a.example"] },
+      {},
+      CAP(/network=allowlist/),
+    ],
+    ["shell broad, network policy", "trusted-development", { ...BROAD, network: "policy" }, {}, CAP(/network=policy/)],
+    [
+      "shell broad, repoConfig approved-only",
+      "trusted-development",
+      { ...BROAD, repoConfig: "approved-only" },
+      {},
+      CAP(/repoConfig/),
+    ],
+    [
+      "shell broad, repoConfig allowlisted",
+      "trusted-development",
+      { ...BROAD, repoConfig: "allowlisted" },
+      {},
+      CAP(/repoConfig/),
+    ],
+    ["shell broad, model requested", "trusted-development", BROAD, { model: "m" }, CAP(/model/)],
+  ];
+
+  const compileRow = (
+    profile: OverridableProfile,
+    override: ProfileOverride | undefined,
+    req: Partial<CompileRequest>,
+  ) =>
+    adapter().compile(
+      request(req),
+      resolveTrustProfile(profile, override ? { overrides: { [profile]: override } } : {}),
+    );
+
+  for (const [label, profile, override, req, expected] of rows) {
+    it(`${profile} / ${label} -> ${"argv" in expected ? expected.argv.slice(4, 5).join("") : expected.reason}`, () => {
+      const r = compileRow(profile, override, req);
+      if ("argv" in expected) {
+        const inv = must(r);
+        expect(inv.argv).toEqual(expected.argv);
+        expect(inv.policyFlags).toEqual(expected.argv.slice(3));
+        expect(auditInvocation(inv)).toEqual([]);
+      } else {
+        expect(r).toMatchObject({ ineligible: true, reason: expected.reason });
+        if (expected.detail) expect((r as { detail: string }).detail).toMatch(expected.detail);
+      }
+    });
+  }
+
+  it("a network allowlist is CAPABILITY_MISSING under every non-privileged profile, never downgraded", () => {
+    for (const p of ["inspect-untrusted", "edit-untrusted", "test-sandboxed", "trusted-development"] as const) {
+      const override: ProfileOverride = {
+        ...(p === "trusted-development" ? BROAD : {}),
+        network: "allowlist",
+        networkAllowlist: ["registry.example"],
+      };
+      expect(compileRow(p, override, {}), p).toMatchObject({ ineligible: true, reason: "CAPABILITY_MISSING" });
+    }
+  });
+
+  it("privileged stays Ineligible awaiting T3.17 and emits no bypass option, scope or approval notwithstanding", () => {
+    const priv: ResolvedProfile = {
+      name: "privileged",
+      fileAccess: "scoped",
+      shell: "scoped",
+      network: "scoped",
+      repoConfig: "scoped",
+      bypassApproved: false,
+    };
+    for (const p of [priv, { ...priv, bypassApproved: true }, { ...EDIT_PROFILE, bypassApproved: true }]) {
+      for (const r of [
+        adapter().compile(request(), p),
+        adapter().resumeArgs({ provider: "codex", nativeSessionId: "t-1" }, request(), p),
+      ]) {
+        expect(r).toMatchObject({ ineligible: true, reason: "PROFILE_UNSUPPORTED" });
+        expect((r as { detail: string }).detail).toContain(PRIVILEGED_DEFERRED);
+        expect(JSON.stringify(r)).not.toMatch(/--yolo|--full-auto|--dangerously/);
+      }
+    }
+  });
+
+  it("no compiled argv in the matrix (or its resume form) carries a bypass flag or a second sandbox", () => {
+    let compiled = 0;
+    for (const [, profile, override, req] of rows) {
+      const p = resolveTrustProfile(profile, override ? { overrides: { [profile]: override } } : {});
+      for (const r of [
+        adapter().compile(request(req), p),
+        adapter().resumeArgs({ provider: "codex", nativeSessionId: "t-1" }, request(req), p),
+      ]) {
+        if (isIneligible(r as Invocation)) continue;
+        const inv = r as Invocation;
+        compiled += 1;
+        expect(auditInvocation(inv)).toEqual([]);
+        for (const a of inv.argv) expect(BYPASS_FLAGS.some((f) => a === f || a.startsWith(`${f}=`))).toBe(false);
+        expect(inv.argv.filter((a) => a === "--sandbox")).toHaveLength(1);
+      }
+    }
+    expect(compiled).toBe(2 * rows.filter(([, , , , e]) => "argv" in e).length);
+  });
+
+  it("the Git-write declaration is unchanged: none-documented", () => {
+    expect(adapter().gitWriteControl.kind).toBe("none-documented");
+  });
+});
+
+describe("sandbox and permission denials per compilable profile (synthetic fixtures, conformance harness)", () => {
+  const profiles: Array<[string, ResolvedProfile]> = [
+    ["inspect-untrusted", resolveTrustProfile("inspect-untrusted")],
+    ["edit-untrusted", resolveTrustProfile("edit-untrusted")],
+    [
+      "trusted-development (shell broad)",
+      resolveTrustProfile("trusted-development", { overrides: { "trusted-development": { shell: "broad" } } }),
+    ],
+  ];
+  for (const [name, profile] of profiles) {
+    for (const [fixture, code] of [
+      ["sandbox_denied", "SANDBOX_VIOLATION"],
+      ["permission_denied", "PERMISSION_BLOCKED"],
+    ] as const) {
+      it(`${name}: ${fixture} ends ${code} without hanging; process group empty`, { timeout: 15_000 }, async () => {
+        const report = await runConformanceCase({
+          kind: "task_failure",
+          adapter: replayAdapter(fixture),
+          request: request({ workspace: { cwd: makeCwd(), writable: profile.fileAccess !== "read-only" } }),
+          profile,
+          expect: { ok: false, failureCode: code },
+        });
+        expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+        expect(report.result?.failureCode).toBe(code);
+      });
+    }
+  }
 });
