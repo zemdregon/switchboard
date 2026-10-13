@@ -5,11 +5,13 @@ this repository. Humans are welcome to read it too.
 
 ## What this repository is
 
-Switchboard is a planned headless controller that lets one primary orchestrating agent delegate coding work to several
+Switchboard is a headless controller that lets one primary orchestrating agent delegate coding work to several
 AI coding CLIs (Claude Code, Codex, Grok Build, Antigravity, Cursor, OpenCode, Kimi Code) through their documented
 automation surfaces, behind a single MCP tool surface.
 
-The repository currently contains research and the specification set only. There is no application code yet.
+The repository contains the research, the specification set and application code under `src/` and `test/`. The M1
+foundation is done; M2 and M3 are `Partial`, and parts of M9 are implemented. Milestone status is owned by
+[ROADMAP §6](docs/ROADMAP.md#6-milestones); code is evidence of what is implemented, not of what is intended.
 
 ## Start here
 
@@ -74,7 +76,11 @@ state machine or schema.
 | `docs/design/` | HLD, SDD, TDD, LLD. |
 | `docs/adr/` | Architecture decision records and their index. |
 | `docs/research/` | Research inputs. Historical record; do not rewrite their findings. |
+| `package.json`, `package-lock.json` | Package metadata, scripts and pinned dependencies (`npm ci` installs them). |
+| `src/` | Application code: config, ledger, lifecycle, adapters (`claude`, `codex`, `fake`), MCP server, CLI, policy, Git. |
+| `test/` | Cross-cutting tests: live smoke test (opt-in) and the malicious-fixture suite. |
 | `scripts/check-docs.mjs` | Documentation consistency checker (Node.js, no dependencies). |
+| `scripts/copy-build-assets.mjs`, `scripts/bench-perf.mjs`, `scripts/live-smoke.mjs` | Build asset copy, the performance benchmark and the opt-in live smoke test. |
 | `CLAUDE.md` | Imports this file for Claude Code. Do not add separate instructions there. |
 | `LICENSE` | Apache License 2.0. |
 

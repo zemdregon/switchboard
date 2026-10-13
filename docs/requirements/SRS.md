@@ -16,8 +16,9 @@
   §8](../ROADMAP.md#8-deferred-and-excluded-work)).
 - **Verification**: `T` = automated test, `I` = inspection or review, `D` = demonstration, `A` = analysis.
 - **Milestone** is where the requirement is first delivered; see [ROADMAP §6](../ROADMAP.md#6-milestones).
-- **Verification status**: no requirement has been verified yet. There is no code and no test suite in the repository as
-  of 2026-10-12. Every verification below is *planned*, not *performed*.
+- **Verification status**: as of 2026-10-12 no requirement had been verified, because the repository had no code or test
+  suite then. Verification evidence is now recorded per milestone and task in [ROADMAP §6](../ROADMAP.md#6-milestones);
+  a requirement is verified only where that evidence names a passing test or check.
 - **Source** cites the business outcome or capability the requirement serves, and where relevant the research section
   that motivates it: `[R1]` = [original blueprint](../research/headless-ai-coding-controller.md) (superseded where it
   conflicts), `[R2]` = [verified research,
@@ -64,7 +65,7 @@ system boundary is owned by the
 
 | ID | Requirement | Priority | Source | Verify | Milestone |
 | --- | --- | --- | --- | --- | --- |
-| FR-MCP-01 | The controller shall expose an MCP server over the stdio transport offering the tools `delegate_task`, `continue_task`, `get_run`, `cancel_run`, `get_artifacts` and `list_capabilities`. | Must | CAP-1, [R2] MCP section | T | M2 |
+| FR-MCP-01 | The controller shall expose an MCP server over the stdio transport offering the tools `delegate_task`, `continue_task`, `get_run`, `cancel_run`, `get_artifacts` and `list_capabilities`, and the read-only `list_projects` tool of FR-PRJ-03. | Must | CAP-1, [R2] MCP section | T | M2 |
 | FR-MCP-02 | The controller shall additionally expose `get_capacity` and `explain_route`. | Must | CAP-6, CAP-7 | T | M6 (`get_capacity`), M7 (`explain_route`) |
 | FR-MCP-03 | `delegate_task` shall accept an objective, a workspace path, constraints, a trust profile, optional verification commands and optional routing hints (`provider_preference`, `require_provider`, `minimum_capability`), and, for `privileged` only, a privileged scope (from M3, FR-POL-09), and shall return a `run_id` and `meta_session_id` without waiting for the run to finish unless the caller supplies a bounded `wait_seconds`. *(Amended 2026-10-12: privileged scope input added for owner decision 13, [ADR-0017](../adr/0017-approved-privileged-scope-bypass.md).)* | Must | CAP-1, [ADR-0002](../adr/0002-mcp-upstream-acp-downstream.md) | T | M2 |
 | FR-MCP-04 | Tool results shall be compact normalized envelopes (status, provider, route reasons, summary, changed-file count, verification results, artifact references, reported and estimated usage) and shall never contain raw provider transcripts or credential material. | Must | CAP-1, BO-2 | T | M2 |

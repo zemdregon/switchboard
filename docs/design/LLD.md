@@ -7,7 +7,8 @@
 | Does not own | Requirements ([SRS](../requirements/SRS.md)); run state machine and workflows ([FRD](../requirements/FRD.md)); technology choices and per-provider strategy ([TDD](TDD.md)); component boundaries ([HLD](HLD.md)); scope and sequencing ([ROADMAP](../ROADMAP.md#6-milestones)) |
 | Last reconciled | 2026-10-12 |
 
-Nothing here is implemented. M1 and M2 items are specified in detail; later items are marked "to be detailed in Mx".
+Implementation status is owned by [ROADMAP §6](../ROADMAP.md#6-milestones); parts of this design are now implemented.
+M1 and M2 items are specified in detail; later items are marked "to be detailed in Mx".
 Numbers marked *(proposed target)* are starting values, not established constraints. Types and column names are
 **Proposed** unless an SRS ID or ADR fixes them.
 
