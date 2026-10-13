@@ -1047,7 +1047,9 @@ per run, created from the previous head, so history per meta-session is a linear
 
 **Lease (one writer per meta-session chain, Proposed).** Because each run branches from the session head, two concurrent
 writers would fork; the lease lives on `meta_session` (`lease_run_id`, `lease_expires_at`). Parallel tasks use separate
-meta-sessions and therefore separate worktrees (FR-WS-02). Parallel subtasks inside one session: to be detailed in M5.
+meta-sessions and therefore separate worktrees (FR-WS-02). Concurrent runs of one project each get their own worktree
+and lease whichever meta-session they belong to (FR-WS-08, owner decision 42, Delegated). Parallel subtasks inside one
+session: to be detailed in M5.
 
 ```mermaid
 sequenceDiagram
@@ -1109,7 +1111,9 @@ that, only add the publish ref beside it.
 
 **GC (FR-WS-07, NFR-DATA-01, M3; to be detailed in M3).** Retention job deletes, per expired terminal run, in one
 logical unit: worktree directory (`git worktree remove --force`, then `git worktree prune`), controller branch,
-artifact files (set `deleted_at`). Never touches branches outside `switchboard/`. From M9 the publish refs (§12.3) are
+artifact files (set `deleted_at`). Never touches branches outside `switchboard/`. *Proposed (FR-WS-09, owner decision
+42):* a concurrent run's worktree may also be removed on merge or abandon before retention; the branch and
+artifacts stay until GC. From M9 the publish refs (§12.3) are
 collected with the rest of their meta-session. Orphan sweep: worktree directories or `switchboard/*` branches with no
 matching `run` row are reported by `doctor` and removed only by GC after the retention period.
 
