@@ -1578,10 +1578,41 @@ as not possible (then the cell becomes `Ineligible` with that reason).
 
 ### 4.7 Kimi Code (M4, blocked by B-1)
 
-Disabled until the current Kimi Code CLI automation contract is pinned and passes conformance tests (FR-ADP-09, Git
-write denial and tool injection included, FR-GIT-01, [ROADMAP
-§7](../ROADMAP.md#7-risks-blockers-and-open-questions)). The archived legacy CLI's syntax, models and permissions are
-not evidence for the replacement. Every row of this table: to be verified when the contract is pinned.
+*Spike T4.60 done 2026-10-13 (documentation only); B-1 is **not cleared**.* Disabled until the current Kimi Code CLI
+automation contract is pinned and passes conformance tests (FR-ADP-09, Git write denial and tool injection included,
+FR-GIT-01, [ROADMAP §7](../ROADMAP.md#7-risks-blockers-and-open-questions)). The archived legacy CLI's syntax, models
+and permissions are not evidence for the replacement ([R2] L77, L145 to L153); every source below documents the
+replacement, **Kimi Code CLI 2.x** (TypeScript, `MoonshotAI/kimi-code`), retrieved 2026-10-13. Source IDs `K1` to `K13`
+and the reasons they are current are in the [spike note](../research/kimi-code-spike-2026-10-13.md); docs are
+unversioned, so they apply to "the docs as of 2026-10-13 (CLI 2.1.1, released 2026-09-24)", not to a pinned binary.
+`Unverified: T4.61` means the operator capture must supply it, following the
+[T4.61 checklist][k-checklist].
+
+[k-checklist]: ../research/kimi-code-spike-2026-10-13.md#t461-operator-checklist-installed-kimi-code-cli-operators-native-login
+
+| Aspect | Detail |
+| --- | --- |
+| Automation surface | `kimi -p` / `--prompt <prompt>` runs one prompt without the TUI (K1). `kimi acp` (JSON-RPC over stdio) is also documented (K6). Chosen transport: **Unverified: T4.61** (`-p` is the simpler candidate; ACP would let the controller answer `session/request_permission` and pass `mcpServers` per session) |
+| Structured output | `--output-format text\|stream-json`, only with `-p`; one JSON object per stdout line (Assistant message, Assistant message with `tool_calls`, Tool message); thinking omitted; progress and resume notices on stderr (K1). Record shapes, terminal record and usage fields: Unverified: T4.61 |
+| Resume | `--session [id]` / `-S` and `--continue` / `-c`, mutually exclusive; `--auto`/`--yolo`/`--plan` may be re-applied on resume (K1, K3). A session-resume hint is emitted as a structured meta message in `stream-json` (K7, version not stated). Where the session id appears: Unverified: T4.61 |
+| Version command | `kimi --version` / `-V` prints the version and exits (K1). Output format and exit code: Unverified: T4.61 |
+| Auth preflight | No status command is documented. `kimi login` (device-code flow, exit 0 or 1, no flags) is the native login (K1); credentials are under `$KIMI_CODE_HOME/credentials/` and must never be read (K10). ACP `authenticate` returns `-32000` with no token (K6). Headless behaviour when logged out and any status check: Unverified: T4.61; until then `UNKNOWN` (fail closed), `AUTH_REQUIRED` naming `kimi login` |
+| Trust profile compilation (Proposed) | `-p` always runs the `auto` (Never Ask) policy, asks no human, and keeps static deny rules (K1); it cannot be combined with `--yolo`, `--auto` or `--plan` (K1; K8 disagrees, see the note). So there is **no documented non-bypass approval mode in headless runs**: the only brakes are deny rules, tool lists (`[tools]` or an agent file's `tools`/`disallowedTools`, enforced before execution, K4, K9) and the controller's worktree. Whether this is bypass-class under FR-POL-03, and so limited to an approved `privileged` scope, is an open design question (see Known risks). Never pass `--yolo`, `--auto` or `--plan` outside it |
+| Sandbox controls | None documented (no OS-level confinement; K1 to K10). Profiles needing confinement are `Ineligible` until T4.61 shows otherwise. File tools no longer follow symlinks out of the working directory (K7), which is not a sandbox |
+| Per-run settings | `--agent-file <path>` / `--agent <name>` select a per-launch agent with a tool allowlist, valid with `-p` (K1, K9); `-m <alias>` selects a model (K1). Permission rules live in `config.toml` under `KIMI_CODE_HOME` (K4, K10); supplying them for one run without editing the user's config (a controller-owned `KIMI_CODE_HOME` would lack the OAuth credentials, which must not be copied): Unverified: T4.61 |
+| Repository config | `.kimi-code/mcp.json`, `.kimi-code/local.toml` and agent files are read from the project; project config applies only after the workspace is trusted (K4, K5, K7, K9). Stdio MCP entries in a project file run commands at session start (K5), so the repository is untrusted input (FR-POL-04). How trust is decided in `-p`: Unverified: T4.61 |
+| Known risks | The docs disagree on `-p` flag combinations and on project-level config (K1 vs K8; K4/K5/K7 vs K8), so every row needs an observation. `--yolo` is "Ask When Needed", not bypass; `--auto` is the unattended mode (K1, K2). The built-in dangerous-command guard is off in Never Ask mode and can be disabled (K2, K4). Telemetry: `KIMI_DISABLE_TELEMETRY=1` (K10). Model identity and limits go in the dynamic registry, not in adapter source ([R2]) |
+| Git writes and injected tools (M4, M9) | Deny rule form `Bash(command-pattern)`, first match wins, `decision = "deny"` (K4): matching of compound commands, wrappers and `git -c` forms is not documented, so declare `none-documented` until T4.61 shows HELD (FR-GIT-01). MCP tools are named `mcp__<server>__<tool>` and match by name only, never by argument (K5). A per-run MCP definition: none in the `kimi` option table (K1); only `mcp.json` files (K5) or ACP `session/new` `mcpServers` (K6): Unverified: T4.61, else finalize-only (FR-GIT-09) |
+| Capacity | `/usage` and `/status` exist in the TUI (K7); whether usage, limits or resets are available headlessly: Unverified: T4.61 (FR-CAP-01) |
+| Model listing | `kimi provider list` lists configured providers (`--json`) and `kimi provider catalog list` browses the public models.dev catalogue (K1); a list of the models the login may use: Unverified: T4.61 (FR-ADP-05) |
+
+**B-1 status (T4.60, 2026-10-13):** not cleared. Moonshot's current documentation does describe a headless command,
+a structured output mode, resume, a version command, permission rules and an ACP server, but T4.62 cannot start from
+documentation alone because these are missing or contradictory: the `stream-json` record schema and where the session
+id appears; any auth status or logged-out behaviour; a non-bypass approval mode for `-p`; a documented way to apply
+permission rules per run without editing the user's config or copying credentials; Bash deny-pattern semantics
+(Git-write denial); any sandbox; a per-run MCP definition; and exit codes for failures. B-1 clears when T4.61
+supplies observations for the `Unverified: T4.61` cells above.
 
 ### 4.8 Muse Code (M4)
 
