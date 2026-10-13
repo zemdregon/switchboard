@@ -88,6 +88,13 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 `mcp_clients[].projects` is not yet (T9.2). Config-only checks run at load; filesystem and Git checks run only in
 `projects validate`, so adding a project cannot stop `serve` starting. See [LLD §11.1](LLD.md#111-configuration-shape).
 
+*Note (2026-10-13, Delegated, T9.2):* `mcp_clients[].projects` is implemented: strict schema key, an unknown project id
+aborts the load, and a client with no list may use no project (workspace-path requests are unaffected). `serve` checks
+the filesystem rules of the project a request names at each `delegate_task` (path under an allowed root, base ref
+resolves). The ledger is at schema version 2 ([ADR-0024](../adr/0024-project-id-columns-and-project-snapshot.md)). The
+tests use the fake adapter and real Git repositories in temporary directories, no provider CLI (`src/mcp/mcp.test.ts`,
+"projects (T9.2 ...)").
+
 ### 3.2 Error handling
 
 - Expected failures are values, not exceptions: every domain operation returns a typed result carrying a code from the

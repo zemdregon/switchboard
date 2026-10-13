@@ -16,7 +16,7 @@ Pre-release. The package is private and is not published to any registry; you bu
   fake provider. They have **not** been confirmed against a live provider yet.
 - Providers other than Claude Code and Codex are not implemented.
 
-What works today: `doctor`, `runs list|show|cancel`, `gc`, and `serve` exposing six MCP tools over stdio, with two trust
+What works today: `doctor`, `runs list|show|cancel`, `gc`, and `serve` exposing seven MCP tools over stdio, with two trust
 profiles (`inspect-untrusted`, `edit-untrusted`). Read [Known limitations](#known-limitations) before relying on it.
 
 ## Single operator, your own accounts
@@ -86,7 +86,8 @@ Keys (from `src/config/schema.ts`; no other keys exist yet):
 | --- | --- | --- |
 | `schema_version` | yes | Must be `1`. |
 | `allowed_roots` | yes | Non-empty list of directories. A task's `workspace_path` must be under one of them. Each must exist. Relative paths resolve against the config file's directory. |
-| `mcp_clients` | yes | Entries `{ "id", "max_trust_profile", "privileged_approval"? }`. `id` matches `^[a-z0-9][a-z0-9_-]{0,63}$` and must be unique. `serve --client <id>` binds a session to one entry. |
+| `mcp_clients` | yes | Entries `{ "id", "max_trust_profile", "privileged_approval"?, "projects"? }`. `id` matches `^[a-z0-9][a-z0-9_-]{0,63}$` and must be unique. `serve --client <id>` binds a session to one entry. |
+| `mcp_clients[].projects` | no | Ids of the configured `projects` this client may use with `delegate_task`'s `project` input and see in `list_projects`. An id that names no project stops startup. A client without the list can use no project (workspace paths still work). |
 | `mcp_clients[].privileged_approval` | no | `"required"` (default) or `"not_required"`. With `not_required`, that client's `privileged` requests run without `switchboard approve` (see [Trust profiles](#trust-profiles)). Allowed only when the client's `max_trust_profile` is `privileged`; `doctor` warns for every client that sets it. |
 | `data_dir` | no | Where the ledger, artifacts and worktrees live. Default `$XDG_DATA_HOME/switchboard` (`~/.local/share/switchboard`). |
 | `limits.global_concurrency` | no | Integer 1 to 64. Default 4. |
@@ -94,7 +95,7 @@ Keys (from `src/config/schema.ts`; no other keys exist yet):
 | `providers.<id>.enabled` | no | Boolean. A provider you do not list is enabled. |
 | `providers.<id>.weight` | no | Number from 0 to 1. Accepted by the schema. |
 | `retention.days`, `retention.interval` | no | How long idle meta-sessions are kept (integer days, default 30) and how often `serve` runs the clean-up pass (`30m`, `12h`, `7d`; default `24h`). **Nothing is deleted unless you set `retention.days`**; the default only applies once you do (or to `gc` dry runs). |
-| `projects` | no | List of `{ "id", "name", "environment"?, "contexts": [...] , "max_trust_profile"?, "allowed_providers"? }`. `id` matches `^[a-z][a-z0-9-]{1,40}$` and is unique. `environment` is `{ "kind": "host" }` (default) or a `container` shape that `projects validate` rejects until M10. Each context is `{ "id", "kind": "repository", "path", "base_ref", "primary"?, "writable"?, "push"?, "identity"?, "sign"? }` with an absolute `path` under an allowed root; exactly one context is primary. Unknown keys and context kinds stop startup. `max_trust_profile`, `allowed_providers` and `sign` are accepted but not enforced yet. Full shape: LLD section 11.1. |
+| `projects` | no | List of `{ "id", "name", "environment"?, "contexts": [...] , "max_trust_profile"?, "allowed_providers"? }`. `id` matches `^[a-z][a-z0-9-]{1,40}$` and is unique. `environment` is `{ "kind": "host" }` (default) or a `container` shape that `projects validate` rejects until M10. Each context is `{ "id", "kind": "repository", "path", "base_ref", "primary"?, "writable"?, "push"?, "identity"?, "sign"? }` with an absolute `path` under an allowed root; exactly one context is primary. Unknown keys and context kinds stop startup. `max_trust_profile` and `allowed_providers` apply to `delegate_task` with a `project`: the effective trust ceiling is the lower of the client's and the project's, and routing is limited to the listed providers (a request naming another provider with `require_provider` fails `PERMISSION_BLOCKED`); `sign` is accepted but not enforced yet. Full shape: LLD section 11.1. |
 | `profiles.<name>` | no | Overrides for `inspect-untrusted`, `edit-untrusted`, `test-sandboxed` or `trusted-development`: `file_access`, `shell`, `shell_allowlist`, `network`, `network_allowlist`, `repo_config`. They may tighten or loosen a default; `doctor` lists them and every run records them. `privileged` has none. See the `edit-untrusted` limit under [Trust profiles](#trust-profiles). |
 
 `<id>` is one of `claude-code`, `codex`, `grok-build`, `antigravity`, `cursor`, `opencode`, `kimi-code`. Only
@@ -149,12 +150,13 @@ Only one `serve` can hold a data directory at a time.
 
 | Tool | What it does |
 | --- | --- |
-| `delegate_task` | Starts a coding task in a new meta-session; returns a `run_id` at once (optional `wait_seconds`, 0 to 60, waits without cancelling). |
+| `delegate_task` | Starts a coding task in a new meta-session; returns a `run_id` at once (optional `wait_seconds`, 0 to 60, waits without cancelling). Give exactly one of `workspace_path` and `project` (see `list_projects`). |
 | `continue_task` | Resumes an idle meta-session on the same provider with a new instruction. |
 | `get_run` | Returns a run's status, failure code, provider, summary, changed-file count and artifact ids, optionally with events. |
 | `cancel_run` | Requests cancellation of a run (asynchronous; poll `get_run`). |
 | `get_artifacts` | Lists a run's artifacts (diff, changed files, test report, ...) with hashes; small ones inline. |
 | `list_capabilities` | Lists providers with adapter status, version, validated range, auth state and supported trust profiles. |
+| `list_projects` | Lists the configured projects this client may use (id, name, environment kind, contexts, trust ceiling, allowed providers). Read-only; returns no filesystem paths. |
 
 Tool schemas are published through MCP `tools/list`.
 
@@ -182,7 +184,9 @@ ledger, no lock, no provider process. `validate` checks every project (or the on
 path is absolute, resolves under an allowed root (so `..` and symlink escapes fail) and is a Git repository, and that
 `base_ref` exists. It prints each failure with its config path and exits 1 if any check fails. Only `host` environments
 work in this stage: a `container` project is listed but fails `validate` with "container environments are not
-implemented yet (M10)". `delegate_task` does not use projects yet.
+implemented yet (M10)". `delegate_task` with `project` runs in the project's primary repository context, starting
+from its `base_ref`; a `container` project is refused before anything is written. A meta-session stays in the project it
+was created in, and runs and meta-sessions record the project in the ledger (schema version 2).
 
 `gc` is the retention clean-up. By default it is a dry run: it lists the idle meta-sessions older than
 `retention.days` (all their runs finished, no lease) and any orphans, and changes nothing. `gc --apply` removes each

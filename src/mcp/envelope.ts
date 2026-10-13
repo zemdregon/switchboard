@@ -29,6 +29,8 @@ export interface Envelope {
   run_id: string;
   meta_session_id: string;
   status: string;
+  /** FR-PRJ-03: the project of a run delegated to one; absent for a workspace-path run. */
+  project_id?: string;
   failure_code?: string;
   failure_detail?: string;
   provider: { adapter: string | null; model: string | null; adapter_version: string | null };
@@ -69,6 +71,7 @@ export function buildEnvelope(ledger: Ledger, run: RunRecord, scrub: (s: string)
     run_id: run.id,
     meta_session_id: run.meta_session_id,
     status: run.state,
+    ...(run.project_id ? { project_id: run.project_id } : {}),
     ...(run.failure_code !== null ? { failure_code: run.failure_code } : {}),
     ...(run.failure_detail ? { failure_detail: scrub(run.failure_detail).slice(0, DETAIL_MAX) } : {}),
     provider: { adapter: run.provider, model: run.model, adapter_version: adapterVersion },

@@ -15,6 +15,10 @@ import type {
   SwitchboardConfig,
   TrustProfile,
 } from "./schema.js";
+import { TRUST_PROFILES } from "./schema.js";
+
+/** Shown by `projects validate` and by `delegate_task` for a `container` project until M10 (FR-PRJ-05). */
+export const CONTAINER_NOT_IMPLEMENTED = "container environments are not implemented yet (M10)";
 
 export interface ResolvedContext {
   readonly id: string;
@@ -134,4 +138,33 @@ export function resolveProjects(cfg: SwitchboardConfig): ResolvedProject[] {
       }),
     };
   });
+}
+
+/** The lower of two trust profiles on the order `inspect-untrusted` < ... < `privileged` (FR-PRJ-06, LLD §11.2). */
+export function lowerProfile(a: TrustProfile, b: TrustProfile): TrustProfile {
+  return TRUST_PROFILES.indexOf(a) <= TRUST_PROFILES.indexOf(b) ? a : b;
+}
+
+/**
+ * The effective maximum profile of a request in a project: the lower of the calling client's maximum (FR-MCP-06) and
+ * the project's own (FR-PRJ-06, BR-23). A project without `max_trust_profile` does not lower the client's.
+ */
+export function effectiveMaxProfile(clientMax: TrustProfile, project: ResolvedProject): TrustProfile {
+  return project.maxTrustProfile === undefined ? clientMax : lowerProfile(clientMax, project.maxTrustProfile);
+}
+
+/** The projects a client may use, in configuration order. A client with no list may use none (fail closed). */
+export function projectsForClient(
+  projects: readonly ResolvedProject[],
+  client: { readonly projects?: readonly string[] },
+): ResolvedProject[] {
+  const allowed = new Set(client.projects ?? []);
+  return projects.filter((p) => allowed.has(p.id));
+}
+
+/** The one primary context of a project (`checkProjects` guarantees exactly one at load time). */
+export function primaryContext(project: ResolvedProject): ResolvedContext {
+  const primary = project.contexts.find((c) => c.primary);
+  if (!primary) throw new Error(`project ${project.id} has no primary context`);
+  return primary;
 }

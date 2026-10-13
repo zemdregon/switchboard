@@ -94,6 +94,7 @@ import type { Ledger, NewRouteDecision, RunFieldPatch, RunRecord, RunState, Trus
 import {
   canonicalScopeJson,
   type PrivilegedScope,
+  type ProjectSnapshot,
   parsePrivilegedScope,
   privilegedScopeHash,
   resolveTrustProfile,
@@ -190,6 +191,13 @@ export interface SubmitRequest {
   readonly privileged?:
     | { readonly scope: unknown; readonly approvedByClientPolicy?: boolean }
     | { readonly approvalId: string };
+  /**
+   * The project the run is admitted under (FR-PRJ-03, T9.2), already resolved and checked by the caller (V12, BR-23).
+   * Recorded as `project_id` on the meta-session and run and as `project` in the policy snapshot. A meta-session keeps
+   * its project for life: a continuation must pass the project the meta-session was created in (the snapshot of the
+   * current resolution) and one created without a project must pass none; any other combination is INVALID_REQUEST.
+   */
+  readonly project?: ProjectSnapshot;
 }
 
 /** `run_event` type recording the dispatch-time approval verdict of a `privileged` run (`approval_id`, `bypass_approved`). */
@@ -214,6 +222,8 @@ export interface MetaSessionContext {
   readonly provider: ProviderId;
   readonly priority: RunPriority;
   readonly clientId: string;
+  /** The project the meta-session was created in (FR-PRJ-03); undefined for a workspace-path session. */
+  readonly projectId: string | undefined;
   /** Non-terminal run holding the session, if any (BR-17). */
   readonly activeRunId: string | undefined;
 }
@@ -242,6 +252,10 @@ interface StoredRequest {
   meta_session_id?: string;
   /** Native session to resume (WF-2). */
   resume_native_session_id?: string;
+  /** Project the run was admitted under (T9.2); the id is also the `project_id` column. */
+  project_id?: string;
+  /** The project's base ref for the first worktree of the meta-session (FR-PRJ-02). */
+  base_ref?: string;
 }
 
 export interface TransitionNotice {
@@ -381,8 +395,18 @@ export class RunLifecycle {
       let metaSessionId = req.metaSessionId;
       if (metaSessionId !== undefined) {
         // R-42: authoritative check inside the admission transaction; retention GC marks ARCHIVED in its own one.
-        if (this.ledger.getMetaSession(metaSessionId)?.status === "ARCHIVED") {
+        const known = this.ledger.getMetaSession(metaSessionId);
+        if (known?.status === "ARCHIVED") {
           throw new LifecycleError("INVALID_REQUEST", archivedMessage(metaSessionId));
+        }
+        // FR-PRJ-03 / BR-23: a meta-session keeps the project it was created in.
+        if ((known?.project_id ?? undefined) !== req.project?.id) {
+          throw new LifecycleError(
+            "INVALID_REQUEST",
+            known?.project_id
+              ? `meta-session ${metaSessionId} belongs to project ${known.project_id} and stays in it`
+              : `meta-session ${metaSessionId} was created without a project and stays without one`,
+          );
         }
         const active = this.ledger.listRunsForMetaSession(metaSessionId).find((r) => !isTerminal(r.state));
         if (active) {
@@ -392,6 +416,7 @@ export class RunLifecycle {
         metaSessionId = this.ledger.createMetaSession({
           objective: stored.objective,
           constraints: stored.constraints,
+          ...(req.project ? { projectId: req.project.id } : {}),
         }).id;
       }
       const privileged = priv === undefined ? undefined : this.bindPrivileged(priv, req.clientId, metaSessionId);
@@ -399,7 +424,10 @@ export class RunLifecycle {
         metaSessionId,
         state: initial,
         trustProfile: req.trustProfile,
-        policySnapshot: privileged?.snapshot ?? profile,
+        policySnapshot: req.project
+          ? { ...(privileged?.snapshot ?? profile), project: req.project }
+          : (privileged?.snapshot ?? profile),
+        ...(req.project ? { projectId: req.project.id } : {}),
         request: stored,
         requestHash: hash,
         clientId: req.clientId,
@@ -545,6 +573,7 @@ export class RunLifecycle {
       provider: stored.provider,
       priority: stored.priority,
       clientId: last.client_id,
+      projectId: this.ledger.getMetaSession(metaSessionId)?.project_id ?? undefined,
       activeRunId: runs.find((r) => !isTerminal(r.state))?.id,
     };
   }
@@ -685,6 +714,7 @@ export class RunLifecycle {
       provider: req.provider,
       priority,
       ...(req.metaSessionId !== undefined ? { meta_session_id: req.metaSessionId } : {}),
+      ...(req.project ? { project_id: req.project.id, base_ref: req.project.base_ref } : {}),
       ...(req.resume !== undefined ? { resume_native_session_id: req.resume.nativeSessionId } : {}),
     };
   }
@@ -806,6 +836,7 @@ export class RunLifecycle {
         runId,
         workspace: req.workspace,
         trustProfile: req.trust_profile,
+        ...(req.base_ref !== undefined ? { baseRef: req.base_ref } : {}),
         leaseTtlMs: this.opts.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS,
       });
     } catch (err) {
