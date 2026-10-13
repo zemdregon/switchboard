@@ -98,6 +98,22 @@ function checkPrivilegedApproval(cfg: ResolvedConfig): DoctorCheck | undefined {
   );
 }
 
+/**
+ * FR-INN-15: a warning when the inner agent's backend is declared to draw on a routed provider's subscription, so its
+ * calls consume that provider's capacity (each call records one `inner_agent` usage observation). Absent otherwise.
+ */
+function checkInnerSharedSubscription(cfg: ResolvedConfig): DoctorCheck | undefined {
+  const shared = cfg.innerAgent?.backend?.sharesSubscriptionWith;
+  if (cfg.innerAgent?.enabled !== true || !shared) return undefined;
+  return check(
+    "inner_shared_subscription",
+    "Inner agent subscription",
+    "warn",
+    `the inner agent shares the ${shared} subscription: its calls consume ${shared} capacity; each call is recorded as a ` +
+      "usage observation labelled inner_agent (not as provider usage, and it does not change capacity_score)",
+  );
+}
+
 const check = (id: string, label: string, status: CheckStatus, detail: string): DoctorCheck => ({
   id,
   label,
@@ -360,6 +376,8 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
     if (overrides) checks.push(overrides);
     const approval = checkPrivilegedApproval(cfg);
     if (approval) checks.push(approval);
+    const innerShared = checkInnerSharedSubscription(cfg);
+    if (innerShared) checks.push(innerShared);
   } catch (err) {
     checks.push(check("config", "Config", "fail", (err as Error).message));
   }

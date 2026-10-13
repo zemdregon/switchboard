@@ -2614,6 +2614,11 @@ The accepted result lives where it is used, not in `inner_call`: a commit messag
 text in artifacts, route features in `route_decision.features_json`, a run title in a `run_event` payload (§13.6). The
 `usage_observation` exception for `shares_subscription_with` is in §13.4 step 13.
 
+**T11.5 note (Delegated).** The `usage_observation.source` widening ships as migration 0006
+(`src/ledger/migrations/0006_usage_inner_agent.ts`, a table rebuild). The step 13 observation is written only when a
+backend request was made (`attempts >= 1`); `harness` is the provider id, `model` the call's `model_id`, and
+`metrics_json` holds `input_tokens` and `output_tokens` when reported (key names are an Assumption), else `{}`.
+
 ### 13.4 Call pipeline
 
 One pipeline serves every task; the task contract (§13.6) supplies the input builder, template, schema, validator and

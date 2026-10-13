@@ -58,9 +58,17 @@ export function createInnerAgent(
 ): InnerAgentService {
   const backend = settings?.enabled === true ? deps.backend : undefined;
   const state: InnerAgentState = settings?.enabled !== true ? "off" : backend === undefined ? "no_backend" : "ready";
+  // FR-INN-15: the shared-subscription label is injected here, from configuration, so the pipeline and every caller stay
+  // unaware of provider usage and nothing outside the ledger's one transaction ever writes a usage figure.
+  const shared = settings?.backend?.sharesSubscriptionWith ?? null;
+  const inner = deps.ledger;
+  const ledger: PipelineDeps["ledger"] =
+    inner !== undefined && shared !== null
+      ? { recordInnerCall: (row, events) => inner.recordInnerCall(row, { ...events, sharedSubscriptionWith: shared }) }
+      : inner;
   const pipeline =
     state === "ready" && settings !== undefined && backend !== undefined
-      ? createInnerPipeline({ ...deps, settings, backend })
+      ? createInnerPipeline({ ...deps, ...(ledger !== undefined ? { ledger } : {}), settings, backend })
       : undefined;
   return {
     state,
