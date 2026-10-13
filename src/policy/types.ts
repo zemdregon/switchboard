@@ -4,7 +4,7 @@
 import type { ResolvedProfile, TrustProfile } from "../adapters/types.js";
 
 /**
- * The structured `privileged_scope` (LLD §3.1, T3.3; FR-POL-09; owner decisions 13 and 14; ROADMAP Q-23 answered). Every
+ * The structured `privileged_scope` (LLD §3.1, T3.3; FR-POL-09; owner decisions 13 and 17; ROADMAP Q-28 answered). Every
  * dimension is required and closed; `shell.allowlist` exists exactly when `shell.mode` is `allowlist`, `network.hosts`
  * exactly when `network.mode` is `allowlist` (checked by {@link parsePrivilegedScope} in `./scope.ts`). `bypass` is
  * always present once defaults are filled (`false` when omitted). COMP-POL never derives `bypassApproved` from it: the

@@ -292,7 +292,7 @@ export interface GcArtifactPlan {
   keptHashes: string[];
 }
 
-/** `approval.status` (LLD §1). The controller never writes `EXPIRED` (no expiry: WF-7, owner decision 14). */
+/** `approval.status` (LLD §1). The controller never writes `EXPIRED` (no expiry: WF-7, owner decision 17). */
 export type ApprovalStatus = "PENDING" | "APPROVED" | "DENIED" | "EXPIRED";
 
 /** `approval` row (LLD §1, §3.1): one per meta-session in M3, created by its first `privileged` run. */

@@ -545,6 +545,13 @@ draft (M11, [§13.6](#136-task-contracts)); Switchboard never opens a pull reque
 validated_range, auth_state, supported_profiles[], transports[], models[], sandbox_features[], git_write_control?}] }`;
 reads cached preflight (NFR-PERF-02). `git_write_control` is `{ kind: "provider-deny-rules" | "none-documented", detail,
 remaining_controls[] }`, the adapter's FR-GIT-01 declaration (Proposed, added in T2.2).
+`supported_profiles` (T3.7, Proposed) is the provider's compile matrix on this host: a profile is listed only if the
+host platform is verified for it (Linux only until M4; every profile counts as sandbox-dependent, NFR-PORT-02) and the
+adapter's own `compile` of the resolved profile, with configured overrides, returns no `Ineligible` (the same check
+the eligibility filter makes). `privileged` is listed only if the adapter compiles the narrowest scope (read-only
+files, no shell, network off, repository configuration disabled, no bypass); each request's scope is still compiled
+at admission and dispatch. An off-host profile is excluded from routing with the machine-readable reason
+`PROFILE_PLATFORM_UNVERIFIED`, which maps to `ELIGIBILITY_NONE` (FRD BR-3).
 **`get_capacity`** (M6) `{ provider? }` returns the FR-CAP-02 fields per provider with `source`; `explicit_remaining` is
 null unless provider-reported. To be detailed in M6.
 **`explain_route`** (M7) `{ run_id }` returns candidates, eligibility reasons, features, weights, scores from

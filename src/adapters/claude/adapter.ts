@@ -198,15 +198,15 @@ export const CLAUDE_PRIVILEGED_DETAIL =
  *    Ineligible for every dimension until T3.9 shows confinement or T3.1 supplies an outer sandbox.
  * 3. A `scoped` dimension outside `privileged`: PROFILE_UNSUPPORTED (only the privileged scope may say `scoped`).
  * 4. `trusted-development` (owner decisions 10-12: operator overrides may loosen it):
- *    - network `allowlist` or `policy`: CAPABILITY_MISSING ([H] has no network or host control; R-29).
+ *    - network `allowlist` or `policy`: CAPABILITY_MISSING ([H] has no network or host control; R-36).
  *    - shell `broad` (network `off`): CAPABILITY_MISSING, because nothing in [H] stops a command's network use
- *      (Q-29 Proposed). With rule 4a this means `broad` never compiles for Claude today.
+ *      (Q-34 Proposed). With rule 4a this means `broad` never compiles for Claude today.
  *    - repository configuration `approved-only` or `allowlisted`: CAPABILITY_MISSING. [H] has no per-item control for
  *      approved hooks or instructions; `--setting-sources` selects whole sources, and `--mcp-config` (approved MCP
  *      servers) is barred by ADR-0015.
  *    What remains compiles as `edit-untrusted` (file access, exact shell allowlist, network off at the tool level,
  *    repository configuration disabled with `--safe-mode --restricted --strict-mcp-config`).
- * `inspect-untrusted` and `edit-untrusted` keep their M2 behaviour (T2.2; Q-29: network off at the tool level).
+ * `inspect-untrusted` and `edit-untrusted` keep their M2 behaviour (T2.2; Q-34: network off at the tool level).
  */
 export function matrixIneligible(profile: ResolvedProfile): Ineligible | undefined {
   if (profile.bypassApproved || profile.name === "privileged") {
@@ -228,14 +228,14 @@ export function matrixIneligible(profile: ResolvedProfile): Ineligible | undefin
       return ineligible(
         "CAPABILITY_MISSING",
         `trusted-development network=${profile.network}: claude --help 2.1.296 documents no network or host control ` +
-          "(TDD §4.1.1, R-29)",
+          "(TDD §4.1.1, R-36)",
       );
     }
     if (profile.shell === "broad") {
       return ineligible(
         "CAPABILITY_MISSING",
         "trusted-development shell=broad with network=off: claude --help 2.1.296 documents nothing that stops a " +
-          "command's network use (Q-29, R-29)",
+          "command's network use (Q-34, R-36)",
       );
     }
     if (profile.repoConfig !== "disabled") {

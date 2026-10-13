@@ -4,10 +4,11 @@
  *
  * Two entry points:
  * - {@link resolveTrustProfile}: all five profiles, with `profiles.<name>` overrides and, for `privileged`, a scope.
- * - {@link resolveProfile} / {@link createProfileResolver}: the M2-gated, name-only resolver wired into `RunLifecycle`.
- *   Until T3.7 it resolves only the two M2 profiles and throws {@link ProfileUnavailableError} for the rest: fail closed
- *   (NFR-SEC-06), never a downgrade (FR-POL-02). `privileged` never resolves from a name alone: since T3.3 the run
- *   lifecycle resolves it through {@link resolveTrustProfile} with the scope binding of the admission or approval path.
+ * - {@link resolveProfile} / {@link createProfileResolver}: the name-only resolver wired into `RunLifecycle`. Since T3.7
+ *   it resolves the four non-privileged profiles; whether a provider can run one is the adapter's own compile verdict
+ *   in the eligibility filter (`src/routing`, FR-POL-02, never a downgrade). Until T3.7 it resolved only the two M2
+ *   profiles. `privileged` never resolves from a name alone: since T3.3 the run lifecycle resolves it through
+ *   {@link resolveTrustProfile} with the scope binding of the admission or approval path.
  *
  * `bypassApproved` is always false here (FR-POL-03, FR-POL-09; owner decision 13): a bypass is applied later only from
  * an approved `privileged` row (T3.4).
@@ -43,7 +44,7 @@ import {
   type ProfileOverrides,
 } from "./types.js";
 
-/** Profiles that the M2-gated resolver accepts (FR-POL-01). The rest stay refused until T3.7 (`privileged`: see T3.3). */
+/** The two profiles M2 supported (FR-POL-01). Kept for M2 tests; since T3.7 the resolver accepts all four non-privileged ones. */
 export const M2_PROFILES: readonly TrustProfile[] = ["inspect-untrusted", "edit-untrusted"];
 
 /** Thrown for a profile this build cannot resolve. Carries the taxonomy code the MCP layer reports (LLD section 4). */
@@ -63,7 +64,7 @@ export class ProfileUnavailableError extends Error {
       reason ??
         (privileged
           ? "the privileged profile resolves only from an operator-approvable scope (privileged_scope), never from its name"
-          : `trust profile ${JSON.stringify(profile)} is not available in this version (M2 supports ${M2_PROFILES.join(", ")})`),
+          : `trust profile ${JSON.stringify(profile)} is not a known trust profile`),
     );
     this.code = privileged ? "PERMISSION_BLOCKED" : "ELIGIBILITY_NONE";
   }
@@ -281,16 +282,19 @@ export function resolveTrustProfile(name: TrustProfile, options: ResolveOptions 
 }
 
 /**
- * The `resolveProfile` for `RunLifecycle` (COMP-POL): M2-gated, with config overrides. Only the M2 profiles resolve;
- * everything else throws {@link ProfileUnavailableError} until T3.7; `privileged` always throws here, because it resolves
- * only from a scope binding (the lifecycle calls {@link resolveTrustProfile} for it, T3.3).
+ * The `resolveProfile` for `RunLifecycle` (COMP-POL), with config overrides. T3.7: the four non-privileged profiles
+ * resolve (the M2 gate is lifted; eligibility is decided by each adapter's compile of the resolved snapshot). An
+ * unknown name throws {@link ProfileUnavailableError}; `privileged` always throws here, because it resolves only from
+ * a scope binding (the lifecycle calls {@link resolveTrustProfile} for it, T3.3).
  */
 export function createProfileResolver(overrides: ProfileOverrides = {}): (name: TrustProfile) => ResolvedProfile {
   return (name) => {
-    if (!M2_PROFILES.includes(name)) throw new ProfileUnavailableError(String(name));
+    if (name === "privileged" || !(OVERRIDABLE_PROFILES as readonly string[]).includes(name)) {
+      throw new ProfileUnavailableError(String(name));
+    }
     return resolveTrustProfile(name, { overrides });
   };
 }
 
-/** M2-gated resolver with no overrides: a fresh, deeply frozen copy of the SRS defaults. */
+/** Resolver with no overrides: a fresh, deeply frozen copy of the SRS defaults. */
 export const resolveProfile: (name: TrustProfile) => ResolvedProfile = createProfileResolver();
