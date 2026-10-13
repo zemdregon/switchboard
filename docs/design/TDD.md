@@ -5,7 +5,7 @@
 | Status | Draft, baseline for milestone M1 |
 | Owns | Technology choices and their tradeoffs; cross-cutting engineering concerns (configuration, error handling, logging, security engineering, concurrency, testing, packaging, CI, versioning); per-provider adapter strategy; technical approach by milestone; migration considerations |
 | Does not own | Requirements ([SRS](../requirements/SRS.md)); scope, sequencing and status ([ROADMAP](../ROADMAP.md#6-milestones)); components and boundaries ([HLD](HLD.md)); component collaboration ([SDD](SDD.md)); schemas, interfaces, algorithms ([LLD](LLD.md)); run state machine ([FRD](../requirements/FRD.md)) |
-| Last reconciled | 2026-10-12 |
+| Last reconciled | 2026-10-13 |
 
 ## 1. Purpose and scope
 
@@ -216,6 +216,8 @@ startup reconciliation applies them. Run state transitions use an optimistic ver
 | Live provider smoke | Opt-in only: `scripts/live-smoke.mjs` (`npm run test:live`) is skipped unless `SWITCHBOARD_LIVE_TESTS=1`; not part of `npm test`, never runs in CI (see below) | Yes | [AGENTS.md](../../AGENTS.md) |
 | Controller-overhead benchmark | `scripts/bench-perf.mjs` (`npm run bench`) times the real MCP server over the in-memory transport with the fake adapter; not part of `npm test` (see [§3.6.1](#361-controller-overhead-benchmark-t27)) | No | NFR-PERF-01, NFR-PERF-02 |
 | Inner agent (M11) | Scripted fake backend as a local HTTP server, hostile-output fixtures, planted-secret prompt capture, import-boundary test; details in [§3.12](#312-inner-agent) | No | FR-INN-01..17 |
+| Affinity replay (M7) | Table-driven and property tests over stored `route_decision` rows and a scripted fake adapter set: for any sequence of runs in a project, the provider and model change only when the decision carries an `affinity_switch_reason` from the closed list; a better score, lower cost or lower load never moves a project; no return after recovery; `require_provider`, `affinity reset`, `QUOTA_EXHAUSTED`, breaker open and exhausted retry each produce exactly their reason. Details in [§3.13.3](#3133-testing-affinity-and-retrieval) | No | FR-RTE-06..09, FR-CAP-08 |
+| Retrieval index (M12) | Deterministic fake embedding backend, hostile-content fixtures, planted-secret scan, isolation and import-boundary tests; details in [§3.13](#313-retrieval-index) | No | FR-RAG-01..14 |
 | Docs check | `scripts/check-docs.mjs` must pass on every change (links, anchors, ID references) | No | NFR-MAINT-02 |
 
 Principles: tests pass with no provider CLI installed or logged in; secret-pattern scan over all test outputs
@@ -809,6 +811,83 @@ which tasks motivate it (owner decision 14); everything below is Delegated and u
   them, with version and date, into [§4.6](#46-opencode-m4), the kind is `Ineligible` (reported by `doctor`, never
   run), and the adapter's argv audit applies (no bypass flag). The `http` kind alone satisfies FR-INN-03.
 
+### 3.13 Retrieval index
+
+Implements FR-RAG-01..14 and [ADR-0031](../adr/0031-retrieval-index.md) for M12 (COMP-RAG, TB-11), and describes how
+FR-RTE-06..09 and FR-CAP-08 ([ADR-0032](../adr/0032-provider-model-affinity.md), M6 and M7) are tested. Schemas,
+algorithms and the tool contract are in [LLD §14](LLD.md#14-retrieval-index) and [LLD
+§3.2](LLD.md#32-provider-and-model-affinity-m7). Status: **Proposed**. zemdregon asked for a per-project automatic
+index, a possible deployment-wide index and sticky provider and model use (owner decision 40); every choice below is
+Delegated and unverified until the T12.0 spike.
+
+#### 3.13.1 Storage and search (Proposed, Q-48, T12.0)
+
+- **Store.** One SQLite file per project and one for the global index under `<data>/rag/` (HLD §5), opened with the
+  existing `better-sqlite3` dependency (§2) but never through the ledger module: the ledger stays the single writer of
+  `ledger.db` (ADR-0005), and a retrieval store is a derived cache that can be deleted and rebuilt. Chunk text and
+  float32 vectors are BLOB columns. Search is a brute-force cosine scan in process over a hard cap on chunks per store,
+  so no native vector extension and no new dependency is needed. An approximate-nearest-neighbour index or a vector
+  extension is adopted only if the T12.0 spike shows the cap is too low for real projects, and then by a new ADR.
+- **Why not a vector database service.** It would add a network listener or a second process to a single-operator,
+  local-first deployment (ADR-0011, NFR-PRIV-01) and a new trust boundary. Rejected for the default; the backend port
+  below does not preclude a later one.
+- **Embedding backend.** One port, kinds `local` and `http`, sharing the locality classification, `allow_remote` and
+`allow_source_content` gates of the inner agent (TDD §3.12, LLD §13.5), with no credential in configuration (ADR-0003).
+The `http` kind reuses the Node built-in HTTP client as in §3.12. Which model, dimension, batch size and latency to use
+is an operator decision: none is named or assumed here, and the vector dimension is read from the backend and stored
+with each store so a model change forces a rebuild (LLD §14.2).
+- **Threading.** Same process and event loop as §3.5. Builds run as a background job in `serve`, in small batches that
+yield between files, with caps on files, chunks, bytes and elapsed time (FR-RAG-11). A brute-force scan over the capped
+store runs synchronously in a bounded loop; whether it must move to a worker thread is a T12.0 measurement, not an
+assumption. Admission waits for retrieval at most a configured bound and then proceeds without a pack (FR-RAG-08).
+- **Redaction.** Reuses the telemetry redactor (§3.3) and the FR-INN-16 pass, not a second implementation; the secret
+  denylist is a path and name pattern table beside the sanitiser patterns, operator-extensible by `exclude`.
+
+#### 3.13.2 Observability
+
+`rag_index_built` and `rag_retrieval` records and run events carry counts, durations, backend id and snippet ids and
+hashes, never text ([LLD §14.10](LLD.md#1410-events-and-records)); `doctor` reports backend, locality, store sizes,
+revision and staleness (FR-RAG-14). Embedding calls never enter `usage_observation` or capacity (FR-RAG-12).
+
+#### 3.13.3 Testing affinity and retrieval
+
+All of it runs with no embedding model, provider CLI or network (AGENTS.md); `npm test` makes zero live calls.
+
+- **Fake embedding backend.** A deterministic in-process backend (a hash-seeded bag-of-tokens projection to a small
+  fixed dimension, so similar text is nearer and identical text gives identical vectors) plus a scripted local HTTP
+  server for the `http` kind with scenarios for success, delay, error status, dropped connection, wrong dimension and
+  non-finite values. Results are exactly reproducible, so ranking tests assert order, not scores. The dimension and
+  scheme are test fixtures, not claims about any real model.
+- **Scanner and exclusions.** Real temp Git repositories with planted `.env` files, key and certificate files,
+  credential-looking names, binary files, files over the size cap, ignored files, a nested repository (ADR-0022) and a
+  symlink leaving the root. Asserted: none is chunked, embedded or stored, and a planted credential-shaped string inside
+  an included file is redacted before the embedding request body (captured by the fake) and before storage.
+- **Isolation.** Two projects with distinct planted markers: no query, tool call or context pack for one returns the
+  other's marker; deleting a project deletes its store; the global index is read only with `use_global` and a
+  contributed snippet carries its origin label; a non-contributing project's marker never appears in it (FR-RAG-03,
+  FR-RAG-09, FR-RAG-10).
+- **Freshness.** A file edited, deleted or moved after indexing is dropped or re-read; a base-ref mismatch is flagged;
+  an interrupted build leaves an incomplete marker; every injected failure (backend down, corrupt store, over budget)
+  yields no pack and an unchanged run (FR-RAG-08).
+- **Authority boundary.** An import-graph test, in the style of §3.12, fails if COMP-POL, the profile compilers, the
+  eligibility, approval, retry or push code, or the sanitiser rule table imports the retrieval service; a second test
+  asserts that run state, policy snapshot and route eligibility are identical with hostile retrieved text (a fake
+  instruction to widen the profile or push) and with retrieval off (FR-RAG-07). The original request text is stored
+  unchanged in every case (FR-RAG-05).
+- **Locality gates.** Table-driven over the LLD §14.4 table, reusing the §3.12 test resolver.
+- **Affinity replay.** A property test generates sequences of runs for a project against scripted adapters whose
+  eligibility, capacity estimate and `QUOTA_EXHAUSTED` outcomes vary per step, then replays the persisted
+`route_decision` rows and asserts: (1) the chosen provider and model equal the affinity unless the row carries a reason
+from the closed list, (2) the reason matches the injected cause, (3) score, cost and load changes alone never produce a
+switch, (4) after a switch the old provider is not chosen again when it recovers, (5) with `enabled: false` the M7
+scoring behaviour is unchanged. Replay reads stored features, as for FR-INN-12; no clock or randomness enters the
+decision. Cache accounting (FR-CAP-08) is tested with recorded fixtures that do and do not report cache tokens: absent
+counts stay absent, never estimated.
+- **Default posture.** With no embedding backend configured the feature is inert and the existing suite passes
+  byte-for-byte (FR-RAG-04). Live embedding calls are opt-in in the pattern of §3.6, proposed
+  `SWITCHBOARD_LIVE_TESTS=1` plus `SWITCHBOARD_LIVE_EMBEDDING=1` with an operator-supplied config path (names Proposed),
+  never in CI, sending only a built-in fixture text.
+
 ## 4. Provider adapter strategy
 
 Source of every fact in this section is [R2]. Anything not stated there reads "to be verified in Mx against installed
@@ -1015,12 +1094,13 @@ approach only.
 | M3 Isolation | Remaining profiles and per-adapter capability matrix; malicious fixture suite; approval flow (`approval` table, `approve` CLI); verification commands run via argv (no shell) in the worktree; retention/GC job; evaluate outer sandbox (§3.4) and decide by ADR. |
 | M4 Adapters | macOS CI leg (NFR-PORT-02); one adapter module + manifest + fixtures + registry entry each (NFR-MAINT-01); ACP stdio client in the supervisor; model registry combining operator config and listing commands where available. |
 | M5 Continuity | Native resume per adapter via `resumeArgs`; handoff bundle builder from ledger rows and Git evidence only (FR-SES-04), regenerable from events and decisions (FR-SES-05). |
-| M6 Capacity | Usage observation writers; estimator (rolling windows over `usage_observation` and `run`); per-provider breakers persisted in `provider_health`; retry scheduler using [LLD §9](LLD.md#9-retryback-off-algorithm); queue with `WAITING_CAPACITY` timers; `get_capacity`. |
-| M7 Routing | Feature extraction and heuristic classifier; static weighted scoring; persist `route_decision` rows; `explain_route` reads them. Scores deterministic for a given stored input (FR-RTE-03). |
+| M6 Capacity | Usage observation writers; estimator (rolling windows over `usage_observation` and `run`); per-provider breakers persisted in `provider_health`; retry scheduler using [LLD §9](LLD.md#9-retryback-off-algorithm); queue with `WAITING_CAPACITY` timers; `get_capacity`. Cache read and creation token counts and per-project kept/switched counts (FR-CAP-08) where adapters report them. |
+| M7 Routing | Feature extraction and heuristic classifier; static weighted scoring; persist `route_decision` rows; `explain_route` reads them. Scores deterministic for a given stored input (FR-RTE-03). Provider and model affinity: `project_affinity` table, the selection step before scoring, the `affinity_switch_reason` field, `affinity reset`, the cache-friendly prompt assembly order, and the replay property test ([§3.13.3](#3133-testing-affinity-and-retrieval), [LLD §3.2](LLD.md#32-provider-and-model-affinity-m7)). |
 | M8 Hardening | OTel exporter driven from `run_event`/spans; version canaries (`adapters validate` ships in M4); |
 | M9 Projects and controlled commits | Project and context schema in the config loader; `COMP-PRJ` resolution and ceilings; `project_id` columns and the `git_commit` table; per-adapter Git-write denial and channel-support declarations; the shim subcommand and per-run socket; `COMP-GIT` (commit, sanitiser, publish ref, ref snapshots, push with policy); `projects` CLI; fake-adapter fixtures for every attempt in §3.6. Starts with a spike that settles §3.10's open mechanisms (per-run Git config, plumbing commands, socket access under sandboxes). |
 | M10 Container environments | After M9 (Q-6 settled by delegation, Proposed): runtime port, mounts, limits, labels and orphan sweep, container leg of the malicious-fixture suite, answer to the provider-login question ([§3.11](#311-container-environments)). |
 | M11 Inner agent | Spike T11.0 first (OpenCode one-shot tool-free controls, or record `Ineligible`). Then in order: config schema, backend port, scripted fake backend, `inner_call` and `inner_task_state` tables and the import-boundary test (T11.1); the pipeline with redaction, budget, breaker, re-ask and fallback (T11.2); `http` backend, locality and privacy gates (T11.3); the commit-message task through the existing sanitiser (T11.4); accounting (T11.5); suspension (T11.6); `doctor`, `inner status`, `inner test` (T11.7); then PR draft, log summary, handoff condensation, route features and run title as their milestones allow (T11.8 to T11.12), and the `cli` kind last (T11.13). Every task ships with its fallback and hostile-fixture tests in the same change ([§3.12](#312-inner-agent), [LLD §13](LLD.md#13-inner-agent)). |
+| M12 Retrieval index | After M9 and the M11 backend port (T11.1). Spike T12.0 first (storage and embedding backend, Q-48; measure the brute-force cap and scan time on real project sizes). Then in order: config and store schema (T12.1); scanner, exclusions, redaction and chunker (T12.2); embedding port with the fake, `local` and `http` backends and the gates (T12.3); incremental background build, `index` CLI and `doctor` (T12.4); retrieval and the context pack at admission (T12.5); `search_project_context` (T12.6); the global index and sharing rules (T12.7); documentation (T12.8); the agent-callable tool last (T12.9, Could). The import-boundary and isolation tests land with T12.1, not after ([§3.13](#313-retrieval-index), [LLD §14](LLD.md#14-retrieval-index)). Affinity is separate and earlier: the `project_affinity` table, selection step and replay tests ship with M7, cache observations with M6 ([LLD §3.2](LLD.md#32-provider-and-model-affinity-m7)). |
 
 ## 6. Migration considerations
 
@@ -1060,4 +1140,6 @@ approach only.
 | Provenance in the ledger, not in Git | Commits stay indistinguishable from ordinary ones | Links by SHA break on an operator rebase (tree hash and patch ID are best-effort) | ADR-0014 |
 | Orchestrator-created projects need a client opt-in and operator approval for containers and push | A compromised orchestrator cannot mount host paths, start containers or enable push on its own | A project is approved on the CLI before it can use those | ADR-0013 |
 | Cheap-model drafts (commit, PR, summaries, features) over agent-written text | Saves premium provider turns; the coding agent does not spend output on mechanical text | A weaker model can write a vague or wrong draft; a new egress path (TB-10); fallbacks and a suspension rule add code. Bounded by agent-text-wins defaults, no policy authority, sanitiser, redaction and `local`-first privacy gates | ADR-0016 |
+| Provider and model affinity over score-driven choice | A project stays on one provider and model, so provider-side prompt caches can keep hitting (benefit per provider unverified); every move has an auditable reason | The affine provider's quota is spent first and load concentrates (R-58); a better-scoring provider is not used until a listed reason applies | ADR-0032 |
+| Per-project SQLite retrieval store with brute-force search over a vector service | No new dependency or process; deletable derived cache; isolation by file | Capped store size; linear scan cost; vectors and text unencrypted in the data directory (R-56); revisit after T12.0 | ADR-0031 |
 | Stdio MCP, single process | No network listener | One orchestrator per controller process (Assumption) | ADR-0011 |
