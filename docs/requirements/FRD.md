@@ -221,6 +221,12 @@ make the controller's commit (BR-30). The post-run checkpoint on the internal ru
 published (FR-GIT-08). A cancelled or failed run keeps any commits already made through the tool on the publish ref;
 publication is not rolled back by a later failure, but a push needs a separate accepted call (BR-29).
 
+*Note 2026-10-13 (T9.7, Delegated; the placement above unchanged, state machine unchanged).* As built, step (2) runs
+after the post-run checkpoint, still inside FINALIZING and before the terminal transition: the finalize-only commit
+takes its paths from the checkpoint's changed-file list, and neither step touches the other's refs. Only a run about to
+end SUCCEEDED is committed, and none after a `git_policy_violation` in the meta-session (BR-27). See [LLD
+§12.3](../design/LLD.md#123-commit-algorithm-and-refs).
+
 ## 5. Meta-session lifecycle
 
 *Proposed.* The SRS defines meta-sessions (FR-SES-01..05) but not lifecycle states; these three are a planning choice.

@@ -39,6 +39,11 @@ export interface RunDetail extends RunSummary {
   commits: CommitProvenanceView[];
   /** T9.6 (FR-GIT-05): push attempts recorded on this run (agent pushes, and operator pushes of its commits). */
   pushes: PushView[];
+  /**
+   * T9.7 (FR-GIT-09): the finalize-only result from the run's `git_finalize_commit` event (outcome, reason code or
+   * SHA); absent when finalize-only did not apply to the run.
+   */
+  finalize_commit?: { outcome: string; reason?: string; commit_sha?: string };
 }
 
 /**
@@ -51,6 +56,8 @@ export interface CommitProvenanceView {
   tree_sha: string;
   patch_id: string | null;
   origin: string;
+  /** T9.7: how the commit was made: `tool` (the injected `commit` tool) or `finalize` (finalize-only, FR-GIT-09). */
+  via: "tool" | "finalize";
   publish_ref: string;
   project_id: string;
   context_id: string;
@@ -166,6 +173,7 @@ export function showRun(
         git_policy_violations: events.filter((e) => e.type === "git_policy_violation").length,
         commits: commitProvenance(db, runId, row.meta_session_id),
         pushes: pushesOfRun(db, runId),
+        ...finalizeView(events),
       },
       events,
       ...(approval ? { approval } : {}),
@@ -173,6 +181,20 @@ export function showRun(
   } finally {
     db.close();
   }
+}
+
+/** T9.7: the newest `git_finalize_commit` event as `{ finalize_commit }`, or nothing. Codes and SHAs only. */
+function finalizeView(events: readonly { type: string; payload: unknown }[]): Pick<RunDetail, "finalize_commit"> {
+  const e = events.findLast((x) => x.type === "git_finalize_commit");
+  if (!e || typeof e.payload !== "object" || e.payload === null) return {};
+  const p = e.payload as { outcome?: unknown; reason?: unknown; commit_sha?: unknown };
+  return {
+    finalize_commit: {
+      outcome: String(p.outcome ?? ""),
+      ...(typeof p.reason === "string" ? { reason: p.reason } : {}),
+      ...(typeof p.commit_sha === "string" ? { commit_sha: p.commit_sha } : {}),
+    },
+  };
 }
 
 function hasTable(db: Database.Database, name: string): boolean {
@@ -230,6 +252,7 @@ function commitProvenance(db: Database.Database, runId: string, metaSessionId: s
       tree_sha: c.tree_sha,
       patch_id: c.patch_id,
       origin: c.origin,
+      via: c.origin === "finalize_only" ? "finalize" : "tool",
       publish_ref: c.publish_ref,
       project_id: c.project_id,
       context_id: c.context_id,
@@ -461,6 +484,12 @@ export function renderRun(d: { run: RunDetail; events: RunEventView[]; approval?
   if (r.git_policy_violations > 0) {
     lines.push(`  git policy:  VIOLATION (${r.git_policy_violations} git_policy_violation event(s); FR-GIT-03)`);
   }
+  if (r.finalize_commit) {
+    const f = r.finalize_commit;
+    lines.push(
+      `  finalize:    ${f.outcome}${f.commit_sha ? ` ${f.commit_sha}` : ""}${f.reason ? ` (${f.reason})` : ""} (finalize-only, FR-GIT-09)`,
+    );
+  }
   if (r.commits.length > 0) {
     lines.push("", "Commits (provenance, FR-GIT-07):");
     for (const c of r.commits) {
@@ -468,7 +497,7 @@ export function renderRun(d: { run: RunDetail; events: RunEventView[]; approval?
         .map(([k, v]) => `${k}=${v}`)
         .join(", ");
       lines.push(
-        `  ${c.sha}  ${c.origin}  ${c.created_at}`,
+        `  ${c.sha}  ${c.origin}  via ${c.via}  ${c.created_at}`,
         `    tree ${c.tree_sha}  patch-id ${c.patch_id ?? "-"}  publish ref ${c.publish_ref}`,
         `    project ${c.project_id}  context ${c.context_id}  session ${c.meta_session_id}  run ${c.run_id}`,
         `    provider ${c.provider} (harness ${c.harness})  model ${c.model ?? "-"}  adapter version ${c.adapter_version ?? c.adapter_version_id ?? "-"}`,

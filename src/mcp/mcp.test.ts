@@ -1163,6 +1163,7 @@ function project(over: Partial<ResolvedProject> = {}, contextPath = repo, baseRe
         writable: true,
         push: { policy: "none" },
         sign: false,
+        finalizeCommit: false,
       },
     ],
     ...over,
@@ -1273,6 +1274,27 @@ describe("projects (T9.2; FR-PRJ-03, FR-PRJ-04, FR-PRJ-06; FRD V12, BR-23)", () 
     });
     // The remote is not frozen: it is not validated as a remote name and could carry credentials (NFR-SEC-01).
     expect(runRow(d.body.run_id).policy_snapshot_json).not.toContain("secret");
+    // T9.7: no finalize-only opt-in configured, so none is frozen.
+    expect(snap.finalize_commit).toBeUndefined();
+  });
+
+  it("freezes the finalize-only opt-in into the run's snapshot (T9.7, FR-GIT-09)", async () => {
+    const base = project();
+    const ctx = base.contexts[0];
+    if (!ctx) throw new Error("no context");
+    await setup({
+      adapters: [fakeWriter()],
+      projects: [
+        {
+          ...base,
+          contexts: [{ ...ctx, identity: { name: "Ada Maintainer", email: "ada@example.test" }, finalizeCommit: true }],
+        },
+      ],
+      clients: [{ id: "o", max: "edit-untrusted", projects: ["web-app"] }],
+    });
+    const d = await call("delegate_task", projectArgs({ wait_seconds: 20 }));
+    expect(d.isError, JSON.stringify(d.body)).toBe(false);
+    expect(JSON.parse(runRow(d.body.run_id).policy_snapshot_json).project).toMatchObject({ finalize_commit: true });
   });
 
   it("a workspace_path run has no project; a client with no project list keeps using workspace paths", async () => {
