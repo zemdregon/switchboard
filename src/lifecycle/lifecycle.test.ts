@@ -48,7 +48,10 @@ const GIT_ENV = {
 const g = (cwd: string, ...args: string[]) =>
   execFileSync("git", ["-c", "commit.gpgsign=false", ...args], { cwd, env: GIT_ENV, encoding: "utf8" }).trim();
 
+// Only the deliberate hang scenarios need short timeouts. Every other scenario gets generous ones so a slow
+// child start under CPU contention (parallel test files, shared CI runners) is not mistaken for a hang.
 const SHORT = { wallClockMs: 15_000, idleMs: 5_000, killGraceMs: 300 };
+const PATIENT = { wallClockMs: 120_000, idleMs: 60_000, killGraceMs: 300 };
 
 const profileFor = (name: TrustProfile): ResolvedProfile => ({
   name,
@@ -95,7 +98,7 @@ class ScenarioAdapter implements ProviderAdapter {
   authScenario: FakeScenario = "success";
   onCompile: ((req: CompileRequest) => void) | undefined;
   compileOverride: ((req: CompileRequest, inv: Invocation) => Invocation | Ineligible) | undefined;
-  private readonly base = new FakeAdapter({ timeouts: SHORT });
+  private readonly base = new FakeAdapter({ timeouts: PATIENT });
 
   constructor(
     private readonly writerScript: string,
@@ -103,9 +106,9 @@ class ScenarioAdapter implements ProviderAdapter {
   ) {}
 
   private forScenario(s: Scenario): FakeAdapter {
-    if (s === "writer-usage") return new FakeAdapter({ script: this.usageScript, timeouts: SHORT });
-    if (s === "writer") return new FakeAdapter({ script: this.writerScript, timeouts: SHORT });
-    return new FakeAdapter({ scenario: s, timeouts: SHORT });
+    if (s === "writer-usage") return new FakeAdapter({ script: this.usageScript, timeouts: PATIENT });
+    if (s === "writer") return new FakeAdapter({ script: this.writerScript, timeouts: PATIENT });
+    return new FakeAdapter({ scenario: s, timeouts: s.startsWith("hang") ? SHORT : PATIENT });
   }
 
   async probe(runner: ProbeRunner) {
