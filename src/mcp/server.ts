@@ -56,6 +56,11 @@
  *   registered provider is ELIGIBILITY_NONE (FRD BR-23 "ineligible under BR-1"). `continue_task` takes no project: the
  *   meta-session's own is re-resolved under the same checks (a project removed from configuration is INVALID_REQUEST,
  *   FR-PRJ-09), and the lifecycle refuses any other project (INVALID_REQUEST).
+ * - Dynamic projects (T9.9; FR-PRJ-10, BR-32, ADR-0030): see `./project-tools.ts`. The three management tools are listed
+ *   and callable only with `manage_projects`; a dynamic project resolves only for its creator, to its in-force revision
+ *   (a revision waiting for approval is PERMISSION_BLOCKED with `details.reason = approval_required`), after the same
+ *   filesystem checks as at creation, and is frozen into the policy snapshot exactly like a configured project; the
+ *   route decision's `project` reasons name the revision.
  */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -81,6 +86,7 @@ import {
   parsePrivilegedScope,
   resolveTrustProfile,
 } from "../policy/index.js";
+import type { DynamicProjectStore } from "../projects/index.js";
 import {
   CONFIG_TO_ADAPTER_ID,
   compileCheck,
@@ -94,9 +100,12 @@ import {
 import { gitText } from "../workspace/git.js";
 import { buildEnvelope, compactEvents, type Envelope } from "./envelope.js";
 import { errorEnvelope, invalid, ToolError, toToolError } from "./errors.js";
+import { createProjectTools, dynamicListItem, type ProjectTools } from "./project-tools.js";
 import {
   inputSchema,
   MCP_ARTIFACT_KINDS,
+  PROJECT_TOOL_NAMES,
+  type ProjectToolName,
   SCHEMA_DIALECT,
   TOOL_NAMES,
   TOOL_SCHEMA_VERSION,
@@ -117,7 +126,13 @@ export interface McpServerDeps {
   readonly config: Pick<ResolvedConfig, "allowedRoots" | "mcpClients"> & {
     /** Configured projects (FR-PRJ-01, T9.2). Absent is read as none. */
     readonly projects?: readonly ResolvedProject[];
+    /** T9.9: no dynamic project may lie inside the data directory. */
+    readonly dataDir?: string;
+    /** T9.9: providers the operator disabled are outside every client's provider set. */
+    readonly providers?: ResolvedConfig["providers"];
   };
+  /** T9.9 (FR-PRJ-10): dynamic projects. Required when the client has `manage_projects`; absent means none resolve. */
+  readonly projectStore?: DynamicProjectStore;
   /** Configured MCP client this session is bound to (`serve --client <id>`). */
   readonly clientId: string;
   /** Routing candidate order (BR-4 tie-break). Defaults to registry registration order. */
@@ -142,6 +157,8 @@ interface ProjectResolution {
   /** The lower of the client's and the project's maximum profile (FR-PRJ-06). */
   readonly effectiveMax: TrustProfile;
   readonly snapshot: ProjectSnapshot;
+  /** T9.9: the in-force revision of a dynamic project; absent for a configured one. */
+  readonly revision?: number;
 }
 type Routing = { provider_preference?: string; require_provider?: boolean; minimum_capability?: string };
 
@@ -161,6 +178,39 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
   const { lifecycle, ledger } = deps;
   const scrub = createScrubber(deps.config.allowedRoots);
   const validators = compileValidators();
+
+  // T9.9: dynamic projects. A client with manage_projects and no store would silently lose its tools: refuse instead.
+  if (client.manageProjects === true && deps.projectStore === undefined) {
+    throw new Error("a client with manage_projects needs the dynamic project store");
+  }
+  /** Project ids with a delegate_task/continue_task between resolution and admission (delete_project waits for them). */
+  const admittingCount = new Map<string, number>();
+  const projectTools: ProjectTools | undefined =
+    deps.projectStore === undefined
+      ? undefined
+      : createProjectTools({
+          store: deps.projectStore,
+          clientId: deps.clientId,
+          client,
+          allowedRoots: deps.config.allowedRoots,
+          ...(deps.config.dataDir !== undefined ? { dataDir: deps.config.dataDir } : {}),
+          configuredIds: () => new Set((deps.config.projects ?? []).map((p) => p.id)),
+          disabledProviders: new Set(
+            [...(deps.config.providers ?? new Map())].filter(([, v]) => !v.enabled).map(([id]) => id),
+          ),
+          admitting: (id) => admittingCount.get(id) ?? 0,
+        });
+  const whileAdmitting = async <T>(projectId: unknown, fn: () => Promise<T>): Promise<T> => {
+    if (typeof projectId !== "string") return fn();
+    admittingCount.set(projectId, (admittingCount.get(projectId) ?? 0) + 1);
+    try {
+      return await fn();
+    } finally {
+      const n = (admittingCount.get(projectId) ?? 1) - 1;
+      if (n <= 0) admittingCount.delete(projectId);
+      else admittingCount.set(projectId, n);
+    }
+  };
 
   // ---- helpers ------------------------------------------------------------------------------------------------
 
@@ -217,9 +267,11 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
    * ref is verified whatever the profile, since the project's contexts are repositories by definition.
    */
   const resolveProject = async (projectId: string, profile: TrustProfile): Promise<ProjectResolution> => {
-    const project = (deps.config.projects ?? []).find((p) => p.id === projectId);
+    // T9.9: a dynamic project of this client (creator-only; in-force revision; limits and filesystem re-checked).
+    const dynamic = await projectTools?.resolveForRequest(projectId);
+    const project = dynamic?.project ?? (deps.config.projects ?? []).find((p) => p.id === projectId);
     if (!project) throw invalid(`unknown project ${JSON.stringify(projectId)}`, { field: "project" }); // V12
-    if (!(client.projects ?? []).includes(project.id)) {
+    if (dynamic === undefined && !(client.projects ?? []).includes(project.id)) {
       throw new ToolError("PERMISSION_BLOCKED", `project ${project.id} is not in this client's project list`, {
         project: project.id,
       });
@@ -244,6 +296,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       project,
       workspace,
       effectiveMax,
+      ...(dynamic !== undefined ? { revision: dynamic.revision } : {}),
       snapshot: {
         id: project.id,
         name: project.name,
@@ -360,13 +413,21 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     answer: EligibilityAnswer,
     provider: ProviderId,
     basis: string,
-    project?: { id: string; excluded: readonly ProviderId[] },
+    project?: { id: string; excluded: readonly ProviderId[]; revision?: number },
   ) => {
     const json = toRouteDecisionJson(answer.input, answer.decision);
     const reasons = {
       ...(JSON.parse(json.reasons_json) as object),
       selection: { provider, basis },
-      ...(project !== undefined ? { project: { id: project.id, excluded_providers: [...project.excluded] } } : {}),
+      ...(project !== undefined
+        ? {
+            project: {
+              id: project.id,
+              excluded_providers: [...project.excluded],
+              ...(project.revision !== undefined ? { revision: project.revision } : {}),
+            },
+          }
+        : {}),
     };
     return { ...json, selected_provider: provider, reasons_json: JSON.stringify(reasons) };
   };
@@ -464,7 +525,13 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         answer,
         provider,
         basis,
-        resolved ? { id: resolved.snapshot.id, excluded: narrowed.excluded } : undefined,
+        resolved
+          ? {
+              id: resolved.snapshot.id,
+              excluded: narrowed.excluded,
+              ...(resolved.revision !== undefined ? { revision: resolved.revision } : {}),
+            }
+          : undefined,
       ),
       ...(resolved ? { project: resolved.snapshot } : {}),
       ...(key !== undefined ? { idempotencyKey: key } : {}),
@@ -618,15 +685,19 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
 
   /** LLD §3 `list_projects`: the projects this client may use, without paths, remotes, identities or image data. */
   const listProjects = async () => ({
-    projects: projectsForClient(deps.config.projects ?? [], client).map((p) => ({
-      id: p.id,
-      name: p.name,
-      environment_kind: p.environment.kind,
-      contexts: p.contexts.map((c) => ({ id: c.id, kind: c.kind, primary: c.primary, push_policy: c.push.policy })),
-      ...(p.maxTrustProfile !== undefined ? { max_trust_profile: p.maxTrustProfile } : {}),
-      effective_max_profile: effectiveMaxProfile(maxTrustProfile, p),
-      ...(p.allowedProviders !== undefined ? { allowed_providers: [...p.allowedProviders] } : {}),
-    })),
+    projects: [
+      ...projectsForClient(deps.config.projects ?? [], client).map((p) => ({
+        id: p.id,
+        name: p.name,
+        environment_kind: p.environment.kind,
+        contexts: p.contexts.map((c) => ({ id: c.id, kind: c.kind, primary: c.primary, push_policy: c.push.policy })),
+        ...(p.maxTrustProfile !== undefined ? { max_trust_profile: p.maxTrustProfile } : {}),
+        effective_max_profile: effectiveMaxProfile(maxTrustProfile, p),
+        ...(p.allowedProviders !== undefined ? { allowed_providers: [...p.allowedProviders] } : {}),
+      })),
+      // T9.9: this client's dynamic projects (creator-only), marked `source: "dynamic"`.
+      ...(projectTools?.listForClient().map((e) => dynamicListItem(e, maxTrustProfile)) ?? []),
+    ],
   });
 
   const describeProvider = (answer: EligibilityAnswer, id: ProviderId, cwd: string) => {
@@ -708,6 +779,13 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
 
   const callTool = async (name: string, rawArgs: unknown): Promise<CallToolResult> => {
     try {
+      if ((PROJECT_TOOL_NAMES as readonly string[]).includes(name)) {
+        // T9.9 (FR-PRJ-10): offered only with manage_projects; otherwise answered exactly like an unknown tool, but recorded.
+        if (client.manageProjects === true && projectTools !== undefined) {
+          return ok(await projectTools.call(name as ProjectToolName, rawArgs));
+        }
+        projectTools?.recordNotOffered(name as ProjectToolName, rawArgs);
+      }
       if (!(TOOL_NAMES as readonly string[]).includes(name)) {
         throw invalid(`unknown tool ${JSON.stringify(name.slice(0, 64))}`, { tools: [...TOOL_NAMES] });
       }
@@ -720,7 +798,14 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         const lists = checkScopeLists(args.privileged_scope as never);
         if (lists) throw invalid(`invalid arguments: ${lists.field} ${lists.message}`, { field: lists.field });
       }
-      return ok(await handlers[tool](args));
+      // T9.9: delete_project waits for requests that are resolving a project but are not admitted yet.
+      const admittingProject =
+        tool === "delegate_task"
+          ? args.project
+          : tool === "continue_task"
+            ? ledger.getMetaSession(String(args.meta_session_id))?.project_id
+            : undefined;
+      return ok(await whileAdmitting(admittingProject, () => handlers[tool](args)));
     } catch (err) {
       return fail(err);
     }
@@ -730,7 +815,9 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     { name: SERVER_NAME, version: SERVER_VERSION },
     { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
   );
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: toolDescriptors() }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: toolDescriptors({ manageProjects: client.manageProjects === true && projectTools !== undefined }),
+  }));
   server.setRequestHandler(CallToolRequestSchema, async (req) => callTool(req.params.name, req.params.arguments));
 
   return {

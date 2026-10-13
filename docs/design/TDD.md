@@ -68,6 +68,8 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | `projects[]` | `{id, name, environment{kind: host or container, image_digest?, limits?}, contexts[{id, kind: repository, path, base_ref, push{policy: none or branch, remote?, branch_prefix?}, identity{name, email}}], max_trust_profile?, allowed_providers?}` (Proposed shape; [LLD §11](LLD.md#11-projects-contexts-and-environments)) | FR-PRJ-01, 02, 04, 06, FR-GIT-04, 05 |
 | `mcp_clients[].privileged_approval` | `"required"` (default) or `"not_required"`; implemented (T3.18). `not_required` admits that client's `privileged` requests to QUEUED under an approval row decided `APPROVED` by `client_policy:<client_id>` instead of waiting for `approve` ([LLD §3.1](LLD.md#31-privileged-scope-m3) "Client policy"); only the per-scope approval is lifted (owner decision 22, [ADR-0019](../adr/0019-per-client-privileged-approval.md)). Valid only with `max_trust_profile: "privileged"` (Proposed, fail closed); `doctor` warns for each such client | FR-POL-09, FR-MCP-06 |
 | `mcp_clients[].projects` | Project IDs the client may use | FR-PRJ-03, 06 |
+| `mcp_clients[].manage_projects` | Boolean, default `false`. `true` offers `create_project`, `update_project` and `delete_project` for dynamic projects created by this client only; implemented (T9.9, [ADR-0030](../adr/0030-dynamic-project-revisions-and-approval.md)) | FR-PRJ-10 |
+| `mcp_clients[].max_push_policy` | `none` (default) or `branch`: the widest push policy a dynamic project of this client may declare; refused without `manage_projects: true`; any push still waits for `projects approve` (T9.9) | FR-PRJ-10, FR-GIT-05 |
 | `git.sanitize_patterns[]` | Operator additions to the built-in attribution patterns ([LLD §12.4](LLD.md#124-message-sanitisation)). *Note (2026-10-13, Delegated, T9.3, [ADR-0025](../adr/0025-git-commit-provenance-and-sanitiser.md)):* implemented as `git.sanitize_patterns` in the schema, at most 16 strings of at most 200 characters, each validated at load against a restricted regular-expression subset (`src/git/safe-pattern.ts`); an invalid pattern aborts startup naming its index. No RE2 dependency | FR-GIT-04 |
 | `limits.global_concurrency`, `limits.per_provider_concurrency` | Defaults 4 and 1 (proposed target) | NFR-PERF-03 |
 | `timeouts.*` | Wall-clock, idle, grace (proposed targets in [LLD §8](LLD.md#8-run-supervisor-details)); only `timeouts.preflight_ttl_seconds` exists in the schema today: integer 0 to 3600, default 60 (**Assumption**), 0 disables the preflight cache; unknown keys are rejected. *Note (2026-10-13, Delegated, [decision 29](../ROADMAP.md#42-owner-decisions), T3.21):* it bounds how long a successful `probe` or `authPreflight` is reused; failures are never cached | FR-EXE-01, NFR-PERF-02 |
@@ -94,6 +96,13 @@ the filesystem rules of the project a request names at each `delegate_task` (pat
 resolves). The ledger is at schema version 2 ([ADR-0024](../adr/0024-project-id-columns-and-project-snapshot.md)). The
 tests use the fake adapter and real Git repositories in temporary directories, no provider CLI (`src/mcp/mcp.test.ts`,
 "projects (T9.2 ...)").
+
+*Note (2026-10-13, Delegated, T9.9):* `mcp_clients[].manage_projects` and `max_push_policy` are implemented (strict
+schema keys, defaults off and `none`). Dynamic projects are ledger rows (schema version 4,
+[ADR-0030](../adr/0030-dynamic-project-revisions-and-approval.md)), validated by the same schema, structural rules and
+filesystem rules as configured projects, at creation and again at every admission. Tests: `src/projects/projects.test.ts`
+(store, rules, migration), `src/mcp/project-tools.test.ts` (MCP tools against the fake adapter and real Git
+repositories) and `src/cli/projects-dynamic.test.ts` (`projects list|show|approve`); no provider CLI.
 
 ### 3.2 Error handling
 
