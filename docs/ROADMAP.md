@@ -519,19 +519,21 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
     - **Not claimed.** That any provider's cache is hit more often, or that retrieval reduces tokens, is unmeasured.
       FR-CAP-08 records cache token counts where a CLI reports them (Q-53) so the operator can check.
 41. Per-run worktrees for concurrent agents in a project (2026-10-13). **zemdregon's words, verbatim, are only this:**
-    "Is this already being tracked somewhere in the roadmap or documents? The anytime multiple agents spawn within the same project, they should be given their own work tree."
+    "Is this already being tracked somewhere in the roadmap or documents? The anytime multiple agents spawn within
+    the same project, they should be given their own work tree."
     *Everything below is Delegated (agent), not owner-approved, and Proposed.*
-    - **Audit finding.** Partly covered, not as a project rule. Each write-capable run gets a controller-created worktree
-      (FR-WS-01), and parallel tasks get separate worktrees with one write lease each (FR-WS-02); LLD §5 says parallel
-      tasks use separate meta-sessions and therefore separate worktrees, and ADR-0006 records the worktree model. Not
-      covered: a project-scoped rule that concurrent runs of one project never share a worktree (added as FR-WS-08), and
-      when a concurrent run's worktree is removed after its work is merged or abandoned. FR-WS-07 and
-      [FRD §4.4](requirements/FRD.md#44-worktree-disposition-per-terminal-state) keep worktrees until retention GC. One
-      meta-session never runs two runs at once (FR-SES-06), so the rule concerns different meta-sessions.
-    - **Requirement (Delegated).** FR-WS-08 (Must, M9): one worktree and one write lease per concurrent run of a project,
-      including runs in one `container` environment (FR-PRJ-05). FR-WS-09 (Should, Proposed, M9): removal of those
-      worktrees on merge or abandon, with the branch and diff artifact kept until retention GC. The worktree is created
-      when the run is leased, not at process spawn (LLD §5). Until FR-WS-09 is accepted, FRD §4.4 applies unchanged.
+    - **Audit finding.** Partly covered, not as a project rule. Each write-capable run gets a controller-created
+      worktree (FR-WS-01), and parallel tasks get separate worktrees with one write lease each (FR-WS-02); LLD §5 says
+      parallel tasks use separate meta-sessions and therefore separate worktrees, and ADR-0006 records the worktree
+      model. Not covered: a project-scoped rule that concurrent runs of one project never share a worktree (added as
+      FR-WS-08), and when a concurrent run's worktree is removed after its work is merged or abandoned. FR-WS-07 and
+      [FRD §4.4](requirements/FRD.md#44-worktree-disposition-per-terminal-state) keep worktrees until retention GC.
+      One meta-session never runs two runs at once (FR-SES-06), so the rule concerns different meta-sessions.
+    - **Requirement (Delegated).** FR-WS-08 (Must, M9): one worktree and one write lease per concurrent run of a
+      project, including runs in one `container` environment (FR-PRJ-05). FR-WS-09 (Should, Proposed, M9): removal of
+      those worktrees on merge or abandon, with the branch and diff artifact kept until retention GC. The worktree is
+      created when the run is leased, not at process spawn (LLD §5). Until FR-WS-09 is accepted, FRD §4.4 applies
+      unchanged.
     - **Task.** T9.11 in §6.3. **Open question:** Q-54. No ADR is needed: the worktree model is ADR-0006's and the
       boundary does not change. No numeric caps are set.
 
@@ -543,7 +545,8 @@ R-40; decision 26's as R-41; decision 27's as R-35 (mitigated); decision 28's as
 decision 29 has none beyond the stale-for-TTL window noted in it; decision 30 closes R-44; decision 32's is R-45 (not blocking);
 decision 33's is R-46 (not blocking); decision 34's is R-47 (not blocking); decision 35's are R-48 and R-49 (not
 blocking); decision 36's is R-50 (not blocking); decision 37's is R-51 (accepted by the owner for bypass); decision
-38's is R-52 (not blocking); decision 39's are R-53 and R-54 (not blocking); decision 40's are R-55 to R-58 (not blocking); decision 41 has none, and its open question is Q-54.
+38's is R-52 (not blocking); decision 39's are R-53 and R-54 (not blocking); decision 40's are R-55 to R-58 (not blocking);
+decision 41 has none, and its open question is Q-54.
 
 ### 4.3 Stated intent (confirmed constraints)
 
@@ -1349,7 +1352,7 @@ No blocker affects M1, M2 or M9.
 | Q-51 | *Delegated, open (decision 40).* After a capacity switch, should the project stay on the new provider, or return to the old one when it recovers? | **Stay on the new provider** (no ping-pong, no extra cache miss); only a listed reason moves it again (FR-RTE-07) |
 | Q-52 | *Delegated, open (decision 40).* Should affinity expire after a project has been idle? | **None** (`idle_ttl` unset); the key exists for the operator |
 | Q-53 | *Delegated, open (decision 40, M6 spike).* Which provider CLIs report cache read or creation token counts in their output? Unverified for every provider | None assumed; FR-CAP-08 records cache counts only where a CLI reports them, labelled by source |
-| Q-54 | *Delegated, open (decision 41, FR-WS-09).* How does the controller learn that a concurrent run's work was merged? It sees publication only through the publish ref (FR-GIT-05, FR-GIT-08), so a merge made outside Switchboard is invisible; should "abandoned" mean a closed meta-session, an operator command, or both? | Until accepted, FRD §4.4 and retention GC (FR-WS-07) remove worktrees as today |
+| Q-54 | *Delegated, open (decision 41, FR-WS-09).* How does the controller learn that a concurrent run's work was merged? It sees publication only through the publish ref (FR-GIT-05, FR-GIT-08), so a merge made outside Switchboard is invisible. *Abandoned* is chosen (Delegated, 2026-10-13, after Ender's "You pick"): the meta-session reaches `CLOSED` or the operator runs an explicit command. | Until accepted, FRD §4.4 and retention GC (FR-WS-07) remove worktrees as today |
 
 ## 8. Deferred and excluded work
 
