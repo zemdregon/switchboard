@@ -190,7 +190,8 @@ export type ArtifactKind =
   | "test_report"
   | "changed_files"
   | "log_summary"
-  | "handoff_view";
+  | "handoff_view"
+  | "pr_draft"; // T11.8, migration 0009
 
 export interface NewArtifactRow {
   runId: string | null;
