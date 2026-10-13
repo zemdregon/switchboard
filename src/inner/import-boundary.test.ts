@@ -18,7 +18,9 @@
  * - verification results: `src/lifecycle/verification.ts`;
  * - the push path and the sanitiser rule table: `src/git/push*.ts`, `publish-ref.ts`, `ref-guard.ts`,
  *   `credential-reach.ts`, `sanitize.ts`, `safe-pattern.ts`;
- * - redaction: `src/artifacts/redact.ts`.
+ * - redaction: `src/artifacts/redact.ts`;
+ * - usage accounting (T11.5): `src/usage/`, `src/ledger/` and `src/mcp/envelope.ts`; the capacity estimator (M6) will live
+ *   under `src/usage/` or `src/routing/` and is added here when it exists.
  * `lifecycle.ts` is protected whole because the retry decision lives inside it. A later task that must wire the inner
  * agent near dispatch (T11.11) has to split that logic out first, not relax this list silently.
  */
@@ -36,6 +38,10 @@ const PROTECTED: readonly RegExp[] = [
   /^routing\/eligibility\.ts$/,
   /^git\/(push[^/]*|publish-ref|ref-guard|credential-reach|sanitize|safe-pattern)\.ts$/,
   /^artifacts\/redact\.ts$/,
+  // T11.5 (FR-INN-15): usage and capacity code, the ledger and the envelope that reads usage never see the service.
+  /^usage\//,
+  /^ledger\//,
+  /^mcp\/envelope\.ts$/,
 ];
 const isInner = (rel: string) => rel.startsWith("inner/");
 const isProtected = (rel: string) => PROTECTED.some((re) => re.test(rel));
@@ -135,6 +141,9 @@ describe("inner-agent import boundary (FR-INN-06)", () => {
       "git/sanitize.ts",
       "adapters/failure.ts",
       "artifacts/redact.ts",
+      "usage/observations.ts",
+      "ledger/repo.ts",
+      "mcp/envelope.ts",
     ]) {
       expect(files.has(must), must).toBe(true);
       expect(isProtected(must), must).toBe(true);

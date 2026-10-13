@@ -244,7 +244,7 @@ export interface UsageObservationRow {
   harness: string;
   backing_provider: string | null;
   model: string | null;
-  source: "provider_reported" | "controller_estimated";
+  source: "provider_reported" | "controller_estimated" | "inner_agent";
   metrics_json: string;
   observed_at: string;
 }
@@ -477,6 +477,12 @@ export interface InnerCallEvents {
   artifactId?: string | null;
   /** `inner_degraded` / `inner_task_suspended` events, appended after the `inner_call` event. */
   extra?: { type: string; payload: unknown }[];
+  /**
+   * `inner_agent.backend.shares_subscription_with` (FR-INN-15, LLD §13.4 step 13). When set and a backend request was
+   * actually made (`attempts >= 1`), one `usage_observation` for this provider with `source = 'inner_agent'` is written
+   * in the same transaction as the `inner_call` row. Absent or null: nothing is written to `usage_observation`.
+   */
+  sharedSubscriptionWith?: string | null;
 }
 
 export interface Ledger {
@@ -1212,6 +1218,24 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
              @latency_ms, @tokens_in, @tokens_out, @input_bytes, @output_bytes, @input_sha256, @run_id, @meta_session_id,
              @created_at)`,
         ).run(row);
+        if (events?.sharedSubscriptionWith && row.attempts >= 1) {
+          const metrics: Record<string, number> = {};
+          if (row.tokens_in !== null) metrics.input_tokens = row.tokens_in;
+          if (row.tokens_out !== null) metrics.output_tokens = row.tokens_out;
+          db.prepare(
+            `INSERT INTO usage_observation (id, run_id, provider, harness, backing_provider, model, source, metrics_json,
+                                            observed_at)
+             VALUES (?, ?, ?, ?, NULL, ?, 'inner_agent', ?, ?)`,
+          ).run(
+            ids.id("use"),
+            row.run_id,
+            events.sharedSubscriptionWith,
+            events.sharedSubscriptionWith,
+            row.model_id,
+            JSON.stringify(metrics),
+            when,
+          );
+        }
         if (row.run_id !== null) {
           insertEvent(
             row.run_id,
