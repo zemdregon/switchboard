@@ -88,6 +88,18 @@ export interface PushView {
 }
 
 /**
+ * T4.6 (FR-ADP-10): one provider-reported `usage_observation` row as `runs show` presents it, with the harness and the
+ * backing provider side by side. Metrics are the provider's figures as stored; no estimate is ever listed.
+ */
+export interface UsageView {
+  harness: string;
+  backing_provider: string | null;
+  model: string | null;
+  observed_at: string;
+  metrics: Record<string, number | string | null>;
+}
+
+/**
  * The approval covering a `privileged` run (T3.3, LLD §3.1 "What is shown where"): operator CLI only, so it shows what
  * the MCP envelope never does: the full scope, `bypass`, the scope hash, the decision and every run it covers.
  */
@@ -148,7 +160,7 @@ export function showRun(
   io: CliIo,
   argv: readonly string[],
   runId: string,
-): { run: RunDetail; events: RunEventView[]; approval?: ApprovalView } | undefined {
+): { run: RunDetail; events: RunEventView[]; approval?: ApprovalView; usage?: UsageView[] } | undefined {
   const db = openReadOnly(dataDirFor(io, argv));
   if (!db) return undefined;
   try {
@@ -166,6 +178,7 @@ export function showRun(
       >[]
     ).map((e) => ({ seq: e.seq, ts: e.ts, type: e.type, payload: JSON.parse(e.payload_json) as unknown }));
     const approval = row.trust_profile === "privileged" ? approvalView(db, runId) : undefined;
+    const usage = usageViews(db, runId);
     return {
       run: {
         ...row,
@@ -177,10 +190,35 @@ export function showRun(
       },
       events,
       ...(approval ? { approval } : {}),
+      ...(usage.length > 0 ? { usage } : {}),
     };
   } finally {
     db.close();
   }
+}
+
+/** T4.6: the run's provider-reported usage rows (harness, backing provider, model, metrics); none when none exist. */
+function usageViews(db: Database.Database, runId: string): UsageView[] {
+  if (!hasTable(db, "usage_observation")) return [];
+  const rows = db
+    .prepare(
+      `SELECT harness, backing_provider, model, observed_at, metrics_json FROM usage_observation
+       WHERE run_id = ? AND source = 'provider_reported' ORDER BY observed_at, id`,
+    )
+    .all(runId) as {
+    harness: string;
+    backing_provider: string | null;
+    model: string | null;
+    observed_at: string;
+    metrics_json: string;
+  }[];
+  return rows.map((r) => ({
+    harness: r.harness,
+    backing_provider: r.backing_provider,
+    model: r.model,
+    observed_at: r.observed_at,
+    metrics: JSON.parse(r.metrics_json) as UsageView["metrics"],
+  }));
 }
 
 /** T9.7: the newest `git_finalize_commit` event as `{ finalize_commit }`, or nothing. Codes and SHAs only. */
@@ -466,7 +504,12 @@ export function renderRunList(runs: readonly RunSummary[]): string {
   return `${[fmt(head), ...rows.map(fmt)].join("\n")}\n`;
 }
 
-export function renderRun(d: { run: RunDetail; events: RunEventView[]; approval?: ApprovalView }): string {
+export function renderRun(d: {
+  run: RunDetail;
+  events: RunEventView[];
+  approval?: ApprovalView;
+  usage?: UsageView[];
+}): string {
   const r = d.run;
   const lines = [
     `Run ${r.id}`,
@@ -511,6 +554,14 @@ export function renderRun(d: { run: RunDetail; events: RunEventView[]; approval?
     for (const p of r.pushes) {
       lines.push(
         `  ${p.id}  ${p.outcome}${p.reason ? ` (${p.reason})` : ""}  ${p.remote || "-"} ${p.ref || "-"}  head ${p.head_sha || "-"}  by ${p.requested_by}  ${p.created_at}`,
+      );
+    }
+  }
+  if (d.usage && d.usage.length > 0) {
+    lines.push("", "Usage (provider-reported, FR-ADP-10):");
+    for (const u of d.usage) {
+      lines.push(
+        `  harness ${u.harness}  backing provider ${u.backing_provider ?? "-"}  model ${u.model ?? "-"}  ${u.observed_at}  ${JSON.stringify(u.metrics)}`,
       );
     }
   }

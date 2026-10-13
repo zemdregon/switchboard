@@ -71,6 +71,12 @@ if (argv.includes("--version")) {
       emit({ type: "future_event_kind" });
       emit({ type: "result", ok: true, summary: "completed" });
       break;
+    case "fronted":
+      // T4.6: a harness fronting another vendor reports the backing provider and model on the session event.
+      emit({ type: "session", session_id: sessionId, model: "m-a", backing_provider: "backing-x" });
+      emit({ type: "usage", input_tokens: 7, output_tokens: 2 });
+      emit({ type: "result", ok: true, summary: "completed" });
+      break;
     case "task_failure":
       begin();
       emit({ type: "error", category: "tool", message: "command failed" });

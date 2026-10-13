@@ -56,6 +56,8 @@ export type FakeScenario =
   | "git_attempts"
   /** Benign: reports the names (not values) of its environment variables (T3.8, FR-EXE-07). */
   | "env_report"
+  /** T4.6 (FR-ADP-10): reports placeholder `backing_provider` and model on the session event, then usage. */
+  | "fronted"
   /**
    * T9.7 (FR-GIT-09): plays an agent without a tool channel that edits files and ends with a structured summary. The
    * objective is a JSON plan `{"files": {"<rel path>": "<content>" | null}, "summary": "<text>" | null, "ok": true}`
@@ -207,7 +209,15 @@ export class FakeAdapter implements ProviderAdapter {
         if (id === undefined) break;
         state.nativeSessionId = id;
         const model = str(e.model);
-        return [{ kind: "session_bound", nativeSessionId: id, ...(model ? { model } : {}) }];
+        const backingProvider = str(e.backing_provider);
+        return [
+          {
+            kind: "session_bound",
+            nativeSessionId: id,
+            ...(model ? { model } : {}),
+            ...(backingProvider ? { backingProvider } : {}),
+          },
+        ];
       }
       case "tool": {
         const tool = str(e.tool);
