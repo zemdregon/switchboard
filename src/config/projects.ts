@@ -8,6 +8,7 @@
  */
 
 import { isBranchPrefix, isRemoteName } from "../git/push-names.js";
+import { mostRestrictiveInnerSetting, type ProjectInnerSetting } from "./inner-agent.js";
 import type {
   ContextConfig,
   ContextKind,
@@ -35,6 +36,8 @@ export interface ResolvedContext {
   readonly sign: boolean;
   /** T9.7 (FR-GIT-09, BR-30): finalize-only opt-in; default false. */
   readonly finalizeCommit: boolean;
+  /** T11.3 (LLD §13.1): present only when the context sets `inner_agent`; absent reads as `inherit`. */
+  readonly innerAgent?: ProjectInnerSetting;
 }
 
 export interface ResolvedProject {
@@ -48,6 +51,8 @@ export interface ResolvedProject {
   /** Shape only in T9.1; enforced from T9.2 (FR-PRJ-06). */
   readonly maxTrustProfile?: TrustProfile;
   readonly allowedProviders?: readonly ProviderId[];
+  /** T11.3 (LLD §13.1): present only when the project sets `inner_agent`; absent reads as `inherit`. */
+  readonly innerAgent?: ProjectInnerSetting;
   readonly contexts: readonly ResolvedContext[];
 }
 
@@ -150,6 +155,7 @@ export function resolveProjects(cfg: SwitchboardConfig): ResolvedProject[] {
       },
       ...(p.max_trust_profile !== undefined ? { maxTrustProfile: p.max_trust_profile } : {}),
       ...(p.allowed_providers !== undefined ? { allowedProviders: [...p.allowed_providers] } : {}),
+      ...(p.inner_agent !== undefined ? { innerAgent: p.inner_agent } : {}),
       contexts: p.contexts.map((c) => {
         const primary = isPrimaryContext(p, c);
         return {
@@ -167,6 +173,7 @@ export function resolveProjects(cfg: SwitchboardConfig): ResolvedProject[] {
           ...(c.identity !== undefined ? { identity: { ...c.identity } } : {}),
           sign: c.sign ?? false,
           finalizeCommit: c.finalize_commit ?? false,
+          ...(c.inner_agent !== undefined ? { innerAgent: c.inner_agent } : {}),
         };
       }),
     };
@@ -200,4 +207,18 @@ export function primaryContext(project: ResolvedProject): ResolvedContext {
   const primary = project.contexts.find((c) => c.primary);
   if (!primary) throw new Error(`project ${project.id} has no primary context`);
   return primary;
+}
+
+/**
+ * The effective inner-agent setting for a run (LLD §13.1, FR-INN-16): the most restrictive of the project's and the
+ * context's (`off` over `local_only` over `inherit`). No project (a run started by `workspace_path`) is `inherit`, and a
+ * context id that names no context of the project contributes nothing (the project's own setting still applies).
+ */
+export function effectiveInnerSetting(
+  project: Pick<ResolvedProject, "innerAgent" | "contexts"> | undefined,
+  contextId?: string,
+): ProjectInnerSetting {
+  if (project === undefined) return "inherit";
+  const context = contextId === undefined ? undefined : project.contexts.find((c) => c.id === contextId);
+  return mostRestrictiveInnerSetting(project.innerAgent, context?.innerAgent);
 }

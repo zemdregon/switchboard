@@ -598,3 +598,25 @@ describe("inner_agent (T11.1; FR-INN-01, FR-INN-03, LLD §13.1)", () => {
     expect(shared.innerAgent?.backend?.sharesSubscriptionWith).toBe("claude-code");
   });
 });
+
+describe("project and context inner_agent (T11.3; LLD §13.1, FR-INN-16)", () => {
+  const project = (over: Record<string, unknown> = {}, ctxOver: Record<string, unknown> = {}) => ({
+    id: "web-app",
+    name: "Web",
+    ...over,
+    contexts: [{ id: "main", kind: "repository", path: "/srv/web", base_ref: "main", ...ctxOver }],
+  });
+  const load = (p: unknown) => loadConfig({ configPath: write({ ...base(), projects: [p] }) });
+
+  it("accepts off, local_only and inherit; resolves them only when written; no `on` value exists", () => {
+    const c = load(project({ inner_agent: "local_only" }, { inner_agent: "off" }));
+    expect(c.projects[0]?.innerAgent).toBe("local_only");
+    expect(c.projects[0]?.contexts[0]?.innerAgent).toBe("off");
+    const plain = load(project());
+    expect(plain.projects[0]).not.toHaveProperty("innerAgent");
+    expect(plain.projects[0]?.contexts[0]).not.toHaveProperty("innerAgent");
+    expect(load(project({ inner_agent: "inherit" })).projects[0]?.innerAgent).toBe("inherit");
+    expect(() => load(project({ inner_agent: "on" }))).toThrow(/\$\.projects\[0\]\.inner_agent/);
+    expect(() => load(project({}, { inner_agent: "on" }))).toThrow(/\$\.projects\[0\]\.contexts\[0\]\.inner_agent/);
+  });
+});

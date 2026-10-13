@@ -32,7 +32,12 @@ import {
   providerGeneration,
 } from "../adapters/providers.js";
 import { MODEL_ID_PATTERN, type ModelConfig } from "../models/registry.js";
-import { type InnerAgentConfig, innerAgentSchema } from "./inner-agent.js";
+import {
+  type InnerAgentConfig,
+  innerAgentSchema,
+  PROJECT_INNER_SETTINGS,
+  type ProjectInnerSetting,
+} from "./inner-agent.js";
 
 export const TRUST_PROFILES = [
   "inspect-untrusted",
@@ -133,6 +138,8 @@ export interface ContextConfig {
    * run whose adapter cannot receive the injected tool channel gets one controller commit at FINALIZING.
    */
   finalize_commit?: boolean;
+  /** T11.3 (LLD §13.1, FR-INN-16): `off` or `local_only` restrict the inner agent for runs in this context; default `inherit`. */
+  inner_agent?: ProjectInnerSetting;
 }
 
 export interface ProjectConfig {
@@ -142,6 +149,8 @@ export interface ProjectConfig {
   /** Shape only until T9.2 (FR-PRJ-06 enforcement). */
   max_trust_profile?: TrustProfile;
   allowed_providers?: ProviderId[];
+  /** T11.3 (LLD §13.1, FR-INN-16): `off` or `local_only` restrict the inner agent for this project; default `inherit`. */
+  inner_agent?: ProjectInnerSetting;
   contexts: ContextConfig[];
 }
 
@@ -240,6 +249,7 @@ const contextSchema = {
     },
     sign: { type: "boolean" },
     finalize_commit: { type: "boolean" },
+    inner_agent: { enum: [...PROJECT_INNER_SETTINGS] },
   },
 } as const;
 
@@ -271,6 +281,7 @@ export const projectSchema = {
     },
     max_trust_profile: { enum: [...TRUST_PROFILES] },
     allowed_providers: { type: "array", uniqueItems: true, items: { enum: [...PROVIDER_IDS] } },
+    inner_agent: { enum: [...PROJECT_INNER_SETTINGS] },
     contexts: { type: "array", minItems: 1, items: contextSchema },
   },
 } as const;
