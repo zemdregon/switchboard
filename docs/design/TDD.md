@@ -134,9 +134,15 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
   command fails instead of running (verified on Git 2.43). Every `git diff` also gets `--no-textconv --no-ext-diff`,
   and `core.attributesFile` is `/dev/null`. A driver name that `-c` cannot express (one containing `=` or a newline)
   makes the call fail closed. Delegated decision: `--attr-source`/`GIT_ATTR_SOURCE` is not used, because it needs Git
-  2.40 (above the 2.30 minimum) and still reads `info/attributes`. Known gap: nested repositories (gitlinks) inside a
-  run worktree can make `status`/`add` start a child Git that uses the nested repository's own drivers (see Q-31 in
-  [ROADMAP §7.3](../ROADMAP.md#73-open-questions-for-ender-not-blocking-m2-unless-noted) and R-35). Evidence:
+  2.40 (above the 2.30 minimum) and still reads `info/attributes`.
+  Nested repositories: *Note (2026-10-13, Delegated, owner decision 27,
+  [ADR-0022](../adr/0022-nested-repositories-excluded-from-controller-git.md)):* a directory in a run worktree that
+  holds its own `.git` (directory, gitdir-pointer file or symlink) is found by `src/workspace/nested.ts` without
+  running Git and without following symlinks, and is excluded by pathspec (`:(exclude,top,literal)<path>`, plus
+  `--ignore-submodules=all` on `status`/`diff`) from `status`, `diff` and `add -A`, so Git never starts in it
+  (reproduced on Git 2.43.0; Q-31, R-35). The run does not fail; each skipped path is a non-fatal
+  `nested_repositories_skipped` warning. Consequence: files inside a nested repository are not captured in
+  checkpoints, diffs or commits. Evidence: `src/workspace/nested.test.ts`; for the drivers,
   `test/malicious/controller.test.ts` ('T3.8 repository-configured Git filter and diff drivers' and 'controller Git
   runner vs. unhardened Git, operation by operation').
 - **Agent Git boundary.** Agents get no Git write ability and no push credentials; see
