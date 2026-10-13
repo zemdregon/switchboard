@@ -10,6 +10,8 @@
 - Related: FR-GIT-01–10, FR-WS-03, FR-WS-05, FR-POL-03, FR-POL-06, FR-POL-08, FR-EXE-07, NFR-SEC-01,
   [ADR-0003](0003-no-credential-handling.md), [ADR-0004](0004-trust-profiles-no-bypass-flags.md),
   [ADR-0006](0006-worktree-checkpoints-no-blind-replay.md)
+- Extended by: [ADR-0016](0016-inner-agent.md), which allows a commit message to be drafted by the inner agent and
+  sanitised exactly as in item 3; the decision here is unchanged.
 - Supersedes in part: [ADR-0006](0006-worktree-checkpoints-no-blind-replay.md), only its clause "The controller never
   pushes to remotes". Its worktree, checkpoint and no-replay decisions stand.
 
