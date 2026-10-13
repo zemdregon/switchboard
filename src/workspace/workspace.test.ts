@@ -366,6 +366,56 @@ describe("workspace manager", () => {
     ).rejects.toMatchObject({ code: "LEASE_STALE" });
   });
 
+  it("creates worktrees for concurrent runs on one repository one at a time (T9.11)", async () => {
+    // Git takes no lock on `.git/worktrees/` during `git worktree add`; overlapping adds failed intermittently with
+    // `fatal: failed to read .git/worktrees/<id>/commondir`. A `git` shim on PATH records any overlap of two adds
+    // deterministically (each add is held open for 150 ms) and then runs the real Git.
+    const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+    const shimDir = path.join(root, "shim");
+    const marks = path.join(root, "marks");
+    mkdirSync(shimDir);
+    mkdirSync(marks);
+    const q = (p: string) => `'${p.replaceAll("'", "'\\''")}'`;
+    writeFileSync(
+      path.join(shimDir, "git"),
+      [
+        "#!/bin/sh",
+        'case " $* " in',
+        '*" worktree add "*)',
+        `  if mkdir ${q(path.join(marks, "active"))} 2>/dev/null; then mine=1; else mine=0;`,
+        `    : > ${q(path.join(marks, "overlap"))}; fi`,
+        "  sleep 0.15",
+        `  ${q(realGit)} "$@"; status=$?`,
+        `  if [ "$mine" = 1 ]; then rmdir ${q(path.join(marks, "active"))}; fi`,
+        '  exit "$status" ;;',
+        "esac",
+        `exec ${q(realGit)} "$@"`,
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${shimDir}${path.delimiter}${savedPath ?? ""}`;
+    try {
+      const jobs = Array.from({ length: 6 }, () => {
+        const session = ledger.createMetaSession({ objective: "o", repoRoot: repo });
+        const run = newRun(session.id);
+        return mgr.prepare({
+          metaSessionId: session.id,
+          runId: run.id,
+          workspace: repo,
+          trustProfile: "edit-untrusted",
+        });
+      });
+      const results = await Promise.allSettled(jobs);
+      expect(results.filter((r) => r.status === "rejected")).toEqual([]);
+    } finally {
+      process.env.PATH = savedPath;
+    }
+    expect(existsSync(path.join(marks, "overlap"))).toBe(false);
+    expect(g(repo, "worktree", "list", "--porcelain").match(/^worktree /gm)).toHaveLength(7);
+  });
+
   it("parses name-status -z output", () => {
     expect(parseNameStatus("M\0a b.txt\0A\0n\tl.txt\0")).toEqual([
       { status: "M", path: "a b.txt" },

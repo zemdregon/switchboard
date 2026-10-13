@@ -1252,9 +1252,20 @@ that controller move as a `switchboard` `git_policy_violation` (which BR-27 then
 meta-session, for example skipping a finalize-only commit). The lifecycle now runs the ref check, the mutation
 assessment and the checkpoint of each run as one critical section per repository root (`src/lifecycle/lifecycle.ts`,
 `serialisedPerRepo`; LLD §5 and §12.5 as-built notes). Regression test: "a ref check never sees another run's
-checkpoint before its post row (no false violation)", which fails without the fix. **Not covered:** two controllers
-with different data directories on one repository (outside the one-`serve`-per-data-directory model); Claude Code and
-Codex end to end (no live run); FR-WS-09 and Q-55.
+checkpoint before its post row (no false violation)", which fails without the fix. **Second defect found and fixed
+(2026-10-13, Delegated):** concurrent `git worktree add` calls on one repository raced inside Git, which takes no lock
+on `.git/worktrees/`; one run failed at LEASED with `TOOL_FAILURE` ("workspace preparation failed: ... fatal: failed to
+read .git/worktrees/<other run>/commondir: Success", or "fatal: could not open '.git/worktrees/<run>/locked' for
+writing" when a sibling's `git worktree prune` removed the new admin directory). This was the cause of the intermittent
+`src/lifecycle/lifecycle.test.ts` failures ("isolates a controller-side failure to its run", "never holds more slots
+than the global limit"): under CPU load both failed in 3 of 3 processes of 15 repeats each before the fix and in 0 of
+6 after. Worktree repair and creation now run one at a time per repository root (`src/workspace/manager.ts`,
+`serialisedWorktreeCreate`; LLD §5 as-built note). Regression test: "creates worktrees for concurrent runs on one
+repository one at a time (T9.11)" (`src/workspace/workspace.test.ts`; a `git` shim records overlapping adds
+deterministically), which fails without the fix. **Not covered:** two controllers with different data directories on
+one repository (outside the one-`serve`-per-data-directory model); Claude Code and
+Codex end to end (no live run); FR-WS-09 and Q-55; retention GC (`git worktree prune`/`remove`) and the push path
+(`git worktree list`) also enumerate worktrees and are not in the creation queue (no failure observed; not tested).
 
 **T9.8 status (2026-10-13; Delegated): documentation closure done; M9 stays `Partial`, not `Done`.** Done: the README
 now describes projects (configured and dynamic), the three commit paths, the publish ref, the push default, signing and
