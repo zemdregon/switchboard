@@ -209,6 +209,11 @@ export interface ShimSpec {
   /** Full argv that starts the shim, ending in `tool-shim --socket <socketPath>`. argv[0] is an absolute path. */
   readonly command: readonly string[];
   readonly socketPath: string;
+  /**
+   * T9.4b (ADR-0029 item 1): the run's private channel directory (`0700`, owned by the controller's user) that holds the
+   * socket. A file an adapter asks for through {@link ChannelArgs.files} is written here by the channel service.
+   */
+  readonly dir: string;
   readonly toolNames: readonly ("commit" | "push")[];
   /** Environment the shim needs: exactly the token variable (`SWITCHBOARD_TOOL_TOKEN`). */
   readonly env: Readonly<Record<string, string>>;
@@ -218,8 +223,9 @@ export interface ShimSpec {
  * FR-GIT-02 declaration (LLD §2 "M9 additions"; T9.4). `injected`: the adapter can pass the per-run channel to its
  * provider without a permission-bypass flag (FR-POL-03), through `channelArgs`. `finalize-only`: it cannot, and the
  * controller commits at FINALIZING when the operator opts in (FR-GIT-09, T9.7). `none`: no channel is declared; `detail`
- * says why (for Claude Code and Codex: unverified provider behaviour and ROADMAP Q-40). `detail` is an addition to the
- * LLD shape so the reason is recorded with the declaration.
+ * says why (Codex: unverified provider behaviour; Claude Code: the same unless the operator sets the unsupported opt-in
+ * `providers.claude-code.git_channel`, T9.4b, ADR-0029). `detail` is an addition to the LLD shape so the reason is
+ * recorded with the declaration.
  */
 export interface GitCapabilities {
   readonly commitChannel: "injected" | "finalize-only" | "none";
@@ -229,11 +235,38 @@ export interface GitCapabilities {
    * lifecycle to the compiled invocation. Present exactly when `commitChannel` is `injected`. Must not emit a bypass
    * flag: the argv audit (FR-POL-03) runs over the result.
    */
-  channelArgs?(
-    shim: ShimSpec,
-    request: CompileRequest,
-    profile: ResolvedProfile,
-  ): Pick<Invocation, "argv" | "env"> | Ineligible;
+  channelArgs?(shim: ShimSpec, request: CompileRequest, profile: ResolvedProfile): ChannelArgs | Ineligible;
+  /**
+   * Pure. Optional per-run narrowing of an `injected` declaration (T9.4b, ADR-0033; Delegated shape): when present and
+   * false for a run, the lifecycle treats that run as `none` (no channel, no `channelArgs` call, no event, and the
+   * finalize-only commit of FR-GIT-09 applies as for an adapter without a channel). Absent means every run qualifies.
+   * Claude Code: true only for an approved `privileged` scope with `bypass` (owner decision 41).
+   */
+  offersChannel?(request: CompileRequest, profile: ResolvedProfile): boolean;
+}
+
+/** A file an adapter needs next to the socket (T9.4b): written by the channel service, never by the adapter. */
+export interface ChannelFile {
+  /** One of `CHANNEL_FILE_NAMES` (`src/git/tool-protocol.ts`); any other name refuses the channel. */
+  readonly name: string;
+  /** File contents. Must never contain the token (FR-POL-08); the token reaches the provider only through `env`. */
+  readonly contents: string;
+}
+
+/**
+ * What `channelArgs` returns: the argv and environment fragment, and optionally files the lifecycle has the channel
+ * service write (mode `0600`, exclusive create) into {@link ShimSpec.dir} before spawn (T9.4b, ADR-0029 item 1).
+ */
+export interface ChannelArgs extends Pick<Invocation, "argv" | "env"> {
+  readonly files?: readonly ChannelFile[];
+  /**
+   * Standalone flags (no value; each starts with `--` and has no `=`) the lifecycle removes from the compiled argv and
+   * `policyFlags` before it appends `argv` (T9.4b, ADR-0033; Delegated shape). A flag that is absent is a no-op. Only
+   * Claude Code's `--safe-mode` in an approved bypass run today (owner decision 41: `--safe-mode` stops the injected
+   * server from starting). The argv audits (`./audit.ts`) run over the result and refuse any omission they do not
+   * admit.
+   */
+  readonly removeFlags?: readonly string[];
 }
 
 export interface ProviderAdapter {

@@ -127,6 +127,21 @@ describe("timeouts.preflight_ttl_seconds (T3.21)", () => {
   });
 });
 
+describe("providers.claude-code.git_channel (T9.4b, ADR-0029 item 7)", () => {
+  it("defaults to off, is true only when set to true, and is refused on other providers or as a non-boolean", () => {
+    expect(loadConfig({ configPath: write(base()) }).claudeCodeGitChannel).toBe(false);
+    const withKey = (v: unknown) => ({ ...base(), providers: { "claude-code": { git_channel: v } } });
+    expect(loadConfig({ configPath: write(withKey(false)) }).claudeCodeGitChannel).toBe(false);
+    const on = loadConfig({ configPath: write(withKey(true)) });
+    expect(on.claudeCodeGitChannel).toBe(true);
+    expect(on.providers.get("claude-code")?.enabled).toBe(true); // the key does not change enablement
+    for (const v of ["true", 1, null]) expect(() => loadConfig({ configPath: write(withKey(v)) })).toThrow(ConfigError);
+    expect(() => loadConfig({ configPath: write({ ...base(), providers: { codex: { git_channel: true } } }) })).toThrow(
+      /\$\.providers\.codex\.git_channel: unknown key/,
+    );
+  });
+});
+
 describe("retention and profiles config (T3.2)", () => {
   it("defaults retention to 30 days and a 24 hour interval, and no overrides", () => {
     const c = loadConfig({ configPath: write(base()) });
