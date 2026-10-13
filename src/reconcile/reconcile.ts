@@ -319,6 +319,7 @@ class Reconciler {
         mutated: assessment.mutated,
         reasons: assessment.reasons,
         replay_eligible: assessment.replayEligible,
+        ...(fin.nestedRepositories.length > 0 ? { nested_repositories_skipped: fin.nestedRepositories } : {}),
         retry_eligible: code !== undefined && RETRYABLE.has(code) && !assessment.mutated,
         auto_retry: false,
         reconciled: true,

@@ -182,7 +182,7 @@ describe("workspace manager", () => {
   it("flags a non-mutating failure as not mutated and replay-eligible", async () => {
     const { run } = await prepared();
     const a = await mgr.assessMutation(run.id);
-    expect(a).toEqual({ mutated: false, replayEligible: true, reasons: [] });
+    expect(a).toEqual({ mutated: false, replayEligible: true, reasons: [], nestedRepositories: [] });
   });
 
   it.each([
