@@ -1109,17 +1109,127 @@ Linux host prerequisites of the sandbox (bubblewrap being installed, user namesp
 
 ### 4.6 OpenCode (M4)
 
+Spike result, 2026-10-13 (T4.50, Delegated agent work, not owner-approved; documentation only). OpenCode is not
+installed on the development host and nothing below was run: **every cell is Unverified until the operator task T4.51
+([§4.6.3](#463-operator-checklist-t451))** records it against an installed version. Sources are cited in every cell and
+were retrieved on 2026-10-13:
+
+- **[R2 Lnn]** a line of the [verified research](../research/headless-ai-coding-controller-verified-2026-10-12.md)
+  (L78, L155 to L160, L756).
+- **[D-cli]** <https://opencode.ai/docs/cli/>, **[D-perm]** <https://opencode.ai/docs/permissions/>, **[D-cfg]**
+  <https://opencode.ai/docs/config/>, **[D-mcp]** <https://opencode.ai/docs/mcp-servers/>, **[D-prov]**
+  <https://opencode.ai/docs/providers/>, **[D-acp]** <https://opencode.ai/docs/acp/>, **[D-rules]**
+  <https://opencode.ai/docs/rules/>: OpenCode's own documentation (the "v1" site; its banner announces a v2).
+- **[D-v2]** <https://opencode.ai/v2/docs/cli/commands/>: the v2 documentation, whose command surface differs (below).
+- **[T-ev]** <https://takopi.dev/reference/runners/opencode/stream-json-cheatsheet/>: a **third-party** project's
+  description of `opencode run --format json` events. OpenCode's documentation does not describe the event shapes, so
+  this is the only source for them and is not evidence about any installed version.
+- **[I-n]** OpenCode GitHub issue `anomalyco/opencode#n` (<https://github.com/anomalyco/opencode/issues/n>; used:
+  36762, 43888, 38661, 27697): a **user report**, not provider documentation. Only the search excerpts were read for
+  36762 (cited through 43888).
+
+Each matrix cell is one of: **Could compile** (a documented control exists; what is unverified is named),
+**Ineligible: `<reason>`** (reasons of [LLD §2](LLD.md#2-adapter-contract)), or **Unverified: T4.51**.
+
 | Aspect | Detail |
 | --- | --- |
-| Automation surface | `opencode run "..."`; `serve`/`attach` persistent service (transport deferred, FR-EXE-04); ACP present |
-| Structured output | Output format flags: to be verified in M4 against installed CLI |
-| Resume | `--continue`, `--session`, `--fork`; session/export commands exist |
-| Auth preflight | to be verified in M4 against installed CLI |
-| Trust profile compilation (Proposed) | Build explicit permissions first; `--auto` approves permissions not explicitly denied, so it is allowed only after explicit deny rules are in place, and then only if profile semantics permit (rule syntax: to be verified in M4) |
-| Sandbox controls | None stated in [R2]: profiles needing confinement are ineligible until verified |
-| Known risks | Multiple backing providers: record harness and backing provider/model (FR-ADP-10) so two paths to one quota pool are not counted as independent capacity |
-| Inner-agent `cli` kind (M11, Proposed) | One-shot `opencode run` as a tool-free completion backend: **flags unverified**, no controls named in [R2]; `Ineligible` until the T11.0 spike records them for an installed version ([§3.12](#312-inner-agent), FR-INN-04, Q-26) |
-| Git writes and injected tools (M4, M9) | Explicit deny rules for Git write commands before anything else; `--auto` approves whatever is not denied, so the injected tools must be explicitly allowed and Git writes explicitly denied (syntax: to be verified in M4). `--fork` and session export are not used. No sandbox [R2], so only shell-less profiles qualify for push |
+| Automation surface | `opencode run [message..]` [D-cli], "explicitly documented for programmatic use" [R2 L78]. **Chosen transport: ephemeral subprocess with `--format json` (JSONL)**; see "Transport decision" below. `serve`/`attach`/`run --attach` stay deferred (FR-EXE-04); `opencode acp` exists [D-cli, D-acp] and is not used |
+| Structured output | `--format`: "default (formatted) or json (raw JSON events)" [D-cli]; v2 documents `--format json` as "newline-delimited JSON for scripts" [D-v2]. Events, one JSON object per line, [T-ev] only: `step_start`, `tool_use` (emitted when a tool finishes), `text` (whole message text in `part.text`), `step_finish` (`part.reason` `stop` or `tool-calls` "when present"; `part.cost`; `part.tokens`), `error` (`error.name`, `error.data.message`); every event carries `sessionID` (`ses_...`) and `timestamp`. Unknown event types are tolerated and logged, never success. Shapes on an installed version: Unverified: T4.51 |
+| Success rule (Proposed) | Exit code `0` is not success: two user reports describe `--format json` runs that exit 0 with no final `text` event after a tool step ([I-38661] with `--attach`, [I-27697] on one version and provider). Success needs a `step_finish` with `reason` `stop` after at least one `text` event, and the controller's verification (FR-ADP-04). An `error` event is a failure; its mapping to the [LLD §4](LLD.md#4-failure-taxonomy) taxonomy: Unverified: T4.51 |
+| Resume | `--continue`/`-c` "Continue the last session", `--session`/`-s` "Session ID to continue" [D-cli]. Proposed: `--session <id>` with the id taken from `sessionID` of the first event only (never `--continue`, which depends on shared "last session" state). `--fork` and `export`/`import` unused. Whether `--session` resumes in a new process in the same directory: Unverified: T4.51 |
+| Auth preflight | Credentials are stored in `~/.local/share/opencode/auth.json` and "any keys defined in your environments or a `.env` file in your project" are also loaded [D-cli]; `opencode auth list` "lists all the authenticated providers as stored in the credentials file" [D-cli] (v2: `--format json` [D-v2]). No status command with a documented exit code. Proposed: `UNKNOWN` (fail closed, the Q-10 pattern) until T4.51 records the `auth list` exit codes logged in and logged out; the adapter never reads `auth.json`, `mcp-auth.json` or `.env`, and a missing login yields `AUTH_REQUIRED` naming `opencode auth login` (never run by Switchboard). Whether `auth list` shows providers authenticated only through environment variables: Unverified: T4.51 |
+| Trust profile compilation (Proposed) | Permissions only, supplied per run as inline config (`OPENCODE_PERMISSION` or `OPENCODE_CONFIG_CONTENT` [D-cli]), with **every permission key set to `allow` or `deny`, never `ask`**: defaults are permissive ("most permissions default to `allow`", `external_directory` and `doom_loop` default to `ask`) [D-perm], and a headless run whose permission resolves to `ask` is reported to hang with no timeout ([I-36762], via [I-43888]). `--auto` is not emitted ([§4.6.1](#461-opencode-native-controls-per-profile-and-platform-t450)) |
+| Sandbox controls | **None documented**: no sandbox page exists on the documentation site (HTTP 404 for `/docs/sandbox/`), [R2] names none, and the only sandbox mention found is a third-party plugin on the ecosystem page. Permission rules are tool-level checks, not OS confinement, so profiles needing confinement are `Ineligible: CAPABILITY_MISSING`; only shell-less profiles qualify |
+| Repository config | Merged, not replaced; later sources win only on conflicting keys: remote `.well-known`, global, `OPENCODE_CONFIG`, **project `opencode.json`**, `.opencode` directories, **`OPENCODE_CONFIG_CONTENT`**, managed files, MDM [D-cfg]. So inline config cannot remove what a repository adds (`mcp`, `plugin`, `instructions`, agents). `CLAUDE.md` is read as a fallback when there is no `AGENTS.md`, switchable off with `OPENCODE_DISABLE_CLAUDE_CODE` [D-rules, D-cli]; `--pure` "run without external plugins" [D-cli]. A documented way to ignore project config: none found; Unverified: T4.51 |
+| Known risks | Multiple backing providers: record harness and backing provider/model (FR-ADP-10), not counting two paths to one quota pool as independent capacity. v1 and v2 documentation differ (`auth list --format json`, `run --standalone`, `auth switch` appear only in [D-v2]), so the version gate (ADR-0009) must pin the major version; the manifest range admits no version until T4.58. `autoupdate` is on by default [D-cfg]: `OPENCODE_DISABLE_AUTOUPDATE` exists [D-cli]. Snapshots "use an internal git repository" and are on by default [D-cfg]: whether it touches the worktree's Git directory: Unverified: T4.51 |
+| Inner-agent `cli` kind (M11, Proposed) | T11.0 candidate, **not yet verified**: a one-shot `opencode run --format json --model <provider/model> --dir <empty directory>` with every permission `deny`, `--pure`, `OPENCODE_DISABLE_CLAUDE_CODE`, `OPENCODE_DISABLE_AUTOUPDATE`, no `--auto` [D-cli, D-perm]. No documented flag removes tools from the model's list, and whether a deny-all permission set stops tool calls or only refuses them, and whether global config and `AGENTS.md` still load, are Unverified: T4.51 (checklist items 4 and 12). `cli` stays `Ineligible` until it is recorded for an installed version ([§3.12](#312-inner-agent), FR-INN-04, Q-26) |
+| Git writes and injected tools (M4, M9) | Rules are `bash` patterns with wildcards, "last matching rule wins", for example `"git commit *": "deny"` and `"git push *": "deny"` [D-perm]. Pattern completeness is not shown (other `git` spellings, `git -C`, shell wrappers, writes through other tools): `gitWriteControl` `none-documented` until T4.51 shows denial holds, then `provider-deny-rules` (Proposed, fail closed). `commitChannel` `finalize-only`. A per-run MCP server is a config entry (`mcp`, `type` `local` with a `command` array, or `remote`) [D-mcp] that can be sent inline; no `--approve-mcps`-style flag is named, but whether injected MCP tools need an `allow` rule and whether that works headless: Unverified: T4.51 (R-18, R-50). `--fork` and session export are not used. No sandbox, so only shell-less profiles qualify for push |
+
+**Transport decision (T4.50, Proposed).** `opencode run --format json` as an ephemeral subprocess, the same JSONL path
+as the other adapters (FR-ADP-08). Reasons: it is the documented programmatic surface [R2 L78, D-cli]; its events carry
+the session id, tool results and usage that the adapter needs ([T-ev]); and ACP would need the unwritten ACP client
+(T4.7) while the research gives no reason `run` falls short. ACP (`opencode acp`, nd-JSON over stdio [D-cli, D-acp]) is
+the fallback if T4.51 shows that `run` cannot be made to resolve every permission without `ask`, cannot report session
+ids or usage, or drops final text (the cases above); the spike has no evidence for that yet. `serve`, `web`, `attach`
+and `run --attach` are deferred (FR-EXE-04, ROADMAP §8); one user report says `run --attach` exits 0 after the first
+tool step and drops later events ([I-38661]).
+
+#### 4.6.1 OpenCode native controls per profile and platform (T4.50)
+
+Platform: Linux is the only evaluated platform (NFR-PORT-02, ROADMAP A-2); macOS and Windows are not evaluated. No
+adapter exists, so "Today" is `Ineligible: CAPABILITY_MISSING` for every profile until T4.52. Every cell below is
+**Unverified: T4.51** as to behaviour on an installed version; the entry before it is what the documentation supports.
+
+| Dimension | `inspect-untrusted` | `edit-untrusted` | `test-sandboxed` | `trusted-development` | `privileged` |
+| --- | --- | --- | --- | --- | --- |
+| File access | Could compile: `edit` `deny` for all patterns, `read` `allow` with the default `.env` denials kept, `external_directory` `deny` [D-perm]. Unverified: T4.51 | Could compile: `edit` `deny` with `allow` only for worktree patterns, last match wins [D-perm]; reads of paths outside the worktree and `bash` writes are not confined. Unverified: T4.51 | Ineligible: `CAPABILITY_MISSING` (no OS confinement for build commands). Unverified: T4.51 | Could compile with shell `broad` only; `edit` `allow`. Unverified: T4.51 | Could compile: `edit` follows `files.access`. Unverified: T4.51 |
+| Shell | Could compile: `bash` `deny` [D-perm]; owner decision 10 requires no shell here. Unverified: T4.51 | Could compile: `bash` `deny`; a non-empty allowlist as `bash` patterns is Ineligible (patterns are not a confinement). Unverified: T4.51 | Ineligible: `CAPABILITY_MISSING` (no sandbox for build and test commands) | `broad`: Could compile, unconfined (no sandbox); `allowlist`: Could compile as `bash` patterns, `"*": "deny"` first. Unverified: T4.51 | `broad`: Could compile; `none`: `bash` `deny`; `allowlist`: patterns. Unverified: T4.51 |
+| Network | `webfetch` and `websearch` `deny` [D-perm]; shell absent, so no other egress by the agent; the model API itself is outside the agent. Unverified: T4.51 | As `inspect-untrusted` | `off` Could compile as `edit-untrusted` (no shell); `allowlist`: Ineligible: `CAPABILITY_MISSING`. Unverified: T4.51 | `webfetch` patterns are URL rules [D-perm] but `bash` can reach any host: `off` is Ineligible with a shell; no switch documented | `on`: Could compile (`webfetch` `allow`); `off` and `allowlist` with a shell: Ineligible: `CAPABILITY_MISSING` |
+| Repository config | `disabled`: Unknown whether achievable (merge model [D-cfg]; `--pure`, `OPENCODE_DISABLE_CLAUDE_CODE`). Unverified: T4.51 | As `inspect-untrusted` | As `inspect-untrusted` | `approved-only` and `allowlisted`: Ineligible: `CAPABILITY_MISSING` (no per-source allowlist documented) | `enabled`: Could compile (nothing suppressed); `disabled`: as `inspect-untrusted`. Unverified: T4.51 |
+| Native sandbox | Ineligible: `CAPABILITY_MISSING` (none documented) | Ineligible: `CAPABILITY_MISSING` | Ineligible: `CAPABILITY_MISSING` | Ineligible: `CAPABILITY_MISSING` | Ineligible: `CAPABILITY_MISSING` for any scope that needs confinement |
+| Approval behaviour | No `ask` outcomes emitted (every key `allow`/`deny`). What a `deny` looks like in the event stream: Unverified: T4.51 | As `inspect-untrusted` | As `inspect-untrusted` | As `inspect-untrusted` | As `inspect-untrusted` |
+| Bypass flag availability | `--auto` never emitted (FR-POL-03). Unverified: T4.51 | Never emitted | Never emitted | Never emitted | `--auto` is the only bypass-class flag documented; `bypass: true` compiles only by owner decision 46 and needs a documented meaning: see below. Unverified: T4.51 |
+| Git-write denial | `bash` `deny` covers it (no shell). Unverified: T4.51 | As `inspect-untrusted` | n/a (Ineligible) | `git commit *`, `git push *` and more `deny` after the allowlist; completeness Unverified: T4.51; declared `none-documented` until then | Kept in bypass runs (owner decision 22); relies on FR-GIT-03 and FR-GIT-06 where denial is not shown (decision 46) |
+
+**`--auto` (Proposed, fail closed: bypass-class).** Documented: "Auto-approve permissions that are not explicitly
+denied"; explicit `deny` rules are still enforced; it "only changes requests that would otherwise ask" [D-cli, D-perm].
+Because the defaults are already permissive, `--auto` mostly turns the remaining `ask` outcomes (`external_directory`,
+`doom_loop`, any rule set to `ask`) into approvals. Switchboard does not need it: it sets every key to `allow` or `deny`
+itself. It is treated as bypass-class (add `--auto` to the argv audit, T4.1) until T4.51 shows that the deny rules are
+complete; it is emitted only in an approved `privileged` scope that sets bypass (ADR-0017). Also bypass-class
+("or equivalents", FR-POL-03): an inline permission of `"allow"` as a whole (`"permission": "allow"`) or `"*": "allow"`
+[D-perm]. How the `privileged` cell compiles for `bypass: true`: owner decision 46 lets it compile on `host` once the
+flag is documented, whether or not Git-write denial is shown to hold.
+
+**Backing provider, model reporting, model listing and usage.**
+
+| Item | Detail |
+| --- | --- |
+| Model selection | `--model`/`-m` "in the form of provider/model" [D-cli]; the operator configures the model, no name is stored in source (T4.5) |
+| Model listing | `opencode models [provider]` prints `provider/model` lines; `--refresh` refreshes from models.dev; `--verbose` adds metadata such as costs [D-cli]. Output stability and exit code: Unverified: T4.51. `OPENCODE_DISABLE_MODELS_FETCH` exists [D-cli] |
+| Backing provider | The part of `--model` before the slash; the providers are those of Models.dev [D-cli, D-prov]. Whether run events report the provider and model actually used: not in [T-ev]; Unverified: T4.51 (the request value is the fallback, Assumption) |
+| Usage | `step_finish`: `part.cost` (USD) and `part.tokens` `input`, `output`, `reasoning`, `cache.read`, `cache.write` [T-ev]; one step per event, so a run total is the sum with duplicates removed by part id (Proposed). `opencode stats` aggregates tokens and cost [D-cli] and is not used. Whether remaining quota or limits are reported: nothing found, so no capacity claim (FR-CAP-01); Unverified: T4.51 |
+
+#### 4.6.2 Inventory and decisions for later tasks (T4.50)
+
+- **Bypass-class list for T4.1:** `--auto`; inline permission `"allow"` as a whole or `"*": "allow"`. `--share` and
+  `--attach` are not bypass-class but are never emitted (session data leaves the host; shared server).
+- **Environment (Proposed):** allowlisted environment as for the other adapters; set `OPENCODE_DISABLE_AUTOUPDATE=1`,
+  `OPENCODE_DISABLE_CLAUDE_CODE=1` and `OPENCODE_PERMISSION` (or `OPENCODE_CONFIG_CONTENT`) per run [D-cli]; provider
+  keys are never copied by Switchboard.
+- **Never read:** `~/.local/share/opencode/auth.json` and `mcp-auth.json` [D-cli, D-mcp], project `.env`.
+- **Open spike questions go to the checklist below;** no adapter code may assume a flag from this section that checklist
+  items 1 to 14 have not confirmed.
+
+#### 4.6.3 Operator checklist (T4.51)
+
+Operator-only (an installed OpenCode with the operator's native login; no agent runs this). Use a disposable
+repository with no secrets and a scratch copy of `$HOME` where possible. Every capture is scrubbed before it is written
+into a dated note under `docs/research/` (as `live-checks-2026-10-13.md`): no API key, token, `auth.json` content,
+account identifier, email, session id of a real project or private prompt text; replace them with `<redacted>`.
+Never run `opencode auth login`, `opencode auth list` output containing account names, or any command with `--auto`
+or `--share` (except item 6, which is the one allowed bypass-class check and runs only in the disposable repository).
+Record the version first; all results are valid for that version only (ADR-0009).
+
+| # | Command (run in the disposable repository) | Capture, scrubbed | Maps to |
+| --- | --- | --- | --- |
+| 1 | `opencode --version`; `opencode run --help`; `opencode auth --help`; `opencode models --help` | Full text | Version gate; whether the v1 flags in this section exist (`--format`, `--session`, `--continue`, `--auto`, `--pure`, `--dir`, `--model`) or the v2 ones (`--standalone`) |
+| 2 | `opencode auth list`, once logged in and once with `HOME` and `XDG_DATA_HOME` pointing at an empty scratch directory; then once with only a provider key in the environment | Exit code and output shape of each (names of providers only) | Auth preflight cell; exit-code mapping for `OK`, `AUTH_REQUIRED`, `UNKNOWN` |
+| 3 | `opencode models` and `opencode models <provider>`; add `--verbose` once | Exit code, first 5 lines, line format | Model listing cell (T4.5); `modelsListed` |
+| 4 | `opencode run --format json --model <provider/model> "Reply with the single word ok"` with all permissions `deny` via `OPENCODE_PERMISSION='{"*":"deny"}'` | The full JSONL stream, exit code, stderr | Event shapes, success rule, T11.0 (does a deny-all run still list tools; do global config and `AGENTS.md` load: run once from an empty directory with `HOME` set to a scratch directory, once from the repository); whether run events name the provider and model used |
+| 5 | A prompt that makes the agent read one repository file, with `read` `allow` and the rest `deny` | JSONL stream (`tool_use`, `step_finish` with `reason`); the `step_finish` `tokens` and `cost` | Fixtures; usage cell; sum-and-dedupe rule |
+| 6 | The same prompt as 5 but asking for `bash` with `bash` `ask`, with no `--auto`, under `timeout 60`; then with `--auto` once | Exit code, whether it hangs, output; with `--auto` the stream | `ask` hang ([I-36762]); what `--auto` approves; bypass-class decision; need for a controller timeout |
+| 7 | A prompt asking to run `git commit`, `git -C . commit`, `env git commit`, `sh -c 'git commit'` and `git push` with `bash` `allow` for `*` followed by `deny` for `git commit *` and `git push *` (last match wins), in a repository with a local bare remote | For each: allowed or denied, repository state before and after, stream | Git-write deny rules; `gitWriteControl` value; completeness of the patterns |
+| 8 | The same with the deny rules before the `"*": "allow"` entry (wrong order) | Whether the commit happens | Confirms "last matching rule wins" ordering for the compiler |
+| 9 | Run item 4 with `OPENCODE_CONFIG_CONTENT` carrying an `mcp` entry (`type` `local`, `command` of a harmless stdio test server) and the matching tool allowed, then denied | Stream, whether the tool was offered and called, whether the run needed anything beyond the config | Per-run MCP definition (R-18, R-50); permission key for MCP tools |
+| 10 | A repository containing its own `opencode.json` (with an `mcp` entry and an `instructions` file) and `AGENTS.md`/`CLAUDE.md`, run with and without `--pure`, `OPENCODE_DISABLE_CLAUDE_CODE=1` and inline config | Which of them loaded (from the stream and `opencode mcp list`) | Repository-config cell; FR-POL-04 |
+| 11 | A prompt asking the agent to read a file outside the repository and write one outside it, with `external_directory` `deny`, and with `bash` `allow` | Allowed or denied per path; `git status` of the repository; the contents of `.git` before and after a run (snapshots) | Sandbox cell (confirms none); file-access cells; snapshot effect on the Git directory |
+| 12 | T11.0: from an empty directory, `opencode run --format json --pure --dir <empty> --model <provider/model>` with every permission `deny` and `OPENCODE_DISABLE_CLAUDE_CODE=1`, asking for a one-sentence answer and then for a tool-requiring task | Whether any tool call is attempted and refused; stream; exit code | T11.0 result; `cli` kind `Ineligible` or eligible with the verified flags (T11.13) |
+| 13 | Resume: item 4 once, then `opencode run --format json --session <sessionID from item 4> "What did I ask?"`; also `--continue` while a second session exists | Streams, whether the second run sees the first, ids (scrubbed) | Resume cell; the "never `--continue`" rule |
+| 14 | A provoked failure: an invalid model name; a missing login (scratch `HOME`); a rate limit if one can be reached safely | Streams and exit codes | `classifyFailure` mapping; success rule |
+
+Done when each row's result, with the OpenCode version and date, replaces its `Unverified: T4.51` cell or is recorded
+as not possible (then the cell becomes `Ineligible` with that reason).
 
 ### 4.7 Kimi Code (M4, blocked by B-1)
 
