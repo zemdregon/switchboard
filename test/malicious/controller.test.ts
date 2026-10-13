@@ -11,7 +11,7 @@
  * Every detector has a positive control in "positive controls" below that plants what it looks for and shows it fires.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -33,6 +33,7 @@ import { createIdGenerator } from "../../src/ids/index.js";
 import { createLedger, type Ledger, openLedger, type RunRecord, type TrustProfile } from "../../src/ledger/index.js";
 import { RunLifecycle } from "../../src/lifecycle/index.js";
 import { createSwitchboardServer, type SwitchboardMcpServer } from "../../src/mcp/index.js";
+import { driverOverrides, GitError, git, gitText } from "../../src/workspace/git.js";
 import { WorkspaceManager } from "../../src/workspace/index.js";
 import {
   envLeaks,
@@ -48,6 +49,7 @@ import {
 import {
   buildMaliciousFixture,
   configureFilterDrivers,
+  FILTER_DRIVER,
   type MaliciousFixture,
   plainGit,
   type TokenRole,
@@ -467,20 +469,42 @@ describe("T3.8 repository-configured Git filter and diff drivers", () => {
     await h.close();
   });
 
-  // KNOWN CONTROLLER WEAKNESS (found by T3.8; see the T3.8 report). src/workspace/git.ts disables hooks and fsmonitor
-  // with `-c core.hooksPath=/dev/null -c core.fsmonitor=false`, but filter drivers (`filter.<name>.clean/smudge/process`)
-  // and diff drivers (`diff.<name>.textconv`) defined in the operator checkout's local config and selected by a
-  // committed `.gitattributes` still execute: smudge on `git worktree add`, clean on `git add -A`, textconv on the
-  // `git diff` that builds the diff artifact (reproduced with Git 2.43). That is code from the repository's own
-  // configuration running inside controller Git operations, the class TDD §3.4 "Repository hooks" exists to prevent.
-  // The assertion is the invariant; it is marked `it.fails` only because the fix lives in src/workspace/git.ts, outside
-  // this task's files. Remove `.fails` once controller Git neutralises repository-configured filter and diff drivers.
-  it.fails(
-    "controller Git never runs filter (clean/smudge) or textconv drivers from repository configuration",
+  // Found by T3.8 (reproduced with Git 2.43): filter drivers (`filter.<name>.clean/smudge/process`) and diff drivers
+  // (`diff.<name>.textconv/command`) defined in the operator checkout's local config and selected by a committed
+  // `.gitattributes` used to execute inside controller Git operations: smudge on `git worktree add`, clean on
+  // `git add -A`, textconv on the `git diff` that builds the diff artifact. src/workspace/git.ts now neutralises every
+  // such driver for every controller Git call (TDD §3.4 "Repository hooks, filters and diff drivers"). The positive
+  // controls below show each driver really runs under unhardened Git in the same fixture.
+  it(
+    "controller Git never runs filter (clean/smudge/process) or diff (textconv/external) drivers from repository configuration",
     async () => {
-      const run = await h.delegate("success");
+      const run = await h.delegate("success", touchDriverFiles);
       expect(run.envelope.status).toBe("SUCCEEDED");
       expect(readIfExists(h.fx.filterLog)).toBe("");
+      // The diff artifact carries the raw bytes (no textconv) of the files the drivers would have handled.
+      const diff = diffTexts(run).join("\n");
+      expect(diff).toContain("+changed by the run (dat)");
+      expect(diff).toContain("+changed by the run (proc)");
+      expect(diff).toContain("+new by the run (dat)");
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "nor on the failure and explicit rollback paths (add -A, diff --cached --binary, reset --hard, clean)",
+    async () => {
+      const run = await h.delegate("partial_mutation", touchDriverFiles);
+      expect(run.envelope.status).toBe("FAILED");
+      // Explicit rollback of the failed run's worktree (FR-WS-04).
+      const rb = await h.workspace.rollback(run.runId);
+      const sha = (
+        h.db.prepare("SELECT sha256 FROM artifact WHERE id = ?").get(rb.diffArtifactId) as { sha256: string }
+      ).sha256;
+      expect((await h.artifacts.get(sha)).toString("utf8")).toContain("+changed by the run (dat)");
+      expect(readIfExists(h.fx.filterLog)).toBe("");
+      const wt = run.record.worktree_path as string;
+      expect(readFileSync(path.join(wt, "payload.dat"), "utf8")).toBe("plain data\n");
+      expect(existsSync(path.join(wt, "new.dat"))).toBe(false);
     },
     TEST_TIMEOUT,
   );
@@ -495,6 +519,128 @@ describe("T3.8 repository-configured Git filter and diff drivers", () => {
     },
     TEST_TIMEOUT,
   );
+});
+
+/** Modify and add files whose attributes select the fixture's filter and diff drivers. */
+function touchDriverFiles(cwd: string): void {
+  writeFileSync(path.join(cwd, "payload.dat"), "changed by the run (dat)\n");
+  writeFileSync(path.join(cwd, "payload.proc"), "changed by the run (proc)\n");
+  writeFileSync(path.join(cwd, "new.dat"), "new by the run (dat)\n");
+  writeFileSync(path.join(cwd, "new.proc"), "new by the run (proc)\n");
+}
+
+describe("T3.8 controller Git runner vs. unhardened Git, operation by operation", () => {
+  // Each case runs the controller's runner (src/workspace/git.ts) and then, as its positive control, the same
+  // operation through plain Git in the same fixture, which must run the driver.
+  let fx: MaliciousFixture;
+  const log = () => readIfExists(fx.filterLog);
+  const clearLog = () => rmSync(fx.filterLog, { force: true });
+  const wtPath = (name: string) => path.join(fx.base, name);
+  beforeEach(() => {
+    fx = buildMaliciousFixture();
+    configureFilterDrivers(fx);
+  });
+  afterEach(() => {
+    fx.close();
+  });
+
+  it("worktree add: no smudge or process filter; unhardened Git runs both", async () => {
+    await git(["worktree", "add", "-q", "--detach", wtPath("wt-a"), fx.baseCommit], { cwd: fx.repo });
+    expect(log()).toBe("");
+    expect(readFileSync(path.join(wtPath("wt-a"), "payload.dat"), "utf8")).toBe("plain data\n");
+    expect(readFileSync(path.join(wtPath("wt-a"), "payload.proc"), "utf8")).toBe("process data\n");
+    plainGit(fx.repo, "worktree", "add", "-q", "--detach", wtPath("wt-b"), fx.baseCommit);
+    expect(log()).toMatch(/filter smudge/);
+    expect(log()).toMatch(/filter process/);
+  });
+
+  it("add -A: no clean or process filter; unhardened Git runs both", async () => {
+    await git(["worktree", "add", "-q", "--detach", wtPath("wt"), fx.baseCommit], { cwd: fx.repo });
+    touchDriverFiles(wtPath("wt"));
+    await git(["status", "--porcelain=v2", "-z", "--untracked-files=all"], { cwd: wtPath("wt") });
+    await git(["add", "-A"], { cwd: wtPath("wt") });
+    expect(log()).toBe("");
+    expect(await gitText(["show", ":payload.dat"], { cwd: wtPath("wt") })).toBe("changed by the run (dat)");
+    writeFileSync(path.join(wtPath("wt"), "payload.dat"), "changed again (dat)\n");
+    writeFileSync(path.join(wtPath("wt"), "payload.proc"), "changed again (proc)\n");
+    plainGit(wtPath("wt"), "add", "-A");
+    expect(log()).toMatch(/filter clean/);
+    expect(log()).toMatch(/filter process/);
+  });
+
+  it("diff: no textconv or external diff command; unhardened Git runs both", async () => {
+    await git(["worktree", "add", "-q", "--detach", wtPath("wt"), fx.baseCommit], { cwd: fx.repo });
+    touchDriverFiles(wtPath("wt"));
+    const wt = { cwd: wtPath("wt") };
+    expect((await git(["diff", "--quiet", fx.baseCommit], { ...wt, okCodes: [1] })).code).toBe(1);
+    await git(["add", "-A"], wt);
+    const binary = (await git(["diff", "--cached", "--binary", "--no-color", fx.baseCommit], wt)).stdout.toString();
+    expect(binary).toContain("+changed by the run (dat)");
+    await git(["diff", "--name-status", "-z", "--no-renames", "--cached", fx.baseCommit], wt);
+    expect(log()).toBe("");
+    // Positive controls: plain `git diff` runs the external diff command, and with `--no-ext-diff` the textconv.
+    plainGit(wtPath("wt"), "diff", "--cached", fx.baseCommit);
+    expect(log()).toMatch(/filter extdiff/);
+    clearLog();
+    plainGit(wtPath("wt"), "diff", "--cached", "--no-ext-diff", fx.baseCommit);
+    expect(log()).toMatch(/filter textconv/);
+  });
+
+  it("commit, reset --hard, clean, worktree remove and branch -D (finalize, rollback and GC paths) run no driver", async () => {
+    await git(["worktree", "add", "-q", "-b", "sb-run", wtPath("wt"), fx.baseCommit], { cwd: fx.repo });
+    const wt = { cwd: wtPath("wt") };
+    touchDriverFiles(wtPath("wt"));
+    await git(["add", "-A"], wt);
+    await git(["commit", "--no-verify", "--no-gpg-sign", "-q", "-m", "checkpoint"], wt);
+    touchDriverFiles(wtPath("wt"));
+    writeFileSync(path.join(wtPath("wt"), "payload.dat"), "dirty (dat)\n");
+    await git(["reset", "--hard", fx.baseCommit], wt);
+    await git(["clean", "-fd"], wt);
+    expect(readFileSync(path.join(wtPath("wt"), "payload.dat"), "utf8")).toBe("plain data\n");
+    touchDriverFiles(wtPath("wt"));
+    await git(["worktree", "remove", "--force", "--force", wtPath("wt")], { cwd: fx.repo });
+    await git(["worktree", "prune"], { cwd: fx.repo });
+    await git(["branch", "-D", "sb-run"], { cwd: fx.repo });
+    expect(log()).toBe("");
+    // Positive control: an unhardened `reset --hard` checks the files out through the smudge driver.
+    plainGit(fx.repo, "worktree", "add", "-q", "--detach", wtPath("wt2"), fx.baseCommit);
+    clearLog();
+    writeFileSync(path.join(wtPath("wt2"), "payload.dat"), "dirty (dat)\n");
+    plainGit(wtPath("wt2"), "reset", "-q", "--hard", fx.baseCommit);
+    expect(log()).toMatch(/filter smudge/);
+  });
+
+  it("drivers defined through include.path or config.worktree are neutralised too", async () => {
+    // Move the smudge driver into an included file and the clean driver into the main worktree's config.worktree.
+    const smudge = tg(fx.repo, "config", "--local", `filter.${FILTER_DRIVER}.smudge`);
+    const clean = tg(fx.repo, "config", "--local", `filter.${FILTER_DRIVER}.clean`);
+    tg(fx.repo, "config", "--local", "--unset", `filter.${FILTER_DRIVER}.smudge`);
+    tg(fx.repo, "config", "--local", "--unset", `filter.${FILTER_DRIVER}.clean`);
+    const included = path.join(fx.base, "included.gitconfig");
+    writeFileSync(included, `[filter "${FILTER_DRIVER}"]\n\tsmudge = ${smudge}\n`);
+    tg(fx.repo, "config", "--local", "include.path", included);
+    tg(fx.repo, "config", "--local", "extensions.worktreeConfig", "true");
+    tg(fx.repo, "config", "--worktree", `filter.${FILTER_DRIVER}.clean`, clean);
+
+    await git(["worktree", "add", "-q", "--detach", wtPath("wt"), fx.baseCommit], { cwd: fx.repo });
+    writeFileSync(path.join(fx.repo, "payload.dat"), "operator edit (dat)\n");
+    await git(["add", "payload.dat"], { cwd: fx.repo });
+    expect(log()).toBe("");
+    plainGit(fx.repo, "worktree", "add", "-q", "--detach", wtPath("wt2"), fx.baseCommit);
+    expect(log()).toMatch(/filter smudge/);
+    writeFileSync(path.join(fx.repo, "payload.dat"), "operator edit again (dat)\n");
+    plainGit(fx.repo, "add", "payload.dat");
+    expect(log()).toMatch(/filter clean/);
+  });
+
+  it("a driver name that `-c` cannot express makes controller Git fail closed", async () => {
+    tg(fx.repo, "config", "--local", "filter.odd=name.smudge", "/bin/false");
+    await expect(driverOverrides(fx.repo)).rejects.toBeInstanceOf(GitError);
+    await expect(git(["status", "--porcelain=v2", "-z"], { cwd: fx.repo })).rejects.toBeInstanceOf(GitError);
+    tg(fx.repo, "config", "--local", "--unset", "filter.odd=name.smudge");
+    await expect(git(["status", "--porcelain=v2", "-z"], { cwd: fx.repo })).resolves.toMatchObject({ code: 0 });
+    expect(log()).toBe("");
+  });
 });
 
 describe("T3.8 positive controls: every detector fires when its invariant is broken", () => {
@@ -549,11 +695,12 @@ describe("T3.8 positive controls: every detector fires when its invariant is bro
     TEST_TIMEOUT,
   );
 
-  it("filter detector: Git without hardening runs the configured smudge driver", () => {
+  it("filter detector: Git without hardening runs the configured smudge and process drivers", () => {
     configureFilterDrivers(h.fx);
     const scratch = path.join(h.fx.base, "scratch-wt");
     plainGit(h.fx.repo, "worktree", "add", "-q", "--detach", scratch, h.fx.baseCommit);
     expect(readIfExists(h.fx.filterLog)).toMatch(/filter smudge/);
+    expect(readIfExists(h.fx.filterLog)).toMatch(/filter process/);
   });
 
   it("agent-config detector: running the repository's .mcp.json command writes the canary log", () => {

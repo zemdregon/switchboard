@@ -37,8 +37,10 @@ const TEST_GIT_ENV = {
   GIT_COMMITTER_EMAIL: "op@example.test",
 };
 
-/** Name of the filter/diff driver the fixture can configure (see `configureFilterDrivers`). */
+/** Name of the filter (clean/smudge) and diff (textconv/command) driver the fixture can configure. */
 export const FILTER_DRIVER = "sbcanary";
+/** Name of the long-running `process` filter driver the fixture can configure (see `configureFilterDrivers`). */
+export const PROCESS_DRIVER = "sbcanaryproc";
 
 /**
  * The suite's own Git calls never run the fixture's hooks, fsmonitor or filter drivers, so any canary line is
@@ -60,6 +62,10 @@ export function tg(cwd: string, ...args: string[]): string {
       `filter.${FILTER_DRIVER}.smudge=cat`,
       "-c",
       `diff.${FILTER_DRIVER}.textconv=cat`,
+      "-c",
+      `diff.${FILTER_DRIVER}.command=`,
+      "-c",
+      `filter.${PROCESS_DRIVER}.process=`,
       ...args,
     ],
     { cwd, env: TEST_GIT_ENV, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
@@ -209,9 +215,13 @@ export function buildMaliciousFixture(): MaliciousFixture {
     writeFileSync(path.join(repo, ".githooks", name), appendLine(hookLog, `hook ${name} (core.hooksPath)`));
     chmodSync(path.join(repo, ".githooks", name), 0o755);
   }
-  // Attributes naming a filter/diff driver (inert until `configureFilterDrivers` defines the driver commands).
-  writeFileSync(path.join(repo, ".gitattributes"), `*.dat filter=${FILTER_DRIVER} diff=${FILTER_DRIVER}\n`);
+  // Attributes naming filter/diff drivers (inert until `configureFilterDrivers` defines the driver commands).
+  writeFileSync(
+    path.join(repo, ".gitattributes"),
+    `*.dat filter=${FILTER_DRIVER} diff=${FILTER_DRIVER}\n*.proc filter=${PROCESS_DRIVER}\n`,
+  );
   writeFileSync(path.join(repo, "payload.dat"), "plain data\n");
+  writeFileSync(path.join(repo, "payload.proc"), "process data\n");
   // Committed symlinks pointing outside the repository (absolute and `..`-relative).
   mkdirSync(path.join(repo, "links"));
   symlinkSync(codexAuthPath, path.join(repo, "links", "home-codex-auth"));
@@ -263,9 +273,12 @@ export function buildMaliciousFixture(): MaliciousFixture {
 }
 
 /**
- * Define the `sbcanary` filter (clean/smudge) and diff (textconv) driver commands in the operator checkout's local
- * config, as a repository setup script might. Each command passes content through unchanged and appends a line to
- * `filterLog`.
+ * Define driver commands in the operator checkout's local config, as a repository setup script might: the `sbcanary`
+ * filter (`clean`/`smudge`, marked `required`) and diff driver (`textconv`, and `command` as an external diff), and the
+ * `sbcanaryproc` long-running `process` filter. Each command appends a line naming itself to `filterLog`; clean, smudge
+ * and textconv pass content through unchanged, the external diff prints nothing, and the process filter echoes Git's
+ * handshake back instead of speaking the filter protocol, so Git reports a failed initialisation, terminates it and
+ * carries on (the driver is not `required`).
  */
 export function configureFilterDrivers(fx: MaliciousFixture): void {
   const dir = path.dirname(fx.filterLog);
@@ -277,5 +290,8 @@ export function configureFilterDrivers(fx: MaliciousFixture): void {
   };
   tg(fx.repo, "config", `filter.${FILTER_DRIVER}.clean`, script("clean", "cat"));
   tg(fx.repo, "config", `filter.${FILTER_DRIVER}.smudge`, script("smudge", "cat"));
+  tg(fx.repo, "config", `filter.${FILTER_DRIVER}.required`, "true");
   tg(fx.repo, "config", `diff.${FILTER_DRIVER}.textconv`, script("textconv", 'cat "$1"'));
+  tg(fx.repo, "config", `diff.${FILTER_DRIVER}.command`, script("extdiff", "exit 0"));
+  tg(fx.repo, "config", `filter.${PROCESS_DRIVER}.process`, script("process", "cat"));
 }
