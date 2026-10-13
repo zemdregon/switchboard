@@ -2,8 +2,8 @@
 
 - Status: Accepted (the decision); every mechanism marked Proposed is unverified
 - Date: 2026-10-13
-- Decided by: zemdregon (the product decision, 2026-10-13: Switchboard has an inner agent, a self-hosted, cheap or free model
-  of the user's choosing, for many cheap tasks such as commit and PR writing and task routing for auto mode, to lighten
+- Decided by: zemdregon (the product decision, 2026-10-13: Switchboard has an inner agent, a self-hosted, cheap or free
+  model of the user's choosing, for many cheap tasks such as commit and PR writing and task routing for auto mode, to lighten
   that load off the other models, with further tasks left to the drafter's judgement). Delegated (agent, 2026-10-13) for
   everything else: the backend kinds, which tasks are in scope, the validation, fallback and privacy rules, and the
   milestone placement. zemdregon then took the agent's recommendations on Q-23 to Q-26 (2026-10-13, owner decision
