@@ -4,6 +4,7 @@ import path from "node:path";
 import type { ErrorObject, ValidateFunction } from "ajv";
 import { Ajv } from "ajv";
 import { validateOperatorPatterns } from "../git/safe-pattern.js";
+import type { ModelConfig } from "../models/registry.js";
 import { ProfileOverrideError, validateProfileOverrides } from "../policy/profiles.js";
 import type { ProfileOverride, ProfileOverrides } from "../policy/types.js";
 import { ConfigError } from "./errors.js";
@@ -35,6 +36,8 @@ export interface ResolvedConfig {
   mcpClients: ReadonlyMap<string, ResolvedMcpClient>;
   limits: { globalConcurrency: number; perProviderConcurrency: number };
   providers: ReadonlyMap<string, { enabled: boolean; weight: number | undefined }>;
+  /** `providers.<id>.models` blocks (T4.5, FR-ADP-05, LLD §2.1), keyed by config provider id; only providers that set one. */
+  providerModels: ReadonlyMap<string, ModelConfig>;
   /** Retention (NFR-DATA-01, FR-WS-07; T3.12 consumes it). `intervalMs` is the GC pass period. */
   retention: { days: number; intervalMs: number };
   /**
@@ -313,6 +316,11 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
     // Proposed: a provider not listed is enabled with no explicit weight; listing it can disable it.
     providers: new Map(
       Object.entries(cfg.providers ?? {}).map(([id, p]) => [id, { enabled: p.enabled ?? true, weight: p.weight }]),
+    ),
+    providerModels: new Map(
+      Object.entries(cfg.providers ?? {}).flatMap(([id, p]) =>
+        p.models !== undefined ? [[id, p.models] as const] : [],
+      ),
     ),
   };
 }
