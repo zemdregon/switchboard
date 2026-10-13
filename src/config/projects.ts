@@ -33,6 +33,8 @@ export interface ResolvedContext {
   readonly push: { policy: "none" | "branch"; remote?: string; branchPrefix?: string };
   readonly identity?: { name: string; email: string };
   readonly sign: boolean;
+  /** T9.7 (FR-GIT-09, BR-30): finalize-only opt-in; default false. */
+  readonly finalizeCommit: boolean;
 }
 
 export interface ResolvedProject {
@@ -97,6 +99,14 @@ export function checkProjects(cfg: SwitchboardConfig): string[] {
       if (c.push !== undefined && c.push.policy !== "none" && c.identity === undefined) {
         errs.push(`${cat}.identity: required when push.policy is not none (LLD §11.1)`);
       }
+      // T9.7 (FR-GIT-09, BR-30): the finalize-only commit is written with the context identity into the primary,
+      // writable context, so the opt-in is refused where it could never apply (fail closed rather than silently ignored).
+      if (c.finalize_commit === true) {
+        if (c.identity === undefined) errs.push(`${cat}.identity: required when finalize_commit is true (FR-GIT-09)`);
+        if (!isPrimary || c.writable === false) {
+          errs.push(`${cat}.finalize_commit: only the primary, writable context can enable finalize_commit`);
+        }
+      }
     }
     const primaries = p.contexts.filter((c) => isPrimaryContext(p, c)).length;
     if (primaries !== 1) {
@@ -148,6 +158,7 @@ export function resolveProjects(cfg: SwitchboardConfig): ResolvedProject[] {
           },
           ...(c.identity !== undefined ? { identity: { ...c.identity } } : {}),
           sign: c.sign ?? false,
+          finalizeCommit: c.finalize_commit ?? false,
         };
       }),
     };

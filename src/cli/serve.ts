@@ -284,6 +284,7 @@ async function runDaemon(
 
   // T9.4: commit intents left by a crash (ADR-0025), then socket directories of channels a crash left open (ADR-0026).
   let gitTools: GitToolService;
+  let finalizePublisher: GitPublisher;
   try {
     const publisher = new GitPublisher({
       db,
@@ -293,6 +294,16 @@ async function runDaemon(
       ...(now ? { now } : {}),
     });
     const recovered = await publisher.recover();
+    // T9.7 (FR-GIT-09): finalize-only commits use their own publisher, which accepts only FINALIZING runs, so the tool
+    // channel's publisher keeps refusing anything but RUNNING. Same scratch directory and sanitiser patterns.
+    finalizePublisher = new GitPublisher({
+      db,
+      scratchDir: path.join(config.dataDir, "git-scratch"),
+      sanitizePatterns: config.sanitizePatterns,
+      allowedStates: ["FINALIZING"],
+      ids,
+      ...(now ? { now } : {}),
+    });
     gitTools = new GitToolService({
       db,
       dataDir: config.dataDir,
@@ -380,6 +391,7 @@ async function runDaemon(
     eligibility: { gate: gateFor(registry, fake), isEnabled: enablement(config, fake) },
     preflightCache: new PreflightCache({ ttlMs: config.preflightTtlMs }),
     gitTools,
+    finalizePublisher,
     onTransition: (n) => log.info("run transition", { run_id: n.runId, from: n.from, to: n.to, rule: n.rule }),
     ...(now ? { now } : {}),
   });
