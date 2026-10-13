@@ -71,7 +71,14 @@ const PROJECT_DEFINITION = boundedSchema(projectSchema) as Record<string, unknow
 const PROJECT_REF = { type: "string", pattern: PROJECT_ID_PATTERN } as const;
 
 /** Artifact kinds an MCP client may read; `provider_stdout`/`provider_stderr` are operator-CLI only (LLD §3). */
-export const MCP_ARTIFACT_KINDS = ["diff", "test_report", "changed_files", "log_summary", "handoff_view"] as const;
+export const MCP_ARTIFACT_KINDS = [
+  "diff",
+  "test_report",
+  "changed_files",
+  "log_summary",
+  "handoff_view",
+  "pr_draft",
+] as const;
 
 const TRUST_PROFILE = {
   type: "string",
