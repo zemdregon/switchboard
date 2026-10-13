@@ -192,7 +192,7 @@ for milestone 3 settles it (ROADMAP R-23).
 - A `privileged` request will carry a machine-readable `privileged_scope` (file access, shell commands, network hosts
   and repository configuration, plus a `bypass` setting that defaults to off) and wait for
   `switchboard approve <run_id>`. A provider bypass flag such as `--dangerously-skip-permissions` is passed only when
-  the approved scope explicitly sets `bypass` ([ADR-0016](docs/adr/0016-approved-privileged-scope-bypass.md)).
+  the approved scope explicitly sets `bypass` ([ADR-0017](docs/adr/0017-approved-privileged-scope-bypass.md)).
   Approvals are never automatic and never expire: once approved, later `continue_task` runs of the same meta-session
   reuse the approved scope without asking again, so approve only scopes you are content to leave open for that
   session. A different scope or a new task asks again.

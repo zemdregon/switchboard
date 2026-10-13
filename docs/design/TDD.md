@@ -77,6 +77,10 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | `capacity.queue_horizon` | Max wait for a known reset | FR-CAP-06 |
 | `telemetry.otlp_endpoint` | Optional export target | FR-TEL-02, NFR-PRIV-01 |
 | `log.level` | Logging threshold | §3.3 |
+| `inner_agent.enabled`, `inner_agent.backend{kind, base_url or provider, model, timeout_ms, max_concurrency, allow_remote, shares_subscription_with}` | Optional inner agent: one backend, no default backend or model, no credential field (Proposed shape; [LLD §13.1](LLD.md#131-configuration-shape)) | FR-INN-01, 03, 04, 15, 16 |
+| `inner_agent.tasks.<task>{enabled, mode?, allow_source_content?, input_budget_bytes, max_output_tokens, timeout_ms?}` | Each task off until enabled; `mode` on `commit_message` only | FR-INN-05, 10, 16 |
+| `inner_agent.breaker`, `inner_agent.suspension` | Circuit-breaker and automatic-suspension thresholds (proposed targets) | FR-INN-08, 09 |
+| `projects[].inner_agent`, `projects[].contexts[].inner_agent` | `off`, `local_only` or `inherit`; can only restrict | FR-INN-16 |
 
 ### 3.2 Error handling
 
@@ -114,7 +118,7 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
   worktree creation to narrow time-of-check/time-of-use gaps (FR-POL-10, NFR-SEC-05).
 - **No bypass flags and no global provider config.** A final argv audit in `COMP-EXE` rejects bypass flags unless the
   run is `privileged` with an approval whose scope sets `bypass` and whose scope hash matches the run's policy snapshot
-  (FR-POL-03, [LLD §3.1](LLD.md#31-privileged-scope-m3), [ADR-0016](../adr/0016-approved-privileged-scope-bypass.md);
+  (FR-POL-03, [LLD §3.1](LLD.md#31-privileged-scope-m3), [ADR-0017](../adr/0017-approved-privileged-scope-bypass.md);
   audit change in T3.17); adapters never write global provider config such as
   `~/.claude/settings.json` (FR-POL-08, [ADR-0004](../adr/0004-trust-profiles-no-bypass-flags.md)).
 - **Repository hooks, filters and diff drivers.** Controller Git operations run with repository hooks disabled and a
@@ -130,8 +134,8 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
   and `core.attributesFile` is `/dev/null`. A driver name that `-c` cannot express (one containing `=` or a newline)
   makes the call fail closed. Delegated decision: `--attr-source`/`GIT_ATTR_SOURCE` is not used, because it needs Git
   2.40 (above the 2.30 minimum) and still reads `info/attributes`. Known gap: nested repositories (gitlinks) inside a
-  run worktree can make `status`/`add` start a child Git that uses the nested repository's own drivers (see Q-26 in
-  [ROADMAP §7.3](../ROADMAP.md#73-open-questions-for-ender-not-blocking-m2-unless-noted) and R-28). Evidence:
+  run worktree can make `status`/`add` start a child Git that uses the nested repository's own drivers (see Q-31 in
+  [ROADMAP §7.3](../ROADMAP.md#73-open-questions-for-ender-not-blocking-m2-unless-noted) and R-35). Evidence:
   `test/malicious/controller.test.ts` ('T3.8 repository-configured Git filter and diff drivers' and 'controller Git
   runner vs. unhardened Git, operation by operation').
 - **Agent Git boundary.** Agents get no Git write ability and no push credentials; see
@@ -182,6 +186,7 @@ startup reconciliation applies them. Run state transitions use an optimistic ver
 | Project and environment (M9, M10) | Configuration validation (unknown context kind, path outside allowed roots), ceiling arithmetic, `host` runs through a project; container tests need a container runtime and are opt-in (skipped in CI until Q-6 is settled) | No for `host`; runtime for `container` | FR-PRJ-01..09 |
 | Live provider smoke | Opt-in only: `scripts/live-smoke.mjs` (`npm run test:live`) is skipped unless `SWITCHBOARD_LIVE_TESTS=1`; not part of `npm test`, never runs in CI (see below) | Yes | [AGENTS.md](../../AGENTS.md) |
 | Controller-overhead benchmark | `scripts/bench-perf.mjs` (`npm run bench`) times the real MCP server over the in-memory transport with the fake adapter; not part of `npm test` (see [§3.6.1](#361-controller-overhead-benchmark-t27)) | No | NFR-PERF-01, NFR-PERF-02 |
+| Inner agent (M11) | Scripted fake backend as a local HTTP server, hostile-output fixtures, planted-secret prompt capture, import-boundary test; details in [§3.12](#312-inner-agent) | No | FR-INN-01..17 |
 | Docs check | `scripts/check-docs.mjs` must pass on every change (links, anchors, ID references) | No | NFR-MAINT-02 |
 
 Principles: tests pass with no provider CLI installed or logged in; secret-pattern scan over all test outputs
@@ -387,6 +392,63 @@ choices below are Delegated, not owner-approved, and unverified until the M10 sp
 - **Cleanup.** Every container carries labels with the run and project IDs. Removal at run end, and a label sweep at
   startup before worktrees are assessed (FR-PRJ-07).
 
+### 3.12 Inner agent
+
+Implements FR-INN-01..17 and [ADR-0016](../adr/0016-inner-agent.md) for M11 (COMP-INN, TB-10); schemas, pipeline and task
+contracts are in [LLD §13](LLD.md#13-inner-agent). Status: **Proposed**. Ender decided that an inner agent exists and
+which tasks motivate it (owner decision 14); everything below is Delegated and unverified until M11 lands.
+
+- **Technology (Proposed).** The `http` kind uses the Node built-in `fetch`/HTTP client (and `node:net`/`node:http`
+  for a Unix socket); no new dependency and no vendor SDK, so the controller does not pick a provider or carry a provider's
+  client code and credential handling (ADR-0003). Schema validation reuses Ajv (§2). Redaction reuses the telemetry
+  redactor (§3.3), not a second implementation. The wire mapping of a request onto a chat-completion body is isolated
+  behind the backend port ([LLD §13.2](LLD.md#132-backend-port)) and is fixed in T11.3 against the operator's endpoint.
+- **Threading and concurrency.** Same single process and event loop as §3.5; no worker thread. A per-backend semaphore
+  (`max_concurrency`, proposed target 2) bounds simultaneous calls, and every call carries an `AbortSignal` with the
+  per-call deadline, so an inner call is never on a run's critical path beyond that bound. The run supervisor, lease
+  heartbeats and reconciliation do not await the pipeline; the only synchronous waits are the `commit` tool call (the
+  agent waits for a draft at most the bound) and stage-2 routing at dispatch, not the `delegate_task` acknowledgement.
+  The circuit breaker and the quality window are in-process state backed by `inner_call` and `inner_task_state`
+  ([LLD §13.4](LLD.md#134-call-pipeline)). The `cli` kind kills its process group at the deadline, as the supervisor does.
+- **Testing strategy.** All of it runs with no inner model, provider CLI or network (AGENTS.md):
+  - A **scripted fake backend** is a local HTTP server on a loopback ephemeral port inside the test, with scenarios for
+    valid output, delay, error status, dropped connection, empty body and
+    non-UTF-8 bytes. It also records the exact request it received.
+  - **Hostile backend fixtures** drive the pipeline and the commit tool end to end: a draft containing `Co-authored-by:`
+    and "generated with" lines; a draft containing a `run_` or `sess_` ID and the run's native session ID; a huge output
+    (over the output cap); invalid JSON, wrong types and extra keys; prompt-injection text ("ignore the above and ...",
+    a fake tool call, a claim that all tests pass) in the output. Expected: a clean commit through the sanitiser, a
+    fallback, or the `MESSAGE_REQUIRED` tool error, and in no case a run state change.
+  - **Secret-planted-in-diff test.** A repository diff, log and objective containing planted credential-shaped strings,
+    a home path and a controller ID are fed to each task; the captured request body is asserted to contain none of them
+    (the telemetry-redactor and identifier-scrub contract), and a recursive scan of logs, spans, events and the ledger
+    finds no prompt or response body (FR-INN-16).
+  - **Import-boundary test.** A static check (an import-graph test over the TypeScript sources, in the style of a lint
+    rule run by Vitest) fails if COMP-POL, any adapter's profile compiler, the retry and failure-classification logic, the
+    approval and eligibility code, the push path or the sanitiser rule table imports the inner-agent service or its types
+    (FR-INN-06). A second test asserts that run state, exit code and verification results are identical with the fake
+    backend returning hostile output and with the inner agent off.
+  - **Privacy gates and locality.** Table-driven over [LLD §13.5](LLD.md#135-privacy-gates), including a hostname that
+    resolves to loopback at load and elsewhere at connect time (a test resolver), a Unix socket, and the always-`remote`
+    `cli` kind.
+  - **Accounting and replay.** `get_capacity` and the estimator are byte-identical with and without inner calls;
+    `shares_subscription_with` yields one labelled `usage_observation`; route replay with the backend off reproduces the
+    stored decision.
+  - **Default test run makes zero live calls.** `npm test` starts only the fake backend. Live inner calls are opt-in, in
+    the same pattern as the provider smoke test (§3.6): proposed `SWITCHBOARD_LIVE_TESTS=1` plus
+    `SWITCHBOARD_LIVE_INNER=1` and an operator-supplied `SWITCHBOARD_LIVE_INNER_CONFIG` path (names Proposed), run by
+    `npm run test:live`, never in CI, sending only the built-in `inner test` fixture and never repository data or
+    credentials.
+- **Observability.** One `inner.call` span per call and `inner_call`, `inner_degraded` and `inner_task_suspended` run
+  events with no bodies ([LLD §13.8](LLD.md#138-telemetry-and-events)); `doctor` shows reachable, locality, canary result,
+  enabled tasks and degraded or suspended state; `inner status` prints per-task outcome counts and fallback rates from
+  `inner_call`; `inner test <task>` runs the fixture (FR-INN-17). Logs follow §3.3: sizes and hashes, never text.
+- **OpenCode `cli` kind (Proposed, flags unverified).** [R2] lists `opencode run`; it does not show that a one-shot,
+  tool-free completion with an operator-chosen model, an empty working directory and no repository config is possible
+  (Q-26). No flag is stated here. Until the T11.0 spike shows the controls that apply for the installed version and writes
+  them, with version and date, into [§4.6](#46-opencode-m4), the kind is `Ineligible` (reported by `doctor`, never
+  run), and the adapter's argv audit applies (no bypass flag). The `http` kind alone satisfies FR-INN-03.
+
 ## 4. Provider adapter strategy
 
 Source of every fact in this section is [R2]. Anything not stated there reads "to be verified in Mx against installed
@@ -473,6 +535,7 @@ Version ranges come from compliance manifests, not this table (FR-ADP-03, FR-POL
 | Trust profile compilation (Proposed) | Build explicit permissions first; `--auto` approves permissions not explicitly denied, so it is allowed only after explicit deny rules are in place, and then only if profile semantics permit (rule syntax: to be verified in M4) |
 | Sandbox controls | None stated in [R2]: profiles needing confinement are ineligible until verified |
 | Known risks | Multiple backing providers: record harness and backing provider/model (FR-ADP-10) so two paths to one quota pool are not counted as independent capacity |
+| Inner-agent `cli` kind (M11, Proposed) | One-shot `opencode run` as a tool-free completion backend: **flags unverified**, no controls named in [R2]; `Ineligible` until the T11.0 spike records them for an installed version ([§3.12](#312-inner-agent), FR-INN-04, Q-26) |
 | Git writes and injected tools (M4, M9) | Explicit deny rules for Git write commands before anything else; `--auto` approves whatever is not denied, so the injected tools must be explicitly allowed and Git writes explicitly denied (syntax: to be verified in M4). `--fork` and session export are not used. No sandbox [R2], so only shell-less profiles qualify for push |
 
 ### 4.7 Kimi Code (M4, blocked by B-1)
@@ -481,6 +544,25 @@ Disabled until the current Kimi Code CLI automation contract is pinned and passe
 write denial and tool injection included, FR-GIT-01, [ROADMAP
 §7](../ROADMAP.md#7-risks-blockers-and-open-questions)). The archived legacy CLI's syntax, models and permissions are
 not evidence for the replacement. Every row of this table: to be verified when the contract is pinned.
+
+### 4.8 Muse Code (M4)
+
+*Proposed, Should (FR-ADP-12, owner decision 16).* Every row is **unverified**: the sources are a user report and an SDK
+crate, not Meta's documentation ([research note](../research/muse-code-2026-10-13.md), R-33, Q-27). Verify each row
+against an installed binary and Meta's documentation before writing adapter code.
+
+| Aspect | Detail |
+| --- | --- |
+| Automation surface | `muse exec [OPTIONS] [PROMPT]` (headless, one turn); `muse` alone is the interactive TUI and is never used |
+| Structured output | `muse exec --json`: JSONL envelope records (command intake, run and task lifecycle, output deltas) ending in a `run_terminal` record. Unknown record kinds must be tolerated and logged, not fatal; the credential-free `--provider echo` mode is the source of recorded fixtures |
+| Resume | Sessions exist; flag spelling to be verified |
+| Auth preflight | To be verified. The adapter never reads `~/.config/muse/auth.json` and never passes `META_API_KEY`; a missing login yields `AUTH_REQUIRED` naming `muse login` |
+| Trust profile compilation | Leave approvals and sandbox on (`--approval-mode`, `--sandbox-network`: values to be verified against the five profiles); `-w off` always; no `--yolo`, `--disable-approval`, `--disable-sandbox` or `--trust-workspace` outside an approved `privileged` scope (add them to the argv audit list) |
+| Repository config | Reads `AGENTS.md`/`CLAUDE.md` and skills from the repository and from `~/.agents`, `~/.claude`, `~/.codex`; skipped when the workspace is untrusted (reported). Whether that is enough for FR-POL-04 under the untrusted profiles is to be verified |
+| Version gate | Self-updates hourly (reported); set `MUSE_NO_AUTO_UPDATE=1` if confirmed and revalidate on version change (ADR-0009) |
+| Success | Exit code `0` is not success; the terminal record and the controller's verification decide |
+| Git writes and injected tools (M4, M9) | No per-command deny control reported: declare `none-documented` until found (FR-GIT-01, as Codex); whether a per-run MCP definition can be supplied without a bypass flag: to be verified |
+| Capacity | Whether usage, limits or resets are reported: to be verified (FR-CAP-01) |
 
 ## 5. Implementation strategy by milestone
 
@@ -499,6 +581,7 @@ approach only.
 | M8 Hardening | OTel exporter driven from `run_event`/spans; version canaries (`adapters validate` ships in M4); |
 | M9 Projects and controlled commits | Project and context schema in the config loader; `COMP-PRJ` resolution and ceilings; `project_id` columns and the `git_commit` table; per-adapter Git-write denial and channel-support declarations; the shim subcommand and per-run socket; `COMP-GIT` (commit, sanitiser, publish ref, ref snapshots, push with policy); `projects` CLI; fake-adapter fixtures for every attempt in §3.6. Starts with a spike that settles §3.10's open mechanisms (per-run Git config, plumbing commands, socket access under sandboxes). |
 | M10 Container environments | After M9 (Q-6 settled by delegation, Proposed): runtime port, mounts, limits, labels and orphan sweep, container leg of the malicious-fixture suite, answer to the provider-login question ([§3.11](#311-container-environments)). |
+| M11 Inner agent | Spike T11.0 first (OpenCode one-shot tool-free controls, or record `Ineligible`). Then in order: config schema, backend port, scripted fake backend, `inner_call` and `inner_task_state` tables and the import-boundary test (T11.1); the pipeline with redaction, budget, breaker, re-ask and fallback (T11.2); `http` backend, locality and privacy gates (T11.3); the commit-message task through the existing sanitiser (T11.4); accounting (T11.5); suspension (T11.6); `doctor`, `inner status`, `inner test` (T11.7); then PR draft, log summary, handoff condensation, route features and run title as their milestones allow (T11.8 to T11.12), and the `cli` kind last (T11.13). Every task ships with its fallback and hostile-fixture tests in the same change ([§3.12](#312-inner-agent), [LLD §13](LLD.md#13-inner-agent)). |
 
 ## 6. Migration considerations
 
@@ -537,4 +620,5 @@ approach only.
 | Tool-only commits over letting agents commit and rewriting afterwards | No provider attribution can reach published history; works without per-provider attribution switches | A per-run tool channel to verify per provider; some adapters fall back to controller-made commits | ADR-0014 |
 | Provenance in the ledger, not in Git | Commits stay indistinguishable from ordinary ones | Links by SHA break on an operator rebase (tree hash and patch ID are best-effort) | ADR-0014 |
 | Orchestrator-created projects need a client opt-in and operator approval for containers and push | A compromised orchestrator cannot mount host paths, start containers or enable push on its own | A project is approved on the CLI before it can use those | ADR-0013 |
+| Cheap-model drafts (commit, PR, summaries, features) over agent-written text | Saves premium provider turns; the coding agent does not spend output on mechanical text | A weaker model can write a vague or wrong draft; a new egress path (TB-10); fallbacks and a suspension rule add code. Bounded by agent-text-wins defaults, no policy authority, sanitiser, redaction and `local`-first privacy gates | ADR-0016 |
 | Stdio MCP, single process | No network listener | One orchestrator per controller process (Assumption) | ADR-0011 |

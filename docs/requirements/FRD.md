@@ -3,7 +3,7 @@
 | Field | Value |
 | --- | --- |
 | Status | Draft, baseline for milestone M1 |
-| Owns | Workflows WF-1..WF-12, business rules BR-*, actor permissions, the canonical run state machine, meta-session and adapter availability states, input validation rules, normal/alternate/failure paths |
+| Owns | Workflows WF-1..WF-13, business rules BR-*, actor permissions, the canonical run state machine, meta-session and adapter availability states, input validation rules, normal/alternate/failure paths |
 | Does not own | Requirements and their IDs ([SRS](SRS.md)); outcomes ([BRD](BRD.md)); journeys and capabilities ([PRD](PRD.md)); components ([HLD](../design/HLD.md)); persistence and the failure taxonomy table ([LLD](../design/LLD.md)); sequencing ([ROADMAP](../ROADMAP.md)) |
 | Last reconciled | 2026-10-12 |
 
@@ -27,6 +27,7 @@ planning and are marked "(planning)". Actors are defined in §2.
 | Operator | The single human who installs, logs in natively, and configures policy ([ADR-0011](../adr/0011-single-operator-local-deployment.md)) | Operator CLI (COMP-OPS) | Local OS user running the CLI |
 | Orchestrator | Upstream agent (OpenClaw, Grok Bot) acting as MCP client | MCP over stdio (COMP-MCP) | Configured MCP client entry carrying a maximum trust profile (FR-MCP-06) |
 | Controller | The Switchboard process and its components | Internal | n/a |
+| Inner backend | The operator's optional `http` or `cli` inner-agent backend (FR-INN-03, FR-INN-04), called only by COMP-INN for stateless text completions (WF-13) | HTTP request or one-shot CLI process | Not trusted; output is untrusted data (BR-35); holds no permissions |
 | Provider CLI (the agent) | Subprocess driven by an adapter | Subprocess/ACP; the injected `commit` and `push` tools (WF-11, WF-12) | Not trusted; confined by the run's trust profile; has no Git write ability of its own (FR-GIT-01) |
 
 ### 2.1 Permission matrix
@@ -35,7 +36,7 @@ planning and are marked "(planning)". Actors are defined in §2.
 | --- | --- | --- | --- | --- |
 | Delegate / continue a task | Not via CLI (CLI has no `delegate`) | Yes, up to the client's max trust profile | Executes | FR-MCP-03, FR-MCP-06 |
 | Request `privileged` profile | Approves via CLI | May request only, with a `privileged_scope` (V13); run stops in AWAITING_APPROVAL. May continue an approved meta-session under its approved scope (C7) | Blocks until approval; later runs of the same meta-session, client and scope run under the existing approval (BR-14) | FR-MCP-06, FR-POL-09 |
-| Approve a privileged run | Yes (`approve <run_id>`); the approval covers later runs of that meta-session with that scope (owner decision 14) | No, never through MCP | Records timestamp and scope | FR-POL-09, FR-OPS-02 |
+| Approve a privileged run | Yes (`approve <run_id>`); the approval covers later runs of that meta-session with that scope (owner decision 17) | No, never through MCP | Records timestamp and scope | FR-POL-09, FR-OPS-02 |
 | Cancel a run | Yes (`runs cancel <id>`) | Yes (`cancel_run`) | Executes | FR-MCP-01, FR-OPS-01, FR-EXE-01 |
 | Read run status, artifacts, route explanation, capacity | Yes (`runs list/show`) | Yes (`get_run`, `get_artifacts`, `explain_route`, `get_capacity`) | n/a | FR-MCP-01/02, FR-OPS-01 |
 | List capabilities | Yes (`doctor`) | Yes (`list_capabilities`) | n/a | FR-MCP-01, FR-OPS-01 |
@@ -49,6 +50,8 @@ planning and are marked "(planning)". Actors are defined in §2.
 | Define or change projects, contexts, environments, push policy, commit identity | Yes (config) | Only dynamic projects, only if its client entry sets `manage_projects`, within the client's limits (BR-32); never configured projects | Snapshots into each run | FR-PRJ-01, 02, 03, 06, 10 |
 | Approve a dynamic project that needs it (`container`, push policy other than `none`, any widening) | Yes (`projects approve`) | No, never through MCP | Records timestamp and revision | FR-PRJ-10 |
 | Emit permission-bypass flags | Only by approving a `privileged` run whose scope sets `bypass` | No | Only under a recorded approval, covering the run's client, meta-session and scope, whose scope sets `bypass` and whose hash matches (BR-14) | FR-POL-03 |
+
+The inner backend has no row: it holds no permissions, performs no action and appears in no decision (BR-35).
 
 Rules on the matrix: a caller's maximum trust profile is a ceiling per MCP client; a request above it ends with
 `PERMISSION_BLOCKED` before any side effect (BR-13). Privileged approval exists only on the operator CLI (BR-14). The
@@ -73,7 +76,7 @@ Each rule elaborates the cited requirement and does not add to it.
 | BR-11 | **Cancellation.** `cancel_run` is accepted in every non-terminal state and takes effect as in §4.3. Cancelling a terminal run is a no-op that returns the run's terminal state. Cancellation of a running process terminates its whole process group (graceful signal, then forced kill after the grace period). | FR-EXE-01, FR-MCP-01 | SRS for the group kill; no-op on terminal runs Proposed: idempotent cancel is simpler for retrying clients. |
 | BR-12 | **Worktree disposition** on each terminal state is defined in §4.4. The controller never touches the operator's checked-out branch, never pushes run branches or checkpoint commits, pushes the publish ref only under BR-26, and removes worktrees only through retention GC. | FR-WS-03, FR-WS-04, FR-WS-05, FR-WS-07, FR-GIT-05, FR-GIT-08 | SRS; keep-until-GC for every terminal state Proposed: evidence for BO-5 outweighs disk cost at single-operator scale. |
 | BR-13 | **Trust ceiling.** The requested profile is compared with the calling client's maximum profile before any side effect. Above it: `PERMISSION_BLOCKED`. `privileged` is above every ceiling for MCP-only authority and always enters AWAITING_APPROVAL if the client ceiling allows requesting it. | FR-MCP-06, FR-POL-09 | SRS. Treating a `privileged` request as allowed-to-request only when the client's ceiling is `privileged` is Proposed; SRS says only that approval cannot come from MCP. **Milestone note (M2):** the `privileged` profile and the approval flow arrive in M3 (FR-POL-09). Until then the policy resolver does not resolve `privileged`, so an MCP request for it is `PERMISSION_BLOCKED` even when the client ceiling is `privileged`, and no run enters AWAITING_APPROVAL (`src/policy/policy.test.ts`, `src/mcp/mcp.test.ts`). |
-| BR-14 | **Privileged approval.** The first `privileged` run of a meta-session does not dispatch until the operator approves it through the CLI. The approval stores timestamp and scope and is durable: it covers that run and every later run of the same meta-session, from the same MCP client, with the same canonical scope (a `continue_task` continuation takes the approved scope as is and cannot change it, C7), and it never expires and is never revoked automatically. A different scope, meta-session or client needs a new approval. Bypass flags (FR-POL-03) are emitted only for a run covered by an `APPROVED` approval row whose scope hash matches the hash recomputed from the run's client, meta-session and snapshot scope, and whose scope sets `bypass: true` ([LLD §3.1](../design/LLD.md#31-privileged-scope-m3)); a `privileged` run without `bypass` compiles without one. Approval is never automatic (no MCP tool, timer, configuration value or ceiling grants it). | FR-POL-09, FR-POL-03 | SRS; the bypass conditions are owner decision 13 and the durable meta-session approval is owner decision 14 (2026-10-13, the orchestrator's reading of "initial privileged approval lasts forever"), recorded in [ADR-0016](../adr/0016-approved-privileged-scope-bypass.md) (mechanism Delegated, Proposed). Revocation: ROADMAP Q-25 |
+| BR-14 | **Privileged approval.** The first `privileged` run of a meta-session does not dispatch until the operator approves it through the CLI. The approval stores timestamp and scope and is durable: it covers that run and every later run of the same meta-session, from the same MCP client, with the same canonical scope (a `continue_task` continuation takes the approved scope as is and cannot change it, C7), and it never expires and is never revoked automatically. A different scope, meta-session or client needs a new approval. Bypass flags (FR-POL-03) are emitted only for a run covered by an `APPROVED` approval row whose scope hash matches the hash recomputed from the run's client, meta-session and snapshot scope, and whose scope sets `bypass: true` ([LLD §3.1](../design/LLD.md#31-privileged-scope-m3)); a `privileged` run without `bypass` compiles without one. Approval is never automatic (no MCP tool, timer, configuration value or ceiling grants it). | FR-POL-09, FR-POL-03 | SRS; the bypass conditions are owner decision 13 and the durable meta-session approval is owner decision 17 (2026-10-13, the orchestrator's reading of "initial privileged approval lasts forever"), recorded in [ADR-0017](../adr/0017-approved-privileged-scope-bypass.md) (mechanism Delegated, Proposed). Revocation: ROADMAP Q-30 |
 | BR-15 | **Fail closed.** An unknown adapter state, unparseable provider output, or unrecognized policy value denies, marks the provider ineligible, or ends the run with an error; it never proceeds. | NFR-SEC-06, FR-ADP-04 | SRS |
 | BR-16 | **Verification outcome.** When verification commands are supplied and any exits non-zero (or times out), the run ends `FAILED` with `TEST_FAILURE`; results are recorded either way. The agent's own result is kept in the envelope. | FR-EXE-08, FR-MCP-04 | Mapping to `TEST_FAILURE` Proposed: the SRS requires running and recording, not the failure semantics. |
 | BR-17 | **One active run per meta-session.** A meta-session has at most one non-terminal run; `continue_task` on a session with an active run is rejected with `INVALID_REQUEST`. | FR-SES-06, FR-WS-02 | SRS |
@@ -93,6 +96,16 @@ Each rule elaborates the cited requirement and does not add to it.
 | BR-31 | **Credential reach.** A context with push policy `branch` is eligible for a run only if the agent cannot run commands that could read the push credentials: a `container` environment with none mounted, or a profile without arbitrary shell, or an adapter whose manifest declares credential confinement (FR-POL-06). Otherwise the `push` tool is withheld and the reason is recorded. | FR-GIT-06, FR-POL-06 | SRS |
 | BR-32 | **Orchestrator-managed projects.** `create_project`, `update_project` and `delete_project` are offered only to a client whose entry sets `manage_projects`. They touch dynamic projects only (an ID that collides with a configured project is refused). A revision is validated like configuration (V12 rules, FR-PRJ-02); its repository path must lie under an allowed root; its trust ceiling and providers may not exceed the client's; its push policy may not exceed the client's `max_push_policy`. A revision with a `container` environment, a push policy other than `none`, or any widening of an approved revision is stored as `pending_approval` and cannot start runs until the operator approves it with `projects approve`. A project is visible to, and usable by, the creating client only. Deletion with a non-terminal run is refused. Refusals are `PERMISSION_BLOCKED` (not allowed) or `INVALID_REQUEST` (malformed); every call is an event. | FR-PRJ-10, FR-MCP-06, FR-POL-10 | Delegated: gating limits, pending-approval state and creator-only visibility are Proposed. Ender answered only "yes" (Q-7). |
 | BR-33 | **Signing.** If a context sets `sign: true`, each published commit is signed by the controller using the operator's existing Git signing setup. A signing failure returns a tool error and creates no commit; nothing is committed unsigned as a fallback. Signing is refused where BR-31 would withhold `push`. | FR-GIT-10, FR-GIT-06 | Delegated mechanism; Ender asked for signing as part of Q-9 ("yes"). |
+| BR-34 | **Inner agent is optional.** The inner agent is an optional, operator-configured backend with no default backend or model. Every inner task is disabled until the operator enables it individually. With no backend configured, or while it is off, unhealthy or suspended, each task uses its deterministic fallback and no other controller behaviour differs: the absence of an inner agent changes no route, eligibility result, policy decision, run status or tool contract other than as stated in BR-37. | FR-INN-01, FR-INN-05 | SRS |
+| BR-35 | **Authority boundary.** Inner output is untrusted data and never an input to trust-profile choice or compilation, the policy snapshot, provider eligibility, approvals, client or project ceilings, push policy, sanitiser rules, secret redaction, failure classification (retry) or the status, exit code or pass/fail of any run or verification command. COMP-INN is not reachable from COMP-POL, the profile compilers, the retry logic or the push path; the design enforces this structurally and an import-boundary test checks it. An inner call is a stateless single-turn text completion with no tools and no loop; the controller performs every action that follows. | FR-INN-02, FR-INN-06 | SRS. The import-boundary test is a Proposed mechanism ([TDD §3.12](../design/TDD.md#312-inner-agent)). |
+| BR-36 | **Validate, re-ask once, fall back.** Each inner call passes redaction, an input budget, the call under a per-call timeout and circuit breaker, then parsing against the task's schema (length-bounded, control characters stripped). An invalid result gets at most one re-ask; after that, or on any failure (unreachable, timeout, error, open circuit), the task's deterministic fallback applies and the event is recorded. A failure never fails or cancels a run and never delays a caller beyond the per-call bound; `doctor` shows the inner agent as degraded. Detail: [LLD §13](../design/LLD.md#13-inner-agent). | FR-INN-07, FR-INN-08 | SRS for the sequence; the pipeline ordering is Proposed. |
+| BR-37 | **Commit-message drafting.** With the commit_message task enabled, `message` on the `commit` tool becomes optional (BR-25). Modes: `draft_if_missing` (default; the agent's own message always wins), `always` (a drafted message replaces the agent's), `never` (no drafting). The prompt is built from the diff of the paths being committed and contains no controller, provider, run or session identifier and no provider name. A drafted message goes through the BR-26 sanitiser like any other. If it is empty after sanitising, invalid or unavailable, the call returns the tool error `MESSAGE_REQUIRED` asking the agent to supply a message, creates no commit and never invents one. The provenance record (BR-28) states `message_source` (`agent` or `inner`). With the task disabled, `message` stays required. | FR-INN-10, FR-GIT-04, FR-GIT-07 | SRS for modes, sanitiser and no invention. The `MESSAGE_REQUIRED` tool-error name and `message_source` field are Proposed. |
+| BR-38 | **Pull-request draft is an artifact only.** With the pr_draft task enabled, the controller may draft a title and description for a meta-session's publish ref and stores it as a `pr_draft` artifact, after the same sanitiser as commit messages. Switchboard never opens, edits or comments on a pull request; the operator or orchestrator uses the draft by their own means. | FR-INN-11 | SRS |
+| BR-39 | **Inner routing classification.** The route_features task applies to routing stage 2 only: it may supply the FR-RTE-04 features as an enumerated structure and never influences stage 1. The features are stored in the route decision with their source (`inner` or `heuristic`), model and template version; replay reads the stored value and never calls the model again. They never override `require_provider` (BR-2), never add a provider to the candidate set or bypass eligibility (BR-1), and rank only as hints do (BR-4). On any inner failure the heuristic classifier supplies the features. | FR-INN-12, FR-RTE-04, FR-RTE-03 | SRS |
+| BR-40 | **Summaries and condensation are additive.** The handoff_condense and log_summary tasks may condense controller-owned evidence into prose (handoff-bundle text fields, log and verification-output summaries). Structured fields, statuses, exit codes and counts come only from controller records. Each condensed field is labelled with its source and keeps a pointer to the raw artifact by ID and hash; the raw text is not discarded. On fallback the raw text is truncated deterministically. | FR-INN-13, FR-SES-04 | SRS |
+| BR-41 | **Usage is not capacity.** Every inner call is recorded in its own `inner_call` record (task, backend, model, tokens as reported or unknown, latency, outcome) and never as a provider `usage_observation`, in a capacity estimate or against `capacity_score`. Exception: if the operator declares `shares_subscription_with` for a routed provider, one additional `usage_observation` with source `inner_agent` is recorded for that provider and `doctor` warns that the inner agent is consuming its capacity. | FR-INN-15 | SRS |
+| BR-42 | **Inner-agent privacy gates.** A backend is `local` (loopback or Unix socket) or `remote`. A `remote` backend is unusable until `allow_remote` is set; a task that sends repository content (diffs, log excerpts) to a `remote` backend also needs that task's `allow_source_content`. A project or context may set `inner_agent` to `off` or `local_only`, which narrows what the global configuration allows and never widens it (BR-35 applies regardless). Deterministic redaction runs on the prompt before every call, and prompt and response bodies are not stored or logged beyond what the accepted result already is (sizes and hashes only). A refused call is a fallback (BR-36), not an error to the run. | FR-INN-16, FR-TEL-03 | SRS. "Narrows and never widens" is Proposed. |
+| BR-43 | **Quality monitoring and suspension.** The outcome of every inner call is recorded (accepted, rejected by validator, rejected by sanitiser, fallback used). When a task's rejection rate over the configured window exceeds the configured threshold, the task is suspended automatically and uses its fallback until the operator re-enables it. Window and threshold are configuration values (proposed targets), not fixed here. `doctor`, `inner status` and `inner test <task>` (built-in fixture, no repository data) expose state to the operator. | FR-INN-09, FR-INN-17 | Proposed (FR-INN-09 is Should and its thresholds are proposed targets). |
 
 ## 4. Canonical run state machine
 
@@ -273,7 +286,7 @@ FR-MCP-09).
 | C4 | Trust profile defaults to the session's profile; a higher profile is checked against the ceiling as V5 | `PERMISSION_BLOCKED` | FR-MCP-06 |
 | C5 | Provider hints as V8; BR-18 selects native resume vs handoff | per BR-2/BR-3 | FR-SES-03, FR-SES-04, FR-MCP-05 |
 | C6 | Idempotency key: the SRS defines it only for `delegate_task`; `continue_task` accepts none (SRS silent) | n/a | FR-MCP-08 |
-| C7 | **M3 (owner decision 14; reverses the earlier Proposed refusal, ROADMAP Q-24):** `continue_task` accepts no `privileged_scope`. A continuation whose resolved profile is `privileged` (requested, or defaulted from a `privileged` run) is admitted only if the meta-session has an `APPROVED` approval for the calling client; it then takes the approved scope as is (no widening or other change) and needs no new approval ([LLD §3.1](../design/LLD.md#31-privileged-scope-m3)). An approval that is `PENDING`, `DENIED` or absent, or a different client, is refused. A different scope needs `delegate_task` and a new approval. Checked after C4 | `INVALID_REQUEST` | FR-POL-09 |
+| C7 | **M3 (owner decision 17; reverses the earlier Proposed refusal, ROADMAP Q-29):** `continue_task` accepts no `privileged_scope`. A continuation whose resolved profile is `privileged` (requested, or defaulted from a `privileged` run) is admitted only if the meta-session has an `APPROVED` approval for the calling client; it then takes the approved scope as is (no widening or other change) and needs no new approval ([LLD §3.1](../design/LLD.md#31-privileged-scope-m3)). An approval that is `PENDING`, `DENIED` or absent, or a different client, is refused. A different scope needs `delegate_task` and a new approval. Checked after C4 | `INVALID_REQUEST` | FR-POL-09 |
 
 ### 7.3 Other tools
 
@@ -283,6 +296,11 @@ unknown project ID returns `INVALID_REQUEST`. The injected
 `commit` and `push` tools are validated by their own rules (BR-25, BR-29), not by §7.1. `get_run`, `get_artifacts`,
 `cancel_run`, `explain_route` and `get_capacity` validate IDs against the schema (V1) and an
 unknown ID returns `INVALID_REQUEST` (**Proposed**; no "not found" code exists in the taxonomy; SRS silent).
+
+The `inner_agent` configuration (backend kind, endpoint, model, locality, per-task switches and modes, `allow_remote`,
+`allow_source_content`, `shares_subscription_with`) is validated like other configuration: unknown keys are
+rejected, and a value that would put a credential in the file is refused at load (FR-INN-03, NFR-SEC-05). The
+optional `message` on the injected `commit` tool follows BR-37.
 
 ## 8. Workflows
 
@@ -336,7 +354,10 @@ sequenceDiagram
   approved meta-session is admitted by T1 under the existing approval, C7). (b) Same idempotency key
   replayed: original run returned (BR-10). (c) Preferred provider ineligible at PREFLIGHT: re-route (T6) unless
   `require_provider`. (d) Quota known exhausted: WAITING_CAPACITY (T7, BR-9). (e) Non-Git workspace with
-  `inspect-untrusted`: no worktree, read-only (FR-WS-06). (f) Cancel at any point: WF-4.
+  `inspect-untrusted`: no worktree, read-only (FR-WS-06). (f) Cancel at any point: WF-4. (g) Route
+  features: when the route_features task is enabled, the inner agent may supply the stage-2 scoring features instead of
+  the heuristic; the value is stored in the route decision and never affects eligibility or `require_provider` (BR-39,
+  WF-13).
 - **Failure paths:** invalid input → `INVALID_REQUEST` (no run created); above ceiling → `PERMISSION_BLOCKED`; no
   eligible provider → `ELIGIBILITY_NONE`; required provider ineligible → per BR-3; auth lost mid-run → `AUTH_REQUIRED`
   naming the native login command (FR-AUTH-02); denied operation → `PERMISSION_BLOCKED` or `SANDBOX_VIOLATION` without
@@ -404,7 +425,10 @@ sequenceDiagram
   to inspect the repository, and no provider transcript file is read (FR-SES-04). The new provider gets a fresh native
   session; a second binding is added to the meta-session.
 - **Alternate paths:** (a) Failover after `QUOTA_EXHAUSTED` (BR-8) uses the same mechanism, with the failed attempt
-  listed in the bundle. (b) Provider B is a multi-vendor harness (OpenCode, Cursor): the backing provider and model are
+  listed in the bundle. (a2) Condensation: when handoff_condense is enabled, text fields of the bundle may be condensed
+  by the inner agent, labelled with their source and keeping a pointer to the raw artifact; statuses and counts stay
+  from controller records, and on any inner failure the raw text is truncated deterministically (BR-40, WF-13).
+  (b) Provider B is a multi-vendor harness (OpenCode, Cursor): the backing provider and model are
   recorded alongside the harness (FR-ADP-10). (c) Earlier work left uncommitted-then-rolled-back: the evidence diff is
   referenced in the bundle.
 - **Failure paths:** target provider cannot compile the session's trust profile → ineligible (FR-POL-02, BR-5),
@@ -475,13 +499,13 @@ sequenceDiagram
 - **Actors:** Orchestrator (requests), Operator (approves), COMP-POL, COMP-OPS, COMP-LED.
 - **Preconditions:** The calling client's ceiling allows requesting `privileged` (BR-13).
 - **Realizes:** FR-POL-03, FR-POL-09, FR-MCP-06, FR-OPS-02, UJ-6, BO-3. Contract:
-  [LLD §3.1](../design/LLD.md#31-privileged-scope-m3); decision: [ADR-0016](../adr/0016-approved-privileged-scope-bypass.md).
+  [LLD §3.1](../design/LLD.md#31-privileged-scope-m3); decision: [ADR-0017](../adr/0017-approved-privileged-scope-bypass.md).
 - **Normal path:** `delegate_task` with `privileged` and a `privileged_scope` (V13) → T2, run in AWAITING_APPROVAL with
   the requested scope (files, shell, network, repository configuration, `bypass`) and its scope hash recorded in a
   `PENDING` approval row → operator runs `runs show <id>` to review the scope and hash → `approve <run_id>` (hash
   re-checked) → approval record with timestamp and scope → T3 → WF-1 continues; a bypass flag is emitted only now, only
   if the approved scope sets `bypass` and the hash still matches the run's policy snapshot (BR-14).
-- **Later runs (owner decision 14):** `continue_task` on the approved meta-session, from the same client, resolves
+- **Later runs (owner decision 17):** `continue_task` on the approved meta-session, from the same client, resolves
   `privileged` with the approved scope as is (C7) → T1, QUEUED with no new approval; the bypass check runs again for
   each run against the same approval row. A new `delegate_task`, even with an identical scope, starts a new
   meta-session and a new `PENDING` approval.
@@ -493,7 +517,7 @@ sequenceDiagram
   `continue_task` on a meta-session without an `APPROVED` approval for the caller → `INVALID_REQUEST` (C7).
 - **Postconditions:** an `approval` row, created by the meta-session's first `privileged` run, binds the approval to one
   client, one meta-session and one canonical scope, and covers every run of that meta-session under that scope; it is
-  never expired or revoked automatically (revocation is ROADMAP Q-25).
+  never expired or revoked automatically (revocation is ROADMAP Q-30).
 
 ### WF-8 Startup reconciliation
 
@@ -573,7 +597,10 @@ sequenceDiagram
   transaction (BR-28) → returns the SHA to the agent.
 - **Alternate paths:** (a) the agent tries to commit by itself: the profile's deny rules refuse it where the provider
   honours them; if one gets through, FINALIZING finds it (BR-27). (b) The message is empty after sanitising: tool error,
-  no commit. (c) Several calls in one run produce a linear chain on the publish ref.
+  no commit. (c) Several calls in one run produce a linear chain on the publish ref. (d) `message` absent: only when the
+  commit_message task is enabled (BR-25, BR-37), COMP-INN may draft it from the diff of the paths being committed and
+  the draft goes through BR-26; if the draft is empty, invalid or unavailable the call returns `MESSAGE_REQUIRED` and
+  creates no commit. The agent's own message always wins in the default mode.
 - **Failure paths:** not RUNNING, lease lost, path outside the worktree, nothing changed → tool error to the agent, run
   unaffected. A Git error inside the controller → tool error plus a `run_event`; it does not fail the run.
 - **Postconditions:** the commit has the configured identity and no marker; the provenance record names project, context,
@@ -597,6 +624,36 @@ sequenceDiagram
 - **Postconditions:** only the publish ref (commits created by WF-11 or BR-30) can have reached the remote; checkpoint
   commits and run branches never do (FR-GIT-08).
 
+### WF-13 Inner task execution
+
+- **Actors:** COMP-INN, the calling component (COMP-GIT, COMP-RTE, COMP-LED or the artifact writer), COMP-TEL, COMP-LED;
+  the inner backend; Operator for enabling, suspension and diagnostics.
+- **Preconditions:** An inner backend is configured and the task is enabled and not suspended; the backend is allowed
+  by its locality (BR-42); the project or context does not set `inner_agent` to `off`. Otherwise the workflow does not
+  start and the caller uses the task's fallback directly (BR-34).
+- **Realizes:** FR-INN-01 to 17; UJ-10; CAP-12; BO-8.
+- **Normal path:** the calling component asks COMP-INN for a task result with its inputs → COMP-INN applies the privacy
+  gates (BR-42) and deterministic redaction → trims the input to the task's budget → calls the backend under the
+  per-call timeout and circuit breaker (BR-36) → parses the response against the task schema (BR-35: untrusted data) →
+  for commit and PR text, the BR-26 sanitiser → returns the accepted result to the caller → appends an `inner_call`
+  record with task, backend, model, tokens as reported or unknown, latency and outcome (BR-41, BR-43) → the caller uses
+  the result as data only.
+- **Alternate paths:** (a) Invalid output: one re-ask with the validation error, then the fallback (BR-36). (b) Backend
+  unreachable, timed out, erroring or circuit open: fallback at once; `doctor` shows degraded. (c) Rejection rate over
+  the window exceeds the threshold: the task is suspended and falls back until the operator re-enables it (BR-43). (d)
+  Backend declares `shares_subscription_with`: one extra `usage_observation` with source `inner_agent` and a `doctor`
+  warning (BR-41). (e) Operator runs `inner test <task>`: the same pipeline on a built-in fixture with no repository
+  data. (f) A `remote` backend or a task needing `allow_source_content` without the setting: refused as a fallback
+  (BR-42).
+- **Failure paths:** every failure resolves to the deterministic fallback of the task (commit_message: tool error
+  `MESSAGE_REQUIRED`, never an invented message; route_features: heuristic features; handoff_condense and log_summary:
+  deterministic truncation; pr_draft and run_title: no artifact or title). No failure code is added to a run, no run
+  is failed, cancelled or delayed beyond the per-call bound, and no retry or failover decision reads the inner outcome
+  (BR-35, BR-36).
+- **Postconditions:** the caller holds either an accepted inner result or the fallback; an `inner_call` record exists; no
+  prompt or response body was stored or logged beyond the accepted result; no run status, route eligibility, policy
+  snapshot or capacity estimate was influenced by the inner output.
+
 ## 9. Traceability summary
 
 | Workflow | User journey | Capabilities | Primary requirements |
@@ -613,9 +670,11 @@ sequenceDiagram
 | WF-10 | UJ-8 | CAP-10, 1, 3, 4 | FR-PRJ-01..04, FR-PRJ-06, FR-PRJ-08 |
 | WF-11 | UJ-9 | CAP-11, 8 | FR-GIT-01..04, FR-GIT-07, FR-GIT-08 |
 | WF-12 | UJ-9 | CAP-11 | FR-GIT-05, FR-GIT-06, FR-WS-05 |
+| WF-13 | UJ-10 | CAP-12 | FR-INN-01..17 |
 
 Milestone availability follows the SRS milestone column (for example WF-7 from M3, WF-5 automatic retry and failover
-from M6, WF-3 from M5, WF-9 `adapters validate` from M4, WF-10 to WF-12 from M9 with containers in M10); see [ROADMAP](../ROADMAP.md#6-milestones).
+from M6, WF-3 from M5, WF-9 `adapters validate` from M4, WF-10 to WF-12 from M9 with containers in M10, WF-13 from
+M11); see [ROADMAP](../ROADMAP.md#6-milestones).
 
 ## 10. Open items in this document
 
