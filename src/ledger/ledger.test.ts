@@ -230,14 +230,44 @@ describe("ledger migrations", () => {
     expect(() => (db as Database.Database).prepare("DELETE FROM git_push").run()).toThrow(/append-only/u);
   });
 
+  it("0006 widens usage_observation.source with inner_agent, keeps rows, index and append-only guards (T11.5)", () => {
+    db = new Database(path.join(dir, LEDGER_FILE_NAME));
+    db.pragma("foreign_keys = ON");
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 5))).toEqual([1, 2, 3, 4, 5]);
+    const d = db;
+    const ins = (id: string, source: string, at = "2026-10-13T00:00:00.000Z") =>
+      d
+        .prepare(
+          `INSERT INTO usage_observation (id, run_id, provider, harness, source, metrics_json, observed_at)
+           VALUES (?, NULL, 'claude-code', 'claude-code', ?, '{"input_tokens":3}', ?)`,
+        )
+        .run(id, source, at);
+    ins("use_a", "provider_reported");
+    expect(() => ins("use_x", "inner_agent")).toThrow(/CHECK/u);
+    const before = d.prepare("SELECT * FROM usage_observation ORDER BY rowid").all();
+    expect(migrate(db)).toEqual([6]);
+    expect(d.prepare("SELECT * FROM usage_observation ORDER BY rowid").all()).toEqual(before);
+    ins("use_b", "inner_agent");
+    ins("use_c", "controller_estimated");
+    expect(() => ins("use_d", "made_up")).toThrow(/CHECK/u);
+    expect(() => d.prepare("UPDATE usage_observation SET model = 'x'").run()).toThrow(/append-only/u);
+    expect(() => d.prepare("DELETE FROM usage_observation").run()).toThrow(/append-only/u);
+    const idx = d
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'usage_observation'")
+      .all();
+    expect(idx).toContainEqual({ name: "usage_provider_time" });
+    expect(tables(d)).not.toContain("usage_observation_new");
+  });
+
   it("inner_call (T11.1, LLD §13.3) upgrades from version 4, is append-only and enforces its checks and keys", () => {
     db = new Database(path.join(dir, LEDGER_FILE_NAME));
     db.pragma("foreign_keys = ON");
     expect(migrate(db, undefined, MIGRATIONS.slice(0, 4))).toEqual([1, 2, 3, 4]);
     expect(tables(db)).not.toContain("inner_call");
-    expect(migrate(db)).toEqual([5]);
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 5))).toEqual([5]);
+    expect(migrate(db)).toEqual([6]);
     expect(migrate(db)).toEqual([]);
-    expect(currentSchemaVersion(db)).toBe(5);
+    expect(currentSchemaVersion(db)).toBe(6);
     expect(tables(db)).toContain("inner_call");
     expect(tables(db)).not.toContain("inner_task_state"); // owned by T11.6
 

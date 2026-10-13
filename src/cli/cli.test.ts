@@ -936,3 +936,36 @@ describe("doctor privileged approval (owner decision 22, ADR-0019)", () => {
     expect(d.checks.map((x: { id: string }) => x.id)).not.toContain("privileged_approval");
   });
 });
+
+describe("doctor inner-agent shared subscription (T11.5, FR-INN-15)", () => {
+  const fakeOnly = () => new AdapterRegistry().register(new FakeAdapter());
+  const writeInner = (backend: Record<string, unknown>) =>
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schema_version: 1,
+        data_dir: dataDir,
+        allowed_roots: [path.join(tmp, "repos")],
+        mcp_clients: [{ id: "ops", max_trust_profile: "privileged" }],
+        inner_agent: {
+          enabled: true,
+          backend: { kind: "http", base_url: "http://127.0.0.1:1", model: "m", ...backend },
+        },
+      }),
+    );
+
+  it("warns when the backend shares a provider's subscription; no line otherwise", async () => {
+    writeInner({ shares_subscription_with: "claude-code" });
+    const j = JSON.parse((await run(["doctor", "--json", ...cfg()], { adapters: fakeOnly() })).out);
+    const c = j.checks.find((x: { id: string }) => x.id === "inner_shared_subscription");
+    expect(c.status).toBe("warn");
+    expect(c.detail).toMatch(/shares the claude-code subscription: its calls consume claude-code capacity/);
+    expect(j.ok).toBe(true);
+    const text = (await run(["doctor", ...cfg()], { adapters: fakeOnly() })).out;
+    expect(text).toMatch(/\[warn\] Inner agent subscription: /);
+
+    writeInner({});
+    const d = JSON.parse((await run(["doctor", "--json", ...cfg()], { adapters: fakeOnly() })).out);
+    expect(d.checks.map((x: { id: string }) => x.id)).not.toContain("inner_shared_subscription");
+  });
+});
