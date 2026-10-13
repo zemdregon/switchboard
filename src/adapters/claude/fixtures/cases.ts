@@ -27,6 +27,17 @@ export const INSPECT_UNTRUSTED: ResolvedProfile = {
   bypassApproved: false,
 };
 
+/** The Proposed `trusted-development` default (src/policy/profiles.ts, Q-17): empty shell allowlist, network off. */
+export const TRUSTED_DEVELOPMENT: ResolvedProfile = {
+  name: "trusted-development",
+  fileAccess: "worktree",
+  shell: "allowlist",
+  shellAllowlist: [],
+  network: "off",
+  repoConfig: "disabled",
+  bypassApproved: false,
+};
+
 const SHORT = { wallClockMs: 10_000, idleMs: 400, killGraceMs: 300 };
 
 export interface ReplayOptions {
@@ -143,6 +154,59 @@ export function claudeConformanceCases(makeCwd: () => string): ConformanceCase[]
       request: request(),
       binding: { provider: "claude", nativeSessionId: RESUMED_SESSION_ID },
       expect: { ok: true, nativeSessionId: RESUMED_SESSION_ID },
+    },
+  ];
+}
+
+/**
+ * T3.5: synthetic denial fixtures under the M3-compiled `trusted-development` profile (with an operator allowlist), run
+ * through the same harness. Each must end with its failure code, never success, and must not hang.
+ */
+export function claudeDenialCases(makeCwd: () => string): ConformanceCase[] {
+  const request = (): CompileRequest => ({
+    runId: "run_claude_denial_fixture",
+    objective: "synthetic objective",
+    constraints: [],
+    workspace: { cwd: makeCwd(), writable: true },
+  });
+  const profile: ResolvedProfile = { ...TRUSTED_DEVELOPMENT, shellAllowlist: ["npm test"] };
+  return [
+    {
+      kind: "success",
+      profile,
+      adapter: replayAdapter("success-edit.jsonl", { write: "hello.txt" }),
+      request: request(),
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID, mutatedPath: "hello.txt" },
+    },
+    {
+      // FR-POL-05: a denied Git write (FR-GIT-01 deny rule) ends PERMISSION_BLOCKED even when the CLI exits 0.
+      kind: "task_failure",
+      profile,
+      adapter: replayAdapter("permission-denied-git.jsonl"),
+      request: request(),
+      expect: { ok: false, failureCode: "PERMISSION_BLOCKED" },
+    },
+    {
+      kind: "task_failure",
+      profile,
+      adapter: replayAdapter("permission-denied-git.jsonl", { exitCode: 1 }),
+      request: request(),
+      expect: { ok: false, failureCode: "PERMISSION_BLOCKED" },
+    },
+    {
+      kind: "task_failure",
+      profile,
+      adapter: replayAdapter("sandbox-violation.jsonl", { exitCode: 1 }),
+      request: request(),
+      expect: { ok: false, failureCode: "SANDBOX_VIOLATION" },
+    },
+    {
+      // A denial with partial edits keeps the mutation visible and still fails closed.
+      kind: "partial_mutation",
+      profile,
+      adapter: replayAdapter("sandbox-violation.jsonl", { write: "partial.txt" }),
+      request: request(),
+      expect: { ok: false, failureCode: "SANDBOX_VIOLATION", mutatedPath: "partial.txt" },
     },
   ];
 }
