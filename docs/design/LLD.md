@@ -1294,8 +1294,8 @@ Observations the algorithm should respect:
   (and the dates) rather than relying on configuration, because Git may derive an identity from the host name.
 - **Minimum versions.** Every command above exists on 2.43.0. Introduction versions are unverified, except
   `--pathspec-from-file`, which the Git 2.25.0 release notes introduce for "a few commands" without naming `git add`,
-  so its availability for `add` below 2.43 is unverified. The tied decision on `MIN_GIT_VERSION` is in TDD §3.10 and
-  ROADMAP Q-39.
+  so its availability for `add` below 2.43 is unverified. The decision on `MIN_GIT_VERSION` (raised to 2.32, ADR-0023) is
+  in TDD §3.10 and ROADMAP Q-39.
 - **Not tested.** Clean and smudge filters during `git add` (the controller already neutralises driver keys, TDD §3.4),
   nested repositories (ADR-0022), submodules, symlinks, very large path sets, concurrent publishers beyond the
   compare-and-swap above, and `-c core.hooksPath=/dev/null` under a Git older than 2.43.

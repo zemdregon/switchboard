@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { GIT_READ_ONLY_SUBCOMMANDS, GIT_WRITE_SUBCOMMANDS, gitWriteRisk, gitWriteRisks } from "./git-write.js";
+import {
+  GIT_GLOBAL_FLAGS,
+  GIT_GLOBAL_OPTIONS_WITH_VALUE,
+  GIT_READ_ONLY_SUBCOMMANDS,
+  GIT_WRITE_SUBCOMMANDS,
+  gitWriteRisk,
+  gitWriteRisks,
+} from "./git-write.js";
 
 describe("gitWriteRisk (FR-GIT-01 lexical check)", () => {
   it.each([
@@ -25,6 +32,26 @@ describe("gitWriteRisk (FR-GIT-01 lexical check)", () => {
     "git worktree add ../x",
     "git config alias.ci commit",
     "git -C . commit",
+    "git --no-pager commit",
+    "git -P commit",
+    "git -p status",
+    "git --no-optional-locks commit",
+    "git --literal-pathspecs commit",
+    "git --glob-pathspecs add",
+    "git --no-replace-objects commit",
+    "git --bare update-ref refs/heads/x HEAD",
+    "git --namespace=x push",
+    "git --config-env=user.name=HOME commit",
+    "git --exec-path=/x commit",
+    "git --attr-source=HEAD commit",
+    "git reflog expire --expire=now --all",
+    "git reflog delete HEAD@{1}",
+    "git pack-refs --all",
+    "git gc --prune=now",
+    "git prune",
+    "git maintenance run",
+    "git repack -ad",
+    "git hash-object -w x",
     "git -c alias.x=commit x",
     "git --git-dir=/repo/.git commit",
     "git --work-tree . status",
@@ -61,6 +88,15 @@ describe("gitWriteRisk (FR-GIT-01 lexical check)", () => {
     for (const v of GIT_WRITE_SUBCOMMANDS) expect(GIT_READ_ONLY_SUBCOMMANDS).not.toContain(v);
     for (const v of ["commit", "branch", "tag", "update-ref", "reset", "push"])
       expect(GIT_WRITE_SUBCOMMANDS).toContain(v);
+  });
+
+  it("every global option spelling and every new subcommand is covered (R-43)", () => {
+    for (const o of [...GIT_GLOBAL_OPTIONS_WITH_VALUE, ...GIT_GLOBAL_FLAGS])
+      expect(gitWriteRisk(`git ${o} x commit`), o).toBeDefined();
+    for (const v of ["reflog", "pack-refs", "gc", "prune", "maintenance", "repack", "hash-object"]) {
+      expect(GIT_WRITE_SUBCOMMANDS).toContain(v);
+      expect(gitWriteRisk(`git ${v}`), v).toBeDefined();
+    }
   });
 
   it("gitWriteRisks returns only the risky entries with reasons", () => {

@@ -38,7 +38,7 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | Unit and integration tests | Vitest | TypeScript-native, fast, fake timers and mocking | Less ubiquitous than Jest; process-level tests still need a plain harness | Vitest 5.0.4 |
 | Lint and format | Biome (single tool) | One config, fast | Smaller rule set than ESLint plus typescript-eslint; type-aware lint rules may be missing, compensated by `tsc --noEmit` in CI | Biome 2.5.15 |
 | Package manager | npm with committed lockfile, `npm ci` in CI | Ships with Node; no extra tool for a single-maintainer project | No workspace-level conveniences of pnpm; adequate for a single package | npm 10.9.4 (bundled with local Node); `package-lock.json` committed |
-| Git access | `git` CLI via `execFile` (no shell), minimum version **2.30** (Proposed, fixed in T1.5; `src/workspace/git.ts` `MIN_GIT_VERSION`; developed against 2.43) | Worktree and diff semantics are Git's own ([ADR-0006](../adr/0006-worktree-checkpoints-no-blind-replay.md)); pure-JS Git libraries lack worktree support (Assumption) | Requires `git` on host; output parsing must use porcelain/`-z` formats | Min version M1 |
+| Git access | `git` CLI via `execFile` (no shell), minimum version **2.32** (raised from 2.30 on 2026-10-13 by [ADR-0023](../adr/0023-minimum-git-version-2-32.md); `src/workspace/git.ts` `MIN_GIT_VERSION`; developed against 2.43) | Worktree and diff semantics are Git's own ([ADR-0006](../adr/0006-worktree-checkpoints-no-blind-replay.md)); pure-JS Git libraries lack worktree support (Assumption) | Requires `git` on host; output parsing must use porcelain/`-z` formats | Min version M1 |
 | Process spawning | `node:child_process` `spawn` with `detached: true` | Needed for process groups (FR-EXE-01) | Signal and group semantics differ on macOS/Windows; Windows deferred (NFR-PORT-03) | Node LTS |
 | IDs | ULID, small dependency or in-house (about 30 lines) | Sortable, prefix-able, time-ordered | In-house needs a monotonic-within-millisecond test | M1 |
 | Logging | Structured JSON to stderr via `pino` with path-based redaction (Proposed) | Redaction support built in; stdout is reserved for MCP framing | One more dependency; redaction is a safety net, not the primary control (§3.3) | Pinned later (with first logging code) |
@@ -134,7 +134,7 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
   command fails instead of running (verified on Git 2.43). Every `git diff` also gets `--no-textconv --no-ext-diff`,
   and `core.attributesFile` is `/dev/null`. A driver name that `-c` cannot express (one containing `=` or a newline)
   makes the call fail closed. Delegated decision: `--attr-source`/`GIT_ATTR_SOURCE` is not used, because it needs Git
-  2.40 (above the 2.30 minimum) and still reads `info/attributes`.
+  2.40 (above the 2.32 minimum) and still reads `info/attributes`.
   Nested repositories: *Note (2026-10-13, Delegated, owner decision 27,
   [ADR-0022](../adr/0022-nested-repositories-excluded-from-controller-git.md)):* a directory in a run worktree that
   holds its own `.git` (directory, gitdir-pointer file or symlink) is found by `src/workspace/nested.ts` without
@@ -346,7 +346,7 @@ C-G2 (ROADMAP R-38).
 | --- | --- | --- | --- | --- |
 | 1 | Profile deny rules | Each adapter compiles Git write operations (commit, branch and tag changes, push) into the provider's *documented* permission controls: Claude Code `--disallowedTools` deny rules plus its explicit `--tools`/`--allowedTools` set, Grok Build `--allow`/`--deny`, OpenCode explicit deny rules, Antigravity `strict` mode. An adapter whose provider documents none declares it (`gitWriteControl`, reported by `list_capabilities`; Codex). Under `inspect-untrusted` and `edit-untrusted` Claude Code has no arbitrary shell, and a shell allowlist entry that could write Git makes the run `Ineligible`; Codex runs commands inside its native sandbox under those profiles (owner decision 10, §4.2), so for Codex this layer is the sandbox's path scope only. | Provider-enforced; only as strong as the provider's rule matching, and lexical | Claude: rule form from the `claude --help` 2.1.296 example only, matching semantics an Assumption (live check pending); Codex: none documented; M4 adapters: to be verified |
 | 2 | No credentials in the agent's environment | The environment allowlist (FR-EXE-07) never carries `SSH_AUTH_SOCK`, token variables or credential-helper settings. In a `container` environment (M10) no credential store is mounted. | Strong in containers; in a `host` environment on-disk credentials stay readable by a same-user shell ([R2] limit) | Allowlist: tested in M1; container: M10 |
-| 3 | Git-level guard | Per-run Git configuration for agent processes that points hooks at a controller-owned directory whose hooks reject ref updates not carrying the controller's token. Candidate mechanisms: a per-run global config file, or `GIT_CONFIG_COUNT` environment entries (newer Git than the current 2.30 minimum, so adopting it raises `MIN_GIT_VERSION`; check Git's release notes). | A guard against provider-internal or accidental commits, **not** a boundary: an agent with a shell can override Git configuration | Mechanism: to be chosen in an M9 spike |
+| 3 | Git-level guard | Per-run Git configuration for agent processes that points hooks at a controller-owned directory whose hooks reject ref updates not carrying the controller's token. Candidate mechanisms: a per-run global config file, or `GIT_CONFIG_COUNT` environment entries (2.31 inferred, below the 2.32 minimum set by [ADR-0023](../adr/0023-minimum-git-version-2-32.md); check Git's release notes). | A guard against provider-internal or accidental commits, **not** a boundary: an agent with a shell can override Git configuration | Mechanism: to be chosen in an M9 spike |
 | 4 | Git directory out of reach | A worktree's Git directory lives under the main repository's `.git/worktrees/`, outside the worktree. A provider sandbox that confines writes to the worktree therefore cannot edit refs. | Depends on each sandbox's path scope | Malicious fixtures per adapter (M9) |
 | 5 | Detection | Snapshot all refs (`for-each-ref`, including tags and other branches) at LEASED and compare at FINALIZING, plus a check that the run branch holds only controller-made commits. Anything else is a violation: content kept as working-tree changes, commits never published (FR-GIT-03). | Catches what layers 1 to 4 miss; cannot undo a push | Tests in M9 |
 
@@ -439,15 +439,21 @@ to feed configuration variable-value pairs via environment variables have been i
 existing in the 2.29.0 notes, and the version that introduced it is **unverified**. This host has no Git man pages or
 release notes, so the notes were fetched from upstream and nothing else about minimum versions could be checked.
 
-*`MIN_GIT_VERSION` revisited (finding; the constant is not changed).* `MIN_GIT_VERSION` is `[2, 30, 0]`
-(`src/workspace/git.ts`; the TDD §2 table above). `scrubbedGitEnv()` already sets `GIT_CONFIG_GLOBAL=/dev/null`, which
-the 2.32.0 release notes introduce; on 2.30 and 2.31 the variable would be unknown to Git, so the operator's global
-config would not be neutralised there (inferred from the notes, not tested: no such Git is installed).
+*`MIN_GIT_VERSION` revisited (finding; decided 2026-10-13, see the note after this paragraph).* `MIN_GIT_VERSION`
+was `[2, 30, 0]` (`src/workspace/git.ts`; the TDD §2 table above). `scrubbedGitEnv()` already sets
+`GIT_CONFIG_GLOBAL=/dev/null`, which the 2.32.0 release notes introduce; on 2.30 and 2.31 the variable would be
+unknown to Git, so the operator's global config would not be neutralised there (inferred from the notes, not tested:
+no such Git is installed).
 `GIT_CONFIG_NOSYSTEM=1`, also set there, is older. Adopting layer 3 as above needs 2.31 (inferred) and the neutral-file
 variable needs 2.32. Proposal: raise the minimum to **2.32.0**. That changes the technology stack's stated floor, so
-under AGENTS.md it needs an ADR; none is written here and the constant, `src/workspace/workspace.test.ts` and `doctor`
-are unchanged (ROADMAP Q-39, R-44). Nothing in the plumbing below needs more than 2.30 as far as could be checked, but
+under AGENTS.md it needs an ADR. Nothing in the plumbing below needs more than 2.30 as far as could be checked, but
 their introduction versions are unverified for the reason above.
+
+*Decision (2026-10-13, Delegated, under owner decision 25; ROADMAP decision 30, Q-39, R-44;
+[ADR-0023](../adr/0023-minimum-git-version-2-32.md)):* `MIN_GIT_VERSION` is now `[2, 32, 0]` (`src/workspace/git.ts`);
+`doctor` and `WorkspaceManager.checkGit` use the constant and so reject 2.31 and older, and `src/workspace/workspace.test.ts`
+covers the gate with version strings. No requirement ID changes; no SRS requirement names a Git version. The 2.32
+introduction of `GIT_CONFIG_GLOBAL` rests on the release notes, not on a test against an old Git (none is installed).
 
 *Per-run MCP definition: Claude Code (help text of 2.1.296 only).* `--mcp-config <configs...>`: "Load MCP servers from
 JSON files or strings (space-separated)"; `--strict-mcp-config`: "Only use MCP servers from --mcp-config, ignoring all
