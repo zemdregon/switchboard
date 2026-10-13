@@ -13,6 +13,8 @@ export interface CliIo {
   /** Adapters `doctor` probes. Defaults to the fake adapter only (M1). */
   readonly adapters?: AdapterRegistry;
   readonly now?: () => Date;
+  /** `adapters validate` only (T4.4): the manifest directory to read and write. Tests inject it; default is the source tree. */
+  readonly manifestDir?: string;
 }
 
 /** Stable `--json` schema version for every command (Proposed). */
