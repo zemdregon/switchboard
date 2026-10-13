@@ -29,6 +29,8 @@ import { DEFAULT_PUBLISH_PREFIX, isRunBranchRef, publishRefFor } from "./publish
  * - **Other `switchboard/` refs** may move only as the controller moves them for other runs: another run's branch to
  *   one of that run's checkpoint commits (or deleted once its session is archived by GC, or while that run is not
  *   terminal), another session's publish ref to one of that session's controller commits. Anything else is a violation.
+ * - **Remote-tracking refs** updated by a controller push (T9.6): `refs/remotes/<remote>/<branch>` at exactly the SHA an
+ *   ACCEPTED `git_push` row pushed to `refs/heads/<branch>` on that remote is expected.
  * - **Every other ref** (default branch, other branches, tags, remote-tracking refs, notes, stash) and the main
  *   checkout's `HEAD`: any change is a violation. They are **reported, not restored** (Delegated): the controller
  *   cannot tell an agent's change from the operator's own concurrent work, and must never modify the operator's
@@ -359,6 +361,7 @@ export class RefGuard {
         if (b === a) continue;
         const scope = name.startsWith("refs/heads/switchboard/") ? "switchboard" : "other";
         if (scope === "switchboard" && this.controllerMoved(name, a)) continue;
+        if (scope === "other" && this.controllerPushed(name, a)) continue;
         out.push(entry(scope, name, b ?? null, a ?? null, "report"));
       }
       if (snapshot.truncated && snapshot.tail) {
@@ -442,6 +445,19 @@ export class RefGuard {
       }
     }
     return out;
+  }
+
+  /**
+   * T9.6 (ADR-0028): a controller `git push` through a configured remote updates the local remote-tracking ref
+   * `refs/remotes/<remote>/<branch>`. Such a change is expected exactly when an ACCEPTED `git_push` row pushed this
+   * SHA to `refs/heads/<branch>` on that remote. A deletion or any other value is still a violation.
+   */
+  private controllerPushed(name: string, after: string | undefined): boolean {
+    if (after === undefined || !name.startsWith("refs/remotes/")) return false;
+    const rest = name.slice("refs/remotes/".length);
+    const slash = rest.indexOf("/");
+    if (slash <= 0) return false;
+    return this.ledger.hasAcceptedPush(rest.slice(0, slash), `refs/heads/${rest.slice(slash + 1)}`, after);
   }
 
   /** Whether a change to another run's or session's `switchboard/` ref matches what the controller records. */

@@ -6,6 +6,8 @@
  * project starts `serve` exactly as before. Nothing here starts a container: `container` is accepted as a shape only
  * (M10).
  */
+
+import { isBranchPrefix, isRemoteName } from "../git/push-names.js";
 import type {
   ContextConfig,
   ContextKind,
@@ -73,6 +75,18 @@ export function checkProjects(cfg: SwitchboardConfig): string[] {
       const isPrimary = isPrimaryContext(p, c);
       if (c.writable === true && !isPrimary) {
         errs.push(`${cat}.writable: only the primary context is writable (LLD §11.1)`);
+      }
+      // T9.6 (ADR-0028): `remote` is a remote NAME resolved by Git at push time, never a URL (which could carry
+      // credentials into the ledger, NFR-SEC-01); the message never echoes the value.
+      if (c.push?.remote !== undefined && !isRemoteName(c.push.remote)) {
+        errs.push(
+          `${cat}.push.remote: must be the name of a remote configured in the repository (letters, digits, '.', '_', '-'; not a URL)`,
+        );
+      }
+      if (c.push?.branch_prefix !== undefined && !isBranchPrefix(c.push.branch_prefix)) {
+        errs.push(
+          `${cat}.push.branch_prefix: must be a branch-name prefix (letters, digits, '.', '_', '-', '/'; no '..', '//', leading '/', '-' or '.', or 'refs/')`,
+        );
       }
       if (c.push?.policy === "branch") {
         if (c.push.remote === undefined) errs.push(`${cat}.push.remote: required when push.policy is branch`);

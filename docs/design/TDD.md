@@ -402,7 +402,8 @@ run branch and its checkpoints are untouched. (Plain Git plumbing; exact command
 `--force`, to the configured remote under the configured prefix. It uses the operator's existing Git configuration (SSH
 agent, credential helper). The controller does not read, copy or store any of it (FR-GIT-06, NFR-SEC-01). The agent's
 environment is separate from the controller's. In a `host` environment with a shell, ambient credentials remain
-readable by the agent, so the `push` tool is withheld (BR-31). Candidate stronger answers, not adopted: a dedicated OS
+readable by the agent, so the `push` tool is withheld (BR-31), except in an approved bypass run (owner decision 37,
+Delegated narrow reading, ADR-0028 "Amended before merge", R-51). Candidate stronger answers, not adopted: a dedicated OS
 user for a publisher helper (adds a privilege boundary and an installation step), or container environments (M10).
 
 **Audit trail.** The ledger table `git_commit` ([LLD §1](LLD.md#1-data-model)) is written in the same transaction as the
@@ -596,6 +597,47 @@ the table above; fake adapter only, Git 2.43.0).* Mechanism in [LLD §12.5](LLD.
   T3.8b).
 - **Still open.** The same attempts through Claude Code and Codex (live checks C-G2 and X-G1), per-worktree refs, Git
   versions other than 2.43.0, and whether a push should be refused after a violation (Q-44).
+
+*T9.6 build notes (2026-10-13; Delegated; [ADR-0028](../adr/0028-controller-push-and-credential-reach.md); the
+**Publication** paragraph above; fake adapter and local bare remotes only, Git 2.43.0).* Mechanism in [LLD
+§12.6](LLD.md#126-push-algorithm) (as-built note). Findings and test strategy:
+
+- **The push is the one controller Git call with the operator's configuration.** Every check before it uses the hardened
+  helper; the push itself gets an allowlisted environment (where Git finds the operator's global configuration, SSH
+  agent, credential-helper session and proxy), no terminal (`detached`, standard input closed, so neither Git nor SSH
+  can prompt), command-scope `-c` settings that switch hooks, tag following, signing and submodule recursion off and
+  allow only `https`, `ssh` and `file`, and `--porcelain --no-verify`. A repository whose own configuration sets a
+  command or redirect key (`core.sshCommand`, `credential.helper`, `remote.*.receivepack`, `url.*.insteadOf`,
+  `protocol.*`, ...) is refused rather than overridden, because a multi-valued key cannot be reset at command scope
+  without also discarding the operator's global setting.
+- **Never forced by construction.** The refspec is `<verified sha>:refs/heads/<prefix><sess>`; Git refuses a
+  non-fast-forward itself, which is recorded. Only commits with a provenance row of the meta-session can be pushed, so
+  checkpoint and run-branch commits cannot, whatever the publish ref points at.
+- **Observed on Git 2.43.0** (scratch repositories, a local bare remote): `--show-scope` reports values from an
+  `include` file in `.git/config` as `local`, and values from `GIT_CONFIG_PARAMETERS` as `command` (this host's own
+  environment sets some; the hardened helper does not inherit them); `push -- <remote> <sha>:<ref>` works with `--`;
+  `protocol.allow=never` plus per-protocol `always` gives `fatal: transport 'ext' not allowed` (rc 128); a rejected
+  update prints `!\t<src>:<dst>\t[rejected] (non-fast-forward)` on stdout under `--porcelain`; a push through a
+  configured remote updates `refs/remotes/<remote>/<branch>`, which the T9.5 ref guard now expects when an accepted
+  `git_push` row matches it.
+- **BR-31.** A profile qualifies only with shell `none` or an empty allowlist; a non-empty allowlist is refused because
+  the controller cannot judge what a listed program can read (R-48 records the remaining file-read-tool gap). Host runs
+  with a shell therefore cannot use the agent `push` tool; the operator command `switchboard git push` (or a `container`
+  environment, M10) is the route. **Exception (owner decision 37, Ender: "BR-31. Don't block git operations on bypass
+  mode"; Delegated narrow reading):** an approved bypass run (scope `bypass` and a controller-verified approval, from
+  `bypassApprovedFor`, never from agent-supplied data) is offered `push` and accepted with the reason `bypass_exempt`
+  recorded; the push itself, the provider's Git-write denial and non-bypass runs are unchanged. The agent of such a run
+  can read push credentials if its shell can (R-51); the controller never gives them to it.
+- **Tests (no provider CLI, no network; temporary repositories and a local bare remote; the push's `HOME` is a temporary
+  directory).** `src/git/push.test.ts` (policy, target, refusals, URL and remote classification, environment allowlist,
+  hooks never run, repository command keys refused, remote hook output not stored, violation, BR-31 table, recording,
+  concurrency), `src/lifecycle/git-push.test.ts` (the fake agent's `commit` then `push` through the real shim; shell
+  profiles withhold `push`; policy `none`; configuration re-read; argument and limit refusals; the ref check stays
+  clean), `src/cli/git-push.test.ts` (operator command, lock, config refusal of a URL remote, `runs show` provenance).
+- **Still open.** `https` and `ssh` remotes with a real credential helper, SSH agent or proxy (the standard-error
+  classification is tested on fixed strings only), Claude Code and Codex channels (T9.4; Claude's is T9.4b,
+  [ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md)), container environments (M10), and pushing
+  while `serve` runs (R-49).
 
 **External reference (T3 Code, MIT, studied not copied; note 2026-10-13, Delegated, not owner-approved).** Ender's
 pointer (owner decision 36): T3 Code "has orchestrator injection for nearly all of the CLI tools we are targeting". A
