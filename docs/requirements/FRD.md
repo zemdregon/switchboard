@@ -160,7 +160,7 @@ happen once, in one place (FR-WS-03). **Proposed** for the same reason.
 | T5 | PREFLIGHT | Preflight passes | Adapter READY (version, manifest, auth, smoke test via cache); lease acquired | LEASED | Create worktree from base checkpoint (write-capable) and lease; record adapter version | FR-ADP-02, 03, FR-WS-01, 02, FR-POL-07 |
 | T6 | PREFLIGHT | Provider became ineligible | Not `require_provider`; another eligible provider | QUEUED | Exclude provider for this run; re-route; record reason | FR-RTE-01, FR-MCP-05 |
 | T7 | PREFLIGHT | Provider quota known exhausted | Failover not possible; `reset_at` within horizon | WAITING_CAPACITY | Release slot | FR-CAP-06 |
-| T8 | PREFLIGHT | No usable provider | `require_provider` ineligible, or none eligible, or reset beyond horizon | FAILED | Code per BR-3 (`AUTH_REQUIRED`, `ADAPTER_VERSION_UNVERIFIED`, `QUOTA_EXHAUSTED`, `ELIGIBILITY_NONE`) | FR-MCP-05, FR-AUTH-02, FR-ADP-03 |
+| T8 | PREFLIGHT | No usable provider | `require_provider` ineligible, or none eligible, or reset beyond horizon; or a `privileged` run's approval check fails ([LLD §3.1](../design/LLD.md#31-privileged-scope-m3) Bypass, checked before any probe) | FAILED | Code per BR-3 (`AUTH_REQUIRED`, `ADAPTER_VERSION_UNVERIFIED`, `QUOTA_EXHAUSTED`, `ELIGIBILITY_NONE`); `PERMISSION_BLOCKED` for a failed approval check (T3.4) | FR-MCP-05, FR-AUTH-02, FR-ADP-03, FR-POL-03 |
 | T9 | LEASED | Process group spawned | Env built from allowlist; profile compiled without downgrade | RUNNING | Start timeout timer; capture stdout events and stderr separately | FR-EXE-01, 05, 07, FR-POL-02 |
 | T10 | LEASED | Compile/spawn error | Adapter cannot compile profile, or spawn fails | FAILED | Release lease; remove empty worktree; code `PROCESS_CRASH` or `PERMISSION_BLOCKED` | FR-POL-02, NFR-REL-02 |
 | T11 | RUNNING | Provider exits successfully | Verification commands supplied | VERIFYING | Parse final result from structured output | FR-ADP-04, FR-EXE-08 |
@@ -528,7 +528,7 @@ sequenceDiagram
 
 | State found | Action | Outcome |
 | --- | --- | --- |
-| AWAITING_APPROVAL, QUEUED, WAITING_CAPACITY | No process or lease exists; keep | Resume in queue, order preserved |
+| AWAITING_APPROVAL, QUEUED, WAITING_CAPACITY | No process or lease exists; keep. An operator `approve` or `deny` recorded while no controller ran is applied first (T3 or T19, WF-7), then a recorded cancel | Resume in queue, order preserved; no expiry and no automatic approval |
 | PREFLIGHT, LEASED (no process spawned) | Release any lease; discard empty worktree | Back to QUEUED, recorded as rule T20 with cause `controller_restart` (**Proposed**: preflight and lease are repeatable without side effects). A LEASED run whose pre checkpoint already exists is not requeued (a second `pre` row would be appended); it ends FAILED `PROCESS_CRASH` through T10 |
 | RUNNING | Process group dead → FAILED `PROCESS_CRASH`, cause `controller_restart`; compare worktree with pre-run checkpoint | Unchanged: eligible for automatic retry (BR-7). Changed: evidence checkpoint, head rolled back, no retry (FR-WS-04) |
 | VERIFYING | Same as RUNNING (verification may have side effects, so it is not re-run) | FAILED `PROCESS_CRASH`, cause `controller_restart`; changes preserved as evidence |

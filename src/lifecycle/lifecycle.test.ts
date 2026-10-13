@@ -21,7 +21,10 @@ import { createLedger, type Ledger, openLedger, type RunState, type TrustProfile
 import { canonicalScopeJson, parsePrivilegedScope, privilegedScopeHash } from "../policy/index.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import {
+  ApprovalRefusedError,
   assertTransition,
+  bypassApprovedFor,
+  evaluateBypass,
   IllegalTransitionError,
   LifecycleError,
   RUN_STATES,
@@ -492,6 +495,192 @@ describe("admission", () => {
           privileged: { approvalId: ta?.id },
         }),
       ).rejects.toMatchObject({ code: "INVALID_REQUEST", message: expect.stringContaining("hash") });
+    });
+  });
+
+  describe("privileged approval and bypass check (T3.4, LLD §3.1 Approve and Bypass)", () => {
+    /** The operator decision as `serve` applies it (the CLI's record is stood in for by an event id). */
+    const decide = (runId: string, decision: "APPROVED" | "DENIED" = "APPROVED") => {
+      const run = ledger.getRunRecord(runId);
+      const row = ledger.getApprovalForRun(runId);
+      return lifecycle.applyApprovalDecision({
+        requestEventId: `evt_test_${runId}`,
+        runId,
+        decision,
+        requestedBy: "op",
+        requestedAt: "2026-10-13T00:00:00.000Z",
+        scopeHash: run ? (row?.scope_hash ?? "") : "",
+      });
+    };
+    const transitionPayload = (runId: string, to: string) =>
+      events(runId)
+        .filter((e) => e.type === "state_transition")
+        .map((e) => e.p)
+        .find((p) => p.to === to);
+    // biome-ignore lint/suspicious/noExplicitAny: the stored snapshot is untyped JSON edited in place
+    const setSnapshot = (runId: string, edit: (snap: Record<string, any>) => void) => {
+      const snap = JSON.parse(ledger.getRunRecord(runId)?.policy_snapshot_json ?? "{}");
+      edit(snap);
+      db.prepare("UPDATE run SET policy_snapshot_json = ? WHERE id = ?").run(JSON.stringify(snap), runId);
+    };
+
+    it("approve moves the run AWAITING_APPROVAL -> QUEUED (T3) with a decided row; dispatch computes bypassApproved and still refuses to compile", async () => {
+      const r = await submit("success", { trustProfile: "privileged", privileged: { scope: SCOPE } });
+      expect(decide(r.runId)).toBe("QUEUED");
+      const row = ledger.getApprovalForRun(r.runId);
+      expect(row).toMatchObject({ status: "APPROVED", decided_by: "op", decided_at: "2026-10-13T00:00:00.000Z" });
+      expect(events(r.runId).map((e) => e.type)).toEqual([
+        "state_transition",
+        "approval_decided",
+        "state_transition",
+        "operator_decision_applied",
+      ]);
+      expect(transitionPayload(r.runId, "QUEUED")).toMatchObject({ rule: "T3", reason: "operator_approve" });
+      lifecycle.start();
+      const done = await lifecycle.waitForTerminal(r.runId);
+      expect(done).toMatchObject({ state: "FAILED", failure_code: "ELIGIBILITY_NONE", pid: null, worktree_path: null });
+      expect(done.failure_detail).toContain("privileged compile not available until T3.5/T3.6");
+      expect(transitionPayload(r.runId, "FAILED")).toMatchObject({ approval_id: row?.id, bypass_approved: true });
+      expect(rules(r.runId)).toEqual(["T3", "T4", "T8"]);
+      expect(compiles).toBe(0);
+      expect(probes).toBe(0);
+      // The stored snapshot is never widened: bypassApproved is computed at dispatch, not written back.
+      expect(JSON.parse(done.policy_snapshot_json).bypassApproved).toBe(false);
+      // A second decision is refused and changes nothing.
+      expect(() => decide(r.runId, "DENIED")).toThrow(ApprovalRefusedError);
+      expect(ledger.getApprovalForRun(r.runId)?.status).toBe("APPROVED");
+    });
+
+    it("deny ends the run CANCELLED (T19) with a DENIED row; no worktree, no process", async () => {
+      const r = await submit("success", { trustProfile: "privileged", privileged: { scope: SCOPE } });
+      expect(decide(r.runId, "DENIED")).toBe("CANCELLED");
+      const done = await lifecycle.waitForTerminal(r.runId);
+      expect(done).toMatchObject({ state: "CANCELLED", pid: null, worktree_path: null });
+      expect(done.finished_at).not.toBeNull();
+      expect(ledger.getApprovalForRun(r.runId)).toMatchObject({ status: "DENIED", decided_by: "op" });
+      expect(rules(r.runId)).toEqual(["T19"]);
+      expect(() => decide(r.runId)).toThrow(/CANCELLED, not AWAITING_APPROVAL/);
+    });
+
+    it("a tampered or mismatched scope hash fails the run PERMISSION_BLOCKED before any probe, lease or spawn", async () => {
+      const tamper: [string, (runId: string) => void][] = [
+        ["snapshot hash", (id) => setSnapshot(id, (s) => (s.privilegedScope.scopeHash = "0".repeat(64)))],
+        ["snapshot scope", (id) => setSnapshot(id, (s) => (s.privilegedScope.scope.network = { mode: "on" }))],
+        ["snapshot approval", (id) => setSnapshot(id, (s) => (s.privilegedScope.approvalId = "apv_missing"))],
+      ];
+      const ids: string[] = [];
+      for (const [, edit] of tamper) {
+        const r = await submit("success", { trustProfile: "privileged", privileged: { scope: SCOPE } });
+        expect(decide(r.runId)).toBe("QUEUED");
+        edit(r.runId); // after approval, before dispatch
+        ids.push(r.runId);
+      }
+      // A row rewritten while PENDING is refused at approve; forced through, dispatch still refuses it.
+      const t = await submit("success", { trustProfile: "privileged", privileged: { scope: SCOPE } });
+      const ta = ledger.getApprovalForRun(t.runId);
+      db.prepare("UPDATE approval SET scope_json = ? WHERE id = ?").run(
+        JSON.stringify({ ...SCOPE, network: { mode: "on" } }),
+        ta?.id,
+      );
+      expect(() => decide(t.runId)).toThrow(/scope hash check failed/);
+      expect(ledger.getRunRecord(t.runId)?.state).toBe("AWAITING_APPROVAL");
+      expect(ledger.getApprovalForRun(t.runId)?.status).toBe("PENDING");
+      ledger.decideApproval({ id: ta?.id as string, status: "APPROVED", decidedBy: "op" });
+      approveDirect(t.runId);
+      ids.push(t.runId);
+
+      lifecycle.start();
+      for (const id of ids) {
+        const done = await lifecycle.waitForTerminal(id);
+        expect(done, id).toMatchObject({ state: "FAILED", failure_code: "PERMISSION_BLOCKED", pid: null });
+        expect(done.worktree_path).toBeNull();
+        expect(done.failure_detail).toContain("privileged approval check failed before spawn");
+        expect(done.failure_detail).not.toMatch(/[0-9a-f]{64}/); // never a hash value
+        expect(transitionPayload(id, "FAILED")).toMatchObject({ rule: "T8", reason: "APPROVAL_MISMATCH" });
+        expect(rules(id).slice(-2)).toEqual(["T4", "T8"]);
+      }
+      expect(compiles).toBe(0);
+      expect(probes).toBe(0);
+    });
+
+    it("bypassApproved is true only for an APPROVED row matching the run's client, meta-session, hash and bypass", async () => {
+      const r = await submit("success", { trustProfile: "privileged", privileged: { scope: SCOPE } });
+      const rec = () => ledger.getRunRecord(r.runId) as NonNullable<ReturnType<typeof ledger.getRunRecord>>;
+      // PENDING: no approval yet.
+      expect(bypassApprovedFor(ledger, rec())).toBe(false);
+      expect(evaluateBypass(ledger, rec())).toMatchObject({
+        ok: false,
+        mismatch: "the approval is PENDING, not APPROVED",
+      });
+      decide(r.runId);
+      expect(bypassApprovedFor(ledger, rec())).toBe(true);
+      // A continuation of the approved meta-session is covered without a new approve.
+      lifecycle.start();
+      await lifecycle.waitForTerminal(r.runId);
+      const approvalId = ledger.getApprovalForRun(r.runId)?.id;
+      const cont = await submit("success", {
+        trustProfile: "privileged",
+        metaSessionId: r.metaSessionId,
+        privileged: { approvalId },
+      });
+      const contRec = ledger.getRunRecord(cont.runId) as NonNullable<ReturnType<typeof ledger.getRunRecord>>;
+      expect(bypassApprovedFor(ledger, contRec)).toBe(true);
+      await lifecycle.waitForTerminal(cont.runId);
+      expect(transitionPayload(cont.runId, "FAILED")).toMatchObject({ bypass_approved: true });
+      // A run in another meta-session with an identical scope is not covered by it, even when its snapshot names it.
+      const other = await submit("success", { trustProfile: "privileged", privileged: { scope: SCOPE } });
+      setSnapshot(other.runId, (s) => {
+        s.privilegedScope.approvalId = approvalId;
+        s.privilegedScope.scopeHash = ledger.getApproval(approvalId as string)?.scope_hash;
+      });
+      const otherRec = ledger.getRunRecord(other.runId) as NonNullable<ReturnType<typeof ledger.getRunRecord>>;
+      expect(evaluateBypass(ledger, otherRec)).toMatchObject({
+        ok: false,
+        mismatch: "the approval belongs to another meta-session or client",
+      });
+      // DENIED: false.
+      const d = await submit("success", { trustProfile: "privileged", privileged: { scope: SCOPE } });
+      decide(d.runId, "DENIED");
+      expect(bypassApprovedFor(ledger, ledger.getRunRecord(d.runId) as typeof contRec)).toBe(false);
+      // APPROVED and matching, but the scope does not set bypass: ok, and false.
+      const nb = await submit("success", {
+        trustProfile: "privileged",
+        privileged: { scope: { ...SCOPE, bypass: false } },
+      });
+      decide(nb.runId);
+      const nbRec = ledger.getRunRecord(nb.runId) as typeof contRec;
+      expect(evaluateBypass(ledger, nbRec)).toMatchObject({ ok: true, bypassApproved: false });
+      expect(bypassApprovedFor(ledger, nbRec)).toBe(false);
+      // A non-privileged run has no approval: never bypassApproved.
+      const plain = await submit("success");
+      expect(bypassApprovedFor(ledger, ledger.getRunRecord(plain.runId) as typeof contRec)).toBe(false);
+    });
+
+    it("approve is refused for a later run that merely reuses an approval, and the approval is unchanged", async () => {
+      const r = await submit("success", { trustProfile: "privileged", privileged: { scope: SCOPE } });
+      decide(r.runId);
+      lifecycle.start();
+      await lifecycle.waitForTerminal(r.runId);
+      const approvalId = ledger.getApprovalForRun(r.runId)?.id;
+      const cont = await submit("success", {
+        trustProfile: "privileged",
+        metaSessionId: r.metaSessionId,
+        privileged: { approvalId },
+      });
+      expect(() =>
+        lifecycle.applyApprovalDecision({
+          requestEventId: "evt_x",
+          runId: cont.runId,
+          decision: "DENIED",
+          requestedBy: "op",
+          requestedAt: "2026-10-13T00:00:00.000Z",
+          scopeHash: "",
+        }),
+      ).toThrow(/approve and deny act only on the run that requested an approval/);
+      // Cancelling (or failing) the later run leaves the approval unchanged.
+      await lifecycle.cancel(cont.runId);
+      expect(["CANCELLED", "FAILED"]).toContain((await lifecycle.waitForTerminal(cont.runId)).state);
+      expect(ledger.getApproval(approvalId as string)?.status).toBe("APPROVED");
     });
   });
 

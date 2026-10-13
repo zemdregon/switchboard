@@ -37,8 +37,14 @@
  *   transaction, that approval is `APPROVED`, was requested by a run of the same meta-session and client, and its stored
  *   hash equals the hash recomputed from (client, meta-session, stored scope); the approved scope is copied as is.
  * - Nothing compiles or spawns a `privileged` run yet: dispatch ends it FAILED `ELIGIBILITY_NONE` (T8) before any probe,
- *   lease or worktree, with reason `PROFILE_UNSUPPORTED`, until the adapters compile the scope (T3.5, T3.6) and the bypass
- *   check exists (T3.4, T3.17). `bypassApproved` stays false.
+ *   lease or worktree, with reason `PROFILE_UNSUPPORTED`, until the adapters compile the scope (T3.5, T3.6) and the argv
+ *   audit admits a bypass flag (T3.17). The snapshot's `bypassApproved` stays false.
+ *
+ * T3.4 additions (operator approval; LLD §3.1 "Approve" and "Bypass"; Proposed, Delegated):
+ * - `applyApprovalDecision` applies an operator `approve`/`deny` record (T3 to QUEUED, T19 to CANCELLED) and pumps.
+ * - At dispatch a `privileged` run is checked first by `evaluateBypass` (`./approval.ts`): a missing, undecided or
+ *   mismatched approval ends it FAILED `PERMISSION_BLOCKED` (T8) before any probe, lease or process; otherwise the
+ *   computed `bypassApproved` is recorded in the transition event and the T3.3 refusal above still applies.
  * - Cancelling a run in AWAITING_APPROVAL closes its `PENDING` approval as `DENIED` in the same transaction (Q-15,
  *   `./approval.ts`).
  */
@@ -80,7 +86,7 @@ import {
 import { usageObservationsFromEvents } from "../usage/index.js";
 import { gitText } from "../workspace/git.js";
 import type { PreparedWorkspace, WorkspaceManager } from "../workspace/index.js";
-import { denyApprovalOnCancel } from "./approval.js";
+import { applyApprovalDecision, type DecisionToApply, denyApprovalOnCancel, evaluateBypass } from "./approval.js";
 import { requestHash } from "./request.js";
 import {
   assertTransition,
@@ -409,6 +415,23 @@ export class RunLifecycle {
     return (this.ledger.getRunRecord(runId) as RunRecord).state;
   }
 
+  /**
+   * Apply one recorded operator `approve`/`deny` (T3.4, FRD T3/T19, WF-7) in one transaction (`./approval.ts`), then let
+   * dispatch pick an approved run up. Throws `ApprovalRefusedError` (nothing written) when the decision no longer
+   * applies. Returns the state after the call (QUEUED or CANCELLED).
+   */
+  applyApprovalDecision(req: DecisionToApply): RunState {
+    const moved = applyApprovalDecision(this.ledger, req, {
+      appliedBy: "serve",
+      ...(this.opts.now ? { now: this.opts.now } : {}),
+    });
+    const rule = moved.state === "QUEUED" ? "T3" : "T19";
+    this.opts.onTransition?.({ runId: moved.id, from: "AWAITING_APPROVAL", to: moved.state, rule });
+    if (isTerminal(moved.state)) queueMicrotask(() => this.settle(moved.id));
+    else queueMicrotask(() => this.pump());
+    return moved.state;
+  }
+
   /** Resolve with the run once it is terminal. */
   waitForTerminal(runId: string): Promise<RunRecord> {
     const run = this.ledger.getRunRecord(runId);
@@ -658,11 +681,29 @@ export class RunLifecycle {
     const req = JSON.parse(run0.request_json) as StoredRequest;
     const profile = JSON.parse(run0.policy_snapshot_json) as ResolvedProfile;
     if (run0.trust_profile === "privileged") {
-      // T3.3 safety boundary: never probe, lease, compile or spawn a privileged run until T3.5/T3.6 compile the scope
-      // and T3.4/T3.17 own the bypass check. FRD T8 (PREFLIGHT -> FAILED), BR-3 code for "no provider can do this".
+      // T3.4 (LLD §3.1 "Bypass"): the approval check runs before anything is probed, leased, compiled or spawned. A
+      // missing, undecided or mismatched approval fails the run PERMISSION_BLOCKED (PREFLIGHT -> FAILED, FRD T8) with
+      // the failed check named in the transition event (never a hash or scope content).
+      const verdict = evaluateBypass(this.ledger, run0);
+      if (!verdict.ok) {
+        return this.fail(
+          runId,
+          "PERMISSION_BLOCKED",
+          `privileged approval check failed before spawn: ${verdict.mismatch}`,
+          {
+            reason: "APPROVAL_MISMATCH",
+            mismatch: verdict.mismatch,
+            ...(verdict.approvalId ? { approval_id: verdict.approvalId } : {}),
+          },
+        );
+      }
+      // T3.3/T3.4 safety boundary: never probe, lease, compile or spawn a privileged run until T3.5/T3.6 compile the
+      // scope and T3.17 lets the argv audit pass a bypass flag. `verdict.bypassApproved` is what T3.5/T3.6 will hand to
+      // the compile; nothing reads it yet and no bypass flag exists anywhere. FRD T8, BR-3 code for "no provider can".
       return this.fail(runId, "ELIGIBILITY_NONE", PRIVILEGED_NOT_COMPILABLE, {
         reason: "PROFILE_UNSUPPORTED",
-        ...(profile.privilegedScope ? { approval_id: profile.privilegedScope.approvalId } : {}),
+        approval_id: verdict.approvalId,
+        bypass_approved: verdict.bypassApproved,
       });
     }
     const adapter = this.opts.adapters.get(req.provider);

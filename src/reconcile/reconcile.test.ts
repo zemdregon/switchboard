@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeAdapter } from "../adapters/fake/adapter.js";
 import { AdapterRegistry, type ResolvedProfile } from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
-import { OPERATOR_CANCEL_APPLIED, requestCancel } from "../cli/operator.js";
+import { OPERATOR_CANCEL_APPLIED, requestCancel, requestDecision } from "../cli/operator.js";
 import { groupAlive } from "../exec/index.js";
 import { createIdGenerator } from "../ids/index.js";
 import {
@@ -141,10 +141,11 @@ async function startChildController(extra: Record<string, unknown> = {}) {
     stderr += d.toString();
   });
   const lines = createInterface({ input: child.stdout as NodeJS.ReadableStream });
-  const running = await new Promise<{ runId: string; metaSessionId: string; pgid: number }>((resolve, reject) => {
+  type Running = { runId: string; metaSessionId: string; pgid: number; privilegedRunId?: string };
+  const running = await new Promise<Running>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`child never reached RUNNING: ${stderr}`)), 20_000);
     lines.on("line", (line) => {
-      const msg = JSON.parse(line) as { running?: { runId: string; metaSessionId: string; pgid: number } };
+      const msg = JSON.parse(line) as { running?: Running };
       if (msg.running) {
         clearTimeout(timer);
         resolve(msg.running);
@@ -523,5 +524,112 @@ describe("operator cancel requests recorded while the controller was down (T1.10
     expect(report.cancelsApplied).toHaveLength(1);
     expect(run(waiting.id).state).toBe("CANCELLED");
     expect(ledger.getApproval(approval.id)).toMatchObject({ status: "DENIED", decided_by: "op" });
+  });
+});
+
+describe("privileged approvals across restarts (T3.4, FRD WF-7, WF-8; owner decision 14)", () => {
+  const SCOPE = {
+    files: { access: "worktree" },
+    shell: { mode: "none" },
+    network: { mode: "off" },
+    repository_config: { mode: "disabled" },
+    bypass: true,
+  };
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const submitPrivileged = (lc: RunLifecycle) =>
+    lc.submit({
+      clientId: "client-a",
+      objective: "privileged work",
+      workspace: repo,
+      trustProfile: "privileged",
+      provider: "fake",
+      privileged: { scope: SCOPE },
+    });
+
+  it("a run AWAITING_APPROVAL survives a SIGKILL restart unchanged, 24 h later: no expiry, no automatic approval", async () => {
+    db.close(); // the child is the only controller while it lives
+    const { child, running } = await startChildController({ scenario: "hang", privilegedScope: SCOPE });
+    const waitingId = running.privilegedRunId as string;
+    expect(waitingId).toMatch(/^run_/);
+    await sigkill(child);
+
+    openController();
+    const before = run(waitingId);
+    expect(before.state).toBe("AWAITING_APPROVAL");
+    const approval = ledger.getApprovalForRun(waitingId);
+    expect(approval?.status).toBe("PENDING");
+    const evBefore = ledger.listRunEvents(waitingId).length;
+
+    const later = () => new Date(Date.now() + DAY_MS);
+    const report = await reconcile({ db, ledger, workspace, killGraceMs: 300, now: later });
+    expect(report.actions.map((a) => a.runId)).toEqual([running.runId]); // only the crashed run changed
+    expect(report.decisionsApplied).toEqual([]);
+    expect(groupAlive(running.pgid)).toBe(false);
+    expect(run(waitingId)).toEqual(before);
+    expect(ledger.listRunEvents(waitingId)).toHaveLength(evBefore);
+    expect(ledger.getApproval(approval?.id as string)).toEqual(approval);
+
+    // A restarted controller dispatching with its clock a day later still leaves it waiting.
+    const lc = new RunLifecycle({
+      ledger,
+      workspace,
+      artifacts,
+      adapters: new AdapterRegistry().register(new FakeAdapter()),
+      allowedRoots: [root],
+      globalConcurrency: 2,
+      resolveProfile: profileFor,
+      now: later,
+    });
+    lc.start();
+    await new Promise((r) => setTimeout(r, 200));
+    await lc.drain();
+    expect(run(waitingId)).toEqual(before);
+    expect(ledger.getApproval(approval?.id as string)?.status).toBe("PENDING");
+    expectConsistentLedger();
+  }, 60_000);
+
+  it("an approve recorded while the daemon was down is applied at startup (T3), once, and dispatch keeps the privileged boundary", async () => {
+    const r = await submitPrivileged(lifecycleWith(new FakeAdapter()));
+    const rec = requestDecision(db, ledger, r.runId, { decision: "APPROVED", requestedBy: "op", direct: false });
+    expect(rec).toMatchObject({ outcome: "requested", state: "AWAITING_APPROVAL" });
+    expect(ledger.getApprovalForRun(r.runId)?.status).toBe("PENDING");
+
+    const report = await runReconcile();
+    expect(report.decisionsApplied).toEqual([rec.requestEventId]);
+    expect(run(r.runId).state).toBe("QUEUED");
+    expect(ledger.getApprovalForRun(r.runId)).toMatchObject({
+      status: "APPROVED",
+      decided_by: "op",
+      decided_at: rec.decidedAt,
+    });
+    const applied = events(r.runId).filter((e) => e.type === "operator_decision_applied");
+    expect(applied.map((e) => e.p)).toEqual([
+      { request_event_id: rec.requestEventId, state_after: "QUEUED", applied_by: "reconciliation" },
+    ]);
+    expect(events(r.runId).find((e) => e.p.to === "QUEUED")?.p).toMatchObject({ rule: "T3" });
+    expectConsistentLedger();
+    const n = eventCount();
+    await runReconcile();
+    expect(eventCount()).toBe(n);
+
+    // Approved, it is dispatched, and refused before any process: privileged compile is T3.5/T3.6.
+    const lc = lifecycleWith(new FakeAdapter());
+    lc.start();
+    const done = await lc.waitForTerminal(r.runId);
+    expect(done).toMatchObject({ state: "FAILED", failure_code: "ELIGIBILITY_NONE", pid: null, worktree_path: null });
+  });
+
+  it("a deny recorded while down, followed by a cancel, ends CANCELLED with both records applied", async () => {
+    const r = await submitPrivileged(lifecycleWith(new FakeAdapter()));
+    const d = requestDecision(db, ledger, r.runId, { decision: "DENIED", requestedBy: "op", direct: false });
+    const c = requestCancel(db, ledger, r.runId, { requestedBy: "op2", direct: false });
+    expect(c.outcome).toBe("requested");
+    const report = await runReconcile();
+    expect(report.decisionsApplied).toEqual([d.requestEventId]);
+    expect(report.cancelsApplied).toEqual([c.requestEventId]);
+    expect(run(r.runId).state).toBe("CANCELLED");
+    // The operator's deny decided the row; the later cancel found nothing PENDING to close.
+    expect(ledger.getApprovalForRun(r.runId)).toMatchObject({ status: "DENIED", decided_by: "op" });
+    expectConsistentLedger();
   });
 });

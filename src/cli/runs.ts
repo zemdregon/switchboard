@@ -1,13 +1,18 @@
-/** `switchboard runs list|show|cancel` (FR-OPS-01). list/show are read-only; cancel writes operator records only. */
+/**
+ * `switchboard runs list|show|cancel` (FR-OPS-01) and the top-level `approve`/`deny` (T3.4, FR-OPS-02, FRD WF-7).
+ * list/show are read-only; cancel, approve and deny write operator records, which they also apply directly only while
+ * they hold the data-directory lock (no daemon can be running then, ADR-0005).
+ */
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { loadConfig } from "../config/index.js";
 import { createLedger, LEDGER_FILE_NAME, openLedger, type RunEventRow } from "../ledger/index.js";
+import type { OperatorDecision } from "../lifecycle/approval.js";
 import { acquireDataDirLock, inspectDataDirLock, LockError } from "../lock/index.js";
 import { type CliIo, JSON_SCHEMA_VERSION, UsageError } from "./io.js";
-import { listPendingCancels, requestCancel, UnknownRunError } from "./operator.js";
+import { listPendingCancels, requestCancel, requestDecision, UnknownRunError } from "./operator.js";
 
 export interface RunSummary {
   id: string;
@@ -173,19 +178,7 @@ function osUser(io: CliIo): string {
  * start) a run without a process is cancelled directly. If a daemon holds it, only the operator record is written.
  */
 export function cancelRun(io: CliIo, argv: readonly string[], runId: string): CancelReport {
-  const dataDir = dataDirFor(io, argv);
-  if (!existsSync(path.join(dataDir, LEDGER_FILE_NAME))) throw new UnknownRunError(`unknown run ${runId}`);
-  let lock: ReturnType<typeof acquireDataDirLock> | undefined;
-  let daemon = false;
-  try {
-    lock = acquireDataDirLock(dataDir);
-  } catch (err) {
-    if (!(err instanceof LockError) || inspectDataDirLock(dataDir).state !== "held") throw err;
-    daemon = true;
-  }
-  const db = openLedger(dataDir);
-  try {
-    const ledger = createLedger(db, io.now ? { now: io.now } : {});
+  return withOperatorLedger(io, argv, runId, (db, ledger, daemon) => {
     const r = requestCancel(db, ledger, runId, {
       requestedBy: osUser(io),
       direct: !daemon,
@@ -199,10 +192,96 @@ export function cancelRun(io: CliIo, argv: readonly string[], runId: string): Ca
       daemon_running: daemon,
       request_event_id: r.requestEventId,
     };
+  });
+}
+
+/**
+ * ADR-0005 operator write: take the data-dir lock if it is free (then no daemon exists, and none can start while the
+ * callback runs, so it may apply its record directly); if a live daemon holds it, only records are written.
+ */
+function withOperatorLedger<T>(
+  io: CliIo,
+  argv: readonly string[],
+  runId: string,
+  fn: (db: Database.Database, ledger: ReturnType<typeof createLedger>, daemon: boolean) => T,
+): T {
+  const dataDir = dataDirFor(io, argv);
+  if (!existsSync(path.join(dataDir, LEDGER_FILE_NAME))) throw new UnknownRunError(`unknown run ${runId}`);
+  let lock: ReturnType<typeof acquireDataDirLock> | undefined;
+  let daemon = false;
+  try {
+    lock = acquireDataDirLock(dataDir);
+  } catch (err) {
+    if (!(err instanceof LockError) || inspectDataDirLock(dataDir).state !== "held") throw err;
+    daemon = true;
+  }
+  const db = openLedger(dataDir);
+  try {
+    return fn(db, createLedger(db, io.now ? { now: io.now } : {}), daemon);
   } finally {
     db.close();
     lock?.release();
   }
+}
+
+/** `approve`/`deny --json` (T3.4). Stable keys; `decided_at` is when this command recorded the decision. */
+export type DecisionReport = {
+  schema_version: number;
+  run_id: string;
+  decision: "approve" | "deny";
+  outcome: "approved" | "denied" | "requested";
+  state: string;
+  daemon_running: boolean;
+  approval_id: string;
+  request_event_id: string;
+  decided_by: string;
+  decided_at: string;
+  scope_hash: string;
+};
+
+/**
+ * `approve <run_id>` / `deny <run_id>` (FR-OPS-02, FRD WF-7, LLD §3.1 "Approve"): records the decision as an operator
+ * record and, when no daemon runs, applies it at once (approve: T3 to QUEUED; deny: T19 to CANCELLED). A run that is
+ * not a waiting `privileged` run with its own `PENDING` approval, a hash mismatch or a second decision is refused with
+ * `ApprovalRefusedError` and nothing is written.
+ */
+export function decideRun(
+  io: CliIo,
+  argv: readonly string[],
+  runId: string,
+  decision: OperatorDecision,
+): DecisionReport {
+  return withOperatorLedger(io, argv, runId, (db, ledger, daemon) => {
+    const r = requestDecision(db, ledger, runId, {
+      decision,
+      requestedBy: osUser(io),
+      direct: !daemon,
+      ...(io.now ? { now: io.now } : {}),
+    });
+    return {
+      schema_version: JSON_SCHEMA_VERSION,
+      run_id: r.runId,
+      decision: decision === "APPROVED" ? "approve" : "deny",
+      outcome: r.outcome,
+      state: r.state,
+      daemon_running: daemon,
+      approval_id: r.approvalId,
+      request_event_id: r.requestEventId,
+      decided_by: r.decidedBy,
+      decided_at: r.decidedAt,
+      scope_hash: r.scopeHash,
+    };
+  });
+}
+
+export function renderDecision(r: DecisionReport): string {
+  const what =
+    r.outcome === "requested"
+      ? `${r.decision} recorded; the serve daemon (or startup reconciliation) will apply it`
+      : r.outcome === "approved"
+        ? "approved (no daemon was running; applied directly)"
+        : "denied (no daemon was running; applied directly)";
+  return `${r.run_id}: ${what} [state ${r.state}; approval ${r.approval_id} by ${r.decided_by} at ${r.decided_at}]\n`;
 }
 
 export function parseLimit(raw: string | undefined): number {

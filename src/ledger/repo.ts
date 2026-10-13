@@ -323,6 +323,11 @@ export interface ApprovalDecision {
   status: "APPROVED" | "DENIED";
   /** OS user of the operator CLI, or the cancel source when a waiting run is cancelled (ROADMAP Q-15, Proposed). */
   decidedBy: string;
+  /**
+   * When the operator decided (ISO 8601); defaults to now. T3.4: the time the operator CLI recorded the decision, which
+   * precedes its application when `serve` or startup reconciliation applies it later.
+   */
+  decidedAt?: string;
 }
 
 export interface Ledger {
@@ -792,7 +797,7 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
       if (typeof input.decidedBy !== "string" || input.decidedBy.length === 0) throw new Error("decidedBy is required");
       const res = db
         .prepare("UPDATE approval SET status = ?, decided_at = ?, decided_by = ? WHERE id = ? AND status = 'PENDING'")
-        .run(input.status, ts(), input.decidedBy, input.id);
+        .run(input.status, input.decidedAt ?? ts(), input.decidedBy, input.id);
       return res.changes === 1 ? getApproval(input.id) : undefined;
     },
 

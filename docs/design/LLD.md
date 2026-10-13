@@ -722,7 +722,8 @@ form, hash, spelling maps), `src/lifecycle/lifecycle.ts` (admission), `src/ledge
 - `network.hosts` entries must match a bare host-name pattern (no scheme, port, path or wildcard).
 - V11 for `privileged` defers the adapter's compile verdict to dispatch ([FRD V11](../requirements/FRD.md#71-delegate_task));
   until T3.5/T3.6 dispatch fails every `privileged` run `ELIGIBILITY_NONE` before any probe, lease, worktree or
-  process, so `bypassApproved` is never read.
+  process, so no compile reads `bypassApproved` (T3.4 computes it at dispatch and records it in the transition event
+  only).
 - Cancelling a run in AWAITING_APPROVAL closes its `PENDING` row as `DENIED` in the same transaction (ROADMAP Q-15
   default): `decided_by` is `cancel_run` for the MCP tool and the requesting OS user for `runs cancel`, plus an
   `approval_closed` `run_event` (approval ID and status only).
@@ -730,6 +731,26 @@ form, hash, spelling maps), `src/lifecycle/lifecycle.ts` (admission), `src/ledge
   `decided_by`; the hash re-check (C7 here, `approve` in T3.4) catches a scope rewritten without its hash, but not a
   writer with ledger access who rewrites both.
 - No index was added: the meta-session lookup joins `approval.run_id` to `run` and expects small tables.
+
+**Implementation notes (T3.4, Proposed, Delegated).** Code: `src/lifecycle/approval.ts` (decision rules, application,
+bypass verdict), `src/cli/operator.ts` and `src/cli/runs.ts` (`approve`, `deny`), `src/reconcile/reconcile.ts`.
+
+- `approve` and `deny` follow the `runs cancel` pattern ([ADR-0005](../adr/0005-sqlite-ledger.md), [TDD
+  §3.5](TDD.md#35-concurrency-model)): after the checks in **Approve** above, the CLI appends an
+  `operator_decision_requested` `run_event` (decision, approval ID, OS user, the scope hash it checked) in the same
+  transaction. With no daemon (the CLI holds the data-directory lock) it applies the decision at once; otherwise `serve`
+  applies it on its operator poll, or startup reconciliation does. Applying re-runs every check, then writes the row
+  (`decided_at` is the time of the CLI's record, `decided_by` its OS user), an `approval_decided` event, the run's
+  transition (T3 to QUEUED, or T19 to CANCELLED) and an `operator_decision_applied` event in one transaction, so the row
+  and the run state change together; a decision that no longer applies gets `operator_decision_rejected` and changes
+  nothing. While a decision or a cancel is pending for the run, a further `approve` or `deny` is refused.
+- The **Approve** checks also require that the run's snapshot names this approval and carries the same `scopeHash`, and
+  that the hash recomputed from the row's stored `scope_json` equals `scope_hash`; the **Bypass** check applies the same
+  three hash comparisons and also requires the row to have been requested by a run of the same meta-session and client.
+- The **Bypass** check runs in `RunLifecycle` at dispatch (PREFLIGHT, before any probe), not in `src/policy`; a mismatch
+  is FRD T8 with `PERMISSION_BLOCKED`, and the transition event names the failed check (never a hash or scope content).
+- `get_run include_events` drops `requested_by` and `scope_hash` from `operator_decision_requested` events.
+- An approved run is QUEUED without the ingress queue bound (FRD T3 has no such guard).
 
 ## 4. Failure taxonomy
 

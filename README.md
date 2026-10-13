@@ -159,10 +159,14 @@ Tool schemas are published through MCP `tools/list`.
 switchboard runs list [--state <STATE>] [--limit <n>]
 switchboard runs show <id>
 switchboard runs cancel <id>
+switchboard approve <run_id>
+switchboard deny <run_id>
 ```
 
-`runs cancel` writes a request that a running `serve` applies. Add `--json` to any of these for machine-readable output.
-Exit codes: 0 success, 1 failure, 2 usage error.
+`runs cancel`, `approve` and `deny` write a request that a running `serve` applies; with no `serve` running they apply
+it themselves. `approve` and `deny` act only on a `privileged` run waiting for approval (review its scope with
+`runs show` first); `deny` ends the run cancelled, and a second decision is refused. Add `--json` to any of these for
+machine-readable output. Exit codes: 0 success, 1 failure (including a refused decision), 2 usage error.
 
 ## Trust profiles
 
@@ -174,7 +178,7 @@ adapter compiles the profile into the provider's own permission and sandbox cont
 | `inspect-untrusted` | yes | Read-only file access, network off, repository-provided config disabled. Claude Code gets no shell. Codex runs commands inside its read-only native sandbox (see below). |
 | `edit-untrusted` | yes | Edits inside an isolated Git worktree, network off, repository config disabled. Claude Code gets no shell, because the shell allowlist is empty. Codex runs commands inside its `workspace-write` native sandbox (see below). |
 | `test-sandboxed`, `trusted-development` | no | Rejected with `ELIGIBILITY_NONE`. |
-| `privileged` | never granted | Rejected with `PERMISSION_BLOCKED`; it needs operator approval, which this version does not provide. |
+| `privileged` | request and approval only | Above the client's `max_trust_profile`: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny`; an approved run still fails `ELIGIBILITY_NONE` before any process starts, because no adapter compiles a `privileged` scope yet. |
 
 A request above the client's `max_trust_profile` also fails `PERMISSION_BLOCKED`. Non-empty
 `verification_commands` are refused with `INVALID_REQUEST` until verification lands in milestone 3.
@@ -189,10 +193,11 @@ for milestone 3 settles it (ROADMAP R-23).
 
 - `profiles.<name>` overrides in the config may loosen a profile's defaults, but only explicitly, with the change
   recorded in every run's policy snapshot and reported by `doctor`.
-- A `privileged` request will carry a machine-readable `privileged_scope` (file access, shell commands, network hosts
-  and repository configuration, plus a `bypass` setting that defaults to off) and wait for
-  `switchboard approve <run_id>`. A provider bypass flag such as `--dangerously-skip-permissions` is passed only when
-  the approved scope explicitly sets `bypass` ([ADR-0017](docs/adr/0017-approved-privileged-scope-bypass.md)).
+- A `privileged` request carries a machine-readable `privileged_scope` (file access, shell commands, network hosts
+  and repository configuration, plus a `bypass` setting that defaults to off) and waits for
+  `switchboard approve <run_id>` (available now; running the approved work is not). A provider bypass flag such as
+  `--dangerously-skip-permissions` is passed only when the approved scope explicitly sets `bypass`
+  ([ADR-0017](docs/adr/0017-approved-privileged-scope-bypass.md)).
   Approvals are never automatic and never expire: once approved, later `continue_task` runs of the same meta-session
   reuse the approved scope without asking again, so approve only scopes you are content to leave open for that
   session. A different scope or a new task asks again.

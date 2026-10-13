@@ -11,9 +11,12 @@
  * T3.3 (LLD §3.1 "What is shown where"): a `privileged` run carries `approval: { status, requested_at }` of the approval
  * named by its policy snapshot, and nothing else of it: never the scope, the scope hash or `decided_by`. The policy
  * snapshot itself is never read into the envelope beyond that ID.
+ *
+ * T3.4: the operator `approve`/`deny` record (`operator_decision_requested`) carries the deciding OS user and the scope
+ * hash for the operator CLI; `get_run include_events` drops both fields from that event (Proposed).
  */
 import type { Ledger, RunRecord } from "../ledger/index.js";
-import { isTerminal } from "../lifecycle/index.js";
+import { isTerminal, OPERATOR_DECISION_REQUESTED } from "../lifecycle/index.js";
 import type { ReportedUsage } from "../usage/index.js";
 import { MCP_ARTIFACT_KINDS } from "./schemas.js";
 
@@ -141,7 +144,7 @@ export function compactEvents(
   scrub: (s: string) => string,
 ): NonNullable<Envelope["events"]> {
   return ledger.listRunEventsAfter(runId, afterSeq, limit).map((e) => {
-    const text = scrub(e.payload_json);
+    const text = scrub(e.type === OPERATOR_DECISION_REQUESTED ? operatorOnlyStripped(e.payload_json) : e.payload_json);
     let payload: unknown;
     if (text.length > EVENT_PAYLOAD_MAX) payload = { truncated: true, bytes: e.payload_json.length };
     else {
@@ -153,4 +156,14 @@ export function compactEvents(
     }
     return { seq: e.seq, ts: e.ts, type: e.type, payload };
   });
+}
+
+/** Operator-only fields of an `approve`/`deny` record (LLD §3.1 "What is shown where": no hash, no `decided_by`). */
+function operatorOnlyStripped(json: string): string {
+  try {
+    const { requested_by: _by, scope_hash: _hash, ...rest } = JSON.parse(json) as Record<string, unknown>;
+    return JSON.stringify(rest);
+  } catch {
+    return JSON.stringify({ unparseable: true });
+  }
 }

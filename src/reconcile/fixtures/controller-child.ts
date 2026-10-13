@@ -20,6 +20,8 @@ interface ChildConfig {
   scenario?: FakeScenario;
   /** Custom fake CLI script (overrides scenario). */
   script?: string;
+  /** T3.4: also admit a privileged run with this scope first (it stays AWAITING_APPROVAL). */
+  privilegedScope?: unknown;
 }
 
 const cfg = JSON.parse(process.argv[2] ?? "{}") as ChildConfig;
@@ -42,6 +44,7 @@ const adapter = new FakeAdapter({
   timeouts: { wallClockMs: 120_000, idleMs: 120_000, killGraceMs: 300 },
 });
 
+let privilegedRunId: string | undefined;
 const lifecycle = new RunLifecycle({
   ledger,
   workspace,
@@ -54,11 +57,23 @@ const lifecycle = new RunLifecycle({
     if (n.to !== "RUNNING") return;
     const run = ledger.getRunRecord(n.runId);
     process.stdout.write(
-      `${JSON.stringify({ running: { runId: n.runId, metaSessionId: run?.meta_session_id, pgid: run?.pgid } })}\n`,
+      `${JSON.stringify({ running: { runId: n.runId, metaSessionId: run?.meta_session_id, pgid: run?.pgid, privilegedRunId } })}\n`,
     );
   },
 });
 
+if (cfg.privilegedScope !== undefined) {
+  privilegedRunId = (
+    await lifecycle.submit({
+      clientId: "client-a",
+      objective: "privileged work",
+      workspace: cfg.repo,
+      trustProfile: "privileged",
+      provider: "fake",
+      privileged: { scope: cfg.privilegedScope },
+    })
+  ).runId;
+}
 const submitted = await lifecycle.submit({
   clientId: "client-a",
   objective: "hang until killed",
