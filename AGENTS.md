@@ -6,8 +6,8 @@ this repository. Humans are welcome to read it too.
 ## What this repository is
 
 Switchboard is a headless controller that lets one primary orchestrating agent delegate coding work to several
-AI coding CLIs (Claude Code, Codex, Grok Build, Antigravity, Cursor, OpenCode, Kimi Code) through their documented
-automation surfaces, behind a single MCP tool surface.
+AI coding CLIs (Claude Code, Codex, Grok Build, Antigravity, Cursor, OpenCode, Kimi Code and, as a Should, Muse Code)
+through their documented automation surfaces, behind a single MCP tool surface. The roadmap owns the provider list.
 
 The repository contains the research, the specification set and application code under `src/` and `test/`. The M1
 foundation is done; M2 and M3 are `Partial`, and parts of M9 are implemented. Milestone status is owned by

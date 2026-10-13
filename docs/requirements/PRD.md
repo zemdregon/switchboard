@@ -7,8 +7,12 @@
 | Does not own | Business outcomes ([BRD](BRD.md)); requirements ([SRS](SRS.md)); workflows and business rules ([FRD](FRD.md)); milestone scope and status ([ROADMAP](../ROADMAP.md)); components ([HLD](../design/HLD.md)). |
 | Last reconciled | 2026-10-12 |
 
-Nothing in this document is implemented. As of 2026-10-12 the repository contains documentation only. Acceptance
-criteria are conditions to be checked when the named milestone delivers.
+Acceptance criteria are conditions to be checked when the named milestone delivers. Status note (2026-10-13): this
+document no longer describes a documentation-only repository. Milestone M1 is done and M2, M3 and M9 are `Partial`
+([ROADMAP §6](../ROADMAP.md#6-milestones)); the roadmap owns what is implemented. CAP-9 as written lists commands
+that do not exist yet: `adapters validate` is owned by milestone M4 (FR-OPS-02) and `capacity` by milestone M6
+(FR-OPS-05), both `Planned` in the ROADMAP §6 table. `serve`, `doctor`, `runs`, `approve`, `deny`, `gc`, `git push` and
+`projects list|show|validate|approve` exist today. The requirement text is unchanged.
 
 ## 1. Product overview
 
