@@ -1,5 +1,7 @@
 # Switchboard
 
+![Switchboard logo](assets/switchboard-logo.png)
+
 Switchboard is a headless controller that lets one orchestrating agent delegate coding work to AI coding CLIs
 (Claude Code and Codex in this stage) through their documented automation surfaces, behind a single MCP tool surface.
 It runs on your own machine and reuses the logins you already made with those CLIs. Switchboard itself never handles
