@@ -106,6 +106,7 @@ describe("projects list | show (T9.1, FR-PRJ-08)", () => {
           writable: true,
           push: { policy: "none" },
           sign: false,
+          finalize_commit: false,
         },
       ],
     });

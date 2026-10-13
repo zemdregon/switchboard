@@ -32,6 +32,17 @@ export {
   credentialReachFromJson,
   evaluateCredentialReach,
 } from "./credential-reach.js";
+export {
+  FINALIZE_MESSAGE_MAX,
+  type FinalizeCommitOutcome,
+  type FinalizeCommitRequest,
+  type FinalizeSkipReason,
+  finalizeCommitEventPayload,
+  finalizeCommitPlan,
+  GIT_FINALIZE_COMMIT_EVENT,
+  makeFinalizeCommit,
+  sessionHasGitPolicyViolation,
+} from "./finalize.js";
 export { DEFAULT_PUBLISH_PREFIX, isRunBranchRef, PublishRefError, publishRefFor } from "./publish-ref.js";
 export {
   classifyPush,

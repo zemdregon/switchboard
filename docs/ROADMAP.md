@@ -441,13 +441,35 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
     (still unmerged, so edited in place under "Amended before merge"); no requirement ID changes (dated notes on BR-31
     and FR-GIT-06). Residual risk: R-51 (not blocking).
 
+<!-- markdownlint-disable-next-line MD029 -->
+38. Finalize-only mode as built (T9.7, 2026-10-13). **Delegated decision (agent), under [owner decisions
+    25](#42-owner-decisions) and 36; not an Ender quote and not owner-approved.** The opt-in is the repository context
+    key `finalize_commit` (boolean, default `false`; it needs an `identity` and only the primary, writable context may
+    set it), frozen into the run's policy snapshot like the identity. It applies only to an adapter whose
+    `commitChannel` is not `injected` (Claude Code and Codex today); a `none` adapter without the opt-in runs as before
+    (diff and checkpoint only), and no ineligibility rule exists (Q-43). At FINALIZING, after the ref check and the
+    evidence checkpoint, a run about to end SUCCEEDED gets ONE commit on the publish ref through the T9.3 publisher (a
+    separate instance that accepts only FINALIZING runs): the checkpoint's changed paths (nested repositories already
+    excluded), the context identity, and the agent's structured final summary as the message after the FR-GIT-04
+    sanitiser. Fail closed, never changing the outcome, each recorded as a `git_finalize_commit` event with a reason:
+    no commit for a failed or cancelled run, after any `git_policy_violation` in the meta-session (BR-27, as Q-44 does
+    for pushes), without a usable summary (`no_message`; the controller never writes a stand-in), for a summary over
+    8192 characters (not truncated), for more than 256 paths, or when any path is refused (counts only). Provenance is
+    the existing `git_commit` row with `origin = 'finalize_only'`; the `git_commit` and intent events carry `via:
+    "finalize"` and the FINALIZING transition's event id in place of a tool-call event (FR-GIT-07), so no ledger column
+    or migration is added. Approved bypass runs are handled identically. No ADR: the persistence format
+    (`origin = 'finalize_only'`) and the mode itself were already decided (ADR-0014, ADR-0025, LLD §1); no boundary,
+    trust or credential change. No requirement ID changes. Residual risk: R-52 (not blocking); open question Q-45.
+    *Unverified:* nothing ran against a live provider; only the fake adapter and Git 2.43.0 were exercised.
+
 Decisions 10 to 13, 17, 19, 21 and 22 each choose the less restrictive of the options put to Ender (decision 18 is the
 principle behind the 2026-10-13 ones); decisions 20 and 23 keep the stricter behaviour already implemented. Their residual
 risks are recorded for Ender as R-23 to R-26, R-34, R-38 and R-39 in §7.1 (not blocking); decision 24's as R-38 and
 R-40; decision 26's as R-41; decision 27's as R-35 (mitigated); decision 28's as R-42 (mitigated);
 decision 29 has none beyond the stale-for-TTL window noted in it; decision 30 closes R-44; decision 32's is R-45 (not blocking);
 decision 33's is R-46 (not blocking); decision 34's is R-47 (not blocking); decision 35's are R-48 and R-49 (not
-blocking); decision 36's is R-50 (not blocking); decision 37's is R-51 (accepted by the owner for bypass).
+blocking); decision 36's is R-50 (not blocking); decision 37's is R-51 (accepted by the owner for bypass); decision
+38's is R-52 (not blocking).
 
 ### 4.3 Stated intent (confirmed constraints)
 
@@ -901,6 +923,34 @@ records the exemption in event and row). Unchanged: the push process, refspec, n
 targets, limits, Q-44, the provider's Git-write denial (decision 22) and non-bypass runs. Still unverified: nothing ran
 against a live provider or a network remote.
 
+**T9.7 status (2026-10-13; Delegated): Done for `host` runs on fakes (Git 2.43.0, local bare remote); not run against
+a live provider.** "Done when", clause by clause, all in `src/lifecycle/finalize-commit.test.ts` (a fake adapter variant
+declaring `commitChannel: "none"`, scenario `edit_files`, temporary repositories):
+*opt-in commit at FINALIZING passes the same sanitiser and provenance tests*: with `finalize_commit` the run ends
+SUCCEEDED with exactly one commit on the publish ref, parented on the base, holding exactly the run's changed paths (a
+modification, a deletion and a new file in a subdirectory), author and committer set to the context identity, and the
+message equal to the summary with its `Co-Authored-By:` trailer and `claude.ai/code/session_...` URL removed
+(`trailer.co-author` and `url.session` counted in `sanitizer_json`); one `git_commit` row with `origin =
+'finalize_only'`, its `git_commit` event marked `via: "finalize"` with the FINALIZING event id; the worktree index,
+`HEAD` and run branch stay where the checkpoint left them, the checkpoint is not in the publish history and the
+operator checkout is untouched; a crash after `update-ref` is rolled forward by `recover()` and a crash after the intent
+is aborted with nothing published. *A `none` adapter without the opt-in still runs (diff and checkpoint only, no
+commit)*: "opt-in off ...". *No ineligibility rule is added*: the same test runs a write-capable profile on a `none`
+adapter to SUCCEEDED; nothing in `src/routing` or the lifecycle refuses it. Also covered: a `git_policy_violation`
+(agent `git commit`) gives `skipped`/`git_policy_violation`; no summary, or one that is only attribution, gives
+`no_message`; a failed run gives `run_not_succeeded`; an `injected` adapter never gets the finalize commit; a refused
+path (a deletion absent from the publish parent) refuses the whole commit (`PATH_REFUSED`, counts only); an approved
+privileged bypass run commits after a clean ref check; the operator command `switchboard git push` pushes the finalize
+commit to a local bare remote and `runs show` (text and `--json`) shows it `via finalize` without the message. Config:
+`src/config/config.test.ts` ("finalize_commit ..."), snapshot freeze: `src/mcp/mcp.test.ts` ("freezes the finalize-only
+opt-in ..."), `projects show --json`: `src/cli/projects.test.ts`. Code: `src/git/finalize.ts`, `src/git/commit.ts`
+(`finalizingEventId`, `via`), `src/lifecycle/lifecycle.ts` (`finalizePublisher`), `src/cli/serve.ts`,
+`src/cli/runs.ts`, `src/config/schema.ts`, `src/config/projects.ts`, `src/mcp/server.ts`, `src/policy/types.ts`, fake
+adapter option `commitChannel` and scenario `edit_files`. Decision 38; Q-43 resolution applied; R-52, Q-45. **Not
+covered:** Claude Code and Codex runs (no live provider; their `commitChannel` stays `none`, so they get the mode when
+opted in), `container` environments (skipped as `environment_not_host` until M10), signing (T9.10), the inner agent's
+message drafting (M11), and reconciliation does not redo a finalize commit a crash interrupted before its intent.
+
 ### 6.4 M10 Container environments: tasks
 
 *Proposed.* Q-6 was left to the agent, so the runtime and login mechanism are delegated and verified by T10.0 before any
@@ -1079,6 +1129,7 @@ preceding milestone completes.
 | R-49 | *Delegated, not blocking (decision 35, ADR-0028).* `switchboard git push` refuses while `serve` holds the data-directory lock, and a repository whose own configuration sets a credential helper, `core.sshCommand` or `insteadOf` is refused (`REPO_CONFIG_UNSAFE`) | The operator must stop `serve` to push, and must move such settings to the global configuration | **Open, accepted.** Fail closed. Revisit if stopping `serve` proves impractical (a daemon-applied operator push request) or if repository-level credential settings are common |
 | R-50 | *Delegated, not blocking (decision 36).* Reliance on third-party observed behaviour that may be stale or wrong. The per-provider tool-injection leads in [TDD §3.10](design/TDD.md#310-git-commits-attribution-and-publication) come from reading another project's source at one commit (6524a8d) and from issue and documentation text; that project's own documentation was already stale for Codex (it describes `-c mcp_servers.*` with a bearer environment variable, while its code passes `config.mcp_servers` with `http_headers` at thread start). It drives SDKs and `codex app-server`, not the raw CLI argv Switchboard builds | An adapter built on a lead could fail, or be less safe than assumed (for example an allow rule that does not cover the tool, or a config merge that loads operator MCP servers) | **Open, accepted.** Every lead is a hypothesis for the T9.0 open items and the adapter tasks (T9.4b and later); the authority is the installed CLI's help, the provider's documentation and the opt-in live checks; nothing is declared `injected` on a lead alone; Switchboard copies no code, comments or documentation from that project |
 | R-51 | *Delegated reading of an owner decision, accepted by the owner for bypass (decision 37, ADR-0028 "Amended before merge").* An approved bypass agent with a shell can read the operator's push credentials (`~/.ssh`, a credential helper's store, `~/.git-credentials`) while the controller `push` tool is offered to it, because BR-31 no longer withholds `push` from approved bypass runs. This is the one place a bypass run's agent can reach push credentials by design of the owner's choice; the controller still never passes credentials to it and the controller's own push is unchanged | A bypass agent, or an injected prompt in one, could push with the operator's credentials around the tool (any ref, force, other remotes), bypassing the publish-ref-only rule | **Accepted by the owner for bypass runs; not blocking.** Controls that stay: bypass needs a per-meta-session approval of the exact scope (decision 17), policy `branch` is off by default per context, the provider's Git-write denial and FR-GIT-03 ref snapshots, worktree isolation, and the controller push itself (verified refspec, never forced). Non-bypass runs keep BR-31. Revisit with containers (M10, no credential store mounted) |
+| R-52 | *Delegated, not blocking (decision 38, T9.7).* Finalize-only mode publishes the agent's final summary as the commit message and the whole run as one commit. The sanitiser removes only what its rules describe (R-14), so a summary can carry text the operator would not have written (including text an injected prompt asked for); and the fail-closed limits (no commit for more than 256 changed paths, a summary over 8192 characters, any refused path, no usable summary, any violation in the meta-session) mean an opted-in run can end with no commit, only the diff and checkpoint | An unwanted message on the publish ref (visible once pushed), or an expected commit missing; neither changes the run's outcome, and each skip is recorded with its reason in `git_finalize_commit` and `runs show` | **Open, accepted.** Controls: opt-in per context (default off), the same FR-GIT-04 sanitiser and provenance as the `commit` tool, nothing pushed without the context's push policy and a separate push, the publish ref is separate from the operator's branches (FR-WS-05). A crash after the ref update leaves the commit published and recovery writes its row even though reconciliation then finishes the run; a crash before the intent leaves no commit (reconciliation does not retry it). Revisit the limits with Q-45 |
 
 Numbering: R-36, R-37 and Q-32 to Q-35 (§7.3) were written on the M3 wave B branch as R-29, R-30 and Q-27 to
 Q-30. PR #17 merged all but Q-30 into main under those numbers, which main already used for other items; they were
@@ -1142,6 +1193,7 @@ No blocker affects M1, M2 or M9.
 | Q-42 | *Delegated, open (T9.3).* LLD §12.3 first said the publish ref is `refs/heads/<push.branch_prefix><sess>`; the example prefix `switchboard/` would collide with run branches, so ADR-0025 fixes the local ref at `refs/heads/switchboard/pub/<sess>` and leaves `push.branch_prefix` as the remote branch prefix (LLD §12.6). T9.6 should confirm this reading when it builds the refspec | **Decided (T9.6, decision 35, Delegated):** confirmed. Local `refs/heads/switchboard/pub/<sess>`; remote `refs/heads/<push.branch_prefix><sess>` ([ADR-0028](adr/0028-controller-push-and-credential-reach.md)) |
 | Q-43 | *Delegated, open (T9.4).* LLD §2 says an adapter with `commitChannel: "none"` is ineligible for write-capable profiles on a context unless the operator opts in to finalize-only mode (FRD BR-30, Proposed there). T9.4 declares `none` for Claude Code and Codex but does not enforce that rule: enforcing it now would make both providers ineligible for every write-capable project run before T9.7 offers the opt-in | **Decided 2026-10-13 by [owner decision 36](#42-owner-decisions)** ("Finalize-only."): adapters with `commitChannel: "none"` are **not** made ineligible; they run write-capable runs and, when the project opts in to finalize-only (T9.7), the controller commits at FINALIZING through the same sanitiser and provenance. Ender wants the opt-in for his own projects. Earlier default: not enforced |
 | Q-44 | *Delegated, open (T9.5).* FRD BR-27 says offending commits are never published. T9.5 keeps them off the publish ref (restore), but the `push` tool and operator command (T9.6) do not exist yet. Should a meta-session with any `git_policy_violation` be refused a push until the operator reviews it, or is the restored publish ref enough? | **Decided (T9.6, decision 35, Delegated; fail closed, stricter than the proposal):** any `git_policy_violation` event in any run of the meta-session refuses every later push, from the `push` tool and from `switchboard git push`, recorded as `REFUSED_POLICY`/`GIT_POLICY_VIOLATION`. There is no "cleared" state in this stage; the operator can push by hand after review ([ADR-0028](adr/0028-controller-push-and-credential-reach.md)) |
+| Q-45 | *Delegated, open (T9.7, decision 38).* Finalize-only mode skips the commit, rather than shortening anything, when a run changed more than 256 paths (the `commit` tool's limit) or the agent's final summary is over 8192 characters (the tool's message limit). Should the controller instead commit all changes in one pass for large runs, or use only the summary's first paragraph as the message? Both change what a bypass run of Ender's would publish | Skip and record the reason (`too_many_paths`, `message_too_long`); the diff and checkpoint remain, and the operator can commit by hand |
 
 ## 8. Deferred and excluded work
 

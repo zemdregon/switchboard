@@ -2,7 +2,7 @@
 // Fake provider CLI for tests (T1.7, TDD §3.6). Needs no real provider, network or credentials.
 // Usage: cli.mjs [--scenario NAME] [--resume SESSION_ID] [--version | --auth-status | --smoke]
 // Scenarios: success, task_failure, auth_missing, rate_limit, partial_mutation, malformed_output, hang,
-// hang_ignore_term, env_report, git_commit, git_attempts. The prompt, if any, arrives on stdin and is ignored except by git_commit.
+// hang_ignore_term, env_report, git_commit, git_attempts, edit_files. The prompt, if any, arrives on stdin and is ignored except by git_commit.
 // `env_report` lists the NAMES (never the values) of the environment variables the child received, for the
 // environment-allowlist test (T3.8, FR-EXE-07).
 //
@@ -27,8 +27,13 @@
 //   {"op": "tool_commit", "arguments"}            the injected `commit` tool (needs --tool-channel)
 // Each step's outcome (op and exit status, or tool SHA/error code) is a `message` event. With "hang": true it then
 // idles until killed (restart tests). It never leaves the worktree, reads no credential and uses no network.
+//
+// `edit_files` (T9.7, FR-GIT-09) plays an agent WITHOUT a tool channel: the objective on stdin is a JSON plan
+// `{"files": {"<rel path>": "<content>" | null}, "summary": "<text>" | null, "ok": true}`; it writes (or, for null,
+// deletes) the files in its working directory and ends with a `result` event carrying the summary (none when null).
+// `ok: false` ends as a task failure (exit 1). No Git command is run.
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 // A hanging scenario must outlive a controller that died (SIGKILL): ignore EPIPE instead of crashing on a late write.
@@ -107,6 +112,10 @@ if (argv.includes("--version")) {
       begin();
       await gitAttemptsScenario();
       break;
+    case "edit_files":
+      begin();
+      await editFilesScenario();
+      break;
     case "hang":
     case "hang_ignore_term":
       if (scenario === "hang_ignore_term") process.on("SIGTERM", () => {});
@@ -123,6 +132,31 @@ async function readStdin() {
   let text = "";
   for await (const chunk of process.stdin) text += chunk;
   return text;
+}
+
+async function editFilesScenario() {
+  let plan;
+  try {
+    plan = JSON.parse(await readStdin());
+  } catch {
+    plan = undefined;
+  }
+  if (typeof plan !== "object" || plan === null) plan = {};
+  for (const [rel, content] of Object.entries(plan.files ?? {})) {
+    if (content === null) {
+      rmSync(rel, { force: true }); // relative to cwd, the run worktree
+      emit({ type: "tool", tool: "edit", name: "delete_file", target: rel });
+      continue;
+    }
+    mkdirSync(dirname(rel), { recursive: true });
+    writeFileSync(rel, content); // relative to cwd, the run worktree
+    emit({ type: "tool", tool: "edit", name: "write_file", target: rel });
+  }
+  const ok = plan.ok !== false;
+  const summary = typeof plan.summary === "string" ? plan.summary : undefined;
+  if (!ok) emit({ type: "error", category: "tool", message: "task failed" });
+  emit({ type: "result", ok, ...(summary !== undefined ? { summary } : {}) });
+  if (!ok) process.exitCode = 1;
 }
 
 async function gitCommitScenario() {

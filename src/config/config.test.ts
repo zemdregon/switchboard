@@ -263,6 +263,35 @@ describe("projects[] (T9.1, FR-PRJ-01, 02, 04)", () => {
       /\$\.projects\[0\]\.x: unknown key[\s\S]*\$\.projects\[0\]\.id/,
     );
   });
+
+  it("finalize_commit (T9.7, FR-GIT-09): default off, opt-in resolved, needs an identity and the primary writable context", () => {
+    const identity = { name: "Ada", email: "ada@example.test" };
+    const off = loadConfig({ configPath: withProjects({ id: "web-app", name: "W", contexts: [repoCtx] }) });
+    expect(off.projects[0]?.contexts[0]?.finalizeCommit).toBe(false);
+    const on = loadConfig({
+      configPath: withProjects({
+        id: "web-app",
+        name: "W",
+        contexts: [{ ...repoCtx, identity, finalize_commit: true }],
+      }),
+    });
+    expect(on.projects[0]?.contexts[0]?.finalizeCommit).toBe(true);
+    const load = (contexts: unknown[]) => () =>
+      loadConfig({ configPath: withProjects({ id: "web-app", name: "W", contexts }) });
+    expect(load([{ ...repoCtx, finalize_commit: "yes" }])).toThrow(/\$\.projects\[0\]\.contexts\[0\]\.finalize_commit/);
+    expect(load([{ ...repoCtx, finalize_commit: true }])).toThrow(
+      /\$\.projects\[0\]\.contexts\[0\]\.identity: required when finalize_commit is true/,
+    );
+    expect(load([{ ...repoCtx, identity, writable: false, finalize_commit: true }])).toThrow(
+      /\$\.projects\[0\]\.contexts\[0\]\.finalize_commit: only the primary, writable context/,
+    );
+    expect(
+      load([
+        { ...repoCtx, primary: true },
+        { ...repoCtx, id: "docs", identity, finalize_commit: true },
+      ]),
+    ).toThrow(/\$\.projects\[0\]\.contexts\[1\]\.finalize_commit: only the primary, writable context/);
+  });
 });
 
 describe("mcp_clients[].projects and the lower-of-two ceiling (T9.2, FR-PRJ-06)", () => {

@@ -55,7 +55,13 @@ export type FakeScenario =
    */
   | "git_attempts"
   /** Benign: reports the names (not values) of its environment variables (T3.8, FR-EXE-07). */
-  | "env_report";
+  | "env_report"
+  /**
+   * T9.7 (FR-GIT-09): plays an agent without a tool channel that edits files and ends with a structured summary. The
+   * objective is a JSON plan `{"files": {"<rel path>": "<content>" | null}, "summary": "<text>" | null, "ok": true}`
+   * (`null` content deletes the file; a `null` summary emits a result without one; `ok: false` ends as a task failure).
+   */
+  | "edit_files";
 
 export interface FakeAdapterOptions {
   scenario?: FakeScenario;
@@ -63,6 +69,11 @@ export interface FakeAdapterOptions {
   executable?: string;
   script?: string;
   timeouts?: Partial<Invocation["timeouts"]>;
+  /**
+   * T9.7 test variant: `none` declares no injected channel (as Claude Code and Codex do today), so the lifecycle offers
+   * no `commit` tool and finalize-only mode can apply. Default `injected`.
+   */
+  commitChannel?: "injected" | "none";
 }
 
 type Json = Record<string, unknown>;
@@ -81,20 +92,24 @@ export class FakeAdapter implements ProviderAdapter {
    * FR-GIT-02 (T9.4): the fake CLI receives the shim command in argv (`--tool-channel <json>`, no secret) and the token
    * in its environment, then starts the shim itself, as a provider would from a per-run MCP definition.
    */
-  readonly gitCapabilities: GitCapabilities = {
-    commitChannel: "injected",
-    detail: "fake test adapter: shim command in argv (--tool-channel), token in the environment",
-    channelArgs: (shim) => ({
-      argv: [FAKE_TOOL_CHANNEL_FLAG, JSON.stringify({ command: shim.command, tools: shim.toolNames })],
-      env: { ...shim.env },
-    }),
-  };
+  readonly gitCapabilities: GitCapabilities;
   readonly #scenario: FakeScenario;
   readonly #exe: string;
   readonly #script: string;
   readonly #timeouts: Invocation["timeouts"];
 
   constructor(opts: FakeAdapterOptions = {}) {
+    this.gitCapabilities =
+      opts.commitChannel === "none"
+        ? { commitChannel: "none", detail: "fake test adapter variant without a tool channel (T9.7 tests)" }
+        : {
+            commitChannel: "injected",
+            detail: "fake test adapter: shim command in argv (--tool-channel), token in the environment",
+            channelArgs: (shim) => ({
+              argv: [FAKE_TOOL_CHANNEL_FLAG, JSON.stringify({ command: shim.command, tools: shim.toolNames })],
+              env: { ...shim.env },
+            }),
+          };
     this.#scenario = opts.scenario ?? "success";
     this.#exe = opts.executable ?? process.execPath;
     this.#script = opts.script ?? FAKE_CLI_PATH;
