@@ -4,8 +4,8 @@
 - Date: 2026-10-13
 - Decided by: Delegated (agent, 2026-10-13, ROADMAP T4.7), under [owner decision 25](../ROADMAP.md#42-owner-decisions)
   for everything outside bypass mode. Not a zemdregon quote and not owner-approved. Item 9.4 (what the client answers in
-  an approved bypass run) touches bypass runs and the Git-write denial they keep, so it is **open for zemdregon**
-  (open item 1 below); the rest does not change what a bypass run may do.
+  an approved bypass run) touches bypass runs and the Git-write denial they keep, so it was put to zemdregon and is
+  answered (owner decision 48, item 9.4); the rest does not change what a bypass run may do.
 - Related: FR-EXE-03, FR-EXE-01, FR-EXE-02, FR-EXE-04, FR-EXE-05, FR-EXE-06, FR-EXE-07, FR-POL-02, FR-POL-03,
   FR-POL-08, FR-AUTH-01, FR-AUTH-02, FR-ADP-04, FR-GIT-01, FR-GIT-02, NFR-SEC-06, NFR-PRIV-02,
   [ADR-0002](0002-mcp-upstream-acp-downstream.md) (item 3), [ADR-0003](0003-no-credential-handling.md),
@@ -91,7 +91,8 @@ Kimi's archived legacy CLI also had ACP ([R2] L60, L148), but it is not evidence
 registry lists `antigravity-acp` ("Google Antigravity", 1.3.0, author Google LLC), linked from Google's Zed guide
 ([TDD §4.4.4](../design/TDD.md#444-separate-acp-adapter-owner-lead-2026-10-13)). Its behaviour (what it wraps, login,
 permission requests, per-session `mcpServers`) is Unverified until T4.31 (C14 to C17), and Google's FAQ wording on
-wrapping is an open compliance question (Q-59). Claude Code and Codex have no ACP entry point in the sources read.
+wrapping was an open compliance question (Q-59, answered by owner decision 47). Claude Code and Codex have no
+ACP entry point in the sources read.
 
 ## Decision
 
@@ -203,11 +204,12 @@ wrapping is an open compliance question (Q-59). Claude Code and Codex have no AC
    4. **Bypass-class answer.** A decision rule that selects allow for every request regardless of kind or location is
       bypass-class under FR-POL-03 (an equivalent of `--always-approve`). It is reachable only when the snapshot is an
       approved `privileged` scope that sets `bypass` with `bypassApproved` true (ADR-0017), and then still selects only
-      `allow_once`. **Open for zemdregon (open item 1):** whether that rule is the bypass answer, and whether it should
-      still reject requests whose structured subject is recognisably a Git write, as defence in depth beside the
-      provider's own deny rules (owner decision 22 keeps Git-write denial in bypass runs; agent-reported kinds cannot
-      make that complete). Until answered, no adapter may compile an approved bypass run on `acp-stdio`; that case is
-      `Ineligible` with `PROFILE_UNSUPPORTED`.
+      `allow_once`. **Answered by zemdregon (owner decision 48, 2026-10-13):** "bypass runs dont need permissions
+      requests, aka auto approve". That rule is therefore the bypass answer: allow every request with `allow_once`.
+      *Delegated details, not asked:* `allow_always` is still never selected, and no extra layer rejects requests
+      recognisably Git writes (decision 46 accepts that a bypass agent may write refs; the Git-write denial and worktree
+      isolation of decision 22 rest on the provider's controls, ref snapshots and the worktree, not on these answers).
+      An adapter may now compile an approved bypass run on `acp-stdio`.
    5. **The answer is never the only control.** The agent reports `kind`, `locations` and `rawInput` itself; the
       specification calls option kinds "a hint" and tool names non-authorising [ACP-TC]. So the answers only narrow:
       an adapter must still compile every profile into the provider's own native controls (FR-POL-02), and profile
@@ -248,7 +250,7 @@ each with no provider installed:
 | Permission inside the profile | `allow_once` selected; never `allow_always`, even when it is the only allow option |
 | No reject option | `cancelled` answer, `session/cancel`, `PERMISSION_BLOCKED` |
 | Location outside the worktree, via `..` or a symlink | Rejected |
-| Allow-everything rule | Refused unless `bypassApproved` (and only after open item 1 is answered) |
+| Allow-everything rule | Refused unless `bypassApproved` (owner decision 48 makes it the bypass answer) |
 | `fs/*`, `terminal/*`, `_x`, `cursor/ask_question` | `-32601` at once; run continues |
 | Oversize line, invalid JSON, batch array, unknown response id, wrong `sessionId`, too many pending requests | `OUTPUT_PROTOCOL_ERROR`, group killed |
 | Resume | `session/resume` preferred, `session/load` replay not re-emitted, neither advertised gives `acp_resume_unsupported` |
@@ -284,20 +286,20 @@ each with no provider installed:
   a profile that only ACP answers could satisfy stays ineligible.
 - Grok Build, Cursor and OpenCode keep JSONL as their M4 transport; this ADR only makes the ACP fallback buildable.
 - New run event types: `acp_initialized`, `acp_permission`, `acp_request_refused`.
-- An ACP adapter that needs the bypass case waits for open item 1.
+- An ACP adapter may compile the bypass case (open item 1 is answered, owner decision 48).
 
 ## Open items (for the orchestrator or zemdregon)
 
-1. **For zemdregon:** the permission answer in an approved bypass run (item 9.4). The orchestrator should record it as
-   a question in ROADMAP §7 (no number is assigned here, to avoid colliding with concurrent edits).
+1. **Answered** (Q-60, owner decision 48): the permission answer in an approved bypass run (item 9.4) is allow-once for
+   every request.
 2. Reconcile TDD §4.5.2's "persistent process" sentence with item 2 (orchestrator).
 3. The shim token path over ACP (item 7.3): environment inheritance per provider is Unverified; passing the value in
    `env` would amend ADR-0026 item 3 (orchestrator, per-provider channel ADR).
-4. The separate Antigravity ACP server: any adapter for it needs T4.31 (C14 to C17) and an answer to Q-59 first.
+4. The separate Antigravity ACP server: any adapter for it needs T4.31 (C14 to C17); Q-59 is answered (owner decision 47).
 5. All numeric bounds above are Proposed targets, not measured.
 
 ## Revisit when
 
 A provider's live leg shows behaviour this ADR assumed from the specification (blocking on a refused extension method,
 honouring `reject_once`, inheriting its environment into stdio MCP servers); ACP v2 leaves draft; a provider requires a
-client capability; or open item 1 is answered.
+client capability; or the bypass answer of owner decision 48 proves unworkable on a live leg.
