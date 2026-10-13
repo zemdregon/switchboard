@@ -464,9 +464,9 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
 
 <!-- markdownlint-disable-next-line MD029 -->
 39. Orchestrator-managed projects, T9.9 (2026-10-13). **Delegated decision (agent), under owner decision 25; not an
-    zemdregon quote and not owner-approved.** zemdregon's only input is "yes" to Q-7 (decision 8); FR-PRJ-10 and FRD BR-32 were
-    already Proposed. None of these choices changes what a bypass run may do: they only narrow what an orchestrator can
-    define. Choices, all fail closed: (a) **persistence** ([ADR-0030](adr/0030-dynamic-project-revisions-and-approval.md),
+    zemdregon quote and not owner-approved.** zemdregon's only input is "yes" to Q-7 (decision 8); FR-PRJ-10 and FRD
+    BR-32 were already Proposed. None of these choices changes what a bypass run may do: they only narrow what an
+    orchestrator can define. Choices, all fail closed: (a) **persistence** ([ADR-0030](adr/0030-dynamic-project-revisions-and-approval.md),
     migration 0004): append-only `project_revision` (without LLD §1's `approved_at`, which an append-only row cannot
     take), `project_revision_decision` (the operator's approval or rejection) and `project_event` (every call, accepted
     or refused, since `run_event` needs a run); state (in force, pending, approved, rejected, deleted) is derived;

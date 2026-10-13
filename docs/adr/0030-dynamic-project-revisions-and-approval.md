@@ -3,9 +3,9 @@
 - Status: Accepted
 - Date: 2026-10-13
 - Decided by: Delegated (agent), under [owner decision 25](../ROADMAP.md#42-owner-decisions) (best practice for a
-  decision that does not affect bypass mode). Not an zemdregon quote and not owner-approved. Recorded as decision 39 in the
-  roadmap for traceability only. zemdregon answered only "yes" to orchestrator-managed projects (Q-7, owner decision 8); the
-  gating limits, the pending-approval state and creator-only visibility were already Proposed in FRD BR-32, SRS
+  decision that does not affect bypass mode). Not an zemdregon quote and not owner-approved. Recorded as decision 39 in
+  the roadmap for traceability only. zemdregon answered only "yes" to orchestrator-managed projects (Q-7, owner decision
+  8); the gating limits, the pending-approval state and creator-only visibility were already Proposed in FRD BR-32, SRS
   FR-PRJ-10 and [ADR-0013](0013-projects-environments-and-contexts.md). This ADR records the persistence format, the
   trust-boundary mechanics and the external interface (three MCP tools, two configuration keys, one CLI command) that
   AGENTS.md requires an ADR for.
