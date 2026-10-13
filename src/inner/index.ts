@@ -8,11 +8,22 @@
  * one does. Callers receive the service by injection and always have a deterministic fallback.
  */
 import type { InnerAgentSettings, InnerTask } from "./config.js";
+import {
+  createInnerPipeline,
+  type InnerCallInput,
+  type InnerCallResult,
+  type InnerPipeline,
+  type InnerTaskContract,
+  type PipelineDeps,
+} from "./pipeline.js";
 import type { InnerBackend } from "./port.js";
 
+export * from "./breaker.js";
 export * from "./config.js";
 export * from "./fake-backend.js";
+export * from "./pipeline.js";
 export * from "./port.js";
+export * from "./truncate.js";
 
 /**
  * - `off`: no `inner_agent` section, or `enabled: false` (FR-INN-01). Every task uses its fallback.
@@ -28,18 +39,46 @@ export interface InnerAgentService {
   readonly backend: InnerBackend | undefined;
   /** True only when the master switch, the backend and the task's own switch are all on (FR-INN-05: none by default). */
   taskEnabled(task: InnerTask): boolean;
+  /**
+   * Run one task call through the pipeline (T11.2, LLD §13.4). Never throws; always yields either the validated value or
+   * the contract's deterministic fallback. With the agent off, or the task not enabled, it yields the fallback and
+   * writes nothing.
+   */
+  call<T, F>(contract: InnerTaskContract<T, F>, input: InnerCallInput): Promise<InnerCallResult<T, F>>;
+  /** Circuit state of the backend; `closed` while there is no backend. */
+  readonly breakerState: InnerPipeline["breakerState"];
 }
+
+/** Optional collaborators of the pipeline (everything in {@link PipelineDeps} except settings and backend). */
+export type InnerAgentDeps = Partial<Omit<PipelineDeps, "settings">>;
 
 export function createInnerAgent(
   settings: InnerAgentSettings | undefined,
-  deps: { backend?: InnerBackend } = {},
+  deps: InnerAgentDeps = {},
 ): InnerAgentService {
   const backend = settings?.enabled === true ? deps.backend : undefined;
   const state: InnerAgentState = settings?.enabled !== true ? "off" : backend === undefined ? "no_backend" : "ready";
+  const pipeline =
+    state === "ready" && settings !== undefined && backend !== undefined
+      ? createInnerPipeline({ ...deps, settings, backend })
+      : undefined;
   return {
     state,
     settings,
     backend,
     taskEnabled: (task) => state === "ready" && settings?.tasks[task].enabled === true,
+    async call(contract, input) {
+      if (pipeline !== undefined) return pipeline.call(contract, input);
+      return {
+        accepted: false,
+        fallback: contract.fallback(),
+        outcome: "no_call",
+        reason: undefined,
+        call_id: undefined,
+      };
+    },
+    get breakerState() {
+      return pipeline?.breakerState ?? "closed";
+    },
   };
 }
