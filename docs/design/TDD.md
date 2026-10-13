@@ -191,7 +191,9 @@ Principles: tests pass with no provider CLI installed or logged in; secret-patte
 variable `SWITCHBOARD_TEST_FAKE_ADAPTER` equals the exact sentinel `enable-test-only-fake-adapter` (scenario from
 `SWITCHBOARD_TEST_FAKE_SCENARIO`, default `success`). Any other non-empty value refuses to start, the config schema has
 no key or provider id that can enable it, and `serve` logs a warning on stderr when it is on. Production registers
-`claude` and `codex` only.
+`claude` and `codex` only. With the switch on, `SWITCHBOARD_TEST_CLOCK_OFFSET_MS` (an integer) shifts the daemon's clock
+so a process test can show that a run waiting for approval does not expire (T3.4); set without the switch, or to a
+non-integer, it refuses to start.
 
 **Running the live smoke test (operator, T2.6).** With the provider CLI installed and logged in natively (Switchboard
 never logs in for you):

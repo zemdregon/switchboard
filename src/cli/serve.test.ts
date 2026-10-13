@@ -22,7 +22,13 @@ import { LEDGER_FILE_NAME } from "../ledger/index.js";
 import { LOCK_FILE_NAME } from "../lock/index.js";
 import type { CliIo } from "./io.js";
 import { main } from "./main.js";
-import { readFakeSwitch, TEST_FAKE_ADAPTER_ENV, TEST_FAKE_ADAPTER_VALUE, TEST_FAKE_SCENARIO_ENV } from "./serve.js";
+import {
+  readFakeSwitch,
+  TEST_CLOCK_OFFSET_ENV,
+  TEST_FAKE_ADAPTER_ENV,
+  TEST_FAKE_ADAPTER_VALUE,
+  TEST_FAKE_SCENARIO_ENV,
+} from "./serve.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(HERE, "bin.ts");
@@ -116,11 +122,14 @@ interface Connected {
 }
 
 /** Start `serve` and connect an SDK stdio client to it. */
-async function connect(scenario?: string): Promise<Connected> {
+async function connect(
+  scenario?: string,
+  opts: { client?: string; env?: Record<string, string> } = {},
+): Promise<Connected> {
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: serveArgs(),
-    env: childEnv(scenario),
+    args: serveArgs(opts.client),
+    env: { ...childEnv(scenario), ...opts.env },
     stderr: "pipe",
   });
   let err = "";
@@ -362,6 +371,130 @@ describe("serve over stdio (process level)", () => {
   }, 60_000);
 });
 
+describe("privileged end to end (fake adapter, T3.4; FRD WF-7, T3, T19; owner decision 14)", () => {
+  const SCOPE = {
+    files: { access: "worktree" },
+    shell: { mode: "none" },
+    network: { mode: "off" },
+    repository_config: { mode: "disabled" },
+    bypass: true,
+  };
+  const DAY_MS = String(24 * 60 * 60 * 1000);
+
+  beforeEach(() => {
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schema_version: 1,
+        data_dir: dataDir,
+        allowed_roots: [root],
+        mcp_clients: [
+          { id: "orch", max_trust_profile: "edit-untrusted" },
+          { id: "priv", max_trust_profile: "privileged" },
+        ],
+      }),
+    );
+  });
+
+  const delegatePrivileged = (c: Client) =>
+    call(c, "delegate_task", {
+      objective: "privileged work",
+      workspace_path: repo,
+      trust_profile: "privileged",
+      privileged_scope: SCOPE,
+      routing: { provider_preference: "fake", require_provider: true },
+    });
+
+  async function operator(cmd: "approve" | "deny", runId: string): Promise<{ code: number; body: Json }> {
+    const out: string[] = [];
+    const io: CliIo = { stdout: { write: (s) => out.push(s) }, stderr: { write: () => {} }, env: {}, user: "op" };
+    const code = await main([cmd, runId, "--config", configPath, "--json"], io);
+    return { code, body: JSON.parse(out.join("")) as Json };
+  }
+
+  function ledgerView(runId: string) {
+    const db = new Database(path.join(dataDir, LEDGER_FILE_NAME), { readonly: true, fileMustExist: true });
+    try {
+      return {
+        run: db.prepare("SELECT state, pid, pgid, worktree_path FROM run WHERE id = ?").get(runId) as Json,
+        approval: db.prepare("SELECT status, decided_at, decided_by FROM approval WHERE run_id = ?").get(runId) as Json,
+        worktrees: (db.prepare("SELECT COUNT(*) AS n FROM run WHERE worktree_path IS NOT NULL").get() as Json).n,
+      };
+    } finally {
+      db.close();
+    }
+  }
+
+  it("waits 24 h (fake clock) across a restart, then approve -> QUEUED -> the documented dispatch refusal", async () => {
+    const a = await connect(undefined, { client: "priv" });
+    const d = await delegatePrivileged(a.client);
+    expect(d.isError, JSON.stringify(d.body)).toBe(false);
+    expect(d.body).toMatchObject({ status: "AWAITING_APPROVAL", approval: { status: "PENDING" } });
+    const runId = d.body.run_id as string;
+    await a.client.close();
+    await waitDead(a.pid);
+
+    // Restart with the daemon's clock a day ahead: reconciliation and several operator polls leave it waiting.
+    const b = await connect(undefined, { client: "priv", env: { [TEST_CLOCK_OFFSET_ENV]: DAY_MS } });
+    expect(b.stderr()).toContain(`"clock_offset_ms":${DAY_MS}`);
+    await new Promise((r) => setTimeout(r, 2500));
+    const still = await call(b.client, "get_run", { run_id: runId });
+    expect(still.body).toMatchObject({ status: "AWAITING_APPROVAL", approval: { status: "PENDING" } });
+    expect(ledgerView(runId).approval).toMatchObject({ status: "PENDING", decided_at: null });
+
+    // No MCP tool can approve (FR-MCP-06).
+    const tools = (await b.client.listTools()).tools.map((t) => t.name);
+    expect(tools.filter((t) => /approv|deny/i.test(t))).toEqual([]);
+
+    // approve while the daemon runs: recorded by the CLI, applied by serve (T3), then dispatched and refused.
+    const ap = await operator("approve", runId);
+    expect(ap.code, JSON.stringify(ap.body)).toBe(0);
+    expect(ap.body).toMatchObject({ outcome: "requested", daemon_running: true, decided_by: "op" });
+    const done = await pollStatus(b.client, runId, TERMINAL);
+    expect(done).toMatchObject({
+      status: "FAILED",
+      failure_code: "ELIGIBILITY_NONE",
+      approval: { status: "APPROVED" },
+    });
+    expect(done.failure_detail).toContain("privileged compile not available until T3.5/T3.6");
+    expect(JSON.stringify(done)).not.toContain(ap.body.scope_hash);
+    const view = ledgerView(runId);
+    expect(view.run).toMatchObject({ pid: null, pgid: null, worktree_path: null });
+    expect(view.approval).toMatchObject({ status: "APPROVED", decided_by: "op", decided_at: ap.body.decided_at });
+    // The operator record's user and hash stay out of the MCP event stream.
+    const withEvents = await call(b.client, "get_run", { run_id: runId, include_events: { after_seq: 0, limit: 200 } });
+    const evs = withEvents.body.events as Json[];
+    const req = evs.find((e) => e.type === "operator_decision_requested");
+    expect(req?.payload).toEqual({ decision: "APPROVED", approval_id: ap.body.approval_id });
+    expect(evs.map((e) => e.type)).toContain("operator_decision_applied");
+    expect(JSON.stringify(evs)).not.toContain(ap.body.scope_hash);
+    // A second decision is refused.
+    expect((await operator("deny", runId)).code).toBe(1);
+  }, 60_000);
+
+  it("deny ends the run CANCELLED with a decided row, no worktree and no spawn; works with and without the daemon", async () => {
+    const c = await connect(undefined, { client: "priv" });
+    const first = await delegatePrivileged(c.client);
+    const second = await delegatePrivileged(c.client);
+    const [r1, r2] = [first.body.run_id as string, second.body.run_id as string];
+    const dn = await operator("deny", r1);
+    expect(dn.body).toMatchObject({ outcome: "requested", daemon_running: true });
+    const done = await pollStatus(c.client, r1, TERMINAL);
+    expect(done).toMatchObject({ status: "CANCELLED", approval: { status: "DENIED" } });
+    expect(ledgerView(r1).approval).toMatchObject({ status: "DENIED", decided_by: "op" });
+    await c.client.close();
+    await waitDead(c.pid);
+
+    // No daemon: the CLI holds the lock and applies the deny itself.
+    const direct = await operator("deny", r2);
+    expect(direct.body).toMatchObject({ outcome: "denied", state: "CANCELLED", daemon_running: false });
+    for (const id of [r1, r2]) {
+      expect(ledgerView(id).run).toMatchObject({ state: "CANCELLED", pid: null, pgid: null, worktree_path: null });
+    }
+    expect(ledgerView(r1).worktrees).toBe(0);
+  }, 60_000);
+});
+
 describe("serve refuses to start (in process, before touching stdio)", () => {
   async function run(args: string[], env: Record<string, string> = {}) {
     const out: string[] = [];
@@ -426,6 +559,14 @@ describe("test-only fake adapter switch", () => {
     expect(() =>
       readFakeSwitch({ [TEST_FAKE_ADAPTER_ENV]: TEST_FAKE_ADAPTER_VALUE, [TEST_FAKE_SCENARIO_ENV]: "nope" }),
     ).toThrow(/must be one of/);
+    // T3.4 test-only clock offset: only with the switch on, integers only.
+    expect(
+      readFakeSwitch({ [TEST_FAKE_ADAPTER_ENV]: TEST_FAKE_ADAPTER_VALUE, [TEST_CLOCK_OFFSET_ENV]: "86400000" }),
+    ).toEqual({ enabled: true, scenario: "success", clockOffsetMs: 86_400_000 });
+    expect(() => readFakeSwitch({ [TEST_CLOCK_OFFSET_ENV]: "1" })).toThrow(/test-only switch/);
+    expect(() =>
+      readFakeSwitch({ [TEST_FAKE_ADAPTER_ENV]: TEST_FAKE_ADAPTER_VALUE, [TEST_CLOCK_OFFSET_ENV]: "1d" }),
+    ).toThrow(/must be an integer/);
 
     // The config schema has no `fake` provider and no switch key: such a config is rejected outright.
     for (const extra of [{ providers: { fake: { enabled: true } } }, { test_fake_adapter: true }]) {

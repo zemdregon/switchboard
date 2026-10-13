@@ -7,6 +7,7 @@
  * | State | Action |
  * | --- | --- |
  * | AWAITING_APPROVAL, QUEUED, WAITING_CAPACITY | Kept, order preserved; a pending operator cancel is applied (T19). |
+ * | AWAITING_APPROVAL with a recorded `approve`/`deny` | The decision is applied first (T3.4: T3 to QUEUED, T19 to CANCELLED). |
  * | PREFLIGHT, LEASED without a worktree | Lease released, back to QUEUED (WF-8, rule T20). |
  * | LEASED with a worktree (pre checkpoint recorded) | Assessed and checkpointed; FAILED `PROCESS_CRASH` (T10). |
  * | RUNNING, VERIFYING | Live orphan group terminated; → FINALIZING (T13/T14, pending `PROCESS_CRASH`, cause `controller_restart`) → finalization below. |
@@ -26,15 +27,19 @@
  *   FINALIZING the recorded outcome stands (FRD §4.3) and the request is marked applied with that outcome.
  * - A FINALIZING run whose pending outcome cannot be read is treated as a pending `PROCESS_CRASH` (fail closed).
  * - Orphan identity rules are in ./process.ts; an unverifiable or reused PID is never signalled.
+ * - T3.4: an operator `approve`/`deny` recorded while no daemon ran is applied here, before any pending cancel of the
+ *   same run (the CLI refuses a decision while a cancel is pending, so the decision is the older record). A decision
+ *   that no longer applies is marked rejected. An AWAITING_APPROVAL run with no decision is kept as is: there is no
+ *   expiry and no automatic approval (FRD WF-7, owner decision 14).
  *
  * Idempotent (LLD §10): every step is conditional on the current state; a second pass over a reconciled ledger writes
  * nothing. A crash during reconciliation leaves the last committed step, which the next pass continues from.
  */
 import { stat } from "node:fs/promises";
 import type Database from "better-sqlite3";
-import { listPendingCancels, OPERATOR_CANCEL_APPLIED } from "../cli/operator.js";
+import { listPendingCancels, listPendingDecisions, OPERATOR_CANCEL_APPLIED, rejectDecision } from "../cli/operator.js";
 import type { Ledger, RunFieldPatch, RunRecord, RunState } from "../ledger/index.js";
-import { denyApprovalOnCancel } from "../lifecycle/approval.js";
+import { applyApprovalDecision, denyApprovalOnCancel } from "../lifecycle/approval.js";
 import { RUN_STATES, SLOT_STATES, TERMINAL_STATES, TRANSITIONS } from "../lifecycle/states.js";
 import type { WorkspaceManager } from "../workspace/index.js";
 import { inspectOrphan, type OrphanStatus, terminateGroup } from "./process.js";
@@ -76,6 +81,8 @@ export interface ReconcileReport {
   readonly leasesReleased: readonly string[];
   /** Operator cancel request event ids applied. */
   readonly cancelsApplied: readonly string[];
+  /** Operator `approve`/`deny` request event ids applied (T3.4). */
+  readonly decisionsApplied: readonly string[];
 }
 
 type Pending =
@@ -94,6 +101,7 @@ class Reconciler {
   private readonly actions: ReconcileAction[] = [];
   private readonly terminated: number[] = [];
   private readonly cancelsApplied: string[] = [];
+  private readonly decisionsApplied: string[] = [];
 
   constructor(private readonly opts: ReconcileOptions) {
     this.ledger = opts.ledger;
@@ -111,6 +119,7 @@ class Reconciler {
       terminated: this.terminated,
       leasesReleased,
       cancelsApplied: this.cancelsApplied,
+      decisionsApplied: this.decisionsApplied,
     };
   }
 
@@ -118,15 +127,27 @@ class Reconciler {
     const cancelRequested = listPendingCancels(this.opts.db, run0.id).length > 0;
 
     if (WAITING.has(run0.state)) {
-      if (!cancelRequested) return; // WF-8: keep; queue order preserved.
+      // T3.4: a decision recorded while no daemon ran is applied first (approve → QUEUED, deny → CANCELLED).
+      const waiting = run0.state === "AWAITING_APPROVAL" ? this.applyDecisions(run0) : run0;
+      if (!cancelRequested) return; // WF-8: keep; queue order preserved. No expiry, no automatic approval.
+      if (TERMINAL_STATES.has(waiting.state)) {
+        this.ledger.immediate(() => this.markCancelsApplied(waiting)); // denied: the cancel is satisfied
+        return;
+      }
       this.ledger.immediate(() => {
         // FRD §4.3 / Q-15 (T3.3): a waiting privileged run's PENDING approval is closed DENIED by the requester.
-        const requestedBy = listPendingCancels(this.opts.db, run0.id)[0]?.requestedBy ?? "operator";
-        denyApprovalOnCancel(this.ledger, run0, requestedBy);
-        const moved = this.transition(run0, "CANCELLED", "T19", { finished_at: this.nowIso() }, { code: "CANCELLED" });
+        const requestedBy = listPendingCancels(this.opts.db, waiting.id)[0]?.requestedBy ?? "operator";
+        denyApprovalOnCancel(this.ledger, waiting, requestedBy);
+        const moved = this.transition(
+          waiting,
+          "CANCELLED",
+          "T19",
+          { finished_at: this.nowIso() },
+          { code: "CANCELLED" },
+        );
         this.markCancelsApplied(moved);
       });
-      this.actions.push({ runId: run0.id, from: run0.state, to: "CANCELLED" });
+      this.actions.push({ runId: waiting.id, from: waiting.state, to: "CANCELLED" });
       return;
     }
 
@@ -179,6 +200,23 @@ class Reconciler {
       default:
         return; // terminal: never touched
     }
+  }
+
+  /** Apply each recorded `approve`/`deny` of a waiting run (T3.4); returns the run as it is afterwards. */
+  private applyDecisions(run: RunRecord): RunRecord {
+    for (const req of listPendingDecisions(this.opts.db, run.id)) {
+      try {
+        const moved = applyApprovalDecision(this.ledger, req, {
+          appliedBy: "reconciliation",
+          ...(this.opts.now ? { now: this.opts.now } : {}),
+        });
+        this.decisionsApplied.push(req.requestEventId);
+        this.actions.push({ runId: run.id, from: run.state, to: moved.state });
+      } catch (err) {
+        rejectDecision(this.ledger, req, err); // e.g. a second record, or the approval changed: nothing applied
+      }
+    }
+    return this.current(run.id);
   }
 
   private async handleOrphan(run: RunRecord): Promise<OrphanStatus> {

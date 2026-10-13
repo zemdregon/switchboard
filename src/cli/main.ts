@@ -6,11 +6,22 @@
  */
 import { parseArgs } from "node:util";
 import { ConfigError } from "../config/index.js";
+import { ApprovalRefusedError } from "../lifecycle/approval.js";
 import { LockError } from "../lock/index.js";
 import { renderDoctor, runDoctor } from "./doctor.js";
 import { type CliIo, JSON_SCHEMA_VERSION, UsageError } from "./io.js";
 import { UnknownRunError } from "./operator.js";
-import { cancelRun, listRuns, parseLimit, renderCancel, renderRun, renderRunList, showRun } from "./runs.js";
+import {
+  cancelRun,
+  decideRun,
+  listRuns,
+  parseLimit,
+  renderCancel,
+  renderDecision,
+  renderRun,
+  renderRunList,
+  showRun,
+} from "./runs.js";
 import { serve } from "./serve.js";
 
 export const HELP = `Usage: switchboard <command> [options]
@@ -21,6 +32,8 @@ Commands:
   runs list           List runs, newest first (--state <STATE>, --limit <n>)
   runs show <id>      Show one run and its events
   runs cancel <id>    Cancel a run (written as an operator record the daemon applies)
+  approve <run_id>    Approve the privileged run that requested an approval (review it with runs show first)
+  deny <run_id>       Deny the privileged run that requested an approval; the run ends CANCELLED
 
 Options:
   --json              Machine-readable output (not for serve)
@@ -107,6 +120,14 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         }
         throw new UsageError(`unknown runs subcommand ${JSON.stringify(sub ?? "")}; expected list, show or cancel`);
       }
+      case "approve":
+      case "deny": {
+        // T3.4 (FR-OPS-02, FRD WF-7): top-level operator commands; no MCP tool can approve (FR-MCP-06).
+        if (sub === undefined || rest.length > 0) throw new UsageError(`${cmd} requires exactly one run id`);
+        const report = decideRun(io, loaderArgv, sub, cmd === "approve" ? "APPROVED" : "DENIED");
+        emit(report, renderDecision(report));
+        return 0;
+      }
       default:
         throw new UsageError(`unknown command ${JSON.stringify(cmd)}`);
     }
@@ -121,11 +142,13 @@ function fail(err: unknown, io: CliIo, json: boolean): number {
     ? "USAGE"
     : err instanceof UnknownRunError
       ? "NOT_FOUND"
-      : err instanceof ConfigError
-        ? "CONFIG"
-        : err instanceof LockError
-          ? "LOCKED"
-          : "ERROR";
+      : err instanceof ApprovalRefusedError
+        ? "REFUSED"
+        : err instanceof ConfigError
+          ? "CONFIG"
+          : err instanceof LockError
+            ? "LOCKED"
+            : "ERROR";
   const message = err instanceof Error ? err.message : String(err);
   if (json)
     io.stdout.write(`${JSON.stringify({ schema_version: JSON_SCHEMA_VERSION, error: { code, message } }, null, 2)}\n`);

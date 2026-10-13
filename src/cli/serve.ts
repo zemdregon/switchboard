@@ -9,7 +9,7 @@
  *   4. check Git, then run startup reconciliation BEFORE the lifecycle starts or MCP accepts calls (FR-EXE-06, WF-8);
  *   5. build the adapter registry (claude, codex; fake only through the test-only switch below) and the lifecycle with
  *      the production COMP-POL `resolveProfile` (`src/policy`) and stage-1 eligibility at dispatch;
- *   6. apply pending operator cancel requests, start the lifecycle, then serve MCP on stdin/stdout;
+ *   6. apply pending operator requests (cancel, approve, deny), start the lifecycle, then serve MCP on stdin/stdout;
  *   7. poll operator requests periodically until SIGINT, SIGTERM or the client closing stdin, then shut down: stop
  *      polling, close MCP (stop accepting), `lifecycle.shutdown()` (cancels in-flight runs and waits for them to be
  *      terminal), close the ledger, release the lock.
@@ -26,6 +26,14 @@
  * rejects unknown keys and has no `fake` provider id, so no config file can enable it; any other non-empty value of the
  * variable refuses to start (a typo must not silently change behaviour). When enabled, `serve` logs a warning and the
  * fake (which has no compliance manifest) passes the version gate; nothing else changes.
+ *
+ * Test-only clock offset (T3.4, Proposed, documented in TDD §3.6): with the fake switch on, {@link TEST_CLOCK_OFFSET_ENV}
+ * (an integer number of milliseconds) shifts the daemon's clock (ledger timestamps, lifecycle, reconciliation, logs), so
+ * a process test can show that a run AWAITING_APPROVAL does not expire after 24 hours. Set without the switch, or to a
+ * non-integer, it refuses to start.
+ *
+ * T3.4: the operator poll also applies `approve`/`deny` records (`applyOperatorRequests`), and startup reconciliation
+ * applies those recorded while no daemon ran.
  */
 import { FakeAdapter, type FakeScenario } from "../adapters/fake/adapter.js";
 import {
@@ -55,6 +63,8 @@ export const TEST_FAKE_ADAPTER_VALUE = "enable-test-only-fake-adapter";
 /** Scenario for the test-only fake adapter (default `success`); read only when the switch is on. */
 export const TEST_FAKE_SCENARIO_ENV = "SWITCHBOARD_TEST_FAKE_SCENARIO";
 export const OPERATOR_POLL_MS = 1000;
+/** Test-only clock offset in milliseconds; honoured only with the fake switch on (T3.4 process tests). */
+export const TEST_CLOCK_OFFSET_ENV = "SWITCHBOARD_TEST_CLOCK_OFFSET_MS";
 
 const FAKE_SCENARIOS: readonly FakeScenario[] = [
   "success",
@@ -74,12 +84,20 @@ export interface ServeOptions {
   readonly loaderArgv: readonly string[];
 }
 
-export type FakeSwitch = { readonly enabled: false } | { readonly enabled: true; readonly scenario: FakeScenario };
+export type FakeSwitch =
+  | { readonly enabled: false }
+  | { readonly enabled: true; readonly scenario: FakeScenario; readonly clockOffsetMs?: number };
 
 /** Read the test-only fake adapter switch. Throws ConfigError on any value other than unset, empty or the sentinel. */
 export function readFakeSwitch(env: Record<string, string | undefined>): FakeSwitch {
   const raw = env[TEST_FAKE_ADAPTER_ENV];
-  if (raw === undefined || raw === "") return { enabled: false };
+  const offset = env[TEST_CLOCK_OFFSET_ENV];
+  if (raw === undefined || raw === "") {
+    if (offset !== undefined && offset !== "") {
+      throw new ConfigError(`${TEST_CLOCK_OFFSET_ENV} is a test-only switch; it needs ${TEST_FAKE_ADAPTER_ENV}.`);
+    }
+    return { enabled: false };
+  }
   if (raw !== TEST_FAKE_ADAPTER_VALUE) {
     throw new ConfigError(
       `${TEST_FAKE_ADAPTER_ENV} is set to an unrecognised value; it is a test-only switch. Unset it to serve real providers.`,
@@ -89,7 +107,9 @@ export function readFakeSwitch(env: Record<string, string | undefined>): FakeSwi
   if (!(FAKE_SCENARIOS as readonly string[]).includes(scenario)) {
     throw new ConfigError(`${TEST_FAKE_SCENARIO_ENV} must be one of ${FAKE_SCENARIOS.join(", ")}`);
   }
-  return { enabled: true, scenario: scenario as FakeScenario };
+  if (offset === undefined || offset === "") return { enabled: true, scenario: scenario as FakeScenario };
+  if (!/^-?\d{1,15}$/.test(offset)) throw new ConfigError(`${TEST_CLOCK_OFFSET_ENV} must be an integer (milliseconds)`);
+  return { enabled: true, scenario: scenario as FakeScenario, clockOffsetMs: Number(offset) };
 }
 
 export interface Logger {
@@ -152,7 +172,11 @@ const message = (err: unknown): string => (err instanceof Error ? err.message : 
  * Run the daemon until shutdown. Resolves with the exit code. Throws ConfigError (config, unknown client, bad test
  * switch) and LockError (another serve holds the data directory) before anything else is touched; the caller maps them.
  */
-export async function serve(io: CliIo, opts: ServeOptions): Promise<number> {
+export async function serve(io0: CliIo, opts: ServeOptions): Promise<number> {
+  const fake = readFakeSwitch(io0.env);
+  const offset = fake.enabled ? (fake.clockOffsetMs ?? 0) : 0;
+  const base = io0.now ?? (() => new Date());
+  const io: CliIo = offset === 0 ? io0 : { ...io0, now: () => new Date(base().getTime() + offset) };
   const log = stderrLogger(io);
   const config = loadConfig({ argv: opts.loaderArgv, env: io.env, ...(io.homedir ? { homedir: io.homedir } : {}) });
   if (!config.mcpClients.has(opts.clientId)) {
@@ -161,7 +185,6 @@ export async function serve(io: CliIo, opts: ServeOptions): Promise<number> {
       `unknown MCP client ${JSON.stringify(opts.clientId)}; configured clients: ${known.length ? known.join(", ") : "(none)"}`,
     );
   }
-  const fake = readFakeSwitch(io.env);
   const lock: DataDirLock = acquireDataDirLock(config.dataDir);
 
   let db: ReturnType<typeof openLedger> | undefined;
@@ -192,7 +215,8 @@ async function runDaemon(
   db: ReturnType<typeof openLedger>,
 ): Promise<number> {
   const ids = createIdGenerator();
-  const ledger = createLedger(db, { ids });
+  const now = io.now;
+  const ledger = createLedger(db, { ids, ...(now ? { now } : {}) });
   const artifacts = new ArtifactStore(`${config.dataDir}/artifacts`);
   const workspace = new WorkspaceManager({
     db,
@@ -211,13 +235,14 @@ async function runDaemon(
 
   // FR-EXE-06: reconciliation completes before the lifecycle dispatches anything and before MCP accepts calls.
   try {
-    const report = await reconcile({ db, ledger, workspace });
+    const report = await reconcile({ db, ledger, workspace, ...(now ? { now } : {}) });
     log.info("startup reconciliation finished", {
       examined: report.examined,
       changed: report.actions.length,
       orphans_terminated: report.terminated.length,
       leases_released: report.leasesReleased.length,
       cancels_applied: report.cancelsApplied.length,
+      decisions_applied: report.decisionsApplied.length,
     });
   } catch (err) {
     log.error("refusing to serve: startup reconciliation failed", { error: message(err) });
@@ -228,6 +253,7 @@ async function runDaemon(
     log.warn("TEST-ONLY fake adapter enabled; it is not a real provider", {
       env: TEST_FAKE_ADAPTER_ENV,
       scenario: fake.scenario,
+      ...(fake.clockOffsetMs !== undefined ? { clock_offset_ms: fake.clockOffsetMs } : {}),
     });
   }
   const registry = buildRegistry(fake);
@@ -244,6 +270,7 @@ async function runDaemon(
     baseEnv: io.env,
     eligibility: { gate: gateFor(registry, fake), isEnabled: enablement(config, fake) },
     onTransition: (n) => log.info("run transition", { run_id: n.runId, from: n.from, to: n.to, rule: n.rule }),
+    ...(now ? { now } : {}),
   });
 
   let polling = false;
@@ -252,7 +279,7 @@ async function runDaemon(
     polling = true;
     try {
       for (const a of await applyOperatorRequests(db, ledger, lifecycle)) {
-        log.info("operator cancel applied", {
+        log.info(a.kind === "decision" ? "operator decision applied" : "operator cancel applied", {
           run_id: a.runId,
           state_after: a.stateAfter,
           ...(a.error ? { error: a.error } : {}),
