@@ -58,6 +58,9 @@ function tables(d: Database.Database): string[] {
   ).map((r) => r.name);
 }
 
+// Versions are not contiguous (0008 is reserved for T11.6), so the newest version is not the migration count.
+const LATEST_VERSION = Math.max(...MIGRATIONS.map((m) => m.version));
+
 function seed(d: Database.Database) {
   const ledger = createLedger(d, { ids: createIdGenerator() });
   const session = ledger.createMetaSession({ objective: "test" });
@@ -76,7 +79,7 @@ describe("ledger migrations", () => {
   it("creates all tables from an empty database and records the version", () => {
     db = openLedger(dir);
     expect(tables(db)).toEqual(EXPECTED_TABLES);
-    expect(currentSchemaVersion(db)).toBe(MIGRATIONS.length);
+    expect(currentSchemaVersion(db)).toBe(LATEST_VERSION);
     const row = db.prepare("SELECT version, name, checksum FROM schema_migrations").get() as { checksum: string };
     expect(row.checksum).toMatch(/^[0-9a-f]{64}$/);
   });
@@ -182,6 +185,62 @@ describe("ledger migrations", () => {
     expect(upgraded.recordGitCommit(rec)).toMatchObject({ created: false, row: { id: first.row.id } }); // idempotent
     expect(upgraded.listRunEvents(run.id)).toHaveLength(1);
     expect(upgraded.findGitCommitsBySha(sha).map((r) => r.run_id)).toEqual([run.id]);
+  });
+
+  it("0009 widens artifact.kind to pr_draft, keeping rows, references and foreign keys (T11.8)", () => {
+    db = new Database(path.join(dir, LEDGER_FILE_NAME));
+    db.pragma("foreign_keys = ON");
+    const d = db;
+    const upTo8 = MIGRATIONS.filter((m) => m.version < 9);
+    expect(migrate(d, undefined, upTo8)).toEqual(upTo8.map((m) => m.version));
+    const { ledger, session, run } = seed(d);
+    const art = ledger.insertArtifact({
+      runId: run.id,
+      metaSessionId: session.id,
+      kind: "diff",
+      sha256: "e".repeat(64),
+      sizeBytes: 3,
+      mediaType: "text/plain",
+    });
+    ledger.appendRunEvent({ runId: run.id, type: "x", artifactId: art });
+    expect(() =>
+      ledger.insertArtifact({
+        runId: run.id,
+        metaSessionId: session.id,
+        kind: "pr_draft",
+        sha256: "f".repeat(64),
+        sizeBytes: 1,
+        mediaType: "application/json",
+      }),
+    ).toThrow(/CHECK/u);
+    expect(migrate(d)).toEqual([9]);
+    expect(d.pragma("foreign_keys", { simple: true })).toBe(1); // restored after the rebuild
+    expect(d.pragma("foreign_key_check")).toEqual([]);
+    expect(d.prepare("SELECT id, kind, deleted_at FROM artifact").all()).toEqual([
+      { id: art, kind: "diff", deleted_at: null },
+    ]);
+    expect(ledger.listRunEvents(run.id)[0]?.artifact_id).toBe(art);
+    const draft = ledger.insertArtifact({
+      runId: run.id,
+      metaSessionId: session.id,
+      kind: "pr_draft",
+      sha256: "f".repeat(64),
+      sizeBytes: 1,
+      mediaType: "application/json",
+    });
+    expect(ledger.listArtifactsForRun(run.id).map((a) => a.id)).toEqual([art, draft]);
+    expect(() =>
+      d
+        .prepare(
+          "INSERT INTO artifact (id, kind, sha256, size_bytes, media_type, created_at) VALUES ('art_x','nope','a',1,'t','t')",
+        )
+        .run(),
+    ).toThrow(/CHECK/u);
+    // the index and the foreign key from run_event still hold
+    expect(d.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='artifact_run'").all()).toHaveLength(
+      1,
+    );
+    expect(() => d.prepare("DELETE FROM artifact WHERE id = ?").run(art)).toThrow(/FOREIGN KEY/u);
   });
 
   it("git_commit and git_push are append-only and enforce their foreign keys and checks (LLD §1)", () => {
@@ -392,7 +451,7 @@ describe("ledger migrations", () => {
   it("applies only pending migrations in order", () => {
     db = openLedger(dir);
     const extra = {
-      version: MIGRATIONS.length + 1,
+      version: LATEST_VERSION + 1,
       name: "extra",
       sql: "CREATE TABLE extra (id INTEGER PRIMARY KEY) STRICT;",
     };
@@ -422,13 +481,13 @@ describe("ledger migrations", () => {
   it("rolls back a failing migration and records nothing", () => {
     db = openLedgerFile(path.join(dir, LEDGER_FILE_NAME));
     const bad = {
-      version: MIGRATIONS.length + 1,
+      version: LATEST_VERSION + 1,
       name: "bad",
       sql: "CREATE TABLE ok (id INTEGER) STRICT; SELECT * FROM nope;",
     };
     expect(() => migrate(db as Database.Database, undefined, [...MIGRATIONS, bad])).toThrow();
     expect(tables(db)).not.toContain("ok");
-    expect(currentSchemaVersion(db)).toBe(MIGRATIONS.length);
+    expect(currentSchemaVersion(db)).toBe(LATEST_VERSION);
   });
 });
 
