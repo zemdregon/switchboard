@@ -2683,8 +2683,7 @@ the transaction that inserts the row, and the gate reads `inner_task_state` on e
 process on the ledger. A suspended call records `fallback_suspended` with reason `TASK_SUSPENDED`, `attempts` 0 and
 locality `remote` (the unresolved default, as for `PROJECT_OFF`). An unreadable state fails closed to the fallback
 (`fallback_unavailable`, `STATE_UNREADABLE`). The re-enable is `InnerAgentService.resumeTask` (the `inner resume`
-command of FR-INN-17 is T11.7); this resolves the "unreconciled" remark in §13.4 step 11 in favour of an explicit command
-backed by that method, with no config edit or restart needed.
+command of FR-INN-17, T11.7) with no config edit or restart needed.
 
 **T11.4 note (Delegated).** The two `git_commit` columns ship as migration 0007
 (`src/ledger/migrations/0007_git_commit_message_source.ts`; [§12.7](#127-provenance-and-audit)). An `inner_call` row
@@ -2744,9 +2743,8 @@ fallback. Redaction is the same component and rules as telemetry (FR-TEL-03, ADR
     `rejected_validator` or `rejected_sanitiser` since `inner_task_state.resumed_at` (`fallback_*` outcomes are not quality
     evidence and are not counted), if at least `suspension.min_calls` exist and the rejected share exceeds
     `suspension.rejection_threshold`, set `suspended = 1` in one transaction. The task then returns `fallback_suspended`
-    until the operator re-enables it (FR-INN-09). The re-enable command, Proposed as `inner resume <task>`, is not in
-    FR-INN-17's list: the SRS needs a note, or the re-enable becomes a config edit plus restart (unreconciled). Suspension
-    never reverses a result already accepted.
+    until the operator re-enables it (FR-INN-09). The re-enable command is `inner resume <task>`, named in FR-INN-17
+    (T11.7). Suspension never reverses a result already accepted.
 12. **Accept or fall back.** Accepted: return the validated value to the caller, which performs every action that follows
     (FR-INN-02). Any rejection or failure: return the task's deterministic fallback (§13.7). In no case does the caller's
     run change state because of the result (FR-INN-08).
