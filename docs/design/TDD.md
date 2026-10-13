@@ -380,7 +380,7 @@ C-G2 (ROADMAP R-38).
 
 | # | Layer | What it does | Strength | Verified? |
 | --- | --- | --- | --- | --- |
-| 1 | Profile deny rules | Each adapter compiles Git write operations (commit, branch and tag changes, push) into the provider's *documented* permission controls: Claude Code `--disallowedTools` deny rules plus its explicit `--tools`/`--allowedTools` set, Grok Build `--allow`/`--deny`, OpenCode explicit deny rules, Antigravity `strict` mode. An adapter whose provider documents none declares it (`gitWriteControl`, reported by `list_capabilities`; Codex). Under `inspect-untrusted` and `edit-untrusted` Claude Code has no arbitrary shell, and a shell allowlist entry that could write Git makes the run `Ineligible`; Codex runs commands inside its native sandbox under those profiles (owner decision 10, §4.2), so for Codex this layer is the sandbox's path scope only. | Provider-enforced; only as strong as the provider's rule matching, and lexical | Claude: rule form from the `claude --help` 2.1.296 example only, matching semantics an Assumption (live check pending); Codex: none documented; M4 adapters: to be verified |
+| 1 | Profile deny rules | Each adapter compiles Git write operations (commit, branch and tag changes, push) into the provider's *documented* permission controls: Claude Code `--disallowedTools` deny rules plus its explicit `--tools`/`--allowedTools` set, Grok Build `--allow`/`--deny` (documented, not yet observed to hold: [§4.3.1](#431-grok-build-native-controls-per-profile-and-platform-t420)), OpenCode explicit deny rules. Antigravity has no per-run control: `strict` is a settings value whose prompts are soft-denials in headless ([§4.4](#44-antigravity-agy-m4)). An adapter whose provider documents none declares it (`gitWriteControl`, reported by `list_capabilities`; Codex). Under `inspect-untrusted` and `edit-untrusted` Claude Code has no arbitrary shell, and a shell allowlist entry that could write Git makes the run `Ineligible`; Codex runs commands inside its native sandbox under those profiles (owner decision 10, §4.2), so for Codex this layer is the sandbox's path scope only. | Provider-enforced; only as strong as the provider's rule matching, and lexical | Claude: rule form from the `claude --help` 2.1.296 example only, matching semantics an Assumption (live check pending); Codex: none documented; M4 adapters: to be verified |
 | 2 | No credentials in the agent's environment | The environment allowlist (FR-EXE-07) never carries `SSH_AUTH_SOCK`, token variables or credential-helper settings. In a `container` environment (M10) no credential store is mounted. | Strong in containers; in a `host` environment on-disk credentials stay readable by a same-user shell ([R2] limit) | Allowlist: tested in M1; container: M10 |
 | 3 | Git-level guard | Per-run Git configuration for agent processes that points hooks at a controller-owned directory whose hooks reject ref updates not carrying the controller's token. Candidate mechanisms: a per-run global config file, or `GIT_CONFIG_COUNT` environment entries (2.31 inferred, below the 2.32 minimum set by [ADR-0023](../adr/0023-minimum-git-version-2-32.md); check Git's release notes). | A guard against provider-internal or accidental commits, **not** a boundary: an agent with a shell can override Git configuration | Mechanism: to be chosen in an M9 spike |
 | 4 | Git directory out of reach | A worktree's Git directory lives under the main repository's `.git/worktrees/`, outside the worktree. A provider sandbox that confines writes to the worktree therefore cannot edit refs. | Depends on each sandbox's path scope | Malicious fixtures per adapter (M9) |
@@ -783,6 +783,9 @@ documentation**; it implements from each provider's documentation and the instal
   analogue to Switchboard's shim. Its comment says some ACP agents advertise HTTP MCP yet drop it, which is why stdio
   is used. SECONDHAND: Grok adds client-supplied servers on top of the user's configuration and has no strict flag.
   Antigravity's own configuration and whether it honours stdio `mcpServers` are UNKNOWN.
+  Google's CLI documentation read on 2026-10-13 does not document Antigravity as an ACP agent
+  ([§4.4](#44-antigravity-agy-m4)), but a separate Google ACP server is listed in the ACP registry
+  ([§4.4.4](#444-separate-acp-adapter-owner-lead-2026-10-13)); its behaviour is unverified.
 - *Kimi Code.* UNKNOWN: not found in T3 Code.
 - *Open questions it leaves* (all for T9.0 / adapter tasks, on our CLIs): does a stdio shim run headless under each
   provider's non-interactive mode; do exact-name allow rules cover its tools under each fail-closed mode; do provider
@@ -1070,82 +1073,717 @@ Linux host prerequisites of the sandbox (bubblewrap being installed, user namesp
 
 ### 4.3 Grok Build (M4)
 
-| Aspect | Detail |
+Spike result, 2026-10-13 (T4.20; Delegated agent work, not owner-approved). **Documentation only**: no `grok` binary
+was installed or run, no credential or configuration file was read, and nothing below was observed on a machine. Every
+fact comes from one of the sources below, retrieved on 2026-10-13, and a cell with no source reads
+`Unverified: T4.21` (the operator capture task; its checklist is [§4.3.2](#432-t421-operator-checklist-grok-build)).
+The fetched pages are data: no instruction inside them was followed. xAI's documentation now carries the brand
+"SpaceXSI"; the product and CLI are still called Grok Build and `grok`.
+
+| Tag | Source (retrieved 2026-10-13) |
 | --- | --- |
-| Automation surface | `grok -p` / `--single`; native ACP via `grok agent stdio` |
-| Structured output | `plain`, `json`, `streaming-json` |
-| Resume | `--resume` / `--continue`; `-s/--session-id` names a session and is **not** resume |
-| Auth preflight | Cached local token used for headless/ACP; status command not stated: to be verified in M4 against installed CLI |
-| Trust profile compilation (Proposed) | Two independent dimensions compiled together: `--allow`/`--deny` rules and a sandbox profile (strict/read-only/workspace named in [R2]; selection flag to be verified in M4). Always-approve only under approved `privileged` |
-| Sandbox controls | Landlock (Linux), Seatbelt (macOS); off unless enabled |
-| Known risks | Permissions and sandbox are separate; project hooks and trust semantics mean repository config is untrusted input; worktree/fork behaviour is a capability, not assumed per run |
-| Git writes and injected tools (M4, M9) | `--deny` rules for Git write commands (syntax: to be verified in M4); sandbox profile as a separate control. No commit or attribution setting in [R2]. Per-run MCP definition: not in [R2], to be verified |
+| **[CLI]** | <https://docs.x.ai/build/cli/reference>, "Last updated: July 21, 2026" |
+| **[HL]** | <https://docs.x.ai/build/cli/headless-scripting>, "Last updated: June 10, 2026" |
+| **[PERM]** | <https://docs.x.ai/build/features/permissions> (no date shown) |
+| **[SBX]** | <https://docs.x.ai/build/features/sandbox> (no date shown) |
+| **[HOOK]** | <https://docs.x.ai/build/features/hooks> (no date shown) |
+| **[MCP]** | <https://docs.x.ai/build/features/mcp-servers> (no date shown) |
+| **[SESS]** | <https://docs.x.ai/build/features/sessions> (no date shown) |
+| **[RULES]** | <https://docs.x.ai/build/features/project-rules> (no date shown) |
+| **[WT]** | <https://docs.x.ai/build/features/worktrees> (no date shown) |
+| **[SET]** | <https://docs.x.ai/build/settings> and <https://docs.x.ai/build/settings/reference> (no date shown) |
+| **[ENT]** | <https://docs.x.ai/build/enterprise> (no date shown) |
+| **[CL]** | <https://x.ai/changelog/build>, latest entry "Grok Build 1.0.52", October 11, 2026 |
+| **[R2 Lnn]** | A line of the [verified research](../research/headless-ai-coding-controller-verified-2026-10-12.md) |
+
+The pages are also served as Markdown by appending `.md` to the URL (listed in <https://docs.x.ai/llms.txt>).
+[CL] is a release history, not an installed version: no version has been validated (the manifest range admits none
+until T4.4). Each matrix cell is one of: **Documented**, with the source; **Could compile (Proposed)**, a design using
+only documented controls whose effect is unverified; **Ineligible: `<reason>`** with the
+[LLD §2](LLD.md#2-adapter-contract) code; or **`Unverified: T4.21`**.
+
+#### 4.3.1 Grok Build native controls per profile and platform (T4.20)
+
+**Transport decision (Proposed, Delegated).** The adapter drives one process per run,
+`grok -p <prompt> --output-format streaming-json`, not `grok agent stdio` (ACP). Reasons:
+
+1. Every control the policy layer must set is documented as a flag or environment variable of the headless command:
+   `--allow`, `--deny`, `--sandbox`, `--tools`, `--disallowed-tools`, `-m`, `-r`, `--cwd`, `--max-turns` ([CLI], [HL],
+   [ENT] example). For `grok agent stdio` the documentation shows no flag at all ([HL]), so whether the permission
+   and sandbox flags apply there is `Unverified: T4.21`. A third-party issue shows `grok agent --always-approve stdio`;
+   that is not xAI documentation and is not relied on.
+2. It matches the existing one-process-per-run adapters and needs no ACP client (T4.8). T4.23 then runs on JSONL
+   fixtures.
+3. The result and the session id are documented: `--output-format json` prints one JSON object at the end and the
+   session id is read from `.sessionId` ([HL], [SESS]); the session id is never taken from text (FR-ADP-04).
+
+Against it: the `streaming-json` event shapes are not documented (only that they carry tool calls, results and usage,
+[CL] 1.0.52), so T4.23 cannot be written until T4.21 supplies a capture. **ACP stays the fallback** and is the only
+documented route to a per-run MCP definition (`session/new` takes `mcpServers`, [HL]). Switch to ACP, and add T4.8 as a
+dependency of T4.23, if T4.21 shows that `streaming-json` lacks the session id, a permission-denial event or a usable
+exit code, or if M9 needs the tool channel through a per-run MCP definition (FR-GIT-09 allows `finalize-only` until
+then). [ADR-0002](../adr/0002-mcp-upstream-acp-downstream.md) allows the controller to be an ACP client to providers
+that expose ACP "alongside subprocess JSON/JSONL", so neither choice needs a new ADR; adding an ACP client (T4.8) is
+a separate roadmap decision.
+
+| Platform | Status |
+| --- | --- |
+| Linux | The matrix below. Sandbox is Landlock; child-network blocking is enforced on Linux only; a custom read `deny` list needs `bubblewrap` ([SBX], [SET]) |
+| macOS | Not supported yet (NFR-PORT-02, ROADMAP A-2): no cell evaluated. Documented differences: Seatbelt (`sandbox-exec`, [SBX], [CL] 1.0.44); child-network blocking is a no-op for `read-only` and `strict` ([SBX]) |
+| Windows | Not supported yet (NFR-PORT-03, Deferred): no cell evaluated. The documentation does not say whether any sandbox profile works on Windows: `Unverified: T4.21` if it is ever needed |
+
+**Items the T4.20 row lists, one line each** (details in the matrix and §4.3.2):
+
+| Item | Finding | Source |
+| --- | --- | --- |
+| Version command | `grok version` ("Print version information"); `grok update --check`. A `--version` flag is not in the page: `Unverified: T4.21` | [CLI] |
+| `-p` / `--single` | `-p, --single <PROMPT>` sends one prompt; a prompt on piped stdin is accepted ([CL] 1.0.50) | [HL] |
+| Output formats | `plain` (human-readable), `json` (one JSON object at the end), `streaming-json` (newline-delimited JSON events). Field names: only `.sessionId` is shown ([SESS]); token usage and cost per prompt and session, the worktree folder, and, in streaming, tool calls, results and usage are reported ([CL] 1.0.52). Event shapes: `Unverified: T4.21` | [HL], [SESS], [CL] |
+| Resume | `-r, --resume [<ID>]` (most recent when omitted), `-c, --continue` (most recent for the directory), `--fork-session` (when resuming); `-s, --session-id <UUID>` names a new session and does not resume | [CLI], [SESS], [R2 L287] |
+| Resume contradiction | [HL] describes `-s` as "Create or resume a named headless session"; [CLI] and [SESS] say it uses a UUID "for a new session" and "does not resume". The adapter uses `-r <id>` only and never `-s`. T4.21 checks it | [HL], [CLI], [SESS] |
+| Auth status command | None documented. `grok login` (`--device-auth`), `grok logout`, and `grok inspect [--json]` (shows discovered configuration; [ENT] says it shows which login policy loaded). ACP `initialize` returns `authMethods`, among them `cached_token` and `xai.api_key`. Preflight is `UNKNOWN` (fail closed) until T4.21 | [CLI], [ENT], [HL] |
+| Sandbox profile selection | `--sandbox <PROFILE>`; or `GROK_SANDBOX=<profile>`; or `[sandbox] profile` in config. Built-ins `off` (default), `workspace`, `devbox`, `read-only`, `strict`; custom profiles in `~/.grok/sandbox.toml` or project `.grok/sandbox.toml`. A managed `requirements.toml` pin can override the CLI | [SBX], [SET], [ENT] |
+| `--allow` / `--deny` | Rule form `Tool(pattern)`, for example `Bash(git *)`, `Read`, `Grep`, `Bash(rm -rf *)`; `--allow`/`--deny` "take the same patterns per invocation"; filters `Bash`, `Edit`, `Read`, `Grep`, `MCPTool`, `WebFetch`, `WebSearch`; "`deny` always wins over `allow`"; evaluation order deny, ask, allow. `--allowed-tools` is an alias of `--allow` in headless mode ([CL] 1.0.51) | [PERM], [SET], [ENT], [CL] |
+| Git-write denial | Syntax is documented only by analogy (a `Bash(<command> *)` pattern); no page shows a Git rule, and whether such a rule matches `git -C`, absolute paths, aliases or `sh -c` is `Unverified: T4.21` and T4.28. [PERM] adds that a CLI or config allow rule auto-approves `rm` and `git push`, and that under always-approve they run "unless you add a deny" | [PERM] |
+| Project hooks and trust | Project hooks `<project>/.grok/hooks/*.json` "require trust before they run"; grant with `/hooks-trust` or `--trust`; stored in `~/.grok/trusted_folders.toml`, which also covers project MCP and LSP servers. Claude (`.claude/settings.json`) and Cursor (`.cursor/hooks.json`) hook files are read as well. Only `PreToolUse` blocks, and every failure mode is fail-open | [HOOK] |
+| Per-run settings | Flags and `GROK_*` environment variables; see "Per-run settings" below | [CLI], [SET] |
+| Per-run MCP definition | Headless: no flag documented, `Unverified: T4.21`. ACP: `session/new` takes `mcpServers` (the example passes `[]`). `grok mcp add` and `config.toml` write persistent configuration and are never used | [HL], [MCP] |
+| Bypass-class flags | `--always-approve` (alias `--yolo`), `--dangerously-skip-permissions` (Claude alias), `--permission-mode bypassPermissions`; also bypass-class (Proposed): a catch-all `allow` rule (`*`, `**`) and `auto_allow_bash`/`GROK_SANDBOX_AUTO_ALLOW_BASH`. `deny` rules and `PreToolUse` hooks still apply under always-approve | [CLI], [PERM], [ENT], [SBX] |
+| Model listing | `grok models` ("List available models"); output format and a `--json` option: `Unverified: T4.21`. `-m, --model`; `GROK_DEFAULT_MODEL` | [CLI], [SET] |
+| JSONL or ACP | JSONL (`-p ... --output-format streaming-json`); ACP is the fallback. Reasons above | [HL], [R2 L73] |
+
+**Per-run settings without editing `~/.grok/config.toml`.** Documented: flags `--sandbox`, `--allow`, `--deny`,
+`--tools`, `--disallowed-tools`, `--rules`, `-m`, `--effort`, `--max-turns`, `--cwd`, `--no-plan`, `--no-subagents`,
+`--no-memory`, `--disable-web-search`, `--no-auto-update`, and `--permission-mode` (shown in [ENT] with `dontAsk`;
+absent from the [CLI] table, so its value list is `Unverified: T4.21`); environment variables `GROK_SANDBOX`,
+`GROK_WRITE_FILE=0` (disables the `write` tool), `GROK_WEB_FETCH=0` (default), `GROK_MEMORY=0` and `GROK_SUBAGENTS=0`
+(both default off), `GROK_DISABLE_AUTOUPDATER`, and the compatibility scanner switches `GROK_CLAUDE_HOOKS_ENABLED`,
+`GROK_CURSOR_HOOKS_ENABLED`, `GROK_CLAUDE_MCPS_ENABLED`, `GROK_CURSOR_MCPS_ENABLED`, `GROK_CLAUDE_RULES_ENABLED`,
+`GROK_CURSOR_RULES_ENABLED`, `GROK_CLAUDE_AGENTS_ENABLED`, `GROK_CLAUDE_SKILLS_ENABLED` and
+`GROK_CURSOR_SKILLS_ENABLED` ([SET]). Not usable: `GROK_HOME` is the home for "config, auth, sessions", so pointing it
+elsewhere hides the native login, and copying a login into it would be credential handling
+([ADR-0003](../adr/0003-no-credential-handling.md)). `XAI_API_KEY` is documented as an authentication route
+([ENT], [HL]) and stays out of the environment (ADR-0003). There is no documented way to disable the project
+`.grok/hooks/*.json`, `.grok/config.toml` or `.grok/sandbox.toml` sources other than withholding trust:
+`Unverified: T4.21`. Project `.grok/config.toml` contributes only `[mcp_servers]`, `[plugins]` and `[permission]`
+([SET]), so a repository can ship `allow` rules; whether they apply without trust is `Unverified: T4.21`.
+
+**Switchboard-side rules this matrix assumes (Proposed).** `-w`/`--worktree`, `--fork-session`, `grok worktree` and
+`--trust` are never emitted: Switchboard owns the worktree, and `--trust` writes `~/.grok/trusted_folders.toml`, which
+is global state. `grok import`, `grok setup`, `grok update` and `grok mcp add` are never run. `--no-auto-update` is
+always emitted so a run never self-updates (ADR-0009).
+
+| Dimension | `inspect-untrusted` | `edit-untrusted` | `test-sandboxed` | `trusted-development` | `privileged` |
+| --- | --- | --- | --- | --- | --- |
+| Today | Not implemented: no module until T4.22 | Not implemented | Not implemented | Not implemented | Not implemented |
+| Sandbox profile | Could compile (Proposed): `--sandbox strict` (reads limited to the working directory and system paths, writes to the working directory, `~/.grok/` and temp, child network blocked on Linux) [SBX]; `read-only` writes only `~/.grok/` and temp but reads everywhere, so `strict` is chosen. Whether the profile is enforced in a headless run: `Unverified: T4.21` | Could compile: `--sandbox strict` [SBX]; writes are inside the working directory by the profile [SBX] | Could compile: `--sandbox strict` for the test command; whether tests that need network or other paths run: `Unverified: T4.21`. Eligible only if the sandbox start is observed (R-7) | Could compile: `--sandbox workspace` (writes to the working directory, `~/.grok/`, temp; network allowed) [SBX], Proposed default | Compiled from the structured scope ([LLD §3.1](LLD.md#31-privileged-scope-m3)), never inferred (FR-POL-02); `--sandbox off` is the documented default [SBX] |
+| Permission rules | Could compile: `--permission-mode dontAsk` plus `--allow Read --allow Grep` (names from [PERM]), `--deny` for the Git rules; `dontAsk` "silently deny anything without an explicit allow rule" [ENT]. Flag value list: `Unverified: T4.21` | Could compile: as `inspect-untrusted` plus `--allow Edit` [PERM] | Could compile: plus `--allow 'Bash(<exact test command>)'` only for the operator's configured command (empty shell allowlist by default, ROADMAP Q-17) | Could compile: `dontAsk` with operator allowlists; no catch-all allow | Documented: `--always-approve`/`--yolo` only from an approved `privileged` scope that sets `bypass` (ADR-0017); `--deny` rules still apply [PERM] |
+| File access | Could compile: `--sandbox strict` read confinement [SBX]; `--tools`/`--disallowed-tools` to remove built-ins, tool names `Unverified: T4.21`. Built-ins "do not permanently protect paths such as `~/.ssh`" and `~/.grok/` stays writable [SBX]: whether the sandboxed process can read the native login under `~/.grok/` is `Unverified: T4.21` and is a credential-boundary question | Could compile: as left, plus `--allow Edit`; `GROK_WRITE_FILE=1` default [SET] | Could compile: as `edit-untrusted` | Could compile: `workspace` writes confined to the working directory [SBX] | Per scope; `off` is unrestricted [SBX] |
+| Shell | Could compile: no `--allow Bash`, so under `dontAsk` a shell call is denied [ENT]; `--disallowed-tools` for the shell tool, name `Unverified: T4.21` | Could compile: as left | Could compile: exact-command `Bash(...)` rule only [PERM] | Could compile: operator allowlist | Per scope |
+| Network | Could compile: child network blocked by `strict` on Linux only [SBX]. In-process network (model API, web tools) is not blocked by the sandbox; `--disable-web-search` and `GROK_WEB_FETCH=0` [CLI], [SET] close the web tools. A network allowlist does not exist (R-36, Q-34) | Could compile: as left | Could compile: `strict` blocks child network on Linux [SBX], so network-dependent tests fail; no per-domain control is documented | Could compile: `workspace` allows child network [SBX] | Per scope |
+| Repository config (`AGENTS.md`, `CLAUDE.md`, `.grok/`, `.mcp.json`, hooks) | Could compile: set the `GROK_CLAUDE_*_ENABLED=0` and `GROK_CURSOR_*_ENABLED=0` switches [SET]; do not pass `--trust` so project hooks, MCP and LSP do not run [HOOK]. `AGENTS.md`/`CLAUDE.md` rules are loaded "in full, with no size cap" [RULES] and have no documented off switch other than `GROK_CLAUDE_AGENTS_ENABLED`/`GROK_CLAUDE_RULES_ENABLED`; project `.grok/config.toml` `[permission]` and `.grok/sandbox.toml`: `Unverified: T4.21`. Until T4.21 shows project sources are inert, FR-POL-04 is not met and these profiles stay Ineligible: `PROFILE_UNSUPPORTED` | As left | As left | Operator-chosen (Proposed `disabled`, Q-17) | Allowed only per [ADR-0021](../adr/0021-repository-config-in-approved-bypass-runs.md) |
+| Native sandbox | Could compile: `strict` [SBX] | Could compile: `strict` | Could compile: `strict`; eligibility needs the observed start | Could compile: `workspace` | Per scope |
+| Approval behaviour | Could compile: `dontAsk`; a denial must end `PERMISSION_BLOCKED` (FR-POL-05). The denial event or exit code: `Unverified: T4.21`; `PermissionDenied` is a hook event [HOOK], not a stream event | Could compile: as left | Could compile: as left | Could compile: as left | `--always-approve` |
+| Bypass flag availability | Documented, never emitted (FR-POL-03): `--always-approve`/`--yolo`, `--dangerously-skip-permissions`, `--permission-mode bypassPermissions`, catch-all allow, `auto_allow_bash` [CLI], [ENT], [SBX] | Never emitted | Never emitted | Never emitted | Documented: `--always-approve` with the approved bypass scope only (ADR-0017); owner decision 46 lets the cell compile on `host` |
+| Git-write denial (FR-GIT-01) | Could compile: `--deny 'Bash(git commit*)'`, `--deny 'Bash(git push*)'` and the other write subcommands, syntax by analogy with [PERM]/[ENT]. **Not shown to hold**: `Unverified: T4.21` (rule matching) and T4.28 (live) | As left | As left | As left | `deny` "still applies" under always-approve [PERM], so the same rules are emitted; holding: `Unverified: T4.21`, T4.28 |
+| Per-run MCP | Headless: `Unverified: T4.21`. ACP `session/new` `mcpServers` [HL]. Until sourced, `commitChannel` stays `finalize-only` | As left | As left | As left | As left |
+| Resume | `-r <id>` from `.sessionId` of the previous run's JSON/stream; `-c` never (it selects "the most recent session for the current directory", not a named run); sandbox profile is preserved on resume ([CL] 0.2.56), permission flags on resume: `Unverified: T4.21` | As left | As left | As left | As left |
+| Auth preflight | `UNKNOWN` until T4.21 (fail closed); `AUTH_REQUIRED` names `grok login` (`--device-auth` on a headless host) | As left | As left | As left | As left |
+| Model listing | `grok models` [CLI]; parse format `Unverified: T4.21` | As left | As left | As left | As left |
+| Capacity and usage | JSON output reports token usage and cost per prompt and session ([CL] 1.0.52); field names `Unverified: T4.21`; limits and resets are not documented (FR-CAP-01) | As left | As left | As left | As left |
+
+**Cells that change profile eligibility today.** The sandbox's effect, project-source inertness and the
+Git rules are documented as features but unobserved. Proposed: the T4.22 module marks the four non-`privileged`
+profiles `Ineligible` (reason `PROFILE_UNSUPPORTED`, FR-POL-02) until T4.21 results are entered; `privileged` follows
+owner decision 46 and the approved scope (ADR-0017).
+
+**Surprises and differences from [R2] (recorded, not resolved here).**
+
+- [R2 L73] lists sandbox profiles "strict/read-only/workspace"; [SBX] also lists `devbox`.
+- [HL] and [SESS] disagree about `-s` (above); [R2 L287] agrees with [SESS].
+- `--trust`, `--permission-mode` and the `dontAsk` mode are documented in [HOOK] and [ENT] but are absent from the
+  [CLI] flag table, which defers to `grok --help` for the complete set.
+- The default-on compatibility scanners mean Grok reads a repository's `.claude/settings.json` hooks, `.mcp.json`,
+  `.cursor/*` and `CLAUDE.md` unless switched off ([HOOK], [MCP], [RULES], [SET]).
+- `PreToolUse` hooks fail open ([HOOK]), so a hook is never counted as a Git control.
+
+#### 4.3.2 T4.21 operator checklist (Grok Build)
+
+For the operator, on a scratch machine with an installed Grok Build and the native login (T4.21). Never commit or
+paste a credential, token, `auth.json`, session cookie or account identifier. Run everything in a throwaway empty
+directory (`git init` it), not in a real repository. Save each capture in a file, then scrub it before it enters the
+repository: replace session ids with `SESSION-1`, home paths with `/home/USER`, and delete any email, name, team
+UUID, token or URL carrying a query string. Record the output of step 1 as the version for every other result. Write
+results into `docs/research/live-checks-2026-10-13.md` under a "Grok Build" heading; the orchestrator then moves the
+cells of §4.3.1 from Unverified to observed.
+
+| Step | Commands (run each; record the exit code with `echo $?`) | Capture | Cell it settles |
+| --- | --- | --- | --- |
+| 1 Version | `grok version`; `grok --version`; `grok --help`; `grok -p --help`; `grok agent --help`; `grok agent stdio --help` | Full text of each, exit codes | Version command; `--version` flag; flag list for `--permission-mode`, `--trust`, `--json-schema`, `--no-auto-update`, `--allow`, `--deny`, `--sandbox`, any MCP flag; whether `grok agent stdio` takes the permission and sandbox flags (transport fallback) |
+| 2 Auth, logged in | `grok inspect --json`; `grok models`; `grok models --json` | Output with account and team fields removed; exit codes | Auth status candidate; model listing format and `--json` |
+| 3 Auth, logged out | Without touching the real login: `GROK_HOME=$(mktemp -d) grok inspect --json`; `GROK_HOME=$(mktemp -d) grok -p "hi" --output-format json` | Exit codes and stderr text | Auth exit code and the text that maps to `AUTH_REQUIRED`; `GROK_HOME` is documented only as the home of config, auth and sessions ([SET]), so state this assumption in the note. If the operator prefers, `grok logout` then repeat and log in again |
+| 4 Output shapes | In the scratch repo: `grok --no-auto-update -p "Reply with the word ok" --output-format json`; the same with `streaming-json`; one with `plain` | Whole stdout and stderr, scrubbed, as fixtures | Event shapes, `.sessionId` and usage fields, success marker, stderr use |
+| 5 Failures | A run with an invalid flag; with a bad model (`-m no-such-model`); interrupted with Ctrl+C | Exit codes, stdout, stderr | Exit code table; rate-limit and task-failure shapes (a rate limit cannot be forced: record `not observed`) |
+| 6 Resume | Take `.sessionId` from step 4; `grok --no-auto-update -p "What word did you reply with?" -r <id> --output-format json`; `-s <fresh-uuid>` twice with the same uuid; `-c` | Outputs, the session id returned each time | Resume form; the `-s` contradiction between [HL] and [SESS] |
+| 7 Sandbox start | `grok --no-auto-update -p "Run: touch ../outside-marker; then cat /etc/hostname" --sandbox strict --permission-mode dontAsk --allow 'Bash(*)' --output-format streaming-json`; repeat with `--sandbox read-only`, `--sandbox workspace`, and with `GROK_SANDBOX=strict` instead of the flag | Streams, `ls ..` before/after, exit codes | Sandbox profile selection by flag and by environment; whether the profile is enforced; the sandbox-violation shape; the value list of `--permission-mode` |
+| 8 Permission rules | In a fresh scratch repo: with `--permission-mode dontAsk` and no allow rules, ask for `echo hi`; then with `--allow 'Bash(echo *)'`; then with `--deny 'Bash(echo *)' --allow 'Bash(echo *)'` | Streams, exit codes | `dontAsk` denial shape (`PERMISSION_BLOCKED` mapping); deny wins; `--allow`/`--deny` syntax |
+| 9 Git deny | Scratch repo with one commit. With `--deny 'Bash(git commit*)' --deny 'Bash(git push*)'` and a permissive allow, ask the agent to run: `git commit --allow-empty -m x`; `git -C . commit --allow-empty -m x`; `/usr/bin/git commit --allow-empty -m x`; `sh -c 'git commit --allow-empty -m x'`; `git push` to a local bare remote. Then once with `--always-approve` in the same scratch repo | `git log` and the bare remote's refs after each; the stream | `HELD` or `ESCAPED` for each form (T4.28 repeats it live); deny under always-approve; whether `provider-deny-rules` may be declared |
+| 10 Project hooks and trust | Scratch repo with `.grok/hooks/probe.json` (a `PreToolUse` command hook that appends a line to a marker file outside the repo), `.claude/settings.json` with the same hook, `.mcp.json` and `.grok/config.toml` each defining a stdio MCP server that appends to a marker, and a `.grok/config.toml` `[permission]` allow rule. Run headless **without** `--trust`; then with `GROK_CLAUDE_HOOKS_ENABLED=0 GROK_CURSOR_HOOKS_ENABLED=0 GROK_CLAUDE_MCPS_ENABLED=0 GROK_CURSOR_MCPS_ENABLED=0`; then once with `--trust` (this writes the scratch path to `~/.grok/trusted_folders.toml`: delete that entry afterwards) | Which markers appeared in each run; whether the run prompted, failed or silently skipped; `grok inspect --json` of the scratch repo | Whether project hooks, MCP, LSP and permission rules are inert without trust in a headless run; whether the switches are enough (FR-POL-04); the untrusted-profile `Ineligible` reasons |
+| 11 Credential reach | In a `strict` and in a `workspace` run, ask the agent to list the names (not the contents) of files under `~/.grok/` | Names only, never contents | Whether the sandboxed process can reach the native login directory (credential boundary, ADR-0003) |
+| 12 Per-run MCP | Look in the step 1 help for any flag taking an MCP definition and try it with a benign stdio server that writes a marker. Then, if ACP is to be assessed, run the [HL] ACP example with `mcpServers` naming that server | Help text, marker, ACP transcript | Per-run MCP definition; `commitChannel` option; ACP fallback |
+| 13 ACP transcript (only if step 1 or 4 failed) | Run the [HL] ACP example unchanged except `cwd` (scratch repo) and the prompt (`Reply with the word ok`); record every JSON-RPC line | The transcript with the `authMethods` list kept and any token or id removed | ACP fixtures for T4.23, `initialize` `authMethods` as an auth probe |
+
+Mapping of results to the T4.22 to T4.28 tasks: steps 1 and 2 to T4.22 (manifest notes) and T4.24; steps 4 to 6 to
+T4.23; steps 7 to 11 to T4.22, T4.27 and T4.28; step 12 to T4.27 and the ACP decision.
 
 ### 4.4 Antigravity (`agy`, M4)
 
+Spike result, 2026-10-13 (T4.30; Delegated agent work, not owner-approved; documentation only). Nothing below was run:
+`agy` is not installed on the development host and no provider command was executed. Every cell is sourced from Google's
+public documentation or from [R2], or reads `Unverified: T4.31` (the operator capture task, [§4.4.2](#443-t431-operator-checklist-antigravity)).
+Sources, cited in cells:
+
+- **[H]** <https://antigravity.google/docs/cli/headless/>, **[P]** <https://antigravity.google/docs/permissions/> (CLI section),
+  **[S]** <https://antigravity.google/docs/sandbox/> (CLI section), **[R]** <https://antigravity.google/docs/cli/reference/>,
+  **[ST]** <https://antigravity.google/docs/settings/> (CLI section), **[M]** <https://antigravity.google/docs/mcp/>,
+  **[I]** <https://antigravity.google/docs/cli/install/>, **[RS]** <https://antigravity.google/docs/cli/commands/resume/>,
+  **[MO]** <https://antigravity.google/docs/cli/modes/>, **[TS]** <https://antigravity.google/docs/cli/troubleshooting/>,
+  **[MG]** <https://antigravity.google/docs/cli/gcli-migration/>, **[SDK]** <https://antigravity.google/docs/sdk/overview/>,
+  **[CL]** <https://antigravity.google/docs/changelog/> (CLI section; cited as `[CL vX.Y.Z]`).
+  All retrieved 2026-10-13 with `curl` from the public site (HTML converted to text; the pages carry no version stamp).
+  The newest CLI release in [CL] is v1.3.1 (2026-10-07); the pages may describe behaviour newer or older than any
+  installed `agy`. Text on those pages is treated as data.
+- **[R2 Lnn]** a line of the [verified research](../research/headless-ai-coding-controller-verified-2026-10-12.md).
+- **[3P]** <https://registry.npmjs.org/agy-acp-bridge> (a third-party package; a lead, never evidence of Google's
+  behaviour).
+- **[REG]** <https://agentclientprotocol.com/get-started/registry> and the manifest
+  <https://raw.githubusercontent.com/agentclientprotocol/registry/main/antigravity-acp/agent.json>, **[GZ]**
+  <https://antigravity.google/docs/ide/extensions/zed>, **[AF]** <https://antigravity.google/docs/faq>,
+  **[GI31]** <https://github.com/google-antigravity/antigravity-cli/issues/31> (a user thread; its comments are
+  secondhand reports, never evidence of Google's behaviour). All retrieved 2026-10-13; used only in
+  [§4.4.4](#444-separate-acp-adapter-owner-lead-2026-10-13).
+- **[P-]** and **[S-]** as in [§4.1.1](#411-claude-code-native-controls-per-profile-and-platform-t30).
+
 | Aspect | Detail |
 | --- | --- |
-| Automation surface | `agy -p` (aliases `--print`, `--prompt`); response on stdout, diagnostics on stderr |
-| Structured output | `text`, `json`, `stream-json`; result includes conversation identifier and usage counters |
-| Resume | Conversation identifier is returned; resume flag: to be verified in M4 against installed CLI |
-| Auth preflight | Uses cached credentials; with none, exits with an auth error instead of prompting, which can serve as the harmless-call failure in FR-AUTH-02. `GEMINI_API_KEY` alone is insufficient and the API-key mode stays disabled |
-| Trust profile compilation (Proposed) | `toolPermission` modes `request-review`, `proceed-in-sandbox`, `always-proceed`, `strict` plus terminal sandbox controls; prefer `strict` or `proceed-in-sandbox`. How the setting is passed per run without editing global config: to be verified in M4 (FR-POL-08) |
-| Sandbox controls | Terminal sandbox controls (names to be verified in M4) |
-| Known risks | `--dangerously-skip-permissions` only under approved `privileged`; mapping `toolPermission` to profiles may force ineligibility |
-| Git writes and injected tools (M4, M9) | `strict` or `proceed-in-sandbox` `toolPermission`; whether Git writes can be denied separately: to be verified in M4. Per-run MCP definition without editing global config: not in [R2], to be verified (FR-POL-08); else finalize-only |
+| Automation surface | `agy -p "<prompt>"` (aliases `--print`, `--prompt`): response on stdout, diagnostics (errors, authentication prompts, progress, permission notices) on stderr [H, R2 L74, L110]. Version: `agy --version` [I] (output format: Unverified: T4.31). Platforms: macOS, Linux, Windows [I]; only Linux is evaluated here (NFR-PORT-02, NFR-PORT-03) |
+| Transport (decision) | **Ephemeral subprocess, `--output-format stream-json`** (NDJSON on stdout), the same family as Claude Code and Codex (R2 L58). **Not ACP.** Reason: none of the Google pages above (headless, reference, install, settings, MCP, SDK, changelog) mentions ACP or the Agent Client Protocol (searched 2026-10-13: no hit), and [R2] does not name it; the only ACP adapter found is third-party and wraps `agy` "using native JSON output" [3P], which points to no native ACP. The T3 Code lead that Antigravity is an ACP agent (TDD §3.12, R-18, R-50) is therefore **not confirmed** by Google's documentation; whether the installed binary has an ACP subcommand: Unverified: T4.31 (C2). **Update 2026-10-13 (owner lead):** a separate Google ACP download is listed in the ACP registry; the transport decision is unchanged, see [§4.4.4](#444-separate-acp-adapter-owner-lead-2026-10-13). `--input-format stream-json` (one process, many turns, [H]) is not used: FR-EXE-04 defers persistent transports, and that mode rejects `control_request` and `control_response` events with exit 2 [H], so it has no permission round-trip |
+| Structured output | `--output-format text` (default), `json` (one-line envelope on completion), `stream-json` (NDJSON) [H]. Shapes in [§4.4.1](#441-antigravity-output-shapes-and-exit-codes-t430). `--json-schema` is also documented [H]; not needed |
+| Resume | Identifier: `conversation_id` in the `json` envelope, on `init`, on every `step_update` and on `result` [H]. Resume: `--conversation <id>` (explicit; preferred) or `--continue`/`-c` (most recent conversation of the working directory, resolved from a local workspace-keyed cache file that is never read by Switchboard) [H, RS]. Histories are scoped to the working directory [RS]; whether `--conversation <id>` works from another directory, and the exit code for an unknown id: Unverified: T4.31 (C9). A resumed run is a new process [H] |
+| Auth preflight | Headless uses cached credentials (OS keyring: Apple Keychain, Linux Secret Service over D-Bus, Windows Credential Manager); a run that is not authenticated, in a non-interactive environment with no terminal, "exits with an authentication required error instead of hanging" [H, I, R2 L110, L192]. **The exit code, stdout and stderr text of that error are not documented: Unverified: T4.31 (C5).** No auth status command is documented (searched [H, I, R, TS, MG]); `agy doctor` appears only on a third-party page and is not used. Documented cheap candidates for a harmless call: `agy -p "/usage"` (also `/credits`, `/model`), which per [CL v1.1.12] answers "without starting an agent turn, spending quota or leaving a conversation behind" (whether it fails when logged out, and its exit code: Unverified: T4.31 C6), and `agy models` [H]. A locked or absent keyring can hang or print `keyring is locked` [TS]: the supervisor's timeout applies (NFR-REL-02) |
+| API-key mode | **Disabled, and stays so.** It needs both `"modelProvider": "gemini"` in `~/.gemini/antigravity-cli/settings.json` and `GEMINI_API_KEY` in the environment; the variable alone "has no effect" [I, R2 L113 to L115]. Switchboard never writes that setting and never puts `GEMINI_API_KEY` in the child environment (environment allowlist, FR-AUTH-02; also `GOOGLE_API_KEY`, which [I] says is ignored, and `GOOGLE_GEMINI_BASE_URL`, which [I] says redirects model requests). If an operator's own settings file selects `gemini`, the CLI "can't start" without the key [I]: the run fails at startup and is classified `AUTH_REQUIRED` by the preflight (exit code: Unverified: T4.31). |
+| Trust profile compilation (Proposed) | **Every profile is `Ineligible: PROFILE_UNSUPPORTED` outside an approved bypass scope**, because `toolPermission` cannot be set per run (row below and [§4.4.2](#442-antigravity-native-controls-per-profile-and-platform-t430)). The documented per-run flags are `--sandbox`, `--mode=accept-edits\|plan`, `--model`, `--effort`, `--agent`, `--dangerously-skip-permissions`, `--print-timeout`, `--json-schema`, `--continue`, `--conversation`, `--disable-slash-commands` [H, MO, CL]; none sets `toolPermission` |
+| `toolPermission` per run | Values `request-review` (default), `proceed-in-sandbox`, `always-proceed`, `strict` are documented [R, ST, R2 L27, L117], and **only as a `settings.json` key** (`~/.gemini/antigravity-cli/settings.json`) or in `/config` [R, S, ST]. Headless "respects the permission mode in your settings" [H]. No flag, environment variable or `-p` option that sets it is documented. [ST] shows a `/config` line `Tool Permission: strict (overridden by command flag)`, which implies that some flag overrides it, but **names none**: Unverified: T4.31 (C2). The only per-run value documented is `always-proceed` through `--dangerously-skip-permissions`, reported as `permission_mode` on `init` [H]. Hence, per T4.30, profiles that need `request-review`, `proceed-in-sandbox` or `strict` are `Ineligible: PROFILE_UNSUPPORTED` (reason: `toolPermission` is not settable per run without editing global configuration, FR-POL-08). Settings are shared with the Antigravity app [<https://antigravity.google/docs/cli/overview/>], so an operator's own edits change every run; the adapter never writes that file |
+| Sandbox controls | `--sandbox` "turns the sandbox on for the session, overriding settings.json" [S, H]; `enableTerminalSandbox` (default `false`) in settings [R, S]. Linux: kernel namespaces (filesystem, host processes, network); macOS: `sandbox-exec` Seatbelt [S]. Network off by default inside it; domains granted by `read_url` allow rules join its allowlist; workspace and `write_file` paths are read-write, `read_file` paths read-only [S, P]. A command may ask to run outside it ("unsandboxed" request) and always needs approval unless an `unsandboxed(...)`/`command(...)` allow rule covers it [S]. Docs name `~/.ssh` and `.env` as blocked [S]; whether `~/.gemini` tokens or the keyring socket are reachable from inside: Unverified: T4.31 (live malicious leg, T4.38). The sandbox does not by itself let commands run in headless: that is `proceed-in-sandbox` (settings only) |
+| Headless approval behaviour | No prompt exists in headless mode. A tool that needs approval it cannot get is **soft-denied: the run continues, exits 0** and prints a notice naming the tool to stderr [H]; denials are reported as `denied_actions` in the JSON output [CL v1.1.27] (field shape: Unverified: T4.31 C7), and [CL v1.1.20] made denials and benign tool errors non-fatal. So a denied run can end `status: SUCCESS` with exit 0: the adapter must read `denied_actions` and the stderr notice and end `PERMISSION_BLOCKED` (FR-POL-05), never `SUCCEEDED`. Workspace file reads and writes are auto-allowed; shell commands default to Ask [H, P]. Allow rules are `permissions.allow` entries in settings (`command(...)`, `write_file(...)`) [H, P]: not per run |
+| Known risks | `--dangerously-skip-permissions` ("Auto-approve all tool permission requests"; `permission_mode` becomes `always-proceed`) only under approved `privileged` [H]; the self-updater can replace the binary between the version gate and a run: `AGY_CLI_DISABLE_AUTO_UPDATE=true` disables it [TS] (to be set in the child environment by the adapter, Proposed); the docs contradict themselves on the headless time limit ([H] default 5 minutes; [CL v1.2.6] unlimited unless `--print-timeout`) and [CL v1.1.28] says `--print-timeout` expiry returns partial output and exits 0 with a warning, so the supervisor's own timeout and the `status` field are authoritative, not the exit code; workspace files steer the agent: `GEMINI.md`, `AGENTS.md`, `.agents/` skills, agents, hooks and `mcp_config.json` [MG, M, CL] (see MCP row) |
+| Models | `agy models` lists slugs and display names [H]; `agy models --output-format json` (or `stream-json`) is machine-readable, with errors off stdout [CL v1.1.12]. `--model <slug>` pins one; an unknown model exits 1 with `status: ERROR` instead of falling back [H]. `--effort low\|medium\|high` [H]. Plan-dependent availability is on <https://antigravity.google/docs/models/>. Feeds the model registry (FR-ADP-05, T4.5); no model name is stored in source or in this document. Whether `agy models` needs a login: Unverified: T4.31 (C3) |
+| Usage fields | `usage` on the `json` envelope, on `result` and per step on `step_update`: `input_tokens`, `output_tokens`, `thinking_tokens`, `cache_read_tokens`, `total_tokens` [H]. In an `--input-format stream-json` session they are cumulative [H] (not used). Remaining quota is separate: `/usage` (alias `/quota`) and `/credits` are available as `-p "/usage"` [CL v1.1.12] and show per-model weekly and five-hour limits and credits (<https://antigravity.google/docs/cli/commands/usage/>, `.../cli/credits/`; machine-readable output shape: Unverified: T4.31 C6). Record what Google reports; make no cross-provider conversion (FR-CAP-01, [R2 L491]) |
+| Git writes and injected tools (M4, M9) | **Git-write denial per run: `none-documented`.** Deny rules are documented (`command(git push)`, `command(git commit)`, `write_file(.git/)` forms; Deny > Ask > Allow; shell constructs such as `$(...)` force an exact match) [P], but only in `settings.json` or the `/permissions` scopes (Project, Shared, Global) [P, `.../cli/commands/permissions/`]; none can be passed per run, and the adapter does not edit them. Adapter declaration: `gitWriteControl` `none-documented`, `commitChannel` `finalize-only` (T4.37; ADR-0017, owner decision 46). TDD §3 row 1 names Antigravity `strict` mode as the Git-write layer; that is superseded for headless: `strict` is a settings value, not per run, and in headless its prompts are soft-denials. **Per-run MCP definition: none documented.** MCP servers come from `~/.gemini/config/mcp_config.json` (global) and `.agents/mcp_config.json` (workspace), both files, no flag [M, MG]; MCP tools default to Ask, which headless soft-denies unless an `mcp(server/tool)` allow rule exists in settings [M, P]. Both the workspace file and the allow rule are outside a per-run argv, so the shim of ADR-0026 cannot be supplied or approved: injected-tool mode is not offered (finalize-only, FR-GIT-09). Whether a controller-written `.agents/mcp_config.json` in the run's own worktree would be loaded and approvable: Unverified: T4.31 (C11); using it would also need an ADR (trust boundary). A repository's own `.agents/mcp_config.json` is a hostile-repo vector (stdio `command` entries): whether workspace trust or `-p` blocks it: Unverified: T4.31 (C11) |
+
+#### 4.4.1 Antigravity output shapes and exit codes (T4.30)
+
+Documented in [H] unless marked. These are the shapes the parser is written against; captures replace them in T4.31.
+
+| Item | Documented shape |
+| --- | --- |
+| `json` envelope | One line: `conversation_id`, `status`, `response`, `duration_seconds`, `num_turns`, `usage`; `error` only on failure; `structured_output` and `json_schema` only with `--json-schema`; `denied_actions` [CL v1.1.27] (shape unverified) |
+| `status` values | `SUCCESS`, `ERROR`, `CANCELED`, `INTERRUPTED`, `INVALID`, `WAITING`, `RUNNING` (only `SUCCESS` is success; `WAITING` and `RUNNING` are terminal-failure for Switchboard) |
+| `stream-json` events | Line objects with `event`: `init` once (`conversation_id`, `init.cwd`, `init.tools[]`, `init.permission_mode`, `init.model` and `init.agent` when set, `init.json_schema` when set), `step_update` many, `result` once (same shape as the envelope) |
+| `step_update` | `conversation_id`, `step_index`, `state` (`ACTIVE`\|`DONE`), `step_type` (observed: `user_input`, `agent_response`, `tool`, `checkpoint`), optional `tool_name`, `text_delta`, `duration_seconds`, `usage`, `tool_info`, `subagent_info`. `tool_info`: `name`, `parameters`, `output`, and `error` (`type`, `message`) on failure. `agent_response` streams `ACTIVE` events with partial `text_delta` before its `DONE`. Unknown `step_type` values are not success (LLD §4) |
+| Exit codes | `0` success (also soft-denials, see above, and `--print-timeout` expiry [CL v1.1.28]); `1` run failed to produce a response (unknown `--model`, invalid `--json-schema`, malformed stream input) [H, CL v1.2.14]; `2` `control_request`/`control_response` or a CLI-handled slash command in an input stream [H]; `3` a turn ended on an agent or model API failure, with a structured `AGY_ERROR: {...}` JSON line on stderr (canonical status, HTTP or gRPC code, retryability, error id) [CL v1.2.6, v1.2.10]. **Authentication-required exit code: Unverified: T4.31 (C5)** |
+| Failure mapping (Proposed) | Parse the last stdout object and the `AGY_ERROR` line; `status` not `SUCCESS` or any `denied_actions` is a failure; exit 3 maps to the LLD §4 codes (`RATE_LIMIT_TRANSIENT`, `PROVIDER_OVERLOADED`, `QUOTA_EXHAUSTED`, `MODEL_UNAVAILABLE`, else `FAILED`) from the `AGY_ERROR` fields, whose names are Unverified: T4.31; the auth error text is not matched until T4.31 records it |
+
+#### 4.4.2 Antigravity native controls per profile and platform (T4.30)
+
+Cell values as in [§4.1.1](#411-claude-code-native-controls-per-profile-and-platform-t30): **Could compile** (documented
+control, unverified), **Ineligible: `<reason>`** (LLD §2 codes, all `ELIGIBILITY_NONE`), **Unverified: T4.31**.
+Platforms: Linux is the column set below; macOS not supported yet (NFR-PORT-02; [S] names Seatbelt, no cell evaluated);
+Windows not supported yet (NFR-PORT-03; [P, S] say Windows uses an older permission system).
+
+| Dimension | `inspect-untrusted` | `edit-untrusted` | `test-sandboxed` | `trusted-development` | `privileged` |
+| --- | --- | --- | --- | --- | --- |
+| `toolPermission` | Ineligible: `PROFILE_UNSUPPORTED` (needs `strict`/`request-review`; not settable per run [R, ST, H]) | Ineligible: `PROFILE_UNSUPPORTED` (same) | Ineligible: `PROFILE_UNSUPPORTED` (needs `proceed-in-sandbox`; settings only [S]) | Ineligible: `PROFILE_UNSUPPORTED` (same) | Without `bypass`: Ineligible: `PROFILE_UNSUPPORTED`. With approved `bypass`: `always-proceed` through `--dangerously-skip-permissions` [H] |
+| File access | Ineligible: `PROFILE_UNSUPPORTED`. Documented, for later: workspace reads and writes auto-allowed, non-workspace Ask (soft-denied) [H, P]; `allowNonWorkspaceAccess` off by default [ST]; read-only is not selectable per run (`--mode=plan` only prepends a planning prefix [MO]) | Ineligible: `PROFILE_UNSUPPORTED`. `--mode=accept-edits` is per run [MO] but is not `toolPermission` | Ineligible: `PROFILE_UNSUPPORTED` | Ineligible: `PROFILE_UNSUPPORTED` | Could compile (bypass only): all tools approved [H]; whether `allowNonWorkspaceAccess` still applies: Unverified: T4.31 (C8) |
+| Shell | Ineligible: `PROFILE_UNSUPPORTED`. Documented, for later: shell is Ask, soft-denied in headless unless a `command(...)` allow rule is in settings [H, P] | Ineligible: `PROFILE_UNSUPPORTED`; an allowlist cannot be passed per run (rules are settings) | Ineligible: `PROFILE_UNSUPPORTED` (`--sandbox` is per run [S] but commands then still Ask in headless) | Ineligible: `PROFILE_UNSUPPORTED` | Could compile (bypass only): arbitrary commands, in or out of the sandbox [H, S] |
+| Network | Ineligible: `PROFILE_UNSUPPORTED`. Documented: sandbox has no network by default, `read_url` rules open domains [S]; tool-level web reads default Ask [P] | Ineligible: `PROFILE_UNSUPPORTED` | `allowlist`: Ineligible: `CAPABILITY_MISSING` (allowlist is `read_url` rules in settings, not per run); `off`: Ineligible: `PROFILE_UNSUPPORTED` | Ineligible: `PROFILE_UNSUPPORTED` | Could compile (bypass only): not confined [H] |
+| Repository config (`GEMINI.md`, `AGENTS.md`, `.agents/*`, hooks, MCP) | Ineligible: `PROFILE_UNSUPPORTED`. No documented flag disables them; only `--disable-slash-commands` (slash and skill expansion) [CL v1.1.9]. Workspace trust in headless: Unverified: T4.31 (C11) | Ineligible: `PROFILE_UNSUPPORTED` | Ineligible: `PROFILE_UNSUPPORTED` | Ineligible: `PROFILE_UNSUPPORTED` | Could compile (bypass only): files load as the agent finds them; Unverified: T4.31 (C11) |
+| Native sandbox | Ineligible: `PROFILE_UNSUPPORTED` (`--sandbox` per run [S]; credential confinement unproven, FR-POL-06: Unverified: T4.31 / T4.38) | Ineligible: `PROFILE_UNSUPPORTED` | Ineligible: `PROFILE_UNSUPPORTED` until `toolPermission` is settable per run; then Could compile with `--sandbox` | Ineligible: `PROFILE_UNSUPPORTED` | Bypass with `--sandbox` as well: Unverified: T4.31 (C8) |
+| Approval behaviour | Ineligible: `PROFILE_UNSUPPORTED`. Headless soft-denies and exits 0 [H] | Ineligible: `PROFILE_UNSUPPORTED` | Ineligible: `PROFILE_UNSUPPORTED` | Ineligible: `PROFILE_UNSUPPORTED` | Could compile (bypass only): no prompts; `init.permission_mode` must read `always-proceed` or the run is a mismatch (Proposed check) |
+| Bypass flag availability | Never emitted (FR-POL-03) | Never emitted | Never emitted | Never emitted; a `bypassApproved` is Ineligible (FR-POL-03) | Could compile: `--dangerously-skip-permissions` only in an approved bypass scope (ADR-0017). Compiles on a `host` project although Git-write denial is `none-documented` (owner decision 46, Q-58). Whether deny rules survive the flag: Unverified: T4.31 (C8) |
+
+**Bypass-class flags and values (Proposed list for the argv audit, T4.1).** Documented: `--dangerously-skip-permissions`
+[H, MO, R2 L27, L117]. `toolPermission` value `always-proceed` is bypass-class by effect (it never prompts [R]),
+and so is
+`artifactReviewPolicy` `always-proceed` [R]; both can arrive only through the operator's `settings.json`, never argv, so
+the audit cannot see them: `init.permission_mode` is the only per-run evidence, and a run whose `init` reports
+`always-proceed` without an approved bypass scope is ended as a policy mismatch (Proposed; the run has already started,
+so this is detective, not preventive). `--mode=accept-edits` is not named a bypass flag in [MO] but auto-approves
+file edits; the compile matrix does not emit it until T4.31 and the profile semantics are checked. `--remote-control`
+[CL v1.2.6] opens a remote-control tunnel and is never emitted.
+
+**What would make profiles eligible (Proposed, no decision).** (a) T4.31 finds a documented per-run `toolPermission`
+flag in `agy --help`; (b) a per-run configuration directory that `agy` honours, which would need an ADR (trust and
+credential boundary, keyring access) and a live check that auth still works; (c) a controller-written, worktree-local
+settings or MCP file, if `agy` reads one and a malicious repository cannot override it.
+
+#### 4.4.3 T4.31 operator checklist (Antigravity)
+
+Run on a host with `agy` installed and the operator's native login. Read-only commands, then a throwaway repository
+(`mktemp -d`, `git init`, a local bare remote). Never print, copy or commit credentials, tokens, `settings.json` in full,
+`~/.gemini` contents, account emails or the keyring. Back up `~/.gemini/antigravity-cli/settings.json` before C7 and C8
+and restore it after. Capture stdout and stderr to separate files, record `echo "exit=$?"` for each, and run each
+command with `timeout 120` and stdin `</dev/null` (no terminal). Scrub account identifiers, absolute home paths and
+prompt text before writing `docs/research/live-checks-2026-10-13.md` (or the next dated note). Never set
+`GEMINI_API_KEY`, `GOOGLE_API_KEY` or `GOOGLE_GEMINI_BASE_URL`.
+
+| # | Command (exact) | Capture | Fills |
+| --- | --- | --- | --- |
+| C1 | `agy --version` | Output format; record the version used for every later row | Automation surface (version), manifest version range |
+| C2 | `agy --help`; `agy -p --help`; `agy models --help`; `agy agents --help`; try `agy acp --help` and `agy serve --help` | Full help text. Look for: a `toolPermission` or permission flag, `--settings`, `--config-dir`, `--mcp-config`, `--add-dir`, `--workspace`, any ACP/server subcommand, any auth/status subcommand | `toolPermission` per run (the Ineligible rule), Transport (ACP), MCP, Auth preflight |
+| C3 | `agy models --output-format json`, logged in and logged out | Exit codes; the JSON keys only (no slugs needed); whether it works logged out | Models; usable as a harmless auth call |
+| C4 | `agy -p "Reply with the single word ok." --output-format text`, then `json`, then `stream-json`, logged in | One scrubbed capture of each; exit code 0; `init`, `step_update`, `result` real keys | Structured output, Usage fields, parser fixtures |
+| C5 | `agy` interactive, run `/logout`, then `agy -p "Reply with the single word ok." --output-format json </dev/null` and the same with `stream-json`; log in again afterwards | **Exit code**, stdout and stderr text (scrubbed), time to exit (it must not hang), whether stdout is empty or an envelope | Auth preflight: the documented auth-error exit code; `AUTH_REQUIRED` mapping |
+| C5b | On Linux: repeat C4 with `env -u DBUS_SESSION_BUS_ADDRESS` and, separately, with the keyring locked | Exit code and text, whether it hangs (use `timeout 60`) | Auth risk (keyring locked), environment allowlist needs |
+| C6 | `agy -p "/usage" --output-format json` and `agy -p "/credits" --output-format json`, logged in and logged out | Exit codes; JSON keys only, no figures or account data; whether a model turn or conversation id is created | Auth preflight candidate and its cost; Usage (quota) fields |
+| C7 | Default settings, throwaway repo: `agy -p "Run the shell command: echo hello" --output-format json`, then `stream-json` | Exit code (expect 0), stderr notice text, `denied_actions` shape, `init.permission_mode`, `status`; whether a file write (`Create a file named a.txt`) is auto-allowed | Headless approval behaviour; `PERMISSION_BLOCKED` mapping; `denied_actions` |
+| C7b | `agy -p "Say ok" --output-format stream-json --sandbox`; same with `--dangerously-skip-permissions`; same with `--mode=plan` | `init.permission_mode` in each; whether `--sandbox` changes it | `toolPermission` per run; Bypass values; Sandbox controls |
+| C8 | With settings backed up: deny rules `command(git commit)`, `command(git push)`, `command(git branch)`, `command(git tag)`, `write_file(.git/)` in `permissions.deny`; then, in the throwaway repo, run `--dangerously-skip-permissions` with "create a.txt, git add and git commit it, create a tag, push to origin"; repeat without the flag but with `command(git)` in `permissions.allow` | Per attempt `HELD`/`ESCAPED`/`NOT_CHECKED`; `git log`, `git tag`, `git ls-remote` of the bare remote; whether Deny survives `--dangerously-skip-permissions`; the same with `--sandbox` added; whether `allowNonWorkspaceAccess` is honoured under bypass | Git writes; Bypass cell (denial held?); Native sandbox under bypass |
+| C9 | Run 1: C4 `json`; note `conversation_id`. Run 2: `agy -p "What did I ask before?" --conversation <id> --output-format json` in the same directory; run 3: the same from another directory; run 4: `-c`; run 5: `--conversation 00000000-0000-0000-0000-000000000000` | Exit codes, `conversation_id` of each result (same or new), the error text for the unknown id | Resume |
+| C10 | `agy -p "Say ok" --model does-not-exist --output-format json`; `agy -p "Say ok" --print-timeout 1s --output-format json` | Exit codes (docs say 1 for the first), `status`, `error`; for the second, whether partial output and exit 0 occur | Exit codes; timeout contradiction |
+| C11 | Throwaway repo containing a benign `.agents/mcp_config.json` whose stdio `command` writes a marker file, a benign `.agents/hooks.json` hook that writes a marker, and a `GEMINI.md` and `AGENTS.md` asking for a marker phrase; run `agy -p "Say ok" --output-format stream-json` (default settings) and with `--dangerously-skip-permissions` | Whether the MCP server started, the hook ran, the instruction files were read (marker files, `init.tools`); whether a trust dialog or `-p` blocks it; if a per-run worktree-local `.agents/mcp_config.json` is loaded, whether its tool is approvable without a settings rule | Repository config; per-run MCP; malicious-fixture design (T4.3) |
+| C12 | With `AGY_CLI_DISABLE_AUTO_UPDATE=true` set in the environment, C4 `json` | Whether the run still works and no updater lock/network update occurs (`~/.gemini/antigravity-cli/updater/` listing only) | Known risks (self-update); environment allowlist |
+| C13 | `HOME=$(mktemp -d) agy -p "Say ok" --output-format json </dev/null` (separate empty home) | Whether auth still works (keyring) and whether settings are read from the new home | "What would make profiles eligible" (b) |
+| C14 | Read-only: is a separate ACP package installed? `command -v agy_acp_server.par agy_acp_server.exe agy-acp agy-acp-bridge`; `npm ls -g --depth=0 2>/dev/null` filtered to names containing `acp` or `antigravity`; for Zed, list the installed external agents in its settings (names only) | Which ACP adapters exist on the machine, their names, versions and install paths (home path scrubbed), and whether each is Google's (registry id `antigravity-acp`) or third-party | §4.4.4: installed candidates |
+| C15 | For each installed adapter, from its own documentation or `--help` (not by running it against a model): what does it wrap (`agy -p`, interactive `agy`, a separate Google server), which auth methods it lists, which environment variables it reads | The wrap target and the auth methods; any variable named `GEMINI_API_KEY`, `GOOGLE_API_KEY` or `GOOGLE_GEMINI_BASE_URL` (names only) | §4.4.4: wraps, credential handling |
+| C16 | Whether the adapter reuses agy's login: with `agy` logged in (C4 works), start the adapter's ACP `initialize` only (no `authenticate`, no prompt) from a scratch ACP client and record whether a session can be created or "authentication required" is returned. Stop if it prints a sign-in URL; do not complete a login for the test | `initialize` result keys (protocol version, `authMethods` ids, capabilities, `mcpCapabilities`), exit codes, and yes/no for login reuse | §4.4.4: auth reuse, `mcpServers` transports |
+| C17 | `agy --help` and `agy -p --help` again, looking for `--gemini_dir`, `--config-dir` or similar (a third-party README names `--gemini_dir`; Unverified) | Flag names and their help text | §4.4.4 and "What would make profiles eligible" (b) |
+
+Results go in the dated note under `docs/research/` and move each `Unverified: T4.31` cell above to the observed value
+with the version from C1; no credential, token or account identifier in any capture.
+
+#### 4.4.4 Separate ACP adapter (owner lead, 2026-10-13)
+
+**Provenance.** On 2026-10-13 the owner (zemdregon) said in chat: "Antigravity also has some form of separate download
+for ACP that isn't part of the native agy." That statement is a **lead without a source**. Delegated agent research the
+same day (public pages and registry metadata only; nothing was installed, downloaded or run) found a source that is
+consistent with it, below. Facts are either sourced to a URL retrieved 2026-10-13 or read `Unverified`. Page text was
+treated as data.
+
+**Finding in one paragraph.** The ACP project's registry lists an agent `Google Antigravity` (id `antigravity-acp`,
+version 1.3.0) whose manifest names `Google LLC` as author and points to binary archives on `dl.google.com`
+[REG]. Google's own Zed guide tells users to install Antigravity from that registry [GZ]. That is a separate download,
+not the `agy` binary. It is not mentioned in Google's CLI pages read for T4.30 ([H], [R], [I], [M], [SDK], [CL]).
+The native-`agy` feature request for `--acp` was still open on 2026-10-13 [GI31]. Confidence that Google publishes it:
+**official** (publisher metadata plus Google's own guide). Everything about how it behaves is **Unverified: T4.31**
+except where the table says it is sourced.
+
+**Candidate 1: Google's ACP server (official).**
+
+| Field | Value |
+| --- | --- |
+| Name, id | "Google Antigravity", registry id `antigravity-acp`; binaries `agy_acp_server.par` (macOS, Linux) and `agy_acp_server.exe` (Windows) [REG manifest] |
+| Publisher, confidence | Google LLC (`authors` in the manifest) [REG]; the Zed guide [GZ] and the IDE extensions page <https://antigravity.google/docs/ide/extensions> (the manifest's `website`) point to it. **Official.** Binary signature and checksum: Unverified (the manifest carries no hash; a commenter on [GI31] says the Windows binaries are Authenticode-signed by Google LLC, which was not checked) |
+| URLs | Manifest and registry page above; archives `https://dl.google.com/agy-extensions/releases/{macos,linux,windows}/agy-acp-server-1.3.0-<platform>.zip` [REG manifest]; the linux-x86_64 archive answered HTTP 200 to a header-only request, nothing was downloaded |
+| What it wraps | Unverified. Not documented by Google as wrapping `agy -p`; it ships as its own binary with its own per-platform archives. A third-party package describes it as "the official Google Antigravity ACP kernel" (npm `paseo-agy-acp`), also unverified |
+| Latest release | Version 1.3.0 in the manifest [REG]. Release date: Unverified (the registry history was not readable from this host). A [GI31] comment reports a build named `..._20260818_01_RC01`, reporting protocol version 2, and another reports version 1.3.0 with protocol 1: Unverified and conflicting |
+| Install method (record only) | Zed: External Agents, Add, Install from Registry, Antigravity [GZ]. Otherwise download the platform zip and run the `cmd` from the manifest (`./agy_acp_server.par`, with the argument `--uid=` on Linux) [REG manifest]. Not done here |
+| Authentication | Google documents four settings values: `oauth-personal`, `oauth-business` (with GCP project and location), `gemini-api-key`, `agent-platform` (API key or Application Default Credentials) [GZ]. Whether it reuses `agy`'s keyring login: **Unverified**. Secondhand reports on [GI31] say it does not: it keeps its own state under `~/.gemini/antigravity-acp/`, does not inherit credentials the IDE wrote, and every session fails with "Authentication required" until a client calls `authenticate` (interactive: prints a URL and opens a browser) |
+| Permission requests | Unverified. A third-party probe on [GI31] reports session modes `default` ("Default permission prompt flow"), `auto_edit` and `yolo`; whether `default` sends ACP `session/request_permission` to the client, and whether a client can pick a mode per session: Unverified: T4.31 |
+| Per-session `mcpServers` | Unverified. The same probe reports `mcp(http=true, sse=true)` and no stdio; the shim of [ADR-0026](../adr/0026-per-run-tool-channel-socket-and-token.md) is a stdio bridge (§3.10), so it may not fit. A commenter reports tool access is limited to the `cwd` given at `session/new` plus skills directories, with symlinks resolved first |
+| Licence | "proprietary", terms at <https://antigravity.google/terms> [REG manifest] |
+
+**Candidates 2 to 8: third-party packages.** None is published by Google. Version, date and licence are from the npm
+registry metadata (`registry.npmjs.org/<name>`); "wraps" comes from the package's own description or README, read
+2026-10-13, and is the author's claim.
+
+| Package (publisher) | Latest, date, licence | Wraps | Auth, MCP, permissions |
+| --- | --- | --- | --- |
+| `agy-acp-bridge` (npm user `hobby0524`; repo `maojindao55/agy-acp`) | 0.3.9, 2026-10-08, Apache-2.0 | `agy` print mode with `--output-format stream-json` (the [3P] lead from T4.30); optionally a warm process using `--input-format stream-json` | Reuses `agy`'s own login (it drives `agy`; README says native auth data stays in place). README claims MCP `stdio`/`sse`/`http` via a per-session private config directory passed as `--gemini_dir` (flag Unverified, C17). Its install script downloads Google's installer unless `AGY_ACP_SKIP_CLI_INSTALL=1`. Permission requests: Unverified |
+| `agy-acp` (repo `shindgew/agy-acp`) | 0.5.2, 2026-08-18, Apache-2.0 | Interactive `agy` in a PTY (`--prompt-interactive --conversation --sandbox`), reading the conversation database | Drives `agy`, so presumably its login (Unverified). MCP and permissions: Unverified |
+| `antigravity-acp` (npm user `shubzkothekar`) | 1.2.0, 2026-09-27, MIT | Drives `agy` (Bun server) | Unverified. **Same name as the official registry id**: a name collision, not Google's package |
+| `@yitom/agy-acp-map` | 0.1.23, 2026-10-13, MIT | "ACP v1/v2 bridge for `agy`" | Unverified |
+| `@simonepri/refined-antigravity-acp` | 1.4.2, 2026-10-03, MIT | "A Google Antigravity ACP binary that actually works" | Unverified (README not readable) |
+| `paseo-agy-acp` (repo `tiezbro/paseo-agy-acp`) | 2.5.1, 2026-10-11, Apache-2.0 | Proxies "the official Google Antigravity ACP kernel" | Unverified |
+| `pi-antigravity-acp-provider`, `@estebanforge/pi-antigravity-bridge` | 0.1.15 and 1.8.1, 2026-10-13, MIT | Clients of an ACP server for the Pi agent, not adapters | Not relevant to Switchboard |
+
+**Policy text found while researching (data, not a decision).** Google's FAQ says that using third-party software
+"to access Antigravity" with an Antigravity login violates its Terms of Service, and that `agy -p` "is intended for
+direct scripting and CI workflows" while "wrapping `agy` inside third-party coding agents or applications ... is not
+supported under consumer plans" [AF]. This bears on the existing ephemeral `-p` decision as much as on any ACP
+adapter, and is not yet reflected elsewhere in these documents. Whether Switchboard, as an orchestrator, counts as
+such an application, and what changes with Gemini Enterprise or an API key plan, is an open question for the owner.
+
+**Transport decision: unchanged.** The transport stays an ephemeral `agy -p --output-format stream-json`
+subprocess (§4.4 table). Nothing above is a decision to use ACP; the T4.7 ACP client design is not yet written, and no
+candidate has been run.
+
+**How a separate ACP adapter would change the picture (considerations, not decisions).**
+
+- *A dependency outside the native `agy`.* A second binary with its own release channel, version and update path. The
+  manifest carries no checksum; a version gate and an integrity check would be new work (compare the self-updater
+  risk for `agy`, Known risks row). A third-party package adds a package-registry supply chain on top.
+- *A second trust boundary.* Another long-lived process that can reach the operator's credentials, the worktree and
+  MCP configuration. It would need its own environment allowlist, process-group handling and sandbox evidence, and by
+  AGENTS.md a new ADR (external interface, trust boundary), on top of T4.7.
+- *Its own credential handling.* The official server lists four auth methods, two of them API-key or ADC based, and
+  secondhand reports say it does not reuse `agy`'s keyring login. Switchboard would still never run `authenticate`,
+  store a token or place `GEMINI_API_KEY` in a child environment (FR-AUTH-02, ADR-0003); the operator would log in
+  outside Switchboard, and the preflight would map "authentication required" to `AUTH_REQUIRED`. Whether a
+  headless host can complete that login at all is Unverified.
+- *What it could add.* If, and only if, it sends permission requests and honours per-session `mcpServers` and a
+  per-session mode (all Unverified), it would supply the per-run permission and MCP channel that `-p` lacks (the
+  "What would make profiles eligible" list in §4.4.2), and so could change the profile eligibility in that matrix. A
+  mode like `yolo` that approves every tool would be bypass-class (FR-POL-03).
+- *What it would not change.* Git-write denial and worktree isolation stay Switchboard's, and a stdio shim cannot be
+  assumed to be accepted (http/sse only was reported).
+
+**Status.** Unverified until T4.31 (checklist C14 to C17). Nothing in the compile matrix, manifest or roadmap
+changes because of this lead.
 
 ### 4.5 Cursor CLI (M4)
 
+Spike result, 2026-10-13 (T4.40; Delegated agent work, not owner-approved). `agent` is not installed on the development
+host and was not run, so nothing here is observed: every cell is either **sourced** (Cursor's public documentation,
+fetched 2026-10-13, or [R2 Lnn]) or reads `Unverified: T4.41`, to be settled by the operator checklist in
+[§4.5.3](#453-t441-operator-checklist). Page text fetched from the web was treated as data. Sources:
+
+- **[C1]** [CLI parameters](https://cursor.com/docs/cli/reference/parameters), 2026-10-13.
+- **[C2]** [Output format](https://cursor.com/docs/cli/reference/output-format), 2026-10-13.
+- **[C3]** [Headless CLI](https://cursor.com/docs/cli/headless), 2026-10-13.
+- **[C4]** [ACP](https://cursor.com/docs/cli/acp), 2026-10-13.
+- **[C5]** [Authentication](https://cursor.com/docs/cli/reference/authentication), 2026-10-13.
+- **[C6]** [Permissions](https://cursor.com/docs/cli/reference/permissions), 2026-10-13.
+- **[C7]** [Configuration](https://cursor.com/docs/cli/reference/configuration), 2026-10-13.
+- **[C8]** [Using the CLI](https://cursor.com/docs/cli/using), 2026-10-13.
+- **[C9]** [MCP](https://cursor.com/docs/mcp), 2026-10-13.
+- **[C10]** [Run modes and sandboxing](https://cursor.com/docs/agent/security/run-modes), 2026-10-13.
+- **[C11]** [CLI changelog](https://cursor.com/docs/cli/changelog), 2026-10-13 (dated entries as printed there).
+- **[R2 Lnn]** a line of the [verified research](../research/headless-ai-coding-controller-verified-2026-10-12.md).
+- **[P]** Proposed: a choice of this document, not a Cursor statement.
+
+Pages [C5] to [C9] were read through a summarising fetch tool, not verbatim; the quoted fragments below come from that
+summary and T4.41 re-reads them against `agent --help` of the installed version.
+
 | Aspect | Detail |
 | --- | --- |
-| Automation surface | `agent -p`; ACP via `agent acp` |
-| Structured output | `text`, `json`, `stream-json`; optional partial deltas |
-| Resume | `--resume`, `--continue` |
-| Auth preflight | Not stated in [R2]: to be verified in M4 against installed CLI |
-| Trust profile compilation (Proposed) | `--sandbox enabled`; `--trust`, `--approve-mcps`, `--force`/`--yolo` decided independently: `--trust` only after controller trust evaluation, never automatic `--approve-mcps` or `--force` |
-| Sandbox controls | `--sandbox enabled` or `--sandbox disabled`; sandbox subcommands support extra writable/read-only paths, blocked patterns, network switch (syntax to be verified in M4); `--worktree` with base-ref control exists but the controller owns worktrees |
-| Known risks | Can front several model vendors: record harness and backing provider/model (FR-ADP-10); `--list-models` feeds the model registry (FR-ADP-05) |
-| Git writes and injected tools (M4, M9) | `--sandbox enabled`; Git-write denial syntax: to be verified in M4. Cursor's `--worktree` creates worktrees and refs of its own and is not used (the controller owns worktrees). If supplying the injected MCP server needs `--approve-mcps` [R2], that is a bypass-class switch (FR-POL-03), so Cursor would use finalize-only mode (FR-GIT-09) |
+| Automation surface | `agent -p` / `--print` ("Has access to all tools, including write and shell") [C1]; native ACP via `agent acp`, a hidden command "intended for custom ACP clients" [C1, C4, R2 L76, L136 to L143]. Version: `-v, --version`; `agent about --format json` shows version, system and account info [C1] (JSON keys: Unverified: T4.41). Prompt is a positional argument (`agent [prompt...]`) [C1]; reading it from stdin: Unverified: T4.41 ([C2] says print mode is inferred for "piped stdin", not that stdin is the prompt). Argv prompts are visible in the process list, so T4.42 needs the stdin answer |
+| Structured output | `--output-format text\|json\|stream-json`, only with `--print` [C1, C2]. `json`: one object on success (`type` `result`, `subtype` `success`, `is_error`, `duration_ms`, `duration_api_ms`, `result`, `session_id`, optional `request_id`); on failure a non-zero exit, a message on stderr and no JSON [C2]. `stream-json`: NDJSON, one line per complete assistant message [C2]; event types `system` (`subtype` `init`: `apiKeySource` `env\|flag\|login`, `cwd`, `session_id`, `model` as a display name, `permissionMode`), `user`, `assistant`, `tool_call` (`subtype` `started` or `completed`, `call_id`, then `readToolCall`, `writeToolCall` or a generic `function` shape) and a terminal `result`; on failure the stream "may end early without a terminal event" [C2]. `--stream-partial-output` (stream-json only) adds delta `assistant` events; only those with `timestamp_ms` and no `model_call_id` carry new text, the other two kinds duplicate it [C2]. `thinking` events are suppressed; consumers must ignore unknown fields [C2]. Shapes of the shell, edit, MCP and denied-tool calls and of error results: Unverified: T4.41 |
+| Usage fields | The changelog (February 2026) says `stream-json` carries "per-turn input/output/cache token totals and a `request_id`" [C11]; the field names are on no page read: Unverified: T4.41. `duration_ms` and `duration_api_ms` are documented but "currently equal" [C2]. No cost field is documented: Unverified: T4.41 |
+| Resume | `--resume [chatId]` resumes a chat; `--continue` is "alias for `--resume=-1`", the previous session [C1]; `agent resume` resumes the latest chat, `agent ls` lists chats, `agent create-chat` "Create a new empty chat and return its ID" [C1, C8]. The id is `session_id` on every stream event and on `result` [C2]. [P]: resume only by explicit id taken from structured output, never `--continue` (it names no chat, so a concurrent run could be resumed by mistake). Whether an id resumes from another working directory, and what `--resume` prints: Unverified: T4.41 ([C11] v2026.07.06 says the picker lists all workspaces) |
+| Transport decision (Proposed) | `agent -p --output-format stream-json` JSONL for M4, without `--stream-partial-output` unless T4.41 shows the message-level lines are too coarse; ACP deferred. Reasons in [§4.5.2](#452-transport-decision) |
+| Auth preflight | `agent status` (alias `whoami`) "View authentication status", with `--format text\|json` [C1, C5, C11 April 2026]. Documented to show whether you are authenticated, account information and endpoint [C5]; **no exit codes and no sample output are documented**, and [R2] does not cover it. Until T4.41 records exit codes logged in and logged out, the preflight is `UNKNOWN` (fail closed, Q-10 pattern). `CURSOR_API_KEY`, `--api-key`, `CURSOR_AUTH_TOKEN` and `--auth-token` are credentials: never set, passed or read by Switchboard; native `agent login` only. The `init` event's `apiKeySource` (`env`, `flag` or `login`) can serve as a per-run check that the native login was used [C2] [P]. Behaviour of `-p` with no login (error text, exit code, no prompt): Unverified: T4.41 |
+| Trust profile compilation (Proposed) | `--sandbox enabled` wherever a profile needs confinement [C1, R2 L76, L617]. `--trust` ("Trust the workspace without prompting (headless mode only)") [C1]: headless runs in an untrusted workspace fail unless `--trust` or `--force` is passed (changelog, January 2026), and worktree setup scripts run only after trust [C11 v2026.07.13]. So `--trust` is the one control that lets a run start in a fresh worktree; the controller passes it only after its own trust decision for that worktree and profile, never because the repository asks [R2 L138 to L143, L661 to L664]. What the trust prompt guards (which repository files load once trusted: rules, `AGENTS.md`, `CLAUDE.md`, `.cursor/mcp.json`, hooks, `.cursor/sandbox.json`, `.cursor/cli.json`): Unverified: T4.41 |
+| Sandbox controls | `--sandbox enabled\|disabled` [C1]. Sandbox policy files `~/.cursor/sandbox.json` and `.cursor/sandbox.json` are honoured, the project file taking precedence (changelog, February 2026) [C10, C11]; keys named: `readBoundary`, `additionalReadPaths`; network modes `sandbox.json Only`, `sandbox.json + Defaults` (the default) and `Allow All` [C10]; config keys `sandbox.mode`, `sandbox.networkAccess`, `sandbox.readBoundary` (`system` default or `workspace`) [C7]. Workspace read/write, `/tmp` and platform temp directories writable unless disabled; `.git/config`, `.git/hooks`, `.vscode`, `.cursorignore` and Cursor config files protected by default [C10]. Linux needs kernel 6.2 or later with Landlock v3 and unprivileged user namespaces, else Cursor "falls back to asking for approval before running commands" (a headless run would then block or fail: Unverified: T4.41); macOS needs nothing extra [C10]. The `sandbox` subcommand: `enable`, `disable`, `reset`, `run <cmd>` with `--allow-paths`, `--readonly-paths`, `--blocked-patterns`, `--network` (default `false`), `--sandbox` (default `true`), `--sb-debug` [C1]: these options belong to `sandbox run` (one command in a sandbox), and no page says they apply to `agent -p`; `enable`, `disable` and `reset` change stored configuration, so Switchboard never calls them. No per-run flag for network or paths on `agent -p` is documented: Unverified: T4.41 |
+| Git writes and injected tools (M4, M9) | Permission rules `Shell(commandBase)`, `Read(pathOrGlob)`, `Write(pathOrGlob)`, `Mcp(server:tool)` in `permissions.allow` and `permissions.deny`; "Deny rules take precedence over allow rules" [C6, C7]; the only Git example is `Shell(git)`, "Allow any `git` subcommand" [C6]. They live in `~/.cursor/cli-config.json` or `<project>/.cursor/cli.json`; "Only permissions can be configured at the project level" [C6, C7]; `CURSOR_CONFIG_DIR` and `XDG_CONFIG_HOME` relocate the global file [C7]. **No per-run permission flag is documented.** A deny rule for Git-write verbs would need a controller-written config file in a controller-owned directory (never the operator's `~/.cursor`, never the repository's `.cursor/cli.json`, which the agent can edit): whether `CURSOR_CONFIG_DIR` gives a clean per-run file, whether a deny of `Shell(git commit)` style prefixes matches, and whether a sandbox confines a `.git` write anyway are Unverified: T4.41. Until then `gitWriteControl.kind` is `none-documented` and `commitChannel` is `finalize-only` (FR-GIT-09). Cursor's `--worktree` / `-w` makes worktrees and refs of its own [C1, R2 L687] and is never used: the controller owns worktrees. Per-run MCP definition: none documented; the CLI "will automatically detect and respect your `mcp.json`" [C8], MCP follows the same approval as terminal commands [C9], `agent mcp enable <id>` "Add an MCP server to the local approved list" (stored state) [C1], and `--approve-mcps` "Automatically approve all MCP servers" [C1]. Servers passed over ACP "load instead of being silently dropped" (changelog v2026.06.22) [C11], but their approval is undocumented. So injection needs `--approve-mcps` or a stored approval: bypass-class (FR-POL-03), hence **finalize-only** (FR-GIT-09), no injected tools (T4.42 compiles none) |
+| Bypass-class flags (Proposed audit list) | Already in `BYPASS_FLAGS`: `--force`, `--yolo`, `--approve-mcps`. **Not covered by the audit today:** the short form `-f` of `--force` [C1] (the audit matches only the long spellings and `flag=value`); `--sandbox disabled`, the value that turns confinement off (the flag `--sandbox` itself is needed, so the audit must test its value); config `approvalMode` `unrestricted` and the "Run Everything" run mode [C7, C10] (config, not argv: T4.42 writes no config and never selects it). Other flags T4.1 should refuse outside an approved bypass run, because they widen what code or credentials a run touches: `-w` / `--worktree`, `--worktree-base`, `--skip-worktree-setup` [C1]; `--plugin-dir` (loads plugin code) [C1]; `--api-key`, `--auth-token`, `-H` / `--header` (credentials or request headers) [C1, C4]; `--workspace` (changes the workspace) [C1]. Combined short flags such as `-pf`: Unverified: T4.41. `--trust` is not bypass-class but is never emitted before the trust decision. Never invoked: `login`, `logout`, `update`, `worker`, `install-shell-integration`, `mcp enable`, `sandbox enable\|disable\|reset` |
+| Known risks | The headless page says "Without `--force`, changes are only proposed, not applied" [C3] while [C8] says "Cursor has full write access in non-interactive mode" and [C1] that `-p` "Has access to all tools, including write and shell": the pages disagree, so whether a write-capable run is possible without `--force` is Unverified: T4.41 and decides whether `edit-untrusted` can compile at all. Repository files are untrusted input ([R2 L661 to L664]); `.cursor/sandbox.json` and `.cursor/cli.json` come from the repository and could widen the sandbox or permissions unless trust and loading are shown to be controllable. Auto-review and "Run Everything" run modes exist [C10]; the mode a headless run uses without a config file: Unverified: T4.41 |
+| Models and backing vendor | `agent models` ("List available models for this account") and `--list-models` [C1], feeding the model registry (FR-ADP-05, T4.5; [R2 L162 to L165]); output shape (names, ids, one per line or JSON): Unverified: T4.41; `--model <model>` runs "the exact model you pick" (changelog v2026.09.28) [C11]. The `init` event's `model` is a display name [C2]; **no page says how the backing vendor or provider is reported**, so `backing_provider` (FR-ADP-10) is `Unverified: T4.41` and, if absent, the adapter derives it only from a registry entry, never from the display name. No model name is written in this document or in adapter source |
+
+#### 4.5.1 Cursor native controls per profile and platform (T4.40)
+
+All five cells per row follow the conventions of [§4.1.1](#411-claude-code-native-controls-per-profile-and-platform-t30)
+(`Compiles`, `Could compile`, `Ineligible: <reason>`, `Unknown`); nothing is implemented, so none reads "Compiles".
+Linux is the only platform in scope (NFR-PORT-02, NFR-PORT-03; [C10] names macOS Seatbelt and a Linux Landlock
+backend, neither evaluated). Every cell ends with its sources or `Unverified: T4.41`.
+
+| Dimension | `inspect-untrusted` | `edit-untrusted` | `test-sandboxed` | `trusted-development` | `privileged` |
+| --- | --- | --- | --- | --- | --- |
+| Base argv | Could compile: `agent -p --output-format stream-json --sandbox enabled --trust` plus `--model` from the registry [C1, C2, P]. Unverified: T4.41 | Could compile only if a write works without `--force` [C3 vs C8]. Unverified: T4.41 | Could compile: as `edit-untrusted`; no build or test allowlist exists [C6]. Unverified: T4.41 | Could compile: as `edit-untrusted`, shell `broad`. Unverified: T4.41 | `bypass: false`: as `trusted-development`; `bypass: true`: see Bypass flag availability. Unverified: T4.41 |
+| File access | Could compile: `--mode ask` (read-only Q&A) [C1, C4] and `--sandbox enabled`, whose writable set is workspace and temp [C10]; `Write(**)` deny needs a config file (none per run). Unverified: T4.41 | Could compile: sandbox workspace read/write [C10]. Unverified: T4.41 | As `edit-untrusted`. Unverified: T4.41 | As `edit-untrusted`. Unverified: T4.41 | `files.access` follows the sandbox; extra paths only via `sandbox.json`, no per-run flag [C10]. Unverified: T4.41 |
+| Shell | Ineligible: `CAPABILITY_MISSING` for `none`; `--mode ask` and plan are read-only [C4] but whether shell is still callable: Unverified: T4.41 | Empty allowlist: commands run inside the sandbox [C10]; a non-empty allowlist needs permission rules, none per run [C6]: Ineligible: `CAPABILITY_MISSING`. Unverified: T4.41 | `allowlist`: Ineligible: `CAPABILITY_MISSING` (as `edit-untrusted`) | `broad`: Could compile, inside the sandbox [C10]. Unverified: T4.41 | `broad` only; `none`, `allowlist`: Ineligible: `CAPABILITY_MISSING` [C6]. Unverified: T4.41 |
+| Network | Ineligible: `CAPABILITY_MISSING` for `off`: default mode `sandbox.json + Defaults` allows defaults [C10] and no per-run switch is documented for `agent -p` ([C1] `--network` belongs to `sandbox run`). Unverified: T4.41 | As `inspect-untrusted` | `allowlist`: Could compile only via `sandbox.json` (repository-controlled or global). Unverified: T4.41 | `policy`, `allowlist`: as `test-sandboxed`; `off`: as `inspect-untrusted` | `off`: as `inspect-untrusted`; `allowlist`, `on`: Ineligible: `CAPABILITY_MISSING` [C10]. Unverified: T4.41 |
+| Repository config (rules, `AGENTS.md`, `.cursor/mcp.json`, hooks, `sandbox.json`, `cli.json`) | Ineligible: `CAPABILITY_MISSING`: the CLI reads `AGENTS.md`, `CLAUDE.md` and `.cursor/rules` [C8] and `.cursor/mcp.json` [C9]; no flag disabling them is documented (`--plugin-dir` only adds). Unverified: T4.41 | As `inspect-untrusted` | `disabled`: Ineligible: `CAPABILITY_MISSING`; `approved-only`: Ineligible: `CAPABILITY_MISSING` (no per-run MCP definition [C9]) | As `test-sandboxed` | `disabled`: as `inspect-untrusted`; `approved`, `enabled`: Could compile in an approved bypass run only (owner decision 26, ADR-0021); no flag turns loading off or on selectively, and headless `--trust` is needed to start at all [C11]. Unverified: T4.41 |
+| Native sandbox | Could compile: `--sandbox enabled`; Linux needs kernel 6.2 or later, Landlock v3 and user namespaces, else approval fallback [C10]; host check and confinement of credential paths (`~/.cursor`, FR-POL-06): Unverified: T4.41 | As `inspect-untrusted` | As `inspect-untrusted` | As `inspect-untrusted` | As `trusted-development` |
+| Approval behaviour | Unknown: live check in T4.41 (what a headless run does with an action needing approval: deny, block or fail; ACP would block until `session/request_permission` is answered [C4]) | As `inspect-untrusted` | As `inspect-untrusted` | As `inspect-untrusted` | As `inspect-untrusted` |
+| Git-write denial | `none-documented`: Shell deny rules need a config file [C6]; `.git/config` and `.git/hooks` are sandbox-protected [C10], other `.git` writes are not stated. Unverified: T4.41 | As `inspect-untrusted` | As `inspect-untrusted` | As `inspect-untrusted`; host-write profiles keep FR-GIT-03 and FR-GIT-06 | Bypass compiles on a `host` project without a sourced deny (owner decision 46), relying on FR-GIT-03 and FR-GIT-06 |
+| Injected tools and channel | `finalize-only` (FR-GIT-09); no MCP injected [C1, C9] | As `inspect-untrusted` | As `inspect-untrusted` | As `inspect-untrusted` | `finalize-only` (an `injected` channel needs its own ADR) |
+| Bypass flag availability | Never emitted (FR-POL-03) [C1] | Never emitted | Never emitted | Never emitted | `bypass: true`: Could compile with `--force` (spelling `--yolo`/`-f` unused) and `--approve-mcps` only if wanted [C1, R2 L137 to L143]; what each disables (`--sandbox enabled` still applied?) Unverified: T4.41; Ineligible: `PROFILE_UNSUPPORTED` until then |
+
+#### 4.5.2 Transport decision
+
+Proposed (Delegated): the M4 Cursor adapter uses the **print-mode JSONL stream** (`agent -p --output-format stream-json`),
+not ACP.
+
+- It is Cursor's documented scripting surface, "for scripts, CI and automation" [R2 L136 to L137, C3], with a documented
+  terminal `result` event, one session id per run and a documented failure behaviour (non-zero exit, no terminal
+  event) [C2]. That fits the existing per-run process model (FR-EXE-03) and the parser and `classifyFailure` pattern of
+  the Claude Code and Codex adapters; T4.43 can run on synthetic fixtures.
+- ACP (`agent acp`) is a hidden command (hidden from default help) [C1] with JSON-RPC 2.0 over stdio, a permission
+  request the client must answer or "tool execution can block", and Cursor extension methods that block on a reply
+  (`cursor/ask_question`, `cursor/create_plan`) [C4]. Using it needs an ACP client in the controller (T4.8) and a
+  persistent process, which FR-EXE-04 defers. It would give richer session control (`session/load`, per-request
+  permissions, MCP passed in `session/new`); revisit once T4.41 shows what the print mode cannot do.
+- The partial-delta flag is optional and off by default: the message-level lines suffice for `RunEvent` summaries, and
+  fewer duplicate event kinds means fewer parser cases [C2].
+
+#### 4.5.3 T4.41 operator checklist
+
+Operator-only (installed Cursor CLI, native login, no credential in any capture). Run in a scratch Git repository,
+never a real project; do not export `CURSOR_API_KEY` or `CURSOR_AUTH_TOKEN`. Record every result in a dated note under
+`docs/research/` (as `live-checks-2026-10-13.md`) with the version, scrub account ids, emails, tokens and private
+prompt text, and move the cell named in the right-hand column from `Unverified: T4.41` to observed.
+
+| # | Command (benign prompt, e.g. "reply with the word ok") | Capture | Settles |
+| --- | --- | --- | --- |
+| 1 | `agent --version`; `agent about --format json` | Version string and the JSON key names only (drop account fields) | Automation surface row; manifest `validated_cli_version` |
+| 2 | `agent --help`; `agent sandbox --help`; `agent sandbox run --help`; `agent mcp --help` | Full help text (no secrets) | Whether each flag in [C1] exists in the installed version; short and combined flags |
+| 3 | `agent status`; `agent status --format json`; both logged in, then logged out (`agent logout` is operator-run) | stdout shape with account values replaced by `<redacted>`, and `echo $?` for each state | Auth preflight row (exit codes) |
+| 4 | Logged out: `agent -p "ok"` | stderr text and exit code | Auth preflight: the no-login failure |
+| 5 | `agent -p --output-format json "ok"`; then `... stream-json "ok"`; then `... stream-json --stream-partial-output "ok"` | Each full output, scrubbed; stderr; exit code | Structured output, usage fields (token totals, `request_id`) and `model` display name |
+| 6 | `echo "ok" \| agent -p --output-format stream-json`; `agent -p --output-format stream-json -` | Output or error | Prompt over stdin |
+| 7 | A stream run that reads one file and runs one shell command; one that edits a file with and without `--force` (scratch repo only) | The `tool_call` shapes for shell, edit and read; whether the file changed; exit code | Event shapes; the [C3] vs [C8] write question; `edit-untrusted` Base argv cell |
+| 8 | Run 5 twice with `--resume <session_id>` from the first run; `--resume` from another directory; `agent create-chat` | `session_id` equality, any new id, resume output | Resume row |
+| 9 | `agent -p --output-format stream-json --sandbox enabled "run: curl -sS https://example.com; touch ../outside; cat ~/.cursor/<non-secret file name>"` in the scratch repo | Event results and exit code; whether network, out-of-worktree write and home read were blocked (never read `auth` or token files) | Sandbox, Network, native sandbox and credential-path cells |
+| 10 | The same without `--trust` in a fresh directory, then with it; then in a repository with a `.cursor/rules` file, an `AGENTS.md` and a `.cursor/mcp.json` that only names a harmless local no-op server | Whether the run starts, what loads (init event `tools`/`mcp_servers` if present) | `--trust` row; Repository config row |
+| 11 | With `CURSOR_CONFIG_DIR` set to an empty scratch directory containing a `cli-config.json` with `permissions.deny` `["Shell(git)"]` (or the shortest Git-verb prefix form), ask the agent to run `git status` and `git commit --allow-empty -m x` | Which are blocked, event shape of a denial, exit code, and that nothing under the real `~/.cursor` changed | Git-write denial; per-run configuration; `PERMISSION_BLOCKED` mapping |
+| 12 | Same scratch config with a `.cursor/mcp.json` server and no `--approve-mcps`; then with `--approve-mcps` | Whether the server loads and its tool runs headless | Per-run MCP row (finalize-only confirmed or not) |
+| 13 | `agent models`; `agent -p --list-models` | Output shape (model names are data for the registry, not for this document) | Models row |
+| 14 | A forced failure: invalid `--model`, then a run with a deliberately killed network | stderr, exit code, last stream line | `classifyFailure` mapping |
+| 15 | `-f` and `-pf` spellings of `--force` in the scratch repo with a read-only prompt | Whether they are accepted | Bypass-class flags row: audit gap for `-f` |
+
+Capture nothing from `~/.cursor` other than file names; if a command prints a token or key, stop, redact and report it.
 
 ### 4.6 OpenCode (M4)
 
+Spike result, 2026-10-13 (T4.50, Delegated agent work, not owner-approved; documentation only). OpenCode is not
+installed on the development host and nothing below was run: **every cell is Unverified until the operator task T4.51
+([§4.6.3](#463-operator-checklist-t451))** records it against an installed version. Sources are cited in every cell and
+were retrieved on 2026-10-13:
+
+- **[R2 Lnn]** a line of the [verified research](../research/headless-ai-coding-controller-verified-2026-10-12.md)
+  (L78, L155 to L160, L756).
+- **[D-cli]** <https://opencode.ai/docs/cli/>, **[D-perm]** <https://opencode.ai/docs/permissions/>, **[D-cfg]**
+  <https://opencode.ai/docs/config/>, **[D-mcp]** <https://opencode.ai/docs/mcp-servers/>, **[D-prov]**
+  <https://opencode.ai/docs/providers/>, **[D-acp]** <https://opencode.ai/docs/acp/>, **[D-rules]**
+  <https://opencode.ai/docs/rules/>: OpenCode's own documentation (the "v1" site; its banner announces a v2).
+- **[D-v2]** <https://opencode.ai/v2/docs/cli/commands/>: the v2 documentation, whose command surface differs (below).
+- **[T-ev]** <https://takopi.dev/reference/runners/opencode/stream-json-cheatsheet/>: a **third-party** project's
+  description of `opencode run --format json` events. OpenCode's documentation does not describe the event shapes, so
+  this is the only source for them and is not evidence about any installed version.
+- **[I-n]** OpenCode GitHub issue `anomalyco/opencode#n` (<https://github.com/anomalyco/opencode/issues/n>; used:
+  36762, 43888, 38661, 27697): a **user report**, not provider documentation. Only the search excerpts were read for
+  36762 (cited through 43888).
+
+Each matrix cell is one of: **Could compile** (a documented control exists; what is unverified is named),
+**Ineligible: `<reason>`** (reasons of [LLD §2](LLD.md#2-adapter-contract)), or **Unverified: T4.51**.
+
 | Aspect | Detail |
 | --- | --- |
-| Automation surface | `opencode run "..."`; `serve`/`attach` persistent service (transport deferred, FR-EXE-04); ACP present |
-| Structured output | Output format flags: to be verified in M4 against installed CLI |
-| Resume | `--continue`, `--session`, `--fork`; session/export commands exist |
-| Auth preflight | to be verified in M4 against installed CLI |
-| Trust profile compilation (Proposed) | Build explicit permissions first; `--auto` approves permissions not explicitly denied, so it is allowed only after explicit deny rules are in place, and then only if profile semantics permit (rule syntax: to be verified in M4) |
-| Sandbox controls | None stated in [R2]: profiles needing confinement are ineligible until verified |
-| Known risks | Multiple backing providers: record harness and backing provider/model (FR-ADP-10) so two paths to one quota pool are not counted as independent capacity |
-| Inner-agent `cli` kind (M11, Proposed) | One-shot `opencode run` as a tool-free completion backend: **flags unverified**, no controls named in [R2]; `Ineligible` until the T11.0 spike records them for an installed version ([§3.12](#312-inner-agent), FR-INN-04, Q-26) |
-| Git writes and injected tools (M4, M9) | Explicit deny rules for Git write commands before anything else; `--auto` approves whatever is not denied, so the injected tools must be explicitly allowed and Git writes explicitly denied (syntax: to be verified in M4). `--fork` and session export are not used. No sandbox [R2], so only shell-less profiles qualify for push |
+| Automation surface | `opencode run [message..]` [D-cli], "explicitly documented for programmatic use" [R2 L78]. **Chosen transport: ephemeral subprocess with `--format json` (JSONL)**; see "Transport decision" below. `serve`/`attach`/`run --attach` stay deferred (FR-EXE-04); `opencode acp` exists [D-cli, D-acp] and is not used |
+| Structured output | `--format`: "default (formatted) or json (raw JSON events)" [D-cli]; v2 documents `--format json` as "newline-delimited JSON for scripts" [D-v2]. Events, one JSON object per line, [T-ev] only: `step_start`, `tool_use` (emitted when a tool finishes), `text` (whole message text in `part.text`), `step_finish` (`part.reason` `stop` or `tool-calls` "when present"; `part.cost`; `part.tokens`), `error` (`error.name`, `error.data.message`); every event carries `sessionID` (`ses_...`) and `timestamp`. Unknown event types are tolerated and logged, never success. Shapes on an installed version: Unverified: T4.51 |
+| Success rule (Proposed) | Exit code `0` is not success: two user reports describe `--format json` runs that exit 0 with no final `text` event after a tool step ([I-38661] with `--attach`, [I-27697] on one version and provider). Success needs a `step_finish` with `reason` `stop` after at least one `text` event, and the controller's verification (FR-ADP-04). An `error` event is a failure; its mapping to the [LLD §4](LLD.md#4-failure-taxonomy) taxonomy: Unverified: T4.51 |
+| Resume | `--continue`/`-c` "Continue the last session", `--session`/`-s` "Session ID to continue" [D-cli]. Proposed: `--session <id>` with the id taken from `sessionID` of the first event only (never `--continue`, which depends on shared "last session" state). `--fork` and `export`/`import` unused. Whether `--session` resumes in a new process in the same directory: Unverified: T4.51 |
+| Auth preflight | Credentials are stored in `~/.local/share/opencode/auth.json` and "any keys defined in your environments or a `.env` file in your project" are also loaded [D-cli]; `opencode auth list` "lists all the authenticated providers as stored in the credentials file" [D-cli] (v2: `--format json` [D-v2]). No status command with a documented exit code. Proposed: `UNKNOWN` (fail closed, the Q-10 pattern) until T4.51 records the `auth list` exit codes logged in and logged out; the adapter never reads `auth.json`, `mcp-auth.json` or `.env`, and a missing login yields `AUTH_REQUIRED` naming `opencode auth login` (never run by Switchboard). Whether `auth list` shows providers authenticated only through environment variables: Unverified: T4.51 |
+| Trust profile compilation (Proposed) | Permissions only, supplied per run as inline config (`OPENCODE_PERMISSION` or `OPENCODE_CONFIG_CONTENT` [D-cli]), with **every permission key set to `allow` or `deny`, never `ask`**: defaults are permissive ("most permissions default to `allow`", `external_directory` and `doom_loop` default to `ask`) [D-perm], and a headless run whose permission resolves to `ask` is reported to hang with no timeout ([I-36762], via [I-43888]). `--auto` is not emitted ([§4.6.1](#461-opencode-native-controls-per-profile-and-platform-t450)) |
+| Sandbox controls | **None documented**: no sandbox page exists on the documentation site (HTTP 404 for `/docs/sandbox/`), [R2] names none, and the only sandbox mention found is a third-party plugin on the ecosystem page. Permission rules are tool-level checks, not OS confinement, so profiles needing confinement are `Ineligible: CAPABILITY_MISSING`; only shell-less profiles qualify |
+| Repository config | Merged, not replaced; later sources win only on conflicting keys: remote `.well-known`, global, `OPENCODE_CONFIG`, **project `opencode.json`**, `.opencode` directories, **`OPENCODE_CONFIG_CONTENT`**, managed files, MDM [D-cfg]. So inline config cannot remove what a repository adds (`mcp`, `plugin`, `instructions`, agents). `CLAUDE.md` is read as a fallback when there is no `AGENTS.md`, switchable off with `OPENCODE_DISABLE_CLAUDE_CODE` [D-rules, D-cli]; `--pure` "run without external plugins" [D-cli]. A documented way to ignore project config: none found; Unverified: T4.51 |
+| Known risks | Multiple backing providers: record harness and backing provider/model (FR-ADP-10), not counting two paths to one quota pool as independent capacity. v1 and v2 documentation differ (`auth list --format json`, `run --standalone`, `auth switch` appear only in [D-v2]), so the version gate (ADR-0009) must pin the major version; the manifest range admits no version until T4.58. `autoupdate` is on by default [D-cfg]: `OPENCODE_DISABLE_AUTOUPDATE` exists [D-cli]. Snapshots "use an internal git repository" and are on by default [D-cfg]: whether it touches the worktree's Git directory: Unverified: T4.51 |
+| Inner-agent `cli` kind (M11, Proposed) | T11.0 candidate, **not yet verified**: a one-shot `opencode run --format json --model <provider/model> --dir <empty directory>` with every permission `deny`, `--pure`, `OPENCODE_DISABLE_CLAUDE_CODE`, `OPENCODE_DISABLE_AUTOUPDATE`, no `--auto` [D-cli, D-perm]. No documented flag removes tools from the model's list, and whether a deny-all permission set stops tool calls or only refuses them, and whether global config and `AGENTS.md` still load, are Unverified: T4.51 (checklist items 4 and 12). `cli` stays `Ineligible` until it is recorded for an installed version ([§3.12](#312-inner-agent), FR-INN-04, Q-26) |
+| Git writes and injected tools (M4, M9) | Rules are `bash` patterns with wildcards, "last matching rule wins", for example `"git commit *": "deny"` and `"git push *": "deny"` [D-perm]. Pattern completeness is not shown (other `git` spellings, `git -C`, shell wrappers, writes through other tools): `gitWriteControl` `none-documented` until T4.51 shows denial holds, then `provider-deny-rules` (Proposed, fail closed). `commitChannel` `finalize-only`. A per-run MCP server is a config entry (`mcp`, `type` `local` with a `command` array, or `remote`) [D-mcp] that can be sent inline; no `--approve-mcps`-style flag is named, but whether injected MCP tools need an `allow` rule and whether that works headless: Unverified: T4.51 (R-18, R-50). `--fork` and session export are not used. No sandbox, so only shell-less profiles qualify for push |
+
+**Transport decision (T4.50, Proposed).** `opencode run --format json` as an ephemeral subprocess, the same JSONL path
+as the other adapters (FR-ADP-08). Reasons: it is the documented programmatic surface [R2 L78, D-cli]; its events carry
+the session id, tool results and usage that the adapter needs ([T-ev]); and ACP would need the unwritten ACP client
+(T4.7) while the research gives no reason `run` falls short. ACP (`opencode acp`, nd-JSON over stdio [D-cli, D-acp]) is
+the fallback if T4.51 shows that `run` cannot be made to resolve every permission without `ask`, cannot report session
+ids or usage, or drops final text (the cases above); the spike has no evidence for that yet. `serve`, `web`, `attach`
+and `run --attach` are deferred (FR-EXE-04, ROADMAP §8); one user report says `run --attach` exits 0 after the first
+tool step and drops later events ([I-38661]).
+
+#### 4.6.1 OpenCode native controls per profile and platform (T4.50)
+
+Platform: Linux is the only evaluated platform (NFR-PORT-02, ROADMAP A-2); macOS and Windows are not evaluated. No
+adapter exists, so "Today" is `Ineligible: CAPABILITY_MISSING` for every profile until T4.52. Every cell below is
+**Unverified: T4.51** as to behaviour on an installed version; the entry before it is what the documentation supports.
+
+| Dimension | `inspect-untrusted` | `edit-untrusted` | `test-sandboxed` | `trusted-development` | `privileged` |
+| --- | --- | --- | --- | --- | --- |
+| File access | Could compile: `edit` `deny` for all patterns, `read` `allow` with the default `.env` denials kept, `external_directory` `deny` [D-perm]. Unverified: T4.51 | Could compile: `edit` `deny` with `allow` only for worktree patterns, last match wins [D-perm]; reads of paths outside the worktree and `bash` writes are not confined. Unverified: T4.51 | Ineligible: `CAPABILITY_MISSING` (no OS confinement for build commands). Unverified: T4.51 | Could compile with shell `broad` only; `edit` `allow`. Unverified: T4.51 | Could compile: `edit` follows `files.access`. Unverified: T4.51 |
+| Shell | Could compile: `bash` `deny` [D-perm]; owner decision 10 requires no shell here. Unverified: T4.51 | Could compile: `bash` `deny`; a non-empty allowlist as `bash` patterns is Ineligible (patterns are not a confinement). Unverified: T4.51 | Ineligible: `CAPABILITY_MISSING` (no sandbox for build and test commands) | `broad`: Could compile, unconfined (no sandbox); `allowlist`: Could compile as `bash` patterns, `"*": "deny"` first. Unverified: T4.51 | `broad`: Could compile; `none`: `bash` `deny`; `allowlist`: patterns. Unverified: T4.51 |
+| Network | `webfetch` and `websearch` `deny` [D-perm]; shell absent, so no other egress by the agent; the model API itself is outside the agent. Unverified: T4.51 | As `inspect-untrusted` | `off` Could compile as `edit-untrusted` (no shell); `allowlist`: Ineligible: `CAPABILITY_MISSING`. Unverified: T4.51 | `webfetch` patterns are URL rules [D-perm] but `bash` can reach any host: `off` is Ineligible with a shell; no switch documented | `on`: Could compile (`webfetch` `allow`); `off` and `allowlist` with a shell: Ineligible: `CAPABILITY_MISSING` |
+| Repository config | `disabled`: Unknown whether achievable (merge model [D-cfg]; `--pure`, `OPENCODE_DISABLE_CLAUDE_CODE`). Unverified: T4.51 | As `inspect-untrusted` | As `inspect-untrusted` | `approved-only` and `allowlisted`: Ineligible: `CAPABILITY_MISSING` (no per-source allowlist documented) | `enabled`: Could compile (nothing suppressed); `disabled`: as `inspect-untrusted`. Unverified: T4.51 |
+| Native sandbox | Ineligible: `CAPABILITY_MISSING` (none documented) | Ineligible: `CAPABILITY_MISSING` | Ineligible: `CAPABILITY_MISSING` | Ineligible: `CAPABILITY_MISSING` | Ineligible: `CAPABILITY_MISSING` for any scope that needs confinement |
+| Approval behaviour | No `ask` outcomes emitted (every key `allow`/`deny`). What a `deny` looks like in the event stream: Unverified: T4.51 | As `inspect-untrusted` | As `inspect-untrusted` | As `inspect-untrusted` | As `inspect-untrusted` |
+| Bypass flag availability | `--auto` never emitted (FR-POL-03). Unverified: T4.51 | Never emitted | Never emitted | Never emitted | `--auto` is the only bypass-class flag documented; `bypass: true` compiles only by owner decision 46 and needs a documented meaning: see below. Unverified: T4.51 |
+| Git-write denial | `bash` `deny` covers it (no shell). Unverified: T4.51 | As `inspect-untrusted` | n/a (Ineligible) | `git commit *`, `git push *` and more `deny` after the allowlist; completeness Unverified: T4.51; declared `none-documented` until then | Kept in bypass runs (owner decision 22); relies on FR-GIT-03 and FR-GIT-06 where denial is not shown (decision 46) |
+
+**`--auto` (Proposed, fail closed: bypass-class).** Documented: "Auto-approve permissions that are not explicitly
+denied"; explicit `deny` rules are still enforced; it "only changes requests that would otherwise ask" [D-cli, D-perm].
+Because the defaults are already permissive, `--auto` mostly turns the remaining `ask` outcomes (`external_directory`,
+`doom_loop`, any rule set to `ask`) into approvals. Switchboard does not need it: it sets every key to `allow` or `deny`
+itself. It is treated as bypass-class (add `--auto` to the argv audit, T4.1) until T4.51 shows that the deny rules are
+complete; it is emitted only in an approved `privileged` scope that sets bypass (ADR-0017). Also bypass-class
+("or equivalents", FR-POL-03): an inline permission of `"allow"` as a whole (`"permission": "allow"`) or `"*": "allow"`
+[D-perm]. How the `privileged` cell compiles for `bypass: true`: owner decision 46 lets it compile on `host` once the
+flag is documented, whether or not Git-write denial is shown to hold.
+
+**Backing provider, model reporting, model listing and usage.**
+
+| Item | Detail |
+| --- | --- |
+| Model selection | `--model`/`-m` "in the form of provider/model" [D-cli]; the operator configures the model, no name is stored in source (T4.5) |
+| Model listing | `opencode models [provider]` prints `provider/model` lines; `--refresh` refreshes from models.dev; `--verbose` adds metadata such as costs [D-cli]. Output stability and exit code: Unverified: T4.51. `OPENCODE_DISABLE_MODELS_FETCH` exists [D-cli] |
+| Backing provider | The part of `--model` before the slash; the providers are those of Models.dev [D-cli, D-prov]. Whether run events report the provider and model actually used: not in [T-ev]; Unverified: T4.51 (the request value is the fallback, Assumption) |
+| Usage | `step_finish`: `part.cost` (USD) and `part.tokens` `input`, `output`, `reasoning`, `cache.read`, `cache.write` [T-ev]; one step per event, so a run total is the sum with duplicates removed by part id (Proposed). `opencode stats` aggregates tokens and cost [D-cli] and is not used. Whether remaining quota or limits are reported: nothing found, so no capacity claim (FR-CAP-01); Unverified: T4.51 |
+
+#### 4.6.2 Inventory and decisions for later tasks (T4.50)
+
+- **Bypass-class list for T4.1:** `--auto`; inline permission `"allow"` as a whole or `"*": "allow"`. `--share` and
+  `--attach` are not bypass-class but are never emitted (session data leaves the host; shared server).
+- **Environment (Proposed):** allowlisted environment as for the other adapters; set `OPENCODE_DISABLE_AUTOUPDATE=1`,
+  `OPENCODE_DISABLE_CLAUDE_CODE=1` and `OPENCODE_PERMISSION` (or `OPENCODE_CONFIG_CONTENT`) per run [D-cli]; provider
+  keys are never copied by Switchboard.
+- **Never read:** `~/.local/share/opencode/auth.json` and `mcp-auth.json` [D-cli, D-mcp], project `.env`.
+- **Open spike questions go to the checklist below;** no adapter code may assume a flag from this section that checklist
+  items 1 to 14 have not confirmed.
+
+#### 4.6.3 Operator checklist (T4.51)
+
+Operator-only (an installed OpenCode with the operator's native login; no agent runs this). Use a disposable
+repository with no secrets and a scratch copy of `$HOME` where possible. Every capture is scrubbed before it is written
+into a dated note under `docs/research/` (as `live-checks-2026-10-13.md`): no API key, token, `auth.json` content,
+account identifier, email, session id of a real project or private prompt text; replace them with `<redacted>`.
+Never run `opencode auth login`, `opencode auth list` output containing account names, or any command with `--auto`
+or `--share` (except item 6, which is the one allowed bypass-class check and runs only in the disposable repository).
+Record the version first; all results are valid for that version only (ADR-0009).
+
+| # | Command (run in the disposable repository) | Capture, scrubbed | Maps to |
+| --- | --- | --- | --- |
+| 1 | `opencode --version`; `opencode run --help`; `opencode auth --help`; `opencode models --help` | Full text | Version gate; whether the v1 flags in this section exist (`--format`, `--session`, `--continue`, `--auto`, `--pure`, `--dir`, `--model`) or the v2 ones (`--standalone`) |
+| 2 | `opencode auth list`, once logged in and once with `HOME` and `XDG_DATA_HOME` pointing at an empty scratch directory; then once with only a provider key in the environment | Exit code and output shape of each (names of providers only) | Auth preflight cell; exit-code mapping for `OK`, `AUTH_REQUIRED`, `UNKNOWN` |
+| 3 | `opencode models` and `opencode models <provider>`; add `--verbose` once | Exit code, first 5 lines, line format | Model listing cell (T4.5); `modelsListed` |
+| 4 | `opencode run --format json --model <provider/model> "Reply with the single word ok"` with all permissions `deny` via `OPENCODE_PERMISSION='{"*":"deny"}'` | The full JSONL stream, exit code, stderr | Event shapes, success rule, T11.0 (does a deny-all run still list tools; do global config and `AGENTS.md` load: run once from an empty directory with `HOME` set to a scratch directory, once from the repository); whether run events name the provider and model used |
+| 5 | A prompt that makes the agent read one repository file, with `read` `allow` and the rest `deny` | JSONL stream (`tool_use`, `step_finish` with `reason`); the `step_finish` `tokens` and `cost` | Fixtures; usage cell; sum-and-dedupe rule |
+| 6 | The same prompt as 5 but asking for `bash` with `bash` `ask`, with no `--auto`, under `timeout 60`; then with `--auto` once | Exit code, whether it hangs, output; with `--auto` the stream | `ask` hang ([I-36762]); what `--auto` approves; bypass-class decision; need for a controller timeout |
+| 7 | A prompt asking to run `git commit`, `git -C . commit`, `env git commit`, `sh -c 'git commit'` and `git push` with `bash` `allow` for `*` followed by `deny` for `git commit *` and `git push *` (last match wins), in a repository with a local bare remote | For each: allowed or denied, repository state before and after, stream | Git-write deny rules; `gitWriteControl` value; completeness of the patterns |
+| 8 | The same with the deny rules before the `"*": "allow"` entry (wrong order) | Whether the commit happens | Confirms "last matching rule wins" ordering for the compiler |
+| 9 | Run item 4 with `OPENCODE_CONFIG_CONTENT` carrying an `mcp` entry (`type` `local`, `command` of a harmless stdio test server) and the matching tool allowed, then denied | Stream, whether the tool was offered and called, whether the run needed anything beyond the config | Per-run MCP definition (R-18, R-50); permission key for MCP tools |
+| 10 | A repository containing its own `opencode.json` (with an `mcp` entry and an `instructions` file) and `AGENTS.md`/`CLAUDE.md`, run with and without `--pure`, `OPENCODE_DISABLE_CLAUDE_CODE=1` and inline config | Which of them loaded (from the stream and `opencode mcp list`) | Repository-config cell; FR-POL-04 |
+| 11 | A prompt asking the agent to read a file outside the repository and write one outside it, with `external_directory` `deny`, and with `bash` `allow` | Allowed or denied per path; `git status` of the repository; the contents of `.git` before and after a run (snapshots) | Sandbox cell (confirms none); file-access cells; snapshot effect on the Git directory |
+| 12 | T11.0: from an empty directory, `opencode run --format json --pure --dir <empty> --model <provider/model>` with every permission `deny` and `OPENCODE_DISABLE_CLAUDE_CODE=1`, asking for a one-sentence answer and then for a tool-requiring task | Whether any tool call is attempted and refused; stream; exit code | T11.0 result; `cli` kind `Ineligible` or eligible with the verified flags (T11.13) |
+| 13 | Resume: item 4 once, then `opencode run --format json --session <sessionID from item 4> "What did I ask?"`; also `--continue` while a second session exists | Streams, whether the second run sees the first, ids (scrubbed) | Resume cell; the "never `--continue`" rule |
+| 14 | A provoked failure: an invalid model name; a missing login (scratch `HOME`); a rate limit if one can be reached safely | Streams and exit codes | `classifyFailure` mapping; success rule |
+
+Done when each row's result, with the OpenCode version and date, replaces its `Unverified: T4.51` cell or is recorded
+as not possible (then the cell becomes `Ineligible` with that reason).
 
 ### 4.7 Kimi Code (M4, blocked by B-1)
 
-Disabled until the current Kimi Code CLI automation contract is pinned and passes conformance tests (FR-ADP-09, Git
-write denial and tool injection included, FR-GIT-01, [ROADMAP
-§7](../ROADMAP.md#7-risks-blockers-and-open-questions)). The archived legacy CLI's syntax, models and permissions are
-not evidence for the replacement. Every row of this table: to be verified when the contract is pinned.
+*Spike T4.60 done 2026-10-13 (documentation only); B-1 is **not cleared**.* Disabled until the current Kimi Code CLI
+automation contract is pinned and passes conformance tests (FR-ADP-09, Git write denial and tool injection included,
+FR-GIT-01, [ROADMAP §7](../ROADMAP.md#7-risks-blockers-and-open-questions)). The archived legacy CLI's syntax, models
+and permissions are not evidence for the replacement ([R2] L77, L145 to L153); every source below documents the
+replacement, **Kimi Code CLI 2.x** (TypeScript, `MoonshotAI/kimi-code`), retrieved 2026-10-13. Source IDs `K1` to `K13`
+and the reasons they are current are in the [spike note](../research/kimi-code-spike-2026-10-13.md); docs are
+unversioned, so they apply to "the docs as of 2026-10-13 (CLI 2.1.1, released 2026-09-24)", not to a pinned binary.
+`Unverified: T4.61` means the operator capture must supply it, following the
+[T4.61 checklist][k-checklist].
 
-### 4.8 Muse Code (M4)
-
-*Proposed, Should (FR-ADP-12, owner decision 16).* Every row is **unverified**: the sources are a user report and an SDK
-crate, not Meta's documentation ([research note](../research/muse-code-2026-10-13.md), R-33, Q-27). Verify each row
-against an installed binary and Meta's documentation before writing adapter code.
+[k-checklist]: ../research/kimi-code-spike-2026-10-13.md#t461-operator-checklist-installed-kimi-code-cli-operators-native-login
 
 | Aspect | Detail |
 | --- | --- |
-| Automation surface | `muse exec [OPTIONS] [PROMPT]` (headless, one turn); `muse` alone is the interactive TUI and is never used |
-| Structured output | `muse exec --json`: JSONL envelope records (command intake, run and task lifecycle, output deltas) ending in a `run_terminal` record. Unknown record kinds must be tolerated and logged, not fatal; the credential-free `--provider echo` mode is the source of recorded fixtures |
-| Resume | Sessions exist; flag spelling to be verified |
-| Auth preflight | To be verified. The adapter never reads `~/.config/muse/auth.json` and never passes `META_API_KEY`; a missing login yields `AUTH_REQUIRED` naming `muse login` |
-| Trust profile compilation | Leave approvals and sandbox on (`--approval-mode`, `--sandbox-network`: values to be verified against the five profiles); `-w off` always; no `--yolo`, `--disable-approval`, `--disable-sandbox` or `--trust-workspace` outside an approved `privileged` scope (add them to the argv audit list) |
-| Repository config | Reads `AGENTS.md`/`CLAUDE.md` and skills from the repository and from `~/.agents`, `~/.claude`, `~/.codex`; skipped when the workspace is untrusted (reported). Whether that is enough for FR-POL-04 under the untrusted profiles is to be verified |
-| Version gate | Self-updates hourly (reported); set `MUSE_NO_AUTO_UPDATE=1` if confirmed and revalidate on version change (ADR-0009) |
-| Success | Exit code `0` is not success; the terminal record and the controller's verification decide |
-| Git writes and injected tools (M4, M9) | No per-command deny control reported: declare `none-documented` until found (FR-GIT-01, as Codex); whether a per-run MCP definition can be supplied without a bypass flag: to be verified |
-| Capacity | Whether usage, limits or resets are reported: to be verified (FR-CAP-01) |
+| Automation surface | `kimi -p` / `--prompt <prompt>` runs one prompt without the TUI (K1). `kimi acp` (JSON-RPC over stdio) is also documented (K6). Chosen transport: **Unverified: T4.61** (`-p` is the simpler candidate; ACP would let the controller answer `session/request_permission` and pass `mcpServers` per session) |
+| Structured output | `--output-format text\|stream-json`, only with `-p`; one JSON object per stdout line (Assistant message, Assistant message with `tool_calls`, Tool message); thinking omitted; progress and resume notices on stderr (K1). Record shapes, terminal record and usage fields: Unverified: T4.61 |
+| Resume | `--session [id]` / `-S` and `--continue` / `-c`, mutually exclusive; `--auto`/`--yolo`/`--plan` may be re-applied on resume (K1, K3). A session-resume hint is emitted as a structured meta message in `stream-json` (K7, version not stated). Where the session id appears: Unverified: T4.61 |
+| Version command | `kimi --version` / `-V` prints the version and exits (K1). Output format and exit code: Unverified: T4.61 |
+| Auth preflight | No status command is documented. `kimi login` (device-code flow, exit 0 or 1, no flags) is the native login (K1); credentials are under `$KIMI_CODE_HOME/credentials/` and must never be read (K10). ACP `authenticate` returns `-32000` with no token (K6). Headless behaviour when logged out and any status check: Unverified: T4.61; until then `UNKNOWN` (fail closed), `AUTH_REQUIRED` naming `kimi login` |
+| Trust profile compilation (Proposed) | `-p` always runs the `auto` (Never Ask) policy, asks no human, and keeps static deny rules (K1); it cannot be combined with `--yolo`, `--auto` or `--plan` (K1; K8 disagrees, see the note). So there is **no documented non-bypass approval mode in headless runs**: the only brakes are deny rules, tool lists (`[tools]` or an agent file's `tools`/`disallowedTools`, enforced before execution, K4, K9) and the controller's worktree. Whether this is bypass-class under FR-POL-03, and so limited to an approved `privileged` scope, is an open design question (see Known risks). Never pass `--yolo`, `--auto` or `--plan` outside it |
+| Sandbox controls | None documented (no OS-level confinement; K1 to K10). Profiles needing confinement are `Ineligible` until T4.61 shows otherwise. File tools no longer follow symlinks out of the working directory (K7), which is not a sandbox |
+| Per-run settings | `--agent-file <path>` / `--agent <name>` select a per-launch agent with a tool allowlist, valid with `-p` (K1, K9); `-m <alias>` selects a model (K1). Permission rules live in `config.toml` under `KIMI_CODE_HOME` (K4, K10); supplying them for one run without editing the user's config (a controller-owned `KIMI_CODE_HOME` would lack the OAuth credentials, which must not be copied): Unverified: T4.61 |
+| Repository config | `.kimi-code/mcp.json`, `.kimi-code/local.toml` and agent files are read from the project; project config applies only after the workspace is trusted (K4, K5, K7, K9). Stdio MCP entries in a project file run commands at session start (K5), so the repository is untrusted input (FR-POL-04). How trust is decided in `-p`: Unverified: T4.61 |
+| Known risks | The docs disagree on `-p` flag combinations and on project-level config (K1 vs K8; K4/K5/K7 vs K8), so every row needs an observation. `--yolo` is "Ask When Needed", not bypass; `--auto` is the unattended mode (K1, K2). The built-in dangerous-command guard is off in Never Ask mode and can be disabled (K2, K4). Telemetry: `KIMI_DISABLE_TELEMETRY=1` (K10). Model identity and limits go in the dynamic registry, not in adapter source ([R2]) |
+| Git writes and injected tools (M4, M9) | Deny rule form `Bash(command-pattern)`, first match wins, `decision = "deny"` (K4): matching of compound commands, wrappers and `git -c` forms is not documented, so declare `none-documented` until T4.61 shows HELD (FR-GIT-01). MCP tools are named `mcp__<server>__<tool>` and match by name only, never by argument (K5). A per-run MCP definition: none in the `kimi` option table (K1); only `mcp.json` files (K5) or ACP `session/new` `mcpServers` (K6): Unverified: T4.61, else finalize-only (FR-GIT-09) |
+| Capacity | `/usage` and `/status` exist in the TUI (K7); whether usage, limits or resets are available headlessly: Unverified: T4.61 (FR-CAP-01) |
+| Model listing | `kimi provider list` lists configured providers (`--json`) and `kimi provider catalog list` browses the public models.dev catalogue (K1); a list of the models the login may use: Unverified: T4.61 (FR-ADP-05) |
+
+**B-1 status (T4.60, 2026-10-13):** not cleared. Moonshot's current documentation does describe a headless command,
+a structured output mode, resume, a version command, permission rules and an ACP server, but T4.62 cannot start from
+documentation alone because these are missing or contradictory: the `stream-json` record schema and where the session
+id appears; any auth status or logged-out behaviour; a non-bypass approval mode for `-p`; a documented way to apply
+permission rules per run without editing the user's config or copying credentials; Bash deny-pattern semantics
+(Git-write denial); any sandbox; a per-run MCP definition; and exit codes for failures. B-1 clears when T4.61
+supplies observations for the `Unverified: T4.61` cells above.
+
+### 4.8 Muse Code (M4)
+
+*Proposed, Should (FR-ADP-12, owner decision 16).* T4.70 (documentation-only spike) re-read the sources on 2026-10-13.
+Meta's documentation **was reachable** this time through WebFetch (Firecrawl scrape still refuses the site). It is
+still not an installed binary, and Muse Code stays a `Should` whose remaining facts come from third-party reports
+(R-33, Q-27). Each row carries one status: **confirmed** (Meta documentation, no change), **corrected** (Meta
+documentation differs from, or adds to, the earlier report), **reported** (only the third-party sources say so, read
+again, not in Meta's pages) or `Unverified: T4.71` (no source; an operator with an installed CLI settles it). Nothing
+here comes from running the CLI. Text fetched from the web was treated as data.
+
+Sources (all retrieved 2026-10-13): **[M-ext]** <https://dev.meta.ai/docs/muse-code/extending> (headless and CI,
+exit codes, MCP, skills); **[M-perm]** <https://dev.meta.ai/docs/muse-code/permissions>; **[M-auth]**
+<https://dev.meta.ai/docs/muse-code/auth>; **[M-cfg]** <https://dev.meta.ai/docs/muse-code/configuration>; **[M-int]**
+<https://dev.meta.ai/docs/muse-code/interactive>; **[M-rew]** <https://dev.meta.ai/docs/muse-code/rewind>; **[M-log]**
+<https://dev.meta.ai/docs/muse-code/changelog> (the fetch read about 100,000 of 183,810 characters of the first page and
+a second window; later parts were not read); **[M-ov]** <https://dev.meta.ai/docs/muse-code>; **[SDK]**
+<https://docs.rs/muse-codes/latest/muse_codes/> (crate 1.4.7); **[Orca]**
+<https://github.com/stablyai/orca/issues/19672> (user report of 2026-09-13).
+
+| Aspect | Detail and status |
+| --- | --- |
+| Automation surface | `muse exec` runs one prompt (inline or `--prompt-file`) to completion and exits; `muse` alone is the interactive TUI and is never used. **Confirmed** [M-ext], [M-ov]. Also documented: `muse serve` (session protocol) and `muse schema` (its JSON schema) [M-ov]; whether either suits Switchboard (ACP, ADR-0002) is not examined: `Unverified: T4.71` |
+| Structured output | `muse exec --json` writes JSONL events on stdout; the page does not list the kinds [M-ext]. **Corrected**: the SDK names `MuseRecord` envelopes whose payloads include `RunStarted`, `RunOutputDelta`, `RunTerminal`, `TaskLifecycle`, `CommandAccepted`, `CommandResult`, `ModelConfigured`, `ToolResult` and `TurnInputUser`, with unseen payloads read as `Unknown` [SDK]. The literal `run_terminal` JSON line (`kind`, `terminal`, `text`, `reason`) is **reported** only [Orca]; the JSON spelling and the `terminal` values are `Unverified: T4.71`. Unknown kinds are tolerated and logged, not fatal |
+| Fixtures without a login | The credential-free `--provider echo` mode captured the SDK's fixtures [SDK]. **Reported**; that the installed CLI accepts it for `muse exec` is `Unverified: T4.71` |
+| Exit codes | `0` the turn completed, `1` failed or cancelled (including `--max-model-steps` reached), `2` usage error, `130` SIGINT, `143` SIGTERM; "reports how the run ended, not whether the work is correct", so an agent can exit `0` with failing tests. **Confirmed** [M-ext]. The terminal record and the controller's verification decide (BR-16) |
+| Resume | **Corrected**: headless resume is `muse exec --session-id <uuid> "<prompt>"`, with `--allow-workspace-switch` when the workspace differs from the session's [M-ext]. `muse resume <id>` opens the interactive UI and is not a headless surface [M-ext], [M-int]. `muse exec --no-session-log` forfeits resume [M-int]. How the controller learns the session id (a record field?) is `Unverified: T4.71` |
+| Auth preflight | **Corrected**: no auth status command is documented [M-auth], [M-log]; documented commands are `muse auth set`, `muse logout`, and sign-in on first run or `/login` [M-auth]; `muse login` (reported [Orca]) appears in the changelog [M-log]. Order: `META_API_KEY`, then a stored key, then a stored browser session, and an environment key hides a browser session [M-auth]. Credential file locations: not stated by Meta (`~/.config/muse/auth.json` is **reported** [Orca]). A status command and its exit code are `Unverified: T4.71`. The adapter never reads credential files and never passes `META_API_KEY`; a missing login yields `AUTH_REQUIRED` naming `muse login` |
+| Approval and sandbox values | **Confirmed**: `--approval-mode on-request` (default), `untrusted` (stops for any shell stage with no allow rule), `never` (nothing stops; the sandbox alone contains) [M-perm]. **Corrected**: `--sandbox-network proxy-only` (default), `restricted` (no network), `unrestricted` (full); `enabled` is a deprecated alias [M-perm], [M-log] (one changelog entry still prints `enabled`). Also documented: `--approval-judge off` [M-perm], `-c key=value` per-run settings [M-log]. Mapping to the five profiles (a proposal for T4.72, not a fact): approvals `untrusted` or `on-request`, never `never`; network `restricted` unless a profile grants network. Whether `--approval-mode` stays honoured with no TTY: `Unverified: T4.71` |
+| Sandbox requirement | **New**: in CI the sandbox needs a working bubblewrap and a non-musl build on Linux, else sandboxed shell commands abort as an environment failure [M-ext]. `doctor` should report it; observed behaviour: `Unverified: T4.71` |
+| Worktree flag | **Reported** [Orca]: `-w, --worktree off\|create\|existing`, pass `off` when the host owns the worktree. Meta's pages mention `--worktree`, `--worktree-existing` and `--subagent-worktree-isolation` (a compatibility flag that does not isolate every child) but never list the values [M-log], [M-ext]. The adapter passes `-w off`; value spelling, the `.muse/worktrees/` side effect and `.git`-file handling are `Unverified: T4.71` |
+| Workspace trust | **Corrected**: Muse Code asks once per workspace root whether to trust it; trust loads project skills, rules and hooks [M-perm]; untrusted checkouts ignore project `AGENTS.md`/`CLAUDE.md`, user-level rules still load [M-cfg]. **Headless**: "a first run with no interactive terminal now stops with a message naming `--trust-workspace`" [M-log], and `--yolo` trusts the workspace [M-ext], so an untrusted workspace fails closed rather than prompting. `--trust-workspace` "now only decides whether the workspace's skills and rules load" [M-log]. Trust storage: Meta states no location (`~/.config/muse/trust.json` **reported** [Orca]). The controller must not pre-seed trust (credential-adjacent state); how to run an untrusted worktree usefully: `Unverified: T4.71` |
+| Repository config | **Confirmed**: from the workspace root up to the nearest `.git`, per level `AGENTS.md`, `CLAUDE.md`, `.agents/AGENTS.md`, then `.claude/CLAUDE.md` (first found wins; project rules beat user rules) [M-cfg]. **Corrected**: skills come from `<repo>/.agents/skills`, repo-local `.codex/skills` and `.claude/skills`, and, for the user, `$XDG_CONFIG_HOME/muse/skills`, `~/.agents/skills`, `~/.claude/skills`, `$CODEX_HOME/skills` or `~/.codex/skills` [M-ext]. Trust also gates hooks [M-perm]. The home-directory inputs are ambient config (FR-POL-04, FR-POL-08); suppressing them without changing `HOME`: `Unverified: T4.71` |
+| Version gate | `muse --version` **confirmed** [M-ov] (output format not given; "Muse Code 1.2.1 (1.2.1-R2847.1)" is **reported** [Orca]). Hourly self-update and `MUSE_NO_AUTO_UPDATE=1` are **reported** only [Orca]: Meta's overview, interactive, configuration and changelog pages do not mention them [M-ov], [M-int], [M-cfg], [M-log]. The adapter sets the variable only if T4.71 shows it pins the version (T4.72); an `ADAPTER_VERSION_UNVERIFIED` revalidation on every version change stays (ADR-0009). Meta advises pinning the version when gating on the export hash [M-ext] |
+| Success | Exit code `0` is not success (see Exit codes); the terminal record and the controller's verification decide |
+| Git writes | **Corrected**: no per-command Git deny control is documented. Inside the writable workspace the `.git`, `.muse` and `.agents` directories "stay read-only" [M-perm]; `--disable-sandbox` removes workspace confinement and `--yolo` disables the sandbox [M-perm]. That is a sandbox property, not a FR-GIT-01 control: declare `none-documented` until T4.71 shows what a commit attempt does in a controller-made worktree whose `.git` is a file (FR-GIT-01, as Codex) |
+| Per-run MCP and injected tools | **Corrected**: servers are declared in the `mcp_servers` block of `~/.config/muse/settings.json` (`transport` `stdio` or `streamable_http`, `enabled`, `mode` defaulting to required, `${VAR}` interpolation, `MUSE_SESSION_ID` passed to `stdio` servers) [M-ext]; `run.toolset` selects MCP tools by name with a trailing `*` [M-ext]; and `-c key=value` (`--config`) sets "any existing setting for that run only, including MCP servers" [M-log]. So a per-run definition without a bypass flag is plausible; the `-c` syntax for a server block and whether it leaves the user settings untouched are `Unverified: T4.71`. `settings.json` must hold `"schema_version": 1` [M-cfg] |
+| Bypass-class flags | **Confirmed**: `--yolo` (disable approval and the sandbox and trust the workspace), `--disable-approval` (keep the sandbox), `--disable-sandbox` (keep approval; also removes workspace confinement of the file tools) [M-perm], [M-ext]. `--trust-workspace` is in the changelog [M-log], not the permissions page. All four stay in the argv audit list (ADR-0004, FR-POL-03) outside an approved `privileged` scope. `--yolo` placement after `exec` is **reported** [Orca]. `--approval-mode never` and `--sandbox-network unrestricted` are not bypass flags by name but widen a run; the audit treats them as forbidden for non-`privileged` profiles (Proposed) |
+| Capacity | **Corrected**: billing is usage-based on input and output tokens with a Usage dashboard [M-auth]; no CLI or stream usage report, limit or reset time is documented [M-ov]. Per-run token fields in `--json` records: `Unverified: T4.71` (FR-CAP-01 records only what is reported) |
+
+#### 4.8.1 T4.71 operator checklist
+
+*Operator-only, Proposed.* Needs an installed Muse Code CLI. Use a throwaway Git repository and a controller-made
+worktree, never a real project, and the operator's own native login (Q-27). Do not paste, print or commit any key or
+`auth.json`; do not set `META_API_KEY`. Run the credential-free steps first. Save redacted stdout, stderr, exit codes
+and `muse --version` as dated fixtures. Record the answer next to each item; anything not observed stays `Unverified`.
+
+1. **Version and update.** `muse --version`: record the exact output format. Run `muse` twice more over two hours with
+   and without `MUSE_NO_AUTO_UPDATE=1` and compare `muse --version` and the binary's modification time: does the
+   variable pin the version?
+2. **Credential-free fixtures.** `muse exec --json --provider echo "hello"` in the throwaway worktree: does it run
+   with no login? Capture the JSONL, list every `kind`, the `run_terminal` line (`terminal` values, `reason`) for a
+   success, a `--max-model-steps 1` stop and a usage error, and the exit code of each. Do unknown fields appear?
+3. **Auth.** With no login, run `muse exec --json "hello"`: exit code, stderr text and any record. Is there a status
+   command (try `muse auth --help`, `muse --help`; do not run anything that prints a key)? After the operator's native
+   login, confirm the same command succeeds and that nothing credential-bearing reaches stdout or `--json` records.
+4. **Headless trust.** In an untrusted worktree run `muse exec --json "hello"` with no TTY: expected per
+   the changelog is a stop that names `--trust-workspace`; record exit code, record and message. Check
+   `~/.config/muse/trust.json` (existence only, not contents) before and after.
+5. **Approval and sandbox.** Run `muse exec --json --approval-mode untrusted --sandbox-network restricted "run ls"`
+   with no TTY: does a prompt block, fail or auto-deny? Repeat for `on-request`. Confirm `--sandbox-network
+   unrestricted` and the deprecated `enabled`. Record the bubblewrap behaviour on a host without it.
+6. **Worktree.** `-w off` in a controller-made worktree whose `.git` is a file: does the CLI find the main
+   repository, create `.muse/worktrees/`, or fail? List accepted `-w` values from `muse exec --help`.
+7. **Resume.** After a run, find the session id (record field or `muse export`), then `muse exec --session-id <uuid>
+   --json "continue"`; check `--allow-workspace-switch` and the `--no-session-log` effect.
+8. **Git writes.** Ask the agent (echo or a logged-in model) to run `git commit` and `git push` in the worktree with
+   default settings: result, exit code and stderr; does `.git` read-only apply to a worktree `.git` file? Is any
+   per-command deny setting in `muse exec --help` or the settings schema (`muse schema`)?
+9. **Project inputs.** Place `AGENTS.md`, `CLAUDE.md`, `.agents/skills/x/SKILL.md` and a hook in the throwaway
+   repository and a skill under `~/.claude/skills`: which load in a trusted and in an untrusted workspace? Is there a
+   setting to ignore the home-directory skill directories?
+10. **Per-run MCP.** Try `muse exec -c <mcp_servers key> ...` for a stdio server defined only for that run; confirm the
+    user `settings.json` is unchanged, `mode` behaviour on failure, and that no bypass flag is needed.
+11. **Bypass audit.** Confirm `--yolo`, `--disable-approval`, `--disable-sandbox` and `--trust-workspace` in
+    `muse exec --help`; the adapter must never emit them (argv audit).
+12. **Usage and limits.** Does any `--json` record carry token counts, a plan limit or a reset time?
+13. **Record.** Update this table row by row (confirmed, corrected or `Unverified`), R-33 and the research note, and
+    attach the fixtures; report the result to the orchestrator for the T4.71 status line.
 
 ## 5. Implementation strategy by milestone
 
