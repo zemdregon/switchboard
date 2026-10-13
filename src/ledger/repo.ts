@@ -133,6 +133,22 @@ export interface RunFieldPatch {
   finished_at?: string | null;
 }
 
+// ---- Retention GC predicates (T3.12, R-42). Aliases: `m` = meta_session. The one `?` is the cutoff (ISO). ----
+const NEWEST_RUN_SQL = "(SELECT id FROM run WHERE meta_session_id = m.id ORDER BY created_at DESC, id DESC LIMIT 1)";
+const LAST_ACTIVITY_SQL = `MAX(m.updated_at, COALESCE((SELECT MAX(MAX(r.created_at, r.updated_at, COALESCE(r.finished_at, '')))
+                                              FROM run r WHERE r.meta_session_id = m.id), ''))`;
+const IDLE_EXPIRED_SQL = `m.status = 'ACTIVE' AND m.lease_run_id IS NULL
+             AND NOT EXISTS (SELECT 1 FROM run r WHERE r.meta_session_id = m.id
+                             AND r.state NOT IN ('SUCCEEDED','FAILED','CANCELLED'))
+             AND ${LAST_ACTIVITY_SQL} < ?`;
+// Marked ARCHIVED by beginGc but not finished: the newest GC event is the intent, or live artifact rows remain.
+// Contains no placeholder; SQLite binds the one `?` of IDLE_EXPIRED_SQL only.
+const GC_PENDING_SQL = `m.status = 'ARCHIVED' AND (
+               (SELECT e.type FROM run_event e WHERE e.run_id = ${NEWEST_RUN_SQL}
+                  AND e.type IN ('gc_intent','gc_outcome') ORDER BY e.seq DESC LIMIT 1) = 'gc_intent'
+               OR EXISTS (SELECT 1 FROM artifact a WHERE a.deleted_at IS NULL
+                  AND (a.meta_session_id = m.id OR a.run_id IN (SELECT id FROM run WHERE meta_session_id = m.id))))`;
+
 const PATCHABLE: readonly (keyof RunFieldPatch)[] = [
   "failure_code",
   "failure_detail",
@@ -274,6 +290,8 @@ export interface GcCandidate {
   last_activity: string;
   /** Newest run (for the GC intent / outcome events, which `run_event` can only attach to a run), if any. */
   newest_run_id: string | null;
+  /** True for an `ARCHIVED` session whose collection began earlier and must roll forward (no cutoff applies). */
+  resume: boolean;
 }
 
 export interface GcSessionTargets {
@@ -397,8 +415,16 @@ export interface Ledger {
   /** Which of the session's live artifact hashes are safe to delete from disk (content is shared across runs). */
   gcArtifactPlan(sessionId: string): GcArtifactPlan;
   /**
-   * One transaction: set `deleted_at` on the session's live artifact rows, mark the meta-session `ARCHIVED` and append
-   * the outcome event (when the session has a run to attach it to). `run_event` rows are never touched (append-only).
+   * Mark first (R-42): in one `BEGIN IMMEDIATE` transaction re-check that the session is still an expired idle `ACTIVE`
+   * one (no lease, only terminal runs, activity older than `cutoffIso`), set it `ARCHIVED` (admission refuses it from
+   * then on) and append the `gc_intent` event (when it has a run). Returns false, writing nothing, when it is no
+   * longer idle. A session already `ARCHIVED` with collection pending only gets another intent event (roll-forward).
+   */
+  beginGc(sessionId: string, cutoffIso: string, at: string, intent: unknown): boolean;
+  /**
+   * One transaction, after the Git and file steps: set `deleted_at` on the session's live artifact rows and append the
+   * outcome event (when the session has a run to attach it to). The session was marked `ARCHIVED` by {@link beginGc}.
+   * `run_event` rows are never touched (append-only).
    */
   completeGc(sessionId: string, at: string, outcome: { runId: string | null; payload: unknown }): void;
 
@@ -681,22 +707,44 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
     },
 
     listGcCandidates(cutoffIso) {
+      // Expired idle ACTIVE sessions, plus ARCHIVED sessions whose collection began (`gc_intent` is their newest GC event,
+      // or live artifact rows remain) and must roll forward. Admission refuses ARCHIVED sessions (R-42).
       return db
         .prepare(
-          `SELECT m.id AS id, m.repo_root AS repo_root,
-                  (SELECT id FROM run WHERE meta_session_id = m.id ORDER BY created_at DESC, id DESC LIMIT 1)
-                    AS newest_run_id,
-                  MAX(m.updated_at, COALESCE((SELECT MAX(MAX(r.created_at, r.updated_at, COALESCE(r.finished_at, '')))
-                                              FROM run r WHERE r.meta_session_id = m.id), '')) AS last_activity
+          `SELECT m.id AS id, m.repo_root AS repo_root, m.status = 'ARCHIVED' AS resume,
+                  ${NEWEST_RUN_SQL} AS newest_run_id,
+                  ${LAST_ACTIVITY_SQL} AS last_activity
            FROM meta_session m
-           WHERE m.status = 'ACTIVE' AND m.lease_run_id IS NULL
-             AND NOT EXISTS (SELECT 1 FROM run r WHERE r.meta_session_id = m.id
-                             AND r.state NOT IN ('SUCCEEDED','FAILED','CANCELLED'))
-             AND MAX(m.updated_at, COALESCE((SELECT MAX(MAX(r.created_at, r.updated_at, COALESCE(r.finished_at, '')))
-                                             FROM run r WHERE r.meta_session_id = m.id), '')) < ?
+           WHERE (${IDLE_EXPIRED_SQL}) OR (${GC_PENDING_SQL})
            ORDER BY last_activity, m.id`,
         )
-        .all(cutoffIso) as GcCandidate[];
+        .all(cutoffIso)
+        .map((r) => {
+          const row = r as Omit<GcCandidate, "resume"> & { resume: number };
+          return { ...row, resume: row.resume === 1 };
+        });
+    },
+
+    beginGc(sessionId, cutoffIso, at, intent) {
+      return immediate(() => {
+        const row = db
+          .prepare(
+            `SELECT m.status AS status, ${NEWEST_RUN_SQL} AS newest_run_id,
+                    (${IDLE_EXPIRED_SQL}) AS expired
+             FROM meta_session m WHERE m.id = ?`,
+          )
+          .get(cutoffIso, sessionId) as { status: string; newest_run_id: string | null; expired: number } | undefined;
+        if (!row) return false;
+        if (row.status === "ACTIVE") {
+          // Re-check idleness inside the marking transaction: a run admitted since the candidate list was read wins.
+          if (row.expired !== 1) return false;
+          db.prepare(
+            "UPDATE meta_session SET status = 'ARCHIVED', version = version + 1, updated_at = ? WHERE id = ? AND status = 'ACTIVE'",
+          ).run(at, sessionId);
+        }
+        if (row.newest_run_id !== null) insertEvent(row.newest_run_id, "gc_intent", intent, at);
+        return true;
+      });
     },
 
     gcSessionTargets(sessionId) {
@@ -740,9 +788,6 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
           `UPDATE artifact SET deleted_at = ? WHERE deleted_at IS NULL
              AND (meta_session_id = ? OR run_id IN (SELECT id FROM run WHERE meta_session_id = ?))`,
         ).run(at, sessionId, sessionId);
-        db.prepare(
-          "UPDATE meta_session SET status = 'ARCHIVED', version = version + 1, updated_at = ? WHERE id = ?",
-        ).run(at, sessionId);
         if (outcome.runId !== null) insertEvent(outcome.runId, "gc_outcome", outcome.payload, at);
       });
     },
