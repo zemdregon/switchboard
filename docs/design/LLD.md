@@ -303,6 +303,15 @@ Both new tables get the same `BEFORE UPDATE`/`DELETE` guards as the other append
 object (`id`, `name`, `environment_kind`, `context_id`, `base_ref`, `effective_max_profile`, `allowed_providers?`;
 `ProjectSnapshot` in `src/policy/types.ts`); push policy, identity and image digest are not in it yet.
 
+*As built (2026-10-13, Delegated, T9.3, [ADR-0025](../adr/0025-git-commit-provenance-and-sanitiser.md)):* migration
+`0003_git_commit` (`src/ledger/migrations/0003_git_commit.ts`; ledger schema version 3) creates `git_commit` and
+`git_push` with the DDL above, the `BEFORE UPDATE`/`DELETE` guards (`git_commit_no_update`, `git_commit_no_delete`,
+`git_push_no_update`, `git_push_no_delete`) and two additions: `CREATE UNIQUE INDEX git_commit_run_sha ON git_commit(run_id,
+commit_sha)` (recovery re-inserts idempotently) and `CREATE INDEX git_push_run ON git_push(run_id)`. `git_push` has no
+writer yet (T9.6); ID prefixes `gcm_` and `gps_` (the latter Proposed here). `Ledger.recordGitCommit` appends the
+`git_commit` run event and inserts the row in one `BEGIN IMMEDIATE` transaction. New `run_event.type` values written by
+T9.3: `git_commit_intent` and `git_commit_aborted` (see §12.3). `project_revision` is still not created (T9.9).
+
 **M11 additions (Proposed).** One forward migration (ADR-0005) adds the append-only `inner_call` table and the mutable
 `inner_task_state` table (DDL in [§13.3](#133-data)), adds `pr_draft` to the `artifact.kind` check, adds `inner_agent` to
 the `usage_observation.source` check (FR-INN-15), and adds two columns to `git_commit` (§12.7). SQLite cannot alter a
@@ -1357,6 +1366,46 @@ Observations the algorithm should respect:
   nested repositories (ADR-0022), submodules, symlinks, very large path sets, concurrent publishers beyond the
   compare-and-swap above, and `-c core.hooksPath=/dev/null` under a Git older than 2.43.
 
+**As built (2026-10-13, Delegated, T9.3, [ADR-0025](../adr/0025-git-commit-provenance-and-sanitiser.md); owner text above
+unchanged).** Code: `src/git/commit.ts` (`GitPublisher.commit`, `GitPublisher.recover`), `src/git/publish-ref.ts`;
+every Git
+call goes through `src/workspace/git.ts`, whose `GitRunOptions` gained `env` (restricted to `GIT_INDEX_FILE` and the six
+author and committer variables) and `input` (standard input). Choices where §12.3 was silent:
+
+- **Publish ref.** `refs/heads/switchboard/pub/<sess>` by default, not `<push.branch_prefix><sess>`: the example prefix
+  `switchboard/` would give `refs/heads/switchboard/<sess>`, which cannot coexist with the run branch
+  `refs/heads/switchboard/<sess>/<run>`. `push.branch_prefix` stays the remote branch prefix (§12.6). A prefix in the
+  `switchboard/sess_*` namespace is refused. Open: Q-42.
+- **Order (replaces "move the ref, then insert" for crash safety).** (1) temporary index seeded from the publish head
+  (or the
+  session's `base_commit`), `add`, `write-tree`, `NOTHING_TO_COMMIT` if the tree equals the parent's; (2) sanitise;
+  (3) `commit-tree` (identity and dates from the context, message on standard input, trailing newline only); (4) lineage
+  check: `rev-list --count <new> --not <base> <old head>` must be 1; (5) append the `git_commit_intent` run event,
+  which holds
+  the whole provenance record (SHAs, ids, provider, harness, model, rule counts; no message text); (6) `update-ref
+  <ref> <new>
+  <old>` (old is all zeros for the first commit); on failure re-read the ref: moved means `git_commit_aborted` and a retry
+  from step 1, once, then `PUBLISH_CONFLICT`; (7) in one transaction append the `git_commit` event and insert the
+  `git_commit` row. Failure to write step 7 after a successful step 6 is reported as `PROVENANCE_PENDING` with the SHA.
+- **Recovery.** `GitPublisher.recover()` (call at controller start, before serving; wiring is T9.4) finds `git_commit_intent`
+  events with neither a `git_commit` row nor a `git_commit_aborted` event for the same SHA. If the commit is an
+  ancestor of
+  the publish ref it writes the row and event (the event payload has `recovered: true`); if not it appends
+  `git_commit_aborted` (`not_published_at_recovery`); if the repository cannot be read it reports the SHA as `unresolved`
+  and tries again next time.
+- **Paths.** With `paths`, each is normalised and checked before anything is staged; any refusal refuses the whole
+  call and
+  reports every refused path with a reason (`invalid`, `outside_worktree`, `git_dir`, `symlink_in_path`, `missing`,
+  `ignored`, `nested_repository`, `contains_nested_repository`); the call code is `PATH_OUTSIDE_WORKTREE` when any
+  path is
+  outside or reached through a symbolic link, else `PATH_REFUSED`. A path must be worktree-relative (an absolute path is
+  `outside_worktree`); `.` is `invalid`. A missing path is a deletion only if the parent tree has it. An ignored path is
+  refused unless the parent tree already tracks it. A directory path that contains a nested repository (ADR-0022) is
+  refused: name the files. Staging uses `git --literal-pathspecs add -- <paths>`; names starting with `-` or `:` were
+  tested. Without `paths`, `git add -A -- . <nested excludes>` stages every change; ignored files are skipped.
+- **Not tested here.** Clean and smudge filters, submodules, very large path sets (the limit is 256), Git older than 2.43.0
+  and concurrent publishers in separate processes (only the compare-and-swap protects them).
+
 #### 12.3.1 Signing (FR-GIT-10, Proposed)
 
 With `sign: true` step 4 asks Git to sign the commit object using the operator's existing signing configuration
@@ -1400,6 +1449,29 @@ adds a line. This holds for text drafted by the inner agent and for the PR draft
 pass the same rules, with no inner-specific exceptions and no inner influence on the rule set (FR-INN-06). The removed
 text is **not** recorded: `sanitizer_json` holds only `{ "rules": { "<rule id>": <count> }
 }`. The rule set cannot catch what it does not describe, and it does not touch file contents (risk R-14).
+
+**As built (2026-10-13, Delegated, T9.3, ADR-0025).** Code: `src/git/sanitize.ts`, `src/git/safe-pattern.ts`. The table
+above is implemented with these additions: rule `trailer.session` (a vendor-prefixed `-Session`/`-Conversation` key
+such as
+`Claude-Session:`, `Session-Id:`/`Run-Id:` forms, and any trailer whose key starts with a provider name and a hyphen),
+`trailer.ai-signoff` (`Signed-off-by:`, `Reviewed-by:` and similar naming an AI product), `id.controller` over every ID
+prefix of §1 (`sess run evt art dec ckp rte apv adv use pbd gcm gps` plus 26 or more characters), `id.native-session` for
+ids of at least 6 characters, and `url.session` (markdown links and bare URLs whose path or query holds a session,
+conversation or thread id, or that are session pages on `claude.ai`, `chatgpt.com` and similar hosts; documentation links
+on those hosts stay). Line rules match an NFKC copy of the line with zero-width and bidirectional control characters
+removed, so `Ｃｏ－ａｕｔｈｏｒｅｄ－ｂｙ：` and `Co\u200b-authored-by:` are caught. `footer.generated-by` needs a verb
+(`generated created written authored made built assisted co-authored produced drafted implemented`) near the start of the
+line, `with|by|using|via` within 80 characters, and a product or provider name anywhere on the line. Whole lines are
+removed by line rules; token rules leave the surrounding text. The passes repeat until nothing more is removed (at most
+four) and the sanitiser refuses (`SANITISER_FAILED`) a text it cannot make stable, a message over 65536 characters, or an
+exhausted budget. Carriage returns become newlines, control characters other than tab are dropped and trailing blanks are
+trimmed. **Operator patterns** (`git.sanitize_patterns`, now in the config schema) remove a whole matching line and
+are reported as `operator.<n>` (1-based); they must be in the validated subset documented in `safe-pattern.ts` and ADR-0025
+(no back-references or look-around, no quantifier on a group holding a quantifier, at most one unbounded quantifier, repeat
+counts up to 64, 16 patterns of 200 characters, estimated cost at most 2^26 steps), flags `iu`, matched in windows of 1024
+characters under a one-second budget. A `MESSAGE_EMPTY_AFTER_SANITISING` result means the text was empty after the
+rules ran.
+Fixtures: `src/git/sanitize.test.ts`.
 
 ### 12.5 Ref snapshot and violation handling
 

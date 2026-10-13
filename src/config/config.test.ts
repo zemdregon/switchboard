@@ -343,3 +343,32 @@ describe("mcp_clients[].projects and the lower-of-two ceiling (T9.2, FR-PRJ-06)"
     ).toBe("inspect-untrusted");
   });
 });
+
+describe("git.sanitize_patterns (FR-GIT-04, T9.3)", () => {
+  it("defaults to none and resolves a valid list in order", () => {
+    expect(loadConfig({ configPath: write(base()) }).sanitizePatterns).toEqual([]);
+    const cfg = { ...base(), git: { sanitize_patterns: ["^ticket-\\d+", "internal\\.corp"] } };
+    expect(loadConfig({ configPath: write(cfg) }).sanitizePatterns).toEqual(["^ticket-\\d+", "internal\\.corp"]);
+  });
+
+  it("rejects an unsafe or malformed pattern at load, naming its index", () => {
+    for (const bad of ["(a+)+$", "(a)\\1", ".*a.*b", "[abc", "a".repeat(201)]) {
+      const cfg = { ...base(), git: { sanitize_patterns: ["ok", bad] } };
+      expect(() => loadConfig({ configPath: write(cfg) }), bad.slice(0, 12)).toThrow(/\$\.git\.sanitize_patterns/u);
+    }
+    expect(() => loadConfig({ configPath: write({ ...base(), git: { sanitize_patterns: ["(a+)+$"] } }) })).toThrow(
+      /\[0\]: quantified group/u,
+    );
+  });
+
+  it("rejects more than 16 patterns, an unknown git key and a non-string pattern", () => {
+    const many = { ...base(), git: { sanitize_patterns: Array.from({ length: 17 }, (_, i) => `p${i}`) } };
+    expect(() => loadConfig({ configPath: write(many) })).toThrow(/sanitize_patterns/u);
+    expect(() => loadConfig({ configPath: write({ ...base(), git: { bogus: 1 } }) })).toThrow(
+      /\$\.git\.bogus: unknown key/u,
+    );
+    expect(() => loadConfig({ configPath: write({ ...base(), git: { sanitize_patterns: [1] } }) })).toThrow(
+      /sanitize_patterns/u,
+    );
+  });
+});

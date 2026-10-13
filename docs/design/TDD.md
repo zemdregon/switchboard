@@ -68,7 +68,7 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | `projects[]` | `{id, name, environment{kind: host or container, image_digest?, limits?}, contexts[{id, kind: repository, path, base_ref, push{policy: none or branch, remote?, branch_prefix?}, identity{name, email}}], max_trust_profile?, allowed_providers?}` (Proposed shape; [LLD §11](LLD.md#11-projects-contexts-and-environments)) | FR-PRJ-01, 02, 04, 06, FR-GIT-04, 05 |
 | `mcp_clients[].privileged_approval` | `"required"` (default) or `"not_required"`; implemented (T3.18). `not_required` admits that client's `privileged` requests to QUEUED under an approval row decided `APPROVED` by `client_policy:<client_id>` instead of waiting for `approve` ([LLD §3.1](LLD.md#31-privileged-scope-m3) "Client policy"); only the per-scope approval is lifted (owner decision 22, [ADR-0019](../adr/0019-per-client-privileged-approval.md)). Valid only with `max_trust_profile: "privileged"` (Proposed, fail closed); `doctor` warns for each such client | FR-POL-09, FR-MCP-06 |
 | `mcp_clients[].projects` | Project IDs the client may use | FR-PRJ-03, 06 |
-| `git.sanitize_patterns[]` | Operator additions to the built-in attribution patterns ([LLD §12.4](LLD.md#124-message-sanitisation)) | FR-GIT-04 |
+| `git.sanitize_patterns[]` | Operator additions to the built-in attribution patterns ([LLD §12.4](LLD.md#124-message-sanitisation)). *Note (2026-10-13, Delegated, T9.3, [ADR-0025](../adr/0025-git-commit-provenance-and-sanitiser.md)):* implemented as `git.sanitize_patterns` in the schema, at most 16 strings of at most 200 characters, each validated at load against a restricted regular-expression subset (`src/git/safe-pattern.ts`); an invalid pattern aborts startup naming its index. No RE2 dependency | FR-GIT-04 |
 | `limits.global_concurrency`, `limits.per_provider_concurrency` | Defaults 4 and 1 (proposed target) | NFR-PERF-03 |
 | `timeouts.*` | Wall-clock, idle, grace (proposed targets in [LLD §8](LLD.md#8-run-supervisor-details)); only `timeouts.preflight_ttl_seconds` exists in the schema today: integer 0 to 3600, default 60 (**Assumption**), 0 disables the preflight cache; unknown keys are rejected. *Note (2026-10-13, Delegated, [decision 29](../ROADMAP.md#42-owner-decisions), T3.21):* it bounds how long a successful `probe` or `authPreflight` is reused; failures are never cached | FR-EXE-01, NFR-PERF-02 |
 | `retention.days`, `retention.interval` | Retention in days (default 30, proposed target) and the GC pass period (`<n>m`, `<n>h` or `<n>d`, default `24h`). Collection is on only when `retention.days` is set in the file: the default is a value, not a switch (`ResolvedConfig.retentionEnabled`, T3.12, Proposed, Delegated). A period above about 24.8 days is capped by the timer | NFR-DATA-01, FR-WS-07 |
@@ -512,6 +512,34 @@ for it until a binary is installed and T3.9 or a follow-up live check runs.
 `listen` and `connect` both worked at 157 bytes yet left no file at that path, which was not investigated.
 `<data_dir>/runs/<run_id>/tools.sock` (LLD §12.2) can be long when the operator's data directory is, so the socket path
 needs a length check at startup, or a short directory; that is a T9.4 design point, not decided here.
+
+*T9.3 build notes (2026-10-13; Delegated; [ADR-0025](../adr/0025-git-commit-provenance-and-sanitiser.md); verified on Git 2.43.0
+only).* The plumbing sequence verified in the T9.0 note is implemented in `src/git/commit.ts` and run through the hardened
+helper in `src/workspace/git.ts` (scrubbed environment, `core.hooksPath=/dev/null`, drivers neutralised, no user
+configuration). Additions and findings:
+
+- **Temporary index.** `GIT_INDEX_FILE` points at a file in a private `0700` directory under the caller's scratch directory
+  (it must lie outside the worktree and the repository); it is removed after `write-tree`. The worktree's own index file,
+  `HEAD`, run branch and `git status` were byte-identical before and after in every test, including after a simulated
+  crash at each step. `GIT_OPTIONAL_LOCKS=0` (already in `scrubbedGitEnv`) keeps read commands from rewriting indexes.
+- **Environment.** The helper accepts extra variables only from an allowlist (`GIT_INDEX_FILE`, `GIT_AUTHOR_*`,
+  `GIT_COMMITTER_*`); any other key throws. The agent's environment never reaches these calls.
+- **Staging.** `git --literal-pathspecs add -- <paths>` for a subset; `git add -A -- . <nested excludes>` for all changes
+  (pathspec magic needs the flag off, so the two modes differ, and a directory path that contains a nested repository is
+  refused rather than expanded). File names starting with `-` or `:` and containing `*` or `[` were staged literally. Deletions
+  are staged. `git ls-tree -r -z --name-only` (with `--literal-pathspecs`) decides whether a missing path is a deletion;
+  `git check-ignore --no-index -z --stdin` decides ignored paths (a tracked file that is now ignored is allowed).
+- **Message and patch id.** The message goes to `commit-tree -F -` on standard input; `git patch-id --stable` over `diff-tree
+  -p --no-ext-diff --no-textconv` gives the 40-hex patch id (best effort, `NULL` if it fails). No `gpgsig` header appears
+  although the repository configured `commit.gpgsign=true` with a missing program (signing is T9.10).
+- **Hooks.** A repository `reference-transaction`, `pre-commit`, `commit-msg` and `post-commit` hook that exits 1 did not
+  stop `update-ref` or `commit-tree` through the helper (test "ignores repository hooks and user configuration"), which
+  answers the "not tested" hook question of the T9.0 note for these commands on 2.43.0.
+- **Regular-expression safety.** Measured on Node 22.22.0: `.*a.*b` (two unbounded quantifiers) took 36 s on a 4096-character
+  line of `a`, so the operator-pattern subset allows one unbounded quantifier and windows of 1024 characters; see ADR-0025
+  and LLD §12.4. Node has no RE2 and cannot time-box a synchronous `RegExp`.
+- **Still open.** Git 2.32 to 2.42 were not exercised; clean and smudge filters, submodules and large path sets were not
+  tested; the shim, socket, snapshot freeze (Q-41) and start-up `recover()` call belong to T9.4.
 
 ### 3.11 Container environments
 

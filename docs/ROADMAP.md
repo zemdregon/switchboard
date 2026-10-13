@@ -336,11 +336,23 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
     [ADR-0024](adr/0024-project-id-columns-and-project-snapshot.md). No requirement ID changes. *Unverified:* nothing
     ran against a live provider.
 
+<!-- markdownlint-disable-next-line MD029 -->
+32. Commit provenance tables, publish ref, crash ordering and the sanitiser's pattern language (2026-10-13).
+    **Delegated decision (agent), under [owner decision 25](#42-owner-decisions); not an zemdregon quote and not
+    owner-approved.** Ledger migration 0003 creates `git_commit` and `git_push` (DDL of LLD §1 plus a unique index on
+    `(run_id, commit_sha)` and an index on `git_push(run_id)`). A commit is recorded as intent event, compare-and-swap
+    `update-ref`, then the `git_commit` event and row in one transaction, with `recover()` resolving a crash at any step.
+    The local publish ref is `refs/heads/switchboard/pub/<sess>` (not `push.branch_prefix`, which names the remote
+    branch). Operator sanitiser patterns (`git.sanitize_patterns`, now in the config schema) are limited to a validated
+    regular-expression subset with a cost bound; no RE2 dependency is added. A persistence-format change needs an ADR:
+    [ADR-0025](adr/0025-git-commit-provenance-and-sanitiser.md). No requirement ID changes. *Unverified:* nothing ran
+    against a live provider; Git 2.43.0 is the only Git exercised.
+
 Decisions 10 to 13, 17, 19, 21 and 22 each choose the less restrictive of the options put to zemdregon (decision 18 is the
 principle behind the 2026-10-13 ones); decisions 20 and 23 keep the stricter behaviour already implemented. Their residual
 risks are recorded for zemdregon as R-23 to R-26, R-34, R-38 and R-39 in §7.1 (not blocking); decision 24's as R-38 and
 R-40; decision 26's as R-41; decision 27's as R-35 (mitigated); decision 28's as R-42 (mitigated);
-decision 29 has none beyond the stale-for-TTL window noted in it; decision 30 closes R-44.
+decision 29 has none beyond the stale-for-TTL window noted in it; decision 30 closes R-44; decision 32's is R-45 (not blocking).
 
 ### 4.3 Stated intent (confirmed constraints)
 
@@ -658,6 +670,29 @@ digest in the snapshot (T9.3 onward, M10), `manage_projects` and dynamic project
 config ids (`claude-code`), mapped to adapter ids by the existing `CONFIG_TO_ADAPTER_ID`; the test-only `fake` adapter
 is never allowed by a project that lists providers. Persistence:
 [ADR-0024](adr/0024-project-id-columns-and-project-snapshot.md).
+
+**T9.3 status (2026-10-13; Delegated): Done** for the controller-side library and ledger; every "Done when" clause has a
+test. Fixtures of attribution trailers, footers and session ids leave none in the commit (`src/git/sanitize.test.ts`,
+"built-in sanitiser rules", ten fixtures including case, full-width, zero-width and CRLF evasion, idempotence; the same
+messages through the commit path in `src/git/commit.test.ts`, "writes the provenance row ..."). Checkpoint commits are not
+reachable from the publish ref (`src/git/commit.test.ts`, "keeps checkpoint commits out of the publish history ..."
+uses `merge-base --is-ancestor`, `rev-list` and `for-each-ref --contains` after a real `finalize` checkpoint, and the
+publish ref is unchanged by it). The provenance row is written in the same transaction as the `git_commit` run event
+("rolls back the event and the row together ..."; `Ledger.recordGitCommit`). Also covered: path-subset commit with
+deletions staged, worktree index, `HEAD`, run branch and `git status` unchanged, outside, missing, ignored, nested,
+`.git` and symlink paths refused per path, wildcard and option-like names handled literally, compare-and-swap loss
+with one
+retry and then `PUBLISH_CONFLICT`, a crash after each of five steps recovered by `recover()`, hooks and signing config in
+the repository ignored, operator patterns including rejected pathological ones (`src/git/sanitize.test.ts`,
+`src/config/config.test.ts` "git.sanitize_patterns"), and the migration from version 2 (`src/ledger/ledger.test.ts`, "0003
+adds ..."). Where: `src/git/` (`commit.ts`, `sanitize.ts`, `safe-pattern.ts`, `publish-ref.ts`), `src/ledger/migrations/0003_git_commit.ts`,
+`Ledger.recordGitCommit`, `git.sanitize_patterns` in the config schema, and an `env`/`input` option on the hardened Git
+helper restricted to the plumbing variables. Persistence and mechanisms: [ADR-0025](adr/0025-git-commit-provenance-and-sanitiser.md),
+decision 32. Scope kept out on purpose: the shim, socket and `COMP-GIT` service and calling `recover()` at start-up
+(T9.4), ref snapshots and violation handling (T9.5), push execution and rows in `git_push` (T9.6; the table exists),
+finalize-only (T9.7), signing (T9.10), `runs show` provenance (T9.6), and freezing identity into the policy snapshot
+(Q-41). Verified only on Git 2.43.0; `git add --literal-pathspecs`, `ls-tree`, `check-ignore --no-index` and
+`patch-id --stable` have not run on 2.32 to 2.42.
 Not run against a live provider.
 
 ### 6.4 M10 Container environments: tasks
@@ -831,6 +866,7 @@ preceding milestone completes.
 | R-42 | *Delegated, not blocking; mitigated 2026-10-13 (decision 28).* Retention GC's `serve` interval pass was not excluded from `continue_task`: a meta-session idle past `retention.days` is chosen by the ledger query, and a `continue_task` admitted while that unit was being collected could find its worktree, checkpoint branches or artifacts gone. The startup pass cannot race it (it runs before MCP accepts calls) | Rare (needs a continuation of a session idle for the whole retention period, within one unit's collection window); before the fix the continued run failed or started from a missing checkpoint | **Mitigated:** GC marks first. `ledger.beginGc` re-checks idleness and sets `ARCHIVED` in one `BEGIN IMMEDIATE` transaction before any removal, so a session with a newly admitted run is skipped; admission refuses an `ARCHIVED` meta-session (`INVALID_REQUEST`, in validation and again inside the admission transaction); a marked but unfinished session rolls forward on the next pass. Evidence: `src/workspace/gc.test.ts`, `src/lifecycle/lifecycle.test.ts` (see T3.12). Residual: a refused client sees `INVALID_REQUEST` and must start a new task (a collected session cannot be continued by design); no process-level test of two real processes racing (SQLite serialises the two transactions) |
 | R-43 | *Delegated, not blocking; mitigated 2026-10-13 (T9.0 follow-up), matcher normalisation still unverified.* The Claude Git deny rules (`Bash(git <verb>)`, `Bash(git <verb> *)`) are lexical and list the subcommand directly after `git`. Git accepts global options before the subcommand: on Git 2.43.0 `git --no-pager commit`, `git -P commit` and `git --no-optional-locks commit` each created a commit in a test repository, and `--config-env`, `--exec-path`, `--namespace` and `--bare` are not denied either. `GIT_WRITE_SUBCOMMANDS` also lacks ref-affecting `reflog`, `pack-refs`, `gc`, `prune` and `maintenance` (`git pack-refs --all` and `git reflog expire` ran). Whether Claude's matcher normalises global options is unverified | A Claude run with a shell could still commit while the rules look complete; FR-GIT-01 on a host would rest on FR-GIT-03 detection and the layer 3 guard | **Mitigated (2026-10-13):** `src/adapters/git-write.ts` adds `GIT_GLOBAL_OPTIONS_WITH_VALUE` and `GIT_GLOBAL_FLAGS` (every global option in the Git 2.43.0 usage text: `-C`, `-c`, `--git-dir`, `--work-tree`, `--namespace`, `--config-env`, `--exec-path`, `--attr-source`, `-p`, `-P`, `--paginate`, `--no-pager`, `--no-optional-locks`, `--literal-pathspecs`, `--glob-pathspecs`, `--noglob-pathspecs`, `--icase-pathspecs`, `--no-replace-objects`, `--bare`) and the write subcommands `reflog`, `pack-refs`, `gc`, `prune`, `maintenance`, `repack`, `hash-object`; the Claude adapter emits `Bash(git <opt> *)` (and `Bash(git <opt>=*)` for long value options) for each, keeping the existing rule syntax; this only denies more and applies in bypass runs too (decision 22). Evidence: tests in `src/adapters/git-write.test.ts` and `src/adapters/claude/claude.test.ts`; behaviour probed on Git 2.43.0 in a throwaway repository (each listed option except `--bare` let `git branch` create a ref; each listed subcommand changed refs, packed-refs, reflogs or objects). `add`, `rm`, `mv`, `restore` and `clean` change the index or work tree only and are not FR-GIT-01 writes. **Still unverified:** whether Claude's matcher normalises global options (the help text does not say), so the explicit spellings are denied as belt and braces; a spelling not in the Git 2.43.0 usage text (a newer Git option) is not denied by the Claude rules; run the live check C-G2 (T3.9). The layer 3 guard (TDD §3.10) blocks the `-c`-less cases via the environment |
 | R-44 | *Delegated, not blocking; mitigated 2026-10-13 (decision 30, ADR-0023).* `MIN_GIT_VERSION` was 2.30 but `scrubbedGitEnv()` sets `GIT_CONFIG_GLOBAL=/dev/null`, which the Git 2.32.0 release notes introduce; on 2.30 or 2.31 the controller's Git calls might read the operator's global configuration (inferred from the notes; no such Git is installed to test) | A controller call could pick up an operator alias, identity, hook path or filter on an old Git that `doctor` accepts | **Mitigated:** floor raised to 2.32 (Q-39 decided; [ADR-0023](adr/0023-minimum-git-version-2-32.md); `src/workspace/git.ts`, `doctor` and the version-gate test). The 2.32 introduction version still rests on the release notes |
+| R-45 | *Delegated, not blocking (decision 32, ADR-0025).* The operator sanitiser patterns run on a backtracking engine (Node has no RE2) and are only protected by a validated subset, a cost estimate, 1024-character windows and a one-second budget; the cost model is an estimate from one measurement (`.*a.*b` took 36 s on 4096 characters), not a proof. A pattern in the subset can still be slow within the budget, and a pattern that is too slow fails closed (commits are refused) rather than slowing the controller further | An operator pattern could make every commit slow or refused; an accepted pattern cannot hang the controller beyond the budget plus one regular-expression call of at most about 67 million steps | **Open, accepted.** Revisit with an RE2 binding if the dependency is accepted; the built-in rules are linear or bounded (tests in `src/git/sanitize.test.ts`) |
 
 Numbering: R-36, R-37 and Q-32 to Q-35 (§7.3) were written on the M3 wave B branch as R-29, R-30 and Q-27 to
 Q-30. PR #17 merged all but Q-30 into main under those numbers, which main already used for other items; they were
@@ -890,6 +926,8 @@ No blocker affects M1, M2 or M9.
 | Q-38 | *Decided 2026-10-13 by [owner decision 25](#42-owner-decisions) (zemdregon: "you pick"; Delegated):* the order stays M3, M9, M10 (M10 needs the M9 projects and injected tools), and the document-only spike T10.0 may start early. Original question: should M10 be brought forward ahead of M9's remaining work (T9.7, T9.9, T9.10)? | — |
 | Q-39 | *Decided 2026-10-13 by [Delegated decision 30](#42-owner-decisions) under owner decision 25 (not owner-approved), [ADR-0023](adr/0023-minimum-git-version-2-32.md): 2.32.0.* Original question: Raise `MIN_GIT_VERSION` from 2.30 to 2.32? Reasons: `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` (2.32.0 release notes) are already used by `scrubbedGitEnv()`; the layer 3 guard needs `GIT_CONFIG_COUNT` (2.31, inferred from the 2.31.0 notes). It changes the stated floor of the technology stack, so AGENTS.md requires an ADR | **Decided:** yes, 2.32.0. `MIN_GIT_VERSION`, its test, README and TDD updated; `doctor` reads the constant |
 | Q-40 | *Proposed ADR, not written (T9.0 finding; Delegated).* ADR-0015 says the Claude adapter never emits `--mcp-config`, and `src/adapters/audit.ts` and `claude.test.ts` enforce it; FR-GIT-02's injected channel needs it. May the adapter emit `--mcp-config` carrying only the controller-generated shim definition, always with `--strict-mcp-config`, while operator and repository definitions stay barred? This touches a trust boundary and an accepted ADR | **Proposed:** yes, narrowly, after the live check shows `--safe-mode` and permissions allow the shim (R-18). Until then no Claude channel is declared |
+| Q-41 | *Delegated, open (T9.3).* [ADR-0024](adr/0024-project-id-columns-and-project-snapshot.md) said push policy and commit identity join the policy snapshot "with T9.3". T9.3 has no caller (the commit library takes identity, project and context ids as arguments), so freezing them into `run.policy_snapshot_json` is left to T9.4, where the `COMP-GIT` service reads them. Until then a configuration edit between admission and a commit is not detected | **Open.** Default: the caller passes identity, project and context ids as arguments; T9.4 decides whether the snapshot freezes `identity` and `push` |
+| Q-42 | *Delegated, open (T9.3).* LLD §12.3 first said the publish ref is `refs/heads/<push.branch_prefix><sess>`; the example prefix `switchboard/` would collide with run branches, so ADR-0025 fixes the local ref at `refs/heads/switchboard/pub/<sess>` and leaves `push.branch_prefix` as the remote branch prefix (LLD §12.6). T9.6 should confirm this reading when it builds the refspec | **Open.** Default: local `switchboard/pub/`, remote `push.branch_prefix`; confirm or change when T9.6 starts |
 
 ## 8. Deferred and excluded work
 

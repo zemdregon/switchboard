@@ -60,3 +60,4 @@ scope and sequencing live in the [ROADMAP](../ROADMAP.md).
 | [0022](0022-nested-repositories-excluded-from-controller-git.md) | Nested repositories are excluded from controller Git calls; the run does not fail | Accepted | Delegated (agent, under owner decision 25; not an zemdregon quote) |
 | [0023](0023-minimum-git-version-2-32.md) | Minimum Git version raised from 2.30 to 2.32 | Accepted | Delegated (agent, under owner decision 25; not an zemdregon quote) |
 | [0024](0024-project-id-columns-and-project-snapshot.md) | `project_id` columns (migration 0002) and the `project` block in the policy snapshot | Accepted | Delegated (agent, under owner decision 25; not an zemdregon quote) |
+| [0025](0025-git-commit-provenance-and-sanitiser.md) | `git_commit` and `git_push` tables (migration 0003), publish ref, intent/ref/outcome crash ordering and the sanitiser's safe pattern subset | Accepted | Delegated (agent, under owner decision 25; not an zemdregon quote) |
