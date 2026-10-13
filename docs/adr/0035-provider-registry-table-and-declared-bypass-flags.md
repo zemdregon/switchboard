@@ -1,6 +1,8 @@
 # ADR-0035: One provider registry table; adapters declare bypass-class flags that the argv audit adds
 
-- Status: Accepted
+- Status: Accepted; extended 2026-10-13 by [ADR-0037](0037-argv-audit-short-flags-and-bypass-values.md): entries may
+  also declare short spellings (matched inside clusters) and bypass-class flag values, counted once the entry has an
+  adapter; decision item 2 and the flag-value "Revisit when" item are answered there
 - Date: 2026-10-13
 - Decided by: Delegated (agent), under [owner decision 25](../ROADMAP.md#42-owner-decisions). Not a zemdregon quote and
   not owner-approved. The change keeps every bypass run's behaviour as it was (it only adds flags the audit refuses

@@ -450,21 +450,35 @@ registry table, `BUILTIN_PROVIDERS` in `src/adapters/providers.ts`; `ProviderId`
 `PROVIDER_IDS` and the `providers` and `allowed_providers` schema parts in `src/config/schema.ts`,
 `CONFIG_TO_ADAPTER_ID` in `src/routing/collect.ts` and the `serve` and `doctor` registrations are derived from it.
 
-| Config provider id | Adapter `ProviderId` | In the table (T4.1) | Declared bypass-class flags (source) |
-| --- | --- | --- | --- |
-| `claude-code` | `claude` | Adapter | `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions` ([TDD §4.1.1](TDD.md#411-claude-code-native-controls-per-profile-and-platform-t30), `claude --help` 2.1.296) |
-| `codex` | `codex` | Adapter | `--yolo`, `--full-auto` ([R2] L28, L125, L126) |
-| `grok-build` | `grok` | Reserved (no adapter yet) | None yet (T4.20) |
-| `antigravity` | `antigravity` | Reserved | None yet (T4.30) |
-| `cursor` | `cursor` | Reserved | None yet (T4.40) |
-| `opencode` | `opencode` | Reserved | None yet (T4.50) |
-| `kimi-code` | `kimi` | Reserved | None yet (T4.60) |
-| `muse-code` | `muse` | Not yet: added with its adapter module (T4.72), as the `ProviderId` above anticipates | None yet (T4.70) |
-| none | `fake` | Test-only adapter (`serve` registers it only behind the test-only switch) | None |
+| Config provider id | Adapter `ProviderId` | In the table (T4.1) | Declared bypass-class flags (source) | Declared short flags and values (ADR-0037; source) |
+| --- | --- | --- | --- | --- |
+| `claude-code` | `claude` | Adapter | `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions` ([TDD §4.1.1](TDD.md#411-claude-code-native-controls-per-profile-and-platform-t30), `claude --help` 2.1.296) | Value `--permission-mode bypassPermissions` (same source); active |
+| `codex` | `codex` | Adapter | `--yolo`, `--full-auto` ([R2] L28, L125, L126) | None |
+| `grok-build` | `grok` | Reserved (no adapter yet) | None (its long bypass flags are shared `BYPASS_FLAGS`) | Values `--permission-mode bypassPermissions`; `--allow` and `--allowed-tools` with `*` or `**` (catch-all, Proposed) ([TDD §4.3.1](TDD.md#431-grok-build-native-controls-per-profile-and-platform-t420)); inert until T4.22 |
+| `antigravity` | `antigravity` | Reserved | None (`--dangerously-skip-permissions` is shared) | None ([TDD §4.4.2](TDD.md#442-antigravity-native-controls-per-profile-and-platform-t430): `always-proceed` is a settings value) |
+| `cursor` | `cursor` | Reserved | None (`--force`, `--yolo`, `--approve-mcps` are shared) | Short `-f`; value `--sandbox disabled` ([TDD §4.5](TDD.md#45-cursor-cli-m4), Proposed); inert until T4.42 |
+| `opencode` | `opencode` | Reserved | None yet (`--auto` with T4.52) | None (the inline `allow` permission is carried in the environment, [TDD §4.6.2](TDD.md#462-inventory-and-decisions-for-later-tasks-t450)) |
+| `kimi-code` | `kimi` | Reserved | None yet (`--auto`, `--plan` with T4.62) | None |
+| `muse-code` | `muse` | Not yet: added with its adapter module (T4.72), as the `ProviderId` above anticipates | None yet (T4.70) | Values `--approval-mode never`, `--sandbox-network unrestricted` ([TDD §4.8](TDD.md#48-muse-code-m4), Proposed), declared when the entry is added |
+| none | `fake` | Test-only adapter (`serve` registers it only behind the test-only switch) | None | None |
 
 A reserved entry is accepted in configuration and never registered. The argv audit refuses the shared `BYPASS_FLAGS`
 plus every flag the table declares, except in the approved bypass case (FR-POL-03, ADR-0017, ADR-0035); a declaration
 can only add to the shared list.
+
+*Audit contract (T4.1 audit gaps, 2026-10-13, Delegated, [ADR-0037](../adr/0037-argv-audit-short-flags-and-bypass-values.md)):*
+before every spawn `findBypassFlags` reads `argv`, then `policyFlags`, word by word, and reports each hit once:
+
+| Form | Matches | Reported as |
+| --- | --- | --- |
+| Flag (`BYPASS_FLAGS` and every entry's `bypassFlags`) | The word equals the flag or starts with `<flag>=` (unchanged since T3.17) | The flag |
+| Short flag (`bypassShortFlags` of entries with `create`, and any `-x` in the flag list) | A word of one dash and letters or digits, with an optional `=value`, whose letters include the short flag's letter (`-f`, `-f=1`, `-pf`): deliberate over-refusal | The short flag |
+| Value (`bypassValues` of entries with `create`) | The flag word directly followed by the value word, or `<flag>=<value>`, within one list; value compared case-insensitively | `<flag> <value>` |
+
+Any hit is refused (`BypassFlagError`) unless the run's context is `privileged` with `bypassApproved` and a scope that
+sets `bypass`. Registration refuses malformed declarations: short flags must be `-x`; values must be
+`{ flag, value }` with a flag of the `bypassFlags` shape and a value of 1 to 128 characters without whitespace or
+control characters. Settings carried in the child environment or in files are not seen (ADR-0037 "Limits").
 
 **Ineligible to failure code.** The adapter reasons map to the codes in §4 per
 [FRD BR-3](../requirements/FRD.md#3-business-rules): `AUTH_REQUIRED` gives `AUTH_REQUIRED`; `VERSION_UNVERIFIED` gives
@@ -846,9 +860,10 @@ sets `bypassApproved = true` only if: the row is `APPROVED`; its `scope_hash` eq
 hash recomputed from this run's `client_id`, `meta_session_id` and snapshot scope; and the approved scope has
 `bypass: true`. Any mismatch fails the run `PERMISSION_BLOCKED` before spawn, with a `run_event` naming the mismatch
 (no process, no flag). With `bypassApproved` false the adapter compiles `privileged` without a bypass flag. The argv
-audit (T3.17) independently refuses any `BYPASS_FLAGS` entry unless the profile is `privileged`, `bypassApproved` is
-true and the snapshot's scope sets `bypass` (the lifecycle passes the run's resolved profile and `bypassApproved` to
-`startAdapterRun`, so the audit sees the same values the compile did). The compiled `policyFlags` are recorded in the
+audit (T3.17) independently refuses any `BYPASS_FLAGS` entry (and every declared form of §2, ADR-0035, ADR-0037)
+unless the profile is `privileged`, `bypassApproved` is true and the snapshot's scope sets `bypass` (the lifecycle
+passes the run's resolved profile and `bypassApproved` to `startAdapterRun`, so the audit sees the same values the
+compile did). The compiled `policyFlags` are recorded in the
 run's events, so every bypass run's invocation and the approval it ran under are in the audit trail.
 
 **Listing (Proposed, Delegated, 2026-10-13).** `list_capabilities` lists `privileged` in a provider's
