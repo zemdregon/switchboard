@@ -1047,7 +1047,9 @@ per run, created from the previous head, so history per meta-session is a linear
 
 **Lease (one writer per meta-session chain, Proposed).** Because each run branches from the session head, two concurrent
 writers would fork; the lease lives on `meta_session` (`lease_run_id`, `lease_expires_at`). Parallel tasks use separate
-meta-sessions and therefore separate worktrees (FR-WS-02). Parallel subtasks inside one session: to be detailed in M5.
+meta-sessions and therefore separate worktrees (FR-WS-02). Concurrent runs of one project each get their own worktree and
+lease whichever meta-session they belong to (FR-WS-08, owner decision 41, Delegated). Parallel subtasks inside one session:
+to be detailed in M5.
 
 ```mermaid
 sequenceDiagram
