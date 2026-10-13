@@ -356,6 +356,50 @@ export interface ApprovalDecision {
   decidedAt?: string;
 }
 
+/** One `git_commit` row (FR-GIT-07; LLD §1 "M9 additions"). Append-only: rows are never updated or deleted. */
+export interface GitCommitRow {
+  id: string;
+  commit_sha: string;
+  tree_sha: string;
+  patch_id: string | null;
+  repo_root: string;
+  publish_ref: string;
+  project_id: string;
+  context_id: string;
+  meta_session_id: string;
+  run_id: string;
+  provider: string;
+  harness: string;
+  model: string | null;
+  adapter_version_id: string | null;
+  origin: "commit_tool" | "finalize_only";
+  tool_event_id: string | null;
+  sanitizer_json: string;
+  created_at: string;
+}
+
+/** Everything `recordGitCommit` needs. `id`, `tool_event_id` and `created_at` are assigned by the ledger. */
+export interface NewGitCommit {
+  commitSha: string;
+  treeSha: string;
+  patchId?: string | null;
+  repoRoot: string;
+  publishRef: string;
+  projectId: string;
+  contextId: string;
+  metaSessionId: string;
+  runId: string;
+  provider: string;
+  harness: string;
+  model?: string | null;
+  adapterVersionId?: string | null;
+  origin: "commit_tool" | "finalize_only";
+  /** `{ "rules": { "<rule id>": <count> } }`: rule ids and counts only, never removed text. */
+  sanitizer: unknown;
+  /** Payload of the `git_commit` run event written in the same transaction (bounded: SHAs, counts, rule ids). */
+  eventPayload: unknown;
+}
+
 export interface Ledger {
   createMetaSession(input: NewMetaSession): MetaSessionRow;
   getMetaSession(id: string): MetaSessionRow | undefined;
@@ -460,6 +504,18 @@ export interface Ledger {
   decideApproval(input: ApprovalDecision): ApprovalRow | undefined;
   /** Runs (oldest first) whose policy snapshot names this approval (`privilegedScope.approvalId`). */
   listRunsCoveredByApproval(approvalId: string): RunRecord[];
+
+  // ---- T9.3 additions (commit provenance, LLD §12.3 and §12.7) ---------------------------------------------------
+  /**
+   * In ONE `BEGIN IMMEDIATE` transaction append the `git_commit` run event and insert the `git_commit` row that points
+   * at it (FR-GIT-07). Idempotent per `(run_id, commit_sha)`: when the row exists nothing is written and `created` is
+   * false, which is what crash recovery relies on. A constraint failure rolls both writes back.
+   */
+  recordGitCommit(input: NewGitCommit): { row: GitCommitRow; created: boolean };
+  /** Provenance rows of a run, oldest first. */
+  listGitCommits(runId: string): GitCommitRow[];
+  /** Provenance rows for one commit SHA, oldest first (the same commit may be recorded by more than one run). */
+  findGitCommitsBySha(commitSha: string): GitCommitRow[];
 }
 
 export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledger {
@@ -492,18 +548,20 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
   const getRunRecord = (id: string) => db.prepare(`${RUN_RECORD_SQL} WHERE id = ?`).get(id) as RunRecord | undefined;
 
   /** Insert the next event inside the caller's transaction. */
-  const insertEvent = (runId: string, type: string, payload: unknown, when: string): void => {
+  const insertEvent = (runId: string, type: string, payload: unknown, when: string): string => {
     const row = db.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM run_event WHERE run_id = ?").get(runId) as {
       next: number;
     };
+    const id = ids.id("evt");
     db.prepare("INSERT INTO run_event (id, run_id, seq, ts, type, payload_json) VALUES (?, ?, ?, ?, ?, ?)").run(
-      ids.id("evt"),
+      id,
       runId,
       row.next,
       when,
       type,
       JSON.stringify(payload ?? {}),
     );
+    return id;
   };
 
   const patchSql = (set: RunFieldPatch): { cols: string; values: unknown[] } => {
@@ -905,6 +963,56 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
         now,
       );
       return getRun(id) as RunRow;
+    },
+
+    recordGitCommit(input) {
+      return immediate(() => {
+        const existing = db
+          .prepare("SELECT * FROM git_commit WHERE run_id = ? AND commit_sha = ?")
+          .get(input.runId, input.commitSha) as GitCommitRow | undefined;
+        if (existing) return { row: existing, created: false };
+        const when = ts();
+        const eventId = insertEvent(input.runId, "git_commit", input.eventPayload, when);
+        const id = ids.id("gcm");
+        db.prepare(
+          `INSERT INTO git_commit (id, commit_sha, tree_sha, patch_id, repo_root, publish_ref, project_id, context_id,
+             meta_session_id, run_id, provider, harness, model, adapter_version_id, origin, tool_event_id,
+             sanitizer_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          id,
+          input.commitSha,
+          input.treeSha,
+          input.patchId ?? null,
+          input.repoRoot,
+          input.publishRef,
+          input.projectId,
+          input.contextId,
+          input.metaSessionId,
+          input.runId,
+          input.provider,
+          input.harness,
+          input.model ?? null,
+          input.adapterVersionId ?? null,
+          input.origin,
+          eventId,
+          JSON.stringify(input.sanitizer ?? { rules: {} }),
+          when,
+        );
+        return { row: db.prepare("SELECT * FROM git_commit WHERE id = ?").get(id) as GitCommitRow, created: true };
+      });
+    },
+
+    listGitCommits(runId) {
+      return db
+        .prepare("SELECT * FROM git_commit WHERE run_id = ? ORDER BY created_at, id")
+        .all(runId) as GitCommitRow[];
+    },
+
+    findGitCommitsBySha(commitSha) {
+      return db
+        .prepare("SELECT * FROM git_commit WHERE commit_sha = ? ORDER BY created_at, id")
+        .all(commitSha) as GitCommitRow[];
     },
 
     appendRunEvent(input) {

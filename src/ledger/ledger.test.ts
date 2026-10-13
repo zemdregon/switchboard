@@ -20,6 +20,8 @@ const EXPECTED_TABLES = [
   "approval",
   "artifact",
   "decision",
+  "git_commit",
+  "git_push",
   "meta_session",
   "provider_binding",
   "provider_health",
@@ -100,8 +102,8 @@ describe("ledger migrations", () => {
                         client_id, created_at, updated_at)
        VALUES (?, ?, 'QUEUED', 'edit-untrusted', '{}', '{}', 'h', 'c', ?, ?)`,
     ).run(run.id, session.id, now, now);
-    expect(migrate(db)).toEqual([2]);
-    expect(migrate(db)).toEqual([]); // idempotent
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 2))).toEqual([2]);
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 2))).toEqual([]); // idempotent
     for (const t of ["meta_session", "run"]) {
       const col = (db
         .prepare(`SELECT type, "notnull" AS nn FROM pragma_table_info('${t}') WHERE name = 'project_id'`)
@@ -124,6 +126,104 @@ describe("ledger migrations", () => {
         projectId: "web-app",
       }).project_id,
     ).toBe("web-app");
+  });
+
+  it("0003 adds git_commit and git_push to a version 2 database and keeps existing rows (ADR-0025)", () => {
+    db = new Database(path.join(dir, LEDGER_FILE_NAME));
+    db.pragma("foreign_keys = ON");
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 2))).toEqual([1, 2]); // a database as 0002 left it
+    expect(tables(db)).not.toContain("git_commit");
+    const now = "2026-10-13T00:00:00.000Z";
+    const session = { id: `sess_${"0".repeat(26)}` };
+    const run = { id: `run_${"0".repeat(26)}` };
+    db.prepare(
+      "INSERT INTO meta_session (id, objective, status, project_id, created_at, updated_at) VALUES (?, 'before', 'ACTIVE', 'web', ?, ?)",
+    ).run(session.id, now, now);
+    db.prepare(
+      `INSERT INTO run (id, meta_session_id, state, trust_profile, policy_snapshot_json, request_json, request_hash,
+                        client_id, project_id, created_at, updated_at)
+       VALUES (?, ?, 'RUNNING', 'edit-untrusted', '{}', '{}', 'h', 'c', 'web', ?, ?)`,
+    ).run(run.id, session.id, now, now);
+    expect(migrate(db)).toEqual([3]);
+    expect(migrate(db)).toEqual([]); // idempotent
+    expect(currentSchemaVersion(db)).toBe(3);
+    expect(tables(db)).toEqual(expect.arrayContaining(["git_commit", "git_push"]));
+    expect(db.prepare("SELECT project_id FROM run WHERE id = ?").get(run.id)).toEqual({ project_id: "web" });
+
+    // the new tables work through the repository helper and are linked to the existing rows
+    const upgraded = createLedger(db, { ids: createIdGenerator() });
+    const sha = "a".repeat(40);
+    const rec = {
+      commitSha: sha,
+      treeSha: "b".repeat(40),
+      repoRoot: "/repo",
+      publishRef: `refs/heads/switchboard/pub/${session.id}`,
+      projectId: "web",
+      contextId: "main",
+      metaSessionId: session.id,
+      runId: run.id,
+      provider: "fake",
+      harness: "fake",
+      origin: "commit_tool" as const,
+      sanitizer: { rules: { "trailer.co-author": 1 } },
+      eventPayload: { commit_sha: sha },
+    };
+    const first = upgraded.recordGitCommit(rec);
+    expect(first.created).toBe(true);
+    expect(first.row.id).toMatch(/^gcm_[0-9A-Z]{26}$/u);
+    expect(first.row.tool_event_id).toBe(upgraded.listRunEvents(run.id)[0]?.id);
+    expect(upgraded.recordGitCommit(rec)).toMatchObject({ created: false, row: { id: first.row.id } }); // idempotent
+    expect(upgraded.listRunEvents(run.id)).toHaveLength(1);
+    expect(upgraded.findGitCommitsBySha(sha).map((r) => r.run_id)).toEqual([run.id]);
+  });
+
+  it("git_commit and git_push are append-only and enforce their foreign keys and checks (LLD §1)", () => {
+    db = openLedger(dir);
+    const { ledger, session, run } = seed(db);
+    const sha = "c".repeat(40);
+    ledger.recordGitCommit({
+      commitSha: sha,
+      treeSha: "d".repeat(40),
+      repoRoot: "/repo",
+      publishRef: "refs/heads/switchboard/pub/x",
+      projectId: "web",
+      contextId: "main",
+      metaSessionId: session.id,
+      runId: run.id,
+      provider: "fake",
+      harness: "fake",
+      origin: "commit_tool",
+      sanitizer: { rules: {} },
+      eventPayload: {},
+    });
+    expect(() => (db as Database.Database).prepare("UPDATE git_commit SET model = 'x'").run()).toThrow(/append-only/u);
+    expect(() => (db as Database.Database).prepare("DELETE FROM git_commit").run()).toThrow(/append-only/u);
+    const insertCommit = (runId: string, origin: string, json: string) =>
+      (db as Database.Database)
+        .prepare(
+          `INSERT INTO git_commit (id, commit_sha, tree_sha, repo_root, publish_ref, project_id, context_id,
+             meta_session_id, run_id, provider, harness, origin, sanitizer_json, created_at)
+           VALUES ('gcm_x', 'e', 'f', '/r', 'refs/heads/p', 'web', 'main', ?, ?, 'p', 'p', ?, ?, 'now')`,
+        )
+        .run(session.id, runId, origin, json);
+    expect(() => insertCommit("run_missing", "commit_tool", "{}")).toThrow(/FOREIGN KEY/u);
+    expect(() => insertCommit(run.id, "magic", "{}")).toThrow(/CHECK/u);
+    expect(() => insertCommit(run.id, "finalize_only", "not json")).toThrow(/CHECK/u);
+
+    let n = 0;
+    const insertPush = (outcome: string, by: string, runId: string | null) =>
+      (db as Database.Database)
+        .prepare(
+          `INSERT INTO git_push (id, run_id, project_id, context_id, remote, ref, head_sha, outcome, requested_by, created_at)
+           VALUES (?, ?, 'web', 'main', 'origin', 'refs/heads/p', ?, ?, ?, 'now')`,
+        )
+        .run(`gps_${n++}`, runId, sha, outcome, by);
+    insertPush("ACCEPTED", "operator", null); // an operator push has no run
+    expect(() => insertPush("MAYBE", "operator", null)).toThrow(/CHECK/u);
+    expect(() => insertPush("ACCEPTED", "nobody", null)).toThrow(/CHECK/u);
+    expect(() => insertPush("ACCEPTED", "agent_tool", "run_missing")).toThrow(/FOREIGN KEY/u);
+    expect(() => (db as Database.Database).prepare("UPDATE git_push SET detail = 'x'").run()).toThrow(/append-only/u);
+    expect(() => (db as Database.Database).prepare("DELETE FROM git_push").run()).toThrow(/append-only/u);
   });
 
   it("applies only pending migrations in order", () => {
