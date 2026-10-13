@@ -545,8 +545,8 @@ R-40; decision 26's as R-41; decision 27's as R-35 (mitigated); decision 28's as
 decision 29 has none beyond the stale-for-TTL window noted in it; decision 30 closes R-44; decision 32's is R-45 (not blocking);
 decision 33's is R-46 (not blocking); decision 34's is R-47 (not blocking); decision 35's are R-48 and R-49 (not
 blocking); decision 36's is R-50 (not blocking); decision 37's is R-51 (accepted by the owner for bypass); decision
-38's is R-52 (not blocking); decision 39's are R-53 and R-54 (not blocking); decision 40's are R-55 to R-58 (not blocking);
-decision 41 has none, and its open question is Q-54.
+38's is R-52 (not blocking); decision 39's are R-53 and R-54 (not blocking); decision 40's are R-55 to R-58
+(not blocking); decision 41 has none, and its open question is Q-54.
 
 ### 4.3 Stated intent (confirmed constraints)
 
