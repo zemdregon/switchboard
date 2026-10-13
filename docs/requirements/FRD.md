@@ -95,7 +95,7 @@ Each rule elaborates the cited requirement and does not add to it.
 | BR-27 | **Violations.** If the post-run check finds a commit, ref change or tag not made by the controller (FR-GIT-03), the run does not fail for that reason alone: the changes are kept as working-tree content in the evidence checkpoint, the offending commits are never published, a `git_policy_violation` event names what was found, and `runs show` flags it. If the agent also pushed, the controller cannot detect or undo it from here; prevention (BR-29) is the control. | FR-GIT-03, FR-GIT-06 | Proposed: not failing the run keeps legitimate work. SRS requires only keeping content, not publishing and reporting. |
 | BR-28 | **Provenance.** Every commit made through the commit tool, or through BR-30, gets an append-only provenance record in the same transaction as the event that created it. Records never go into the commit. | FR-GIT-07 | SRS |
 | BR-29 | **Push eligibility.** A push is accepted only if the context's policy is `branch`, the target ref is the publish ref pushed to the configured remote under the configured prefix, and the run's environment keeps push credentials out of the agent's reach (BR-31). It is never forced. Every attempt, accepted or refused, is a run event. With policy `none` (the default) the `push` tool is not offered. | FR-GIT-05, FR-GIT-06 | SRS |
-| BR-30 | **Finalize-only mode.** For an adapter that cannot receive the injected channel, and only if the operator enabled it for the context, FINALIZING makes one commit from the run's worktree changes with a message from the agent's structured final summary, under BR-26 and BR-28. Without the opt-in, such an adapter is ineligible for write-capable profiles on that context. | FR-GIT-09, FR-GIT-02 | FR-GIT-09 is Should; ineligible-without-opt-in is Proposed. |
+| BR-30 | **Finalize-only mode.** For an adapter that cannot receive the injected channel, and only if the operator enabled it for the context, FINALIZING makes one commit from the run's worktree changes with a message from the agent's structured final summary, under BR-26 and BR-28. Without the opt-in, such an adapter is ineligible for write-capable profiles on that context. | FR-GIT-09, FR-GIT-02 | FR-GIT-09 is Should; ineligible-without-opt-in is Proposed. *Note 2026-10-13 (Q-43, owner decision 36, T9.7; Delegated): an adapter with `commitChannel: "none"` is **not** made ineligible. It runs write-capable runs and, when the context opts in, the controller commits at FINALIZING; without the opt-in the work stays in the worktree, diff and checkpoint. No such ineligibility is enforced in `src/routing/` or `src/lifecycle/lifecycle.ts`.* |
 | BR-31 | **Credential reach.** A context with push policy `branch` is eligible for a run only if the agent cannot run commands that could read the push credentials: a `container` environment with none mounted, or a profile without arbitrary shell, or an adapter whose manifest declares credential confinement (FR-POL-06). Otherwise the `push` tool is withheld and the reason is recorded. *Note 2026-10-13 (owner decision 37, zemdregon: "BR-31. Don't block git operations on bypass mode"; Delegated narrow reading; no ID change):* an approved bypass run (scope `bypass` and a controller-verified approval) is exempt: `push` is offered and accepted, with the reason `bypass_exempt` recorded; non-bypass runs keep this rule. | FR-GIT-06, FR-POL-06 | SRS |
 | BR-32 | **Orchestrator-managed projects.** `create_project`, `update_project` and `delete_project` are offered only to a client whose entry sets `manage_projects`. They touch dynamic projects only (an ID that collides with a configured project is refused). A revision is validated like configuration (V12 rules, FR-PRJ-02); its repository path must lie under an allowed root; its trust ceiling and providers may not exceed the client's; its push policy may not exceed the client's `max_push_policy`. A revision with a `container` environment, a push policy other than `none`, or any widening of an approved revision is stored as `pending_approval` and cannot start runs until the operator approves it with `projects approve`. A project is visible to, and usable by, the creating client only. Deletion with a non-terminal run is refused. Refusals are `PERMISSION_BLOCKED` (not allowed) or `INVALID_REQUEST` (malformed); every call is an event. | FR-PRJ-10, FR-MCP-06, FR-POL-10 | Delegated: gating limits, pending-approval state and creator-only visibility are Proposed. zemdregon answered only "yes" (Q-7). *Note 2026-10-13 (T9.9, decision 39, Delegated): deletion with a non-terminal run is `INVALID_REQUEST`, as FR-PRJ-10 states; the `PERMISSION_BLOCKED` sentence covers the limits. As built in [LLD §3](../design/LLD.md#3-mcp-tool-contracts) and [ADR-0030](../adr/0030-dynamic-project-revisions-and-approval.md).* |
 | BR-33 | **Signing.** If a context sets `sign: true`, each published commit is signed by the controller using the operator's existing Git signing setup. A signing failure returns a tool error and creates no commit; nothing is committed unsigned as a fallback. Signing is refused where BR-31 would withhold `push`. | FR-GIT-10, FR-GIT-06 | Delegated mechanism; zemdregon asked for signing as part of Q-9 ("yes"). |
@@ -215,7 +215,7 @@ predecessors are unaffected (BR-11, BR-17).
 | Any, `inspect-untrusted` on non-Git directory | No worktree exists (FR-WS-06) | Nothing to retain; artifacts only | Not applicable |
 
 *Proposed, not accepted (FR-WS-09, owner decision 42):* a concurrent run's worktree of a project may be removed when its
-changes are merged or its meta-session is abandoned (CLOSED or an explicit operator command, Delegated); its branch and
+changes are merged or its meta-session is abandoned (ARCHIVED or an explicit operator command, Delegated); its branch and
 diff artifact stay to retention GC. Until accepted, the rows above apply unchanged.
 
 Garbage collection deletes artifacts, worktrees and controller branches together (NFR-DATA-01). The operator's
@@ -246,7 +246,7 @@ stateDiagram-v2
     [*] --> ACTIVE: first delegate_task creates meta-session and run
     ACTIVE --> IDLE: all runs terminal
     IDLE --> ACTIVE: continue_task starts a run
-    IDLE --> CLOSED: retention GC removed its artifacts
+    IDLE --> ARCHIVED: retention GC removed its artifacts
     ACTIVE --> ACTIVE: retry or failover successor run
 ```
 
@@ -254,7 +254,7 @@ stateDiagram-v2
 | --- | --- | --- | --- |
 | ACTIVE | At least one non-terminal run | Rejected with `INVALID_REQUEST` (BR-17) | Holds the write lease |
 | IDLE | All runs terminal; ledger, checkpoints and provider bindings intact | Accepted (WF-2, WF-3) | Event log is append-only (FR-SES-05) |
-| CLOSED | Retention GC deleted artifacts, worktrees, branches (NFR-DATA-01); the ledger rows needed for audit remain | Rejected with `INVALID_REQUEST` | Closure by operator command is not in the SRS (SRS silent) |
+| ARCHIVED | Retention GC deleted artifacts, worktrees, branches (NFR-DATA-01); the ledger rows needed for audit remain | Rejected with `INVALID_REQUEST` | Closure by operator command is not in the SRS (SRS silent) |
 
 ## 6. Adapter availability states
 
@@ -305,7 +305,7 @@ FR-MCP-09).
 | # | Rule | Failure code | FR |
 | --- | --- | --- | --- |
 | C1 | Schema validation as V1 | `INVALID_REQUEST` | FR-MCP-09 |
-| C2 | `meta_session_id` exists and is IDLE (not ACTIVE or CLOSED); a project cannot be changed on continue | `INVALID_REQUEST` | FR-SES-01, BR-17, FR-PRJ-03 |
+| C2 | `meta_session_id` exists and is IDLE (not ACTIVE or ARCHIVED); a project cannot be changed on continue | `INVALID_REQUEST` | FR-SES-01, BR-17, FR-PRJ-03 |
 | C3 | Workspace is taken from the meta-session, then re-checked against current allowed roots (config may have changed) | `INVALID_REQUEST` | FR-POL-10 |
 | C4 | Trust profile defaults to the session's profile; a higher profile is checked against the ceiling as V5 | `PERMISSION_BLOCKED` | FR-MCP-06 |
 | C5 | Provider hints as V8; BR-18 selects native resume vs handoff | per BR-2/BR-3 | FR-SES-03, FR-SES-04, FR-MCP-05 |
@@ -408,7 +408,7 @@ sequenceDiagram
   the provider (stale or expired session) → `OUTPUT_PROTOCOL_ERROR` or the code the adapter classifies; **Proposed:**
   the controller does not auto-fall back to handoff on a rejected resume, because that would change the provider-visible
   context unnoticed (SRS silent).
-- **Failure paths:** session not IDLE or CLOSED → `INVALID_REQUEST`; `require_provider` provider ineligible → BR-3 code;
+- **Failure paths:** session not IDLE or ARCHIVED → `INVALID_REQUEST`; `require_provider` provider ineligible → BR-3 code;
   run failures as WF-5.
 - **Postconditions:** an additional run in the same meta-session, head advanced on success, decision/event log appended.
 
