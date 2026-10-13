@@ -22,6 +22,7 @@ const EXPECTED_TABLES = [
   "decision",
   "git_commit",
   "git_push",
+  "inner_call",
   "meta_session",
   "project_event",
   "project_revision",
@@ -227,6 +228,60 @@ describe("ledger migrations", () => {
     expect(() => insertPush("ACCEPTED", "agent_tool", "run_missing")).toThrow(/FOREIGN KEY/u);
     expect(() => (db as Database.Database).prepare("UPDATE git_push SET detail = 'x'").run()).toThrow(/append-only/u);
     expect(() => (db as Database.Database).prepare("DELETE FROM git_push").run()).toThrow(/append-only/u);
+  });
+
+  it("inner_call (T11.1, LLD §13.3) upgrades from version 4, is append-only and enforces its checks and keys", () => {
+    db = new Database(path.join(dir, LEDGER_FILE_NAME));
+    db.pragma("foreign_keys = ON");
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 4))).toEqual([1, 2, 3, 4]);
+    expect(tables(db)).not.toContain("inner_call");
+    expect(migrate(db)).toEqual([5]);
+    expect(migrate(db)).toEqual([]);
+    expect(currentSchemaVersion(db)).toBe(5);
+    expect(tables(db)).toContain("inner_call");
+    expect(tables(db)).not.toContain("inner_task_state"); // owned by T11.6
+
+    const d = db;
+    const { run } = seed(d);
+    let n = 0;
+    const insert = (over: Record<string, unknown> = {}) => {
+      const row = {
+        id: `inc_${String(n++).padStart(26, "0")}`,
+        task: "run_title",
+        backend_kind: "http",
+        model_id: "m",
+        locality: "local",
+        template_version: "run_title.v1",
+        outcome: "accepted",
+        reason: null,
+        attempts: 1,
+        latency_ms: 5,
+        tokens_in: null,
+        tokens_out: null,
+        input_bytes: 10,
+        output_bytes: 4,
+        input_sha256: "a".repeat(64),
+        run_id: null,
+        meta_session_id: null,
+        created_at: "2026-10-13T00:00:00.000Z",
+        ...over,
+      };
+      const cols = Object.keys(row);
+      d.prepare(`INSERT INTO inner_call (${cols.join(",")}) VALUES (${cols.map((c) => `@${c}`).join(",")})`).run(row);
+    };
+    insert(); // outside a run
+    insert({ run_id: run.id, outcome: "fallback_unavailable", reason: "TIMEOUT", attempts: 0 });
+    expect(() => insert({ id: "bad_id" })).toThrow(/CHECK/u);
+    expect(() => insert({ task: "shell" })).toThrow(/CHECK/u);
+    expect(() => insert({ backend_kind: "ssh" })).toThrow(/CHECK/u);
+    expect(() => insert({ locality: "lan" })).toThrow(/CHECK/u);
+    expect(() => insert({ outcome: "maybe" })).toThrow(/CHECK/u);
+    expect(() => insert({ attempts: 3 })).toThrow(/CHECK/u);
+    expect(() => insert({ run_id: "run_missing" })).toThrow(/FOREIGN KEY/u);
+    expect(() => insert({ meta_session_id: "sess_missing" })).toThrow(/FOREIGN KEY/u);
+    expect(() => d.prepare("UPDATE inner_call SET reason = 'x'").run()).toThrow(/append-only/u);
+    expect(() => d.prepare("DELETE FROM inner_call").run()).toThrow(/append-only/u);
+    expect(d.prepare("SELECT COUNT(*) AS n FROM inner_call").get()).toEqual({ n: 2 });
   });
 
   it("applies only pending migrations in order", () => {
