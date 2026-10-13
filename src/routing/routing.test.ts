@@ -151,13 +151,16 @@ describe("eligibility filter (T2.3, FR-RTE-01, FR-MCP-05)", () => {
     expect(excludedFor(d, "claude")?.primary).toMatchObject({ code: "PROBE_FAILED" });
   });
 
-  it("version unverified with the shipped Codex manifest; auth is not run on an unvalidated binary", async () => {
+  it("version outside the shipped Codex range is unverified; auth is not run on an unvalidated binary", async () => {
     const runner = runnerFor(codexTable);
     const d = await evaluateEligibility(request({ candidates: ["codex"] }), deps(runner));
     const ex = excludedFor(d, "codex");
     expect(ex?.primary.code).toBe("ADAPTER_VERSION_UNVERIFIED");
     expect(ex?.failureCode).toBe("ADAPTER_VERSION_UNVERIFIED");
-    expect(ex?.primary.evidence).toMatchObject({ observedVersion: "codex-cli 1.2.3", validatedRange: "<0.0.0" });
+    expect(ex?.primary.evidence).toMatchObject({
+      observedVersion: "codex-cli 1.2.3",
+      validatedRange: ">=0.162.1 <0.163.0",
+    });
   });
 
   it("claude outside its validated range is ADAPTER_VERSION_UNVERIFIED", async () => {
@@ -187,19 +190,31 @@ describe("eligibility filter (T2.3, FR-RTE-01, FR-MCP-05)", () => {
     expect(ex?.primary.evidence).toMatchObject({ loginCommand: expect.stringContaining("claude") });
   });
 
-  it("auth unknown fails closed (Claude unparseable status, and Codex which has no status command)", async () => {
+  it("auth unknown fails closed (Claude unparseable status, and Codex status with an unexpected exit code)", async () => {
     const t = claudeTable({ [`${CLAUDE} auth status --json`]: { stdout: "garbage", exitCode: 1 } });
-    const d = await evaluateEligibility(request(), deps(runnerFor({ ...t, ...codexTable }), { gate: passGate }));
+    const codex = { ...codexTable, [`${CODEX} login status`]: { exitCode: 3 } };
+    const d = await evaluateEligibility(request(), deps(runnerFor({ ...t, ...codex }), { gate: passGate }));
     expect(d.eligible).toEqual([]);
     expect(excludedFor(d, "claude")?.primary.code).toBe("AUTH_UNKNOWN");
     expect(excludedFor(d, "codex")?.primary.code).toBe("AUTH_UNKNOWN");
     expect(excludedFor(d, "claude")?.failureCode).toBe("ELIGIBILITY_NONE");
   });
 
+  it("codex login status exit 0 is auth OK, exit 1 is AUTH_REQUIRED (Q-10)", async () => {
+    const req = request({ candidates: ["codex"] });
+    const ok = await evaluateEligibility(req, deps(runnerFor(codexTable), { gate: passGate }));
+    expect(ok.eligible).toEqual(["codex"]);
+    const out = runnerFor({ ...codexTable, [`${CODEX} login status`]: { exitCode: 1, stdout: "Not logged in\n" } });
+    const no = await evaluateEligibility(req, deps(out, { gate: passGate }));
+    expect(excludedFor(no, "codex")?.primary.code).toBe("AUTH_REQUIRED");
+  });
+
   it("capability missing: model not expressible (Claude) and no model flag (Codex)", async () => {
     const d = await evaluateEligibility(
       request({ requirements: { network: "off", writable: true, model: "not a model!" } }),
-      deps(runnerFor({ ...claudeTable(), ...codexTable }), { gate: passGate }),
+      deps(runnerFor({ ...claudeTable(), ...codexTable, [`${CODEX} login status`]: { exitCode: 3 } }), {
+        gate: passGate,
+      }),
     );
     expect(excludedFor(d, "claude")?.reasons.map((r) => r.code)).toEqual(["CAPABILITY_MISSING"]);
     const codex = excludedFor(d, "codex");
@@ -330,7 +345,7 @@ describe("eligibility filter (T2.3, FR-RTE-01, FR-MCP-05)", () => {
   });
 });
 
-/** Codex with a known-good auth state, so the per-profile tests reach the compile check (Codex auth is UNKNOWN, Q-10). */
+/** Codex with a known-good auth state, so the per-profile tests reach the compile check (a fixed auth state, independent of `codex login status`, Q-10). */
 class AuthedCodex extends CodexAdapter {
   override async authPreflight(): Promise<AuthResult> {
     return { state: "OK" };

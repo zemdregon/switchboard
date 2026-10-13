@@ -59,9 +59,13 @@ describe("shipped manifests", () => {
     expect(manifest.notes ?? "").toMatch(/no claim that any use complies/);
     expect(manifest.notes ?? "").not.toMatch(/\bis (ToS|terms)[- ]compliant\b/i);
   });
-  it("claude pins the observed version inside its own range; codex fails closed", () => {
+  it("claude and codex pin the observed version inside their own range; other versions fail closed", () => {
     const reg = new AdapterRegistry();
     expect(reg.gate("claude", "2.1.296 (Claude Code)").eligible).toBe(true);
+    expect(reg.gate("codex", "codex-cli 0.162.1").eligible).toBe(true);
+    expect(reg.gate("codex", "codex-cli 0.162.9").eligible).toBe(true);
+    expect(reg.gate("codex", "codex-cli 0.163.0").eligible).toBe(false);
+    expect(reg.gate("codex", "codex-cli 0.161.0").eligible).toBe(false);
     expect(reg.gate("codex", "codex-cli 0.1.0").eligible).toBe(false);
   });
 });

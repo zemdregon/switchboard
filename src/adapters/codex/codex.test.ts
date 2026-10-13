@@ -263,20 +263,98 @@ describe("compile: argv and policy (FR-POL-02/03/04/08)", () => {
   }
 });
 
-describe("authPreflight (FR-AUTH-02)", () => {
-  it("runs nothing, reads nothing, and returns UNKNOWN with the native login instruction", async () => {
+describe("authPreflight (FR-AUTH-02, Q-10): `codex login status` exit code", () => {
+  /** A fake `codex` shell script that records its argv and prints a fixed line, then exits with `code`. */
+  const fakeCodex = (code: number, line = "Logged in using ChatGPT", sleep = 0): string => {
+    const dir = makeCwd();
+    const exe = join(dir, "codex");
+    writeFileSync(
+      exe,
+      `#!/bin/sh\necho "$@" > "${dir}/argv"\n${sleep ? `sleep ${sleep}\n` : ""}echo "${line}"\nexit ${code}\n`,
+    );
+    chmodSync(exe, 0o755);
+    return exe;
+  };
+  const argvOf = (exe: string): string => readFileSync(join(exe, "..", "argv"), "utf8").trim();
+
+  it("exit 0 is OK and runs only `login status` with a short timeout", async () => {
+    const exe = fakeCodex(0);
+    const seen: Array<{ argv: readonly string[]; timeoutMs?: number }> = [];
+    const real = createProbeRunner(["PATH", "HOME"]);
+    const runner: ProbeRunner = async (argv, opts) => {
+      seen.push({
+        argv,
+        ...(opts?.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
+      });
+      return real(argv, opts);
+    };
+    expect(await new CodexAdapter({ executable: exe }).authPreflight(runner)).toEqual({ state: "OK" });
+    expect(argvOf(exe)).toBe("login status");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.timeoutMs).toBeLessThanOrEqual(10_000);
+  });
+
+  it("exit 1 is AUTH_REQUIRED naming the native login", async () => {
+    const r = await new CodexAdapter({
+      executable: fakeCodex(1, "Not logged in"),
+    }).authPreflight(createProbeRunner());
+    expect(r).toEqual({
+      state: "AUTH_REQUIRED",
+      loginCommand: CODEX_LOGIN_COMMAND,
+    });
+  });
+
+  it.each([2, 127, 255])(
+    "exit %i is UNKNOWN (fail closed) with the exit code and a truncated first line",
+    async (c) => {
+      const exe = fakeCodex(c, `weird ${"x".repeat(300)}`);
+      const r = await new CodexAdapter({ executable: exe }).authPreflight(createProbeRunner());
+      expect(r.state).toBe("UNKNOWN");
+      if (r.state === "UNKNOWN") {
+        expect(r.reason).toContain(`exit ${c}`);
+        expect(r.reason).not.toContain("x".repeat(100));
+        expect(r.reason).not.toMatch(/auth\.json/);
+      }
+    },
+  );
+
+  it("a timeout is UNKNOWN", async () => {
+    const exe = fakeCodex(0, "Logged in using ChatGPT", 5);
+    const runner = createProbeRunner();
+    const r = await new CodexAdapter({ executable: exe }).authPreflight((argv) => runner(argv, { timeoutMs: 300 }));
+    expect(r).toMatchObject({ state: "UNKNOWN" });
+    if (r.state === "UNKNOWN") expect(r.reason).toContain("timed out");
+  });
+
+  it("a missing binary (spawn failure) is UNKNOWN", async () => {
+    const missing = join(makeCwd(), "no-such-codex");
+    const r = await new CodexAdapter({ executable: missing }).authPreflight(createProbeRunner());
+    expect(r.state).toBe("UNKNOWN");
+  });
+
+  it("no executable on PATH is UNKNOWN and runs nothing", async () => {
     const calls: unknown[] = [];
     const runner: ProbeRunner = async (argv) => {
       calls.push(argv);
       return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
     };
-    const r = await adapter().authPreflight(runner);
+    const r = await new CodexAdapter({ pathEnv: makeCwd() }).authPreflight(runner);
     expect(r.state).toBe("UNKNOWN");
-    if (r.state === "UNKNOWN") {
-      expect(r.reason).toContain(CODEX_LOGIN_COMMAND);
-      expect(r.reason).not.toMatch(/auth\.json/);
-    }
     expect(calls).toEqual([]);
+  });
+
+  it("the probe environment passes only the allowlist (no secrets reach the status command)", async () => {
+    const dir = makeCwd();
+    const exe = join(dir, "codex");
+    writeFileSync(exe, `#!/bin/sh\nenv > "${dir}/env"\nexit 0\n`);
+    chmodSync(exe, 0o755);
+    process.env.SB_TEST_SECRET_CANARY = "canary-value";
+    try {
+      await new CodexAdapter({ executable: exe }).authPreflight(createProbeRunner(["PATH", "HOME"]));
+    } finally {
+      delete process.env.SB_TEST_SECRET_CANARY;
+    }
+    expect(readFileSync(join(dir, "env"), "utf8")).not.toContain("SB_TEST_SECRET_CANARY");
   });
 });
 
