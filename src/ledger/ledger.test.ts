@@ -154,7 +154,9 @@ describe("ledger migrations", () => {
     expect(tables(db)).toEqual(expect.arrayContaining(["git_commit", "git_push"]));
     expect(db.prepare("SELECT project_id FROM run WHERE id = ?").get(run.id)).toEqual({ project_id: "web" });
 
-    // the new tables work through the repository helper and are linked to the existing rows
+    // the new tables work through the repository helper (which writes the current schema, so the later migrations are
+    // applied first; T11.4 added git_commit columns in 0007) and are linked to the existing rows
+    migrate(db);
     const upgraded = createLedger(db, { ids: createIdGenerator() });
     const sha = "a".repeat(40);
     const rec = {
@@ -245,7 +247,7 @@ describe("ledger migrations", () => {
     ins("use_a", "provider_reported");
     expect(() => ins("use_x", "inner_agent")).toThrow(/CHECK/u);
     const before = d.prepare("SELECT * FROM usage_observation ORDER BY rowid").all();
-    expect(migrate(db)).toEqual([6]);
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 6))).toEqual([6]);
     expect(d.prepare("SELECT * FROM usage_observation ORDER BY rowid").all()).toEqual(before);
     ins("use_b", "inner_agent");
     ins("use_c", "controller_estimated");
@@ -259,14 +261,60 @@ describe("ledger migrations", () => {
     expect(tables(d)).not.toContain("usage_observation_new");
   });
 
+  it("0007 adds message_source and inner_call_id to git_commit, keeps rows and guards (T11.4, LLD §12.7)", () => {
+    db = new Database(path.join(dir, LEDGER_FILE_NAME));
+    db.pragma("foreign_keys = ON");
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 6))).toEqual([1, 2, 3, 4, 5, 6]);
+    const d = db;
+    const { session, run } = seed(d);
+    let n = 0;
+    const insert = (extra: Record<string, unknown> = {}) => {
+      const row = {
+        id: `gcm_${String(n++).padStart(26, "0")}`,
+        commit_sha: String(n).padStart(40, "a"),
+        tree_sha: "b".repeat(40),
+        repo_root: "/repo",
+        publish_ref: "refs/heads/switchboard/pub/x",
+        project_id: "web",
+        context_id: "main",
+        meta_session_id: session.id,
+        run_id: run.id,
+        provider: "fake",
+        harness: "fake",
+        origin: "commit_tool",
+        sanitizer_json: "{}",
+        created_at: "2026-10-13T00:00:00.000Z",
+        ...extra,
+      };
+      const cols = Object.keys(row);
+      d.prepare(`INSERT INTO git_commit (${cols.join(",")}) VALUES (${cols.map((c) => `@${c}`).join(",")})`).run(row);
+      return row.id;
+    };
+    const old = insert();
+    expect(migrate(db)).toEqual([7]);
+    expect(migrate(db)).toEqual([]);
+    expect(currentSchemaVersion(db)).toBe(7);
+    // the existing row reads as an agent message with no inner call
+    expect(d.prepare("SELECT message_source, inner_call_id FROM git_commit WHERE id = ?").get(old)).toEqual({
+      message_source: "agent",
+      inner_call_id: null,
+    });
+    expect(() => insert({ message_source: "model" })).toThrow(/CHECK/u);
+    expect(() => insert({ message_source: "agent", inner_call_id: "inc_x" })).toThrow(/CHECK/u);
+    expect(() => insert({ message_source: "inner", inner_call_id: "inc_missing" })).toThrow(/FOREIGN KEY/u);
+    insert({ message_source: "inner" }); // an accepted draft whose call row was not recorded
+    expect(() => d.prepare("UPDATE git_commit SET message_source = 'inner'").run()).toThrow(/append-only/u);
+    expect(() => d.prepare("DELETE FROM git_commit").run()).toThrow(/append-only/u);
+  });
+
   it("inner_call (T11.1, LLD §13.3) upgrades from version 4, is append-only and enforces its checks and keys", () => {
     db = new Database(path.join(dir, LEDGER_FILE_NAME));
     db.pragma("foreign_keys = ON");
     expect(migrate(db, undefined, MIGRATIONS.slice(0, 4))).toEqual([1, 2, 3, 4]);
     expect(tables(db)).not.toContain("inner_call");
     expect(migrate(db, undefined, MIGRATIONS.slice(0, 5))).toEqual([5]);
-    expect(migrate(db)).toEqual([6]);
-    expect(migrate(db)).toEqual([]);
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 6))).toEqual([6]);
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 6))).toEqual([]);
     expect(currentSchemaVersion(db)).toBe(6);
     expect(tables(db)).toContain("inner_call");
     expect(tables(db)).not.toContain("inner_task_state"); // owned by T11.6
