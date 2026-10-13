@@ -172,6 +172,15 @@ export const PRIORITY_VALUES: Readonly<Record<RunPriority, number>> = { interact
 export const DEFAULT_MAX_QUEUE_DEPTH = 64;
 /** Proposed: 2 x the 30-minute default wall clock (LLD §5). */
 export const DEFAULT_LEASE_TTL_MS = 60 * 60_000;
+/** `bypassApprovedFor` that fails closed (false) when the ledger rows cannot be evaluated. */
+function approvedBypassFor(ledger: Ledger, run: RunRecord): boolean {
+  try {
+    return bypassApprovedFor(ledger, run);
+  } catch {
+    return false;
+  }
+}
+
 const SUMMARY_MAX = 4000; // LLD §3 envelope `result.summary` maxLength
 
 export interface SubmitRequest {
@@ -1324,6 +1333,8 @@ export class RunLifecycle {
         summary: input.summary,
         nativeSessionIds: input.nativeSessionIds,
         finalizingEventId: finalizing?.id,
+        // Owner decision 44 (Q-45): the same ledger evaluation as the BR-31 exemption; fails closed.
+        approvedBypass: approvedBypassFor(this.ledger, run),
       });
       this.ledger.appendRunEvent({
         runId,

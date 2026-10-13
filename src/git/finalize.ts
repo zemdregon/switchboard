@@ -21,6 +21,10 @@ import { GIT_POLICY_VIOLATION_EVENT } from "./ref-guard.js";
  *   truncated, because a cut could split an identifier the sanitiser would otherwise remove (`message_too_long`).
  * - More than {@link MAX_PATHS} changed paths (the `commit` tool's limit) is `too_many_paths`; a refused path refuses the
  *   whole commit (T9.3 rules), recorded as counts per reason, never the path names.
+ * - Exception, owner decision 44 (ROADMAP Q-45, "Loosen restrictions always for bypass"): for an approved bypass run
+ *   ({@link FinalizeCommitRequest.approvedBypass}) neither size limit skips. All changed paths go in one commit, and an
+ *   over-long summary is sanitised in full first and only then truncated (by the publisher, with a one-line note), so a
+ *   cut cannot split anything the sanitiser would have removed. Every other skip and refusal is unchanged.
  * - Nothing here changes the run's outcome; the result is recorded as one {@link GIT_FINALIZE_COMMIT_EVENT} event.
  */
 
@@ -99,6 +103,12 @@ export interface FinalizeCommitRequest {
   readonly nativeSessionIds: readonly string[];
   /** Id of the run's transition event into FINALIZING (FR-GIT-07 "tool-call event" for this path). */
   readonly finalizingEventId: string | undefined;
+  /**
+   * The run is an approved bypass run (approved `privileged` scope with `bypass`, ADR-0017), as the lifecycle
+   * derived it from `bypassApprovedFor`. Owner decision 44 (ROADMAP Q-45): the two size
+   * limits then no longer skip. Default false.
+   */
+  readonly approvedBypass?: boolean;
 }
 
 /** Decide and, when every condition holds, make the finalize-only commit. Never throws. */
@@ -116,10 +126,11 @@ export async function makeFinalizeCommit(
   if (publisher === undefined) return skip("service_unavailable");
   const paths = [...new Set(req.changedPaths)];
   if (paths.length === 0) return skip("no_changes");
-  if (paths.length > MAX_PATHS) return skip("too_many_paths");
+  const bypass = req.approvedBypass === true;
+  if (paths.length > MAX_PATHS && !bypass) return skip("too_many_paths");
   const message = req.summary ?? "";
   if (message.trim() === "") return skip("no_message");
-  if (message.length > FINALIZE_MESSAGE_MAX) return skip("message_too_long");
+  if (message.length > FINALIZE_MESSAGE_MAX && !bypass) return skip("message_too_long");
   try {
     const r = await publisher.commit({
       runId: req.runId,
@@ -129,6 +140,8 @@ export async function makeFinalizeCommit(
       projectId: p.id,
       contextId: p.context_id,
       origin: "finalize_only",
+      // The publisher sanitises the whole text, then truncates to FINALIZE_MESSAGE_MAX with a note (bypass only).
+      ...(bypass ? { looseLimits: true } : {}),
       nativeSessionIds: req.nativeSessionIds,
       ...(req.finalizingEventId !== undefined ? { finalizingEventId: req.finalizingEventId } : {}),
     });

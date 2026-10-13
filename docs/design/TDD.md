@@ -666,7 +666,9 @@ paragraph above; fake adapter only, Git 2.43.0).* Mechanism in [LLD §12.3](LLD.
   recorded reason; the controller never writes a message of its own (FR-GIT-04, and the M11 rule FR-INN-10 by
   analogy). The run's outcome and the diff and checkpoint artifacts are the same with and without the commit.
 - **Bypass.** Handled identically: the commit happens after the ref check and the provider's Git-write denial is
-  unchanged, so an approved bypass Claude run in an opted-in project ends with one clean commit on the publish ref.
+  unchanged, so an approved bypass Claude run in an opted-in project ends with one clean commit on the publish ref. The
+  one difference (decision 44, Q-45): an approved bypass run is not skipped for more than 256 paths or a summary over
+  8192 characters; it commits all paths and a sanitised-then-truncated message with a note.
 - **Tests (no provider CLI; temporary repositories and a local bare remote).** `src/lifecycle/finalize-commit.test.ts`
   with a fake adapter variant declaring `commitChannel: "none"` and the `edit_files` scenario: opt-in off and on, exact
   paths (modify, delete, add), identity, sanitised summary (a `Co-Authored-By:` trailer and a `claude.ai/code` session
@@ -674,7 +676,8 @@ paragraph above; fake adapter only, Git 2.43.0).* Mechanism in [LLD §12.3](LLD.
   missing and attribution-only summaries, failed run, `injected` adapter, refused path, crash after the ref update and
   after the intent (`recover()`), approved bypass, and the operator push of the finalize commit plus `runs show`.
 - **Still open.** Claude Code and Codex live runs (their summaries' real shape: Claude's `result` text, Codex's last
-  agent message, FR-ADP-04), container environments (M10), and the limits of Q-45.
+  agent message, FR-ADP-04), container environments (M10), and the live behaviour of a very large bypass commit (Q-45 is
+  decided, decision 44).
 
 *T9.4b build notes (2026-10-13; Delegated; [ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md);
 behind the operator opt-in `providers.claude-code.git_channel`; **UNSUPPORTED, no live check run**).* Mechanism in

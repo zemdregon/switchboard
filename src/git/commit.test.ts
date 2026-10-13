@@ -678,3 +678,72 @@ describe("crash injection: every step recovers (ADR-0025)", () => {
     return row.base_commit;
   }
 });
+
+describe("finalize-only loosened limits for an approved bypass run (owner decision 44, ROADMAP Q-45)", () => {
+  const loose = { origin: "finalize_only" as const, looseLimits: true };
+
+  it("commits all 300 changed paths in one pass; without the flag the 256-path limit still holds", async () => {
+    const { run, wt, session } = await running();
+    const names = Array.from({ length: 300 }, (_, i) => `many/f${i}.txt`);
+    mkdirSync(path.join(wt, "many"));
+    for (const n of names) writeFileSync(path.join(wt, n), `${n}\n`);
+    await expect(publisher().commit(input(run.id, { paths: names, origin: "finalize_only" }))).rejects.toMatchObject({
+      code: "INVALID_REQUEST",
+    });
+    // The flag alone (origin commit_tool, i.e. the agent's own channel) is not honoured either.
+    await expect(publisher().commit(input(run.id, { paths: names, looseLimits: true }))).rejects.toMatchObject({
+      code: "INVALID_REQUEST",
+    });
+    const res = await publisher().commit(input(run.id, { paths: names, ...loose }));
+    expect(res.filesChanged).toBe(300);
+    expect(g(repo, "ls-tree", "-r", "--name-only", refSha(repo, publishRefFor(session.id))).split("\n")).toEqual(
+      expect.arrayContaining(names),
+    );
+  });
+
+  it("still refuses traversal, symlink and .git paths when loosened, and commits nothing", async () => {
+    const { run, wt, session } = await running();
+    writeFileSync(path.join(wt, "ok.txt"), "ok\n");
+    writeFileSync(path.join(root, "outside.txt"), "outside\n");
+    symlinkSync(root, path.join(wt, "escape"));
+    const many = Array.from({ length: 300 }, (_, i) => `ok${i}.txt`);
+    for (const n of many) writeFileSync(path.join(wt, n), "x\n");
+    const err = (await publisher()
+      .commit(input(run.id, { paths: [...many, "../outside.txt", "escape/outside.txt", ".git/config"], ...loose }))
+      .catch((e: unknown) => e)) as CommitError;
+    expect(err).toBeInstanceOf(CommitError);
+    expect(err.code).toBe("PATH_OUTSIDE_WORKTREE");
+    expect(Object.fromEntries(err.refused.map((r) => [r.path, r.reason]))).toEqual({
+      "../outside.txt": "outside_worktree",
+      "escape/outside.txt": "symlink_in_path",
+      ".git/config": "git_dir",
+    });
+    expect(refSha(repo, publishRefFor(session.id))).toBe("");
+  });
+
+  it("sanitises the whole message first, then truncates with a note; the report covers the full text", async () => {
+    const { run, wt } = await running();
+    writeFileSync(path.join(wt, "a.txt"), "x\n");
+    // The attribution line sits beyond the 8192-character limit: the sanitiser must still see (and remove) it.
+    const body = `Subject line\n\n${"word ".repeat(4000)}\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n`;
+    expect(body.length).toBeGreaterThan(20_000);
+    const res = await publisher().commit(input(run.id, { message: body, paths: ["a.txt"], ...loose }));
+    const msg = g(repo, "log", "-1", "--format=%B", res.sha);
+    expect(msg.length).toBeLessThanOrEqual(8192 + 2);
+    expect(msg.startsWith("Subject line\n\nword word")).toBe(true);
+    expect(msg).toContain("truncated");
+    expect(msg.toLowerCase()).not.toContain("co-authored");
+    expect(res.sanitizer.rules["trailer.co-author"]).toBe(1);
+    // Without the flag the same message is committed whole (the limit lives in the callers, not here).
+    writeFileSync(path.join(wt, "a.txt"), "y\n");
+    const whole = await publisher().commit(input(run.id, { message: body, paths: ["a.txt"] }));
+    expect(g(repo, "log", "-1", "--format=%B", whole.sha).length).toBeGreaterThan(19_000);
+  });
+
+  it("leaves a message within the limit untouched, even with the flag", async () => {
+    const { run, wt } = await running();
+    writeFileSync(path.join(wt, "a.txt"), "x\n");
+    const res = await publisher().commit(input(run.id, { message: "Short one", paths: ["a.txt"], ...loose }));
+    expect(g(repo, "log", "-1", "--format=%B", res.sha)).toBe("Short one\n\n");
+  });
+});

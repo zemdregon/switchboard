@@ -227,11 +227,12 @@ project's primary context, next to its `identity`:
 When such a run succeeds, Switchboard makes one commit of the run's changed files on the session's publish ref, with
 your identity and the agent's final summary as the message after the same sanitiser as the `commit` tool (attribution
 trailers, footers and session links removed). It makes no commit for a failed or cancelled run, after a recorded Git
-policy violation in the session, when the summary is missing, empty after sanitising or over 8192 characters, when
-more than 256 files changed, or when a path is refused; `runs show` gives the reason. The commit is recorded like any
+policy violation in the session, when the summary is missing or empty after sanitising, when it is over 8192 characters
+or more than 256 files changed (an approved bypass run is not limited on either: it commits all files and a truncated
+message with a note), or when a path is refused; `runs show` gives the reason. The commit is recorded like any
 other (`via finalize` in `runs show`) and leaves the host only through Switchboard's own push (the `git push` command
 above, or a `push` tool offered to a later run), under the context's push policy. Approved bypass runs are treated
-the same.
+the same apart from those two size limits.
 
 `projects list|show|validate` read the `projects` section of the config (see below) and the filesystem only: no
 ledger, no lock, no provider process. `validate` checks every project (or the one named): the config rules, that each repository
