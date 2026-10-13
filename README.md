@@ -11,13 +11,18 @@ Pre-release. The package is private and is not published to any registry; you bu
 
 - **Milestone 1 (foundation) is done**: run ledger, workspaces, run lifecycle, reconciliation and the operator CLI
   (`doctor`, `runs`). See [ROADMAP §6](docs/ROADMAP.md#6-milestones) for the evidence.
-- **Milestone 2 (Claude Code and Codex adapters plus the MCP slice) is in progress.** The Claude Code and Codex
+- **Milestone 2 (Claude Code and Codex adapters plus the MCP slice) is `Partial`.** The Claude Code and Codex
   adapters, the MCP server and `switchboard serve` exist and pass their tests on recorded or synthetic fixtures and a
   fake provider. They have **not** been confirmed against a live provider yet.
+- **Milestone 3 (isolation) and milestone 9 (projects and controlled commits) are `Partial`.** Parts of both are
+  implemented (approvals, privileged runs, retention, projects, the controller-side commit and push); the rest, including
+  the live malicious-fixture checks, is not. See [ROADMAP §6](docs/ROADMAP.md#6-milestones) for each task.
 - Providers other than Claude Code and Codex are not implemented.
 
-What works today: `doctor`, `runs list|show|cancel`, `gc`, and `serve` exposing seven MCP tools over stdio (ten for a
-client with `manage_projects`), with two trust profiles (`inspect-untrusted`, `edit-untrusted`). Read
+What works today: `doctor`, `runs list|show|cancel`, `approve`, `deny`, `gc`, `projects list|show|validate|approve`,
+`git push`, and `serve` exposing seven MCP tools over stdio (ten for a client with `manage_projects`). The five trust
+profile names exist; which of them a provider can run is listed in [Trust profiles](#trust-profiles) and by
+`list_capabilities`. Read
 [Known limitations](#known-limitations) before relying on it.
 
 ## Single operator, your own accounts
@@ -81,7 +86,7 @@ Minimal example:
 }
 ```
 
-Keys (from `src/config/schema.ts`; no other keys exist yet):
+Keys (from `src/config/schema.ts`; the `projects` key is described below the table):
 
 | Key | Required | Meaning |
 | --- | --- | --- |
@@ -99,6 +104,8 @@ Keys (from `src/config/schema.ts`; no other keys exist yet):
 | `providers.<id>.weight` | no | Number from 0 to 1. Accepted by the schema. |
 | `retention.days`, `retention.interval` | no | How long idle meta-sessions are kept (integer days, default 30) and how often `serve` runs the clean-up pass (`30m`, `12h`, `7d`; default `24h`). **Nothing is deleted unless you set `retention.days`**; the default only applies once you do (or to `gc` dry runs). |
 | `projects` | no | List of `{ "id", "name", "environment"?, "contexts": [...] , "max_trust_profile"?, "allowed_providers"? }`. `id` matches `^[a-z][a-z0-9-]{1,40}$` and is unique. `environment` is `{ "kind": "host" }` (default) or a `container` shape that `projects validate` rejects until M10. Each context is `{ "id", "kind": "repository", "path", "base_ref", "primary"?, "writable"?, "push"?, "identity"?, "sign"?, "finalize_commit"? }` with an absolute `path` under an allowed root; exactly one context is primary. Unknown keys and context kinds stop startup. `push.remote` must be the name of a remote in the repository (not a URL), and `push.branch_prefix` a branch-name prefix such as `"switchboard/"`. `max_trust_profile` and `allowed_providers` apply to `delegate_task` with a `project`: the effective trust ceiling is the lower of the client's and the project's, and routing is limited to the listed providers (a request naming another provider with `require_provider` fails `PERMISSION_BLOCKED`); `sign` is accepted but not enforced yet. `finalize_commit` (default `false`; needs `identity`, primary writable context only) turns on finalize-only commits, described below. Full shape: LLD section 11.1. |
+| `timeouts.preflight_ttl_seconds` | no | Integer 0 to 3600. How long a successful adapter preflight is cached (default 60); 0 disables the cache. |
+| `git.sanitize_patterns` | no | Up to 16 extra regular-expression sources (200 characters each, restricted subset in `src/git/safe-pattern.ts`). A commit-message line that matches one is removed, in addition to the built-in attribution rules. |
 | `profiles.<name>` | no | Overrides for `inspect-untrusted`, `edit-untrusted`, `test-sandboxed` or `trusted-development`: `file_access`, `shell`, `shell_allowlist`, `network`, `network_allowlist`, `repo_config`. They may tighten or loosen a default; `doctor` lists them and every run records them. `privileged` has none. See the `edit-untrusted` limit under [Trust profiles](#trust-profiles). |
 
 `<id>` is one of `claude-code`, `codex`, `grok-build`, `antigravity`, `cursor`, `opencode`, `kimi-code`. Only

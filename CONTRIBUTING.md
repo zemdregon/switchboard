@@ -1,9 +1,10 @@
 # Contributing
 
 Thanks for looking at switchboard. The project is pre-release: the specification set
-and the M1 foundation are done, and M2 (Claude Code and Codex adapters plus the MCP
-slice) is in progress (see the [roadmap](docs/ROADMAP.md) for status). Contributions
-are code, tests, or documentation edits.
+and the M1 foundation are done, M2 (Claude Code and Codex adapters plus the MCP
+slice) and M3 (isolation) are `Partial`, and parts of M9 (projects and controlled
+commits) are implemented (see the [roadmap](docs/ROADMAP.md#6-milestones) for the
+status of each). Contributions are code, tests, or documentation edits.
 
 ## Before you start
 
@@ -35,7 +36,7 @@ are code, tests, or documentation edits.
 4. Check your Markdown and the documentation set locally:
 
    ```sh
-   npx --yes markdownlint-cli2@0.23.3 "**/*.md" "!docs/**"
+   npx --yes markdownlint-cli2@0.23.3 "**/*.md"
    npx --yes markdown-link-check@3.13.7 --quiet README.md CONTRIBUTING.md SECURITY.md
    node scripts/check-docs.mjs
    ```
@@ -45,9 +46,9 @@ are code, tests, or documentation edits.
 
 ## Scope notes
 
-- Files under `docs/` are not yet held to the blocking lint rules. Their lint
-  results are reported by an advisory job. You may fix them, but keep such
-  changes separate from content changes.
+- Markdown lint is blocking for every Markdown file, including `docs/`. A lint
+  finding in `docs/` fails the pull request like one anywhere else, so keep
+  line-wrapping and formatting fixes separate from content changes where you can.
 - Open an issue before adding a dependency or changing the build tooling, and
   before changing a component boundary, persistence format, trust boundary or
   external interface; those need an ADR (see [AGENTS.md](AGENTS.md)).
