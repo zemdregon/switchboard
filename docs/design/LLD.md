@@ -1262,6 +1262,13 @@ at most 100 characters; so never a URL or anything with `@` or `:`) and a `push.
 prefix (letters, digits, `.`, `_`, `-`, `/`; no `..`, `//`, leading `/`, `-` or `.`, no `refs/`, no component starting
 with `.` or ending in `.lock`), whatever the policy. The error names the JSON path and the rule, never the value.
 
+*As built (2026-10-13, Delegated, T9.7, [decision 38](../ROADMAP.md#42-owner-decisions)):* a repository context takes
+`"finalize_commit": true` (boolean, default `false`; FR-GIT-09, FRD BR-30) to opt in to finalize-only mode. `loadConfig`
+refuses it on a context without `identity` and on a context that is not the primary, writable one. It is frozen into
+the run's policy snapshot as `project.finalize_commit: true` (absent when off) and shown by `projects show`. Example:
+`{ "id": "main", "kind": "repository", "path": "/home/op/src/web-app", "base_ref": "main", "identity": { "name":
+"Operator Name", "email": "operator@example.com" }, "finalize_commit": true }`.
+
 ### 11.2 Resolution and ceilings
 
 At admission (FRD BR-23): (1) resolve `project` to its definition, else `INVALID_REQUEST`; (2) check the client's project
@@ -1561,6 +1568,37 @@ author and committer variables) and `input` (standard input). Choices where §12
 - **Not tested here.** Clean and smudge filters, submodules, very large path sets (the limit is 256), Git older than 2.43.0
   and concurrent publishers in separate processes (only the compare-and-swap protects them).
 
+**As built (2026-10-13, Delegated, T9.7, finalize-only mode, FR-GIT-09, FRD BR-30; [decision
+38](../ROADMAP.md#42-owner-decisions); owner text above unchanged).** Code: `src/git/finalize.ts`, called from
+`RunLifecycle.finalize` (`src/lifecycle/lifecycle.ts`) with a second `GitPublisher` whose `allowedStates` is
+`["FINALIZING"]` (`src/cli/serve.ts`); the tool channel's publisher still accepts only RUNNING. Choices where §12.3 and
+BR-30 were silent:
+
+- **When.** Only for an adapter whose `commitChannel` is not `injected`, a project run whose frozen snapshot has
+  `finalize_commit: true`, and a worktree run. Order inside FINALIZING: ref check (§12.5), assessment and evidence
+  checkpoint, then the commit, then the terminal transition. The steps of §12.3 apply unchanged except step 1, which
+  checks FINALIZING instead of RUNNING (the run still holds the lease). The FRD §4.5 placement "ahead of the
+  checkpoint" is read as "before the terminal transition": the commit takes its path list from the checkpoint's
+  changed-file list, and neither touches the other's refs.
+- **Input.** Paths: the changed-file list of the post-run checkpoint (pre to post, nested repositories excluded),
+  deletions included; at most 256 (§12.1), else no commit. Message: the adapter's structured final summary
+  (`RunResult.summary`, FR-ADP-04), passed whole to the §12.4 sanitiser with the run's native session ids; empty,
+  absent or empty after sanitising means no commit; over 8192 characters means no commit (no truncation, so an
+  identifier cannot be split past the sanitiser). Identity, project and context: the frozen snapshot.
+- **Never committed** (each a `git_finalize_commit` event `{outcome: "skipped", reason}`): the run is not about to end
+  SUCCEEDED (`run_not_succeeded`); `environment_not_host` (M10); `context_not_writable`; `no_identity`; any
+  `git_policy_violation` event in any run of the meta-session (`git_policy_violation`, BR-27); no publisher configured
+  (`service_unavailable`); `no_changes`; `too_many_paths`; `no_message`; `message_too_long`; `nothing_to_commit`.
+  A §12.3 error is `{outcome: "failed", reason: <code>}` with refused paths as counts per reason (`refused`), never
+  names; `PROVENANCE_PENDING` adds the SHA. A commit is `{outcome: "committed", commit_sha, provenance_id,
+  files_changed}`. The run's outcome never changes; the terminal transition payload gains `finalize_commit: <sha>` or
+  `finalize_commit_skipped: <reason>`.
+- **Provenance.** The T9.3 sequence unchanged (intent, compare-and-swap, event and row in one transaction;
+  `recover()` resolves a crash), with `origin = 'finalize_only'`. The intent and the `git_commit` event add `via:
+  "finalize"` and `finalizing_event_id` (the run's transition event into FINALIZING), which stands in for FR-GIT-07's
+  tool-call event; `tool_event_id` keeps its T9.3 meaning (the `git_commit` event). No column or migration.
+- **Bypass.** An approved bypass run is handled identically; nothing in this path reads the profile.
+
 #### 12.3.1 Signing (FR-GIT-10, Proposed)
 
 With `sign: true` step 4 asks Git to sign the commit object using the operator's existing signing configuration
@@ -1760,6 +1798,9 @@ of the run `sha`, `tree_sha`, `patch_id`, `origin`, `publish_ref`, `project_id`,
 every ACCEPTED `git_push` event of the meta-session whose commit list holds the SHA); and `run.pushes`: the `git_push`
 rows whose event is on this run (`id`, `outcome`, `reason`, `remote`, `ref`, `head_sha`, `requested_by`, `run_id`,
 `created_at`). Text and `--json`; never the message or a URL. A re-link after an operator rewrite is not implemented.
+*As built (2026-10-13, Delegated, T9.7):* each commit also shows `via` (`tool` or `finalize`, from `origin`; text
+`<sha>  finalize_only  via finalize`), and `run.finalize_commit` (`outcome`, `reason` or `commit_sha`) comes from the
+run's `git_finalize_commit` event (text line `finalize: ...`).
 
 **Inner-agent provenance (M11, Proposed).** `git_commit` gains `message_source` (`agent` or `inner`, default `agent`) and
 `inner_call_id` (the `inner_call` row of the accepted draft; NULL for an agent message). `runs show` prints both. The

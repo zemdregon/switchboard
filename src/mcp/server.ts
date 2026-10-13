@@ -309,6 +309,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         writable: context.writable,
         ...(context.identity !== undefined ? { identity: { ...context.identity } } : {}),
         push: { policy: context.push.policy },
+        // T9.7 (FR-GIT-09): the finalize-only opt-in, frozen like the identity; absent when off.
+        ...(context.finalizeCommit ? { finalize_commit: true as const } : {}),
       },
     };
   };

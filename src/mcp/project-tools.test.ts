@@ -223,6 +223,7 @@ const configured = (id: string): ResolvedProject => ({
       baseRef: "main",
       primary: true,
       writable: true,
+      finalizeCommit: false,
       push: { policy: "none" },
       sign: false,
     },

@@ -108,6 +108,11 @@ export interface ProjectSnapshot {
   readonly writable?: boolean;
   readonly identity?: { readonly name: string; readonly email: string };
   readonly push?: { readonly policy: "none" | "branch" };
+  /**
+   * T9.7 (FR-GIT-09, FRD BR-30, owner decision 36): the primary context's finalize-only opt-in, frozen at admission.
+   * Present (and `true`) only when the context enabled it; absent means off (also on snapshots written before T9.7).
+   */
+  readonly finalize_commit?: true;
 }
 
 /**

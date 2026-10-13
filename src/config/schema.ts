@@ -115,6 +115,11 @@ export interface ContextConfig {
   identity?: { name: string; email: string };
   /** Shape only until T9.10 (FR-GIT-10). */
   sign?: boolean;
+  /**
+   * T9.7 (FR-GIT-09, FRD BR-30, owner decision 36): opt-in to finalize-only mode. Default false. When true, a successful
+   * run whose adapter cannot receive the injected tool channel gets one controller commit at FINALIZING.
+   */
+  finalize_commit?: boolean;
 }
 
 export interface ProjectConfig {
@@ -192,6 +197,7 @@ const contextSchema = {
       properties: { name: { type: "string", minLength: 1 }, email: { type: "string", minLength: 3 } },
     },
     sign: { type: "boolean" },
+    finalize_commit: { type: "boolean" },
   },
 } as const;
 

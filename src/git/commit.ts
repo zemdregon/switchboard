@@ -87,7 +87,10 @@ export interface GitPublisherOptions {
   readonly publishPrefix?: string;
   readonly ids?: IdGenerator;
   readonly now?: () => Date;
-  /** Run states in which `commit` is accepted (default `RUNNING`; T9.7 adds `FINALIZING`). */
+  /**
+   * Run states in which `commit` is accepted (default `RUNNING`). T9.7: the finalize-only publisher is a separate
+   * instance with `["FINALIZING"]`, so the tool channel's publisher never accepts a FINALIZING run.
+   */
   readonly allowedStates?: readonly string[];
   /**
    * Test seam for crash injection: called after each step; whatever it throws propagates as if the process had died
@@ -108,6 +111,12 @@ export interface CommitInput {
   readonly origin?: "commit_tool" | "finalize_only";
   /** The run's provider-native session ids, removed from the message by exact match (FR-ADP-04). */
   readonly nativeSessionIds?: readonly string[];
+  /**
+   * T9.7 (FR-GIT-09): for a finalize-only commit (`origin: "finalize_only"`), the id of the run's transition event into
+   * FINALIZING, which stands in for the tool-call event of FR-GIT-07. Recorded in the intent and in the `git_commit`
+   * event (`via: "finalize"`, `finalizing_event_id`), so recovery after a crash keeps it.
+   */
+  readonly finalizingEventId?: string;
 }
 
 export interface CommitResult {
@@ -143,6 +152,9 @@ interface IntentRecord {
   readonly expected_old: string | null;
   readonly publish_ref: string;
   readonly files_changed: number;
+  /** T9.7: present only for a finalize-only commit. */
+  readonly via?: "finalize";
+  readonly finalizing_event_id?: string;
   readonly record: {
     readonly commitSha: string;
     readonly treeSha: string;
@@ -441,6 +453,12 @@ export class GitPublisher {
       expected_old: old ?? null,
       publish_ref: publishRef,
       files_changed: filesChanged,
+      ...(input.origin === "finalize_only"
+        ? {
+            via: "finalize" as const,
+            ...(input.finalizingEventId !== undefined ? { finalizing_event_id: input.finalizingEventId } : {}),
+          }
+        : {}),
       record: {
         commitSha: sha,
         treeSha: tree,
@@ -519,6 +537,8 @@ export class GitPublisher {
         publish_ref: r.publishRef,
         files_changed: intent.files_changed,
         origin: r.origin,
+        ...(intent.via !== undefined ? { via: intent.via } : {}),
+        ...(intent.finalizing_event_id !== undefined ? { finalizing_event_id: intent.finalizing_event_id } : {}),
         sanitizer: r.sanitizer,
         ...(recovered ? { recovered: true } : {}),
       },
