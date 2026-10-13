@@ -123,8 +123,8 @@ estimates. Architecture: [HLD](design/HLD.md).
 14. Switchboard has an *inner agent*: a self-hosted model, a cheap or free OpenCode model, or another model of the
     user's choosing, used for many cheap tasks so the main provider CLIs do not have to do them: commit and PR writing,
     task routing for auto mode, and other tasks the drafter judges to fit (2026-10-13). Recorded in
-    [ADR-0016](adr/0016-inner-agent.md). zemdregon's wording covers only the product idea. Everything else is delegated and
-    Proposed: the backend kinds, which tasks are in scope ([PRD §3.1](requirements/PRD.md#31-inner-agent-task-catalogue)),
+    [ADR-0016](adr/0016-inner-agent.md). zemdregon's wording covers only the product idea. Everything else is delegated
+    and Proposed: the backend kinds, which tasks are in scope ([PRD §3.1](requirements/PRD.md#31-inner-agent-task-catalogue)),
     the rule that it has no authority over security or run status, validation, fallback, privacy and the M11
     placement. (Numbers 10 to 13 are used by the open M3 plan, PR #13.)
 <!-- markdownlint-disable-next-line MD029 -->
@@ -232,8 +232,8 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
     CLIs that need Git; a Git client fetched or Git files written by an agent with shell and network).
 
 <!-- markdownlint-disable-next-line MD029 -->
-25. Delegation rule, Q-34, Q-38 and the container-image ADR (2026-10-13). zemdregon, verbatim: "Q37: explain. Q34 unless it
-    affects bypass mode you make the decisions (add that to agents) my only concern is with bypass mode, other modes
+25. Delegation rule, Q-34, Q-38 and the container-image ADR (2026-10-13). zemdregon, verbatim: "Q37: explain. Q34 unless
+    it affects bypass mode you make the decisions (add that to agents) my only concern is with bypass mode, other modes
     are for other users, so choose the industry best choices/practices. Q38 you pick. Container ADR sure make it".
     *Owner direction:* (a) a decision that does not affect bypass mode is the agent's, made by industry best practice;
     this is now a working rule in [AGENTS.md](../AGENTS.md) ("Best-practice defaults outside bypass mode"); (b) Q-37
@@ -286,9 +286,9 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
 
 <!-- markdownlint-disable-next-line MD029 -->
 28. Answers to Q-18 and Q-19, and the fix for R-42: retention GC (2026-10-13). **Delegated decision (agent), under
-    [owner decision 25](#42-owner-decisions); not an zemdregon quote and not owner-approved.** None of it affects bypass mode
-    (retention touches only idle, terminal meta-sessions and refuses nothing a bypass run needs), so by decision 25 (a)
-    it is the agent's, by best practice. (a) **Q-18:** the retention unit is a whole idle meta-session (no lease, only
+    [owner decision 25](#42-owner-decisions); not an zemdregon quote and not owner-approved.** None of it affects bypass
+    mode (retention touches only idle, terminal meta-sessions and refuses nothing a bypass run needs), so by decision 25
+    (a) it is the agent's, by best practice. (a) **Q-18:** the retention unit is a whole idle meta-session (no lease, only
     terminal runs, newest activity older than `retention.days`), never a single run, because collecting one run can
     break the checkpoint chain of the rest. (b) **Q-19:** `run_event` rows are kept: the table is append-only by trigger
     ([ADR-0005](adr/0005-sqlite-ledger.md)) and is the audit record, so NFR-DATA-01 is amended (dated note in the SRS):
@@ -329,12 +329,12 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
     *Unverified:* the 2.32 introduction version rests on the release notes, not on a test against an old Git.
 <!-- markdownlint-disable-next-line MD029 -->
 31. Project columns and the project block in the policy snapshot (2026-10-13). **Delegated decision (agent), under
-    [owner decision 25](#42-owner-decisions); not an zemdregon quote and not owner-approved.** Ledger migration 0002 adds the
-    nullable `project_id` to `meta_session` and `run` (the DDL was already proposed in LLD §1); the resolved project is
-    frozen into the policy snapshot as `project`; `mcp_clients[].projects` is added to the config schema, with an absent
-    list meaning no project (fail closed, workspace-path requests unaffected). A persistence-format change needs an ADR:
-    [ADR-0024](adr/0024-project-id-columns-and-project-snapshot.md). No requirement ID changes. *Unverified:* nothing
-    ran against a live provider.
+    [owner decision 25](#42-owner-decisions); not an zemdregon quote and not owner-approved.** Ledger migration 0002
+    adds the nullable `project_id` to `meta_session` and `run` (the DDL was already proposed in LLD §1); the resolved
+    project is frozen into the policy snapshot as `project`; `mcp_clients[].projects` is added to the config schema,
+    with an absent list meaning no project (fail closed, workspace-path requests unaffected). A persistence-format
+    change needs an ADR: [ADR-0024](adr/0024-project-id-columns-and-project-snapshot.md). No requirement ID changes.
+    *Unverified:* nothing ran against a live provider.
 
 <!-- markdownlint-disable-next-line MD029 -->
 32. Commit provenance tables, publish ref, crash ordering and the sanitiser's pattern language (2026-10-13).
@@ -361,9 +361,9 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
 
 <!-- markdownlint-disable-next-line MD029 -->
 34. Ref snapshots and Git policy violation handling (2026-10-13). **Delegated decision (agent), under
-    [owner decision 25](#42-owner-decisions); not an zemdregon quote and not owner-approved.** At LEASED, before spawn, a
-    `git_ref_snapshot` run event (version 1) records every ref of the main repository as a digest plus a list bounded to
-    5000 refs and 1 MiB (a tail digest covers the rest), and the main and worktree `HEAD`s; a run whose repository cannot
+    [owner decision 25](#42-owner-decisions); not an zemdregon quote and not owner-approved.** At LEASED, before spawn,
+    a `git_ref_snapshot` run event (version 1) records every ref of the main repository as a digest plus a list bounded
+    to 5000 refs and 1 MiB (a tail digest covers the rest), and the main and worktree `HEAD`s; a run whose repository cannot
     be read fails `TOOL_FAILURE` before spawn. At FINALIZING, before the checkpoint, the controller compares, appends
     `git_policy_violation` (ref names, kinds and SHAs only) before acting, and then restores only its own refs with a
     compare-and-swap: the run branch to the `pre` checkpoint (the agent's tree stays as checkpoint content), the
@@ -403,8 +403,8 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
     (Delegated mechanism) in [ADR-0029](adr/0029-claude-code-receives-tool-shim-via-mcp-config.md): a `0600` file, never
     inline argv; exact-name `--allowedTools`; the token in the environment; shipped disabled behind an operator opt-in
     until the live checks pass; the argv audit rule and adapter work are task T9.4b (not implemented by this change).
-    ADR-0015 is partly superseded. (b) **Q-43 is decided finalize-only** (zemdregon's reply to the agent's explanation): an
-    adapter with `commitChannel: "none"` is **not** made ineligible for write-capable runs; it runs them, and when the
+    ADR-0015 is partly superseded. (b) **Q-43 is decided finalize-only** (zemdregon's reply to the agent's explanation):
+    an adapter with `commitChannel: "none"` is **not** made ineligible for write-capable runs; it runs them, and when the
     project opts in to finalize-only mode (T9.7, FR-GIT-09, FRD BR-30) the controller makes the commit at FINALIZING
     through the same sanitiser and provenance as the commit tool. The opt-in is per project; **zemdregon wants it enabled
     for his own projects**, and T9.7 is to be built. FR-GIT-09 keeps the priority the SRS gives it. (c) **Q-3:** yes,
@@ -421,10 +421,10 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
 <!-- markdownlint-disable-next-line MD029 -->
 37. BR-31 does not block Git operations on bypass mode (2026-10-13). zemdregon's words, verbatim: "BR-31. Don't block
     git operations on bypass mode". **The words are zemdregon's; the narrow reading below is a Delegated interpretation
-    (agent), recorded so zemdregon can correct it.** zemdregon's priority is that an approved bypass run is never blocked from
-    Git operations through Switchboard. Reading: in an approved bypass run (scope `bypass` true AND an approval the
-    controller verifies, the same `bypassApprovedFor`/`evaluateBypass` evaluation the argv audit gate uses), the
-    controller-mediated `push` tool is offered and accepted regardless of the BR-31 credential-reach rule; the
+    (agent), recorded so zemdregon can correct it.** zemdregon's priority is that an approved bypass run is never
+    blocked from Git operations through Switchboard. Reading: in an approved bypass run (scope `bypass` true AND an
+    approval the controller verifies, the same `bypassApprovedFor`/`evaluateBypass` evaluation the argv audit gate
+    uses), the controller-mediated `push` tool is offered and accepted regardless of the BR-31 credential-reach rule; the
     channel-open event and every `git_push` event and row carry the reason `bypass_exempt`, so `runs show` shows it.
     Everything else about `push` stays: the controller alone pushes (the agent never receives credentials; the push
     process's allowlisted environment is unchanged), policy `branch` is required (policy `none` offers nothing), the
@@ -521,8 +521,8 @@ introduction](research/headless-ai-coding-controller.md#introduction-to-the-cli-
 ### 4.6 Conflicts between sources and how they were resolved
 
 Resolution rule: the verified research is a direct, dated review of the original blueprint against provider
-documentation, so its technical findings win. Where the original carries zemdregon's *stated intent* (§4.3), the intent is
-kept and only the mechanism changes.
+documentation, so its technical findings win. Where the original carries zemdregon's *stated intent* (§4.3), the intent
+is kept and only the mechanism changes.
 
 | Topic | Original blueprint | Verified research | Resolution |
 | --- | --- | --- | --- |
@@ -957,8 +957,8 @@ message drafting (M11), and reconciliation does not redo a finalize commit a cra
 other M10 task.
 
 **M10 and the bypass goal (note, 2026-10-13; not a re-sequencing).** Owner decision 24 makes container environments the
-route to zemdregon's stated main usability goal, bypass runs with no permission prompts and no Git risk: in a container the
-image has no Git client and neither the Git directory nor any credential store is mounted, so an approved bypass run
+route to zemdregon's stated main usability goal, bypass runs with no permission prompts and no Git risk: in a container
+the image has no Git client and neither the Git directory nor any credential store is mounted, so an approved bypass run
 there does not depend on provider Git deny rules holding under bypass (R-38). Host-run agents stay supported with the
 existing controls. The current sequence is unchanged: M3, then M9 (projects, `host` environments, the injected `commit`
 and `push` tools that container runs also need), then M10. Q-38 (bring M10 forward) was decided on 2026-10-13 (owner decision
@@ -1255,8 +1255,8 @@ Notes carried from M2:
 
 1. Read [AGENTS.md](../AGENTS.md), then this roadmap's §6 to find the first milestone whose status is not `Done`. A
    `Partial` milestone is closed from its "Blocks Done" list before the next one starts, unless every remaining item
-   needs the operator or zemdregon; agents then work on the next milestone's tasks that do not depend on those items (as M3
-   wave A does while M2 waits for the live smoke run).
+   needs the operator or zemdregon; agents then work on the next milestone's tasks that do not depend on those items (as
+   M3 wave A does while M2 waits for the live smoke run).
 2. Take the first task in that milestone's task table whose dependencies are done. If the milestone has no task table
    yet (M4 onward), break it into tasks in the same format first, from its row in §6 and the requirements it lists, and
    add them here before coding.
