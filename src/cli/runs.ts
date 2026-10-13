@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { loadConfig } from "../config/index.js";
-import { createLedger, LEDGER_FILE_NAME, openLedger, type RunEventRow } from "../ledger/index.js";
+import { createLedger, type GitCommitRow, LEDGER_FILE_NAME, openLedger, type RunEventRow } from "../ledger/index.js";
 import type { OperatorDecision } from "../lifecycle/approval.js";
 import { acquireDataDirLock, inspectDataDirLock, LockError } from "../lock/index.js";
 import { type CliIo, JSON_SCHEMA_VERSION, UsageError } from "./io.js";
@@ -35,6 +35,49 @@ export interface RunDetail extends RunSummary {
   cancel_requested: boolean;
   /** T9.5 (FR-GIT-03, BR-27): number of `git_policy_violation` events; `runs show` flags the run when non-zero. */
   git_policy_violations: number;
+  /** T9.6 (FR-GIT-07, LLD §12.7): provenance of the commits this run published, with their push state. */
+  commits: CommitProvenanceView[];
+  /** T9.6 (FR-GIT-05): push attempts recorded on this run (agent pushes, and operator pushes of its commits). */
+  pushes: PushView[];
+}
+
+/**
+ * One `git_commit` row as `runs show` presents it (FR-GIT-07). Ids, SHAs, provider facts and the sanitiser's rule
+ * counts only: never the message, never a URL. `pushed_to` lists the accepted pushes whose recorded commit list holds
+ * this commit (any run of the meta-session).
+ */
+export interface CommitProvenanceView {
+  sha: string;
+  tree_sha: string;
+  patch_id: string | null;
+  origin: string;
+  publish_ref: string;
+  project_id: string;
+  context_id: string;
+  meta_session_id: string;
+  run_id: string;
+  provider: string;
+  harness: string;
+  model: string | null;
+  adapter_version_id: string | null;
+  adapter_version: string | null;
+  tool_event_id: string | null;
+  sanitizer: { rules: Record<string, number> };
+  created_at: string;
+  pushed_to: { push_id: string; remote: string; ref: string; at: string }[];
+}
+
+/** One `git_push` row (FR-GIT-05): the remote NAME, target ref, SHA, outcome and reason code; never a URL. */
+export interface PushView {
+  id: string;
+  outcome: string;
+  reason: string | null;
+  remote: string;
+  ref: string;
+  head_sha: string;
+  requested_by: string;
+  run_id: string | null;
+  created_at: string;
 }
 
 /**
@@ -121,6 +164,8 @@ export function showRun(
         ...row,
         cancel_requested: listPendingCancels(db, runId).length > 0,
         git_policy_violations: events.filter((e) => e.type === "git_policy_violation").length,
+        commits: commitProvenance(db, runId, row.meta_session_id),
+        pushes: pushesOfRun(db, runId),
       },
       events,
       ...(approval ? { approval } : {}),
@@ -128,6 +173,93 @@ export function showRun(
   } finally {
     db.close();
   }
+}
+
+function hasTable(db: Database.Database, name: string): boolean {
+  return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined;
+}
+
+/** T9.6 (FR-GIT-07, LLD §12.7): the run's `git_commit` rows joined to the adapter version and accepted pushes. */
+function commitProvenance(db: Database.Database, runId: string, metaSessionId: string): CommitProvenanceView[] {
+  if (!hasTable(db, "git_commit")) return [];
+  const rows = db
+    .prepare(
+      `SELECT c.*, a.binary_version AS adapter_version FROM git_commit c
+       LEFT JOIN adapter_version a ON a.id = c.adapter_version_id
+       WHERE c.run_id = ? ORDER BY c.created_at, c.id`,
+    )
+    .all(runId) as (GitCommitRow & { adapter_version: string | null })[];
+  if (rows.length === 0) return [];
+  const pushedTo = new Map<string, CommitProvenanceView["pushed_to"]>();
+  const pushEvents = db
+    .prepare(
+      `SELECT e.ts, e.payload_json FROM run_event e JOIN run r ON r.id = e.run_id
+       WHERE r.meta_session_id = ? AND e.type = 'git_push'
+         AND json_extract(e.payload_json, '$.outcome') = 'ACCEPTED'
+       ORDER BY e.ts, e.id`,
+    )
+    .all(metaSessionId) as { ts: string; payload_json: string }[];
+  for (const e of pushEvents) {
+    const p = JSON.parse(e.payload_json) as { push_id?: unknown; remote?: unknown; ref?: unknown; commits?: unknown };
+    if (!Array.isArray(p.commits)) continue;
+    const entry = {
+      push_id: String(p.push_id ?? ""),
+      remote: String(p.remote ?? ""),
+      ref: String(p.ref ?? ""),
+      at: e.ts,
+    };
+    for (const sha of p.commits) {
+      if (typeof sha !== "string") continue;
+      const list = pushedTo.get(sha) ?? [];
+      list.push(entry);
+      pushedTo.set(sha, list);
+    }
+  }
+  return rows.map((c) => {
+    let sanitizer: { rules: Record<string, number> } = { rules: {} };
+    try {
+      const parsed = JSON.parse(c.sanitizer_json) as { rules?: unknown };
+      if (typeof parsed.rules === "object" && parsed.rules !== null) {
+        sanitizer = { rules: { ...(parsed.rules as Record<string, number>) } };
+      }
+    } catch {
+      // keep the empty report
+    }
+    return {
+      sha: c.commit_sha,
+      tree_sha: c.tree_sha,
+      patch_id: c.patch_id,
+      origin: c.origin,
+      publish_ref: c.publish_ref,
+      project_id: c.project_id,
+      context_id: c.context_id,
+      meta_session_id: c.meta_session_id,
+      run_id: c.run_id,
+      provider: c.provider,
+      harness: c.harness,
+      model: c.model,
+      adapter_version_id: c.adapter_version_id,
+      adapter_version: c.adapter_version,
+      tool_event_id: c.tool_event_id,
+      sanitizer,
+      created_at: c.created_at,
+      pushed_to: pushedTo.get(c.commit_sha) ?? [],
+    };
+  });
+}
+
+/** `git_push` rows whose event is on this run (the run's own agent pushes and operator pushes of its commits). */
+function pushesOfRun(db: Database.Database, runId: string): PushView[] {
+  if (!hasTable(db, "git_push")) return [];
+  return db
+    .prepare(
+      `SELECT p.id, p.outcome, p.detail AS reason, p.remote, p.ref, p.head_sha, p.requested_by, p.run_id, p.created_at
+       FROM git_push p
+       WHERE p.id IN (SELECT json_extract(e.payload_json, '$.push_id') FROM run_event e
+                      WHERE e.run_id = ? AND e.type = 'git_push')
+       ORDER BY p.created_at, p.id`,
+    )
+    .all(runId) as PushView[];
 }
 
 function approvalView(db: Database.Database, runId: string): ApprovalView | undefined {
@@ -328,6 +460,30 @@ export function renderRun(d: { run: RunDetail; events: RunEventView[]; approval?
   if (r.failure_code) lines.push(`  failure:     ${r.failure_code}${r.failure_detail ? ` - ${r.failure_detail}` : ""}`);
   if (r.git_policy_violations > 0) {
     lines.push(`  git policy:  VIOLATION (${r.git_policy_violations} git_policy_violation event(s); FR-GIT-03)`);
+  }
+  if (r.commits.length > 0) {
+    lines.push("", "Commits (provenance, FR-GIT-07):");
+    for (const c of r.commits) {
+      const rules = Object.entries(c.sanitizer.rules)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(", ");
+      lines.push(
+        `  ${c.sha}  ${c.origin}  ${c.created_at}`,
+        `    tree ${c.tree_sha}  patch-id ${c.patch_id ?? "-"}  publish ref ${c.publish_ref}`,
+        `    project ${c.project_id}  context ${c.context_id}  session ${c.meta_session_id}  run ${c.run_id}`,
+        `    provider ${c.provider} (harness ${c.harness})  model ${c.model ?? "-"}  adapter version ${c.adapter_version ?? c.adapter_version_id ?? "-"}`,
+        `    sanitiser: ${rules === "" ? "nothing removed" : rules}`,
+        `    pushed: ${c.pushed_to.length === 0 ? "no" : c.pushed_to.map((p) => `${p.remote} ${p.ref} (${p.push_id}, ${p.at})`).join("; ")}`,
+      );
+    }
+  }
+  if (r.pushes.length > 0) {
+    lines.push("", "Pushes (FR-GIT-05):");
+    for (const p of r.pushes) {
+      lines.push(
+        `  ${p.id}  ${p.outcome}${p.reason ? ` (${p.reason})` : ""}  ${p.remote || "-"} ${p.ref || "-"}  head ${p.head_sha || "-"}  by ${p.requested_by}  ${p.created_at}`,
+      );
+    }
   }
   const a = d.approval;
   if (a) {

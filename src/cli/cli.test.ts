@@ -335,6 +335,7 @@ describe("runs list and show (read-only)", () => {
         "branch",
         "cancel_requested",
         "client_id",
+        "commits",
         "created_at",
         "failure_code",
         "failure_detail",
@@ -343,12 +344,15 @@ describe("runs list and show (read-only)", () => {
         "id",
         "meta_session_id",
         "provider",
+        "pushes",
         "started_at",
         "state",
         "trust_profile",
         "updated_at",
       ].sort(),
     );
+    expect(j.run.commits).toEqual([]);
+    expect(j.run.pushes).toEqual([]);
     expect(j.run.cancel_requested).toBe(false);
     expect(j.run.git_policy_violations).toBe(0);
     expect(j.events).toEqual([]);

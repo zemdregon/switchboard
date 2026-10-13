@@ -11,6 +11,7 @@
  *
  *   request:  {"v":1,"token":"<token>","tool":"commit","arguments":{...}}
  *   response: {"ok":true,"result":{"sha":"...","files_changed":1}}
+ *             {"ok":true,"result":{"pushed":true,"ref":"refs/heads/...","head_sha":"..."}}   (push, T9.6)
  *             {"ok":false,"error":{"code":"NOT_RUNNING","message":"..."}}
  */
 
@@ -46,10 +47,26 @@ export const MAX_COMMIT_PATH_CHARS = 4096;
  */
 export const MAX_SOCKET_PATH_BYTES = 100;
 
-export type ToolName = "commit";
+export type ToolName = "commit" | "push";
 
-/** Tool names the shim can serve. `push` arrives with T9.6 and is not offered before then. */
-export const TOOL_NAMES: readonly ToolName[] = ["commit"];
+/**
+ * Tool names the shim can serve (T9.6 added `push`). Which of them a run is offered is decided per run by the
+ * controller (`push` only under policy `branch` and BR-31) and passed to the shim with `--tools`.
+ */
+export const TOOL_NAMES: readonly ToolName[] = ["commit", "push"];
+
+/** Parse a `--tools` value (`commit` or `commit,push`); undefined for anything else. */
+export function parseToolList(raw: string): ToolName[] | undefined {
+  const names = raw.split(",");
+  if (names.length === 0 || names.length > TOOL_NAMES.length) return undefined;
+  const out: ToolName[] = [];
+  for (const n of names) {
+    const t = TOOL_NAMES.find((x) => x === n);
+    if (t === undefined || out.includes(t)) return undefined;
+    out.push(t);
+  }
+  return out;
+}
 
 /** The LLD §12.1 `commit` input schema, served by the shim (every object `additionalProperties: false`). */
 export const COMMIT_INPUT_SCHEMA = {
@@ -72,9 +89,17 @@ export const COMMIT_DESCRIPTION =
   "to include (default: all changes). This is the only way to create a commit; Git commands that write history are " +
   "not available to you.";
 
+/** The LLD §12.1 `push` input schema: no arguments, so an agent cannot choose a remote or a ref. */
+export const PUSH_INPUT_SCHEMA = { type: "object", additionalProperties: false, properties: {} } as const;
+
+export const PUSH_DESCRIPTION =
+  "Publish the commits you made with the commit tool: pushes this session's commits to the remote branch configured " +
+  "by the operator. Takes no arguments. Never force-pushes; a rejected or refused push returns an error code.";
+
 /** Error codes the channel itself returns (the commit library's codes are passed through as well). */
 export type ChannelErrorCode =
   | "MALFORMED_REQUEST"
+  | "PUSH_LIMIT_REACHED"
   | "REQUEST_TOO_LARGE"
   | "REQUEST_TIMEOUT"
   | "RATE_LIMITED"

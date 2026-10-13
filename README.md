@@ -95,7 +95,7 @@ Keys (from `src/config/schema.ts`; no other keys exist yet):
 | `providers.<id>.enabled` | no | Boolean. A provider you do not list is enabled. |
 | `providers.<id>.weight` | no | Number from 0 to 1. Accepted by the schema. |
 | `retention.days`, `retention.interval` | no | How long idle meta-sessions are kept (integer days, default 30) and how often `serve` runs the clean-up pass (`30m`, `12h`, `7d`; default `24h`). **Nothing is deleted unless you set `retention.days`**; the default only applies once you do (or to `gc` dry runs). |
-| `projects` | no | List of `{ "id", "name", "environment"?, "contexts": [...] , "max_trust_profile"?, "allowed_providers"? }`. `id` matches `^[a-z][a-z0-9-]{1,40}$` and is unique. `environment` is `{ "kind": "host" }` (default) or a `container` shape that `projects validate` rejects until M10. Each context is `{ "id", "kind": "repository", "path", "base_ref", "primary"?, "writable"?, "push"?, "identity"?, "sign"? }` with an absolute `path` under an allowed root; exactly one context is primary. Unknown keys and context kinds stop startup. `max_trust_profile` and `allowed_providers` apply to `delegate_task` with a `project`: the effective trust ceiling is the lower of the client's and the project's, and routing is limited to the listed providers (a request naming another provider with `require_provider` fails `PERMISSION_BLOCKED`); `sign` is accepted but not enforced yet. Full shape: LLD section 11.1. |
+| `projects` | no | List of `{ "id", "name", "environment"?, "contexts": [...] , "max_trust_profile"?, "allowed_providers"? }`. `id` matches `^[a-z][a-z0-9-]{1,40}$` and is unique. `environment` is `{ "kind": "host" }` (default) or a `container` shape that `projects validate` rejects until M10. Each context is `{ "id", "kind": "repository", "path", "base_ref", "primary"?, "writable"?, "push"?, "identity"?, "sign"? }` with an absolute `path` under an allowed root; exactly one context is primary. Unknown keys and context kinds stop startup. `push.remote` must be the name of a remote in the repository (not a URL), and `push.branch_prefix` a branch-name prefix such as `"switchboard/"`. `max_trust_profile` and `allowed_providers` apply to `delegate_task` with a `project`: the effective trust ceiling is the lower of the client's and the project's, and routing is limited to the listed providers (a request naming another provider with `require_provider` fails `PERMISSION_BLOCKED`); `sign` is accepted but not enforced yet. Full shape: LLD section 11.1. |
 | `profiles.<name>` | no | Overrides for `inspect-untrusted`, `edit-untrusted`, `test-sandboxed` or `trusted-development`: `file_access`, `shell`, `shell_allowlist`, `network`, `network_allowlist`, `repo_config`. They may tighten or loosen a default; `doctor` lists them and every run records them. `privileged` has none. See the `edit-untrusted` limit under [Trust profiles](#trust-profiles). |
 
 `<id>` is one of `claude-code`, `codex`, `grok-build`, `antigravity`, `cursor`, `opencode`, `kimi-code`. Only
@@ -169,6 +169,7 @@ switchboard runs cancel <id>
 switchboard approve <run_id>
 switchboard deny <run_id>
 switchboard gc [--apply]
+switchboard git push <session_or_run_id>
 switchboard projects list
 switchboard projects show <id>
 switchboard projects validate [<id>]
@@ -178,6 +179,27 @@ switchboard projects validate [<id>]
 it themselves. `approve` and `deny` act only on a `privileged` run waiting for approval (review its scope with
 `runs show` first); `deny` ends the run cancelled, and a second decision is refused. Add `--json` to any of these for
 machine-readable output. Exit codes: 0 success, 1 failure (including a refused decision), 2 usage error.
+
+`git push` publishes the commits a meta-session made through the injected `commit` tool: it pushes the session's
+publish ref (`switchboard/pub/<session>`) to the context's `push.remote` as the branch `<push.branch_prefix><session>`.
+It works only when the context sets `"push": { "policy": "branch", "remote": "<remote name>", "branch_prefix": "..." }`
+(the default policy `none` refuses with a message naming it). It never force-pushes (a non-fast-forward is refused by
+Git and reported), never pushes the default or a checked-out branch, run branches, checkpoint commits, tags or notes,
+and refuses a meta-session that has a recorded Git policy violation. It uses your own Git setup (SSH agent, credential
+helper) for that one `git push`, without hooks or prompts; it refuses a remote whose URL embeds credentials or uses a
+transport other than `https`, `ssh` or `file`, and a repository whose own configuration sets a credential helper,
+`core.sshCommand` or `insteadOf` (move those to your global configuration). Like `gc --apply`, it refuses while
+`serve` is running. Every attempt, accepted or refused, is recorded and shown by `runs show`, which also lists each
+published commit's provenance (SHA, tree, patch ID, project, context, session, run, provider, model, adapter version,
+sanitiser counts) and where it was pushed, never the message or a URL. Exit 0 when the remote branch holds the commits,
+1 otherwise.
+
+Agents get a `push` tool only for a context with policy `branch` and only when the run cannot read your push
+credentials (FRD BR-31): a profile with no shell or an empty shell allowlist. Host runs with a shell are not offered
+`push`; use `git push` above (or a container environment, once milestone 10 exists). An approved bypass run is the
+exception (owner decision 37): it is offered `push` whatever its shell, and the run record shows `bypass_exempt`. That is
+the one place a bypass run's agent can reach your push credentials, by your choice; Switchboard still never hands them
+to it, and its Git-write denial is unchanged.
 
 `projects list|show|validate` read the `projects` section of the config (see below) and the filesystem only: no
 ledger, no lock, no provider process. `validate` checks every project (or the one named): the config rules, that each repository
@@ -261,6 +283,8 @@ you control. `approve` and `deny` keep working for clients left at `"required"`.
   `--full-auto` to provider CLIs, and tests audit this. The one exception is an approved `privileged` scope that
   explicitly sets `bypass` (approved by you, or by a client's `privileged_approval: "not_required"`; see Trust
   profiles).
+- **Pushes only through Switchboard's own tool or command.** Agents cannot push; a push-enabled context (off by default)
+  pushes one branch, never forced, from the controller with your Git setup, and never hands a credential to an agent.
 - **Fail closed.** An invalid config, an unknown client id, an unverified CLI version or an unavailable profile refuses
   to run rather than weakening anything.
 

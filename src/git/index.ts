@@ -24,7 +24,41 @@ export {
   type PublishStep,
   type RecoveryReport,
 } from "./commit.js";
+export {
+  BYPASS_EXEMPT,
+  type CredentialReach,
+  type CredentialReachFacts,
+  type CredentialReachReason,
+  credentialReachFromJson,
+  evaluateCredentialReach,
+} from "./credential-reach.js";
 export { DEFAULT_PUBLISH_PREFIX, isRunBranchRef, PublishRefError, publishRefFor } from "./publish-ref.js";
+export {
+  classifyPush,
+  classifyRemoteUrl,
+  DEFAULT_PUSH_TIMEOUT_MS,
+  GIT_PUSH_EVENT,
+  GitPusher,
+  type GitPusherOptions,
+  isBranchPrefix,
+  isRemoteName,
+  MAX_EVENT_COMMITS,
+  MAX_PUSH_COMMITS,
+  PUSH_CONFIG,
+  PUSH_ENV_ALLOWLIST,
+  type PushContextConfig,
+  PushError,
+  type PushReason,
+  type PushRequest,
+  type PushResult,
+  type PushToolCode,
+  pushArgs,
+  pushContextResolver,
+  pushEnv,
+  remoteTargetRef,
+  repoConfigUnsafe,
+  UNSAFE_REPO_CONFIG_PATTERN,
+} from "./push.js";
 export {
   DEFAULT_REF_GUARD_LIMITS,
   GIT_POLICY_VIOLATION_EVENT,

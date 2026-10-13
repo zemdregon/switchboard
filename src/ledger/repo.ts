@@ -400,6 +400,43 @@ export interface NewGitCommit {
   eventPayload: unknown;
 }
 
+/** One `git_push` row (FR-GIT-05; LLD §1 "M9 additions", §12.6). Append-only. Never holds a URL or Git output. */
+export interface GitPushRow {
+  id: string;
+  /** The calling run for an agent push; NULL for an operator push (LLD §1). */
+  run_id: string | null;
+  project_id: string;
+  context_id: string;
+  /** Configured remote NAME (validated as a name, never a URL); empty when the attempt was refused before a valid name existed. */
+  remote: string;
+  /** Target ref on the remote (`refs/heads/<branch_prefix><sess>`); empty when refused before it could be computed. */
+  ref: string;
+  /** The publish head that was (or would have been) pushed; empty when there was none. */
+  head_sha: string;
+  outcome: "ACCEPTED" | "REFUSED_POLICY" | "REJECTED_REMOTE" | "ERROR";
+  /** Short reason code from a fixed vocabulary (`src/git/push.ts`); never Git's own output. */
+  detail: string | null;
+  requested_by: "agent_tool" | "operator";
+  created_at: string;
+}
+
+/** Everything `recordGitPush` needs; `id` and `created_at` are assigned by the ledger. */
+export interface NewGitPush {
+  runId: string | null;
+  /** The run the `git_push` run event is appended to (the calling run, or for an operator push the run of the head commit). */
+  eventRunId: string;
+  projectId: string;
+  contextId: string;
+  remote: string;
+  ref: string;
+  headSha: string;
+  outcome: GitPushRow["outcome"];
+  detail: string | null;
+  requestedBy: GitPushRow["requested_by"];
+  /** Payload of the `git_push` run event (bounded; SHAs, names and codes only). `push_id` is added by the ledger. */
+  eventPayload: Record<string, unknown>;
+}
+
 export interface Ledger {
   createMetaSession(input: NewMetaSession): MetaSessionRow;
   getMetaSession(id: string): MetaSessionRow | undefined;
@@ -522,6 +559,17 @@ export interface Ledger {
   listGitCommitsForMetaSession(metaSessionId: string): GitCommitRow[];
   /** The meta-session's base commit (set by the first `prepare`), if any. */
   getMetaSessionBaseCommit(metaSessionId: string): string | undefined;
+
+  // ---- T9.6 additions (push, LLD §12.6) --------------------------------------------------------------------------
+  /**
+   * In ONE `BEGIN IMMEDIATE` transaction append the `git_push` run event (on `eventRunId`) and insert the `git_push`
+   * row (FR-GIT-05: every attempt, accepted or refused, is recorded). The event payload gains `push_id`.
+   */
+  recordGitPush(input: NewGitPush): { row: GitPushRow; eventId: string };
+  /** One `git_push` row by id. */
+  getGitPush(id: string): GitPushRow | undefined;
+  /** Whether an ACCEPTED `git_push` row pushed exactly `headSha` to `ref` on the remote named `remote` (T9.6). */
+  hasAcceptedPush(remote: string, ref: string, headSha: string): boolean;
 }
 
 export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledger {
@@ -1025,6 +1073,46 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
       return db
         .prepare("SELECT * FROM git_commit WHERE meta_session_id = ? ORDER BY created_at, id")
         .all(metaSessionId) as GitCommitRow[];
+    },
+
+    recordGitPush(input) {
+      return immediate(() => {
+        const when = ts();
+        const id = ids.id("gps");
+        const eventId = insertEvent(input.eventRunId, "git_push", { push_id: id, ...input.eventPayload }, when);
+        db.prepare(
+          `INSERT INTO git_push (id, run_id, project_id, context_id, remote, ref, head_sha, outcome, detail, requested_by,
+             created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          id,
+          input.runId,
+          input.projectId,
+          input.contextId,
+          input.remote,
+          input.ref,
+          input.headSha,
+          input.outcome,
+          input.detail,
+          input.requestedBy,
+          when,
+        );
+        return { row: db.prepare("SELECT * FROM git_push WHERE id = ?").get(id) as GitPushRow, eventId };
+      });
+    },
+
+    getGitPush(id) {
+      return db.prepare("SELECT * FROM git_push WHERE id = ?").get(id) as GitPushRow | undefined;
+    },
+
+    hasAcceptedPush(remote, ref, headSha) {
+      return (
+        db
+          .prepare(
+            "SELECT 1 FROM git_push WHERE outcome = 'ACCEPTED' AND remote = ? AND ref = ? AND head_sha = ? LIMIT 1",
+          )
+          .get(remote, ref, headSha) !== undefined
+      );
     },
 
     getMetaSessionBaseCommit(metaSessionId) {

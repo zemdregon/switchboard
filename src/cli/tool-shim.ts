@@ -20,22 +20,41 @@ import {
   MAX_RESPONSE_BYTES,
   MAX_SOCKET_PATH_BYTES,
   PROTOCOL_VERSION,
-  TOOL_NAMES,
+  PUSH_DESCRIPTION,
+  PUSH_INPUT_SCHEMA,
+  parseToolList,
   TOOL_TOKEN_ENV,
+  type ToolName,
   type ToolResponse,
 } from "../git/tool-protocol.js";
 
-/** How long the shim waits for the controller's answer to one call (Proposed: commits are local Git operations). */
+/**
+ * How long the shim waits for the controller's answer to one call (Proposed: commits are local Git operations; a push
+ * is bounded by the controller at 90 s, below this).
+ */
 export const SHIM_CALL_TIMEOUT_MS = 120_000;
 
 export interface ShimConfig {
   readonly socketPath: string;
   readonly token: string;
+  /** Tools listed to the agent (T9.6): `--tools`, default `commit`. The controller still refuses tools it did not offer. */
+  readonly tools?: readonly ToolName[];
 }
 
-/** Parse `--socket <path>` and read (then remove) the token from the environment. Throws a plain Error on misuse. */
+const USAGE = "usage: switchboard tool-shim --socket <path> [--tools commit[,push]]";
+
+/**
+ * Parse `--socket <path> [--tools <list>]` and read (then remove) the token from the environment. Throws a plain
+ * Error on misuse.
+ */
 export function shimConfig(argv: readonly string[], env: Record<string, string | undefined>): ShimConfig {
-  if (argv.length !== 2 || argv[0] !== "--socket") throw new Error("usage: switchboard tool-shim --socket <path>");
+  if ((argv.length !== 2 && argv.length !== 4) || argv[0] !== "--socket") throw new Error(USAGE);
+  let tools: readonly ToolName[] = ["commit"];
+  if (argv.length === 4) {
+    const parsed = argv[2] === "--tools" ? parseToolList(argv[3] as string) : undefined;
+    if (parsed === undefined) throw new Error(USAGE);
+    tools = parsed;
+  }
   const socketPath = argv[1] as string;
   if (!path.isAbsolute(socketPath) || Buffer.byteLength(socketPath) > MAX_SOCKET_PATH_BYTES) {
     throw new Error("tool-shim: --socket must be an absolute path within the socket length limit");
@@ -43,7 +62,7 @@ export function shimConfig(argv: readonly string[], env: Record<string, string |
   const token = env[TOOL_TOKEN_ENV];
   delete env[TOOL_TOKEN_ENV];
   if (!isTokenShaped(token)) throw new Error(`tool-shim: ${TOOL_TOKEN_ENV} is missing or malformed`);
-  return { socketPath, token };
+  return { socketPath, token, tools };
 }
 
 /** One request over a fresh connection; resolves with the controller's answer or a local transport error. */
@@ -101,10 +120,10 @@ function toResult(r: ToolResponse): CallToolResult {
 export function createShimServer(cfg: ShimConfig): Server {
   const server = new Server({ name: "switchboard-git-tools", version: "1.0.0" }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: TOOL_NAMES.map((name) => ({
+    tools: (cfg.tools ?? ["commit"]).map((name) => ({
       name,
-      description: COMMIT_DESCRIPTION,
-      inputSchema: COMMIT_INPUT_SCHEMA as unknown as { type: "object" },
+      description: name === "push" ? PUSH_DESCRIPTION : COMMIT_DESCRIPTION,
+      inputSchema: (name === "push" ? PUSH_INPUT_SCHEMA : COMMIT_INPUT_SCHEMA) as unknown as { type: "object" },
     })),
   }));
   server.setRequestHandler(CallToolRequestSchema, async (req) =>

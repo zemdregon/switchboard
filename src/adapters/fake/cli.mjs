@@ -8,7 +8,7 @@
 //
 // `git_commit` (T9.4, FR-GIT-02) plays an agent that uses the injected tool channel: `--tool-channel <json>` names the
 // shim command (`{"command": [...]}`) and the token arrives in SWITCHBOARD_TOOL_TOKEN. The objective on stdin may be a
-// JSON plan `{"files": {"<rel path>": "<content>"}, "calls": [{"name": "commit", "arguments": {...}}]}`; otherwise a
+// JSON plan `{"files": {"<rel path>": "<content>"}, "calls": [{"name": "commit"|"push", "arguments": {...}}]}`; otherwise a
 // default plan writes feature.txt and commits it with a message that carries an attribution trailer. Each call's
 // outcome is reported as a `message` event (SHA or error code only; never the token). Tool errors do not fail the run.
 //
@@ -192,7 +192,9 @@ async function callTool(client, name, args) {
   }
   const outcome = res.isError
     ? { error: body.code ?? "unknown" }
-    : { sha: body.sha, files_changed: body.files_changed };
+    : name === "push"
+      ? { pushed: body.pushed, ref: body.ref, head_sha: body.head_sha }
+      : { sha: body.sha, files_changed: body.files_changed };
   emit({ type: "message", text: JSON.stringify({ call: name, ...outcome }) });
 }
 
