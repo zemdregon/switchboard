@@ -83,6 +83,11 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | `inner_agent.breaker`, `inner_agent.suspension` | Circuit-breaker and automatic-suspension thresholds (proposed targets) | FR-INN-08, 09 |
 | `projects[].inner_agent`, `projects[].contexts[].inner_agent` | `off`, `local_only` or `inherit`; can only restrict | FR-INN-16 |
 
+*Note (2026-10-13, Delegated, T9.1):* `projects[]` is implemented for the schema, the loader and the read-only
+`switchboard projects list|show|validate` commands (`src/config/projects.ts`, `src/cli/projects.ts`);
+`mcp_clients[].projects` is not yet (T9.2). Config-only checks run at load; filesystem and Git checks run only in
+`projects validate`, so adding a project cannot stop `serve` starting. See [LLD §11.1](LLD.md#111-configuration-shape).
+
 ### 3.2 Error handling
 
 - Expected failures are values, not exceptions: every domain operation returns a typed result carrying a code from the

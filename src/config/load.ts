@@ -6,6 +6,7 @@ import { Ajv } from "ajv";
 import { ProfileOverrideError, validateProfileOverrides } from "../policy/profiles.js";
 import type { ProfileOverride, ProfileOverrides } from "../policy/types.js";
 import { ConfigError } from "./errors.js";
+import { checkProjects, type ResolvedProject, resolveProjects } from "./projects.js";
 import {
   configSchema,
   DEFAULT_PREFLIGHT_TTL_SECONDS,
@@ -45,6 +46,8 @@ export interface ResolvedConfig {
   preflightTtlMs: number;
   /** Validated `profiles.<name>` overrides in COMP-POL's camelCase form (owner decision 12); empty when none. */
   profileOverrides: ProfileOverrides;
+  /** Validated `projects[]` (FR-PRJ-01; T9.1); empty when the config has none. Paths are as written, not yet canonical. */
+  projects: ResolvedProject[];
 }
 
 export interface ResolvedMcpClient {
@@ -210,9 +213,15 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
     throw err;
   }
 
+  const projectErrors = checkProjects(cfg);
+  if (projectErrors.length > 0) {
+    throw new ConfigError(`Invalid config:\n${projectErrors.map((l) => `  ${l}`).join("\n")}`);
+  }
+
   return {
     configPath,
     dataDir,
+    projects: resolveProjects(cfg),
     allowedRoots,
     mcpClients: new Map(
       cfg.mcp_clients.map((c) => [

@@ -94,6 +94,7 @@ Keys (from `src/config/schema.ts`; no other keys exist yet):
 | `providers.<id>.enabled` | no | Boolean. A provider you do not list is enabled. |
 | `providers.<id>.weight` | no | Number from 0 to 1. Accepted by the schema. |
 | `retention.days`, `retention.interval` | no | How long idle meta-sessions are kept (integer days, default 30) and how often `serve` runs the clean-up pass (`30m`, `12h`, `7d`; default `24h`). **Nothing is deleted unless you set `retention.days`**; the default only applies once you do (or to `gc` dry runs). |
+| `projects` | no | List of `{ "id", "name", "environment"?, "contexts": [...] , "max_trust_profile"?, "allowed_providers"? }`. `id` matches `^[a-z][a-z0-9-]{1,40}$` and is unique. `environment` is `{ "kind": "host" }` (default) or a `container` shape that `projects validate` rejects until M10. Each context is `{ "id", "kind": "repository", "path", "base_ref", "primary"?, "writable"?, "push"?, "identity"?, "sign"? }` with an absolute `path` under an allowed root; exactly one context is primary. Unknown keys and context kinds stop startup. `max_trust_profile`, `allowed_providers` and `sign` are accepted but not enforced yet. Full shape: LLD section 11.1. |
 | `profiles.<name>` | no | Overrides for `inspect-untrusted`, `edit-untrusted`, `test-sandboxed` or `trusted-development`: `file_access`, `shell`, `shell_allowlist`, `network`, `network_allowlist`, `repo_config`. They may tighten or loosen a default; `doctor` lists them and every run records them. `privileged` has none. See the `edit-untrusted` limit under [Trust profiles](#trust-profiles). |
 
 `<id>` is one of `claude-code`, `codex`, `grok-build`, `antigravity`, `cursor`, `opencode`, `kimi-code`. Only
@@ -166,12 +167,22 @@ switchboard runs cancel <id>
 switchboard approve <run_id>
 switchboard deny <run_id>
 switchboard gc [--apply]
+switchboard projects list
+switchboard projects show <id>
+switchboard projects validate [<id>]
 ```
 
 `runs cancel`, `approve` and `deny` write a request that a running `serve` applies; with no `serve` running they apply
 it themselves. `approve` and `deny` act only on a `privileged` run waiting for approval (review its scope with
 `runs show` first); `deny` ends the run cancelled, and a second decision is refused. Add `--json` to any of these for
 machine-readable output. Exit codes: 0 success, 1 failure (including a refused decision), 2 usage error.
+
+`projects list|show|validate` read the `projects` section of the config (see below) and the filesystem only: no
+ledger, no lock, no provider process. `validate` checks every project (or the one named): the config rules, that each repository
+path is absolute, resolves under an allowed root (so `..` and symlink escapes fail) and is a Git repository, and that
+`base_ref` exists. It prints each failure with its config path and exits 1 if any check fails. Only `host` environments
+work in this stage: a `container` project is listed but fails `validate` with "container environments are not
+implemented yet (M10)". `delegate_task` does not use projects yet.
 
 `gc` is the retention clean-up. By default it is a dry run: it lists the idle meta-sessions older than
 `retention.days` (all their runs finished, no lease) and any orphans, and changes nothing. `gc --apply` removes each
