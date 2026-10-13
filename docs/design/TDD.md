@@ -76,7 +76,7 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | `timeouts.*` | Wall-clock, idle, grace (proposed targets in [LLD §8](LLD.md#8-run-supervisor-details)); only `timeouts.preflight_ttl_seconds` exists in the schema today: integer 0 to 3600, default 60 (**Assumption**), 0 disables the preflight cache; unknown keys are rejected. *Note (2026-10-13, Delegated, [decision 29](../ROADMAP.md#42-owner-decisions), T3.21):* it bounds how long a successful `probe` or `authPreflight` is reused; failures are never cached | FR-EXE-01, NFR-PERF-02 |
 | `retention.days`, `retention.interval` | Retention in days (default 30, proposed target) and the GC pass period (`<n>m`, `<n>h` or `<n>d`, default `24h`). Collection is on only when `retention.days` is set in the file: the default is a value, not a switch (`ResolvedConfig.retentionEnabled`, T3.12, Proposed, Delegated). A period above about 24.8 days is capped by the timer | NFR-DATA-01, FR-WS-07 |
 | `profiles.<name>` | Overrides of the [SRS §3.3](../requirements/SRS.md#33-policy-and-trust-profiles-fr-pol) defaults. They may tighten or loosen a default ([owner decision 12](../ROADMAP.md#42-owner-decisions)); a loosening must be explicit in the config, is validated, and is recorded in the run's policy snapshot and listed by `doctor` (M3, T3.2). *Known limit ([owner decision 20](../ROADMAP.md#42-owner-decisions), 2026-10-13):* a `profiles.edit-untrusted` override that loosens `network` or `repo_config` is not enforced: the Claude adapter compiles `edit-untrusted` with the strict settings (network off at the tool level, repository configuration disabled) whatever the override says, and the Codex adapter makes the run `Ineligible: CAPABILITY_MISSING` | FR-POL-01 |
-| `providers.<id>` | `{enabled, binary_path, extra_env_allowlist[], model_overrides}` | FR-ADP-05, FR-EXE-07 |
+| `providers.<id>` | `{enabled, binary_path, extra_env_allowlist[], models}`; `models` is `{ids[], aliases{}, context_limits{}}` (implemented, T4.5; the earlier placeholder name was `model_overrides`; shape and refresh rule in [LLD §2.1](LLD.md#21-model-registry-m4-t45)) | FR-ADP-05, FR-EXE-07 |
 | `providers.claude-code.git_channel` | Boolean, default `false`; `claude-code` only. Operator opt-in for the Claude Code tool channel through a controller-written `--mcp-config` file; implemented (T9.4b, [ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md)) and **UNSUPPORTED** until the ADR-0029 live checks pass ([LLD §11.1](LLD.md#111-configuration-shape), §12.2); only approved bypass runs get the channel, without `--safe-mode` ([ADR-0033](../adr/0033-claude-channel-bypass-only-without-safe-mode.md)) | FR-GIT-02, FR-POL-08 |
 | `routing.weights`, `routing.minimum_capability_defaults` | Static weights | FR-RTE-02 |
 | `capacity.queue_horizon` | Max wait for a known reset | FR-CAP-06 |
@@ -1860,12 +1860,19 @@ marked **Unverified** (naming the task that will verify it) or **Assumption**. T
 fixtures, tests and the README as much as to this document.
 
 **No model names in adapter source (T4.5).** Adapter source contains no model name, alias or context limit as a
-literal. Models come from operator configuration and the provider's listing command, through the model registry.
+literal. Models come from operator configuration and the provider's listing command, through the model registry
+([LLD §2.1](LLD.md#21-model-registry-m4-t45)). Checklist item 13: the adapter supplies a listing through
+`ProbeResult.modelsListed` where the provider documents a listing command (the command and its output shape are
+sourced in the provider's TDD §4 section), and nothing else about models. Automated by `src/models/models.test.ts`,
+which scans the non-test, non-fixture `.ts` and `.json` files under `src/adapters` for model-family names followed by a
+version or tier word and for context-window-sized numbers (a heuristic: it can miss a name it does not know, so
+reviewers still read new adapter code for model names).
 
 **State of automation (2026-10-13).** The T4.1 scratch adapter (`src/adapters/fixtures/scratch-provider.ts`, exercised
 by `src/adapters/providers.test.ts` and `src/adapters/bypass-forms.test.ts`) wraps the fake adapter. Against the
 checklist it automates:
 
+- item 13 (model-literal ban, heuristic): `src/models/models.test.ts` scans adapter source;
 - items 1 and 12 (registry entry only): it is registered at runtime from a fixture module with no other source edit and
   appears in `doctor`, `list_capabilities` and config validation;
 - item 3 in part: `doctor` probes it through the fake adapter's `probe`;
@@ -1882,7 +1889,7 @@ checklist it automates:
   scratch adapter, and the shared replay helper and per-adapter malicious leg are T4.3 work;
 - item 10 in part: `gitCapabilities` is not asserted for the scratch adapter;
 - item 12 in part: nothing checks the README login row;
-- the model-literal ban: no check exists (T4.5).
+- the model-literal ban is automated only as the heuristic scan above; the family-name list is hand-kept.
 
 ## 5. Implementation strategy by milestone
 

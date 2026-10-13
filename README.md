@@ -218,12 +218,25 @@ switchboard projects list
 switchboard projects show <id>
 switchboard projects validate [<id>]
 switchboard projects approve <id> [--revision <n>] [--reject]
+switchboard adapters validate <provider>
 ```
 
 `runs cancel`, `approve` and `deny` write a request that a running `serve` applies; with no `serve` running they apply
 it themselves. `approve` and `deny` act only on a `privileged` run waiting for approval (review its scope with
 `runs show` first); `deny` ends the run cancelled, and a second decision is refused. Add `--json` to any of these for
 machine-readable output. Exit codes: 0 success, 1 failure (including a refused decision), 2 usage error.
+
+`adapters validate <provider>` (`claude`, `codex`, or the config id such as `claude-code`) accepts the version of a
+provider CLI that is installed now. It runs the adapter's probe, its auth preflight and a conformance subset that ends
+with a structured-output smoke test, and **that smoke step makes one real provider call** (a trivial read-only prompt in
+a throwaway repository; it may use your subscription quota). It never logs in: if the CLI is not logged in (`AUTH_REQUIRED`)
+or its login state cannot be determined (`UNKNOWN`) it fails, and you log in natively and run it again. It passes no
+bypass flag. Only when everything passes does it edit the provider's manifest file in your source checkout
+(`src/adapters/manifests/<provider>.json`): `validated_cli_version`, `validated_on`, `validated_version_range` (the same
+minor series, for example `>=2.1.296 <2.2.0`; an assumption, not a provider statement) and a dated evidence sentence
+appended to `notes`. It does not commit: review the diff and commit the manifest change yourself, then rebuild and
+restart `serve`. On any failure it writes nothing and exits 1. It needs a clone of the repository (an installed package
+has no source tree to edit), and `--json` prints each step's result.
 
 `git push` publishes the commits a meta-session made through the injected `commit` tool: it pushes the session's
 publish ref (`switchboard/pub/<session>`) to the context's `push.remote` as the branch `<push.branch_prefix><session>`.

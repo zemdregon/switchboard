@@ -636,6 +636,63 @@ finalize-only mode (T9.7, BR-30), the controller makes the commit at FINALIZING 
 provenance as the commit tool. zemdregon wants the opt-in enabled for his own projects. Claude Code's `commitChannel` may
 become `injected` behind an operator opt-in once T9.4b and its live checks pass ([ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md)).
 
+### 2.1 Model registry (M4, T4.5)
+
+Satisfies FR-ADP-05: model identities, aliases and context limits come from a refreshable registry, never from adapter
+source. **Delegated** (not owner-approved); every key, pattern and default below is a Proposed shape. No ledger table
+and no ADR: the registry is configuration plus an in-memory refresh, so a restart rebuilds it from the file and the next
+probe.
+
+**Configuration (`providers.<id>.models`, strict keys).** Replaces the earlier TDD §3.1 placeholder
+`model_overrides`. `<id>` is a config provider id.
+
+```jsonc
+"providers": { "<id>": { "models": {
+  "ids": ["<model-id>"],                    // operator-held model ids; at most 256, unique
+  "aliases": { "<alias>": "<model-id>" },   // alias to the id passed to the provider; at most 256
+  "context_limits": { "<model-id>": 0 }     // positive integer tokens, as the operator states them
+} } }
+```
+
+An id, alias or key matches `^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$` (**Assumption**: plain-identifier shape, which also
+keeps option-like values out of argv). Examples use placeholders: neither this document nor adapter source names a model.
+
+**In-memory state (`src/models/registry.ts`, `ModelRegistry`).** Per adapter id: the configured `ids`, `aliases` and
+`context_limits`, and the last *listing*, a set of ids taken from `ProbeResult.modelsListed`.
+
+**Refresh rule.** Whenever eligibility collects facts and a provider's probe completed with every step `ok`, the
+collector calls `refresh(adapterId, probe.modelsListed)`:
+
+- `modelsListed` absent: the previous listing is kept (an adapter that cannot list never clears the registry; a probe
+  that fails any step does not reach this call).
+- `modelsListed` present: it **replaces** the listing for that provider (an empty array clears it), so a model the
+  provider stopped listing leaves the registry at the next probe and a new one enters, with no code change. Entries that
+  do not match the id pattern are dropped.
+- Cadence is that of the probe, so the preflight cache TTL (`timeouts.preflight_ttl_seconds`, NFR-PERF-02) bounds the
+  staleness; a restart starts with no listing until the first probe.
+- Adapters supply the listing from the provider's documented listing command through the `ProbeRunner`; none stores a
+  name. An adapter that has no listing command leaves `modelsListed` unset.
+
+**Check rule.** A request's `model` (`CapabilityRequirements.model`, then `CompileRequest.model`) is resolved per
+provider before the adapter's `compile` is asked:
+
+1. A provider is *restricted* when its configured `ids`, the targets of its `aliases` or its current listing hold at
+   least one id. Otherwise it is *unrestricted*.
+2. Unrestricted: the model passes through unchanged (**Delegated default, backward compatible**: without registry data
+   the behaviour before T4.5 holds, and the adapter's own `compile` still decides; `context_limits` alone does not
+   restrict).
+3. Restricted: an alias resolves to its target id; an id held by `ids` or the listing passes; anything else is
+   `Ineligible` with reason `CAPABILITY_MISSING` and a detail naming the provider, the requested value and the reason
+   (not configured, not listed). The detail never echoes more than 80 characters of the request.
+4. The resolved id, not the alias, goes into `CompileRequest.model`.
+
+The `Ineligible` follows the usual BR-3 mapping (`ELIGIBILITY_NONE`, or the named provider's reason under
+`require_provider`). `contextLimit(provider, id)` returns the configured limit or nothing; no consumer exists before M6/M7
+(capacity and affinity), and no default limit is ever supplied by Switchboard.
+
+**Not in scope.** Dispatch-time `compile` and `delegate_task` do not yet carry a `model` argument; wiring a request
+parameter is a separate change with its own contract update. `list_capabilities` `models` stays `[]` until then.
+
 ## 3. MCP tool contracts
 
 Schemas are published JSON Schema (draft 2020-12; version choice Proposed) validated with Ajv before any side effect
@@ -1313,8 +1370,21 @@ the manifest fails validation (fail closed); the run's auth mode is not in `auth
 `reviewed-prohibited`. In the single-operator deployment
 `requires-review` is recorded but does not block (Assumption,
 [ADR-0011](../adr/0011-single-operator-local-deployment.md)); multi-user or resale use is out of scope. The three
-`const: false` fields mean a manifest that claims otherwise cannot load. `adapters validate` (M4) updates range and
-`validated_on` only after the conformance suite passes (FR-OPS-02).
+`const: false` fields mean a manifest that claims otherwise cannot load.
+`switchboard adapters validate <provider>` (T4.4, FR-OPS-02) updates
+`validated_cli_version`, `validated_on`, `validated_version_range` and appends a dated evidence sentence to `notes`, and
+nothing else, only after the probe (FR-ADP-02 steps 1 to 5), an `OK` auth preflight and the conformance subset including
+the structured-output smoke call (step 7, one provider call) pass; on any failure it writes nothing.
+The range is the installed `X.Y.Z` to the next minor, `>=X.Y.Z <X.(Y+1).0` (Q-12; an Assumption, not a provider
+statement); a pre-release version is refused.
+
+**Manifest file location (Delegated, Assumption).** The command edits the manifest in the source tree, the file a
+contributor changes in a pull request, and the operator commits that change. It finds it from its own module location:
+the package root must hold `package.json`, a `.git` entry and `src/adapters/manifests/`. The copy that the built package
+loads from `dist/` is a build artefact (rebuild after committing), and an installed package has no source tree, so the
+command then fails closed and writes nothing. There is no option to point it elsewhere (only tests inject a directory).
+The write is a line-level text replacement of those four properties (`notes` is added as the last property if
+absent), checked by re-validating the result and comparing every other field, then a rename over the original.
 
 ## 7. Telemetry spans
 
