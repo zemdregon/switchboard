@@ -184,6 +184,8 @@ describe("switchboard git push (operator command)", () => {
     expect(Object.keys(c)).toEqual(
       expect.arrayContaining(["model", "adapter_version", "adapter_version_id", "harness", "tool_event_id"]),
     );
+    // T11.4 (LLD §12.7): an agent-written message
+    expect(c).toMatchObject({ message_source: "agent", inner_call_id: null });
     expect(d.run.pushes).toEqual([
       expect.objectContaining({ id: j.push_id, outcome: "ACCEPTED", remote: "origin", ref: target, run_id: null }),
     ]);
@@ -192,6 +194,7 @@ describe("switchboard git push (operator command)", () => {
     expect(text.out).toContain("Commits (provenance, FR-GIT-07):");
     expect(text.out).toContain(`pushed: origin ${target} (${j.push_id}`);
     expect(text.out).toContain("sanitiser: trailer.co-author=1");
+    expect(text.out).toContain("    message: agent\n");
     expect(text.out).toContain(`Pushes (FR-GIT-05):\n  ${j.push_id}  ACCEPTED (ACCEPTED)  origin ${target}`);
     for (const out of [show.out, text.out]) {
       expect(out).not.toContain("distinctive message body");

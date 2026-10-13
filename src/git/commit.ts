@@ -36,6 +36,14 @@ import {
  * `git_commit_signing_failed` run event (reason code only), before any intent, so the publish ref never moves and no
  * unsigned commit is made. Without `sign` nothing about this path changes.
  *
+ * Commit-message task (T11.4, FR-INN-10, LLD §12.1, §12.3 step 2 (M11), ADR-0016): the tool channel may hand in a
+ * {@link CommitMessageTask}. After the tree is written, and only when the task applies (no agent message, or mode
+ * `always`), its `draft` receives the diff of exactly the committed paths and returns text or "unavailable". This module
+ * never imports the inner-agent service: the task is an injected function, and whatever it returns is untrusted text
+ * that passes {@link GitPublisher}'s own sanitiser (the same built-in and operator rules as an agent message) before
+ * `commit-tree`; the sanitiser is the only producer of the text Git receives. No usable draft and no agent message is
+ * `MESSAGE_REQUIRED`; the controller never writes a stand-in. Without a task nothing about this path changes.
+ *
  * A crash before 3 leaves an unfinished intent and no published commit; a crash between 3 and 4 leaves a published
  * commit with an unfinished intent. {@link GitPublisher.recover} resolves each unfinished intent from the repository:
  * the commit is on the publish ref (roll forward: write the row) or it is not (append `git_commit_aborted`).
@@ -57,6 +65,7 @@ export type CommitErrorCode =
   | "PUBLISH_LINEAGE_VIOLATION"
   | "PROVENANCE_PENDING"
   | "SIGNING_FAILED"
+  | "MESSAGE_REQUIRED"
   | "GIT_FAILED";
 
 export type PathRefusalReason =
@@ -126,9 +135,47 @@ export const GIT_COMMIT_SIGNING_FAILED_EVENT = "git_commit_signing_failed";
 /** Why a signed commit was not made (the `reason` of {@link GIT_COMMIT_SIGNING_FAILED_EVENT}). */
 export type SigningRefusalReason = "credential_reach" | "repo_config_unsafe" | SigningFailureReason;
 
+/**
+ * T11.4: what the commit algorithm hands the commit-message task (LLD §13.6 `commit_message` input fields). Built from the
+ * two tree objects only, never from a run object or transcript. Paths are worktree-relative.
+ */
+export interface CommitDraftRequest {
+  /** `git diff-tree -r --numstat` of the parent tree and the new tree: added, deleted and path per changed file. */
+  readonly numstat: string;
+  /** `git diff-tree -r -p` of the same two trees (exactly the paths being committed). */
+  readonly diff: string;
+  /** Up to {@link MAX_RECENT_SUBJECTS} subject lines of the commit's parent history (style hint). */
+  readonly recentSubjects: readonly string[];
+  /**
+   * The publisher's own sanitiser for this commit (built-in and operator rules plus the run's native session ids).
+   * Returns the sanitised text, or null when nothing is left or the sanitiser refuses the text. Lets the inner pipeline
+   * record `rejected_sanitiser` (LLD §13.4 step 10); the publisher sanitises the chosen text again regardless.
+   */
+  readonly sanitise: (text: string) => string | null;
+}
+
+/** T11.4: the result of one draft. `ok: false` covers every fallback (disabled, denied, unavailable, invalid). */
+export type CommitDraftResult =
+  | { readonly ok: true; readonly text: string; readonly innerCallId: string | null }
+  | { readonly ok: false };
+
+/** T11.4 (FR-INN-10): the commit-message task, injected by the tool channel only when it is enabled for the run. */
+export interface CommitMessageTask {
+  /** `never` is represented by passing no task at all. */
+  readonly mode: "draft_if_missing" | "always";
+  /** Must not throw; a throw is treated as `{ ok: false }`. Bounded by the inner agent's per-call timeout. */
+  draft(request: CommitDraftRequest): Promise<CommitDraftResult>;
+}
+
 export interface CommitInput {
   readonly runId: string;
-  readonly message: string;
+  /**
+   * The agent's message. Required unless {@link messageTask} is set (T11.4), in which case it may be omitted and the
+   * task drafts one; when present it is never sent to the task.
+   */
+  readonly message?: string;
+  /** T11.4: only from the tool channel (`origin` `commit_tool`); refused with `INVALID_REQUEST` otherwise. */
+  readonly messageTask?: CommitMessageTask;
   /** Worktree-relative paths; omit for all changes. At most {@link MAX_PATHS}. */
   readonly paths?: readonly string[];
   /** Context identity (FR-GIT-04). Used for author and committer. */
@@ -169,6 +216,8 @@ export interface CommitResult {
   readonly sanitizer: SanitizeReport;
   /** The `git_commit` row id (`gcm_...`). */
   readonly provenanceId: string;
+  /** T11.4: `inner` when the committed message was drafted by the inner agent. */
+  readonly messageSource: "agent" | "inner";
 }
 
 export interface RecoveryReport {
@@ -188,6 +237,16 @@ const LS_TREE_CHUNK = 256; // paths per `git ls-tree` call, to keep the argument
 const MAX_PATH_LENGTH = 4096;
 const MAX_IDENTITY_FIELD = 256;
 const ATTEMPTS = 2; // LLD §12.3 step 5: retry once after a lost race
+/** LLD §13.6 `commit_message`: up to 5 recent subject lines of the publish ref as a style hint. */
+export const MAX_RECENT_SUBJECTS = 5;
+const MAX_SUBJECT_HINT_CHARS = 200;
+
+interface ChosenMessage {
+  readonly message: string;
+  readonly report: SanitizeReport;
+  readonly source: "agent" | "inner";
+  readonly innerCallId: string | null;
+}
 
 interface IntentRecord {
   readonly commit_sha: string;
@@ -217,6 +276,9 @@ interface IntentRecord {
     readonly adapterVersionId: string | null;
     readonly origin: "commit_tool" | "finalize_only";
     readonly sanitizer: SanitizeReport;
+    /** T11.4: present only for a drafted message (absent reads as `agent`, also on intents written before T11.4). */
+    readonly messageSource?: "inner";
+    readonly innerCallId?: string | null;
   };
 }
 
@@ -270,11 +332,12 @@ export class GitPublisher {
       await mkdir(this.options.scratchDir, { recursive: true, mode: 0o700 });
       await this.checkScratch(ctx);
       if (input.sign !== undefined) await this.checkSigning(ctx, input);
-      let sanitized: { message: string; report: SanitizeReport } | undefined;
+      // Chosen once and reused after a lost race (the draft is not requested twice; Delegated, T11.4).
+      let chosen: ChosenMessage | undefined;
       for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
-        const done = await this.attempt(ctx, input, publishRef, () => {
-          if (sanitized === undefined) sanitized = this.sanitize(input);
-          return sanitized;
+        const done = await this.attempt(ctx, input, publishRef, async (draftRequest) => {
+          chosen ??= await this.chooseMessage(input, draftRequest);
+          return chosen;
         });
         if (done !== "lost-race") return done;
       }
@@ -401,17 +464,59 @@ export class GitPublisher {
     }
   }
 
-  private sanitize(input: CommitInput): { message: string; report: SanitizeReport } {
+  /** The sanitiser for this commit: built-in and operator rules, plus the run's native session ids when known. */
+  private sanitizerFor(input: CommitInput): Sanitizer {
+    return input.nativeSessionIds && input.nativeSessionIds.length > 0
+      ? createSanitizer({
+          operatorPatterns: this.options.sanitizePatterns ?? [],
+          nativeSessionIds: input.nativeSessionIds,
+        })
+      : this.sanitizer;
+  }
+
+  /**
+   * T11.4 (LLD §12.1, §12.3 steps 2 and 3, §13.7): pick the message. Without a task, or with `draft_if_missing` and an
+   * agent message, this is exactly the pre-T11.4 path (no draft is requested). Otherwise the draft is requested; a
+   * usable draft (non-empty after this publisher's sanitiser) wins; else the agent's message when there is one (mode
+   * `always`); else `MESSAGE_REQUIRED`. Every returned message has passed {@link sanitize}.
+   */
+  private async chooseMessage(input: CommitInput, request: () => Promise<CommitDraftRequest>): Promise<ChosenMessage> {
+    const task = input.messageTask;
+    const agent = input.message;
+    if (task === undefined || (task.mode === "draft_if_missing" && agent !== undefined)) {
+      return { ...this.sanitize(input, agent ?? ""), source: "agent", innerCallId: null };
+    }
+    let draft: CommitDraftResult = { ok: false };
+    try {
+      draft = await task.draft(await request());
+    } catch {
+      draft = { ok: false }; // the task contract never throws; this keeps a broken one from failing the call
+    }
+    if (draft.ok && typeof draft.text === "string") {
+      const clean = this.trySanitize(input, draft.text);
+      if (clean !== undefined) return { ...clean, source: "inner", innerCallId: draft.innerCallId };
+    }
+    if (agent !== undefined) return { ...this.sanitize(input, agent), source: "agent", innerCallId: null };
+    throw new CommitError(
+      "MESSAGE_REQUIRED",
+      "no commit message was given and none could be drafted; call commit again with a message",
+    );
+  }
+
+  /** {@link sanitize} for drafted text: undefined (instead of an error) when nothing usable is left or it is refused. */
+  private trySanitize(input: CommitInput, text: string): { message: string; report: SanitizeReport } | undefined {
+    try {
+      return this.sanitize(input, text);
+    } catch (err) {
+      if (err instanceof CommitError) return undefined;
+      throw err;
+    }
+  }
+
+  private sanitize(input: CommitInput, text: string): { message: string; report: SanitizeReport } {
     let result: { message: string; report: SanitizeReport };
     try {
-      const s =
-        input.nativeSessionIds && input.nativeSessionIds.length > 0
-          ? createSanitizer({
-              operatorPatterns: this.options.sanitizePatterns ?? [],
-              nativeSessionIds: input.nativeSessionIds,
-            })
-          : this.sanitizer;
-      result = s.sanitize(input.message);
+      result = this.sanitizerFor(input).sanitize(text);
     } catch (err) {
       if (err instanceof SanitizerError) throw new CommitError("SANITISER_FAILED", `${err.code}: ${err.message}`);
       throw err;
@@ -431,7 +536,7 @@ export class GitPublisher {
     ctx: RunContext,
     input: CommitInput,
     publishRef: string,
-    sanitizedMessage: () => { message: string; report: SanitizeReport },
+    messageFor: (draftRequest: () => Promise<CommitDraftRequest>) => Promise<ChosenMessage>,
   ): Promise<CommitResult | "lost-race"> {
     const cwd = ctx.worktreePath;
     const old = await resolveCommit(ctx.repoRoot, publishRef);
@@ -469,7 +574,22 @@ export class GitPublisher {
     }
     await this.options.testHooks?.afterStep?.("tree_written");
 
-    const sanitized = sanitizedMessage();
+    // T11.4: the draft request is built lazily, only when the commit-message task actually asks for a draft.
+    const sanitized = await messageFor(async () => ({
+      numstat: (await git(["diff-tree", "-r", "--numstat", "--no-renames", parentTree, tree], { cwd })).stdout.toString(
+        "utf8",
+      ),
+      diff: (
+        await git(
+          ["diff-tree", "-r", "-p", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", parentTree, tree],
+          {
+            cwd,
+          },
+        )
+      ).stdout.toString("utf8"),
+      recentSubjects: await recentSubjects(cwd, parent),
+      sanitise: (text) => this.trySanitize(input, text)?.message ?? null,
+    }));
     const when = Math.floor(this.now().getTime() / 1000);
     const identity = input.identity;
     const identityEnv = {
@@ -550,6 +670,9 @@ export class GitPublisher {
         adapterVersionId: ctx.adapterVersionId,
         origin: input.origin ?? "commit_tool",
         sanitizer: sanitized.report,
+        ...(sanitized.source === "inner"
+          ? { messageSource: "inner" as const, innerCallId: sanitized.innerCallId }
+          : {}),
       },
     };
     this.ledger.appendRunEvent({ runId: ctx.runId, type: "git_commit_intent", payload: intent });
@@ -594,6 +717,7 @@ export class GitPublisher {
         patchId,
         sanitizer: sanitized.report,
         provenanceId: row.id,
+        messageSource: sanitized.source,
       };
     } finally {
       this.inFlight.delete(sha);
@@ -603,8 +727,10 @@ export class GitPublisher {
   /** The outcome step: `git_commit` event and row in one transaction (idempotent per run and commit). */
   private recordOutcome(intent: IntentRecord, recovered: boolean): GitCommitRow {
     const r = intent.record;
+    const { messageSource, innerCallId, ...rest } = r;
     return this.ledger.recordGitCommit({
-      ...r,
+      ...rest,
+      ...(messageSource === "inner" ? { messageSource, innerCallId: innerCallId ?? null } : {}),
       eventPayload: {
         commit_sha: r.commitSha,
         tree_sha: r.treeSha,
@@ -616,6 +742,8 @@ export class GitPublisher {
         ...(intent.via !== undefined ? { via: intent.via } : {}),
         ...(intent.finalizing_event_id !== undefined ? { finalizing_event_id: intent.finalizing_event_id } : {}),
         sanitizer: r.sanitizer,
+        // T11.4 (LLD §12.7): present only for a drafted message, so an agent commit's event is unchanged.
+        ...(messageSource === "inner" ? { message_source: "inner", inner_call_id: innerCallId ?? null } : {}),
         ...(recovered ? { recovered: true } : {}),
       },
     }).row;
@@ -783,7 +911,15 @@ function truncateMessage(message: string): string {
 }
 
 function validateInput(input: CommitInput): void {
-  if (typeof input.message !== "string" || input.message.trim() === "") {
+  if (input.messageTask !== undefined) {
+    // T11.4: the task is offered only to the agent's own `commit` tool, never to the finalize-only path.
+    if ((input.origin ?? "commit_tool") !== "commit_tool") {
+      throw new CommitError("INVALID_REQUEST", "a commit-message task is accepted only for the commit tool");
+    }
+    if (input.message !== undefined && (typeof input.message !== "string" || input.message.trim() === "")) {
+      throw new CommitError("INVALID_REQUEST", "message must be omitted or a non-empty string");
+    }
+  } else if (typeof input.message !== "string" || input.message.trim() === "") {
     throw new CommitError("INVALID_REQUEST", "message must be a non-empty string");
   }
   if (input.paths !== undefined) {
@@ -845,6 +981,27 @@ async function hasSymlinkAncestor(root: string, rel: string): Promise<boolean> {
     }
   }
   return false;
+}
+
+/**
+ * T11.4: up to {@link MAX_RECENT_SUBJECTS} subject lines reachable from `head` (the publish ref, else the base commit),
+ * as a style hint. Best effort: an empty list on any failure. `--no-show-signature` keeps a repository's
+ * `log.showSignature` from adding signature output.
+ */
+async function recentSubjects(cwd: string, head: string): Promise<string[]> {
+  try {
+    const out = await git(
+      ["log", "--no-show-signature", "--no-color", `--max-count=${MAX_RECENT_SUBJECTS}`, "--format=%s", head, "--"],
+      { cwd },
+    );
+    return out.stdout
+      .toString("utf8")
+      .split("\n")
+      .map((l) => l.trim().slice(0, MAX_SUBJECT_HINT_CHARS))
+      .filter((l) => l !== "");
+  } catch {
+    return [];
+  }
 }
 
 async function resolveCommit(cwd: string, rev: string): Promise<string | undefined> {

@@ -15,10 +15,13 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, type CallToolResult, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import {
   COMMIT_DESCRIPTION,
+  COMMIT_DESCRIPTION_MESSAGE_OPTIONAL,
   COMMIT_INPUT_SCHEMA,
+  COMMIT_INPUT_SCHEMA_MESSAGE_OPTIONAL,
   isTokenShaped,
   MAX_RESPONSE_BYTES,
   MAX_SOCKET_PATH_BYTES,
+  MESSAGE_OPTIONAL_FLAG,
   PROTOCOL_VERSION,
   PUSH_DESCRIPTION,
   PUSH_INPUT_SCHEMA,
@@ -39,15 +42,19 @@ export interface ShimConfig {
   readonly token: string;
   /** Tools listed to the agent (T9.6): `--tools`, default `commit`. The controller still refuses tools it did not offer. */
   readonly tools?: readonly ToolName[];
+  /** T11.4: serve the `commit` schema with `message` optional (`--message-optional`). Default false. */
+  readonly messageOptional?: boolean;
 }
 
-const USAGE = "usage: switchboard tool-shim --socket <path> [--tools commit[,push]]";
+const USAGE = `usage: switchboard tool-shim --socket <path> [--tools commit[,push]] [${MESSAGE_OPTIONAL_FLAG}]`;
 
 /**
  * Parse `--socket <path> [--tools <list>]` and read (then remove) the token from the environment. Throws a plain
  * Error on misuse.
  */
-export function shimConfig(argv: readonly string[], env: Record<string, string | undefined>): ShimConfig {
+export function shimConfig(argv0: readonly string[], env: Record<string, string | undefined>): ShimConfig {
+  const messageOptional = argv0.length > 0 && argv0[argv0.length - 1] === MESSAGE_OPTIONAL_FLAG;
+  const argv = messageOptional ? argv0.slice(0, -1) : argv0;
   if ((argv.length !== 2 && argv.length !== 4) || argv[0] !== "--socket") throw new Error(USAGE);
   let tools: readonly ToolName[] = ["commit"];
   if (argv.length === 4) {
@@ -62,7 +69,7 @@ export function shimConfig(argv: readonly string[], env: Record<string, string |
   const token = env[TOOL_TOKEN_ENV];
   delete env[TOOL_TOKEN_ENV];
   if (!isTokenShaped(token)) throw new Error(`tool-shim: ${TOOL_TOKEN_ENV} is missing or malformed`);
-  return { socketPath, token, tools };
+  return { socketPath, token, tools, ...(messageOptional ? { messageOptional: true } : {}) };
 }
 
 /** One request over a fresh connection; resolves with the controller's answer or a local transport error. */
@@ -122,8 +129,17 @@ export function createShimServer(cfg: ShimConfig): Server {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: (cfg.tools ?? ["commit"]).map((name) => ({
       name,
-      description: name === "push" ? PUSH_DESCRIPTION : COMMIT_DESCRIPTION,
-      inputSchema: (name === "push" ? PUSH_INPUT_SCHEMA : COMMIT_INPUT_SCHEMA) as unknown as { type: "object" },
+      description:
+        name === "push"
+          ? PUSH_DESCRIPTION
+          : cfg.messageOptional === true
+            ? COMMIT_DESCRIPTION_MESSAGE_OPTIONAL
+            : COMMIT_DESCRIPTION,
+      inputSchema: (name === "push"
+        ? PUSH_INPUT_SCHEMA
+        : cfg.messageOptional === true
+          ? COMMIT_INPUT_SCHEMA_MESSAGE_OPTIONAL
+          : COMMIT_INPUT_SCHEMA) as unknown as { type: "object" },
     })),
   }));
   server.setRequestHandler(CallToolRequestSchema, async (req) =>

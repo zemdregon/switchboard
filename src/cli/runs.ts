@@ -70,6 +70,10 @@ export interface CommitProvenanceView {
   adapter_version: string | null;
   tool_event_id: string | null;
   sanitizer: { rules: Record<string, number> };
+  /** T11.4 (LLD §12.7): `inner` when the inner agent drafted the message, else `agent`. Never the message itself. */
+  message_source: "agent" | "inner";
+  /** T11.4: the `inner_call` row of the accepted draft; null for an agent message. */
+  inner_call_id: string | null;
   created_at: string;
   pushed_to: { push_id: string; remote: string; ref: string; at: string }[];
 }
@@ -303,6 +307,8 @@ function commitProvenance(db: Database.Database, runId: string, metaSessionId: s
       adapter_version: c.adapter_version,
       tool_event_id: c.tool_event_id,
       sanitizer,
+      message_source: c.message_source === "inner" ? "inner" : "agent",
+      inner_call_id: c.inner_call_id ?? null,
       created_at: c.created_at,
       pushed_to: pushedTo.get(c.commit_sha) ?? [],
     };
@@ -545,6 +551,7 @@ export function renderRun(d: {
         `    project ${c.project_id}  context ${c.context_id}  session ${c.meta_session_id}  run ${c.run_id}`,
         `    provider ${c.provider} (harness ${c.harness})  model ${c.model ?? "-"}  adapter version ${c.adapter_version ?? c.adapter_version_id ?? "-"}`,
         `    sanitiser: ${rules === "" ? "nothing removed" : rules}`,
+        `    message: ${c.message_source === "inner" ? `drafted by the inner agent (${c.inner_call_id ?? "call not recorded"})` : "agent"}`,
         `    pushed: ${c.pushed_to.length === 0 ? "no" : c.pushed_to.map((p) => `${p.remote} ${p.ref} (${p.push_id}, ${p.at})`).join("; ")}`,
       );
     }

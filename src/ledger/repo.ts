@@ -376,6 +376,10 @@ export interface GitCommitRow {
   tool_event_id: string | null;
   sanitizer_json: string;
   created_at: string;
+  /** T11.4 (migration 0007, LLD §12.7): `inner` when the inner agent drafted the message; `agent` otherwise. */
+  message_source: "agent" | "inner";
+  /** T11.4: the `inner_call` row of the accepted draft; NULL for an agent message. */
+  inner_call_id: string | null;
 }
 
 /** Everything `recordGitCommit` needs. `id`, `tool_event_id` and `created_at` are assigned by the ledger. */
@@ -398,6 +402,10 @@ export interface NewGitCommit {
   sanitizer: unknown;
   /** Payload of the `git_commit` run event written in the same transaction (bounded: SHAs, counts, rule ids). */
   eventPayload: unknown;
+  /** T11.4 (LLD §12.7): default `agent`. */
+  messageSource?: "agent" | "inner";
+  /** T11.4: only with `messageSource: "inner"` (the column CHECK refuses it otherwise). */
+  innerCallId?: string | null;
 }
 
 /** One `git_push` row (FR-GIT-05; LLD §1 "M9 additions", §12.6). Append-only. Never holds a URL or Git output. */
@@ -1089,8 +1097,8 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
         db.prepare(
           `INSERT INTO git_commit (id, commit_sha, tree_sha, patch_id, repo_root, publish_ref, project_id, context_id,
              meta_session_id, run_id, provider, harness, model, adapter_version_id, origin, tool_event_id,
-             sanitizer_json, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             sanitizer_json, created_at, message_source, inner_call_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           id,
           input.commitSha,
@@ -1110,6 +1118,8 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
           eventId,
           JSON.stringify(input.sanitizer ?? { rules: {} }),
           when,
+          input.messageSource ?? "agent",
+          input.innerCallId ?? null,
         );
         return { row: db.prepare("SELECT * FROM git_commit WHERE id = ?").get(id) as GitCommitRow, created: true };
       });
