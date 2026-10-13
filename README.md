@@ -16,7 +16,7 @@ Pre-release. The package is private and is not published to any registry; you bu
   fake provider. They have **not** been confirmed against a live provider yet.
 - Providers other than Claude Code and Codex are not implemented.
 
-What works today: `doctor`, `runs list|show|cancel`, and `serve` exposing six MCP tools over stdio, with two trust
+What works today: `doctor`, `runs list|show|cancel`, `gc`, and `serve` exposing six MCP tools over stdio, with two trust
 profiles (`inspect-untrusted`, `edit-untrusted`). Read [Known limitations](#known-limitations) before relying on it.
 
 ## Single operator, your own accounts
@@ -93,7 +93,7 @@ Keys (from `src/config/schema.ts`; no other keys exist yet):
 | `limits.per_provider_concurrency` | no | Integer 1 to 64. Default 1. |
 | `providers.<id>.enabled` | no | Boolean. A provider you do not list is enabled. |
 | `providers.<id>.weight` | no | Number from 0 to 1. Accepted by the schema. |
-| `retention.days`, `retention.interval` | no | How long finished runs are kept (integer days, default 30) and how often the clean-up pass runs (`30m`, `12h`, `7d`; default `24h`). |
+| `retention.days`, `retention.interval` | no | How long idle meta-sessions are kept (integer days, default 30) and how often `serve` runs the clean-up pass (`30m`, `12h`, `7d`; default `24h`). **Nothing is deleted unless you set `retention.days`**; the default only applies once you do (or to `gc` dry runs). |
 | `profiles.<name>` | no | Overrides for `inspect-untrusted`, `edit-untrusted`, `test-sandboxed` or `trusted-development`: `file_access`, `shell`, `shell_allowlist`, `network`, `network_allowlist`, `repo_config`. They may tighten or loosen a default; `doctor` lists them and every run records them. `privileged` has none. See the `edit-untrusted` limit under [Trust profiles](#trust-profiles). |
 
 `<id>` is one of `claude-code`, `codex`, `grok-build`, `antigravity`, `cursor`, `opencode`, `kimi-code`. Only
@@ -107,7 +107,8 @@ switchboard doctor            # add --json for machine-readable output
 switchboard doctor --config /path/to/config.json
 ```
 
-`doctor` checks Node, Git, the config, the data directory, the ledger and the data-directory lock, then probes each
+`doctor` checks Node, Git, the config, the data directory, the ledger and the data-directory lock, reports what
+retention would collect and any orphans (read-only), then probes each
 adapter (Claude Code, Codex and a fake test adapter that is not a real provider). It exits 0 when no check failed and 1
 otherwise. Markers:
 
@@ -164,12 +165,21 @@ switchboard runs show <id>
 switchboard runs cancel <id>
 switchboard approve <run_id>
 switchboard deny <run_id>
+switchboard gc [--apply]
 ```
 
 `runs cancel`, `approve` and `deny` write a request that a running `serve` applies; with no `serve` running they apply
 it themselves. `approve` and `deny` act only on a `privileged` run waiting for approval (review its scope with
 `runs show` first); `deny` ends the run cancelled, and a second decision is refused. Add `--json` to any of these for
 machine-readable output. Exit codes: 0 success, 1 failure (including a refused decision), 2 usage error.
+
+`gc` is the retention clean-up. By default it is a dry run: it lists the idle meta-sessions older than
+`retention.days` (all their runs finished, no lease) and any orphans, and changes nothing. `gc --apply` removes each
+listed session's worktrees, `switchboard/<session>/` branches and artifact files and marks the session archived; the
+run events stay as the audit record. It refuses to apply unless `retention.days` is set in the config, and while a
+`serve` is running (stop it first; a dry run is always allowed). When `retention.days` is set, `serve` also runs this
+pass at startup and then every `retention.interval`. `doctor` shows the same dry-run summary and the orphan sweep
+(worktree directories or `switchboard/*` branches with no ledger row); orphans are reported, never removed.
 
 ## Trust profiles
 

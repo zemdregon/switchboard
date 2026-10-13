@@ -32,6 +32,11 @@
  * a process test can show that a run AWAITING_APPROVAL does not expire after 24 hours. Set without the switch, or to a
  * non-integer, it refuses to start.
  *
+ * T3.12 (Proposed, Delegated): when the config sets `retention.days`, one retention GC pass (`runRetentionGc`) runs right
+ * after reconciliation, before the lifecycle starts and MCP accepts calls (so no run can race it), and then every
+ * `retention.interval` (default 24h). With `retention.days` unset nothing is collected, whatever the default value is.
+ * A failing pass is logged and never stops serving; units are crash-safe and a later pass rolls them forward.
+ *
  * T3.4: the operator poll also applies `approve`/`deny` records (`applyOperatorRequests`), and startup reconciliation
  * applies those recorded while no daemon ran.
  */
@@ -54,7 +59,7 @@ import { type SwitchboardMcpServer, startStdioServer } from "../mcp/index.js";
 import { createProfileResolver } from "../policy/index.js";
 import { reconcile } from "../reconcile/index.js";
 import { CONFIG_TO_ADAPTER_ID } from "../routing/index.js";
-import { WorkspaceManager } from "../workspace/index.js";
+import { runRetentionGc, WorkspaceManager } from "../workspace/index.js";
 import { type CliIo, PROBE_ENV_ALLOWLIST } from "./io.js";
 import { applyOperatorRequests } from "./operator.js";
 
@@ -63,6 +68,8 @@ export const TEST_FAKE_ADAPTER_VALUE = "enable-test-only-fake-adapter";
 /** Scenario for the test-only fake adapter (default `success`); read only when the switch is on. */
 export const TEST_FAKE_SCENARIO_ENV = "SWITCHBOARD_TEST_FAKE_SCENARIO";
 export const OPERATOR_POLL_MS = 1000;
+/** Node clamps a timer delay above 2^31-1 ms (about 24.8 days) to 1 ms, so a longer `retention.interval` is capped. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
 /** Test-only clock offset in milliseconds; honoured only with the fake switch on (T3.4 process tests). */
 export const TEST_CLOCK_OFFSET_ENV = "SWITCHBOARD_TEST_CLOCK_OFFSET_MS";
 
@@ -249,6 +256,41 @@ async function runDaemon(
     return 1;
   }
 
+  // T3.12: retention GC, only when the operator set retention.days. Housekeeping: a failure never blocks serving.
+  let gcInFlight: Promise<void> | undefined;
+  const gcPass = async (when: "startup" | "interval"): Promise<void> => {
+    if (!config.retentionEnabled || gcInFlight) return;
+    let done: () => void = () => {};
+    gcInFlight = new Promise<void>((r) => {
+      done = r;
+    });
+    try {
+      const r = await runRetentionGc({
+        db,
+        artifacts,
+        dataDir: config.dataDir,
+        days: config.retention.days,
+        ...(now ? { now: now() } : {}),
+      });
+      log.info("retention gc finished", {
+        when,
+        cutoff: r.cutoff,
+        collected: r.collected.map((c) => c.sessionId),
+        errors: r.errors.length,
+      });
+      for (const e of r.errors)
+        log.warn("retention gc unit failed", { session_id: e.sessionId, step: e.step, error: e.message });
+      for (const c of r.collected)
+        for (const w of c.warnings) log.warn("retention gc warning", { session_id: c.sessionId, warning: w });
+    } catch (err) {
+      log.error("retention gc failed", { when, error: message(err) });
+    } finally {
+      gcInFlight = undefined;
+      done();
+    }
+  };
+  await gcPass("startup");
+
   if (fake.enabled) {
     log.warn("TEST-ONLY fake adapter enabled; it is not a real provider", {
       env: TEST_FAKE_ADAPTER_ENV,
@@ -308,6 +350,10 @@ async function runDaemon(
   process.stdin.on("end", onStdinEnd);
   process.stdin.on("close", onStdinEnd);
   const timer = setInterval(() => void applyRequests(), OPERATOR_POLL_MS);
+  const gcTimer = config.retentionEnabled
+    ? setInterval(() => void gcPass("interval"), Math.min(config.retention.intervalMs, MAX_TIMER_MS))
+    : undefined;
+  gcTimer?.unref();
 
   let code = 0;
   try {
@@ -342,6 +388,8 @@ async function runDaemon(
     process.stdin.off("end", onStdinEnd);
     process.stdin.off("close", onStdinEnd);
     clearInterval(timer);
+    if (gcTimer) clearInterval(gcTimer);
+    await gcInFlight; // a pass still running must finish before the lifecycle and the ledger are closed
     try {
       // onclose fires again here; resolving the already-settled stop promise is a no-op.
       if (mcp) await mcp.close();
