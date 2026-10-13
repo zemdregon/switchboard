@@ -7,7 +7,7 @@
  *   SWITCHBOARD_LIVE_TESTS=1 SWITCHBOARD_LIVE_PROVIDER=claude npm run test:live
  *
  * Skipped (exit 0, nothing run) unless SWITCHBOARD_LIVE_TESTS=1. `npm test` and CI never run it. Optional:
- *   SWITCHBOARD_LIVE_PROVIDER    claude | codex (required when enabled)
+ *   SWITCHBOARD_LIVE_PROVIDER    a provider plug-in id: claude | codex | any other scripts/live/providers/<id>.mjs (required when enabled)
  *   SWITCHBOARD_LIVE_TIMEOUT_MS  how long to wait for the run (default 600000)
  *   SWITCHBOARD_LIVE_KEEP=1      keep the temp directory (ledger, artifacts, serve log) for inspection
  *
@@ -18,24 +18,40 @@
  * under `edit-untrusted` in a fresh repository that contains only a README.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+// Provider plug-ins (T4.3): one scripts/live/providers/<id>.mjs per provider; the contract is in those files.
+const PLUGIN_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "live", "providers");
+const PROVIDERS = readdirSync(PLUGIN_DIR)
+  .filter((f) => f.endsWith(".mjs"))
+  .map((f) => f.slice(0, -".mjs".length))
+  .sort();
+
 if (process.env.SWITCHBOARD_LIVE_TESTS !== "1") {
   process.stdout.write(
-    "live-smoke: SKIPPED (opt-in). Set SWITCHBOARD_LIVE_TESTS=1 and SWITCHBOARD_LIVE_PROVIDER=claude|codex to run it.\n",
+    `live-smoke: SKIPPED (opt-in). Set SWITCHBOARD_LIVE_TESTS=1 and SWITCHBOARD_LIVE_PROVIDER=${PROVIDERS.join("|")} to run it.\n`,
   );
   process.exit(0);
 }
 
-const PROVIDERS = ["claude", "codex"];
 const provider = process.env.SWITCHBOARD_LIVE_PROVIDER ?? "";
 if (!PROVIDERS.includes(provider)) {
   process.stderr.write(`live-smoke: SWITCHBOARD_LIVE_PROVIDER must be one of ${PROVIDERS.join(", ")}\n`);
   process.exit(2);
 }
+const plugin = (await import(pathToFileURL(path.join(PLUGIN_DIR, `${provider}.mjs`)).href)).default;
 const timeoutMs = Number(process.env.SWITCHBOARD_LIVE_TIMEOUT_MS ?? 600_000);
 const keep = process.env.SWITCHBOARD_LIVE_KEEP === "1";
 
@@ -60,9 +76,9 @@ const checks = [];
 const record = (id, group, assumption, result, evidence) => checks.push({ id, group, assumption, result, evidence });
 const held = (ok) => (ok === undefined ? "NOT_CHECKED" : ok ? "HELD" : "FAILED");
 
-const GROUP = provider === "claude" ? "R-21" : "R-22";
+const GROUP = plugin.group;
 const runner = adapters.createProbeRunner(PROBE_ENV_ALLOWLIST);
-const adapter = provider === "claude" ? new adapters.ClaudeAdapter() : new adapters.CodexAdapter();
+const adapter = plugin.createAdapter(adapters);
 const registry = new adapters.AdapterRegistry().register(adapter);
 
 out(`Switchboard live smoke test: provider ${provider}`);
@@ -78,107 +94,16 @@ const gate = registry.gate(provider, probe.binaryVersion);
 out(`version gate: ${gate.eligible ? "eligible" : `${gate.code}: ${gate.detail}`}`);
 const binaryOk = step("binary")?.ok === true;
 
-if (provider === "claude") {
-  record(
-    "C-1",
-    GROUP,
-    "`claude --version` prints `<semver> (Claude Code)`",
-    held(binaryOk ? step("version")?.ok : undefined),
-    probe.binaryVersion ?? "no version",
-  );
-  record(
-    "C-2",
-    GROUP,
-    "`claude --help` lists every flag the adapter emits (--safe-mode, --restricted, --disallowedTools, ...)",
-    held(binaryOk ? step("flags")?.ok && step("output_format")?.ok : undefined),
-    binaryOk ? (step("flags")?.detail ?? "all present") : "binary not found",
-  );
-} else {
-  record(
-    "X-1",
-    GROUP,
-    "`codex --version` prints a parseable version line",
-    held(binaryOk ? step("version")?.ok : undefined),
-    probe.binaryVersion ?? "no version",
-  );
-  record(
-    "X-2",
-    GROUP,
-    "`codex exec --help` lists --json, --sandbox and the ignore-config/rules flags",
-    held(binaryOk ? step("flags")?.ok && step("output_format")?.ok : undefined),
-    binaryOk ? (step("flags")?.detail ?? "all present") : "binary not found",
-  );
-  if (binaryOk) {
-    const help = await runner([probe.binaryPath, "exec", "--help"]);
-    const text = help.exitCode === 0 ? help.stdout : "";
-    record(
-      "X-3",
-      GROUP,
-      "the sandbox values are spelled `read-only` and `workspace-write`",
-      held(text ? text.includes("read-only") && text.includes("workspace-write") : undefined),
-      text ? "searched `codex exec --help`" : "help unavailable",
-    );
-  } else {
-    record(
-      "X-3",
-      GROUP,
-      "the sandbox values are spelled `read-only` and `workspace-write`",
-      "NOT_CHECKED",
-      "binary not found",
-    );
-  }
-}
+await plugin.probeChecks({ record, held, step, probe, binaryOk, runner, group: GROUP });
 record(
-  `${provider === "claude" ? "C" : "X"}-V`,
+  `${plugin.checkPrefix}-V`,
   "Q-12/T2.1",
   "the installed version is inside the manifest's validated range",
   held(binaryOk ? gate.eligible : undefined),
   gate.eligible ? `${probe.binaryVersion} in ${gate.evidence.validatedRange}` : gate.detail,
 );
 
-if (provider === "claude" && binaryOk) {
-  // Status command shape only: exit code, parse, key NAMES. Values are never printed.
-  const r = await runner([probe.binaryPath, "auth", "status", "--json"]);
-  let parsed;
-  try {
-    parsed = JSON.parse(r.stdout);
-  } catch {
-    parsed = undefined;
-  }
-  const isObj = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
-  const keys = isObj ? Object.keys(parsed).sort() : [];
-  out(`auth status: exit ${r.exitCode}, JSON ${isObj ? "object" : "not parseable"}, keys [${keys.join(", ")}]`);
-  record("C-3", GROUP, "`claude auth status --json` prints a JSON object", held(isObj), `exit ${r.exitCode}`);
-  record(
-    "C-4",
-    GROUP,
-    "the status JSON has a boolean `loggedIn` field consistent with the exit code (0 = logged in)",
-    held(isObj ? typeof parsed.loggedIn === "boolean" && (parsed.loggedIn === true) === (r.exitCode === 0) : undefined),
-    isObj ? `loggedIn is ${typeof parsed.loggedIn}` : "no JSON",
-  );
-  const auth = await adapter.authPreflight(runner);
-  out(
-    `auth preflight (PATH and HOME only): ${auth.state}${auth.state === "AUTH_REQUIRED" ? ` -> run \`${auth.loginCommand}\` yourself` : ""}`,
-  );
-  record(
-    "C-5",
-    GROUP,
-    "the status command works with only PATH and HOME in its environment",
-    held(auth.state === "OK" ? true : auth.state === "UNKNOWN" ? false : undefined),
-    auth.state,
-  );
-} else if (provider === "codex") {
-  out(
-    "auth status: Codex documents no status command (Q-10); the adapter reports UNKNOWN, so routing is expected to refuse it",
-  );
-  record(
-    "X-4",
-    "Q-10",
-    "a Codex auth status mechanism exists that the adapter can use",
-    "NOT_CHECKED",
-    "no documented command; adapter returns UNKNOWN (fail closed)",
-  );
-}
+await plugin.authChecks({ record, held, probe, binaryOk, runner, adapter, out, group: GROUP });
 
 // Flags the daemon will pass (from the same compile the daemon runs), audited for bypass flags.
 const compiled = adapter.compile(
@@ -336,19 +261,7 @@ if (runId && existsSync(path.join(dataDir, "ledger.sqlite"))) {
       }
       const t = `${doc?.type ?? "(no type)"}${typeof doc?.subtype === "string" ? `/${doc.subtype}` : ""}`;
       types.set(t, (types.get(t) ?? 0) + 1);
-      if (provider === "claude") {
-        if (doc?.type === "system" && doc.subtype === "init")
-          shapes.initWithSession = typeof doc.session_id === "string";
-        if ((doc?.type === "assistant" || doc?.type === "user") && shapes.contentBlocks !== false) {
-          shapes.contentBlocks = Array.isArray(doc.message?.content);
-        }
-        if (doc?.type === "result") {
-          shapes.resultFields = ["subtype", "is_error", "session_id", "usage"].every((k) => k in doc);
-        }
-      } else {
-        if (doc?.type === "thread.started") shapes.threadStarted = typeof doc.thread_id === "string";
-        if (doc?.type === "turn.completed") shapes.turnCompleted = typeof doc.usage === "object" && doc.usage !== null;
-      }
+      plugin.observeEvent(doc, shapes);
       for (const ev of adapter.parseEvent(line, state)) {
         kinds.set(ev.kind, (kinds.get(ev.kind) ?? 0) + 1);
         if (ev.kind === "unknown") unknownEvents += 1;
@@ -403,93 +316,19 @@ if (ran) {
     gitRefsEvidence = `git inspection failed: ${String(err).slice(0, 120)}`;
   }
 }
-if (provider === "claude") {
-  record(
-    "C-6",
-    GROUP,
-    "`-p` reads the prompt from stdin and `--verbose` is accepted with stream-json",
-    held(ran ? succeeded : undefined),
-    ran ? final.status : "provider never ran",
-  );
-  record(
-    "C-7",
-    GROUP,
-    "stream starts with `system`/`init` carrying `session_id`",
-    held(ran ? shapes.initWithSession === true : undefined),
-    String(shapes.initWithSession ?? "no init event"),
-  );
-  record(
-    "C-8",
-    GROUP,
-    "`assistant`/`user` events carry `message.content[]` blocks",
-    held(ran ? shapes.contentBlocks === true : undefined),
-    String(shapes.contentBlocks ?? "no such events"),
-  );
-  record(
-    "C-9",
-    GROUP,
-    "the `result` event has `subtype`, `is_error`, `session_id` and `usage`",
-    held(ran ? shapes.resultFields === true : undefined),
-    String(shapes.resultFields ?? "no result event"),
-  );
-  record(
-    "C-10",
-    GROUP,
-    "every event type in a successful run is recognised (no `unknown` events)",
-    held(ran ? unknownEvents === 0 && badJson === 0 : undefined),
-    `${unknownEvents} unknown, ${badJson} non-JSON`,
-  );
-  record(
-    "C-11",
-    GROUP,
-    "the file-creating tool is named `Write` (or `Edit`) and is allowed by --tools",
-    held(ran ? smokeContent !== undefined && (toolNames.has("Write") || toolNames.has("Edit")) : undefined),
-    [...toolNames].join(", ") || "no tool calls",
-  );
-  record(
-    "C-12",
-    GROUP,
-    "error category strings (rate_limit, overloaded, authentication_failed, ...)",
-    "NOT_CHECKED",
-    "needs a failing run; not provoked by this smoke test",
-  );
-} else {
-  record(
-    "X-5",
-    GROUP,
-    "`codex exec --json` reads the prompt from stdin",
-    held(ran ? succeeded : undefined),
-    ran ? final.status : "provider never ran",
-  );
-  record(
-    "X-6",
-    GROUP,
-    "the stream has `thread.started` with `thread_id`",
-    held(ran ? shapes.threadStarted === true : undefined),
-    String(shapes.threadStarted ?? "no such event"),
-  );
-  record(
-    "X-7",
-    GROUP,
-    "`turn.completed` carries `usage`",
-    held(ran ? shapes.turnCompleted === true : undefined),
-    String(shapes.turnCompleted ?? "no such event"),
-  );
-  record(
-    "X-8",
-    GROUP,
-    "every event and item type in a successful run is recognised (no `unknown` events)",
-    held(ran ? unknownEvents === 0 && badJson === 0 : undefined),
-    `${unknownEvents} unknown, ${badJson} non-JSON`,
-  );
-  record(
-    "X-9",
-    GROUP,
-    "error `code` strings and the `declined` item status",
-    "NOT_CHECKED",
-    "needs a failing run; not provoked by this smoke test",
-  );
-}
+plugin.streamChecks({
+  record,
+  held,
+  ran,
+  succeeded,
+  final,
+  shapes,
+  unknownEvents,
+  badJson,
+  toolNames,
+  smokeContent,
+  group: GROUP,
+});
 record(
   "G-1",
   "FR-GIT-01",
@@ -497,25 +336,7 @@ record(
   held(gitRefsOk),
   gitRefsEvidence,
 );
-if (provider === "claude") {
-  record(
-    "C-G2",
-    "FR-GIT-01",
-    "`--disallowedTools` Git deny rules (`Bash(git commit *)`, ...) are accepted with no Bash in --tools and deny a Git write",
-    "NOT_CHECKED",
-    "acceptance is covered by C-6 (the run starts); denial needs a deliberate Git write attempt, which this smoke test never makes (malicious fixtures: T9.5). " +
-      'Depends on bypass: an approved privileged run with `bypass: true` adds --dangerously-skip-permissions (`claude --help`: "Bypass all permission checks") and keeps these deny rules; ' +
-      "whether Claude still honours deny rules under that flag is an Assumption, unverified (R-26, TDD §4.1.1; live check T3.9), and this smoke test never runs a bypass invocation",
-  );
-} else {
-  record(
-    "X-G1",
-    "FR-GIT-01",
-    "the workspace-write sandbox blocks writes to the worktree's Git directory (outside the cwd, under .git/worktrees/)",
-    "NOT_CHECKED",
-    "needs a deliberate `git commit` attempt inside the sandbox, which this smoke test never makes (malicious fixtures: T9.5)",
-  );
-}
+plugin.gitWriteChecks({ record });
 record(
   "E2E",
   "T2.6",

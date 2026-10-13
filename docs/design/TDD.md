@@ -231,6 +231,17 @@ startup reconciliation applies them. Run state transitions use an optimistic ver
 | Retrieval index (M12) | Deterministic fake embedding backend, hostile-content fixtures, planted-secret scan, isolation and import-boundary tests; details in [§3.13](#313-retrieval-index) | No | FR-RAG-01..14 |
 | Docs check | `scripts/check-docs.mjs` must pass on every change (links, anchors, ID references) | No | NFR-MAINT-02 |
 
+**Shared suite plumbing (T4.3).** A provider supplies cases and small data files; the shared code is not edited.
+Replay: one helper, `src/adapters/fixtures/replay.mjs`, replays a recorded or synthetic fixture for any provider, with
+one dialect file per provider in `src/adapters/fixtures/replay-dialects/<id>.mjs` (argv shape check, session
+placeholder, probe answers) and launcher arguments from `replayLauncher` (`src/adapters/fixtures/replay.ts`).
+Malicious-fixture leg per adapter: `test/malicious/adapter-leg.test.ts` runs the harness in `test/malicious/adapter-leg.ts`
+over every `test/malicious/adapters/<id>.case.ts`; the case names the profile, the isolation and never-enabled flags
+and its hostile streams (credential-path read, out-of-worktree write, network attempt, unknown events). It proves
+compile and parse behaviour against replayed, synthetic streams only; "no escape" on a real CLI is the operator leg
+(T3.9, T4.n8). Live scripts: `scripts/live-smoke.mjs` loads `scripts/live/providers/<id>.mjs` (the contract is in the
+header of those files) and still exits 0 without running anything unless `SWITCHBOARD_LIVE_TESTS=1`.
+
 Principles: tests pass with no provider CLI installed or logged in; secret-pattern scan over all test outputs
 (NFR-SEC-01); coverage targets are not set until M1 measurement (no number proposed).
 
