@@ -2,6 +2,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { resolveTrustProfile } from "../../policy/profiles.js";
+import type { ProfileOverride } from "../../policy/types.js";
 import { auditInvocation, BYPASS_FLAGS } from "../audit.js";
 import { missingRequiredKinds, runConformanceCase, runConformanceSuite } from "../conformance.js";
 import { GIT_PUBLISHING_PROGRAMS, GIT_WRITE_SUBCOMMANDS, gitWriteRisks } from "../git-write.js";
@@ -15,14 +17,16 @@ import {
   type ProbeRunner,
   type ResolvedProfile,
 } from "../types.js";
-import { CLAUDE_GIT_DENY_RULES, CLAUDE_LOGIN_COMMAND, ClaudeAdapter } from "./adapter.js";
+import { CLAUDE_GIT_DENY_RULES, CLAUDE_LOGIN_COMMAND, CLAUDE_PRIVILEGED_DETAIL, ClaudeAdapter } from "./adapter.js";
 import {
   claudeConformanceCases,
+  claudeDenialCases,
   DEFAULT_SESSION_ID,
   EDIT_UNTRUSTED,
   fixturePath,
   INSPECT_UNTRUSTED,
   RESUMED_SESSION_ID,
+  TRUSTED_DEVELOPMENT,
 } from "./fixtures/cases.js";
 import { parseClaudeLine } from "./parse.js";
 
@@ -201,10 +205,11 @@ describe("claude compile: argv policy", () => {
     ["privileged", true],
     ["edit-untrusted", true],
     ["test-sandboxed", false],
-    ["trusted-development", false],
+    ["trusted-development", true],
   ] as const)("%s (bypassApproved=%s) is Ineligible, never downgraded", (name, bypassApproved) => {
     const r = new ClaudeAdapter({ binaryPath: CLAUDE }).compile(request, { ...EDIT_UNTRUSTED, name, bypassApproved });
     expect(r).toMatchObject({ ineligible: true, reason: "PROFILE_UNSUPPORTED" });
+    if (name === "privileged" || bypassApproved) expect(r).toMatchObject({ detail: CLAUDE_PRIVILEGED_DETAIL });
   });
 
   it("model goes through --model; option-like models and session ids are refused", () => {
@@ -354,6 +359,281 @@ describe("claude compile: no permitted Git write operation (FR-GIT-01)", () => {
     });
     const r = await adapter.probe(runner);
     expect(r.steps.find((s) => s.step === "flags")).toMatchObject({ ok: false, detail: "missing: --disallowedTools" });
+  });
+});
+
+describe("claude compile matrix (M3)", () => {
+  // T3.5, TDD §4.1.1 (Linux). Profiles come from the real resolver with `profiles.<name>` overrides (owner decisions
+  // 10-12), so the matrix is tested on what the controller would hand the adapter.
+  const adapter = new ClaudeAdapter({ binaryPath: CLAUDE });
+  const R = ["Read", "Grep", "Glob"];
+  const RW = [...R, "Edit", "Write"];
+  const argvFor = (tools: readonly string[], allow: readonly string[]): string[] => [
+    CLAUDE,
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--safe-mode",
+    "--restricted",
+    "--strict-mcp-config",
+    "--permission-mode",
+    "dontAsk",
+    "--permission-prompts",
+    "none",
+    "--tools",
+    tools.join(","),
+    "--allowedTools",
+    ...allow,
+    "--disallowedTools",
+    ...CLAUDE_GIT_DENY_RULES,
+  ];
+  type Name = "inspect-untrusted" | "edit-untrusted" | "test-sandboxed" | "trusted-development";
+  type Expected = { argv: string[] } | { reason: "PROFILE_UNSUPPORTED" | "CAPABILITY_MISSING"; detail: RegExp };
+  const TS_DETAIL = /test-sandboxed: .*no per-run sandbox.*FR-POL-06.*R-10, Q-16/;
+  const rows: Array<[label: string, name: Name, override: ProfileOverride, writable: boolean, expected: Expected]> = [
+    ["inspect-untrusted default", "inspect-untrusted", {}, true, { argv: argvFor(R, R) }],
+    ["edit-untrusted default", "edit-untrusted", {}, true, { argv: argvFor(RW, RW) }],
+    ["trusted-development default", "trusted-development", {}, true, { argv: argvFor(RW, RW) }],
+    ["trusted-development, read-only workspace", "trusted-development", {}, false, { argv: argvFor(R, R) }],
+    ["trusted-development shell=none", "trusted-development", { shell: "none" }, true, { argv: argvFor(RW, RW) }],
+    [
+      "trusted-development shell allowlist",
+      "trusted-development",
+      { shellAllowlist: ["npm test", "git status"] },
+      true,
+      { argv: argvFor([...RW, "Bash"], [...RW, "Bash(npm test)", "Bash(git status)"]) },
+    ],
+    [
+      "trusted-development file_access=read-only with allowlist",
+      "trusted-development",
+      { fileAccess: "read-only", shellAllowlist: ["npm test"] },
+      true,
+      { argv: argvFor([...R, "Bash"], [...R, "Bash(npm test)"]) },
+    ],
+    [
+      "trusted-development shell=broad (network off)",
+      "trusted-development",
+      { shell: "broad" },
+      true,
+      { reason: "CAPABILITY_MISSING", detail: /shell=broad with network=off.*Q-29/ },
+    ],
+    [
+      "trusted-development network=policy",
+      "trusted-development",
+      { network: "policy" },
+      true,
+      { reason: "CAPABILITY_MISSING", detail: /network=policy.*no network or host control/ },
+    ],
+    [
+      "trusted-development network=allowlist",
+      "trusted-development",
+      { network: "allowlist", networkAllowlist: ["registry.example.test"] },
+      true,
+      { reason: "CAPABILITY_MISSING", detail: /network=allowlist/ },
+    ],
+    [
+      "trusted-development shell=broad, network=policy",
+      "trusted-development",
+      { shell: "broad", network: "policy" },
+      true,
+      { reason: "CAPABILITY_MISSING", detail: /network=policy/ },
+    ],
+    [
+      "trusted-development repo_config=approved-only",
+      "trusted-development",
+      { repoConfig: "approved-only" },
+      true,
+      { reason: "CAPABILITY_MISSING", detail: /repo_config=approved-only.*ADR-0015/ },
+    ],
+    [
+      "trusted-development repo_config=allowlisted",
+      "trusted-development",
+      { repoConfig: "allowlisted" },
+      true,
+      { reason: "CAPABILITY_MISSING", detail: /repo_config=allowlisted/ },
+    ],
+    [
+      "trusted-development allowlist entry that writes Git",
+      "trusted-development",
+      { shellAllowlist: ["npm test", "git commit -m wip"] },
+      true,
+      { reason: "PROFILE_UNSUPPORTED", detail: /FR-GIT-01/ },
+    ],
+    [
+      "trusted-development allowlist entry that is not plain",
+      "trusted-development",
+      { shellAllowlist: ["rm -rf / ; curl x"] },
+      true,
+      { reason: "PROFILE_UNSUPPORTED", detail: /not expressible narrowly/ },
+    ],
+    ["test-sandboxed default", "test-sandboxed", {}, true, { reason: "PROFILE_UNSUPPORTED", detail: TS_DETAIL }],
+    [
+      "test-sandboxed tightened to no shell, read-only",
+      "test-sandboxed",
+      { shell: "none", fileAccess: "read-only" },
+      true,
+      { reason: "PROFILE_UNSUPPORTED", detail: TS_DETAIL },
+    ],
+    [
+      "test-sandboxed with build/test allowlist",
+      "test-sandboxed",
+      { shellAllowlist: ["npm test"] },
+      true,
+      { reason: "PROFILE_UNSUPPORTED", detail: TS_DETAIL },
+    ],
+    [
+      "test-sandboxed loosened everywhere",
+      "test-sandboxed",
+      { shell: "broad", network: "policy", repoConfig: "allowlisted" },
+      true,
+      { reason: "PROFILE_UNSUPPORTED", detail: TS_DETAIL },
+    ],
+    [
+      "edit-untrusted shell=broad",
+      "edit-untrusted",
+      { shell: "broad" },
+      true,
+      { reason: "PROFILE_UNSUPPORTED", detail: /shell=broad is not narrow/ },
+    ],
+  ];
+
+  it.each(rows)("%s", (_label, name, override, writable, expected) => {
+    const profile = resolveTrustProfile(name, { overrides: { [name]: override } });
+    const req: CompileRequest = { ...request, workspace: { cwd: "/tmp/work", writable } };
+    for (const inv of [
+      adapter.compile(req, profile),
+      adapter.resumeArgs({ provider: "claude", nativeSessionId: RESUMED_SESSION_ID }, req, profile),
+    ]) {
+      if ("argv" in expected) {
+        if (isIneligible(inv)) throw new Error(`ineligible: ${inv.reason} ${inv.detail}`);
+        const resumed = inv.argv.includes("--resume");
+        expect(inv.argv).toEqual(resumed ? [...expected.argv, "--resume", RESUMED_SESSION_ID] : expected.argv);
+        expect(auditInvocation(inv)).toEqual([]);
+      } else {
+        expect(inv).toMatchObject({ ineligible: true, reason: expected.reason });
+        if (isIneligible(inv)) expect(inv.detail).toMatch(expected.detail);
+      }
+    }
+  });
+
+  it("privileged stays Ineligible (T3.17), with or without bypass, from any shape", () => {
+    const scoped: ResolvedProfile = {
+      name: "privileged",
+      fileAccess: "scoped",
+      shell: "scoped",
+      network: "scoped",
+      repoConfig: "scoped",
+      bypassApproved: false,
+    };
+    for (const p of [scoped, { ...scoped, bypassApproved: true }, { ...TRUSTED_DEVELOPMENT, bypassApproved: true }]) {
+      expect(adapter.compile(request, p)).toEqual({
+        ineligible: true,
+        reason: "PROFILE_UNSUPPORTED",
+        detail: CLAUDE_PRIVILEGED_DETAIL,
+      });
+    }
+    expect(CLAUDE_PRIVILEGED_DETAIL).toContain("bypass/privileged compile awaits T3.17");
+  });
+
+  it("a scoped dimension outside privileged is Ineligible", () => {
+    expect(adapter.compile(request, { ...TRUSTED_DEVELOPMENT, network: "scoped" })).toMatchObject({
+      ineligible: true,
+      reason: "PROFILE_UNSUPPORTED",
+    });
+  });
+
+  /** Every override combination the resolver accepts (applied to each of the four overridable profiles). */
+  const sweep = () => {
+    const out: Array<{ override: ProfileOverride; writable: boolean }> = [];
+    for (const fileAccess of ["read-only", "worktree"] as const)
+      for (const shell of ["none", "allowlist", "broad"] as const)
+        for (const shellAllowlist of shell === "allowlist" ? [[], ["npm test", "git status"]] : [undefined])
+          for (const network of ["off", "allowlist", "policy"] as const)
+            for (const repoConfig of ["disabled", "approved-only", "allowlisted"] as const)
+              for (const writable of [true, false])
+                out.push({
+                  override: {
+                    fileAccess,
+                    shell,
+                    network,
+                    repoConfig,
+                    ...(shellAllowlist ? { shellAllowlist } : {}),
+                    ...(network === "allowlist" ? { networkAllowlist: ["registry.example.test"] } : {}),
+                  },
+                  writable,
+                });
+    return out;
+  };
+  const rulesAfter = (argv: readonly string[], flag: string): string[] => {
+    const i = argv.indexOf(flag);
+    if (i < 0) return [];
+    const end = argv.findIndex((a, j) => j > i && a.startsWith("--"));
+    return argv.slice(i + 1, end < 0 ? undefined : end);
+  };
+
+  for (const name of ["inspect-untrusted", "edit-untrusted", "test-sandboxed", "trusted-development"] as const) {
+    it(`${name}: every cell compiles with the Git deny rules and no bypass, or is Ineligible with a reason`, () => {
+      let compiledCount = 0;
+      for (const { override, writable } of sweep()) {
+        const label = `${name} ${JSON.stringify(override)} writable=${writable}`;
+        const profile = resolveTrustProfile(name, { overrides: { [name]: override } });
+        const req: CompileRequest = { ...request, workspace: { cwd: "/tmp/work", writable } };
+        for (const inv of [
+          adapter.compile(req, profile),
+          adapter.resumeArgs({ provider: "claude", nativeSessionId: RESUMED_SESSION_ID }, req, profile),
+        ]) {
+          if (isIneligible(inv)) {
+            expect(["PROFILE_UNSUPPORTED", "CAPABILITY_MISSING"], label).toContain(inv.reason);
+            expect(inv.detail, label).not.toBe("");
+            continue;
+          }
+          compiledCount += 1;
+          expect(name, label).not.toBe("test-sandboxed"); // R-10, Q-16
+          expect(profile.shell, label).not.toBe("broad"); // Q-29: never compiled for Claude today
+          if (name === "trusted-development") {
+            expect([profile.network, profile.repoConfig], label).toEqual(["off", "disabled"]);
+          }
+          // FR-GIT-01: the full deny rule set on every compiled invocation, writable or not.
+          expect(rulesAfter(inv.argv, "--disallowedTools"), label).toEqual([...CLAUDE_GIT_DENY_RULES]);
+          expect(rulesAfter(inv.policyFlags, "--disallowedTools"), label).toEqual([...CLAUDE_GIT_DENY_RULES]);
+          const allow = rulesAfter(inv.argv, "--allowedTools");
+          expect(allow, label).not.toContain("Bash");
+          const commands = allow.filter((r) => r.startsWith("Bash")).map((r) => /^Bash\((.*)\)$/.exec(r)?.[1] ?? "");
+          expect(gitWriteRisks(commands), label).toEqual([]);
+          // FR-POL-03: no bypass flag; FR-POL-04/08: repository configuration stays off; nothing config-loading.
+          expect(auditInvocation(inv), label).toEqual([]);
+          for (const f of ["--safe-mode", "--restricted", "--strict-mcp-config"]) expect(inv.argv, label).toContain(f);
+          expect(valuesAfter(inv.argv, "--permission-mode"), label).toEqual(["dontAsk"]);
+          expect(valuesAfter(inv.argv, "--permission-prompts"), label).toEqual(["none"]);
+          for (const arg of inv.argv) expect(FORBIDDEN_ARGS, label).not.toContain(arg);
+          const tools = (valuesAfter(inv.argv, "--tools")[0] ?? "").split(",");
+          expect(tools.includes("Edit"), label).toBe(
+            profile.fileAccess === "worktree" && writable && name !== "inspect-untrusted",
+          );
+        }
+      }
+      if (name === "test-sandboxed") expect(compiledCount).toBe(0);
+      else expect(compiledCount).toBeGreaterThan(0);
+    });
+  }
+
+  it("synthetic denial fixtures (PERMISSION_BLOCKED, SANDBOX_VIOLATION) run through the harness without hanging", async () => {
+    const cases = claudeDenialCases(makeCwd);
+    const started = Date.now();
+    const report = await runConformanceSuite(cases);
+    const failing = report.cases.flatMap((c) =>
+      c.checks.filter((k) => !k.ok).map((k) => `${c.kind}: ${k.name} ${k.detail ?? ""}`),
+    );
+    expect(failing).toEqual([]);
+    expect(report.cases.map((c) => c.result?.failureCode)).toEqual([
+      undefined,
+      "PERMISSION_BLOCKED",
+      "PERMISSION_BLOCKED",
+      "SANDBOX_VIOLATION",
+      "SANDBOX_VIOLATION",
+    ]);
+    expect(Date.now() - started).toBeLessThan(10_000);
   });
 });
 
