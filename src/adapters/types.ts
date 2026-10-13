@@ -236,6 +236,13 @@ export interface GitCapabilities {
    * flag: the argv audit (FR-POL-03) runs over the result.
    */
   channelArgs?(shim: ShimSpec, request: CompileRequest, profile: ResolvedProfile): ChannelArgs | Ineligible;
+  /**
+   * Pure. Optional per-run narrowing of an `injected` declaration (T9.4b, ADR-0033; Delegated shape): when present and
+   * false for a run, the lifecycle treats that run as `none` (no channel, no `channelArgs` call, no event, and the
+   * finalize-only commit of FR-GIT-09 applies as for an adapter without a channel). Absent means every run qualifies.
+   * Claude Code: true only for an approved `privileged` scope with `bypass` (owner decision 41).
+   */
+  offersChannel?(request: CompileRequest, profile: ResolvedProfile): boolean;
 }
 
 /** A file an adapter needs next to the socket (T9.4b): written by the channel service, never by the adapter. */
@@ -252,6 +259,14 @@ export interface ChannelFile {
  */
 export interface ChannelArgs extends Pick<Invocation, "argv" | "env"> {
   readonly files?: readonly ChannelFile[];
+  /**
+   * Standalone flags (no value; each starts with `--` and has no `=`) the lifecycle removes from the compiled argv and
+   * `policyFlags` before it appends `argv` (T9.4b, ADR-0033; Delegated shape). A flag that is absent is a no-op. Only
+   * Claude Code's `--safe-mode` in an approved bypass run today (owner decision 41: `--safe-mode` stops the injected
+   * server from starting). The argv audits (`./audit.ts`) run over the result and refuse any omission they do not
+   * admit.
+   */
+  readonly removeFlags?: readonly string[];
 }
 
 export interface ProviderAdapter {

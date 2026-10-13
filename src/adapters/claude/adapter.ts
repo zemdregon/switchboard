@@ -27,9 +27,12 @@
  *                                   denied (FR-GIT-01; which files count as "git files" is an Assumption)
  *   --strict-mcp-config             only MCP servers from --mcp-config ([HELP] only); without the operator opt-in
  *                                   below none are passed
- *   --mcp-config <file>             T9.4b, ADR-0029, ONLY with the operator opt-in `providers.claude-code.git_channel`
- *                                   and only for a run the lifecycle offers the tool channel: the controller-written
- *                                   `0600` definition of the shim (one server, see CLAUDE_GIT_CHANNEL_CAPABILITIES)
+ *   --mcp-config <file>             T9.4b, ADR-0029, ADR-0033, ONLY with the operator opt-in
+ *                                   `providers.claude-code.git_channel`, only in an approved privileged bypass run
+ *                                   (owner decision 41) and only for a run the lifecycle offers the tool channel: the
+ *                                   controller-written `0600` definition of the shim (one server, see
+ *                                   CLAUDE_GIT_CHANNEL_CAPABILITIES); `--safe-mode` is then removed (it stops the
+ *                                   server from starting, live check in PR #41)
  *   --model <model>                 when the request names one ([HELP]; [R2] says the CLI accepts aliases and IDs)
  *   --resume <session-id>           native resume (FR-SES-03; [R2], [TDD], [HELP])
  *   auth status --json              auth preflight (FR-AUTH-02; `claude auth status` per [R2]/[TDD]; --json per [HELP])
@@ -64,7 +67,7 @@
  *
  * Never emitted: any BYPASS_FLAGS entry other than the approved privileged bypass above,
  * `--allow-dangerously-skip-permissions`, `--permission-mode bypassPermissions|acceptEdits|auto`, `--settings`,
- * `--setting-sources`, `--mcp-config` (except the opt-in channel definition above, ADR-0029), `--plugin-dir`,
+ * `--setting-sources`, `--mcp-config` (except the opt-in channel definition above, ADR-0029, ADR-0033), `--plugin-dir`,
  * `--add-dir`, `--worktree`/`-w` (creates a Git worktree and branch, [HELP]), `--from-pr`, `--debug-file`, or any
  * config-writing subcommand (FR-POL-03, FR-POL-08, FR-GIT-01).
  */
@@ -78,7 +81,7 @@ import {
 } from "../../exec/index.js";
 import { CHANNEL_MCP_CONFIG_FILE, TOOL_NAMES, TOOL_SHIM_MCP_SERVER, TOOL_TOKEN_ENV } from "../../git/tool-protocol.js";
 import type { PrivilegedScope } from "../../policy/types.js";
-import { channelToolRule } from "../audit.js";
+import { channelToolRule, SAFE_MODE_FLAG } from "../audit.js";
 import { classifyCommon } from "../failure.js";
 import {
   GIT_GLOBAL_FLAGS,
@@ -499,8 +502,9 @@ export function privilegedPlan(request: CompileRequest, profile: ResolvedProfile
 /**
  * FR-GIT-02 declaration without the operator opt-in (T9.4, ADR-0026; Delegated): no injected channel, and the compiled
  * argv is unchanged. Q-40 is decided (ADR-0029) and the channel exists behind `providers.claude-code.git_channel`
- * (T9.4b, {@link CLAUDE_GIT_CHANNEL_CAPABILITIES}); this default stays because the JSON shape, the MCP tool allow-rule
- * form, `--safe-mode` behaviour and socket reach are unverified (TDD §3.10, R-18). The detail text is kept as it was.
+ * (T9.4b, {@link CLAUDE_GIT_CHANNEL_CAPABILITIES}), for approved bypass runs only (ADR-0033); this default stays
+ * because the channel is unproven end to end through Switchboard (TDD §3.10, R-18). The detail text is kept as it
+ * was.
  */
 export const CLAUDE_GIT_CAPABILITIES: GitCapabilities = {
   commitChannel: "none",
@@ -511,28 +515,58 @@ export const CLAUDE_GIT_CAPABILITIES: GitCapabilities = {
 };
 
 /**
- * The fragment {@link CLAUDE_GIT_CHANNEL_CAPABILITIES} appends for one run (T9.4b, ADR-0029; Delegated mechanism):
+ * Owner decision 41 (ADR-0033; Delegated wording of option A): the Claude channel is offered only to an approved
+ * `privileged` run whose scope sets `bypass` ({@link bypassApprovedFor}), the same three facts the argv audit checks.
+ * Every other run (inspect-untrusted, edit-untrusted, trusted-development, privileged without bypass) gets no channel,
+ * keeps `--safe-mode` and the argv of the opt-in off, and commits through finalize-only (FR-GIT-09, T9.7).
+ */
+export function claudeChannelOffered(request: CompileRequest, profile: ResolvedProfile): boolean {
+  return (
+    profile.name === "privileged" &&
+    profile.privilegedScope?.scope.bypass === true &&
+    bypassApprovedFor(request, profile)
+  );
+}
+
+/** Ineligible detail of {@link claudeChannelArgs} for a run that is not an approved bypass run (ADR-0033). */
+export const CLAUDE_CHANNEL_BYPASS_ONLY =
+  "the Claude Code tool channel is offered only to an approved privileged bypass run (owner decision 41, ADR-0033): " +
+  "--safe-mode, which every other run keeps, stops the injected MCP server from starting";
+
+/**
+ * The fragment {@link CLAUDE_GIT_CHANNEL_CAPABILITIES} appends for one approved bypass run (T9.4b, ADR-0029, ADR-0033;
+ * Delegated mechanism):
  *   argv:  `--mcp-config <dir>/mcp-config.json --allowedTools mcp__switchboard-git__commit[ mcp__switchboard-git__push]`
+ *   removeFlags: `--safe-mode` (owner decision 41; a no-op where decision 26 already omitted it)
  *   env:   exactly `ShimSpec.env` (the token, FR-POL-08: never argv or the file)
  *   file:  `{"mcpServers":{"switchboard-git":{"type":"stdio","command":<ShimSpec.command[0]>,"args":<the rest>,
  *          "env":{"SWITCHBOARD_TOOL_TOKEN":"${SWITCHBOARD_TOOL_TOKEN}"}}}}`, written by the channel service (0600).
- * Decisions and Assumptions (all unverified until the ADR-0029 live checks):
+ * Live check on the operator's machine (`docs/research/live-checks-2026-10-13.md`, PR #41; Claude Code 2.1.296, a
+ * hand-made server, not Switchboard's shim): the `mcpServers` wrapper is required (a bare map is rejected); `${VAR}`
+ * expands from the claude environment and an unset one stays literal (so the controller always sets the token and the
+ * audit refuses `--mcp-config` without it); the server inherits the whole claude environment (here only PATH, HOME and
+ * the token: `envAllowlist`); exact-name allow rules work under `dontAsk`; `--safe-mode` stops the server from
+ * starting while `--strict-mcp-config` and `--restricted` do not.
+ * Decisions and remaining Assumptions:
+ * - Not offered unless {@link claudeChannelOffered} (refused here too, as defence in depth).
  * - `--strict-mcp-config` is NOT added here: the compiled argv already carries it on every invocation except an approved
  *   bypass run with repository_config `enabled` (owner decision 26, ADR-0021), which is exactly ADR-0029 item 5; the
- *   argv audit (`../audit.ts`) refuses `--mcp-config` without it outside that case. No other flag changes (`--safe-mode`
- *   stays where it is; whether it drops a `--mcp-config` server is live check (c)).
+ *   argv audit (`../audit.ts`) refuses `--mcp-config` without it outside that case.
+ * - Omitting `--safe-mode` loads the repository's CLAUDE.md, hooks and skills (live check 15, R-41); in a bypass run
+ *   that is accepted as part of the deliberately loose bypass (ADR-0033). The Git deny rules, `--tools` and worktree
+ *   isolation are unchanged (they held under bypass, live check 14, R-38).
  * - The allow rules are a second `--allowedTools` occurrence at the end of argv. Assumption: repeated occurrences of
- *   this variadic option accumulate. If they replace instead, the earlier read and edit rules are lost and the run is
- *   denied more, never less (fail closed).
+ *   this variadic option accumulate. Under `--dangerously-skip-permissions` allow rules do not narrow anything anyway.
  * - The tools are not named in `--tools`: [HELP] says it lists tools "from the built-in set". Assumption: `--tools`
  *   does not filter MCP tools; if it does, the channel tools are simply absent (fail closed).
- * - `"type":"stdio"` and the top-level `mcpServers` key are Assumptions from the documented `.mcp.json` form.
- * - The `env` entry is a reference only (ADR-0029 item 3): Assumption that Claude Code expands `${VAR}` in an
- *   `--mcp-config` file from its own environment; if it does not, the shim gets the literal text, which is not
- *   token-shaped, and every call is refused (fail closed).
  * - `--mcp-config` takes "configs..." ([HELP]); the file is followed by `--allowedTools`, so it is the only value.
  */
-export function claudeChannelArgs(shim: ShimSpec): ChannelArgs | Ineligible {
+export function claudeChannelArgs(
+  shim: ShimSpec,
+  request: CompileRequest,
+  profile: ResolvedProfile,
+): ChannelArgs | Ineligible {
+  if (!claudeChannelOffered(request, profile)) return ineligible("PROFILE_UNSUPPORTED", CLAUDE_CHANNEL_BYPASS_ONLY);
   const [command, ...args] = shim.command;
   if (command === undefined || !isAbsolute(command)) {
     return ineligible("CAPABILITY_MISSING", "tool shim command is not an absolute executable path");
@@ -567,23 +601,28 @@ export function claudeChannelArgs(shim: ShimSpec): ChannelArgs | Ineligible {
     argv: ["--mcp-config", join(shim.dir, CHANNEL_MCP_CONFIG_FILE), "--allowedTools", ...tools.map(channelToolRule)],
     env: { ...shim.env },
     files: [{ name: CHANNEL_MCP_CONFIG_FILE, contents: `${JSON.stringify(definition, null, 2)}\n` }],
+    removeFlags: [SAFE_MODE_FLAG],
   };
 }
 
 /**
- * FR-GIT-02 declaration with the operator opt-in (T9.4b, ADR-0029; Delegated mechanism, owner decision 36). `injected`
- * through {@link claudeChannelArgs}; no bypass flag is ever added (FR-POL-03). UNSUPPORTED: the live checks of
- * ADR-0029 item 7 (R-18) have not been run, so this is offered only behind the opt-in.
+ * FR-GIT-02 declaration with the operator opt-in (T9.4b, ADR-0029, ADR-0033; Delegated mechanism, owner decisions 36
+ * and 41). `injected` through {@link claudeChannelArgs}, and only for an approved bypass run
+ * ({@link claudeChannelOffered} as `offersChannel`); every other run is treated as `none`. No bypass flag is ever added
+ * (FR-POL-03). UNSUPPORTED: the channel has not run end to end through Switchboard with a real Claude Code (the live
+ * check used a hand-made server), so this is offered only behind the opt-in.
  */
 export const CLAUDE_GIT_CHANNEL_CAPABILITIES: GitCapabilities = {
   commitChannel: "injected",
   detail:
-    "UNSUPPORTED operator opt-in (providers.claude-code.git_channel, ADR-0029): the shim is given as one stdio MCP " +
+    "UNSUPPORTED operator opt-in (providers.claude-code.git_channel, ADR-0029, ADR-0033): offered only to an " +
+    "approved privileged bypass run, which then omits --safe-mode (it stops the server from starting) and so loads " +
+    "repository CLAUDE.md and hooks; every other run has no channel and keeps --safe-mode. The shim is one stdio MCP " +
     `server "${TOOL_SHIM_MCP_SERVER}" in a controller-written 0600 --mcp-config file in the run's private channel ` +
-    "directory, pre-approved by exact name with --allowedTools, token only in the environment. Unverified live: " +
-    "headless -p use, MCP allow rules under dontAsk and bypass, --safe-mode, Git deny rules with the server present, " +
-    "socket reach, the token environment and variable-reference expansion.",
-  channelArgs: (shim) => claudeChannelArgs(shim),
+    "directory, pre-approved by exact name with --allowedTools, token only in the environment. Unverified end to end " +
+    "through Switchboard: socket reach from the real provider and Git deny rules with the server present.",
+  channelArgs: (shim, request, profile) => claudeChannelArgs(shim, request, profile),
+  offersChannel: (request, profile) => claudeChannelOffered(request, profile),
 };
 
 export class ClaudeAdapter implements ProviderAdapter {

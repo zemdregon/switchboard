@@ -77,7 +77,7 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | `retention.days`, `retention.interval` | Retention in days (default 30, proposed target) and the GC pass period (`<n>m`, `<n>h` or `<n>d`, default `24h`). Collection is on only when `retention.days` is set in the file: the default is a value, not a switch (`ResolvedConfig.retentionEnabled`, T3.12, Proposed, Delegated). A period above about 24.8 days is capped by the timer | NFR-DATA-01, FR-WS-07 |
 | `profiles.<name>` | Overrides of the [SRS §3.3](../requirements/SRS.md#33-policy-and-trust-profiles-fr-pol) defaults. They may tighten or loosen a default ([owner decision 12](../ROADMAP.md#42-owner-decisions)); a loosening must be explicit in the config, is validated, and is recorded in the run's policy snapshot and listed by `doctor` (M3, T3.2). *Known limit ([owner decision 20](../ROADMAP.md#42-owner-decisions), 2026-10-13):* a `profiles.edit-untrusted` override that loosens `network` or `repo_config` is not enforced: the Claude adapter compiles `edit-untrusted` with the strict settings (network off at the tool level, repository configuration disabled) whatever the override says, and the Codex adapter makes the run `Ineligible: CAPABILITY_MISSING` | FR-POL-01 |
 | `providers.<id>` | `{enabled, binary_path, extra_env_allowlist[], model_overrides}` | FR-ADP-05, FR-EXE-07 |
-| `providers.claude-code.git_channel` | Boolean, default `false`; `claude-code` only. Operator opt-in for the Claude Code tool channel through a controller-written `--mcp-config` file; implemented (T9.4b, [ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md)) and **UNSUPPORTED** until the ADR-0029 live checks pass ([LLD §11.1](LLD.md#111-configuration-shape), §12.2) | FR-GIT-02, FR-POL-08 |
+| `providers.claude-code.git_channel` | Boolean, default `false`; `claude-code` only. Operator opt-in for the Claude Code tool channel through a controller-written `--mcp-config` file; implemented (T9.4b, [ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md)) and **UNSUPPORTED** until the ADR-0029 live checks pass ([LLD §11.1](LLD.md#111-configuration-shape), §12.2); only approved bypass runs get the channel, without `--safe-mode` ([ADR-0033](../adr/0033-claude-channel-bypass-only-without-safe-mode.md)) | FR-GIT-02, FR-POL-08 |
 | `routing.weights`, `routing.minimum_capability_defaults` | Static weights | FR-RTE-02 |
 | `capacity.queue_horizon` | Max wait for a known reset | FR-CAP-06 |
 | `telemetry.otlp_endpoint` | Optional export target | FR-TEL-02, NFR-PRIV-01 |
@@ -707,6 +707,17 @@ behind the operator opt-in `providers.claude-code.git_channel`; **UNSUPPORTED, n
   `PERMISSION_BLOCKED` before spawn.
 - **Still open: the live checks** (ADR-0029 item 7, listed in ROADMAP T9.4b). Nothing here shows what the installed
   `claude` does with the definition.
+- **Update 2026-10-13 (owner decision 41, [ADR-0033](../adr/0033-claude-channel-bypass-only-without-safe-mode.md)).**
+  The operator-machine live check (`docs/research/live-checks-2026-10-13.md`, PR #41; Claude Code 2.1.296, a hand-made
+  stdio server) confirmed the `mcpServers` shape, `${VAR}` expansion (unset stays literal), that the server inherits the
+  claude environment and that exact-name rules work under `dontAsk`, and found that `--safe-mode` stops the server. The
+  channel is now offered only to an approved bypass run, whose fragment removes `--safe-mode`; every other run with the
+  opt-in on has the argv of the opt-in off and uses finalize-only. Tests added: every non-bypass profile gets no channel
+  and an identical argv; the audit refuses `--mcp-config` outside an approved bypass run or without the token variable,
+  and a Claude argv without `--safe-mode` outside the approved bypass cases; the lifecycle replay runs an approved
+  bypass run and records a child environment of only `PATH`, `HOME` and the token, and an `edit-untrusted` run with the
+  opt-in on and the project's `finalize_commit` gets its commit through finalize-only. Still unproven end to end through
+  Switchboard with the real `claude` (shim start, socket reach, Git deny rules with the server present).
 
 **External reference (T3 Code, MIT, studied not copied; note 2026-10-13, Delegated, not owner-approved).** zemdregon's
 pointer (owner decision 36): T3 Code "has orchestrator injection for nearly all of the CLI tools we are targeting". A

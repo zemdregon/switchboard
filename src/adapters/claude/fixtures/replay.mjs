@@ -74,7 +74,13 @@ process.stdin.on("end", async () => {
 });
 
 async function mcpCommit(recordPath) {
-  const out = { argv: claude, tokenInEnv: typeof process.env.SWITCHBOARD_TOOL_TOKEN === "string", calls: [] };
+  const out = {
+    argv: claude,
+    tokenInEnv: typeof process.env.SWITCHBOARD_TOOL_TOKEN === "string",
+    // Names only, never values: the stdio server inherits this whole environment (live check, PR #41).
+    envKeys: Object.keys(process.env).sort(),
+    calls: [],
+  };
   try {
     const file = opt(claude, "--mcp-config");
     out.config = readFileSync(file, "utf8");

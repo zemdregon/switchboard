@@ -1385,7 +1385,9 @@ the run's policy snapshot as `project.finalize_commit: true` (absent when off) a
 other provider aborts startup) is the operator opt-in for the Claude Code tool channel (§12.2). `ResolvedConfig` gains
 `claudeCodeGitChannel`; `serve` passes it to the Claude adapter and logs a warning when it is on. It does not change
 `providers.<id>.enabled`. **UNSUPPORTED** until the ADR-0029 live checks pass (ROADMAP T9.4b). Example:
-`"providers": { "claude-code": { "git_channel": true } }`.
+`"providers": { "claude-code": { "git_channel": true } }`. *Note 2026-10-13 (owner decision 41,
+[ADR-0033](../adr/0033-claude-channel-bypass-only-without-safe-mode.md)):* even with the key on, only an approved
+`privileged` bypass run gets the channel (and runs without `--safe-mode`); every other run is as with the key off.
 
 ### 11.2 Resolution and ceilings
 
@@ -1616,6 +1618,29 @@ UNSUPPORTED and unverified live).* Claude Code declares `injected` only with the
   `--allowedTools` adds to the first (if it replaces it the run is denied more, not less); that `--tools` does not
   filter MCP tools; the `mcp__<server>__<tool>` rule form. Each failure mode found so far leaves the agent without the
   tool (fail closed), never with more permission.
+
+*Note 2026-10-13 (owner decision 41, [ADR-0033](../adr/0033-claude-channel-bypass-only-without-safe-mode.md); mechanism
+Delegated; still UNSUPPORTED).* An operator-machine live check (`docs/research/live-checks-2026-10-13.md`, PR #41; a
+hand-made server, not the shim) confirmed the `mcpServers` shape, `${VAR}` expansion (an unset variable stays literal),
+environment inheritance and exact-name rules under `dontAsk`, and found that `--safe-mode` stops the server from
+starting. So, superseding the "unchanged `--safe-mode`" bullet above for Claude:
+
+- **Bypass only.** `GitCapabilities` gained the optional, pure `offersChannel(request, profile)`. When it is false for
+  a run the lifecycle treats the adapter as `none` for that run: no channel, no `channelArgs` call, no event, argv
+  unchanged, and `finalize` receives `commitChannel: "none"` (so FR-GIT-09 applies). Claude's predicate
+  (`claudeChannelOffered`) is true only for `privileged` with a scope that sets `bypass` and `bypassApproved`;
+  `claudeChannelArgs` refuses every other run (`PROFILE_UNSUPPORTED`) as a second check.
+- **`--safe-mode` removed.** `ChannelArgs` gained the optional `removeFlags`: standalone flags (`--name`, no `=`) the
+  lifecycle drops from the compiled argv and `policyFlags` before appending the fragment (absent flags are a no-op; any
+  other spelling fails the run `ELIGIBILITY_NONE`, `reason: "GIT_CHANNEL_INELIGIBLE"`). Claude returns
+  `["--safe-mode"]`. `--strict-mcp-config`, the Git deny rules, `--tools` and worktree isolation are unchanged.
+- **Audit additions.** `auditMcpArgs` also refuses `--mcp-config` unless the run context admits a bypass, and when the
+  invocation's `env` lacks a non-empty `SWITCHBOARD_TOOL_TOKEN`. `auditSafeMode` (run before every Claude spawn, as
+  `assertSafeModeAudit`) refuses an argv without `--safe-mode` unless the run is an approved bypass run and either
+  `repository_config` is `approved` or `enabled` (decision 26) or the argv carries `--mcp-config`. A refusal fails the
+  run `PERMISSION_BLOCKED` (`reason: "ISOLATION_REFUSED"`) and closes the channel.
+- **Environment.** The stdio server inherits the claude process environment, which is the adapter's child environment:
+  `PATH`, `HOME` (its allowlist) and the token only.
 
 ### 12.3 Commit algorithm and refs
 

@@ -9,11 +9,13 @@
  * gate, so a compile bug cannot by itself put a bypass flag on a spawned argv.
  *
  * The second half of this module (T9.4b, ADR-0029 item 6) audits `--mcp-config` and MCP allow rules: only the
- * controller-written channel definition, in one exact shape, is admitted (see {@link auditMcpArgs}).
+ * controller-written channel definition, in one exact shape, and only in an approved bypass run (ADR-0033, owner
+ * decision 41), is admitted (see {@link auditMcpArgs}). The third half checks that a Claude Code argv keeps
+ * `--safe-mode` except in the approved bypass cases that omit it on purpose (see {@link auditSafeMode}).
  */
 import { lstatSync } from "node:fs";
 import path from "node:path";
-import { CHANNEL_MCP_CONFIG_FILE, TOOL_SHIM_MCP_SERVER } from "../git/tool-protocol.js";
+import { CHANNEL_MCP_CONFIG_FILE, TOOL_SHIM_MCP_SERVER, TOOL_TOKEN_ENV } from "../git/tool-protocol.js";
 import type { Invocation, ResolvedProfile } from "./types.js";
 
 export const BYPASS_FLAGS: readonly string[] = [
@@ -117,6 +119,11 @@ export function strictMcpExempt(ctx: BypassContext | undefined): boolean {
  * Returns one human-readable problem per violation; empty means the argv passes. Admitted:
  * - at most one `--mcp-config`, in argv only (never in `policyFlags`), followed by exactly one value that equals
  *   `channel.mcpConfigPath` (absolute, normalised, named `CHANNEL_MCP_CONFIG_FILE`), and only with a channel;
+ * - `--mcp-config` only when `ctx` admits a bypass ({@link bypassPermitted}; ADR-0033, owner decision 41: the Claude
+ *   channel is offered only to an approved bypass run). The adapter's own gate is `offersChannel`; this is the second,
+ *   independent check;
+ * - `--mcp-config` only when the provider environment carries a non-empty `SWITCHBOARD_TOOL_TOKEN` (`inv.env`): Claude
+ *   Code leaves an unset `${VAR}` reference as literal text (live check, PR #41), so the controller must always set it;
  * - `--strict-mcp-config` in argv whenever `--mcp-config` is present, unless {@link strictMcpExempt};
  * - an `mcp__` token (argv words split on commas and whitespace) only as a value of `--allowedTools` and only when it
  *   is exactly {@link channelToolRule} of a tool the channel offers; so no wildcard, no server-wide rule, no other
@@ -124,7 +131,7 @@ export function strictMcpExempt(ctx: BypassContext | undefined): boolean {
  * Refused always: the `--mcp-config=<value>` form, inline JSON or any other path, a second occurrence.
  */
 export function auditMcpArgs(
-  inv: Pick<Invocation, "argv" | "policyFlags">,
+  inv: Pick<Invocation, "argv" | "policyFlags"> & { readonly env?: Readonly<Record<string, string>> },
   channel?: ChannelAuditContext,
   ctx?: BypassContext,
 ): string[] {
@@ -150,6 +157,10 @@ export function auditMcpArgs(
     if (next !== undefined && !next.startsWith("-")) problems.push(`${MCP_CONFIG_FLAG} takes exactly one file`);
     if (!inv.argv.includes(STRICT_MCP_CONFIG_FLAG) && !strictMcpExempt(ctx)) {
       problems.push(`${MCP_CONFIG_FLAG} without ${STRICT_MCP_CONFIG_FLAG}`);
+    }
+    if (!bypassPermitted(ctx)) problems.push(`${MCP_CONFIG_FLAG} outside an approved bypass run (ADR-0033)`);
+    if ((inv.env?.[TOOL_TOKEN_ENV] ?? "") === "") {
+      problems.push(`${MCP_CONFIG_FLAG} without ${TOOL_TOKEN_ENV} in the provider environment`);
     }
   }
   const allowed = new Set((channel?.toolNames ?? []).map(channelToolRule));
@@ -208,7 +219,7 @@ export class McpConfigAuditError extends Error {
  * definition and {@link checkChannelFile} fails (used before every spawn, after the bypass audit).
  */
 export function assertMcpAudit(
-  inv: Pick<Invocation, "argv" | "policyFlags">,
+  inv: Pick<Invocation, "argv" | "policyFlags"> & { readonly env?: Readonly<Record<string, string>> },
   channel?: ChannelAuditContext,
   ctx?: BypassContext,
 ): void {
@@ -217,4 +228,40 @@ export function assertMcpAudit(
     problems.push(...checkChannelFile(channel.mcpConfigPath));
   }
   if (problems.length > 0) throw new McpConfigAuditError(problems);
+}
+
+// ---- Claude Code `--safe-mode` audit (ADR-0015, ADR-0021, ADR-0033; owner decisions 26, 41) ----------------------
+
+/** Claude Code's flag that keeps repository CLAUDE.md, skills, plugins, hooks and MCP servers off (`claude --help`). */
+export const SAFE_MODE_FLAG = "--safe-mode";
+
+/**
+ * A Claude Code argv must carry `--safe-mode` (ADR-0015), except in two approved bypass cases
+ * ({@link bypassPermitted}):
+ * - owner decision 26 (ADR-0021): the scope's `repository_config` is `approved` or `enabled`;
+ * - owner decision 41 (ADR-0033): the run carries the injected channel (`--mcp-config`, whose shape
+ *   {@link auditMcpArgs} checks), because `--safe-mode` stops that server from starting (live check, PR #41).
+ * Every other omission is refused, whatever the adapter compiled. Returns problems; empty means the argv passes.
+ */
+export function auditSafeMode(inv: Pick<Invocation, "argv">, ctx?: BypassContext): string[] {
+  if (inv.argv.includes(SAFE_MODE_FLAG)) return [];
+  if (bypassPermitted(ctx)) {
+    const repo = ctx?.profile.privilegedScope?.scope.repository_config.mode;
+    if (repo === "approved" || repo === "enabled") return [];
+    if (inv.argv.includes(MCP_CONFIG_FLAG)) return [];
+  }
+  return [`${SAFE_MODE_FLAG} missing outside an approved bypass case (ADR-0015, ADR-0021, ADR-0033)`];
+}
+
+export class IsolationAuditError extends Error {
+  constructor(readonly problems: readonly string[]) {
+    super(`isolation flags refused: ${problems.join("; ")}`);
+    this.name = "IsolationAuditError";
+  }
+}
+
+/** Throws {@link IsolationAuditError} when {@link auditSafeMode} finds a problem (used before every Claude spawn). */
+export function assertSafeModeAudit(inv: Pick<Invocation, "argv">, ctx?: BypassContext): void {
+  const problems = auditSafeMode(inv, ctx);
+  if (problems.length > 0) throw new IsolationAuditError(problems);
 }

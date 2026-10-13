@@ -1,7 +1,9 @@
 /**
- * T9.4b (ADR-0029; FR-GIT-02, FR-POL-03, FR-POL-08): the Claude Code tool channel behind the operator opt-in, and the
- * argv audit rule that admits `--mcp-config` in exactly the controller's shape. argv inspection only: the real `claude`
- * binary is never run (the lifecycle replay test is `src/lifecycle/claude-channel.test.ts`).
+ * T9.4b (ADR-0029, ADR-0033; FR-GIT-02, FR-POL-03, FR-POL-08): the Claude Code tool channel behind the operator opt-in,
+ * offered only to an approved privileged bypass run (owner decision 41), and the argv audit rules that admit
+ * `--mcp-config` in exactly the controller's shape and a missing `--safe-mode` only in the approved bypass cases. argv
+ * inspection only: the real `claude` binary is never run (the lifecycle replay test is
+ * `src/lifecycle/claude-channel.test.ts`).
  */
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,11 +12,14 @@ import { afterAll, describe, expect, it } from "vitest";
 import { CHANNEL_MCP_CONFIG_FILE, TOKEN_PREFIX, TOOL_TOKEN_ENV } from "../../git/tool-protocol.js";
 import {
   assertMcpAudit,
+  assertSafeModeAudit,
   auditMcpArgs,
+  auditSafeMode,
   type BypassContext,
   type ChannelAuditContext,
   channelToolRule,
   checkChannelFile,
+  IsolationAuditError,
   McpConfigAuditError,
 } from "../audit.js";
 import { LOOSE_SCOPE, privilegedProfile } from "../fixtures/privileged.js";
@@ -28,6 +33,7 @@ import {
   type ShimSpec,
 } from "../types.js";
 import {
+  CLAUDE_CHANNEL_BYPASS_ONLY,
   CLAUDE_GIT_CAPABILITIES,
   CLAUDE_GIT_CHANNEL_CAPABILITIES,
   CLAUDE_GIT_DENY_RULES,
@@ -75,6 +81,11 @@ const request: CompileRequest = {
   constraints: [],
   workspace: { cwd: "/tmp/work", writable: true },
 };
+/** The run the channel is offered to (owner decision 41): approved, privileged, scope sets bypass. */
+const approvedReq: CompileRequest = { ...request, bypassApproved: true };
+const BYPASS = privilegedProfile({ ...LOOSE_SCOPE, bypass: true });
+const BYPASS_CTX: BypassContext = { profile: BYPASS, bypassApproved: true };
+const TOKEN_ENV = { [TOOL_TOKEN_ENV]: TOKEN };
 const off = new ClaudeAdapter({ binaryPath: CLAUDE });
 const on = new ClaudeAdapter({ binaryPath: CLAUDE, gitChannel: true });
 const compiled = (a: ClaudeAdapter, p: ResolvedProfile, req: CompileRequest = request): Invocation => {
@@ -82,17 +93,21 @@ const compiled = (a: ClaudeAdapter, p: ResolvedProfile, req: CompileRequest = re
   if (isIneligible(inv)) throw new Error(`ineligible: ${inv.detail}`);
   return inv;
 };
-const channelArgs = (shim: ShimSpec, p: ResolvedProfile = EDIT_UNTRUSTED): ChannelArgs => {
-  const extra = on.gitCapabilities.channelArgs?.(shim, request, p);
+const channelArgs = (shim: ShimSpec, p: ResolvedProfile = BYPASS, req: CompileRequest = approvedReq): ChannelArgs => {
+  const extra = on.gitCapabilities.channelArgs?.(shim, req, p);
   if (extra === undefined || isIneligible(extra as Invocation)) throw new Error("channel refused");
   return extra as ChannelArgs;
 };
-/** What the lifecycle spawns: the compiled argv with the channel fragment appended. */
-const withChannel = (inv: Invocation, extra: ChannelArgs): Invocation => ({
-  ...inv,
-  argv: [...inv.argv, ...extra.argv],
-  env: { ...inv.env, ...extra.env },
-});
+/** What the lifecycle spawns: the compiled argv without `removeFlags`, with the channel fragment appended. */
+const withChannel = (inv: Invocation, extra: ChannelArgs): Invocation => {
+  const drop = new Set(extra.removeFlags ?? []);
+  return {
+    ...inv,
+    argv: [...inv.argv.filter((a) => !drop.has(a)), ...extra.argv],
+    policyFlags: inv.policyFlags.filter((a) => !drop.has(a)),
+    env: { ...inv.env, ...extra.env },
+  };
+};
 
 describe("opt-in off: no channel, argv byte-identical (T9.4b regression)", () => {
   it("declares commitChannel none with the T9.4 reason and no channelArgs", () => {
@@ -128,9 +143,15 @@ describe("opt-in off: no channel, argv byte-identical (T9.4b regression)", () =>
       ...CLAUDE_GIT_DENY_RULES,
     ];
     expect(compiled(off, EDIT_UNTRUSTED).argv).toEqual(expected);
-    for (const p of [INSPECT_UNTRUSTED, EDIT_UNTRUSTED, TRUSTED_DEVELOPMENT, privilegedProfile(LOOSE_SCOPE)]) {
-      const a = compiled(off, p);
-      const b = compiled(on, p);
+    for (const [p, req] of [
+      [INSPECT_UNTRUSTED, request],
+      [EDIT_UNTRUSTED, request],
+      [TRUSTED_DEVELOPMENT, request],
+      [privilegedProfile(LOOSE_SCOPE), request],
+      [BYPASS, approvedReq],
+    ] as const) {
+      const a = compiled(off, p, req);
+      const b = compiled(on, p, req);
       expect(b).toEqual(a);
       expect(a.argv).not.toContain("--mcp-config");
       expect(a.env).toEqual({});
@@ -139,15 +160,17 @@ describe("opt-in off: no channel, argv byte-identical (T9.4b regression)", () =>
   });
 });
 
-describe("opt-in on: the channel fragment (ADR-0029 items 1-5)", () => {
+describe("opt-in on, approved bypass run: the channel fragment (ADR-0029 items 1-5, ADR-0033)", () => {
   it("declares injected and emits one --mcp-config file, exact-name allow rules and the token in env only", () => {
     expect(on.gitCapabilities).toBe(CLAUDE_GIT_CHANNEL_CAPABILITIES);
     expect(on.gitCapabilities.commitChannel).toBe("injected");
     expect(on.gitCapabilities.detail).toMatch(/UNSUPPORTED/);
+    expect(on.gitCapabilities.offersChannel?.(approvedReq, BYPASS)).toBe(true);
     const dir = privateDir();
     const extra = channelArgs(shimFor(dir));
     const file = path.join(dir, CHANNEL_MCP_CONFIG_FILE);
     expect(extra.argv).toEqual(["--mcp-config", file, "--allowedTools", "mcp__switchboard-git__commit"]);
+    expect(extra.removeFlags).toEqual(["--safe-mode"]);
     expect(extra.env).toEqual({ [TOOL_TOKEN_ENV]: TOKEN });
     expect(extra.files).toHaveLength(1);
     const f = extra.files?.[0];
@@ -195,48 +218,121 @@ describe("opt-in on: the channel fragment (ADR-0029 items 1-5)", () => {
       { ...good, dir: `${dir}/../x` },
     ];
     for (const shim of bad) {
-      const r = claudeChannelArgs(shim);
+      const r = claudeChannelArgs(shim, approvedReq, BYPASS);
       expect("ineligible" in r, JSON.stringify(shim.toolNames)).toBe(true);
     }
   });
 
-  it("edit-untrusted, trusted-development and privileged non-bypass keep --safe-mode, --restricted, --strict-mcp-config and pass the audit", () => {
+  it("the spawned argv (fragment applied): no --safe-mode, --strict-mcp-config kept, every audit passes", () => {
     const dir = privateDir();
-    const shim = shimFor(dir, ["commit", "push"]);
-    const channel: ChannelAuditContext = {
-      mcpConfigPath: path.join(dir, CHANNEL_MCP_CONFIG_FILE),
-      toolNames: ["commit", "push"],
-    };
-    for (const p of [EDIT_UNTRUSTED, TRUSTED_DEVELOPMENT, privilegedProfile(LOOSE_SCOPE)]) {
-      const inv = withChannel(compiled(on, p), channelArgs(shim, p));
-      for (const f of ["--safe-mode", "--restricted", "--strict-mcp-config", "--permission-mode"]) {
-        expect(inv.argv, `${p.name} ${f}`).toContain(f);
+    const inv = withChannel(compiled(on, BYPASS, approvedReq), channelArgs(shimFor(dir, ["commit", "push"])));
+    expect(inv.argv).not.toContain("--safe-mode");
+    expect(inv.policyFlags).not.toContain("--safe-mode");
+    expect(inv.argv).toContain("--strict-mcp-config");
+    expect(inv.argv).toContain("--dangerously-skip-permissions");
+    expect(inv.argv).toContain("--disallowedTools");
+    expect(inv.env).toEqual(TOKEN_ENV);
+    const channel = { mcpConfigPath: path.join(dir, CHANNEL_MCP_CONFIG_FILE), toolNames: ["commit", "push"] };
+    expect(auditMcpArgs(inv, channel, BYPASS_CTX)).toEqual([]);
+    expect(auditSafeMode(inv, BYPASS_CTX)).toEqual([]);
+    expect(inv.argv.slice(-3)).toEqual([
+      "--allowedTools",
+      "mcp__switchboard-git__commit",
+      "mcp__switchboard-git__push",
+    ]);
+  });
+});
+
+describe("opt-in on, every other run: no channel, argv as with the opt-in off (owner decision 41)", () => {
+  const unapproved = privilegedProfile({ ...LOOSE_SCOPE, bypass: true });
+  const cases: Array<[string, ResolvedProfile, CompileRequest]> = [
+    ["inspect-untrusted", INSPECT_UNTRUSTED, request],
+    ["edit-untrusted", EDIT_UNTRUSTED, request],
+    ["trusted-development", TRUSTED_DEVELOPMENT, request],
+    ["privileged without bypass", privilegedProfile(LOOSE_SCOPE), request],
+    ["privileged without bypass, approval flag set", privilegedProfile(LOOSE_SCOPE), approvedReq],
+    ["privileged bypass scope without an approval", unapproved, request],
+  ];
+  for (const [label, p, req] of cases) {
+    it(`${label}: offersChannel false, channelArgs refused, --safe-mode kept`, () => {
+      expect(on.gitCapabilities.offersChannel?.(req, p), label).toBe(false);
+      const r = on.gitCapabilities.channelArgs?.(shimFor(privateDir()), req, p);
+      expect(r).toEqual({ ineligible: true, reason: "PROFILE_UNSUPPORTED", detail: CLAUDE_CHANNEL_BYPASS_ONLY });
+      const a = off.compile(req, p);
+      const b = on.compile(req, p);
+      expect(b, label).toEqual(a);
+      if (!isIneligible(b)) {
+        expect(b.argv).toContain("--safe-mode");
+        expect(b.argv).not.toContain("--mcp-config");
+        expect(auditSafeMode(b, { profile: p, bypassApproved: req.bypassApproved === true })).toEqual([]);
       }
-      expect(inv.argv).not.toContain("--dangerously-skip-permissions");
-      expect(auditMcpArgs(inv, channel, { profile: p, bypassApproved: false })).toEqual([]);
-      // The original allow list is untouched; the channel rules follow in their own occurrence.
-      expect(inv.argv.filter((a) => a === "--allowedTools")).toHaveLength(2);
-      expect(inv.argv.slice(-3)).toEqual([
-        "--allowedTools",
-        "mcp__switchboard-git__commit",
-        "mcp__switchboard-git__push",
-      ]);
+    });
+  }
+
+  it("audit: the bypass fragment on a non-bypass argv is refused (--mcp-config and missing --safe-mode)", () => {
+    const dir = privateDir();
+    const extra = channelArgs(shimFor(dir));
+    const channel = { mcpConfigPath: path.join(dir, CHANNEL_MCP_CONFIG_FILE), toolNames: ["commit"] };
+    for (const [p, req] of [
+      [EDIT_UNTRUSTED, request],
+      [TRUSTED_DEVELOPMENT, request],
+      [privilegedProfile(LOOSE_SCOPE), request],
+    ] as const) {
+      const inv = withChannel(compiled(on, p, req), extra);
+      const ctx: BypassContext = { profile: p, bypassApproved: false };
+      expect(auditMcpArgs(inv, channel, ctx), p.name).toContain(
+        "--mcp-config outside an approved bypass run (ADR-0033)",
+      );
+      expect(auditSafeMode(inv, ctx), p.name).toHaveLength(1);
+      expect(() => assertSafeModeAudit(inv, ctx)).toThrow(IsolationAuditError);
+      expect(() => startAdapterRun(on, inv, { profile: p, bypassApproved: false, channel })).toThrow(
+        McpConfigAuditError,
+      );
+    }
+    // The approved bypass argv itself, presented without the approval, is refused as well.
+    const inv = withChannel(compiled(on, BYPASS, approvedReq), extra);
+    for (const ctx of [undefined, { profile: BYPASS, bypassApproved: false }]) {
+      expect(auditMcpArgs(inv, channel, ctx)).toContain("--mcp-config outside an approved bypass run (ADR-0033)");
+      expect(auditSafeMode(inv, ctx)).toHaveLength(1);
     }
   });
 
+  it("audit: --safe-mode missing without the approved bypass channel is refused, also without --mcp-config", () => {
+    const strip = (inv: Invocation) => ({ ...inv, argv: inv.argv.filter((a) => a !== "--safe-mode") });
+    for (const p of [INSPECT_UNTRUSTED, EDIT_UNTRUSTED, TRUSTED_DEVELOPMENT, privilegedProfile(LOOSE_SCOPE)]) {
+      const inv = strip(compiled(on, p));
+      expect(auditSafeMode(inv, { profile: p, bypassApproved: false }), p.name).toHaveLength(1);
+      expect(() => startAdapterRun(on, inv, { profile: p })).toThrow(IsolationAuditError);
+    }
+    // An approved bypass run with repository_config disabled and no channel keeps --safe-mode too.
+    const bare = strip(compiled(on, BYPASS, approvedReq));
+    expect(auditSafeMode(bare, BYPASS_CTX)).toHaveLength(1);
+    expect(() => startAdapterRun(on, bare, { profile: BYPASS, bypassApproved: true })).toThrow(IsolationAuditError);
+    // Decision 26 omissions stay admitted.
+    for (const mode of ["approved", "enabled"] as const) {
+      const p = privilegedProfile({ ...LOOSE_SCOPE, bypass: true, repository_config: { mode } });
+      const inv = compiled(on, p, approvedReq);
+      expect(inv.argv).not.toContain("--safe-mode");
+      expect(auditSafeMode(inv, { profile: p, bypassApproved: true })).toEqual([]);
+      expect(auditSafeMode(inv, { profile: p, bypassApproved: false })).toHaveLength(1);
+    }
+  });
+});
+
+describe("resume in an approved bypass run", () => {
   it("resume keeps the same shape (the fragment follows --resume)", () => {
     const dir = privateDir();
-    const r = on.resumeArgs({ provider: "claude", nativeSessionId: RESUMED_SESSION_ID }, request, EDIT_UNTRUSTED);
+    const r = on.resumeArgs({ provider: "claude", nativeSessionId: RESUMED_SESSION_ID }, approvedReq, BYPASS);
     if (isIneligible(r)) throw new Error(r.detail);
     const inv = withChannel(r, channelArgs(shimFor(dir)));
     const channel = { mcpConfigPath: path.join(dir, CHANNEL_MCP_CONFIG_FILE), toolNames: ["commit"] };
-    expect(auditMcpArgs(inv, channel)).toEqual([]);
+    expect(auditMcpArgs(inv, channel, BYPASS_CTX)).toEqual([]);
+    expect(auditSafeMode(inv, BYPASS_CTX)).toEqual([]);
     expect(inv.argv.indexOf("--resume")).toBeLessThan(inv.argv.indexOf("--mcp-config"));
   });
 });
 
-describe("approved bypass runs (owner decisions 13, 26; ADR-0017, ADR-0021)", () => {
-  const approvedReq = { ...request, bypassApproved: true };
+describe("approved bypass runs (owner decisions 13, 26, 41; ADR-0017, ADR-0021, ADR-0033)", () => {
   const scope = (mode: "disabled" | "approved" | "enabled") => ({
     ...LOOSE_SCOPE,
     bypass: true,
@@ -252,14 +348,16 @@ describe("approved bypass runs (owner decisions 13, 26; ADR-0017, ADR-0021)", ()
     const channel = { mcpConfigPath: path.join(dir, CHANNEL_MCP_CONFIG_FILE), toolNames: ["commit"] };
     const approved: BypassContext = { profile, bypassApproved: true };
     expect(auditMcpArgs(inv, channel, approved)).toEqual([]);
-    // Same argv without the approval, or on another repository_config, is refused (strict required).
-    expect(auditMcpArgs(inv, channel, { profile, bypassApproved: false })).toEqual([
+    // Same argv without the approval is refused twice over; on another repository_config strict is required.
+    const notBypass = [
       "--mcp-config without --strict-mcp-config",
-    ]);
+      "--mcp-config outside an approved bypass run (ADR-0033)",
+    ];
+    expect(auditMcpArgs(inv, channel, { profile, bypassApproved: false })).toEqual(notBypass);
     expect(auditMcpArgs(inv, channel, { profile: privilegedProfile(scope("approved")), bypassApproved: true })).toEqual(
       ["--mcp-config without --strict-mcp-config"],
     );
-    expect(auditMcpArgs(inv, channel)).toEqual(["--mcp-config without --strict-mcp-config"]);
+    expect(auditMcpArgs(inv, channel)).toEqual(notBypass);
   });
 
   it("repository_config disabled or approved: --strict-mcp-config kept", () => {
@@ -268,8 +366,10 @@ describe("approved bypass runs (owner decisions 13, 26; ADR-0017, ADR-0021)", ()
       const profile = privilegedProfile(scope(mode));
       const inv = withChannel(compiled(on, profile, approvedReq), channelArgs(shimFor(dir), profile));
       expect(inv.argv, mode).toContain("--strict-mcp-config");
+      expect(inv.argv, mode).not.toContain("--safe-mode");
       const channel = { mcpConfigPath: path.join(dir, CHANNEL_MCP_CONFIG_FILE), toolNames: ["commit"] };
       expect(auditMcpArgs(inv, channel, { profile, bypassApproved: true })).toEqual([]);
+      expect(auditSafeMode(inv, { profile, bypassApproved: true })).toEqual([]);
     }
   });
 });
@@ -279,14 +379,34 @@ describe("audit: everything but the one channel shape is refused (ADR-0029 item 
   const file = `${dir}/${CHANNEL_MCP_CONFIG_FILE}`;
   const channel: ChannelAuditContext = { mcpConfigPath: file, toolNames: ["commit"] };
   const base = compiled(off, EDIT_UNTRUSTED);
-  const inv = (tail: string[], policyFlags: string[] = base.policyFlags) => ({
+  const inv = (tail: string[], policyFlags: string[] = base.policyFlags, env: Record<string, string> = TOKEN_ENV) => ({
     argv: [...base.argv, ...tail],
     policyFlags,
+    env,
   });
   const good = ["--mcp-config", file, "--allowedTools", channelToolRule("commit")];
 
-  it("admits the exact shape", () => {
-    expect(auditMcpArgs(inv(good), channel)).toEqual([]);
+  it("admits the exact shape, in an approved bypass run with the token set", () => {
+    expect(auditMcpArgs(inv(good), channel, BYPASS_CTX)).toEqual([]);
+  });
+
+  it("refuses the exact shape outside an approved bypass run (ADR-0033)", () => {
+    for (const ctx of [
+      undefined,
+      { profile: EDIT_UNTRUSTED, bypassApproved: false },
+      { ...BYPASS_CTX, bypassApproved: false },
+    ]) {
+      expect(auditMcpArgs(inv(good), channel, ctx)).toEqual(["--mcp-config outside an approved bypass run (ADR-0033)"]);
+    }
+  });
+
+  it("refuses the exact shape when the token variable is unset or empty (it would stay a literal reference)", () => {
+    for (const env of [{}, { [TOOL_TOKEN_ENV]: "" }, { OTHER: TOKEN }]) {
+      expect(auditMcpArgs(inv(good, base.policyFlags, env), channel, BYPASS_CTX)).toEqual([
+        `--mcp-config without ${TOOL_TOKEN_ENV} in the provider environment`,
+      ]);
+    }
+    expect(auditMcpArgs({ argv: inv(good).argv, policyFlags: [] }, channel, BYPASS_CTX)).toHaveLength(1);
   });
 
   const refusedCases: Array<[string, string[], ChannelAuditContext | undefined]> = [
@@ -310,19 +430,22 @@ describe("audit: everything but the one channel shape is refused (ADR-0029 item 
   ];
   for (const [label, tail, ctx] of refusedCases) {
     it(`refuses ${label}`, () => {
-      expect(auditMcpArgs(inv(tail), ctx).length, label).toBeGreaterThan(0);
-      expect(() => assertMcpAudit(inv(tail), ctx), label).toThrow(McpConfigAuditError);
+      expect(auditMcpArgs(inv(tail), ctx, BYPASS_CTX).length, label).toBeGreaterThan(0);
+      expect(() => assertMcpAudit(inv(tail), ctx, BYPASS_CTX), label).toThrow(McpConfigAuditError);
     });
   }
 
   it("refuses --mcp-config when --strict-mcp-config is missing outside decision 26", () => {
     const argv = [...base.argv.filter((a) => a !== "--strict-mcp-config"), ...good];
-    expect(auditMcpArgs({ argv, policyFlags: [] }, channel)).toEqual(["--mcp-config without --strict-mcp-config"]);
+    expect(auditMcpArgs({ argv, policyFlags: [], env: TOKEN_ENV }, channel, BYPASS_CTX)).toEqual([
+      "--mcp-config without --strict-mcp-config",
+    ]);
   });
 
   it("refuses --mcp-config or MCP rules carried in policyFlags", () => {
-    expect(auditMcpArgs(inv([], [...base.policyFlags, "--mcp-config", file]), channel).length).toBeGreaterThan(0);
-    expect(auditMcpArgs(inv([], [...base.policyFlags, "mcp__switchboard-git__*"]), channel).length).toBeGreaterThan(0);
+    const pf = (extra: string[]) => auditMcpArgs(inv([], [...base.policyFlags, ...extra]), channel, BYPASS_CTX);
+    expect(pf(["--mcp-config", file]).length).toBeGreaterThan(0);
+    expect(pf(["mcp__switchboard-git__*"]).length).toBeGreaterThan(0);
   });
 
   it("refuses an unexpected or relative definition path in the context itself", () => {
@@ -333,7 +456,8 @@ describe("audit: everything but the one channel shape is refused (ADR-0029 item 
     ]) {
       const argv = [...base.argv, "--mcp-config", p];
       expect(
-        auditMcpArgs({ argv, policyFlags: [] }, { mcpConfigPath: p, toolNames: ["commit"] }).length,
+        auditMcpArgs({ argv, policyFlags: [], env: TOKEN_ENV }, { mcpConfigPath: p, toolNames: ["commit"] }, BYPASS_CTX)
+          .length,
         p,
       ).toBeGreaterThan(0);
     }
@@ -343,6 +467,9 @@ describe("audit: everything but the one channel shape is refused (ADR-0029 item 
     const evil = { ...base, argv: [...base.argv, "--mcp-config", "/home/op/.mcp.json"] };
     expect(() => startAdapterRun(off, evil)).toThrow(McpConfigAuditError);
     expect(() => startAdapterRun(off, evil, { channel })).toThrow(McpConfigAuditError);
+    expect(() => startAdapterRun(off, evil, { channel, profile: BYPASS, bypassApproved: true })).toThrow(
+      McpConfigAuditError,
+    );
   });
 });
 
@@ -364,12 +491,11 @@ describe("audit: the definition file itself (defence in depth)", () => {
     symlinkSync(file, link);
     expect(checkChannelFile(link)).toContain("channel file is not a plain file");
     // assertMcpAudit runs the file check only when argv carries the definition.
-    const base = compiled(off, EDIT_UNTRUSTED);
+    const base = { ...compiled(off, EDIT_UNTRUSTED), env: TOKEN_ENV };
     const ctx = { mcpConfigPath: file, toolNames: ["commit"] };
-    expect(() => assertMcpAudit({ ...base, argv: [...base.argv, "--mcp-config", file] }, ctx)).not.toThrow();
+    const withFile = { ...base, argv: [...base.argv, "--mcp-config", file] };
+    expect(() => assertMcpAudit(withFile, ctx, BYPASS_CTX)).not.toThrow();
     chmodSync(file, 0o640);
-    expect(() => assertMcpAudit({ ...base, argv: [...base.argv, "--mcp-config", file] }, ctx)).toThrow(
-      /accessible to other users/,
-    );
+    expect(() => assertMcpAudit(withFile, ctx, BYPASS_CTX)).toThrow(/accessible to other users/);
   });
 });

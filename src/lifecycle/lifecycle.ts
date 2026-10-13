@@ -80,6 +80,7 @@ import {
   type ChannelAuditContext,
   createProbeRunner,
   type FailureCode,
+  IsolationAuditError,
   isIneligible,
   McpConfigAuditError,
   type NormalizedEvent,
@@ -943,8 +944,13 @@ export class RunLifecycle {
     const nativeIds: string[] = req.resume_native_session_id !== undefined ? [req.resume_native_session_id] : [];
     let channel: OpenChannel | undefined;
     let channelAudit: ChannelAuditContext | undefined;
+    // T9.4b (ADR-0033, owner decision 41): an adapter may narrow its `injected` declaration per run (Claude Code: only
+    // an approved bypass run). A run it declines is treated exactly like one of an adapter without a channel.
+    const caps = adapter.gitCapabilities;
+    const adapterOffers = caps.commitChannel === "injected" && (caps.offersChannel?.(compileReq, profile) ?? true);
+    const runCommitChannel = caps.commitChannel === "injected" && !adapterOffers ? "none" : caps.commitChannel;
     if (ws.mode === "worktree") {
-      const plan = gitChannelPlan(adapter, run0, this.opts.gitTools !== undefined);
+      const plan = gitChannelPlan(adapter, run0, this.opts.gitTools !== undefined && adapterOffers);
       if (plan.kind === "not_offered") {
         this.ledger.appendRunEvent({ runId, type: GIT_CHANNEL_NOT_OFFERED_EVENT, payload: { reason: plan.reason } });
       } else if (plan.kind === "offer" && this.opts.gitTools) {
@@ -1002,8 +1008,21 @@ export class RunLifecycle {
             reason: "GIT_CHANNEL_UNAVAILABLE",
           });
         }
+        // ADR-0033: standalone flags the adapter drops for the channel (Claude `--safe-mode`); the audits recheck them.
+        const remove = new Set(extra.removeFlags ?? []);
+        if ([...remove].some((f) => !f.startsWith("--") || f.includes("="))) {
+          await channel.close();
+          return this.fail(runId, "ELIGIBILITY_NONE", `${req.provider} cannot take the git tool channel: bad flag`, {
+            reason: "GIT_CHANNEL_INELIGIBLE",
+          });
+        }
         channelAudit = { toolNames: [...channel.shim.toolNames], ...(mcpConfigPath ? { mcpConfigPath } : {}) };
-        inv = { ...inv, argv: [...inv.argv, ...extra.argv], env: { ...inv.env, ...extra.env } };
+        inv = {
+          ...inv,
+          argv: [...inv.argv.filter((a) => !remove.has(a)), ...extra.argv],
+          policyFlags: inv.policyFlags.filter((a) => !remove.has(a)),
+          env: { ...inv.env, ...extra.env },
+        };
       }
     }
     if (exec.cancelRequested) {
@@ -1050,6 +1069,10 @@ export class RunLifecycle {
           await channel?.close();
           return this.fail(runId, "PERMISSION_BLOCKED", err.message.slice(0, 500), { reason: "MCP_CONFIG_REFUSED" });
         }
+        if (err instanceof IsolationAuditError) {
+          await channel?.close();
+          return this.fail(runId, "PERMISSION_BLOCKED", err.message.slice(0, 500), { reason: "ISOLATION_REFUSED" });
+        }
         throw err;
       }
       out = await exec.handle.done;
@@ -1086,7 +1109,7 @@ export class RunLifecycle {
       rule,
     );
     await this.finalize(runId, meta, ws, pending, out, streams, {
-      commitChannel: adapter.gitCapabilities.commitChannel,
+      commitChannel: runCommitChannel,
       nativeSessionIds: nativeIds,
     });
   }
@@ -1452,8 +1475,9 @@ type GitChannelPlan =
  * T9.4 (FR-GIT-02, LLD §12.1, ADR-0026; Delegated): whether a write-capable run gets the `commit` tool. Only facts frozen
  * in the run's policy snapshot at admission count (Q-41): a project run in a `host` environment whose primary context
  * is writable and names a commit identity, with an adapter that declares an `injected` channel. Runs delegated by
- * workspace path, and adapters without a channel (Codex; Claude Code without the T9.4b opt-in), are untouched (`none`,
- * no event).
+ * workspace path, and adapters without a channel (Codex; Claude Code without the T9.4b opt-in, or with it on any run
+ * other than an approved bypass run, ADR-0033), are untouched (`none`, no event); `serviceConfigured` is false for
+ * those.
  */
 function gitChannelPlan(adapter: ProviderAdapter, run: RunRecord, serviceConfigured: boolean): GitChannelPlan {
   if (!serviceConfigured || adapter.gitCapabilities.commitChannel !== "injected") return { kind: "none" };

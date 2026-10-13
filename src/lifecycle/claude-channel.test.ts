@@ -1,10 +1,12 @@
 /**
- * T9.4b end to end with a fake `claude` (ADR-0029; FR-GIT-02, FR-POL-08): the run lifecycle opens the per-run tool
- * channel for a Claude Code project run with the operator opt-in, the channel service writes the `--mcp-config`
- * definition, the argv audit admits it, and the replay script (`src/adapters/claude/fixtures/replay.mjs --mcp-commit`)
- * stands in for Claude Code: it reads the definition, starts the real `switchboard tool-shim` from it and calls `commit`.
- * What the replay does with the definition is the ASSUMED Claude Code behaviour (unverified, ADR-0029 live checks).
- * The real `claude` binary is never run; no login, network or credential is used; repositories are temporary.
+ * T9.4b end to end with a fake `claude` (ADR-0029, ADR-0033; FR-GIT-02, FR-POL-08): the run lifecycle opens the per-run
+ * tool channel for a Claude Code project run with the operator opt-in, and only for an approved privileged bypass run
+ * (owner decision 41), the channel service writes the `--mcp-config` definition, `--safe-mode` is removed, the argv
+ * audits admit both, and the replay script (`src/adapters/claude/fixtures/replay.mjs --mcp-commit`) stands in for
+ * Claude Code: it reads the definition, starts the real `switchboard tool-shim` from it and calls `commit`. What the
+ * replay does with the definition is modelled on the operator live check (PR #41, a hand-made server), not on a real
+ * Claude Code run through Switchboard. Every other profile gets no channel and the argv of the opt-in off. The real
+ * `claude` binary is never run; no login, network or credential is used; repositories are temporary.
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
@@ -147,7 +149,16 @@ function capturing(inner: ClaudeAdapter, rewrite?: (argv: string[]) => string[])
   };
 }
 
-function start(adapter: ProviderAdapter): RunLifecycle {
+/** The approved bypass scope a Claude privileged run can compile (network on, R-36; repository config disabled). */
+const BYPASS_SCOPE = {
+  files: { access: "worktree" },
+  shell: { mode: "broad" },
+  network: { mode: "on" },
+  repository_config: { mode: "disabled" },
+  bypass: true,
+};
+
+function start(adapter: ProviderAdapter, extra: { finalizePublisher?: GitPublisher } = {}): RunLifecycle {
   const ids = createIdGenerator();
   const artifacts = new ArtifactStore(path.join(dataDir, "artifacts"));
   const workspace = new WorkspaceManager({ db, artifacts, dataDir, allowedRoots: [root], ids });
@@ -161,6 +172,7 @@ function start(adapter: ProviderAdapter): RunLifecycle {
     resolveProfile: () => PROFILE,
     probeRunner,
     gitTools: service,
+    ...extra,
   });
   lc.start();
   lifecycle = lc;
@@ -176,6 +188,28 @@ const submit = (lc: RunLifecycle) =>
     provider: "claude",
     project: PROJECT,
   });
+
+/** Submit a privileged run, approve it as `serve` would (applyApprovalDecision), and wait for it to end. */
+async function submitPrivileged(lc: RunLifecycle, scope: object = BYPASS_SCOPE) {
+  const { runId, metaSessionId } = await lc.submit({
+    clientId: "c",
+    objective: "commit through the channel",
+    workspace: repo,
+    trustProfile: "privileged",
+    provider: "claude",
+    project: PROJECT,
+    privileged: { scope },
+  });
+  lc.applyApprovalDecision({
+    requestEventId: `evt_test_${runId}`,
+    runId,
+    decision: "APPROVED",
+    requestedBy: "op",
+    requestedAt: "2026-10-13T00:00:00.000Z",
+    scopeHash: ledger.getApprovalForRun(runId)?.scope_hash ?? "",
+  });
+  return { runId, metaSessionId, done: await lc.waitForTerminal(runId) };
+}
 
 const events = (runId: string) =>
   ledger.listRunEvents(runId).map((e) => ({ type: e.type, p: JSON.parse(e.payload_json) }));
@@ -217,10 +251,9 @@ afterEach(async () => {
 });
 
 describe("Claude Code channel behind the opt-in (T9.4b, fake claude replay)", () => {
-  it("opt-in on: one-server 0600 definition, exact allow rule, token only in env, commit lands, file removed", async () => {
+  it("opt-in on, approved bypass: one 0600 definition, no --safe-mode, token only in env, commit lands", async () => {
     const lc = start(capturing(claude(true)));
-    const { runId, metaSessionId } = await submit(lc);
-    const done = await lc.waitForTerminal(runId);
+    const { runId, metaSessionId, done } = await submitPrivileged(lc);
     expect(done.state, done.failure_detail ?? "").toBe("SUCCEEDED");
 
     const rec = readRecord();
@@ -231,14 +264,22 @@ describe("Claude Code channel behind the opt-in (T9.4b, fake claude replay)", ()
     expect(argv.filter((a) => a === "--mcp-config")).toHaveLength(1);
     expect(argv[argv.indexOf("--mcp-config") + 1]).toBe(file);
     expect(argv).toContain("--strict-mcp-config");
-    expect(argv).toContain("--safe-mode");
+    // Owner decision 41 (ADR-0033): --safe-mode stops the server from starting, so this run omits it.
+    expect(argv).not.toContain("--safe-mode");
     expect(argv.slice(-2)).toEqual(["--allowedTools", "mcp__switchboard-git__commit"]);
     expect(argv.some((a) => a.includes("*") && a.includes("mcp__"))).toBe(false);
-    expect(argv).not.toContain("--dangerously-skip-permissions");
+    // The approved bypass invocation; the Git deny rules stay (R-38).
+    expect(argv).toContain("--dangerously-skip-permissions");
+    expect(argv).toContain("--disallowedTools");
+    expect(argv).toContain("Bash(git commit *)");
     expect(rec.servers).toEqual(["switchboard-git"]);
     expect(rec.mode).toBe(0o600);
     expect(rec.dirMode).toBe(0o700);
     expect(rec.tokenInEnv).toBe(true);
+    // The server inherits the claude environment (live check, PR #41): only PATH, HOME and the token reach it, and the
+    // controller always sets the token (an unset one would stay a literal ${...}).
+    expect(rec.envKeys).toContain(TOOL_TOKEN_ENV);
+    for (const k of rec.envKeys as string[]) expect(["HOME", "PATH", TOOL_TOKEN_ENV], k).toContain(k);
     expect(rec.tools).toEqual(["commit"]);
     expect(rec.calls).toHaveLength(1);
     expect(rec.calls[0].isError).toBe(false);
@@ -289,12 +330,69 @@ describe("Claude Code channel behind the opt-in (T9.4b, fake claude replay)", ()
     expect(refSha(repo, publishRefFor(metaSessionId))).toBe("");
   });
 
+  it("opt-in on, every non-bypass run: no channel, argv identical to the opt-in off, --safe-mode kept", async () => {
+    const argvOf = async (gitChannel: boolean, privileged: boolean) => {
+      shims = [];
+      rmSync(record, { force: true });
+      const lc = start(capturing(claude(gitChannel)));
+      const r = privileged ? await submitPrivileged(lc, { ...BYPASS_SCOPE, bypass: false }) : await submit(lc);
+      const done = "done" in r ? r.done : await lc.waitForTerminal(r.runId);
+      expect(done.state, done.failure_detail ?? "").toBe("SUCCEEDED");
+      await lc.shutdown();
+      lifecycle = undefined;
+      const rec = readRecord();
+      expect(rec.tokenInEnv).toBe(false);
+      expect(shims).toEqual([]);
+      expect(events(r.runId).some((e) => e.type.startsWith("git_channel"))).toBe(false);
+      expect(refSha(repo, publishRefFor(r.metaSessionId))).toBe("");
+      // Worktree paths differ per run; compare the flags.
+      return (rec.argv as string[]).filter((a) => a.startsWith("-"));
+    };
+    for (const privileged of [false, true]) {
+      const offArgv = await argvOf(false, privileged);
+      const onArgv = await argvOf(true, privileged);
+      expect(onArgv).toEqual(offArgv);
+      expect(onArgv).toContain("--safe-mode");
+      expect(onArgv).not.toContain("--mcp-config");
+      expect(onArgv).not.toContain("--dangerously-skip-permissions");
+    }
+  });
+
+  it("opt-in on, edit-untrusted with the project's finalize_commit: finalize-only makes the commit (FR-GIT-09)", async () => {
+    const adapter = new ClaudeAdapter({
+      binaryPath: process.execPath,
+      launcherArgs: [REPLAY_SCRIPT, "--fixture", fixturePath("success-edit.jsonl"), "--write", "edited.txt", "--"],
+      timeouts: PATIENT,
+      gitChannel: true,
+    });
+    const finalizePublisher = new GitPublisher({
+      db,
+      scratchDir: path.join(dataDir, "git-scratch"),
+      allowedStates: ["FINALIZING"],
+    });
+    const lc = start(capturing(adapter), { finalizePublisher });
+    const { runId, metaSessionId } = await lc.submit({
+      clientId: "c",
+      objective: "edit a file",
+      workspace: repo,
+      trustProfile: "edit-untrusted",
+      provider: "claude",
+      project: { ...PROJECT, finalize_commit: true },
+    });
+    const done = await lc.waitForTerminal(runId);
+    expect(done.state, done.failure_detail ?? "").toBe("SUCCEEDED");
+    expect(shims).toEqual([]);
+    expect(events(runId).some((e) => e.type.startsWith("git_channel"))).toBe(false);
+    const sha = refSha(repo, publishRefFor(metaSessionId));
+    expect(sha).toMatch(/^[0-9a-f]{40}$/u);
+    expect(g(repo, "show", "--name-only", "--format=", sha)).toBe("edited.txt");
+  });
+
   it("a fragment that names another definition is refused by the audit before spawn; the file is removed", async () => {
     const lc = start(
       capturing(claude(true), (argv) => argv.map((a) => (a.endsWith(CHANNEL_MCP_CONFIG_FILE) ? "/tmp/other.json" : a))),
     );
-    const { runId } = await submit(lc);
-    const done = await lc.waitForTerminal(runId);
+    const { runId, done } = await submitPrivileged(lc);
     expect(done.state).toBe("FAILED");
     expect(done.failure_code).toBe("PERMISSION_BLOCKED");
     expect(done.failure_detail).toMatch(/MCP definition refused/u);
@@ -305,8 +403,7 @@ describe("Claude Code channel behind the opt-in (T9.4b, fake claude replay)", ()
 
   it("a wildcard allow rule in the fragment is refused by the audit before spawn", async () => {
     const lc = start(capturing(claude(true), (argv) => [...argv, "mcp__switchboard-git__*"]));
-    const { runId } = await submit(lc);
-    const done = await lc.waitForTerminal(runId);
+    const { done } = await submitPrivileged(lc);
     expect(done.failure_code).toBe("PERMISSION_BLOCKED");
     expect(existsSync(record)).toBe(false);
   });

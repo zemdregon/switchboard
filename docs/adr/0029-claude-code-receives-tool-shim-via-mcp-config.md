@@ -2,7 +2,9 @@
 
 - Status: Accepted (decision); implementation present behind an unsupported operator opt-in (T9.4b, 2026-10-13,
   Delegated) and **unverified live** (no live check run). Amends [ADR-0015](0015-claude-untrusted-isolation-flags.md)'s
-  ban on `--mcp-config` for the injected channel only
+  ban on `--mcp-config` for the injected channel only. Partly superseded by
+  [ADR-0033](0033-claude-channel-bypass-only-without-safe-mode.md) (2026-10-13, owner decision 41): the channel is
+  offered only to approved bypass runs, which omit `--safe-mode`
 - Date: 2026-10-13
 - Decided by: zemdregon (owner decision 36, answer to Q-40); mechanism Delegated (agent, 2026-10-13)
 - Related: FR-GIT-02, FR-GIT-01, FR-POL-03, FR-POL-08, [ADR-0014](0014-tool-only-commits-and-publication.md),

@@ -1,6 +1,6 @@
 /** Glue between an adapter and the exec supervisor: probe runner and a single-invocation runner. */
 import { supervise } from "../exec/index.js";
-import { assertBypassAudit, assertMcpAudit, type ChannelAuditContext } from "./audit.js";
+import { assertBypassAudit, assertMcpAudit, assertSafeModeAudit, type ChannelAuditContext } from "./audit.js";
 import {
   createParseState,
   type ExitInfo,
@@ -80,7 +80,8 @@ export interface AdapterRun {
  * result with `adapter.extractResult`. Throws BypassFlagError before spawning if the audit refuses a bypass flag: every
  * bypass flag is refused unless `opts.profile` is `privileged`, `opts.bypassApproved` is true and the profile's scope
  * sets bypass (T3.17, `./audit.ts`). Throws McpConfigAuditError before spawning if `--mcp-config` or an MCP allow rule
- * is not exactly the controller's channel shape (T9.4b).
+ * is not exactly the controller's channel shape in an approved bypass run (T9.4b, ADR-0033), and IsolationAuditError if
+ * a Claude Code argv lacks `--safe-mode` outside the approved bypass cases that omit it.
  */
 export function startAdapterRun(adapter: ProviderAdapter, inv: Invocation, opts: AdapterRunOptions = {}): AdapterRun {
   if (inv.transport !== "subprocess-jsonl") throw new Error(`unsupported transport: ${inv.transport}`);
@@ -89,6 +90,8 @@ export function startAdapterRun(adapter: ProviderAdapter, inv: Invocation, opts:
   assertBypassAudit(inv, ctx);
   // T9.4b (ADR-0029 item 6): `--mcp-config` only in the controller's one channel shape; no other MCP rule.
   assertMcpAudit(inv, opts.channel, ctx);
+  // ADR-0033 (owner decision 41): Claude Code keeps `--safe-mode` except in the approved bypass cases that omit it.
+  if (adapter.id === "claude") assertSafeModeAudit(inv, ctx);
 
   const state = createParseState();
   const events: NormalizedEvent[] = [];

@@ -165,8 +165,8 @@ function enablement(config: ResolvedConfig, fake: FakeSwitch): (id: ProviderId) 
 }
 
 /**
- * `claudeGitChannel` is `providers.claude-code.git_channel` (T9.4b, ADR-0029 item 7): default false, so the Claude
- * adapter declares no tool channel and its argv is unchanged.
+ * `claudeGitChannel` is `providers.claude-code.git_channel` (T9.4b, ADR-0029 item 7, ADR-0033): default false, so the
+ * Claude adapter declares no tool channel and its argv is unchanged; when true, only approved bypass runs get it.
  */
 export function buildRegistry(fake: FakeSwitch, opts: { claudeGitChannel?: boolean } = {}): AdapterRegistry {
   const registry = new AdapterRegistry()
@@ -384,9 +384,11 @@ async function runDaemon(
     });
   }
   if (config.claudeCodeGitChannel) {
-    log.warn("UNSUPPORTED opt-in providers.claude-code.git_channel is on: the ADR-0029 live checks have not passed", {
-      adr: "ADR-0029",
-    });
+    log.warn(
+      "UNSUPPORTED opt-in providers.claude-code.git_channel is on: offered only to approved bypass runs, which then " +
+        "omit --safe-mode and load repository CLAUDE.md and hooks; not yet proven end to end",
+      { adr: "ADR-0033" },
+    );
   }
   const registry = buildRegistry(fake, { claudeGitChannel: config.claudeCodeGitChannel });
   const lifecycle = new RunLifecycle({
