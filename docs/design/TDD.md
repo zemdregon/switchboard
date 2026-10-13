@@ -10,9 +10,10 @@
 ## 1. Purpose and scope
 
 This document says *with what* and *how* Switchboard is to be built, at the level a maintainer needs before writing M1.
-It does not restate requirements; it cites SRS IDs. Nothing described here exists yet: as of 2026-10-12 the repository
-holds documentation and research only, with no code, tests, CI or configuration. Every statement below is a design
-intention.
+It does not restate requirements; it cites SRS IDs. Implementation status is owned by
+[ROADMAP §6](../ROADMAP.md#6-milestones). As of 2026-10-12 the repository held documentation and research only, with no
+code, tests, CI or configuration; code now exists for M1 and parts of M2, M3 and M9. Statements below that describe a
+design intention are marked as such in their own text or by their milestone.
 
 Decision status: ADR-0010 (stack) and the other [ADRs](../adr/README.md) are *Delegated* decisions, binding for
 implementation until revised but not individually approved by zemdregon. Items labelled **Proposed** or **Assumption** here
@@ -85,8 +86,8 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 
 *Note (2026-10-13, Delegated, T9.1):* `projects[]` is implemented for the schema, the loader and the read-only
 `switchboard projects list|show|validate` commands (`src/config/projects.ts`, `src/cli/projects.ts`);
-`mcp_clients[].projects` is not yet (T9.2). Config-only checks run at load; filesystem and Git checks run only in
-`projects validate`, so adding a project cannot stop `serve` starting. See [LLD §11.1](LLD.md#111-configuration-shape).
+`mcp_clients[].projects` followed in T9.2 (2026-10-13, `531a04f`; Delegated). Config-only checks run at load;
+filesystem and Git checks run only in `projects validate`, so adding a project cannot stop `serve` starting. See [LLD §11.1](LLD.md#111-configuration-shape).
 
 *Note (2026-10-13, Delegated, T9.2):* `mcp_clients[].projects` is implemented: strict schema key, an unknown project id
 aborts the load, and a client with no list may use no project (workspace-path requests are unaffected). `serve` checks

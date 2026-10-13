@@ -20,8 +20,9 @@ it if you have them.
 
 ## Scope
 
-This repository holds the specification set and early application code (the M1
-foundation, with M2 in progress). Relevant reports include guidance or code that
+This repository holds the specification set and application code: the M1 foundation
+is done, M2 and M3 are `Partial`, and parts of M9 are implemented (see the
+[roadmap](docs/ROADMAP.md#6-milestones)). Relevant reports include guidance or code that
 would weaken credential handling, permission boundaries, or sandboxing, and
 exposed secrets or credentials in the repository history.
 
