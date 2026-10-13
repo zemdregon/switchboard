@@ -1120,8 +1120,10 @@ rows are kept, Q-19). It is wired three ways, none with a new config key. `docto
 the same by default (dry run); `--apply` collects, needs `retention.days` set in the config and the data-directory
 lock (so it is refused while `serve` runs). `serve` runs one pass after reconciliation, before the lifecycle starts or
 MCP accepts calls, and then every `retention.interval`, only when `retention.days` is set: unset means nothing is
-collected. Orphans are reported but not yet removed. GC marks first (R-42, decision 28): one transaction re-checks idleness,
-sets the meta-session `ARCHIVED` and appends the intent event, and admission refuses an `ARCHIVED` meta-session with
+collected. Orphans are reported but not yet removed. The sweep does not count a publish ref
+(`refs/heads/<prefix><sess>`, §12.3) of a meta-session that has a ledger row as an orphan; one whose session is
+unknown is still reported. GC marks first (R-42, decision 28): one transaction re-checks idleness, sets the
+meta-session `ARCHIVED` and appends the intent event, and admission refuses an `ARCHIVED` meta-session with
 `INVALID_REQUEST`; a marked, unfinished session is a candidate again and rolls forward.
 
 **Crash safety.** Order is intent row (with the `ARCHIVED` mark, one transaction), then Git action, then outcome
