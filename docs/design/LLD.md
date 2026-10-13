@@ -1062,6 +1062,14 @@ unchanged. One defect was found and fixed: another run's ref check could see a c
 repository root. Tests: `src/lifecycle/concurrent-worktrees.test.ts`. Not built: the `container` clause of FR-WS-08
 (M10, FR-PRJ-05) and FR-WS-09 (Proposed, not accepted, Q-55; its tests are skipped placeholders).
 
+*As built (worktree creation, 2026-10-13, Delegated).* Git takes no lock on `.git/worktrees/` during `git worktree add`,
+so concurrent preparations on one repository failed intermittently: an add that enumerated worktrees read a sibling's
+half-created admin directory (`fatal: failed to read .git/worktrees/<id>/commondir: Success`), or a sibling's
+`git worktree prune` removed it (`fatal: could not open '.git/worktrees/<id>/locked' for writing`). The partial-worktree
+repair, the directory creation and `git worktree add` now run one at a time per repository root in the process
+(`src/workspace/manager.ts`, `serialisedWorktreeCreate`); no retry. Test: "creates worktrees for concurrent runs on one
+repository one at a time (T9.11)" in `src/workspace/workspace.test.ts`.
+
 ```mermaid
 sequenceDiagram
   participant S as Scheduler

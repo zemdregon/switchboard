@@ -109,6 +109,32 @@ const DEFAULT_LEASE_TTL_MS = 30 * 60 * 1000;
 const ID_RE = /^(sess|run)_[0-9A-Za-z]{1,40}$/;
 const TERMINAL = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
 
+/**
+ * Worktree creation queue per repository root, shared by every manager in the process. Git takes no lock on
+ * `.git/worktrees/` during `git worktree add`: a concurrent add (or prune) that enumerates worktrees can read a sibling
+ * whose admin directory exists but whose `commondir` is not yet written, and dies with
+ * `fatal: failed to read .git/worktrees/<id>/commondir`. Runs of different meta-sessions on one repository may
+ * prepare at once (T9.11), so the repair-and-add step runs one at a time per repository root.
+ */
+const worktreeCreateQueue = new Map<string, Promise<void>>();
+
+async function serialisedWorktreeCreate<T>(repoRoot: string, fn: () => Promise<T>): Promise<T> {
+  const previous = worktreeCreateQueue.get(repoRoot) ?? Promise.resolve();
+  let release = () => {};
+  const mine = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.then(() => mine);
+  worktreeCreateQueue.set(repoRoot, tail);
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (worktreeCreateQueue.get(repoRoot) === tail) worktreeCreateQueue.delete(repoRoot);
+  }
+}
+
 export class WorkspaceManager {
   private readonly db: Database.Database;
   private readonly ids: IdGenerator;
@@ -169,9 +195,11 @@ export class WorkspaceManager {
 
       // Intent row first, then the Git action, then the outcome row.
       const baseCheckpointId = this.insertCheckpoint(input.metaSessionId, input.runId, "base", baseCommit, branch);
-      await this.repairPartialWorktree(repoRoot, worktreePath, branch);
-      await mkdir(path.dirname(worktreePath), { recursive: true, mode: 0o700 });
-      await git(["worktree", "add", "-b", branch, worktreePath, baseCommit], { cwd: repoRoot });
+      await serialisedWorktreeCreate(repoRoot, async () => {
+        await this.repairPartialWorktree(repoRoot, worktreePath, branch);
+        await mkdir(path.dirname(worktreePath), { recursive: true, mode: 0o700 });
+        await git(["worktree", "add", "-b", branch, worktreePath, baseCommit], { cwd: repoRoot });
+      });
       const head = await gitText(["rev-parse", "HEAD"], { cwd: worktreePath });
       if (head !== baseCommit) throw new WorkspaceError("NOT_FOUND", "new worktree is not at the base commit");
       const preCheckpointId = this.insertCheckpoint(input.metaSessionId, input.runId, "pre", head, branch);
