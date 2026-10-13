@@ -46,6 +46,7 @@ import {
   ClaudeAdapter,
   CodexAdapter,
   createProbeRunner,
+  PreflightCache,
   type ProviderId,
   type VersionGateResult,
 } from "../adapters/index.js";
@@ -311,6 +312,7 @@ async function runDaemon(
     probeRunner: createProbeRunner(PROBE_ENV_ALLOWLIST),
     baseEnv: io.env,
     eligibility: { gate: gateFor(registry, fake), isEnabled: enablement(config, fake) },
+    preflightCache: new PreflightCache({ ttlMs: config.preflightTtlMs }),
     onTransition: (n) => log.info("run transition", { run_id: n.runId, from: n.from, to: n.to, rule: n.rule }),
     ...(now ? { now } : {}),
   });

@@ -1123,6 +1123,13 @@ context kind aborts startup (NFR-SEC-06).
 Only the primary context is writable in this design; additional writable contexts (multi-repository changes) are deferred
 (ROADMAP §8). A context with `push.policy` other than `none` must have an `identity`.
 
+*Note (2026-10-13, Delegated, [decision 29](../ROADMAP.md#42-owner-decisions), T3.21):* the top-level `timeouts` object
+is part of the same Ajv-validated schema (strict; unknown keys abort startup) and today holds one key,
+`"timeouts": { "preflight_ttl_seconds": 60 }` (integer 0 to 3600; default 60 is an **Assumption**; 0 disables the
+preflight cache, NFR-PERF-02). The cache holds only successful `probe` and `OK` auth results, keyed by adapter id and
+the resolved binary's path, `mtime`, size and inode, so an upgraded binary is re-probed immediately and a failure or
+an unauthenticated state is re-checked on the next call (used by `delegate_task`, dispatch and `list_capabilities`; [§2](#2-adapter-contract)).
+
 ### 11.2 Resolution and ceilings
 
 At admission (FRD BR-23): (1) resolve `project` to its definition, else `INVALID_REQUEST`; (2) check the client's project

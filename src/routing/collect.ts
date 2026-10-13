@@ -7,6 +7,7 @@
  * the binary probed fully and the version gate passed, so an unvalidated binary is never asked anything beyond
  * `probe`. `compile` is pure and runs after a successful probe (adapters resolve their binary path in `probe`).
  */
+import type { PreflightCache } from "../adapters/preflight-cache.js";
 import type { AdapterRegistry } from "../adapters/registry.js";
 import type {
   AuthResult,
@@ -75,6 +76,8 @@ export interface CollectDeps {
   manifestDir?: string;
   supportedPlatforms?: (id: ProviderId) => readonly string[] | undefined;
   isEnabled?: (id: ProviderId) => boolean;
+  /** NFR-PERF-02: when set, `probe` and `authPreflight` go through this cache (successes only). */
+  preflight?: PreflightCache;
 }
 
 export async function collectFacts(req: EligibilityRequest, deps: CollectDeps): Promise<EligibilityInput> {
@@ -110,7 +113,7 @@ async function collectOne(
   // Do not execute anything for a provider that is already excluded by configuration or platform.
   if (!adapter || !enabled || (supportedPlatforms !== undefined && !supportedPlatforms.includes(platform))) return base;
 
-  const probe = await adapter.probe(deps.runner);
+  const probe = deps.preflight ? await deps.preflight.probe(adapter, deps.runner) : await adapter.probe(deps.runner);
   const facts: ProviderFacts = {
     ...base,
     probe: { steps: probe.steps, binaryVersion: probe.binaryVersion },
@@ -122,7 +125,9 @@ async function collectOne(
     : deps.registry.gate(id, probe.binaryVersion, deps.manifestDir);
   facts.gate = gate;
   if (gate.eligible) {
-    const auth: AuthResult = await adapter.authPreflight(deps.runner);
+    const auth: AuthResult = deps.preflight
+      ? await deps.preflight.authPreflight(adapter, deps.runner)
+      : await adapter.authPreflight(deps.runner);
     facts.auth = auth;
   }
   facts.compile = compileCheck(adapter, req.profile, req.requirements, req.cwd);

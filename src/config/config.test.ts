@@ -97,6 +97,27 @@ describe("loadConfig", () => {
   });
 });
 
+describe("timeouts.preflight_ttl_seconds (T3.21)", () => {
+  it("defaults to 60 seconds, parses a value and 0 (disabled), and rejects bad values", () => {
+    expect(loadConfig({ configPath: write(base()) }).preflightTtlMs).toBe(60_000);
+    expect(
+      loadConfig({ configPath: write({ ...base(), timeouts: { preflight_ttl_seconds: 5 } }) }).preflightTtlMs,
+    ).toBe(5000);
+    expect(
+      loadConfig({ configPath: write({ ...base(), timeouts: { preflight_ttl_seconds: 0 } }) }).preflightTtlMs,
+    ).toBe(0);
+    for (const timeouts of [
+      { preflight_ttl_seconds: -1 },
+      { preflight_ttl_seconds: 1.5 },
+      { preflight_ttl_seconds: 3601 },
+      { preflight_ttl_seconds: "60" },
+      { bogus: 1 },
+    ]) {
+      expect(() => loadConfig({ configPath: write({ ...base(), timeouts }) })).toThrow(ConfigError);
+    }
+  });
+});
+
 describe("retention and profiles config (T3.2)", () => {
   it("defaults retention to 30 days and a 24 hour interval, and no overrides", () => {
     const c = loadConfig({ configPath: write(base()) });

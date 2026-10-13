@@ -8,6 +8,7 @@ import type { ProfileOverride, ProfileOverrides } from "../policy/types.js";
 import { ConfigError } from "./errors.js";
 import {
   configSchema,
+  DEFAULT_PREFLIGHT_TTL_SECONDS,
   DEFAULT_PRIVILEGED_APPROVAL,
   DEFAULT_RETENTION_DAYS,
   DEFAULT_RETENTION_INTERVAL,
@@ -40,6 +41,8 @@ export interface ResolvedConfig {
    * does not enable collection.
    */
   retentionEnabled: boolean;
+  /** Adapter preflight cache TTL in milliseconds (NFR-PERF-02, T3.21); 0 disables the cache. */
+  preflightTtlMs: number;
   /** Validated `profiles.<name>` overrides in COMP-POL's camelCase form (owner decision 12); empty when none. */
   profileOverrides: ProfileOverrides;
 }
@@ -230,6 +233,7 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
       intervalMs: parseRetentionInterval(cfg.retention?.interval ?? DEFAULT_RETENTION_INTERVAL),
     },
     retentionEnabled: cfg.retention?.days !== undefined,
+    preflightTtlMs: (cfg.timeouts?.preflight_ttl_seconds ?? DEFAULT_PREFLIGHT_TTL_SECONDS) * 1000,
     profileOverrides,
     // Proposed: a provider not listed is enabled with no explicit weight; listing it can disable it.
     providers: new Map(

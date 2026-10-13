@@ -2,7 +2,8 @@
 // Drives the real MCP server over the SDK's in-memory transport with the fake adapter's `success` scenario on a temp
 // git repo. Provider time is excluded: the fake CLI does no work, and the preflight/spawn marks below are taken from
 // wrapper calls around the adapter, so the figures are controller overhead plus the cost of spawning the (trivial)
-// fake probe processes. Usage: node scripts/bench-perf.mjs [--n 30] [--warmup 5] [--json]
+// fake probe processes. Usage: node scripts/bench-perf.mjs [--n 30] [--warmup 5] [--json] [--cached]
+// --cached enables the NFR-PERF-02 preflight cache (T3.21, default TTL); the default run keeps preflight uncached.
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -11,7 +12,7 @@ import { performance } from "node:perf_hooks";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { FakeAdapter } from "../dist/adapters/fake/adapter.js";
-import { AdapterRegistry } from "../dist/adapters/index.js";
+import { AdapterRegistry, PreflightCache } from "../dist/adapters/index.js";
 import { ArtifactStore } from "../dist/artifacts/index.js";
 import { createIdGenerator } from "../dist/ids/index.js";
 import { createLedger, openLedger } from "../dist/ledger/index.js";
@@ -26,6 +27,7 @@ const argOf = (name, dflt) => {
 const N = argOf("--n", 30);
 const WARMUP = argOf("--warmup", 5);
 const AS_JSON = process.argv.includes("--json");
+const CACHED = process.argv.includes("--cached");
 
 const GIT_ENV = {
   PATH: process.env.PATH ?? "",
@@ -105,6 +107,7 @@ const lifecycle = new RunLifecycle({
   allowedRoots: [root],
   globalConcurrency: 4,
   resolveProfile: profileFor,
+  ...(CACHED ? { preflightCache: new PreflightCache() } : {}),
   eligibility: {
     platform: "linux",
     // The fake adapter has no compliance manifest; accept it as the tests do.
@@ -215,6 +218,7 @@ const results = {
   },
   n: N,
   warmup: WARMUP,
+  preflightCache: CACHED,
   metricsMs: {
     delegate_task_ack: stat(col("ack")),
     accepted_to_spawn_total_uncached_preflight: stat(col("toSpawn")),
@@ -240,7 +244,9 @@ if (AS_JSON) {
   const h = results.host;
   console.log(`Switchboard controller-overhead benchmark  ${results.date}`);
   console.log(`host: node ${h.node}; ${h.os}; ${h.cpu} x${h.cpuCount}; ${h.totalMemGiB} GiB RAM`);
-  console.log(`iterations: ${N} after ${WARMUP} warm-up; fake adapter scenario "success"; times in ms\n`);
+  console.log(
+    `iterations: ${N} after ${WARMUP} warm-up; fake adapter scenario "success"; preflight cache ${CACHED ? "ON" : "off"}; times in ms\n`,
+  );
   console.log(`${"metric".padEnd(46)}${"p50".padStart(9)}${"p95".padStart(9)}${"max".padStart(9)}`);
   for (const [k, v] of Object.entries(results.metricsMs)) {
     console.log(
