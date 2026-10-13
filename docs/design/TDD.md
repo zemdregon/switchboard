@@ -783,8 +783,9 @@ documentation**; it implements from each provider's documentation and the instal
   analogue to Switchboard's shim. Its comment says some ACP agents advertise HTTP MCP yet drop it, which is why stdio
   is used. SECONDHAND: Grok adds client-supplied servers on top of the user's configuration and has no strict flag.
   Antigravity's own configuration and whether it honours stdio `mcpServers` are UNKNOWN.
-  Google's documentation read on 2026-10-13 does not document Antigravity as an ACP agent
-  ([§4.4](#44-antigravity-agy-m4)), so that part of the lead is unconfirmed.
+  Google's CLI documentation read on 2026-10-13 does not document Antigravity as an ACP agent
+  ([§4.4](#44-antigravity-agy-m4)), but a separate Google ACP server is listed in the ACP registry
+  ([§4.4.4](#444-separate-acp-adapter-owner-lead-2026-10-13)); its behaviour is unverified.
 - *Kimi Code.* UNKNOWN: not found in T3 Code.
 - *Open questions it leaves* (all for T9.0 / adapter tasks, on our CLIs): does a stdio shim run headless under each
   provider's non-interactive mode; do exact-name allow rules cover its tools under each fail-closed mode; do provider
@@ -1255,12 +1256,18 @@ Sources, cited in cells:
 - **[R2 Lnn]** a line of the [verified research](../research/headless-ai-coding-controller-verified-2026-10-12.md).
 - **[3P]** <https://registry.npmjs.org/agy-acp-bridge> (a third-party package; a lead, never evidence of Google's
   behaviour).
+- **[REG]** <https://agentclientprotocol.com/get-started/registry> and the manifest
+  <https://raw.githubusercontent.com/agentclientprotocol/registry/main/antigravity-acp/agent.json>, **[GZ]**
+  <https://antigravity.google/docs/ide/extensions/zed>, **[AF]** <https://antigravity.google/docs/faq>,
+  **[GI31]** <https://github.com/google-antigravity/antigravity-cli/issues/31> (a user thread; its comments are
+  secondhand reports, never evidence of Google's behaviour). All retrieved 2026-10-13; used only in
+  [§4.4.4](#444-separate-acp-adapter-owner-lead-2026-10-13).
 - **[P-]** and **[S-]** as in [§4.1.1](#411-claude-code-native-controls-per-profile-and-platform-t30).
 
 | Aspect | Detail |
 | --- | --- |
 | Automation surface | `agy -p "<prompt>"` (aliases `--print`, `--prompt`): response on stdout, diagnostics (errors, authentication prompts, progress, permission notices) on stderr [H, R2 L74, L110]. Version: `agy --version` [I] (output format: Unverified: T4.31). Platforms: macOS, Linux, Windows [I]; only Linux is evaluated here (NFR-PORT-02, NFR-PORT-03) |
-| Transport (decision) | **Ephemeral subprocess, `--output-format stream-json`** (NDJSON on stdout), the same family as Claude Code and Codex (R2 L58). **Not ACP.** Reason: none of the Google pages above (headless, reference, install, settings, MCP, SDK, changelog) mentions ACP or the Agent Client Protocol (searched 2026-10-13: no hit), and [R2] does not name it; the only ACP adapter found is third-party and wraps `agy` "using native JSON output" [3P], which points to no native ACP. The T3 Code lead that Antigravity is an ACP agent (TDD §3.12, R-18, R-50) is therefore **not confirmed** by Google's documentation; whether the installed binary has an ACP subcommand: Unverified: T4.31 (C2). `--input-format stream-json` (one process, many turns, [H]) is not used: FR-EXE-04 defers persistent transports, and that mode rejects `control_request` and `control_response` events with exit 2 [H], so it has no permission round-trip |
+| Transport (decision) | **Ephemeral subprocess, `--output-format stream-json`** (NDJSON on stdout), the same family as Claude Code and Codex (R2 L58). **Not ACP.** Reason: none of the Google pages above (headless, reference, install, settings, MCP, SDK, changelog) mentions ACP or the Agent Client Protocol (searched 2026-10-13: no hit), and [R2] does not name it; the only ACP adapter found is third-party and wraps `agy` "using native JSON output" [3P], which points to no native ACP. The T3 Code lead that Antigravity is an ACP agent (TDD §3.12, R-18, R-50) is therefore **not confirmed** by Google's documentation; whether the installed binary has an ACP subcommand: Unverified: T4.31 (C2). **Update 2026-10-13 (owner lead):** a separate Google ACP download is listed in the ACP registry; the transport decision is unchanged, see [§4.4.4](#444-separate-acp-adapter-owner-lead-2026-10-13). `--input-format stream-json` (one process, many turns, [H]) is not used: FR-EXE-04 defers persistent transports, and that mode rejects `control_request` and `control_response` events with exit 2 [H], so it has no permission round-trip |
 | Structured output | `--output-format text` (default), `json` (one-line envelope on completion), `stream-json` (NDJSON) [H]. Shapes in [§4.4.1](#441-antigravity-output-shapes-and-exit-codes-t430). `--json-schema` is also documented [H]; not needed |
 | Resume | Identifier: `conversation_id` in the `json` envelope, on `init`, on every `step_update` and on `result` [H]. Resume: `--conversation <id>` (explicit; preferred) or `--continue`/`-c` (most recent conversation of the working directory, resolved from a local workspace-keyed cache file that is never read by Switchboard) [H, RS]. Histories are scoped to the working directory [RS]; whether `--conversation <id>` works from another directory, and the exit code for an unknown id: Unverified: T4.31 (C9). A resumed run is a new process [H] |
 | Auth preflight | Headless uses cached credentials (OS keyring: Apple Keychain, Linux Secret Service over D-Bus, Windows Credential Manager); a run that is not authenticated, in a non-interactive environment with no terminal, "exits with an authentication required error instead of hanging" [H, I, R2 L110, L192]. **The exit code, stdout and stderr text of that error are not documented: Unverified: T4.31 (C5).** No auth status command is documented (searched [H, I, R, TS, MG]); `agy doctor` appears only on a third-party page and is not used. Documented cheap candidates for a harmless call: `agy -p "/usage"` (also `/credits`, `/model`), which per [CL v1.1.12] answers "without starting an agent turn, spending quota or leaving a conversation behind" (whether it fails when logged out, and its exit code: Unverified: T4.31 C6), and `agy models` [H]. A locked or absent keyring can hang or print `keyring is locked` [TS]: the supervisor's timeout applies (NFR-REL-02) |
@@ -1347,9 +1354,92 @@ prompt text before writing `docs/research/live-checks-2026-10-13.md` (or the nex
 | C11 | Throwaway repo containing a benign `.agents/mcp_config.json` whose stdio `command` writes a marker file, a benign `.agents/hooks.json` hook that writes a marker, and a `GEMINI.md` and `AGENTS.md` asking for a marker phrase; run `agy -p "Say ok" --output-format stream-json` (default settings) and with `--dangerously-skip-permissions` | Whether the MCP server started, the hook ran, the instruction files were read (marker files, `init.tools`); whether a trust dialog or `-p` blocks it; if a per-run worktree-local `.agents/mcp_config.json` is loaded, whether its tool is approvable without a settings rule | Repository config; per-run MCP; malicious-fixture design (T4.3) |
 | C12 | With `AGY_CLI_DISABLE_AUTO_UPDATE=true` set in the environment, C4 `json` | Whether the run still works and no updater lock/network update occurs (`~/.gemini/antigravity-cli/updater/` listing only) | Known risks (self-update); environment allowlist |
 | C13 | `HOME=$(mktemp -d) agy -p "Say ok" --output-format json </dev/null` (separate empty home) | Whether auth still works (keyring) and whether settings are read from the new home | "What would make profiles eligible" (b) |
+| C14 | Read-only: is a separate ACP package installed? `command -v agy_acp_server.par agy_acp_server.exe agy-acp agy-acp-bridge`; `npm ls -g --depth=0 2>/dev/null` filtered to names containing `acp` or `antigravity`; for Zed, list the installed external agents in its settings (names only) | Which ACP adapters exist on the machine, their names, versions and install paths (home path scrubbed), and whether each is Google's (registry id `antigravity-acp`) or third-party | §4.4.4: installed candidates |
+| C15 | For each installed adapter, from its own documentation or `--help` (not by running it against a model): what does it wrap (`agy -p`, interactive `agy`, a separate Google server), which auth methods it lists, which environment variables it reads | The wrap target and the auth methods; any variable named `GEMINI_API_KEY`, `GOOGLE_API_KEY` or `GOOGLE_GEMINI_BASE_URL` (names only) | §4.4.4: wraps, credential handling |
+| C16 | Whether the adapter reuses agy's login: with `agy` logged in (C4 works), start the adapter's ACP `initialize` only (no `authenticate`, no prompt) from a scratch ACP client and record whether a session can be created or "authentication required" is returned. Stop if it prints a sign-in URL; do not complete a login for the test | `initialize` result keys (protocol version, `authMethods` ids, capabilities, `mcpCapabilities`), exit codes, and yes/no for login reuse | §4.4.4: auth reuse, `mcpServers` transports |
+| C17 | `agy --help` and `agy -p --help` again, looking for `--gemini_dir`, `--config-dir` or similar (a third-party README names `--gemini_dir`; Unverified) | Flag names and their help text | §4.4.4 and "What would make profiles eligible" (b) |
 
 Results go in the dated note under `docs/research/` and move each `Unverified: T4.31` cell above to the observed value
 with the version from C1; no credential, token or account identifier in any capture.
+
+#### 4.4.4 Separate ACP adapter (owner lead, 2026-10-13)
+
+**Provenance.** On 2026-10-13 the owner (zemdregon) said in chat: "Antigravity also has some form of separate download
+for ACP that isn't part of the native agy." That statement is a **lead without a source**. Delegated agent research the
+same day (public pages and registry metadata only; nothing was installed, downloaded or run) found a source that is
+consistent with it, below. Facts are either sourced to a URL retrieved 2026-10-13 or read `Unverified`. Page text was
+treated as data.
+
+**Finding in one paragraph.** The ACP project's registry lists an agent `Google Antigravity` (id `antigravity-acp`,
+version 1.3.0) whose manifest names `Google LLC` as author and points to binary archives on `dl.google.com`
+[REG]. Google's own Zed guide tells users to install Antigravity from that registry [GZ]. That is a separate download,
+not the `agy` binary. It is not mentioned in Google's CLI pages read for T4.30 ([H], [R], [I], [M], [SDK], [CL]).
+The native-`agy` feature request for `--acp` was still open on 2026-10-13 [GI31]. Confidence that Google publishes it:
+**official** (publisher metadata plus Google's own guide). Everything about how it behaves is **Unverified: T4.31**
+except where the table says it is sourced.
+
+**Candidate 1: Google's ACP server (official).**
+
+| Field | Value |
+| --- | --- |
+| Name, id | "Google Antigravity", registry id `antigravity-acp`; binaries `agy_acp_server.par` (macOS, Linux) and `agy_acp_server.exe` (Windows) [REG manifest] |
+| Publisher, confidence | Google LLC (`authors` in the manifest) [REG]; the Zed guide [GZ] and the IDE extensions page <https://antigravity.google/docs/ide/extensions> (the manifest's `website`) point to it. **Official.** Binary signature and checksum: Unverified (the manifest carries no hash; a commenter on [GI31] says the Windows binaries are Authenticode-signed by Google LLC, which was not checked) |
+| URLs | Manifest and registry page above; archives `https://dl.google.com/agy-extensions/releases/{macos,linux,windows}/agy-acp-server-1.3.0-<platform>.zip` [REG manifest]; the linux-x86_64 archive answered HTTP 200 to a header-only request, nothing was downloaded |
+| What it wraps | Unverified. Not documented by Google as wrapping `agy -p`; it ships as its own binary with its own per-platform archives. A third-party package describes it as "the official Google Antigravity ACP kernel" (npm `paseo-agy-acp`), also unverified |
+| Latest release | Version 1.3.0 in the manifest [REG]. Release date: Unverified (the registry history was not readable from this host). A [GI31] comment reports a build named `..._20260818_01_RC01`, reporting protocol version 2, and another reports version 1.3.0 with protocol 1: Unverified and conflicting |
+| Install method (record only) | Zed: External Agents, Add, Install from Registry, Antigravity [GZ]. Otherwise download the platform zip and run the `cmd` from the manifest (`./agy_acp_server.par`, with the argument `--uid=` on Linux) [REG manifest]. Not done here |
+| Authentication | Google documents four settings values: `oauth-personal`, `oauth-business` (with GCP project and location), `gemini-api-key`, `agent-platform` (API key or Application Default Credentials) [GZ]. Whether it reuses `agy`'s keyring login: **Unverified**. Secondhand reports on [GI31] say it does not: it keeps its own state under `~/.gemini/antigravity-acp/`, does not inherit credentials the IDE wrote, and every session fails with "Authentication required" until a client calls `authenticate` (interactive: prints a URL and opens a browser) |
+| Permission requests | Unverified. A third-party probe on [GI31] reports session modes `default` ("Default permission prompt flow"), `auto_edit` and `yolo`; whether `default` sends ACP `session/request_permission` to the client, and whether a client can pick a mode per session: Unverified: T4.31 |
+| Per-session `mcpServers` | Unverified. The same probe reports `mcp(http=true, sse=true)` and no stdio; the shim of [ADR-0026](../adr/0026-per-run-tool-channel-socket-and-token.md) is a stdio bridge (§3.10), so it may not fit. A commenter reports tool access is limited to the `cwd` given at `session/new` plus skills directories, with symlinks resolved first |
+| Licence | "proprietary", terms at <https://antigravity.google/terms> [REG manifest] |
+
+**Candidates 2 to 8: third-party packages.** None is published by Google. Version, date and licence are from the npm
+registry metadata (`registry.npmjs.org/<name>`); "wraps" comes from the package's own description or README, read
+2026-10-13, and is the author's claim.
+
+| Package (publisher) | Latest, date, licence | Wraps | Auth, MCP, permissions |
+| --- | --- | --- | --- |
+| `agy-acp-bridge` (npm user `hobby0524`; repo `maojindao55/agy-acp`) | 0.3.9, 2026-10-08, Apache-2.0 | `agy` print mode with `--output-format stream-json` (the [3P] lead from T4.30); optionally a warm process using `--input-format stream-json` | Reuses `agy`'s own login (it drives `agy`; README says native auth data stays in place). README claims MCP `stdio`/`sse`/`http` via a per-session private config directory passed as `--gemini_dir` (flag Unverified, C17). Its install script downloads Google's installer unless `AGY_ACP_SKIP_CLI_INSTALL=1`. Permission requests: Unverified |
+| `agy-acp` (repo `shindgew/agy-acp`) | 0.5.2, 2026-08-18, Apache-2.0 | Interactive `agy` in a PTY (`--prompt-interactive --conversation --sandbox`), reading the conversation database | Drives `agy`, so presumably its login (Unverified). MCP and permissions: Unverified |
+| `antigravity-acp` (npm user `shubzkothekar`) | 1.2.0, 2026-09-27, MIT | Drives `agy` (Bun server) | Unverified. **Same name as the official registry id**: a name collision, not Google's package |
+| `@yitom/agy-acp-map` | 0.1.23, 2026-10-13, MIT | "ACP v1/v2 bridge for `agy`" | Unverified |
+| `@simonepri/refined-antigravity-acp` | 1.4.2, 2026-10-03, MIT | "A Google Antigravity ACP binary that actually works" | Unverified (README not readable) |
+| `paseo-agy-acp` (repo `tiezbro/paseo-agy-acp`) | 2.5.1, 2026-10-11, Apache-2.0 | Proxies "the official Google Antigravity ACP kernel" | Unverified |
+| `pi-antigravity-acp-provider`, `@estebanforge/pi-antigravity-bridge` | 0.1.15 and 1.8.1, 2026-10-13, MIT | Clients of an ACP server for the Pi agent, not adapters | Not relevant to Switchboard |
+
+**Policy text found while researching (data, not a decision).** Google's FAQ says that using third-party software
+"to access Antigravity" with an Antigravity login violates its Terms of Service, and that `agy -p` "is intended for
+direct scripting and CI workflows" while "wrapping `agy` inside third-party coding agents or applications ... is not
+supported under consumer plans" [AF]. This bears on the existing ephemeral `-p` decision as much as on any ACP
+adapter, and is not yet reflected elsewhere in these documents. Whether Switchboard, as an orchestrator, counts as
+such an application, and what changes with Gemini Enterprise or an API key plan, is an open question for the owner.
+
+**Transport decision: unchanged.** The transport stays an ephemeral `agy -p --output-format stream-json`
+subprocess (§4.4 table). Nothing above is a decision to use ACP; the T4.7 ACP client design is not yet written, and no
+candidate has been run.
+
+**How a separate ACP adapter would change the picture (considerations, not decisions).**
+
+- *A dependency outside the native `agy`.* A second binary with its own release channel, version and update path. The
+  manifest carries no checksum; a version gate and an integrity check would be new work (compare the self-updater
+  risk for `agy`, Known risks row). A third-party package adds a package-registry supply chain on top.
+- *A second trust boundary.* Another long-lived process that can reach the operator's credentials, the worktree and
+  MCP configuration. It would need its own environment allowlist, process-group handling and sandbox evidence, and by
+  AGENTS.md a new ADR (external interface, trust boundary), on top of T4.7.
+- *Its own credential handling.* The official server lists four auth methods, two of them API-key or ADC based, and
+  secondhand reports say it does not reuse `agy`'s keyring login. Switchboard would still never run `authenticate`,
+  store a token or place `GEMINI_API_KEY` in a child environment (FR-AUTH-02, ADR-0003); the operator would log in
+  outside Switchboard, and the preflight would map "authentication required" to `AUTH_REQUIRED`. Whether a
+  headless host can complete that login at all is Unverified.
+- *What it could add.* If, and only if, it sends permission requests and honours per-session `mcpServers` and a
+  per-session mode (all Unverified), it would supply the per-run permission and MCP channel that `-p` lacks (the
+  "What would make profiles eligible" list in §4.4.2), and so could change the profile eligibility in that matrix. A
+  mode like `yolo` that approves every tool would be bypass-class (FR-POL-03).
+- *What it would not change.* Git-write denial and worktree isolation stay Switchboard's, and a stdio shim cannot be
+  assumed to be accepted (http/sse only was reported).
+
+**Status.** Unverified until T4.31 (checklist C14 to C17). Nothing in the compile matrix, manifest or roadmap
+changes because of this lead.
 
 ### 4.5 Cursor CLI (M4)
 
