@@ -959,6 +959,7 @@ export class RunLifecycle {
     let outcome = pending;
     const artifacts: Record<string, string> = { ...streams };
     let changedFiles = 0;
+    let nestedSkipped: readonly string[] = [];
     if (ws.mode === "worktree") {
       try {
         const assessment = await this.opts.workspace.assessMutation(runId);
@@ -967,6 +968,7 @@ export class RunLifecycle {
         artifacts.diff = fin.diffArtifactId;
         artifacts.changed_files = fin.changedFilesArtifactId;
         changedFiles = fin.changedFiles.length;
+        nestedSkipped = fin.nestedRepositories;
         const failureCode = outcome.kind === "failure" ? outcome.code : undefined;
         this.ledger.appendRunEvent({
           runId,
@@ -975,6 +977,8 @@ export class RunLifecycle {
             mutated: assessment.mutated,
             reasons: assessment.reasons,
             replay_eligible: assessment.replayEligible,
+            // Q-31 / ADR-0022: non-fatal warning; files inside these nested repositories are not captured.
+            ...(fin.nestedRepositories.length > 0 ? { nested_repositories_skipped: fin.nestedRepositories } : {}),
             // BR-7: what M6 will act on; M1 never retries automatically (FR-CAP-05 is M6).
             retry_eligible: failureCode !== undefined && RETRYABLE.has(failureCode) && !assessment.mutated,
             auto_retry: false,
@@ -1005,6 +1009,7 @@ export class RunLifecycle {
     const payload = {
       artifacts,
       changed_files: changedFiles,
+      ...(nestedSkipped.length > 0 ? { nested_repositories_skipped: nestedSkipped } : {}),
       ...(out.result.summary ? { summary: out.result.summary.slice(0, SUMMARY_MAX) } : {}),
       ...(out.result.nativeSessionId ? { native_session_id: out.result.nativeSessionId } : {}),
     };

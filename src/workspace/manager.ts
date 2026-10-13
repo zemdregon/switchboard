@@ -6,6 +6,7 @@ import { isUnderAllowedRoot } from "../config/index.js";
 import { defaultIds, type IdGenerator } from "../ids/index.js";
 import type { TrustProfile } from "../ledger/index.js";
 import { git, gitText, MIN_GIT_VERSION, parseGitVersion, versionAtLeast } from "./git.js";
+import { findNestedRepositories, nestedPathspecArgs } from "./nested.js";
 
 /**
  * Workspace manager (T1.5; LLD §5, ADR-0006, FR-WS-01..06). Order of every step is intent row, Git action, outcome row.
@@ -69,6 +70,11 @@ export interface MutationAssessment {
   /** Retry per BR-7 is allowed only when nothing changed (ADR-0006). */
   readonly replayEligible: boolean;
   readonly reasons: readonly string[];
+  /**
+   * Nested repositories (worktree-relative paths) the controller skipped (Q-31, ADR-0022). Non-fatal warning: files
+   * inside them are not captured in checkpoints, diffs or commits.
+   */
+  readonly nestedRepositories: readonly string[];
 }
 
 export interface FinalizeResult {
@@ -78,6 +84,8 @@ export interface FinalizeResult {
   readonly changedFiles: readonly { status: string; path: string }[];
   readonly diffArtifactId: string;
   readonly changedFilesArtifactId: string;
+  /** As `MutationAssessment.nestedRepositories`. */
+  readonly nestedRepositories: readonly string[];
 }
 
 export interface RollbackResult {
@@ -212,19 +220,29 @@ export class WorkspaceManager {
   async assessMutation(runId: string): Promise<MutationAssessment> {
     const ws = this.runWorkspace(runId);
     const reasons: string[] = [];
+    let nestedRepositories: readonly string[] = [];
     try {
       await stat(ws.worktreePath);
+      const nested = await findNestedRepositories(ws.worktreePath);
+      nestedRepositories = nested.paths;
+      const scope = nestedPathspecArgs(nested);
       const head = await gitText(["rev-parse", "HEAD"], { cwd: ws.worktreePath });
       if (head !== ws.preCommit) reasons.push("HEAD differs from the pre-run checkpoint");
-      const status = await git(["status", "--porcelain=v2", "-z", "--untracked-files=all"], { cwd: ws.worktreePath });
+      const status = await git(
+        ["status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=all", ...scope],
+        { cwd: ws.worktreePath },
+      );
       if (status.stdout.length > 0) reasons.push("working tree has changes or untracked files");
-      const diff = await git(["diff", "--quiet", ws.preCommit], { cwd: ws.worktreePath, okCodes: [1] });
+      const diff = await git(["diff", "--quiet", "--ignore-submodules=all", ws.preCommit, ...scope], {
+        cwd: ws.worktreePath,
+        okCodes: [1],
+      });
       if (diff.code !== 0) reasons.push("working tree differs from the pre-run checkpoint");
     } catch (err) {
       reasons.push(`worktree unreadable: ${err instanceof Error ? err.message : String(err)}`);
     }
     const mutated = reasons.length > 0;
-    return { mutated, replayEligible: !mutated, reasons };
+    return { mutated, replayEligible: !mutated, reasons, nestedRepositories };
   }
 
   /**
@@ -233,9 +251,11 @@ export class WorkspaceManager {
    */
   async finalize(runId: string, options: { advanceHead?: boolean } = {}): Promise<FinalizeResult> {
     const ws = this.runWorkspace(runId);
-    await git(["add", "-A"], { cwd: ws.worktreePath });
+    const nested = await findNestedRepositories(ws.worktreePath);
+    const scope = nestedPathspecArgs(nested);
+    await git(["add", "-A", ...scope], { cwd: ws.worktreePath });
     const clean =
-      (await git(["diff", "--cached", "--quiet", "HEAD"], { cwd: ws.worktreePath, okCodes: [1] })).code === 0;
+      (await git(["diff", "--cached", "--quiet", "HEAD", ...scope], { cwd: ws.worktreePath, okCodes: [1] })).code === 0;
     let committed = false;
     if (!clean) {
       await git(["commit", "--no-verify", "--no-gpg-sign", "-m", `switchboard: checkpoint for ${runId}`], {
@@ -262,7 +282,15 @@ export class WorkspaceManager {
           .run(postCommit, now, ws.metaSessionId);
       }
     })();
-    return { postCommit, postCheckpointId, committed, changedFiles, diffArtifactId, changedFilesArtifactId };
+    return {
+      postCommit,
+      postCheckpointId,
+      committed,
+      changedFiles,
+      diffArtifactId,
+      changedFilesArtifactId,
+      nestedRepositories: nested.paths,
+    };
   }
 
   /**
@@ -271,8 +299,9 @@ export class WorkspaceManager {
    */
   async rollback(runId: string): Promise<RollbackResult> {
     const ws = this.runWorkspace(runId);
-    await git(["add", "-A"], { cwd: ws.worktreePath });
-    const diff = await git(["diff", "--cached", "--binary", "--no-ext-diff", "--no-color", ws.preCommit], {
+    const scope = nestedPathspecArgs(await findNestedRepositories(ws.worktreePath));
+    await git(["add", "-A", ...scope], { cwd: ws.worktreePath });
+    const diff = await git(["diff", "--cached", "--binary", "--no-ext-diff", "--no-color", ws.preCommit, ...scope], {
       cwd: ws.worktreePath,
     });
     const diffArtifactId = await this.putArtifact(runId, ws.metaSessionId, "diff", "text/x-diff", diff.stdout);
