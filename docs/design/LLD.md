@@ -506,6 +506,15 @@ bundles `{events, exit, stderrTail (bounded), timedOut, cancelled}`. A central b
 `Invocation.policyFlags` and `argv` before spawn (FR-POL-03). Per-adapter parsing specifics: to be detailed in M2
 (Claude) and M4 (others).
 
+**Harness and backing provider (M4, T4.6, FR-ADP-10; Delegated).** An adapter whose harness fronts several vendors
+sets `backingProvider` (and `model`) on `session_bound`, from structured output only; it never derives a vendor from a
+display name (TDD §4.5), and omits the field when the harness does not report it. `usageObservationsFromEvents`
+(`src/usage/observations.ts`) copies the latest `session_bound` `model` and `backingProvider` onto every
+`usage_observation` row of the run, with `harness` the adapter id; no new column or table. Shown as follows:
+`get_run` `usage.reported[]` carries `harness`, `backing_provider` (null when not reported) and `model`; `runs show`
+adds a top-level `usage` array (same fields plus `observed_at` and `metrics`; absent when the run has no
+provider-reported row) and prints one `harness H  backing provider B  model M` line per row. Capacity keys stay with M6.
+
 **Transport kinds and the ACP plan (M4, Proposed, Delegated, T4.7,
 [ADR-0036](../adr/0036-per-run-acp-stdio-client.md)).** `subprocess-jsonl` (M1) and `acp-stdio` (M4, FR-EXE-03) are
 both one provider process per run; `local-service` stays deferred (FR-EXE-04). For `acp-stdio`, `compile` and
