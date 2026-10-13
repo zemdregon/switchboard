@@ -11,5 +11,8 @@ export {
   type InnerTask,
   type InnerTaskConfig,
   type InnerTaskSettings,
+  mostRestrictiveInnerSetting,
+  PROJECT_INNER_SETTINGS,
+  type ProjectInnerSetting,
   SOURCE_CONTENT_TASKS,
 } from "../config/inner-agent.js";
