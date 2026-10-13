@@ -652,6 +652,12 @@ Meaning of each value, and how it lines up with the profile fields of `ResolvedP
 | `repository_config.mode` | `disabled`, `approved`, `enabled` | Repository-provided hooks, MCP definitions and agent instructions not loaded; only those the operator's configuration approves; all loaded | `repoConfig` `disabled`, `approved-only`, and a scope-only `enabled` (wider than `allowlisted`) |
 | `bypass` | boolean, default `false` | The provider's bypass flag is requested; emitted only under the conditions in **Bypass** below | `bypassApproved` (set from the approval, never from the request) |
 
+*Note (2026-10-13, owner decision 26, Q-37, [ADR-0021](../adr/0021-repository-config-in-approved-bypass-runs.md);
+T3.19):* `approved` and `enabled` are compilable only in an approved bypass run (`bypass: true` and the run's
+`bypassApproved`). The Claude adapter then omits `--safe-mode`, keeps `--strict-mcp-config` for `approved` and omits
+it for `enabled`; the Git deny rules and the worktree are unchanged. Without that approval, and for a Codex scope (its
+bypass is undocumented), they remain `Ineligible: CAPABILITY_MISSING`. Flag behaviour unverified (R-41).
+
 **Validation** ([FRD §7.1](../requirements/FRD.md#71-delegate_task), in table order): a malformed scope fails schema
 validation (V1, `INVALID_REQUEST`, `details.field` naming the offending path): every dimension is required, unknown keys
 are refused at every level, `shell.allowlist` is present exactly when `shell.mode` is `allowlist` and `network.hosts`

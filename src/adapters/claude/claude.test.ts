@@ -746,6 +746,76 @@ describe("claude privileged compile matrix (T3.5, T3.17; TDD §4.1.1; decisions 
     expect(findBypassFlags(viaProfile)).toEqual([CLAUDE_BYPASS_FLAG]);
   });
 
+  describe("repository_config under an approved bypass (owner decision 26, Q-37, ADR-0021; UNVERIFIED live, R-41)", () => {
+    const approvedReq = { ...request, bypassApproved: true };
+    const bypassScope = (mode: "approved" | "enabled", bypass = true) => ({
+      ...LOOSE_SCOPE,
+      bypass,
+      repository_config: { mode },
+    });
+    const tools = [...RW, "Bash", "WebFetch"];
+    const expected = (isolation: readonly string[]) => [
+      ...head,
+      ...isolation,
+      "--dangerously-skip-permissions",
+      "--permission-prompts",
+      "none",
+      ...tail(tools, tools),
+    ];
+
+    it("approved + bypass: no --safe-mode, --strict-mcp-config and the Git deny rules kept", () => {
+      const profile = privilegedProfile(bypassScope("approved"));
+      const inv = compiled(profile, approvedReq);
+      expect(inv.argv).toEqual(expected(["--strict-mcp-config"]));
+      expect(inv.argv).not.toContain("--safe-mode");
+      expect(rulesAfter(inv.argv, "--disallowedTools")).toEqual([...CLAUDE_GIT_DENY_RULES]);
+      expect(auditInvocation(inv, { profile, bypassApproved: true })).toEqual([]);
+    });
+
+    it("enabled + bypass: neither --safe-mode nor --strict-mcp-config, Git deny rules kept", () => {
+      const profile = privilegedProfile(bypassScope("enabled"));
+      for (const inv of [
+        compiled(profile, approvedReq),
+        adapter.resumeArgs(
+          { provider: "claude", nativeSessionId: RESUMED_SESSION_ID },
+          approvedReq,
+          profile,
+        ) as Invocation,
+      ]) {
+        expect(inv.argv.filter((a) => a !== "--resume" && a !== RESUMED_SESSION_ID)).toEqual(expected([]));
+        expect(inv.policyFlags).not.toContain("--safe-mode");
+        expect(inv.policyFlags).not.toContain("--strict-mcp-config");
+        expect(rulesAfter(inv.argv, "--disallowedTools")).toEqual([...CLAUDE_GIT_DENY_RULES]);
+        expect(auditInvocation(inv, { profile, bypassApproved: true })).toEqual([]);
+      }
+    });
+
+    it("never --restricted in any bypass invocation", () => {
+      for (const mode of ["approved", "enabled"] as const) {
+        const inv = compiled(privilegedProfile(bypassScope(mode)), approvedReq);
+        expect(inv.argv).not.toContain("--restricted");
+      }
+    });
+
+    it.each(["approved", "enabled"] as const)("%s with bypass true but not approved stays Ineligible", (mode) => {
+      for (const req of [request, { ...request, bypassApproved: false }]) {
+        expect(adapter.compile(req, privilegedProfile(bypassScope(mode)))).toMatchObject({
+          ineligible: true,
+          reason: "CAPABILITY_MISSING",
+        });
+      }
+    });
+
+    it.each(["approved", "enabled"] as const)("%s with bypass false stays Ineligible, even if approved", (mode) => {
+      for (const req of [request, approvedReq]) {
+        expect(adapter.compile(req, privilegedProfile(bypassScope(mode, false)))).toMatchObject({
+          ineligible: true,
+          reason: "CAPABILITY_MISSING",
+        });
+      }
+    });
+  });
+
   it.each([
     [
       "read-only, no shell, network on",
@@ -785,13 +855,13 @@ describe("claude privileged compile matrix (T3.5, T3.17; TDD §4.1.1; decisions 
       /network=allowlist/,
     ],
     [
-      "repository_config approved",
+      "repository_config approved without bypass",
       { repository_config: { mode: "approved" } },
       "CAPABILITY_MISSING",
       /approved.*ADR-0015/,
     ],
     [
-      "repository_config enabled",
+      "repository_config enabled without bypass",
       { repository_config: { mode: "enabled" } },
       "CAPABILITY_MISSING",
       /enabled.*--restricted/,
@@ -851,7 +921,7 @@ describe("claude privileged compile matrix (T3.5, T3.17; TDD §4.1.1; decisions 
           const approved = bypassApproved === true;
           const shouldCompile =
             scope.network.mode === "on" &&
-            scope.repository_config.mode === "disabled" &&
+            (scope.repository_config.mode === "disabled" || (scope.bypass && approved)) &&
             !(scope.shell.mode === "allowlist" && scope.bypass) &&
             !(scope.shell.mode === "broad" && scope.files.access === "read-only") &&
             !(scope.bypass && !approved);
@@ -875,7 +945,12 @@ describe("claude privileged compile matrix (T3.5, T3.17; TDD §4.1.1; decisions 
             // Decision 19: --restricted absent iff bypass; dontAsk absent iff bypass; the rest always.
             expect(inv.argv.includes("--restricted"), label).toBe(!bypass);
             expect(valuesAfter(inv.argv, "--permission-mode"), label).toEqual(bypass ? [] : ["dontAsk"]);
-            for (const f of ["--safe-mode", "--strict-mcp-config"]) expect(inv.argv, label).toContain(f);
+            // Decision 26 (Q-37): repository_config approved/enabled only in an approved bypass run, which then drops
+            // --safe-mode, and --strict-mcp-config too for enabled.
+            const repo = scope.repository_config.mode;
+            expect(inv.argv.includes("--safe-mode"), label).toBe(repo === "disabled");
+            expect(inv.argv.includes("--strict-mcp-config"), label).toBe(repo !== "enabled");
+            if (repo !== "disabled") expect(bypass, label).toBe(true);
             expect(valuesAfter(inv.argv, "--permission-prompts"), label).toEqual(["none"]);
             // FR-GIT-01: the full Git deny rule set on every compiled invocation, bypass included.
             expect(rulesAfter(inv.argv, "--disallowedTools"), label).toEqual([...CLAUDE_GIT_DENY_RULES]);

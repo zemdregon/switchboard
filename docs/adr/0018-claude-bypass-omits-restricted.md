@@ -1,6 +1,8 @@
 # ADR-0018: Approved Claude Code bypass runs omit `--restricted`
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-13 by [ADR-0021](0021-repository-config-in-approved-bypass-runs.md): decision
+  item 2 (`--safe-mode`, `--strict-mcp-config` stay) no longer holds when the scope's `repository_config` is
+  `approved` or `enabled`
 - Date: 2026-10-13
 - Decided by: zemdregon (owner decisions 19, 22), mechanism Delegated (agent, 2026-10-13). zemdregon decided that an approved
   `bypass: true` run on Claude Code omits `--restricted` instead of being `Ineligible` (owner decision 19, answering

@@ -126,6 +126,12 @@ analysis. Report results clearly so the orchestrator can verify and coordinate t
   `--dangerously-skip-permissions`, `--yolo`, `--force`, `--always-approve`, `--approve-mcps` or `--full-auto` unless a
   design document explicitly calls for it. Today only an operator-approved `privileged` scope that sets `bypass` does
   ([ADR-0017](docs/adr/0017-approved-privileged-scope-bypass.md)).
+- **Best-practice defaults outside bypass mode.** zemdregon's only concern is bypass mode (owner decision 25). Where a
+  decision does not change what a bypass run (an approved `privileged` scope with `bypass`, ADR-0017) may do, decide it
+  yourself using industry best practice (least privilege, fail closed, defence in depth, no claim of a control that is
+  not enforced), because the other modes are for people who deploy Switchboard. Record it as **Delegated** with its
+  reason, and do not ask zemdregon. Ask only when the choice would restrict or change bypass runs, the Git-write denial or
+  worktree isolation that bypass keeps, or a trust or credential boundary.
 - **Live provider calls are opt-in.** Tests must pass without any provider CLI installed or logged in. Tests that call a
   real provider must be skipped unless explicitly enabled.
 - **Small, reviewable changes.** One logical change per commit, with a message that says what changed and why. Open pull

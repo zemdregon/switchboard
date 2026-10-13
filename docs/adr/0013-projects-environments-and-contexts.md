@@ -1,6 +1,7 @@
 # ADR-0013: Projects own environments and contexts
 
-- Status: Accepted (the concept and orchestrator-managed projects); the container mechanism is Proposed (Delegated)
+- Status: Accepted (the concept and orchestrator-managed projects); the container mechanism is Proposed (Delegated);
+  the container image rule is amended by [ADR-0020](0020-container-image-without-git-client.md)
 - Date: 2026-10-12
 - Decided by: zemdregon (projects as first-class, an environment plus contexts, environments likely containers; message of
   2026-10-12). Delegated (agent, 2026-10-12) for the mechanism: config-defined projects, two environment kinds, the
