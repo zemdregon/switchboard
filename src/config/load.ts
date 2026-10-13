@@ -34,6 +34,12 @@ export interface ResolvedConfig {
   providers: ReadonlyMap<string, { enabled: boolean; weight: number | undefined }>;
   /** Retention (NFR-DATA-01, FR-WS-07; T3.12 consumes it). `intervalMs` is the GC pass period. */
   retention: { days: number; intervalMs: number };
+  /**
+   * True only when the config sets `retention.days` itself (T3.12, Proposed, Delegated). The 30 day default is a value,
+   * not a switch: with this false, `serve` and `switchboard gc --apply` collect nothing. `retention.interval` alone
+   * does not enable collection.
+   */
+  retentionEnabled: boolean;
   /** Validated `profiles.<name>` overrides in COMP-POL's camelCase form (owner decision 12); empty when none. */
   profileOverrides: ProfileOverrides;
 }
@@ -223,6 +229,7 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
       days: cfg.retention?.days ?? DEFAULT_RETENTION_DAYS,
       intervalMs: parseRetentionInterval(cfg.retention?.interval ?? DEFAULT_RETENTION_INTERVAL),
     },
+    retentionEnabled: cfg.retention?.days !== undefined,
     profileOverrides,
     // Proposed: a provider not listed is enabled with no explicit weight; listing it can disable it.
     providers: new Map(

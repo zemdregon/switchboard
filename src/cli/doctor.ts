@@ -17,7 +17,7 @@ import { inspectDataDirLock } from "../lock/index.js";
 import { type AppliedOverride, validateProfileOverrides } from "../policy/index.js";
 import { CONFIG_TO_ADAPTER_ID } from "../routing/index.js";
 import { gitText, parseGitVersion, versionAtLeast } from "../workspace/git.js";
-import { MIN_GIT_VERSION } from "../workspace/index.js";
+import { findOrphans, MIN_GIT_VERSION, planRetentionGc } from "../workspace/index.js";
 import { type CliIo, JSON_SCHEMA_VERSION, PROBE_ENV_ALLOWLIST } from "./io.js";
 
 /** Minimum Node major from package.json `engines` (>=22). */
@@ -160,6 +160,73 @@ function checkLock(dataDir: string): DoctorCheck {
   );
 }
 
+const LIST_CAP = 10;
+const listIds = (ids: readonly string[]): string =>
+  ids.length <= LIST_CAP ? ids.join(", ") : `${ids.slice(0, LIST_CAP).join(", ")}, and ${ids.length - LIST_CAP} more`;
+
+/**
+ * Retention and orphan reporting (T3.12; FR-WS-07, LLD §5). Strictly read-only: the ledger is opened read-only and
+ * nothing is deleted. Reports which meta-sessions the configured retention would collect (`switchboard gc` shows the
+ * detail, `gc --apply` collects) and the orphan sweep: worktree directories or `switchboard/*` branches with no ledger row.
+ */
+async function checkRetentionAndOrphans(cfg: ResolvedConfig, now: Date): Promise<DoctorCheck[]> {
+  const file = path.join(cfg.dataDir, LEDGER_FILE_NAME);
+  if (!existsSync(file)) {
+    return [
+      check("gc", "Retention GC", "skip", "skipped: no ledger yet"),
+      check("orphans", "Orphan sweep", "skip", "skipped: no ledger yet"),
+    ];
+  }
+  let db: Database.Database | undefined;
+  try {
+    db = new Database(file, { readonly: true, fileMustExist: true });
+    const out: DoctorCheck[] = [];
+    const plan = planRetentionGc({ db, days: cfg.retention.days, now });
+    const ids = plan.units.map((u) => u.sessionId);
+    if (cfg.retentionEnabled) {
+      out.push(
+        check(
+          "gc",
+          "Retention GC",
+          "ok",
+          `retention ${cfg.retention.days} days; ${ids.length === 0 ? "no meta-session would be collected" : `${ids.length} meta-session(s) would be collected: ${listIds(ids)} (switchboard gc shows detail; gc --apply collects)`}`,
+        ),
+      );
+    } else {
+      out.push(
+        check(
+          "gc",
+          "Retention GC",
+          "ok",
+          `retention.days is not set, so nothing is collected${ids.length === 0 ? "" : `; ${ids.length} meta-session(s) are idle longer than the ${cfg.retention.days} day default: ${listIds(ids)}`}`,
+        ),
+      );
+    }
+    const o = await findOrphans({ db, dataDir: cfg.dataDir });
+    const n = o.worktrees.length + o.branches.length;
+    const parts = [
+      ...o.worktrees.map((w) => `worktree directory ${w}`),
+      ...o.branches.map((b) => `branch ${b.branch} (${b.repoRoot})`),
+    ];
+    const warn = o.warnings.length ? `; ${o.warnings.join("; ")}` : "";
+    out.push(
+      n === 0
+        ? check("orphans", "Orphan sweep", o.warnings.length ? "warn" : "ok", `no orphans found${warn}`)
+        : check(
+            "orphans",
+            "Orphan sweep",
+            "warn",
+            `${n} orphan(s) with no ledger row, reported only (never removed): ${listIds(parts)}${warn}`,
+          ),
+    );
+    return out;
+  } catch (err) {
+    return [check("gc", "Retention GC", "warn", `cannot assess: ${(err as Error).message.split("\n")[0]}`)];
+  } finally {
+    db?.close();
+  }
+}
+
 export function defaultAdapters(): AdapterRegistry {
   return new AdapterRegistry().register(new FakeAdapter()).register(new ClaudeAdapter()).register(new CodexAdapter());
 }
@@ -299,11 +366,14 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
 
   if (cfg) {
     checks.push(checkDataDir(cfg.dataDir), checkLedger(cfg.dataDir), checkLock(cfg.dataDir));
+    checks.push(...(await checkRetentionAndOrphans(cfg, (io.now ?? (() => new Date()))())));
   } else {
     for (const [id, label] of [
       ["data_dir", "Data directory"],
       ["ledger", "Ledger"],
       ["lock", "Data-dir lock"],
+      ["gc", "Retention GC"],
+      ["orphans", "Orphan sweep"],
     ] as const) {
       checks.push(check(id, label, "skip", "skipped: config is not valid"));
     }

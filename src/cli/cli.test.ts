@@ -119,7 +119,16 @@ describe("doctor", () => {
     const j = JSON.parse(r.out);
     expect(Object.keys(j).sort()).toEqual(["adapters", "checks", "ok", "schema_version"]);
     expect(j.ok).toBe(true);
-    expect(j.checks.map((c: { id: string }) => c.id)).toEqual(["node", "git", "config", "data_dir", "ledger", "lock"]);
+    expect(j.checks.map((c: { id: string }) => c.id)).toEqual([
+      "node",
+      "git",
+      "config",
+      "data_dir",
+      "ledger",
+      "lock",
+      "gc",
+      "orphans",
+    ]);
     for (const c of j.checks) expect(Object.keys(c).sort()).toEqual(["detail", "id", "label", "status"]);
     expect(j.adapters).toHaveLength(1);
     expect(Object.keys(j.adapters[0]).sort()).toEqual([
