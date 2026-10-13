@@ -648,6 +648,30 @@ the table above; fake adapter only, Git 2.43.0).* Mechanism in [LLD §12.5](LLD.
   [ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md)), container environments (M10), and pushing
   while `serve` runs (R-49).
 
+*T9.7 build notes (2026-10-13; Delegated; [decision 38](../ROADMAP.md#42-owner-decisions); the **Finalize-only mode**
+paragraph above; fake adapter only, Git 2.43.0).* Mechanism in [LLD §12.3](LLD.md#123-commit-algorithm-and-refs)
+("As built (... T9.7 ...)"). Findings and test strategy:
+
+- **Same machinery, different trigger.** The commit goes through the T9.3 `GitPublisher` (temporary index, sanitiser,
+  identity, lineage check, intent and compare-and-swap, provenance in one transaction, `recover()`), from a second
+  instance that accepts only FINALIZING runs; nothing new reaches Git. The opt-in is per context (`finalize_commit`,
+  default off), frozen at admission, and applies only to adapters that cannot take the channel; a `none` adapter
+  without it is not made ineligible (Q-43, owner decision 36).
+- **Fail closed without changing the run.** Anything the controller cannot justify (a violation anywhere in the
+  meta-session, no usable or an over-long summary, too many paths, a refused path, a failed run) means no commit and a
+  recorded reason; the controller never writes a message of its own (FR-GIT-04, and the M11 rule FR-INN-10 by
+  analogy). The run's outcome and the diff and checkpoint artifacts are the same with and without the commit.
+- **Bypass.** Handled identically: the commit happens after the ref check and the provider's Git-write denial is
+  unchanged, so an approved bypass Claude run in an opted-in project ends with one clean commit on the publish ref.
+- **Tests (no provider CLI; temporary repositories and a local bare remote).** `src/lifecycle/finalize-commit.test.ts`
+  with a fake adapter variant declaring `commitChannel: "none"` and the `edit_files` scenario: opt-in off and on, exact
+  paths (modify, delete, add), identity, sanitised summary (a `Co-Authored-By:` trailer and a `claude.ai/code` session
+  URL removed), provenance row and `via: "finalize"`, worktree index, `HEAD` and run branch unchanged, violation,
+  missing and attribution-only summaries, failed run, `injected` adapter, refused path, crash after the ref update and
+  after the intent (`recover()`), approved bypass, and the operator push of the finalize commit plus `runs show`.
+- **Still open.** Claude Code and Codex live runs (their summaries' real shape: Claude's `result` text, Codex's last
+  agent message, FR-ADP-04), container environments (M10), and the limits of Q-45.
+
 **External reference (T3 Code, MIT, studied not copied; note 2026-10-13, Delegated, not owner-approved).** Ender's
 pointer (owner decision 36): T3 Code "has orchestrator injection for nearly all of the CLI tools we are targeting". A
 research pass read the public repository `pingdotgg/t3code` at commit `6524a8d` (MIT, (c) 2026 T3 Tools Inc.) without

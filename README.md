@@ -98,7 +98,7 @@ Keys (from `src/config/schema.ts`; no other keys exist yet):
 | `providers.<id>.enabled` | no | Boolean. A provider you do not list is enabled. |
 | `providers.<id>.weight` | no | Number from 0 to 1. Accepted by the schema. |
 | `retention.days`, `retention.interval` | no | How long idle meta-sessions are kept (integer days, default 30) and how often `serve` runs the clean-up pass (`30m`, `12h`, `7d`; default `24h`). **Nothing is deleted unless you set `retention.days`**; the default only applies once you do (or to `gc` dry runs). |
-| `projects` | no | List of `{ "id", "name", "environment"?, "contexts": [...] , "max_trust_profile"?, "allowed_providers"? }`. `id` matches `^[a-z][a-z0-9-]{1,40}$` and is unique. `environment` is `{ "kind": "host" }` (default) or a `container` shape that `projects validate` rejects until M10. Each context is `{ "id", "kind": "repository", "path", "base_ref", "primary"?, "writable"?, "push"?, "identity"?, "sign"? }` with an absolute `path` under an allowed root; exactly one context is primary. Unknown keys and context kinds stop startup. `push.remote` must be the name of a remote in the repository (not a URL), and `push.branch_prefix` a branch-name prefix such as `"switchboard/"`. `max_trust_profile` and `allowed_providers` apply to `delegate_task` with a `project`: the effective trust ceiling is the lower of the client's and the project's, and routing is limited to the listed providers (a request naming another provider with `require_provider` fails `PERMISSION_BLOCKED`); `sign` is accepted but not enforced yet. Full shape: LLD section 11.1. |
+| `projects` | no | List of `{ "id", "name", "environment"?, "contexts": [...] , "max_trust_profile"?, "allowed_providers"? }`. `id` matches `^[a-z][a-z0-9-]{1,40}$` and is unique. `environment` is `{ "kind": "host" }` (default) or a `container` shape that `projects validate` rejects until M10. Each context is `{ "id", "kind": "repository", "path", "base_ref", "primary"?, "writable"?, "push"?, "identity"?, "sign"?, "finalize_commit"? }` with an absolute `path` under an allowed root; exactly one context is primary. Unknown keys and context kinds stop startup. `push.remote` must be the name of a remote in the repository (not a URL), and `push.branch_prefix` a branch-name prefix such as `"switchboard/"`. `max_trust_profile` and `allowed_providers` apply to `delegate_task` with a `project`: the effective trust ceiling is the lower of the client's and the project's, and routing is limited to the listed providers (a request naming another provider with `require_provider` fails `PERMISSION_BLOCKED`); `sign` is accepted but not enforced yet. `finalize_commit` (default `false`; needs `identity`, primary writable context only) turns on finalize-only commits, described below. Full shape: LLD section 11.1. |
 | `profiles.<name>` | no | Overrides for `inspect-untrusted`, `edit-untrusted`, `test-sandboxed` or `trusted-development`: `file_access`, `shell`, `shell_allowlist`, `network`, `network_allowlist`, `repo_config`. They may tighten or loosen a default; `doctor` lists them and every run records them. `privileged` has none. See the `edit-untrusted` limit under [Trust profiles](#trust-profiles). |
 
 `<id>` is one of `claude-code`, `codex`, `grok-build`, `antigravity`, `cursor`, `opencode`, `kimi-code`. Only
@@ -205,6 +205,24 @@ credentials (FRD BR-31): a profile with no shell or an empty shell allowlist. Ho
 exception (owner decision 37): it is offered `push` whatever its shell, and the run record shows `bypass_exempt`. That is
 the one place a bypass run's agent can reach your push credentials, by your choice; Switchboard still never hands them
 to it, and its Git-write denial is unchanged.
+
+Providers that cannot receive the injected `commit` tool (Claude Code and Codex today) still run write-capable tasks;
+by default their work stays in the run's worktree, diff and checkpoint, with no commit. To have Switchboard commit it,
+set `"finalize_commit": true` on the project's primary context, next to its `identity`:
+
+```json
+{ "id": "main", "kind": "repository", "path": "/home/you/projects/web", "base_ref": "main",
+  "identity": { "name": "Your Name", "email": "you@example.com" }, "finalize_commit": true }
+```
+
+When such a run succeeds, Switchboard makes one commit of the run's changed files on the session's publish ref, with
+your identity and the agent's final summary as the message after the same sanitiser as the `commit` tool (attribution
+trailers, footers and session links removed). It makes no commit for a failed or cancelled run, after a recorded Git
+policy violation in the session, when the summary is missing, empty after sanitising or over 8192 characters, when
+more than 256 files changed, or when a path is refused; `runs show` gives the reason. The commit is recorded like any
+other (`via finalize` in `runs show`) and leaves the host only through Switchboard's own push (the `git push` command
+above, or a `push` tool offered to a later run), under the context's push policy. Approved bypass runs are treated
+the same.
 
 `projects list|show|validate` read the `projects` section of the config (see below) and the filesystem only: no
 ledger, no lock, no provider process. `validate` checks every project (or the one named): the config rules, that each repository

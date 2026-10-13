@@ -41,6 +41,8 @@ export interface ProjectContextView {
   push: { policy: string; remote?: string; branch_prefix?: string };
   identity?: { name: string; email: string };
   sign: boolean;
+  /** T9.7 (FR-GIT-09): finalize-only opt-in. */
+  finalize_commit: boolean;
 }
 
 export interface ProjectView {
@@ -101,6 +103,7 @@ export function toProjectView(p: ResolvedProject): ProjectView {
       },
       ...(c.identity !== undefined ? { identity: { ...c.identity } } : {}),
       sign: c.sign,
+      finalize_commit: c.finalizeCommit,
     })),
   };
 }
@@ -234,6 +237,7 @@ export function renderProject(p: ProjectView): string {
       `    push: ${c.push.policy}`,
     );
     if (c.identity) lines.push(`    identity: ${c.identity.name} <${c.identity.email}>`);
+    if (c.finalize_commit) lines.push("    finalize_commit: on (FR-GIT-09)");
   }
   return `${lines.join("\n")}\n`;
 }

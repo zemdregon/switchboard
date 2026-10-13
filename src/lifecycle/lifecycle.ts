@@ -91,7 +91,16 @@ import {
 import type { ArtifactStore } from "../artifacts/index.js";
 import { isUnderAllowedRoot, TRUST_PROFILES } from "../config/index.js";
 import { ChannelOpenError, type GitToolService, type OpenChannel } from "../git/channel.js";
+import type { GitPublisher } from "../git/commit.js";
 import { credentialReachFromJson } from "../git/credential-reach.js";
+import {
+  type FinalizeCommitOutcome,
+  finalizeCommitEventPayload,
+  finalizeCommitPlan,
+  GIT_FINALIZE_COMMIT_EVENT,
+  makeFinalizeCommit,
+  sessionHasGitPolicyViolation,
+} from "../git/finalize.js";
 import { RefGuard } from "../git/ref-guard.js";
 import type { Ledger, NewRouteDecision, RunFieldPatch, RunRecord, RunState, TrustProfile } from "../ledger/index.js";
 import {
@@ -315,6 +324,13 @@ export interface RunLifecycleOptions {
    * off (fail closed).
    */
   readonly refGuard?: RefGuard;
+  /**
+   * T9.7 (FR-GIT-09, FRD BR-30, owner decision 36): the publisher for finalize-only commits, constructed with
+   * `allowedStates: ["FINALIZING"]` (a separate instance from the tool channel's, which accepts only RUNNING). Used only
+   * for a run whose adapter does not declare an `injected` channel and whose frozen project snapshot opted in
+   * (`finalize_commit`); see `src/git/finalize.ts`. Unset: an opted-in run records `service_unavailable` and no commit.
+   */
+  readonly finalizePublisher?: GitPublisher;
 }
 
 /** `run_event` type: a channel-capable run was not offered the commit tool, with a reason code (T9.4). */
@@ -1039,7 +1055,10 @@ export class RunLifecycle {
       },
       rule,
     );
-    await this.finalize(runId, meta, ws, pending, out, streams);
+    await this.finalize(runId, meta, ws, pending, out, streams, {
+      commitChannel: adapter.gitCapabilities.commitChannel,
+      nativeSessionIds: nativeIds,
+    });
   }
 
   /** M1 preflight (no `eligibility` option): probe and auth only (T8 codes as in M1). */
@@ -1114,12 +1133,15 @@ export class RunLifecycle {
     pending: Pending,
     out: AdapterRunOutcome,
     streams: Record<string, string>,
+    git: { commitChannel: "injected" | "finalize-only" | "none"; nativeSessionIds: readonly string[] },
   ): Promise<void> {
     let outcome = pending;
     const artifacts: Record<string, string> = { ...streams };
     let changedFiles = 0;
+    let changedPaths: readonly string[] = [];
     let nestedSkipped: readonly string[] = [];
     let gitViolations = 0;
+    let finalizeCommit: FinalizeCommitOutcome | undefined;
     if (ws.mode === "worktree") {
       try {
         // T9.5 (FR-GIT-03, BR-27): compare refs with the LEASED snapshot and put controller-owned refs back BEFORE the
@@ -1132,6 +1154,7 @@ export class RunLifecycle {
         artifacts.diff = fin.diffArtifactId;
         artifacts.changed_files = fin.changedFilesArtifactId;
         changedFiles = fin.changedFiles.length;
+        changedPaths = fin.changedFiles.map((f) => f.path);
         nestedSkipped = fin.nestedRepositories;
         const failureCode = outcome.kind === "failure" ? outcome.code : undefined;
         this.ledger.appendRunEvent({
@@ -1168,12 +1191,23 @@ export class RunLifecycle {
           outcome = { kind: "failure", code: "TOOL_FAILURE", detail: `finalization failed: ${errorText(err)}` };
         }
       }
+      // T9.7 (FR-GIT-09, BR-30): after the ref check and the evidence checkpoint, an opted-in run whose adapter cannot
+      // take the channel gets one controller commit on the publish ref. It never changes the run's outcome.
+      finalizeCommit = await this.finalizeOnlyCommit(runId, metaSessionId, outcome.kind === "success", {
+        ...git,
+        changedPaths,
+        summary: out.result.summary,
+      });
     }
 
     const payload = {
       artifacts,
       changed_files: changedFiles,
       ...(gitViolations > 0 ? { git_policy_violation: true } : {}),
+      ...(finalizeCommit?.outcome === "committed" ? { finalize_commit: finalizeCommit.commitSha } : {}),
+      ...(finalizeCommit !== undefined && finalizeCommit.outcome !== "committed"
+        ? { finalize_commit_skipped: finalizeCommit.reason }
+        : {}),
       ...(nestedSkipped.length > 0 ? { nested_repositories_skipped: nestedSkipped } : {}),
       ...(out.result.summary ? { summary: out.result.summary.slice(0, SUMMARY_MAX) } : {}),
       ...(out.result.nativeSessionId ? { native_session_id: out.result.nativeSessionId } : {}),
@@ -1202,6 +1236,52 @@ export class RunLifecycle {
         );
       }
     });
+  }
+
+  /**
+   * T9.7: the finalize-only commit (`src/git/finalize.ts`), recorded as one `git_finalize_commit` event. Returns
+   * undefined (and records nothing) when finalize-only does not apply to the run. Never throws.
+   */
+  private async finalizeOnlyCommit(
+    runId: string,
+    metaSessionId: string,
+    succeeded: boolean,
+    input: {
+      commitChannel: "injected" | "finalize-only" | "none";
+      nativeSessionIds: readonly string[];
+      changedPaths: readonly string[];
+      summary: string | undefined;
+    },
+  ): Promise<FinalizeCommitOutcome | undefined> {
+    try {
+      const run = this.current(runId);
+      const project = finalizeCommitPlan(input.commitChannel, run.policy_snapshot_json);
+      if (project === undefined) return undefined;
+      const events = this.ledger.listRunEvents(runId);
+      const finalizing = events.findLast((e) => {
+        if (e.type !== "state_transition") return false;
+        return (JSON.parse(e.payload_json) as { to?: unknown }).to === "FINALIZING";
+      });
+      const result = await makeFinalizeCommit(this.opts.finalizePublisher, {
+        runId,
+        project,
+        succeeded,
+        gitPolicyViolation: succeeded && sessionHasGitPolicyViolation(this.ledger, metaSessionId),
+        changedPaths: input.changedPaths,
+        summary: input.summary,
+        nativeSessionIds: input.nativeSessionIds,
+        finalizingEventId: finalizing?.id,
+      });
+      this.ledger.appendRunEvent({
+        runId,
+        type: GIT_FINALIZE_COMMIT_EVENT,
+        payload: finalizeCommitEventPayload(result),
+      });
+      return result;
+    } catch {
+      // A ledger or snapshot problem here must not change the run's outcome (NFR-REL-02); no commit is claimed.
+      return { outcome: "failed", reason: "INTERNAL_ERROR" };
+    }
   }
 
   private async storeStreams(runId: string, metaSessionId: string, out: AdapterRunOutcome) {
