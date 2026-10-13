@@ -437,6 +437,48 @@ export interface NewGitPush {
   eventPayload: Record<string, unknown>;
 }
 
+export type InnerCallOutcome =
+  | "accepted"
+  | "rejected_validator"
+  | "rejected_sanitiser"
+  | "fallback_unavailable"
+  | "fallback_suspended"
+  | "fallback_disabled";
+
+/** One `inner_call` row (T11.2, LLD §13.3). No prompt or response body: sizes and a hash only (FR-INN-16). */
+export interface InnerCallRow {
+  id: string;
+  task: string;
+  backend_kind: "http" | "cli";
+  model_id: string;
+  locality: "local" | "remote";
+  template_version: string;
+  outcome: InnerCallOutcome;
+  reason: string | null;
+  attempts: number;
+  latency_ms: number;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  input_bytes: number;
+  output_bytes: number;
+  input_sha256: string;
+  run_id: string | null;
+  meta_session_id: string | null;
+  created_at: string;
+}
+
+/** Everything `recordInnerCall` needs; `id` and `created_at` are assigned by the ledger. */
+export type NewInnerCall = Omit<InnerCallRow, "id" | "created_at">;
+
+/** Extra run events written in the same transaction as the `inner_call` row, for a call tied to a run (LLD §13.8). */
+export interface InnerCallEvents {
+  /** Merged into the `inner_call` event payload (for example `title` and `summary` of a `run_title`). */
+  callPayload?: Record<string, unknown>;
+  artifactId?: string | null;
+  /** `inner_degraded` / `inner_task_suspended` events, appended after the `inner_call` event. */
+  extra?: { type: string; payload: unknown }[];
+}
+
 export interface Ledger {
   createMetaSession(input: NewMetaSession): MetaSessionRow;
   getMetaSession(id: string): MetaSessionRow | undefined;
@@ -570,6 +612,15 @@ export interface Ledger {
   getGitPush(id: string): GitPushRow | undefined;
   /** Whether an ACCEPTED `git_push` row pushed exactly `headSha` to `ref` on the remote named `remote` (T9.6). */
   hasAcceptedPush(remote: string, ref: string, headSha: string): boolean;
+
+  // ---- T11.2 additions (inner-agent call pipeline, LLD §13.3, §13.4 step 13, §13.8) --------------------------------
+  /**
+   * In ONE `BEGIN IMMEDIATE` transaction insert the append-only `inner_call` row and, only when `input.run_id` is set,
+   * the `inner_call` run event (payload: ids, outcome and sizes, never text) plus any `events.extra`. Returns the row.
+   */
+  recordInnerCall(input: NewInnerCall, events?: InnerCallEvents): InnerCallRow;
+  /** `inner_call` rows, oldest first, optionally of one run. */
+  listInnerCalls(filter?: { runId?: string }): InnerCallRow[];
 }
 
 export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledger {
@@ -602,19 +653,20 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
   const getRunRecord = (id: string) => db.prepare(`${RUN_RECORD_SQL} WHERE id = ?`).get(id) as RunRecord | undefined;
 
   /** Insert the next event inside the caller's transaction. */
-  const insertEvent = (runId: string, type: string, payload: unknown, when: string): string => {
+  const insertEvent = (
+    runId: string,
+    type: string,
+    payload: unknown,
+    when: string,
+    artifactId: string | null = null,
+  ): string => {
     const row = db.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM run_event WHERE run_id = ?").get(runId) as {
       next: number;
     };
     const id = ids.id("evt");
-    db.prepare("INSERT INTO run_event (id, run_id, seq, ts, type, payload_json) VALUES (?, ?, ?, ?, ?, ?)").run(
-      id,
-      runId,
-      row.next,
-      when,
-      type,
-      JSON.stringify(payload ?? {}),
-    );
+    db.prepare(
+      "INSERT INTO run_event (id, run_id, seq, ts, type, payload_json, artifact_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run(id, runId, row.next, when, type, JSON.stringify(payload ?? {}), artifactId);
     return id;
   };
 
@@ -1146,6 +1198,54 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
         };
       });
       return append.immediate();
+    },
+
+    recordInnerCall(input, events) {
+      return immediate(() => {
+        const id = ids.id("inc");
+        const when = ts();
+        const row: InnerCallRow = { ...input, id, created_at: when };
+        db.prepare(
+          `INSERT INTO inner_call (id, task, backend_kind, model_id, locality, template_version, outcome, reason, attempts,
+             latency_ms, tokens_in, tokens_out, input_bytes, output_bytes, input_sha256, run_id, meta_session_id, created_at)
+           VALUES (@id, @task, @backend_kind, @model_id, @locality, @template_version, @outcome, @reason, @attempts,
+             @latency_ms, @tokens_in, @tokens_out, @input_bytes, @output_bytes, @input_sha256, @run_id, @meta_session_id,
+             @created_at)`,
+        ).run(row);
+        if (row.run_id !== null) {
+          insertEvent(
+            row.run_id,
+            "inner_call",
+            {
+              inner_call_id: id,
+              task: row.task,
+              outcome: row.outcome,
+              ...(row.reason !== null ? { reason: row.reason } : {}),
+              locality: row.locality,
+              template_version: row.template_version,
+              attempts: row.attempts,
+              latency_ms: row.latency_ms,
+              input_bytes: row.input_bytes,
+              output_bytes: row.output_bytes,
+              ...events?.callPayload,
+            },
+            when,
+            events?.artifactId ?? null,
+          );
+          for (const e of events?.extra ?? []) insertEvent(row.run_id, e.type, e.payload, when);
+        }
+        return row;
+      });
+    },
+
+    listInnerCalls(filter) {
+      const cols = `id, task, backend_kind, model_id, locality, template_version, outcome, reason, attempts, latency_ms,
+        tokens_in, tokens_out, input_bytes, output_bytes, input_sha256, run_id, meta_session_id, created_at`;
+      return (
+        filter?.runId !== undefined
+          ? db.prepare(`SELECT ${cols} FROM inner_call WHERE run_id = ? ORDER BY id`).all(filter.runId)
+          : db.prepare(`SELECT ${cols} FROM inner_call ORDER BY id`).all()
+      ) as InnerCallRow[];
     },
   };
 }
