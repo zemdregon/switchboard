@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type Database from "better-sqlite3";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createIdGenerator } from "../ids/index.js";
 import {
@@ -82,10 +82,58 @@ describe("ledger migrations", () => {
     expect(migrate(db)).toEqual([]);
   });
 
+  it("0002 adds nullable project_id to meta_session and run; existing rows keep NULL (ADR-0024)", () => {
+    db = new Database(path.join(dir, LEDGER_FILE_NAME));
+    db.pragma("foreign_keys = ON");
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 1))).toEqual([1]); // a database as 0001 left it
+    const cols = (t: string) =>
+      (db as Database.Database).prepare(`SELECT name FROM pragma_table_info('${t}')`).all() as { name: string }[];
+    expect(cols("run").map((c) => c.name)).not.toContain("project_id");
+    const now = "2026-10-13T00:00:00.000Z";
+    const session = { id: `sess_${"0".repeat(26)}` };
+    const run = { id: `run_${"0".repeat(26)}` };
+    db.prepare(
+      "INSERT INTO meta_session (id, objective, status, created_at, updated_at) VALUES (?, 'before', 'ACTIVE', ?, ?)",
+    ).run(session.id, now, now);
+    db.prepare(
+      `INSERT INTO run (id, meta_session_id, state, trust_profile, policy_snapshot_json, request_json, request_hash,
+                        client_id, created_at, updated_at)
+       VALUES (?, ?, 'QUEUED', 'edit-untrusted', '{}', '{}', 'h', 'c', ?, ?)`,
+    ).run(run.id, session.id, now, now);
+    expect(migrate(db)).toEqual([2]);
+    expect(migrate(db)).toEqual([]); // idempotent
+    for (const t of ["meta_session", "run"]) {
+      const col = (db
+        .prepare(`SELECT type, "notnull" AS nn FROM pragma_table_info('${t}') WHERE name = 'project_id'`)
+        .get() ?? {}) as { type?: string; nn?: number };
+      expect(col).toEqual({ type: "TEXT", nn: 0 });
+    }
+    const upgraded = createLedger(db, { ids: createIdGenerator() });
+    expect(upgraded.getMetaSession(session.id)?.project_id).toBeNull();
+    expect(upgraded.getRun(run.id)?.project_id).toBeNull();
+    const s2 = upgraded.createMetaSession({ objective: "after", projectId: "web-app" });
+    expect(upgraded.getMetaSession(s2.id)?.project_id).toBe("web-app");
+    expect(
+      upgraded.createRun({
+        metaSessionId: s2.id,
+        trustProfile: "edit-untrusted",
+        policySnapshot: {},
+        request: {},
+        requestHash: "h2",
+        clientId: "c",
+        projectId: "web-app",
+      }).project_id,
+    ).toBe("web-app");
+  });
+
   it("applies only pending migrations in order", () => {
     db = openLedger(dir);
-    const extra = { version: 2, name: "extra", sql: "CREATE TABLE extra (id INTEGER PRIMARY KEY) STRICT;" };
-    expect(migrate(db, undefined, [...MIGRATIONS, extra])).toEqual([2]);
+    const extra = {
+      version: MIGRATIONS.length + 1,
+      name: "extra",
+      sql: "CREATE TABLE extra (id INTEGER PRIMARY KEY) STRICT;",
+    };
+    expect(migrate(db, undefined, [...MIGRATIONS, extra])).toEqual([extra.version]);
     expect(tables(db)).toContain("extra");
   });
 
@@ -110,10 +158,14 @@ describe("ledger migrations", () => {
 
   it("rolls back a failing migration and records nothing", () => {
     db = openLedgerFile(path.join(dir, LEDGER_FILE_NAME));
-    const bad = { version: 2, name: "bad", sql: "CREATE TABLE ok (id INTEGER) STRICT; SELECT * FROM nope;" };
+    const bad = {
+      version: MIGRATIONS.length + 1,
+      name: "bad",
+      sql: "CREATE TABLE ok (id INTEGER) STRICT; SELECT * FROM nope;",
+    };
     expect(() => migrate(db as Database.Database, undefined, [...MIGRATIONS, bad])).toThrow();
     expect(tables(db)).not.toContain("ok");
-    expect(currentSchemaVersion(db)).toBe(1);
+    expect(currentSchemaVersion(db)).toBe(MIGRATIONS.length);
   });
 });
 

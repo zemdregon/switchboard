@@ -8,6 +8,7 @@
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 import {
+  CONTAINER_NOT_IMPLEMENTED,
   ConfigError,
   isUnderAllowedRoot,
   loadConfig,
@@ -21,7 +22,7 @@ export class UnknownProjectError extends Error {
   override readonly name = "UnknownProjectError";
 }
 
-export const CONTAINER_NOT_IMPLEMENTED = "container environments are not implemented yet (M10)";
+export { CONTAINER_NOT_IMPLEMENTED };
 
 export interface ProjectFailure {
   /** JSON path into the config file, e.g. `$.projects[0].contexts[0].path`. */

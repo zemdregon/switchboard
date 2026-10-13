@@ -296,6 +296,13 @@ New `run_event.type` values (M9): `environment` (create, start, stop, remove; M1
 `git_policy_violation`, `git_tool_denied`. Payloads are bounded and hold no message text, only counts, SHAs and rule IDs.
 Both new tables get the same `BEFORE UPDATE`/`DELETE` guards as the other append-only tables.
 
+*As built (2026-10-13, Delegated, T9.2, [ADR-0024](../adr/0024-project-id-columns-and-project-snapshot.md)):* only the two
+`ALTER TABLE ... ADD COLUMN project_id TEXT` statements exist so far, as migration `0002_project_id`
+(`src/ledger/migrations/0002_project_id.ts`; ledger schema version 2). No index and no constraint. `git_commit`,
+`project_revision` and `git_push` come with T9.3 onward and T9.9. The run's `policy_snapshot_json` gains a `project`
+object (`id`, `name`, `environment_kind`, `context_id`, `base_ref`, `effective_max_profile`, `allowed_providers?`;
+`ProjectSnapshot` in `src/policy/types.ts`); push policy, identity and image digest are not in it yet.
+
 **M11 additions (Proposed).** One forward migration (ADR-0005) adds the append-only `inner_call` table and the mutable
 `inner_task_state` table (DDL in [§13.3](#133-data)), adds `pr_draft` to the `artifact.kind` check, adds `inner_agent` to
 the `usage_observation.source` check (FR-INN-15), and adds two columns to `git_commit` (§12.7). SQLite cannot alter a
@@ -577,6 +584,20 @@ providers or push policy, or switches to `container`, is `PENDING_APPROVAL` and 
 force until the operator approves. **`delete_project`** `{ id }` marks the project `DELETED` unless a non-terminal run
 uses it (`INVALID_REQUEST`). All three act only on projects created by the calling client; a configured project, or another
 client's, returns `PERMISSION_BLOCKED`. Names and shapes are Proposed.
+
+*As built (2026-10-13, Delegated, T9.2):* `delegate_task` publishes `workspace_path` and `project` as a root `oneOf`
+(exactly one, else `INVALID_REQUEST` "exactly one of workspace_path and project is required"); `workspace_path` is no
+longer in `required`. `continue_task` has no `project` input (a supplied one fails the closed schema,
+`INVALID_REQUEST`). The envelope gains `project_id` (absent for a path run); `commits` waits for T9.3. `list_projects`
+returns, per project the client lists in `mcp_clients[].projects`: `id`, `name`, `environment_kind`, `contexts[]`
+(`id`, `kind`, `primary`, `push_policy`), `max_trust_profile?`, `effective_max_profile` (the lower of the client's and the
+project's, **Proposed** addition) and `allowed_providers?` (config ids). It returns no path, remote, identity or image
+reference. Errors: unknown project `INVALID_REQUEST`; project not in the client's list (or the client has no list)
+`PERMISSION_BLOCKED`; profile above the effective ceiling `PERMISSION_BLOCKED` with `details.requested`,
+`client_max_profile`, `project` and `effective_max_profile`; a `container` project `TOOL_FAILURE` with
+`details.reason = "ENVIRONMENT_NOT_IMPLEMENTED"` before anything is written (M10; LLD §3 names no other code, so no new
+code is added); base ref that does not resolve `INVALID_REQUEST`. Implementation: `src/mcp/server.ts`,
+`src/mcp/schemas.ts`.
 
 **Error envelope** (FR-MCP-07). Delivered as an MCP tool result with `isError: true`:
 
@@ -1148,6 +1169,12 @@ environment fails with "container environments are not implemented yet (M10)"), 
 lists projects exactly as before and never starts a container. `mcp_clients[].projects`, `manage_projects` and
 `max_push_policy` are not in the schema yet (T9.2, T9.9).
 
+*As built (2026-10-13, Delegated, T9.2):* `mcp_clients[].projects` is in the schema (array of unique project ids matching
+the project id pattern); `loadConfig` refuses an id that names no `projects[]` entry (`$.mcp_clients[i].projects[j]:
+unknown project id`). **An absent or empty list means the client may use no project** (fail closed; the SRS says "only
+the projects listed"); requests that name a workspace path are unaffected. `manage_projects` and `max_push_policy` are
+still not in the schema (T9.9).
+
 ### 11.2 Resolution and ceilings
 
 At admission (FRD BR-23): (1) resolve `project` to its definition, else `INVALID_REQUEST`; (2) check the client's project
@@ -1163,6 +1190,21 @@ A project created by an orchestrator uses the same shape and is validated by the
 from a configured value the operator named in the client entry (`identities` list), so an orchestrator cannot invent an
 author (Proposed); the repository `path` must already exist under an allowed root. Approval is `projects approve <id>
 [--revision n]`, an operator CLI command that writes `approved_at`; it has no MCP counterpart (FRD BR-32).
+
+*As built (2026-10-13, Delegated, T9.2; configured `host` projects only, no dynamic revisions, no step 5a, no push or
+identity in step 6):* the steps run in `resolveProject` and `projectCandidates` (`src/mcp/server.ts`) in this order:
+(1) unknown id `INVALID_REQUEST`; (2) not in the client's list `PERMISSION_BLOCKED`; a `container` environment fails here
+(M10); (5) the primary context's path is canonicalised against the allowed roots again (`INVALID_REQUEST`) and its
+`base_ref` must resolve to a commit; (3) the profile is checked against `effectiveMaxProfile` (`src/config/projects.ts`);
+(4) candidates are filtered by `allowed_providers` (config ids mapped to adapter ids with `CONFIG_TO_ADAPTER_ID`;
+**Delegated reading of FR-PRJ-06 against FRD BR-23**: `require_provider` naming a provider outside the set is
+`PERMISSION_BLOCKED` before any write, a set that leaves no registered provider is `ELIGIBILITY_NONE` with
+`details.reason = "PROJECT_PROVIDERS"`, and a non-required preference outside the set is ignored); the excluded
+providers are recorded in the `route_decision` reasons as `project.excluded_providers`; (6) the project block is frozen
+into the policy snapshot (ADR-0024). The project's `base_ref` starts the first worktree of the meta-session
+(`PrepareInput.baseRef`, `src/workspace/manager.ts`); later runs start from the meta-session head as before. A
+continuation re-runs steps 1 to 4 for the meta-session's own project: a project removed from configuration is
+`INVALID_REQUEST`, one removed from the client's list `PERMISSION_BLOCKED` (history stays, FR-PRJ-09).
 
 ### 11.3 Environment port
 

@@ -28,6 +28,7 @@ import {
   type VersionGateResult,
 } from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
+import type { ResolvedProject } from "../config/index.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger, type TrustProfile } from "../ledger/index.js";
 import { RunLifecycle, type RunLifecycleOptions } from "../lifecycle/index.js";
@@ -175,7 +176,9 @@ interface Setup {
   passCodex?: boolean;
   /** Host platform injected into eligibility (T3.7); default linux. */
   platform?: string;
-  clients?: { id: string; max: TrustProfile; approval?: "required" | "not_required" }[];
+  clients?: { id: string; max: TrustProfile; approval?: "required" | "not_required"; projects?: string[] }[];
+  /** Configured projects (T9.2); the array is shared with the server so a test can change it between calls. */
+  projects?: ResolvedProject[];
   lifecycle?: Partial<RunLifecycleOptions>;
   start?: boolean;
 }
@@ -201,10 +204,16 @@ async function setup(s: Setup): Promise<void> {
   const clients = s.clients ?? [{ id: "orchestrator", max: "edit-untrusted" }];
   const config = {
     allowedRoots: [root],
+    projects: s.projects ?? [],
     mcpClients: new Map(
       clients.map((c) => [
         c.id,
-        { id: c.id, maxTrustProfile: c.max, ...(c.approval ? { privilegedApproval: c.approval } : {}) },
+        {
+          id: c.id,
+          maxTrustProfile: c.max,
+          ...(c.approval ? { privilegedApproval: c.approval } : {}),
+          ...(c.projects ? { projects: c.projects } : {}),
+        },
       ]),
     ),
   };
@@ -1134,5 +1143,382 @@ describe("outbound scrubbing", () => {
       "see /work/allowed/repo/a.txt and <path>.",
     );
     expect(scrub("token sk-abcdefghijklmnopqrstuvwxyz123")).toBe("token [REDACTED]");
+  });
+});
+
+/** A configured `host` project whose primary context is `repo` (T9.2); `over` replaces any field. */
+function project(over: Partial<ResolvedProject> = {}, contextPath = repo, baseRef = "main"): ResolvedProject {
+  return {
+    id: "web-app",
+    name: "Web application",
+    environment: { kind: "host" },
+    contexts: [
+      {
+        id: "main",
+        kind: "repository",
+        path: contextPath,
+        baseRef,
+        primary: true,
+        writable: true,
+        push: { policy: "none" },
+        sign: false,
+      },
+    ],
+    ...over,
+  };
+}
+const projectArgs = (over: Json = {}): Json => ({
+  objective: "add a feature",
+  project: "web-app",
+  trust_profile: "edit-untrusted",
+  ...over,
+});
+const sessionRow = (id: string) =>
+  db.prepare("SELECT project_id, base_commit FROM meta_session WHERE id = ?").get(id) as {
+    project_id: string | null;
+    base_commit: string | null;
+  };
+const runRow = (id: string) =>
+  db.prepare("SELECT project_id, policy_snapshot_json FROM run WHERE id = ?").get(id) as {
+    project_id: string | null;
+    policy_snapshot_json: string;
+  };
+
+describe("projects (T9.2; FR-PRJ-03, FR-PRJ-04, FR-PRJ-06; FRD V12, BR-23)", () => {
+  it("publishes list_projects and a delegate_task whose project and workspace_path are alternatives", async () => {
+    await setup({ adapters: [fakeWriter()] });
+    const client = servers[0]?.client as Client;
+    const { tools } = await client.listTools();
+    const del = tools.find((t) => t.name === "delegate_task");
+    expect(del?.inputSchema.required).toEqual(["objective", "trust_profile"]);
+    expect(Object.keys(del?.inputSchema.properties ?? {})).toContain("project");
+    expect(tools.map((t) => t.name)).toContain("list_projects");
+  });
+
+  it("exactly one of project and workspace_path: both and neither are INVALID_REQUEST with nothing written", async () => {
+    await setup({
+      adapters: [fakeWriter()],
+      projects: [project()],
+      clients: [{ id: "o", max: "edit-untrusted", projects: ["web-app"] }],
+    });
+    const both = await call("delegate_task", delegateArgs({ project: "web-app" }));
+    expect(both.body.error).toMatchObject({ code: "INVALID_REQUEST" });
+    expect(both.body.error.message).toMatch(/exactly one of workspace_path and project/);
+    const { workspace_path: _w, ...none } = delegateArgs();
+    const neither = await call("delegate_task", none);
+    expect(neither.body.error).toMatchObject({ code: "INVALID_REQUEST" });
+    expect(neither.body.error.message).toMatch(/exactly one of workspace_path and project/);
+    expect(runCount()).toBe(0);
+  });
+
+  it("a project run records project_id on the run and meta-session and the environment kind in the policy snapshot", async () => {
+    g(repo, "branch", "release");
+    writeFileSync(path.join(repo, "later.txt"), "later\n");
+    g(repo, "add", "-A");
+    g(repo, "commit", "-q", "-m", "later on main");
+    const release = g(repo, "rev-parse", "release");
+    await setup({
+      adapters: [fakeWriter()],
+      projects: [project({}, repo, "release")],
+      clients: [{ id: "o", max: "edit-untrusted", projects: ["web-app"] }],
+    });
+    const d = await call("delegate_task", projectArgs({ wait_seconds: 20 }));
+    expect(d.isError).toBe(false);
+    expect(d.body).toMatchObject({ status: "SUCCEEDED", project_id: "web-app" });
+    expect(sessionRow(d.body.meta_session_id)).toEqual({ project_id: "web-app", base_commit: release }); // FR-PRJ-02 base_ref
+    const row = runRow(d.body.run_id);
+    expect(row.project_id).toBe("web-app");
+    expect(JSON.parse(row.policy_snapshot_json).project).toEqual({
+      id: "web-app",
+      name: "Web application",
+      environment_kind: "host",
+      context_id: "main",
+      base_ref: "release",
+      effective_max_profile: "edit-untrusted",
+    });
+    expect(JSON.stringify(d.body)).not.toContain(repo); // the context path never leaves the controller
+  });
+
+  it("a workspace_path run has no project; a client with no project list keeps using workspace paths", async () => {
+    await setup({ adapters: [fakeWriter()], projects: [project()] });
+    const d = await call("delegate_task", delegateArgs({ wait_seconds: 20 }));
+    expect(d.body.status).toBe("SUCCEEDED");
+    expect(d.body.project_id).toBeUndefined();
+    expect(sessionRow(d.body.meta_session_id).project_id).toBeNull();
+    expect(JSON.parse(runRow(d.body.run_id).policy_snapshot_json).project).toBeUndefined();
+  });
+
+  it("unknown project is INVALID_REQUEST; a project outside the client's list (or with no list) is PERMISSION_BLOCKED", async () => {
+    await setup({
+      adapters: [fakeWriter()],
+      projects: [project(), project({ id: "other-app", name: "Other" })],
+      clients: [
+        { id: "listed", max: "edit-untrusted", projects: ["web-app"] },
+        { id: "unlisted", max: "edit-untrusted" },
+      ],
+    });
+    const unknown = await call("delegate_task", projectArgs({ project: "nope" }), 0);
+    expect(unknown.body.error).toMatchObject({ code: "INVALID_REQUEST", details: { field: "project" } });
+    const outside = await call("delegate_task", projectArgs({ project: "other-app" }), 0);
+    expect(outside.body.error).toMatchObject({ code: "PERMISSION_BLOCKED", details: { project: "other-app" } });
+    const none = await call("delegate_task", projectArgs(), 1);
+    expect(none.body.error).toMatchObject({ code: "PERMISSION_BLOCKED" });
+    expect(runCount()).toBe(0);
+    const ok = await call("delegate_task", projectArgs({ wait_seconds: 20 }), 0);
+    expect(ok.body.status).toBe("SUCCEEDED");
+  });
+
+  it("a container project fails with the not-implemented error and nothing written (M10)", async () => {
+    const container = project({ environment: { kind: "container", imageDigest: `sha256:${"a".repeat(64)}` } });
+    await setup({
+      adapters: [fakeWriter()],
+      projects: [container],
+      clients: [{ id: "o", max: "edit-untrusted", projects: ["web-app"] }],
+    });
+    const r = await call("delegate_task", projectArgs());
+    expect(r.body.error).toMatchObject({ code: "TOOL_FAILURE", details: { reason: "ENVIRONMENT_NOT_IMPLEMENTED" } });
+    expect(r.body.error.message).toMatch(/not implemented yet \(M10\)/);
+    expect(runCount()).toBe(0);
+  });
+
+  it("a base ref that does not resolve is INVALID_REQUEST with nothing written", async () => {
+    await setup({
+      adapters: [fakeWriter()],
+      projects: [project({}, repo, "no-such-ref")],
+      clients: [{ id: "o", max: "edit-untrusted", projects: ["web-app"] }],
+    });
+    const r = await call("delegate_task", projectArgs());
+    expect(r.body.error).toMatchObject({ code: "INVALID_REQUEST" });
+    expect(r.body.error.message).toMatch(/base ref/);
+    expect(runCount()).toBe(0);
+  });
+
+  it("a primary context outside the allowed roots is INVALID_REQUEST (checked again at admission)", async () => {
+    const outside = realpathSync(mkdtempSync(path.join(tmpdir(), "sb-outside-")));
+    try {
+      await setup({
+        adapters: [fakeWriter()],
+        projects: [project({}, outside)],
+        clients: [{ id: "o", max: "edit-untrusted", projects: ["web-app"] }],
+      });
+      const r = await call("delegate_task", projectArgs({ trust_profile: "inspect-untrusted" }));
+      expect(r.body.error).toMatchObject({ code: "INVALID_REQUEST" });
+      expect(r.body.error.message).toMatch(/allowed root/);
+      expect(runCount()).toBe(0);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  describe("effective ceiling is the lower of the client's and the project's (FR-PRJ-06)", () => {
+    const cases: [
+      client: TrustProfile,
+      project: TrustProfile | undefined,
+      requested: TrustProfile,
+      blocked: boolean,
+    ][] = [
+      ["edit-untrusted", "inspect-untrusted", "edit-untrusted", true], // project lower
+      ["edit-untrusted", "inspect-untrusted", "inspect-untrusted", false],
+      ["inspect-untrusted", "edit-untrusted", "edit-untrusted", true], // client lower
+      ["edit-untrusted", "trusted-development", "edit-untrusted", false], // equal to the lower: allowed
+      ["edit-untrusted", undefined, "edit-untrusted", false], // no project ceiling: the client's stands
+      ["edit-untrusted", undefined, "test-sandboxed", true],
+    ];
+    it.each(cases)("client %s, project %s, requested %s -> blocked %s", async (cMax, pMax, requested, blocked) => {
+      await setup({
+        adapters: [fakeWriter()],
+        projects: [project(pMax ? { maxTrustProfile: pMax } : {})],
+        clients: [{ id: "o", max: cMax, projects: ["web-app"] }],
+      });
+      const r = await call("delegate_task", projectArgs({ trust_profile: requested }));
+      if (blocked) {
+        expect(r.body.error).toMatchObject({
+          code: "PERMISSION_BLOCKED",
+          details: { requested, client_max_profile: cMax, project: "web-app" },
+        });
+        expect(runCount()).toBe(0);
+      } else {
+        expect(r.body.error).toBeUndefined();
+      }
+    });
+
+    it("a project ceiling below privileged blocks privileged for a privileged client, before V13 and with nothing written", async () => {
+      await setup({
+        adapters: [fakeWriter()],
+        projects: [project({ maxTrustProfile: "trusted-development" })],
+        clients: [{ id: "o", max: "privileged", approval: "not_required", projects: ["web-app"] }],
+      });
+      const r = await call("delegate_task", projectArgs({ trust_profile: "privileged", privileged_scope: SCOPE }));
+      expect(r.body.error).toMatchObject({
+        code: "PERMISSION_BLOCKED",
+        details: { requested: "privileged", effective_max_profile: "trusted-development" },
+      });
+      expect(r.body.error.message).toMatch(/project web-app/);
+      expect(runCount()).toBe(0);
+      expect((db.prepare("SELECT COUNT(*) AS n FROM approval").get() as { n: number }).n).toBe(0);
+    });
+  });
+
+  describe("allowed_providers (FR-PRJ-06, BR-23)", () => {
+    it("narrows routing to the project's providers and records the excluded ones in the route decision", async () => {
+      await setup({
+        adapters: [fakeWriter(), recorded(claudeReplay("success-edit.jsonl")).adapter],
+        projects: [project({ allowedProviders: ["claude-code"] })],
+        clients: [{ id: "o", max: "edit-untrusted", projects: ["web-app"] }],
+      });
+      const d = await call("delegate_task", projectArgs({ wait_seconds: 20 }));
+      expect(d.body.provider.adapter).toBe("claude");
+      const rd = JSON.parse(
+        (
+          db.prepare("SELECT reasons_json FROM route_decision WHERE run_id = ?").get(d.body.run_id) as {
+            reasons_json: string;
+          }
+        ).reasons_json,
+      );
+      expect(rd.project).toEqual({ id: "web-app", excluded_providers: ["fake"] });
+    });
+
+    it("require_provider outside the set is PERMISSION_BLOCKED with nothing written; a set leaving no registered provider is ELIGIBILITY_NONE", async () => {
+      await setup({
+        adapters: [fakeWriter(), recorded(claudeReplay("success-edit.jsonl")).adapter],
+        projects: [
+          project({ allowedProviders: ["claude-code"] }),
+          project({ id: "cursor-only", name: "C", allowedProviders: ["cursor"] }),
+        ],
+        clients: [{ id: "o", max: "edit-untrusted", projects: ["web-app", "cursor-only"] }],
+      });
+      const named = await call(
+        "delegate_task",
+        projectArgs({ routing: { provider_preference: "fake", require_provider: true } }),
+      );
+      expect(named.body.error).toMatchObject({ code: "PERMISSION_BLOCKED", details: { project: "web-app" } });
+      const empty = await call("delegate_task", projectArgs({ project: "cursor-only" }));
+      expect(empty.body.error).toMatchObject({ code: "ELIGIBILITY_NONE", details: { reason: "PROJECT_PROVIDERS" } });
+      expect(runCount()).toBe(0);
+    });
+  });
+
+  describe("a meta-session stays in its project (BR-23)", () => {
+    it("continue_task keeps the project on the new run and takes no project input", async () => {
+      await setup({
+        adapters: [fakeWriter()],
+        projects: [project()],
+        clients: [{ id: "o", max: "edit-untrusted", projects: ["web-app"] }],
+      });
+      const d = await call("delegate_task", projectArgs({ wait_seconds: 20 }));
+      expect(d.body.status).toBe("SUCCEEDED");
+      const withProject = await call("continue_task", {
+        meta_session_id: d.body.meta_session_id,
+        instruction: "more",
+        project: "other-app",
+      });
+      expect(withProject.body.error).toMatchObject({ code: "INVALID_REQUEST" });
+      expect(runCount()).toBe(1);
+      const c = await call("continue_task", {
+        meta_session_id: d.body.meta_session_id,
+        instruction: "keep going",
+        wait_seconds: 20,
+      });
+      expect(c.body).toMatchObject({ status: "SUCCEEDED", project_id: "web-app" });
+      const row = runRow(c.body.run_id);
+      expect(row.project_id).toBe("web-app");
+      expect(JSON.parse(row.policy_snapshot_json).project.environment_kind).toBe("host");
+    });
+
+    it("the lifecycle refuses a conflicting project, or one added to a path session, in the admission transaction", async () => {
+      await setup({
+        adapters: [fakeWriter()],
+        projects: [project()],
+        clients: [{ id: "o", max: "edit-untrusted", projects: ["web-app"] }],
+      });
+      const inProject = await call("delegate_task", projectArgs({ wait_seconds: 20 }));
+      const byPath = await call("delegate_task", delegateArgs({ wait_seconds: 20 }));
+      const snap = (id: string) => ({
+        id,
+        name: id,
+        environment_kind: "host" as const,
+        context_id: "main",
+        base_ref: "main",
+        effective_max_profile: "edit-untrusted" as const,
+      });
+      const base = {
+        clientId: "o",
+        objective: "x",
+        trustProfile: "edit-untrusted" as const,
+        provider: "fake" as const,
+      };
+      await expect(
+        lifecycle.submit({ ...base, metaSessionId: inProject.body.meta_session_id, project: snap("other-app") }),
+      ).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+      await expect(lifecycle.submit({ ...base, metaSessionId: inProject.body.meta_session_id })).rejects.toMatchObject({
+        code: "INVALID_REQUEST",
+      });
+      await expect(
+        lifecycle.submit({ ...base, metaSessionId: byPath.body.meta_session_id, project: snap("web-app") }),
+      ).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+      expect(runCount()).toBe(2);
+    });
+
+    it("a project removed from configuration, or from the client's list, refuses new runs but keeps history", async () => {
+      const projects = [project()];
+      const clients = [{ id: "o", max: "edit-untrusted" as const, projects: ["web-app"] }];
+      await setup({ adapters: [fakeWriter()], projects, clients });
+      const d = await call("delegate_task", projectArgs({ wait_seconds: 20 }));
+      clients[0]?.projects.splice(0);
+      const blocked = await call("continue_task", { meta_session_id: d.body.meta_session_id, instruction: "again" });
+      expect(blocked.body.error).toMatchObject({ code: "PERMISSION_BLOCKED" });
+      clients[0]?.projects.push("web-app");
+      projects.splice(0);
+      const gone = await call("continue_task", { meta_session_id: d.body.meta_session_id, instruction: "again" });
+      expect(gone.body.error).toMatchObject({ code: "INVALID_REQUEST" });
+      expect(runCount()).toBe(1);
+      expect((await call("get_run", { run_id: d.body.run_id })).body.project_id).toBe("web-app");
+    });
+  });
+
+  describe("list_projects (read-only, per client)", () => {
+    it("lists only the calling client's projects, with ceilings and no paths", async () => {
+      await setup({
+        adapters: [fakeWriter()],
+        projects: [
+          project({ maxTrustProfile: "inspect-untrusted", allowedProviders: ["claude-code", "codex"] }),
+          project({ id: "other-app", name: "Other" }),
+          project({ id: "hidden-app", name: "Hidden" }),
+        ],
+        clients: [
+          { id: "a", max: "edit-untrusted", projects: ["web-app", "other-app"] },
+          { id: "b", max: "inspect-untrusted", projects: ["other-app"] },
+          { id: "c", max: "edit-untrusted" },
+        ],
+      });
+      const a = await call("list_projects", {}, 0);
+      expect(a.isError).toBe(false);
+      expect(a.body.projects).toEqual([
+        {
+          id: "web-app",
+          name: "Web application",
+          environment_kind: "host",
+          contexts: [{ id: "main", kind: "repository", primary: true, push_policy: "none" }],
+          max_trust_profile: "inspect-untrusted",
+          effective_max_profile: "inspect-untrusted",
+          allowed_providers: ["claude-code", "codex"],
+        },
+        {
+          id: "other-app",
+          name: "Other",
+          environment_kind: "host",
+          contexts: [{ id: "main", kind: "repository", primary: true, push_policy: "none" }],
+          effective_max_profile: "edit-untrusted",
+        },
+      ]);
+      expect(JSON.stringify(a.body)).not.toContain(root); // no filesystem path
+      const b = await call("list_projects", {}, 1);
+      expect(b.body.projects.map((p: Json) => [p.id, p.effective_max_profile])).toEqual([
+        ["other-app", "inspect-untrusted"],
+      ]);
+      expect((await call("list_projects", {}, 2)).body).toEqual({ projects: [] });
+      const bad = await call("list_projects", { project: "x" }, 0);
+      expect(bad.body.error.code).toBe("INVALID_REQUEST");
+    });
   });
 });

@@ -2,7 +2,16 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ConfigError, isUnderAllowedRoot, loadConfig, resolveConfigPath } from "./index.js";
+import {
+  ConfigError,
+  effectiveMaxProfile,
+  isUnderAllowedRoot,
+  loadConfig,
+  lowerProfile,
+  projectsForClient,
+  resolveConfigPath,
+  TRUST_PROFILES,
+} from "./index.js";
 
 let tmp: string;
 beforeEach(() => {
@@ -187,6 +196,7 @@ describe("mcp_clients[].privileged_approval (owner decision 22, ADR-0019)", () =
       id: "plain",
       maxTrustProfile: "edit-untrusted",
       privilegedApproval: "required",
+      projects: [],
     });
     expect(c.mcpClients.get("ops")?.privilegedApproval).toBe("required");
     expect(c.mcpClients.get("strict")?.privilegedApproval).toBe("required");
@@ -252,5 +262,84 @@ describe("projects[] (T9.1, FR-PRJ-01, 02, 04)", () => {
     expect(() => loadConfig({ configPath: withProjects({ id: "A", name: "W", contexts: [repoCtx], x: 1 }) })).toThrow(
       /\$\.projects\[0\]\.x: unknown key[\s\S]*\$\.projects\[0\]\.id/,
     );
+  });
+});
+
+describe("mcp_clients[].projects and the lower-of-two ceiling (T9.2, FR-PRJ-06)", () => {
+  const repoCtx = { id: "main", kind: "repository", path: "/x", base_ref: "main" };
+  const proj = (id: string) => ({ id, name: id, contexts: [repoCtx] });
+  const withClients = (clients: unknown[], ...projects: unknown[]) =>
+    write({ ...base(), mcp_clients: clients, projects });
+
+  it("resolves a client's project list; an entry without one has none", () => {
+    const c = loadConfig({
+      configPath: withClients(
+        [
+          { id: "a", max_trust_profile: "edit-untrusted", projects: ["web-app"] },
+          { id: "b", max_trust_profile: "edit-untrusted" },
+        ],
+        proj("web-app"),
+      ),
+    });
+    expect(c.mcpClients.get("a")?.projects).toEqual(["web-app"]);
+    expect(c.mcpClients.get("b")?.projects).toEqual([]);
+    expect(projectsForClient(c.projects, c.mcpClients.get("a") ?? {}).map((p) => p.id)).toEqual(["web-app"]);
+    expect(projectsForClient(c.projects, c.mcpClients.get("b") ?? {})).toEqual([]);
+    expect(projectsForClient(c.projects, {})).toEqual([]); // a hand-built entry is read as no project
+  });
+
+  it("an id that names no configured project fails the load with its path", () => {
+    expect(() =>
+      loadConfig({
+        configPath: withClients(
+          [{ id: "a", max_trust_profile: "edit-untrusted", projects: ["web-app", "ghost"] }],
+          proj("web-app"),
+        ),
+      }),
+    ).toThrow(/\$\.mcp_clients\[0\]\.projects\[1\]: unknown project id "ghost"/);
+    expect(() =>
+      loadConfig({ configPath: withClients([{ id: "a", max_trust_profile: "edit-untrusted", projects: ["ghost"] }]) }),
+    ).toThrow(/unknown project id/);
+  });
+
+  it("rejects a malformed or repeated id and an unknown key shape", () => {
+    expect(() =>
+      loadConfig({
+        configPath: withClients(
+          [{ id: "a", max_trust_profile: "edit-untrusted", projects: ["Bad Id"] }],
+          proj("web-app"),
+        ),
+      }),
+    ).toThrow(/\$\.mcp_clients\[0\]\.projects\[0\]/);
+    expect(() =>
+      loadConfig({
+        configPath: withClients(
+          [{ id: "a", max_trust_profile: "edit-untrusted", projects: ["web-app", "web-app"] }],
+          proj("web-app"),
+        ),
+      }),
+    ).toThrow(/\$\.mcp_clients\[0\]\.projects/);
+  });
+
+  it("lowerProfile and effectiveMaxProfile take the lower of the two on the profile order", () => {
+    for (const a of TRUST_PROFILES) {
+      for (const b of TRUST_PROFILES) {
+        expect(TRUST_PROFILES.indexOf(lowerProfile(a, b))).toBe(
+          Math.min(TRUST_PROFILES.indexOf(a), TRUST_PROFILES.indexOf(b)),
+        );
+      }
+    }
+    const c = loadConfig({
+      configPath: write({
+        ...base(),
+        projects: [{ ...proj("capped"), max_trust_profile: "inspect-untrusted" }, proj("open")],
+      }),
+    });
+    const [capped, open] = c.projects;
+    expect(effectiveMaxProfile("privileged", capped as never)).toBe("inspect-untrusted");
+    expect(effectiveMaxProfile("edit-untrusted", open as never)).toBe("edit-untrusted");
+    expect(
+      effectiveMaxProfile("inspect-untrusted", { ...(open as object), maxTrustProfile: "privileged" } as never),
+    ).toBe("inspect-untrusted");
   });
 });

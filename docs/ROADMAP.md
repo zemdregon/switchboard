@@ -327,6 +327,14 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
     [ADR-0023](adr/0023-minimum-git-version-2-32.md). `doctor`, the workspace manager's Git check, the README and TDD §2
     state 2.32; no requirement ID changes and no SRS requirement names a version. Residual risk R-44 is mitigated.
     *Unverified:* the 2.32 introduction version rests on the release notes, not on a test against an old Git.
+<!-- markdownlint-disable-next-line MD029 -->
+31. Project columns and the project block in the policy snapshot (2026-10-13). **Delegated decision (agent), under
+    [owner decision 25](#42-owner-decisions); not an zemdregon quote and not owner-approved.** Ledger migration 0002 adds the
+    nullable `project_id` to `meta_session` and `run` (the DDL was already proposed in LLD §1); the resolved project is
+    frozen into the policy snapshot as `project`; `mcp_clients[].projects` is added to the config schema, with an absent
+    list meaning no project (fail closed, workspace-path requests unaffected). A persistence-format change needs an ADR:
+    [ADR-0024](adr/0024-project-id-columns-and-project-snapshot.md). No requirement ID changes. *Unverified:* nothing
+    ran against a live provider.
 
 Decisions 10 to 13, 17, 19, 21 and 22 each choose the less restrictive of the options put to zemdregon (decision 18 is the
 principle behind the 2026-10-13 ones); decisions 20 and 23 keep the stricter behaviour already implemented. Their residual
@@ -629,6 +637,28 @@ schema file) and the shape is recorded in [LLD §11.1](design/LLD.md#111-configu
 Scope kept out on purpose: no ledger or `delegate_task` change, no `mcp_clients[].projects` key (T9.2), and
 `max_trust_profile`, `allowed_providers` and `sign` are validated for shape only (enforcement is T9.2 and T9.10). T9.1
 does not use any T9.0 finding, so T9.0 staying `Partial` does not affect it.
+
+**T9.2 status (2026-10-13; Delegated): Done** for `host` environments. Done when: both and neither of `project` and
+`workspace_path` are `INVALID_REQUEST` with nothing written (`src/mcp/mcp.test.ts`, "exactly one of project and
+workspace_path"); ceiling arithmetic is the lower of the two (the `it.each` table under "effective ceiling is the lower
+of the client's and the project's", including a project ceiling below `privileged` blocking a `privileged` client, and
+`lowerProfile` / `effectiveMaxProfile` in `src/config/config.test.ts`); the client list is enforced (unknown project
+`INVALID_REQUEST`, unlisted or absent list `PERMISSION_BLOCKED`, "unknown project is INVALID_REQUEST..."); run and
+meta-session carry the project ("a project run records project_id ...", "continue_task keeps the project", "the
+lifecycle refuses a conflicting project ..."; all in `src/mcp/mcp.test.ts`). Also covered: `list_projects` per client
+without paths; the migration upgrade test (`src/ledger/ledger.test.ts`, "0002 adds nullable project_id ..."); a
+`container` project failing before any write; `allowed_providers` narrowing; configs and clients without projects
+unchanged. Decisions made without a source (all Delegated): an absent `mcp_clients[].projects` means no project; a
+`container` project fails `TOOL_FAILURE` with `details.reason = ENVIRONMENT_NOT_IMPLEMENTED` (LLD §3 names no code for
+it); `require_provider` naming a provider outside `allowed_providers` is `PERMISSION_BLOCKED` (SRS FR-PRJ-06 wording)
+while a set that leaves no registered provider is `ELIGIBILITY_NONE` (FRD BR-23 "ineligible"); `list_projects` also
+returns `primary` per context and `effective_max_profile`. The project's `base_ref` now starts the first worktree of a
+meta-session instead of `HEAD` (`src/workspace/manager.ts`). Scope kept out: push policy, commit identity and image
+digest in the snapshot (T9.3 onward, M10), `manage_projects` and dynamic projects (T9.9). `allowed_providers` uses
+config ids (`claude-code`), mapped to adapter ids by the existing `CONFIG_TO_ADAPTER_ID`; the test-only `fake` adapter
+is never allowed by a project that lists providers. Persistence:
+[ADR-0024](adr/0024-project-id-columns-and-project-snapshot.md).
+Not run against a live provider.
 
 ### 6.4 M10 Container environments: tasks
 

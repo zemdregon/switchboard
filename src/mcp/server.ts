@@ -44,6 +44,18 @@
  *   different provider in `routing` (handoff, M5) and a session with no recorded native session fail INVALID_REQUEST;
  *   an ineligible bound provider fails with its BR-3 code (no handoff fallback in M2).
  * - Unknown tool names return an INVALID_REQUEST tool error (FR-MCP-07) rather than a JSON-RPC protocol error.
+ * - Projects (T9.2; FR-PRJ-03, FR-PRJ-06; FRD V12, BR-23; ADR-0024). `delegate_task` takes exactly one of `workspace_path`
+ *   and `project` (the schema's `oneOf`, INVALID_REQUEST). With a project: an unknown id is INVALID_REQUEST; an id the
+ *   client's `projects` list lacks is PERMISSION_BLOCKED (an absent list means no project, Delegated fail-closed
+ *   reading; workspace_path requests are unaffected); a `container` project fails TOOL_FAILURE with
+ *   `details.reason = ENVIRONMENT_NOT_IMPLEMENTED` before any side effect (M10, Proposed code: LLD §3 names no other).
+ *   The workspace is the primary context's path, canonicalised and root-checked at every request (LLD §11.2 step 5), and
+ *   its `base_ref` must resolve to a commit. The effective ceiling is the lower of the client's and the project's
+ *   (V5 with both limits named in the error details). A project's `allowed_providers` narrows the candidate set; naming a
+ *   provider outside it with `require_provider` is PERMISSION_BLOCKED (SRS FR-PRJ-06 wording), and a set that leaves no
+ *   registered provider is ELIGIBILITY_NONE (FRD BR-23 "ineligible under BR-1"). `continue_task` takes no project: the
+ *   meta-session's own is re-resolved under the same checks (a project removed from configuration is INVALID_REQUEST,
+ *   FR-PRJ-09), and the lifecycle refuses any other project (INVALID_REQUEST).
  */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -52,11 +64,25 @@ import type { ErrorObject, ValidateFunction } from "ajv";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type { AdapterRegistry, ProviderId, ResolvedProfile } from "../adapters/index.js";
 import type { ArtifactStore } from "../artifacts/index.js";
-import type { ResolvedConfig } from "../config/index.js";
+import {
+  CONTAINER_NOT_IMPLEMENTED,
+  effectiveMaxProfile,
+  primaryContext,
+  projectsForClient,
+  type ResolvedConfig,
+  type ResolvedProject,
+} from "../config/index.js";
 import type { Ledger, RunRecord, TrustProfile } from "../ledger/index.js";
 import { type EligibilityAnswer, type RunLifecycle, type RunPriority, requestHash } from "../lifecycle/index.js";
-import { checkScopeLists, type PrivilegedScope, parsePrivilegedScope, resolveTrustProfile } from "../policy/index.js";
 import {
+  checkScopeLists,
+  type PrivilegedScope,
+  type ProjectSnapshot,
+  parsePrivilegedScope,
+  resolveTrustProfile,
+} from "../policy/index.js";
+import {
+  CONFIG_TO_ADAPTER_ID,
   compileCheck,
   type EligibilityReasonCode,
   profilePlatformSupported,
@@ -65,6 +91,7 @@ import {
   TRUST_PROFILE_ORDER,
   toRouteDecisionJson,
 } from "../routing/index.js";
+import { gitText } from "../workspace/git.js";
 import { buildEnvelope, compactEvents, type Envelope } from "./envelope.js";
 import { errorEnvelope, invalid, ToolError, toToolError } from "./errors.js";
 import {
@@ -87,7 +114,10 @@ export interface McpServerDeps {
   readonly ledger: Ledger;
   readonly artifacts: ArtifactStore;
   readonly registry: AdapterRegistry;
-  readonly config: Pick<ResolvedConfig, "allowedRoots" | "mcpClients">;
+  readonly config: Pick<ResolvedConfig, "allowedRoots" | "mcpClients"> & {
+    /** Configured projects (FR-PRJ-01, T9.2). Absent is read as none. */
+    readonly projects?: readonly ResolvedProject[];
+  };
   /** Configured MCP client this session is bound to (`serve --client <id>`). */
   readonly clientId: string;
   /** Routing candidate order (BR-4 tie-break). Defaults to registry registration order. */
@@ -104,6 +134,15 @@ export interface SwitchboardMcpServer {
 }
 
 type Args = Record<string, unknown>;
+
+/** A project resolved for one request (BR-23): the definition, its primary context's canonical path and the ceiling. */
+interface ProjectResolution {
+  readonly project: ResolvedProject;
+  readonly workspace: string;
+  /** The lower of the client's and the project's maximum profile (FR-PRJ-06). */
+  readonly effectiveMax: TrustProfile;
+  readonly snapshot: ProjectSnapshot;
+}
 type Routing = { provider_preference?: string; require_provider?: boolean; minimum_capability?: string };
 
 const INSTRUCTIONS =
@@ -142,8 +181,27 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     ...extra,
   });
 
-  /** FRD V5 / C4 / BR-13: `privileged` is requestable only by a client whose ceiling is `privileged`. */
-  const checkCeiling = (profile: TrustProfile): void => {
+  /**
+   * FRD V5 / V12 / C4 / BR-13 / BR-23: the profile may not exceed the client's ceiling, nor (in a project) the lower of
+   * the two. `privileged` is therefore requestable only by a client whose ceiling is `privileged` and in a project that
+   * does not lower it.
+   */
+  const checkCeiling = (profile: TrustProfile, project?: ProjectResolution): void => {
+    if (project !== undefined && profileRank(profile) > profileRank(project.effectiveMax)) {
+      const byProject = profileRank(profile) <= profileRank(maxTrustProfile);
+      throw new ToolError(
+        "PERMISSION_BLOCKED",
+        byProject
+          ? `trust profile ${profile} exceeds the maximum ${project.effectiveMax} of project ${project.snapshot.id}`
+          : `trust profile ${profile} exceeds this client's maximum ${maxTrustProfile}`,
+        {
+          requested: profile,
+          client_max_profile: maxTrustProfile,
+          project: project.snapshot.id,
+          effective_max_profile: project.effectiveMax,
+        },
+      );
+    }
     if (profileRank(profile) > profileRank(maxTrustProfile)) {
       throw new ToolError(
         "PERMISSION_BLOCKED",
@@ -151,6 +209,79 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         { requested: profile, client_max_profile: maxTrustProfile },
       );
     }
+  };
+
+  /**
+   * FRD V12 / BR-23 / LLD §11.2 steps 1-3, 5: the project, if this client may use it, with its primary context's
+   * canonical path. Nothing is written. `profile` decides whether the workspace must be a Git repository (V4); the base
+   * ref is verified whatever the profile, since the project's contexts are repositories by definition.
+   */
+  const resolveProject = async (projectId: string, profile: TrustProfile): Promise<ProjectResolution> => {
+    const project = (deps.config.projects ?? []).find((p) => p.id === projectId);
+    if (!project) throw invalid(`unknown project ${JSON.stringify(projectId)}`, { field: "project" }); // V12
+    if (!(client.projects ?? []).includes(project.id)) {
+      throw new ToolError("PERMISSION_BLOCKED", `project ${project.id} is not in this client's project list`, {
+        project: project.id,
+      });
+    }
+    if (project.environment.kind === "container") {
+      throw new ToolError("TOOL_FAILURE", `project ${project.id}: ${CONTAINER_NOT_IMPLEMENTED}`, {
+        project: project.id,
+        reason: "ENVIRONMENT_NOT_IMPLEMENTED",
+      });
+    }
+    const context = primaryContext(project);
+    const workspace = await lifecycle.canonicalWorkspace(context.path, profile); // V3, V4 again: config may have changed
+    try {
+      await gitText(["rev-parse", "--verify", "--end-of-options", `${context.baseRef}^{commit}`], { cwd: workspace });
+    } catch {
+      throw invalid(`project ${project.id}: base ref ${JSON.stringify(context.baseRef)} does not resolve to a commit`, {
+        field: "project",
+      });
+    }
+    const effectiveMax = effectiveMaxProfile(maxTrustProfile, project);
+    return {
+      project,
+      workspace,
+      effectiveMax,
+      snapshot: {
+        id: project.id,
+        name: project.name,
+        environment_kind: project.environment.kind,
+        context_id: context.id,
+        base_ref: context.baseRef,
+        effective_max_profile: effectiveMax,
+        ...(project.allowedProviders !== undefined ? { allowed_providers: [...project.allowedProviders] } : {}),
+      },
+    };
+  };
+
+  /** LLD §11.2 step 4: the candidate set after the project's `allowed_providers`, or the full set outside a project. */
+  const projectCandidates = (
+    project: ProjectResolution | undefined,
+    required: ProviderId | undefined,
+  ): { candidates: ProviderId[]; excluded: ProviderId[] } => {
+    const all = candidates();
+    const allowed = project?.project.allowedProviders;
+    if (allowed === undefined) return { candidates: all, excluded: [] };
+    // Config ids (`claude-code`) differ from adapter ids (`claude`); a provider with no mapping (the test `fake`) is never allowed.
+    const set = new Set<string>(allowed.map((id) => CONFIG_TO_ADAPTER_ID[id]));
+    if (required !== undefined && !set.has(required)) {
+      throw new ToolError(
+        "PERMISSION_BLOCKED",
+        `provider ${required} is not allowed in project ${project?.snapshot.id}`,
+        { project: project?.snapshot.id, allowed_providers: [...allowed] },
+      );
+    }
+    const kept = all.filter((id) => set.has(id));
+    if (kept.length === 0) {
+      throw new ToolError("ELIGIBILITY_NONE", `no registered provider is allowed in project ${project?.snapshot.id}`, {
+        reason: "PROJECT_PROVIDERS",
+        project: project?.snapshot.id,
+        allowed_providers: [...allowed],
+      });
+    }
+    return { candidates: kept, excluded: all.filter((id) => !set.has(id)) };
   };
 
   /** FRD V8: provider names must be registered; `require_provider` needs a named provider. */
@@ -221,9 +352,18 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     return { provider: first, basis: `configured_order${suffix}` };
   };
 
-  const routeRecord = (answer: EligibilityAnswer, provider: ProviderId, basis: string) => {
+  const routeRecord = (
+    answer: EligibilityAnswer,
+    provider: ProviderId,
+    basis: string,
+    project?: { id: string; excluded: readonly ProviderId[] },
+  ) => {
     const json = toRouteDecisionJson(answer.input, answer.decision);
-    const reasons = { ...(JSON.parse(json.reasons_json) as object), selection: { provider, basis } };
+    const reasons = {
+      ...(JSON.parse(json.reasons_json) as object),
+      selection: { provider, basis },
+      ...(project !== undefined ? { project: { id: project.id, excluded_providers: [...project.excluded] } } : {}),
+    };
     return { ...json, selected_provider: provider, reasons_json: JSON.stringify(reasons) };
   };
 
@@ -244,8 +384,10 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
   const delegateTask = async (a: Args): Promise<Envelope> => {
     const routing = a.routing as Routing | undefined;
     const profile = a.trust_profile as TrustProfile;
-    const workspace = await lifecycle.canonicalWorkspace(a.workspace_path as string, profile); // V3, V4
-    checkCeiling(profile); // V5
+    // V12 / V3 / V4: exactly one of `project` and `workspace_path` (the schema's oneOf has already refused anything else).
+    const resolved = a.project !== undefined ? await resolveProject(a.project as string, profile) : undefined;
+    const workspace = resolved?.workspace ?? (await lifecycle.canonicalWorkspace(a.workspace_path as string, profile));
+    checkCeiling(profile, resolved); // V5 / BR-23
     // V13 (after V5): privileged_scope present exactly when the profile is privileged.
     const scopeArg = a.privileged_scope;
     if (profile === "privileged" && scopeArg === undefined) {
@@ -270,6 +412,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       tool: "delegate_task",
       objective: a.objective,
       workspace_path: workspace,
+      ...(resolved ? { project: resolved.snapshot.id } : {}),
       constraints: a.constraints,
       trust_profile: profile,
       verification_commands: a.verification_commands,
@@ -289,11 +432,12 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
 
     const required = routing?.require_provider === true ? (routing.provider_preference as ProviderId) : undefined;
     const privileged = scope?.ok === true;
+    const narrowed = projectCandidates(resolved, required); // BR-23: before eligibility, so nothing is probed for them
     const answer = await lifecycle.checkEligibility({
-      candidates: candidates(),
+      candidates: narrowed.candidates,
       ...(required !== undefined ? { requiredProvider: required } : {}),
       trustProfile: profile,
-      clientMaxProfile: maxTrustProfile,
+      clientMaxProfile: resolved?.effectiveMax ?? maxTrustProfile,
       cwd: workspace,
       ...(scope?.ok ? { profile: eligibilityProfile(scope.scope) } : {}),
     }); // V11
@@ -312,7 +456,13 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       constraints: a.constraints as string[],
       priority: a.priority as RunPriority,
       requestHash: hash,
-      routeDecision: routeRecord(answer, provider, basis),
+      routeDecision: routeRecord(
+        answer,
+        provider,
+        basis,
+        resolved ? { id: resolved.snapshot.id, excluded: narrowed.excluded } : undefined,
+      ),
+      ...(resolved ? { project: resolved.snapshot } : {}),
       ...(key !== undefined ? { idempotencyKey: key } : {}),
       ...(scope?.ok
         ? {
@@ -338,8 +488,10 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       throw invalid(`meta-session ${sessionId} has an active run ${ctx.activeRunId}`, { run_id: ctx.activeRunId });
     }
     const profile = (a.trust_profile as TrustProfile | undefined) ?? ctx.trustProfile; // C4
+    // BR-23: the meta-session keeps its project; it is re-resolved under the same checks as a new request (FR-PRJ-09).
+    const resolved = ctx.projectId !== undefined ? await resolveProject(ctx.projectId, profile) : undefined;
     const workspace = await lifecycle.canonicalWorkspace(ctx.workspace, profile); // C3
-    checkCeiling(profile);
+    checkCeiling(profile, resolved);
     // C7 (after C4): a privileged continuation runs only under the meta-session's APPROVED approval for this client,
     // with the approved scope as is. The lifecycle re-checks status, ownership and hash in the admission transaction.
     let approval: { id: string; scope: unknown } | undefined;
@@ -369,11 +521,12 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
 
     const approvedScope = approval ? parsePrivilegedScope(approval.scope) : undefined;
     if (approvedScope && !approvedScope.ok) throw invalid(`meta-session ${sessionId} approval holds an invalid scope`);
+    projectCandidates(resolved, bound); // the bound provider must still be allowed in the project
     const answer = await lifecycle.checkEligibility({
       candidates: [bound],
       requiredProvider: bound,
       trustProfile: profile,
-      clientMaxProfile: maxTrustProfile,
+      clientMaxProfile: resolved?.effectiveMax ?? maxTrustProfile,
       cwd: workspace,
       ...(approvedScope?.ok ? { profile: eligibilityProfile(approvedScope.scope) } : {}),
     });
@@ -394,6 +547,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         approval ? "continuation; privileged compile deferred to dispatch" : "continuation",
       ),
       ...(approval ? { privileged: { approvalId: approval.id } } : {}),
+      ...(resolved ? { project: resolved.snapshot } : {}),
     });
     await waitBounded(submitted.runId, a.wait_seconds as number);
     return envelopeOf(submitted.runId);
@@ -457,6 +611,19 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       providers,
     };
   };
+
+  /** LLD §3 `list_projects`: the projects this client may use, without paths, remotes, identities or image data. */
+  const listProjects = async () => ({
+    projects: projectsForClient(deps.config.projects ?? [], client).map((p) => ({
+      id: p.id,
+      name: p.name,
+      environment_kind: p.environment.kind,
+      contexts: p.contexts.map((c) => ({ id: c.id, kind: c.kind, primary: c.primary, push_policy: c.push.policy })),
+      ...(p.maxTrustProfile !== undefined ? { max_trust_profile: p.maxTrustProfile } : {}),
+      effective_max_profile: effectiveMaxProfile(maxTrustProfile, p),
+      ...(p.allowedProviders !== undefined ? { allowed_providers: [...p.allowedProviders] } : {}),
+    })),
+  });
 
   const describeProvider = (answer: EligibilityAnswer, id: ProviderId, cwd: string) => {
     const facts = answer.input.facts.find((f) => f.provider === id);
@@ -523,6 +690,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     cancel_run: cancelRun,
     get_artifacts: getArtifacts,
     list_capabilities: listCapabilities,
+    list_projects: listProjects,
   };
 
   const ok = (value: object): CallToolResult => ({
@@ -647,6 +815,13 @@ function compileValidators(): Record<ToolName, ValidateFunction> {
 }
 
 function schemaError(errors: readonly ErrorObject[]): ToolError {
+  // FRD V12: the root `oneOf` of delegate_task says it better than the branch errors it leaves behind.
+  if (errors.some((e) => e.keyword === "oneOf" && e.instancePath === "")) {
+    return invalid("invalid arguments: exactly one of workspace_path and project is required", {
+      field: "project",
+      errors: [{ path: "$", message: "must have exactly one of workspace_path and project" }],
+    });
+  }
   const list = errors.slice(0, 10).map((e) => {
     // `$.a.b[0]` notation (as config errors use): JSON pointers would read like filesystem paths.
     let where = e.instancePath

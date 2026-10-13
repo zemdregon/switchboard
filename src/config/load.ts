@@ -59,6 +59,11 @@ export interface ResolvedMcpClient {
    * `loadConfig` always sets it; a hand-built entry without it is read as `required` (fail closed).
    */
   readonly privilegedApproval?: PrivilegedApprovalMode;
+  /**
+   * `projects` (FR-PRJ-06, T9.2): the project ids the client may use. `loadConfig` always sets it (empty when the entry
+   * has none); a hand-built entry without it is read as no project (fail closed).
+   */
+  readonly projects?: readonly string[];
 }
 
 const INTERVAL_UNIT_MS = { m: 60_000, h: 3_600_000, d: 86_400_000 } as const;
@@ -205,6 +210,19 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
     }
   }
 
+  // FR-PRJ-06 (T9.2): a client's project list may only name configured projects (NFR-SEC-06: unknown id aborts startup).
+  const projectIds = new Set((cfg.projects ?? []).map((p) => p.id));
+  for (const [i, c] of cfg.mcp_clients.entries()) {
+    for (const [j, id] of (c.projects ?? []).entries()) {
+      if (!projectIds.has(id)) {
+        throw new ConfigError(
+          `Invalid config: $.mcp_clients[${i}].projects[${j}]: unknown project id ${JSON.stringify(id)} ` +
+            `(client ${JSON.stringify(c.id)}); define it in projects[] or remove it`,
+        );
+      }
+    }
+  }
+
   const profileOverrides = toOverrides(cfg);
   try {
     validateProfileOverrides(profileOverrides);
@@ -230,6 +248,7 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
           id: c.id,
           maxTrustProfile: c.max_trust_profile,
           privilegedApproval: c.privileged_approval ?? DEFAULT_PRIVILEGED_APPROVAL,
+          projects: [...(c.projects ?? [])],
         },
       ]),
     ),

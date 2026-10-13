@@ -80,6 +80,25 @@ export interface AppliedOverride {
 }
 
 /**
+ * The project a run was admitted under (FR-PRJ-03, FR-PRJ-04, FR-PRJ-06; T9.2), frozen into the policy snapshot as
+ * `project`. Absent for a run delegated by workspace path. Host environments only until M10: `environment_kind` is
+ * recorded so a `container` run can be told apart later (the image digest joins it in M10). Never holds a path or
+ * credential; `repository` paths stay in configuration. Proposed shape (Delegated), LLD §11.2 step 6.
+ */
+export interface ProjectSnapshot {
+  readonly id: string;
+  readonly name: string;
+  readonly environment_kind: "host" | "container";
+  /** The primary repository context whose worktree is the agent's working directory. */
+  readonly context_id: string;
+  readonly base_ref: string;
+  /** The lower of the client's and the project's ceiling when the run was admitted (FR-PRJ-06). */
+  readonly effective_max_profile: TrustProfile;
+  /** The project's allowed providers when it declared any; absent means no restriction. */
+  readonly allowed_providers?: readonly string[];
+}
+
+/**
  * The frozen snapshot stored on the run (`run.policy_snapshot_json`). A {@link ResolvedProfile} plus, only when
  * non-empty, `overrides` (the applied config overrides); for `privileged`, `ResolvedProfile.privilegedScope` carries
  * the scope, its hash and the approval ID (LLD §2, §3.1). Default profiles with no overrides serialise exactly as a bare
@@ -87,4 +106,6 @@ export interface AppliedOverride {
  */
 export interface PolicySnapshot extends ResolvedProfile {
   readonly overrides?: readonly AppliedOverride[];
+  /** Only for a run delegated to a project (T9.2). */
+  readonly project?: ProjectSnapshot;
 }
