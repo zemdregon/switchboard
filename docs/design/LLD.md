@@ -483,6 +483,13 @@ the shim). `ShimSpec.command` is the full argv including `--socket <path>`. The 
 `channelArgs` result (above). Fake: `injected`; Claude Code and Codex: `none`. The rule that a `none` adapter is
 ineligible for write-capable profiles without the finalize-only opt-in is not enforced yet (ROADMAP Q-43).
 
+*Note 2026-10-13 (owner decision 36, Q-43; the sentence in the paragraph above stays as written).* zemdregon chose
+finalize-only ("Finalize-only."): an adapter with `commitChannel: 'none'` is **not** made ineligible for write-capable
+profiles, so that rule is not to be enforced. Such an adapter runs write-capable runs and, when the project opts in to
+finalize-only mode (T9.7, BR-30), the controller makes the commit at FINALIZING through the same sanitiser and
+provenance as the commit tool. zemdregon wants the opt-in enabled for his own projects. Claude Code's `commitChannel` may
+become `injected` behind an operator opt-in once T9.4b and its live checks pass ([ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md)).
+
 ## 3. MCP tool contracts
 
 Schemas are published JSON Schema (draft 2020-12; version choice Proposed) validated with Ajv before any side effect
@@ -1295,6 +1302,13 @@ and newline-delimited JSON to the controller. The controller accepts only connec
 is RUNNING, and closes and removes the socket when the run leaves RUNNING. Nothing the agent sends is trusted beyond the
 validation in §12.3. Whether provider sandboxes permit the connect is verified per adapter; if not, that adapter is
 `finalize-only`.
+
+*Note 2026-10-13 (decision 36).* For Claude Code the per-run definition is now decided: a `0600` file passed with
+`--mcp-config`, one server, token in the environment, exact-name allow rules ([ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md),
+T9.4b; unverified live). How other projects pass a per-run tool definition to each provider (leads only, not
+verified here) is listed in [TDD §3.10](TDD.md#310-git-commits-attribution-and-publication) under "External reference
+(T3 Code, MIT, studied not copied)". Switchboard implements from provider documentation and `--help`, not from that
+project's code.
 
 *Note 2026-10-13 (T9.0 spike; Delegated; findings only, owner text above unchanged).* For Claude Code the per-run
 definition is `--mcp-config <json file or string>` with `--strict-mcp-config` (`claude --help` 2.1.296); the JSON shape,

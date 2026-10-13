@@ -109,6 +109,12 @@ Each rule elaborates the cited requirement and does not add to it.
 | BR-42 | **Inner-agent privacy gates.** A backend is `local` (loopback or Unix socket) or `remote`. A `remote` backend is unusable until `allow_remote` is set; a task that sends repository content (diffs, log excerpts) to a `remote` backend also needs that task's `allow_source_content`. A project or context may set `inner_agent` to `off` or `local_only`, which narrows what the global configuration allows and never widens it (BR-35 applies regardless). Deterministic redaction runs on the prompt before every call, and prompt and response bodies are not stored or logged beyond what the accepted result already is (sizes and hashes only). A refused call is a fallback (BR-36), not an error to the run. | FR-INN-16, FR-TEL-03 | SRS. "Narrows and never widens" is Proposed. |
 | BR-43 | **Quality monitoring and suspension.** The outcome of every inner call is recorded (accepted, rejected by validator, rejected by sanitiser, fallback used). When a task's rejection rate over the configured window exceeds the configured threshold, the task is suspended automatically and uses its fallback until the operator re-enables it. Window and threshold are configuration values (proposed targets), not fixed here. `doctor`, `inner status` and `inner test <task>` (built-in fixture, no repository data) expose state to the operator. | FR-INN-09, FR-INN-17 | Proposed (FR-INN-09 is Should and its thresholds are proposed targets). |
 
+*Note 2026-10-13 (owner decision 36, Q-43; BR-30's wording above unchanged).* zemdregon chose finalize-only for adapters with
+no injected channel ("Finalize-only."): such an adapter is **not** made ineligible for write-capable profiles. It runs
+them, and when the project opts in to finalize-only mode the controller commits at FINALIZING under BR-26 and BR-28.
+Without the opt-in its work stays in the worktree and the diff artifacts. The "ineligible without the opt-in" clause of
+BR-30 is therefore not applied. zemdregon wants the opt-in enabled for his own projects. Per-project opt-in; ROADMAP T9.7.
+
 ## 4. Canonical run state machine
 
 ### 4.1 Diagram
