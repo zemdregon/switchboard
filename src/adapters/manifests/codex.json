@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "provider": "codex",
+  "validated_cli_version": "unverified-on-this-host",
+  "validated_version_range": "<0.0.0",
+  "validated_on": "2026-10-12",
+  "auth_modes_allowed": ["native_cached_subscription"],
+  "automation_surface": ["documented_headless"],
+  "credential_export_allowed": false,
+  "dashboard_scraping_allowed": false,
+  "network_protocol_reverse_engineering": false,
+  "commercial_multi_user_status": "requires-review",
+  "source_revision": "not-reviewed: provider terms not read; automation surface per docs/research/headless-ai-coding-controller-verified-2026-10-12.md (R2, 2026-10-12)",
+  "notes": "Automation surface: `codex exec` with `--json` JSONL and `codex exec resume`, per R2 sections 'Verified provider adapter design' (adapter matrix) and 'Compliance and authentication boundary'; TDD 4.2. Version: Assumption/unverified-on-this-host. R2 states no Codex version number and the codex binary is not installed on the development host, so no real version could be recorded. The range <0.0.0 is deliberately empty and fails closed: every Codex binary yields ADAPTER_VERSION_UNVERIFIED until the operator validates a version (`adapters validate`, FR-OPS-02) or T2.2 records one against an installed CLI. Credentials: Switchboard never reads, copies, logs or exports Codex credentials (including ~/.codex/auth.json, which R2 says is sensitive), never starts login and never scrapes dashboards or reimplements the network protocol; it reuses the CLI's cached login and returns AUTH_REQUIRED naming the native login (ADR-0003, FR-AUTH-02). Terms: this manifest records that the CLI documents headless use (technical evidence only); it makes no claim that any use complies with OpenAI's terms. Commercial, resale, multi-user or credential-sharing use requires a per-provider policy review first (NFR-COMP-01). Review date: 2026-10-12 (Delegated agent review, not owner-approved). Git writes (FR-GIT-01, T2.2): R2 documents no Codex per-command deny or allow rule and no commit or attribution setting (adapter matrix and Codex paragraph: only `--sandbox workspace-write` or stricter, `--ignore-user-config`, `--ignore-rules`). The adapter declares this (`gitWriteControl.kind = none-documented`, reported by list_capabilities); FR-GIT-03 (ref snapshots, M9) and FR-GIT-06 (no push credentials in the agent environment) are the remaining controls. Assumption, unverified (codex not installed; live smoke check X-G1): the workspace-write sandbox blocks writes to a worktree's Git directory, which lives outside the cwd. A non-empty shell allowlist is not compiled for Codex (Ineligible)."
+}

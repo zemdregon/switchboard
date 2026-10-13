@@ -48,3 +48,8 @@ scope and sequencing live in the [ROADMAP](../ROADMAP.md).
 | [0010](0010-typescript-node-stack.md) | TypeScript on Node.js as the implementation stack | Accepted | Delegated |
 | [0011](0011-single-operator-local-deployment.md) | Single-operator, local, Linux-first deployment | Accepted | Delegated |
 | [0012](0012-telemetry-at-wrapper-boundary.md) | Telemetry at the wrapper boundary, never by mutating provider config | Accepted | Delegated |
+| [0013](0013-projects-environments-and-contexts.md) | Projects own environments and contexts | Accepted (concept); container details Proposed | Ender (concept), Delegated (mechanism) |
+| [0014](0014-tool-only-commits-and-publication.md) | Agents never commit or push; Switchboard-injected tools do | Accepted; supersedes the no-push clause of ADR-0006 | Ender (decision), Delegated (mechanism) |
+| [0015](0015-claude-untrusted-isolation-flags.md) | Claude untrusted profiles use safe-mode isolation flags, not `--bare` | Accepted | Delegated |
+| [0016](0016-inner-agent.md) | An inner agent handles cheap, low-stakes tasks, with no authority over security | Accepted | Ender (product decision), Delegated (mechanism) |
+| [0017](0017-approved-privileged-scope-bypass.md) | Bypass flags only for an approved privileged scope that sets bypass; complements ADR-0004. Amended before merge (2026-10-13; numbered 0016 while planned): machine-readable scope; approval durable per meta-session | Accepted | Delegated (records owner decisions 13 and 17) |

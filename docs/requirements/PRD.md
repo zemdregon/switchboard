@@ -3,7 +3,7 @@
 | Field | Value |
 | --- | --- |
 | Status | Draft, baseline for milestone M1 |
-| Owns | Target users, use cases, user journeys UJ-1..UJ-7, capabilities CAP-1..CAP-9 and their priorities, the product surface, non-goals, and product-level acceptance criteria per capability. |
+| Owns | Target users, use cases, user journeys UJ-1..UJ-9, capabilities CAP-1..CAP-11 and their priorities, the product surface, non-goals, and product-level acceptance criteria per capability. |
 | Does not own | Business outcomes ([BRD](BRD.md)); requirements ([SRS](SRS.md)); workflows and business rules ([FRD](FRD.md)); milestone scope and status ([ROADMAP](../ROADMAP.md)); components ([HLD](../design/HLD.md)). |
 | Last reconciled | 2026-10-12 |
 
@@ -12,12 +12,14 @@ criteria are conditions to be checked when the named milestone delivers.
 
 ## 1. Product overview
 
-Switchboard is a headless controller that sits between a primary orchestrating agent (for example OpenClaw or Grok Bot)
-and up to seven AI coding CLIs: Claude Code, Grok Build, Antigravity (`agy`), Codex, Cursor CLI, OpenCode and Kimi Code.
-It exposes a small MCP tool surface, runs the chosen CLI through its documented headless mode inside an isolated
-workspace under a named trust profile, and keeps its own record of the work so tasks can move between providers. It
-never logs in to a provider and never handles credentials ([ADR-0003](../adr/0003-no-credential-handling.md)). The
-business case is in the [BRD](BRD.md); the stated intent comes from the introduction of the [original
+Switchboard is a headless controller that sits between a primary orchestrating agent (for example OpenClaw or Grok
+Bot) and up to eight AI coding CLIs: Claude Code, Grok Build, Antigravity (`agy`), Codex, Cursor CLI, OpenCode, Kimi
+Code and, since 2026-10-13, Muse Code from Meta (FR-ADP-12). It exposes a small MCP tool surface, runs the chosen CLI
+through its documented headless mode inside an isolated workspace under a named trust profile, and keeps its own
+record of the work so tasks can move between providers. It never logs in to a provider and never handles credentials
+([ADR-0003](../adr/0003-no-credential-handling.md)). It may also hand cheap, low-stakes text tasks to an *inner agent*
+the operator chooses, so the provider CLIs keep their capacity for coding (CAP-12). The business case is in the
+[BRD](BRD.md); the stated intent comes from the introduction of the [original
 blueprint](../research/headless-ai-coding-controller.md) (superseded on technical details by the [verified
 research](../research/headless-ai-coding-controller-verified-2026-10-12.md)).
 
@@ -42,16 +44,65 @@ Priorities are MoSCoW as in [SRS §1](SRS.md#1-conventions). Milestones are defi
 | CAP-1 | Task delegation via MCP | The orchestrator delegates a task with objective, workspace, constraints and trust profile, gets a `run_id` and `meta_session_id` at once, and polls or waits a bounded time for a compact result. | Must | M2 (vertical slice); verification commands M3 | BO-1 | FR-MCP-01, 03–10, FR-EXE-01–02, 05–08 |
 | CAP-2 | Provider adapters with version/auth preflight | One adapter per provider translates requests to documented headless modes and normalizes structured output. Preflight checks binary, version, auth, flags and a smoke call; unvalidated versions are ineligible. | Must, all seven (Kimi Code blocked until its contract is pinned) | M1 (contract and fake adapter), M2 (Claude Code, Codex), M4 (others) | BO-1, BO-2, BO-6 | FR-ADP-01–11, FR-AUTH-02 |
 | CAP-3 | Policy and trust profiles | Five named trust profiles compiled into each adapter's native controls, with no automatic bypass flags, no loading of repository-supplied agent config under untrusted profiles, and per-client maximum trust. | Must | M2 (`inspect-untrusted`, `edit-untrusted`); M3 (remaining profiles) | BO-2, BO-3 | FR-POL-01–10, FR-MCP-06 |
-| CAP-4 | Workspace isolation | Write-capable runs execute in a controller-created Git worktree from a recorded checkpoint, with one write lease per worktree, post-run checkpoints and diffs, rollback, and no remote pushes. | Must | M1 (retention and GC M3) | BO-3, BO-4 | FR-WS-01–07 |
+| CAP-4 | Workspace isolation | Write-capable runs execute in a controller-created Git worktree from a recorded checkpoint, with one write lease per worktree, post-run checkpoints and diffs, rollback, and no remote pushes except through controlled publication (CAP-11). | Must | M1 (retention and GC M3) | BO-3, BO-4 | FR-WS-01–07 |
 | CAP-5 | Meta-sessions and cross-provider continuity | A controller-owned task record outlives any provider session. Continuing on the same provider uses native resume; continuing elsewhere uses a handoff bundle built from controller evidence. | Must | M1 (schema, events), M2 (Claude resume), M5 (all adapters, handoff) | BO-4 | FR-SES-01–06 |
 | CAP-6 | Routing with explanation | Hard eligibility filtering first, then weighted scoring; every decision persisted and explainable; routing hints can only narrow the choice. | Must (eligibility); Should (heuristic classifier); learned routing Deferred | M2 (eligibility only), M7 (scoring, classifier, `explain_route`) | BO-1, BO-5 | FR-RTE-01–05, FR-MCP-02, 05 |
 | CAP-7 | Capacity estimation and backpressure | Usage is recorded as reported; a per-provider confidence-labelled capacity estimate feeds scheduling; bounded queue, concurrency limits, breakers, bounded retries and failover. | Must | M1 (queue, global limit), M2 (record usage), M6 | BO-1, BO-4, BO-5 | FR-CAP-01–07, FR-MCP-02, FR-ADP-10 |
 | CAP-8 | Telemetry and audit | Every lifecycle step appends a run event; secrets and raw prompts never reach telemetry; optional OpenTelemetry export; run records retrievable after the fact. | Must (events, redaction); Should (OTel export); read-only dashboard Deferred | M1 (events); M8 (OTel) | BO-2, BO-5 | FR-TEL-01–04, NFR-OBS-01 |
-| CAP-9 | Operator CLI | `serve`, `doctor`, `runs list/show/cancel`, `approve`, `deny`, `adapters validate`, `capacity`, and the config file. No login commands and no web interface. | Must | M1 (config, `doctor`, `runs`), M2 (`serve`), M3 (`approve`, `deny`), M4 (`adapters validate`), M6 (`capacity`) | BO-3, BO-5, BO-6 | FR-OPS-01–05 |
+| CAP-9 | Operator CLI | `serve`, `doctor`, `runs list/show/cancel`, `approve`, `deny`, `adapters validate`, `capacity`, `projects list/show/validate`, and the config file. No login commands and no web interface. | Must | M1 (config, `doctor`, `runs`), M2 (`serve`), M3 (`approve`, `deny`), M4 (`adapters validate`), M6 (`capacity`), M9 (`projects`) | BO-3, BO-5, BO-6 | FR-OPS-01–05, FR-PRJ-08 |
+| CAP-10 | Projects, contexts and environments | Switchboard manages *projects*: the environment the coding agents operate from (the operator's host first, a container later) and the *contexts* of that project, such as its repositories. The orchestrator delegates to a project instead of a bare path; a project can cap the trust profile and the providers. | Must | M9 (host environments, repository contexts); M10 (container environments, blocked on Q-6) | BO-3, BO-4 | FR-PRJ-01–09 |
+| CAP-11 | Controlled commits and publication | Agents have no commit or push ability. Switchboard-injected tools make the commits and, only when a context's policy allows, the pushes, so commits carry no co-author trailer, "generated by" footer or session ID and look like any other commit. The controller keeps an internal record of which agent produced which commit. | Must | M2 (agents denied Git writes), M9 (tools, publication, audit) | BO-3, BO-7 | FR-GIT-01–09, FR-WS-05 |
+| CAP-12 | Inner agent | One optional cheap, free or self-hosted model of the operator's choosing, called by the controller (not by orchestrators) for opt-in low-stakes text tasks: commit messages, PR drafts, routing classification, handoff and log summaries, run titles. Stateless, no tools, no authority over security or run status; every output validated; a deterministic fallback for every task; usage kept apart from provider capacity; explicit privacy rules for local versus remote models. Owner decision 14. | Must (core, commit messages); Should (PR drafts, routing, summaries, `cli` backend, CLI views); Could (titles); model-assisted redaction Deferred | M11 | BO-8, BO-1 | FR-INN-01–18 |
 
 Deferred capabilities, tracked in [ROADMAP §8](../ROADMAP.md#8-deferred-and-excluded-work): read-only usage dashboard
 (FR-TEL-04), upstream ACP server, learned routing (FR-RTE-05), OpenCode persistent service transport (FR-EXE-04), native
-Windows support (NFR-PORT-03), and multi-user or hosted operation.
+Windows support (NFR-PORT-03), context kinds other than repositories, model-assisted redaction (FR-INN-18), and
+multi-user or hosted operation.
+
+### 3.1 Inner agent task catalogue
+
+The inner agent (CAP-12) is configured once and then used for the tasks the operator enables one by one. This catalogue
+owns which tasks exist and whether each is in scope; requirements are in [SRS §3.14](SRS.md#314-inner-agent-fr-inn) and
+schemas and validators in [LLD §13](../design/LLD.md#13-inner-agent). Owner decision 14 named commit and PR writing,
+routing for auto mode, and "other things"; every row below beyond those is **Proposed** (the drafter's judgement, not
+Ender's decision). "Fallback" is what happens with no inner agent or when it fails (FR-INN-08).
+
+**Rule for what may go to a cheap model.** A task qualifies only if (a) a wrong or hostile output cannot change what a
+run is allowed to do, how it ended or whether it passed, (b) the output can be checked mechanically or is only advisory
+text for a human or an agent that will inspect the repository anyway, and (c) there is a safe fallback.
+
+| ID | Task | What it produces | Value | Main risk if the model is weak or manipulated | Controls | Fallback | Recommendation |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| IT-1 | Commit message | Message for the commit tool from the diff of the committed paths | The coding agent does not spend output on it | Vague or wrong message in published history; attribution text echoed; instructions from the diff followed | Agent text wins by default; sanitiser; no IDs or provider names in the prompt; empty means error (FR-INN-10) | Tool error: the agent writes the message | **In scope** (Must, first task) |
+| IT-2 | PR title and description draft | `pr_draft` artifact for a publish ref | Saves a premium turn per PR | Overclaims ("all tests pass"); attribution text; leaks internal paths | Same sanitiser; draft states only facts from the diff and run records; Switchboard never posts it (FR-INN-11) | No draft; the orchestrator writes its own | **In scope** (Should) |
+| IT-3 | Routing classification for auto mode | Enumerated features for FR-RTE-04 (context volume, autonomy, reasoning depth, task kind) | Better stage-2 scoring when the caller names no provider | A skewed feature sends work to a weaker or costlier provider; prompt injection in the request | Features only, never eligibility or `require_provider`; stored with source and version; replay never re-calls the model (FR-INN-12) | Heuristic classifier, else neutral features | **In scope** (Should; needs M7) |
+| IT-4 | Handoff condensation | Prose fields of the FR-SES-04 bundle | Smaller bundle for the next provider | A summary that drops or invents a decision or failure | Additive and labelled; structured fields from records only; raw artifact pointers kept; the next agent must inspect the repository (FR-INN-13) | Deterministic truncation of raw text | **In scope** (Should; needs M5) |
+| IT-5 | Log and verification-output summary | `log_summary` text and envelope summary lines | Short, readable results for the orchestrator | A summary that says "passed" when it failed | Status, exit codes and counts come from records only; source label; raw artifact link (FR-INN-13) | Deterministic head and tail excerpt with counts | **In scope** (Should) |
+| IT-6 | Run title and one-line summary | Text for `runs list` and envelopes | Readability | Injected text shown to humans and orchestrators | Length cap, control characters stripped, treated as data (FR-INN-14) | First line of the objective, truncated | **In scope** (Could) |
+| IT-7 | Secret or PII detection | Extra redactions | Catch odd secret formats | Misses are silent leaks; sending content to find secrets is itself exposure | None adequate | Deterministic redaction stays the control | **Deferred** (FR-INN-18); at most an add-only advisory pass on a `local` backend later |
+| IT-8 | Failure classification | A failure code for retry or failover | Fewer `UNKNOWN`s | A wrong code triggers a replay on a mutated workspace (BR-7) | — | Adapter and controller classification | **Excluded** (FR-INN-06) |
+| IT-9 | Permission, sandbox, approval or eligibility decisions | Any policy verdict | — | A cheap, injectable model holding a security decision | — | Policy engine | **Excluded permanently** (FR-INN-06) |
+| IT-10 | Rewriting or compressing the orchestrator's instruction before delegation | A shorter prompt | Fewer provider tokens | Changes the user's intent silently | — | Send as given | **Not now**: the orchestrator owns the instruction |
+| IT-11 | Verification test selection | Which tests to run | Faster checks | Skipping the test that would have failed | — | Run the supplied commands | **Excluded**: it changes what is verified |
+| IT-12 | Advisory diff pre-review ("does this look done?") | A note beside the result | Cheap second look | False confidence; reviewed as if authoritative | Would have to be advisory only and labelled | None | **Not now**: reconsider after IT-1 to IT-6 have fallback data |
+| IT-13 | Commit splitting or ordering suggestions | Groups of paths for several commits | Tidier history | Splits that break the build | Would need verification between commits | One commit per tool call as made | **Deferred** |
+| IT-14 | Changelog or release notes | Text from commit history | Convenience | Misstatement | Builds on IT-2 | None | **Not now**: no requirement behind it |
+| IT-15 | A general model tool for orchestrators | Direct access to the inner model | Convenience | Switchboard becomes a model proxy and TB-1 widens | — | — | **Excluded** (ADR-0016) |
+
+**How the operator chooses the inner agent (Proposed).** In the configuration file, name one backend and model, then
+list the tasks to enable; there is no default model, and nothing is enabled until listed. A backend is `http` (an
+endpoint the operator runs or reaches; any key-bearing service goes through a local gateway) or `cli` (a one-shot run of
+an installed provider CLI, first OpenCode with a free or cheap model, which holds its own login). `switchboard doctor`
+shows whether it is reachable and answers a fixed canary correctly; `switchboard inner test <task>` tries one task on
+built-in sample data; a project or repository context can turn the inner agent `off` or `local_only`.
+
+**Privacy in one paragraph.** A `local` backend (loopback or a Unix socket on the same host) keeps everything on the
+machine. A `remote` backend needs an explicit opt-in, and sending diffs or log excerpts to it needs a second opt-in per
+task. Secrets are redacted by fixed rules before any call, and prompts and replies are not logged.
+
+**Capacity.** Inner calls are not provider usage. They never reduce a provider's capacity estimate, unless the operator
+says the inner model draws on the same subscription as a routed provider, in which case that consumption is recorded and
+`doctor` warns about it.
 
 ## 4. Use cases and user journeys
 
@@ -62,11 +113,15 @@ Windows support (NFR-PORT-03), and multi-user or hosted operation.
 | Delegate a bounded coding task to the best eligible provider | Orchestrator | CAP-1, CAP-2, CAP-6 |
 | Inspect an unknown repository read-only | Orchestrator | CAP-1, CAP-3 |
 | Edit code in isolation and receive a branch and diff, not a change to the operator's checkout | Orchestrator | CAP-1, CAP-4 |
+| Delegate work to a named project (its environment and repositories) instead of a bare path | Orchestrator | CAP-1, CAP-10 |
+| Have the agent's finished work committed, and optionally pushed, as ordinary commits | Orchestrator, Operator | CAP-11 |
+| Find out which agent produced a given commit | Operator | CAP-11, CAP-8 |
 | Continue unfinished work after a quota wall or an expired login | Orchestrator | CAP-5, CAP-7 |
 | Check that every provider is installed, logged in and validated | Operator | CAP-2, CAP-9 |
 | Audit what ran, why it was routed there and what it consumed | Operator | CAP-8, CAP-9 |
 | Approve one exceptional privileged run | Operator | CAP-3, CAP-9 |
 | Accept a new provider CLI version after conformance checks | Operator | CAP-2, CAP-9 |
+| Let a cheap or self-hosted model write commit messages, PR drafts and summaries instead of a premium provider | Operator | CAP-12 |
 
 ### 4.2 User journeys
 
@@ -131,7 +186,9 @@ involved.
 - Steps: (1) the request is held in `AWAITING_APPROVAL`; MCP alone cannot grant it; (2) operator reviews the requested
   scope with `runs show`; (3) operator runs `switchboard approve <run_id>`; (4) approval is recorded with timestamp and
   scope and the run proceeds.
-- Outcome: the run executes with explicit, recorded scope. Without approval it does not run.
+- Outcome: the run executes with explicit, recorded scope. Without approval it does not run. The approval also covers
+  later runs that continue the same meta-session with the same scope (owner decision 17); a different scope or a new
+  meta-session asks again.
 - CAP: CAP-3, CAP-9. FR: FR-POL-01, FR-POL-03, FR-POL-09, FR-MCP-06, FR-OPS-02.
 
 #### UJ-7 Provider CLI updates and the operator revalidates the adapter
@@ -143,16 +200,59 @@ involved.
 - Outcome: the new version is accepted deliberately, or the provider stays out of rotation.
 - CAP: CAP-2, CAP-9. FR: FR-ADP-02, FR-ADP-03, FR-ADP-11, FR-OPS-02, FR-POL-07.
 
+#### UJ-8 Delegate to a project
+
+- Trigger: the operator has defined a project (an environment and one or more repository contexts) in configuration, and
+  the orchestrator has a coding task for it.
+- Steps: (1) the operator runs `switchboard projects validate` and fixes anything it reports; (2) the orchestrator calls
+  `list_projects` to see the projects its client entry may use; (3) it calls `delegate_task` with a `project` instead of
+  a workspace path; (4) the controller applies the lower of the client's and the project's trust ceiling, creates the
+  run's worktree from the project's repository context, and runs the agent in the project's environment; (5) results
+  are collected as in UJ-2.
+- Outcome: the work happens in the project's environment against its repository, within the project's limits, and the
+  run record names the project.
+- CAP: CAP-10, CAP-1, CAP-3, CAP-4. FR: FR-PRJ-01–04, FR-PRJ-06, FR-PRJ-08, FR-MCP-06, FR-WS-01.
+
+#### UJ-9 Agent work becomes ordinary commits
+
+- Trigger: an agent running in a project's repository has finished a unit of work.
+- Steps: (1) the agent calls the injected `commit` tool with a message, rather than running Git itself (Git writes are
+  denied to it); (2) the controller makes the commit on the meta-session's publish ref using the repository's configured
+  identity and a sanitised message, and records a provenance record; (3) if the context's push policy allows it, the
+  agent or the operator pushes through the `push` tool or command; the default policy is no push; (4) later the operator
+  runs `switchboard runs show <id>` and sees which provider and model produced each commit.
+- Outcome: the commits in the repository carry no agent trailer, footer or session ID, and the ledger still says who
+  produced them. An agent that tried to commit or push by itself produced nothing published, and the attempt is reported.
+- CAP: CAP-11, CAP-8. FR: FR-GIT-01–08.
+
+#### UJ-10 Configure and use an inner agent
+
+- Trigger: the operator wants commit messages, summaries or routing hints produced by a cheap, free or self-hosted model
+  instead of a premium provider.
+- Steps: (1) the operator adds an `inner_agent` section naming a backend and model and the tasks to enable (nothing is
+  enabled by default); (2) `switchboard doctor` reports the backend reachable, its locality (`local` or `remote`) and
+  whether it answered the canary; (3) `switchboard inner test commit_message` shows a sample draft and whether it passed
+  validation; (4) during runs, an agent that calls `commit` without a message gets a drafted one, sanitised like any
+  other; (5) later `switchboard inner status` shows accepted drafts, rejections and fallbacks per task, and
+  `get_capacity` is unchanged because inner usage is not provider usage.
+- Alternate: the backend is down or the model produces rubbish; tasks fall back, the run is unaffected, the commit tool
+  asks the agent for a message, `doctor` shows the inner agent as degraded, and a task with too many rejections is
+  suspended.
+- Outcome: premium capacity is spent on coding; cheap text tasks go to the operator's chosen model; nothing about what a
+  run may do depends on that model.
+- CAP: CAP-12, CAP-9, CAP-11. FR: FR-INN-01–17.
+
 ## 5. Product surface
 
 The owner asked for an application plus a backend. In this product:
 
 - **"The application"** is what users touch: the MCP tool surface (`delegate_task`, `continue_task`, `get_run`,
-  `cancel_run`, `get_artifacts`, `list_capabilities`, later `get_capacity` and `explain_route`) for the orchestrator,
-  and the operator CLI for the human. There is no graphical or web application ([SRS
+  `cancel_run`, `get_artifacts`, `list_capabilities`, later `list_projects`, `get_capacity` and `explain_route`) for the
+  orchestrator, and the operator CLI for the human. A second, narrower surface faces the agents themselves: the injected
+  `commit` and `push` tools of CAP-11, offered per run and nothing else. There is no graphical or web application ([SRS
   FR-OPS-03](SRS.md#311-operator-cli-fr-ops)).
-- **"The backend"** is the controller daemon: policy engine, session ledger, workspace manager, router/scheduler,
-  execution supervisor, adapters and telemetry pipeline. Components are defined in the
+- **"The backend"** is the controller daemon: policy engine, project manager, session ledger, workspace manager, git
+  publisher, router/scheduler, execution supervisor, adapters and telemetry pipeline. Components are defined in the
   [HLD](../design/HLD.md#1-system-context) (COMP-MCP through COMP-OPS). The MCP front end and operator CLI are the
   application-facing components; the others form the backend.
 
@@ -183,8 +283,19 @@ The following are out of scope. Sources: the stated intent in [R1], [ADR-0003](.
 - **Reimplementing provider APIs** or protocols, reverse engineering, or patching provider binaries (FR-AUTH-01).
 - **Claiming terms-of-service compliance.** Switchboard describes its use of documented automation surfaces and makes no
   compliance claim (NFR-COMP-01).
-- **Automatic merge into operator branches, or pushing to remotes.** Results arrive as controller-owned branches and
-  diffs (FR-WS-05).
+- **Automatic merge into operator branches, and any push that is not policy-gated.** Results arrive as controller-owned
+  branches and diffs; pushing happens only through the injected tool or an operator command, under a context policy that
+  defaults to no push (FR-WS-05, FR-GIT-05). Agents never push or commit themselves (FR-GIT-01).
+- **Containers on arbitrary images and non-repository contexts**, for now. Only `repository` contexts exist
+  (FR-PRJ-02). An orchestrator may create projects (FR-PRJ-10) but only within its client's limits, and a `container`
+  or push-enabled project waits for operator approval.
+- **Attribution inside file contents.** The controller keeps agent attribution out of commits (FR-GIT-04); it does not
+  rewrite what an agent writes into source files.
+- **An inner agent with authority or tools.** The inner agent writes text; it never decides permissions, eligibility,
+  approvals, redaction, failure classes or run status, and orchestrators cannot call it directly ([ADR-0016](../adr/0016-inner-agent.md),
+  FR-INN-02, FR-INN-06).
+- **Storing a hosted model's API key in Switchboard**, for now (Q-23). Key-bearing services are reached through an
+  operator-run local gateway or a CLI that holds its own login.
 - **Windows**, for now (NFR-PORT-03, deferred).
 - **Upstream ACP server**, for now (ADR-0002); MCP is the upstream interface. ACP as a downstream client is in scope at
   M4.
@@ -202,10 +313,10 @@ Each criterion is observable and is checked when the named milestone delivers. D
 | CAP-1 | With the Claude Code adapter, an MCP client calls `delegate_task` and receives a `run_id` and `meta_session_id` without waiting for completion; `get_run` returns a compact envelope with no raw transcript or credential material; a tool error carries exactly one failure code. A repeated call with the same idempotency key returns the original run. | M2 |
 | CAP-1 | When verification commands are supplied, their results appear in the run result. | M3 |
 | CAP-2 | `switchboard doctor` reports, for each adapter, binary, version, auth status and eligibility; a missing login yields `AUTH_REQUIRED` with the native login command; an out-of-range version yields `ADAPTER_VERSION_UNVERIFIED` and no routed work. | M1 (fake adapter), M2 (Claude Code, Codex) |
-| CAP-2 | Grok Build, Antigravity, Cursor and OpenCode adapters each pass the recorded-fixture conformance suite. Kimi Code does once its contract is pinned. | M4 |
+| CAP-2 | Grok Build, Antigravity, Cursor and OpenCode adapters each pass the recorded-fixture conformance suite. Kimi Code does once its contract is pinned. Muse Code does too (Should, FR-ADP-12). | M4 |
 | CAP-3 | `inspect-untrusted` and `edit-untrusted` runs deny writes outside the worktree and arbitrary shell, do not load repository-supplied agent config, and end with `PERMISSION_BLOCKED` or `SANDBOX_VIOLATION` rather than hanging; a request above its client's maximum trust fails with `PERMISSION_BLOCKED`. | M2 |
 | CAP-3 | All five profiles work; the malicious-fixture suite shows no escape for Claude Code; a `privileged` run does not start without a recorded operator approval. | M3 |
-| CAP-4 | A write-capable run executes in its own worktree from a recorded checkpoint; the operator's checked-out branch and working tree are unchanged afterwards; no push occurs; the changed-file list, diff artifact and post-run checkpoint are recorded; a failed mutating run is rolled back or resumed, never replayed. | M1 |
+| CAP-4 | A write-capable run executes in its own worktree from a recorded checkpoint; the operator's checked-out branch and working tree are unchanged afterwards; no push occurs by default; the changed-file list, diff artifact and post-run checkpoint are recorded; a failed mutating run is rolled back or resumed, never replayed. | M1 |
 | CAP-4 | Retention policy removes artifacts, worktrees and controller branches together. | M3 |
 | CAP-5 | Meta-session records and append-only events exist in the ledger. | M1 |
 | CAP-5 | `continue_task` resumes natively on the same provider; on a different provider it supplies a handoff bundle built only from controller records, and the new run sees the objective, decisions, changed files and prior failures. | M5 (Claude resume from M2) |
@@ -217,3 +328,11 @@ Each criterion is observable and is checked when the named milestone delivers. D
 | CAP-8 | OpenTelemetry traces reach an operator-configured endpoint. | M8 |
 | CAP-9 | `doctor` and `runs list/show` work against the fake adapter; `serve` starts the MCP server on stdio; no login command and no web interface exist. | M1, M2 |
 | CAP-9 | `approve` and `deny` work for privileged runs; `adapters validate <provider>` accepts a revalidated CLI version only after its live checks pass; `capacity` shows the same estimates as `get_capacity`. | M3, M4, M6 |
+| CAP-10 | `projects validate` accepts a configuration with a repository context and a `host` environment and rejects an unknown context kind; `delegate_task` with a `project` runs in that project's repository; a request above the lower of the client's and the project's ceiling fails `PERMISSION_BLOCKED`; the run record names the project. | M9 |
+| CAP-10 | A `container` environment mounts only the run's worktree and declared read-only contexts, applies its limits, and is removed when the run ends, including after a controller crash. | M10 |
+| CAP-11 | No adapter's compiled controls allow Git writes under a write-capable profile (argv inspection), and the fake adapter's attempt to run `git commit` is denied. | M2 |
+| CAP-11 | A commit made through the injected tool carries the configured identity and no trailer, footer or identifier, even when the agent's message contains them; an agent-made commit or ref change is never published and is reported; with push disabled nothing leaves the host; with push enabled to a local bare remote only the publish ref arrives; every published commit has a provenance record naming run, provider and model. | M9 |
+| CAP-12 | With no inner agent configured every behaviour is unchanged and all tests pass; with a fake backend, an enabled task is used, an invalid or empty output falls back, and an unreachable backend never fails or delays a run beyond the per-call bound. | M11 |
+| CAP-12 | An agent `commit` call without a message gets a drafted message that passes the sanitiser and contains no trailer, footer or identifier even when the fake backend returns them; with the task suspended or the backend down the tool returns an error asking for a message. | M11 |
+| CAP-12 | Inner usage appears only in `inner_call` records and never in `usage_observation` or `get_capacity`, unless `shares_subscription_with` is set, in which case the observation is labelled `inner_agent` and `doctor` warns. | M11 |
+| CAP-12 | A `remote` backend is unusable without `allow_remote`; diffs reach it only with the per-task opt-in; a project set to `local_only` never sends to it; a planted secret in a diff does not appear in the captured prompt; no inner-agent output reaches any policy component (import-boundary test). | M11 |
