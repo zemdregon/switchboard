@@ -134,6 +134,9 @@ import {
 export type LifecycleErrorCode = "INVALID_REQUEST" | "QUEUE_FULL";
 
 /** Admission or API error. No run row is written when it is thrown from `submit`. */
+const archivedMessage = (id: string): string =>
+  `meta-session ${id} is archived (collected or being collected by retention GC); start a new task instead`;
+
 export class LifecycleError extends Error {
   override readonly name = "LifecycleError";
   constructor(
@@ -377,6 +380,10 @@ export class RunLifecycle {
       }
       let metaSessionId = req.metaSessionId;
       if (metaSessionId !== undefined) {
+        // R-42: authoritative check inside the admission transaction; retention GC marks ARCHIVED in its own one.
+        if (this.ledger.getMetaSession(metaSessionId)?.status === "ARCHIVED") {
+          throw new LifecycleError("INVALID_REQUEST", archivedMessage(metaSessionId));
+        }
         const active = this.ledger.listRunsForMetaSession(metaSessionId).find((r) => !isTerminal(r.state));
         if (active) {
           throw new LifecycleError("INVALID_REQUEST", `meta-session ${metaSessionId} has an active run ${active.id}`);
@@ -659,7 +666,9 @@ export class RunLifecycle {
 
     let workspace: string;
     if (req.metaSessionId !== undefined) {
-      if (!this.ledger.getMetaSession(req.metaSessionId)) bad(`unknown meta-session ${req.metaSessionId}`);
+      const known = this.ledger.getMetaSession(req.metaSessionId);
+      if (!known) bad(`unknown meta-session ${req.metaSessionId}`);
+      if (known?.status === "ARCHIVED") bad(archivedMessage(req.metaSessionId));
       const first = this.ledger.listRunsForMetaSession(req.metaSessionId).at(-1);
       if (!first) return bad(`meta-session ${req.metaSessionId} has no runs`);
       workspace = (JSON.parse(first.request_json) as StoredRequest).workspace;

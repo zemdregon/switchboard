@@ -6,12 +6,14 @@ import { createLedger, type Ledger } from "../ledger/index.js";
 import { git } from "./git.js";
 
 /**
- * Retention GC core (T3.12; FR-WS-07, NFR-DATA-01, BR-12, LLD §5, ADR-0006). Proposed per Q-18: the unit is a whole
- * ACTIVE-status meta-session that is idle (no lease), has only terminal runs and whose newest activity is older than
- * `days`. Per unit the order is: intent event, worktrees, `switchboard/<sess>/` branches, artifact files, then one
- * ledger transaction (artifact `deleted_at`, meta-session `ARCHIVED`, outcome event). Every step is idempotent, so
- * re-running after a crash at any point rolls forward. `run_event` rows are kept (Q-19, Proposed): the table is
- * append-only by trigger (ADR-0005) and is the audit record.
+ * Retention GC core (T3.12; FR-WS-07, NFR-DATA-01, BR-12, LLD §5, ADR-0006). Q-18 (Delegated, owner decision 25): the
+ * unit is a whole ACTIVE-status meta-session that is idle (no lease), has only terminal runs and whose newest activity
+ * is older than `days`. Per unit the order is: one ledger transaction that re-checks idleness, marks the meta-session
+ * `ARCHIVED` (admission refuses it from then on, R-42) and appends the intent event; then worktrees,
+ * `switchboard/<sess>/` branches, artifact files; then one ledger transaction (artifact `deleted_at`, outcome event).
+ * Every step is idempotent and an `ARCHIVED` session with collection pending is a candidate again, so re-running after
+ * a crash at any point rolls forward. `run_event` rows are kept (Q-19, Delegated): the table is append-only by trigger
+ * (ADR-0005) and is the audit record.
  *
  * Never touched: non-terminal runs, leased or recent sessions, the operator's checkout, branches outside
  * `switchboard/<sess>/`, artifact files still referenced by a live row of another session.
@@ -62,11 +64,10 @@ export async function runRetentionGc(options: GcOptions): Promise<GcResult> {
   for (const candidate of ledger.listGcCandidates(cutoff)) {
     let step: GcStep | "unknown" = "unknown";
     try {
-      collected.push(
-        await collectUnit(ledger, options, candidate, now.toISOString(), (s) => {
-          step = s;
-        }),
-      );
+      const unit = await collectUnit(ledger, options, candidate, now.toISOString(), cutoff, (s) => {
+        step = s;
+      });
+      if (unit) collected.push(unit);
     } catch (err) {
       errors.push({ sessionId: candidate.id, step, message: err instanceof Error ? err.message : String(err) });
     }
@@ -79,8 +80,9 @@ async function collectUnit(
   o: GcOptions,
   c: { id: string; repo_root: string | null; newest_run_id: string | null },
   at: string,
+  cutoff: string,
   entering: (s: GcStep) => void,
-): Promise<GcUnitResult> {
+): Promise<GcUnitResult | undefined> {
   const sessionId = c.id;
   if (!SESSION_ID_RE.test(sessionId)) throw new Error(`invalid meta-session id ${sessionId}`);
   const warnings: string[] = [];
@@ -89,15 +91,16 @@ async function collectUnit(
   };
   const targets = ledger.gcSessionTargets(sessionId);
 
-  // 1. Intent. A re-run after a crash appends another intent; the events are an audit trail, not a state machine.
+  // 1. Mark and intent, in one ledger transaction (R-42). Idleness is re-checked inside it, so a run admitted since the
+  // candidate list was read keeps the session; once ARCHIVED, admission refuses it. A re-run after a crash appends
+  // another intent; the events are an audit trail, not a state machine.
   entering("intent");
-  if (c.newest_run_id !== null) {
-    ledger.appendRunEvent({
-      runId: c.newest_run_id,
-      type: "gc_intent",
-      payload: { sessionId, worktrees: targets.worktreePaths.length, branches: targets.branches },
-    });
-  }
+  const marked = ledger.beginGc(sessionId, cutoff, at, {
+    sessionId,
+    worktrees: targets.worktreePaths.length,
+    branches: targets.branches,
+  });
+  if (!marked) return undefined;
   await hook("intent");
 
   // 2. Worktrees.
@@ -117,7 +120,7 @@ async function collectUnit(
   for (const hash of plan.deletableHashes) if (await o.artifacts.remove(hash)) artifactFilesDeleted++;
   await hook("artifacts");
 
-  // 5. Ledger: deleted_at, ARCHIVED, outcome event, atomically.
+  // 5. Ledger: deleted_at and the outcome event, atomically (the session was marked ARCHIVED in step 1).
   entering("ledger");
   ledger.completeGc(sessionId, at, {
     runId: c.newest_run_id,

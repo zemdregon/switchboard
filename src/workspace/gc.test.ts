@@ -238,7 +238,7 @@ describe("retention GC (T3.12)", () => {
       expect(first.errors).toHaveLength(1);
       expect(first.errors[0]?.message).toBe("injected crash");
       // The injected crash after the final transaction leaves a finished unit; earlier ones leave work to roll forward.
-      expect(status(u.sess)).toBe(crashAfter === "ledger" ? "ARCHIVED" : "ACTIVE");
+      expect(status(u.sess)).toBe("ARCHIVED"); // marked in the first transaction (R-42)
 
       const second = await gc();
       expect(second.errors).toEqual([]);
@@ -269,5 +269,41 @@ describe("retention GC (T3.12)", () => {
     const u = await unit(OLD);
     await gc();
     expect(() => db.prepare("DELETE FROM run_event WHERE run_id = ?").run(u.run)).toThrow(/append-only/);
+  });
+
+  it("skips a session whose run was admitted after the candidate list was read, and collects the rest (R-42)", async () => {
+    const a = await unit(OLD);
+    const b = await unit(OLD);
+    const [first, second] = a.sess < b.sess ? [a, b] : [b, a]; // candidates are ordered by activity, then id
+    let admitted = false;
+    const res = await gc(30, (s, id) => {
+      if (s === "ledger" && id === first.sess && !admitted) {
+        admitted = true;
+        ledgerAt(NOW).createRun({
+          metaSessionId: second.sess,
+          trustProfile: "edit-untrusted",
+          policySnapshot: {},
+          request: {},
+          requestHash: "h2",
+          clientId: "c",
+          state: "QUEUED",
+        });
+      }
+    });
+    expect(res.errors).toEqual([]);
+    expect(res.collected.map((u) => u.sessionId)).toEqual([first.sess]);
+    expect(status(second.sess)).toBe("ACTIVE");
+    expect(existsSync(second.wt)).toBe(true);
+    expect(branches()).toContain(second.branch);
+    expect(artifacts(second.sess).every((r) => r.deleted_at === null)).toBe(true);
+  });
+
+  it("marks the session ARCHIVED before any worktree, branch or file is removed (R-42)", async () => {
+    const u = await unit(OLD);
+    let seen: { status: string; worktree: boolean } | undefined;
+    await gc(30, (s) => {
+      if (s === "intent") seen = { status: status(u.sess), worktree: existsSync(u.wt) };
+    });
+    expect(seen).toEqual({ status: "ARCHIVED", worktree: true });
   });
 });
