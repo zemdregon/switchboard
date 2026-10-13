@@ -2671,6 +2671,21 @@ The accepted result lives where it is used, not in `inner_call`: a commit messag
 text in artifacts, route features in `route_decision.features_json`, a run title in a `run_event` payload (§13.6). The
 `usage_observation` exception for `shares_subscription_with` is in §13.4 step 13.
 
+**T11.6 note (Delegated).** `inner_task_state` ships as migration 0008
+(`src/ledger/migrations/0008_inner_task_state.ts`, the DDL above unchanged). A row exists only once a task has been
+suspended; no row reads as not suspended. A suspension sets `suspended = 1`, `suspended_at` and `suspended_basis_json`
+(`window_calls`, `rejected`, `total`, `threshold`) and increments `version`. A re-enable sets `suspended = 0`, clears
+`suspended_at` and the basis, sets `resumed_at` and increments `version`; the suspension evidence then survives only in
+the `inner_task_suspended` run event (when the suspending call was tied to a run). The window counts calls with `created_at`
+strictly after `resumed_at`, so a call recorded in the same millisecond as the resume is not counted (Assumption: the
+safe side; counting an older call would suspend again at once). The window is evaluated by `Ledger.recordInnerCall` in
+the transaction that inserts the row, and the gate reads `inner_task_state` on every call, so the state is shared by every
+process on the ledger. A suspended call records `fallback_suspended` with reason `TASK_SUSPENDED`, `attempts` 0 and
+locality `remote` (the unresolved default, as for `PROJECT_OFF`). An unreadable state fails closed to the fallback
+(`fallback_unavailable`, `STATE_UNREADABLE`). The re-enable is `InnerAgentService.resumeTask` (the `inner resume`
+command of FR-INN-17 is T11.7); this resolves the "unreconciled" remark in §13.4 step 11 in favour of an explicit command
+backed by that method, with no config edit or restart needed.
+
 **T11.4 note (Delegated).** The two `git_commit` columns ship as migration 0007
 (`src/ledger/migrations/0007_git_commit_message_source.ts`; [§12.7](#127-provenance-and-audit)). An `inner_call` row
 with outcome `accepted` exists for every draft handed to the publisher; when the commit then fails after the draft (a
