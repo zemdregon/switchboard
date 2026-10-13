@@ -402,7 +402,14 @@ asks the operator to copy them into the configuration, so the identity is explic
 Commit signing is optional per context (`sign: true`, FR-GIT-10; zemdregon answered yes to Q-9). A signing key is a
 credential, so signing runs only in the controller process through the operator's existing Git configuration, is never
 stored or exported to an agent, and never falls back to unsigned ([LLD
-§12.3.1](LLD.md#1231-signing-fr-git-10-proposed)). Which signing formats work headlessly is settled in the M9 spike.
+§12.3.1](LLD.md#1231-signing-fr-git-10)). Which signing formats work headlessly is settled in the M9 spike.
+*Note 2026-10-13 (T9.10, Delegated, [ADR-0034](../adr/0034-controller-side-commit-signing.md)):* built as a signing
+step in `src/git/sign.ts` with an allowlisted environment, the operator's global and system configuration only (a
+scratch `GIT_DIR` keeps the repository's own configuration out; repository signing keys are refused), BR-31 through
+`evaluateSigningReach`, and `SIGNING_FAILED` before any intent. Tests use only a throwaway unprotected GnuPG key
+generated in a temporary `GNUPGHOME` (`src/git/fixtures/throwaway-gpg.ts`) and skip when `gpg` is not installed; no
+real key, keyring or agent is touched. Only that GnuPG case is verified; SSH, X.509, passphrase-protected and hardware
+keys are not.
 The controller sets author and committer dates itself and adds no trailer. The existing checkpoint identity
 (`Switchboard <switchboard@localhost>` in `src/workspace/git.ts`) is for internal checkpoints only and must never be
 used for published commits.

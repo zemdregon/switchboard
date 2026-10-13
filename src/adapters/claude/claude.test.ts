@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { SIGNING_AGENT_VARIABLES } from "../../git/sign.js";
 import { resolveTrustProfile } from "../../policy/profiles.js";
 import type { ProfileOverride } from "../../policy/types.js";
 import { auditInvocation, BYPASS_FLAGS, BypassFlagError, findBypassFlags } from "../audit.js";
@@ -140,6 +141,8 @@ describe("claude compile: argv policy", () => {
       expect(Object.keys(inv.env)).toEqual([]);
       expect(inv.envAllowlist).not.toContain("CLAUDE_CONFIG_DIR");
       expect(inv.envAllowlist.some((n) => /KEY|TOKEN|SECRET/i.test(n))).toBe(false);
+      // T9.10 (FR-GIT-10): the signing key and agent variables stay with the controller's own Git child.
+      for (const v of SIGNING_AGENT_VARIABLES) expect(inv.envAllowlist).not.toContain(v);
     });
 
     it(`${label}: headless stream-json, fail-closed permissions, repo config disabled`, () => {

@@ -15,6 +15,7 @@ import {
   type ResolvedConfig,
   type ResolvedProject,
 } from "../config/index.js";
+import { repoSigningConfigUnsafe, testSignature } from "../git/sign.js";
 import { gitText } from "../workspace/git.js";
 import { type CliIo, JSON_SCHEMA_VERSION } from "./io.js";
 
@@ -148,6 +149,7 @@ export async function validateProjects(io: CliIo, argv: readonly string[], only?
   for (const [i, p] of config.projects.entries()) {
     if (only !== undefined && p.id !== only) continue;
     const failures = await checkProject(config, p, `$.projects[${i}]`);
+    if (failures.length === 0) failures.push(...(await checkSigning(io, p, `$.projects[${i}]`)));
     projects.push({ id: p.id, ok: failures.length === 0, failures });
   }
   return {
@@ -156,6 +158,43 @@ export async function validateProjects(io: CliIo, argv: readonly string[], only?
     projects,
     config_failures: [],
   };
+}
+
+/**
+ * T9.10 (FR-GIT-10, LLD §12.3.1): for each context with `sign: true`, the repository's own configuration must not set
+ * a signing key (`SIGNING_CONFIG_UNSAFE`, the controller would refuse to sign there), and the operator's signing setup
+ * (global and system Git configuration plus the allowlisted variables of the environment this command runs in) must
+ * produce a test signature in a throwaway scratch repository (`SIGNING_UNAVAILABLE`). Only reason codes are reported:
+ * never the key, its fingerprint, the keyring path or the signing program's output. Run by `projects validate` only
+ * (not at admission or for dynamic projects, whose `sign` waits for `projects approve`); at run time every signed
+ * commit fails closed on its own.
+ */
+async function checkSigning(io: CliIo, p: ResolvedProject, at: string): Promise<ProjectFailure[]> {
+  const out: ProjectFailure[] = [];
+  let tested: Awaited<ReturnType<typeof testSignature>> | undefined;
+  for (const [j, c] of p.contexts.entries()) {
+    if (!c.sign) continue;
+    const where = `${at}.contexts[${j}].sign`;
+    if (await repoSigningConfigUnsafe(await realpath(c.path))) {
+      out.push({
+        path: where,
+        code: "SIGNING_CONFIG_UNSAFE",
+        message:
+          "the repository's own Git configuration sets a signing key (gpg.* or user.signingkey); " +
+          "move it to the global configuration",
+      });
+      continue;
+    }
+    tested ??= await testSignature({ sourceEnv: io.env });
+    if (!tested.ok) {
+      out.push({
+        path: where,
+        code: "SIGNING_UNAVAILABLE",
+        message: `no test signature could be made with the operator's Git signing configuration (${tested.reason})`,
+      });
+    }
+  }
+  return out;
 }
 
 /** The T9.1 filesystem rules for one project; also run on dynamic projects (T9.9) at creation and at admission. */
@@ -238,6 +277,7 @@ export function renderProject(p: ProjectView): string {
     );
     if (c.identity) lines.push(`    identity: ${c.identity.name} <${c.identity.email}>`);
     if (c.finalize_commit) lines.push("    finalize_commit: on (FR-GIT-09)");
+    if (c.sign) lines.push("    sign: on (FR-GIT-10)");
   }
   return `${lines.join("\n")}\n`;
 }

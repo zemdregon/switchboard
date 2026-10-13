@@ -107,6 +107,14 @@ export function checkProjects(cfg: SwitchboardConfig): string[] {
           errs.push(`${cat}.finalize_commit: only the primary, writable context can enable finalize_commit`);
         }
       }
+      // T9.10 (FR-GIT-10, BR-33): only published commits are signed, and only the primary, writable context with an
+      // identity publishes, so `sign` elsewhere is refused rather than silently ignored (fail closed; Delegated).
+      if (c.sign === true) {
+        if (c.identity === undefined) errs.push(`${cat}.identity: required when sign is true (FR-GIT-10)`);
+        if (!isPrimary || c.writable === false) {
+          errs.push(`${cat}.sign: only the primary, writable context can enable sign`);
+        }
+      }
     }
     const primaries = p.contexts.filter((c) => isPrimaryContext(p, c)).length;
     if (primaries !== 1) {

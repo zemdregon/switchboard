@@ -16,6 +16,7 @@ export {
   type CommitErrorCode,
   type CommitInput,
   type CommitResult,
+  GIT_COMMIT_SIGNING_FAILED_EVENT,
   GitPublisher,
   type GitPublisherOptions,
   MAX_PATHS,
@@ -23,6 +24,7 @@ export {
   type PathRefusalReason,
   type PublishStep,
   type RecoveryReport,
+  type SigningRefusalReason,
 } from "./commit.js";
 export {
   BYPASS_EXEMPT,
@@ -31,6 +33,8 @@ export {
   type CredentialReachReason,
   credentialReachFromJson,
   evaluateCredentialReach,
+  evaluateSigningReach,
+  signingReachFromJson,
 } from "./credential-reach.js";
 export {
   FINALIZE_MESSAGE_MAX,
@@ -106,4 +110,15 @@ export {
   SanitizerError,
   sanitizeMessage,
 } from "./sanitize.js";
+export {
+  DEFAULT_SIGN_TIMEOUT_MS,
+  repoSigningConfigUnsafe,
+  SIGNING_AGENT_VARIABLES,
+  SIGNING_ENV_ALLOWLIST,
+  type SigningFailureReason,
+  signedCommitTree,
+  signingEnv,
+  testSignature,
+  UNSAFE_SIGNING_CONFIG_PATTERN,
+} from "./sign.js";
 export * from "./tool-protocol.js";

@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createThrowawaySigner, gpgAvailable, type ThrowawaySigner } from "../git/fixtures/throwaway-gpg.js";
 import { main } from "./index.js";
 import type { CliIo } from "./io.js";
 
@@ -65,10 +66,10 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(tmp, { recursive: true, force: true }));
 
-async function run(args: string[]) {
+async function run(args: string[], env: Record<string, string> = {}) {
   const out: string[] = [];
   const err: string[] = [];
-  const io: CliIo = { stdout: { write: (s) => out.push(s) }, stderr: { write: (s) => err.push(s) }, env: {} };
+  const io: CliIo = { stdout: { write: (s) => out.push(s) }, stderr: { write: (s) => err.push(s) }, env };
   const code = await main([...args, "--config", configPath], io);
   return { code, out: out.join(""), err: err.join("") };
 }
@@ -264,5 +265,74 @@ describe("projects validate (T9.1, FR-PRJ-01, 02, 04)", () => {
     const unknown = await run(["projects", "validate", "nope", "--json"]);
     expect(unknown.code).toBe(1);
     expect(JSON.parse(unknown.out).error.code).toBe("NOT_FOUND");
+  });
+});
+
+describe("projects validate: commit signing (T9.10, FR-GIT-10, BR-33)", () => {
+  const identity = { name: "Ada Maintainer", email: "ada@example.test" };
+
+  it("refuses sign on a context that can never publish (no identity, or not the primary writable one)", async () => {
+    writeConfig([project({ contexts: [ctx({ sign: true })] })]);
+    expect((await validateJson()).report.config_failures[0]?.path).toBe("$.projects[0].contexts[0].identity");
+    const second = path.join(roots, "second");
+    mkRepo(second);
+    writeConfig([
+      project({
+        contexts: [
+          ctx({ primary: true, identity }),
+          ctx({ id: "other", path: second, writable: false, identity, sign: true }),
+        ],
+      }),
+    ]);
+    expect((await validateJson()).report.config_failures[0]?.path).toBe("$.projects[0].contexts[1].sign");
+  });
+
+  it("does not try to sign when sign is off (no signing tools or variables needed)", async () => {
+    writeConfig([project({ contexts: [ctx({ identity })] })]);
+    const { code, report } = await validateJson();
+    expect(code).toBe(0);
+    expect(report.ok).toBe(true);
+  });
+
+  it("refuses a repository whose own configuration sets a signing program, without running it", async () => {
+    const marker = path.join(tmp, "evil.ran");
+    const evil = path.join(tmp, "evil.sh");
+    writeFileSync(evil, `#!/bin/sh\ntouch '${marker}'\nexit 1\n`, { mode: 0o755 });
+    g(repo, "config", "gpg.program", evil);
+    writeConfig([project({ contexts: [ctx({ identity, sign: true })] })]);
+    const { code, report } = await validateJson();
+    expect(code).toBe(1);
+    expect(report.projects[0]?.failures).toEqual([
+      expect.objectContaining({ path: "$.projects[0].contexts[0].sign", code: "SIGNING_CONFIG_UNSAFE" }),
+    ]);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  describe.skipIf(!gpgAvailable())("with a throwaway GnuPG key", () => {
+    let signer: ThrowawaySigner;
+    beforeEach(() => {
+      signer = createThrowawaySigner();
+    });
+    afterEach(() => signer.dispose());
+
+    it("passes with a test signature from the operator's setup, and fails without a usable key", async () => {
+      writeConfig([project({ contexts: [ctx({ identity, sign: true })] })]);
+      const ok = await run(["projects", "validate", "--json"], signer.env);
+      expect(ok.code, ok.out).toBe(0);
+      expect(JSON.parse(ok.out).ok).toBe(true);
+      writeFileSync(
+        path.join(signer.home, ".gitconfig"),
+        "[user]\n\tsigningkey = 0000000000000000000000000000000000000000\n",
+      );
+      const bad = await run(["projects", "validate", "--json"], signer.env);
+      expect(bad.code).toBe(1);
+      const failures = (JSON.parse(bad.out) as Report).projects[0]?.failures;
+      expect(failures).toEqual([
+        expect.objectContaining({ path: "$.projects[0].contexts[0].sign", code: "SIGNING_UNAVAILABLE" }),
+      ]);
+      // Neither the key's fingerprint nor the key directory is printed.
+      expect(bad.out).not.toContain(signer.fingerprint);
+      expect(bad.out).not.toContain(signer.gnupgHome);
+    });
   });
 });

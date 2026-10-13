@@ -24,6 +24,9 @@
  * `bypass` is still refused. The exemption widens what the AGENT may reach (it may read the operator's push
  * credentials if its shell can), never what the controller pushes: the push itself is unchanged.
  *
+ * Signing (T9.10, FR-GIT-10, FRD BR-33): {@link evaluateSigningReach} applies this same rule, exemption included, to a
+ * context with `sign: true`, without the push-policy precondition; a refusal fails the commit with `SIGNING_FAILED`.
+ *
  * Pure: it reads only the frozen policy snapshot of the run. The operator command is not subject to this rule (the
  * operator is not the agent); it still goes through the policy, ref and never-force rules in `push.ts`.
  *
@@ -70,10 +73,37 @@ export function credentialReachFromJson(policySnapshotJson: string, facts?: Cred
 
 /** BR-31 for the agent `push` tool, from the run's frozen snapshot. Every unknown value refuses. */
 export function evaluateCredentialReach(snap: PolicySnapshot, facts?: CredentialReachFacts): CredentialReach {
-  const project = snap.project;
-  if (project === undefined) return { ok: false, reason: "no_project" };
-  if (project.push?.policy !== "branch") return { ok: false, reason: "policy_not_branch" };
-  if (project.environment_kind !== "host") return { ok: false, reason: "container_not_available" };
+  if (snap.project === undefined) return { ok: false, reason: "no_project" };
+  if (snap.project.push?.policy !== "branch") return { ok: false, reason: "policy_not_branch" };
+  return agentReach(snap, facts);
+}
+
+/**
+ * T9.10 (FR-GIT-10, FRD BR-33: "Signing is refused where BR-31 would withhold `push`"): the SAME rule as
+ * {@link evaluateCredentialReach}, including the owner decision 37 exemption for a controller-verified approved bypass
+ * run, minus the push-policy precondition, which concerns `push` only (a context may sign with push policy `none`).
+ * Wherever the push policy is `branch` both functions return the same verdict (tested). Delegated reading, LLD §12.3.1.
+ */
+export function evaluateSigningReach(snap: PolicySnapshot, facts?: CredentialReachFacts): CredentialReach {
+  if (snap.project === undefined) return { ok: false, reason: "no_project" };
+  return agentReach(snap, facts);
+}
+
+/** {@link evaluateSigningReach} from `run.policy_snapshot_json`; an unreadable snapshot fails closed. */
+export function signingReachFromJson(policySnapshotJson: string, facts?: CredentialReachFacts): CredentialReach {
+  let snap: unknown;
+  try {
+    snap = JSON.parse(policySnapshotJson);
+  } catch {
+    return { ok: false, reason: "snapshot_unreadable" };
+  }
+  if (typeof snap !== "object" || snap === null) return { ok: false, reason: "snapshot_unreadable" };
+  return evaluateSigningReach(snap as PolicySnapshot, facts);
+}
+
+/** The environment, bypass and shell part of BR-31, shared by push and signing. `snap.project` is present. */
+function agentReach(snap: PolicySnapshot, facts?: CredentialReachFacts): CredentialReach {
+  if (snap.project?.environment_kind !== "host") return { ok: false, reason: "container_not_available" };
   if (facts?.approvedBypass === true) return { ok: true, reason: BYPASS_EXEMPT };
   if (snap.bypassApproved === true) return { ok: false, reason: "bypass_run" };
   if (snap.shell === "scoped") {

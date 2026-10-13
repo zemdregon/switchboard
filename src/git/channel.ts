@@ -14,7 +14,8 @@
  *      most 4096); `push` takes none (an empty object);
  *   6. run exists, is RUNNING, and still has the meta-session and worktree the token was bound to;
  *   7. `commit`: the commit library re-checks state and lease, refuses paths outside the worktree
- *      (`PATH_OUTSIDE_WORKTREE`, `PATH_REFUSED`), sanitises the message and writes provenance (FR-GIT-04, FR-GIT-07).
+ *      (`PATH_OUTSIDE_WORKTREE`, `PATH_REFUSED`), sanitises the message and writes provenance (FR-GIT-04, FR-GIT-07);
+ *      with `sign` (T9.10) it signs with the operator's setup after the BR-31 rule passes, else `SIGNING_FAILED`.
  *      `push` (T9.6, ADR-0028): at most {@link ChannelLimits.maxPushesPerChannel} attempts per channel; the BR-31
  *      credential-reach rule is evaluated again from the run's frozen policy snapshot; then {@link GitPusher.push}
  *      applies the policy, violation, ref and never-force rules and records every attempt in `git_push`.
@@ -42,7 +43,7 @@ import type { ShimSpec } from "../adapters/types.js";
 import { createLedger, type Ledger } from "../ledger/index.js";
 import { bypassApprovedFor } from "../lifecycle/approval.js";
 import { CommitError, type GitPublisher } from "./commit.js";
-import { credentialReachFromJson } from "./credential-reach.js";
+import { credentialReachFromJson, signingReachFromJson } from "./credential-reach.js";
 import type { GitPusher } from "./push.js";
 import {
   CHANNEL_FILE_NAMES,
@@ -133,6 +134,12 @@ export interface OpenChannelInput {
    * changes only that record: every call re-derives the verdict from the ledger and never reads this field.
    */
   readonly pushReach?: "bypass_exempt";
+  /**
+   * T9.10 (FR-GIT-10): the run's frozen project snapshot has `sign: true`. Every `commit` call is then signed by the
+   * publisher, after the BR-31 rule is evaluated again for that call (`evaluateSigningReach`, with the same
+   * controller-verified bypass exemption as `push`); a refusal or failure is `SIGNING_FAILED`.
+   */
+  readonly sign?: true;
 }
 
 export interface OpenChannel {
@@ -196,6 +203,8 @@ const AGENT_MESSAGE_CODES: ReadonlySet<string> = new Set([
   "MESSAGE_EMPTY_AFTER_SANITISING",
   "SANITISER_FAILED",
   "INVALID_REQUEST",
+  // T9.10: the message names only a fixed reason code (never Git's or the signing program's output).
+  "SIGNING_FAILED",
 ]);
 
 const GENERIC_MESSAGES: Readonly<Record<string, string>> = {
@@ -216,6 +225,7 @@ const GENERIC_MESSAGES: Readonly<Record<string, string>> = {
   PUBLISH_CONFLICT: "the publish ref kept moving; try again",
   PUBLISH_LINEAGE_VIOLATION: "the commit was refused by a history check",
   GIT_FAILED: "the commit failed in the controller",
+  SIGNING_FAILED: "the commit could not be signed; nothing was committed",
   INTERNAL_ERROR: "the controller could not complete the call",
 };
 
@@ -563,6 +573,16 @@ export class GitToolService {
         contextId: state.input.contextId,
         origin: "commit_tool",
         nativeSessionIds: state.input.nativeSessionIds?.() ?? [],
+        // T9.10: BR-31 for signing, evaluated at call time like `push`; the exemption input is the controller's own.
+        ...(state.input.sign === true
+          ? {
+              sign: {
+                reach: signingReachFromJson(bound.run.policy_snapshot_json, {
+                  approvedBypass: approvedBypassOf(this.ledger, bound.run),
+                }),
+              },
+            }
+          : {}),
       });
       state.commits += 1;
       return { ok: true, result: { sha: result.sha, files_changed: result.filesChanged } };
