@@ -251,6 +251,61 @@ afterEach(() => {
 });
 
 describe("fault injection: SIGKILL the controller during RUNNING (T1.9, NFR-REL-01)", () => {
+  it("T9.5: the LEASED ref snapshot survives a SIGKILL restart; reconciliation flags and restores before the evidence checkpoint", async () => {
+    const refSha = (ref: string) => {
+      try {
+        return g(repo, "rev-parse", "--verify", "--quiet", ref);
+      } catch {
+        return "";
+      }
+    };
+    const plan = {
+      steps: [
+        { op: "write", path: "agent.txt", content: "agent\n" },
+        { op: "commit", message: "agent commit" },
+        { op: "update_ref", ref: "@publish", to: "HEAD" },
+        { op: "tag", name: "agent-tag" },
+      ],
+      hang: true,
+    };
+    db.close();
+    const { child, running } = await startChildController({
+      scenario: "git_attempts",
+      objective: JSON.stringify(plan),
+    });
+    await until(() => refSha("refs/tags/agent-tag") !== "", 20_000);
+    await sigkill(child);
+
+    openController();
+    const snapshot = events(running.runId).find((e) => e.type === "git_ref_snapshot");
+    expect(snapshot?.p).toMatchObject({ v: 1, phase: "leased" });
+    const pub = `refs/heads/switchboard/pub/${running.metaSessionId}`;
+    expect(refSha(pub)).not.toBe(""); // the agent's publish-ref write is in place before the restart
+
+    await runReconcile();
+    const after = run(running.runId);
+    expect(after.state).toBe("FAILED");
+    expect(after.failure_code).toBe("PROCESS_CRASH"); // BR-27: the violation does not change the outcome
+    const ev = events(running.runId);
+    const violations = ev
+      .filter((e) => e.type === "git_policy_violation")
+      .flatMap((e) => e.p.violations as { scope: string; ref: string }[]);
+    expect(violations.map((v) => v.scope).sort()).toEqual(["other", "publish_ref", "run_branch"]);
+    expect(violations.find((v) => v.scope === "other")?.ref).toBe("refs/tags/agent-tag");
+    expect(refSha(pub)).toBe("");
+    const pre = ledger.getRunCheckpointCommit(running.runId, "pre") as string;
+    const post = ledger.getRunCheckpointCommit(running.runId, "post") as string;
+    expect(g(repo, "rev-parse", `${post}^`)).toBe(pre);
+    expect(g(repo, "show", `${post}:agent.txt`)).toBe("agent");
+    const order = ev.map((e) => e.type);
+    expect(order.indexOf("git_policy_violation")).toBeLessThan(order.indexOf("workspace_assessment"));
+    expectConsistentLedger();
+
+    const n = eventCount();
+    expect((await runReconcile()).actions).toEqual([]);
+    expect(eventCount()).toBe(n);
+  }, 60_000);
+
   it("restart reconciles the run to FAILED/PROCESS_CRASH, kills the orphan, releases the lease and accepts new work", async () => {
     db.close(); // the child is the only controller while it lives
     const { child, running } = await startChildController({ scenario: "hang" });

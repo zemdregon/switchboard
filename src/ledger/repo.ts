@@ -516,6 +516,12 @@ export interface Ledger {
   listGitCommits(runId: string): GitCommitRow[];
   /** Provenance rows for one commit SHA, oldest first (the same commit may be recorded by more than one run). */
   findGitCommitsBySha(commitSha: string): GitCommitRow[];
+
+  // ---- T9.5 additions (ref snapshots, LLD §12.5) -----------------------------------------------------------------
+  /** Provenance rows of every run of a meta-session, oldest first. */
+  listGitCommitsForMetaSession(metaSessionId: string): GitCommitRow[];
+  /** The meta-session's base commit (set by the first `prepare`), if any. */
+  getMetaSessionBaseCommit(metaSessionId: string): string | undefined;
 }
 
 export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledger {
@@ -1013,6 +1019,19 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
       return db
         .prepare("SELECT * FROM git_commit WHERE commit_sha = ? ORDER BY created_at, id")
         .all(commitSha) as GitCommitRow[];
+    },
+
+    listGitCommitsForMetaSession(metaSessionId) {
+      return db
+        .prepare("SELECT * FROM git_commit WHERE meta_session_id = ? ORDER BY created_at, id")
+        .all(metaSessionId) as GitCommitRow[];
+    },
+
+    getMetaSessionBaseCommit(metaSessionId) {
+      const row = db.prepare("SELECT base_commit FROM meta_session WHERE id = ?").get(metaSessionId) as
+        | { base_commit: string | null }
+        | undefined;
+      return row?.base_commit ?? undefined;
     },
 
     appendRunEvent(input) {

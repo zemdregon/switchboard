@@ -26,6 +26,22 @@ export {
 } from "./commit.js";
 export { DEFAULT_PUBLISH_PREFIX, isRunBranchRef, PublishRefError, publishRefFor } from "./publish-ref.js";
 export {
+  DEFAULT_REF_GUARD_LIMITS,
+  GIT_POLICY_VIOLATION_EVENT,
+  GIT_REF_CHECK_EVENT,
+  GIT_REF_SNAPSHOT_EVENT,
+  type HeadState,
+  MAX_COUNTED_COMMITS,
+  type RefCheckResult,
+  RefGuard,
+  type RefGuardLimits,
+  type RefGuardOptions,
+  type RefSnapshotV1,
+  type ViolationEntry,
+  type ViolationKind,
+  type ViolationScope,
+} from "./ref-guard.js";
+export {
   compileOperatorPattern,
   MAX_COST,
   MAX_PATTERN_LENGTH,

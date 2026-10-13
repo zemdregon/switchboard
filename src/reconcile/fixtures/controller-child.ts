@@ -22,6 +22,8 @@ interface ChildConfig {
   script?: string;
   /** T3.4: also admit a privileged run with this scope first (it stays AWAITING_APPROVAL). */
   privilegedScope?: unknown;
+  /** T9.5: objective of the run (a fake-agent plan for the `git_attempts` scenario). */
+  objective?: string;
 }
 
 const cfg = JSON.parse(process.argv[2] ?? "{}") as ChildConfig;
@@ -76,7 +78,7 @@ if (cfg.privilegedScope !== undefined) {
 }
 const submitted = await lifecycle.submit({
   clientId: "client-a",
-  objective: "hang until killed",
+  objective: cfg.objective ?? "hang until killed",
   workspace: cfg.repo,
   trustProfile: "edit-untrusted",
   provider: "fake",
