@@ -87,6 +87,7 @@ import type {
   ExitInfo,
   FailureClassification,
   FailureEvidence,
+  GitCapabilities,
   GitWriteControl,
   Ineligible,
   Invocation,
@@ -480,10 +481,25 @@ export function privilegedPlan(request: CompileRequest, profile: ResolvedProfile
   return isolation === undefined ? { tools, allow, bypass } : { tools, allow, bypass, isolation };
 }
 
+/**
+ * FR-GIT-02 declaration (T9.4, ADR-0026; Delegated): no injected channel. The per-run form would be `--mcp-config` with
+ * `--strict-mcp-config` (`claude --help` 2.1.296), but ADR-0015 and the argv audit bar `--mcp-config` until an ADR
+ * narrows that bar (ROADMAP Q-40), and the JSON shape, the MCP tool allow-rule form, `--safe-mode` behaviour and socket
+ * reach from the provider are unverified (TDD §3.10, R-18). The compiled argv is unchanged.
+ */
+export const CLAUDE_GIT_CAPABILITIES: GitCapabilities = {
+  commitChannel: "none",
+  detail:
+    "No injected commit channel: --mcp-config is barred by ADR-0015 and the argv audit until Q-40 is decided, and the " +
+    "per-run MCP definition shape, MCP tool allow rules, --safe-mode behaviour and socket reach are unverified (live " +
+    "check). Agent work stays in the run's worktree and diff artifacts.",
+};
+
 export class ClaudeAdapter implements ProviderAdapter {
   readonly id = "claude" as const;
   readonly transports = ["subprocess-jsonl"] as const;
   readonly gitWriteControl = CLAUDE_GIT_WRITE_CONTROL;
+  readonly gitCapabilities = CLAUDE_GIT_CAPABILITIES;
   readonly #configured: string;
   #resolved: string | undefined;
   readonly #launcherArgs: readonly string[];

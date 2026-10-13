@@ -39,7 +39,16 @@
  *
  * T3.4: the operator poll also applies `approve`/`deny` records (`applyOperatorRequests`), and startup reconciliation
  * applies those recorded while no daemon ran.
+ *
+ * T9.4 (FR-GIT-02, FR-GIT-07, LLD §12.2, ADR-0025, ADR-0026; Delegated): after reconciliation and before anything else
+ * runs, `GitPublisher.recover()` resolves commit intents a crash left open (roll forward or abort), and the tool
+ * service sweeps socket directories of channels that were open when the previous daemon died. The lifecycle gets the
+ * `COMP-GIT` tool service; the shim command is this same entry point (`process.execPath`, the controller's own Node
+ * options without inspector flags, the script path) with the internal `tool-shim` subcommand.
  */
+
+import os from "node:os";
+import path from "node:path";
 import { FakeAdapter, type FakeScenario } from "../adapters/fake/adapter.js";
 import {
   AdapterRegistry,
@@ -52,6 +61,8 @@ import {
 } from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
 import { ConfigError, loadConfig, type ResolvedConfig } from "../config/index.js";
+import { GitToolService } from "../git/channel.js";
+import { GitPublisher } from "../git/commit.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, openLedger } from "../ledger/index.js";
 import { RunLifecycle } from "../lifecycle/index.js";
@@ -83,6 +94,7 @@ const FAKE_SCENARIOS: readonly FakeScenario[] = [
   "malformed_output",
   "hang",
   "hang_ignore_term",
+  "git_commit",
 ];
 
 /** Exit codes (Proposed, same as the rest of the CLI): 0 clean shutdown, 1 refused to start or failed. */
@@ -174,6 +186,18 @@ function gateFor(registry: AdapterRegistry, fake: FakeSwitch) {
   };
 }
 
+/**
+ * argv prefix that starts `switchboard tool-shim` with the same Node and entry script as this daemon (T9.4). Inspector
+ * and debugger flags are dropped so a shim never opens a debug port. Throws when the entry script is unknown.
+ */
+export function defaultShimCommand(): string[] {
+  const script = process.argv[1];
+  if (script === undefined || script === "")
+    throw new Error("cannot locate the switchboard entry script for tool-shim");
+  const nodeArgs = process.execArgv.filter((a) => !a.startsWith("--inspect") && !a.startsWith("--debug"));
+  return [process.execPath, ...nodeArgs, path.resolve(script), "tool-shim"];
+}
+
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err)).split("\n")[0] ?? "";
 
 /**
@@ -257,6 +281,38 @@ async function runDaemon(
     return 1;
   }
 
+  // T9.4: commit intents left by a crash (ADR-0025), then socket directories of channels a crash left open (ADR-0026).
+  let gitTools: GitToolService;
+  try {
+    const publisher = new GitPublisher({
+      db,
+      scratchDir: path.join(config.dataDir, "git-scratch"),
+      sanitizePatterns: config.sanitizePatterns,
+      ids,
+      ...(now ? { now } : {}),
+    });
+    const recovered = await publisher.recover();
+    gitTools = new GitToolService({
+      db,
+      dataDir: config.dataDir,
+      publisher,
+      shimCommand: defaultShimCommand(),
+      fallbackDirs: [io.env.XDG_RUNTIME_DIR, os.tmpdir()].filter((d): d is string => typeof d === "string" && d !== ""),
+      ...(now ? { now } : {}),
+    });
+    const swept = await gitTools.sweepStale();
+    log.info("git recovery finished", {
+      commits_rolled_forward: recovered.rolledForward.length,
+      commits_aborted: recovered.aborted.length,
+      commits_unresolved: recovered.unresolved.length,
+      channels_cleaned: swept.cleaned.length,
+      channels_skipped: swept.skipped.length,
+    });
+  } catch (err) {
+    log.error("refusing to serve: git recovery failed", { error: message(err) });
+    return 1;
+  }
+
   // T3.12: retention GC, only when the operator set retention.days. Housekeeping: a failure never blocks serving.
   let gcInFlight: Promise<void> | undefined;
   const gcPass = async (when: "startup" | "interval"): Promise<void> => {
@@ -313,6 +369,7 @@ async function runDaemon(
     baseEnv: io.env,
     eligibility: { gate: gateFor(registry, fake), isEnabled: enablement(config, fake) },
     preflightCache: new PreflightCache({ ttlMs: config.preflightTtlMs }),
+    gitTools,
     onTransition: (n) => log.info("run transition", { run_id: n.runId, from: n.from, to: n.to, rule: n.rule }),
     ...(now ? { now } : {}),
   });
@@ -400,6 +457,7 @@ async function runDaemon(
     }
     try {
       await lifecycle.shutdown();
+      await gitTools.closeAll(); // every run closed its own channel; this is a backstop
     } catch (err) {
       log.error("lifecycle shutdown failed", { error: message(err) });
       code = 1;

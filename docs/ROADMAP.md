@@ -348,11 +348,23 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
     [ADR-0025](adr/0025-git-commit-provenance-and-sanitiser.md). No requirement ID changes. *Unverified:* nothing ran
     against a live provider; Git 2.43.0 is the only Git exercised.
 
+<!-- markdownlint-disable-next-line MD029 -->
+33. Per-run injected tool channel (2026-10-13). **Delegated decision (agent), under
+    [owner decision 25](#42-owner-decisions); not an zemdregon quote and not owner-approved.** The `switchboard tool-shim`
+    subcommand, a per-run Unix socket (`<data_dir>/runs/<run_id>/tools.sock`, or a private short directory when that
+    path exceeds 100 bytes), a 256-bit token kept only as a digest in memory, one request per connection with fixed
+    per-call checks and limits, and a start-up sweep of sockets a crash left behind; `GitCapabilities` in the adapter
+    contract (fake `injected`, Claude Code and Codex `none` with the reason); the policy snapshot's project block
+    freezes `writable`, `identity` and `push.policy` (Q-41). A trust boundary and an external interface need an ADR:
+    [ADR-0026](adr/0026-per-run-tool-channel-socket-and-token.md). No requirement ID changes. No bypass run is affected
+    (no adapter that runs a bypass scope declares a channel). *Unverified:* nothing ran against a live provider.
+
 Decisions 10 to 13, 17, 19, 21 and 22 each choose the less restrictive of the options put to zemdregon (decision 18 is the
 principle behind the 2026-10-13 ones); decisions 20 and 23 keep the stricter behaviour already implemented. Their residual
 risks are recorded for zemdregon as R-23 to R-26, R-34, R-38 and R-39 in §7.1 (not blocking); decision 24's as R-38 and
 R-40; decision 26's as R-41; decision 27's as R-35 (mitigated); decision 28's as R-42 (mitigated);
-decision 29 has none beyond the stale-for-TTL window noted in it; decision 30 closes R-44; decision 32's is R-45 (not blocking).
+decision 29 has none beyond the stale-for-TTL window noted in it; decision 30 closes R-44; decision 32's is R-45 (not blocking);
+decision 33's is R-46 (not blocking).
 
 ### 4.3 Stated intent (confirmed constraints)
 
@@ -695,6 +707,30 @@ finalize-only (T9.7), signing (T9.10), `runs show` provenance (T9.6), and freezi
 `patch-id --stable` have not run on 2.32 to 2.42.
 Not run against a live provider.
 
+**T9.4 status (2026-10-13; Delegated): Done for the fake adapter; not done for Claude Code and Codex.** Both "Done
+when" clauses have tests, with the fake adapter only. *Fake adapter commits through the tool end to end:*
+`src/lifecycle/git-channel.test.ts` ("commits through the shim and socket ...": the fake CLI starts the real
+`switchboard tool-shim`, calls `commit` over MCP, the publish ref advances, a `git_commit` provenance row is written, the
+`Co-authored-by:` trailer is removed, the operator checkout, run branch and worktree index are unaffected) and
+`src/cli/serve.test.ts` ("the fake agent commits through tool-shim ..."), with `recover()` wired at `serve` start.
+*Token and run-state checks refuse stale or foreign calls:* `src/git/channel.test.ts` (wrong, other run's, forged and
+truncated tokens; not RUNNING; changed binding; malformed, oversized, unterminated and silent requests; bad paths;
+message over 8192 characters; unknown tools; rate limit and refusal-event cap; a call after close; concurrent commits
+with the compare-and-swap retry; socket and directory modes; long data-directory fallback; crash sweep) and "a stale
+token after the run ended reaches nothing" plus cancel cleanup in `src/lifecycle/git-channel.test.ts`; a SIGKILLed
+daemon's socket is removed by the next `serve` ("after SIGKILL with a channel open ..."). The token never appears in
+the ledger, artifacts, events, stderr logs or any data-directory file (searched in both the lifecycle and `serve`
+tests). Code: `src/git/channel.ts`, `src/git/tool-protocol.ts`, `src/cli/tool-shim.ts`, `src/lifecycle/lifecycle.ts`,
+`src/cli/serve.ts`, `GitCapabilities` in `src/adapters/types.ts`, fake scenario `git_commit`; Q-41 decided (snapshot
+freeze; `src/mcp/server.ts`, test "freezes the primary context's commit identity ..."). Decision 33,
+[ADR-0026](adr/0026-per-run-tool-channel-socket-and-token.md). **Not done:** Claude Code and Codex declare
+`commitChannel: "none"` with the reason and their argv is unchanged, because Q-40 (narrowing ADR-0015's bar on
+`--mcp-config`) is open and the live checks of R-18 (definition shape, MCP allow rules, `--safe-mode`, socket reach
+from the provider sandbox) have not run; Codex is not installed. Scope kept out on purpose: `push` (T9.6), ref snapshots
+and violation handling (T9.5), finalize-only (T9.7), signing (T9.10), and enforcing that a `none` adapter is ineligible
+for write-capable project runs without the finalize-only opt-in (Q-43). Peer credentials are not checked (no Node.js API;
+R-46).
+
 ### 6.4 M10 Container environments: tasks
 
 *Proposed.* Q-6 was left to the agent, so the runtime and login mechanism are delegated and verified by T10.0 before any
@@ -867,6 +903,7 @@ preceding milestone completes.
 | R-43 | *Delegated, not blocking; mitigated 2026-10-13 (T9.0 follow-up), matcher normalisation still unverified.* The Claude Git deny rules (`Bash(git <verb>)`, `Bash(git <verb> *)`) are lexical and list the subcommand directly after `git`. Git accepts global options before the subcommand: on Git 2.43.0 `git --no-pager commit`, `git -P commit` and `git --no-optional-locks commit` each created a commit in a test repository, and `--config-env`, `--exec-path`, `--namespace` and `--bare` are not denied either. `GIT_WRITE_SUBCOMMANDS` also lacks ref-affecting `reflog`, `pack-refs`, `gc`, `prune` and `maintenance` (`git pack-refs --all` and `git reflog expire` ran). Whether Claude's matcher normalises global options is unverified | A Claude run with a shell could still commit while the rules look complete; FR-GIT-01 on a host would rest on FR-GIT-03 detection and the layer 3 guard | **Mitigated (2026-10-13):** `src/adapters/git-write.ts` adds `GIT_GLOBAL_OPTIONS_WITH_VALUE` and `GIT_GLOBAL_FLAGS` (every global option in the Git 2.43.0 usage text: `-C`, `-c`, `--git-dir`, `--work-tree`, `--namespace`, `--config-env`, `--exec-path`, `--attr-source`, `-p`, `-P`, `--paginate`, `--no-pager`, `--no-optional-locks`, `--literal-pathspecs`, `--glob-pathspecs`, `--noglob-pathspecs`, `--icase-pathspecs`, `--no-replace-objects`, `--bare`) and the write subcommands `reflog`, `pack-refs`, `gc`, `prune`, `maintenance`, `repack`, `hash-object`; the Claude adapter emits `Bash(git <opt> *)` (and `Bash(git <opt>=*)` for long value options) for each, keeping the existing rule syntax; this only denies more and applies in bypass runs too (decision 22). Evidence: tests in `src/adapters/git-write.test.ts` and `src/adapters/claude/claude.test.ts`; behaviour probed on Git 2.43.0 in a throwaway repository (each listed option except `--bare` let `git branch` create a ref; each listed subcommand changed refs, packed-refs, reflogs or objects). `add`, `rm`, `mv`, `restore` and `clean` change the index or work tree only and are not FR-GIT-01 writes. **Still unverified:** whether Claude's matcher normalises global options (the help text does not say), so the explicit spellings are denied as belt and braces; a spelling not in the Git 2.43.0 usage text (a newer Git option) is not denied by the Claude rules; run the live check C-G2 (T3.9). The layer 3 guard (TDD §3.10) blocks the `-c`-less cases via the environment |
 | R-44 | *Delegated, not blocking; mitigated 2026-10-13 (decision 30, ADR-0023).* `MIN_GIT_VERSION` was 2.30 but `scrubbedGitEnv()` sets `GIT_CONFIG_GLOBAL=/dev/null`, which the Git 2.32.0 release notes introduce; on 2.30 or 2.31 the controller's Git calls might read the operator's global configuration (inferred from the notes; no such Git is installed to test) | A controller call could pick up an operator alias, identity, hook path or filter on an old Git that `doctor` accepts | **Mitigated:** floor raised to 2.32 (Q-39 decided; [ADR-0023](adr/0023-minimum-git-version-2-32.md); `src/workspace/git.ts`, `doctor` and the version-gate test). The 2.32 introduction version still rests on the release notes |
 | R-45 | *Delegated, not blocking (decision 32, ADR-0025).* The operator sanitiser patterns run on a backtracking engine (Node has no RE2) and are only protected by a validated subset, a cost estimate, 1024-character windows and a one-second budget; the cost model is an estimate from one measurement (`.*a.*b` took 36 s on 4096 characters), not a proof. A pattern in the subset can still be slow within the budget, and a pattern that is too slow fails closed (commits are refused) rather than slowing the controller further | An operator pattern could make every commit slow or refused; an accepted pattern cannot hang the controller beyond the budget plus one regular-expression call of at most about 67 million steps | **Open, accepted.** Revisit with an RE2 binding if the dependency is accepted; the built-in rules are linear or bounded (tests in `src/git/sanitize.test.ts`) |
+| R-46 | *Delegated, not blocking (decision 33, ADR-0026).* The tool channel cannot identify its peer (Node.js has no `SO_PEERCRED`), and the token reaches the provider process through its environment. Any process of the same OS user that can read that environment (or the shim's, which deletes it from its own copy only at start) can call `commit` for that run while it is RUNNING | A same-user process could make commits on the run's publish ref with the run's identity; it cannot push (no `push` tool yet), cannot reach another run (tokens are per run and bound to run, meta-session and worktree), cannot use the token after the run leaves RUNNING, and every commit still passes the path checks, sanitiser and provenance record | **Open, accepted.** Same reach the agent itself has. Controls: `0700` directory, `0600` socket, 256-bit per-run token compared in constant time, run-state re-check per call, rate limit. Revisit if Node.js gains a peer-credential API or when `push` is added (T9.6, BR-31) |
 
 Numbering: R-36, R-37 and Q-32 to Q-35 (§7.3) were written on the M3 wave B branch as R-29, R-30 and Q-27 to
 Q-30. PR #17 merged all but Q-30 into main under those numbers, which main already used for other items; they were
@@ -926,8 +963,9 @@ No blocker affects M1, M2 or M9.
 | Q-38 | *Decided 2026-10-13 by [owner decision 25](#42-owner-decisions) (zemdregon: "you pick"; Delegated):* the order stays M3, M9, M10 (M10 needs the M9 projects and injected tools), and the document-only spike T10.0 may start early. Original question: should M10 be brought forward ahead of M9's remaining work (T9.7, T9.9, T9.10)? | — |
 | Q-39 | *Decided 2026-10-13 by [Delegated decision 30](#42-owner-decisions) under owner decision 25 (not owner-approved), [ADR-0023](adr/0023-minimum-git-version-2-32.md): 2.32.0.* Original question: Raise `MIN_GIT_VERSION` from 2.30 to 2.32? Reasons: `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` (2.32.0 release notes) are already used by `scrubbedGitEnv()`; the layer 3 guard needs `GIT_CONFIG_COUNT` (2.31, inferred from the 2.31.0 notes). It changes the stated floor of the technology stack, so AGENTS.md requires an ADR | **Decided:** yes, 2.32.0. `MIN_GIT_VERSION`, its test, README and TDD updated; `doctor` reads the constant |
 | Q-40 | *Proposed ADR, not written (T9.0 finding; Delegated).* ADR-0015 says the Claude adapter never emits `--mcp-config`, and `src/adapters/audit.ts` and `claude.test.ts` enforce it; FR-GIT-02's injected channel needs it. May the adapter emit `--mcp-config` carrying only the controller-generated shim definition, always with `--strict-mcp-config`, while operator and repository definitions stay barred? This touches a trust boundary and an accepted ADR | **Proposed:** yes, narrowly, after the live check shows `--safe-mode` and permissions allow the shim (R-18). Until then no Claude channel is declared |
-| Q-41 | *Delegated, open (T9.3).* [ADR-0024](adr/0024-project-id-columns-and-project-snapshot.md) said push policy and commit identity join the policy snapshot "with T9.3". T9.3 has no caller (the commit library takes identity, project and context ids as arguments), so freezing them into `run.policy_snapshot_json` is left to T9.4, where the `COMP-GIT` service reads them. Until then a configuration edit between admission and a commit is not detected | **Open.** Default: the caller passes identity, project and context ids as arguments; T9.4 decides whether the snapshot freezes `identity` and `push` |
+| Q-41 | *Delegated, open (T9.3).* [ADR-0024](adr/0024-project-id-columns-and-project-snapshot.md) said push policy and commit identity join the policy snapshot "with T9.3". T9.3 has no caller (the commit library takes identity, project and context ids as arguments), so freezing them into `run.policy_snapshot_json` is left to T9.4, where the `COMP-GIT` service reads them. Until then a configuration edit between admission and a commit is not detected | **Decided (T9.4, decision 33, Delegated):** the snapshot's project block freezes `writable`, `identity` and `push.policy`; the channel uses only these. The push remote and branch prefix are not frozen (`remote` is not validated as a remote name and could hold a URL with credentials); T9.6 decides how the push target is resolved |
 | Q-42 | *Delegated, open (T9.3).* LLD §12.3 first said the publish ref is `refs/heads/<push.branch_prefix><sess>`; the example prefix `switchboard/` would collide with run branches, so ADR-0025 fixes the local ref at `refs/heads/switchboard/pub/<sess>` and leaves `push.branch_prefix` as the remote branch prefix (LLD §12.6). T9.6 should confirm this reading when it builds the refspec | **Open.** Default: local `switchboard/pub/`, remote `push.branch_prefix`; confirm or change when T9.6 starts |
+| Q-43 | *Delegated, open (T9.4).* LLD §2 says an adapter with `commitChannel: "none"` is ineligible for write-capable profiles on a context unless the operator opts in to finalize-only mode (FRD BR-30, Proposed there). T9.4 declares `none` for Claude Code and Codex but does not enforce that rule: enforcing it now would make both providers ineligible for every write-capable project run before T9.7 offers the opt-in | **Open.** Default: not enforced; a project run with a `none` adapter runs as before and its work stays in the worktree and diff artifacts; decide with T9.7 |
 
 ## 8. Deferred and excluded work
 

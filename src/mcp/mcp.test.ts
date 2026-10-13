@@ -115,6 +115,7 @@ function recorded(inner: ProviderAdapter, auth?: AuthResult): Recorded {
     id: inner.id,
     transports: inner.transports,
     gitWriteControl: inner.gitWriteControl,
+    gitCapabilities: inner.gitCapabilities,
     probe: (r) => inner.probe(r),
     authPreflight: (r) => (auth ? Promise.resolve(auth) : inner.authPreflight(r)),
     compile: (req, p) => keep(inner.compile(req, p)),
@@ -1235,8 +1236,43 @@ describe("projects (T9.2; FR-PRJ-03, FR-PRJ-04, FR-PRJ-06; FRD V12, BR-23)", () 
       context_id: "main",
       base_ref: "release",
       effective_max_profile: "edit-untrusted",
+      // T9.4 / Q-41: Git facts frozen at admission (no identity configured here, so none is recorded).
+      writable: true,
+      push: { policy: "none" },
     });
     expect(JSON.stringify(d.body)).not.toContain(repo); // the context path never leaves the controller
+  });
+
+  it("freezes the primary context's commit identity and push policy into the run's snapshot (T9.4, Q-41)", async () => {
+    const base = project();
+    const ctx = base.contexts[0];
+    if (!ctx) throw new Error("no context");
+    await setup({
+      adapters: [fakeWriter()],
+      projects: [
+        {
+          ...base,
+          contexts: [
+            {
+              ...ctx,
+              identity: { name: "Ada Maintainer", email: "ada@example.test" },
+              push: { policy: "branch", remote: "https://user:secret@example.test/r.git", branchPrefix: "pub/" },
+            },
+          ],
+        },
+      ],
+      clients: [{ id: "o", max: "edit-untrusted", projects: ["web-app"] }],
+    });
+    const d = await call("delegate_task", projectArgs({ wait_seconds: 20 }));
+    expect(d.isError, JSON.stringify(d.body)).toBe(false);
+    const snap = JSON.parse(runRow(d.body.run_id).policy_snapshot_json).project;
+    expect(snap).toMatchObject({
+      writable: true,
+      identity: { name: "Ada Maintainer", email: "ada@example.test" },
+      push: { policy: "branch" },
+    });
+    // The remote is not frozen: it is not validated as a remote name and could carry credentials (NFR-SEC-01).
+    expect(runRow(d.body.run_id).policy_snapshot_json).not.toContain("secret");
   });
 
   it("a workspace_path run has no project; a client with no project list keeps using workspace paths", async () => {
