@@ -323,6 +323,20 @@ in [§12.5](#125-ref-snapshot-and-violation-handling).
 an operator push, whose event goes on the run of the newest published commit. New `run_event.type` value
 `git_push_withheld` (`{reason}`, BR-31). Payloads in [§12.6](#126-push-algorithm).
 
+*As built (2026-10-13, Delegated, T9.9, [ADR-0030](../adr/0030-dynamic-project-revisions-and-approval.md)):* migration
+`0004_project_revision` (`src/ledger/migrations/0004_project_revision.ts`; ledger schema version 4) creates
+`project_revision` with the DDL above **except** `approved_at` (an append-only row cannot be updated) and **plus**
+`approval_reasons_json TEXT NOT NULL DEFAULT '[]'` (why a `PENDING_APPROVAL` revision waits), an `id` check for the
+`prv_` prefix, `revision >= 1` and `CREATE INDEX project_revision_client ON project_revision(client_id, project_id)`.
+Two more append-only tables: `project_revision_decision` (`prd_`; `project_id`, `revision`, `decision`
+`APPROVED|REJECTED`, `decided_by`, `reason`, `decided_at`; unique `(project_id, revision)`, foreign key to the revision)
+holds the operator's decision that LLD §11.2 called `approved_at`, and `project_event` (`pev_`; `ts`, `actor`
+`mcp_client|operator`, `client_id`, `operator`, `action` `create_project|update_project|delete_project|approve|reject`,
+`project_id`, `revision`, `outcome` `ACCEPTED|REFUSED`, `code` (set exactly when refused), `reason`, bounded
+`payload_json`; index on `(project_id, ts)`) records every call, because `run_event.run_id` is `NOT NULL` and a project
+call has no run. All three have `<table>_no_update` / `<table>_no_delete` guards. The store is `DynamicProjectStore`
+(`src/projects/store.ts`); a project's state (in force, pending, approved, rejected, deleted) is derived from its rows.
+
 **M11 additions (Proposed).** One forward migration (ADR-0005) adds the append-only `inner_call` table and the mutable
 `inner_task_state` table (DDL in [§13.3](#133-data)), adds `pr_draft` to the `artifact.kind` check, adds `inner_agent` to
 the `usage_observation.source` check (FR-INN-15), and adds two columns to `git_commit` (§12.7). SQLite cannot alter a
@@ -638,6 +652,31 @@ reference. Errors: unknown project `INVALID_REQUEST`; project not in the client'
 `details.reason = "ENVIRONMENT_NOT_IMPLEMENTED"` before anything is written (M10; LLD §3 names no other code, so no new
 code is added); base ref that does not resolve `INVALID_REQUEST`. Implementation: `src/mcp/server.ts`,
 `src/mcp/schemas.ts`.
+
+*As built (2026-10-13, Delegated, T9.9, [ADR-0030](../adr/0030-dynamic-project-revisions-and-approval.md)):* the three
+tools are in `tools/list` only for a client with `manage_projects`; for any other client a call is answered exactly as
+an unknown tool (`INVALID_REQUEST`) and recorded as a refused `project_event` (`TOOL_NOT_OFFERED`). Inputs:
+`create_project { project }`, `update_project { id, project }` (`project.id` must equal `id`), `delete_project { id }`;
+`project` is the configuration's `projectSchema` (§11.1) with Delegated bounds (strings without a pattern at most 4096
+characters, arrays at most 32 items), closed, so a client-limit key such as `max_push_policy` is an unknown key. Result
+(create, update, delete): `{ id, revision, status: "ACTIVE" | "PENDING_APPROVAL" | "DELETED", approval_needed?,
+in_force_revision?, message? }` (`in_force_revision` and `message` Proposed). `approval_needed` values:
+`container_environment`, `push_policy`, `commit_identity`, `commit_signing`, `widened_trust_ceiling`,
+`widened_providers` (widening is measured against the revision in force). Errors, in check order: schema
+`INVALID_REQUEST`; a control, separator or bidirectional character in any string `INVALID_REQUEST`
+(`CONTROL_CHARACTER`); a configured id or another client's project `PERMISSION_BLOCKED` with one message for both
+(`NOT_MANAGEABLE`); unknown id for update/delete, deleted id, or an existing id for create `INVALID_REQUEST` (ids are
+never reused); the loader's structural rules `INVALID_REQUEST`; ceiling, provider or push above the client's
+`PERMISSION_BLOCKED` (`CEILING_ABOVE_CLIENT`, `PROVIDER_OUTSIDE_CLIENT`, `PUSH_ABOVE_CLIENT`); quotas (32 live projects
+per client, 100 revisions per project, Assumptions) `PERMISSION_BLOCKED`; filesystem: outside every allowed root (also
+through `..` or a symlink) or inside the data directory `PERMISSION_BLOCKED`, not absolute, missing, not Git or
+unresolvable `base_ref` `INVALID_REQUEST`, always with the field and a fixed text, never a resolved path. Deleting with
+a non-terminal run, or while a `delegate_task`/`continue_task` for the project is being admitted, is `INVALID_REQUEST`
+(`ACTIVE_RUN`; SRS FR-PRJ-10 and this section, read as winning over FRD BR-32's general "refusals are
+`PERMISSION_BLOCKED`"). `list_projects` appends the client's own dynamic projects (not deleted, not shadowed by a
+configured id) with `source: "dynamic"`, `revision` (the one in force, else the latest), `status`
+(`ACTIVE | PENDING_APPROVAL | REJECTED`) and `pending_revision?`; configured entries are unchanged. Implementation:
+`src/mcp/project-tools.ts`, `src/projects/`.
 
 **Error envelope** (FR-MCP-07). Delivered as an MCP tool result with `isError: true`:
 
@@ -1319,6 +1358,15 @@ unknown project id`). **An absent or empty list means the client may use no proj
 the projects listed"); requests that name a workspace path are unaffected. `manage_projects` and `max_push_policy` are
 still not in the schema (T9.9).
 
+*As built (2026-10-13, Delegated, T9.9, [ADR-0030](../adr/0030-dynamic-project-revisions-and-approval.md)):*
+`mcp_clients[].manage_projects` (boolean, default `false`) and `mcp_clients[].max_push_policy` (`none | branch`, default
+`none`) are in the strict schema; `loadConfig` refuses `max_push_policy: "branch"` on a client without
+`manage_projects: true` (`$.mcp_clients[i].max_push_policy: applies only to a client with manage_projects: true`).
+`ResolvedMcpClient` gains `manageProjects` and `maxPushPolicy`; a hand-built entry without them reads as off and `none`.
+The project shape is exported as `projectSchema` (`src/config/schema.ts`) and is also the `project` input of
+`create_project` and `update_project` (§3). No client-level provider list exists, so a client's provider set is every
+provider not disabled in `providers` (Delegated).
+
 *As built (2026-10-13, Delegated, T9.6, [ADR-0028](../adr/0028-controller-push-and-credential-reach.md)):* `loadConfig`
 refuses a `push.remote` that is not a remote **name** (letters, digits, `.`, `_`, `-`, starting with a letter or digit,
 at most 100 characters; so never a URL or anything with `@` or `:`) and a `push.branch_prefix` that is not a branch-name
@@ -1347,6 +1395,24 @@ A project created by an orchestrator uses the same shape and is validated by the
 from a configured value the operator named in the client entry (`identities` list), so an orchestrator cannot invent an
 author (Proposed); the repository `path` must already exist under an allowed root. Approval is `projects approve <id>
 [--revision n]`, an operator CLI command that writes `approved_at`; it has no MCP counterpart (FRD BR-32).
+
+*As built (2026-10-13, Delegated, T9.9, [ADR-0030](../adr/0030-dynamic-project-revisions-and-approval.md)):* step 5a runs
+in `resolveForRequest` (`src/mcp/project-tools.ts`) before the configured-project steps: a configured id always wins; a
+dynamic project resolves only for the client that created it and only while that client has `manage_projects`
+(otherwise `PERMISSION_BLOCKED`, `MANAGE_PROJECTS_OFF` for the creator); a deleted project is `INVALID_REQUEST`
+(FR-PRJ-09); with no revision in force it is `PERMISSION_BLOCKED` with `details.reason` `approval_required` (or
+`revision_rejected`). The in-force revision is re-checked against the client's current ceiling and `max_push_policy`
+and against all the filesystem rules of §11.1 for every context (step 5, extended), then steps 3, 4 and 6 run exactly as
+for a configured project; the client's `projects` list does not apply to its own dynamic projects. The snapshot shape is
+unchanged; the `route_decision` reasons' `project` object gains `revision`. The orchestrator-identity rule above is not
+built as an `identities` list: instead any revision with an `identity` (or `sign: true`) waits for the operator's
+approval (Delegated, stricter). Approval is `switchboard projects approve <id> [--revision n] [--reject]`: it decides the
+latest revision only when it is `PENDING_APPROVAL` and undecided, needs `--revision` once the project has more than one
+revision, and writes a `project_revision_decision` row and a `project_event` row instead of `approved_at`
+(`src/cli/projects-dynamic.ts`). `projects list|show` show dynamic projects (`source`, `creator`, `revision`, `state`,
+`in_force_revision`, `pending_revision`, `approval_needed`; `show` lists the revisions). Push targets of approved
+dynamic projects are not resolved yet: the `push` tool and `switchboard git push` read push contexts from configuration
+only, so such a push is refused (`CONTEXT_UNKNOWN`, fails closed; ROADMAP Q-46).
 
 *As built (2026-10-13, Delegated, T9.2; configured `host` projects only, no dynamic revisions, no step 5a, no push or
 identity in step 6):* the steps run in `resolveProject` and `projectCandidates` (`src/mcp/server.ts`) in this order:
