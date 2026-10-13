@@ -389,6 +389,13 @@ export class RunLifecycle {
   private stopped = false;
   private rootsCache: string[] | undefined;
   private readonly refGuard: RefGuard;
+  /**
+   * T9.11 (FR-WS-08, FR-GIT-03): the tail of each repository's finalization queue. The ref check and the checkpoint
+   * commit of one run must not interleave with those of another run in the same repository: the checkpoint moves the
+   * run branch before its `post` row exists, and another run's ref check in that window would report it as a
+   * `git_policy_violation` (Delegated; LLD §5).
+   */
+  private readonly repoFinalizeQueue = new Map<string, Promise<void>>();
 
   constructor(private readonly opts: RunLifecycleOptions) {
     if (!Number.isInteger(opts.globalConcurrency) || opts.globalConcurrency < 1) {
@@ -1188,6 +1195,24 @@ export class RunLifecycle {
     };
   }
 
+  /** Run `fn` after every earlier call for the same repository root has settled (T9.11; `repoFinalizeQueue`). */
+  private async serialisedPerRepo<T>(repoRoot: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.repoFinalizeQueue.get(repoRoot) ?? Promise.resolve();
+    let release = () => {};
+    const mine = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => mine);
+    this.repoFinalizeQueue.set(repoRoot, tail);
+    await previous;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.repoFinalizeQueue.get(repoRoot) === tail) this.repoFinalizeQueue.delete(repoRoot);
+    }
+  }
+
   /** FINALIZING → terminal (T15–T17): checkpoint, diff, head disposition (FRD §4.4), lease release. */
   private async finalize(
     runId: string,
@@ -1210,10 +1235,14 @@ export class RunLifecycle {
         // T9.5 (FR-GIT-03, BR-27): compare refs with the LEASED snapshot and put controller-owned refs back BEFORE the
         // checkpoint, so an agent's commits end up as working-tree content of the checkpoint, never in its history.
         // It never throws for Git problems (recorded as a violation) and never changes the outcome.
-        gitViolations = (await this.refGuard.checkAtFinalizing(runId)).violations;
-        const assessment = await this.opts.workspace.assessMutation(runId);
+        // T9.11: serialised per repository with other runs' ref checks and checkpoints (see `repoFinalizeQueue`).
         const success = outcome.kind === "success";
-        const fin = await this.opts.workspace.finalize(runId, { advanceHead: success });
+        const { assessment, fin } = await this.serialisedPerRepo(ws.repoRoot, async () => {
+          gitViolations = (await this.refGuard.checkAtFinalizing(runId)).violations;
+          const assessment = await this.opts.workspace.assessMutation(runId);
+          const fin = await this.opts.workspace.finalize(runId, { advanceHead: success });
+          return { assessment, fin };
+        });
         artifacts.diff = fin.diffArtifactId;
         artifacts.changed_files = fin.changedFilesArtifactId;
         changedFiles = fin.changedFiles.length;
