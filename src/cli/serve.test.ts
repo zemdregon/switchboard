@@ -8,7 +8,17 @@
  * tests assert that no provider process survives a run.
  */
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -371,6 +381,108 @@ describe("serve over stdio (process level)", () => {
     } finally {
       db.close();
     }
+  }, 60_000);
+});
+
+describe("injected commit tool through serve (T9.4; FR-GIT-02, LLD §12.2, ADR-0026)", () => {
+  const writeProjectConfig = () =>
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schema_version: 1,
+        data_dir: dataDir,
+        allowed_roots: [root],
+        mcp_clients: [{ id: "orch", max_trust_profile: "edit-untrusted", projects: ["web"] }],
+        projects: [
+          {
+            id: "web",
+            name: "Web",
+            contexts: [
+              {
+                id: "main",
+                kind: "repository",
+                path: repo,
+                base_ref: "main",
+                identity: { name: "Ada Maintainer", email: "ada@example.test" },
+              },
+            ],
+          },
+        ],
+      }),
+    );
+  const delegateProject = (c: Client) =>
+    call(c, "delegate_task", {
+      objective: "add a feature",
+      project: "web",
+      trust_profile: "edit-untrusted",
+      routing: { provider_preference: "fake", require_provider: true },
+    });
+  /** Every regular file under the data directory (the token-leak search). */
+  const dataFiles = (dir: string): string[] =>
+    existsSync(dir)
+      ? readdirSync(dir, { withFileTypes: true }).flatMap((d) =>
+          d.isDirectory() ? dataFiles(path.join(dir, d.name)) : d.isFile() ? [path.join(dir, d.name)] : [],
+        )
+      : [];
+  const runEvents = (runId: string) => {
+    const db = new Database(path.join(dataDir, LEDGER_FILE_NAME), { readonly: true, fileMustExist: true });
+    try {
+      return db.prepare("SELECT type, payload_json FROM run_event WHERE run_id = ? ORDER BY seq").all(runId) as {
+        type: string;
+        payload_json: string;
+      }[];
+    } finally {
+      db.close();
+    }
+  };
+
+  it("the fake agent commits through tool-shim; nothing in logs or the data directory holds a token", async () => {
+    writeProjectConfig();
+    const c = await connect("git_commit");
+    const d = await delegateProject(c.client);
+    expect(d.isError, JSON.stringify(d.body)).toBe(false);
+    const done = await pollStatus(c.client, d.body.run_id, TERMINAL);
+    expect(done.status, c.stderr()).toBe("SUCCEEDED");
+    const ref = `refs/heads/switchboard/pub/${d.body.meta_session_id}`;
+    const sha = g(repo, "rev-parse", "--verify", ref);
+    expect(g(repo, "log", "-1", "--format=%an|%B", sha)).toBe("Ada Maintainer|Add the feature");
+    const types = runEvents(d.body.run_id).map((e) => e.type);
+    expect(types).toEqual(
+      expect.arrayContaining(["git_channel_opened", "git_commit_intent", "git_commit", "git_channel_closed"]),
+    );
+    expect(c.stderr()).toContain('"msg":"git recovery finished"');
+    await c.client.close();
+    await waitDead(c.pid);
+    for (const f of dataFiles(dataDir)) expect(readFileSync(f).includes("sbt1_"), f).toBe(false);
+    expect(c.stderr()).not.toContain("sbt1_");
+    expect(existsSync(path.join(dataDir, "runs", d.body.run_id))).toBe(false);
+  }, 60_000);
+
+  it("after SIGKILL with a channel open, the next serve removes the stale socket directory", async () => {
+    writeProjectConfig();
+    const a = await connect("hang");
+    const d = await delegateProject(a.client);
+    expect(d.isError, JSON.stringify(d.body)).toBe(false);
+    const runId = d.body.run_id as string;
+    await pollStatus(a.client, runId, (s) => s === "RUNNING");
+    const sock = path.join(dataDir, "runs", runId, "tools.sock");
+    const end = Date.now() + 10_000;
+    while (!existsSync(sock)) {
+      if (Date.now() > end) throw new Error("socket not created");
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    recordedGroup(runId);
+    process.kill(a.pid, "SIGKILL");
+    await waitDead(a.pid);
+    expect(existsSync(sock)).toBe(true); // left behind by the crash
+
+    const b = await connect();
+    const after = await call(b.client, "get_run", { run_id: runId });
+    expect(after.body.status, b.stderr()).toBe("FAILED");
+    expect(existsSync(path.join(dataDir, "runs", runId))).toBe(false);
+    const closed = runEvents(runId).filter((e) => e.type === "git_channel_closed");
+    expect(closed.map((e) => JSON.parse(e.payload_json))).toEqual([{ reason: "recovered", removed: true }]);
+    expect(b.stderr()).toContain('"channels_cleaned":1');
   }, 60_000);
 });
 

@@ -72,6 +72,12 @@ const OPTIONS = {
 } as const;
 
 export async function main(argv: readonly string[], io: CliIo): Promise<number> {
+  if (argv[0] === "tool-shim") {
+    // T9.4 (FR-GIT-02, LLD §12.2): internal subcommand started by a provider CLI from the per-run MCP definition, not an
+    // operator command, so it is not in HELP. It takes its own arguments and touches no config, ledger or lock.
+    const { runToolShim } = await import("./tool-shim.js");
+    return runToolShim(argv.slice(1), io);
+  }
   let json = argv.includes("--json");
   try {
     const { values, positionals } = parseArgs({

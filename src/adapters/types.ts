@@ -199,11 +199,50 @@ export interface GitWriteControl {
   readonly remainingControls: readonly string[];
 }
 
+/**
+ * What the controller hands an adapter so it can name the per-run tool shim in the provider's own per-run MCP form
+ * (LLD §2 "M9 additions", §12.2; T9.4, ADR-0026). `env` holds the one-run capability token for the shim; it is a
+ * secret for the run's lifetime and must reach the provider only through `Invocation.env` (never argv, a file the
+ * adapter writes, or global provider configuration, FR-POL-08).
+ */
+export interface ShimSpec {
+  /** Full argv that starts the shim, ending in `tool-shim --socket <socketPath>`. argv[0] is an absolute path. */
+  readonly command: readonly string[];
+  readonly socketPath: string;
+  readonly toolNames: readonly ("commit" | "push")[];
+  /** Environment the shim needs: exactly the token variable (`SWITCHBOARD_TOOL_TOKEN`). */
+  readonly env: Readonly<Record<string, string>>;
+}
+
+/**
+ * FR-GIT-02 declaration (LLD §2 "M9 additions"; T9.4). `injected`: the adapter can pass the per-run channel to its
+ * provider without a permission-bypass flag (FR-POL-03), through `channelArgs`. `finalize-only`: it cannot, and the
+ * controller commits at FINALIZING when the operator opts in (FR-GIT-09, T9.7). `none`: no channel is declared; `detail`
+ * says why (for Claude Code and Codex: unverified provider behaviour and ROADMAP Q-40). `detail` is an addition to the
+ * LLD shape so the reason is recorded with the declaration.
+ */
+export interface GitCapabilities {
+  readonly commitChannel: "injected" | "finalize-only" | "none";
+  readonly detail: string;
+  /**
+   * Pure. The argv and environment fragment that supplies the shim to the provider for this run; appended by the
+   * lifecycle to the compiled invocation. Present exactly when `commitChannel` is `injected`. Must not emit a bypass
+   * flag: the argv audit (FR-POL-03) runs over the result.
+   */
+  channelArgs?(
+    shim: ShimSpec,
+    request: CompileRequest,
+    profile: ResolvedProfile,
+  ): Pick<Invocation, "argv" | "env"> | Ineligible;
+}
+
 export interface ProviderAdapter {
   readonly id: ProviderId;
   readonly transports: readonly Transport[];
   /** FR-GIT-01 declaration, surfaced by `list_capabilities`. */
   readonly gitWriteControl: GitWriteControl;
+  /** FR-GIT-02 declaration (T9.4): whether and how the per-run injected tool channel reaches the provider. */
+  readonly gitCapabilities: GitCapabilities;
 
   /** FR-ADP-02 steps 1-5: binary, version, command, output formats, required flags. No auth, no model call. */
   probe(runner: ProbeRunner): Promise<ProbeResult>;
