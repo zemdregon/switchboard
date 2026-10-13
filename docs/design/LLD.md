@@ -1052,6 +1052,16 @@ meta-sessions and therefore separate worktrees (FR-WS-02). Concurrent runs of on
 and lease whichever meta-session they belong to (FR-WS-08, owner decision 42, Delegated). Parallel subtasks inside one
 session: to be detailed in M5.
 
+*As built (T9.11, 2026-10-13, Delegated).* FR-WS-08 needed no change to the lease or worktree model: a run's worktree
+and branch are keyed by meta-session and run (`<data_dir>/worktrees/<sess>/<run>`, `switchboard/<sess>/<run>`), the
+lease is one column pair per `meta_session` row, and a meta-session has at most one non-terminal run (FR-SES-06), so
+two concurrent runs of one project are always in different meta-sessions with their own worktree, branch and lease;
+nothing is keyed by project or context. The one rule that holds per worktree (FR-WS-02, at most one write lease) is
+unchanged. One defect was found and fixed: another run's ref check could see a checkpoint commit before its `post` row
+(see [§12.5](#125-ref-snapshot-and-violation-handling), "Concurrent runs"); finalization is now serialised per
+repository root. Tests: `src/lifecycle/concurrent-worktrees.test.ts`. Not built: the `container` clause of FR-WS-08
+(M10, FR-PRJ-05) and FR-WS-09 (Proposed, not accepted, Q-55; its tests are skipped placeholders).
+
 ```mermaid
 sequenceDiagram
   participant S as Scheduler
@@ -1932,6 +1942,11 @@ silent:
   or be a commit with a `git_commit_intent` (not aborted) whose recorded parent chain through such commits reaches the
   meta-session's `base_commit`. Another run's branch may move to one of that run's checkpoint commits or be deleted
   (that run non-terminal, or its session `ARCHIVED`); another session's publish ref may move to one of its intents.
+- **Concurrent runs in one repository (T9.11, Delegated).** The checkpoint commit moves a run branch before its `post`
+  row exists, so another run's check in that window would report the move as a `switchboard` violation. The lifecycle
+  therefore runs each run's check, mutation assessment and checkpoint as one critical section per repository root
+  (in-process queue in `src/lifecycle/lifecycle.ts`; one `serve` per data directory holds the lock). Regression test:
+  `src/lifecycle/concurrent-worktrees.test.ts`.
 - **Handling.** One `git_policy_violation` event (`v`, `violation_count`, `truncated`, `digest_before`,
   `digest_after`, at most 200 `violations` of `{scope, kind, ref, old, new, action, restore_to?, foreign_commits?
   (at most 50), foreign_commit_count?, detail?}`) is appended before any change; scopes `run_branch`, `worktree_head`,
