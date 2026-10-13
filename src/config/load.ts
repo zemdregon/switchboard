@@ -1,7 +1,7 @@
 import { readFileSync, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ErrorObject } from "ajv";
+import type { ErrorObject, ValidateFunction } from "ajv";
 import { Ajv } from "ajv";
 import { validateOperatorPatterns } from "../git/safe-pattern.js";
 import { ProfileOverrideError, validateProfileOverrides } from "../policy/profiles.js";
@@ -9,7 +9,7 @@ import type { ProfileOverride, ProfileOverrides } from "../policy/types.js";
 import { ConfigError } from "./errors.js";
 import { checkProjects, type ResolvedProject, resolveProjects } from "./projects.js";
 import {
-  configSchema,
+  currentConfigSchema,
   DEFAULT_PREFLIGHT_TTL_SECONDS,
   DEFAULT_PRIVILEGED_APPROVAL,
   DEFAULT_RETENTION_DAYS,
@@ -114,8 +114,18 @@ export interface ResolveEnv {
   homedir?: string;
 }
 
-const ajv = new Ajv({ allErrors: true, strict: true });
-const validate = ajv.compile<SwitchboardConfig>(configSchema);
+/**
+ * Config validator over {@link currentConfigSchema} (T4.1): compiled once for the built-in provider ids, and again,
+ * with a fresh Ajv (the schema `$id` is fixed), only when a provider is registered or removed at runtime.
+ */
+let compiled: { readonly generation: number; readonly validate: ValidateFunction<SwitchboardConfig> } | undefined;
+function validator(): ValidateFunction<SwitchboardConfig> {
+  const { generation, schema } = currentConfigSchema();
+  if (compiled?.generation !== generation) {
+    compiled = { generation, validate: new Ajv({ allErrors: true, strict: true }).compile<SwitchboardConfig>(schema) };
+  }
+  return compiled.validate;
+}
 
 /** Resolution order: --config, SWITCHBOARD_CONFIG, $XDG_CONFIG_HOME/switchboard/config.json (TDD §3.1). */
 export function resolveConfigPath({ argv = [], env = process.env, homedir = os.homedir() }: ResolveEnv = {}): string {
@@ -173,6 +183,7 @@ function describe(e: ErrorObject): string {
 
 /** Validate parsed JSON; throws ConfigError listing every violation with its JSON path (NFR-SEC-05, NFR-SEC-06). */
 export function validateConfig(value: unknown, source = "config"): SwitchboardConfig {
+  const validate = validator();
   if (validate(value)) return value;
   const lines = (validate.errors ?? []).map(describe);
   throw new ConfigError(`Invalid ${source}:\n${lines.map((l) => `  ${l}`).join("\n")}`);

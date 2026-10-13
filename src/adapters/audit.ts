@@ -2,7 +2,9 @@
  * Bypass-flag audit over compiled invocations (FR-POL-03, BR-14, AGENTS.md working rules; owner decision 13, ADR-0017,
  * LLD §3.1 "Bypass"; T3.17).
  *
- * `BYPASS_FLAGS` is the single list. A flag from it is admitted only when the run's context says all three of: the
+ * `BYPASS_FLAGS` is the shared list; every adapter's declared bypass-class flags (`bypassFlags` in the provider registry
+ * table, `./providers.ts`; T4.1, ADR-0035) are added to it, never subtracted ({@link bypassClassFlags}). A flag from
+ * either is admitted only when the run's context says all three of: the
  * resolved profile is `privileged`, `bypassApproved` is true (computed by the lifecycle from an `APPROVED` approval row,
  * never by an adapter or a request), and the approved scope sets `bypass`. Every other case refuses the flag; with no
  * context at all every flag is refused (the M1/M2 behaviour). The audit is independent of the adapter's own compile
@@ -16,6 +18,7 @@
 import { lstatSync } from "node:fs";
 import path from "node:path";
 import { CHANNEL_MCP_CONFIG_FILE, TOOL_SHIM_MCP_SERVER, TOOL_TOKEN_ENV } from "../git/tool-protocol.js";
+import { declaredBypassFlags } from "./providers.js";
 import type { Invocation, ResolvedProfile } from "./types.js";
 
 export const BYPASS_FLAGS: readonly string[] = [
@@ -45,15 +48,25 @@ export function bypassPermitted(ctx: BypassContext | undefined): boolean {
   );
 }
 
-function matches(arg: string): string | undefined {
-  return BYPASS_FLAGS.find((f) => arg === f || arg.startsWith(`${f}=`));
+/**
+ * The flags the audit refuses (T4.1, ADR-0035): `BYPASS_FLAGS` first, then every flag a registered provider entry
+ * declares, without duplicates. Read at call time, so an entry registered at runtime is audited from then on. A
+ * declaration can only add to the shared list: nothing here removes or admits a flag.
+ */
+export function bypassClassFlags(): string[] {
+  return [...new Set([...BYPASS_FLAGS, ...declaredBypassFlags()])];
+}
+
+function matches(arg: string, flags: readonly string[]): string | undefined {
+  return flags.find((f) => arg === f || arg.startsWith(`${f}=`));
 }
 
 /** Every bypass flag present in argv or policyFlags, whatever the context. */
 export function findBypassFlags(inv: Pick<Invocation, "argv" | "policyFlags">): string[] {
   const found = new Set<string>();
+  const flags = bypassClassFlags();
   for (const arg of [...inv.argv, ...inv.policyFlags]) {
-    const hit = matches(arg);
+    const hit = matches(arg, flags);
     if (hit) found.add(hit);
   }
   return [...found];

@@ -7,8 +7,9 @@
  *   2. take the data-directory lock, so a second `serve` fails clearly (ADR-0005, TDD §3.5);
  *   3. open and migrate the ledger; refuse to serve if it cannot be opened (NFR-SEC-06);
  *   4. check Git, then run startup reconciliation BEFORE the lifecycle starts or MCP accepts calls (FR-EXE-06, WF-8);
- *   5. build the adapter registry (claude, codex; fake only through the test-only switch below) and the lifecycle with
- *      the production COMP-POL `resolveProfile` (`src/policy`) and stage-1 eligibility at dispatch;
+ *   5. build the adapter registry (every provider registry entry with an adapter, T4.1: claude, codex; fake only through
+ *      the test-only switch below) and the lifecycle with the production COMP-POL `resolveProfile` (`src/policy`) and
+ *      stage-1 eligibility at dispatch;
  *   6. apply pending operator requests (cancel, approve, deny), start the lifecycle, then serve MCP on stdin/stdout;
  *   7. poll operator requests periodically until SIGINT, SIGTERM or the client closing stdin, then shut down: stop
  *      polling, close MCP (stop accepting), `lifecycle.shutdown()` (cancels in-flight runs and waits for them to be
@@ -49,14 +50,14 @@
 
 import os from "node:os";
 import path from "node:path";
-import { FakeAdapter, type FakeScenario } from "../adapters/fake/adapter.js";
+import type { FakeScenario } from "../adapters/fake/adapter.js";
 import {
   AdapterRegistry,
-  ClaudeAdapter,
-  CodexAdapter,
+  configIdForAdapterId,
   createProbeRunner,
   PreflightCache,
   type ProviderId,
+  providerEntries,
   type VersionGateResult,
 } from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
@@ -72,7 +73,6 @@ import { type SwitchboardMcpServer, startStdioServer } from "../mcp/index.js";
 import { createProfileResolver } from "../policy/index.js";
 import { DynamicProjectStore } from "../projects/index.js";
 import { reconcile } from "../reconcile/index.js";
-import { CONFIG_TO_ADAPTER_ID } from "../routing/index.js";
 import { runRetentionGc, WorkspaceManager } from "../workspace/index.js";
 import { type CliIo, PROBE_ENV_ALLOWLIST } from "./io.js";
 import { applyOperatorRequests } from "./operator.js";
@@ -156,23 +156,29 @@ export function stderrLogger(io: CliIo): Logger {
 function enablement(config: ResolvedConfig, fake: FakeSwitch): (id: ProviderId) => boolean {
   return (id) => {
     if (id === "fake") return fake.enabled;
-    const configId = (Object.keys(CONFIG_TO_ADAPTER_ID) as (keyof typeof CONFIG_TO_ADAPTER_ID)[]).find(
-      (k) => CONFIG_TO_ADAPTER_ID[k] === id,
-    );
+    const configId = configIdForAdapterId(id);
     if (configId === undefined) return false; // not a configured provider id: fail closed
     return config.providers.get(configId)?.enabled !== false;
   };
 }
 
 /**
- * `claudeGitChannel` is `providers.claude-code.git_channel` (T9.4b, ADR-0029 item 7, ADR-0033): default false, so the
- * Claude adapter declares no tool channel and its argv is unchanged; when true, only approved bypass runs get it.
+ * Every provider registry entry with an adapter (`src/adapters/providers.ts`, T4.1), in table order; test-only entries
+ * (the fake) only when the switch is on. `claudeGitChannel` is `providers.claude-code.git_channel` (T9.4b, ADR-0029
+ * item 7, ADR-0033): default false, so the Claude adapter declares no tool channel and its argv is unchanged; when
+ * true, only approved bypass runs get it.
  */
 export function buildRegistry(fake: FakeSwitch, opts: { claudeGitChannel?: boolean } = {}): AdapterRegistry {
-  const registry = new AdapterRegistry()
-    .register(new ClaudeAdapter({ gitChannel: opts.claudeGitChannel === true }))
-    .register(new CodexAdapter());
-  if (fake.enabled) registry.register(new FakeAdapter({ scenario: fake.scenario }));
+  const registry = new AdapterRegistry();
+  for (const entry of providerEntries()) {
+    if (entry.create === undefined || (entry.kind === "test" && !fake.enabled)) continue;
+    registry.register(
+      entry.create({
+        claudeGitChannel: opts.claudeGitChannel === true,
+        ...(fake.enabled ? { fakeScenario: fake.scenario } : {}),
+      }),
+    );
+  }
   return registry;
 }
 

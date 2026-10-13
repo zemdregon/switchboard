@@ -2,8 +2,8 @@
  * Config JSON Schema (TDD §3.1, FR-OPS-04, NFR-SEC-05). The schema document is the source of truth and is validated by
  * Ajv; `SwitchboardConfig` is hand-written and kept consistent by the tests (TDD §2 allows either mechanism).
  *
- * Proposed (not in the SRS): provider ids are limited to the seven providers named in AGENTS.md; `weight` is a number
- * in [0, 1]; client ids match `^[a-z0-9][a-z0-9_-]{0,63}$`; concurrency maxima are 64.
+ * Proposed (not in the SRS): provider ids are the config ids of the provider registry table (T4.1,
+ * `src/adapters/providers.ts`; the seven providers named in AGENTS.md); `weight` is a number in [0, 1]; client ids match `^[a-z0-9][a-z0-9_-]{0,63}$`; concurrency maxima are 64.
  *
  * `mcp_clients[].privileged_approval` (owner decisions 18 and 22, ADR-0019; the key, its values and its default are
  * Delegated): `required` (default) keeps the operator's `approve`/`deny` step for this client's `privileged` requests;
@@ -25,6 +25,12 @@
  * `--mcp-config` file. Default false (argv unchanged, `commitChannel: "none"`). Accepted only under `claude-code`.
  * UNSUPPORTED until the ADR-0029 live checks pass.
  */
+import {
+  BUILTIN_CONFIG_PROVIDER_IDS,
+  type ConfigProviderId,
+  configProviderIds,
+  providerGeneration,
+} from "../adapters/providers.js";
 
 export const TRUST_PROFILES = [
   "inspect-untrusted",
@@ -35,16 +41,12 @@ export const TRUST_PROFILES = [
 ] as const;
 export type TrustProfile = (typeof TRUST_PROFILES)[number];
 
-export const PROVIDER_IDS = [
-  "claude-code",
-  "codex",
-  "grok-build",
-  "antigravity",
-  "cursor",
-  "opencode",
-  "kimi-code",
-] as const;
-export type ProviderId = (typeof PROVIDER_IDS)[number];
+/**
+ * Config provider ids, derived from the provider registry table (`src/adapters/providers.ts`, T4.1, LLD §2): the
+ * built-in entries' config ids in table order. `configSchemaFor` extends the schema with runtime-registered entries.
+ */
+export const PROVIDER_IDS: readonly ConfigProviderId[] = BUILTIN_CONFIG_PROVIDER_IDS;
+export type ProviderId = ConfigProviderId;
 
 export const CONFIG_SCHEMA_VERSION = 1;
 
@@ -146,21 +148,23 @@ export interface ProfileOverrideConfig {
   repo_config?: "disabled" | "approved-only" | "allowlisted";
 }
 
-const providerProps = Object.fromEntries(
-  PROVIDER_IDS.map((id) => [
-    id,
-    {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        enabled: { type: "boolean" },
-        weight: { type: "number", minimum: 0, maximum: 1 },
-        // T9.4b (ADR-0029): Claude Code only; any other provider refuses the key (additionalProperties: false).
-        ...(id === "claude-code" ? { git_channel: { type: "boolean" } } : {}),
+const providerPropsFor = (ids: readonly string[]) =>
+  Object.fromEntries(
+    ids.map((id) => [
+      id,
+      {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          enabled: { type: "boolean" },
+          weight: { type: "number", minimum: 0, maximum: 1 },
+          // T9.4b (ADR-0029): Claude Code only; any other provider refuses the key (additionalProperties: false).
+          ...(id === "claude-code" ? { git_channel: { type: "boolean" } } : {}),
+        },
       },
-    },
-  ]),
-);
+    ]),
+  );
+const providerProps = providerPropsFor(PROVIDER_IDS);
 
 const stringList = {
   type: "array",
@@ -319,3 +323,25 @@ export const configSchema = {
     },
   },
 } as const;
+
+/**
+ * The config schema for the given config provider ids (T4.1): {@link configSchema} with `providers` and
+ * `projects[].allowed_providers` rebuilt from `ids`; every other part is the same object structure. With the built-in
+ * ids it is deep-equal to {@link configSchema}.
+ */
+export function configSchemaFor(ids: readonly string[]): Record<string, unknown> {
+  // biome-ignore lint/suspicious/noExplicitAny: a structural copy of a JSON schema document, edited at two known paths
+  const schema = structuredClone(configSchema) as any;
+  schema.properties.providers.properties = providerPropsFor(ids);
+  schema.properties.projects.items.properties.allowed_providers.items.enum = [...ids];
+  return schema as Record<string, unknown>;
+}
+
+/**
+ * The schema config validation uses now: {@link configSchema} while no provider is registered at runtime, else
+ * {@link configSchemaFor} over every registered config id. `generation` changes whenever that set changes.
+ */
+export function currentConfigSchema(): { readonly generation: number; readonly schema: Record<string, unknown> } {
+  const generation = providerGeneration();
+  return { generation, schema: generation === 0 ? configSchema : configSchemaFor(configProviderIds()) };
+}

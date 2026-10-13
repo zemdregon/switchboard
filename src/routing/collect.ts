@@ -8,6 +8,7 @@
  * `probe`. `compile` is pure and runs after a successful probe (adapters resolve their binary path in `probe`).
  */
 import type { PreflightCache } from "../adapters/preflight-cache.js";
+import { BUILTIN_CONFIG_TO_ADAPTER_ID, configIdForAdapterId } from "../adapters/providers.js";
 import type { AdapterRegistry } from "../adapters/registry.js";
 import type {
   AuthResult,
@@ -30,17 +31,11 @@ import {
 
 /**
  * Proposed: config provider ids (`claude-code`, `grok-build`, `kimi-code`) differ from adapter ids (`claude`, `grok`,
- * `kimi`). The docs do not define the mapping; this table is the single place it lives.
+ * `kimi`). The docs do not define the mapping; since T4.1 it is derived from the provider registry table
+ * (`src/adapters/providers.ts`), the single place it lives. Runtime lookups use `adapterIdForConfigId` and
+ * `configIdForAdapterId`, which also see runtime-registered entries.
  */
-export const CONFIG_TO_ADAPTER_ID: Readonly<Record<ConfigProviderId, ProviderId>> = {
-  "claude-code": "claude",
-  codex: "codex",
-  "grok-build": "grok",
-  antigravity: "antigravity",
-  cursor: "cursor",
-  opencode: "opencode",
-  "kimi-code": "kimi",
-};
+export const CONFIG_TO_ADAPTER_ID: Readonly<Record<ConfigProviderId, ProviderId>> = BUILTIN_CONFIG_TO_ADAPTER_ID;
 
 /**
  * Proposed default: a provider is enabled unless config sets `providers.<id>.enabled` to false. Fail-closed gating
@@ -48,9 +43,10 @@ export const CONFIG_TO_ADAPTER_ID: Readonly<Record<ConfigProviderId, ProviderId>
  * follow the same default.
  */
 export function isProviderEnabled(config: Pick<SwitchboardConfig, "providers"> | undefined, id: ProviderId): boolean {
-  const entry = (Object.entries(CONFIG_TO_ADAPTER_ID) as [ConfigProviderId, ProviderId][]).find(([, a]) => a === id);
-  if (!entry) return true;
-  return config?.providers?.[entry[0]]?.enabled !== false;
+  const configId = configIdForAdapterId(id);
+  if (configId === undefined) return true;
+  const providers = config?.providers as Readonly<Record<string, { enabled?: boolean } | undefined>> | undefined;
+  return providers?.[configId]?.enabled !== false;
 }
 
 export interface EligibilityRequest {

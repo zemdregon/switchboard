@@ -68,7 +68,12 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, type CallToolResult, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { ErrorObject, ValidateFunction } from "ajv";
 import { Ajv2020 } from "ajv/dist/2020.js";
-import type { AdapterRegistry, ProviderId, ResolvedProfile } from "../adapters/index.js";
+import {
+  type AdapterRegistry,
+  adapterIdForConfigId,
+  type ProviderId,
+  type ResolvedProfile,
+} from "../adapters/index.js";
 import type { ArtifactStore } from "../artifacts/index.js";
 import {
   CONTAINER_NOT_IMPLEMENTED,
@@ -95,7 +100,6 @@ import {
 } from "../policy/index.js";
 import type { DynamicProjectStore } from "../projects/index.js";
 import {
-  CONFIG_TO_ADAPTER_ID,
   compileCheck,
   type EligibilityReasonCode,
   profilePlatformSupported,
@@ -333,7 +337,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     const allowed = project?.project.allowedProviders;
     if (allowed === undefined) return { candidates: all, excluded: [] };
     // Config ids (`claude-code`) differ from adapter ids (`claude`); a provider with no mapping (the test `fake`) is never allowed.
-    const set = new Set<string>(allowed.map((id) => CONFIG_TO_ADAPTER_ID[id]));
+    const set = new Set<string>(allowed.flatMap((id) => adapterIdForConfigId(id) ?? []));
     if (required !== undefined && !set.has(required)) {
       throw new ToolError(
         "PERMISSION_BLOCKED",
