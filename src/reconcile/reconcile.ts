@@ -30,7 +30,7 @@
  * - T3.4: an operator `approve`/`deny` recorded while no daemon ran is applied here, before any pending cancel of the
  *   same run (the CLI refuses a decision while a cancel is pending, so the decision is the older record). A decision
  *   that no longer applies is marked rejected. An AWAITING_APPROVAL run with no decision is kept as is: there is no
- *   expiry and no automatic approval (FRD WF-7, owner decision 14).
+ *   expiry and no automatic approval (FRD WF-7, owner decision 17).
  *
  * Idempotent (LLD §10): every step is conditional on the current state; a second pass over a reconciled ledger writes
  * nothing. A crash during reconciliation leaves the last committed step, which the next pass continues from.

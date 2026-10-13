@@ -527,7 +527,7 @@ describe("operator cancel requests recorded while the controller was down (T1.10
   });
 });
 
-describe("privileged approvals across restarts (T3.4, FRD WF-7, WF-8; owner decision 14)", () => {
+describe("privileged approvals across restarts (T3.4, FRD WF-7, WF-8; owner decision 17)", () => {
   const SCOPE = {
     files: { access: "worktree" },
     shell: { mode: "none" },

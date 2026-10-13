@@ -425,7 +425,7 @@ describe("admission", () => {
       expect(compiles).toBe(0);
       expect(probes).toBe(0);
       expect(JSON.parse(done.policy_snapshot_json).bypassApproved).toBe(false);
-      // A failed later run never changes the approval (owner decision 14).
+      // A failed later run never changes the approval (owner decision 17).
       expect(ledger.getApproval(approval?.id as string)?.status).toBe("APPROVED");
     });
 

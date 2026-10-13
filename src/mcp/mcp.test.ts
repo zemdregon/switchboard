@@ -827,7 +827,7 @@ describe("privileged admission (T3.3; FR-POL-09, FR-MCP-06, BR-13, BR-14, V13, C
     const rows = approvals();
     expect(rows.map((r) => r.status)).toEqual(["PENDING", "PENDING"]);
     expect(rows[0]?.scope_json).toBe(rows[1]?.scope_json);
-    expect(rows[0]?.scope_hash).not.toBe(rows[1]?.scope_hash); // bound to the meta-session (owner decision 14)
+    expect(rows[0]?.scope_hash).not.toBe(rows[1]?.scope_hash); // bound to the meta-session (owner decision 17)
   });
 
   it("cancel_run while AWAITING_APPROVAL ends CANCELLED and closes the row DENIED by cancel_run (Q-15)", async () => {

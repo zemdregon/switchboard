@@ -1,5 +1,5 @@
 /**
- * The structured `privileged_scope` (T3.3; LLD §3.1; FR-POL-09; owner decisions 13 and 14; ADR-0016): its closed JSON
+ * The structured `privileged_scope` (T3.3; LLD §3.1; FR-POL-09; owner decisions 13 and 17; ADR-0017): its closed JSON
  * Schema, the "present exactly when" checks the schema cannot express, the canonical form and the v2 scope hash, and the
  * documented mapping from scope spellings to {@link ResolvedProfile} spellings.
  *
@@ -168,7 +168,7 @@ export function canonicalScopeJson(scope: PrivilegedScope): string {
 /**
  * `scope_hash` v2 (LLD §3.1): hex SHA-256 over `canonicalJson({ v: 2, client_id, meta_session_id, scope })`. The same
  * for every run of one meta-session and client under one scope; different for any other client, meta-session or scope
- * (owner decision 14).
+ * (owner decision 17).
  */
 export function privilegedScopeHash(input: {
   readonly clientId: string;

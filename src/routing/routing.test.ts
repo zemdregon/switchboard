@@ -421,7 +421,7 @@ describe("per-profile eligibility (M3)", () => {
   it("linux: a loosening override changes the verdict through compile only (trusted-development shell broad)", async () => {
     const d = await evaluate("trusted-development", "linux", { "trusted-development": { shell: "broad" } });
     expect(d.eligible).toEqual(["codex"]); // Codex: --sandbox workspace-write
-    expect(excludedFor(d, "claude")?.primary).toMatchObject({ code: "CAPABILITY_MISSING" }); // Q-29
+    expect(excludedFor(d, "claude")?.primary).toMatchObject({ code: "CAPABILITY_MISSING" }); // Q-34
   });
 
   for (const platform of ["darwin", "win32"]) {

@@ -209,7 +209,7 @@ describe("compile: argv and policy (FR-POL-02/03/04/08)", () => {
       "PROFILE_UNSUPPORTED",
     ],
     [
-      "test-sandboxed (Q-27)",
+      "test-sandboxed (Q-32)",
       () => adapter().compile(request(), { ...EDIT_PROFILE, name: "test-sandboxed" }),
       "PROFILE_UNSUPPORTED",
     ],
@@ -561,11 +561,11 @@ describe("compile matrix (M3, T3.6; TDD §4.2.1)", () => {
     ["network allowlist", "edit-untrusted", { network: "allowlist", networkAllowlist: ["a.example"] }, {}, CAP()],
     ["repoConfig allowlisted", "edit-untrusted", { repoConfig: "allowlisted" }, {}, CAP(/repoConfig/)],
     ["model requested", "edit-untrusted", undefined, { model: "m" }, CAP(/model/)],
-    // test-sandboxed: Q-27 Proposed fail closed; capability gaps name their own reason first
-    ["default", "test-sandboxed", undefined, {}, UNSUP(/Q-27/)],
-    ["shell none", "test-sandboxed", { shell: "none" }, {}, UNSUP(/Q-27/)],
-    ["shell broad", "test-sandboxed", BROAD, {}, UNSUP(/Q-27/)],
-    ["read-only workspace", "test-sandboxed", undefined, RO, UNSUP(/Q-27/)],
+    // test-sandboxed: Q-32 Proposed fail closed; capability gaps name their own reason first
+    ["default", "test-sandboxed", undefined, {}, UNSUP(/Q-32/)],
+    ["shell none", "test-sandboxed", { shell: "none" }, {}, UNSUP(/Q-32/)],
+    ["shell broad", "test-sandboxed", BROAD, {}, UNSUP(/Q-32/)],
+    ["read-only workspace", "test-sandboxed", undefined, RO, UNSUP(/Q-32/)],
     ["shell allowlist [npm test]", "test-sandboxed", { shellAllowlist: ["npm test"] }, {}, CAP(/Q-11/)],
     ["shell allowlist [git push]", "test-sandboxed", { shellAllowlist: ["git push"] }, {}, UNSUP(/FR-GIT-01/)],
     ["network allowlist", "test-sandboxed", { network: "allowlist", networkAllowlist: ["a.example"] }, {}, CAP()],

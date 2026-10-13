@@ -3,7 +3,7 @@
 | Field | Value |
 | --- | --- |
 | Status | Draft, baseline for milestone M1 |
-| Owns | SQLite schema (DDL), adapter TypeScript contract, MCP tool schemas, failure taxonomy, workspace/lease algorithm, compliance manifest schema, telemetry span list, supervisor/retry/idempotency details |
+| Owns | SQLite schema (DDL), adapter TypeScript contract, MCP tool schemas, failure taxonomy, workspace/lease algorithm, compliance manifest schema, telemetry span list, supervisor/retry/idempotency details, inner-agent configuration, backend port, tables, call pipeline and task contracts (§13) |
 | Does not own | Requirements ([SRS](../requirements/SRS.md)); run state machine and workflows ([FRD](../requirements/FRD.md)); technology choices and per-provider strategy ([TDD](TDD.md)); component boundaries ([HLD](HLD.md)); scope and sequencing ([ROADMAP](../ROADMAP.md#6-milestones)) |
 | Last reconciled | 2026-10-12 |
 
@@ -26,9 +26,11 @@ Conventions:
 - All tables are `STRICT`. Foreign keys `ON`. `PRAGMA journal_mode=WAL; synchronous=FULL` (Proposed: durability over
   speed for crash safety, NFR-REL-01); `busy_timeout` set although only one writer exists.
 - **Append-only** (enforced by `BEFORE UPDATE/DELETE` triggers that `RAISE(ABORT)`): `run_event`, `decision`,
-  `workspace_checkpoint`, `usage_observation`, `route_decision` (FR-SES-05, FR-RTE-03, FR-CAP-01). **Update-once**
+  `workspace_checkpoint`, `usage_observation`, `route_decision`, and (M11) `inner_call` (FR-SES-05, FR-RTE-03, FR-CAP-01,
+FR-INN-15). **Update-once**
   (pending to decided): `approval`. **Mutable current-state**: `meta_session`, `run`, `provider_health`,
-  `adapter_version.validated_*`, and `artifact.deleted_at` only. Retention GC removes artifact files and worktrees and
+  `adapter_version.validated_*`, (M11) `inner_task_state`, and `artifact.deleted_at` only. Retention GC removes artifact
+  files and worktrees and
   sets `artifact.deleted_at`; it never deletes `run_event` rows (Assumption).
 
 ```sql
@@ -198,7 +200,7 @@ CREATE TABLE provider_health (          -- mutable, one row per provider; breake
 CREATE TABLE route_decision (           -- append-only (FR-RTE-03); M2 writes eligibility only, M7 adds scores
   id              TEXT PRIMARY KEY,
   run_id          TEXT NOT NULL REFERENCES run(id),
-  features_json   TEXT NOT NULL CHECK (json_valid(features_json)),
+  features_json   TEXT NOT NULL CHECK (json_valid(features_json)),  -- M11: feature entries carry source, model_id, template_version (§13.6)
   weights_json    TEXT CHECK (weights_json IS NULL OR json_valid(weights_json)),
   candidates_json TEXT NOT NULL CHECK (json_valid(candidates_json)), -- per candidate: eligible?, reasons, score
   selected_provider TEXT,
@@ -221,7 +223,7 @@ CREATE TABLE approval (                 -- privileged runs (FR-POL-09), M3
 Triggers (shape, one per append-only table): `CREATE TRIGGER run_event_no_update BEFORE UPDATE ON run_event BEGIN SELECT
 RAISE(ABORT,'append-only'); END;` and the same for `DELETE`. An analogous guard allows `approval` to change only from
 `PENDING`. The controller never writes `EXPIRED` (no expiry: WF-7,
-[ADR-0016](../adr/0016-approved-privileged-scope-bypass.md)); the value stays in the `CHECK` only so the M1 schema needs
+[ADR-0017](../adr/0017-approved-privileged-scope-bypass.md)); the value stays in the `CHECK` only so the M1 schema needs
 no migration.
 
 **Operator cancel requests (M1, Proposed).** `runs cancel` records a request as append-only `run_event` rows of type
@@ -294,6 +296,14 @@ New `run_event.type` values (M9): `environment` (create, start, stop, remove; M1
 `git_policy_violation`, `git_tool_denied`. Payloads are bounded and hold no message text, only counts, SHAs and rule IDs.
 Both new tables get the same `BEFORE UPDATE`/`DELETE` guards as the other append-only tables.
 
+**M11 additions (Proposed).** One forward migration (ADR-0005) adds the append-only `inner_call` table and the mutable
+`inner_task_state` table (DDL in [§13.3](#133-data)), adds `pr_draft` to the `artifact.kind` check, adds `inner_agent` to
+the `usage_observation.source` check (FR-INN-15), and adds two columns to `git_commit` (§12.7). SQLite cannot alter a
+`CHECK`, so the two checks are widened by the migration runner's table-rebuild step. `route_decision.features_json` keeps
+its column; only its content gains per-feature `source`, `model_id` and `template_version` (§13.6, `route_features`).
+The inner agent's entities are therefore `inner_call` (history) and `inner_task_state` (current suspension state per
+task), plus the columns above; no inner prompt or response body is stored anywhere (FR-INN-16).
+
 ## 2. Adapter contract
 
 Satisfies FR-ADP-01 (probe, auth preflight, compile, parse, resume, cancel). Adapters are pure with respect to I/O
@@ -301,7 +311,7 @@ except `probe`/`authPreflight`, which execute the provider binary through a supe
 inject fakes). Adapters never read credential files (FR-AUTH-01).
 
 ```ts
-export type ProviderId = 'claude' | 'codex' | 'grok' | 'antigravity' | 'cursor' | 'opencode' | 'kimi' | 'fake';
+export type ProviderId = 'claude' | 'codex' | 'grok' | 'antigravity' | 'cursor' | 'opencode' | 'kimi' | 'muse' | 'fake';
 export type TrustProfile = 'inspect-untrusted' | 'edit-untrusted' | 'test-sandboxed'
                          | 'trusted-development' | 'privileged';
 
@@ -360,7 +370,7 @@ export interface ResolvedProfile {                       // from COMP-POL, snaps
   shell: 'none'|'allowlist'|'broad'|'scoped'; shellAllowlist?: string[];
   network: 'off'|'allowlist'|'policy'|'scoped'; networkAllowlist?: string[];
   repoConfig: 'disabled'|'approved-only'|'allowlisted'|'scoped';
-  bypassApproved: boolean;                               // true only per §3.1 "Bypass" (FR-POL-03, ADR-0016)
+  bypassApproved: boolean;                               // true only per §3.1 "Bypass" (FR-POL-03, ADR-0017)
   privilegedScope?: { scope: PrivilegedScope; scopeHash: string; approvalId: string };  // privileged only (§3.1)
 }
 
@@ -385,14 +395,15 @@ export interface Ineligible {
 ```
 
 **Provider ids.** Two id spaces exist (Proposed, M2; the single mapping table is `CONFIG_TO_ADAPTER_ID` in
-`src/routing/collect.ts`). Config files and `providers.<id>` use the seven provider names from the roadmap; the adapter
-contract, the ledger and MCP tools use the `ProviderId` above. They differ for three providers:
+`src/routing/collect.ts`). Config files and `providers.<id>` use the provider names from the roadmap; the adapter
+contract, the ledger and MCP tools use the `ProviderId` above. They differ for four providers:
 
 | Config provider id | Adapter `ProviderId` |
 | --- | --- |
 | `claude-code` | `claude` |
 | `grok-build` | `grok` |
 | `kimi-code` | `kimi` |
+| `muse-code` | `muse` |
 | `codex`, `antigravity`, `cursor`, `opencode` | the same string |
 
 `fake` is a test adapter with no config id.
@@ -526,9 +537,10 @@ Fails `INVALID_REQUEST` if the session has a non-terminal run holding the lease.
 (type and bounded payload; no raw output).
 **`cancel_run`** `{ run_id, reason? }` returns the envelope; cancellation is asynchronous (WF-4) and the status may
 still be non-terminal. Cancelling a terminal run is a no-op returning its envelope.
-**`get_artifacts`** `{ run_id, kinds?: ["diff"|"test_report"|"changed_files"|"log_summary"|"handoff_view"],
+**`get_artifacts`** `{ run_id, kinds?: ["diff"|"test_report"|"changed_files"|"log_summary"|"handoff_view"|"pr_draft"],
 max_inline_bytes?: int }` returns `[{artifact_id, kind, sha256, size_bytes, inline_text?}]`; inline only when under
-`max_inline_bytes` (default 65536, proposed target).
+`max_inline_bytes` (default 65536, proposed target). `pr_draft` exists only when the PR-draft task produced an accepted
+draft (M11, [§13.6](#136-task-contracts)); Switchboard never opens a pull request with it (FR-INN-11).
 **`list_capabilities`** `{}` returns `{ schema_version, providers: [{provider, adapter_status, binary_version,
 validated_range, auth_state, supported_profiles[], transports[], models[], sandbox_features[], git_write_control?}] }`;
 reads cached preflight (NFR-PERF-02). `git_write_control` is `{ kind: "provider-deny-rules" | "none-documented", detail,
@@ -587,11 +599,11 @@ with an empty range (Codex today, `<0.0.0`) is therefore `ADAPTER_VERSION_UNVERI
 
 ### 3.1 Privileged scope (M3)
 
-Owner decisions 13 and 14 and [ADR-0016](../adr/0016-approved-privileged-scope-bypass.md). Shape, hash, lookup and
+Owner decisions 13 and 17 and [ADR-0017](../adr/0017-approved-privileged-scope-bypass.md). Shape, hash, lookup and
 validation are Delegated (Proposed), not owner-approved. No code may emit a bypass flag until this contract and the
 argv audit change (T3.17) are both in place. *Amended 2026-10-13, before merge:* the scope became machine-readable
-(Delegated, ROADMAP Q-23 answered, ROADMAP §4.4) and the approval binding moved from one run to the meta-session (owner
-decision 14, ROADMAP Q-24 answered).
+(Delegated, ROADMAP Q-28 answered, ROADMAP §4.4) and the approval binding moved from one run to the meta-session (owner
+decision 17, ROADMAP Q-29 answered).
 
 ```jsonc
 { "$defs": { "privileged_scope": { "type": "object", "additionalProperties": false,
@@ -662,7 +674,7 @@ scope_hash = hex(SHA-256(canonicalJson({ "v": 2,
 ```
 
 `v: 1` (the hash over the run ID and `request_hash`) was never implemented and is withdrawn. The `v: 2` hash binds the
-approval to one MCP client, one meta-session and one canonical scope (owner decision 14), not to one run, so it is the
+approval to one MCP client, one meta-session and one canonical scope (owner decision 17), not to one run, so it is the
 same for every run of that meta-session that uses that scope, and different for any other client, meta-session or
 scope. The run row, the `PENDING` approval row (`run_id` = this first run, `scope_json`, `scope_hash`, `requested_at`)
 and the first `run_event` are written in one transaction; the policy snapshot records `privilegedScope` with the same
@@ -691,8 +703,8 @@ only, FR-OPS-02) on the run that requested the approval. It recomputes the hash 
 AWAITING_APPROVAL, the row is `PENDING` and the recomputed hash equals `scope_hash`; otherwise it is a CLI error and
 nothing changes. `approve` on a later run of the meta-session is a CLI error: it is not AWAITING_APPROVAL and has no
 row of its own. `deny` writes `DENIED` and the run ends CANCELLED (WF-7). No MCP tool, timer, configuration value or
-client ceiling approves. An approval never expires and is never revoked automatically (owner decision 14); a manual
-revoke is ROADMAP Q-25.
+client ceiling approves. An approval never expires and is never revoked automatically (owner decision 17); a manual
+revoke is ROADMAP Q-30.
 
 **Bypass.** Before compiling any `privileged` run, COMP-POL loads the approval named by the snapshot's `approvalId` and
 sets `bypassApproved = true` only if: the row is `APPROVED`; its `scope_hash` equals the snapshot's `scopeHash` and the
@@ -775,6 +787,10 @@ of replay follows FR-WS-04.
 
 `CANCELLED` is also a run *state* (FRD); the code is used in error envelopes and `run_event` payloads, while a cancelled
 run has `state = 'CANCELLED'` and `failure_code` NULL per the DDL check.
+
+Inner-agent failures (unreachable, timeout, invalid output, open circuit, suspension) are **not** run failure codes: they
+never fail a run, never appear in `run.failure_code` and never feed retry (FR-INN-06, FR-INN-08); they are recorded as
+`inner_call` outcomes and `inner_*` run events ([§13.8](#138-telemetry-and-events)).
 
 ## 5. Workspace and lease algorithm
 
@@ -917,11 +933,12 @@ export is derived. Redaction is by construction: spans are built from an allowli
 | `workspace.diff` | `controller.delegate` | mutation detection + post checkpoint |
 | `verification.tests` | `controller.delegate` | M3 |
 | `run.finalize` | `controller.delegate` | terminal transition |
+| `inner.call` | `controller.delegate` when the call belongs to a run, else root | M11; one per inner-agent call, attributes in [§13.8](#138-telemetry-and-events); never on a run's critical path beyond the per-call bound |
 
 **Allowed attributes:** `run.id`, `session.id`, `provider`, `adapter.version`, `model`, `trust_profile`, `run.state`,
 `failure.code`, `retry.attempt`, `transport`, durations, `exit.code`, `exit.signal`, tool kind
 (`read|edit|shell|other`), counts (changed files, events), token/usage numbers as reported, `route.eligible_count`,
-`artifact.id`, `artifact.sha256`, `artifact.size_bytes`.
+`artifact.id`, `artifact.sha256`, `artifact.size_bytes`, and (M11) the `inner.*` attributes listed in §13.8.
 **Forbidden (FR-TEL-03, NFR-SEC-01):** prompt or objective text, constraints text, shell command lines and tool
 arguments, file contents and diffs, stdout/stderr text, environment variable names or values beyond a count,
 credential-like values, absolute home paths (use run-relative paths), provider reasoning text (NFR-PRIV-02). Large
@@ -1105,6 +1122,7 @@ Served by the shim to the agent as MCP tools; every object has `additionalProper
 
 ```jsonc
 // commit  (always offered under write-capable profiles when the adapter's commitChannel is "injected")
+// M11: "message" is required only unless the commit_message task is enabled with mode != never (see below)
 { "input": { "type": "object", "required": ["message"], "properties": {
     "message": { "type": "string", "minLength": 1, "maxLength": 8192 },
     "paths":   { "type": "array", "items": { "type": "string" }, "maxItems": 256 } } },     // worktree-relative; default: all changes
@@ -1117,9 +1135,19 @@ Served by the shim to the agent as MCP tools; every object has `additionalProper
 
 `push` takes no arguments on purpose, so an injected agent cannot choose a ref. Tool errors use short codes
 (`NOT_RUNNING`, `LEASE_LOST`, `PATH_OUTSIDE_WORKTREE`, `NOTHING_TO_COMMIT`, `MESSAGE_EMPTY_AFTER_SANITISING`,
-`PUSH_NOT_ALLOWED`, `CREDENTIALS_UNAVAILABLE`, `REMOTE_REJECTED`, `SIGNING_FAILED`) and are `git_tool_denied` or
-`git_push` events. They are
-returned to the agent and do not fail the run.
+`PUSH_NOT_ALLOWED`, `CREDENTIALS_UNAVAILABLE`, `REMOTE_REJECTED`, `SIGNING_FAILED`, and, from M11, `MESSAGE_REQUIRED`)
+and are `git_tool_denied` or `git_push` events. They are returned to the agent and do not fail the run.
+
+**`message` and the inner agent (M11, FR-INN-10, Proposed).** `message` stays required in the published tool schema
+unless the `commit_message` task is enabled with `mode` other than `never`; the shim then serves the schema with no
+required field, generated per run from the effective configuration. With `draft_if_missing` the agent's own message
+always wins and no inner call is made when it is present and non-empty; with `always` the draft is requested even when
+the agent supplied one. `MESSAGE_REQUIRED` is returned when no message was supplied and the draft is unavailable
+(disabled, suspended, denied by a privacy gate, timed out, circuit open), empty, invalid, or empty after sanitising; its
+text asks the agent to call `commit` again with a `message`. The controller never writes a stand-in message. Under
+`always`, an unusable draft falls back to the agent's message when there is one, and returns `MESSAGE_REQUIRED` when not.
+`MESSAGE_EMPTY_AFTER_SANITISING` keeps its meaning for a message the agent supplied. The tool call waits for the inner
+call at most the per-call bound ([§13.4](#134-call-pipeline)).
 
 ### 12.2 Channel
 
@@ -1140,7 +1168,12 @@ Refs (Proposed): the **publish ref** for a meta-session is `refs/heads/<prefix><
 2. Build a temporary index file seeded from the publish ref's tree (or the run's base commit for the first commit); add
    the requested paths, or all worktree changes, from the worktree; write the tree. If the tree equals the parent's,
    `NOTHING_TO_COMMIT`.
-3. Sanitise the message (§12.4). If it is empty afterwards, `MESSAGE_EMPTY_AFTER_SANITISING`.
+   *(M11)* If the `commit_message` task applies (no agent message, or `mode` `always`), the inner pipeline
+   ([§13.4](#134-call-pipeline)) runs here on the diff between the parent tree and the new tree, limited to the paths
+   being committed. The result is a draft message or "unavailable".
+3. Sanitise the message (§12.4); drafted text goes through exactly the same sanitiser, with the same built-in and
+   operator patterns, as the agent's own text. If it is empty afterwards, `MESSAGE_EMPTY_AFTER_SANITISING` for an agent
+   message and `MESSAGE_REQUIRED` for a draft or when neither exists.
 4. Create the commit object with author and committer set to the context identity, current time, no trailers, no
    signature unless the context sets `sign: true` (§12.3.1), hooks disabled and a scrubbed environment (as in §5).
 5. Move the publish ref from the old head to the new commit with a compare-and-swap; on a lost race, retry from step 2
@@ -1177,7 +1210,9 @@ sources, case-insensitive, validated at config load with a length limit; Propose
 | `url.session` | URLs whose path or query contains a session or conversation identifier of this run | Same |
 
 After removal, runs of blank lines collapse and leading and trailing blank lines are trimmed. The controller never
-adds a line. The removed text is **not** recorded: `sanitizer_json` holds only `{ "rules": { "<rule id>": <count> }
+adds a line. This holds for text drafted by the inner agent and for the PR draft ([§13.6](#136-task-contracts)): they
+pass the same rules, with no inner-specific exceptions and no inner influence on the rule set (FR-INN-06). The removed
+text is **not** recorded: `sanitizer_json` holds only `{ "rules": { "<rule id>": <count> }
 }`. The rule set cannot catch what it does not describe, and it does not touch file contents (risk R-14).
 
 ### 12.5 Ref snapshot and violation handling
@@ -1210,3 +1245,341 @@ version and prints each commit's SHA, origin (`commit_tool` or `finalize_only`),
 Re-linking after an operator rewrite: match first on `commit_sha`, then `tree_sha`, then `patch_id` (best effort; Git's
 `patch-id` command; to be verified against the pinned Git version). Records are never edited and the commit objects are
 never annotated (notes were rejected, ADR-0014).
+
+**Inner-agent provenance (M11, Proposed).** `git_commit` gains `message_source` (`agent` or `inner`, default `agent`) and
+`inner_call_id` (the `inner_call` row of the accepted draft; NULL for an agent message). `runs show` prints both. The
+message itself is never annotated or stored; the PR draft's provenance is its `pr_draft` artifact ID on the `inner_call`
+run event.
+
+## 13. Inner agent
+
+Implements FR-INN-01..17 and [ADR-0016](../adr/0016-inner-agent.md) for M11 (COMP-INN, trust boundary TB-10). Task
+catalogue and recommendations: [PRD §3.1](../requirements/PRD.md#31-inner-agent-task-catalogue). Everything here is
+**Proposed** unless an SRS ID fixes it; no model name, port or provider flag is stated as fact, and every number is a
+*(proposed target)*. An inner call is a stateless single-turn text completion with no tools (FR-INN-02). No inner output
+is an input to COMP-POL, profile compilation, eligibility, approvals, ceilings, push policy, the sanitiser's rules,
+redaction, failure classification or any run status (FR-INN-06); structure and the import-boundary test
+([TDD §3.12](TDD.md#312-inner-agent)) enforce it, not prompting.
+
+### 13.1 Configuration shape
+
+Part of the config schema ([TDD §3.1](TDD.md#31-configuration)). With no `inner_agent` section, or `enabled: false`, every
+task uses its fallback and nothing else changes (FR-INN-01). There is no default backend, model or task.
+
+```jsonc
+{ "inner_agent": {
+    "enabled": true,                                   // master switch; default false
+    "backend": {
+      "kind": "http",                                  // or "cli" (FR-INN-04; Ineligible until verified, §13.2)
+      "base_url": "http://127.0.0.1:<port>",           // http only; no userinfo, no query; or a Unix socket path form (§13.2)
+      "model": "<model>",                              // operator-chosen placeholder; never defaulted
+      "timeout_ms": 15000,                             // hard bound per task call, both attempts together (proposed target)
+      "max_concurrency": 2,                            // per-backend semaphore (proposed target)
+      "allow_remote": false,                           // true is required to use a backend classified remote (FR-INN-16)
+      "shares_subscription_with": null                 // optional provider id; see FR-INN-15
+      // cli kind instead of base_url: "provider": "opencode"   (flags and argv are adapter-owned, not configurable here)
+    },
+    "tasks": {
+      "commit_message":   { "enabled": true,  "mode": "draft_if_missing",   // draft_if_missing | always | never
+                            "allow_source_content": false, "input_budget_bytes": 24000, "max_output_tokens": 400 },
+      "pr_draft":         { "enabled": false, "allow_source_content": false, "input_budget_bytes": 48000, "max_output_tokens": 1200 },
+      "route_features":   { "enabled": false, "input_budget_bytes": 8000, "max_output_tokens": 100, "timeout_ms": 5000 },
+      "handoff_condense": { "enabled": false, "allow_source_content": false, "input_budget_bytes": 32000, "max_output_tokens": 800 },
+      "log_summary":      { "enabled": false, "allow_source_content": false, "input_budget_bytes": 32000, "max_output_tokens": 400 },
+      "run_title":        { "enabled": false, "input_budget_bytes": 2000, "max_output_tokens": 80 }
+    },
+    "breaker":    { "failure_threshold": 3, "open_ms": 60000 },                          // proposed targets
+    "suspension": { "window_calls": 50, "min_calls": 20, "rejection_threshold": 0.4 }    // proposed targets (FR-INN-09)
+  } }
+```
+
+Rules (Ajv at startup; an unknown key or type error aborts startup, NFR-SEC-06):
+
+- **No credential fields.** There is no key, token, header, password or environment-variable field. `base_url` is
+  rejected if it carries userinfo or a query string; a value that looks like a credential is rejected at load (T11.1). A
+  keyed hosted service is reached through an operator-run local gateway that holds the key, or through the `cli` kind,
+  which keeps its own login (FR-INN-03, ADR-0003).
+- `mode` is valid only on `commit_message`. `allow_source_content` is valid only on tasks that send repository content
+  (`commit_message`, `pr_draft`, `handoff_condense`, `log_summary`; §13.5) and defaults to `false`. A task `timeout_ms`
+  may only be lower than the backend's. `input_budget_bytes` has a floor of 1024 so the fixed header always fits.
+- `shares_subscription_with` must name a configured provider id or be `null` (FR-INN-15).
+- **Per-project and per-context setting.** The project object and each context object of [§11.1](#111-configuration-shape)
+  gain an optional `"inner_agent": "off" | "local_only" | "inherit"` (default `inherit`). There is deliberately no `on`
+  value: a project can only restrict what the installation-level configuration allows. The effective value is the most
+  restrictive of project and context (`off` over `local_only` over `inherit`). Runs started by `workspace_path`, with no
+  project, use `inherit`.
+- Tasks are enabled individually and none is on by default (FR-INN-05). A task whose master switch, task switch, mode,
+  privacy gate or suspension forbids the call uses its fallback (§13.7).
+
+### 13.2 Backend port
+
+```ts
+type InnerTask = 'commit_message' | 'pr_draft' | 'route_features' | 'handoff_condense' | 'log_summary' | 'run_title';
+type Locality = 'local' | 'remote';
+
+interface InnerRequest {
+  task: InnerTask;
+  template_version: string;            // e.g. "commit_message.v1"; part of the task contract, bumped on any prompt change
+  system: string;                      // fixed template text owned by the task contract, never built from input
+  user: string;                        // redacted, budget-truncated input (§13.4 steps 2-3)
+  max_output_tokens: number;
+  response_schema: object;             // JSON Schema of the expected output; a hint to the backend, never trusted (§13.4)
+}
+
+interface InnerResult {
+  text: string;                        // raw completion text; untrusted data (FR-INN-07)
+  usage?: { in: number | null; out: number | null };   // as reported by the backend; null/absent = unknown, never estimated
+  model_id: string;                    // as reported by the backend, else the configured model string
+}
+
+interface InnerBackend {
+  readonly kind: 'http' | 'cli';
+  resolveLocality(signal: AbortSignal): Promise<Locality>;   // at connect time, every connection (rule below)
+  complete(req: InnerRequest, signal: AbortSignal): Promise<InnerResult>;   // rejects on transport/exit failure
+  probe(signal: AbortSignal): Promise<{ reachable: boolean; canary_ok: boolean; eligible: boolean; detail: string }>;
+}
+```
+
+The port carries one request and one answer. There is no tool, file, session, history or streaming parameter, so a
+backend cannot be asked for more than a single completion (FR-INN-02). How `InnerRequest` maps onto a chat-completion
+request body, whether `response_schema` is passed as a structured-output constraint, and how usage is read are **Proposed**
+details of the `http` implementation, fixed in T11.3 against the endpoint the operator runs; the controller validates the
+output the same way whether or not the backend honoured the schema.
+
+**Kinds.**
+
+- `http`: a chat-completion endpoint the operator runs or reaches (FR-INN-03). Model and endpoint come only from the
+  configuration. No redirects are followed and no proxy environment variable is read (Proposed).
+- `cli`: an installed provider CLI run once, headless, with an operator-chosen model, the first being `opencode run`
+  (FR-INN-04, FR-ADP-08). **Proposed; flags unverified (Q-26, T11.0).** The run uses an empty temporary directory, a
+  minimal environment (FR-EXE-07), no repository config, and only argv that passes the adapter argv audit (no bypass flag;
+  [AGENTS.md](../../AGENTS.md)). The way the prompt is delivered (argv, stdin or file) and the output read are fixed by
+  the T11.0 spike, not guessed here.
+
+**Ineligible rule (cli).** The `cli` backend is `eligible` only if (a) the installed version is inside a compliance
+manifest range (FR-ADP-03) and (b) the documented controls that offer the model no tools, no file and no shell access have
+been shown to apply for that version (T11.0). Otherwise `probe` returns `eligible: false`, the backend is reported
+`Ineligible` in `doctor`, no process is started, and every task uses its fallback. Nothing downgrades this to "run it
+anyway".
+
+**Locality classification** (FR-INN-16). `local` means the address the controller actually connects to is a loopback
+address (`127.0.0.0/8`, `::1`) or a Unix domain socket on the host; everything else is `remote`.
+
+- Resolved **at connect time, not only at config load**: for `http`, the hostname is resolved when the connection is made,
+  the controller connects to that resolved address (so a second lookup cannot differ), and the peer address of the
+  established socket is checked. A hostname resolving to several addresses is `local` only if every address is loopback.
+  A name that was loopback at load but resolves elsewhere now is `remote` for that call; if `allow_remote` is false the
+  call is denied (§13.5). A failure to resolve is `remote` (fail closed).
+- The `cli` kind is always `remote` (Proposed): the controller cannot see where the installed CLI sends the prompt.
+- The classification used for each call is stored in `inner_call.locality` and shown by `doctor`.
+
+### 13.3 Data
+
+Added by the M11 forward migration ([§1](#1-data-model)). Same conventions as §1: ULID text IDs with a prefix (`inc_`,
+Proposed), UTC millisecond timestamps, `STRICT`, no prompt or response body in any column (FR-INN-16).
+
+```sql
+CREATE TABLE inner_call (               -- append-only (FR-INN-15, FR-INN-09); never usage_observation, never capacity
+  id              TEXT PRIMARY KEY CHECK (id LIKE 'inc\_%' ESCAPE '\'),
+  task            TEXT NOT NULL CHECK (task IN ('commit_message','pr_draft','route_features','handoff_condense',
+                    'log_summary','run_title')),
+  backend_kind    TEXT NOT NULL CHECK (backend_kind IN ('http','cli')),
+  model_id        TEXT NOT NULL,        -- reported by the backend, else the configured model string
+  locality        TEXT NOT NULL CHECK (locality IN ('local','remote')),
+  template_version TEXT NOT NULL,
+  outcome         TEXT NOT NULL CHECK (outcome IN ('accepted','rejected_validator','rejected_sanitiser',
+                    'fallback_unavailable','fallback_suspended','fallback_disabled')),
+  reason          TEXT,                 -- short code only (e.g. REMOTE_NOT_ALLOWED, CIRCUIT_OPEN, TIMEOUT); no free text
+  attempts        INTEGER NOT NULL CHECK (attempts BETWEEN 0 AND 2),   -- 0 when no call was made; 2 after a re-ask
+  latency_ms      INTEGER NOT NULL,     -- wall time of the whole pipeline attempt, 0 when no call was made
+  tokens_in       INTEGER,              -- as reported; NULL = unknown (never estimated)
+  tokens_out      INTEGER,
+  input_bytes     INTEGER NOT NULL,     -- size of the redacted, budget-truncated user text actually sent
+  output_bytes    INTEGER NOT NULL,     -- size of the raw completion received (0 if none)
+  input_sha256    TEXT NOT NULL,        -- hash of that sent text; lets a test or operator match without storing it
+  run_id          TEXT REFERENCES run(id),                 -- NULL for calls outside a run (inner test, doctor canary)
+  meta_session_id TEXT REFERENCES meta_session(id),
+  created_at      TEXT NOT NULL
+) STRICT;
+CREATE INDEX inner_call_task_time ON inner_call(task, created_at);
+CREATE INDEX inner_call_run ON inner_call(run_id);
+
+CREATE TABLE inner_task_state (         -- mutable current state, one row per task (FR-INN-09)
+  task            TEXT PRIMARY KEY CHECK (task IN ('commit_message','pr_draft','route_features','handoff_condense',
+                    'log_summary','run_title')),
+  suspended       INTEGER NOT NULL DEFAULT 0 CHECK (suspended IN (0,1)),
+  suspended_at    TEXT,
+  suspended_basis_json TEXT CHECK (suspended_basis_json IS NULL OR json_valid(suspended_basis_json)), -- window, rejected, total, threshold
+  resumed_at      TEXT,                 -- window counting restarts after this instant
+  version         INTEGER NOT NULL DEFAULT 0
+) STRICT;
+```
+
+`inner_call` gets the same `BEFORE UPDATE`/`DELETE` guards as the other append-only tables. The outcomes mean: `accepted`
+(the output passed every check and was used); `rejected_validator` (not valid after the permitted re-ask);
+`rejected_sanitiser` (valid, but the sanitiser left nothing usable); `fallback_unavailable` (the call could not be made
+or completed: unreachable, timeout, error, open circuit, no free slot, `Ineligible`); `fallback_suspended` (the task is
+suspended, §13.4 step 11); `fallback_disabled` (the task is enabled but a gate forbade the call: locality, `allow_remote`,
+`allow_source_content`, project setting, or the backend switched off). A task that is simply not enabled, or a
+`commit_message` call skipped because the agent supplied a message in `draft_if_missing`, writes no row.
+
+The accepted result lives where it is used, not in `inner_call`: a commit message in the commit, a PR draft and condensed
+text in artifacts, route features in `route_decision.features_json`, a run title in a `run_event` payload (§13.6). The
+`usage_observation` exception for `shares_subscription_with` is in §13.4 step 13.
+
+### 13.4 Call pipeline
+
+One pipeline serves every task; the task contract (§13.6) supplies the input builder, template, schema, validator and
+fallback. Redaction is the same component and rules as telemetry (FR-TEL-03, ADR-0012), not a second implementation.
+
+1. **Gate.** If `enabled` is false or the task is not enabled, return the fallback with no row. If the task is suspended
+   (`inner_task_state.suspended`), record `fallback_suspended` and return the fallback. Otherwise evaluate the privacy
+   gates of §13.5; a denial records `fallback_disabled` with the reason code and returns the fallback. No bytes of task
+   input are sent before this point; only name resolution for `resolveLocality` may occur.
+2. **Build and redact.** The task's input builder takes typed controller-owned fields (never a run object, a transcript
+   or a request body) and produces the text. Then, over every string in it, in this order: (a) the telemetry redactor
+   (credential-like values, home paths, environment values), (b) the identifier scrub: the patterns of §12.4 rules
+   `id.controller` and `id.native-session` and the configured provider names, so the prompt carries none of them
+   (FR-INN-10), (c) control-character stripping. The redactors only remove or mask; nothing the model returns is ever fed
+   back into them (FR-INN-06, FR-INN-18).
+3. **Budget.** If the text exceeds `input_budget_bytes`, truncate deterministically, never in the middle of a UTF-8
+   sequence, and insert a marker line `[truncated: <n> bytes omitted]`. Diffs: keep the file list and per-file stat header
+   whole, then whole hunks in path order until the budget is used. Logs and long text: keep a head of 25% and a tail of
+   75% of the budget (proposed target split). The marker and the fixed template are always kept. Truncation is recorded
+   only through `input_bytes`.
+4. **Hash.** `input_sha256` is computed over the text that will be sent.
+5. **Slot.** Acquire the per-backend semaphore (`max_concurrency`) waiting no longer than the remaining per-call bound.
+   No slot in time: `fallback_unavailable` (`BUSY`).
+6. **Breaker.** `closed`: proceed. `open`: do not call; `fallback_unavailable` (`CIRCUIT_OPEN`). `half_open`: exactly one
+   call at a time goes through as the probe; others see `open`. Transitions:
+   - `closed` to `open` after `breaker.failure_threshold` consecutive transport-level failures (connect error, timeout,
+     non-success response, unreadable response envelope, process failure for `cli`) across all tasks on the backend;
+   - `open` to `half_open` after `breaker.open_ms`;
+   - `half_open` to `closed` on a call that returns a transport-level success, to `open` on a failure.
+   A validator or sanitiser rejection is a quality outcome, not a transport failure: it does not move the breaker. Breaker
+   state is held in memory and starts `closed` at process start (Assumption; `doctor` re-probes).
+7. **Call.** The deadline is `timeout_ms` (task value if lower) for the whole pipeline including a re-ask; the
+   `AbortSignal` cancels the request or kills the `cli` process group at the deadline. The caller is never blocked longer.
+8. **Decode and strip.** The raw text must be valid UTF-8 (otherwise invalid), is capped at the task's output byte limit
+   (longer is invalid, not truncated), stripped of control characters other than newline and tab, and, for JSON tasks,
+   parsed as a single JSON value with nothing else around it.
+9. **Validate.** Ajv against the task's output schema (`additionalProperties: false`), then the task's validator rules
+   (§13.6). On failure, **one re-ask** if time remains: the same request plus a fixed error class from a closed list
+   (`not_json`, `schema`, `too_long`, `empty`, `rule`), never the rejected text, so hostile output is not echoed back. A
+   second failure is `rejected_validator`.
+10. **Sanitiser (commit_message and pr_draft only).** Run the [§12.4](#124-message-sanitisation) sanitiser unchanged over
+    the text. Empty or unusable afterwards is `rejected_sanitiser`, with no re-ask. Sanitiser counts go to
+    `git_commit.sanitizer_json` as for any message.
+11. **Quality window and suspension.** Over the task's last `suspension.window_calls` calls with outcome `accepted`,
+    `rejected_validator` or `rejected_sanitiser` since `inner_task_state.resumed_at` (`fallback_*` outcomes are not quality
+    evidence and are not counted), if at least `suspension.min_calls` exist and the rejected share exceeds
+    `suspension.rejection_threshold`, set `suspended = 1` in one transaction. The task then returns `fallback_suspended`
+    until the operator re-enables it (FR-INN-09). The re-enable command, Proposed as `inner resume <task>`, is not in
+    FR-INN-17's list: the SRS needs a note, or the re-enable becomes a config edit plus restart (unreconciled). Suspension
+    never reverses a result already accepted.
+12. **Accept or fall back.** Accepted: return the validated value to the caller, which performs every action that follows
+    (FR-INN-02). Any rejection or failure: return the task's deterministic fallback (§13.7). In no case does the caller's
+    run change state because of the result (FR-INN-08).
+13. **Record.** In one ledger transaction: the `inner_call` row; for a call tied to a run, one `run_event` of kind
+    `inner_call` (plus `inner_degraded` or `inner_task_suspended` when a transition happened, §13.8); and, only when
+    `shares_subscription_with` names a provider, one `usage_observation` for that provider with `source = 'inner_agent'`
+    and the reported token counts in `metrics_json` (empty when unknown). `provider_health`, the capacity estimator and
+    `capacity_score` are not touched (FR-INN-15). Bodies are never written.
+
+Every step is wrapped so that an exception inside the pipeline becomes `fallback_unavailable`; the pipeline has no code
+path that throws into the run supervisor.
+
+### 13.5 Privacy gates
+
+Evaluated in step 1 of §13.4, before any task data leaves the process. "Source content" is repository-derived text:
+diffs and file lists with hunks (`commit_message`, `pr_draft`), log or verification output excerpts (`log_summary`),
+diff excerpts and decision text carried into a handoff (`handoff_condense`). `route_features` and `run_title` send the
+request's objective text and counts only, which is not repository content; whether a remote backend should see an
+objective without a second opt-in is an open point (Assumption: `allow_remote` alone is enough).
+
+| # | Effective project setting | Backend locality | `allow_remote` | Task sends source content | Task `allow_source_content` | Result | Reason code |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `off` | any | any | any | any | Denied | `PROJECT_OFF` |
+| 2 | `local_only` | remote | any | any | any | Denied | `PROJECT_LOCAL_ONLY` |
+| 3 | `local_only` or `inherit` | local | any | any | any | Allowed | n/a |
+| 4 | `inherit` | remote | false | any | any | Denied | `REMOTE_NOT_ALLOWED` |
+| 5 | `inherit` | remote | true | no | any | Allowed | n/a |
+| 6 | `inherit` | remote | true | yes | false | Denied | `SOURCE_CONTENT_NOT_ALLOWED` |
+| 7 | `inherit` | remote | true | yes | true | Allowed | n/a |
+
+A denial is `fallback_disabled`. Further rules: `cli` is `remote` (§13.2), so rows 4 to 7 apply to it; an unresolved
+locality is `remote`; an `Ineligible` backend is `fallback_unavailable` (`INELIGIBLE`), not a privacy result.
+`inner test <task>` and the `doctor` canary use a built-in fixture with no repository data, so they are subject to
+rows 4 and 5 only. In every allowed case redaction (§13.4 step 2) still runs, and bodies are still not logged (FR-INN-16).
+`allow_source_content` is meaningless for a `local` backend (row 3) and is ignored there.
+
+### 13.6 Task contracts
+
+Each task has a versioned template (`<task>.v1`, Proposed), an input budget, an output schema, a validator and a
+fallback (FR-INN-05). All output schemas use `additionalProperties: false`. All input builders **exclude**: controller,
+session and run IDs, native provider session IDs, provider, adapter and model names, internal run-branch and publish-ref
+names (they contain session IDs), absolute home paths, credentials, and the raw agent transcript. Paths are
+worktree-relative. Output length limits are proposed targets.
+
+| Task (`FR`) | Input fields | Output schema | Validator rules beyond the schema | Fallback |
+| --- | --- | --- | --- | --- |
+| `commit_message` (FR-INN-10) | Paths being committed; unified diff of exactly those paths; up to 5 recent subject lines of the publish ref (style hint); nothing else. The agent's own message is not sent, and neither is the objective | `{ "subject": string 1..72, "body"?: string 0..2000 }` | Subject is one line, no leading or trailing space, no control characters, no code fence; body has no `Co-authored-by`-style key line (the sanitiser also removes them); result = `subject` plus blank line plus `body` | No message: tool error `MESSAGE_REQUIRED` (§12.1); never an invented message |
+| `pr_draft` (FR-INN-11) | Subjects of the controller-made commits on the publish ref since its base; changed file list with line counts; diff excerpt within budget; controller-computed verification facts (command label, pass or fail) if any | `{ "title": string 1..100, "body": string 1..8000 }` | Single-line title; markdown body; if the verification facts hold no pass, or hold a fail, the draft is rejected when it matches a success claim (for example "all tests pass"; pattern list Proposed); no URLs added (Proposed) | No `pr_draft` artifact; `get_artifacts` returns none and the orchestrator writes its own. Stored as artifact kind `pr_draft`, `application/json`, referenced by the `inner_call` run event |
+| `route_features` (FR-INN-12) | Objective text (truncated); counts: constraints, verification commands, repository file count and size band, extension histogram; no trust profile, no `provider_preference`, no provider names | `{ "context_volume": "small"\|"medium"\|"large", "autonomy": "low"\|"medium"\|"high", "reasoning_depth": "low"\|"medium"\|"high", "task_kind": "bug_fix"\|"feature"\|"refactor"\|"test"\|"docs"\|"investigation"\|"other" }` | Enumerations only, no free text, all four keys present; stage-2 scoring input only, never read by eligibility or by `require_provider` handling | The heuristic classifier (FR-RTE-04); if it too is unavailable, the neutral value `medium` for each level and `other` |
+| `handoff_condense` (FR-INN-13) | Labelled controller-owned text fields of the bundle (goal, constraints, decisions, failed-attempt notes, open tasks) and bounded diff excerpts; statuses, exit codes and counts are not sent | `{ "fields": { "<name>": string 1..600 } }`, names limited to the bundle's prose fields | Every key is a requested field; each value is no longer than its source field; every digit sequence in a value occurs in the source (no invented counts or codes); the bundle stores `{ text, source: "inner", model_id, template_version, raw_artifact_id, raw_sha256 }` per condensed field | Deterministic truncation of the raw text with a truncation marker; structured bundle fields are unchanged either way |
+| `log_summary` (FR-INN-13) | Head and tail excerpt of the verification output or log artifact; controller facts as labelled lines (command label, exit code, counts) given as facts to restate, not infer | `{ "summary": string 1..600, "notable"?: string[] (max 5, each 1..160) }` | Same digit-in-source rule; no sentence may be the only carrier of a status: the envelope's `status`, exit codes and counts come from records, not from this text; stored with source label and raw artifact ID plus hash | Deterministic head and tail excerpt with line and byte counts, labelled `source: heuristic` |
+| `run_title` (FR-INN-14, Could) | First N characters of the objective (within budget) | `{ "title": string 1..80, "summary"?: string 1..200 }` | Single line each, no control characters, no markdown, no URLs; treated as data in every listing | First line of the objective truncated to 80 characters. Accepted values go in a `run_event` payload of kind `inner_call` (Proposed; no run-table column) |
+
+The `commit_message` task modes (FR-INN-10): `draft_if_missing` draws on the inner agent only when the agent supplied no
+message; `always` requests a draft in every commit and uses it when valid, otherwise the agent's message if present;
+`never` disables the task for commits and keeps `message` required. A route feature is stored in
+`route_decision.features_json` as `{ "value": ..., "source": "heuristic" | "inner", "model_id"?: string,
+"template_version"?: string }` per feature; replay reads the stored value and never calls the model (FR-RTE-03,
+FR-INN-12). Handoff and log text always carry a visible source label so a reader can tell inner prose from controller
+facts.
+
+### 13.7 Fallback table
+
+| Situation | `inner_call.outcome` | Result for the caller |
+| --- | --- | --- |
+| Inner agent not configured, `enabled: false`, task not enabled, or `commit_message` supplied by the agent in `draft_if_missing` | No row | Task fallback; behaviour identical to a build with no inner agent |
+| A privacy gate or project setting forbids the call (§13.5) | `fallback_disabled` (reason code) | Task fallback |
+| Task suspended after a high rejection rate | `fallback_suspended` | Task fallback until the operator resumes the task |
+| Backend unreachable, timeout, error response, open circuit, no free slot, `Ineligible` cli | `fallback_unavailable` (reason code) | Task fallback within the per-call bound; `doctor` shows degraded |
+| Output invalid after at most one re-ask | `rejected_validator` | Task fallback |
+| Commit or PR text empty or unusable after the sanitiser | `rejected_sanitiser` | Task fallback |
+| Output accepted | `accepted` | The validated value |
+
+| Task | Deterministic fallback |
+| --- | --- |
+| `commit_message` | Tool error `MESSAGE_REQUIRED`; the agent writes the message. Under `always`, the agent's own message when it supplied one |
+| `pr_draft` | No artifact |
+| `route_features` | Heuristic classifier features, else neutral values |
+| `handoff_condense` | Deterministically truncated raw text, labelled |
+| `log_summary` | Head and tail excerpt with counts, labelled |
+| `run_title` | First line of the objective, truncated |
+
+No fallback depends on a second model call, and no fallback changes a run's state, exit code or verification result.
+
+### 13.8 Telemetry and events
+
+**Span `inner.call`** (added to [§7](#7-telemetry-spans)): one per pipeline run that reaches step 5 or later, parent
+`controller.delegate` for a run-linked call, else a root span. Allowed attributes (by construction, no bodies,
+ADR-0012): `inner.task`, `inner.backend_kind`, `inner.locality`, `inner.template_version`, `inner.model` (the model ID as
+reported or configured), `inner.outcome`, `inner.reason` (short code), `inner.attempts`, `inner.latency_ms`,
+`inner.input_bytes`, `inner.output_bytes`, `inner.tokens_in`, `inner.tokens_out` (only when reported),
+`inner.breaker_state`, and, for run-linked calls, `run.id` and `session.id`. Forbidden: the prompt, the response, the diff,
+log excerpts, objective text, any message text, the backend URL's userinfo. The exporter drops every attribute not on this
+list, and a test asserts it.
+
+**Run events** (append-only `run_event.type`, bounded payloads, no text, M11), written only for calls tied to a run:
+
+| Kind | Payload | When |
+| --- | --- | --- |
+| `inner_call` | `inner_call_id`, `task`, `outcome`, `reason?`, `locality`, `template_version`, `attempts`, `latency_ms`, `input_bytes`, `output_bytes`; `artifact_id` column set for a `pr_draft` or condensed-text artifact; a `run_title` payload also carries `title` and `summary` (bounded) | Every recorded call |
+| `inner_degraded` | `state` (`degraded` or `recovered`), `reason`, `breaker_state`, `backend_kind` | Breaker changes state, or an `Ineligible` probe result changes; written once per transition, not per failed call |
+| `inner_task_suspended` | `task`, `window_calls`, `rejected`, `total`, `threshold` | A task is suspended (§13.4 step 11). A resume writes no event; `inner_task_state.resumed_at` records it |
+
+Calls with no run (`inner test`, the `doctor` canary) have no `run_event`; their record is the `inner_call` row, and
+`doctor` and `inner status` read `inner_call` and `inner_task_state`. None of these events or outcomes is a run failure
+code, appears in an envelope's `failure_code`, or influences retry (§4).
