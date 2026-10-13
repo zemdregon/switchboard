@@ -6,8 +6,10 @@
   not owner-approved. That published commits may be signed is zemdregon's answer to Q-9 ("yes", owner decision 9); the
   rule (FR-GIT-10, FRD BR-33) and the outline ([LLD §12.3.1](../design/LLD.md#1231-signing-fr-git-10)) were already
   specified with the mechanism delegated. This ADR records the credential boundary AGENTS.md requires an ADR for, and
-  the mechanisms the specification left open. Applying the owner decision 37 exemption to signing is a Delegated
-  reading, open for confirmation as [Q-56](../ROADMAP.md#73-open-questions-for-zemdregon-not-blocking-m2-unless-noted).
+  the mechanisms the specification left open. Applying the owner decision 37 exemption to signing was a Delegated
+  reading; zemdregon answered **Yes** (2026-10-13, in chat: "Q-56 yes"), see
+  [Q-56](../ROADMAP.md#73-open-questions-for-zemdregon-not-blocking-m2-unless-noted): the exemption also covers
+  signing, and in an approved bypass run the agent may reach the signing key, the same rule as push.
 - Related: FR-GIT-06, FR-GIT-10, FR-EXE-07, NFR-SEC-01, FRD BR-31, BR-33, [ADR-0003](0003-no-credential-handling.md),
   [ADR-0014](0014-tool-only-commits-and-publication.md), [ADR-0025](0025-git-commit-provenance-and-sanitiser.md),
   [ADR-0028](0028-controller-push-and-credential-reach.md), ROADMAP T9.10, R-15, R-60, Q-56

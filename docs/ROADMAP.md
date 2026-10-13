@@ -1219,7 +1219,7 @@ event payloads are unchanged (the existing T9.3 to T9.7 suites pass unmodified).
 `src/cli/projects.ts`; test fixture `src/git/fixtures/throwaway-gpg.ts` and the fake CLI's `report_env` plan flag.
 **Not covered:** SSH-format, X.509, passphrase-protected and hardware keys; the operator's real keyring or agent; an
 operator `includeIf "gitdir:..."` that selects the key by repository path (not applied, LLD §12.3.1); `container`
-environments (M10); Claude Code and Codex end to end (no live run). Open: Q-56 (the decision 37 exemption for
+environments (M10); Claude Code and Codex end to end (no live run). Q-56 answered Yes (the decision 37 exemption for
 signing), R-60.
 
 ### 6.4 M10 Container environments: tasks
@@ -1507,7 +1507,7 @@ No blocker affects M1, M2 or M9.
 | Q-53 | *Delegated, open (decision 40, M6 spike).* Which provider CLIs report cache read or creation token counts in their output? Unverified for every provider | None assumed; FR-CAP-08 records cache counts only where a CLI reports them, labelled by source |
 | Q-54 | *Delegated, open (decision 41, ADR-0033).* Is there a Claude Code flag combination that keeps repository and user customisations off while still starting one `--mcp-config` server (untested candidates from the live check report: `--settings`, `--setting-sources`, `--disable-slash-commands`, plugin flags)? If so, non-bypass runs could get the channel without loading repository content | None: the channel stays bypass-only and every other Claude run keeps `--safe-mode` and uses finalize-only; a spike needs the installed `claude` (opt-in, never in CI) and, before any change to non-bypass runs, an owner decision |
 | Q-55 | *Delegated, open (decision 42, FR-WS-09).* How does the controller learn that a concurrent run's work was merged? It sees publication only through the publish ref (FR-GIT-05, FR-GIT-08), so a merge made outside Switchboard is invisible. *Abandoned* is chosen (Delegated, 2026-10-13, after Ender's "You pick"): the meta-session reaches `CLOSED` or the operator runs an explicit command. | Until accepted, FRD §4.4 and retention GC (FR-WS-07) remove worktrees as today |
-| Q-56 | *Delegated, open (T9.10, ADR-0034).* BR-33 refuses signing "where BR-31 would withhold `push`", and decision 37 exempts approved bypass runs from BR-31 ("Don't block git operations on bypass mode"). Does that exemption also cover signing, given that the agent of such a run may then reach the signing key (R-60)? | **Yes** (Delegated reading): an approved bypass run signs; every other run follows BR-31 unchanged. Answering no would refuse signing in approved bypass runs on `host` |
+| Q-56 | *Answered 2026-10-13 by zemdregon, in chat: "Q-56 yes" (T9.10, ADR-0034).* BR-33 refuses signing "where BR-31 would withhold `push`", and decision 37 exempts approved bypass runs from BR-31 ("Don't block git operations on bypass mode"). Does that exemption also cover signing, given that the agent of such a run may then reach the signing key (R-60)? | **Yes** (zemdregon: the decision 37 exemption also covers signing; in an approved bypass run the agent may reach the signing key, same rule as push): an approved bypass run signs; every other run follows BR-31 unchanged. Answering no would refuse signing in approved bypass runs on `host` |
 
 ## 8. Deferred and excluded work
 
