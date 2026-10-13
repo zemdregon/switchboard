@@ -77,6 +77,7 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | `retention.days`, `retention.interval` | Retention in days (default 30, proposed target) and the GC pass period (`<n>m`, `<n>h` or `<n>d`, default `24h`). Collection is on only when `retention.days` is set in the file: the default is a value, not a switch (`ResolvedConfig.retentionEnabled`, T3.12, Proposed, Delegated). A period above about 24.8 days is capped by the timer | NFR-DATA-01, FR-WS-07 |
 | `profiles.<name>` | Overrides of the [SRS §3.3](../requirements/SRS.md#33-policy-and-trust-profiles-fr-pol) defaults. They may tighten or loosen a default ([owner decision 12](../ROADMAP.md#42-owner-decisions)); a loosening must be explicit in the config, is validated, and is recorded in the run's policy snapshot and listed by `doctor` (M3, T3.2). *Known limit ([owner decision 20](../ROADMAP.md#42-owner-decisions), 2026-10-13):* a `profiles.edit-untrusted` override that loosens `network` or `repo_config` is not enforced: the Claude adapter compiles `edit-untrusted` with the strict settings (network off at the tool level, repository configuration disabled) whatever the override says, and the Codex adapter makes the run `Ineligible: CAPABILITY_MISSING` | FR-POL-01 |
 | `providers.<id>` | `{enabled, binary_path, extra_env_allowlist[], model_overrides}` | FR-ADP-05, FR-EXE-07 |
+| `providers.claude-code.git_channel` | Boolean, default `false`; `claude-code` only. Operator opt-in for the Claude Code tool channel through a controller-written `--mcp-config` file; implemented (T9.4b, [ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md)) and **UNSUPPORTED** until the ADR-0029 live checks pass ([LLD §11.1](LLD.md#111-configuration-shape), §12.2) | FR-GIT-02, FR-POL-08 |
 | `routing.weights`, `routing.minimum_capability_defaults` | Static weights | FR-RTE-02 |
 | `capacity.queue_horizon` | Max wait for a known reset | FR-CAP-06 |
 | `telemetry.otlp_endpoint` | Optional export target | FR-TEL-02, NFR-PRIV-01 |
@@ -672,6 +673,38 @@ paragraph above; fake adapter only, Git 2.43.0).* Mechanism in [LLD §12.3](LLD.
   after the intent (`recover()`), approved bypass, and the operator push of the finalize commit plus `runs show`.
 - **Still open.** Claude Code and Codex live runs (their summaries' real shape: Claude's `result` text, Codex's last
   agent message, FR-ADP-04), container environments (M10), and the limits of Q-45.
+
+*T9.4b build notes (2026-10-13; Delegated; [ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md);
+behind the operator opt-in `providers.claude-code.git_channel`; **UNSUPPORTED, no live check run**).* Mechanism in
+[LLD §12.2](LLD.md#122-channel) ("As built (... T9.4b ...)"). Findings and test strategy:
+
+- **Off by default, byte-identical.** Without the opt-in the Claude adapter declares `none` with the T9.4 reason and its
+  compiled argv is unchanged; with it, `compile` is still unchanged and only the `channelArgs` fragment is added, so
+  every existing argv test holds.
+- **Decisions where the help text is silent (Assumptions, each failing closed).** The fragment is
+  `--mcp-config <dir>/mcp-config.json --allowedTools mcp__switchboard-git__<tool>...`. The channel tools are not named
+  in `--tools`, because the help says it lists tools "from the built-in set"; if `--tools` also filters MCP tools the
+  tool is absent. The exact-name rules are a second `--allowedTools` occurrence; if the CLI keeps only the last
+  occurrence the earlier read and edit rules are lost and the run is denied more. The definition uses the `.mcp.json`
+  form (`mcpServers`, `"type": "stdio"`) and an `env` reference `${SWITCHBOARD_TOOL_TOKEN}`; if it is not expanded the
+  shim sees a non-token value and every call is refused. `--strict-mcp-config` is already compiled on every invocation
+  except decision 26's, so no flag is added; `--safe-mode` stays (live check (c)).
+- **Audit.** The argv audit admits the one shape and nothing else, independently of the adapter: the definition path
+  comes from the channel service, the tool names from the channel, the decision-26 exception from the run's approval
+  context. The file check is repeated before spawn (plain `0600` file, owned by this user, private directory).
+- **Tests (no provider CLI, temporary repositories).** `src/adapters/claude/channel.test.ts`: off-snapshot, fragment,
+  file contents (one server, no token), malformed shims, each profile including approved bypass with every
+  `repository_config`, and the audit's negatives (no channel, inline JSON, other or sibling paths, a second occurrence
+  or value, the `=` form, server-wide, wildcard, foreign and unoffered MCP rules, rules outside `--allowedTools` or in
+  `policyFlags`, missing `--strict-mcp-config`, unsafe file modes and links). `src/git/channel.test.ts`: `writeFile`
+  modes, name allowlist, token refusal, planted link, removal on close, crash sweep and directory reuse.
+  `src/lifecycle/claude-channel.test.ts`: the lifecycle with the Claude replay script standing in for `claude`, which
+  reads the definition, starts the real `tool-shim` from it (expanding the reference as Claude Code is assumed to) and
+  commits through the socket; the evidence record shows one server, mode `0600`, no token in argv or the file, and the
+  file and directory are gone after the run; a fragment naming another file or a wildcard rule fails
+  `PERMISSION_BLOCKED` before spawn.
+- **Still open: the live checks** (ADR-0029 item 7, listed in ROADMAP T9.4b). Nothing here shows what the installed
+  `claude` does with the definition.
 
 **External reference (T3 Code, MIT, studied not copied; note 2026-10-13, Delegated, not owner-approved).** zemdregon's
 pointer (owner decision 36): T3 Code "has orchestrator injection for nearly all of the CLI tools we are targeting". A

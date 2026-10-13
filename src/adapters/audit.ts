@@ -7,7 +7,13 @@
  * never by an adapter or a request), and the approved scope sets `bypass`. Every other case refuses the flag; with no
  * context at all every flag is refused (the M1/M2 behaviour). The audit is independent of the adapter's own compile
  * gate, so a compile bug cannot by itself put a bypass flag on a spawned argv.
+ *
+ * The second half of this module (T9.4b, ADR-0029 item 6) audits `--mcp-config` and MCP allow rules: only the
+ * controller-written channel definition, in one exact shape, is admitted (see {@link auditMcpArgs}).
  */
+import { lstatSync } from "node:fs";
+import path from "node:path";
+import { CHANNEL_MCP_CONFIG_FILE, TOOL_SHIM_MCP_SERVER } from "../git/tool-protocol.js";
 import type { Invocation, ResolvedProfile } from "./types.js";
 
 export const BYPASS_FLAGS: readonly string[] = [
@@ -71,4 +77,144 @@ export class BypassFlagError extends Error {
 export function assertBypassAudit(inv: Pick<Invocation, "argv" | "policyFlags">, ctx?: BypassContext): void {
   const refused = auditInvocation(inv, ctx);
   if (refused.length > 0) throw new BypassFlagError(refused);
+}
+
+// ---- MCP definition audit (T9.4b, ADR-0029 item 6; ADR-0015) ------------------------------------------------------
+
+/** The provider flag that loads MCP server definitions (`claude --help` 2.1.296). Only the channel may emit it. */
+export const MCP_CONFIG_FLAG = "--mcp-config";
+/** Only MCP servers from `--mcp-config` load (`claude --help` 2.1.296). */
+export const STRICT_MCP_CONFIG_FLAG = "--strict-mcp-config";
+/** Allow-rule flag spellings in `claude --help` 2.1.296 (`--allowedTools, --allowed-tools`). */
+const ALLOW_FLAGS: readonly string[] = ["--allowedTools", "--allowed-tools"];
+
+/**
+ * What the controller knows about the injected tool channel of the run an invocation belongs to (T9.4b). Set by the
+ * lifecycle from the channel service's own values, never from the adapter's output.
+ */
+export interface ChannelAuditContext {
+  /** Absolute path of the MCP definition the channel service wrote for this run; absent when none was written. */
+  readonly mcpConfigPath?: string;
+  /** Tools the channel offers (`commit`, and `push` under policy `branch`). */
+  readonly toolNames: readonly string[];
+}
+
+/** The exact allow rule for one channel tool: `mcp__switchboard-git__<tool>` (ADR-0029 item 4; form is an Assumption). */
+export function channelToolRule(tool: string): string {
+  return `mcp__${TOOL_SHIM_MCP_SERVER}__${tool}`;
+}
+
+/**
+ * Owner decision 26 (ADR-0021): an approved bypass run whose scope sets `repository_config` to `enabled` omits
+ * `--strict-mcp-config` so the repository's `.mcp.json` loads. Computed from the run context only (not the adapter).
+ */
+export function strictMcpExempt(ctx: BypassContext | undefined): boolean {
+  return bypassPermitted(ctx) && ctx?.profile.privilegedScope?.scope.repository_config.mode === "enabled";
+}
+
+/**
+ * ADR-0029 item 6: `--mcp-config` and MCP allow rules are admitted in exactly one shape, and refused in every other.
+ * Returns one human-readable problem per violation; empty means the argv passes. Admitted:
+ * - at most one `--mcp-config`, in argv only (never in `policyFlags`), followed by exactly one value that equals
+ *   `channel.mcpConfigPath` (absolute, normalised, named `CHANNEL_MCP_CONFIG_FILE`), and only with a channel;
+ * - `--strict-mcp-config` in argv whenever `--mcp-config` is present, unless {@link strictMcpExempt};
+ * - an `mcp__` token (argv words split on commas and whitespace) only as a value of `--allowedTools` and only when it
+ *   is exactly {@link channelToolRule} of a tool the channel offers; so no wildcard, no server-wide rule, no other
+ *   server, and no MCP rule at all without a channel.
+ * Refused always: the `--mcp-config=<value>` form, inline JSON or any other path, a second occurrence.
+ */
+export function auditMcpArgs(
+  inv: Pick<Invocation, "argv" | "policyFlags">,
+  channel?: ChannelAuditContext,
+  ctx?: BypassContext,
+): string[] {
+  const problems: string[] = [];
+  const expectedPath = channel?.mcpConfigPath;
+  const pathOk =
+    expectedPath !== undefined &&
+    path.isAbsolute(expectedPath) &&
+    path.normalize(expectedPath) === expectedPath &&
+    path.basename(expectedPath) === CHANNEL_MCP_CONFIG_FILE;
+  for (const arg of [...inv.argv, ...inv.policyFlags]) {
+    if (arg.startsWith(`${MCP_CONFIG_FLAG}=`)) problems.push(`${MCP_CONFIG_FLAG}=<value> form refused`);
+  }
+  if (inv.policyFlags.includes(MCP_CONFIG_FLAG)) problems.push(`${MCP_CONFIG_FLAG} in policyFlags refused`);
+  const at = inv.argv.flatMap((a, i) => (a === MCP_CONFIG_FLAG ? [i] : []));
+  if (at.length > 1) problems.push(`${MCP_CONFIG_FLAG} given ${at.length} times`);
+  if (at.length >= 1) {
+    const i = at[0] as number;
+    const value = inv.argv[i + 1];
+    const next = inv.argv[i + 2];
+    if (!pathOk) problems.push(`${MCP_CONFIG_FLAG} without a controller-written channel definition`);
+    else if (value !== expectedPath) problems.push(`${MCP_CONFIG_FLAG} value is not this run's channel definition`);
+    if (next !== undefined && !next.startsWith("-")) problems.push(`${MCP_CONFIG_FLAG} takes exactly one file`);
+    if (!inv.argv.includes(STRICT_MCP_CONFIG_FLAG) && !strictMcpExempt(ctx)) {
+      problems.push(`${MCP_CONFIG_FLAG} without ${STRICT_MCP_CONFIG_FLAG}`);
+    }
+  }
+  const allowed = new Set((channel?.toolNames ?? []).map(channelToolRule));
+  for (const list of [inv.argv, inv.policyFlags]) {
+    let flag: string | undefined;
+    for (const arg of list) {
+      if (arg.startsWith("-")) {
+        flag = arg;
+        continue;
+      }
+      if (flag === MCP_CONFIG_FLAG && arg === expectedPath) continue;
+      for (const token of arg.split(/[\s,]+/u)) {
+        if (!token.includes("mcp__")) continue;
+        const asAllowRule = flag !== undefined && ALLOW_FLAGS.includes(flag);
+        if (!asAllowRule || !allowed.has(token)) problems.push(`MCP rule refused: ${token.slice(0, 120)}`);
+      }
+    }
+  }
+  return problems;
+}
+
+/**
+ * Filesystem check of the channel definition (defence in depth; the channel service already created it this way): a
+ * regular file, not a link, owned by this user, mode without group or other bits, in a directory with the same
+ * properties. Returns problems; empty means it passes.
+ */
+export function checkChannelFile(file: string): string[] {
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  const problems: string[] = [];
+  for (const [p, kind] of [
+    [file, "file"],
+    [path.dirname(file), "directory"],
+  ] as const) {
+    try {
+      const st = lstatSync(p);
+      const typeOk = kind === "file" ? st.isFile() : st.isDirectory();
+      if (!typeOk || st.isSymbolicLink()) problems.push(`channel ${kind} is not a plain ${kind}`);
+      if (uid !== undefined && st.uid !== uid) problems.push(`channel ${kind} is not owned by this user`);
+      if ((st.mode & 0o077) !== 0) problems.push(`channel ${kind} is accessible to other users`);
+    } catch {
+      problems.push(`channel ${kind} is missing`);
+    }
+  }
+  return problems;
+}
+
+export class McpConfigAuditError extends Error {
+  constructor(readonly problems: readonly string[]) {
+    super(`MCP definition refused: ${problems.join("; ")}`);
+    this.name = "McpConfigAuditError";
+  }
+}
+
+/**
+ * Throws {@link McpConfigAuditError} when {@link auditMcpArgs} finds a problem, or when argv carries the channel
+ * definition and {@link checkChannelFile} fails (used before every spawn, after the bypass audit).
+ */
+export function assertMcpAudit(
+  inv: Pick<Invocation, "argv" | "policyFlags">,
+  channel?: ChannelAuditContext,
+  ctx?: BypassContext,
+): void {
+  const problems = auditMcpArgs(inv, channel, ctx);
+  if (problems.length === 0 && channel?.mcpConfigPath !== undefined && inv.argv.includes(MCP_CONFIG_FLAG)) {
+    problems.push(...checkChannelFile(channel.mcpConfigPath));
+  }
+  if (problems.length > 0) throw new McpConfigAuditError(problems);
 }

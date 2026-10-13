@@ -102,6 +102,7 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `limits.per_provider_concurrency` | no | Integer 1 to 64. Default 1. |
 | `providers.<id>.enabled` | no | Boolean. A provider you do not list is enabled. |
 | `providers.<id>.weight` | no | Number from 0 to 1. Accepted by the schema. |
+| `providers.claude-code.git_channel` | no | Boolean, default `false`. **Unsupported, for testing only:** gives Claude Code the injected `commit` (and `push`) tool through a Switchboard-written `--mcp-config` file in the run's private directory. Its behaviour with the real `claude` has not been checked (ROADMAP T9.4b lists the checks); `serve` logs a warning when it is on. Only `claude-code` accepts the key. |
 | `retention.days`, `retention.interval` | no | How long idle meta-sessions are kept (integer days, default 30) and how often `serve` runs the clean-up pass (`30m`, `12h`, `7d`; default `24h`). **Nothing is deleted unless you set `retention.days`**; the default only applies once you do (or to `gc` dry runs). |
 | `projects` | no | List of `{ "id", "name", "environment"?, "contexts": [...] , "max_trust_profile"?, "allowed_providers"? }`. `id` matches `^[a-z][a-z0-9-]{1,40}$` and is unique. `environment` is `{ "kind": "host" }` (default) or a `container` shape that `projects validate` rejects until M10. Each context is `{ "id", "kind": "repository", "path", "base_ref", "primary"?, "writable"?, "push"?, "identity"?, "sign"?, "finalize_commit"? }` with an absolute `path` under an allowed root; exactly one context is primary. Unknown keys and context kinds stop startup. `push.remote` must be the name of a remote in the repository (not a URL), and `push.branch_prefix` a branch-name prefix such as `"switchboard/"`. `max_trust_profile` and `allowed_providers` apply to `delegate_task` with a `project`: the effective trust ceiling is the lower of the client's and the project's, and routing is limited to the listed providers (a request naming another provider with `require_provider` fails `PERMISSION_BLOCKED`); `sign` is accepted but not enforced yet. `finalize_commit` (default `false`; needs `identity`, primary writable context only) turns on finalize-only commits, described below. Full shape: LLD section 11.1. |
 | `timeouts.preflight_ttl_seconds` | no | Integer 0 to 3600. How long a successful adapter preflight is cached (default 60); 0 disables the cache. |
@@ -213,9 +214,10 @@ exception (owner decision 37): it is offered `push` whatever its shell, and the 
 the one place a bypass run's agent can reach your push credentials, by your choice; Switchboard still never hands them
 to it, and its Git-write denial is unchanged.
 
-Providers that cannot receive the injected `commit` tool (Claude Code and Codex today) still run write-capable tasks;
-by default their work stays in the run's worktree, diff and checkpoint, with no commit. To have Switchboard commit it,
-set `"finalize_commit": true` on the project's primary context, next to its `identity`:
+Providers that cannot receive the injected `commit` tool (Codex, and Claude Code unless you set the unsupported
+`providers.claude-code.git_channel`) still run write-capable tasks; by default their work stays in the run's worktree,
+diff and checkpoint, with no commit. To have Switchboard commit it, set `"finalize_commit": true` on the project's
+primary context, next to its `identity`:
 
 ```json
 { "id": "main", "kind": "repository", "path": "/home/you/projects/web", "base_ref": "main",

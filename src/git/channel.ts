@@ -23,13 +23,18 @@
  * SHA-256 digest. It is never written to the ledger, an artifact, a log line or the file system. The artifact redactor
  * recognises its prefix (`src/artifacts/redact.ts`), so a provider that prints it does not persist it.
  *
+ * Channel files (T9.4b, ADR-0029): `OpenChannel.writeFile` writes one of `CHANNEL_FILE_NAMES` (the Claude Code
+ * `--mcp-config` definition) into the same private directory, `0600`, exclusive create, no link following; it never
+ * holds the token and is removed with the socket.
+ *
  * Peer credentials: Node.js exposes no `SO_PEERCRED`, so the peer process is not identified (documented absence,
  * ADR-0026). The controls are the `0700` directory owned by the controller's user, the `0600` socket and the token. A
  * process of the same OS user that can read the provider's environment can use the token while the run is RUNNING; that
  * is the same reach the agent itself has and is why the token is per run and dies with the run.
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, rmdir, unlink } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { chmod, lstat, mkdir, mkdtemp, open as openFile, rmdir, unlink } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import type Database from "better-sqlite3";
@@ -40,6 +45,7 @@ import { CommitError, type GitPublisher } from "./commit.js";
 import { credentialReachFromJson } from "./credential-reach.js";
 import type { GitPusher } from "./push.js";
 import {
+  CHANNEL_FILE_NAMES,
   type ChannelErrorCode,
   isTokenShaped,
   MAX_COMMIT_PATH_CHARS,
@@ -134,6 +140,13 @@ export interface OpenChannel {
   readonly socketPath: string;
   /** What the adapter needs for `channelArgs`; `env` holds the token. */
   readonly shim: ShimSpec;
+  /**
+   * T9.4b (ADR-0029 item 1): write one of `CHANNEL_FILE_NAMES` into the channel's private directory with mode `0600`,
+   * exclusive create and no link following, and return its absolute path. Refused ({@link ChannelOpenError}) for any
+   * other name, a second write of the same name, a closed channel, or contents that look like a token. The file is
+   * removed when the channel closes and by {@link GitToolService.sweepStale}.
+   */
+  writeFile(name: string, contents: string): Promise<string>;
   /** Stop accepting, refuse queued calls, wait for calls in progress, remove the socket and its directory. Idempotent. */
   close(): Promise<void>;
 }
@@ -162,6 +175,8 @@ interface ChannelState {
   readonly dispatching: WeakSet<net.Socket>;
   readonly inFlight: Set<Promise<void>>;
   readonly callTimes: number[];
+  /** Absolute paths of the files written by `writeFile` (T9.4b). */
+  readonly files: Set<string>;
   closed: boolean;
   closing: Promise<void> | undefined;
   calls: number;
@@ -264,6 +279,7 @@ export class GitToolService {
       dispatching: new WeakSet(),
       inFlight: new Set(),
       callTimes: [],
+      files: new Set(),
       closed: false,
       closing: undefined,
       calls: 0,
@@ -307,11 +323,37 @@ export class GitToolService {
       shim: {
         command: [...this.options.shimCommand, "--socket", socketPath, "--tools", state.tools.join(",")],
         socketPath,
+        dir,
         toolNames: [...state.tools],
         env: { [TOOL_TOKEN_ENV]: token },
       },
+      writeFile: (name, contents) => this.writeChannelFile(state, name, contents),
       close: () => this.close(input.runId),
     };
+  }
+
+  /** {@link OpenChannel.writeFile}. */
+  private async writeChannelFile(state: ChannelState, name: string, contents: string): Promise<string> {
+    if (!CHANNEL_FILE_NAMES.includes(name)) throw new ChannelOpenError("channel file name not allowed");
+    if (state.closed) throw new ChannelOpenError("the tool channel is closed");
+    // Defence in depth (FR-POL-08): the token reaches the provider only through its environment.
+    if (contents.includes(TOKEN_PREFIX)) throw new ChannelOpenError("channel file contents look like a token");
+    const target = path.join(state.dir, name);
+    if (state.files.has(target)) throw new ChannelOpenError("channel file already written");
+    await assertPrivateDir(state.dir);
+    const handle = await openFile(
+      target,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+      0o600,
+    );
+    state.files.add(target);
+    try {
+      await handle.chmod(0o600);
+      await handle.writeFile(contents, "utf8");
+    } finally {
+      await handle.close();
+    }
+    return target;
   }
 
   /** Close one run's channel (no-op when none is open). */
@@ -354,7 +396,10 @@ export class GitToolService {
         dir = undefined;
       }
       const ok = typeof dir === "string" && (await this.safeToRemove(dir, row.run_id));
-      if (ok) await removeQuietly(path.join(dir as string, SOCKET_FILE_NAME), dir as string);
+      if (ok) {
+        await removeChannelFiles(dir as string);
+        await removeQuietly(path.join(dir as string, SOCKET_FILE_NAME), dir as string);
+      }
       const gone = typeof dir === "string" ? !(await exists(dir)) : true;
       (gone ? cleaned : skipped).push(row.run_id);
       this.ledger.appendRunEvent({
@@ -383,8 +428,9 @@ export class GitToolService {
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
         // Left over from a crash of this same run id: reuse only a private directory we own (checked BEFORE anything
-        // inside it is touched), after removing a stale socket.
+        // inside it is touched), after removing a stale socket and stale channel files (T9.4b).
         await assertPrivateDir(preferred);
+        await removeChannelFiles(preferred);
         await removeQuietly(path.join(preferred, SOCKET_FILE_NAME), undefined);
       }
       await assertPrivateDir(preferred);
@@ -622,6 +668,7 @@ export class GitToolService {
     while (state.inFlight.size > 0) await Promise.allSettled([...state.inFlight]);
     for (const sock of state.sockets) sock.destroy();
     await serverClosed;
+    await removeChannelFiles(state.dir);
     await removeQuietly(state.socketPath, state.dir);
     this.channels.delete(state.input.runId);
     try {
@@ -696,6 +743,18 @@ async function assertPrivateDir(dir: string): Promise<void> {
   const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
   if (uid !== undefined && st.uid !== uid) throw new ChannelOpenError(`${dir} is not owned by this user`);
   if ((st.mode & 0o077) !== 0) throw new ChannelOpenError(`${dir} is accessible to other users`);
+}
+
+/** Unlink every `CHANNEL_FILE_NAMES` entry of `dir` that is a regular file (never a link or directory). T9.4b. */
+async function removeChannelFiles(dir: string): Promise<void> {
+  for (const name of CHANNEL_FILE_NAMES) {
+    const file = path.join(dir, name);
+    try {
+      if ((await lstat(file)).isFile()) await unlink(file);
+    } catch {
+      // absent
+    }
+  }
 }
 
 /** Unlink the socket (only if it is one), then remove the directory if it is empty. Never recursive. */

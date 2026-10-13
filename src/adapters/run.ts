@@ -1,6 +1,6 @@
 /** Glue between an adapter and the exec supervisor: probe runner and a single-invocation runner. */
 import { supervise } from "../exec/index.js";
-import { assertBypassAudit } from "./audit.js";
+import { assertBypassAudit, assertMcpAudit, type ChannelAuditContext } from "./audit.js";
 import {
   createParseState,
   type ExitInfo,
@@ -61,6 +61,11 @@ export interface AdapterRunOptions {
    * `bypassApproved` is true and `profile.privilegedScope.scope.bypass` is true; without it every bypass flag is refused.
    */
   profile?: Pick<ResolvedProfile, "name" | "privilegedScope">;
+  /**
+   * T9.4b: the run's injected tool channel as the controller opened it (definition path, offered tools). Without it
+   * every `--mcp-config` and every MCP allow rule is refused (`./audit.ts` {@link assertMcpAudit}).
+   */
+  channel?: ChannelAuditContext;
   /** Passed to the supervisor: called after spawn, before any output is read, so pid/pgid can be persisted. */
   onSpawn?: (info: { pid: number; pgid: number }) => void;
 }
@@ -74,14 +79,16 @@ export interface AdapterRun {
  * Spawn `inv` under the supervisor, feed each stdout JSONL document through `adapter.parseEvent`, and fold the
  * result with `adapter.extractResult`. Throws BypassFlagError before spawning if the audit refuses a bypass flag: every
  * bypass flag is refused unless `opts.profile` is `privileged`, `opts.bypassApproved` is true and the profile's scope
- * sets bypass (T3.17, `./audit.ts`).
+ * sets bypass (T3.17, `./audit.ts`). Throws McpConfigAuditError before spawning if `--mcp-config` or an MCP allow rule
+ * is not exactly the controller's channel shape (T9.4b).
  */
 export function startAdapterRun(adapter: ProviderAdapter, inv: Invocation, opts: AdapterRunOptions = {}): AdapterRun {
   if (inv.transport !== "subprocess-jsonl") throw new Error(`unsupported transport: ${inv.transport}`);
-  assertBypassAudit(
-    inv,
-    opts.profile !== undefined ? { profile: opts.profile, bypassApproved: opts.bypassApproved === true } : undefined,
-  );
+  const ctx =
+    opts.profile !== undefined ? { profile: opts.profile, bypassApproved: opts.bypassApproved === true } : undefined;
+  assertBypassAudit(inv, ctx);
+  // T9.4b (ADR-0029 item 6): `--mcp-config` only in the controller's one channel shape; no other MCP rule.
+  assertMcpAudit(inv, opts.channel, ctx);
 
   const state = createParseState();
   const events: NormalizedEvent[] = [];

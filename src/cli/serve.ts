@@ -164,8 +164,14 @@ function enablement(config: ResolvedConfig, fake: FakeSwitch): (id: ProviderId) 
   };
 }
 
-export function buildRegistry(fake: FakeSwitch): AdapterRegistry {
-  const registry = new AdapterRegistry().register(new ClaudeAdapter()).register(new CodexAdapter());
+/**
+ * `claudeGitChannel` is `providers.claude-code.git_channel` (T9.4b, ADR-0029 item 7): default false, so the Claude
+ * adapter declares no tool channel and its argv is unchanged.
+ */
+export function buildRegistry(fake: FakeSwitch, opts: { claudeGitChannel?: boolean } = {}): AdapterRegistry {
+  const registry = new AdapterRegistry()
+    .register(new ClaudeAdapter({ gitChannel: opts.claudeGitChannel === true }))
+    .register(new CodexAdapter());
   if (fake.enabled) registry.register(new FakeAdapter({ scenario: fake.scenario }));
   return registry;
 }
@@ -377,7 +383,12 @@ async function runDaemon(
       ...(fake.clockOffsetMs !== undefined ? { clock_offset_ms: fake.clockOffsetMs } : {}),
     });
   }
-  const registry = buildRegistry(fake);
+  if (config.claudeCodeGitChannel) {
+    log.warn("UNSUPPORTED opt-in providers.claude-code.git_channel is on: the ADR-0029 live checks have not passed", {
+      adr: "ADR-0029",
+    });
+  }
+  const registry = buildRegistry(fake, { claudeGitChannel: config.claudeCodeGitChannel });
   const lifecycle = new RunLifecycle({
     ledger,
     workspace,

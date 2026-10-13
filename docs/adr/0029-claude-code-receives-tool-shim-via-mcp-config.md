@@ -1,6 +1,7 @@
 # ADR-0029: Claude Code receives the controller-generated tool shim via `--mcp-config`
 
-- Status: Accepted (decision); implementation Proposed and unverified. Amends [ADR-0015](0015-claude-untrusted-isolation-flags.md)'s
+- Status: Accepted (decision); implementation present behind an unsupported operator opt-in (T9.4b, 2026-10-13,
+  Delegated) and **unverified live** (no live check run). Amends [ADR-0015](0015-claude-untrusted-isolation-flags.md)'s
   ban on `--mcp-config` for the injected channel only
 - Date: 2026-10-13
 - Decided by: zemdregon (owner decision 36, answer to Q-40); mechanism Delegated (agent, 2026-10-13)
@@ -84,3 +85,17 @@ is the reason for item 1 below. It is studied, not copied, and none of its behav
 
 A live check contradicts items 3 to 5, Claude Code adds a flag that supplies a definition without a file, or the
 `--mcp-config` semantics change in a CLI release (the manifest range gates the adapter, ADR-0009).
+
+## Implementation note (2026-10-13, T9.4b; Delegated, not owner-approved)
+
+The decision text above is unchanged. Items 1 to 6 are implemented behind the operator opt-in
+`providers.claude-code.git_channel` (default `false`), which is documented as unsupported until the item 7 live checks
+pass; without it the adapter declares `none` and its argv is byte-identical. The server name chosen for item 2 is
+`switchboard-git` and the file is `mcp-config.json` in the run's private channel directory, written by the channel
+service (not the adapter) and removed on close and by the startup sweep. Item 5 needs no extra flag: the compiled argv
+already carries `--strict-mcp-config` everywhere except decision 26's case. Item 3: the file carries the `env` reference
+`${SWITCHBOARD_TOOL_TOKEN}`, never the value. Further Assumptions added by the implementation (a second `--allowedTools`
+occurrence accumulates, `--tools` does not filter MCP tools, the `mcpServers` / `"type": "stdio"` shape) are listed with
+the live checks under the T9.4b status in [ROADMAP §6.3](../ROADMAP.md#63-m9-projects-and-controlled-commits-tasks);
+each fails closed. Mechanism and tests: [LLD §12.2](../design/LLD.md#122-channel), [TDD
+§3.10](../design/TDD.md#310-git-commits-attribution-and-publication).

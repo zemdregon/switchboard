@@ -1270,6 +1270,13 @@ the run's policy snapshot as `project.finalize_commit: true` (absent when off) a
 `{ "id": "main", "kind": "repository", "path": "/home/op/src/web-app", "base_ref": "main", "identity": { "name":
 "Operator Name", "email": "operator@example.com" }, "finalize_commit": true }`.
 
+*As built (2026-10-13, Delegated, T9.4b, [ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md)):*
+`providers.claude-code.git_channel` (boolean, default `false`; accepted under `claude-code` only, so the key on any
+other provider aborts startup) is the operator opt-in for the Claude Code tool channel (§12.2). `ResolvedConfig` gains
+`claudeCodeGitChannel`; `serve` passes it to the Claude adapter and logs a warning when it is on. It does not change
+`providers.<id>.enabled`. **UNSUPPORTED** until the ADR-0029 live checks pass (ROADMAP T9.4b). Example:
+`"providers": { "claude-code": { "git_channel": true } }`.
+
 ### 11.2 Resolution and ceilings
 
 At admission (FRD BR-23): (1) resolve `project` to its definition, else `INVALID_REQUEST`; (2) check the client's project
@@ -1458,6 +1465,47 @@ attempts per channel (`PUSH_LIMIT_REACHED`, a `git_tool_denied` event), and then
 `git_channel_closed` counts `pushes`. *Note 2026-10-13 (decision 37):* for an approved bypass run `push` is offered
 whatever the shell (§12.7 BR-31 note) and `git_channel_opened` carries `credential_reach: "bypass_exempt"`; the
 provider's Git-write denial and every other check are unchanged.
+
+*As built (2026-10-13, Delegated, T9.4b, [ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md);
+UNSUPPORTED and unverified live).* Claude Code declares `injected` only with the operator opt-in
+`providers.claude-code.git_channel: true` (§11.1 note); without it, `none` and an unchanged argv as above. Code:
+`claudeChannelArgs` and `CLAUDE_GIT_CHANNEL_CAPABILITIES` in `src/adapters/claude/adapter.ts`, `auditMcpArgs` and
+`assertMcpAudit` in `src/adapters/audit.ts`, `OpenChannel.writeFile` in `src/git/channel.ts`. Choices:
+
+- **Contract.** `ShimSpec` gained `dir` (the run's private channel directory) and `channelArgs` may return `files`
+  (`ChannelFile`: a name and contents). The lifecycle has the channel service write them before spawn; an adapter never
+  writes a file. The service accepts only names in `CHANNEL_FILE_NAMES` (today `mcp-config.json`), creates the file with
+  `O_CREAT|O_EXCL|O_NOFOLLOW` and mode `0600` after re-checking the directory, refuses contents containing `sbt1_`, and
+  removes it on close, on the startup sweep and when a crashed run's directory is reused (regular files only).
+- **Fragment.** `--mcp-config <dir>/mcp-config.json --allowedTools mcp__switchboard-git__commit` (plus
+  `mcp__switchboard-git__push` when offered), appended after the compiled argv; environment exactly `ShimSpec.env`.
+  Server name `switchboard-git` (`TOOL_SHIM_MCP_SERVER`). The file (the `env` entry is a reference only, ADR-0029
+  item 3):
+
+  ```jsonc
+  { "mcpServers": { "switchboard-git": {
+      "type": "stdio",
+      "command": "<ShimSpec.command[0]>",
+      "args": ["<the rest of ShimSpec.command>"],
+      "env": { "SWITCHBOARD_TOOL_TOKEN": "${SWITCHBOARD_TOOL_TOKEN}" } } } }
+  ```
+
+- **Strictness.** No flag is added for it: the compiled argv already has `--strict-mcp-config` on every invocation but
+  an approved bypass run with `repository_config` `enabled` (decision 26), which is ADR-0029 item 5. `--safe-mode`,
+  `--restricted`, `--tools` and the Git deny rules are unchanged; the channel tools are not named in `--tools` (built-in
+  set only, per the help text).
+- **Audit.** Before every spawn, after the bypass audit, `assertMcpAudit` admits at most one `--mcp-config`, in argv
+  only, with exactly one value equal to the path the channel service wrote (absolute, normalised, named
+  `mcp-config.json`), with `--strict-mcp-config` unless the run context is an approved bypass with `repository_config`
+  `enabled`; and an `mcp__` token only as a value of `--allowedTools` equal to `mcp__switchboard-git__<tool>` for an
+  offered tool. It refuses the `--mcp-config=` form, inline JSON, other paths, a second occurrence or value,
+  server-wide, wildcard and foreign MCP rules, and any MCP rule without a channel; it then checks the file is a plain
+  `0600` file owned by this user in a private directory. A refusal fails the run `PERMISSION_BLOCKED`
+  (`reason: "MCP_CONFIG_REFUSED"`) and closes the channel (removing the file) before the run is terminal.
+- **Assumptions (live checks, ADR-0029 item 7 and ROADMAP T9.4b):** the JSON shape; `${VAR}` expansion; that a second
+  `--allowedTools` adds to the first (if it replaces it the run is denied more, not less); that `--tools` does not
+  filter MCP tools; the `mcp__<server>__<tool>` rule form. Each failure mode found so far leaves the agent without the
+  tool (fail closed), never with more permission.
 
 ### 12.3 Commit algorithm and refs
 

@@ -77,9 +77,11 @@ import {
   type AdapterRun,
   type AdapterRunOutcome,
   BypassFlagError,
+  type ChannelAuditContext,
   createProbeRunner,
   type FailureCode,
   isIneligible,
+  McpConfigAuditError,
   type NormalizedEvent,
   type PreflightCache,
   type ProbeRunner,
@@ -102,6 +104,7 @@ import {
   sessionHasGitPolicyViolation,
 } from "../git/finalize.js";
 import { RefGuard } from "../git/ref-guard.js";
+import { CHANNEL_MCP_CONFIG_FILE } from "../git/tool-protocol.js";
 import type { Ledger, NewRouteDecision, RunFieldPatch, RunRecord, RunState, TrustProfile } from "../ledger/index.js";
 import {
   canonicalScopeJson,
@@ -939,6 +942,7 @@ export class RunLifecycle {
     // T9.4 (FR-GIT-02): the injected tool channel, opened just before spawn and closed as soon as the process exits.
     const nativeIds: string[] = req.resume_native_session_id !== undefined ? [req.resume_native_session_id] : [];
     let channel: OpenChannel | undefined;
+    let channelAudit: ChannelAuditContext | undefined;
     if (ws.mode === "worktree") {
       const plan = gitChannelPlan(adapter, run0, this.opts.gitTools !== undefined);
       if (plan.kind === "not_offered") {
@@ -983,6 +987,22 @@ export class RunLifecycle {
             reason: "GIT_CHANNEL_INELIGIBLE",
           });
         }
+        // T9.4b (ADR-0029 item 1): files the adapter asked for (the Claude MCP definition) are written by the channel
+        // service into the run's private directory; the audit later admits `--mcp-config` only with this path.
+        let mcpConfigPath: string | undefined;
+        try {
+          for (const f of extra.files ?? []) {
+            const written = await channel.writeFile(f.name, f.contents);
+            if (f.name === CHANNEL_MCP_CONFIG_FILE) mcpConfigPath = written;
+          }
+        } catch (err) {
+          await channel.close();
+          if (!(err instanceof ChannelOpenError) && !isFsError(err)) throw err;
+          return this.fail(runId, "TOOL_FAILURE", `git tool channel files could not be written: ${errorText(err)}`, {
+            reason: "GIT_CHANNEL_UNAVAILABLE",
+          });
+        }
+        channelAudit = { toolNames: [...channel.shim.toolNames], ...(mcpConfigPath ? { mcpConfigPath } : {}) };
         inv = { ...inv, argv: [...inv.argv, ...extra.argv], env: { ...inv.env, ...extra.env } };
       }
     }
@@ -1001,6 +1021,8 @@ export class RunLifecycle {
           bypassApproved: profile.bypassApproved,
           // T3.17: the audit admits a bypass flag only for this profile being privileged with a scope that sets bypass.
           profile,
+          // T9.4b: `--mcp-config` and MCP allow rules only in the channel's exact shape (ADR-0029 item 6).
+          ...(channelAudit ? { channel: channelAudit } : {}),
           ...(this.opts.baseEnv ? { baseEnv: this.opts.baseEnv } : {}),
           onSpawn: ({ pid, pgid }) => {
             this.move(
@@ -1019,7 +1041,15 @@ export class RunLifecycle {
           },
         });
       } catch (err) {
-        if (err instanceof BypassFlagError) return this.fail(runId, "PERMISSION_BLOCKED", err.message);
+        // Nothing was spawned: close the channel (removing its socket and definition file) before the run is terminal.
+        if (err instanceof BypassFlagError) {
+          await channel?.close();
+          return this.fail(runId, "PERMISSION_BLOCKED", err.message);
+        }
+        if (err instanceof McpConfigAuditError) {
+          await channel?.close();
+          return this.fail(runId, "PERMISSION_BLOCKED", err.message.slice(0, 500), { reason: "MCP_CONFIG_REFUSED" });
+        }
         throw err;
       }
       out = await exec.handle.done;
@@ -1422,7 +1452,8 @@ type GitChannelPlan =
  * T9.4 (FR-GIT-02, LLD §12.1, ADR-0026; Delegated): whether a write-capable run gets the `commit` tool. Only facts frozen
  * in the run's policy snapshot at admission count (Q-41): a project run in a `host` environment whose primary context
  * is writable and names a commit identity, with an adapter that declares an `injected` channel. Runs delegated by
- * workspace path, and adapters without a channel (Claude Code, Codex), are untouched (`none`, no event).
+ * workspace path, and adapters without a channel (Codex; Claude Code without the T9.4b opt-in), are untouched (`none`,
+ * no event).
  */
 function gitChannelPlan(adapter: ProviderAdapter, run: RunRecord, serviceConfigured: boolean): GitChannelPlan {
   if (!serviceConfigured || adapter.gitCapabilities.commitChannel !== "injected") return { kind: "none" };
@@ -1508,6 +1539,11 @@ export function procStartTicks(pid: number): number | null {
   } catch {
     return null;
   }
+}
+
+/** A Node.js file-system error (has a string `code` such as `EEXIST`). */
+function isFsError(err: unknown): boolean {
+  return err instanceof Error && typeof (err as NodeJS.ErrnoException).code === "string";
 }
 
 function errorText(err: unknown): string {
