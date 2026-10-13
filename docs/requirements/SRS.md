@@ -136,6 +136,8 @@ The five trust profiles and their intended semantics are:
 | FR-WS-05 | The controller shall not modify the operator's checked-out branch or working tree, and shall not push to remotes except through the controlled publication in FR-GIT-05, which is off by default; results are delivered as controller-owned branches plus diff artifacts. *(Amended 2026-10-12 by owner decision 7: the blanket no-push rule became push-only-through-injected-tools; see [ADR-0014](../adr/0014-tool-only-commits-and-publication.md).)* | Must | BO-3 | T | M1 (no push by default), M9 (controlled publication) |
 | FR-WS-06 | Write-capable profiles shall require the workspace to be a Git repository; `inspect-untrusted` may operate on a non-Git directory read-only. | Must | CAP-4 | T | M1 |
 | FR-WS-07 | Worktrees and controller branches shall be garbage-collected according to a configurable retention policy. | Should | NFR-DATA-01 | T | M3 |
+| FR-WS-08 | Concurrent runs of one project shall each execute in their own controller-created Git worktree and hold their own write lease. No two concurrent runs of a project, in different meta-sessions, may share a worktree, and a `container` environment (FR-PRJ-05) mounts each run's worktree alone. *(Added 2026-10-13, Delegated under owner decision 42; see [ROADMAP §4.2](../ROADMAP.md#42-owner-decisions).)* | Must | CAP-4, owner decision 42 | T | M9 |
+| FR-WS-09 | Worktrees created for concurrent runs of a project shall be removed when the run's changes are merged or its meta-session is abandoned, whichever happens first. The controller branch and diff artifact stay until retention GC (FR-WS-07). *(Proposed 2026-10-13, Delegated under owner decision 42, not accepted: until it is, [FRD §4.4](FRD.md#44-worktree-disposition-per-terminal-state) applies unchanged. Open question Q-55 asks how a merge is detected.)* | Should | CAP-4, owner decision 42 | T | M9 |
 
 ### 3.6 Meta-sessions and continuity (`FR-SES`)
 
@@ -308,6 +310,16 @@ agent (FR-INN-03, FR-INN-16). All requirements in this group first ship in M12.
 | FR-RAG-13 | Once an adapter has an injected channel (T9.4b), an agent may call a read-only search through the per-run tool channel ([ADR-0026](../adr/0026-per-run-tool-channel-socket-and-token.md)), with the same project scope and size limits as FR-RAG-06. | Could | CAP-13, BO-9 | T | M12 |
 | FR-RAG-14 | The operator can clear any index, which deletes vectors and chunk text; the ledger keeps only counts. `doctor` shall report backend, locality, index size, revision and staleness. | Must | CAP-13, BO-5 | T | M12 |
 
+### 3.16 PR and merge subscriptions (`FR-SUB`)
+
+Owner decision 43 (2026-10-13, [ROADMAP §4.2](../ROADMAP.md#42-owner-decisions)), recorded as optional and later. It is
+not scheduled and has no milestone, so it stays `Deferred` until it is accepted and placed in
+[ROADMAP §6](../ROADMAP.md#6-milestones).
+
+| ID | Requirement | Priority | Source | Verify | Milestone |
+| --- | --- | --- | --- | --- | --- |
+| FR-SUB-01 | An agent may subscribe to a pull request or merge in a project's context. The controller shall deliver an event to it when CI on the head commit passes or fails, when another agent or a person commits to that pull request, and when it is merged or closed. Events carry untrusted text and never authorise an action on their own. | Deferred | CAP-14, owner decision 43 | — | Deferred |
+
 ## 4. Nonfunctional requirements
 
 ### 4.1 Security (`NFR-SEC`)
@@ -399,7 +411,7 @@ Requirement → milestone mapping is in the tables above; milestone → requirem
 | CAP-1 Task delegation | FR-MCP-01, 03–10, FR-EXE-01–02, 05–08 |
 | CAP-2 Provider adapters | FR-ADP-01–11, FR-AUTH-02 |
 | CAP-3 Policy and trust profiles | FR-POL-01–10, FR-MCP-06, FR-PRJ-06 |
-| CAP-4 Workspace isolation | FR-WS-01–07 |
+| CAP-4 Workspace isolation | FR-WS-01–09 |
 | CAP-5 Continuity | FR-SES-01–06 |
 | CAP-6 Routing | FR-RTE-01–09, FR-MCP-02, 05 |
 | CAP-7 Capacity and backpressure | FR-CAP-01–08, FR-MCP-02, FR-ADP-10 |
@@ -409,3 +421,4 @@ Requirement → milestone mapping is in the tables above; milestone → requirem
 | CAP-11 Controlled commits and publication | FR-GIT-01–10, FR-WS-05 |
 | CAP-12 Inner agent | FR-INN-01–18 |
 | CAP-13 Retrieval index | FR-RAG-01–14 |
+| CAP-14 Agent subscriptions to PR and merge events (deferred) | FR-SUB-01 |
