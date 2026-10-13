@@ -48,7 +48,8 @@
  *   In that bypass invocation `--restricted` is omitted ([HELP]: it "refuses bypassPermissions"; owner decision 19) and
  *   so is `--permission-mode dontAsk` (Assumption: [HELP] does not say how an explicit mode combines with
  *   --dangerously-skip-permissions, so the bypass flag is left as the only mode-setting input); `--safe-mode`,
- *   `--strict-mcp-config`, `--permission-prompts none`, `--tools` and the FR-GIT-01 `--disallowedTools` Git deny rules
+ *   `--strict-mcp-config` (both omitted in a bypass run whose repository_config is `approved`/`enabled`, owner decision
+ *   26, Q-37: see CLAUDE_BYPASS_REPO_CONFIG_ISOLATION_FLAGS), `--permission-prompts none`, `--tools` and the FR-GIT-01 `--disallowedTools` Git deny rules
  *   are kept, and `--add-dir`/`--worktree` are still never emitted. **Assumption (unverified, R-26, live check T3.9 and
  *   live-smoke C-G2):** that `--disallowedTools` deny rules still deny under --dangerously-skip-permissions, and that
  *   `--tools` still limits the available tools under it; [HELP] says neither.
@@ -114,6 +115,19 @@ export const CLAUDE_PERMISSION_FLAGS: readonly string[] = [
 export const CLAUDE_BYPASS_FLAG = "--dangerously-skip-permissions";
 /** Isolation flags of an approved bypass run: `--restricted` "refuses bypassPermissions" ([HELP]; decision 19). */
 export const CLAUDE_BYPASS_ISOLATION_FLAGS: readonly string[] = ["--safe-mode", "--strict-mcp-config"];
+/**
+ * Isolation flags of an approved bypass run whose scope sets `repository_config` to `approved` or `enabled` (owner
+ * decision 26, Q-37, ADR-0021; Delegated reading). `--restricted` stays absent (as above, ADR-0018) and the Git deny
+ * rules, `--tools` and worktree isolation are untouched. Omitting `--safe-mode` is what lets the repository's CLAUDE.md,
+ * skills, plugins and hooks load ([HELP]: it "disables CLAUDE.md, skills, plugins, hooks, MCP servers, custom
+ * commands/agents"). `approved` keeps `--strict-mcp-config` (no repository MCP definition loads; `--mcp-config` stays
+ * barred, ADR-0015); `enabled` omits it so the repository's `.mcp.json` can load. UNVERIFIED (R-41, live check T3.9):
+ * that omitting these flags loads exactly those items; [HELP] does not say so.
+ */
+export const CLAUDE_BYPASS_REPO_CONFIG_ISOLATION_FLAGS: Readonly<Record<"approved" | "enabled", readonly string[]>> = {
+  approved: ["--strict-mcp-config"],
+  enabled: [],
+};
 /**
  * Permission flags of an approved bypass run: the bypass flag replaces `--permission-mode dontAsk` (Assumption, see the
  * header); `--permission-prompts none` is kept (nobody answers a prompt, if any remains).
@@ -297,6 +311,8 @@ interface ClaudePlan {
   readonly allow: readonly string[];
   /** True only for an approved privileged scope with `bypass: true` (T3.17). */
   readonly bypass: boolean;
+  /** Isolation flags of this invocation; defaults to the bypass or non-bypass set when absent. */
+  readonly isolation?: readonly string[];
 }
 
 /** Exact `Bash(<entry>)` allow rules for an operator shell allowlist, or the specific refusal (FR-GIT-01). */
@@ -367,8 +383,11 @@ const SCOPE_ARG = /^[A-Za-z0-9_./=:@-]+$/;
  *    network limit cannot be enforced, R-36). `on` compiles, naming `WebFetch` in `--tools`.
  * 3. repository_config `approved`: CAPABILITY_MISSING (as trusted-development `approved-only`). `enabled`:
  *    CAPABILITY_MISSING: it means omitting `--safe-mode` and `--restricted`, and without `--restricted` [HELP] documents
- *    no confinement of file tools to the working directory (never beyond the worktree; decision 19 keeps `--safe-mode`
- *    and `--strict-mcp-config` in bypass runs). `disabled` compiles with the isolation flags.
+ *    no confinement of file tools to the working directory (never beyond the worktree). `disabled` compiles with the
+ *    isolation flags. Exception (owner decision 26, Q-37, ADR-0021): in an approved bypass run (`scope.bypass` and
+ *    {@link bypassApprovedFor}) `approved` and `enabled` compile with {@link CLAUDE_BYPASS_REPO_CONFIG_ISOLATION_FLAGS}
+ *    (no `--safe-mode`; `--strict-mcp-config` kept for `approved`, omitted for `enabled`). A bypass scope without an
+ *    approval, and every non-bypass scope, keep the refusal.
  * 4. shell `allowlist` under bypass: CAPABILITY_MISSING ("Bypass all permission checks" [HELP]: allow rules no longer
  *    narrow `Bash`). Otherwise `none` (no `Bash`), `allowlist` (exact `Bash(<argv joined by spaces>)` rules, each word
  *    plain, no Git write), `broad` (`Bash` tool and the allow rule `Bash`).
@@ -391,14 +410,16 @@ export function privilegedPlan(request: CompileRequest, profile: ResolvedProfile
         "network on compiles (TDD §4.1.1, R-36)",
     );
   }
-  if (scope.repository_config.mode === "approved") {
+  const repoMode = scope.repository_config.mode;
+  const bypassRepoConfig = scope.bypass && bypassApprovedFor(request, profile);
+  if (repoMode === "approved" && !bypassRepoConfig) {
     return ineligible(
       "CAPABILITY_MISSING",
       "privileged repository_config=approved: claude --help 2.1.296 has no per-item control for approved hooks, " +
         "instructions or MCP servers; --mcp-config is barred by ADR-0015 (TDD §4.1.1)",
     );
   }
-  if (scope.repository_config.mode === "enabled") {
+  if (repoMode === "enabled" && !bypassRepoConfig) {
     return ineligible(
       "CAPABILITY_MISSING",
       "privileged repository_config=enabled: needs omitting --safe-mode and --restricted, and without --restricted " +
@@ -449,7 +470,8 @@ export function privilegedPlan(request: CompileRequest, profile: ResolvedProfile
   tools.push(...CLAUDE_NETWORK_TOOLS);
   allow.push(...CLAUDE_NETWORK_TOOLS);
   if (scope.bypass && !bypass) return ineligible("PROFILE_UNSUPPORTED", CLAUDE_BYPASS_NOT_APPROVED);
-  return { tools, allow, bypass };
+  const isolation = bypass && repoMode !== "disabled" ? CLAUDE_BYPASS_REPO_CONFIG_ISOLATION_FLAGS[repoMode] : undefined;
+  return isolation === undefined ? { tools, allow, bypass } : { tools, allow, bypass, isolation };
 }
 
 export class ClaudeAdapter implements ProviderAdapter {
@@ -562,7 +584,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     }
 
     const policyFlags = [
-      ...(plan.bypass ? CLAUDE_BYPASS_ISOLATION_FLAGS : CLAUDE_ISOLATION_FLAGS),
+      ...(plan.isolation ?? (plan.bypass ? CLAUDE_BYPASS_ISOLATION_FLAGS : CLAUDE_ISOLATION_FLAGS)),
       ...(plan.bypass ? CLAUDE_BYPASS_PERMISSION_FLAGS : CLAUDE_PERMISSION_FLAGS),
       "--tools",
       plan.tools.join(","),

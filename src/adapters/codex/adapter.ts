@@ -300,6 +300,8 @@ export class CodexAdapter implements ProviderAdapter {
    * 6. A requested model: CAPABILITY_MISSING (no documented model flag).
    * Then files `read-only` (or a read-only workspace) is `--sandbox read-only`, `worktree` is `--sandbox workspace-write`.
    * `bypassApproved` true on a `bypass: false` scope changes nothing (no flag).
+   * Owner decision 26 (Q-37) allows repository_config `approved`/`enabled` in an approved bypass run; Codex bypass is
+   * undocumented (step 2 refuses it first), so those modes stay refused here until a Codex bypass is documented.
    */
   #privileged(request: CompileRequest, profile: ResolvedProfile): { policyFlags: string[] } | Ineligible {
     const scope = profile.privilegedScope?.scope;
@@ -323,7 +325,8 @@ export class CodexAdapter implements ProviderAdapter {
       return ineligible(
         "CAPABILITY_MISSING",
         `privileged repository_config=${scope.repository_config.mode}: Codex documents only all-or-nothing ` +
-          "--ignore-user-config/--ignore-rules, and whether --sandbox wins over loaded configuration is not in R2",
+          "--ignore-user-config/--ignore-rules, and whether --sandbox wins over loaded configuration is not in R2; " +
+          "owner decision 26 (Q-37) allows it for bypass runs only, and Codex bypass is undocumented",
       );
     }
     if (request.model !== undefined) return ineligible("CAPABILITY_MISSING", "no documented Codex model flag");
