@@ -5,14 +5,28 @@ import { afterAll, describe, expect, it } from "vitest";
 import { ClaudeAdapter } from "../adapters/claude/adapter.js";
 import { CodexAdapter } from "../adapters/codex/adapter.js";
 import { AdapterRegistry } from "../adapters/registry.js";
-import type { ProbeOutput, ProbeRunner, ProviderId, ResolvedProfile, TrustProfile } from "../adapters/types.js";
+import type {
+  AuthResult,
+  ProbeOutput,
+  ProbeRunner,
+  ProviderAdapter,
+  ProviderId,
+  ResolvedProfile,
+  TrustProfile,
+} from "../adapters/types.js";
+import { type ProfileOverrides, resolveTrustProfile } from "../policy/index.js";
 import {
   type CollectDeps,
+  compileCheck,
   type EligibilityRequest,
   evaluateEligibility,
+  failureCodeForIneligible,
   failureCodeForReason,
   filterEligible,
   isProviderEnabled,
+  requirementsFor,
+  SANDBOX_DEPENDENT_PROFILES,
+  TRUST_PROFILE_ORDER,
   toRouteDecisionJson,
 } from "./index.js";
 
@@ -313,5 +327,128 @@ describe("eligibility filter (T2.3, FR-RTE-01, FR-MCP-05)", () => {
     ]);
     expect(() => JSON.parse(row.features_json)).not.toThrow();
     expect(() => JSON.parse(row.reasons_json)).not.toThrow();
+  });
+});
+
+/** Codex with a known-good auth state, so the per-profile tests reach the compile check (Codex auth is UNKNOWN, Q-10). */
+class AuthedCodex extends CodexAdapter {
+  override async authPreflight(): Promise<AuthResult> {
+    return { state: "OK" };
+  }
+}
+
+/** Production snapshot for a profile (T3.2 resolver; privileged from the narrowest valid scope, placeholder binding). */
+function snapshot(name: TrustProfile, overrides: ProfileOverrides = {}): ResolvedProfile {
+  if (name !== "privileged") return resolveTrustProfile(name, { overrides });
+  return resolveTrustProfile("privileged", {
+    privileged: {
+      scope: {
+        files: { access: "worktree" },
+        shell: { mode: "none" },
+        network: { mode: "off" },
+        repository_config: { mode: "disabled" },
+        bypass: false,
+      },
+      scopeHash: "0".repeat(64),
+      approvalId: "apv_00000000000000000000000000",
+    },
+  });
+}
+
+describe("per-profile eligibility (M3)", () => {
+  // T3.7: profile x provider x platform. The filter's verdict for each cell is the adapter's own compile of the resolved
+  // snapshot (T3.5 and T3.6 matrices, TDD §4.1.1 and §4.2.1) plus the host-platform rule (Proposed).
+  const adapters = (): ProviderAdapter[] => [
+    new ClaudeAdapter({ binaryPath: CLAUDE }),
+    new AuthedCodex({ executable: CODEX }),
+  ];
+  const reg = () => {
+    const r = new AdapterRegistry();
+    for (const a of adapters()) r.register(a);
+    return r;
+  };
+  const evaluate = (trustProfile: TrustProfile, platform: string, overrides: ProfileOverrides = {}) => {
+    const p = snapshot(trustProfile, overrides);
+    return evaluateEligibility(
+      {
+        candidates: ["claude", "codex"],
+        trustProfile,
+        clientMaxProfile: "privileged",
+        profile: p,
+        requirements: requirementsFor(trustProfile, p),
+        cwd: "/tmp/synthetic-worktree",
+      },
+      deps(runnerFor({ ...claudeTable(), ...codexTable }), { registry: reg(), gate: passGate, platform }),
+    );
+  };
+
+  /** Expected Linux matrix with default profiles: undefined = eligible, else the primary reason code. */
+  const LINUX: Record<TrustProfile, Record<"claude" | "codex", string | undefined>> = {
+    "inspect-untrusted": { claude: undefined, codex: undefined },
+    "edit-untrusted": { claude: undefined, codex: undefined },
+    "test-sandboxed": { claude: "PROFILE_UNSUPPORTED", codex: "PROFILE_UNSUPPORTED" },
+    "trusted-development": { claude: undefined, codex: "CAPABILITY_MISSING" },
+    privileged: { claude: "PROFILE_UNSUPPORTED", codex: "PROFILE_UNSUPPORTED" },
+  };
+
+  for (const trustProfile of TRUST_PROFILE_ORDER) {
+    it(`linux, ${trustProfile}: each provider is filtered by its own compile result`, async () => {
+      const d = await evaluate(trustProfile, "linux");
+      for (const provider of ["claude", "codex"] as const) {
+        const adapter = adapters().find((a) => a.id === provider) as ProviderAdapter;
+        const p = snapshot(trustProfile);
+        const direct = compileCheck(adapter, p, requirementsFor(trustProfile, p), "/tmp/synthetic-worktree");
+        const expected = LINUX[trustProfile][provider];
+        const ex = excludedFor(d, provider);
+        if (expected === undefined) {
+          expect(direct).toEqual({ ok: true });
+          expect(d.eligible).toContain(provider);
+          continue;
+        }
+        expect("ineligible" in direct && direct.reason).toBe(expected);
+        expect(ex?.reasons).toEqual([
+          {
+            code: expected,
+            detail: "ineligible" in direct ? direct.detail : "",
+            evidence: expect.objectContaining({ provider, adapterReason: expected, trustProfile }),
+          },
+        ]);
+        expect(ex?.failureCode).toBe("ELIGIBILITY_NONE"); // FRD BR-3: profile unsupported -> ELIGIBILITY_NONE
+      }
+    });
+  }
+
+  it("linux: a loosening override changes the verdict through compile only (trusted-development shell broad)", async () => {
+    const d = await evaluate("trusted-development", "linux", { "trusted-development": { shell: "broad" } });
+    expect(d.eligible).toEqual(["codex"]); // Codex: --sandbox workspace-write
+    expect(excludedFor(d, "claude")?.primary).toMatchObject({ code: "CAPABILITY_MISSING" }); // Q-29
+  });
+
+  for (const platform of ["darwin", "win32"]) {
+    it(`${platform}: every sandbox-dependent profile is PROFILE_PLATFORM_UNVERIFIED for both providers`, async () => {
+      expect(SANDBOX_DEPENDENT_PROFILES).toEqual(TRUST_PROFILE_ORDER);
+      for (const trustProfile of TRUST_PROFILE_ORDER) {
+        const d = await evaluate(trustProfile, platform);
+        expect(d.eligible).toEqual([]);
+        expect(d.outcome).toMatchObject({ kind: "none_eligible", failureCode: "ELIGIBILITY_NONE" });
+        for (const provider of ["claude", "codex"] as const) {
+          const ex = excludedFor(d, provider);
+          expect(ex?.primary).toMatchObject({
+            code: "PROFILE_PLATFORM_UNVERIFIED",
+            evidence: { provider, platform, trustProfile, verifiedPlatforms: ["linux"] },
+          });
+          expect(ex?.failureCode).toBe("ELIGIBILITY_NONE");
+        }
+      }
+    });
+  }
+
+  it("maps adapter Ineligible reasons to BR-3 codes (LLD §2)", () => {
+    expect(failureCodeForIneligible("PROFILE_UNSUPPORTED")).toBe("ELIGIBILITY_NONE");
+    expect(failureCodeForIneligible("CAPABILITY_MISSING")).toBe("ELIGIBILITY_NONE");
+    expect(failureCodeForIneligible("NO_MANIFEST")).toBe("ELIGIBILITY_NONE");
+    expect(failureCodeForIneligible("VERSION_UNVERIFIED")).toBe("ADAPTER_VERSION_UNVERIFIED");
+    expect(failureCodeForIneligible("AUTH_REQUIRED")).toBe("AUTH_REQUIRED");
+    expect(failureCodeForReason("PROFILE_PLATFORM_UNVERIFIED")).toBe("ELIGIBILITY_NONE");
   });
 });

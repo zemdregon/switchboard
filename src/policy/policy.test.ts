@@ -95,15 +95,18 @@ describe("resolveProfile (COMP-POL, M2)", () => {
     }
   });
 
-  it("fails closed for every profile not delivered in M2 and for unknown names (NFR-SEC-06)", () => {
-    for (const p of TRUST_PROFILES.filter((x) => !M2_PROFILES.includes(x) && x !== "privileged")) {
-      expect(() => resolveProfile(p)).toThrow(ProfileUnavailableError);
-      try {
-        resolveProfile(p);
-      } catch (err) {
-        expect((err as ProfileUnavailableError).code).toBe("ELIGIBILITY_NONE");
-        expect(toToolError(err)).toMatchObject({ code: "ELIGIBILITY_NONE", details: { trust_profile: p } });
-      }
+  it("T3.7: resolves all four non-privileged profiles (M2 gate lifted) and fails closed for unknown names (NFR-SEC-06)", () => {
+    // Until T3.7 test-sandboxed and trusted-development threw ELIGIBILITY_NONE here; support is now each adapter's
+    // compile verdict in the eligibility filter (src/routing/routing.test.ts "per-profile eligibility (M3)").
+    for (const p of TRUST_PROFILES.filter((x) => x !== "privileged")) {
+      expect(resolveProfile(p)).toEqual(resolveTrustProfile(p));
+      expect(resolveProfile(p).bypassApproved).toBe(false);
+    }
+    try {
+      resolveProfile("bogus" as TrustProfile);
+    } catch (err) {
+      expect((err as ProfileUnavailableError).code).toBe("ELIGIBILITY_NONE");
+      expect(toToolError(err)).toMatchObject({ code: "ELIGIBILITY_NONE", details: { trust_profile: "bogus" } });
     }
     for (const bogus of ["", "toString", "__proto__", "constructor", "EDIT-UNTRUSTED"]) {
       expect(() => resolveProfile(bogus as TrustProfile)).toThrow(ProfileUnavailableError);
@@ -172,13 +175,13 @@ describe("resolveTrustProfile (COMP-POL, T3.2)", () => {
     expect(Object.isFrozen(resolveTrustProfile("test-sandboxed").shellAllowlist)).toBe(true);
   });
 
-  it("keeps the M2-gated resolver refusing non-M2 profiles, with or without overrides", () => {
+  it("T3.7: the lifecycle resolver applies overrides to every non-privileged profile and never resolves privileged", () => {
     const resolver = createProfileResolver({
       "test-sandboxed": { network: "policy" },
     });
-    for (const p of ["test-sandboxed", "trusted-development", "privileged"] as const) {
-      expect(() => resolver(p)).toThrow(ProfileUnavailableError);
-    }
+    expect(resolver("test-sandboxed")).toMatchObject({ name: "test-sandboxed", network: "policy" });
+    expect(resolver("trusted-development").name).toBe("trusted-development");
+    expect(() => resolver("privileged")).toThrow(ProfileUnavailableError);
     expect(resolver("edit-untrusted").name).toBe("edit-untrusted");
   });
 

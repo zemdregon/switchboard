@@ -20,8 +20,13 @@
  *   approval for this client (C7, checked after the ceiling) and takes the approved scope as is.
  * - Proposed: no adapter compiles `privileged` before T3.5/T3.6, so for a `privileged` request V11 defers the adapter
  *   compile verdict to dispatch: a provider excluded only by PROFILE_UNSUPPORTED or CAPABILITY_MISSING is admissible
- *   (it still has to pass binary, version, manifest, enablement, platform and auth). The run is refused at dispatch
- *   until the adapters compile the scope (`PRIVILEGED_NOT_COMPILABLE` in the lifecycle).
+ *   (it still has to pass binary, version, manifest, enablement, platform, the T3.7 profile-platform rule and auth).
+ *   The run is refused at dispatch until the adapters compile the scope (`PRIVILEGED_NOT_COMPILABLE` in the
+ *   lifecycle).
+ * - `list_capabilities` (T3.7): `supported_profiles` is each provider's compile matrix on this host: the
+ *   profile-platform rule (`profilePlatformSupported`), then the adapter's own compile of each resolved profile
+ *   (`compileCheck`, the same call the eligibility filter makes). `privileged` is listed only if the adapter compiles
+ *   the narrowest scope (Proposed); no adapter does before T3.17.
  * - Non-empty `verification_commands` are refused with INVALID_REQUEST until verification (FR-EXE-08) lands in M3,
  *   rather than accepted and silently not run. `minimum_capability` fails ELIGIBILITY_NONE: it is a hard constraint
  *   (BR-4) and no model registry exists before M7.
@@ -41,13 +46,21 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, type CallToolResult, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { ErrorObject, ValidateFunction } from "ajv";
 import { Ajv2020 } from "ajv/dist/2020.js";
-import { type AdapterRegistry, isIneligible, type ProviderId, type ResolvedProfile } from "../adapters/index.js";
+import type { AdapterRegistry, ProviderId, ResolvedProfile } from "../adapters/index.js";
 import type { ArtifactStore } from "../artifacts/index.js";
 import type { ResolvedConfig } from "../config/index.js";
 import type { Ledger, RunRecord, TrustProfile } from "../ledger/index.js";
 import { type EligibilityAnswer, type RunLifecycle, type RunPriority, requestHash } from "../lifecycle/index.js";
 import { checkScopeLists, type PrivilegedScope, parsePrivilegedScope, resolveTrustProfile } from "../policy/index.js";
-import { profileRank, TRUST_PROFILE_ORDER, toRouteDecisionJson } from "../routing/index.js";
+import {
+  compileCheck,
+  type EligibilityReasonCode,
+  profilePlatformSupported,
+  profileRank,
+  requirementsFor,
+  TRUST_PROFILE_ORDER,
+  toRouteDecisionJson,
+} from "../routing/index.js";
 import { buildEnvelope, compactEvents, type Envelope } from "./envelope.js";
 import { errorEnvelope, invalid, ToolError, toToolError } from "./errors.js";
 import {
@@ -436,10 +449,9 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
   const describeProvider = (answer: EligibilityAnswer, id: ProviderId, cwd: string) => {
     const facts = answer.input.facts.find((f) => f.provider === id);
     const adapter = deps.registry.get(id);
-    // FRD §6 precedence; compile reasons are per-profile and are reported through supported_profiles instead.
-    const status = answer.decision.excluded[0]?.reasons.find(
-      (r) => r.code !== "PROFILE_UNSUPPORTED" && r.code !== "CAPABILITY_MISSING",
-    );
+    // FRD §6 precedence; compile and profile-platform reasons are per-profile and are reported through
+    // supported_profiles instead.
+    const status = answer.decision.excluded[0]?.reasons.find((r) => !PER_PROFILE_REASONS.has(r.code));
     const adapterStatus =
       status === undefined
         ? "READY"
@@ -449,26 +461,19 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
             ? "AUTH_REQUIRED"
             : "DISABLED";
     const probed = facts?.probe?.steps.every((s) => s.ok) === true;
+    // T3.7: supported_profiles is the provider's compile matrix on this host: the host-platform rule, then the
+    // adapter's own compile of each resolved profile (overrides included), exactly as the eligibility filter asks it.
     const supported: TrustProfile[] = [];
     if (adapter && probed) {
       for (const p of TRUST_PROFILE_ORDER) {
-        if (p === "privileged") continue; // never grantable through MCP (FR-MCP-06)
+        if (!profilePlatformSupported(p, answer.input.platform)) continue;
         let profile: ResolvedProfile;
         try {
-          profile = lifecycle.resolveProfile(p);
+          profile = p === "privileged" ? eligibilityProfile(NARROWEST_PRIVILEGED_SCOPE) : lifecycle.resolveProfile(p);
         } catch {
-          continue; // COMP-POL does not resolve this profile in this version (src/policy): unsupported, fail closed
+          continue; // COMP-POL does not resolve this profile: unsupported, fail closed
         }
-        const inv = adapter.compile(
-          {
-            runId: "capability-check",
-            objective: "capability check",
-            constraints: [],
-            workspace: { cwd, writable: p !== "inspect-untrusted" },
-          },
-          profile,
-        );
-        if (!isIneligible(inv)) supported.push(p);
+        if (!("ineligible" in compileCheck(adapter, profile, requirementsFor(p, profile), cwd))) supported.push(p);
       }
     }
     return {
@@ -557,6 +562,27 @@ export async function startStdioServer(deps: McpServerDeps): Promise<Switchboard
   await mcp.server.connect(new StdioServerTransport());
   return mcp;
 }
+
+/** Eligibility reasons that depend on the requested profile, not on the provider as a whole (T3.7). */
+const PER_PROFILE_REASONS: ReadonlySet<EligibilityReasonCode> = new Set([
+  "PROFILE_UNSUPPORTED",
+  "CAPABILITY_MISSING",
+  "PROFILE_PLATFORM_UNVERIFIED",
+]);
+
+/**
+ * Proposed (T3.7): the scope `list_capabilities` compiles to decide whether a provider lists `privileged`: the narrowest
+ * scope LLD §3.1 allows (read-only files, no shell, no network, repository configuration disabled, no bypass). A
+ * provider that cannot compile even this scope cannot compile any; one that can is listed, and each request's own scope
+ * is still compiled at admission and dispatch. Both adapters refuse `privileged` until T3.17, so neither lists it.
+ */
+const NARROWEST_PRIVILEGED_SCOPE: PrivilegedScope = {
+  files: { access: "read-only" },
+  shell: { mode: "none" },
+  network: { mode: "off" },
+  repository_config: { mode: "disabled" },
+  bypass: false,
+};
 
 /**
  * The snapshot V11 compiles against for a `privileged` request: the scope resolved with placeholder hash and approval

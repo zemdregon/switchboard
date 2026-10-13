@@ -890,14 +890,96 @@ describe("run lifecycle", () => {
     expect(rules(r.runId)).toEqual(["T4", "T8"]);
   });
 
-  it("T10: a profile the adapter cannot compile ends FAILED/PERMISSION_BLOCKED and releases the lease", async () => {
+  it("T10: a profile the adapter cannot compile ends FAILED/ELIGIBILITY_NONE (BR-3) and releases the lease", async () => {
+    // T3.7 change: until T3.7 this ended PERMISSION_BLOCKED (ROADMAP §6.2.1). A compile Ineligible is not a denial;
+    // FRD BR-3 / LLD §2 map PROFILE_UNSUPPORTED to ELIGIBILITY_NONE, with the reason in the transition event.
     adapter.compileOverride = () => ({ ineligible: true, reason: "PROFILE_UNSUPPORTED", detail: "no" });
     const r = await submit("success");
     lifecycle.start();
     const done = await lifecycle.waitForTerminal(r.runId);
-    expect(done.failure_code).toBe("PERMISSION_BLOCKED");
+    expect(done.failure_code).toBe("ELIGIBILITY_NONE");
+    expect(done.failure_detail).toContain("PROFILE_UNSUPPORTED: no");
     expect(rules(r.runId)).toEqual(["T4", "T5", "T10"]);
+    expect(events(r.runId).at(-1)?.p).toMatchObject({
+      reason: "PROFILE_UNSUPPORTED",
+      stage: "compile",
+      eligibility: [{ code: "PROFILE_UNSUPPORTED", detail: "no" }],
+    });
     expect(sessionRow(r.metaSessionId).lease_run_id).toBeNull();
+    expect(done.pid).toBeNull();
+  });
+
+  describe("compile-time Ineligible with stage-1 eligibility (T3.7, FRD BR-3, T8, T10)", () => {
+    const passGate: NonNullable<RunLifecycleOptions["eligibility"]>["gate"] = (id) => ({
+      eligible: true,
+      evidence: { provider: id, observedVersion: "x", validatedRange: "test", validatedCliVersion: "test" },
+    });
+    beforeEach(async () => {
+      await lifecycle.shutdown();
+      lifecycle = makeLifecycle({ eligibility: { platform: "linux", gate: passGate } });
+    });
+
+    it("a race-time compile Ineligible at LEASED (preflight passed) ends FAILED with the BR-3 code and the reason", async () => {
+      // Preflight's compile check (runId "route-check") passes; the LEASED compile refuses: the race §6.2.1 described.
+      adapter.compileOverride = (req, inv) =>
+        req.runId === "route-check" ? inv : { ineligible: true, reason: "CAPABILITY_MISSING", detail: "raced" };
+      const r = await submit("success");
+      lifecycle.start();
+      const done = await lifecycle.waitForTerminal(r.runId);
+      expect(done).toMatchObject({ state: "FAILED", failure_code: "ELIGIBILITY_NONE", pid: null });
+      expect(done.failure_detail).toContain("CAPABILITY_MISSING: raced");
+      expect(rules(r.runId)).toEqual(["T4", "T5", "T10"]);
+      expect(events(r.runId).at(-1)?.p).toMatchObject({
+        to: "FAILED",
+        reason: "CAPABILITY_MISSING",
+        stage: "compile",
+        eligibility: [{ code: "CAPABILITY_MISSING", detail: "raced" }],
+      });
+      expect(sessionRow(r.metaSessionId).lease_run_id).toBeNull();
+    });
+
+    it("a compile Ineligible at PREFLIGHT ends FAILED/ELIGIBILITY_NONE (T8) with the reason, no lease or worktree", async () => {
+      adapter.compileOverride = () => ({ ineligible: true, reason: "PROFILE_UNSUPPORTED", detail: "not here" });
+      const r = await submit("success");
+      lifecycle.start();
+      const done = await lifecycle.waitForTerminal(r.runId);
+      expect(done).toMatchObject({ state: "FAILED", failure_code: "ELIGIBILITY_NONE", worktree_path: null, pid: null });
+      expect(rules(r.runId)).toEqual(["T4", "T8"]);
+      expect(events(r.runId).at(-1)?.p).toMatchObject({
+        eligibility: [{ code: "PROFILE_UNSUPPORTED", detail: "not here" }],
+      });
+    });
+
+    it("an adapter AUTH_REQUIRED or VERSION_UNVERIFIED from compile keeps its own BR-3 code", async () => {
+      adapter.compileOverride = (req, inv) =>
+        req.runId === "route-check" ? inv : { ineligible: true, reason: "VERSION_UNVERIFIED", detail: "moved" };
+      const r = await submit("success");
+      lifecycle.start();
+      expect(await lifecycle.waitForTerminal(r.runId)).toMatchObject({
+        failure_code: "ADAPTER_VERSION_UNVERIFIED",
+      });
+    });
+
+    it("preflight compiles the run's frozen snapshot, not a fresh resolution", async () => {
+      // The resolver drifts after admission (e.g. a config reload); both compiles must still see the stored snapshot.
+      let drift = false;
+      await lifecycle.shutdown();
+      lifecycle = makeLifecycle({
+        eligibility: { platform: "linux", gate: passGate },
+        resolveProfile: (n) => ({ ...profileFor(n), ...(drift ? { shell: "broad" as const } : {}) }),
+      });
+      const seen: string[] = [];
+      const compile = adapter.compile.bind(adapter);
+      adapter.compile = (req, profile) => {
+        seen.push(`${req.runId === "route-check" ? "preflight" : "leased"}:${profile.shell}`);
+        return compile(req, profile);
+      };
+      const r = await submit("success");
+      drift = true;
+      lifecycle.start();
+      expect((await lifecycle.waitForTerminal(r.runId)).state).toBe("SUCCEEDED");
+      expect(seen).toEqual(["preflight:none", "leased:none"]);
+    });
   });
 
   it("T10: a spawn error ends FAILED/PROCESS_CRASH", async () => {

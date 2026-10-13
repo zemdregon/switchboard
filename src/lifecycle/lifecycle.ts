@@ -47,6 +47,16 @@
  *   computed `bypassApproved` is recorded in the transition event and the T3.3 refusal above still applies.
  * - Cancelling a run in AWAITING_APPROVAL closes its `PENDING` approval as `DENIED` in the same transaction (Q-15,
  *   `./approval.ts`).
+ *
+ * T3.7 additions (profile-aware eligibility; FRD BR-3, BR-5, T8, T10; LLD §2):
+ * - PREFLIGHT re-checks eligibility against the run's frozen policy snapshot, so its compile check is the same compile
+ *   LEASED performs; a compile `Ineligible` there ends the run FAILED (T8) with the BR-3 code and the reasons in the
+ *   event.
+ * - A compile `Ineligible` at LEASED (a race after preflight passed) ends FAILED (T10) with the BR-3 code of the
+ *   adapter's reason (`failureCodeForIneligible`: PROFILE_UNSUPPORTED and CAPABILITY_MISSING give ELIGIBILITY_NONE),
+ *   with `reason`, `stage: "compile"` and `eligibility` in the transition event. Until T3.7 it ended
+ *   PERMISSION_BLOCKED (ROADMAP §6.2.1). PERMISSION_BLOCKED remains only for the client ceiling (BR-13), the
+ *   privileged approval check (T3.4) and a refused bypass flag in the argv audit.
  */
 import { readFileSync } from "node:fs";
 import { realpath } from "node:fs/promises";
@@ -80,8 +90,11 @@ import {
   collectFacts,
   type EligibilityDecision,
   type EligibilityInput,
+  failureCodeForIneligible,
   failureCodeForReason,
   filterEligible,
+  reasonCodeForIneligible,
+  requirementsFor,
 } from "../routing/index.js";
 import { usageObservationsFromEvents } from "../usage/index.js";
 import { gitText } from "../workspace/git.js";
@@ -502,11 +515,7 @@ export class RunLifecycle {
         trustProfile: q.trustProfile,
         clientMaxProfile: q.clientMaxProfile,
         profile,
-        requirements: {
-          network: profile.network,
-          writable: q.trustProfile !== "inspect-untrusted",
-          ...(profile.shellAllowlist ? { shellAllowlist: profile.shellAllowlist } : {}),
-        },
+        requirements: requirementsFor(q.trustProfile, profile),
         cwd: q.cwd,
       },
       { ...this.opts.eligibility, registry: this.opts.adapters, runner: this.runner },
@@ -711,7 +720,7 @@ export class RunLifecycle {
 
     // PREFLIGHT (WF-6 order: probe, then auth; no login is ever attempted).
     const verdict = this.opts.eligibility
-      ? await this.preflightEligibility(req, run0)
+      ? await this.preflightEligibility(req, run0, profile)
       : await this.preflightM1(req, adapter);
     if (exec.cancelRequested) return this.cancelEarly(runId);
     if (!verdict.ok) return this.fail(runId, verdict.code, verdict.detail, verdict.extra);
@@ -749,7 +758,24 @@ export class RunLifecycle {
           )
         : adapter.compile(compileReq, profile);
     if (exec.cancelRequested) return this.cancelEarly(runId);
-    if (isIneligible(inv)) return this.fail(runId, "PERMISSION_BLOCKED", `${inv.reason}: ${inv.detail}`);
+    if (isIneligible(inv)) {
+      // T3.7 (FRD T10, BR-3, BR-5): with stage-1 eligibility, preflight's compile check passed, so this is a race or
+      // a resume-only refusal (`resumeArgs`, or the worktree cwd, differs from the preflight compile). The adapter's reason maps to its BR-3 code (LLD §2),
+      // normally ELIGIBILITY_NONE, never PERMISSION_BLOCKED: nothing was denied, the profile simply cannot be
+      // compiled. The machine-readable reason is in the transition event. PERMISSION_BLOCKED stays for the client
+      // ceiling, the privileged approval check and the argv bypass audit below.
+      const code = failureCodeForIneligible(inv.reason);
+      return this.fail(
+        runId,
+        code,
+        `${req.provider} cannot compile ${run0.trust_profile}: ${inv.reason}: ${inv.detail}`,
+        {
+          reason: inv.reason,
+          stage: "compile",
+          eligibility: [{ code: reasonCodeForIneligible(inv.reason), detail: inv.detail.slice(0, 300) }],
+        },
+      );
+    }
     if (ws.mode === "worktree") {
       this.opts.workspace.extendLease(runId, 2 * inv.timeouts.wallClockMs + inv.timeouts.killGraceMs);
     }
@@ -837,13 +863,19 @@ export class RunLifecycle {
    * client ceiling was enforced at admission (BR-13), so the run's own profile is passed as the ceiling here (Proposed).
    * An exclusion ends the run FAILED with the BR-3 code (T8) and the reasons in the event payload.
    */
-  private async preflightEligibility(req: StoredRequest, run: RunRecord): Promise<PreflightVerdict> {
+  private async preflightEligibility(
+    req: StoredRequest,
+    run: RunRecord,
+    profile: ResolvedProfile,
+  ): Promise<PreflightVerdict> {
+    // T3.7: compile against the run's frozen policy snapshot (what LEASED will compile), not a fresh resolution.
     const { input, decision } = await this.checkEligibility({
       candidates: [req.provider],
       requiredProvider: req.provider,
       trustProfile: run.trust_profile,
       clientMaxProfile: run.trust_profile,
       cwd: req.workspace,
+      profile,
     });
     const binaryVersion = input.facts.find((f) => f.provider === req.provider)?.probe?.binaryVersion ?? null;
     if (decision.outcome.kind === "eligible") return { ok: true, binaryVersion };
