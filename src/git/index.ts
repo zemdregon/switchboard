@@ -1,4 +1,17 @@
 export {
+  type ChannelLimits,
+  ChannelOpenError,
+  DEFAULT_CHANNEL_LIMITS,
+  GIT_CHANNEL_CLOSED,
+  GIT_CHANNEL_OPENED,
+  GIT_TOOL_DENIED,
+  GitToolService,
+  type GitToolServiceOptions,
+  type OpenChannel,
+  type OpenChannelInput,
+  type SweepReport,
+} from "./channel.js";
+export {
   CommitError,
   type CommitErrorCode,
   type CommitInput,
@@ -32,3 +45,4 @@ export {
   SanitizerError,
   sanitizeMessage,
 } from "./sanitize.js";
+export * from "./tool-protocol.js";

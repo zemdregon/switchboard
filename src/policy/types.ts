@@ -96,6 +96,18 @@ export interface ProjectSnapshot {
   readonly effective_max_profile: TrustProfile;
   /** The project's allowed providers when it declared any; absent means no restriction. */
   readonly allowed_providers?: readonly string[];
+  /**
+   * T9.4 (ROADMAP Q-41, ADR-0026): the primary context's Git facts as of admission, so a configuration edit after
+   * admission cannot change the identity a run's commits use or the push policy it runs under. `writable` is the
+   * context's own flag; `identity` is absent when the context configures none (then no commit tool is offered). Not
+   * secrets: an author name and e-mail address, and the push policy name. The remote and branch prefix are NOT frozen:
+   * the schema does not restrict `remote` to a remote name, so it could hold a URL with credentials, which must never
+   * reach the ledger (NFR-SEC-01); T9.6 decides how the push target is resolved. Absent on snapshots written before
+   * T9.4; such runs are offered no commit tool.
+   */
+  readonly writable?: boolean;
+  readonly identity?: { readonly name: string; readonly email: string };
+  readonly push?: { readonly policy: "none" | "branch" };
 }
 
 /**

@@ -473,6 +473,12 @@ finalize-only mode (BR-30). The bypass-flag audit (FR-POL-03) treats any flag wh
 injected server as a bypass flag. Which providers fall in which category is **to be verified** per adapter
 ([TDD §3.10](TDD.md#310-git-commits-attribution-and-publication)).
 
+**As built (2026-10-13, Delegated, T9.4, ADR-0026).** `GitCapabilities` and `ShimSpec` are in `src/adapters/types.ts`
+with two additions: `GitCapabilities.detail` (the reason for the declaration) and `ShimSpec.env` (the token variable for
+the shim). `ShimSpec.command` is the full argv including `--socket <path>`. The lifecycle, not `compile`, appends the
+`channelArgs` result (above). Fake: `injected`; Claude Code and Codex: `none`. The rule that a `none` adapter is
+ineligible for write-capable profiles without the finalize-only opt-in is not enforced yet (ROADMAP Q-43).
+
 ## 3. MCP tool contracts
 
 Schemas are published JSON Schema (draft 2020-12; version choice Proposed) validated with Ajv before any side effect
@@ -1295,6 +1301,46 @@ limited to 108 bytes by the kernel (`/usr/include/linux/un.h`); `<data_dir>/runs
 under a long data directory, so the controller should check the length when it creates the socket (Python `bind` failed
 at 167 bytes and `gpg-agent` failed to start under a long path on this host; Node 22.22.0 accepted 157 bytes, behaviour
 not investigated). Details and sources: [TDD §3.10](TDD.md#310-git-commits-attribution-and-publication).
+
+**As built (2026-10-13, Delegated, T9.4, [ADR-0026](../adr/0026-per-run-tool-channel-socket-and-token.md); owner text
+above unchanged).** Code: `src/git/channel.ts` (`GitToolService`), `src/git/tool-protocol.ts` (wire constants shared with
+the shim), `src/cli/tool-shim.ts` (the shim), lifecycle wiring in `src/lifecycle/lifecycle.ts`, start-up wiring in
+`src/cli/serve.ts`. Choices where this section was silent:
+
+- **Shim.** `switchboard tool-shim --socket <path>`, internal (not in `--help`), dispatched before the operator argument
+  parser. It serves only `commit` (§12.1 schema; `push` is T9.6), imports nothing from the controller but the protocol
+  constants, reads the token from `SWITCHBOARD_TOOL_TOKEN` and deletes it from its own environment. The shim command is
+  the daemon's own entry point: `process.execPath`, the daemon's Node options minus `--inspect*`/`--debug*`, the
+  script path, `tool-shim`.
+- **Wire format.** One request per connection: `{"v":1,"token","tool","arguments"}` and a newline (at most 2 MiB, within
+  10 s), answered by one line `{"ok":true,"result":{"sha","files_changed"}}` or `{"ok":false,"error":{"code","message"}}`.
+- **Token.** `sbt1_` plus 256 random bits (`crypto.randomBytes`, base64url). Only its SHA-256 digest is kept, in memory;
+  digests are compared with `timingSafeEqual`. It reaches the provider only in the invocation's environment and is bound
+  to the run id, meta-session and worktree path; the artifact redactor removes any `sbt1_` token.
+- **Checks per call**, each refusal answered with a code and recorded as `git_tool_denied` (code, tool, refused-path
+  count; never content or token; at most 32 events per channel): framing and size (`MALFORMED_REQUEST`,
+  `REQUEST_TOO_LARGE`, `REQUEST_TIMEOUT`); 60 requests per rolling minute (`RATE_LIMITED`); exact shape; channel open
+  (`CHANNEL_CLOSED`); token (`TOKEN_INVALID`); tool offered (`UNKNOWN_TOOL`); arguments (`INVALID_ARGUMENTS`,
+  `MESSAGE_TOO_LONG`); run exists, is RUNNING and matches the binding (`RUN_NOT_FOUND`, `NOT_RUNNING`,
+  `BINDING_MISMATCH`); then the §12.3 library codes. Eight connections at most. Tool errors never fail the run.
+- **Socket path.** `<data_dir>/runs/<run_id>/tools.sock` if at most 100 bytes, else a `mkdtemp` directory
+  `sb-git-XXXXXX` directly inside `$XDG_RUNTIME_DIR` or the OS temporary directory; every directory is checked with
+  `lstat` (not a link, owned by this user, mode without group or other bits). Node 22.22.0 accepted a 251-byte path in
+  `listen()` on this host and left no file at it (consistent with silent truncation; where it bound was not
+  determined), which is why the length is checked first. If nothing fits the run fails `TOOL_FAILURE` before spawn.
+- **Peer credentials.** Not checked: Node.js exposes no `SO_PEERCRED`. Controls: directory, socket mode, token.
+- **Lifetime.** Opened after the compile, immediately before spawn; the adapter's `channelArgs` result is appended to
+  the compiled invocation (not inside `compile`, which stays pure and knows no token), so the argv audit sees it.
+  Closed in a `finally` once the provider process has exited (calls already past the checks finish first), before
+  FINALIZING. Events `git_channel_opened` (tools, socket directory, fallback flag) and `git_channel_closed` (counts).
+  At `serve` start, after reconciliation: `GitPublisher.recover()`, then a sweep that closes channels a crash left open
+  (unlinks only a socket; removes only an empty, private `runs/<run_id>` or fallback `sb-git-*` directory).
+- **When offered.** Write-capable run, adapter `commitChannel: "injected"`, and a frozen project snapshot with a `host`
+  environment, a writable primary context and an `identity`; a project run missing one of these gets
+  `git_channel_not_offered` with a reason. The snapshot's project block gained `writable`, `identity` and `push.policy`
+  (Q-41; the push remote and prefix are not frozen because `remote` is not validated as a name).
+- **Adapters.** Only the fake adapter declares `injected`. Claude Code and Codex declare `none` with the reason (Q-40,
+  unverified live behaviour, Codex not installed); their argv is unchanged.
 
 ### 12.3 Commit algorithm and refs
 

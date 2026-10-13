@@ -94,6 +94,8 @@ class ScenarioAdapter implements ProviderAdapter {
   readonly id = "fake" as const;
   readonly transports = ["subprocess-jsonl"] as const;
   readonly gitWriteControl = new FakeAdapter().gitWriteControl;
+  /** No injected tool channel: these tests cover the lifecycle without COMP-GIT (T9.4 has its own tests). */
+  readonly gitCapabilities = { commitChannel: "none", detail: "test double" } as const;
   probeGate: Promise<void> | undefined;
   authScenario: FakeScenario = "success";
   onCompile: ((req: CompileRequest) => void) | undefined;

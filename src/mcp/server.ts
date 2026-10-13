@@ -252,6 +252,10 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         base_ref: context.baseRef,
         effective_max_profile: effectiveMax,
         ...(project.allowedProviders !== undefined ? { allowed_providers: [...project.allowedProviders] } : {}),
+        // T9.4 / Q-41: Git facts frozen at admission (commit identity, push policy).
+        writable: context.writable,
+        ...(context.identity !== undefined ? { identity: { ...context.identity } } : {}),
+        push: { policy: context.push.policy },
       },
     };
   };

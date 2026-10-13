@@ -1,0 +1,113 @@
+/**
+ * Wire contract between the tool shim (`switchboard tool-shim`, run by the agent's provider CLI) and the controller's
+ * `COMP-GIT` service over the per-run Unix socket (FR-GIT-02, LLD §12.1, §12.2; ADR-0014, ADR-0026; T9.4).
+ *
+ * This module is shared by both sides and holds constants and pure helpers only: no Git, no ledger, no socket server.
+ * The shim imports nothing else from the controller, so it contains no Git logic and no secret other than the one-run
+ * token it reads from its environment.
+ *
+ * Framing (Proposed, Delegated, ADR-0026): one request per connection. The shim connects, writes ONE line of JSON
+ * terminated by `\n`, reads ONE line of JSON back, and the controller closes the connection.
+ *
+ *   request:  {"v":1,"token":"<token>","tool":"commit","arguments":{...}}
+ *   response: {"ok":true,"result":{"sha":"...","files_changed":1}}
+ *             {"ok":false,"error":{"code":"NOT_RUNNING","message":"..."}}
+ */
+
+/** Environment variable that carries the per-run capability token into the shim (LLD §12.2: "token in the shim's environment"). */
+export const TOOL_TOKEN_ENV = "SWITCHBOARD_TOOL_TOKEN";
+
+/** Wire protocol version. */
+export const PROTOCOL_VERSION = 1;
+
+/**
+ * Token format: a fixed prefix (so the artifact redactor and tests can recognise a leaked token, FR-TEL-03) followed by
+ * 32 random bytes (256 bits) in base64url without padding (43 characters).
+ */
+export const TOKEN_PREFIX = "sbt1_";
+export const TOKEN_RANDOM_BYTES = 32;
+export const TOKEN_LENGTH = TOKEN_PREFIX.length + 43;
+
+/** Largest request line the controller reads (bytes, including the newline). Proposed: room for 256 paths of 4096 bytes. */
+export const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
+/** Largest response line the shim accepts (bytes). Responses carry a SHA, a count or a short error. */
+export const MAX_RESPONSE_BYTES = 64 * 1024;
+
+/** LLD §12.1 `commit` limits. */
+export const MAX_TOOL_MESSAGE_CHARS = 8192;
+export const MAX_COMMIT_PATHS = 256;
+/** Same bound as the commit library's own path check (`src/git/commit.ts`). */
+export const MAX_COMMIT_PATH_CHARS = 4096;
+
+/**
+ * Kernel limit for `sockaddr_un.sun_path` on Linux is 108 bytes including the terminating NUL. Node 22.22.0 silently
+ * accepted a 251-byte path in `listen()` and left no file at that path (observed on this host, T9.4), so the controller
+ * never relies on the kernel or Node to refuse a long path: it checks against this conservative bound (Proposed).
+ */
+export const MAX_SOCKET_PATH_BYTES = 100;
+
+export type ToolName = "commit";
+
+/** Tool names the shim can serve. `push` arrives with T9.6 and is not offered before then. */
+export const TOOL_NAMES: readonly ToolName[] = ["commit"];
+
+/** The LLD §12.1 `commit` input schema, served by the shim (every object `additionalProperties: false`). */
+export const COMMIT_INPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["message"],
+  properties: {
+    message: { type: "string", minLength: 1, maxLength: MAX_TOOL_MESSAGE_CHARS },
+    paths: {
+      type: "array",
+      minItems: 1,
+      maxItems: MAX_COMMIT_PATHS,
+      items: { type: "string", minLength: 1, maxLength: MAX_COMMIT_PATH_CHARS },
+    },
+  },
+} as const;
+
+export const COMMIT_DESCRIPTION =
+  "Commit changes from your working directory. Give a commit message and, optionally, the worktree-relative paths " +
+  "to include (default: all changes). This is the only way to create a commit; Git commands that write history are " +
+  "not available to you.";
+
+/** Error codes the channel itself returns (the commit library's codes are passed through as well). */
+export type ChannelErrorCode =
+  | "MALFORMED_REQUEST"
+  | "REQUEST_TOO_LARGE"
+  | "REQUEST_TIMEOUT"
+  | "RATE_LIMITED"
+  | "BUSY"
+  | "TOKEN_INVALID"
+  | "CHANNEL_CLOSED"
+  | "UNKNOWN_TOOL"
+  | "INVALID_ARGUMENTS"
+  | "MESSAGE_TOO_LONG"
+  | "RUN_NOT_FOUND"
+  | "NOT_RUNNING"
+  | "BINDING_MISMATCH"
+  | "INTERNAL_ERROR";
+
+export interface ToolRequest {
+  readonly v: number;
+  readonly token: string;
+  readonly tool: string;
+  readonly arguments: Record<string, unknown>;
+}
+
+export type ToolResponse =
+  | { readonly ok: true; readonly result: Record<string, unknown> }
+  | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } };
+
+/** True when `s` has the exact token shape (prefix plus 43 base64url characters). Does not say whether it is valid. */
+export function isTokenShaped(s: unknown): s is string {
+  if (typeof s !== "string" || s.length !== TOKEN_LENGTH || !s.startsWith(TOKEN_PREFIX)) return false;
+  for (let i = TOKEN_PREFIX.length; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    const ok =
+      (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 45 /* - */ || c === 95; /* _ */
+    if (!ok) return false;
+  }
+  return true;
+}

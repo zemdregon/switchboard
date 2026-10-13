@@ -14,6 +14,7 @@ import type {
   ExitInfo,
   FailureClassification,
   FailureEvidence,
+  GitCapabilities,
   GitWriteControl,
   Ineligible,
   Invocation,
@@ -29,6 +30,9 @@ import type {
 
 export const FAKE_CLI_PATH = fileURLToPath(new URL("./cli.mjs", import.meta.url));
 
+/** Fake CLI flag that carries the shim command (JSON) for the injected tool channel (T9.4). */
+export const FAKE_TOOL_CHANNEL_FLAG = "--tool-channel";
+
 export type FakeScenario =
   | "success"
   | "task_failure"
@@ -38,6 +42,11 @@ export type FakeScenario =
   | "malformed_output"
   | "hang"
   | "hang_ignore_term"
+  /**
+   * T9.4: with the injected tool channel (`--tool-channel`), writes files into its working directory and calls the
+   * `commit` tool through the shim, as an agent would; the objective may be a JSON plan (see `cli.mjs`).
+   */
+  | "git_commit"
   /** Benign: reports the names (not values) of its environment variables (T3.8, FR-EXE-07). */
   | "env_report";
 
@@ -60,6 +69,18 @@ export class FakeAdapter implements ProviderAdapter {
     kind: "none-documented",
     detail: "fake test adapter; no provider permission controls exist",
     remainingControls: ["FR-GIT-03", "FR-GIT-06"],
+  };
+  /**
+   * FR-GIT-02 (T9.4): the fake CLI receives the shim command in argv (`--tool-channel <json>`, no secret) and the token
+   * in its environment, then starts the shim itself, as a provider would from a per-run MCP definition.
+   */
+  readonly gitCapabilities: GitCapabilities = {
+    commitChannel: "injected",
+    detail: "fake test adapter: shim command in argv (--tool-channel), token in the environment",
+    channelArgs: (shim) => ({
+      argv: [FAKE_TOOL_CHANNEL_FLAG, JSON.stringify({ command: shim.command, tools: shim.toolNames })],
+      env: { ...shim.env },
+    }),
   };
   readonly #scenario: FakeScenario;
   readonly #exe: string;

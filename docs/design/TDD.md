@@ -541,6 +541,35 @@ configuration). Additions and findings:
 - **Still open.** Git 2.32 to 2.42 were not exercised; clean and smudge filters, submodules and large path sets were not
   tested; the shim, socket, snapshot freeze (Q-41) and start-up `recover()` call belong to T9.4.
 
+*T9.4 build notes (2026-10-13; Delegated; [ADR-0026](../adr/0026-per-run-tool-channel-socket-and-token.md); fake adapter
+only).* The injected channel is built and tested end to end with the fake adapter; mechanism in [LLD
+§12.2](LLD.md#122-channel) (as-built note). Findings and test strategy:
+
+- **No provider declares a channel.** Claude Code and Codex declare `gitCapabilities.commitChannel = "none"` with the
+  reason (Q-40 still bars `--mcp-config`; the per-run definition shape, MCP allow rules, `--safe-mode` and socket reach
+  are unverified; Codex is not installed). Their compiled argv is unchanged, so every existing argv test still holds.
+- **Socket path length.** On this host Node 22.22.0 `listen()` accepted a 251-byte Unix socket path and no file existed
+  at that path afterwards, which is consistent with silent truncation by the library (where it bound was not determined).
+  The service therefore checks the length itself (at most 100 bytes) and falls back to a short private directory.
+  `server.close()` removed the socket file on this host.
+- **Peer credentials.** Node.js has no `SO_PEERCRED` API, so the peer is not identified; the directory mode, socket mode
+  and token are the controls (R-46). The test host runs as root, so the tests check modes and ownership rather than an
+  access denial.
+- **Tests (no provider CLI, temporary repositories).** `src/git/channel.test.ts` drives the real socket with a raw client:
+  modes and ownership, wrong, foreign, forged and truncated tokens, calls while not RUNNING and after a binding change,
+  malformed, oversized, unterminated and silent requests, argument and path refusals (`..`, absolute, through a symbolic
+  link, `.git`), unknown tools, the rate limit and the refusal-event cap, two concurrent commits (the second loses the
+  compare-and-swap, retries and lands), close with a half-open connection, the long-path fallback, and the crash sweep
+  (a killed process's stale socket is removed; links, foreign directories and fallback directories outside a configured
+  parent are kept). `src/lifecycle/git-channel.test.ts` runs the lifecycle with the fake CLI, which starts the real
+  `tool-shim` (TypeScript entry) and calls `commit` over MCP: publish ref advanced, provenance row, trailer removed,
+  operator checkout, run branch and worktree unaffected; refusals through the shim; cancel removes the socket; no token
+  bytes anywhere in the data directory. `src/cli/serve.test.ts` repeats the commit through `serve` (stderr and data
+  directory searched for the token prefix) and shows that a SIGKILLed daemon's socket directory is removed by the next
+  start.
+- **Still open.** Live provider checks (R-18, Q-40), a provider sandbox's effect on the connect, `push` (T9.6),
+  finalize-only (T9.7), and enforcement of "`none` is ineligible for write-capable profiles without opt-in" (Q-43).
+
 ### 3.11 Container environments
 
 Implements FR-PRJ-04, 05, 07, 09 for M10. Status: **Proposed**. Ender left Q-6 to the agent ("the rest you pick"), so the

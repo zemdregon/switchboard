@@ -90,6 +90,7 @@ import {
 } from "../adapters/index.js";
 import type { ArtifactStore } from "../artifacts/index.js";
 import { isUnderAllowedRoot, TRUST_PROFILES } from "../config/index.js";
+import { ChannelOpenError, type GitToolService, type OpenChannel } from "../git/channel.js";
 import type { Ledger, NewRouteDecision, RunFieldPatch, RunRecord, RunState, TrustProfile } from "../ledger/index.js";
 import {
   canonicalScopeJson,
@@ -298,7 +299,17 @@ export interface RunLifecycleOptions {
    * stage-1 eligibility collection. Unset means no caching.
    */
   readonly preflightCache?: PreflightCache;
+  /**
+   * T9.4 (FR-GIT-02, LLD §12.2, ADR-0026): the `COMP-GIT` tool service. When set, a run whose adapter declares an
+   * `injected` channel and whose frozen project snapshot has a writable primary context with a commit identity gets a
+   * per-run socket and token before spawn, passed to the provider through the adapter's `channelArgs`; the channel is
+   * closed and its socket removed as soon as the provider process has exited. Unset: no channel for any run.
+   */
+  readonly gitTools?: GitToolService;
 }
+
+/** `run_event` type: a channel-capable run was not offered the commit tool, with a reason code (T9.4). */
+export const GIT_CHANNEL_NOT_OFFERED_EVENT = "git_channel_not_offered";
 
 type PreflightVerdict =
   | { readonly ok: true; readonly binaryVersion: string | null }
@@ -851,7 +862,7 @@ export class RunLifecycle {
       constraints: req.constraints,
       workspace: { cwd, writable: ws.mode === "worktree" },
     };
-    const inv =
+    let inv =
       req.resume_native_session_id !== undefined
         ? adapter.resumeArgs(
             { provider: req.provider, nativeSessionId: req.resume_native_session_id },
@@ -882,30 +893,82 @@ export class RunLifecycle {
       this.opts.workspace.extendLease(runId, 2 * inv.timeouts.wallClockMs + inv.timeouts.killGraceMs);
     }
 
+    // T9.4 (FR-GIT-02): the injected tool channel, opened just before spawn and closed as soon as the process exits.
+    const nativeIds: string[] = req.resume_native_session_id !== undefined ? [req.resume_native_session_id] : [];
+    let channel: OpenChannel | undefined;
+    if (ws.mode === "worktree") {
+      const plan = gitChannelPlan(adapter, run0, this.opts.gitTools !== undefined);
+      if (plan.kind === "not_offered") {
+        this.ledger.appendRunEvent({ runId, type: GIT_CHANNEL_NOT_OFFERED_EVENT, payload: { reason: plan.reason } });
+      } else if (plan.kind === "offer" && this.opts.gitTools) {
+        try {
+          channel = await this.opts.gitTools.open({
+            runId,
+            metaSessionId: run0.meta_session_id,
+            worktreePath: ws.worktreePath,
+            identity: plan.identity,
+            projectId: plan.projectId,
+            contextId: plan.contextId,
+            nativeSessionIds: () => nativeIds,
+          });
+        } catch (err) {
+          if (!(err instanceof ChannelOpenError)) throw err;
+          return this.fail(runId, "TOOL_FAILURE", `git tool channel could not be opened: ${err.message}`, {
+            reason: "GIT_CHANNEL_UNAVAILABLE",
+          });
+        }
+        const extra = adapter.gitCapabilities.channelArgs?.(channel.shim, compileReq, profile);
+        if (extra === undefined || "ineligible" in extra) {
+          await channel.close();
+          const detail = extra === undefined ? "adapter declares no channelArgs" : `${extra.reason}: ${extra.detail}`;
+          return this.fail(runId, "ELIGIBILITY_NONE", `${req.provider} cannot take the git tool channel: ${detail}`, {
+            reason: "GIT_CHANNEL_INELIGIBLE",
+          });
+        }
+        inv = { ...inv, argv: [...inv.argv, ...extra.argv], env: { ...inv.env, ...extra.env } };
+      }
+    }
+    if (exec.cancelRequested) {
+      // Opening the channel awaited: a cancel that arrived meanwhile must not be lost (no process exists yet).
+      await channel?.close();
+      return this.cancelEarly(runId);
+    }
+
     // RUNNING (T9): pid/pgid persisted in the same transaction, before any output is read (LLD §8).
     let spawned = false;
+    let out: AdapterRunOutcome;
     try {
-      exec.handle = startAdapterRun(adapter, inv, {
-        bypassApproved: profile.bypassApproved,
-        // T3.17: the audit admits a bypass flag only for this profile being privileged with a scope that sets bypass.
-        profile,
-        ...(this.opts.baseEnv ? { baseEnv: this.opts.baseEnv } : {}),
-        onSpawn: ({ pid, pgid }) => {
-          this.move(
-            this.current(runId),
-            "RUNNING",
-            { pid, pgid, proc_start_ticks: procStartTicks(pid), started_at: this.nowIso() },
-            { pid, pgid },
-          );
-          spawned = true;
-        },
-        onEvent: (ev) => this.ledger.appendRunEvent({ runId, type: "provider_event", payload: compactEvent(ev) }),
-      });
-    } catch (err) {
-      if (err instanceof BypassFlagError) return this.fail(runId, "PERMISSION_BLOCKED", err.message);
-      throw err;
+      try {
+        exec.handle = startAdapterRun(adapter, inv, {
+          bypassApproved: profile.bypassApproved,
+          // T3.17: the audit admits a bypass flag only for this profile being privileged with a scope that sets bypass.
+          profile,
+          ...(this.opts.baseEnv ? { baseEnv: this.opts.baseEnv } : {}),
+          onSpawn: ({ pid, pgid }) => {
+            this.move(
+              this.current(runId),
+              "RUNNING",
+              { pid, pgid, proc_start_ticks: procStartTicks(pid), started_at: this.nowIso() },
+              { pid, pgid },
+            );
+            spawned = true;
+          },
+          onEvent: (ev) => {
+            if (ev.kind === "session_bound" && !nativeIds.includes(ev.nativeSessionId)) {
+              nativeIds.push(ev.nativeSessionId);
+            }
+            this.ledger.appendRunEvent({ runId, type: "provider_event", payload: compactEvent(ev) });
+          },
+        });
+      } catch (err) {
+        if (err instanceof BypassFlagError) return this.fail(runId, "PERMISSION_BLOCKED", err.message);
+        throw err;
+      }
+      out = await exec.handle.done;
+    } finally {
+      // LLD §12.2: the socket is closed and removed when the run leaves RUNNING; calls in progress finish first.
+      await channel?.close();
     }
-    const out = await exec.handle.done;
     const meta = run0.meta_session_id;
     const streams = await this.storeStreams(runId, meta, out);
     if (!spawned) {
@@ -1215,6 +1278,37 @@ export class RunLifecycle {
 }
 
 const LOST_RACE = Symbol("lost-race");
+
+type GitChannelPlan =
+  | { readonly kind: "none" }
+  | { readonly kind: "not_offered"; readonly reason: string }
+  | {
+      readonly kind: "offer";
+      readonly identity: { readonly name: string; readonly email: string };
+      readonly projectId: string;
+      readonly contextId: string;
+    };
+
+/**
+ * T9.4 (FR-GIT-02, LLD §12.1, ADR-0026; Delegated): whether a write-capable run gets the `commit` tool. Only facts frozen
+ * in the run's policy snapshot at admission count (Q-41): a project run in a `host` environment whose primary context
+ * is writable and names a commit identity, with an adapter that declares an `injected` channel. Runs delegated by
+ * workspace path, and adapters without a channel (Claude Code, Codex), are untouched (`none`, no event).
+ */
+function gitChannelPlan(adapter: ProviderAdapter, run: RunRecord, serviceConfigured: boolean): GitChannelPlan {
+  if (!serviceConfigured || adapter.gitCapabilities.commitChannel !== "injected") return { kind: "none" };
+  let project: ProjectSnapshot | undefined;
+  try {
+    project = (JSON.parse(run.policy_snapshot_json) as { project?: ProjectSnapshot }).project;
+  } catch {
+    project = undefined;
+  }
+  if (project === undefined) return { kind: "none" };
+  if (project.environment_kind !== "host") return { kind: "not_offered", reason: "environment_not_host" };
+  if (project.writable !== true) return { kind: "not_offered", reason: "context_not_writable" };
+  if (project.identity === undefined) return { kind: "not_offered", reason: "no_identity" };
+  return { kind: "offer", identity: project.identity, projectId: project.id, contextId: project.context_id };
+}
 
 type PrivilegedInput =
   | { readonly kind: "request"; readonly scope: PrivilegedScope; readonly clientPolicy: boolean }

@@ -28,6 +28,7 @@ import type {
   ExitInfo,
   FailureClassification,
   FailureEvidence,
+  GitCapabilities,
   GitWriteControl,
   Ineligible,
   Invocation,
@@ -141,10 +142,24 @@ function harnessFlags(readOnly: boolean): string[] {
   ];
 }
 
+/**
+ * FR-GIT-02 declaration (T9.4, ADR-0026; Delegated): no injected channel. Codex is not installed on the build host and
+ * [R2] documents no per-run MCP definition, MCP tool approval or Unix-socket access from its sandbox (TDD §3.10, T9.0).
+ * The compiled argv is unchanged.
+ */
+export const CODEX_GIT_CAPABILITIES: GitCapabilities = {
+  commitChannel: "none",
+  detail:
+    "No injected commit channel: no per-run MCP definition, MCP tool approval or socket access from the sandbox is " +
+    "documented in [R2] or verified (Codex not installed; T9.0). Agent work stays in the run's worktree and diff " +
+    "artifacts.",
+};
+
 export class CodexAdapter implements ProviderAdapter {
   readonly id = "codex" as const;
   readonly transports = ["subprocess-jsonl"] as const;
   readonly gitWriteControl = CODEX_GIT_WRITE_CONTROL;
+  readonly gitCapabilities = CODEX_GIT_CAPABILITIES;
   readonly #exe: string | undefined;
   readonly #launcher: readonly string[];
   readonly #timeouts: Invocation["timeouts"];
