@@ -17,9 +17,12 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ArtifactStore } from "../artifacts/index.js";
 import { groupAlive } from "../exec/index.js";
-import { LEDGER_FILE_NAME } from "../ledger/index.js";
+import { createIdGenerator } from "../ids/index.js";
+import { createLedger, LEDGER_FILE_NAME, openLedger } from "../ledger/index.js";
 import { LOCK_FILE_NAME } from "../lock/index.js";
+import { WorkspaceManager } from "../workspace/index.js";
 import type { CliIo } from "./io.js";
 import { main } from "./main.js";
 import {
@@ -369,6 +372,133 @@ describe("serve over stdio (process level)", () => {
       db.close();
     }
   }, 60_000);
+});
+
+describe("serve runs retention GC after reconciliation (T3.12; FR-WS-07, NFR-DATA-01)", () => {
+  const DAY = 86_400_000;
+
+  /** A meta-session with one run, a real worktree and a `switchboard/` branch, last active `ageDays` ago. */
+  async function seedUnit(ageDays: number, state: "SUCCEEDED" | "AWAITING_APPROVAL" = "SUCCEEDED") {
+    const at = new Date(Date.now() - ageDays * DAY);
+    const db = openLedger(dataDir);
+    try {
+      const ids = createIdGenerator();
+      const ledger = createLedger(db, { ids, now: () => at });
+      const sess = ledger.createMetaSession({ objective: "o", repoRoot: repo });
+      const run = ledger.createRun({
+        metaSessionId: sess.id,
+        trustProfile: "edit-untrusted",
+        policySnapshot: {},
+        request: {},
+        requestHash: "h",
+        clientId: "orch",
+        state: "SUCCEEDED",
+      });
+      const m = new WorkspaceManager({
+        db,
+        artifacts: new ArtifactStore(path.join(dataDir, "artifacts")),
+        dataDir,
+        allowedRoots: [root],
+        ids,
+        now: () => at,
+      });
+      const ws = await m.prepare({
+        metaSessionId: sess.id,
+        runId: run.id,
+        workspace: repo,
+        trustProfile: "edit-untrusted",
+      });
+      if (ws.mode !== "worktree") throw new Error("expected worktree");
+      writeFileSync(path.join(ws.worktreePath, "new.txt"), `change ${run.id}\n`);
+      await m.finalize(run.id);
+      m.releaseLease(run.id);
+      db.prepare("UPDATE run SET updated_at = ?, created_at = ?, state = ? WHERE id = ?").run(
+        at.toISOString(),
+        at.toISOString(),
+        state,
+        run.id,
+      );
+      db.prepare("UPDATE meta_session SET updated_at = ?, lease_run_id = NULL WHERE id = ?").run(
+        at.toISOString(),
+        sess.id,
+      );
+      return { sess: sess.id, wt: ws.worktreePath, branch: ws.branch };
+    } finally {
+      db.close();
+    }
+  }
+
+  const setRetention = (retention?: Record<string, unknown>) =>
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schema_version: 1,
+        data_dir: dataDir,
+        allowed_roots: [root],
+        mcp_clients: [{ id: "orch", max_trust_profile: "edit-untrusted" }],
+        ...(retention ? { retention } : {}),
+      }),
+    );
+  const sessionStatus = (id: string) => {
+    const db = new Database(path.join(dataDir, LEDGER_FILE_NAME), { readonly: true });
+    try {
+      return (db.prepare("SELECT status FROM meta_session WHERE id = ?").get(id) as { status: string }).status;
+    } finally {
+      db.close();
+    }
+  };
+  const branches = () => g(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/").split("\n");
+
+  async function untilLogged(c: Connected, msg: string): Promise<void> {
+    const end = Date.now() + 10_000;
+    while (!c.stderr().includes(`"msg":"${msg}"`)) {
+      if (Date.now() > end) throw new Error(`never logged ${msg}; stderr: ${c.stderr()}`);
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  }
+
+  it("with retention unset it collects nothing, even for a unit far past the 30 day default", async () => {
+    const old = await seedUnit(400);
+    const c = await connect();
+    await untilLogged(c, "serving MCP on stdio");
+    expect(c.stderr()).not.toContain("retention gc");
+    expect(existsSync(old.wt)).toBe(true);
+    expect(branches()).toContain(old.branch);
+    expect(sessionStatus(old.sess)).toBe("ACTIVE");
+  }, 30_000);
+
+  it("with retention.days set it collects the expired idle unit before serving and leaves recent and non-terminal units", async () => {
+    const old = await seedUnit(90);
+    const recent = await seedUnit(1);
+    const pending = await seedUnit(90, "AWAITING_APPROVAL");
+    setRetention({ days: 30 });
+    const c = await connect();
+    await untilLogged(c, "serving MCP on stdio");
+    const logs = c
+      .stderr()
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as Json);
+    const msgs = logs.map((l) => l.msg as string);
+    expect(msgs.indexOf("startup reconciliation finished")).toBeLessThan(msgs.indexOf("retention gc finished"));
+    expect(msgs.indexOf("retention gc finished")).toBeLessThan(msgs.indexOf("serving MCP on stdio"));
+    expect(logs.find((l) => l.msg === "retention gc finished")).toMatchObject({
+      when: "startup",
+      collected: [old.sess],
+      errors: 0,
+    });
+    expect(existsSync(old.wt)).toBe(false);
+    expect(branches()).not.toContain(old.branch);
+    expect(sessionStatus(old.sess)).toBe("ARCHIVED");
+    for (const keep of [recent, pending]) {
+      expect(existsSync(keep.wt)).toBe(true);
+      expect(branches()).toContain(keep.branch);
+      expect(sessionStatus(keep.sess)).toBe("ACTIVE");
+    }
+    expect(branches()).toContain("main");
+    // The daemon still serves normally after the pass.
+    expect((await call(c.client, "list_capabilities")).isError).toBe(false);
+  }, 30_000);
 });
 
 describe("privileged end to end (fake adapter, T3.4; FRD WF-7, T3, T19; owner decision 17)", () => {

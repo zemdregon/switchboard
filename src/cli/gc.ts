@@ -1,0 +1,187 @@
+/**
+ * `switchboard gc [--apply]` (T3.12; FR-WS-07, NFR-DATA-01, LLD §5). Operator command around the retention GC core in
+ * `src/workspace/gc.ts`. Proposed (Delegated, not owner-approved) safety defaults:
+ *
+ * - The default is a DRY RUN: it lists what would be collected and changes nothing (no lock, ledger opened read-only).
+ * - `--apply` collects, and only when the config sets `retention.days` (`retentionEnabled`); the 30 day default is a
+ *   value, not a switch. It refuses (LockError) while a `serve` daemon holds the data-directory lock, and holds the
+ *   lock itself while it runs, so no daemon can start mid-collection (ADR-0005).
+ */
+import { existsSync } from "node:fs";
+import path from "node:path";
+import Database from "better-sqlite3";
+import { ArtifactStore } from "../artifacts/index.js";
+import { ConfigError, loadConfig, type ResolvedConfig } from "../config/index.js";
+import { LEDGER_FILE_NAME, openLedger } from "../ledger/index.js";
+import { acquireDataDirLock } from "../lock/index.js";
+import { findOrphans, type GcPlan, type GcResult, planRetentionGc, runRetentionGc } from "../workspace/index.js";
+import { type CliIo, JSON_SCHEMA_VERSION } from "./io.js";
+
+export interface GcReport {
+  readonly schema_version: number;
+  readonly mode: "dry-run" | "apply";
+  readonly retention_days: number;
+  /** False when the config does not set `retention.days`: `--apply` is then refused. */
+  readonly retention_configured: boolean;
+  readonly cutoff: string;
+  /** Units that qualify (dry run) or qualified at the start of the pass (apply). */
+  readonly units: {
+    session_id: string;
+    last_activity: string;
+    worktrees: number;
+    branches: string[];
+  }[];
+  /** Apply only. */
+  readonly collected?: {
+    session_id: string;
+    worktrees_removed: number;
+    branches_deleted: string[];
+    artifact_files_deleted: number;
+    artifact_files_kept: number;
+    warnings: string[];
+  }[];
+  readonly errors?: { session_id: string; step: string; message: string }[];
+  readonly orphans: { worktrees: string[]; branches: { repo_root: string; branch: string }[] };
+}
+
+const toUnits = (plan: GcPlan): GcReport["units"] =>
+  plan.units.map((u) => ({
+    session_id: u.sessionId,
+    last_activity: u.lastActivity,
+    worktrees: u.worktrees,
+    branches: u.branches,
+  }));
+
+export async function runGcCommand(
+  io: CliIo,
+  argv: readonly string[],
+  opts: { readonly apply: boolean },
+): Promise<GcReport> {
+  const config: ResolvedConfig = loadConfig({
+    argv,
+    env: io.env,
+    ...(io.homedir ? { homedir: io.homedir } : {}),
+  });
+  if (opts.apply && !config.retentionEnabled) {
+    throw new ConfigError(
+      "retention is not configured: set retention.days in the config to enable collection (nothing was changed)",
+    );
+  }
+  const now = (io.now ?? (() => new Date()))();
+  const days = config.retention.days;
+  const file = path.join(config.dataDir, LEDGER_FILE_NAME);
+
+  if (!opts.apply) {
+    if (!existsSync(file)) {
+      return emptyReport("dry-run", config, days, now);
+    }
+    const db = new Database(file, { readonly: true, fileMustExist: true });
+    try {
+      const plan = planRetentionGc({ db, days, now });
+      const orphans = await findOrphans({ db, dataDir: config.dataDir });
+      return {
+        schema_version: JSON_SCHEMA_VERSION,
+        mode: "dry-run",
+        retention_days: days,
+        retention_configured: config.retentionEnabled,
+        cutoff: plan.cutoff,
+        units: toUnits(plan),
+        orphans: orphanView(orphans),
+      };
+    } finally {
+      db.close();
+    }
+  }
+
+  if (!existsSync(file)) return emptyReport("apply", config, days, now);
+  const lock = acquireDataDirLock(config.dataDir); // LockError while a serve daemon holds it
+  try {
+    const db = openLedger(config.dataDir);
+    try {
+      const plan = planRetentionGc({ db, days, now });
+      const result: GcResult = await runRetentionGc({
+        db,
+        artifacts: new ArtifactStore(path.join(config.dataDir, "artifacts")),
+        dataDir: config.dataDir,
+        days,
+        now,
+      });
+      const orphans = await findOrphans({ db, dataDir: config.dataDir });
+      return {
+        schema_version: JSON_SCHEMA_VERSION,
+        mode: "apply",
+        retention_days: days,
+        retention_configured: true,
+        cutoff: result.cutoff,
+        units: toUnits(plan),
+        collected: result.collected.map((c) => ({
+          session_id: c.sessionId,
+          worktrees_removed: c.worktreesRemoved,
+          branches_deleted: c.branchesDeleted,
+          artifact_files_deleted: c.artifactFilesDeleted,
+          artifact_files_kept: c.artifactFilesKept,
+          warnings: c.warnings,
+        })),
+        errors: result.errors.map((e) => ({ session_id: e.sessionId, step: e.step, message: e.message })),
+        orphans: orphanView(orphans),
+      };
+    } finally {
+      db.close();
+    }
+  } finally {
+    lock.release();
+  }
+}
+
+function orphanView(o: Awaited<ReturnType<typeof findOrphans>>): GcReport["orphans"] {
+  return {
+    worktrees: o.worktrees,
+    branches: o.branches.map((b) => ({ repo_root: b.repoRoot, branch: b.branch })),
+  };
+}
+
+function emptyReport(mode: GcReport["mode"], config: ResolvedConfig, days: number, now: Date): GcReport {
+  return {
+    schema_version: JSON_SCHEMA_VERSION,
+    mode,
+    retention_days: days,
+    retention_configured: config.retentionEnabled,
+    cutoff: new Date(now.getTime() - days * 86_400_000).toISOString(),
+    units: [],
+    ...(mode === "apply" ? { collected: [], errors: [] } : {}),
+    orphans: { worktrees: [], branches: [] },
+  };
+}
+
+export function renderGc(r: GcReport): string {
+  const lines = [
+    `switchboard gc (${r.mode === "dry-run" ? "dry run: nothing is changed; pass --apply to collect" : "apply"})`,
+    "",
+    `Retention: ${r.retention_days} days${r.retention_configured ? "" : " (default; retention.days is not set, so --apply is refused)"}; cutoff ${r.cutoff}`,
+  ];
+  lines.push(
+    r.mode === "dry-run"
+      ? `${r.units.length} meta-session(s) would be collected${r.units.length ? ":" : "."}`
+      : `${r.collected?.length ?? 0} of ${r.units.length} meta-session(s) collected${r.units.length ? ":" : "."}`,
+  );
+  for (const u of r.units) {
+    lines.push(
+      `  ${u.session_id}  last activity ${u.last_activity}  ${u.worktrees} worktree(s), ${u.branches.length} branch(es)`,
+    );
+  }
+  for (const c of r.collected ?? []) {
+    lines.push(
+      `  collected ${c.session_id}: ${c.worktrees_removed} worktree(s), ${c.branches_deleted.length} branch(es), ${c.artifact_files_deleted} artifact file(s) removed, ${c.artifact_files_kept} kept`,
+    );
+    for (const w of c.warnings) lines.push(`    warning: ${w}`);
+  }
+  for (const e of r.errors ?? [])
+    lines.push(`  ERROR ${e.session_id} at ${e.step}: ${e.message} (re-run to roll forward)`);
+  const n = r.orphans.worktrees.length + r.orphans.branches.length;
+  if (n > 0) {
+    lines.push("", `Orphans (reported only, never removed): ${n}`);
+    for (const w of r.orphans.worktrees) lines.push(`  worktree directory ${w}`);
+    for (const b of r.orphans.branches) lines.push(`  branch ${b.branch} in ${b.repo_root}`);
+  }
+  return `${lines.join("\n")}\n`;
+}

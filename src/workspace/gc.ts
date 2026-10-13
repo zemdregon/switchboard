@@ -227,3 +227,104 @@ async function deleteBranches(
   }
   return deleted;
 }
+
+// ---- Read-only reporting (T3.12 wiring: `doctor`, `gc` dry run). Nothing below writes to the ledger, Git or disk. ----
+
+export interface GcPlanUnit {
+  readonly sessionId: string;
+  readonly repoRoot: string | null;
+  /** Newest activity of the unit (ISO), the value compared with the cutoff. */
+  readonly lastActivity: string;
+  readonly worktrees: number;
+  readonly branches: string[];
+}
+
+export interface GcPlan {
+  readonly cutoff: string;
+  readonly units: GcPlanUnit[];
+}
+
+/** What {@link runRetentionGc} would collect for `days` at `now`, using the same candidate query. Read-only. */
+export function planRetentionGc(options: {
+  readonly db: Database.Database;
+  readonly days: number;
+  readonly now?: Date;
+}): GcPlan {
+  if (!Number.isFinite(options.days) || options.days < 0) throw new RangeError("days must be a non-negative number");
+  const now = options.now ?? new Date();
+  const cutoff = new Date(now.getTime() - options.days * DAY_MS).toISOString();
+  const ledger = createLedger(options.db);
+  const units = ledger.listGcCandidates(cutoff).map((c) => {
+    const t = ledger.gcSessionTargets(c.id);
+    return {
+      sessionId: c.id,
+      repoRoot: c.repo_root,
+      lastActivity: c.last_activity,
+      worktrees: t.worktreePaths.length,
+      branches: t.branches,
+    };
+  });
+  return { cutoff, units };
+}
+
+export interface OrphanReport {
+  /** Directories under `<dataDir>/worktrees/` with no matching `run` row (`<sess>/<run>`, or just `<sess>`). */
+  readonly worktrees: string[];
+  /** `switchboard/*` branches (per recorded repository) that no `run` or `workspace_checkpoint` row names. */
+  readonly branches: { readonly repoRoot: string; readonly branch: string }[];
+  /** Why part of the sweep could not be done (unreadable repository, ...). */
+  readonly warnings: string[];
+}
+
+/**
+ * Orphan sweep (LLD §5): worktree directories and `switchboard/*` branches with no matching ledger row. Report only;
+ * nothing is removed (T3.12: removal of orphans is not implemented). Symlinks are listed, never followed. A run being
+ * prepared at this very moment can appear briefly as an orphan, so treat the report as advice, not as a delete list.
+ */
+export async function findOrphans(options: {
+  readonly db: Database.Database;
+  readonly dataDir: string;
+}): Promise<OrphanReport> {
+  const { db } = options;
+  const warnings: string[] = [];
+  const worktrees: string[] = [];
+  const base = path.join(await realpath(options.dataDir).catch(() => path.resolve(options.dataDir)), "worktrees");
+  const runsOf = db.prepare("SELECT id FROM run WHERE meta_session_id = ?");
+  const sessionExists = db.prepare("SELECT 1 AS x FROM meta_session WHERE id = ?");
+  for (const sess of await readdir(base).catch(() => [] as string[])) {
+    const sessDir = path.join(base, sess);
+    if (!sessionExists.get(sess)) {
+      worktrees.push(sessDir);
+      continue;
+    }
+    const known = new Set((runsOf.all(sess) as { id: string }[]).map((r) => r.id));
+    for (const name of await readdir(sessDir).catch(() => [] as string[])) {
+      if (!known.has(name)) worktrees.push(path.join(sessDir, name));
+    }
+  }
+
+  const named = new Set<string>();
+  for (const r of db.prepare("SELECT branch FROM run WHERE branch IS NOT NULL").all() as { branch: string }[])
+    named.add(r.branch);
+  for (const r of db.prepare("SELECT branch FROM workspace_checkpoint").all() as { branch: string }[])
+    named.add(r.branch);
+  const branches: OrphanReport["branches"][number][] = [];
+  const repos = (
+    db.prepare("SELECT DISTINCT repo_root FROM meta_session WHERE repo_root IS NOT NULL ORDER BY repo_root").all() as {
+      repo_root: string;
+    }[]
+  ).map((r) => r.repo_root);
+  for (const repoRoot of repos) {
+    if (!(await isRepo(repoRoot))) {
+      warnings.push(`repository unavailable, branches not checked: ${repoRoot}`);
+      continue;
+    }
+    const refs = await git(["for-each-ref", "--format=%(refname:short)", "refs/heads/switchboard/"], {
+      cwd: repoRoot,
+    });
+    for (const b of refs.stdout.toString("utf8").split("\n").filter(Boolean)) {
+      if (!named.has(b)) branches.push({ repoRoot, branch: b });
+    }
+  }
+  return { worktrees, branches, warnings };
+}

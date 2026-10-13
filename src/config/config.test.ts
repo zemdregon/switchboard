@@ -101,6 +101,7 @@ describe("retention and profiles config (T3.2)", () => {
   it("defaults retention to 30 days and a 24 hour interval, and no overrides", () => {
     const c = loadConfig({ configPath: write(base()) });
     expect(c.retention).toEqual({ days: 30, intervalMs: 86_400_000 });
+    expect(c.retentionEnabled).toBe(false); // the default is a value, not a switch (T3.12)
     expect(c.profileOverrides).toEqual({});
   });
 
@@ -109,6 +110,10 @@ describe("retention and profiles config (T3.2)", () => {
       configPath: write({ ...base(), retention: { days: 7, interval: "90m" } }),
     });
     expect(c.retention).toEqual({ days: 7, intervalMs: 5_400_000 });
+    expect(c.retentionEnabled).toBe(true);
+    expect(loadConfig({ configPath: write({ ...base(), retention: { interval: "1h" } }) }).retentionEnabled).toBe(
+      false,
+    );
     for (const retention of [{ days: 0 }, { days: 1.5 }, { interval: "soon" }, { interval: "0h" }, { bogus: 1 }]) {
       expect(() => loadConfig({ configPath: write({ ...base(), retention }) })).toThrow(ConfigError);
     }

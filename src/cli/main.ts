@@ -9,6 +9,7 @@ import { ConfigError } from "../config/index.js";
 import { ApprovalRefusedError } from "../lifecycle/approval.js";
 import { LockError } from "../lock/index.js";
 import { renderDoctor, runDoctor } from "./doctor.js";
+import { renderGc, runGcCommand } from "./gc.js";
 import { type CliIo, JSON_SCHEMA_VERSION, UsageError } from "./io.js";
 import { UnknownRunError } from "./operator.js";
 import {
@@ -32,6 +33,8 @@ Commands:
   runs list           List runs, newest first (--state <STATE>, --limit <n>)
   runs show <id>      Show one run and its events
   runs cancel <id>    Cancel a run (written as an operator record the daemon applies)
+  gc [--apply]        Retention clean-up: dry run by default (lists what would go); --apply collects, and is refused
+                      while serve runs or when retention.days is not set in the config
   approve <run_id>    Approve the privileged run that requested an approval (review it with runs show first)
   deny <run_id>       Deny the privileged run that requested an approval; the run ends CANCELLED
 
@@ -48,6 +51,8 @@ const OPTIONS = {
   json: { type: "boolean" },
   config: { type: "string" },
   client: { type: "string" },
+  apply: { type: "boolean" },
+  "dry-run": { type: "boolean" },
   state: { type: "string" },
   limit: { type: "string" },
   help: { type: "boolean", short: "h" },
@@ -73,6 +78,9 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
       throw new UsageError("--client is only valid with serve");
     }
 
+    if (cmd !== "gc" && (values.apply || values["dry-run"]))
+      throw new UsageError("--apply and --dry-run are only valid with gc");
+
     if (values.help) {
       io.stdout.write(HELP);
       return 0;
@@ -97,6 +105,13 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         const report = await runDoctor(io, loaderArgv);
         emit(report, renderDoctor(report));
         return report.ok ? 0 : 1;
+      }
+      case "gc": {
+        if (sub !== undefined) throw new UsageError("gc takes no positional arguments");
+        if (values.apply && values["dry-run"]) throw new UsageError("--apply and --dry-run cannot be combined");
+        const report = await runGcCommand(io, loaderArgv, { apply: values.apply === true });
+        emit(report, renderGc(report));
+        return report.errors && report.errors.length > 0 ? 1 : 0;
       }
       case "runs": {
         if (sub === "list") {

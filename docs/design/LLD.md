@@ -910,6 +910,15 @@ artifact files (set `deleted_at`). Never touches branches outside `switchboard/`
 collected with the rest of their meta-session. Orphan sweep: worktree directories or `switchboard/*` branches with no
 matching `run` row are reported by `doctor` and removed only by GC after the retention period.
 
+*As built (T3.12, Proposed, Delegated):* the unit is a whole idle meta-session
+([Q-18](../ROADMAP.md#73-open-questions-for-zemdregon-not-blocking-m2-unless-noted), `src/workspace/gc.ts`; `run_event`
+rows are kept, Q-19). It is wired three ways, none with a new config key. `doctor` reports what `retention.days`
+(default 30) would collect and the orphan sweep, read-only (`findOrphans`, `planRetentionGc`). `switchboard gc` lists
+the same by default (dry run); `--apply` collects, needs `retention.days` set in the config and the data-directory
+lock (so it is refused while `serve` runs). `serve` runs one pass after reconciliation, before the lifecycle starts or
+MCP accepts calls, and then every `retention.interval`, only when `retention.days` is set: unset means nothing is
+collected. Orphans are reported but not yet removed; the interval pass can race a `continue_task` (R-42).
+
 **Crash safety.** Order is intent row, then Git action, then outcome row. On startup reconciliation (WF-8) a run in
 `LEASED`/`RUNNING` with a worktree but no outcome is assessed by the mutation check; a lease row is cleared only after
 its run reaches a terminal state. `git worktree add` interrupted mid-way is detected by `git worktree list` disagreement
