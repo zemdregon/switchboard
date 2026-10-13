@@ -91,6 +91,7 @@ import {
 import type { ArtifactStore } from "../artifacts/index.js";
 import { isUnderAllowedRoot, TRUST_PROFILES } from "../config/index.js";
 import { ChannelOpenError, type GitToolService, type OpenChannel } from "../git/channel.js";
+import { RefGuard } from "../git/ref-guard.js";
 import type { Ledger, NewRouteDecision, RunFieldPatch, RunRecord, RunState, TrustProfile } from "../ledger/index.js";
 import {
   canonicalScopeJson,
@@ -306,6 +307,12 @@ export interface RunLifecycleOptions {
    * closed and its socket removed as soon as the provider process has exited. Unset: no channel for any run.
    */
   readonly gitTools?: GitToolService;
+  /**
+   * T9.5 (FR-GIT-03, BR-27, LLD §12.5, ADR-0027): ref snapshot at LEASED and comparison at FINALIZING for every run with
+   * a worktree. Defaults to a guard over this lifecycle's ledger with the default publish prefix; it cannot be turned
+   * off (fail closed).
+   */
+  readonly refGuard?: RefGuard;
 }
 
 /** `run_event` type: a channel-capable run was not offered the commit tool, with a reason code (T9.4). */
@@ -345,6 +352,7 @@ export class RunLifecycle {
   private started = false;
   private stopped = false;
   private rootsCache: string[] | undefined;
+  private readonly refGuard: RefGuard;
 
   constructor(private readonly opts: RunLifecycleOptions) {
     if (!Number.isInteger(opts.globalConcurrency) || opts.globalConcurrency < 1) {
@@ -353,6 +361,7 @@ export class RunLifecycle {
     this.ledger = opts.ledger;
     this.runner = opts.probeRunner ?? createProbeRunner();
     this.maxQueueDepth = opts.maxQueueDepth ?? DEFAULT_MAX_QUEUE_DEPTH;
+    this.refGuard = opts.refGuard ?? new RefGuard({ ledger: opts.ledger });
   }
 
   // ---- public API ---------------------------------------------------------------------------------------------
@@ -854,6 +863,17 @@ export class RunLifecycle {
       return this.fail(runId, "TOOL_FAILURE", `workspace preparation failed: ${errorText(err)}`);
     }
     if (exec.cancelRequested) return this.cancelEarly(runId);
+    if (ws.mode === "worktree") {
+      // T9.5 (FR-GIT-03, LLD §12.5): the controller-visible Git state, recorded before the provider can touch it. A
+      // repository that cannot be read here cannot be checked later, so the run fails before spawn (fail closed).
+      try {
+        await this.refGuard.snapshotAtLeased(runId);
+      } catch (err) {
+        return this.fail(runId, "TOOL_FAILURE", `git ref snapshot failed: ${errorText(err)}`, {
+          reason: "GIT_REF_SNAPSHOT_FAILED",
+        });
+      }
+    }
 
     const cwd = ws.mode === "worktree" ? ws.worktreePath : ws.path;
     const compileReq = {
@@ -1077,8 +1097,13 @@ export class RunLifecycle {
     const artifacts: Record<string, string> = { ...streams };
     let changedFiles = 0;
     let nestedSkipped: readonly string[] = [];
+    let gitViolations = 0;
     if (ws.mode === "worktree") {
       try {
+        // T9.5 (FR-GIT-03, BR-27): compare refs with the LEASED snapshot and put controller-owned refs back BEFORE the
+        // checkpoint, so an agent's commits end up as working-tree content of the checkpoint, never in its history.
+        // It never throws for Git problems (recorded as a violation) and never changes the outcome.
+        gitViolations = (await this.refGuard.checkAtFinalizing(runId)).violations;
         const assessment = await this.opts.workspace.assessMutation(runId);
         const success = outcome.kind === "success";
         const fin = await this.opts.workspace.finalize(runId, { advanceHead: success });
@@ -1126,6 +1151,7 @@ export class RunLifecycle {
     const payload = {
       artifacts,
       changed_files: changedFiles,
+      ...(gitViolations > 0 ? { git_policy_violation: true } : {}),
       ...(nestedSkipped.length > 0 ? { nested_repositories_skipped: nestedSkipped } : {}),
       ...(out.result.summary ? { summary: out.result.summary.slice(0, SUMMARY_MAX) } : {}),
       ...(out.result.nativeSessionId ? { native_session_id: out.result.nativeSessionId } : {}),

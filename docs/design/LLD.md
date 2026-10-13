@@ -312,6 +312,10 @@ writer yet (T9.6); ID prefixes `gcm_` and `gps_` (the latter Proposed here). `Le
 `git_commit` run event and inserts the row in one `BEGIN IMMEDIATE` transaction. New `run_event.type` values written by
 T9.3: `git_commit_intent` and `git_commit_aborted` (see §12.3). `project_revision` is still not created (T9.9).
 
+*As built (2026-10-13, Delegated, T9.5, [ADR-0027](../adr/0027-ref-snapshots-and-violation-handling.md)):* no migration.
+New `run_event.type` values `git_ref_snapshot` and `git_ref_check`; `git_policy_violation` gets its first writer. Payloads
+in [§12.5](#125-ref-snapshot-and-violation-handling).
+
 **M11 additions (Proposed).** One forward migration (ADR-0005) adds the append-only `inner_call` table and the mutable
 `inner_task_state` table (DDL in [§13.3](#133-data)), adds `pr_draft` to the `artifact.kind` check, adds `inner_agent` to
 the `usage_observation.source` check (FR-INN-15), and adds two columns to `git_commit` (§12.7). SQLite cannot alter a
@@ -1529,6 +1533,40 @@ commit on the run branch, appends `git_policy_violation` (names of refs and SHAs
 not reachable from the publish ref, and the tree content is kept as the working-tree changes the post-run checkpoint
 records (FRD BR-27). The comparison reads the whole repository, so it also covers writes made through the main
 repository's Git directory.
+
+**As built (2026-10-13, Delegated, T9.5, [ADR-0027](../adr/0027-ref-snapshots-and-violation-handling.md); owner text
+above unchanged).** Code: `src/git/ref-guard.ts` (`RefGuard`), called by `src/lifecycle/lifecycle.ts` (snapshot after
+`prepare`, before compile and spawn; check after the provider exits, before `assessMutation` and the checkpoint) and by
+`src/reconcile/reconcile.ts` (check before the evidence checkpoint after a restart). Choices where this section was
+silent:
+
+- **Snapshot payload** (`git_ref_snapshot`, `{v: 1, phase: "leased", ...}`): `digest` (SHA-256 over `<sha> <name>\n`
+  for every ref in code-unit order), `ref_count`, `refs` as `[name, sha]` pairs for the first refs by name up to 5000
+  refs and 1 MiB of names and SHAs, `truncated` and `tail` (`after`, `count`, `digest` of the refs past the cap, without
+  the run's own branch and publish ref), `repo_head` and `worktree_head` (`symref`, `sha`), `run_branch` and
+  `publish_ref` (`ref`, `sha`). Listing: `git for-each-ref --format=%(objectname) %(refname)` in the main repository
+  through the hardened helper. A repository that cannot be read at LEASED fails the run `TOOL_FAILURE`
+  (`GIT_REF_SNAPSHOT_FAILED`) before spawn. `get_run` events and `runs show` print the digest and counts, not the list.
+- **Expected differences.** The run branch must still be at the run's `pre` checkpoint (the checkpoint moves it only
+  after the check); the worktree `HEAD` must be the symbolic ref to it. The publish ref may be unchanged since LEASED,
+  or be a commit with a `git_commit_intent` (not aborted) whose recorded parent chain through such commits reaches the
+  meta-session's `base_commit`. Another run's branch may move to one of that run's checkpoint commits or be deleted
+  (that run non-terminal, or its session `ARCHIVED`); another session's publish ref may move to one of its intents.
+- **Handling.** One `git_policy_violation` event (`v`, `violation_count`, `truncated`, `digest_before`,
+  `digest_after`, at most 200 `violations` of `{scope, kind, ref, old, new, action, restore_to?, foreign_commits?
+  (at most 50), foreign_commit_count?, detail?}`) is appended before any change; scopes `run_branch`, `worktree_head`,
+  `publish_ref`, `repo_head`, `switchboard`, `other`, `unlisted`, `guard`; kinds `created`, `moved`, `deleted`,
+  `head_changed`, `unlisted_refs_changed`, `snapshot_missing`, `check_failed`. Then the controller restores, each with
+  a compare-and-swap, only the worktree `HEAD` (`symbolic-ref`), the run branch (`update-ref` to `pre`) and the publish
+  ref (newest `git_commit` row with a valid chain, else the LEASED value, else deleted); everything else is reported
+  only. A `git_ref_check` event (`clean`, `violation` with per-ref restore results, `failed`, `skipped`) closes the
+  check; a run with one is not checked again. The run's outcome is unchanged; the terminal transition payload gains
+  `git_policy_violation: true` and `runs show` prints `git policy: VIOLATION (n ...)` and `--json` `run.git_policy_violations`.
+- **Fail closed.** A check that cannot complete is a `check_failed` violation; a run that reached RUNNING without a
+  snapshot is `snapshot_missing` and its own refs are still checked against the ledger.
+- **Not covered.** Per-worktree refs (`refs/worktree/`, `refs/bisect/`), objects written without a ref, and a push that
+  updates no local ref (BR-27: prevention is the control). Changes made by the operator during the run are flagged too
+  (ROADMAP R-47). Verified on Git 2.43.0 only.
 
 ### 12.6 Push algorithm
 

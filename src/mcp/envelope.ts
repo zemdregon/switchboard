@@ -15,6 +15,8 @@
  * T3.4: the operator `approve`/`deny` record (`operator_decision_requested`) carries the deciding OS user and the scope
  * hash for the operator CLI; `get_run include_events` drops both fields from that event (Proposed).
  */
+
+import { GIT_REF_SNAPSHOT_EVENT } from "../git/ref-guard.js";
 import type { Ledger, RunRecord } from "../ledger/index.js";
 import { isTerminal, OPERATOR_DECISION_REQUESTED } from "../lifecycle/index.js";
 import type { ReportedUsage } from "../usage/index.js";
@@ -147,7 +149,13 @@ export function compactEvents(
   scrub: (s: string) => string,
 ): NonNullable<Envelope["events"]> {
   return ledger.listRunEventsAfter(runId, afterSeq, limit).map((e) => {
-    const text = scrub(e.type === OPERATOR_DECISION_REQUESTED ? operatorOnlyStripped(e.payload_json) : e.payload_json);
+    const raw =
+      e.type === OPERATOR_DECISION_REQUESTED
+        ? operatorOnlyStripped(e.payload_json)
+        : e.type === GIT_REF_SNAPSHOT_EVENT
+          ? refListStripped(e.payload_json)
+          : e.payload_json;
+    const text = scrub(raw);
     let payload: unknown;
     if (text.length > EVENT_PAYLOAD_MAX) payload = { truncated: true, bytes: e.payload_json.length };
     else {
@@ -159,6 +167,16 @@ export function compactEvents(
     }
     return { seq: e.seq, ts: e.ts, type: e.type, payload };
   });
+}
+
+/** T9.5: the MCP client sees the snapshot's digest and counts, not the operator repository's ref list. */
+function refListStripped(json: string): string {
+  try {
+    const { refs, ...rest } = JSON.parse(json) as { refs?: unknown };
+    return JSON.stringify({ ...rest, refs_listed: Array.isArray(refs) ? refs.length : 0 });
+  } catch {
+    return JSON.stringify({ unparseable: true });
+  }
 }
 
 /** Operator-only fields of an `approve`/`deny` record (LLD §3.1 "What is shown where": no hash, no `decided_by`). */
