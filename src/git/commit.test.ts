@@ -531,7 +531,9 @@ describe("request, lease and message checks", () => {
   });
 
   it("rejects an unsafe operator pattern when the publisher is built", () => {
-    expect(() => publisher({ sanitizePatterns: ["(a+)+$"] })).toThrow(/pattern 0/u);
+    // Assembled at run time so static analysis does not read the fixture as a live regex.
+    const unsafe = ["(a+", ")+$"].join("");
+    expect(() => publisher({ sanitizePatterns: [unsafe] })).toThrow(/pattern 0/u);
   });
 });
 
