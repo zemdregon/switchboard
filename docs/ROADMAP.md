@@ -24,12 +24,14 @@ workspace isolation, cross-provider task state, routing and capacity estimation,
 is published as open source so anyone can run their own installation with their own subscriptions) and the
 *orchestrator* (an MCP client agent such as OpenClaw or Grok Bot). See [PRD §2](requirements/PRD.md).
 
-**Desired outcomes.** BO-1 to BO-7 in the [BRD](requirements/BRD.md): more work per paid subscription, no credential
-handling, safe unattended runs, continuity across providers, visibility, resilience to CLI churn, and agent work that
-reaches the repository as ordinary commits with the audit record kept internally.
+**Desired outcomes.** BO-1 to BO-8 in the [BRD](requirements/BRD.md): more work per paid subscription, no credential
+handling, safe unattended runs, continuity across providers, visibility, resilience to CLI churn, agent work that
+reaches the repository as ordinary commits with the audit record kept internally, and cheap text work handled by an
+operator-chosen inner model instead of premium capacity.
 
-**In scope.** Capabilities CAP-1 to CAP-11 in the [PRD](requirements/PRD.md), including projects (the environments
-agents operate from and their contexts, CAP-10) and controlled commits and publication (CAP-11). "Application" in this
+**In scope.** Capabilities CAP-1 to CAP-12 in the [PRD](requirements/PRD.md), including projects (the environments
+agents operate from and their contexts, CAP-10), controlled commits and publication (CAP-11) and the inner agent
+(CAP-12). "Application" in this
 project means the MCP tool surface plus the operator CLI; "backend" means the controller daemon and its ledger,
 workspace manager, router and adapters.
 
@@ -95,6 +97,14 @@ estimates. Architecture: [HLD](design/HLD.md).
    was taken for both. Branch scope, the per-context opt-in (push stays off until a context enables it) and the
    signing mechanism are delegated. Ender left Q-6 (container runtime and logins) and Q-8 (commit identity) to the agent,
    so those choices are delegated, not owner decisions.
+<!-- markdownlint-disable-next-line MD029 -->
+14. Switchboard has an *inner agent*: a self-hosted model, a cheap or free OpenCode model, or another model of the
+    user's choosing, used for many cheap tasks so the main provider CLIs do not have to do them: commit and PR writing,
+    task routing for auto mode, and other tasks the drafter judges to fit (2026-10-13). Recorded in
+    [ADR-0016](adr/0016-inner-agent.md). Ender's wording covers only the product idea. Everything else is delegated and
+    Proposed: the backend kinds, which tasks are in scope ([PRD §3.1](requirements/PRD.md#31-inner-agent-task-catalogue)),
+    the rule that it has no authority over security or run status, validation, fallback, privacy and the M11
+    placement. (Numbers 10 to 13 are used by the open M3 plan, PR #13.)
 
 ### 4.3 Stated intent (confirmed constraints)
 
@@ -178,7 +188,7 @@ kept and only the mechanism changes.
 | [docs/design/SDD.md](design/SDD.md) | Software design | Draft baseline | Component collaboration, shared patterns, requirement→design traceability |
 | [docs/design/TDD.md](design/TDD.md) | Technical design | Draft baseline | Technology choices, cross-cutting concerns, per-provider adapter strategy, test strategy |
 | [docs/design/LLD.md](design/LLD.md) | Low-level design | Draft baseline (M1–M2 detail) | Schemas, interfaces, tool contracts, failure taxonomy, algorithms |
-| [docs/adr/](adr/README.md) | Decision records | 15 accepted (13 and 14 record Ender's 2026-10-12 decisions, mechanisms delegated; 15 is delegated) | Why each architectural decision was made |
+| [docs/adr/](adr/README.md) | Decision records | 16 accepted (13 and 14 record Ender's 2026-10-12 decisions and 16 his 2026-10-13 decision, mechanisms delegated; 15 is delegated) | Why each architectural decision was made |
 | [docs/research/headless-ai-coding-controller-verified-2026-10-12.md](research/headless-ai-coding-controller-verified-2026-10-12.md) | Verified research | Current reference | Evidence for provider behaviour as of 2026-10-12 |
 | [docs/research/headless-ai-coding-controller.md](research/headless-ai-coding-controller.md) | Original blueprint | **Superseded** where it conflicts (§4.6); retained for stated intent | Stated intent C-1 to C-7 only |
 | `scripts/check-docs.mjs` | Documentation link and ID checker | Current | Mechanical consistency of this set |
@@ -187,7 +197,7 @@ kept and only the mechanism changes.
 
 Status values: `Done`, `In progress`, `Partial`, `Planned`, `Blocked`, `Deferred`. No milestone has dates; none were
 set. Sizes are not estimated. M9 and M10 were added on 2026-10-12 for owner decisions 6 and 7 (projects; tool-only
-commits).
+commits); M11 on 2026-10-13 for owner decision 14 (inner agent).
 
 | ID | Milestone | Status | Depends on | Requirements delivered (first delivery) | Acceptance criteria | Verification |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -202,6 +212,7 @@ commits).
 | M8 | Hardening | Planned | M7 | FR-TEL-02 | OTel traces reach a test collector with no forbidden attributes; a scheduled version canary on the operator's machine flags CLI updates before they reach routing | Collector test; version-bump test |
 | M9 | Projects and controlled commits | Planned. Numbered after M8 to keep existing milestone IDs stable; **sequenced after M3 and before M4** (Proposed) so new adapters declare their Git controls once | M3 | FR-PRJ-01–04, 06, 08, 10, FR-GIT-01 (fixtures), 02–10, FR-WS-05 (publication) | A scripted MCP client lists projects and delegates to one (`host` environment, one repository context) and the lower of client and project ceilings applies; the agent's `commit` tool call produces a commit on the publish ref with the configured identity and no trailer, footer or identifier even when the message contains them; an agent attempt to commit, move a ref or push (shell or provider built-in) leaves nothing on the publish ref and appears as `git_policy_violation`; with push `none` nothing leaves the host, with `branch` against a local bare remote only the publish ref arrives and never checkpoint commits or run branches; every published commit has a `git_commit` row naming run, provider and model; a client with `manage_projects` can create a `host` project within its limits and use it, a `container` or push-enabled revision stays unusable until `projects approve`, and a client without the flag has no project-management tools; with `sign: true` the published commit verifies against the operator's key and a failed signature creates no commit; adapters that cannot take the channel without a bypass flag run in finalize-only mode only on opt-in | Fake-adapter integration tests with real Git repos and a local bare remote; sanitiser fixtures; malicious-fixture additions for Claude Code and Codex; argv inspection |
 | M10 | Container environments | Planned; B-2 resolved by delegation (Proposed), starts with a spike | M9 | FR-PRJ-05, 07, 09 | A `container` project mounts only the run worktree and declared read-only contexts, applies its limits and network policy, and is removed at run end and after a controller crash; no home directory, data directory, push credential or runtime socket is mounted; the container leg of the malicious-fixture suite shows no escape | Opt-in container integration tests (skipped in CI until a runtime is chosen); fault injection; inspection of mounts |
+| M11 | Inner agent | Planned (Proposed). Owner decision 14; numbered after M10 to keep milestone IDs stable; **sequenced after M9** (Proposed). Tasks that use another milestone's output wait for it (§6.6) | M2 (configuration, ledger); M9 for commit and PR tasks; M3, M4, M5, M7 for the tasks that use them | FR-INN-01–17 | With no inner agent configured nothing changes and the suite passes; with a fake backend, enabled tasks are used and invalid, empty, slow or unreachable output falls back without failing or delaying a run beyond the bound; a commit with no agent message gets a sanitised drafted message with no trailer, footer or identifier even when the backend returns them; inner usage never appears in provider usage or capacity unless a shared subscription is declared; a `remote` backend needs `allow_remote` and diffs need the per-task opt-in, and a planted secret never reaches a captured prompt; no inner output reaches any policy component; `doctor` and `inner status` report state | Fake-backend integration and fault-injection tests; hostile-backend sanitiser fixtures; import-boundary test; secret-in-prompt test; inspection of the privacy gates; one opt-in live run against an operator-chosen backend |
 
 ### 6.1 M1 Foundation: tasks
 
@@ -362,6 +373,32 @@ other M10 task.
 | T10.2 | Startup orphan sweep and `environment` run events | FR-PRJ-07, FR-EXE-06 | T10.1 | Fault injection: `SIGKILL` mid-run, restart, container gone before worktree assessment |
 | T10.3 | Container leg of the malicious-fixture suite; `projects validate` checks; retention of containers and volumes | NFR-SEC-03, FR-PRJ-08, 09 | T10.1 | Fixtures show no escape; GC removes containers with worktrees |
 
+### 6.6 M11 Inner agent: tasks
+
+*Proposed breakdown, written when M11 was added; revisit when M9 completes.* Design: [ADR-0016](adr/0016-inner-agent.md),
+[LLD §13](design/LLD.md#13-inner-agent), [TDD §3.12](design/TDD.md#312-inner-agent), [PRD
+§3.1](requirements/PRD.md#31-inner-agent-task-catalogue). Order of delivery: the core and the `http` backend first, then
+the commit-message task (the highest-value one), then the others as the milestones they need complete. No task here may
+call a live model in the default test run.
+
+| Task | Objective | References | Depends on | Done when |
+| --- | --- | --- | --- | --- |
+| T11.0 | Spike: on the installed OpenCode, find whether a one-shot `opencode run` with an operator-chosen model can be run with no tools, an empty working directory and no repository config. Record the flags verified, or record that it cannot and mark the `cli` kind `Ineligible` | FR-INN-04, Q-26, [R2] OpenCode | — | The result and the checked flags are written into TDD §4.6 with the version and date, or the limitation is recorded and FR-INN-04 re-prioritised |
+| T11.1 | Config schema for `inner_agent`, the backend port, a scripted fake backend, the `inner_call` table, the disabled-by-default path, and the import-boundary test | FR-INN-01, 02, 05, 06, LLD §13.1–13.3 | M2 | Config rejects unknown keys and a credential-looking value; with no section the suite behaves as before; a test fails if COMP-POL, an adapter's profile compiler, the retry logic or the push path imports the inner-agent service |
+| T11.2 | Call pipeline: redaction, input budget, call, schema validation, one re-ask, per-call timeout, circuit breaker, fallback result, `inner_call` and run events | FR-INN-07, 08, 16 (redaction, no body logging), LLD §13.4 | T11.1 | Fake-backend tests: invalid, empty, oversized, slow, erroring and non-UTF-8 outputs all fall back within the bound; breaker opens and probes; a planted secret never appears in the captured prompt or in any log |
+| T11.3 | `http` backend, locality classification, `allow_remote`, `allow_source_content`, project and context `inner_agent` override | FR-INN-03, 16, LLD §13.2, §13.5, [LLD §11](design/LLD.md#11-projects-contexts-and-environments) | T11.2, T9.1 | Against a local fake HTTP server: a `remote` backend is refused without opt-in, diffs are refused without the per-task opt-in, `local_only` and `off` projects never call a remote backend |
+| T11.4 | Commit-message task: optional `message` on the `commit` tool, modes `draft_if_missing`, `always`, `never`, prompt without identifiers, sanitiser on the result, provenance note | FR-INN-10, FR-GIT-04, [LLD §12.1](design/LLD.md#121-tool-contracts), [LLD §12.4](design/LLD.md#124-message-sanitisation) | T11.2, T9.3, T9.4 | A hostile fake backend returning `Co-authored-by:` lines, a run ID and a "generated by" footer yields a clean commit; empty or unavailable output returns the tool error and no commit; the agent's own message wins in the default mode |
+| T11.5 | Usage accounting: `inner_call` records only, nothing in `usage_observation` or capacity; `shares_subscription_with` observation and the `doctor` warning | FR-INN-15, ADR-0007 | T11.1 | `get_capacity` and the estimator are byte-identical with and without inner calls; with the flag set, one labelled observation per call appears |
+| T11.6 | Quality monitoring and automatic suspension | FR-INN-09 | T11.2 | Rejection rate above the configured threshold over the window suspends the task, which then falls back until re-enabled |
+| T11.7 | `doctor` inner-agent section, `inner status`, `inner test` with the built-in fixture | FR-INN-17 | T11.3, T11.6 | Plain-text and `--json` output; `inner test` sends no repository data (asserted on the captured prompt) |
+| T11.8 | PR-draft task and the `pr_draft` artifact kind | FR-INN-11, [LLD §3](design/LLD.md#3-mcp-tool-contracts) | T11.4 | Draft passes the sanitiser; Switchboard makes no call to any pull-request API (test asserts no such client exists) |
+| T11.9 | Log and verification-output summary | FR-INN-13, FR-EXE-08 | T11.2, M3 | Statuses, exit codes and counts in the envelope come from records in every test; the summary carries a source label and a raw-artifact pointer; fallback is deterministic head and tail |
+| T11.10 | Handoff-bundle condensation | FR-INN-13, FR-SES-04 | T11.2, M5 | Structured bundle fields are identical with and without the inner agent; condensed fields are labelled and link to raw artifacts |
+| T11.11 | Routing classification feature | FR-INN-12, FR-RTE-04, ADR-0008 | T11.2, M7 | Stored feature with source, model and template version; replay reproduces the decision with the backend off; the feature never changes eligibility or `require_provider` |
+| T11.12 | Run title and one-line summary (Could) | FR-INN-14 | T11.2 | Length cap and control-character stripping tested |
+| T11.13 | `cli` backend using OpenCode (Should) | FR-INN-04, FR-ADP-08, FR-ADP-03 | T11.0, M4 (OpenCode adapter and manifest) | Runs only on a version inside the manifest range and only with the verified tool-free flags; otherwise reports `Ineligible`; no bypass flag in argv (argv audit) |
+| T11.14 | Update the README (configuration, privacy, `doctor`, `inner`), roadmap status and any document the work proved wrong | NFR-MAINT-02, NFR-MAINT-03 | T11.1–T11.8 | §6 shows M11 with status and links to tests |
+
 Later milestones (M3–M8) are intentionally kept at the level of the table in §6; break them into tasks when the
 preceding milestone completes.
 
@@ -393,6 +430,12 @@ preceding milestone completes.
 | R-20 | An orchestrator that can create projects widens what a compromised or prompt-injected orchestrator can reach | New mounts, providers, ceilings or push rights through a project it created | `manage_projects` off by default; limits are the client's own; operator approval for containers, push and widening; creator-only visibility; every call recorded (FR-PRJ-10, HLD TB-9) |
 | R-21 | Claude stream-json event shapes and error category strings are unverified; the adapter was written against `claude --help` 2.1.296 text and synthetic fixtures (`src/adapters/claude/parse.ts`; [ADR-0015](adr/0015-claude-untrusted-isolation-flags.md)) | Misparsed events or misclassified failures on a real CLI | Live smoke test (T2.6) before M2 is called done; classify unknown shapes as `OUTPUT_PROTOCOL_ERROR`, never success |
 | R-22 | Codex event shapes and the `--sandbox read-only` spelling are unverified (`src/adapters/codex/protocol.ts`); no Codex binary was available | Misparsed events, or a sandbox flag that does not mean what the adapter assumes | Live smoke test (T2.6); the probe requires the flags in `codex exec --help` |
+| R-27 | *Proposed (owner decision 14).* A cheap model writes a vague, wrong or misleading commit message or PR draft, and it enters published history | Poor history; reviewers misled | Agent text wins by default; sanitiser and non-empty check (FR-INN-10); `inner status` shows rejection rates and suspension (FR-INN-09); `never` mode; the provenance record notes the drafting source |
+| R-28 | *Proposed.* Repository content or an orchestrator's request contains prompt injection aimed at the inner model | A bad draft, a misleading title or summary, or a skewed routing feature | The inner agent has no authority (FR-INN-06), no tools (FR-INN-02), validated output (FR-INN-07), and routing features cannot touch eligibility (FR-INN-12) |
+| R-29 | *Proposed.* Source code or logs are sent to a `remote` inner backend that the operator or the provider may retain or train on; deterministic redaction misses a secret | Data leaves the host from the controller itself | `local`/`remote` classification, `allow_remote`, per-task `allow_source_content`, per-project `local_only`, redaction before every call, no body logging (FR-INN-16); the examples default to local |
+| R-30 | *Proposed.* A condensed handoff or log summary drops or invents a fact, and the next agent or the orchestrator trusts it | Wasted work or a wrong conclusion | Additive and labelled, raw artifact pointers, statuses from records only, the next agent still inspects the repository (FR-INN-13) |
+| R-31 | *Proposed.* The inner backend draws on the same subscription as a routed provider (for example a Claude Code or OpenCode login also used for coding) | Capacity estimates are blind to real consumption; the saving is lost | `shares_subscription_with` records an `inner_agent` observation and `doctor` warns (FR-INN-15) |
+| R-32 | *Proposed.* Model or server churn changes output quality or format under a fixed prompt template; the `cli` kind's flags change (as R-1) | Rising fallback rates, silent quality drift | Versioned templates, per-task outcome records and suspension (FR-INN-05, 09), `inner test`; the `cli` kind is version-gated (FR-INN-04) |
 
 ### 7.2 Blockers
 
@@ -421,6 +464,10 @@ No blocker affects M1, M2 or M9.
 | Q-12 | The Codex manifest range is empty, so every Codex binary is `ADAPTER_VERSION_UNVERIFIED`. Which `codex --version` will the operator validate? | Fail closed until the operator records one (T2.1 note, `adapters validate`) |
 | Q-13 | Are the Claude and Codex assumptions in R-21 and R-22 correct on real CLIs? | Unconfirmed; the opt-in live smoke test (T2.6) must confirm or correct each, and the fixtures and TDD §4.1–4.2 are updated with the result |
 | Q-14 | NFR-PERF-02 (Must, M2: cache adapter preflight, invalidate on binary version change or a configurable TTL) is unimplemented and no task owns it. Should it become a task, and in which milestone? **Proposed:** a task to add the cache in the probe and auth path used by `delegate_task`, dispatch and `list_capabilities`, with a version-change invalidation test | None; the requirement stays unmet and M2 stays `Partial` until Ender decides |
+| Q-23 | *Owner decision 14.* May Switchboard read a hosted inner model's API key from its environment (an `api_key_env` setting)? That would change ADR-0003 and FR-AUTH-01 for convenience. **Proposed:** no; use a local gateway that holds the key, or the `cli` kind | No: keys stay outside Switchboard (FR-INN-03) |
+| Q-24 | *Owner decision 14.* Where should M11 sit? **Proposed:** after M9, with the core, `http` backend and commit-message task first. Ender may want it earlier because it saves capacity from the first commit | After M9 (§6) |
+| Q-25 | *Owner decision 14.* Should a commit with no agent message be drafted by the inner agent by default when the task is enabled (`draft_if_missing`), and is a PR draft artifact wanted given that Switchboard never opens pull requests? | `draft_if_missing`, agent text wins; PR draft is Should and off unless enabled (FR-INN-10, 11) |
+| Q-26 | *Owner decision 14.* Can `opencode run` be made a tool-free one-shot completion with a chosen model, and which flags and version prove it? Unknown; the research lists `opencode run` but not such a mode | The `cli` kind stays Should and is `Ineligible` until T11.0 verifies it (FR-INN-04) |
 
 ## 8. Deferred and excluded work
 
@@ -436,6 +483,9 @@ No blocker affects M1, M2 or M9.
 | Multi-user or hosted operation | Excluded | Compliance and credential risk | ADR-0011 |
 | Context kinds other than `repository`; remote-clone contexts; multiple writable contexts in one run | Deferred | Not asked for yet; the schema is extensible | FR-PRJ-02 |
 | Rewriting attribution inside file contents | Excluded | Out of the commit boundary; the controller does not edit what agents write | FR-GIT-04, R-14 |
+| Model-assisted secret or PII redaction (inner agent) | Deferred | A miss is a silent leak and sending content to find secrets is itself exposure; deterministic redaction stays the control. Revisit as an add-only advisory pass on a `local` backend | FR-INN-18 |
+| Inner agent exposed to orchestrators as a tool | Excluded | Makes Switchboard a model proxy and widens TB-1; no requirement behind it | ADR-0016 |
+| Inner-agent tasks IT-10 to IT-14 (prompt rewriting, test selection, diff pre-review, commit splitting, changelogs) | Deferred or excluded | Each changes intent, verification or authority, or has no requirement; see [PRD §3.1](requirements/PRD.md#31-inner-agent-task-catalogue) | — |
 
 ## 9. Next actionable milestone
 
