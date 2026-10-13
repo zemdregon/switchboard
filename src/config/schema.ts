@@ -34,6 +34,9 @@ export type ProviderId = (typeof PROVIDER_IDS)[number];
 
 export const CONFIG_SCHEMA_VERSION = 1;
 
+/** Assumption (T3.21): adapter preflight is cached for 60 seconds unless `timeouts.preflight_ttl_seconds` says otherwise. */
+export const DEFAULT_PREFLIGHT_TTL_SECONDS = 60;
+
 /** `mcp_clients[].privileged_approval` values (ADR-0019). The restrictive value is the default. */
 export const PRIVILEGED_APPROVAL_MODES = ["required", "not_required"] as const;
 export type PrivilegedApprovalMode = (typeof PRIVILEGED_APPROVAL_MODES)[number];
@@ -48,6 +51,8 @@ export interface SwitchboardConfig {
   providers?: Partial<Record<ProviderId, { enabled?: boolean; weight?: number }>>;
   /** Run retention (NFR-DATA-01, FR-WS-07). `interval` is `<n>m`, `<n>h` or `<n>d` (Proposed form). */
   retention?: { days?: number; interval?: string };
+  /** Preflight cache TTL in seconds (NFR-PERF-02, T3.21). 0 disables the cache. */
+  timeouts?: { preflight_ttl_seconds?: number };
   /** Per-field profile overrides (FR-POL-01, owner decision 12). `privileged` has none: it comes from its scope. */
   profiles?: Partial<Record<Exclude<TrustProfile, "privileged">, ProfileOverrideConfig>>;
 }
@@ -136,6 +141,13 @@ export const configSchema = {
       properties: {
         days: { type: "integer", minimum: 1, maximum: 3650 },
         interval: { type: "string", pattern: "^[1-9][0-9]{0,5}[mhd]$" },
+      },
+    },
+    timeouts: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        preflight_ttl_seconds: { type: "integer", minimum: 0, maximum: 3600 },
       },
     },
     profiles: {

@@ -70,7 +70,7 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | `mcp_clients[].projects` | Project IDs the client may use | FR-PRJ-03, 06 |
 | `git.sanitize_patterns[]` | Operator additions to the built-in attribution patterns ([LLD §12.4](LLD.md#124-message-sanitisation)) | FR-GIT-04 |
 | `limits.global_concurrency`, `limits.per_provider_concurrency` | Defaults 4 and 1 (proposed target) | NFR-PERF-03 |
-| `timeouts.*` | Wall-clock, idle, grace, preflight TTL (proposed targets in [LLD §8](LLD.md#8-run-supervisor-details)) | FR-EXE-01, NFR-PERF-02 |
+| `timeouts.*` | Wall-clock, idle, grace (proposed targets in [LLD §8](LLD.md#8-run-supervisor-details)); only `timeouts.preflight_ttl_seconds` exists in the schema today: integer 0 to 3600, default 60 (**Assumption**), 0 disables the preflight cache; unknown keys are rejected. *Note (2026-10-13, Delegated, [decision 29](../ROADMAP.md#42-owner-decisions), T3.21):* it bounds how long a successful `probe` or `authPreflight` is reused; failures are never cached | FR-EXE-01, NFR-PERF-02 |
 | `retention.days`, `retention.interval` | Retention in days (default 30, proposed target) and the GC pass period (`<n>m`, `<n>h` or `<n>d`, default `24h`). Collection is on only when `retention.days` is set in the file: the default is a value, not a switch (`ResolvedConfig.retentionEnabled`, T3.12, Proposed, Delegated). A period above about 24.8 days is capped by the timer | NFR-DATA-01, FR-WS-07 |
 | `profiles.<name>` | Overrides of the [SRS §3.3](../requirements/SRS.md#33-policy-and-trust-profiles-fr-pol) defaults. They may tighten or loosen a default ([owner decision 12](../ROADMAP.md#42-owner-decisions)); a loosening must be explicit in the config, is validated, and is recorded in the run's policy snapshot and listed by `doctor` (M3, T3.2). *Known limit ([owner decision 20](../ROADMAP.md#42-owner-decisions), 2026-10-13):* a `profiles.edit-untrusted` override that loosens `network` or `repo_config` is not enforced: the Claude adapter compiles `edit-untrusted` with the strict settings (network off at the tool level, repository configuration disabled) whatever the override says, and the Codex adapter makes the run `Ineligible: CAPABILITY_MISSING` | FR-POL-01 |
 | `providers.<id>` | `{enabled, binary_path, extra_env_allowlist[], model_overrides}` | FR-ADP-05, FR-EXE-07 |
@@ -236,7 +236,7 @@ as the spawn mark) and `extractResult` (called as soon as process exit is observ
 
 - **delegate_task ack**: tool call to `run_id` returned.
 - **accepted to spawn**: tool call to the `compile` mark, reported in total and with the probe and auth preflight time
-  subtracted. This is the NFR-PERF-01 quantity, measured with preflight uncached.
+  subtracted. This is the NFR-PERF-01 quantity, measured with preflight uncached (the default `npm run bench`).
 - **exit to terminal visible**: exit observed to the first `get_run` showing a terminal state (finalize: worktree
   teardown, diff artifact, ledger commit), polled in a tight loop.
 - **get_run** and **list_capabilities**: tool call to result, 30 calls each against a finished run.
@@ -276,7 +276,24 @@ s at p50 (two probe spawns, about 0.145 s, and one auth spawn, about 0.07 s). `l
 registered provider live on each call (about 0.10 s per provider with the fake adapter). With caching, the
 acknowledgement and the dispatch probes would drop to the controller-only cost. The cache required by NFR-PERF-02
 (invalidated on binary version change or a configurable TTL) is not implemented, and no roadmap task owns it: T2.7 only
-measures. This is a gap to be assigned (reported to the roadmap owner), not a finished requirement.
+measures. This was a gap to be assigned (reported to the roadmap owner), not a finished requirement.
+
+*Note (2026-10-13, Delegated, [decision 29](../ROADMAP.md#42-owner-decisions), T3.21): resolved.* `PreflightCache`
+(`src/adapters/preflight-cache.ts`) now caches successful probe and auth results by adapter id and binary identity
+(path, `mtime`, size, inode) for `timeouts.preflight_ttl_seconds` (Assumption: 60 s); failures, `AUTH_REQUIRED` and
+`UNKNOWN` are never cached. `npm run bench -- --cached` enables it in the benchmark (the default run keeps the
+uncached baseline above). One run on a busier shared host than the tables above (so compare the two rows below with
+each other, not with the tables; n = 30, 5 warm-up, p50 / p95 ms):
+
+| Metric | Cache off | Cache on |
+| --- | --- | --- |
+| `delegate_task` acknowledgement | 239.2 / 291.1 | 45.8 / 52.0 |
+| Accepted to spawn, total | 614.6 / 773.0 | 205.7 / 243.7 |
+| `list_capabilities` | 162.0 / 206.1 | 0.5 / 1.1 |
+| Live probe and auth at dispatch | 406.2 / 514.1 | 0.0 / 0.0 |
+
+The first run after start-up, and the first after a TTL expiry or binary change, still pay the full probe cost. The
+benchmark uses the fake adapter only; a real provider CLI's probe cost is unmeasured (Unverified).
 
 ### 3.7 Packaging and release
 
