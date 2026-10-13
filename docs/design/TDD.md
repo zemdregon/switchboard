@@ -635,8 +635,58 @@ the table above; fake adapter only, Git 2.43.0).* Mechanism in [LLD §12.5](LLD.
   profiles withhold `push`; policy `none`; configuration re-read; argument and limit refusals; the ref check stays
   clean), `src/cli/git-push.test.ts` (operator command, lock, config refusal of a URL remote, `runs show` provenance).
 - **Still open.** `https` and `ssh` remotes with a real credential helper, SSH agent or proxy (the standard-error
-  classification is tested on fixed strings only), Claude Code and Codex channels (T9.4, Q-40), container environments
-  (M10), and pushing while `serve` runs (R-49).
+  classification is tested on fixed strings only), Claude Code and Codex channels (T9.4; Claude's is T9.4b,
+  [ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md)), container environments (M10), and pushing
+  while `serve` runs (R-49).
+
+**External reference (T3 Code, MIT, studied not copied; note 2026-10-13, Delegated, not owner-approved).** Ender's
+pointer (owner decision 36): T3 Code "has orchestrator injection for nearly all of the CLI tools we are targeting". A
+research pass read the public repository `pingdotgg/t3code` at commit `6524a8d` (MIT, (c) 2026 T3 Tools Inc.) without
+running or installing anything. Labels: *observed in T3 Code source at commit 6524a8d* means a research subagent read
+that code (VERIFIED-IN-SOURCE there; still **unverified on our CLIs**); SECONDHAND means issue, pull-request or
+third-party documentation text only; UNKNOWN means not found. **These are leads for the open T9.0 items and for T9.4b
+and the other adapter tasks. None is verified here. Switchboard must not copy T3 Code's code, identifiers, comments or
+documentation**; it implements from each provider's documentation and the installed `--help` (R-50).
+
+- *Shape.* T3 serves a loopback HTTP MCP server with a per-provider-session bearer token (observed in source: 32 random
+  bytes, kept hashed, scoped to the session and revoked with it). Switchboard differs on purpose: a Unix-socket stdio
+  shim, so the controller listens on no network port ([ADR-0026](../adr/0026-per-run-tool-channel-socket-and-token.md)).
+  The server, not the provider, checks authorisation; the provider-side allow rule only gets past the provider's own
+  approval gate.
+- *Claude Code.* Observed in source: T3 drives Claude through the Agent SDK and passes `mcpServers` over the CLI's stdin
+  control channel, because the SDK would otherwise pass an inline `--mcp-config` argument that every local user can
+  read (the reason [ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md) uses a `0600` file); it
+  pre-approves with `allowedTools` `mcp__<server>__*` (an explicit per-tool list in its read-only mode), notes that
+  headless `dontAsk` denies anything not pre-approved, and sets a per-server timeout because Claude aborts an HTTP MCP
+  call after 60 seconds by default. `--strict-mcp-config` is **not** used for its chat sessions (user, project and local
+  settings still load, so it is additive); only its capability probe uses it. Switchboard's exclusivity needs
+  `--strict-mcp-config` (decision 26 aside). Flag name `--mcp-config` confirmed against our `claude --help` 2.1.296; the
+  rest unverified on our CLI.
+- *Codex.* Observed in source: `codex app-server` is spawned, and each thread start, resume or fork carries
+  `config.mcp_servers[<name>]` (URL and `http_headers`), which Codex layers above the user's and project's
+  configuration. T3's own documentation still describes the older `-c mcp_servers.*` plus `bearer_token_env_var` form,
+  which is stale against its code. SECONDHAND: a per-thread `mcp_servers` override may replace servers added by `-c`
+  launch arguments; under `approval_policy = never` a tool needing approval may be refused unless
+  `default_tools_approval_mode` is set; a separate `CODEX_HOME` isolates configuration but needs its own login, which
+  collides with [ADR-0003](../adr/0003-no-credential-handling.md). Codex is not installed here; nothing is verified.
+- *Cursor.* Observed in source: Cursor SDK `AgentOptions.mcpServers` (HTTP type), re-sent on each send; the user and
+  project settings sources are loaded too (additive). The Cursor CLI route is UNKNOWN; MCP-specific approval is UNKNOWN
+  (R2 lists `--approve-mcps`, which FR-POL-03 treats as a bypass flag).
+- *OpenCode.* Observed in source: T3 spawns `opencode serve` and, per turn, calls `client.mcp.add` with a per-thread
+  server name and bearer header, then removes it; it adds session permission rules (deny its own prefix, allow the
+  thread's server; last match wins). SECONDHAND: servers added at runtime can be evicted when idle, may be missing on
+  the first turn, and a long server name is skipped, so a controller using this route must re-add and verify each turn.
+  A config-by-environment route is not verified.
+- *Grok Build and Antigravity.* Observed in source: both are ACP agents; T3 passes ACP `mcpServers` with a **stdio**
+  bridge process whose endpoint and credential are in its **environment, never its argument list**. This is the closest
+  analogue to Switchboard's shim. Its comment says some ACP agents advertise HTTP MCP yet drop it, which is why stdio
+  is used. SECONDHAND: Grok adds client-supplied servers on top of the user's configuration and has no strict flag.
+  Antigravity's own configuration and whether it honours stdio `mcpServers` are UNKNOWN.
+- *Kimi Code.* UNKNOWN: not found in T3 Code.
+- *Open questions it leaves* (all for T9.0 / adapter tasks, on our CLIs): does a stdio shim run headless under each
+  provider's non-interactive mode; do exact-name allow rules cover its tools under each fail-closed mode; do provider
+  sandboxes allow the socket connect; how does each merge with user and repository MCP configuration; is registration
+  verifiable (T3 checks for failures because registration can fail silently).
 
 ### 3.11 Container environments
 
