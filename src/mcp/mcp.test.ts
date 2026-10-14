@@ -477,9 +477,7 @@ describe("vertical slice against the fake adapter", () => {
     expect(h.isError).toBe(false);
     const done = await pollTerminal(h.body.run_id);
     expect(done.status).toBe("SUCCEEDED");
-    expect(done.route.reasons[0]).toBe(
-      "selected fake (handoff resume_directory_unavailable from fake; continuation)",
-    );
+    expect(done.route.reasons[0]).toBe("selected fake (handoff resume_directory_unavailable from fake; continuation)");
     expect(fake.resumes).toHaveLength(resumesBefore); // no native resume anywhere
     expect(ledger.getRunRecord(h.body.run_id)?.worktree_path).not.toBe(originPath);
     expect(JSON.stringify(done)).not.toContain(dataDir); // no controller path in the envelope
@@ -493,7 +491,7 @@ describe("vertical slice against the fake adapter", () => {
     expect(ledger.listArtifactsForRun(h.body.run_id).map((a) => a.kind)).toContain("handoff_view");
   });
 
-  it("continue_task rejects an active session, a different provider, an unknown session and an idempotency key", async () => {
+  it("continue_task rejects an active session, an unregistered provider, an unknown session and an idempotency key", async () => {
     await setup({ adapters: [fakeWriter()] });
     const d = await call("delegate_task", delegateArgs({ objective: "hang" }));
     const sess = d.body.meta_session_id;
@@ -507,7 +505,12 @@ describe("vertical slice against the fake adapter", () => {
       instruction: "more",
       routing: { provider_preference: "codex" },
     });
-    expect(other.body.error.code).toBe("INVALID_REQUEST");
+    // T5.6: another registered provider is a handoff now (src/mcp/continue-handoff.test.ts); an unregistered one is
+    // still refused by C5 (as V8) before anything else.
+    expect(other.body.error).toMatchObject({
+      code: "INVALID_REQUEST",
+      details: { field: "routing.provider_preference" },
+    });
     const unknown = await call("continue_task", { meta_session_id: `sess_${"0".repeat(26)}`, instruction: "x" });
     expect(unknown.body.error.code).toBe("INVALID_REQUEST");
     const keyed = await call("continue_task", { meta_session_id: sess, instruction: "x", idempotency_key: "abcdefgh" });

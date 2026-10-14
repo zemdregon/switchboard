@@ -49,8 +49,8 @@
  *   is a handoff over the project's other allowed providers (`bound_provider_ineligible`); `require_provider` naming an
  *   ineligible provider fails with its BR-3 code. A named provider the project does not allow is PERMISSION_BLOCKED
  *   before anything is probed. A `privileged` continuation to another provider is refused (Q-61, one constant in
- *   `src/continuity/policy.ts`). A handoff builds the bundle before admission; a failure there is TOOL_FAILURE
- *   `HANDOFF_BUNDLE_UNAVAILABLE` with no row written.
+ *   `src/continuity/policy.ts`) before any provider other than `P0` is probed. A handoff builds the bundle before
+ *   admission; a failure there is TOOL_FAILURE `HANDOFF_BUNDLE_UNAVAILABLE` with no row written.
  * - Unknown tool names return an INVALID_REQUEST tool error (FR-MCP-07) rather than a JSON-RPC protocol error.
  * - Projects (T9.2; FR-PRJ-03, FR-PRJ-06; FRD V12, BR-23; ADR-0024). `delegate_task` takes exactly one of `workspace_path`
  *   and `project` (the schema's `oneOf`, INVALID_REQUEST). With a project: an unknown id is INVALID_REQUEST; an id the
@@ -636,20 +636,80 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         ...(approvedScope?.ok ? { profile: eligibilityProfile(approvedScope.scope) } : {}),
       });
 
-    // ---- BR-18 (LLD §15.7 steps 1 and 2): resume or handoff, and on which provider. Nothing is written here. ----
+    // ---- BR-18 (LLD §15.7 steps 1 to 4): resume or handoff, and on which provider. Nothing is written here. ----
     const binding = ledger.latestProviderBinding(sessionId);
     const p0 = (binding?.provider ?? ctx.provider) as ProviderId; // step 1: the session provider
     const named = routing?.provider_preference as ProviderId | undefined;
     const required = routing?.require_provider === true ? named : undefined;
+
+    // Step 2, first half: same provider or cross-provider? Only P0 is probed here, so the Q-61 check below runs before
+    // any provider other than P0 is probed. `crossTo` is undefined when P0 is the target.
+    let answerP0: EligibilityAnswer | undefined;
+    let crossTo: string | undefined;
+    if (named !== undefined && named !== p0) {
+      crossTo = named; // another provider named: a handoff to it (routed normally with that preference, BR-4)
+    } else {
+      // `require_provider` naming P0 outside the project is PERMISSION_BLOCKED (as in delegate_task); without it, P0
+      // outside the project is ineligible like any other reason (BR-23) and is not probed.
+      if (required !== undefined) projectCandidates(resolved, p0);
+      const allowedSet = resolved?.project.allowedProviders;
+      const p0Allowed = allowedSet === undefined || allowedSet.some((id) => adapterIdForConfigId(id) === p0);
+      answerP0 = p0Allowed ? await ask([p0], p0) : undefined;
+      if (answerP0 === undefined || !admissible(answerP0, privileged).includes(p0)) {
+        if (required !== undefined && answerP0 !== undefined) throw eligibilityError(answerP0); // BR-18 → BR-2 / BR-3
+        crossTo = `a provider other than ${p0}`; // P0 ineligible: a handoff over the project's other providers
+      }
+    }
+
+    // Step 3, Q-61 (ADR-0038 item 8): the ONE check of the policy constant, before anything else is probed or written.
+    // Fail closed while Q-61 is open: a `privileged` continuation never runs on a provider other than P0. Same-provider
+    // continuations, including a same-provider handoff, keep C7 as is. The lifecycle's handoff guard reads the same
+    // constant (defence in depth).
+    if (crossTo !== undefined && refusesPrivilegedCrossProvider(profile, p0, crossTo)) {
+      throw invalid(
+        `a privileged meta-session cannot continue on another provider (${p0} to ${crossTo}) while ROADMAP Q-61 is ` +
+          "open; continue on the same provider or start a new privileged meta-session with delegate_task",
+        {
+          reason: PRIVILEGED_CROSS_PROVIDER_REASON,
+          from_provider: p0,
+          ...(named !== undefined && named !== p0 ? { to_provider: named } : {}),
+        },
+      );
+    }
+
+    // Step 2, second half, and step 4: the target and the mode.
     let target: ProviderId;
     let answer: EligibilityAnswer;
     let basis: string;
     let excluded: readonly ProviderId[] = [];
     let handoffReason: HandoffReason | undefined; // undefined: native resume
     let problem: string | undefined;
-    if (named !== undefined && named !== p0) {
-      // Another provider named: a handoff routed normally with that preference (BR-4). The named provider is the target,
-      // so one the project does not allow is PERMISSION_BLOCKED before anything is probed (step 4, BR-23).
+    if (crossTo === undefined && answerP0 !== undefined) {
+      target = p0;
+      answer = answerP0;
+      basis = "continuation";
+      if (binding === undefined) {
+        handoffReason = "no_binding"; // no run of this session reported a native session: nothing to resume
+      } else {
+        // T5.7 (LLD §15.6 step 3): a resume never runs outside its origin's directory; if that is unusable, the
+        // continuation becomes a handoff on the same provider (ADR-0038 item 6.4), decided before any write.
+        const dir = await lifecycle.resumeDirectoryPlan({
+          metaSessionId: sessionId,
+          provider: p0,
+          nativeSessionId: binding.native_session_id,
+          trustProfile: profile,
+          workspace,
+          resumeCwd: deps.registry.get(p0)?.resumeCwd,
+        });
+        if (dir.kind === "unavailable") {
+          handoffReason = "resume_directory_unavailable";
+          problem = dir.problem;
+        }
+      }
+      if (privileged) basis += "; privileged compile deferred to dispatch";
+    } else if (named !== undefined && named !== p0) {
+      // The named provider is the target, so one the project does not allow is PERMISSION_BLOCKED before anything is
+      // probed (step 4, BR-23); eligibility then runs over the project's allowed providers (FR-PRJ-06).
       const narrowed = projectCandidates(resolved, named);
       answer = await ask(narrowed.candidates, required);
       if (required !== undefined && !admissible(answer, privileged).includes(required)) throw eligibilityError(answer);
@@ -657,63 +717,20 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       excluded = narrowed.excluded;
       handoffReason = "provider_named";
     } else {
-      // No other provider named: P0 if eligible. `require_provider` naming P0 outside the project is PERMISSION_BLOCKED
-      // (as in delegate_task); without it, P0 outside the project is ineligible like any other reason (BR-23).
-      if (required !== undefined) projectCandidates(resolved, p0);
-      const allowedSet = resolved?.project.allowedProviders;
-      const p0Allowed =
-        allowedSet === undefined || allowedSet.some((id) => adapterIdForConfigId(id) === p0);
-      const answerP0 = p0Allowed ? await ask([p0], p0) : undefined;
-      if (answerP0 !== undefined && admissible(answerP0, privileged).includes(p0)) {
-        target = p0;
-        answer = answerP0;
-        basis = "continuation";
-        if (binding === undefined) {
-          handoffReason = "no_binding"; // a run that never reported a native session: nothing to resume
-        } else {
-          // T5.7 (LLD §15.6 step 3): a resume never runs outside its origin's directory; if that is unusable, the
-          // continuation becomes a handoff on the same provider (ADR-0038 item 6.4), decided before any write.
-          const dir = await lifecycle.resumeDirectoryPlan({
-            metaSessionId: sessionId,
-            provider: p0,
-            nativeSessionId: binding.native_session_id,
-            trustProfile: profile,
-            workspace,
-            resumeCwd: deps.registry.get(p0)?.resumeCwd,
-          });
-          if (dir.kind === "unavailable") {
-            handoffReason = "resume_directory_unavailable";
-            problem = dir.problem;
-          }
-        }
-        if (privileged) basis += "; privileged compile deferred to dispatch";
-      } else {
-        if (required !== undefined) throw eligibilityError(answerP0 as EligibilityAnswer); // BR-2 / BR-3
-        // P0 ineligible and not required: route over the project's other allowed providers (BR-18, FR-PRJ-06).
-        const narrowed = projectCandidates(resolved, undefined);
-        const others = narrowed.candidates.filter((p) => p !== p0);
-        if (others.length === 0) {
-          throw answerP0 !== undefined
-            ? eligibilityError(answerP0)
-            : new ToolError("ELIGIBILITY_NONE", `no provider other than ${p0} is allowed for this meta-session`, {
-                bound_provider: p0,
-              });
-        }
-        answer = await ask(others);
-        ({ provider: target, basis } = selectProvider(answer, undefined, privileged));
-        excluded = narrowed.excluded;
-        handoffReason = "bound_provider_ineligible";
+      // P0 ineligible and not required: route over the project's other allowed providers (BR-18, FR-PRJ-06).
+      const narrowed = projectCandidates(resolved, undefined);
+      const others = narrowed.candidates.filter((p) => p !== p0);
+      if (others.length === 0) {
+        throw answerP0 !== undefined
+          ? eligibilityError(answerP0)
+          : new ToolError("ELIGIBILITY_NONE", `no provider other than ${p0} is allowed for this meta-session`, {
+              bound_provider: p0,
+            });
       }
-    }
-
-    // Step 3, Q-61 (ADR-0038 item 8): the ONE check of the policy constant. Fail closed while Q-61 is open: a
-    // `privileged` continuation never runs on a provider other than P0. Same-provider continuations keep C7 as is.
-    if (refusesPrivilegedCrossProvider(profile, p0, target)) {
-      throw invalid(
-        `a privileged meta-session cannot continue on another provider (${p0} to ${target}) while ROADMAP Q-61 is open; ` +
-          "continue on the same provider or start a new privileged meta-session with delegate_task",
-        { reason: PRIVILEGED_CROSS_PROVIDER_REASON, from_provider: p0, to_provider: target },
-      );
+      answer = await ask(others);
+      ({ provider: target, basis } = selectProvider(answer, undefined, privileged));
+      excluded = narrowed.excluded;
+      handoffReason = "bound_provider_ineligible";
     }
 
     // Step 5 (handoff only): the bundle at `as_of`, put in the artifact store; no ledger row yet. Any failure is

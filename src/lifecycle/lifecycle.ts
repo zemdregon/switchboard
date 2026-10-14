@@ -791,7 +791,7 @@ export class RunLifecycle {
 
   /**
    * T5.7 (LLD §15.6): where a resume of `nativeSessionId` on `provider` would run, checked read-only before admission
-   * (`inspect`); `continue_task` refuses an `unavailable` plan before any side effect (T5.6 turns it into a handoff).
+   * (`inspect`); `continue_task` turns an `unavailable` plan into a same-provider handoff before any write (T5.6).
    */
   resumeDirectoryPlan(q: ResumeDirectoryQuestion, inspect = true): Promise<ResumeDirectoryPlan> {
     return planResumeDirectory({ ledger: this.ledger, workspace: this.opts.workspace }, q, { inspect });
