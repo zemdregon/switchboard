@@ -72,9 +72,11 @@ import { createLedger, openLedger } from "../ledger/index.js";
 import { RunLifecycle } from "../lifecycle/index.js";
 import { acquireDataDirLock, type DataDirLock } from "../lock/index.js";
 import {
+  AuthorizationServer,
   type HttpTransportListener,
   OAuthClientStore,
   OAuthTokenStore,
+  PairingCodeStore,
   type SwitchboardMcpServer,
   startHttpTransport,
   startStdioServer,
@@ -527,13 +529,31 @@ async function runDaemon(
     });
     // T13.1 (FR-MCP-12): no listener unless `transport.http.enabled`. T13.3 (FR-MCP-13, Q-73): bearer tokens are
     // verified against the hashed rows in the ledger; a refusal logs its reason code only, never the token.
+    const oauthTokens = new OAuthTokenStore(db, now ? { now } : {});
+    const oauthClients = new OAuthClientStore(db, now ? { now } : {});
     httpListener = await startHttpTransport(config.httpTransport, {
-      tokens: new OAuthTokenStore(db, now ? { now } : {}),
+      tokens: oauthTokens,
       onTokenRejected: (reason) => log.warn("refused an HTTP bearer token", { reason }),
       // T13.7 (FR-MCP-16, Q-74): open registration creates a pending client only; the operator approves it later.
-      clients: new OAuthClientStore(db, now ? { now } : {}),
+      clients: oauthClients,
       onClientRegistered: (clientId) =>
         log.info("registered an OAuth client, pending operator approval", { client_id: clientId }),
+      // T13.8 (Q-75, Q-76): authorization code + PKCE S256 behind the operator consent page; the audit log gets event
+      // names, client ids and reason codes only, never a token, code, passphrase or pairing code.
+      ...(config.httpTransport
+        ? {
+            authorizationServer: new AuthorizationServer(config.httpTransport, {
+              clients: oauthClients,
+              tokens: oauthTokens,
+              pairing: new PairingCodeStore(db, now ? { now } : {}),
+              ...(config.httpTransport.passphraseHash !== undefined
+                ? { passphraseHash: config.httpTransport.passphraseHash }
+                : {}),
+              ...(now ? { now } : {}),
+              onEvent: (event, fields) => log.info("OAuth authorization event", { event, ...fields }),
+            }),
+          }
+        : {}),
     });
     if (httpListener && config.httpTransport) {
       log.info("serving MCP discovery on HTTP", {

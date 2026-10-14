@@ -1216,7 +1216,7 @@ previous provider and model, runs that switched, by reason) are a query over `ro
 ### 3.3 Network MCP transport (M13)
 
 Design gate: [ADR-0041](../adr/0041-http-transport-with-oauth-2-1.md) (Accepted 2026-10-14 under T13.1).
-Requirements FR-MCP-12 to 15. Off unless the config enables it.
+Requirements FR-MCP-12 to 17. Off unless the config enables it.
 
 - **Endpoint.** One Streamable HTTP path (`/mcp`), bound to `127.0.0.1` unless `transport.http.bind` is set explicitly.
   Every request checks the `Origin` header against `transport.http.allowed_origins` before routing; an `Origin` that is
@@ -1237,8 +1237,8 @@ Requirements FR-MCP-12 to 15. Off unless the config enables it.
   ["header"]` and `resource_name`. `GET /.well-known/oauth-authorization-server` (RFC 8414) returns the issuer, the
   `/authorize`, `/token` and `/register` endpoints, `response_types_supported: ["code"]`, `grant_types_supported:
   ["authorization_code", "refresh_token"]`, `code_challenge_methods_supported: ["S256"]` and
-  `token_endpoint_auth_methods_supported: ["none"]`. Until their tasks land, those three endpoints answer 404 and the
-  MCP endpoint answers every request with the challenge below. Code: `src/mcp/http.ts`.
+  `token_endpoint_auth_methods_supported: ["none"]`. Each of those three endpoints answers 404 when `serve` has not
+  configured it (registration: T13.7; authorization and token: T13.8). Code: `src/mcp/http.ts`.
 - **Challenge.** A request without a valid bearer token gets HTTP 401 with `WWW-Authenticate` naming the metadata URL.
   The server never returns a token or any authorization detail.
 - **Verification.** Signature or introspection, `exp`, `iss` equal to the configured issuer, `aud` equal to the resource
@@ -1298,6 +1298,46 @@ CREATE TABLE oauth_client (              -- migration 0011 (T13.7); status chang
   decided_at         TEXT
 ) STRICT;
 CREATE INDEX oauth_client_status ON oauth_client(status, created_at);
+```
+
+- **Authorization, consent and token endpoints as built (T13.8, Q-75, Q-76, Delegated).** `GET /authorize` requires
+  `response_type=code`, a registered `client_id`, a `redirect_uri` equal to a registered one, `code_challenge_method=S256`
+  with a 43-character `code_challenge`, and `resource` equal to the resource identifier; `scope` is absent or `mcp` (the
+  only grantable scope; `privileged` and anything else get `invalid_scope`); `state` is at most 512 characters; no
+  parameter may repeat. An unknown client or unregistered redirect URI gets an HTML error page and no redirect; every
+  other error redirects with the RFC 6749 error code, `state` and `iss` (RFC 9207). A denied or revoked client gets
+  `access_denied`. A valid request shows the consent page: static HTML (escaped client name, client id, redirect URI,
+  scope), with `Content-Security-Policy: default-src 'none'; form-action 'self' <redirect origin>; frame-ancestors
+  'none'; base-uri 'none'`, `X-Frame-Options: DENY`, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`. The
+  consent request (random id, CSRF token hash, PKCE challenge, at most 32 open, the oldest dropped first, 10 minutes) is held in memory; the CSRF
+  token is in the form and in a `__Host-sb_consent` cookie (`Secure; HttpOnly; SameSite=Strict`). `POST /authorize`
+  (form, at most 8 KiB) needs both CSRF copies, an `Origin` absent or equal to the issuer (the one origin the global
+  `Origin` check lets through on this path) and `Sec-Fetch-Site` absent or `same-origin`; a CSRF failure ends the
+  request. "Deny" redirects with `access_denied` and changes no client. "Approve" needs `transport.http.passphrase_hash`
+  to verify the passphrase (scrypt N=2^17, r=8, p=1, 16-byte salt, 32-byte key, `timingSafeEqual`; one check at a
+  time) or a pairing code to redeem; five failures in 15 minutes lock approval for 15 minutes (429, `Retry-After`),
+  during which a right credential is refused and no pairing code is consumed. Success approves a `pending` client and
+  redirects (303) with a single-use code (`sbac_` and 256 bits, kept hashed in memory for 60 seconds). `POST /token`
+  (form; `client_id` required, no client authentication) accepts `authorization_code` (`code`, `redirect_uri`,
+  `code_verifier`; the code is spent by any attempt; `S256(code_verifier)` must equal the challenge; a reused code
+  revokes the client's tokens) and `refresh_token` (only for a client registered with that grant; rotation through
+  `OAuthTokenStore.useRefreshToken`, which revokes the old token in the same transaction, and a reused one revokes all
+  the client's tokens; `scope` may only narrow). `resource`, if sent, must equal the resource identifier; every token is
+  bound to it. Access tokens last 15 minutes, refresh tokens 7 days. Responses carry `Cache-Control: no-store`; errors
+  are `{"error": ...}` only. `serve` logs `OAuth authorization event` with the event name, client id, method and reason
+  code, never a value. Code: `src/mcp/oauth-server.ts`, `src/mcp/oauth-consent-page.ts`, `src/mcp/oauth-passphrase.ts`.
+- **Pairing codes (T13.8, Q-76).** `switchboard consent pair` creates 12 Crockford base32 characters (60 bits, shown
+  `XXXX-XXXX-XXXX`), valid once for 10 minutes; creating one ends every older unused one. Only the SHA-256 of the
+  normalised code is stored; redemption is one `UPDATE ... WHERE used_at IS NULL AND expires_at > now`. Code:
+  `src/mcp/oauth-pairing.ts`, `src/cli/consent.ts`.
+
+```sql
+CREATE TABLE oauth_pairing_code (        -- migration 0012 (T13.8); mutable only in used_at
+  code_hash  TEXT PRIMARY KEY CHECK (length(code_hash) = 64 AND code_hash NOT GLOB '*[^0-9a-f]*'),  -- sha256 hex
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at    TEXT                        -- redeemed or superseded
+) STRICT;
 ```
 
 - **Mapping.** `subject` (and an optional client claim) maps to a configured client entry (`transport.http.clients`).

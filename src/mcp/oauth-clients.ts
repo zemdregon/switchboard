@@ -175,6 +175,20 @@ export class OAuthClientStore {
     })();
   }
 
+  /**
+   * The operator's consent (T13.8): move a `pending` client to `approved`. Returns false for any other status, so a
+   * denied or revoked client is never re-approved by this path.
+   */
+  approve(clientId: string): boolean {
+    return (
+      this.db
+        .prepare(
+          "UPDATE oauth_client SET status = 'approved', decided_at = ? WHERE client_id = ? AND status = 'pending'",
+        )
+        .run(this.now().toISOString(), clientId).changes === 1
+    );
+  }
+
   get(clientId: string): RegisteredClient | undefined {
     const row = this.db
       .prepare(

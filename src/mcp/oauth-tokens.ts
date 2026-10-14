@@ -130,6 +130,27 @@ export class OAuthTokenStore {
   }
 
   /**
+   * Redeem a refresh token for rotation (T13.8, Q-76): verify it and revoke it in one transaction, so it works once.
+   * A refresh token that was already revoked is treated as stolen (OAuth 2.1 §4.3.1): every token of its client is
+   * revoked and `reusedBy` names the client for the audit log.
+   */
+  useRefreshToken(token: string, resource: string): TokenVerification & { reusedBy?: string } {
+    return this.db.transaction((): TokenVerification & { reusedBy?: string } => {
+      const v = this.verify(token, "refresh", resource);
+      if (!v.ok) {
+        if (v.reason !== "revoked") return v;
+        const row = this.db
+          .prepare("SELECT client_id FROM oauth_token WHERE token_hash = ?")
+          .get(sha256(token).toString("hex")) as { client_id: string } | undefined;
+        if (row) this.revokeClient(row.client_id);
+        return row ? { ...v, reusedBy: row.client_id } : v;
+      }
+      if (!this.revokeToken(token)) return { ok: false, reason: "revoked" };
+      return v;
+    })();
+  }
+
+  /**
    * Verify a token of the given kind for the given audience. Fails closed: any doubt (bad shape, no row, a hash that
    * does not compare equal, wrong kind, unparseable or past expiry, revoked, another audience) is a refusal.
    */

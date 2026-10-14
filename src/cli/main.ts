@@ -1,7 +1,8 @@
 /**
  * Operator CLI entry (COMP-OPS, FR-OPS-01, FR-OPS-03). `main` returns the exit code and writes through injected
  * streams so tests call it directly. Exit codes (Proposed): 0 ok, 1 failure, 2 usage error.
- * There is deliberately no `login`/`auth` command (FR-OPS-03, ADR-0003). `serve` (T2.6) is the long-lived daemon: it
+ * There is deliberately no `login`/`auth` command (FR-OPS-03, ADR-0003). `consent` (T13.8) manages only Switchboard's own
+ * consent-page passphrase hash and pairing codes for the HTTP transport, never a provider sign-in. `serve` (T2.6) is the long-lived daemon: it
  * never writes to stdout itself (MCP framing only, TDD §3.3), so it rejects `--json` and reports every error on stderr.
  */
 import { parseArgs } from "node:util";
@@ -10,6 +11,7 @@ import { ApprovalRefusedError } from "../lifecycle/approval.js";
 import { LockError } from "../lock/index.js";
 import { renderValidate, runAdaptersValidate } from "./adapters-validate.js";
 import { renderCapacity, runCapacity } from "./capacity.js";
+import { consentHashPassphrase, consentPair, renderPair, renderPassphraseHash } from "./consent.js";
 import { renderDoctor, runDoctor } from "./doctor.js";
 import { renderGc, runGcCommand } from "./gc.js";
 import { renderGitPush, runGitPush } from "./git-push.js";
@@ -83,6 +85,10 @@ Commands:
   inner resume <task> Re-enable a task that the quality monitor suspended
   approve <run_id>    Approve the privileged run that requested an approval (review it with runs show first)
   deny <run_id>       Deny the privileged run that requested an approval; the run ends CANCELLED
+  consent hash-passphrase
+                      Read the HTTP consent-page passphrase from stdin and print its hash for
+                      transport.http.passphrase_hash (Switchboard's own; touches no provider sign-in)
+  consent pair        Print a one-time pairing code for the HTTP consent page (valid once, for 10 minutes)
 
 Options:
   --json              Machine-readable output (not for serve)
@@ -296,6 +302,23 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         const report = decideRun(io, loaderArgv, sub, cmd === "approve" ? "APPROVED" : "DENIED");
         emit(report, renderDecision(report));
         return 0;
+      }
+      case "consent": {
+        // T13.8 (ADR-0041 item 3, Q-75, Q-76): Switchboard's own consent-page secrets, never a provider sign-in.
+        if (rest.length > 0) throw new UsageError(`consent ${sub ?? ""} takes no arguments`);
+        if (sub === "hash-passphrase") {
+          const report = await consentHashPassphrase(io);
+          emit(report, renderPassphraseHash(report));
+          return 0;
+        }
+        if (sub === "pair") {
+          const report = consentPair(io, loaderArgv);
+          emit(report, renderPair(report));
+          return 0;
+        }
+        throw new UsageError(
+          `unknown consent subcommand ${JSON.stringify(sub ?? "")}; expected hash-passphrase or pair`,
+        );
       }
       default:
         throw new UsageError(`unknown command ${JSON.stringify(cmd)}`);

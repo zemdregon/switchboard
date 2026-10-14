@@ -39,10 +39,17 @@ on launch binding only ([ADR-0040](0040-mcp-caller-authentication-no-oauth-on-st
 3. **Client registration and consent.** Dynamic Client Registration (RFC 7591) is supported. The operator approves each
    new client on a local consent page. Sign-in uses a locally set operator passphrase (argon2id hash in config). A
    one-time pairing code from `switchboard auth pair` is the fallback. Manual registration remains possible.
+   *As built (T13.8, Q-75 and Q-76, Delegated 2026-10-14):* the passphrase hash is the built-in scrypt (N=2^17, r=8,
+   p=1, 16-byte salt, 32-byte key), not argon2id, because Node's `crypto.argon2` is missing from Node 22, which the
+   `engines` range and CI include, and no new dependency is added. The pairing command is `switchboard consent pair`,
+   because FR-OPS-03 keeps `auth` and `login` out of the CLI. Details: [LLD
+   §3.3](../design/LLD.md#33-network-mcp-transport-m13).
 4. **Token issuance.** Authorization code with mandatory PKCE S256 only. Resource indicators (RFC 8707) bind tokens to
    this server's audience. Access tokens are short-lived; refresh tokens rotate. Tokens are stored hashed in the ledger
    and are revocable with `switchboard auth revoke`. Every issue, refresh and revocation is audit-logged with no token
    values.
+   *As built (T13.8, Q-76):* access tokens last 15 minutes and refresh tokens 7 days (Assumptions); a reused refresh
+   token or authorization code revokes every token of its client. The operator revocation command is not built yet.
 5. **Token checks.** On each MCP request the server verifies signature or introspection, expiry, issuer, and that the
    audience equals its own resource identifier. A token for any other resource is rejected. The server never forwards
    the inbound token to any upstream provider; provider credentials are untouched (ADR-0003).
