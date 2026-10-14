@@ -813,3 +813,25 @@ describe("capacity (T6.2; LLD §16.1, ADR-0043)", () => {
     expect(() => load([])).toThrow(/\$\.capacity/);
   });
 });
+
+describe("routing (T7.1; LLD §17.1, ADR-0044)", () => {
+  const load = (section: unknown) => loadConfig({ configPath: write({ ...base(), routing: section }) });
+  const ONES = { success: 1, latency: 1, capacity: 1, security: 1, handoff: 1, cost: 1 };
+
+  it("defaults every weight to 1 (Assumption, Q-80) and takes each key", () => {
+    expect(loadConfig({ configPath: write(base()) }).routing).toEqual({ weights: ONES });
+    expect(load({}).routing).toEqual({ weights: ONES });
+    expect(load({ weights: { cost: 0, success: 100, latency: 2.5 } }).routing).toEqual({
+      weights: { ...ONES, cost: 0, success: 100, latency: 2.5 },
+    });
+  });
+
+  it("refuses unknown keys, out-of-range and non-numeric weights (NFR-SEC-06)", () => {
+    expect(() => load({ weights: { quality: 1 } })).toThrow(/\$\.routing\.weights/);
+    expect(() => load({ minimum_capability_defaults: {} })).toThrow(/\$\.routing/);
+    expect(() => load({ weights: { cost: -1 } })).toThrow(/\$\.routing\.weights\.cost/);
+    expect(() => load({ weights: { cost: 101 } })).toThrow(/\$\.routing\.weights\.cost/);
+    expect(() => load({ weights: { cost: "1" } })).toThrow(/\$\.routing\.weights\.cost/);
+    expect(() => load([])).toThrow(/\$\.routing/);
+  });
+});

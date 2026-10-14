@@ -13,6 +13,7 @@ import { ConfigError } from "./errors.js";
 import { checkHttpTransport, type HttpTransportSettings, resolveHttpTransport } from "./http-transport.js";
 import { checkInnerAgent, type InnerAgentSettings, resolveInnerAgent } from "./inner-agent.js";
 import { checkProjects, type ResolvedProject, resolveProjects } from "./projects.js";
+import { type RoutingSettings, resolveRouting } from "./routing.js";
 import {
   currentConfigSchema,
   DEFAULT_CONTINUITY_MAX_BUNDLE_BYTES,
@@ -79,6 +80,8 @@ export interface ResolvedConfig {
   continuity: { max_bundle_bytes: number; max_diff_excerpt_bytes: number; max_text_chars: number };
   /** Capacity and resilience settings (M6, T6.2; LLD §16.1), always set, defaulted per key. */
   capacity: CapacitySettings;
+  /** Routing settings (M7, T7.1; LLD §17.1), always set, defaulted per key. */
+  routing: RoutingSettings;
   /**
    * Validated `transport.http` (T13.1; FR-MCP-12, ADR-0041). Absent unless the section sets `enabled: true`; absent
    * means `serve` opens no listener.
@@ -384,6 +387,7 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
       max_text_chars: cfg.continuity?.max_text_chars ?? DEFAULT_CONTINUITY_MAX_TEXT_CHARS,
     },
     capacity: resolveCapacity(cfg.capacity),
+    routing: resolveRouting(cfg.routing),
     claudeCodeGitChannel: cfg.providers?.["claude-code"]?.git_channel === true,
     profileOverrides,
     // Proposed: a provider not listed is enabled with no explicit weight; listing it can disable it.
