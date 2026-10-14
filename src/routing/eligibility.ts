@@ -46,7 +46,12 @@ export type EligibilityReasonCode =
    * T3.7 (Proposed): the requested profile depends on a sandbox whose behaviour on this host platform is unverified
    * (see {@link profilePlatformSupported}). Per-profile, like the compile reasons; maps to ELIGIBILITY_NONE (BR-3).
    */
-  | "PROFILE_PLATFORM_UNVERIFIED";
+  | "PROFILE_PLATFORM_UNVERIFIED"
+  /**
+   * T6.4 (FR-CAP-04, LLD §16.4): the provider's circuit breaker is open until its cool-down ends. Maps to
+   * ELIGIBILITY_NONE (FRD BR-3 "circuit-open").
+   */
+  | "CIRCUIT_OPEN";
 
 export interface EligibilityReason {
   code: EligibilityReasonCode;
@@ -140,6 +145,8 @@ export interface ProviderFacts {
   auth?: AuthResult;
   /** Result of `adapter.compile` for the request's profile and requirements; undefined when not evaluated. */
   compile?: { ok: true } | Ineligible;
+  /** T6.4: set while the provider's breaker is open (the cool-down end); undefined when closed or not checked. */
+  circuitOpenUntil?: string;
 }
 
 export interface CapabilityRequirements {
@@ -202,6 +209,13 @@ function checkProvider(f: ProviderFacts, input: EligibilityInput): EligibilityRe
   });
   if (!f.registered) return [r("ADAPTER_NOT_REGISTERED", `no adapter registered for ${f.provider}`)];
   if (!f.enabled) return [r("PROVIDER_DISABLED", `${f.provider} is disabled in config`)];
+  if (f.circuitOpenUntil !== undefined) {
+    return [
+      r("CIRCUIT_OPEN", `${f.provider} circuit breaker is open until ${f.circuitOpenUntil}`, {
+        until: f.circuitOpenUntil,
+      }),
+    ];
+  }
   if (f.supportedPlatforms !== undefined && !f.supportedPlatforms.includes(input.platform)) {
     return [
       r("PLATFORM_UNSUPPORTED", `${f.provider} does not support platform ${input.platform}`, {
