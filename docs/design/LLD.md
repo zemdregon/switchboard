@@ -664,10 +664,10 @@ finalize-only mode (T9.7, BR-30), the controller makes the commit at FINALIZING 
 provenance as the commit tool. zemdregon wants the opt-in enabled for his own projects. Claude Code's `commitChannel` may
 become `injected` behind an operator opt-in once T9.4b and its live checks pass ([ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md)).
 
-### 2.0 Antigravity adapter implementation evidence (M4 T4.32, T4.33)
+### 2.0 Antigravity adapter implementation evidence (M4 T4.32, T4.33, T4.37)
 
 Compile matrix, transport and declared flags: [TDD §4.4](TDD.md#44-antigravity-agy-m4). Task status and remaining
-gaps: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.32`, `T4.33`). On `origin/main` as of
+gaps: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.32`, `T4.33`, `T4.37`). On `origin/main` as of
 [#208](https://github.com/zemdregon/switchboard/pull/208) (2026-10-14, Delegated, not owner-approved; synthetic
 fixtures only; no `agy` in CI).
 
@@ -699,6 +699,29 @@ until a capture shows them on the stdout stream the supervisor parses.
 
 - **Tests:** `src/adapters/antigravity/antigravity.test.ts` (`antigravity parser and result (T4.33)`,
   `antigravity parser hardening (T4.33, synthetic shapes)`).
+
+**As built (T4.37).** Git declarations and Done-when for FR-GIT-01, FR-GIT-02 and FR-GIT-09
+([TDD §4.4](TDD.md#44-antigravity-agy-m4) "Git writes and injected tools",
+[ADR-0039](../adr/0039-switchboard-side-tool-call-guard.md), owner decision 36). Lands in
+[#224](https://github.com/zemdregon/switchboard/pull/224) on `sb/2026-10-14-t437-antigravity-git` (2026-10-14, Delegated;
+synthetic and replay fixtures only; no `agy` in CI).
+
+- **Static declarations (FR-GIT-01, FR-GIT-02).** `ANTIGRAVITY_GIT_WRITE_CONTROL` and `ANTIGRAVITY_GIT_CAPABILITIES` on
+  `AntigravityAdapter`; `GIT_WRITE_CONTROL_DETAIL` in `protocol.ts`. `kind` `none-documented`, `remainingControls`
+  `["FR-GIT-03", "FR-GIT-06"]`; `commitChannel` `finalize-only` with detail that MCP servers come only from global and
+  workspace `mcp_config.json` and need a settings allow rule, so no tool channel is injected (FR-GIT-09).
+- **Compile guard (FR-GIT-01).** Check 0 in `#build`: `gitWriteRisks` over `profile.shellAllowlist` rejects entries that
+  could write Git as `PROFILE_UNSUPPORTED` citing FR-GIT-01 on every profile, including an approved bypass scope. Read-only
+  `git status` / `git diff` allowlist entries do not trigger that refusal (non-`privileged` profiles stay ineligible for
+  other reasons).
+- **Argv and env (FR-GIT-02).** The compiled shape keeps the objective in one `--prompt=` word; no `git` or `gh` in argv
+  or `policyFlags`; `envAllowlist` is `PATH` and `HOME` only; child `env` carries no Git or provider credential keys.
+- **MCP surface.** `list_capabilities` reports `git_write_control` matching the adapter constants.
+- **Finalize-only (FR-GIT-09).** A replayed successful edit (`success_edit` fixture) in a project whose primary context
+  has `finalize_commit: true` receives one controller commit at FINALIZING (T9.7; same path as other finalize-only
+  adapters).
+- **Tests:** `src/adapters/antigravity/antigravity.test.ts` (`antigravity Git declaration (T4.37, FR-GIT-01, FR-GIT-02,
+  FR-GIT-09)`): declarations, `list_capabilities`, argv and allowlist guards, finalize-only lifecycle leg.
 
 **Not covered by this evidence (their own tasks):** auth preflight beyond the `UNKNOWN` placeholder (T4.34), conformance
 suite (T4.35), malicious-fixture leg (T4.36), operator live smoke and `adapters validate` (T4.38).
