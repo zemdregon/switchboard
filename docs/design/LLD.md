@@ -4254,6 +4254,13 @@ the top two scores when scored, each excluded provider's primary code); it never
 bounded to 300 characters, as in eligibility errors. A run with no decision (none exists on `main`) returns every field
 `null` and `deciding_factors: ["no route decision recorded"]`.
 
+*As built (T7.3, 2026-10-14, Delegated):* `src/routing/explain.ts` and the `explain_route` handler in
+`src/mcp/server.ts`. `selection` also carries `rule` (T7.2; `null` on an M2 row); reason details and the basis pass
+through the MCP scrubber (secrets, paths outside the allowed roots); `features` is `null` on an M2 row, whose request
+facts stay in the ledger; `deciding_factors` lists the rule, the affinity outcome when recorded, the top two scores when
+the rule is `score` or `configured_order`, and each excluded provider's first code. A run admitted without a decision
+(possible only through the lifecycle API, never through the MCP tools) is explained as none recorded.
+
 ### 17.6 Affinity details (fills §3.2)
 
 - **Project key** as in §16.8: the project id, else `ws:` and the SHA-256 of the canonical workspace path.

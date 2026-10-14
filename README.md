@@ -52,8 +52,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks).
 
 What works today: `doctor`, `runs list|show|cancel`, `approve`, `deny`, `gc`, `capacity`,
-`projects list|show|validate|approve`, `git push`, `inner status|test|resume`, and `serve` exposing eight MCP tools over
-stdio (eleven for a client with `manage_projects`). The five trust
+`projects list|show|validate|approve`, `git push`, `inner status|test|resume`, and `serve` exposing nine MCP tools over
+stdio (twelve for a client with `manage_projects`). The five trust
 profile names exist; which of them a provider can run is listed in [Trust profiles](#trust-profiles) and by
 `list_capabilities`. Read
 [Known limitations](#known-limitations) before relying on it.
@@ -214,6 +214,7 @@ Only one `serve` can hold a data directory at a time.
 | `get_artifacts` | Lists a run's artifacts (diff, changed files, test report, ...) with hashes; small ones inline. |
 | `list_capabilities` | Lists providers with adapter status, version, validated range, auth state and supported trust profiles. |
 | `get_capacity` | Per-provider capacity: controller estimates (`capacity_score`, `confidence`, `throttle_risk`) with their sources, free slots, the circuit breaker, and `reset_at` or `explicit_remaining` only when the provider itself reported them; reported cache token counts where a source names the keys; per-project counts of runs that kept or switched provider and model. Read-only; it never calls a provider. |
+| `explain_route` | Why a run went to its provider, from Switchboard's stored route decision: candidates with eligibility reasons, the recorded task features, weights and per-candidate scores, the selection rule and short deciding factors. Price, model quality and sandbox strength are not sourced, so those terms are equal for every provider. Read-only; no model is asked. |
 | `list_projects` | Lists the configured projects this client may use (id, name, environment kind, contexts, trust ceiling, allowed providers), plus its own dynamic projects marked `source: "dynamic"` with their revision and status. Read-only; returns no filesystem paths. |
 | `create_project`, `update_project`, `delete_project` | Only for a client with `manage_projects`. Create, revise or delete a dynamic project this client owns. See [Dynamic projects](#dynamic-projects). |
 
