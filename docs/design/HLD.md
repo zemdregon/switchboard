@@ -161,8 +161,17 @@ the [LLD](LLD.md).
 
 Configuration shape, store schema, scanner and chunking rules, the embedding port and locality gates are in [TDD
 §3.13](TDD.md#313-retrieval-index) and [LLD §14](LLD.md#14-retrieval-index). Requirement-to-component traceability is in
-[SDD §4.1](SDD.md#41-comp-rag-implementation-evidence-m12-t121t123). The pointers below are HLD-level evidence only;
-WF-14 admission, operator `index` commands and MCP search remain future tasks (T12.4–T12.7).
+[SDD §4.1](SDD.md#41-comp-rag-implementation-evidence-m12-t121t123). The pointers below are HLD-level evidence only.
+
+**T12.5 (WF-14 admission context pack).** Placement, freshness, pack labelling, ledger fields and the import boundary are
+**design on `main`**: [LLD §14.11](LLD.md#1411-admission-context-pack-t125),
+[TDD §3.13.8](TDD.md#3138-t125-admission-time-context-pack-2026-10-14) and
+[SDD §4.1 (T12.5)](SDD.md#41-comp-rag-implementation-evidence-m12-t121t123). The sequence is in
+[§6.6](#66-retrieval-for-a-run-wf-14-m12-proposed).
+Runtime WF-14 wiring and the admission tests named there are **not on `main`** until [PR #182](https://github.com/zemdregon/switchboard/pull/182)
+(T12.5 code, stacked on [PR #170](https://github.com/zemdregon/switchboard/pull/170) for T12.4) lands. Operator `index`
+commands and `doctor` retrieval reporting (T12.4), MCP `search_project_context` (T12.6) and the deployment-wide index
+(T12.7) remain future runtime tasks; their contracts are already cited from LLD §14 where applicable.
 
 #### T12.1 — configuration and per-project store
 
@@ -189,6 +198,19 @@ store and sharing rules are T12.7), FR-RAG-11 (caps in configuration only; backg
 - **Tests:** `src/retrieval/http-embedder.test.ts`, `src/retrieval/embedding.test.ts`
 - **Modules:** `src/retrieval/embedding.ts`, `src/retrieval/http-embedder.ts`, `src/retrieval/fake-embedder.ts`;
   `createPinnedHttpTransport` in `src/inner/http-backend.ts`
+
+#### T12.5 — admission context pack (WF-14; design on `main`, runtime pending)
+
+**Design evidence (on `main`).** FR-RAG-05, FR-RAG-07 and FR-RAG-08 at `delegate_task` admission: original request text
+stored unchanged; stale or deleted-source snippets dropped; any retrieval failure yields no pack and never fails the run;
+retrieved text has no policy authority (BR-46).
+
+- **Specification:** [LLD §14.11](LLD.md#1411-admission-context-pack-t125), [TDD §3.13.8](TDD.md#3138-t125-admission-time-context-pack-2026-10-14),
+  [SDD §4.1 (T12.5)](SDD.md#41-comp-rag-implementation-evidence-m12-t121t123); depends on T12.4 background build and
+  `rag_record` shapes in LLD §14.5 and §14.10.
+- **Runtime evidence (planned).** Admission wiring in COMP-MCP / lifecycle, `src/retrieval/import-boundary.test.ts` and
+  fake-embedder admission integration tests per TDD §3.13.8 — target [PR #182](https://github.com/zemdregon/switchboard/pull/182)
+  after T12.4 [PR #170](https://github.com/zemdregon/switchboard/pull/170).
 
 ## 3. Trust boundaries
 
@@ -477,7 +499,11 @@ sequenceDiagram
 and only when the contributing project allows it and the reading project asks for it (FR-RAG-09, FR-RAG-10, BR-46,
 BR-47).
 
-Contracts: [LLD §14](LLD.md#14-retrieval-index).
+Contracts: [LLD §14](LLD.md#14-retrieval-index). Admission detail is in
+[LLD §14.11](LLD.md#1411-admission-context-pack-t125) and
+[TDD §3.13.8](TDD.md#3138-t125-admission-time-context-pack-2026-10-14) (design on `main`). End-to-end WF-14 behaviour and
+the tests listed there are runtime-pending [PR #182](https://github.com/zemdregon/switchboard/pull/182) (stacked on T12.4
+[PR #170](https://github.com/zemdregon/switchboard/pull/170)).
 
 ## 7. Threat scenarios
 
