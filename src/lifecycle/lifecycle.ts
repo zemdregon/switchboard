@@ -501,7 +501,47 @@ export interface RunLifecycleOptions {
    * the capacity window, provider configuration). Unset means the LLD defaults.
    */
   readonly routing?: RouteScoringSettings;
+  /**
+   * T12.5 (FR-RAG-05, FR-RAG-08, LLD §14.6): the retrieval context pack. When set, a fresh (not resumed, not handoff)
+   * run admitted under a project asks it for a pack after its workspace is prepared and before compile; the text is
+   * appended to the prompt compiled for the adapter, never to the stored request. Unset: no run gets a pack.
+   */
+  readonly contextPack?: ContextPackPort;
 }
+
+/**
+ * T12.5: the retrieval context pack as the lifecycle sees it. Typed here, structurally, so this module never imports
+ * the retrieval service (FR-RAG-07; `src/retrieval/import-boundary.test.ts`); `serve` wires it.
+ */
+export interface ContextPackPort {
+  /** `retrieval.admission_timeout_ms`; the lifecycle stops waiting {@link CONTEXT_PACK_GRACE_MS} after it. */
+  readonly timeoutMs: number;
+  /** `undefined` when retrieval is inert; otherwise the pack text (or null) and the bounded `rag_retrieval` payload. */
+  prepare(request: ContextPackRequest): Promise<ContextPackOutcome | undefined>;
+}
+
+export interface ContextPackRequest {
+  readonly runId: string;
+  readonly projectId: string;
+  /** The stored request text. */
+  readonly objective: string;
+  /** The worktree's base commit, or null for a run without a worktree. */
+  readonly baseCommit: string | null;
+  /** The run's worktree, where the primary context's files are read for the freshness check. */
+  readonly primaryRoot?: string;
+  readonly signal: AbortSignal;
+}
+
+export interface ContextPackOutcome {
+  readonly text: string | null;
+  /** Counts, codes, ids and durations only (FR-RAG-12, LLD §14.10); never retrieved text or the query. */
+  readonly event: Readonly<Record<string, unknown>>;
+}
+
+/** `run_event` type of the retrieval at dispatch (LLD §14.10). Never a failure code; never changes run state. */
+export const RAG_RETRIEVAL_EVENT = "rag_retrieval";
+/** How long past `timeoutMs` the lifecycle waits for a pack before dispatching without one (Assumption, Delegated). */
+export const CONTEXT_PACK_GRACE_MS = 100;
 
 /** `run_event` type: a channel-capable run was not offered the commit tool, with a reason code (T9.4). */
 export const GIT_CHANNEL_NOT_OFFERED_EVENT = "git_channel_not_offered";
@@ -1286,11 +1326,23 @@ export class RunLifecycle {
     }
 
     const cwd = ws.mode === "worktree" ? ws.worktreePath : ws.path;
+    // T12.5 (FR-RAG-05, FR-RAG-08, LLD §14.6): a fresh project run may get a context pack, appended to the compiled
+    // prompt only; `request_json` keeps the request text unchanged. Any retrieval failure means no pack, never a failure.
+    let pack: string | null = null;
+    if (
+      this.opts.contextPack !== undefined &&
+      handoffPrompt === undefined &&
+      req.resume_native_session_id === undefined &&
+      req.project_id !== undefined
+    ) {
+      pack = await this.contextPack(this.opts.contextPack, runId, req.project_id, req.objective, ws);
+      if (exec.cancelRequested) return this.cancelEarly(runId);
+    }
     const compileReq = {
       runId,
       // T5.5: a handoff run compiles the rendered bundle with the instruction last, and no separate constraints (the
       // bundle carries them); `handoff` is for the record only (no adapter reads it). Other runs are unchanged.
-      objective: handoffPrompt ? handoffPrompt.prompt : req.objective,
+      objective: handoffPrompt ? handoffPrompt.prompt : pack !== null ? `${req.objective}\n\n${pack}` : req.objective,
       constraints: handoffPrompt ? [] : req.constraints,
       workspace: { cwd, writable: ws.mode === "worktree" },
       ...(handoffPrompt ? { handoff: handoffPrompt.ref } : {}),
@@ -1946,6 +1998,59 @@ export class RunLifecycle {
       });
     }
     return ids;
+  }
+
+  /**
+   * T12.5 (FR-RAG-08, LLD §14.8): ask the port for a pack, waiting at most its timeout plus
+   * {@link CONTEXT_PACK_GRACE_MS}. A rejection, a late answer or a failed event write gives no pack; the run goes on
+   * unchanged. Writes one `rag_retrieval` event whenever retrieval was attempted.
+   */
+  private async contextPack(
+    port: ContextPackPort,
+    runId: string,
+    projectId: string,
+    objective: string,
+    ws: PreparedWorkspace,
+  ): Promise<string | null> {
+    const ctrl = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<"late">((resolve) => {
+      timer = setTimeout(() => resolve("late"), Math.max(0, port.timeoutMs) + CONTEXT_PACK_GRACE_MS);
+    });
+    const asked = Promise.resolve().then(() =>
+      port.prepare({
+        runId,
+        projectId,
+        objective,
+        baseCommit: ws.mode === "worktree" ? ws.baseCommit : null,
+        ...(ws.mode === "worktree" ? { primaryRoot: ws.worktreePath } : {}),
+        signal: ctrl.signal,
+      }),
+    );
+    asked.catch(() => {}); // a late rejection must not become an unhandled one
+    let text: string | null = null;
+    let payload: Readonly<Record<string, unknown>>;
+    try {
+      const r = await Promise.race([asked, late]);
+      if (r === undefined) return null;
+      if (r === "late") {
+        ctrl.abort();
+        payload = { outcome: "unavailable", reason: "TIMEOUT" };
+      } else {
+        text = typeof r.text === "string" && r.text.length > 0 ? r.text : null;
+        payload = r.event;
+      }
+    } catch {
+      payload = { outcome: "unavailable", reason: "RETRIEVAL_ERROR" };
+    } finally {
+      clearTimeout(timer);
+    }
+    try {
+      this.ledger.appendRunEvent({ runId, type: RAG_RETRIEVAL_EVENT, payload: { ...payload } });
+    } catch {
+      return null;
+    }
+    return text;
   }
 
   /**
