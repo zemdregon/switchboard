@@ -67,9 +67,11 @@ Pre-release. The package is private and is not published to any registry; you bu
   [ROADMAP §6.10](docs/ROADMAP.md#610-m13-network-mcp-transport-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
   client and a macOS CI leg are done; Grok Build, Antigravity, Cursor and OpenCode each have a module, compile matrix
-  and parser work on synthetic fixtures, but conformance and malicious-fixture suites, Git declarations and live
-  captures remain. Manifests still admit no version until `switchboard adapters validate` passes a real CLI (operator
-  tasks). Outside an approved `privileged` bypass scope every profile is ineligible for the new providers. See
+  and parser work on synthetic fixtures. Cursor has conformance and malicious-fixture legs and a Git declaration on
+  recorded fixtures (README [Cursor CLI](#cursor-cli-milestone-4), ROADMAP T4.45 to T4.47); live smoke, live malicious
+  leg and `adapters validate` for Cursor remain operator work (T4.48). Other M4 providers are still catching up on those
+  legs. Manifests still admit no version until `switchboard adapters validate` passes a real CLI (operator tasks).
+  Outside an approved `privileged` bypass scope every profile is ineligible for the new providers. See
   [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks).
 
 What works today: `doctor`, `runs list|show|cancel`, `approve`, `deny`, `gc`, `capacity`, `affinity list|reset`,
@@ -122,6 +124,7 @@ each provider's own CLI, and Switchboard asks that CLI whether it is logged in.
 | --- | --- | --- |
 | Claude Code | `claude auth login` (the adapter returns `AUTH_REQUIRED` naming it) | Taken from the adapter; check Anthropic's documentation |
 | Codex | `codex login`; status is read with `codex login status` (exit code 0 logged in, 1 not) | `codex login status` observed on codex-cli 0.162.1 (`docs/research/live-checks-2026-10-13.md`); output format undocumented, so only the exit code is used; check OpenAI's documentation for the login step |
+| Cursor CLI | `cursor-agent login` (the adapter returns `AUTH_REQUIRED` naming it) | Auth preflight runs `cursor-agent status --format json` and keys on `isAuthenticated` (exit 0 both logged in and logged out on the 2026-10-14 live check; [`docs/research/live-checks-2026-10-14-cursor.md`](docs/research/live-checks-2026-10-14-cursor.md)); check Cursor's documentation for the login step |
 
 Do not copy credential files between machines or users. Do not put API keys or tokens in the Switchboard config; it has
 no place for them and rejects unknown keys.
@@ -168,7 +171,9 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `profiles.<name>` | no | Overrides for `inspect-untrusted`, `edit-untrusted`, `test-sandboxed` or `trusted-development`: `file_access`, `shell`, `shell_allowlist`, `network`, `network_allowlist`, `repo_config`. They may tighten or loosen a default; `doctor` lists them and every run records them. `privileged` has none. See the `edit-untrusted` limit under [Trust profiles](#trust-profiles). |
 
 `<id>` is one of `claude-code`, `codex`, `grok-build`, `antigravity`, `cursor`, `opencode`, `kimi-code`. Only
-`claude-code` and `codex` have adapters in this stage. `<id>` is the *config* id. The *provider* id used in
+`claude-code` and `codex` pass the version gate on `main` today; the other ids name registered M4 adapters whose
+manifests admit no version until `switchboard adapters validate` passes a live CLI (ROADMAP §6.8.2). `<id>` is the
+*config* id. The *provider* id used in
 `routing.provider_preference` of `delegate_task` is the adapter id: `claude`
 for Claude Code (config id `claude-code`), `codex` for Codex. `max_trust_profile` accepts any of the five profile
 names, but see [Trust profiles](#trust-profiles).
@@ -410,8 +415,9 @@ the model its last run reported, since when and why it last switched. `affinity 
 routing step for that project choose again among the eligible providers, recorded as `user_request`; the first run
 that then succeeds consumes the reset. Resetting a project with no affinity exits 1 and writes nothing.
 
-`adapters validate <provider>` (`claude`, `codex`, or the config id such as `claude-code`) accepts the version of a
-provider CLI that is installed now. It runs the adapter's probe, its auth preflight and a conformance subset that ends
+`adapters validate <provider>` (`claude`, `codex`, `cursor`, or the config id such as `claude-code`) accepts the
+version of a provider CLI that is installed now. It runs the adapter's probe, its auth preflight and a conformance
+subset that ends
 with a structured-output smoke test, and **that smoke step makes one real provider call** (a trivial read-only prompt in
 a throwaway repository; it may use your subscription quota). It never logs in: if the CLI is not logged in (`AUTH_REQUIRED`)
 or its login state cannot be determined (`UNKNOWN`) it fails, and you log in natively and run it again. It passes no
@@ -515,6 +521,57 @@ the `commit` tool). The PR-draft, verification-summary and run-title tasks exist
 and nothing calls them yet; the handoff-condensation and routing tasks need milestones 11 and 7 (the handoff bundle of
 milestone 5 is built without it). No hosted or live backend has been
 exercised: every test uses a scripted fake or a local fake server.
+
+## Cursor CLI (milestone 4)
+
+Config id `cursor`; routing and `list_capabilities` id `cursor`. Switchboard runs the **`cursor-agent`** binary with
+`--print --output-format stream-json` and the prompt on stdin ([TDD §4.5.2](docs/design/TDD.md#452-transport-decision);
+observed on 2026-10-14 in [`docs/research/live-checks-2026-10-14-cursor.md`](docs/research/live-checks-2026-10-14-cursor.md)).
+Do not invoke bare `agent` on `PATH`: on some hosts that name is Grok Build's CLI, not Cursor's (same live check).
+
+The compliance manifest range admits no version until an operator runs `switchboard adapters validate cursor` and
+commits the manifest diff (ROADMAP T4.48). Until then `doctor` reports `ADAPTER_VERSION_UNVERIFIED` for Cursor.
+
+### Login
+
+See the [login table](#log-in-to-the-providers-natively) above. Switchboard never runs `cursor-agent login`; it only
+runs `cursor-agent status --format json` during preflight.
+
+### Trust profiles
+
+The adapter compiles only what [TDD §4.5.1](docs/design/TDD.md#451-cursor-native-controls-per-profile-and-platform-t440)
+records for the 2026-10-14 live check (Q-65, Q-79): every profile other than an approved `privileged` bypass scope is
+refused (`PROFILE_UNSUPPORTED`), because edits apply without `--force`, `--sandbox enabled` did not start on the
+operator's Ampere host, headless runs need `--trust` (which loads repository rules and the operator's global MCP
+servers), and no per-run permission flag is documented.
+
+| Profile | Available now | Effect in this version |
+| --- | --- | --- |
+| `inspect-untrusted` | no | `PROFILE_UNSUPPORTED` (`list_capabilities` / `ELIGIBILITY_NONE`) |
+| `edit-untrusted` | no | As `inspect-untrusted` |
+| `test-sandboxed` | no | As `inspect-untrusted` |
+| `trusted-development` | no | As `inspect-untrusted` |
+| `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one argv shape: `cursor-agent --print --output-format stream-json --trust --force` with the prompt on stdin, worktree file access, shell `broad`, network `on` and repository configuration `enabled`, and **no** `--sandbox` flag (owner decision 46). A scope without `bypass`, or any narrowing Switchboard can express, is refused before spawn. Bypass-class flags such as `--approve-mcps` and `--yolo` are never compiled outside that case. |
+
+Resume continues the native session with `--resume <session_id>` through the same matrix when the provider is eligible
+(synthetic fixtures in `src/adapters/cursor/cursor.test.ts`, T4.43).
+
+### Git and commits
+
+`list_capabilities` reports `gitWriteControl` **`none-documented`**: Cursor documents permission rules in configuration
+files, not per-run argv, and Switchboard does not write a per-run `CURSOR_CONFIG_DIR` file. Git-write denial therefore
+relies on FR-GIT-03 (controller ref comparison) and FR-GIT-06 (the tool-call guard) in addition to any provider rule.
+Shell allowlist entries that could write Git make the run `Ineligible` (`PROFILE_UNSUPPORTED`, FR-GIT-01).
+
+`commitChannel` is **`finalize-only`**: Switchboard does not inject a `commit` tool or pass `--approve-mcps`, so
+repository `.mcp.json` servers stay unapproved (observed on the 2026-10-14 live check). To publish work, set
+`finalize_commit` on the project's primary context as for Codex ([How commits reach Git](#how-commits-reach-git)).
+
+Fixture evidence: `src/adapters/cursor/cursor.test.ts` ("cursor Git declaration (T4.47, FR-GIT-01, FR-GIT-02,
+FR-GIT-09)"), the conformance suite ("cursor conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.45)") and
+the malicious-fixture leg ("cursor malicious-fixture leg (T4.46, NFR-SEC-03, FR-POL-04, FR-POL-06)"); CI also runs
+`test/malicious/adapter-leg.test.ts` ("adapter malicious leg: cursor"). No end-to-end run through Switchboard against a
+logged-in `cursor-agent` has been recorded yet (T4.48).
 
 ## Trust profiles
 
@@ -622,8 +679,9 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
 - Only Claude Code and Codex; profiles beyond `inspect-untrusted` and `edit-untrusted` only where the adapter can
   compile them (see `list_capabilities`); a `privileged` `continue_task` only on the same provider (ROADMAP
   Q-61 is open).
-- `adapters validate` exists for Claude Code and Codex only; the M4 providers still need operator captures before their
-  manifests admit a version.
+- `adapters validate` is implemented for every registered provider, but only Claude Code and Codex have a manifest range
+  on `main` today. Cursor and the other M4 adapters still need operator captures before their manifests admit a version
+  (ROADMAP T4.48 and §6.8.2).
 - Routing (milestone 7) refuses `minimum_capability` with `ELIGIBILITY_NONE`, because the model a run uses is not yet
   chosen by Switchboard (ROADMAP Q-90, T7.8, T7.12). Affinity keeps the provider but not the model: a held run uses the
   adapter's default model. No cache benefit from keeping a project on one provider is claimed.
