@@ -9,7 +9,17 @@ import { auditInvocation, bypassClassFlags } from "../audit.js";
 import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
 import { providerEntry } from "../providers.js";
 import { AdapterRegistry } from "../registry.js";
-import type { CompileRequest, Invocation, ProbeOutput, ProbeRunner, ResolvedProfile, TrustProfile } from "../types.js";
+import type {
+  CompileRequest,
+  ExitInfo,
+  Invocation,
+  NormalizedEvent,
+  ParseState,
+  ProbeOutput,
+  ProbeRunner,
+  ResolvedProfile,
+  TrustProfile,
+} from "../types.js";
 import { OpenCodeAdapter } from "./adapter.js";
 
 const EXE = "/opt/synthetic/opencode";
@@ -153,7 +163,7 @@ describe("opencode bypass-class declaration (ADR-0035)", () => {
   });
 });
 
-describe("opencode probe, auth, parser and resume placeholders (fail closed until T4.53, T4.54)", () => {
+describe("opencode probe and auth placeholder (fail closed until T4.54)", () => {
   const runner =
     (table: Record<string, { stdout: string; exitCode: number }>): ProbeRunner =>
     async (argv) => {
@@ -197,21 +207,8 @@ describe("opencode probe, auth, parser and resume placeholders (fail closed unti
     expect(missing.steps).toEqual([{ step: "binary", ok: false, detail: "opencode not found on PATH" }]);
   });
 
-  it("auth is UNKNOWN, resume is Ineligible, no event is recognised and a clean exit never succeeds", async () => {
-    const a = adapter();
-    expect(await a.authPreflight(runner({}))).toMatchObject({ state: "UNKNOWN" });
-    expect(
-      a.resumeArgs({ provider: "codex", nativeSessionId: "s" }, request(), profileOf("edit-untrusted")),
-    ).toMatchObject({ reason: "CAPABILITY_MISSING", detail: "binding is for codex" });
-    expect(
-      a.resumeArgs({ provider: "opencode", nativeSessionId: "ses_x" }, request(), profileOf("edit-untrusted")),
-    ).toMatchObject({ ineligible: true });
-    const state = { lines: 0, unknownEvents: 0 } as Parameters<OpenCodeAdapter["parseEvent"]>[1];
-    expect(a.parseEvent('{"type":"text","sessionID":"ses_x","part":{"text":"ok"}}', state)).toEqual([
-      { kind: "unknown", rawType: "unparsed" },
-    ]);
-    const r = a.extractResult([], { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] });
-    expect(r).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+  it("auth is UNKNOWN until T4.54", async () => {
+    expect(await adapter().authPreflight(runner({}))).toMatchObject({ state: "UNKNOWN" });
   });
 
   it("reads no OpenCode credential or configuration file (source inspection)", () => {
@@ -235,5 +232,188 @@ describe("opencode registry entry and manifest gate (T4.52)", () => {
     for (const v of ["2.0.23", "1.0.0", "0.0.0", null]) {
       expect(registry.gate("opencode", v).eligible, String(v)).toBe(false);
     }
+  });
+});
+
+/**
+ * T4.53: parser, result, failure classification and resume. SYNTHETIC lines in the shapes the 2026-10-14 live check
+ * recorded (rows 4c, 5, 6a, 14a, 14b, 14d); ids, text and numbers are invented.
+ */
+describe("opencode parser and result (T4.53)", () => {
+  const SID = "ses_0000000000000000000000000A";
+  const line = (type: string, part: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      type,
+      timestamp: 1,
+      sessionID: SID,
+      part: { sessionID: SID, messageID: "msg_1", ...part },
+      ...extra,
+    });
+  const START = line("step_start", { id: "prt_s1", type: "step-start", snapshot: "abc" });
+  const TEXT = (text: string, id = "prt_t1") => line("text", { id, type: "text", text });
+  const TOOL = (tool: string, input: Record<string, unknown>, status = "completed") =>
+    line("tool_use", { id: "prt_u1", type: "tool", tool, state: { status, input, output: "done" } });
+  const FINISH = (reason: string, id = "prt_f1") =>
+    line("step_finish", {
+      id,
+      type: "step-finish",
+      reason,
+      cost: 0.001,
+      tokens: { input: 10, output: 3, reasoning: 1, cache: { read: 4, write: 0 } },
+    });
+  const ERROR = (type: string, message: string) =>
+    JSON.stringify({ type: "error", timestamp: 1, sessionID: SID, error: { type, message } });
+  const EXIT0: ExitInfo = { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] };
+  const parse = (lines: string[]) => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const events: NormalizedEvent[] = lines.flatMap((l) => a.parseEvent(l, state));
+    return { a, state, events };
+  };
+
+  it("success: session id from the first event, text joined, usage per step provider_reported, stop is the result", () => {
+    const { a, state, events } = parse([
+      START,
+      TEXT("reading"),
+      TOOL("read", { filePath: "hello.txt" }),
+      FINISH("tool-calls", "prt_f1"),
+      START,
+      TEXT("ok", "prt_t2"),
+      FINISH("stop", "prt_f2"),
+    ]);
+    expect(events[0]).toEqual({ kind: "session_bound", nativeSessionId: SID });
+    expect(events.filter((e) => e.kind === "session_bound")).toHaveLength(1);
+    expect(events.filter((e) => e.kind === "usage")).toEqual([
+      {
+        kind: "usage",
+        source: "provider_reported",
+        metrics: { input: 10, output: 3, reasoning: 1, cache_read: 4, cache_write: 0, cost_usd: 0.001 },
+      },
+      {
+        kind: "usage",
+        source: "provider_reported",
+        metrics: { input: 10, output: 3, reasoning: 1, cache_read: 4, cache_write: 0, cost_usd: 0.001 },
+      },
+    ]);
+    expect(events).toContainEqual({ kind: "tool_call", tool: "read", name: "read", target: "hello.txt" });
+    expect(state).toMatchObject({ nativeSessionId: SID, unknownEvents: 0 });
+    expect(a.extractResult(events, EXIT0)).toEqual({
+      ok: true,
+      nativeSessionId: SID,
+      summary: "reading\nok",
+      unknownEventCount: 0,
+    });
+  });
+
+  it("a repeated step_finish part is counted once; no backing provider or model is invented (T4.6)", () => {
+    const { events } = parse([START, TEXT("ok"), FINISH("stop", "prt_f9"), FINISH("stop", "prt_f9")]);
+    expect(events.filter((e) => e.kind === "usage")).toHaveLength(1);
+    const bound = events.find((e) => e.kind === "session_bound");
+    expect(bound).not.toHaveProperty("backingProvider");
+    expect(bound).not.toHaveProperty("model");
+  });
+
+  it("a run that exits 0 with text but no step_finish stop is not a success (Q-85)", () => {
+    for (const lines of [
+      [START, TEXT("ok")],
+      [START, TEXT("x"), FINISH("tool-calls")],
+    ]) {
+      const { a, events } = parse(lines);
+      expect(a.extractResult(events, EXIT0)).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+    }
+  });
+
+  it("shell calls carry their command for the tool-call guard (ADR-0039); other tools are `other`", () => {
+    const { events } = parse([
+      START,
+      TOOL("shell", { command: "git -C . commit -m x" }),
+      TOOL("write", { filePath: "/tmp/outside.txt" }, "error"),
+      TOOL("webfetch", { url: "https://example.test" }),
+      TOOL("shell", {}),
+    ]);
+    expect(events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "shell", name: "shell", command: "git -C . commit -m x" },
+      { kind: "tool_call", tool: "edit", name: "write", target: "/tmp/outside.txt" },
+      { kind: "tool_call", tool: "other", name: "webfetch" },
+      { kind: "tool_call", tool: "shell", name: "shell" },
+    ]);
+  });
+
+  it("error events map to the taxonomy and fail the run whatever the exit code", () => {
+    const cases: [string, string][] = [
+      ["provider.no-route", "MODEL_UNAVAILABLE"],
+      ["provider.quota", "QUOTA_EXHAUSTED"],
+      ["provider.auth", "AUTH_REQUIRED"],
+      ["provider.something-new", "TOOL_FAILURE"],
+    ];
+    for (const [type, code] of cases) {
+      const { a, events } = parse([START, ERROR(type, "synthetic message"), TEXT("ok"), FINISH("stop")]);
+      expect(a.extractResult(events, EXIT0), type).toMatchObject({ ok: false, failureCode: code });
+      expect(a.extractResult(events, { ...EXIT0, exitCode: 1 }), type).toMatchObject({ ok: false, failureCode: code });
+    }
+  });
+
+  it("a non-zero exit, a timeout and a cancel never succeed", () => {
+    const { a, events } = parse([START, TEXT("ok"), FINISH("stop")]);
+    expect(a.extractResult(events, { ...EXIT0, exitCode: 1 })).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+    });
+    expect(a.extractResult(events, { ...EXIT0, outcome: "timeout", timeoutKind: "wall_clock" })).toMatchObject({
+      failureCode: "PROCESS_TIMEOUT",
+    });
+    expect(a.extractResult(events, { ...EXIT0, outcome: "cancelled" })).toMatchObject({ failureCode: "CANCELLED" });
+  });
+
+  it("malformed and unknown lines are unknown events, counted, never a result; JSON framing errors emit nothing", () => {
+    const { a, state, events } = parse([
+      START,
+      line("brand_new"),
+      JSON.stringify({ no_type: true }),
+      line("text", { id: "p" }),
+      line("tool_use", { id: "p" }),
+      line("step_finish", { id: "p" }),
+      JSON.stringify({ type: "error", sessionID: SID }),
+      "not json",
+    ]);
+    expect(events.filter((e) => e.kind === "unknown")).toHaveLength(6);
+    expect(state.unknownEvents).toBe(6);
+    expect(events.some((e) => e.kind === "result")).toBe(false);
+    expect(a.extractResult(events, EXIT0)).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+    expect(a.parseEvent({ jsonrpc: "2.0", method: "x" }, state)).toEqual([]);
+  });
+
+  it("the session id is never taken from text", () => {
+    const { state } = parse([JSON.stringify({ type: "text", part: { text: `use ${SID}` } })]);
+    expect(state.nativeSessionId).toBeUndefined();
+  });
+
+  it("resume is --session <id> through the same matrix; another provider's binding and a flag-like id are refused", () => {
+    const profile = { ...privilegedProfile(BYPASS_SCOPE), bypassApproved: true };
+    const r = adapter().resumeArgs(
+      { provider: "opencode", nativeSessionId: SID },
+      request({ bypassApproved: true }),
+      profile,
+    );
+    if ("ineligible" in r) throw new Error(r.detail);
+    expect(r.argv.slice(1)).toEqual([
+      "run",
+      "--format",
+      "json",
+      "--standalone",
+      "--session",
+      SID,
+      "--",
+      "fix the failing test",
+    ]);
+    expect(
+      adapter().resumeArgs({ provider: "codex", nativeSessionId: SID }, request({ bypassApproved: true }), profile),
+    ).toMatchObject({ reason: "CAPABILITY_MISSING", detail: "binding is for codex" });
+    expect(
+      adapter().resumeArgs({ provider: "opencode", nativeSessionId: "-c" }, request({ bypassApproved: true }), profile),
+    ).toMatchObject({ reason: "CAPABILITY_MISSING" });
+    expect(
+      adapter().resumeArgs({ provider: "opencode", nativeSessionId: SID }, request(), profileOf("edit-untrusted")),
+    ).toMatchObject({ reason: "PROFILE_UNSUPPORTED" });
   });
 });
