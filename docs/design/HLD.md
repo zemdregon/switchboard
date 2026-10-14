@@ -216,10 +216,10 @@ retrieved text has no policy authority (BR-46).
 The Antigravity compile matrix, probe steps and stream-json event vocabulary are in [TDD
 §4.4](TDD.md#44-antigravity-agy-m4) and the adapter contract in [LLD §2](LLD.md#2-adapter-contract) (provider registry
 row for `antigravity`). Milestone status and task boundaries are in [ROADMAP
-§6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks). As-built LLD detail for parser, result and resume is in draft pull request
-[212](https://github.com/zemdregon/switchboard/pull/212) at documentation time; until that merges, treat the pointers
-below and the roadmap task rows as HLD-level evidence only. Requirement-to-component traceability for the shared adapter
-port is in [SDD §5](SDD.md#5-requirements-to-design-traceability) (`FR-ADP-*`, `FR-AUTH-02`, `FR-SES-03`,
+§6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks). As-built parser, result and resume detail is in [LLD
+§2.0](LLD.md#20-antigravity-adapter-implementation-evidence-m4-t432-t433-t437) and [TDD
+§4.4.7](TDD.md#447-antigravity-parser-implementation-evidence-m4-t433). Requirement-to-component traceability for the
+shared adapter port is in [SDD §5](SDD.md#5-requirements-to-design-traceability) (`FR-ADP-*`, `FR-AUTH-02`, `FR-SES-03`,
 `FR-CAP-01`).
 
 #### T4.32 — module, manifest, probe, registry entry and compile matrix
@@ -253,6 +253,12 @@ every profile and binding).
 - **Modules:** `parseEvent`, `extractResult`, `classifyFailure` and `resumeArgs` in `src/adapters/antigravity/adapter.ts`;
   event names and error prefixes in `src/adapters/antigravity/protocol.ts`; failure codes per [LLD
   §4](LLD.md#4-failure-taxonomy)
+- **Hardening (2026-10-14, [#227](https://github.com/zemdregon/switchboard/pull/227); Delegated, not owner-approved;
+  synthetic shapes).** A second `result` line ends `OUTPUT_PROTOCOL_ERROR` and records no second `usage` row (FR-CAP-01).
+  A `step_update` whose `conversation_id` differs from the bound id ends `OUTPUT_PROTOCOL_ERROR` while its tool call still
+  reaches the ADR-0039 guard; a step never binds the session. Classification precedence is pinned (cancel and timeout over
+  a denial, denial over envelope error and non-zero exit, guard over all). Sourcing: [TDD
+  §4.4.7](TDD.md#447-antigravity-parser-implementation-evidence-m4-t433).
 
 **Gaps (remain `Partial`, not `Done`).** Resume is not compiled (Q-86). Rate-limit, sandbox-violation and stderr
 `AGY_ERROR` shapes were not observed on stdout in the live check, so those failures currently end `TOOL_FAILURE` rather
@@ -301,6 +307,55 @@ observed (T4.31 C8; operator task T4.38). T4.36 recorded a finding that `extract
 `SUCCESS` envelope without reading a guard `violation` on a Git write, although ADR-0039 ends such a run
 `PERMISSION_BLOCKED`; that gap is pinned by a known-gap test and tracked in the [ROADMAP
 §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) T4.36 row, not closed by T4.37.
+
+### 2.3 COMP-ADP Cursor implementation evidence (M4, T4.42, T4.43)
+
+Compile matrix and transport are in [TDD §4.5](TDD.md#45-cursor-cli-m4); parser as-built detail is in [LLD
+§2.0.1](LLD.md#201-cursor-adapter-implementation-evidence-m4-t442-t443) and [TDD
+§4.5.5](TDD.md#455-cursor-parser-implementation-evidence-m4-t443). Task status: [ROADMAP
+§6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.42`, `T4.43`).
+
+#### T4.43 — parser, result, failure classification and resume (`Partial`)
+
+**Evidence (`Partial`, synthetic lines in the shapes of the T4.41 live check).** FR-ADP-04, FR-SES-03 (`--resume` through
+the compile matrix), FR-ADP-10 (`backingProvider` unset: no vendor field was recorded).
+
+- **Tests:** `src/adapters/cursor/cursor.test.ts` ("cursor parser and result (T4.43)", "cursor parser hardening (T4.43,
+  synthetic shapes)")
+- **Modules:** `parseEvent`, `extractResult`, `classifyFailure` and `resumeArgs` in `src/adapters/cursor/adapter.ts`;
+  event fields in `src/adapters/cursor/protocol.ts`
+- **Hardening (2026-10-14, [#228](https://github.com/zemdregon/switchboard/pull/228); Delegated, not owner-approved).**
+  Second `result` line and mid-run session id change end `OUTPUT_PROTOCOL_ERROR`; non-`login` `apiKeySource` is
+  `AUTH_REQUIRED`; usage drops non-finite values; multi-key `tool_call` objects report each key; unrecorded rate-limit,
+  quota and sandbox text ends `TOOL_FAILURE`. Sourcing: [TDD §4.5.5](TDD.md#455-cursor-parser-implementation-evidence-m4-t443).
+
+**Gaps (remain `Partial`, not `Done`).** No recorded rate-limit or sandbox stream shape; T4.6 backing-vendor fixture cannot
+be written without a vendor field (Q-65). Operator capture: T4.48 / T4.41 extension.
+
+### 2.4 COMP-ADP OpenCode implementation evidence (M4, T4.52, T4.53)
+
+Compile matrix and transport are in [TDD §4.6](TDD.md#46-opencode-m4); parser as-built detail is in [LLD
+§2.0.2](LLD.md#202-opencode-adapter-implementation-evidence-m4-t452-t453) and [TDD
+§4.6.5](TDD.md#465-opencode-parser-implementation-evidence-m4-t453). Task status: [ROADMAP
+§6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.52`, `T4.53`).
+
+#### T4.53 — parser, result, failure classification and resume (`Partial`)
+
+**Evidence (`Partial`, synthetic lines in the shapes of the T4.51 live check).** FR-ADP-04, FR-SES-03 (`--session`
+through the compile matrix), FR-ADP-10 (`backingProvider` unset: events name no vendor).
+
+- **Tests:** `src/adapters/opencode/opencode.test.ts` ("opencode parser and result (T4.53)", including nested
+  "cases with no recorded native shape (live check rows 7, 11, 14c)")
+- **Modules:** `parseEvent`, `extractResult`, `classifyFailure` and `resumeArgs` in `src/adapters/opencode/adapter.ts`;
+  event fields in `src/adapters/opencode/protocol.ts`
+- **Hardening (2026-10-14, [#229](https://github.com/zemdregon/switchboard/pull/229); Delegated, not owner-approved).**
+  Finite non-negative usage only; unknown line `type` clipped to 64 characters; mid-run `sessionID` change ends
+  `OUTPUT_PROTOCOL_ERROR`; non-object roots and unstructured errors fail closed; nested tests pin row 11 (denial not
+  detected), row 14c (rate limit `TOOL_FAILURE`) and missing tool input keys. Sourcing: [TDD
+  §4.6.5](TDD.md#465-opencode-parser-implementation-evidence-m4-t453).
+
+**Gaps (remain `Partial`, not `Done`).** No permission-denial or rate-limit event shape recorded; tool input key names
+are Assumptions; T4.6 backing-vendor fixture cannot be written. Operator capture: T4.58 / T4.51 extension.
 
 ## 3. Trust boundaries
 
