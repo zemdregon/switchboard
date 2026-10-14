@@ -174,6 +174,9 @@ Every `FR-*` and `NFR-*` ID in the [SRS](../requirements/SRS.md) has one row. Pr
 "Detail" links point to the LLD or TDD section that will specify the mechanism; where no section anchor is assigned yet
 the cell says so.
 
+M12 retrieval through T12.3 (FR-RAG-01–04 on fakes) lists primary tests and modules under [TDD
+§3.13.5](TDD.md#3135-t121-config-and-store-2026-10-14)–[§3.13.7](TDD.md#3137-t123-embedding-port-and-locality-gates-2026-10-14).
+
 | ID | Component(s) | Design element / mechanism | ADR(s) | Detail |
 | --- | --- | --- | --- | --- |
 | FR-MCP-01 | COMP-MCP | Tool registry on an MCP stdio server; handlers delegate to other components | [ADR-0002](../adr/0002-mcp-upstream-acp-downstream.md) | [LLD §3](LLD.md#3-mcp-tool-contracts) |
