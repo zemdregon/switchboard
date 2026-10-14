@@ -21,6 +21,46 @@ export interface AffinityRecord {
   /** False for a continuation (FR-SES-03 governs) or when affinity is disabled: the row is not moved by this run. */
   applies: boolean;
   excluded_from_score: string | null;
+  /** T7.12 (FR-RTE-08, Q-90): present on a held decision only; whether the remembered model was pinned, and why not. */
+  model_pin?: ModelPinRecord;
+}
+
+/**
+ * Why a held decision did or did not pin the project's remembered model (T7.12). `pinned`: passed to `compile`;
+ * otherwise the run keeps the adapter default: `no_remembered_model` (the row's model is null), `adapter_not_declared`
+ * (the adapter does not declare that its reported model id is accepted by its model flag), `model_refused` (the model
+ * registry or the adapter's `compile` refused the id; the provider still holds, fail closed), `privileged` (a
+ * `privileged` run is never pinned, so pinning cannot change what an approved scope or a bypass run does).
+ */
+export type ModelPinOutcome =
+  | "pinned"
+  | "no_remembered_model"
+  | "adapter_not_declared"
+  | "model_refused"
+  | "privileged";
+
+export interface ModelPinRecord {
+  /** The model passed to `compile`, or null for the adapter default. */
+  model: string | null;
+  outcome: ModelPinOutcome;
+  /** For `model_refused`: the stage-1 reason code that refused it. */
+  refused_code?: string;
+}
+
+/**
+ * T7.12 step 1 (pure): the model a held decision would pin, before the registry and compile check. Null when the
+ * decision did not hold (the switch reason already records why; a new provider runs with its adapter default).
+ */
+export function planModelPin(
+  record: AffinityRecord | null,
+  adapterAccepts: boolean,
+  privileged: boolean,
+): { candidate: string; outcome: "pinned" } | { candidate: null; outcome: ModelPinOutcome } | null {
+  if (record === null || !record.applies || !record.held) return null;
+  if (record.model === null) return { candidate: null, outcome: "no_remembered_model" };
+  if (privileged) return { candidate: null, outcome: "privileged" };
+  if (!adapterAccepts) return { candidate: null, outcome: "adapter_not_declared" };
+  return { candidate: record.model, outcome: "pinned" };
 }
 
 export interface AffinityFacts {

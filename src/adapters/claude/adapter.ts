@@ -634,6 +634,16 @@ export class ClaudeAdapter implements ProviderAdapter {
    * `Unverified: T5.12`, so a resume reuses the origin worktree path (handled as `bound`).
    */
   readonly resumeCwd = "unverified" as const;
+  /**
+   * T7.12 (FR-RTE-08, Q-90, Delegated): [R2] says the CLI's `--model` accepts model aliases and full model IDs, and the
+   * `system` `init` event carries `model` (parse.ts). **Assumption** (to be confirmed by the live conformance subset,
+   * FR-OPS-02): that value is a full model ID. Routing still checks the id against the model registry and this
+   * adapter's own `compile` (SAFE_VALUE) before it pins one, and keeps the adapter default otherwise.
+   */
+  readonly reportedModelFlag = {
+    kind: "accepted",
+    detail: "--model takes aliases and full model IDs ([R2]); init reports the session model (Assumption: a full ID)",
+  } as const;
   readonly gitCapabilities: GitCapabilities;
   readonly #configured: string;
   #resolved: string | undefined;

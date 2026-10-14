@@ -81,6 +81,7 @@ import type { ErrorObject, ValidateFunction } from "ajv";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import {
   type AdapterRegistry,
+  acceptsReportedModel,
   adapterIdForConfigId,
   type ProviderId,
   type ResolvedProfile,
@@ -110,6 +111,7 @@ import {
 import type { Ledger, RunRecord, TrustProfile } from "../ledger/index.js";
 import {
   type EligibilityAnswer,
+  type EligibilityQuestion,
   type HandoffReason,
   type HandoffSubmission,
   type RunLifecycle,
@@ -136,12 +138,14 @@ import {
   DEFAULT_WEIGHTS,
   type EligibilityReasonCode,
   explainRoute,
+  planModelPin,
   profilePlatformSupported,
   profileRank,
   type RouteDecisionResult,
   type RouteFeatures,
   requirementsFor,
   TRUST_PROFILE_ORDER,
+  withModelPin,
 } from "../routing/index.js";
 import { gitText } from "../workspace/git.js";
 import { buildEnvelope, compactEvents, type Envelope } from "./envelope.js";
@@ -557,6 +561,38 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     return { ...result, provider: result.provider as ProviderId };
   };
 
+  /**
+   * T7.12 (FR-RTE-08, Q-90, LLD §17.6): on a held decision, pin the project's remembered model when the adapter declares
+   * that a reported model id is accepted by its model flag and stage 1 (the model registry and the adapter's own
+   * `compile`) still admits the provider with it; otherwise the run keeps the adapter default. The outcome is recorded
+   * in the decision's `affinity.model_pin`. Never moves the provider (fail closed: a refused model is not a reason).
+   */
+  const pinModel = async (
+    routed: RouteDecisionResult & { provider: ProviderId },
+    question: Omit<EligibilityQuestion, "candidates" | "requiredProvider" | "model">,
+    privileged: boolean,
+  ): Promise<{ routed: RouteDecisionResult & { provider: ProviderId }; model: string | undefined }> => {
+    const adapter = deps.registry.get(routed.provider);
+    const plan = planModelPin(routed.affinity, adapter !== undefined && acceptsReportedModel(adapter), privileged);
+    if (plan === null) return { routed, model: undefined };
+    const keep = (pin: Parameters<typeof withModelPin>[1]) => ({
+      routed: { ...withModelPin(routed, pin), provider: routed.provider },
+      model: pin.model ?? undefined,
+    });
+    if (plan.candidate === null) return keep({ model: null, outcome: plan.outcome });
+    const check = await lifecycle.checkEligibility({
+      ...question,
+      candidates: [routed.provider],
+      requiredProvider: routed.provider,
+      model: plan.candidate,
+    });
+    if (!check.decision.eligible.includes(routed.provider)) {
+      const code = check.decision.excluded[0]?.primary.code ?? "ELIGIBILITY_NONE";
+      return keep({ model: null, outcome: "model_refused", refused_code: code });
+    }
+    return keep({ model: plan.candidate, outcome: "pinned" });
+  };
+
   const waitBounded = async (runId: string, seconds: number | undefined): Promise<void> => {
     if (!seconds) return;
     let timer: NodeJS.Timeout | undefined;
@@ -641,7 +677,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       throw eligibilityError(answer);
     }
     if (required !== undefined && !admissible(answer, privileged).includes(required)) throw eligibilityError(answer);
-    const routed = route(answer, {
+    const routed0 = route(answer, {
       preference: routing?.provider_preference,
       privileged,
       features: classifyRequest({
@@ -667,6 +703,15 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
           }
         : {}),
     });
+    const { routed, model } = await pinModel(
+      routed0,
+      {
+        trustProfile: profile,
+        clientMaxProfile: resolved?.effectiveMax ?? maxTrustProfile,
+        cwd: workspace,
+      },
+      privileged,
+    );
     const provider = routed.provider;
 
     const submitted = await lifecycle.submit({
@@ -679,6 +724,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       priority: a.priority as RunPriority,
       requestHash: hash,
       routeDecision: routed.record,
+      ...(model !== undefined ? { model } : {}),
       ...(resolved ? { project: resolved.snapshot } : {}),
       ...(key !== undefined ? { idempotencyKey: key } : {}),
       ...(verification.length > 0 ? { verificationCommands: verification } : {}),

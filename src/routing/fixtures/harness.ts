@@ -81,6 +81,12 @@ else {
 
 /** Providers whose adapter currently refuses to compile (ineligible, `CAPABILITY_MISSING`). Mutable by tests. */
 export const down = new Set<string>();
+/** T7.12: providers whose adapter declares `reportedModelFlag: accepted`. Mutable by tests; cleared per harness. */
+export const pinning = new Set<string>();
+/** T7.12: providers whose adapter refuses any requested model (`CAPABILITY_MISSING`). Mutable by tests. */
+export const refusesModel = new Set<string>();
+/** T7.12: every run compile (not the eligibility `route-check`), with the model it was given. */
+export const compiled: { provider: string; runId: string; model: string | undefined }[] = [];
 
 function scripted(id: string, script: string, spare = false): ProviderAdapter {
   const base = new FakeAdapter({ script, timeouts: PATIENT });
@@ -90,14 +96,23 @@ function scripted(id: string, script: string, spare = false): ProviderAdapter {
     gitWriteControl: base.gitWriteControl,
     resumeCwd: base.resumeCwd,
     gitCapabilities: { commitChannel: "none", detail: "test double" },
+    get reportedModelFlag() {
+      return { kind: pinning.has(id) ? ("accepted" as const) : ("not_accepted" as const), detail: "test double" };
+    },
     probe: (r) => base.probe(r),
     authPreflight: (r) => base.authPreflight(r),
     compile: (req, p) => {
       if (down.has(id)) return { ineligible: true, reason: "CAPABILITY_MISSING", detail: `${id} is down for the test` };
+      if (req.model !== undefined && refusesModel.has(id)) {
+        return { ineligible: true, reason: "CAPABILITY_MISSING", detail: `${id} refuses models for the test` };
+      }
       const inv = base.compile(req, p);
       if ("ineligible" in inv) return inv;
-      // Each provider's native session reports its own placeholder model (`<id>-model`), as a real CLI reports one.
-      const env = { ...inv.env, FAKE_MODEL: `${id}-model`, ...(spare ? { FAKE_PROVIDER_ROLE: "spare" } : {}) };
+      if (req.runId !== "route-check") compiled.push({ provider: id, runId: req.runId, model: req.model });
+      // Each provider's native session reports its own placeholder model (`<id>-model`), as a real CLI reports one; a
+      // compiled model is reported as the session's model (T7.12).
+      const model = req.model ?? `${id}-model`;
+      const env = { ...inv.env, FAKE_MODEL: model, ...(spare ? { FAKE_PROVIDER_ROLE: "spare" } : {}) };
       return { ...inv, env };
     },
     resumeArgs: (b, req, p) => base.resumeArgs(b, req, p),
@@ -140,6 +155,9 @@ export interface HarnessOptions {
 
 export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> {
   down.clear();
+  pinning.clear();
+  refusesModel.clear();
+  compiled.length = 0;
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "sb-route-")));
   const repo = path.join(root, "repo");
   mkdirSync(repo);
