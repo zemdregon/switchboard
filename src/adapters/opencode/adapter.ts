@@ -16,8 +16,10 @@
  *   and `--auto` would only widen what is refused by default (out-of-tree paths, [LIVE] 11), so it is not emitted
  *   (Q-83). OpenCode confines nothing in that run; what remains is the controller's worktree, the tool-call guard
  *   (ADR-0039), FR-GIT-03 and FR-GIT-06;
- * - parser, auth preflight and resume fail closed until T4.53 and T4.54. The manifest range admits no version, so none
- *   of this runs before `adapters validate` passes a version.
+ * - the parser (T4.53) reads only the `--format json` fields the 2026-10-14 live check recorded; success needs a
+ *   `step_finish` with reason `stop` (Q-85); resume is `--session <id>` through the same matrix. The auth preflight
+ *   fails closed until T4.54. The manifest range admits no version, so none of this runs before `adapters validate`
+ *   passes a version.
  */
 import {
   DEFAULT_IDLE_MS,
@@ -51,15 +53,21 @@ import type {
 import {
   DISABLE_AUTOUPDATE_ENV,
   END_OF_OPTIONS,
+  ERROR_TYPE_CATEGORIES,
+  EVENT,
   FORMAT_FLAG,
   FORMAT_JSON,
   GIT_WRITE_CONTROL_DETAIL,
   NON_PRIVILEGED_UNSUPPORTED_DETAIL,
   OPENCODE_BINARY,
+  REASON_STOP,
   REQUIRED_HELP_FLAGS,
   RUN_COMMAND,
   RUN_HELP_ARGS,
+  SESSION_FLAG,
   STANDALONE_FLAG,
+  TOKEN_KEYS,
+  TOOL_KINDS,
   VERSION_ARGS,
 } from "./protocol.js";
 
@@ -71,6 +79,10 @@ import {
 export const OPENCODE_ENV_ALLOWLIST: readonly string[] = ["PATH", "HOME"];
 
 const PROBE_TIMEOUT_MS = 10_000;
+const MAX_SUMMARY_CHARS = 2_000;
+const MAX_TARGET_CHARS = 512;
+/** Native ids are passed as one argv element; refuse anything that could be read as a flag (Proposed). */
+const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 
 /** FR-GIT-01 (ADR-0039): no per-run deny took effect on v2.0.23; see protocol.ts. */
 export const OPENCODE_GIT_WRITE_CONTROL: GitWriteControl = {
@@ -111,7 +123,14 @@ export interface OpenCodeAdapterOptions {
   pathEnv?: string;
 }
 
+type Json = Record<string, unknown>;
+const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+const obj = (v: unknown): Json | undefined =>
+  typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Json) : undefined;
+const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
 const ineligible = (reason: Ineligible["reason"], detail: string): Ineligible => ({ ineligible: true, reason, detail });
+/** Part ids already counted per run, so a repeated `step_finish` is not recorded twice (TDD §4.6, Proposed). */
+const seenParts = new WeakMap<ParseState, Set<string>>();
 
 export class OpenCodeAdapter implements ProviderAdapter {
   readonly id = "opencode" as const;
@@ -199,13 +218,16 @@ export class OpenCodeAdapter implements ProviderAdapter {
     return this.#build(request, profile, []);
   }
 
-  /** FR-SES-03: resume arrives with the parser (T4.53); a binding of another provider is never compiled. */
-  resumeArgs(binding: NativeBinding, _request: CompileRequest, _profile: ResolvedProfile): Invocation | Ineligible {
+  /**
+   * FR-SES-03 (T4.53): `--session <id>` through the same matrix, the id taken from the structured `sessionID` only
+   * ([LIVE] 13a, 15a). `--continue` is never used: it resumes the most recent session of the directory ([LIVE] 13b).
+   */
+  resumeArgs(binding: NativeBinding, request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible {
     if (binding.provider !== "opencode") return ineligible("CAPABILITY_MISSING", `binding is for ${binding.provider}`);
-    return ineligible(
-      "CAPABILITY_MISSING",
-      "OpenCode resume is not compiled until its parser records the session id (T4.53)",
-    );
+    if (!SESSION_ID_RE.test(binding.nativeSessionId)) {
+      return ineligible("CAPABILITY_MISSING", "native session id is not a safe single argument");
+    }
+    return this.#build(request, profile, [SESSION_FLAG, binding.nativeSessionId]);
   }
 
   /**
@@ -296,17 +318,143 @@ export class OpenCodeAdapter implements ProviderAdapter {
     };
   }
 
-  /** T4.53 writes the parser from captures; until then nothing is recognised and a clean exit cannot succeed. */
+  /**
+   * One `--format json` line -> normalized events (T4.53). Structured fields only (FR-ADP-04): the session id is the
+   * `sessionID` of the first event that carries one. The run's result comes only from a `step_finish` whose
+   * `part.reason` is `stop` (Q-85): a run that exits 0 without one is not a success, although the live check saw such
+   * runs answer correctly ([LIVE] 4a). Events do not name the provider or model used ([LIVE] 4c), so `session_bound`
+   * carries neither.
+   */
   parseEvent(input: string | AcpMessage, state: ParseState): NormalizedEvent[] {
-    if (typeof input !== "string") return [];
+    if (typeof input !== "string") return []; // no ACP transport for OpenCode (TDD §4.6)
     state.lines += 1;
-    state.unknownEvents += 1;
-    return [{ kind: "unknown", rawType: "unparsed" }];
+    let doc: unknown;
+    try {
+      doc = JSON.parse(input);
+    } catch {
+      return []; // the supervisor ends the run OUTPUT_PROTOCOL_ERROR on unparseable framing
+    }
+    const e = obj(doc);
+    const type = str(e?.type);
+    if (e === undefined || type === undefined) return this.#unknown(state, "none");
+    const out: NormalizedEvent[] = [];
+    const id = str(e.sessionID);
+    if (id !== undefined && id !== "" && state.nativeSessionId === undefined) {
+      state.nativeSessionId = id;
+      out.push({ kind: "session_bound", nativeSessionId: id });
+    }
+    const part = obj(e.part);
+    switch (type) {
+      case EVENT.stepStart:
+        return out;
+      case EVENT.text: {
+        const text = str(part?.text);
+        if (text === undefined) return [...out, ...this.#unknown(state, type)];
+        return text === ""
+          ? out
+          : [...out, { kind: "message", role: "assistant", text: clip(text, MAX_SUMMARY_CHARS) }];
+      }
+      case EVENT.toolUse: {
+        const name = str(part?.tool);
+        if (name === undefined) return [...out, ...this.#unknown(state, type)];
+        const kind = TOOL_KINDS[name] ?? "other";
+        const input = obj(obj(part?.state)?.input);
+        // Assumption: the shell input names its command line `command` and the file tools their path `filePath` or
+        // `path`; the live check recorded `state.input` but not its keys. Without them the guard sees no command.
+        const command = kind === "shell" ? str(input?.command) : undefined;
+        const target = kind === "read" || kind === "edit" ? (str(input?.filePath) ?? str(input?.path)) : undefined;
+        return [
+          ...out,
+          {
+            kind: "tool_call",
+            tool: kind,
+            name: clip(name, 64),
+            ...(command !== undefined ? { command } : {}),
+            ...(target !== undefined ? { target: clip(target, MAX_TARGET_CHARS) } : {}),
+          },
+        ];
+      }
+      case EVENT.stepFinish: {
+        const reason = str(part?.reason);
+        if (reason === undefined) return [...out, ...this.#unknown(state, type)];
+        const partId = str(part?.id);
+        const seen = seenParts.get(state) ?? new Set<string>();
+        seenParts.set(state, seen);
+        if (partId === undefined || !seen.has(partId)) {
+          if (partId !== undefined) seen.add(partId);
+          const metrics = this.#metrics(part);
+          if (Object.keys(metrics).length > 0) out.push({ kind: "usage", source: "provider_reported", metrics });
+        }
+        if (reason === REASON_STOP) out.push({ kind: "result", ok: true });
+        return out;
+      }
+      case EVENT.error: {
+        const err = obj(e.error);
+        const errType = str(err?.type);
+        const message = str(err?.message);
+        if (errType === undefined && message === undefined) return [...out, ...this.#unknown(state, type)];
+        const category = (errType !== undefined ? ERROR_TYPE_CATEGORIES[errType] : undefined) ?? "unknown";
+        const ev: NormalizedEvent = {
+          kind: "provider_error",
+          category,
+          message: clip(`${errType ?? "error"}: ${message ?? ""}`, MAX_SUMMARY_CHARS),
+        };
+        return [...out, ev];
+      }
+      default:
+        return [...out, ...this.#unknown(state, type)];
+    }
   }
 
-  /** Never success before the parser exists (T4.53): a result needs a `result` event, which nothing emits yet. */
+  /** `step_finish` token counts and cost, as reported (no sums, no defaults; FR-CAP-01). */
+  #metrics(part: Json | undefined): Record<string, number | string | null> {
+    const metrics: Record<string, number | string | null> = {};
+    const tokens = obj(part?.tokens);
+    for (const [path, metric] of TOKEN_KEYS) {
+      let v: unknown = tokens;
+      for (const k of path) v = obj(v)?.[k];
+      if (typeof v === "number") metrics[metric] = v;
+    }
+    if (typeof part?.cost === "number") metrics.cost_usd = part.cost;
+    return metrics;
+  }
+
+  #unknown(state: ParseState, rawType: string): NormalizedEvent[] {
+    state.unknownEvents += 1;
+    return [{ kind: "unknown", rawType: clip(rawType, 64) }];
+  }
+
+  /**
+   * Success needs a clean expected exit, a `step_finish` with reason `stop` (Q-85) and no `provider_error`,
+   * `permission_denied`, `sandbox_violation` or `rate_limit` event (fail closed). The summary is the joined assistant
+   * text, last {@link MAX_SUMMARY_CHARS} characters.
+   */
   extractResult(events: readonly NormalizedEvent[], exit: ExitInfo): RunResult {
     const unknownEventCount = events.filter((e) => e.kind === "unknown").length;
+    const bound = events.find((e) => e.kind === "session_bound");
+    const nativeSessionId = bound?.kind === "session_bound" ? bound.nativeSessionId : undefined;
+    const text = events.flatMap((e) => (e.kind === "message" ? [e.text] : [])).join("\n");
+    const summary = text === "" ? undefined : text.slice(-MAX_SUMMARY_CHARS);
+    const final = events.findLast((e) => e.kind === "result");
+    const base = {
+      unknownEventCount,
+      ...(nativeSessionId ? { nativeSessionId } : {}),
+      ...(summary ? { summary } : {}),
+    };
+    const clean =
+      exit.outcome === "exited" &&
+      exit.exitCode !== null &&
+      exit.expectedExitCodes.includes(exit.exitCode) &&
+      final?.kind === "result" &&
+      final.ok &&
+      !events.some(
+        (e) =>
+          e.kind === "provider_error" ||
+          e.kind === "permission_denied" ||
+          e.kind === "sandbox_violation" ||
+          e.kind === "rate_limit",
+      );
+    if (clean) return { ok: true, ...base };
     const c = this.classifyFailure({
       events,
       exit,
@@ -314,7 +462,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
       timedOut: exit.outcome === "timeout",
       cancelled: exit.outcome === "cancelled",
     });
-    return { ok: false, failureCode: c.code, failureDetail: c.detail, unknownEventCount };
+    return { ok: false, failureCode: c.code, failureDetail: c.detail, ...base };
   }
 
   classifyFailure(evidence: FailureEvidence): FailureClassification {

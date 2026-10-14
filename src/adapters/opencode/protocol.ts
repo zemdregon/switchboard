@@ -68,3 +68,46 @@ export const NON_PRIVILEGED_UNSUPPORTED_DETAIL =
   "(opencode v2.0.23) no per-run deny took effect (OPENCODE_PERMISSION and OPENCODE_CONFIG_CONTENT were ignored, a " +
   "recognised deny failed the run with a 403), the default ran shell commands including git commit and git push, no " +
   "sandbox is documented, and a repository's opencode.json and AGENTS.md load (Q-64, TDD §4.6.4, FR-POL-02, FR-POL-06)";
+
+/**
+ * `--format json` event types observed in the 2026-10-14 live check ([LIVE] 4c; opencode v2.0.23). Every event carries
+ * `type`, `timestamp`, `sessionID` and `part`. Only the fields named below are read.
+ */
+export const EVENT = {
+  stepStart: "step_start",
+  text: "text",
+  toolUse: "tool_use",
+  stepFinish: "step_finish",
+  error: "error",
+} as const;
+
+/** `step_finish.part.reason` of the final step ([LIVE] 4c, 5: `stop`; `tool-calls` ends an intermediate step). */
+export const REASON_STOP = "stop";
+
+/** `tool_use.part.tool` of the shell tool ([LIVE] 6a: `shell`, not `bash`) and the file tools ([LIVE] 4c). */
+export const TOOL_KINDS: Readonly<Record<string, "read" | "edit" | "shell">> = {
+  read: "read",
+  write: "edit",
+  edit: "edit",
+  shell: "shell",
+};
+
+/**
+ * `error.type` values observed ([LIVE] 14a `provider.no-route`, 14b `provider.quota`, 14d `provider.auth`) and the
+ * shared category each maps to. 14d's `provider.auth` was a 403 on a free tier, not a missing login, but an auth error
+ * is the safe reading (the run fails either way). Others are `unknown` (TOOL_FAILURE).
+ */
+export const ERROR_TYPE_CATEGORIES: Readonly<Record<string, string>> = {
+  "provider.no-route": "model_unavailable",
+  "provider.quota": "quota",
+  "provider.auth": "auth",
+};
+
+/** `step_finish.part.tokens` keys ([LIVE] 4c) and the metric names they are recorded under. */
+export const TOKEN_KEYS: readonly (readonly [path: readonly string[], metric: string])[] = [
+  [["input"], "input"],
+  [["output"], "output"],
+  [["reasoning"], "reasoning"],
+  [["cache", "read"], "cache_read"],
+  [["cache", "write"], "cache_write"],
+];
