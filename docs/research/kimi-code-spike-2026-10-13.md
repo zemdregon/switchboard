@@ -139,3 +139,8 @@ contents of `~/.kimi-code/credentials/`; scrub paths and the user name.
 15. Capacity: record whether usage, limits or resets appear in `-p` output (compare `/usage` and `/status`).
 16. Telemetry and updates: confirm `KIMI_DISABLE_TELEMETRY=1` is honoured in `-p` and that `kimi` never self-updates
     in a headless run.
+17. Resume across directories and modes (T5.0): resume the item 5 session from a second throwaway directory and record
+    whether the session is found; resume with `--auto`, `--yolo` and `--plan` each added and omitted, and record the
+    permission mode that applies, the exit code, and how this squares with `-p` not combining with those flags (K1)
+    and K8's disagreement. Settles the Kimi Code cells of
+    [TDD §4.10](../design/TDD.md#410-native-resume-inventory-t50).
