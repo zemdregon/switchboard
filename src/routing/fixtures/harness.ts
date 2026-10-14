@@ -118,6 +118,8 @@ export interface Harness {
   /** Tool call that must succeed. */
   ok(name: string, args: Json, clientId?: string): Promise<Json>;
   delegate(objective: string, routing?: Json, extra?: Json): Promise<Json>;
+  /** A further Git repository under the allowed root (another project key). */
+  newRepo(name: string): string;
   settle(runId: string): Promise<Json>;
   decisions(): RouteDecisionRow[];
   waitFor(check: () => boolean): Promise<void>;
@@ -244,6 +246,15 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
           })
         ).run_id,
       ),
+    newRepo: (name) => {
+      const dir = path.join(root, name);
+      mkdirSync(dir);
+      g(dir, "init", "-q", "-b", "main");
+      writeFileSync(path.join(dir, "README.md"), `${name}\n`);
+      g(dir, "add", "-A");
+      g(dir, "commit", "-q", "-m", "init");
+      return dir;
+    },
     decisions: () => db.prepare("SELECT * FROM route_decision ORDER BY created_at, id").all() as RouteDecisionRow[],
     waitFor: async (check) => {
       const end = Date.now() + 30_000;
