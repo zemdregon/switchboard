@@ -664,6 +664,45 @@ finalize-only mode (T9.7, BR-30), the controller makes the commit at FINALIZING 
 provenance as the commit tool. zemdregon wants the opt-in enabled for his own projects. Claude Code's `commitChannel` may
 become `injected` behind an operator opt-in once T9.4b and its live checks pass ([ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md)).
 
+### 2.0 Antigravity adapter implementation evidence (M4 T4.32, T4.33)
+
+Compile matrix, transport and declared flags: [TDD §4.4](TDD.md#44-antigravity-agy-m4). Task status and remaining
+gaps: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.32`, `T4.33`). On `origin/main` as of
+[#208](https://github.com/zemdregon/switchboard/pull/208) (2026-10-14, Delegated, not owner-approved; synthetic
+fixtures only; no `agy` in CI).
+
+**As built (T4.32).** Module `src/adapters/antigravity/` (`adapter.ts`, `protocol.ts`; spellings cite TDD §4.4 or the
+T4.31 live check, with `--prompt=` marked Assumption where unobserved). Manifest `src/adapters/manifests/antigravity.json`
+(range `<0.0.0` until `adapters validate` passes a live CLI). One registry entry with `create` and bypass-class flags in
+`src/adapters/providers.ts` ([ADR-0045](../adr/0045-one-dash-long-bypass-flag-spellings.md)). Transport
+`subprocess-jsonl` with `outputFormat` `jsonl`. Every non-`privileged` profile and every `privileged` scope without an
+approved bypass is `Ineligible: PROFILE_UNSUPPORTED` because `toolPermission` is a settings value, not per run
+([TDD §4.4.2](TDD.md#442-antigravity-native-controls-per-profile-and-platform-t430), Q-63). The sole compiled shape is
+the Q-84 bypass cell: `--prompt=<objective>`, `--output-format stream-json`, `--dangerously-skip-permissions`, env
+`AGY_CLI_DISABLE_AUTO_UPDATE=true` only (no API-key variables). Static declarations on the adapter: `gitWriteControl`
+`none-documented`, `commitChannel` `finalize-only`, `resumeCwd` `bound`.
+
+- **Tests:** `src/adapters/antigravity/antigravity.test.ts` (`antigravity compile matrix (T4.32)`,
+  `antigravity bypass-class declarations (ADR-0035, ADR-0045)`, `antigravity probe and auth placeholder (fail closed
+  until T4.34)`, `antigravity registry entry and manifest gate (T4.32)`); `src/adapters/providers.test.ts` (declared
+  bypass spellings).
+
+**As built (T4.33, Partial).** `parseEvent`, `extractResult`, `classifyFailure` and `resumeArgs` in `adapter.ts`; event
+names and status prefixes in `protocol.ts`. Structured JSONL only (FR-ADP-04): `session_bound` from `init`, never from
+free text. Success needs a clean expected exit, a `result` with `status` `SUCCESS`, run-total `total_tokens` above zero,
+and no `denied_actions` or `error` text (Q-86); envelope usage is emitted once as `provider_reported`. A soft-denied tool
+(`denied_actions`) ends `PERMISSION_BLOCKED` even when `status` is `SUCCESS` and the exit is 0. Invalid model and failed
+login map to `MODEL_UNAVAILABLE` and `AUTH_REQUIRED`; malformed and unknown lines become `unknown` events. Resume is not
+compiled: `resumeArgs` is always `Ineligible` and `--conversation` never appears in argv (Q-86). Shapes that stayed on
+stderr in the live check (for example `AGY_ERROR`) are outside `FailureEvidence` here, so those runs end `TOOL_FAILURE`
+until a capture shows them on the stdout stream the supervisor parses.
+
+- **Tests:** `src/adapters/antigravity/antigravity.test.ts` (`antigravity parser and result (T4.33)`,
+  `antigravity parser hardening (T4.33, synthetic shapes)`).
+
+**Not covered by this evidence (their own tasks):** auth preflight beyond the `UNKNOWN` placeholder (T4.34), conformance
+suite (T4.35), malicious-fixture leg (T4.36), operator live smoke and `adapters validate` (T4.38).
+
 ### 2.1 Model registry (M4, T4.5)
 
 Satisfies FR-ADP-05: model identities, aliases and context limits come from a refreshable registry, never from adapter
