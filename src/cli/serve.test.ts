@@ -310,6 +310,7 @@ describeLinuxVerified("serve over stdio (process level)", () => {
       "codex",
       "grok",
       "cursor",
+      "opencode",
       "fake",
     ]);
     expect(msgs.at(-1)).toBe("stopped");
