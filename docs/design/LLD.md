@@ -30,9 +30,9 @@ Conventions:
 `workspace_checkpoint`, `usage_observation`, `route_decision`, and (M11) `inner_call` and (M12) `rag_record` (FR-SES-05,
 FR-RTE-03, FR-CAP-01, FR-INN-15). **Update-once** (pending to decided): `approval`. **Mutable current-state**:
 `meta_session`, `run`, `provider_health`, `adapter_version.validated_*`, (M7) `project_affinity`, (M11)
-`inner_task_state`, (M13) `oauth_token.revoked`/`revoked_at`, and `artifact.deleted_at` only. Retention GC removes
-artifact files and worktrees and sets
-`artifact.deleted_at`; it never deletes `run_event` rows (Assumption).
+`inner_task_state`, (M13) `oauth_token.revoked`/`revoked_at` and `oauth_client.status`/`decided_at`, and
+`artifact.deleted_at` only. Retention GC removes artifact files and worktrees and sets `artifact.deleted_at`; it never
+deletes `run_event` rows (Assumption).
 
 ```sql
 CREATE TABLE schema_migrations (
@@ -1269,6 +1269,35 @@ CREATE TABLE oauth_token (               -- migration 0010 (T13.3); mutable only
   revoked_at  TEXT
 ) STRICT;
 CREATE INDEX oauth_token_client ON oauth_token(client_id, kind);
+```
+
+- **Client registration as built (T13.7, Q-74, Delegated).** `POST /register` (RFC 7591) needs no initial access
+  token, because a remote client registers itself, but a registered client is `pending` and gets no code or token until
+  the operator approves it on the consent page (a later task). The body must be `application/json`, at most 16 KiB
+  (413 otherwise, 415 for another type). Accepted: `redirect_uris` (1 to 4 absolute `https:` URLs of at most 2048
+  characters, no userinfo or fragment, no duplicates; plain `http:`, loopback included, is refused),
+  `token_endpoint_auth_method` absent or `none`, `grant_types` absent (default `authorization_code`) or a subset of
+  `authorization_code` and `refresh_token` containing `authorization_code`, `response_types` absent or `["code"]`, and
+  an optional `client_name` of 1 to 128 printable characters. Other fields (`scope`, `jwks`, `software_statement`, ...)
+  are ignored and not echoed. Errors are RFC 7591's `invalid_redirect_uri` or `invalid_client_metadata` with a
+  description that echoes no input. The 201 response carries `client_id` (`sbc_` and 128 random bits),
+  `client_id_issued_at`, `client_name`, `redirect_uris`, `grant_types`, `response_types: ["code"]` and
+  `token_endpoint_auth_method: "none"`; no secret and no registration access token (RFC 7592 is not offered). At most 16
+  `pending` clients created in the last 24 hours may exist; another registration gets 429 `temporarily_unavailable`
+  with `Retry-After: 3600`. The endpoint passes the `Origin` check first. `serve` logs the new `client_id` only. Code:
+  `src/mcp/oauth-clients.ts`, `src/mcp/http.ts`.
+
+```sql
+CREATE TABLE oauth_client (              -- migration 0011 (T13.7); status changes only by operator decision
+  client_id          TEXT PRIMARY KEY CHECK (client_id GLOB 'sbc_*'),
+  client_name        TEXT,
+  redirect_uris_json TEXT NOT NULL CHECK (json_valid(redirect_uris_json) AND json_type(redirect_uris_json) = 'array'),
+  grant_types_json   TEXT NOT NULL CHECK (json_valid(grant_types_json) AND json_type(grant_types_json) = 'array'),
+  status             TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','denied','revoked')),
+  created_at         TEXT NOT NULL,
+  decided_at         TEXT
+) STRICT;
+CREATE INDEX oauth_client_status ON oauth_client(status, created_at);
 ```
 
 - **Mapping.** `subject` (and an optional client claim) maps to a configured client entry (`transport.http.clients`).
