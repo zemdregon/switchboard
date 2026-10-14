@@ -83,6 +83,77 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ configPath: path.join(tmp, "missing.json") })).toThrow(ConfigError);
   });
 
+  describe("transport.http (T13.1, FR-MCP-12, ADR-0041)", () => {
+    const http = (h: Record<string, unknown>) =>
+      loadConfig({ configPath: write({ ...base(), transport: { http: h } }) });
+    const on = { enabled: true, public_url: "https://sb.example.test/mcp", port: 8443 };
+
+    it("is off when absent or disabled", () => {
+      expect(loadConfig({ configPath: write(base()) }).httpTransport).toBeUndefined();
+      expect(http({ ...on, enabled: false }).httpTransport).toBeUndefined();
+    });
+
+    it("resolves an enabled section with a loopback default bind", () => {
+      expect(http(on).httpTransport).toEqual({
+        bind: "127.0.0.1",
+        port: 8443,
+        resource: "https://sb.example.test/mcp",
+        issuer: "https://sb.example.test",
+        mcpPath: "/mcp",
+        allowedOrigins: [],
+      });
+    });
+
+    it.each([
+      ["http://sb.example.test/mcp", /must use https/],
+      ["http://127.0.0.1/mcp", /must use https/],
+      ["https://user:pw@sb.example.test/mcp", /must not contain userinfo/],
+      ["https://sb.example.test/mcp?x=1", /must not have a query or fragment/],
+      ["https://sb.example.test/", /path must name the MCP endpoint/],
+      ["https://sb.example.test/.well-known/oauth-protected-resource", /path must name the MCP endpoint/],
+      ["https://sb.example.test/token", /path must name the MCP endpoint/],
+      ["not a url", /not a valid URL/],
+    ])("refuses public_url %s", (url, re) => {
+      expect(() => http({ ...on, public_url: url })).toThrow(re);
+    });
+
+    it("never echoes userinfo from a refused URL", () => {
+      expect(() => http({ ...on, public_url: "https://user:s3cr3t@sb.example.test/mcp" })).toThrow(
+        /^(?![\s\S]*s3cr3t)/,
+      );
+    });
+
+    it("refuses a non-loopback or host-name bind unless explicitly allowed", () => {
+      expect(() => http({ ...on, bind: "0.0.0.0" })).toThrow(/not loopback; set allow_non_loopback/);
+      expect(() => http({ ...on, bind: "localhost" })).toThrow(/must be an IP address literal/);
+      expect(http({ ...on, bind: "0.0.0.0", allow_non_loopback: true }).httpTransport?.bind).toBe("0.0.0.0");
+      expect(http({ ...on, bind: "::1" }).httpTransport?.bind).toBe("::1");
+    });
+
+    it("accepts serialised origins only (T13.2)", () => {
+      const ok = ["https://app.example.test", "http://127.0.0.1:5173"];
+      expect(http({ ...on, allowed_origins: ok }).httpTransport?.allowedOrigins).toEqual(ok);
+      for (const bad of [
+        "https://app.example.test/",
+        "https://app.example.test/x",
+        "https://App.example.test",
+        "null",
+        "*",
+      ]) {
+        expect(() => http({ ...on, allowed_origins: [bad] })).toThrow(
+          /allowed_origins\[0\]: must be a serialised origin/,
+        );
+      }
+      expect(() => http({ ...on, allowed_origins: ok.concat(ok[0] as string) })).toThrow(/allowed_origins/);
+    });
+
+    it("requires public_url and port when enabled, and refuses unknown keys", () => {
+      expect(() => http({ enabled: true, port: 1 })).toThrow(/public_url: required when enabled/);
+      expect(() => http({ enabled: true, public_url: on.public_url })).toThrow(/port: required when enabled/);
+      expect(() => http({ ...on, token: "x" })).toThrow(/\$\.transport\.http\.token: unknown key/);
+    });
+  });
+
   it("rejects an allowed root that does not exist", () => {
     const cfg = { ...base(), allowed_roots: [path.join(tmp, "nope")] };
     expect(() => loadConfig({ configPath: write(cfg) })).toThrow(/\$\.allowed_roots\[0\]: cannot resolve/);

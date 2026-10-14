@@ -1,3 +1,4 @@
+export * from "./http-transport.js";
 export * from "./inner-agent.js";
 export * from "./load.js";
 export * from "./projects.js";

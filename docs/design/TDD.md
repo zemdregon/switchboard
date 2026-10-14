@@ -986,9 +986,24 @@ counts stay absent, never estimated.
 
 ### 3.14 Network MCP transport (M13)
 
-- **Assumption (not verified):** the official MCP TypeScript SDK provides a Streamable HTTP server and a bearer-token
-  verifier that can be extended to RFC 9728 metadata and RFC 8707 audience checks. Task T13.1 verifies this, or
-  chooses a library, before any code. Choice is Delegated.
+- **T13.1 spike (2026-10-14, read from the installed `@modelcontextprotocol/sdk` 1.32.1 in `node_modules`, not from
+  memory).** `server/streamableHttp.js` exports `StreamableHTTPServerTransport`, whose `handleRequest(req, res,
+  parsedBody?)` takes `node:http` objects (and an optional `req.auth`); the underlying
+  `WebStandardStreamableHTTPServerTransport` has `allowedOrigins` and `enableDnsRebindingProtection` options.
+  `server/auth/middleware/bearerAuth.js` exports `requireBearerAuth({ verifier, resourceMetadataUrl, expectedResource
+  })`, a `(req, res, next)` middleware whose `expectedResource` compares the verifier's `AuthInfo.resource` (the RFC 8707
+  audience check); it imports express only for types. `server/auth/router.js` exports `mcpAuthRouter` (an express 5
+  router; express is a dependency of the SDK, not of Switchboard) and `createOAuthMetadata`, which always advertises
+  `token_endpoint_auth_methods_supported: ["client_secret_post", "none"]` and whose issuer check accepts plain HTTP for
+  `localhost` and `127.0.0.1` and is switched off by the environment variable
+  `MCP_DANGEROUSLY_ALLOW_INSECURE_ISSUER_URL`.
+- **Choice (Delegated, T13.1).** A plain `node:http` listener (`src/mcp/http.ts`) with Switchboard's own RFC 9728 and
+  RFC 8414 documents and its own HTTPS check at config load (`src/config/http-transport.ts`), because the SDK router's
+  issuer check and fixed client-authentication list are weaker than ADR-0041 asks and would add express as a direct
+  dependency. Later tasks mount `StreamableHTTPServerTransport.handleRequest` on that listener (T13.2, T13.3) and may
+  reuse `requireBearerAuth` as a function; whether the SDK's authorize, token and registration handlers are reused
+  (behind express) or written is decided by the task that builds them. Evidence: `src/mcp/http.test.ts`,
+  `src/config/config.test.ts` (`transport.http`).
 - **Tests.** Malicious-fixture cases for the HTTP path: missing token, expired token, wrong audience, wrong issuer,
   unlisted `Origin`, a session reused by another subject, a privileged scope claim. No live identity provider is needed
   for the suite; token fixtures are generated locally and no test calls a real authorization server.

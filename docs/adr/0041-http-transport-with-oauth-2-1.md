@@ -84,6 +84,10 @@ on launch binding only ([ADR-0040](0040-mcp-caller-authentication-no-oauth-on-st
   remote connector. Confirm before relying on that client.
 - **External IdP:** keep as a later optional mode; not required for M13 acceptance.
 - **T13.1 spike:** confirm MCP SDK Streamable HTTP and how the embedded AS mounts beside the resource server.
+  *Answered in part (2026-10-14, Delegated):* the SDK's Streamable HTTP transport takes `node:http` objects, and the
+  first slice mounts the metadata documents on a plain `node:http` listener with Switchboard's own HTTPS check, because
+  the SDK's express auth router accepts plain-HTTP localhost issuers and advertises `client_secret_post`. Details and
+  evidence: [TDD §3.14](../design/TDD.md#314-network-mcp-transport-m13). This ADR stays Proposed until it is accepted.
 
 ## Revisit when
 
