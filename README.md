@@ -45,8 +45,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   `Done`: `minimum_capability` stays refused until model pinning lands, cache-friendly prompt order waits on the M4
   adapter lane, and the README routing section is still open (task T7.11). See
   [ROADMAP §6.12](docs/ROADMAP.md#612-m7-routing-tasks).
-- **Milestone 12 (retrieval index) is `Partial`.** Configuration, a per-project store, and the scanner through chunker
-  are on main and tested; embedding backends, background indexing and retrieval at admission are not. See
+- **Milestone 12 (retrieval index) is `Partial`.** Configuration, a per-project store, the scanner through chunker and
+  the embedding port (fake and `http` backends behind the locality gates) are on main and tested; background indexing
+  and retrieval at admission are not. See
   [ROADMAP §6.7](docs/ROADMAP.md#67-m12-retrieval-index-tasks).
 - **Milestone 13 (network MCP transport) is done.** `serve` can expose the MCP tools over Streamable HTTP with OAuth
   2.1 (an embedded authorization server with an operator consent page, PKCE, client registration that the operator
