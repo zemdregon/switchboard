@@ -293,6 +293,59 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
     });
   });
 
+  it("records only the observed usage counters and clips an unknown line's type", () => {
+    const { events } = parse([
+      line({
+        ...END,
+        usage: { input_tokens: 10, reasoning_tokens: 3, total_tokens: 13, surprise: 9, output_tokens: "2" },
+      }),
+      line({ type: "x".repeat(10_000) }),
+    ]);
+    expect(events.find((e) => e.kind === "usage")).toEqual({
+      kind: "usage",
+      source: "provider_reported",
+      metrics: { input_tokens: 10, reasoning_tokens: 3, total_tokens: 13, num_turns: 1 },
+    });
+    const unknown = events.find((e) => e.kind === "unknown");
+    expect(unknown?.kind === "unknown" && unknown.rawType.length).toBeLessThanOrEqual(65);
+  });
+
+  // Done-when cases whose native shape the T4.21 live check did NOT record (ROADMAP T4.23 stays Partial). Each fixture
+  // replays only what the check saw: the `tool_call`/`tool_call_update` field names were not recorded, so those lines
+  // carry `type` alone. These pin today's outcome; a capture (T4.21 extension) must change them.
+  describe("cases with no recorded native shape (live check 5d, 7g, 8c, 8f)", () => {
+    const TOOL_LINES = [line({ type: "tool_call" }), line({ type: "tool_call_update" })];
+
+    it("permission denied without a deny rule (8f: tool cancelled, stopReason `cancelled`, exit 0) is not success", () => {
+      const { events } = parse([...TOOL_LINES, line({ ...END, stopReason: "cancelled" })]);
+      const r = adapter().extractResult(events, EXIT_OK);
+      expect(r).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", unknownEventCount: 2, nativeSessionId: SID });
+    });
+
+    it("permission denied by a rule (8c) and a sandbox violation (7g) end `end_turn` at exit 0: NOT detected (gap)", () => {
+      // The only signal in both is the tool's own status and text inside an unrecorded `tool_call_update` shape, and
+      // FR-ADP-04 forbids reading status from free text, so the parser emits neither `permission_denied` nor
+      // `sandbox_violation`. The opaque tool lines are counted, so the run carries `unknownEventCount` > 0.
+      const { events } = parse([...TOOL_LINES, line({ type: "text", data: "Permission denied" }), line(END)]);
+      expect(events.some((e) => e.kind === "permission_denied" || e.kind === "sandbox_violation")).toBe(false);
+      expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({ ok: true, unknownEventCount: 2 });
+    });
+
+    it("a rate limit (5d, never forced) has no recognised form: an unrecognised error line or a bare exit is not success", () => {
+      const exit1 = { outcome: "exited", exitCode: 1, signal: null, expectedExitCodes: [0] } as const;
+      const errorLine = parse([line({ type: "error", message: "SYNTHETIC: too many requests" })]);
+      expect(errorLine.events).toEqual([
+        { kind: "provider_error", category: "unknown", message: "SYNTHETIC: too many requests" },
+      ]);
+      expect(adapter().extractResult(errorLine.events, exit1)).toMatchObject({
+        ok: false,
+        failureCode: "TOOL_FAILURE",
+      });
+      expect(adapter().extractResult([], exit1)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+      expect(errorLine.events.some((e) => e.kind === "rate_limit")).toBe(false);
+    });
+  });
+
   it("ignores ACP messages and unparseable framing", () => {
     const a = adapter();
     const state: ParseState = { lines: 0, unknownEvents: 0 };
