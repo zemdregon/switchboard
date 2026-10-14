@@ -40,11 +40,12 @@ Pre-release. The package is private and is not published to any registry; you bu
   is tested on fake providers. It is not `Done`: what Claude Code and Codex print on a real rate limit or quota stop has
   not been captured (operator task T6.11), and no provider is known to publish an enforceable rate limit, so there is no
   rate gate. See [ROADMAP §6.11](docs/ROADMAP.md#611-m6-capacity-and-resilience-tasks).
-- **Milestone 7 (routing) is `Partial`.** Tasks T7.0 to T7.7 and T7.10 are done on fake adapters: `explain_route`,
-  provider or model affinity (with `switchboard affinity list|reset`), including the acceptance test through the MCP
-  server. It is not `Done` until at least T7.8 (`minimum_capability`, blocked on model pinning in T7.12) and T7.11
-  (README and status) land; cache-friendly prompt order (T7.9) waits on the M4 adapter lane. See
-  [ROADMAP §6.12](docs/ROADMAP.md#612-m7-routing-tasks).
+- **Milestone 7 (routing) is `Partial`.** Eligible providers are scored from Switchboard's own records, every route
+  decision is stored and replays exactly, `explain_route` shows why a run went where it did, and a project stays on its
+  provider until a listed reason moves it (`switchboard affinity list|reset`). All of this is tested on fake providers.
+  It is not `Done`: `minimum_capability` is still refused, the remembered model is not yet passed to the provider, and
+  the cache-friendly prompt order is not built; all three wait for adapter work. See
+  [Routing and affinity](#routing-and-affinity) and [ROADMAP §6.12](docs/ROADMAP.md#612-m7-routing-tasks).
 - **Milestone 11 (inner agent) is `Partial`.** An optional HTTP backend, privacy gates, `doctor` and `inner` reporting,
   and commit-message drafting on fakes are on main; most run-path hooks, PR drafting and a live backend are not. See
   [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
@@ -154,6 +155,7 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `providers.claude-code.git_channel` | no | Boolean, default `false`. **Unsupported, for testing only:** gives Claude Code the injected `commit` (and `push`) tool through a Switchboard-written `--mcp-config` file in the run's private directory, **only in an approved `privileged` run whose scope sets `bypass`**. Such a run then omits `--safe-mode` (it stops the tool server from starting), so the repository's `CLAUDE.md` and hooks load in it. Every other run is unaffected and can use `finalize_commit`. It has not been run end to end with the real `claude` (ROADMAP T9.4b); `serve` logs a warning when it is on. Only `claude-code` accepts the key. |
 | `retention.days`, `retention.interval` | no | How long idle meta-sessions are kept (integer days, default 30) and how often `serve` runs the clean-up pass (`30m`, `12h`, `7d`; default `24h`). **Nothing is deleted unless you set `retention.days`**; the default only applies once you do (or to `gc` dry runs). |
 | `projects` | no | List of `{ "id", "name", "environment"?, "contexts": [...] , "max_trust_profile"?, "allowed_providers"? }`. `id` matches `^[a-z][a-z0-9-]{1,40}$` and is unique. `environment` is `{ "kind": "host" }` (default) or a `container` shape that `projects validate` rejects until M10. Each context is `{ "id", "kind": "repository", "path", "base_ref", "primary"?, "writable"?, "push"?, "identity"?, "sign"?, "finalize_commit"? }` with an absolute `path` under an allowed root; exactly one context is primary. Unknown keys and context kinds stop startup. `push.remote` must be the name of a remote in the repository (not a URL), and `push.branch_prefix` a branch-name prefix such as `"switchboard/"`. `max_trust_profile` and `allowed_providers` apply to `delegate_task` with a `project`: the effective trust ceiling is the lower of the client's and the project's, and routing is limited to the listed providers (a request naming another provider with `require_provider` fails `PERMISSION_BLOCKED`); `sign` (default `false`; needs `identity`, primary writable context only) makes the controller sign each published commit with the operator's own global Git signing configuration; a signing failure, a repository whose own configuration sets `gpg.*` or `user.signingkey`, or a run whose agent could reach the key (the `push` rule) returns `SIGNING_FAILED` and commits nothing; `projects validate` makes a test signature. Only GnuPG has been tried, with a throwaway key; SSH, X.509, passphrase-protected and hardware keys are untested. `finalize_commit` (default `false`; needs `identity`, primary writable context only) turns on finalize-only commits, described below. Full shape: LLD section 11.1. |
+| `routing` | no | `{ "weights"?: { "success", "latency", "capacity", "security", "handoff", "cost" }, "affinity"?: { "enabled", "low_water_mark", "min_confidence", "idle_ttl" } }`. Each weight 0 to 100, default 1; all 0 means configured order. `affinity.enabled` defaults to `true`; `low_water_mark` and `min_confidence` (0 to 1) are set together or both left `null` (the default, which leaves the estimate trigger off); `idle_ttl` accepts only `null` (no expiry). Unknown keys stop startup. See [Routing and affinity](#routing-and-affinity) and LLD section 17.1. |
 | `timeouts.preflight_ttl_seconds` | no | Integer 0 to 3600. How long a successful adapter preflight is cached (default 60); 0 disables the cache. |
 | `git.sanitize_patterns` | no | Up to 16 extra regular-expression sources (200 characters each, restricted subset in `src/git/safe-pattern.ts`). A commit-message line that matches one is removed, in addition to the built-in attribution rules. |
 | `inner_agent` | no | The optional inner agent (ADR-0016): a cheap or self-hosted model for small tasks. Off unless you write the section and set `enabled: true`; there is no default backend, model or task, and no key, token or header field (a hosted service goes through a gateway you run). Shape: `{ "enabled", "backend": { "kind": "http", "base_url", "model", "timeout_ms"?, "max_concurrency"?, "allow_remote"?, "shares_subscription_with"? }, "tasks": { "<task>": { "enabled", ... } }, "breaker"?, "suspension"? }`; `base_url` may not carry userinfo or a query. Full shape: LLD section 13.1. Inspect it with `doctor` and `inner status`. |
@@ -297,9 +299,56 @@ Switchboard's own records when you ask:
 - **Limits.** `limits.per_provider_concurrency` (default 1) applies to every provider, and
   `providers.<id>.concurrency` overrides it for one provider.
 - **Cache and switch counts** are evidence, not claims. Reported cache token counts are shown only where a source names
-  the provider's key (Grok Build today). Per-project kept and switched counts group switches by
-  `affinity_switch_reason` (`user_request`, `capacity_exhausted`, `ineligible`, `failed_after_retry`); runs whose
-  decision has no recorded reason still appear under `unrecorded`.
+  the provider's key (Grok Build today). The per-project kept and switched counts show the reason routing recorded
+  (see [Routing and affinity](#routing-and-affinity)), or `unrecorded` for a change no affinity reason covers: a
+  decision written before milestone 7, a `continue_task` to another provider, a change of reported model alone, or
+  affinity turned off.
+
+### Routing and affinity
+
+Every `delegate_task`, `continue_task` and quota failover is routed in two stages, and the decision is stored with
+everything needed to re-run it.
+
+1. **Eligibility.** Providers that fail a hard constraint (enablement, trust ceiling, platform, binary, version gate,
+   login, profile compile, open circuit breaker, known quota exhaustion, the project's `allowed_providers`) are removed
+   with a reason. No hint or score brings one back. `require_provider` with an ineligible provider is an error.
+2. **Selection**, first match wins: the provider named with `require_provider`; the project's affine provider (below);
+   an eligible `provider_preference`; the highest score; configured order on a tie.
+
+**The score** is a weighted mean of six terms, each 0 to 1, computed per candidate from Switchboard's own ledger:
+`success` (healthy versus counted failures in the capacity window), `latency` (median wall time of succeeded runs),
+`capacity` (the milestone 6 estimate; an unknown estimate scores 0, never as headroom), `handoff` (staying on the
+meta-session's provider for a continuation), and `security` and `cost`, which are 0.5 for every provider because no
+source gives a sandbox-strength order or a price. With no history every provider ties, so the default is configured
+order. Weights are `routing.weights` (0 to 100 each, default 1, an Assumption). A heuristic classifier also records
+task features (`context_volume`, `autonomy`, `task_kind`, `reasoning_depth`) for explanation only: no feature changes
+a route, because no source says which provider is better at what.
+
+**What a score never claims.** It is not a quality, price or model ranking, and not a prediction of success. Terms with
+no source are equal for every provider, so they can never decide a route.
+
+**Affinity.** A project (its id, or the workspace path for a run without one) stays on the provider and model of its
+last succeeded run. A better score, a lower cost or a lower load never moves it. It moves only for a reason from a
+closed list, recorded in the decision:
+
+- `user_request`: `require_provider` names another provider, or the operator ran `switchboard affinity reset`;
+- `ineligible`: the affine provider failed stage 1 (it does not move back when it recovers);
+- `capacity_exhausted`: known quota exhaustion, a quota failover, or the optional estimate trigger
+  (`routing.affinity.low_water_mark` with `min_confidence`, both off by default);
+- `failed_after_retry`: the project's last run there failed after its automatic retries ran out.
+
+`provider_preference` is a hint: it does not move a project that already has affinity. A first run that fails creates
+no affinity. A `continue_task` follows its meta-session, not affinity, and a `privileged` meta-session is never moved
+to another provider. The model is remembered (the one the provider's session reported) but not yet passed to the
+provider, so a held run uses the adapter's default model. `routing.affinity.enabled: false` turns affinity off.
+
+**`explain_route`** returns, from the stored decision only, the candidates with their eligibility reasons, the
+features, the weights, each candidate's terms and score, the rule that selected the provider, the affinity outcome and
+short deciding factors such as `affinity held (claude)`. No model is asked and no reasoning is invented. A client sees
+only its own runs. `switchboard affinity list` and `affinity reset` are under [Operator commands](#operator-commands).
+
+The rules and the record format are in [LLD §17](docs/design/LLD.md#17-routing-m7) and
+[ADR-0044](docs/adr/0044-deterministic-route-scoring-and-replayable-decisions.md).
 
 ### How commits reach Git
 
@@ -569,6 +618,9 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   Q-61 is open).
 - `adapters validate` exists for Claude Code and Codex only; the M4 providers still need operator captures before their
   manifests admit a version.
+- Routing (milestone 7) refuses `minimum_capability` with `ELIGIBILITY_NONE`, because the model a run uses is not yet
+  chosen by Switchboard (ROADMAP Q-90, T7.8, T7.12). Affinity keeps the provider but not the model: a held run uses the
+  adapter's default model. No cache benefit from keeping a project on one provider is claimed.
 - Capacity figures are controller estimates. No provider is known to report remaining quota, and the rate-limit and
   quota output shapes of Claude Code and Codex come from synthetic fixtures until the operator captures them (ROADMAP
   T6.11). There is no rate gate, because no provider publishes an enforceable limit for the logins used (T6.8,
