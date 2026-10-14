@@ -359,6 +359,77 @@ describe("admission", () => {
     expect(events(r.runId).map((e) => e.type)).toContain("approval_closed");
   });
 
+  describe("objective redaction at admission (Q-68, NFR-SEC-01)", () => {
+    // Synthetic canaries shaped like the redactor's patterns (never real credentials).
+    const KEY = `sk-ant-api03-CANARYQ68${"0a1b2c3d".repeat(3)}`;
+    const GH = `ghp_${"Q68canary".repeat(4)}`;
+    const ledgerText = () =>
+      [
+        ...(db.prepare("SELECT objective, constraints_json FROM meta_session").all() as Record<string, string>[]),
+        ...(db.prepare("SELECT request_json FROM run").all() as Record<string, string>[]),
+      ]
+        .map((r) => JSON.stringify(r))
+        .join("\n");
+    const storedRequest = (runId: string) => JSON.parse(ledger.getRunRecord(runId)?.request_json ?? "{}");
+    const compiled: CompileRequest[] = [];
+    beforeEach(() => {
+      compiled.length = 0;
+      adapter.onCompile = (req) => compiled.push(req);
+    });
+
+    it("stores and sends the redacted objective and constraints, with a count and never the original", async () => {
+      const r = await submit(`fix the build, my key is ${KEY}`, { constraints: [`use token ${GH}`, "keep tests"] });
+      const meta = ledger.getMetaSession(r.metaSessionId);
+      expect(meta?.objective).toBe("fix the build, my key is [REDACTED]");
+      const req = storedRequest(r.runId);
+      expect(req).toMatchObject({
+        objective: "fix the build, my key is [REDACTED]",
+        constraints: ["use token [REDACTED]", "keep tests"],
+        admission_redactions: 2,
+      });
+      expect(ledgerText()).not.toContain(KEY);
+      expect(ledgerText()).not.toContain(GH);
+      lifecycle.start();
+      await lifecycle.waitForTerminal(r.runId);
+      // What the adapter compiles is what the provider receives (stdin or the ACP prompt).
+      expect(compiled.map((c) => [c.objective, c.constraints])).toEqual([
+        ["fix the build, my key is [REDACTED]", ["use token [REDACTED]", "keep tests"]],
+      ]);
+    });
+
+    it("a clean objective is stored unchanged with no redaction field (stored request and hash unchanged)", async () => {
+      const r = await submit("success", { constraints: ["keep tests"] });
+      const req = storedRequest(r.runId);
+      expect(req.objective).toBe("success");
+      expect(req).not.toHaveProperty("admission_redactions");
+      // A literal marker already in the text is not counted as a redaction.
+      const m = await submit("leave [REDACTED] as it is");
+      expect(storedRequest(m.runId)).not.toHaveProperty("admission_redactions");
+    });
+
+    it("a continuation stores and sends its own instruction redacted and re-sends the stored constraints", async () => {
+      lifecycle.start();
+      const first = await submit("success", { constraints: [`token ${GH}`] });
+      await lifecycle.waitForTerminal(first.runId);
+      // The MCP layer continues with the constraints the meta-session's latest run stored (FRD C3).
+      const inherited = lifecycle.metaSessionContext(first.metaSessionId)?.constraints;
+      expect(inherited).toEqual(["token [REDACTED]"]);
+      const next = await submit(`now use ${KEY}`, { metaSessionId: first.metaSessionId, constraints: inherited });
+      await lifecycle.waitForTerminal(next.runId);
+      expect(storedRequest(next.runId)).toMatchObject({
+        objective: "now use [REDACTED]",
+        constraints: ["token [REDACTED]"],
+        admission_redactions: 1,
+      });
+      expect(compiled.map((c) => [c.objective, c.constraints])).toEqual([
+        ["success", ["token [REDACTED]"]],
+        ["now use [REDACTED]", ["token [REDACTED]"]],
+      ]);
+      expect(ledgerText()).not.toContain(KEY);
+      expect(ledgerText()).not.toContain(GH);
+    });
+  });
+
   describe("privileged admission (T3.3, LLD §3.1)", () => {
     it("T2 writes the run, one PENDING approval and the first event in one transaction; no process, no worktree", async () => {
       const r = await submit("success", { trustProfile: "privileged", privileged: { scope: SCOPE } });

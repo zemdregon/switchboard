@@ -18,7 +18,8 @@
  * Prompt text (c): the objective is deliberately stored in `meta_session.objective` and `run.request_json` (the
  * continuity record, LLD §15; FRD BR-8), so the objective canary is asserted absent from `run_event` payloads, artifacts,
  * the daemon log and CLI list output, not from those two columns. A credential-shaped canary inside the prompt is
- * asserted absent everywhere, including those columns.
+ * asserted absent everywhere, including those columns and the raw data directory: the objective is redacted at
+ * admission (Q-68).
  *
  * The scanner itself has positive controls at the end: each detector is shown to fire on planted text.
  */
@@ -444,7 +445,6 @@ describe("secret scan: in-process runs (lifecycle, ledger, artifacts, MCP, CLI)"
 
   it("no environment or provider-output credential canary appears on any surface", () => {
     const canaries = credentialCanaries(c);
-    delete canaries["prompt.credential"]; // handled below: stored verbatim in the objective columns
     const found: Record<string, string[]> = {};
     for (const [surface, text] of Object.entries(got.surfaces)) {
       const hits = findCanaries(text, canaries);
@@ -469,20 +469,13 @@ describe("secret scan: in-process runs (lifecycle, ledger, artifacts, MCP, CLI)"
     expect(got.surfaces.artifacts_decoded).toContain("env seen: []");
   });
 
-  it("a credential-shaped canary in the prompt appears on no surface except the objective columns", () => {
-    const only = { "prompt.credential": c.promptCredential };
-    for (const name of ["ledger", "ledger_run_events", "artifacts_decoded", "mcp", "cli"] as const) {
-      expect(findCanaries(got.surfaces[name], only), name).toEqual([]);
-    }
-  });
-
-  // KNOWN GAP, reported by this scan (ROADMAP §6.1.1): the objective is stored verbatim in `meta_session.objective`
-  // and `run.request_json`, with no redaction, so a credential pasted into a prompt reaches the ledger and the data
-  // directory. Changing it alters what a continuation or handoff re-sends, which is a design decision. `it.fails`
-  // turns green-to-red when someone closes the gap, and then this test and the exclusions above should go.
-  it.fails("a credential-shaped canary in the prompt is absent from the whole ledger and data directory", () => {
+  // Q-68 (Delegated by the orchestrator, 2026-10-14): the objective is redacted at admission, so a credential pasted
+  // into a prompt reaches neither the objective columns nor the raw SQLite file and WAL.
+  it("a credential-shaped canary in the prompt is absent from the whole ledger and data directory", () => {
     expect(got.surfaces.ledger_full).not.toContain(c.promptCredential);
     expect(got.surfaces.data_dir_files).not.toContain(c.promptCredential);
+    // Positive control: the prompt text itself is still stored, with the marker where the credential was.
+    expect(got.surfaces.ledger_full).toContain(`${c.promptText} mode:ok (credential in prompt: [REDACTED])`);
   });
 
   it("run_event payloads omit the prompt text (FR-TEL-03)", () => {
@@ -629,12 +622,9 @@ describeLinuxVerified("secret scan: `serve` daemon as a process (stderr log, dat
     };
     const found: Record<string, string[]> = {};
     for (const [surface, text] of Object.entries(surfaces)) {
-      // The raw data directory holds the verbatim objective (known gap, see the in-process suite); the other
-      // surfaces must not hold the prompt credential either.
-      const hits = findCanaries(text, {
-        ...canaries,
-        ...(surface === "data_dir_files" ? {} : { prompt_credential: c.promptCredential }),
-      });
+      // The objective is redacted at admission (Q-68), so no surface, the raw data directory included, holds the
+      // prompt credential.
+      const hits = findCanaries(text, { ...canaries, prompt_credential: c.promptCredential });
       if (hits.length > 0) found[surface] = hits;
     }
     expect(found).toEqual({});
