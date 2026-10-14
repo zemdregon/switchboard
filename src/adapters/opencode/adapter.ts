@@ -18,7 +18,7 @@
  *   (ADR-0039), FR-GIT-03 and FR-GIT-06;
  * - the parser (T4.53) reads only the `--format json` fields the 2026-10-14 live check recorded; success needs a
  *   `step_finish` with reason `stop` (Q-85); resume is `--session <id>` through the same matrix. The auth preflight
- *   fails closed until T4.54. The manifest range admits no version, so none of this runs before `adapters validate`
+ *   (T4.54) reads the connection types of `auth list --format json --standalone`. The manifest range admits no version, so none of this runs before `adapters validate`
  *   passes a version.
  */
 import {
@@ -51,6 +51,9 @@ import type {
   RunResult,
 } from "../types.js";
 import {
+  AUTH_ENV_CONNECTION_TYPES,
+  AUTH_STATUS_ARGS,
+  AUTH_STATUS_TIMEOUT_MS,
   DISABLE_AUTOUPDATE_ENV,
   END_OF_OPTIONS,
   ERROR_TYPE_CATEGORIES,
@@ -60,6 +63,7 @@ import {
   GIT_WRITE_CONTROL_DETAIL,
   NON_PRIVILEGED_UNSUPPORTED_DETAIL,
   OPENCODE_BINARY,
+  OPENCODE_LOGIN_COMMAND,
   REASON_STOP,
   REQUIRED_HELP_FLAGS,
   RUN_COMMAND,
@@ -206,12 +210,40 @@ export class OpenCodeAdapter implements ProviderAdapter {
     return { binaryPath: exe, binaryVersion: version, steps };
   }
 
-  /** T4.54 supplies the auth preflight; until then fail closed (NFR-SEC-06). Never reads a credential file. */
-  async authPreflight(_runner: ProbeRunner): Promise<AuthResult> {
-    return {
+  /**
+   * FR-AUTH-01/02 (T4.54): `opencode auth list --format json --standalone`, keyed on the connection types (see
+   * protocol.ts). Never reads `auth.json`, never runs `auth login` or `auth export`, and never copies the list (it names
+   * providers and accounts) into the result.
+   */
+  async authPreflight(runner: ProbeRunner): Promise<AuthResult> {
+    const exe = this.#exe;
+    if (exe === undefined) return { state: "UNKNOWN", reason: `${OPENCODE_BINARY} not found on PATH` };
+    const r = await runner([exe, ...this.#launcher, ...AUTH_STATUS_ARGS], { timeoutMs: AUTH_STATUS_TIMEOUT_MS });
+    const unknown = (why: string): AuthResult => ({
       state: "UNKNOWN",
-      reason: "OpenCode auth preflight is not implemented (T4.54); `opencode auth list` exits 0 in every login state",
-    };
+      reason: `\`${OPENCODE_BINARY} ${AUTH_STATUS_ARGS.join(" ")}\` gave no login state (${why})`,
+    });
+    if (r.spawnError !== undefined) return unknown("could not start");
+    if (r.timedOut) return unknown("timed out");
+    if (r.exitCode !== 0) return unknown(`exit ${r.exitCode}`);
+    let doc: unknown;
+    try {
+      doc = JSON.parse(r.stdout);
+    } catch {
+      return unknown("output is not JSON");
+    }
+    if (!Array.isArray(doc)) return unknown("not a JSON array");
+    let stored = false;
+    for (const entry of doc) {
+      const connections = obj(entry)?.connections;
+      if (!Array.isArray(connections)) return unknown("an entry has no connections list");
+      for (const c of connections) {
+        const type = str(obj(c)?.type);
+        if (type === undefined) return unknown("a connection has no type");
+        if (!AUTH_ENV_CONNECTION_TYPES.includes(type)) stored = true;
+      }
+    }
+    return stored ? { state: "OK" } : { state: "AUTH_REQUIRED", loginCommand: OPENCODE_LOGIN_COMMAND };
   }
 
   compile(request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible {

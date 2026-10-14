@@ -163,7 +163,7 @@ describe("opencode bypass-class declaration (ADR-0035)", () => {
   });
 });
 
-describe("opencode probe and auth placeholder (fail closed until T4.54)", () => {
+describe("opencode probe and auth preflight (T4.52, T4.54)", () => {
   const runner =
     (table: Record<string, { stdout: string; exitCode: number }>): ProbeRunner =>
     async (argv) => {
@@ -207,8 +207,64 @@ describe("opencode probe and auth placeholder (fail closed until T4.54)", () => 
     expect(missing.steps).toEqual([{ step: "binary", ok: false, detail: "opencode not found on PATH" }]);
   });
 
-  it("auth is UNKNOWN until T4.54", async () => {
-    expect(await adapter().authPreflight(runner({}))).toMatchObject({ state: "UNKNOWN" });
+  // T4.54: shapes of the 2026-10-14 live check rows 2b, 2d to 2f; names and ids are invented placeholders.
+  const AUTH = "auth list --format json --standalone";
+  const list = (v: unknown) => ({ [AUTH]: { stdout: JSON.stringify(v), exitCode: 0 } });
+
+  it("auth is OK only when a provider holds a non-environment connection; empty or environment-only is AUTH_REQUIRED", async () => {
+    expect(
+      await adapter().authPreflight(
+        runner(list([{ id: "opencode", name: "Someone", connections: [{ type: "oauth" }] }])),
+      ),
+    ).toEqual({ state: "OK" });
+    for (const v of [
+      [],
+      [{ id: "cloudflare", name: "Env Provider", connections: [{ type: "environment" }] }],
+      [{ id: "other", name: "Env Provider", connections: [{ type: "env" }, { type: "environment" }] }],
+    ]) {
+      expect(await adapter().authPreflight(runner(list(v))), JSON.stringify(v)).toEqual({
+        state: "AUTH_REQUIRED",
+        loginCommand: "opencode auth login",
+      });
+    }
+  });
+
+  it("auth is UNKNOWN for text output, other shapes, another exit code, a timeout and no binary; no name leaks", async () => {
+    const cases: Record<string, { stdout: string; exitCode: number }>[] = [
+      { [AUTH]: { stdout: "No authenticated integrations\n", exitCode: 0 } },
+      list({ providers: [] }),
+      list([{ id: "x", name: "Someone" }]),
+      list([{ id: "x", name: "Someone", connections: [{}] }]),
+      { [AUTH]: { stdout: "[]", exitCode: 1 } },
+    ];
+    for (const table of cases) {
+      const r = await adapter().authPreflight(runner(table));
+      expect(r, JSON.stringify(table)).toMatchObject({ state: "UNKNOWN" });
+      expect(JSON.stringify(r)).not.toContain("Someone");
+    }
+    const timedOut: ProbeRunner = async () => ({ stdout: "[]", stderr: "", exitCode: null, timedOut: true });
+    expect(await adapter().authPreflight(timedOut)).toMatchObject({ state: "UNKNOWN" });
+    expect(await new OpenCodeAdapter({ pathEnv: "/nonexistent" }).authPreflight(runner({}))).toMatchObject({
+      state: "UNKNOWN",
+      reason: "opencode not found on PATH",
+    });
+  });
+
+  it("runs only `auth list --format json --standalone`, never `auth export`, with a timeout", async () => {
+    const seen: (readonly string[])[] = [];
+    let timeout: number | undefined;
+    const rec: ProbeRunner = async (argv, opts) => {
+      seen.push(argv);
+      timeout = opts?.timeoutMs;
+      return { stdout: "[]", stderr: "", exitCode: 0, timedOut: false };
+    };
+    await adapter().authPreflight(rec);
+    expect(seen).toEqual([[EXE, "auth", "list", "--format", "json", "--standalone"]]);
+    expect(timeout).toBe(15_000);
+    for (const f of ["adapter.ts", "protocol.ts"]) {
+      const src = readFileSync(new URL(`./${f}`, import.meta.url), "utf8");
+      expect(src, f).not.toMatch(/"export"/);
+    }
   });
 
   it("reads no OpenCode credential or configuration file (source inspection)", () => {
