@@ -28,7 +28,10 @@ import { compileExcludes, isDenylisted } from "./denylist.js";
  * denylist and excludes are applied to both the link path and its resolved path; redaction keeps line numbers by
  * replacing a multi-line PEM private key block with one marker followed by the same number of newlines; carriage
  * returns are stripped by the shared control-character step, so CRLF files chunk like LF files; caps are applied per
- * file (a file whose chunks would cross a cap is not indexed at all, keeping the index consistent).
+ * file (a file whose chunks would cross a cap is not indexed at all, keeping the index consistent); a path with a
+ * symlinked parent directory is skipped (`symlink_escape` when its real location leaves the root). Residual risk: a
+ * directory swapped for a symlink between that check and the open is not detected (`O_NOFOLLOW` covers the last
+ * component only); the agent-writable run worktree is never scanned (LLD §14.5), only the project's contexts.
  */
 
 export type SkipReason =
@@ -177,6 +180,16 @@ export async function scanContext(root: string, opts: ScanOptions): Promise<Scan
           continue;
         }
         abs = target;
+      } else {
+        // `lstat` refuses a symlink only in the last component: a tracked `a/b.txt` whose directory `a` was replaced by
+        // a symlink would otherwise be read through it. Any path whose real location differs is skipped, as escaping
+        // when it leaves the root and as a symlinked directory (never descended) otherwise.
+        const real = await realpath(abs);
+        if (real !== abs) {
+          const realRel = toPosix(path.relative(realRoot, real));
+          await skip(realRel.startsWith("..") || path.isAbsolute(realRel) ? "symlink_escape" : "special_file");
+          continue;
+        }
       }
       const s = await stat(abs);
       if (!s.isFile()) {

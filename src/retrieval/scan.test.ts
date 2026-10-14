@@ -152,6 +152,25 @@ describe("scanContext in a Git context", () => {
     expect(reasonOf(r, "dirlink")).toBe("special_file");
   });
 
+  it("never reads through a tracked directory that was replaced by a symlink", async () => {
+    put("docs/readme.md", "tracked\n");
+    put("inside/readme.md", marker("inside-dir"));
+    sh(root, "init", "-q");
+    sh(root, "add", "-A");
+    sh(root, "commit", "-q", "-m", "x");
+    put("readme.md", marker("escape-parent"), outside);
+    rmSync(path.join(root, "docs"), { recursive: true });
+    symlinkSync(outside, path.join(root, "docs"));
+    const moved = await scanContext(root, OPTS);
+    expect(allText(moved)).not.toContain(marker("escape-parent"));
+    expect(reasonOf(moved, "docs/readme.md")).toBe("symlink_escape");
+    rmSync(path.join(root, "docs"));
+    symlinkSync(path.join(root, "inside"), path.join(root, "docs"));
+    const inner = await scanContext(root, OPTS);
+    expect(reasonOf(inner, "docs/readme.md")).toBe("special_file");
+    expect(inner.files.map((f) => f.path)).toContain("inside/readme.md");
+  });
+
   it("does not run a repository-configured filter or hook", async () => {
     put("a.txt", "hello\n");
     sh(root, "init", "-q");
