@@ -76,7 +76,7 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | `timeouts.*` | Wall-clock, idle, grace (proposed targets in [LLD §8](LLD.md#8-run-supervisor-details)); only `timeouts.preflight_ttl_seconds` exists in the schema today: integer 0 to 3600, default 60 (**Assumption**), 0 disables the preflight cache; unknown keys are rejected. *Note (2026-10-13, Delegated, [decision 29](../ROADMAP.md#42-owner-decisions), T3.21):* it bounds how long a successful `probe` or `authPreflight` is reused; failures are never cached | FR-EXE-01, NFR-PERF-02 |
 | `retention.days`, `retention.interval` | Retention in days (default 30, proposed target) and the GC pass period (`<n>m`, `<n>h` or `<n>d`, default `24h`). Collection is on only when `retention.days` is set in the file: the default is a value, not a switch (`ResolvedConfig.retentionEnabled`, T3.12, Proposed, Delegated). A period above about 24.8 days is capped by the timer | NFR-DATA-01, FR-WS-07 |
 | `profiles.<name>` | Overrides of the [SRS §3.3](../requirements/SRS.md#33-policy-and-trust-profiles-fr-pol) defaults. They may tighten or loosen a default ([owner decision 12](../ROADMAP.md#42-owner-decisions)); a loosening must be explicit in the config, is validated, and is recorded in the run's policy snapshot and listed by `doctor` (M3, T3.2). *Known limit ([owner decision 20](../ROADMAP.md#42-owner-decisions), 2026-10-13):* a `profiles.edit-untrusted` override that loosens `network` or `repo_config` is not enforced: the Claude adapter compiles `edit-untrusted` with the strict settings (network off at the tool level, repository configuration disabled) whatever the override says, and the Codex adapter makes the run `Ineligible: CAPABILITY_MISSING` | FR-POL-01 |
-| `providers.<id>` | `{enabled, binary_path, extra_env_allowlist[], models}`; `models` is `{ids[], aliases{}, context_limits{}}` (implemented, T4.5; the earlier placeholder name was `model_overrides`; shape and refresh rule in [LLD §2.1](LLD.md#21-model-registry-m4-t45)) | FR-ADP-05, FR-EXE-07 |
+| `providers.<id>` | `{enabled, binary_path, extra_env_allowlist[], models}`; `models` is `{ids[], aliases{}, context_limits{}}` (implemented, T4.5; the earlier placeholder name was `model_overrides`; shape and refresh rule in [LLD §2.1](LLD.md#21-model-registry-m4-t45)). *As built (2026-10-13):* `src/config/schema.ts` accepts `{enabled, weight, models}` plus `git_channel` under `claude-code` only; `binary_path`, `extra_env_allowlist` and `model_overrides` are not implemented | FR-ADP-05, FR-EXE-07 |
 | `providers.claude-code.git_channel` | Boolean, default `false`; `claude-code` only. Operator opt-in for the Claude Code tool channel through a controller-written `--mcp-config` file; implemented (T9.4b, [ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md)) and **UNSUPPORTED** until the ADR-0029 live checks pass ([LLD §11.1](LLD.md#111-configuration-shape), §12.2); only approved bypass runs get the channel, without `--safe-mode` ([ADR-0033](../adr/0033-claude-channel-bypass-only-without-safe-mode.md)) | FR-GIT-02, FR-POL-08 |
 | `routing.weights`, `routing.minimum_capability_defaults` | Static weights | FR-RTE-02 |
 | `capacity.queue_horizon` | Max wait for a known reset | FR-CAP-06 |
@@ -95,7 +95,9 @@ filesystem and Git checks run only in `projects validate`, so adding a project c
 *Note (2026-10-13, Delegated, T9.2):* `mcp_clients[].projects` is implemented: strict schema key, an unknown project id
 aborts the load, and a client with no list may use no project (workspace-path requests are unaffected). `serve` checks
 the filesystem rules of the project a request names at each `delegate_task` (path under an allowed root, base ref
-resolves). The ledger is at schema version 2 ([ADR-0024](../adr/0024-project-id-columns-and-project-snapshot.md)). The
+resolves). The ledger was at schema version 2 when T9.2 landed
+([ADR-0024](../adr/0024-project-id-columns-and-project-snapshot.md)); it is now at version 4, after migration 0004 for
+dynamic projects (T9.9, [ADR-0030](../adr/0030-dynamic-project-revisions-and-approval.md)). The
 tests use the fake adapter and real Git repositories in temporary directories, no provider CLI (`src/mcp/mcp.test.ts`,
 "projects (T9.2 ...)").
 
@@ -532,7 +534,13 @@ decision. For a trusted-development or approved-bypass run the same applies: `ap
 `--strict-mcp-config`, so the shim would be the only server; `enabled` omits it (ADR-0021), so the repository's own
 definitions would load beside the shim. Under `--dangerously-skip-permissions` (help: "Bypass all permission checks") an
 unlisted MCP tool should need no allow rule (inference from the help text, unverified), but a bypass run is exactly
-where deny rules are unverified (R-38), so the shim is the sanctioned path there, not the only one.
+where deny rules are unverified (R-38), so the shim is the sanctioned path there, not the only one. *Update
+(2026-10-13):* Q-40 was decided yes (owner decision 36,
+[ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md)); the channel is implemented behind the
+unsupported opt-in `providers.claude-code.git_channel` (T9.4b) and, per
+[ADR-0033](../adr/0033-claude-channel-bypass-only-without-safe-mode.md) (owner decision 41), offered only to an approved
+bypass run without `--safe-mode`. The audit symbols are `MCP_CONFIG_FLAG`, `bypassClassFlags()` and `auditMcpArgs()` in
+`src/adapters/audit.ts`; `FORBIDDEN_ARGS` is a test-only list in `src/adapters/claude/claude.test.ts`.
 
 *Codex (documentation only; nothing verified).* Codex is not installed. [R2] documents `codex exec`, `--json`,
 `--sandbox`, `--ignore-user-config`, `--ignore-rules` and the platform sandboxes (bubblewrap, Seatbelt, a Windows

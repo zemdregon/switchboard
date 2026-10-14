@@ -440,8 +440,8 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
     is the one place a bypass run's agent can reach push credentials by design of the owner's choice**: an approved
     bypass agent with a shell can read the operator's push credentials while the `push` tool is offered; the
     controller still never gives them to it. Amends [ADR-0028](adr/0028-controller-push-and-credential-reach.md)
-    (still unmerged, so edited in place under "Amended before merge"); no requirement ID changes (dated notes on BR-31
-    and FR-GIT-06). Residual risk: R-51 (not blocking).
+    (then unmerged, so edited in place under "Amended before merge"; now merged); no requirement ID changes (dated notes
+    on BR-31 and FR-GIT-06). Residual risk: R-51 (not blocking).
 
 <!-- markdownlint-disable-next-line MD029 -->
 38. Finalize-only mode as built (T9.7, 2026-10-13). **Delegated decision (agent), under [owner decisions
@@ -748,7 +748,7 @@ is kept and only the mechanism changes.
 | [docs/design/SDD.md](design/SDD.md) | Software design | Draft baseline | Component collaboration, shared patterns, requirement→design traceability |
 | [docs/design/TDD.md](design/TDD.md) | Technical design | Draft baseline | Technology choices, cross-cutting concerns, per-provider adapter strategy, test strategy |
 | [docs/design/LLD.md](design/LLD.md) | Low-level design | Draft baseline (M1–M2 detail) | Schemas, interfaces, tool contracts, failure taxonomy, algorithms |
-| [docs/adr/](adr/README.md) | Decision records | 31 accepted and 2 proposed (0031, 0032, owner decision 40; 0033 records owner decision 41), see the [index](adr/README.md) (13 and 14 record zemdregon's 2026-10-12 decisions and 16 his 2026-10-13 decision, mechanisms delegated; 15 is delegated; 17 is Delegated wording recording owner decisions 13 and 17) | Why each architectural decision was made |
+| [docs/adr/](adr/README.md) | Decision records | 33 accepted and 3 proposed (0031, 0032, owner decision 40; 0036, the T4.7 ACP client design; 0033 records owner decision 41), see the [index](adr/README.md) (13 and 14 record zemdregon's 2026-10-12 decisions and 16 his 2026-10-13 decision, mechanisms delegated; 15 is delegated; 17 is Delegated wording recording owner decisions 13 and 17) | Why each architectural decision was made |
 | [docs/research/headless-ai-coding-controller-verified-2026-10-12.md](research/headless-ai-coding-controller-verified-2026-10-12.md) | Verified research | Current reference | Evidence for provider behaviour as of 2026-10-12 |
 | [docs/research/muse-code-2026-10-13.md](research/muse-code-2026-10-13.md) | Muse Code research note | Research input; not verified against Meta's documentation | Muse Code as a Should provider (FR-ADP-12) |
 | [docs/research/headless-ai-coding-controller.md](research/headless-ai-coding-controller.md) | Original blueprint | **Superseded** where it conflicts (§4.6); retained for stated intent | Stated intent C-1 to C-7 only |
@@ -759,8 +759,8 @@ is kept and only the mechanism changes.
 Status values: `Done`, `In progress`, `Partial`, `Planned`, `Blocked`, `Deferred`. No milestone has dates; none were
 set. Sizes are not estimated. M9 and M10 were added on 2026-10-12 for owner decisions 6 and 7 (projects; tool-only
 commits); M11 on 2026-10-13 for owner decision 14 (inner agent); M12 on 2026-10-13 for owner decision 40 (retrieval
-index). Test count on 2026-10-13: `npm test` passes with 39 files and 983 tests (the per-milestone counts quoted below
-are dated when they were taken).
+index). Test count on 2026-10-13: `npm test` passes with 51 files and 1175 tests (1172 passed, 3 skipped; the
+per-milestone counts quoted below are dated when they were taken).
 
 | ID | Milestone | Status | Depends on | Requirements delivered (first delivery) | Acceptance criteria | Verification |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -768,7 +768,7 @@ are dated when they were taken).
 | M1 | Foundation | **Done** (2026-10-12): every acceptance criterion has a passing test (166 tests locally); first CI run unconfirmed; requirement gaps marked `Partial` in §6.1 | M0 | FR-ADP-01, FR-AUTH-01, FR-POL-10, FR-WS-01–06, FR-SES-01, 02 (schema), 05 (events), FR-CAP-04 (queue, global limit), FR-EXE-01, 02, 05–07, FR-SES-06, FR-TEL-01, 03, FR-OPS-01 (`doctor`, `runs`), 03, 04, NFR-SEC-01, 02, 04–06, NFR-REL-01–02, NFR-PERF-03 (global), NFR-PORT-01, NFR-PRIV-01 | A fake provider CLI runs through the full lifecycle transactionally; cancel kills the process tree; `SIGKILL` of the controller mid-run followed by restart leaves a consistent ledger; a failed run that mutated files is rolled back, not replayed; CI green on Linux | Automated integration and fault-injection tests in CI; evidence in §6.1 |
 | M2 | Claude Code and Codex adapters + MCP vertical slice | **Partial** (2026-10-12): T2.1 to T2.8 implemented with tests on fakes and synthetic fixtures (453 tests locally); not `Done`, see "Blocks Done" in §6.2. FR-GIT-01 (added on main, PR #11) is shown by argv and policy inspection: Claude Code compiles documented deny rules, Codex declares that none is documented; live behaviour is unverified (§6.2 item 4) | M1 | FR-MCP-01, 03–09, FR-ADP-02–04, 06, 11 (Claude Code, Codex), FR-POL-01 (two profiles), 02–05, 07, 08, FR-AUTH-02, FR-GIT-01 (Claude Code, Codex), FR-SES-03 (Claude Code, Codex), FR-RTE-01 (eligibility), FR-CAP-01 (record), FR-OPS-01 (`serve`), NFR-PERF-01, 02, NFR-OBS-01, NFR-PRIV-02, NFR-MAINT-03 | For each of Claude Code and Codex, a scripted MCP client delegates an edit task under `edit-untrusted`, polls to `SUCCEEDED`, retrieves a diff artifact and continues the same native session; a new user following the README reaches a passing `doctor`; missing login yields `AUTH_REQUIRED`; unknown CLI version yields `ADAPTER_VERSION_UNVERIFIED`; no bypass flag appears in any compiled invocation; no compiled invocation leaves a Git write operation (commit, ref change, push) permitted (FR-GIT-01) | Conformance suite on recorded fixtures in CI; one opt-in live smoke test run by the operator; argv inspection test |
 | M3 | Isolation | **Partial** (2026-10-13): on main with tests are approvals (T3.4, `approve`/`deny`), privileged admission and compile matrices (T3.3, T3.5 to T3.7, T3.17, T3.18), profiles (T3.2), retention and GC (T3.12), the nested-repository fix (T3.20, `fb4dc1d`), the preflight cache (T3.21) and verification commands (T3.10: run on the host, refused under `inspect-untrusted`, recorded in a `test_report`). Not done: outer sandbox (T3.1), live leg (T3.9), T3.11, T3.13. Tasks in §6.5. Can reach only `Partial` without live provider runs (§6.5.2) | M2 | FR-POL-01 (all), 06, 09, FR-WS-07, FR-EXE-08, FR-OPS-02 (`approve`, `deny`), NFR-SEC-03 (Claude Code, Codex), NFR-DATA-01 | Malicious-fixture suite shows no escape for each profile on Claude Code and Codex; `privileged` runs wait for `approve` and end `CANCELLED` on `deny`; verification commands run and are recorded; retention deletes artifacts, worktrees and branches together | Malicious-fixture suite; integration tests |
-| M4 | Adapter expansion | Planned (Kimi Code part blocked by B-1; Muse Code is Should). Tasks in §6.8 (Proposed breakdown, 2026-10-13, Delegated); what needs the operator or zemdregon is in §6.8.2 | M3, M9 (Proposed) | FR-ADP-05, 07, 08, 09, 10, 11 (others), 12, FR-EXE-03, FR-OPS-02 (`adapters validate`), NFR-SEC-03 (others), NFR-MAINT-01, NFR-PORT-02 | Grok Build, Antigravity, Cursor and OpenCode adapters pass conformance and malicious-fixture suites; the test suite passes on macOS; Kimi Code passes once B-1 clears (M4 may be marked `Partial` until then, with only Kimi outstanding); ACP transport used where it is the adapter's chosen surface; adding an adapter touched only its own module, manifest, fixtures and registry entry; `adapters validate` accepts a new CLI version only after its live checks pass | Conformance and fixture suites per adapter; diff inspection |
+| M4 | Adapter expansion | **Partial** (2026-10-13): T4.1 (one provider registry table, PR #56) and T4.7 (ACP stdio client design, PR #57) are merged, and the six provider spikes T4.20 to T4.70 are documentation-only and merged (PR #55); the rest Planned. Kimi Code part blocked by B-1; Muse Code is Should. Tasks in §6.8 (Proposed breakdown, 2026-10-13, Delegated); what needs the operator or zemdregon is in §6.8.2 | M3, M9 (Proposed) | FR-ADP-05, 07, 08, 09, 10, 11 (others), 12, FR-EXE-03, FR-OPS-02 (`adapters validate`), NFR-SEC-03 (others), NFR-MAINT-01, NFR-PORT-02 | Grok Build, Antigravity, Cursor and OpenCode adapters pass conformance and malicious-fixture suites; the test suite passes on macOS; Kimi Code passes once B-1 clears (M4 may be marked `Partial` until then, with only Kimi outstanding); ACP transport used where it is the adapter's chosen surface; adding an adapter touched only its own module, manifest, fixtures and registry entry; `adapters validate` accepts a new CLI version only after its live checks pass | Conformance and fixture suites per adapter; diff inspection |
 | M5 | Continuity | Planned. Tasks in §6.9 (Proposed breakdown, 2026-10-14, Delegated); what needs the operator or zemdregon is in §6.9.2 | M4 | FR-SES-02 (populated), 03 (all), 04, 05 (handoff view) | Provider A edits and tests; provider B continues from the handoff bundle and completes the task; no provider transcript file is opened (verified by file-access test) | End-to-end test with two fake adapters plus one opt-in live pair |
 | M6 | Capacity and resilience | Planned | M5 | FR-MCP-02 (`get_capacity`), 10, FR-CAP-01 (use), 02–07, FR-CAP-08 (cache observations and affinity counters; owner decision 40), FR-OPS-05, NFR-PERF-03 (per provider) | Injected rate-limit, overload, quota and crash failures produce the behaviour in FRD WF-5, with successor runs linked to their predecessors; `get_capacity` and `switchboard capacity` never return `explicit_remaining` unless the provider reported it; where a provider reports cache read or creation token counts they are recorded as labelled observations, and per project the runs that kept versus switched provider and model are counted by reason (FR-CAP-08, Proposed) | Fault-injection tests with fake adapters |
 | M7 | Routing | Planned | M6 | FR-MCP-02 (`explain_route`), FR-RTE-01 (full), 02–04, FR-RTE-06–09 (provider and model affinity; owner decision 40, Proposed) | Given stored features and weights, re-running the scorer reproduces every stored decision; `explain_route` lists the deciding factors; a project keeps its last provider and model across meta-sessions, and in a replay of stored routing decisions affinity changes only with an `affinity_switch_reason` from the closed list (`user_request`, `capacity_exhausted`, `ineligible`, `failed_after_retry`), never for a better score, lower cost or lower load; with several eligible providers and equal capacity no project is spread across providers | Deterministic replay test; property test over replayed decisions; fake-adapter fault injection |
@@ -842,9 +842,12 @@ All other requirements in the M1 row have at least one passing test named in the
 
 ### 6.2 M2 Claude Code adapter and MCP slice: tasks
 
-Status (2026-10-12), per task. Evidence is local (`npm test`: 23 files, 453 tests, plus build, typecheck, lint and
-`node scripts/check-docs.mjs`); the first CI run on this branch is unconfirmed. Every provider-facing result below is on
-fakes or **synthetic** fixtures; nothing has run against a real Claude Code or Codex binary.
+Status (2026-10-12), per task. Evidence is local (`npm test`: 23 files, 453 tests at the time; now 51 files, 1175 tests,
+plus build, typecheck, lint and `node scripts/check-docs.mjs`); the first CI run on this branch is unconfirmed. The
+per-task rows below were written against fakes and **synthetic** fixtures. *Update 2026-10-13:* the operator-machine
+live checks ([live-checks-2026-10-13.md](research/live-checks-2026-10-13.md), PR #41) ran the real Claude Code 2.1.296
+and codex-cli 0.162.1: Claude C-1 to C-11 and G-1 held (14 of 16; C-12 and C-G2 need a failing run), and Codex X-1 to
+X-3 held. The rows keep their fixture-based wording; R-21, R-22 and Q-13 carry the live results.
 
 | Task | Status | Evidence | Caveat |
 | --- | --- | --- | --- |
@@ -860,7 +863,7 @@ fakes or **synthetic** fixtures; nothing has run against a real Claude Code or C
 
 **Blocks Done.** M2 stays `Partial` against its acceptance criteria because:
 
-1. The opt-in live smoke test (`npm run test:live`) has not been run by the operator against real Claude Code or Codex.
+. The opt-in live smoke test (`npm run test:live`) has not been run by the operator against real Claude Code or Codex.
    Event shapes, error categories, flag spellings and auth behaviour are therefore unconfirmed (R-21, R-22, Q-10, Q-13),
    and the criteria "polls to `SUCCEEDED`, retrieves a diff artifact and continues the same native session" and
    "missing login yields `AUTH_REQUIRED`" are shown on fakes and synthetic fixtures only.
@@ -1949,8 +1952,9 @@ source, and where the research is silent the task is to find the fact, not to as
 | T4.79 | Muse Code in the README and status here | NFR-MAINT-02, NFR-MAINT-03 | T4.75 to T4.77 (final after T4.78) | As T4.29 |
 | T4.90 | M4 closure: the M4 row in §6 with evidence per acceptance criterion, README "Status", TDD §4 and §5, and any document the work proved wrong | NFR-MAINT-02, NFR-MAINT-03 | All other M4 tasks that are not blocked | §6 shows M4 `Done` or `Partial` with the open items named (§6.8.2) |
 
-**T4.1 status note (2026-10-13, Delegated agent work, not owner-approved).** Implemented on branch `m4-registry`, not
-yet merged: the provider registry table `BUILTIN_PROVIDERS` in `src/adapters/providers.ts` now derives `ProviderId`,
+**T4.1 status note (2026-10-13, Delegated agent work, not owner-approved).** Merged (PR #56, `e3d42f1`; the note was
+first written on branch `m4-registry`): the provider registry table `BUILTIN_PROVIDERS` in `src/adapters/providers.ts`
+now derives `ProviderId`,
 `PROVIDER_IDS` and the provider parts of the config schema, `CONFIG_TO_ADAPTER_ID`, and the `serve` and `doctor`
 registrations; each entry declares its bypass-class flags, which the argv audit adds to the unchanged `BYPASS_FLAGS`
 ([ADR-0035](adr/0035-provider-registry-table-and-declared-bypass-flags.md); [LLD §2](design/LLD.md#2-adapter-contract)
@@ -2346,8 +2350,9 @@ Notes carried from M2:
   environments, the route to bypass without Git risk, owner decision 24) follows M9 (Q-38 decided, owner
   decision 25).
 - **M4 has a Proposed task breakdown** (§6.8, 2026-10-13, Delegated). While M3 and M9 wait on the operator, its wave A
-  (§6.8.1) needs no provider CLI: T4.1 (single registry entry), T4.7 (ACP client ADR), T4.9 (macOS process port) and
-  the documentation-only provider spikes T4.20, T4.30, T4.40, T4.50, T4.60 and T4.70. Its operator and owner items
+  (§6.8.1) needs no provider CLI: T4.1 (single registry entry, merged PR #56) and T4.7 (ACP client ADR, merged PR #57)
+  are done; T4.9 (macOS process port) and the documentation-only provider spikes T4.20, T4.30, T4.40, T4.50, T4.60 and
+  T4.70 (merged PR #55) remain agent work. Its operator and owner items
   are listed in §6.8.2; Q-58 was answered by owner decision 46.
 - **M5 has a Proposed task breakdown** (§6.9, 2026-10-14, Delegated). Its wave A (§6.9.1) needs no provider CLI: T5.0
   (native-resume inventory) and T5.2 (second fake provider); T5.1 (continuity ADR and LLD) gates all bundle code. Its
