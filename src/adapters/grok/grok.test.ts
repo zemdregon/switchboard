@@ -384,6 +384,93 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
     });
   });
 
+  describe("parser hardening (T4.23, synthetic shapes; mirrors Antigravity T4.33)", () => {
+    it("a second `end` line fails the run even when both report end_turn", () => {
+      const cancelledThenOk = parse([line({ ...END, stopReason: "cancelled" }), line(END)]);
+      expect(adapter().extractResult(cancelledThenOk.events, EXIT_OK)).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+      });
+      const okTwice = parse([line(END), line(END)]);
+      expect(adapter().extractResult(okTwice.events, EXIT_OK)).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        nativeSessionId: SID,
+      });
+      expect(okTwice.events.filter((e) => e.kind === "result").map((e) => e.kind === "result" && e.ok)).toEqual([
+        true,
+        false,
+      ]);
+    });
+
+    it("a session id that changes mid-run fails the run and the first id stays bound; an empty id binds nothing", () => {
+      const other = "0a0a0a0a-0000-4000-8000-000000000001";
+      const { events, state } = parse([line({ ...END, stopReason: "cancelled" }), line({ ...END, sessionId: other })]);
+      expect(state.nativeSessionId).toBe(SID);
+      expect(events.filter((e) => e.kind === "session_bound")).toHaveLength(1);
+      expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        nativeSessionId: SID,
+      });
+      const empty = parse([line({ ...END, sessionId: "" })]);
+      expect(empty.events.some((e) => e.kind === "session_bound")).toBe(false);
+      expect(adapter().extractResult(empty.events, EXIT_OK)).toMatchObject({ ok: true });
+    });
+
+    it("an error line without a string message is still an error, never ignored or unknown", () => {
+      for (const message of [undefined, { code: 429 }, ["x"], 1, null]) {
+        const { events, state } = parse([line({ type: "error", message }), line(END)]);
+        expect(state.unknownEvents, JSON.stringify(message)).toBe(0);
+        expect(adapter().extractResult(events, EXIT_OK), JSON.stringify(message)).toMatchObject({
+          ok: false,
+          failureCode: "TOOL_FAILURE",
+        });
+      }
+    });
+
+    it("unrecorded rate-limit or quota text in an error line is TOOL_FAILURE, never RATE_LIMIT_TRANSIENT or success", () => {
+      for (const message of ["429 Too Many Requests", "rate limit reached", "quota exceeded"]) {
+        const { events } = parse([line({ type: "error", message }), line(END)]);
+        expect(adapter().extractResult(events, EXIT_OK), message).toMatchObject({
+          ok: false,
+          failureCode: "TOOL_FAILURE",
+        });
+        expect(
+          events.some((e) => e.kind === "rate_limit"),
+          message,
+        ).toBe(false);
+      }
+    });
+
+    it("negative, non-finite and non-number usage values are dropped; no usable counter emits no usage", () => {
+      const { events } = parse([
+        line({
+          ...END,
+          usage: { input_tokens: -5, output_tokens: "3", reasoning_tokens: null, total_tokens: 24 },
+          num_turns: -1,
+        }),
+      ]);
+      expect(events.find((e) => e.kind === "usage")).toEqual({
+        kind: "usage",
+        source: "provider_reported",
+        metrics: { total_tokens: 24 },
+      });
+      expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({ ok: true });
+      // JSON has no Infinity literal; an overflowing number parses to Infinity and is dropped.
+      const huge = parse([`{"type":"end","stopReason":"end_turn","usage":{"input_tokens":1e400,"output_tokens":2}}`]);
+      expect(huge.events.find((e) => e.kind === "usage")).toMatchObject({ metrics: { output_tokens: 2 } });
+      expect(huge.events.find((e) => e.kind === "usage")).not.toHaveProperty("metrics.input_tokens");
+      for (const usage of [{}, [24], "24", { input_tokens: -1 }]) {
+        const r = parse([line({ ...END, usage, num_turns: undefined })]);
+        expect(
+          r.events.some((e) => e.kind === "usage"),
+          JSON.stringify(usage),
+        ).toBe(false);
+      }
+    });
+  });
+
   it("ignores ACP messages and unparseable framing", () => {
     const a = adapter();
     const state: ParseState = { lines: 0, unknownEvents: 0 };

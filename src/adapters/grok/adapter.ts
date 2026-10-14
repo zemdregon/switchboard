@@ -26,7 +26,7 @@ import {
   DEFAULT_WALL_CLOCK_MS,
 } from "../../exec/index.js";
 import { resolveOnPath } from "../codex/adapter.js";
-import { classifyCommon } from "../failure.js";
+import { classifyCommon, PROVIDER_ERROR_CATEGORY_CODES } from "../failure.js";
 import { gitWriteRisks } from "../git-write.js";
 import { parseVersion } from "../manifest/index.js";
 import type {
@@ -136,6 +136,11 @@ const obj = (v: unknown): Json | undefined =>
   typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Json) : undefined;
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
 const ineligible = (reason: Ineligible["reason"], detail: string): Ineligible => ({ ineligible: true, reason, detail });
+/** `end` lines already seen per run: a second one is a protocol anomaly, never a success (fail closed, as Antigravity). */
+const seenEnds = new WeakMap<ParseState, number>();
+/** Category of a stream anomaly (two `end` lines, two session ids); classified OUTPUT_PROTOCOL_ERROR. */
+const PROTOCOL_CATEGORY = "protocol";
+const CATEGORY_CODES = { ...PROVIDER_ERROR_CATEGORY_CODES, [PROTOCOL_CATEGORY]: "OUTPUT_PROTOCOL_ERROR" } as const;
 
 export class GrokAdapter implements ProviderAdapter {
   readonly id = "grok" as const;
@@ -357,7 +362,9 @@ export class GrokAdapter implements ProviderAdapter {
   /**
    * One `streaming-json` line -> normalized events (T4.23). Structured fields only (FR-ADP-04): the session id is read
    * from the `end` line's `sessionId` and nowhere else. A line whose type or shape is not recognised is an `unknown`
-   * event and never a result; a final result exists only when an `end` line carries a string `stopReason`.
+   * event and never a result; a final result exists only when an `end` line carries a string `stopReason`. Hardening
+   * (fail closed): a second `end` line or a changed session id is OUTPUT_PROTOCOL_ERROR, an `error` line without a
+   * string message is still an error, and only finite non-negative usage counters are recorded.
    */
   parseEvent(input: string | AcpMessage, state: ParseState): NormalizedEvent[] {
     if (typeof input !== "string") return []; // no ACP transport for Grok Build (TDD §4.3.1)
@@ -388,28 +395,29 @@ export class GrokAdapter implements ProviderAdapter {
         const stop = str(e.stopReason);
         if (stop === undefined) return this.#unknown(state, type);
         const out: NormalizedEvent[] = [];
+        const ends = (seenEnds.get(state) ?? 0) + 1;
+        seenEnds.set(state, ends);
+        // One turn prints one `end` ([LIVE] 4a, 4b); a second could flip an earlier failure, so the run fails closed.
+        if (ends > 1) {
+          out.push({ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "more than one end line" });
+        }
         const id = str(e.sessionId);
-        if (id !== undefined && id !== "") {
-          state.nativeSessionId = id;
-          out.push({ kind: "session_bound", nativeSessionId: id });
-        }
+        if (id !== undefined) out.push(...this.#bind(state, id));
         const usage = obj(e.usage);
-        if (usage) {
-          const metrics: Record<string, number | string | null> = {};
-          for (const k of USAGE_KEYS) if (typeof usage[k] === "number") metrics[k] = usage[k] as number;
-          if (typeof e.num_turns === "number") metrics.num_turns = e.num_turns;
-          out.push({ kind: "usage", source: "provider_reported", metrics });
-        }
-        out.push({
-          kind: "result",
-          ok: stop === STOP_REASON_END_TURN,
-          ...(stop === STOP_REASON_END_TURN ? {} : { summary: `stopReason ${clip(stop, 64)}` }),
-        });
+        const metrics: Record<string, number | string | null> = {};
+        const count = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
+        for (const k of USAGE_KEYS) if (count(usage?.[k])) metrics[k] = usage?.[k] as number;
+        if (usage && count(e.num_turns)) metrics.num_turns = e.num_turns;
+        if (Object.keys(metrics).length > 0) out.push({ kind: "usage", source: "provider_reported", metrics });
+        const ok = ends === 1 && stop === STOP_REASON_END_TURN;
+        out.push({ kind: "result", ok, ...(ok ? {} : { summary: `stopReason ${clip(stop, 64)}` }) });
         return out;
       }
       case EVENT.error: {
         const message = str(e.message);
-        if (message === undefined) return this.#unknown(state, type);
+        // `message` was a string ([LIVE] 3c, 5b); an `error` line of any other shape is still an error, never ignored.
+        if (message === undefined)
+          return [{ kind: "provider_error", category: "unknown", message: "error line without a string message" }];
         const category = message.startsWith(ERROR_NOT_SIGNED_IN_PREFIX)
           ? "auth"
           : message.startsWith(ERROR_MODEL_PREFIX)
@@ -420,6 +428,20 @@ export class GrokAdapter implements ProviderAdapter {
       default:
         return this.#unknown(state, type);
     }
+  }
+
+  /**
+   * The first non-empty id binds the session. A later, different id (a second `end` for another session) makes the
+   * binding ambiguous, so the run fails closed; the first id stays bound.
+   */
+  #bind(state: ParseState, id: string): NormalizedEvent[] {
+    if (id === "") return [];
+    if (state.nativeSessionId !== undefined) {
+      if (id === state.nativeSessionId) return [];
+      return [{ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "session id changed mid-run" }];
+    }
+    state.nativeSessionId = id;
+    return [{ kind: "session_bound", nativeSessionId: id }];
   }
 
   #unknown(state: ParseState, rawType: string): NormalizedEvent[] {
@@ -468,8 +490,11 @@ export class GrokAdapter implements ProviderAdapter {
     return { ok: false, failureCode: c.code, failureDetail: c.detail, ...base };
   }
 
-  /** Shared precedence (failure.ts); native error messages are already mapped to the shared categories. */
+  /**
+   * Shared precedence (failure.ts); native error messages are already mapped to the shared categories, and a stream
+   * anomaly (category `protocol`) is OUTPUT_PROTOCOL_ERROR.
+   */
   classifyFailure(evidence: FailureEvidence): FailureClassification {
-    return classifyCommon(evidence);
+    return classifyCommon(evidence, CATEGORY_CODES);
   }
 }
