@@ -4101,3 +4101,14 @@ or no row holding one, has no block, never a zero. The top-level `affinity` bloc
 runs whose provider and model equal the previous run's (`kept`) and those that differ (`switched`), grouped by
 `affinity_switch_reason` from `route_decision.reasons_json`, or `unrecorded` until M7 writes one. Wording: "reported",
 never "cache hits".
+
+*As built (T6.7, 2026-10-14, Delegated):* `src/capacity/cache.ts`. Only Grok Build is mapped. It is the only provider
+with both a sourced key name and an adapter that stores it (flat `cache_read_input_tokens` and
+`cache_creation_input_tokens`; that its `streaming-json` `end.usage` uses the names seen in `json` output is an
+Assumption). Cursor, Antigravity and OpenCode join when their adapters store their keys; Codex's key is synthetic only
+and Claude Code's is unknown. The `cache` block sums the window's rows that hold a key, with `key_names` and
+`key_source`. The `affinity` block is always present in the projection (`source: "controller"`, a `note`, `projects`
+sorted by key, at most 100 with `truncated`; the bound is an Assumption). It counts runs that started a provider
+process and were created in the window. `get_capacity` counts only the calling MCP client's own runs, so another
+client's project ids are never shown (Delegated, least privilege). The operator's `switchboard capacity` and `doctor` see
+every project. `doctor` prints one summary line, and `switchboard capacity` one line per project.

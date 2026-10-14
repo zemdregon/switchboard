@@ -471,6 +471,16 @@ export function renderDoctor(r: DoctorReport): string {
           `estimate confidence ${c.confidence.toFixed(2)}`,
       );
     }
+    // T6.7 (FR-CAP-08): per-project kept versus switched counts, summed; details in `switchboard capacity`.
+    const kept = r.capacity.affinity.projects.reduce((n, pr) => n + pr.kept, 0);
+    const switched = r.capacity.affinity.projects.reduce(
+      (n, pr) => n + Object.values(pr.switched).reduce((m, v) => m + v, 0),
+      0,
+    );
+    lines.push(
+      `       projects: ${r.capacity.affinity.projects.length}, runs that kept provider and model ${kept}, ` +
+        `switched ${switched}`,
+    );
   }
   lines.push("", r.ok ? "Result: OK" : "Result: FAILED");
   return `${lines.join("\n")}\n`;

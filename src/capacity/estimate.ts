@@ -10,6 +10,8 @@
  * empty because no provider's run output reports remaining quota (T6.0 inventory).
  */
 
+import { type CacheObservation, cacheObservation } from "./cache.js";
+
 /** Breaker states as stored in `provider_health` (LLD §1, §16.4). */
 export type BreakerState = "CLOSED" | "OPEN" | "HALF_OPEN";
 export type ThrottleRisk = "unknown" | "low" | "elevated" | "high";
@@ -87,6 +89,8 @@ export interface ProviderCapacity {
     rate_limit_signals: number;
     usage_observations: number;
   };
+  /** T6.7 (FR-CAP-08): reported cache counts over the window; absent when no sourced key or no row holds one. */
+  cache?: CacheObservation;
 }
 
 /** Failure codes that signal throttling (`elevated`, LLD §16.2 step 3) and that the breaker counts (§16.4). */
@@ -154,6 +158,8 @@ export function estimateCapacity(inputs: CapacityInputs, settings: EstimatorSett
 
   // Step 7: slots (controller facts).
   const available = Math.max(0, inputs.slots.limit - inputs.slots.inUse);
+  // T6.7 (FR-CAP-08): reported cache counts, labelled; never estimated, never an input to the estimate.
+  const cache = cacheObservation(inputs.provider, inputs.usage);
 
   return {
     provider: inputs.provider,
@@ -179,5 +185,6 @@ export function estimateCapacity(inputs: CapacityInputs, settings: EstimatorSett
       rate_limit_signals: inputs.rateLimitSignals.length,
       usage_observations: inputs.usage.length,
     },
+    ...(cache !== undefined ? { cache } : {}),
   };
 }

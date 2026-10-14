@@ -61,6 +61,13 @@ export function renderCapacity(p: CapacityProjection): string {
       }`,
     );
     lines.push(`  provider-reported reset: ${c.reset_at === null ? "none" : c.reset_at.at}`);
+    if (c.cache !== undefined) {
+      // FR-CAP-08: reported counts with their source; never read as cache use.
+      lines.push(
+        `  provider-reported cache tokens: read ${c.cache.read ?? "-"}, creation ${c.cache.creation ?? "-"} ` +
+          `(${c.cache.rows} reports)`,
+      );
+    }
     lines.push(`  slots: ${c.concurrency_available} free of ${c.concurrency_limit}`);
     lines.push(
       `  breaker: ${c.breaker.state}${c.breaker.until === null ? "" : ` until ${c.breaker.until}`} ` +
@@ -72,5 +79,14 @@ export function renderCapacity(p: CapacityProjection): string {
         `${c.window.usage_observations} usage reports`,
     );
   }
+  lines.push("", `Provider and model per project (${p.affinity.note}):`);
+  if (p.affinity.projects.length === 0) lines.push("  no runs in the window");
+  for (const pr of p.affinity.projects) {
+    const switched = Object.entries(pr.switched)
+      .map(([reason, n]) => `${reason} ${n}`)
+      .join(", ");
+    lines.push(`  ${pr.project_key}: ${pr.runs} runs, kept ${pr.kept}, switched ${switched === "" ? "0" : switched}`);
+  }
+  if (p.affinity.truncated) lines.push("  (more projects not shown)");
   return `${lines.join("\n")}\n`;
 }
