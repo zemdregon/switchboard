@@ -505,6 +505,194 @@ describe("opencode parser and result (T4.53)", () => {
       adapter().resumeArgs({ provider: "opencode", nativeSessionId: SID }, request(), profileOf("edit-untrusted")),
     ).toMatchObject({ reason: "PROFILE_UNSUPPORTED" });
   });
+
+  it("records only observed usage counters, drops negative, non-number and unexpected values, and clips an unknown line's type", () => {
+    const { events } = parse([
+      START,
+      line("step_finish", {
+        id: "prt_f1",
+        type: "step-finish",
+        reason: "stop",
+        cost: 0.005,
+        tokens: {
+          input: 10,
+          output: "3",
+          reasoning: 1,
+          surprise: 9,
+          cache: { read: 4, write: -1, extra: 2 },
+        },
+      }),
+      line("x".repeat(10_000)),
+    ]);
+    expect(events.find((e) => e.kind === "usage")).toEqual({
+      kind: "usage",
+      source: "provider_reported",
+      metrics: { input: 10, reasoning: 1, cache_read: 4, cost_usd: 0.005 },
+    });
+    const unknown = events.find((e) => e.kind === "unknown");
+    expect(unknown?.kind === "unknown" && unknown.rawType.length).toBeLessThanOrEqual(65);
+
+    const withBadCost = parse([
+      START,
+      line("step_finish", {
+        id: "prt_f2",
+        type: "step-finish",
+        reason: "stop",
+        cost: -0.1,
+        tokens: { input: 5 },
+      }),
+    ]);
+    expect(withBadCost.events.find((e) => e.kind === "usage")).toEqual({
+      kind: "usage",
+      source: "provider_reported",
+      metrics: { input: 5 },
+    });
+  });
+
+  it("a session id that changes mid-run fails OUTPUT_PROTOCOL_ERROR (the first id stays bound)", () => {
+    const { a, state, events } = parse([
+      START,
+      TEXT("first"),
+      JSON.stringify({
+        type: "text",
+        timestamp: 2,
+        sessionID: "ses_OTHER00000000000000000002",
+        part: { id: "prt_t2", type: "text", text: "second" },
+      }),
+      FINISH("stop", "prt_f2"),
+    ]);
+    expect(state.nativeSessionId).toBe(SID);
+    expect(events).toContainEqual({
+      kind: "provider_error",
+      category: "protocol",
+      message: "session id changed mid-run",
+    });
+    expect(a.extractResult(events, EXIT0)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      nativeSessionId: SID,
+    });
+  });
+
+  it("non-string or unstructured error fields fail the run, never ignored", () => {
+    const strErr = parse([
+      START,
+      JSON.stringify({ type: "error", timestamp: 1, sessionID: SID, error: "synthetic fatal error" }),
+    ]);
+    expect(strErr.events).toContainEqual({
+      kind: "provider_error",
+      category: "unknown",
+      message: "error: synthetic fatal error",
+    });
+    expect(strErr.a.extractResult(strErr.events, EXIT0)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+
+    const objErr = parse([
+      START,
+      JSON.stringify({ type: "error", timestamp: 1, sessionID: SID, error: { code: 500, detail: "bad" } }),
+    ]);
+    expect(objErr.events).toContainEqual({
+      kind: "provider_error",
+      category: "unknown",
+      message: '{"code":500,"detail":"bad"}',
+    });
+    expect(objErr.a.extractResult(objErr.events, EXIT0)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+
+    const numErr = parse([START, JSON.stringify({ type: "error", timestamp: 1, sessionID: SID, error: 500 })]);
+    expect(numErr.events).toContainEqual({
+      kind: "provider_error",
+      category: "unknown",
+      message: "500",
+    });
+    expect(numErr.a.extractResult(numErr.events, EXIT0)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+  });
+
+  it("non-object roots, arrays, and __proto__ pollute nothing and are counted unknown", () => {
+    const { state, events } = parse([
+      '"str"',
+      "123",
+      "true",
+      "null",
+      "[]",
+      '{"type":"text","__proto__":{"polluted":true},"part":{"id":"prt_p","type":"text","text":"hi"}}',
+    ]);
+    expect(state.unknownEvents).toBe(5);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(events.filter((e) => e.kind === "message")).toEqual([{ kind: "message", role: "assistant", text: "hi" }]);
+  });
+
+  it("resume refuses every non-privileged profile and dangerous session IDs", () => {
+    const approved = { ...privilegedProfile(BYPASS_SCOPE), bypassApproved: true };
+    const badIds = ["", "-s", "--session", "--auto", "../escape", "id with spaces", "@flag"];
+    for (const badId of badIds) {
+      expect(
+        adapter().resumeArgs(
+          { provider: "opencode", nativeSessionId: badId },
+          request({ bypassApproved: true }),
+          approved,
+        ),
+        badId,
+      ).toMatchObject({ ineligible: true, reason: "CAPABILITY_MISSING" });
+    }
+    for (const name of ["inspect-untrusted", "edit-untrusted", "test-sandboxed", "trusted-development"] as const) {
+      expect(
+        adapter().resumeArgs({ provider: "opencode", nativeSessionId: SID }, request(), profileOf(name)),
+        name,
+      ).toMatchObject({ ineligible: true, reason: "PROFILE_UNSUPPORTED" });
+    }
+  });
+
+  // Done-when cases whose native shape the T4.51 live check did NOT record (ROADMAP T4.53 stays Partial).
+  // These pin today's observed outcomes; an operator capture (T4.51 extension) must change them.
+  describe("cases with no recorded native shape (live check rows 7, 11, 14c)", () => {
+    it("permission denied by OpenCode (row 11: out-of-worktree path, status error, exit 0) is not detected as denial (gap)", () => {
+      // Live check row 11: an out-of-repo read/write returned tool_use state.status "error", the model reported
+      // "rejected by the permission system", and the run exited 0. FR-ADP-04 forbids reading status from free text,
+      // and state.status "error" is also what an ordinary tool error reports, so neither permission_denied nor
+      // sandbox_violation is emitted.
+      const { a, events } = parse([
+        START,
+        TOOL("read", { filePath: "/tmp/outside.txt" }, "error"),
+        TEXT("The tool call was rejected by the permission system."),
+        FINISH("stop"),
+      ]);
+      expect(events.some((e) => e.kind === "permission_denied" || e.kind === "sandbox_violation")).toBe(false);
+      expect(a.extractResult(events, EXIT0)).toMatchObject({ ok: true });
+    });
+
+    it("a rate limit (row 14c, never forced) has no recognised form: an unrecognised error line or bare exit is TOOL_FAILURE, never RATE_LIMIT_TRANSIENT or success", () => {
+      const exit1: ExitInfo = { outcome: "exited", exitCode: 1, signal: null, expectedExitCodes: [0] };
+      const errorLine = parse([
+        START,
+        JSON.stringify({
+          type: "error",
+          timestamp: 1,
+          sessionID: SID,
+          error: { type: "provider.rate_limit", message: "429 Too Many Requests" },
+        }),
+      ]);
+      expect(errorLine.events).toContainEqual({
+        kind: "provider_error",
+        category: "unknown",
+        message: "provider.rate_limit: 429 Too Many Requests",
+      });
+      expect(errorLine.a.extractResult(errorLine.events, exit1)).toMatchObject({
+        ok: false,
+        failureCode: "TOOL_FAILURE",
+      });
+      expect(errorLine.events.some((e) => e.kind === "rate_limit")).toBe(false);
+      expect(adapter().extractResult([], exit1)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+    });
+
+    it("tool call without command or target keys emits tool_call with no command or target (Assumption gap)", () => {
+      // Live check row 4c recorded state.input but not its keys. If a tool call arrives with unexpected input keys,
+      // command and target are omitted from the tool_call event.
+      const { events } = parse([START, TOOL("shell", { script: "git commit" }), TOOL("read", { file: "foo.txt" })]);
+      expect(events.filter((e) => e.kind === "tool_call")).toEqual([
+        { kind: "tool_call", tool: "shell", name: "shell" },
+        { kind: "tool_call", tool: "read", name: "read" },
+      ]);
+    });
+  });
 });
 
 /**
