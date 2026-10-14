@@ -728,7 +728,8 @@ returns immediately unless `wait_seconds` is given ([ADR-0002](../adr/0002-mcp-u
       "route": { "type": "object", "properties": { "reasons": { "type": "array", "items": { "type": "string" } } } },
       "result": { "type": "object", "properties": { "summary": { "type": "string", "maxLength": 4000 },
           "changed_files": { "type": "integer" },
-          "verification": { "type": "array", "items": { "type": "object" } } } },  // per command, §8.1
+          "verification": { "type": "array", "items": { "type": "object" } },   // per command, §8.1
+          "verification_summary": { "type": "object" } } },  // M11, T11.9: display-only prose, see §13.6
       "artifacts": { "type": "object", "additionalProperties": { "type": "string" } },   // kind -> art_ id
       "approval": { "type": "object", "required": ["status","requested_at"], "properties": {   // privileged only (M3, §3.1)
           "status": { "enum": ["PENDING","APPROVED","DENIED"] }, "requested_at": { "type": "string" } } },
@@ -2849,6 +2850,38 @@ section left open, each an **Assumption**:
 - **Sanitiser in step 10.** The pipeline uses the publisher's sanitiser only to decide `rejected_sanitiser`; it hands
   the validated, unsanitised text back, and the publisher sanitises it once more as the commit's message, so its rule
   counts reach `sanitizer_json`.
+
+*As built (2026-10-14, Delegated, T11.9; table above unchanged), `log_summary`:* template `log_summary.v1`
+(`src/inner/log-summary.ts`), a fixed system text that names no product, provider, tool or identifier. Each point is
+an **Assumption** unless the table says it:
+
+- **Source.** The run's `test_report` artifact (the raw artifact, FR-EXE-08), parsed into the controller's records:
+  per command its index, outcome, exit code, stdout and stderr. The input holds, under the fixed headings `Recorded
+  facts (restate, do not infer):` (`check <n>: outcome ..., exit code ...` and a counts line) and `Output excerpt:`,
+  those facts and the per-check output. Argv, the objective and every identifier are excluded. One summary covers the
+  whole run.
+- **Budget.** The facts stay whole; the excerpt takes the head 25% and tail 75% of the rest (§13.4 step 3), pre-capped
+  at four times the budget before redaction.
+- **Validator.** Beyond the schema: single-line values, no control character, no URL, every whole digit run must occur
+  as a whole digit run in the text the model was given (stricter than "occurs in the source", so `17` is not matched
+  by `1700`), and a success claim (the `pr_draft` pattern list, Proposed) is refused unless the records hold at least
+  one check and every check passed. There is no sanitiser step (§13.4 step 10 is for commit and PR text); the stored
+  text is passed through the artifact redactor.
+- **Fallback and storage.** When the task is enabled and the model produces no accepted summary (any outcome in
+  §13.7), the shown text is the deterministic excerpt: the first 8 and last 12 lines of the combined output with an
+  omitted-lines marker, counts of lines and bytes, at most 1,500 bytes, controls stripped, `source: heuristic`. With
+  the task not enabled nothing is produced (§13.7 row 1). Either result is stored as a `log_summary` artifact
+  (`application/json`, kind already in the schema) and recorded as one `log_summary` run event.
+- **Envelope.** The `log_summary` run event (`src/lifecycle/summary-event.ts`) holds `source`, `text`, `notable`, the
+  raw artifact ID and SHA-256, the summary artifact ID and `inner_call_id`. It carries text, an exception to "no text"
+  in the table of §13.8 (as for `run_title`), because the envelope builder is synchronous and reads the ledger only.
+  The envelope shows it as `result.verification_summary { source, label, text, notable?, raw_artifact { id, sha256 },
+  summary_artifact_id? }`; the label is derived from `source` by the builder, never from the payload. `status`,
+  `failure_code`, `verification` (outcomes, exit codes) and every count come from the run row and the terminal
+  transition, not from this field. The envelope builder reads the event by constant and shape and does not import
+  `src/inner/` (the import-boundary test is unchanged).
+- **Trigger.** No run path calls `summariseVerification` automatically (the lifecycle may not import the service); the
+  entry point is the service function, like `createPrDraft`.
 
 ### 13.7 Fallback table
 

@@ -12,13 +12,24 @@
  * named by its policy snapshot, and nothing else of it: never the scope, the scope hash or `decided_by`. The policy
  * snapshot itself is never read into the envelope beyond that ID.
  *
+ * T11.9 (FR-INN-13): when a verification-output summary exists, `result.verification_summary` carries it as DISPLAY-ONLY text
+ * with a visible source label (derived here from the source, never from the stored text) and a pointer to the raw artifact
+ * by ID and SHA-256. It never feeds `status`, `failure_code`, `verification` (exit codes, outcomes) or any count: those are
+ * read from the run row and the terminal transition as before. This module still does not import `src/inner/`.
+ *
  * T3.4: the operator `approve`/`deny` record (`operator_decision_requested`) carries the deciding OS user and the scope
  * hash for the operator CLI; `get_run include_events` drops both fields from that event (Proposed).
  */
 
 import { GIT_REF_SNAPSHOT_EVENT } from "../git/ref-guard.js";
 import type { Ledger, RunRecord } from "../ledger/index.js";
-import { isTerminal, OPERATOR_DECISION_REQUESTED } from "../lifecycle/index.js";
+import {
+  isTerminal,
+  LOG_SUMMARY_EVENT,
+  type LogSummarySource,
+  OPERATOR_DECISION_REQUESTED,
+  summaryLabel,
+} from "../lifecycle/index.js";
 import type { ReportedUsage } from "../usage/index.js";
 import { MCP_ARTIFACT_KINDS } from "./schemas.js";
 
@@ -37,12 +48,27 @@ export interface Envelope {
   failure_detail?: string;
   provider: { adapter: string | null; model: string | null; adapter_version: string | null };
   route: { reasons: string[] };
-  result: { summary?: string; changed_files?: number; verification: Record<string, unknown>[] };
+  result: {
+    summary?: string;
+    changed_files?: number;
+    verification: Record<string, unknown>[];
+    verification_summary?: VerificationSummaryView;
+  };
   artifacts: Record<string, string>;
   usage: { reported: ReportedUsage[] | null; estimated: null; capacity_confidence: null };
   approval?: { status: "PENDING" | "APPROVED" | "DENIED"; requested_at: string };
   replayed?: boolean;
   events?: { seq: number; ts: string; type: string; payload: unknown }[];
+}
+
+/** T11.9: a condensed view of the verification output. Prose only; see the module comment. */
+export interface VerificationSummaryView {
+  source: LogSummarySource;
+  label: string;
+  text: string;
+  notable?: string[];
+  raw_artifact: { id: string; sha256: string };
+  summary_artifact_id?: string;
 }
 
 interface TransitionPayload {
@@ -57,7 +83,16 @@ interface TransitionPayload {
 export function buildEnvelope(ledger: Ledger, run: RunRecord, scrub: (s: string) => string): Envelope {
   let adapterVersion: string | null = null;
   let terminal: TransitionPayload | undefined;
+  let summaryPayload: unknown;
   for (const e of ledger.listRunEvents(run.id)) {
+    if (e.type === LOG_SUMMARY_EVENT) {
+      try {
+        summaryPayload = JSON.parse(e.payload_json); // the latest wins
+      } catch {
+        summaryPayload = undefined;
+      }
+      continue;
+    }
     if (e.type !== "state_transition") continue;
     const p = JSON.parse(e.payload_json) as TransitionPayload;
     if (p.to === "LEASED" && typeof p.adapter_version === "string") adapterVersion = p.adapter_version;
@@ -76,6 +111,9 @@ export function buildEnvelope(ledger: Ledger, run: RunRecord, scrub: (s: string)
     );
   }
 
+  const verificationSummary = summaryView(summaryPayload, scrub);
+  if (verificationSummary !== undefined) result.verification_summary = verificationSummary;
+
   return {
     run_id: run.id,
     meta_session_id: run.meta_session_id,
@@ -89,6 +127,35 @@ export function buildEnvelope(ledger: Ledger, run: RunRecord, scrub: (s: string)
     artifacts,
     usage: { reported: reportedUsage(ledger, run.id), estimated: null, capacity_confidence: null },
     ...approvalOf(ledger, run),
+  };
+}
+
+const SUMMARY_TEXT_MAX = 2000;
+const SUMMARY_NOTE_MAX = 200;
+const SHA256 = /^[0-9a-f]{64}$/u;
+
+/** Strict shape check of a stored `log_summary` payload; anything unexpected shows nothing (fail closed). */
+function summaryView(payload: unknown, scrub: (s: string) => string): VerificationSummaryView | undefined {
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const p = payload as Record<string, unknown>;
+  const source = p.source;
+  if (source !== "inner" && source !== "heuristic") return undefined;
+  if (typeof p.text !== "string" || typeof p.raw_artifact_id !== "string") return undefined;
+  if (typeof p.raw_sha256 !== "string" || !SHA256.test(p.raw_sha256)) return undefined;
+  const notable =
+    source === "inner" && Array.isArray(p.notable)
+      ? p.notable
+          .filter((n): n is string => typeof n === "string")
+          .slice(0, 5)
+          .map((n) => scrub(n).slice(0, SUMMARY_NOTE_MAX))
+      : [];
+  return {
+    source,
+    label: summaryLabel(source),
+    text: scrub(p.text).slice(0, SUMMARY_TEXT_MAX),
+    ...(notable.length > 0 ? { notable } : {}),
+    raw_artifact: { id: p.raw_artifact_id, sha256: p.raw_sha256 },
+    ...(typeof p.summary_artifact_id === "string" ? { summary_artifact_id: p.summary_artifact_id } : {}),
   };
 }
 
