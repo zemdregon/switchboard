@@ -16,6 +16,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { runConformanceCase } from "../../src/adapters/conformance.js";
 import { FAILURE_CODES, type FailureCode } from "../../src/adapters/failure.js";
 import {
@@ -25,6 +26,7 @@ import {
   isIneligible,
   type ProviderAdapter,
   type ResolvedProfile,
+  type RunResult,
 } from "../../src/adapters/index.js";
 import { guardEvent } from "../../src/adapters/tool-guard.js";
 import { readIfExists, treeHash } from "./detectors.js";
@@ -46,9 +48,11 @@ export interface HostileStream {
   /**
    * While the case declares a {@link AdapterLegCase.replayGap}: the exact result this stream ends with today (for
    * example `{ ok: true }` for a denial the parser cannot see). Pinned through {@link gapOutcome} and through the
-   * supervisor replay, so a change in either direction is visible and the stream is re-examined.
+   * supervisor replay, so a change in either direction is visible and the stream is re-examined. A full `RunResult`
+   * (with `unknownEventCount`) also pins the exact `extractResult` value {@link gapOutcome} derives, so a change to its
+   * detail, summary or session id is visible too.
    */
-  gapResult?: { ok: boolean; failureCode?: FailureCode };
+  gapResult?: { ok: boolean; failureCode?: FailureCode } | RunResult;
 }
 
 export interface AdapterLegCase {
@@ -235,6 +239,8 @@ export async function gapProblems(c: AdapterLegCase, fx: MaliciousFixture, s: Ho
   const got = (ok: boolean | undefined, code: FailureCode | undefined) => `ok=${ok} code=${code ?? "none"}`;
   if (got(g.ok, g.failureCode) !== want)
     problems.push(`${s.name}: gapOutcome ${got(g.ok, g.failureCode)}, want ${want}`);
+  else if ("unknownEventCount" in s.gapResult && !isDeepStrictEqual(g, s.gapResult))
+    problems.push(`${s.name}: gapOutcome ${JSON.stringify(g)}, want ${JSON.stringify(s.gapResult)}`);
   const r = await replayHostileStream(c, fx, s);
   if (got(r.resultOk, r.failureCode) !== want)
     problems.push(`${s.name}: replay ${got(r.resultOk, r.failureCode)}, want ${want}`);
