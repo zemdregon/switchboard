@@ -1107,6 +1107,16 @@ channel with no `--safe-mode` and a child environment of only `PATH`, `HOME` and
 `finalize_commit` gets its commit through finalize-only). **Still not done:** a live run through Switchboard with the
 real `claude` (shim start, socket reach, Git deny rules with the server present), so the opt-in stays UNSUPPORTED.
 
+*Update 2026-10-14 (operator run on Ampere through Switchboard's own shim; Delegated).* Claude Code 2.1.294, an approved
+`privileged` bypass scope (via `switchboard approve`), `git_channel: true`, a canary project:
+([docs/research/live-checks-2026-10-14-channel.md](research/live-checks-2026-10-14-channel.md)) (a) the shim connected and
+served `commit` headless, one commit landed on the publish ref with the context identity; (b) the exact-name rule ran
+the tool under bypass; (d) a shell `git commit` was denied and nothing moved (one spelling only); (e) the shim reached
+the controller socket; (f) the token authenticated, the environment contents were not inspected; (i) the definition
+shape was accepted. The run ended `FAILED PERMISSION_BLOCKED` because of the denied shell call (the commit stays on the
+publish ref). Not checked: (g), (h), the `push` tool, `dontAsk` with the shim, R-41 under the channel. The opt-in
+stays UNSUPPORTED (ADR-0033: bypass-only) until the owner decides what this evidence is worth; no clause failed.
+
 **T9.5 status (2026-10-13; Delegated): Done for `host` runs on fakes (Git 2.43.0); not run against a live provider.**
 "Done when", clause by clause, all in `src/lifecycle/ref-guard.test.ts` (fake adapter scenario `git_attempts`, plain Git
 commands in the run worktree against temporary local repositories and a local bare remote):
