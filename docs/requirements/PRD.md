@@ -83,10 +83,36 @@ and [LLD §14](../design/LLD.md#14-retrieval-index).
 admission context pack in [LLD §14.11](../design/LLD.md#1411-admission-context-pack-t125); component and traceability
 notes in [SDD §4.1 (T12.5)](../design/SDD.md#t125--admission-context-pack-design-intent) and [SDD
 §5](../design/SDD.md#5-requirements-to-design-traceability); test plan in [TDD
-§3.13.8](../design/TDD.md#3138-t125-admission-time-context-pack-2026-10-14). Built on fakes: incremental background
-index build, operator `index` commands and `doctor` retrieval reporting (T12.4); admission-time retrieval and the
-context pack (T12.5; evidence in [ROADMAP §6.7](../ROADMAP.md#67-m12-retrieval-index-tasks)). Not implemented yet:
-`search_project_context` (T12.6); and the deployment-wide index (T12.7).
+§3.13.8](../design/TDD.md#3138-t125-admission-time-context-pack-2026-10-14). Global-index merge at admission is
+deferred to T12.7 (same TDD section).
+
+**Runtime (implemented, T12.4–T12.5).** Built on fakes ([ROADMAP §6.7](../ROADMAP.md#67-m12-retrieval-index-tasks)):
+incremental background index build, operator `index` commands and `doctor` retrieval reporting (T12.4); delegated runs
+with retrieval on receive an untrusted context pack at dispatch (T12.5;
+`src/retrieval/admission.test.ts`, `src/lifecycle/context-pack.test.ts`, `src/retrieval/import-boundary.test.ts`);
+differences from the design are listed at the end of LLD §14.11. The admission path searches the project store only
+until T12.7.
+
+**Design (T12.7; FR-RAG-09, FR-RAG-10).** On `origin/main`: deployment-wide index and opt-in sharing in [LLD
+§14.9](../design/LLD.md#149-global-index-and-sharing) (`rag.global`, operator-added `sources`, `contribute_to_global`
+and `use_global`, default off on every side; `untrusted` contexts do not contribute by default; every global snippet
+carries `origin_project` or a source label; the same §14.4 locality gates and run profile apply), with admission-time
+merge of project and global hits in [LLD §14.6](../design/LLD.md#146-selection-and-token-budget) step 3 alongside the
+T12.5 pack path (LLD §14.11). Store layout and caps: [LLD §14.2](../design/LLD.md#142-stores-and-tables).
+Engineering expectations: cross-project isolation and origin labelling in [TDD
+§3.13.3](../design/TDD.md#3133-testing-affinity-and-retrieval); explicit admission merge coverage in [TDD
+§3.13.8](../design/TDD.md#3138-t125-admission-time-context-pack-2026-10-14). Load-time enforcement that only the
+operator file may set sharing flags is implemented in T12.1 ([TDD
+§3.13.5](../design/TDD.md#3135-t121-config-and-store-2026-10-14)). Workflow rule BR-47 and WF-14 traceability: [FRD
+§3.1](FRD.md#31-implementation-evidence-partial-m12) (open in
+[PR #196](https://github.com/zemdregon/switchboard/pull/196)); SRS requirement evidence in
+[PR #198](https://github.com/zemdregon/switchboard/pull/198). Component mapping: [SDD
+§5](../design/SDD.md#5-requirements-to-design-traceability) (`FR-RAG-09`, `FR-RAG-10`); [ADR-0031](../adr/0031-retrieval-index.md).
+
+**Runtime (in progress, T12.7; not on `main`).** A separate global SQLite store, `index rebuild global`, contribution
+copy from contributing projects, admission search merge when `use_global` is set, and `index clear global` are tracked
+in [PR #197](https://github.com/zemdregon/switchboard/pull/197) (w61-t127 on sb-worker-a). Not implemented yet on
+`main`: `search_project_context` (T12.6).
 
 ### 3.1 Inner agent task catalogue
 
@@ -291,10 +317,10 @@ involved.
   sent less context. The saving is not measured by the product.
 - CAP: CAP-6, CAP-7, CAP-13. FR: FR-RTE-06–09, FR-CAP-08, FR-RAG-01–14.
 
-**Implementation note (partial M12).** UJ-11 is the target operator and orchestrator experience for CAP-13. Through T12.3
-only the configuration, store, scan/chunk pipeline and embedding port exist on fakes; background indexing,
-`doctor`/`index` visibility, labelled snippets at admission and agent-callable search remain T12.4 onward (see [§3
-implementation evidence](#implementation-evidence-partial-m12--cap-13)).
+**Implementation note (partial M12).** UJ-11 is the target operator and orchestrator experience for CAP-13. On `main`,
+T12.4–T12.5 deliver background indexing, `doctor`/`index` visibility and labelled per-project snippets at admission on
+fakes; the alternate path with `use_global: true` and deployment-wide snippets is T12.7 ([§3 implementation
+evidence](#implementation-evidence-partial-m12--cap-13)). Agent-callable search remains T12.6.
 
 ## 5. Product surface
 
