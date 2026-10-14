@@ -78,6 +78,7 @@ class HarnessAdapter implements ProviderAdapter {
   readonly id = "fake" as const;
   readonly transports = ["subprocess-jsonl"] as const;
   readonly gitWriteControl = new FakeAdapter().gitWriteControl;
+  readonly resumeCwd = "bound" as const;
   readonly gitCapabilities = { commitChannel: "none", detail: "test double" } as const;
   scenario: FakeScenario = "success";
   beforeSpawn: ((cwd: string) => void) | undefined;

@@ -27,6 +27,7 @@ import type {
   ProbeRunner,
   ProviderAdapter,
   ResolvedProfile,
+  ResumeCwd,
   RunResult,
   Transport,
 } from "../types.js";
@@ -84,6 +85,11 @@ export interface FakeAdapterOptions {
    */
   commitChannel?: "injected" | "none";
   /**
+   * T5.7 test variant (ADR-0038 item 6.3, LLD §15.6): the fake's `resumeCwd` declaration. Default `bound` (a resume
+   * reuses the origin worktree path); `independent` is the unbound variant, `unverified` the fail-closed one.
+   */
+  resumeCwd?: ResumeCwd;
+  /**
    * T4.8 test variant (ADR-0036 conformance plan; ADR-0035 item 4 test-only entry): compile `acp-stdio` invocations
    * that run the scripted fake ACP agent with this fixture, recording what it receives to `record`. Unlike the JSONL
    * mode, every profile compiles (the fake has no native controls; the permission answers are what the tests exercise).
@@ -113,6 +119,8 @@ export class FakeAdapter implements ProviderAdapter {
    * FR-GIT-02 (T9.4): the fake CLI receives the shim command in argv (`--tool-channel <json>`, no secret) and the token
    * in its environment, then starts the shim itself, as a provider would from a per-run MCP definition.
    */
+  /** T5.7: see {@link FakeAdapterOptions.resumeCwd}. */
+  readonly resumeCwd: ResumeCwd;
   readonly gitCapabilities: GitCapabilities;
   readonly #scenario: FakeScenario;
   readonly #exe: string;
@@ -123,6 +131,7 @@ export class FakeAdapter implements ProviderAdapter {
   constructor(opts: FakeAdapterOptions = {}) {
     this.#acp = opts.acp;
     this.transports = opts.acp ? ["acp-stdio"] : ["subprocess-jsonl"];
+    this.resumeCwd = opts.resumeCwd ?? "bound";
     this.gitCapabilities =
       opts.commitChannel === "none"
         ? { commitChannel: "none", detail: "fake test adapter variant without a tool channel (T9.7 tests)" }

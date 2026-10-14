@@ -1935,8 +1935,10 @@ the same `#build`, so every policy flag (permission, tools, isolation, Git deny 
 `--ignore-user-config`, `--ignore-rules` for Codex) is sent again on every resume; only `--resume <id>` (Claude Code) or
 `resume <id>` (Codex) is added. The Codex position of exec-level flags before `resume <id>`, and the prompt on stdin,
 are an Assumption in that file. The fake adapter (`src/adapters/fake/adapter.ts`) appends `--resume <id>` to its normal
-argv. The working directory of a continuation is the new run's worktree (`<data>/worktrees/<sess>/<run>`), not the
-previous run's. So today the controller never relies on a resumed session keeping its flags. The sandbox and
+argv. The working directory of a continuation was the new run's worktree (`<data>/worktrees/<sess>/<run>`) until T5.7;
+since T5.7 a resume runs in the worktree path of the run that created the native session unless the adapter declares
+`resumeCwd: 'independent'` ([LLD §15.6](LLD.md#156-working-directory-of-a-native-resume)). So the controller never
+relies on a resumed session keeping its flags, nor on an `Unverified` working-directory cell. The sandbox and
 permission cells above ask what the provider itself does: an adapter may stop re-sending a flag only where a
 documented or observed `keeps` result exists, and until then it must keep re-sending it (fail closed, NFR-SEC-06).
 

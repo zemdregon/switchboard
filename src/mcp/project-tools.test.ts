@@ -95,6 +95,7 @@ async function setup(clients: ClientSpec[], opts: { projects?: ResolvedProject[]
     id: fake.id,
     transports: fake.transports,
     gitWriteControl: fake.gitWriteControl,
+    resumeCwd: fake.resumeCwd,
     gitCapabilities: fake.gitCapabilities,
     probe: (r) => fake.probe(r),
     authPreflight: (r) => fake.authPreflight(r),

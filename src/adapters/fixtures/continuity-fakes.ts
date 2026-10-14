@@ -67,6 +67,7 @@ class StatefulFakeAdapter implements ProviderAdapter {
   readonly #home: string;
   readonly transports;
   readonly gitWriteControl;
+  readonly resumeCwd;
   readonly gitCapabilities;
   readonly probe;
   readonly authPreflight;
@@ -83,6 +84,7 @@ class StatefulFakeAdapter implements ProviderAdapter {
     this.#inner = new FakeAdapter({ commitChannel: "none", ...fakeOpts });
     this.transports = this.#inner.transports;
     this.gitWriteControl = this.#inner.gitWriteControl;
+    this.resumeCwd = this.#inner.resumeCwd;
     this.gitCapabilities = this.#inner.gitCapabilities;
     this.probe = this.#inner.probe.bind(this.#inner);
     this.authPreflight = this.#inner.authPreflight.bind(this.#inner);

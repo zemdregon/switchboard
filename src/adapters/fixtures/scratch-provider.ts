@@ -35,6 +35,7 @@ export class ScratchAdapter implements ProviderAdapter {
   readonly #inner = new FakeAdapter({ commitChannel: "none" });
   readonly transports = this.#inner.transports;
   readonly gitWriteControl = this.#inner.gitWriteControl;
+  readonly resumeCwd = this.#inner.resumeCwd;
   readonly gitCapabilities = this.#inner.gitCapabilities;
   readonly probe = this.#inner.probe.bind(this.#inner);
   readonly authPreflight = this.#inner.authPreflight.bind(this.#inner);

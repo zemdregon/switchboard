@@ -404,15 +404,22 @@ sequenceDiagram
   (BR-18).
 - **Realizes:** FR-SES-01, 02, 03, 05; FR-MCP-03, 05, 09; FR-ADP-04; FR-WS-01, 02, 03.
 - **Normal path:** `continue_task(meta_session_id, instruction)` → validation (§7.2) → T1 → same lifecycle as WF-1 with
-  the adapter's `resume` using the stored native session ID. **Proposed:** the new run takes a new lease on the
-  meta-session's worktree when it exists at the head checkpoint, otherwise a fresh worktree from the head checkpoint;
-  rationale: native resume may be tied to the working directory (**Assumption**, to be checked per provider in M5). The
-  new native session ID, if changed, updates the binding. *Update 2026-10-14 (Proposed, Delegated,
-  [ADR-0038](../adr/0038-handoff-bundle-and-continuity.md) item 6):* the resume runs in the worktree path of the run
-  that created the native session, with a new run branch at the head checkpoint, unless the adapter declares
-  `resumeCwd: 'independent'` from a recorded capture; if that path is unusable the continuation becomes a recorded
-  handoff before any spawn (BR-18, reason `resume_directory_unavailable`). Code still uses a new path per run until
-  T5.7 ([LLD §15.6](../design/LLD.md#156-working-directory-of-a-native-resume)).
+  the adapter's `resume` using the stored native session ID. The resume runs in the worktree path of the run that
+  created the native session, on a new run branch `switchboard/<sess>/<run>` at the head checkpoint with its own lease
+  and checkpoints, unless the adapter declares `resumeCwd: 'independent'` from a recorded capture, in which case it
+  gets a fresh worktree path `<data>/worktrees/<sess>/<run>` from the head checkpoint (Proposed, Delegated,
+  [ADR-0038](../adr/0038-handoff-bundle-and-continuity.md) item 6; as built in T5.7,
+  [LLD §15.6](../design/LLD.md#156-working-directory-of-a-native-resume)). Every adapter except the test fake declares
+  `unverified` or `bound` today, handled as `bound`, because whether a native resume is tied to its directory is
+  verified for no provider in [TDD §4.10](../design/TDD.md#410-native-resume-inventory-t50) except Antigravity and
+  Muse Code (both tied). A missing origin directory is re-created at the same path. The new native session ID, if
+  changed, updates the binding. *Superseded text (2026-10-14):* this workflow used to say the new run takes a lease on
+  "the meta-session's worktree" or else a fresh one; the code before T5.7 gave every continuation a new path.
+- **Directory unusable (T5.7, Delegated):** if the origin run cannot be found, or its path is not a clean, unlocked
+  worktree of this meta-session's repository under `<data>/worktrees/<sess>/`, no resume is attempted there or
+  anywhere else. Target (T5.6): the continuation becomes a recorded handoff before any spawn (BR-18, reason
+  `resume_directory_unavailable`). Until T5.6 lands, `continue_task` refuses with `TOOL_FAILURE`, `details.reason =
+  "resume_directory_unavailable"`, before any run is written.
 - **Alternate paths:** caller names another provider or bound provider is ineligible → WF-3. Native resume rejected by
   the provider (stale or expired session) → `OUTPUT_PROTOCOL_ERROR` or the code the adapter classifies; **Proposed:**
   the controller does not auto-fall back to handoff on a rejected resume, because that would change the provider-visible

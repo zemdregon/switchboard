@@ -127,6 +127,7 @@ function capturing(inner: ClaudeAdapter, rewrite?: (argv: string[]) => string[])
     id: inner.id,
     transports: inner.transports,
     gitWriteControl: inner.gitWriteControl,
+    resumeCwd: inner.resumeCwd,
     gitCapabilities: {
       ...inner.gitCapabilities,
       ...(channelArgs

@@ -27,7 +27,7 @@
 import { ClaudeAdapter } from "./claude/adapter.js";
 import { CodexAdapter } from "./codex/adapter.js";
 import { FakeAdapter, type FakeScenario } from "./fake/adapter.js";
-import type { AcpDeclarations, ProviderAdapter } from "./types.js";
+import type { AcpDeclarations, ProviderAdapter, ResumeCwd } from "./types.js";
 
 /** What `serve` and `doctor` pass to an entry's factory. Fields are named after the provider they configure. */
 export interface ProviderFactoryOptions {
@@ -78,6 +78,13 @@ export interface ProviderEntry {
    * Additive only, like the flags.
    */
   readonly acp?: AcpDeclarations;
+  /**
+   * T5.7 (ADR-0038 item 6.3, LLD §15.6): the provider's `resumeCwd` value from TDD §4.10, kept here so the table names
+   * it for every provider, including reserved ones whose adapter does not exist yet (data only until `create`). An
+   * adapter's own `resumeCwd` is what the lifecycle reads; a registry test requires the two to agree for every entry
+   * with `create`. Absent is handled as `unverified`.
+   */
+  readonly resumeCwd?: ResumeCwd;
   /** Absent while the provider has no adapter module yet (reserved id: accepted in config, never registered). */
   readonly create?: (opts: ProviderFactoryOptions) => ProviderAdapter;
 }
@@ -101,6 +108,8 @@ export const BUILTIN_PROVIDERS = [
     // Same source: the `--permission-mode` choice `bypassPermissions` (which `--restricted` "refuses"). The adapter
     // never emits it; before ADR-0037 only its compile tests said so, now the pre-spawn audit refuses it too.
     bypassValues: [{ flag: "--permission-mode", value: "bypassPermissions" }],
+    // TDD §4.10: "Tied to the working directory" is `Unverified: T5.12`.
+    resumeCwd: "unverified",
     create: (o: ProviderFactoryOptions): ProviderAdapter =>
       new ClaudeAdapter({ gitChannel: o.claudeGitChannel === true }),
   },
@@ -111,6 +120,8 @@ export const BUILTIN_PROVIDERS = [
     label: "Codex (real provider)",
     // [R2] L28, L125 (`--yolo`, not to be built around) and L126 (`--full-auto`, deprecated compatibility option).
     bypassFlags: ["--yolo", "--full-auto"],
+    // TDD §4.10: `Unverified: T5.12`.
+    resumeCwd: "unverified",
     create: (): ProviderAdapter => new CodexAdapter(),
   },
   {
@@ -129,9 +140,12 @@ export const BUILTIN_PROVIDERS = [
       { flag: "--allowed-tools", value: "*" },
       { flag: "--allowed-tools", value: "**" },
     ],
+    // TDD §4.10: `Unverified: T4.21`.
+    resumeCwd: "unverified",
   },
   // TDD §4.4.2: its one bypass flag (`--dangerously-skip-permissions`) is shared; `always-proceed` is a settings value.
-  { id: "antigravity", configId: "antigravity", kind: "real", bypassFlags: [] },
+  // TDD §4.10 ([RS]): "Histories are scoped to the working directory", so `bound`.
+  { id: "antigravity", configId: "antigravity", kind: "real", bypassFlags: [], resumeCwd: "bound" },
   {
     id: "cursor",
     configId: "cursor",
@@ -142,11 +156,15 @@ export const BUILTIN_PROVIDERS = [
     bypassFlags: [],
     bypassShortFlags: ["-f"],
     bypassValues: [{ flag: "--sandbox", value: "disabled" }],
+    // TDD §4.10: `Unverified: T4.41`.
+    resumeCwd: "unverified",
   },
   // TDD §4.6.2: `--auto` is a long flag (declared with the adapter, T4.52); the inline `allow` permission travels in
   // `OPENCODE_PERMISSION`/`OPENCODE_CONFIG_CONTENT`, which the argv audit does not see (ADR-0037 limits).
-  { id: "opencode", configId: "opencode", kind: "real", bypassFlags: [] },
-  { id: "kimi", configId: "kimi-code", kind: "real", bypassFlags: [] },
+  // TDD §4.10: `Unverified: T4.51` (OpenCode) and `Unverified: T4.61` (Kimi Code). Muse Code (`bound`, [M-ext]:
+  // `--allow-workspace-switch` is needed when the workspace differs) gets its entry with its module (T4.72).
+  { id: "opencode", configId: "opencode", kind: "real", bypassFlags: [], resumeCwd: "unverified" },
+  { id: "kimi", configId: "kimi-code", kind: "real", bypassFlags: [], resumeCwd: "unverified" },
   {
     id: "fake",
     kind: "test",
@@ -158,6 +176,8 @@ export const BUILTIN_PROVIDERS = [
       bypassModeIds: ["fake-bypass-mode"],
       bypassConfigValues: [{ configId: "fake-approval", value: "never-ask" }],
     },
+    // Test stand-in: the default fake declares `bound`; tests build `independent` and `unverified` variants.
+    resumeCwd: "bound",
     create: (o: ProviderFactoryOptions): ProviderAdapter =>
       new FakeAdapter(o.fakeScenario !== undefined ? { scenario: o.fakeScenario } : {}),
   },
@@ -257,6 +277,9 @@ function entryProblems(entry: ProviderEntry, others: readonly ProviderEntry[]): 
     else for (const v of entry.bypassValues as unknown[]) problems.push(...valueProblems(v));
   }
   if (entry.acp !== undefined) problems.push(...acpProblems(entry.acp));
+  if (entry.resumeCwd !== undefined && !["bound", "independent", "unverified"].includes(entry.resumeCwd)) {
+    problems.push(`malformed resumeCwd ${JSON.stringify(entry.resumeCwd)}`);
+  }
   const ids = new Set(others.flatMap((o) => [o.id, ...(o.configId !== undefined ? [o.configId] : [])]));
   // Ids and config ids share one namespace across entries (`codex` is both for one provider, which is allowed).
   if (ids.has(entry.id)) problems.push(`id ${entry.id} is already registered`);

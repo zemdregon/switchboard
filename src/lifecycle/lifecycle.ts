@@ -129,7 +129,7 @@ import {
 } from "../routing/index.js";
 import { usageObservationsFromEvents } from "../usage/index.js";
 import { gitText } from "../workspace/git.js";
-import type { PreparedWorkspace, WorkspaceManager } from "../workspace/index.js";
+import { type PreparedWorkspace, ResumeDirectoryUnavailableError, type WorkspaceManager } from "../workspace/index.js";
 import {
   APPROVAL_DECIDED_EVENT,
   applyApprovalDecision,
@@ -140,6 +140,13 @@ import {
   evaluateBypass,
 } from "./approval.js";
 import { requestHash } from "./request.js";
+import {
+  planResumeDirectory,
+  RESUME_DIRECTORY_UNAVAILABLE,
+  type ResumeDirectoryPlan,
+  type ResumeDirectoryQuestion,
+  type ResumeUnavailableProblem,
+} from "./resume-directory.js";
 import {
   assertTransition,
   IllegalTransitionError,
@@ -687,6 +694,14 @@ export class RunLifecycle {
   }
 
   /**
+   * T5.7 (LLD §15.6): where a resume of `nativeSessionId` on `provider` would run, checked read-only before admission
+   * (`inspect`); `continue_task` refuses an `unavailable` plan before any side effect (T5.6 turns it into a handoff).
+   */
+  resumeDirectoryPlan(q: ResumeDirectoryQuestion, inspect = true): Promise<ResumeDirectoryPlan> {
+    return planResumeDirectory({ ledger: this.ledger, workspace: this.opts.workspace }, q, { inspect });
+  }
+
+  /**
    * BR-10 lookup before routing: the run already admitted for `(clientId, key)` when its hash matches, undefined when
    * the key is unused, `LifecycleError` INVALID_REQUEST when the key was used with different parameters.
    */
@@ -947,6 +962,25 @@ export class RunLifecycle {
 
     // LEASED (T5): intent committed before the lease and worktree are created.
     this.move(this.current(runId), "LEASED", {}, { adapter_version: binaryVersion });
+    // T5.7 (ADR-0038 item 6, LLD §15.6): a resume runs in its origin's worktree path unless the adapter declares
+    // `independent`. The origin is resolved from records here and its directory re-checked inside `prepare`; any
+    // failure ends the run before spawn with `resume_directory_unavailable`, never a resume in another directory.
+    let resumeIn: { originPath: string } | undefined;
+    if (req.resume_native_session_id !== undefined) {
+      const plan = await this.resumeDirectoryPlan(
+        {
+          metaSessionId: run0.meta_session_id,
+          provider: req.provider,
+          nativeSessionId: req.resume_native_session_id,
+          trustProfile: req.trust_profile,
+          workspace: req.workspace,
+          resumeCwd: adapter.resumeCwd,
+        },
+        false,
+      );
+      if (plan.kind === "unavailable") return this.failResumeDirectory(runId, plan.problem, plan.detail);
+      if (plan.kind === "origin" && plan.originPath !== null) resumeIn = { originPath: plan.originPath };
+    }
     let ws: PreparedWorkspace;
     try {
       ws = await this.opts.workspace.prepare({
@@ -955,9 +989,12 @@ export class RunLifecycle {
         workspace: req.workspace,
         trustProfile: req.trust_profile,
         ...(req.base_ref !== undefined ? { baseRef: req.base_ref } : {}),
+        ...(resumeIn ? { resumeIn } : {}),
         leaseTtlMs: this.opts.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS,
       });
     } catch (err) {
+      if (err instanceof ResumeDirectoryUnavailableError)
+        return this.failResumeDirectory(runId, err.problem, err.message);
       return this.fail(runId, "TOOL_FAILURE", `workspace preparation failed: ${errorText(err)}`);
     }
     if (exec.cancelRequested) return this.cancelEarly(runId);
@@ -1623,6 +1660,17 @@ export class RunLifecycle {
         { failure_code: code, failure_detail: detail, finished_at: this.nowIso() },
         extra,
       );
+    });
+  }
+
+  /**
+   * T5.7: a resume whose origin directory is unusable ends before spawn (LEASED → FAILED, as a workspace preparation
+   * failure) with `TOOL_FAILURE` and `reason: resume_directory_unavailable`; nothing ran in any directory.
+   */
+  private failResumeDirectory(runId: string, problem: ResumeUnavailableProblem, detail: string): void {
+    this.fail(runId, "TOOL_FAILURE", `native resume not attempted: ${detail}`, {
+      reason: RESUME_DIRECTORY_UNAVAILABLE,
+      problem,
     });
   }
 
