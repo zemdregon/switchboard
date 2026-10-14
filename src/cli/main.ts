@@ -12,6 +12,15 @@ import { renderValidate, runAdaptersValidate } from "./adapters-validate.js";
 import { renderDoctor, runDoctor } from "./doctor.js";
 import { renderGc, runGcCommand } from "./gc.js";
 import { renderGitPush, runGitPush } from "./git-push.js";
+import {
+  innerResume,
+  innerStatus,
+  innerTest,
+  parseInnerTask,
+  renderInnerResume,
+  renderInnerStatus,
+  renderInnerTest,
+} from "./inner.js";
 import { type CliIo, JSON_SCHEMA_VERSION, UsageError } from "./io.js";
 import { UnknownRunError } from "./operator.js";
 import { renderProject, renderValidation, UnknownProjectError, validateProjects } from "./projects.js";
@@ -62,6 +71,11 @@ Commands:
                       read-only prompt; may use your quota). Never starts a sign-in. On success only, writes the
                       version, date, range and an evidence line into the provider's manifest file in the source
                       checkout for you to review and commit; on any failure writes nothing. Exit 1 on failure
+  inner status        Show the inner agent: backend, locality, per-task call counts, fallback rates and suspension
+                      (read-only; never contacts the backend)
+  inner test <task>   Run one task on a built-in synthetic fixture through the configured backend; sends no repository
+                      data; exit 1 if the result would fall back
+  inner resume <task> Re-enable a task that the quality monitor suspended
   approve <run_id>    Approve the privileged run that requested an approval (review it with runs show first)
   deny <run_id>       Deny the privileged run that requested an approval; the run ends CANCELLED
 
@@ -237,6 +251,28 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         const report = await runGitPush(io, loaderArgv, id);
         emit(report, renderGitPush(report));
         return report.pushed ? 0 : 1;
+      }
+      case "inner": {
+        // T11.7 (FR-INN-17, LLD §13): status reads the ledger only; test sends the built-in fixture; resume re-enables.
+        if (sub === "status") {
+          if (rest.length > 0) throw new UsageError("inner status takes no arguments");
+          const report = innerStatus(io, loaderArgv);
+          emit(report, renderInnerStatus(report));
+          return 0;
+        }
+        if (sub === "test" || sub === "resume") {
+          if (rest.length !== 1) throw new UsageError(`inner ${sub} requires exactly one task`);
+          const task = parseInnerTask(rest[0]);
+          if (sub === "resume") {
+            const report = await innerResume(io, loaderArgv, task);
+            emit(report, renderInnerResume(report));
+            return 0;
+          }
+          const report = await innerTest(io, loaderArgv, task);
+          emit(report, renderInnerTest(report));
+          return report.accepted ? 0 : 1;
+        }
+        throw new UsageError(`unknown inner subcommand ${JSON.stringify(sub ?? "")}; expected status, test or resume`);
       }
       case "approve":
       case "deny": {
