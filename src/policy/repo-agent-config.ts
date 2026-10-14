@@ -15,6 +15,8 @@
  */
 import { lstatSync } from "node:fs";
 import { join } from "node:path";
+import type { ResolvedProfile } from "../adapters/types.js";
+import { SCOPE_REPO_CONFIG_TO_PROFILE } from "./scope.js";
 
 export const REPO_AGENT_CONFIG_PATHS: Readonly<Record<string, readonly string[]>> = {
   // C11: both executed at default settings.
@@ -54,4 +56,19 @@ export function repoAgentConfigRefusal(
   const present = repoAgentConfigPresent(provider, cwd);
   if (present.length === 0) return undefined;
   return `repository config ${present.join(", ")} would be loaded by ${provider}; repoConfig is disabled`;
+}
+
+/**
+ * The `repoConfig` this run is held to. A privileged snapshot always records `repoConfig: "scoped"` (the scope owns the
+ * decision), so the approved scope's `repository_config.mode` decides: `disabled` stays disabled (the refusal applies),
+ * `approved` and `enabled` lift it. A mode with no mapping fails closed to `disabled`.
+ */
+export function effectiveRepoConfig(
+  profile: Pick<ResolvedProfile, "repoConfig" | "privilegedScope">,
+): ResolvedProfile["repoConfig"] {
+  const scope = profile.privilegedScope?.scope;
+  if (scope === undefined) return profile.repoConfig;
+  const mapped = SCOPE_REPO_CONFIG_TO_PROFILE[scope.repository_config.mode];
+  if (mapped === undefined) return "disabled";
+  return mapped ?? "scoped";
 }

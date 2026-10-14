@@ -1360,3 +1360,143 @@ describe("acp-stdio runs (T4.8, ADR-0036)", () => {
     });
   }, 30_000);
 });
+
+describe("pre-spawn refusals (ADR-0039, Q-62, Q-63)", () => {
+  const ENV = { PATH: process.env.PATH ?? "" };
+  /** The provider id is switched on the shared test adapter: the refusal tables are keyed by real provider ids. */
+  const asProvider = (id: string, over: Partial<RunLifecycleOptions> = {}) => {
+    (adapter as { id: string }).id = id;
+    lifecycle = makeLifecycle(over);
+  };
+  const run = (runId: string) => {
+    const r = ledger.getRunRecord(runId);
+    if (!r) throw new Error("no run");
+    return r;
+  };
+  /** No process was spawned: no pid, and the run never reached RUNNING. */
+  const neverSpawned = (runId: string) => {
+    expect(run(runId).pid).toBeNull();
+    expect(path_(runId)).not.toContain("RUNNING");
+  };
+  const failureReason = (runId: string) =>
+    events(runId)
+      .filter((e) => e.type === "state_transition" && e.p.to === "FAILED")
+      .map((e) => e.p.reason)[0];
+  const commitAgentConfig = () => {
+    mkdirSync(path.join(repo, ".agents"));
+    writeFileSync(path.join(repo, ".agents", "mcp_config.json"), "{}\n");
+    g(repo, "add", "-A");
+    g(repo, "commit", "-q", "-m", "agent config");
+  };
+  const approve = (runId: string) => {
+    const approval = ledger.getApprovalForRun(runId);
+    ledger.decideApproval({ id: approval?.id as string, status: "APPROVED", decidedBy: "op" });
+    approveDirect(runId);
+  };
+
+  describe("working directory reaching provider state", () => {
+    it("refuses a run whose working directory contains a provider state directory", async () => {
+      asProvider("grok", { baseEnv: { ...ENV, HOME: repo } });
+      lifecycle.start();
+      const r = await submit("writer", { provider: "grok", trustProfile: "inspect-untrusted" });
+      const done = await lifecycle.waitForTerminal(r.runId);
+      expect(done).toMatchObject({ state: "FAILED", failure_code: "PERMISSION_BLOCKED" });
+      expect(done.failure_detail).toMatch(/working directory .* contains .*\/\.(claude|codex|grok)/);
+      expect(failureReason(r.runId)).toBe("PROVIDER_STATE_REACHABLE");
+      expect(compiles).toBe(1);
+      neverSpawned(r.runId);
+      expect(existsSync(path.join(repo, "feature.txt"))).toBe(false);
+    });
+
+    it("refuses a run whose working directory is inside a provider state directory", async () => {
+      const home = path.join(root, "home");
+      const inside = path.join(home, ".claude", "proj");
+      mkdirSync(inside, { recursive: true });
+      asProvider("claude", { baseEnv: { ...ENV, HOME: home } });
+      lifecycle.start();
+      const r = await submit("writer", { provider: "claude", trustProfile: "inspect-untrusted", workspace: inside });
+      const done = await lifecycle.waitForTerminal(r.runId);
+      expect(done).toMatchObject({ state: "FAILED", failure_code: "PERMISSION_BLOCKED" });
+      expect(done.failure_detail).toContain("is inside");
+      expect(failureReason(r.runId)).toBe("PROVIDER_STATE_REACHABLE");
+      neverSpawned(r.runId);
+      expect(existsSync(path.join(inside, "feature.txt"))).toBe(false);
+    });
+
+    it("admits the same run when no provider state directory is reachable", async () => {
+      asProvider("grok", { baseEnv: { ...ENV, HOME: path.join(root, "elsewhere") } });
+      lifecycle.start();
+      const r = await submit("writer", { provider: "grok", trustProfile: "edit-untrusted" });
+      expect((await lifecycle.waitForTerminal(r.runId)).state).toBe("SUCCEEDED");
+    });
+  });
+
+  describe("repository-local agent config", () => {
+    beforeEach(() => {
+      commitAgentConfig();
+    });
+
+    it("refuses an edit-untrusted run whose worktree holds repo-local agent config, before spawn", async () => {
+      asProvider("antigravity", { baseEnv: { ...ENV, HOME: path.join(root, "elsewhere") } });
+      lifecycle.start();
+      const r = await submit("writer", { provider: "antigravity" });
+      const done = await lifecycle.waitForTerminal(r.runId);
+      expect(done).toMatchObject({ state: "FAILED", failure_code: "PERMISSION_BLOCKED" });
+      expect(done.failure_detail).toContain(".agents/mcp_config.json");
+      expect(done.failure_detail).toContain("repoConfig is disabled");
+      expect(failureReason(r.runId)).toBe("REPO_AGENT_CONFIG_REFUSED");
+      neverSpawned(r.runId);
+    });
+
+    it("does not refuse a provider whose repo-local paths are not listed", async () => {
+      asProvider("fake", { baseEnv: { ...ENV, HOME: path.join(root, "elsewhere") } });
+      lifecycle.start();
+      const r = await submit("writer");
+      expect((await lifecycle.waitForTerminal(r.runId)).state).toBe("SUCCEEDED");
+    });
+
+    it("admits the run under an approved scope whose repository_config is `approved`", async () => {
+      adapter.privilegedAs = "edit-untrusted";
+      asProvider("antigravity", { baseEnv: { ...ENV, HOME: path.join(root, "elsewhere") } });
+      const r = await submit("writer", {
+        provider: "antigravity",
+        trustProfile: "privileged",
+        privileged: { scope: { ...SCOPE, bypass: false } },
+      });
+      approve(r.runId);
+      lifecycle.start();
+      const done = await lifecycle.waitForTerminal(r.runId);
+      expect(done.state).toBe("SUCCEEDED");
+      expect(done.failure_code).toBeNull();
+    });
+
+    it("admits the run under an approved scope whose repository_config is `enabled`", async () => {
+      adapter.privilegedAs = "edit-untrusted";
+      asProvider("antigravity", { baseEnv: { ...ENV, HOME: path.join(root, "elsewhere") } });
+      const r = await submit("writer", {
+        provider: "antigravity",
+        trustProfile: "privileged",
+        privileged: { scope: { ...SCOPE, bypass: false, repository_config: { mode: "enabled" } } },
+      });
+      approve(r.runId);
+      lifecycle.start();
+      expect((await lifecycle.waitForTerminal(r.runId)).state).toBe("SUCCEEDED");
+    });
+
+    it("still refuses under an approved scope whose repository_config is `disabled`", async () => {
+      adapter.privilegedAs = "edit-untrusted";
+      asProvider("antigravity", { baseEnv: { ...ENV, HOME: path.join(root, "elsewhere") } });
+      const r = await submit("writer", {
+        provider: "antigravity",
+        trustProfile: "privileged",
+        privileged: { scope: { ...SCOPE, bypass: false, repository_config: { mode: "disabled" } } },
+      });
+      approve(r.runId);
+      lifecycle.start();
+      const done = await lifecycle.waitForTerminal(r.runId);
+      expect(done).toMatchObject({ state: "FAILED", failure_code: "PERMISSION_BLOCKED" });
+      expect(failureReason(r.runId)).toBe("REPO_AGENT_CONFIG_REFUSED");
+      neverSpawned(r.runId);
+    });
+  });
+});
