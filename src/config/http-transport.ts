@@ -17,8 +17,12 @@
  *   them: lower case, no default port, no path or trailing slash; at most 32). Default empty: any request that carries an
  *   `Origin` header is refused with 403. A request with no `Origin` is not a browser cross-origin request and passes
  *   this check; authentication still applies to it.
+ * - `passphrase_hash` (T13.8, Q-75) is the operator passphrase for the consent page, as printed by `switchboard consent
+ *   hash-passphrase` (scrypt, `scrypt$17$8$1$<salt>$<key>`); never the passphrase itself. A value in any other form, or
+ *   with other parameters, aborts startup. Absent: the consent page accepts only one-time pairing codes.
  */
 import net from "node:net";
+import { isPassphraseHash } from "../mcp/oauth-passphrase.js";
 
 export interface HttpTransportConfig {
   enabled?: boolean;
@@ -27,6 +31,7 @@ export interface HttpTransportConfig {
   port?: number;
   allow_non_loopback?: boolean;
   allowed_origins?: string[];
+  passphrase_hash?: string;
 }
 
 export const httpTransportSchema = {
@@ -44,6 +49,7 @@ export const httpTransportSchema = {
       uniqueItems: true,
       items: { type: "string", minLength: 1, maxLength: 2048 },
     },
+    passphrase_hash: { type: "string", minLength: 1, maxLength: 256 },
   },
 } as const;
 
@@ -65,6 +71,8 @@ export interface HttpTransportSettings {
   mcpPath: string;
   /** Origins allowed to send an `Origin` header (T13.2); empty refuses every request that has one. */
   allowedOrigins: readonly string[];
+  /** The consent-page passphrase hash (T13.8, Q-75); undefined when only pairing codes are accepted. */
+  passphraseHash?: string;
 }
 
 const loopback = new net.BlockList();
@@ -123,6 +131,9 @@ export function checkHttpTransport(cfg: HttpTransportConfig | undefined): string
       );
     }
   }
+  if (cfg.passphrase_hash !== undefined && !isPassphraseHash(cfg.passphrase_hash)) {
+    errs.push(`${at}.passphrase_hash: must be the output of switchboard consent hash-passphrase (scrypt$17$8$1$...)`);
+  }
   if (cfg.bind !== undefined && net.isIP(cfg.bind) === 0) errs.push(`${at}.bind: must be an IP address literal`);
   const bind = cfg.bind ?? DEFAULT_HTTP_BIND;
   if (net.isIP(bind) !== 0 && !isLoopbackAddress(bind) && cfg.allow_non_loopback !== true) {
@@ -146,5 +157,6 @@ export function resolveHttpTransport(cfg: HttpTransportConfig | undefined): Http
     issuer: url.origin,
     mcpPath: url.pathname,
     allowedOrigins: [...(cfg.allowed_origins ?? [])],
+    ...(cfg.passphrase_hash !== undefined ? { passphraseHash: cfg.passphrase_hash } : {}),
   };
 }

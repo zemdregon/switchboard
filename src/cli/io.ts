@@ -18,6 +18,8 @@ export interface CliIo {
   readonly innerBackend?: InnerBackend;
   /** `adapters validate` only (T4.4): the manifest directory to read and write. Tests inject it; default is the source tree. */
   readonly manifestDir?: string;
+  /** `consent hash-passphrase` only (T13.8): test seam for reading stdin. */
+  readonly readStdin?: () => Promise<string>;
 }
 
 /** Stable `--json` schema version for every command (Proposed). */

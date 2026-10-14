@@ -5,7 +5,8 @@
  * metadata (RFC 8414). The authorization, token and registration endpoints are advertised as designed (ADR-0041 items 3
  * and 4). Dynamic Client Registration (T13.7, RFC 7591, `src/mcp/oauth-clients.ts`) answers `POST /register` when a
  * client store is configured: a valid request creates a `pending` client that can do nothing until the operator approves
- * it. The authorization and token endpoints answer 404 until their tasks land.
+ * it. The authorization and token endpoints (T13.8, `src/mcp/oauth-server.ts`) answer when an authorization server is
+ * configured: `/authorize` shows the operator consent page and `/token` exchanges codes and rotates refresh tokens.
  *
  * The MCP endpoint verifies the bearer token (T13.3, Q-73; `src/mcp/oauth-tokens.ts`). A request without an
  * `Authorization` header gets 401 with a `WWW-Authenticate` challenge naming the metadata URL (RFC 6750 §3, RFC 9728
@@ -16,7 +17,8 @@
  *
  * Every request first passes the `Origin` check (T13.2, FR-MCP-12, LLD §3.3): a request whose `Origin` header is not in
  * `transport.http.allowed_origins` gets 403 before any routing, which blocks DNS rebinding and cross-site calls from a
- * browser. No CORS headers are sent yet, so a browser page cannot read any response even from an allowed origin.
+ * browser. The one exception is the consent form, which posts to `/authorize` from the issuer's own origin (T13.8; the
+ * authorization server then checks CSRF itself). No CORS headers are sent yet, so a browser page cannot read any response even from an allowed origin.
  *
  * Delegated (T13.1): a plain `node:http` listener rather than the SDK's express `mcpAuthRouter`. The SDK's issuer check
  * accepts plain HTTP for localhost and can be relaxed by an environment variable, and its metadata advertises
@@ -31,7 +33,9 @@ import {
   type HttpTransportSettings,
   PROTECTED_RESOURCE_WELL_KNOWN,
 } from "../config/http-transport.js";
+import { mediaType, readBody } from "./http-body.js";
 import { checkClientMetadata, type OAuthClientStore, registrationResponse } from "./oauth-clients.js";
+import type { AuthorizationServer } from "./oauth-server.js";
 import { bearerToken, type OAuthTokenStore, type TokenRejectReason } from "./oauth-tokens.js";
 
 /** RFC 9728 §3.1: the well-known segment goes between the host and the resource's path. */
@@ -89,48 +93,23 @@ export interface HttpAuthDeps {
   clients?: Pick<OAuthClientStore, "register">;
   /** Told the id of each newly registered (pending) client, for the local audit log. */
   onClientRegistered?: (clientId: string) => void;
+  /** Authorization and token endpoints with the consent page (T13.8). Without one both answer 404. */
+  authorizationServer?: Pick<AuthorizationServer, "handleAuthorize" | "handleToken">;
 }
 
 /** Delegated (Q-74): the largest registration body read; a larger one is refused with 413 without being parsed. */
 export const MAX_REGISTRATION_BODY_BYTES = 16 * 1024;
 
-type BodyResult = { ok: true; body: unknown } | { ok: false; status: 400 | 413 };
+type JsonBodyResult = { ok: true; body: unknown } | { ok: false; status: 400 | 413 };
 
-function readJsonBody(req: IncomingMessage, limit: number): Promise<BodyResult> {
-  return new Promise((resolve) => {
-    const declared = Number(req.headers["content-length"]);
-    if (Number.isFinite(declared) && declared > limit) {
-      resolve({ ok: false, status: 413 });
-      req.resume();
-      return;
-    }
-    const chunks: Buffer[] = [];
-    let size = 0;
-    let done = false;
-    const finish = (r: BodyResult) => {
-      if (done) return;
-      done = true;
-      resolve(r);
-    };
-    req.on("data", (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > limit) {
-        finish({ ok: false, status: 413 });
-        req.resume();
-        return;
-      }
-      if (!done) chunks.push(chunk);
-    });
-    req.on("error", () => finish({ ok: false, status: 400 }));
-    req.on("end", () => {
-      if (done) return;
-      try {
-        finish({ ok: true, body: JSON.parse(Buffer.concat(chunks).toString("utf8")) });
-      } catch {
-        finish({ ok: false, status: 400 });
-      }
-    });
-  });
+async function readJsonBody(req: IncomingMessage, limit: number): Promise<JsonBodyResult> {
+  const read = await readBody(req, limit);
+  if (!read.ok) return read;
+  try {
+    return { ok: true, body: JSON.parse(read.body.toString("utf8")) };
+  } catch {
+    return { ok: false, status: 400 };
+  }
 }
 
 async function handleRegistration(req: IncomingMessage, res: ServerResponse, auth: HttpAuthDeps): Promise<void> {
@@ -143,8 +122,7 @@ async function handleRegistration(req: IncomingMessage, res: ServerResponse, aut
     send(res, 405, { error: "method_not_allowed" }, { allow: "POST" });
     return;
   }
-  const type = (req.headers["content-type"] ?? "").split(";")[0]?.trim().toLowerCase();
-  if (type !== "application/json") {
+  if (mediaType(req) !== "application/json") {
     send(res, 415, { error: "invalid_client_metadata", error_description: "the body must be application/json" });
     return;
   }
@@ -192,16 +170,18 @@ export function httpTransportHandler(
   ]);
   const allowedOrigins = new Set(s.allowedOrigins);
   return (req, res) => {
-    const origin = req.headers.origin;
-    if (origin !== undefined && !allowedOrigins.has(origin)) {
-      send(res, 403, { error: "forbidden_origin" });
-      return;
-    }
     let pathname: string;
     try {
       pathname = new URL(req.url ?? "/", "http://listener.invalid").pathname;
     } catch {
       send(res, 400, { error: "invalid_request" });
+      return;
+    }
+    const origin = req.headers.origin;
+    // T13.8: the consent form posts from the issuer's own origin, which is allowed on `/authorize` only.
+    const sameOriginConsent = origin === s.issuer && pathname === AS_ENDPOINT_PATHS.authorization;
+    if (origin !== undefined && !allowedOrigins.has(origin) && !sameOriginConsent) {
+      send(res, 403, { error: "forbidden_origin" });
       return;
     }
     const doc = documents.get(pathname);
@@ -212,6 +192,19 @@ export function httpTransportHandler(
     }
     if (pathname === AS_ENDPOINT_PATHS.registration) {
       handleRegistration(req, res, auth).catch(() => {
+        if (!res.headersSent) send(res, 500, { error: "server_error" });
+        else res.destroy();
+      });
+      return;
+    }
+    if (pathname === AS_ENDPOINT_PATHS.authorization || pathname === AS_ENDPOINT_PATHS.token) {
+      const as = auth.authorizationServer;
+      if (!as) {
+        send(res, 404, { error: "not_found" });
+        return;
+      }
+      const handled = pathname === AS_ENDPOINT_PATHS.token ? as.handleToken(req, res) : as.handleAuthorize(req, res);
+      handled.catch(() => {
         if (!res.headersSent) send(res, 500, { error: "server_error" });
         else res.destroy();
       });
