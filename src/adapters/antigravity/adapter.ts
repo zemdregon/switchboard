@@ -20,7 +20,7 @@
  * - the parser (T4.33) reads only the `stream-json` fields the 2026-10-14 live check recorded; soft denials fail the run
  *   and `SUCCESS` with no reported tokens is not a success (Q-86); a `denied_actions` or `error` value of an unrecorded
  *   shape, a second `result` and a changed conversation id fail the run too; resume is not compiled (Q-86). The auth
- *   preflight fails closed until T4.34. The manifest range admits no version, so none of this runs before `adapters validate` passes a
+ *   preflight (T4.34) is `agy models`, keyed on the observed exit codes and stderr. The manifest range admits no version, so none of this runs before `adapters validate` passes a
  *   version.
  */
 import {
@@ -54,6 +54,12 @@ import type {
 } from "../types.js";
 import {
   AGY_BINARY,
+  AGY_LOGIN_COMMAND,
+  AUTH_LOGGED_OUT_EXIT,
+  AUTH_LOGGED_OUT_PREFIX,
+  AUTH_STATUS_ARGS,
+  AUTH_STATUS_LINE_MAX,
+  AUTH_STATUS_TIMEOUT_MS,
   DISABLE_AUTO_UPDATE_ENV,
   ERROR_AUTH_PREFIX,
   ERROR_MODEL_PREFIX,
@@ -81,6 +87,9 @@ import {
 export const ANTIGRAVITY_ENV_ALLOWLIST: readonly string[] = ["PATH", "HOME"];
 
 const PROBE_TIMEOUT_MS = 10_000;
+const AUTH_UNKNOWN_REASON = "`agy models` output is not a recognised login state";
+/** One `agy models` line ([LIVE] C3b): a slug with no whitespace, a tab, then a display name. */
+const MODEL_LINE = /^\S+\t\S.*$/;
 const MAX_SUMMARY_CHARS = 2_000;
 const MAX_TARGET_CHARS = 512;
 
@@ -210,9 +219,32 @@ export class AntigravityAdapter implements ProviderAdapter {
     return { binaryPath: exe, binaryVersion: version, steps };
   }
 
-  /** T4.34 supplies the auth preflight; until then fail closed (NFR-SEC-06). Never reads a credential file. */
-  async authPreflight(_runner: ProbeRunner): Promise<AuthResult> {
-    return { state: "UNKNOWN", reason: "Antigravity auth preflight is not implemented (T4.34)" };
+  /**
+   * FR-AUTH-02 via `agy models` (T4.34; observed on `agy` 1.3.4, [LIVE] C3b and C3c; cost in protocol.ts). Exit 0 with
+   * at least one stdout line and every non-empty line of the `<slug>\t<name>` shape is OK; exit 1 with a stderr line
+   * starting `Error: Please sign in` is AUTH_REQUIRED naming the native login; any other output or exit code, a
+   * timeout or a spawn failure is UNKNOWN (ineligible, NFR-SEC-06). Model names are never stored; at most the first
+   * stderr line, filtered and truncated, appears in an UNKNOWN reason. It never reads `~/.gemini` and never starts a
+   * sign-in.
+   */
+  async authPreflight(runner: ProbeRunner): Promise<AuthResult> {
+    const exe = this.#exe;
+    if (exe === undefined) return { state: "UNKNOWN", reason: `${AGY_BINARY} not found on PATH` };
+    const r = await runner([exe, ...this.#launcher, ...AUTH_STATUS_ARGS], { timeoutMs: AUTH_STATUS_TIMEOUT_MS });
+    if (r.spawnError !== undefined) return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (${r.spawnError})` };
+    if (r.timedOut) return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (timed out)` };
+    const nonEmpty = (s: string) => s.split("\n").filter((l) => l.trim() !== "");
+    const models = nonEmpty(r.stdout);
+    const errors = nonEmpty(r.stderr).map((l) => l.trim());
+    if (r.exitCode === 0 && models.length > 0 && models.every((l) => MODEL_LINE.test(l))) return { state: "OK" };
+    if (r.exitCode === AUTH_LOGGED_OUT_EXIT && errors.some((l) => l.startsWith(AUTH_LOGGED_OUT_PREFIX))) {
+      return { state: "AUTH_REQUIRED", loginCommand: AGY_LOGIN_COMMAND };
+    }
+    const line = Array.from(errors[0] ?? "")
+      .filter((c) => c >= " " && c !== "\x7f")
+      .join("")
+      .slice(0, AUTH_STATUS_LINE_MAX);
+    return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (exit ${r.exitCode}${line ? `: ${line}` : ""})` };
   }
 
   compile(request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible {
