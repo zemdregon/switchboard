@@ -34,11 +34,17 @@ Pre-release. The package is private and is not published to any registry; you bu
   It is not `Done`: no run of a real Claude Code and Codex pair has been made (the opt-in `npm run test:live:pair`
   script exists and has not been run), and resume for the providers of milestone 4 is not built. See
   [ROADMAP §6.9](docs/ROADMAP.md#69-m5-continuity-tasks).
+- **Milestone 6 (capacity and resilience) is `Partial`.** `get_capacity` and `switchboard capacity` show per-provider
+  estimates with their sources, a circuit breaker holds a failing provider back, retryable failures are retried
+  automatically as linked successor runs, and quota exhaustion fails over to another provider or returns. All of this
+  is tested on fake providers. It is not `Done`: what Claude Code and Codex print on a real rate limit or quota stop has
+  not been captured (operator task T6.11), and no provider is known to publish an enforceable rate limit, so there is no
+  rate gate. See [ROADMAP §6.11](docs/ROADMAP.md#611-m6-capacity-and-resilience-tasks).
 - Providers other than Claude Code and Codex are not implemented.
 
-What works today: `doctor`, `runs list|show|cancel`, `approve`, `deny`, `gc`, `projects list|show|validate|approve`,
-`git push`, `inner status|test|resume`, and `serve` exposing seven MCP tools over stdio (ten for a client with
-`manage_projects`). The five trust
+What works today: `doctor`, `runs list|show|cancel`, `approve`, `deny`, `gc`, `capacity`,
+`projects list|show|validate|approve`, `git push`, `inner status|test|resume`, and `serve` exposing eight MCP tools over
+stdio (eleven for a client with `manage_projects`). The five trust
 profile names exist; which of them a provider can run is listed in [Trust profiles](#trust-profiles) and by
 `list_capabilities`. Read
 [Known limitations](#known-limitations) before relying on it.
@@ -194,10 +200,11 @@ Only one `serve` can hold a data directory at a time.
 | --- | --- |
 | `delegate_task` | Starts a coding task in a new meta-session; returns a `run_id` at once (optional `wait_seconds`, 0 to 60, waits without cancelling). Give exactly one of `workspace_path` and `project` (see `list_projects`). |
 | `continue_task` | Continues an idle meta-session with a new instruction: resumes the same provider's native session, or hands off to another provider (or a fresh session) with a bundle built from Switchboard's own records. A `privileged` meta-session continues on its own provider only. |
-| `get_run` | Returns a run's status, failure code, provider, summary, changed-file count and artifact ids, optionally with events. |
+| `get_run` | Returns a run's status, failure code, provider, summary, changed-file count and artifact ids, optionally with events. A run that was retried or failed over names its successor in `superseded_by`; the successor names the run it follows in `retry_of`. |
 | `cancel_run` | Requests cancellation of a run (asynchronous; poll `get_run`). |
 | `get_artifacts` | Lists a run's artifacts (diff, changed files, test report, ...) with hashes; small ones inline. |
 | `list_capabilities` | Lists providers with adapter status, version, validated range, auth state and supported trust profiles. |
+| `get_capacity` | Per-provider capacity: controller estimates (`capacity_score`, `confidence`, `throttle_risk`) with their sources, free slots, the circuit breaker, and `reset_at` or `explicit_remaining` only when the provider itself reported them; reported cache token counts where a source names the keys; per-project counts of runs that kept or switched provider and model. Read-only; it never calls a provider. |
 | `list_projects` | Lists the configured projects this client may use (id, name, environment kind, contexts, trust ceiling, allowed providers), plus its own dynamic projects marked `source: "dynamic"` with their revision and status. Read-only; returns no filesystem paths. |
 | `create_project`, `update_project`, `delete_project` | Only for a client with `manage_projects`. Create, revise or delete a dynamic project this client owns. See [Dynamic projects](#dynamic-projects). |
 
@@ -239,6 +246,36 @@ other provider is probed or anything is written, because a durable approval for 
 This is a fail-closed default until [ROADMAP Q-61](docs/ROADMAP.md#73-open-questions-for-zemdregon-not-blocking-m2-unless-noted)
 is answered; a same-provider `privileged` continuation keeps the approval as it was.
 
+### Capacity, retries and failover
+
+`get_capacity`, `switchboard capacity` and the capacity lines of `doctor` show one projection, computed from
+Switchboard's own records when you ask:
+
+- **Estimates are estimates.** `capacity_score`, `confidence` and `throttle_risk` come from recent run outcomes,
+  rate-limit signals the provider printed, the circuit breaker and free slots, over `capacity.window_seconds` (default
+  one hour). With no recent evidence they read `unknown`, `null` and `0`, never "plenty". No provider's run output is
+  known to report remaining quota, so `explicit_remaining` is `null` for every provider today. Nothing here is a
+  percentage of your subscription. The sources are in
+  [docs/research/capacity-signals-2026-10-14.md](docs/research/capacity-signals-2026-10-14.md).
+- **Circuit breaker.** After `capacity.breaker.failure_threshold` (default 3) rate-limit, overload or crash failures in
+  a row, a provider is held back for `capacity.breaker.open_seconds` (default 300). New requests go to other providers;
+  with `require_provider` they fail `ELIGIBILITY_NONE`. Queued runs wait. Then one run tries it, and its outcome
+  closes or re-opens the breaker.
+- **Automatic retry.** A `RATE_LIMIT_TRANSIENT`, `PROVIDER_OVERLOADED` or `PROCESS_CRASH` failure is retried only if the
+  worktree is exactly as it was before the run. The retry is a new run in the same meta-session, with capped
+  exponential backoff and jitter (`capacity.retry.*`: at most 3 attempts, 2 s base, 120 s cap). A changed worktree is
+  never retried (it is rolled back and kept as evidence). A run cut off by a Switchboard restart is not retried
+  either.
+- **Quota exhaustion.** On `QUOTA_EXHAUSTED`, Switchboard hands the work to the next eligible provider with the same
+  kind of bundle `continue_task` uses, unless you set `require_provider` or the run is `privileged`. Otherwise it waits
+  for a reset time the provider reported, if that falls within `capacity.queue_horizon_seconds`. The default is 0,
+  meaning never wait. Otherwise it returns `QUOTA_EXHAUSTED`.
+- **Limits.** `limits.per_provider_concurrency` (default 1) applies to every provider, and
+  `providers.<id>.concurrency` overrides it for one provider.
+- **Cache and switch counts** are evidence, not claims. Reported cache token counts are shown only where a source names
+  the provider's key (Grok Build today). The per-project kept and switched counts show `unrecorded` as the reason until
+  milestone 7 records one.
+
 ### How commits reach Git
 
 Agents are not given a way to commit or push: Git writes are denied where the provider documents a rule (Claude
@@ -266,6 +303,7 @@ are exempt from the push credential rule and from the finalize-only size limits 
 switchboard runs list [--state <STATE>] [--limit <n>]
 switchboard runs show <id>
 switchboard runs cancel <id>
+switchboard capacity [--provider <id>]
 switchboard approve <run_id>
 switchboard deny <run_id>
 switchboard gc [--apply]
@@ -498,6 +536,10 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   compile them (see `list_capabilities`); a `privileged` `continue_task` only on the same provider (ROADMAP
   Q-61 is open).
 - No `adapters validate` command yet; it is scheduled for milestone 4.
+- Capacity figures are controller estimates. No provider is known to report remaining quota, and the rate-limit and
+  quota output shapes of Claude Code and Codex come from synthetic fixtures until the operator captures them (ROADMAP
+  T6.11). There is no rate gate, because no provider publishes an enforceable limit for the logins used (T6.8,
+  Deferred).
 
 ### Optional live smoke test
 
