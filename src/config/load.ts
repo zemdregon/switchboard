@@ -312,6 +312,25 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
   }
 
   const httpErrors = checkHttpTransport(cfg.transport?.http);
+  // T13.4 (FR-MCP-14, Q-77): every HTTP mapping names a configured MCP client whose privileged runs still need the
+  // operator's approval (a remote client never gets `privileged_approval: not_required`).
+  const mcpById = new Map(cfg.mcp_clients.map((c) => [c.id, c]));
+  const httpTargets: [string, string][] = [
+    ...(cfg.transport?.http?.clients ?? []).map((c, i): [string, string] => [`clients[${i}].mcp_client`, c.mcp_client]),
+    ...(cfg.transport?.http?.default_mcp_client !== undefined
+      ? [["default_mcp_client", cfg.transport.http.default_mcp_client] as [string, string]]
+      : []),
+  ];
+  for (const [where, id] of httpTargets) {
+    const entry = mcpById.get(id);
+    if (entry === undefined) httpErrors.push(`$.transport.http.${where}: unknown mcp_clients id ${JSON.stringify(id)}`);
+    else if (entry.privileged_approval === "not_required") {
+      httpErrors.push(
+        `$.transport.http.${where}: ${JSON.stringify(id)} has privileged_approval not_required; an HTTP client's ` +
+          "privileged runs must wait for the operator (FR-MCP-14)",
+      );
+    }
+  }
   if (httpErrors.length > 0) {
     throw new ConfigError(`Invalid config:\n${httpErrors.map((l) => `  ${l}`).join("\n")}`);
   }

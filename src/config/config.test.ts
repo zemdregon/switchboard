@@ -101,7 +101,36 @@ describe("loadConfig", () => {
         issuer: "https://sb.example.test",
         mcpPath: "/mcp",
         allowedOrigins: [],
+        clientMap: new Map(),
       });
+    });
+
+    it("maps OAuth clients to MCP clients and refuses unsafe or unknown targets (T13.4, FR-MCP-14)", () => {
+      const A = `sbc_${"a".repeat(22)}`;
+      const mapped = http({ ...on, clients: [{ oauth_client_id: A, mcp_client: "main" }], default_mcp_client: "main" });
+      expect(mapped.httpTransport?.clientMap.get(A)).toBe("main");
+      expect(mapped.httpTransport?.defaultMcpClient).toBe("main");
+      expect(() => http({ ...on, clients: [{ oauth_client_id: A, mcp_client: "nobody" }] })).toThrow(
+        /clients\[0\]\.mcp_client: unknown mcp_clients id/,
+      );
+      expect(() => http({ ...on, default_mcp_client: "nobody" })).toThrow(/default_mcp_client: unknown/);
+      expect(() =>
+        http({
+          ...on,
+          clients: [
+            { oauth_client_id: A, mcp_client: "main" },
+            { oauth_client_id: A, mcp_client: "main" },
+          ],
+        }),
+      ).toThrow(/mapped more than once/);
+      expect(() => http({ ...on, clients: [{ oauth_client_id: "grok", mcp_client: "main" }] })).toThrow(ConfigError);
+      // A client whose privileged runs skip the operator's approval cannot be reached over HTTP.
+      const root = {
+        ...base(),
+        mcp_clients: [{ id: "root", max_trust_profile: "privileged", privileged_approval: "not_required" }],
+        transport: { http: { ...on, default_mcp_client: "root" } },
+      };
+      expect(() => loadConfig({ configPath: write(root) })).toThrow(/privileged_approval not_required/);
     });
 
     it.each([

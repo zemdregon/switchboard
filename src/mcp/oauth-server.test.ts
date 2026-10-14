@@ -285,7 +285,7 @@ describe("authorization code flow with PKCE S256 (T13.8)", () => {
       reason: "wrong_audience",
     });
     const mcp = await call("POST", "/mcp", { authorization: `Bearer ${access}` });
-    expect(mcp.status).toBe(501); // valid token; T13.4 mounts the MCP server
+    expect(mcp.status).toBe(403); // valid token, but this test maps the client to no MCP client (T13.4)
 
     // Refresh rotation: the new pair works, the old refresh token is spent.
     const rotated = await token({ grant_type: "refresh_token", client_id: clientId, refresh_token: refresh });

@@ -8,7 +8,9 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { replayAdapter as claudeReplay, DEFAULT_SESSION_ID, REPLAY_SCRIPT } from "../adapters/claude/fixtures/cases.js";
@@ -28,7 +30,7 @@ import {
   type VersionGateResult,
 } from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
-import type { ResolvedProject } from "../config/index.js";
+import { type HttpTransportSettings, type ResolvedProject, resolveHttpTransport } from "../config/index.js";
 import { buildAndPutHandoffView, DEFAULT_BUNDLE_BOUNDS, INSTRUCTION_MARKER, takeAsOf } from "../continuity/index.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger, type TrustProfile } from "../ledger/index.js";
@@ -36,7 +38,15 @@ import { RunLifecycle, type RunLifecycleOptions } from "../lifecycle/index.js";
 import { createProfileResolver } from "../policy/index.js";
 import { compileCheck, requirementsFor, TRUST_PROFILE_ORDER } from "../routing/index.js";
 import { WorkspaceManager } from "../workspace/index.js";
-import { createScrubber, createSwitchboardServer, type SwitchboardMcpServer, TOOL_NAMES } from "./index.js";
+import {
+  createScrubber,
+  createSwitchboardServer,
+  type HttpTransportListener,
+  OAuthTokenStore,
+  type SwitchboardMcpServer,
+  startHttpTransport,
+  TOOL_NAMES,
+} from "./index.js";
 
 const GIT_ENV = {
   PATH: process.env.PATH ?? "",
@@ -184,7 +194,24 @@ interface Setup {
   projects?: ResolvedProject[];
   lifecycle?: Partial<RunLifecycleOptions>;
   start?: boolean;
+  /**
+   * T13.4: also serve these clients over the HTTP transport. Each token is issued for `oauthClientId` and its client
+   * is appended to `servers` after the stdio-style ones, so `call(..., index)` reaches it over Streamable HTTP.
+   */
+  http?: {
+    map?: Record<string, string>;
+    defaultMcpClient?: string;
+    tokens: { oauthClientId: string; scopes?: string[] }[];
+  };
 }
+
+const HTTP_RESOURCE = "https://sb.example.test/mcp";
+const httpClient = (i: number): Client => {
+  const c = servers[i]?.client;
+  if (!c) throw new Error("no client");
+  return c;
+};
+let httpListener: HttpTransportListener | undefined;
 
 async function setup(s: Setup): Promise<void> {
   const registry = new AdapterRegistry();
@@ -228,6 +255,41 @@ async function setup(s: Setup): Promise<void> {
     await client.connect(clientSide);
     await client.listTools(); // caches the published output schemas, so every result below is schema-checked
     servers.push({ mcp, client });
+  }
+  if (s.http) {
+    const settings = resolveHttpTransport({
+      enabled: true,
+      public_url: HTTP_RESOURCE,
+      port: 0,
+      clients: Object.entries(s.http.map ?? {}).map(([oauth_client_id, mcp_client]) => ({
+        oauth_client_id,
+        mcp_client,
+      })),
+      ...(s.http.defaultMcpClient !== undefined ? { default_mcp_client: s.http.defaultMcpClient } : {}),
+    }) as HttpTransportSettings;
+    const tokens = new OAuthTokenStore(db);
+    httpListener = await startHttpTransport(settings, {
+      tokens,
+      mcpServerFor: (id) => createSwitchboardServer({ lifecycle, ledger, artifacts, registry, config, clientId: id }),
+    });
+    const url = new URL(`http://127.0.0.1:${httpListener?.address.port}/mcp`);
+    for (const t of s.http.tokens) {
+      const { token } = tokens.issue({
+        kind: "access",
+        clientId: t.oauthClientId,
+        resource: HTTP_RESOURCE,
+        scopes: t.scopes ?? ["mcp"],
+        ttlMs: 60_000,
+      });
+      const client = new Client({ name: `http-${t.oauthClientId}`, version: "0.0.0" });
+      const transport = new StreamableHTTPClientTransport(url, {
+        requestInit: { headers: { authorization: `Bearer ${token}` } },
+      });
+      // The SDK's `sessionId?: string | undefined` trips `exactOptionalPropertyTypes`.
+      await client.connect(transport as Transport);
+      await client.listTools();
+      servers.push({ mcp: { close: async () => {} } as unknown as SwitchboardMcpServer, client });
+    }
   }
 }
 
@@ -304,6 +366,8 @@ afterEach(async () => {
     await s.client.close();
     await s.mcp.close();
   }
+  await httpListener?.close();
+  httpListener = undefined;
   db.close();
   // FR-POL-03 / AGENTS.md: no compiled argv in any run of this file carried a bypass flag.
   for (const inv of compiled) expect(auditInvocation(inv)).toEqual([]);
@@ -846,6 +910,104 @@ describe("per-client trust ceiling (FR-MCP-06, BR-13)", () => {
       0,
     );
     expect(raise.body.error.code).toBe("PERMISSION_BLOCKED");
+  });
+});
+
+describe("MCP over the HTTP transport (T13.4; FR-MCP-14, Q-77)", () => {
+  const A = `sbc_${"a".repeat(22)}`;
+  const B = `sbc_${"b".repeat(22)}`;
+
+  it("a token's client gets its mapped client's maximum profile; no scope or claim raises it", async () => {
+    await setup({
+      adapters: [fakeWriter()],
+      clients: [
+        { id: "reader", max: "inspect-untrusted" },
+        { id: "root", max: "privileged" },
+      ],
+      // The token claims `privileged` as a scope: it changes nothing.
+      http: { map: { [A]: "reader" }, tokens: [{ oauthClientId: A, scopes: ["mcp", "privileged"] }] },
+    });
+    const http = 2;
+    const { tools } = await httpClient(http).listTools();
+    expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES]);
+    const up = await call("delegate_task", delegateArgs({ trust_profile: "edit-untrusted" }), http);
+    expect(up.body.error).toMatchObject({
+      code: "PERMISSION_BLOCKED",
+      details: { requested: "edit-untrusted", client_max_profile: "inspect-untrusted" },
+    });
+    const priv = await call(
+      "delegate_task",
+      delegateArgs({ trust_profile: "privileged", privileged_scope: SCOPE }),
+      http,
+    );
+    expect(priv.body.error).toMatchObject({ code: "PERMISSION_BLOCKED", details: { requested: "privileged" } });
+    expect(runCount()).toBe(0);
+    const ok = await call("delegate_task", delegateArgs({ trust_profile: "inspect-untrusted" }), http);
+    expect(ok.isError).toBe(false);
+    expect(ledger.getRunRecord(ok.body.run_id)).toMatchObject({
+      client_id: "reader",
+      trust_profile: "inspect-untrusted",
+    });
+    await pollTerminal(ok.body.run_id, http);
+  });
+
+  it("a privileged request over HTTP waits for the operator; no tool can approve it", async () => {
+    await setup({
+      adapters: [fakeWriter()],
+      clients: [{ id: "root", max: "privileged" }],
+      http: { map: { [B]: "root" }, tokens: [{ oauthClientId: B }] },
+    });
+    const d = await call("delegate_task", delegateArgs({ trust_profile: "privileged", privileged_scope: SCOPE }), 1);
+    expect(d.body.status).toBe("AWAITING_APPROVAL");
+    expect(ledger.listApprovals()).toMatchObject([{ run_id: d.body.run_id, status: "PENDING" }]);
+    const { tools } = await httpClient(1).listTools();
+    expect(tools.map((t) => t.name).filter((n) => /approv|deny/i.test(n))).toEqual([]);
+  });
+
+  it("refuses an unmapped client and a token without the mcp scope (403); a default mapping applies", async () => {
+    await setup({
+      adapters: [fakeWriter()],
+      clients: [{ id: "reader", max: "inspect-untrusted" }],
+      http: { defaultMcpClient: "reader", tokens: [{ oauthClientId: B }] },
+    });
+    const ok = await call("delegate_task", delegateArgs({ trust_profile: "inspect-untrusted" }), 1);
+    expect(ledger.getRunRecord(ok.body.run_id)?.client_id).toBe("reader");
+    await pollTerminal(ok.body.run_id, 1);
+    await httpListener?.close();
+
+    const settings = resolveHttpTransport({
+      enabled: true,
+      public_url: HTTP_RESOURCE,
+      port: 0,
+      clients: [{ oauth_client_id: A, mcp_client: "reader" }],
+    }) as HttpTransportSettings;
+    const tokens = new OAuthTokenStore(db);
+    let built = 0;
+    const refused: string[] = [];
+    httpListener = await startHttpTransport(settings, {
+      tokens,
+      onClientRefused: (reason) => refused.push(reason),
+      mcpServerFor: () => {
+        built++;
+        throw new Error("must not be built");
+      },
+    });
+    const post = (token: string) =>
+      fetch(`http://127.0.0.1:${httpListener?.address.port}/mcp`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      });
+    const issue = (clientId: string, scopes: string[]) =>
+      tokens.issue({ kind: "access", clientId, resource: HTTP_RESOURCE, scopes, ttlMs: 60_000 }).token;
+    for (const t of [issue(B, ["mcp"]), issue(A, [])]) {
+      const r = await post(t);
+      expect(r.status).toBe(403);
+      expect(r.headers.get("www-authenticate")).toContain('error="insufficient_scope"');
+      expect(await r.json()).toEqual({ error: "insufficient_scope" });
+    }
+    expect(refused).toEqual(["unmapped_client", "missing_scope"]);
+    expect(built).toBe(0);
   });
 });
 

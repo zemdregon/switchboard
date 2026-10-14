@@ -60,9 +60,14 @@ on launch binding only ([ADR-0040](0040-mcp-caller-authentication-no-oauth-on-st
 6. **Scopes map to trust.** Each OAuth scope maps to a configured MCP client entry, which carries the maximum trust
    profile (FR-MCP-06). A token can never raise a client above its configured maximum. Scopes never grant `privileged`
    by default (ADR-0019): approval stays with the operator CLI.
+   *As built (T13.4, Q-77, Delegated 2026-10-14):* the mapping is `transport.http.clients` (OAuth client id to
+   `mcp_clients` id) with an optional `default_mcp_client`; the only scope is `mcp`, and a target with
+   `privileged_approval: not_required` is refused at config load.
 7. **Sessions.** Each Streamable HTTP session is bound to the token subject that opened it. A request with a different
    subject, or a session ID from a different client, is refused. Session IDs are unguessable and are never accepted as
    authentication on their own.
+   *As built (T13.4, Q-77):* the MCP endpoint is stateless (no session ID is issued or accepted); each request
+   authenticates with its own token.
 8. **Secrets and logs.** Tokens, authorization codes, pairing codes and passphrases are never written to the ledger,
    logs, telemetry or MCP responses (NFR-SEC-01, FR-TEL-03). Only hashes and audit metadata are stored.
 9. **Off by default.** The HTTP transport is compiled in only when the operator enables it in configuration. With it

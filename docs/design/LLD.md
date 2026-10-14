@@ -1253,7 +1253,7 @@ Requirements FR-MCP-12 to 17. Off unless the config enables it.
   401 `{"error":"invalid_token"}` with `WWW-Authenticate: Bearer error="invalid_token", resource_metadata="<metadata
   URL>"`; a request with no `Authorization` header gets the challenge without an error code (RFC 6750 §3.1). A token in
   the query string is not read. The reason code is logged (`refused an HTTP bearer token`, `reason`) and nothing else.
-  A valid token gets 501 until T13.4 mounts the MCP server with the client's frozen profile. Code:
+  A valid token goes on to the mapping below (T13.4). Code:
   `src/mcp/oauth-tokens.ts`, `src/mcp/http.ts`.
 
 ```sql
@@ -1349,8 +1349,22 @@ CREATE TABLE oauth_pairing_code (        -- migration 0012 (T13.8); mutable only
 - **Mapping.** `subject` (and an optional client claim) maps to a configured client entry (`transport.http.clients`).
   The entry's `max_profile` is frozen into the policy snapshot at admission (FR-MCP-06, FR-POL-01). No claim can name
   `privileged`.
+- **Mapping and mount as built (T13.4, Q-77, Delegated).** The token's subject is its OAuth client id.
+  `transport.http.clients` lists `{ "oauth_client_id": "sbc_...", "mcp_client": "<mcp_clients id>" }` (at most 64, each
+  OAuth client once); `transport.http.default_mcp_client` optionally names the entry for an approved OAuth client with no
+  mapping. Config load refuses a target that is not in `mcp_clients` or that has `privileged_approval: not_required`, so
+  a remote client's `privileged` runs always wait for the operator CLI (FR-MCP-14, ADR-0019). At the MCP endpoint a
+  valid token without the `mcp` scope, or whose client has no mapping, gets 403 `{"error":"insufficient_scope"}` with
+  `WWW-Authenticate: Bearer error="insufficient_scope", scope="mcp", resource_metadata=...`; `serve` logs the reason and
+  the OAuth client id. Otherwise the request is served in the MCP SDK's stateless Streamable HTTP mode: a fresh
+  `createSwitchboardServer` for the mapped client (the same lifecycle, ledger, projects and policy as stdio, so the
+  same ceiling and admission checks) and a fresh transport per request, JSON responses, closed when the response ends.
+  Token scopes and claims never reach the server, so nothing in a token can raise the profile. Runs are recorded under
+  the MCP client id, so OAuth clients mapped to one entry share its runs. Code: `src/mcp/http.ts`,
+  `src/config/http-transport.ts`, `src/config/load.ts`, `src/cli/serve.ts`.
 - **Sessions.** The session identifier is random and stored with the subject and client; a mismatch returns HTTP 403 and
-  an audit event with no token material.
+  an audit event with no token material. *As built (T13.4, Q-77):* the transport is stateless, so no session identifier
+  is issued or accepted; every request authenticates with its own token.
 - **Forbidden.** Forwarding the inbound token, logging it, or storing it in the ledger.
 
 ## 4. Failure taxonomy
