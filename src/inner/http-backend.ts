@@ -129,7 +129,7 @@ export interface HttpBackendOptions {
   envelopeOverheadBytes?: number;
 }
 
-interface Pinned {
+export interface Pinned {
   readonly address: string;
   readonly family: 4 | 6;
   readonly locality: Locality;
@@ -150,21 +150,32 @@ const CANARY_REQUEST: InnerRequest = {
 
 const abortReason = (): HttpBackendError => new HttpBackendError("ABORTED");
 
-export function createHttpBackend(backend: HttpBackendSettings, options: HttpBackendOptions = {}): InnerBackend {
-  if (backend.kind !== "http" || backend.baseUrl === undefined) {
-    throw new Error("createHttpBackend needs an http backend with a base_url");
-  }
-  const base = new URL(backend.baseUrl);
+/**
+ * The pinned-address JSON POST transport behind the `http` kind, shared with the retrieval index's embedding backend
+ * (T12.3, LLD §14.4): `resolvePinned` resolves and classifies every address once, and `post` connects only to the pinned
+ * address, re-checks the peer of a `local` call before writing a byte, refuses redirects and encodings, and caps the
+ * response. Errors are fixed codes, never the endpoint's text.
+ */
+export interface PinnedHttpTransport {
+  resolvePinned(): Promise<Pinned>;
+  post(body: string, pin: Pinned, maxBytes: number, signal: AbortSignal): Promise<string>;
+}
+
+/** `endpoint` is appended to the base path, with `/v1` inserted unless the base path already ends in it. */
+export function createPinnedHttpTransport(
+  baseUrl: string,
+  endpoint: string,
+  resolveName?: (hostname: string) => Promise<readonly string[]>,
+): PinnedHttpTransport {
+  const base = new URL(baseUrl);
   const isTls = base.protocol === "https:";
   const hostname = base.hostname.startsWith("[") ? base.hostname.slice(1, -1) : base.hostname;
   const port = base.port !== "" ? Number(base.port) : isTls ? 443 : 80;
   const basePath = base.pathname.replace(/\/+$/u, "");
-  const endpointPath = `${basePath}${basePath.endsWith("/v1") ? "" : "/v1"}/chat/completions`;
-  const overhead = options.envelopeOverheadBytes ?? DEFAULT_ENVELOPE_OVERHEAD;
+  const endpointPath = `${basePath}${basePath.endsWith("/v1") ? "" : "/v1"}/${endpoint}`;
   const resolve =
-    options.resolve ??
+    resolveName ??
     (async (name: string) => (await dnsLookup(name, { all: true, verbatim: true })).map((a) => a.address));
-  const pins = new WeakMap<AbortSignal, Pinned>();
 
   async function resolvePinned(): Promise<Pinned> {
     let addresses: readonly string[];
@@ -255,6 +266,17 @@ export function createHttpBackend(backend: HttpBackendSettings, options: HttpBac
       });
     });
   }
+
+  return { resolvePinned, post };
+}
+
+export function createHttpBackend(backend: HttpBackendSettings, options: HttpBackendOptions = {}): InnerBackend {
+  if (backend.kind !== "http" || backend.baseUrl === undefined) {
+    throw new Error("createHttpBackend needs an http backend with a base_url");
+  }
+  const overhead = options.envelopeOverheadBytes ?? DEFAULT_ENVELOPE_OVERHEAD;
+  const { resolvePinned, post } = createPinnedHttpTransport(backend.baseUrl, "chat/completions", options.resolve);
+  const pins = new WeakMap<AbortSignal, Pinned>();
 
   function decodeEnvelope(raw: string, fallbackModel: string): InnerResult {
     let json: unknown;
