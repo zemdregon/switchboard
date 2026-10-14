@@ -49,13 +49,14 @@ Pre-release. The package is private and is not published to any registry; you bu
 - **Milestone 11 (inner agent) is `Partial`.** An optional HTTP backend, privacy gates, `doctor` and `inner` reporting,
   and commit-message drafting on fakes are on main; most run-path hooks, PR drafting and a live backend are not. See
   [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
-- **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.3 are done on fakes: the spike, `rag`
-  configuration and per-project store, the scanner through chunker, and the embedding port (fake and `http` backends
-  behind the locality gates). T12.5 **design** for the admission context pack (FR-RAG-05, FR-RAG-07, FR-RAG-08) is on
+- **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.4 are done on fakes: the spike, `rag`
+  configuration and per-project store, the scanner through chunker, the embedding port (fake and `http` backends
+  behind the locality gates), incremental background indexing in `serve`, `switchboard index status|rebuild|clear`
+  and a `doctor` section. T12.5 **design** for the admission context pack (FR-RAG-05, FR-RAG-07, FR-RAG-08) is on
   `main` in [LLD §14.11](docs/design/LLD.md#1411-admission-context-pack-t125), [SDD §4.1](docs/design/SDD.md#41-comp-rag-implementation-evidence-m12-t121t123)
   and [TDD §3.13.8](docs/design/TDD.md#3138-t125-admission-time-context-pack-2026-10-14) (merged PRs
   [#180](https://github.com/zemdregon/switchboard/pull/180) and [#181](https://github.com/zemdregon/switchboard/pull/181)).
-  T12.4 (incremental background build) and T12.5 **runtime** remain `Planned` (open implementation
+  T12.5 **runtime** remains `Planned` (open implementation
   [#182](https://github.com/zemdregon/switchboard/pull/182)); retrieval at admission is not wired yet. See
   [ROADMAP §6.7](docs/ROADMAP.md#67-m12-retrieval-index-tasks) and the merged requirements and design evidence in
   [SRS §3.15](docs/requirements/SRS.md#implementation-evidence-partial-m12),

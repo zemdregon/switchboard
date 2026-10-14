@@ -19,6 +19,8 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -330,6 +332,48 @@ describeLinuxVerified("serve over stdio (process level)", () => {
     const pgid = recordedGroup(d.body.run_id);
     expect(groupAlive(pgid)).toBe(false);
   }, 30_000);
+
+  it("T12.4: a retrieval build hung on its embedding backend never blocks admission or shutdown (FR-RAG-11)", async () => {
+    // A loopback embedding endpoint that accepts each request and never answers.
+    const held: http.ServerResponse[] = [];
+    const server = http.createServer((_req, res) => held.push(res));
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    cleanup.push(async () => {
+      for (const res of held) res.destroy();
+      await new Promise((r) => server.close(r));
+    });
+    const port = (server.address() as AddressInfo).port;
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schema_version: 1,
+        data_dir: dataDir,
+        allowed_roots: [root],
+        mcp_clients: [{ id: "orch", max_trust_profile: "edit-untrusted" }],
+        projects: [
+          { id: "demo", name: "Demo", contexts: [{ id: "main", kind: "repository", path: repo, base_ref: "main" }] },
+        ],
+        rag: { embedding: { kind: "http", base_url: `http://127.0.0.1:${port}`, model: "m", timeout_ms: 600_000 } },
+      }),
+    );
+    const c = await connect();
+    const end = Date.now() + 15_000;
+    while (held.length === 0) {
+      if (Date.now() > end) throw new Error(`no embedding request reached the endpoint\n${c.stderr()}`);
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(c.stderr()).toContain("retrieval index builds started in the background");
+    // The build is now waiting on the endpoint; a delegated run is admitted and finishes regardless.
+    const d = await delegate(c.client);
+    expect(d.isError, JSON.stringify(d.body)).toBe(false);
+    const done = await pollStatus(c.client, d.body.run_id, TERMINAL);
+    expect(done.status, c.stderr()).toBe("SUCCEEDED");
+    expect(held.length).toBe(1); // still the one hung request
+    recordedGroup(d.body.run_id);
+    // Shutdown aborts the build instead of waiting for the endpoint.
+    await c.client.close();
+    await waitDead(c.pid, 10_000);
+  }, 40_000);
 
   it("refuses a second serve on the same data directory while the first holds the lock", async () => {
     const first = await connect();
