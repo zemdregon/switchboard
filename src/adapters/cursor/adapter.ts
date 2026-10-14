@@ -18,8 +18,10 @@
  *   worktree files, shell `broad`, network `on` and repository configuration `enabled` (Q-79). No `--sandbox` flag is
  *   emitted, so Cursor itself confines nothing in that run; what remains is the controller's worktree, the tool-call
  *   guard (ADR-0039), FR-GIT-03 and FR-GIT-06;
- * - parser, auth preflight and resume fail closed until T4.43 and T4.44. The manifest range admits no version, so none
- *   of this runs before `adapters validate` passes a version.
+ * - the parser (T4.43) reads only the `stream-json` fields the 2026-10-14 live check recorded; a refused tool call is a
+ *   `permission_denied` event because the final `result` still says `success`; resume is `--resume <id>` through the
+ *   same matrix. The auth preflight fails closed until T4.44. The manifest range admits no version, so none of this
+ *   runs before `adapters validate` passes a version.
  */
 import {
   DEFAULT_IDLE_MS,
@@ -51,7 +53,10 @@ import type {
   RunResult,
 } from "../types.js";
 import {
+  API_KEY_SOURCE_LOGIN,
   CURSOR_BINARY,
+  CURSOR_LOGIN_COMMAND,
+  EVENT,
   FORCE_FLAG,
   GIT_WRITE_CONTROL_DETAIL,
   HELP_FLAG,
@@ -60,7 +65,16 @@ import {
   OUTPUT_STREAM_JSON,
   PRINT_FLAG,
   REQUIRED_HELP_FLAGS,
+  RESUME_FLAG,
+  SUBTYPE_COMPLETED,
+  SUBTYPE_INIT,
+  SUBTYPE_STARTED,
+  SUBTYPE_SUCCESS,
+  TOOL_KEYS,
+  TOOL_RESULT_PERMISSION_DENIED,
+  TOOL_RESULT_REJECTED,
   TRUST_FLAG,
+  USAGE_KEYS,
   VERSION_ARGS,
 } from "./protocol.js";
 
@@ -72,6 +86,10 @@ import {
 export const CURSOR_ENV_ALLOWLIST: readonly string[] = ["PATH", "HOME"];
 
 const PROBE_TIMEOUT_MS = 10_000;
+const MAX_SUMMARY_CHARS = 2_000;
+const MAX_TARGET_CHARS = 512;
+/** Native ids are passed as one argv element; refuse anything that could be read as a flag (Proposed). */
+const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 
 /** FR-GIT-01 (ADR-0039): no per-run deny control is compiled; see protocol.ts. */
 export const CURSOR_GIT_WRITE_CONTROL: GitWriteControl = {
@@ -112,6 +130,11 @@ export interface CursorAdapterOptions {
   pathEnv?: string;
 }
 
+type Json = Record<string, unknown>;
+const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+const obj = (v: unknown): Json | undefined =>
+  typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Json) : undefined;
+const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
 const ineligible = (reason: Ineligible["reason"], detail: string): Ineligible => ({ ineligible: true, reason, detail });
 
 export class CursorAdapter implements ProviderAdapter {
@@ -199,13 +222,17 @@ export class CursorAdapter implements ProviderAdapter {
     return this.#build(request, profile, []);
   }
 
-  /** FR-SES-03: resume arrives with the parser (T4.43); a binding of another provider is never compiled. */
-  resumeArgs(binding: NativeBinding, _request: CompileRequest, _profile: ResolvedProfile): Invocation | Ineligible {
+  /**
+   * FR-SES-03 (T4.43): `--resume <id>` through the same matrix, the id taken from structured output only ([LIVE] 8a to
+   * 8c: the same `session_id` comes back). The follow-up prompt goes on stdin as for a first run (Assumption: [LIVE] 8a
+   * passed it as an argument). `--continue` is never used: it names no chat.
+   */
+  resumeArgs(binding: NativeBinding, request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible {
     if (binding.provider !== "cursor") return ineligible("CAPABILITY_MISSING", `binding is for ${binding.provider}`);
-    return ineligible(
-      "CAPABILITY_MISSING",
-      "Cursor resume is not compiled until its parser records the session id (T4.43)",
-    );
+    if (!SESSION_ID_RE.test(binding.nativeSessionId)) {
+      return ineligible("CAPABILITY_MISSING", "native session id is not a safe single argument");
+    }
+    return this.#build(request, profile, [RESUME_FLAG, binding.nativeSessionId]);
   }
 
   /**
@@ -290,17 +317,148 @@ export class CursorAdapter implements ProviderAdapter {
     };
   }
 
-  /** T4.43 writes the parser from captures; until then nothing is recognised and a clean exit cannot succeed. */
+  /**
+   * One `stream-json` line -> normalized events (T4.43). Structured fields only (FR-ADP-04): the session id is read from
+   * `session_id` of the `system`/`init` line (or of `result` when no `init` came first) and nowhere else. A line whose
+   * type or shape is not recognised is an `unknown` event and never a result. A refused tool call ([LIVE] 7a, 11) is a
+   * `permission_denied` event, because the final `result` still says `success` and the exit code is 0 (Q-65).
+   */
   parseEvent(input: string | AcpMessage, state: ParseState): NormalizedEvent[] {
-    if (typeof input !== "string") return [];
+    if (typeof input !== "string") return []; // no ACP transport for Cursor (TDD §4.5.2)
     state.lines += 1;
-    state.unknownEvents += 1;
-    return [{ kind: "unknown", rawType: "unparsed" }];
+    let doc: unknown;
+    try {
+      doc = JSON.parse(input);
+    } catch {
+      return []; // the supervisor ends the run OUTPUT_PROTOCOL_ERROR on unparseable framing
+    }
+    const e = obj(doc);
+    const type = str(e?.type);
+    if (e === undefined || type === undefined) return this.#unknown(state, "none");
+    const subtype = str(e.subtype);
+    switch (type) {
+      case EVENT.user:
+      case EVENT.thinking:
+        return [];
+      case EVENT.system: {
+        if (subtype !== SUBTYPE_INIT) return this.#unknown(state, `${type}:${subtype ?? "none"}`);
+        const out: NormalizedEvent[] = [];
+        const id = str(e.session_id);
+        if (id !== undefined && id !== "" && state.nativeSessionId === undefined) {
+          state.nativeSessionId = id;
+          // `model` is a display name ([C2], [LIVE] 5b). No backing vendor is reported, so none is set (TDD §4.5:
+          // never derived from the display name).
+          const model = str(e.model);
+          out.push({ kind: "session_bound", nativeSessionId: id, ...(model ? { model: clip(model, 128) } : {}) });
+        }
+        const source = str(e.apiKeySource);
+        if (source !== undefined && source !== API_KEY_SOURCE_LOGIN) {
+          out.push({
+            kind: "provider_error",
+            category: "auth",
+            message: `credential source ${clip(source, 32)} is not the native login; run \`${CURSOR_LOGIN_COMMAND}\``,
+          });
+        }
+        return out;
+      }
+      case EVENT.assistant: {
+        const content = obj(e.message)?.content;
+        if (!Array.isArray(content)) return this.#unknown(state, type);
+        const text = content.map((c) => str(obj(c)?.text) ?? "").join("");
+        return text === "" ? [] : [{ kind: "message", role: "assistant", text: clip(text, MAX_SUMMARY_CHARS) }];
+      }
+      case EVENT.toolCall:
+        return this.#toolCall(e, subtype, state);
+      case EVENT.result: {
+        if (subtype === undefined) return this.#unknown(state, type);
+        const out: NormalizedEvent[] = [];
+        const id = str(e.session_id);
+        if (id !== undefined && id !== "" && state.nativeSessionId === undefined) {
+          state.nativeSessionId = id;
+          out.push({ kind: "session_bound", nativeSessionId: id });
+        }
+        const usage = obj(e.usage);
+        if (usage) {
+          const metrics: Record<string, number | string | null> = {};
+          for (const k of USAGE_KEYS) if (typeof usage[k] === "number") metrics[k] = usage[k] as number;
+          out.push({ kind: "usage", source: "provider_reported", metrics });
+        }
+        const ok = subtype === SUBTYPE_SUCCESS && e.is_error === false;
+        out.push({ kind: "result", ok, ...(ok ? {} : { summary: `result ${clip(subtype, 64)}` }) });
+        return out;
+      }
+      default:
+        return this.#unknown(state, type);
+    }
   }
 
-  /** Never success before the parser exists (T4.43): a result needs a `result` event, which nothing emits yet. */
+  /** `tool_call` started: a `tool_call` event (command or path transient for the guard); completed: denial only. */
+  #toolCall(e: Json, subtype: string | undefined, state: ParseState): NormalizedEvent[] {
+    const call = obj(e.tool_call);
+    const key = call ? Object.keys(call)[0] : undefined;
+    if (call === undefined || key === undefined) return this.#unknown(state, `tool_call:${subtype ?? "none"}`);
+    const body = obj(call[key]);
+    const kind = TOOL_KEYS[key] ?? "other";
+    if (subtype === SUBTYPE_STARTED) {
+      const args = obj(body?.args);
+      const command = kind === "shell" ? str(args?.command) : undefined;
+      const target = kind === "read" || kind === "edit" ? str(args?.path) : undefined;
+      return [
+        {
+          kind: "tool_call",
+          tool: kind,
+          name: clip(key, 64),
+          ...(command !== undefined ? { command } : {}),
+          ...(target !== undefined ? { target: clip(target, MAX_TARGET_CHARS) } : {}),
+        },
+      ];
+    }
+    if (subtype === SUBTYPE_COMPLETED) {
+      const result = obj(body?.result);
+      const denied =
+        result !== undefined && (TOOL_RESULT_REJECTED in result || TOOL_RESULT_PERMISSION_DENIED in result);
+      return denied ? [{ kind: "permission_denied", tool: clip(key, 64) }] : [];
+    }
+    return this.#unknown(state, `tool_call:${subtype ?? "none"}`);
+  }
+
+  #unknown(state: ParseState, rawType: string): NormalizedEvent[] {
+    state.unknownEvents += 1;
+    return [{ kind: "unknown", rawType: clip(rawType, 64) }];
+  }
+
+  /**
+   * Success needs a clean expected exit and a final `result` with `ok` and no `provider_error`, `permission_denied`,
+   * `sandbox_violation` or `rate_limit` event (fail closed, as Grok Build). The summary is the joined assistant text,
+   * last {@link MAX_SUMMARY_CHARS} characters. A failed run prints no stream at all ([LIVE] 4, 14), so it ends
+   * `TOOL_FAILURE` on its exit code; the stderr text is not read (the adapter contract passes none).
+   */
   extractResult(events: readonly NormalizedEvent[], exit: ExitInfo): RunResult {
     const unknownEventCount = events.filter((e) => e.kind === "unknown").length;
+    const bound = events.find((e) => e.kind === "session_bound");
+    const nativeSessionId = bound?.kind === "session_bound" ? bound.nativeSessionId : undefined;
+    const text = events.flatMap((e) => (e.kind === "message" ? [e.text] : [])).join("\n");
+    const summary = text === "" ? undefined : text.slice(-MAX_SUMMARY_CHARS);
+    const final = events.findLast((e) => e.kind === "result");
+    const base = {
+      unknownEventCount,
+      ...(nativeSessionId ? { nativeSessionId } : {}),
+      ...(summary ? { summary } : {}),
+    };
+    const clean =
+      exit.outcome === "exited" &&
+      exit.exitCode !== null &&
+      exit.expectedExitCodes.includes(exit.exitCode) &&
+      final?.kind === "result" &&
+      final.ok &&
+      !events.some(
+        (e) =>
+          e.kind === "provider_error" ||
+          e.kind === "permission_denied" ||
+          e.kind === "sandbox_violation" ||
+          e.kind === "rate_limit",
+      );
+    if (clean) return { ok: true, ...base };
     const c = this.classifyFailure({
       events,
       exit,
@@ -308,7 +466,7 @@ export class CursorAdapter implements ProviderAdapter {
       timedOut: exit.outcome === "timeout",
       cancelled: exit.outcome === "cancelled",
     });
-    return { ok: false, failureCode: c.code, failureDetail: c.detail, unknownEventCount };
+    return { ok: false, failureCode: c.code, failureDetail: c.detail, ...base };
   }
 
   classifyFailure(evidence: FailureEvidence): FailureClassification {
