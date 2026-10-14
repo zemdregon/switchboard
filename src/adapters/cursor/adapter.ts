@@ -165,8 +165,8 @@ export class CursorAdapter implements ProviderAdapter {
   /**
    * FR-ADP-02 steps 1 to 5 with no model call: `cursor-agent --version`, then `--help` for the required flags. Output
    * is probe evidence only (FR-ADP-04). Step 7 (the structured-output smoke call) is not run here. The version string
-   * `2026.10.12-d47ca18` ([LIVE] 1a) parses as a prerelease, which no manifest range admits (ADR-0009); `adapters
-   * validate` (T4.48) has to settle how a Cursor build is gated.
+   * `2026.10.12-d47ca18` ([LIVE] 1a) carries a commit hash parsed as build metadata (T4.48), allowing manifest ranges
+   * to gate the version once `adapters validate` is run by an operator (ADR-0009).
    */
   async probe(runner: ProbeRunner): Promise<ProbeResult> {
     const exe = this.#exe;

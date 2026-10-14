@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { resolveTrustProfile } from "../../policy/profiles.js";
 import { auditInvocation, bypassClassFlags, bypassClassShortFlags, bypassClassValues } from "../audit.js";
 import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
+import { evaluateVersionGate } from "../manifest/index.js";
 import { providerEntry } from "../providers.js";
 import { AdapterRegistry } from "../registry.js";
 import type {
@@ -333,6 +334,29 @@ describe("cursor registry entry and manifest gate (T4.42)", () => {
     for (const v of ["2026.10.12-d47ca18", "2026.10.12", "1.0.0", "0.0.0", null]) {
       expect(registry.gate("cursor", v).eligible, String(v)).toBe(false);
     }
+  });
+
+  it("admits Cursor CalVer commit-hash version when manifest validated range covers it (T4.48)", () => {
+    const manifest = {
+      schema_version: 1 as const,
+      provider: "cursor",
+      validated_cli_version: "2026.10.12",
+      validated_version_range: ">=2026.10.12 <2026.11.0",
+      validated_on: "2026-10-14",
+      auth_modes_allowed: ["native_cached_subscription" as const],
+      automation_surface: ["documented_headless" as const],
+      credential_export_allowed: false as const,
+      dashboard_scraping_allowed: false as const,
+      network_protocol_reverse_engineering: false as const,
+      commercial_multi_user_status: "requires-review" as const,
+      source_revision: "test",
+    };
+    const ok = evaluateVersionGate("cursor", manifest, "2026.10.12-d47ca18");
+    expect(ok.eligible).toBe(true);
+    expect(evaluateVersionGate("cursor", manifest, "2026.10.15-abcdef0").eligible).toBe(true);
+    expect(evaluateVersionGate("cursor", manifest, "2026.10.11-d47ca18").eligible).toBe(false);
+    expect(evaluateVersionGate("cursor", manifest, "2026.11.01-d47ca18").eligible).toBe(false);
+    expect(evaluateVersionGate("cursor", manifest, "2026.10.12-rc.1").eligible).toBe(false);
   });
 });
 
