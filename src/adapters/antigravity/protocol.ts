@@ -70,3 +70,32 @@ export const NON_PRIVILEGED_UNSUPPORTED_DETAIL =
   "settings.json value with no per-run flag (TDD §4.4.2), init.permission_mode was request-review in every run of the " +
   "2026-10-14 live check (agy 1.3.4) including --sandbox and --mode=plan, and a repository's .agents MCP server and " +
   "hook ran with no approval (Q-63, FR-POL-02, FR-POL-08)";
+
+/**
+ * `stream-json` lines ([H]; [LIVE] C4, C7, C9, C10): each is `{"event": ...}`. `init` carries `conversation_id` and
+ * `init.{cwd,tools,permission_mode,model?}`; `step_update` carries `step_index`, `state`, `step_type`, `text_delta`,
+ * `tool_name`, `tool_info.{name,parameters,output,error}`; `result` nests the `json` envelope under `result`.
+ */
+export const EVENT = { init: "init", stepUpdate: "step_update", result: "result" } as const;
+
+/** `step_type` of a tool call ([H]; [LIVE] C4, C7); other step types are ignored steps, not unknown lines. */
+export const STEP_TOOL = "tool";
+
+/** The one success `status` ([H] §4.4.1); every other value is a failure. */
+export const STATUS_SUCCESS = "SUCCESS";
+
+/**
+ * Prefixes of the envelope's `error` text observed in the live check ([LIVE] C10: invalid model; C6, C13: logged
+ * out). An observation of 1.3.4, not a contract; anything else is `unknown` (TOOL_FAILURE).
+ */
+export const ERROR_MODEL_PREFIX = "invalid model selection";
+export const ERROR_AUTH_PREFIX = "authentication failed";
+
+/** `usage` keys of the envelope ([H]; [LIVE] C4). `total_tokens` > 0 is part of the success rule (Q-86). */
+export const USAGE_KEYS: readonly string[] = [
+  "input_tokens",
+  "output_tokens",
+  "thinking_tokens",
+  "cache_read_tokens",
+  "total_tokens",
+];
