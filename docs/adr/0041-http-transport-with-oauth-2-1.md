@@ -1,11 +1,11 @@
 # ADR-0041: Network MCP transport (Streamable HTTP) with embedded OAuth 2.1
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-14
 - Decided by: Delegated (Linus, 2026-10-14), recording the owner decision that Switchboard will be embedded in
   Grok Bot as a public-facing MCP server, so HTTP transport and OAuth are critical. Under [owner
   decision 25](../ROADMAP.md#42-owner-decisions) for everything outside bypass mode. Q-67 is **Yes** (build it).
-  Not owner-approved line-by-line; T13.1 may revise implementation details before this ADR is Accepted.
+  Not owner-approved line-by-line; T13.1 landed via #113; Accepted by orchestrator 2026-10-14 to match Q-67.
 - Supersedes (once accepted): the deferral of the HTTP/SSE transport in [ADR-0002](0002-mcp-upstream-acp-downstream.md),
   and item 4 of [ADR-0040](0040-mcp-caller-authentication-no-oauth-on-stdio.md) is the gate this ADR answers. Neither is
   changed by this document; the status of ADR-0002 changes only when this ADR is accepted.
