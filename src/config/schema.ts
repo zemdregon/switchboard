@@ -100,7 +100,27 @@ export interface SwitchboardConfig {
   git?: { sanitize_patterns?: string[] };
   /** Inner agent (M11, T11.1; FR-INN-01, LLD §13.1). Absent means off and nothing else changes. */
   inner_agent?: InnerAgentConfig;
+  /**
+   * Handoff bundle bounds (T5.6; ADR-0038 item 5.5, LLD §15.4). Each key defaults to its LLD value; the defaults are
+   * Assumptions (no measurement exists).
+   */
+  continuity?: { max_bundle_bytes?: number; max_diff_excerpt_bytes?: number; max_text_chars?: number };
 }
+
+/**
+ * LLD §15.4 defaults and the minimum of `continuity.max_bundle_bytes` (Assumptions, ADR-0038 item 5.5). They equal
+ * `DEFAULT_BUNDLE_BOUNDS` and `MIN_BUNDLE_BYTES` of `src/continuity/bundle-schema.ts` (a test keeps them equal).
+ */
+export const DEFAULT_CONTINUITY_MAX_BUNDLE_BYTES = 65536;
+export const MIN_CONTINUITY_MAX_BUNDLE_BYTES = 16384;
+export const DEFAULT_CONTINUITY_MAX_DIFF_EXCERPT_BYTES = 32768;
+export const DEFAULT_CONTINUITY_MAX_TEXT_CHARS = 2000;
+/**
+ * Upper limits (Assumption, Delegated, T5.6: the LLD names none). They keep an operator typo from producing a prompt of
+ * many megabytes; 1 MiB is 16 times the default bundle.
+ */
+export const MAX_CONTINUITY_BYTES = 1_048_576;
+export const MAX_CONTINUITY_TEXT_CHARS = 65_536;
 
 /** Context kinds delivered in M9 (FR-PRJ-02); any other value fails validation. */
 export const CONTEXT_KINDS = ["repository"] as const;
@@ -347,6 +367,15 @@ export const configSchema = {
     },
     projects: { type: "array", items: projectSchema },
     inner_agent: innerAgentSchema,
+    continuity: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        max_bundle_bytes: { type: "integer", minimum: MIN_CONTINUITY_MAX_BUNDLE_BYTES, maximum: MAX_CONTINUITY_BYTES },
+        max_diff_excerpt_bytes: { type: "integer", minimum: 0, maximum: MAX_CONTINUITY_BYTES },
+        max_text_chars: { type: "integer", minimum: 1, maximum: MAX_CONTINUITY_TEXT_CHARS },
+      },
+    },
     git: {
       type: "object",
       additionalProperties: false,

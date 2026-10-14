@@ -13,6 +13,9 @@ import { checkInnerAgent, type InnerAgentSettings, resolveInnerAgent } from "./i
 import { checkProjects, type ResolvedProject, resolveProjects } from "./projects.js";
 import {
   currentConfigSchema,
+  DEFAULT_CONTINUITY_MAX_BUNDLE_BYTES,
+  DEFAULT_CONTINUITY_MAX_DIFF_EXCERPT_BYTES,
+  DEFAULT_CONTINUITY_MAX_TEXT_CHARS,
   DEFAULT_PREFLIGHT_TTL_SECONDS,
   DEFAULT_PRIVILEGED_APPROVAL,
   DEFAULT_RETENTION_DAYS,
@@ -66,6 +69,11 @@ export interface ResolvedConfig {
    * means no inner agent and every behaviour is as before.
    */
   innerAgent?: InnerAgentSettings;
+  /**
+   * Handoff bundle bounds (T5.6; ADR-0038 item 5.5, LLD §15.4), always set, defaulted per key. Snake case on purpose: it
+   * is passed as is to the bundle builder, which records it in the bundle's `bounds`.
+   */
+  continuity: { max_bundle_bytes: number; max_diff_excerpt_bytes: number; max_text_chars: number };
 }
 
 export interface ResolvedMcpClient {
@@ -324,6 +332,11 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
     },
     retentionEnabled: cfg.retention?.days !== undefined,
     preflightTtlMs: (cfg.timeouts?.preflight_ttl_seconds ?? DEFAULT_PREFLIGHT_TTL_SECONDS) * 1000,
+    continuity: {
+      max_bundle_bytes: cfg.continuity?.max_bundle_bytes ?? DEFAULT_CONTINUITY_MAX_BUNDLE_BYTES,
+      max_diff_excerpt_bytes: cfg.continuity?.max_diff_excerpt_bytes ?? DEFAULT_CONTINUITY_MAX_DIFF_EXCERPT_BYTES,
+      max_text_chars: cfg.continuity?.max_text_chars ?? DEFAULT_CONTINUITY_MAX_TEXT_CHARS,
+    },
     claudeCodeGitChannel: cfg.providers?.["claude-code"]?.git_channel === true,
     profileOverrides,
     // Proposed: a provider not listed is enabled with no explicit weight; listing it can disable it.

@@ -7,10 +7,13 @@
  *   names a full queue. Retryable is false, matching the LLD §4 row ("state may change").
  * - `ProfileUnavailableError` from COMP-POL (`src/policy`, T2.6) carries its own code: PERMISSION_BLOCKED for
  *   `privileged`, ELIGIBILITY_NONE for a profile no M2 adapter can compile.
+ * - `HandoffBundleError` (T5.6, ADR-0038 item 7) maps to its own `TOOL_FAILURE` with `details.reason`
+ *   `HANDOFF_BUNDLE_UNAVAILABLE` and its fixed message.
  * - Unexpected exceptions caught at the tool-handler boundary (TDD §3.2) map to `TOOL_FAILURE` with a generic message
  *   (no stack, no input echo), following the FRD WF-3 precedent for internal faults.
  */
 import type { FailureCode } from "../adapters/failure.js";
+import { HandoffBundleError } from "../continuity/index.js";
 import { LifecycleError } from "../lifecycle/index.js";
 import { ProfileUnavailableError } from "../policy/index.js";
 
@@ -45,6 +48,9 @@ export const invalid = (message: string, details: Record<string, unknown> = {}):
 /** Normalise anything thrown by a handler into a ToolError. */
 export function toToolError(err: unknown): ToolError {
   if (err instanceof ToolError) return err;
+  // T5.6 (ADR-0038 item 7): a bundle that cannot be built is TOOL_FAILURE, not retryable, with the fixed message and
+  // `details.reason = "HANDOFF_BUNDLE_UNAVAILABLE"`; the internal cause stays in the controller.
+  if (err instanceof HandoffBundleError) return new ToolError(err.code, err.message, { reason: err.details.reason });
   if (err instanceof LifecycleError) {
     if (err.code === "QUEUE_FULL") return new ToolError("ELIGIBILITY_NONE", err.message, { reason: "QUEUE_FULL" });
     return new ToolError("INVALID_REQUEST", err.message);

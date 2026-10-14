@@ -2,12 +2,14 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { DEFAULT_BUNDLE_BOUNDS, MIN_BUNDLE_BYTES } from "../continuity/bundle-schema.js";
 import {
   ConfigError,
   effectiveMaxProfile,
   isUnderAllowedRoot,
   loadConfig,
   lowerProfile,
+  MIN_CONTINUITY_MAX_BUNDLE_BYTES,
   projectsForClient,
   resolveConfigPath,
   TRUST_PROFILES,
@@ -618,5 +620,34 @@ describe("project and context inner_agent (T11.3; LLD §13.1, FR-INN-16)", () =>
     expect(load(project({ inner_agent: "inherit" })).projects[0]?.innerAgent).toBe("inherit");
     expect(() => load(project({ inner_agent: "on" }))).toThrow(/\$\.projects\[0\]\.inner_agent/);
     expect(() => load(project({}, { inner_agent: "on" }))).toThrow(/\$\.projects\[0\]\.contexts\[0\]\.inner_agent/);
+  });
+});
+
+describe("continuity (T5.6; ADR-0038 item 5.5, LLD §15.4)", () => {
+  const load = (section: unknown) => loadConfig({ configPath: write({ ...base(), continuity: section }) });
+
+  it("defaults every key to the LLD §15.4 value, which equals the bundle builder's defaults", () => {
+    const c = loadConfig({ configPath: write(base()) });
+    expect(c.continuity).toEqual({ max_bundle_bytes: 65536, max_diff_excerpt_bytes: 32768, max_text_chars: 2000 });
+    expect(c.continuity).toEqual(DEFAULT_BUNDLE_BOUNDS);
+    expect(MIN_CONTINUITY_MAX_BUNDLE_BYTES).toBe(MIN_BUNDLE_BYTES);
+    expect(load({}).continuity).toEqual(DEFAULT_BUNDLE_BOUNDS);
+    expect(load({ max_text_chars: 500 }).continuity).toEqual({ ...DEFAULT_BUNDLE_BOUNDS, max_text_chars: 500 });
+  });
+
+  it("takes all three keys", () => {
+    const set = { max_bundle_bytes: 16384, max_diff_excerpt_bytes: 0, max_text_chars: 1 };
+    expect(load(set).continuity).toEqual(set);
+  });
+
+  it("is strict: unknown keys, non-integers and out-of-range values fail", () => {
+    expect(() => load({ max_bytes: 1 })).toThrow(/\$\.continuity\.max_bytes: unknown key/);
+    expect(() => load({ max_bundle_bytes: 16383 })).toThrow(/\$\.continuity\.max_bundle_bytes/);
+    expect(() => load({ max_bundle_bytes: 1_048_577 })).toThrow(/\$\.continuity\.max_bundle_bytes/);
+    expect(() => load({ max_diff_excerpt_bytes: -1 })).toThrow(/\$\.continuity\.max_diff_excerpt_bytes/);
+    expect(() => load({ max_text_chars: 0 })).toThrow(/\$\.continuity\.max_text_chars/);
+    expect(() => load({ max_text_chars: 1.5 })).toThrow(/\$\.continuity\.max_text_chars/);
+    expect(() => load({ max_text_chars: "2000" })).toThrow(/\$\.continuity\.max_text_chars/);
+    expect(() => load([])).toThrow(/\$\.continuity/);
   });
 });
