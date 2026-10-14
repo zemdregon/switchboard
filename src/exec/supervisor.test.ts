@@ -26,7 +26,9 @@ function alive(pid: number): boolean {
       const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
       state = stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3);
     } else {
-      state = execFileSync("/bin/ps", ["-o", "state=", "-p", String(pid)], { encoding: "utf8" }).trim().slice(0, 1);
+      state = execFileSync("/bin/ps", ["-o", "state=", "-p", String(pid)], { encoding: "utf8" })
+        .trim()
+        .slice(0, 1);
       if (state === "") return false;
     }
     return state !== "Z" && state !== "X";
