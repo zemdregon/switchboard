@@ -1,0 +1,3 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.25), in the streaming-json shapes recorded by the 2026-10-14 live check (rows 4b, 6a: -r <id> returns the same sessionId).","exit":0,"requireResume":true}}
+{"type":"text","data":"Resumed earlier session."}
+{"type":"end","stopReason":"end_turn","sessionId":"{{SESSION_ID}}","requestId":"req_synthetic_2","usage":{"input_tokens":11,"cache_read_input_tokens":5,"cache_creation_input_tokens":0,"output_tokens":2,"reasoning_tokens":0,"total_tokens":18},"num_turns":1,"total_cost_usd":0.001}

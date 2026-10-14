@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.25), in the streaming-json shapes recorded by the 2026-10-14 live check (rows 4b, 8f: a cancelled tool call ends the run stopReason cancelled at exit 0).","exit":0}}
+{"type":"available_commands","tools":["run_terminal_command"]}
+{"type":"text","data":"The command was not run."}
+{"type":"end","stopReason":"cancelled","sessionId":"00000000-0000-4000-8000-000000000001","requestId":"req_synthetic_1","usage":{"input_tokens":11,"cache_read_input_tokens":5,"cache_creation_input_tokens":0,"output_tokens":2,"reasoning_tokens":0,"total_tokens":18},"num_turns":1,"total_cost_usd":0.001}

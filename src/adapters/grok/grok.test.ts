@@ -2,15 +2,35 @@
  * T4.22 (TDD §4.3): the Grok Build module, probe and compile matrix. SYNTHETIC: the executable path is a placeholder and
  * no `grok` binary is run; probe output is the shape the 2026-10-14 live check recorded (`grok 1.0.50 (...) [stable]`).
  */
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
 import { resolveTrustProfile } from "../../policy/profiles.js";
 import { auditInvocation, bypassClassFlags } from "../audit.js";
+import { type ConformanceCase, missingRequiredKinds, runConformanceCase, runConformanceSuite } from "../conformance.js";
 import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
 import { providerEntry } from "../providers.js";
 import { AdapterRegistry } from "../registry.js";
 import type { CompileRequest, ParseState, ProbeOutput, ProbeRunner, ResolvedProfile, TrustProfile } from "../types.js";
 import { GrokAdapter } from "./adapter.js";
+import {
+  DEFAULT_SESSION_ID,
+  grokConformanceCases,
+  PRIVILEGED_BYPASS_PROFILE,
+  RESUMED_SESSION_ID,
+  replayAdapter,
+} from "./fixtures/cases.js";
+
+const dirs: string[] = [];
+const makeCwd = () => {
+  const d = mkdtempSync(join(tmpdir(), "sb-grok-"));
+  dirs.push(d);
+  return d;
+};
+afterAll(() => {
+  for (const d of dirs) rmSync(d, { recursive: true, force: true });
+});
 
 const EXE = "/opt/synthetic/grok";
 const BYPASS_SCOPE = {
@@ -422,6 +442,115 @@ describe("grok auth preflight (T4.24, Q-10; SYNTHETIC outputs in the shapes of t
     expect(r).toMatchObject({ state: "UNKNOWN" });
     expect(ran).toBe(false);
   });
+});
+
+/**
+ * T4.25 (FR-ADP-11): the shared conformance suite over synthetic recorded fixtures (`./fixtures/*.jsonl`, in the
+ * `streaming-json` shapes of the 2026-10-14 live check), replayed by `replay.mjs --provider grok` in place of the
+ * binary, so it passes with no `grok` installed. The prompt reaches the replay as the `--single=` argv word.
+ */
+describe("grok conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.25)", () => {
+  const caseOf = (kind: ConformanceCase["kind"]): ConformanceCase => {
+    const c = grokConformanceCases(makeCwd).find((x) => x.kind === kind);
+    if (!c) throw new Error(`missing ${kind} case`);
+    return c;
+  };
+  const shapeRequest = (): CompileRequest => ({
+    runId: "run_grok_shape",
+    objective: "synthetic grok objective",
+    constraints: [],
+    workspace: { cwd: makeCwd(), writable: true },
+    bypassApproved: true,
+  });
+  /** A copy of `a` whose compiled argv is rewritten by `edit`, to show the replay refuses a wrong compile. */
+  const brokenBy = (a: GrokAdapter, edit: (argv: string[]) => string[]): GrokAdapter => {
+    const broken: GrokAdapter = Object.create(a);
+    broken.compile = (r, p) => {
+      const inv = a.compile(r, p);
+      if ("ineligible" in inv) return inv;
+      return { ...inv, argv: edit(inv.argv), policyFlags: [] };
+    };
+    return broken;
+  };
+
+  it("covers every FR-ADP-11 kind and passes the full suite", async () => {
+    const cases = grokConformanceCases(makeCwd);
+    expect(missingRequiredKinds(cases)).toEqual([]);
+    const report = await runConformanceSuite(cases);
+    const failing = report.cases.flatMap((c) =>
+      c.checks.filter((k) => !k.ok).map((k) => `${c.kind}: ${k.name} ${k.detail ?? ""}`),
+    );
+    expect(failing).toEqual([]);
+    expect(report.ok).toBe(true);
+  });
+
+  it("success with edit normalizes session, summary and the edit; thought is dropped and usage recorded", async () => {
+    const c = caseOf("success");
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({
+      ok: true,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      summary: "Added hello.txt.",
+      unknownEventCount: 0,
+    });
+    expect(readFileSync(join(c.request.workspace.cwd, "hello.txt"), "utf8")).toContain("synthetic");
+  });
+
+  it("resumed run passes -r <id> after the policy flags and preserves the native session id", async () => {
+    const c = caseOf("resume");
+    const inv = c.adapter.resumeArgs(c.binding ?? { provider: "grok", nativeSessionId: "" }, c.request, c.profile);
+    if ("ineligible" in inv) throw new Error(inv.detail);
+    expect(inv.argv.slice(-3)).toEqual(["--always-approve", "-r", RESUMED_SESSION_ID]);
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({ ok: true, nativeSessionId: RESUMED_SESSION_ID });
+  });
+
+  it("a not-signed-in error line at exit 1 ends AUTH_REQUIRED, not a success", async () => {
+    const report = await runConformanceCase(caseOf("auth_missing"));
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "AUTH_REQUIRED" });
+  });
+
+  it("a cancelled stopReason at exit 0 (live check 8f) is TOOL_FAILURE and keeps the session id", async () => {
+    const report = await runConformanceCase(caseOf("task_failure"));
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      nativeSessionId: DEFAULT_SESSION_ID,
+    });
+  });
+
+  it("partial mutation leaves the file in the cwd", async () => {
+    const c = caseOf("partial_mutation");
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(readFileSync(join(c.request.workspace.cwd, "partial.txt"), "utf8")).toContain("synthetic");
+  });
+
+  it.each([
+    ["--sandbox removed", (argv: string[]) => argv.filter((w, i) => w !== "--sandbox" && argv[i - 1] !== "--sandbox")],
+    ["--always-approve removed", (argv: string[]) => argv.filter((w) => w !== "--always-approve")],
+    ["--yolo added", (argv: string[]) => [...argv, "--yolo"]],
+    ["--permission-mode added", (argv: string[]) => [...argv, "--permission-mode", "bypassPermissions"]],
+    ["--trust added", (argv: string[]) => [...argv, "--trust"]],
+    ["--single= removed", (argv: string[]) => argv.filter((w) => !w.startsWith("--single="))],
+  ])(
+    "the replay refuses an argv Grok Build would not be given (%s), so a wrong compile cannot pass",
+    async (_n, edit) => {
+      const report = await runConformanceCase({
+        kind: "success",
+        adapter: brokenBy(replayAdapter("success_edit"), edit),
+        request: shapeRequest(),
+        profile: PRIVILEGED_BYPASS_PROFILE,
+        expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+      });
+      expect(report.ok).toBe(false);
+      expect(report.result?.ok).toBe(false);
+    },
+  );
 });
 
 describe("grok registry entry and manifest gate (T4.22)", () => {
