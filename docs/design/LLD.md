@@ -4216,6 +4216,16 @@ deferred, continuation mode). With the default weights and no history every cand
 and `affinity` object, and compare provider, basis prefix and every score with the stored values. It reads no other row,
 calls no model and no provider, and reports any difference.
 
+*As built (T7.2, 2026-10-14, Delegated):* `src/routing/decision.ts`. Three points the text above leaves open, each an
+**Assumption**: the window counts runs that *finished* in it (the same rows the M6 estimator reads), not runs that
+started in it; `reasons_json.selection` gains `rule` (the selection rule, one of the five basis values) beside the
+human `basis`, which keeps its M2 to M6 wording for continuations, the quota failover and a required provider
+(`provider_preference`), and replay compares `rule`;
+`features_json.admissible` lists the providers selection could pick (for `privileged`, the admissible set of FRD V11),
+and `score_inputs` holds one entry per admissible provider. A same-provider continuation asks eligibility with P0 as its
+required provider, so its rule is `required_provider`. The quota failover (§16.6) now picks among the other eligible
+providers by stage 2 instead of the first in configured order.
+
 ### 17.5 `explain_route`
 
 Input `{ "run_id": string }` (closed schema). The caller must own the run, exactly as `get_run` checks it; an unknown run

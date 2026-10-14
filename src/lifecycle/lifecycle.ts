@@ -152,13 +152,18 @@ import {
 import { workspaceReachesProviderState } from "../policy/provider-state.js";
 import { effectiveRepoConfig, repoAgentConfigRefusal } from "../policy/repo-agent-config.js";
 import {
+  buildRouteDecision,
   type CollectDeps,
+  classifyRequest,
   collectFacts,
+  collectScoreInputs,
+  DEFAULT_ROUTE_SCORING,
   type EligibilityDecision,
   type EligibilityInput,
   failureCodeForIneligible,
   failureCodeForReason,
   filterEligible,
+  type RouteScoringSettings,
   reasonCodeForIneligible,
   requirementsFor,
 } from "../routing/index.js";
@@ -481,6 +486,11 @@ export interface RunLifecycleOptions {
   readonly random?: () => number;
   /** T6.6: handoff bundle bounds for a quota failover (`continuity.*`, LLD §15.4). Unset means the LLD defaults. */
   readonly continuityBounds?: BundleBounds;
+  /**
+   * T7.2 (LLD §17.3): stage-2 settings for the quota failover's choice among the other eligible providers (weights,
+   * the capacity window, provider configuration). Unset means the LLD defaults.
+   */
+  readonly routing?: RouteScoringSettings;
 }
 
 /** `run_event` type: a channel-capable run was not offered the commit tool, with a reason code (T9.4). */
@@ -2208,11 +2218,11 @@ export class RunLifecycle {
         record({ outcome: "returned", reason: "attempts_exhausted" });
         return;
       }
-      const target = await this.failoverTarget(failed, notes);
-      if (target !== undefined) {
-        const successor = await this.submitFailover(failed, target, notes);
+      const routed = await this.failoverTarget(failed, notes);
+      if (routed !== undefined) {
+        const successor = await this.submitFailover(failed, routed, notes);
         if (successor !== undefined) {
-          record({ outcome: "failover", successor_run_id: successor, to_provider: target });
+          record({ outcome: "failover", successor_run_id: successor, to_provider: routed.provider });
           return;
         }
       }
@@ -2238,8 +2248,14 @@ export class RunLifecycle {
     }
   }
 
-  /** BR-8 permission and the first eligible other provider (BR-4 order), or undefined with the reasons in `notes`. */
-  private async failoverTarget(failed: RunRecord, notes: string[]): Promise<ProviderId | undefined> {
+  /**
+   * BR-8 permission and the other eligible provider stage 2 selects (T7.2, LLD §17.3), with its route decision record,
+   * or undefined with the reasons in `notes`.
+   */
+  private async failoverTarget(
+    failed: RunRecord,
+    notes: string[],
+  ): Promise<{ provider: ProviderId; record: Omit<NewRouteDecision, "runId"> } | undefined> {
     if (failed.trust_profile === "privileged") {
       notes.push("failover:privileged_cross_provider"); // Q-61 default (ADR-0038 item 8)
       return undefined;
@@ -2271,13 +2287,50 @@ export class RunLifecycle {
       cwd: req.workspace,
       profile: JSON.parse(failed.policy_snapshot_json) as ResolvedProfile,
     });
-    const target = answer.decision.eligible[0];
-    if (target === undefined) notes.push("failover:none_eligible");
-    return target;
+    if (answer.decision.eligible.length === 0) {
+      notes.push("failover:none_eligible");
+      return undefined;
+    }
+    const scoring = this.opts.routing ?? DEFAULT_ROUTE_SCORING;
+    const from = failed.provider as string;
+    const routed = buildRouteDecision({
+      input: answer.input,
+      decision: answer.decision,
+      admissible: answer.decision.eligible,
+      preference: null,
+      features: classifyRequest({
+        objective: req.objective,
+        constraints: req.constraints ?? [],
+        verificationCommands: req.verification_commands?.length ?? 0,
+        writable: failed.trust_profile !== "inspect-untrusted",
+      }),
+      scoreInputs: collectScoreInputs(this.ledger, answer.decision.eligible, scoring, this.now(), from),
+      weights: scoring.weights,
+      basis: () => `handoff quota_failover from ${from}`,
+      continuation: { mode: "handoff", reason: "quota_failover", from_provider: from },
+      ...(reasons.project !== undefined
+        ? {
+            project: {
+              id: (reasons.project as { id?: string }).id ?? "",
+              excluded: reasons.project.excluded_providers ?? [],
+            },
+          }
+        : {}),
+    });
+    if (routed.provider === null) {
+      notes.push("failover:none_eligible");
+      return undefined;
+    }
+    return { provider: routed.provider as ProviderId, record: routed.record };
   }
 
   /** The handoff successor on `target` (LLD §15.7 steps 5 and 6), or undefined with the reason in `notes`. */
-  private async submitFailover(failed: RunRecord, target: ProviderId, notes: string[]): Promise<string | undefined> {
+  private async submitFailover(
+    failed: RunRecord,
+    routed: { provider: ProviderId; record: Omit<NewRouteDecision, "runId"> },
+    notes: string[],
+  ): Promise<string | undefined> {
+    const target = routed.provider;
     const req = JSON.parse(failed.request_json) as StoredRequest;
     const snapshot = JSON.parse(failed.policy_snapshot_json) as { project?: ProjectSnapshot };
     try {
@@ -2301,15 +2354,7 @@ export class RunLifecycle {
         ...(snapshot.project ? { project: snapshot.project } : {}),
         handoff: { built, stored, fromProvider: failed.provider as string, reason: "quota_failover" },
         successorOf: { runId: failed.id, attempt: failed.attempt },
-        routeDecision: {
-          features_json: JSON.stringify({ failover_of: failed.id, trust_profile: failed.trust_profile }),
-          candidates_json: JSON.stringify([{ provider: target, eligible: true, reasons: [], score: null }]),
-          selected_provider: target,
-          reasons_json: JSON.stringify({
-            selection: { provider: target, basis: `handoff quota_failover from ${failed.provider}` },
-            continuation: { mode: "handoff", reason: "quota_failover", from_provider: failed.provider },
-          }),
-        },
+        routeDecision: routed.record,
       });
       return submitted.runId;
     } catch (err) {
