@@ -21,17 +21,19 @@ jobs:
           echo "--- tmpdir"; node -e 'console.log(require("os").tmpdir(), process.env.TMPDIR)'
       - run: |
           cat > $RUNNER_TEMP/t.mjs <<'EOF'
-          import { spawn } from "node:child_process";
-          import { execFileSync } from "node:child_process";
-          const p = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { detached: true, stdio: "ignore" });
-          await new Promise(r => setTimeout(r, 500));
-          const show = () => console.log(execFileSync("/bin/ps", ["-A","-o","pid=","-o","pgid=","-o","state=","-o","command="], {encoding:"utf8"}).split("\n").filter(l => l.includes(String(p.pid))).join("\n"));
-          show();
-          process.kill(-p.pid, "SIGTERM");
+          import { spawn, execFileSync } from "node:child_process";
+          const ps = () => { const t0 = Date.now(); const o = execFileSync("/bin/ps", ["-A","-o","pid=","-o","pgid=","-o","state="], {encoding:"utf8"}); return [Date.now()-t0, o]; };
+          const probe = (pgid) => { try { process.kill(-pgid, 0); return "ok"; } catch (e) { return e.code; } };
+          // child with a grandchild, both in one group; leader will be left unreaped for a while by blocking the event loop
+          const p = spawn(process.execPath, ["-e", "require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'}); setInterval(()=>{},1000)"], { detached: true, stdio: "ignore" });
+          await new Promise(r => setTimeout(r, 700));
+          const [ms0] = ps(); console.log("ps ms", ms0);
+          process.kill(-p.pid, "SIGKILL");
+          const end = Date.now() + 60; while (Date.now() < end) {} // block: no reaping by node
+          const [ms1, o] = ps();
+          console.log("kill(-pgid,0) while leader unreaped:", probe(p.pid), "ps ms", ms1);
+          console.log(o.split("\n").filter(l => l.trim().split(/ +/)[1] == String(p.pid)).join("\n"));
           await new Promise(r => setTimeout(r, 300));
-          console.log("after SIGTERM"); show();
-          p.on("exit", () => {});
-          await new Promise(r => setTimeout(r, 300));
-          console.log("after wait"); show();
+          console.log("after reap:", probe(p.pid));
           EOF
           node $RUNNER_TEMP/t.mjs
