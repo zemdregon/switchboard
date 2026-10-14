@@ -211,6 +211,64 @@ retrieved text has no policy authority (BR-46).
 - **Modules:** `src/retrieval/admission.ts`; the retrieval port in `src/lifecycle/lifecycle.ts`, wired by
   `src/cli/serve.ts`
 
+### 2.2 COMP-ADP Antigravity implementation evidence (M4, T4.32, T4.33)
+
+The Antigravity compile matrix, probe steps and stream-json event vocabulary are in [TDD
+§4.4](TDD.md#44-antigravity-agy-m4) and the adapter contract in [LLD §2](LLD.md#2-adapter-contract) (provider registry
+row for `antigravity`). Milestone status and task boundaries are in [ROADMAP
+§6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks). As-built LLD detail for parser, result and resume is in draft pull request
+[212](https://github.com/zemdregon/switchboard/pull/212) at documentation time; until that merges, treat the pointers
+below and the roadmap task rows as HLD-level evidence only. Requirement-to-component traceability for the shared adapter
+port is in [SDD §5](SDD.md#5-requirements-to-design-traceability) (`FR-ADP-*`, `FR-AUTH-02`, `FR-SES-03`,
+`FR-CAP-01`).
+
+#### T4.32 — module, manifest, probe, registry entry and compile matrix
+
+**Evidence (implemented on `origin/main`).** FR-ADP-07, FR-ADP-01, FR-ADP-02 (five-step probe on synthetic
+`--version`/`--help` shapes only; no `agy` in CI), FR-ADP-03 (manifest range admits no version until operator
+`adapters validate`), FR-POL-02, FR-POL-03, FR-POL-08; Git behaviour is declared (`gitWriteControl`
+`none-documented`, `commitChannel` `finalize-only`, `resumeCwd` `bound`) per TDD §4.4, not exercised here.
+
+- **Tests:** `src/adapters/antigravity/antigravity.test.ts` ("antigravity compile matrix (T4.32)", "antigravity
+  bypass-class declarations (ADR-0035, ADR-0045)", "antigravity probe and auth placeholder (fail closed until T4.34)",
+  "antigravity registry entry and manifest gate (T4.32)"); `src/adapters/providers.test.ts` (refused bypass-flag
+  shapes)
+- **Modules:** `src/adapters/antigravity/adapter.ts`, `src/adapters/antigravity/protocol.ts`,
+  `src/adapters/manifests/antigravity.json`; registry entry in `src/adapters/providers.ts`
+
+Outside an approved `privileged` scope with `bypass`, every profile is `Ineligible` (`PROFILE_UNSUPPORTED`) because
+`toolPermission` is a settings value, not a per-run control ([TDD
+§4.4.2](TDD.md#442-antigravity-native-controls-per-profile-and-platform-t430)). Only the approved bypass cell compiles
+on synthetic fixtures; argv spellings and `--prompt=` are cited in source to TDD §4.4 or marked Assumption until
+operator live capture (T4.38).
+
+#### T4.33 — parser, result, failure classification and resume (`Partial`)
+
+**Evidence (`Partial`, synthetic lines in the shapes of the T4.31 live check).** FR-ADP-04, FR-CAP-01 (envelope
+run-total usage recorded `provider_reported` once), FR-SES-03 (resume not compiled: `resumeArgs` is `Ineligible` for
+every profile and binding).
+
+- **Tests:** `src/adapters/antigravity/antigravity.test.ts` ("antigravity parser and result (T4.33)", "antigravity
+  parser hardening (T4.33, synthetic shapes)")
+- **Modules:** `parseEvent`, `extractResult`, `classifyFailure` and `resumeArgs` in `src/adapters/antigravity/adapter.ts`;
+  event names and error prefixes in `src/adapters/antigravity/protocol.ts`; failure codes per [LLD
+  §4](LLD.md#4-failure-taxonomy)
+
+**Gaps (remain `Partial`, not `Done`).** Resume is not compiled (Q-86). Rate-limit, sandbox-violation and stderr
+`AGY_ERROR` shapes were not observed on stdout in the live check, so those failures currently end `TOOL_FAILURE` rather
+than dedicated taxonomy codes. Tool-step parameter key names (`command`, path fields) are Assumptions where the capture
+did not record them. Operator extension of T4.31 is still needed for resume with a known conversation id, rate limits
+and full tool-parameter shapes.
+
+#### T4.34 — auth preflight (placeholder)
+
+**Evidence (not implemented).** FR-AUTH-02: `authPreflight` returns `UNKNOWN` until T4.34 implements a status command
+or the documented auth-error exit of a harmless headless call; this subsection does not describe `agy` login behaviour
+beyond that fail-closed placeholder (NFR-SEC-06).
+
+- **Tests:** `src/adapters/antigravity/antigravity.test.ts` ("auth is UNKNOWN until T4.34")
+- **Modules:** `authPreflight` in `src/adapters/antigravity/adapter.ts`
+
 ## 3. Trust boundaries
 
 Controls cite requirements and ADRs; a control is a design intent until its verification (all currently *planned*) is
