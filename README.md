@@ -41,11 +41,12 @@ Pre-release. The package is private and is not published to any registry; you bu
   not been captured (operator task T6.11), and no provider is known to publish an enforceable rate limit, so there is no
   rate gate. See [ROADMAP §6.11](docs/ROADMAP.md#611-m6-capacity-and-resilience-tasks).
 - **Milestone 7 (routing) is `Partial`.** Eligible providers are scored from Switchboard's own records, every route
-  decision is stored and replays exactly, `explain_route` shows why a run went where it did, and a project stays on its
-  provider until a listed reason moves it (`switchboard affinity list|reset`). All of this is tested on fake providers.
-  It is not `Done`: `minimum_capability` is still refused, the remembered model is not yet passed to the provider, and
-  the cache-friendly prompt order is not built; all three wait for adapter work. See
-  [Routing and affinity](#routing-and-affinity) and [ROADMAP §6.12](docs/ROADMAP.md#612-m7-routing-tasks).
+  decision is stored and replays exactly, `explain_route` shows why a run went where it did, a project stays on its
+  provider until a listed reason moves it (`switchboard affinity list|reset`), and `minimum_capability` is enforced
+  against operator-declared model capabilities in the model registry (`src/routing/minimum-capability.test.ts`). All
+  of this is tested on fake providers. It is not `Done`: the cache-friendly prompt order is not built (ROADMAP T7.9,
+  Could) and real-provider model flags wait for adapter work. See [Routing and affinity](#routing-and-affinity) and
+  [ROADMAP §6.12](docs/ROADMAP.md#612-m7-routing-tasks).
 - **Milestone 11 (inner agent) is `Partial`.** An optional HTTP backend, privacy gates, `doctor` and `inner` reporting,
   and commit-message drafting on fakes are on main; most run-path hooks, PR drafting and a live backend are not. See
   [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
@@ -407,8 +408,11 @@ Every `delegate_task`, `continue_task` and quota failover is routed in two stage
 everything needed to re-run it.
 
 1. **Eligibility.** Providers that fail a hard constraint (enablement, trust ceiling, platform, binary, version gate,
-   login, profile compile, open circuit breaker, known quota exhaustion, the project's `allowed_providers`) are removed
-   with a reason. No hint or score brings one back. `require_provider` with an ineligible provider is an error.
+   login, profile compile, open circuit breaker, known quota exhaustion, `minimum_capability` evaluated against
+   operator-declared model capabilities in the model registry, the project's `allowed_providers`) are removed with a
+   reason. Undeclared models fail closed (`CAPABILITY_MISSING`, mapping to `ELIGIBILITY_NONE`); admitted providers
+   compile with the satisfying model (`src/routing/minimum-capability.test.ts`). No hint or score brings one back.
+   `require_provider` with an ineligible provider is an error.
 2. **Selection**, first match wins: the provider named with `require_provider`; the project's affine provider (below);
    an eligible `provider_preference`; the highest score; configured order on a tie.
 
@@ -436,8 +440,10 @@ closed list, recorded in the decision:
 
 `provider_preference` is a hint: it does not move a project that already has affinity. A first run that fails creates
 no affinity. A `continue_task` follows its meta-session, not affinity, and a `privileged` meta-session is never moved
-to another provider. The model is remembered (the one the provider's session reported) but not yet passed to the
-provider, so a held run uses the adapter's default model. `routing.affinity.enabled: false` turns affinity off.
+to another provider. The model is remembered (the one the provider's session reported, or the satisfying model under
+`minimum_capability`) and pinned at compile for adapters declaring acceptance of reported model flags (Claude Code
+today; `src/routing/model-pin.test.ts`); an undeclared adapter keeps its default model.
+`routing.affinity.enabled: false` turns affinity off.
 
 **`explain_route`** returns, from the stored decision only, the candidates with their eligibility reasons, the
 features, the weights, each candidate's terms and score, the rule that selected the provider, the affinity outcome and
@@ -891,9 +897,12 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
 - `adapters validate` is implemented for every registered provider, but only Claude Code and Codex have a manifest range
   on `main` today. Cursor, OpenCode and the other M4 adapters still need operator captures before their manifests
   admit a version (ROADMAP T4.48, T4.58 and §6.8.2).
-- Routing (milestone 7) refuses `minimum_capability` with `ELIGIBILITY_NONE`, because the model a run uses is not yet
-  chosen by Switchboard (ROADMAP Q-90, T7.8, T7.12). Affinity keeps the provider but not the model: a held run uses the
-  adapter's default model. No cache benefit from keeping a project on one provider is claimed.
+- Routing (milestone 7) evaluates `minimum_capability` against operator-declared model capabilities in the model
+  registry instead of refusing it (ROADMAP §6.12 T7.8, `src/routing/minimum-capability.test.ts`); undeclared models
+  fail closed with `CAPABILITY_MISSING` (mapping to `ELIGIBILITY_NONE`), and admitted providers compile with the
+  satisfying model. Affinity pins the model at compile when the adapter declares `reportedModelFlag` (Claude Code
+  today, T7.12, `src/routing/model-pin.test.ts`); undeclared adapters keep their default model. No cache benefit from
+  keeping a project on one provider is claimed (T7.9).
 - Capacity figures are controller estimates. No provider is known to report remaining quota, and the rate-limit and
   quota output shapes of Claude Code and Codex come from synthetic fixtures until the operator captures them (ROADMAP
   T6.11). There is no rate gate, because no provider publishes an enforceable limit for the logins used (T6.8,
