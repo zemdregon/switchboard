@@ -3377,6 +3377,20 @@ than the inner agent, for simplicity). A denial leaves the store untouched, the 
 Switchboard handles no embedding credential: a keyed hosted service is reached through an operator-run local gateway
 (ADR-0003, Q-23).
 
+*As built (T12.3, 2026-10-14, Delegated; `src/retrieval/embedding.ts`, `http-embedder.ts`, `fake-embedder.ts`):* the
+port above, with camelCase result fields. `embedGated` resolves locality, applies this table, redacts each text again
+(`redactForIndex`, idempotent on scanner output) and only then calls the backend; a gate denial, a backend error or an
+envelope fault (wrong vector count, a dimension outside 1 to 8,192 or inconsistent, a non-finite value, a zero vector)
+is returned as `ok: false` with a fixed code, never thrown. Each call yields one record of counts, bytes, duration,
+backend kind, locality, outcome and dimension, never text or vectors, to an injected recorder; no retrieval module
+imports the ledger, usage accounting or the capacity estimator (a test checks it), so no embedding call can become a
+`usage_observation` row (FR-RAG-12). The `http` kind reuses the inner agent's pinned-address transport, now exported as
+`createPinnedHttpTransport` from `src/inner/http-backend.ts` (the inner backend uses it unchanged), and posts
+`{ model, input }` to `<base_url>/v1/embeddings`, reading `data[i].embedding` ordered by `index` (Assumption, T12.0),
+at most 32 texts per request and 8 MiB per response, each request bounded by `embedding.timeout_ms`; requests are sent
+one at a time, so `max_concurrency` is not used yet. `probe` sends only a built-in text and never contacts a remote
+endpoint without `allow_remote`. The `local` kind exists only as the deterministic test fake (T12.0).
+
 ### 14.5 Incremental build
 
 Runs in the `serve` daemon as a background job per store, never inside the admission path (FR-RAG-11):
