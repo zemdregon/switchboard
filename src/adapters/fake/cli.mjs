@@ -28,13 +28,21 @@
 // Each step's outcome (op and exit status, or tool SHA/error code) is a `message` event. With "hang": true it then
 // idles until killed (restart tests). It never leaves the worktree, reads no credential and uses no network.
 //
+// Session state (T5.2, FR-ADP-11; all optional, additive): `--state-dir NAME` makes the CLI keep its session state under
+// `$HOME/NAME/`, as real CLIs keep sessions under the home directory. It appends one canary line to
+// `sessions/<session id>.jsonl` (the "transcript"), appends `{"session_id", "prompt"}` (the stdin text it received) to
+// `prompts.log`, and reports both absolute paths in a first `message` event `{"state": {...}}`. NAME is a relative
+// path without `..`; `HOME` must be set (it is not passed unless the adapter's environment allowlist names it).
+// `--resume-flag FLAG` (default `--resume`) names the flag that carries the session id to resume, and
+// `--new-session-id ID` (default `fake-session-1`) the id of a session that is not resumed.
+//
 // `edit_files` (T9.7, FR-GIT-09) plays an agent WITHOUT a tool channel: the objective on stdin is a JSON plan
 // `{"files": {"<rel path>": "<content>" | null}, "summary": "<text>" | null, "ok": true}`; it writes (or, for null,
 // deletes) the files in its working directory and ends with a `result` event carrying the summary (none when null).
 // `ok: false` ends as a task failure (exit 1). No Git command is run.
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
 
 // A hanging scenario must outlive a controller that died (SIGKILL): ignore EPIPE instead of crashing on a late write.
 process.stdout.on("error", () => {});
@@ -46,7 +54,12 @@ const flagValue = (name) => {
   return i >= 0 ? argv[i + 1] : undefined;
 };
 const scenario = flagValue("--scenario") ?? "success";
-const sessionId = flagValue("--resume") ?? "fake-session-1";
+// The resume flag's own name may be the value of `--resume-flag`, so look for it outside that pair.
+const resumeFlag = flagValue("--resume-flag") ?? "--resume";
+const resumeAt = argv.findIndex((a, i) => a === resumeFlag && argv[i - 1] !== "--resume-flag");
+const sessionId = (resumeAt >= 0 ? argv[resumeAt + 1] : undefined) ?? flagValue("--new-session-id") ?? "fake-session-1";
+const stateDirName = flagValue("--state-dir");
+let stdinText; // read at most once: the state recorder and a plan scenario both need the prompt
 const emit = (obj) => process.stdout.write(`${JSON.stringify(obj)}\n`);
 
 if (argv.includes("--version")) {
@@ -62,6 +75,7 @@ if (argv.includes("--version")) {
   emit({ type: "result", ok: true, summary: "smoke" });
 } else {
   const begin = () => emit({ type: "session", session_id: sessionId, model: "fake-model-1" });
+  if (stateDirName !== undefined && (await recordState()) === false) process.exit(64);
   switch (scenario) {
     case "success":
       begin();
@@ -135,9 +149,38 @@ if (argv.includes("--version")) {
 }
 
 async function readStdin() {
+  if (stdinText !== undefined) return stdinText;
   let text = "";
   for await (const chunk of process.stdin) text += chunk;
+  stdinText = text;
   return text;
+}
+
+/** `--state-dir`: keep the canary transcript and the received prompt under `$HOME/<name>/` and report the paths. */
+async function recordState() {
+  const home = process.env.HOME;
+  if (
+    home === undefined ||
+    !isAbsolute(home) ||
+    stateDirName === "" ||
+    isAbsolute(stateDirName) ||
+    stateDirName.split(/[\\/]/).includes("..")
+  ) {
+    process.stderr.write("state directory needs an absolute HOME and a relative --state-dir without ..\n");
+    return false;
+  }
+  const prompt = await readStdin();
+  const root = join(home, stateDirName);
+  const canaryPath = join(root, "sessions", `${sessionId}.jsonl`);
+  const promptLog = join(root, "prompts.log");
+  mkdirSync(dirname(canaryPath), { recursive: true });
+  appendFileSync(canaryPath, `${JSON.stringify({ canary: "switchboard-canary", session_id: sessionId })}\n`);
+  appendFileSync(promptLog, `${JSON.stringify({ session_id: sessionId, prompt })}\n`);
+  emit({
+    type: "message",
+    text: JSON.stringify({ state: { session_id: sessionId, canary_path: canaryPath, prompt_log: promptLog } }),
+  });
+  return true;
 }
 
 async function editFilesScenario() {
