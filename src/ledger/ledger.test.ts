@@ -25,6 +25,7 @@ const EXPECTED_TABLES = [
   "inner_call",
   "inner_task_state",
   "meta_session",
+  "oauth_token",
   "project_event",
   "project_revision",
   "project_revision_decision",
@@ -213,7 +214,13 @@ describe("ledger migrations", () => {
         mediaType: "application/json",
       }),
     ).toThrow(/CHECK/u);
-    expect(migrate(d)).toEqual([9]);
+    expect(
+      migrate(
+        d,
+        undefined,
+        MIGRATIONS.filter((m) => m.version <= 9),
+      ),
+    ).toEqual([9]);
     expect(d.pragma("foreign_keys", { simple: true })).toBe(1); // restored after the rebuild
     expect(d.pragma("foreign_key_check")).toEqual([]);
     expect(d.prepare("SELECT id, kind, deleted_at FROM artifact").all()).toEqual([
