@@ -159,7 +159,7 @@ describe("eligibility filter (T2.3, FR-RTE-01, FR-MCP-05)", () => {
     expect(ex?.failureCode).toBe("ADAPTER_VERSION_UNVERIFIED");
     expect(ex?.primary.evidence).toMatchObject({
       observedVersion: "codex-cli 1.2.3",
-      validatedRange: ">=0.162.1 <0.163.0",
+      validatedRange: ">=0.162.0 <0.163.0",
     });
   });
 
