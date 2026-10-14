@@ -455,6 +455,31 @@ describe("vertical slice against the fake adapter", () => {
     expect(d.body.status).toBe("SUCCEEDED");
   });
 
+  it("continue_task resumes in the origin worktree, and refuses when that directory is unusable (T5.7)", async () => {
+    await setup({ adapters: [fakeWriter()] });
+    const d = await call("delegate_task", delegateArgs());
+    expect((await pollTerminal(d.body.run_id)).status).toBe("SUCCEEDED");
+    const sess = d.body.meta_session_id as string;
+    const originPath = ledger.getRunRecord(d.body.run_id)?.worktree_path as string;
+
+    const c = await call("continue_task", { meta_session_id: sess, instruction: "keep going" });
+    expect(c.isError).toBe(false);
+    expect((await pollTerminal(c.body.run_id)).status).toBe("SUCCEEDED");
+    expect(ledger.getRunRecord(c.body.run_id)?.worktree_path).toBe(originPath); // the fake declares `bound`
+
+    // An untracked file in the origin worktree: no resume there, and none anywhere else (LLD §15.6 step 3).
+    writeFileSync(path.join(originPath, "stray.txt"), "x\n");
+    const runsBefore = ledger.listRunsForMetaSession(sess).length;
+    const refused = await call("continue_task", { meta_session_id: sess, instruction: "more" });
+    expect(refused.body.error).toMatchObject({
+      code: "TOOL_FAILURE",
+      retryable: false,
+      details: { reason: "resume_directory_unavailable", problem: "unclean" },
+    });
+    expect(JSON.stringify(refused.body)).not.toContain(dataDir); // no controller path in the envelope
+    expect(ledger.listRunsForMetaSession(sess)).toHaveLength(runsBefore); // nothing admitted
+  });
+
   it("continue_task rejects an active session, a different provider, an unknown session and an idempotency key", async () => {
     await setup({ adapters: [fakeWriter()] });
     const d = await call("delegate_task", delegateArgs({ objective: "hang" }));
@@ -928,7 +953,10 @@ describe("privileged admission (T3.3; FR-POL-09, FR-MCP-06, BR-13, BR-14, V13, C
   });
 
   it("continue_task: QUEUED under an APPROVED approval with the scope as is; refused when PENDING, DENIED, absent or another client", async () => {
-    await setup({ adapters: [fakeWriter()], clients: PRIV_CLIENTS, start: false });
+    // The binding below is recorded by hand, with no run that reported it, so there is no origin worktree (T5.7,
+    // LLD §15.6): the `independent` fake keeps this test about C7; the directory rule has its own tests.
+    const independent = recorded(new FakeAdapter({ script: writerScript, timeouts: SHORT, resumeCwd: "independent" }));
+    await setup({ adapters: [independent.adapter], clients: PRIV_CLIENTS, start: false });
     const d = await call("delegate_task", privArgs());
     const sess = d.body.meta_session_id as string;
     const cont = (clientIndex = 0, over: Json = {}) =>

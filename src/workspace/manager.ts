@@ -1,4 +1,4 @@
-import { mkdir, realpath, stat } from "node:fs/promises";
+import { lstat, mkdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import type Database from "better-sqlite3";
 import type { ArtifactStore } from "../artifacts/index.js";
@@ -21,7 +21,8 @@ export type WorkspaceErrorCode =
   | "LEASE_STALE"
   | "LEASE_NOT_HELD"
   | "INVALID_ID"
-  | "NOT_FOUND";
+  | "NOT_FOUND"
+  | "RESUME_DIRECTORY_UNAVAILABLE";
 
 export class WorkspaceError extends Error {
   override readonly name = "WorkspaceError";
@@ -30,6 +31,44 @@ export class WorkspaceError extends Error {
     message: string,
   ) {
     super(message);
+  }
+}
+
+/**
+ * Why the worktree path of the run that created a native session cannot host a resume (T5.7, LLD §15.6 step 2;
+ * ADR-0038 item 6.4). Every value means: no resume is attempted there and no other directory is used instead.
+ * - `outside_session_directory`: the path is not `<dataDir>/worktrees/<sess>/<name>` of this meta-session (FR-WS-08).
+ * - `not_a_directory`: the path exists but is a symlink or not a directory.
+ * - `not_registered`: `git worktree list` of the meta-session's repository does not list it, or Git run inside it
+ *   resolves to another repository or top level.
+ * - `locked`: the worktree is locked (`git worktree lock`); Delegated: treated as in use by someone else.
+ * - `unclean`: the §5 mutation check against its own `HEAD` finds changes or untracked files.
+ * - `unreadable`: a check could not be completed (fail closed, NFR-SEC-06).
+ */
+export type ResumeDirectoryProblem =
+  | "outside_session_directory"
+  | "not_a_directory"
+  | "not_registered"
+  | "locked"
+  | "unclean"
+  | "unreadable";
+
+export type ResumeDirectoryVerdict =
+  | {
+      readonly usable: true;
+      readonly path: string;
+      /** False: the directory is gone and is re-created at the same path from the head checkpoint. */
+      readonly exists: boolean;
+    }
+  | { readonly usable: false; readonly problem: ResumeDirectoryProblem; readonly detail: string };
+
+/** Thrown by `prepare` when the origin worktree fails the LEASED re-check (T5.7); nothing was created or switched. */
+export class ResumeDirectoryUnavailableError extends WorkspaceError {
+  constructor(
+    readonly problem: ResumeDirectoryProblem,
+    detail: string,
+  ) {
+    super("RESUME_DIRECTORY_UNAVAILABLE", `resume directory unavailable (${problem}): ${detail}`);
   }
 }
 
@@ -56,6 +95,14 @@ export interface PrepareInput {
    * the meta-session has a head commit.
    */
   readonly baseRef?: string;
+  /**
+   * T5.7 (ADR-0038 item 6.1, LLD §15.6 step 2): a native resume whose adapter does not declare `independent` runs in
+   * the worktree path of the run that created the native session. The path is re-checked under the per-repository
+   * worktree serialisation; a failed check throws {@link ResumeDirectoryUnavailableError} before any Git change. The run
+   * still gets its own branch `switchboard/<sess>/<run>` at the head checkpoint, its own `base` and `pre` checkpoints
+   * and the lease. Ignored for `inspect-untrusted` (no worktree).
+   */
+  readonly resumeIn?: { readonly originPath: string };
 }
 
 export type PreparedWorkspace =
@@ -191,11 +238,25 @@ export class WorkspaceManager {
         { cwd: repoRoot },
       );
       const branch = `switchboard/${input.metaSessionId}/${input.runId}`;
-      const worktreePath = path.join(this.options.dataDir, "worktrees", input.metaSessionId, input.runId);
+      const resumeIn = input.resumeIn;
+      const worktreePath = resumeIn
+        ? path.resolve(resumeIn.originPath)
+        : path.join(this.options.dataDir, "worktrees", input.metaSessionId, input.runId);
 
       // Intent row first, then the Git action, then the outcome row.
       const baseCheckpointId = this.insertCheckpoint(input.metaSessionId, input.runId, "base", baseCommit, branch);
       await serialisedWorktreeCreate(repoRoot, async () => {
+        if (resumeIn) {
+          // T5.7: re-check the origin path here, where no sibling can add or prune a worktree of this repository.
+          const verdict = await this.inspectOrigin(input.metaSessionId, repoRoot, worktreePath);
+          if (!verdict.usable) throw new ResumeDirectoryUnavailableError(verdict.problem, verdict.detail);
+          if (verdict.exists) {
+            // Clean against its own HEAD (checked above): start this run's branch at the head checkpoint in place.
+            await git(["switch", "--no-guess", "-c", branch, baseCommit], { cwd: worktreePath });
+            return;
+          }
+          // The directory is gone: re-create it at the same path from the head checkpoint (LLD §15.6 step 2).
+        }
         await this.repairPartialWorktree(repoRoot, worktreePath, branch);
         await mkdir(path.dirname(worktreePath), { recursive: true, mode: 0o700 });
         await git(["worktree", "add", "-b", branch, worktreePath, baseCommit], { cwd: repoRoot });
@@ -224,6 +285,24 @@ export class WorkspaceManager {
       this.releaseLease(input.runId);
       throw err;
     }
+  }
+
+  /**
+   * T5.7 (LLD §15.6 step 2, read-only): whether `originPath` can host a resume of `metaSessionId`. It must be
+   * `<dataDir>/worktrees/<metaSessionId>/<name>` (never another meta-session's path, FR-WS-08), and, if it exists, a
+   * real directory that `git worktree list` of the meta-session's repository lists unlocked, that Git inside resolves
+   * to that repository and to itself, and that is clean against its own `HEAD`. A missing directory is usable (it is
+   * re-created). The lifecycle calls this before admission; `prepare` repeats it under the worktree serialisation.
+   */
+  async inspectResumeDirectory(metaSessionId: string, originPath: string): Promise<ResumeDirectoryVerdict> {
+    assertId(metaSessionId);
+    const row = this.db.prepare("SELECT repo_root FROM meta_session WHERE id = ?").get(metaSessionId) as
+      | { repo_root: string | null }
+      | undefined;
+    if (!row?.repo_root) {
+      return { usable: false, problem: "not_registered", detail: "the meta-session has no recorded repository" };
+    }
+    return this.inspectOrigin(metaSessionId, row.repo_root, path.resolve(originPath));
   }
 
   /** Heartbeat: extend the lease while the supervisor holds the process (LLD §5). */
@@ -425,6 +504,73 @@ export class WorkspaceManager {
     tx.immediate();
   }
 
+  private async inspectOrigin(
+    metaSessionId: string,
+    repoRoot: string,
+    originPath: string,
+  ): Promise<ResumeDirectoryVerdict> {
+    const no = (problem: ResumeDirectoryProblem, detail: string): ResumeDirectoryVerdict => ({
+      usable: false,
+      problem,
+      detail,
+    });
+    const sessionDir = path.resolve(this.options.dataDir, "worktrees", metaSessionId);
+    if (!path.isAbsolute(originPath) || path.dirname(originPath) !== sessionDir) {
+      return no("outside_session_directory", "the path is not a worktree directory of this meta-session");
+    }
+    let exists = true;
+    try {
+      const st = await lstat(originPath);
+      if (st.isSymbolicLink() || !st.isDirectory()) return no("not_a_directory", "the path is not a plain directory");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") return no("unreadable", errorDetail(err));
+      exists = false;
+    }
+    try {
+      const target = exists ? await realpath(originPath) : originPath;
+      const entries = parseWorktreeList(
+        (await git(["worktree", "list", "--porcelain", "-z"], { cwd: repoRoot })).stdout,
+      );
+      let entry: WorktreeEntry | undefined;
+      for (const e of entries.slice(1)) {
+        // The first entry is the main worktree; it is never a controller worktree.
+        const listed = exists ? await realpath(e.path).catch(() => path.resolve(e.path)) : path.resolve(e.path);
+        if (listed === target) entry = e;
+      }
+      if (entry?.locked) return no("locked", "the worktree is locked");
+      if (!exists) return { usable: true, path: originPath, exists: false };
+      if (!entry) return no("not_registered", "the repository does not list the path as one of its worktrees");
+      // Defence in depth: Git run inside the directory must reach this repository and this top level (a rewritten
+      // `.git` file would point it elsewhere).
+      const top = await realpath(await gitText(["rev-parse", "--show-toplevel"], { cwd: originPath }));
+      const common = await realpath(
+        path.resolve(originPath, await gitText(["rev-parse", "--git-common-dir"], { cwd: originPath })),
+      );
+      const repoCommon = await realpath(
+        path.resolve(repoRoot, await gitText(["rev-parse", "--git-common-dir"], { cwd: repoRoot })),
+      );
+      if (top !== target || common !== repoCommon) {
+        return no("not_registered", "Git inside the directory resolves to another repository or top level");
+      }
+      // §5 mutation check against its own HEAD: any status entry (untracked included) or diff counts as unclean.
+      const scope = nestedPathspecArgs(await findNestedRepositories(originPath));
+      const status = await git(
+        ["status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=all", ...scope],
+        { cwd: originPath },
+      );
+      const diff = await git(["diff", "--quiet", "--ignore-submodules=all", "HEAD", ...scope], {
+        cwd: originPath,
+        okCodes: [1],
+      });
+      if (status.stdout.length > 0 || diff.code !== 0) {
+        return no("unclean", "the worktree has changes or untracked files against its own HEAD");
+      }
+      return { usable: true, path: originPath, exists: true };
+    } catch (err) {
+      return no("unreadable", errorDetail(err));
+    }
+  }
+
   /** A `git worktree add` interrupted mid-way leaves a registration or directory: remove and recreate (LLD §5). */
   private async repairPartialWorktree(repoRoot: string, worktreePath: string, branch: string): Promise<void> {
     await git(["worktree", "prune"], { cwd: repoRoot });
@@ -509,6 +655,27 @@ export class WorkspaceManager {
       .run(id, runId, metaSessionId, kind, stored.sha256, stored.sizeBytes, mediaType, this.now().toISOString());
     return id;
   }
+}
+
+interface WorktreeEntry {
+  readonly path: string;
+  readonly locked: boolean;
+}
+
+/** Parse `git worktree list --porcelain -z`: NUL-terminated attribute lines, an empty field between entries. */
+function parseWorktreeList(raw: Buffer): WorktreeEntry[] {
+  const out: { path: string; locked: boolean }[] = [];
+  for (const field of raw.toString("utf8").split("\0")) {
+    if (field.startsWith("worktree ")) out.push({ path: field.slice("worktree ".length), locked: false });
+    else if ((field === "locked" || field.startsWith("locked ")) && out.length > 0) {
+      (out[out.length - 1] as { locked: boolean }).locked = true;
+    }
+  }
+  return out;
+}
+
+function errorDetail(err: unknown): string {
+  return (err instanceof Error ? err.message : String(err)).slice(0, 300);
 }
 
 function assertId(id: string): void {

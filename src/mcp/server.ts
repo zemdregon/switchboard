@@ -86,6 +86,7 @@ import {
 import type { Ledger, RunRecord, TrustProfile } from "../ledger/index.js";
 import {
   type EligibilityAnswer,
+  RESUME_DIRECTORY_UNAVAILABLE,
   type RunLifecycle,
   type RunPriority,
   requestHash,
@@ -622,6 +623,26 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       ...(approvedScope?.ok ? { profile: eligibilityProfile(approvedScope.scope) } : {}),
     });
     if (!admissible(answer, approval !== undefined).includes(bound)) throw eligibilityError(answer); // BR-18 → BR-2/BR-3
+
+    // T5.7 (ADR-0038 item 6.4, LLD §15.6 step 3): a resume that cannot run in its origin's directory is never run in
+    // another one. Until T5.6 makes this a handoff preferring the bound provider, it is refused here, before any run,
+    // decision or event is written: TOOL_FAILURE (not retryable; the request is valid, the fault is the controller's
+    // state, as ADR-0038 item 7 reasons), `details.reason = "resume_directory_unavailable"`.
+    const dir = await lifecycle.resumeDirectoryPlan({
+      metaSessionId: sessionId,
+      provider: bound,
+      nativeSessionId: binding.native_session_id,
+      trustProfile: profile,
+      workspace,
+      resumeCwd: deps.registry.get(bound)?.resumeCwd,
+    });
+    if (dir.kind === "unavailable") {
+      throw new ToolError(
+        "TOOL_FAILURE",
+        `meta-session ${sessionId}: the native session cannot be resumed in its own working directory (${dir.problem}); a handoff is not available yet`,
+        { reason: RESUME_DIRECTORY_UNAVAILABLE, problem: dir.problem },
+      );
+    }
 
     const submitted = await lifecycle.submit({
       clientId: deps.clientId,
