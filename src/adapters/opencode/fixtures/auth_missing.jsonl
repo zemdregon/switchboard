@@ -1,0 +1,3 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.55), in the --format json shapes recorded by the 2026-10-14 live check (row 14d).","exit":1}}
+{"type":"step_start","timestamp":1,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"sessionID":"ses_SYNTHETIC0000000000000001","messageID":"msg_1","id":"prt_s1","type":"step-start","snapshot":"synthetic"}}
+{"type":"error","timestamp":1,"sessionID":"ses_SYNTHETIC0000000000000001","error":{"type":"provider.auth","message":"synthetic: not logged in"}}

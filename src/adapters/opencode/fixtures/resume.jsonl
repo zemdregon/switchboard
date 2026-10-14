@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.55), in the --format json shapes recorded by the 2026-10-14 live check (rows 4c, 13a, 15a).","exit":0,"requireResume":true}}
+{"type":"step_start","timestamp":1,"sessionID":"{{SESSION_ID}}","part":{"sessionID":"{{SESSION_ID}}","messageID":"msg_1","id":"prt_s1","type":"step-start","snapshot":"synthetic"}}
+{"type":"text","timestamp":1,"sessionID":"{{SESSION_ID}}","part":{"sessionID":"{{SESSION_ID}}","messageID":"msg_1","id":"prt_t1","type":"text","text":"Resumed earlier session."}}
+{"type":"step_finish","timestamp":1,"sessionID":"{{SESSION_ID}}","part":{"sessionID":"{{SESSION_ID}}","messageID":"msg_1","id":"prt_f1","type":"step-finish","reason":"stop","cost":0.001,"tokens":{"input":11,"output":2,"reasoning":0,"cache":{"read":5,"write":0}}}}
