@@ -14,7 +14,9 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type Database from "better-sqlite3";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { FakeAdapter, type FakeScenario } from "../../src/adapters/fake/adapter.js";
@@ -29,10 +31,21 @@ import {
   type VersionGateResult,
 } from "../../src/adapters/index.js";
 import { ArtifactStore } from "../../src/artifacts/index.js";
+import { stderrLogger } from "../../src/cli/serve.js";
+import { type HttpTransportSettings, resolveHttpTransport } from "../../src/config/index.js";
 import { createIdGenerator } from "../../src/ids/index.js";
 import { createLedger, type Ledger, openLedger, type RunRecord, type TrustProfile } from "../../src/ledger/index.js";
 import { RunLifecycle } from "../../src/lifecycle/index.js";
-import { createSwitchboardServer, type SwitchboardMcpServer } from "../../src/mcp/index.js";
+import {
+  checkClientMetadata,
+  createSwitchboardServer,
+  type HttpTransportListener,
+  OAuthClientStore,
+  OAuthTokenStore,
+  SubjectBindingStore,
+  type SwitchboardMcpServer,
+  startHttpTransport,
+} from "../../src/mcp/index.js";
 import { driverOverrides, GitError, git, gitText } from "../../src/workspace/git.js";
 import { WorkspaceManager } from "../../src/workspace/index.js";
 import {
@@ -127,8 +140,23 @@ interface RunOutcome {
   readonly record: RunRecord;
 }
 
+/** T13.6: the network MCP transport of a harness opened with `"http"` (TB-12). */
+interface HttpLeg {
+  readonly url: string;
+  readonly resource: string;
+  /** The access token the harness's own MCP client presents. */
+  readonly token: string;
+  readonly tokens: OAuthTokenStore;
+  /** Register and approve another OAuth client, mapped like the first (the default mapping). */
+  approveClient(): string;
+  /** Every line the `serve` logger wrote for the listener's hooks. */
+  readonly logLines: string[];
+}
+
 interface Harness {
   readonly fx: MaliciousFixture;
+  /** Present when the harness serves MCP over Streamable HTTP with OAuth (T13.6) rather than in memory. */
+  readonly http?: HttpLeg;
   readonly db: Database.Database;
   readonly ledger: Ledger;
   readonly artifacts: ArtifactStore;
@@ -142,7 +170,9 @@ interface Harness {
   close(): Promise<void>;
 }
 
-async function openHarness(): Promise<Harness> {
+const HTTP_RESOURCE = "https://switchboard.example.test/mcp";
+
+async function openHarness(transport: "stdio" | "http" = "stdio"): Promise<Harness> {
   const fx = buildMaliciousFixture();
   // Controller process environment: a FAKE home and a canary secret variable (restored in close()).
   const savedHome = process.env.HOME;
@@ -176,18 +206,58 @@ async function openHarness(): Promise<Harness> {
     allowedRoots: [fx.allowedRoot],
     mcpClients: new Map([["orchestrator", { id: "orchestrator", maxTrustProfile: "edit-untrusted" as const }]]),
   };
-  const mcp: SwitchboardMcpServer = createSwitchboardServer({
-    lifecycle,
-    ledger,
-    artifacts,
-    registry,
-    config,
-    clientId: "orchestrator",
-  });
+  const deps = { lifecycle, ledger, artifacts, registry, config, subjectBindings: new SubjectBindingStore(db) };
+  const mcp: SwitchboardMcpServer = createSwitchboardServer({ ...deps, clientId: "orchestrator" });
   const client = new Client({ name: "t38", version: "0.0.0" });
-  const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
-  await mcp.server.connect(serverSide);
-  await client.connect(clientSide);
+  let listener: HttpTransportListener | undefined;
+  let http: HttpLeg | undefined;
+  if (transport === "http") {
+    // T13.6 (TB-12): the same controller behind the real listener, token store, client store and `serve` logger.
+    const logLines: string[] = [];
+    const log = stderrLogger({ stdout: { write: () => {} }, stderr: { write: (l) => logLines.push(l) }, env: {} });
+    const settings = resolveHttpTransport({
+      enabled: true,
+      public_url: HTTP_RESOURCE,
+      port: 0,
+      allowed_origins: ["https://orchestrator.example"],
+      default_mcp_client: "orchestrator",
+    }) as HttpTransportSettings;
+    const tokens = new OAuthTokenStore(db);
+    const clients = new OAuthClientStore(db);
+    const approveClient = (): string => {
+      const meta = checkClientMetadata({ redirect_uris: ["https://orchestrator.example/cb"] });
+      if (!meta.ok) throw new Error("bad metadata");
+      const reg = clients.register(meta.metadata);
+      if (!reg.ok || !clients.approve(reg.client.clientId)) throw new Error("registration failed");
+      return reg.client.clientId;
+    };
+    listener = await startHttpTransport(settings, {
+      tokens,
+      clients,
+      onTokenRejected: (reason) => log.warn("refused an HTTP bearer token", { reason }),
+      onClientRefused: (reason, oauthClientId) =>
+        log.warn("refused an HTTP MCP request", { reason, client_id: oauthClientId }),
+      mcpServerFor: (id, subject) => createSwitchboardServer({ ...deps, clientId: id, subject }),
+    });
+    const issued = tokens.issue({
+      kind: "access",
+      clientId: approveClient(),
+      resource: HTTP_RESOURCE,
+      scopes: ["mcp"],
+      ttlMs: 600_000,
+    });
+    const url = `http://127.0.0.1:${listener?.address.port}/mcp`;
+    http = { url, resource: HTTP_RESOURCE, token: issued.token, tokens, approveClient, logLines };
+    const t = new StreamableHTTPClientTransport(new URL(url), {
+      requestInit: { headers: { authorization: `Bearer ${issued.token}` } },
+    });
+    // The SDK's `sessionId?: string | undefined` trips `exactOptionalPropertyTypes`.
+    await client.connect(t as Transport);
+  } else {
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await mcp.server.connect(serverSide);
+    await client.connect(clientSide);
+  }
   await client.listTools();
 
   const mcpTexts: string[] = [];
@@ -213,6 +283,7 @@ async function openHarness(): Promise<Harness> {
   };
   return {
     fx,
+    ...(http ? { http } : {}),
     db,
     ledger,
     artifacts,
@@ -242,6 +313,7 @@ async function openHarness(): Promise<Harness> {
       await lifecycle.shutdown();
       await client.close();
       await mcp.close();
+      await listener?.close();
       db.close();
       if (savedHome === undefined) delete process.env.HOME;
       else process.env.HOME = savedHome;
@@ -258,9 +330,10 @@ function leakScan(h: Harness): Record<string, TokenRole[]> {
     artifacts: findTokens(h.fx, treeText(path.join(h.fx.dataDir, "artifacts"))),
     worktrees: findTokens(h.fx, treeText(path.join(h.fx.dataDir, "worktrees"))),
     mcp: findTokens(h.fx, h.mcpTexts.join("\n")),
+    log: findTokens(h.fx, h.http?.logLines.join("\n") ?? ""),
   };
 }
-const NO_LEAKS = { ledger: [], artifacts: [], worktrees: [], mcp: [] };
+const NO_LEAKS = { ledger: [], artifacts: [], worktrees: [], mcp: [], log: [] };
 
 async function streamText(h: Harness, runId: string, kind: "provider_stdout" | "provider_stderr"): Promise<string> {
   const row = h.db.prepare("SELECT sha256 FROM artifact WHERE run_id = ? AND kind = ?").get(runId, kind) as
@@ -291,175 +364,186 @@ function linkPlanter(fx: MaliciousFixture, prefix: string) {
 const diffTexts = (run: RunOutcome): string[] =>
   run.artifacts.filter((a) => a.kind === "diff").map((a) => String(a.inline_text ?? ""));
 
-describe("T3.8 controller invariants on a hostile fixture repository", () => {
-  let h: Harness;
-  let before: ReturnType<typeof operatorState>;
-  let beforeAllRefs: Record<string, string>;
-  let outsideHash: string;
-  let homeHash: string;
-  const runs: Record<string, RunOutcome> = {};
-  let successLinks: ReturnType<typeof linkPlanter>;
-  let failedLinks: ReturnType<typeof linkPlanter>;
-  let rollbackDiff = "";
+// T13.6 (TB-12, NFR-SEC-03): the same invariants hold when the orchestrator reaches the controller over Streamable HTTP.
+describe.each(["stdio", "http"] as const)(
+  "T3.8 controller invariants on a hostile fixture repository (%s)",
+  (transport) => {
+    let h: Harness;
+    let before: ReturnType<typeof operatorState>;
+    let beforeAllRefs: Record<string, string>;
+    let outsideHash: string;
+    let homeHash: string;
+    const runs: Record<string, RunOutcome> = {};
+    let successLinks: ReturnType<typeof linkPlanter>;
+    let failedLinks: ReturnType<typeof linkPlanter>;
+    let rollbackDiff = "";
 
-  beforeAll(async () => {
-    h = await openHarness();
-    const { fx } = h;
-    before = operatorState(fx);
-    beforeAllRefs = refs(fx.repo);
-    outsideHash = treeHash(fx.outsideDir);
-    homeHash = treeHash(fx.fakeHome);
+    beforeAll(async () => {
+      h = await openHarness(transport);
+      const { fx } = h;
+      before = operatorState(fx);
+      beforeAllRefs = refs(fx.repo);
+      outsideHash = treeHash(fx.outsideDir);
+      homeHash = treeHash(fx.fakeHome);
 
-    // The existing benign scenarios, end to end through MCP: success, a continuation, failures and mutations.
-    runs.success = await h.delegate("success");
-    runs.continuation = await h.cont(runs.success.metaSessionId, "success");
-    runs.env = await h.delegate("env_report");
-    runs.taskFailure = await h.delegate("task_failure");
-    runs.malformed = await h.delegate("malformed_output");
-    runs.rateLimit = await h.delegate("rate_limit");
-    runs.partial = await h.delegate("partial_mutation");
-    successLinks = linkPlanter(fx, "leak-ok");
-    runs.successLinks = await h.delegate("success", successLinks.plant);
-    failedLinks = linkPlanter(fx, "leak-failed");
-    runs.partialLinks = await h.delegate("partial_mutation", failedLinks.plant);
+      // The existing benign scenarios, end to end through MCP: success, a continuation, failures and mutations.
+      runs.success = await h.delegate("success");
+      runs.continuation = await h.cont(runs.success.metaSessionId, "success");
+      runs.env = await h.delegate("env_report");
+      runs.taskFailure = await h.delegate("task_failure");
+      runs.malformed = await h.delegate("malformed_output");
+      runs.rateLimit = await h.delegate("rate_limit");
+      runs.partial = await h.delegate("partial_mutation");
+      successLinks = linkPlanter(fx, "leak-ok");
+      runs.successLinks = await h.delegate("success", successLinks.plant);
+      failedLinks = linkPlanter(fx, "leak-failed");
+      runs.partialLinks = await h.delegate("partial_mutation", failedLinks.plant);
 
-    // Explicit rollback of the failed run's worktree (FR-WS-04) with one more untracked outside-pointing link.
-    const wt = runs.partialLinks.record.worktree_path as string;
-    symlinkSync(fx.claudeCredentialsPath, path.join(wt, "leak-late"));
-    const rb = await h.workspace.rollback(runs.partialLinks.runId);
-    const sha = (h.db.prepare("SELECT sha256 FROM artifact WHERE id = ?").get(rb.diffArtifactId) as { sha256: string })
-      .sha256;
-    rollbackDiff = (await h.artifacts.get(sha)).toString("latin1");
-    // Re-read every run's MCP view after the rollback, so its artifact is part of the MCP scan too.
-    for (const r of Object.values(runs))
-      await h.call("get_artifacts", { run_id: r.runId, max_inline_bytes: 1_048_576 });
-  }, 120_000);
+      // Explicit rollback of the failed run's worktree (FR-WS-04) with one more untracked outside-pointing link.
+      const wt = runs.partialLinks.record.worktree_path as string;
+      symlinkSync(fx.claudeCredentialsPath, path.join(wt, "leak-late"));
+      const rb = await h.workspace.rollback(runs.partialLinks.runId);
+      const sha = (
+        h.db.prepare("SELECT sha256 FROM artifact WHERE id = ?").get(rb.diffArtifactId) as { sha256: string }
+      ).sha256;
+      rollbackDiff = (await h.artifacts.get(sha)).toString("latin1");
+      // Re-read every run's MCP view after the rollback, so its artifact is part of the MCP scan too.
+      for (const r of Object.values(runs))
+        await h.call("get_artifacts", { run_id: r.runId, max_inline_bytes: 1_048_576 });
+    }, 120_000);
 
-  afterAll(async () => {
-    await h?.close();
-  });
-
-  it("ran the scenarios the suite relies on", () => {
-    const status = Object.fromEntries(Object.entries(runs).map(([k, r]) => [k, r.envelope.status]));
-    expect(status).toEqual({
-      success: "SUCCEEDED",
-      continuation: "SUCCEEDED",
-      env: "SUCCEEDED",
-      taskFailure: "FAILED",
-      malformed: "FAILED",
-      rateLimit: "FAILED",
-      partial: "FAILED",
-      successLinks: "SUCCEEDED",
-      partialLinks: "FAILED",
+    afterAll(async () => {
+      await h?.close();
     });
-    for (const r of Object.values(runs)) expect(r.record.worktree_path).not.toBeNull();
-  });
 
-  it("(1) FR-EXE-07: the provider child gets only allowlisted environment names; the canary variable and HOME are absent", async () => {
-    const stdout = await streamText(h, runs.env?.runId as string, "provider_stdout");
-    const leaks = envLeaks(stdout, h.adapter.declaredEnv);
-    expect(leaks).toEqual([]); // `undefined` would mean no report at all
-    expect(stdout).not.toContain(h.fx.envCanaryName);
-    expect(stdout).not.toMatch(/"HOME"/);
-    expect(findTokens(h.fx, stdout)).toEqual([]);
-  });
+    it("ran the scenarios the suite relies on", () => {
+      const status = Object.fromEntries(Object.entries(runs).map(([k, r]) => [k, r.envelope.status]));
+      expect(status).toEqual({
+        success: "SUCCEEDED",
+        continuation: "SUCCEEDED",
+        env: "SUCCEEDED",
+        taskFailure: "FAILED",
+        malformed: "FAILED",
+        rateLimit: "FAILED",
+        partial: "FAILED",
+        successLinks: "SUCCEEDED",
+        partialLinks: "FAILED",
+      });
+      for (const r of Object.values(runs)) expect(r.record.worktree_path).not.toBeNull();
+    });
 
-  it("(2) FR-WS-05: operator refs, HEAD, index, working tree, config, hooks and remote are unchanged", () => {
-    expect(operatorState(h.fx)).toEqual(before);
-    const added = newRefs(beforeAllRefs, refs(h.fx.repo));
-    expect(added.length).toBeGreaterThan(0);
-    for (const r of added) expect(r).toMatch(/^refs\/heads\/switchboard\/sess_[0-9A-Za-z]+\/run_[0-9A-Za-z]+$/);
-    // No existing ref moved, the operator's branch included.
-    for (const [name, sha] of Object.entries(beforeAllRefs)) expect(refs(h.fx.repo)[name]).toBe(sha);
-  });
+    it("(1) FR-EXE-07: the provider child gets only allowlisted environment names; the canary variable and HOME are absent", async () => {
+      const stdout = await streamText(h, runs.env?.runId as string, "provider_stdout");
+      const leaks = envLeaks(stdout, h.adapter.declaredEnv);
+      expect(leaks).toEqual([]); // `undefined` would mean no report at all
+      expect(stdout).not.toContain(h.fx.envCanaryName);
+      expect(stdout).not.toMatch(/"HOME"/);
+      expect(findTokens(h.fx, stdout)).toEqual([]);
+    });
 
-  it("(3) TDD §3.4: controller Git (worktree add, status, diff, checkpoint commit, rollback) never runs repository hooks or fsmonitor", () => {
-    expect(readIfExists(h.fx.hookLog)).toBe("");
-    // Controller checkpoint commits really happened (so commit hooks had their chance to fire).
-    expect(tg(h.fx.repo, "log", "-1", "--format=%an", `refs/heads/${runs.partial?.record.branch}`)).toBe("Switchboard");
-  });
+    it("(2) FR-WS-05: operator refs, HEAD, index, working tree, config, hooks and remote are unchanged", () => {
+      expect(operatorState(h.fx)).toEqual(before);
+      const added = newRefs(beforeAllRefs, refs(h.fx.repo));
+      expect(added.length).toBeGreaterThan(0);
+      for (const r of added) expect(r).toMatch(/^refs\/heads\/switchboard\/sess_[0-9A-Za-z]+\/run_[0-9A-Za-z]+$/);
+      // No existing ref moved, the operator's branch included.
+      for (const [name, sha] of Object.entries(beforeAllRefs)) expect(refs(h.fx.repo)[name]).toBe(sha);
+    });
 
-  it("(3) FR-POL-04: repository agent configuration (.mcp.json, .claude/settings.json, .codex/config.toml) is never executed", () => {
-    expect(readIfExists(h.fx.configLog)).toBe("");
-  });
+    it("(3) TDD §3.4: controller Git (worktree add, status, diff, checkpoint commit, rollback) never runs repository hooks or fsmonitor", () => {
+      expect(readIfExists(h.fx.hookLog)).toBe("");
+      // Controller checkpoint commits really happened (so commit hooks had their chance to fire).
+      expect(tg(h.fx.repo, "log", "-1", "--format=%an", `refs/heads/${runs.partial?.record.branch}`)).toBe(
+        "Switchboard",
+      );
+    });
 
-  it("(4) symlinks: diffs and artifacts store link targets only, never the bytes behind an outside-pointing link", () => {
-    const ok = diffTexts(runs.successLinks as RunOutcome).join("\n");
-    const failed = diffTexts(runs.partialLinks as RunOutcome).join("\n");
-    expect(ok).toContain("new file mode 120000");
-    for (const t of successLinks.targets) expect(ok).toContain(t);
-    for (const t of failedLinks.targets) expect(failed).toContain(t);
-    expect(rollbackDiff).toContain(h.fx.claudeCredentialsPath); // the late link, as a target string
-    for (const text of [ok, failed, rollbackDiff]) expect(findTokens(h.fx, text)).toEqual([]);
-    // Following the links never wrote through them: the outside directory and the fake home are byte-identical.
-    expect(treeHash(h.fx.outsideDir)).toBe(outsideHash);
-    expect(treeHash(h.fx.fakeHome)).toBe(homeHash);
-    // Rollback removed the untracked link without touching its target.
-    const wt = runs.partialLinks?.record.worktree_path as string;
-    expect(existsSync(path.join(wt, "leak-late"))).toBe(false);
-    expect(existsSync(h.fx.claudeCredentialsPath)).toBe(true);
-  });
+    it("(3) FR-POL-04: repository agent configuration (.mcp.json, .claude/settings.json, .codex/config.toml) is never executed", () => {
+      expect(readIfExists(h.fx.configLog)).toBe("");
+    });
 
-  it("(4)+(5) NFR-SEC-01, FR-TEL-03: no canary token in ledger rows, stored artifacts (provider logs included), worktrees or MCP envelopes", () => {
-    expect(h.mcpTexts.length).toBeGreaterThan(0);
-    expect(leakScan(h)).toEqual(NO_LEAKS);
-  });
+    it("(4) symlinks: diffs and artifacts store link targets only, never the bytes behind an outside-pointing link", () => {
+      const ok = diffTexts(runs.successLinks as RunOutcome).join("\n");
+      const failed = diffTexts(runs.partialLinks as RunOutcome).join("\n");
+      expect(ok).toContain("new file mode 120000");
+      for (const t of successLinks.targets) expect(ok).toContain(t);
+      for (const t of failedLinks.targets) expect(failed).toContain(t);
+      expect(rollbackDiff).toContain(h.fx.claudeCredentialsPath); // the late link, as a target string
+      for (const text of [ok, failed, rollbackDiff]) expect(findTokens(h.fx, text)).toEqual([]);
+      // Following the links never wrote through them: the outside directory and the fake home are byte-identical.
+      expect(treeHash(h.fx.outsideDir)).toBe(outsideHash);
+      expect(treeHash(h.fx.fakeHome)).toBe(homeHash);
+      // Rollback removed the untracked link without touching its target.
+      const wt = runs.partialLinks?.record.worktree_path as string;
+      expect(existsSync(path.join(wt, "leak-late"))).toBe(false);
+      expect(existsSync(h.fx.claudeCredentialsPath)).toBe(true);
+    });
 
-  it("(6) FR-POL-10: workspaces outside the allowed roots are refused, including through symlinks and `..`", async () => {
-    const { fx } = h;
-    // A real Git repository outside the allowed root, reachable through a symlink inside it.
-    const outsideRepo = path.join(fx.base, "outside-repo");
-    mkdirSync(path.join(outsideRepo, "inner"), { recursive: true });
-    tg(outsideRepo, "init", "-q", "-b", "main");
-    const sneaky = path.join(fx.allowedRoot, "sneaky-link");
-    symlinkSync(outsideRepo, sneaky);
-    // Raw, unnormalised `..` segments (path.join would normalise them away before the controller saw them).
-    const dotDot = `${fx.repo}/../../outside-repo`;
-    const viaLinkDotDot = `${fx.allowedRoot}/repo/links/outside-dir/..`;
-    const candidates = [outsideRepo, sneaky, dotDot, viaLinkDotDot, fx.outsideDir];
+    it("(4)+(5) NFR-SEC-01, FR-TEL-03: no canary token in ledger rows, stored artifacts (provider logs included), worktrees or MCP envelopes", () => {
+      expect(h.mcpTexts.length).toBeGreaterThan(0);
+      expect(leakScan(h)).toEqual(NO_LEAKS);
+    });
 
-    const runCount = () => (h.db.prepare("SELECT COUNT(*) AS n FROM run").get() as { n: number }).n;
-    const n0 = runCount();
-    for (const ws of candidates) {
-      const r = await h.call("delegate_task", { objective: "x", workspace_path: ws, trust_profile: "edit-untrusted" });
-      expect(r.isError, ws).toBe(true);
-      expect(r.body.error.code, ws).toBe("INVALID_REQUEST");
+    it("(6) FR-POL-10: workspaces outside the allowed roots are refused, including through symlinks and `..`", async () => {
+      const { fx } = h;
+      // A real Git repository outside the allowed root, reachable through a symlink inside it.
+      const outsideRepo = path.join(fx.base, "outside-repo");
+      mkdirSync(path.join(outsideRepo, "inner"), { recursive: true });
+      tg(outsideRepo, "init", "-q", "-b", "main");
+      const sneaky = path.join(fx.allowedRoot, "sneaky-link");
+      symlinkSync(outsideRepo, sneaky);
+      // Raw, unnormalised `..` segments (path.join would normalise them away before the controller saw them).
+      const dotDot = `${fx.repo}/../../outside-repo`;
+      const viaLinkDotDot = `${fx.allowedRoot}/repo/links/outside-dir/..`;
+      const candidates = [outsideRepo, sneaky, dotDot, viaLinkDotDot, fx.outsideDir];
+
+      const runCount = () => (h.db.prepare("SELECT COUNT(*) AS n FROM run").get() as { n: number }).n;
+      const n0 = runCount();
+      for (const ws of candidates) {
+        const r = await h.call("delegate_task", {
+          objective: "x",
+          workspace_path: ws,
+          trust_profile: "edit-untrusted",
+        });
+        expect(r.isError, ws).toBe(true);
+        expect(r.body.error.code, ws).toBe("INVALID_REQUEST");
+        await expect(
+          h.workspace.prepare({
+            metaSessionId: "sess_t38",
+            runId: "run_t38",
+            workspace: ws,
+            trustProfile: "edit-untrusted",
+          }),
+          ws,
+        ).rejects.toMatchObject({ code: "WORKSPACE_NOT_ALLOWED" });
+      }
+      expect(runCount()).toBe(n0);
+
+      // An allowed root inside a repository whose top level lies outside every allowed root is refused too.
+      const nested = new WorkspaceManager({
+        db: h.db,
+        artifacts: h.artifacts,
+        dataDir: fx.dataDir,
+        allowedRoots: [fx.allowedRoot, path.join(outsideRepo, "inner")],
+      });
       await expect(
-        h.workspace.prepare({
+        nested.prepare({
           metaSessionId: "sess_t38",
           runId: "run_t38",
-          workspace: ws,
+          workspace: path.join(outsideRepo, "inner"),
           trustProfile: "edit-untrusted",
         }),
-        ws,
-      ).rejects.toMatchObject({ code: "WORKSPACE_NOT_ALLOWED" });
-    }
-    expect(runCount()).toBe(n0);
-
-    // An allowed root inside a repository whose top level lies outside every allowed root is refused too.
-    const nested = new WorkspaceManager({
-      db: h.db,
-      artifacts: h.artifacts,
-      dataDir: fx.dataDir,
-      allowedRoots: [fx.allowedRoot, path.join(outsideRepo, "inner")],
+      ).rejects.toMatchObject({ code: "WORKSPACE_NOT_ALLOWED", message: expect.stringMatching(/repository root/) });
+      // Nothing was created in the outside repository.
+      expect(tg(outsideRepo, "for-each-ref")).toBe("");
+      expect(
+        tg(outsideRepo, "worktree", "list", "--porcelain")
+          .split("\n")
+          .filter((l) => l.startsWith("worktree")),
+      ).toHaveLength(1);
     });
-    await expect(
-      nested.prepare({
-        metaSessionId: "sess_t38",
-        runId: "run_t38",
-        workspace: path.join(outsideRepo, "inner"),
-        trustProfile: "edit-untrusted",
-      }),
-    ).rejects.toMatchObject({ code: "WORKSPACE_NOT_ALLOWED", message: expect.stringMatching(/repository root/) });
-    // Nothing was created in the outside repository.
-    expect(tg(outsideRepo, "for-each-ref")).toBe("");
-    expect(
-      tg(outsideRepo, "worktree", "list", "--porcelain")
-        .split("\n")
-        .filter((l) => l.startsWith("worktree")),
-    ).toHaveLength(1);
-  });
-});
+  },
+);
 
 describe("T3.8 repository-configured Git filter and diff drivers", () => {
   let h: Harness;
@@ -756,6 +840,7 @@ describe("T3.8 positive controls: every detector fires when its invariant is bro
         artifacts: ["codex_auth"],
         worktrees: ["outside_sentinel"],
         mcp: ["codex_auth"],
+        log: [],
       });
     },
     TEST_TIMEOUT,
@@ -771,5 +856,160 @@ describe("T3.8 positive controls: every detector fires when its invariant is bro
         trustProfile: "edit-untrusted",
       }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+});
+
+/**
+ * T13.6 (TB-12; FR-MCP-12..15, NFR-SEC-03): hostile requests against the network MCP transport of the same controller.
+ * Each one is refused before it reaches a tool, writes nothing, and leaves no token in any output.
+ */
+describe("T13.6 hostile requests on the HTTP path (TB-12)", () => {
+  let h: Harness;
+  let leg: HttpLeg;
+  const responses: string[] = [];
+  const TOKEN_SHAPE = /sb(?:at|rt|ac)_[A-Za-z0-9_-]{43}/;
+  const runCount = () => (h.db.prepare("SELECT COUNT(*) AS n FROM run").get() as { n: number }).n;
+  const toolsList = { jsonrpc: "2.0", id: 1, method: "tools/list" };
+  const tool = (name: string, args: Json) => ({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "tools/call",
+    params: { name, arguments: args },
+  });
+  const post = async (body: unknown, headers: Record<string, string>, url = leg.url): Promise<Response> => {
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...headers },
+      body: JSON.stringify(body),
+    });
+    responses.push(JSON.stringify([...r.headers]), await r.clone().text());
+    return r;
+  };
+  const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
+  const issue = (over: { clientId?: string; resource?: string; scopes?: string[]; kind?: "access" | "refresh" } = {}) =>
+    leg.tokens.issue({
+      kind: over.kind ?? "access",
+      clientId: over.clientId ?? leg.approveClient(),
+      resource: over.resource ?? leg.resource,
+      scopes: over.scopes ?? ["mcp"],
+      ttlMs: 600_000,
+    }).token;
+  const toolBody = async (r: Response): Promise<Json> =>
+    JSON.parse((JSON.parse(await r.text()) as Json).result.content[0].text as string) as Json;
+
+  beforeAll(async () => {
+    h = await openHarness("http");
+    if (!h.http) throw new Error("no HTTP leg");
+    leg = h.http;
+  }, TEST_TIMEOUT);
+  afterAll(async () => {
+    await h?.close();
+  });
+
+  it("DNS rebinding: a browser request from an unlisted origin is refused before routing, even with a valid token", async () => {
+    for (const origin of ["https://attacker.example", "null", "http://127.0.0.1"]) {
+      const r = await post(
+        tool("delegate_task", { objective: "x", workspace_path: h.fx.repo, trust_profile: "edit-untrusted" }),
+        {
+          ...bearer(leg.token),
+          origin,
+        },
+      );
+      expect(r.status, origin).toBe(403);
+    }
+    expect(runCount()).toBe(0);
+  });
+
+  it("stolen, forged or misdirected credentials are refused alike (401) and logged by reason only", async () => {
+    const forged = `sbat_${"A".repeat(43)}`;
+    const otherAudience = issue({ resource: "https://other.example/mcp" });
+    const refresh = issue({ kind: "refresh" });
+    const cases: [string, Record<string, string>, string?][] = [
+      ["forged", bearer(forged)],
+      ["other audience", bearer(otherAudience)],
+      ["refresh as bearer", bearer(refresh)],
+      ["two credentials", { authorization: `Bearer ${leg.token}, Bearer ${forged}` }],
+      ["token in the query string", {}, `${leg.url}?access_token=${encodeURIComponent(leg.token)}`],
+    ];
+    for (const [name, headers, url] of cases) {
+      const r = await post(toolsList, headers, url);
+      expect(r.status, name).toBe(401);
+    }
+    const refused = leg.logLines.filter((l) => l.includes("refused an HTTP bearer token"));
+    expect(refused.length).toBeGreaterThanOrEqual(4);
+    for (const l of refused)
+      expect(Object.keys(JSON.parse(l) as Json).sort()).toEqual(["component", "level", "msg", "reason", "ts"]);
+  });
+
+  it("a token cannot raise the profile, and no scope or claim grants privileged", async () => {
+    const claims = bearer(issue({ scopes: ["mcp", "privileged", "admin"] }));
+    const up = await toolBody(
+      await post(
+        tool("delegate_task", { objective: "x", workspace_path: h.fx.repo, trust_profile: "test-sandboxed" }),
+        claims,
+      ),
+    );
+    expect(up.error).toMatchObject({ code: "PERMISSION_BLOCKED" });
+    const priv = await toolBody(
+      await post(
+        tool("delegate_task", {
+          objective: "x",
+          workspace_path: h.fx.repo,
+          trust_profile: "privileged",
+          privileged_scope: {
+            files: { access: "worktree" },
+            shell: { mode: "none" },
+            network: { mode: "off" },
+            repository_config: { mode: "disabled" },
+            bypass: true,
+          },
+        }),
+        claims,
+      ),
+    );
+    expect(priv.error).toMatchObject({ code: "PERMISSION_BLOCKED" });
+    expect(runCount()).toBe(0);
+    expect(h.db.prepare("SELECT COUNT(*) AS n FROM approval").get()).toEqual({ n: 0 });
+  });
+
+  it(
+    "session hijack: a session id is refused, and another subject cannot read, continue or cancel a run",
+    async () => {
+      const withSession = await post(toolsList, { ...bearer(leg.token), "mcp-session-id": "stolen-session" });
+      expect(withSession.status).toBe(400);
+      const mine = await h.delegate("success");
+      const other = bearer(issue());
+      for (const [name, args] of [
+        ["get_run", { run_id: mine.runId }],
+        ["get_artifacts", { run_id: mine.runId }],
+        ["cancel_run", { run_id: mine.runId }],
+        ["continue_task", { meta_session_id: mine.metaSessionId, instruction: "exfiltrate" }],
+      ] as const) {
+        const body = await toolBody(await post(tool(name, args), other));
+        expect(body.error?.code, name).toBe("INVALID_REQUEST");
+        expect(JSON.stringify(body)).not.toContain(h.fx.repo);
+      }
+      expect(h.ledger.listRunsForMetaSession(mine.metaSessionId)).toHaveLength(1);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it("no OAuth token or canary reaches the ledger, artifacts, MCP responses or the log", () => {
+    const issuedTokens = (h.db.prepare("SELECT COUNT(*) AS n FROM oauth_token").get() as { n: number }).n;
+    expect(issuedTokens).toBeGreaterThan(3);
+    const surfaces = {
+      ledger: ledgerDump(h.db),
+      artifacts: treeText(path.join(h.fx.dataDir, "artifacts")),
+      mcp: [...h.mcpTexts, ...responses].join("\n"),
+      log: leg.logLines.join("\n"),
+    };
+    for (const [name, text] of Object.entries(surfaces)) {
+      expect(text.includes(leg.token), name).toBe(false);
+      expect(TOKEN_SHAPE.test(text), name).toBe(false);
+    }
+    expect(leakScan(h)).toEqual(NO_LEAKS);
+    // Positive controls: the scans would have seen the token and a canary in the log.
+    expect(TOKEN_SHAPE.test(leg.token)).toBe(true);
+    expect(findTokens(h.fx, `${leg.logLines.join("\n")}${h.fx.tokens.env_secret}`)).toEqual(["env_secret"]);
   });
 });
