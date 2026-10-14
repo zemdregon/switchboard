@@ -97,6 +97,7 @@ import {
   projectsForClient,
   type ResolvedConfig,
   type ResolvedProject,
+  type RoutingSettings,
 } from "../config/index.js";
 import {
   type BundleBounds,
@@ -125,13 +126,18 @@ import {
 } from "../policy/index.js";
 import type { DynamicProjectStore } from "../projects/index.js";
 import {
+  buildRouteDecision,
+  classifyRequest,
+  collectScoreInputs,
   compileCheck,
+  DEFAULT_WEIGHTS,
   type EligibilityReasonCode,
   profilePlatformSupported,
   profileRank,
+  type RouteDecisionResult,
+  type RouteFeatures,
   requirementsFor,
   TRUST_PROFILE_ORDER,
-  toRouteDecisionJson,
 } from "../routing/index.js";
 import { gitText } from "../workspace/git.js";
 import { buildEnvelope, compactEvents, type Envelope } from "./envelope.js";
@@ -173,6 +179,8 @@ export interface McpServerDeps {
     readonly capacity?: Pick<CapacitySettings, "windowSeconds" | "confidenceRuns">;
     /** T6.3: slot limits shown by `get_capacity`. Absent means the NFR-PERF-03 default of one per provider. */
     readonly limits?: Pick<ResolvedConfig["limits"], "perProviderConcurrency">;
+    /** T7.2: stage-2 score weights (`routing.weights`, LLD §17.1). Absent means the LLD defaults. */
+    readonly routing?: Pick<RoutingSettings, "weights">;
   };
   /** T9.9 (FR-PRJ-10): dynamic projects. Required when the client has `manage_projects`; absent means none resolve. */
   readonly projectStore?: DynamicProjectStore;
@@ -187,7 +195,7 @@ export interface McpServerDeps {
   readonly subjectBindings?: SubjectBindings;
   /** Routing candidate order (BR-4 tie-break). Defaults to registry registration order. */
   readonly candidateOrder?: readonly ProviderId[];
-  /** Clock for `get_capacity` (T6.3); defaults to the system clock. */
+  /** Clock for `get_capacity` (T6.3) and the routing window (T7.2); defaults to the system clock. */
   readonly now?: () => Date;
 }
 
@@ -471,41 +479,50 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     return answer.input.facts.map((f) => f.provider).filter((p) => ok.has(p));
   };
 
-  const selectProvider = (answer: EligibilityAnswer, preference: string | undefined, privileged = false) => {
-    const eligible = admissible(answer, privileged);
-    const suffix = privileged && !answer.decision.eligible.length ? "; privileged compile deferred to dispatch" : "";
-    if (preference !== undefined && eligible.includes(preference as ProviderId)) {
-      return { provider: preference as ProviderId, basis: `provider_preference${suffix}` };
-    }
-    const first = eligible[0];
-    if (first === undefined) throw eligibilityError(answer);
-    return { provider: first, basis: `configured_order${suffix}` };
-  };
-
-  const routeRecord = (
+  /**
+   * T7.2 (FR-RTE-02, FR-RTE-03, LLD §17.3, §17.4): stage 2 over the admissible providers and the self-contained route
+   * decision record. `sessionProvider` is the meta-session's provider for a continuation (handoff term), null otherwise.
+   * No admissible provider is the BR-3 error, as before.
+   */
+  const route = (
     answer: EligibilityAnswer,
-    provider: ProviderId,
-    basis: string,
-    project?: { id: string; excluded: readonly ProviderId[]; revision?: number },
-    /** T5.6 (LLD §15.7 step 7): how a continuation runs, with its BR-18 reason code; controller values only. */
-    continuation?: { mode: "resume" | "handoff"; reason: string; from_provider: string; problem?: string },
-  ) => {
-    const json = toRouteDecisionJson(answer.input, answer.decision);
-    const reasons = {
-      ...(JSON.parse(json.reasons_json) as object),
-      selection: { provider, basis },
-      ...(continuation !== undefined ? { continuation } : {}),
-      ...(project !== undefined
-        ? {
-            project: {
-              id: project.id,
-              excluded_providers: [...project.excluded],
-              ...(project.revision !== undefined ? { revision: project.revision } : {}),
-            },
-          }
-        : {}),
+    opts: {
+      preference: string | undefined;
+      privileged: boolean;
+      features: RouteFeatures;
+      sessionProvider: string | null;
+      basis?: (selected: string) => string;
+      project?: { id: string; excluded: readonly ProviderId[]; revision?: number };
+      /** T5.6 (LLD §15.7 step 7): how a continuation runs, with its BR-18 reason code; controller values only. */
+      continuation?: { mode: "resume" | "handoff"; reason: string; from_provider: string; problem?: string };
+    },
+  ): RouteDecisionResult & { provider: ProviderId } => {
+    const eligible = admissible(answer, opts.privileged);
+    const suffix =
+      opts.privileged && !answer.decision.eligible.length ? "; privileged compile deferred to dispatch" : "";
+    const settings = {
+      weights: deps.config.routing?.weights ?? DEFAULT_WEIGHTS,
+      windowSeconds: deps.config.capacity?.windowSeconds ?? DEFAULT_CAPACITY_WINDOW_SECONDS,
+      confidenceRuns: deps.config.capacity?.confidenceRuns ?? DEFAULT_CAPACITY_CONFIDENCE_RUNS,
+      ...(deps.config.providers !== undefined ? { providers: deps.config.providers } : {}),
+      ...(deps.config.limits !== undefined ? { limits: deps.config.limits } : {}),
     };
-    return { ...json, selected_provider: provider, reasons_json: JSON.stringify(reasons) };
+    const now = (deps.now ?? (() => new Date()))();
+    const result = buildRouteDecision({
+      input: answer.input,
+      decision: answer.decision,
+      admissible: eligible,
+      preference: opts.preference ?? null,
+      features: opts.features,
+      scoreInputs: collectScoreInputs(ledger, eligible, settings, now, opts.sessionProvider),
+      weights: settings.weights,
+      basisSuffix: suffix,
+      ...(opts.basis !== undefined ? { basis: opts.basis } : {}),
+      ...(opts.project !== undefined ? { project: opts.project } : {}),
+      ...(opts.continuation !== undefined ? { continuation: opts.continuation } : {}),
+    });
+    if (result.provider === null) throw eligibilityError(answer);
+    return { ...result, provider: result.provider as ProviderId };
   };
 
   const waitBounded = async (runId: string, seconds: number | undefined): Promise<void> => {
@@ -592,7 +609,27 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       throw eligibilityError(answer);
     }
     if (required !== undefined && !admissible(answer, privileged).includes(required)) throw eligibilityError(answer);
-    const { provider, basis } = selectProvider(answer, routing?.provider_preference, privileged);
+    const routed = route(answer, {
+      preference: routing?.provider_preference,
+      privileged,
+      features: classifyRequest({
+        objective: a.objective as string,
+        constraints: a.constraints as string[],
+        verificationCommands: verification.length,
+        writable: profile !== "inspect-untrusted",
+      }),
+      sessionProvider: null,
+      ...(resolved
+        ? {
+            project: {
+              id: resolved.snapshot.id,
+              excluded: narrowed.excluded,
+              ...(resolved.revision !== undefined ? { revision: resolved.revision } : {}),
+            },
+          }
+        : {}),
+    });
+    const provider = routed.provider;
 
     const submitted = await lifecycle.submit({
       clientId: deps.clientId,
@@ -603,18 +640,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       constraints: a.constraints as string[],
       priority: a.priority as RunPriority,
       requestHash: hash,
-      routeDecision: routeRecord(
-        answer,
-        provider,
-        basis,
-        resolved
-          ? {
-              id: resolved.snapshot.id,
-              excluded: narrowed.excluded,
-              ...(resolved.revision !== undefined ? { revision: resolved.revision } : {}),
-            }
-          : undefined,
-      ),
+      routeDecision: routed.record,
       ...(resolved ? { project: resolved.snapshot } : {}),
       ...(key !== undefined ? { idempotencyKey: key } : {}),
       ...(verification.length > 0 ? { verificationCommands: verification } : {}),
@@ -726,17 +752,17 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       );
     }
 
-    // Step 2, second half, and step 4: the target and the mode.
-    let target: ProviderId;
+    // Step 2, second half, and step 4: the candidates and the mode. The target is chosen by stage 2 below (T7.2); for
+    // the same provider the eligibility answer has P0 as its required provider, so it is P0.
     let answer: EligibilityAnswer;
-    let basis: string;
+    let preference: string | undefined;
+    let sameProvider = false;
     let excluded: readonly ProviderId[] = [];
     let handoffReason: HandoffReason | undefined; // undefined: native resume
     let problem: string | undefined;
     if (crossTo === undefined && answerP0 !== undefined) {
-      target = p0;
       answer = answerP0;
-      basis = "continuation";
+      sameProvider = true;
       if (binding === undefined) {
         handoffReason = "no_binding"; // no run of this session reported a native session: nothing to resume
       } else {
@@ -755,14 +781,14 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
           problem = dir.problem;
         }
       }
-      if (privileged) basis += "; privileged compile deferred to dispatch";
     } else if (named !== undefined && named !== p0) {
       // The named provider is the target, so one the project does not allow is PERMISSION_BLOCKED before anything is
       // probed (step 4, BR-23); eligibility then runs over the project's allowed providers (FR-PRJ-06).
       const narrowed = projectCandidates(resolved, named);
       answer = await ask(narrowed.candidates, required);
       if (required !== undefined && !admissible(answer, privileged).includes(required)) throw eligibilityError(answer);
-      ({ provider: target, basis } = selectProvider(answer, named, privileged));
+      if (admissible(answer, privileged).length === 0) throw eligibilityError(answer);
+      preference = named;
       excluded = narrowed.excluded;
       handoffReason = "provider_named";
     } else {
@@ -777,7 +803,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
             });
       }
       answer = await ask(others);
-      ({ provider: target, basis } = selectProvider(answer, undefined, privileged));
+      if (admissible(answer, privileged).length === 0) throw eligibilityError(answer);
       excluded = narrowed.excluded;
       handoffReason = "bound_provider_ineligible";
     }
@@ -798,6 +824,32 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     // handoff gets a fresh native session from the head checkpoint; the lifecycle re-checks that `as_of` is current.
     const mode = handoff ? "handoff" : "resume";
     const reasonCode = handoffReason ?? "same_provider_resume";
+    const routed = route(answer, {
+      preference,
+      privileged,
+      features: classifyRequest({
+        objective: a.instruction as string,
+        constraints: ctx.constraints,
+        verificationCommands: 0,
+        writable: profile !== "inspect-untrusted",
+      }),
+      sessionProvider: p0,
+      basis: (selected) =>
+        `${mode} ${reasonCode} from ${p0}; ${
+          sameProvider ? `continuation${privileged ? "; privileged compile deferred to dispatch" : ""}` : selected
+        }`,
+      ...(resolved
+        ? {
+            project: {
+              id: resolved.snapshot.id,
+              excluded,
+              ...(resolved.revision !== undefined ? { revision: resolved.revision } : {}),
+            },
+          }
+        : {}),
+      continuation: { mode, reason: reasonCode, from_provider: p0, ...(problem !== undefined ? { problem } : {}) },
+    });
+    const target = routed.provider;
     const submitted = await lifecycle.submit({
       clientId: deps.clientId,
       objective: a.instruction as string,
@@ -809,19 +861,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       ...(handoff
         ? { handoff }
         : { resume: { nativeSessionId: (binding as { native_session_id: string }).native_session_id } }),
-      routeDecision: routeRecord(
-        answer,
-        target,
-        `${mode} ${reasonCode} from ${p0}; ${basis}`,
-        resolved
-          ? {
-              id: resolved.snapshot.id,
-              excluded,
-              ...(resolved.revision !== undefined ? { revision: resolved.revision } : {}),
-            }
-          : undefined,
-        { mode, reason: reasonCode, from_provider: p0, ...(problem !== undefined ? { problem } : {}) },
-      ),
+      routeDecision: routed.record,
       ...(approval ? { privileged: { approvalId: approval.id } } : {}),
       ...(resolved ? { project: resolved.snapshot } : {}),
     });

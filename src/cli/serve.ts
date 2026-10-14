@@ -459,6 +459,14 @@ async function runDaemon(
     retry: { ...config.capacity.retry, queueHorizonSeconds: config.capacity.queueHorizonSeconds },
     // T6.6: bundle bounds for a quota failover handoff (`continuity.*`, LLD §15.4).
     continuityBounds: config.continuity,
+    // T7.2: stage-2 settings for the quota failover's choice (`routing.weights`, the capacity window; LLD §17.3).
+    routing: {
+      weights: config.routing.weights,
+      windowSeconds: config.capacity.windowSeconds,
+      confidenceRuns: config.capacity.confidenceRuns,
+      providers: config.providers,
+      limits: config.limits,
+    },
     resolveProfile: createProfileResolver(config.profileOverrides),
     probeRunner: createProbeRunner(PROBE_ENV_ALLOWLIST),
     baseEnv: io.env,
@@ -530,6 +538,8 @@ async function runDaemon(
         // T6.3: `get_capacity` settings and slot limits (LLD §16.1, §16.3).
         capacity: config.capacity,
         limits: config.limits,
+        // T7.2: stage-2 score weights (`routing.weights`, LLD §17.1).
+        routing: config.routing,
       },
       ...(now ? { now } : {}),
       projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
