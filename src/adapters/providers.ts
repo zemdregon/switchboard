@@ -29,6 +29,7 @@ import { CodexAdapter } from "./codex/adapter.js";
 import { CursorAdapter } from "./cursor/adapter.js";
 import { FakeAdapter, type FakeScenario } from "./fake/adapter.js";
 import { GrokAdapter } from "./grok/adapter.js";
+import { OpenCodeAdapter } from "./opencode/adapter.js";
 import type { AcpDeclarations, ProviderAdapter, ResumeCwd } from "./types.js";
 
 /** What `serve` and `doctor` pass to an entry's factory. Fields are named after the provider they configure. */
@@ -178,11 +179,21 @@ export const BUILTIN_PROVIDERS = [
     resumeCwd: "unverified",
     create: (): ProviderAdapter => new CursorAdapter(),
   },
-  // TDD §4.6.2: `--auto` is a long flag (declared with the adapter, T4.52); the inline `allow` permission travels in
-  // `OPENCODE_PERMISSION`/`OPENCODE_CONFIG_CONTENT`, which the argv audit does not see (ADR-0037 limits).
-  // TDD §4.10: `Unverified: T4.51` (OpenCode) and `Unverified: T4.61` (Kimi Code). Muse Code (`bound`, [M-ext]:
-  // `--allow-workspace-switch` is needed when the workspace differs) gets its entry with its module (T4.72).
-  { id: "opencode", configId: "opencode", kind: "real", bypassFlags: [], resumeCwd: "unverified" },
+  {
+    id: "opencode",
+    configId: "opencode",
+    kind: "real",
+    // TDD §4.6.2 ([D-cli], [D-perm]; `run --help` of v2.0.23 in the T4.51 live check lists it): `--auto` "Auto-approve
+    // permissions that are not explicitly denied", bypass-class (Proposed, fail closed; the adapter never emits it,
+    // Q-83). The inline `allow` permission travels in `OPENCODE_PERMISSION`/`OPENCODE_CONFIG_CONTENT`, which the argv
+    // audit does not see (ADR-0037 limits); the adapter sets neither. Active since the adapter (T4.52) added `create`.
+    bypassFlags: ["--auto"],
+    // TDD §4.10: `Unverified: T4.51` (`--session <id>` resumed from another directory in the 2026-10-14 live check).
+    resumeCwd: "unverified",
+    create: (): ProviderAdapter => new OpenCodeAdapter(),
+  },
+  // TDD §4.10: `Unverified: T4.61` (Kimi Code). Muse Code (`bound`, [M-ext]: `--allow-workspace-switch` is needed when
+  // the workspace differs) gets its entry with its module (T4.72).
   { id: "kimi", configId: "kimi-code", kind: "real", bypassFlags: [], resumeCwd: "unverified" },
   {
     id: "fake",
