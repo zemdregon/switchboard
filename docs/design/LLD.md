@@ -3522,6 +3522,28 @@ the snippet; an optional re-read re-chunks that one file in place for the snippe
   (admission) or `status: "unavailable"` (tool). It is never a run failure code, never changes run status, and never
   delays dispatch beyond `admission_timeout_ms`. A corrupt store is marked for rebuild.
 
+*As built (T12.5, 2026-10-14, Delegated; `src/retrieval/admission.ts`, the lifecycle's `contextPack` port, the `serve`
+wiring in `src/cli/rag-index.ts`):* §14.6 and this section run at dispatch, after the workspace is prepared and before
+`compile`, for a fresh run admitted under a project (not a resume or a handoff, which already carry their context). The
+lifecycle sees only a structurally typed port (`ContextPackPort`, no import of `src/retrieval/`) and waits at most
+`admission_timeout_ms` plus 100 ms (Assumption) for it; a rejection or late answer is no pack and a `rag_retrieval`
+event with `outcome: "unavailable"`. The pack is appended after the request text in the compiled prompt only;
+`request_json` is unchanged. The store is opened read-only and never created by a query. Outcomes: `ok`, `empty`
+(`NO_HITS`, `NOTHING_SELECTED`), `skipped` (`PROJECT_OFF`, a gate code, `NO_INDEX`, `REBUILD_PENDING`,
+`STORE_UNREADABLE`), `stale` (`MAX_STALENESS`) and `unavailable` (a backend or envelope code, `DIMENSION_MISMATCH`,
+`TIMEOUT`, `RETRIEVAL_ERROR`). The scan yields to the event loop every 2,000 vectors (Q-48) and only a positive cosine
+similarity is a hit (Delegated). A primary-context hit is checked against the run's worktree copy (what the agent sees,
+so a file that differs at the run's base ref is dropped); other contexts are checked in place, size and `mtime_ns`
+first. `base_ref_mismatch` and `incomplete` are header flags. The delimiter carries a random nonce so snippet text
+cannot close the block; the token estimate is UTF-8 bytes divided by 4 (Assumption). The query is the stored
+(admission-redacted) request text, cut to 8,000 characters, embedded under the §14.4 gate. One `rag_record` row of kind
+`retrieval` holds `run_id`, outcome, reason, revision, the packed count, pack bytes, `embed_calls` and
+`snippet_ids_json` (`[{id, text_sha256}]`); the `rag_retrieval` event holds `record_id`, outcome, reason, revision,
+snippet count, `tokens_est`, candidates, `dropped_changed`, flags and duration. A missing, stale or out-of-date store
+queues an incremental build (the `delegate_task` trigger of §14.5), never awaited. Not built yet: the `rag.retrieve`
+span (no span facility exists), re-reading a changed file in place, and the configuration-change trigger (the periodic
+check covers it).
+
 ### 14.9 Global index and sharing
 
 Optional, default off (FR-RAG-09, FR-RAG-10, BR-47, Q-50). When `rag.global.enabled`:

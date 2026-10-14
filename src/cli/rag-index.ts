@@ -27,8 +27,10 @@ import {
   type ResolvedProject,
 } from "../config/index.js";
 import { hasRagTables, LEDGER_FILE_NAME, openLedger, RagLedger, type RagRequestRow } from "../ledger/index.js";
+import type { ContextPackOutcome, ContextPackRequest } from "../lifecycle/index.js";
 import { acquireDataDirLock, inspectDataDirLock, LockError } from "../lock/index.js";
 import { DynamicProjectStore, toResolved } from "../projects/index.js";
+import { retrieveContextPack } from "../retrieval/admission.js";
 import { type BuildProject, type BuildResult, buildProjectIndex, contextHead } from "../retrieval/build.js";
 import type { EmbeddingBackend, Locality } from "../retrieval/embedding.js";
 import { createHttpEmbedder } from "../retrieval/http-embedder.js";
@@ -132,6 +134,12 @@ export interface ServeRagLogger {
 
 export interface ServeRag {
   readonly indexer: RagIndexer;
+  /**
+   * T12.5 (FR-RAG-05, FR-RAG-08, LLD §14.6): the context pack for one run, behind the lifecycle's `contextPack` port.
+   * Records one `rag_record` row of kind `retrieval` (snippet ids and hashes, no text) and returns the run event's
+   * payload. When the store is missing, stale, flagged or had a changed file, it queues a refresh (never awaited).
+   */
+  prepareContextPack(request: ContextPackRequest): Promise<ContextPackOutcome | undefined>;
   /** Apply pending `index rebuild|clear` requests; called from the daemon's operator poll. */
   applyRequests(): Promise<void>;
   stop(): Promise<void>;
@@ -236,8 +244,71 @@ export function startServeRag(opts: {
     }
   };
 
+  const prepareContextPack = async (request: ContextPackRequest): Promise<ContextPackOutcome | undefined> => {
+    const project = projectsNow().find((p) => p.id === request.projectId);
+    if (project === undefined || !project.effective.enabled) return undefined;
+    const r = await retrieveContextPack(
+      {
+        dataDir: config.dataDir,
+        backend,
+        embedding,
+        retrieval: config.rag.retrieval,
+        ...(opts.io.homedir !== undefined ? { homeDir: opts.io.homedir } : {}),
+        ...(opts.now ? { now: opts.now } : {}),
+      },
+      {
+        project,
+        objective: request.objective,
+        baseCommit: request.baseCommit,
+        ...(request.primaryRoot !== undefined ? { primaryRoot: request.primaryRoot } : {}),
+        signal: request.signal,
+      },
+    );
+    // LLD §14.5 step 1: a run for the project refreshes a store that is missing, stale or behind the run's base.
+    if (
+      r.reason === "NO_INDEX" ||
+      r.reason === "REBUILD_PENDING" ||
+      r.outcome === "stale" ||
+      r.droppedChanged > 0 ||
+      r.flags.includes("base_ref_mismatch")
+    ) {
+      indexer.trigger(project.id);
+    }
+    const recordId = rag.record({
+      kind: "retrieval",
+      projectKey: r.projectKey,
+      runId: request.runId,
+      backendKind: r.backendKind,
+      modelId: r.modelId,
+      locality: r.locality,
+      outcome: r.outcome,
+      reason: r.reason,
+      revision: r.revision,
+      chunks: r.snippets.length,
+      bytes: r.text === null ? 0 : Buffer.byteLength(r.text, "utf8"),
+      durationMs: r.durationMs,
+      embedCalls: r.embedCalls,
+      snippets: r.snippets,
+    });
+    return {
+      text: r.text,
+      event: {
+        record_id: recordId,
+        outcome: r.outcome,
+        ...(r.reason !== null ? { reason: r.reason } : {}),
+        revision: r.revision,
+        snippets: r.snippets.length,
+        tokens_est: r.tokensEst,
+        candidates: r.candidates,
+        dropped_changed: r.droppedChanged,
+        flags: [...r.flags],
+        duration_ms: r.durationMs,
+      },
+    };
+  };
+
   indexer.start();
-  return { indexer, applyRequests, stop: () => indexer.stop() };
+  return { indexer, applyRequests, prepareContextPack, stop: () => indexer.stop() };
 }
 
 async function applyDaemonRequest(

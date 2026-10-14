@@ -319,3 +319,64 @@ describe("doctor retrieval section", () => {
     expect(probed).toBe(false);
   });
 });
+
+describe("context pack wiring (T12.5)", () => {
+  async function withRag<T>(
+    fn: (rag: NonNullable<ReturnType<typeof startServeRag>>, db: ReturnType<typeof openLedger>) => Promise<T>,
+  ) {
+    const config = loadConfig({ argv: ["--config", configPath], env: {} });
+    const db = openLedger(dataDir);
+    const rag = startServeRag({ io: baseIo(), config, db, log: { info: () => {}, warn: () => {} } });
+    if (rag === undefined) throw new Error("retrieval did not start");
+    try {
+      return await fn(rag, db);
+    } finally {
+      await rag.stop();
+      db.close();
+    }
+  }
+  const ask = (rag: NonNullable<ReturnType<typeof startServeRag>>, projectId = "demo") =>
+    rag.prepareContextPack({
+      runId: "run_01TESTTESTTESTTESTTESTTEST",
+      projectId,
+      objective: "export const alpha",
+      baseCommit: null,
+      signal: new AbortController().signal,
+    });
+
+  it("records one retrieval row with snippet ids and hashes, no text, and returns a bounded event", async () => {
+    await withRag(async (rag, db) => {
+      await rag.indexer.idle();
+      const out = await ask(rag);
+      expect(out?.text).toContain("UNTRUSTED REFERENCE DATA");
+      expect(out?.event).toMatchObject({ outcome: "ok", revision: 1, flags: [], dropped_changed: 0 });
+      const row = db.prepare("SELECT * FROM rag_record WHERE kind = 'retrieval'").get() as Record<
+        string,
+        string | number | null
+      >;
+      expect(row).toMatchObject({ id: out?.event.record_id, project_key: "demo", outcome: "ok", revision: 1 });
+      expect(row.run_id).toBe("run_01TESTTESTTESTTESTTESTTEST");
+      const snippets = JSON.parse(row.snippet_ids_json as string) as { id: string; text_sha256: string }[];
+      expect(snippets.length).toBe(out?.event.snippets);
+      for (const s of snippets) {
+        expect(Object.keys(s).sort()).toEqual(["id", "text_sha256"]);
+        expect(s.id).toMatch(/^chk_[0-9a-f]{24}$/);
+        expect(s.text_sha256).toMatch(/^[0-9a-f]{64}$/);
+      }
+      // No retrieved text anywhere in the ledger row.
+      expect(JSON.stringify(row)).not.toContain("alpha");
+    });
+  });
+
+  it("a project with retrieval off is inert; a missing store is skipped and recorded", async () => {
+    await withRag(async (rag, db) => {
+      expect(await ask(rag, "quiet")).toBeUndefined();
+      await rag.indexer.stop(); // nothing builds meanwhile: the store stays missing
+      const out = await ask(rag);
+      expect(out).toMatchObject({ text: null, event: { outcome: "skipped", reason: "NO_INDEX" } });
+      expect(db.prepare("SELECT outcome, reason FROM rag_record WHERE kind = 'retrieval'").all()).toEqual([
+        { outcome: "skipped", reason: "NO_INDEX" },
+      ]);
+    });
+  });
+});
