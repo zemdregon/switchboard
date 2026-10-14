@@ -279,6 +279,19 @@ setInterval(()=>{},1000);`;
     expect((await good.result).outcome).toBe("exited");
   });
 
+  it("malformed JSON after valid lines still ends protocol_error when the child exits immediately", async () => {
+    const script = `
+console.log(JSON.stringify({ type: "session", session_id: "x" }));
+console.log("not json");
+process.exit(0);`;
+    const events: unknown[] = [];
+    const res = await run({ argv: node(script), onEvent: (v) => events.push(v) }).result;
+    expect(res.outcome).toBe("protocol_error");
+    expect(res.failureCode).toBe("OUTPUT_PROTOCOL_ERROR");
+    expect(res.protocolError?.kind).toBe("invalid_json");
+    expect(events).toHaveLength(1);
+  });
+
   it("contains an exception thrown by onEvent and kills the child", async () => {
     const r = run({
       argv: node('console.log("{}");setInterval(()=>{},1000)'),
