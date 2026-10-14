@@ -4168,8 +4168,8 @@ OpenCode `cache.read` and `cache.write`) from `usage_observation.metrics_json` i
 `creation`, `rows`, `source: "provider_reported"`, `key_names`) summed over the window. A provider with no sourced key,
 or no row holding one, has no block, never a zero. The top-level `affinity` block counts, per project key (§3.2), the
 runs whose provider and model equal the previous run's (`kept`) and those that differ (`switched`), grouped by
-`affinity_switch_reason` from `route_decision.reasons_json`, or `unrecorded` when that field is absent (for example a
-run before affinity was recorded). Wording: "reported",
+`affinity_switch_reason` from `route_decision.reasons_json`, or `unrecorded` when the decision carries none (a row
+written before M7, a continuation, a change of reported model alone, or affinity disabled; T7.11). Wording: "reported",
 never "cache hits".
 
 *As built (T6.7, 2026-10-14, Delegated):* `src/capacity/cache.ts`. Only Grok Build is mapped. It is the only provider
@@ -4344,6 +4344,7 @@ the rule is `score` or `configured_order`, and each excluded provider's first co
   (`request_json.model`, passed to the adapter's `compile`); a `null` model means the adapter default. After a switch
   the new provider runs with its adapter default: the row keeps only the current provider's model.
   `delegate_task` has no model argument, so "an explicit model in the request" cannot occur until one is specified.
+  Not built as written: see the T7.5 "As built" note below (the model is remembered, not passed to `compile`; T7.12).
 - **Recorded object** (`reasons_json.affinity`): §3.2's fields plus `applies` (boolean) and `excluded_from_score`
   (the affine provider when it was left out). Invariants (TDD §3.13.3): `held` implies a null reason and `scored`
   false; a provider or model different from the row's, when `applies`, implies a non-null reason.
