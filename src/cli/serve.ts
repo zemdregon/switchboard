@@ -466,6 +466,9 @@ async function runDaemon(
     );
   }
   const registry = buildRegistry(fake, { claudeGitChannel: config.claudeCodeGitChannel });
+  // T12.4 / T12.5: set below once background indexing has started; until then (and with no embedding backend) the
+  // context-pack port answers `undefined` and a run is compiled without a pack.
+  let rag: ServeRag | undefined;
   const lifecycle = new RunLifecycle({
     ledger,
     workspace,
@@ -497,6 +500,11 @@ async function runDaemon(
     preflightCache: new PreflightCache({ ttlMs: config.preflightTtlMs }),
     gitTools,
     finalizePublisher,
+    // T12.5 (FR-RAG-05, FR-RAG-08): retrieval at dispatch; no pack when retrieval is inert or fails.
+    contextPack: {
+      timeoutMs: config.rag.retrieval.admissionTimeoutMs,
+      prepare: async (request) => rag?.prepareContextPack(request),
+    },
     onTransition: (n) => log.info("run transition", { run_id: n.runId, from: n.from, to: n.to, rule: n.rule }),
     ...(now ? { now } : {}),
   });
@@ -527,7 +535,6 @@ async function runDaemon(
   // T12.4 (FR-RAG-11, LLD §14.5): background index builds. `startServeRag` only queues every project and returns; a
   // build runs on later turns of the event loop and is never awaited by admission. Without an embedding backend it is
   // undefined and nothing changes (FR-RAG-04). Pending `index rebuild|clear` requests are applied with the operator poll.
-  let rag: ServeRag | undefined;
   try {
     rag = startServeRag({ io, config, db, log, ...(now ? { now } : {}) });
     if (rag !== undefined) {

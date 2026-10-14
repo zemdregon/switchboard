@@ -146,6 +146,47 @@ export function openRagStore(dataDir: string, key: RagStoreKey): RagStore {
   };
 }
 
+/**
+ * Open an existing store read-only for a query (T12.5): `undefined` when there is no store file, so a reader never
+ * creates, migrates or writes one. A store this version cannot read throws `SCHEMA_TOO_NEW`.
+ */
+export function openRagStoreReadOnly(dataDir: string, key: RagStoreKey): RagStore | undefined {
+  const file = path.join(ragStoreDir(dataDir, key), "index.db");
+  if (!existsSync(file)) return undefined;
+  const db = new Database(file, { readonly: true, fileMustExist: true });
+  try {
+    const version = db.pragma("user_version", { simple: true }) as number;
+    if (version > RAG_SCHEMA_VERSION) {
+      throw new RagStoreError(
+        "SCHEMA_TOO_NEW",
+        `retrieval store schema ${version} is newer than this version supports`,
+      );
+    }
+    if (version < 1) {
+      db.close();
+      return undefined; // created but never migrated: nothing to serve
+    }
+  } catch (err) {
+    db.close();
+    throw err;
+  }
+  const metaStmt = db.prepare("SELECT * FROM rag_meta LIMIT 1");
+  return {
+    key,
+    file,
+    db,
+    meta: () => {
+      const r = metaStmt.get() as Record<string, unknown> | undefined;
+      return r === undefined ? undefined : toMeta(r);
+    },
+    counts: () => ({
+      files: (db.prepare("SELECT COUNT(*) AS n FROM rag_file").get() as { n: number }).n,
+      chunks: (db.prepare("SELECT COUNT(*) AS n FROM rag_chunk").get() as { n: number }).n,
+    }),
+    close: () => db.close(),
+  };
+}
+
 function toMeta(r: Record<string, unknown>): RagMeta {
   return {
     schemaVersion: r.schema_version as number,

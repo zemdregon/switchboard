@@ -3451,7 +3451,9 @@ check per store, at most warnings.
 
 ### 14.6 Selection and token budget
 
-At admission (WF-14), after the policy snapshot and before dispatch, within `retrieval.admission_timeout_ms`:
+The admission contract for T12.5 (original request storage, ledger fields, import boundary) is in
+[§14.11](#1411-admission-context-pack-t125). At admission (WF-14), after the policy snapshot and before dispatch, within
+`retrieval.admission_timeout_ms`:
 
 1. **Gate**: effective mode, backend gate (§14.4), store exists, not mid-rebuild for a different model or dimension.
    Otherwise no pack (outcome `skipped`, reason code).
@@ -3522,6 +3524,28 @@ the snippet; an optional re-read re-chunks that one file in place for the snippe
   (admission) or `status: "unavailable"` (tool). It is never a run failure code, never changes run status, and never
   delays dispatch beyond `admission_timeout_ms`. A corrupt store is marked for rebuild.
 
+*As built (T12.5, 2026-10-14, Delegated; `src/retrieval/admission.ts`, the lifecycle's `contextPack` port, the `serve`
+wiring in `src/cli/rag-index.ts`):* §14.6 and this section run at dispatch, after the workspace is prepared and before
+`compile`, for a fresh run admitted under a project (not a resume or a handoff, which already carry their context). The
+lifecycle sees only a structurally typed port (`ContextPackPort`, no import of `src/retrieval/`) and waits at most
+`admission_timeout_ms` plus 100 ms (Assumption) for it; a rejection or late answer is no pack and a `rag_retrieval`
+event with `outcome: "unavailable"`. The pack is appended after the request text in the compiled prompt only;
+`request_json` is unchanged. The store is opened read-only and never created by a query. Outcomes: `ok`, `empty`
+(`NO_HITS`, `NOTHING_SELECTED`), `skipped` (`PROJECT_OFF`, a gate code, `NO_INDEX`, `REBUILD_PENDING`,
+`STORE_UNREADABLE`), `stale` (`MAX_STALENESS`) and `unavailable` (a backend or envelope code, `DIMENSION_MISMATCH`,
+`TIMEOUT`, `RETRIEVAL_ERROR`). The scan yields to the event loop every 2,000 vectors (Q-48) and only a positive cosine
+similarity is a hit (Delegated). A primary-context hit is checked against the run's worktree copy (what the agent sees,
+so a file that differs at the run's base ref is dropped); other contexts are checked in place, size and `mtime_ns`
+first. `base_ref_mismatch` and `incomplete` are header flags. The delimiter carries a random nonce so snippet text
+cannot close the block; the token estimate is UTF-8 bytes divided by 4 (Assumption). The query is the stored
+(admission-redacted) request text, cut to 8,000 characters, embedded under the §14.4 gate. One `rag_record` row of kind
+`retrieval` holds `run_id`, outcome, reason, revision, the packed count, pack bytes, `embed_calls` and
+`snippet_ids_json` (`[{id, text_sha256}]`); the `rag_retrieval` event holds `record_id`, outcome, reason, revision,
+snippet count, `tokens_est`, candidates, `dropped_changed`, flags and duration. A missing, stale or out-of-date store
+queues an incremental build (the `delegate_task` trigger of §14.5), never awaited. Not built yet: the `rag.retrieve`
+span (no span facility exists), re-reading a changed file in place, and the configuration-change trigger (the periodic
+check covers it).
+
 ### 14.9 Global index and sharing
 
 Optional, default off (FR-RAG-09, FR-RAG-10, BR-47, Q-50). When `rag.global.enabled`:
@@ -3570,8 +3594,113 @@ ledger migration 15 adds `rag_record` as above, without the foreign key on `run_
 knowing about this table), with `CHECK`s on the kinds and counts and the append-only guards; and `rag_request` for the
 operator's `index rebuild` and `index clear`. T12.4 writes `index_built` (one row per finished build, including
 `skipped`) and `clear` (the counts removed) rows. Index builds are not tied to a run, so `rag_index_built` and
-`rag_index_cleared` are not written as run events; the `rag_record` row holds the same fields. The span and
-`rag_retrieval` arrive with T12.5.
+`rag_index_cleared` are not written as run events; the `rag_record` row holds the same fields. T12.5 writes the
+`retrieval` row and the `rag_retrieval` event ([§14.8](#148-freshness-and-fallback)); the span is not built.
+
+### 14.11 Admission context pack (T12.5)
+
+*Design intent (2026-10-14, Delegated, ROADMAP T12.5); built by T12.5 with the differences listed at the end of this
+section.* Implements FR-RAG-05, FR-RAG-07 and FR-RAG-08
+([SRS](../requirements/SRS.md)) at `delegate_task` admission ([FRD WF-14](../requirements/FRD.md#wf-14-retrieval-for-a-run),
+[HLD §6.6](HLD.md#66-retrieval-for-a-run-wf-14-m12-proposed)).
+Selection steps are in [§14.6](#146-selection-and-token-budget); freshness rules in [§14.8](#148-freshness-and-fallback);
+ledger shapes in [§14.10](#1410-events-and-records). Tests are specified in [TDD §3.13.3](TDD.md#3133-testing-affinity-and-retrieval).
+
+#### 14.11.1 Placement and callers
+
+Admission runs inside the same transaction that inserts the `run` row and the first `run_event`s (after the policy
+snapshot is frozen and before adapter `compile` / dispatch). **COMP-MCP** (or the lifecycle module it calls) is the only
+production caller of retrieval on this path; it invokes **COMP-RAG** synchronously with a deadline of
+`retrieval.admission_timeout_ms` (§14.1). COMP-RAG returns either no pack or a volatile prompt fragment plus metadata for
+the ledger; it never mutates `run.request_json`, policy, eligibility or route state. Background index builds (§14.5) never
+run inside this deadline.
+
+#### 14.11.2 Original request text unchanged (FR-RAG-05)
+
+The orchestrator's objective and constraints are redacted per
+[ADR-0042](../adr/0042-objective-redaction-at-admission.md) and written to `run.request_json` **before** retrieval runs.
+That JSON is the canonical stored request: `objective`, `constraints`,
+`verification_commands`, `project`, scope fields and the admission idempotency payload. Retrieval may read the objective
+text only as the embedding query (§14.6 step 3); it shall not append pack text, snippet bodies, paths from the index or
+retrieval metadata into `request_json`, `meta_session.objective`, `constraints_json` or any ledger column that holds
+request text. The delegated prompt seen by the adapter is assembled separately ([§3.2](#32-provider-and-model-affinity-m7),
+FR-RTE-09): stable project content first, then volatile content with the task text and, when present, the delimited
+retrieval block from §14.6 step 5 **last**. Replays, handoff bundles (§15) and `runs show` therefore always show the
+orchestrator's words, not retrieved snippets.
+
+#### 14.11.3 Freshness, staleness and snippet dropping (FR-RAG-08)
+
+Before packing, COMP-RAG applies the rules of §14.8 in this order for admission:
+
+| Check | Condition | Admission effect |
+| --- | --- | --- |
+| Store age | `built_at` older than `retrieval.max_staleness` | No pack; `rag_retrieval.outcome = stale` |
+| Base ref | `rag_meta.base_ref_sha` differs from the run worktree's base ref | Pack may still be built if other checks pass; header and record flag `base_ref_mismatch`; snippets whose on-disk `sha256` differs between index and worktree are **dropped** |
+| Incomplete index | `complete = 0` | Pack allowed; header and record note `incomplete` (tool uses `status: "incomplete"`; admission does not fail) |
+| Per snippet | File deleted, or `mtime_ns`/size mismatch then `sha256` ≠ `rag_file.sha256` | Drop the hit; optional single-file re-read and re-chunk for that path when time and `admission_timeout_ms` allow (§14.8) |
+| Post-select | No snippets remain after drops and de-duplication | No pack; outcome `skipped` with reason `empty_after_freshness` |
+
+Each retained snippet in the pack and in `snippet_ids_json` carries `index_revision` (`rag_meta.revision` at query time)
+and `file_sha256` (`rag_file.sha256` for that path). Labels in the pack header repeat path, line range, score, revision,
+hash prefix and the untrusted-data marker (FR-RAG-05).
+
+#### 14.11.4 Ledger and telemetry (FR-RAG-05, FR-RAG-12)
+
+When admission invokes retrieval, the same admission transaction appends one `rag_record` row with `kind =
+'retrieval'`, `run_id` set, and **no chunk text anywhere**:
+
+- `snippet_ids_json`: JSON array of objects
+  `{ "id": "<chk_…>", "text_sha256": "<hex>", "path": "<relative>", "file_sha256": "<hex>" }`, ordered as packed. Only
+  ids and hashes; not the snippet bodies.
+- `outcome`, `reason`, `revision`, `duration_ms`, `embed_calls`, `backend_kind`, `model_id`, `locality`, `project_key` as
+  in §14.10.
+- A matching `run_event` `rag_retrieval` with `record_id`, `outcome`, optional `reason`, `revision`, `snippets` (count),
+  `tokens_est`, `duration_ms`.
+
+If retrieval is skipped, gated off or times out before a record is written, no `rag_retrieval` run event is required;
+when a row is written with `outcome` in `skipped`, `stale`, `unavailable` or `fallback_disabled`, the event still
+reflects that outcome. Embedding usage never creates `usage_observation` or capacity rows (FR-RAG-12).
+
+#### 14.11.5 Fallback when retrieval fails (FR-RAG-08)
+
+Retrieval at admission is **best effort**. None of the following may change `run` state, set a `failure_code`, block
+dispatch beyond `admission_timeout_ms`, or influence retry (§4):
+
+| Failure | Pack | Typical `rag_record.outcome` / `reason` |
+| --- | --- | --- |
+| Feature off, gate denial (§14.4), missing or rebuilding store | None | `skipped` / `PROJECT_OFF`, `REMOTE_NOT_ALLOWED`, … |
+| Timeout (`admission_timeout_ms`) | None | `unavailable` / `ADMISSION_TIMEOUT` |
+| Backend or embed error, corrupt store, dimension mismatch | None | `unavailable` / backend code; store marked for rebuild when corrupt |
+| Stale store (§14.11.3) | None | `stale` |
+| Freshness emptied the candidate set | None | `skipped` / `empty_after_freshness` |
+
+The run proceeds with the same policy snapshot, eligibility outcome and prompt assembly as if retrieval were disabled;
+only the volatile retrieval block is absent.
+
+#### 14.11.6 Import boundary (FR-RAG-07)
+
+Retrieved text has **no policy authority** (BR-46, [ADR-0031](../adr/0031-retrieval-index.md)). Enforcement is structural:
+
+- **Forbidden importers.** Modules that implement policy snapshot compilation, profile `compile`, route eligibility,
+  approvals, retry selection, push, publication, Git commit intent, or the sanitiser **rule table** shall not import
+  `src/retrieval/**` or any admission-time retrieval facade. The same import-boundary test style as the inner agent
+  ([TDD §3.13.3](TDD.md#3133-testing-affinity-and-retrieval), [§13](#13-inner-agent)) fails the build if any forbidden
+  path imports retrieval.
+- **Allowed importers.** `src/retrieval/**`, COMP-MCP / lifecycle admission, `serve` background build, MCP tool handlers
+  (§14.7), CLI `index` / `doctor`, and tests.
+- **Behavioural test.** With retrieval forced on and a hostile pack (for example text instructing a wider profile or
+  automatic push), `request_json`, the policy snapshot, eligibility and the chosen route match a run with retrieval off
+  (FR-RAG-07).
+
+*As built (T12.5, 2026-10-14, Delegated):* the build is described in the as-built note of
+[§14.8](#148-freshness-and-fallback); evidence is `src/retrieval/admission.test.ts`, `src/lifecycle/context-pack.test.ts`,
+`src/retrieval/import-boundary.test.ts` and `src/cli/rag-index.test.ts` (ROADMAP T12.5). Where it differs from the
+design above: retrieval runs at dispatch, after the workspace is prepared and before `compile`, not inside the admission
+transaction, and the lifecycle reaches it only through a structurally typed port; `snippet_ids_json` holds
+`{id, text_sha256}` only (path, revision and file hash are in the pack header, not the ledger); a timeout is
+`unavailable` / `TIMEOUT`, and a pack that freshness or the budget empties is `empty` (`NO_HITS`, `NOTHING_SELECTED`)
+rather than `skipped` / `empty_after_freshness`; the import-boundary test also forbids lifecycle dispatch and adapter
+`compile` modules; the hostile-pack behavioural test and the `rag.retrieve` span are not built.
 
 ## 15. Continuity and the handoff bundle (M5)
 

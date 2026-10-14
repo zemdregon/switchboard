@@ -49,10 +49,11 @@ Pre-release. The package is private and is not published to any registry; you bu
 - **Milestone 11 (inner agent) is `Partial`.** An optional HTTP backend, privacy gates, `doctor` and `inner` reporting,
   and commit-message drafting on fakes are on main; most run-path hooks, PR drafting and a live backend are not. See
   [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
-- **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.4 are done on fakes: the spike, `rag`
+- **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.5 are done on fakes: the spike, `rag`
   configuration and per-project store, the scanner through chunker, the embedding port (fake and `http` backends
   behind the locality gates), incremental background indexing in `serve`, `switchboard index status|rebuild|clear`
-  and a `doctor` section. From T12.5 (retrieval at admission) onward remains `Planned`. See
+  and a `doctor` section, and an untrusted context pack at admission that never changes the stored request or the
+  run's outcome. From T12.6 (`search_project_context`) onward remains `Planned`. See
   [ROADMAP §6.7](docs/ROADMAP.md#67-m12-retrieval-index-tasks) and the merged requirements and design evidence in
   [SRS §3.15](docs/requirements/SRS.md#implementation-evidence-partial-m12),
   [PRD CAP-13](docs/requirements/PRD.md#implementation-evidence-partial-m12--cap-13),
