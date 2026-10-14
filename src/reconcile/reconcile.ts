@@ -351,10 +351,20 @@ class Reconciler {
       if (pre !== undefined) {
         // FRD §4.4: head returns to the pre-run checkpoint; the mutated state is evidence only (FR-WS-04, ADR-0006).
         this.ledger.setMetaSessionHead(run.meta_session_id, pre);
-        this.ledger.appendRunEvent({
-          runId: run.id,
-          type: "rollback",
-          payload: { head: pre, evidence_commit: fin.postCommit, mutated: assessment.mutated, reconciled: true },
+        // T5.3 (LLD §15.3): the `rollback` decision shares a transaction with the `rollback` event (once per run).
+        this.ledger.immediate(() => {
+          this.ledger.appendRunEvent({
+            runId: run.id,
+            type: "rollback",
+            payload: { head: pre, evidence_commit: fin.postCommit, mutated: assessment.mutated, reconciled: true },
+          });
+          this.ledger.appendDecision({
+            kind: "rollback",
+            runId: run.id,
+            head: pre,
+            evidenceCommit: fin.postCommit,
+            mutated: assessment.mutated,
+          });
         });
       }
     }

@@ -198,6 +198,14 @@ export function applyApprovalDecision(
       type: APPROVAL_DECIDED_EVENT,
       payload: { approval_id: decided.id, status: decided.status },
     });
+    // T5.3 (LLD §15.3): the decision row, before a denial makes the run terminal (the helper refuses terminal runs).
+    ledger.appendDecision({
+      kind: "approval_decided",
+      runId: run.id,
+      approvalId: decided.id,
+      status: decided.status === "APPROVED" ? "APPROVED" : "DENIED",
+      by: "operator",
+    });
     const to = req.decision === "APPROVED" ? "QUEUED" : "CANCELLED";
     const rule = assertTransition(run.state, to);
     const moved = ledger.casRunState({
