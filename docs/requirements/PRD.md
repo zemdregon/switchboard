@@ -76,9 +76,18 @@ per-project SQLite retrieval stores under the data directory; scanner, exclusion
 readable contexts; and the embedding backend port with a deterministic fake backend and an `http` backend subject to the
 same locality and source-content gates as the inner agent. Schemas, algorithms and module-level evidence are in [SDD
 §4.1](../design/SDD.md#41-comp-rag-implementation-evidence-m12-t121t123), [TDD §3.13](../design/TDD.md#313-retrieval-index)
-and [LLD §14](../design/LLD.md#14-retrieval-index). Not implemented yet: incremental background index build, operator
-`index` commands and `doctor` retrieval reporting (T12.4); admission-time context pack and WF-14 end-to-end retrieval
-(T12.5); `search_project_context` (T12.6); and the deployment-wide index (T12.7).
+and [LLD §14](../design/LLD.md#14-retrieval-index).
+
+**Design (T12.5; FR-RAG-05, FR-RAG-07, FR-RAG-08).** On `origin/main` after squash merges
+[#180](https://github.com/zemdregon/switchboard/pull/180) and [#181](https://github.com/zemdregon/switchboard/pull/181):
+admission context pack in [LLD §14.11](../design/LLD.md#1411-admission-context-pack-t125); component and traceability
+notes in [SDD §4.1 (T12.5)](../design/SDD.md#t125--admission-context-pack-design-intent) and [SDD
+§5](../design/SDD.md#5-requirements-to-design-traceability); test plan in [TDD
+§3.13.8](../design/TDD.md#3138-t125-admission-time-context-pack-2026-10-14). Runtime implementation is still open:
+incremental background index build, operator `index` commands and `doctor` retrieval reporting (T12.4,
+[#170](https://github.com/zemdregon/switchboard/pull/170)); admission wiring and WF-14 end-to-end retrieval (T12.5 code,
+[#182](https://github.com/zemdregon/switchboard/pull/182)). Not implemented yet: `search_project_context` (T12.6); and the
+deployment-wide index (T12.7).
 
 ### 3.1 Inner agent task catalogue
 
