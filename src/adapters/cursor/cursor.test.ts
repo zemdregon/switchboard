@@ -197,7 +197,7 @@ describe("cursor bypass-class declarations (ADR-0035, ADR-0037)", () => {
   });
 });
 
-describe("cursor probe and auth placeholder (fail closed until T4.44)", () => {
+describe("cursor probe and auth preflight (T4.42, T4.44)", () => {
   const runner =
     (table: Record<string, { stdout: string; exitCode: number }>): ProbeRunner =>
     async (argv) => {
@@ -241,8 +241,75 @@ describe("cursor probe and auth placeholder (fail closed until T4.44)", () => {
     expect(missing.steps).toEqual([{ step: "binary", ok: false, detail: "cursor-agent not found on PATH" }]);
   });
 
-  it("auth is UNKNOWN until T4.44", async () => {
-    expect(await adapter().authPreflight(runner({}))).toMatchObject({ state: "UNKNOWN" });
+  // T4.44: shapes of the 2026-10-14 live check rows 3b and 3c; account values are invented placeholders.
+  const STATUS = "status --format json";
+  const LOGGED_IN = JSON.stringify({
+    status: "authenticated",
+    isAuthenticated: true,
+    hasAccessToken: true,
+    hasRefreshToken: true,
+    userInfo: { email: "someone@example.test", userId: "u-123", firstName: "Some", lastName: "One" },
+  });
+  const LOGGED_OUT = JSON.stringify({
+    status: "unauthenticated",
+    isAuthenticated: false,
+    hasAccessToken: false,
+    hasRefreshToken: false,
+    message: "Not logged in",
+  });
+
+  it("auth is OK only for isAuthenticated true and AUTH_REQUIRED naming the native login for false (exit 0 both)", async () => {
+    expect(await adapter().authPreflight(runner({ [STATUS]: { stdout: LOGGED_IN, exitCode: 0 } }))).toEqual({
+      state: "OK",
+    });
+    expect(await adapter().authPreflight(runner({ [STATUS]: { stdout: LOGGED_OUT, exitCode: 0 } }))).toEqual({
+      state: "AUTH_REQUIRED",
+      loginCommand: "cursor-agent login",
+    });
+  });
+
+  it("auth is UNKNOWN for text output, a missing or non-boolean key, another exit code, a timeout and no binary", async () => {
+    const cases: Record<string, { stdout: string; exitCode: number }>[] = [
+      { [STATUS]: { stdout: "Logged in as someone@example.test\n", exitCode: 0 } },
+      { [STATUS]: { stdout: JSON.stringify({ status: "authenticated" }), exitCode: 0 } },
+      { [STATUS]: { stdout: JSON.stringify({ isAuthenticated: "true" }), exitCode: 0 } },
+      { [STATUS]: { stdout: JSON.stringify([true]), exitCode: 0 } },
+      { [STATUS]: { stdout: LOGGED_IN, exitCode: 1 } },
+      { [STATUS]: { stdout: "", exitCode: 0 } },
+    ];
+    for (const table of cases) {
+      const r = await adapter().authPreflight(runner(table));
+      expect(r, JSON.stringify(table)).toMatchObject({ state: "UNKNOWN" });
+      // No account value ever reaches the reason.
+      expect(JSON.stringify(r)).not.toMatch(/someone|u-123|example\.test/);
+    }
+    const timedOut: ProbeRunner = async () => ({ stdout: LOGGED_IN, stderr: "", exitCode: null, timedOut: true });
+    expect(await adapter().authPreflight(timedOut)).toMatchObject({
+      state: "UNKNOWN",
+      reason: expect.stringContaining("timed out"),
+    });
+    const noSpawn: ProbeRunner = async () => ({
+      stdout: "",
+      stderr: "",
+      exitCode: null,
+      timedOut: false,
+      spawnError: "ENOENT",
+    });
+    expect(await adapter().authPreflight(noSpawn)).toMatchObject({ state: "UNKNOWN" });
+    expect(await new CursorAdapter({ pathEnv: "/nonexistent" }).authPreflight(runner({}))).toMatchObject({
+      state: "UNKNOWN",
+      reason: "cursor-agent not found on PATH",
+    });
+  });
+
+  it("runs only the status command, with a timeout", async () => {
+    const seen: { argv: readonly string[]; timeoutMs?: number }[] = [];
+    const rec: ProbeRunner = async (argv, opts) => {
+      seen.push({ argv, ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}) });
+      return { stdout: LOGGED_OUT, stderr: "", exitCode: 0, timedOut: false };
+    };
+    await adapter().authPreflight(rec);
+    expect(seen).toEqual([{ argv: [EXE, "status", "--format", "json"], timeoutMs: 10_000 }]);
   });
 
   it("reads no Cursor credential or configuration file (source inspection)", () => {
