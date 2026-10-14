@@ -29,6 +29,7 @@ export * from "./log-summary.js";
 export * from "./pipeline.js";
 export * from "./port.js";
 export * from "./pr-draft.js";
+export * from "./run-title.js";
 export * from "./truncate.js";
 
 /**

@@ -2883,6 +2883,30 @@ an **Assumption** unless the table says it:
 - **Trigger.** No run path calls `summariseVerification` automatically (the lifecycle may not import the service); the
   entry point is the service function, like `createPrDraft`.
 
+*As built (2026-10-14, Delegated, T11.12; table above unchanged), `run_title`:* template `run_title.v1`
+(`src/inner/run-title.ts`), a fixed system text that names no product, provider, tool or identifier. Each point is an
+**Assumption** unless the table says it:
+
+- **Display-only.** The title and summary are never read by routing, eligibility, policy, retry, approvals or status;
+  the module is under `src/inner/` (import-boundary test) and a test scans that nothing outside it imports the task. A
+  listing must show the text as data.
+- **Input and gate.** The first 1,500 characters of the objective, within `input_budget_bytes`, under the heading
+  `Task description:`. The task does not send source content (the objective is not repository content), so only
+  `allow_remote` gates a remote backend; this settles the open point at the top of §13.5 as proposed there.
+- **Validator.** Beyond the schema (a length over the cap is rejected, not cut): each value is single-line with no
+  control character (newline, tab and line or paragraph separators included), no leading or trailing space, no URL and
+  no markdown (backtick, `**`, `__`, `~~`, heading, list or quote marker, link, HTML tag). Underscores inside words
+  are allowed.
+- **Cleaning and sanitiser.** The pipeline strips control characters other than newline and tab before validation. An
+  accepted value then has invisible and bidirectional formatting characters removed and whitespace collapsed, passes
+  the unchanged §12.4 sanitiser like other drafts (step 10 names only commit and PR text; this task adds it), and is
+  capped again by length. A title left empty is `rejected_sanitiser`; a summary left empty is dropped.
+- **Record and fallback.** The accepted values ride in the `inner_call` run event payload as `title` and `summary`
+  (§13.8); no table or column. `readRunTitle` re-cleans and re-caps what it reads. The fallback is the first non-empty
+  line of the objective, cleaned, at most 80 characters by code point, and is returned (with nothing written) when the
+  task is not enabled.
+- **Trigger.** Nothing calls `createRunTitle` automatically and no listing shows the title yet.
+
 ### 13.7 Fallback table
 
 | Situation | `inner_call.outcome` | Result for the caller |
