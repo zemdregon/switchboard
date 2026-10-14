@@ -771,7 +771,7 @@ per-milestone counts quoted below are dated when they were taken).
 | M4 | Adapter expansion | **Partial** (2026-10-13): T4.1 (one provider registry table, PR #56) and T4.7 (ACP stdio client design, PR #57) are merged, and the six provider spikes T4.20 to T4.70 are documentation-only and merged (PR #55); the rest Planned. Kimi Code part blocked by B-1; Muse Code is Should. Tasks in §6.8 (Proposed breakdown, 2026-10-13, Delegated); what needs the operator or zemdregon is in §6.8.2 | M3, M9 (Proposed) | FR-ADP-05, 07, 08, 09, 10, 11 (others), 12, FR-EXE-03, FR-OPS-02 (`adapters validate`), NFR-SEC-03 (others), NFR-MAINT-01, NFR-PORT-02 | Grok Build, Antigravity, Cursor and OpenCode adapters pass conformance and malicious-fixture suites; the test suite passes on macOS; Kimi Code passes once B-1 clears (M4 may be marked `Partial` until then, with only Kimi outstanding); ACP transport used where it is the adapter's chosen surface; adding an adapter touched only its own module, manifest, fixtures and registry entry; `adapters validate` accepts a new CLI version only after its live checks pass | Conformance and fixture suites per adapter; diff inspection |
 | M5 | Continuity | **Partial** (2026-10-14, Delegated, not owner-approved): T5.0 to T5.11 and T5.13 are done as agent work on fakes, with evidence in each task row of §6.9 (T5.8 for the adapters that exist; T5.11 not run live); `Done` waits for T5.12 (operator live pair, Claude Code and Codex logins), for T5.8 to include each M4 adapter, and for the Q-61 note in §6.9.2. Tasks in §6.9 (Proposed breakdown, 2026-10-14, Delegated); what needs the operator or zemdregon is in §6.9.2 | M4 | FR-SES-02 (populated), 03 (all), 04, 05 (handoff view) | Provider A edits and tests; provider B continues from the handoff bundle and completes the task; no provider transcript file is opened (verified by file-access test) | End-to-end test with two fake adapters plus one opt-in live pair |
 | M6 | Capacity and resilience | **Partial** (2026-10-14, Delegated, not owner-approved): T6.0 to T6.7, T6.9, T6.10 and T6.12 are done as agent work on fakes, with evidence in each task row of [§6.11](#611-m6-capacity-and-resilience-tasks), including the acceptance test `src/mcp/m6-acceptance.test.ts` (T6.10). T6.8 (rate gate) is `Deferred`: no source names an enforceable limit. `Done` waits for the operator task T6.11 (real rate-limit and quota output of Claude Code and Codex). Tasks in §6.11 (Proposed breakdown, 2026-10-14, Delegated); what needs the operator or zemdregon is in §6.11.2 | M5 | FR-MCP-02 (`get_capacity`), 10, FR-CAP-01 (use), 02–07, FR-CAP-08 (cache observations and affinity counters; owner decision 40), FR-OPS-05, NFR-PERF-03 (per provider) | Injected rate-limit, overload, quota and crash failures produce the behaviour in FRD WF-5, with successor runs linked to their predecessors; `get_capacity` and `switchboard capacity` never return `explicit_remaining` unless the provider reported it; where a provider reports cache read or creation token counts they are recorded as labelled observations, and per project the runs that kept versus switched provider and model are counted by reason (FR-CAP-08, Proposed) | Fault-injection tests with fake adapters |
-| M7 | Routing | Planned | M6 | FR-MCP-02 (`explain_route`), FR-RTE-01 (full), 02–04, FR-RTE-06–09 (provider and model affinity; owner decision 40, Proposed) | Given stored features and weights, re-running the scorer reproduces every stored decision; `explain_route` lists the deciding factors; a project keeps its last provider and model across meta-sessions, and in a replay of stored routing decisions affinity changes only with an `affinity_switch_reason` from the closed list (`user_request`, `capacity_exhausted`, `ineligible`, `failed_after_retry`), never for a better score, lower cost or lower load; with several eligible providers and equal capacity no project is spread across providers | Deterministic replay test; property test over replayed decisions; fake-adapter fault injection |
+| M7 | Routing | Planned. Tasks in [§6.12](#612-m7-routing-tasks) (Proposed breakdown, 2026-10-14, Delegated); what needs the operator or zemdregon is in §6.12.2 | M6 | FR-MCP-02 (`explain_route`), FR-RTE-01 (full), 02–04, FR-RTE-06–09 (provider and model affinity; owner decision 40, Proposed) | Given stored features and weights, re-running the scorer reproduces every stored decision; `explain_route` lists the deciding factors; a project keeps its last provider and model across meta-sessions, and in a replay of stored routing decisions affinity changes only with an `affinity_switch_reason` from the closed list (`user_request`, `capacity_exhausted`, `ineligible`, `failed_after_retry`), never for a better score, lower cost or lower load; with several eligible providers and equal capacity no project is spread across providers | Deterministic replay test; property test over replayed decisions; fake-adapter fault injection |
 | M8 | Hardening | Planned | M7 | FR-TEL-02 | OTel traces reach a test collector with no forbidden attributes; a scheduled version canary on the operator's machine flags CLI updates before they reach routing | Collector test; version-bump test |
 | M9 | Projects and controlled commits | **Partial** (2026-10-13, T9.8 closure; Delegated reading of the Done rule, not owner-approved): every acceptance criterion in the next column that applies to `host` environments has a passing test on a fake provider with real Git in temporary repositories (T9.1 to T9.3, T9.5 to T9.7, T9.9 to T9.11 and T9.4 for the fake adapter; per-task evidence in §6.3), but `Done` is not claimed because of the exceptions E1 to E8 in the T9.8 status block of §6.3: no live run through Switchboard's own tool channel (T9.4b, the Claude opt-in is UNSUPPORTED), T9.0 and Codex `Partial`, signing tried only with a throwaway GnuPG key, push from dynamic projects not wired (Q-46), FR-WS-09 not accepted (Q-55), the `container` clauses waiting for M10, no malicious-fixture additions for Claude Code and Codex, and open risks R-18, R-41, R-59 and R-60. Numbered after M8 to keep existing milestone IDs stable; **sequenced after M3 and before M4** (Proposed) so new adapters declare their Git controls once | M3 | FR-PRJ-01–04, 06, 08, 10, FR-GIT-01 (fixtures), 02–10, FR-WS-05 (publication), FR-WS-08–09 (owner decision 42; T9.11) | A scripted MCP client lists projects and delegates to one (`host` environment, one repository context) and the lower of client and project ceilings applies; the agent's `commit` tool call produces a commit on the publish ref with the configured identity and no trailer, footer or identifier even when the message contains them; an agent attempt to commit, move a ref or push (shell or provider built-in) leaves nothing on the publish ref and appears as `git_policy_violation`; with push `none` nothing leaves the host, with `branch` against a local bare remote only the publish ref arrives and never checkpoint commits or run branches; every published commit has a `git_commit` row naming run, provider and model; a client with `manage_projects` can create a `host` project within its limits and use it, a `container` or push-enabled revision stays unusable until `projects approve`, and a client without the flag has no project-management tools; with `sign: true` the published commit verifies against the operator's key and a failed signature creates no commit; adapters that cannot take the channel without a bypass flag run in finalize-only mode only on opt-in | Fake-adapter integration tests with real Git repos and a local bare remote; sanitiser fixtures; malicious-fixture additions for Claude Code and Codex; argv inspection |
 | M10 | Container environments | Planned; B-2 resolved by delegation (Proposed), starts with a spike. Route to zemdregon's bypass goal (owner decision 24, §6.4); order after M9 kept (Q-38, owner decision 25) | M9 | FR-PRJ-05, 07, 09, FR-GIT-01 (container environments, by construction) | A `container` project mounts only the run worktree and declared read-only contexts, applies its limits and network policy, and is removed at run end and after a controller crash; no home directory, data directory, push credential or runtime socket is mounted; the container leg of the malicious-fixture suite shows no escape | Opt-in container integration tests (skipped in CI until a runtime is chosen); fault injection; inspection of mounts |
@@ -2377,6 +2377,109 @@ quota ladder, per-provider limits and the acceptance test T6.10. `Done` also nee
    Q-61 and is refused while Q-61 is open (fail closed), and a same-provider retry runs under the approval as is.
 4. **Not needed for M6:** the M7 affinity step (`project_affinity`, `affinity reset`, the replay test).
 
+### 6.12 M7 Routing: tasks
+
+*Proposed breakdown (2026-10-14, Delegated agent work, documentation only; not owner-approved), written under §9.1
+step 2 from the M7 row in §6 and the requirements it lists.* M6 is `Partial` and its only remaining item is the
+operator task T6.11, so under §9.1 step 1 agents start M7 tasks that do not need it. It is numbered after §6.11 so that
+earlier anchors stay. Design: [ADR-0008](adr/0008-two-stage-routing.md) (two-stage routing: hard filter, then static
+weighted score, every decision persisted), [ADR-0032](adr/0032-provider-model-affinity.md) (provider and model affinity,
+owner decision 40), [ADR-0043](adr/0043-capacity-estimate-breaker-and-retry.md) (the capacity estimate, breaker and
+retry M7 reads), [ADR-0007](adr/0007-capacity-as-confidence-estimate.md), [FRD §3](requirements/FRD.md#3-business-rules)
+(BR-1 to BR-5, BR-39, BR-45), [LLD §1](design/LLD.md#1-data-model) (`route_decision`), [LLD §3](design/LLD.md#3-mcp-tool-contracts)
+(`explain_route`, "to be detailed in M7"), [LLD §3.2](design/LLD.md#32-provider-and-model-affinity-m7) (affinity table,
+algorithm, decision fields, events), [LLD §13.6](design/LLD.md#136-task-contracts) (`route_features` shape and the
+per-feature `source`), [LLD §16](design/LLD.md#16-capacity-and-resilience-m6) (the estimate), [TDD §3.1](design/TDD.md#31-configuration)
+(`routing.weights`), [TDD §3.13.3](design/TDD.md#3133-testing-affinity-and-retrieval) (affinity replay) and
+[TDD §5](design/TDD.md#5-implementation-strategy-by-milestone) (M7 row).
+
+**Facts the breakdown relies on (checked against `main` at `55e3d4b`, 2026-10-14).**
+
+- Stage 1 is **built** (M2 T2.3, extended by T3.7, T6.4 and T6.6): `filterEligible` in `src/routing/eligibility.ts` is
+  pure, and `collectFacts` in `src/routing/collect.ts` gathers the facts. Its reasons cover enablement, client ceiling,
+  platform, binary and probe, manifest and version gate, auth, the adapter's compile verdict per profile,
+  `PROFILE_PLATFORM_UNVERIFIED`, `CIRCUIT_OPEN` and `QUOTA_EXHAUSTED_KNOWN`. Not modelled: `minimum_capability` (the
+  MCP server refuses it with `ELIGIBILITY_NONE`, "no model registry", in `checkRouting`, `src/mcp/server.ts`, although
+  the T4.5 model registry now exists), required tools and sandbox strength as separate constraints, and concurrency,
+  which queues rather than excludes (Q-5).
+- **There is no stage 2.** `selectProvider` in `src/mcp/server.ts` picks `provider_preference` if it is eligible, else
+  the first eligible provider in configured order (BR-4's M2 tie-break), and `routeRecord` stores the basis as
+  `selection.basis`. `toRouteDecisionJson` writes `features_json` (request facts: candidates, required provider,
+  profiles, requirements, platform), `candidates_json` (per provider: eligible and reasons), `weights_json` `NULL` and
+  no score. `continue_task` (BR-18) and the lifecycle's quota failover (`submitFailover`, T6.6) write their own route
+  decisions with `selection` and `continuation` objects.
+- No heuristic classifier (FR-RTE-04), no `routing` configuration section (`src/config/schema.ts` has none, though TDD
+  §3.1 names `routing.weights`), no `explain_route` tool, no `project_affinity` table and no `routing_affinity_*` event.
+  The newest migration is `0013_http_subject.ts`, so the next is 0014. `delegate_task` takes no `model` argument
+  (`src/mcp/schemas.ts`), so "an explicit model in the request" (FR-RTE-07, 08) cannot occur yet.
+- M6 left hooks for M7: the capacity projection (`src/capacity/projection.ts`) gives per provider `throttle_risk`,
+  `capacity_score` (`null` when unknown, Q-69) and `confidence`; T6.7's `switchCounts` (`src/capacity/cache.ts`) reads
+  `reasons_json.affinity.affinity_switch_reason` and counts `unrecorded` until M7 writes one; the retry chain records
+  `retry_not_scheduled` with `attempts_exhausted` (FR-CAP-05) and the quota ladder records `quota_failover`.
+- No source gives a provider's price, a model ranking, a quality score or a sandbox-strength order (T6.0's
+  [capacity-signals note](research/capacity-signals-2026-10-14.md) found no price or limit for the logins in use).
+  The controller's own ledger holds run outcomes and durations per provider.
+- The prompt each adapter sends is assembled inside the adapter (`promptText` in `src/adapters/claude/adapter.ts`, and
+  the handoff renderer in `src/continuity/render.ts`), so FR-RTE-09 touches adapter code.
+
+**Conventions (Proposed, Delegated).**
+
+- **No invented provider facts.** A score term whose per-provider value has no source (monetary cost, security risk, any
+  model ranking) takes the same neutral value for every candidate, so it can never decide a route, and each weight
+  default is documented, configurable and an **Assumption**. Terms computed from the controller's own ledger (success
+  rate and latency over the capacity window, the M6 estimate, handoff cost) are facts, not claims.
+- **Unknown capacity is never headroom (Q-69).** A `null` `capacity_score` scores as the worst capacity risk, never as
+  spare capacity, and never makes a provider ineligible on its own.
+- **Fail closed, keep the provider.** Where the switch logic is unsure (a missing affinity row field, an estimate below
+  the configured confidence, an unset low-water mark), affinity holds; where routing cannot decide (no candidate), the
+  request is refused with the BR-3 code, as today. Replay never calls a model or a provider: it reads stored features.
+- **Design gate.** T7.0 (documentation only) writes the contracts before code: the feature set, the score, the decision
+  record, `explain_route`, the `routing` configuration section, the affinity data and the reset command. A new table,
+  column or event type is specified in the LLD first and is covered by an ADR (AGENTS.md).
+- Every test runs on fake adapters with an injected clock; no task calls a live provider. Routing code lives in
+  `src/routing/`; edits to `src/mcp/server.ts` are limited to calling it and to the `explain_route` tool, and
+  `src/adapters/**` is not edited while the M4 adapter work holds it.
+
+| Task | Objective | References | Depends on | Done when |
+| --- | --- | --- | --- | --- |
+| T7.0 | Routing design (documentation only). **Needs a new ADR** (next free number; extends ADR-0008 and ADR-0032 without editing them). A new LLD section, with LLD §1, §3 and §3.2 touched: (1) the FR-RTE-04 heuristic features (the LLD §13.6 `route_features` enumeration, each with `source` `heuristic`) and their inputs; (2) the FR-RTE-02 score: per-term value per candidate, its source, the neutral value for an unsourced term, the unknown-capacity rule (Q-69), the weights and their defaults, the tie-break (`provider_preference`, then score, then configured order; BR-4) and how affinity bypasses it (FR-RTE-06); (3) the FR-RTE-03 record: a `schema_version` and what `features_json`, `weights_json`, `candidates_json` and `reasons_json` hold, so replay needs no other input; (4) the `explain_route` input, output and ownership rule; (5) the `routing` configuration section (`weights`, `affinity.*`), strict; (6) the affinity rules LLD §3.2 leaves open: when the row is written (a first run that fails creates none), how `capacity_exhausted` and `failed_after_retry` are detected from ledger facts, how a continuation bound to its meta-session (FR-SES-03) is recorded, defaults for `low_water_mark` and `min_confidence`; (7) the `affinity reset` record | FR-RTE-01 to 04, 06 to 09, FR-MCP-02, FR-CAP-06, FR-CAP-08, BR-4, BR-39, BR-45, ADR-0007, ADR-0008, ADR-0032, ADR-0043, LLD §1, §3, §3.2, §13.6, §16, TDD §3.1, §3.13.3 | — | ADR (Proposed) and LLD text merged; LLD §3 no longer says "to be detailed in M7"; TDD §3.1 and the SDD rows for FR-RTE-01 to 09 and FR-MCP-02 agree; each Delegated default is a Q entry in §7.3 answered by the orchestrator; `node scripts/check-docs.mjs` passes |
+| T7.1 | Heuristic classifier and deterministic scorer: a pure module in `src/routing/` that derives the FR-RTE-04 features from the request (and injected repository metadata), and scores eligible candidates from stored features, per-candidate inputs and weights; the `routing.weights` configuration keys | FR-RTE-02, FR-RTE-04, BR-4, BR-39, the T7.0 LLD section | T7.0 | Tests: the same input gives byte-identical output; an unsourced term has the same value for every candidate and cannot change the order; an unknown capacity estimate never ranks above a known one with headroom; the tie-break is preference, score, configured order; with the default weights and no history the order is the configured order (no behaviour change); configuration keys strict (NFR-SEC-06); no import from `src/inner/` (FR-INN-06) |
+| T7.2 | Persist full route decisions: `delegate_task`, `continue_task` and the quota failover write the T7.0 record (features with their source, weights, per-candidate inputs and scores, outcome); a replay function re-runs the scorer on a stored row | FR-RTE-02, FR-RTE-03, FR-RTE-04, BR-4, the T7.0 LLD section | T7.1 | A replay test re-scores every route decision written by a scripted fake-adapter session (several providers, preferences, required providers, continuations, a quota failover) and reproduces each stored selection and score exactly; older rows without a `schema_version` replay as the M2 eligibility-only form; existing routing tests pass unchanged |
+| T7.3 | `explain_route` MCP tool: `{ run_id }` returns, from the stored `route_decision` only, candidates with eligibility reasons, features with their source, weights, scores, the selection basis and the `affinity` object; the caller sees only its own runs (as `get_run`) | FR-MCP-02, FR-MCP-04, FR-RTE-03, LLD §3, the T7.0 LLD section | T7.2 | MCP tests through the SDK client: the tool is listed with closed input and output schemas and the existing tools are unchanged; an unknown or another client's run is `INVALID_REQUEST`; the output equals the stored row's content; a pre-M7 row is explained as eligibility-only; no model is called and no reasoning text is invented |
+| T7.4 | Affinity store: forward migration (next free number) adding `project_affinity` as specified in LLD §3.2 and T7.0, ledger helpers, and the `routing.affinity` configuration keys (`enabled`, `low_water_mark`, `min_confidence`, `idle_ttl`) | FR-RTE-06, FR-RTE-07, ADR-0005, ADR-0032, LLD §3.2 | T7.0 | Tests: the migration applies on a fresh ledger and on one at the previous version; the reason column refuses a value outside the closed list; helpers read, write and version-check a row; configuration keys strict, defaults as T7.0 records |
+| T7.5 | Affinity selection step: inside routing, after stage 1 and before the score, select the affine provider and model unless a reason from the closed list applies; record the `affinity` object in every decision; on `SUCCEEDED` write the row; a quota failover is a `capacity_exhausted` switch; emit the `routing_affinity_*` events | FR-RTE-06, FR-RTE-07, FR-RTE-08, FR-CAP-06 (amended), BR-45, Q-51, Q-52, LLD §3.2, the T7.0 LLD section | T7.2, T7.4 | Fake-adapter tests: a project keeps its provider and model across meta-sessions; `require_provider` gives `user_request`; an affine provider removed by stage 1 gives `ineligible`, or `capacity_exhausted` for known quota exhaustion; a quota failover re-bases affinity with `capacity_exhausted`; an exhausted retry chain gives `failed_after_retry`; the old provider recovering does not move the project back; a failed first run creates no row; `enabled: false` writes and reads no row; T6.7's switch counts show the recorded reasons instead of `unrecorded` |
+| T7.6 | Affinity replay property test: generate sequences of runs for projects against scripted fakes whose eligibility, capacity estimate, cost-like and load-like inputs and outcomes vary per step, then replay the stored decisions | FR-RTE-03, FR-RTE-06, FR-RTE-07, TDD §3.13.3, M7 acceptance criteria | T7.5 | Property test: in every replay the provider or model of a project changes only on a decision carrying a reason from the closed list; a better score, lower cost or lower load never moves a project; `held` implies no reason and `scored` false (LLD §3.2 invariants); with several eligible providers and equal capacity no project is spread across providers |
+| T7.7 | `switchboard affinity` operator commands: `affinity list` and `affinity reset <project>`; the reset is recorded and applied at the next routing step as `user_request` (`routing_affinity_reset` event) | FR-RTE-07, FR-OPS-01, LLD §3.2, the T7.0 LLD section | T7.5 | CLI tests: `list` shows each row in text and `--json`; `reset` of an unknown project exits non-zero and writes nothing; after a reset the next decision for the project is scored with reason `user_request` and the reset is consumed once; works with no daemon running |
+| T7.8 | FR-RTE-01 in full: evaluate `minimum_capability` against operator-declared model capability in the model registry instead of refusing it (an undeclared model fails closed, `CAPABILITY_MISSING`); state in the LLD how sandbox strength, required tools, concurrency (Q-5: queue) and health map onto existing reasons | FR-RTE-01, FR-MCP-05, BR-1, BR-3, BR-4, LLD §2.1, the T7.0 LLD section | T7.0 | Tests: a request with `minimum_capability` routes only to providers with a declared model at or above it, and with none declared returns `ELIGIBILITY_NONE` with the reason; with `require_provider` the BR-3 code; no capability is assumed for any real model |
+| T7.9 | FR-RTE-09 cache-friendly prompt order (Could): stable content (constraints, project instructions, preamble) before volatile content (task text, retrieved snippets), fixed per project; verified by inspection and a test on the rendered prompt | FR-RTE-09, LLD §3.2, §14.6, Q-53 | T7.0; `src/adapters/**` free of the M4 work | Test: two runs of a project with different objectives share the same rendered prefix up to the task text for each adapter that renders a prompt; the README states that no cache benefit is claimed |
+| T7.10 | M7 acceptance test on fake adapters through the MCP server: replay reproduces every stored decision, `explain_route` lists the deciding factors, a project keeps its provider and model across meta-sessions and changes only with a listed reason, and with equal capacity no project is spread across providers | M7 acceptance criteria (§6), FR-MCP-02, FR-RTE-01 to 04, 06 to 08 | T7.3, T7.5 to T7.7 | The test passes in CI with no provider installed; evidence recorded here and in the M7 row |
+| T7.11 | README (routing, `explain_route`, affinity and `affinity reset`, what scores never claim), corrections to any FRD, SDD, HLD or TDD text the work proved wrong, and status here | NFR-MAINT-02, 03 | T7.10 | The README matches the behaviour; the M7 row in §6 carries status and evidence; `node scripts/check-docs.mjs` passes |
+
+#### 6.12.1 Order, waves and hot files
+
+- **Wave A (agents, now; nothing needs a provider CLI or an owner decision):** T7.0 first (documentation), then T7.1
+  and T7.4 after it, T7.2 after T7.1, T7.3 after T7.2, T7.5 after T7.2 and T7.4, T7.6 after T7.5, T7.7 after T7.5.
+- **Wave B:** T7.8 after T7.0; T7.10 after T7.3 and T7.5 to T7.7; T7.11 last.
+- **Waits for another lane:** T7.9 edits adapter prompt assembly, so it starts after the M4 adapter work releases
+  `src/adapters/**` (§6.8.1).
+- **Hot files:** `src/mcp/server.ts` (T7.2, T7.3, T7.5; only the routing call sites and the `explain_route` tool, never
+  the HTTP transport); `src/lifecycle/lifecycle.ts` (T7.2 and T7.5: the failover decision and the success hook);
+  `src/config/schema.ts` and `src/config/load.ts` (T7.1, T7.4); `src/ledger/repo.ts` (T7.2, T7.4); `docs/design/LLD.md`
+  (T7.0). Tasks sharing a hot file run one after another, never in parallel (AGENTS.md).
+
+#### 6.12.2 Blocks Done: what needs the operator or zemdregon
+
+M7 can reach `Done` on fakes; no task needs a provider login (Delegated reading: the acceptance criteria are all
+replay, property and fault-injection tests). Open items that do not block it:
+
+1. **zemdregon, optional:** Q-51 (stay on the new provider after a capacity switch) and Q-52 (no idle expiry) are
+   Delegated defaults that M7 implements as written; zemdregon may revise them. The default weights and the
+   `low_water_mark` and `min_confidence` defaults are T7.0's Delegated Assumptions. Nothing here changes what a bypass
+   run may do: affinity never moves a `privileged` meta-session to another provider (the Q-61 rule stays in force).
+2. **Sources for provider facts:** a price, model ranking or sandbox-strength order per provider. Without one the
+   matching term stays neutral and `minimum_capability` needs an operator-declared capability (T7.8).
+3. **Another lane:** T7.9 waits for `src/adapters/**`.
+
 ## 7. Risks, blockers and open questions
 
 ### 7.1 Risks
@@ -2622,6 +2725,10 @@ Notes carried from M2:
   (ADR-0043), the estimator, `get_capacity` and `capacity`, the breaker, retry with successor runs, the quota ladder,
   cache and switch counts, per-provider limits and the acceptance test. T6.8 is `Deferred` (no sourced limit). What
   is left needs the operator: T6.11 (§6.11.2). Unknown capacity is shown as unknown, never as headroom.
+- **M7 has a Proposed task breakdown** (§6.12, 2026-10-14, Delegated). Its wave A (§6.12.1) needs no provider CLI:
+  T7.0 (routing design and ADR) gates the code, then the scorer, persisted decisions with a replay test,
+  `explain_route`, the affinity store and selection step, the affinity replay property test and `affinity reset`. No
+  provider login blocks it (§6.12.2).
 
 ### 9.1 How an agent picks up work
 
@@ -2630,8 +2737,8 @@ Notes carried from M2:
    needs the operator or zemdregon; agents then work on the next milestone's tasks that do not depend on those items (as
    M3 wave A does while M2 waits for the live smoke run).
 2. Take the first task in that milestone's task table whose dependencies are done. If the milestone has no task table
-   yet (M7 onward; M4's is §6.8, M5's §6.9 and M6's §6.11), break it into tasks in the same format first, from its
-   row in §6 and the requirements it lists, and add them here before coding.
+   yet (M8 onward; M4's is §6.8, M5's §6.9, M6's §6.11 and M7's §6.12), break it into tasks in the same format first,
+   from its row in §6 and the requirements it lists, and add them here before coding.
 3. Read every reference in the task row: the SRS requirements, the FRD workflow or rule, the LLD/TDD section and the
    ADRs. Those are the contract; this roadmap only sequences them.
 4. Implement with tests that prove the task's "Done when" checks and the cited requirements' verification method.
