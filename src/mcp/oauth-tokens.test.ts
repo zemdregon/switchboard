@@ -40,7 +40,7 @@ function ledgerBytes(): string {
     .join("\n");
 }
 
-describe("token issue and storage (T13.3, Q-69)", () => {
+describe("token issue and storage (T13.3, Q-73)", () => {
   it("mints opaque 256-bit tokens and stores only their SHA-256 hash", () => {
     const a = access();
     const r = store.issue({ kind: "refresh", clientId: "grok-bot", resource: RESOURCE, scopes: [], ttlMs: 1000 });

@@ -520,7 +520,7 @@ async function runDaemon(
       adapters: registry.list().map((a) => a.id),
       pid: process.pid,
     });
-    // T13.1 (FR-MCP-12): no listener unless `transport.http.enabled`. T13.3 (FR-MCP-13, Q-69): bearer tokens are
+    // T13.1 (FR-MCP-12): no listener unless `transport.http.enabled`. T13.3 (FR-MCP-13, Q-73): bearer tokens are
     // verified against the hashed rows in the ledger; a refusal logs its reason code only, never the token.
     httpListener = await startHttpTransport(config.httpTransport, {
       tokens: new OAuthTokenStore(db, now ? { now } : {}),

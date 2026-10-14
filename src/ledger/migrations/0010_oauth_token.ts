@@ -1,5 +1,5 @@
 /**
- * Migration 0010 (T13.3; FR-MCP-13, LLD §3.3, ADR-0041 items 4, 5 and 8, Q-69): `oauth_token`, the access and refresh
+ * Migration 0010 (T13.3; FR-MCP-13, LLD §3.3, ADR-0041 items 4, 5 and 8, Q-73): `oauth_token`, the access and refresh
  * tokens issued by the embedded OAuth 2.1 authorization server. Tokens are opaque random values; only the SHA-256 hash
  * of each one is stored (`token_hash`, lower-case hex), never the value. Each row carries the client, the audience
  * (`resource`, RFC 8707), the granted scopes, the expiry and a revoked flag. Lookup is by hash.

@@ -5,7 +5,7 @@
  * metadata (RFC 8414). The authorization, token and registration endpoints are advertised as designed (ADR-0041 items 3
  * and 4) and answer 404 until their tasks land.
  *
- * The MCP endpoint verifies the bearer token (T13.3, Q-69; `src/mcp/oauth-tokens.ts`). A request without an
+ * The MCP endpoint verifies the bearer token (T13.3, Q-73; `src/mcp/oauth-tokens.ts`). A request without an
  * `Authorization` header gets 401 with a `WWW-Authenticate` challenge naming the metadata URL (RFC 6750 §3, RFC 9728
  * §5.1). A malformed, unknown, expired, revoked or wrong-audience token, or a refresh token used as a bearer token, gets
  * one identical 401 with `error="invalid_token"`; the reason code goes only to `onTokenRejected`. A valid token gets 501

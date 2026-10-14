@@ -1,7 +1,7 @@
 /**
- * Opaque OAuth token store and bearer-token verifier (T13.3; FR-MCP-13, LLD §3.3, ADR-0041 items 4, 5 and 8, Q-69).
+ * Opaque OAuth token store and bearer-token verifier (T13.3; FR-MCP-13, LLD §3.3, ADR-0041 items 4, 5 and 8, Q-73).
  *
- * Delegated (Q-69, orchestrator 2026-10-14): access and refresh tokens are opaque random values, never JWTs. Each is
+ * Delegated (Q-73, orchestrator 2026-10-14): access and refresh tokens are opaque random values, never JWTs. Each is
  * 256 bits from the CSPRNG, base64url-encoded behind a fixed prefix (`sbat_` access, `sbrt_` refresh) so secret
  * scanners can recognise one. Only the SHA-256 hash of a token is stored (`oauth_token`, migration 0010); lookup is by
  * hash and the stored hash is compared to the presented one in constant time. The raw value exists only in the return

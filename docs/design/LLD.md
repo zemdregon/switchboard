@@ -1243,7 +1243,7 @@ Requirements FR-MCP-12 to 15. Off unless the config enables it.
   The server never returns a token or any authorization detail.
 - **Verification.** Signature or introspection, `exp`, `iss` equal to the configured issuer, `aud` equal to the resource
   identifier (RFC 8707). Failure is 401; no fallback.
-- **Tokens as built (T13.3, Q-69, Delegated).** Access and refresh tokens are opaque, never JWTs: 32 bytes from the
+- **Tokens as built (T13.3, Q-73, Delegated).** Access and refresh tokens are opaque, never JWTs: 32 bytes from the
   CSPRNG, base64url, behind the prefix `sbat_` (access) or `sbrt_` (refresh). Only the SHA-256 hash is stored, in
   `oauth_token` (migration 0010, DDL below); verification is a lookup by hash with a constant-time compare of the stored
   hash, which is the local introspection FR-MCP-13 allows. A token this server did not issue (forged, or from another

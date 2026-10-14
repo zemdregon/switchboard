@@ -46,7 +46,7 @@ on launch binding only ([ADR-0040](0040-mcp-caller-authentication-no-oauth-on-st
 5. **Token checks.** On each MCP request the server verifies signature or introspection, expiry, issuer, and that the
    audience equals its own resource identifier. A token for any other resource is rejected. The server never forwards
    the inbound token to any upstream provider; provider credentials are untouched (ADR-0003).
-   *As built (T13.3, Q-69, Delegated 2026-10-14):* tokens are opaque random values (256 bits), not signed JWTs, and the
+   *As built (T13.3, Q-73, Delegated 2026-10-14):* tokens are opaque random values (256 bits), not signed JWTs, and the
    check is a local introspection: a lookup of the token's SHA-256 hash in the ledger with a constant-time compare.
    A token this server did not issue has no row, which covers the signature and issuer checks. Details: [LLD
    §3.3](../design/LLD.md#33-network-mcp-transport-m13).
