@@ -936,6 +936,8 @@ with each store so a model change forces a rebuild (LLD §14.2).
 yield between files, with caps on files, chunks, bytes and elapsed time (FR-RAG-11). A brute-force scan over the capped
 store runs synchronously in a bounded loop; whether it must move to a worker thread is a T12.0 measurement, not an
 assumption. Admission waits for retrieval at most a configured bound and then proceeds without a pack (FR-RAG-08).
+- *Note 2026-10-14 (T12.0):* the measurements, the chunk cap, the search path, the threading decision and the context
+  pack default are in [§3.13.4](#3134-t120-spike-result-2026-10-14).
 - **Redaction.** Reuses the telemetry redactor (§3.3) and the FR-INN-16 pass, not a second implementation; the secret
   denylist is a path and name pattern table beside the sanitiser patterns, operator-extensible by `exclude`.
 
@@ -983,6 +985,83 @@ counts stay absent, never estimated.
   byte-for-byte (FR-RAG-04). Live embedding calls are opt-in in the pattern of §3.6, proposed
   `SWITCHBOARD_LIVE_TESTS=1` plus `SWITCHBOARD_LIVE_EMBEDDING=1` with an operator-supplied config path (names Proposed),
   never in CI, sending only a built-in fixture text.
+
+#### 3.13.4 T12.0 spike result (2026-10-14)
+
+*Delegated (answered by the orchestrator under its fail-closed instruction, not owner-approved). Answers Q-48.*
+Measured with `scripts/bench-rag.mjs` (not part of `npm test`; it calls no embedding model and reads no repository
+content for the search figures). Vectors are synthetic, seeded and L2-normalised float32 values written as BLOBs into
+the LLD §14.2 `rag_chunk` table (1,200 bytes of chunk text per row beside each vector, WAL, `synchronous=FULL`); cosine
+similarity is then a dot product, and the top 8 are kept. Two search paths: **SQLite** streams every vector BLOB from
+the store on every query; **memory** loads the vectors once into one `Float32Array` and scans that. 20 queries after one
+warm-up per cell.
+
+**Machine.** Oracle Cloud Ampere VM, Neoverse-N1, 2 vCPUs, 11.6 GiB RAM, Linux 7.0.0-1013-oracle arm64; Node v24.21.0;
+SQLite 3.53.4 (bundled with `better-sqlite3` 13.0.3). Shared host, not an operator laptop. Two consecutive invocations
+of `node scripts/bench-rag.mjs --json` on 2026-10-14; values are run 1, with run 2 in brackets where p95 differs by more
+than 20%. Times in milliseconds.
+
+| Dimension | Chunks | Store file (MiB) | Insert, all rows | Load into memory | SQLite query p50 / p95 | Memory query p50 / p95 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 384 | 1,000 | 4.0 | 86.9 | 9.0 | 5.6 / 10.7 | 0.9 / 1.5 |
+| 384 | 10,000 | 39.4 | 621.0 | 94.6 | 105.9 / 124.0 | 8.2 / 9.3 (16.3 / 23.9) |
+| 384 | 25,000 | 98.6 | 1,557.1 | 235.3 | 249.0 / 303.5 | 21.3 / 25.5 |
+| 384 | 50,000 | 197.1 | 3,076.1 | 818.2 | 558.8 / 613.3 | 43.6 / 58.9 |
+| 384 | 100,000 | 394.3 | 7,546.8 | 1,093.9 | 1,060.0 / 1,105.3 | 82.5 / 94.9 |
+| 768 | 1,000 | 4.4 | 102.4 | 4.3 | 6.5 / 14.0 | 1.6 / 2.1 |
+| 768 | 10,000 | 44.2 | 780.6 | 127.7 | 124.3 / 153.5 | 16.8 / 20.8 |
+| 768 | 25,000 | 110.6 | 1,942.8 | 483.8 | 311.4 / 357.5 | 40.1 / 48.4 |
+| 768 | 50,000 | 221.1 | 3,898.0 | 689.9 | 619.3 / 675.0 | 85.1 / 94.4 |
+| 768 | 100,000 | 442.3 | 8,863.1 | 1,533.5 | 1,292.4 / 1,405.3 | 167.9 / 175.4 |
+| 1536 | 1,000 | 7.9 | 152.3 | 10.5 | 16.7 / 25.8 | 3.2 / 3.4 |
+| 1536 | 10,000 | 78.5 | 1,307.0 | 203.3 | 197.0 / 228.5 | 33.7 / 40.9 |
+| 1536 | 25,000 | 196.2 | 3,320.7 | 539.0 | 489.7 / 507.2 | 91.8 / 108.0 (78.5 / 79.2) |
+| 1536 | 50,000 | 392.4 | 7,550.6 | 1,010.4 | 943.6 / 1,037.6 | 172.6 / 199.6 |
+| 1536 | 100,000 | 784.9 | 17,119.4 | 2,306.1 | 1,916.2 / 2,027.6 | 344.6 / 383.2 |
+
+Chunk sizes were measured on this repository at `28a703e` with `node scripts/bench-rag.mjs --chunk-sizes .` (every
+tracked text file, windows of 40 lines, no overlap): 435 files gave 3,023 chunks, 1,747 bytes at p50, 4,078 at p95 and
+49,195 at most (long Markdown table lines). With the controller's token approximation `ceil(bytes / 4)` (an
+Assumption, not a provider count), that is about 437, 1,020 and 12,299 tokens. 60-line windows gave 2,095 chunks, 2,570
+and 6,139 bytes at p50 and p95.
+
+**Findings.**
+
+- Search time grows linearly with chunks times dimension on both paths, as expected for a brute-force scan.
+- Streaming vectors from SQLite on every query is 5 to 13 times slower than scanning a loaded array, because each row
+  also carries its chunk text. At 25,000 chunks it costs 249 to 490 ms at p50, too slow for an admission-time step.
+- No approximate-nearest-neighbour index or vector extension is needed at the cap below (Q-48 stays answered "SQLite,
+  brute force"); the ADR-0031 "revisit" condition is not met.
+
+**Decisions (Delegated, each fail-closed or bounded).**
+
+- **Search path.** COMP-RAG loads a store's vectors once into memory and scans them there; the cache is keyed by the
+  store's `revision` and dropped when the revision changes. SQLite stays the store of record. The text BLOB is read only
+  for the selected hits.
+- **Chunk cap.** `caps.max_chunks` defaults to **25,000** per store and is also the schema maximum (a project can only
+  lower it, LLD §14.1). Measured at that size: one memory scan is 21.3 / 25.5 ms (p50 / p95) at 384 dimensions, 40.1 /
+  48.4 at 768 and 91.8 / 108.0 at 1536; the one-time load is 235 to 539 ms. The array holds chunks × dimension × 4
+  bytes (computed, not measured: 38.4 MB at 384, 153.6 MB at 1536). This repository needs about 3,000 chunks at 40-line
+  windows, so the cap leaves about eight times headroom. A store that reaches the cap is marked incomplete (FR-RAG-11).
+- **Threading.** At the cap a scan blocks the event loop for up to about 110 ms (1536 dimensions, p95), which is too
+  long for a single step beside the MCP server and run supervision. T12.5 therefore scans in slices that yield to the
+  event loop between them (or moves the scan to a worker thread, if slicing measures worse); the vector load runs only
+  in the background build or on the first query after a revision change, never inside `admission_timeout_ms`.
+- **Chunk shape (input to T12.2).** Line windows of 40 lines, also bounded to **4,096 bytes** per chunk (just above the
+  measured p95 of 4,078), because a line bound alone let one chunk reach 49,195 bytes.
+- **Context pack default.** `retrieval.top_k` defaults to **8** and `retrieval.max_context_tokens` to **4,000**
+  (controller estimate): with the measured sizes that holds about nine median chunks or three p95 chunks, so the pack
+  fills by score and never by one oversized hit. It is a starting value; R-57 still applies, and no token saving is
+  claimed until it is measured on real runs.
+- **Backend shapes, first version.** `http` first: one non-streaming `POST <base_url>/v1/embeddings` with
+  `{ model, input: [texts] }` and the vectors read from `data[i].embedding` (Assumption, the same widely served request
+  family as the inner agent's chat-completion mapping, fixed in T12.3 against a fake server only), reusing the inner
+  agent's `http` transport, locality pinning and gates (§3.12, LLD §13.2). `local` means an in-process model; none
+  exists without a new native dependency, so in this version `local` is the deterministic fake used by the tests, and a
+  config naming `kind: "local"` is refused at load with a pointer to a loopback `http` gateway (fail closed). A real
+  in-process backend needs its own ADR.
+- **Not decided here.** Embedding model, dimension and batch size remain operator choices; the dimension is read from
+  the backend (§3.13.1). Every other cap and timeout default is chosen in T12.1 as an Assumption.
 
 ### 3.14 Network MCP transport (M13)
 
