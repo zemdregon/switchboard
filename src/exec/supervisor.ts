@@ -342,6 +342,8 @@ export function supervise(opts: SuperviseOptions): SupervisedRun {
         },
         onProtocolError: (e) => {
           protocolError = e;
+          // Record before abort: a fast exit can set exitSeen and skip reason in abort (malformed_output fakes).
+          reason ??= "protocol_error";
           void abort("protocol_error");
         },
       })
@@ -466,7 +468,8 @@ export function supervise(opts: SuperviseOptions): SupervisedRun {
     fail: (failure) => {
       if (pid === undefined) return;
       if (failure.kind === "protocol_error") {
-        if (reason === undefined && !exitSeen && !finished) protocolError = failure.error;
+        protocolError ??= failure.error;
+        reason ??= "protocol_error";
         void abort("protocol_error");
       } else {
         if (reason === undefined && !exitSeen && !finished) timeoutKind = failure.timeoutKind;
