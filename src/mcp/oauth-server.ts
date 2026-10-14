@@ -15,15 +15,19 @@
  * - The only grantable scope is `mcp` (the default when `scope` is absent). Any other scope, `privileged` included, is
  *   refused with `invalid_scope`; trust comes from the client's configured maximum profile (FR-MCP-14, T13.4).
  * - An unknown client or a redirect URI that does not match gets an error page and no redirect (RFC 6749 §4.1.2.1).
+ *   Other errors redirect only for an approved client; a pending, denied or revoked client gets the error page, so a
+ *   self-registered redirect URI cannot turn this server into an open redirector (RFC 9700 §4.11.2).
  * - There is no authorization-server login session: every authorization needs the passphrase or a pairing code. A
  *   pending client is approved by the first successful consent; a denied or revoked client is refused. "Deny" needs
  *   no credential and changes no client status, so a stranger cannot deny someone else's client.
  * - CSRF: each consent request has a random id and a CSRF token held server-side; the form carries both and the token
  *   is also set as a `__Host-` cookie (`Secure`, `HttpOnly`, `SameSite=Strict`); the POST must match both, carry no
  *   foreign `Origin` and no cross-site `Sec-Fetch-Site`. A mismatch ends the consent request.
- * - Attempt limiter: {@link MAX_FAILED_ATTEMPTS} wrong passphrases or pairing codes within {@link ATTEMPT_WINDOW_MS}
- *   lock approval for {@link LOCKOUT_MS}, during which even the right credential is refused. One passphrase check runs
- *   at a time; a concurrent one is refused, so scrypt's cost cannot be multiplied.
+ * - Attempt limits: {@link MAX_FAILED_ATTEMPTS} wrong passphrases within {@link ATTEMPT_WINDOW_MS} lock passphrase
+ *   approval for {@link LOCKOUT_MS}, during which even the right passphrase is refused. One passphrase check runs at a
+ *   time; a concurrent one is refused, so scrypt's cost cannot be multiplied. Wrong pairing codes are throttled
+ *   separately ({@link MAX_PAIRING_FAILURES_PER_MINUTE} a minute, then 429) and never lock or end a code, so a stranger
+ *   who keeps the passphrase locked cannot also block the operator's fresh pairing code (60 bits, single use).
  * - Authorization codes live in memory only, hashed, for {@link AUTHORIZATION_CODE_TTL_MS}; a restart drops them. A
  *   reused code is refused and every token of its client is revoked (RFC 6749 §4.1.2).
  * - Lifetimes (Assumption): access token {@link ACCESS_TOKEN_TTL_MS}, refresh token {@link REFRESH_TOKEN_TTL_MS} from
@@ -49,6 +53,9 @@ export const MAX_CONSENT_REQUESTS = 32;
 export const MAX_FAILED_ATTEMPTS = 5;
 export const ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
 export const LOCKOUT_MS = 15 * 60 * 1000;
+/** Wrong pairing codes allowed per minute; more are refused (429) without consuming or ending any code. */
+export const MAX_PAIRING_FAILURES_PER_MINUTE = 10;
+const PAIRING_WINDOW_MS = 60 * 1000;
 export const GRANTABLE_SCOPES: readonly string[] = ["mcp"];
 export const CONSENT_COOKIE = "__Host-sb_consent";
 const MAX_FORM_BYTES = 8 * 1024;
@@ -76,7 +83,7 @@ export type AuthEventFields = { client_id?: string; method?: "passphrase" | "pai
 
 export interface AuthorizationServerDeps {
   clients: Pick<OAuthClientStore, "get" | "approve">;
-  tokens: Pick<OAuthTokenStore, "issue" | "useRefreshToken" | "revokeClient">;
+  tokens: Pick<OAuthTokenStore, "issue" | "verify" | "useRefreshToken" | "revokeClient">;
   /** Pairing-code redemption; without it the fallback is unavailable. */
   pairing?: Pick<PairingCodeStore, "redeem">;
   /** `transport.http.passphrase_hash`; without it the passphrase path is unavailable. */
@@ -95,6 +102,7 @@ interface ConsentRequest {
   readonly codeChallenge: string;
   readonly scopes: readonly string[];
   readonly state?: string;
+  readonly approvedClient: boolean;
   readonly expiresAt: number;
 }
 
@@ -177,7 +185,10 @@ export class AttemptLimiter {
 export class AuthorizationServer {
   private readonly consents = new Map<string, ConsentRequest>();
   private readonly codes = new Map<string, CodeGrant>();
+  /** Wrong passphrases: a global lockout. */
   private readonly limiter = new AttemptLimiter();
+  /** Times of recent wrong pairing codes (a separate, short throttle; never a lockout). */
+  private pairingFailures: number[] = [];
   private verifying = false;
   private readonly now: () => Date;
   private readonly random: (n: number) => Buffer;
@@ -190,6 +201,12 @@ export class AuthorizationServer {
     this.now = deps.now ?? (() => new Date());
     this.random = deps.randomBytes ?? randomBytes;
     this.checkPassphrase = deps.verifyPassphrase ?? defaultVerifyPassphrase;
+  }
+
+  /** True while {@link MAX_PAIRING_FAILURES_PER_MINUTE} wrong pairing codes fall within the last minute. */
+  private pairingThrottled(now: number): boolean {
+    this.pairingFailures = this.pairingFailures.filter((t) => now - t < PAIRING_WINDOW_MS);
+    return this.pairingFailures.length >= MAX_PAIRING_FAILURES_PER_MINUTE;
   }
 
   private event(event: AuthEvent, fields: AuthEventFields = {}): void {
@@ -251,7 +268,13 @@ export class AuthorizationServer {
     const state = rawState !== undefined && rawState.length <= MAX_STATE_LENGTH ? rawState : undefined;
     const refuse = (error: string, reason: string, description: string) => {
       this.event("authorize_refused", { client_id: client.clientId, reason });
-      this.redirect(res, 302, this.redirectTo(redirectUri, { error, error_description: description, state }));
+      // Only an approved client's redirect URI is trusted for error redirects: a self-registered client's URI would
+      // make this server an open redirector (RFC 9700 §4.11.2).
+      if (client.status === "approved") {
+        this.redirect(res, 302, this.redirectTo(redirectUri, { error, error_description: description, state }));
+      } else {
+        sendHtml(res, 400, errorPage(`Invalid authorization request: ${description}.`));
+      }
     };
     if (rawState !== undefined && state === undefined) {
       refuse("invalid_request", "state", "state is too long");
@@ -286,11 +309,20 @@ export class AuthorizationServer {
     }
     const now = this.now().getTime();
     this.prune(now);
-    // At most MAX_CONSENT_REQUESTS open: the oldest is dropped, so a flood of requests cannot block new ones.
+    // At most MAX_CONSENT_REQUESTS open. A new request drops the oldest one for a client that is not yet approved
+    // (anyone can register those), and only if there is none the oldest overall, so a flood against self-registered
+    // clients cannot push out an approved client's request.
     while (this.consents.size >= MAX_CONSENT_REQUESTS) {
-      const oldest = this.consents.keys().next().value;
-      if (oldest === undefined) break;
-      this.consents.delete(oldest);
+      let victim: string | undefined;
+      for (const [k, v] of this.consents) {
+        if (!v.approvedClient) {
+          victim = k;
+          break;
+        }
+      }
+      victim ??= this.consents.keys().next().value;
+      if (victim === undefined) break;
+      this.consents.delete(victim);
     }
     const requestId = this.secret();
     const csrf = this.secret();
@@ -301,6 +333,7 @@ export class AuthorizationServer {
       codeChallenge: challenge,
       scopes,
       ...(state !== undefined ? { state } : {}),
+      approvedClient: client.status === "approved",
       expiresAt: now + CONSENT_REQUEST_TTL_MS,
     });
     this.event("consent_shown", { client_id: client.clientId });
@@ -388,15 +421,6 @@ export class AuthorizationServer {
       sendHtml(res, 403, errorPage("This client is not approved."), clearCookie);
       return;
     }
-    if (this.limiter.locked(now)) {
-      this.consents.delete(requestId);
-      this.event("consent_refused_locked", { client_id: client.clientId });
-      sendHtml(res, 429, errorPage("Too many failed attempts. Approval is locked; try again later."), {
-        ...clearCookie,
-        "retry-after": String(LOCKOUT_MS / 1000),
-      });
-      return;
-    }
     const passphrase = form.get("passphrase") ?? "";
     const pairingCode = form.get("pairing_code") ?? "";
     const retry = (status: number, notice: string) => {
@@ -404,6 +428,25 @@ export class AuthorizationServer {
       this.consents.set(requestId, { ...consent, csrfHash: sha256(csrf) });
       this.renderConsent(res, status, requestId, csrf, client, consent.redirectUri, consent.scopes, notice);
     };
+    const lockedOut = () => {
+      this.consents.delete(requestId);
+      sendHtml(res, 429, errorPage("Too many wrong passphrases. Passphrase approval is locked; try again later."), {
+        ...clearCookie,
+        "retry-after": String(LOCKOUT_MS / 1000),
+      });
+    };
+    // The passphrase lockout does not block pairing codes, so a stranger who keeps the passphrase locked cannot also
+    // lock out the operator's local recovery path (`switchboard consent pair`).
+    if (passphrase !== "" && this.limiter.locked(now)) {
+      this.event("consent_refused_locked", { client_id: client.clientId });
+      lockedOut();
+      return;
+    }
+    if (passphrase === "" && pairingCode !== "" && this.pairingThrottled(now)) {
+      this.event("consent_refused_locked", { client_id: client.clientId, method: "pairing_code" });
+      retry(429, "Too many wrong pairing codes. Wait a minute and try again.");
+      return;
+    }
     if (passphrase === "" && pairingCode === "") {
       retry(400, "Enter the operator passphrase or a pairing code.");
       return;
@@ -428,19 +471,16 @@ export class AuthorizationServer {
     const after = this.now().getTime();
     if (!ok) {
       this.event("consent_failed", { client_id: client.clientId, method });
-      if (this.limiter.fail(after)) {
-        this.consents.delete(requestId);
+      if (method === "passphrase" && this.limiter.fail(after)) {
         this.event("consent_locked_out", { client_id: client.clientId });
-        sendHtml(res, 429, errorPage("Too many failed attempts. Approval is locked; try again later."), {
-          ...clearCookie,
-          "retry-after": String(LOCKOUT_MS / 1000),
-        });
+        lockedOut();
         return;
       }
+      if (method === "pairing_code") this.pairingFailures.push(after);
       retry(401, "Wrong passphrase or pairing code.");
       return;
     }
-    this.limiter.succeed();
+    if (method === "passphrase") this.limiter.succeed();
     this.consents.delete(requestId);
     if (client.status === "pending" && !this.deps.clients.approve(client.clientId)) {
       sendHtml(res, 403, errorPage("This client is not approved."), clearCookie);
@@ -559,13 +599,19 @@ export class AuthorizationServer {
       fail(400, "invalid_request", "missing_parameter", client.clientId);
       return;
     }
-    const used = this.deps.tokens.useRefreshToken(refresh, this.s.resource);
-    if (!used.ok) {
-      if (used.reusedBy !== undefined) this.event("refresh_reused", { client_id: used.reusedBy });
-      fail(400, "invalid_grant", `refresh_${used.reason}`, client.clientId);
+    // Every check that can refuse a well-formed request runs before the token is spent, so a client's bad request
+    // does not cost it its refresh token (and a retry is not mistaken for reuse).
+    const pre = this.deps.tokens.verify(refresh, "refresh", this.s.resource);
+    if (!pre.ok) {
+      // A rotated-out (revoked) token: let the store apply reuse detection, which revokes the client's tokens.
+      if (pre.reason === "revoked") {
+        const reused = this.deps.tokens.useRefreshToken(refresh, this.s.resource);
+        if (reused.reusedBy !== undefined) this.event("refresh_reused", { client_id: reused.reusedBy });
+      }
+      fail(400, "invalid_grant", `refresh_${pre.reason}`, client.clientId);
       return;
     }
-    if (used.token.clientId !== client.clientId) {
+    if (pre.token.clientId !== client.clientId) {
       fail(400, "invalid_grant", "refresh_client", client.clientId);
       return;
     }
@@ -573,7 +619,7 @@ export class AuthorizationServer {
       fail(400, "invalid_grant", "client_not_approved", client.clientId);
       return;
     }
-    let scopes = used.token.scopes;
+    let scopes = pre.token.scopes;
     const scope = form.get("scope");
     if (scope !== undefined) {
       const asked = [...new Set(scope.split(" "))];
@@ -582,6 +628,13 @@ export class AuthorizationServer {
         return;
       }
       scopes = asked;
+    }
+    // Spend it atomically; a concurrent rotation of the same token makes this one fail (and counts as reuse).
+    const used = this.deps.tokens.useRefreshToken(refresh, this.s.resource);
+    if (!used.ok) {
+      if (used.reusedBy !== undefined) this.event("refresh_reused", { client_id: used.reusedBy });
+      fail(400, "invalid_grant", `refresh_${used.reason}`, client.clientId);
+      return;
     }
     this.issue(res, client, scopes, "refresh_token");
     return;

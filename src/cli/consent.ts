@@ -14,10 +14,12 @@ import { openLedger } from "../ledger/index.js";
 import { acquireDataDirLock, inspectDataDirLock, LockError } from "../lock/index.js";
 import { PairingCodeStore } from "../mcp/oauth-pairing.js";
 import { hashPassphrase } from "../mcp/oauth-passphrase.js";
-import { type CliIo, JSON_SCHEMA_VERSION } from "./io.js";
+import { type CliIo, JSON_SCHEMA_VERSION, UsageError } from "./io.js";
 
 async function readAll(io: CliIo): Promise<string> {
   if (io.readStdin) return io.readStdin();
+  // A terminal would echo the passphrase into scrollback; require a pipe (e.g. `read -rs P; printf %s "$P" | ...`).
+  if (process.stdin.isTTY) throw new UsageError("pipe the passphrase on stdin; it is not read from a terminal");
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk as Buffer));
   return Buffer.concat(chunks).toString("utf8");

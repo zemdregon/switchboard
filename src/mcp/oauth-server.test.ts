@@ -21,6 +21,7 @@ import {
   LOCKOUT_MS,
   MAX_CONSENT_REQUESTS,
   MAX_FAILED_ATTEMPTS,
+  MAX_PAIRING_FAILURES_PER_MINUTE,
 } from "./oauth-server.js";
 import { OAuthTokenStore } from "./oauth-tokens.js";
 
@@ -365,24 +366,43 @@ describe("authorization request rejections (T13.8)", () => {
     ["privileged beside mcp", { scope: "mcp privileged" }, "invalid_scope"],
     ["a trust-profile scope", { scope: "trusted-development" }, "invalid_scope"],
     ["empty scope", { scope: "" }, "invalid_scope"],
+    ["an over-long state", { state: "s".repeat(513) }, "invalid_request"],
   ] as [string, Record<string, string | undefined>, string][])("refuses %s", async (_name, over, error) => {
+    // A pending (self-registered) client's redirect URI is not trusted: error page, no redirect (no open redirector).
+    const pendingId = register();
+    const page = await call("GET", authorizeQuery(pendingId, pkce().challenge, over));
+    expect(page.status).toBe(400);
+    expect(page.headers.location).toBeUndefined();
+    expect(page.text).not.toContain("request_id");
+    // An approved client gets the RFC 6749 §4.1.2.1 error redirect.
     const clientId = register();
+    db.prepare("UPDATE oauth_client SET status = 'approved' WHERE client_id = ?").run(clientId);
     const r = await call("GET", authorizeQuery(clientId, pkce().challenge, over));
     expect(r.status).toBe(302);
     const params = redirectParams(r);
     expect(params.get("error")).toBe(error);
-    expect(params.get("state")).toBe("st-123");
+    expect(params.get("state")).toBe(over.state === undefined ? "st-123" : null);
     expect(params.get("code")).toBeNull();
     expect(r.text).not.toContain("request_id");
   });
 
-  it("refuses a denied or revoked client", async () => {
+  it("refuses a denied or revoked client without redirecting", async () => {
     for (const status of ["denied", "revoked"]) {
       const clientId = register();
       db.prepare("UPDATE oauth_client SET status = ? WHERE client_id = ?").run(status, clientId);
       const r = await call("GET", authorizeQuery(clientId, pkce().challenge));
-      expect(redirectParams(r).get("error")).toBe("access_denied");
+      expect(r.status).toBe(400);
+      expect(r.headers.location).toBeUndefined();
+      expect(r.text).toContain("this client is not approved");
     }
+  });
+
+  it("lets the issuer's own Origin through on /authorize only", async () => {
+    for (const p of ["/token", "/register", "/mcp", "/.well-known/oauth-authorization-server"]) {
+      expect((await call("POST", p, { origin: ISSUER })).status).toBe(403);
+    }
+    const clientId = register();
+    expect((await call("GET", authorizeQuery(clientId, pkce().challenge), { origin: ISSUER })).status).toBe(200);
   });
 });
 
@@ -500,6 +520,56 @@ describe("token endpoint rejections (T13.8)", () => {
   });
 });
 
+describe("refresh-token rotation edge cases (T13.8)", () => {
+  async function pair(clientId: string): Promise<{ access: string; refresh: string }> {
+    const { code, verifier } = await obtainCode(clientId);
+    const body = JSON.parse((await exchange(clientId, code, verifier)).text) as Record<string, string>;
+    const out = { access: String(body.access_token), refresh: String(body.refresh_token) };
+    secrets.push(out.access, out.refresh);
+    return out;
+  }
+  const refreshWith = (clientId: string, refresh: string, extra: Record<string, string> = {}) =>
+    token({ grant_type: "refresh_token", client_id: clientId, refresh_token: refresh, ...extra });
+
+  it("keeps the refresh token after a refusal that is the request's fault", async () => {
+    const clientId = register();
+    const otherId = register();
+    db.prepare("UPDATE oauth_client SET status = 'approved' WHERE client_id = ?").run(otherId);
+    const t = await pair(clientId);
+    expect(JSON.parse((await refreshWith(clientId, t.refresh, { scope: "privileged" })).text)).toEqual({
+      error: "invalid_scope",
+    });
+    // Presented under another client's id: refused, and not spent.
+    expect(JSON.parse((await refreshWith(otherId, t.refresh)).text)).toEqual({ error: "invalid_grant" });
+    const ok = await refreshWith(clientId, t.refresh);
+    expect(ok.status).toBe(200);
+    const next = JSON.parse(ok.text) as Record<string, string>;
+    secrets.push(String(next.access_token), String(next.refresh_token));
+    expect(tokens.verify(String(next.access_token), "access", RESOURCE).ok).toBe(true);
+  });
+
+  it("refuses an expired refresh token and a client revoked after consent", async () => {
+    const clientId = register();
+    const t = await pair(clientId);
+    const revokedLater = register();
+    const { code, verifier } = await obtainCode(revokedLater);
+    db.prepare("UPDATE oauth_client SET status = 'revoked' WHERE client_id = ?").run(revokedLater);
+    expect(JSON.parse((await exchange(revokedLater, code, verifier)).text)).toEqual({ error: "invalid_grant" });
+    clock = new Date(clock.getTime() + 7 * 24 * 60 * 60 * 1000);
+    expect(JSON.parse((await refreshWith(clientId, t.refresh)).text)).toEqual({ error: "invalid_grant" });
+  });
+
+  it("lets only one of two concurrent rotations of the same token succeed", async () => {
+    const clientId = register();
+    const t = await pair(clientId);
+    const replies = await Promise.all([refreshWith(clientId, t.refresh), refreshWith(clientId, t.refresh)]);
+    const statuses = replies.map((r) => r.status).sort();
+    expect(statuses).toEqual([200, 400]);
+    const winner = JSON.parse((replies.find((r) => r.status === 200) as Reply).text) as Record<string, string>;
+    secrets.push(String(winner.access_token), String(winner.refresh_token));
+  });
+});
+
 describe("consent page authentication, lockout and CSRF (T13.8)", () => {
   it("refuses a wrong passphrase, re-renders with a fresh CSRF token, and issues no code", async () => {
     const clientId = register();
@@ -527,17 +597,21 @@ describe("consent page authentication, lockout and CSRF (T13.8)", () => {
     expect(r.text).toContain("Enter the operator passphrase or a pairing code.");
   });
 
-  it("locks approval after repeated failures, refusing even the right passphrase until the lockout ends", async () => {
+  it("locks passphrase approval after repeated failures, refusing even the right passphrase until it ends", async () => {
     const clientId = register();
     let c = await openConsent(clientId, pkce().challenge);
+    // Wrong pairing codes do not count towards the passphrase lockout.
+    const wrongCode = await submit(c, { decision: "approve", pairing_code: "AAAA-BBBB-CCCC" });
+    expect(wrongCode.status).toBe(401);
+    c = consentFrom(wrongCode);
     for (let i = 1; i < MAX_FAILED_ATTEMPTS; i++) {
       const r = await submit(c, { decision: "approve", passphrase: `wrong-${i}-passphrase` });
       secrets.push(`wrong-${i}-passphrase`);
       expect(r.status).toBe(401);
       c = consentFrom(r);
     }
-    // A wrong pairing code counts as well, and this one starts the lockout.
-    const last = await submit(c, { decision: "approve", pairing_code: "AAAA-BBBB-CCCC" });
+    const last = await submit(c, { decision: "approve", passphrase: "wrong-last-passphrase" });
+    secrets.push("wrong-last-passphrase");
     expect(last.status).toBe(429);
     expect(last.headers["retry-after"]).toBe(String(LOCKOUT_MS / 1000));
     expect(events.some((e) => e.event === "consent_locked_out")).toBe(true);
@@ -546,21 +620,40 @@ describe("consent page authentication, lockout and CSRF (T13.8)", () => {
     const refused = await submit(locked, { decision: "approve", passphrase: PASSPHRASE });
     expect(refused.status).toBe(429);
     expect(refused.headers.location).toBeUndefined();
-    // A pairing code is not consumed while locked.
+    expect(clients.get(clientId)?.status).toBe("pending");
+
+    // The lockout does not block the operator's local recovery path: a fresh pairing code still works.
     const live = pairing.create();
     secrets.push(live.code, norm(live.code));
-    const lockedPair = await openConsent(clientId, pkce().challenge);
-    expect((await submit(lockedPair, { decision: "approve", pairing_code: live.code })).status).toBe(429);
-    expect(clients.get(clientId)?.status).toBe("pending");
-    expect(db.prepare("SELECT used_at FROM oauth_pairing_code").get()).toEqual({ used_at: null });
+    const viaPairing = await openConsent(clientId, pkce().challenge);
+    const paired = await submit(viaPairing, { decision: "approve", pairing_code: live.code });
+    expect(paired.status).toBe(303);
+    secrets.push(codeOf(paired));
 
+    // The passphrase works again once the lockout ends.
     clock = new Date(clock.getTime() + LOCKOUT_MS);
-    const fresh = pairing.create();
-    secrets.push(fresh.code, norm(fresh.code));
     const after = await openConsent(clientId, pkce().challenge);
-    const ok = await submit(after, { decision: "approve", pairing_code: fresh.code });
+    const ok = await submit(after, { decision: "approve", passphrase: PASSPHRASE });
     expect(ok.status).toBe(303);
-    expect(redirectParams(ok).get("code")).toMatch(/^sbac_/);
+    secrets.push(codeOf(ok));
+  });
+
+  it("throttles wrong pairing codes without consuming or ending the live code", async () => {
+    const clientId = register();
+    const live = pairing.create();
+    secrets.push(live.code, norm(live.code));
+    let c = await openConsent(clientId, pkce().challenge);
+    for (let i = 0; i < MAX_PAIRING_FAILURES_PER_MINUTE; i++) {
+      const r = await submit(c, { decision: "approve", pairing_code: "AAAA-BBBB-CCCC" });
+      expect(r.status).toBe(401);
+      c = consentFrom(r);
+    }
+    const throttled = await submit(c, { decision: "approve", pairing_code: live.code });
+    expect(throttled.status).toBe(429);
+    expect(db.prepare("SELECT used_at FROM oauth_pairing_code").get()).toEqual({ used_at: null });
+    clock = new Date(clock.getTime() + 60_000);
+    const ok = await submit(consentFrom(throttled), { decision: "approve", pairing_code: live.code });
+    expect(ok.status).toBe(303);
     secrets.push(codeOf(ok));
   });
 
@@ -650,13 +743,16 @@ describe("consent page authentication, lockout and CSRF (T13.8)", () => {
     expect(clients.get(clientId)?.status).toBe("pending");
   });
 
-  it("drops the oldest open consent request instead of refusing new ones", async () => {
-    const clientId = register();
-    const first = await openConsent(clientId, pkce().challenge);
-    for (let i = 0; i < MAX_CONSENT_REQUESTS; i++) await openConsent(clientId, pkce().challenge);
-    expect((await submit(first, { decision: "approve", passphrase: PASSPHRASE })).status).toBe(400);
-    const latest = await openConsent(clientId, pkce().challenge);
-    const ok = await submit(latest, { decision: "approve", passphrase: PASSPHRASE });
+  it("drops pending clients' consent requests first when too many are open", async () => {
+    const approvedId = register();
+    db.prepare("UPDATE oauth_client SET status = 'approved' WHERE client_id = ?").run(approvedId);
+    const operator = await openConsent(approvedId, pkce().challenge);
+    const flooder = register();
+    const firstFlood = await openConsent(flooder, pkce().challenge);
+    for (let i = 0; i < MAX_CONSENT_REQUESTS; i++) await openConsent(flooder, pkce().challenge);
+    // The flood pushed out its own oldest request, not the approved client's.
+    expect((await submit(firstFlood, { decision: "approve", passphrase: PASSPHRASE })).status).toBe(400);
+    const ok = await submit(operator, { decision: "approve", passphrase: PASSPHRASE });
     expect(ok.status).toBe(303);
     secrets.push(codeOf(ok));
   });

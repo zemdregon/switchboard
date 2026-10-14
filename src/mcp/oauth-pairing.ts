@@ -5,8 +5,9 @@
  * Delegated (Q-76, fail closed): `switchboard consent pair` creates a code of 12 characters from the Crockford base32
  * alphabet (60 bits from the CSPRNG), shown as `XXXX-XXXX-XXXX`. Only its SHA-256 hash is stored (`oauth_pairing_code`,
  * migration 0012). A code is valid for {@link PAIRING_CODE_TTL_MS} (10 minutes), is redeemed at most once, and creating
- * a new code ends every older unused one, so at most one code is live. Guessing is bounded by the consent page's
- * attempt limiter, which counts a wrong pairing code like a wrong passphrase.
+ * a new code ends every older unused one, so at most one code is live. Guessing is throttled by the consent page (at
+ * most ten wrong codes a minute, so at most a hundred against one code's lifetime of a 2^60 space), separately from the
+ * passphrase lockout, so a stranger who locks the passphrase cannot also block a fresh pairing code.
  */
 import { createHash, randomBytes } from "node:crypto";
 import type Database from "better-sqlite3";

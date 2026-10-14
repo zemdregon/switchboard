@@ -17,7 +17,7 @@
  *   them: lower case, no default port, no path or trailing slash; at most 32). Default empty: any request that carries an
  *   `Origin` header is refused with 403. A request with no `Origin` is not a browser cross-origin request and passes
  *   this check; authentication still applies to it.
- * - `passphrase_hash` (T13.8, Q-75) is the operator passphrase for the consent page, as printed by `switchboard auth
+ * - `passphrase_hash` (T13.8, Q-75) is the operator passphrase for the consent page, as printed by `switchboard consent
  *   hash-passphrase` (scrypt, `scrypt$17$8$1$<salt>$<key>`); never the passphrase itself. A value in any other form, or
  *   with other parameters, aborts startup. Absent: the consent page accepts only one-time pairing codes.
  */
