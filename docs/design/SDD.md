@@ -5,7 +5,7 @@
 | Status | Draft, baseline for milestone M1 |
 | Owns | How components collaborate per workflow, shared design patterns, interface responsibilities, error propagation, configuration model overview, requirement-to-design traceability |
 | Does not own | Components and boundaries ([HLD](HLD.md)), workflows and business rules ([FRD](../requirements/FRD.md)), requirements ([SRS](../requirements/SRS.md)), technology choices ([TDD](TDD.md)), schemas and contracts ([LLD](LLD.md)) |
-| Last reconciled | 2026-10-13 |
+| Last reconciled | 2026-10-14 |
 
 Implementation status is owned by [ROADMAP §6](../ROADMAP.md#6-milestones); no code, tests or configuration existed as
 of 2026-10-12, and parts of this design are now implemented. Component IDs (`COMP-*`) are
@@ -167,12 +167,51 @@ All configuration is schema-validated at load and invalid configuration prevents
 Defaults for numeric values are *(proposed target)* until measured, as in the SRS. Environment variables and global
 provider config are never an input path for policy (FR-POL-08).
 
+### 4.1 COMP-RAG implementation evidence (M12 T12.1–T12.3)
+
+Milestone status and task boundaries: [ROADMAP §6.7](../ROADMAP.md#67-m12-retrieval-index-tasks). Schemas, algorithms
+and the test strategy are in [TDD §3.13](TDD.md#313-retrieval-index) and [LLD §14](LLD.md#14-retrieval-index); the
+subsection below is SDD traceability only.
+
+#### T12.1 — `rag` configuration and per-project store
+
+**Evidence (implemented).** FR-RAG-01, FR-RAG-03, FR-RAG-09 (global `sources` under an allowed root only; the global
+store and sharing rules are T12.7), FR-RAG-11 (caps in configuration only; background build, `index` commands and
+`rag_record` ledger rows are T12.4).
+
+- **Tests:** `src/config/rag.test.ts`, `src/retrieval/store.test.ts`, `src/mcp/project-tools.test.ts`
+- **Modules:** `src/config/rag.ts`, `src/retrieval/store.ts`; store prune at `serve` start (`src/cli/serve.ts`)
+
+#### T12.2 — scanner, exclusions, redaction and chunker
+
+**Evidence (implemented).** FR-RAG-02 (deterministic redaction before chunk output, same pipeline as FR-INN-16).
+
+- **Tests:** `src/retrieval/scan.test.ts`, `src/retrieval/chunk.test.ts`, `src/retrieval/options.test.ts`
+- **Modules:** `src/retrieval/scan.ts`, `src/retrieval/chunk.ts`, `src/retrieval/denylist.ts`,
+  `src/retrieval/options.ts`
+
+#### T12.3 — embedding backend port and locality gates
+
+**Evidence (implemented).** FR-RAG-04; FR-RAG-12 for the port layer (records without text; no embedding row in
+`usage_observation` or capacity). Reuses COMP-INN locality classification and gates (FR-INN-16, T11.3).
+
+- **Tests:** `src/retrieval/http-embedder.test.ts`, `src/retrieval/embedding.test.ts`
+- **Modules:** `src/retrieval/embedding.ts`, `src/retrieval/http-embedder.ts`, `src/retrieval/fake-embedder.ts`;
+  `createPinnedHttpTransport` in `src/inner/http-backend.ts`
+
+Not implemented yet (design unchanged): WF-14 end-to-end and admission context pack (FR-RAG-05, FR-RAG-07, FR-RAG-08,
+T12.5), `search_project_context` (FR-RAG-06), operator `index` and `doctor` retrieval sections (FR-RAG-11, FR-RAG-14,
+T12.4), global read and contribute (FR-RAG-09, FR-RAG-10, T12.7).
+
 ## 5. Requirements to design traceability
 
 Every `FR-*` and `NFR-*` ID in the [SRS](../requirements/SRS.md) has one row. Priority and milestone remain in the SRS;
 "Deferred" requirements are listed with the extension point that keeps them possible. Components use the HLD IDs.
 "Detail" links point to the LLD or TDD section that will specify the mechanism; where no section anchor is assigned yet
 the cell says so.
+
+M12 retrieval through T12.3 (FR-RAG-01–04 on fakes) lists primary tests and modules under [TDD
+§3.13.5](TDD.md#3135-t121-config-and-store-2026-10-14)–[§3.13.7](TDD.md#3137-t123-embedding-port-and-locality-gates-2026-10-14).
 
 | ID | Component(s) | Design element / mechanism | ADR(s) | Detail |
 | --- | --- | --- | --- | --- |

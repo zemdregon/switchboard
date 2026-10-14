@@ -3250,6 +3250,9 @@ installation's is a load error. A dynamic project definition (T9.9) may narrow r
 `effectiveProjectRag` gives each project `off` with a reason (`NO_BACKEND`, `INSTALLATION_OFF`, `PROJECT_OFF`) or `on`
 with the lowered caps and the union of exclusions; context blocks are applied by the scanner (T12.2).
 
+*Evidence (implemented) (T12.1):* `src/config/rag.ts` (wired through `src/config/schema.ts`, `src/config/load.ts`,
+`src/config/projects.ts` and dynamic narrowing in `src/projects/rules.ts`); tests `src/config/rag.test.ts`.
+
 `switchboard index status`, `index rebuild` and `index clear` (each optionally per project, plus `global`) write only
 operator records (rebuild and clear requests) read by the `serve` daemon, as `approve` does (FR-RAG-11, FR-RAG-14).
 
@@ -3267,6 +3270,9 @@ newer version is refused, and `needsRebuild` reports a missing meta row or a mod
 store is deleted by `delete_project` (after the delete is recorded) and, for a configured project removed from the file
 or a delete whose clean-up failed, by a prune at `serve` start; no store is created while no backend is configured. The
 `rag_record` ledger table (§14.10) is added with the first writer of it (T12.4), not here.
+
+*Evidence (implemented) (T12.1):* `src/retrieval/store.ts` (delete on `delete_project` in `src/mcp/project-tools.ts`,
+prune at `serve` in `src/cli/serve.ts`); tests `src/retrieval/store.test.ts`, `src/mcp/project-tools.test.ts`.
 
 ```sql
 CREATE TABLE rag_meta (                 -- one row
@@ -3346,6 +3352,10 @@ whose chunks would cross a cap is left out whole and the result is `complete: fa
 globs) to the project's effective setting. Residual risk: a directory swapped for a symlink between the check and the
 open is not detected; only the project's contexts are scanned, never a run's worktree.
 
+*Evidence (implemented) (T12.2):* `src/retrieval/scan.ts`, `src/retrieval/chunk.ts`, `src/retrieval/denylist.ts`,
+`src/retrieval/options.ts`; tests `src/retrieval/scan.test.ts`, `src/retrieval/chunk.test.ts`,
+`src/retrieval/options.test.ts`.
+
 ### 14.4 Embedding backend port and privacy gates
 
 ```ts
@@ -3376,6 +3386,24 @@ than the inner agent, for simplicity). A denial leaves the store untouched, the 
 `inner_agent` project setting does not apply to this feature; `rag` has its own, narrowing-only setting (§14.1).
 Switchboard handles no embedding credential: a keyed hosted service is reached through an operator-run local gateway
 (ADR-0003, Q-23).
+
+*As built (T12.3, 2026-10-14, Delegated; `src/retrieval/embedding.ts`, `http-embedder.ts`, `fake-embedder.ts`):* the
+port above, with camelCase result fields. `embedGated` resolves locality, applies this table, redacts each text again
+(`redactForIndex`, idempotent on scanner output) and only then calls the backend; a gate denial, a backend error or an
+envelope fault (wrong vector count, a dimension outside 1 to 8,192 or inconsistent, a non-finite value, a zero vector)
+is returned as `ok: false` with a fixed code, never thrown. Each call yields one record of counts, bytes, duration,
+backend kind, locality, outcome and dimension, never text or vectors, to an injected recorder; no retrieval module
+imports the ledger, usage accounting or the capacity estimator (a test checks it), so no embedding call can become a
+`usage_observation` row (FR-RAG-12). The `http` kind reuses the inner agent's pinned-address transport, now exported as
+`createPinnedHttpTransport` from `src/inner/http-backend.ts` (the inner backend uses it unchanged), and posts
+`{ model, input }` to `<base_url>/v1/embeddings`, reading `data[i].embedding` ordered by `index` (Assumption, T12.0),
+at most 32 texts per request and 8 MiB per response, each request bounded by `embedding.timeout_ms`; requests are sent
+one at a time, so `max_concurrency` is not used yet. `probe` sends only a built-in text and never contacts a remote
+endpoint without `allow_remote`. The `local` kind exists only as the deterministic test fake (T12.0).
+
+*Evidence (implemented) (T12.3):* `src/retrieval/embedding.ts`, `src/retrieval/fake-embedder.ts`,
+`src/retrieval/http-embedder.ts`, `createPinnedHttpTransport` in `src/inner/http-backend.ts`; tests
+`src/retrieval/embedding.test.ts` (LLD §14.4 gate table and retrieval import boundary), `src/retrieval/http-embedder.test.ts`.
 
 ### 14.5 Incremental build
 
@@ -4154,7 +4182,8 @@ OpenCode `cache.read` and `cache.write`) from `usage_observation.metrics_json` i
 `creation`, `rows`, `source: "provider_reported"`, `key_names`) summed over the window. A provider with no sourced key,
 or no row holding one, has no block, never a zero. The top-level `affinity` block counts, per project key (§3.2), the
 runs whose provider and model equal the previous run's (`kept`) and those that differ (`switched`), grouped by
-`affinity_switch_reason` from `route_decision.reasons_json`, or `unrecorded` until M7 writes one. Wording: "reported",
+`affinity_switch_reason` from `route_decision.reasons_json`, or `unrecorded` when that field is absent (for example a
+run before affinity was recorded). Wording: "reported",
 never "cache hits".
 
 *As built (T6.7, 2026-10-14, Delegated):* `src/capacity/cache.ts`. Only Grok Build is mapped. It is the only provider

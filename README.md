@@ -40,14 +40,18 @@ Pre-release. The package is private and is not published to any registry; you bu
   is tested on fake providers. It is not `Done`: what Claude Code and Codex print on a real rate limit or quota stop has
   not been captured (operator task T6.11), and no provider is known to publish an enforceable rate limit, so there is no
   rate gate. See [ROADMAP §6.11](docs/ROADMAP.md#611-m6-capacity-and-resilience-tasks).
-- **Milestone 7 (routing) is `Partial`.** `explain_route` and provider or model affinity (with `switchboard affinity
-  list|reset`) are implemented and tested on fake adapters, including an acceptance test through the MCP server. It is not
-  `Done`: `minimum_capability` stays refused until model pinning lands, cache-friendly prompt order waits on the M4
-  adapter lane, and the README routing section is still open (task T7.11). See
+- **Milestone 7 (routing) is `Partial`.** Tasks T7.0 to T7.7 and T7.10 are done on fake adapters: `explain_route`,
+  provider or model affinity (with `switchboard affinity list|reset`), including the acceptance test through the MCP
+  server. It is not `Done` until at least T7.8 (`minimum_capability`, blocked on model pinning in T7.12) and T7.11
+  (README and status) land; cache-friendly prompt order (T7.9) waits on the M4 adapter lane. See
   [ROADMAP §6.12](docs/ROADMAP.md#612-m7-routing-tasks).
-- **Milestone 12 (retrieval index) is `Partial`.** Configuration, a per-project store, and the scanner through chunker
-  are on main and tested; embedding backends, background indexing and retrieval at admission are not. See
-  [ROADMAP §6.7](docs/ROADMAP.md#67-m12-retrieval-index-tasks).
+- **Milestone 11 (inner agent) is `Partial`.** An optional HTTP backend, privacy gates, `doctor` and `inner` reporting,
+  and commit-message drafting on fakes are on main; most run-path hooks, PR drafting and a live backend are not. See
+  [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
+- **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.3 are done on fakes: the spike, `rag`
+  configuration and per-project store, the scanner through chunker, and the embedding port (fake and `http` backends
+  behind the locality gates). From T12.4 (incremental background build) onward remains `Planned`; retrieval at
+  admission is not built yet. See [ROADMAP §6.7](docs/ROADMAP.md#67-m12-retrieval-index-tasks).
 - **Milestone 13 (network MCP transport) is done.** `serve` can expose the MCP tools over Streamable HTTP with OAuth
   2.1 (an embedded authorization server with an operator consent page, PKCE, client registration that the operator
   approves, audience-bound opaque tokens). It is off by default and binds to loopback; put your own TLS proxy in
@@ -293,8 +297,9 @@ Switchboard's own records when you ask:
 - **Limits.** `limits.per_provider_concurrency` (default 1) applies to every provider, and
   `providers.<id>.concurrency` overrides it for one provider.
 - **Cache and switch counts** are evidence, not claims. Reported cache token counts are shown only where a source names
-  the provider's key (Grok Build today). The per-project kept and switched counts show `unrecorded` as the reason until
-  milestone 7 records one.
+  the provider's key (Grok Build today). Per-project kept and switched counts group switches by
+  `affinity_switch_reason` (`user_request`, `capacity_exhausted`, `ineligible`, `failed_after_retry`); runs whose
+  decision has no recorded reason still appear under `unrecorded`.
 
 ### How commits reach Git
 
@@ -562,7 +567,8 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
 - Only Claude Code and Codex; profiles beyond `inspect-untrusted` and `edit-untrusted` only where the adapter can
   compile them (see `list_capabilities`); a `privileged` `continue_task` only on the same provider (ROADMAP
   Q-61 is open).
-- No `adapters validate` command yet; it is scheduled for milestone 4.
+- `adapters validate` exists for Claude Code and Codex only; the M4 providers still need operator captures before their
+  manifests admit a version.
 - Capacity figures are controller estimates. No provider is known to report remaining quota, and the rate-limit and
   quota output shapes of Claude Code and Codex come from synthetic fixtures until the operator captures them (ROADMAP
   T6.11). There is no rate gate, because no provider publishes an enforceable limit for the logins used (T6.8,
@@ -598,7 +604,7 @@ against real providers yet (ROADMAP T5.12 is the operator task).
 | `AUTH_REQUIRED` | `doctor` adapter line (`[warn]`, "AUTH_REQUIRED, run natively"); a failed run | The provider CLI reports you are not logged in. Run the native login it prints (Claude Code: `claude auth login`; Codex: `codex login`, check the provider's documentation), then run `doctor` again. |
 | auth `UNKNOWN` | `doctor` adapter line | Switchboard could not determine login state; the reason is printed. Check the CLI runs on its own. For Codex it means `codex login status` exited with a code other than 0 or 1, timed out or could not start. |
 | `not installed: ... CLI not found` | `doctor` (`[warn]`) | The provider binary is not on `PATH`. Install it, or ignore it if you do not use that provider. |
-| `ADAPTER_VERSION_UNVERIFIED` | `doctor` (`[FAIL]`, exit 1); `list_capabilities` | The installed CLI version is outside the range recorded in the adapter's compliance manifest, so the adapter is ineligible. For Codex the range is `>=0.162.1 <0.163.0`, the version the operator checked on 2026-10-13 (ROADMAP Q-12, an Assumption): another Codex version fails `doctor` until its manifest range is reviewed. Do not edit manifests to force a pass; the `adapters validate` command that would record a version does not exist yet. Use Claude Code, or set `providers.codex.enabled` to `false` (this stops dispatch to Codex, and `doctor` then reports it as `[skip]` and does not probe it). |
+| `ADAPTER_VERSION_UNVERIFIED` | `doctor` (`[FAIL]`, exit 1); `list_capabilities` | The installed CLI version is outside the range recorded in the adapter's compliance manifest, so the adapter is ineligible. For Codex the range on main is `>=0.162.0 <0.163.0` (validated on 0.162.0, ROADMAP Q-12, an Assumption): another Codex version fails `doctor` until you run `switchboard adapters validate codex` and commit the manifest diff, or set `providers.codex.enabled` to `false` (this stops dispatch to Codex, and `doctor` then reports it as `[skip]` and does not probe it). Do not edit manifests by hand to force a pass. |
 | `ELIGIBILITY_NONE` | MCP error or failed run | No provider can take the task: none enabled, installed, version-verified and logged in for that profile; no provider can compile the profile or the approved `privileged` scope; or the queue or concurrency limit was hit. Run `doctor` and `list_capabilities` to see why. |
 | `ELIGIBILITY_NONE` with `details.reason = "QUEUE_FULL"` | MCP error | Switchboard reports a full waiting queue under `ELIGIBILITY_NONE` (a proposed mapping, ROADMAP Q-5). Wait for runs to finish or cancel some, then retry. |
 | `PERMISSION_BLOCKED` | MCP error or failed run | The requested `trust_profile` is above the client's `max_trust_profile`, a `privileged` run's approval check failed before start (for example a changed scope), or the provider denied an operation. Request a lower profile or re-delegate within what is allowed. |

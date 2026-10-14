@@ -1063,6 +1063,44 @@ and 6,139 bytes at p50 and p95.
 - **Not decided here.** Embedding model, dimension and batch size remain operator choices; the dimension is read from
   the backend (§3.13.1). Every other cap and timeout default is chosen in T12.1 as an Assumption.
 
+#### 3.13.5 T12.1 config and store (2026-10-14)
+
+**Evidence (implemented).** Satisfies FR-RAG-01, FR-RAG-03, FR-RAG-09 (global `sources` under an allowed root) and the
+config portion of FR-RAG-11 (caps only lowered; background build and `rag_record` ledger rows are T12.4).
+
+- **Tests:** `src/config/rag.test.ts` (unknown keys at every level, credential-looking values refused without echo,
+  `local` kind and `mode: "on"` without a backend refused, caps only lowered, no backend means every project off);
+  `src/retrieval/store.test.ts` (one `0600` store per project under `rag/projects/`, LLD §14.2 schema as migration 1,
+  newer schema refused, delete and prune, a planted symlink removed without touching its target, nothing created with no
+  backend); `src/mcp/project-tools.test.ts` (`delete_project` removes the store; a dynamic definition cannot set the
+  sharing flags).
+- **Modules:** `src/config/rag.ts`, `src/retrieval/store.ts`; store prune at `serve` start. As built:
+  [LLD §14.1](LLD.md#141-configuration-shape), [LLD §14.2](LLD.md#142-stores-and-tables).
+
+#### 3.13.6 T12.2 scanner, exclusions, redaction and chunker (2026-10-14)
+
+**Evidence (implemented).** Satisfies FR-RAG-02.
+
+- **Tests:** `src/retrieval/scan.test.ts` (nested repository, escaping symlinks, binary, oversized, ignored and
+  denylisted files never chunked; synthetic canary secrets never reach chunk output; operator `exclude`; cap ends
+  `complete: false` with the cap named); `src/retrieval/chunk.test.ts` (40-line and 4,096-byte bounds, UTF-8-safe
+  splits); `src/retrieval/options.test.ts` (context block).
+- **Modules:** `src/retrieval/scan.ts`, `chunk.ts`, `denylist.ts` (documented best effort, R-56), `options.ts`. As
+  built: [LLD §14.3](LLD.md#143-scanner-chunking-and-redaction).
+
+#### 3.13.7 T12.3 embedding port and locality gates (2026-10-14)
+
+**Evidence (implemented).** Satisfies FR-RAG-04 and FR-RAG-12 (records without text; no embedding row in
+`usage_observation` or capacity); reuses FR-INN-16 redaction and the inner-agent locality classification from T11.3.
+
+- **Tests:** `src/retrieval/http-embedder.test.ts` (scripted loopback HTTP server: locality table, gate refusal before
+  connect, planted canaries never in captured request bodies, transport failure modes); `src/retrieval/embedding.test.ts`
+  (LLD §14.4 gate table, re-redaction before the backend, import check that no retrieval module imports ledger, usage or
+  capacity code).
+- **Modules:** `src/retrieval/embedding.ts`, `http-embedder.ts`, `fake-embedder.ts`; inner transport via
+  `createPinnedHttpTransport`. As built: [LLD §14.4](LLD.md#144-embedding-backend-port-and-privacy-gates). Aggregated
+  `rag_record` rows arrive with T12.4.
+
 ### 3.14 Network MCP transport (M13)
 
 - **T13.1 spike (2026-10-14, read from the installed `@modelcontextprotocol/sdk` 1.32.1 in `node_modules`, not from
