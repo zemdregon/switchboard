@@ -24,7 +24,8 @@ export function capacityProviders(
       id,
       enabled: entry?.enabled ?? true,
       weight: entry?.weight ?? null,
-      concurrencyLimit: config.limits?.perProviderConcurrency ?? DEFAULT_LIMIT,
+      // T6.9: the provider's own limit, else the shared per-provider limit (NFR-PERF-03).
+      concurrencyLimit: entry?.concurrency ?? config.limits?.perProviderConcurrency ?? DEFAULT_LIMIT,
     };
   });
 }

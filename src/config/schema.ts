@@ -83,7 +83,10 @@ export interface SwitchboardConfig {
   }[];
   limits?: { global_concurrency?: number; per_provider_concurrency?: number };
   providers?: Partial<
-    Record<ProviderId, { enabled?: boolean; weight?: number; git_channel?: boolean; models?: ModelConfig }>
+    Record<
+      ProviderId,
+      { enabled?: boolean; weight?: number; concurrency?: number; git_channel?: boolean; models?: ModelConfig }
+    >
   >;
   /** Run retention (NFR-DATA-01, FR-WS-07). `interval` is `<n>m`, `<n>h` or `<n>d` (Proposed form). */
   retention?: { days?: number; interval?: string };
@@ -241,6 +244,8 @@ const providerPropsFor = (ids: readonly string[]) =>
         properties: {
           enabled: { type: "boolean" },
           weight: { type: "number", minimum: 0, maximum: 1 },
+          // T6.9 (NFR-PERF-03, LLD §16.1): this provider's slot limit; default `limits.per_provider_concurrency`.
+          concurrency: { type: "integer", minimum: 1, maximum: 64 },
           models: modelsSchema,
           // T9.4b (ADR-0029): Claude Code only; any other provider refuses the key (additionalProperties: false).
           ...(id === "claude-code" ? { git_channel: { type: "boolean" } } : {}),

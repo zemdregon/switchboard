@@ -410,6 +410,11 @@ export interface RunLifecycleOptions {
   readonly globalConcurrency: number;
   /** Optional per-provider slot limit (T4 guard). Unset means no per-provider limit. */
   readonly perProviderConcurrency?: number;
+  /**
+   * T6.9 (NFR-PERF-03 "per provider", LLD §16.1): slot limits by adapter provider id (`providers.<id>.concurrency`).
+   * A provider absent here uses `perProviderConcurrency`.
+   */
+  readonly perProviderLimits?: ReadonlyMap<string, number>;
   readonly maxQueueDepth?: number;
   /** COMP-POL stand-in: resolves a profile name to the snapshot stored on the run and given to `compile`. */
   readonly resolveProfile: (name: TrustProfile) => ResolvedProfile;
@@ -1101,9 +1106,12 @@ export class RunLifecycle {
     for (;;) {
       const picked = this.ledger.immediate((): RunRecord | undefined => {
         if (this.ledger.countRunsInStates(SLOT_STATES) >= this.opts.globalConcurrency) return undefined;
-        const limit = this.opts.perProviderConcurrency;
         const now = this.now();
         for (const run of this.ledger.listRunsInState("QUEUED")) {
+          const limit =
+            run.provider === null
+              ? undefined
+              : (this.opts.perProviderLimits?.get(run.provider) ?? this.opts.perProviderConcurrency);
           if (limit !== undefined && run.provider !== null) {
             if (this.ledger.countRunsInStates(SLOT_STATES, run.provider) >= limit) continue;
           }

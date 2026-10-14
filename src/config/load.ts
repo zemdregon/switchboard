@@ -42,7 +42,8 @@ export interface ResolvedConfig {
   allowedRoots: string[];
   mcpClients: ReadonlyMap<string, ResolvedMcpClient>;
   limits: { globalConcurrency: number; perProviderConcurrency: number };
-  providers: ReadonlyMap<string, { enabled: boolean; weight: number | undefined }>;
+  /** Keyed by config provider id. `concurrency` is the T6.9 per-provider slot limit, absent when not set. */
+  providers: ReadonlyMap<string, { enabled: boolean; weight: number | undefined; concurrency?: number }>;
   /** `providers.<id>.models` blocks (T4.5, FR-ADP-05, LLD §2.1), keyed by config provider id; only providers that set one. */
   providerModels: ReadonlyMap<string, ModelConfig>;
   /** Retention (NFR-DATA-01, FR-WS-07; T3.12 consumes it). `intervalMs` is the GC pass period. */
@@ -363,7 +364,14 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
     profileOverrides,
     // Proposed: a provider not listed is enabled with no explicit weight; listing it can disable it.
     providers: new Map(
-      Object.entries(cfg.providers ?? {}).map(([id, p]) => [id, { enabled: p.enabled ?? true, weight: p.weight }]),
+      Object.entries(cfg.providers ?? {}).map(([id, p]) => [
+        id,
+        {
+          enabled: p.enabled ?? true,
+          weight: p.weight,
+          ...(p.concurrency !== undefined ? { concurrency: p.concurrency } : {}),
+        },
+      ]),
     ),
     providerModels: new Map(
       Object.entries(cfg.providers ?? {}).flatMap(([id, p]) =>
