@@ -9,7 +9,17 @@ import { auditInvocation, bypassClassFlags } from "../audit.js";
 import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
 import { providerEntry } from "../providers.js";
 import { AdapterRegistry } from "../registry.js";
-import type { CompileRequest, Invocation, ProbeOutput, ProbeRunner, ResolvedProfile, TrustProfile } from "../types.js";
+import type {
+  CompileRequest,
+  ExitInfo,
+  Invocation,
+  NormalizedEvent,
+  ParseState,
+  ProbeOutput,
+  ProbeRunner,
+  ResolvedProfile,
+  TrustProfile,
+} from "../types.js";
 import { AntigravityAdapter } from "./adapter.js";
 
 const EXE = "/opt/synthetic/agy";
@@ -167,7 +177,7 @@ describe("antigravity bypass-class declarations (ADR-0035, ADR-0045)", () => {
   });
 });
 
-describe("antigravity probe, auth, parser and resume placeholders (fail closed until T4.33, T4.34)", () => {
+describe("antigravity probe and auth placeholder (fail closed until T4.34)", () => {
   const runner =
     (table: Record<string, { stdout: string; exitCode: number }>): ProbeRunner =>
     async (argv) => {
@@ -210,21 +220,8 @@ describe("antigravity probe, auth, parser and resume placeholders (fail closed u
     expect(missing.steps).toEqual([{ step: "binary", ok: false, detail: "agy not found on PATH" }]);
   });
 
-  it("auth is UNKNOWN, resume is Ineligible, no event is recognised and a clean exit never succeeds", async () => {
-    const a = adapter();
-    expect(await a.authPreflight(runner({}))).toMatchObject({ state: "UNKNOWN" });
-    expect(
-      a.resumeArgs({ provider: "codex", nativeSessionId: "s" }, request(), profileOf("edit-untrusted")),
-    ).toMatchObject({ reason: "CAPABILITY_MISSING", detail: "binding is for codex" });
-    expect(
-      a.resumeArgs({ provider: "antigravity", nativeSessionId: "c" }, request(), profileOf("edit-untrusted")),
-    ).toMatchObject({ ineligible: true });
-    const state = { lines: 0, unknownEvents: 0 } as Parameters<AntigravityAdapter["parseEvent"]>[1];
-    expect(a.parseEvent('{"event":"result","result":{"status":"SUCCESS"}}', state)).toEqual([
-      { kind: "unknown", rawType: "unparsed" },
-    ]);
-    const r = a.extractResult([], { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] });
-    expect(r).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+  it("auth is UNKNOWN until T4.34", async () => {
+    expect(await adapter().authPreflight(runner({}))).toMatchObject({ state: "UNKNOWN" });
   });
 
   it("reads no Antigravity credential, settings or state file (source inspection)", () => {
@@ -248,5 +245,162 @@ describe("antigravity registry entry and manifest gate (T4.32)", () => {
     for (const v of ["1.3.4", "1.3.1", "0.0.0", null]) {
       expect(registry.gate("antigravity", v).eligible, String(v)).toBe(false);
     }
+  });
+});
+
+/**
+ * T4.33: parser, result and failure classification. SYNTHETIC lines in the shapes the 2026-10-14 live check recorded
+ * (rows C4, C7, C9, C10); ids, text and numbers are invented.
+ */
+describe("antigravity parser and result (T4.33)", () => {
+  const CID = "0b6c2d1e-0000-4000-8000-00000000000a";
+  const j = (o: Record<string, unknown>) => JSON.stringify(o);
+  const INIT = j({
+    event: "init",
+    conversation_id: CID,
+    init: { cwd: "/work/tree", tools: ["run_command"], permission_mode: "always-proceed", model: "synthetic-model" },
+  });
+  const STEP = (o: Record<string, unknown>) => j({ event: "step_update", conversation_id: CID, ...o });
+  const USAGE = { input_tokens: 20, output_tokens: 3, thinking_tokens: 1, cache_read_tokens: 0, total_tokens: 24 };
+  const RESULT = (over: Record<string, unknown> = {}) =>
+    j({
+      event: "result",
+      result: {
+        conversation_id: CID,
+        status: "SUCCESS",
+        response: "ok",
+        duration_seconds: 3,
+        num_turns: 1,
+        usage: USAGE,
+        ...over,
+      },
+    });
+  const EXIT0: ExitInfo = { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] };
+  const parse = (lines: string[]) => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const events: NormalizedEvent[] = lines.flatMap((l) => a.parseEvent(l, state));
+    return { a, state, events };
+  };
+
+  it("success: conversation id and model from init, response as the summary, run-total usage provider_reported", () => {
+    const { a, state, events } = parse([
+      INIT,
+      STEP({ step_index: 0, state: "DONE", step_type: "user_input" }),
+      STEP({ step_index: 1, state: "ACTIVE", step_type: "agent_response", text_delta: "o", usage: USAGE }),
+      STEP({ step_index: 1, state: "DONE", step_type: "agent_response", text_delta: "k" }),
+      RESULT(),
+    ]);
+    expect(events).toEqual([
+      { kind: "session_bound", nativeSessionId: CID, model: "synthetic-model" },
+      { kind: "usage", source: "provider_reported", metrics: USAGE },
+      { kind: "message", role: "assistant", text: "ok" },
+      { kind: "result", ok: true },
+    ]);
+    expect(events.find((e) => e.kind === "session_bound")).not.toHaveProperty("backingProvider");
+    expect(state).toMatchObject({ nativeSessionId: CID, unknownEvents: 0 });
+    expect(a.extractResult(events, EXIT0)).toEqual({
+      ok: true,
+      nativeSessionId: CID,
+      summary: "ok",
+      unknownEventCount: 0,
+    });
+  });
+
+  it("a soft-denied tool is PERMISSION_BLOCKED although status is SUCCESS and the exit is 0 (live check C7)", () => {
+    const { a, events } = parse([
+      INIT,
+      STEP({
+        step_index: 2,
+        state: "ACTIVE",
+        step_type: "tool",
+        tool_name: "run_command",
+        tool_info: { name: "run_command", parameters: { command: "echo hello" } },
+      }),
+      STEP({ step_index: 2, state: "DONE", step_type: "tool", tool_name: "run_command" }),
+      RESULT({ response: "", denied_actions: [{ action: "command", display_name: "RunCommand" }] }),
+    ]);
+    expect(events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "shell", name: "run_command", command: "echo hello" },
+    ]);
+    expect(events).toContainEqual({ kind: "permission_denied", tool: "RunCommand" });
+    expect(a.extractResult(events, EXIT0)).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+  });
+
+  it("SUCCESS with no reported tokens (a print timeout, C10) and every other status fail", () => {
+    const timeout = parse([INIT, RESULT({ response: "", usage: { ...USAGE, total_tokens: 0 } })]);
+    expect(timeout.a.extractResult(timeout.events, EXIT0)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+    const noUsage = parse([INIT, RESULT({ usage: undefined })]);
+    expect(noUsage.a.extractResult(noUsage.events, EXIT0)).toMatchObject({ ok: false });
+    for (const status of ["ERROR", "CANCELED", "INTERRUPTED", "INVALID", "WAITING", "RUNNING", "NEW_STATUS"]) {
+      const r = parse([INIT, RESULT({ status })]);
+      expect(r.a.extractResult(r.events, EXIT0), status).toMatchObject({ ok: false });
+    }
+  });
+
+  it("the envelope error maps an invalid model and a failed login; other errors are TOOL_FAILURE", () => {
+    const cases: [string, string][] = [
+      ["invalid model selection (--model x): Available models: a, b", "MODEL_UNAVAILABLE"],
+      ["authentication failed or timed out", "AUTH_REQUIRED"],
+      ["something else", "TOOL_FAILURE"],
+    ];
+    for (const [error, code] of cases) {
+      const r = parse([j({ event: "result", result: { conversation_id: "", status: "ERROR", response: "", error } })]);
+      expect(r.a.extractResult(r.events, { ...EXIT0, exitCode: 1 }), error).toMatchObject({
+        ok: false,
+        failureCode: code,
+      });
+    }
+  });
+
+  it("a non-zero exit, a missing result, a timeout and a cancel never succeed", () => {
+    const { a, events } = parse([INIT, RESULT()]);
+    expect(a.extractResult(events, { ...EXIT0, exitCode: 3 })).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+    });
+    expect(a.extractResult(events, { ...EXIT0, outcome: "timeout", timeoutKind: "idle" })).toMatchObject({
+      failureCode: "PROCESS_TIMEOUT",
+    });
+    expect(a.extractResult(events, { ...EXIT0, outcome: "cancelled" })).toMatchObject({ failureCode: "CANCELLED" });
+    const cut = parse([INIT, STEP({ step_index: 1, state: "ACTIVE", step_type: "agent_response", text_delta: "x" })]);
+    expect(cut.a.extractResult(cut.events, EXIT0)).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+  });
+
+  it("malformed and unknown lines are unknown events, counted, never a result; JSON framing errors emit nothing", () => {
+    const { a, state, events } = parse([
+      INIT,
+      j({ event: "brand_new" }),
+      j({ type: "init" }),
+      j({ event: "init", conversation_id: CID }),
+      j({ event: "step_update", state: "ACTIVE" }),
+      j({ event: "result", result: {} }),
+      "not json",
+    ]);
+    expect(events.filter((e) => e.kind === "unknown")).toHaveLength(5);
+    expect(state.unknownEvents).toBe(5);
+    expect(events.some((e) => e.kind === "result")).toBe(false);
+    expect(a.extractResult(events, EXIT0)).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+  });
+
+  it("the conversation id comes only from structured fields; the first one wins", () => {
+    const other = "0b6c2d1e-0000-4000-8000-00000000000b";
+    const { state, events } = parse([INIT, RESULT({ conversation_id: other, response: `id ${other}` })]);
+    expect(state.nativeSessionId).toBe(CID);
+    expect(events.filter((e) => e.kind === "session_bound")).toHaveLength(1);
+  });
+
+  it("resume is not compiled (Q-86): an unknown --conversation id silently starts a new conversation", () => {
+    const profile = { ...privilegedProfile(BYPASS_SCOPE), bypassApproved: true };
+    expect(
+      adapter().resumeArgs(
+        { provider: "antigravity", nativeSessionId: CID },
+        request({ bypassApproved: true }),
+        profile,
+      ),
+    ).toMatchObject({ ineligible: true, reason: "CAPABILITY_MISSING", detail: expect.stringContaining("Q-86") });
+    expect(
+      adapter().resumeArgs({ provider: "codex", nativeSessionId: CID }, request({ bypassApproved: true }), profile),
+    ).toMatchObject({ reason: "CAPABILITY_MISSING", detail: "binding is for codex" });
   });
 });
