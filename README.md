@@ -69,7 +69,11 @@ Pre-release. The package is private and is not published to any registry; you bu
   [ROADMAP §6.10](docs/ROADMAP.md#610-m13-network-mcp-transport-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
   client and a macOS CI leg are done; Grok Build, Antigravity, Cursor and OpenCode each have a module, compile matrix
-  and parser work on synthetic fixtures. Cursor has conformance and malicious-fixture legs and a Git declaration on
+  and parser work on synthetic fixtures. Grok Build has module, compile-matrix, parser (partial) and auth-preflight
+  coverage on synthetic fixtures (README [Grok Build CLI](#grok-build-cli-milestone-4), ROADMAP T4.22 to T4.24); the
+  conformance suite, malicious-fixture leg and Git declaration fixture tests are still open (T4.25 to T4.27; T4.25 PR
+  [#210](https://github.com/zemdregon/switchboard/pull/210) was open at documentation time). Cursor has conformance
+  and malicious-fixture legs and a Git declaration on
   recorded fixtures (README [Cursor CLI](#cursor-cli-milestone-4), ROADMAP T4.45 to T4.47); live smoke, live malicious
   leg and `adapters validate` for Cursor remain operator work (T4.48). OpenCode has a conformance suite and Git
   declaration on synthetic fixtures and a malicious-fixture leg that is still partial (README
@@ -130,6 +134,7 @@ each provider's own CLI, and Switchboard asks that CLI whether it is logged in.
 | --- | --- | --- |
 | Claude Code | `claude auth login` (the adapter returns `AUTH_REQUIRED` naming it) | Taken from the adapter; check Anthropic's documentation |
 | Codex | `codex login`; status is read with `codex login status` (exit code 0 logged in, 1 not) | `codex login status` observed on codex-cli 0.162.1 (`docs/research/live-checks-2026-10-13.md`); output format undocumented, so only the exit code is used; check OpenAI's documentation for the login step |
+| Grok Build | `grok login` (the adapter returns `AUTH_REQUIRED` naming it; the CLI's own error text also names `grok login --device-code`) | Auth preflight runs `grok models` and keys on the first stdout line (`You are logged in with grok.com.` vs `You are not authenticated.`; exit 0 in both states on the 2026-10-14 live check, `grok 1.0.50`; [`docs/research/live-checks-2026-10-14-grok.md`](docs/research/live-checks-2026-10-14-grok.md)); check xAI's documentation for the login step |
 | Cursor CLI | `cursor-agent login` (the adapter returns `AUTH_REQUIRED` naming it) | Auth preflight runs `cursor-agent status --format json` and keys on `isAuthenticated` (exit 0 both logged in and logged out on the 2026-10-14 live check; [`docs/research/live-checks-2026-10-14-cursor.md`](docs/research/live-checks-2026-10-14-cursor.md)); check Cursor's documentation for the login step |
 | OpenCode | `opencode auth login` (the adapter returns `AUTH_REQUIRED` naming it) | Auth preflight runs `opencode auth list --format json --standalone` and treats any non-environment connection type as logged in (exit 0 in every state on the 2026-10-14 live check, `opencode v2.0.23`; [`docs/research/live-checks-2026-10-14-opencode.md`](docs/research/live-checks-2026-10-14-opencode.md)); check OpenCode's documentation for the login step |
 
@@ -605,6 +610,62 @@ the `commit` tool). The PR-draft, verification-summary and run-title tasks exist
 and nothing calls them yet; the handoff-condensation and routing tasks need milestones 11 and 7 (the handoff bundle of
 milestone 5 is built without it). No hosted or live backend has been
 exercised: every test uses a scripted fake or a local fake server.
+
+## Grok Build CLI (milestone 4)
+
+Config id `grok-build`; routing and `list_capabilities` id `grok-build`. Switchboard runs the **`grok`** binary with
+`--single=<prompt> --output-format streaming-json`
+([TDD §4.3.1](docs/design/TDD.md#431-grok-build-native-controls-per-profile-and-platform-t420); observed on
+2026-10-14 in [`docs/research/live-checks-2026-10-14-grok.md`](docs/research/live-checks-2026-10-14-grok.md),
+`grok 1.0.50`). The prompt is one argv word (`--single=<prompt>`), not stdin (an Assumption in the adapter). Switchboard
+never sets `GROK_HOME`, `XAI_API_KEY` or `GROK_SANDBOX` (the sandbox profile is always a `--sandbox` flag).
+
+The compliance manifest range admits no version until an operator runs `switchboard adapters validate grok-build` and
+commits the manifest diff (ROADMAP T4.28). Until then `doctor` reports `ADAPTER_VERSION_UNVERIFIED` for Grok Build.
+
+### Login
+
+See the [login table](#log-in-to-the-providers-natively) above. Switchboard never runs `grok login`; it only runs
+`grok models` during preflight.
+
+### Trust profiles
+
+The adapter compiles only what [TDD §4.3.1](docs/design/TDD.md#431-grok-build-native-controls-per-profile-and-platform-t420)
+records for the 2026-10-14 live check (Q-62): every profile other than an approved `privileged` bypass scope is refused
+(`PROFILE_UNSUPPORTED`), because `dontAsk` did not show a deny without a matching allow rule, deny rules are prefix
+matches only (so Git-write denial via `--deny` is not a control Switchboard can rely on), the native login file is
+readable from inside the sandbox, and no per-run MCP-definition flag exists in headless mode.
+
+| Profile | Available now | Effect in this version |
+| --- | --- | --- |
+| `inspect-untrusted` | no | `PROFILE_UNSUPPORTED` (`list_capabilities` / `ELIGIBILITY_NONE`) |
+| `edit-untrusted` | no | As `inspect-untrusted` |
+| `test-sandboxed` | no | As `inspect-untrusted` |
+| `trusted-development` | no | As `inspect-untrusted` |
+| `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one argv shape: `grok --no-auto-update --single=<prompt> --output-format streaming-json` with `--sandbox` and `--always-approve` together (never one without the other), worktree file access, shell `broad`, network `on` or `off` (with `--disable-web-search` when off), repository configuration `enabled`, and sandbox profile `read-only`, `strict` or `workspace` from the scope (owner decision 46). A scope without `bypass`, or any narrowing Switchboard can express, is refused before spawn. No `--allow` or `--deny` rules are emitted (prefix matches are not a Git-write control). |
+
+Resume continues the native session with `-r <session_id>` through the same matrix when the provider is eligible
+(synthetic fixtures in `src/adapters/grok/grok.test.ts`, T4.23).
+
+### Git and commits
+
+`list_capabilities` reports `gitWriteControl` **`none-documented`**: Grok Build documents `--deny` rules, but they are
+prefix matches and the live check showed forms that could still run `git commit` (step 9); Switchboard does not emit a
+deny rule. Git-write denial therefore relies on FR-GIT-03 (controller ref comparison) and FR-GIT-06 (the tool-call
+guard) in addition to any provider rule. The parser does not yet read `tool_call` / `tool_call_update` shapes (T4.23
+Partial), so the guard cannot see Grok Build's shell commands until a capture records those lines.
+
+`commitChannel` is **`finalize-only`**: Switchboard does not inject a per-run MCP server (no headless MCP-definition
+flag was found in the 2026-10-14 live check). In the only compiled scope, project `.mcp.json` and `.grok/config.toml`
+MCP servers load without `--trust` (observed step 10a). To publish work, set `finalize_commit` on the project's primary
+context as for Codex ([How commits reach Git](#how-commits-reach-git)).
+
+Fixture evidence on `main`: `src/adapters/grok/grok.test.ts` ("grok compile matrix (T4.22)", "grok probe and resume
+(T4.22, T4.23)", "grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-10-14 live check recorded)",
+"grok auth preflight (T4.24, Q-10; SYNTHETIC outputs in the shapes of the 2026-10-14 live check)"). Conformance,
+malicious-fixture and Git-declaration argv tests are not on `main` yet (ROADMAP T4.25 to T4.27; T4.25 was open as PR
+[#210](https://github.com/zemdregon/switchboard/pull/210) at documentation time). No end-to-end run through Switchboard
+against a logged-in `grok` has been recorded yet (T4.28).
 
 ## Cursor CLI (milestone 4)
 
