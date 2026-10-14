@@ -14,7 +14,9 @@
  * one identical 401 with `error="invalid_token"`; the reason code goes only to `onTokenRejected`. A valid token needs
  * the `mcp` scope and an OAuth-client-to-MCP-client mapping (T13.4, Q-77), otherwise 403 `insufficient_scope`; then
  * the request is served by a stateless MCP server for that configured client, with its maximum trust profile. The
- * handler never echoes a token, never passes it to the MCP server, and logs nothing itself.
+ * OAuth client must still be approved. Only POST is served; requests in flight are capped. The handler never echoes a
+ * token, removes the `Authorization` and `Cookie` headers before the MCP server sees the request, and logs nothing
+ * itself.
  *
  * Every request first passes the `Origin` check (T13.2, FR-MCP-12, LLD §3.3): a request whose `Origin` header is not in
  * `transport.http.allowed_origins` gets 403 before any routing, which blocks DNS rebinding and cross-site calls from a
@@ -101,12 +103,17 @@ export interface HttpAuthDeps {
    */
   mcpServerFor?: (mcpClientId: string) => SwitchboardMcpServer;
   /** Client registry for `POST /register` (T13.7). Without one the endpoint answers 404. */
-  clients?: Pick<OAuthClientStore, "register">;
+  clients?: Pick<OAuthClientStore, "register" | "get">;
   /** Told the id of each newly registered (pending) client, for the local audit log. */
   onClientRegistered?: (clientId: string) => void;
   /** Authorization and token endpoints with the consent page (T13.8). Without one both answer 404. */
   authorizationServer?: Pick<AuthorizationServer, "handleAuthorize" | "handleToken">;
 }
+
+/** Delegated (Q-77, Assumptions): bounds on the stateless MCP endpoint, which builds a server per request. */
+export const MAX_MCP_REQUESTS_IN_FLIGHT = 16;
+export const MAX_MCP_REQUESTS_PER_CLIENT = 4;
+export const MAX_MCP_BODY_BYTES = 256 * 1024;
 
 /** Delegated (Q-74): the largest registration body read; a larger one is refused with 413 without being parsed. */
 export const MAX_REGISTRATION_BODY_BYTES = 16 * 1024;
@@ -175,7 +182,10 @@ async function serveMcp(
 ): Promise<void> {
   const mcp = mcpServerFor(mcpClientId);
   // No `sessionIdGenerator`: the SDK's stateless mode.
-  const transport = new StreamableHTTPServerTransport({ enableJsonResponse: true });
+  const transport = new StreamableHTTPServerTransport({
+    enableJsonResponse: true,
+    maxRequestBodySize: MAX_MCP_BODY_BYTES,
+  });
   res.on("close", () => {
     void transport.close().catch(() => {});
     void mcp.close().catch(() => {});
@@ -204,6 +214,9 @@ export function httpTransportHandler(
     [AUTHORIZATION_SERVER_WELL_KNOWN, authorizationServerMetadata(s)],
   ]);
   const allowedOrigins = new Set(s.allowedOrigins);
+  /** MCP requests being served, in total and per OAuth client (T13.4): each one holds a whole MCP server. */
+  let inFlightTotal = 0;
+  const inFlight = new Map<string, number>();
   return (req, res) => {
     let pathname: string;
     try {
@@ -261,8 +274,14 @@ export function httpTransportHandler(
         refuse(res, verdict?.reason ?? "unknown");
         return;
       }
-      // T13.4 (FR-MCP-14, Q-77): the token's OAuth client maps to one configured MCP client, whose maximum profile
-      // applies exactly as on stdio; the token carries no profile, so it cannot raise it.
+      // T13.4 (FR-MCP-14, Q-77): the token's OAuth client must still be approved (fail closed without a client store:
+      // a revoked client's unexpired token is refused even if its tokens were not revoked with it).
+      if (auth.clients?.get(verdict.token.clientId)?.status !== "approved") {
+        refuse(res, "revoked");
+        return;
+      }
+      // The token's OAuth client maps to one configured MCP client, whose maximum profile applies exactly as on
+      // stdio; the token carries no profile, so it cannot raise it.
       if (!verdict.token.scopes.includes("mcp")) {
         auth.onClientRefused?.("missing_scope", verdict.token.clientId);
         send(res, 403, { error: "insufficient_scope" }, { "www-authenticate": insufficient });
@@ -278,6 +297,29 @@ export function httpTransportHandler(
         send(res, 501, { error: "not_implemented" });
         return;
       }
+      // Stateless mode serves POST only: a GET would open a server-sent-events stream that never ends, and DELETE has
+      // no session to end (the MCP transport spec allows 405 for both).
+      if (req.method !== "POST") {
+        send(res, 405, { error: "method_not_allowed" }, { allow: "POST" });
+        return;
+      }
+      const perClient = inFlight.get(verdict.token.clientId) ?? 0;
+      if (inFlightTotal >= MAX_MCP_REQUESTS_IN_FLIGHT || perClient >= MAX_MCP_REQUESTS_PER_CLIENT) {
+        send(res, 503, { error: "temporarily_unavailable" }, { "retry-after": "1" });
+        return;
+      }
+      // The credential stays here: the SDK copies request headers into every handler's `extra.requestInfo`.
+      delete req.headers.authorization;
+      delete req.headers.cookie;
+      const oauthClientId = verdict.token.clientId;
+      inFlightTotal++;
+      inFlight.set(oauthClientId, perClient + 1);
+      res.once("close", () => {
+        inFlightTotal--;
+        const n = (inFlight.get(oauthClientId) ?? 1) - 1;
+        if (n <= 0) inFlight.delete(oauthClientId);
+        else inFlight.set(oauthClientId, n);
+      });
       serveMcp(req, res, auth.mcpServerFor, mcpClientId).catch(() => {
         if (!res.headersSent) send(res, 500, { error: "server_error" });
         else res.destroy();

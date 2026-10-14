@@ -5,6 +5,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -42,6 +43,7 @@ import {
   createScrubber,
   createSwitchboardServer,
   type HttpTransportListener,
+  MAX_MCP_REQUESTS_PER_CLIENT,
   OAuthTokenStore,
   type SwitchboardMcpServer,
   startHttpTransport,
@@ -206,6 +208,20 @@ interface Setup {
 }
 
 const HTTP_RESOURCE = "https://sb.example.test/mcp";
+/** A client store in which every OAuth client is approved, unless named in `revokedClients`. */
+const revokedClients = new Set<string>();
+const approvedClients = {
+  register: () => {
+    throw new Error("not used");
+  },
+  get: (clientId: string) => ({
+    clientId,
+    status: revokedClients.has(clientId) ? ("revoked" as const) : ("approved" as const),
+    redirectUris: [],
+    grantTypes: [],
+    createdAt: "",
+  }),
+};
 const httpClient = (i: number): Client => {
   const c = servers[i]?.client;
   if (!c) throw new Error("no client");
@@ -270,6 +286,7 @@ async function setup(s: Setup): Promise<void> {
     const tokens = new OAuthTokenStore(db);
     httpListener = await startHttpTransport(settings, {
       tokens,
+      clients: approvedClients,
       mcpServerFor: (id) => createSwitchboardServer({ lifecycle, ledger, artifacts, registry, config, clientId: id }),
     });
     const url = new URL(`http://127.0.0.1:${httpListener?.address.port}/mcp`);
@@ -368,6 +385,7 @@ afterEach(async () => {
   }
   await httpListener?.close();
   httpListener = undefined;
+  revokedClients.clear();
   db.close();
   // FR-POL-03 / AGENTS.md: no compiled argv in any run of this file carried a bypass flag.
   for (const inv of compiled) expect(auditInvocation(inv)).toEqual([]);
@@ -986,6 +1004,7 @@ describe("MCP over the HTTP transport (T13.4; FR-MCP-14, Q-77)", () => {
     const refused: string[] = [];
     httpListener = await startHttpTransport(settings, {
       tokens,
+      clients: approvedClients,
       onClientRefused: (reason) => refused.push(reason),
       mcpServerFor: () => {
         built++;
@@ -1007,7 +1026,68 @@ describe("MCP over the HTTP transport (T13.4; FR-MCP-14, Q-77)", () => {
       expect(await r.json()).toEqual({ error: "insufficient_scope" });
     }
     expect(refused).toEqual(["unmapped_client", "missing_scope"]);
+    // A client revoked after its token was issued is refused at once (401), even though the token is unexpired.
+    revokedClients.add(A);
+    expect((await post(issue(A, ["mcp"]))).status).toBe(401);
     expect(built).toBe(0);
+  });
+
+  it("serves POST only, caps requests in flight and keeps the credential away from the MCP server", async () => {
+    await setup({ adapters: [fakeWriter()], clients: [{ id: "reader", max: "inspect-untrusted" }] });
+    const settings = resolveHttpTransport({
+      enabled: true,
+      public_url: HTTP_RESOURCE,
+      port: 0,
+      default_mcp_client: "reader",
+    }) as HttpTransportSettings;
+    const tokens = new OAuthTokenStore(db);
+    const seen: (string | undefined)[] = [];
+    // A server whose connect never settles holds its request open, so the in-flight cap can be observed.
+    const hanging = {
+      server: { connect: () => new Promise<never>(() => {}) },
+      close: async () => {},
+    } as unknown as SwitchboardMcpServer;
+    httpListener = await startHttpTransport(settings, {
+      tokens,
+      clients: approvedClients,
+      mcpServerFor: () => hanging,
+      // Records, after the handler has run, the credential headers the MCP transport would see on a POST.
+      createServer: (handler) =>
+        http.createServer((req, res) => {
+          handler(req, res);
+          if (req.method === "POST") seen.push(req.headers.authorization, req.headers.cookie);
+        }),
+    });
+    const listener = httpListener;
+    if (!listener) throw new Error("no listener");
+    const token = tokens.issue({
+      kind: "access",
+      clientId: A,
+      resource: HTTP_RESOURCE,
+      scopes: ["mcp"],
+      ttlMs: 60_000,
+    });
+    const url = `http://127.0.0.1:${listener.address.port}/mcp`;
+    const headers = { authorization: `Bearer ${token.token}`, "content-type": "application/json", cookie: "a=b" };
+    for (const method of ["GET", "DELETE", "PUT"]) {
+      const r = await fetch(url, { method, headers });
+      expect(r.status).toBe(405);
+      expect(r.headers.get("allow")).toBe("POST");
+    }
+    const abort = new AbortController();
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    const held = Array.from({ length: MAX_MCP_REQUESTS_PER_CLIENT }, () =>
+      fetch(url, { method: "POST", headers, body, signal: abort.signal }).catch(() => undefined),
+    );
+    await new Promise((res) => setTimeout(res, 100));
+    const over = await fetch(url, { method: "POST", headers, body });
+    expect(over.status).toBe(503);
+    abort.abort();
+    await Promise.all(held);
+    await new Promise((res) => setTimeout(res, 100));
+    // Served (and the refused 503) requests: the handler removed both headers before the MCP transport could read them.
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.slice(0, MAX_MCP_REQUESTS_PER_CLIENT * 2).every((h) => h === undefined)).toBe(true);
   });
 });
 

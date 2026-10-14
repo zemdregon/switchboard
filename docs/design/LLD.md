@@ -1351,16 +1351,21 @@ CREATE TABLE oauth_pairing_code (        -- migration 0012 (T13.8); mutable only
   `privileged`.
 - **Mapping and mount as built (T13.4, Q-77, Delegated).** The token's subject is its OAuth client id.
   `transport.http.clients` lists `{ "oauth_client_id": "sbc_...", "mcp_client": "<mcp_clients id>" }` (at most 64, each
-  OAuth client once); `transport.http.default_mcp_client` optionally names the entry for an approved OAuth client with no
-  mapping. Config load refuses a target that is not in `mcp_clients` or that has `privileged_approval: not_required`, so
-  a remote client's `privileged` runs always wait for the operator CLI (FR-MCP-14, ADR-0019). At the MCP endpoint a
+  OAuth client once); `transport.http.default_mcp_client` optionally names the entry for an approved OAuth client with
+  no mapping. Config load refuses a target that is not in `mcp_clients` or that has `privileged_approval: not_required`,
+  so a remote client's `privileged` runs always wait for the operator CLI (FR-MCP-14, ADR-0019), and a
+  `default_mcp_client` with a `privileged` ceiling (only an explicit mapping may reach one). The token's OAuth client
+  must still be `approved` on every request (401 otherwise, also when no client store is wired). At the MCP endpoint a
   valid token without the `mcp` scope, or whose client has no mapping, gets 403 `{"error":"insufficient_scope"}` with
   `WWW-Authenticate: Bearer error="insufficient_scope", scope="mcp", resource_metadata=...`; `serve` logs the reason and
-  the OAuth client id. Otherwise the request is served in the MCP SDK's stateless Streamable HTTP mode: a fresh
-  `createSwitchboardServer` for the mapped client (the same lifecycle, ledger, projects and policy as stdio, so the
-  same ceiling and admission checks) and a fresh transport per request, JSON responses, closed when the response ends.
-  Token scopes and claims never reach the server, so nothing in a token can raise the profile. Runs are recorded under
-  the MCP client id, so OAuth clients mapped to one entry share its runs. Code: `src/mcp/http.ts`,
+  the OAuth client id. Only `POST` is served (405 with `Allow: POST` otherwise: a stateless `GET` would hold an endless
+  event stream). At most 16 requests are in flight, 4 per OAuth client (503 with `Retry-After: 1`), and a body is at
+  most 256 KiB (Assumptions). The `Authorization` and `Cookie` headers are removed before the SDK copies headers into
+  the handlers' request info. Otherwise the request is served in the MCP SDK's stateless Streamable HTTP mode: a fresh
+  `createSwitchboardServer` for the mapped client (the same lifecycle, ledger, projects and policy as stdio, so the same
+  ceiling and admission checks) and a fresh transport per request, JSON responses, closed when the response ends. Token
+  scopes and claims never reach the server, so nothing in a token can raise the profile. Runs are recorded under the MCP
+  client id, so OAuth clients mapped to one entry share its runs. Code: `src/mcp/http.ts`,
   `src/config/http-transport.ts`, `src/config/load.ts`, `src/cli/serve.ts`.
 - **Sessions.** The session identifier is random and stored with the subject and client; a mismatch returns HTTP 403 and
   an audit event with no token material. *As built (T13.4, Q-77):* the transport is stateless, so no session identifier
