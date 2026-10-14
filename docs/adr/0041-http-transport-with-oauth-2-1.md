@@ -1,6 +1,6 @@
 # ADR-0041: Network MCP transport (Streamable HTTP) with embedded OAuth 2.1
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-14
 - Decided by: Delegated (Linus, 2026-10-14), recording the owner decision that Switchboard will be embedded in
   Grok Bot as a public-facing MCP server, so HTTP transport and OAuth are critical. Under [owner
