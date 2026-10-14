@@ -439,10 +439,11 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
 
 ## Known limitations
 
-- **Codex is only lightly validated.** The Codex compliance manifest covers `>=0.162.1 <0.163.0` (an Assumption, ROADMAP
-  Q-12), validated only by `--version`, the flags in `--help` and the operator's live checks of 2026-10-13
-  (`docs/research/live-checks-2026-10-13.md`), not by a conformance suite. Any other Codex version fails the version
-  gate. The `codex login status` exit codes were observed on that version only; its output format is undocumented.
+- **Codex is only lightly validated.** The Codex compliance manifest covers `>=0.162.0 <0.163.0` (an Assumption, ROADMAP
+  Q-12), validated on codex-cli 0.162.0 on 2026-10-14 by `switchboard adapters validate codex` (probe, auth, static
+  conformance checks and one smoke call; `docs/research/live-checks-2026-10-14-claude-codex.md`) and, for 0.162.1, by
+  `--version` and the flags in `--help` (`docs/research/live-checks-2026-10-13.md`), not by a conformance suite. Any
+  other Codex version fails the version gate. The `codex login status` exit codes were observed on that version only; its output format is undocumented.
 - **Event shapes are partly verified.** The 2026-10-13 live checks confirmed the Claude Code stream-json shapes
   (C-1 to C-11 and G-1) on 2.1.296 and the Codex flags (X-1 to X-3) on 0.162.1. Claude error strings (C-12), the
   Git-write attempt (C-G2) and Codex through Switchboard (X-5 to X-9) are still unverified, and another CLI version may
@@ -464,8 +465,8 @@ SWITCHBOARD_LIVE_TESTS=1 SWITCHBOARD_LIVE_PROVIDER=claude npm run test:live   # 
 
 It builds, creates a throwaway Git repository and data directory under the system temp directory, runs one
 `edit-untrusted` task, and prints which adapter assumptions held, failed or were not checked. Details are in
-[TDD §3.6](docs/design/TDD.md#36-testing-strategy). With the current manifests, a codex-cli 0.162.1 passes the version
-gate; any other Codex version is refused as `ADAPTER_VERSION_UNVERIFIED`.
+[TDD §3.6](docs/design/TDD.md#36-testing-strategy). With the current manifests, a codex-cli 0.162.0 or 0.162.1 passes the
+version gate (range `>=0.162.0 <0.163.0`); any other Codex version is refused as `ADAPTER_VERSION_UNVERIFIED`.
 
 ## Troubleshooting
 

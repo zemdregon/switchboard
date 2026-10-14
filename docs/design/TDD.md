@@ -1257,6 +1257,29 @@ cells of §4.3.1 from Unverified to observed.
 Mapping of results to the T4.22 to T4.28 tasks: steps 1 and 2 to T4.22 (manifest notes) and T4.24; steps 4 to 6 to
 T4.23; steps 7 to 11 to T4.22, T4.27 and T4.28; step 12 to T4.27 and the ACP decision.
 
+#### 4.3.3 Note 2026-10-14: contradictions found by the T4.21 live checks (Delegated; cells above not edited)
+
+Source: [live-checks-2026-10-14-grok.md](../research/live-checks-2026-10-14-grok.md), grok 1.0.50 on Ampere. Accepted
+text is not rewritten; each item names the claim above it that the check contradicts or narrows. Decisions are in
+[Q-62](../ROADMAP.md#73-open-questions-for-zemdregon-not-blocking-m2-unless-noted) and
+[ADR-0039](../adr/0039-switchboard-side-tool-call-guard.md).
+
+- **`grok models --json`** (checklist step 2): no `--json` flag (exit 2). `grok models` prints text and exits 0 even
+  logged out (first line `You are not authenticated.`), so an auth probe keys on that first line, not on exit code.
+  `grok inspect --json` carries no auth status.
+- **Git-write deny rules** (§4.3.1 matrix, §4 layer 1): syntax accepted and the deny fires, but it is a prefix match:
+  `git -C . commit` and `/usr/bin/git commit` created commits. The rule is not a declared control; Switchboard's guard
+  and the ref snapshot are (ADR-0039).
+- **`dontAsk`** silently denying without an allow rule: not shown (plain `echo hi` ran). `inspect-untrusted` may not
+  rely on it.
+- **Credential boundary** (`~/.grok/auth.json`): readable from `--sandbox strict` and `workspace`; the sandbox is not
+  a credential control. The sandbox's temp allowance follows `$TMPDIR`.
+- **`--no-auto-update` and `--trust`**: the first works but is absent from `--help`; `--trust` is absent from
+  `--help` and was not run.
+- **AUTH_REQUIRED text**: the CLI names `grok login --device-code` and `XAI_API_KEY`.
+- **`agent stdio`** as a fallback: it has no permission or sandbox flags.
+- **Resume**: `-r <id>` is not tied to the working directory; `-s` names a new session only (the [SESS] reading).
+
 ### 4.4 Antigravity (`agy`, M4)
 
 Spike result, 2026-10-13 (T4.30; Delegated agent work, not owner-approved; documentation only). Nothing below was run:
@@ -1463,6 +1486,26 @@ candidate has been run.
 **Status.** Unverified until T4.31 (checklist C14 to C17). Nothing in the compile matrix, manifest or roadmap
 changes because of this lead.
 
+#### 4.4.5 Note 2026-10-14: contradictions found by the T4.31 live checks (Delegated; cells above not edited)
+
+Source: [live-checks-2026-10-14-antigravity.md](../research/live-checks-2026-10-14-antigravity.md), `agy` 1.3.4 and the
+ACP server build 1.3.0 on Ampere. Decision: [Q-63](../ROADMAP.md#73-open-questions-for-zemdregon-not-blocking-m2-unless-noted),
+[ADR-0039](../adr/0039-switchboard-side-tool-call-guard.md).
+
+- **Auth** (C3, C5): `agy models --output-format json` does not exist (exit 1, `flags provided but not defined`);
+  `agy models` prints `slug<TAB>name` lines and, logged out, exits 1 quickly with `Please sign in to view available
+  models` (a usable preflight; `-p` logged out hangs about 60 s). Login state is a token file under the CLI state
+  directory, not the keyring text of C5b and C13.
+- **Flags** (C2): no `--settings`, `--config-dir` (rejected), `--mcp-config` or `--workspace`; a hidden
+  `--gemini_dir` works. `acp` and `serve` are not subcommands.
+- **Permission mode** (§4.4.1, §4.4.2): no per-run flag; `init.permission_mode` was `request-review` in every run,
+  including `--sandbox` and `--mode=plan`. A soft-denied tool gives `status` `SUCCESS` with possibly empty `response`;
+  timeouts and an unknown `--conversation` id also exit 0.
+- **ACP** (§4.4.4): the ACP server does not reuse `agy`'s login (`session/new` returns `-32000 Authentication
+  required`); without `--uid=` the binary aborts (SIGABRT); MCP capabilities `http` and `sse`, no `stdio`.
+- **Repository config** (C11): `.agents/mcp_config.json` and `.agents/hooks.json` ran with no approval: an escape,
+  now refused by Switchboard while `repoConfig` is `disabled`.
+
 ### 4.5 Cursor CLI (M4)
 
 Spike result, 2026-10-13 (T4.40; Delegated agent work, not owner-approved). `agent` is not installed on the development
@@ -1566,6 +1609,25 @@ prompt text, and move the cell named in the right-hand column from `Unverified: 
 | 16 | In scratch directory A, a stream run with `--sandbox enabled` that tries `touch ../outside`; take `session_id`; resume it with `--resume <session_id>` (a) in directory A with `--sandbox` omitted, repeating `touch ../outside`; (b) from a second scratch directory B with the same flags as the first run; (c) in A without `--force` after a first run with `--force` (scratch repo only) | Event results, exit code, `session_id` of each result, resume output | [§4.10](#410-native-resume-inventory-t50) Cursor cells: working-directory tie, sandbox and permission flags on resume (extends item 8) |
 
 Capture nothing from `~/.cursor` other than file names; if a command prints a token or key, stop, redact and report it.
+
+#### 4.5.4 Note 2026-10-14: contradictions found by the T4.41 live checks (Delegated; cells above not edited)
+
+Source: [live-checks-2026-10-14-cursor.md](../research/live-checks-2026-10-14-cursor.md), Cursor CLI 2026.10.12-d47ca18
+on Ampere. Decision: [Q-65](../ROADMAP.md#73-open-questions-for-zemdregon-not-blocking-m2-unless-noted).
+
+- **`--force`** ([C3], §4.5.1): edits apply without `--force`; only shell is refused. [C1] and [C8] are right, [C3] is
+  wrong for this version.
+- **Shell refusal**: `shellToolCall.result.rejected` or `.permissionDenied`; the overall `result` is still `success`,
+  `is_error` false, exit 0. A refusal is seen only in events.
+- **`status` exit code**: exit 0 both logged in and logged out; use JSON `isAuthenticated`.
+- **`--sandbox enabled`**: hard-fails (exit 1, "Sandbox mode is enabled but not available", AppArmor user-namespace
+  restriction on this host), not a fallback to approval.
+- **Binary**: `agent` in a login shell is Grok's binary here; Cursor's is `cursor-agent`.
+- **`thinking` events** are emitted on every `stream-json` run (not suppressed) and carry reasoning text.
+- **Additional flags** not in the audit list: `--auto-review` (a permission-widening flag; Proposed bypass-class),
+  `--add-dir`.
+- **Global state**: a headless run loads the operator's global rules, hooks and MCP tool names; `CURSOR_CONFIG_DIR`
+  alone does not isolate the login.
 
 ### 4.6 OpenCode (M4)
 
@@ -1694,6 +1756,26 @@ Record the version first; all results are valid for that version only (ADR-0009)
 
 Done when each row's result, with the OpenCode version and date, replaces its `Unverified: T4.51` cell or is recorded
 as not possible (then the cell becomes `Ineligible` with that reason).
+
+#### 4.6.4 Note 2026-10-14: contradictions found by the T4.51 live checks (Delegated; cells above not edited)
+
+Source: [live-checks-2026-10-14-opencode.md](../research/live-checks-2026-10-14-opencode.md), `opencode v2.0.23` on
+Ampere. Decision: [Q-64](../ROADMAP.md#73-open-questions-for-zemdregon-not-blocking-m2-unless-noted),
+[ADR-0039](../adr/0039-switchboard-side-tool-call-guard.md).
+
+- **Version**: the section describes the v1 documentation site; the installed CLI is v2.0.23 (a different major).
+- **Flags**: no `--pure`, `--dir` or `--attach` in `run --help` (`--server <url>` and `--standalone` exist);
+  `opencode models [provider]` and `--verbose` exit 1.
+- **Permission compile target**: `OPENCODE_PERMISSION` and `OPENCODE_CONFIG_CONTENT` denials had no effect on a `read`
+  call (service and `--standalone`); a recognised deny in project or inline config made tool runs fail with a 403
+  `provider.auth` error. The shell tool is `shell` in events.
+- **Defaults**: shell commands, including `git commit` and `git push`, ran with no rule; no `ask` hang was seen.
+- **Events**: `error.type` and `error.message` (not `error.name`/`error.data.message`); a successful run can lack
+  `step_finish`.
+- **Auth**: `auth list` exits 0 in all states; use `--format json`. `auth export` prints stored credentials (never run).
+- **Isolation**: a scratch `HOME` collides with the host's background `opencode serve --service` unless
+  `--standalone`; env-based per-run config is read by the client and not applied by the service.
+- **Resume**: `--session` resumes from another directory; `--continue` is per project.
 
 ### 4.7 Kimi Code (M4, blocked by B-1)
 
