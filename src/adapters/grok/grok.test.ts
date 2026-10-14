@@ -9,10 +9,17 @@ import { auditInvocation, bypassClassFlags } from "../audit.js";
 import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
 import { providerEntry } from "../providers.js";
 import { AdapterRegistry } from "../registry.js";
-import type { CompileRequest, ProbeOutput, ProbeRunner, ResolvedProfile, TrustProfile } from "../types.js";
+import type { CompileRequest, ParseState, ProbeOutput, ProbeRunner, ResolvedProfile, TrustProfile } from "../types.js";
 import { GrokAdapter } from "./adapter.js";
 
 const EXE = "/opt/synthetic/grok";
+const BYPASS_SCOPE = {
+  files: { access: "worktree" },
+  shell: { mode: "broad" },
+  network: { mode: "off" },
+  repository_config: { mode: "enabled" },
+  bypass: true,
+} as const;
 const request = (over: Partial<CompileRequest> = {}): CompileRequest => ({
   runId: "run_01M4WBZSXSCWYKTKJN77A7MFJQ",
   objective: "--yolo fix the failing test",
@@ -117,7 +124,7 @@ describe("grok compile matrix (T4.22)", () => {
   });
 });
 
-describe("grok probe, parser and resume placeholders (fail closed until T4.23)", () => {
+describe("grok probe and resume (T4.22, T4.23)", () => {
   const runner =
     (table: Record<string, { stdout: string; exitCode: number }>): ProbeRunner =>
     async (argv) => {
@@ -161,33 +168,139 @@ describe("grok probe, parser and resume placeholders (fail closed until T4.23)",
     expect(missing.steps).toEqual([{ step: "binary", ok: false, detail: "grok not found on PATH" }]);
   });
 
-  it("resume is Ineligible, no event is recognised and a clean exit never succeeds", () => {
+  it("resume compiles `-r <id>` through the same matrix and refuses another provider's or an unsafe id", () => {
     const a = adapter();
     expect(
       a.resumeArgs({ provider: "codex", nativeSessionId: "s" }, request(), profileOf("edit-untrusted")),
-    ).toMatchObject({
-      reason: "CAPABILITY_MISSING",
-      detail: "binding is for codex",
-    });
+    ).toMatchObject({ reason: "CAPABILITY_MISSING", detail: "binding is for codex" });
     expect(
       a.resumeArgs({ provider: "grok", nativeSessionId: "s" }, request(), profileOf("edit-untrusted")),
     ).toMatchObject({
-      ineligible: true,
+      reason: "PROFILE_UNSUPPORTED",
     });
-    const state = { lines: 0, unknownEvents: 0 } as Parameters<GrokAdapter["parseEvent"]>[1];
-    expect(a.parseEvent('{"type":"end","stopReason":"end_turn"}', state)).toEqual([
-      { kind: "unknown", rawType: "unparsed" },
-    ]);
-    const r = a.extractResult([], {
-      outcome: "exited",
-      exitCode: 0,
-      signal: null,
-      expectedExitCodes: [0],
-    });
-    expect(r).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+    const profile = privilegedProfile(BYPASS_SCOPE);
+    const approved = { ...profile, bypassApproved: true };
+    expect(
+      a.resumeArgs({ provider: "grok", nativeSessionId: "--yolo" }, request({ bypassApproved: true }), approved),
+    ).toMatchObject({ reason: "CAPABILITY_MISSING", detail: expect.stringContaining("not a safe single argument") });
+    const id = "0c1d5f2e-7c1a-4b66-9d0c-1f5b8a3a9e11";
+    const r = a.resumeArgs({ provider: "grok", nativeSessionId: id }, request({ bypassApproved: true }), approved);
+    expect("ineligible" in r).toBe(false);
+    if ("ineligible" in r) return;
+    expect(r.argv.slice(-2)).toEqual(["-r", id]);
+    const first = a.compile(request({ bypassApproved: true }), approved);
+    expect("ineligible" in first).toBe(false);
+    if (!("ineligible" in first)) expect(r.policyFlags).toEqual(first.policyFlags);
+    expect(auditInvocation(r, { profile, bypassApproved: true })).toEqual([]);
   });
 });
 
+describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-10-14 live check recorded)", () => {
+  const parse = (lines: string[]) => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    return { events: lines.flatMap((l) => a.parseEvent(l, state)), state };
+  };
+  const EXIT_OK = { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] } as const;
+  const line = (o: unknown) => JSON.stringify(o);
+  const SID = "9f1c2b44-0d5e-4a77-8f3a-2b6c1d0e7a55";
+  const END = {
+    type: "end",
+    stopReason: "end_turn",
+    sessionId: SID,
+    requestId: "r1",
+    usage: { input_tokens: 10, output_tokens: 2 },
+    num_turns: 1,
+  };
+
+  it("a successful turn: text chunks joined, session id from `end`, usage numbers, result ok", () => {
+    const { events } = parse([
+      line({ type: "available_commands", tools: ["a", "b"] }),
+      line({ type: "thought", data: "private reasoning" }),
+      line({ type: "text", data: "Hel" }),
+      line({ type: "text", data: "lo" }),
+      line({ type: "usage", signature: "s" }),
+      line(END),
+    ]);
+    expect(events.map((e) => e.kind)).toEqual(["message", "message", "session_bound", "usage", "result"]);
+    expect(JSON.stringify(events)).not.toContain("private reasoning");
+    const r = adapter().extractResult(events, EXIT_OK);
+    expect(r).toMatchObject({ ok: true, nativeSessionId: SID, summary: "Hello", unknownEventCount: 0 });
+    expect(events.find((e) => e.kind === "usage")).toMatchObject({
+      metrics: { input_tokens: 10, output_tokens: 2, num_turns: 1 },
+    });
+  });
+
+  it("the session id comes only from the structured `end` line, never from text", () => {
+    const { events } = parse([
+      line({ type: "text", data: `sessionId: ${SID}` }),
+      line({ ...END, sessionId: undefined }),
+    ]);
+    expect(events.some((e) => e.kind === "session_bound")).toBe(false);
+    expect(adapter().extractResult(events, EXIT_OK)).not.toHaveProperty("nativeSessionId");
+  });
+
+  it("tool_call lines and any unrecognised shape are `unknown`, counted, and never a result", () => {
+    const { events, state } = parse([
+      line({ type: "tool_call", whatever: 1 }),
+      line({ type: "tool_call_update" }),
+      line({ type: "mystery" }),
+      line({ nothing: true }),
+      line({ type: "text" }),
+      line({ type: "end" }),
+      "[1,2]",
+    ]);
+    expect(events.every((e) => e.kind === "unknown")).toBe(true);
+    expect(state.unknownEvents).toBe(events.length);
+    const r = adapter().extractResult(events, EXIT_OK);
+    expect(r).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", unknownEventCount: 7 });
+  });
+
+  it("a stop reason other than end_turn is not success", () => {
+    const { events } = parse([line({ ...END, stopReason: "cancelled" })]);
+    const r = adapter().extractResult(events, EXIT_OK);
+    expect(r).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+    expect(r.ok === false && r.failureDetail).toContain("cancelled");
+  });
+
+  it("an error line maps its message to a category: not signed in is AUTH_REQUIRED, a bad model MODEL_UNAVAILABLE", () => {
+    const signedOut = parse([
+      line({
+        type: "error",
+        message: "Not signed in. To authenticate without a browser, run:\n  grok login --device-code",
+      }),
+    ]);
+    expect(signedOut.events[0]).toMatchObject({ kind: "provider_error", category: "auth" });
+    const exit1 = { outcome: "exited", exitCode: 1, signal: null, expectedExitCodes: [0] } as const;
+    expect(adapter().extractResult(signedOut.events, exit1)).toMatchObject({ ok: false, failureCode: "AUTH_REQUIRED" });
+    const badModel = parse([line({ type: "error", message: "Couldn't set model 'x': Invalid params" })]);
+    expect(adapter().extractResult(badModel.events, exit1)).toMatchObject({ failureCode: "MODEL_UNAVAILABLE" });
+    const other = parse([line({ type: "error", message: "boom" })]);
+    expect(adapter().extractResult(other.events, exit1)).toMatchObject({ failureCode: "TOOL_FAILURE" });
+  });
+
+  it("a clean `end` after an error line, a non-zero exit or a missing result is never success", () => {
+    const afterError = parse([line({ type: "error", message: "boom" }), line(END)]);
+    expect(adapter().extractResult(afterError.events, EXIT_OK)).toMatchObject({ ok: false });
+    const badExit = { outcome: "exited", exitCode: 1, signal: null, expectedExitCodes: [0] } as const;
+    expect(adapter().extractResult(parse([line(END)]).events, badExit)).toMatchObject({ ok: false });
+    expect(adapter().extractResult([], EXIT_OK)).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+    expect(adapter().extractResult([], { ...EXIT_OK, outcome: "timeout", timeoutKind: "wall_clock" })).toMatchObject({
+      failureCode: "PROCESS_TIMEOUT",
+    });
+    expect(adapter().extractResult([], { ...EXIT_OK, outcome: "cancelled" })).toMatchObject({
+      failureCode: "CANCELLED",
+    });
+  });
+
+  it("ignores ACP messages and unparseable framing", () => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    expect(a.parseEvent({ jsonrpc: "2.0", method: "x" } as never, state)).toEqual([]);
+    expect(a.parseEvent("not json", state)).toEqual([]);
+    expect(state.unknownEvents).toBe(0);
+  });
+});
 describe("grok auth preflight (T4.24, Q-10; SYNTHETIC outputs in the shapes of the 2026-10-14 live check)", () => {
   const out =
     (stdout: string, exitCode: number | null = 0, extra: Partial<ProbeOutput> = {}): ProbeRunner =>

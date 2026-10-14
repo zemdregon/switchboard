@@ -58,6 +58,33 @@ export const REQUIRED_HELP_FLAGS: readonly string[] = [
 export const GROK_LOGIN_COMMAND = "grok login";
 
 /**
+ * `streaming-json` line types observed in the 2026-10-14 live check ([LIVE] 4b, 5b, 3c; CLI version 1.0.50). Only the fields
+ * named in the check are read; the shapes of `tool_call` and `tool_call_update` beyond their `type` were not recorded,
+ * so those lines are `unknown` events (counted, never success, and invisible to the Q-62 tool-call guard until a
+ * capture exists). `thought` carries reasoning text and is dropped (NFR-PRIV-02).
+ */
+export const EVENT = {
+  availableCommands: "available_commands",
+  thought: "thought",
+  text: "text",
+  toolCall: "tool_call",
+  toolCallUpdate: "tool_call_update",
+  usage: "usage",
+  end: "end",
+  error: "error",
+} as const;
+
+/** `end.stopReason` of a finished turn ([LIVE] 4a, 4b: `end_turn`; 8c, 8f show a cancelled tool ended the run `cancelled`). */
+export const STOP_REASON_END_TURN = "end_turn";
+
+/** Message prefixes of the `error` line ([LIVE] 3c: `Not signed in. ...`; 5b: `Couldn't set model '...'`). */
+export const ERROR_NOT_SIGNED_IN_PREFIX = "Not signed in";
+export const ERROR_MODEL_PREFIX = "Couldn't set model";
+
+/** Resume flag spelling observed to work ([LIVE] 6a): `-r <id>`, the id as a separate word. */
+export const RESUME_SHORT_FLAG = "-r";
+
+/**
  * Auth status (T4.24, Q-10; [LIVE] steps 2b and 3b). `grok models` is the only observed status surface and its exit
  * code does not discriminate: it exits 0 logged in and logged out. Only the first stdout line does: `You are logged in
  * with grok.com.` or `You are not authenticated.` (CLI version 1.0.50). `grok inspect --json` carries no auth status ([LIVE]

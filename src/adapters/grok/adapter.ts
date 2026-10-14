@@ -13,10 +13,11 @@
  * - `privileged` compiles only when its scope sets `bypass` and the run is approved (owner decision 46: the bypass
  *   cell does not wait for Git-write denial to be shown to hold). Sandbox profile and permission mode are compiled
  *   together, never one without the other ([R2] L613 to L615): `--always-approve` always with `--sandbox`;
- * - parser, resume and the tool-call guard declaration are T4.23 and T4.27: until then no
- *   event is parsed (a run that exits cleanly ends `OUTPUT_PROTOCOL_ERROR`) and resume is `Ineligible`, both fail
- *   closed; the auth preflight keys on the first line of `grok models` (T4.24). The manifest range admits no version,
- *   so none of this runs before `adapters validate` passes a version.
+ * - the parser reads only the `streaming-json` fields the 2026-10-14 live check recorded (T4.23): `tool_call` and
+ *   `tool_call_update` lines are `unknown` events until a capture records their shape, so Switchboard's own tool-call
+ *   guard (ADR-0039, T4.27) cannot see Grok Build's commands yet; resume is `-r <id>` through the same matrix. The auth
+ *   preflight keys on the first line of `grok models` (T4.24). The manifest range admits no version, so none of this
+ *   runs before `adapters validate` passes a version.
  */
 import {
   DEFAULT_IDLE_MS,
@@ -54,6 +55,9 @@ import {
   AUTH_STATUS_ARGS,
   AUTH_STATUS_LINE_MAX,
   AUTH_STATUS_TIMEOUT_MS,
+  ERROR_MODEL_PREFIX,
+  ERROR_NOT_SIGNED_IN_PREFIX,
+  EVENT,
   GIT_WRITE_CONTROL_DETAIL,
   GROK_BINARY,
   GROK_LOGIN_COMMAND,
@@ -63,11 +67,13 @@ import {
   OUTPUT_FORMAT_FLAG,
   OUTPUT_STREAMING_JSON,
   REQUIRED_HELP_FLAGS,
+  RESUME_SHORT_FLAG,
   SANDBOX_FLAG,
   SANDBOX_READ_ONLY,
   SANDBOX_STRICT,
   SANDBOX_WORKSPACE,
   SINGLE_FLAG,
+  STOP_REASON_END_TURN,
   VERSION_ARGS,
 } from "./protocol.js";
 
@@ -79,6 +85,9 @@ import {
 export const GROK_ENV_ALLOWLIST: readonly string[] = ["PATH", "HOME"];
 
 const PROBE_TIMEOUT_MS = 10_000;
+const MAX_SUMMARY_CHARS = 2_000;
+/** Native ids are passed as one argv element; refuse anything that could be read as a flag (Proposed). */
+const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const AUTH_UNKNOWN_REASON = "`grok models` first line is not a recognised login state";
 
 /** FR-GIT-01 (ADR-0039): deny rules are prefix matches, so no declared control; see protocol.ts. */
@@ -119,6 +128,11 @@ export interface GrokAdapterOptions {
   pathEnv?: string;
 }
 
+type Json = Record<string, unknown>;
+const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+const obj = (v: unknown): Json | undefined =>
+  typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Json) : undefined;
+const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
 const ineligible = (reason: Ineligible["reason"], detail: string): Ineligible => ({ ineligible: true, reason, detail });
 
 export class GrokAdapter implements ProviderAdapter {
@@ -221,13 +235,18 @@ export class GrokAdapter implements ProviderAdapter {
     return this.#build(request, profile, []);
   }
 
-  /** FR-SES-03: resume arrives with the parser (T4.23); a binding of another provider is never compiled. */
-  resumeArgs(binding: NativeBinding, _request: CompileRequest, _profile: ResolvedProfile): Invocation | Ineligible {
+  /**
+   * FR-SES-03: `-r <id>` with the stored native id ([LIVE] 6a, 14a: same `sessionId` back, not tied to the working
+   * directory), compiled by the same matrix as a first run (so the same Ineligible reasons and flags). A binding of
+   * another provider, or an id that could be read as a flag, is never compiled. Whether a resumed run keeps its
+   * permission mode without the flag is `Unverified: T5.12`, so every policy flag is passed again.
+   */
+  resumeArgs(binding: NativeBinding, request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible {
     if (binding.provider !== "grok") return ineligible("CAPABILITY_MISSING", `binding is for ${binding.provider}`);
-    return ineligible(
-      "CAPABILITY_MISSING",
-      "Grok Build resume is not compiled until its parser records the session id (T4.23)",
-    );
+    if (!SESSION_ID_RE.test(binding.nativeSessionId)) {
+      return ineligible("CAPABILITY_MISSING", "native session id is not a safe single argument");
+    }
+    return this.#build(request, profile, [RESUME_SHORT_FLAG, binding.nativeSessionId]);
   }
 
   /**
@@ -325,17 +344,110 @@ export class GrokAdapter implements ProviderAdapter {
     };
   }
 
-  /** T4.23 writes the parser from captures; until then nothing is recognised and a clean exit cannot succeed. */
+  /**
+   * One `streaming-json` line -> normalized events (T4.23). Structured fields only (FR-ADP-04): the session id is read
+   * from the `end` line's `sessionId` and nowhere else. A line whose type or shape is not recognised is an `unknown`
+   * event and never a result; a final result exists only when an `end` line carries a string `stopReason`.
+   */
   parseEvent(input: string | AcpMessage, state: ParseState): NormalizedEvent[] {
-    if (typeof input !== "string") return [];
+    if (typeof input !== "string") return []; // no ACP transport for Grok Build (TDD §4.3.1)
     state.lines += 1;
-    state.unknownEvents += 1;
-    return [{ kind: "unknown", rawType: "unparsed" }];
+    let doc: unknown;
+    try {
+      doc = JSON.parse(input);
+    } catch {
+      return []; // the supervisor ends the run OUTPUT_PROTOCOL_ERROR on unparseable framing
+    }
+    const e = obj(doc);
+    const type = str(e?.type);
+    if (e === undefined || type === undefined) return this.#unknown(state, "none");
+    switch (type) {
+      case EVENT.availableCommands:
+      case EVENT.thought:
+      case EVENT.usage: // the `end` line carries the totals; this one has a `signature` field and no recorded use
+        return [];
+      case EVENT.text: {
+        const data = str(e.data);
+        if (data === undefined) return this.#unknown(state, type);
+        return [{ kind: "message", role: "assistant", text: data }];
+      }
+      case EVENT.toolCall:
+      case EVENT.toolCallUpdate:
+        return this.#unknown(state, type); // shape not recorded: see protocol.ts
+      case EVENT.end: {
+        const stop = str(e.stopReason);
+        if (stop === undefined) return this.#unknown(state, type);
+        const out: NormalizedEvent[] = [];
+        const id = str(e.sessionId);
+        if (id !== undefined && id !== "") {
+          state.nativeSessionId = id;
+          out.push({ kind: "session_bound", nativeSessionId: id });
+        }
+        const usage = obj(e.usage);
+        if (usage) {
+          const metrics: Record<string, number | string | null> = {};
+          for (const [k, v] of Object.entries(usage)) if (typeof v === "number") metrics[k] = v;
+          if (typeof e.num_turns === "number") metrics.num_turns = e.num_turns;
+          out.push({ kind: "usage", source: "provider_reported", metrics });
+        }
+        out.push({
+          kind: "result",
+          ok: stop === STOP_REASON_END_TURN,
+          ...(stop === STOP_REASON_END_TURN ? {} : { summary: `stopReason ${clip(stop, 64)}` }),
+        });
+        return out;
+      }
+      case EVENT.error: {
+        const message = str(e.message);
+        if (message === undefined) return this.#unknown(state, type);
+        const category = message.startsWith(ERROR_NOT_SIGNED_IN_PREFIX)
+          ? "auth"
+          : message.startsWith(ERROR_MODEL_PREFIX)
+            ? "model_unavailable"
+            : "unknown";
+        return [{ kind: "provider_error", category, message: clip(message, MAX_SUMMARY_CHARS) }];
+      }
+      default:
+        return this.#unknown(state, type);
+    }
   }
 
-  /** Never success before the parser exists (T4.23): a result needs a `result` event, which nothing emits yet. */
+  #unknown(state: ParseState, rawType: string): NormalizedEvent[] {
+    state.unknownEvents += 1;
+    return [{ kind: "unknown", rawType }];
+  }
+
+  /**
+   * Success needs a clean expected exit and a final `result` with `ok` and no `provider_error`, `permission_denied`,
+   * `sandbox_violation` or `rate_limit` event (fail closed, as Codex). The summary is the joined assistant text, last
+   * {@link MAX_SUMMARY_CHARS} characters.
+   */
   extractResult(events: readonly NormalizedEvent[], exit: ExitInfo): RunResult {
     const unknownEventCount = events.filter((e) => e.kind === "unknown").length;
+    const bound = events.findLast((e) => e.kind === "session_bound");
+    const nativeSessionId = bound?.kind === "session_bound" ? bound.nativeSessionId : undefined;
+    const text = events.flatMap((e) => (e.kind === "message" ? [e.text] : [])).join("");
+    const summary = text === "" ? undefined : text.slice(-MAX_SUMMARY_CHARS);
+    const final = events.findLast((e) => e.kind === "result");
+    const base = {
+      unknownEventCount,
+      ...(nativeSessionId ? { nativeSessionId } : {}),
+      ...(summary ? { summary } : {}),
+    };
+    const clean =
+      exit.outcome === "exited" &&
+      exit.exitCode !== null &&
+      exit.expectedExitCodes.includes(exit.exitCode) &&
+      final?.kind === "result" &&
+      final.ok &&
+      !events.some(
+        (e) =>
+          e.kind === "provider_error" ||
+          e.kind === "permission_denied" ||
+          e.kind === "sandbox_violation" ||
+          e.kind === "rate_limit",
+      );
+    if (clean) return { ok: true, ...base };
     const c = this.classifyFailure({
       events,
       exit,
@@ -343,9 +455,10 @@ export class GrokAdapter implements ProviderAdapter {
       timedOut: exit.outcome === "timeout",
       cancelled: exit.outcome === "cancelled",
     });
-    return { ok: false, failureCode: c.code, failureDetail: c.detail, unknownEventCount };
+    return { ok: false, failureCode: c.code, failureDetail: c.detail, ...base };
   }
 
+  /** Shared precedence (failure.ts); native error messages are already mapped to the shared categories. */
   classifyFailure(evidence: FailureEvidence): FailureClassification {
     return classifyCommon(evidence);
   }
