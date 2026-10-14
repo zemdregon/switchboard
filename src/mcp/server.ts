@@ -128,8 +128,10 @@ import type { DynamicProjectStore } from "../projects/index.js";
 import {
   buildRouteDecision,
   classifyRequest,
+  collectAffinityFacts,
   collectScoreInputs,
   compileCheck,
+  DEFAULT_AFFINITY,
   DEFAULT_WEIGHTS,
   type EligibilityReasonCode,
   explainRoute,
@@ -180,8 +182,8 @@ export interface McpServerDeps {
     readonly capacity?: Pick<CapacitySettings, "windowSeconds" | "confidenceRuns">;
     /** T6.3: slot limits shown by `get_capacity`. Absent means the NFR-PERF-03 default of one per provider. */
     readonly limits?: Pick<ResolvedConfig["limits"], "perProviderConcurrency">;
-    /** T7.2: stage-2 score weights (`routing.weights`, LLD §17.1). Absent means the LLD defaults. */
-    readonly routing?: Pick<RoutingSettings, "weights">;
+    /** T7.2, T7.5: `routing.weights` and `routing.affinity` (LLD §17.1). Absent means the LLD defaults. */
+    readonly routing?: Partial<RoutingSettings>;
   };
   /** T9.9 (FR-PRJ-10): dynamic projects. Required when the client has `manage_projects`; absent means none resolve. */
   readonly projectStore?: DynamicProjectStore;
@@ -496,6 +498,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       project?: { id: string; excluded: readonly ProviderId[]; revision?: number };
       /** T5.6 (LLD §15.7 step 7): how a continuation runs, with its BR-18 reason code; controller values only. */
       continuation?: { mode: "resume" | "handoff"; reason: string; from_provider: string; problem?: string };
+      /** T7.5 (LLD §3.2, §17.6): the project and whether affinity applies (false for a continuation). */
+      affinity: { projectId: string | null; workspace: string; applies: boolean; requiredProvider: string | null };
     },
   ): RouteDecisionResult & { provider: ProviderId } => {
     const eligible = admissible(answer, opts.privileged);
@@ -509,13 +513,20 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       ...(deps.config.limits !== undefined ? { limits: deps.config.limits } : {}),
     };
     const now = (deps.now ?? (() => new Date()))();
+    const scoreInputs = collectScoreInputs(ledger, eligible, settings, now, opts.sessionProvider);
+    const affinity = collectAffinityFacts(
+      ledger,
+      { ...opts.affinity, admissible: eligible, decision: answer.decision, scoreInputs },
+      deps.config.routing?.affinity ?? DEFAULT_AFFINITY,
+    );
     const result = buildRouteDecision({
       input: answer.input,
       decision: answer.decision,
       admissible: eligible,
       preference: opts.preference ?? null,
       features: opts.features,
-      scoreInputs: collectScoreInputs(ledger, eligible, settings, now, opts.sessionProvider),
+      affinity,
+      scoreInputs,
       weights: settings.weights,
       basisSuffix: suffix,
       ...(opts.basis !== undefined ? { basis: opts.basis } : {}),
@@ -620,6 +631,12 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         writable: profile !== "inspect-untrusted",
       }),
       sessionProvider: null,
+      affinity: {
+        projectId: resolved?.snapshot.id ?? null,
+        workspace,
+        applies: true,
+        requiredProvider: required ?? null,
+      },
       ...(resolved
         ? {
             project: {
@@ -835,6 +852,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         writable: profile !== "inspect-untrusted",
       }),
       sessionProvider: p0,
+      affinity: { projectId: ctx.projectId ?? null, workspace, applies: false, requiredProvider: required ?? null },
       basis: (selected) =>
         `${mode} ${reasonCode} from ${p0}; ${
           sameProvider ? `continuation${privileged ? "; privileged compile deferred to dispatch" : ""}` : selected

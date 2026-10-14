@@ -63,10 +63,21 @@ describe("explain_route (T7.3, FR-MCP-02)", () => {
       })),
       features,
       weights: JSON.parse(row.weights_json ?? "null"),
-      affinity: null,
+      // T7.5: the project's first run, so no affine provider and no reason (LLD §17.6).
+      affinity: {
+        enabled: true,
+        project_key: expect.stringMatching(/^ws:[0-9a-f]{64}$/u),
+        provider: null,
+        model: null,
+        held: false,
+        affinity_switch_reason: null,
+        scored: false,
+        applies: true,
+        excluded_from_score: null,
+      },
       continuation: null,
       project: null,
-      deciding_factors: ["selected grok by provider_preference"],
+      deciding_factors: ["selected grok by provider_preference", "no affinity recorded for the project"],
     });
     expect(r.body.features.route_features).toMatchObject({
       classifier: "heuristic.v1",
@@ -87,6 +98,7 @@ describe("explain_route (T7.3, FR-MCP-02)", () => {
     expect(excluded.reasons[0]).toMatchObject({ code: "CAPABILITY_MISSING" });
     expect(r.body.deciding_factors).toEqual([
       "selected fake-b by configured_order",
+      "no affinity recorded for the project",
       `score fake-b ${r.body.candidates[0].score.toFixed(4)}`,
       `score grok ${r.body.candidates[1].score.toFixed(4)}`,
       "fake excluded: CAPABILITY_MISSING",

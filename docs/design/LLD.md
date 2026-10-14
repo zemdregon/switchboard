@@ -4299,3 +4299,22 @@ no row was read; otherwise an update guarded by the version read, which keeps `s
 provider is unchanged and the reason is null, and clears a pending reset) and `requestAffinityReset` (an existing row
 only). `src/config/routing.ts` refuses `low_water_mark` without `min_confidence` or the reverse, so a half-configured
 trigger is an error rather than silently off.
+
+*As built (T7.5, 2026-10-14, Delegated):* `src/routing/affinity.ts` (the pure step: `affinityReason`, `planAffinity`,
+`affinityRecord`), `collectAffinityFacts` in `src/routing/decision.ts`, the `affinity` argument of the MCP `route`
+helper, the quota failover's forced `capacity_exhausted`, and `recordAffinity` at the `SUCCEEDED` transition in
+`src/lifecycle/lifecycle.ts`. Points decided here, each an **Assumption**:
+
+- **The model is remembered, not pinned** (Q-90). `run.model` is never set, so the row's `model` is the one the run's
+  native session reported (`provider_binding.model`, else `null`). It is **not** passed to `compile`: the Codex adapter
+  refuses any model (`CAPABILITY_MISSING`), and no adapter declares that a reported model id is accepted by its model
+  flag, so pinning could make a held provider ineligible. The provider still holds; the model is the adapter default.
+  Pinning is T7.12, after the adapters declare it.
+- "Runs after the row" means runs that finished after the row's `updated_at` (the success write, or a reset), so the
+  run that wrote the row never counts and a GC'd `last_run_id` does not matter.
+- The `routing_affinity_*` events are appended when the row is written, on the succeeded run: `routing_affinity_held`
+  when provider and model are unchanged, otherwise `routing_affinity_switched` (with `from_provider: null` for a first
+  run), and `routing_affinity_reset` before either when the write consumed a reset. A reset is therefore consumed only
+  by a run that succeeds; until then every decision for the project reads it as `user_request`.
+- With affinity disabled the `affinity` object is still recorded (`enabled: false`, `applies: false`), so `explain_route`
+  and replay see the same shape.
