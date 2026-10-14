@@ -48,9 +48,21 @@ no account identifier is recorded here.
   were. The script's "native event types" versus "normalized kinds" listing would identify the type in any future
   failure (a native type present in the first list whose lines all land in `unknown`), so no script change is strictly
   needed — but printing each unknown event's raw type explicitly would make it unmissable (Proposed, not done here).
-- No parser change is proposed: with no reproduction and no captured unknown line, adding an event kind would be
-  guessing (AGENTS.md, no invented facts). If C-10 fails again, the type list in the smoke output names the missing
-  kind and a scrubbed fixture can be captured then.
+- **Update, same day: the unknown event was reproduced** in a Claude run through Switchboard that had a tool call
+  denied (an approved privileged bypass run on claude 2.1.294 that asked for a shell `git commit` after the commit
+  tool; details in `docs/research/live-checks-2026-10-14-channel.md`, a separate PR). The stream's
+  line 7 had `type: "system"`, `subtype: "permission_denied"`, and top-level keys `type`, `subtype`, `tool_name`,
+  `tool_use_id`, `decision_reason_type`, `message`, `uuid`, `session_id`. `parseClaudeLine` handles only
+  `system/init` and falls through to `unknown` (`rawType: "system:permission_denied"`, `src/adapters/claude/parse.ts`
+  lines 163 to 170). That one line is the "1 unknown event". The denial itself is not lost: the final `result` event
+  carries `permission_denials` (one entry, tool name only), which the parser already maps to `permission_denied`.
+- Verdict: **missing event kind, benign.** The unknown event is counted, never trusted, and did not change the run's
+  outcome (the run correctly failed `PERMISSION_BLOCKED`); it makes the smoke's C-10 check FAIL whenever a smoke run
+  has a denied tool. Proposed (not done here; a parser change needs its own change with a fixture): map
+  `system/permission_denied` to a `permission_denied` event carrying `tool_name`, de-duplicated against the `result`
+  event's `permission_denials` so a denial is reported once, plus a scrubbed one-line fixture captured from claude
+  2.1.294 on 2026-10-14 (keys as above, content removed). No fixture was added because the existing fixtures are
+  full-stream replays and splicing a line into one would be an invented stream.
 
 ## Limits
 
