@@ -29,18 +29,17 @@ of it.
 
 ## Decision
 
-1. **Stdio is the only transport.** The MCP server performs no authorization flow of any kind. The trust binding of an
-   MCP client is the `serve --client <id>` launch and its configuration entry (FR-OPS-04), as today.
+1. **Stdio has no authorization flow.** On the stdio transport the MCP server performs no OAuth or token check. The
+   trust binding of a stdio MCP client is the `serve --client <id>` launch and its configuration entry (FR-OPS-04).
+   Network transport is [ADR-0041](0041-http-transport-with-oauth-2-1.md) (Q-67 Yes).
 2. **Any credential for stdio comes from the environment.** If a future stdio client must prove identity, the
    configuration may name an environment variable that holds the secret; it shall not hold the value. The value is
    compared in memory and never logged or returned (NFR-SEC-01, FR-TEL-03). This is **Proposed** and off by default;
-   Q-66 asks the owner whether any such check is wanted.
-3. **OAuth is not adopted.** Switchboard does not implement OAuth 2.1 now, because the transport it would protect does
-   not exist yet.
-4. **An HTTP or SSE transport needs its own ADR first.** Adding one supersedes the deferral in ADR-0002 and changes the
-   network trust boundary, so it needs a new ADR, a roadmap entry and a threat review. If accepted, it would use the MCP
-   authorization specification as published at that time: OAuth 2.1 with PKCE, resource indicators, audience-bound
-   tokens and no token passthrough. A static bearer token in configuration would not be used for a network listener.
+   Q-66 decided No (optional check stays off by default).
+3. **OAuth is not adopted on stdio.** Stdio does not implement OAuth 2.1 (MCP authorization spec applies to HTTP).
+4. **Network HTTP uses ADR-0041.** Streamable HTTP with an embedded OAuth 2.1 authorization server is [ADR-0041](
+   0041-http-transport-with-oauth-2-1.md) (Q-67 Yes). A static bearer token in configuration is not used for a network
+   listener.
 
 ## Alternatives considered
 
@@ -54,11 +53,11 @@ of it.
 ## Consequences
 
 - Operators see no login step for MCP clients. Security rests on the local user and the config entry, as ADR-0011 states.
-- No credential store, token lifecycle or OAuth code enters the repository.
-- The requirement in FR-MCP-11 keeps a future HTTP transport from shipping without this ADR's successor.
+- Stdio adds no credential store or OAuth code. Network OAuth client tokens are confined to ADR-0041 / M13.
+- FR-MCP-11 still requires ADR-0041 (or a successor) before an HTTP transport ships.
 
 ## Revisit when
 
-- A network-reachable MCP transport is proposed, in which case item 4 applies.
+- ADR-0041 is Accepted or revised after the T13.1 spike.
 - The owner asks for multi-user or hosted use, which ADR-0011 excludes.
 - The MCP specification changes its stdio guidance.
