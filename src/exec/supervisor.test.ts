@@ -129,8 +129,9 @@ describe("supervise", () => {
       expect(env.SWITCHBOARD_TEST_ALLOWED).toBe("ok");
       expect(env.ADAPTER_VAR).toBe("x");
       const allowed = new Set(["PATH", "SWITCHBOARD_TEST_ALLOWED", "ADAPTER_VAR"]);
-      // Node/ICU may add nothing else, but tolerate runtime-injected vars only if starting with NODE_/LC_.
-      for (const k of Object.keys(env)) expect(allowed.has(k) || /^(NODE_|LC_|PWD$|SHLVL$|_$)/.test(k)).toBe(true);
+      // Node/ICU may add nothing else, but tolerate runtime-injected vars only if starting with NODE_/LC_ (and macOS's own `__CF_USER_TEXT_ENCODING`, T4.10).
+      for (const k of Object.keys(env))
+        expect(allowed.has(k) || /^(NODE_|LC_|PWD$|SHLVL$|_$|__CF_USER_TEXT_ENCODING$)/.test(k)).toBe(true);
     } finally {
       delete process.env.SWITCHBOARD_TEST_SECRET;
       delete process.env.SWITCHBOARD_TEST_ALLOWED;

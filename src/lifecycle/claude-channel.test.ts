@@ -35,6 +35,9 @@ import type { ProjectSnapshot } from "../policy/index.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import { RunLifecycle } from "./index.js";
 
+/** macOS temp paths (`/private/var/folders/...`) are too long for the 100-byte socket bound (T4.10); `/tmp` is not. */
+const SHORT_TMP = process.platform === "darwin" ? "/tmp" : tmpdir();
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(HERE, "..", "cli", "bin.ts");
 const TS_REGISTER = path.join(HERE, "..", "reconcile", "fixtures", "ts-register.mjs");
@@ -230,7 +233,7 @@ const readRecord = (): Record<string, any> => JSON.parse(readFileSync(record, "u
 beforeEach(() => {
   shims = [];
   lifecycle = undefined;
-  root = realpathSync(mkdtempSync(path.join(tmpdir(), "sb-cch-")));
+  root = realpathSync(mkdtempSync(path.join(SHORT_TMP, "sb-cch-")));
   repo = path.join(root, "repo");
   mkdirSync(repo);
   g(repo, "init", "-q", "-b", "main");

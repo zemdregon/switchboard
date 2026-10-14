@@ -207,8 +207,8 @@ describe("acp-stdio: session start and streamed updates", () => {
     });
     expect(msgs.filter((m) => m.method === "session/prompt")).toHaveLength(1);
     expect(msgs.some((m) => m.method === "authenticate" || m.method === "logout")).toBe(false);
-    // FR-EXE-07: only allowlisted names reach the agent (node itself may not add any).
-    expect(recorded()[0]?.env?.filter((k) => k !== "PATH")).toEqual([]);
+    // FR-EXE-07: only allowlisted names reach the agent (node itself may not add any; macOS adds `__CF_USER_TEXT_ENCODING` to every process, T4.10).
+    expect(recorded()[0]?.env?.filter((k) => k !== "PATH" && k !== "__CF_USER_TEXT_ENCODING")).toEqual([]);
     // FR-EXE-05: stderr captured, never parsed as protocol.
     expect(out.stderr.toString()).toContain("fake-acp-agent: started");
     expect(out.stdin?.toString()).toContain('"method":"initialize"');
@@ -229,7 +229,7 @@ describe("acp-stdio: session start and streamed updates", () => {
       steps: [INIT(), NEW, PROMPT, END()],
       baseEnv: { PATH: process.env.PATH ?? "/usr/bin", SECRET_TOKEN: "x", HOME: "/root" },
     });
-    expect(recorded()[0]?.env).toEqual(["PATH"]);
+    expect(recorded()[0]?.env?.filter((k) => k !== "__CF_USER_TEXT_ENCODING")).toEqual(["PATH"]);
   });
 });
 

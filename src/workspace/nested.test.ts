@@ -229,22 +229,26 @@ describe("nested repository guard (Q-31, R-35)", () => {
     expect((await findNestedRepositories(wt)).paths).toEqual([]);
   });
 
-  it("a name that is not valid UTF-8 is excluded through a widened glob instead of failing the run", async () => {
-    const { run, wt } = await prepared();
-    const bad = Buffer.concat([Buffer.from(`${wt}/bad-`), Buffer.from([0xff, 0xfe]), Buffer.from("-dir")]);
-    mkdirSync(Buffer.concat([bad, Buffer.from("/.git")]) as unknown as string, { recursive: true });
-    const found = await findNestedRepositories(wt);
-    expect(found.paths).toHaveLength(1);
-    expect(found.excludes[0]).toMatch(/^:\(exclude,top,glob\)bad-\*-dir$/);
-    writeFileSync(path.join(wt, "a.txt"), "changed\n");
-    const fin = await mgr.finalize(run.id);
-    expect(fin.changedFiles).toEqual([{ status: "M", path: "a.txt" }]);
-    expect(
-      g(wt, "ls-files")
-        .split("\n")
-        .filter((l) => l.includes("bad-")),
-    ).toEqual([]);
-  });
+  // T4.10: APFS (macOS) refuses a name that is not valid UTF-8 (mkdir fails ENOENT), so the case cannot be built there.
+  it.skipIf(process.platform === "darwin")(
+    "a name that is not valid UTF-8 is excluded through a widened glob instead of failing the run",
+    async () => {
+      const { run, wt } = await prepared();
+      const bad = Buffer.concat([Buffer.from(`${wt}/bad-`), Buffer.from([0xff, 0xfe]), Buffer.from("-dir")]);
+      mkdirSync(Buffer.concat([bad, Buffer.from("/.git")]) as unknown as string, { recursive: true });
+      const found = await findNestedRepositories(wt);
+      expect(found.paths).toHaveLength(1);
+      expect(found.excludes[0]).toMatch(/^:\(exclude,top,glob\)bad-\*-dir$/);
+      writeFileSync(path.join(wt, "a.txt"), "changed\n");
+      const fin = await mgr.finalize(run.id);
+      expect(fin.changedFiles).toEqual([{ status: "M", path: "a.txt" }]);
+      expect(
+        g(wt, "ls-files")
+          .split("\n")
+          .filter((l) => l.includes("bad-")),
+      ).toEqual([]);
+    },
+  );
 
   it("excludePathspec uses literal matching for ordinary names and escapes glob characters otherwise", () => {
     expect(excludePathspec("a b/ü")).toBe(":(exclude,top,literal)a b/ü");

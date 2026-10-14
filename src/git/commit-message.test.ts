@@ -34,6 +34,9 @@ import { GIT_CHANNEL_OPENED, GitToolService, type OpenChannel } from "./channel.
 import { GitPublisher, publishRefFor } from "./index.js";
 import { COMMIT_INPUT_SCHEMA_MESSAGE_OPTIONAL, MESSAGE_OPTIONAL_FLAG, TOOL_TOKEN_ENV } from "./tool-protocol.js";
 
+/** macOS temp paths (`/private/var/folders/...`) are too long for the 100-byte socket bound (T4.10); `/tmp` is not. */
+const SHORT_TMP = process.platform === "darwin" ? "/tmp" : tmpdir();
+
 const GIT_ENV = {
   PATH: process.env.PATH ?? "",
   GIT_CONFIG_GLOBAL: "/dev/null",
@@ -69,7 +72,7 @@ let services: GitToolService[];
 
 beforeEach(() => {
   services = [];
-  root = realpathSync(mkdtempSync(path.join(tmpdir(), "sb-cmsg-")));
+  root = realpathSync(mkdtempSync(path.join(SHORT_TMP, "sb-cmsg-")));
   repo = path.join(root, "repo");
   mkdirSync(repo);
   g(repo, "init", "-q", "-b", "main");
