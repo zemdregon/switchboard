@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeAdapter, type FakeScenario } from "../adapters/fake/adapter.js";
 import {
   AdapterRegistry,
+  bypassClassFlags,
   type CompileRequest,
   type Ineligible,
   type Invocation,
@@ -823,6 +824,71 @@ describe("admission", () => {
       const refused = await lifecycle.waitForTerminal(no.runId);
       expect(refused).toMatchObject({ state: "FAILED", failure_code: "PERMISSION_BLOCKED", pid: null });
       expect(refused.failure_detail).toContain("--dangerously-skip-permissions");
+    });
+
+    // T3.17 lifecycle wiring: the CLI records the argv it was spawned with, so a pass means the flag reached a process.
+    const argvRecorder = () => {
+      const out = path.join(root, "spawned-argv.json");
+      const script = path.join(root, "argv-recorder.mjs");
+      writeFileSync(
+        script,
+        `import { writeFileSync } from "node:fs";
+const emit = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+writeFileSync(${JSON.stringify(out)}, JSON.stringify(process.argv.slice(2)));
+emit({ type: "session", session_id: "argv-1" });
+emit({ type: "result", ok: true, summary: "recorded" });
+`,
+      );
+      return {
+        out,
+        withFlags: (inv: Invocation, flags: readonly string[]) => ({
+          ...inv,
+          argv: [inv.argv[0] ?? process.execPath, script, ...inv.argv.slice(2), ...flags],
+        }),
+      };
+    };
+
+    it("an approved bypass-true run is spawned with every bypass-class flag on its argv (T3.17)", async () => {
+      adapter.privilegedAs = "edit-untrusted";
+      const rec = argvRecorder();
+      const flags = bypassClassFlags();
+      adapter.compileOverride = (_req, inv) => rec.withFlags(inv, flags);
+      const r = await byPolicy("writer", SCOPE);
+      lifecycle.start();
+      const done = await lifecycle.waitForTerminal(r.runId);
+      expect(done.state, done.failure_detail ?? "").toBe("SUCCEEDED");
+      expect(adapter.compiledProfiles.at(-1)).toMatchObject({ name: "privileged", bypassApproved: true });
+      const argv = JSON.parse(readFileSync(rec.out, "utf8")) as string[];
+      for (const f of flags) expect(argv).toContain(f);
+    });
+
+    it("every other case refuses each bypass-class flag before spawn: non-privileged profiles, bypass false (T3.17)", async () => {
+      adapter.privilegedAs = "edit-untrusted";
+      const rec = argvRecorder();
+      let flag = "";
+      adapter.compileOverride = (_req, inv) => rec.withFlags(inv, [flag]);
+      lifecycle.start();
+      const cases: [string, () => Promise<{ runId: string }>][] = [
+        ...(["inspect-untrusted", "edit-untrusted", "test-sandboxed", "trusted-development"] as const).map(
+          (p): [string, () => Promise<{ runId: string }>] => [p, () => submit("writer", { trustProfile: p })],
+        ),
+        ["privileged bypass:false", () => byPolicy("writer", { ...SCOPE, bypass: false })],
+      ];
+      for (const [label, run] of cases) {
+        for (const f of bypassClassFlags()) {
+          flag = f;
+          const r = await run();
+          const done = await lifecycle.waitForTerminal(r.runId);
+          expect(done, `${label} ${f}`).toMatchObject({
+            state: "FAILED",
+            failure_code: "PERMISSION_BLOCKED",
+            pid: null,
+          });
+          expect(done.failure_detail, `${label} ${f}`).toContain(f);
+          expect(path_(r.runId), `${label} ${f}`).not.toContain("RUNNING");
+          expect(existsSync(rec.out), `${label} ${f}`).toBe(false);
+        }
+      }
     });
 
     it("a continuation runs under the client-policy approval as is; another client cannot use it", async () => {
