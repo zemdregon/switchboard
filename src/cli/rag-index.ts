@@ -10,7 +10,8 @@
  * - `clear` deletes the store's vectors and chunk text (the whole store directory) and writes one `rag_record` row of
  *   kind `clear` with the counts it removed; the ledger keeps nothing else (FR-RAG-14).
  * - The bare word `global` names the global store (Delegated: a project whose id is literally `global` is covered by
- *   the no-argument form only). Building the global store is T12.7, so `rebuild global` is refused.
+ *   the no-argument form only). The daemon builds the global store (T12.7) only while `rag.global.enabled` is set, so
+ *   `rebuild global` is refused otherwise.
  *
  * Retrieval content never passes through here: reports hold counts, revisions, hashes of nothing and reason codes.
  */
@@ -33,6 +34,7 @@ import { DynamicProjectStore, toResolved } from "../projects/index.js";
 import { retrieveContextPack } from "../retrieval/admission.js";
 import { type BuildProject, type BuildResult, buildProjectIndex, contextHead } from "../retrieval/build.js";
 import type { EmbeddingBackend, Locality } from "../retrieval/embedding.js";
+import { buildGlobalIndex, GLOBAL_INDEX_KEY, globalOrigins, isUntrustedProfile } from "../retrieval/global.js";
 import { createHttpEmbedder } from "../retrieval/http-embedder.js";
 import { RagIndexer } from "../retrieval/indexer.js";
 import { deleteRagStore, inspectRagStore, type RagStoreKey, ragRoot } from "../retrieval/store.js";
@@ -64,6 +66,7 @@ export function toBuildProject(rag: RagSettings, p: ResolvedProject): BuildProje
   return {
     id: p.id,
     effective: effectiveProjectRag(rag, p.rag),
+    ...(isUntrustedProfile(p.maxTrustProfile) ? { untrusted: true } : {}),
     contexts: p.contexts.map((c) => ({
       id: c.id,
       path: c.path,
@@ -164,27 +167,42 @@ export function startServeRag(opts: {
   const rag = new RagLedger(db, opts.now ? { now: opts.now } : {});
   const projectsNow = () => ragProjects(config, db).map((p) => toBuildProject(config.rag, p));
 
-  const indexer = new RagIndexer({
-    projects: () =>
-      projectsNow()
+  const indexer: RagIndexer = new RagIndexer({
+    // T12.7: the global store is queued after every project, so it copies their latest contributions.
+    projects: () => [
+      ...projectsNow()
         .filter((p) => p.effective.enabled)
         .map((p) => p.id),
+      ...(config.rag.global.enabled ? [GLOBAL_INDEX_KEY] : []),
+    ],
     build: async (projectId, signal): Promise<BuildResult | undefined> => {
+      const buildDeps = {
+        dataDir: config.dataDir,
+        backend,
+        embedding,
+        signal,
+        ...(opts.io.homedir !== undefined ? { homeDir: opts.io.homedir } : {}),
+        ...(opts.now ? { now: opts.now } : {}),
+      };
+      if (projectId === GLOBAL_INDEX_KEY) {
+        return buildGlobalIndex(buildDeps, {
+          global: config.rag.global,
+          caps: config.rag.caps,
+          exclude: config.rag.exclude,
+          projects: projectsNow(),
+          allowedRoots: config.allowedRoots,
+        });
+      }
       const project = projectsNow().find((p) => p.id === projectId);
       if (project === undefined) return undefined;
-      return buildProjectIndex(
-        {
-          dataDir: config.dataDir,
-          backend,
-          embedding,
-          signal,
-          ...(opts.io.homedir !== undefined ? { homeDir: opts.io.homedir } : {}),
-          ...(opts.now ? { now: opts.now } : {}),
-        },
-        project,
-      );
+      return buildProjectIndex(buildDeps, project);
     },
     onResult: (r) => {
+      // A contributing project whose store changed refreshes the global store (never awaited).
+      if (r.projectKey !== null && (r.filesEmbedded > 0 || r.filesRemoved > 0) && config.rag.global.enabled) {
+        const p = projectsNow().find((x) => x.id === r.projectKey);
+        if (p?.effective.enabled === true && p.effective.contributeToGlobal) indexer.trigger(GLOBAL_INDEX_KEY);
+      }
       rag.record({
         kind: "index_built",
         projectKey: r.projectKey,
@@ -201,7 +219,7 @@ export function startServeRag(opts: {
         embedCalls: r.embedCalls,
       });
       log.info("retrieval index build finished", {
-        project_key: r.projectKey,
+        project_key: r.projectKey ?? "global",
         outcome: r.outcome,
         reason: r.reason,
         revision: r.revision,
@@ -261,6 +279,7 @@ export function startServeRag(opts: {
         objective: request.objective,
         baseCommit: request.baseCommit,
         ...(request.primaryRoot !== undefined ? { primaryRoot: request.primaryRoot } : {}),
+        ...(project.effective.useGlobal ? { globalOrigins: globalOrigins(config.rag.global, projectsNow()) } : {}),
         signal: request.signal,
       },
     );
@@ -274,6 +293,7 @@ export function startServeRag(opts: {
     ) {
       indexer.trigger(project.id);
     }
+    if (r.flags.includes("global_unavailable") || r.flags.includes("global_stale")) indexer.trigger(GLOBAL_INDEX_KEY);
     const recordId = rag.record({
       kind: "retrieval",
       projectKey: r.projectKey,
@@ -298,6 +318,8 @@ export function startServeRag(opts: {
         ...(r.reason !== null ? { reason: r.reason } : {}),
         revision: r.revision,
         snippets: r.snippets.length,
+        global_snippets: r.globalSnippets,
+        global_revision: r.globalRevision,
         tokens_est: r.tokensEst,
         candidates: r.candidates,
         dropped_changed: r.droppedChanged,
@@ -323,11 +345,16 @@ async function applyDaemonRequest(
     const key = req.project_key;
     const r =
       key === null
-        ? clearRagStore(ctx.config.dataDir, ctx.rag, null)
+        ? await ctx.indexer.exclusive(GLOBAL_INDEX_KEY, () => clearRagStore(ctx.config.dataDir, ctx.rag, null))
         : await ctx.indexer.exclusive(key, () => clearRagStore(ctx.config.dataDir, ctx.rag, key));
     return settle("applied", r.removed ? `files=${r.files} chunks=${r.chunks}` : "EMPTY");
   }
-  if (req.project_key === null) return settle("rejected", "GLOBAL_NOT_BUILT");
+  if (req.project_key === null) {
+    if (!ctx.config.rag.global.enabled) return settle("rejected", "GLOBAL_OFF");
+    await ctx.indexer.exclusive(GLOBAL_INDEX_KEY, () => deleteRagStore(ctx.config.dataDir, { kind: "global" }));
+    ctx.indexer.trigger(GLOBAL_INDEX_KEY);
+    return settle("applied", "QUEUED");
+  }
   const key = req.project_key;
   const project = ctx.projects.find((p) => p.id === key);
   if (project === undefined) return settle("rejected", "UNKNOWN_PROJECT");
@@ -623,8 +650,8 @@ export function indexRequest(
   target?: string,
 ): IndexRequestReport {
   const config = dataDirConfig(io, argv);
-  if (kind === "rebuild" && target === GLOBAL_TARGET) {
-    throw new UsageError("the global index is not built in this version (T12.7); nothing to rebuild");
+  if (kind === "rebuild" && target === GLOBAL_TARGET && !config.rag.global.enabled) {
+    throw new UsageError("the global index is off (rag.global.enabled is not set); nothing to rebuild");
   }
   let lock: ReturnType<typeof acquireDataDirLock> | undefined;
   let daemon = false;
@@ -654,6 +681,7 @@ export function indexRequest(
         keys = [target];
       } else if (kind === "rebuild") {
         keys = projects.filter((p) => effectiveProjectRag(config.rag, p.rag).enabled).map((p) => p.id);
+        if (config.rag.global.enabled && config.rag.embedding !== undefined) keys.push(null);
       } else {
         keys = storesOnDisk(config.dataDir);
         if (existsSync(path.join(ragRoot(config.dataDir), "global"))) keys.push(null);

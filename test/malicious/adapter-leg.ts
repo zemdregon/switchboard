@@ -26,6 +26,7 @@ import {
   type ProviderAdapter,
   type ResolvedProfile,
 } from "../../src/adapters/index.js";
+import { guardEvent } from "../../src/adapters/tool-guard.js";
 import { readIfExists, treeHash } from "./detectors.js";
 import type { MaliciousFixture } from "./fixture.js";
 
@@ -61,6 +62,12 @@ export interface AdapterLegCase {
   nonDisabledRepoConfig: ResolvedProfile;
   /** Hostile streams, built from the fixture so credential and outside paths are the fixture's FAKE canary paths. */
   streams(fx: MaliciousFixture): HostileStream[];
+  /**
+   * Set, with the roadmap blocker as the reason, when the adapter cannot yet end any hostile stream blocked. The replay
+   * checks are then reported skipped, and {@link gapOutcome} is asserted instead: every stream still fails to end in
+   * its blocked code, so the gap is pinned and the test turns red (remove this field) once it closes.
+   */
+  replayGap?: string;
 }
 
 /** Names of the repository files and directories that carry hostile configuration in the fixture. */
@@ -180,4 +187,32 @@ export function parsedKinds(c: AdapterLegCase, s: HostileStream): string[] {
   const adapter = c.makeAdapter("unused", 0);
   const state = createParseState();
   return s.lines.flatMap((line) => adapter.parseEvent(line, state).map((e) => e.kind));
+}
+
+/**
+ * The run result the adapter derives from a stream with no replay process: the stream's lines (provenance lines
+ * skipped, as the replay does) through `parseEvent`, the tool-call guard as an approved bypass run sees it, and
+ * `extractResult` on a clean exit with the stream's code. Used to pin a {@link AdapterLegCase.replayGap}.
+ */
+export function gapOutcome(c: AdapterLegCase, fx: MaliciousFixture, s: HostileStream) {
+  const adapter = c.makeAdapter("unused", 0);
+  const inv = adapter.compile(requestFor(fx.repo, c.bypassApproved === true), c.profile);
+  if (isIneligible(inv)) throw new Error(`profile does not compile: ${inv.reason}: ${inv.detail}`);
+  const state = createParseState();
+  const ctx = { cwd: fx.repo, home: fx.fakeHome, bypass: c.bypassApproved === true };
+  const events = s.lines
+    .filter((line) => {
+      try {
+        return !Object.hasOwn(JSON.parse(line) as object, "_fixture");
+      } catch {
+        return true;
+      }
+    })
+    .flatMap((line) => adapter.parseEvent(line, state).map((e) => guardEvent(e, ctx)));
+  return adapter.extractResult(events, {
+    outcome: "exited",
+    exitCode: s.exitCode,
+    signal: null,
+    expectedExitCodes: inv.expectedExitCodes,
+  });
 }

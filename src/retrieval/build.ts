@@ -54,12 +54,15 @@ export interface BuildProject {
   readonly id: string;
   readonly contexts: readonly BuildContext[];
   readonly effective: EffectiveProjectRag;
+  /** T12.7 (Q-50): the project's `max_trust_profile` is an untrusted one; its contexts contribute only when they opt in. */
+  readonly untrusted?: boolean;
 }
 
 export type BuildOutcome = "ok" | "partial" | "failed" | "skipped";
 
 export interface BuildResult {
-  readonly projectKey: string;
+  /** The project id, or null for the global store (T12.7). */
+  readonly projectKey: string | null;
   readonly outcome: BuildOutcome;
   /** A cap name, `max_build_ms`, `aborted`, `context_unreadable`, a gate reason or a backend code; null when `ok`. */
   readonly reason: string | null;
