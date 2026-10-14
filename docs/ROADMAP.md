@@ -2158,7 +2158,6 @@ Proposed breakdown after owner decision Q-67 (2026-10-14). Each task names its e
 | T13.5 | Session binding by subject and client; redaction at the telemetry boundary | FR-MCP-15 | T13.4 | Tests: session reuse by another subject refused; secret-pattern scan of responses and logs is clean |
 | T13.6 | Threat model entry TB-12 reviewed; malicious-fixture suite extended for the HTTP path | FR-MCP-12..15, NFR-SEC-03 | T13.5 | HLD TB-12 linked to tests; suite passes |
 
-
 ## 7. Risks, blockers and open questions
 
 ### 7.1 Risks
