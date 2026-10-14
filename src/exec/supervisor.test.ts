@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildEnv, groupAlive, type SupervisedRun, type SuperviseOptions, supervise } from "./supervisor.js";
@@ -14,11 +15,22 @@ function run(opts: Partial<SuperviseOptions> & { argv: readonly string[] }): Sup
   return r;
 }
 
-/** Live = exists and is not a zombie (zombies are dead but may await reaping by a slow init). */
+/**
+ * Live = exists and is not a zombie (zombies are dead but may await reaping by a slow init). `/proc` on Linux; BSD `ps`
+ * elsewhere (macOS, T4.10), so the kill checks below are evidence on both platforms and never pass vacuously.
+ */
 function alive(pid: number): boolean {
   try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const state = stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3);
+    let state: string;
+    if (process.platform === "linux") {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      state = stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3);
+    } else {
+      state = execFileSync("/bin/ps", ["-o", "state=", "-p", String(pid)], { encoding: "utf8" })
+        .trim()
+        .slice(0, 1);
+      if (state === "") return false;
+    }
     return state !== "Z" && state !== "X";
   } catch {
     return false;
@@ -117,8 +129,9 @@ describe("supervise", () => {
       expect(env.SWITCHBOARD_TEST_ALLOWED).toBe("ok");
       expect(env.ADAPTER_VAR).toBe("x");
       const allowed = new Set(["PATH", "SWITCHBOARD_TEST_ALLOWED", "ADAPTER_VAR"]);
-      // Node/ICU may add nothing else, but tolerate runtime-injected vars only if starting with NODE_/LC_.
-      for (const k of Object.keys(env)) expect(allowed.has(k) || /^(NODE_|LC_|PWD$|SHLVL$|_$)/.test(k)).toBe(true);
+      // Node/ICU may add nothing else, but tolerate runtime-injected vars only if starting with NODE_/LC_ (and macOS's own `__CF_USER_TEXT_ENCODING`, T4.10).
+      for (const k of Object.keys(env))
+        expect(allowed.has(k) || /^(NODE_|LC_|PWD$|SHLVL$|_$|__CF_USER_TEXT_ENCODING$)/.test(k)).toBe(true);
     } finally {
       delete process.env.SWITCHBOARD_TEST_SECRET;
       delete process.env.SWITCHBOARD_TEST_ALLOWED;

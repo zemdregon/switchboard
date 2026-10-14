@@ -131,7 +131,9 @@ export function groupAlive(pgid: number, info: ProcInfo = hostProcInfo): boolean
   try {
     process.kill(-pgid, 0);
   } catch (err) {
-    return (err as NodeJS.ErrnoException).code === "EPERM";
+    // ESRCH: no such group. EPERM does not mean alive: macOS answers EPERM for a group whose only members are zombies
+    // (observed on the T4.10 macOS leg), so the table decides; an unreadable table still counts as alive.
+    if ((err as NodeJS.ErrnoException).code !== "EPERM") return false;
   }
   return info.liveGroupMember(pgid) ?? true;
 }

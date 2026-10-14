@@ -57,7 +57,8 @@ Commercial, resale, multi-user or credential-sharing use needs your own policy r
 ## Requirements
 
 - Linux. Other operating systems are not supported yet. macOS process handling (process tree and PID-reuse guard
-  through `ps`) is implemented but not yet verified on a Mac, and no trust profile is eligible on macOS.
+  through `ps`) runs in a macOS CI leg (typecheck, lint, tests and docs check on a GitHub-hosted runner), and no trust
+  profile is eligible on macOS.
 - Node.js 22 or newer (`engines` in `package.json`).
 - Git 2.32.0 or newer (`MIN_GIT_VERSION` in `src/workspace/git.ts`). `doctor` checks both.
 - For real work, at least one provider CLI installed and logged in natively: Claude Code and/or Codex. `doctor` does not

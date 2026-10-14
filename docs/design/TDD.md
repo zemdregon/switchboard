@@ -40,11 +40,11 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | Lint and format | Biome (single tool) | One config, fast | Smaller rule set than ESLint plus typescript-eslint; type-aware lint rules may be missing, compensated by `tsc --noEmit` in CI | Biome 2.5.15 |
 | Package manager | npm with committed lockfile, `npm ci` in CI | Ships with Node; no extra tool for a single-maintainer project | No workspace-level conveniences of pnpm; adequate for a single package | npm 10.9.4 (bundled with local Node); `package-lock.json` committed |
 | Git access | `git` CLI via `execFile` (no shell), minimum version **2.32** (raised from 2.30 on 2026-10-13 by [ADR-0023](../adr/0023-minimum-git-version-2-32.md); `src/workspace/git.ts` `MIN_GIT_VERSION`; developed against 2.43) | Worktree and diff semantics are Git's own ([ADR-0006](../adr/0006-worktree-checkpoints-no-blind-replay.md)); pure-JS Git libraries lack worktree support (Assumption) | Requires `git` on host; output parsing must use porcelain/`-z` formats | Min version M1 |
-| Process spawning | `node:child_process` `spawn` with `detached: true` | Needed for process groups (FR-EXE-01) | Signal and group semantics differ on macOS/Windows; Windows deferred (NFR-PORT-03). The process table (start time, group scan) is read per platform: `/proc` on Linux, BSD `ps` on macOS (Unverified until T4.10), none elsewhere (fail closed); [LLD §8.3](LLD.md#83-process-table-per-platform-m4-t49) | Node LTS |
+| Process spawning | `node:child_process` `spawn` with `detached: true` | Needed for process groups (FR-EXE-01) | Signal and group semantics differ on macOS/Windows; Windows deferred (NFR-PORT-03). The process table (start time, group scan) is read per platform: `/proc` on Linux, BSD `ps` on macOS (verified on the T4.10 macOS leg, see LLD §8.3), none elsewhere (fail closed); [LLD §8.3](LLD.md#83-process-table-per-platform-m4-t49) | Node LTS |
 | IDs | ULID, small dependency or in-house (about 30 lines) | Sortable, prefix-able, time-ordered | In-house needs a monotonic-within-millisecond test | M1 |
 | Logging | Structured JSON to stderr via `pino` with path-based redaction (Proposed) | Redaction support built in; stdout is reserved for MCP framing | One more dependency; redaction is a safety net, not the primary control (§3.3) | Pinned later (with first logging code) |
 | Telemetry export | `@opentelemetry/api` + OTLP exporter, M8 (FR-TEL-02) | Standard | Heavy dependency tree; load lazily and only when an endpoint is configured | M8 |
-| CI | GitHub Actions on Linux (x86-64; arm64 runner if available, to be confirmed in M1, NFR-PORT-01) | Repository is on GitHub | Hosted runners have no provider CLIs or logins, which matches "tests pass without any provider" ([AGENTS.md](../../AGENTS.md)) | `actions/checkout` pinned by SHA (v5.1.0); `actions/setup-node` on version tag `v5`, SHA unverified from the network, so SHA pinning is pending |
+| CI | GitHub Actions on Linux (x86-64; arm64 runner if available, to be confirmed in M1, NFR-PORT-01), plus a macOS leg (`runs-on: macos-latest`; the T4.10 run reported `macos-26-arm64`, macOS 26.6.2, `arm64`, Node 22.23.2; the label is a moving alias, so the job prints `uname -m` and `sw_vers` in every run) | Repository is on GitHub | Hosted runners have no provider CLIs or logins, which matches "tests pass without any provider" ([AGENTS.md](../../AGENTS.md)) | `actions/checkout` pinned by SHA (v5.1.0); `actions/setup-node` on version tag `v5`, SHA unverified from the network, so SHA pinning is pending |
 
 ## 3. Cross-cutting concerns
 
@@ -366,11 +366,13 @@ benchmark uses the fake adapter only; a real provider CLI's probe cost is unmeas
 
 Proposed jobs on every pull request, all runnable with no provider installed: (1) install via `npm ci`; (2) `biome
 check`; (3) `tsc --noEmit`; (4) Vitest unit + integration + fake-provider + fault-injection; (5) `node
-scripts/check-docs.mjs`; (6) secret-pattern scan over test outputs; (7) `npm audit` as informational (Assumption). The
-fault-injection job needs process-kill privileges only, no root. A scheduled job for version canaries is M8
-([ADR-0009](../adr/0009-version-gated-adapters.md)); it needs installed provider CLIs and logins and therefore cannot
-run on hosted runners without operator-managed credentials, which the project must not hold, so canaries run on the
-operator's machine (Assumption).
+scripts/check-docs.mjs`; (6) secret-pattern scan over test outputs; (7) `npm audit` as informational (Assumption).
+Jobs (1) to (5) also run on a macOS runner (T4.10, NFR-PORT-02), as a separate job `Typecheck, lint, test, docs check
+(macOS)` in `.github/workflows/ci.yml`; the tests it skips are listed in [ROADMAP
+T4.10](../ROADMAP.md#68-m4-adapter-expansion-tasks). The fault-injection job needs process-kill privileges only, no
+root. A scheduled job for version canaries is M8 ([ADR-0009](../adr/0009-version-gated-adapters.md)); it needs
+installed provider CLIs and logins and therefore cannot run on hosted runners without operator-managed credentials,
+which the project must not hold, so canaries run on the operator's machine (Assumption).
 
 ### 3.9 Versioning
 

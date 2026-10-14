@@ -92,7 +92,7 @@ import {
   type ResolvedProfile,
   startAdapterRun,
 } from "../adapters/index.js";
-import type { ArtifactStore } from "../artifacts/index.js";
+import { type ArtifactStore, defaultRedactor } from "../artifacts/index.js";
 import { isUnderAllowedRoot, TRUST_PROFILES } from "../config/index.js";
 import {
   type BuiltBundle,
@@ -1698,7 +1698,7 @@ export class RunLifecycle {
       finalizeCommit = await this.finalizeOnlyCommit(runId, metaSessionId, outcome.kind === "success", {
         ...git,
         changedPaths,
-        summary: out.result.summary,
+        summary: out.result.summary === undefined ? undefined : redactText(out.result.summary),
       });
     }
 
@@ -1927,8 +1927,14 @@ export class RunLifecycle {
       from: run.state,
       to,
       expectedVersion: run.version,
-      set,
-      payload: { rule: rule.id, ...payload },
+      // NFR-SEC-01, FR-TEL-03: failure detail and the provider's summary are provider-reported text; a credential-shaped
+      // token in either must not reach the ledger (the stream artifacts are redacted at storage time, these are not).
+      set: typeof set.failure_detail === "string" ? { ...set, failure_detail: redactText(set.failure_detail) } : set,
+      payload: {
+        rule: rule.id,
+        ...payload,
+        ...(typeof payload.summary === "string" ? { summary: redactText(payload.summary) } : {}),
+      },
     });
     if (!moved) return undefined;
     this.opts.onTransition?.({ runId: run.id, from: run.state, to, rule: rule.id });
@@ -2039,6 +2045,11 @@ function resolveRule(from: RunState, to: RunState, ruleId?: string): TransitionR
   const named = TRANSITIONS.find((t) => t.id === ruleId && t.from === from && t.to === to);
   if (!named) throw new IllegalTransitionError(from, to);
   return named;
+}
+
+/** The artifact secret redactor applied to a text value (same patterns as stored artifacts). */
+function redactText(text: string): string {
+  return defaultRedactor(Buffer.from(text, "utf8")).toString("utf8");
 }
 
 function pendingOf(exec: Execution, out: AdapterRunOutcome): Pending {
