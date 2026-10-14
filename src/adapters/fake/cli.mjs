@@ -40,6 +40,10 @@
 // `{"files": {"<rel path>": "<content>" | null}, "summary": "<text>" | null, "ok": true}`; it writes (or, for null,
 // deletes) the files in its working directory and ends with a `result` event carrying the summary (none when null).
 // `ok: false` ends as a task failure (exit 1). No Git command is run.
+//
+// Handoff prompts (T5.5, LLD §15.5; additive): a plan scenario reads its JSON plan from the text after the first line
+// that is exactly `[instruction from the orchestrator]`, when there is one (the rendered bundle comes before it); a
+// prompt without that line is the plan itself, as before.
 import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
@@ -60,6 +64,7 @@ const resumeAt = argv.findIndex((a, i) => a === resumeFlag && argv[i - 1] !== "-
 const sessionId = (resumeAt >= 0 ? argv[resumeAt + 1] : undefined) ?? flagValue("--new-session-id") ?? "fake-session-1";
 const stateDirName = flagValue("--state-dir");
 let stdinText; // read at most once: the state recorder and a plan scenario both need the prompt
+const INSTRUCTION_LINE = "[instruction from the orchestrator]";
 const emit = (obj) => process.stdout.write(`${JSON.stringify(obj)}\n`);
 
 if (argv.includes("--version")) {
@@ -148,6 +153,14 @@ if (argv.includes("--version")) {
   }
 }
 
+/** The plan text: after the first instruction marker line of a handoff prompt, else the whole prompt (T5.5). */
+async function readPlan() {
+  const text = await readStdin();
+  const lines = text.split("\n");
+  const at = lines.indexOf(INSTRUCTION_LINE);
+  return at < 0 ? text : lines.slice(at + 1).join("\n");
+}
+
 async function readStdin() {
   if (stdinText !== undefined) return stdinText;
   let text = "";
@@ -186,7 +199,7 @@ async function recordState() {
 async function editFilesScenario() {
   let plan;
   try {
-    plan = JSON.parse(await readStdin());
+    plan = JSON.parse(await readPlan());
   } catch {
     plan = undefined;
   }
@@ -219,7 +232,7 @@ async function gitCommitScenario() {
   }
   let plan;
   try {
-    plan = JSON.parse(await readStdin());
+    plan = JSON.parse(await readPlan());
   } catch {
     plan = undefined;
   }
@@ -324,7 +337,7 @@ function refAlias(ref) {
 async function gitAttemptsScenario() {
   let plan;
   try {
-    plan = JSON.parse(await readStdin());
+    plan = JSON.parse(await readPlan());
   } catch {
     plan = undefined;
   }

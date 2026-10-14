@@ -2,6 +2,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { syntheticBundle } from "../../continuity/fixtures/handoff-bundle.js";
+import { INSTRUCTION_MARKER, renderHandoffPrompt } from "../../continuity/render.js";
 import { SIGNING_AGENT_VARIABLES } from "../../git/sign.js";
 import { resolveTrustProfile } from "../../policy/profiles.js";
 import type { ProfileOverride } from "../../policy/types.js";
@@ -1224,5 +1226,27 @@ describe("claude probe and auth preflight (injected runner; the real CLI is neve
     expect(await a.authPreflight(fake({ "auth status --json": { timedOut: true, exitCode: null } }))).toMatchObject({
       state: "UNKNOWN",
     });
+  });
+});
+
+describe("handoff runs change the prompt only (T5.5, LLD §15.5, ADR-0038 item 5.1)", () => {
+  const handoffRef = { bundleArtifactId: "art_01HANDOFF", bundleSha256: "f".repeat(64) };
+  const { prompt } = renderHandoffPrompt({ bundle: syntheticBundle(), instruction: "Fix the failing test." });
+  const withoutStdin = (inv: Invocation) => ({ ...inv, stdin: undefined });
+
+  it.each([INSPECT_UNTRUSTED, EDIT_UNTRUSTED, TRUSTED_DEVELOPMENT])(
+    "$name: argv, environment, policy flags and cwd equal the same-provider compile; stdin is the rendered prompt",
+    (profile) => {
+      const plain = compiled(profile, { ...request, constraints: ["keep the public API"] });
+      const handoff = compiled(profile, { ...request, objective: prompt, constraints: [], handoff: handoffRef });
+      expect(withoutStdin(handoff)).toEqual(withoutStdin(plain));
+      expect(handoff.stdin).toEqual({ kind: "text", value: prompt });
+      expect(handoff.argv.join("\n")).not.toContain(INSTRUCTION_MARKER);
+      expect(auditInvocation(handoff)).toEqual([]);
+    },
+  );
+
+  it("no adapter reads CompileRequest.handoff: the same request with it compiles identically", () => {
+    expect(compiled(EDIT_UNTRUSTED, { ...request, handoff: handoffRef })).toEqual(compiled(EDIT_UNTRUSTED, request));
   });
 });

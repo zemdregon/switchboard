@@ -93,6 +93,17 @@ import {
 } from "../adapters/index.js";
 import type { ArtifactStore } from "../artifacts/index.js";
 import { isUnderAllowedRoot, TRUST_PROFILES } from "../config/index.js";
+import {
+  type BuiltBundle,
+  HANDOFF_BUNDLE_UNAVAILABLE,
+  HandoffBundleError,
+  MAX_INSTRUCTION_CHARS,
+  parseHandoffBundle,
+  RENDERER_VERSION,
+  type RouteReasonCode,
+  recordHandoffView,
+  renderHandoffPrompt,
+} from "../continuity/index.js";
 import { procStartTicks } from "../exec/proc-info.js";
 import { ChannelOpenError, type GitToolService, type OpenChannel } from "../git/channel.js";
 import type { GitPublisher } from "../git/commit.js";
@@ -247,6 +258,45 @@ export interface SubmitRequest {
    * Refused under `inspect-untrusted`; an empty list means no verification. A continuation takes none (FRD §7.2).
    */
   readonly verificationCommands?: readonly (readonly string[])[];
+  /**
+   * T5.5 (ADR-0038 items 2 and 5, LLD §15.2, §15.5, §15.7 step 6): admit this continuation as a handoff run. The caller
+   * (T5.6 `continue_task`) has built the bundle and put its bytes in the artifact store (`buildAndPutHandoffView`); the
+   * admission transaction records the `handoff_view` row and its `handoff_built` decision, writes `route_selected` with
+   * mode `handoff`, and stores `request_json.handoff`. At dispatch the lifecycle renders the stored view with
+   * `objective` (the new instruction) last and compiles that text with `constraints: []`. Requires `metaSessionId`;
+   * refused with `resume`.
+   */
+  readonly handoff?: HandoffSubmission;
+}
+
+/** T5.5: what a handoff submission carries (see {@link SubmitRequest.handoff}). */
+export interface HandoffSubmission {
+  readonly built: BuiltBundle;
+  /** The artifact store's answer to `put(built.bytes)`; its hash must equal `built.sha256`. */
+  readonly stored: { readonly sha256: string; readonly sizeBytes: number };
+  /** The meta-session's provider before this run (`P0`, LLD §15.7 step 1). */
+  readonly fromProvider: string;
+  /** The route reason code recorded in `route_selected` and `request_json.handoff.reason` (LLD §15.3). */
+  readonly reason: HandoffReason;
+}
+
+/** Route reason codes that lead to a handoff (LLD §15.3, §15.7). */
+export const HANDOFF_REASONS = [
+  "provider_named",
+  "bound_provider_ineligible",
+  "no_binding",
+  "resume_directory_unavailable",
+] as const satisfies readonly RouteReasonCode[];
+export type HandoffReason = (typeof HANDOFF_REASONS)[number];
+
+/** `request_json.handoff` of a handoff run (ADR-0038 item 2, LLD §15.2); the rendered prompt itself is never stored. */
+export interface StoredHandoff {
+  bundle_artifact_id: string;
+  bundle_sha256: string;
+  as_of_sha256: string;
+  renderer_version: number;
+  from_provider: string;
+  reason: HandoffReason;
 }
 
 /** `run_event` type recording the dispatch-time approval verdict of a `privileged` run (`approval_id`, `bypass_approved`). */
@@ -307,6 +357,8 @@ interface StoredRequest {
   base_ref?: string;
   /** T3.10: present only when non-empty, so the stored request (and its default hash) is unchanged otherwise. */
   verification_commands?: string[][];
+  /** T5.5: present only for a handoff run. */
+  handoff?: StoredHandoff;
 }
 
 export interface TransitionNotice {
@@ -478,6 +530,23 @@ export class RunLifecycle {
     const profile = priv === undefined ? this.opts.resolveProfile(req.trustProfile) : undefined;
 
     const result = this.ledger.immediate((): SubmitResult => {
+      // T5.5: a handoff run's request names its view, whose id is allocated here so both rows share this transaction.
+      const handoff = req.handoff;
+      const viewId = handoff ? this.ledger.newArtifactId() : undefined;
+      const request: StoredRequest =
+        handoff && viewId !== undefined
+          ? {
+              ...stored,
+              handoff: {
+                bundle_artifact_id: viewId,
+                bundle_sha256: handoff.built.sha256,
+                as_of_sha256: handoff.built.asOfSha256,
+                renderer_version: RENDERER_VERSION,
+                from_provider: handoff.fromProvider,
+                reason: handoff.reason,
+              },
+            }
+          : stored;
       if (req.idempotencyKey !== undefined) {
         const prior = this.ledger.findRunByIdempotencyKey(req.clientId, req.idempotencyKey);
         if (prior) {
@@ -526,8 +595,9 @@ export class RunLifecycle {
           ? { ...(privileged?.snapshot ?? profile), project: req.project }
           : (privileged?.snapshot ?? profile),
         ...(req.project ? { projectId: req.project.id } : {}),
-        request: stored,
-        requestHash: hash,
+        request,
+        // T5.5: so `request_hash` covers `handoff` (LLD §15.2); a handoff takes no idempotency key (continuation).
+        requestHash: handoff && req.requestHash === undefined ? requestHash(request) : hash,
         clientId: req.clientId,
         idempotencyKey: req.idempotencyKey ?? null,
         provider: req.provider,
@@ -567,9 +637,27 @@ export class RunLifecycle {
         kind: "route_selected",
         runId: run.id,
         provider: req.provider,
-        mode: req.resume ? "resume" : "new",
-        reasons: [req.resume ? "same_provider_resume" : req.metaSessionId !== undefined ? "no_binding" : "new_session"],
+        mode: handoff ? "handoff" : req.resume ? "resume" : "new",
+        reasons: [
+          handoff
+            ? handoff.reason
+            : req.resume
+              ? "same_provider_resume"
+              : req.metaSessionId !== undefined
+                ? "no_binding"
+                : "new_session",
+        ],
       });
+      // T5.5 (LLD §15.7 step 6): the `handoff_view` row (with the pre-allocated id) and `handoff_built`, in this
+      // transaction; a refusal throws HandoffBundleError and rolls the run back.
+      if (handoff) {
+        recordHandoffView(this.ledger, {
+          receivingRunId: run.id,
+          built: handoff.built,
+          stored: handoff.stored,
+          ...(viewId !== undefined ? { artifactId: viewId } : {}),
+        });
+      }
       const rule = initial === "QUEUED" ? "T1" : "T2";
       this.ledger.appendRunEvent({
         runId: run.id,
@@ -820,6 +908,7 @@ export class RunLifecycle {
       if (req.trustProfile === "inspect-untrusted") bad("verification commands are refused under inspect-untrusted");
       if (req.metaSessionId !== undefined) bad("verification commands apply to delegate_task only");
     }
+    if (req.handoff !== undefined) this.validateHandoff(req, bad);
     if (req.idempotencyKey !== undefined) {
       if (req.metaSessionId !== undefined) bad("idempotency keys apply to new meta-sessions only");
       if (req.idempotencyKey.length < 8 || req.idempotencyKey.length > 128) bad("idempotency key length out of range");
@@ -850,6 +939,32 @@ export class RunLifecycle {
       ...(req.resume !== undefined ? { resume_native_session_id: req.resume.nativeSessionId } : {}),
       ...(verification.length > 0 ? { verification_commands: verification } : {}),
     };
+  }
+
+  /**
+   * T5.5: admission checks of a handoff submission, before any write. Malformed input is INVALID_REQUEST; a bundle the
+   * renderer cannot turn into a prompt throws {@link HandoffBundleError} (`TOOL_FAILURE`, `HANDOFF_BUNDLE_UNAVAILABLE`).
+   */
+  private validateHandoff(req: SubmitRequest, bad: (msg: string) => never): void {
+    const h = req.handoff as HandoffSubmission;
+    if (req.metaSessionId === undefined) bad("a handoff applies to an existing meta-session only");
+    if (req.resume !== undefined) bad("a handoff starts a fresh native session; it cannot resume one");
+    if (!(HANDOFF_REASONS as readonly string[]).includes(h.reason)) bad("unknown handoff reason");
+    if (typeof h.fromProvider !== "string" || !/^[a-z0-9][a-z0-9_.-]{0,63}$/.test(h.fromProvider)) {
+      bad("handoff source provider is not a provider id");
+    }
+    if (h.built.bundle.as_of.meta_session_id !== req.metaSessionId)
+      bad("the handoff bundle is of another meta-session");
+    if (h.stored.sha256 !== h.built.sha256) bad("the stored handoff view does not match the built bundle");
+    // Q-61 fail-closed default (ADR-0038 item 8): never a privileged continuation on another provider through this hook.
+    // T5.6 owns the policy constant and its check in continue_task; this keeps the hook from being a way around it.
+    if (req.trustProfile === "privileged" && req.provider !== h.fromProvider) {
+      bad("PRIVILEGED_CROSS_PROVIDER: a privileged meta-session cannot continue on another provider (Q-61)");
+    }
+    if ([...req.objective].length > MAX_INSTRUCTION_CHARS) bad("the instruction is too long for a handoff");
+    // The prompt is rendered again at dispatch from the stored bytes (same input, same output); rendering it here
+    // refuses an unusable bundle before anything is written.
+    renderHandoffPrompt({ bundle: parseHandoffBundle(h.built.bytes), instruction: req.objective });
   }
 
   /** FRD V3/V4 and C3: canonical path under an allowed root; write-capable profiles need a Git repository. */
@@ -951,6 +1066,18 @@ export class RunLifecycle {
     }
     const adapter = this.opts.adapters.get(req.provider);
     if (!adapter) return this.fail(runId, "ELIGIBILITY_NONE", `adapter ${req.provider} is not registered`);
+    // T5.5 (LLD §15.5): a handoff run's prompt is rendered from its stored view before anything is probed, leased or
+    // spawned; a view that cannot be read, verified or rendered fails the run here (fail closed).
+    let handoffPrompt: { prompt: string; ref: { bundleArtifactId: string; bundleSha256: string } } | undefined;
+    if (req.handoff !== undefined) {
+      try {
+        handoffPrompt = await this.renderHandoff(runId, req.objective, req.handoff);
+      } catch {
+        return this.fail(runId, "TOOL_FAILURE", "the handoff view could not be read or rendered", {
+          reason: HANDOFF_BUNDLE_UNAVAILABLE,
+        });
+      }
+    }
 
     // PREFLIGHT (WF-6 order: probe, then auth; no login is ever attempted).
     const verdict = this.opts.eligibility
@@ -1013,9 +1140,12 @@ export class RunLifecycle {
     const cwd = ws.mode === "worktree" ? ws.worktreePath : ws.path;
     const compileReq = {
       runId,
-      objective: req.objective,
-      constraints: req.constraints,
+      // T5.5: a handoff run compiles the rendered bundle with the instruction last, and no separate constraints (the
+      // bundle carries them); `handoff` is for the record only (no adapter reads it). Other runs are unchanged.
+      objective: handoffPrompt ? handoffPrompt.prompt : req.objective,
+      constraints: handoffPrompt ? [] : req.constraints,
       workspace: { cwd, writable: ws.mode === "worktree" },
+      ...(handoffPrompt ? { handoff: handoffPrompt.ref } : {}),
     };
     let inv =
       req.resume_native_session_id !== undefined
@@ -1646,6 +1776,31 @@ export class RunLifecycle {
       });
     }
     return ids;
+  }
+
+  /**
+   * T5.5: read this run's `handoff_view` (row of this run, kind and hash as recorded, not collected; the store verifies
+   * the content address), check its `as_of` hash and render it with `instruction`. Throws on any mismatch.
+   */
+  private async renderHandoff(
+    runId: string,
+    instruction: string,
+    h: StoredHandoff,
+  ): Promise<{ prompt: string; ref: { bundleArtifactId: string; bundleSha256: string } }> {
+    const row = this.ledger.getArtifact(h.bundle_artifact_id);
+    if (
+      row?.kind !== "handoff_view" ||
+      row.run_id !== runId ||
+      row.deleted_at !== null ||
+      row.sha256 !== h.bundle_sha256 ||
+      h.renderer_version !== RENDERER_VERSION
+    ) {
+      throw new HandoffBundleError("the handoff view row does not match the run's request");
+    }
+    const bundle = parseHandoffBundle(await this.opts.artifacts.get(row.sha256));
+    if (requestHash(bundle.as_of) !== h.as_of_sha256) throw new HandoffBundleError("the view's as_of does not match");
+    const { prompt } = renderHandoffPrompt({ bundle, instruction });
+    return { prompt, ref: { bundleArtifactId: row.id, bundleSha256: row.sha256 } };
   }
 
   // ---- terminal helpers -----------------------------------------------------------------------------------------
