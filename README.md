@@ -28,6 +28,12 @@ Pre-release. The package is private and is not published to any registry; you bu
   against a live provider through Switchboard's own tool channel, signing was tried only with a throwaway GnuPG key,
   pushing from dynamic projects is not wired, and container environments need milestone 10. The exceptions are listed
   in [ROADMAP §6.3](docs/ROADMAP.md#63-m9-projects-and-controlled-commits-tasks) (task T9.8).
+- **Milestone 5 (continuity) is `Partial`.** `continue_task` resumes the provider's native session or hands off to
+  another provider from a bundle built from Switchboard's own records, and `get_artifacts` and `runs show` show the
+  handoff. It is tested on two fake providers, including a check that the controller opens no provider state directory.
+  It is not `Done`: no run of a real Claude Code and Codex pair has been made (the opt-in `npm run test:live:pair`
+  script exists and has not been run), and resume for the providers of milestone 4 is not built. See
+  [ROADMAP §6.9](docs/ROADMAP.md#69-m5-continuity-tasks).
 - Providers other than Claude Code and Codex are not implemented.
 
 What works today: `doctor`, `runs list|show|cancel`, `approve`, `deny`, `gc`, `projects list|show|validate|approve`,
@@ -196,6 +202,42 @@ Only one `serve` can hold a data directory at a time.
 
 Tool schemas are published through MCP `tools/list`.
 
+### Continuing a session: resume or handoff
+
+`continue_task` takes a meta-session that has no active run and a new instruction, and does one of two things:
+
+- **Resume.** The session's provider is eligible and has a native session: Switchboard resumes that native session
+  (Claude Code `--resume <session id>`, Codex `exec resume <session id>`; the Codex form is an assumption until the
+  operator's live run) in the worktree path of the run that created
+  it, on a new run branch at the session's head checkpoint. If that directory is gone or is not clean, the continuation
+  becomes a handoff on the same provider instead of resuming somewhere else.
+- **Handoff.** You name another provider in `routing.provider_preference`, the session has no native session to resume,
+  its directory is unusable, or its provider is no longer eligible. Switchboard builds a bundle, stores it as the run's
+  `handoff_view` artifact and gives the new provider a fresh native session whose prompt is the bundle followed by your
+  instruction. The first provider's native session is left untouched and can still be resumed.
+  `require_provider: true` turns "no eligible provider" into an error instead of falling back.
+
+What the bundle carries: your goal, constraints and every earlier instruction (labelled as your text); controller
+facts (the base and head commits, run outcomes and failure codes, decisions such as routing, verification outcomes and
+open work derived from them); changed-file lists and bounded diff excerpts read from Git; and each run's reported
+summary or failure text, which is shown inside blocks labelled as untrusted data. What it never carries: a provider's
+transcript or its state directory (Switchboard opens no file under a provider's home directory to build it), raw
+provider output, credentials or tokens, a native session id, or any text that was not produced by the controller, by you
+or by the repository. Size is bounded by the `continuity.max_bundle_bytes`, `continuity.max_diff_excerpt_bytes` and
+`continuity.max_text_chars` configuration keys, and what was cut is listed in the
+bundle's `truncation`. A bundle that cannot be built fails the call with `TOOL_FAILURE`
+(`details.reason: "HANDOFF_BUNDLE_UNAVAILABLE"`) and writes nothing.
+
+`get_artifacts` returns the `handoff_view` of a handoff run; `get_run` names its artifact id and never carries bundle
+text. `runs show <run>` prints a Handoff block: bundle artifact id and hash, the provider handed off from and why, the
+source runs, and the binding the run started.
+
+The `privileged` rule: a `privileged` meta-session continues on its own provider only. A continuation that would
+hand it to another provider is refused with `INVALID_REQUEST` (`details.reason: "PRIVILEGED_CROSS_PROVIDER"`) before any
+other provider is probed or anything is written, because a durable approval for a bypass run was given for one provider.
+This is a fail-closed default until [ROADMAP Q-61](docs/ROADMAP.md#73-open-questions-for-zemdregon-not-blocking-m2-unless-noted)
+is answered; a same-provider `privileged` continuation keeps the approval as it was.
+
 ### How commits reach Git
 
 Agents are not given a way to commit or push: Git writes are denied where the provider documents a rule (Claude
@@ -344,7 +386,8 @@ command prints a base URL's userinfo, a header, a key or any prompt or response 
 
 Which tasks run today (2026-10-14): only the commit-message task is wired into a run path (the optional `message` on
 the `commit` tool). The PR-draft, verification-summary and run-title tasks exist as service functions, tested on fakes,
-and nothing calls them yet; the handoff and routing tasks need milestones 5 and 7. No hosted or live backend has been
+and nothing calls them yet; the handoff-condensation and routing tasks need milestones 11 and 7 (the handoff bundle of
+milestone 5 is built without it). No hosted or live backend has been
 exercised: every test uses a scripted fake or a local fake server.
 
 ## Trust profiles
@@ -468,6 +511,15 @@ It builds, creates a throwaway Git repository and data directory under the syste
 `edit-untrusted` task, and prints which adapter assumptions held, failed or were not checked. Details are in
 [TDD §3.6](docs/design/TDD.md#36-testing-strategy). With the current manifests, a codex-cli 0.162.0 or 0.162.1 passes the
 version gate (range `>=0.162.0 <0.163.0`); any other Codex version is refused as `ADAPTER_VERSION_UNVERIFIED`.
+
+### Optional live pair test
+
+With both Claude Code and Codex installed and logged in natively, `SWITCHBOARD_LIVE_TESTS=1 npm run test:live:pair`
+delegates one edit to one provider and continues the session on the other through `continue_task`, in a throwaway
+repository, for each direction (`SWITCHBOARD_LIVE_PAIR=claude:codex` runs one). It is opt-in and skipped otherwise, passes
+no bypass flag, prints no prompt or transcript, and records statuses, bindings (without native session ids) and the
+bundle hash. A provider that is not installed or not logged in makes its checks `NOT_CHECKED`. It has not been run
+against real providers yet (ROADMAP T5.12 is the operator task).
 
 ## Troubleshooting
 
