@@ -1927,7 +1927,11 @@ The roadmap's provider groups (T4.n0 to T4.n9) order the work; this list says wh
    (FR-ADP-04). `classifyFailure` maps every piece of evidence to one [LLD §4](LLD.md#4-failure-taxonomy) code; unknown
    evidence, unknown event kinds and a missing result never map to success.
 6. **Resume.** `resumeArgs` continues a native session from a `NativeBinding` (FR-SES-03) and is `Ineligible` with a
-   reason where the provider has no documented resume.
+   reason where the provider has no documented resume. The adapter declares `resumeCwd` (`bound`, `independent` or
+   `unverified`, [§4.10](#410-native-resume-inventory-t50)) and its registry entry states the same value. The
+   registry-wide check `src/adapters/resume-conformance.test.ts` (T5.8) runs on every registered adapter with no
+   per-adapter edit: it compiles wherever `compile` does, refuses another provider's binding with a reason and carries
+   the declaration.
 7. **Replay fixtures.** Recorded-style fixtures under the adapter's `fixtures/` directory, replayed by the shared replay
    helper (T4.3) rather than a per-adapter copy. Synthetic fixtures say so and are replaced by scrubbed captures from
    the operator task (no credential, token, account identifier or private prompt text).
