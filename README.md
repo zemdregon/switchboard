@@ -15,7 +15,11 @@ Pre-release. The package is private and is not published to any registry; you bu
   (`doctor`, `runs`). See [ROADMAP §6](docs/ROADMAP.md#6-milestones) for the evidence.
 - **Milestone 2 (Claude Code and Codex adapters plus the MCP slice) is `Partial`.** The Claude Code and Codex
   adapters, the MCP server and `switchboard serve` exist and pass their tests on recorded or synthetic fixtures and a
-  fake provider. They have **not** been confirmed against a live provider yet.
+  fake provider. The 2026-10-13 operator-machine live checks
+  ([`docs/research/live-checks-2026-10-13.md`](docs/research/live-checks-2026-10-13.md)) ran the real Claude Code
+  2.1.296 (14 of 16 checks held; two need a failing run) and codex-cli 0.162.1 (flag assumptions held; Codex has not
+  run through Switchboard). The opt-in `npm run test:live` smoke test has not been run by the operator personally. See
+  [ROADMAP §6.2](docs/ROADMAP.md#62-m2-claude-code-adapter-and-mcp-slice-tasks).
 - **Milestone 3 (isolation) is `Partial`.** Approvals, privileged runs and retention are implemented; the live
   malicious-fixture checks are not. See [ROADMAP §6](docs/ROADMAP.md#6-milestones) for each task.
 - **Milestone 9 (projects and controlled commits) is `Partial`.** Projects, the agent `commit` tool, finalize-only
@@ -439,8 +443,10 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   Q-12), validated only by `--version`, the flags in `--help` and the operator's live checks of 2026-10-13
   (`docs/research/live-checks-2026-10-13.md`), not by a conformance suite. Any other Codex version fails the version
   gate. The `codex login status` exit codes were observed on that version only; its output format is undocumented.
-- **Event shapes are unverified until the live smoke test passes.** The adapters were written against recorded or
-  synthetic fixtures. Provider output formats, flags and the exact meaning of status commands may differ on a real CLI.
+- **Event shapes are partly verified.** The 2026-10-13 live checks confirmed the Claude Code stream-json shapes
+  (C-1 to C-11 and G-1) on 2.1.296 and the Codex flags (X-1 to X-3) on 0.162.1. Claude error strings (C-12), the
+  Git-write attempt (C-G2) and Codex through Switchboard (X-5 to X-9) are still unverified, and another CLI version may
+  differ. See `docs/research/live-checks-2026-10-13.md`.
 - Linux only. Single operator only. No hosted or multi-user mode.
 - Only Claude Code and Codex; profiles beyond `inspect-untrusted` and `edit-untrusted` only where the adapter can
   compile them (see `list_capabilities`); `continue_task` only on the same provider.
@@ -457,8 +463,8 @@ SWITCHBOARD_LIVE_TESTS=1 SWITCHBOARD_LIVE_PROVIDER=claude npm run test:live   # 
 
 It builds, creates a throwaway Git repository and data directory under the system temp directory, runs one
 `edit-untrusted` task, and prints which adapter assumptions held, failed or were not checked. Details are in
-[TDD §3.6](docs/design/TDD.md#36-testing-strategy). With the current manifests, expect Codex to be refused at the
-version gate.
+[TDD §3.6](docs/design/TDD.md#36-testing-strategy). With the current manifests, a codex-cli 0.162.1 passes the version
+gate; any other Codex version is refused as `ADAPTER_VERSION_UNVERIFIED`.
 
 ## Troubleshooting
 

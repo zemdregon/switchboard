@@ -276,8 +276,8 @@ involved.
 The owner asked for an application plus a backend. In this product:
 
 - **"The application"** is what users touch: the MCP tool surface (`delegate_task`, `continue_task`, `get_run`,
-  `cancel_run`, `get_artifacts`, `list_capabilities`, later `list_projects`, `get_capacity` and `explain_route`) for the
-  orchestrator, and the operator CLI for the human. A second, narrower surface faces the agents themselves: the injected
+  `cancel_run`, `get_artifacts`, `list_capabilities`, `list_projects`, and later `get_capacity` and `explain_route`) for
+  the orchestrator, and the operator CLI for the human. A second, narrower surface faces the agents themselves: the injected
   `commit` and `push` tools of CAP-11, offered per run and nothing else. There is no graphical or web application ([SRS
   FR-OPS-03](SRS.md#311-operator-cli-fr-ops)).
 - **"The backend"** is the controller daemon: policy engine, project manager, session ledger, workspace manager, git
