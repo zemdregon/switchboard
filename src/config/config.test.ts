@@ -818,12 +818,36 @@ describe("routing (T7.1; LLD §17.1, ADR-0044)", () => {
   const load = (section: unknown) => loadConfig({ configPath: write({ ...base(), routing: section }) });
   const ONES = { success: 1, latency: 1, capacity: 1, security: 1, handoff: 1, cost: 1 };
 
+  const AFFINITY = { enabled: true, lowWaterMark: null, minConfidence: null };
+
   it("defaults every weight to 1 (Assumption, Q-80) and takes each key", () => {
-    expect(loadConfig({ configPath: write(base()) }).routing).toEqual({ weights: ONES });
-    expect(load({}).routing).toEqual({ weights: ONES });
+    expect(loadConfig({ configPath: write(base()) }).routing).toEqual({ weights: ONES, affinity: AFFINITY });
+    expect(load({}).routing).toEqual({ weights: ONES, affinity: AFFINITY });
     expect(load({ weights: { cost: 0, success: 100, latency: 2.5 } }).routing).toEqual({
       weights: { ...ONES, cost: 0, success: 100, latency: 2.5 },
+      affinity: AFFINITY,
     });
+  });
+
+  it("affinity (T7.4): enabled by default, thresholds null so the estimate trigger is off (Q-81), set together", () => {
+    expect(load({ affinity: {} }).routing.affinity).toEqual(AFFINITY);
+    expect(load({ affinity: { enabled: false, idle_ttl: null } }).routing.affinity).toEqual({
+      ...AFFINITY,
+      enabled: false,
+    });
+    expect(load({ affinity: { low_water_mark: 0.1, min_confidence: 0.5 } }).routing.affinity).toEqual({
+      enabled: true,
+      lowWaterMark: 0.1,
+      minConfidence: 0.5,
+    });
+    expect(() => load({ affinity: { low_water_mark: 0.1 } })).toThrow(
+      /\$\.routing\.affinity: low_water_mark and min_confidence/,
+    );
+    expect(() => load({ affinity: { min_confidence: 0.1, low_water_mark: null } })).toThrow(/set together/);
+    expect(() => load({ affinity: { idle_ttl: "7d" } })).toThrow(/\$\.routing\.affinity\.idle_ttl/);
+    expect(() => load({ affinity: { low_water_mark: 2, min_confidence: 0.5 } })).toThrow(/low_water_mark/);
+    expect(() => load({ affinity: { enabled: "yes" } })).toThrow(/\$\.routing\.affinity\.enabled/);
+    expect(() => load({ affinity: { sticky: true } })).toThrow(/\$\.routing\.affinity/);
   });
 
   it("refuses unknown keys, out-of-range and non-numeric weights (NFR-SEC-06)", () => {

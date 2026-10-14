@@ -4290,3 +4290,12 @@ the rule is `score` or `configured_order`, and each excluded provider's first co
   TEXT NOT NULL`.
 - **Privileged.** Affinity never moves a `privileged` meta-session to another provider; a new `privileged` meta-session
   routes like any other, under its own approval (the Q-61 rule for continuations is unchanged).
+
+*As built (T7.4, 2026-10-14, Delegated):* migration 0014 (`src/ledger/migrations/0014_project_affinity.ts`) creates the
+table with §3.2's columns and the three above. One deviation, an **Assumption**: `last_run_id` has **no** foreign key,
+because retention GC deletes old runs and must not be blocked by a row naming one (the id is informational). Ledger
+helpers in `src/ledger/repo.ts`: `getProjectAffinity`, `listProjectAffinities`, `writeProjectAffinity` (insert only when
+no row was read; otherwise an update guarded by the version read, which keeps `since` and the last reason when the
+provider is unchanged and the reason is null, and clears a pending reset) and `requestAffinityReset` (an existing row
+only). `src/config/routing.ts` refuses `low_water_mark` without `min_confidence` or the reverse, so a half-configured
+trigger is an error rather than silently off.

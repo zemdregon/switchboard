@@ -13,7 +13,7 @@ import { ConfigError } from "./errors.js";
 import { checkHttpTransport, type HttpTransportSettings, resolveHttpTransport } from "./http-transport.js";
 import { checkInnerAgent, type InnerAgentSettings, resolveInnerAgent } from "./inner-agent.js";
 import { checkProjects, type ResolvedProject, resolveProjects } from "./projects.js";
-import { type RoutingSettings, resolveRouting } from "./routing.js";
+import { checkRouting, type RoutingSettings, resolveRouting } from "./routing.js";
 import {
   currentConfigSchema,
   DEFAULT_CONTINUITY_MAX_BUNDLE_BYTES,
@@ -345,6 +345,10 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
   }
   const httpTransport = resolveHttpTransport(cfg.transport?.http);
 
+  const routingErrors = checkRouting(cfg.routing);
+  if (routingErrors.length > 0) {
+    throw new ConfigError(`Invalid config:\n${routingErrors.map((l) => `  ${l}`).join("\n")}`);
+  }
   const capacityErrors = checkCapacity(cfg.capacity);
   if (capacityErrors.length > 0) {
     throw new ConfigError(`Invalid config:\n${capacityErrors.map((l) => `  ${l}`).join("\n")}`);

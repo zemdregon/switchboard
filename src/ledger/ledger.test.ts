@@ -29,6 +29,7 @@ const EXPECTED_TABLES = [
   "oauth_client",
   "oauth_pairing_code",
   "oauth_token",
+  "project_affinity",
   "project_event",
   "project_revision",
   "project_revision_decision",
@@ -677,5 +678,91 @@ describe("approval helpers (T3.3, LLD §1 and §3.1)", () => {
     expect(() => ledger.decideApproval({ id: b.id, status: "DENIED", decidedBy: "" })).toThrow();
     expect(ledger.decideApproval({ id: b.id, status: "DENIED", decidedBy: "cancel_run" })?.status).toBe("DENIED");
     expect(ledger.listApprovals({ status: "DENIED" }).map((x) => x.id)).toEqual([b.id]);
+  });
+});
+
+describe("project_affinity (T7.4; migration 0014, LLD §3.2, §17.6)", () => {
+  it("applies on a ledger at the previous version and keeps its rows", () => {
+    db = new Database(path.join(dir, LEDGER_FILE_NAME));
+    db.pragma("foreign_keys = ON");
+    const before = MIGRATIONS.filter((m) => m.version < 14);
+    migrate(db, undefined, before);
+    expect(tables(db)).not.toContain("project_affinity");
+    const { run } = seed(db);
+    expect(migrate(db)).toEqual([14]);
+    expect(tables(db)).toContain("project_affinity");
+    expect(db.prepare("SELECT id FROM run").get()).toEqual({ id: run.id });
+  });
+
+  it("refuses a reason outside the closed list (FR-RTE-07)", () => {
+    db = openLedger(dir);
+    const insert = (reason: string | null) =>
+      (db as Database.Database)
+        .prepare(
+          `INSERT INTO project_affinity (project_key, provider, since, last_switch_reason, updated_at)
+           VALUES (?, 'fake', 'now', ?, 'now')`,
+        )
+        .run(`p-${reason}`, reason);
+    for (const ok of [null, "user_request", "capacity_exhausted", "ineligible", "failed_after_retry"]) insert(ok);
+    for (const bad of ["better_score", "lower_cost", "lower_load", "unrecorded", ""]) {
+      expect(() => insert(bad)).toThrow(/CHECK constraint/u);
+    }
+  });
+
+  it("writes, reads and version-checks a row; a reset is recorded and cleared by the next write", () => {
+    db = openLedger(dir);
+    const { ledger, run } = seed(db);
+    expect(ledger.getProjectAffinity("proj")).toBeUndefined();
+    const first = { projectKey: "proj", provider: "fake", model: null, lastRunId: run.id, reason: null };
+    expect(ledger.writeProjectAffinity({ ...first, expectedVersion: undefined })).toBe(true);
+    expect(ledger.writeProjectAffinity({ ...first, expectedVersion: undefined })).toBe(false); // a row exists now
+    const row = ledger.getProjectAffinity("proj");
+    expect(row).toMatchObject({
+      provider: "fake",
+      model: null,
+      last_run_id: run.id,
+      last_switch_reason: null,
+      version: 1,
+    });
+    // Held: same provider, reason null keeps `since` and the last reason; a stale version writes nothing.
+    expect(ledger.writeProjectAffinity({ ...first, model: "m1", expectedVersion: 0 })).toBe(false);
+    expect(ledger.writeProjectAffinity({ ...first, model: "m1", expectedVersion: 1 })).toBe(true);
+    expect(ledger.getProjectAffinity("proj")).toMatchObject({ model: "m1", since: row?.since, version: 2 });
+    // A switch: provider and reason change.
+    const switched = { ...first, provider: "fake-b", reason: "capacity_exhausted" as const, expectedVersion: 2 };
+    expect(ledger.writeProjectAffinity(switched)).toBe(true);
+    expect(ledger.getProjectAffinity("proj")).toMatchObject({
+      provider: "fake-b",
+      last_switch_reason: "capacity_exhausted",
+      version: 3,
+    });
+    // Reset: only on an existing row; cleared by the next write.
+    expect(ledger.requestAffinityReset("nope", "op")).toBe(false);
+    expect(ledger.getProjectAffinity("nope")).toBeUndefined();
+    expect(ledger.requestAffinityReset("proj", "op")).toBe(true);
+    expect(ledger.getProjectAffinity("proj")).toMatchObject({ reset_by: "op", version: 4 });
+    expect(ledger.getProjectAffinity("proj")?.reset_requested_at).not.toBeNull();
+    expect(ledger.writeProjectAffinity({ ...switched, reason: "user_request", expectedVersion: 4 })).toBe(true);
+    expect(ledger.getProjectAffinity("proj")).toMatchObject({
+      reset_requested_at: null,
+      reset_by: null,
+      last_switch_reason: "user_request",
+    });
+    expect(ledger.listProjectAffinities().map((r) => r.project_key)).toEqual(["proj"]);
+  });
+
+  it("does not block retention GC of the run it names (no foreign key)", () => {
+    db = openLedger(dir);
+    const { ledger, run } = seed(db);
+    ledger.writeProjectAffinity({
+      projectKey: "proj",
+      provider: "fake",
+      model: null,
+      lastRunId: run.id,
+      reason: null,
+      expectedVersion: undefined,
+    });
+    db.prepare("DELETE FROM run WHERE id = ?").run(run.id);
+    expect(ledger.getProjectAffinity("proj")?.last_run_id).toBe(run.id);
   });
 });
