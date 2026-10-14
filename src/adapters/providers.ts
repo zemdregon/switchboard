@@ -26,6 +26,7 @@
  */
 import { ClaudeAdapter } from "./claude/adapter.js";
 import { CodexAdapter } from "./codex/adapter.js";
+import { CursorAdapter } from "./cursor/adapter.js";
 import { FakeAdapter, type FakeScenario } from "./fake/adapter.js";
 import { GrokAdapter } from "./grok/adapter.js";
 import type { AcpDeclarations, ProviderAdapter, ResumeCwd } from "./types.js";
@@ -152,14 +153,30 @@ export const BUILTIN_PROVIDERS = [
     id: "cursor",
     configId: "cursor",
     kind: "real",
-    // `--force`, `--yolo` and `--approve-mcps` are shared `BYPASS_FLAGS`. TDD §4.5 "Bypass-class flags" ([C1];
-    // documentation only, Unverified: T4.41; Proposed): `-f`, the short form of `--force`, and `--sandbox disabled`.
-    // Inert until the adapter (T4.42) adds `create` (ADR-0037).
-    bypassFlags: [],
-    bypassShortFlags: ["-f"],
+    // `--force`, `--yolo` and `--approve-mcps` are shared `BYPASS_FLAGS`. TDD §4.5 "Bypass-class flags" ([C1]) and the
+    // T4.41 live check (`--help` of 2026.10.12-d47ca18 lists each; Proposed, T4.42): `--auto-review` widens approval;
+    // the worktree, workspace, directory and plugin flags widen what code a run touches; `--api-key`, `--auth-token`,
+    // `-H`/`--header` and `-e`/`--endpoint` carry credentials or redirect requests. The adapter emits none of them; the
+    // audit refuses each outside an approved privileged bypass run, like `-f` (short `--force`) and `--sandbox disabled`.
+    // Active since the adapter (T4.42) added `create` (ADR-0037).
+    bypassFlags: [
+      "--auto-review",
+      "--worktree",
+      "--worktree-base",
+      "--skip-worktree-setup",
+      "--workspace",
+      "--add-dir",
+      "--plugin-dir",
+      "--api-key",
+      "--auth-token",
+      "--header",
+      "--endpoint",
+    ],
+    bypassShortFlags: ["-f", "-w", "-H", "-e"],
     bypassValues: [{ flag: "--sandbox", value: "disabled" }],
-    // TDD §4.10: `Unverified: T4.41`.
+    // TDD §4.10: `Unverified: T4.41` (`--resume <id>` resumed from a second directory in the 2026-10-14 live check).
     resumeCwd: "unverified",
+    create: (): ProviderAdapter => new CursorAdapter(),
   },
   // TDD §4.6.2: `--auto` is a long flag (declared with the adapter, T4.52); the inline `allow` permission travels in
   // `OPENCODE_PERMISSION`/`OPENCODE_CONFIG_CONTENT`, which the argv audit does not see (ADR-0037 limits).

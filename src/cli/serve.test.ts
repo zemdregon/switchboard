@@ -305,7 +305,13 @@ describeLinuxVerified("serve over stdio (process level)", () => {
     const msgs = logs.map((l) => l.msg as string);
     expect(msgs.indexOf("startup reconciliation finished")).toBeLessThan(msgs.indexOf("serving MCP on stdio"));
     expect(msgs).toContain("TEST-ONLY fake adapter enabled; it is not a real provider");
-    expect(logs.find((l) => l.msg === "serving MCP on stdio")?.adapters).toEqual(["claude", "codex", "grok", "fake"]);
+    expect(logs.find((l) => l.msg === "serving MCP on stdio")?.adapters).toEqual([
+      "claude",
+      "codex",
+      "grok",
+      "cursor",
+      "fake",
+    ]);
     expect(msgs.at(-1)).toBe("stopped");
     // The lock is released on shutdown.
     expect(existsSync(path.join(dataDir, LOCK_FILE_NAME))).toBe(false);

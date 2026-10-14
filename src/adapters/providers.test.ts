@@ -119,9 +119,15 @@ describe("derived constants equal the pre-T4.1 values", () => {
 
   it("serve and doctor register the same adapters in the same order", () => {
     const ids = (r: { list(): { id: string }[] }) => r.list().map((a) => a.id);
-    expect(ids(buildRegistry({ enabled: false }))).toEqual(["claude", "codex", "grok"]);
-    expect(ids(buildRegistry({ enabled: true, scenario: "success" }))).toEqual(["claude", "codex", "grok", "fake"]);
-    expect(ids(defaultAdapters())).toEqual(["fake", "claude", "codex", "grok"]);
+    expect(ids(buildRegistry({ enabled: false }))).toEqual(["claude", "codex", "grok", "cursor"]);
+    expect(ids(buildRegistry({ enabled: true, scenario: "success" }))).toEqual([
+      "claude",
+      "codex",
+      "grok",
+      "cursor",
+      "fake",
+    ]);
+    expect(ids(defaultAdapters())).toEqual(["fake", "claude", "codex", "grok", "cursor"]);
     // The Claude git_channel opt-in still reaches only the Claude adapter.
     const on = buildRegistry({ enabled: false }, { claudeGitChannel: true });
     expect(on.get("claude")?.gitCapabilities.commitChannel).toBe("injected");
@@ -289,7 +295,7 @@ describe("scratch adapter registered from a fixture module (T4.1 Done when)", ()
       defaultAdapters()
         .list()
         .map((a) => a.id),
-    ).toEqual(["fake", "claude", "codex", "grok", SCRATCH_ID]);
+    ).toEqual(["fake", "claude", "codex", "grok", "cursor", SCRATCH_ID]);
     const scratchOnly = () => {
       const r = buildRegistry({ enabled: false });
       const a = r.get(SCRATCH_ID as ProviderId);
@@ -317,7 +323,7 @@ describe("scratch adapter registered from a fixture module (T4.1 Done when)", ()
   it("list_capabilities on the registry serve builds reports it", async () => {
     register(SCRATCH_PROVIDER);
     const registry = buildRegistry({ enabled: false });
-    expect(registry.list().map((a) => a.id)).toEqual(["claude", "codex", "grok", SCRATCH_ID]);
+    expect(registry.list().map((a) => a.id)).toEqual(["claude", "codex", "grok", "cursor", SCRATCH_ID]);
     const dataDir = path.join(tmp, "data");
     mkdirSync(dataDir);
     const db = openLedger(dataDir);
@@ -366,6 +372,7 @@ describe("scratch adapter registered from a fixture module (T4.1 Done when)", ()
         "claude",
         "codex",
         "grok",
+        "cursor",
         SCRATCH_ID,
       ]);
       // No compliance manifest: fail closed (ADR-0009), but listed with its declarations.

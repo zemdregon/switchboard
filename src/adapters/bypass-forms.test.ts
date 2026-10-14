@@ -173,22 +173,25 @@ describe("matching is limited to the declared forms; existing matching unchanged
 });
 
 describe("declarations count only once the entry has an adapter (create)", () => {
-  it("with no registration, only the Claude Code and Grok Build values are active; reserved entries' data is inert", () => {
-    expect(declaredBypassShortFlags()).toEqual([]);
-    const GROK_VALUES = [
+  it("with no registration, the Claude Code, Grok Build and Cursor declarations are active; reserved data is inert", () => {
+    const CURSOR_SHORT = ["-f", "-w", "-H", "-e"];
+    expect(declaredBypassShortFlags()).toEqual(CURSOR_SHORT);
+    const ACTIVE_VALUES = [
       { flag: "--permission-mode", value: "bypassPermissions" },
       { flag: "--allow", value: "*" },
       { flag: "--allow", value: "**" },
       { flag: "--allowed-tools", value: "*" },
       { flag: "--allowed-tools", value: "**" },
+      { flag: "--sandbox", value: "disabled" },
     ];
-    // Claude Code's `--permission-mode bypassPermissions` and Grok Build's (declared since T4.22) are one value.
-    expect(declaredBypassValues()).toEqual(GROK_VALUES);
-    expect(bypassClassShortFlags()).toEqual([]);
-    expect(bypassClassValues()).toEqual(GROK_VALUES);
-    // Cursor declarations: data only until T4.42 adds its adapter.
+    // Claude Code's `--permission-mode bypassPermissions` and Grok Build's (declared since T4.22) are one value;
+    // Cursor's `--sandbox disabled` is active since T4.42.
+    expect(declaredBypassValues()).toEqual(ACTIVE_VALUES);
+    expect(bypassClassShortFlags()).toEqual(CURSOR_SHORT);
+    expect(bypassClassValues()).toEqual(ACTIVE_VALUES);
+    // Cursor declarations are active now that T4.42 added its adapter.
     for (const words of [["-f"], ["-pf"], ["--sandbox", "disabled"], ["--sandbox=disabled"]]) {
-      expect(auditInvocation(withArgv(...words)), words.join(" ")).toEqual([]);
+      expect(auditInvocation(withArgv(...words)), words.join(" ")).toHaveLength(1);
     }
     // Claude Code's value and Grok Build's catch-all allow rule are active: both have an adapter.
     expect(auditInvocation(withArgv("--permission-mode", "bypassPermissions"))).toEqual([CLAUDE_MODE_HIT]);
@@ -216,7 +219,7 @@ describe("declarations count only once the entry has an adapter (create)", () =>
         ],
       },
       antigravity: { short: [], values: [] },
-      cursor: { short: ["-f"], values: [{ flag: "--sandbox", value: "disabled" }] },
+      cursor: { short: ["-f", "-w", "-H", "-e"], values: [{ flag: "--sandbox", value: "disabled" }] },
       opencode: { short: [], values: [] },
       kimi: { short: [], values: [] },
       fake: { short: [], values: [] },

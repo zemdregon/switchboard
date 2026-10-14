@@ -1,0 +1,82 @@
+/**
+ * Cursor CLI surface used by the Cursor adapter (T4.42, TDD §4.5). Every spelling is cited to a TDD §4.5 source tag
+ * ([C1] CLI parameters, [C2] output format, [C10] run modes and sandboxing; Cursor's documentation, fetched
+ * 2026-10-13), to the T4.41 live checks ([LIVE]: `docs/research/live-checks-2026-10-14-cursor.md`, Cursor CLI
+ * 2026.10.12-d47ca18), or marked **Assumption**. Keep every native spelling in this file so a later capture touches one
+ * place. The manifest range admits no version, so none of this runs until `adapters validate` passes a version
+ * (ADR-0009, T4.4).
+ */
+
+/**
+ * Binary name ([LIVE] "Naming trap": `cursor-agent`; on the operator's host `agent` in a login shell is Grok Build's
+ * binary, so the adapter never resolves the bare name `agent`).
+ */
+export const CURSOR_BINARY = "cursor-agent";
+
+/** Version command ([C1] `-v, --version`; [LIVE] 1a: prints `2026.10.12-d47ca18`, exit 0). */
+export const VERSION_ARGS: readonly string[] = ["--version"];
+
+/** Help ([LIVE] 2a: `--help` exit 0 and lists every flag below). */
+export const HELP_FLAG = "--help";
+
+/** Print (headless) mode ([C1] `-p, --print`; the long spelling, so no short flag reaches the argv). */
+export const PRINT_FLAG = "--print";
+
+/** Output format flag and value ([C1], [C2]; [LIVE] 5b: NDJSON `stream-json`, exit 0). */
+export const OUTPUT_FORMAT_FLAG = "--output-format";
+export const OUTPUT_STREAM_JSON = "stream-json";
+
+/**
+ * Workspace trust ([C1] "Trust the workspace without prompting (headless mode only)"; [LIVE] 10a: a headless run in an
+ * untrusted workspace exits 1 without it; 10c: once trusted, the repository's `AGENTS.md` and `.cursor/rules` load).
+ * Emitted only after the controller's own trust decision: an approved bypass scope whose `repository_config` is
+ * `enabled` (owner decision 26).
+ */
+export const TRUST_FLAG = "--trust";
+
+/** The bypass-class flag compiled only for an approved privileged scope with `bypass` ([C1] `-f, --force`; ADR-0017). */
+export const FORCE_FLAG = "--force";
+
+/**
+ * Sandbox switch ([C1] `--sandbox enabled|disabled`). Not emitted by T4.42: `enabled` exits 1 on the operator's host
+ * ([LIVE] 9, AppArmor user-namespace restriction) and what `--force` does to it was not observed (TDD §4.5.1).
+ * `disabled` is a declared bypass-class value (registry entry, ADR-0037).
+ */
+export const SANDBOX_FLAG = "--sandbox";
+
+/** Resume by explicit id ([C1] `--resume [chatId]`; [LIVE] 8a to 8c: same `session_id`). `--continue` is never used. */
+export const RESUME_FLAG = "--resume";
+
+/** Flags the probe requires in `cursor-agent --help` ([LIVE] 2a lists each). */
+export const REQUIRED_HELP_FLAGS: readonly string[] = [
+  PRINT_FLAG,
+  OUTPUT_FORMAT_FLAG,
+  TRUST_FLAG,
+  FORCE_FLAG,
+  RESUME_FLAG,
+  SANDBOX_FLAG,
+];
+
+/** Native login command named on `AUTH_REQUIRED` ([C1] `login`; [LIVE] 4: the CLI's own message names `agent login`). */
+export const CURSOR_LOGIN_COMMAND = "cursor-agent login";
+
+/**
+ * FR-GIT-01 declaration ([C6], [LIVE] 11). A `permissions.deny` rule in a controller-written `CURSOR_CONFIG_DIR` file
+ * denied `git commit` in the live check, but it needs a config file, the CLI rewrites that file, the operator's global
+ * rules and MCP servers still load, and the match form (command prefix) was not tested against `git -C . commit` or an
+ * absolute path. T4.42 writes no configuration, so no deny rule is compiled.
+ */
+export const GIT_WRITE_CONTROL_DETAIL =
+  "No per-run permission flag is documented ([C6]); deny rules live in a config file. A `Shell(git commit)` deny in a " +
+  "scratch CURSOR_CONFIG_DIR held in the 2026-10-14 live check (Cursor CLI 2026.10.12-d47ca18), but whether the rule " +
+  "is a command-prefix match (Q-62) was not tested and the adapter writes no configuration, so no deny rule is " +
+  "declared. Remaining controls: Switchboard's own tool-call guard (ADR-0039), ref snapshots and violation handling " +
+  "(FR-GIT-03, M9) and keeping push credentials out of the agent's environment (FR-GIT-06).";
+
+/** Why every non-privileged profile is Ineligible today (Q-65; TDD §4.5.4). */
+export const NON_PRIVILEGED_UNSUPPORTED_DETAIL =
+  "Cursor profiles other than an approved privileged bypass scope are not compiled: in the 2026-10-14 live check " +
+  "(Cursor CLI 2026.10.12-d47ca18) edits applied without --force, so there is no read-only control; --sandbox enabled " +
+  "exited 1 on the operator's host and its confinement was never observed; a headless run needs --trust to start, " +
+  "after which the repository's AGENTS.md and rules load; and the operator's global rules and MCP servers load in " +
+  "every run (Q-65, TDD §4.5.4, FR-POL-02, FR-POL-06)";
