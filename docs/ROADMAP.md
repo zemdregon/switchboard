@@ -871,9 +871,9 @@ X-3 held. The rows keep their fixture-based wording; R-21, R-22 and Q-13 carry t
    range (Q-12). `switchboard adapters validate` (T4.4) records one; running it for Codex is the operator task T4.11
    (FR-OPS-02). *Update 2026-10-14 (operator run on Ampere):* Claude Code 2.1.294 is validated by the command
    (`src/adapters/manifests/claude.json` evidence line; range `>=2.1.294 <2.2.0`). Codex 0.162.0 is validated too:
-   `adapters validate codex` passed after the operator's re-login (an earlier attempt failed at the smoke step with a 401 from an expired login and wrote nothing); the range is
-   now `>=0.162.0 <0.163.0`. T4.11 is done for both providers.
-3. "A new user following the README reaches a passing `doctor`" is verified only for the no-provider case (both
+   `adapters validate codex` passed after the operator's re-login (an earlier attempt failed at the smoke step with
+   a 401 from an expired login and wrote nothing); the range is now `>=0.162.0 <0.163.0`. T4.11 is done for both
+   providers.
    providers `[warn]`, exit 0, which proves the environment and config only). A machine with a provider installed has
    not been checked, and an installed Codex fails `doctor` by design today.
 4. FR-GIT-01 (Claude Code, Codex) and the M2 criterion "no compiled invocation leaves a Git write operation (commit,
