@@ -7,7 +7,7 @@
  *   2. take the data-directory lock, so a second `serve` fails clearly (ADR-0005, TDD §3.5);
  *   3. open and migrate the ledger; refuse to serve if it cannot be opened (NFR-SEC-06);
  *   4. check Git, then run startup reconciliation BEFORE the lifecycle starts or MCP accepts calls (FR-EXE-06, WF-8);
- *   5. build the adapter registry (every provider registry entry with an adapter, T4.1: claude, codex, grok (T4.22), cursor (T4.42), opencode (T4.52);
+ *   5. build the adapter registry (every provider registry entry with an adapter, T4.1: claude, codex, grok (T4.22), antigravity (T4.32), cursor (T4.42), opencode (T4.52);
  *      fake only through the test-only switch below) and the lifecycle with the production COMP-POL `resolveProfile` (`src/policy`) and
  *      stage-1 eligibility at dispatch;
  *   6. apply pending operator requests (cancel, approve, deny), start the lifecycle, then serve MCP on stdin/stdout;
