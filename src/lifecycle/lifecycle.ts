@@ -93,7 +93,20 @@ import {
   startAdapterRun,
 } from "../adapters/index.js";
 import { type ArtifactStore, defaultRedactor, REDACTION_MARKER } from "../artifacts/index.js";
-import { isUnderAllowedRoot, TRUST_PROFILES } from "../config/index.js";
+import {
+  applyBreakerOutcome,
+  type BreakerSettings,
+  type BreakerSnapshot,
+  breakerAdmission,
+  breakerOutcome,
+  CLOSED_BREAKER,
+} from "../capacity/breaker.js";
+import {
+  DEFAULT_BREAKER_FAILURE_THRESHOLD,
+  DEFAULT_BREAKER_OPEN_SECONDS,
+  isUnderAllowedRoot,
+  TRUST_PROFILES,
+} from "../config/index.js";
 import {
   type BuiltBundle,
   HANDOFF_BUNDLE_UNAVAILABLE,
@@ -316,6 +329,11 @@ export interface EligibilityQuestion {
   readonly cwd: string;
   /** Resolved snapshot to compile against instead of `resolveProfile(trustProfile)` (`privileged`, T3.3). */
   readonly profile?: ResolvedProfile;
+  /**
+   * T6.4: apply the per-provider breaker (`CIRCUIT_OPEN`). Default true (admission, `list_capabilities`); PREFLIGHT
+   * passes false because `pump()` already holds queued runs while a breaker is open and dispatches the probe.
+   */
+  readonly breaker?: boolean;
 }
 
 export interface MetaSessionContext {
@@ -430,6 +448,11 @@ export interface RunLifecycleOptions {
    * (`finalize_commit`); see `src/git/finalize.ts`. Unset: an opted-in run records `service_unavailable` and no commit.
    */
   readonly finalizePublisher?: GitPublisher;
+  /**
+   * T6.4 (FR-CAP-04, LLD §16.4, ADR-0043 item 3): per-provider breaker thresholds (`capacity.breaker`). Unset means
+   * the LLD §16.1 defaults. The breaker cannot be turned off.
+   */
+  readonly breaker?: BreakerSettings;
 }
 
 /** `run_event` type: a channel-capable run was not offered the commit tool, with a reason code (T9.4). */
@@ -471,6 +494,14 @@ interface Execution {
   done: Promise<void>;
 }
 
+/** LLD §16.1 breaker defaults (Assumptions, Q-70); `serve` passes `capacity.breaker`. */
+const DEFAULT_BREAKER: BreakerSettings = {
+  failureThreshold: DEFAULT_BREAKER_FAILURE_THRESHOLD,
+  openSeconds: DEFAULT_BREAKER_OPEN_SECONDS,
+};
+/** `setTimeout` limit (about 24.8 days); a later wake is re-armed when it fires. */
+const MAX_TIMER_MS = 2_147_483_647;
+
 const CANCELLABLE_DIRECT: ReadonlySet<RunState> = new Set(["AWAITING_APPROVAL", "QUEUED", "WAITING_CAPACITY"]);
 /** BR-7 / FR-CAP-05 retry set (automatic retry itself is M6). */
 const RETRYABLE: ReadonlySet<FailureCode> = new Set(["RATE_LIMIT_TRANSIENT", "PROVIDER_OVERLOADED", "PROCESS_CRASH"]);
@@ -492,6 +523,9 @@ export class RunLifecycle {
    * `git_policy_violation` (Delegated; LLD §5).
    */
   private readonly repoFinalizeQueue = new Map<string, Promise<void>>();
+  /** T6.4: one timer for the earliest moment a held run may become dispatchable (breaker cool-down). */
+  private wakeTimer: ReturnType<typeof setTimeout> | undefined;
+  private wakeAt: number | undefined;
 
   constructor(private readonly opts: RunLifecycleOptions) {
     if (!Number.isInteger(opts.globalConcurrency) || opts.globalConcurrency < 1) {
@@ -514,6 +548,9 @@ export class RunLifecycle {
   /** Stop dispatching, cancel every in-flight run and wait for each to reach a terminal state. */
   async shutdown(): Promise<void> {
     this.stopped = true;
+    if (this.wakeTimer !== undefined) clearTimeout(this.wakeTimer);
+    this.wakeTimer = undefined;
+    this.wakeAt = undefined;
     for (const exec of this.inflight.values()) {
       exec.cancelRequested = true;
       void exec.handle?.cancel();
@@ -840,6 +877,14 @@ export class RunLifecycle {
         runner: this.runner,
       },
     );
+    if (q.breaker !== false) {
+      // T6.4 (LLD §16.4): an open breaker before its cool-down ends is a stage-1 reason (`CIRCUIT_OPEN`, BR-3).
+      const now = this.now();
+      for (const f of input.facts) {
+        const b = this.breakerOf(f.provider);
+        if (breakerAdmission(b, now) === "deny" && b.until !== null) f.circuitOpenUntil = b.until;
+      }
+    }
     return { input, decision: filterEligible(input) };
   }
 
@@ -1038,10 +1083,12 @@ export class RunLifecycle {
       const picked = this.ledger.immediate((): RunRecord | undefined => {
         if (this.ledger.countRunsInStates(SLOT_STATES) >= this.opts.globalConcurrency) return undefined;
         const limit = this.opts.perProviderConcurrency;
+        const now = this.now();
         for (const run of this.ledger.listRunsInState("QUEUED")) {
           if (limit !== undefined && run.provider !== null) {
             if (this.ledger.countRunsInStates(SLOT_STATES, run.provider) >= limit) continue;
           }
+          if (run.provider !== null && !this.breakerLetsThrough(run, now)) continue;
           return this.move(run, "PREFLIGHT", {}, { slot: "reserved" });
         }
         return undefined;
@@ -1585,6 +1632,7 @@ export class RunLifecycle {
       clientMaxProfile: run.trust_profile,
       cwd: req.workspace,
       profile,
+      breaker: false,
     });
     const binaryVersion = input.facts.find((f) => f.provider === req.provider)?.probe?.binaryVersion ?? null;
     if (decision.outcome.kind === "eligible") return { ok: true, binaryVersion };
@@ -1948,9 +1996,94 @@ export class RunLifecycle {
       },
     });
     if (!moved) return undefined;
+    if (isTerminal(to)) this.recordBreakerOutcome(moved);
     this.opts.onTransition?.({ runId: run.id, from: run.state, to, rule: rule.id });
     if (isTerminal(to)) queueMicrotask(() => this.settle(run.id));
     return moved;
+  }
+
+  // ---- per-provider breaker (T6.4; FR-CAP-04, LLD §16.4) ------------------------------------------------------
+
+  private breakerOf(provider: string): BreakerSnapshot {
+    const row = this.ledger.getProviderHealth(provider);
+    return row === undefined
+      ? CLOSED_BREAKER
+      : {
+          state: row.breaker_state,
+          until: row.breaker_until,
+          consecutiveFailures: row.consecutive_failures,
+          lastFailureCode: row.last_failure_code,
+        };
+  }
+
+  /**
+   * FRD T4 guard: a run whose provider breaker is open waits in QUEUED (a wake is armed for the cool-down end); once
+   * the cool-down has passed, or while `HALF_OPEN`, one run at a time goes through as the probe. Called inside the
+   * dispatch transaction; writes `HALF_OPEN` and its event when the probe is the first run after the cool-down.
+   */
+  private breakerLetsThrough(run: RunRecord, now: Date): boolean {
+    const provider = run.provider as string;
+    const b = this.breakerOf(provider);
+    const admission = breakerAdmission(b, now);
+    if (admission === "allow") return true;
+    if (admission === "deny") {
+      if (b.until !== null) this.scheduleWake(Date.parse(b.until));
+      return false;
+    }
+    if (this.ledger.countRunsInStates(SLOT_STATES, provider) > 0) return false; // the probe is in flight
+    if (b.state === "OPEN") {
+      this.ledger.writeProviderBreaker(provider, { ...b, state: "HALF_OPEN" });
+      this.ledger.appendRunEvent({ runId: run.id, type: "breaker_half_open", payload: { provider } });
+    }
+    return true;
+  }
+
+  /** LLD §16.4 table, at every terminal transition of a routed run, in the transition's transaction. */
+  private recordBreakerOutcome(run: RunRecord): void {
+    if (run.provider === null) return;
+    const outcome = breakerOutcome(run);
+    if (outcome === "neutral") return;
+    const provider = run.provider;
+    this.ledger.immediate(() => {
+      const cur = this.breakerOf(provider);
+      const { next, transition } = applyBreakerOutcome(
+        cur,
+        outcome,
+        run.failure_code,
+        this.opts.breaker ?? DEFAULT_BREAKER,
+        this.now(),
+      );
+      if (next === cur) return;
+      this.ledger.writeProviderBreaker(provider, next);
+      if (transition === "breaker_opened") {
+        this.ledger.appendRunEvent({
+          runId: run.id,
+          type: transition,
+          payload: { provider, consecutive_failures: next.consecutiveFailures, until: next.until },
+        });
+      } else if (transition === "breaker_closed") {
+        this.ledger.appendRunEvent({ runId: run.id, type: transition, payload: { provider } });
+      }
+    });
+  }
+
+  /** Arm the single wake timer for `atMs` (epoch ms) unless an earlier one is armed; it re-runs `pump()`. */
+  private scheduleWake(atMs: number): void {
+    if (this.stopped || !Number.isFinite(atMs)) return;
+    if (this.wakeAt !== undefined && this.wakeAt <= atMs) return;
+    if (this.wakeTimer !== undefined) clearTimeout(this.wakeTimer);
+    this.wakeAt = atMs;
+    const delay = Math.max(0, Math.min(atMs - this.now().getTime(), MAX_TIMER_MS));
+    this.wakeTimer = setTimeout(() => {
+      this.wakeTimer = undefined;
+      this.wakeAt = undefined;
+      this.pump();
+    }, delay);
+    this.wakeTimer.unref?.();
+  }
+
+  private now(): Date {
+    return (this.opts.now ?? (() => new Date()))();
   }
 
   private settle(runId: string): void {

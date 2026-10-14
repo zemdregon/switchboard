@@ -441,6 +441,8 @@ async function runDaemon(
     allowedRoots: config.allowedRoots,
     globalConcurrency: config.limits.globalConcurrency,
     perProviderConcurrency: config.limits.perProviderConcurrency,
+    // T6.4: per-provider breaker thresholds (`capacity.breaker`, LLD §16.4).
+    breaker: config.capacity.breaker,
     resolveProfile: createProfileResolver(config.profileOverrides),
     probeRunner: createProbeRunner(PROBE_ENV_ALLOWLIST),
     baseEnv: io.env,

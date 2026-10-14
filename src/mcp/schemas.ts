@@ -401,7 +401,7 @@ const CAPABILITIES = {
 } as const;
 
 /** `list_projects` (LLD §3 project additions): no paths, remotes, identities or image references (FR-MCP-04). */
-/** T6.3 (LLD §16.3, ADR-0042 item 6): the capacity projection; estimates and provider-reported values kept apart. */
+/** T6.3 (LLD §16.3, ADR-0043 item 6): the capacity projection; estimates and provider-reported values kept apart. */
 const NULLABLE_NUMBER = { type: ["number", "null"] } as const;
 const CAPACITY = {
   type: "object",

@@ -715,6 +715,19 @@ export interface Ledger {
   listProviderReportedUsageSince(provider: string, sinceIso: string): ProviderUsageRow[];
   /** The provider's `provider_health` row, if one was written. */
   getProviderHealth(provider: string): ProviderHealthRow | undefined;
+  /**
+   * T6.4 (LLD §16.4): write the breaker columns of `provider`'s row, creating it if needed with `auth_state =
+   * 'UNKNOWN'` and `version_state = 'UNVERIFIED'` (placeholders nothing reads). Bumps `version`.
+   */
+  writeProviderBreaker(
+    provider: string,
+    breaker: {
+      state: ProviderHealthRow["breaker_state"];
+      until: string | null;
+      consecutiveFailures: number;
+      lastFailureCode: string | null;
+    },
+  ): void;
 
   // ---- T5.4 additions (handoff bundle sources, LLD §15.1 and §15.2; read-only) -------------------------------------
   /** The continuity fields of a meta-session the bundle builder reads (LLD §15.1). `undefined` when unknown. */
@@ -1252,6 +1265,23 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
            FROM provider_health WHERE provider = ?`,
         )
         .get(provider) as ProviderHealthRow | undefined;
+    },
+
+    writeProviderBreaker(provider, b) {
+      db.prepare(
+        `INSERT INTO provider_health (provider, auth_state, version_state, breaker_state, breaker_until,
+           consecutive_failures, last_failure_code, updated_at, version)
+         VALUES (@provider, 'UNKNOWN', 'UNVERIFIED', @state, @until, @failures, @code, @now, 1)
+         ON CONFLICT (provider) DO UPDATE SET breaker_state = @state, breaker_until = @until,
+           consecutive_failures = @failures, last_failure_code = @code, updated_at = @now, version = version + 1`,
+      ).run({
+        provider,
+        state: b.state,
+        until: b.until,
+        failures: b.consecutiveFailures,
+        code: b.lastFailureCode,
+        now: ts(),
+      });
     },
 
     listUsageObservationsForRun(runId) {

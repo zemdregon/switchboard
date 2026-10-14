@@ -3919,6 +3919,14 @@ slot state: that run is the probe. Each transition appends one run event to the 
 (`provider`) or `breaker_closed` (`provider`). After a restart the row is read as is. A `HALF_OPEN` provider with no run
 in a slot state gets a new probe.
 
+*As built (T6.4, 2026-10-14, Delegated):* `src/capacity/breaker.ts` (the pure table and admission) and the lifecycle hooks.
+The outcome is applied in the transaction of the terminal transition. `CIRCUIT_OPEN` is a stage-1 reason at
+admission and in `list_capabilities`, but not at PREFLIGHT: by then `pump()` has already held the run or picked it as
+the probe. A run that was in PREFLIGHT when the breaker opened therefore still runs. One wake timer re-runs `pump()` at
+the earliest cool-down end. A healthy outcome while the breaker is `OPEN` (a run that started before it opened) resets
+the count but leaves the breaker open; only a probe closes it. A probe that ends neutral (for example cancelled) leaves
+`HALF_OPEN`, and the next queued run becomes the probe.
+
 ### 16.5 Retry with successor runs
 
 Applies at T16 to a run that ended `FAILED` with `RATE_LIMIT_TRANSIENT`, `PROVIDER_OVERLOADED` or `PROCESS_CRASH`, when
