@@ -117,9 +117,11 @@ export interface SwitchboardConfig {
   routing?: RoutingConfigInput;
 }
 
-/** `routing` as written in the config file (LLD §17.1). `affinity` arrives with T7.4. */
+/** `routing` as written in the config file (LLD §17.1). */
 export interface RoutingConfigInput {
   weights?: Partial<Record<"success" | "latency" | "capacity" | "security" | "handoff" | "cost", number>>;
+  /** T7.4 (LLD §3.2, §17.1): `idle_ttl` accepts only null until expiry is built (Q-52). */
+  affinity?: { enabled?: boolean; low_water_mark?: number | null; min_confidence?: number | null; idle_ttl?: null };
 }
 
 /** LLD §17.1 bounds of each `routing.weights` value (Assumption, Q-80); the default of 1 lives in `src/routing/score.ts`. */
@@ -469,6 +471,16 @@ export const configSchema = {
               { type: "number", minimum: 0, maximum: MAX_ROUTING_WEIGHT },
             ]),
           ),
+        },
+        affinity: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            enabled: { type: "boolean" },
+            low_water_mark: { type: ["number", "null"], minimum: 0, maximum: 1 },
+            min_confidence: { type: ["number", "null"], minimum: 0, maximum: 1 },
+            idle_ttl: { type: "null" },
+          },
         },
       },
     },

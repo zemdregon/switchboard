@@ -314,6 +314,41 @@ export interface ProviderHealthRow {
   version: number;
 }
 
+/** T7.4 (LLD §3.2, §17.6): the closed `affinity_switch_reason` list (FR-RTE-07). */
+export const AFFINITY_SWITCH_REASONS = [
+  "user_request",
+  "capacity_exhausted",
+  "ineligible",
+  "failed_after_retry",
+] as const;
+export type AffinitySwitchReason = (typeof AFFINITY_SWITCH_REASONS)[number];
+
+/** `project_affinity` row (migration 0014). */
+export interface ProjectAffinityRow {
+  project_key: string;
+  provider: string;
+  model: string | null;
+  since: string;
+  last_run_id: string | null;
+  last_switch_reason: AffinitySwitchReason | null;
+  reset_requested_at: string | null;
+  reset_by: string | null;
+  updated_at: string;
+  version: number;
+}
+
+/** What a succeeded run writes into its project's row (LLD §17.6). */
+export interface AffinityWrite {
+  projectKey: string;
+  provider: string;
+  model: string | null;
+  lastRunId: string;
+  /** The decision's reason, or null for a first run or a held affinity. */
+  reason: AffinitySwitchReason | null;
+  /** The row version the caller read (`undefined` when it read no row); a mismatch writes nothing. */
+  expectedVersion: number | undefined;
+}
+
 export interface RouteDecisionRow {
   id: string;
   run_id: string;
@@ -740,6 +775,18 @@ export interface Ledger {
   findSuccessorRun(runId: string): RunRecord | undefined;
   /** The provider's `provider_health` row, if one was written. */
   getProviderHealth(provider: string): ProviderHealthRow | undefined;
+  /** T7.4: the project's affinity row, if any. */
+  getProjectAffinity(projectKey: string): ProjectAffinityRow | undefined;
+  /** T7.4: every affinity row, by project key. */
+  listProjectAffinities(): ProjectAffinityRow[];
+  /**
+   * T7.4 (LLD §17.6): create or update the row with a version check. `since` changes only when the provider changes;
+   * a held affinity keeps its last reason; a pending reset is cleared. Returns false (nothing written) when the row's
+   * version is not `expectedVersion`, or when a row exists and none was expected.
+   */
+  writeProjectAffinity(input: AffinityWrite): boolean;
+  /** T7.4: record an operator reset on an existing row; false when the project has no row (nothing written). */
+  requestAffinityReset(projectKey: string, by: string): boolean;
   /**
    * T6.4 (LLD §16.4): write the breaker columns of `provider`'s row, creating it if needed with `auth_state =
    * 'UNKNOWN'` and `version_state = 'UNVERIFIED'` (placeholders nothing reads). Bumps `version`.
@@ -1313,6 +1360,60 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
       return db
         .prepare(`${RUN_RECORD_SQL} WHERE parent_run_id = ? ORDER BY attempt, created_at, id LIMIT 1`)
         .get(runId) as RunRecord | undefined;
+    },
+
+    getProjectAffinity(projectKey) {
+      return db.prepare("SELECT * FROM project_affinity WHERE project_key = ?").get(projectKey) as
+        | ProjectAffinityRow
+        | undefined;
+    },
+
+    listProjectAffinities() {
+      return db.prepare("SELECT * FROM project_affinity ORDER BY project_key").all() as ProjectAffinityRow[];
+    },
+
+    writeProjectAffinity(w) {
+      const now = ts();
+      if (w.expectedVersion === undefined) {
+        const r = db
+          .prepare(
+            `INSERT INTO project_affinity (project_key, provider, model, since, last_run_id, last_switch_reason,
+               updated_at, version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 1) ON CONFLICT (project_key) DO NOTHING`,
+          )
+          .run(w.projectKey, w.provider, w.model, now, w.lastRunId, w.reason, now);
+        return r.changes === 1;
+      }
+      const r = db
+        .prepare(
+          `UPDATE project_affinity SET
+             since = CASE WHEN provider = @provider THEN since ELSE @now END,
+             last_switch_reason = CASE WHEN @reason IS NULL AND provider = @provider THEN last_switch_reason
+                                       ELSE @reason END,
+             provider = @provider, model = @model, last_run_id = @run,
+             reset_requested_at = NULL, reset_by = NULL, updated_at = @now, version = version + 1
+           WHERE project_key = @key AND version = @version`,
+        )
+        .run({
+          key: w.projectKey,
+          provider: w.provider,
+          model: w.model,
+          run: w.lastRunId,
+          reason: w.reason,
+          now,
+          version: w.expectedVersion,
+        });
+      return r.changes === 1;
+    },
+
+    requestAffinityReset(projectKey, by) {
+      const r = db
+        .prepare(
+          `UPDATE project_affinity SET reset_requested_at = @now, reset_by = @by, updated_at = @now,
+             version = version + 1 WHERE project_key = @key`,
+        )
+        .run({ key: projectKey, by, now: ts() });
+      return r.changes === 1;
     },
 
     writeProviderBreaker(provider, b) {
