@@ -1,0 +1,2 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.25), in the streaming-json shapes recorded by the 2026-10-14 live check (row 3c).","exit":1}}
+{"type":"error","message":"Not signed in. SYNTHETIC: run grok login."}
