@@ -3,7 +3,7 @@
 | Field | Value |
 | --- | --- |
 | Status | Draft, baseline for milestone M1 |
-| Owns | SQLite schema (DDL), adapter TypeScript contract, MCP tool schemas, failure taxonomy, workspace/lease algorithm, compliance manifest schema, telemetry span list, supervisor/retry/idempotency details, inner-agent configuration, backend port, tables, call pipeline and task contracts (§13), provider and model affinity table, algorithm and routing-decision fields (§3.2), retrieval-index configuration, stores, algorithms, tool contract and events (§14), continuity: handoff bundle schema, `as_of`, decision kinds, open-work derivation, prompt rendering and the resume working directory (§15) |
+| Owns | SQLite schema (DDL), adapter TypeScript contract, MCP tool schemas, failure taxonomy, workspace/lease algorithm, compliance manifest schema, telemetry span list, supervisor/retry/idempotency details, inner-agent configuration, backend port, tables, call pipeline and task contracts (§13), provider and model affinity table, algorithm and routing-decision fields (§3.2), retrieval-index configuration, stores, algorithms, tool contract and events (§14), continuity: handoff bundle schema, `as_of`, decision kinds, open-work derivation, prompt rendering and the resume working directory (§15), capacity estimator, `get_capacity` output, per-provider breaker, retry successors and the quota ladder (§16) |
 | Does not own | Requirements ([SRS](../requirements/SRS.md)); run state machine and workflows ([FRD](../requirements/FRD.md)); technology choices and per-provider strategy ([TDD](TDD.md)); component boundaries ([HLD](HLD.md)); scope and sequencing ([ROADMAP](../ROADMAP.md#6-milestones)) |
 | Last reconciled | 2026-10-14 |
 
@@ -185,7 +185,7 @@ CREATE TABLE usage_observation (        -- append-only; reported never merged wi
 ) STRICT;
 CREATE INDEX usage_provider_time ON usage_observation(provider, observed_at);
 
-CREATE TABLE provider_health (          -- mutable, one row per provider; breakers detailed in M6
+CREATE TABLE provider_health (          -- mutable, one row per provider; breaker use in §16.4
   provider          TEXT PRIMARY KEY,
   auth_state        TEXT NOT NULL CHECK (auth_state IN ('OK','AUTH_REQUIRED','UNKNOWN')),
   version_state     TEXT NOT NULL CHECK (version_state IN ('VALIDATED','UNVERIFIED','ABSENT')),
@@ -824,7 +824,7 @@ files, no shell, network off, repository configuration disabled, no bypass); eac
 at admission and dispatch. An off-host profile is excluded from routing with the machine-readable reason
 `PROFILE_PLATFORM_UNVERIFIED`, which maps to `ELIGIBILITY_NONE` (FRD BR-3).
 **`get_capacity`** (M6) `{ provider? }` returns the FR-CAP-02 fields per provider with `source`; `explicit_remaining` is
-null unless provider-reported. To be detailed in M6.
+null unless provider-reported. Detailed in [§16.3](#163-get_capacity-and-switchboard-capacity) (T6.1).
 **`explain_route`** (M7) `{ run_id }` returns candidates, eligibility reasons, features, weights, scores and the
 `affinity` object ([§3.2](#32-provider-and-model-affinity-m7)) from `route_decision`, no model reasoning. To be detailed
 in M7.
@@ -1782,8 +1782,8 @@ Procedure: failure classified; mutation check; if clean and attempts remain, ins
 `next_attempt_at`; the scheduler wakes on `next_attempt_at` (persisted, so it survives restart). A retry re-runs
 preflight and routing, so a breaker or ineligibility ends the retry chain. Dirty workspace: no retry, FR-WS-04 applies.
 `QUOTA_EXHAUSTED` follows FR-CAP-06 (failover, else queue if a reset is known within `capacity.queue_horizon`, else
-return); no backoff makes a hard quota disappear. Breakers, adaptive concurrency and failover details: to be detailed in
-M6.
+return); no backoff makes a hard quota disappear. Breakers, successor fields, the wake timer and failover are detailed in
+[§16](#16-capacity-and-resilience-m6) (T6.1); adaptive concurrency is not planned (per-provider limits are static, §16.1).
 
 ## 10. Idempotency and ordering
 
@@ -3789,3 +3789,182 @@ provider, model, creation time). Choices:
 
 Tests: the "handoff view on the read surfaces" cases in `src/mcp/continue-handoff.test.ts` (MCP and CLI on the two fakes,
 plain text and `--json`; a handoff section absent for a non-handoff run; a missing view gives unknown source runs).
+
+## 16. Capacity and resilience (M6)
+
+Implements FR-CAP-01 (use) to FR-CAP-08, FR-MCP-02 (`get_capacity`), FR-MCP-10, FR-OPS-05 and NFR-PERF-03 (per
+provider) under [ADR-0043](../adr/0043-capacity-estimate-breaker-and-retry.md), which extends
+[ADR-0007](../adr/0007-capacity-as-confidence-estimate.md). Everything here is **Proposed** (T6.1, 2026-10-14,
+Delegated). Every default is an **Assumption** that no measurement supports; each is configurable and recorded in ROADMAP
+§7.3 (Q-69 to Q-72). Provider facts come only from the [T6.0 inventory](../research/capacity-signals-2026-10-14.md).
+No migration: every column used exists since migration 0001.
+
+### 16.1 Configuration
+
+```jsonc
+{ "capacity": {
+    "window_seconds": 3600,          // 60..604800; the estimator's look-back window (Q-69)
+    "confidence_runs": 10,           // 1..1000; terminal runs in the window at which confidence reaches 1 (Q-69)
+    "queue_horizon_seconds": 0,      // 0..86400; BR-9 wait for a known reset; 0 = never wait (Q-72)
+    "breaker": { "failure_threshold": 3, "open_seconds": 300 },   // 1..100, 1..86400 (Q-70)
+    "retry": { "max_attempts": 3, "base_ms": 2000, "cap_ms": 120000 } // 1..10, 1..600000, 1..3600000; §9 values (Q-71)
+  },
+  "providers": { "<id>": { "concurrency": 1 } }  // 1..64, T6.9; default limits.per_provider_concurrency
+}
+```
+
+Unknown keys and type errors abort startup (NFR-SEC-06). `base_ms` must not exceed `cap_ms`. Absent section: the
+defaults above. There is no rate-gate key (FR-CAP-07, §16.7).
+
+### 16.2 Estimator
+
+A pure function `estimateCapacity(inputs, config, now)` per provider (Proposed module `src/capacity/`), fed by a
+collector that reads only:
+
+| Input | Source | Label in `sources` |
+| --- | --- | --- |
+| Terminal runs of the provider with `finished_at` in the window, with their state and `failure_code` | `run` | `controller:run_outcomes` |
+| `rate_limit` provider events of those runs and of running ones, with `reset_at` | `run_event` (`compactEvent` payload) | `provider_reported:rate_limit` |
+| Count and latest `observed_at` of `usage_observation` rows with `source = 'provider_reported'` in the window | `usage_observation` | `provider_reported:usage` |
+| Breaker state, `breaker_until`, `consecutive_failures` | `provider_health` (§16.4) | `controller:breaker` |
+| Slots in use (runs in `PREFLIGHT`, `LEASED`, `RUNNING`, `VERIFYING`, `FINALIZING`) and the provider's limit | `run`, config | `controller:concurrency` |
+| `providers.<id>.weight` (ADR-0007's prior) | config | `operator:weight` |
+
+It never reads `inner_agent` or `controller_estimated` usage rows (BR-41, FR-INN-15), retrieval or inner-agent output
+(FR-INN-06, FR-RAG-12), or any artifact content. A label is listed in `sources` only if that input contributed (the
+slot count always does).
+
+Derivation, first match wins for `throttle_risk`:
+
+1. **Evidence.** There is evidence if the window has a terminal run that reached `RUNNING`, a `rate_limit` event, or a
+   breaker that is not `CLOSED`.
+2. `reset_at`: the latest provider-reported `reset_at` in the window that is later than `now`, with `source:
+   "provider_reported"`; else `null`.
+3. `throttle_risk`: `high` if the breaker is `OPEN` or `HALF_OPEN`, `reset_at` is set, or a run ended
+   `QUOTA_EXHAUSTED` in the window; else `elevated` if a run ended `RATE_LIMIT_TRANSIENT` or `PROVIDER_OVERLOADED` or a
+   `rate_limit` event occurred in the window; else `low` if there is evidence; else `unknown`.
+4. `capacity_score` in [0, 1]: `null` for `unknown`; 0 for `high`; otherwise `prior × factor` with `prior` the
+   configured `weight` (1 when unset) and `factor` 1 for `low`, 0.5 for `elevated` (Q-69).
+5. `confidence` in [0, 1]: 0 for `unknown`; 1 when `high` comes from the breaker or a future `reset_at` (a controller
+   fact or a provider report); otherwise `min(1, terminal_runs / confidence_runs)`, rounded to two decimals.
+6. `explicit_remaining`: `{ value, unit, source: "provider_reported", observed_at }` from the latest usage row that
+   holds the key declared for that provider in `REMAINING_KEYS`, else `null`. `REMAINING_KEYS` is empty: no run output
+   reports remaining quota (T6.0), so the value is `null` for every provider until a task adds a sourced key.
+7. `concurrency_available = max(0, limit - in_use)`; `concurrency_limit = limit`.
+
+Numbers are rounded to two decimals, keys are sorted and providers are listed in registry order, so the same inputs
+give byte-identical canonical JSON.
+
+### 16.3 `get_capacity` and `switchboard capacity`
+
+Input `{ provider?: string }`, a provider id known to the registry. An unknown id is `INVALID_REQUEST`. With no input,
+the tool covers every registered provider. Output:
+
+```jsonc
+{ "as_of": "<ISO time>", "window_seconds": 3600,
+  "note": "capacity_score, confidence and throttle_risk are controller estimates, not provider-authoritative quota",
+  "providers": [ {
+    "provider": "fake", "enabled": true,
+    "capacity_score": null, "confidence": 0, "throttle_risk": "unknown",   // controller_estimated
+    "estimate_source": "controller_estimated",
+    "sources": ["controller:concurrency"],
+    "explicit_remaining": null,         // or { value, unit, source: "provider_reported", observed_at }
+    "reset_at": null,                   // or { at, source: "provider_reported" }
+    "concurrency_available": 1, "concurrency_limit": 1,
+    "breaker": { "state": "CLOSED", "until": null, "consecutive_failures": 0 },
+    "window": { "terminal_runs": 0, "counted_failures": 0, "quota_exhausted": 0, "rate_limit_signals": 0,
+                "usage_observations": 0 }
+  } ] }
+```
+
+T6.7 adds an optional per-provider `cache` block and a top-level `affinity` block (§16.8). `switchboard capacity
+[--provider <id>] [--json]` prints the same projection: `--json` is the same object, and the text view prints one block
+per provider, headed by the `note`. **Wording rule (FR-CAP-03):** on every surface, any line or key containing
+"remaining" also contains "provider_reported" or "provider-reported", and no surface prints "quota left", "available
+quota" or a percentage of an estimate. `doctor` prints one `capacity` line per provider: breaker state, `throttle_risk`
+and `confidence`, labelled "estimate".
+
+### 16.4 Per-provider circuit breaker
+
+State in `provider_health` (one row per adapter provider id; created on first write, with `auth_state = 'UNKNOWN'` and
+`version_state = 'UNVERIFIED'` as placeholders that nothing reads, because the preflight cache stays authoritative for
+auth and version). The breaker writes only `breaker_state`, `breaker_until`, `consecutive_failures`, `last_failure_code`,
+`updated_at` and `version`.
+
+| Outcome of a run on provider P (at its terminal transition) | Effect |
+| --- | --- |
+| `FAILED` with `RATE_LIMIT_TRANSIENT`, `PROVIDER_OVERLOADED`, or `PROCESS_CRASH` whose cause is not `controller_restart` (counted) | `consecutive_failures + 1`; `CLOSED` at the threshold, or `HALF_OPEN`: to `OPEN`, `breaker_until = now + open_seconds` |
+| `SUCCEEDED`, or `FAILED` with `TEST_FAILURE`, `TOOL_FAILURE`, `PERMISSION_BLOCKED` or `SANDBOX_VIOLATION` after the provider ran (healthy) | `consecutive_failures = 0`; `HALF_OPEN` to `CLOSED` |
+| Anything else (`CANCELLED`, `QUOTA_EXHAUSTED`, `PROCESS_TIMEOUT`, failures before spawn, a restart crash) | No change |
+
+Admission and dispatch read the row with the clock. `OPEN` before `breaker_until` gives the eligibility reason
+`CIRCUIT_OPEN`, which maps to `ELIGIBILITY_NONE` (FRD BR-3), and `pump()` leaves that provider's queued runs in `QUEUED`
+(FRD T4 guard). `OPEN` at or after `breaker_until` is treated as `HALF_OPEN`, and the row is written `HALF_OPEN` when the
+first run is dispatched. While a provider is `HALF_OPEN`, `pump()` dispatches one of its runs only when none is in a
+slot state: that run is the probe. Each transition appends one run event to the run whose outcome caused it (or, for
+`HALF_OPEN`, to the probe run): `breaker_opened` (`provider`, `consecutive_failures`, `until`), `breaker_half_open`
+(`provider`) or `breaker_closed` (`provider`). After a restart the row is read as is. A `HALF_OPEN` provider with no run
+in a slot state gets a new probe.
+
+### 16.5 Retry with successor runs
+
+Applies at T16 to a run that ended `FAILED` with `RATE_LIMIT_TRANSIENT`, `PROVIDER_OVERLOADED` or `PROCESS_CRASH`, when
+the `workspace_assessment` shows the worktree unchanged since the pre-run checkpoint (BR-7; `retry_eligible` true). The
+steps run in one ledger transaction, after the breaker update of §16.4:
+
+1. **Stop conditions**, first match recorded as `retry_not_scheduled` (`reason`): `attempts_exhausted` (`attempt >=
+   max_attempts`); `breaker_open` (the provider's breaker is now `OPEN`); `reset_beyond_bound` (a provider-reported
+   `reset_at` of this run lies more than `max(cap_ms, queue_horizon_seconds)` ahead).
+2. **Delay** (LLD §9): `random_uniform(0, min(cap_ms, base_ms × 2^(attempt - 1)))`. If the run reported a `reset_at`,
+   the delay is at least `reset_at - now`. Clock and random source are injectable.
+3. **Successor row:** same `meta_session_id`, `trust_profile`, `policy_snapshot_json`, `request_json`, `request_hash`,
+   `client_id`, `provider`, `priority` and project; `parent_run_id` = the failed run; `attempt + 1`; `idempotency_key`
+   `NULL` (the first run keeps it, so a replayed key still returns the first run); `state = 'WAITING_CAPACITY'`;
+   `next_attempt_at = now + delay`. Its first event is `retry_of` (`run_id`, `attempt`, `failure_code`). The failed run
+   gets `retry_scheduled` (`successor_run_id`, `attempt`, `delay_ms`, `not_before`), and its `workspace_assessment`
+   records `auto_retry: true`.
+4. **Wake:** the lifecycle keeps one timer for the earliest `next_attempt_at` among `WAITING_CAPACITY` runs. It arms the
+   timer at start, after scheduling and after a cancel. When it fires, due runs move to `QUEUED` (T18) and `pump()`
+   runs. A successor dispatches like any queued run: it re-runs preflight and routing, so an ineligible provider or an
+   open breaker fails or holds it as for a new run, in a fresh worktree from the meta-session's head (unchanged, because
+   the failure rolled the head back to the same base).
+
+A `privileged` successor runs under the meta-session's approval as is (FR-POL-09, FRD C7): it is the same provider and
+scope. Reconciliation after a restart (WF-8) does not schedule retries: an orphaned run keeps `auto_retry: false` (ADR-0043
+item 4). A `WAITING_CAPACITY` successor survives a restart unchanged and is woken by the timer.
+
+**`get_run`** gains `retry_of` (the parent run id when `attempt > 1`, else `null`) and `superseded_by` (the id of the run
+whose `parent_run_id` is this run and whose `attempt` is one higher, else `null`). `runs show` prints both.
+
+### 16.6 Quota exhaustion ladder (T6.6)
+
+At T16 with `QUOTA_EXHAUSTED`, after the breaker step (no change, §16.4), in BR-6 order:
+
+1. **Failover** when the request permits it (BR-8): `require_provider` is not set, the profile is not `privileged`
+   (Q-61 default), and another provider is eligible. A successor run (`parent_run_id`, `attempt + 1`) continues on that
+   provider through the M5 handoff ([LLD §15.7](#157-continue_task-with-handoff)). Its bundle lists the failed attempt.
+   A changed workspace is already preserved as the evidence checkpoint and the head is rolled back (FRD §4.4) before the
+   bundle is built. The route decision records `continuation.reason = "quota_failover"`. M7 adds the affinity re-base.
+2. **Wait** (BR-9) when a provider-reported `reset_at` of the run lies within `queue_horizon_seconds`: a successor on the
+   same provider in `WAITING_CAPACITY` with `next_attempt_at = reset_at`.
+3. Otherwise the run stays `FAILED` with `QUOTA_EXHAUSTED`, and nothing more is created.
+
+While a provider has a provider-reported `reset_at` in the future from a `QUOTA_EXHAUSTED` run, the eligibility filter
+gives it the reason `QUOTA_EXHAUSTED_KNOWN`. BR-3 maps that reason to `QUOTA_EXHAUSTED` for `require_provider`, and FRD
+T7 then applies at preflight.
+
+### 16.7 Rate gate (FR-CAP-07)
+
+No gate exists. The T6.0 inventory finds no published enforceable limit for the logins in use. A gate is added only for
+a provider whose limit a source names (T6.8), with its own configuration key and source citation.
+
+### 16.8 Cache observations and switch counts (FR-CAP-08, T6.7)
+
+The capacity module maps the reported cache keys that T6.0 sources (Grok Build `cache_read_input_tokens` and
+`cache_creation_input_tokens`; Cursor `cacheReadTokens` and `cacheWriteTokens`; Antigravity `cache_read_tokens`;
+OpenCode `cache.read` and `cache.write`) from `usage_observation.metrics_json` into a per-provider `cache` block (`read`,
+`creation`, `rows`, `source: "provider_reported"`, `key_names`) summed over the window. A provider with no sourced key,
+or no row holding one, has no block, never a zero. The top-level `affinity` block counts, per project key (§3.2), the
+runs whose provider and model equal the previous run's (`kept`) and those that differ (`switched`), grouped by
+`affinity_switch_reason` from `route_decision.reasons_json`, or `unrecorded` until M7 writes one. Wording: "reported",
+never "cache hits".
