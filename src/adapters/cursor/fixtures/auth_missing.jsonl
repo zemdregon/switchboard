@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.45).","exit":0}}
+{"type":"system","subtype":"init","apiKeySource":"env","cwd":"/work/tree","session_id":"synthetic-cursor-session-0001","model":"Synthetic Model 1","permissionMode":"default"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Not logged in with native login"}]},"session_id":"synthetic-cursor-session-0001"}
+{"type":"result","subtype":"error","is_error":true,"result":"auth required","session_id":"synthetic-cursor-session-0001"}

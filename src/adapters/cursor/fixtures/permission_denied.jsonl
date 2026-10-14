@@ -1,0 +1,6 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.45).","exit":0}}
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work/tree","session_id":"synthetic-cursor-session-0001","model":"Synthetic Model 1","permissionMode":"default"}
+{"type":"tool_call","subtype":"started","call_id":"c1","tool_call":{"shellToolCall":{"args":{"command":"git push","workingDirectory":"/work/tree"}}},"session_id":"synthetic-cursor-session-0001"}
+{"type":"tool_call","subtype":"completed","call_id":"c1","tool_call":{"shellToolCall":{"args":{"command":"git push"},"result":{"rejected":{"command":"git push","workingDirectory":"/work/tree","reason":"","isReadonly":false}}}},"session_id":"synthetic-cursor-session-0001"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Command blocked by permissions configuration"}]},"session_id":"synthetic-cursor-session-0001"}
+{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"synthetic-cursor-session-0001"}
