@@ -4168,7 +4168,8 @@ OpenCode `cache.read` and `cache.write`) from `usage_observation.metrics_json` i
 `creation`, `rows`, `source: "provider_reported"`, `key_names`) summed over the window. A provider with no sourced key,
 or no row holding one, has no block, never a zero. The top-level `affinity` block counts, per project key (§3.2), the
 runs whose provider and model equal the previous run's (`kept`) and those that differ (`switched`), grouped by
-`affinity_switch_reason` from `route_decision.reasons_json`, or `unrecorded` until M7 writes one. Wording: "reported",
+`affinity_switch_reason` from `route_decision.reasons_json`, or `unrecorded` when that field is absent (for example a
+run before affinity was recorded). Wording: "reported",
 never "cache hits".
 
 *As built (T6.7, 2026-10-14, Delegated):* `src/capacity/cache.ts`. Only Grok Build is mapped. It is the only provider
