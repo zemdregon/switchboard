@@ -5,7 +5,7 @@
 | Status | Draft, baseline for milestone M1 |
 | Owns | Target users, use cases, user journeys UJ-1..UJ-11, capabilities CAP-1..CAP-13 and their priorities, the product surface, non-goals, and product-level acceptance criteria per capability. |
 | Does not own | Business outcomes ([BRD](BRD.md)); requirements ([SRS](SRS.md)); workflows and business rules ([FRD](FRD.md)); milestone scope and status ([ROADMAP](../ROADMAP.md)); components ([HLD](../design/HLD.md)). |
-| Last reconciled | 2026-10-12 |
+| Last reconciled | 2026-10-14 |
 
 Acceptance criteria are conditions to be checked when the named milestone delivers. Status note (2026-10-13): this
 document no longer describes a documentation-only repository. Milestone M1 is done and M2, M3 and M9 are `Partial`
@@ -67,6 +67,18 @@ Deferred capabilities, tracked in [ROADMAP §8](../ROADMAP.md#8-deferred-and-exc
 Windows support (NFR-PORT-03), context kinds other than repositories, model-assisted redaction (FR-INN-18),
 approximate-nearest-neighbour indexes and learned reranking for retrieval, agent subscriptions to PR and merge events
 (CAP-14, FR-SUB-01), and multi-user or hosted operation.
+
+### Implementation evidence (partial M12) — CAP-13
+
+Milestone boundaries and task status: [ROADMAP §6.7](../ROADMAP.md#67-m12-retrieval-index-tasks). On fakes and synthetic
+fixtures through T12.3 (2026-10-14, Delegated, not owner-approved): deployment and per-project `rag` configuration;
+per-project SQLite retrieval stores under the data directory; scanner, exclusion filters, redaction and chunking over
+readable contexts; and the embedding backend port with a deterministic fake backend and an `http` backend subject to the
+same locality and source-content gates as the inner agent. Schemas, algorithms and module-level evidence are in [SDD
+§4.1](../design/SDD.md#41-comp-rag-implementation-evidence-m12-t121t123), [TDD §3.13](../design/TDD.md#313-retrieval-index)
+and [LLD §14](../design/LLD.md#14-retrieval-index). Not implemented yet: incremental background index build, operator
+`index` commands and `doctor` retrieval reporting (T12.4); admission-time context pack and WF-14 end-to-end retrieval
+(T12.5); `search_project_context` (T12.6); and the deployment-wide index (T12.7).
 
 ### 3.1 Inner agent task catalogue
 
@@ -270,6 +282,11 @@ involved.
 - Outcome: the project does not bounce between providers, caches stay warm where providers support them, and agents are
   sent less context. The saving is not measured by the product.
 - CAP: CAP-6, CAP-7, CAP-13. FR: FR-RTE-06–09, FR-CAP-08, FR-RAG-01–14.
+
+**Implementation note (partial M12).** UJ-11 is the target operator and orchestrator experience for CAP-13. Through T12.3
+only the configuration, store, scan/chunk pipeline and embedding port exist on fakes; background indexing,
+`doctor`/`index` visibility, labelled snippets at admission and agent-callable search remain T12.4 onward (see [§3
+implementation evidence](#implementation-evidence-partial-m12--cap-13)).
 
 ## 5. Product surface
 
