@@ -142,6 +142,14 @@ embedding backend configured the retrieval feature is inert and suite behaviour 
 BR-46); `search_project_context` (FR-RAG-06); deployment-wide index read and contribute rules (BR-47). Until those tasks
 land, delegated runs do not receive a retrieval pack at admission.
 
+**Design evidence (T12.5; draft, not on `main`).** FR-RAG-05, FR-RAG-07 and FR-RAG-08 (WF-14 admission context pack;
+BR-46) are specified in open design pull requests only: [PR #180](https://github.com/zemdregon/switchboard/pull/180)
+(LLD §14.11 admission context pack; SDD updates) and [PR #181](https://github.com/zemdregon/switchboard/pull/181) (TDD
+§3.13.8 admission-time context pack). Runtime implementation on `main` remains pending merge of
+[PR #170](https://github.com/zemdregon/switchboard/pull/170) (T12.4), the w29 T12.5 code stack
+[PR #182](https://github.com/zemdregon/switchboard/pull/182) (stacked on #170), and integration onto `main`; until then
+WF-14 admission behaviour for these requirements is design-only in §3.1 and WF-14 below.
+
 ## 4. Canonical run state machine
 
 ### 4.1 Diagram
