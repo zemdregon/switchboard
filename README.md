@@ -443,7 +443,8 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   Q-12), validated on codex-cli 0.162.0 on 2026-10-14 by `switchboard adapters validate codex` (probe, auth, static
   conformance checks and one smoke call; `docs/research/live-checks-2026-10-14-claude-codex.md`) and, for 0.162.1, by
   `--version` and the flags in `--help` (`docs/research/live-checks-2026-10-13.md`), not by a conformance suite. Any
-  other Codex version fails the version gate. The `codex login status` exit codes were observed on that version only; its output format is undocumented.
+  other Codex version fails the version gate. The `codex login status` exit codes were observed on that version only;
+  its output format is undocumented.
 - **Event shapes are partly verified.** The 2026-10-13 live checks confirmed the Claude Code stream-json shapes
   (C-1 to C-11 and G-1) on 2.1.296 and the Codex flags (X-1 to X-3) on 0.162.1. Claude error strings (C-12), the
   Git-write attempt (C-G2) and Codex through Switchboard (X-5 to X-9) are still unverified, and another CLI version may
