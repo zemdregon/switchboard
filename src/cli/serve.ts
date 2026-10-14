@@ -68,7 +68,7 @@ import { GitPublisher } from "../git/commit.js";
 import { GitPusher, pushContextResolver } from "../git/push.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createConfiguredInnerAgent, PROMPT_PROVIDER_NAMES } from "../inner/index.js";
-import { createLedger, openLedger } from "../ledger/index.js";
+import { createLedger, openLedger, RagLedger } from "../ledger/index.js";
 import { RunLifecycle } from "../lifecycle/index.js";
 import { acquireDataDirLock, type DataDirLock } from "../lock/index.js";
 import {
@@ -91,7 +91,7 @@ import { pruneRagStores } from "../retrieval/store.js";
 import { runRetentionGc, WorkspaceManager } from "../workspace/index.js";
 import { type CliIo, PROBE_ENV_ALLOWLIST } from "./io.js";
 import { applyOperatorRequests } from "./operator.js";
-import { type ServeRag, startServeRag } from "./rag-index.js";
+import { ragBackendFor, type ServeRag, startServeRag } from "./rag-index.js";
 
 export const TEST_FAKE_ADAPTER_ENV = "SWITCHBOARD_TEST_FAKE_ADAPTER";
 export const TEST_FAKE_ADAPTER_VALUE = "enable-test-only-fake-adapter";
@@ -585,6 +585,19 @@ async function runDaemon(
       projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
       // T13.5 (FR-MCP-15, Q-78): stdio sees only meta-sessions with no HTTP subject; HTTP sees only its own.
       subjectBindings: new SubjectBindingStore(db, now ? { now } : {}),
+      // T12.6 (FR-RAG-06): read-only search over a project's store; absent without an embedding backend (FR-RAG-04).
+      ...(config.rag.embedding !== undefined
+        ? {
+            searchContext: {
+              dataDir: config.dataDir,
+              settings: config.rag,
+              backend: ragBackendFor(io, config.rag.embedding),
+              record: (r: Parameters<RagLedger["record"]>[0]) => void new RagLedger(db, { ids }).record(r),
+              ...(io.homedir !== undefined ? { homeDir: io.homedir } : {}),
+              ...(now ? { now } : {}),
+            },
+          }
+        : {}),
     };
     mcp = await startStdioServer({ ...mcpDeps, clientId });
     mcp.server.onclose = () => resolveStop("mcp transport closed");

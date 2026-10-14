@@ -154,12 +154,19 @@ import {
   PROJECT_TOOL_NAMES,
   type ProjectToolName,
   SCHEMA_DIALECT,
+  SEARCH_TOOL_NAMES,
   TOOL_NAMES,
   TOOL_SCHEMA_VERSION,
   type ToolName,
   toolDescriptors,
 } from "./schemas.js";
 import { createScrubber } from "./scrub.js";
+import {
+  type SearchContextDeps,
+  type SearchProject,
+  searchEnabledFor,
+  searchProjectContext,
+} from "./search-context.js";
 
 export const SERVER_NAME = "switchboard";
 /** Proposed: tracks package.json `version`. */
@@ -188,6 +195,11 @@ export interface McpServerDeps {
   };
   /** T9.9 (FR-PRJ-10): dynamic projects. Required when the client has `manage_projects`; absent means none resolve. */
   readonly projectStore?: DynamicProjectStore;
+  /**
+   * T12.6 (FR-RAG-06): `search_project_context`. Absent (no embedding backend configured) means the tool is never
+   * listed; present, it is listed only while retrieval is on for at least one project this client may use.
+   */
+  readonly searchContext?: SearchContextDeps;
   /** Configured MCP client this session is bound to (`serve --client <id>`). */
   readonly clientId: string;
   /**
@@ -1061,6 +1073,51 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     };
   };
 
+  /**
+   * T12.6 (FR-RAG-06, LLD §14.7): the projects this client may search: its configured `projects` and its own dynamic
+   * projects with a revision in force.
+   */
+  const searchableProjects = (): ResolvedProject[] => [
+    ...projectsForClient(deps.config.projects ?? [], client),
+    ...(projectTools?.listForClient().flatMap((e) => (e.status === "ACTIVE" ? [e.project] : [])) ?? []),
+  ];
+  const searchOffered = (): boolean => {
+    const sc = deps.searchContext;
+    return sc !== undefined && searchableProjects().some((p) => searchEnabledFor(sc.settings, p));
+  };
+  const searchValidator = new Ajv2020({ allErrors: true, strict: true, useDefaults: true }).compile(
+    inputSchema("search_project_context"),
+  );
+  /**
+   * A project this client may not use is reported exactly like an unknown one (LLD §14.7), so the tool is no existence
+   * oracle: another client's dynamic project, a configured project missing from `projects`, a deleted or pending one.
+   */
+  const searchTarget = async (projectId: string): Promise<SearchProject> => {
+    const unknown = () => invalid(`unknown project ${JSON.stringify(projectId)}`, { field: "project" });
+    const configured = (deps.config.projects ?? []).find((p) => p.id === projectId);
+    if (configured !== undefined) {
+      if (!(client.projects ?? []).includes(configured.id)) throw unknown();
+      return configured;
+    }
+    let dynamic: Awaited<ReturnType<ProjectTools["resolveForRequest"]>>;
+    try {
+      dynamic = await projectTools?.resolveForRequest(projectId);
+    } catch {
+      throw unknown();
+    }
+    if (dynamic === undefined) throw unknown();
+    return dynamic.project;
+  };
+  const searchContextTool = async (a: Args) => {
+    const sc = deps.searchContext as SearchContextDeps;
+    const project = await searchTarget(a.project as string);
+    return searchProjectContext(sc, project, {
+      query: a.query as string,
+      ...(a.limit !== undefined ? { limit: a.limit as number } : {}),
+      scope: a.scope as "project" | "global" | "both",
+    });
+  };
+
   const handlers: Record<ToolName, (a: Args) => Promise<object>> = {
     delegate_task: delegateTask,
     continue_task: continueTask,
@@ -1090,6 +1147,12 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
           return ok(await projectTools.call(name as ProjectToolName, rawArgs));
         }
         projectTools?.recordNotOffered(name as ProjectToolName, rawArgs);
+      }
+      if ((SEARCH_TOOL_NAMES as readonly string[]).includes(name) && searchOffered()) {
+        // T12.6 (FR-RAG-06): read-only; when not offered it is answered exactly like an unknown tool.
+        const args = structuredClone(rawArgs ?? {}) as Args;
+        if (!searchValidator(args)) throw schemaError(searchValidator.errors ?? []);
+        return ok(await searchContextTool(args));
       }
       if (!(TOOL_NAMES as readonly string[]).includes(name)) {
         throw invalid(`unknown tool ${JSON.stringify(name.slice(0, 64))}`, { tools: [...TOOL_NAMES] });
@@ -1121,7 +1184,10 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
   );
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: toolDescriptors({ manageProjects: client.manageProjects === true && projectTools !== undefined }),
+    tools: toolDescriptors({
+      manageProjects: client.manageProjects === true && projectTools !== undefined,
+      searchContext: searchOffered(),
+    }),
   }));
   server.setRequestHandler(CallToolRequestSchema, async (req) => callTool(req.params.name, req.params.arguments));
 
