@@ -1,14 +1,14 @@
 # ADR-0041: Network MCP transport (Streamable HTTP) with embedded OAuth 2.1
 
-- Status: Accepted
+- Status: Accepted (Delegated, 2026-10-14: orchestrator Linus under owner decision 25; Q-67 is Yes)
 - Date: 2026-10-14
 - Decided by: Delegated (Linus, 2026-10-14), recording the owner decision that Switchboard will be embedded in
   Grok Bot as a public-facing MCP server, so HTTP transport and OAuth are critical. Under [owner
   decision 25](../ROADMAP.md#42-owner-decisions) for everything outside bypass mode. Q-67 is **Yes** (build it).
-  Not owner-approved line-by-line; T13.1 landed via #113; Accepted by orchestrator 2026-10-14 to match Q-67.
-- Supersedes (once accepted): the deferral of the HTTP/SSE transport in [ADR-0002](0002-mcp-upstream-acp-downstream.md),
+  Not owner-approved line-by-line. Later M13 tasks may revise implementation details inside this decision.
+- Supersedes: the deferral of the HTTP/SSE transport in [ADR-0002](0002-mcp-upstream-acp-downstream.md),
   and item 4 of [ADR-0040](0040-mcp-caller-authentication-no-oauth-on-stdio.md) is the gate this ADR answers. Neither is
-  changed by this document; the status of ADR-0002 changes only when this ADR is accepted.
+  rewritten by this document; ADR-0002 stays Accepted apart from that deferral.
 - Builds on: [ADR-0011](0011-single-operator-local-deployment.md) (single operator),
   [ADR-0003](0003-no-credential-handling.md)
   (no provider credential handling; this ADR's tokens are Switchboard's own client tokens and are a new boundary),
@@ -87,7 +87,7 @@ on launch binding only ([ADR-0040](0040-mcp-caller-authentication-no-oauth-on-st
   *Answered in part (2026-10-14, Delegated):* the SDK's Streamable HTTP transport takes `node:http` objects, and the
   first slice mounts the metadata documents on a plain `node:http` listener with Switchboard's own HTTPS check, because
   the SDK's express auth router accepts plain-HTTP localhost issuers and advertises `client_secret_post`. Details and
-  evidence: [TDD §3.14](../design/TDD.md#314-network-mcp-transport-m13). This ADR stays Proposed until it is accepted.
+  evidence: [TDD §3.14](../design/TDD.md#314-network-mcp-transport-m13). Accepted on that evidence (2026-10-14).
 
 ## Revisit when
 

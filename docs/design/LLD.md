@@ -1213,7 +1213,7 @@ previous provider and model, runs that switched, by reason) are a query over `ro
 
 ### 3.3 Network MCP transport (M13)
 
-Design gate: [ADR-0041](../adr/0041-http-transport-with-oauth-2-1.md) (Accepted; accepting it is task T13.1).
+Design gate: [ADR-0041](../adr/0041-http-transport-with-oauth-2-1.md) (Accepted 2026-10-14 under T13.1).
 Requirements FR-MCP-12 to 15. Off unless the config enables it.
 
 - **Endpoint.** One Streamable HTTP path (`/mcp`), bound to `127.0.0.1` unless `transport.http.bind` is set explicitly.
