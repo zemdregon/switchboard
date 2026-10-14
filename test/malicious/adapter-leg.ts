@@ -60,6 +60,8 @@ export interface AdapterLegCase {
   neverEnabledFlags: readonly string[];
   /** The same profile with a repository configuration that is not `disabled`; refused or still isolated. */
   nonDisabledRepoConfig: ResolvedProfile;
+  /** Every other profile the adapter compiles, with that profile's isolation flags (e.g. another sandbox value). */
+  extraProfiles?: readonly { label: string; profile: ResolvedProfile; isolationFlags: readonly string[] }[];
   /** Hostile streams, built from the fixture so credential and outside paths are the fixture's FAKE canary paths. */
   streams(fx: MaliciousFixture): HostileStream[];
   /**
@@ -108,9 +110,15 @@ export function coverageProblems(streams: readonly HostileStream[]): string[] {
 }
 
 /** Isolation findings for one compiled argv: isolation flags present, no enabling flag, no hostile-repo path. */
-function argvProblems(c: AdapterLegCase, fx: MaliciousFixture, inv: Invocation, label: string): string[] {
+function argvProblems(
+  c: AdapterLegCase,
+  fx: MaliciousFixture,
+  inv: Invocation,
+  label: string,
+  isolationFlags: readonly string[] = c.isolationFlags,
+): string[] {
   const problems: string[] = [];
-  for (const f of c.isolationFlags) if (!inv.argv.includes(f)) problems.push(`${label}: missing isolation flag ${f}`);
+  for (const f of isolationFlags) if (!inv.argv.includes(f)) problems.push(`${label}: missing isolation flag ${f}`);
   for (const f of c.neverEnabledFlags) {
     if (inv.argv.some((a) => a === f || a.startsWith(`${f}=`))) problems.push(`${label}: forbidden flag ${f} in argv`);
   }
@@ -135,7 +143,30 @@ export function compileProblems(c: AdapterLegCase, fx: MaliciousFixture): string
   if (!isIneligible(other)) {
     problems.push(...argvProblems(c, fx, other, `repoConfig=${c.nonDisabledRepoConfig.repoConfig}`));
   }
+  for (const extra of c.extraProfiles ?? []) {
+    const inv = adapter.compile(requestFor(fx.repo, c.bypassApproved === true), extra.profile);
+    if (isIneligible(inv)) problems.push(`${extra.label}: profile does not compile: ${inv.reason}: ${inv.detail}`);
+    else problems.push(...argvProblems(c, fx, inv, extra.label, extra.isolationFlags));
+  }
   return problems;
+}
+
+/**
+ * Test-only: the case with a deliberately broken compile that drops every argv word equal to `flag` (a removed sandbox
+ * or deny flag). {@link compileProblems} must report it.
+ */
+export function withFlagStripped(c: AdapterLegCase, flag: string): AdapterLegCase {
+  return {
+    ...c,
+    makeAdapter: (file, exitCode) => {
+      const real = c.makeAdapter(file, exitCode);
+      const compile: ProviderAdapter["compile"] = (request, profile) => {
+        const inv = real.compile(request, profile);
+        return isIneligible(inv) ? inv : { ...inv, argv: inv.argv.filter((a) => a !== flag) };
+      };
+      return Object.assign(Object.create(real) as ProviderAdapter, { compile });
+    },
+  };
 }
 
 export interface StreamOutcome {
