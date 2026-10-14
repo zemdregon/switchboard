@@ -18,8 +18,9 @@
  *   nothing in that run; what remains is the controller's worktree, the tool-call guard (ADR-0039), FR-GIT-03 and
  *   FR-GIT-06;
  * - the parser (T4.33) reads only the `stream-json` fields the 2026-10-14 live check recorded; soft denials fail the run
- *   and `SUCCESS` with no reported tokens is not a success (Q-86); resume is not compiled (Q-86). The auth preflight fails
- *   closed until T4.34. The manifest range admits no version, so none of this runs before `adapters validate` passes a
+ *   and `SUCCESS` with no reported tokens is not a success (Q-86); a `denied_actions` or `error` value of an unrecorded
+ *   shape, a second `result` and a changed conversation id fail the run too; resume is not compiled (Q-86). The auth
+ *   preflight fails closed until T4.34. The manifest range admits no version, so none of this runs before `adapters validate` passes a
  *   version.
  */
 import {
@@ -29,7 +30,7 @@ import {
   DEFAULT_WALL_CLOCK_MS,
 } from "../../exec/index.js";
 import { resolveOnPath } from "../codex/adapter.js";
-import { classifyCommon } from "../failure.js";
+import { classifyCommon, PROVIDER_ERROR_CATEGORY_CODES } from "../failure.js";
 import { parseVersion } from "../manifest/index.js";
 import type {
   AcpMessage,
@@ -128,8 +129,16 @@ const obj = (v: unknown): Json | undefined =>
   typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Json) : undefined;
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
 const ineligible = (reason: Ineligible["reason"], detail: string): Ineligible => ({ ineligible: true, reason, detail });
-/** Tool steps already reported per run (a step streams ACTIVE then DONE, [LIVE] C7), keyed by `step_index`. */
-const seenToolSteps = new WeakMap<ParseState, Set<number>>();
+/**
+ * Tool steps already reported per run (a step streams ACTIVE then DONE, [LIVE] C7), keyed by `step_index`; the value
+ * is whether the report carried a command or path, so a later update that first carries one is still reported.
+ */
+const seenToolSteps = new WeakMap<ParseState, Map<number, boolean>>();
+/** `result` lines already seen per run: a second one is a protocol anomaly, never a success (fail closed). */
+const seenResults = new WeakMap<ParseState, number>();
+/** Category of a stream anomaly (two results, two conversation ids); classified OUTPUT_PROTOCOL_ERROR. */
+const PROTOCOL_CATEGORY = "protocol";
+const CATEGORY_CODES = { ...PROVIDER_ERROR_CATEGORY_CODES, [PROTOCOL_CATEGORY]: "OUTPUT_PROTOCOL_ERROR" } as const;
 
 export class AntigravityAdapter implements ProviderAdapter {
   readonly id = "antigravity" as const;
@@ -351,13 +360,25 @@ export class AntigravityAdapter implements ProviderAdapter {
         const status = str(r?.status);
         if (r === undefined || status === undefined) return this.#unknown(state, type);
         const out: NormalizedEvent[] = [];
+        const results = (seenResults.get(state) ?? 0) + 1;
+        seenResults.set(state, results);
+        // One run prints one `result` ([LIVE] C4); a second could flip an earlier failure, so the run fails closed.
+        if (results > 1) {
+          out.push({ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "more than one result line" });
+        }
         const id = str(r.conversation_id);
         if (id !== undefined) out.push(...this.#bind(state, id, undefined));
         const usage = obj(r.usage);
         const metrics: Record<string, number | string | null> = {};
-        for (const k of USAGE_KEYS) if (typeof usage?.[k] === "number") metrics[k] = usage[k] as number;
+        for (const k of USAGE_KEYS) {
+          const v = usage?.[k];
+          if (typeof v === "number" && Number.isFinite(v) && v >= 0) metrics[k] = v;
+        }
         if (Object.keys(metrics).length > 0) out.push({ kind: "usage", source: "provider_reported", metrics });
-        const denied = Array.isArray(r.denied_actions) ? r.denied_actions : [];
+        // `denied_actions` was an array of `{action, display_name}` ([LIVE] C7, C18). Any other present value is
+        // read as a denial rather than ignored, so an unexpected shape cannot hide one.
+        const rawDenied = r.denied_actions;
+        const denied = Array.isArray(rawDenied) ? rawDenied : rawDenied === undefined || rawDenied === null ? [] : [{}];
         for (const d of denied) {
           const action = obj(d);
           out.push({
@@ -365,7 +386,9 @@ export class AntigravityAdapter implements ProviderAdapter {
             tool: clip(str(action?.display_name) ?? str(action?.action) ?? "unknown", 64),
           });
         }
-        const error = str(r.error);
+        // `error` was a string ([LIVE] C6, C10, C13); any other present value is an unknown error, never ignored.
+        const rawError = r.error;
+        const error = str(rawError);
         if (error !== undefined && error !== "") {
           const category = error.startsWith(ERROR_MODEL_PREFIX)
             ? "model_unavailable"
@@ -373,10 +396,12 @@ export class AntigravityAdapter implements ProviderAdapter {
               ? "auth"
               : "unknown";
           out.push({ kind: "provider_error", category, message: clip(error, MAX_SUMMARY_CHARS) });
+        } else if (error === undefined && rawError !== undefined && rawError !== null) {
+          out.push({ kind: "provider_error", category: "unknown", message: "non-string error field" });
         }
         // Q-86: `SUCCESS` with no tokens is what a print timeout returns ([LIVE] C10), so it is not a success.
         const total = metrics.total_tokens;
-        const ok = status === STATUS_SUCCESS && typeof total === "number" && total > 0;
+        const ok = results === 1 && status === STATUS_SUCCESS && typeof total === "number" && total > 0;
         const response = str(r.response);
         if (response !== undefined && response !== "") {
           out.push({ kind: "message", role: "assistant", text: clip(response, MAX_SUMMARY_CHARS) });
@@ -393,8 +418,16 @@ export class AntigravityAdapter implements ProviderAdapter {
     }
   }
 
+  /**
+   * The first non-empty id binds the session. A later, different id (a second `init` or a `result` for another
+   * conversation) makes the binding ambiguous, so the run fails closed; the first id stays bound.
+   */
   #bind(state: ParseState, id: string, model: string | undefined): NormalizedEvent[] {
-    if (id === "" || state.nativeSessionId !== undefined) return [];
+    if (id === "") return [];
+    if (state.nativeSessionId !== undefined) {
+      if (id === state.nativeSessionId) return [];
+      return [{ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "conversation id changed mid-run" }];
+    }
     state.nativeSessionId = id;
     return [{ kind: "session_bound", nativeSessionId: id, ...(model ? { model: clip(model, 128) } : {}) }];
   }
@@ -407,10 +440,10 @@ export class AntigravityAdapter implements ProviderAdapter {
     // Only tool steps are actions; the final answer arrives whole in `result.response`, so `agent_response` deltas,
     // `user_input` and `checkpoint` steps are not kept.
     if (stepType !== STEP_TOOL) return [];
-    const seen = seenToolSteps.get(state) ?? new Set<number>();
+    const seen = seenToolSteps.get(state) ?? new Map<number, boolean>();
     seenToolSteps.set(state, seen);
-    if (seen.has(index)) return [];
-    seen.add(index);
+    // Already reported with a command or path: later updates of the step add nothing.
+    if (seen.get(index) === true) return [];
     const info = obj(e.tool_info);
     const name = str(info?.name) ?? str(e.tool_name) ?? "unknown";
     const params = obj(info?.parameters);
@@ -419,6 +452,11 @@ export class AntigravityAdapter implements ProviderAdapter {
     const command = str(params?.command) ?? str(params?.CommandLine);
     const target = str(params?.path) ?? str(params?.file_path) ?? str(params?.AbsolutePath);
     const kind = command !== undefined ? "shell" : "other";
+    const carries = command !== undefined || target !== undefined;
+    // Reported once without parameters: a later update is reported again only when it first names a command or path,
+    // so the tool-call guard sees it whichever update carries `tool_info.parameters` (Assumption: not recorded).
+    if (seen.has(index) && !carries) return [];
+    seen.set(index, carries);
     return [
       {
         kind: "tool_call",
@@ -477,6 +515,6 @@ export class AntigravityAdapter implements ProviderAdapter {
   }
 
   classifyFailure(evidence: FailureEvidence): FailureClassification {
-    return classifyCommon(evidence);
+    return classifyCommon(evidence, CATEGORY_CODES);
   }
 }

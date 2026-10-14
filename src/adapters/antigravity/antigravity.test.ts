@@ -383,11 +383,225 @@ describe("antigravity parser and result (T4.33)", () => {
     expect(a.extractResult(events, EXIT0)).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
   });
 
-  it("the conversation id comes only from structured fields; the first one wins", () => {
+  it("the conversation id comes only from structured fields; the first one stays bound and a change fails", () => {
     const other = "0b6c2d1e-0000-4000-8000-00000000000b";
-    const { state, events } = parse([INIT, RESULT({ conversation_id: other, response: `id ${other}` })]);
+    const { a, state, events } = parse([INIT, RESULT({ conversation_id: other, response: `id ${other}` })]);
     expect(state.nativeSessionId).toBe(CID);
     expect(events.filter((e) => e.kind === "session_bound")).toHaveLength(1);
+    expect(a.extractResult(events, EXIT0)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      nativeSessionId: CID,
+    });
+    // A second `init` for another conversation is the same anomaly.
+    const twice = parse([INIT, j({ event: "init", conversation_id: other, init: {} }), RESULT()]);
+    expect(twice.a.extractResult(twice.events, EXIT0)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+    });
+    // Repeating the same id (init then result, as recorded) is not an anomaly; an id only in text binds nothing.
+    const same = parse([INIT, RESULT()]);
+    expect(same.a.extractResult(same.events, EXIT0)).toMatchObject({ ok: true });
+    const textOnly = parse([RESULT({ conversation_id: "", response: `conversation_id ${other}` })]);
+    expect(textOnly.state.nativeSessionId).toBeUndefined();
+  });
+});
+
+/**
+ * T4.33 hardening toward the T4.23 Done-when (denied tools, malformed lines, resume). SYNTHETIC: shapes the live check
+ * did not record are invented to pin a fail-closed reading, never to claim the CLI emits them.
+ */
+describe("antigravity parser hardening (T4.33, synthetic shapes)", () => {
+  const CID = "0b6c2d1e-0000-4000-8000-00000000000c";
+  const j = (o: Record<string, unknown>) => JSON.stringify(o);
+  const INIT = j({
+    event: "init",
+    conversation_id: CID,
+    init: { cwd: "/work/tree", permission_mode: "always-proceed" },
+  });
+  const USAGE = { input_tokens: 20, output_tokens: 3, thinking_tokens: 1, cache_read_tokens: 0, total_tokens: 24 };
+  const RESULT = (over: Record<string, unknown> = {}) =>
+    j({ event: "result", result: { conversation_id: CID, status: "SUCCESS", response: "ok", usage: USAGE, ...over } });
+  const TOOL = (index: number, state: string, info?: Record<string, unknown>) =>
+    j({
+      event: "step_update",
+      conversation_id: CID,
+      step_index: index,
+      state,
+      step_type: "tool",
+      tool_name: "run_command",
+      ...(info ? { tool_info: info } : {}),
+    });
+  const EXIT0: ExitInfo = { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] };
+  const parse = (lines: string[]) => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const events: NormalizedEvent[] = lines.flatMap((l) => a.parseEvent(l, state));
+    return { a, state, events, result: a.extractResult(events, EXIT0) };
+  };
+
+  it("several denied tools are each reported and the run is PERMISSION_BLOCKED", () => {
+    const { events, result } = parse([
+      INIT,
+      RESULT({
+        denied_actions: [
+          { action: "command", display_name: "RunCommand" },
+          { action: "write" },
+          "not an object",
+          { display_name: "x".repeat(200) },
+        ],
+      }),
+    ]);
+    expect(events.filter((e) => e.kind === "permission_denied")).toEqual([
+      { kind: "permission_denied", tool: "RunCommand" },
+      { kind: "permission_denied", tool: "write" },
+      { kind: "permission_denied", tool: "unknown" },
+      { kind: "permission_denied", tool: `${"x".repeat(64)}…` },
+    ]);
+    expect(result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+  });
+
+  it("a denied_actions value that is not an array is read as a denial, never ignored; empty and null are none", () => {
+    for (const denied of [{ action: "command" }, "command", 1, true]) {
+      const r = parse([INIT, RESULT({ denied_actions: denied })]);
+      expect(r.result, JSON.stringify(denied)).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    }
+    for (const denied of [[], null]) {
+      const r = parse([INIT, RESULT({ denied_actions: denied })]);
+      expect(r.result, JSON.stringify(denied)).toMatchObject({ ok: true });
+    }
+  });
+
+  it("a non-string error is an unknown provider error; an empty error string is none", () => {
+    for (const error of [{ code: 429 }, ["x"], 1, false]) {
+      const r = parse([INIT, RESULT({ error })]);
+      expect(r.result, JSON.stringify(error)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+    }
+    expect(parse([INIT, RESULT({ error: "" })]).result).toMatchObject({ ok: true });
+    expect(parse([INIT, RESULT({ error: null })]).result).toMatchObject({ ok: true });
+  });
+
+  it("an unrecorded rate-limit or quota text in error is TOOL_FAILURE, never RATE_LIMIT_TRANSIENT or success", () => {
+    for (const error of ["RESOURCE_EXHAUSTED: quota exceeded", "429 Too Many Requests", "rate limit reached"]) {
+      const r = parse([INIT, RESULT({ status: "ERROR", response: "", error })]);
+      expect(r.result, error).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+      expect(
+        r.events.some((e) => e.kind === "rate_limit"),
+        error,
+      ).toBe(false);
+    }
+  });
+
+  it("a second result line fails the run even when it reports SUCCESS", () => {
+    const failedThenOk = parse([INIT, RESULT({ status: "ERROR" }), RESULT()]);
+    expect(failedThenOk.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+    const okTwice = parse([INIT, RESULT(), RESULT()]);
+    expect(okTwice.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+    expect(okTwice.events.filter((e) => e.kind === "result").map((e) => e.kind === "result" && e.ok)).toEqual([
+      true,
+      false,
+    ]);
+  });
+
+  it("negative and non-number usage values are dropped; zero total is not a success", () => {
+    const r = parse([
+      INIT,
+      RESULT({ usage: { input_tokens: -5, output_tokens: "3", thinking_tokens: null, total_tokens: 24, extra: 9 } }),
+    ]);
+    expect(r.events.find((e) => e.kind === "usage")).toEqual({
+      kind: "usage",
+      source: "provider_reported",
+      metrics: { total_tokens: 24 },
+    });
+    expect(r.result).toMatchObject({ ok: true });
+    const negative = parse([INIT, RESULT({ usage: { total_tokens: -1 } })]);
+    expect(negative.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+    const usageNotObject = parse([INIT, RESULT({ usage: [24] })]);
+    expect(usageNotObject.result).toMatchObject({ ok: false });
+  });
+
+  it("a tool step is reported once; a later update that first carries the command is reported for the guard", () => {
+    const late = parse([
+      INIT,
+      TOOL(3, "ACTIVE"),
+      TOOL(3, "DONE", { name: "run_command", parameters: { command: "git push origin main" } }),
+      TOOL(3, "DONE", { name: "run_command", parameters: { command: "git push origin main" } }),
+      RESULT(),
+    ]);
+    expect(late.events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "other", name: "run_command" },
+      { kind: "tool_call", tool: "shell", name: "run_command", command: "git push origin main" },
+    ]);
+    const early = parse([
+      INIT,
+      TOOL(4, "ACTIVE", { name: "write_to_file", parameters: { path: "/work/tree/a.txt" } }),
+      TOOL(4, "DONE", { name: "write_to_file", parameters: { path: "/elsewhere" } }),
+      TOOL(4, "DONE"),
+      RESULT(),
+    ]);
+    expect(early.events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "other", name: "write_to_file", target: "/work/tree/a.txt" },
+    ]);
+    // Steps are keyed per run: a new parse state starts with no seen steps.
+    expect(
+      parse([INIT, TOOL(3, "ACTIVE", { name: "run_command", parameters: { command: "ls" } })]).events,
+    ).toContainEqual({
+      kind: "tool_call",
+      tool: "shell",
+      name: "run_command",
+      command: "ls",
+    });
+  });
+
+  it("malformed step and init lines are unknown and counted; non-object roots and arrays never bind or succeed", () => {
+    const { state, events, result } = parse([
+      j({ event: "step_update", step_type: "tool", step_index: "1" }),
+      j({ event: "step_update", step_index: 1 }),
+      j({ event: "init", conversation_id: 7, init: {} }),
+      j({ event: "init", conversation_id: CID, init: [] }),
+      j({ event: 1 }),
+      j({ event: "result", result: { status: 200 } }),
+      j({ event: "result", result: "SUCCESS" }),
+      "[]",
+      "null",
+      '"result"',
+      "42",
+    ]);
+    expect(state.unknownEvents).toBe(11);
+    expect(events.every((e) => e.kind === "unknown")).toBe(true);
+    expect(state.nativeSessionId).toBeUndefined();
+    expect(result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", unknownEventCount: 11 });
+  });
+
+  it("a __proto__ key in a line changes nothing outside the parsed document", () => {
+    const { result } = parse([INIT, '{"event":"result","__proto__":{"polluted":1},"result":{"status":"ERROR"}}']);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(result).toMatchObject({ ok: false });
+  });
+
+  it("ACP messages are ignored (no ACP transport)", () => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    expect(a.parseEvent({ jsonrpc: "2.0", method: "session/update" } as never, state)).toEqual([]);
+    expect(state.lines).toBe(0);
+  });
+
+  it("resume stays Ineligible for every profile and binding id, never throws and never emits --conversation", () => {
+    const approved = { ...privilegedProfile(BYPASS_SCOPE), bypassApproved: true };
+    const profiles: ResolvedProfile[] = [...PROFILES.map(profileOf), approved, privilegedProfile(BYPASS_SCOPE)];
+    for (const profile of profiles) {
+      for (const nativeSessionId of [CID, "", "--dangerously-skip-permissions", "-c", "../x", "a b"]) {
+        const label = `${profile.name}:${nativeSessionId}`;
+        const r = adapter().resumeArgs(
+          { provider: "antigravity", nativeSessionId },
+          request({ bypassApproved: profile.bypassApproved }),
+          profile,
+        );
+        expect(r, label).toMatchObject({ ineligible: true, reason: "CAPABILITY_MISSING" });
+        expect("ineligible" in r && r.detail.length > 0, label).toBe(true);
+      }
+    }
+    expect(compiled().argv.some((a) => a.startsWith("--conversation") || a.startsWith("-conversation"))).toBe(false);
   });
 
   it("resume is not compiled (Q-86): an unknown --conversation id silently starts a new conversation", () => {
