@@ -2,10 +2,13 @@
  * T4.52 (TDD §4.6): the OpenCode module, probe and compile matrix. SYNTHETIC: the executable path is a placeholder and
  * no `opencode` binary is run; probe output is the shape the 2026-10-14 live check recorded (`opencode v2.0.23`).
  */
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
 import { resolveTrustProfile } from "../../policy/profiles.js";
 import { auditInvocation, bypassClassFlags } from "../audit.js";
+import { type ConformanceCase, missingRequiredKinds, runConformanceCase, runConformanceSuite } from "../conformance.js";
 import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
 import { providerEntry } from "../providers.js";
 import { AdapterRegistry } from "../registry.js";
@@ -21,6 +24,23 @@ import type {
   TrustProfile,
 } from "../types.js";
 import { OpenCodeAdapter } from "./adapter.js";
+import {
+  DEFAULT_SESSION_ID,
+  opencodeConformanceCases,
+  PRIVILEGED_BYPASS_PROFILE,
+  RESUMED_SESSION_ID,
+  replayAdapter,
+} from "./fixtures/cases.js";
+
+const dirs: string[] = [];
+const makeCwd = () => {
+  const d = mkdtempSync(join(tmpdir(), "sb-opencode-"));
+  dirs.push(d);
+  return d;
+};
+afterAll(() => {
+  for (const d of dirs) rmSync(d, { recursive: true, force: true });
+});
 
 const EXE = "/opt/synthetic/opencode";
 const request = (over: Partial<CompileRequest> = {}): CompileRequest => ({
@@ -471,5 +491,95 @@ describe("opencode parser and result (T4.53)", () => {
     expect(
       adapter().resumeArgs({ provider: "opencode", nativeSessionId: SID }, request(), profileOf("edit-untrusted")),
     ).toMatchObject({ reason: "PROFILE_UNSUPPORTED" });
+  });
+});
+
+/**
+ * T4.55 (FR-ADP-11): the shared conformance suite over synthetic recorded fixtures (`./fixtures/*.jsonl`, in the
+ * `--format json` shapes of the 2026-10-14 live check), replayed by `replay.mjs --provider opencode` in place of the
+ * binary, so it passes with no `opencode` installed. The prompt reaches the replay as the argv word after `--`.
+ */
+describe("opencode conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.55)", () => {
+  const caseOf = (kind: ConformanceCase["kind"]): ConformanceCase => {
+    const c = opencodeConformanceCases(makeCwd).find((x) => x.kind === kind);
+    if (!c) throw new Error(`missing ${kind} case`);
+    return c;
+  };
+
+  it("covers every FR-ADP-11 kind and passes the full suite", async () => {
+    const cases = opencodeConformanceCases(makeCwd);
+    expect(missingRequiredKinds(cases)).toEqual([]);
+    const report = await runConformanceSuite(cases);
+    const failing = report.cases.flatMap((c) =>
+      c.checks.filter((k) => !k.ok).map((k) => `${c.kind}: ${k.name} ${k.detail ?? ""}`),
+    );
+    expect(failing).toEqual([]);
+    expect(report.ok).toBe(true);
+  });
+
+  it("success with edit normalizes session, summary and the edit; usage is counted per step", async () => {
+    const c = caseOf("success");
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({
+      ok: true,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      summary: "Added hello.txt.",
+      unknownEventCount: 0,
+    });
+    expect(readFileSync(join(c.request.workspace.cwd, "hello.txt"), "utf8")).toContain("synthetic");
+  });
+
+  it("resumed run passes --session and preserves the native session id", async () => {
+    const c = caseOf("resume");
+    const inv = c.adapter.resumeArgs(c.binding ?? { provider: "opencode", nativeSessionId: "" }, c.request, c.profile);
+    if ("ineligible" in inv) throw new Error(inv.detail);
+    expect(inv.argv.slice(-4)).toEqual(["--session", RESUMED_SESSION_ID, "--", "synthetic opencode objective"]);
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({ ok: true, nativeSessionId: RESUMED_SESSION_ID });
+  });
+
+  it("an auth error event ends AUTH_REQUIRED, not a success", async () => {
+    const report = await runConformanceCase(caseOf("auth_missing"));
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "AUTH_REQUIRED",
+      nativeSessionId: DEFAULT_SESSION_ID,
+    });
+  });
+
+  it("partial mutation leaves the file in the cwd", async () => {
+    const c = caseOf("partial_mutation");
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(readFileSync(join(c.request.workspace.cwd, "partial.txt"), "utf8")).toContain("synthetic");
+  });
+
+  it("the replay refuses an argv OpenCode would not be given (no --standalone), so a wrong compile cannot pass", async () => {
+    const a = replayAdapter("success_edit");
+    const req: CompileRequest = {
+      runId: "run_opencode_shape",
+      objective: "synthetic opencode objective",
+      constraints: [],
+      workspace: { cwd: makeCwd(), writable: true },
+      bypassApproved: true,
+    };
+    const broken: OpenCodeAdapter = Object.create(a);
+    broken.compile = (r, p) => {
+      const inv = a.compile(r, p);
+      if ("ineligible" in inv) return inv;
+      return { ...inv, argv: inv.argv.filter((w) => w !== "--standalone"), policyFlags: [] };
+    };
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: broken,
+      request: req,
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.ok).toBe(false);
+    expect(report.result?.ok).toBe(false);
   });
 });

@@ -7,8 +7,8 @@
 //                   [--mcp-commit RECORD.json] -- <provider argv>
 // Lines of FILE.jsonl are written to stdout verbatim, except lines whose JSON has a "_fixture" key (provenance notes
 // and, for Codex, run metadata), which are skipped. Malformed lines are replayed verbatim on purpose. The prompt must
-// arrive on stdin; otherwise the replay exits 65. A provider argv of the wrong shape exits 64, so a wrong compile
-// cannot pass silently.
+// arrive on stdin, or in argv for a dialect that defines `prompt`; otherwise the replay exits 65. A provider argv of the
+// wrong shape exits 64, so a wrong compile cannot pass silently.
 //
 // A provider is one file in ./replay-dialects/<id>.mjs (default export, see claude.mjs): how it checks its argv, what a
 // session id placeholder in the fixture means and which probe invocations (`--version`, help) the replay answers.
@@ -76,13 +76,21 @@ if (dialect.requireSynthetic && meta.synthetic !== true) fail("fixture metadata 
 const session = dialect.session(argv);
 if (meta.requireResume && session.value === undefined) fail("resume fixture invoked without `resume <id>`", 64);
 
-let prompt = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", (chunk) => {
-  prompt += chunk;
-});
-process.stdin.on("end", async () => {
-  if (prompt.trim() === "") fail("no prompt on stdin", 65);
+// A dialect whose CLI takes the prompt as an argv word (OpenCode) names it through `prompt`; stdin is then not read.
+const argvPrompt = dialect.prompt?.(argv);
+if (argvPrompt !== undefined) {
+  await replay(argvPrompt, "argv");
+} else {
+  let prompt = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    prompt += chunk;
+  });
+  process.stdin.on("end", () => replay(prompt, "stdin"));
+}
+
+async function replay(prompt, from) {
+  if (prompt.trim() === "") fail(`no prompt on ${from}`, 65);
   const write = opt(own, "--write");
   if (write)
     writeFileSync(write, "synthetic edit from replay fixture\n"); // relative to cwd, on purpose
@@ -105,7 +113,7 @@ process.stdin.on("end", async () => {
     return;
   }
   process.exitCode = Number(opt(own, "--exit-code") ?? meta.exit ?? 0);
-});
+}
 
 async function mcpCommit(recordPath) {
   const out = {

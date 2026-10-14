@@ -12,6 +12,7 @@ const opt = (list, name) => {
  * @property {(argv: string[]) => string | undefined} probe  Output for a probe invocation (exit 0), or undefined.
  * @property {(argv: string[]) => { token: string, value: string | undefined }} session  Placeholder and its value.
  * @property {boolean} requireSynthetic  The fixture's first line must carry { _fixture: { synthetic: true } }.
+ * @property {(argv: string[]) => string | undefined} [prompt]  The prompt when the CLI takes it in argv (stdin unread).
  */
 
 /** @type {Dialect} */
