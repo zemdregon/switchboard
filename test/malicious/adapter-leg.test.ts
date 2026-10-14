@@ -12,6 +12,7 @@ import {
   compileProblems,
   coverageProblems,
   gapOutcome,
+  gapProblems,
   parsedKinds,
   replayHostileStream,
   STREAM_CATEGORIES,
@@ -72,12 +73,12 @@ describe.each(cases.map((c) => [c.provider, c] as const))("adapter malicious leg
     },
   );
 
-  // A declared replay gap is pinned, not hidden: no hostile stream ends in its blocked code yet. When one does, this
-  // fails; remove `replayGap` from the case file so the replay checks above run.
-  it.runIf(c.replayGap !== undefined)(`known replay gap still open: ${c.replayGap}`, () => {
+  // A declared replay gap is pinned, not hidden: no hostile stream ends in its blocked code yet, and a stream that
+  // declares `gapResult` ends exactly there both without a process and through the supervisor replay. When one ends
+  // blocked, this fails; remove `replayGap` from the case file so the replay checks above run.
+  it.runIf(c.replayGap !== undefined)(`known replay gap still open: ${c.replayGap}`, async () => {
     for (const s of c.streams(fx).filter((x) => x.category !== "unknown_events")) {
-      const r = gapOutcome(c, fx, s);
-      expect(r.ok === false && r.failureCode === s.failureCode, s.name).toBe(false);
+      expect(await gapProblems(c, fx, s), s.name).toEqual([]);
     }
   });
 
@@ -101,6 +102,33 @@ describe.each(cases.map((c) => [c.provider, c] as const))("adapter malicious leg
         });
         expect(o.untouched, s.name).toBe(true);
       }
+    },
+  );
+
+  // The gap covers only the blocked categories; unknown event kinds still replay through the supervisor.
+  it.runIf(c.replayGap !== undefined)(
+    "with a replay gap open, unknown-event streams still end in their code through the replay",
+    async () => {
+      const unknown = c.streams(fx).filter((x) => x.category === "unknown_events");
+      expect(unknown.length).toBeGreaterThan(0);
+      for (const s of unknown) {
+        const o = await replayHostileStream(c, fx, s);
+        expect(o.failedChecks, s.name).toEqual([]);
+        expect(o.resultOk, s.name).toBe(false);
+        expect(o.failureCode, s.name).toBe(s.failureCode);
+        expect(o.untouched, s.name).toBe(true);
+      }
+    },
+  );
+
+  it.runIf(c.replayGap !== undefined)(
+    "positive control: a mislabelled gapResult is reported by the gap pin",
+    async () => {
+      const s = c.streams(fx).find((x) => x.category !== "unknown_events");
+      if (!s) throw new Error("no blocked-category stream");
+      const now = gapOutcome(c, fx, s);
+      const wrong = { ...s, gapResult: now.ok ? { ok: false, failureCode: "PROCESS_TIMEOUT" as const } : { ok: true } };
+      expect((await gapProblems(c, fx, wrong)).join()).toContain("want");
     },
   );
 

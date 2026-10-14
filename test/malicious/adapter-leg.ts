@@ -43,6 +43,12 @@ export interface HostileStream {
   exitCode: number;
   /** Failure code the run must end with. Never success. */
   failureCode: FailureCode;
+  /**
+   * While the case declares a {@link AdapterLegCase.replayGap}: the exact result this stream ends with today (for
+   * example `{ ok: true }` for a denial the parser cannot see). Pinned through {@link gapOutcome} and through the
+   * supervisor replay, so a change in either direction is visible and the stream is re-examined.
+   */
+  gapResult?: { ok: boolean; failureCode?: FailureCode };
 }
 
 export interface AdapterLegCase {
@@ -213,6 +219,27 @@ export async function replayHostileStream(
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Findings for one stream of a case with a {@link AdapterLegCase.replayGap}; empty when the gap is pinned as declared.
+ * The stream must not end in its blocked code (the gap is still open), and when it declares a `gapResult` both the
+ * no-process outcome and the supervisor replay must end exactly there with the hostile checkout untouched.
+ */
+export async function gapProblems(c: AdapterLegCase, fx: MaliciousFixture, s: HostileStream): Promise<string[]> {
+  const problems: string[] = [];
+  const g = gapOutcome(c, fx, s);
+  if (g.ok === false && g.failureCode === s.failureCode) problems.push(`${s.name}: ends ${s.failureCode}; gap closed`);
+  if (s.gapResult === undefined) return problems;
+  const want = `ok=${s.gapResult.ok} code=${s.gapResult.failureCode ?? "none"}`;
+  const got = (ok: boolean | undefined, code: FailureCode | undefined) => `ok=${ok} code=${code ?? "none"}`;
+  if (got(g.ok, g.failureCode) !== want)
+    problems.push(`${s.name}: gapOutcome ${got(g.ok, g.failureCode)}, want ${want}`);
+  const r = await replayHostileStream(c, fx, s);
+  if (got(r.resultOk, r.failureCode) !== want)
+    problems.push(`${s.name}: replay ${got(r.resultOk, r.failureCode)}, want ${want}`);
+  if (!r.untouched) problems.push(`${s.name}: replay changed the hostile checkout, canary logs or outside sentinel`);
+  return problems;
 }
 
 /** Normalized kinds the adapter produces for the stream's lines; `unknown` lines must never become a result. */
