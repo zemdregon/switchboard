@@ -48,14 +48,51 @@ no account identifier is recorded here.
   were. The script's "native event types" versus "normalized kinds" listing would identify the type in any future
   failure (a native type present in the first list whose lines all land in `unknown`), so no script change is strictly
   needed — but printing each unknown event's raw type explicitly would make it unmissable (Proposed, not done here).
-- No parser change is proposed: with no reproduction and no captured unknown line, adding an event kind would be
-  guessing (AGENTS.md, no invented facts). If C-10 fails again, the type list in the smoke output names the missing
-  kind and a scrubbed fixture can be captured then.
+- **Update, same day: the unknown event was reproduced** in a Claude run through Switchboard that had a tool call
+  denied (an approved privileged bypass run on claude 2.1.294 that asked for a shell `git commit` after the commit
+  tool; details in `docs/research/live-checks-2026-10-14-channel.md`, a separate PR). The stream's
+  line 7 had `type: "system"`, `subtype: "permission_denied"`, and top-level keys `type`, `subtype`, `tool_name`,
+  `tool_use_id`, `decision_reason_type`, `message`, `uuid`, `session_id`. `parseClaudeLine` handles only
+  `system/init` and falls through to `unknown` (`rawType: "system:permission_denied"`, `src/adapters/claude/parse.ts`
+  lines 163 to 170). That one line is the "1 unknown event". The denial itself is not lost: the final `result` event
+  carries `permission_denials` (one entry, tool name only), which the parser already maps to `permission_denied`.
+- Verdict: **missing event kind, benign.** The unknown event is counted, never trusted, and did not change the run's
+  outcome (the run correctly failed `PERMISSION_BLOCKED`); it makes the smoke's C-10 check FAIL whenever a smoke run
+  has a denied tool. Proposed (not done here; a parser change needs its own change with a fixture): map
+  `system/permission_denied` to a `permission_denied` event carrying `tool_name`, de-duplicated against the `result`
+  event's `permission_denials` so a denial is reported once, plus a scrubbed one-line fixture captured from claude
+  2.1.294 on 2026-10-14 (keys as above, content removed). No fixture was added because the existing fixtures are
+  full-stream replays and splicing a line into one would be an invented stream.
 
 ## Limits
 
 - Only one successful Claude run was observed (the smoke's single task); C-12 (error category strings) and C-G2 (deny
   rules against a deliberate Git write) remain NOT_CHECKED, as on 2026-10-13.
-- Codex never ran through Switchboard on this host (version gate, then the expired login); X-5 to X-9 stay NOT_CHECKED.
+- Codex first failed on the expired login (rows 6 to 8); it ran through Switchboard after the re-login, see
+  "Codex retry" below.
 - `codex exec` on this host also prints `Reading additional input from stdin...` and refuses outside a trusted Git
   directory; the smoke's throwaway repository satisfies that.
+
+## Codex retry (same day, after the operator re-signed in with ChatGPT Plus)
+
+Binary `codex-cli 0.162.0` (unchanged). Nothing was passed a bypass flag.
+
+| # | Check | Result | Evidence |
+| --- | --- | --- | --- |
+| 9 | Live smoke before validating | FAILS at the gate (as in row 6) | `ADAPTER_VERSION_UNVERIFIED`: 0.162.0 is outside `>=0.162.1 <0.163.0`; the gate was not bypassed |
+| 10 | `switchboard adapters validate codex` | PASSED | manifest, probe (5 steps), auth OK, 8 static conformance checks and the one smoke call all `[ok]`; wrote `src/adapters/manifests/codex.json` (`validated_cli_version` 0.162.0, `validated_on` 2026-10-14, range `>=0.162.0 <0.163.0`) |
+| 11 | Live smoke after validating | 10 HELD, 0 FAILED, 3 NOT_CHECKED | run SUCCEEDED, 1 changed file, `SMOKE.md` on the result branch; stream: 17 lines, 0 not JSON, 0 unrecognised; native types `thread.started`, `turn.started`, `item.started`, `item.completed`, `turn.completed`; item tools `command_execution`, `file_change` |
+
+HELD: X-1, X-2, X-3, X-V, X-5, X-6, X-7, X-8, G-1, E2E. NOT_CHECKED: X-4 (no documented status command; the adapter's
+`codex login status` exit-code key is what `validate` used and it reported auth OK), X-9 (needs a failing run), X-G1
+(needs a deliberate `git commit` in the sandbox; T9.5).
+
+Notes:
+
+- Validating 0.162.0 *replaces* the 2026-10-13 record of 0.162.1 (that version was seen on a different machine). The new
+  range `>=0.162.0 <0.163.0` still includes 0.162.1; the previous `validated_cli_version` is no longer recorded.
+- Two unit tests hard-coded manifest strings (`src/mcp/mcp.test.ts` the Claude range, `src/routing/routing.test.ts` the
+  Codex range). The Claude one had already been stale since the Claude validate of this day; both expectations now
+  match the manifests.
+- Unlike the Q-10 finding of row 8, `codex login status` exit 0 coincided with a usable login this time. The earlier
+  finding stands: exit 0 alone does not prove a usable login (the validate smoke step is what proved it).
