@@ -1786,6 +1786,58 @@ ACP server build 1.3.0 on Ampere. Decision: [Q-63](../ROADMAP.md#73-open-questio
 - **Repository config** (C11): `.agents/mcp_config.json` and `.agents/hooks.json` ran with no approval: an escape,
   now refused by Switchboard while `repoConfig` is `disabled`.
 
+#### 4.4.6 Antigravity Git declaration implementation evidence (M4, T4.37)
+
+Spike and live-check context: the [Git writes and injected tools](#44-antigravity-agy-m4) matrix row ([P], [M], [MG];
+deny rules only in `settings.json` or `/permissions`, none per run), [§4.4.5](#445-note-2026-10-14-contradictions-found-by-the-t431-live-checks-delegated-cells-above-not-edited)
+(T4.31 C8 Git-write deny under bypass not run; C11 repository MCP ran with no approval). Task boundary and Done-when:
+[ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.37`). Adapter contract: [LLD §2](LLD.md#2-adapter-contract)
+(`gitWriteControl`, `gitCapabilities`, `list_capabilities`). Requirements: FR-GIT-01, FR-GIT-02, FR-GIT-09;
+[ADR-0026](../adr/0026-per-run-tool-channel-socket-and-token.md), [ADR-0039](../adr/0039-switchboard-side-tool-call-guard.md),
+[ADR-0017](../adr/0017-approved-privileged-scope-bypass.md) (owner decision 46). Mirrors the Grok, Cursor and OpenCode
+Git tasks ([T4.27](#434-grok-build-git-declaration-implementation-evidence-m4-t427),
+[T4.47](../ROADMAP.md#68-m4-adapter-expansion-tasks),
+[T4.57](../ROADMAP.md#68-m4-adapter-expansion-tasks)): declare `none-documented` when T4.30 sources no per-run
+Git-write control that Switchboard can compile without editing operator settings, refuse Git-write shell allowlists at
+compile time, and use `finalize-only` until a per-run injected channel is sourced and approved (owner decision 36).
+
+**Design evidence (on `origin/main`, from T4.32).** Delegated agent work, not owner-approved; no `agy` binary was run in
+CI.
+
+- **Static declaration (FR-GIT-01, FR-GIT-02).** `ANTIGRAVITY_GIT_WRITE_CONTROL` (`kind` `none-documented`, not
+  `provider-deny-rules`: documented deny forms such as `command(git commit)` and `write_file(.git/)` live only in
+  `settings.json` or the `/permissions` scopes [P] and cannot be passed per run; the adapter writes no configuration.
+  **Assumption:** whether those rules block Git writes in headless, including under `--dangerously-skip-permissions`, was
+  not observed (T4.31 C8 not run); Switchboard does not emit settings deny rules,
+  [ADR-0039](../adr/0039-switchboard-side-tool-call-guard.md)), `remainingControls` `["FR-GIT-03", "FR-GIT-06"]`, detail
+  `GIT_WRITE_CONTROL_DETAIL` in `src/adapters/antigravity/protocol.ts`. `ANTIGRAVITY_GIT_CAPABILITIES`
+  (`commitChannel` `finalize-only`, owner decision 36, FR-GIT-09): MCP servers load only from
+  `~/.gemini/config/mcp_config.json` and `.agents/mcp_config.json`, with no per-run definition flag [M, MG]; MCP tools
+  default to Ask and headless soft-denies them unless a settings `mcp(server/tool)` allow rule exists [P], so the
+  ADR-0026 shim cannot be supplied per run. **Assumption:** whether a controller-written `.agents/mcp_config.json` in the
+  run worktree would load and whether an allow rule could be added without editing global settings reads
+  `Unverified: T4.31` (C11). Both constants are exposed on `AntigravityAdapter` in `src/adapters/antigravity/adapter.ts`
+  and reported through `list_capabilities` like the other M4 adapters.
+
+**Implementation evidence (T4.37 Done-when; not on `origin/main` at documentation time).** Fixtures only; same
+obligations as `grok Git declaration (T4.27)`, `cursor Git declaration (T4.47)` and `opencode Git declaration
+(T4.57)`:
+
+- **Compile guard (FR-GIT-01).** Check 0 in `#build`: a shell allowlist entry that `gitWriteRisks` judges able to write
+  Git is `Ineligible` `PROFILE_UNSUPPORTED` citing FR-GIT-01 on every profile, including an approved bypass scope
+  (owner decision 46 does not waive this refusal).
+- **Argv.** FR-GIT-01 argv test: the objective stays in the single `--prompt=` argv word; no `git`/`gh` in argv, policy
+  flags or child environment; initial compile and `resumeArgs` replay (**Assumption:** the `=` form is accepted; T4.38).
+- **Finalize-only (FR-GIT-09).** A replayed successful edit run in a project with `finalize_commit` on the primary
+  context receives exactly one controller commit at FINALIZING (T9.7, BR-30), with the same sanitiser path as other
+  finalize-only adapters.
+- **Tests:** `src/adapters/antigravity/antigravity.test.ts` (`"antigravity Git declaration (T4.37, FR-GIT-01, FR-GIT-02,
+  FR-GIT-09)"`): declaration and `commitChannel` pinned; `list_capabilities` `git_write_control`; argv and allowlist
+  cases above; finalize-only lifecycle leg.
+
+**Out of scope for T4.37 (other tasks).** Operator live Git-write and bypass cells (T4.38), README final status after
+live validate (T4.39), and tool-step parameter keys for the Switchboard tool-call guard while T4.33 stays `Partial`.
+
 ### 4.5 Cursor CLI (M4)
 
 Spike result, 2026-10-13 (T4.40; Delegated agent work, not owner-approved). `agent` is not installed on the development
