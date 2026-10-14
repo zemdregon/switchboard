@@ -722,3 +722,53 @@ describe("continuity (T5.6; ADR-0038 item 5.5, LLD §15.4)", () => {
     expect(() => load([])).toThrow(/\$\.continuity/);
   });
 });
+
+describe("capacity (T6.2; LLD §16.1, ADR-0043)", () => {
+  const load = (section: unknown) => loadConfig({ configPath: write({ ...base(), capacity: section }) });
+  const DEFAULTS = {
+    windowSeconds: 3600,
+    confidenceRuns: 10,
+    queueHorizonSeconds: 0,
+    breaker: { failureThreshold: 3, openSeconds: 300 },
+    retry: { maxAttempts: 3, baseMs: 2000, capMs: 120000 },
+  };
+
+  it("defaults every key to the LLD §16.1 value (Assumptions; queue horizon 0 means never wait)", () => {
+    expect(loadConfig({ configPath: write(base()) }).capacity).toEqual(DEFAULTS);
+    expect(load({}).capacity).toEqual(DEFAULTS);
+    expect(load({ breaker: { open_seconds: 60 } }).capacity).toEqual({
+      ...DEFAULTS,
+      breaker: { failureThreshold: 3, openSeconds: 60 },
+    });
+  });
+
+  it("takes every key", () => {
+    const c = load({
+      window_seconds: 60,
+      confidence_runs: 1,
+      queue_horizon_seconds: 86400,
+      breaker: { failure_threshold: 100, open_seconds: 1 },
+      retry: { max_attempts: 10, base_ms: 5, cap_ms: 5 },
+    }).capacity;
+    expect(c).toEqual({
+      windowSeconds: 60,
+      confidenceRuns: 1,
+      queueHorizonSeconds: 86400,
+      breaker: { failureThreshold: 100, openSeconds: 1 },
+      retry: { maxAttempts: 10, baseMs: 5, capMs: 5 },
+    });
+  });
+
+  it("is strict: unknown keys, non-integers, out-of-range values and base_ms above cap_ms fail", () => {
+    expect(() => load({ horizon: 1 })).toThrow(/\$\.capacity\.horizon: unknown key/);
+    expect(() => load({ breaker: { threshold: 1 } })).toThrow(/\$\.capacity\.breaker\.threshold: unknown key/);
+    expect(() => load({ rate_gate: {} })).toThrow(/\$\.capacity\.rate_gate: unknown key/);
+    expect(() => load({ window_seconds: 59 })).toThrow(/\$\.capacity\.window_seconds/);
+    expect(() => load({ queue_horizon_seconds: -1 })).toThrow(/\$\.capacity\.queue_horizon_seconds/);
+    expect(() => load({ confidence_runs: 1.5 })).toThrow(/\$\.capacity\.confidence_runs/);
+    expect(() => load({ retry: { max_attempts: 0 } })).toThrow(/\$\.capacity\.retry\.max_attempts/);
+    expect(() => load({ retry: { max_attempts: "3" } })).toThrow(/\$\.capacity\.retry\.max_attempts/);
+    expect(() => load({ retry: { base_ms: 200000 } })).toThrow(/\$\.capacity\.retry\.base_ms: must not exceed/);
+    expect(() => load([])).toThrow(/\$\.capacity/);
+  });
+});

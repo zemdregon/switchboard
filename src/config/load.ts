@@ -8,6 +8,7 @@ import { validateOperatorPatterns } from "../git/safe-pattern.js";
 import type { ModelConfig } from "../models/registry.js";
 import { ProfileOverrideError, validateProfileOverrides } from "../policy/profiles.js";
 import type { ProfileOverride, ProfileOverrides } from "../policy/types.js";
+import { type CapacitySettings, checkCapacity, resolveCapacity } from "./capacity.js";
 import { ConfigError } from "./errors.js";
 import { checkHttpTransport, type HttpTransportSettings, resolveHttpTransport } from "./http-transport.js";
 import { checkInnerAgent, type InnerAgentSettings, resolveInnerAgent } from "./inner-agent.js";
@@ -75,6 +76,8 @@ export interface ResolvedConfig {
    * is passed as is to the bundle builder, which records it in the bundle's `bounds`.
    */
   continuity: { max_bundle_bytes: number; max_diff_excerpt_bytes: number; max_text_chars: number };
+  /** Capacity and resilience settings (M6, T6.2; LLD §16.1), always set, defaulted per key. */
+  capacity: CapacitySettings;
   /**
    * Validated `transport.http` (T13.1; FR-MCP-12, ADR-0041). Absent unless the section sets `enabled: true`; absent
    * means `serve` opens no listener.
@@ -314,6 +317,11 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
   }
   const httpTransport = resolveHttpTransport(cfg.transport?.http);
 
+  const capacityErrors = checkCapacity(cfg.capacity);
+  if (capacityErrors.length > 0) {
+    throw new ConfigError(`Invalid config:\n${capacityErrors.map((l) => `  ${l}`).join("\n")}`);
+  }
+
   return {
     configPath,
     dataDir,
@@ -350,6 +358,7 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
       max_diff_excerpt_bytes: cfg.continuity?.max_diff_excerpt_bytes ?? DEFAULT_CONTINUITY_MAX_DIFF_EXCERPT_BYTES,
       max_text_chars: cfg.continuity?.max_text_chars ?? DEFAULT_CONTINUITY_MAX_TEXT_CHARS,
     },
+    capacity: resolveCapacity(cfg.capacity),
     claudeCodeGitChannel: cfg.providers?.["claude-code"]?.git_channel === true,
     profileOverrides,
     // Proposed: a provider not listed is enabled with no explicit weight; listing it can disable it.

@@ -265,6 +265,39 @@ export interface NewRouteDecision {
   weights_json?: string | null;
 }
 
+/** T6.2 (LLD §16.2): a terminal run as the capacity estimator sees it. */
+export interface CapacityRunRow {
+  id: string;
+  state: RunState;
+  failure_code: string | null;
+  failure_detail: string | null;
+  started_at: string | null;
+  finished_at: string;
+}
+
+/** T6.2 (LLD §16.2): a provider-reported `rate_limit` signal (the bounded `compactEvent` payload). */
+export interface RateLimitSignalRow {
+  ts: string;
+  reset_at: string | null;
+}
+
+/** T6.2 (LLD §16.2): a `provider_reported` usage row of one provider (metrics as stored). */
+export interface ProviderUsageRow {
+  metrics_json: string;
+  observed_at: string;
+}
+
+/** `provider_health` (LLD §1); M6 reads and writes only the breaker columns (LLD §16.4). */
+export interface ProviderHealthRow {
+  provider: string;
+  breaker_state: "CLOSED" | "OPEN" | "HALF_OPEN";
+  breaker_until: string | null;
+  consecutive_failures: number;
+  last_failure_code: string | null;
+  updated_at: string;
+  version: number;
+}
+
 export interface RouteDecisionRow {
   id: string;
   run_id: string;
@@ -672,6 +705,16 @@ export interface Ledger {
   getOpenWorkProjection(metaSessionId: string): unknown[] | undefined;
   /** Most recently used binding of a meta-session, optionally for one provider. */
   latestProviderBinding(metaSessionId: string, provider?: string): ProviderBindingRow | undefined;
+
+  // ---- T6.2 additions (capacity estimator inputs, LLD §16.2; read-only) -------------------------------------------
+  /** Terminal runs of `provider` whose `finished_at` is at or after `sinceIso`, oldest first. */
+  listTerminalRunsForProviderSince(provider: string, sinceIso: string): CapacityRunRow[];
+  /** `rate_limit` provider events of `provider`'s runs recorded at or after `sinceIso`, oldest first. */
+  listRateLimitSignalsSince(provider: string, sinceIso: string): RateLimitSignalRow[];
+  /** `provider_reported` usage rows of `provider` observed at or after `sinceIso`, oldest first (never `inner_agent`). */
+  listProviderReportedUsageSince(provider: string, sinceIso: string): ProviderUsageRow[];
+  /** The provider's `provider_health` row, if one was written. */
+  getProviderHealth(provider: string): ProviderHealthRow | undefined;
 
   // ---- T5.4 additions (handoff bundle sources, LLD §15.1 and §15.2; read-only) -------------------------------------
   /** The continuity fields of a meta-session the bundle builder reads (LLD §15.1). `undefined` when unknown. */
@@ -1163,6 +1206,52 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
         ts(),
       );
       return id;
+    },
+
+    listTerminalRunsForProviderSince(provider, sinceIso) {
+      return db
+        .prepare(
+          `SELECT id, state, failure_code, failure_detail, started_at, finished_at FROM run
+           WHERE provider = ? AND state IN ('SUCCEEDED', 'FAILED', 'CANCELLED')
+             AND finished_at IS NOT NULL AND finished_at >= ?
+           ORDER BY finished_at, id`,
+        )
+        .all(provider, sinceIso) as CapacityRunRow[];
+    },
+
+    listRateLimitSignalsSince(provider, sinceIso) {
+      return db
+        .prepare(
+          `SELECT e.ts AS ts, json_extract(e.payload_json, '$.reset_at') AS reset_at
+           FROM run_event e JOIN run r ON r.id = e.run_id
+           WHERE r.provider = ? AND e.type = 'provider_event' AND e.ts >= ?
+             AND json_extract(e.payload_json, '$.kind') = 'rate_limit'
+           ORDER BY e.ts, e.id`,
+        )
+        .all(provider, sinceIso)
+        .map((r) => {
+          const row = r as { ts: string; reset_at: unknown };
+          return { ts: row.ts, reset_at: typeof row.reset_at === "string" ? row.reset_at : null };
+        });
+    },
+
+    listProviderReportedUsageSince(provider, sinceIso) {
+      return db
+        .prepare(
+          `SELECT metrics_json, observed_at FROM usage_observation
+           WHERE provider = ? AND source = 'provider_reported' AND observed_at >= ?
+           ORDER BY observed_at, id`,
+        )
+        .all(provider, sinceIso) as ProviderUsageRow[];
+    },
+
+    getProviderHealth(provider) {
+      return db
+        .prepare(
+          `SELECT provider, breaker_state, breaker_until, consecutive_failures, last_failure_code, updated_at, version
+           FROM provider_health WHERE provider = ?`,
+        )
+        .get(provider) as ProviderHealthRow | undefined;
     },
 
     listUsageObservationsForRun(runId) {
