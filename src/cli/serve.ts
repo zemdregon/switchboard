@@ -73,6 +73,7 @@ import { RunLifecycle } from "../lifecycle/index.js";
 import { acquireDataDirLock, type DataDirLock } from "../lock/index.js";
 import {
   AuthorizationServer,
+  createSwitchboardServer,
   type HttpTransportListener,
   OAuthClientStore,
   OAuthTokenStore,
@@ -497,7 +498,7 @@ async function runDaemon(
 
   let code = 0;
   try {
-    mcp = await startStdioServer({
+    const mcpDeps = {
       lifecycle,
       ledger,
       artifacts,
@@ -515,10 +516,10 @@ async function runDaemon(
         capacity: config.capacity,
         limits: config.limits,
       },
-      clientId,
       ...(now ? { now } : {}),
       projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
-    });
+    };
+    mcp = await startStdioServer({ ...mcpDeps, clientId });
     mcp.server.onclose = () => resolveStop("mcp transport closed");
     log.info("serving MCP on stdio", {
       client: clientId,
@@ -534,6 +535,11 @@ async function runDaemon(
     httpListener = await startHttpTransport(config.httpTransport, {
       tokens: oauthTokens,
       onTokenRejected: (reason) => log.warn("refused an HTTP bearer token", { reason }),
+      // T13.4 (FR-MCP-14, Q-77): a mapped token gets a stateless MCP server for its configured client, with that
+      // client's maximum profile; the same lifecycle, ledger and policy as stdio.
+      onClientRefused: (reason, oauthClientId) =>
+        log.warn("refused an HTTP MCP request", { reason, client_id: oauthClientId }),
+      mcpServerFor: (mcpClientId) => createSwitchboardServer({ ...mcpDeps, clientId: mcpClientId }),
       // T13.7 (FR-MCP-16, Q-74): open registration creates a pending client only; the operator approves it later.
       clients: oauthClients,
       onClientRegistered: (clientId) =>
@@ -556,7 +562,7 @@ async function runDaemon(
         : {}),
     });
     if (httpListener && config.httpTransport) {
-      log.info("serving MCP discovery on HTTP", {
+      log.info("serving MCP on HTTP", {
         bind: httpListener.address.address,
         port: httpListener.address.port,
         resource: config.httpTransport.resource,
