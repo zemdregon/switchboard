@@ -317,6 +317,19 @@ agent (FR-INN-03, FR-INN-16). All requirements in this group first ship in M12.
 | FR-RAG-13 | Once an adapter has an injected channel (T9.4b), an agent may call a read-only search through the per-run tool channel ([ADR-0026](../adr/0026-per-run-tool-channel-socket-and-token.md)), with the same project scope and size limits as FR-RAG-06. | Could | CAP-13, BO-9 | T | M12 |
 | FR-RAG-14 | The operator can clear any index, which deletes vectors and chunk text; the ledger keeps only counts. `doctor` shall report backend, locality, index size, revision and staleness. | Must | CAP-13, BO-5 | T | M12 |
 
+#### Implementation evidence (partial M12)
+
+Tasks T12.1–T12.3 on `main` give partial verification of FR-RAG-01–FR-RAG-04. Per-task test lists, module paths and
+known gaps are in [TDD §3.13](../design/TDD.md#313-retrieval-index). FR-RAG-05 and later requirements in this group
+remain unimplemented until T12.4 and subsequent M12 work.
+
+| Task | Requirement | Primary tests | Primary modules |
+| --- | --- | --- | --- |
+| T12.1 | FR-RAG-01 | `src/config/rag.test.ts`, `src/retrieval/store.test.ts` | `src/config/rag.ts`, `src/retrieval/store.ts` (config, data-directory store, inert without a backend; incremental build is T12.4+) |
+| T12.2 | FR-RAG-02 | `src/retrieval/scan.test.ts`, `src/retrieval/chunk.test.ts`, `src/retrieval/options.test.ts` | `src/retrieval/scan.ts`, `chunk.ts`, `denylist.ts`, `options.ts` |
+| T12.1 | FR-RAG-03 | `src/retrieval/store.test.ts`, `src/mcp/project-tools.test.ts` | `src/retrieval/store.ts`, project delete and serve-time prune (`src/mcp/project-tools.ts`, `src/cli/serve.ts`) |
+| T12.3 | FR-RAG-04 | `src/retrieval/http-embedder.test.ts`, `src/retrieval/embedding.test.ts` | `src/retrieval/embedding.ts`, `http-embedder.ts`, `fake-embedder.ts` |
+
 ### 3.16 PR and merge subscriptions (`FR-SUB`)
 
 Owner decision 43 (2026-10-13, [ROADMAP §4.2](../ROADMAP.md#42-owner-decisions)), recorded as optional and later. It is
