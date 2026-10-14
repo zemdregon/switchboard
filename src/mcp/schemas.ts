@@ -43,6 +43,7 @@ export const TOOL_NAMES = [
   "get_artifacts",
   "list_capabilities",
   "list_projects",
+  "get_capacity",
 ] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];
 
@@ -301,6 +302,12 @@ const INPUTS = {
   },
   list_capabilities: { type: "object", additionalProperties: false, properties: {} },
   list_projects: { type: "object", additionalProperties: false, properties: {} },
+  // T6.3 (LLD §16.3): an adapter provider id; membership in the registry is checked by the handler.
+  get_capacity: {
+    type: "object",
+    additionalProperties: false,
+    properties: { provider: PROVIDER },
+  },
 } as const;
 
 const PROJECT_INPUTS = {
@@ -394,6 +401,107 @@ const CAPABILITIES = {
 } as const;
 
 /** `list_projects` (LLD §3 project additions): no paths, remotes, identities or image references (FR-MCP-04). */
+/** T6.3 (LLD §16.3, ADR-0042 item 6): the capacity projection; estimates and provider-reported values kept apart. */
+const NULLABLE_NUMBER = { type: ["number", "null"] } as const;
+const CAPACITY = {
+  type: "object",
+  additionalProperties: false,
+  required: ["as_of", "window_seconds", "note", "providers"],
+  properties: {
+    as_of: { type: "string" },
+    window_seconds: { type: "integer" },
+    note: { type: "string" },
+    providers: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "provider",
+          "enabled",
+          "capacity_score",
+          "confidence",
+          "throttle_risk",
+          "estimate_source",
+          "sources",
+          "explicit_remaining",
+          "reset_at",
+          "concurrency_available",
+          "concurrency_limit",
+          "breaker",
+          "window",
+        ],
+        properties: {
+          provider: { type: "string" },
+          enabled: { type: "boolean" },
+          capacity_score: { ...NULLABLE_NUMBER, minimum: 0, maximum: 1 },
+          confidence: { type: "number", minimum: 0, maximum: 1 },
+          throttle_risk: { type: "string", enum: ["unknown", "low", "elevated", "high"] },
+          estimate_source: { const: "controller_estimated" },
+          sources: { type: "array", items: { type: "string" } },
+          explicit_remaining: {
+            anyOf: [
+              { type: "null" },
+              {
+                type: "object",
+                additionalProperties: false,
+                required: ["value", "unit", "source", "observed_at"],
+                properties: {
+                  value: { type: "number" },
+                  unit: { type: "string" },
+                  source: { const: "provider_reported" },
+                  observed_at: { type: "string" },
+                },
+              },
+            ],
+          },
+          reset_at: {
+            anyOf: [
+              { type: "null" },
+              {
+                type: "object",
+                additionalProperties: false,
+                required: ["at", "source"],
+                properties: { at: { type: "string" }, source: { const: "provider_reported" } },
+              },
+            ],
+          },
+          concurrency_available: { type: "integer", minimum: 0 },
+          concurrency_limit: { type: "integer", minimum: 1 },
+          breaker: {
+            type: "object",
+            additionalProperties: false,
+            required: ["state", "until", "consecutive_failures"],
+            properties: {
+              state: { type: "string", enum: ["CLOSED", "OPEN", "HALF_OPEN"] },
+              until: { type: ["string", "null"] },
+              consecutive_failures: { type: "integer", minimum: 0 },
+            },
+          },
+          window: {
+            type: "object",
+            additionalProperties: false,
+            required: [
+              "terminal_runs",
+              "counted_failures",
+              "quota_exhausted",
+              "rate_limit_signals",
+              "usage_observations",
+            ],
+            properties: {
+              terminal_runs: { type: "integer", minimum: 0 },
+              counted_failures: { type: "integer", minimum: 0 },
+              quota_exhausted: { type: "integer", minimum: 0 },
+              rate_limit_signals: { type: "integer", minimum: 0 },
+              usage_observations: { type: "integer", minimum: 0 },
+            },
+          },
+        },
+      },
+    },
+  },
+} as const;
+
 const PROJECTS = {
   type: "object",
   additionalProperties: false,
@@ -468,6 +576,7 @@ const OUTPUTS = {
   get_artifacts: withError(ARTIFACT_LIST),
   list_capabilities: withError(CAPABILITIES),
   list_projects: withError(PROJECTS),
+  get_capacity: withError(CAPACITY),
 } as const;
 
 const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
@@ -501,6 +610,11 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
   list_projects:
     "Projects this client may use with delegate_task: id, name, environment kind, contexts (id, kind, push policy), " +
     "the project's trust ceiling, the ceiling this client gets there and allowed providers. Read-only; no paths.",
+  get_capacity:
+    "Per-provider capacity, read-only. capacity_score, confidence and throttle_risk are controller estimates from " +
+    "recent run outcomes, rate-limit signals, the circuit breaker and free slots, never provider-authoritative quota; " +
+    "with no recent evidence they read unknown (score null, confidence 0). explicit_remaining and reset_at are set " +
+    "only when the provider itself reported them. Optional provider narrows the answer to one provider.",
 };
 
 const PROJECT_DESCRIPTIONS: Readonly<Record<ProjectToolName, string>> = {

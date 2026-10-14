@@ -9,6 +9,7 @@ import { ConfigError } from "../config/index.js";
 import { ApprovalRefusedError } from "../lifecycle/approval.js";
 import { LockError } from "../lock/index.js";
 import { renderValidate, runAdaptersValidate } from "./adapters-validate.js";
+import { renderCapacity, runCapacity } from "./capacity.js";
 import { renderDoctor, runDoctor } from "./doctor.js";
 import { renderGc, runGcCommand } from "./gc.js";
 import { renderGitPush, runGitPush } from "./git-push.js";
@@ -54,6 +55,10 @@ Commands:
   runs list           List runs, newest first (--state <STATE>, --limit <n>)
   runs show <id>      Show one run and its events
   runs cancel <id>    Cancel a run (written as an operator record the daemon applies)
+  capacity [--provider <id>]
+                      Per-provider capacity: controller estimates (score, confidence, throttle risk) with their
+                      sources, provider-reported reset and remaining figures when a provider reported them, free
+                      slots and breaker state; the same data as the get_capacity MCP tool (read-only)
   gc [--apply]        Retention clean-up: dry run by default (lists what would go); --apply collects, and is refused
                       while serve runs or when retention.days is not set in the config
   projects list       List configured and dynamic projects (source config|dynamic; read-only, no lock)
@@ -98,6 +103,7 @@ const OPTIONS = {
   revision: { type: "string" },
   reject: { type: "boolean" },
   limit: { type: "string" },
+  provider: { type: "string" },
   help: { type: "boolean", short: "h" },
 } as const;
 
@@ -129,6 +135,9 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
 
     if (cmd !== "gc" && (values.apply || values["dry-run"]))
       throw new UsageError("--apply and --dry-run are only valid with gc");
+    if (cmd !== "capacity" && values.provider !== undefined) {
+      throw new UsageError("--provider is only valid with capacity");
+    }
     if (!(cmd === "projects" && sub === "approve") && (values.revision !== undefined || values.reject)) {
       throw new UsageError("--revision and --reject are only valid with projects approve");
     }
@@ -151,6 +160,12 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
           throw new UsageError("serve requires --client <id> naming an mcp_clients entry in the config");
         }
         return await serve(io, { clientId: values.client, loaderArgv });
+      }
+      case "capacity": {
+        if (sub !== undefined) throw new UsageError("capacity takes no positional arguments");
+        const projection = runCapacity(io, loaderArgv, values.provider);
+        emit({ schema_version: JSON_SCHEMA_VERSION, ...projection }, renderCapacity(projection));
+        return 0;
       }
       case "doctor": {
         if (sub !== undefined) throw new UsageError("doctor takes no arguments");

@@ -11,12 +11,14 @@ import {
   providerEntries,
   providerEntry,
 } from "../adapters/index.js";
+import type { CapacityProjection } from "../capacity/index.js";
 import { loadConfig, type ResolvedConfig } from "../config/index.js";
 import { currentSchemaVersion, LEDGER_FILE_NAME, MIGRATIONS } from "../ledger/index.js";
 import { inspectDataDirLock } from "../lock/index.js";
 import { type AppliedOverride, validateProfileOverrides } from "../policy/index.js";
 import { gitText, parseGitVersion, versionAtLeast } from "../workspace/git.js";
 import { findOrphans, MIN_GIT_VERSION, planRetentionGc } from "../workspace/index.js";
+import { projectCapacity } from "./capacity.js";
 import { type InnerDoctorSection, innerDoctorSection, renderInnerDoctor } from "./inner.js";
 import { type CliIo, JSON_SCHEMA_VERSION, PROBE_ENV_ALLOWLIST } from "./io.js";
 
@@ -68,6 +70,8 @@ export interface DoctorReport {
    * for a configuration without one is unchanged. Its findings are at most warnings and never change `ok`.
    */
   readonly inner_agent?: InnerDoctorSection;
+  /** T6.3 (LLD §16.3): the `get_capacity` projection for the probed adapters; absent when the config is invalid. */
+  readonly capacity?: CapacityProjection;
 }
 
 const fmtValue = (v: AppliedOverride["to"]): string => (Array.isArray(v) ? `[${v.join(", ")}]` : String(v));
@@ -403,8 +407,10 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
     }
   }
 
-  const adapters = await probeAdapters(io.adapters ?? defaultAdapters(), cfg);
+  const registry = io.adapters ?? defaultAdapters();
+  const adapters = await probeAdapters(registry, cfg);
   const innerAgent = cfg ? await innerDoctorSection(io, cfg) : undefined;
+  const capacity = cfg ? capacitySection(cfg, registry, (io.now ?? (() => new Date()))()) : undefined;
   const ok = checks.every((c) => c.status !== "fail") && adapters.every((a) => a.status !== "fail");
   return {
     schema_version: JSON_SCHEMA_VERSION,
@@ -412,7 +418,24 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
     checks,
     adapters,
     ...(innerAgent !== undefined ? { inner_agent: innerAgent } : {}),
+    ...(capacity !== undefined ? { capacity } : {}),
   };
+}
+
+/**
+ * T6.3 (LLD §16.3): one capacity line per adapter from the same projection as `get_capacity`. Informational: it never
+ * changes `ok`. A ledger that cannot be read leaves the section out rather than failing `doctor`.
+ */
+function capacitySection(cfg: ResolvedConfig, registry: AdapterRegistry, now: Date): CapacityProjection | undefined {
+  try {
+    return projectCapacity(
+      cfg,
+      registry.list().map((a) => a.id),
+      now,
+    );
+  } catch {
+    return undefined;
+  }
 }
 
 const MARK: Record<CheckStatus, string> = { ok: "[ok]  ", warn: "[warn]", fail: "[FAIL]", skip: "[skip]" };
@@ -439,6 +462,16 @@ export function renderDoctor(r: DoctorReport): string {
     }
   }
   if (r.inner_agent !== undefined) lines.push(...renderInnerDoctor(r.inner_agent, MARK));
+  if (r.capacity !== undefined) {
+    // FR-CAP-03: labelled as estimates; no remaining or quota wording (see `switchboard capacity` for detail).
+    lines.push("", "Capacity (controller estimates, not provider quota; details: switchboard capacity):");
+    for (const c of r.capacity.providers) {
+      lines.push(
+        `       ${c.provider}: breaker ${c.breaker.state}, throttle risk ${c.throttle_risk}, ` +
+          `estimate confidence ${c.confidence.toFixed(2)}`,
+      );
+    }
+  }
   lines.push("", r.ok ? "Result: OK" : "Result: FAILED");
   return `${lines.join("\n")}\n`;
 }

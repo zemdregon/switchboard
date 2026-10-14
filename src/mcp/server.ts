@@ -82,8 +82,12 @@ import {
   type ResolvedProfile,
 } from "../adapters/index.js";
 import type { ArtifactStore } from "../artifacts/index.js";
+import { capacityProjection, capacityProviders } from "../capacity/index.js";
 import {
+  type CapacitySettings,
   CONTAINER_NOT_IMPLEMENTED,
+  DEFAULT_CAPACITY_CONFIDENCE_RUNS,
+  DEFAULT_CAPACITY_WINDOW_SECONDS,
   effectiveMaxProfile,
   primaryContext,
   projectsForClient,
@@ -160,6 +164,10 @@ export interface McpServerDeps {
     readonly providers?: ResolvedConfig["providers"];
     /** T5.6: handoff bundle bounds (`continuity.*`, LLD §15.4). Absent means the LLD defaults. */
     readonly continuity?: BundleBounds;
+    /** T6.3: estimator settings (`capacity.*`, LLD §16.1). Absent means the LLD defaults. */
+    readonly capacity?: Pick<CapacitySettings, "windowSeconds" | "confidenceRuns">;
+    /** T6.3: slot limits shown by `get_capacity`. Absent means the NFR-PERF-03 default of one per provider. */
+    readonly limits?: Pick<ResolvedConfig["limits"], "perProviderConcurrency">;
   };
   /** T9.9 (FR-PRJ-10): dynamic projects. Required when the client has `manage_projects`; absent means none resolve. */
   readonly projectStore?: DynamicProjectStore;
@@ -167,6 +175,8 @@ export interface McpServerDeps {
   readonly clientId: string;
   /** Routing candidate order (BR-4 tie-break). Defaults to registry registration order. */
   readonly candidateOrder?: readonly ProviderId[];
+  /** Clock for `get_capacity` (T6.3); defaults to the system clock. */
+  readonly now?: () => Date;
 }
 
 export interface SwitchboardMcpServer {
@@ -839,6 +849,27 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     };
   };
 
+  /**
+   * LLD §16.3 `get_capacity` (T6.3; FR-MCP-02, FR-CAP-02, FR-CAP-03): the one capacity projection, for every registered
+   * provider in candidate order or for the one named. Read-only; it never probes or calls a provider.
+   */
+  const getCapacity = async (args: Args) => {
+    const ids: string[] = candidates();
+    const named = args.provider as string | undefined;
+    if (named !== undefined && !ids.includes(named)) {
+      throw invalid(`unknown provider ${JSON.stringify(named)}`, { providers: ids });
+    }
+    const settings = {
+      windowSeconds: deps.config.capacity?.windowSeconds ?? DEFAULT_CAPACITY_WINDOW_SECONDS,
+      confidenceRuns: deps.config.capacity?.confidenceRuns ?? DEFAULT_CAPACITY_CONFIDENCE_RUNS,
+    };
+    const providers = capacityProviders(named === undefined ? ids : [named], {
+      ...(deps.config.providers !== undefined ? { providers: deps.config.providers } : {}),
+      ...(deps.config.limits !== undefined ? { limits: deps.config.limits } : {}),
+    });
+    return capacityProjection(ledger, providers, settings, (deps.now ?? (() => new Date()))());
+  };
+
   /** LLD §3 `list_projects`: the projects this client may use, without paths, remotes, identities or image data. */
   const listProjects = async () => ({
     projects: [
@@ -922,6 +953,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     get_artifacts: getArtifacts,
     list_capabilities: listCapabilities,
     list_projects: listProjects,
+    get_capacity: getCapacity,
   };
 
   const ok = (value: object): CallToolResult => ({

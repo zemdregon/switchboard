@@ -3890,6 +3890,13 @@ per provider, headed by the `note`. **Wording rule (FR-CAP-03):** on every surfa
 quota" or a percentage of an estimate. `doctor` prints one `capacity` line per provider: breaker state, `throttle_risk`
 and `confidence`, labelled "estimate".
 
+*As built (T6.3, 2026-10-14, Delegated):* `get_capacity` is the eighth tool, after `list_projects`; its input reuses
+the provider-id pattern of `delegate_task` and the handler refuses an id that is not registered. The listed providers are
+the server's routing candidates. `switchboard capacity` and `doctor` list the adapters `doctor` probes. `capacity
+--json` adds `schema_version` as every CLI `--json` does. With no ledger file, the CLI computes over an empty in-memory
+ledger and creates nothing. The `doctor` JSON gains a `capacity` key, and its text gains one line per adapter. The
+section never changes `ok`, and an unreadable ledger leaves it out.
+
 ### 16.4 Per-provider circuit breaker
 
 State in `provider_health` (one row per adapter provider id; created on first write, with `auth_state = 'UNKNOWN'` and

@@ -509,8 +509,12 @@ async function runDaemon(
         providers: config.providers,
         // T5.6: handoff bundle bounds (`continuity.*`, LLD §15.4).
         continuity: config.continuity,
+        // T6.3: `get_capacity` settings and slot limits (LLD §16.1, §16.3).
+        capacity: config.capacity,
+        limits: config.limits,
       },
       clientId,
+      ...(now ? { now } : {}),
       projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
     });
     mcp.server.onclose = () => resolveStop("mcp transport closed");

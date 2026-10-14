@@ -96,7 +96,8 @@ describe("no inner_agent section: everything is off and doctor is unchanged", ()
 
   it("doctor adds no key and no text", async () => {
     const j = JSON.parse((await run(["doctor", "--json"])).out);
-    expect(Object.keys(j).sort()).toEqual(["adapters", "checks", "ok", "schema_version"]);
+    // No `inner_agent` key; `capacity` is T6.3's section, present whatever the inner-agent configuration.
+    expect(Object.keys(j).sort()).toEqual(["adapters", "capacity", "checks", "ok", "schema_version"]);
     const text = (await run(["doctor"])).out;
     expect(text).not.toMatch(/Inner agent/i);
   });
