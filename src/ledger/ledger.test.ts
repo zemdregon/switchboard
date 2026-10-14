@@ -22,6 +22,7 @@ const EXPECTED_TABLES = [
   "decision",
   "git_commit",
   "git_push",
+  "http_subject",
   "inner_call",
   "inner_task_state",
   "meta_session",
