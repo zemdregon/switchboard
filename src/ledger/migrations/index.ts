@@ -7,6 +7,7 @@ import { sql as sql0006 } from "./0006_usage_inner_agent.js";
 import { sql as sql0007 } from "./0007_git_commit_message_source.js";
 import { sql as sql0008 } from "./0008_inner_task_state.js";
 import { sql as sql0009 } from "./0009_pr_draft_artifact.js";
+import { sql as sql0010 } from "./0010_oauth_token.js";
 
 export interface Migration {
   readonly version: number;
@@ -27,4 +28,5 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 7, name: "git_commit_message_source", sql: sql0007 },
   { version: 8, name: "inner_task_state", sql: sql0008 },
   { version: 9, name: "pr_draft_artifact", sql: sql0009, foreignKeysOff: true },
+  { version: 10, name: "oauth_token", sql: sql0010 },
 ];

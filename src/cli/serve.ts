@@ -73,6 +73,7 @@ import { RunLifecycle } from "../lifecycle/index.js";
 import { acquireDataDirLock, type DataDirLock } from "../lock/index.js";
 import {
   type HttpTransportListener,
+  OAuthTokenStore,
   type SwitchboardMcpServer,
   startHttpTransport,
   startStdioServer,
@@ -519,8 +520,12 @@ async function runDaemon(
       adapters: registry.list().map((a) => a.id),
       pid: process.pid,
     });
-    // T13.1 (FR-MCP-12): no listener unless `transport.http.enabled`; it serves discovery metadata and a 401 challenge.
-    httpListener = await startHttpTransport(config.httpTransport);
+    // T13.1 (FR-MCP-12): no listener unless `transport.http.enabled`. T13.3 (FR-MCP-13, Q-73): bearer tokens are
+    // verified against the hashed rows in the ledger; a refusal logs its reason code only, never the token.
+    httpListener = await startHttpTransport(config.httpTransport, {
+      tokens: new OAuthTokenStore(db, now ? { now } : {}),
+      onTokenRejected: (reason) => log.warn("refused an HTTP bearer token", { reason }),
+    });
     if (httpListener && config.httpTransport) {
       log.info("serving MCP discovery on HTTP", {
         bind: httpListener.address.address,

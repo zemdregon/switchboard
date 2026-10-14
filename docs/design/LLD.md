@@ -30,7 +30,8 @@ Conventions:
 `workspace_checkpoint`, `usage_observation`, `route_decision`, and (M11) `inner_call` and (M12) `rag_record` (FR-SES-05,
 FR-RTE-03, FR-CAP-01, FR-INN-15). **Update-once** (pending to decided): `approval`. **Mutable current-state**:
 `meta_session`, `run`, `provider_health`, `adapter_version.validated_*`, (M7) `project_affinity`, (M11)
-`inner_task_state`, and `artifact.deleted_at` only. Retention GC removes artifact files and worktrees and sets
+`inner_task_state`, (M13) `oauth_token.revoked`/`revoked_at`, and `artifact.deleted_at` only. Retention GC removes
+artifact files and worktrees and sets
 `artifact.deleted_at`; it never deletes `run_event` rows (Assumption).
 
 ```sql
@@ -1242,6 +1243,34 @@ Requirements FR-MCP-12 to 15. Off unless the config enables it.
   The server never returns a token or any authorization detail.
 - **Verification.** Signature or introspection, `exp`, `iss` equal to the configured issuer, `aud` equal to the resource
   identifier (RFC 8707). Failure is 401; no fallback.
+- **Tokens as built (T13.3, Q-73, Delegated).** Access and refresh tokens are opaque, never JWTs: 32 bytes from the
+  CSPRNG, base64url, behind the prefix `sbat_` (access) or `sbrt_` (refresh). Only the SHA-256 hash is stored, in
+  `oauth_token` (migration 0010, DDL below); verification is a lookup by hash with a constant-time compare of the stored
+  hash, which is the local introspection FR-MCP-13 allows. A token this server did not issue (forged, or from another
+  issuer) has no row, so there is no signature or `iss` to check. Refused alike: no single well-formed `Bearer`
+  credential (`malformed`), no row (`unknown`), a refresh token presented as a bearer token (`wrong_kind`), `revoked`,
+  `expired` (from the expiry instant on) and a `resource` other than this server's (`wrong_audience`). Each gets the same
+  401 `{"error":"invalid_token"}` with `WWW-Authenticate: Bearer error="invalid_token", resource_metadata="<metadata
+  URL>"`; a request with no `Authorization` header gets the challenge without an error code (RFC 6750 §3.1). A token in
+  the query string is not read. The reason code is logged (`refused an HTTP bearer token`, `reason`) and nothing else.
+  A valid token gets 501 until T13.4 mounts the MCP server with the client's frozen profile. Code:
+  `src/mcp/oauth-tokens.ts`, `src/mcp/http.ts`.
+
+```sql
+CREATE TABLE oauth_token (               -- migration 0010 (T13.3); mutable only in revoked/revoked_at
+  token_hash  TEXT PRIMARY KEY CHECK (length(token_hash) = 64 AND token_hash NOT GLOB '*[^0-9a-f]*'),  -- sha256 hex
+  kind        TEXT NOT NULL CHECK (kind IN ('access','refresh')),
+  client_id   TEXT NOT NULL,
+  resource    TEXT NOT NULL,             -- audience (RFC 8707)
+  scopes_json TEXT NOT NULL CHECK (json_valid(scopes_json) AND json_type(scopes_json) = 'array'),
+  issued_at   TEXT NOT NULL,
+  expires_at  TEXT NOT NULL,
+  revoked     INTEGER NOT NULL DEFAULT 0 CHECK (revoked IN (0,1)),
+  revoked_at  TEXT
+) STRICT;
+CREATE INDEX oauth_token_client ON oauth_token(client_id, kind);
+```
+
 - **Mapping.** `subject` (and an optional client claim) maps to a configured client entry (`transport.http.clients`).
   The entry's `max_profile` is frozen into the policy snapshot at admission (FR-MCP-06, FR-POL-01). No claim can name
   `privileged`.
