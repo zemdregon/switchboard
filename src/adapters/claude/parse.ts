@@ -112,7 +112,7 @@ function usageEvent(e: Json): NormalizedEvent[] {
 }
 
 /**
- * `system` / `permission_denied` (C-10; claude 2.1.294, 2026-10-14, [live-checks-2026-10-14-claude-codex.md]): emitted
+ * `system` / `permission_denied` (C-10; Claude Code 2.1.294, 2026-10-14, [live-checks-2026-10-14-claude-codex.md]): emitted
  * when a tool call is denied, with top-level `tool_name`, `tool_use_id`, `decision_reason_type`, `message`. The final
  * `result` event repeats the denial in `permission_denials`; the `tool_use_id` is remembered so it is reported once.
  */
