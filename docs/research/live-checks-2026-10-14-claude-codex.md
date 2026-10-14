@@ -68,7 +68,8 @@ no account identifier is recorded here.
 
 - Only one successful Claude run was observed (the smoke's single task); C-12 (error category strings) and C-G2 (deny
   rules against a deliberate Git write) remain NOT_CHECKED, as on 2026-10-13.
-- Codex first failed on the expired login (rows 6 to 8); it ran through Switchboard after the re-login, see "Codex retry" below.
+- Codex first failed on the expired login (rows 6 to 8); it ran through Switchboard after the re-login, see
+  "Codex retry" below.
 - `codex exec` on this host also prints `Reading additional input from stdin...` and refuses outside a trusted Git
   directory; the smoke's throwaway repository satisfies that.
 
@@ -91,7 +92,7 @@ Notes:
 - Validating 0.162.0 *replaces* the 2026-10-13 record of 0.162.1 (that version was seen on a different machine). The new
   range `>=0.162.0 <0.163.0` still includes 0.162.1; the previous `validated_cli_version` is no longer recorded.
 - Two unit tests hard-coded manifest strings (`src/mcp/mcp.test.ts` the Claude range, `src/routing/routing.test.ts` the
-  Codex range). The Claude one had already been stale since the Claude validate of this day; both expectations now match the
-  manifests.
+  Codex range). The Claude one had already been stale since the Claude validate of this day; both expectations now
+  match the manifests.
 - Unlike the Q-10 finding of row 8, `codex login status` exit 0 coincided with a usable login this time. The earlier
   finding stands: exit 0 alone does not prove a usable login (the validate smoke step is what proved it).
