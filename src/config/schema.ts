@@ -32,6 +32,7 @@ import {
   providerGeneration,
 } from "../adapters/providers.js";
 import { MODEL_ID_PATTERN, type ModelConfig } from "../models/registry.js";
+import { type HttpTransportConfig, httpTransportSchema } from "./http-transport.js";
 import {
   type InnerAgentConfig,
   innerAgentSchema,
@@ -105,6 +106,8 @@ export interface SwitchboardConfig {
    * Assumptions (no measurement exists).
    */
   continuity?: { max_bundle_bytes?: number; max_diff_excerpt_bytes?: number; max_text_chars?: number };
+  /** Network MCP transport (M13, T13.1; FR-MCP-12, LLD §3.3, ADR-0041). Absent or disabled means stdio only. */
+  transport?: { http?: HttpTransportConfig };
 }
 
 /**
@@ -382,6 +385,11 @@ export const configSchema = {
       properties: {
         sanitize_patterns: { type: "array", maxItems: 16, items: { type: "string", minLength: 1, maxLength: 200 } },
       },
+    },
+    transport: {
+      type: "object",
+      additionalProperties: false,
+      properties: { http: httpTransportSchema },
     },
     profiles: {
       type: "object",
