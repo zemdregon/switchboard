@@ -75,6 +75,7 @@ system boundary is owned by the
 | FR-MCP-08 | `delegate_task` shall accept an optional client idempotency key; a repeated call with the same key and identical parameters shall return the original run rather than start a new one, and the same key with different parameters shall fail with `INVALID_REQUEST`. Keys are scoped to the calling MCP client. | Should | CAP-1 | T | M2 |
 | FR-MCP-09 | All tool inputs shall be validated against published JSON Schemas before any side effect; invalid input or an unknown ID fails with `INVALID_REQUEST`. | Must | NFR-SEC-05 | T | M2 |
 | FR-MCP-10 | An automatic retry or failover shall create a successor run in the same meta-session linked to its predecessor; `get_run` on a superseded run shall report the successor's `run_id`. | Must | CAP-1, CAP-7 | T | M6 |
+| FR-MCP-11 | The stdio MCP server shall perform no OAuth or other authorization flow, and any secret it checks for a client shall come from an environment variable named in configuration, never from a configuration value. A network-reachable MCP transport shall not be implemented before a new ADR accepts it ([ADR-0040](../adr/0040-mcp-caller-authentication-no-oauth-on-stdio.md)). | Must | CAP-1, BO-2 | I, T | M2 |
 
 ### 3.2 Provider adapters (`FR-ADP`)
 
