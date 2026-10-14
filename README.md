@@ -71,7 +71,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   client and a macOS CI leg are done; Grok Build, Antigravity, Cursor and OpenCode each have a module, compile matrix
   and parser work on synthetic fixtures. Cursor has conformance and malicious-fixture legs and a Git declaration on
   recorded fixtures (README [Cursor CLI](#cursor-cli-milestone-4), ROADMAP T4.45 to T4.47); live smoke, live malicious
-  leg and `adapters validate` for Cursor remain operator work (T4.48). Other M4 providers are still catching up on those
+  leg and `adapters validate` for Cursor remain operator work (T4.48). OpenCode has a conformance suite and Git
+  declaration on synthetic fixtures and a malicious-fixture leg that is still partial (README
+  [OpenCode CLI](#opencode-cli-milestone-4), ROADMAP T4.55 to T4.57); live smoke, live malicious leg and
+  `adapters validate` for OpenCode remain operator work (T4.58). Other M4 providers are still catching up on those
   legs. Manifests still admit no version until `switchboard adapters validate` passes a real CLI (operator tasks).
   Outside an approved `privileged` bypass scope every profile is ineligible for the new providers. See
   [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks).
@@ -128,6 +131,7 @@ each provider's own CLI, and Switchboard asks that CLI whether it is logged in.
 | Claude Code | `claude auth login` (the adapter returns `AUTH_REQUIRED` naming it) | Taken from the adapter; check Anthropic's documentation |
 | Codex | `codex login`; status is read with `codex login status` (exit code 0 logged in, 1 not) | `codex login status` observed on codex-cli 0.162.1 (`docs/research/live-checks-2026-10-13.md`); output format undocumented, so only the exit code is used; check OpenAI's documentation for the login step |
 | Cursor CLI | `cursor-agent login` (the adapter returns `AUTH_REQUIRED` naming it) | Auth preflight runs `cursor-agent status --format json` and keys on `isAuthenticated` (exit 0 both logged in and logged out on the 2026-10-14 live check; [`docs/research/live-checks-2026-10-14-cursor.md`](docs/research/live-checks-2026-10-14-cursor.md)); check Cursor's documentation for the login step |
+| OpenCode | `opencode auth login` (the adapter returns `AUTH_REQUIRED` naming it) | Auth preflight runs `opencode auth list --format json --standalone` and treats any non-environment connection type as logged in (exit 0 in every state on the 2026-10-14 live check, `opencode v2.0.23`; [`docs/research/live-checks-2026-10-14-opencode.md`](docs/research/live-checks-2026-10-14-opencode.md)); check OpenCode's documentation for the login step |
 
 Do not copy credential files between machines or users. Do not put API keys or tokens in the Switchboard config; it has
 no place for them and rejects unknown keys.
@@ -653,6 +657,60 @@ the malicious-fixture leg ("cursor malicious-fixture leg (T4.46, NFR-SEC-03, FR-
 `test/malicious/adapter-leg.test.ts` ("adapter malicious leg: cursor"). No end-to-end run through Switchboard against a
 logged-in `cursor-agent` has been recorded yet (T4.48).
 
+## OpenCode CLI (milestone 4)
+
+Config id `opencode`; routing and `list_capabilities` id `opencode`. Switchboard runs the **`opencode`** binary with
+`run --format json --standalone -- <prompt>` ([TDD §4.6](docs/design/TDD.md#46-opencode-m4); observed on
+2026-10-14 in [`docs/research/live-checks-2026-10-14-opencode.md`](docs/research/live-checks-2026-10-14-opencode.md),
+`opencode v2.0.23`). The prompt is one argv word after `--`, not stdin (an Assumption in the adapter). Switchboard never
+sets `OPENCODE_PERMISSION` or `OPENCODE_CONFIG_CONTENT` (ignored on that version in the live check).
+
+The compliance manifest range admits no version until an operator runs `switchboard adapters validate opencode` and
+commits the manifest diff (ROADMAP T4.58). Until then `doctor` reports `ADAPTER_VERSION_UNVERIFIED` for OpenCode.
+
+### Login
+
+See the [login table](#log-in-to-the-providers-natively) above. Switchboard never runs `opencode auth login`; it only
+runs `opencode auth list --format json --standalone` during preflight.
+
+### Trust profiles
+
+The adapter compiles only what [TDD §4.6.1](docs/design/TDD.md#461-opencode-native-controls-per-profile-and-platform-t450)
+records for the 2026-10-14 live check (Q-64, Q-83): every profile other than an approved `privileged` bypass scope is
+refused (`PROFILE_UNSUPPORTED`), because no per-run deny took effect, the default runs shell commands including Git
+writes, no sandbox is documented and a repository's `opencode.json` and `AGENTS.md` load.
+
+| Profile | Available now | Effect in this version |
+| --- | --- | --- |
+| `inspect-untrusted` | no | `PROFILE_UNSUPPORTED` (`list_capabilities` / `ELIGIBILITY_NONE`) |
+| `edit-untrusted` | no | As `inspect-untrusted` |
+| `test-sandboxed` | no | As `inspect-untrusted` |
+| `trusted-development` | no | As `inspect-untrusted` |
+| `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one argv shape: `opencode run --format json --standalone -- <prompt>` with worktree file access, shell `broad`, network `on` and repository configuration `enabled`, and **no** `--auto` (owner decision 46, Q-83). A scope without `bypass`, or any narrowing Switchboard can express, is refused before spawn. Bypass-class flags such as `--auto` are never compiled outside that case (and are not emitted even inside it). |
+
+Resume continues the native session with `--session <session_id>` through the same matrix when the provider is eligible
+(synthetic fixtures in `src/adapters/opencode/opencode.test.ts`, T4.53).
+
+### Git and commits
+
+`list_capabilities` reports `gitWriteControl` **`none-documented`**: OpenCode documents `bash` deny patterns in
+configuration, but on opencode v2.0.23 no per-run deny took effect in the live check, so Switchboard does not emit a
+deny rule. Git-write denial therefore relies on FR-GIT-03 (controller ref comparison) and FR-GIT-06 (the tool-call
+guard) in addition to any provider rule. Shell allowlist entries that could write Git make the run `Ineligible`
+(`PROFILE_UNSUPPORTED`, FR-GIT-01).
+
+`commitChannel` is **`finalize-only`**: Switchboard does not inject a per-run MCP server through
+`OPENCODE_CONFIG_CONTENT` (not exercised on the 2026-10-14 live check). In the only compiled scope, repository
+`opencode.json` and `AGENTS.md` load (owner decision 26). To publish work, set `finalize_commit` on the project's primary
+context as for Codex ([How commits reach Git](#how-commits-reach-git)).
+
+Fixture evidence: `src/adapters/opencode/opencode.test.ts` ("opencode conformance suite (synthetic recorded fixtures,
+FR-ADP-11, T4.55)" and "opencode Git declaration (T4.57, FR-GIT-01, FR-GIT-02, FR-GIT-09)"); CI also runs
+`test/malicious/adapter-leg.test.ts` ("adapter malicious leg: opencode") with the case in
+`test/malicious/adapters/opencode.case.ts` (T4.56 is still `Partial` on the roadmap: hostile streams that end blocked
+are not pinned yet). No end-to-end run through Switchboard against a logged-in `opencode` has been recorded yet
+(T4.58).
+
 ## Trust profiles
 
 A trust profile says what a delegated agent may do ([ADR-0004](docs/adr/0004-trust-profiles-no-bypass-flags.md)). Each
@@ -764,8 +822,8 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   compile them (see `list_capabilities`); a `privileged` `continue_task` only on the same provider (ROADMAP
   Q-61 is open).
 - `adapters validate` is implemented for every registered provider, but only Claude Code and Codex have a manifest range
-  on `main` today. Cursor and the other M4 adapters still need operator captures before their manifests admit a version
-  (ROADMAP T4.48 and §6.8.2).
+  on `main` today. Cursor, OpenCode and the other M4 adapters still need operator captures before their manifests
+  admit a version (ROADMAP T4.48, T4.58 and §6.8.2).
 - Routing (milestone 7) refuses `minimum_capability` with `ELIGIBILITY_NONE`, because the model a run uses is not yet
   chosen by Switchboard (ROADMAP Q-90, T7.8, T7.12). Affinity keeps the provider but not the model: a held run uses the
   adapter's default model. No cache benefit from keeping a project on one provider is claimed.
