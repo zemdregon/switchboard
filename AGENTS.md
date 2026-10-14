@@ -124,6 +124,24 @@ analysis. Report results clearly so the orchestrator can verify and coordinate t
 - Escalate one tier (Haiku → Sonnet → Opus → Fable) only after a lower tier's output fails verification, not
   pre-emptively.
 
+## Verify and merge routine
+
+Standing instructions from zemdregon (2026-10-13 and 2026-10-14): continue the roadmap, and merge a pull request once CI
+is good. Refer to the owner as `zemdregon`. The routine that has been used:
+
+1. Work on one branch per logical change, in its own `git worktree`. Merge current `main` into the branch before
+   verifying; resolve a `docs/ROADMAP.md` conflict by hand, keeping both sides' rows.
+2. Run `npx tsc --noEmit`, `npm run lint`, `node scripts/check-docs.mjs`, `npx markdownlint-cli2 "**/*.md"
+   "#node_modules"` and the full `npm test` (about three minutes; run it in the background and read the exit code
+   separately).
+3. Open the pull request as a draft, wait for all seven checks (CodeQL, Analyze (actions), Analyze
+   (javascript-typescript), Typecheck/lint/test/docs (Linux), Markdown lint, Link check, Docs consistency), then mark it
+   ready and squash-merge. Stacked pull requests conflict in the roadmap after the first squash; merge `main` in again.
+4. Never run `scripts/live-smoke.mjs` or any provider CLI on the operator's logged-in accounts unless the task is an
+   operator task. Hot files (ROADMAP §6.9.1) are edited by one task at a time.
+5. Work that needs a provider login, the macOS runner or an owner answer is listed in the roadmap (§6.9.2 for M5, the
+   "Blocks Done" lists elsewhere, §7.3 for questions); do not guess it.
+
 ## Working rules
 
 - **Never handle provider credentials.** Do not commit, log, print or copy API keys, OAuth tokens, `auth.json` files,

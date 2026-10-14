@@ -3464,8 +3464,10 @@ entries kept); (2) a text value longer than its bound is cut at the last code po
 with `[truncated: <n> characters omitted]`; (3) if the canonical JSON is still above `max_bundle_bytes`, whole items
 are dropped in this fixed order until it fits: `diff_excerpts` from the last path, `diagnostics[].output_excerpt` from
 the last command, `reported` from the oldest, `instructions` from the oldest, `decisions` from the oldest, `runs` from
-the oldest, `changed_files` from the last path. Every drop or cut is appended to `truncation`. With the minimum
-`max_bundle_bytes` the remaining fields always fit (constants above), so truncation never fails a build.
+the oldest, `changed_files` from the last path. Every drop or cut is appended to `truncation`.
+The constants above do not guarantee that the remaining fields fit even at the minimum `max_bundle_bytes` (`as_of` grows with the number of runs); the builder then drops
+further fields and, as a last resort, fails closed, as the §15.1 "As built" note ("Drop order extended") records. R-64
+in the roadmap tracks it.
 
 ### 15.5 Rendering
 
