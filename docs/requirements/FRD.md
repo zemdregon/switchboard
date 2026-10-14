@@ -5,7 +5,7 @@
 | Status | Draft, baseline for milestone M1 |
 | Owns | Workflows WF-1..WF-14, business rules BR-*, actor permissions, the canonical run state machine, meta-session and adapter availability states, input validation rules, normal/alternate/failure paths |
 | Does not own | Requirements and their IDs ([SRS](SRS.md)); outcomes ([BRD](BRD.md)); journeys and capabilities ([PRD](PRD.md)); components ([HLD](../design/HLD.md)); persistence and the failure taxonomy table ([LLD](../design/LLD.md)); sequencing ([ROADMAP](../ROADMAP.md)) |
-| Last reconciled | 2026-10-12 |
+| Last reconciled | 2026-10-14 |
 
 ## 1. Purpose and conventions
 
@@ -120,6 +120,27 @@ with no injected channel ("Finalize-only."): such an adapter is **not** made ine
 them, and when the project opts in to finalize-only mode the controller commits at FINALIZING under BR-26 and BR-28.
 Without the opt-in its work stays in the worktree and the diff artifacts. The "ineligible without the opt-in" clause of
 BR-30 is therefore not applied. zemdregon wants the opt-in enabled for his own projects. Per-project opt-in; ROADMAP T9.7.
+
+### 3.1 Implementation evidence (partial M12)
+
+Milestone status and task boundaries: [ROADMAP §6.7](../ROADMAP.md#67-m12-retrieval-index-tasks) (**Partial** on fakes,
+2026-10-14, Delegated, not owner-approved). Requirement IDs: [SRS §3.15 (`FR-RAG`)](SRS.md#315-retrieval-index-fr-rag).
+Design references: [ADR-0031](../adr/0031-retrieval-index.md), [HLD §6.6](../design/HLD.md#66-retrieval-for-a-run-wf-14-m12-proposed),
+[TDD §3.13](../design/TDD.md#313-retrieval-index), [LLD §14](../design/LLD.md#14-retrieval-index). This subsection is
+FRD traceability only; it does not restate SRS obligations.
+
+**Implemented on fakes (T12.0–T12.3).** T12.0 storage spike ([TDD §3.13.4](../design/TDD.md#3134-t120-spike-result-2026-10-14),
+`scripts/bench-rag.mjs`). T12.1 `rag` configuration validation and one SQLite store per project (`src/config/rag.test.ts`,
+`src/retrieval/store.test.ts`; BR-47 isolation at the store layer; global sharing remains Planned). T12.2 scanner,
+exclusions, redaction and chunker (`src/retrieval/scan.test.ts`; BR-48 exclusions and redaction before embedding). T12.3
+embedding backend port with deterministic fake and `http` backends, locality classification and the `allow_remote` /
+`allow_source_content` gates (`src/retrieval/http-embedder.test.ts`, `src/retrieval/embedding.test.ts`; BR-48). With no
+embedding backend configured the retrieval feature is inert and suite behaviour is unchanged (BR-48).
+
+**Planned (T12.4 onward).** Incremental background index build in `serve`, operator `index` commands and the retrieval
+`doctor` section (FR-RAG-11, FR-RAG-14); admission-time search, freshness checks and the labelled context pack (WF-14;
+BR-46); `search_project_context` (FR-RAG-06); deployment-wide index read and contribute rules (BR-47). Until those tasks
+land, delegated runs do not receive a retrieval pack at admission.
 
 ## 4. Canonical run state machine
 
@@ -749,7 +770,8 @@ sequenceDiagram
 
 Milestone availability follows the SRS milestone column (for example WF-7 from M3, WF-5 automatic retry and failover
 from M6, WF-3 from M5, WF-9 `adapters validate` from M4, WF-10 to WF-12 from M9 with containers in M10, WF-13 from
-M11, WF-14 from M12); see [ROADMAP](../ROADMAP.md#6-milestones).
+M11, WF-14 from M12); see [ROADMAP](../ROADMAP.md#6-milestones). Partial M12 foundation evidence for BR-46–BR-48 is in
+§3.1; WF-14 steps are unchanged until T12.4–T12.6 on main.
 
 ## 10. Open items in this document
 
