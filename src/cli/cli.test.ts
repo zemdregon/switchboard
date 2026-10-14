@@ -340,6 +340,8 @@ describe("runs list and show (read-only)", () => {
         "created_at",
         "failure_code",
         "failure_detail",
+        "superseded_by",
+        "retry_of",
         "finished_at",
         "git_policy_violations",
         "id",

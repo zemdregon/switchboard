@@ -104,6 +104,9 @@ import {
 import {
   DEFAULT_BREAKER_FAILURE_THRESHOLD,
   DEFAULT_BREAKER_OPEN_SECONDS,
+  DEFAULT_RETRY_BASE_MS,
+  DEFAULT_RETRY_CAP_MS,
+  DEFAULT_RETRY_MAX_ATTEMPTS,
   isUnderAllowedRoot,
   TRUST_PROFILES,
 } from "../config/index.js";
@@ -453,6 +456,14 @@ export interface RunLifecycleOptions {
    * the LLD §16.1 defaults. The breaker cannot be turned off.
    */
   readonly breaker?: BreakerSettings;
+  /**
+   * T6.5 (FR-CAP-05, LLD §9, §16.5, ADR-0043 item 4): automatic retry parameters (`capacity.retry`). Unset means the
+   * LLD §9 values. `queueHorizonSeconds` (`capacity.queue_horizon_seconds`, default 0) widens how far ahead a
+   * provider-reported reset may lie for a retry to wait for it.
+   */
+  readonly retry?: { maxAttempts: number; baseMs: number; capMs: number; queueHorizonSeconds?: number };
+  /** T6.5: random source in [0, 1) for the backoff jitter; injectable for tests. */
+  readonly random?: () => number;
 }
 
 /** `run_event` type: a channel-capable run was not offered the commit tool, with a reason code (T9.4). */
@@ -499,11 +510,18 @@ const DEFAULT_BREAKER: BreakerSettings = {
   failureThreshold: DEFAULT_BREAKER_FAILURE_THRESHOLD,
   openSeconds: DEFAULT_BREAKER_OPEN_SECONDS,
 };
+/** LLD §9 / §16.1 retry defaults (Assumptions, Q-71); `serve` passes `capacity.retry`. */
+const DEFAULT_RETRY = {
+  maxAttempts: DEFAULT_RETRY_MAX_ATTEMPTS,
+  baseMs: DEFAULT_RETRY_BASE_MS,
+  capMs: DEFAULT_RETRY_CAP_MS,
+  queueHorizonSeconds: 0,
+};
 /** `setTimeout` limit (about 24.8 days); a later wake is re-armed when it fires. */
 const MAX_TIMER_MS = 2_147_483_647;
 
 const CANCELLABLE_DIRECT: ReadonlySet<RunState> = new Set(["AWAITING_APPROVAL", "QUEUED", "WAITING_CAPACITY"]);
-/** BR-7 / FR-CAP-05 retry set (automatic retry itself is M6). */
+/** BR-7 / FR-CAP-05 retry set (T6.5 retries these automatically, LLD §16.5). */
 const RETRYABLE: ReadonlySet<FailureCode> = new Set(["RATE_LIMIT_TRANSIENT", "PROVIDER_OVERLOADED", "PROCESS_CRASH"]);
 
 export class RunLifecycle {
@@ -1079,6 +1097,7 @@ export class RunLifecycle {
   /** Move queued runs to PREFLIGHT while global (and per-provider) slots are free (T4, FR-CAP-04). */
   private pump(): void {
     if (!this.started || this.stopped) return;
+    this.releaseDueWaiting();
     for (;;) {
       const picked = this.ledger.immediate((): RunRecord | undefined => {
         if (this.ledger.countRunsInStates(SLOT_STATES) >= this.opts.globalConcurrency) return undefined;
@@ -1689,6 +1708,8 @@ export class RunLifecycle {
     let nestedSkipped: readonly string[] = [];
     let gitViolations = 0;
     let finalizeCommit: FinalizeCommitOutcome | undefined;
+    // T6.5 (BR-7): only an assessed worktree equal to its pre-run checkpoint may be retried (fail closed otherwise).
+    let retryEligible: boolean | undefined;
     if (ws.mode === "worktree") {
       try {
         // T9.5 (FR-GIT-03, BR-27): compare refs with the LEASED snapshot and put controller-owned refs back BEFORE the
@@ -1708,6 +1729,7 @@ export class RunLifecycle {
         changedPaths = fin.changedFiles.map((f) => f.path);
         nestedSkipped = fin.nestedRepositories;
         const failureCode = outcome.kind === "failure" ? outcome.code : undefined;
+        retryEligible = !assessment.mutated;
         this.ledger.appendRunEvent({
           runId,
           type: "workspace_assessment",
@@ -1717,9 +1739,10 @@ export class RunLifecycle {
             replay_eligible: assessment.replayEligible,
             // Q-31 / ADR-0022: non-fatal warning; files inside these nested repositories are not captured.
             ...(fin.nestedRepositories.length > 0 ? { nested_repositories_skipped: fin.nestedRepositories } : {}),
-            // BR-7: what M6 will act on; M1 never retries automatically (FR-CAP-05 is M6).
+            // BR-7 (T6.5): a retry-eligible failure is retried automatically unless a stop condition of LLD §16.5
+            // applies; the outcome is the `retry_scheduled` or `retry_not_scheduled` event of the terminal transaction.
             retry_eligible: failureCode !== undefined && RETRYABLE.has(failureCode) && !assessment.mutated,
-            auto_retry: false,
+            auto_retry: failureCode !== undefined && RETRYABLE.has(failureCode) && !assessment.mutated,
           },
         });
         this.ledger.appendRunEvent({
@@ -1790,12 +1813,14 @@ export class RunLifecycle {
       else if (outcome.kind === "cancelled") {
         this.move(run, "CANCELLED", { finished_at: finished }, { ...payload, code: "CANCELLED" });
       } else {
-        this.move(
+        const failed = this.move(
           run,
           "FAILED",
           { failure_code: outcome.code, failure_detail: outcome.detail, finished_at: finished },
           payload,
         );
+        // T6.5 (FRD T16, BR-6, BR-7): after the breaker step of the same transition, in the same transaction.
+        this.scheduleRetry(failed, outcome.code, retryEligible);
       }
     });
   }
@@ -2082,6 +2107,82 @@ export class RunLifecycle {
     this.wakeTimer.unref?.();
   }
 
+  // ---- automatic retry (T6.5; FR-CAP-05, FR-MCP-10, LLD §16.5) ---------------------------------------------------
+
+  /**
+   * LLD §16.5 at T16: a retryable failure on an unchanged worktree gets a successor in `WAITING_CAPACITY` unless a stop
+   * condition applies; either way one event on the failed run says what happened. Runs in the caller's transaction.
+   */
+  private scheduleRetry(failed: RunRecord, code: FailureCode, workspaceUnchanged: boolean | undefined): void {
+    if (!RETRYABLE.has(code) || failed.provider === null) return;
+    const settings = this.opts.retry ?? DEFAULT_RETRY;
+    const now = this.now();
+    const notScheduled = (reason: string, extra: Record<string, unknown> = {}) =>
+      this.ledger.appendRunEvent({ runId: failed.id, type: "retry_not_scheduled", payload: { reason, ...extra } });
+    if (workspaceUnchanged !== true) {
+      notScheduled(workspaceUnchanged === false ? "workspace_changed" : "workspace_not_assessed");
+      return;
+    }
+    if (failed.attempt >= settings.maxAttempts) {
+      notScheduled("attempts_exhausted", { attempt: failed.attempt, max_attempts: settings.maxAttempts });
+      return;
+    }
+    if (breakerAdmission(this.breakerOf(failed.provider), now) === "deny") {
+      notScheduled("breaker_open");
+      return;
+    }
+    const resetAt = latestResetAt(this.ledger.listRunEvents(failed.id));
+    const waitForReset = resetAt === undefined ? 0 : Math.max(0, resetAt - now.getTime());
+    const bound = Math.max(settings.capMs, (settings.queueHorizonSeconds ?? 0) * 1000);
+    if (waitForReset > bound) {
+      notScheduled("reset_beyond_bound", { reset_at: new Date(resetAt as number).toISOString(), bound_ms: bound });
+      return;
+    }
+    const ceiling = Math.min(settings.capMs, settings.baseMs * 2 ** (failed.attempt - 1));
+    const jitter = Math.floor((this.opts.random ?? Math.random)() * ceiling);
+    const delay = Math.max(jitter, waitForReset);
+    const notBefore = new Date(now.getTime() + delay).toISOString();
+    const successor = this.ledger.createRun({
+      metaSessionId: failed.meta_session_id,
+      state: "WAITING_CAPACITY",
+      trustProfile: failed.trust_profile,
+      policySnapshot: JSON.parse(failed.policy_snapshot_json) as unknown,
+      request: JSON.parse(failed.request_json) as unknown,
+      requestHash: failed.request_hash,
+      clientId: failed.client_id,
+      provider: failed.provider,
+      priority: failed.priority,
+      projectId: failed.project_id ?? null,
+      parentRunId: failed.id,
+      attempt: failed.attempt + 1,
+      nextAttemptAt: notBefore,
+    });
+    this.ledger.appendRunEvent({
+      runId: successor.id,
+      type: "retry_of",
+      payload: { run_id: failed.id, attempt: failed.attempt, failure_code: code },
+    });
+    this.ledger.appendRunEvent({
+      runId: failed.id,
+      type: "retry_scheduled",
+      payload: { successor_run_id: successor.id, attempt: failed.attempt + 1, delay_ms: delay, not_before: notBefore },
+    });
+    this.scheduleWake(Date.parse(notBefore));
+  }
+
+  /** FRD T18: due `WAITING_CAPACITY` runs go back to `QUEUED`; the earliest one not yet due arms the wake timer. */
+  private releaseDueWaiting(): void {
+    const now = this.now().getTime();
+    for (const run of this.ledger.listRunsInState("WAITING_CAPACITY")) {
+      const due = run.next_attempt_at === null ? now : Date.parse(run.next_attempt_at);
+      if (Number.isFinite(due) && due > now) {
+        this.scheduleWake(due);
+        continue;
+      }
+      this.tryMove(run, "QUEUED", {}, { reason: "next_attempt_due" }, "T18");
+    }
+  }
+
   private now(): Date {
     return (this.opts.now ?? (() => new Date()))();
   }
@@ -2243,4 +2344,23 @@ function isFsError(err: unknown): boolean {
 
 function errorText(err: unknown): string {
   return (err instanceof Error ? err.message : String(err)).slice(0, 500);
+}
+
+/** T6.5: the latest provider-reported `reset_at` among a run's `rate_limit` provider events (epoch ms), if any. */
+function latestResetAt(events: readonly { type: string; payload_json: string }[]): number | undefined {
+  let latest: number | undefined;
+  for (const e of events) {
+    if (e.type !== "provider_event") continue;
+    let p: unknown;
+    try {
+      p = JSON.parse(e.payload_json);
+    } catch {
+      continue;
+    }
+    const o = p as { kind?: unknown; reset_at?: unknown };
+    if (o?.kind !== "rate_limit" || typeof o.reset_at !== "string") continue;
+    const t = Date.parse(o.reset_at);
+    if (Number.isFinite(t) && (latest === undefined || t > latest)) latest = t;
+  }
+  return latest;
 }

@@ -3954,8 +3954,16 @@ A `privileged` successor runs under the meta-session's approval as is (FR-POL-09
 scope. Reconciliation after a restart (WF-8) does not schedule retries: an orphaned run keeps `auto_retry: false` (ADR-0043
 item 4). A `WAITING_CAPACITY` successor survives a restart unchanged and is woken by the timer.
 
-**`get_run`** gains `retry_of` (the parent run id when `attempt > 1`, else `null`) and `superseded_by` (the id of the run
-whose `parent_run_id` is this run and whose `attempt` is one higher, else `null`). `runs show` prints both.
+**`get_run`** gains `retry_of` (the parent run id when `attempt > 1`) and `superseded_by` (the run whose `parent_run_id`
+is this run), each present only when set. `runs show` prints both and gives `null` in `--json` when one is unset.
+
+*As built (T6.5, 2026-10-14, Delegated):* `scheduleRetry` and `releaseDueWaiting` in `src/lifecycle/lifecycle.ts`.
+`workspace_assessment.auto_retry` now equals `retry_eligible`: it means the controller will try. Whether it did is
+recorded by `retry_scheduled` or `retry_not_scheduled`. A run with no worktree assessment (a read-only run without a
+worktree) is never retried, with `reason: workspace_not_assessed`. A retryable code from a pre-spawn failure has no
+assessment either, so it follows the same rule. The wake timer is the one the breaker uses (§16.4); `pump()` first moves
+due `WAITING_CAPACITY` runs to `QUEUED` (T18, event payload `reason: next_attempt_due`). `next_attempt_at` stays on the
+row as a record.
 
 ### 16.6 Quota exhaustion ladder (T6.6)
 

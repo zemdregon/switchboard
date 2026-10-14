@@ -161,6 +161,8 @@ function makeLifecycle(openSeconds: number): RunLifecycle {
     perProviderConcurrency: 4,
     resolveProfile: profileFor,
     breaker: { failureThreshold: 2, openSeconds },
+    // One attempt: automatic retries (T6.5, retry.test.ts) would add counted failures in the background.
+    retry: { maxAttempts: 1, baseMs: 1, capMs: 1 },
     eligibility: {
       platform: "linux",
       gate: (id, version) => ({

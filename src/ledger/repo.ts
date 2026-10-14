@@ -85,6 +85,12 @@ export interface NewRun {
   priority?: number;
   /** Project of the run (FR-PRJ-03); must equal the meta-session's. */
   projectId?: string | null;
+  /** T6.5 (FR-MCP-10, LLD §16.5): the failed run a retry or failover successor follows. */
+  parentRunId?: string | null;
+  /** T6.5: attempt number (default 1); a successor has its parent's plus one. */
+  attempt?: number;
+  /** T6.5: when a `WAITING_CAPACITY` successor becomes due (ISO 8601). */
+  nextAttemptAt?: string | null;
 }
 
 export interface RunEventRow {
@@ -713,6 +719,8 @@ export interface Ledger {
   listRateLimitSignalsSince(provider: string, sinceIso: string): RateLimitSignalRow[];
   /** `provider_reported` usage rows of `provider` observed at or after `sinceIso`, oldest first (never `inner_agent`). */
   listProviderReportedUsageSince(provider: string, sinceIso: string): ProviderUsageRow[];
+  /** T6.5 (FR-MCP-10): the run that supersedes `runId` (its retry or failover successor), if any. */
+  findSuccessorRun(runId: string): RunRecord | undefined;
   /** The provider's `provider_health` row, if one was written. */
   getProviderHealth(provider: string): ProviderHealthRow | undefined;
   /**
@@ -1267,6 +1275,12 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
         .get(provider) as ProviderHealthRow | undefined;
     },
 
+    findSuccessorRun(runId) {
+      return db
+        .prepare(`${RUN_RECORD_SQL} WHERE parent_run_id = ? ORDER BY attempt, created_at, id LIMIT 1`)
+        .get(runId) as RunRecord | undefined;
+    },
+
     writeProviderBreaker(provider, b) {
       db.prepare(
         `INSERT INTO provider_health (provider, auth_state, version_state, breaker_state, breaker_until,
@@ -1602,8 +1616,9 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
       const now = ts();
       db.prepare(
         `INSERT INTO run (id, meta_session_id, state, trust_profile, policy_snapshot_json, request_json, request_hash,
-                          client_id, idempotency_key, provider, priority, project_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                          client_id, idempotency_key, provider, priority, project_id, parent_run_id, attempt,
+                          next_attempt_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         id,
         input.metaSessionId,
@@ -1617,6 +1632,9 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
         input.provider ?? null,
         input.priority ?? 1,
         input.projectId ?? null,
+        input.parentRunId ?? null,
+        input.attempt ?? 1,
+        input.nextAttemptAt ?? null,
         now,
         now,
       );

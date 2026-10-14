@@ -127,6 +127,9 @@ const ENVELOPE = {
     status: STATUS,
     // FR-PRJ-03 (LLD §3 project additions): the project of a run delegated to one; absent for a workspace path.
     project_id: { type: "string" },
+    // T6.5 (FR-MCP-10, LLD §16.5): retry and failover successor links, present only when set.
+    retry_of: RUN_ID,
+    superseded_by: RUN_ID,
     failure_code: { type: "string" },
     failure_detail: { type: "string", maxLength: 1000 },
     provider: {
