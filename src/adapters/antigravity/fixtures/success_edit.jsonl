@@ -1,0 +1,8 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.35), in the stream-json shapes recorded by the 2026-10-14 live check (C4, C7: a workspace file write is auto-allowed; tool_info.parameters keys were not recorded, so none are given).","exit":0,"write":{"path":"hello.txt","content":"hello from a synthetic antigravity fixture\n"}}}
+{"event":"init","conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","init":{"cwd":"/work/tree","tools":["run_command","write_to_file"],"permission_mode":"always-proceed","model":"synthetic-model"}}
+{"event":"step_update","conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","step_index":0,"state":"DONE","step_type":"user_input"}
+{"event":"step_update","conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","step_index":1,"state":"ACTIVE","step_type":"tool","tool_name":"write_to_file","tool_info":{"name":"write_to_file"}}
+{"event":"step_update","conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","step_index":1,"state":"DONE","step_type":"tool","tool_name":"write_to_file"}
+{"event":"step_update","conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","step_index":2,"state":"ACTIVE","step_type":"agent_response","text_delta":"Added ","usage":{"input_tokens":20,"output_tokens":3,"thinking_tokens":1,"cache_read_tokens":0,"total_tokens":24}}
+{"event":"step_update","conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","step_index":2,"state":"DONE","step_type":"agent_response","text_delta":"hello.txt."}
+{"event":"result","result":{"conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","status":"SUCCESS","response":"Added hello.txt.","duration_seconds":3,"num_turns":1,"usage":{"input_tokens":20,"output_tokens":3,"thinking_tokens":1,"cache_read_tokens":0,"total_tokens":24}}}

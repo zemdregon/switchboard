@@ -2,10 +2,13 @@
  * T4.32 (TDD §4.4): the Antigravity module, probe and compile matrix. SYNTHETIC: the executable path is a placeholder and
  * no `agy` binary is run; probe output is the shape the 2026-10-14 live check recorded (`1.3.4`).
  */
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
 import { resolveTrustProfile } from "../../policy/profiles.js";
 import { auditInvocation, bypassClassFlags } from "../audit.js";
+import { type ConformanceCase, missingRequiredKinds, runConformanceCase, runConformanceSuite } from "../conformance.js";
 import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
 import { PreflightCache } from "../preflight-cache.js";
 import { providerEntry } from "../providers.js";
@@ -22,6 +25,24 @@ import type {
   TrustProfile,
 } from "../types.js";
 import { AntigravityAdapter } from "./adapter.js";
+import {
+  ANTIGRAVITY_RUNNABLE_KINDS,
+  antigravityConformanceCases,
+  DEFAULT_SESSION_ID,
+  PRIVILEGED_BYPASS_PROFILE,
+  RESUMED_SESSION_ID,
+  replayAdapter,
+} from "./fixtures/cases.js";
+
+const dirs: string[] = [];
+const makeCwd = () => {
+  const d = mkdtempSync(join(tmpdir(), "sb-antigravity-"));
+  dirs.push(d);
+  return d;
+};
+afterAll(() => {
+  for (const d of dirs) rmSync(d, { recursive: true, force: true });
+});
 
 const EXE = "/opt/synthetic/agy";
 const request = (over: Partial<CompileRequest> = {}): CompileRequest => ({
@@ -716,4 +737,172 @@ describe("antigravity parser hardening (T4.33, synthetic shapes)", () => {
       adapter().resumeArgs({ provider: "codex", nativeSessionId: CID }, request({ bypassApproved: true }), profile),
     ).toMatchObject({ reason: "CAPABILITY_MISSING", detail: "binding is for codex" });
   });
+});
+
+/**
+ * T4.35 (FR-ADP-11): the shared conformance suite over synthetic recorded fixtures (`./fixtures/*.jsonl`, in the
+ * `stream-json` shapes of the 2026-10-14 live check), replayed by `replay.mjs --provider antigravity` in place of the
+ * binary, so it passes with no `agy` installed. The prompt reaches the replay as the `--prompt=` argv word. The
+ * `resume` case fails closed while `resumeArgs` is Ineligible (Q-86), so it is asserted apart from the suite.
+ */
+describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.35)", () => {
+  const caseOf = (kind: ConformanceCase["kind"]): ConformanceCase => {
+    const c = antigravityConformanceCases(makeCwd).find((x) => x.kind === kind);
+    if (!c) throw new Error(`missing ${kind} case`);
+    return c;
+  };
+  const shapeRequest = (): CompileRequest => ({
+    runId: "run_antigravity_shape",
+    objective: "synthetic antigravity objective",
+    constraints: [],
+    workspace: { cwd: makeCwd(), writable: true },
+    bypassApproved: true,
+  });
+  /**
+   * `a` with `compile` replaced. A Proxy that binds every other method to `a`, because the adapter's private `#`
+   * members throw on an `Object.create` copy (the run would end `OUTPUT_PROTOCOL_ERROR` for that reason alone).
+   */
+  const withCompile = (a: AntigravityAdapter, compile: AntigravityAdapter["compile"]): AntigravityAdapter =>
+    new Proxy(a, {
+      get(target, key) {
+        if (key === "compile") return compile;
+        const v: unknown = Reflect.get(target, key, target);
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    });
+  /** A copy of `a` whose compiled invocation is rewritten by `edit`, to show the replay refuses a wrong compile. */
+  const brokenBy = (a: AntigravityAdapter, edit: (inv: Invocation) => Invocation): AntigravityAdapter =>
+    withCompile(a, (r, p) => {
+      const inv = a.compile(r, p);
+      if ("ineligible" in inv) return inv;
+      return { ...edit(inv), policyFlags: [] };
+    });
+
+  it("names every FR-ADP-11 kind and passes the suite for every kind except resume", async () => {
+    const cases = antigravityConformanceCases(makeCwd);
+    expect(missingRequiredKinds(cases)).toEqual([]);
+    const runnable = cases.filter((c) => ANTIGRAVITY_RUNNABLE_KINDS.includes(c.kind));
+    expect(new Set(runnable.map((c) => c.kind))).toEqual(new Set(ANTIGRAVITY_RUNNABLE_KINDS));
+    const report = await runConformanceSuite(runnable);
+    const failing = report.cases.flatMap((c) =>
+      c.checks.filter((k) => !k.ok).map((k) => `${c.kind}: ${k.name} ${k.detail ?? ""}`),
+    );
+    expect(failing).toEqual([]);
+    expect(report.ok).toBe(true);
+  });
+
+  it("resume fails closed: the case does not compile while resumeArgs is Ineligible (Q-86)", async () => {
+    const report = await runConformanceCase(caseOf("resume"));
+    expect(report.ok).toBe(false);
+    expect(report.result).toBeUndefined();
+    expect(report.checks).toEqual([{ name: "compiles", ok: false, detail: "ineligible: CAPABILITY_MISSING" }]);
+  });
+
+  it("the resume fixture and dialect keep the --conversation id, ready for when Q-86 allows a compile", async () => {
+    const { binding: _binding, ...c } = caseOf("resume");
+    const withId = withCompile(c.adapter as AntigravityAdapter, (r, p) => {
+      const inv = c.adapter.compile(r, p);
+      return "ineligible" in inv ? inv : { ...inv, argv: [...inv.argv, "--conversation", RESUMED_SESSION_ID] };
+    });
+    const report = await runConformanceCase({ ...c, adapter: withId });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: true, nativeSessionId: RESUMED_SESSION_ID });
+    // Without the id the replay refuses the resume fixture (requireResume), so it cannot pass as a fresh run.
+    const fresh = await runConformanceCase(c);
+    expect(fresh.result).toMatchObject({ ok: false, failureDetail: "exit code 64" });
+  });
+
+  it("success with edit normalizes conversation id, summary and the edit; usage is provider_reported", async () => {
+    const c = caseOf("success");
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({
+      ok: true,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      summary: "Added hello.txt.",
+      unknownEventCount: 0,
+    });
+    expect(readFileSync(join(c.request.workspace.cwd, "hello.txt"), "utf8")).toContain("synthetic");
+  });
+
+  it("SUCCESS with zero tokens at exit 0 (live check C10, Q-86) is TOOL_FAILURE and keeps the conversation id", async () => {
+    const report = await runConformanceCase(caseOf("task_failure"));
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      nativeSessionId: DEFAULT_SESSION_ID,
+    });
+  });
+
+  it("a soft-denied shell command at exit 0 (live check C7) is PERMISSION_BLOCKED", async () => {
+    const c = antigravityConformanceCases(makeCwd).find((x) => x.expect.failureCode === "PERMISSION_BLOCKED");
+    if (!c) throw new Error("missing permission_denied case");
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+  });
+
+  it("a logged-out ERROR envelope at exit 1 (live check C13) ends AUTH_REQUIRED, not a success", async () => {
+    const report = await runConformanceCase(caseOf("auth_missing"));
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "AUTH_REQUIRED" });
+  });
+
+  it("partial mutation leaves the file in the cwd", async () => {
+    const c = caseOf("partial_mutation");
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(readFileSync(join(c.request.workspace.cwd, "partial.txt"), "utf8")).toContain("synthetic");
+  });
+
+  it("positive control: the same wrapper with the compile unchanged passes, so each refusal below is the replay's", async () => {
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: brokenBy(replayAdapter("success_edit"), (inv) => ({ ...inv, policyFlags: inv.policyFlags })),
+      request: shapeRequest(),
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+  });
+
+  const argvEdit =
+    (edit: (argv: string[]) => string[]) =>
+    (inv: Invocation): Invocation => ({ ...inv, argv: edit(inv.argv) });
+  it.each([
+    [
+      "--dangerously-skip-permissions removed",
+      argvEdit((a) => a.filter((w) => w !== "--dangerously-skip-permissions")),
+    ],
+    ["--prompt= removed", argvEdit((a) => a.filter((w) => !w.startsWith("--prompt=")))],
+    ["--sandbox added", argvEdit((a) => [...a, "--sandbox"])],
+    ["--model added", argvEdit((a) => [...a, "--model", "synthetic-model"])],
+    ["--continue added", argvEdit((a) => [...a, "--continue"])],
+    ["-dangerously-skip-permissions added", argvEdit((a) => [...a, "-dangerously-skip-permissions"])],
+    ["--gemini_dir= added", argvEdit((a) => [...a, "--gemini_dir=/tmp/synthetic"])],
+    ["auto-update not disabled", (inv: Invocation): Invocation => ({ ...inv, env: {} })],
+    [
+      "GEMINI_API_KEY in the environment",
+      (inv: Invocation): Invocation => ({
+        ...inv,
+        env: { ...inv.env, GEMINI_API_KEY: "synthetic-not-a-key" },
+        envAllowlist: [...inv.envAllowlist, "GEMINI_API_KEY"],
+      }),
+    ],
+  ])(
+    "the replay refuses an invocation agy would not be given (%s), so a wrong compile cannot pass",
+    async (_n, edit) => {
+      const report = await runConformanceCase({
+        kind: "success",
+        adapter: brokenBy(replayAdapter("success_edit"), edit),
+        request: shapeRequest(),
+        profile: PRIVILEGED_BYPASS_PROFILE,
+        expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+      });
+      expect(report.ok).toBe(false);
+      expect(report.result?.ok).toBe(false);
+      expect(report.result?.failureDetail).toBe("exit code 64");
+    },
+  );
 });

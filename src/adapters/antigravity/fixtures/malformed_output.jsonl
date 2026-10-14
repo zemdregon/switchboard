@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.35), in the stream-json shapes recorded by the 2026-10-14 live check (C4), with one line that is deliberately not JSON.","exit":0}}
+{"event":"init","conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","init":{"cwd":"/work/tree","tools":["run_command","write_to_file"],"permission_mode":"always-proceed","model":"synthetic-model"}}
+SYNTHETIC this line is deliberately not valid JSON {
+{"event":"result","result":{"conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","status":"SUCCESS","response":"ok","duration_seconds":3,"num_turns":1,"usage":{"input_tokens":20,"output_tokens":3,"thinking_tokens":1,"cache_read_tokens":0,"total_tokens":24}}}
