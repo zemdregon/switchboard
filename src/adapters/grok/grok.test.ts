@@ -2,18 +2,30 @@
  * T4.22 (TDD §4.3): the Grok Build module, probe and compile matrix. SYNTHETIC: the executable path is a placeholder and
  * no `grok` binary is run; probe output is the shape the 2026-10-14 live check recorded (`grok 1.0.50 (...) [stable]`).
  */
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterAll, describe, expect, it } from "vitest";
+import { ArtifactStore } from "../../artifacts/index.js";
+import { GIT_FINALIZE_COMMIT_EVENT, GitPublisher, publishRefFor } from "../../git/index.js";
+import { createIdGenerator } from "../../ids/index.js";
+import { createLedger, openLedger } from "../../ledger/index.js";
+import { RunLifecycle } from "../../lifecycle/index.js";
+import { createSwitchboardServer } from "../../mcp/server.js";
 import { resolveTrustProfile } from "../../policy/profiles.js";
+import { WorkspaceManager } from "../../workspace/index.js";
 import { auditInvocation, bypassClassFlags } from "../audit.js";
 import { type ConformanceCase, missingRequiredKinds, runConformanceCase, runConformanceSuite } from "../conformance.js";
 import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
 import { providerEntry } from "../providers.js";
 import { AdapterRegistry } from "../registry.js";
+import { createProbeRunner } from "../run.js";
 import type { CompileRequest, ParseState, ProbeOutput, ProbeRunner, ResolvedProfile, TrustProfile } from "../types.js";
-import { GrokAdapter } from "./adapter.js";
+import { isIneligible } from "../types.js";
+import { GROK_GIT_CAPABILITIES, GROK_GIT_WRITE_CONTROL, GrokAdapter } from "./adapter.js";
 import {
   DEFAULT_SESSION_ID,
   grokConformanceCases,
@@ -21,6 +33,12 @@ import {
   RESUMED_SESSION_ID,
   replayAdapter,
 } from "./fixtures/cases.js";
+import {
+  AUTH_LOGGED_IN_PREFIX,
+  AUTH_STATUS_ARGS,
+  GIT_WRITE_CONTROL_DETAIL,
+  NON_PRIVILEGED_UNSUPPORTED_DETAIL,
+} from "./protocol.js";
 
 const dirs: string[] = [];
 const makeCwd = () => {
@@ -565,6 +583,268 @@ describe("grok registry entry and manifest gate (T4.22)", () => {
     const registry = new AdapterRegistry();
     for (const v of ["1.0.50", "1.0.52", "0.0.0", null]) {
       expect(registry.gate("grok", v).eligible, String(v)).toBe(false);
+    }
+  });
+});
+
+describe("grok Git declaration (T4.27, FR-GIT-01, FR-GIT-02, FR-GIT-09)", () => {
+  it("declares no Git write control (deny rules are prefix matches), leaving FR-GIT-03 and FR-GIT-06", () => {
+    const c = adapter().gitWriteControl;
+    expect(c.kind).toBe("none-documented");
+    expect(c.remainingControls).toEqual(["FR-GIT-03", "FR-GIT-06"]);
+    expect(c.detail).toBe(GIT_WRITE_CONTROL_DETAIL);
+    expect(c.detail).toMatch(/prefix/i);
+    expect(c.detail).toMatch(/git -C \. commit/);
+    expect(c.detail).toMatch(/FR-GIT-03/);
+    expect(c.detail).toMatch(/FR-GIT-06/);
+    expect(adapter().gitWriteControl).toBe(GROK_GIT_WRITE_CONTROL);
+  });
+
+  it("declares finalize-only commit channel (FR-GIT-09, owner decision 36)", () => {
+    const caps = adapter().gitCapabilities;
+    expect(caps.commitChannel).toBe("finalize-only");
+    expect(caps.detail).toMatch(/FR-GIT-09/);
+    expect(caps.detail).toMatch(/per-run MCP/);
+    expect(adapter().gitCapabilities).toBe(GROK_GIT_CAPABILITIES);
+  });
+
+  it("list_capabilities reports Grok Build's Git-write declaration through MCP", async () => {
+    const root = realpathSync(makeCwd());
+    const dataDir = join(root, "data");
+    mkdirSync(dataDir);
+    const db = openLedger(dataDir);
+    const ids = createIdGenerator();
+    const ledger = createLedger(db, { ids });
+    const artifacts = new ArtifactStore(join(dataDir, "artifacts"));
+    const registry = new AdapterRegistry().register(adapter());
+    const real = createProbeRunner();
+    const probeRunner: ProbeRunner = async (argv, opts) =>
+      argv[0] === process.execPath
+        ? real(argv, opts)
+        : { exitCode: null, stdout: "", stderr: "", timedOut: false, spawnError: "refused in tests" };
+    const lifecycle = new RunLifecycle({
+      ledger,
+      workspace: new WorkspaceManager({ db, artifacts, dataDir, allowedRoots: [root], ids }),
+      artifacts,
+      adapters: registry,
+      allowedRoots: [root],
+      globalConcurrency: 1,
+      resolveProfile: (name) => resolveTrustProfile(name),
+      probeRunner,
+      eligibility: { platform: "linux", gate: (id, v, dir) => registry.gate(id, v, dir) },
+    });
+    const mcp = createSwitchboardServer({
+      lifecycle,
+      ledger,
+      artifacts,
+      registry,
+      config: {
+        allowedRoots: [root],
+        projects: [],
+        mcpClients: new Map([["c1", { id: "c1", maxTrustProfile: "edit-untrusted" as const }]]),
+      },
+      clientId: "c1",
+    });
+    const client = new Client({ name: "test-client", version: "0.0.0" });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    try {
+      await mcp.server.connect(serverSide);
+      await client.connect(clientSide);
+      const res = await client.callTool({ name: "list_capabilities", arguments: {} });
+      const body = JSON.parse((res.content as { text: string }[])[0]?.text ?? "{}");
+      const grok = body.providers.find((p: { provider: string }) => p.provider === "grok");
+      expect(grok).toBeDefined();
+      expect(grok.git_write_control).toEqual({
+        kind: "none-documented",
+        detail: GIT_WRITE_CONTROL_DETAIL,
+        remaining_controls: ["FR-GIT-03", "FR-GIT-06"],
+      });
+    } finally {
+      await client.close();
+      await mcp.close();
+      await lifecycle.shutdown();
+      db.close();
+    }
+  });
+
+  it("every compiled invocation passes the prompt as one --single= word and carries no git command or credentials", () => {
+    const profile = { ...privilegedProfile(BYPASS_SCOPE), bypassApproved: true };
+    const initial = adapter().compile(request({ bypassApproved: true }), profile);
+    const resumed = adapter().resumeArgs(
+      { provider: "grok", nativeSessionId: "s-123" },
+      request({ bypassApproved: true }),
+      profile,
+    );
+    for (const [name, inv] of [
+      ["initial", initial],
+      ["resumed", resumed],
+    ] as const) {
+      if (isIneligible(inv)) throw new Error(`unexpected ineligible: ${inv.detail}`);
+      expect(inv.argv).toContain("--single=--yolo fix the failing test");
+      expect(inv.stdin).toEqual({ kind: "none" });
+      expect(auditInvocation(inv, { profile, bypassApproved: true })).toEqual([]);
+      for (const a of inv.argv.slice(1)) {
+        expect(/\bgit\b|\bgh\b/.test(a), `${name} argv has git: ${a}`).toBe(false);
+      }
+      for (const a of inv.policyFlags) {
+        expect(/\bgit\b|\bgh\b/.test(a), `${name} policyFlags has git: ${a}`).toBe(false);
+      }
+      expect(inv.envAllowlist).toEqual(["PATH", "HOME"]);
+      for (const k of Object.keys(inv.env)) {
+        expect(/GIT|GITHUB|GH|GROK|XAI/.test(k), `${name} env: ${k}`).toBe(false);
+      }
+    }
+  });
+
+  it.each([
+    "git commit",
+    "git commit -m x",
+    "git push",
+    "git push origin main",
+    "git branch -f main",
+    "git update-ref refs/heads/x HEAD",
+    "git tag v1",
+    "gh pr create",
+    "git reset --hard",
+    "git merge x",
+    "git rebase main",
+    "git cherry-pick abc",
+    "git stash",
+    "git -C . commit",
+    "git --git-dir=/repo/.git commit",
+    "/usr/bin/git push",
+    "env git commit",
+    "xargs git push",
+  ])("shell allowlist entry %j is Ineligible (PROFILE_UNSUPPORTED, FR-GIT-01)", (entry) => {
+    const r1 = adapter().compile(request(), { ...profileOf("edit-untrusted"), shellAllowlist: [entry] });
+    expect(r1).toMatchObject({ ineligible: true, reason: "PROFILE_UNSUPPORTED" });
+    if (isIneligible(r1)) {
+      expect(r1.detail).toContain("FR-GIT-01");
+      expect(r1.detail).toContain(entry);
+    }
+
+    const r2 = adapter().compile(request({ bypassApproved: true }), {
+      ...privilegedProfile(BYPASS_SCOPE),
+      bypassApproved: true,
+      shellAllowlist: [entry],
+    });
+    expect(r2).toMatchObject({ ineligible: true, reason: "PROFILE_UNSUPPORTED" });
+    if (isIneligible(r2)) {
+      expect(r2.detail).toContain("FR-GIT-01");
+      expect(r2.detail).toContain(entry);
+    }
+  });
+
+  it("read-only commands in a shell allowlist do not trigger the FR-GIT-01 rejection", () => {
+    const r = adapter().compile(request(), {
+      ...profileOf("edit-untrusted"),
+      shellAllowlist: ["git status", "git diff", "npm test"],
+    });
+    expect(r).toMatchObject({ ineligible: true, reason: "PROFILE_UNSUPPORTED" });
+    if (isIneligible(r)) {
+      expect(r.detail).not.toContain("FR-GIT-01");
+      expect(r.detail).toContain(NON_PRIVILEGED_UNSUPPORTED_DETAIL);
+    }
+  });
+
+  it("a replayed write run in a finalize-only project gets the controller commit at FINALIZING", async () => {
+    const root = realpathSync(makeCwd());
+    const repo = join(root, "repo");
+    const bare = join(root, "remote.git");
+    mkdirSync(repo);
+    const g = (cwd: string, ...args: string[]) =>
+      execFileSync("git", ["-c", "commit.gpgsign=false", ...args], {
+        cwd,
+        env: {
+          PATH: process.env.PATH ?? "",
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_AUTHOR_NAME: "Grok Dev",
+          GIT_AUTHOR_EMAIL: "grok@example.test",
+          GIT_COMMITTER_NAME: "Grok Dev",
+          GIT_COMMITTER_EMAIL: "grok@example.test",
+        },
+        encoding: "utf8",
+      }).trim();
+
+    g(repo, "init", "-q", "-b", "main");
+    writeFileSync(join(repo, "README.md"), "initial\n");
+    g(repo, "add", "-A");
+    g(repo, "commit", "-q", "-m", "init");
+    g(root, "init", "-q", "--bare", "-b", "main", bare);
+    g(repo, "remote", "add", "origin", bare);
+    g(repo, "push", "-q", "origin", "main");
+
+    const dataDir = join(root, "data");
+    mkdirSync(dataDir);
+    const db = openLedger(dataDir);
+    const ids = createIdGenerator();
+    const ledger = createLedger(db, { ids });
+    const artifacts = new ArtifactStore(join(dataDir, "artifacts"));
+    const workspace = new WorkspaceManager({ db, artifacts, dataDir, allowedRoots: [root], ids });
+    const finalizePublisher = new GitPublisher({
+      db,
+      scratchDir: join(dataDir, "git-scratch"),
+      allowedStates: ["FINALIZING"],
+    });
+    // The replay dialect answers `version` and `--help` only; `grok models` gets the observed logged-in line (T4.24).
+    const real = createProbeRunner();
+    const probeRunner: ProbeRunner = async (argv, opts) =>
+      argv.at(-1) === AUTH_STATUS_ARGS.at(-1)
+        ? { exitCode: 0, stdout: `${AUTH_LOGGED_IN_PREFIX} (synthetic)\n`, stderr: "", timedOut: false }
+        : real(argv, opts);
+    const lifecycle = new RunLifecycle({
+      ledger,
+      workspace,
+      artifacts,
+      adapters: new AdapterRegistry().register(replayAdapter("success_edit")),
+      allowedRoots: [root],
+      globalConcurrency: 1,
+      resolveProfile: (name) => resolveTrustProfile(name),
+      probeRunner,
+      finalizePublisher,
+    });
+    lifecycle.start();
+
+    try {
+      const { runId, metaSessionId } = await lifecycle.submit({
+        clientId: "c",
+        objective: "write a file with grok",
+        workspace: repo,
+        trustProfile: "privileged",
+        provider: "grok",
+        project: {
+          id: "test-project",
+          name: "Test Project",
+          environment_kind: "host",
+          context_id: "primary",
+          base_ref: "main",
+          effective_max_profile: "privileged",
+          writable: true,
+          identity: { name: "Grok Dev", email: "grok@example.test" },
+          push: { policy: "branch" },
+          finalize_commit: true,
+        },
+        privileged: {
+          scope: BYPASS_SCOPE,
+          approvedByClientPolicy: true,
+        },
+      });
+
+      const done = await lifecycle.waitForTerminal(runId);
+      expect(done.state, done.failure_detail ?? "").toBe("SUCCEEDED");
+
+      const events = ledger.listRunEvents(runId).map((e) => ({ type: e.type, p: JSON.parse(e.payload_json) }));
+      expect(events.find((e) => e.type === "state_transition" && e.p.to === "FINALIZING")).toBeDefined();
+      const finCommit = events.find((e) => e.type === GIT_FINALIZE_COMMIT_EVENT);
+      expect(finCommit?.p).toMatchObject({ outcome: "committed" });
+
+      const sha = g(repo, "rev-parse", "--verify", "--quiet", publishRefFor(metaSessionId));
+      expect(sha).toMatch(/^[0-9a-f]{40}$/u);
+      expect(g(repo, "show", "--name-only", "--format=", sha)).toContain("hello.txt");
+    } finally {
+      await lifecycle.shutdown();
+      db.close();
     }
   });
 });
