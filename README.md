@@ -52,7 +52,12 @@ Pre-release. The package is private and is not published to any registry; you bu
 - **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.3 are done on fakes: the spike, `rag`
   configuration and per-project store, the scanner through chunker, and the embedding port (fake and `http` backends
   behind the locality gates). From T12.4 (incremental background build) onward remains `Planned`; retrieval at
-  admission is not built yet. See [ROADMAP §6.7](docs/ROADMAP.md#67-m12-retrieval-index-tasks).
+  admission is not built yet. See [ROADMAP §6.7](docs/ROADMAP.md#67-m12-retrieval-index-tasks) and the merged
+  requirements and design evidence in [SRS §3.15](docs/requirements/SRS.md#implementation-evidence-partial-m12),
+  [PRD CAP-13](docs/requirements/PRD.md#implementation-evidence-partial-m12--cap-13),
+  [HLD §2.1](docs/design/HLD.md#21-comp-rag-implementation-evidence-m12-t121t123),
+  [SDD §4.1](docs/design/SDD.md#41-comp-rag-implementation-evidence-m12-t121t123),
+  [LLD §14](docs/design/LLD.md#14-retrieval-index) and [TDD §3.13](docs/design/TDD.md#313-retrieval-index).
 - **Milestone 13 (network MCP transport) is done.** `serve` can expose the MCP tools over Streamable HTTP with OAuth
   2.1 (an embedded authorization server with an operator consent page, PKCE, client registration that the operator
   approves, audience-bound opaque tokens). It is off by default and binds to loopback; put your own TLS proxy in
