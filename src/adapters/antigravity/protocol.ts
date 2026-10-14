@@ -54,6 +54,21 @@ export const DISABLE_AUTO_UPDATE_ENV = "AGY_CLI_DISABLE_AUTO_UPDATE";
 export const AGY_LOGIN_COMMAND = "agy";
 
 /**
+ * Auth status (T4.34, FR-AUTH-02; [LIVE] C3b, C3c). No auth status command is documented ([H], [I], [R], [TS], [MG]),
+ * so the preflight is `agy models`: logged in it exits 0 and prints one `<slug>\t<display name>` line per model on
+ * stdout (stderr `Fetching available models...`); logged out it exits 1 in under 1 s with stderr `Error: Please sign
+ * in to view available models. Launch the CLI without arguments to sign in.` (`agy` 1.3.4). Cost: one process that
+ * fetches the model list from Google; no model turn, no quota and no conversation. `-p "/usage"` is not used: logged
+ * out it waits about 61 s for a sign-in ([LIVE] C6, C13). The text is an observation of one version, not a documented
+ * contract: anything else is `UNKNOWN` (fail closed).
+ */
+export const AUTH_STATUS_ARGS: readonly string[] = ["models"];
+export const AUTH_LOGGED_OUT_PREFIX = "Error: Please sign in";
+export const AUTH_LOGGED_OUT_EXIT = 1;
+export const AUTH_STATUS_TIMEOUT_MS = 10_000;
+export const AUTH_STATUS_LINE_MAX = 80;
+
+/**
  * FR-GIT-01 declaration ([P]; [LIVE] C8 not run). Deny rules such as `command(git commit)` exist only in `settings.json`
  * or the `/permissions` scopes, none per run, and the adapter writes no configuration; whether deny rules survive
  * `--dangerously-skip-permissions` was not observed.

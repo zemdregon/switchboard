@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { resolveTrustProfile } from "../../policy/profiles.js";
 import { auditInvocation, bypassClassFlags } from "../audit.js";
 import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
+import { PreflightCache } from "../preflight-cache.js";
 import { providerEntry } from "../providers.js";
 import { AdapterRegistry } from "../registry.js";
 import type {
@@ -177,7 +178,7 @@ describe("antigravity bypass-class declarations (ADR-0035, ADR-0045)", () => {
   });
 });
 
-describe("antigravity probe and auth placeholder (fail closed until T4.34)", () => {
+describe("antigravity probe (T4.32)", () => {
   const runner =
     (table: Record<string, { stdout: string; exitCode: number }>): ProbeRunner =>
     async (argv) => {
@@ -220,14 +221,112 @@ describe("antigravity probe and auth placeholder (fail closed until T4.34)", () 
     expect(missing.steps).toEqual([{ step: "binary", ok: false, detail: "agy not found on PATH" }]);
   });
 
-  it("auth is UNKNOWN until T4.34", async () => {
-    expect(await adapter().authPreflight(runner({}))).toMatchObject({ state: "UNKNOWN" });
-  });
-
   it("reads no Antigravity credential, settings or state file (source inspection)", () => {
     for (const f of ["adapter.ts", "protocol.ts"]) {
       const src = readFileSync(new URL(`./${f}`, import.meta.url), "utf8");
       expect(src, f).not.toMatch(/from "node:fs"|readFile|antigravity-oauth-token|settings\.json"/);
+    }
+  });
+});
+
+describe("antigravity auth preflight (T4.34; SYNTHETIC outputs in the shapes of the 2026-10-14 live check C3b, C3c)", () => {
+  const out =
+    (stdout: string, exitCode: number | null = 0, extra: Partial<ProbeOutput> = {}): ProbeRunner =>
+    async () => ({ stdout, stderr: "", exitCode, timedOut: false, ...extra });
+  const MODELS = "m-flash\tModel Flash\nm-pro\tModel Pro\n";
+  const SIGN_IN = "Error: Please sign in to view available models. Launch the CLI without arguments to sign in.\n";
+
+  it("runs only `models` with a short timeout; model lines at exit 0 are OK", async () => {
+    const seen: Array<{ argv: readonly string[]; timeoutMs?: number }> = [];
+    const r = await adapter().authPreflight(async (argv, opts) => {
+      seen.push({ argv, ...(opts?.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}) });
+      return { stdout: MODELS, stderr: "Fetching available models...\n", exitCode: 0, timedOut: false };
+    });
+    expect(r).toEqual({ state: "OK" });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.argv).toEqual([EXE, "models"]);
+    expect(seen[0]?.timeoutMs).toBeLessThanOrEqual(10_000);
+  });
+
+  it("the sign-in error at exit 1 is AUTH_REQUIRED naming the native login", async () => {
+    expect(await adapter().authPreflight(out("", 1, { stderr: SIGN_IN }))).toEqual({
+      state: "AUTH_REQUIRED",
+      loginCommand: "agy",
+    });
+  });
+
+  it("any other output, exit code, timeout or spawn failure is UNKNOWN and leaks no more than one stderr line", async () => {
+    const cases: Array<[string, ProbeRunner]> = [
+      ["empty stdout at exit 0", out("")],
+      ["a non-model line at exit 0", out(`${MODELS}You are not signed in\n`)],
+      ["a line with no tab", out("m-flash Model Flash\n")],
+      ["model lines at a non-zero exit", out(MODELS, 1)],
+      ["sign-in text at exit 0", out("", 0, { stderr: SIGN_IN })],
+      ["sign-in text at exit 2", out("", 2, { stderr: SIGN_IN })],
+      ["an unknown error at exit 1", out("", 1, { stderr: "Error: flags provided but not defined\n" })],
+      ["a null exit code", out(MODELS, null)],
+      ["timeout", out("", null, { timedOut: true })],
+      ["spawn error", out("", null, { spawnError: "ENOENT" })],
+    ];
+    for (const [name, runner] of cases) {
+      expect(await adapter().authPreflight(runner), name).toMatchObject({ state: "UNKNOWN" });
+    }
+    const r = await adapter().authPreflight(
+      out(MODELS, 1, { stderr: `Error: odd\u0007 ${"x".repeat(200)}\nsecret: hunter2\n` }),
+    );
+    expect(r.state).toBe("UNKNOWN");
+    if (r.state === "UNKNOWN") {
+      expect(r.reason.length).toBeLessThan(200);
+      expect(r.reason).not.toContain("hunter2");
+      expect(r.reason).not.toContain("\u0007");
+      expect(r.reason).not.toContain("Model Flash");
+    }
+  });
+
+  it("is UNKNOWN when the binary is not on PATH, without running anything", async () => {
+    let ran = false;
+    const r = await new AntigravityAdapter({ pathEnv: "/nonexistent" }).authPreflight(async () => {
+      ran = true;
+      return { stdout: MODELS, stderr: "", exitCode: 0, timedOut: false };
+    });
+    expect(r).toMatchObject({ state: "UNKNOWN" });
+    expect(ran).toBe(false);
+  });
+
+  it("the T3.21 preflight cache keeps an OK and re-runs `models` after AUTH_REQUIRED or UNKNOWN", async () => {
+    const HELP =
+      "Usage of agy:\n  --conversation string\n  --dangerously-skip-permissions\n" +
+      "  --output-format string\n  -p, --print, --prompt string\n";
+    let models: ProbeOutput = { stdout: MODELS, stderr: "", exitCode: 0, timedOut: false };
+    let modelCalls = 0;
+    const runner: ProbeRunner = async (argv) => {
+      const key = argv.slice(1).join(" ");
+      if (key === "--version") return { stdout: "1.3.4\n", stderr: "", exitCode: 0, timedOut: false };
+      if (key === "--help") return { stdout: HELP, stderr: "", exitCode: 0, timedOut: false };
+      modelCalls += 1;
+      return models;
+    };
+    const identity = { path: EXE, mtimeMs: 1, size: 1, ino: 1 };
+    const fresh = () => new PreflightCache({ ttlMs: 60_000, now: () => 0, identify: () => identity });
+    const a = adapter();
+
+    const ok = fresh();
+    expect((await ok.probe(a, runner)).steps.every((s) => s.ok)).toBe(true);
+    expect(await ok.authPreflight(a, runner)).toEqual({ state: "OK" });
+    expect(await ok.authPreflight(a, runner)).toEqual({ state: "OK" });
+    expect(modelCalls).toBe(1);
+
+    for (const failing of [
+      { stdout: "", stderr: SIGN_IN, exitCode: 1, timedOut: false },
+      { stdout: "", stderr: "", exitCode: null, timedOut: true },
+    ]) {
+      models = failing;
+      modelCalls = 0;
+      const cache = fresh();
+      await cache.probe(a, runner);
+      expect((await cache.authPreflight(a, runner)).state).not.toBe("OK");
+      expect((await cache.authPreflight(a, runner)).state).not.toBe("OK");
+      expect(modelCalls).toBe(2);
     }
   });
 });
