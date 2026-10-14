@@ -3313,6 +3313,52 @@ an **Assumption** (minimum Git 2.32, [ADR-0023](../adr/0023-minimum-git-version-
 of a worktree, and `meta_session.open_work_json` (§15.3). An import-boundary test (T5.4) keeps `src/continuity/` from
 importing an adapter parser or the stream artifact readers.
 
+*As built (T5.4, 2026-10-14, Delegated, not owner-approved; no migration).* Code: `src/continuity/bundle-schema.ts`
+(types, constants, `HandoffBundleError`), `src/continuity/bundle-sources.ts` (`takeAsOf`, `collectBundleSources`: the only
+I/O), `src/continuity/bundle.ts` (`assembleHandoffBundle`, pure; `buildHandoffBundle`, `regenerateHandoffBundle`),
+`src/continuity/handoff-view.ts` (`storeHandoffView`, `recordHandoffView`); read-only helpers `getMetaSessionContinuity`,
+`getArtifact`, `maxRunEventSeq` and `listRunEventsUpTo` in `src/ledger/repo.ts`. Choices the design left open:
+
+- **Shapes.** `diagnostics` is `{ run_id, commands }` or `null`; `output_excerpt` is `{ stdout, stderr }` or `null`, each
+  the last `max_text_chars` code points of that stream in the `test_report` artifact, with the marker first (a tail,
+  because failures print last). `runs[].mode` comes from the run's `route_selected` decision, `null` without one.
+  `harness` and `backing_provider` are `null` for a run whose terminal payload names no native session; `model` then
+  falls back to the run row. A failed attempt's `mutated` comes from its `workspace_assessment` event,
+  `evidence_commit` from its `rollback` event (else its post checkpoint) and `head_restored_to` from the `rollback`
+  event; each is `null` when the run has no such event (a run cancelled before it started). `reported` takes the
+  newest 10 runs that reported a summary or a failure detail. Each verification `argv` element (in `diagnostics` and
+  in `open_work` details) is bounded by `max_text_chars` like other orchestrator text.
+- **Text.** Every text value is redacted first and cut afterwards, so a cut can never leave part of a secret the patterns
+  no longer match. "Characters" are Unicode code points and the marker is appended after the kept text, not counted
+  (**Assumption**). Diff excerpt bounds count UTF-8 bytes of excerpt text without markers; Git output is decoded as UTF-8
+  with replacement characters. Paths are redacted like other text.
+- **`truncation`** has one entry per `(field, reason)` with the amounts summed (each cut value also carries its own marker),
+  because a per-value list could itself outgrow the budget and `truncation` is never dropped. Reasons: `item_limit`,
+  `text_chars`, `diff_file_bytes`, `diff_total_bytes`, `bundle_bytes`.
+- **Drop order extended.** §15.4's claim that the remaining fields always fit does not hold at the defaults: 64
+  constraints of 2,000 characters alone exceed the 16 KiB minimum, and `as_of` lists every run, so it grows with the
+  meta-session. After the seven steps of rule 3 the builder also drops `paths_to_inspect` from the last, `failed_attempts`
+  from the oldest, `open_work` from the last, `constraints` from the last and then the whole `diagnostics`; if `as_of`,
+  `goal`, `git`, `bounds` and `truncation` still do not fit, the build fails closed with `HANDOFF_BUNDLE_UNAVAILABLE`
+  (**Assumption**; reachable only with very many runs in one meta-session).
+- **Git.** Both commits must be full object names that `git rev-parse --verify` resolves to themselves as commits; the
+  patch command also passes `-r` (Git recurses for patch output anyway). The runner is `src/workspace/git.ts` (scrubbed
+  environment, `core.hooksPath=/dev/null`, repository filter and diff drivers neutralised) with `cwd` = `repo_root`.
+  The name-status and patch outputs are paired in Git's order and must have the same number of files.
+- **Reads.** `changed_files` content is read only for the newest 10 failed attempts and `test_report` content only for
+  the diagnostics run; each read first checks that the artifact row exists, has that kind, belongs to that run and was not
+  collected, and the store verifies the content address. A native session named in a terminal payload without its
+  `provider_binding` row is a build failure.
+- **Storage.** The bytes measured are the bytes stored: the builder applies the artifact store's own redactor to the
+  canonical JSON, checks the result still parses, and the store step refuses a stored hash that differs. The view row and
+  the `handoff_built` decision are written in one transaction; the receiving run must be a non-terminal run of the same
+  meta-session that is not a source run.
+- **Failure.** `HandoffBundleError` carries `code: "TOOL_FAILURE"`, `retryable: false`, `details.reason:
+  "HANDOFF_BUNDLE_UNAVAILABLE"` and the fixed message of ADR-0038 item 7; the internal cause stays out of the message.
+  Mapping it to the MCP envelope is T5.6.
+- **Not yet wired.** The three `continuity.*` configuration keys and the `continue_task` caller are T5.6; until then
+  the builder takes the bounds as input, with `DEFAULT_BUNDLE_BOUNDS` holding the defaults of §15.4.
+
 ### 15.2 `as_of` and regeneration
 
 `as_of` is taken when `continue_task` decides on a handoff (§15.7). The meta-session is IDLE then (FR-SES-06), so every
