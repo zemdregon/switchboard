@@ -5,7 +5,7 @@
 | Status | Draft, baseline for milestone M1 |
 | Owns | Technology choices and their tradeoffs; cross-cutting engineering concerns (configuration, error handling, logging, security engineering, concurrency, testing, packaging, CI, versioning); per-provider adapter strategy; technical approach by milestone; migration considerations |
 | Does not own | Requirements ([SRS](../requirements/SRS.md)); scope, sequencing and status ([ROADMAP](../ROADMAP.md#6-milestones)); components and boundaries ([HLD](HLD.md)); component collaboration ([SDD](SDD.md)); schemas, interfaces, algorithms ([LLD](LLD.md)); run state machine ([FRD](../requirements/FRD.md)) |
-| Last reconciled | 2026-10-13 |
+| Last reconciled | 2026-10-14 |
 
 ## 1. Purpose and scope
 
@@ -1100,6 +1100,56 @@ config portion of FR-RAG-11 (caps only lowered; background build and `rag_record
 - **Modules:** `src/retrieval/embedding.ts`, `http-embedder.ts`, `fake-embedder.ts`; inner transport via
   `createPinnedHttpTransport`. As built: [LLD §14.4](LLD.md#144-embedding-backend-port-and-privacy-gates). Aggregated
   `rag_record` rows arrive with T12.4.
+
+#### 3.13.8 T12.5 admission-time context pack (2026-10-14)
+
+**Status: Proposed** (design and test plan for T12.5; depends on T12.4 background build and `rag_record`). Realizes
+FR-RAG-05, FR-RAG-07 and FR-RAG-08 ([SRS §3.15](../requirements/SRS.md#315-retrieval-index-fr-rag)) at run admission
+(WF-14). Algorithms, pack shape, freshness rules,
+ledger columns and span attributes are owned by [LLD §14](LLD.md#14-retrieval-index), especially [§14.6 Selection and token
+budget](LLD.md#146-selection-and-token-budget), [§14.8 Freshness and fallback](LLD.md#148-freshness-and-fallback) and
+[§14.10 Events and records](LLD.md#1410-events-and-records); this subsection states the engineering approach and what
+`npm test` must prove without restating that specification.
+
+- **Placement.** After the policy snapshot is frozen and before dispatch, COMP-MCP (or the lifecycle module it calls)
+  asks COMP-RAG for an optional pack within `retrieval.admission_timeout_ms` (default 250 ms, LLD §14.1). The vector
+  search uses the in-memory scan path from [§3.13.4](#3134-t120-spike-result-2026-10-14), with cooperative yielding
+  between slices so admission does not block the event loop longer than the timeout. Background index build and vector
+  load stay out of this window (FR-RAG-11).
+- **Freshness and dropping (FR-RAG-08).** A store past `max_staleness`, a `base_ref_sha` mismatch that cannot be
+  reconciled, or an incomplete index that LLD treats as unsuitable for admission yields **no pack** (outcome `stale` or
+  `skipped`), not a failed run. Per hit, COMP-RAG compares the indexed `file_sha256` with the file on disk (cheap
+  `mtime_ns` and size first); changed, deleted or moved sources drop that snippet. A base-ref mismatch may still attach
+  snippets from files whose hash matches both refs, with a `base_ref_mismatch` flag on the pack header (LLD §14.8). An
+  empty selection after dropping is the same as retrieval off: dispatch proceeds unchanged.
+- **Pack and prompt (FR-RAG-05).** When anything remains within `retrieval.top_k` and `retrieval.max_context_tokens`
+  (defaults from [§3.13.4](#3134-t120-spike-result-2026-10-14)), COMP-RAG prepends a delimited block to the **volatile**
+  section of the delegated prompt (LLD §3.2 order). Each snippet is labelled with path, line range, index revision,
+  score, file hash prefix and an explicit untrusted-reference marker; the block header states that the content is not
+  instructions. The orchestrator's objective and constraints in `run.request_json` are stored **unchanged**; the pack is
+  not persisted on the run row.
+- **Fallback (FR-RAG-08).** Gate denial, backend or embed failure, corrupt store, dimension or model mismatch, timeout,
+  or any thrown error inside the admission budget yields **no pack** with outcome `unavailable` or `fallback_disabled` and
+  never a run failure code, never a change to run status, and never delay beyond `admission_timeout_ms`. Retrieval off
+  (no backend, project `mode: off`, or caps) is indistinguishable from failure for the run's outcome.
+- **Authority boundary (FR-RAG-07).** Retrieved text is data only: it does not enter profile choice or compilation, the
+  policy snapshot, eligibility, approvals, ceilings, push or commit. The import-graph test in [§3.13.3](#3133-testing-affinity-and-retrieval)
+  remains the structural enforcement; T12.5 adds an end-to-end admission test that hostile pack text (for example an
+  instruction to widen the profile or approve a push) leaves `run.policy_snapshot_json`, route eligibility and stored
+  request text identical to a run with retrieval disabled. COMP-RAG lives under `src/retrieval/`; lifecycle and MCP may
+  call into it, but retrieval modules must not import COMP-POL, adapters' profile compilers, eligibility, approval, retry,
+  push or sanitiser tables (the check started in T12.3 extends to any new admission wiring).
+- **Ledger and telemetry (FR-RAG-05, FR-RAG-08, FR-RAG-12).** Admission writes one `rag_record` row of kind `retrieval`
+  and a matching `rag_retrieval` run event per LLD §14.10: `outcome`, optional `reason`, `revision`, snippet **ids** and
+  `text_sha256` values in `snippet_ids_json`, token estimate and durations, never chunk text or the query. A `rag.retrieve`
+  span carries the same bounded attributes. Embedding for the query string is recorded through the T12.3 recorder and still
+  does not create `usage_observation` or capacity rows.
+- **Tests (to land with T12.5 implementation).** Vitest, fake embedder only, no network: table-driven freshness (edited,
+  deleted and moved files; stale store; base-ref flag); timeout and injected backend failure → no pack and unchanged run
+  row; pack labelling and token budget (de-overlap and cap); ledger and event payloads contain ids and hashes only
+  (recursive scan for planted canary strings); admission integration on the fake lifecycle path with retrieval on versus
+  off and versus hostile snippets. Global-index merge at admission is exercised in T12.7; T12.5 may stub `use_global: false`
+  only.
 
 ### 3.14 Network MCP transport (M13)
 
