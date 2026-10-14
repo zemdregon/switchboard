@@ -49,11 +49,13 @@ Pre-release. The package is private and is not published to any registry; you bu
 - **Milestone 11 (inner agent) is `Partial`.** An optional HTTP backend, privacy gates, `doctor` and `inner` reporting,
   and commit-message drafting on fakes are on main; most run-path hooks, PR drafting and a live backend are not. See
   [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
-- **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.5 are done on fakes: the spike, `rag`
+- **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.7 are done on fakes: the spike, `rag`
   configuration and per-project store, the scanner through chunker, the embedding port (fake and `http` backends
   behind the locality gates), incremental background indexing in `serve`, `switchboard index status|rebuild|clear`
-  and a `doctor` section, and an untrusted context pack at admission that never changes the stored request or the
-  run's outcome. From T12.6 (`search_project_context`) onward remains `Planned`. See
+  and a `doctor` section, an untrusted context pack at admission that never changes the stored request or the
+  run's outcome, the read-only MCP tool `search_project_context`, and optional global sharing (`rag.global`,
+  `contribute_to_global`, `use_global`, all off by default). Agent-callable search (T12.9) and an opt-in live
+  embedding backend are not `Done`. See [Retrieval index](#retrieval-index-milestone-12),
   [ROADMAP §6.7](docs/ROADMAP.md#67-m12-retrieval-index-tasks) and the merged requirements and design evidence in
   [SRS §3.15](docs/requirements/SRS.md#implementation-evidence-partial-m12),
   [PRD CAP-13](docs/requirements/PRD.md#implementation-evidence-partial-m12--cap-13),
@@ -75,8 +77,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks).
 
 What works today: `doctor`, `runs list|show|cancel`, `approve`, `deny`, `gc`, `capacity`, `affinity list|reset`,
-`projects list|show|validate|approve`, `git push`, `inner status|test|resume`, and `serve` exposing nine MCP tools over
-stdio (twelve for a client with `manage_projects`). The five trust
+`index status|rebuild|clear`, `projects list|show|validate|approve`, `git push`, `inner status|test|resume`, and
+`serve` exposing nine MCP tools over stdio (ten when retrieval is on for at least one of the client's projects,
+thirteen with `manage_projects`). The five trust
 profile names exist; which of them a provider can run is listed in [Trust profiles](#trust-profiles) and by
 `list_capabilities`. Read
 [Known limitations](#known-limitations) before relying on it.
@@ -168,6 +171,7 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `timeouts.preflight_ttl_seconds` | no | Integer 0 to 3600. How long a successful adapter preflight is cached (default 60); 0 disables the cache. |
 | `git.sanitize_patterns` | no | Up to 16 extra regular-expression sources (200 characters each, restricted subset in `src/git/safe-pattern.ts`). A commit-message line that matches one is removed, in addition to the built-in attribution rules. |
 | `inner_agent` | no | The optional inner agent (ADR-0016): a cheap or self-hosted model for small tasks. Off unless you write the section and set `enabled: true`; there is no default backend, model or task, and no key, token or header field (a hosted service goes through a gateway you run). Shape: `{ "enabled", "backend": { "kind": "http", "base_url", "model", "timeout_ms"?, "max_concurrency"?, "allow_remote"?, "shares_subscription_with"? }, "tasks": { "<task>": { "enabled", ... } }, "breaker"?, "suspension"? }`; `base_url` may not carry userinfo or a query. Full shape: LLD section 13.1. Inspect it with `doctor` and `inner status`. |
+| `rag` | no | The optional retrieval index (ADR-0031): off unless you configure an `embedding` backend. No credential fields; `mode` defaults to `auto` (on only when a backend exists and the project allows). Projects and contexts may narrow caps and exclusions; `use_global` and `contribute_to_global` default to false and cannot be set on dynamic projects. Full shape: [LLD §14.1](docs/design/LLD.md#141-configuration-shape) and [Retrieval index](#retrieval-index-milestone-12). |
 | `profiles.<name>` | no | Overrides for `inspect-untrusted`, `edit-untrusted`, `test-sandboxed` or `trusted-development`: `file_access`, `shell`, `shell_allowlist`, `network`, `network_allowlist`, `repo_config`. They may tighten or loosen a default; `doctor` lists them and every run records them. `privileged` has none. See the `edit-untrusted` limit under [Trust profiles](#trust-profiles). |
 
 `<id>` is one of `claude-code`, `codex`, `grok-build`, `antigravity`, `cursor`, `opencode`, `kimi-code`. Only
@@ -209,8 +213,80 @@ fallback rates and whether it is suspended. Its findings are at most `[warn]` an
 contacts the backend only for that canary, and never a `remote` backend unless `allow_remote` is true. With no
 `inner_agent` section the output is unchanged.
 
+When `rag.embedding` is configured, `doctor` adds a "Retrieval index" block (and a `retrieval` key in `--json`): the
+backend kind, model and locality; whether the privacy gate allows it; a one-line `probe` of the embedding endpoint
+(only built-in probe text, and never to a `remote` backend unless `allow_remote` is true); and per project (and
+`global` when `rag.global.enabled`) the index mode, revision, completeness, size, build time and staleness. These lines
+are at most `[warn]` or `[skip]` and never change the exit code. With no `rag.embedding` section the report is unchanged.
+
 A machine with no Claude Code or Codex installed gets `[warn]` for both and still exits 0. That proves only that the
 environment and config are sound, not that a provider works.
+
+## Retrieval index (milestone 12)
+
+The retrieval index is **off by default**. Without a configured `rag.embedding` backend, `mode: "auto"` keeps every
+project off, `serve` does not build indexes, and `delegate_task` behaves as today. Setting `mode: "on"` without a
+backend is a configuration error at load time.
+
+Minimal example (loopback embedding service you run yourself; Switchboard has no API-key field):
+
+```json
+{
+  "rag": {
+    "embedding": {
+      "kind": "http",
+      "base_url": "http://127.0.0.1:8080",
+      "model": "your-embed-model",
+      "allow_remote": false,
+      "allow_source_content": false
+    },
+    "mode": "auto"
+  }
+}
+```
+
+`embedding.kind: "local"` is refused today. A backend is `local` only when every resolved address is loopback; anything
+else is `remote` and stays unused until both `allow_remote` and `allow_source_content` are true (the same locality rules
+as the inner agent (`inner_agent` in [Configure](#configure)). Source text is redacted before embedding;
+credential-shaped strings in the config are rejected at load.
+
+Per project (and per context for `exclude`, `caps` and `contribute_to_global`), you may set `rag.mode`, lower caps,
+add `exclude` globs, `use_global` (read the optional global index) and `contribute_to_global` (copy this project's
+chunks into it). Both sharing flags default to false; contexts on `inspect-untrusted` or `edit-untrusted` do not
+contribute unless you opt a context in. Operator-only `rag.global.enabled` and `global.sources` add read-only
+directories under your allowed roots.
+
+While `serve` runs, Switchboard builds and refreshes indexes in the background. A build never blocks admitting or
+starting a run. At dispatch, a project with retrieval on may receive an **untrusted context pack**: labelled snippets
+prepended to the volatile part of the compiled prompt only. The stored request text and the run's outcome are unchanged;
+any retrieval failure, timeout, stale index or gate denial means no pack, not a failed run.
+
+Operator commands (counts and metadata only; no chunk text in the ledger):
+
+```text
+switchboard index status [<project>|global] [--json]
+switchboard index rebuild [<project>|global]
+switchboard index clear [<project>|global]
+```
+
+`rebuild` and `clear` write operator requests that a running `serve` applies (like `approve`). With no `serve`, `clear`
+is applied immediately under the data-directory lock; `rebuild` is queued for the next `serve` start. Inspect state with
+`index status` and the `doctor` retrieval block above.
+
+The MCP tool `search_project_context` exists only when an embedding backend is configured **and** the client may use at
+least one project with retrieval on. It is read-only, scoped to that client's projects, and bounds result count and
+size. `scope: "project"` searches the project's index; `global` and `both` need `use_global` on the project, but
+`global` and the global half of `both` still return `unavailable` with `GLOBAL_NOT_AVAILABLE` until a follow-up wires
+the global store into the tool (admission and the global build already use it). Treat every returned `text` field as
+untrusted reference data, not instructions.
+
+Privacy: retrieved text never feeds trust profiles, eligibility, approvals, routing, commit or push decisions (an
+import-boundary test enforces this). Embedding calls are recorded apart from provider usage and capacity. Indexes live
+under `<data_dir>/rag/`; deleting a project removes its store.
+
+Tests on fakes and fixtures (no live embedding in CI): `src/config/rag.test.ts`, `src/retrieval/*.test.ts`,
+`src/lifecycle/context-pack.test.ts`, `src/mcp/search-context.test.ts`, `src/cli/rag-index.test.ts`. Task-level
+evidence is in [ROADMAP §6.7](docs/ROADMAP.md#67-m12-retrieval-index-tasks).
 
 ## Run as an MCP server
 
@@ -243,6 +319,7 @@ Only one `serve` can hold a data directory at a time.
 | `get_capacity` | Per-provider capacity: controller estimates (`capacity_score`, `confidence`, `throttle_risk`) with their sources, free slots, the circuit breaker, and `reset_at` or `explicit_remaining` only when the provider itself reported them; reported cache token counts where a source names the keys; per-project counts of runs that kept or switched provider and model. Read-only; it never calls a provider. |
 | `explain_route` | Why a run went to its provider, from Switchboard's stored route decision: candidates with eligibility reasons, the recorded task features, weights and per-candidate scores, the selection rule and short deciding factors. Price, model quality and sandbox strength are not sourced, so those terms are equal for every provider. Read-only; no model is asked. |
 | `list_projects` | Lists the configured projects this client may use (id, name, environment kind, contexts, trust ceiling, allowed providers), plus its own dynamic projects marked `source: "dynamic"` with their revision and status. Read-only; returns no filesystem paths. |
+| `search_project_context` | Read-only semantic search over a project's indexed contexts (and optionally the global index once the tool is wired for `global`/`both`). Listed only when `rag.embedding` is set and this client has at least one project with retrieval on. See [Retrieval index](#retrieval-index-milestone-12). |
 | `create_project`, `update_project`, `delete_project` | Only for a client with `manage_projects`. Create, revise or delete a dynamic project this client owns. See [Dynamic projects](#dynamic-projects). |
 
 Tool schemas are published through MCP `tools/list`.
@@ -403,6 +480,9 @@ switchboard adapters validate <provider>
 switchboard inner status
 switchboard inner test <task>
 switchboard inner resume <task>
+switchboard index status [<project>|global]
+switchboard index rebuild [<project>|global]
+switchboard index clear [<project>|global]
 ```
 
 `runs cancel`, `approve` and `deny` write a request that a running `serve` applies; with no `serve` running they apply
@@ -657,6 +737,10 @@ you control. `approve` and `deny` keep working for clients left at `"required"`.
   `allow_remote`, and a task that sends repository content (diffs, log excerpts) to a remote backend needs its own
   `allow_source_content`. A project can only restrict it (`off` or `local_only`). Prompts are redacted first, bodies are
   never logged, and nothing it returns reaches a policy, approval or failure decision.
+- **Retrieval privacy.** The retrieval index is off by default and uses the same locality gates for its embedding
+  backend. Chunk text and MCP search results are untrusted reference data; they never reach profile compilation,
+  eligibility, approvals, routing, commit or push logic, and a retrieval failure never fails a run. Ledger rows for
+  index and search hold counts, ids and hashes only.
 - **Fail closed.** An invalid config, an unknown client id, an unverified CLI version or an unavailable profile refuses
   to run rather than weakening anything.
 
@@ -689,6 +773,9 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   quota output shapes of Claude Code and Codex come from synthetic fixtures until the operator captures them (ROADMAP
   T6.11). There is no rate gate, because no provider publishes an enforceable limit for the logins used (T6.8,
   Deferred).
+- Retrieval is tested with a deterministic in-process fake embedder and scripted HTTP fixtures; no live embedding model
+  runs in CI. `search_project_context` with `scope: "global"` or `"both"` does not read the global store yet (admission
+  merge with `use_global` does).
 
 ### Optional live smoke test
 
