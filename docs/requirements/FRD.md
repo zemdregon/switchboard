@@ -131,23 +131,45 @@ FRD traceability only; it does not restate SRS obligations.
 
 **Implemented on fakes (T12.0–T12.3).** T12.0 storage spike ([TDD §3.13.4](../design/TDD.md#3134-t120-spike-result-2026-10-14),
 `scripts/bench-rag.mjs`). T12.1 `rag` configuration validation and one SQLite store per project (`src/config/rag.test.ts`,
-`src/retrieval/store.test.ts`; BR-47 isolation at the store layer; global sharing remains Planned). T12.2 scanner,
+`src/retrieval/store.test.ts`; BR-47 isolation at the store layer; FR-RAG-09/10 configuration shape and operator-only
+sharing flags; global store build, contribution copy and admission merge are T12.7 below). T12.2 scanner,
 exclusions, redaction and chunker (`src/retrieval/scan.test.ts`; BR-48 exclusions and redaction before embedding). T12.3
 embedding backend port with deterministic fake and `http` backends, locality classification and the `allow_remote` /
 `allow_source_content` gates (`src/retrieval/http-embedder.test.ts`, `src/retrieval/embedding.test.ts`; BR-48). With no
 embedding backend configured the retrieval feature is inert and suite behaviour is unchanged (BR-48).
 
-**Planned (T12.6 onward).** `search_project_context` (FR-RAG-06); deployment-wide index read and contribute rules
-(BR-47).
+**Planned (T12.6).** `search_project_context` (FR-RAG-06).
 
 **Design evidence (T12.5; on `main`).** FR-RAG-05, FR-RAG-07 and FR-RAG-08 (WF-14 admission context pack; BR-46) are
 specified on `main` in [LLD §14.11](../design/LLD.md#1411-admission-context-pack-t125), [SDD §4.1
 (T12.5)](../design/SDD.md#t125--admission-context-pack-design-intent) and [TDD
 §3.13.8](../design/TDD.md#3138-t125-admission-time-context-pack-2026-10-14) (merged
 [#180](https://github.com/zemdregon/switchboard/pull/180), [#181](https://github.com/zemdregon/switchboard/pull/181)).
-T12.4 and T12.5 are built on fakes (ROADMAP §6.7): delegated runs of a project with retrieval on receive an untrusted
-context pack at dispatch (`src/retrieval/admission.test.ts`, `src/lifecycle/context-pack.test.ts`,
-`src/retrieval/import-boundary.test.ts`); differences from the design are listed at the end of LLD §14.11.
+
+**Runtime (implemented, T12.5).** T12.4 and T12.5 are built on fakes (ROADMAP §6.7): delegated runs of a project with
+retrieval on receive an untrusted context pack at dispatch (`src/retrieval/admission.test.ts`,
+`src/lifecycle/context-pack.test.ts`, `src/retrieval/import-boundary.test.ts`); differences from the design are listed
+at the end of LLD §14.11. Global-index merge at admission is deferred to T12.7 ([TDD
+§3.13.8](../design/TDD.md#3138-t125-admission-time-context-pack-2026-10-14)).
+
+**Design evidence (T12.7; on `main`).** FR-RAG-09 and FR-RAG-10 (WF-14 global index leg; BR-47) are specified on
+`main` in [LLD §14.9](../design/LLD.md#149-global-index-and-sharing) (`rag.global`, operator-added `sources`, opt-in
+`contribute_to_global` and `use_global`, default off on every side; `untrusted` contexts do not contribute by default;
+every global snippet carries `origin_project` or a source label; the same §14.4 locality gates and run profile apply),
+with admission-time merge of project and global hits in [LLD §14.6](../design/LLD.md#146-selection-and-token-budget)
+step 3 alongside the T12.5 pack path ([LLD §14.11](../design/LLD.md#1411-admission-context-pack-t125)). Store layout
+and caps: [LLD §14.2](../design/LLD.md#142-stores-and-tables). Engineering expectations: cross-project isolation and
+origin labelling in [TDD §3.13.3](../design/TDD.md#3133-testing-affinity-and-retrieval); explicit admission merge
+coverage in [TDD §3.13.8](../design/TDD.md#3138-t125-admission-time-context-pack-2026-10-14). Load-time enforcement
+that only the operator file may set sharing flags (dynamic projects cannot widen sharing) is implemented in T12.1
+([TDD §3.13.5](../design/TDD.md#3135-t121-config-and-store-2026-10-14), `src/config/rag.ts`, `src/projects/rules.ts`,
+`src/mcp/project-tools.test.ts`). Component mapping: [SDD §5](../design/SDD.md#5-requirements-to-design-traceability)
+(`FR-RAG-09`, `FR-RAG-10`); [ADR-0031](../adr/0031-retrieval-index.md).
+
+**Runtime (in progress, T12.7; w61-t127 on sb-worker-a, not on `main`).** A separate global SQLite store,
+`index rebuild global`, contribution copy from contributing projects, admission search merge when `use_global` is set,
+and `index clear global` are not on `main` yet (`src/cli/rag-index.ts` refuses global rebuild; the T12.5 admission
+path searches the project store only). Depends on the merged T12.5 admission context pack on `main`.
 
 ## 4. Canonical run state machine
 
@@ -778,7 +800,7 @@ sequenceDiagram
 Milestone availability follows the SRS milestone column (for example WF-7 from M3, WF-5 automatic retry and failover
 from M6, WF-3 from M5, WF-9 `adapters validate` from M4, WF-10 to WF-12 from M9 with containers in M10, WF-13 from
 M11, WF-14 from M12); see [ROADMAP](../ROADMAP.md#6-milestones). Partial M12 foundation evidence for BR-46–BR-48 is in
-§3.1; WF-14 steps are unchanged until T12.4–T12.6 on main.
+§3.1; WF-14 admission pack is on `main` (T12.5); global sharing (FR-RAG-09, FR-RAG-10) is T12.7 per §3.1.
 
 ## 10. Open items in this document
 
