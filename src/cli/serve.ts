@@ -443,6 +443,8 @@ async function runDaemon(
     allowedRoots: config.allowedRoots,
     globalConcurrency: config.limits.globalConcurrency,
     perProviderConcurrency: config.limits.perProviderConcurrency,
+    // T6.9: `providers.<id>.concurrency`, keyed by adapter id.
+    perProviderLimits: providerLimits(config),
     // T6.4: per-provider breaker thresholds (`capacity.breaker`, LLD §16.4).
     breaker: config.capacity.breaker,
     // T6.5: automatic retry parameters and the reset wait bound (`capacity.retry`, `capacity.queue_horizon_seconds`).
@@ -607,4 +609,14 @@ async function runDaemon(
     log.info("stopped", { code });
   }
   return code;
+}
+
+/** T6.9 (NFR-PERF-03): `providers.<config id>.concurrency` re-keyed by adapter provider id, for the dispatcher. */
+export function providerLimits(config: Pick<ResolvedConfig, "providers">): ReadonlyMap<string, number> {
+  const limits = new Map<string, number>();
+  for (const [configId, entry] of config.providers) {
+    const adapterId = adapterIdForConfigId(configId);
+    if (adapterId !== undefined && entry.concurrency !== undefined) limits.set(adapterId, entry.concurrency);
+  }
+  return limits;
 }
