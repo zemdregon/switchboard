@@ -171,7 +171,17 @@ export function isIneligible(x: Invocation | Ineligible): x is Ineligible {
 /** Observable facts only (NFR-PRIV-02); no provider reasoning text. */
 export type NormalizedEvent =
   | { kind: "session_bound"; nativeSessionId: string; model?: string; backingProvider?: string }
-  | { kind: "tool_call"; tool: "read" | "edit" | "shell" | "other"; name: string; target?: string; denied?: boolean }
+  | {
+      kind: "tool_call";
+      tool: "read" | "edit" | "shell" | "other";
+      name: string;
+      target?: string;
+      denied?: boolean;
+      /** Transient: a shell tool's command line, set by the parser, evaluated and dropped by `startAdapterRun` (`./tool-guard.ts`); never stored. */
+      command?: string;
+      /** Set by `startAdapterRun` when Switchboard's own tool-call guard fired (Q-62 to Q-65, ADR-0039). */
+      violation?: { kind: "git_write" | "provider_state"; reason: string };
+    }
   | { kind: "message"; role: "assistant"; text: string }
   | { kind: "usage"; source: "provider_reported"; metrics: Record<string, number | string | null> }
   | { kind: "rate_limit"; resetAt?: string; reportedCategory?: string }

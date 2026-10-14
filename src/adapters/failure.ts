@@ -56,6 +56,14 @@ export function classifyCommon(
   if (exit.outcome === "crashed" || exit.outcome === "spawn_error") {
     return { code: "PROCESS_CRASH", detail: exit.signal ? `signal ${exit.signal}` : exit.outcome };
   }
+  // ADR-0039: Switchboard's own tool-call guard fired, whatever the provider's policy did.
+  for (const e of events) {
+    if (e.kind !== "tool_call" || e.violation === undefined) continue;
+    if (e.violation.kind === "git_write") {
+      return { code: "PERMISSION_BLOCKED", detail: `git write attempted: ${e.violation.reason}` };
+    }
+    return { code: "SANDBOX_VIOLATION", detail: `provider state reached: ${e.violation.reason}` };
+  }
   for (const e of events) {
     if (e.kind === "permission_denied") return { code: "PERMISSION_BLOCKED", detail: `denied: ${e.tool}` };
     if (e.kind === "sandbox_violation") return { code: "SANDBOX_VIOLATION", detail: e.detail };

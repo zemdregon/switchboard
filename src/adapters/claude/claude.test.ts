@@ -1094,7 +1094,8 @@ describe("claude parseEvent", () => {
     expect(rl).toContainEqual({ kind: "provider_error", category: "rate_limit", message: "rate_limit" });
     const pd = parseAll("permission-denied.jsonl").events;
     expect(pd).toContainEqual({ kind: "permission_denied", tool: "Bash" });
-    expect(pd).toContainEqual({ kind: "tool_call", tool: "shell", name: "Bash" }); // command text not copied
+    // the command line is a transient field for the tool-call guard (ADR-0039); `startAdapterRun` drops it before storage
+    expect(pd).toContainEqual({ kind: "tool_call", tool: "shell", name: "Bash", command: "synthetic-command" });
   });
 
   it("never yields events for unparseable or non-object lines", () => {

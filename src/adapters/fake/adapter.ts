@@ -73,7 +73,12 @@ export type FakeScenario =
    * T5.5: in a handoff prompt the plan is the text after the `[instruction from the orchestrator]` line (as for
    * `git_commit` and `git_attempts`); the CLI's state recorder keeps the whole prompt.
    */
-  | "edit_files";
+  | "edit_files"
+  /**
+   * ADR-0039: emits the `tool` events listed in the JSON plan `{"calls": [{"tool", "name", "command"?, "target"?}]}` and
+   * runs nothing; for the tool-call guard tests (a command line or path the provider's own policy would have denied).
+   */
+  | "tool_calls";
 
 export interface FakeAdapterOptions {
   scenario?: FakeScenario;
@@ -284,7 +289,16 @@ export class FakeAdapter implements ProviderAdapter {
         const tool = str(e.tool);
         const kind = tool === "read" || tool === "edit" || tool === "shell" ? tool : "other";
         const target = str(e.target);
-        return [{ kind: "tool_call", tool: kind, name: str(e.name) ?? "unknown", ...(target ? { target } : {}) }];
+        const command = str(e.command); // transient: evaluated by the tool-call guard, never stored (ADR-0039)
+        return [
+          {
+            kind: "tool_call",
+            tool: kind,
+            name: str(e.name) ?? "unknown",
+            ...(target ? { target } : {}),
+            ...(command ? { command } : {}),
+          },
+        ];
       }
       case "message":
         return [{ kind: "message", role: "assistant", text: str(e.text) ?? "" }];
