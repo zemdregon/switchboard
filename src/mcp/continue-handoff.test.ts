@@ -5,11 +5,13 @@
  * for a session with no binding, a handoff when the session provider is ineligible, and `require_provider` naming an
  * ineligible provider. The fail-closed refusals: the bundle failure code, a target outside the project and a
  * `privileged` continuation on another provider while ROADMAP Q-61 is open. The fakes are synthetic test adapters
- * (`fake`, `fake-b`); no real provider CLI, login or network is used. T5.9 adds the formal acceptance test with the
- * file-access proof; the end-to-end case here only checks the transcript canaries against the prompt and the bundle.
+ * (`fake`, `fake-b`); no real provider CLI, login or network is used. The end-to-end case here checks the transcript
+ * canaries against the prompt and the bundle; the last `describe` is the M5 acceptance test (T5.9) with the
+ * file-access proof: the controller's own file opens are recorded and none lies under a provider state directory.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -660,4 +662,184 @@ describe("continue_task under BR-18 on the two fakes (T5.6)", () => {
     expect(routeOf(same.body.run_id).continuation).toMatchObject({ mode: "handoff", reason: "no_binding" });
     expect(ledger.listApprovals()).toHaveLength(1);
   }, 60_000);
+});
+
+/**
+ * M5 acceptance (T5.9; FR-SES-02, 03, 04, 05, FR-EXE-08, ADR-0001, TDD §3.6): provider A edits and runs a verification
+ * command; `continue_task` naming provider B continues from the bundle and completes the task. While it runs, the
+ * controller process records every path it opens through the `node:fs` and `node:fs/promises` open, read, stream and
+ * directory functions, and the test asserts that none lies under either fake's provider state directory and that
+ * both canary transcripts are unchanged by the controller.
+ *
+ * Limit (stated with the evidence): the wrappers see this process only. The fake CLIs are child processes and write
+ * their own transcripts, which is the point of the canaries; a native binding (the ledger's SQLite driver) and a
+ * child process such as `git` open files the wrappers cannot see. FR-SES-04 constrains the controller.
+ */
+describe("M5 acceptance on two fake adapters (T5.9)", () => {
+  /** The `node:fs` entry points that take a path and open, read, stream or list it (or write it, which opens it). */
+  const WATCHED = [
+    "openSync",
+    "open",
+    "readFileSync",
+    "readFile",
+    "createReadStream",
+    "createWriteStream",
+    "opendirSync",
+    "opendir",
+    "readdirSync",
+    "readdir",
+    "copyFileSync",
+    "copyFile",
+    "writeFileSync",
+    "writeFile",
+    "appendFileSync",
+    "appendFile",
+    "cpSync",
+    "cp",
+  ] as const;
+  const WATCHED_PROMISES = [
+    "open",
+    "readFile",
+    "readdir",
+    "opendir",
+    "copyFile",
+    "writeFile",
+    "appendFile",
+    "cp",
+  ] as const;
+
+  let opened: string[] = [];
+  let recording = false;
+  let restores: (() => void)[] = [];
+
+  const note = (arg: unknown): void => {
+    if (!recording) return;
+    if (typeof arg === "string") opened.push(path.resolve(arg));
+    else if (Buffer.isBuffer(arg)) opened.push(path.resolve(arg.toString("utf8")));
+    else if (arg instanceof URL && arg.protocol === "file:") opened.push(path.resolve(arg.pathname));
+  };
+  const wrap = (obj: Record<string, unknown>, name: string): void => {
+    const orig = obj[name];
+    if (typeof orig !== "function") return;
+    obj[name] = function (this: unknown, ...args: unknown[]) {
+      note(args[0]);
+      return Reflect.apply(orig, this, args);
+    };
+    restores.push(() => {
+      obj[name] = orig;
+    });
+  };
+  const startRecording = (): void => {
+    for (const n of WATCHED) wrap(fs as unknown as Record<string, unknown>, n);
+    for (const n of WATCHED_PROMISES) wrap(fs.promises as unknown as Record<string, unknown>, n);
+    syncBuiltinESMExports(); // code that imports `{ readFileSync } from "node:fs"` sees the wrappers too
+    opened = [];
+    recording = true;
+  };
+  const stopRecording = (): string[] => {
+    recording = false;
+    for (const r of restores.reverse()) r();
+    restores = [];
+    syncBuiltinESMExports();
+    return opened;
+  };
+  const under = (p: string, dir: string) => p === dir || p.startsWith(dir + path.sep);
+  /** Opened paths under either fake's provider state directory (the transcripts, the prompt logs, the state root). */
+  const stateOpens = (paths: readonly string[]) =>
+    paths.filter((p) => [FIRST_FAKE_STATE_DIR, SECOND_FAKE_STATE_DIR].some((d) => under(p, path.join(home, d))));
+
+  afterEach(() => {
+    if (restores.length > 0) stopRecording();
+  });
+
+  it("A edits and verifies, B continues from the bundle and completes; the controller opens no provider state", async () => {
+    await setup({
+      projects: [project({}, true)],
+      clients: [{ id: "o", max: "edit-untrusted", projects: ["web-app"] }],
+      finalizeCommit: true,
+    });
+    startRecording();
+
+    // Provider A edits, and the controller runs the verification command in A's worktree (FR-EXE-08).
+    const d = await call("delegate_task", {
+      objective: plan({ "src/a.ts": "export const a = 1;\n" }, "a wrote src/a.ts"),
+      project: "web-app",
+      trust_profile: "edit-untrusted",
+      routing: { provider_preference: "fake" },
+      verification_commands: [[process.execPath, "-e", "console.log('tests pass')"]],
+    });
+    expect(d.isError, JSON.stringify(d.body)).toBe(false);
+    const doneA = await pollTerminal(d.body.run_id);
+    expect(doneA.status, JSON.stringify(doneA)).toBe("SUCCEEDED");
+    expect(doneA.result.verification).toEqual([expect.objectContaining({ index: 0, outcome: "passed", exit_code: 0 })]);
+    const sess = d.body.meta_session_id as string;
+
+    // A's canary exists (written by the fake CLI, a child process); take its hash outside the recording window.
+    const canaryA = path.join(home, FIRST_FAKE_STATE_DIR, "sessions", "fake-session-1.jsonl");
+    recording = false;
+    const canaryABefore = readFileSync(canaryA, "utf8");
+    recording = true;
+    expect(canaryABefore).toContain(CANARY);
+
+    // `continue_task` naming provider B: a handoff from the bundle, a fresh native session on B.
+    const instruction = plan({ "src/b.ts": "export const b = 2;\n" }, "b done");
+    const c = await call("continue_task", {
+      meta_session_id: sess,
+      instruction,
+      routing: { provider_preference: B },
+    });
+    expect(c.isError, JSON.stringify(c.body)).toBe(false);
+    const doneB = await pollTerminal(c.body.run_id);
+    expect(doneB, JSON.stringify(doneB)).toMatchObject({ status: "SUCCEEDED", provider: { adapter: B } });
+    expect(routeOf(c.body.run_id).continuation).toMatchObject({ mode: "handoff", reason: "provider_named" });
+
+    // FR-SES-05: `get_artifacts` returns the handoff view of B's run, which carries A's verification outcome.
+    const view = await call("get_artifacts", { run_id: c.body.run_id, kinds: ["handoff_view"] });
+    expect(view.isError, JSON.stringify(view.body)).toBe(false);
+    expect(view.body.artifacts).toHaveLength(1);
+    expect(view.body.artifacts[0].kind).toBe("handoff_view");
+
+    const seen = stopRecording();
+    // The controller really did open files while recording (so an empty `stateOpens` is not an empty recorder) ...
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.some((p) => under(p, root))).toBe(true);
+    // ... and none of them lies under a provider state directory.
+    expect(stateOpens(seen)).toEqual([]);
+
+    // Both canary transcripts are as the fake CLIs left them: A's is unchanged by B's run, B's holds only its own.
+    const canaryB = path.join(home, SECOND_FAKE_STATE_DIR, "sessions", "fake-b-session-1.jsonl");
+    expect(readFileSync(canaryA, "utf8")).toBe(canaryABefore);
+    expect(readFileSync(canaryB, "utf8").split("\n").filter(Boolean)).toHaveLength(1);
+    // The transcripts reached the new prompt only as the bundle's rendering: no canary line, no state path.
+    const bundle = viewText(c.body.run_id);
+    expect(bundle).toContain("a wrote src/a.ts");
+    for (const leak of [CANARY, canaryA, canaryB, FIRST_FAKE_STATE_DIR, SECOND_FAKE_STATE_DIR]) {
+      expect(bundle).not.toContain(leak);
+      for (const p of prompts(SECOND_FAKE_STATE_DIR)) expect(p).not.toContain(leak);
+    }
+  }, 120_000);
+
+  it("positive control: a controller read of a canary is recorded and fails the assertion", async () => {
+    const canary = path.join(home, FIRST_FAKE_STATE_DIR, "sessions", "fake-session-1.jsonl");
+    mkdirSync(path.dirname(canary), { recursive: true });
+    writeFileSync(canary, `${CANARY}\n`);
+    startRecording();
+    readFileSync(canary, "utf8"); // a named import, as the source modules use
+    fs.readFileSync(canary, "utf8");
+    await fs.promises.readFile(canary, "utf8");
+    await new Promise<void>((resolve, reject) => {
+      const stream = fs.createReadStream(canary);
+      stream.on("error", reject).on("close", () => resolve());
+      stream.resume();
+    });
+    const seen = stopRecording();
+    const hits = stateOpens(seen);
+    expect(new Set(hits)).toEqual(new Set([canary]));
+    expect(hits.length).toBeGreaterThanOrEqual(4); // one per call; a stream may also open through `fs.open`
+    // The wrappers are removed: a later read is not recorded.
+    recording = true;
+    readFileSync(canary, "utf8");
+    recording = false;
+    expect(stateOpens(opened)).toHaveLength(hits.length);
+  });
 });
