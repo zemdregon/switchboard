@@ -40,15 +40,25 @@ Pre-release. The package is private and is not published to any registry; you bu
   is tested on fake providers. It is not `Done`: what Claude Code and Codex print on a real rate limit or quota stop has
   not been captured (operator task T6.11), and no provider is known to publish an enforceable rate limit, so there is no
   rate gate. See [ROADMAP §6.11](docs/ROADMAP.md#611-m6-capacity-and-resilience-tasks).
+- **Milestone 7 (routing) is `Partial`.** `explain_route` and provider or model affinity (with `switchboard affinity
+  list|reset`) are implemented and tested on fake adapters, including an acceptance test through the MCP server. It is not
+  `Done`: `minimum_capability` stays refused until model pinning lands, cache-friendly prompt order waits on the M4
+  adapter lane, and the README routing section is still open (task T7.11). See
+  [ROADMAP §6.12](docs/ROADMAP.md#612-m7-routing-tasks).
+- **Milestone 12 (retrieval index) is `Partial`.** Configuration, a per-project store, and the scanner through chunker
+  are on main and tested; embedding backends, background indexing and retrieval at admission are not. See
+  [ROADMAP §6.7](docs/ROADMAP.md#67-m12-retrieval-index-tasks).
 - **Milestone 13 (network MCP transport) is done.** `serve` can expose the MCP tools over Streamable HTTP with OAuth
   2.1 (an embedded authorization server with an operator consent page, PKCE, client registration that the operator
   approves, audience-bound opaque tokens). It is off by default and binds to loopback; put your own TLS proxy in
   front of it. A test runs the whole path from client registration and PKCE to a tool call. Residual risks are listed
   under [HLD TB-12](docs/design/HLD.md#3-trust-boundaries). See
   [ROADMAP §6.10](docs/ROADMAP.md#610-m13-network-mcp-transport-tasks).
-- Adapter modules for Grok Build, Cursor, OpenCode and Antigravity exist and are tested on synthetic fixtures, but
-  their compliance manifests admit no version, so none of them runs until `switchboard adapters validate` passes a
-  version (operator tasks). Outside an approved `privileged` bypass scope every profile is ineligible for them. See
+- **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
+  client and a macOS CI leg are done; Grok Build, Antigravity, Cursor and OpenCode each have a module, compile matrix
+  and parser work on synthetic fixtures, but conformance and malicious-fixture suites, Git declarations and live
+  captures remain. Manifests still admit no version until `switchboard adapters validate` passes a real CLI (operator
+  tasks). Outside an approved `privileged` bypass scope every profile is ineligible for the new providers. See
   [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks).
 
 What works today: `doctor`, `runs list|show|cancel`, `approve`, `deny`, `gc`, `capacity`, `affinity list|reset`,
