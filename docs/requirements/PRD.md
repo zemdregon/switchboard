@@ -83,11 +83,10 @@ and [LLD §14](../design/LLD.md#14-retrieval-index).
 admission context pack in [LLD §14.11](../design/LLD.md#1411-admission-context-pack-t125); component and traceability
 notes in [SDD §4.1 (T12.5)](../design/SDD.md#t125--admission-context-pack-design-intent) and [SDD
 §5](../design/SDD.md#5-requirements-to-design-traceability); test plan in [TDD
-§3.13.8](../design/TDD.md#3138-t125-admission-time-context-pack-2026-10-14). Runtime implementation is still open:
-incremental background index build, operator `index` commands and `doctor` retrieval reporting (T12.4,
-[#170](https://github.com/zemdregon/switchboard/pull/170)); admission wiring and WF-14 end-to-end retrieval (T12.5 code,
-[#182](https://github.com/zemdregon/switchboard/pull/182)). Not implemented yet: `search_project_context` (T12.6); and the
-deployment-wide index (T12.7).
+§3.13.8](../design/TDD.md#3138-t125-admission-time-context-pack-2026-10-14). Built on fakes: incremental background
+index build, operator `index` commands and `doctor` retrieval reporting (T12.4); admission-time retrieval and the
+context pack (T12.5; evidence in [ROADMAP §6.7](../ROADMAP.md#67-m12-retrieval-index-tasks)). Not implemented yet:
+`search_project_context` (T12.6); and the deployment-wide index (T12.7).
 
 ### 3.1 Inner agent task catalogue
 

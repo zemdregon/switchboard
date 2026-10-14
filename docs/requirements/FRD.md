@@ -137,20 +137,17 @@ embedding backend port with deterministic fake and `http` backends, locality cla
 `allow_source_content` gates (`src/retrieval/http-embedder.test.ts`, `src/retrieval/embedding.test.ts`; BR-48). With no
 embedding backend configured the retrieval feature is inert and suite behaviour is unchanged (BR-48).
 
-**Planned (T12.4 onward).** Incremental background index build in `serve`, operator `index` commands and the retrieval
-`doctor` section (FR-RAG-11, FR-RAG-14); admission-time search, freshness checks and the labelled context pack (WF-14;
-BR-46); `search_project_context` (FR-RAG-06); deployment-wide index read and contribute rules (BR-47). Until those tasks
-land, delegated runs do not receive a retrieval pack at admission.
+**Planned (T12.6 onward).** `search_project_context` (FR-RAG-06); deployment-wide index read and contribute rules
+(BR-47).
 
 **Design evidence (T12.5; on `main`).** FR-RAG-05, FR-RAG-07 and FR-RAG-08 (WF-14 admission context pack; BR-46) are
 specified on `main` in [LLD §14.11](../design/LLD.md#1411-admission-context-pack-t125), [SDD §4.1
 (T12.5)](../design/SDD.md#t125--admission-context-pack-design-intent) and [TDD
 §3.13.8](../design/TDD.md#3138-t125-admission-time-context-pack-2026-10-14) (merged
 [#180](https://github.com/zemdregon/switchboard/pull/180), [#181](https://github.com/zemdregon/switchboard/pull/181)).
-Runtime implementation on `main` remains pending T12.4 and T12.5 code in open
-[PR #182](https://github.com/zemdregon/switchboard/pull/182) (stacked; prior T12.4 pull request
-[170](https://github.com/zemdregon/switchboard/pull/170) closed); until then WF-14 admission behaviour for these
-requirements is design-only in §3.1 and WF-14 below.
+T12.4 and T12.5 are built on fakes (ROADMAP §6.7): delegated runs of a project with retrieval on receive an untrusted
+context pack at dispatch (`src/retrieval/admission.test.ts`, `src/lifecycle/context-pack.test.ts`,
+`src/retrieval/import-boundary.test.ts`); differences from the design are listed at the end of LLD §14.11.
 
 ## 4. Canonical run state machine
 

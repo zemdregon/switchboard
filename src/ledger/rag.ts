@@ -26,6 +26,8 @@ export interface RagRecordInput {
   readonly bytes?: number | null;
   readonly durationMs?: number | null;
   readonly embedCalls?: number | null;
+  /** `retrieval` only (T12.5): the packed snippets' ids and `text_sha256` values, never their text (FR-RAG-05). */
+  readonly snippets?: readonly { readonly id: string; readonly textSha256: string }[] | null;
 }
 
 export interface RagRecordRow {
@@ -85,7 +87,7 @@ export class RagLedger {
       .prepare(
         `INSERT INTO rag_record (id, kind, project_key, run_id, backend_kind, model_id, locality, outcome, reason, revision,
            files, chunks, bytes, snippet_ids_json, duration_ms, embed_calls, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -101,6 +103,7 @@ export class RagLedger {
         r.files ?? null,
         r.chunks ?? null,
         r.bytes ?? null,
+        r.snippets == null ? null : JSON.stringify(r.snippets.map((x) => ({ id: x.id, text_sha256: x.textSha256 }))),
         r.durationMs ?? null,
         r.embedCalls ?? null,
         this.now().toISOString(),
