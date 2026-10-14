@@ -43,8 +43,8 @@ CREATE TABLE schema_migrations (
 
 CREATE TABLE meta_session (
   id              TEXT PRIMARY KEY CHECK (id LIKE 'sess\_%' ESCAPE '\'),
-  objective       TEXT NOT NULL,
-  constraints_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(constraints_json)),
+  objective       TEXT NOT NULL,        -- redacted at admission (ADR-0042)
+  constraints_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(constraints_json)),  -- redacted at admission
   repo_root       TEXT,                 -- canonical path; NULL for non-Git read-only inspect (FR-WS-06)
   base_commit     TEXT,                 -- first base checkpoint commit
   head_commit     TEXT,                 -- latest post-run checkpoint commit
@@ -100,7 +100,8 @@ CREATE TABLE run (
   trust_profile   TEXT NOT NULL CHECK (trust_profile IN ('inspect-untrusted','edit-untrusted',
                     'test-sandboxed','trusted-development','privileged')),
   policy_snapshot_json TEXT NOT NULL CHECK (json_valid(policy_snapshot_json)),
-  request_json    TEXT NOT NULL CHECK (json_valid(request_json)),  -- validated request, excludes secrets
+  request_json    TEXT NOT NULL CHECK (json_valid(request_json)),  -- validated request, objective and constraints
+                                                     -- redacted (ADR-0042); admission_redactions when > 0
   request_hash    TEXT NOT NULL,
   client_id       TEXT NOT NULL,                     -- configured MCP client (FR-MCP-06)
   idempotency_key TEXT,
@@ -3333,7 +3334,7 @@ run in the worktree, including file paths). Only the last two are rendered as un
 | `bounds` | The bound values in force (§15.4) | Configuration at build time, then frozen in the view | controller | — |
 | `goal` | The meta-session objective | `meta_session.objective` | orchestrator | 8,000 chars |
 | `constraints` | List of strings | `meta_session.constraints_json` | orchestrator | 64 items (schema), each `max_text_chars` |
-| `instructions` | `[{ run_id, text }]`, the instruction of each listed run whose text differs from `goal` | `run.request_json` `objective` (written at admission, never updated) | orchestrator | Newest 10, each `max_text_chars` |
+| `instructions` | `[{ run_id, text }]`, the instruction of each listed run whose text differs from `goal` | `run.request_json` `objective` (written at admission, redacted per ADR-0042, never updated) | orchestrator | Newest 10, each `max_text_chars` |
 | `decisions` | `[{ run_id, kind, summary, created_at }]` in `(created_at, id)` order | `decision` rows whose `run_id` is in `as_of.runs` (§15.3) | controller | Newest 100 |
 | `git` | `{ base_commit, head_commit }`; no repository path | `as_of` | controller | — |
 | `runs` | Per run: `run_id`, `parent_run_id`, `attempt`, `provider`, `harness`, `backing_provider`, `model`, `trust_profile`, `state`, `failure_code`, `started_at`, `finished_at`, `changed_files` (count), `post_commit`, `verification: [{ index, outcome, exit_code }]`, `mode` (`new`, `resume` or `handoff`) | Terminal `run` row (columns not updated after the terminal transition); its terminal `state_transition` payload; `checkpoint` and `verification_command` events; the `provider_binding` row of the payload's `native_session_id` (`harness`, `backing_provider`, `model` set at insert by T5.3); its `route_selected` decision | controller | Newest 20 |

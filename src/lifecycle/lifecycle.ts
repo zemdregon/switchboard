@@ -92,7 +92,7 @@ import {
   type ResolvedProfile,
   startAdapterRun,
 } from "../adapters/index.js";
-import { type ArtifactStore, defaultRedactor } from "../artifacts/index.js";
+import { type ArtifactStore, defaultRedactor, REDACTION_MARKER } from "../artifacts/index.js";
 import { isUnderAllowedRoot, TRUST_PROFILES } from "../config/index.js";
 import {
   type BuiltBundle,
@@ -363,6 +363,11 @@ interface StoredRequest {
   verification_commands?: string[][];
   /** T5.5: present only for a handoff run. */
   handoff?: StoredHandoff;
+  /**
+   * Q-68 (NFR-SEC-01): how many secret-shaped values the admission redactor replaced in `objective` and `constraints`
+   * (never the values). Present only when non-zero, so the stored request (and its default hash) is unchanged otherwise.
+   */
+  admission_redactions?: number;
 }
 
 export interface TransitionNotice {
@@ -938,10 +943,15 @@ export class RunLifecycle {
       workspace = req.workspace;
     }
     const canonical = await this.checkWorkspace(workspace, req.trustProfile);
+    // Q-68 (NFR-SEC-01, Delegated, fail closed): the prompt text is redacted with the artifact secret patterns before it
+    // is stored. The stored text is all that is kept, so it is also what this run and every continuation send.
+    const objective = redactTextCounted(req.objective);
+    const redactedConstraints = constraints.map(redactTextCounted);
+    const redactions = objective.count + redactedConstraints.reduce((n, c) => n + c.count, 0);
     return {
-      objective: req.objective,
+      objective: objective.text,
       workspace: canonical,
-      constraints,
+      constraints: redactedConstraints.map((c) => c.text),
       trust_profile: req.trustProfile,
       provider: req.provider,
       priority,
@@ -949,6 +959,7 @@ export class RunLifecycle {
       ...(req.project ? { project_id: req.project.id, base_ref: req.project.base_ref } : {}),
       ...(req.resume !== undefined ? { resume_native_session_id: req.resume.nativeSessionId } : {}),
       ...(verification.length > 0 ? { verification_commands: verification } : {}),
+      ...(redactions > 0 ? { admission_redactions: redactions } : {}),
     };
   }
 
@@ -2050,6 +2061,13 @@ function resolveRule(from: RunState, to: RunState, ruleId?: string): TransitionR
 /** The artifact secret redactor applied to a text value (same patterns as stored artifacts). */
 function redactText(text: string): string {
   return defaultRedactor(Buffer.from(text, "utf8")).toString("utf8");
+}
+
+/** {@link redactText} plus how many values it replaced (marker occurrences added; the text's own markers are not counted). */
+function redactTextCounted(text: string): { text: string; count: number } {
+  const out = redactText(text);
+  const markers = (t: string) => t.split(REDACTION_MARKER).length - 1;
+  return { text: out, count: markers(out) - markers(text) };
 }
 
 function pendingOf(exec: Execution, out: AdapterRunOutcome): Pending {
