@@ -324,10 +324,10 @@ describe("M6 acceptance (T6.10)", () => {
     expect(byId["fake-b"]).not.toHaveProperty("cache");
 
     // One project (the workspace), five runs that started: fake (rate limit), fake (its retry, kept), fake (the next
-    // task, kept), fake-b (quota failover, switched), grok (switched). M7 records no affinity reason yet, so both
-    // switches are `unrecorded`.
+    // task, kept), fake-b (quota failover, switched), grok (switched). Since T7.5 each switch carries its recorded
+    // affinity reason: the failover `capacity_exhausted`, the required provider `user_request`.
     expect(tool.body.affinity.projects).toEqual([
-      expect.objectContaining({ runs: 5, kept: 2, switched: { unrecorded: 2 } }),
+      expect.objectContaining({ runs: 5, kept: 2, switched: { capacity_exhausted: 1, user_request: 1 } }),
     ]);
 
     const out: string[] = [];

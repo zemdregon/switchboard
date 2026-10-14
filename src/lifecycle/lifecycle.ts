@@ -140,7 +140,15 @@ import {
 } from "../git/finalize.js";
 import { RefGuard } from "../git/ref-guard.js";
 import { CHANNEL_MCP_CONFIG_FILE } from "../git/tool-protocol.js";
-import type { Ledger, NewRouteDecision, RunFieldPatch, RunRecord, RunState, TrustProfile } from "../ledger/index.js";
+import {
+  AFFINITY_SWITCH_REASONS,
+  type Ledger,
+  type NewRouteDecision,
+  type RunFieldPatch,
+  type RunRecord,
+  type RunState,
+  type TrustProfile,
+} from "../ledger/index.js";
 import {
   canonicalScopeJson,
   type PrivilegedScope,
@@ -155,8 +163,10 @@ import {
   buildRouteDecision,
   type CollectDeps,
   classifyRequest,
+  collectAffinityFacts,
   collectFacts,
   collectScoreInputs,
+  DEFAULT_AFFINITY,
   DEFAULT_ROUTE_SCORING,
   type EligibilityDecision,
   type EligibilityInput,
@@ -2060,6 +2070,7 @@ export class RunLifecycle {
     });
     if (!moved) return undefined;
     if (isTerminal(to)) this.recordBreakerOutcome(moved);
+    if (to === "SUCCEEDED") this.recordAffinity(moved);
     this.opts.onTransition?.({ runId: run.id, from: run.state, to, rule: rule.id });
     if (isTerminal(to)) queueMicrotask(() => this.settle(run.id));
     return moved;
@@ -2099,6 +2110,73 @@ export class RunLifecycle {
       this.ledger.appendRunEvent({ runId: run.id, type: "breaker_half_open", payload: { provider } });
     }
     return true;
+  }
+
+  /**
+   * T7.5 (FR-RTE-06, LLD §3.2 step 7, §17.6): when a run succeeds and its route decision (or, for a retry successor
+   * without one, its nearest ancestor's) applied affinity, write the project's row: the run's provider and the model
+   * its native session reported, with the decision's reason. A first run that fails never gets here, so it creates no
+   * row. The `routing_affinity_*` event goes on the run. A concurrent write (version mismatch) is left alone.
+   */
+  private recordAffinity(run: RunRecord): void {
+    if (run.provider === null) return;
+    let decision = this.ledger.getRouteDecision(run.id);
+    let cursor: RunRecord | undefined = run;
+    for (let hops = 0; decision === undefined && cursor?.parent_run_id && hops < 32; hops++) {
+      cursor = this.ledger.getRunRecord(cursor.parent_run_id);
+      if (cursor !== undefined) decision = this.ledger.getRouteDecision(cursor.id);
+    }
+    if (decision === undefined) return;
+    let affinity: { applies?: unknown; project_key?: unknown; affinity_switch_reason?: unknown } | undefined;
+    try {
+      affinity = (JSON.parse(decision.reasons_json) as { affinity?: typeof affinity }).affinity;
+    } catch {
+      return;
+    }
+    if (affinity?.applies !== true || typeof affinity.project_key !== "string") return;
+    const key = affinity.project_key;
+    const reason = AFFINITY_SWITCH_REASONS.find((r) => r === affinity?.affinity_switch_reason) ?? null;
+    const provider = run.provider;
+    const model = this.ledger.latestProviderBinding(run.meta_session_id, provider)?.model ?? null;
+    this.ledger.immediate(() => {
+      const row = this.ledger.getProjectAffinity(key);
+      const written = this.ledger.writeProjectAffinity({
+        projectKey: key,
+        provider,
+        model,
+        lastRunId: run.id,
+        reason,
+        expectedVersion: row?.version,
+      });
+      if (!written) return;
+      if (row?.reset_requested_at) {
+        this.ledger.appendRunEvent({
+          runId: run.id,
+          type: "routing_affinity_reset",
+          payload: { project_key: key, by: row.reset_by },
+        });
+      }
+      if (row !== undefined && row.provider === provider && row.model === model) {
+        this.ledger.appendRunEvent({
+          runId: run.id,
+          type: "routing_affinity_held",
+          payload: { project_key: key, provider, model },
+        });
+      } else {
+        this.ledger.appendRunEvent({
+          runId: run.id,
+          type: "routing_affinity_switched",
+          payload: {
+            project_key: key,
+            from_provider: row?.provider ?? null,
+            to_provider: provider,
+            from_model: row?.model ?? null,
+            to_model: model,
+            reason,
+          },
+        });
+      }
+    });
   }
 
   /** LLD §16.4 table, at every terminal transition of a routed run, in the transition's transaction. */
@@ -2293,6 +2371,7 @@ export class RunLifecycle {
     }
     const scoring = this.opts.routing ?? DEFAULT_ROUTE_SCORING;
     const from = failed.provider as string;
+    const scoreInputs = collectScoreInputs(this.ledger, answer.decision.eligible, scoring, this.now(), from);
     const routed = buildRouteDecision({
       input: answer.input,
       decision: answer.decision,
@@ -2304,7 +2383,22 @@ export class RunLifecycle {
         verificationCommands: req.verification_commands?.length ?? 0,
         writable: failed.trust_profile !== "inspect-untrusted",
       }),
-      scoreInputs: collectScoreInputs(this.ledger, answer.decision.eligible, scoring, this.now(), from),
+      scoreInputs,
+      // T7.5 (FR-CAP-06 amended, FR-RTE-07): a capacity failover re-bases the project's affinity on success.
+      affinity: collectAffinityFacts(
+        this.ledger,
+        {
+          projectId: failed.project_id ?? null,
+          workspace: req.workspace,
+          applies: true,
+          requiredProvider: null,
+          admissible: answer.decision.eligible,
+          decision: answer.decision,
+          scoreInputs,
+          forcedReason: "capacity_exhausted",
+        },
+        scoring.affinity ?? DEFAULT_AFFINITY,
+      ),
       weights: scoring.weights,
       basis: () => `handoff quota_failover from ${from}`,
       continuation: { mode: "handoff", reason: "quota_failover", from_provider: from },

@@ -7,9 +7,11 @@
 import { breakerOutcome } from "../capacity/breaker.js";
 import { collectCapacityInputs } from "../capacity/collect.js";
 import { estimateCapacity } from "../capacity/estimate.js";
+import { projectKey } from "../capacity/projection.js";
 import { capacityProviders } from "../capacity/providers.js";
-import type { ResolvedConfig } from "../config/index.js";
+import type { AffinitySettings, ResolvedConfig } from "../config/index.js";
 import type { Ledger, NewRouteDecision, RouteDecisionRow } from "../ledger/index.js";
+import { type AffinityFacts, type AffinityRecord, affinityRecord, planAffinity } from "./affinity.js";
 import type { EligibilityDecision, EligibilityInput } from "./eligibility.js";
 import type { RouteFeatures } from "./features.js";
 import {
@@ -31,7 +33,15 @@ export interface RouteScoringSettings {
   confidenceRuns: number;
   providers?: ResolvedConfig["providers"];
   limits?: Pick<ResolvedConfig["limits"], "perProviderConcurrency">;
+  /** T7.5 (LLD §17.1): `routing.affinity`. Absent means enabled with both estimate thresholds null. */
+  affinity?: AffinitySettings;
 }
+
+export const DEFAULT_AFFINITY: Readonly<AffinitySettings> = Object.freeze({
+  enabled: true,
+  lowWaterMark: null,
+  minConfidence: null,
+});
 
 /** LLD §16.1 and §17.1 defaults, for callers built without configuration (tests, the M1 lifecycle). */
 export const DEFAULT_ROUTE_SCORING: Readonly<RouteScoringSettings> = Object.freeze({
@@ -88,6 +98,61 @@ export function collectScoreInputs(
   return out;
 }
 
+/** What {@link collectAffinityFacts} needs to know about the request. */
+export interface AffinityQuestion {
+  projectId: string | null;
+  /** Canonical workspace path (the project key when there is no project). */
+  workspace: string;
+  /** False for `continue_task` (LLD §17.6). */
+  applies: boolean;
+  requiredProvider: string | null;
+  admissible: readonly string[];
+  decision: EligibilityDecision;
+  scoreInputs: Readonly<Record<string, ScoreInputs>>;
+  forcedReason?: AffinityFacts["forcedReason"];
+}
+
+/** LLD §17.6: read the project's row and the facts the reasons are detected from. Read-only. */
+export function collectAffinityFacts(ledger: Ledger, q: AffinityQuestion, settings: AffinitySettings): AffinityFacts {
+  const key = projectKey(q.projectId, q.workspace);
+  const row = settings.enabled ? ledger.getProjectAffinity(key) : undefined;
+  let latestOnAffine: AffinityFacts["latestOnAffine"] = null;
+  if (row !== undefined) {
+    const latest = ledger.latestProjectRunOnProvider(q.projectId, q.workspace, row.provider, row.updated_at);
+    if (latest !== undefined) {
+      const retryExhausted = ledger.listRunEvents(latest.id).some((e) => {
+        if (e.type !== "retry_not_scheduled") return false;
+        try {
+          return (JSON.parse(e.payload_json) as { reason?: unknown }).reason === "attempts_exhausted";
+        } catch {
+          return false;
+        }
+      });
+      latestOnAffine = { failureCode: latest.failure_code, retryExhausted };
+    }
+  }
+  const affineInputs = row !== undefined ? q.scoreInputs[row.provider] : undefined;
+  return {
+    enabled: settings.enabled,
+    applies: q.applies,
+    projectKey: key,
+    row:
+      row !== undefined
+        ? { provider: row.provider, model: row.model, reset_requested_at: row.reset_requested_at }
+        : undefined,
+    requiredProvider: q.requiredProvider,
+    admissible: q.admissible,
+    excluded: q.decision.excluded.map((e) => ({ provider: e.provider, codes: e.reasons.map((r) => r.code) })),
+    latestOnAffine,
+    estimate:
+      affineInputs !== undefined
+        ? { capacityScore: affineInputs.capacity_score, confidence: affineInputs.capacity_confidence }
+        : null,
+    thresholds: { lowWaterMark: settings.lowWaterMark, minConfidence: settings.minConfidence },
+    ...(q.forcedReason !== undefined ? { forcedReason: q.forcedReason } : {}),
+  };
+}
+
 function median(xs: number[]): number | null {
   if (xs.length === 0) return null;
   const s = [...xs].sort((a, b) => a - b);
@@ -114,12 +179,15 @@ export interface RouteDecisionRequest {
   project?: { id: string; excluded: readonly string[]; revision?: number };
   /** T5.6 (LLD §15.7 step 7): how a continuation runs; controller values only. */
   continuation?: { mode: "resume" | "handoff"; reason: string; from_provider: string; problem?: string };
+  /** T7.5 (LLD §3.2, §17.6): the affinity step's facts; absent means no affinity object is recorded. */
+  affinity?: AffinityFacts;
 }
 
 export interface RouteDecisionResult {
   provider: string | null;
   rule: SelectionBasis | null;
   basis: string;
+  affinity: AffinityRecord | null;
   record: Omit<NewRouteDecision, "runId">;
 }
 
@@ -127,16 +195,20 @@ export interface RouteDecisionResult {
 export function buildRouteDecision(req: RouteDecisionRequest): RouteDecisionResult {
   const { input, decision } = req;
   const required = input.requiredProvider ?? null;
+  const plan = req.affinity !== undefined ? planAffinity(req.affinity) : null;
   const selection = selectRoute({
     candidateOrder: input.candidates,
     eligible: req.admissible,
     requiredProvider: required,
     preference: req.preference,
-    affinityProvider: null,
-    excludeFromScore: null,
+    affinityProvider: plan?.affinityProvider ?? null,
+    excludeFromScore: plan?.excludeFromScore ?? null,
     scoreInputs: req.scoreInputs,
     weights: req.weights,
   });
+  const scored = selection.basis === "score" || selection.basis === "configured_order";
+  const affinity =
+    req.affinity !== undefined && plan !== null ? affinityRecord(req.affinity, plan, selection.provider, scored) : null;
   const scoreOf = new Map(selection.scored.map((c) => [c.provider, c]));
   // The human basis keeps the M2 wording for a required provider (`provider_preference`, which V8 makes name it); the
   // rule beside it says `required_provider` (LLD §17.4 "As built").
@@ -180,6 +252,7 @@ export function buildRouteDecision(req: RouteDecisionRequest): RouteDecisionResu
       ? { selection: { provider: selection.provider, basis, rule: selection.basis } }
       : {}),
     ...(req.continuation !== undefined ? { continuation: req.continuation } : {}),
+    ...(affinity !== null ? { affinity } : {}),
     ...(req.project !== undefined
       ? {
           project: {
@@ -194,6 +267,7 @@ export function buildRouteDecision(req: RouteDecisionRequest): RouteDecisionResu
     provider: selection.provider,
     rule: selection.basis,
     basis,
+    affinity,
     record: {
       features_json,
       weights_json: JSON.stringify(Object.fromEntries(SCORE_TERMS.map((t) => [t, req.weights[t]]))),
@@ -235,7 +309,11 @@ export function replayRouteDecision(
   const differences: string[] = [];
   const weights = JSON.parse(row.weights_json ?? "null") as Weights | null;
   if (weights === null) return { schemaVersion: 2, ok: false, differences: ["weights_json missing"] };
-  const reasons = JSON.parse(row.reasons_json) as { selection?: { provider?: string; rule?: string | null } };
+  const reasons = JSON.parse(row.reasons_json) as {
+    selection?: { provider?: string; rule?: string | null };
+    affinity?: Partial<AffinityRecord>;
+  };
+  const affinity = reasons.affinity;
   const inputs: Record<string, ScoreInputs> = {};
   for (const [p, v] of Object.entries(f.score_inputs ?? {})) if (v !== null) inputs[p] = v;
   const selection = selectRoute({
@@ -243,8 +321,9 @@ export function replayRouteDecision(
     eligible: f.admissible ?? [],
     requiredProvider: f.required_provider ?? null,
     preference: f.provider_preference ?? null,
-    affinityProvider: null,
-    excludeFromScore: null,
+    // A held affinity selected its provider before the score; the stored object says so (LLD §17.6).
+    affinityProvider: affinity?.held === true ? (affinity.provider ?? null) : null,
+    excludeFromScore: affinity?.excluded_from_score ?? null,
     scoreInputs: inputs,
     weights,
   });

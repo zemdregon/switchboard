@@ -19,13 +19,23 @@ afterEach(async () => {
 
 describe("route decision replay (T7.2, FR-RTE-03)", () => {
   it("reproduces every stored decision of a mixed session from the stored row alone", async () => {
-    const first = await h.delegate("ok");
+    // With affinity (T7.5) the project stays on its provider unless a listed reason applies, so the sequence uses the
+    // reasons to reach every selection rule.
+    const first = await h.delegate("ok"); // first run: configured order
     expect(first.status).toBe("SUCCEEDED");
-    const overloaded = await h.delegate("overload", { provider_preference: "fake" });
+    // A quota stop on the affine `fake` fails over by stage 2 to another eligible provider (capacity_exhausted).
+    const quota = await h.delegate("quota", { provider_preference: "fake" });
+    expect(quota.failure_code).toBe("QUOTA_EXHAUSTED");
+    await h.waitFor(() => h.ledger.listRunEvents(quota.run_id).some((e) => e.type === "quota_ladder"));
+    const ladder = h.ledger.listRunEvents(quota.run_id).find((e) => e.type === "quota_ladder");
+    expect(JSON.parse(ladder?.payload_json ?? "{}")).toMatchObject({ outcome: "failover" });
+    await h.settle(h.ledger.findSuccessorRun(quota.run_id)?.id as string);
+    // Overload on the new affine provider, retried until exhausted; the next run is scored without it.
+    const overloaded = await h.delegate("overload");
     expect(overloaded.status).toBe("FAILED");
     if (overloaded.superseded_by !== undefined) await h.settle(overloaded.superseded_by); // the retry fails the same way
-    await h.delegate("ok"); // now scored with history on `fake`
-    await h.delegate("ok", { provider_preference: "grok" });
+    await h.delegate("ok"); // failed_after_retry: scored with history
+    await h.delegate("ok", { provider_preference: "grok" }); // affinity holds over a preference
     await h.delegate("ok", { provider_preference: "fake-b", require_provider: true });
     // A same-provider continuation, and one that names another provider (a handoff).
     const resumed = await h.ok("continue_task", { meta_session_id: first.meta_session_id, instruction: "ok" });
@@ -36,12 +46,6 @@ describe("route decision replay (T7.2, FR-RTE-03)", () => {
       routing: { provider_preference: "grok" },
     });
     await h.settle(handed.run_id);
-    // A quota stop on `fake` fails over by stage 2 to another eligible provider.
-    const quota = await h.delegate("quota", { provider_preference: "fake" });
-    expect(quota.failure_code).toBe("QUOTA_EXHAUSTED");
-    await h.waitFor(() => h.ledger.listRunEvents(quota.run_id).some((e) => e.type === "quota_ladder"));
-    const ladder = h.ledger.listRunEvents(quota.run_id).find((e) => e.type === "quota_ladder");
-    expect(JSON.parse(ladder?.payload_json ?? "{}")).toMatchObject({ outcome: "failover" });
 
     const rows = h.decisions();
     expect(rows.length).toBe(9);
@@ -62,7 +66,9 @@ describe("route decision replay (T7.2, FR-RTE-03)", () => {
         cost: 1,
       });
     }
-    expect(rules).toEqual(new Set(["configured_order", "score", "provider_preference", "required_provider"]));
+    expect(rules).toEqual(
+      new Set(["configured_order", "score", "affinity", "provider_preference", "required_provider"]),
+    );
   }, 60_000);
 
   it("reports a tampered row and replays an M2 eligibility-only row as version 1", async () => {

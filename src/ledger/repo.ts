@@ -788,6 +788,16 @@ export interface Ledger {
   /** T7.4: record an operator reset on an existing row; false when the project has no row (nothing written). */
   requestAffinityReset(projectKey: string, by: string): boolean;
   /**
+   * T7.5 (LLD §17.6): the project's latest terminal run on `provider` that finished after `afterIso`. The project is
+   * `projectId`, or with none the runs without a project whose stored request names `workspace`.
+   */
+  latestProjectRunOnProvider(
+    projectId: string | null,
+    workspace: string,
+    provider: string,
+    afterIso: string,
+  ): { id: string; state: string; failure_code: string | null } | undefined;
+  /**
    * T6.4 (LLD §16.4): write the breaker columns of `provider`'s row, creating it if needed with `auth_state =
    * 'UNKNOWN'` and `version_state = 'UNVERIFIED'` (placeholders nothing reads). Bumps `version`.
    */
@@ -1404,6 +1414,23 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
           version: w.expectedVersion,
         });
       return r.changes === 1;
+    },
+
+    latestProjectRunOnProvider(projectId, workspace, provider, afterIso) {
+      const where =
+        projectId !== null
+          ? "project_id = @project"
+          : "project_id IS NULL AND json_extract(request_json, '$.workspace') = @workspace";
+      return db
+        .prepare(
+          `SELECT id, state, failure_code FROM run
+           WHERE provider = @provider AND state IN ('SUCCEEDED', 'FAILED', 'CANCELLED')
+             AND finished_at IS NOT NULL AND finished_at > @after AND ${where}
+           ORDER BY finished_at DESC, id DESC LIMIT 1`,
+        )
+        .get({ provider, after: afterIso, project: projectId, workspace }) as
+        | { id: string; state: string; failure_code: string | null }
+        | undefined;
     },
 
     requestAffinityReset(projectKey, by) {
