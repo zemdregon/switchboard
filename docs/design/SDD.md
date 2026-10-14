@@ -58,7 +58,7 @@ AWAITING_APPROVAL and WAITING_CAPACITY as side states.
 | WF-11 Commit through the injected tool | The agent calls the shim, which forwards over the per-run socket to COMP-GIT; COMP-GIT checks run state with COMP-LED, builds the tree through COMP-WS, writes the commit on the publish ref, and records provenance and a `git_commit` event in one COMP-LED transaction. | Violations found at FINALIZING are reported as `git_policy_violation` events (BR-27). When the commit-message task is enabled and the agent gave no message, COMP-GIT asks COMP-INN for a draft of the committed paths' diff and sanitises it like any message; empty or unavailable returns a tool error (FR-INN-10). |
 | WF-12 Publish | COMP-GIT asks COMP-POL for the push decision (policy, ref, credential reach), pushes from the controller process, and records a `git_push` event and provenance update through COMP-LED. | Agent-originated and operator-originated pushes take the same path. |
 | WF-13 Inner task execution | A caller (COMP-GIT, COMP-RTE, handoff builder, COMP-EXE or COMP-OPS) asks COMP-INN for a task with controller-owned inputs; COMP-INN applies locality gating, redaction and budget, calls the backend port, validates, and writes an `inner_call` record through COMP-LED; the caller receives validated text or "unavailable" and applies its fallback. | Defined in the [FRD](../requirements/FRD.md) as WF-13; sequence in [HLD §6.5](HLD.md#65-inner-task-call-including-commit-message-drafting-wf-13-wf-11). No branch reaches COMP-POL, retry or push (FR-INN-06). |
-| WF-14 Retrieval for a run | In the `serve` daemon COMP-RAG scans the project's contexts (paths from COMP-PRJ), applies exclusions and redaction, embeds through the backend port under the inner-agent locality gates, and stores chunks in the project index; at admission COMP-MCP asks COMP-RAG for a context pack within the token budget; COMP-RAG returns snippets or nothing; COMP-LED records the run with the original text unchanged plus snippet ids and hashes, and index and retrieval records without content. | Defined in the [FRD](../requirements/FRD.md) as WF-14; sequence in [HLD §6.6](HLD.md#66-retrieval-for-a-run-wf-14-m12-proposed). Nothing reaches COMP-POL, eligibility, retry or push (FR-RAG-07, BR-46). Failure at any step gives no pack (FR-RAG-08). The pack is placed after stable prompt content (FR-RTE-09). |
+| WF-14 Retrieval for a run | In the `serve` daemon COMP-RAG scans the project's contexts (paths from COMP-PRJ), applies exclusions and redaction, embeds through the backend port under the inner-agent locality gates, and stores chunks in the project index; at admission COMP-MCP asks COMP-RAG for a context pack within the token budget; COMP-RAG returns snippets or nothing; COMP-LED records the run with the original text unchanged plus snippet ids and hashes, and index and retrieval records without content. | Defined in the [FRD](../requirements/FRD.md) as WF-14; sequence in [HLD §6.6](HLD.md#66-retrieval-for-a-run-wf-14-m12-proposed). Admission pack mechanism: [LLD §14.11](LLD.md#1411-admission-context-pack-t125), [TDD §3.13.8](TDD.md#3138-t125-admission-time-context-pack-2026-10-14) (design on `main`; runtime wiring pending [PR #182](https://github.com/zemdregon/switchboard/pull/182)). Nothing reaches COMP-POL, eligibility, retry or push (FR-RAG-07, BR-46). Failure at any step gives no pack (FR-RAG-08). The pack is placed after stable prompt content (FR-RTE-09). |
 
 Routing note for WF-1, WF-2, WF-3 and WF-5 (M7): COMP-RTE reads the project's `project_affinity` row from COMP-LED after
 the eligibility filter and before scoring. WF-2 stays on the bound provider as before (FR-SES-03); the affinity only
@@ -201,14 +201,19 @@ store and sharing rules are T12.7), FR-RAG-11 (caps in configuration only; backg
 
 #### T12.5 — admission context pack (design intent)
 
-**Not implemented on `main`.** Specification: [LLD §14.11](LLD.md#1411-admission-context-pack-t125) (FR-RAG-05,
-FR-RAG-07, FR-RAG-08). Depends on T12.4 (`rag_record`, background build). Planned evidence: admission wiring in
-COMP-MCP / lifecycle, `src/retrieval/import-boundary.test.ts` and the authority-boundary scenario in [TDD
+**Design evidence (on `main`).** FR-RAG-05, FR-RAG-07 and FR-RAG-08 (WF-14 admission context pack; BR-46) are specified
+in [LLD §14.11](LLD.md#1411-admission-context-pack-t125) (with [§14.6](LLD.md#146-selection-and-token-budget),
+[§14.8](LLD.md#148-freshness-and-fallback) and [§14.10](LLD.md#1410-events-and-records)) and the engineering test plan
+in [TDD §3.13.8](TDD.md#3138-t125-admission-time-context-pack-2026-10-14); authority-boundary scenarios in [TDD
 §3.13.3](TDD.md#3133-testing-affinity-and-retrieval).
 
-Not implemented yet (design unchanged): WF-14 end-to-end wiring for T12.5, `search_project_context` (FR-RAG-06),
-operator `index` and `doctor` retrieval sections (FR-RAG-11, FR-RAG-14, T12.4), global read and contribute (FR-RAG-09,
-FR-RAG-10, T12.7).
+**Runtime (not on `main` yet).** T12.4 (`rag_record`, background build) and admission wiring land with open
+[PR #182](https://github.com/zemdregon/switchboard/pull/182). Planned evidence when merged: COMP-MCP / lifecycle admission
+path, `src/retrieval/import-boundary.test.ts` and the hostile-pack admission integration tests in TDD §3.13.8.
+
+**Not implemented yet on `main`:** WF-14 end-to-end admission behaviour for T12.5, `search_project_context`
+(FR-RAG-06), operator `index` and `doctor` retrieval sections (FR-RAG-11, FR-RAG-14, T12.4), global read and
+contribute (FR-RAG-09, FR-RAG-10, T12.7).
 
 ## 5. Requirements to design traceability
 
@@ -219,6 +224,9 @@ the cell says so.
 
 M12 retrieval through T12.3 (FR-RAG-01–04 on fakes) lists primary tests and modules under [TDD
 §3.13.5](TDD.md#3135-t121-config-and-store-2026-10-14)–[§3.13.7](TDD.md#3137-t123-embedding-port-and-locality-gates-2026-10-14).
+T12.5 admission pack design for FR-RAG-05, FR-RAG-07 and FR-RAG-08 is on `main` in [LLD
+§14.11](LLD.md#1411-admission-context-pack-t125) and [TDD §3.13.8](TDD.md#3138-t125-admission-time-context-pack-2026-10-14);
+implementation evidence is pending [PR #182](https://github.com/zemdregon/switchboard/pull/182) ([§4.1](#t125--admission-context-pack-design-intent)).
 
 | ID | Component(s) | Design element / mechanism | ADR(s) | Detail |
 | --- | --- | --- | --- | --- |
@@ -354,10 +362,10 @@ M12 retrieval through T12.3 (FR-RAG-01–04 on fakes) lists primary tests and mo
 | FR-RAG-02 | COMP-RAG, COMP-PRJ | Scanner limited to context roots; exclusions, secret denylist, FR-INN-16 redaction before embedding and storage | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.3](LLD.md#143-scanner-chunking-and-redaction) |
 | FR-RAG-03 | COMP-RAG, COMP-PRJ | One store file per project; store deleted with the project; no cross-project read except the global path | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.2](LLD.md#142-stores-and-tables) |
 | FR-RAG-04 | COMP-RAG | Embedding backend port (`local`, `http`) with the inner-agent locality classification and gates; no credential; inert without a backend | [ADR-0031](../adr/0031-retrieval-index.md), [ADR-0016](../adr/0016-inner-agent.md) | [LLD §14.4](LLD.md#144-embedding-backend-port-and-privacy-gates) |
-| FR-RAG-05 | COMP-RAG, COMP-MCP, COMP-LED | Context pack at admission within `max_context_tokens`, labelled snippets, original request text stored unchanged, ids and hashes recorded | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.11](LLD.md#1411-admission-context-pack-t125), [LLD §14.6](LLD.md#146-selection-and-token-budget) |
+| FR-RAG-05 | COMP-RAG, COMP-MCP, COMP-LED | Context pack at admission within `max_context_tokens`, labelled snippets, original request text stored unchanged, ids and hashes recorded | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.11](LLD.md#1411-admission-context-pack-t125), [LLD §14.6](LLD.md#146-selection-and-token-budget), [TDD §3.13.8](TDD.md#3138-t125-admission-time-context-pack-2026-10-14) |
 | FR-RAG-06 | COMP-MCP, COMP-RAG, COMP-PRJ | Read-only tool `search_project_context`, client sees only its projects, bounded count and size | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.7](LLD.md#147-tool-contract-search_project_context) |
-| FR-RAG-07 | COMP-RAG, COMP-POL, COMP-ADP, COMP-RTE, COMP-GIT | Structural authority boundary: no dependency edge from policy, compile, eligibility, retry or push code; import-boundary test | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.11](LLD.md#14116-import-boundary-fr-rag-07), [TDD §3.13](TDD.md#313-retrieval-index) |
-| FR-RAG-08 | COMP-RAG, COMP-WS | Index revision and file hash on results; stale snippets dropped or re-read; base-ref mismatch flagged; any failure gives no pack | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.11](LLD.md#1411-admission-context-pack-t125), [LLD §14.8](LLD.md#148-freshness-and-fallback) |
+| FR-RAG-07 | COMP-RAG, COMP-POL, COMP-ADP, COMP-RTE, COMP-GIT | Structural authority boundary: no dependency edge from policy, compile, eligibility, retry or push code; import-boundary test | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.11](LLD.md#14116-import-boundary-fr-rag-07), [TDD §3.13.3](TDD.md#3133-testing-affinity-and-retrieval), [TDD §3.13.8](TDD.md#3138-t125-admission-time-context-pack-2026-10-14) |
+| FR-RAG-08 | COMP-RAG, COMP-WS | Index revision and file hash on results; stale snippets dropped or re-read; base-ref mismatch flagged; any failure gives no pack | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.11](LLD.md#1411-admission-context-pack-t125), [LLD §14.8](LLD.md#148-freshness-and-fallback), [TDD §3.13.8](TDD.md#3138-t125-admission-time-context-pack-2026-10-14) |
 | FR-RAG-09 | COMP-RAG, COMP-OPS | Optional separate global store (default off) holding operator-added sources and opt-in project contributions | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.2](LLD.md#142-stores-and-tables), [LLD §14.9](LLD.md#149-global-index-and-sharing) |
 | FR-RAG-10 | COMP-RAG, COMP-PRJ | Global read only with `use_global`; snippets labelled with origin project; same gates and profile | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.9](LLD.md#149-global-index-and-sharing) |
 | FR-RAG-11 | COMP-RAG, COMP-OPS | Caps on files, chunks, bytes and build time; background build in `serve`; incomplete marker; `index status`, `index rebuild`, `index clear` write operator records only | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.5](LLD.md#145-incremental-build), [LLD §14.1](LLD.md#141-configuration-shape) |
