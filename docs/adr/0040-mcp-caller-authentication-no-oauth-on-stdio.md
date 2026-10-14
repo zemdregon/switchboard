@@ -1,6 +1,6 @@
 # ADR-0040: MCP caller authentication: no OAuth on the stdio transport
 
-- Status: Proposed
+- Status: Accepted (owner decision, 2026-10-14, PR #102 comment: stdio launch binding is enough; Q-66)
 - Date: 2026-10-14
 - Decided by: Delegated (agent, 2026-10-14, at the owner's request to choose an authentication approach), under [owner
   decision 25](../ROADMAP.md#42-owner-decisions) for everything outside bypass mode. Not a zemdregon quote and not
