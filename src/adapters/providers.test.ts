@@ -59,7 +59,13 @@ import {
 } from "./providers.js";
 import { AdapterRegistry } from "./registry.js";
 import { createProbeRunner, startAdapterRun } from "./run.js";
-import type { Invocation, ProbeRunner, ProviderId, ResolvedProfile } from "./types.js";
+import {
+  type Invocation,
+  type ProbeRunner,
+  type ProviderId,
+  type ResolvedProfile,
+  resumeMayChangeDirectory,
+} from "./types.js";
 
 /** Removes every registration a test made, so module state never leaks into other tests (or files). */
 const cleanups: (() => void)[] = [];
@@ -140,6 +146,34 @@ describe("derived constants equal the pre-T4.1 values", () => {
   });
 });
 
+describe("resumeCwd declarations (T5.7; ADR-0038 item 6.3, TDD §4.10)", () => {
+  it("the table names TDD §4.10's value for every built-in provider", () => {
+    expect(Object.fromEntries(BUILTIN_PROVIDERS.map((e) => [e.id, e.resumeCwd]))).toEqual({
+      claude: "unverified",
+      codex: "unverified",
+      grok: "unverified",
+      antigravity: "bound",
+      cursor: "unverified",
+      opencode: "unverified",
+      kimi: "unverified",
+      fake: "bound",
+    });
+  });
+
+  it("every adapter declares the value of its entry, and only `independent` lets a resume change directory", () => {
+    for (const entry of providerEntries()) {
+      if (entry.create === undefined) continue;
+      const adapter = entry.create({});
+      expect(adapter.resumeCwd, entry.id).toBe(entry.resumeCwd);
+      expect(resumeMayChangeDirectory(adapter), entry.id).toBe(false);
+    }
+    expect(resumeMayChangeDirectory({ resumeCwd: "independent" })).toBe(true);
+    for (const v of ["bound", "unverified", undefined, "Independent", null]) {
+      expect(resumeMayChangeDirectory({ resumeCwd: v })).toBe(false);
+    }
+  });
+});
+
 describe("registerProvider refuses anything but a clean addition", () => {
   const base: ProviderEntry = { id: "zeta", configId: "zeta-cli", kind: "real", bypassFlags: [] };
   const cases: [string, ProviderEntry, RegExp][] = [
@@ -152,6 +186,11 @@ describe("registerProvider refuses anything but a clean addition", () => {
     ["a flag with a value", { ...base, bypassFlags: ["--x=1"] }, /malformed bypass flag/],
     ["a flag without dashes", { ...base, bypassFlags: ["x"] }, /malformed bypass flag/],
     ["an empty flag", { ...base, bypassFlags: [""] }, /malformed bypass flag/],
+    [
+      "a malformed resumeCwd",
+      { ...base, resumeCwd: "maybe" as NonNullable<ProviderEntry["resumeCwd"]> },
+      /malformed resumeCwd/,
+    ],
   ];
   for (const [label, entry, message] of cases) {
     it(label, () => {

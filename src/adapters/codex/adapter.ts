@@ -163,6 +163,11 @@ export class CodexAdapter implements ProviderAdapter {
   readonly id = "codex" as const;
   readonly transports = ["subprocess-jsonl"] as const;
   readonly gitWriteControl = CODEX_GIT_WRITE_CONTROL;
+  /**
+   * T5.7 (ADR-0038 item 6.3): TDD §4.10 records whether a resumed session is tied to its directory as
+   * `Unverified: T5.12`, so a resume reuses the origin worktree path (handled as `bound`).
+   */
+  readonly resumeCwd = "unverified" as const;
   readonly gitCapabilities = CODEX_GIT_CAPABILITIES;
   readonly #exe: string | undefined;
   readonly #launcher: readonly string[];

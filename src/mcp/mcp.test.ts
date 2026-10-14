@@ -115,6 +115,7 @@ function recorded(inner: ProviderAdapter, auth?: AuthResult): Recorded {
     id: inner.id,
     transports: inner.transports,
     gitWriteControl: inner.gitWriteControl,
+    resumeCwd: inner.resumeCwd,
     gitCapabilities: inner.gitCapabilities,
     probe: (r) => inner.probe(r),
     authPreflight: (r) => (auth ? Promise.resolve(auth) : inner.authPreflight(r)),

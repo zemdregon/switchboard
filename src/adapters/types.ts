@@ -327,11 +327,32 @@ export interface ChannelArgs extends Pick<Invocation, "argv" | "env"> {
   readonly removeFlags?: readonly string[];
 }
 
+/**
+ * Whether a resumed native session is tied to the working directory it was created in (T5.7; ADR-0038 item 6.3,
+ * LLD §15.6). Static adapter data, set from TDD §4.10:
+ * - `bound`: sourced as tied to the directory (Antigravity, Muse Code).
+ * - `unverified`: not known (Claude Code, Codex, Grok Build, Cursor, OpenCode, Kimi Code until their operator checks
+ *   record a result). Handled exactly as `bound` (NFR-SEC-06).
+ * - `independent`: a dated capture recorded `PASS` for resume from another worktree (T5.12 check 2 or the provider's M4
+ *   operator item). The only value that lets a resume run in a fresh worktree path.
+ */
+export type ResumeCwd = "bound" | "independent" | "unverified";
+
+/**
+ * True only for `independent`. Every other value, and a missing or malformed declaration, means the resume runs in the
+ * worktree path of the run that created the native session (fail closed, NFR-SEC-06).
+ */
+export function resumeMayChangeDirectory(adapter: { readonly resumeCwd?: unknown }): boolean {
+  return adapter.resumeCwd === "independent";
+}
+
 export interface ProviderAdapter {
   readonly id: ProviderId;
   readonly transports: readonly Transport[];
   /** FR-GIT-01 declaration, surfaced by `list_capabilities`. */
   readonly gitWriteControl: GitWriteControl;
+  /** T5.7 declaration ({@link ResumeCwd}): whether a native resume is tied to its working directory. */
+  readonly resumeCwd: ResumeCwd;
   /** FR-GIT-02 declaration (T9.4): whether and how the per-run injected tool channel reaches the provider. */
   readonly gitCapabilities: GitCapabilities;
 

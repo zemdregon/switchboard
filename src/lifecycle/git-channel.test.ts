@@ -100,6 +100,7 @@ function capturing(scenario: FakeScenario): ProviderAdapter {
     id: inner.id,
     transports: inner.transports,
     gitWriteControl: inner.gitWriteControl,
+    resumeCwd: inner.resumeCwd,
     gitCapabilities: {
       ...inner.gitCapabilities,
       channelArgs: (shim, req, p) => {
