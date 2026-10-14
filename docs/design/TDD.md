@@ -1148,8 +1148,43 @@ budget](LLD.md#146-selection-and-token-budget), [§14.8 Freshness and fallback](
   deleted and moved files; stale store; base-ref flag); timeout and injected backend failure → no pack and unchanged run
   row; pack labelling and token budget (de-overlap and cap); ledger and event payloads contain ids and hashes only
   (recursive scan for planted canary strings); admission integration on the fake lifecycle path with retrieval on versus
-  off and versus hostile snippets. Global-index merge at admission is exercised in T12.7; T12.5 may stub `use_global: false`
-  only.
+  off and versus hostile snippets. Global-index merge at admission is specified in [§3.13.9](#3139-t127-global-index-and-sharing-2026-10-14)
+  and lands with the T12.7 runtime; T12.5 on `main` stubs `use_global: false` only.
+
+#### 3.13.9 T12.7 global index and sharing (2026-10-14)
+
+**Design evidence (on `main`).** Specifies FR-RAG-09 and FR-RAG-10 ([SRS
+§3.15](../requirements/SRS.md#315-retrieval-index-fr-rag), [FRD BR-47](../requirements/FRD.md#3-business-rules), WF-14
+global leg). **Runtime in progress** ([#197](https://github.com/zemdregon/switchboard/pull/197), w61-t127 on sb-worker-a;
+not on `origin/main`).
+
+- **Specification.** [LLD §14.9](LLD.md#149-global-index-and-sharing): optional `rag.global.enabled` (default off),
+  operator-added `sources` under an allowed root, per-project `contribute_to_global` and `use_global` (each default false);
+  content of `untrusted` contexts does not contribute unless explicitly allowed; every global snippet carries
+  `origin_project` or a source label; a snippet from project A never reaches project B unless A contributes and B sets
+  `use_global`; the same §14.4 locality gates and run profile apply and global content stays labelled data with no
+  authority (FR-RAG-07). Separate global SQLite store, caps and `index clear global`: [LLD
+  §14.2](LLD.md#142-stores-and-tables), [LLD §14.1](LLD.md#141-configuration-shape). Admission search merges project
+  and global hits in [LLD §14.6](LLD.md#146-selection-and-token-budget) step 3 with the T12.5 pack path ([LLD
+  §14.11](LLD.md#1411-admission-context-pack-t125)). `search_project_context` scopes `global` and `both` when a global
+  store exists: [LLD §14.7](LLD.md#147-tool-contract-search_project_context). Traceability: [SDD
+  §5](SDD.md#5-requirements-to-design-traceability) (`FR-RAG-09`, `FR-RAG-10`); [ADR-0031](../adr/0031-retrieval-index.md).
+- **Configuration and narrowing (implemented, T12.1).** Global `sources` under an allowed root; per-project sharing flags
+  in config; dynamic project definitions cannot set or widen `use_global` or `contribute_to_global` ([§3.13.5](#3135-t121-config-and-store-2026-10-14),
+  `src/config/rag.ts`, `src/projects/rules.ts`, `src/mcp/project-tools.test.ts`).
+- **Runtime gaps on `main` (T12.7 implementation).** No global store is built under `<data>/rag/`; `index rebuild global`
+  and `index clear global` are refused (`src/cli/rag-index.ts`); admission searches the project store only ([§3.13.8](#3138-t125-admission-time-context-pack-2026-10-14));
+  T12.6 returns `GLOBAL_NOT_AVAILABLE` for `global` or `both` until the global store exists (`src/mcp/search-context.ts`,
+  `src/mcp/search-context.test.ts`).
+- **Tests (fake embedder only, no network; land with T12.7 runtime).** Extend [§3.13.3](#3133-testing-affinity-and-retrieval)
+  isolation: two projects with distinct planted markers — B with `use_global: true` sees A's marker in the global index
+  only when A has `contribute_to_global: true` and the global store is built; otherwise never; operator `sources` chunks
+  appear with a source label. Contribution copy re-applies redaction and exclusions; `untrusted` context content is
+  excluded by default; removing `contribute_to_global` or `index clear` for a project drops its contributions on the next
+  global build. Admission with `use_global: true` merges global hits into the pack with origin labels and the same
+  freshness, token budget, ledger shape and authority boundary as T12.5; `use_global: false` matches current T12.5
+  behaviour. CLI: `index rebuild global`, `index clear global`, and a `doctor` global subsection when enabled. Tool:
+  `global` and `both` read the built global store when the project has `use_global: true`.
 
 ### 3.14 Network MCP transport (M13)
 
