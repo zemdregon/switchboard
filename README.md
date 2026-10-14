@@ -338,6 +338,11 @@ or when nothing was sent because the agent or the task is off. A task whose reje
 threshold is suspended and falls back until you run `inner resume <task>` (quality counting then restarts). Neither
 command prints a base URL's userinfo, a header, a key or any prompt or response text.
 
+Which tasks run today (2026-10-14): only the commit-message task is wired into a run path (the optional `message` on
+the `commit` tool). The PR-draft, verification-summary and run-title tasks exist as service functions, tested on fakes,
+and nothing calls them yet; the handoff and routing tasks need milestones 5 and 7. No hosted or live backend has been
+exercised: every test uses a scripted fake or a local fake server.
+
 ## Trust profiles
 
 A trust profile says what a delegated agent may do ([ADR-0004](docs/adr/0004-trust-profiles-no-bypass-flags.md)). Each
