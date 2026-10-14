@@ -21,6 +21,7 @@ import { findOrphans, MIN_GIT_VERSION, planRetentionGc } from "../workspace/inde
 import { projectCapacity } from "./capacity.js";
 import { type InnerDoctorSection, innerDoctorSection, renderInnerDoctor } from "./inner.js";
 import { type CliIo, JSON_SCHEMA_VERSION, PROBE_ENV_ALLOWLIST } from "./io.js";
+import { type RagDoctorSection, ragDoctorSection, renderRagDoctor } from "./rag-index.js";
 
 /** Minimum Node major from package.json `engines` (>=22). */
 export const MIN_NODE_MAJOR = 22;
@@ -70,6 +71,11 @@ export interface DoctorReport {
    * for a configuration without one is unchanged. Its findings are at most warnings and never change `ok`.
    */
   readonly inner_agent?: InnerDoctorSection;
+  /**
+   * T12.4 (FR-RAG-14): the retrieval-index section. Present only when `rag.embedding` is configured, so the report for a
+   * configuration without one is unchanged. Its findings are at most warnings and never change `ok`.
+   */
+  readonly retrieval?: RagDoctorSection;
   /** T6.3 (LLD §16.3): the `get_capacity` projection for the probed adapters; absent when the config is invalid. */
   readonly capacity?: CapacityProjection;
 }
@@ -410,6 +416,12 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
   const registry = io.adapters ?? defaultAdapters();
   const adapters = await probeAdapters(registry, cfg);
   const innerAgent = cfg ? await innerDoctorSection(io, cfg) : undefined;
+  let retrieval: RagDoctorSection | undefined;
+  try {
+    retrieval = cfg ? await ragDoctorSection(io, cfg) : undefined;
+  } catch {
+    retrieval = undefined; // informational: an unreadable ledger or store never fails doctor
+  }
   const capacity = cfg ? capacitySection(cfg, registry, (io.now ?? (() => new Date()))()) : undefined;
   const ok = checks.every((c) => c.status !== "fail") && adapters.every((a) => a.status !== "fail");
   return {
@@ -418,6 +430,7 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
     checks,
     adapters,
     ...(innerAgent !== undefined ? { inner_agent: innerAgent } : {}),
+    ...(retrieval !== undefined ? { retrieval } : {}),
     ...(capacity !== undefined ? { capacity } : {}),
   };
 }
@@ -462,6 +475,7 @@ export function renderDoctor(r: DoctorReport): string {
     }
   }
   if (r.inner_agent !== undefined) lines.push(...renderInnerDoctor(r.inner_agent, MARK));
+  if (r.retrieval !== undefined) lines.push(...renderRagDoctor(r.retrieval, MARK));
   if (r.capacity !== undefined) {
     // FR-CAP-03: labelled as estimates; no remaining or quota wording (see `switchboard capacity` for detail).
     lines.push("", "Capacity (controller estimates, not provider quota; details: switchboard capacity):");

@@ -21,7 +21,8 @@
  * Accounting (FR-RAG-12): each call yields one {@link EmbeddingCallRecord} with counts, bytes, duration, backend kind,
  * locality and outcome, never text or vectors. Records go to an injected recorder only; this module imports neither the
  * ledger nor the capacity estimator, so no embedding call can become a `usage_observation` row or a capacity input (an
- * import test in `embedding.test.ts` checks it). The `rag_record` table that aggregates them arrives with T12.4.
+ * import test in `embedding.test.ts` checks it). A build sums them into the `embed_calls` count of its `index_built`
+ * `rag_record` row (T12.4).
  */
 import type { EffectiveProjectRag } from "../config/index.js";
 import { redactForIndex } from "./scan.js";

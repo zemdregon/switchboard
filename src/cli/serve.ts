@@ -91,12 +91,15 @@ import { pruneRagStores } from "../retrieval/store.js";
 import { runRetentionGc, WorkspaceManager } from "../workspace/index.js";
 import { type CliIo, PROBE_ENV_ALLOWLIST } from "./io.js";
 import { applyOperatorRequests } from "./operator.js";
+import { type ServeRag, startServeRag } from "./rag-index.js";
 
 export const TEST_FAKE_ADAPTER_ENV = "SWITCHBOARD_TEST_FAKE_ADAPTER";
 export const TEST_FAKE_ADAPTER_VALUE = "enable-test-only-fake-adapter";
 /** Scenario for the test-only fake adapter (default `success`); read only when the switch is on. */
 export const TEST_FAKE_SCENARIO_ENV = "SWITCHBOARD_TEST_FAKE_SCENARIO";
 export const OPERATOR_POLL_MS = 1000;
+/** Upper bound on waiting for a retrieval build to stop at shutdown (Assumption, Delegated, T12.4). */
+const RAG_STOP_WAIT_MS = 2000;
 /** Node clamps a timer delay above 2^31-1 ms (about 24.8 days) to 1 ms, so a longer `retention.interval` is capped. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
 /** Test-only clock offset in milliseconds; honoured only with the fake switch on (T3.4 process tests). */
@@ -521,6 +524,20 @@ async function runDaemon(
   await applyRequests();
   lifecycle.start();
 
+  // T12.4 (FR-RAG-11, LLD §14.5): background index builds. `startServeRag` only queues every project and returns; a
+  // build runs on later turns of the event loop and is never awaited by admission. Without an embedding backend it is
+  // undefined and nothing changes (FR-RAG-04). Pending `index rebuild|clear` requests are applied with the operator poll.
+  let rag: ServeRag | undefined;
+  try {
+    rag = startServeRag({ io, config, db, log, ...(now ? { now } : {}) });
+    if (rag !== undefined) {
+      log.info("retrieval index builds started in the background", { projects: rag.indexer.queued().length });
+      void rag.applyRequests();
+    }
+  } catch (err) {
+    log.warn("retrieval indexing could not start; continuing without it", { error: message(err) });
+  }
+
   let mcp: SwitchboardMcpServer | undefined;
   let httpListener: HttpTransportListener | undefined;
   let resolveStop: (reason: string) => void = () => {};
@@ -533,7 +550,10 @@ async function runDaemon(
   process.on("SIGTERM", onSignal);
   process.stdin.on("end", onStdinEnd);
   process.stdin.on("close", onStdinEnd);
-  const timer = setInterval(() => void applyRequests(), OPERATOR_POLL_MS);
+  const timer = setInterval(() => {
+    void applyRequests();
+    void rag?.applyRequests();
+  }, OPERATOR_POLL_MS);
   const gcTimer = config.retentionEnabled
     ? setInterval(() => void gcPass("interval"), Math.min(config.retention.intervalMs, MAX_TIMER_MS))
     : undefined;
@@ -633,6 +653,10 @@ async function runDaemon(
     process.stdin.off("close", onStdinEnd);
     clearInterval(timer);
     if (gcTimer) clearInterval(gcTimer);
+    // Abort a running build (each committed batch is already consistent). A scan in progress is not interruptible, so
+    // shutdown waits for it at most RAG_STOP_WAIT_MS; the ledger write of a late result then fails and is only logged.
+    if (rag !== undefined)
+      await Promise.race([rag.stop(), new Promise((r) => setTimeout(r, RAG_STOP_WAIT_MS).unref())]);
     await gcInFlight; // a pass still running must finish before the lifecycle and the ledger are closed
     try {
       if (httpListener) await httpListener.close();

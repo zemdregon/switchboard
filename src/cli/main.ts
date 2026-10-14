@@ -37,6 +37,7 @@ import {
   renderProjectApproval,
   showAnyProject,
 } from "./projects-dynamic.js";
+import { indexRequest, indexStatus, renderIndexRequest, renderIndexStatus } from "./rag-index.js";
 import {
   cancelRun,
   decideRun,
@@ -66,6 +67,15 @@ Commands:
   affinity reset <project_key>
                       Make the next routing step for the project choose afresh among eligible providers
                       (recorded as user_request); the project key is as affinity list prints it
+  index status [<project>|global]
+                      Retrieval index per store: mode, backend kind and locality, files, chunks, size, revision,
+                      complete or incomplete, build time, staleness and pending requests (read-only)
+  index rebuild [<project>]
+                      Request a full rebuild of a project's index (all projects with retrieval on by default); the
+                      serve daemon builds it in the background
+  index clear [<project>|global]
+                      Delete a store's vectors and chunk text (every store by default); the ledger keeps only counts.
+                      Applied at once when serve is not running, else by the daemon
   gc [--apply]        Retention clean-up: dry run by default (lists what would go); --apply collects, and is refused
                       while serve runs or when retention.days is not set in the config
   projects list       List configured and dynamic projects (source config|dynamic; read-only, no lock)
@@ -195,6 +205,23 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
           return 0;
         }
         throw new UsageError(`unknown affinity subcommand ${JSON.stringify(sub ?? "")}; expected list or reset`);
+      }
+      case "index": {
+        // T12.4 (FR-RAG-11, FR-RAG-14, LLD §14.5): status is read-only; rebuild and clear write operator records.
+        if (rest.length > 1) throw new UsageError(`index ${sub ?? ""} takes at most one project id or global`);
+        if (sub === "status") {
+          const report = await indexStatus(io, loaderArgv, rest[0]);
+          emit(report, renderIndexStatus(report));
+          return 0;
+        }
+        if (sub === "rebuild" || sub === "clear") {
+          const report = indexRequest(io, loaderArgv, sub, rest[0]);
+          emit(report, renderIndexRequest(report));
+          return 0;
+        }
+        throw new UsageError(
+          `unknown index subcommand ${JSON.stringify(sub ?? "")}; expected status, rebuild or clear`,
+        );
       }
       case "doctor": {
         if (sub !== undefined) throw new UsageError("doctor takes no arguments");

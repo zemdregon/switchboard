@@ -14,7 +14,7 @@
  * is ever created (FR-RAG-04). Deleting a project deletes its store (FR-RAG-03): `deleteRagStore` on `delete_project`,
  * and `pruneRagStores` at `serve` start for projects that no longer exist (a configured project removed from the file).
  */
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { PROJECT_ID_PATTERN } from "../config/index.js";
@@ -86,7 +86,7 @@ CREATE TABLE rag_chunk (
 CREATE INDEX rag_chunk_path ON rag_chunk(path);
 `;
 
-/** The `rag_meta` row, absent until the first build step commits (T12.4). */
+/** The `rag_meta` row, absent until the first build step commits (`build.ts`, T12.4). */
 export interface RagMeta {
   readonly schemaVersion: number;
   readonly storeKind: "project" | "global";
@@ -136,24 +136,27 @@ export function openRagStore(dataDir: string, key: RagStoreKey): RagStore {
     db,
     meta: () => {
       const r = metaStmt.get() as Record<string, unknown> | undefined;
-      if (r === undefined) return undefined;
-      return {
-        schemaVersion: r.schema_version as number,
-        storeKind: r.store_kind as "project" | "global",
-        projectKey: (r.project_key as string | null) ?? null,
-        embeddingModel: r.embedding_model as string,
-        dimension: r.dimension as number,
-        revision: r.revision as number,
-        complete: r.complete === 1,
-        baseRefSha: (r.base_ref_sha as string | null) ?? null,
-        builtAt: r.built_at as string,
-      };
+      return r === undefined ? undefined : toMeta(r);
     },
     counts: () => ({
       files: (db.prepare("SELECT COUNT(*) AS n FROM rag_file").get() as { n: number }).n,
       chunks: (db.prepare("SELECT COUNT(*) AS n FROM rag_chunk").get() as { n: number }).n,
     }),
     close: () => db.close(),
+  };
+}
+
+function toMeta(r: Record<string, unknown>): RagMeta {
+  return {
+    schemaVersion: r.schema_version as number,
+    storeKind: r.store_kind as "project" | "global",
+    projectKey: (r.project_key as string | null) ?? null,
+    embeddingModel: r.embedding_model as string,
+    dimension: r.dimension as number,
+    revision: r.revision as number,
+    complete: r.complete === 1,
+    baseRefSha: (r.base_ref_sha as string | null) ?? null,
+    builtAt: r.built_at as string,
   };
 }
 
@@ -178,6 +181,67 @@ export function needsRebuild(meta: RagMeta | undefined, want: { model: string; d
   if (meta === undefined) return true;
   if (meta.schemaVersion !== RAG_SCHEMA_VERSION || meta.embeddingModel !== want.model) return true;
   return want.dimension !== undefined && meta.dimension !== want.dimension;
+}
+
+/** Remove every row, meta included, in one transaction (a model, dimension or schema change, or `index rebuild`). */
+export function wipeRagStore(store: RagStore): void {
+  store.db.transaction(() => {
+    store.db.exec("DELETE FROM rag_chunk; DELETE FROM rag_file; DELETE FROM rag_meta;");
+  })();
+}
+
+/** What `index status`, `index clear` and `doctor` report about one store; counts only, never text (FR-RAG-14). */
+export interface RagStoreInspection {
+  readonly meta: RagMeta | undefined;
+  readonly files: number;
+  readonly chunks: number;
+  /** Bytes of stored (redacted) chunk text. */
+  readonly textBytes: number;
+  /** Size on disk of `index.db` and its WAL. */
+  readonly diskBytes: number;
+}
+
+/**
+ * Read a store without creating it: `undefined` when there is no store file. Opened read-only, so a reader never
+ * migrates or writes; a store this version cannot read is reported by the thrown error.
+ */
+export function inspectRagStore(dataDir: string, key: RagStoreKey): RagStoreInspection | undefined {
+  const file = path.join(ragStoreDir(dataDir, key), "index.db");
+  if (!existsSync(file)) return undefined;
+  const db = new Database(file, { readonly: true, fileMustExist: true });
+  try {
+    const version = db.pragma("user_version", { simple: true }) as number;
+    if (version > RAG_SCHEMA_VERSION) {
+      throw new RagStoreError(
+        "SCHEMA_TOO_NEW",
+        `retrieval store schema ${version} is newer than this version supports`,
+      );
+    }
+    if (version < 1) return { meta: undefined, files: 0, chunks: 0, textBytes: 0, diskBytes: diskSize(file) };
+    const r = db.prepare("SELECT * FROM rag_meta LIMIT 1").get() as Record<string, unknown> | undefined;
+    const n = (sql: string) => (db.prepare(sql).get() as { n: number | null }).n ?? 0;
+    return {
+      meta: r === undefined ? undefined : toMeta(r),
+      files: n("SELECT COUNT(*) AS n FROM rag_file"),
+      chunks: n("SELECT COUNT(*) AS n FROM rag_chunk"),
+      textBytes: n("SELECT SUM(length(text)) AS n FROM rag_chunk"),
+      diskBytes: diskSize(file),
+    };
+  } finally {
+    db.close();
+  }
+}
+
+function diskSize(file: string): number {
+  let total = 0;
+  for (const f of [file, `${file}-wal`]) {
+    try {
+      total += statSync(f).size;
+    } catch {
+      // absent
+    }
+  }
+  return total;
 }
 
 /** Delete one store's directory (vectors and chunk text; FR-RAG-03, FR-RAG-14). Returns whether anything was removed. */
