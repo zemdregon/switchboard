@@ -4,8 +4,9 @@
  * clients (`orch`, `other`), each reached through the SDK client so every result is checked against the published
  * output schemas. No provider CLI is installed or called.
  *
- * The instruction is the mode: `ok` succeeds, `overload` fails as provider overload (counted by the breaker), `quota`
- * stops on quota except on `fake-b` (the spare). A provider id in `FAKE_DOWN` (environment of the test process, read
+ * Each provider's session event reports the placeholder model `<id>-model`. The instruction is the mode: `ok` succeeds, `overload` fails as provider overload (counted by the breaker), `quota`
+ * stops on quota only on `fake` (`fake-b` and `grok` are spares, so a quota failover always lands on a provider that
+ * succeeds). A provider id in `FAKE_DOWN` (environment of the test process, read
  * at compile time) is made ineligible by its adapter's compile verdict.
  */
 import { execFileSync } from "node:child_process";
@@ -62,7 +63,7 @@ else {
   process.stdin.on("end", () => {
     const i = prompt.lastIndexOf(${JSON.stringify(MARKER)});
     const mode = (i >= 0 ? prompt.slice(i + ${MARKER.length}) : prompt).trim();
-    emit({ type: "session", session_id: "s-" + process.pid });
+    emit({ type: "session", session_id: "s-" + process.pid, model: process.env.FAKE_MODEL });
     if (mode === "overload") {
       emit({ type: "error", category: "overloaded", message: "busy" });
       process.exitCode = 1;
@@ -95,7 +96,9 @@ function scripted(id: string, script: string, spare = false): ProviderAdapter {
       if (down.has(id)) return { ineligible: true, reason: "CAPABILITY_MISSING", detail: `${id} is down for the test` };
       const inv = base.compile(req, p);
       if ("ineligible" in inv) return inv;
-      return spare ? { ...inv, env: { ...inv.env, FAKE_PROVIDER_ROLE: "spare" } } : inv;
+      // Each provider's native session reports its own placeholder model (`<id>-model`), as a real CLI reports one.
+      const env = { ...inv.env, FAKE_MODEL: `${id}-model`, ...(spare ? { FAKE_PROVIDER_ROLE: "spare" } : {}) };
+      return { ...inv, env };
     },
     resumeArgs: (b, req, p) => base.resumeArgs(b, req, p),
     parseEvent: (i, s) => base.parseEvent(i, s),
@@ -156,7 +159,7 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
   const registry = new AdapterRegistry()
     .register(scripted("fake", script))
     .register(scripted("fake-b", script, true))
-    .register(scripted("grok", script));
+    .register(scripted("grok", script, true));
   const lifecycle = new RunLifecycle({
     ledger,
     workspace,
