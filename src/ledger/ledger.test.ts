@@ -26,6 +26,7 @@ const EXPECTED_TABLES = [
   "inner_task_state",
   "meta_session",
   "oauth_client",
+  "oauth_pairing_code",
   "oauth_token",
   "project_event",
   "project_revision",
