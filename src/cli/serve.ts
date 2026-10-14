@@ -73,6 +73,7 @@ import { RunLifecycle } from "../lifecycle/index.js";
 import { acquireDataDirLock, type DataDirLock } from "../lock/index.js";
 import {
   type HttpTransportListener,
+  OAuthClientStore,
   OAuthTokenStore,
   type SwitchboardMcpServer,
   startHttpTransport,
@@ -525,6 +526,10 @@ async function runDaemon(
     httpListener = await startHttpTransport(config.httpTransport, {
       tokens: new OAuthTokenStore(db, now ? { now } : {}),
       onTokenRejected: (reason) => log.warn("refused an HTTP bearer token", { reason }),
+      // T13.7 (FR-MCP-16, Q-74): open registration creates a pending client only; the operator approves it later.
+      clients: new OAuthClientStore(db, now ? { now } : {}),
+      onClientRegistered: (clientId) =>
+        log.info("registered an OAuth client, pending operator approval", { client_id: clientId }),
     });
     if (httpListener && config.httpTransport) {
       log.info("serving MCP discovery on HTTP", {

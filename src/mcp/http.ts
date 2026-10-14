@@ -3,7 +3,9 @@
  *
  * The listener serves discovery: protected-resource metadata (RFC 9728) and the embedded authorization server's
  * metadata (RFC 8414). The authorization, token and registration endpoints are advertised as designed (ADR-0041 items 3
- * and 4) and answer 404 until their tasks land.
+ * and 4). Dynamic Client Registration (T13.7, RFC 7591, `src/mcp/oauth-clients.ts`) answers `POST /register` when a
+ * client store is configured: a valid request creates a `pending` client that can do nothing until the operator approves
+ * it. The authorization and token endpoints answer 404 until their tasks land.
  *
  * The MCP endpoint verifies the bearer token (T13.3, Q-73; `src/mcp/oauth-tokens.ts`). A request without an
  * `Authorization` header gets 401 with a `WWW-Authenticate` challenge naming the metadata URL (RFC 6750 §3, RFC 9728
@@ -29,6 +31,7 @@ import {
   type HttpTransportSettings,
   PROTECTED_RESOURCE_WELL_KNOWN,
 } from "../config/http-transport.js";
+import { checkClientMetadata, type OAuthClientStore, registrationResponse } from "./oauth-clients.js";
 import { bearerToken, type OAuthTokenStore, type TokenRejectReason } from "./oauth-tokens.js";
 
 /** RFC 9728 §3.1: the well-known segment goes between the host and the resource's path. */
@@ -82,6 +85,92 @@ export interface HttpAuthDeps {
   tokens?: Pick<OAuthTokenStore, "verify">;
   /** Told the reason code of each refused token, for the local log. Never receives the token. */
   onTokenRejected?: (reason: TokenRejectReason) => void;
+  /** Client registry for `POST /register` (T13.7). Without one the endpoint answers 404. */
+  clients?: Pick<OAuthClientStore, "register">;
+  /** Told the id of each newly registered (pending) client, for the local audit log. */
+  onClientRegistered?: (clientId: string) => void;
+}
+
+/** Delegated (Q-74): the largest registration body read; a larger one is refused with 413 without being parsed. */
+export const MAX_REGISTRATION_BODY_BYTES = 16 * 1024;
+
+type BodyResult = { ok: true; body: unknown } | { ok: false; status: 400 | 413 };
+
+function readJsonBody(req: IncomingMessage, limit: number): Promise<BodyResult> {
+  return new Promise((resolve) => {
+    const declared = Number(req.headers["content-length"]);
+    if (Number.isFinite(declared) && declared > limit) {
+      resolve({ ok: false, status: 413 });
+      req.resume();
+      return;
+    }
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let done = false;
+    const finish = (r: BodyResult) => {
+      if (done) return;
+      done = true;
+      resolve(r);
+    };
+    req.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > limit) {
+        finish({ ok: false, status: 413 });
+        req.resume();
+        return;
+      }
+      if (!done) chunks.push(chunk);
+    });
+    req.on("error", () => finish({ ok: false, status: 400 }));
+    req.on("end", () => {
+      if (done) return;
+      try {
+        finish({ ok: true, body: JSON.parse(Buffer.concat(chunks).toString("utf8")) });
+      } catch {
+        finish({ ok: false, status: 400 });
+      }
+    });
+  });
+}
+
+async function handleRegistration(req: IncomingMessage, res: ServerResponse, auth: HttpAuthDeps): Promise<void> {
+  const clients = auth.clients;
+  if (!clients) {
+    send(res, 404, { error: "not_found" });
+    return;
+  }
+  if (req.method !== "POST") {
+    send(res, 405, { error: "method_not_allowed" }, { allow: "POST" });
+    return;
+  }
+  const type = (req.headers["content-type"] ?? "").split(";")[0]?.trim().toLowerCase();
+  if (type !== "application/json") {
+    send(res, 415, { error: "invalid_client_metadata", error_description: "the body must be application/json" });
+    return;
+  }
+  const read = await readJsonBody(req, MAX_REGISTRATION_BODY_BYTES);
+  if (!read.ok) {
+    if (read.status === 413) send(res, 413, { error: "invalid_client_metadata", error_description: "body too large" });
+    else send(res, 400, { error: "invalid_client_metadata", error_description: "the body is not valid JSON" });
+    return;
+  }
+  const checked = checkClientMetadata(read.body);
+  if (!checked.ok) {
+    send(res, 400, { error: checked.error, error_description: checked.description });
+    return;
+  }
+  const result = clients.register(checked.metadata);
+  if (!result.ok) {
+    send(
+      res,
+      429,
+      { error: "temporarily_unavailable", error_description: "too many clients are waiting for operator approval" },
+      { "retry-after": "3600" },
+    );
+    return;
+  }
+  auth.onClientRegistered?.(result.client.clientId);
+  send(res, 201, registrationResponse(result.client));
 }
 
 /** The request handler, exported for tests. Paths are matched exactly; the query string is ignored. */
@@ -119,6 +208,13 @@ export function httpTransportHandler(
     if (doc !== undefined) {
       if (req.method === "GET" || req.method === "HEAD") send(res, 200, doc);
       else send(res, 405, { error: "method_not_allowed" }, { allow: "GET, HEAD" });
+      return;
+    }
+    if (pathname === AS_ENDPOINT_PATHS.registration) {
+      handleRegistration(req, res, auth).catch(() => {
+        if (!res.headersSent) send(res, 500, { error: "server_error" });
+        else res.destroy();
+      });
       return;
     }
     if (pathname === s.mcpPath) {
@@ -164,12 +260,7 @@ export async function startHttpTransport(
   deps: HttpTransportDeps = {},
 ): Promise<HttpTransportListener | undefined> {
   if (settings === undefined) return undefined;
-  const server = (deps.createServer ?? http.createServer)(
-    httpTransportHandler(settings, {
-      ...(deps.tokens ? { tokens: deps.tokens } : {}),
-      ...(deps.onTokenRejected ? { onTokenRejected: deps.onTokenRejected } : {}),
-    }),
-  );
+  const server = (deps.createServer ?? http.createServer)(httpTransportHandler(settings, deps));
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(settings.port, settings.bind, () => {
