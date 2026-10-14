@@ -4,6 +4,7 @@
  * Codex adapter replaying its synthetic fixtures. No provider CLI, login or network is needed.
  */
 import { execFileSync } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
@@ -40,11 +41,14 @@ import { createProfileResolver } from "../policy/index.js";
 import { compileCheck, requirementsFor, TRUST_PROFILE_ORDER } from "../routing/index.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import {
+  AuthorizationServer,
   createScrubber,
   createSwitchboardServer,
   type HttpTransportListener,
   MAX_MCP_REQUESTS_PER_CLIENT,
+  OAuthClientStore,
   OAuthTokenStore,
+  PairingCodeStore,
   SubjectBindingStore,
   type SwitchboardMcpServer,
   startHttpTransport,
@@ -205,6 +209,11 @@ interface Setup {
     map?: Record<string, string>;
     defaultMcpClient?: string;
     tokens: { oauthClientId: string; scopes?: string[] }[];
+    /**
+     * T13.9: serve the embedded authorization server too, with a real client store (registration, consent, token
+     * endpoints) instead of the always-approved stand-in; the consent passphrase is {@link AUTHZ_PASSPHRASE}.
+     */
+    authz?: boolean;
   };
 }
 
@@ -229,6 +238,9 @@ const httpClient = (i: number): Client => {
   return c;
 };
 let httpListener: HttpTransportListener | undefined;
+/** T13.9: the consent passphrase and the stand-in for its scrypt hash (scrypt's cost is tested in oauth-server). */
+const AUTHZ_PASSPHRASE = "correct horse battery staple";
+const AUTHZ_HASH = `scrypt$17$8$1$${"A".repeat(22)}$${"B".repeat(43)}`;
 
 async function setup(s: Setup): Promise<void> {
   const registry = new AdapterRegistry();
@@ -295,9 +307,21 @@ async function setup(s: Setup): Promise<void> {
       ...(s.http.defaultMcpClient !== undefined ? { default_mcp_client: s.http.defaultMcpClient } : {}),
     }) as HttpTransportSettings;
     const tokens = new OAuthTokenStore(db);
+    const realClients = s.http.authz === true ? new OAuthClientStore(db) : undefined;
+    const authorizationServer =
+      realClients !== undefined
+        ? new AuthorizationServer(settings, {
+            clients: realClients,
+            tokens,
+            pairing: new PairingCodeStore(db),
+            passphraseHash: AUTHZ_HASH,
+            verifyPassphrase: async (p, h) => p === AUTHZ_PASSPHRASE && h === AUTHZ_HASH,
+          })
+        : undefined;
     httpListener = await startHttpTransport(settings, {
       tokens,
-      clients: approvedClients,
+      clients: realClients ?? approvedClients,
+      ...(authorizationServer !== undefined ? { authorizationServer } : {}),
       mcpServerFor: (id, subject) =>
         createSwitchboardServer({
           lifecycle,
@@ -1109,6 +1133,135 @@ describe("MCP over the HTTP transport (T13.4; FR-MCP-14, Q-77)", () => {
     // Served (and the refused 503) requests: the handler removed both headers before the MCP transport could read them.
     expect(seen.length).toBeGreaterThan(0);
     expect(seen.slice(0, MAX_MCP_REQUESTS_PER_CLIENT * 2).every((h) => h === undefined)).toBe(true);
+  });
+
+  it("a client that completed PKCE against the embedded authorization server lists and calls tools (T13.9)", async () => {
+    await setup({
+      adapters: [fakeWriter()],
+      clients: [{ id: "reader", max: "inspect-untrusted" }],
+      http: { defaultMcpClient: "reader", tokens: [], authz: true },
+    });
+    const listener = httpListener;
+    if (!listener) throw new Error("no listener");
+    const ISSUER = new URL(HTTP_RESOURCE).origin;
+    const REDIRECT = "https://client.example.test/oauth/callback";
+    const seen: string[] = [];
+    const send = (method: string, p: string, headers: Record<string, string>, body?: string) =>
+      new Promise<{ status: number; headers: http.IncomingHttpHeaders; text: string }>((resolve, reject) => {
+        const req = http.request(
+          { host: "127.0.0.1", port: listener.address.port, method, path: p, headers },
+          (res) => {
+            const chunks: Buffer[] = [];
+            res.on("data", (c: Buffer) => chunks.push(c));
+            res.on("end", () => {
+              const text = Buffer.concat(chunks).toString("utf8");
+              seen.push(JSON.stringify(res.headers), text);
+              resolve({ status: res.statusCode ?? 0, headers: res.headers, text });
+            });
+          },
+        );
+        req.on("error", reject);
+        req.end(body);
+      });
+
+    // 1. Dynamic Client Registration (RFC 7591): a public client, pending until the operator approves it.
+    const reg = await send(
+      "POST",
+      "/register",
+      { "content-type": "application/json" },
+      JSON.stringify({ redirect_uris: [REDIRECT], client_name: "T13.9 client" }),
+    );
+    expect(reg.status).toBe(201);
+    const clientId = String((JSON.parse(reg.text) as Json).client_id);
+    // 2. PKCE S256 and the consent page, approved with the operator's passphrase.
+    const verifier = randomBytes(32).toString("base64url");
+    const challenge = createHash("sha256").update(verifier).digest("base64url");
+    const q = new URLSearchParams({
+      response_type: "code",
+      client_id: clientId,
+      redirect_uri: REDIRECT,
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+      resource: HTTP_RESOURCE,
+      state: "st-e2e",
+    });
+    const page = await send("GET", `/authorize?${q.toString()}`, {});
+    expect(page.status).toBe(200);
+    const requestId = /name="request_id" value="([^"]+)"/.exec(page.text)?.[1] ?? "";
+    const csrf = /name="csrf" value="([^"]+)"/.exec(page.text)?.[1] ?? "";
+    const cookie = ((page.headers["set-cookie"] ?? [])[0] ?? "").split(";")[0] ?? "";
+    const approved = await send(
+      "POST",
+      "/authorize",
+      {
+        "content-type": "application/x-www-form-urlencoded",
+        origin: ISSUER,
+        "sec-fetch-site": "same-origin",
+        cookie,
+      },
+      new URLSearchParams({
+        request_id: requestId,
+        csrf,
+        decision: "approve",
+        passphrase: AUTHZ_PASSPHRASE,
+      }).toString(),
+    );
+    expect(approved.status).toBe(303);
+    const redirect = new URL(String(approved.headers.location));
+    expect(`${redirect.origin}${redirect.pathname}`).toBe(REDIRECT);
+    expect(redirect.searchParams.get("state")).toBe("st-e2e");
+    const code = redirect.searchParams.get("code") ?? "";
+    // 3. The code exchange: an access token bound to this resource.
+    const exchanged = await send(
+      "POST",
+      "/token",
+      { "content-type": "application/x-www-form-urlencoded" },
+      new URLSearchParams({
+        grant_type: "authorization_code",
+        client_id: clientId,
+        code,
+        redirect_uri: REDIRECT,
+        code_verifier: verifier,
+      }).toString(),
+    );
+    expect(exchanged.status).toBe(200);
+    const pair = JSON.parse(exchanged.text) as Json;
+    const access = String(pair.access_token);
+    const refresh = String(pair.refresh_token);
+    expect(pair).toMatchObject({ token_type: "Bearer", scope: "mcp" });
+
+    // 4. With that token, an MCP client lists the tools and calls one over Streamable HTTP.
+    const client = new Client({ name: "t13-9", version: "0.0.0" });
+    const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${listener.address.port}/mcp`), {
+      requestInit: { headers: { authorization: `Bearer ${access}` } },
+    });
+    await client.connect(transport as Transport);
+    const { tools } = await client.listTools();
+    expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES]);
+    servers.push({ mcp: { close: async () => {} } as unknown as SwitchboardMcpServer, client });
+    const index = servers.length - 1;
+    const d = await call("delegate_task", delegateArgs({ trust_profile: "inspect-untrusted" }), index);
+    expect(d.isError).toBe(false);
+    expect(ledger.getRunRecord(d.body.run_id)).toMatchObject({
+      client_id: "reader",
+      trust_profile: "inspect-untrusted",
+    });
+    const done = await pollTerminal(d.body.run_id, index);
+    seen.push(JSON.stringify(d.body), JSON.stringify(done));
+
+    // 5. No token, code or verifier in the responses or any ledger row.
+    const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map(
+      (t) => t.name,
+    );
+    const rows = tables.map((t) => JSON.stringify(db.prepare(`SELECT * FROM "${t}"`).all()));
+    const secrets = [access, refresh, code, verifier, AUTHZ_PASSPHRASE];
+    // The redirect carries the code and the token response the tokens, by design; every other surface must not.
+    const issuing = new Set([JSON.stringify(approved.headers), exchanged.text]);
+    for (const surface of [...seen.filter((x) => !issuing.has(x)), ...rows]) {
+      for (const secret of secrets) expect(surface).not.toContain(secret);
+    }
+    // Positive control: the token endpoint's own answer did carry the tokens the scan looks for.
+    expect(exchanged.text).toContain(access);
   });
 });
 

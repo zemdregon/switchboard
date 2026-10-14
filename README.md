@@ -40,10 +40,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   is tested on fake providers. It is not `Done`: what Claude Code and Codex print on a real rate limit or quota stop has
   not been captured (operator task T6.11), and no provider is known to publish an enforceable rate limit, so there is no
   rate gate. See [ROADMAP §6.11](docs/ROADMAP.md#611-m6-capacity-and-resilience-tasks).
-- **Milestone 13 (network MCP transport) is `Partial`.** `serve` can expose the MCP tools over Streamable HTTP with
-  OAuth 2.1 (an embedded authorization server with an operator consent page, PKCE, client registration that the
-  operator approves, audience-bound opaque tokens). It is off by default and binds to loopback. Every task is done and
-  tested, but no single test yet runs the whole path from PKCE to a tool call (task T13.9). Residual risks are listed
+- **Milestone 13 (network MCP transport) is done.** `serve` can expose the MCP tools over Streamable HTTP with OAuth
+  2.1 (an embedded authorization server with an operator consent page, PKCE, client registration that the operator
+  approves, audience-bound opaque tokens). It is off by default and binds to loopback; put your own TLS proxy in
+  front of it. A test runs the whole path from client registration and PKCE to a tool call. Residual risks are listed
   under [HLD TB-12](docs/design/HLD.md#3-trust-boundaries). See
   [ROADMAP §6.10](docs/ROADMAP.md#610-m13-network-mcp-transport-tasks).
 - Providers other than Claude Code and Codex are not implemented.
