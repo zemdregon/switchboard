@@ -112,6 +112,9 @@ import {
 } from "../config/index.js";
 import {
   type BuiltBundle,
+  type BundleBounds,
+  buildAndPutHandoffView,
+  DEFAULT_BUNDLE_BOUNDS,
   HANDOFF_BUNDLE_UNAVAILABLE,
   HandoffBundleError,
   MAX_INSTRUCTION_CHARS,
@@ -121,6 +124,7 @@ import {
   recordHandoffView,
   refusesPrivilegedCrossProvider,
   renderHandoffPrompt,
+  takeAsOf,
 } from "../continuity/index.js";
 import { procStartTicks } from "../exec/proc-info.js";
 import { ChannelOpenError, type GitToolService, type OpenChannel } from "../git/channel.js";
@@ -287,6 +291,11 @@ export interface SubmitRequest {
    * refused with `resume`.
    */
   readonly handoff?: HandoffSubmission;
+  /**
+   * T6.6 (FR-MCP-10, LLD §16.6): internal only. The failed run this one follows as a failover successor: sets
+   * `parent_run_id` and `attempt + 1`. Never set from an MCP request.
+   */
+  readonly successorOf?: { readonly runId: string; readonly attempt: number };
 }
 
 /** T5.5: what a handoff submission carries (see {@link SubmitRequest.handoff}). */
@@ -306,6 +315,7 @@ export const HANDOFF_REASONS = [
   "bound_provider_ineligible",
   "no_binding",
   "resume_directory_unavailable",
+  "quota_failover",
 ] as const satisfies readonly RouteReasonCode[];
 export type HandoffReason = (typeof HANDOFF_REASONS)[number];
 
@@ -469,6 +479,8 @@ export interface RunLifecycleOptions {
   readonly retry?: { maxAttempts: number; baseMs: number; capMs: number; queueHorizonSeconds?: number };
   /** T6.5: random source in [0, 1) for the backoff jitter; injectable for tests. */
   readonly random?: () => number;
+  /** T6.6: handoff bundle bounds for a quota failover (`continuity.*`, LLD §15.4). Unset means the LLD defaults. */
+  readonly continuityBounds?: BundleBounds;
 }
 
 /** `run_event` type: a channel-capable run was not offered the commit tool, with a reason code (T9.4). */
@@ -522,6 +534,8 @@ const DEFAULT_RETRY = {
   capMs: DEFAULT_RETRY_CAP_MS,
   queueHorizonSeconds: 0,
 };
+/** T6.6: how many recent `QUOTA_EXHAUSTED` runs of a provider are read for a reported reset (Assumption). */
+const QUOTA_RESET_LOOKBACK = 5;
 /** `setTimeout` limit (about 24.8 days); a later wake is re-armed when it fires. */
 const MAX_TIMER_MS = 2_147_483_647;
 
@@ -678,6 +692,7 @@ export class RunLifecycle {
         idempotencyKey: req.idempotencyKey ?? null,
         provider: req.provider,
         priority: PRIORITY_VALUES[stored.priority],
+        ...(req.successorOf ? { parentRunId: req.successorOf.runId, attempt: req.successorOf.attempt + 1 } : {}),
       });
       const byPolicy = priv?.kind === "request" && priv.clientPolicy;
       if (priv?.kind === "request" && privileged) {
@@ -906,6 +921,9 @@ export class RunLifecycle {
       for (const f of input.facts) {
         const b = this.breakerOf(f.provider);
         if (breakerAdmission(b, now) === "deny" && b.until !== null) f.circuitOpenUntil = b.until;
+        // T6.6 (LLD §16.6, BR-3): a provider-reported reset still ahead after a QUOTA_EXHAUSTED run.
+        const reset = this.knownQuotaReset(f.provider, now);
+        if (reset !== undefined) f.quotaExhaustedUntil = new Date(reset).toISOString();
       }
     }
     return { input, decision: filterEligible(input) };
@@ -1831,6 +1849,8 @@ export class RunLifecycle {
         this.scheduleRetry(failed, outcome.code, retryEligible);
       }
     });
+    // T6.6 (BR-6 step 2 and 3, BR-8, BR-9): after the terminal transaction, because a failover builds a bundle.
+    if (outcome.kind === "failure" && outcome.code === "QUOTA_EXHAUSTED") await this.quotaLadder(runId);
   }
 
   /**
@@ -2150,6 +2170,158 @@ export class RunLifecycle {
     const jitter = Math.floor((this.opts.random ?? Math.random)() * ceiling);
     const delay = Math.max(jitter, waitForReset);
     const notBefore = new Date(now.getTime() + delay).toISOString();
+    const successor = { id: this.createSuccessor(failed, notBefore, code) };
+    this.ledger.appendRunEvent({
+      runId: failed.id,
+      type: "retry_scheduled",
+      payload: { successor_run_id: successor.id, attempt: failed.attempt + 1, delay_ms: delay, not_before: notBefore },
+    });
+    this.scheduleWake(Date.parse(notBefore));
+  }
+
+  // ---- quota exhaustion ladder (T6.6; FR-CAP-06, BR-8, BR-9, LLD §16.6) ------------------------------------------
+
+  /** The latest provider-reported reset after a `QUOTA_EXHAUSTED` run of `provider`, if it is still ahead (epoch ms). */
+  private knownQuotaReset(provider: string, now: Date): number | undefined {
+    let latest: number | undefined;
+    for (const run of this.ledger.listRecentQuotaExhaustedRuns(provider, QUOTA_RESET_LOOKBACK)) {
+      const reset = latestResetAt(this.ledger.listRunEvents(run.id));
+      if (reset !== undefined && reset > now.getTime() && (latest === undefined || reset > latest)) latest = reset;
+    }
+    return latest;
+  }
+
+  /**
+   * LLD §16.6 after a run ended `QUOTA_EXHAUSTED`: fail over through the M5 handoff when the request permits it, else
+   * wait for a provider-reported reset within the horizon, else nothing more. One `quota_ladder` event on the failed run
+   * records the outcome and why each earlier step did not apply. Never throws (NFR-REL-02).
+   */
+  private async quotaLadder(failedId: string): Promise<void> {
+    const failed = this.ledger.getRunRecord(failedId);
+    if (!failed || failed.state !== "FAILED" || failed.provider === null || this.stopped) return;
+    const notes: string[] = [];
+    const record = (payload: Record<string, unknown>) =>
+      this.ledger.appendRunEvent({ runId: failed.id, type: "quota_ladder", payload: { ...payload, not_taken: notes } });
+    try {
+      const settings = this.opts.retry ?? DEFAULT_RETRY;
+      if (failed.attempt >= settings.maxAttempts) {
+        record({ outcome: "returned", reason: "attempts_exhausted" });
+        return;
+      }
+      const target = await this.failoverTarget(failed, notes);
+      if (target !== undefined) {
+        const successor = await this.submitFailover(failed, target, notes);
+        if (successor !== undefined) {
+          record({ outcome: "failover", successor_run_id: successor, to_provider: target });
+          return;
+        }
+      }
+      const now = this.now();
+      const reset = latestResetAt(this.ledger.listRunEvents(failed.id));
+      const horizonMs = (settings.queueHorizonSeconds ?? 0) * 1000;
+      if (reset === undefined || reset <= now.getTime()) notes.push("wait:no_reported_reset");
+      else if (reset - now.getTime() > horizonMs) notes.push("wait:reset_beyond_horizon");
+      else {
+        const notBefore = new Date(reset).toISOString();
+        const id = this.ledger.immediate(() => this.createSuccessor(failed, notBefore, "QUOTA_EXHAUSTED"));
+        this.scheduleWake(reset);
+        record({ outcome: "wait", successor_run_id: id, not_before: notBefore });
+        return;
+      }
+      record({ outcome: "returned" });
+    } catch (err) {
+      try {
+        record({ outcome: "returned", error: errorText(err).slice(0, 200) });
+      } catch {
+        // The failure stands as recorded; nothing else to do (NFR-REL-02).
+      }
+    }
+  }
+
+  /** BR-8 permission and the first eligible other provider (BR-4 order), or undefined with the reasons in `notes`. */
+  private async failoverTarget(failed: RunRecord, notes: string[]): Promise<ProviderId | undefined> {
+    if (failed.trust_profile === "privileged") {
+      notes.push("failover:privileged_cross_provider"); // Q-61 default (ADR-0038 item 8)
+      return undefined;
+    }
+    const decision = this.ledger.getRouteDecision(failed.id);
+    if (decision === undefined) {
+      notes.push("failover:no_route_decision"); // fail closed: whether the request permitted it is unknown
+      return undefined;
+    }
+    const features = JSON.parse(decision.features_json) as { required_provider?: string | null };
+    if (features.required_provider !== null && features.required_provider !== undefined) {
+      notes.push("failover:require_provider");
+      return undefined;
+    }
+    const reasons = JSON.parse(decision.reasons_json) as { project?: { excluded_providers?: string[] } };
+    const excluded = new Set([failed.provider as string, ...(reasons.project?.excluded_providers ?? [])]);
+    const admitted = (JSON.parse(decision.candidates_json) as { provider: string; eligible: boolean }[])
+      .filter((c) => c.eligible && !excluded.has(c.provider))
+      .map((c) => c.provider as ProviderId);
+    if (admitted.length === 0) {
+      notes.push("failover:no_other_candidate");
+      return undefined;
+    }
+    const req = JSON.parse(failed.request_json) as StoredRequest;
+    const answer = await this.checkEligibility({
+      candidates: admitted,
+      trustProfile: failed.trust_profile,
+      clientMaxProfile: failed.trust_profile,
+      cwd: req.workspace,
+      profile: JSON.parse(failed.policy_snapshot_json) as ResolvedProfile,
+    });
+    const target = answer.decision.eligible[0];
+    if (target === undefined) notes.push("failover:none_eligible");
+    return target;
+  }
+
+  /** The handoff successor on `target` (LLD §15.7 steps 5 and 6), or undefined with the reason in `notes`. */
+  private async submitFailover(failed: RunRecord, target: ProviderId, notes: string[]): Promise<string | undefined> {
+    const req = JSON.parse(failed.request_json) as StoredRequest;
+    const snapshot = JSON.parse(failed.policy_snapshot_json) as { project?: ProjectSnapshot };
+    try {
+      const store = this.opts.artifacts;
+      const { built, stored } = await buildAndPutHandoffView(
+        { ledger: this.ledger, artifacts: store, redact: (x: Buffer) => store.redactContent(x), store },
+        {
+          asOf: takeAsOf(this.ledger, failed.meta_session_id),
+          bounds: this.opts.continuityBounds ?? DEFAULT_BUNDLE_BOUNDS,
+        },
+      );
+      const submitted = await this.submit({
+        clientId: failed.client_id,
+        objective: req.objective,
+        metaSessionId: failed.meta_session_id,
+        trustProfile: failed.trust_profile,
+        provider: target,
+        constraints: req.constraints,
+        priority: req.priority,
+        ...(req.verification_commands ? { verificationCommands: req.verification_commands } : {}),
+        ...(snapshot.project ? { project: snapshot.project } : {}),
+        handoff: { built, stored, fromProvider: failed.provider as string, reason: "quota_failover" },
+        successorOf: { runId: failed.id, attempt: failed.attempt },
+        routeDecision: {
+          features_json: JSON.stringify({ failover_of: failed.id, trust_profile: failed.trust_profile }),
+          candidates_json: JSON.stringify([{ provider: target, eligible: true, reasons: [], score: null }]),
+          selected_provider: target,
+          reasons_json: JSON.stringify({
+            selection: { provider: target, basis: `handoff quota_failover from ${failed.provider}` },
+            continuation: { mode: "handoff", reason: "quota_failover", from_provider: failed.provider },
+          }),
+        },
+      });
+      return submitted.runId;
+    } catch (err) {
+      notes.push(
+        `failover:refused:${err instanceof LifecycleError ? err.code : err instanceof HandoffBundleError ? HANDOFF_BUNDLE_UNAVAILABLE : "error"}`,
+      );
+      return undefined;
+    }
+  }
+
+  /** A same-provider successor in `WAITING_CAPACITY` (LLD §16.5 step 3, §16.6 step 2), with its `retry_of` event. */
+  private createSuccessor(failed: RunRecord, notBefore: string, code: FailureCode): string {
     const successor = this.ledger.createRun({
       metaSessionId: failed.meta_session_id,
       state: "WAITING_CAPACITY",
@@ -2170,12 +2342,7 @@ export class RunLifecycle {
       type: "retry_of",
       payload: { run_id: failed.id, attempt: failed.attempt, failure_code: code },
     });
-    this.ledger.appendRunEvent({
-      runId: failed.id,
-      type: "retry_scheduled",
-      payload: { successor_run_id: successor.id, attempt: failed.attempt + 1, delay_ms: delay, not_before: notBefore },
-    });
-    this.scheduleWake(Date.parse(notBefore));
+    return successor.id;
   }
 
   /** FRD T18: due `WAITING_CAPACITY` runs go back to `QUEUED`; the earliest one not yet due arms the wake timer. */

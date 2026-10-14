@@ -719,6 +719,8 @@ export interface Ledger {
   listRateLimitSignalsSince(provider: string, sinceIso: string): RateLimitSignalRow[];
   /** `provider_reported` usage rows of `provider` observed at or after `sinceIso`, oldest first (never `inner_agent`). */
   listProviderReportedUsageSince(provider: string, sinceIso: string): ProviderUsageRow[];
+  /** T6.6 (LLD §16.6): the provider's most recent `QUOTA_EXHAUSTED` runs, newest first, at most `limit`. */
+  listRecentQuotaExhaustedRuns(provider: string, limit: number): RunRecord[];
   /** T6.5 (FR-MCP-10): the run that supersedes `runId` (its retry or failover successor), if any. */
   findSuccessorRun(runId: string): RunRecord | undefined;
   /** The provider's `provider_health` row, if one was written. */
@@ -1273,6 +1275,15 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
            FROM provider_health WHERE provider = ?`,
         )
         .get(provider) as ProviderHealthRow | undefined;
+    },
+
+    listRecentQuotaExhaustedRuns(provider, limit) {
+      return db
+        .prepare(
+          `${RUN_RECORD_SQL} WHERE provider = ? AND failure_code = 'QUOTA_EXHAUSTED'
+           ORDER BY finished_at DESC, id DESC LIMIT ?`,
+        )
+        .all(provider, limit) as RunRecord[];
     },
 
     findSuccessorRun(runId) {

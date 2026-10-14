@@ -450,6 +450,8 @@ async function runDaemon(
     breaker: config.capacity.breaker,
     // T6.5: automatic retry parameters and the reset wait bound (`capacity.retry`, `capacity.queue_horizon_seconds`).
     retry: { ...config.capacity.retry, queueHorizonSeconds: config.capacity.queueHorizonSeconds },
+    // T6.6: bundle bounds for a quota failover handoff (`continuity.*`, LLD §15.4).
+    continuityBounds: config.continuity,
     resolveProfile: createProfileResolver(config.profileOverrides),
     probeRunner: createProbeRunner(PROBE_ENV_ALLOWLIST),
     baseEnv: io.env,
