@@ -1211,6 +1211,27 @@ previous provider and model, runs that switched, by reason) are a query over `ro
 `routing_affinity_switched` (`from_provider`, `to_provider`, `from_model`, `to_model`, `reason`),
 `routing_affinity_reset` (`project_key`, `by`). None is a failure code or changes a run's status.
 
+### 3.3 Network MCP transport (M13)
+
+Design gate: [ADR-0041](../adr/0041-http-transport-with-oauth-2-1.md) (Proposed; accepting it is task T13.1).
+Requirements FR-MCP-12 to 15. Off unless the config enables it.
+
+- **Endpoint.** One Streamable HTTP path (`/mcp`), bound to `127.0.0.1` unless `transport.http.bind` is set explicitly.
+  Every request checks the `Origin` header against `transport.http.allowed_origins`; a missing or unlisted `Origin` on a
+  browser-style request is refused with HTTP 403.
+- **Metadata.** `GET /.well-known/oauth-protected-resource` returns the resource identifier (the endpoint URL) and the
+  configured authorization-server issuer (RFC 9728).
+- **Challenge.** A request without a valid bearer token gets HTTP 401 with `WWW-Authenticate` naming the metadata URL.
+  The server never returns a token or any authorization detail.
+- **Verification.** Signature or introspection, `exp`, `iss` equal to the configured issuer, `aud` equal to the resource
+  identifier (RFC 8707). Failure is 401; no fallback.
+- **Mapping.** `subject` (and an optional client claim) maps to a configured client entry (`transport.http.clients`).
+  The entry's `max_profile` is frozen into the policy snapshot at admission (FR-MCP-06, FR-POL-01). No claim can name
+  `privileged`.
+- **Sessions.** The session identifier is random and stored with the subject and client; a mismatch returns HTTP 403 and
+  an audit event with no token material.
+- **Forbidden.** Forwarding the inbound token, logging it, or storing it in the ledger.
+
 ## 4. Failure taxonomy
 
 `failure_code` on a `FAILED` run holds exactly one of these codes. `ELIGIBILITY_NONE` and `INVALID_REQUEST` were **added

@@ -982,6 +982,16 @@ counts stay absent, never estimated.
   `SWITCHBOARD_LIVE_TESTS=1` plus `SWITCHBOARD_LIVE_EMBEDDING=1` with an operator-supplied config path (names Proposed),
   never in CI, sending only a built-in fixture text.
 
+### 3.14 Network MCP transport (M13)
+
+- **Assumption (not verified):** the official MCP TypeScript SDK provides a Streamable HTTP server and a bearer-token
+  verifier that can be extended to RFC 9728 metadata and RFC 8707 audience checks. Task T13.1 verifies this, or
+  chooses a library, before any code. Choice is Delegated.
+- **Tests.** Malicious-fixture cases for the HTTP path: missing token, expired token, wrong audience, wrong issuer,
+  unlisted `Origin`, a session reused by another subject, a privileged scope claim. No live identity provider is needed
+  for the suite; token fixtures are generated locally and no test calls a real authorization server.
+- **Secrets.** Tests scan HTTP responses and logs for token and code patterns, as NFR-SEC-01 does for provider output.
+
 ## 4. Provider adapter strategy
 
 Source of every fact in this section is [R2]. Anything not stated there reads "to be verified in Mx against installed
