@@ -81,6 +81,8 @@ export const HOSTILE_REPO_ENTRIES = [
   ".codex",
   "CLAUDE.md",
   "AGENTS.md",
+  "GEMINI.md",
+  ".agents",
 ];
 
 export function requestFor(cwd: string, bypassApproved = false): CompileRequest {
