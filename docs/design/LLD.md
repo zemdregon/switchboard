@@ -1219,8 +1219,19 @@ Requirements FR-MCP-12 to 15. Off unless the config enables it.
 - **Endpoint.** One Streamable HTTP path (`/mcp`), bound to `127.0.0.1` unless `transport.http.bind` is set explicitly.
   Every request checks the `Origin` header against `transport.http.allowed_origins`; a missing or unlisted `Origin` on a
   browser-style request is refused with HTTP 403.
-- **Metadata.** `GET /.well-known/oauth-protected-resource` returns the resource identifier (the endpoint URL) and the
-  configured authorization-server issuer (RFC 9728).
+- **Config (T13.1, as built; key names other than `bind` Delegated).** `transport.http`: `enabled` (default false),
+  `public_url` (the `https://` MCP endpoint URL behind the operator's TLS terminator; no userinfo, query or fragment;
+  a path that is not `/`, under `/.well-known/` or an authorization-server endpoint), `bind` (an IP literal, default
+  `127.0.0.1`), `port`, `allow_non_loopback` (default false). `public_url` and `port` are required when enabled. Plain
+  HTTP in `public_url` is refused at load, even for localhost. Code: `src/config/http-transport.ts`.
+- **Metadata.** `GET /.well-known/oauth-protected-resource` and the path-suffixed form
+  `/.well-known/oauth-protected-resource/<endpoint path>` (RFC 9728 §3.1) return `resource` (the normalised
+  `public_url`), `authorization_servers` (the embedded issuer: the origin of `public_url`), `bearer_methods_supported:
+  ["header"]` and `resource_name`. `GET /.well-known/oauth-authorization-server` (RFC 8414) returns the issuer, the
+  `/authorize`, `/token` and `/register` endpoints, `response_types_supported: ["code"]`, `grant_types_supported:
+  ["authorization_code", "refresh_token"]`, `code_challenge_methods_supported: ["S256"]` and
+  `token_endpoint_auth_methods_supported: ["none"]`. Until their tasks land, those three endpoints answer 404 and the
+  MCP endpoint answers every request with the challenge below. Code: `src/mcp/http.ts`.
 - **Challenge.** A request without a valid bearer token gets HTTP 401 with `WWW-Authenticate` naming the metadata URL.
   The server never returns a token or any authorization detail.
 - **Verification.** Signature or introspection, `exp`, `iss` equal to the configured issuer, `aud` equal to the resource

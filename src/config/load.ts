@@ -9,6 +9,7 @@ import type { ModelConfig } from "../models/registry.js";
 import { ProfileOverrideError, validateProfileOverrides } from "../policy/profiles.js";
 import type { ProfileOverride, ProfileOverrides } from "../policy/types.js";
 import { ConfigError } from "./errors.js";
+import { checkHttpTransport, type HttpTransportSettings, resolveHttpTransport } from "./http-transport.js";
 import { checkInnerAgent, type InnerAgentSettings, resolveInnerAgent } from "./inner-agent.js";
 import { checkProjects, type ResolvedProject, resolveProjects } from "./projects.js";
 import {
@@ -74,6 +75,11 @@ export interface ResolvedConfig {
    * is passed as is to the bundle builder, which records it in the bundle's `bounds`.
    */
   continuity: { max_bundle_bytes: number; max_diff_excerpt_bytes: number; max_text_chars: number };
+  /**
+   * Validated `transport.http` (T13.1; FR-MCP-12, ADR-0041). Absent unless the section sets `enabled: true`; absent
+   * means `serve` opens no listener.
+   */
+  httpTransport?: HttpTransportSettings;
 }
 
 export interface ResolvedMcpClient {
@@ -302,9 +308,16 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
     throw new ConfigError(`Invalid config:\n${innerErrors.map((l) => `  ${l}`).join("\n")}`);
   }
 
+  const httpErrors = checkHttpTransport(cfg.transport?.http);
+  if (httpErrors.length > 0) {
+    throw new ConfigError(`Invalid config:\n${httpErrors.map((l) => `  ${l}`).join("\n")}`);
+  }
+  const httpTransport = resolveHttpTransport(cfg.transport?.http);
+
   return {
     configPath,
     dataDir,
+    ...(httpTransport !== undefined ? { httpTransport } : {}),
     projects: resolveProjects(cfg),
     sanitizePatterns: [...(cfg.git?.sanitize_patterns ?? [])],
     ...(cfg.inner_agent !== undefined ? { innerAgent: resolveInnerAgent(cfg.inner_agent) } : {}),

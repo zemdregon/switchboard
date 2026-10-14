@@ -71,7 +71,12 @@ import { createConfiguredInnerAgent, PROMPT_PROVIDER_NAMES } from "../inner/inde
 import { createLedger, openLedger } from "../ledger/index.js";
 import { RunLifecycle } from "../lifecycle/index.js";
 import { acquireDataDirLock, type DataDirLock } from "../lock/index.js";
-import { type SwitchboardMcpServer, startStdioServer } from "../mcp/index.js";
+import {
+  type HttpTransportListener,
+  type SwitchboardMcpServer,
+  startHttpTransport,
+  startStdioServer,
+} from "../mcp/index.js";
 import { type ModelConfig, ModelRegistry } from "../models/index.js";
 import { createProfileResolver } from "../policy/index.js";
 import { DynamicProjectStore, innerSettingResolver } from "../projects/index.js";
@@ -469,6 +474,7 @@ async function runDaemon(
   lifecycle.start();
 
   let mcp: SwitchboardMcpServer | undefined;
+  let httpListener: HttpTransportListener | undefined;
   let resolveStop: (reason: string) => void = () => {};
   const stopped = new Promise<string>((r) => {
     resolveStop = r;
@@ -513,6 +519,15 @@ async function runDaemon(
       adapters: registry.list().map((a) => a.id),
       pid: process.pid,
     });
+    // T13.1 (FR-MCP-12): no listener unless `transport.http.enabled`; it serves discovery metadata and a 401 challenge.
+    httpListener = await startHttpTransport(config.httpTransport);
+    if (httpListener && config.httpTransport) {
+      log.info("serving MCP discovery on HTTP", {
+        bind: httpListener.address.address,
+        port: httpListener.address.port,
+        resource: config.httpTransport.resource,
+      });
+    }
     const reason = await stopped;
     log.info("shutting down", { reason });
   } catch (err) {
@@ -530,6 +545,11 @@ async function runDaemon(
     clearInterval(timer);
     if (gcTimer) clearInterval(gcTimer);
     await gcInFlight; // a pass still running must finish before the lifecycle and the ledger are closed
+    try {
+      if (httpListener) await httpListener.close();
+    } catch (err) {
+      log.warn("closing the HTTP listener failed", { error: message(err) });
+    }
     try {
       // onclose fires again here; resolving the already-settled stop promise is a no-op.
       if (mcp) await mcp.close();
