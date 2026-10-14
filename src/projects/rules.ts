@@ -174,6 +174,34 @@ export function checkClientLimits(
 }
 
 /**
+ * T12.1 (FR-RAG-09, FR-RAG-10, LLD §14.1; **Delegated**, fail closed): a dynamic definition may narrow retrieval
+ * (`mode: "off"`, lower caps, more exclusions) but may not set `use_global` or `contribute_to_global`. Both move content
+ * across projects, so only the operator turns them on, in the configuration file.
+ */
+export function checkRagSharing(def: ProjectConfig): void {
+  for (const flag of ["use_global", "contribute_to_global"] as const) {
+    if (def.rag?.[flag] === true) {
+      throw new ProjectRuleError(
+        "PERMISSION_BLOCKED",
+        "RAG_SHARING_OPERATOR_ONLY",
+        `rag.${flag} can only be set by the operator in the configuration file`,
+        `$.project.rag.${flag}`,
+      );
+    }
+  }
+  for (const [i, c] of def.contexts.entries()) {
+    if (c.rag?.contribute_to_global === true) {
+      throw new ProjectRuleError(
+        "PERMISSION_BLOCKED",
+        "RAG_SHARING_OPERATOR_ONLY",
+        "rag.contribute_to_global can only be set by the operator in the configuration file",
+        `$.project.contexts[${i}].rag.contribute_to_global`,
+      );
+    }
+  }
+}
+
+/**
  * Why a revision must wait for the operator (FR-PRJ-10, BR-32): a `container` environment, any push policy other than
  * `none`, and any widening of the revision in force. **Delegated** additions: a commit identity (it names the author
  * of published commits, LLD §11.2 says an orchestrator must not invent one; the `identities` list proposed there is not

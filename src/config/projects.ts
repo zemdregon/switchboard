@@ -9,6 +9,7 @@
 
 import { isBranchPrefix, isRemoteName } from "../git/push-names.js";
 import { mostRestrictiveInnerSetting, type ProjectInnerSetting } from "./inner-agent.js";
+import type { ContextRagConfig, ProjectRagConfig } from "./rag.js";
 import type {
   ContextConfig,
   ContextKind,
@@ -38,6 +39,8 @@ export interface ResolvedContext {
   readonly finalizeCommit: boolean;
   /** T11.3 (LLD §13.1): present only when the context sets `inner_agent`; absent reads as `inherit`. */
   readonly innerAgent?: ProjectInnerSetting;
+  /** T12.1 (LLD §14.1): present only when the context sets `rag`. */
+  readonly rag?: ContextRagConfig;
 }
 
 export interface ResolvedProject {
@@ -53,6 +56,8 @@ export interface ResolvedProject {
   readonly allowedProviders?: readonly ProviderId[];
   /** T11.3 (LLD §13.1): present only when the project sets `inner_agent`; absent reads as `inherit`. */
   readonly innerAgent?: ProjectInnerSetting;
+  /** T12.1 (LLD §14.1): present only when the project sets `rag`; see `effectiveProjectRag`. */
+  readonly rag?: ProjectRagConfig;
   readonly contexts: readonly ResolvedContext[];
 }
 
@@ -156,6 +161,7 @@ export function resolveProjects(cfg: SwitchboardConfig): ResolvedProject[] {
       ...(p.max_trust_profile !== undefined ? { maxTrustProfile: p.max_trust_profile } : {}),
       ...(p.allowed_providers !== undefined ? { allowedProviders: [...p.allowed_providers] } : {}),
       ...(p.inner_agent !== undefined ? { innerAgent: p.inner_agent } : {}),
+      ...(p.rag !== undefined ? { rag: structuredClone(p.rag) } : {}),
       contexts: p.contexts.map((c) => {
         const primary = isPrimaryContext(p, c);
         return {
@@ -174,6 +180,7 @@ export function resolveProjects(cfg: SwitchboardConfig): ResolvedProject[] {
           sign: c.sign ?? false,
           finalizeCommit: c.finalize_commit ?? false,
           ...(c.inner_agent !== undefined ? { innerAgent: c.inner_agent } : {}),
+          ...(c.rag !== undefined ? { rag: structuredClone(c.rag) } : {}),
         };
       }),
     };

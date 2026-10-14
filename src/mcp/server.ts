@@ -125,6 +125,7 @@ import {
   resolveTrustProfile,
 } from "../policy/index.js";
 import type { DynamicProjectStore } from "../projects/index.js";
+import { deleteRagStore } from "../retrieval/store.js";
 import {
   buildRouteDecision,
   classifyRequest,
@@ -267,6 +268,13 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
             [...(deps.config.providers ?? new Map())].filter(([, v]) => !v.enabled).map(([id]) => id),
           ),
           admitting: (id) => admittingCount.get(id) ?? 0,
+          // T12.1 (FR-RAG-03): the project's retrieval store goes with it (a no-op when none was ever built).
+          ...(deps.config.dataDir !== undefined
+            ? {
+                onDeleted: (id: string) =>
+                  void deleteRagStore(deps.config.dataDir as string, { kind: "project", projectId: id }),
+              }
+            : {}),
         });
   const whileAdmitting = async <T>(projectId: unknown, fn: () => Promise<T>): Promise<T> => {
     if (typeof projectId !== "string") return fn();

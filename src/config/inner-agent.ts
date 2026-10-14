@@ -233,7 +233,8 @@ export function checkInnerAgent(cfg: InnerAgentConfig | undefined, knownProvider
   return errs;
 }
 
-function checkBaseUrl(raw: string, at: string): string[] {
+/** URL rules shared with `rag.embedding.base_url` (LLD §14.1): http(s), no userinfo, query or fragment. */
+export function checkBaseUrl(raw: string, at: string): string[] {
   let u: URL;
   try {
     u = new URL(raw);

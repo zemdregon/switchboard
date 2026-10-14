@@ -3,5 +3,6 @@ export * from "./http-transport.js";
 export * from "./inner-agent.js";
 export * from "./load.js";
 export * from "./projects.js";
+export * from "./rag.js";
 export * from "./routing.js";
 export * from "./schema.js";
