@@ -27,6 +27,7 @@
 import { ClaudeAdapter } from "./claude/adapter.js";
 import { CodexAdapter } from "./codex/adapter.js";
 import { FakeAdapter, type FakeScenario } from "./fake/adapter.js";
+import { GrokAdapter } from "./grok/adapter.js";
 import type { AcpDeclarations, ProviderAdapter, ResumeCwd } from "./types.js";
 
 /** What `serve` and `doctor` pass to an entry's factory. Fields are named after the provider they configure. */
@@ -132,7 +133,7 @@ export const BUILTIN_PROVIDERS = [
     bypassFlags: [],
     // TDD §4.3.1 "Bypass-class flags" ([CLI], [ENT], [PERM]; documentation only, Unverified: T4.21): the mode value
     // `bypassPermissions`; a catch-all `allow` rule (`*`, `**`; Proposed), also through `--allowed-tools`, which [CL]
-    // 1.0.51 documents as an alias of `--allow`. Inert until the adapter (T4.22) adds `create` (ADR-0037).
+    // 1.0.51 documents as an alias of `--allow`. Active since the adapter (T4.22) added `create` (ADR-0037).
     bypassValues: [
       { flag: "--permission-mode", value: "bypassPermissions" },
       { flag: "--allow", value: "*" },
@@ -140,8 +141,9 @@ export const BUILTIN_PROVIDERS = [
       { flag: "--allowed-tools", value: "*" },
       { flag: "--allowed-tools", value: "**" },
     ],
-    // TDD §4.10: `Unverified: T4.21`.
+    // TDD §4.10: `Unverified: T5.12` (`-r <id>` resumed from a second directory in the 2026-10-14 live check).
     resumeCwd: "unverified",
+    create: (): ProviderAdapter => new GrokAdapter(),
   },
   // TDD §4.4.2: its one bypass flag (`--dangerously-skip-permissions`) is shared; `always-proceed` is a settings value.
   // TDD §4.10 ([RS]): "Histories are scoped to the working directory", so `bound`.

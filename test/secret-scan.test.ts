@@ -512,7 +512,14 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(HERE, "..", "src", "cli", "bin.ts");
 const TS_REGISTER = path.join(HERE, "..", "src", "reconcile", "fixtures", "ts-register.mjs");
 
-describe("secret scan: `serve` daemon as a process (stderr log, data directory, MCP over stdio)", () => {
+/**
+ * T4.10: this block drives a real `serve` process with the test-only fake adapter, whose compile matrix is "verified on
+ * linux only" (Q-35, NFR-PORT-02), so on darwin eligibility ends `ELIGIBILITY_NONE` by design and the run never starts.
+ * The Q-35 rule is unchanged; the block runs on the Linux leg (as the same-cause blocks of `src/cli/serve.test.ts`).
+ */
+const describeLinuxVerified = process.platform === "darwin" ? describe.skip : describe;
+
+describeLinuxVerified("secret scan: `serve` daemon as a process (stderr log, data directory, MCP over stdio)", () => {
   let root: string;
   let c: Canaries;
   const surfaces = { mcp: "", stderr: "", data_dir_files: "", ledger: "", run_events: "" };
