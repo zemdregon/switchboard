@@ -199,9 +199,16 @@ store and sharing rules are T12.7), FR-RAG-11 (caps in configuration only; backg
 - **Modules:** `src/retrieval/embedding.ts`, `src/retrieval/http-embedder.ts`, `src/retrieval/fake-embedder.ts`;
   `createPinnedHttpTransport` in `src/inner/http-backend.ts`
 
-Not implemented yet (design unchanged): WF-14 end-to-end and admission context pack (FR-RAG-05, FR-RAG-07, FR-RAG-08,
-T12.5), `search_project_context` (FR-RAG-06), operator `index` and `doctor` retrieval sections (FR-RAG-11, FR-RAG-14,
-T12.4), global read and contribute (FR-RAG-09, FR-RAG-10, T12.7).
+#### T12.5 — admission context pack (design intent)
+
+**Not implemented on `main`.** Specification: [LLD §14.11](LLD.md#1411-admission-context-pack-t125) (FR-RAG-05,
+FR-RAG-07, FR-RAG-08). Depends on T12.4 (`rag_record`, background build). Planned evidence: admission wiring in
+COMP-MCP / lifecycle, `src/retrieval/import-boundary.test.ts` and the authority-boundary scenario in [TDD
+§3.13.3](TDD.md#3133-testing-affinity-and-retrieval).
+
+Not implemented yet (design unchanged): WF-14 end-to-end wiring for T12.5, `search_project_context` (FR-RAG-06),
+operator `index` and `doctor` retrieval sections (FR-RAG-11, FR-RAG-14, T12.4), global read and contribute (FR-RAG-09,
+FR-RAG-10, T12.7).
 
 ## 5. Requirements to design traceability
 
@@ -347,10 +354,10 @@ M12 retrieval through T12.3 (FR-RAG-01–04 on fakes) lists primary tests and mo
 | FR-RAG-02 | COMP-RAG, COMP-PRJ | Scanner limited to context roots; exclusions, secret denylist, FR-INN-16 redaction before embedding and storage | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.3](LLD.md#143-scanner-chunking-and-redaction) |
 | FR-RAG-03 | COMP-RAG, COMP-PRJ | One store file per project; store deleted with the project; no cross-project read except the global path | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.2](LLD.md#142-stores-and-tables) |
 | FR-RAG-04 | COMP-RAG | Embedding backend port (`local`, `http`) with the inner-agent locality classification and gates; no credential; inert without a backend | [ADR-0031](../adr/0031-retrieval-index.md), [ADR-0016](../adr/0016-inner-agent.md) | [LLD §14.4](LLD.md#144-embedding-backend-port-and-privacy-gates) |
-| FR-RAG-05 | COMP-RAG, COMP-MCP, COMP-LED | Context pack at admission within `max_context_tokens`, labelled snippets, original request text stored unchanged, ids and hashes recorded | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.6](LLD.md#146-selection-and-token-budget) |
+| FR-RAG-05 | COMP-RAG, COMP-MCP, COMP-LED | Context pack at admission within `max_context_tokens`, labelled snippets, original request text stored unchanged, ids and hashes recorded | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.11](LLD.md#1411-admission-context-pack-t125), [LLD §14.6](LLD.md#146-selection-and-token-budget) |
 | FR-RAG-06 | COMP-MCP, COMP-RAG, COMP-PRJ | Read-only tool `search_project_context`, client sees only its projects, bounded count and size | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.7](LLD.md#147-tool-contract-search_project_context) |
-| FR-RAG-07 | COMP-RAG, COMP-POL, COMP-ADP, COMP-RTE, COMP-GIT | Structural authority boundary: no dependency edge from policy, compile, eligibility, retry or push code; import-boundary test | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14](LLD.md#14-retrieval-index), [TDD §3.13](TDD.md#313-retrieval-index) |
-| FR-RAG-08 | COMP-RAG, COMP-WS | Index revision and file hash on results; stale snippets dropped or re-read; base-ref mismatch flagged; any failure gives no pack | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.8](LLD.md#148-freshness-and-fallback) |
+| FR-RAG-07 | COMP-RAG, COMP-POL, COMP-ADP, COMP-RTE, COMP-GIT | Structural authority boundary: no dependency edge from policy, compile, eligibility, retry or push code; import-boundary test | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.11](LLD.md#14116-import-boundary-fr-rag-07), [TDD §3.13](TDD.md#313-retrieval-index) |
+| FR-RAG-08 | COMP-RAG, COMP-WS | Index revision and file hash on results; stale snippets dropped or re-read; base-ref mismatch flagged; any failure gives no pack | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.11](LLD.md#1411-admission-context-pack-t125), [LLD §14.8](LLD.md#148-freshness-and-fallback) |
 | FR-RAG-09 | COMP-RAG, COMP-OPS | Optional separate global store (default off) holding operator-added sources and opt-in project contributions | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.2](LLD.md#142-stores-and-tables), [LLD §14.9](LLD.md#149-global-index-and-sharing) |
 | FR-RAG-10 | COMP-RAG, COMP-PRJ | Global read only with `use_global`; snippets labelled with origin project; same gates and profile | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.9](LLD.md#149-global-index-and-sharing) |
 | FR-RAG-11 | COMP-RAG, COMP-OPS | Caps on files, chunks, bytes and build time; background build in `serve`; incomplete marker; `index status`, `index rebuild`, `index clear` write operator records only | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.5](LLD.md#145-incremental-build), [LLD §14.1](LLD.md#141-configuration-shape) |
