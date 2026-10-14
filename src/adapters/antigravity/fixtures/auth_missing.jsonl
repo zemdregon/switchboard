@@ -1,0 +1,2 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.35), in the stream-json shapes recorded by the 2026-10-14 live check (C13, recorded with --output-format json: logged out it exits 1 with status ERROR and this error; the stream-json nesting under result is an Assumption).","exit":1}}
+{"event":"result","result":{"conversation_id":"","status":"ERROR","response":"","error":"authentication failed or timed out"}}

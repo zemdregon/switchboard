@@ -1,0 +1,3 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.35), in the stream-json shapes recorded by the 2026-10-14 live check (C4): a turn that never ends.","hang":"ignore_term"}}
+{"event":"init","conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","init":{"cwd":"/work/tree","tools":["run_command","write_to_file"],"permission_mode":"always-proceed","model":"synthetic-model"}}
+{"event":"step_update","conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"Working"}
