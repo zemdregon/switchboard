@@ -302,6 +302,16 @@ export interface NewProviderBinding {
   model?: string | null;
 }
 
+/** The `meta_session` columns the handoff bundle reads (T5.4; LLD §15.1). Never `open_work_json` (LLD §15.3). */
+export interface MetaSessionContinuityRow {
+  id: string;
+  objective: string;
+  constraints_json: string;
+  repo_root: string | null;
+  base_commit: string | null;
+  head_commit: string | null;
+}
+
 /** `decision` row (LLD §1, append-only). */
 export interface DecisionRow {
   id: string;
@@ -660,6 +670,16 @@ export interface Ledger {
   getOpenWorkProjection(metaSessionId: string): unknown[] | undefined;
   /** Most recently used binding of a meta-session, optionally for one provider. */
   latestProviderBinding(metaSessionId: string, provider?: string): ProviderBindingRow | undefined;
+
+  // ---- T5.4 additions (handoff bundle sources, LLD §15.1 and §15.2; read-only) -------------------------------------
+  /** The continuity fields of a meta-session the bundle builder reads (LLD §15.1). `undefined` when unknown. */
+  getMetaSessionContinuity(metaSessionId: string): MetaSessionContinuityRow | undefined;
+  /** One artifact row by id, deleted by retention GC or not. */
+  getArtifact(id: string): ArtifactRow | undefined;
+  /** Highest `run_event.seq` of a run; 0 when it has none (the `as_of` watermark, LLD §15.2). */
+  maxRunEventSeq(runId: string): number;
+  /** Events of a run with `seq <= maxSeq`, ascending (events appended after an `as_of` are not returned). */
+  listRunEventsUpTo(runId: string, maxSeq: number): RunEventRow[];
 
   // ---- T3.12 additions (retention GC) --------------------------------------------------------------------------
   /**
@@ -1249,6 +1269,38 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
                    ORDER BY last_used_at DESC, rowid DESC LIMIT 1`;
       const args = provider === undefined ? [metaSessionId] : [metaSessionId, provider];
       return db.prepare(sql).get(...args) as ProviderBindingRow | undefined;
+    },
+
+    getMetaSessionContinuity(metaSessionId) {
+      return db
+        .prepare(
+          "SELECT id, objective, constraints_json, repo_root, base_commit, head_commit FROM meta_session WHERE id = ?",
+        )
+        .get(metaSessionId) as MetaSessionContinuityRow | undefined;
+    },
+
+    getArtifact(id) {
+      return db
+        .prepare(
+          `SELECT id, run_id, meta_session_id, kind, sha256, size_bytes, media_type, created_at, deleted_at
+           FROM artifact WHERE id = ?`,
+        )
+        .get(id) as ArtifactRow | undefined;
+    },
+
+    maxRunEventSeq(runId) {
+      return (
+        db.prepare("SELECT COALESCE(MAX(seq), 0) AS n FROM run_event WHERE run_id = ?").get(runId) as { n: number }
+      ).n;
+    },
+
+    listRunEventsUpTo(runId, maxSeq) {
+      return db
+        .prepare(
+          `SELECT id, run_id, seq, ts, type, payload_json, artifact_id FROM run_event
+           WHERE run_id = ? AND seq <= ? ORDER BY seq`,
+        )
+        .all(runId, maxSeq) as RunEventRow[];
     },
 
     listGcCandidates(cutoffIso) {
