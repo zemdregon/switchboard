@@ -874,6 +874,12 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   `--version` and the flags in `--help` (`docs/research/live-checks-2026-10-13.md`), not by a conformance suite. Any
   other Codex version fails the version gate. The `codex login status` exit codes were observed on that version only;
   its output format is undocumented.
+- **Grok Build malicious-fixture leg is partial (ROADMAP T4.26).** CI runs `test/malicious/adapter-leg.test.ts` with
+  `test/malicious/adapters/grok.case.ts` on synthetic `streaming-json` streams (no `grok` installed). Compile and
+  isolation-flag checks pass for each compiled bypass cell; hostile replay blocking checks are skipped while `replayGap`
+  is set because `tool_call` / `tool_call_update` fields were not recorded (T4.23), so sandbox and policy denials can
+  still end at exit 0 in an approved bypass run, and credential reads inside the sandbox are not refused (Q-62). See
+  ROADMAP T4.26 for the full gap list.
 - **Event shapes are partly verified.** The 2026-10-13 live checks confirmed the Claude Code stream-json shapes
   (C-1 to C-11 and G-1) on 2.1.296 and the Codex flags (X-1 to X-3) on 0.162.1. Claude error strings (C-12), the
   Git-write attempt (C-G2) and Codex through Switchboard (X-5 to X-9) are still unverified, and another CLI version may
