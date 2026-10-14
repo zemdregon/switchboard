@@ -409,11 +409,36 @@ const NULLABLE_NUMBER = { type: ["number", "null"] } as const;
 const CAPACITY = {
   type: "object",
   additionalProperties: false,
-  required: ["as_of", "window_seconds", "note", "providers"],
+  required: ["as_of", "window_seconds", "note", "providers", "affinity"],
   properties: {
     as_of: { type: "string" },
     window_seconds: { type: "integer" },
     note: { type: "string" },
+    // T6.7 (FR-CAP-08, LLD §3.2): per-project kept versus switched counts; controller evidence only.
+    affinity: {
+      type: "object",
+      additionalProperties: false,
+      required: ["source", "note", "projects", "truncated"],
+      properties: {
+        source: { const: "controller" },
+        note: { type: "string" },
+        truncated: { type: "boolean" },
+        projects: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["project_key", "runs", "kept", "switched"],
+            properties: {
+              project_key: { type: "string" },
+              runs: { type: "integer", minimum: 0 },
+              kept: { type: "integer", minimum: 0 },
+              switched: { type: "object", additionalProperties: { type: "integer", minimum: 0 } },
+            },
+          },
+        },
+      },
+    },
     providers: {
       type: "array",
       items: {
@@ -468,6 +493,20 @@ const CAPACITY = {
                 properties: { at: { type: "string" }, source: { const: "provider_reported" } },
               },
             ],
+          },
+          // T6.7 (FR-CAP-08): reported cache counts, present only when a sourced key was reported in the window.
+          cache: {
+            type: "object",
+            additionalProperties: false,
+            required: ["read", "creation", "rows", "source", "key_names", "key_source"],
+            properties: {
+              read: NULLABLE_NUMBER,
+              creation: NULLABLE_NUMBER,
+              rows: { type: "integer", minimum: 1 },
+              source: { const: "provider_reported" },
+              key_names: { type: "array", items: { type: "string" } },
+              key_source: { type: "string" },
+            },
           },
           concurrency_available: { type: "integer", minimum: 0 },
           concurrency_limit: { type: "integer", minimum: 1 },

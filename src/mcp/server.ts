@@ -906,7 +906,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       ...(deps.config.providers !== undefined ? { providers: deps.config.providers } : {}),
       ...(deps.config.limits !== undefined ? { limits: deps.config.limits } : {}),
     });
-    return capacityProjection(ledger, providers, settings, (deps.now ?? (() => new Date()))());
+    // T6.7: the affinity block shows this client's own runs only.
+    return capacityProjection(ledger, providers, settings, (deps.now ?? (() => new Date()))(), deps.clientId);
   };
 
   /** LLD §3 `list_projects`: the projects this client may use, without paths, remotes, identities or image data. */

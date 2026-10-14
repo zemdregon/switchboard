@@ -293,6 +293,16 @@ export interface ProviderUsageRow {
   observed_at: string;
 }
 
+/** T6.7 (FR-CAP-08): a run that started a provider process, as the switch counter sees it. */
+export interface StartedRunRow {
+  id: string;
+  provider: string;
+  model: string | null;
+  project_id: string | null;
+  request_json: string;
+  created_at: string;
+}
+
 /** `provider_health` (LLD §1); M6 reads and writes only the breaker columns (LLD §16.4). */
 export interface ProviderHealthRow {
   provider: string;
@@ -719,6 +729,11 @@ export interface Ledger {
   listRateLimitSignalsSince(provider: string, sinceIso: string): RateLimitSignalRow[];
   /** `provider_reported` usage rows of `provider` observed at or after `sinceIso`, oldest first (never `inner_agent`). */
   listProviderReportedUsageSince(provider: string, sinceIso: string): ProviderUsageRow[];
+  /**
+   * T6.7 (FR-CAP-08): runs created at or after `sinceIso` that started a provider process, oldest first; only the runs
+   * of `clientId` when it is given.
+   */
+  listStartedRunsSince(sinceIso: string, clientId?: string): StartedRunRow[];
   /** T6.6 (LLD §16.6): the provider's most recent `QUOTA_EXHAUSTED` runs, newest first, at most `limit`. */
   listRecentQuotaExhaustedRuns(provider: string, limit: number): RunRecord[];
   /** T6.5 (FR-MCP-10): the run that supersedes `runId` (its retry or failover successor), if any. */
@@ -1275,6 +1290,14 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
            FROM provider_health WHERE provider = ?`,
         )
         .get(provider) as ProviderHealthRow | undefined;
+    },
+
+    listStartedRunsSince(sinceIso, clientId) {
+      const sql = `SELECT id, provider, model, project_id, request_json, created_at FROM run
+           WHERE started_at IS NOT NULL AND provider IS NOT NULL AND created_at >= ?${clientId === undefined ? "" : " AND client_id = ?"}
+           ORDER BY created_at, id`;
+      const args: unknown[] = clientId === undefined ? [sinceIso] : [sinceIso, clientId];
+      return db.prepare(sql).all(...args) as StartedRunRow[];
     },
 
     listRecentQuotaExhaustedRuns(provider, limit) {
