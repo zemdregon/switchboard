@@ -35,6 +35,8 @@ const EXPECTED_TABLES = [
   "project_revision_decision",
   "provider_binding",
   "provider_health",
+  "rag_record",
+  "rag_request",
   "route_decision",
   "run",
   "run_event",
@@ -689,7 +691,7 @@ describe("project_affinity (T7.4; migration 0014, LLD §3.2, §17.6)", () => {
     migrate(db, undefined, before);
     expect(tables(db)).not.toContain("project_affinity");
     const { run } = seed(db);
-    expect(migrate(db)).toEqual([14]);
+    expect(migrate(db)).toEqual(MIGRATIONS.filter((m) => m.version >= 14).map((m) => m.version));
     expect(tables(db)).toContain("project_affinity");
     expect(db.prepare("SELECT id FROM run").get()).toEqual({ id: run.id });
   });
