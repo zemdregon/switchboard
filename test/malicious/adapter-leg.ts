@@ -49,8 +49,10 @@ export interface AdapterLegCase {
   provider: string;
   /** An adapter whose launcher replays `streamFile` with the given exit code (use `replayLauncher`). */
   makeAdapter(streamFile: string, exitCode: number): ProviderAdapter;
-  /** A profile with `repoConfig: "disabled"` that the adapter compiles. */
+  /** A profile the adapter compiles (e.g. repoConfig: "disabled", or approved privileged bypass). */
   profile: ResolvedProfile;
+  /** Test-only: whether the case compiles under an approved bypass (e.g. Cursor). */
+  bypassApproved?: boolean;
   /** Flags that must appear in the compiled argv for that profile (they switch repository configuration off). */
   isolationFlags: readonly string[];
   /** Flags that must NOT appear (they would load a repository hook, MCP definition, plugin or settings source). */
@@ -72,12 +74,13 @@ export const HOSTILE_REPO_ENTRIES = [
   "AGENTS.md",
 ];
 
-export function requestFor(cwd: string): CompileRequest {
+export function requestFor(cwd: string, bypassApproved = false): CompileRequest {
   return {
     runId: "run_malicious_leg",
     objective: "synthetic objective",
     constraints: [],
     workspace: { cwd, writable: true },
+    ...(bypassApproved ? { bypassApproved: true } : {}),
   };
 }
 
@@ -118,10 +121,10 @@ function argvProblems(c: AdapterLegCase, fx: MaliciousFixture, inv: Invocation, 
  */
 export function compileProblems(c: AdapterLegCase, fx: MaliciousFixture): string[] {
   const adapter = c.makeAdapter(path.join(fx.base, "unused.jsonl"), 0);
-  const inv = adapter.compile(requestFor(fx.repo), c.profile);
+  const inv = adapter.compile(requestFor(fx.repo, c.bypassApproved === true), c.profile);
   if (isIneligible(inv)) return [`profile does not compile: ${inv.reason}: ${inv.detail}`];
   const problems = argvProblems(c, fx, inv, "disabled");
-  const other = adapter.compile(requestFor(fx.repo), c.nonDisabledRepoConfig);
+  const other = adapter.compile(requestFor(fx.repo, c.bypassApproved === true), c.nonDisabledRepoConfig);
   if (!isIneligible(other)) {
     problems.push(...argvProblems(c, fx, other, `repoConfig=${c.nonDisabledRepoConfig.repoConfig}`));
   }
@@ -151,7 +154,7 @@ export async function replayHostileStream(
     const report = await runConformanceCase({
       kind: "task_failure",
       adapter: c.makeAdapter(file, s.exitCode),
-      request: requestFor(fx.repo),
+      request: requestFor(fx.repo, c.bypassApproved === true),
       profile: c.profile,
       expect: { ok: false, failureCode: s.failureCode },
     });

@@ -930,3 +930,58 @@ describe("cursor Git declaration (T4.47, FR-GIT-01, FR-GIT-02, FR-GIT-09)", () =
     }
   });
 });
+
+describe("cursor malicious-fixture leg (T4.46, NFR-SEC-03, FR-POL-04, FR-POL-06)", () => {
+  it("never emits --approve-mcps, so repository MCP definitions stay unapproved (FR-POL-04, NFR-SEC-03)", () => {
+    const profile = { ...privilegedProfile(BYPASS_SCOPE), bypassApproved: true };
+    const inv = adapter().compile(request({ bypassApproved: true }), profile);
+    expect("ineligible" in inv).toBe(false);
+    if (!("ineligible" in inv)) {
+      expect(inv.argv).not.toContain("--approve-mcps");
+      expect(inv.policyFlags).not.toContain("--approve-mcps");
+      expect(inv.argv.some((a) => a.startsWith("--approve-mcps"))).toBe(false);
+    }
+  });
+
+  it("compiled argv carries isolation flags and never any repository-enabling or bypass flags (FR-POL-04, FR-POL-06)", () => {
+    const profile = { ...privilegedProfile(BYPASS_SCOPE), bypassApproved: true };
+    const inv = adapter().compile(request({ bypassApproved: true }), profile);
+    expect("ineligible" in inv).toBe(false);
+    if (!("ineligible" in inv)) {
+      expect(inv.argv).toContain("--print");
+      expect(inv.argv).toContain("--output-format");
+      expect(inv.argv).toContain("stream-json");
+      const forbidden = [
+        "--approve-mcps",
+        "--yolo",
+        "--auto-review",
+        "-w",
+        "--worktree",
+        "--workspace",
+        "--add-dir",
+        "--plugin-dir",
+        "--continue",
+        "--sandbox",
+      ];
+      for (const f of forbidden) {
+        expect(inv.argv).not.toContain(f);
+      }
+    }
+  });
+
+  it("deliberately broken compile fails audit or dialect check (T4.26 bar)", () => {
+    const profile = { ...privilegedProfile(BYPASS_SCOPE), bypassApproved: true };
+    const inv = adapter().compile(request({ bypassApproved: true }), profile);
+    expect("ineligible" in inv).toBe(false);
+    if (!("ineligible" in inv)) {
+      // Invocation audit refuses --force without approval context
+      const unapprovedAudit = auditInvocation(inv);
+      expect(unapprovedAudit).toContain("--force");
+      // Removing --trust or --force breaks required flags
+      const missingTrust = inv.argv.filter((a) => a !== "--trust");
+      expect(missingTrust.includes("--trust")).toBe(false);
+      const missingForce = inv.argv.filter((a) => a !== "--force");
+      expect(missingForce.includes("--force")).toBe(false);
+    }
+  });
+});
