@@ -20,8 +20,8 @@
  *   guard (ADR-0039), FR-GIT-03 and FR-GIT-06;
  * - the parser (T4.43) reads only the `stream-json` fields the 2026-10-14 live check recorded; a refused tool call is a
  *   `permission_denied` event because the final `result` still says `success`; resume is `--resume <id>` through the
- *   same matrix. The auth preflight fails closed until T4.44. The manifest range admits no version, so none of this
- *   runs before `adapters validate` passes a version.
+ *   same matrix. The auth preflight (T4.44) keys on `isAuthenticated` of `status --format json`. The manifest range
+ *   admits no version, so none of this runs before `adapters validate` passes a version.
  */
 import {
   DEFAULT_IDLE_MS,
@@ -54,6 +54,9 @@ import type {
 } from "../types.js";
 import {
   API_KEY_SOURCE_LOGIN,
+  AUTH_STATUS_ARGS,
+  AUTH_STATUS_KEY,
+  AUTH_STATUS_TIMEOUT_MS,
   CURSOR_BINARY,
   CURSOR_LOGIN_COMMAND,
   EVENT,
@@ -209,13 +212,32 @@ export class CursorAdapter implements ProviderAdapter {
     return { binaryPath: exe, binaryVersion: version, steps };
   }
 
-  /** T4.44 supplies the auth preflight; until then fail closed (NFR-SEC-06). Never reads a credential file. */
-  async authPreflight(_runner: ProbeRunner): Promise<AuthResult> {
-    return {
+  /**
+   * FR-AUTH-01/02 (T4.44): `cursor-agent status --format json`, keyed on `isAuthenticated` only (see protocol.ts). Never
+   * reads a credential file, never starts a login, and never copies the status output (it holds account fields) into
+   * the result.
+   */
+  async authPreflight(runner: ProbeRunner): Promise<AuthResult> {
+    const exe = this.#exe;
+    if (exe === undefined) return { state: "UNKNOWN", reason: `${CURSOR_BINARY} not found on PATH` };
+    const r = await runner([exe, ...this.#launcher, ...AUTH_STATUS_ARGS], { timeoutMs: AUTH_STATUS_TIMEOUT_MS });
+    const unknown = (why: string): AuthResult => ({
       state: "UNKNOWN",
-      reason:
-        "Cursor auth preflight is not implemented (T4.44); `cursor-agent status` exits 0 logged in and logged out",
-    };
+      reason: `\`${CURSOR_BINARY} ${AUTH_STATUS_ARGS.join(" ")}\` gave no login state (${why})`,
+    });
+    if (r.spawnError !== undefined) return unknown("could not start");
+    if (r.timedOut) return unknown("timed out");
+    if (r.exitCode !== 0) return unknown(`exit ${r.exitCode}`);
+    let doc: unknown;
+    try {
+      doc = JSON.parse(r.stdout);
+    } catch {
+      return unknown("output is not JSON");
+    }
+    const flag = obj(doc)?.[AUTH_STATUS_KEY];
+    if (flag === true) return { state: "OK" };
+    if (flag === false) return { state: "AUTH_REQUIRED", loginCommand: CURSOR_LOGIN_COMMAND };
+    return unknown(`no boolean ${AUTH_STATUS_KEY}`);
   }
 
   compile(request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible {

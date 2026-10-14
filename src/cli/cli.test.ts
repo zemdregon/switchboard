@@ -164,7 +164,7 @@ describe("doctor", () => {
   });
 
   it("fails on an old Node, a failing probe, and warns (exit 0) on AUTH_REQUIRED", async () => {
-    expect((await run(["doctor", ...cfg()], { nodeVersion: "20.1.0" })).code).toBe(1);
+    expect((await run(["doctor", ...cfg()], { nodeVersion: "20.1.0", adapters: fakeOnly() })).code).toBe(1);
 
     const broken = new AdapterRegistry().register(new FakeAdapter({ script: path.join(tmp, "missing.mjs") }));
     const bad = await run(["doctor", ...cfg()], { adapters: broken });
@@ -285,7 +285,7 @@ describe("doctor", () => {
     seed([]).close();
     const lock = acquireDataDirLock(dataDir);
     try {
-      const j = JSON.parse((await run(["doctor", "--json", ...cfg()])).out);
+      const j = JSON.parse((await run(["doctor", "--json", ...cfg()], { adapters: fakeOnly() })).out);
       const by = Object.fromEntries(j.checks.map((c: { id: string; status: string; detail: string }) => [c.id, c]));
       expect(by.ledger.status).toBe("ok");
       expect(by.lock.detail).toContain(`pid ${process.pid}`);
@@ -293,7 +293,7 @@ describe("doctor", () => {
       lock.release();
     }
     writeFileSync(path.join(dataDir, LOCK_FILE_NAME), "999999999\n");
-    const stale = JSON.parse((await run(["doctor", "--json", ...cfg()])).out);
+    const stale = JSON.parse((await run(["doctor", "--json", ...cfg()], { adapters: fakeOnly() })).out);
     expect(stale.checks.find((c: { id: string }) => c.id === "lock").status).toBe("warn");
   });
 });

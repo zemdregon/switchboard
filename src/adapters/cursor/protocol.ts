@@ -61,6 +61,18 @@ export const REQUIRED_HELP_FLAGS: readonly string[] = [
 export const CURSOR_LOGIN_COMMAND = "cursor-agent login";
 
 /**
+ * Auth status (T4.44, Q-10, Q-65; [C1], [C5] `status`/`whoami` with `--format text|json`; [LIVE] 3a to 3c). The exit code
+ * is 0 logged in and logged out, so only the JSON key `isAuthenticated` decides: `true` is `OK`, `false` is
+ * `AUTH_REQUIRED`, anything else (no JSON, no boolean, another exit code, a timeout) is `UNKNOWN` (fail closed). The
+ * object also carries account fields (`userInfo`: email, user id, names): the adapter reads the one boolean and never
+ * puts any of the output into a reason, log or event. The logged-out state was observed with an empty scratch `HOME`,
+ * not after a real `logout` ([LIVE] "Unverified / not run").
+ */
+export const AUTH_STATUS_ARGS: readonly string[] = ["status", "--format", "json"];
+export const AUTH_STATUS_KEY = "isAuthenticated";
+export const AUTH_STATUS_TIMEOUT_MS = 10_000;
+
+/**
  * FR-GIT-01 declaration ([C6], [LIVE] 11). A `permissions.deny` rule in a controller-written `CURSOR_CONFIG_DIR` file
  * denied `git commit` in the live check, but it needs a config file, the CLI rewrites that file, the operator's global
  * rules and MCP servers still load, and the match form (command prefix) was not tested against `git -C . commit` or an
