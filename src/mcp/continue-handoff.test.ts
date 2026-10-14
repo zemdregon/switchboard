@@ -41,6 +41,8 @@ import {
 } from "../adapters/index.js";
 import { registerProvider } from "../adapters/providers.js";
 import { ArtifactStore } from "../artifacts/index.js";
+import { main } from "../cli/index.js";
+import type { CliIo } from "../cli/io.js";
 import type { ResolvedProject } from "../config/index.js";
 import { INSTRUCTION_MARKER, PRIVILEGED_CROSS_PROVIDER } from "../continuity/index.js";
 import { GitPublisher } from "../git/index.js";
@@ -842,4 +844,121 @@ describe("M5 acceptance on two fake adapters (T5.9)", () => {
     recording = false;
     expect(stateOpens(opened)).toHaveLength(hits.length);
   });
+});
+
+/**
+ * T5.10 (FR-SES-05, FR-MCP-04, FR-OPS-01; LLD §15.7 step 7): the handoff view on the read surfaces. `get_artifacts`
+ * returns the `handoff_view` of a handoff run and `get_run` carries only its id; `runs show` (plain text and `--json`)
+ * lists the bundle artifact id and hash, the source run and the binding the run started. Neither surface holds bundle
+ * text or a transcript line, and the handoff section holds no native session id.
+ */
+describe("handoff view on the read surfaces (T5.10)", () => {
+  const cli = async (args: string[]) => {
+    const configPath = path.join(root, "config.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schema_version: 1,
+        data_dir: dataDir,
+        allowed_roots: [root],
+        mcp_clients: [{ id: "orchestrator", max_trust_profile: "edit-untrusted" }],
+      }),
+    );
+    const out: string[] = [];
+    const err: string[] = [];
+    const io: CliIo = {
+      stdout: { write: (x) => out.push(x) },
+      stderr: { write: (x) => err.push(x) },
+      env: { PATH: process.env.PATH, HOME: home },
+      user: "tester",
+    };
+    const code = await main([...args, "--config", configPath], io);
+    return { code, out: out.join(""), err: err.join("") };
+  };
+
+  it("get_artifacts, get_run and `runs show` agree on the bundle, the source run and the binding", async () => {
+    await setup();
+    const { runId: runA_, sess } = await runA();
+    const c = await call("continue_task", {
+      meta_session_id: sess,
+      instruction: plan({ "src/b.ts": "export const b = 2;\n" }, "b done"),
+      routing: { provider_preference: B },
+    });
+    expect(c.isError, JSON.stringify(c.body)).toBe(false);
+    const done = await pollTerminal(c.body.run_id);
+    expect(done.status, JSON.stringify(done)).toBe("SUCCEEDED");
+    const runB = c.body.run_id as string;
+
+    // MCP: the view is listed by `get_artifacts`; the `get_run` envelope names it and carries no bundle text.
+    const row = ledger.listArtifactsForRun(runB).find((x) => x.kind === "handoff_view");
+    if (!row) throw new Error("no handoff_view row");
+    const listed = await call("get_artifacts", { run_id: runB, kinds: ["handoff_view"] });
+    expect(listed.isError, JSON.stringify(listed.body)).toBe(false);
+    expect(listed.body.artifacts).toHaveLength(1);
+    expect(listed.body.artifacts[0]).toMatchObject({ artifact_id: row.id, kind: "handoff_view", sha256: row.sha256 });
+    expect(done.artifacts.handoff_view).toBe(row.id);
+    expect(JSON.stringify(done)).not.toContain("a wrote src/a.ts");
+    // The view itself (what `get_artifacts` is for) holds the bundle, which never holds a transcript line.
+    expect(JSON.stringify(listed.body)).not.toContain(CANARY);
+
+    // CLI, `--json`: the identifiers, hashes and labels, nothing else.
+    const shown = await cli(["runs", "show", runB, "--json"]);
+    expect(shown.code, shown.out + shown.err).toBe(0);
+    const j = JSON.parse(shown.out);
+    expect(j.run.handoff).toEqual({
+      bundle_artifact_id: row.id,
+      bundle_sha256: row.sha256,
+      as_of_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      renderer_version: expect.any(Number),
+      from_provider: "fake",
+      reason: "provider_named",
+      source_run_ids: [runA_],
+      source_run_id: runA_,
+      binding: expect.objectContaining({ provider: B, harness: B }),
+    });
+    const bindingB = ledger.latestProviderBinding(sess, B);
+    expect(j.run.handoff.binding.id).toBe(bindingB?.id);
+
+    // The handoff section holds no native session id (the run's own events already name its session). The bundle's
+    // text and the transcripts are on none of the surfaces.
+    expect(JSON.stringify(j.run.handoff)).not.toMatch(/fake(-b)?-session-1/);
+    const text = await cli(["runs", "show", runB]);
+    expect(text.code).toBe(0);
+    for (const surface of [shown.out, text.out, JSON.stringify(done)]) {
+      for (const leak of [CANARY, "a wrote src/a.ts", INSTRUCTION_MARKER]) {
+        expect(surface, `leaked ${leak}`).not.toContain(leak);
+      }
+    }
+
+    // CLI, plain text.
+    expect(text.out).toContain("Handoff (FR-SES-05):");
+    expect(text.out).toContain(`bundle:      ${row.id}  sha256 ${row.sha256}`);
+    expect(text.out).toContain("from:        fake (provider_named)");
+    expect(text.out).toContain(`source run:  ${runA_}`);
+    expect(text.out).toContain(`binding:     ${bindingB?.id}  provider ${B} (harness ${B})`);
+
+    // A run that was not a handoff has no handoff section on either form.
+    const plainJson = JSON.parse((await cli(["runs", "show", runA_, "--json"])).out);
+    expect(plainJson.run.handoff).toBeUndefined();
+    expect((await cli(["runs", "show", runA_])).out).not.toContain("Handoff (FR-SES-05)");
+  }, 60_000);
+
+  it("shows the source runs as unknown, never guessed, when the stored view is gone", async () => {
+    await setup();
+    const { sess } = await runA();
+    const c = await call("continue_task", {
+      meta_session_id: sess,
+      instruction: plan({ "src/b.ts": "export const b = 2;\n" }, "b done"),
+      routing: { provider_preference: B },
+    });
+    const runB = c.body.run_id as string;
+    await pollTerminal(runB);
+    const row = ledger.listArtifactsForRun(runB).find((x) => x.kind === "handoff_view");
+    if (!row) throw new Error("no handoff_view row");
+    rmSync(artifacts.pathFor(row.sha256));
+    const shown = await cli(["runs", "show", runB, "--json"]);
+    expect(shown.code, shown.out + shown.err).toBe(0);
+    const j = JSON.parse(shown.out);
+    expect(j.run.handoff).toMatchObject({ bundle_artifact_id: row.id, source_run_ids: null, source_run_id: null });
+  }, 60_000);
 });

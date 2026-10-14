@@ -3,11 +3,14 @@
  * list/show are read-only; cancel, approve and deny write operator records, which they also apply directly only while
  * they hold the data-directory lock (no daemon can be running then, ADR-0005).
  */
-import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { ArtifactStore } from "../artifacts/index.js";
 import { loadConfig } from "../config/index.js";
+import { parseHandoffBundle } from "../continuity/index.js";
 import { createLedger, type GitCommitRow, LEDGER_FILE_NAME, openLedger, type RunEventRow } from "../ledger/index.js";
 import type { OperatorDecision } from "../lifecycle/approval.js";
 import { acquireDataDirLock, inspectDataDirLock, LockError } from "../lock/index.js";
@@ -44,6 +47,40 @@ export interface RunDetail extends RunSummary {
    * SHA); absent when finalize-only did not apply to the run.
    */
   finalize_commit?: { outcome: string; reason?: string; commit_sha?: string };
+  /** T5.10 (FR-SES-05): present for a handoff run only (a run whose `request_json` names a bundle). */
+  handoff?: HandoffRunView;
+}
+
+/**
+ * What `runs show` says about a handoff run (T5.10, FR-SES-05; LLD §15.7 step 7). Identifiers, hashes and labels only:
+ * never bundle text, never a transcript, and no native session id in this section (Delegated: it is not needed to
+ * audit a handoff; the run's own events, shown below it, already carry what they carry).
+ */
+export interface HandoffRunView {
+  bundle_artifact_id: string;
+  bundle_sha256: string;
+  as_of_sha256: string;
+  renderer_version: number;
+  /** The session provider `P0` the handoff left (`request_json.handoff.from_provider`). */
+  from_provider: string;
+  /** The BR-18 reason code (`provider_named`, `no_binding`, ...). */
+  reason: string;
+  /** The source runs: the terminal runs the bundle's `as_of` lists, oldest first; `null` when the stored view is unreadable. */
+  source_run_ids: string[] | null;
+  /** The newest source run (the last of `source_run_ids`). */
+  source_run_id: string | null;
+  /**
+   * The binding this run started (Assumption: the first binding of this run's provider created at or after the run was
+   * created; `provider_binding` has no run column). `null` while the run has reported no native session.
+   */
+  binding: {
+    id: string;
+    provider: string;
+    harness: string;
+    backing_provider: string | null;
+    model: string | null;
+    created_at: string;
+  } | null;
 }
 
 /**
@@ -191,6 +228,7 @@ export function showRun(
         commits: commitProvenance(db, runId, row.meta_session_id),
         pushes: pushesOfRun(db, runId),
         ...finalizeView(events),
+        ...handoffView(db, dataDirFor(io, argv), runId, row),
       },
       events,
       ...(approval ? { approval } : {}),
@@ -199,6 +237,62 @@ export function showRun(
   } finally {
     db.close();
   }
+}
+
+/** T5.10: the `handoff` field of a handoff run; nothing for any other run. */
+function handoffView(
+  db: Database.Database,
+  dataDir: string,
+  runId: string,
+  run: { meta_session_id: string; provider: string | null; created_at: string },
+): { handoff?: HandoffRunView } {
+  const req = db.prepare("SELECT request_json FROM run WHERE id = ?").get(runId) as
+    | { request_json: string }
+    | undefined;
+  let h: Record<string, unknown> | undefined;
+  try {
+    const parsed = JSON.parse(req?.request_json ?? "{}") as { handoff?: unknown };
+    if (typeof parsed.handoff === "object" && parsed.handoff !== null) h = parsed.handoff as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+  if (h === undefined) return {};
+  const str = (v: unknown): string => (typeof v === "string" ? v : "-");
+  const bundleId = str(h.bundle_artifact_id);
+  const bundleSha = str(h.bundle_sha256);
+  // The source runs come from the stored view's `as_of`, read through the content address and checked against it.
+  let sources: string[] | null = null;
+  try {
+    const bytes = readFileSync(new ArtifactStore(path.join(dataDir, "artifacts")).pathFor(bundleSha));
+    if (createHash("sha256").update(bytes).digest("hex") === bundleSha) {
+      sources = parseHandoffBundle(bytes).as_of.runs.map((r) => r.run_id);
+    }
+  } catch {
+    sources = null; // a collected, altered or unreadable view: shown as unknown, never guessed
+  }
+  let binding: HandoffRunView["binding"] = null;
+  if (run.provider !== null && hasTable(db, "provider_binding")) {
+    const b = db
+      .prepare(
+        `SELECT id, provider, harness, backing_provider, model, created_at FROM provider_binding
+         WHERE meta_session_id = ? AND provider = ? AND created_at >= ? ORDER BY created_at, rowid LIMIT 1`,
+      )
+      .get(run.meta_session_id, run.provider, run.created_at) as NonNullable<HandoffRunView["binding"]> | undefined;
+    if (b) binding = b;
+  }
+  return {
+    handoff: {
+      bundle_artifact_id: bundleId,
+      bundle_sha256: bundleSha,
+      as_of_sha256: str(h.as_of_sha256),
+      renderer_version: typeof h.renderer_version === "number" ? h.renderer_version : 0,
+      from_provider: str(h.from_provider),
+      reason: str(h.reason),
+      source_run_ids: sources,
+      source_run_id: sources?.at(-1) ?? null,
+      binding,
+    },
+  };
 }
 
 /** T4.6: the run's provider-reported usage rows (harness, backing provider, model, metrics); none when none exist. */
@@ -537,6 +631,19 @@ export function renderRun(d: {
     const f = r.finalize_commit;
     lines.push(
       `  finalize:    ${f.outcome}${f.commit_sha ? ` ${f.commit_sha}` : ""}${f.reason ? ` (${f.reason})` : ""} (finalize-only, FR-GIT-09)`,
+    );
+  }
+  if (r.handoff) {
+    const h = r.handoff;
+    lines.push(
+      "",
+      "Handoff (FR-SES-05):",
+      `  bundle:      ${h.bundle_artifact_id}  sha256 ${h.bundle_sha256}  as-of ${h.as_of_sha256}  renderer v${h.renderer_version}`,
+      `  from:        ${h.from_provider} (${h.reason})`,
+      `  source run:  ${h.source_run_id ?? "-"}${h.source_run_ids && h.source_run_ids.length > 1 ? `  (all: ${h.source_run_ids.join(", ")})` : ""}`,
+      h.binding
+        ? `  binding:     ${h.binding.id}  provider ${h.binding.provider} (harness ${h.binding.harness})  backing provider ${h.binding.backing_provider ?? "-"}  model ${h.binding.model ?? "-"}  ${h.binding.created_at}`
+        : "  binding:     - (no native session reported)",
     );
   }
   if (r.commits.length > 0) {
