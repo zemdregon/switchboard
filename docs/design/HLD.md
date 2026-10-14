@@ -269,6 +269,39 @@ beyond that fail-closed placeholder (NFR-SEC-06).
 - **Tests:** `src/adapters/antigravity/antigravity.test.ts` ("auth is UNKNOWN until T4.34")
 - **Modules:** `authPreflight` in `src/adapters/antigravity/adapter.ts`
 
+#### T4.37 — Git declaration (FR-GIT-01, FR-GIT-02, FR-GIT-09)
+
+**Evidence (implemented on `origin/main`, pull request [224](https://github.com/zemdregon/switchboard/pull/224);
+Delegated agent work, not owner-approved; fixtures only, no `agy` was run).** FR-GIT-01, FR-GIT-02, FR-GIT-09, owner
+decision 36. The sourcing and the per-obligation detail are in [TDD
+§4.4.6](TDD.md#446-antigravity-git-declaration-implementation-evidence-m4-t437); this subsection records only the
+component-level outcome. Mirrors the Grok Build declaration ([TDD
+§4.3.4](TDD.md#434-grok-build-git-declaration-implementation-evidence-m4-t427)).
+
+- **Declaration.** `gitWriteControl` is `none-documented`, because Antigravity documents Git deny rules only in
+  `settings.json` or the `/permissions` scopes, none per run, and the adapter writes no provider configuration; the
+  remaining controls are the controller's worktree, the tool-call guard
+  ([ADR-0039](../adr/0039-switchboard-side-tool-call-guard.md)), FR-GIT-03 and FR-GIT-06. `gitCapabilities.commitChannel`
+  is `finalize-only`: MCP servers load only from `mcp_config.json` files, so the per-run tool channel
+  ([ADR-0026](../adr/0026-per-run-tool-channel-socket-and-token.md)) cannot be injected and the controller commits at
+  FINALIZING when the project opts in. Both are reported through `list_capabilities`.
+- **Compile guard.** Before any other check, a shell allowlist entry that could write Git (`gitWriteRisks`) makes the
+  profile `Ineligible` `PROFILE_UNSUPPORTED` citing FR-GIT-01, including on an approved `privileged` scope with `bypass`
+  ([ADR-0017](../adr/0017-approved-privileged-scope-bypass.md)); read-only entries do not trigger it.
+- **Tests:** `src/adapters/antigravity/antigravity.test.ts` ("antigravity Git declaration (T4.37, FR-GIT-01, FR-GIT-02,
+  FR-GIT-09)": declaration constants, `list_capabilities` over MCP, the FR-GIT-01 argv test with the prompt in the one
+  `--prompt=` word and no `git` or `gh` in argv, policy flags or environment, Git-write shell allowlist entries refused,
+  and a replayed write run in a finalize-only project committed by the controller at FINALIZING)
+- **Modules:** `ANTIGRAVITY_GIT_WRITE_CONTROL`, `ANTIGRAVITY_GIT_CAPABILITIES` and the compile-matrix check in
+  `src/adapters/antigravity/adapter.ts`; `GIT_WRITE_CONTROL_DETAIL` in `src/adapters/antigravity/protocol.ts`;
+  `gitWriteRisks` in `src/adapters/git-write.ts`
+
+**Not shown by this evidence.** Whether settings deny rules hold under `--dangerously-skip-permissions` was not
+observed (T4.31 C8; operator task T4.38). T4.36 recorded a finding that `extractResult` returns `ok` for a clean
+`SUCCESS` envelope without reading a guard `violation` on a Git write, although ADR-0039 ends such a run
+`PERMISSION_BLOCKED`; that gap is pinned by a known-gap test and tracked in the [ROADMAP
+§6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) T4.36 row, not closed by T4.37.
+
 ## 3. Trust boundaries
 
 Controls cite requirements and ADRs; a control is a design intent until its verification (all currently *planned*) is
