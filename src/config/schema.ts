@@ -39,6 +39,14 @@ import {
   PROJECT_INNER_SETTINGS,
   type ProjectInnerSetting,
 } from "./inner-agent.js";
+import {
+  type ContextRagConfig,
+  contextRagSchema,
+  type ProjectRagConfig,
+  projectRagSchema,
+  type RagConfig,
+  ragSchema,
+} from "./rag.js";
 
 export const TRUST_PROFILES = [
   "inspect-untrusted",
@@ -104,6 +112,8 @@ export interface SwitchboardConfig {
   git?: { sanitize_patterns?: string[] };
   /** Inner agent (M11, T11.1; FR-INN-01, LLD §13.1). Absent means off and nothing else changes. */
   inner_agent?: InnerAgentConfig;
+  /** Retrieval index (M12, T12.1; FR-RAG-01, LLD §14.1). Absent, or no `embedding`, means off and nothing else changes. */
+  rag?: RagConfig;
   /**
    * Handoff bundle bounds (T5.6; ADR-0038 item 5.5, LLD §15.4). Each key defaults to its LLD value; the defaults are
    * Assumptions (no measurement exists).
@@ -202,6 +212,8 @@ export interface ContextConfig {
   finalize_commit?: boolean;
   /** T11.3 (LLD §13.1, FR-INN-16): `off` or `local_only` restrict the inner agent for runs in this context; default `inherit`. */
   inner_agent?: ProjectInnerSetting;
+  /** T12.1 (LLD §14.1, FR-RAG-01): narrowing-only retrieval settings for this context. */
+  rag?: ContextRagConfig;
 }
 
 export interface ProjectConfig {
@@ -213,6 +225,8 @@ export interface ProjectConfig {
   allowed_providers?: ProviderId[];
   /** T11.3 (LLD §13.1, FR-INN-16): `off` or `local_only` restrict the inner agent for this project; default `inherit`. */
   inner_agent?: ProjectInnerSetting;
+  /** T12.1 (LLD §14.1, FR-RAG-01, 09, 10): narrowing-only retrieval settings; sharing flags default false. */
+  rag?: ProjectRagConfig;
   contexts: ContextConfig[];
 }
 
@@ -314,6 +328,7 @@ const contextSchema = {
     sign: { type: "boolean" },
     finalize_commit: { type: "boolean" },
     inner_agent: { enum: [...PROJECT_INNER_SETTINGS] },
+    rag: contextRagSchema,
   },
 } as const;
 
@@ -346,6 +361,7 @@ export const projectSchema = {
     max_trust_profile: { enum: [...TRUST_PROFILES] },
     allowed_providers: { type: "array", uniqueItems: true, items: { enum: [...PROVIDER_IDS] } },
     inner_agent: { enum: [...PROJECT_INNER_SETTINGS] },
+    rag: projectRagSchema,
     contexts: { type: "array", minItems: 1, items: contextSchema },
   },
 } as const;
@@ -411,6 +427,7 @@ export const configSchema = {
     },
     projects: { type: "array", items: projectSchema },
     inner_agent: innerAgentSchema,
+    rag: ragSchema,
     continuity: {
       type: "object",
       additionalProperties: false,

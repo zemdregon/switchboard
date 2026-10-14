@@ -31,6 +31,7 @@ import {
   approvalReasons,
   checkClientLimits,
   checkFilesystem,
+  checkRagSharing,
   checkStrings,
   checkStructure,
   type DynamicProjectState,
@@ -57,6 +58,11 @@ export interface ProjectToolsDeps {
   readonly disabledProviders: ReadonlySet<string>;
   /** Number of `delegate_task`/`continue_task` calls for the project currently between resolution and admission. */
   readonly admitting: (projectId: string) => number;
+  /**
+   * T12.1 (FR-RAG-03): called after a delete is written, to remove the project's retrieval store. A failure here does
+   * not undo the delete; `serve` prunes stores of deleted projects again at its next start.
+   */
+  readonly onDeleted?: (projectId: string) => void;
 }
 
 export interface DynamicResolution {
@@ -153,6 +159,7 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
   const checkDefinition = (def: ProjectConfig): void => {
     checkStructure(def);
     checkClientLimits(def, limits, deps.disabledProviders);
+    checkRagSharing(def);
   };
 
   const pendingMessage = (revision: number, inForce: number | undefined) =>
@@ -267,6 +274,11 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
         busy(); // same transaction as the write: a run admitted meanwhile is seen here
       },
     );
+    try {
+      deps.onDeleted?.(id);
+    } catch {
+      // The delete is recorded; the store is pruned at the next `serve` start (FR-RAG-03).
+    }
     return { id, revision: row.revision, status: "DELETED" };
   };
 

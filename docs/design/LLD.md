@@ -3235,15 +3235,38 @@ Rules (Ajv at startup; an unknown key or type error aborts startup, NFR-SEC-06):
 - `allow_source_content` is meaningless for a `local` backend and is ignored there.
 - `global.sources[].path` must be absolute, under an allowed root, and is read-only to the controller.
 
+*As built (T12.1, 2026-10-14, Delegated; `src/config/rag.ts`):* the schema above, with `kind: "local"` refused at load
+(T12.0) and these defaults and bounds, all Assumptions except the T12.0 values: `caps.max_files` 20,000 (at most
+100,000), `max_file_bytes` 262,144 (at most 4,194,304), `max_chunks` 25,000 (T12.0; also the maximum),
+`max_total_bytes` 102,400,000 (`max_chunks` times the 4,096-byte chunk bound; also the maximum), `max_build_ms` 600,000
+(at most 3,600,000); `retrieval.top_k` 8 (1 to 32, T12.0), `max_context_tokens` 4,000 (256 to 32,000, T12.0),
+`max_staleness` `"24h"` (the retention-interval form), `admission_timeout_ms` 250 (10 to 5,000); `embedding.timeout_ms`
+15,000 and `max_concurrency` 2 with the bounds of §13.1; at most 256 `exclude` globs, each relative with no `..`
+segment; at most 32 `global.sources`, each with a unique label. The context block has `mode`, `exclude`, `caps` and
+`contribute_to_global` (reading the global index is per project). Every string in the section and in the project and
+context blocks is checked for credential shapes, with the inner agent's patterns. A project or context cap above the
+installation's is a load error. A dynamic project definition (T9.9) may narrow retrieval but setting `use_global` or
+`contribute_to_global` is `PERMISSION_BLOCKED` (`RAG_SHARING_OPERATOR_ONLY`): only the operator's file enables sharing.
+`effectiveProjectRag` gives each project `off` with a reason (`NO_BACKEND`, `INSTALLATION_OFF`, `PROJECT_OFF`) or `on`
+with the lowered caps and the union of exclusions; context blocks are applied by the scanner (T12.2).
+
 `switchboard index status`, `index rebuild` and `index clear` (each optionally per project, plus `global`) write only
 operator records (rebuild and clear requests) read by the `serve` daemon, as `approve` does (FR-RAG-11, FR-RAG-14).
 
 ### 14.2 Stores and tables
 
-One SQLite file per project, `<data>/rag/<project_key>/index.db`, and one global file `<data>/rag/global/index.db`
+One SQLite file per project, `<data>/rag/projects/<project_key>/index.db`, and one global file `<data>/rag/global/index.db`
 (HLD §5). They are derived caches opened by COMP-RAG alone, never by the ledger module; `ledger.db` stays the single
 writer of canonical state (ADR-0005). Same conventions as §1 (`STRICT`, UTC millisecond timestamps, WAL). Deleting a
 project deletes its directory (FR-RAG-03).
+
+*As built (T12.1, 2026-10-14, Delegated; `src/retrieval/store.ts`):* project stores are under `rag/projects/`, so a
+project id cannot collide with `global`, and a store key that does not match the project id pattern is refused. The
+directory is created `0700` and the file `0600`. The schema below is migration 1 (`PRAGMA user_version`); a store with a
+newer version is refused, and `needsRebuild` reports a missing meta row or a model, dimension or schema change. The
+store is deleted by `delete_project` (after the delete is recorded) and, for a configured project removed from the file
+or a delete whose clean-up failed, by a prune at `serve` start; no store is created while no backend is configured. The
+`rag_record` ledger table (§14.10) is added with the first writer of it (T12.4), not here.
 
 ```sql
 CREATE TABLE rag_meta (                 -- one row

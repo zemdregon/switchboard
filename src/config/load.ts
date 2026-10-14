@@ -13,6 +13,7 @@ import { ConfigError } from "./errors.js";
 import { checkHttpTransport, type HttpTransportSettings, resolveHttpTransport } from "./http-transport.js";
 import { checkInnerAgent, type InnerAgentSettings, resolveInnerAgent } from "./inner-agent.js";
 import { checkProjects, type ResolvedProject, resolveProjects } from "./projects.js";
+import { checkRag, type RagSettings, resolveRag } from "./rag.js";
 import { checkRouting, type RoutingSettings, resolveRouting } from "./routing.js";
 import {
   currentConfigSchema,
@@ -73,6 +74,11 @@ export interface ResolvedConfig {
    * means no inner agent and every behaviour is as before.
    */
   innerAgent?: InnerAgentSettings;
+  /**
+   * Retrieval index settings (T12.1; FR-RAG-01, LLD §14.1), always set and defaulted. Without `embedding` the feature is
+   * inert: every project resolves off (`effectiveProjectRag`) and no store is created.
+   */
+  rag: RagSettings;
   /**
    * Handoff bundle bounds (T5.6; ADR-0038 item 5.5, LLD §15.4), always set, defaulted per key. Snake case on purpose: it
    * is passed as is to the bundle builder, which records it in the bundle's `bounds`.
@@ -315,6 +321,11 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
     throw new ConfigError(`Invalid config:\n${innerErrors.map((l) => `  ${l}`).join("\n")}`);
   }
 
+  const ragErrors = checkRag(cfg.rag, cfg.projects ?? [], allowedRoots);
+  if (ragErrors.length > 0) {
+    throw new ConfigError(`Invalid config:\n${ragErrors.map((l) => `  ${l}`).join("\n")}`);
+  }
+
   const httpErrors = checkHttpTransport(cfg.transport?.http);
   // T13.4 (FR-MCP-14, Q-77): every HTTP mapping names a configured MCP client whose privileged runs still need the
   // operator's approval (a remote client never gets `privileged_approval: not_required`).
@@ -391,6 +402,7 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
       max_text_chars: cfg.continuity?.max_text_chars ?? DEFAULT_CONTINUITY_MAX_TEXT_CHARS,
     },
     capacity: resolveCapacity(cfg.capacity),
+    rag: resolveRag(cfg.rag),
     routing: resolveRouting(cfg.routing),
     claudeCodeGitChannel: cfg.providers?.["claude-code"]?.git_channel === true,
     profileOverrides,

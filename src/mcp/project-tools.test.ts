@@ -5,7 +5,16 @@
  * belong to T3.8b.
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -20,6 +29,7 @@ import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger, type TrustProfile } from "../ledger/index.js";
 import { RunLifecycle } from "../lifecycle/index.js";
 import { DynamicProjectStore } from "../projects/index.js";
+import { openRagStore, ragStoreDir } from "../retrieval/store.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import { createSwitchboardServer, PROJECT_TOOL_NAMES, type SwitchboardMcpServer, TOOL_NAMES } from "./index.js";
 
@@ -678,6 +688,46 @@ describe("approval (BR-32): container, push and widening wait for the operator",
     });
     expect((await call("list_projects", {}, 1)).body).toEqual({ projects: [] });
     expect(count("run")).toBe(0);
+  });
+});
+
+describe("retrieval settings in a dynamic project (T12.1; FR-RAG-03, FR-RAG-09, FR-RAG-10)", () => {
+  it("accepts narrowing rag settings and refuses the sharing flags, which only the operator may set", async () => {
+    await setup([{ id: "mgr", max: "edit-untrusted", manage: true }]);
+    for (const [over, ctx, field] of [
+      [{ rag: { use_global: true } }, {}, "$.project.rag.use_global"],
+      [{ rag: { contribute_to_global: true } }, {}, "$.project.rag.contribute_to_global"],
+      [{}, { rag: { contribute_to_global: true } }, "$.project.contexts[0].rag.contribute_to_global"],
+    ] as const) {
+      const r = await call("create_project", { project: definition(over, ctx) });
+      expect(r.body.error).toMatchObject({
+        code: "PERMISSION_BLOCKED",
+        details: { reason: "RAG_SHARING_OPERATOR_ONLY" },
+      });
+      expect(JSON.stringify(r.body.error)).toContain(field);
+    }
+    expect(count("project_revision")).toBe(0);
+    const ok = await call("create_project", {
+      project: definition(
+        { rag: { mode: "off", exclude: ["vendor/**"], caps: { max_files: 10 } } },
+        { rag: { mode: "off" } },
+      ),
+    });
+    expect(ok.isError, JSON.stringify(ok.body)).toBe(false);
+  });
+
+  it("delete_project removes the project's retrieval store", async () => {
+    await setup([{ id: "mgr", max: "edit-untrusted", manage: true }]);
+    await call("create_project", { project: definition() });
+    const s = openRagStore(dataDir, { kind: "project", projectId: "dyn-app" });
+    s.close();
+    const other = openRagStore(dataDir, { kind: "project", projectId: "other-app" });
+    other.close();
+    const dir = ragStoreDir(dataDir, { kind: "project", projectId: "dyn-app" });
+    expect(existsSync(dir)).toBe(true);
+    expect((await call("delete_project", { id: "dyn-app" })).body).toMatchObject({ status: "DELETED" });
+    expect(existsSync(dir)).toBe(false);
+    expect(existsSync(ragStoreDir(dataDir, { kind: "project", projectId: "other-app" }))).toBe(true);
   });
 });
 

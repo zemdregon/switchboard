@@ -242,7 +242,7 @@ format is decided in [TDD §3.1](TDD.md#31-configuration) and [LLD §11.1](LLD.m
 | `<data>/worktrees/<meta_session_id>/<run_id>/` | Controller-created Git worktrees (could alternatively live beside the source repo; open question) |
 | `<data>/runs/<run_id>/tools.sock` | Per-run socket for the injected tools (directory `0700`, socket `0600`); removed when the provider process exits, or by the start-up sweep after a crash. When this path would exceed 100 bytes, a private `sb-git-XXXXXX` directory under `$XDG_RUNTIME_DIR` or the OS temporary directory holds it instead ([ADR-0026](../adr/0026-per-run-tool-channel-socket-and-token.md), T9.4) |
 | `<config>/` | Operator configuration: allowed roots, projects (environment, contexts, push policy, commit identity, sanitiser patterns), MCP client entries with maximum profiles and project lists, tier priors, routing weights, retention, compliance manifests |
-| `<data>/rag/<project>/index.db` and `<data>/rag/global/index.db` (M12) | Per-project and optional deployment-wide retrieval stores (chunk text and vectors); deleted with the project or by `index clear` (FR-RAG-03, FR-RAG-14) |
+| `<data>/rag/projects/<project>/index.db` and `<data>/rag/global/index.db` (M12) | Per-project and optional deployment-wide retrieval stores (chunk text and vectors); deleted with the project or by `index clear` (FR-RAG-03, FR-RAG-14) |
 | `<data>/logs/` | Structured controller logs, free of secrets and prompts (FR-TEL-03) |
 
 `<data>` and `<config>` are assumed to resolve to per-user directories chosen by the operator. Disk growth is bounded by

@@ -87,6 +87,7 @@ import { type ModelConfig, ModelRegistry } from "../models/index.js";
 import { createProfileResolver } from "../policy/index.js";
 import { DynamicProjectStore, innerSettingResolver } from "../projects/index.js";
 import { reconcile } from "../reconcile/index.js";
+import { pruneRagStores } from "../retrieval/store.js";
 import { runRetentionGc, WorkspaceManager } from "../workspace/index.js";
 import { type CliIo, PROBE_ENV_ALLOWLIST } from "./io.js";
 import { applyOperatorRequests } from "./operator.js";
@@ -323,6 +324,25 @@ async function runDaemon(
   } catch (err) {
     log.error("refusing to serve: startup reconciliation failed", { error: message(err) });
     return 1;
+  }
+
+  // T12.1 (FR-RAG-03): the retrieval store of a project that no longer exists (removed from the configuration, or a
+  // dynamic project deleted) is deleted. Without any store on disk, which is the case while no embedding backend is
+  // configured, this reads one missing directory and does nothing.
+  try {
+    const live = new Set([
+      ...config.projects.map((p) => p.id),
+      ...new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) })
+        .list()
+        .filter((s) => !s.deleted)
+        .map((s) => s.projectId),
+    ]);
+    const pruned = pruneRagStores(config.dataDir, live);
+    if (pruned.removed.length > 0 || pruned.ignored.length > 0) {
+      log.info("retrieval stores pruned", { removed: pruned.removed.length, ignored: pruned.ignored.length });
+    }
+  } catch (err) {
+    log.warn("retrieval store pruning failed; continuing", { error: message(err) });
   }
 
   // T11.4 (FR-INN-10, ADR-0016): the inner-agent service, first wired for the commit-message task. With no
