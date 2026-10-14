@@ -637,6 +637,62 @@ describe("antigravity parser hardening (T4.33, synthetic shapes)", () => {
     ]);
   });
 
+  it("a second result line records no second usage row, so the run total is never counted twice (FR-CAP-01)", () => {
+    const { events } = parse([INIT, RESULT(), RESULT({ usage: { ...USAGE, total_tokens: 99 } })]);
+    expect(events.filter((e) => e.kind === "usage")).toEqual([
+      { kind: "usage", source: "provider_reported", metrics: USAGE },
+    ]);
+  });
+
+  it("a step for another conversation fails the run, keeps the first id bound and still reaches the guard", () => {
+    const other = "0b6c2d1e-0000-4000-8000-00000000000d";
+    const step = (cid: string, o: Record<string, unknown>) =>
+      j({ event: "step_update", conversation_id: cid, step_index: 2, state: "DONE", ...o });
+    const text = parse([INIT, step(other, { step_type: "agent_response", text_delta: "x" }), RESULT()]);
+    expect(text.state.nativeSessionId).toBe(CID);
+    expect(text.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", nativeSessionId: CID });
+    const tool = parse([
+      INIT,
+      step(other, { step_type: "tool", tool_name: "run_command", tool_info: { parameters: { command: "ls" } } }),
+      RESULT(),
+    ]);
+    expect(tool.events).toContainEqual({ kind: "tool_call", tool: "shell", name: "run_command", command: "ls" });
+    expect(tool.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+    // The same id, an empty or absent id, and a step before any binding are not anomalies; a step never binds.
+    const same = parse([INIT, step(CID, { step_type: "agent_response" }), RESULT()]);
+    expect(same.result).toMatchObject({ ok: true });
+    const absent = parse([INIT, j({ event: "step_update", step_index: 2, step_type: "agent_response" }), RESULT()]);
+    expect(absent.result).toMatchObject({ ok: true });
+    const early = parse([step(other, { step_type: "agent_response" })]);
+    expect(early.state.nativeSessionId).toBeUndefined();
+    expect(early.events).toEqual([]);
+  });
+
+  it("supervisor outcomes win over a denial, a denial over an envelope error, and the guard over both", () => {
+    const denied = RESULT({ denied_actions: [{ action: "run_command", display_name: "rm -rf x" }], error: "boom" });
+    const { a, events } = parse([INIT, denied]);
+    expect(a.extractResult(events, { ...EXIT0, outcome: "cancelled" })).toMatchObject({ failureCode: "CANCELLED" });
+    expect(a.extractResult(events, { ...EXIT0, outcome: "timeout", timeoutKind: "wall_clock" })).toMatchObject({
+      failureCode: "PROCESS_TIMEOUT",
+    });
+    expect(a.extractResult(events, { ...EXIT0, exitCode: 3 })).toMatchObject({ failureCode: "PERMISSION_BLOCKED" });
+    expect(a.extractResult(events, EXIT0)).toMatchObject({ failureCode: "PERMISSION_BLOCKED" });
+    const authThenProtocol = parse([INIT, RESULT({ status: "ERROR", error: "authentication failed: x" }), RESULT()]);
+    expect(authThenProtocol.result).toMatchObject({ ok: false, failureCode: "AUTH_REQUIRED" });
+    const guarded: NormalizedEvent[] = [
+      {
+        kind: "tool_call",
+        tool: "shell",
+        name: "run_command",
+        command: "git push",
+        violation: { kind: "git_write", reason: "git push" },
+      },
+      ...events,
+    ];
+    expect(a.extractResult(guarded, EXIT0)).toMatchObject({ failureCode: "PERMISSION_BLOCKED" });
+    expect(a.extractResult(guarded, EXIT0).failureDetail).toMatch(/^git write attempted/);
+  });
+
   it("negative and non-number usage values are dropped; zero total is not a success", () => {
     const r = parse([
       INIT,

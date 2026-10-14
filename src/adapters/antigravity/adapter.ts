@@ -415,7 +415,11 @@ export class AntigravityAdapter implements ProviderAdapter {
           const v = usage?.[k];
           if (typeof v === "number" && Number.isFinite(v) && v >= 0) metrics[k] = v;
         }
-        if (Object.keys(metrics).length > 0) out.push({ kind: "usage", source: "provider_reported", metrics });
+        // The envelope's usage is the run total and each `usage` event becomes one ledger row (FR-CAP-01), so only the
+        // first `result` records it; a second would count the run twice.
+        if (results === 1 && Object.keys(metrics).length > 0) {
+          out.push({ kind: "usage", source: "provider_reported", metrics });
+        }
         // `denied_actions` was an array of `{action, display_name}` ([LIVE] C7, C18). Any other present value is
         // read as a denial rather than ignored, so an unexpected shape cannot hide one.
         const rawDenied = r.denied_actions;
@@ -478,6 +482,21 @@ export class AntigravityAdapter implements ProviderAdapter {
     const stepType = str(e.step_type);
     const index = e.step_index;
     if (stepType === undefined || typeof index !== "number") return this.#unknown(state, "step_update");
+    // Every step carries the run's `conversation_id` ([H]; [LIVE] C4). A step for another conversation than the bound
+    // one makes the run ambiguous, as a changed `init` or `result` id does, so the run fails closed; the step is still
+    // read so the tool-call guard sees its command. A step never binds the session itself.
+    const stepId = str(e.conversation_id);
+    const bound = state.nativeSessionId;
+    const changed = stepId !== undefined && stepId !== "" && bound !== undefined && stepId !== bound;
+    const tool = this.#toolStep(e, stepType, index, state);
+    if (!changed) return tool;
+    return [
+      { kind: "provider_error", category: PROTOCOL_CATEGORY, message: "conversation id changed mid-run" },
+      ...tool,
+    ];
+  }
+
+  #toolStep(e: Json, stepType: string, index: number, state: ParseState): NormalizedEvent[] {
     // Only tool steps are actions; the final answer arrives whole in `result.response`, so `agent_response` deltas,
     // `user_input` and `checkpoint` steps are not kept.
     if (stepType !== STEP_TOOL) return [];
