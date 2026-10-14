@@ -247,9 +247,10 @@ describe("MCP endpoint token check over HTTP (T13.3)", () => {
         expect(await r.text()).not.toContain(valid.token);
       }
 
-      // A valid token passes the verifier; no tool is served until T13.4 mounts the MCP server.
+      // A valid token passes the verifier; without a client store to confirm its client is approved (T13.4) it is
+      // still refused, fail closed.
       const ok = await post(`Bearer ${valid.token}`);
-      expect(ok.status).toBe(501);
+      expect(ok.status).toBe(401);
       expect(await ok.text()).not.toContain(valid.token);
       secrets.push(valid.token);
       db.pragma("wal_checkpoint(TRUNCATE)");

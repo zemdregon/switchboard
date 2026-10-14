@@ -20,6 +20,10 @@
  * - `passphrase_hash` (T13.8, Q-75) is the operator passphrase for the consent page, as printed by `switchboard consent
  *   hash-passphrase` (scrypt, `scrypt$17$8$1$<salt>$<key>`); never the passphrase itself. A value in any other form, or
  *   with other parameters, aborts startup. Absent: the consent page accepts only one-time pairing codes.
+ * - `clients` (T13.4, FR-MCP-14, Q-77) maps an approved OAuth client (`oauth_client_id`, `sbc_...`) to an `mcp_clients`
+ *   entry (`mcp_client`), whose maximum trust profile then applies; at most 64 entries, each OAuth client once.
+ *   `default_mcp_client` optionally names the entry for an approved OAuth client with no mapping. With neither, an
+ *   authenticated client is refused (403). Cross-checks against `mcp_clients` are in `load.ts`.
  */
 import net from "node:net";
 import { isPassphraseHash } from "../mcp/oauth-passphrase.js";
@@ -32,6 +36,8 @@ export interface HttpTransportConfig {
   allow_non_loopback?: boolean;
   allowed_origins?: string[];
   passphrase_hash?: string;
+  clients?: { oauth_client_id: string; mcp_client: string }[];
+  default_mcp_client?: string;
 }
 
 export const httpTransportSchema = {
@@ -50,6 +56,20 @@ export const httpTransportSchema = {
       items: { type: "string", minLength: 1, maxLength: 2048 },
     },
     passphrase_hash: { type: "string", minLength: 1, maxLength: 256 },
+    clients: {
+      type: "array",
+      maxItems: 64,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["oauth_client_id", "mcp_client"],
+        properties: {
+          oauth_client_id: { type: "string", pattern: "^sbc_[A-Za-z0-9_-]{22}$" },
+          mcp_client: { type: "string", minLength: 1, maxLength: 128 },
+        },
+      },
+    },
+    default_mcp_client: { type: "string", minLength: 1, maxLength: 128 },
   },
 } as const;
 
@@ -73,6 +93,10 @@ export interface HttpTransportSettings {
   allowedOrigins: readonly string[];
   /** The consent-page passphrase hash (T13.8, Q-75); undefined when only pairing codes are accepted. */
   passphraseHash?: string;
+  /** OAuth client id to `mcp_clients` id (T13.4, Q-77). */
+  clientMap: ReadonlyMap<string, string>;
+  /** The `mcp_clients` id for an approved OAuth client with no mapping; undefined refuses such a client. */
+  defaultMcpClient?: string;
 }
 
 const loopback = new net.BlockList();
@@ -134,6 +158,11 @@ export function checkHttpTransport(cfg: HttpTransportConfig | undefined): string
   if (cfg.passphrase_hash !== undefined && !isPassphraseHash(cfg.passphrase_hash)) {
     errs.push(`${at}.passphrase_hash: must be the output of switchboard consent hash-passphrase (scrypt$17$8$1$...)`);
   }
+  const seen = new Set<string>();
+  for (const [i, c] of (cfg.clients ?? []).entries()) {
+    if (seen.has(c.oauth_client_id)) errs.push(`${at}.clients[${i}].oauth_client_id: mapped more than once`);
+    seen.add(c.oauth_client_id);
+  }
   if (cfg.bind !== undefined && net.isIP(cfg.bind) === 0) errs.push(`${at}.bind: must be an IP address literal`);
   const bind = cfg.bind ?? DEFAULT_HTTP_BIND;
   if (net.isIP(bind) !== 0 && !isLoopbackAddress(bind) && cfg.allow_non_loopback !== true) {
@@ -158,5 +187,7 @@ export function resolveHttpTransport(cfg: HttpTransportConfig | undefined): Http
     mcpPath: url.pathname,
     allowedOrigins: [...(cfg.allowed_origins ?? [])],
     ...(cfg.passphrase_hash !== undefined ? { passphraseHash: cfg.passphrase_hash } : {}),
+    clientMap: new Map((cfg.clients ?? []).map((c) => [c.oauth_client_id, c.mcp_client])),
+    ...(cfg.default_mcp_client !== undefined ? { defaultMcpClient: cfg.default_mcp_client } : {}),
   };
 }
