@@ -543,9 +543,26 @@ export class RunLifecycle {
             decidedBy: `${CLIENT_POLICY_DECIDER_PREFIX}${req.clientId}`,
           });
           if (!decided) throw new Error(`approval ${privileged.approvalId} could not be decided by client policy`);
+          // T5.3 (LLD §15.3): the decision row, in the transaction of the approval it records.
+          this.ledger.appendDecision({
+            kind: "approval_decided",
+            runId: run.id,
+            approvalId: privileged.approvalId,
+            status: "APPROVED",
+            by: "client_policy",
+          });
         }
       }
       if (req.routeDecision) this.ledger.insertRouteDecision({ ...req.routeDecision, runId: run.id });
+      // T5.3 (LLD §15.3): the controller's route choice. Only the admission-time facts this code knows (no handoff yet:
+      // T5.6 adds that mode and its reason codes).
+      this.ledger.appendDecision({
+        kind: "route_selected",
+        runId: run.id,
+        provider: req.provider,
+        mode: req.resume ? "resume" : "new",
+        reasons: [req.resume ? "same_provider_resume" : req.metaSessionId !== undefined ? "no_binding" : "new_session"],
+      });
       const rule = initial === "QUEUED" ? "T1" : "T2";
       this.ledger.appendRunEvent({
         runId: run.id,
@@ -996,6 +1013,8 @@ export class RunLifecycle {
 
     // T9.4 (FR-GIT-02): the injected tool channel, opened just before spawn and closed as soon as the process exits.
     const nativeIds: string[] = req.resume_native_session_id !== undefined ? [req.resume_native_session_id] : [];
+    /** T5.3: model and backing provider each `session_bound` event reported, by native session id. */
+    const bound = new Map<string, { model: string | null; backingProvider: string | null }>();
     let channel: OpenChannel | undefined;
     let channelAudit: ChannelAuditContext | undefined;
     // T9.4b (ADR-0033, owner decision 41): an adapter may narrow its `injected` declaration per run (Claude Code: only
@@ -1119,8 +1138,12 @@ export class RunLifecycle {
             spawned = true;
           },
           onEvent: (ev) => {
-            if (ev.kind === "session_bound" && !nativeIds.includes(ev.nativeSessionId)) {
-              nativeIds.push(ev.nativeSessionId);
+            if (ev.kind === "session_bound") {
+              if (!nativeIds.includes(ev.nativeSessionId)) nativeIds.push(ev.nativeSessionId);
+              // T5.3 (FR-ADP-10): remember what `session_bound` reported, for the binding row written after the run.
+              if (!bound.has(ev.nativeSessionId)) {
+                bound.set(ev.nativeSessionId, { model: ev.model ?? null, backingProvider: ev.backingProvider ?? null });
+              }
             }
             this.ledger.appendRunEvent({ runId, type: "provider_event", payload: compactEvent(ev) });
           },
@@ -1159,10 +1182,15 @@ export class RunLifecycle {
 
     if (out.result.nativeSessionId) {
       // FR-SES-02/03: remember the native session (from structured output only) so continue_task can resume it.
+      const reported = bound.get(out.result.nativeSessionId);
       this.ledger.recordProviderBinding({
         metaSessionId: meta,
         provider: req.provider,
         nativeSessionId: out.result.nativeSessionId,
+        // T5.3 (FR-ADP-10, Delegated): the model `session_bound` reported, else the run's recorded model (as for usage
+        // observations); the backing provider only when reported. Set at insert, never updated.
+        model: reported?.model ?? this.current(runId).model,
+        backingProvider: reported?.backingProvider ?? null,
       });
     }
     let pending = pendingOf(exec, out);
@@ -1175,18 +1203,23 @@ export class RunLifecycle {
       this.move(this.current(runId), "VERIFYING", exitFields, { ...exitPayload, commands: commands.length }, "T11");
       verification = await this.verify(exec, runId, meta, ws, inv, commands);
       pending = verification.pending;
+      const verified = verification;
       // T14: pending success, `TEST_FAILURE` (BR-16) or cancelled; the per-command summary is in the event.
-      this.move(
-        this.current(runId),
-        "FINALIZING",
-        {},
-        {
-          pending: pending.kind,
-          ...(pending.kind === "failure" ? { failure_code: pending.code } : {}),
-          verification: verification.summary,
-        },
-        "T14",
-      );
+      // T5.3 (LLD §15.3): the `verification_outcome` decision is written in the transaction of that T14 event.
+      this.ledger.immediate(() => {
+        recordVerificationDecision(this.ledger, runId, verified);
+        this.move(
+          this.current(runId),
+          "FINALIZING",
+          {},
+          {
+            pending: verified.pending.kind,
+            ...(verified.pending.kind === "failure" ? { failure_code: verified.pending.code } : {}),
+            verification: verified.summary,
+          },
+          "T14",
+        );
+      });
     } else {
       const rule = pending.kind === "success" ? "T12" : "T13";
       this.move(
@@ -1434,10 +1467,20 @@ export class RunLifecycle {
         if (!success) {
           // FRD §4.4: the meta-session head stays at / returns to the pre-run checkpoint; never replay (FR-WS-04).
           this.ledger.setMetaSessionHead(metaSessionId, ws.baseCommit);
-          this.ledger.appendRunEvent({
-            runId,
-            type: "rollback",
-            payload: { head: ws.baseCommit, evidence_commit: fin.postCommit, mutated: assessment.mutated },
+          // T5.3 (LLD §15.3): the `rollback` decision shares a transaction with the `rollback` event.
+          this.ledger.immediate(() => {
+            this.ledger.appendRunEvent({
+              runId,
+              type: "rollback",
+              payload: { head: ws.baseCommit, evidence_commit: fin.postCommit, mutated: assessment.mutated },
+            });
+            this.ledger.appendDecision({
+              kind: "rollback",
+              runId,
+              head: ws.baseCommit,
+              evidenceCommit: fin.postCommit,
+              mutated: assessment.mutated,
+            });
           });
         }
       } catch (err) {
@@ -1669,6 +1712,24 @@ export class RunLifecycle {
   private nowIso(): string {
     return (this.opts.now ?? (() => new Date()))().toISOString();
   }
+}
+
+/**
+ * T5.3 (LLD §15.3): the `verification_outcome` decision for a finished verification stage. The outcome is the stage's
+ * own verdict (a controller-side failure or a cancellation maps to `failed` and `cancelled`); the counts are of the
+ * per-command outcomes the stage recorded (`passed`, `not_run`, anything else counts as failed). Controller values only.
+ */
+function recordVerificationDecision(ledger: Ledger, runId: string, v: VerificationOutcomeRecord): void {
+  const passed = v.summary.filter((c) => c.outcome === "passed").length;
+  const notRun = v.summary.filter((c) => c.outcome === "not_run").length;
+  ledger.appendDecision({
+    kind: "verification_outcome",
+    runId,
+    outcome: v.pending.kind === "success" ? "passed" : v.pending.kind === "cancelled" ? "cancelled" : "failed",
+    passed,
+    failed: v.summary.length - passed - notRun,
+    notRun,
+  });
 }
 
 const LOST_RACE = Symbol("lost-race");

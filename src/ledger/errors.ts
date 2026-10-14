@@ -6,3 +6,8 @@ export class LedgerError extends Error {
 export class MigrationError extends LedgerError {
   override readonly name = "MigrationError";
 }
+
+/** A `decision` was refused: the run is unknown or already terminal (LLD §15.3 ordering rule, T5.3). */
+export class DecisionRefusedError extends LedgerError {
+  override readonly name = "DecisionRefusedError";
+}

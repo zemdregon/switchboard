@@ -1252,6 +1252,7 @@ cells of §4.3.1 from Unverified to observed.
 | 11 Credential reach | In a `strict` and in a `workspace` run, ask the agent to list the names (not the contents) of files under `~/.grok/` | Names only, never contents | Whether the sandboxed process can reach the native login directory (credential boundary, ADR-0003) |
 | 12 Per-run MCP | Look in the step 1 help for any flag taking an MCP definition and try it with a benign stdio server that writes a marker. Then, if ACP is to be assessed, run the [HL] ACP example with `mcpServers` naming that server | Help text, marker, ACP transcript | Per-run MCP definition; `commitChannel` option; ACP fallback |
 | 13 ACP transcript (only if step 1 or 4 failed) | Run the [HL] ACP example unchanged except `cwd` (scratch repo) and the prompt (`Reply with the word ok`); record every JSON-RPC line | The transcript with the `authMethods` list kept and any token or id removed | ACP fixtures for T4.23, `initialize` `authMethods` as an auth probe |
+| 14 Resume across directories and flags | From step 4 in directory A (run with `--sandbox strict --permission-mode dontAsk --allow 'Bash(*)'`) take `.sessionId`; in a second `git init` directory B run `grok --no-auto-update -p "What word did you reply with?" -r <id> --output-format json`; then in A resume with the permission and sandbox flags omitted, asking for `touch ../outside-marker`; then in A resume with `--permission-mode dontAsk` and no `--allow`, asking for `echo hi` | Outputs, exit codes, the session id each time, `ls ..` before/after | [§4.10](#410-native-resume-inventory-t50) Grok Build cells: working-directory tie and permission flags on resume (the sandbox cell is sourced from [CL] and is re-checked by the omitted-flag run) |
 
 Mapping of results to the T4.22 to T4.28 tasks: steps 1 and 2 to T4.22 (manifest notes) and T4.24; steps 4 to 6 to
 T4.23; steps 7 to 11 to T4.22, T4.27 and T4.28; step 12 to T4.27 and the ACP decision.
@@ -1378,6 +1379,7 @@ prompt text before writing `docs/research/live-checks-2026-10-13.md` (or the nex
 | C15 | For each installed adapter, from its own documentation or `--help` (not by running it against a model): what does it wrap (`agy -p`, interactive `agy`, a separate Google server), which auth methods it lists, which environment variables it reads | The wrap target and the auth methods; any variable named `GEMINI_API_KEY`, `GOOGLE_API_KEY` or `GOOGLE_GEMINI_BASE_URL` (names only) | §4.4.4: wraps, credential handling |
 | C16 | Whether the adapter reuses agy's login: with `agy` logged in (C4 works), start the adapter's ACP `initialize` only (no `authenticate`, no prompt) from a scratch ACP client and record whether a session can be created or "authentication required" is returned. Stop if it prints a sign-in URL; do not complete a login for the test | `initialize` result keys (protocol version, `authMethods` ids, capabilities, `mcpCapabilities`), exit codes, and yes/no for login reuse | §4.4.4: auth reuse, `mcpServers` transports |
 | C17 | `agy --help` and `agy -p --help` again, looking for `--gemini_dir`, `--config-dir` or similar (a third-party README names `--gemini_dir`; Unverified) | Flag names and their help text | §4.4.4 and "What would make profiles eligible" (b) |
+| C18 | Run 1: C7b with `--sandbox` and `--mode=plan`; note `conversation_id`. Run 2: resume it with `--conversation <id>` and neither flag, asking for a file write and a shell command. Run 3: resume with `--dangerously-skip-permissions` absent after a run 1 that used it (throwaway repo only). Record `init.permission_mode` and whether each action was allowed or denied | Exit codes, `init.permission_mode` of each run, `denied_actions` shape | [§4.10](#410-native-resume-inventory-t50) Antigravity sandbox and permission cells; with C9 run 3, the cross-directory case |
 
 Results go in the dated note under `docs/research/` and move each `Unverified: T4.31` cell above to the observed value
 with the version from C1; no credential, token or account identifier in any capture.
@@ -1561,6 +1563,7 @@ prompt text, and move the cell named in the right-hand column from `Unverified: 
 | 13 | `agent models`; `agent -p --list-models` | Output shape (model names are data for the registry, not for this document) | Models row |
 | 14 | A forced failure: invalid `--model`, then a run with a deliberately killed network | stderr, exit code, last stream line | `classifyFailure` mapping |
 | 15 | `-f` and `-pf` spellings of `--force` in the scratch repo with a read-only prompt | Whether they are accepted | Bypass-class flags row: audit gap for `-f` |
+| 16 | In scratch directory A, a stream run with `--sandbox enabled` that tries `touch ../outside`; take `session_id`; resume it with `--resume <session_id>` (a) in directory A with `--sandbox` omitted, repeating `touch ../outside`; (b) from a second scratch directory B with the same flags as the first run; (c) in A without `--force` after a first run with `--force` (scratch repo only) | Event results, exit code, `session_id` of each result, resume output | [§4.10](#410-native-resume-inventory-t50) Cursor cells: working-directory tie, sandbox and permission flags on resume (extends item 8) |
 
 Capture nothing from `~/.cursor` other than file names; if a command prints a token or key, stop, redact and report it.
 
@@ -1687,6 +1690,7 @@ Record the version first; all results are valid for that version only (ADR-0009)
 | 12 | T11.0: from an empty directory, `opencode run --format json --pure --dir <empty> --model <provider/model>` with every permission `deny` and `OPENCODE_DISABLE_CLAUDE_CODE=1`, asking for a one-sentence answer and then for a tool-requiring task | Whether any tool call is attempted and refused; stream; exit code | T11.0 result; `cli` kind `Ineligible` or eligible with the verified flags (T11.13) |
 | 13 | Resume: item 4 once, then `opencode run --format json --session <sessionID from item 4> "What did I ask?"`; also `--continue` while a second session exists | Streams, whether the second run sees the first, ids (scrubbed) | Resume cell; the "never `--continue`" rule |
 | 14 | A provoked failure: an invalid model name; a missing login (scratch `HOME`); a rate limit if one can be reached safely | Streams and exit codes | `classifyFailure` mapping; success rule |
+| 15 | Item 13 from a second disposable directory (`--dir` pointing at the first, then at the second, and no `--dir` while the shell stands in the second); then resume with `OPENCODE_PERMISSION` or `OPENCODE_CONFIG_CONTENT` omitted after a first run that denied a tool, asking for that tool; then with a different permission set than the first run | Streams, whether the session is found from another directory, which permission set applied, exit codes | [§4.10](#410-native-resume-inventory-t50) OpenCode cells: working-directory tie, sandbox and permission flags on resume (extends item 13) |
 
 Done when each row's result, with the OpenCode version and date, replaces its `Unverified: T4.51` cell or is recorded
 as not possible (then the cell becomes `Ineligible` with that reason).
@@ -1807,6 +1811,11 @@ and `muse --version` as dated fixtures. Record the answer next to each item; any
 12. **Usage and limits.** Does any `--json` record carry token counts, a plan limit or a reset time?
 13. **Record.** Update this table row by row (confirmed, corrected or `Unverified`), R-33 and the research note, and
     attach the fixtures; report the result to the orchestrator for the T4.71 status line.
+14. **Resume flags (T5.0).** After item 7, resume the same session with the approval and sandbox flags of the first run
+    omitted (`--approval-mode`, `--sandbox-network`), asking for a shell command the first run's flags denied, and again
+    with different values; record which values apply, the exit code and whether the `--allow-workspace-switch` refusal
+    is a stop or a prompt without a TTY. Settles the [§4.10](#410-native-resume-inventory-t50) Muse Code sandbox and
+    permission cells.
 
 ### 4.9 Adapter-addition checklist (T4.2)
 
@@ -1898,6 +1907,61 @@ checklist it automates:
 - item 10 in part: `gitCapabilities` is not asserted for the scratch adapter;
 - item 12 in part: nothing checks the README login row;
 - the model-literal ban is automated only as the heuristic scan above; the family-name list is hand-kept.
+
+### 4.10 Native-resume inventory (T5.0)
+
+*Documentation only, Delegated agent work (not owner-approved), 2026-10-14.* Nothing below was run: no provider CLI was
+invoked and no network was used. Each cell is either **sourced** (a tag in the right-hand column, a TDD §4 subsection, or
+a line of a research document, with the CLI version where a source records one) or reads exactly `Unverified: <task>`,
+naming the operator checklist item that will verify it. Task T5.12 is the Claude Code and Codex operator task
+([ROADMAP §6.9](../ROADMAP.md#69-m5-continuity-tasks)); the other ids are the M4 operator tasks. This table
+exists because each continuation runs in a new worktree path (ROADMAP §6.9 facts; the FRD WF-2 working-directory
+Assumption), so "is a native session tied to the directory it was created in" decides T5.1 question (6) and T5.7.
+
+| Provider | Resume form (how the native id is passed) | Tied to the working directory | Sandbox flags on resume | Permission flags on resume | Sources |
+| --- | --- | --- | --- | --- | --- |
+| Claude Code | `--resume <session>`; `--continue` also exists; the id is `session_id` from structured output ([§4.1](#41-claude-code-m2) Resume row; [R2] L72, L90) | Unverified: T5.12 | Unverified: T5.12 | Unverified: T5.12 | [§4.1](#41-claude-code-m2); [R2] L72, L90 (research of 2026-10-12, which records no CLI version); `--help` of 2.1.296 is recorded in [§4.1.1](#411-claude-code-native-controls-per-profile-and-platform-t30) and names no resume text |
+| Codex | `codex exec resume <SESSION_ID>` or `--last`; an explicit id is preferred ([§4.2](#42-codex-m2) Resume row; [R2] L75) | Unverified: T5.12 | Unverified: T5.12 | Unverified: T5.12 | [§4.2](#42-codex-m2); [R2] L75 (no CLI version recorded for the resume form; codex-cli 0.162.1 was observed only for `codex login status`) |
+| Grok Build | `-r, --resume [<ID>]`; `-c, --continue` is the most recent session for the directory; `-s, --session-id <UUID>` names a new session and does not resume (the adapter plans `-r <id>` from `.sessionId`, never `-c` or `-s`) [CLI], [SESS], [R2 L287]; [HL] contradicts on `-s` | Unverified: T4.21 | Preserved on resume (changelog entry 0.2.56) [CL] | Unverified: T4.21 | [§4.3.1](#431-grok-build-native-controls-per-profile-and-platform-t420) Resume and Resume contradiction rows and its source table ([CLI] last updated 2026-07-21, [HL] 2026-06-10, [SESS] undated, [CL] "Grok Build 1.0.52", 2026-10-11; all retrieved 2026-10-13; no binary version validated) |
+| Antigravity | `--conversation <id>` (explicit; preferred) or `-c, --continue`; the id is `conversation_id` in the `json` envelope [H, RS] | Histories are scoped to the working directory; `--continue` resolves the workspace through a local cache keyed by it [RS] | Unverified: T4.31 | Unverified: T4.31 | [§4.4](#44-antigravity-agy-m4) Resume row and its source list ([H], [RS]; retrieved 2026-10-13; no `agy` version validated) |
+| Cursor | `--resume [chatId]`; `--continue` is "alias for `--resume=-1`"; `agent resume`, `agent ls`, `agent create-chat`; the id is `session_id` on every stream event and on `result` [C1, C2, C8] | Unverified: T4.41 | Unverified: T4.41 | Unverified: T4.41 | [§4.5](#45-cursor-cli-m4) Resume row and its source list ([C1], [C2], [C8] retrieved 2026-10-13; [C11] CLI changelog v2026.07.06 says the picker lists all workspaces; no `agent` version validated) |
+| OpenCode | `--session`/`-s` "Session ID to continue", `--continue`/`-c` "Continue the last session"; the adapter plans `--session <id>` with the id from `sessionID` of the first event [D-cli]; the v2 command surface differs [D-v2] | Unverified: T4.51 | Unverified: T4.51 | Unverified: T4.51 | [§4.6](#46-opencode-m4) Resume row and its source list ([D-cli], [D-v2] retrieved 2026-10-13; every cell Unverified until T4.51 records a version) |
+| Kimi Code | `--session [id]` / `-S` (hidden alias `-r`/`--resume`) and `--continue` / `-c`, mutually exclusive; where the id appears in `stream-json`: not documented (K1, K3, K7) | Unverified: T4.61 | No sandbox is documented, so there is none to carry (K1 to K10) | `--auto`/`--yolo`/`--plan` may be re-applied on resume (K1, K3) | [§4.7](#47-kimi-code-m4-blocked-by-b-1) Resume and Sandbox controls rows; the [spike note](../research/kimi-code-spike-2026-10-13.md) (docs as of 2026-10-13, Kimi Code CLI 2.1.1 released 2026-09-24; no binary validated) |
+| Muse Code | `muse exec --session-id <uuid> "<prompt>"` [M-ext]; `muse resume <id>` opens the interactive UI and is not headless [M-ext], [M-int]; `--no-session-log` forfeits resume [M-int] | Yes, by workspace: `--allow-workspace-switch` is needed when the workspace differs from the session's [M-ext] | Unverified: T4.71 | Unverified: T4.71 | [§4.8](#48-muse-code-m4) Resume row ([M-ext], [M-int], retrieved 2026-10-13; third-party reports are not used here; no `muse` version validated) |
+
+**What Switchboard emits on resume today (code evidence, not provider behaviour).** `resumeArgs` for Claude Code
+(`src/adapters/claude/adapter.ts`) and Codex (`src/adapters/codex/adapter.ts`) build the same argv as `compile` through
+the same `#build`, so every policy flag (permission, tools, isolation, Git deny rules for Claude Code; `--sandbox`,
+`--ignore-user-config`, `--ignore-rules` for Codex) is sent again on every resume; only `--resume <id>` (Claude Code) or
+`resume <id>` (Codex) is added. The Codex position of exec-level flags before `resume <id>`, and the prompt on stdin,
+are an Assumption in that file. The fake adapter (`src/adapters/fake/adapter.ts`) appends `--resume <id>` to its normal
+argv. The working directory of a continuation is the new run's worktree (`<data>/worktrees/<sess>/<run>`), not the
+previous run's. So today the controller never relies on a resumed session keeping its flags. The sandbox and
+permission cells above ask what the provider itself does: an adapter may stop re-sending a flag only where a
+documented or observed `keeps` result exists, and until then it must keep re-sending it (fail closed, NFR-SEC-06).
+
+**Residual questions inside sourced cells.** Antigravity: whether `--conversation <id>` works from another directory,
+and the exit code for an unknown id, are Unverified: T4.31 (C9 runs 3 and 5). Cursor: the picker listing all
+workspaces ([C11]) and "scoped to a directory" are not the same statement, so the cwd cell stays Unverified: T4.41. Grok
+Build: [CLI] ties only `-c` to the directory. Kimi Code: K1 says `-p` cannot be combined with `--yolo`, `--auto` or
+`--plan` while the same page says they may be re-applied on resume (K8 disagrees on `-p` combinations); the cell quotes
+the resume statement only and T4.61 item 17 checks both.
+
+**Where each Unverified cell is verified (checklist item that records the result).**
+
+| Provider | Cells | Checklist item |
+| --- | --- | --- |
+| Claude Code, Codex | cwd, sandbox, permission | T5.12, checks 1 to 4 ([ROADMAP §6.9](../ROADMAP.md#69-m5-continuity-tasks)) |
+| Grok Build | cwd, permission | [§4.3.2](#432-t421-operator-checklist-grok-build) step 14 |
+| Antigravity | sandbox, permission (and the cross-directory case of the cwd cell) | [§4.4.3](#443-t431-operator-checklist-antigravity) C18 (and C9) |
+| Cursor | cwd, sandbox, permission | [§4.5.3](#453-t441-operator-checklist) item 16 |
+| OpenCode | cwd, sandbox, permission | [§4.6.3](#463-operator-checklist-t451) item 15 |
+| Kimi Code | cwd, and the permission statement | [spike note](../research/kimi-code-spike-2026-10-13.md#t461-operator-checklist-installed-kimi-code-cli-operators-native-login) item 17 |
+| Muse Code | sandbox, permission | [§4.8.1](#481-t471-operator-checklist) item 14 |
+
+When a result lands, replace the `Unverified: <task>` cell with the observed value and the CLI version, record
+`PASS`, `FAIL` or `NOT_CHECKED` in the dated note under `docs/research/`, and update ROADMAP T5.7 (a directory-bound
+adapter declaration) and T5.1 question (6).
 
 ## 5. Implementation strategy by milestone
 

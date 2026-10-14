@@ -214,6 +214,10 @@ predecessors are unaffected (BR-11, BR-17).
 | CANCELLED | Unchanged or changed | As FAILED, by condition | As FAILED, by condition |
 | Any, `inspect-untrusted` on non-Git directory | No worktree exists (FR-WS-06) | Nothing to retain; artifacts only | Not applicable |
 
+*Note 2026-10-14 (Proposed, Delegated, [ADR-0038](../adr/0038-handoff-bundle-and-continuity.md) item 6):* a native
+resume reuses the worktree directory of the run that created the native session. That earlier run's state stays on its
+branch, its checkpoint and its diff artifact until GC, but its directory then holds the resuming run's work.
+
 *Proposed, not accepted (FR-WS-09, owner decision 42):* a concurrent run's worktree of a project may be removed when its
 changes are merged or its meta-session is abandoned (ARCHIVED or an explicit operator command, Delegated); its branch and
 diff artifact stay to retention GC. Until accepted, the rows above apply unchanged.
@@ -403,7 +407,12 @@ sequenceDiagram
   the adapter's `resume` using the stored native session ID. **Proposed:** the new run takes a new lease on the
   meta-session's worktree when it exists at the head checkpoint, otherwise a fresh worktree from the head checkpoint;
   rationale: native resume may be tied to the working directory (**Assumption**, to be checked per provider in M5). The
-  new native session ID, if changed, updates the binding.
+  new native session ID, if changed, updates the binding. *Update 2026-10-14 (Proposed, Delegated,
+  [ADR-0038](../adr/0038-handoff-bundle-and-continuity.md) item 6):* the resume runs in the worktree path of the run
+  that created the native session, with a new run branch at the head checkpoint, unless the adapter declares
+  `resumeCwd: 'independent'` from a recorded capture; if that path is unusable the continuation becomes a recorded
+  handoff before any spawn (BR-18, reason `resume_directory_unavailable`). Code still uses a new path per run until
+  T5.7 ([LLD §15.6](../design/LLD.md#156-working-directory-of-a-native-resume)).
 - **Alternate paths:** caller names another provider or bound provider is ineligible → WF-3. Native resume rejected by
   the provider (stale or expired session) → `OUTPUT_PROTOCOL_ERROR` or the code the adapter classifies; **Proposed:**
   the controller does not auto-fall back to handoff on a rejected resume, because that would change the provider-visible
@@ -460,7 +469,10 @@ sequenceDiagram
 - **Failure paths:** target provider cannot compile the session's trust profile → ineligible (FR-POL-02, BR-5),
   `ELIGIBILITY_NONE` if none remains; `require_provider` ineligible → BR-3; bundle cannot be generated from the ledger →
   `INVALID_REQUEST` is **not** used; **Proposed:** `TOOL_FAILURE` with a message, since the fault is internal and fails
-  closed.
+  closed (*2026-10-14:* adopted by [ADR-0038](../adr/0038-handoff-bundle-and-continuity.md) item 7 with
+  `details.reason = "HANDOFF_BUNDLE_UNAVAILABLE"`, before any row is written). A cross-provider continuation whose
+  resolved profile is `privileged` is refused with `INVALID_REQUEST` while ROADMAP Q-61 is open (ADR-0038 item 8).
+  Bundle fields, `as_of`, bounds and rendering: [LLD §15](../design/LLD.md#15-continuity-and-the-handoff-bundle-m5).
 - **Postconditions:** a second binding exists; the meta-session head reflects provider B's checkpoint; provider A's
   session is unchanged and still resumable.
 
