@@ -3566,7 +3566,7 @@ the helper refuses a decision for a run that is already terminal, so no decision
 | `rollback` | The `rollback` event at finalize | `head=<sha> evidence_commit=<sha> mutated=<bool>` |
 
 Route reason codes for `mode` (Proposed): `new_session`, `same_provider_resume`, `provider_named`,
-`bound_provider_ineligible`, `no_binding`, `resume_directory_unavailable`.
+`bound_provider_ineligible`, `no_binding`, `resume_directory_unavailable`, and (T6.6, §16.6) `quota_failover`.
 
 **Open work.** `deriveOpenWork(records at as_of)` is pure and returns items in this order, at most 20:
 
@@ -4046,6 +4046,19 @@ At T16 with `QUOTA_EXHAUSTED`, after the breaker step (no change, §16.4), in BR
 While a provider has a provider-reported `reset_at` in the future from a `QUOTA_EXHAUSTED` run, the eligibility filter
 gives it the reason `QUOTA_EXHAUSTED_KNOWN`. BR-3 maps that reason to `QUOTA_EXHAUSTED` for `require_provider`, and FRD
 T7 then applies at preflight.
+
+*As built (T6.6, 2026-10-14, Delegated):* `quotaLadder` in `src/lifecycle/lifecycle.ts` runs after the terminal
+transaction, because a failover builds a bundle. Failover is permitted only when the run has a route decision whose
+`features_json.required_provider` is null (no route decision: fail closed, `failover:no_route_decision`), the profile is
+not `privileged`, and the attempt limit of §16.5 is not reached. The candidates are the providers eligible at admission
+minus the failed one and any project-excluded one, re-checked now (breaker and known quota included). The first eligible
+one in candidate order is chosen (BR-4). The successor is admitted through `submit` with `handoff` (reason
+`quota_failover`, a new route reason code) and the internal `successorOf`. The wait step reuses the §16.5 successor
+with `next_attempt_at` set to the reported reset. One `quota_ladder` event (`outcome` `failover`, `wait` or
+`returned`, and `not_taken` with the reason each earlier step did not apply) records the result. FRD T7
+(PREFLIGHT to WAITING_CAPACITY) is not built: a known reset is a stage-1 reason at admission instead
+(`QUOTA_EXHAUSTED_KNOWN`, BR-3 `QUOTA_EXHAUSTED`). Only the five most recent `QUOTA_EXHAUSTED` runs of a provider are
+read for it (Assumption). A queued run is not failed by it.
 
 ### 16.7 Rate gate (FR-CAP-07)
 

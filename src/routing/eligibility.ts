@@ -51,7 +51,12 @@ export type EligibilityReasonCode =
    * T6.4 (FR-CAP-04, LLD §16.4): the provider's circuit breaker is open until its cool-down ends. Maps to
    * ELIGIBILITY_NONE (FRD BR-3 "circuit-open").
    */
-  | "CIRCUIT_OPEN";
+  | "CIRCUIT_OPEN"
+  /**
+   * T6.6 (FR-CAP-06, LLD §16.6): a provider-reported reset after a `QUOTA_EXHAUSTED` run is still ahead. Maps to
+   * QUOTA_EXHAUSTED (FRD BR-3 "known quota exhaustion").
+   */
+  | "QUOTA_EXHAUSTED_KNOWN";
 
 export interface EligibilityReason {
   code: EligibilityReasonCode;
@@ -69,6 +74,8 @@ export function failureCodeForReason(code: EligibilityReasonCode): FailureCode {
       return "ADAPTER_VERSION_UNVERIFIED";
     case "CLIENT_TRUST_CEILING_EXCEEDED":
       return "PERMISSION_BLOCKED";
+    case "QUOTA_EXHAUSTED_KNOWN":
+      return "QUOTA_EXHAUSTED";
     default:
       return "ELIGIBILITY_NONE";
   }
@@ -147,6 +154,8 @@ export interface ProviderFacts {
   compile?: { ok: true } | Ineligible;
   /** T6.4: set while the provider's breaker is open (the cool-down end); undefined when closed or not checked. */
   circuitOpenUntil?: string;
+  /** T6.6: set while a provider-reported reset after a `QUOTA_EXHAUSTED` run is still ahead (that reset). */
+  quotaExhaustedUntil?: string;
 }
 
 export interface CapabilityRequirements {
@@ -213,6 +222,13 @@ function checkProvider(f: ProviderFacts, input: EligibilityInput): EligibilityRe
     return [
       r("CIRCUIT_OPEN", `${f.provider} circuit breaker is open until ${f.circuitOpenUntil}`, {
         until: f.circuitOpenUntil,
+      }),
+    ];
+  }
+  if (f.quotaExhaustedUntil !== undefined) {
+    return [
+      r("QUOTA_EXHAUSTED_KNOWN", `${f.provider} reported its quota exhausted until ${f.quotaExhaustedUntil}`, {
+        reset_at: f.quotaExhaustedUntil,
       }),
     ];
   }

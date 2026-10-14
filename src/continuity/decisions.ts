@@ -23,6 +23,8 @@ export const ROUTE_REASON_CODES = [
   "bound_provider_ineligible",
   "no_binding",
   "resume_directory_unavailable",
+  // T6.6 (LLD §16.6, BR-8): a handoff after QUOTA_EXHAUSTED on the previous provider.
+  "quota_failover",
 ] as const;
 export type RouteReasonCode = (typeof ROUTE_REASON_CODES)[number];
 
