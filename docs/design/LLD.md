@@ -3368,6 +3368,38 @@ Route reason codes for `mode` (Proposed): `new_session`, `same_provider_resume`,
 `meta_session.open_work_json` is a current-state projection of the same function over all terminal runs, rewritten in
 the transaction that makes a run terminal (T5.3), for `runs show`; no event is added. The builder never reads it.
 
+*As built (T5.3, 2026-10-14, Delegated, not owner-approved; no migration).* Code: `src/continuity/decisions.ts` (kinds,
+templates, token checks), `src/continuity/open-work.ts` (`deriveOpenWork`, pure), `appendDecision`, `listOutcomesForMetaSession`
+and `getOpenWorkProjection` in `src/ledger/repo.ts`. Choices the design left open:
+
+- **Idempotence per cause** (no column for it): one row per `(run_id, kind)`, except `approval_decided`, one per
+  approval id (matched on the summary's leading `approval=<id>` token). A repeat call returns the existing id with
+  `created: false`.
+- **Values are checked, not trusted:** every template value must match a strict controller-token shape (ids, adapter ids,
+  lowercase reason codes, hex hashes, counts), so provider text cannot enter a decision even by a caller's mistake; the
+  helper throws and writes nothing.
+- **Refusal:** an unknown or terminal run throws `DecisionRefusedError`, also for a repeat of a cause already written.
+- **Wired causes today:** `route_selected` in the admission transaction of `RunLifecycle.submit` (the provider the caller
+  routed to: `mode=new` with `new_session`, `mode=new` with `no_binding` for a continuation without a native session,
+  `mode=resume` with `same_provider_resume`; the other reason codes and `handoff` mode wait for T5.6);
+  `approval_decided` at the client-policy decision in `submit` (`by=client_policy`) and at the operator's `approve`/`deny`
+  in `applyApprovalDecision` (`by=operator`), before a denial makes the run terminal; `verification_outcome` with the T14
+  event (counts are of the per-command outcomes, `not_run` counted apart, everything else not `passed` counted as failed);
+  `rollback` with the `rollback` event in finalize and in startup reconciliation. `handoff_built` has no caller until T5.4
+  and T5.6. **Assumption:** an approval closed `DENIED` by cancelling a waiting run (`denyApprovalOnCancel`) writes no
+  `approval_decided`, because the template's `by` has only `operator` and `client_policy`; the run's `CANCELLED` transition
+  records it.
+- **Open work** is recomputed inside `casRunState` whenever a run reaches a terminal state, so every caller (lifecycle,
+  operator decision, reconciliation) refreshes it with no lifecycle edit; it also bumps `meta_session.version` and
+  `updated_at` like the other writes to that row. Each item is `{kind, run_id, detail}`; `verification_not_passing` has
+  one item per non-passing command of the newest run that ran verification, with `argv` read from that run's stored request.
+- **Binding:** `harness` is the adapter id (no adapter reports another); `backing_provider` and `model` come from the
+  run's `session_bound` event, and the model falls back to the run's recorded model (as for usage observations). A repeated
+  bind of the same native session refreshes `last_used_at` only (the earlier `model` update on conflict is removed).
+- **Changed files and verification results** per meta-session are reached through `listOutcomesForMetaSession`: for each
+  terminal run the changed-files count and artifact id, the `diff` and `test_report` artifact ids, the post checkpoint
+  commit and each verification command's outcome and exit code; the Git side (`git diff-tree`) is T5.4.
+
 ### 15.4 Bounds and deterministic truncation
 
 | Bound | Default | Where set |

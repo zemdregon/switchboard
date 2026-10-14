@@ -1,5 +1,8 @@
 import type Database from "better-sqlite3";
+import { approvalCausePrefix, type DecisionInput, renderDecisionSummary } from "../continuity/decisions.js";
+import { deriveOpenWork, type OpenWorkRun } from "../continuity/open-work.js";
 import { defaultIds, type IdGenerator } from "../ids/index.js";
+import { DecisionRefusedError } from "./errors.js";
 
 /**
  * Minimal typed repository helpers (Proposed shape). They cover what T1.3 tests and the T1.5/T1.8 callers need first;
@@ -284,11 +287,70 @@ export interface ProviderBindingRow {
   last_used_at: string;
 }
 
+/**
+ * Set at INSERT from the run's `session_bound` event (FR-ADP-10, T5.3) and never updated afterwards: a conflicting
+ * insert (the same native session bound again by a resume) refreshes `last_used_at` only.
+ */
 export interface NewProviderBinding {
   metaSessionId: string;
   provider: string;
   nativeSessionId: string;
+  /** The harness; defaults to `provider` (LLD §1: it equals the provider unless fronted, and no adapter reports another). */
+  harness?: string;
+  /** The actual backing vendor when the adapter reported one. */
+  backingProvider?: string | null;
   model?: string | null;
+}
+
+/** `decision` row (LLD §1, append-only). */
+export interface DecisionRow {
+  id: string;
+  meta_session_id: string;
+  run_id: string | null;
+  decision: string;
+  reason_summary: string;
+  created_at: string;
+}
+
+/** One verification command of a run, from its `verification_command` events (argv from the stored request). */
+export interface RunVerificationResult {
+  index: number;
+  outcome: string;
+  exit_code: number | null;
+  argv: string[] | null;
+}
+
+/**
+ * What a terminal run left behind, from existing run records only (T5.3; LLD §15.1 sources): the changed-files count and
+ * artifact, the post-run checkpoint commit and the verification results. Content stays in the artifacts and in Git.
+ */
+export interface RunOutcomeRecord {
+  run_id: string;
+  state: "SUCCEEDED" | "FAILED" | "CANCELLED";
+  failure_code: string | null;
+  provider: string | null;
+  created_at: string;
+  finished_at: string | null;
+  /** Commit of the run's first `post` checkpoint, if one was recorded. */
+  post_commit: string | null;
+  /** `changed_files` count of the terminal record (0 when it carries none). */
+  changed_files: number;
+  /** Artifact ids named by the terminal record (`changed_files`, `diff`, `test_report`), when present. */
+  changed_files_artifact_id: string | null;
+  diff_artifact_id: string | null;
+  test_report_artifact_id: string | null;
+  verification: RunVerificationResult[];
+  nested_repositories_skipped: number;
+  git_policy_violation: boolean;
+}
+
+/** The terminal runs of a meta-session with the session's base and head commits (T5.3). */
+export interface MetaSessionOutcomes {
+  meta_session_id: string;
+  base_commit: string | null;
+  head_commit: string | null;
+  /** Terminal runs in `(created_at, id)` order. */
+  runs: RunOutcomeRecord[];
 }
 
 /** A meta-session eligible for retention GC (T3.12, Proposed per Q-18). */
@@ -575,6 +637,27 @@ export interface Ledger {
    * comes from structured provider output only (FR-ADP-04).
    */
   recordProviderBinding(input: NewProviderBinding): void;
+  /** Every binding of a meta-session, oldest first. */
+  listProviderBindings(metaSessionId: string): ProviderBindingRow[];
+
+  // ---- T5.3 additions (canonical state across providers, LLD §15.3) ---------------------------------------------------
+  /**
+   * The ONE writer of the `decision` table (ADR-0038 item 3). Renders the fixed template of `input.kind` from controller
+   * values only (a non-controller value throws `DecisionTemplateError`, nothing written), refuses a decision for a
+   * terminal or unknown run ({@link DecisionRefusedError}; the ordering rule that fixes the decisions of a bundle's
+   * `as_of`), and writes it once per cause: `created: false` and the existing id when this cause already has a row (one per
+   * run and kind, except `approval_decided`, one per approval). Call inside the transaction of the event that causes it.
+   */
+  appendDecision(input: DecisionInput): { id: string; created: boolean };
+  /** Decisions of a run, oldest first. */
+  listDecisionsForRun(runId: string): DecisionRow[];
+  /**
+   * Changed files and verification results per meta-session, from run records (T5.3): terminal runs in `(created_at, id)`
+   * order with the base and head commits. `undefined` for an unknown meta-session.
+   */
+  listOutcomesForMetaSession(metaSessionId: string): MetaSessionOutcomes | undefined;
+  /** The `open_work_json` projection of a meta-session (LLD §15.3), parsed. `undefined` for an unknown meta-session. */
+  getOpenWorkProjection(metaSessionId: string): unknown[] | undefined;
   /** Most recently used binding of a meta-session, optionally for one provider. */
   latestProviderBinding(metaSessionId: string, provider?: string): ProviderBindingRow | undefined;
 
@@ -795,6 +878,109 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
     "SELECT id, run_id, scope_json, scope_hash, status, requested_at, decided_at, decided_by FROM approval";
   const getApproval = (id: string) => db.prepare(`${APPROVAL_SQL} WHERE id = ?`).get(id) as ApprovalRow | undefined;
 
+  // ---- T5.3 helpers (outcomes per meta-session, open-work projection) ----------------------------------------------
+  const TERMINAL_STATES = ["SUCCEEDED", "FAILED", "CANCELLED"] as const;
+  const parseJson = (text: string): unknown => {
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      return undefined;
+    }
+  };
+  const isRecord = (v: unknown): v is Record<string, unknown> =>
+    typeof v === "object" && v !== null && !Array.isArray(v);
+  const strOrNull = (v: unknown): string | null => (typeof v === "string" ? v : null);
+
+  /** Terminal runs of a meta-session with the facts the open-work derivation and the read helper need (existing records only). */
+  const outcomesOf = (metaSessionId: string): RunOutcomeRecord[] => {
+    const runs = db
+      .prepare(
+        `SELECT id, state, failure_code, provider, created_at, finished_at, request_json FROM run
+         WHERE meta_session_id = ? AND state IN ('SUCCEEDED','FAILED','CANCELLED') ORDER BY created_at, id`,
+      )
+      .all(metaSessionId) as {
+      id: string;
+      state: RunOutcomeRecord["state"];
+      failure_code: string | null;
+      provider: string | null;
+      created_at: string;
+      finished_at: string | null;
+      request_json: string;
+    }[];
+    return runs.map((r) => {
+      const events = listRunEvents(r.id);
+      const terminal = events.findLast((e) => {
+        if (e.type !== "state_transition") return false;
+        const p = parseJson(e.payload_json);
+        return isRecord(p) && typeof p.to === "string" && (TERMINAL_STATES as readonly string[]).includes(p.to);
+      });
+      const tp = terminal === undefined ? undefined : parseJson(terminal.payload_json);
+      const payload = isRecord(tp) ? tp : {};
+      const arts = isRecord(payload.artifacts) ? payload.artifacts : {};
+      const request = parseJson(r.request_json);
+      const argvs =
+        isRecord(request) && Array.isArray(request.verification_commands) ? request.verification_commands : [];
+      const byIndex = new Map<number, RunVerificationResult>();
+      for (const e of events) {
+        if (e.type !== "verification_command") continue;
+        const p = parseJson(e.payload_json);
+        if (!isRecord(p) || typeof p.index !== "number" || typeof p.outcome !== "string") continue;
+        const a = argvs[p.index];
+        byIndex.set(p.index, {
+          index: p.index,
+          outcome: p.outcome,
+          exit_code: typeof p.exit_code === "number" ? p.exit_code : null,
+          argv: Array.isArray(a) && a.every((x) => typeof x === "string") ? (a as string[]) : null,
+        });
+      }
+      const assessment = events.findLast((e) => e.type === "workspace_assessment");
+      const ap = assessment === undefined ? undefined : parseJson(assessment.payload_json);
+      const nested =
+        isRecord(ap) && Array.isArray(ap.nested_repositories_skipped) ? ap.nested_repositories_skipped.length : 0;
+      const post = db
+        .prepare(
+          "SELECT commit_sha FROM workspace_checkpoint WHERE run_id = ? AND kind = 'post' ORDER BY rowid LIMIT 1",
+        )
+        .get(r.id) as { commit_sha: string } | undefined;
+      return {
+        run_id: r.id,
+        state: r.state,
+        failure_code: r.failure_code,
+        provider: r.provider,
+        created_at: r.created_at,
+        finished_at: r.finished_at,
+        post_commit: post?.commit_sha ?? null,
+        changed_files: typeof payload.changed_files === "number" ? payload.changed_files : 0,
+        changed_files_artifact_id: strOrNull(arts.changed_files),
+        diff_artifact_id: strOrNull(arts.diff),
+        test_report_artifact_id: strOrNull(arts.test_report),
+        verification: [...byIndex.values()].sort((a, b) => a.index - b.index),
+        nested_repositories_skipped: nested,
+        git_policy_violation: payload.git_policy_violation === true,
+      };
+    });
+  };
+
+  /**
+   * LLD §15.3: rewrite `meta_session.open_work_json` from the pure derivation over all terminal runs. Called inside the
+   * transaction of every terminal transition (after the terminal `state_transition` event is written). No event is added.
+   */
+  const refreshOpenWork = (metaSessionId: string, when: string): void => {
+    const runs: OpenWorkRun[] = outcomesOf(metaSessionId).map((o) => ({
+      runId: o.run_id,
+      state: o.state,
+      failureCode: o.failure_code,
+      verification: o.verification.map((v) => ({ index: v.index, outcome: v.outcome, argv: v.argv })),
+      nestedRepositoriesSkipped: o.nested_repositories_skipped,
+      gitPolicyViolation: o.git_policy_violation,
+    }));
+    db.prepare("UPDATE meta_session SET open_work_json = ?, version = version + 1, updated_at = ? WHERE id = ?").run(
+      JSON.stringify(deriveOpenWork(runs)),
+      when,
+      metaSessionId,
+    );
+  };
+
   return {
     getMetaSession,
     getRun,
@@ -814,7 +1000,12 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
           .run(input.to, when, ...values, input.runId, input.expectedVersion, input.from);
         if (res.changes !== 1) return undefined;
         insertEvent(input.runId, "state_transition", { from: input.from, to: input.to, ...input.payload }, when);
-        return getRunRecord(input.runId);
+        const moved = getRunRecord(input.runId);
+        // T5.3 (LLD §15.3): every terminal transition, whichever caller made it, refreshes the open-work projection.
+        if (moved !== undefined && (TERMINAL_STATES as readonly string[]).includes(input.to)) {
+          refreshOpenWork(moved.meta_session_id, when);
+        }
+        return moved;
       });
     },
 
@@ -967,22 +1158,90 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
 
     recordProviderBinding(input) {
       const now = ts();
+      // T5.3 (FR-ADP-10, LLD §1): harness, backing provider and model are set at insert and not updated; binding the
+      // same native session again (a resume) only refreshes `last_used_at`.
       db.prepare(
-        `INSERT INTO provider_binding (id, meta_session_id, provider, harness, model, native_session_id, created_at,
-                                       last_used_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (meta_session_id, provider, native_session_id) DO UPDATE SET last_used_at = excluded.last_used_at,
-           model = COALESCE(excluded.model, provider_binding.model)`,
+        `INSERT INTO provider_binding (id, meta_session_id, provider, harness, backing_provider, model, native_session_id,
+                                       created_at, last_used_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (meta_session_id, provider, native_session_id) DO UPDATE SET last_used_at = excluded.last_used_at`,
       ).run(
         ids.id("pbd"),
         input.metaSessionId,
         input.provider,
-        input.provider,
+        input.harness ?? input.provider,
+        input.backingProvider ?? null,
         input.model ?? null,
         input.nativeSessionId,
         now,
         now,
       );
+    },
+
+    listProviderBindings(metaSessionId) {
+      return db
+        .prepare("SELECT * FROM provider_binding WHERE meta_session_id = ? ORDER BY created_at, rowid")
+        .all(metaSessionId) as ProviderBindingRow[];
+    },
+
+    appendDecision(input) {
+      return immediate(() => {
+        const run = db.prepare("SELECT meta_session_id, state FROM run WHERE id = ?").get(input.runId) as
+          | { meta_session_id: string; state: RunState }
+          | undefined;
+        if (run === undefined) throw new DecisionRefusedError(`decision ${input.kind}: unknown run ${input.runId}`);
+        if ((TERMINAL_STATES as readonly string[]).includes(run.state)) {
+          throw new DecisionRefusedError(`decision ${input.kind}: run ${input.runId} is already ${run.state}`);
+        }
+        const summary = renderDecisionSummary(input);
+        const prefix = input.kind === "approval_decided" ? approvalCausePrefix(input.approvalId) : undefined;
+        const existing = (
+          prefix === undefined
+            ? db
+                .prepare("SELECT id FROM decision WHERE run_id = ? AND decision = ? ORDER BY rowid LIMIT 1")
+                .get(input.runId, input.kind)
+            : db
+                .prepare(
+                  `SELECT id FROM decision WHERE run_id = ? AND decision = ? AND substr(reason_summary, 1, ?) = ?
+                   ORDER BY rowid LIMIT 1`,
+                )
+                .get(input.runId, input.kind, prefix.length, prefix)
+        ) as { id: string } | undefined;
+        if (existing !== undefined) return { id: existing.id, created: false };
+        const id = ids.id("dec");
+        db.prepare(
+          "INSERT INTO decision (id, meta_session_id, run_id, decision, reason_summary, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ).run(id, run.meta_session_id, input.runId, input.kind, summary, ts());
+        return { id, created: true };
+      });
+    },
+
+    listDecisionsForRun(runId) {
+      return db
+        .prepare(
+          "SELECT id, meta_session_id, run_id, decision, reason_summary, created_at FROM decision WHERE run_id = ? ORDER BY created_at, rowid",
+        )
+        .all(runId) as DecisionRow[];
+    },
+
+    listOutcomesForMetaSession(metaSessionId) {
+      const m = db.prepare("SELECT id, base_commit, head_commit FROM meta_session WHERE id = ?").get(metaSessionId) as
+        | { id: string; base_commit: string | null; head_commit: string | null }
+        | undefined;
+      if (m === undefined) return undefined;
+      return {
+        meta_session_id: m.id,
+        base_commit: m.base_commit,
+        head_commit: m.head_commit,
+        runs: outcomesOf(metaSessionId),
+      };
+    },
+
+    getOpenWorkProjection(metaSessionId) {
+      const row = db.prepare("SELECT open_work_json FROM meta_session WHERE id = ?").get(metaSessionId) as
+        | { open_work_json: string }
+        | undefined;
+      return row === undefined ? undefined : (JSON.parse(row.open_work_json) as unknown[]);
     },
 
     latestProviderBinding(metaSessionId, provider) {
