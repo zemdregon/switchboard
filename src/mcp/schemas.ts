@@ -145,6 +145,25 @@ const ENVELOPE = {
         summary: { type: "string", maxLength: 4000 },
         changed_files: { type: "integer", minimum: 0 },
         verification: { type: "array", items: { type: "object" } },
+        // T11.9 (FR-INN-13): display-only prose with a visible source label and a pointer to the raw artifact.
+        verification_summary: {
+          type: "object",
+          additionalProperties: false,
+          required: ["source", "label", "text", "raw_artifact"],
+          properties: {
+            source: { enum: ["inner", "heuristic"] },
+            label: { type: "string" },
+            text: { type: "string" },
+            notable: { type: "array", items: { type: "string" } },
+            raw_artifact: {
+              type: "object",
+              additionalProperties: false,
+              required: ["id", "sha256"],
+              properties: { id: ARTIFACT_ID, sha256: { type: "string", pattern: "^[0-9a-f]{64}$" } },
+            },
+            summary_artifact_id: ARTIFACT_ID,
+          },
+        },
       },
     },
     artifacts: { type: "object", additionalProperties: ARTIFACT_ID },
