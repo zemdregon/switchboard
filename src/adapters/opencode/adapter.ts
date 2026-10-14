@@ -28,7 +28,7 @@ import {
   DEFAULT_WALL_CLOCK_MS,
 } from "../../exec/index.js";
 import { resolveOnPath } from "../codex/adapter.js";
-import { classifyCommon } from "../failure.js";
+import { classifyCommon, PROVIDER_ERROR_CATEGORY_CODES } from "../failure.js";
 import { gitWriteRisks } from "../git-write.js";
 import { parseVersion } from "../manifest/index.js";
 import type {
@@ -136,6 +136,9 @@ const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s
 const ineligible = (reason: Ineligible["reason"], detail: string): Ineligible => ({ ineligible: true, reason, detail });
 /** Part ids already counted per run, so a repeated `step_finish` is not recorded twice (TDD §4.6, Proposed). */
 const seenParts = new WeakMap<ParseState, Set<string>>();
+/** Category of a stream anomaly (session id changed mid-run); classified OUTPUT_PROTOCOL_ERROR. */
+const PROTOCOL_CATEGORY = "protocol";
+const CATEGORY_CODES = { ...PROVIDER_ERROR_CATEGORY_CODES, [PROTOCOL_CATEGORY]: "OUTPUT_PROTOCOL_ERROR" } as const;
 
 export class OpenCodeAdapter implements ProviderAdapter {
   readonly id = "opencode" as const;
@@ -381,9 +384,13 @@ export class OpenCodeAdapter implements ProviderAdapter {
     if (e === undefined || type === undefined) return this.#unknown(state, "none");
     const out: NormalizedEvent[] = [];
     const id = str(e.sessionID);
-    if (id !== undefined && id !== "" && state.nativeSessionId === undefined) {
-      state.nativeSessionId = id;
-      out.push({ kind: "session_bound", nativeSessionId: id });
+    if (id !== undefined && id !== "") {
+      if (state.nativeSessionId === undefined) {
+        state.nativeSessionId = id;
+        out.push({ kind: "session_bound", nativeSessionId: id });
+      } else if (id !== state.nativeSessionId) {
+        out.push({ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "session id changed mid-run" });
+      }
     }
     const part = obj(e.part);
     switch (type) {
@@ -431,10 +438,19 @@ export class OpenCodeAdapter implements ProviderAdapter {
         return out;
       }
       case EVENT.error: {
-        const err = obj(e.error);
+        const rawErr = e.error;
+        const err = obj(rawErr);
         const errType = str(err?.type);
-        const message = str(err?.message);
-        if (errType === undefined && message === undefined) return [...out, ...this.#unknown(state, type)];
+        const message = str(err?.message) ?? str(rawErr);
+        if (errType === undefined && message === undefined) {
+          if (rawErr === undefined || rawErr === null) return [...out, ...this.#unknown(state, type)];
+          const ev: NormalizedEvent = {
+            kind: "provider_error",
+            category: "unknown",
+            message: clip(JSON.stringify(rawErr), MAX_SUMMARY_CHARS),
+          };
+          return [...out, ev];
+        }
         const category = (errType !== undefined ? ERROR_TYPE_CATEGORIES[errType] : undefined) ?? "unknown";
         const ev: NormalizedEvent = {
           kind: "provider_error",
@@ -455,9 +471,9 @@ export class OpenCodeAdapter implements ProviderAdapter {
     for (const [path, metric] of TOKEN_KEYS) {
       let v: unknown = tokens;
       for (const k of path) v = obj(v)?.[k];
-      if (typeof v === "number") metrics[metric] = v;
+      if (typeof v === "number" && Number.isFinite(v) && v >= 0) metrics[metric] = v;
     }
-    if (typeof part?.cost === "number") metrics.cost_usd = part.cost;
+    if (typeof part?.cost === "number" && Number.isFinite(part.cost) && part.cost >= 0) metrics.cost_usd = part.cost;
     return metrics;
   }
 
@@ -508,6 +524,6 @@ export class OpenCodeAdapter implements ProviderAdapter {
   }
 
   classifyFailure(evidence: FailureEvidence): FailureClassification {
-    return classifyCommon(evidence);
+    return classifyCommon(evidence, CATEGORY_CODES);
   }
 }
