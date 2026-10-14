@@ -192,7 +192,7 @@ export class GrokAdapter implements ProviderAdapter {
   }
 
   /**
-   * FR-AUTH-02 via `grok models` (T4.24, Q-10; observed on grok 1.0.50, TDD §4.3.3): the exit code is 0 whether logged
+   * FR-AUTH-02 via `grok models` (T4.24, Q-10; observed on CLI version 1.0.50, TDD §4.3.3): the exit code is 0 whether logged
    * in or not, so the first stdout line decides, and only the two observed phrases do (see protocol.ts). A line that
    * starts with `You are logged in` is OK, `You are not authenticated` is AUTH_REQUIRED naming the native login; any
    * other first line, a non-zero exit, a timeout or a spawn failure is UNKNOWN (ineligible, NFR-SEC-06). The output is
