@@ -157,6 +157,39 @@ flowchart TB
 Collaboration per workflow, call direction and error propagation are in the [SDD](SDD.md); schemas and contracts are in
 the [LLD](LLD.md).
 
+### 2.1 COMP-RAG implementation evidence (M12, T12.1–T12.3)
+
+Configuration shape, store schema, scanner and chunking rules, the embedding port and locality gates are in [TDD
+§3.13](TDD.md#313-retrieval-index) and [LLD §14](LLD.md#14-retrieval-index). Requirement-to-component traceability is in
+[SDD §4.1](SDD.md#41-comp-rag-implementation-evidence-m12-t121t123). The pointers below are HLD-level evidence only;
+WF-14 admission, operator `index` commands and MCP search remain future tasks (T12.4–T12.7).
+
+#### T12.1 — configuration and per-project store
+
+**Evidence (implemented).** FR-RAG-01, FR-RAG-03, FR-RAG-09 (global `sources` under an allowed root only; the global
+store and sharing rules are T12.7), FR-RAG-11 (caps in configuration only; background build, `index` commands and
+`rag_record` ledger rows are T12.4).
+
+- **Tests:** `src/config/rag.test.ts`, `src/retrieval/store.test.ts`, `src/mcp/project-tools.test.ts`
+- **Modules:** `src/config/rag.ts`, `src/retrieval/store.ts`; store prune at `serve` start (`src/cli/serve.ts`)
+
+#### T12.2 — scanner, exclusions, redaction and chunker
+
+**Evidence (implemented).** FR-RAG-02 (deterministic redaction before chunk output, same pipeline as FR-INN-16).
+
+- **Tests:** `src/retrieval/scan.test.ts`, `src/retrieval/chunk.test.ts`, `src/retrieval/options.test.ts`
+- **Modules:** `src/retrieval/scan.ts`, `src/retrieval/chunk.ts`, `src/retrieval/denylist.ts`,
+  `src/retrieval/options.ts`
+
+#### T12.3 — embedding backend port and locality gates
+
+**Evidence (implemented).** FR-RAG-04; FR-RAG-12 for the port layer (records without text; no embedding row in
+`usage_observation` or capacity). Reuses COMP-INN locality classification and gates (FR-INN-16, T11.3).
+
+- **Tests:** `src/retrieval/http-embedder.test.ts`, `src/retrieval/embedding.test.ts`
+- **Modules:** `src/retrieval/embedding.ts`, `src/retrieval/http-embedder.ts`, `src/retrieval/fake-embedder.ts`;
+  `createPinnedHttpTransport` in `src/inner/http-backend.ts`
+
 ## 3. Trust boundaries
 
 Controls cite requirements and ADRs; a control is a design intent until its verification (all currently *planned*) is
