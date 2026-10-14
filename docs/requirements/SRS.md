@@ -321,7 +321,13 @@ agent (FR-INN-03, FR-INN-16). All requirements in this group first ship in M12.
 
 Tasks T12.1–T12.3 on `main` give partial verification of FR-RAG-01–FR-RAG-04. Per-task test lists, module paths and
 known gaps are in [TDD §3.13](../design/TDD.md#313-retrieval-index). FR-RAG-05 and later requirements in this group
-remain unimplemented until T12.4 and subsequent M12 work.
+have no runtime implementation on `main` until T12.4 and subsequent M12 work land.
+
+**Design evidence (T12.5; draft, not on `main`).** FR-RAG-05, FR-RAG-07 and FR-RAG-08 are specified in open design
+pull requests only: [PR #180](https://github.com/zemdregon/switchboard/pull/180) (LLD §14.11 admission context pack;
+SDD updates) and [PR #181](https://github.com/zemdregon/switchboard/pull/181) (TDD §3.13.8 admission-time context
+pack). Runtime implementation and primary tests remain pending merge of **T12.4** on `main` and the w29 T12.5 code
+stack; until then there is no `src/` evidence for these three requirements on `main`.
 
 | Task | Requirement | Primary tests | Primary modules |
 | --- | --- | --- | --- |
