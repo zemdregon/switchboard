@@ -444,7 +444,7 @@ describe("vertical slice against the fake adapter", () => {
     expect(c.body.run_id).not.toBe(d.body.run_id);
     const cont = await pollTerminal(c.body.run_id);
     expect(cont).toMatchObject({ status: "SUCCEEDED", result: { summary: "continued writer-1" } });
-    expect(cont.route.reasons[0]).toBe("selected fake (continuation)");
+    expect(cont.route.reasons[0]).toBe("selected fake (resume same_provider_resume from fake; continuation)");
     expect(fake.resumes).toEqual(["writer-1"]);
     const diff2 = await call("get_artifacts", { run_id: c.body.run_id, kinds: ["diff"] });
     expect(diff2.body.artifacts[0].inline_text).toContain("+continued"); // started from the session head
@@ -456,8 +456,9 @@ describe("vertical slice against the fake adapter", () => {
     expect(d.body.status).toBe("SUCCEEDED");
   });
 
-  it("continue_task resumes in the origin worktree, and refuses when that directory is unusable (T5.7)", async () => {
-    await setup({ adapters: [fakeWriter()] });
+  it("continue_task resumes in the origin worktree; an unusable directory becomes a same-provider handoff (T5.7, T5.6)", async () => {
+    const fake = recorded(newWriter());
+    await setup({ adapters: [fake.adapter] });
     const d = await call("delegate_task", delegateArgs());
     expect((await pollTerminal(d.body.run_id)).status).toBe("SUCCEEDED");
     const sess = d.body.meta_session_id as string;
@@ -468,17 +469,28 @@ describe("vertical slice against the fake adapter", () => {
     expect((await pollTerminal(c.body.run_id)).status).toBe("SUCCEEDED");
     expect(ledger.getRunRecord(c.body.run_id)?.worktree_path).toBe(originPath); // the fake declares `bound`
 
-    // An untracked file in the origin worktree: no resume there, and none anywhere else (LLD §15.6 step 3).
+    // An untracked file in the origin worktree: no resume there, and none anywhere else (LLD §15.6 step 3). T5.6: the
+    // continuation is a handoff on the same provider in a fresh worktree, recorded with its reason.
     writeFileSync(path.join(originPath, "stray.txt"), "x\n");
-    const runsBefore = ledger.listRunsForMetaSession(sess).length;
-    const refused = await call("continue_task", { meta_session_id: sess, instruction: "more" });
-    expect(refused.body.error).toMatchObject({
-      code: "TOOL_FAILURE",
-      retryable: false,
-      details: { reason: "resume_directory_unavailable", problem: "unclean" },
+    const resumesBefore = fake.resumes.length;
+    const h = await call("continue_task", { meta_session_id: sess, instruction: "more" });
+    expect(h.isError).toBe(false);
+    const done = await pollTerminal(h.body.run_id);
+    expect(done.status).toBe("SUCCEEDED");
+    expect(done.route.reasons[0]).toBe(
+      "selected fake (handoff resume_directory_unavailable from fake; continuation)",
+    );
+    expect(fake.resumes).toHaveLength(resumesBefore); // no native resume anywhere
+    expect(ledger.getRunRecord(h.body.run_id)?.worktree_path).not.toBe(originPath);
+    expect(JSON.stringify(done)).not.toContain(dataDir); // no controller path in the envelope
+    const rd = JSON.parse(ledger.getRouteDecision(h.body.run_id)?.reasons_json ?? "{}");
+    expect(rd.continuation).toEqual({
+      mode: "handoff",
+      reason: "resume_directory_unavailable",
+      from_provider: "fake",
+      problem: "unclean",
     });
-    expect(JSON.stringify(refused.body)).not.toContain(dataDir); // no controller path in the envelope
-    expect(ledger.listRunsForMetaSession(sess)).toHaveLength(runsBefore); // nothing admitted
+    expect(ledger.listArtifactsForRun(h.body.run_id).map((a) => a.kind)).toContain("handoff_view");
   });
 
   it("continue_task rejects an active session, a different provider, an unknown session and an idempotency key", async () => {

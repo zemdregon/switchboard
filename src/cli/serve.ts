@@ -499,6 +499,8 @@ async function runDaemon(
         // T9.9 (FR-PRJ-10, ADR-0030): no dynamic project inside the data directory; disabled providers are off-limits.
         dataDir: config.dataDir,
         providers: config.providers,
+        // T5.6: handoff bundle bounds (`continuity.*`, LLD §15.4).
+        continuity: config.continuity,
       },
       clientId,
       projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),

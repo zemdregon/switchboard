@@ -102,6 +102,7 @@ import {
   RENDERER_VERSION,
   type RouteReasonCode,
   recordHandoffView,
+  refusesPrivilegedCrossProvider,
   renderHandoffPrompt,
 } from "../continuity/index.js";
 import { procStartTicks } from "../exec/proc-info.js";
@@ -575,9 +576,16 @@ export class RunLifecycle {
               : `meta-session ${metaSessionId} was created without a project and stays without one`,
           );
         }
-        const active = this.ledger.listRunsForMetaSession(metaSessionId).find((r) => !isTerminal(r.state));
+        const sessionRuns = this.ledger.listRunsForMetaSession(metaSessionId);
+        const active = sessionRuns.find((r) => !isTerminal(r.state));
         if (active) {
           throw new LifecycleError("INVALID_REQUEST", `meta-session ${metaSessionId} has an active run ${active.id}`);
+        }
+        // T5.6 (Delegated, fail closed): the bundle was built outside this transaction, so it must still describe the
+        // session as it is now: the same runs and the same base and head. Otherwise a run admitted and finished in
+        // between would be missing from it; refuse with the bundle failure code and write nothing (ADR-0038 item 7).
+        if (handoff && !this.handoffIsCurrent(metaSessionId, sessionRuns, handoff.built)) {
+          throw new HandoffBundleError("the meta-session changed after the bundle was built");
         }
       } else {
         metaSessionId = this.ledger.createMetaSession({
@@ -631,8 +639,8 @@ export class RunLifecycle {
         }
       }
       if (req.routeDecision) this.ledger.insertRouteDecision({ ...req.routeDecision, runId: run.id });
-      // T5.3 (LLD §15.3): the controller's route choice. Only the admission-time facts this code knows (no handoff yet:
-      // T5.6 adds that mode and its reason codes).
+      // T5.3 (LLD §15.3): the controller's route choice; for a handoff (T5.6) the mode and the BR-18 reason code the
+      // caller (`continue_task`) decided.
       this.ledger.appendDecision({
         kind: "route_selected",
         runId: run.id,
@@ -956,15 +964,29 @@ export class RunLifecycle {
     if (h.built.bundle.as_of.meta_session_id !== req.metaSessionId)
       bad("the handoff bundle is of another meta-session");
     if (h.stored.sha256 !== h.built.sha256) bad("the stored handoff view does not match the built bundle");
-    // Q-61 fail-closed default (ADR-0038 item 8): never a privileged continuation on another provider through this hook.
-    // T5.6 owns the policy constant and its check in continue_task; this keeps the hook from being a way around it.
-    if (req.trustProfile === "privileged" && req.provider !== h.fromProvider) {
+    // Q-61 (ADR-0038 item 8): the same one constant `continue_task` reads (src/continuity/policy.ts, fail-closed
+    // `refuse` while Q-61 is open), so this hook can never be a way around the check in continue_task.
+    if (refusesPrivilegedCrossProvider(req.trustProfile, h.fromProvider, req.provider)) {
       bad("PRIVILEGED_CROSS_PROVIDER: a privileged meta-session cannot continue on another provider (Q-61)");
     }
     if ([...req.objective].length > MAX_INSTRUCTION_CHARS) bad("the instruction is too long for a handoff");
     // The prompt is rendered again at dispatch from the stored bytes (same input, same output); rendering it here
     // refuses an unusable bundle before anything is written.
     renderHandoffPrompt({ bundle: parseHandoffBundle(h.built.bytes), instruction: req.objective });
+  }
+
+  /** T5.6: the bundle's `as_of` still names exactly the session's runs, base and head (inside the admission transaction). */
+  private handoffIsCurrent(metaSessionId: string, runs: readonly RunRecord[], built: BuiltBundle): boolean {
+    const asOf = built.bundle.as_of;
+    const meta = this.ledger.getMetaSessionContinuity(metaSessionId);
+    const listed = new Set(asOf.runs.map((r) => r.run_id));
+    return (
+      meta !== undefined &&
+      meta.base_commit === asOf.base_commit &&
+      meta.head_commit === asOf.head_commit &&
+      listed.size === runs.length &&
+      runs.every((r) => listed.has(r.id))
+    );
   }
 
   /** FRD V3/V4 and C3: canonical path under an allowed root; write-capable profiles need a Git repository. */

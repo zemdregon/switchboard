@@ -41,9 +41,16 @@
  *   (BR-4 tie-break until M7 scoring).
  * - Runs, meta-sessions and artifacts are visible only to the client that created them; another client's id is
  *   reported as unknown (INVALID_REQUEST), so ids are not an existence oracle across clients.
- * - `continue_task` (M2, same provider) resumes the latest native session of the meta-session's bound provider. A
- *   different provider in `routing` (handoff, M5) and a session with no recorded native session fail INVALID_REQUEST;
- *   an ineligible bound provider fails with its BR-3 code (no handoff fallback in M2).
+ * - `continue_task` (T5.6; FRD BR-18, WF-2, WF-3; LLD §15.7; ADR-0038) chooses between a native resume and a handoff.
+ *   With no other provider named, the session provider `P0` (latest binding, else latest run) resumes its native
+ *   session when it is eligible and its origin directory is usable (T5.7); it is a handoff preferring `P0` when there
+ *   is no binding (`no_binding`) or the directory is unusable (`resume_directory_unavailable`). Another provider named
+ *   is a handoff routed normally with that preference (`provider_named`); an ineligible `P0` without `require_provider`
+ *   is a handoff over the project's other allowed providers (`bound_provider_ineligible`); `require_provider` naming an
+ *   ineligible provider fails with its BR-3 code. A named provider the project does not allow is PERMISSION_BLOCKED
+ *   before anything is probed. A `privileged` continuation to another provider is refused (Q-61, one constant in
+ *   `src/continuity/policy.ts`). A handoff builds the bundle before admission; a failure there is TOOL_FAILURE
+ *   `HANDOFF_BUNDLE_UNAVAILABLE` with no row written.
  * - Unknown tool names return an INVALID_REQUEST tool error (FR-MCP-07) rather than a JSON-RPC protocol error.
  * - Projects (T9.2; FR-PRJ-03, FR-PRJ-06; FRD V12, BR-23; ADR-0024). `delegate_task` takes exactly one of `workspace_path`
  *   and `project` (the schema's `oneOf`, INVALID_REQUEST). With a project: an unknown id is INVALID_REQUEST; an id the
@@ -83,10 +90,19 @@ import {
   type ResolvedConfig,
   type ResolvedProject,
 } from "../config/index.js";
+import {
+  type BundleBounds,
+  buildAndPutHandoffView,
+  DEFAULT_BUNDLE_BOUNDS,
+  PRIVILEGED_CROSS_PROVIDER_REASON,
+  refusesPrivilegedCrossProvider,
+  takeAsOf,
+} from "../continuity/index.js";
 import type { Ledger, RunRecord, TrustProfile } from "../ledger/index.js";
 import {
   type EligibilityAnswer,
-  RESUME_DIRECTORY_UNAVAILABLE,
+  type HandoffReason,
+  type HandoffSubmission,
   type RunLifecycle,
   type RunPriority,
   requestHash,
@@ -142,6 +158,8 @@ export interface McpServerDeps {
     readonly dataDir?: string;
     /** T9.9: providers the operator disabled are outside every client's provider set. */
     readonly providers?: ResolvedConfig["providers"];
+    /** T5.6: handoff bundle bounds (`continuity.*`, LLD §15.4). Absent means the LLD defaults. */
+    readonly continuity?: BundleBounds;
   };
   /** T9.9 (FR-PRJ-10): dynamic projects. Required when the client has `manage_projects`; absent means none resolve. */
   readonly projectStore?: DynamicProjectStore;
@@ -430,11 +448,14 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     provider: ProviderId,
     basis: string,
     project?: { id: string; excluded: readonly ProviderId[]; revision?: number },
+    /** T5.6 (LLD §15.7 step 7): how a continuation runs, with its BR-18 reason code; controller values only. */
+    continuation?: { mode: "resume" | "handoff"; reason: string; from_provider: string; problem?: string },
   ) => {
     const json = toRouteDecisionJson(answer.input, answer.decision);
     const reasons = {
       ...(JSON.parse(json.reasons_json) as object),
       selection: { provider, basis },
+      ...(continuation !== undefined ? { continuation } : {}),
       ...(project !== undefined
         ? {
             project: {
@@ -602,61 +623,138 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
 
     const routing = a.routing as Routing | undefined;
     checkRouting(routing); // C5 (as V8)
-    const binding = ledger.latestProviderBinding(sessionId);
-    const bound = (binding?.provider ?? ctx.provider) as ProviderId;
-    if (routing?.provider_preference !== undefined && routing.provider_preference !== bound) {
-      throw invalid(`cross-provider continuation (${bound} to ${routing.provider_preference}) is not available yet`, {
-        bound_provider: bound,
-      });
-    }
-    if (!binding) throw invalid(`meta-session ${sessionId} has no native session to resume`);
-
     const approvedScope = approval ? parsePrivilegedScope(approval.scope) : undefined;
     if (approvedScope && !approvedScope.ok) throw invalid(`meta-session ${sessionId} approval holds an invalid scope`);
-    projectCandidates(resolved, bound); // the bound provider must still be allowed in the project
-    const answer = await lifecycle.checkEligibility({
-      candidates: [bound],
-      requiredProvider: bound,
-      trustProfile: profile,
-      clientMaxProfile: resolved?.effectiveMax ?? maxTrustProfile,
-      cwd: workspace,
-      ...(approvedScope?.ok ? { profile: eligibilityProfile(approvedScope.scope) } : {}),
-    });
-    if (!admissible(answer, approval !== undefined).includes(bound)) throw eligibilityError(answer); // BR-18 → BR-2/BR-3
+    const privileged = approval !== undefined;
+    const ask = (candidates: readonly ProviderId[], requiredProvider?: ProviderId) =>
+      lifecycle.checkEligibility({
+        candidates,
+        ...(requiredProvider !== undefined ? { requiredProvider } : {}),
+        trustProfile: profile,
+        clientMaxProfile: resolved?.effectiveMax ?? maxTrustProfile,
+        cwd: workspace,
+        ...(approvedScope?.ok ? { profile: eligibilityProfile(approvedScope.scope) } : {}),
+      });
 
-    // T5.7 (ADR-0038 item 6.4, LLD §15.6 step 3): a resume that cannot run in its origin's directory is never run in
-    // another one. Until T5.6 makes this a handoff preferring the bound provider, it is refused here, before any run,
-    // decision or event is written: TOOL_FAILURE (not retryable; the request is valid, the fault is the controller's
-    // state, as ADR-0038 item 7 reasons), `details.reason = "resume_directory_unavailable"`.
-    const dir = await lifecycle.resumeDirectoryPlan({
-      metaSessionId: sessionId,
-      provider: bound,
-      nativeSessionId: binding.native_session_id,
-      trustProfile: profile,
-      workspace,
-      resumeCwd: deps.registry.get(bound)?.resumeCwd,
-    });
-    if (dir.kind === "unavailable") {
-      throw new ToolError(
-        "TOOL_FAILURE",
-        `meta-session ${sessionId}: the native session cannot be resumed in its own working directory (${dir.problem}); a handoff is not available yet`,
-        { reason: RESUME_DIRECTORY_UNAVAILABLE, problem: dir.problem },
+    // ---- BR-18 (LLD §15.7 steps 1 and 2): resume or handoff, and on which provider. Nothing is written here. ----
+    const binding = ledger.latestProviderBinding(sessionId);
+    const p0 = (binding?.provider ?? ctx.provider) as ProviderId; // step 1: the session provider
+    const named = routing?.provider_preference as ProviderId | undefined;
+    const required = routing?.require_provider === true ? named : undefined;
+    let target: ProviderId;
+    let answer: EligibilityAnswer;
+    let basis: string;
+    let excluded: readonly ProviderId[] = [];
+    let handoffReason: HandoffReason | undefined; // undefined: native resume
+    let problem: string | undefined;
+    if (named !== undefined && named !== p0) {
+      // Another provider named: a handoff routed normally with that preference (BR-4). The named provider is the target,
+      // so one the project does not allow is PERMISSION_BLOCKED before anything is probed (step 4, BR-23).
+      const narrowed = projectCandidates(resolved, named);
+      answer = await ask(narrowed.candidates, required);
+      if (required !== undefined && !admissible(answer, privileged).includes(required)) throw eligibilityError(answer);
+      ({ provider: target, basis } = selectProvider(answer, named, privileged));
+      excluded = narrowed.excluded;
+      handoffReason = "provider_named";
+    } else {
+      // No other provider named: P0 if eligible. `require_provider` naming P0 outside the project is PERMISSION_BLOCKED
+      // (as in delegate_task); without it, P0 outside the project is ineligible like any other reason (BR-23).
+      if (required !== undefined) projectCandidates(resolved, p0);
+      const allowedSet = resolved?.project.allowedProviders;
+      const p0Allowed =
+        allowedSet === undefined || allowedSet.some((id) => adapterIdForConfigId(id) === p0);
+      const answerP0 = p0Allowed ? await ask([p0], p0) : undefined;
+      if (answerP0 !== undefined && admissible(answerP0, privileged).includes(p0)) {
+        target = p0;
+        answer = answerP0;
+        basis = "continuation";
+        if (binding === undefined) {
+          handoffReason = "no_binding"; // a run that never reported a native session: nothing to resume
+        } else {
+          // T5.7 (LLD §15.6 step 3): a resume never runs outside its origin's directory; if that is unusable, the
+          // continuation becomes a handoff on the same provider (ADR-0038 item 6.4), decided before any write.
+          const dir = await lifecycle.resumeDirectoryPlan({
+            metaSessionId: sessionId,
+            provider: p0,
+            nativeSessionId: binding.native_session_id,
+            trustProfile: profile,
+            workspace,
+            resumeCwd: deps.registry.get(p0)?.resumeCwd,
+          });
+          if (dir.kind === "unavailable") {
+            handoffReason = "resume_directory_unavailable";
+            problem = dir.problem;
+          }
+        }
+        if (privileged) basis += "; privileged compile deferred to dispatch";
+      } else {
+        if (required !== undefined) throw eligibilityError(answerP0 as EligibilityAnswer); // BR-2 / BR-3
+        // P0 ineligible and not required: route over the project's other allowed providers (BR-18, FR-PRJ-06).
+        const narrowed = projectCandidates(resolved, undefined);
+        const others = narrowed.candidates.filter((p) => p !== p0);
+        if (others.length === 0) {
+          throw answerP0 !== undefined
+            ? eligibilityError(answerP0)
+            : new ToolError("ELIGIBILITY_NONE", `no provider other than ${p0} is allowed for this meta-session`, {
+                bound_provider: p0,
+              });
+        }
+        answer = await ask(others);
+        ({ provider: target, basis } = selectProvider(answer, undefined, privileged));
+        excluded = narrowed.excluded;
+        handoffReason = "bound_provider_ineligible";
+      }
+    }
+
+    // Step 3, Q-61 (ADR-0038 item 8): the ONE check of the policy constant. Fail closed while Q-61 is open: a
+    // `privileged` continuation never runs on a provider other than P0. Same-provider continuations keep C7 as is.
+    if (refusesPrivilegedCrossProvider(profile, p0, target)) {
+      throw invalid(
+        `a privileged meta-session cannot continue on another provider (${p0} to ${target}) while ROADMAP Q-61 is open; ` +
+          "continue on the same provider or start a new privileged meta-session with delegate_task",
+        { reason: PRIVILEGED_CROSS_PROVIDER_REASON, from_provider: p0, to_provider: target },
       );
     }
 
+    // Step 5 (handoff only): the bundle at `as_of`, put in the artifact store; no ledger row yet. Any failure is
+    // HandoffBundleError (TOOL_FAILURE, HANDOFF_BUNDLE_UNAVAILABLE) and nothing is written (a stored file is a GC orphan).
+    let handoff: HandoffSubmission | undefined;
+    if (handoffReason !== undefined) {
+      const store = deps.artifacts;
+      const { built, stored } = await buildAndPutHandoffView(
+        { ledger, artifacts: store, redact: (x: Buffer) => store.redactContent(x), store },
+        { asOf: takeAsOf(ledger, sessionId), bounds: deps.config.continuity ?? DEFAULT_BUNDLE_BOUNDS },
+      );
+      handoff = { built, stored, fromProvider: p0, reason: handoffReason };
+    }
+
+    // Step 6: one admission transaction (run, view row, route_selected and handoff_built decisions, first event). A
+    // handoff gets a fresh native session from the head checkpoint; the lifecycle re-checks that `as_of` is current.
+    const mode = handoff ? "handoff" : "resume";
+    const reasonCode = handoffReason ?? "same_provider_resume";
     const submitted = await lifecycle.submit({
       clientId: deps.clientId,
       objective: a.instruction as string,
       metaSessionId: sessionId,
       trustProfile: profile,
-      provider: bound,
+      provider: target,
       constraints: [...ctx.constraints],
       priority: ctx.priority,
-      resume: { nativeSessionId: binding.native_session_id },
+      ...(handoff
+        ? { handoff }
+        : { resume: { nativeSessionId: (binding as { native_session_id: string }).native_session_id } }),
       routeDecision: routeRecord(
         answer,
-        bound,
-        approval ? "continuation; privileged compile deferred to dispatch" : "continuation",
+        target,
+        `${mode} ${reasonCode} from ${p0}; ${basis}`,
+        resolved
+          ? {
+              id: resolved.snapshot.id,
+              excluded,
+              ...(resolved.revision !== undefined ? { revision: resolved.revision } : {}),
+            }
+          : undefined,
+        { mode, reason: reasonCode, from_provider: p0, ...(problem !== undefined ? { problem } : {}) },
       ),
       ...(approval ? { privileged: { approvalId: approval.id } } : {}),
       ...(resolved ? { project: resolved.snapshot } : {}),

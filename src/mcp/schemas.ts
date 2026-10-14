@@ -480,9 +480,13 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
     "workspace_path and project (see list_projects); a project fixes the repository and caps trust_profile and " +
     "providers at the project's limits.",
   continue_task:
-    "Continue an idle meta-session on the same provider by resuming its native session. Asynchronous like " +
-    "delegate_task. Cross-provider handoff is not available yet. A privileged continuation runs under the " +
-    "meta-session's operator-approved scope as is and is refused unless that approval exists for this client.",
+    "Continue an idle meta-session with a new instruction. Asynchronous like delegate_task. With no other provider " +
+    "named, the session's provider resumes its native session when it is eligible; otherwise (another provider named, " +
+    "the bound provider ineligible, no native session, or its working directory unusable) the run is a handoff: a " +
+    "fresh session that gets a bundle built from Switchboard's own records and starts from the session's latest " +
+    "checkpoint. require_provider fails if the named provider is ineligible. A privileged continuation runs under the " +
+    "meta-session's operator-approved scope as is, is refused unless that approval exists for this client, and is " +
+    "refused on a provider other than the session's own.",
   get_run:
     "Current envelope of a run: status, failure code, provider, route reasons, summary, changed-file count and " +
     "artifact ids. Optionally returns compact events after a sequence number.",

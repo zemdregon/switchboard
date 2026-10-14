@@ -4,4 +4,5 @@ export * from "./bundle-sources.js";
 export * from "./decisions.js";
 export * from "./handoff-view.js";
 export * from "./open-work.js";
+export * from "./policy.js";
 export * from "./render.js";
