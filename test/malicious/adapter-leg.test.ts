@@ -74,8 +74,9 @@ describe.each(cases.map((c) => [c.provider, c] as const))("adapter malicious leg
   );
 
   // A declared replay gap is pinned, not hidden: no hostile stream ends in its blocked code yet, and a stream that
-  // declares `gapResult` ends exactly there both without a process and through the supervisor replay. When one ends
-  // blocked, this fails; remove `replayGap` from the case file so the replay checks above run.
+  // declares `gapResult` ends exactly there both without a process and through the supervisor replay (a full
+  // `RunResult` pins the exact `extractResult` value too). When one ends blocked, this fails; remove `replayGap` from
+  // the case file so the replay checks above run.
   it.runIf(c.replayGap !== undefined)(`known replay gap still open: ${c.replayGap}`, async () => {
     for (const s of c.streams(fx).filter((x) => x.category !== "unknown_events")) {
       expect(await gapProblems(c, fx, s), s.name).toEqual([]);
@@ -129,6 +130,16 @@ describe.each(cases.map((c) => [c.provider, c] as const))("adapter malicious leg
       const now = gapOutcome(c, fx, s);
       const wrong = { ...s, gapResult: now.ok ? { ok: false, failureCode: "PROCESS_TIMEOUT" as const } : { ok: true } };
       expect((await gapProblems(c, fx, wrong)).join()).toContain("want");
+    },
+  );
+
+  it.runIf(c.replayGap !== undefined)(
+    "positive control: an exact gapResult with a wrong summary is reported by the gap pin",
+    async ({ skip }) => {
+      const s = c.streams(fx).find((x) => x.gapResult !== undefined && "unknownEventCount" in x.gapResult);
+      if (!s?.gapResult) return skip("the case pins no exact gapResult");
+      const wrong = { ...s, gapResult: { ...s.gapResult, unknownEventCount: 0, summary: "not what it ends with" } };
+      expect((await gapProblems(c, fx, wrong)).join()).toContain("not what it ends with");
     },
   );
 

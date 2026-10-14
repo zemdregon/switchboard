@@ -14,13 +14,14 @@
  * ordinary failed tool reports, and the keys that would tell a refusal apart were not recorded, so the parser (T4.53)
  * maps no refusal, and the tool-call guard enforces only Git writes in an approved bypass run (ADR-0039, owner decision
  * 25). No hostile stream can end blocked until a refusal shape is captured (T4.51 extension) or a classification of
- * `status: error` is decided. The shell streams below are hypothetical: the default ran every shell command (rows 6a,
- * 7).
+ * `status: error` is decided. Each gap stream pins the exact `extractResult` value it ends with today (`gapResult`). The
+ * shell streams below are hypothetical: the default ran every shell command (rows 6a, 7).
  */
 
 import { privilegedProfile } from "../../../src/adapters/fixtures/privileged.js";
 import { replayLauncher } from "../../../src/adapters/fixtures/replay.js";
 import { OpenCodeAdapter } from "../../../src/adapters/opencode/adapter.js";
+import type { RunResult } from "../../../src/adapters/types.js";
 import type { PrivilegedScope } from "../../../src/policy/types.js";
 import type { AdapterLegCase } from "../adapter-leg.js";
 
@@ -49,8 +50,23 @@ const STEP_START = event("step_start", { type: "step-start" });
 const refused = (tool: string, input: Record<string, string>) =>
   event("tool_use", { type: "tool", tool, state: { status: "error", input } });
 /** Row 11: the model then reported the call "rejected by the permission system" and the run exited 0. */
-const REPORT = event("text", { type: "text", text: "The tool call was rejected by the permission system." });
+const REPORT_TEXT = "The tool call was rejected by the permission system.";
+const REPORT = event("text", { type: "text", text: REPORT_TEXT });
 const STOP = event("step_finish", { type: "step-finish", reason: "stop", cost: 0, tokens: { input: 1, output: 1 } });
+
+/**
+ * The exact `extractResult` value each gap stream ends with today (`gapResult`): a refusal, reported and followed by a
+ * `step_finish` `stop`, ends `ok` with the model's report as the summary; with exit 1 and no `step_finish`, it ends
+ * `TOOL_FAILURE` on the exit code alone. Neither is the stream's blocked `failureCode`.
+ */
+const GAP_OK: RunResult = { ok: true, unknownEventCount: 0, nativeSessionId: SID, summary: REPORT_TEXT };
+const GAP_EXIT_1: RunResult = {
+  ok: false,
+  failureCode: "TOOL_FAILURE",
+  failureDetail: "exit code 1",
+  unknownEventCount: 0,
+  nativeSessionId: SID,
+};
 
 /** The scope OpenCode compiles (T4.52, Q-83). */
 const BYPASS_SCOPE: PrivilegedScope = {
@@ -103,6 +119,7 @@ const opencodeCase: AdapterLegCase = {
       category: "credential_read",
       exitCode: 0,
       failureCode: "PERMISSION_BLOCKED",
+      gapResult: GAP_OK,
       lines: [
         META("read of a credential path", 0),
         STEP_START,
@@ -116,6 +133,7 @@ const opencodeCase: AdapterLegCase = {
       category: "credential_read",
       exitCode: 0,
       failureCode: "PERMISSION_BLOCKED",
+      gapResult: GAP_OK,
       lines: [
         META("shell read of a credential path", 0),
         STEP_START,
@@ -129,6 +147,7 @@ const opencodeCase: AdapterLegCase = {
       category: "credential_read",
       exitCode: 1,
       failureCode: "PERMISSION_BLOCKED",
+      gapResult: GAP_EXIT_1,
       lines: [
         META("shell read of a credential path, exit 1", 1),
         STEP_START,
@@ -140,6 +159,7 @@ const opencodeCase: AdapterLegCase = {
       category: "out_of_worktree_write",
       exitCode: 0,
       failureCode: "PERMISSION_BLOCKED",
+      gapResult: GAP_OK,
       lines: [
         META("write outside the worktree", 0),
         STEP_START,
@@ -153,6 +173,7 @@ const opencodeCase: AdapterLegCase = {
       category: "out_of_worktree_write",
       exitCode: 0,
       failureCode: "PERMISSION_BLOCKED",
+      gapResult: GAP_OK,
       lines: [
         META("shell write outside the worktree", 0),
         STEP_START,
@@ -166,6 +187,7 @@ const opencodeCase: AdapterLegCase = {
       category: "network",
       exitCode: 0,
       failureCode: "PERMISSION_BLOCKED",
+      gapResult: GAP_OK,
       lines: [
         META("shell network call", 0),
         STEP_START,
