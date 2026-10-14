@@ -89,7 +89,7 @@ describe("listener (T13.1 skeleton)", () => {
       expect(asDoc).toEqual(authorizationServerMetadata(s));
       expect([asDoc.issuer]).toEqual(protectedResourceMetadata(s).authorization_servers);
 
-      const token = "sb-test-token-value-0123456789";
+      const token = "sb-test-token-value-0123456789"; // malformed: refused as an invalid token (T13.3)
       const mcp = await fetch(`${base}/mcp`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
@@ -97,7 +97,7 @@ describe("listener (T13.1 skeleton)", () => {
       });
       expect(mcp.status).toBe(401);
       expect(mcp.headers.get("www-authenticate")).toBe(
-        'Bearer resource_metadata="https://sb.example.test/.well-known/oauth-protected-resource/mcp"',
+        'Bearer error="invalid_token", resource_metadata="https://sb.example.test/.well-known/oauth-protected-resource/mcp"',
       );
       const body = await mcp.text();
       expect(body).not.toContain(token);
