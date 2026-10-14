@@ -80,3 +80,49 @@ export const NON_PRIVILEGED_UNSUPPORTED_DETAIL =
   "exited 1 on the operator's host and its confinement was never observed; a headless run needs --trust to start, " +
   "after which the repository's AGENTS.md and rules load; and the operator's global rules and MCP servers load in " +
   "every run (Q-65, TDD §4.5.4, FR-POL-02, FR-POL-06)";
+
+/**
+ * `stream-json` event types and fields observed in the 2026-10-14 live check ([LIVE] 5b, 7a, 7b, 11; [C2]). Only these
+ * fields are read. `thinking` lines carry the model's reasoning and are dropped (NFR-PRIV-02; [LIVE] contradicts [C2],
+ * they are emitted on every run); `user` echoes the prompt and is dropped.
+ */
+export const EVENT = {
+  system: "system",
+  user: "user",
+  thinking: "thinking",
+  assistant: "assistant",
+  toolCall: "tool_call",
+  result: "result",
+} as const;
+
+/** `system` subtype carrying the session id, the model display name and the credential source ([LIVE] 5b). */
+export const SUBTYPE_INIT = "init";
+/** `tool_call` subtypes ([C2]; [LIVE] 7a: `started` then `completed` per call). */
+export const SUBTYPE_STARTED = "started";
+export const SUBTYPE_COMPLETED = "completed";
+/** `result.subtype` of a finished run ([LIVE] 5a, 5b). Not proof of success alone: a refused shell call keeps it (7a). */
+export const SUBTYPE_SUCCESS = "success";
+
+/** `init.apiKeySource` of the native login ([C2] `env|flag|login`; [LIVE] 5b: `login` on every run). */
+export const API_KEY_SOURCE_LOGIN = "login";
+
+/**
+ * Keys of the `tool_call` object ([LIVE] 7a, 7b, 10c, 11) and the tool kind each maps to. Any other key is an `other`
+ * tool named by its key (Assumption: [C2] names `writeToolCall` and a generic `function` shape, not observed).
+ */
+export const TOOL_KEYS: Readonly<Record<string, "read" | "edit" | "shell">> = {
+  readToolCall: "read",
+  editToolCall: "edit",
+  writeToolCall: "edit",
+  shellToolCall: "shell",
+};
+
+/**
+ * Refusal shapes of a completed tool call ([LIVE] 7a: `result.rejected` in the default mode; 11: `result.permissionDenied`
+ * under a config deny). Neither changes the exit code or the final `result`, so they are the only evidence of a denial.
+ */
+export const TOOL_RESULT_REJECTED = "rejected";
+export const TOOL_RESULT_PERMISSION_DENIED = "permissionDenied";
+
+/** `result.usage` keys ([LIVE] 5a: `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`). */
+export const USAGE_KEYS: readonly string[] = ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens"];

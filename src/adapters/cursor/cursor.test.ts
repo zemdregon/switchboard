@@ -9,7 +9,17 @@ import { auditInvocation, bypassClassFlags, bypassClassShortFlags, bypassClassVa
 import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
 import { providerEntry } from "../providers.js";
 import { AdapterRegistry } from "../registry.js";
-import type { CompileRequest, Invocation, ProbeOutput, ProbeRunner, ResolvedProfile, TrustProfile } from "../types.js";
+import type {
+  CompileRequest,
+  ExitInfo,
+  Invocation,
+  NormalizedEvent,
+  ParseState,
+  ProbeOutput,
+  ProbeRunner,
+  ResolvedProfile,
+  TrustProfile,
+} from "../types.js";
 import { CursorAdapter } from "./adapter.js";
 
 const EXE = "/opt/synthetic/cursor-agent";
@@ -187,7 +197,7 @@ describe("cursor bypass-class declarations (ADR-0035, ADR-0037)", () => {
   });
 });
 
-describe("cursor probe, auth, parser and resume placeholders (fail closed until T4.43, T4.44)", () => {
+describe("cursor probe and auth placeholder (fail closed until T4.44)", () => {
   const runner =
     (table: Record<string, { stdout: string; exitCode: number }>): ProbeRunner =>
     async (argv) => {
@@ -231,21 +241,8 @@ describe("cursor probe, auth, parser and resume placeholders (fail closed until 
     expect(missing.steps).toEqual([{ step: "binary", ok: false, detail: "cursor-agent not found on PATH" }]);
   });
 
-  it("auth is UNKNOWN, resume is Ineligible, no event is recognised and a clean exit never succeeds", async () => {
-    const a = adapter();
-    expect(await a.authPreflight(runner({}))).toMatchObject({ state: "UNKNOWN" });
-    expect(
-      a.resumeArgs({ provider: "codex", nativeSessionId: "s" }, request(), profileOf("edit-untrusted")),
-    ).toMatchObject({ reason: "CAPABILITY_MISSING", detail: "binding is for codex" });
-    expect(
-      a.resumeArgs({ provider: "cursor", nativeSessionId: "s" }, request(), profileOf("edit-untrusted")),
-    ).toMatchObject({ ineligible: true });
-    const state = { lines: 0, unknownEvents: 0 } as Parameters<CursorAdapter["parseEvent"]>[1];
-    expect(a.parseEvent('{"type":"result","subtype":"success","is_error":false}', state)).toEqual([
-      { kind: "unknown", rawType: "unparsed" },
-    ]);
-    const r = a.extractResult([], { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] });
-    expect(r).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+  it("auth is UNKNOWN until T4.44", async () => {
+    expect(await adapter().authPreflight(runner({}))).toMatchObject({ state: "UNKNOWN" });
   });
 
   it("reads no Cursor credential or configuration file (source inspection)", () => {
@@ -269,5 +266,206 @@ describe("cursor registry entry and manifest gate (T4.42)", () => {
     for (const v of ["2026.10.12-d47ca18", "2026.10.12", "1.0.0", "0.0.0", null]) {
       expect(registry.gate("cursor", v).eligible, String(v)).toBe(false);
     }
+  });
+});
+
+/**
+ * T4.43: parser, result, failure classification and resume. SYNTHETIC lines in the shapes the 2026-10-14 live check
+ * recorded (rows 5a, 5b, 7a, 7b, 11); ids, text and numbers are invented.
+ */
+describe("cursor parser and result (T4.43)", () => {
+  const SID = "4f1c2a9e-0000-4000-8000-000000000001";
+  const line = (o: Record<string, unknown>) => JSON.stringify(o);
+  const INIT = line({
+    type: "system",
+    subtype: "init",
+    apiKeySource: "login",
+    cwd: "/work/tree",
+    session_id: SID,
+    model: "Synthetic Model 1",
+    permissionMode: "default",
+  });
+  const USER = line({ type: "user", message: { content: [{ type: "text", text: "the prompt" }] }, session_id: SID });
+  const THINK = line({
+    type: "thinking",
+    subtype: "delta",
+    text: "private reasoning",
+    session_id: SID,
+    timestamp_ms: 1,
+  });
+  const ASSIST = (text: string) =>
+    line({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text }] }, session_id: SID });
+  const tool = (subtype: string, key: string, body: Record<string, unknown>) =>
+    line({ type: "tool_call", subtype, call_id: "c1", tool_call: { [key]: body }, session_id: SID });
+  const RESULT = (over: Record<string, unknown> = {}) =>
+    line({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      duration_ms: 10,
+      duration_api_ms: 10,
+      result: "ok",
+      session_id: SID,
+      request_id: "req-1",
+      usage: { inputTokens: 11, outputTokens: 2, cacheReadTokens: 5, cacheWriteTokens: 0 },
+      ...over,
+    });
+  const EXIT0: ExitInfo = { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] };
+  const parse = (lines: string[]) => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const events: NormalizedEvent[] = lines.flatMap((l) => a.parseEvent(l, state));
+    return { a, state, events };
+  };
+
+  it("success: session id and model from init, reasoning and the prompt echo dropped, usage provider_reported", () => {
+    const { a, state, events } = parse([INIT, USER, THINK, ASSIST("ok"), RESULT()]);
+    expect(events).toEqual([
+      { kind: "session_bound", nativeSessionId: SID, model: "Synthetic Model 1" },
+      { kind: "message", role: "assistant", text: "ok" },
+      {
+        kind: "usage",
+        source: "provider_reported",
+        metrics: { inputTokens: 11, outputTokens: 2, cacheReadTokens: 5, cacheWriteTokens: 0 },
+      },
+      { kind: "result", ok: true },
+    ]);
+    // No backing vendor is reported, so none is invented from the display name (TDD §4.5, T4.6).
+    expect(events.find((e) => e.kind === "session_bound")).not.toHaveProperty("backingProvider");
+    expect(JSON.stringify(events)).not.toContain("private reasoning");
+    expect(state).toMatchObject({ nativeSessionId: SID, unknownEvents: 0, lines: 5 });
+    expect(a.extractResult(events, EXIT0)).toEqual({
+      ok: true,
+      nativeSessionId: SID,
+      summary: "ok",
+      unknownEventCount: 0,
+    });
+  });
+
+  it("a refused shell call is PERMISSION_BLOCKED although result says success and the exit is 0 (Q-65)", () => {
+    for (const refusal of [
+      { rejected: { command: "git push", workingDirectory: "/w", reason: "", isReadonly: false } },
+      { permissionDenied: { workingDirectory: "/w", error: "Command blocked by permissions configuration" } },
+    ]) {
+      const { a, events } = parse([
+        INIT,
+        tool("started", "shellToolCall", { args: { command: "echo shellok", workingDirectory: "/w" } }),
+        tool("completed", "shellToolCall", { args: { command: "echo shellok" }, result: refusal }),
+        ASSIST("blocked by the system"),
+        RESULT(),
+      ]);
+      expect(events).toContainEqual({
+        kind: "tool_call",
+        tool: "shell",
+        name: "shellToolCall",
+        command: "echo shellok",
+      });
+      expect(events).toContainEqual({ kind: "permission_denied", tool: "shellToolCall" });
+      expect(a.extractResult(events, EXIT0)).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    }
+  });
+
+  it("read and edit calls carry their path for the guard; a completed call that succeeded adds nothing", () => {
+    const { a, events } = parse([
+      INIT,
+      tool("started", "readToolCall", { args: { path: "a.txt" } }),
+      tool("completed", "readToolCall", { args: { path: "a.txt" }, result: { success: { content: "hello" } } }),
+      tool("started", "editToolCall", { args: { path: "a.txt" } }),
+      tool("completed", "editToolCall", { result: { success: {} } }),
+      tool("started", "getMcpToolsToolCall", { args: {} }),
+      ASSIST("done"),
+      RESULT(),
+    ]);
+    expect(events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "read", name: "readToolCall", target: "a.txt" },
+      { kind: "tool_call", tool: "edit", name: "editToolCall", target: "a.txt" },
+      { kind: "tool_call", tool: "other", name: "getMcpToolsToolCall" },
+    ]);
+    expect(a.extractResult(events, EXIT0)).toMatchObject({ ok: true });
+  });
+
+  it("task failure, a non-zero exit, a missing result and a credential source other than the login fail", () => {
+    const err = parse([INIT, RESULT({ subtype: "error", is_error: true })]);
+    expect(err.a.extractResult(err.events, EXIT0)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+    // A failed run prints no stream at all (live check rows 4, 14): exit 1 is TOOL_FAILURE, never success.
+    const none = parse([]);
+    expect(none.a.extractResult(none.events, { ...EXIT0, exitCode: 1 })).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+    });
+    const cut = parse([INIT, ASSIST("partial")]);
+    expect(cut.a.extractResult(cut.events, EXIT0)).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+    const envKey = parse([INIT.replace('"login"', '"env"'), ASSIST("ok"), RESULT()]);
+    expect(envKey.a.extractResult(envKey.events, EXIT0)).toMatchObject({ ok: false, failureCode: "AUTH_REQUIRED" });
+    const clean = parse([INIT, ASSIST("ok"), RESULT()]);
+    expect(clean.a.extractResult(clean.events, { ...EXIT0, exitCode: 1 })).toMatchObject({ ok: false });
+    expect(clean.a.extractResult(clean.events, { ...EXIT0, outcome: "timeout", timeoutKind: "idle" })).toMatchObject({
+      failureCode: "PROCESS_TIMEOUT",
+    });
+    expect(clean.a.extractResult(clean.events, { ...EXIT0, outcome: "cancelled" })).toMatchObject({
+      failureCode: "CANCELLED",
+    });
+  });
+
+  it("malformed and unknown lines are unknown events, counted, never a result; JSON framing errors emit nothing", () => {
+    const { a, state, events } = parse([
+      INIT,
+      line({ type: "system", subtype: "compact" }),
+      line({ type: "brand_new" }),
+      line({ no_type: true }),
+      line({ type: "tool_call", subtype: "started" }),
+      line({ type: "tool_call", subtype: "progress", tool_call: { shellToolCall: {} } }),
+      line({ type: "assistant", message: {} }),
+      line({ type: "result" }),
+      "not json",
+    ]);
+    expect(events.filter((e) => e.kind === "unknown")).toHaveLength(7);
+    expect(state.unknownEvents).toBe(7);
+    expect(events.some((e) => e.kind === "result")).toBe(false);
+    expect(a.extractResult(events, EXIT0)).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+    expect(a.parseEvent({ jsonrpc: "2.0", method: "x" }, state)).toEqual([]);
+  });
+
+  it("the session id comes only from structured fields: the first init wins, result binds only when init is absent", () => {
+    const other = "4f1c2a9e-0000-4000-8000-000000000002";
+    const { events, state } = parse([INIT, INIT.replace(SID, other), ASSIST(`session ${other}`), RESULT()]);
+    expect(events.filter((e) => e.kind === "session_bound")).toHaveLength(1);
+    expect(state.nativeSessionId).toBe(SID);
+    const late = parse([ASSIST("ok"), RESULT()]);
+    expect(late.events).toContainEqual({ kind: "session_bound", nativeSessionId: SID });
+  });
+
+  it("resume is --resume <id> through the same matrix; another provider's binding and a flag-like id are refused", () => {
+    const profile = { ...privilegedProfile(BYPASS_SCOPE), bypassApproved: true };
+    const r = adapter().resumeArgs(
+      { provider: "cursor", nativeSessionId: SID },
+      request({ bypassApproved: true }),
+      profile,
+    );
+    if ("ineligible" in r) throw new Error(r.detail);
+    expect(r.argv.slice(1)).toEqual([
+      "--print",
+      "--output-format",
+      "stream-json",
+      "--trust",
+      "--force",
+      "--resume",
+      SID,
+    ]);
+    expect(r.stdin).toEqual({ kind: "text", value: "--yolo fix the failing test" });
+    expect(
+      adapter().resumeArgs({ provider: "codex", nativeSessionId: SID }, request({ bypassApproved: true }), profile),
+    ).toMatchObject({ reason: "CAPABILITY_MISSING", detail: "binding is for codex" });
+    expect(
+      adapter().resumeArgs(
+        { provider: "cursor", nativeSessionId: "--force" },
+        request({ bypassApproved: true }),
+        profile,
+      ),
+    ).toMatchObject({ reason: "CAPABILITY_MISSING" });
+    // The matrix still applies: a resume under a non-privileged profile is Ineligible.
+    expect(
+      adapter().resumeArgs({ provider: "cursor", nativeSessionId: SID }, request(), profileOf("edit-untrusted")),
+    ).toMatchObject({ reason: "PROFILE_UNSUPPORTED" });
   });
 });
