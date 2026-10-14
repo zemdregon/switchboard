@@ -450,21 +450,35 @@ registry table, `BUILTIN_PROVIDERS` in `src/adapters/providers.ts`; `ProviderId`
 `PROVIDER_IDS` and the `providers` and `allowed_providers` schema parts in `src/config/schema.ts`,
 `CONFIG_TO_ADAPTER_ID` in `src/routing/collect.ts` and the `serve` and `doctor` registrations are derived from it.
 
-| Config provider id | Adapter `ProviderId` | In the table (T4.1) | Declared bypass-class flags (source) |
-| --- | --- | --- | --- |
-| `claude-code` | `claude` | Adapter | `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions` ([TDD §4.1.1](TDD.md#411-claude-code-native-controls-per-profile-and-platform-t30), `claude --help` 2.1.296) |
-| `codex` | `codex` | Adapter | `--yolo`, `--full-auto` ([R2] L28, L125, L126) |
-| `grok-build` | `grok` | Reserved (no adapter yet) | None yet (T4.20) |
-| `antigravity` | `antigravity` | Reserved | None yet (T4.30) |
-| `cursor` | `cursor` | Reserved | None yet (T4.40) |
-| `opencode` | `opencode` | Reserved | None yet (T4.50) |
-| `kimi-code` | `kimi` | Reserved | None yet (T4.60) |
-| `muse-code` | `muse` | Not yet: added with its adapter module (T4.72), as the `ProviderId` above anticipates | None yet (T4.70) |
-| none | `fake` | Test-only adapter (`serve` registers it only behind the test-only switch) | None |
+| Config provider id | Adapter `ProviderId` | In the table (T4.1) | Declared bypass-class flags (source) | Declared short flags and values (ADR-0037; source) |
+| --- | --- | --- | --- | --- |
+| `claude-code` | `claude` | Adapter | `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions` ([TDD §4.1.1](TDD.md#411-claude-code-native-controls-per-profile-and-platform-t30), `claude --help` 2.1.296) | Value `--permission-mode bypassPermissions` (same source); active |
+| `codex` | `codex` | Adapter | `--yolo`, `--full-auto` ([R2] L28, L125, L126) | None |
+| `grok-build` | `grok` | Reserved (no adapter yet) | None (its long bypass flags are shared `BYPASS_FLAGS`) | Values `--permission-mode bypassPermissions`; `--allow` and `--allowed-tools` with `*` or `**` (catch-all, Proposed) ([TDD §4.3.1](TDD.md#431-grok-build-native-controls-per-profile-and-platform-t420)); inert until T4.22 |
+| `antigravity` | `antigravity` | Reserved | None (`--dangerously-skip-permissions` is shared) | None ([TDD §4.4.2](TDD.md#442-antigravity-native-controls-per-profile-and-platform-t430): `always-proceed` is a settings value) |
+| `cursor` | `cursor` | Reserved | None (`--force`, `--yolo`, `--approve-mcps` are shared) | Short `-f`; value `--sandbox disabled` ([TDD §4.5](TDD.md#45-cursor-cli-m4), Proposed); inert until T4.42 |
+| `opencode` | `opencode` | Reserved | None yet (`--auto` with T4.52) | None (the inline `allow` permission is carried in the environment, [TDD §4.6.2](TDD.md#462-inventory-and-decisions-for-later-tasks-t450)) |
+| `kimi-code` | `kimi` | Reserved | None yet (`--auto`, `--plan` with T4.62) | None |
+| `muse-code` | `muse` | Not yet: added with its adapter module (T4.72), as the `ProviderId` above anticipates | None yet (T4.70) | Values `--approval-mode never`, `--sandbox-network unrestricted` ([TDD §4.8](TDD.md#48-muse-code-m4), Proposed), declared when the entry is added |
+| none | `fake` | Test-only adapter (`serve` registers it only behind the test-only switch) | None | None |
 
 A reserved entry is accepted in configuration and never registered. The argv audit refuses the shared `BYPASS_FLAGS`
 plus every flag the table declares, except in the approved bypass case (FR-POL-03, ADR-0017, ADR-0035); a declaration
 can only add to the shared list.
+
+*Audit contract (T4.1 audit gaps, 2026-10-13, Delegated, [ADR-0037](../adr/0037-argv-audit-short-flags-and-bypass-values.md)):*
+before every spawn `findBypassFlags` reads `argv`, then `policyFlags`, word by word, and reports each hit once:
+
+| Form | Matches | Reported as |
+| --- | --- | --- |
+| Flag (`BYPASS_FLAGS` and every entry's `bypassFlags`) | The word equals the flag or starts with `<flag>=` (unchanged since T3.17) | The flag |
+| Short flag (`bypassShortFlags` of entries with `create`, and any `-x` in the flag list) | A word of one dash and letters or digits, with an optional `=value`, whose letters include the short flag's letter (`-f`, `-f=1`, `-pf`): deliberate over-refusal | The short flag |
+| Value (`bypassValues` of entries with `create`) | The flag word directly followed by the value word, or `<flag>=<value>`, within one list; value compared case-insensitively | `<flag> <value>` |
+
+Any hit is refused (`BypassFlagError`) unless the run's context is `privileged` with `bypassApproved` and a scope that
+sets `bypass`. Registration refuses malformed declarations: short flags must be `-x`; values must be
+`{ flag, value }` with a flag of the `bypassFlags` shape and a value of 1 to 128 characters without whitespace or
+control characters. Settings carried in the child environment or in files are not seen (ADR-0037 "Limits").
 
 **Ineligible to failure code.** The adapter reasons map to the codes in §4 per
 [FRD BR-3](../requirements/FRD.md#3-business-rules): `AUTH_REQUIRED` gives `AUTH_REQUIRED`; `VERSION_UNVERIFIED` gives
@@ -491,6 +505,15 @@ Parsing rules: unparseable framing yields no event and the supervisor ends the r
 bundles `{events, exit, stderrTail (bounded), timedOut, cancelled}`. A central bypass-flag audit runs over
 `Invocation.policyFlags` and `argv` before spawn (FR-POL-03). Per-adapter parsing specifics: to be detailed in M2
 (Claude) and M4 (others).
+
+**Harness and backing provider (M4, T4.6, FR-ADP-10; Delegated).** An adapter whose harness fronts several vendors
+sets `backingProvider` (and `model`) on `session_bound`, from structured output only; it never derives a vendor from a
+display name (TDD §4.5), and omits the field when the harness does not report it. `usageObservationsFromEvents`
+(`src/usage/observations.ts`) copies the latest `session_bound` `model` and `backingProvider` onto every
+`usage_observation` row of the run, with `harness` the adapter id; no new column or table. Shown as follows:
+`get_run` `usage.reported[]` carries `harness`, `backing_provider` (null when not reported) and `model`; `runs show`
+adds a top-level `usage` array (same fields plus `observed_at` and `metrics`; absent when the run has no
+provider-reported row) and prints one `harness H  backing provider B  model M` line per row. Capacity keys stay with M6.
 
 **Transport kinds and the ACP plan (M4, Proposed, Delegated, T4.7,
 [ADR-0036](../adr/0036-per-run-acp-stdio-client.md)).** `subprocess-jsonl` (M1) and `acp-stdio` (M4, FR-EXE-03) are
@@ -541,6 +564,27 @@ bypass-class and reachable only in an approved bypass scope (open for zemdregon,
 approved bypass run on `acp-stdio` is `Ineligible: PROFILE_UNSUPPORTED`). The pre-spawn audit also refuses an `acp`
 plan whose `modeId` or `configOptions` match the registry's declared bypass values outside that case, or whose
 `mcpServers` is not empty without ADR-0036 item 7.3.
+*Note 2026-10-13 (owner decision 48; the sentence above stays as written):* open item 1 is answered, so in an approved
+bypass run `decidePermission` allows every request with `allow_once` (never `allow_always`), and an adapter may compile
+that run on `acp-stdio`.
+
+*As built (2026-10-13, Delegated, T4.8; not owner-approved).* `AcpPlan`, `AcpStdioServer` and `AcpDeclarations` are in
+`src/adapters/types.ts` (`Invocation.acp`); a registry entry declares `acp` (`src/adapters/providers.ts`; the fake entry
+declares a made-up mode and option for tests). `decidePermission(request, snapshot, decl?)` is in
+`src/policy/acp-permission.ts`; `request` is the `session/request_permission` params, and the snapshot gains
+`writable` (edits need a writable workspace). A privileged scope's `files`, `shell` (exact argv entries) and `network`
+(`on` or host list) are read in place of the profile's `scoped` fields; a profile shell allowlist entry is split on
+whitespace into an argv. The decision is `cancel_turn` with the denial reason when no `reject_once` option exists. It
+resolves symlinks in the longest existing prefix of each location (`realpathSync`), the one file-system read item 9.2
+needs. `auditAcpPlan` (`src/adapters/audit.ts`) refuses every non-empty `mcpServers`, because no per-provider ADR
+accepts an ACP channel yet (fail closed); declared bypass mode ids and option values are compared case-insensitively.
+The shared mapping is `mapAcpMessage` (`src/exec/acp/events.ts`): message chunks are joined per `messageId` up to 4,000
+characters (the Claude Code parser's bound) and flushed by any other update or the result; `tool_call` `target` is the
+first location; `usage_update` `cost` as an object becomes `cost_amount` and `cost_currency`; `current_mode_update` not
+caught by the client is `unknown`. The run events are written by the lifecycle through `run_event` (no migration):
+`acp_initialized` (`protocol_version`, boolean capability flags only, auth method `id` and `type`), `acp_permission`
+(`tool_kind`, `decision`, `reason`, `option_kind`, `location_count`; after 256, one `{summary, suppressed}` event) and
+`acp_request_refused` (`method`).
 
 `parseEvent` receives the `session/update` notifications and the final `session/prompt` response as `AcpMessage`s.
 Mapping to `NormalizedEvent`:
@@ -601,6 +645,63 @@ finalize-only mode (T9.7, BR-30), the controller makes the commit at FINALIZING 
 provenance as the commit tool. zemdregon wants the opt-in enabled for his own projects. Claude Code's `commitChannel` may
 become `injected` behind an operator opt-in once T9.4b and its live checks pass ([ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md)).
 
+### 2.1 Model registry (M4, T4.5)
+
+Satisfies FR-ADP-05: model identities, aliases and context limits come from a refreshable registry, never from adapter
+source. **Delegated** (not owner-approved); every key, pattern and default below is a Proposed shape. No ledger table
+and no ADR: the registry is configuration plus an in-memory refresh, so a restart rebuilds it from the file and the next
+probe.
+
+**Configuration (`providers.<id>.models`, strict keys).** Replaces the earlier TDD §3.1 placeholder
+`model_overrides`. `<id>` is a config provider id.
+
+```jsonc
+"providers": { "<id>": { "models": {
+  "ids": ["<model-id>"],                    // operator-held model ids; at most 256, unique
+  "aliases": { "<alias>": "<model-id>" },   // alias to the id passed to the provider; at most 256
+  "context_limits": { "<model-id>": 0 }     // positive integer tokens, as the operator states them
+} } }
+```
+
+An id, alias or key matches `^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$` (**Assumption**: plain-identifier shape, which also
+keeps option-like values out of argv). Examples use placeholders: neither this document nor adapter source names a model.
+
+**In-memory state (`src/models/registry.ts`, `ModelRegistry`).** Per adapter id: the configured `ids`, `aliases` and
+`context_limits`, and the last *listing*, a set of ids taken from `ProbeResult.modelsListed`.
+
+**Refresh rule.** Whenever eligibility collects facts and a provider's probe completed with every step `ok`, the
+collector calls `refresh(adapterId, probe.modelsListed)`:
+
+- `modelsListed` absent: the previous listing is kept (an adapter that cannot list never clears the registry; a probe
+  that fails any step does not reach this call).
+- `modelsListed` present: it **replaces** the listing for that provider (an empty array clears it), so a model the
+  provider stopped listing leaves the registry at the next probe and a new one enters, with no code change. Entries that
+  do not match the id pattern are dropped.
+- Cadence is that of the probe, so the preflight cache TTL (`timeouts.preflight_ttl_seconds`, NFR-PERF-02) bounds the
+  staleness; a restart starts with no listing until the first probe.
+- Adapters supply the listing from the provider's documented listing command through the `ProbeRunner`; none stores a
+  name. An adapter that has no listing command leaves `modelsListed` unset.
+
+**Check rule.** A request's `model` (`CapabilityRequirements.model`, then `CompileRequest.model`) is resolved per
+provider before the adapter's `compile` is asked:
+
+1. A provider is *restricted* when its configured `ids`, the targets of its `aliases` or its current listing hold at
+   least one id. Otherwise it is *unrestricted*.
+2. Unrestricted: the model passes through unchanged (**Delegated default, backward compatible**: without registry data
+   the behaviour before T4.5 holds, and the adapter's own `compile` still decides; `context_limits` alone does not
+   restrict).
+3. Restricted: an alias resolves to its target id; an id held by `ids` or the listing passes; anything else is
+   `Ineligible` with reason `CAPABILITY_MISSING` and a detail naming the provider, the requested value and the reason
+   (not configured, not listed). The detail never echoes more than 80 characters of the request.
+4. The resolved id, not the alias, goes into `CompileRequest.model`.
+
+The `Ineligible` follows the usual BR-3 mapping (`ELIGIBILITY_NONE`, or the named provider's reason under
+`require_provider`). `contextLimit(provider, id)` returns the configured limit or nothing; no consumer exists before M6/M7
+(capacity and affinity), and no default limit is ever supplied by Switchboard.
+
+**Not in scope.** Dispatch-time `compile` and `delegate_task` do not yet carry a `model` argument; wiring a request
+parameter is a separate change with its own contract update. `list_capabilities` `models` stays `[]` until then.
+
 ## 3. MCP tool contracts
 
 Schemas are published JSON Schema (draft 2020-12; version choice Proposed) validated with Ajv before any side effect
@@ -627,7 +728,8 @@ returns immediately unless `wait_seconds` is given ([ADR-0002](../adr/0002-mcp-u
       "route": { "type": "object", "properties": { "reasons": { "type": "array", "items": { "type": "string" } } } },
       "result": { "type": "object", "properties": { "summary": { "type": "string", "maxLength": 4000 },
           "changed_files": { "type": "integer" },
-          "verification": { "type": "array", "items": { "type": "object" } } } },  // per command, §8.1
+          "verification": { "type": "array", "items": { "type": "object" } },   // per command, §8.1
+          "verification_summary": { "type": "object" } } },  // M11, T11.9: display-only prose, see §13.6
       "artifacts": { "type": "object", "additionalProperties": { "type": "string" } },   // kind -> art_ id
       "approval": { "type": "object", "required": ["status","requested_at"], "properties": {   // privileged only (M3, §3.1)
           "status": { "enum": ["PENDING","APPROVED","DENIED"] }, "requested_at": { "type": "string" } } },
@@ -921,9 +1023,10 @@ sets `bypassApproved = true` only if: the row is `APPROVED`; its `scope_hash` eq
 hash recomputed from this run's `client_id`, `meta_session_id` and snapshot scope; and the approved scope has
 `bypass: true`. Any mismatch fails the run `PERMISSION_BLOCKED` before spawn, with a `run_event` naming the mismatch
 (no process, no flag). With `bypassApproved` false the adapter compiles `privileged` without a bypass flag. The argv
-audit (T3.17) independently refuses any `BYPASS_FLAGS` entry unless the profile is `privileged`, `bypassApproved` is
-true and the snapshot's scope sets `bypass` (the lifecycle passes the run's resolved profile and `bypassApproved` to
-`startAdapterRun`, so the audit sees the same values the compile did). The compiled `policyFlags` are recorded in the
+audit (T3.17) independently refuses any `BYPASS_FLAGS` entry (and every declared form of §2, ADR-0035, ADR-0037)
+unless the profile is `privileged`, `bypassApproved` is true and the snapshot's scope sets `bypass` (the lifecycle
+passes the run's resolved profile and `bypassApproved` to `startAdapterRun`, so the audit sees the same values the
+compile did). The compiled `policyFlags` are recorded in the
 run's events, so every bypass run's invocation and the approval it ran under are in the audit trail.
 
 **Listing (Proposed, Delegated, 2026-10-13).** `list_capabilities` lists `privileged` in a provider's
@@ -1277,8 +1380,21 @@ the manifest fails validation (fail closed); the run's auth mode is not in `auth
 `reviewed-prohibited`. In the single-operator deployment
 `requires-review` is recorded but does not block (Assumption,
 [ADR-0011](../adr/0011-single-operator-local-deployment.md)); multi-user or resale use is out of scope. The three
-`const: false` fields mean a manifest that claims otherwise cannot load. `adapters validate` (M4) updates range and
-`validated_on` only after the conformance suite passes (FR-OPS-02).
+`const: false` fields mean a manifest that claims otherwise cannot load.
+`switchboard adapters validate <provider>` (T4.4, FR-OPS-02) updates
+`validated_cli_version`, `validated_on`, `validated_version_range` and appends a dated evidence sentence to `notes`, and
+nothing else, only after the probe (FR-ADP-02 steps 1 to 5), an `OK` auth preflight and the conformance subset including
+the structured-output smoke call (step 7, one provider call) pass; on any failure it writes nothing.
+The range is the installed `X.Y.Z` to the next minor, `>=X.Y.Z <X.(Y+1).0` (Q-12; an Assumption, not a provider
+statement); a pre-release version is refused.
+
+**Manifest file location (Delegated, Assumption).** The command edits the manifest in the source tree, the file a
+contributor changes in a pull request, and the operator commits that change. It finds it from its own module location:
+the package root must hold `package.json`, a `.git` entry and `src/adapters/manifests/`. The copy that the built package
+loads from `dist/` is a build artefact (rebuild after committing), and an installed package has no source tree, so the
+command then fails closed and writes nothing. There is no option to point it elsewhere (only tests inject a directory).
+The write is a line-level text replacement of those four properties (`notes` is added as the last property if
+absent), checked by re-validating the result and comparing every other field, then a rename over the original.
 
 ## 7. Telemetry spans
 
@@ -1317,8 +1433,8 @@ asserts it.
 
 - **Spawn.** `spawn(argv[0], argv.slice(1), { cwd, env, detached: true, stdio: ['pipe' or 'ignore', 'pipe', 'pipe'],
   shell: false })`. `detached` puts the child in a new session and process group (`pgid = pid`). Persist `pid`, `pgid`
-  and process start ticks (from `/proc/<pid>/stat` on Linux) in `run` *before* reading any output, so reconciliation can
-  tell a live orphan from a reused PID.
+  and the process start time (`/proc/<pid>/stat` ticks on Linux, `ps` `lstart` on macOS: §8.2) in `run` *before*
+  reading any output, so reconciliation can tell a live orphan from a reused PID.
 - **Stdin.** Closed (`ignore`) unless the Invocation supplies stdin text; prompts passed on stdin rather than argv where
   an adapter supports it, to keep them out of process listings (to be verified per adapter).
 - **Cancel and timeout.** On cancel, wall-clock or idle timeout: send `SIGTERM` to `-pgid`, wait `killGraceMs` (10 s,
@@ -1352,7 +1468,9 @@ asserts it.
   its leader's start ticks equal the recorded ticks, or when the leader is gone but the group still has live members
   (Linux does not reuse a PID still in use as a group ID). A leader with different ticks (PID reuse) or with no recorded
   ticks is never signalled. Known limit: a crash between spawn and the `pid`/`pgid` commit leaves an orphan that cannot
-  be found (ROADMAP R-12).
+  be found (ROADMAP R-12). *Since T4.9* the start time and the group scan come from the platform port of §8.3, and a
+  leader whose presence cannot be determined while its group still answers `kill(-pgid, 0)` is never signalled either
+  (`unverifiable`).
 
 ### 8.1 Verification stage (M3, T3.10)
 
@@ -1410,6 +1528,23 @@ T11, T14) in `src/lifecycle/verification.ts`, driven by `src/lifecycle/lifecycle
 the ACP specification v1 (agentclientprotocol.com, retrieved 2026-10-13); numbers are proposed targets.* Everything in
 §8 above applies to `acp-stdio` unless replaced here.
 
+*As built (2026-10-13, Delegated, T4.8; not owner-approved; tested only against the scripted fake ACP agent, so every
+provider behaviour stays Unverified).* `runAcpAgent` (`src/exec/acp/client.ts`) drives one `supervise` call
+(`src/exec/supervisor.ts`), which gained `keepStdinOpen` with `writeStdin` and `endStdin`, `fail` (protocol error or a
+named timeout: `acp_initialize`, `acp_session`), `complete` (close stdin, wait `killGraceMs`, group kill, outcome
+`exited`) and `beforeTerminate` (the graceful cancel step, raced against `killGraceMs`). Framing reuses the JSONL reader
+with blank lines refused; `classifyEnvelope` (`src/exec/acp/framing.ts`) adds the JSON-RPC checks. `startAdapterRun`
+(`src/adapters/run.ts`) runs the plan audit, then the client with `decidePermission` over the snapshot; the
+allow-everything answer needs both the snapshot's and the run's `bypassApproved` and the audit's bypass check. An
+asynchronous decision is raced against the 1 s bound and a synchronous one is measured, so either overrun is a
+rejection. The permission answer is sent as `result: {outcome: {outcome, optionId?}}` (the [ACP-TC] outcome object in
+the schema's response result; Unverified on a live provider); the mode field read is `currentModeId` ([ACP-MODE]).
+Exit before the turn ends is reported as outcome `crashed` (`PROCESS_CRASH`). The lifecycle passes the snapshot (no
+read-only contexts yet) and writes the three ACP run events. **Not built:** the `provider_stdin` artifact (the client
+keeps what it sent on `AdapterRunOutcome.stdin`, but storing it needs a new `artifact.kind`, that is a ledger
+migration); backpressure (as for JSONL, the supervisor does not pause stdout); `initialize` as a probe step; no adapter
+other than the fake compiles `acp-stdio`.
+
 - **Process.** One agent process per run, spawned like a JSONL provider (own process group, `pid`, `pgid` and start
   ticks persisted first, allowlisted environment, `cwd` = the run worktree) but with `stdio: ['pipe', 'pipe', 'pipe']`:
   the client (`src/exec/acp/`) keeps stdin open and writes JSON-RPC to it. No process outlives its run or serves two
@@ -1444,6 +1579,63 @@ the ACP specification v1 (agentclientprotocol.com, retrieved 2026-10-13); number
   the raw artifact (NFR-PRIV-02).
 - **Backpressure.** As above; while stdout is paused, permission answers already decided are still written.
 - **Reconciliation.** Unchanged: an orphaned ACP agent group is terminated as a JSONL one (FR-EXE-06).
+
+### 8.3 Process table per platform (M4, T4.9)
+
+*Implemented 2026-10-13 (Delegated agent work, not owner-approved; every choice below is Proposed). The macOS path is
+**Unverified**: it was written and unit-tested on Linux against fixtures only, and runs on a real Mac first in the
+macOS CI leg (T4.10) and the operator's optional live check (T4.12).* The supervisor (§8) and reconciliation ask the
+host's process table two questions through one port, `src/exec/proc-info.ts` (`ProcInfo`, selected by
+`process.platform`):
+
+- `startTime(pid)` → `present` with a start time, `absent`, or `unknown` (cannot verify). Recorded at spawn into
+  `run.proc_start_ticks` and compared for equality at reconciliation (FR-EXE-06, NFR-REL-01).
+- `liveGroupMember(pgid)` → whether the group has a member that is not a zombie, or `undefined` (cannot tell). Polled
+  by the cancel sequence after `kill(-pgid, 0)` succeeds (FR-EXE-01); `undefined` counts as alive, so the controller
+  keeps waiting and then escalates to `SIGKILL`, as before.
+
+| Platform | Mechanism | Start time stored as | Cannot verify when |
+| --- | --- | --- | --- |
+| `linux` | `/proc/<pid>/stat`: field 22 `starttime`; a scan of every `/proc/<n>/stat` for `pgrp` and state `Z`/`X` | clock ticks since boot | `/proc` cannot be listed (group scan only). Any failure to read one PID's `stat` means absent: the M1 behaviour, unchanged |
+| `darwin` | one run of `/bin/ps -A -o pid= -o ppid= -o pgid= -o state= -o lstart=` per question, `execFileSync`, no shell, environment exactly `LC_ALL=C` and `TZ=UTC`, 5 s timeout, 16 MiB output cap | UTC epoch seconds parsed from `lstart` | `ps` is missing, exits non-zero, times out or prints any line outside the contract below; or `ps` does not list a PID that `kill(pid, 0)` says exists |
+| anything else (`win32`, BSDs, ...) | none | nothing (`null`) | always |
+
+**macOS sources** (retrieved 2026-10-13; fetched text is data). The macOS `ps(1)` manual page
+([mirror of the Xcode manual pages](https://keith.github.io/xcode-man-pages/ps.1.html), footer "Mac OS X 12") says:
+`-A` "Display information about other users' processes, including those without controlling terminals"; `-o` keywords
+may be given "in the form of more than one `-o` option" and "If all keywords have empty header texts, no header line is
+written"; the keywords `pid` ("process ID"), `ppid` ("parent process ID"), `pgid` ("process group number"), `state`
+("symbolic process state", first character `Z` "Marks a dead process (a 'zombie')") and `lstart` ("The exact time the
+command started, using the '%c' format described in strftime(3)"); and "When output is not to a terminal, an unlimited
+number of columns are always used". In the POSIX locale `%c` is `d_t_fmt`, `"%a %b %e %H:%M:%S %Y"`, with the English
+`abmon` names ([POSIX.1-2024 XBD 7.3.5](https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/V1_chap07.html)).
+POSIX `fork()`: "The child process ID also shall not match any active process group ID"
+([POSIX.1-2024 fork](https://pubs.opengroup.org/onlinepubs/9799919799/functions/fork.html)), which carries the
+"leader gone, group alive" rule of §8 from Linux to macOS.
+
+**Parsing contract (macOS).** Each non-blank line is `pid ppid pgid state lstart`, blank-separated, the first three
+non-negative decimal integers, `state` one token, and `lstart` matching `Www Mmm d HH:MM:SS YYYY` (any run of blanks
+between fields, since `%e` pads a one-digit day with a space) with a real calendar date. One line outside this
+contract, a header line or empty output makes the whole table unusable (`unknown`/`undefined`); nothing is guessed.
+
+**Assumptions and limits (Unverified until T4.10).**
+
+- `/bin/ps` is the base-system path on macOS (absolute, so `PATH` cannot substitute another program). The manual page
+  above names no path.
+- `LC_ALL=C` makes macOS `ps` print `%c` in the POSIX form, and `TZ=UTC` makes it print UTC. Both are standard C library
+  behaviour; neither is stated in `ps(1)`.
+- `lstart` has one-second resolution: a PID reused within the same second as the recorded process started would match.
+  macOS is not documented here to allocate PIDs in any order, so this is a residual risk, not a proven impossibility.
+- One `ps` run costs a process spawn (it blocks the event loop while it runs); the cancel sequence polls every 20 ms, so
+  a cancel on macOS may run `ps` many times. Acceptable for a single operator (ADR-0011); not measured.
+- `proc_start_ticks` keeps its name and `INTEGER` type; its unit is per host (Linux ticks, macOS seconds) and it is only
+  ever compared for equality on the host that wrote it. A ledger moved between operating systems reads every live
+  leader as `pid_reused`, which is never signalled (fail safe). No schema or trust-boundary change, so no ADR
+  (Delegated).
+- The supervisor's process-group handling itself (`detached` → `setsid`, `kill(-pgid, …)`) is POSIX and unchanged.
+  Windows has no such groups and stays Deferred (NFR-PORT-03). Routing refuses every profile off Linux anyway
+  (`VERIFIED_PROFILE_PLATFORMS` and `SANDBOX_DEPENDENT_PROFILES` in `src/routing/eligibility.ts`, ROADMAP Q-35), so
+  no provider run reaches this port on macOS until a profile's macOS cells are verified (T4.12).
 
 ## 9. Retry/back-off algorithm
 
@@ -1590,6 +1782,14 @@ other provider aborts startup) is the operator opt-in for the Claude Code tool c
 [ADR-0033](../adr/0033-claude-channel-bypass-only-without-safe-mode.md)):* even with the key on, only an approved
 `privileged` bypass run gets the channel (and runs without `--safe-mode`); every other run is as with the key off.
 
+*As built (2026-10-13, Delegated, T11.3, [§13.1](#131-configuration-shape)):* a project and each context take an
+optional `"inner_agent": "off" | "local_only" | "inherit"` (strict schema; `projectSchema`, so a dynamic project's
+`project` input may carry it too, and it needs no operator approval because it can only restrict).
+`ResolvedProject.innerAgent` and `ResolvedContext.innerAgent` are present only when written;
+`effectiveInnerSetting(project, contextId?)` (`src/config/projects.ts`) returns the most restrictive of the two,
+`inherit` for no project. The value is not part of the policy snapshot; callers pass it to the pipeline as
+`project_setting`.
+
 ### 11.2 Resolution and ceilings
 
 At admission (FRD BR-23): (1) resolve `project` to its definition, else `INVALID_REQUEST`; (2) check the client's project
@@ -1699,6 +1899,29 @@ text asks the agent to call `commit` again with a `message`. The controller neve
 `always`, an unusable draft falls back to the agent's message when there is one, and returns `MESSAGE_REQUIRED` when not.
 `MESSAGE_EMPTY_AFTER_SANITISING` keeps its meaning for a message the agent supplied. The tool call waits for the inner
 call at most the per-call bound ([§13.4](#134-call-pipeline)).
+
+*As built (2026-10-13, Delegated, T11.4; owner text above unchanged).* Code: `src/inner/commit-message.ts` (task
+contract and `createCommitMessageTask`), `src/git/commit.ts` (`CommitMessageTask`, `chooseMessage`),
+`src/git/channel.ts`, `src/git/tool-protocol.ts`, `src/cli/tool-shim.ts`, `src/projects/inner-setting.ts`, wiring in
+`src/cli/serve.ts`; tests `src/git/commit-message.test.ts`. Choices where this section was silent:
+
+- **Per-run schema.** The channel decides once, at open: the mode is `draft_if_missing` or `always` only when the
+  service is `ready`, the task is enabled, its mode is not `never`, and the effective project/context setting is not
+  `off`. Then the shim command ends with `--message-optional`, the shim serves the §12.1 schema without `required`
+  (`COMMIT_INPUT_SCHEMA_MESSAGE_OPTIONAL`), and `git_channel_opened` carries `commit_message: <mode>`. Otherwise the
+  command, schema, argument check and library call are byte-for-byte as before; a missing `message` stays
+  `INVALID_ARGUMENTS`. A present `message` is checked exactly as before in either case.
+- **Call time.** Every `commit` call re-resolves the project setting from the current configuration (or a dynamic
+  project's revision in force; an unknown project or a resolver error is `off`) and passes it as `project_setting`, so
+  a project restricted after open gets `PROJECT_OFF` or `PROJECT_LOCAL_ONLY` from the gate and `MESSAGE_REQUIRED`.
+- **Where the draft enters.** `src/git/commit.ts` never imports the service (it is now on the import-boundary test's
+  protected list): the channel injects a `CommitMessageTask` whose `draft` receives `git diff-tree --numstat` and
+  `-p` of the parent and new trees and up to five `git log --format=%s` subjects of the parent, after
+  `NOTHING_TO_COMMIT`. Whatever text it returns goes through the publisher's own sanitiser (built-in and operator
+  rules plus the run's native session ids), which is the only producer of the text `commit-tree` receives; its rule
+  counts are the `sanitizer_json`. A draft is requested once per call and reused after a lost compare-and-swap race.
+- **`MESSAGE_REQUIRED` text.** Fixed: "no commit message was given and none could be drafted; call commit again with a
+  message". It never says why (gate, timeout, validator).
 
 ### 12.2 Channel
 
@@ -2243,6 +2466,15 @@ run's `git_finalize_commit` event (text line `finalize: ...`).
 message itself is never annotated or stored; the PR draft's provenance is its `pr_draft` artifact ID on the `inner_call`
 run event.
 
+*As built (2026-10-13, Delegated, T11.4):* migration `0007_git_commit_message_source`
+(`src/ledger/migrations/0007_git_commit_message_source.ts`; ledger schema version 7) adds `message_source TEXT NOT NULL
+DEFAULT 'agent' CHECK (message_source IN ('agent','inner'))` and `inner_call_id TEXT REFERENCES inner_call(id) CHECK
+(inner_call_id IS NULL OR message_source = 'inner')`; existing rows read `agent`/NULL and the append-only guards are
+unchanged. `inner_call_id` is NULL with `inner` only when the call row could not be written. The `git_commit_intent`
+record and the `git_commit` event payload gain `message_source: "inner"` and `inner_call_id` only for a drafted
+message, so an agent commit's records are unchanged. `runs show` adds `message_source` and `inner_call_id` (JSON) and a
+`message:` line (text).
+
 ## 13. Inner agent
 
 Implements FR-INN-01..17 and [ADR-0016](../adr/0016-inner-agent.md) for M11 (COMP-INN, trust boundary TB-10). Task
@@ -2365,6 +2597,23 @@ address (`127.0.0.0/8`, `::1`) or a Unix domain socket on the host; everything e
 - The `cli` kind is always `remote` (Proposed): the controller cannot see where the installed CLI sends the prompt.
 - The classification used for each call is stored in `inner_call.locality` and shown by `doctor`.
 
+*As built (2026-10-13, Delegated, T11.3; `src/inner/http-backend.ts`):* the points §13.2 left to T11.3, all **Proposed**
+and marked **Assumption**: (1) request: `POST <base_url>/v1/chat/completions` (`<base_url>/chat/completions` when the
+base path already ends in `/v1`), JSON body `{ model, messages: [{role: "system"}, {role: "user"}], max_tokens,
+temperature: 0, stream: false }`; `response_schema` is not sent, because structured-output parameters differ between
+servers and the pipeline validates the output either way; (2) answer: `choices[0].message.content` must be a string,
+usage is `usage.prompt_tokens` and `usage.completion_tokens` when non-negative integers (else unknown), the model id is
+the response's `model` or the configured one; (3) headers are fixed and none comes from configuration or the
+environment; the request asks for `identity` encoding and a compressed answer is a failure; (4) any 3xx is a failure and
+is not followed, no proxy variable is read, and each call uses its own connection; (5) the response may not exceed
+`max_output_tokens * 16` bytes plus 16 KiB (declared `content-length` is checked first); (6) locality: `resolveLocality`
+resolves the host once, and the address is pinned to the call's `AbortSignal` so `complete` connects to that exact
+address; the connected socket's peer is re-checked and a call gated `local` whose peer is not loopback is aborted before
+the body is written. `private` (RFC 1918, link-local, CGNAT, unique-local) is `remote`, as FR-INN-16 says "anything
+else"; (7) `probe` sends only a fixed canary, returns code-only `detail`, and does not contact an endpoint classified
+`remote` when `allow_remote` is false. The Unix-socket form of `base_url` mentioned in §13.1 remains undefined and
+unimplemented.
+
 ### 13.3 Data
 
 Added by the M11 forward migration ([§1](#1-data-model)). Same conventions as §1: ULID text IDs with a prefix (`inc_`,
@@ -2407,6 +2656,11 @@ CREATE TABLE inner_task_state (         -- mutable current state, one row per ta
 ) STRICT;
 ```
 
+**T11.1 note (Delegated).** `inner_call` ships alone in migration 0005 (`src/ledger/migrations/0005_inner_call.ts`).
+`inner_task_state` arrives with T11.6, and the `git_commit` columns, the `usage_observation.source` widening and the
+`pr_draft` artifact kind with T11.4, T11.5 and T11.8, each as its own forward migration, because a released migration is
+immutable (ADR-0005).
+
 `inner_call` gets the same `BEFORE UPDATE`/`DELETE` guards as the other append-only tables. The outcomes mean: `accepted`
 (the output passed every check and was used); `rejected_validator` (not valid after the permitted re-ask);
 `rejected_sanitiser` (valid, but the sanitiser left nothing usable); `fallback_unavailable` (the call could not be made
@@ -2418,6 +2672,31 @@ suspended, §13.4 step 11); `fallback_disabled` (the task is enabled but a gate 
 The accepted result lives where it is used, not in `inner_call`: a commit message in the commit, a PR draft and condensed
 text in artifacts, route features in `route_decision.features_json`, a run title in a `run_event` payload (§13.6). The
 `usage_observation` exception for `shares_subscription_with` is in §13.4 step 13.
+
+**T11.6 note (Delegated).** `inner_task_state` ships as migration 0008
+(`src/ledger/migrations/0008_inner_task_state.ts`, the DDL above unchanged). A row exists only once a task has been
+suspended; no row reads as not suspended. A suspension sets `suspended = 1`, `suspended_at` and `suspended_basis_json`
+(`window_calls`, `rejected`, `total`, `threshold`) and increments `version`. A re-enable sets `suspended = 0`, clears
+`suspended_at` and the basis, sets `resumed_at` and increments `version`; the suspension evidence then survives only in
+the `inner_task_suspended` run event (when the suspending call was tied to a run). The window counts calls with `created_at`
+strictly after `resumed_at`, so a call recorded in the same millisecond as the resume is not counted (Assumption: the
+safe side; counting an older call would suspend again at once). The window is evaluated by `Ledger.recordInnerCall` in
+the transaction that inserts the row, and the gate reads `inner_task_state` on every call, so the state is shared by every
+process on the ledger. A suspended call records `fallback_suspended` with reason `TASK_SUSPENDED`, `attempts` 0 and
+locality `remote` (the unresolved default, as for `PROJECT_OFF`). An unreadable state fails closed to the fallback
+(`fallback_unavailable`, `STATE_UNREADABLE`). The re-enable is `InnerAgentService.resumeTask` (the `inner resume`
+command of FR-INN-17, T11.7) with no config edit or restart needed.
+
+**T11.4 note (Delegated).** The two `git_commit` columns ship as migration 0007
+(`src/ledger/migrations/0007_git_commit_message_source.ts`; [§12.7](#127-provenance-and-audit)). An `inner_call` row
+with outcome `accepted` exists for every draft handed to the publisher; when the commit then fails after the draft (a
+Git failure, a lineage or signing refusal, or a second lost compare-and-swap), that row stays and no `git_commit` row
+points to it.
+
+**T11.5 note (Delegated).** The `usage_observation.source` widening ships as migration 0006
+(`src/ledger/migrations/0006_usage_inner_agent.ts`, a table rebuild). The step 13 observation is written only when a
+backend request was made (`attempts >= 1`); `harness` is the provider id, `model` the call's `model_id`, and
+`metrics_json` holds `input_tokens` and `output_tokens` when reported (key names are an Assumption), else `{}`.
 
 ### 13.4 Call pipeline
 
@@ -2466,9 +2745,8 @@ fallback. Redaction is the same component and rules as telemetry (FR-TEL-03, ADR
     `rejected_validator` or `rejected_sanitiser` since `inner_task_state.resumed_at` (`fallback_*` outcomes are not quality
     evidence and are not counted), if at least `suspension.min_calls` exist and the rejected share exceeds
     `suspension.rejection_threshold`, set `suspended = 1` in one transaction. The task then returns `fallback_suspended`
-    until the operator re-enables it (FR-INN-09). The re-enable command, Proposed as `inner resume <task>`, is not in
-    FR-INN-17's list: the SRS needs a note, or the re-enable becomes a config edit plus restart (unreconciled). Suspension
-    never reverses a result already accepted.
+    until the operator re-enables it (FR-INN-09). The re-enable command is `inner resume <task>`, named in FR-INN-17
+    (T11.7). Suspension never reverses a result already accepted.
 12. **Accept or fall back.** Accepted: return the validated value to the caller, which performs every action that follows
     (FR-INN-02). Any rejection or failure: return the task's deterministic fallback (§13.7). In no case does the caller's
     run change state because of the result (FR-INN-08).
@@ -2529,6 +2807,106 @@ message; `always` requests a draft in every commit and uses it when valid, other
 "template_version"?: string }` per feature; replay reads the stored value and never calls the model (FR-RTE-03,
 FR-INN-12). Handoff and log text always carry a visible source label so a reader can tell inner prose from controller
 facts.
+
+*As built (2026-10-13, Delegated, T11.4; table above unchanged), `commit_message`:* template `commit_message.v1`
+(`src/inner/commit-message.ts`), a fixed system text that names no product, provider, tool or identifier. Points this
+section left open, each an **Assumption**:
+
+- **Body trailer lines are removed, not rejected.** The validator column says "body has no `Co-authored-by`-style key
+  line (the sanitiser also removes them)". Rejecting would make a backend that always adds trailers produce no commit,
+  against the T11.4 Done-when ("yields a clean commit") and the M11 completion criterion in the ROADMAP, which owns
+  completion criteria. So such lines in the body are left to the §12.4 sanitiser, which removes them and counts them;
+  the subject, which must survive the sanitiser, is rejected when it is a trailer-shaped key line (`<key>-by:` or
+  `<key>-with:`). The other subject rules are as in the table; body control characters other than newline and tab are
+  refused.
+- **Input.** Under the fixed headings `Changed paths (added<TAB>deleted<TAB>path):` (`git diff-tree --numstat`),
+  `Recent subjects (style hint):` and `Diff:`. "Recent subjects of the publish ref" are those of the commit's parent,
+  which is the publish ref head, or the session's base commit before the first commit.
+- **Budget.** The diff-aware truncation of §13.4 step 3 keeps the part before `Diff:` whole, then whole hunks (each
+  with its file header) in path order, then the marker; if the header alone does not fit, head-and-tail over the
+  header with no hunk. The builder pre-caps the raw diff the same way at four times the budget so the redactor never
+  scans an unbounded text.
+- **Scrubbed names.** Besides the configured provider ids, the prompt scrub covers `PROMPT_PROVIDER_NAMES` (`claude`,
+  `anthropic`, `codex`, `openai`, `gemini`, `antigravity`, `cursor`, `grok`, `kimi`, `opencode`), because a config id
+  such as `claude-code` would miss the bare product name; a diff mentioning one of them reaches the model with
+  `[provider]` instead.
+- **Output cap.** The raw completion may be at most `4 * (72 + 2000) + 1024` bytes.
+
+*As built (2026-10-13, Delegated, T11.8; table above unchanged), `pr_draft`:* template `pr_draft.v1`
+(`src/inner/pr-draft.ts`), a fixed system text that names no product, provider, tool or identifier. Each point is an
+**Assumption** unless the table says it:
+
+- **Input.** Under the fixed headings `Commit subjects (oldest first):`, `Changed paths (added<TAB>deleted<TAB>path):`,
+  `Verification facts (recorded by the system):` and `Diff:`. The commits are the run's `git_commit` rows; the diff runs
+  from the parent of the first to the last of them. Facts come from the run's `verification_command` events, labelled
+  `check <n>` because the events hold no command label. Budget and truncation are those of `commit_message`.
+- **Sanitiser.** Title and body each pass the §12.4 sanitiser (operator patterns and the run's native session IDs
+  included); the SANITISED draft is stored. Trailer and "generated by" lines in the body are removed, not rejected (as for
+  commit messages). The "no URLs added" rule is judged on the text the sanitiser leaves.
+- **Persistence.** The pipeline's optional `persist` hook stores the accepted draft before the call is recorded, so the
+  `inner_call` run event carries the `pr_draft` artifact ID; a storage failure is `fallback_unavailable`
+  (`PERSIST_FAILED`) and no draft is handed out.
+- **Trigger.** No tool or CLI command starts a draft yet; the entry point is `createPrDraft` (T11.7 adds `inner` commands).
+  Retrieval is `get_artifacts` with kind `pr_draft` (§3).
+- **Sanitiser in step 10.** The pipeline uses the publisher's sanitiser only to decide `rejected_sanitiser`; it hands
+  the validated, unsanitised text back, and the publisher sanitises it once more as the commit's message, so its rule
+  counts reach `sanitizer_json`.
+
+*As built (2026-10-14, Delegated, T11.9; table above unchanged), `log_summary`:* template `log_summary.v1`
+(`src/inner/log-summary.ts`), a fixed system text that names no product, provider, tool or identifier. Each point is
+an **Assumption** unless the table says it:
+
+- **Source.** The run's `test_report` artifact (the raw artifact, FR-EXE-08), parsed into the controller's records:
+  per command its index, outcome, exit code, stdout and stderr. The input holds, under the fixed headings `Recorded
+  facts (restate, do not infer):` (`check <n>: outcome ..., exit code ...` and a counts line) and `Output excerpt:`,
+  those facts and the per-check output. Argv, the objective and every identifier are excluded. One summary covers the
+  whole run.
+- **Budget.** The facts stay whole; the excerpt takes the head 25% and tail 75% of the rest (§13.4 step 3), pre-capped
+  at four times the budget before redaction.
+- **Validator.** Beyond the schema: single-line values, no control character, no URL, every whole digit run must occur
+  as a whole digit run in the text the model was given (stricter than "occurs in the source", so `17` is not matched
+  by `1700`), and a success claim (the `pr_draft` pattern list, Proposed) is refused unless the records hold at least
+  one check and every check passed. There is no sanitiser step (§13.4 step 10 is for commit and PR text); the stored
+  text is passed through the artifact redactor.
+- **Fallback and storage.** When the task is enabled and the model produces no accepted summary (any outcome in
+  §13.7), the shown text is the deterministic excerpt: the first 8 and last 12 lines of the combined output with an
+  omitted-lines marker, counts of lines and bytes, at most 1,500 bytes, controls stripped, `source: heuristic`. With
+  the task not enabled nothing is produced (§13.7 row 1). Either result is stored as a `log_summary` artifact
+  (`application/json`, kind already in the schema) and recorded as one `log_summary` run event.
+- **Envelope.** The `log_summary` run event (`src/lifecycle/summary-event.ts`) holds `source`, `text`, `notable`, the
+  raw artifact ID and SHA-256, the summary artifact ID and `inner_call_id`. It carries text, an exception to "no text"
+  in the table of §13.8 (as for `run_title`), because the envelope builder is synchronous and reads the ledger only.
+  The envelope shows it as `result.verification_summary { source, label, text, notable?, raw_artifact { id, sha256 },
+  summary_artifact_id? }`; the label is derived from `source` by the builder, never from the payload. `status`,
+  `failure_code`, `verification` (outcomes, exit codes) and every count come from the run row and the terminal
+  transition, not from this field. The envelope builder reads the event by constant and shape and does not import
+  `src/inner/` (the import-boundary test is unchanged).
+- **Trigger.** No run path calls `summariseVerification` automatically (the lifecycle may not import the service); the
+  entry point is the service function, like `createPrDraft`.
+
+*As built (2026-10-14, Delegated, T11.12; table above unchanged), `run_title`:* template `run_title.v1`
+(`src/inner/run-title.ts`), a fixed system text that names no product, provider, tool or identifier. Each point is an
+**Assumption** unless the table says it:
+
+- **Display-only.** The title and summary are never read by routing, eligibility, policy, retry, approvals or status;
+  the module is under `src/inner/` (import-boundary test) and a test scans that nothing outside it imports the task. A
+  listing must show the text as data.
+- **Input and gate.** The first 1,500 characters of the objective, within `input_budget_bytes`, under the heading
+  `Task description:`. The task does not send source content (the objective is not repository content), so only
+  `allow_remote` gates a remote backend; this settles the open point at the top of §13.5 as proposed there.
+- **Validator.** Beyond the schema (a length over the cap is rejected, not cut): each value is single-line with no
+  control character (newline, tab and line or paragraph separators included), no leading or trailing space, no URL and
+  no markdown (backtick, `**`, `__`, `~~`, heading, list or quote marker, link, HTML tag). Underscores inside words
+  are allowed.
+- **Cleaning and sanitiser.** The pipeline strips control characters other than newline and tab before validation. An
+  accepted value then has invisible and bidirectional formatting characters removed and whitespace collapsed, passes
+  the unchanged §12.4 sanitiser like other drafts (step 10 names only commit and PR text; this task adds it), and is
+  capped again by length. A title left empty is `rejected_sanitiser`; a summary left empty is dropped.
+- **Record and fallback.** The accepted values ride in the `inner_call` run event payload as `title` and `summary`
+  (§13.8); no table or column. `readRunTitle` re-cleans and re-caps what it reads. The fallback is the first non-empty
+  line of the objective, cleaned, at most 80 characters by code point, and is returned (with nothing written) when the
+  task is not enabled.
+- **Trigger.** Nothing calls `createRunTitle` automatically and no listing shows the title yet.
 
 ### 13.7 Fallback table
 

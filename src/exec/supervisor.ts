@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
-import { DEFAULT_MAX_LINE_BYTES, type JsonlProtocolError, JsonlReader } from "./jsonl.js";
+import { DEFAULT_MAX_LINE_BYTES, JsonlReader } from "./jsonl.js";
+import { hostProcInfo, type ProcInfo } from "./proc-info.js";
 
 /** Failure codes from LLD §4 that the supervisor itself can determine. */
 export type ExecFailureCode = "PROCESS_TIMEOUT" | "PROCESS_CRASH" | "OUTPUT_PROTOCOL_ERROR";
@@ -13,6 +13,19 @@ export type SupervisedOutcome =
   | "crashed" // child died from a signal the supervisor did not send
   | "spawn_error" // process could not be started
   | "internal_error"; // onEvent/onSpawn callback threw; group killed, supervisor itself survives
+
+/**
+ * A stdout framing or protocol problem. The JSONL reader reports `line_too_long`, `invalid_utf8` and `invalid_json`;
+ * a transport layered on the reader (the ACP client, `./acp/`) reports its own kinds through {@link SupervisedRun.fail}.
+ */
+export interface ProtocolErrorInfo {
+  readonly kind: string;
+  readonly lineNumber: number;
+  readonly message: string;
+}
+
+/** Which bound ended a run with `PROCESS_TIMEOUT`. The two `acp_*` kinds are ADR-0036 item 4 (Proposed targets). */
+export type TimeoutKind = "wall_clock" | "idle" | "acp_initialize" | "acp_session";
 
 /** Proposed defaults. LLD §8 gives these as proposed targets. */
 export const DEFAULT_KILL_GRACE_MS = 10_000;
@@ -30,8 +43,19 @@ export interface SuperviseOptions {
   readonly extraEnv?: Readonly<Record<string, string>>;
   /** Source for allowlisted names. Defaults to process.env. */
   readonly baseEnv?: Readonly<Record<string, string | undefined>>;
-  /** Prompt text written to stdin then closed; stdin is `ignore` when absent. */
+  /** Prompt text written to stdin then closed; stdin is `ignore` when absent (and `keepStdinOpen` is not set). */
   readonly stdinText?: string;
+  /**
+   * `acp-stdio` (ADR-0036, LLD §8.2): stdin is a pipe that stays open; the caller writes through
+   * {@link SupervisedRun.writeStdin} and closes it with {@link SupervisedRun.endStdin}. Exclusive with `stdinText`.
+   */
+  readonly keepStdinOpen?: boolean;
+  /**
+   * Graceful step run before the group kill on cancel and on the wall-clock or idle timeout, never on a protocol or
+   * internal error (ADR-0036 item 8.5: answer pending permission requests, send `session/cancel`, wait for the
+   * result). Bounded by `killGraceMs` whatever it does; the SIGTERM-then-SIGKILL sequence never depends on it.
+   */
+  readonly beforeTerminate?: (reason: "timeout" | "cancelled") => Promise<void>;
   readonly wallClockMs?: number;
   /** Max time without stdout bytes. */
   readonly idleMs?: number;
@@ -42,6 +66,8 @@ export interface SuperviseOptions {
   /** Parse stdout as JSONL and deliver each document. Without it stdout is only captured. */
   readonly onEvent?: (value: unknown, lineNumber: number) => void;
   readonly isIgnorableLine?: (line: string) => boolean;
+  /** Blank stdout lines are a protocol error rather than skipped (`acp-stdio`). */
+  readonly rejectBlankLines?: boolean;
   /** Called synchronously after spawn, before any output is read, so callers can persist pid/pgid. */
   readonly onSpawn?: (info: { pid: number; pgid: number }) => void;
 }
@@ -49,15 +75,15 @@ export interface SuperviseOptions {
 export interface SupervisedResult {
   readonly outcome: SupervisedOutcome;
   readonly failureCode: ExecFailureCode | undefined;
-  /** Which timer fired, when outcome is `timeout`. */
-  readonly timeoutKind: "wall_clock" | "idle" | undefined;
+  /** Which bound fired, when outcome is `timeout`. */
+  readonly timeoutKind: TimeoutKind | undefined;
   readonly exitCode: number | null;
   readonly signal: NodeJS.Signals | null;
   readonly stdout: Buffer;
   readonly stderr: Buffer;
   readonly stdoutTruncated: boolean;
   readonly stderrTruncated: boolean;
-  readonly protocolError: JsonlProtocolError | undefined;
+  readonly protocolError: ProtocolErrorInfo | undefined;
   /** True when SIGKILL escalation was needed. */
   readonly escalatedToKill: boolean;
   /** True when `kill(-pgid, 0)` confirmed ESRCH before the result was reported. */
@@ -70,6 +96,24 @@ export interface SupervisedRun {
   readonly pgid: number | undefined;
   /** Idempotent; resolves when the group is gone. No effect once the run finished. */
   cancel(): Promise<void>;
+  /**
+   * Ends the run as `protocol_error` (`OUTPUT_PROTOCOL_ERROR`) or as a `timeout` of the given kind (`PROCESS_TIMEOUT`),
+   * killing the group at once (no graceful step). For a transport layered on the line reader. No effect once the run
+   * is ending or has ended.
+   */
+  fail(
+    failure: { kind: "protocol_error"; error: ProtocolErrorInfo } | { kind: "timeout"; timeoutKind: TimeoutKind },
+  ): void;
+  /**
+   * The provider finished its work (ADR-0036 item 8.4): close stdin, wait up to `killGraceMs` for the process to exit,
+   * then run the group kill sequence. The outcome is `exited` whatever the exit status or signal, because the result
+   * already decided it. No effect once the run is ending or has ended.
+   */
+  complete(): Promise<void>;
+  /** Writes to an open stdin (`keepStdinOpen`). False when stdin is closed, failed or not a pipe; never throws. */
+  writeStdin(data: string): boolean;
+  /** Closes an open stdin. Idempotent. */
+  endStdin(): void;
   readonly result: Promise<SupervisedResult>;
 }
 
@@ -79,38 +123,17 @@ const POLL_MS = 20;
 const POST_KILL_WAIT_MS = 5_000;
 
 /**
- * Linux only: true/false if /proc shows whether group `pgid` has a non-zombie member, undefined if /proc is
- * unusable. Zombies (killed but not yet reaped by init, which can take seconds in containers) cannot run code,
- * so they do not count as live.
+ * Whether any live process remains in group `pgid`: `kill(-pgid, 0)`, then the platform process table (LLD §8.3)
+ * to ignore zombies, which were killed but not yet reaped and cannot run code. When the table cannot be read the
+ * group counts as alive (fail closed: keep waiting, then escalate).
  */
-function liveMemberViaProc(pgid: number): boolean | undefined {
-  try {
-    for (const entry of readdirSync("/proc")) {
-      if (!/^\d+$/.test(entry)) continue;
-      let stat: string;
-      try {
-        stat = readFileSync(`/proc/${entry}/stat`, "utf8");
-      } catch {
-        continue; // exited while scanning
-      }
-      // Fields after the parenthesised comm: state, ppid, pgrp, ...
-      const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-      if (Number(rest[2]) === pgid && rest[0] !== "Z" && rest[0] !== "X") return true;
-    }
-    return false;
-  } catch {
-    return undefined;
-  }
-}
-
-/** Whether any live process remains in group `pgid` (`kill(-pgid, 0)`, ignoring zombies where /proc allows). */
-export function groupAlive(pgid: number): boolean {
+export function groupAlive(pgid: number, info: ProcInfo = hostProcInfo): boolean {
   try {
     process.kill(-pgid, 0);
   } catch (err) {
     return (err as NodeJS.ErrnoException).code === "EPERM";
   }
-  return liveMemberViaProc(pgid) ?? true;
+  return info.liveGroupMember(pgid) ?? true;
 }
 
 function signalGroup(pgid: number, signal: NodeJS.Signals): void {
@@ -176,6 +199,10 @@ export function supervise(opts: SuperviseOptions): SupervisedRun {
     pid: undefined,
     pgid: undefined,
     cancel: async () => {},
+    fail: () => {},
+    complete: async () => {},
+    writeStdin: () => false,
+    endStdin: () => {},
     result: Promise.resolve({
       outcome: "spawn_error",
       failureCode: "PROCESS_CRASH",
@@ -202,7 +229,7 @@ export function supervise(opts: SuperviseOptions): SupervisedRun {
       env: buildEnv(opts),
       detached: true,
       shell: false,
-      stdio: [opts.stdinText === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+      stdio: [opts.stdinText === undefined && opts.keepStdinOpen !== true ? "ignore" : "pipe", "pipe", "pipe"],
     });
   } catch (err) {
     return settleEarly(err as Error);
@@ -212,9 +239,9 @@ export function supervise(opts: SuperviseOptions): SupervisedRun {
   const stdout = new Capture(maxCapture);
   const stderr = new Capture(maxCapture);
 
-  let reason: "timeout" | "cancelled" | "protocol_error" | "internal_error" | undefined;
-  let timeoutKind: "wall_clock" | "idle" | undefined;
-  let protocolError: JsonlProtocolError | undefined;
+  let reason: "timeout" | "cancelled" | "protocol_error" | "internal_error" | "completed" | undefined;
+  let timeoutKind: TimeoutKind | undefined;
+  let protocolError: ProtocolErrorInfo | undefined;
   let internalError: Error | undefined;
   let spawnError: Error | undefined;
   let escalated = false;
@@ -224,6 +251,8 @@ export function supervise(opts: SuperviseOptions): SupervisedRun {
   let finished = false;
   let wallTimer: NodeJS.Timeout | undefined;
   let idleTimer: NodeJS.Timeout | undefined;
+  let aborting: Promise<void> | undefined;
+  let stdinOpen = opts.keepStdinOpen === true && opts.stdinText === undefined;
 
   const clearTimers = () => {
     if (wallTimer) clearTimeout(wallTimer);
@@ -250,17 +279,57 @@ export function supervise(opts: SuperviseOptions): SupervisedRun {
     return termination;
   };
 
+  /** Resolves after `ms`, or as soon as the process has exited. */
+  const waitForExit = async (ms: number): Promise<void> => {
+    const end = Date.now() + ms;
+    while (!exitSeen && !finished && Date.now() < end) await sleep(POLL_MS);
+  };
+
   const abort = (r: NonNullable<typeof reason>): Promise<void> => {
     // After exit or completion the pgid may be reused; never signal then, and keep the natural outcome.
     if (exitSeen || finished) return termination ?? Promise.resolve();
     reason ??= r;
-    return terminate();
+    if (aborting) return aborting;
+    clearTimers();
+    const graceful =
+      (r === "timeout" || r === "cancelled") && opts.beforeTerminate !== undefined ? opts.beforeTerminate : undefined;
+    const pre = r === "completed" ? "completed" : graceful ? "graceful" : "none";
+    aborting = (async () => {
+      if (pre === "completed") {
+        endStdin();
+        await waitForExit(killGraceMs);
+      } else if (pre === "graceful" && graceful) {
+        let timer: NodeJS.Timeout | undefined;
+        await Promise.race([
+          graceful(r as "timeout" | "cancelled").catch(() => {}),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, killGraceMs);
+          }),
+        ]);
+        if (timer) clearTimeout(timer);
+      }
+      // The process may have exited meanwhile: the exit handler then sweeps any straggler, never a reused pgid.
+      if (exitSeen || finished) return termination;
+      return terminate();
+    })();
+    return aborting;
   };
+
+  function endStdin(): void {
+    if (!stdinOpen) return;
+    stdinOpen = false;
+    try {
+      child.stdin?.end();
+    } catch {
+      // already closed
+    }
+  }
 
   const reader = opts.onEvent
     ? new JsonlReader({
         maxLineBytes: opts.maxLineBytes ?? DEFAULT_MAX_LINE_BYTES,
         ...(opts.isIgnorableLine ? { isIgnorable: opts.isIgnorableLine } : {}),
+        ...(opts.rejectBlankLines === true ? { rejectBlankLines: true } : {}),
         onEvent: (value, lineNumber) => {
           try {
             opts.onEvent?.(value, lineNumber);
@@ -278,7 +347,7 @@ export function supervise(opts: SuperviseOptions): SupervisedRun {
 
   const armIdle = () => {
     if (idleTimer) clearTimeout(idleTimer);
-    if (termination) return;
+    if (termination || aborting) return;
     idleTimer = setTimeout(() => {
       timeoutKind = "idle";
       void abort("timeout");
@@ -311,6 +380,8 @@ export function supervise(opts: SuperviseOptions): SupervisedRun {
         failureCode = "OUTPUT_PROTOCOL_ERROR";
       } else if (reason === "internal_error") {
         outcome = "internal_error";
+      } else if (reason === "completed") {
+        outcome = "exited";
       } else if (signal !== null) {
         outcome = "crashed";
         failureCode = "PROCESS_CRASH";
@@ -369,6 +440,11 @@ export function supervise(opts: SuperviseOptions): SupervisedRun {
     if (opts.stdinText !== undefined && child.stdin) {
       child.stdin.on("error", () => {}); // EPIPE if the child exits before reading
       child.stdin.end(opts.stdinText);
+    } else if (stdinOpen && child.stdin) {
+      // A failed write is treated as the process ending (ADR-0036 item 3): stop writing; the exit decides the outcome.
+      child.stdin.on("error", () => {
+        stdinOpen = false;
+      });
     }
     try {
       opts.onSpawn?.({ pid, pgid: pid });
@@ -385,6 +461,31 @@ export function supervise(opts: SuperviseOptions): SupervisedRun {
       if (pid === undefined) return;
       await abort("cancelled");
     },
+    fail: (failure) => {
+      if (pid === undefined) return;
+      if (failure.kind === "protocol_error") {
+        if (reason === undefined && !exitSeen && !finished) protocolError = failure.error;
+        void abort("protocol_error");
+      } else {
+        if (reason === undefined && !exitSeen && !finished) timeoutKind = failure.timeoutKind;
+        void abort("timeout");
+      }
+    },
+    complete: async () => {
+      if (pid === undefined) return;
+      await abort("completed");
+    },
+    writeStdin: (data) => {
+      if (!stdinOpen || child.stdin === null || child.stdin.destroyed) return false;
+      try {
+        child.stdin.write(data);
+        return true;
+      } catch {
+        stdinOpen = false;
+        return false;
+      }
+    },
+    endStdin,
     result,
   };
 }

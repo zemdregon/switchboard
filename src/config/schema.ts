@@ -31,6 +31,13 @@ import {
   configProviderIds,
   providerGeneration,
 } from "../adapters/providers.js";
+import { MODEL_ID_PATTERN, type ModelConfig } from "../models/registry.js";
+import {
+  type InnerAgentConfig,
+  innerAgentSchema,
+  PROJECT_INNER_SETTINGS,
+  type ProjectInnerSetting,
+} from "./inner-agent.js";
 
 export const TRUST_PROFILES = [
   "inspect-untrusted",
@@ -74,7 +81,9 @@ export interface SwitchboardConfig {
     max_push_policy?: (typeof PUSH_POLICIES)[number];
   }[];
   limits?: { global_concurrency?: number; per_provider_concurrency?: number };
-  providers?: Partial<Record<ProviderId, { enabled?: boolean; weight?: number; git_channel?: boolean }>>;
+  providers?: Partial<
+    Record<ProviderId, { enabled?: boolean; weight?: number; git_channel?: boolean; models?: ModelConfig }>
+  >;
   /** Run retention (NFR-DATA-01, FR-WS-07). `interval` is `<n>m`, `<n>h` or `<n>d` (Proposed form). */
   retention?: { days?: number; interval?: string };
   /** Preflight cache TTL in seconds (NFR-PERF-02, T3.21). 0 disables the cache. */
@@ -89,6 +98,8 @@ export interface SwitchboardConfig {
    * that matches is removed from the message.
    */
   git?: { sanitize_patterns?: string[] };
+  /** Inner agent (M11, T11.1; FR-INN-01, LLD §13.1). Absent means off and nothing else changes. */
+  inner_agent?: InnerAgentConfig;
 }
 
 /** Context kinds delivered in M9 (FR-PRJ-02); any other value fails validation. */
@@ -127,6 +138,8 @@ export interface ContextConfig {
    * run whose adapter cannot receive the injected tool channel gets one controller commit at FINALIZING.
    */
   finalize_commit?: boolean;
+  /** T11.3 (LLD §13.1, FR-INN-16): `off` or `local_only` restrict the inner agent for runs in this context; default `inherit`. */
+  inner_agent?: ProjectInnerSetting;
 }
 
 export interface ProjectConfig {
@@ -136,6 +149,8 @@ export interface ProjectConfig {
   /** Shape only until T9.2 (FR-PRJ-06 enforcement). */
   max_trust_profile?: TrustProfile;
   allowed_providers?: ProviderId[];
+  /** T11.3 (LLD §13.1, FR-INN-16): `off` or `local_only` restrict the inner agent for this project; default `inherit`. */
+  inner_agent?: ProjectInnerSetting;
   contexts: ContextConfig[];
 }
 
@@ -148,6 +163,27 @@ export interface ProfileOverrideConfig {
   repo_config?: "disabled" | "approved-only" | "allowlisted";
 }
 
+/** `providers.<id>.models` (T4.5, FR-ADP-05, LLD §2.1; shape Delegated). */
+const modelsSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    ids: { type: "array", uniqueItems: true, maxItems: 256, items: { type: "string", pattern: MODEL_ID_PATTERN } },
+    aliases: {
+      type: "object",
+      maxProperties: 256,
+      propertyNames: { pattern: MODEL_ID_PATTERN },
+      additionalProperties: { type: "string", pattern: MODEL_ID_PATTERN },
+    },
+    context_limits: {
+      type: "object",
+      maxProperties: 256,
+      propertyNames: { pattern: MODEL_ID_PATTERN },
+      additionalProperties: { type: "integer", minimum: 1 },
+    },
+  },
+} as const;
+
 const providerPropsFor = (ids: readonly string[]) =>
   Object.fromEntries(
     ids.map((id) => [
@@ -158,6 +194,7 @@ const providerPropsFor = (ids: readonly string[]) =>
         properties: {
           enabled: { type: "boolean" },
           weight: { type: "number", minimum: 0, maximum: 1 },
+          models: modelsSchema,
           // T9.4b (ADR-0029): Claude Code only; any other provider refuses the key (additionalProperties: false).
           ...(id === "claude-code" ? { git_channel: { type: "boolean" } } : {}),
         },
@@ -212,6 +249,7 @@ const contextSchema = {
     },
     sign: { type: "boolean" },
     finalize_commit: { type: "boolean" },
+    inner_agent: { enum: [...PROJECT_INNER_SETTINGS] },
   },
 } as const;
 
@@ -243,6 +281,7 @@ export const projectSchema = {
     },
     max_trust_profile: { enum: [...TRUST_PROFILES] },
     allowed_providers: { type: "array", uniqueItems: true, items: { enum: [...PROVIDER_IDS] } },
+    inner_agent: { enum: [...PROJECT_INNER_SETTINGS] },
     contexts: { type: "array", minItems: 1, items: contextSchema },
   },
 } as const;
@@ -307,6 +346,7 @@ export const configSchema = {
       },
     },
     projects: { type: "array", items: projectSchema },
+    inner_agent: innerAgentSchema,
     git: {
       type: "object",
       additionalProperties: false,

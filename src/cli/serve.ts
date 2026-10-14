@@ -53,6 +53,7 @@ import path from "node:path";
 import type { FakeScenario } from "../adapters/fake/adapter.js";
 import {
   AdapterRegistry,
+  adapterIdForConfigId,
   configIdForAdapterId,
   createProbeRunner,
   PreflightCache,
@@ -66,12 +67,14 @@ import { GitToolService } from "../git/channel.js";
 import { GitPublisher } from "../git/commit.js";
 import { GitPusher, pushContextResolver } from "../git/push.js";
 import { createIdGenerator } from "../ids/index.js";
+import { createConfiguredInnerAgent, PROMPT_PROVIDER_NAMES } from "../inner/index.js";
 import { createLedger, openLedger } from "../ledger/index.js";
 import { RunLifecycle } from "../lifecycle/index.js";
 import { acquireDataDirLock, type DataDirLock } from "../lock/index.js";
 import { type SwitchboardMcpServer, startStdioServer } from "../mcp/index.js";
+import { type ModelConfig, ModelRegistry } from "../models/index.js";
 import { createProfileResolver } from "../policy/index.js";
-import { DynamicProjectStore } from "../projects/index.js";
+import { DynamicProjectStore, innerSettingResolver } from "../projects/index.js";
 import { reconcile } from "../reconcile/index.js";
 import { runRetentionGc, WorkspaceManager } from "../workspace/index.js";
 import { type CliIo, PROBE_ENV_ALLOWLIST } from "./io.js";
@@ -153,6 +156,16 @@ export function stderrLogger(io: CliIo): Logger {
 }
 
 /** Provider enablement from config (`providers.<config id>.enabled`, default on); the fake follows the test switch. */
+/** T4.5 (FR-ADP-05, LLD §2.1): the model registry from `providers.<id>.models`, keyed by adapter id. */
+function modelRegistry(config: ResolvedConfig): ModelRegistry {
+  const byAdapter = new Map<string, ModelConfig>();
+  for (const [configId, models] of config.providerModels) {
+    const adapterId = adapterIdForConfigId(configId);
+    if (adapterId !== undefined) byAdapter.set(adapterId, models);
+  }
+  return new ModelRegistry(byAdapter);
+}
+
 function enablement(config: ResolvedConfig, fake: FakeSwitch): (id: ProviderId) => boolean {
   return (id) => {
     if (id === "fake") return fake.enabled;
@@ -295,6 +308,20 @@ async function runDaemon(
     return 1;
   }
 
+  // T11.4 (FR-INN-10, ADR-0016): the inner-agent service, first wired for the commit-message task. With no
+  // `inner_agent` section, or `enabled: false`, it is `off` and every task falls back (FR-INN-01).
+  const innerAgent = createConfiguredInnerAgent(config.innerAgent, {
+    ledger,
+    providerNames: [...config.providers.keys(), ...PROMPT_PROVIDER_NAMES],
+    logger: (entry) => log.info("inner agent call", entry),
+  });
+  // LLD §13.1 and the T11.3 note: the effective project/context setting, resolved from the current configuration (or a
+  // dynamic project's revision in force) at channel open and at every commit call; an unknown project reads as `off`.
+  const innerSettingFor = innerSettingResolver(
+    config.projects,
+    new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
+  );
+
   // T9.4: commit intents left by a crash (ADR-0025), then socket directories of channels a crash left open (ADR-0026).
   let gitTools: GitToolService;
   let finalizePublisher: GitPublisher;
@@ -331,6 +358,8 @@ async function runDaemon(
         ...(now ? { now } : {}),
       }),
       shimCommand: defaultShimCommand(),
+      innerAgent,
+      innerSettingFor,
       fallbackDirs: [io.env.XDG_RUNTIME_DIR, os.tmpdir()].filter((d): d is string => typeof d === "string" && d !== ""),
       ...(now ? { now } : {}),
     });
@@ -408,7 +437,7 @@ async function runDaemon(
     resolveProfile: createProfileResolver(config.profileOverrides),
     probeRunner: createProbeRunner(PROBE_ENV_ALLOWLIST),
     baseEnv: io.env,
-    eligibility: { gate: gateFor(registry, fake), isEnabled: enablement(config, fake) },
+    eligibility: { gate: gateFor(registry, fake), isEnabled: enablement(config, fake), models: modelRegistry(config) },
     preflightCache: new PreflightCache({ ttlMs: config.preflightTtlMs }),
     gitTools,
     finalizePublisher,

@@ -70,9 +70,9 @@
  *   PERMISSION_BLOCKED (ROADMAP §6.2.1). PERMISSION_BLOCKED remains only for the client ceiling (BR-13), the
  *   privileged approval check (T3.4) and a refused bypass flag in the argv audit.
  */
-import { readFileSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import {
+  AcpPlanAuditError,
   type AdapterRegistry,
   type AdapterRun,
   type AdapterRunOutcome,
@@ -93,6 +93,7 @@ import {
 } from "../adapters/index.js";
 import type { ArtifactStore } from "../artifacts/index.js";
 import { isUnderAllowedRoot, TRUST_PROFILES } from "../config/index.js";
+import { procStartTicks } from "../exec/proc-info.js";
 import { ChannelOpenError, type GitToolService, type OpenChannel } from "../git/channel.js";
 import type { GitPublisher } from "../git/commit.js";
 import { credentialReachFromJson, signingReachFromJson } from "../git/credential-reach.js";
@@ -1098,6 +1099,16 @@ export class RunLifecycle {
           // T9.4b: `--mcp-config` and MCP allow rules only in the channel's exact shape (ADR-0029 item 6).
           ...(channelAudit ? { channel: channelAudit } : {}),
           ...(this.opts.baseEnv ? { baseEnv: this.opts.baseEnv } : {}),
+          // T4.8 (ADR-0036 item 9): an `acp-stdio` run answers permission requests from this frozen snapshot only.
+          // No read-only context is passed yet (fail closed: reads outside the worktree are rejected).
+          ...(inv.transport === "acp-stdio"
+            ? {
+                acp: {
+                  snapshot: { profile, worktree: inv.cwd, writable: ws.mode === "worktree", readOnlyContexts: [] },
+                  onRunEvent: (e) => this.ledger.appendRunEvent({ runId, type: e.type, payload: e.payload }),
+                },
+              }
+            : {}),
           onSpawn: ({ pid, pgid }) => {
             this.move(
               this.current(runId),
@@ -1123,6 +1134,10 @@ export class RunLifecycle {
         if (err instanceof McpConfigAuditError) {
           await channel?.close();
           return this.fail(runId, "PERMISSION_BLOCKED", err.message.slice(0, 500), { reason: "MCP_CONFIG_REFUSED" });
+        }
+        if (err instanceof AcpPlanAuditError) {
+          await channel?.close();
+          return this.fail(runId, "PERMISSION_BLOCKED", err.message.slice(0, 500), { reason: "ACP_PLAN_REFUSED" });
         }
         if (err instanceof IsolationAuditError) {
           await channel?.close();
@@ -1754,17 +1769,8 @@ function compactEvent(ev: NormalizedEvent): Record<string, unknown> {
   }
 }
 
-/** Linux: process start time in clock ticks (field 22 of /proc/<pid>/stat), guarding PID reuse (LLD §8). */
-export function procStartTicks(pid: number): number | null {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-    const ticks = Number(rest[19]);
-    return Number.isFinite(ticks) ? ticks : null;
-  } catch {
-    return null;
-  }
-}
+/** Re-exported for callers that recorded start ticks through the lifecycle (LLD §8.3). */
+export { procStartTicks };
 
 /** A Node.js file-system error (has a string `code` such as `EEXIST`). */
 function isFsError(err: unknown): boolean {

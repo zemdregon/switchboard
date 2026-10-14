@@ -1,4 +1,5 @@
 import type { AdapterRegistry } from "../adapters/index.js";
+import type { InnerBackend } from "../inner/port.js";
 
 /** Injectable process surface so tests call `main` directly (no spawn). */
 export interface CliIo {
@@ -13,6 +14,10 @@ export interface CliIo {
   /** Adapters `doctor` probes. Defaults to the fake adapter only (M1). */
   readonly adapters?: AdapterRegistry;
   readonly now?: () => Date;
+  /** Test seam (T11.7): an inner backend to use instead of the one the configuration names (`doctor`, `inner test`). */
+  readonly innerBackend?: InnerBackend;
+  /** `adapters validate` only (T4.4): the manifest directory to read and write. Tests inject it; default is the source tree. */
+  readonly manifestDir?: string;
 }
 
 /** Stable `--json` schema version for every command (Proposed). */

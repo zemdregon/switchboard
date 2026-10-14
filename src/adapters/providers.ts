@@ -6,7 +6,9 @@
  * - `CONFIG_TO_ADAPTER_ID` (`src/routing/collect.ts`) and the runtime lookups {@link adapterIdForConfigId} and
  *   {@link configIdForAdapterId};
  * - the adapters `serve` registers (`buildRegistry`) and `doctor` probes (`defaultAdapters`, with its labels);
- * - the bypass-class flags the argv audit refuses on top of the shared `BYPASS_FLAGS` ({@link declaredBypassFlags}).
+ * - the bypass-class flags the argv audit refuses on top of the shared `BYPASS_FLAGS` ({@link declaredBypassFlags}),
+ *   and the short spellings and flag values it refuses ({@link declaredBypassShortFlags},
+ *   {@link declaredBypassValues}; ADR-0037), the latter two only from entries that have an adapter (`create`).
  *
  * Adding an adapter: its module, manifest and fixtures, plus one entry here. Per-adapter modules are not re-exported
  * from `./index.ts`; Claude Code and Codex stay exported there for the code that already imports them.
@@ -18,13 +20,14 @@
  *
  * Runtime registration ({@link registerProvider}) exists so a test can register a scratch adapter from a fixture
  * module with no source edit (the T4.1 "Done when"). It can only add: it refuses an id or config id already in use,
- * a test-only entry, and malformed flags; the shared `BYPASS_FLAGS` and every built-in declaration stay in force.
+ * a test-only entry, and malformed flags, short flags or values; the shared `BYPASS_FLAGS` and every built-in
+ * declaration stay in force.
  * Its static limit: TypeScript's `ProviderId` is the built-in union, so a runtime id needs a cast (tests only).
  */
 import { ClaudeAdapter } from "./claude/adapter.js";
 import { CodexAdapter } from "./codex/adapter.js";
 import { FakeAdapter, type FakeScenario } from "./fake/adapter.js";
-import type { ProviderAdapter } from "./types.js";
+import type { AcpDeclarations, ProviderAdapter } from "./types.js";
 
 /** What `serve` and `doctor` pass to an entry's factory. Fields are named after the provider they configure. */
 export interface ProviderFactoryOptions {
@@ -32,6 +35,17 @@ export interface ProviderFactoryOptions {
   readonly claudeGitChannel?: boolean;
   /** Test-only fake scenario (`serve`'s fake switch); only the fake factory reads it. */
   readonly fakeScenario?: FakeScenario;
+}
+
+/**
+ * A bypass-class setting given as the value of a flag (ADR-0037): the audit refuses `<flag> <value>` (two argv words)
+ * and `<flag>=<value>`; the value is compared case-insensitively (`toLowerCase`; Delegated: deliberately over-refuses).
+ */
+export interface BypassValue {
+  /** The flag that takes the value, `-x` or `--name` (same shape as `bypassFlags`). */
+  readonly flag: string;
+  /** The bypass-class value: non-empty, at most 128 characters, no whitespace or control characters. */
+  readonly value: string;
 }
 
 /** One provider: static data plus, once its adapter module exists, a factory. */
@@ -50,6 +64,20 @@ export interface ProviderEntry {
    * approved `privileged` scope that sets `bypass` (ADR-0017, ADR-0035). Adds to the shared list; removes nothing.
    */
   readonly bypassFlags: readonly string[];
+  /**
+   * Short bypass-class spellings (`-x`, ADR-0037). The audit refuses each one alone, as `-x=value`, and inside any
+   * single-dash cluster of letters and digits (`-px`, `-xp`): deliberate over-refusal, since whether the CLI accepts a
+   * cluster is not known. Counted only while the entry has `create` (no effect before its adapter exists).
+   */
+  readonly bypassShortFlags?: readonly string[];
+  /** Bypass-class flag values (ADR-0037); counted only while the entry has `create`, as `bypassShortFlags`. */
+  readonly bypassValues?: readonly BypassValue[];
+  /**
+   * ACP facts (ADR-0036 items 9 and 10; LLD §2 `AcpDeclarations`): bypass-class mode ids and config option values,
+   * refused in an `acp` plan outside the approved bypass case, and optional parsers that only narrow permission answers.
+   * Additive only, like the flags.
+   */
+  readonly acp?: AcpDeclarations;
   /** Absent while the provider has no adapter module yet (reserved id: accepted in config, never registered). */
   readonly create?: (opts: ProviderFactoryOptions) => ProviderAdapter;
 }
@@ -70,6 +98,9 @@ export const BUILTIN_PROVIDERS = [
     // all permission checks") and `--allow-dangerously-skip-permissions`. The mode value `bypassPermissions` is a
     // value of `--permission-mode`, not a flag; the adapter never emits it (see its header).
     bypassFlags: ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"],
+    // Same source: the `--permission-mode` choice `bypassPermissions` (which `--restricted` "refuses"). The adapter
+    // never emits it; before ADR-0037 only its compile tests said so, now the pre-spawn audit refuses it too.
+    bypassValues: [{ flag: "--permission-mode", value: "bypassPermissions" }],
     create: (o: ProviderFactoryOptions): ProviderAdapter =>
       new ClaudeAdapter({ gitChannel: o.claudeGitChannel === true }),
   },
@@ -82,9 +113,38 @@ export const BUILTIN_PROVIDERS = [
     bypassFlags: ["--yolo", "--full-auto"],
     create: (): ProviderAdapter => new CodexAdapter(),
   },
-  { id: "grok", configId: "grok-build", kind: "real", bypassFlags: [] },
+  {
+    id: "grok",
+    configId: "grok-build",
+    kind: "real",
+    // Its long bypass flags (`--always-approve`, `--yolo`, `--dangerously-skip-permissions`) are shared `BYPASS_FLAGS`.
+    bypassFlags: [],
+    // TDD §4.3.1 "Bypass-class flags" ([CLI], [ENT], [PERM]; documentation only, Unverified: T4.21): the mode value
+    // `bypassPermissions`; a catch-all `allow` rule (`*`, `**`; Proposed), also through `--allowed-tools`, which [CL]
+    // 1.0.51 documents as an alias of `--allow`. Inert until the adapter (T4.22) adds `create` (ADR-0037).
+    bypassValues: [
+      { flag: "--permission-mode", value: "bypassPermissions" },
+      { flag: "--allow", value: "*" },
+      { flag: "--allow", value: "**" },
+      { flag: "--allowed-tools", value: "*" },
+      { flag: "--allowed-tools", value: "**" },
+    ],
+  },
+  // TDD §4.4.2: its one bypass flag (`--dangerously-skip-permissions`) is shared; `always-proceed` is a settings value.
   { id: "antigravity", configId: "antigravity", kind: "real", bypassFlags: [] },
-  { id: "cursor", configId: "cursor", kind: "real", bypassFlags: [] },
+  {
+    id: "cursor",
+    configId: "cursor",
+    kind: "real",
+    // `--force`, `--yolo` and `--approve-mcps` are shared `BYPASS_FLAGS`. TDD §4.5 "Bypass-class flags" ([C1];
+    // documentation only, Unverified: T4.41; Proposed): `-f`, the short form of `--force`, and `--sandbox disabled`.
+    // Inert until the adapter (T4.42) adds `create` (ADR-0037).
+    bypassFlags: [],
+    bypassShortFlags: ["-f"],
+    bypassValues: [{ flag: "--sandbox", value: "disabled" }],
+  },
+  // TDD §4.6.2: `--auto` is a long flag (declared with the adapter, T4.52); the inline `allow` permission travels in
+  // `OPENCODE_PERMISSION`/`OPENCODE_CONFIG_CONTENT`, which the argv audit does not see (ADR-0037 limits).
   { id: "opencode", configId: "opencode", kind: "real", bypassFlags: [] },
   { id: "kimi", configId: "kimi-code", kind: "real", bypassFlags: [] },
   {
@@ -92,6 +152,12 @@ export const BUILTIN_PROVIDERS = [
     kind: "test",
     label: "fake adapter (test stand-in, not a real provider)",
     bypassFlags: [],
+    // T4.8: the fake ACP agent's made-up bypass-class mode and option value, so the plan audit and the
+    // `current_mode_update` check (ADR-0036 item 10) are exercised without a provider.
+    acp: {
+      bypassModeIds: ["fake-bypass-mode"],
+      bypassConfigValues: [{ configId: "fake-approval", value: "never-ask" }],
+    },
     create: (o: ProviderFactoryOptions): ProviderAdapter =>
       new FakeAdapter(o.fakeScenario !== undefined ? { scenario: o.fakeScenario } : {}),
   },
@@ -125,6 +191,41 @@ export const BUILTIN_CONFIG_TO_ADAPTER_ID: Readonly<Record<ConfigProviderId, Bui
 const ID_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 /** Flag shape (Delegated): `-x` or `--name`, no value part (`=`), no whitespace. The audit also matches `flag=value`. */
 const FLAG_PATTERN = /^(?:-[A-Za-z0-9]|--[A-Za-z0-9][A-Za-z0-9-]*)$/;
+/** Short flag shape (ADR-0037): one dash, one letter or digit. */
+const SHORT_FLAG_PATTERN = /^-[A-Za-z0-9]$/;
+/** Value shape (ADR-0037, Delegated): 1 to 128 characters, no whitespace or control characters. */
+const VALUE_PATTERN = /^[^\s\p{Cc}]{1,128}$/u;
+
+function valueProblems(v: unknown): string[] {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return [`malformed bypass value ${JSON.stringify(v)}`];
+  const o = v as Record<string, unknown>;
+  const keysOk = Object.keys(o).every((k) => k === "flag" || k === "value");
+  const ok =
+    keysOk &&
+    typeof o.flag === "string" &&
+    FLAG_PATTERN.test(o.flag) &&
+    typeof o.value === "string" &&
+    VALUE_PATTERN.test(o.value);
+  return ok ? [] : [`malformed bypass value ${JSON.stringify(v)}`];
+}
+
+/** ACP declarations (T4.8, Delegated shape check): lists of 1 to 128 character strings without control characters. */
+function acpProblems(acp: AcpDeclarations): string[] {
+  const okString = (v: unknown) => typeof v === "string" && /^[^\p{Cc}]{1,128}$/u.test(v);
+  const problems: string[] = [];
+  if (!Array.isArray(acp.bypassModeIds) || !acp.bypassModeIds.every(okString)) {
+    problems.push("malformed acp.bypassModeIds");
+  }
+  if (
+    !Array.isArray(acp.bypassConfigValues) ||
+    !acp.bypassConfigValues.every(
+      (v) => typeof v === "object" && v !== null && okString(v.configId) && okString(v.value),
+    )
+  ) {
+    problems.push("malformed acp.bypassConfigValues");
+  }
+  return problems;
+}
 
 function entryProblems(entry: ProviderEntry, others: readonly ProviderEntry[]): string[] {
   const problems: string[] = [];
@@ -141,6 +242,21 @@ function entryProblems(entry: ProviderEntry, others: readonly ProviderEntry[]): 
       if (typeof f !== "string" || !FLAG_PATTERN.test(f)) problems.push(`malformed bypass flag ${JSON.stringify(f)}`);
     }
   }
+  if (entry.bypassShortFlags !== undefined) {
+    if (!Array.isArray(entry.bypassShortFlags)) problems.push("bypassShortFlags must be an array");
+    else {
+      for (const f of entry.bypassShortFlags) {
+        if (typeof f !== "string" || !SHORT_FLAG_PATTERN.test(f)) {
+          problems.push(`malformed bypass short flag ${JSON.stringify(f)}`);
+        }
+      }
+    }
+  }
+  if (entry.bypassValues !== undefined) {
+    if (!Array.isArray(entry.bypassValues)) problems.push("bypassValues must be an array");
+    else for (const v of entry.bypassValues as unknown[]) problems.push(...valueProblems(v));
+  }
+  if (entry.acp !== undefined) problems.push(...acpProblems(entry.acp));
   const ids = new Set(others.flatMap((o) => [o.id, ...(o.configId !== undefined ? [o.configId] : [])]));
   // Ids and config ids share one namespace across entries (`codex` is both for one provider, which is allowed).
   if (ids.has(entry.id)) problems.push(`id ${entry.id} is already registered`);
@@ -166,6 +282,17 @@ export class ProviderRegistrationError extends Error {
     if (problems.length > 0) throw new ProviderRegistrationError(problems);
     seen.push(e);
     Object.freeze(e.bypassFlags);
+    if (e.bypassShortFlags !== undefined) Object.freeze(e.bypassShortFlags);
+    if (e.bypassValues !== undefined) {
+      for (const v of e.bypassValues) Object.freeze(v);
+      Object.freeze(e.bypassValues);
+    }
+    if (e.acp !== undefined) {
+      Object.freeze(e.acp.bypassModeIds);
+      for (const v of e.acp.bypassConfigValues) Object.freeze(v);
+      Object.freeze(e.acp.bypassConfigValues);
+      Object.freeze(e.acp);
+    }
     Object.freeze(e);
   }
   Object.freeze(BUILTIN_PROVIDERS);
@@ -183,7 +310,14 @@ export function registerProvider(entry: ProviderEntry): () => void {
   const problems = entryProblems(entry, providerEntries());
   if (entry.kind === "test") problems.push("test-only entries are built in only (the fake adapter)");
   if (problems.length > 0) throw new ProviderRegistrationError(problems);
-  const frozen: ProviderEntry = Object.freeze({ ...entry, bypassFlags: Object.freeze([...entry.bypassFlags]) });
+  const frozen: ProviderEntry = Object.freeze({
+    ...entry,
+    bypassFlags: Object.freeze([...entry.bypassFlags]),
+    ...(entry.bypassShortFlags !== undefined ? { bypassShortFlags: Object.freeze([...entry.bypassShortFlags]) } : {}),
+    ...(entry.bypassValues !== undefined
+      ? { bypassValues: Object.freeze(entry.bypassValues.map((v) => Object.freeze({ flag: v.flag, value: v.value }))) }
+      : {}),
+  });
   extra.push(frozen);
   generation += 1;
   let removed = false;
@@ -226,7 +360,36 @@ export function configIdForAdapterId(id: string): string | undefined {
   return providerEntries().find((e) => e.id === id)?.configId;
 }
 
+/** The ACP declarations of adapter id `id`, if its entry has any (ADR-0036 items 9 and 10). */
+export function acpDeclarations(id: string): AcpDeclarations | undefined {
+  return providerEntry(id)?.acp;
+}
+
 /** Every adapter-declared bypass-class flag (deduplicated; the argv audit adds these to `BYPASS_FLAGS`). */
 export function declaredBypassFlags(): string[] {
   return [...new Set(providerEntries().flatMap((e) => e.bypassFlags))];
+}
+
+/**
+ * Every declared short bypass-class spelling (`-x`, deduplicated) of the entries that have an adapter (`create`);
+ * a reserved entry's declaration is data only until its adapter task adds the factory (ADR-0037).
+ */
+export function declaredBypassShortFlags(): string[] {
+  return [...new Set(providerEntries().flatMap((e) => (e.create !== undefined ? (e.bypassShortFlags ?? []) : [])))];
+}
+
+/**
+ * Every declared bypass-class flag value of the entries that have an adapter (`create`), deduplicated by flag and
+ * lower-cased value (first declaration kept); reserved entries as in {@link declaredBypassShortFlags}.
+ */
+export function declaredBypassValues(): BypassValue[] {
+  const out = new Map<string, BypassValue>();
+  for (const e of providerEntries()) {
+    if (e.create === undefined) continue;
+    for (const v of e.bypassValues ?? []) {
+      const key = `${v.flag}\u0000${v.value.toLowerCase()}`;
+      if (!out.has(key)) out.set(key, { flag: v.flag, value: v.value });
+    }
+  }
+  return [...out.values()];
 }

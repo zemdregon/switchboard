@@ -70,6 +70,10 @@ export interface CommitProvenanceView {
   adapter_version: string | null;
   tool_event_id: string | null;
   sanitizer: { rules: Record<string, number> };
+  /** T11.4 (LLD §12.7): `inner` when the inner agent drafted the message, else `agent`. Never the message itself. */
+  message_source: "agent" | "inner";
+  /** T11.4: the `inner_call` row of the accepted draft; null for an agent message. */
+  inner_call_id: string | null;
   created_at: string;
   pushed_to: { push_id: string; remote: string; ref: string; at: string }[];
 }
@@ -85,6 +89,18 @@ export interface PushView {
   requested_by: string;
   run_id: string | null;
   created_at: string;
+}
+
+/**
+ * T4.6 (FR-ADP-10): one provider-reported `usage_observation` row as `runs show` presents it, with the harness and the
+ * backing provider side by side. Metrics are the provider's figures as stored; no estimate is ever listed.
+ */
+export interface UsageView {
+  harness: string;
+  backing_provider: string | null;
+  model: string | null;
+  observed_at: string;
+  metrics: Record<string, number | string | null>;
 }
 
 /**
@@ -148,7 +164,7 @@ export function showRun(
   io: CliIo,
   argv: readonly string[],
   runId: string,
-): { run: RunDetail; events: RunEventView[]; approval?: ApprovalView } | undefined {
+): { run: RunDetail; events: RunEventView[]; approval?: ApprovalView; usage?: UsageView[] } | undefined {
   const db = openReadOnly(dataDirFor(io, argv));
   if (!db) return undefined;
   try {
@@ -166,6 +182,7 @@ export function showRun(
       >[]
     ).map((e) => ({ seq: e.seq, ts: e.ts, type: e.type, payload: JSON.parse(e.payload_json) as unknown }));
     const approval = row.trust_profile === "privileged" ? approvalView(db, runId) : undefined;
+    const usage = usageViews(db, runId);
     return {
       run: {
         ...row,
@@ -177,10 +194,35 @@ export function showRun(
       },
       events,
       ...(approval ? { approval } : {}),
+      ...(usage.length > 0 ? { usage } : {}),
     };
   } finally {
     db.close();
   }
+}
+
+/** T4.6: the run's provider-reported usage rows (harness, backing provider, model, metrics); none when none exist. */
+function usageViews(db: Database.Database, runId: string): UsageView[] {
+  if (!hasTable(db, "usage_observation")) return [];
+  const rows = db
+    .prepare(
+      `SELECT harness, backing_provider, model, observed_at, metrics_json FROM usage_observation
+       WHERE run_id = ? AND source = 'provider_reported' ORDER BY observed_at, id`,
+    )
+    .all(runId) as {
+    harness: string;
+    backing_provider: string | null;
+    model: string | null;
+    observed_at: string;
+    metrics_json: string;
+  }[];
+  return rows.map((r) => ({
+    harness: r.harness,
+    backing_provider: r.backing_provider,
+    model: r.model,
+    observed_at: r.observed_at,
+    metrics: JSON.parse(r.metrics_json) as UsageView["metrics"],
+  }));
 }
 
 /** T9.7: the newest `git_finalize_commit` event as `{ finalize_commit }`, or nothing. Codes and SHAs only. */
@@ -265,6 +307,8 @@ function commitProvenance(db: Database.Database, runId: string, metaSessionId: s
       adapter_version: c.adapter_version,
       tool_event_id: c.tool_event_id,
       sanitizer,
+      message_source: c.message_source === "inner" ? "inner" : "agent",
+      inner_call_id: c.inner_call_id ?? null,
       created_at: c.created_at,
       pushed_to: pushedTo.get(c.commit_sha) ?? [],
     };
@@ -466,7 +510,12 @@ export function renderRunList(runs: readonly RunSummary[]): string {
   return `${[fmt(head), ...rows.map(fmt)].join("\n")}\n`;
 }
 
-export function renderRun(d: { run: RunDetail; events: RunEventView[]; approval?: ApprovalView }): string {
+export function renderRun(d: {
+  run: RunDetail;
+  events: RunEventView[];
+  approval?: ApprovalView;
+  usage?: UsageView[];
+}): string {
   const r = d.run;
   const lines = [
     `Run ${r.id}`,
@@ -502,6 +551,7 @@ export function renderRun(d: { run: RunDetail; events: RunEventView[]; approval?
         `    project ${c.project_id}  context ${c.context_id}  session ${c.meta_session_id}  run ${c.run_id}`,
         `    provider ${c.provider} (harness ${c.harness})  model ${c.model ?? "-"}  adapter version ${c.adapter_version ?? c.adapter_version_id ?? "-"}`,
         `    sanitiser: ${rules === "" ? "nothing removed" : rules}`,
+        `    message: ${c.message_source === "inner" ? `drafted by the inner agent (${c.inner_call_id ?? "call not recorded"})` : "agent"}`,
         `    pushed: ${c.pushed_to.length === 0 ? "no" : c.pushed_to.map((p) => `${p.remote} ${p.ref} (${p.push_id}, ${p.at})`).join("; ")}`,
       );
     }
@@ -511,6 +561,14 @@ export function renderRun(d: { run: RunDetail; events: RunEventView[]; approval?
     for (const p of r.pushes) {
       lines.push(
         `  ${p.id}  ${p.outcome}${p.reason ? ` (${p.reason})` : ""}  ${p.remote || "-"} ${p.ref || "-"}  head ${p.head_sha || "-"}  by ${p.requested_by}  ${p.created_at}`,
+      );
+    }
+  }
+  if (d.usage && d.usage.length > 0) {
+    lines.push("", "Usage (provider-reported, FR-ADP-10):");
+    for (const u of d.usage) {
+      lines.push(
+        `  harness ${u.harness}  backing provider ${u.backing_provider ?? "-"}  model ${u.model ?? "-"}  ${u.observed_at}  ${JSON.stringify(u.metrics)}`,
       );
     }
   }

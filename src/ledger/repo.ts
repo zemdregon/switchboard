@@ -190,7 +190,8 @@ export type ArtifactKind =
   | "test_report"
   | "changed_files"
   | "log_summary"
-  | "handoff_view";
+  | "handoff_view"
+  | "pr_draft"; // T11.8, migration 0009
 
 export interface NewArtifactRow {
   runId: string | null;
@@ -244,7 +245,7 @@ export interface UsageObservationRow {
   harness: string;
   backing_provider: string | null;
   model: string | null;
-  source: "provider_reported" | "controller_estimated";
+  source: "provider_reported" | "controller_estimated" | "inner_agent";
   metrics_json: string;
   observed_at: string;
 }
@@ -376,6 +377,10 @@ export interface GitCommitRow {
   tool_event_id: string | null;
   sanitizer_json: string;
   created_at: string;
+  /** T11.4 (migration 0007, LLD §12.7): `inner` when the inner agent drafted the message; `agent` otherwise. */
+  message_source: "agent" | "inner";
+  /** T11.4: the `inner_call` row of the accepted draft; NULL for an agent message. */
+  inner_call_id: string | null;
 }
 
 /** Everything `recordGitCommit` needs. `id`, `tool_event_id` and `created_at` are assigned by the ledger. */
@@ -398,6 +403,10 @@ export interface NewGitCommit {
   sanitizer: unknown;
   /** Payload of the `git_commit` run event written in the same transaction (bounded: SHAs, counts, rule ids). */
   eventPayload: unknown;
+  /** T11.4 (LLD §12.7): default `agent`. */
+  messageSource?: "agent" | "inner";
+  /** T11.4: only with `messageSource: "inner"` (the column CHECK refuses it otherwise). */
+  innerCallId?: string | null;
 }
 
 /** One `git_push` row (FR-GIT-05; LLD §1 "M9 additions", §12.6). Append-only. Never holds a URL or Git output. */
@@ -435,6 +444,82 @@ export interface NewGitPush {
   requestedBy: GitPushRow["requested_by"];
   /** Payload of the `git_push` run event (bounded; SHAs, names and codes only). `push_id` is added by the ledger. */
   eventPayload: Record<string, unknown>;
+}
+
+export type InnerCallOutcome =
+  | "accepted"
+  | "rejected_validator"
+  | "rejected_sanitiser"
+  | "fallback_unavailable"
+  | "fallback_suspended"
+  | "fallback_disabled";
+
+/** One `inner_call` row (T11.2, LLD §13.3). No prompt or response body: sizes and a hash only (FR-INN-16). */
+export interface InnerCallRow {
+  id: string;
+  task: string;
+  backend_kind: "http" | "cli";
+  model_id: string;
+  locality: "local" | "remote";
+  template_version: string;
+  outcome: InnerCallOutcome;
+  reason: string | null;
+  attempts: number;
+  latency_ms: number;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  input_bytes: number;
+  output_bytes: number;
+  input_sha256: string;
+  run_id: string | null;
+  meta_session_id: string | null;
+  created_at: string;
+}
+
+/** Everything `recordInnerCall` needs; `id` and `created_at` are assigned by the ledger. */
+export type NewInnerCall = Omit<InnerCallRow, "id" | "created_at">;
+
+/** Extra run events written in the same transaction as the `inner_call` row, for a call tied to a run (LLD §13.8). */
+export interface InnerCallEvents {
+  /** Merged into the `inner_call` event payload (for example `title` and `summary` of a `run_title`). */
+  callPayload?: Record<string, unknown>;
+  artifactId?: string | null;
+  /** `inner_degraded` / `inner_task_suspended` events, appended after the `inner_call` event. */
+  extra?: { type: string; payload: unknown }[];
+  /**
+   * `inner_agent.backend.shares_subscription_with` (FR-INN-15, LLD §13.4 step 13). When set and a backend request was
+   * actually made (`attempts >= 1`), one `usage_observation` for this provider with `source = 'inner_agent'` is written
+   * in the same transaction as the `inner_call` row. Absent or null: nothing is written to `usage_observation`.
+   */
+  sharedSubscriptionWith?: string | null;
+  /**
+   * T11.6 (FR-INN-09, LLD §13.4 step 11): the quality window. When set and the recorded outcome is a quality outcome
+   * (`accepted`, `rejected_validator`, `rejected_sanitiser`), the ledger evaluates the task's window in the same
+   * transaction and suspends the task when at least `minCalls` calls exist and the rejected share exceeds
+   * `rejectionThreshold`. Absent: no evaluation (callers that only record).
+   */
+  suspension?: { windowCalls: number; minCalls: number; rejectionThreshold: number };
+}
+
+/** Evidence of a suspension (`inner_task_state.suspended_basis_json`, the `inner_task_suspended` event payload). */
+export interface InnerSuspensionBasis {
+  window_calls: number;
+  rejected: number;
+  total: number;
+  threshold: number;
+}
+
+/** Result of `recordInnerCall`: the row, plus the basis when this very call suspended its task. Not a column. */
+export type RecordedInnerCall = InnerCallRow & { suspended_task?: InnerSuspensionBasis };
+
+/** One `inner_task_state` row (T11.6, LLD §13.3), with the basis decoded. */
+export interface InnerTaskStateRow {
+  task: string;
+  suspended: boolean;
+  suspended_at: string | null;
+  suspended_basis: InnerSuspensionBasis | null;
+  resumed_at: string | null;
+  version: number;
 }
 
 export interface Ledger {
@@ -570,6 +655,27 @@ export interface Ledger {
   getGitPush(id: string): GitPushRow | undefined;
   /** Whether an ACCEPTED `git_push` row pushed exactly `headSha` to `ref` on the remote named `remote` (T9.6). */
   hasAcceptedPush(remote: string, ref: string, headSha: string): boolean;
+
+  // ---- T11.2 additions (inner-agent call pipeline, LLD §13.3, §13.4 step 13, §13.8) --------------------------------
+  /**
+   * In ONE `BEGIN IMMEDIATE` transaction insert the append-only `inner_call` row and, only when `input.run_id` is set,
+   * the `inner_call` run event (payload: ids, outcome and sizes, never text) plus any `events.extra`. Returns the row.
+   */
+  recordInnerCall(input: NewInnerCall, events?: InnerCallEvents): RecordedInnerCall;
+  /** `inner_call` rows, oldest first, optionally of one run. */
+  listInnerCalls(filter?: { runId?: string }): InnerCallRow[];
+
+  // ---- T11.6 additions (quality monitoring and suspension, FR-INN-09, LLD §13.3, §13.4 step 11) --------------------
+  /** The task's `inner_task_state` row; `undefined` when it was never suspended (equivalent to not suspended). */
+  getInnerTaskState(task: string): InnerTaskStateRow | undefined;
+  /** Every `inner_task_state` row, by task. */
+  listInnerTaskStates(): InnerTaskStateRow[];
+  /**
+   * Re-enable a suspended task in one transaction: `suspended = 0`, the suspension fields cleared, `resumed_at` set
+   * (quality counting restarts after it), `version` incremented. Returns the new state, or `undefined` when the task was
+   * not suspended (nothing is changed or recorded). Writes no run event (LLD §13.8).
+   */
+  resumeInnerTask(task: string): InnerTaskStateRow | undefined;
 }
 
 export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledger {
@@ -602,19 +708,79 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
   const getRunRecord = (id: string) => db.prepare(`${RUN_RECORD_SQL} WHERE id = ?`).get(id) as RunRecord | undefined;
 
   /** Insert the next event inside the caller's transaction. */
-  const insertEvent = (runId: string, type: string, payload: unknown, when: string): string => {
+  // ---- T11.6 helpers (inner_task_state) --------------------------------------------------------------------------
+  const QUALITY_OUTCOMES: readonly string[] = ["accepted", "rejected_validator", "rejected_sanitiser"];
+  const STATE_COLS = "task, suspended, suspended_at, suspended_basis_json, resumed_at, version";
+  interface InnerTaskStateDbRow {
+    task: string;
+    suspended: number;
+    suspended_at: string | null;
+    suspended_basis_json: string | null;
+    resumed_at: string | null;
+    version: number;
+  }
+  const toInnerTaskState = (r: InnerTaskStateDbRow): InnerTaskStateRow => ({
+    task: r.task,
+    suspended: r.suspended === 1,
+    suspended_at: r.suspended_at,
+    suspended_basis:
+      r.suspended_basis_json === null ? null : (JSON.parse(r.suspended_basis_json) as InnerSuspensionBasis),
+    resumed_at: r.resumed_at,
+    version: r.version,
+  });
+  const readInnerTaskState = (task: string): InnerTaskStateRow | undefined => {
+    const r = db.prepare(`SELECT ${STATE_COLS} FROM inner_task_state WHERE task = ?`).get(task) as
+      | InnerTaskStateDbRow
+      | undefined;
+    return r === undefined ? undefined : toInnerTaskState(r);
+  };
+  /**
+   * LLD §13.4 step 11: over the task's last `windowCalls` quality calls since `resumed_at` (strictly after it;
+   * `fallback_*` outcomes are not evidence), the basis when at least `minCalls` exist and the rejected share exceeds the
+   * threshold, else `undefined`. Nothing when the task is already suspended.
+   */
+  const evaluateInnerWindow = (
+    task: string,
+    w: { windowCalls: number; minCalls: number; rejectionThreshold: number },
+  ): InnerSuspensionBasis | undefined => {
+    const state = readInnerTaskState(task);
+    if (state?.suspended === true) return undefined;
+    const outcomes = db
+      .prepare(
+        `SELECT outcome FROM inner_call
+          WHERE task = ? AND outcome IN ('accepted','rejected_validator','rejected_sanitiser')
+            AND (? IS NULL OR created_at > ?)
+          ORDER BY created_at DESC, id DESC LIMIT ?`,
+      )
+      .all(task, state?.resumed_at ?? null, state?.resumed_at ?? null, w.windowCalls) as { outcome: string }[];
+    const total = outcomes.length;
+    const rejected = outcomes.filter((o) => o.outcome !== "accepted").length;
+    if (total < w.minCalls || total === 0 || rejected / total <= w.rejectionThreshold) return undefined;
+    return { window_calls: w.windowCalls, rejected, total, threshold: w.rejectionThreshold };
+  };
+  const suspendInnerTask = (task: string, basis: InnerSuspensionBasis, when: string) => {
+    db.prepare(
+      `INSERT INTO inner_task_state (task, suspended, suspended_at, suspended_basis_json, version)
+       VALUES (?, 1, ?, ?, 1)
+       ON CONFLICT(task) DO UPDATE SET suspended = 1, suspended_at = excluded.suspended_at,
+         suspended_basis_json = excluded.suspended_basis_json, version = version + 1`,
+    ).run(task, when, JSON.stringify(basis));
+  };
+
+  const insertEvent = (
+    runId: string,
+    type: string,
+    payload: unknown,
+    when: string,
+    artifactId: string | null = null,
+  ): string => {
     const row = db.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM run_event WHERE run_id = ?").get(runId) as {
       next: number;
     };
     const id = ids.id("evt");
-    db.prepare("INSERT INTO run_event (id, run_id, seq, ts, type, payload_json) VALUES (?, ?, ?, ?, ?, ?)").run(
-      id,
-      runId,
-      row.next,
-      when,
-      type,
-      JSON.stringify(payload ?? {}),
-    );
+    db.prepare(
+      "INSERT INTO run_event (id, run_id, seq, ts, type, payload_json, artifact_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run(id, runId, row.next, when, type, JSON.stringify(payload ?? {}), artifactId);
     return id;
   };
 
@@ -1031,8 +1197,8 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
         db.prepare(
           `INSERT INTO git_commit (id, commit_sha, tree_sha, patch_id, repo_root, publish_ref, project_id, context_id,
              meta_session_id, run_id, provider, harness, model, adapter_version_id, origin, tool_event_id,
-             sanitizer_json, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             sanitizer_json, created_at, message_source, inner_call_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           id,
           input.commitSha,
@@ -1052,6 +1218,8 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
           eventId,
           JSON.stringify(input.sanitizer ?? { rules: {} }),
           when,
+          input.messageSource ?? "agent",
+          input.innerCallId ?? null,
         );
         return { row: db.prepare("SELECT * FROM git_commit WHERE id = ?").get(id) as GitCommitRow, created: true };
       });
@@ -1146,6 +1314,103 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
         };
       });
       return append.immediate();
+    },
+
+    recordInnerCall(input, events) {
+      return immediate(() => {
+        const id = ids.id("inc");
+        const when = ts();
+        const row: RecordedInnerCall = { ...input, id, created_at: when };
+        db.prepare(
+          `INSERT INTO inner_call (id, task, backend_kind, model_id, locality, template_version, outcome, reason, attempts,
+             latency_ms, tokens_in, tokens_out, input_bytes, output_bytes, input_sha256, run_id, meta_session_id, created_at)
+           VALUES (@id, @task, @backend_kind, @model_id, @locality, @template_version, @outcome, @reason, @attempts,
+             @latency_ms, @tokens_in, @tokens_out, @input_bytes, @output_bytes, @input_sha256, @run_id, @meta_session_id,
+             @created_at)`,
+        ).run(row);
+        if (events?.sharedSubscriptionWith && row.attempts >= 1) {
+          const metrics: Record<string, number> = {};
+          if (row.tokens_in !== null) metrics.input_tokens = row.tokens_in;
+          if (row.tokens_out !== null) metrics.output_tokens = row.tokens_out;
+          db.prepare(
+            `INSERT INTO usage_observation (id, run_id, provider, harness, backing_provider, model, source, metrics_json,
+                                            observed_at)
+             VALUES (?, ?, ?, ?, NULL, ?, 'inner_agent', ?, ?)`,
+          ).run(
+            ids.id("use"),
+            row.run_id,
+            events.sharedSubscriptionWith,
+            events.sharedSubscriptionWith,
+            row.model_id,
+            JSON.stringify(metrics),
+            when,
+          );
+        }
+        if (row.run_id !== null) {
+          insertEvent(
+            row.run_id,
+            "inner_call",
+            {
+              inner_call_id: id,
+              task: row.task,
+              outcome: row.outcome,
+              ...(row.reason !== null ? { reason: row.reason } : {}),
+              locality: row.locality,
+              template_version: row.template_version,
+              attempts: row.attempts,
+              latency_ms: row.latency_ms,
+              input_bytes: row.input_bytes,
+              output_bytes: row.output_bytes,
+              ...events?.callPayload,
+            },
+            when,
+            events?.artifactId ?? null,
+          );
+          for (const e of events?.extra ?? []) insertEvent(row.run_id, e.type, e.payload, when);
+        }
+        // Step 11: quality window. Same transaction, so the row and the state change are never seen apart.
+        const w = events?.suspension;
+        if (w !== undefined && QUALITY_OUTCOMES.includes(row.outcome)) {
+          const basis = evaluateInnerWindow(row.task, w);
+          if (basis !== undefined) {
+            suspendInnerTask(row.task, basis, when);
+            row.suspended_task = basis;
+            if (row.run_id !== null)
+              insertEvent(row.run_id, "inner_task_suspended", { task: row.task, ...basis }, when);
+          }
+        }
+        return row;
+      });
+    },
+
+    getInnerTaskState: (task) => readInnerTaskState(task),
+
+    listInnerTaskStates() {
+      return (
+        db.prepare(`SELECT ${STATE_COLS} FROM inner_task_state ORDER BY task`).all() as InnerTaskStateDbRow[]
+      ).map(toInnerTaskState);
+    },
+
+    resumeInnerTask(task) {
+      return immediate(() => {
+        const cur = readInnerTaskState(task);
+        if (cur === undefined || !cur.suspended) return undefined;
+        db.prepare(
+          `UPDATE inner_task_state SET suspended = 0, suspended_at = NULL, suspended_basis_json = NULL,
+             resumed_at = ?, version = version + 1 WHERE task = ?`,
+        ).run(ts(), task);
+        return readInnerTaskState(task);
+      });
+    },
+
+    listInnerCalls(filter) {
+      const cols = `id, task, backend_kind, model_id, locality, template_version, outcome, reason, attempts, latency_ms,
+        tokens_in, tokens_out, input_bytes, output_bytes, input_sha256, run_id, meta_session_id, created_at`;
+      return (
+        filter?.runId !== undefined
+          ? db.prepare(`SELECT ${cols} FROM inner_call WHERE run_id = ? ORDER BY id`).all(filter.runId)
+          : db.prepare(`SELECT ${cols} FROM inner_call ORDER BY id`).all()
+      ) as InnerCallRow[];
     },
   };
 }

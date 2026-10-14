@@ -1,13 +1,13 @@
 /**
  * Codex conformance cases over synthetic recorded fixtures (T2.2, FR-ADP-11). Test-only (excluded from the build):
- * the adapter runs `node replay.mjs <fixture>` in place of the codex binary.
+ * the adapter runs the shared `node src/adapters/fixtures/replay.mjs --provider codex` in place of the codex binary.
  */
 import { fileURLToPath } from "node:url";
 import type { ConformanceCase } from "../../conformance.js";
+import { replayLauncher } from "../../fixtures/replay.js";
 import type { CompileRequest, ResolvedProfile } from "../../types.js";
 import { CodexAdapter } from "../adapter.js";
 
-export const REPLAY_PATH = fileURLToPath(new URL("./replay.mjs", import.meta.url));
 export const fixturePath = (name: string) => fileURLToPath(new URL(`./${name}.jsonl`, import.meta.url));
 
 /** SRS §3.3 defaults for the two M2 profiles. */
@@ -34,7 +34,7 @@ const SHORT = { wallClockMs: 10_000, idleMs: 2_000, killGraceMs: 300 };
 export function replayAdapter(fixture: string, timeouts?: Partial<typeof SHORT>): CodexAdapter {
   return new CodexAdapter({
     executable: process.execPath,
-    launcherArgs: [REPLAY_PATH, fixturePath(fixture)],
+    launcherArgs: replayLauncher("codex", fixturePath(fixture)),
     timeouts: { ...SHORT, ...timeouts },
   });
 }

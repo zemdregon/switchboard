@@ -2,12 +2,14 @@
  * Bypass-flag audit over compiled invocations (FR-POL-03, BR-14, AGENTS.md working rules; owner decision 13, ADR-0017,
  * LLD §3.1 "Bypass"; T3.17).
  *
- * `BYPASS_FLAGS` is the shared list; every adapter's declared bypass-class flags (`bypassFlags` in the provider registry
- * table, `./providers.ts`; T4.1, ADR-0035) are added to it, never subtracted ({@link bypassClassFlags}). A flag from
- * either is admitted only when the run's context says all three of: the
- * resolved profile is `privileged`, `bypassApproved` is true (computed by the lifecycle from an `APPROVED` approval row,
- * never by an adapter or a request), and the approved scope sets `bypass`. Every other case refuses the flag; with no
- * context at all every flag is refused (the M1/M2 behaviour). The audit is independent of the adapter's own compile
+ * `BYPASS_FLAGS` is the shared list; every adapter's declared bypass-class flags (`bypassFlags` in the provider
+ * registry table, `./providers.ts`; T4.1, ADR-0035) are added to it, never subtracted ({@link bypassClassFlags}).
+ * ADR-0037 adds two forms an adapter declares as data, counted once the entry has an adapter: short spellings, also
+ * inside a single-dash cluster ({@link bypassClassShortFlags}), and bypass-class flag values in the `--flag value` and
+ * `--flag=value` forms ({@link bypassClassValues}). A hit of any kind is admitted only when the run's context says all
+ * three of: the resolved profile is `privileged`, `bypassApproved` is true (computed by the lifecycle from an
+ * `APPROVED` approval row, never by an adapter or a request), and the approved scope sets `bypass`. Every other case
+ * refuses the flag; with no context at all every flag is refused (the M1/M2 behaviour). The audit is independent of the adapter's own compile
  * gate, so a compile bug cannot by itself put a bypass flag on a spawned argv.
  *
  * The second half of this module (T9.4b, ADR-0029 item 6) audits `--mcp-config` and MCP allow rules: only the
@@ -18,7 +20,13 @@
 import { lstatSync } from "node:fs";
 import path from "node:path";
 import { CHANNEL_MCP_CONFIG_FILE, TOOL_SHIM_MCP_SERVER, TOOL_TOKEN_ENV } from "../git/tool-protocol.js";
-import { declaredBypassFlags } from "./providers.js";
+import {
+  acpDeclarations,
+  type BypassValue,
+  declaredBypassFlags,
+  declaredBypassShortFlags,
+  declaredBypassValues,
+} from "./providers.js";
 import type { Invocation, ResolvedProfile } from "./types.js";
 
 export const BYPASS_FLAGS: readonly string[] = [
@@ -57,17 +65,66 @@ export function bypassClassFlags(): string[] {
   return [...new Set([...BYPASS_FLAGS, ...declaredBypassFlags()])];
 }
 
+/**
+ * Short spellings matched inside clusters (ADR-0037): every `-x` in {@link bypassClassFlags} (none today) and every
+ * declared short flag of an entry that has an adapter, without duplicates.
+ */
+export function bypassClassShortFlags(): string[] {
+  const short = /^-[A-Za-z0-9]$/;
+  return [...new Set([...bypassClassFlags().filter((f) => short.test(f)), ...declaredBypassShortFlags()])];
+}
+
+/** Bypass-class flag values of entries that have an adapter (ADR-0037; see `declaredBypassValues`). */
+export function bypassClassValues(): BypassValue[] {
+  return declaredBypassValues();
+}
+
 function matches(arg: string, flags: readonly string[]): string | undefined {
   return flags.find((f) => arg === f || arg.startsWith(`${f}=`));
 }
 
-/** Every bypass flag present in argv or policyFlags, whatever the context. */
+/** A single-dash cluster of letters and digits, with an optional `=value` (`-pf`, `-f=1`); never `--name`. */
+const CLUSTER = /^-([A-Za-z0-9]+)(?:=.*)?$/su;
+
+/** The declared short flags whose letter is in `arg`'s cluster, in declaration order (deliberate over-refusal). */
+function clusterHits(arg: string, short: readonly string[]): string[] {
+  const m = CLUSTER.exec(arg);
+  const letters = m?.[1];
+  if (letters === undefined) return [];
+  return short.filter((f) => letters.includes(f.slice(1)));
+}
+
+/** `<flag> <value>` (this word and the next) or `<flag>=<value>`, value compared case-insensitively. */
+function valueHits(list: readonly string[], i: number, values: readonly BypassValue[]): string[] {
+  const arg = list[i] as string;
+  const next = list[i + 1];
+  return values
+    .filter((v) => {
+      const want = v.value.toLowerCase();
+      if (arg === v.flag) return next !== undefined && next.toLowerCase() === want;
+      return arg.startsWith(`${v.flag}=`) && arg.slice(v.flag.length + 1).toLowerCase() === want;
+    })
+    .map((v) => `${v.flag} ${v.value}`);
+}
+
+/**
+ * Every bypass-class hit in argv or policyFlags, whatever the context: a flag of {@link bypassClassFlags} as before
+ * (bare or `flag=value`); otherwise a short spelling inside a cluster; and a declared flag value (ADR-0037), reported
+ * as `<flag> <value>`. Value pairs are read within one list (argv, then policyFlags), never across the two.
+ */
 export function findBypassFlags(inv: Pick<Invocation, "argv" | "policyFlags">): string[] {
   const found = new Set<string>();
   const flags = bypassClassFlags();
-  for (const arg of [...inv.argv, ...inv.policyFlags]) {
-    const hit = matches(arg, flags);
-    if (hit) found.add(hit);
+  const short = bypassClassShortFlags();
+  const values = bypassClassValues();
+  for (const list of [inv.argv, inv.policyFlags]) {
+    for (let i = 0; i < list.length; i += 1) {
+      const arg = list[i] as string;
+      const hit = matches(arg, flags);
+      if (hit) found.add(hit);
+      else for (const s of clusterHits(arg, short)) found.add(s);
+      for (const v of valueHits(list, i, values)) found.add(v);
+    }
   }
   return [...found];
 }
@@ -277,4 +334,71 @@ export class IsolationAuditError extends Error {
 export function assertSafeModeAudit(inv: Pick<Invocation, "argv">, ctx?: BypassContext): void {
   const problems = auditSafeMode(inv, ctx);
   if (problems.length > 0) throw new IsolationAuditError(problems);
+}
+
+// ---- ACP plan audit (ADR-0036 items 3, 7.3 and 10; LLD §2 "Rules"; T4.8) -----------------------------------------
+
+/**
+ * Pre-spawn checks of an `acp-stdio` invocation's plan, independent of the adapter's own compile gate (FR-POL-03).
+ * Returns problems; empty means it passes. Refused:
+ * - an `acp-stdio` invocation without an `acp` plan, with an output format other than `acp`, with stdin text (the client
+ *   owns stdin) or with a protocol version other than 1; an `acp` plan on any other transport;
+ * - any `mcpServers` entry: ADR-0036 item 7.3 needs a per-provider ADR accepting that provider's ACP channel, and none
+ *   exists yet (Delegated, fail closed);
+ * - a `modeId` among the provider's declared bypass-class mode ids, or a `configOptions` pair among its declared
+ *   bypass-class values (both compared case-insensitively, deliberate over-refusal as in ADR-0037), except in the
+ *   approved bypass case ({@link bypassPermitted}).
+ */
+export function auditAcpPlan(
+  inv: Pick<Invocation, "transport" | "outputFormat" | "stdin" | "acp">,
+  adapterId: string,
+  ctx?: BypassContext,
+): string[] {
+  const problems: string[] = [];
+  if (inv.transport !== "acp-stdio") {
+    if (inv.acp !== undefined) problems.push("acp plan on a transport other than acp-stdio");
+    return problems;
+  }
+  const plan = inv.acp;
+  if (plan === undefined) return ["acp-stdio invocation without an acp plan"];
+  if (inv.outputFormat !== "acp") problems.push(`acp-stdio output format ${inv.outputFormat}`);
+  if (inv.stdin?.kind === "text") problems.push("acp-stdio invocation with stdin text (the client owns stdin)");
+  if (plan.protocolVersion !== 1) problems.push(`acp protocol version ${String(plan.protocolVersion)}`);
+  if (plan.mcpServers.length > 0) {
+    problems.push("acp mcpServers refused: no provider ACP channel is accepted by an ADR (ADR-0036 item 7.3)");
+  }
+  if (!bypassPermitted(ctx)) {
+    const decl = acpDeclarations(adapterId);
+    const lower = (v: string) => v.toLowerCase();
+    if (
+      plan.modeId !== undefined &&
+      (decl?.bypassModeIds ?? []).some((m) => lower(m) === lower(plan.modeId as string))
+    ) {
+      problems.push(`acp mode ${plan.modeId.slice(0, 64)} is bypass-class`);
+    }
+    for (const o of plan.configOptions ?? []) {
+      const hit = (decl?.bypassConfigValues ?? []).some(
+        (v) => lower(v.configId) === lower(o.configId) && lower(v.value) === lower(o.value),
+      );
+      if (hit) problems.push(`acp config option ${o.configId.slice(0, 64)}=${o.value.slice(0, 64)} is bypass-class`);
+    }
+  }
+  return problems;
+}
+
+export class AcpPlanAuditError extends Error {
+  constructor(readonly problems: readonly string[]) {
+    super(`acp plan refused: ${problems.join("; ")}`);
+    this.name = "AcpPlanAuditError";
+  }
+}
+
+/** Throws {@link AcpPlanAuditError} when {@link auditAcpPlan} finds a problem (used before every spawn). */
+export function assertAcpPlanAudit(
+  inv: Pick<Invocation, "transport" | "outputFormat" | "stdin" | "acp">,
+  adapterId: string,
+  ctx?: BypassContext,
+): void {
+  const problems = auditAcpPlan(inv, adapterId, ctx);
+  if (problems.length > 0) throw new AcpPlanAuditError(problems);
 }

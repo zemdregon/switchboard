@@ -84,8 +84,8 @@ describe("migration 0004 (ADR-0030)", () => {
     db.prepare(
       "INSERT INTO meta_session (id, objective, status, created_at, updated_at) VALUES (?, 'before', 'ACTIVE', ?, ?)",
     ).run(`sess_${"0".repeat(26)}`, now, now);
-    expect(migrate(db)).toEqual([4]);
-    expect(migrate(db)).toEqual([]);
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 4))).toEqual([4]);
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 4))).toEqual([]);
     expect(currentSchemaVersion(db)).toBe(4);
     const names = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map(
       (r) => r.name,

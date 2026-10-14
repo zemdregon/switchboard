@@ -102,8 +102,8 @@ export interface CodexAdapterOptions {
   /** Absolute path of the codex binary. Defaults to the first executable `codex` on PATH, resolved once. */
   executable?: string;
   /**
-   * Test-only: arguments inserted between the executable and `exec` (recorded-fixture replay runs `node replay.mjs
-   * <fixture>` in place of the binary). Empty in production.
+   * Test-only: arguments inserted between the executable and `exec` (recorded-fixture replay runs the shared
+   * `node src/adapters/fixtures/replay.mjs --provider codex ...` in place of the binary). Empty in production.
    */
   launcherArgs?: readonly string[];
   timeouts?: Partial<Invocation["timeouts"]>;

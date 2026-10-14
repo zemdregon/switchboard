@@ -31,7 +31,8 @@ Pre-release. The package is private and is not published to any registry; you bu
 - Providers other than Claude Code and Codex are not implemented.
 
 What works today: `doctor`, `runs list|show|cancel`, `approve`, `deny`, `gc`, `projects list|show|validate|approve`,
-`git push`, and `serve` exposing seven MCP tools over stdio (ten for a client with `manage_projects`). The five trust
+`git push`, `inner status|test|resume`, and `serve` exposing seven MCP tools over stdio (ten for a client with
+`manage_projects`). The five trust
 profile names exist; which of them a provider can run is listed in [Trust profiles](#trust-profiles) and by
 `list_capabilities`. Read
 [Known limitations](#known-limitations) before relying on it.
@@ -49,7 +50,8 @@ Commercial, resale, multi-user or credential-sharing use needs your own policy r
 
 ## Requirements
 
-- Linux. Other operating systems are not supported yet.
+- Linux. Other operating systems are not supported yet. macOS process handling (process tree and PID-reuse guard
+  through `ps`) is implemented but not yet verified on a Mac, and no trust profile is eligible on macOS.
 - Node.js 22 or newer (`engines` in `package.json`).
 - Git 2.32.0 or newer (`MIN_GIT_VERSION` in `src/workspace/git.ts`). `doctor` checks both.
 - For real work, at least one provider CLI installed and logged in natively: Claude Code and/or Codex. `doctor` does not
@@ -118,6 +120,7 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `projects` | no | List of `{ "id", "name", "environment"?, "contexts": [...] , "max_trust_profile"?, "allowed_providers"? }`. `id` matches `^[a-z][a-z0-9-]{1,40}$` and is unique. `environment` is `{ "kind": "host" }` (default) or a `container` shape that `projects validate` rejects until M10. Each context is `{ "id", "kind": "repository", "path", "base_ref", "primary"?, "writable"?, "push"?, "identity"?, "sign"?, "finalize_commit"? }` with an absolute `path` under an allowed root; exactly one context is primary. Unknown keys and context kinds stop startup. `push.remote` must be the name of a remote in the repository (not a URL), and `push.branch_prefix` a branch-name prefix such as `"switchboard/"`. `max_trust_profile` and `allowed_providers` apply to `delegate_task` with a `project`: the effective trust ceiling is the lower of the client's and the project's, and routing is limited to the listed providers (a request naming another provider with `require_provider` fails `PERMISSION_BLOCKED`); `sign` (default `false`; needs `identity`, primary writable context only) makes the controller sign each published commit with the operator's own global Git signing configuration; a signing failure, a repository whose own configuration sets `gpg.*` or `user.signingkey`, or a run whose agent could reach the key (the `push` rule) returns `SIGNING_FAILED` and commits nothing; `projects validate` makes a test signature. Only GnuPG has been tried, with a throwaway key; SSH, X.509, passphrase-protected and hardware keys are untested. `finalize_commit` (default `false`; needs `identity`, primary writable context only) turns on finalize-only commits, described below. Full shape: LLD section 11.1. |
 | `timeouts.preflight_ttl_seconds` | no | Integer 0 to 3600. How long a successful adapter preflight is cached (default 60); 0 disables the cache. |
 | `git.sanitize_patterns` | no | Up to 16 extra regular-expression sources (200 characters each, restricted subset in `src/git/safe-pattern.ts`). A commit-message line that matches one is removed, in addition to the built-in attribution rules. |
+| `inner_agent` | no | The optional inner agent (ADR-0016): a cheap or self-hosted model for small tasks. Off unless you write the section and set `enabled: true`; there is no default backend, model or task, and no key, token or header field (a hosted service goes through a gateway you run). Shape: `{ "enabled", "backend": { "kind": "http", "base_url", "model", "timeout_ms"?, "max_concurrency"?, "allow_remote"?, "shares_subscription_with"? }, "tasks": { "<task>": { "enabled", ... } }, "breaker"?, "suspension"? }`; `base_url` may not carry userinfo or a query. Full shape: LLD section 13.1. Inspect it with `doctor` and `inner status`. |
 | `profiles.<name>` | no | Overrides for `inspect-untrusted`, `edit-untrusted`, `test-sandboxed` or `trusted-development`: `file_access`, `shell`, `shell_allowlist`, `network`, `network_allowlist`, `repo_config`. They may tighten or loosen a default; `doctor` lists them and every run records them. `privileged` has none. See the `edit-untrusted` limit under [Trust profiles](#trust-profiles). |
 
 `<id>` is one of `claude-code`, `codex`, `grok-build`, `antigravity`, `cursor`, `opencode`, `kimi-code`. Only
@@ -149,6 +152,13 @@ Per adapter, the auth state is `OK`, `AUTH_REQUIRED` (doctor prints the native l
 (Switchboard could not tell; the reason is printed). `UNKNOWN` means the status command exited with
 neither of its two expected codes, timed out or could not start (see [Troubleshooting](#troubleshooting)). For Codex the
 state comes from the exit code of `codex login status` (0 is `OK`, 1 is `AUTH_REQUIRED`).
+
+When the config has an `inner_agent` section, `doctor` adds an "Inner agent" block (and an `inner_agent` key in `--json`):
+the backend kind, its locality (`local` for a loopback address, `remote` for anything else), the model, whether a fixed
+canary answered within schema, the circuit state of the `doctor` process, and each enabled task with its rejection and
+fallback rates and whether it is suspended. Its findings are at most `[warn]` and never change the exit code. `doctor`
+contacts the backend only for that canary, and never a `remote` backend unless `allow_remote` is true. With no
+`inner_agent` section the output is unchanged.
 
 A machine with no Claude Code or Codex installed gets `[warn]` for both and still exits 0. That proves only that the
 environment and config are sound, not that a provider works.
@@ -221,12 +231,28 @@ switchboard projects list
 switchboard projects show <id>
 switchboard projects validate [<id>]
 switchboard projects approve <id> [--revision <n>] [--reject]
+switchboard adapters validate <provider>
+switchboard inner status
+switchboard inner test <task>
+switchboard inner resume <task>
 ```
 
 `runs cancel`, `approve` and `deny` write a request that a running `serve` applies; with no `serve` running they apply
 it themselves. `approve` and `deny` act only on a `privileged` run waiting for approval (review its scope with
 `runs show` first); `deny` ends the run cancelled, and a second decision is refused. Add `--json` to any of these for
 machine-readable output. Exit codes: 0 success, 1 failure (including a refused decision), 2 usage error.
+
+`adapters validate <provider>` (`claude`, `codex`, or the config id such as `claude-code`) accepts the version of a
+provider CLI that is installed now. It runs the adapter's probe, its auth preflight and a conformance subset that ends
+with a structured-output smoke test, and **that smoke step makes one real provider call** (a trivial read-only prompt in
+a throwaway repository; it may use your subscription quota). It never logs in: if the CLI is not logged in (`AUTH_REQUIRED`)
+or its login state cannot be determined (`UNKNOWN`) it fails, and you log in natively and run it again. It passes no
+bypass flag. Only when everything passes does it edit the provider's manifest file in your source checkout
+(`src/adapters/manifests/<provider>.json`): `validated_cli_version`, `validated_on`, `validated_version_range` (the same
+minor series, for example `>=2.1.296 <2.2.0`; an assumption, not a provider statement) and a dated evidence sentence
+appended to `notes`. It does not commit: review the diff and commit the manifest change yourself, then rebuild and
+restart `serve`. On any failure it writes nothing and exits 1. It needs a clone of the repository (an installed package
+has no source tree to edit), and `--json` prints each step's result.
 
 `git push` publishes the commits a meta-session made through the injected `commit` tool: it pushes the session's
 publish ref (`switchboard/pub/<session>`) to the context's `push.remote` as the branch `<push.branch_prefix><session>`.
@@ -307,6 +333,20 @@ run events stay as the audit record. It refuses to apply unless `retention.days`
 pass at startup and then every `retention.interval`. `doctor` shows the same dry-run summary and the orphan sweep
 (worktree directories or `switchboard/*` branches with no ledger row); orphans are reported, never removed.
 
+**Inner agent.** `inner status` (read-only; it never contacts the backend) shows the state (`off`, `no_backend` or
+`ready`), the backend's origin and locality, and per task the call counts by outcome, the fallback rate and the
+rejection rate over the quality window; add `--json` for the same data. `inner test <task>` sends one built-in synthetic
+fixture through the real pipeline (the same privacy gates, redaction, validation and `inner_call` record) and prints
+the outcome, never the prompt or the reply; it sends no repository data, and it exits 1 when the result would fall back,
+or when nothing was sent because the agent or the task is off. A task whose rejection rate exceeds the configured
+threshold is suspended and falls back until you run `inner resume <task>` (quality counting then restarts). Neither
+command prints a base URL's userinfo, a header, a key or any prompt or response text.
+
+Which tasks run today (2026-10-14): only the commit-message task is wired into a run path (the optional `message` on
+the `commit` tool). The PR-draft, verification-summary and run-title tasks exist as service functions, tested on fakes,
+and nothing calls them yet; the handoff and routing tasks need milestones 5 and 7. No hosted or live backend has been
+exercised: every test uses a scripted fake or a local fake server.
+
 ## Trust profiles
 
 A trust profile says what a delegated agent may do ([ADR-0004](docs/adr/0004-trust-profiles-no-bypass-flags.md)). Each
@@ -386,6 +426,11 @@ you control. `approve` and `deny` keep working for clients left at `"required"`.
   profiles).
 - **Pushes only through Switchboard's own tool or command.** Agents cannot push; a push-enabled context (off by default)
   pushes one branch, never forced, from the controller with your Git setup, and never hands a credential to an agent.
+- **Inner-agent privacy.** The inner agent is off by default and is the one place the controller process itself calls
+  out. A backend is `local` only if every address it resolves to is loopback; a `remote` backend is unused until you set
+  `allow_remote`, and a task that sends repository content (diffs, log excerpts) to a remote backend needs its own
+  `allow_source_content`. A project can only restrict it (`off` or `local_only`). Prompts are redacted first, bodies are
+  never logged, and nothing it returns reaches a policy, approval or failure decision.
 - **Fail closed.** An invalid config, an unknown client id, an unverified CLI version or an unavailable profile refuses
   to run rather than weakening anything.
 

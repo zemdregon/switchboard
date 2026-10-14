@@ -40,7 +40,7 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | Lint and format | Biome (single tool) | One config, fast | Smaller rule set than ESLint plus typescript-eslint; type-aware lint rules may be missing, compensated by `tsc --noEmit` in CI | Biome 2.5.15 |
 | Package manager | npm with committed lockfile, `npm ci` in CI | Ships with Node; no extra tool for a single-maintainer project | No workspace-level conveniences of pnpm; adequate for a single package | npm 10.9.4 (bundled with local Node); `package-lock.json` committed |
 | Git access | `git` CLI via `execFile` (no shell), minimum version **2.32** (raised from 2.30 on 2026-10-13 by [ADR-0023](../adr/0023-minimum-git-version-2-32.md); `src/workspace/git.ts` `MIN_GIT_VERSION`; developed against 2.43) | Worktree and diff semantics are Git's own ([ADR-0006](../adr/0006-worktree-checkpoints-no-blind-replay.md)); pure-JS Git libraries lack worktree support (Assumption) | Requires `git` on host; output parsing must use porcelain/`-z` formats | Min version M1 |
-| Process spawning | `node:child_process` `spawn` with `detached: true` | Needed for process groups (FR-EXE-01) | Signal and group semantics differ on macOS/Windows; Windows deferred (NFR-PORT-03) | Node LTS |
+| Process spawning | `node:child_process` `spawn` with `detached: true` | Needed for process groups (FR-EXE-01) | Signal and group semantics differ on macOS/Windows; Windows deferred (NFR-PORT-03). The process table (start time, group scan) is read per platform: `/proc` on Linux, BSD `ps` on macOS (Unverified until T4.10), none elsewhere (fail closed); [LLD §8.3](LLD.md#83-process-table-per-platform-m4-t49) | Node LTS |
 | IDs | ULID, small dependency or in-house (about 30 lines) | Sortable, prefix-able, time-ordered | In-house needs a monotonic-within-millisecond test | M1 |
 | Logging | Structured JSON to stderr via `pino` with path-based redaction (Proposed) | Redaction support built in; stdout is reserved for MCP framing | One more dependency; redaction is a safety net, not the primary control (§3.3) | Pinned later (with first logging code) |
 | Telemetry export | `@opentelemetry/api` + OTLP exporter, M8 (FR-TEL-02) | Standard | Heavy dependency tree; load lazily and only when an endpoint is configured | M8 |
@@ -76,7 +76,7 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | `timeouts.*` | Wall-clock, idle, grace (proposed targets in [LLD §8](LLD.md#8-run-supervisor-details)); only `timeouts.preflight_ttl_seconds` exists in the schema today: integer 0 to 3600, default 60 (**Assumption**), 0 disables the preflight cache; unknown keys are rejected. *Note (2026-10-13, Delegated, [decision 29](../ROADMAP.md#42-owner-decisions), T3.21):* it bounds how long a successful `probe` or `authPreflight` is reused; failures are never cached | FR-EXE-01, NFR-PERF-02 |
 | `retention.days`, `retention.interval` | Retention in days (default 30, proposed target) and the GC pass period (`<n>m`, `<n>h` or `<n>d`, default `24h`). Collection is on only when `retention.days` is set in the file: the default is a value, not a switch (`ResolvedConfig.retentionEnabled`, T3.12, Proposed, Delegated). A period above about 24.8 days is capped by the timer | NFR-DATA-01, FR-WS-07 |
 | `profiles.<name>` | Overrides of the [SRS §3.3](../requirements/SRS.md#33-policy-and-trust-profiles-fr-pol) defaults. They may tighten or loosen a default ([owner decision 12](../ROADMAP.md#42-owner-decisions)); a loosening must be explicit in the config, is validated, and is recorded in the run's policy snapshot and listed by `doctor` (M3, T3.2). *Known limit ([owner decision 20](../ROADMAP.md#42-owner-decisions), 2026-10-13):* a `profiles.edit-untrusted` override that loosens `network` or `repo_config` is not enforced: the Claude adapter compiles `edit-untrusted` with the strict settings (network off at the tool level, repository configuration disabled) whatever the override says, and the Codex adapter makes the run `Ineligible: CAPABILITY_MISSING` | FR-POL-01 |
-| `providers.<id>` | `{enabled, binary_path, extra_env_allowlist[], model_overrides}` (proposed shape). *As built (2026-10-13):* `src/config/schema.ts` accepts `{enabled, weight}` plus `git_channel` under `claude-code` only; `binary_path`, `extra_env_allowlist` and `model_overrides` are not implemented | FR-ADP-05, FR-EXE-07 |
+| `providers.<id>` | `{enabled, binary_path, extra_env_allowlist[], models}`; `models` is `{ids[], aliases{}, context_limits{}}` (implemented, T4.5; the earlier placeholder name was `model_overrides`; shape and refresh rule in [LLD §2.1](LLD.md#21-model-registry-m4-t45)). *As built (2026-10-13):* `src/config/schema.ts` accepts `{enabled, weight, models}` plus `git_channel` under `claude-code` only; `binary_path`, `extra_env_allowlist` and `model_overrides` are not implemented | FR-ADP-05, FR-EXE-07 |
 | `providers.claude-code.git_channel` | Boolean, default `false`; `claude-code` only. Operator opt-in for the Claude Code tool channel through a controller-written `--mcp-config` file; implemented (T9.4b, [ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md)) and **UNSUPPORTED** until the ADR-0029 live checks pass ([LLD §11.1](LLD.md#111-configuration-shape), §12.2); only approved bypass runs get the channel, without `--safe-mode` ([ADR-0033](../adr/0033-claude-channel-bypass-only-without-safe-mode.md)) | FR-GIT-02, FR-POL-08 |
 | `routing.weights`, `routing.minimum_capability_defaults` | Static weights | FR-RTE-02 |
 | `capacity.queue_horizon` | Max wait for a known reset | FR-CAP-06 |
@@ -218,6 +218,7 @@ startup reconciliation applies them. Run state transitions use an optimistic ver
 | Unit | Pure logic: eligibility, scoring, backoff, schema validation, path canonicalization, taxonomy mapping | No | all |
 | Adapter conformance | Per adapter: success, task failure, native resume, auth missing, malformed output, cancellation, run against **recorded fixtures** (captured provider output committed as files, scrubbed of credentials) | No | FR-ADP-11, ADR-0009 |
 | Fake provider CLI (M1) | A scripted executable emitting configurable JSONL, delays, crashes, mutations and ignoring SIGTERM; exercises supervisor, ledger, workspace, reconciliation end to end | No | FR-ADP-01, FR-EXE-01..07 |
+| Fake ACP agent (M4, T4.8) | `src/adapters/fake/acp-agent.mjs` plays a JSON fixture of JSON-RPC steps (receive and answer a client method, send updates and agent requests, raw or invalid bytes, exit, hang, ignore SIGTERM) and records what it receives; the fake adapter's `acp-stdio` mode runs it through the real supervisor and ACP client. Cases follow the [ADR-0036](../adr/0036-per-run-acp-stdio-client.md) conformance plan (`src/exec/acp/client.test.ts`); the permission matrix is `src/policy/acp-permission.test.ts` | No | FR-EXE-03, FR-EXE-01, 02, 05, 07, NFR-REL-02 |
 | Workspace and Git | Real Git repos in temp dirs: worktree create, lease, checkpoint, mutation detection, rollback, GC; concurrent runs of one project held RUNNING at once by a gated fake CLI (T9.11, `src/lifecycle/concurrent-worktrees.test.ts`); FR-WS-09 tests are skipped placeholders until the owner accepts it | No | FR-WS-01..09 |
 | Verification stage (M3, T3.10) | Fake adapter plus `node` commands in real Git worktrees: pass, fail (`TEST_FAILURE`, later commands `not_run`), timeout with group kill, cancel during VERIFYING, redaction of an invented canary token, truncation, argv with shell metacharacters passed literally, environment canary, a verification `git commit` flagged and removed from the run branch (`src/lifecycle/verification.test.ts`); `SIGKILL` of the controller during VERIFYING ends `PROCESS_CRASH` without re-running (`src/reconcile/reconcile.test.ts`); MCP envelope and V7 (`src/mcp/mcp.test.ts`) | No | FR-EXE-08, FRD BR-16, V7, WF-8 |
 | Fault injection | Kill controller with `SIGKILL` at each transition boundary (named crash points), restart, assert ledger consistency and terminal/resumed state | No | NFR-REL-01, FR-EXE-06 |
@@ -232,6 +233,17 @@ startup reconciliation applies them. Run state transitions use an optimistic ver
 | Affinity replay (M7) | Table-driven and property tests over stored `route_decision` rows and a scripted fake adapter set: for any sequence of runs in a project, the provider and model change only when the decision carries an `affinity_switch_reason` from the closed list; a better score, lower cost or lower load never moves a project; no return after recovery; `require_provider`, `affinity reset`, `QUOTA_EXHAUSTED`, breaker open and exhausted retry each produce exactly their reason. Details in [§3.13.3](#3133-testing-affinity-and-retrieval) | No | FR-RTE-06..09, FR-CAP-08 |
 | Retrieval index (M12) | Deterministic fake embedding backend, hostile-content fixtures, planted-secret scan, isolation and import-boundary tests; details in [§3.13](#313-retrieval-index) | No | FR-RAG-01..14 |
 | Docs check | `scripts/check-docs.mjs` must pass on every change (links, anchors, ID references) | No | NFR-MAINT-02 |
+
+**Shared suite plumbing (T4.3).** A provider supplies cases and small data files; the shared code is not edited.
+Replay: one helper, `src/adapters/fixtures/replay.mjs`, replays a recorded or synthetic fixture for any provider, with
+one dialect file per provider in `src/adapters/fixtures/replay-dialects/<id>.mjs` (argv shape check, session
+placeholder, probe answers) and launcher arguments from `replayLauncher` (`src/adapters/fixtures/replay.ts`).
+Malicious-fixture leg per adapter: `test/malicious/adapter-leg.test.ts` runs the harness in `test/malicious/adapter-leg.ts`
+over every `test/malicious/adapters/<id>.case.ts`; the case names the profile, the isolation and never-enabled flags
+and its hostile streams (credential-path read, out-of-worktree write, network attempt, unknown events). It proves
+compile and parse behaviour against replayed, synthetic streams only; "no escape" on a real CLI is the operator leg
+(T3.9, T4.n8). Live scripts: `scripts/live-smoke.mjs` loads `scripts/live/providers/<id>.mjs` (the contract is in the
+header of those files) and still exits 0 without running anything unless `SWITCHBOARD_LIVE_TESTS=1`.
 
 Principles: tests pass with no provider CLI installed or logged in; secret-pattern scan over all test outputs
 (NFR-SEC-01); coverage targets are not set until M1 measurement (no number proposed).
@@ -1156,7 +1168,7 @@ a separate roadmap decision.
 | Project hooks and trust | Project hooks `<project>/.grok/hooks/*.json` "require trust before they run"; grant with `/hooks-trust` or `--trust`; stored in `~/.grok/trusted_folders.toml`, which also covers project MCP and LSP servers. Claude (`.claude/settings.json`) and Cursor (`.cursor/hooks.json`) hook files are read as well. Only `PreToolUse` blocks, and every failure mode is fail-open | [HOOK] |
 | Per-run settings | Flags and `GROK_*` environment variables; see "Per-run settings" below | [CLI], [SET] |
 | Per-run MCP definition | Headless: no flag documented, `Unverified: T4.21`. ACP: `session/new` takes `mcpServers` (the example passes `[]`). `grok mcp add` and `config.toml` write persistent configuration and are never used | [HL], [MCP] |
-| Bypass-class flags | `--always-approve` (alias `--yolo`), `--dangerously-skip-permissions` (Claude alias), `--permission-mode bypassPermissions`; also bypass-class (Proposed): a catch-all `allow` rule (`*`, `**`) and `auto_allow_bash`/`GROK_SANDBOX_AUTO_ALLOW_BASH`. `deny` rules and `PreToolUse` hooks still apply under always-approve | [CLI], [PERM], [ENT], [SBX] |
+| Bypass-class flags | `--always-approve` (alias `--yolo`), `--dangerously-skip-permissions` (Claude alias), `--permission-mode bypassPermissions`; also bypass-class (Proposed): a catch-all `allow` rule (`*`, `**`) and `auto_allow_bash`/`GROK_SANDBOX_AUTO_ALLOW_BASH`. `deny` rules and `PreToolUse` hooks still apply under always-approve. *Update 2026-10-13 ([ADR-0037](../adr/0037-argv-audit-short-flags-and-bypass-values.md)):* the mode value and the catch-all `--allow`/`--allowed-tools` `*` and `**` are declared in the Grok Build registry entry and refused once its adapter (T4.22) exists; `auto_allow_bash`/`GROK_SANDBOX_AUTO_ALLOW_BASH` is not in argv and is a recorded limit | [CLI], [PERM], [ENT], [SBX] |
 | Model listing | `grok models` ("List available models"); output format and a `--json` option: `Unverified: T4.21`. `-m, --model`; `GROK_DEFAULT_MODEL` | [CLI], [SET] |
 | JSONL or ACP | JSONL (`-p ... --output-format streaming-json`); ACP is the fallback. Reasons above | [HL], [R2 L73] |
 
@@ -1484,7 +1496,7 @@ summary and T4.41 re-reads them against `agent --help` of the installed version.
 | Trust profile compilation (Proposed) | `--sandbox enabled` wherever a profile needs confinement [C1, R2 L76, L617]. `--trust` ("Trust the workspace without prompting (headless mode only)") [C1]: headless runs in an untrusted workspace fail unless `--trust` or `--force` is passed (changelog, January 2026), and worktree setup scripts run only after trust [C11 v2026.07.13]. So `--trust` is the one control that lets a run start in a fresh worktree; the controller passes it only after its own trust decision for that worktree and profile, never because the repository asks [R2 L138 to L143, L661 to L664]. What the trust prompt guards (which repository files load once trusted: rules, `AGENTS.md`, `CLAUDE.md`, `.cursor/mcp.json`, hooks, `.cursor/sandbox.json`, `.cursor/cli.json`): Unverified: T4.41 |
 | Sandbox controls | `--sandbox enabled\|disabled` [C1]. Sandbox policy files `~/.cursor/sandbox.json` and `.cursor/sandbox.json` are honoured, the project file taking precedence (changelog, February 2026) [C10, C11]; keys named: `readBoundary`, `additionalReadPaths`; network modes `sandbox.json Only`, `sandbox.json + Defaults` (the default) and `Allow All` [C10]; config keys `sandbox.mode`, `sandbox.networkAccess`, `sandbox.readBoundary` (`system` default or `workspace`) [C7]. Workspace read/write, `/tmp` and platform temp directories writable unless disabled; `.git/config`, `.git/hooks`, `.vscode`, `.cursorignore` and Cursor config files protected by default [C10]. Linux needs kernel 6.2 or later with Landlock v3 and unprivileged user namespaces, else Cursor "falls back to asking for approval before running commands" (a headless run would then block or fail: Unverified: T4.41); macOS needs nothing extra [C10]. The `sandbox` subcommand: `enable`, `disable`, `reset`, `run <cmd>` with `--allow-paths`, `--readonly-paths`, `--blocked-patterns`, `--network` (default `false`), `--sandbox` (default `true`), `--sb-debug` [C1]: these options belong to `sandbox run` (one command in a sandbox), and no page says they apply to `agent -p`; `enable`, `disable` and `reset` change stored configuration, so Switchboard never calls them. No per-run flag for network or paths on `agent -p` is documented: Unverified: T4.41 |
 | Git writes and injected tools (M4, M9) | Permission rules `Shell(commandBase)`, `Read(pathOrGlob)`, `Write(pathOrGlob)`, `Mcp(server:tool)` in `permissions.allow` and `permissions.deny`; "Deny rules take precedence over allow rules" [C6, C7]; the only Git example is `Shell(git)`, "Allow any `git` subcommand" [C6]. They live in `~/.cursor/cli-config.json` or `<project>/.cursor/cli.json`; "Only permissions can be configured at the project level" [C6, C7]; `CURSOR_CONFIG_DIR` and `XDG_CONFIG_HOME` relocate the global file [C7]. **No per-run permission flag is documented.** A deny rule for Git-write verbs would need a controller-written config file in a controller-owned directory (never the operator's `~/.cursor`, never the repository's `.cursor/cli.json`, which the agent can edit): whether `CURSOR_CONFIG_DIR` gives a clean per-run file, whether a deny of `Shell(git commit)` style prefixes matches, and whether a sandbox confines a `.git` write anyway are Unverified: T4.41. Until then `gitWriteControl.kind` is `none-documented` and `commitChannel` is `finalize-only` (FR-GIT-09). Cursor's `--worktree` / `-w` makes worktrees and refs of its own [C1, R2 L687] and is never used: the controller owns worktrees. Per-run MCP definition: none documented; the CLI "will automatically detect and respect your `mcp.json`" [C8], MCP follows the same approval as terminal commands [C9], `agent mcp enable <id>` "Add an MCP server to the local approved list" (stored state) [C1], and `--approve-mcps` "Automatically approve all MCP servers" [C1]. Servers passed over ACP "load instead of being silently dropped" (changelog v2026.06.22) [C11], but their approval is undocumented. So injection needs `--approve-mcps` or a stored approval: bypass-class (FR-POL-03), hence **finalize-only** (FR-GIT-09), no injected tools (T4.42 compiles none) |
-| Bypass-class flags (Proposed audit list) | Already in `BYPASS_FLAGS`: `--force`, `--yolo`, `--approve-mcps`. **Not covered by the audit today:** the short form `-f` of `--force` [C1] (the audit matches only the long spellings and `flag=value`); `--sandbox disabled`, the value that turns confinement off (the flag `--sandbox` itself is needed, so the audit must test its value); config `approvalMode` `unrestricted` and the "Run Everything" run mode [C7, C10] (config, not argv: T4.42 writes no config and never selects it). Other flags T4.1 should refuse outside an approved bypass run, because they widen what code or credentials a run touches: `-w` / `--worktree`, `--worktree-base`, `--skip-worktree-setup` [C1]; `--plugin-dir` (loads plugin code) [C1]; `--api-key`, `--auth-token`, `-H` / `--header` (credentials or request headers) [C1, C4]; `--workspace` (changes the workspace) [C1]. Combined short flags such as `-pf`: Unverified: T4.41. `--trust` is not bypass-class but is never emitted before the trust decision. Never invoked: `login`, `logout`, `update`, `worker`, `install-shell-integration`, `mcp enable`, `sandbox enable\|disable\|reset` |
+| Bypass-class flags (Proposed audit list) | Already in `BYPASS_FLAGS`: `--force`, `--yolo`, `--approve-mcps`. **Not covered by the audit today:** the short form `-f` of `--force` [C1] (the audit matches only the long spellings and `flag=value`); `--sandbox disabled`, the value that turns confinement off (the flag `--sandbox` itself is needed, so the audit must test its value); config `approvalMode` `unrestricted` and the "Run Everything" run mode [C7, C10] (config, not argv: T4.42 writes no config and never selects it). Other flags T4.1 should refuse outside an approved bypass run, because they widen what code or credentials a run touches: `-w` / `--worktree`, `--worktree-base`, `--skip-worktree-setup` [C1]; `--plugin-dir` (loads plugin code) [C1]; `--api-key`, `--auth-token`, `-H` / `--header` (credentials or request headers) [C1, C4]; `--workspace` (changes the workspace) [C1]. Combined short flags such as `-pf`: Unverified: T4.41. `--trust` is not bypass-class but is never emitted before the trust decision. Never invoked: `login`, `logout`, `update`, `worker`, `install-shell-integration`, `mcp enable`, `sandbox enable\|disable\|reset`. *Update 2026-10-13 ([ADR-0037](../adr/0037-argv-audit-short-flags-and-bypass-values.md)):* `-f` (also inside any cluster such as `-pf`) and `--sandbox disabled` are declared in the Cursor registry entry and refused once its adapter (T4.42) exists; the other flags above are declared by T4.42 |
 | Known risks | The headless page says "Without `--force`, changes are only proposed, not applied" [C3] while [C8] says "Cursor has full write access in non-interactive mode" and [C1] that `-p` "Has access to all tools, including write and shell": the pages disagree, so whether a write-capable run is possible without `--force` is Unverified: T4.41 and decides whether `edit-untrusted` can compile at all. Repository files are untrusted input ([R2 L661 to L664]); `.cursor/sandbox.json` and `.cursor/cli.json` come from the repository and could widen the sandbox or permissions unless trust and loading are shown to be controllable. Auto-review and "Run Everything" run modes exist [C10]; the mode a headless run uses without a config file: Unverified: T4.41 |
 | Models and backing vendor | `agent models` ("List available models for this account") and `--list-models` [C1], feeding the model registry (FR-ADP-05, T4.5; [R2 L162 to L165]); output shape (names, ids, one per line or JSON): Unverified: T4.41; `--model <model>` runs "the exact model you pick" (changelog v2026.09.28) [C11]. The `init` event's `model` is a display name [C2]; **no page says how the backing vendor or provider is reported**, so `backing_provider` (FR-ADP-10) is `Unverified: T4.41` and, if absent, the adapter derives it only from a registry entry, never from the display name. No model name is written in this document or in adapter source |
 
@@ -1639,6 +1651,9 @@ flag is documented, whether or not Git-write denial is shown to hold.
 
 - **Bypass-class list for T4.1:** `--auto`; inline permission `"allow"` as a whole or `"*": "allow"`. `--share` and
   `--attach` are not bypass-class but are never emitted (session data leaves the host; shared server).
+  *Update 2026-10-13 ([ADR-0037](../adr/0037-argv-audit-short-flags-and-bypass-values.md)):* the inline permission
+  travels in `OPENCODE_PERMISSION` or `OPENCODE_CONFIG_CONTENT`, which the argv audit does not read (a recorded
+  limit); T4.52 keeps `allow` out of those values in its compile and declares `--auto`.
 - **Environment (Proposed):** allowlisted environment as for the other adapters; set `OPENCODE_DISABLE_AUTOUPDATE=1`,
   `OPENCODE_DISABLE_CLAUDE_CODE=1` and `OPENCODE_PERMISSION` (or `OPENCODE_CONFIG_CONTENT`) per run [D-cli]; provider
   keys are never copied by Switchboard.
@@ -1750,7 +1765,7 @@ a second window; later parts were not read); **[M-ov]** <https://dev.meta.ai/doc
 | Success | Exit code `0` is not success (see Exit codes); the terminal record and the controller's verification decide |
 | Git writes | **Corrected**: no per-command Git deny control is documented. Inside the writable workspace the `.git`, `.muse` and `.agents` directories "stay read-only" [M-perm]; `--disable-sandbox` removes workspace confinement and `--yolo` disables the sandbox [M-perm]. That is a sandbox property, not a FR-GIT-01 control: declare `none-documented` until T4.71 shows what a commit attempt does in a controller-made worktree whose `.git` is a file (FR-GIT-01, as Codex) |
 | Per-run MCP and injected tools | **Corrected**: servers are declared in the `mcp_servers` block of `~/.config/muse/settings.json` (`transport` `stdio` or `streamable_http`, `enabled`, `mode` defaulting to required, `${VAR}` interpolation, `MUSE_SESSION_ID` passed to `stdio` servers) [M-ext]; `run.toolset` selects MCP tools by name with a trailing `*` [M-ext]; and `-c key=value` (`--config`) sets "any existing setting for that run only, including MCP servers" [M-log]. So a per-run definition without a bypass flag is plausible; the `-c` syntax for a server block and whether it leaves the user settings untouched are `Unverified: T4.71`. `settings.json` must hold `"schema_version": 1` [M-cfg] |
-| Bypass-class flags | **Confirmed**: `--yolo` (disable approval and the sandbox and trust the workspace), `--disable-approval` (keep the sandbox), `--disable-sandbox` (keep approval; also removes workspace confinement of the file tools) [M-perm], [M-ext]. `--trust-workspace` is in the changelog [M-log], not the permissions page. All four stay in the argv audit list (ADR-0004, FR-POL-03) outside an approved `privileged` scope. `--yolo` placement after `exec` is **reported** [Orca]. `--approval-mode never` and `--sandbox-network unrestricted` are not bypass flags by name but widen a run; the audit treats them as forbidden for non-`privileged` profiles (Proposed) |
+| Bypass-class flags | **Confirmed**: `--yolo` (disable approval and the sandbox and trust the workspace), `--disable-approval` (keep the sandbox), `--disable-sandbox` (keep approval; also removes workspace confinement of the file tools) [M-perm], [M-ext]. `--trust-workspace` is in the changelog [M-log], not the permissions page. All four stay in the argv audit list (ADR-0004, FR-POL-03) outside an approved `privileged` scope. `--yolo` placement after `exec` is **reported** [Orca]. `--approval-mode never` and `--sandbox-network unrestricted` are not bypass flags by name but widen a run; the audit treats them as forbidden for non-`privileged` profiles (Proposed). *Update 2026-10-13 ([ADR-0037](../adr/0037-argv-audit-short-flags-and-bypass-values.md)):* the audit can now refuse them as declared values (both `--flag value` and `--flag=value`); they are declared when T4.72 adds the Muse Code entry |
 | Capacity | **Corrected**: billing is usage-based on input and output tokens with a Usage dashboard [M-auth]; no CLI or stream usage report, limit or reset time is documented [M-ov]. Per-run token fields in `--json` records: `Unverified: T4.71` (FR-CAP-01 records only what is reported) |
 
 #### 4.8.1 T4.71 operator checklist
@@ -1792,6 +1807,97 @@ and `muse --version` as dated fixtures. Record the answer next to each item; any
 12. **Usage and limits.** Does any `--json` record carry token counts, a plan limit or a reset time?
 13. **Record.** Update this table row by row (confirmed, corrected or `Unverified`), R-33 and the research note, and
     attach the fixtures; report the result to the orchestrator for the T4.71 status line.
+
+### 4.9 Adapter-addition checklist (T4.2)
+
+What a contributor supplies to add a provider. Requirements are cited, not restated: NFR-MAINT-01 (an addition touches
+only the adapter module, its compliance manifest, its fixtures and one registry entry), NFR-MAINT-03 (user
+documentation), FR-ADP-01, FR-ADP-02, FR-ADP-04, FR-ADP-11, FR-GIT-01 and FR-GIT-02. The adapter contract is
+[LLD §2](LLD.md#2-adapter-contract), the failure codes are [LLD §4](LLD.md#4-failure-taxonomy), and the registry rules
+are in `src/adapters/providers.ts` and [ADR-0035](../adr/0035-provider-registry-table-and-declared-bypass-flags.md).
+The roadmap's provider groups (T4.n0 to T4.n9) order the work; this list says what each must have produced.
+
+**Checklist.** Tick every item in the pull request; an item that does not apply says why.
+
+1. **Module.** A directory under `src/adapters/<id>/` whose adapter class implements `ProviderAdapter` (`id`,
+   `transports`, `gitWriteControl`, `gitCapabilities`, `probe`, `authPreflight`, `compile`, `parseEvent`,
+   `extractResult`, `resumeArgs`, `classifyFailure`, optional `cancel`). No edit outside the module, manifest, fixtures
+   and the registry entry (item 12), apart from the documents this change affects.
+2. **Manifest.** `src/adapters/manifests/<id>.json`, starting with the range that admits no version (`<0.0.0`), so the
+   adapter reports `ADAPTER_VERSION_UNVERIFIED` until `adapters validate` (T4.4) records a version. Never invent a
+   validated version or range.
+3. **Probe and auth preflight.** `probe` covers FR-ADP-02 steps 1 to 5 and `authPreflight` the auth step, both through
+   the supplied `ProbeRunner`; neither reads a credential file, starts a login or makes a model call.
+4. **Compile matrix.** `compile` is pure and returns an `Invocation` or an `Ineligible` for each of the five trust
+   profiles (`inspect-untrusted`, `edit-untrusted`, `test-sandboxed`, `trusted-development`, `privileged`). Every
+   `Ineligible` cell carries a reason (FR-POL-02: never a downgraded profile). The provider's TDD section holds the
+   matrix with the source of each cell.
+5. **Stream parser and failure mapping.** `parseEvent` and `extractResult` read only the provider's structured output
+   (FR-ADP-04). `classifyFailure` maps every piece of evidence to one [LLD §4](LLD.md#4-failure-taxonomy) code; unknown
+   evidence, unknown event kinds and a missing result never map to success.
+6. **Resume.** `resumeArgs` continues a native session from a `NativeBinding` (FR-SES-03) and is `Ineligible` with a
+   reason where the provider has no documented resume.
+7. **Replay fixtures.** Recorded-style fixtures under the adapter's `fixtures/` directory, replayed by the shared replay
+   helper (T4.3) rather than a per-adapter copy. Synthetic fixtures say so and are replaced by scrubbed captures from
+   the operator task (no credential, token, account identifier or private prompt text).
+8. **Conformance cases.** Cases for `ConformanceCaseKind` in `src/adapters/conformance.ts` covering at least
+   `REQUIRED_CASE_KINDS` (FR-ADP-11), run through `runConformanceSuite` with no live provider.
+9. **Malicious-fixture leg.** A per-adapter leg of the malicious-fixture suite in `test/malicious/` (T4.3), driven by the
+   compiled argv and replayed hostile streams. It proves compile and parse behaviour only; "no escape" on a real CLI is
+   the operator task (`T4.n8`).
+10. **Git declarations.** `gitWriteControl` (FR-GIT-01) and `gitCapabilities` (FR-GIT-02) at the fail-closed values:
+    `none-documented` unless the spike sources a deny control, and `commitChannel` `finalize-only` (FR-GIT-09). An
+    `injected` channel needs its own ADR, an operator opt-in and a live check.
+11. **Bypass-class flags.** Every flag, short spelling and flag value the provider documents as bypass-class
+    (FR-POL-03, "or equivalents") is declared as data in the registry entry: `bypassFlags` for long flags,
+    `bypassShortFlags` and `bypassValues` for short spellings and values
+    ([ADR-0037](../adr/0037-argv-audit-short-flags-and-bypass-values.md)), each with its source. The adapter emits
+    none of them outside an approved `privileged` scope that sets `bypass` (ADR-0017). Settings-file and environment
+    forms are outside what the argv audit sees (ADR-0037 limits) and are listed in the provider's section.
+12. **Registry entry and README login row.** One entry in `BUILTIN_PROVIDERS` (`src/adapters/providers.ts`) with `id`,
+    `configId`, `kind`, `label` and `create`, and a row in the README's login table (NFR-MAINT-03) giving the native
+    login step the adapter reports and the status of that step. The row states only what the spike sourced.
+
+**Conventions (from the §6.8 roadmap conventions, restated as obligations, not redefined).** Group numbering and the
+operator-only tasks follow the roadmap; no bypass-class flag is emitted outside an approved bypass scope; an approved
+bypass scope on a `host` project is `Ineligible` only for a reason other than the Git-write control (owner decision 46).
+
+**No provider fact from memory.** A flag, output field, exit code, version, model name, limit, price or login step is
+written only with a citation to the provider's documentation, a research note, or a dated spike or live check, or it is
+marked **Unverified** (naming the task that will verify it) or **Assumption**. This applies to code comments, manifests,
+fixtures, tests and the README as much as to this document.
+
+**No model names in adapter source (T4.5).** Adapter source contains no model name, alias or context limit as a
+literal. Models come from operator configuration and the provider's listing command, through the model registry
+([LLD §2.1](LLD.md#21-model-registry-m4-t45)). Checklist item 13: the adapter supplies a listing through
+`ProbeResult.modelsListed` where the provider documents a listing command (the command and its output shape are
+sourced in the provider's TDD §4 section), and nothing else about models. Automated by `src/models/models.test.ts`,
+which scans the non-test, non-fixture `.ts` and `.json` files under `src/adapters` for model-family names followed by a
+version or tier word and for context-window-sized numbers (a heuristic: it can miss a name it does not know, so
+reviewers still read new adapter code for model names).
+
+**State of automation (2026-10-13).** The T4.1 scratch adapter (`src/adapters/fixtures/scratch-provider.ts`, exercised
+by `src/adapters/providers.test.ts` and `src/adapters/bypass-forms.test.ts`) wraps the fake adapter. Against the
+checklist it automates:
+
+- item 13 (model-literal ban, heuristic): `src/models/models.test.ts` scans adapter source;
+- items 1 and 12 (registry entry only): it is registered at runtime from a fixture module with no other source edit and
+  appears in `doctor`, `list_capabilities` and config validation;
+- item 3 in part: `doctor` probes it through the fake adapter's `probe`;
+- item 10 in part: `gitWriteControl.kind` is asserted `none-documented`;
+- item 11: long flag, short flag and flag value are refused before spawn except in the approved bypass case, and the
+  scratch adapter emits its flag only in that case (item 4 in part: only the `privileged` cells).
+
+**Not yet automated** (no test or lint checks it today; reviewers check it by hand):
+
+- item 2: the scratch adapter has no manifest (`doctor` reports `NO_MANIFEST`);
+- item 4: the `Ineligible` reason for each of the five profile cells (only `privileged` is asserted);
+- item 5: `parseEvent`, `extractResult` and `classifyFailure` are the fake's; no scratch-specific parser test exists;
+- items 6, 7, 8 and 9: no test runs resume, replay fixtures, `runConformanceSuite` or a malicious-fixture leg for the
+  scratch adapter, and the shared replay helper and per-adapter malicious leg are T4.3 work;
+- item 10 in part: `gitCapabilities` is not asserted for the scratch adapter;
+- item 12 in part: nothing checks the README login row;
+- the model-literal ban is automated only as the heuristic scan above; the family-name list is hand-kept.
 
 ## 5. Implementation strategy by milestone
 

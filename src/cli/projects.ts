@@ -44,6 +44,8 @@ export interface ProjectContextView {
   sign: boolean;
   /** T9.7 (FR-GIT-09): finalize-only opt-in. */
   finalize_commit: boolean;
+  /** T11.3: present only when the context restricts the inner agent. */
+  inner_agent?: string;
 }
 
 export interface ProjectView {
@@ -56,6 +58,8 @@ export interface ProjectView {
   };
   max_trust_profile?: string;
   allowed_providers?: string[];
+  /** T11.3: present only when the project restricts the inner agent. */
+  inner_agent?: string;
   contexts: ProjectContextView[];
 }
 
@@ -90,6 +94,7 @@ export function toProjectView(p: ResolvedProject): ProjectView {
     },
     ...(p.maxTrustProfile !== undefined ? { max_trust_profile: p.maxTrustProfile } : {}),
     ...(p.allowedProviders !== undefined ? { allowed_providers: [...p.allowedProviders] } : {}),
+    ...(p.innerAgent !== undefined ? { inner_agent: p.innerAgent } : {}),
     contexts: p.contexts.map((c) => ({
       id: c.id,
       kind: c.kind,
@@ -105,6 +110,7 @@ export function toProjectView(p: ResolvedProject): ProjectView {
       ...(c.identity !== undefined ? { identity: { ...c.identity } } : {}),
       sign: c.sign,
       finalize_commit: c.finalizeCommit,
+      ...(c.innerAgent !== undefined ? { inner_agent: c.innerAgent } : {}),
     })),
   };
 }
@@ -268,6 +274,7 @@ export function renderProject(p: ProjectView): string {
   if (p.environment.image_digest) lines.push(`  image_digest: ${p.environment.image_digest}`);
   if (p.max_trust_profile) lines.push(`  max_trust_profile: ${p.max_trust_profile}`);
   if (p.allowed_providers) lines.push(`  allowed_providers: ${p.allowed_providers.join(", ")}`);
+  if (p.inner_agent) lines.push(`  inner_agent: ${p.inner_agent}`);
   for (const c of p.contexts) {
     lines.push(
       `  context ${c.id} (${c.kind}${c.primary ? ", primary" : ""}${c.writable ? ", writable" : ""})`,
@@ -278,6 +285,7 @@ export function renderProject(p: ProjectView): string {
     if (c.identity) lines.push(`    identity: ${c.identity.name} <${c.identity.email}>`);
     if (c.finalize_commit) lines.push("    finalize_commit: on (FR-GIT-09)");
     if (c.sign) lines.push("    sign: on (FR-GIT-10)");
+    if (c.inner_agent) lines.push(`    inner_agent: ${c.inner_agent}`);
   }
   return `${lines.join("\n")}\n`;
 }

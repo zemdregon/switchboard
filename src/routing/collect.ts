@@ -21,6 +21,7 @@ import type {
   TrustProfile,
 } from "../adapters/types.js";
 import type { ProviderId as ConfigProviderId, SwitchboardConfig } from "../config/index.js";
+import type { ModelRegistry } from "../models/registry.js";
 import {
   type CapabilityRequirements,
   type EligibilityDecision,
@@ -74,6 +75,11 @@ export interface CollectDeps {
   isEnabled?: (id: ProviderId) => boolean;
   /** NFR-PERF-02: when set, `probe` and `authPreflight` go through this cache (successes only). */
   preflight?: PreflightCache;
+  /**
+   * T4.5 (FR-ADP-05, LLD §2.1): when set, a successful probe refreshes it from `ProbeResult.modelsListed` and a requested
+   * `model` is resolved against it; a model it does not hold is `Ineligible: CAPABILITY_MISSING`. Absent: unchanged.
+   */
+  models?: ModelRegistry;
 }
 
 export async function collectFacts(req: EligibilityRequest, deps: CollectDeps): Promise<EligibilityInput> {
@@ -126,7 +132,17 @@ async function collectOne(
       : await adapter.authPreflight(deps.runner);
     facts.auth = auth;
   }
-  facts.compile = compileCheck(adapter, req.profile, req.requirements, req.cwd);
+  deps.models?.refresh(id, probe.modelsListed);
+  let requirements = req.requirements;
+  if (deps.models !== undefined && requirements.model !== undefined) {
+    const resolved = deps.models.resolve(id, requirements.model);
+    if (!resolved.ok) {
+      facts.compile = { ineligible: true, reason: "CAPABILITY_MISSING", detail: resolved.detail };
+      return facts;
+    }
+    requirements = { ...requirements, model: resolved.model };
+  }
+  facts.compile = compileCheck(adapter, req.profile, requirements, req.cwd);
   return facts;
 }
 

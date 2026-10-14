@@ -22,6 +22,8 @@ const EXPECTED_TABLES = [
   "decision",
   "git_commit",
   "git_push",
+  "inner_call",
+  "inner_task_state",
   "meta_session",
   "project_event",
   "project_revision",
@@ -56,6 +58,9 @@ function tables(d: Database.Database): string[] {
   ).map((r) => r.name);
 }
 
+// Versions are not contiguous (0008 is reserved for T11.6), so the newest version is not the migration count.
+const LATEST_VERSION = Math.max(...MIGRATIONS.map((m) => m.version));
+
 function seed(d: Database.Database) {
   const ledger = createLedger(d, { ids: createIdGenerator() });
   const session = ledger.createMetaSession({ objective: "test" });
@@ -74,7 +79,7 @@ describe("ledger migrations", () => {
   it("creates all tables from an empty database and records the version", () => {
     db = openLedger(dir);
     expect(tables(db)).toEqual(EXPECTED_TABLES);
-    expect(currentSchemaVersion(db)).toBe(MIGRATIONS.length);
+    expect(currentSchemaVersion(db)).toBe(LATEST_VERSION);
     const row = db.prepare("SELECT version, name, checksum FROM schema_migrations").get() as { checksum: string };
     expect(row.checksum).toMatch(/^[0-9a-f]{64}$/);
   });
@@ -153,7 +158,9 @@ describe("ledger migrations", () => {
     expect(tables(db)).toEqual(expect.arrayContaining(["git_commit", "git_push"]));
     expect(db.prepare("SELECT project_id FROM run WHERE id = ?").get(run.id)).toEqual({ project_id: "web" });
 
-    // the new tables work through the repository helper and are linked to the existing rows
+    // the new tables work through the repository helper (which writes the current schema, so the later migrations are
+    // applied first; T11.4 added git_commit columns in 0007) and are linked to the existing rows
+    migrate(db);
     const upgraded = createLedger(db, { ids: createIdGenerator() });
     const sha = "a".repeat(40);
     const rec = {
@@ -178,6 +185,62 @@ describe("ledger migrations", () => {
     expect(upgraded.recordGitCommit(rec)).toMatchObject({ created: false, row: { id: first.row.id } }); // idempotent
     expect(upgraded.listRunEvents(run.id)).toHaveLength(1);
     expect(upgraded.findGitCommitsBySha(sha).map((r) => r.run_id)).toEqual([run.id]);
+  });
+
+  it("0009 widens artifact.kind to pr_draft, keeping rows, references and foreign keys (T11.8)", () => {
+    db = new Database(path.join(dir, LEDGER_FILE_NAME));
+    db.pragma("foreign_keys = ON");
+    const d = db;
+    const upTo8 = MIGRATIONS.filter((m) => m.version < 9);
+    expect(migrate(d, undefined, upTo8)).toEqual(upTo8.map((m) => m.version));
+    const { ledger, session, run } = seed(d);
+    const art = ledger.insertArtifact({
+      runId: run.id,
+      metaSessionId: session.id,
+      kind: "diff",
+      sha256: "e".repeat(64),
+      sizeBytes: 3,
+      mediaType: "text/plain",
+    });
+    ledger.appendRunEvent({ runId: run.id, type: "x", artifactId: art });
+    expect(() =>
+      ledger.insertArtifact({
+        runId: run.id,
+        metaSessionId: session.id,
+        kind: "pr_draft",
+        sha256: "f".repeat(64),
+        sizeBytes: 1,
+        mediaType: "application/json",
+      }),
+    ).toThrow(/CHECK/u);
+    expect(migrate(d)).toEqual([9]);
+    expect(d.pragma("foreign_keys", { simple: true })).toBe(1); // restored after the rebuild
+    expect(d.pragma("foreign_key_check")).toEqual([]);
+    expect(d.prepare("SELECT id, kind, deleted_at FROM artifact").all()).toEqual([
+      { id: art, kind: "diff", deleted_at: null },
+    ]);
+    expect(ledger.listRunEvents(run.id)[0]?.artifact_id).toBe(art);
+    const draft = ledger.insertArtifact({
+      runId: run.id,
+      metaSessionId: session.id,
+      kind: "pr_draft",
+      sha256: "f".repeat(64),
+      sizeBytes: 1,
+      mediaType: "application/json",
+    });
+    expect(ledger.listArtifactsForRun(run.id).map((a) => a.id)).toEqual([art, draft]);
+    expect(() =>
+      d
+        .prepare(
+          "INSERT INTO artifact (id, kind, sha256, size_bytes, media_type, created_at) VALUES ('art_x','nope','a',1,'t','t')",
+        )
+        .run(),
+    ).toThrow(/CHECK/u);
+    // the index and the foreign key from run_event still hold
+    expect(d.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='artifact_run'").all()).toHaveLength(
+      1,
+    );
+    expect(() => d.prepare("DELETE FROM artifact WHERE id = ?").run(art)).toThrow(/FOREIGN KEY/u);
   });
 
   it("git_commit and git_push are append-only and enforce their foreign keys and checks (LLD §1)", () => {
@@ -229,10 +292,166 @@ describe("ledger migrations", () => {
     expect(() => (db as Database.Database).prepare("DELETE FROM git_push").run()).toThrow(/append-only/u);
   });
 
+  it("0006 widens usage_observation.source with inner_agent, keeps rows, index and append-only guards (T11.5)", () => {
+    db = new Database(path.join(dir, LEDGER_FILE_NAME));
+    db.pragma("foreign_keys = ON");
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 5))).toEqual([1, 2, 3, 4, 5]);
+    const d = db;
+    const ins = (id: string, source: string, at = "2026-10-13T00:00:00.000Z") =>
+      d
+        .prepare(
+          `INSERT INTO usage_observation (id, run_id, provider, harness, source, metrics_json, observed_at)
+           VALUES (?, NULL, 'claude-code', 'claude-code', ?, '{"input_tokens":3}', ?)`,
+        )
+        .run(id, source, at);
+    ins("use_a", "provider_reported");
+    expect(() => ins("use_x", "inner_agent")).toThrow(/CHECK/u);
+    const before = d.prepare("SELECT * FROM usage_observation ORDER BY rowid").all();
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 6))).toEqual([6]);
+    expect(d.prepare("SELECT * FROM usage_observation ORDER BY rowid").all()).toEqual(before);
+    ins("use_b", "inner_agent");
+    ins("use_c", "controller_estimated");
+    expect(() => ins("use_d", "made_up")).toThrow(/CHECK/u);
+    expect(() => d.prepare("UPDATE usage_observation SET model = 'x'").run()).toThrow(/append-only/u);
+    expect(() => d.prepare("DELETE FROM usage_observation").run()).toThrow(/append-only/u);
+    const idx = d
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'usage_observation'")
+      .all();
+    expect(idx).toContainEqual({ name: "usage_provider_time" });
+    expect(tables(d)).not.toContain("usage_observation_new");
+  });
+
+  it("0007 adds message_source and inner_call_id to git_commit, keeps rows and guards (T11.4, LLD §12.7)", () => {
+    db = new Database(path.join(dir, LEDGER_FILE_NAME));
+    db.pragma("foreign_keys = ON");
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 6))).toEqual([1, 2, 3, 4, 5, 6]);
+    const d = db;
+    const { session, run } = seed(d);
+    let n = 0;
+    const insert = (extra: Record<string, unknown> = {}) => {
+      const row = {
+        id: `gcm_${String(n++).padStart(26, "0")}`,
+        commit_sha: String(n).padStart(40, "a"),
+        tree_sha: "b".repeat(40),
+        repo_root: "/repo",
+        publish_ref: "refs/heads/switchboard/pub/x",
+        project_id: "web",
+        context_id: "main",
+        meta_session_id: session.id,
+        run_id: run.id,
+        provider: "fake",
+        harness: "fake",
+        origin: "commit_tool",
+        sanitizer_json: "{}",
+        created_at: "2026-10-13T00:00:00.000Z",
+        ...extra,
+      };
+      const cols = Object.keys(row);
+      d.prepare(`INSERT INTO git_commit (${cols.join(",")}) VALUES (${cols.map((c) => `@${c}`).join(",")})`).run(row);
+      return row.id;
+    };
+    const old = insert();
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 7))).toEqual([7]);
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 7))).toEqual([]);
+    expect(currentSchemaVersion(db)).toBe(7);
+    // the existing row reads as an agent message with no inner call
+    expect(d.prepare("SELECT message_source, inner_call_id FROM git_commit WHERE id = ?").get(old)).toEqual({
+      message_source: "agent",
+      inner_call_id: null,
+    });
+    expect(() => insert({ message_source: "model" })).toThrow(/CHECK/u);
+    expect(() => insert({ message_source: "agent", inner_call_id: "inc_x" })).toThrow(/CHECK/u);
+    expect(() => insert({ message_source: "inner", inner_call_id: "inc_missing" })).toThrow(/FOREIGN KEY/u);
+    insert({ message_source: "inner" }); // an accepted draft whose call row was not recorded
+    expect(() => d.prepare("UPDATE git_commit SET message_source = 'inner'").run()).toThrow(/append-only/u);
+    expect(() => d.prepare("DELETE FROM git_commit").run()).toThrow(/append-only/u);
+  });
+
+  it("inner_task_state (T11.6, LLD §13.3) upgrades from version 7, is mutable and enforces its checks", () => {
+    db = new Database(path.join(dir, LEDGER_FILE_NAME));
+    db.pragma("foreign_keys = ON");
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 7))).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(tables(db)).not.toContain("inner_task_state");
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 8))).toEqual([8]);
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 8))).toEqual([]);
+    expect(currentSchemaVersion(db)).toBeGreaterThanOrEqual(8);
+    const d = db;
+    expect(tables(d)).toContain("inner_task_state");
+    d.prepare("INSERT INTO inner_task_state (task) VALUES ('run_title')").run();
+    expect(d.prepare("SELECT suspended, version, resumed_at FROM inner_task_state").get()).toEqual({
+      suspended: 0,
+      version: 0,
+      resumed_at: null,
+    });
+    // mutable, unlike inner_call
+    d.prepare("UPDATE inner_task_state SET suspended = 1, suspended_basis_json = '{\"total\":20}'").run();
+    expect(() => d.prepare("INSERT INTO inner_task_state (task) VALUES ('made_up')").run()).toThrow(/CHECK/u);
+    expect(() => d.prepare("INSERT INTO inner_task_state (task) VALUES ('run_title')").run()).toThrow(
+      /UNIQUE|PRIMARY/u,
+    );
+    expect(() => d.prepare("UPDATE inner_task_state SET suspended = 2").run()).toThrow(/CHECK/u);
+    expect(() => d.prepare("UPDATE inner_task_state SET suspended_basis_json = 'not json'").run()).toThrow();
+  });
+
+  it("inner_call (T11.1, LLD §13.3) upgrades from version 4, is append-only and enforces its checks and keys", () => {
+    db = new Database(path.join(dir, LEDGER_FILE_NAME));
+    db.pragma("foreign_keys = ON");
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 4))).toEqual([1, 2, 3, 4]);
+    expect(tables(db)).not.toContain("inner_call");
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 5))).toEqual([5]);
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 6))).toEqual([6]);
+    expect(migrate(db, undefined, MIGRATIONS.slice(0, 6))).toEqual([]);
+    expect(currentSchemaVersion(db)).toBe(6);
+    expect(tables(db)).toContain("inner_call");
+    expect(tables(db)).not.toContain("inner_task_state"); // owned by T11.6
+
+    const d = db;
+    const { run } = seed(d);
+    let n = 0;
+    const insert = (over: Record<string, unknown> = {}) => {
+      const row = {
+        id: `inc_${String(n++).padStart(26, "0")}`,
+        task: "run_title",
+        backend_kind: "http",
+        model_id: "m",
+        locality: "local",
+        template_version: "run_title.v1",
+        outcome: "accepted",
+        reason: null,
+        attempts: 1,
+        latency_ms: 5,
+        tokens_in: null,
+        tokens_out: null,
+        input_bytes: 10,
+        output_bytes: 4,
+        input_sha256: "a".repeat(64),
+        run_id: null,
+        meta_session_id: null,
+        created_at: "2026-10-13T00:00:00.000Z",
+        ...over,
+      };
+      const cols = Object.keys(row);
+      d.prepare(`INSERT INTO inner_call (${cols.join(",")}) VALUES (${cols.map((c) => `@${c}`).join(",")})`).run(row);
+    };
+    insert(); // outside a run
+    insert({ run_id: run.id, outcome: "fallback_unavailable", reason: "TIMEOUT", attempts: 0 });
+    expect(() => insert({ id: "bad_id" })).toThrow(/CHECK/u);
+    expect(() => insert({ task: "shell" })).toThrow(/CHECK/u);
+    expect(() => insert({ backend_kind: "ssh" })).toThrow(/CHECK/u);
+    expect(() => insert({ locality: "lan" })).toThrow(/CHECK/u);
+    expect(() => insert({ outcome: "maybe" })).toThrow(/CHECK/u);
+    expect(() => insert({ attempts: 3 })).toThrow(/CHECK/u);
+    expect(() => insert({ run_id: "run_missing" })).toThrow(/FOREIGN KEY/u);
+    expect(() => insert({ meta_session_id: "sess_missing" })).toThrow(/FOREIGN KEY/u);
+    expect(() => d.prepare("UPDATE inner_call SET reason = 'x'").run()).toThrow(/append-only/u);
+    expect(() => d.prepare("DELETE FROM inner_call").run()).toThrow(/append-only/u);
+    expect(d.prepare("SELECT COUNT(*) AS n FROM inner_call").get()).toEqual({ n: 2 });
+  });
+
   it("applies only pending migrations in order", () => {
     db = openLedger(dir);
     const extra = {
-      version: MIGRATIONS.length + 1,
+      version: LATEST_VERSION + 1,
       name: "extra",
       sql: "CREATE TABLE extra (id INTEGER PRIMARY KEY) STRICT;",
     };
@@ -262,13 +481,13 @@ describe("ledger migrations", () => {
   it("rolls back a failing migration and records nothing", () => {
     db = openLedgerFile(path.join(dir, LEDGER_FILE_NAME));
     const bad = {
-      version: MIGRATIONS.length + 1,
+      version: LATEST_VERSION + 1,
       name: "bad",
       sql: "CREATE TABLE ok (id INTEGER) STRICT; SELECT * FROM nope;",
     };
     expect(() => migrate(db as Database.Database, undefined, [...MIGRATIONS, bad])).toThrow();
     expect(tables(db)).not.toContain("ok");
-    expect(currentSchemaVersion(db)).toBe(MIGRATIONS.length);
+    expect(currentSchemaVersion(db)).toBe(LATEST_VERSION);
   });
 });
 

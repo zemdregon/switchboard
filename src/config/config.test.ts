@@ -461,3 +461,162 @@ describe("git.sanitize_patterns (FR-GIT-04, T9.3)", () => {
     );
   });
 });
+
+describe("inner_agent (T11.1; FR-INN-01, FR-INN-03, LLD §13.1)", () => {
+  const section = (over: Record<string, unknown> = {}) => ({
+    enabled: true,
+    backend: { kind: "http", base_url: "http://127.0.0.1:8080", model: "local-model" },
+    ...over,
+  });
+  const load = (inner: unknown) => loadConfig({ configPath: write({ ...base(), inner_agent: inner }) });
+
+  it("with no section there is no inner agent and the resolved config has no such key", () => {
+    const c = loadConfig({ configPath: write(base()) });
+    expect(c.innerAgent).toBeUndefined();
+    expect("innerAgent" in c).toBe(false);
+  });
+
+  it("resolves the LLD defaults: no task enabled, nothing but what the operator wrote", () => {
+    const a = load(section()).innerAgent;
+    expect(a?.enabled).toBe(true);
+    expect(a?.backend).toMatchObject({
+      kind: "http",
+      baseUrl: "http://127.0.0.1:8080",
+      model: "local-model",
+      timeoutMs: 15000,
+      maxConcurrency: 2,
+      allowRemote: false,
+      sharesSubscriptionWith: null,
+    });
+    expect(Object.values(a?.tasks ?? {}).some((t) => t.enabled)).toBe(false);
+    expect(a?.tasks.commit_message).toMatchObject({ mode: "draft_if_missing", allowSourceContent: false });
+    expect(a?.tasks.route_features.timeoutMs).toBe(5000);
+    expect(a?.breaker).toEqual({ failureThreshold: 3, openMs: 60000 });
+    expect(a?.suspension).toEqual({ windowCalls: 50, minCalls: 20, rejectionThreshold: 0.4 });
+  });
+
+  it("an empty or disabled section is accepted and has no backend or model default", () => {
+    expect(load({}).innerAgent).toMatchObject({ enabled: false, backend: undefined });
+    expect(load({ enabled: false }).innerAgent?.enabled).toBe(false);
+    expect(() => load({ enabled: true })).toThrow(/\$\.inner_agent\.backend: required when enabled/);
+    expect(() => load(section({ backend: { kind: "http", base_url: "http://127.0.0.1:1" } }))).toThrow(
+      /backend\.model: required property is missing/,
+    );
+  });
+
+  it("rejects unknown keys at every level, including credential-shaped field names", () => {
+    expect(() => load(section({ surprise: 1 }))).toThrow(/\$\.inner_agent\.surprise: unknown key/);
+    for (const key of ["api_key", "token", "headers", "password", "env"]) {
+      const backend = { kind: "http", base_url: "http://127.0.0.1:1", model: "m", [key]: "x" };
+      expect(() => load(section({ backend }))).toThrow(new RegExp(`backend\\.${key}: unknown key`));
+    }
+    expect(() => load(section({ tasks: { shell: { enabled: true } } }))).toThrow(/tasks\.shell: unknown key/);
+    expect(() => load(section({ tasks: { run_title: { enabled: true, tools: [] } } }))).toThrow(
+      /tasks\.run_title\.tools: unknown key/,
+    );
+    expect(() => load(section({ breaker: { nope: 1 } }))).toThrow(/breaker\.nope: unknown key/);
+  });
+
+  it("rejects a credential-looking value anywhere in the section, without echoing it", () => {
+    const secret = `sk-${"a1B2c3D4e5".repeat(3)}`;
+    for (const inner of [
+      section({ backend: { kind: "http", base_url: "http://127.0.0.1:1", model: secret } }),
+      section({ backend: { kind: "http", base_url: `http://127.0.0.1:1/${secret}`, model: "m" } }),
+      section({ backend: { kind: "http", base_url: "http://127.0.0.1:1", model: "api_key=abcdefgh12345" } }),
+      section({ backend: { kind: "cli", provider: "opencode", model: `ghp_${"a".repeat(36)}` } }),
+    ]) {
+      let message = "";
+      try {
+        load(inner);
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      expect(message).toMatch(/looks like a credential/);
+      expect(message).not.toContain(secret);
+      expect(message).not.toContain("abcdefgh12345");
+      expect(message).not.toContain("ghp_");
+    }
+  });
+
+  it("rejects userinfo, a query string, a fragment, a non-http scheme and an unparseable base_url", () => {
+    const withUrl = (base_url: string) => section({ backend: { kind: "http", base_url, model: "m" } });
+    expect(() => load(withUrl("http://user:pw@127.0.0.1:1"))).toThrow(/userinfo/);
+    expect(() => load(withUrl("http://user@127.0.0.1:1"))).toThrow(/userinfo/);
+    expect(() => load(withUrl("http://127.0.0.1:1/v1?x=1"))).toThrow(/query string/);
+    expect(() => load(withUrl("http://127.0.0.1:1/v1#frag"))).toThrow(/fragment/);
+    expect(() => load(withUrl("ftp://127.0.0.1:1"))).toThrow(/scheme must be http or https/);
+    expect(() => load(withUrl("not a url"))).toThrow(/not a valid URL/);
+    expect(load(withUrl("https://gateway.example.test/v1")).innerAgent?.backend?.baseUrl).toBe(
+      "https://gateway.example.test/v1",
+    );
+  });
+
+  it("checks backend kind fields, the task rules and the cross-field rules", () => {
+    expect(() => load(section({ backend: { kind: "http", model: "m" } }))).toThrow(
+      /base_url: required for the http kind/,
+    );
+    expect(() => load(section({ backend: { kind: "cli", model: "m" } }))).toThrow(
+      /provider: required for the cli kind/,
+    );
+    expect(() =>
+      load(section({ backend: { kind: "cli", provider: "opencode", base_url: "http://127.0.0.1:1", model: "m" } })),
+    ).toThrow(/base_url: valid only for the http kind/);
+    expect(() =>
+      load(section({ backend: { kind: "http", base_url: "http://127.0.0.1:1", provider: "opencode", model: "m" } })),
+    ).toThrow(/provider: valid only for the cli kind/);
+    expect(
+      load(section({ backend: { kind: "cli", provider: "opencode", model: "m" } })).innerAgent?.backend?.kind,
+    ).toBe("cli");
+    // mode only on commit_message; allow_source_content only on tasks that send repository content
+    expect(() => load(section({ tasks: { pr_draft: { mode: "always" } } }))).toThrow(/pr_draft\.mode: unknown key/);
+    expect(() => load(section({ tasks: { run_title: { allow_source_content: true } } }))).toThrow(
+      /run_title\.allow_source_content: unknown key/,
+    );
+    expect(() => load(section({ tasks: { route_features: { allow_source_content: true } } }))).toThrow(/unknown key/);
+    expect(() => load(section({ tasks: { commit_message: { mode: "sometimes" } } }))).toThrow(/mode: must be one of/);
+    // input budget floor 1024; task timeout may only be lower than the backend's
+    expect(() => load(section({ tasks: { run_title: { input_budget_bytes: 1023 } } }))).toThrow(/>= 1024/);
+    expect(() => load(section({ tasks: { run_title: { timeout_ms: 20000 } } }))).toThrow(
+      /may only be lower than the backend/,
+    );
+    expect(() => load(section({ suspension: { window_calls: 10, min_calls: 11 } }))).toThrow(
+      /min_calls: must not exceed/,
+    );
+    // shares_subscription_with must name a known provider or be null
+    expect(() =>
+      load(
+        section({
+          backend: { kind: "http", base_url: "http://127.0.0.1:1", model: "m", shares_subscription_with: "nope" },
+        }),
+      ),
+    ).toThrow(/shares_subscription_with: must name a configured provider id/);
+    const shared = load(
+      section({
+        backend: { kind: "http", base_url: "http://127.0.0.1:1", model: "m", shares_subscription_with: "claude-code" },
+      }),
+    );
+    expect(shared.innerAgent?.backend?.sharesSubscriptionWith).toBe("claude-code");
+  });
+});
+
+describe("project and context inner_agent (T11.3; LLD §13.1, FR-INN-16)", () => {
+  const project = (over: Record<string, unknown> = {}, ctxOver: Record<string, unknown> = {}) => ({
+    id: "web-app",
+    name: "Web",
+    ...over,
+    contexts: [{ id: "main", kind: "repository", path: "/srv/web", base_ref: "main", ...ctxOver }],
+  });
+  const load = (p: unknown) => loadConfig({ configPath: write({ ...base(), projects: [p] }) });
+
+  it("accepts off, local_only and inherit; resolves them only when written; no `on` value exists", () => {
+    const c = load(project({ inner_agent: "local_only" }, { inner_agent: "off" }));
+    expect(c.projects[0]?.innerAgent).toBe("local_only");
+    expect(c.projects[0]?.contexts[0]?.innerAgent).toBe("off");
+    const plain = load(project());
+    expect(plain.projects[0]).not.toHaveProperty("innerAgent");
+    expect(plain.projects[0]?.contexts[0]).not.toHaveProperty("innerAgent");
+    expect(load(project({ inner_agent: "inherit" })).projects[0]?.innerAgent).toBe("inherit");
+    expect(() => load(project({ inner_agent: "on" }))).toThrow(/\$\.projects\[0\]\.inner_agent/);
+    expect(() => load(project({}, { inner_agent: "on" }))).toThrow(/\$\.projects\[0\]\.contexts\[0\]\.inner_agent/);
+  });
+});

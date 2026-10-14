@@ -56,10 +56,21 @@ export function migrate(
       .run(m.version, m.name, migrationChecksum(m), now().toISOString());
   for (const m of [...migrations].sort((a, b) => a.version - b.version)) {
     if (appliedVersions.has(m.version)) continue;
-    db.transaction(() => {
-      db.exec(m.sql);
-      insert(m);
-    })();
+    // A rebuild of a referenced table runs with foreign keys off (the pragma is a no-op inside a transaction), then the
+    // whole database is checked before commit and the setting is restored (SQLite "ALTER TABLE" procedure, LLD §1).
+    const fkOff = m.foreignKeysOff === true && db.pragma("foreign_keys", { simple: true }) === 1;
+    if (fkOff) db.pragma("foreign_keys = OFF");
+    try {
+      db.transaction(() => {
+        db.exec(m.sql);
+        insert(m);
+        if (fkOff && (db.pragma("foreign_key_check") as unknown[]).length > 0) {
+          throw new MigrationError(`migration ${m.version} (${m.name}) left foreign key violations; aborting`);
+        }
+      })();
+    } finally {
+      if (fkOff) db.pragma("foreign_keys = ON");
+    }
     done.push(m.version);
   }
   return done;

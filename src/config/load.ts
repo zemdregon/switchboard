@@ -3,10 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import type { ErrorObject, ValidateFunction } from "ajv";
 import { Ajv } from "ajv";
+import { configProviderIds } from "../adapters/providers.js";
 import { validateOperatorPatterns } from "../git/safe-pattern.js";
+import type { ModelConfig } from "../models/registry.js";
 import { ProfileOverrideError, validateProfileOverrides } from "../policy/profiles.js";
 import type { ProfileOverride, ProfileOverrides } from "../policy/types.js";
 import { ConfigError } from "./errors.js";
+import { checkInnerAgent, type InnerAgentSettings, resolveInnerAgent } from "./inner-agent.js";
 import { checkProjects, type ResolvedProject, resolveProjects } from "./projects.js";
 import {
   currentConfigSchema,
@@ -35,6 +38,8 @@ export interface ResolvedConfig {
   mcpClients: ReadonlyMap<string, ResolvedMcpClient>;
   limits: { globalConcurrency: number; perProviderConcurrency: number };
   providers: ReadonlyMap<string, { enabled: boolean; weight: number | undefined }>;
+  /** `providers.<id>.models` blocks (T4.5, FR-ADP-05, LLD §2.1), keyed by config provider id; only providers that set one. */
+  providerModels: ReadonlyMap<string, ModelConfig>;
   /** Retention (NFR-DATA-01, FR-WS-07; T3.12 consumes it). `intervalMs` is the GC pass period. */
   retention: { days: number; intervalMs: number };
   /**
@@ -56,6 +61,11 @@ export interface ResolvedConfig {
   projects: ResolvedProject[];
   /** Validated `git.sanitize_patterns` (FR-GIT-04; T9.3): sources in the safe subset, in configuration order. */
   sanitizePatterns: string[];
+  /**
+   * Validated `inner_agent` (T11.1; FR-INN-01, LLD §13.1), defaulted. Present only when the config has the section; absent
+   * means no inner agent and every behaviour is as before.
+   */
+  innerAgent?: InnerAgentSettings;
 }
 
 export interface ResolvedMcpClient {
@@ -279,11 +289,17 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
     throw new ConfigError(`Invalid config:\n${projectErrors.map((l) => `  ${l}`).join("\n")}`);
   }
 
+  const innerErrors = checkInnerAgent(cfg.inner_agent, configProviderIds());
+  if (innerErrors.length > 0) {
+    throw new ConfigError(`Invalid config:\n${innerErrors.map((l) => `  ${l}`).join("\n")}`);
+  }
+
   return {
     configPath,
     dataDir,
     projects: resolveProjects(cfg),
     sanitizePatterns: [...(cfg.git?.sanitize_patterns ?? [])],
+    ...(cfg.inner_agent !== undefined ? { innerAgent: resolveInnerAgent(cfg.inner_agent) } : {}),
     allowedRoots,
     mcpClients: new Map(
       cfg.mcp_clients.map((c) => [
@@ -313,6 +329,11 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
     // Proposed: a provider not listed is enabled with no explicit weight; listing it can disable it.
     providers: new Map(
       Object.entries(cfg.providers ?? {}).map(([id, p]) => [id, { enabled: p.enabled ?? true, weight: p.weight }]),
+    ),
+    providerModels: new Map(
+      Object.entries(cfg.providers ?? {}).flatMap(([id, p]) =>
+        p.models !== undefined ? [[id, p.models] as const] : [],
+      ),
     ),
   };
 }

@@ -144,7 +144,7 @@ const servers: { mcp: SwitchboardMcpServer; client: Client }[] = [];
 /** Probe runner: the Claude replay script only replays streams, so its probe/auth commands are answered here. */
 const realRunner = createProbeRunner();
 const probeRunner: ProbeRunner = async (argv, opts) => {
-  if (argv.includes(REPLAY_SCRIPT)) {
+  if (argv.includes(REPLAY_SCRIPT) && argv[argv.indexOf("--provider") + 1] === "claude") {
     const tail = argv.slice(argv.indexOf("--") + 1).join(" ");
     const out = { exitCode: 0, stderr: "", timedOut: false };
     if (tail === "--version") return { ...out, stdout: "2.1.296 (Claude Code)\n" };
@@ -381,6 +381,25 @@ describe("usage in get_run (T2.5)", () => {
       harness: "fake",
       metrics: { input_tokens: 12, output_tokens: 3 },
     });
+  });
+});
+
+describe("harness and backing provider in get_run (T4.6, FR-ADP-10)", () => {
+  it("stores both in usage_observation and shows both in get_run", async () => {
+    await setup({ adapters: [recorded(new FakeAdapter({ scenario: "fronted", timeouts: SHORT })).adapter] });
+    const d = await call("delegate_task", delegateArgs());
+    const done = await pollTerminal(d.body.run_id);
+    expect(done.status).toBe("SUCCEEDED");
+    expect(done.usage.reported).toHaveLength(1);
+    expect(done.usage.reported[0]).toMatchObject({
+      harness: "fake",
+      backing_provider: "backing-x",
+      model: "m-a",
+      metrics: { input_tokens: 7, output_tokens: 2 },
+    });
+    const rows = ledger.listUsageObservationsForRun(d.body.run_id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ harness: "fake", backing_provider: "backing-x", model: "m-a" });
   });
 });
 

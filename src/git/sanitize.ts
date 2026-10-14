@@ -87,7 +87,9 @@ const AI_SIGNOFF = /^\s*(?:signed-off|reviewed|authored|created|written|generate
 const FOOTER_HEAD =
   /^[^\p{L}\p{N}]{0,16}(?:this (?:commit|change|patch|pr|pull request|message) (?:was|is) )?(?:generated|created|written|authored|made|built|assisted|co-authored|produced|drafted|implemented)\b.{0,80}?\b(?:with|by|using|via)\b/iu;
 
-const CONTROLLER_ID = /(?<![0-9A-Za-z])(?:sess|run|evt|art|dec|ckp|rte|apv|adv|use|pbd|gcm|gps)_[0-9A-Za-z]{26,}/gu;
+/** The controller's own ID formats (LLD §3.0); the inner-agent prompt scrub (T11.2) reuses this pattern. */
+export const CONTROLLER_ID =
+  /(?<![0-9A-Za-z])(?:sess|run|evt|art|dec|ckp|rte|apv|adv|use|pbd|gcm|gps)_[0-9A-Za-z]{26,}/gu;
 const MD_LINK = /\[[^\]\n]{0,200}\]\((https?:\/\/[^)\s]{1,2000})\)/giu;
 const BARE_URL = /https?:\/\/[^\s<>"')\]]{1,2000}/giu;
 

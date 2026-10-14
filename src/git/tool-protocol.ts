@@ -102,6 +102,26 @@ export const COMMIT_INPUT_SCHEMA = {
   },
 } as const;
 
+/**
+ * T11.4 (LLD §12.1, FR-INN-10): the `commit` schema served when the run's `commit_message` task is enabled with a mode
+ * other than `never`: identical except that nothing is required. The controller still refuses a missing message on a
+ * channel that did not offer this form.
+ */
+export const COMMIT_INPUT_SCHEMA_MESSAGE_OPTIONAL = {
+  type: "object",
+  additionalProperties: false,
+  properties: COMMIT_INPUT_SCHEMA.properties,
+} as const;
+
+/** Shim argument that selects {@link COMMIT_INPUT_SCHEMA_MESSAGE_OPTIONAL} (T11.4). */
+export const MESSAGE_OPTIONAL_FLAG = "--message-optional";
+
+export const COMMIT_DESCRIPTION_MESSAGE_OPTIONAL =
+  "Commit changes from your working directory. Give a commit message, or omit it to have one drafted from the diff " +
+  "(if none can be drafted the call fails with MESSAGE_REQUIRED and you call it again with a message). Optionally " +
+  "give the worktree-relative paths to include (default: all changes). This is the only way to create a commit; Git " +
+  "commands that write history are not available to you.";
+
 export const COMMIT_DESCRIPTION =
   "Commit changes from your working directory. Give a commit message and, optionally, the worktree-relative paths " +
   "to include (default: all changes). This is the only way to create a commit; Git commands that write history are " +

@@ -53,6 +53,8 @@ status of each). Contributions are code, tests, or documentation edits.
   before changing a component boundary, persistence format, trust boundary or
   external interface; those need an ADR (see [AGENTS.md](AGENTS.md)).
 - Work that is not on the roadmap is not in scope yet; propose it first.
+- Adding a provider adapter follows the checklist in
+  [TDD §4.9](docs/design/TDD.md#49-adapter-addition-checklist-t42); write no provider fact from memory.
 
 ## Review
 
