@@ -1097,6 +1097,14 @@ describe("claude parseEvent", () => {
     expect(pd).toContainEqual({ kind: "tool_call", tool: "shell", name: "Bash" }); // command text not copied
   });
 
+  it("maps system/permission_denied once, de-duplicated against result.permission_denials (C-10)", () => {
+    const { events, state } = parseAll("permission-denied-system.jsonl");
+    expect(events.filter((e) => e.kind === "permission_denied")).toEqual([{ kind: "permission_denied", tool: "Bash" }]);
+    expect(state.unknownEvents).toBe(0);
+    // Without the system event, the result's entry is still reported (the existing fixture).
+    expect(parseAll("permission-denied.jsonl").events.filter((e) => e.kind === "permission_denied")).toHaveLength(1);
+  });
+
   it("never yields events for unparseable or non-object lines", () => {
     const s = createParseState();
     expect(parseClaudeLine("this line is deliberately not json {", s)).toEqual([]);
