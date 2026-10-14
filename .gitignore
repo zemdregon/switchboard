@@ -1,5 +1,5 @@
 # Node tooling (if scripts or linters are run locally)
-node_modules/
+node_modules
 npm-debug.log*
 .npm/
 
