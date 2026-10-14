@@ -51,6 +51,18 @@ export const DISABLE_AUTOUPDATE_ENV = "OPENCODE_DISABLE_AUTOUPDATE";
 export const OPENCODE_LOGIN_COMMAND = "opencode auth login";
 
 /**
+ * Auth status (T4.54, Q-10, Q-64; [D-cli] `opencode auth list` "lists all the authenticated providers as stored in the
+ * credentials file"; [LIVE] 2a to 2f). It exits 0 in every state, so the JSON decides: an array whose entries hold a
+ * connection of a type other than an environment one is `OK` (**Assumption**: the type of a stored login was not
+ * recorded, only that environment-only providers show `environment` or `env`); an empty array, or environment-only
+ * connections (a run gets no provider key, so they would not apply), is `AUTH_REQUIRED`; anything else is `UNKNOWN`.
+ * `--standalone` keeps the call off the host's shared service ([LIVE] 2c, 2d). Never `auth export` (prints secrets).
+ */
+export const AUTH_STATUS_ARGS: readonly string[] = ["auth", "list", "--format", "json", "--standalone"];
+export const AUTH_ENV_CONNECTION_TYPES: readonly string[] = ["env", "environment"];
+export const AUTH_STATUS_TIMEOUT_MS = 15_000;
+
+/**
  * FR-GIT-01 declaration ([D-perm], [LIVE] 7, 14d, ESCAPED). `bash` deny patterns are documented, but on v2.0.23 no
  * per-run deny took effect: `OPENCODE_PERMISSION` and `OPENCODE_CONFIG_CONTENT` denials did not deny a `read`, a
  * recognised deny in config failed tool runs with a 403 instead of refusing the tool, and with default permissions
