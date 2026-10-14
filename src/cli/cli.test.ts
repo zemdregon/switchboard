@@ -117,7 +117,8 @@ describe("doctor", () => {
   it("has a stable --json schema", async () => {
     const r = await run(["doctor", "--json", ...cfg()], { adapters: fakeOnly() });
     const j = JSON.parse(r.out);
-    expect(Object.keys(j).sort()).toEqual(["adapters", "checks", "ok", "schema_version"]);
+    // T6.3: `capacity` (LLD §16.3) is the one additive key since M1.
+    expect(Object.keys(j).sort()).toEqual(["adapters", "capacity", "checks", "ok", "schema_version"]);
     expect(j.ok).toBe(true);
     expect(j.checks.map((c: { id: string }) => c.id)).toEqual([
       "node",
