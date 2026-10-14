@@ -161,6 +161,8 @@ export function secondFakeProvider(home: string): ProviderEntry {
     kind: "real",
     label: "Second fake CLI (synthetic T5.2 test adapter)",
     bypassFlags: [],
+    // T5.7/T5.8: the entry states what the adapter declares (the bundled CLI's default, `bound`).
+    resumeCwd: "bound",
     create: () => secondFake({ home }),
   };
 }
