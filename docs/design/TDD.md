@@ -1226,7 +1226,7 @@ always emitted so a run never self-updates (ADR-0009).
 | Git-write denial (FR-GIT-01) | Could compile: `--deny 'Bash(git commit*)'`, `--deny 'Bash(git push*)'` and the other write subcommands, syntax by analogy with [PERM]/[ENT]. **Not shown to hold**: `Unverified: T4.21` (rule matching) and T4.28 (live) | As left | As left | As left | `deny` "still applies" under always-approve [PERM], so the same rules are emitted; holding: `Unverified: T4.21`, T4.28 |
 | Per-run MCP | Headless: `Unverified: T4.21`. ACP `session/new` `mcpServers` [HL]. Until sourced, `commitChannel` stays `finalize-only` | As left | As left | As left | As left |
 | Resume | `-r <id>` from `.sessionId` of the previous run's JSON/stream; `-c` never (it selects "the most recent session for the current directory", not a named run); sandbox profile is preserved on resume ([CL] 0.2.56), permission flags on resume: `Unverified: T4.21` | As left | As left | As left | As left |
-| Auth preflight | `UNKNOWN` until T4.21 (fail closed); `AUTH_REQUIRED` names `grok login` (`--device-auth` on a headless host) | As left | As left | As left | As left |
+| Auth preflight | **T4.24 (2026-10-14):** `grok models` first line at exit 0: `You are logged in` is `OK`, `You are not authenticated` is `AUTH_REQUIRED` naming `grok login`, anything else `UNKNOWN` (fail closed; the exit code does not discriminate, TDD §4.3.3) | As left | As left | As left | As left |
 | Model listing | `grok models` [CLI]; parse format `Unverified: T4.21` | As left | As left | As left | As left |
 | Capacity and usage | JSON output reports token usage and cost per prompt and session ([CL] 1.0.52); field names `Unverified: T4.21`; limits and resets are not documented (FR-CAP-01) | As left | As left | As left | As left |
 

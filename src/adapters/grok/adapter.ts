@@ -13,10 +13,10 @@
  * - `privileged` compiles only when its scope sets `bypass` and the run is approved (owner decision 46: the bypass
  *   cell does not wait for Git-write denial to be shown to hold). Sandbox profile and permission mode are compiled
  *   together, never one without the other ([R2] L613 to L615): `--always-approve` always with `--sandbox`;
- * - parser, auth preflight, resume and the tool-call guard declaration are T4.23, T4.24 and T4.27: until then no
- *   event is parsed (a run that exits cleanly ends `OUTPUT_PROTOCOL_ERROR`), the auth state is `UNKNOWN` and resume is
- *   `Ineligible`, all fail closed. The manifest range admits no version, so none of this runs before
- *   `adapters validate` passes a version.
+ * - parser, resume and the tool-call guard declaration are T4.23 and T4.27: until then no
+ *   event is parsed (a run that exits cleanly ends `OUTPUT_PROTOCOL_ERROR`) and resume is `Ineligible`, both fail
+ *   closed; the auth preflight keys on the first line of `grok models` (T4.24). The manifest range admits no version,
+ *   so none of this runs before `adapters validate` passes a version.
  */
 import {
   DEFAULT_IDLE_MS,
@@ -49,8 +49,14 @@ import type {
 } from "../types.js";
 import {
   ALWAYS_APPROVE_FLAG,
+  AUTH_LOGGED_IN_PREFIX,
+  AUTH_LOGGED_OUT_PREFIX,
+  AUTH_STATUS_ARGS,
+  AUTH_STATUS_LINE_MAX,
+  AUTH_STATUS_TIMEOUT_MS,
   GIT_WRITE_CONTROL_DETAIL,
   GROK_BINARY,
+  GROK_LOGIN_COMMAND,
   HELP_FLAG,
   NO_AUTO_UPDATE_FLAG,
   NON_PRIVILEGED_UNSUPPORTED_DETAIL,
@@ -73,6 +79,7 @@ import {
 export const GROK_ENV_ALLOWLIST: readonly string[] = ["PATH", "HOME"];
 
 const PROBE_TIMEOUT_MS = 10_000;
+const AUTH_UNKNOWN_REASON = "`grok models` first line is not a recognised login state";
 
 /** FR-GIT-01 (ADR-0039): deny rules are prefix matches, so no declared control; see protocol.ts. */
 export const GROK_GIT_WRITE_CONTROL: GitWriteControl = {
@@ -184,12 +191,30 @@ export class GrokAdapter implements ProviderAdapter {
     return { binaryPath: exe, binaryVersion: version, steps };
   }
 
-  /** T4.24 supplies the auth preflight; until then fail closed (NFR-SEC-06). Never reads a credential file. */
-  async authPreflight(_runner: ProbeRunner): Promise<AuthResult> {
-    return {
-      state: "UNKNOWN",
-      reason: "Grok Build auth preflight is not implemented (T4.24); no status command exits non-zero when logged out",
-    };
+  /**
+   * FR-AUTH-02 via `grok models` (T4.24, Q-10; observed on grok 1.0.50, TDD §4.3.3): the exit code is 0 whether logged
+   * in or not, so the first stdout line decides, and only the two observed phrases do (see protocol.ts). A line that
+   * starts with `You are logged in` is OK, `You are not authenticated` is AUTH_REQUIRED naming the native login; any
+   * other first line, a non-zero exit, a timeout or a spawn failure is UNKNOWN (ineligible, NFR-SEC-06). The output is
+   * never stored; at most its first line, filtered and truncated, appears in an UNKNOWN reason. The command lists
+   * model names and makes no model call. It never reads `~/.grok` and never starts a login.
+   */
+  async authPreflight(runner: ProbeRunner): Promise<AuthResult> {
+    const exe = this.#exe;
+    if (exe === undefined) return { state: "UNKNOWN", reason: `${GROK_BINARY} not found on PATH` };
+    const r = await runner([exe, ...this.#launcher, ...AUTH_STATUS_ARGS], { timeoutMs: AUTH_STATUS_TIMEOUT_MS });
+    if (r.spawnError !== undefined) return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (${r.spawnError})` };
+    if (r.timedOut) return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (timed out)` };
+    const first = (r.stdout.split("\n").find((l) => l.trim() !== "") ?? "").trim();
+    if (r.exitCode === 0) {
+      if (first.startsWith(AUTH_LOGGED_IN_PREFIX)) return { state: "OK" };
+      if (first.startsWith(AUTH_LOGGED_OUT_PREFIX)) return { state: "AUTH_REQUIRED", loginCommand: GROK_LOGIN_COMMAND };
+    }
+    const line = Array.from(first)
+      .filter((c) => c >= " " && c !== "\x7f")
+      .join("")
+      .slice(0, AUTH_STATUS_LINE_MAX);
+    return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (exit ${r.exitCode}${line ? `: ${line}` : ""})` };
   }
 
   compile(request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible {

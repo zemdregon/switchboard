@@ -58,6 +58,19 @@ export const REQUIRED_HELP_FLAGS: readonly string[] = [
 export const GROK_LOGIN_COMMAND = "grok login";
 
 /**
+ * Auth status (T4.24, Q-10; [LIVE] steps 2b and 3b). `grok models` is the only observed status surface and its exit
+ * code does not discriminate: it exits 0 logged in and logged out. Only the first stdout line does: `You are logged in
+ * with grok.com.` or `You are not authenticated.` (CLI version 1.0.50). `grok inspect --json` carries no auth status ([LIVE]
+ * 2a). The text is an observation of one version, not a documented contract, so only a first line that starts with one
+ * of the two observed phrases decides; any other output, exit code or a timeout is `UNKNOWN` (fail closed).
+ */
+export const AUTH_STATUS_ARGS: readonly string[] = ["models"];
+export const AUTH_LOGGED_IN_PREFIX = "You are logged in";
+export const AUTH_LOGGED_OUT_PREFIX = "You are not authenticated";
+export const AUTH_STATUS_TIMEOUT_MS = 10_000;
+export const AUTH_STATUS_LINE_MAX = 80;
+
+/**
  * FR-GIT-01 declaration. [LIVE] step 9: a `--deny 'Bash(git commit*)'` rule is a prefix match on the command string;
  * `git -C . commit` and `/usr/bin/git commit` created commits, so it is not a declared control (Q-62, ADR-0039).
  * `--always-approve` under a deny rule was not run ([LIVE] 9b).
