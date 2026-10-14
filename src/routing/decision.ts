@@ -11,7 +11,13 @@ import { projectKey } from "../capacity/projection.js";
 import { capacityProviders } from "../capacity/providers.js";
 import type { AffinitySettings, ResolvedConfig } from "../config/index.js";
 import type { Ledger, NewRouteDecision, RouteDecisionRow } from "../ledger/index.js";
-import { type AffinityFacts, type AffinityRecord, affinityRecord, planAffinity } from "./affinity.js";
+import {
+  type AffinityFacts,
+  type AffinityRecord,
+  affinityRecord,
+  type ModelPinRecord,
+  planAffinity,
+} from "./affinity.js";
 import type { EligibilityDecision, EligibilityInput } from "./eligibility.js";
 import type { RouteFeatures } from "./features.js";
 import {
@@ -275,6 +281,22 @@ export function buildRouteDecision(req: RouteDecisionRequest): RouteDecisionResu
       selected_provider: selection.provider,
       reasons_json: JSON.stringify(reasons),
     },
+  };
+}
+
+/**
+ * T7.12 (FR-RTE-08, Q-90): record the model-pin outcome in the decision's `affinity` object (the record and
+ * `reasons_json`). Pure; a decision without an affinity object is returned unchanged. Replay ignores the field: the
+ * pin follows a held selection and never changes it.
+ */
+export function withModelPin(result: RouteDecisionResult, pin: ModelPinRecord): RouteDecisionResult {
+  if (result.affinity === null) return result;
+  const affinity = { ...result.affinity, model_pin: pin };
+  const reasons = JSON.parse(result.record.reasons_json) as Record<string, unknown>;
+  return {
+    ...result,
+    affinity,
+    record: { ...result.record, reasons_json: JSON.stringify({ ...reasons, affinity }) },
   };
 }
 

@@ -362,6 +362,24 @@ export function resumeMayChangeDirectory(adapter: { readonly resumeCwd?: unknown
   return adapter.resumeCwd === "independent";
 }
 
+/**
+ * T7.12 (FR-RTE-08, Q-90): whether a model id the provider's native session reports (`session_bound.model`) is accepted
+ * by the adapter's model flag, so routing may pin a project's remembered model at `compile`. Static adapter data:
+ * - `accepted`: the reported value is a model id the model flag takes, with the source in `detail`.
+ * - `not_accepted`: the provider reports something else (a display name), or the adapter emits no model flag.
+ * An adapter without a declaration is handled as `not_accepted` (fail closed: the run keeps the adapter default).
+ */
+export interface ReportedModelFlag {
+  kind: "accepted" | "not_accepted";
+  detail: string;
+}
+
+/** True only for a declared `accepted`; anything else keeps the adapter default (NFR-SEC-06). */
+export function acceptsReportedModel(adapter: { readonly reportedModelFlag?: unknown }): boolean {
+  const d = adapter.reportedModelFlag;
+  return typeof d === "object" && d !== null && (d as { kind?: unknown }).kind === "accepted";
+}
+
 export interface ProviderAdapter {
   readonly id: ProviderId;
   readonly transports: readonly Transport[];
@@ -371,6 +389,8 @@ export interface ProviderAdapter {
   readonly resumeCwd: ResumeCwd;
   /** FR-GIT-02 declaration (T9.4): whether and how the per-run injected tool channel reaches the provider. */
   readonly gitCapabilities: GitCapabilities;
+  /** T7.12 declaration ({@link ReportedModelFlag}); absent means `not_accepted`. */
+  readonly reportedModelFlag?: ReportedModelFlag;
 
   /** FR-ADP-02 steps 1-5: binary, version, command, output formats, required flags. No auth, no model call. */
   probe(runner: ProbeRunner): Promise<ProbeResult>;

@@ -147,6 +147,14 @@ export class CursorAdapter implements ProviderAdapter {
   readonly gitWriteControl = CURSOR_GIT_WRITE_CONTROL;
   /** TDD §4.10: `--resume <id>` resumed from a second directory ([LIVE] 8c), still `Unverified: T4.41`. */
   readonly resumeCwd = "unverified" as const;
+  /**
+   * T7.12 (FR-RTE-08, Q-90): init reports a display name, not a model id ([C2], [LIVE] 5b), and `compile` emits no
+   * `--model` (a requested model is CAPABILITY_MISSING), so a remembered model is never pinned for Cursor.
+   */
+  readonly reportedModelFlag = {
+    kind: "not_accepted",
+    detail: "init reports a display name ([LIVE] 5b); --model is not emitted until the model registry has Cursor data",
+  } as const;
   readonly gitCapabilities = CURSOR_GIT_CAPABILITIES;
   readonly #exe: string | undefined;
   readonly #launcher: readonly string[];

@@ -149,6 +149,7 @@ import {
   type RunState,
   type TrustProfile,
 } from "../ledger/index.js";
+import { MODEL_ID_PATTERN } from "../models/registry.js";
 import {
   canonicalScopeJson,
   type PrivilegedScope,
@@ -311,6 +312,12 @@ export interface SubmitRequest {
    * `parent_run_id` and `attempt + 1`. Never set from an MCP request.
    */
   readonly successorOf?: { readonly runId: string; readonly attempt: number };
+  /**
+   * T7.12 (FR-RTE-08, LLD §17.6): the project's remembered model, pinned by routing when affinity holds and the adapter
+   * declares it accepts a reported model id. Stored as `request_json.model`, re-checked at preflight and passed to
+   * `compile`. Absent: the adapter default.
+   */
+  readonly model?: string;
 }
 
 /** T5.5: what a handoff submission carries (see {@link SubmitRequest.handoff}). */
@@ -362,6 +369,11 @@ export interface EligibilityQuestion {
    * passes false because `pump()` already holds queued runs while a breaker is open and dispatches the probe.
    */
   readonly breaker?: boolean;
+  /**
+   * T7.12 (FR-RTE-08): a model to check with the provider's model registry and pure `compile` (LLD §2.1 check rule),
+   * as the run would be compiled. Absent: the adapter default.
+   */
+  readonly model?: string;
 }
 
 export interface MetaSessionContext {
@@ -414,6 +426,8 @@ interface StoredRequest {
    * (never the values). Present only when non-zero, so the stored request (and its default hash) is unchanged otherwise.
    */
   admission_redactions?: number;
+  /** T7.12: the pinned model (see {@link SubmitRequest.model}); present only when pinned. */
+  model?: string;
 }
 
 export interface TransitionNotice {
@@ -963,7 +977,10 @@ export class RunLifecycle {
         trustProfile: q.trustProfile,
         clientMaxProfile: q.clientMaxProfile,
         profile,
-        requirements: requirementsFor(q.trustProfile, profile),
+        requirements: {
+          ...requirementsFor(q.trustProfile, profile),
+          ...(q.model !== undefined ? { model: q.model } : {}),
+        },
         cwd: q.cwd,
       },
       {
@@ -1071,6 +1088,12 @@ export class RunLifecycle {
       if (req.metaSessionId !== undefined) bad("verification commands apply to delegate_task only");
     }
     if (req.handoff !== undefined) this.validateHandoff(req, bad);
+    if (req.model !== undefined) {
+      // LLD §2.1 id pattern; the adapter's own compile checks it again.
+      if (typeof req.model !== "string" || !new RegExp(MODEL_ID_PATTERN).test(req.model))
+        bad("model is not a plain model id");
+      if (req.resume !== undefined || req.handoff !== undefined) bad("a pinned model applies to a fresh run only");
+    }
     if (req.idempotencyKey !== undefined) {
       if (req.metaSessionId !== undefined) bad("idempotency keys apply to new meta-sessions only");
       if (req.idempotencyKey.length < 8 || req.idempotencyKey.length > 128) bad("idempotency key length out of range");
@@ -1106,6 +1129,7 @@ export class RunLifecycle {
       ...(req.resume !== undefined ? { resume_native_session_id: req.resume.nativeSessionId } : {}),
       ...(verification.length > 0 ? { verification_commands: verification } : {}),
       ...(redactions > 0 ? { admission_redactions: redactions } : {}),
+      ...(req.model !== undefined ? { model: req.model } : {}),
     };
   }
 
@@ -1346,6 +1370,8 @@ export class RunLifecycle {
       constraints: handoffPrompt ? [] : req.constraints,
       workspace: { cwd, writable: ws.mode === "worktree" },
       ...(handoffPrompt ? { handoff: handoffPrompt.ref } : {}),
+      // T7.12 (FR-RTE-08): the model routing pinned at admission and preflight re-checked; absent = adapter default.
+      ...(req.model !== undefined ? { model: req.model } : {}),
     };
     let inv =
       req.resume_native_session_id !== undefined
@@ -1750,6 +1776,7 @@ export class RunLifecycle {
       cwd: req.workspace,
       profile,
       breaker: false,
+      ...(req.model !== undefined ? { model: req.model } : {}),
     });
     const binaryVersion = input.facts.find((f) => f.provider === req.provider)?.probe?.binaryVersion ?? null;
     if (decision.outcome.kind === "eligible") return { ok: true, binaryVersion };
