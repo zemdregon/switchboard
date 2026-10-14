@@ -3357,7 +3357,8 @@ I/O), `src/continuity/bundle.ts` (`assembleHandoffBundle`, pure; `buildHandoffBu
   "HANDOFF_BUNDLE_UNAVAILABLE"` and the fixed message of ADR-0038 item 7; the internal cause stays out of the message.
   Mapping it to the MCP envelope is T5.6.
 - **Not yet wired.** The three `continuity.*` configuration keys and the `continue_task` caller are T5.6; until then
-  the builder takes the bounds as input, with `DEFAULT_BUNDLE_BOUNDS` holding the defaults of §15.4.
+  the builder takes the bounds as input, with `DEFAULT_BUNDLE_BOUNDS` holding the defaults of §15.4. *Wired by T5.6
+  (2026-10-14), see §15.7 "As built".*
 
 ### 15.2 `as_of` and regeneration
 
@@ -3593,7 +3594,8 @@ Decisions taken here:
   rather than `INVALID_REQUEST` for the reason ADR-0038 item 7 gives: the request is valid and the fault is the
   controller's state. T5.6 replaces this refusal with the handoff of step 3. If the LEASED re-check fails (a race after
   admission), the run fails `LEASED → FAILED` before spawn with `TOOL_FAILURE` and the same `reason` and `problem` in
-  the transition event; nothing ran in any directory.
+  the transition event; nothing ran in any directory. *Superseded for `continue_task` by T5.6 (2026-10-14): the
+  refusal is now the handoff of step 3 (§15.7 "As built"); the LEASED re-check is unchanged.*
 - No migration and no new path scheme: run paths stay `<data_dir>/worktrees/<sess>/<run>`, and a resume's
   `run.worktree_path` is its origin's path, so GC (which de-duplicates recorded paths) and the orphan sweep are
   unchanged.
@@ -3625,3 +3627,44 @@ The input schema of §3 is unchanged. After C1 to C4 and C7 ([FRD §7.2](../requ
    (FRD WF-3). Provider A's binding is untouched.
 7. The envelope's `route.reasons` names the mode and reason code; `artifacts.handoff_view` holds the view's id
    (T5.10). No bundle text is in any envelope (FR-MCP-04).
+
+*As built (T5.6, 2026-10-14, Delegated, not owner-approved; no migration).* Code: `continueTask` in
+`src/mcp/server.ts`; the Q-61 constant `PRIVILEGED_CROSS_PROVIDER = 'refuse'` and `refusesPrivilegedCrossProvider` in
+`src/continuity/policy.ts` (read by `continueTask` and by the lifecycle's handoff guard, so the hook cannot route around
+it); the `HandoffBundleError` mapping in `src/mcp/errors.ts`; the `continuity.*` keys in `src/config/schema.ts` and
+`src/config/load.ts`, passed to the server by `src/cli/serve.ts`. Choices the steps above left open:
+
+- **Order.** Only `P0` is probed before step 3, so the Q-61 check runs before any other provider is probed or anything is
+  written. Consequences (fail closed): a `privileged` continuation that names another provider is refused even if
+  routing would have fallen back to `P0`; when `P0` is ineligible a `privileged` continuation is refused with
+  `PRIVILEGED_CROSS_PROVIDER` (no `to_provider` in `details`) rather than with `P0`'s BR-3 code.
+- **Project (step 4).** A named provider other than `P0` that the project does not allow is `PERMISSION_BLOCKED`, with or
+  without `require_provider` (in `delegate_task` a preference outside the project only narrows). `P0` outside the project
+  with no provider named is ineligible (BR-23) and not probed, so the continuation is a `bound_provider_ineligible`
+  handoff over the project's other providers; with `require_provider` naming it, `PERMISSION_BLOCKED`.
+- **Named provider ineligible without `require_provider`** (**Assumption**): routed normally over the project's
+  providers, so the target may be another provider or `P0`; it is still a handoff with reason `provider_named` (BR-18:
+  "route normally and build a handoff bundle"). A name equal to `P0` is treated as no name.
+- **No other provider allowed.** `P0` ineligible and no other provider in the candidate set: `P0`'s BR-3 code, or
+  `ELIGIBILITY_NONE` when `P0` is outside the project.
+- **No head checkpoint.** A session whose runs left no head (its only run was cancelled before it started) cannot give a
+  bundle, so a continuation that must hand off (`no_binding`) fails `HANDOFF_BUNDLE_UNAVAILABLE` (ADR-0038 item 7); it was
+  `INVALID_REQUEST` ("no native session to resume") before T5.6.
+- **`as_of` still current.** The bundle is built and stored before the admission transaction; inside it the lifecycle
+  checks that the session still has exactly the runs, base and head of `as_of`, else it refuses with the bundle failure
+  code and writes nothing (a stored file is a GC orphan, as step 5 allows).
+- **Record.** The route decision's `reasons_json` gains `continuation: { mode, reason, from_provider, problem? }`
+  (`problem` only for `resume_directory_unavailable`); the selection basis, and so the envelope's first route reason, reads
+  `selected <provider> (<mode> <reason> from <P0>; <basis>)`.
+- **Configuration.** `continuity.max_bundle_bytes` (16,384 to 1,048,576), `continuity.max_diff_excerpt_bytes` (0 to
+  1,048,576) and `continuity.max_text_chars` (1 to 65,536), integers, unknown keys refused; defaults as §15.4. The upper
+  limits are **Assumptions** (§15.4 names none) that keep a typo from producing a prompt of many megabytes.
+- **WF-3 postcondition** (**Assumption** on its reading): after a handoff the latest binding is B's, so `P0` is B and a
+  continuation naming A again is a handoff (step 2), not a resume of A's session. "Still resumable" is read as: A's
+  binding row, native session and transcript are untouched and a resume of A's native session still runs; the test shows
+  it through the lifecycle (`resume` on A in A's origin worktree).
+
+Tests: `src/mcp/continue-handoff.test.ts` (both fakes: each BR-18 branch, the refusals with nothing written, an end to
+end handoff with commits whose provenance names each run's provider and the transcript canaries absent from B's prompt
+and the bundle), the T5.6 case in `src/mcp/mcp.test.ts` (an unusable resume directory becomes a same-provider handoff),
+`src/continuity/policy.test.ts` and the `continuity` cases in `src/config/config.test.ts`.

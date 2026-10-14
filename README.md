@@ -186,7 +186,7 @@ Only one `serve` can hold a data directory at a time.
 | Tool | What it does |
 | --- | --- |
 | `delegate_task` | Starts a coding task in a new meta-session; returns a `run_id` at once (optional `wait_seconds`, 0 to 60, waits without cancelling). Give exactly one of `workspace_path` and `project` (see `list_projects`). |
-| `continue_task` | Resumes an idle meta-session on the same provider with a new instruction. |
+| `continue_task` | Continues an idle meta-session with a new instruction: resumes the same provider's native session, or hands off to another provider (or a fresh session) with a bundle built from Switchboard's own records. A `privileged` meta-session continues on its own provider only. |
 | `get_run` | Returns a run's status, failure code, provider, summary, changed-file count and artifact ids, optionally with events. |
 | `cancel_run` | Requests cancellation of a run (asynchronous; poll `get_run`). |
 | `get_artifacts` | Lists a run's artifacts (diff, changed files, test report, ...) with hashes; small ones inline. |
@@ -449,7 +449,8 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   differ. See `docs/research/live-checks-2026-10-13.md`.
 - Linux only. Single operator only. No hosted or multi-user mode.
 - Only Claude Code and Codex; profiles beyond `inspect-untrusted` and `edit-untrusted` only where the adapter can
-  compile them (see `list_capabilities`); `continue_task` only on the same provider.
+  compile them (see `list_capabilities`); a `privileged` `continue_task` only on the same provider (ROADMAP
+  Q-61 is open).
 - No `adapters validate` command yet; it is scheduled for milestone 4.
 
 ### Optional live smoke test

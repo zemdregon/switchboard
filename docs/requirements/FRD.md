@@ -418,8 +418,9 @@ sequenceDiagram
 - **Directory unusable (T5.7, Delegated):** if the origin run cannot be found, or its path is not a clean, unlocked
   worktree of this meta-session's repository under `<data>/worktrees/<sess>/`, no resume is attempted there or
   anywhere else. Target (T5.6): the continuation becomes a recorded handoff before any spawn (BR-18, reason
-  `resume_directory_unavailable`). Until T5.6 lands, `continue_task` refuses with `TOOL_FAILURE`, `details.reason =
-  "resume_directory_unavailable"`, before any run is written.
+  `resume_directory_unavailable`). *Done in T5.6 (2026-10-14):* before T5.6, `continue_task` refused with
+  `TOOL_FAILURE`, `details.reason = "resume_directory_unavailable"`, before any run was written; it now admits the
+  handoff ([LLD §15.7](../design/LLD.md#157-continue_task-with-handoff)).
 - **Alternate paths:** caller names another provider or bound provider is ineligible → WF-3. Native resume rejected by
   the provider (stale or expired session) → `OUTPUT_PROTOCOL_ERROR` or the code the adapter classifies; **Proposed:**
   the controller does not auto-fall back to handoff on a rejected resume, because that would change the provider-visible
