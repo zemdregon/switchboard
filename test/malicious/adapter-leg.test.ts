@@ -82,6 +82,29 @@ describe.each(cases.map((c) => [c.provider, c] as const))("adapter malicious leg
     }
   });
 
+  // The pin above models the outcome without a process. This replays the same streams through the supervisor, the
+  // tool-call guard and the shared replay helper, so the model is checked against the real path and a gap stream still
+  // proves the hostile checkout, canary logs and outside sentinel are left untouched.
+  it.runIf(c.replayGap !== undefined)(
+    "known replay gap: the replayed outcome matches the pinned one and leaves the hostile checkout untouched",
+    async () => {
+      for (const s of c.streams(fx).filter((x) => x.category !== "unknown_events")) {
+        const model = gapOutcome(c, fx, s);
+        const o = await replayHostileStream(c, fx, s);
+        const expectationChecks = ["result.ok matches", "failure code matches"];
+        expect(
+          o.failedChecks.filter((k) => !expectationChecks.some((n) => k.startsWith(n))),
+          s.name,
+        ).toEqual([]);
+        expect({ ok: o.resultOk, failureCode: o.failureCode }, s.name).toEqual({
+          ok: model.ok,
+          failureCode: model.failureCode,
+        });
+        expect(o.untouched, s.name).toBe(true);
+      }
+    },
+  );
+
   // The gap covers only the blocked categories; unknown event kinds still replay through the supervisor.
   it.runIf(c.replayGap !== undefined)(
     "with a replay gap open, unknown-event streams still end in their code through the replay",
