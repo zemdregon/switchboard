@@ -1,0 +1,8 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.45), in the shapes recorded by the 2026-10-14 live check (rows 5a, 5b, 7a, 7b).","exit":0,"write":{"path":"hello.txt","content":"hello from a synthetic cursor fixture\n"}}}
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work/tree","session_id":"synthetic-cursor-session-0001","model":"Synthetic Model 1","permissionMode":"default"}
+{"type":"user","message":{"content":[{"type":"text","text":"synthetic prompt"}]},"session_id":"synthetic-cursor-session-0001"}
+{"type":"thinking","subtype":"delta","text":"private reasoning to drop","session_id":"synthetic-cursor-session-0001","timestamp_ms":1}
+{"type":"tool_call","subtype":"started","call_id":"c1","tool_call":{"editToolCall":{"args":{"path":"hello.txt"}}},"session_id":"synthetic-cursor-session-0001"}
+{"type":"tool_call","subtype":"completed","call_id":"c1","tool_call":{"editToolCall":{"result":{"success":{}}}},"session_id":"synthetic-cursor-session-0001"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Added hello.txt."}]},"session_id":"synthetic-cursor-session-0001"}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"duration_api_ms":10,"result":"ok","session_id":"synthetic-cursor-session-0001","request_id":"req-1","usage":{"inputTokens":11,"outputTokens":2,"cacheReadTokens":5,"cacheWriteTokens":0}}

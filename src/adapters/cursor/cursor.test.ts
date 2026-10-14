@@ -2,10 +2,13 @@
  * T4.42 (TDD §4.5): the Cursor module, probe and compile matrix. SYNTHETIC: the executable path is a placeholder and no
  * `cursor-agent` binary is run; probe output is the shape the 2026-10-14 live check recorded (`2026.10.12-d47ca18`).
  */
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
 import { resolveTrustProfile } from "../../policy/profiles.js";
 import { auditInvocation, bypassClassFlags, bypassClassShortFlags, bypassClassValues } from "../audit.js";
+import { type ConformanceCase, missingRequiredKinds, runConformanceCase, runConformanceSuite } from "../conformance.js";
 import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
 import { evaluateVersionGate } from "../manifest/index.js";
 import { providerEntry } from "../providers.js";
@@ -22,6 +25,23 @@ import type {
   TrustProfile,
 } from "../types.js";
 import { CursorAdapter } from "./adapter.js";
+import {
+  cursorConformanceCases,
+  DEFAULT_SESSION_ID,
+  PRIVILEGED_BYPASS_PROFILE,
+  RESUMED_SESSION_ID,
+  replayAdapter,
+} from "./fixtures/cases.js";
+
+const dirs: string[] = [];
+const makeCwd = () => {
+  const d = mkdtempSync(join(tmpdir(), "sb-cursor-"));
+  dirs.push(d);
+  return d;
+};
+afterAll(() => {
+  for (const d of dirs) rmSync(d, { recursive: true, force: true });
+});
 
 const EXE = "/opt/synthetic/cursor-agent";
 const request = (over: Partial<CompileRequest> = {}): CompileRequest => ({
@@ -558,5 +578,79 @@ describe("cursor parser and result (T4.43)", () => {
     expect(
       adapter().resumeArgs({ provider: "cursor", nativeSessionId: SID }, request(), profileOf("edit-untrusted")),
     ).toMatchObject({ reason: "PROFILE_UNSUPPORTED" });
+  });
+});
+
+describe("cursor conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.45)", () => {
+  it("covers every FR-ADP-11 kind and passes the full suite", async () => {
+    const cases = cursorConformanceCases(makeCwd);
+    expect(missingRequiredKinds(cases)).toEqual([]);
+    const report = await runConformanceSuite(cases);
+    const failing = report.cases.flatMap((c) =>
+      c.checks.filter((k) => !k.ok).map((k) => `${c.kind}: ${k.name} ${k.detail ?? ""}`),
+    );
+    expect(failing).toEqual([]);
+    expect(report.ok).toBe(true);
+  });
+
+  it("success with edit normalizes session, summary, tool calls and usage; drops reasoning", async () => {
+    const c = cursorConformanceCases(makeCwd).find((x) => x.kind === "success");
+    if (!c) throw new Error("missing success case");
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({
+      ok: true,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      summary: "Added hello.txt.",
+      unknownEventCount: 0,
+    });
+    expect(readFileSync(join(c.request.workspace.cwd, "hello.txt"), "utf8")).toContain("synthetic");
+  });
+
+  it("resumed run preserves native session id", async () => {
+    const c = cursorConformanceCases(makeCwd).find((x) => x.kind === "resume");
+    if (!c) throw new Error("missing resume case");
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({
+      ok: true,
+      nativeSessionId: RESUMED_SESSION_ID,
+    });
+  });
+
+  it("partial mutation leaves the file in the cwd", async () => {
+    const c = cursorConformanceCases(makeCwd).find((x) => x.kind === "partial_mutation");
+    if (!c) throw new Error("missing partial_mutation case");
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(readFileSync(join(c.request.workspace.cwd, "partial.txt"), "utf8")).toContain("synthetic");
+  });
+
+  it("permission denial ends PERMISSION_BLOCKED even at exit 0", async () => {
+    const req = {
+      runId: "run_cursor_perm",
+      objective: "permission test",
+      constraints: [],
+      workspace: { cwd: makeCwd(), writable: true },
+      bypassApproved: true,
+    };
+    const c: ConformanceCase = {
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      kind: "task_failure",
+      adapter: replayAdapter("permission_denied"),
+      request: req,
+      expect: { ok: false, failureCode: "PERMISSION_BLOCKED" },
+    };
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(report.result?.failureCode).toBe("PERMISSION_BLOCKED");
+  });
+
+  it("hang that ignores SIGTERM is cancelled with the process group empty", async () => {
+    const c = cursorConformanceCases(makeCwd).find((x) => x.kind === "cancellation");
+    if (!c) throw new Error("missing cancellation case");
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(report.checks.find((k) => k.name === "process group empty after run")?.ok).toBe(true);
   });
 });
