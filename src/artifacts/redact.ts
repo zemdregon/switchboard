@@ -23,6 +23,9 @@ export const DEFAULT_SECRET_PATTERNS: readonly RegExp[] = [
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
   // Switchboard's own per-run tool-channel token (T9.4, `src/git/tool-protocol.ts`): prefix plus 43 base64url characters.
   /sbt1_[A-Za-z0-9_-]{43}/g,
+  // Switchboard's OAuth access and refresh tokens and authorization codes (T13.3, T13.8; T13.5, FR-MCP-15): prefix plus
+  // 43 base64url characters.
+  /sb(?:at|rt|ac)_[A-Za-z0-9_-]{43}/g,
 ];
 
 /** Patterns that keep a prefix (the header or key name) and replace only the secret value. */
