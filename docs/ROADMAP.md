@@ -2147,7 +2147,8 @@ and FR-SES-03 for Claude Code, Codex and the fakes on fixtures. `Done` also need
 
 ### 6.10 M13 Network MCP transport: tasks
 
-Proposed breakdown held as design notes after Q-67 (2026-10-14, fail-closed: do not implement yet). Each task names its evidence when Done.
+Proposed breakdown held as design notes after Q-67 (2026-10-14, fail-closed: do not
+implement yet). Each task names its evidence when Done.
 
 | Task | Scope | Requirements | Depends on | Done when |
 | --- | --- | --- | --- | --- |
