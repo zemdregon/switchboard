@@ -141,6 +141,16 @@ the [ROADMAP](../ROADMAP.md#6-milestones).
 | BO-9 | With no embedding backend configured, behaviour and test results are unchanged; with a fake backend, a run's prompt carries labelled, bounded retrieved snippets and no content from another project's index. | Full test suite; fake-backend tests ([SRS FR-RAG](SRS.md#315-retrieval-index-fr-rag)) | M12 |
 | BO-8 | No inner-agent output influences policy, eligibility or run status; an unreachable or misbehaving backend never fails a run. | Import-boundary test; fault-injection with a fake backend | M11 |
 
+**Implementation evidence (partial M12).** On `origin/main`, tasks T12.0–T12.3 implement retrieval foundations on fake
+backends only: `rag` configuration and the per-project store (T12.1), scanner exclusions, redaction and chunking (T12.2),
+and the embedding backend port with locality gates (T12.3). Requirement IDs and acceptance criteria are in [SRS
+§3.15 (`FR-RAG`)](SRS.md#315-retrieval-index-fr-rag); mechanism, tests and module pointers are in [SDD
+§4.1](../design/SDD.md#41-comp-rag-implementation-evidence-m12-t121t123), [HLD
+§2.1](../design/HLD.md#21-comp-rag-implementation-evidence-m12-t121t123), [TDD
+§3.13](../design/TDD.md#313-retrieval-index) and [LLD §14](../design/LLD.md#14-retrieval-index). Incremental background
+index build, operator `index` and `doctor`, admission context-pack retrieval and `search_project_context` remain T12.4
+and later; the BO-9 retrieval success measure above is unchanged until those tasks land.
+
 ## 7. Business risks
 
 The authoritative risk register, blockers and open questions are in [ROADMAP
