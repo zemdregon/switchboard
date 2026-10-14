@@ -99,3 +99,18 @@ describe("handoff bundle builder import boundary (T5.4)", () => {
     ]);
   });
 });
+
+describe("handoff prompt renderer import boundary (T5.5)", () => {
+  const { modules, external } = closure(["continuity/render.ts"]);
+
+  it("is pure: the schema, the redactor and canonical JSON only, no file or process access", () => {
+    expect([...modules].sort()).toEqual(
+      ["continuity/bundle-schema.ts", "continuity/render.ts", "artifacts/redact.ts", "lifecycle/request.ts"].sort(),
+    );
+    expect([...new Set([...external.values()].flat())].sort()).toEqual(["node:crypto"]);
+  });
+
+  it("never names a stream artifact kind", () => {
+    expect(readFileSync(path.join(SRC, "continuity/render.ts"), "utf8")).not.toMatch(/provider_stdout|provider_stderr/);
+  });
+});
