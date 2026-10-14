@@ -690,15 +690,21 @@ the Q-84 bypass cell: `--prompt=<objective>`, `--output-format stream-json`, `--
 **As built (T4.33, Partial).** `parseEvent`, `extractResult`, `classifyFailure` and `resumeArgs` in `adapter.ts`; event
 names and status prefixes in `protocol.ts`. Structured JSONL only (FR-ADP-04): `session_bound` from `init`, never from
 free text. Success needs a clean expected exit, a `result` with `status` `SUCCESS`, run-total `total_tokens` above zero,
-and no `denied_actions` or `error` text (Q-86); envelope usage is emitted once as `provider_reported`. A soft-denied tool
-(`denied_actions`) ends `PERMISSION_BLOCKED` even when `status` is `SUCCESS` and the exit is 0. Invalid model and failed
-login map to `MODEL_UNAVAILABLE` and `AUTH_REQUIRED`; malformed and unknown lines become `unknown` events. Resume is not
-compiled: `resumeArgs` is always `Ineligible` and `--conversation` never appears in argv (Q-86). Shapes that stayed on
-stderr in the live check (for example `AGY_ERROR`) are outside `FailureEvidence` here, so those runs end `TOOL_FAILURE`
-until a capture shows them on the stdout stream the supervisor parses.
+and no `denied_actions` or `error` text (Q-86); envelope usage is emitted once as `provider_reported` (a second `result`
+line records no second `usage` row, [#227](https://github.com/zemdregon/switchboard/pull/227)). A soft-denied tool
+(`denied_actions`) ends `PERMISSION_BLOCKED` even when `status` is `SUCCESS` and the exit is 0. A `step_update` whose
+`conversation_id` differs from the bound id ends `OUTPUT_PROTOCOL_ERROR` while its tool call still reaches the guard; a
+step never binds the session. Invalid model and failed login map to `MODEL_UNAVAILABLE` and `AUTH_REQUIRED`; malformed
+and unknown lines become `unknown` events. `extractResult` precedence: cancel and timeout over a denial, denial over
+envelope error and non-zero exit, ADR-0039 guard over all ([#227](https://github.com/zemdregon/switchboard/pull/227)).
+Resume is not compiled: `resumeArgs` is always `Ineligible` and `--conversation` never appears in argv (Q-86). Shapes
+that stayed on stderr in the live check (for example `AGY_ERROR`) are outside `FailureEvidence` here, so those runs end
+`TOOL_FAILURE` until a capture shows them on the stdout stream the supervisor parses.
 
 - **Tests:** `src/adapters/antigravity/antigravity.test.ts` (`antigravity parser and result (T4.33)`,
   `antigravity parser hardening (T4.33, synthetic shapes)`).
+- **Design sourcing:** [TDD §4.4.7](TDD.md#447-antigravity-parser-implementation-evidence-m4-t433); HLD [§2.2
+  T4.33](HLD.md#t433--parser-result-failure-classification-and-resume-partial).
 
 **As built (T4.37).** Git declarations and Done-when for FR-GIT-01, FR-GIT-02 and FR-GIT-09
 ([TDD §4.4](TDD.md#44-antigravity-agy-m4) "Git writes and injected tools",
@@ -725,6 +731,66 @@ synthetic and replay fixtures only; no `agy` in CI).
 
 **Not covered by this evidence (their own tasks):** auth preflight beyond the `UNKNOWN` placeholder (T4.34), conformance
 suite (T4.35), malicious-fixture leg (T4.36), operator live smoke and `adapters validate` (T4.38).
+
+### 2.0.1 Cursor adapter implementation evidence (M4 T4.42, T4.43)
+
+Compile matrix and transport: [TDD §4.5](TDD.md#45-cursor-cli-m4). Task status: [ROADMAP
+§6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.42`, `T4.43`). On `origin/main` as of
+[#228](https://github.com/zemdregon/switchboard/pull/228) (2026-10-14, Delegated, not owner-approved; synthetic
+fixtures only; no `cursor-agent` in CI).
+
+**As built (T4.42).** Module `src/adapters/cursor/`; manifest `src/adapters/manifests/cursor.json` (range `<0.0.0`).
+Transport `subprocess-jsonl` with prompt on stdin. Every non-`privileged` profile is `Ineligible: PROFILE_UNSUPPORTED`
+(Q-65); the sole compiled shape is the Q-79 bypass cell (`--print --output-format stream-json --trust --force`).
+
+- **Tests:** `src/adapters/cursor/cursor.test.ts` (`cursor compile matrix (T4.42)`, `cursor bypass-class declarations
+  (ADR-0035, ADR-0037)`, `cursor probe and auth preflight (T4.42, T4.44)`, `cursor registry entry and manifest gate
+  (T4.42)`).
+
+**As built (T4.43, Partial).** `parseEvent`, `extractResult`, `classifyFailure` and `resumeArgs` in `adapter.ts`;
+stream-json fields in `protocol.ts`. Success needs a terminal `result` with `subtype` `success`, refused tools read
+`rejected` / `permissionDenied` as `PERMISSION_BLOCKED` at exit 0 (Q-65). Hardening ([#228](https://github.com/zemdregon/switchboard/pull/228)):
+a second `result` line or changed `session_id` ends `OUTPUT_PROTOCOL_ERROR`; `apiKeySource` other than the string
+`login` is `AUTH_REQUIRED`; usage omits non-finite counters; each key on a multi-key `tool_call` is reported; unrecorded
+rate-limit, quota and sandbox text ends `TOOL_FAILURE`. `backingProvider` stays unset (no vendor field in the live check).
+
+- **Tests:** `src/adapters/cursor/cursor.test.ts` (`cursor parser and result (T4.43)`, `cursor parser hardening (T4.43,
+  synthetic shapes)`).
+- **Design sourcing:** [TDD §4.5.5](TDD.md#455-cursor-parser-implementation-evidence-m4-t443); HLD [§2.3
+  T4.43](HLD.md#t443--parser-result-failure-classification-and-resume-partial).
+
+**Not covered here:** conformance (T4.45 Done), malicious leg (T4.46 Done), Git declaration (T4.47 Done), operator live
+validate (T4.48 Partial).
+
+### 2.0.2 OpenCode adapter implementation evidence (M4 T4.52, T4.53)
+
+Compile matrix and transport: [TDD §4.6](TDD.md#46-opencode-m4). Task status: [ROADMAP
+§6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.52`, `T4.53`). On `origin/main` as of
+[#229](https://github.com/zemdregon/switchboard/pull/229) (2026-10-14, Delegated, not owner-approved; synthetic
+fixtures only; no `opencode` in CI).
+
+**As built (T4.52).** Module `src/adapters/opencode/`; manifest `src/adapters/manifests/opencode.json` (range
+`<0.0.0`). Transport `subprocess-jsonl` with `run --format json --standalone -- <prompt>`. Every non-`privileged`
+profile is `Ineligible: PROFILE_UNSUPPORTED` (Q-64); the sole compiled shape is the Q-83 bypass cell without `--auto`.
+
+- **Tests:** `src/adapters/opencode/opencode.test.ts` (`opencode compile matrix (T4.52)`, `opencode bypass-class
+  declaration (ADR-0035)`, `opencode probe and auth preflight (T4.52, T4.54)`, `opencode registry entry and manifest
+  gate (T4.52)`).
+
+**As built (T4.53, Partial).** `parseEvent`, `extractResult`, `classifyFailure` and `resumeArgs` in `adapter.ts`;
+`--format json` fields in `protocol.ts`. Success needs a `step_finish` with `reason` `stop` (Q-85). Hardening
+([#229](https://github.com/zemdregon/switchboard/pull/229)): finite non-negative usage only; unknown `type` clipped to
+64 characters; changed `sessionID` ends `OUTPUT_PROTOCOL_ERROR`; non-object roots and unstructured errors fail closed.
+Nested tests `cases with no recorded native shape (live check rows 7, 11, 14c)` pin row 11 (out-of-worktree denial not
+detected at exit 0), row 14c (rate limit `TOOL_FAILURE`) and omitted tool input keys. `backingProvider` stays unset.
+
+- **Tests:** `src/adapters/opencode/opencode.test.ts` (`opencode parser and result (T4.53)`, including nested `cases with
+  no recorded native shape (live check rows 7, 11, 14c)`).
+- **Design sourcing:** [TDD §4.6.5](TDD.md#465-opencode-parser-implementation-evidence-m4-t453); HLD [§2.4
+  T4.53](HLD.md#t453--parser-result-failure-classification-and-resume-partial).
+
+**Not covered here:** conformance (T4.55 Done), malicious leg (T4.56 Partial), Git declaration (T4.57 Done), operator
+live validate (T4.58).
 
 ### 2.1 Model registry (M4, T4.5)
 

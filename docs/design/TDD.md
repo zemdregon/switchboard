@@ -1838,6 +1838,31 @@ obligations as `grok Git declaration (T4.27)`, `cursor Git declaration (T4.47)` 
 **Out of scope for T4.37 (other tasks).** Operator live Git-write and bypass cells (T4.38), README final status after
 live validate (T4.39), and tool-step parameter keys for the Switchboard tool-call guard while T4.33 stays `Partial`.
 
+#### 4.4.7 Antigravity parser implementation evidence (M4, T4.33)
+
+Live-check context: [§4.4.5](#445-note-2026-10-14-contradictions-found-by-the-t431-live-checks-delegated-cells-above-not-edited).
+Task boundary and remaining gaps: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.33`, `Partial`).
+Adapter contract and taxonomy: [LLD §2](LLD.md#2-adapter-contract), [LLD §4](LLD.md#4-failure-taxonomy). Requirements:
+FR-ADP-04, FR-CAP-01 (`provider_reported` once), FR-SES-03 (resume not compiled, Q-86). HLD: [§2.2
+T4.33](HLD.md#t433--parser-result-failure-classification-and-resume-partial). LLD as-built: [§2.0](LLD.md#20-antigravity-adapter-implementation-evidence-m4-t432-t433-t437).
+
+**Implementation evidence (on `origin/main`, [#227](https://github.com/zemdregon/switchboard/pull/227); Delegated agent
+work, not owner-approved; synthetic lines only; no `agy` in CI).**
+
+- **Parser and result.** `parseEvent`, `extractResult`, `classifyFailure` and `resumeArgs` in
+  `src/adapters/antigravity/adapter.ts`; event vocabulary in `src/adapters/antigravity/protocol.ts`. Structured JSONL
+  only; soft denials from `denied_actions`; envelope run-total usage emitted once (a second `result` line adds no second
+  `usage` row).
+- **Hardening (synthetic shapes).** Second `result` line and mid-run `conversation_id` change end
+  `OUTPUT_PROTOCOL_ERROR` (first id stays bound); foreign `step_update` tool calls still reach the ADR-0039 guard; steps
+  never bind the session; classification precedence pinned; negative or non-number usage dropped; unrecorded rate-limit
+  text ends `TOOL_FAILURE`.
+- **Tests:** `src/adapters/antigravity/antigravity.test.ts` (`"antigravity parser and result (T4.33)"`, `"antigravity
+  parser hardening (T4.33, synthetic shapes)"`).
+
+**Out of scope (stay `Partial` until operator capture).** Resume with `--conversation`; stdout shapes for rate limit,
+sandbox violation and stderr `AGY_ERROR`; recorded `tool_info.parameters` keys.
+
 ### 4.5 Cursor CLI (M4)
 
 Spike result, 2026-10-13 (T4.40; Delegated agent work, not owner-approved). `agent` is not installed on the development
@@ -1961,6 +1986,28 @@ on Ampere. Decision: [Q-65](../ROADMAP.md#73-open-questions-for-zemdregon-not-bl
   `--add-dir`.
 - **Global state**: a headless run loads the operator's global rules, hooks and MCP tool names; `CURSOR_CONFIG_DIR`
   alone does not isolate the login.
+
+#### 4.5.5 Cursor parser implementation evidence (M4, T4.43)
+
+Live-check context: [§4.5.4](#454-note-2026-10-14-contradictions-found-by-the-t441-live-checks-delegated-cells-above-not-edited).
+Task boundary: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.43`, `Partial`). Requirements: FR-ADP-04,
+FR-SES-03, FR-ADP-10 (`backingProvider` unset). HLD: [§2.3 T4.43](HLD.md#t443--parser-result-failure-classification-and-resume-partial).
+LLD as-built: [§2.0.1](LLD.md#201-cursor-adapter-implementation-evidence-m4-t442-t443).
+
+**Implementation evidence (on `origin/main`, [#228](https://github.com/zemdregon/switchboard/pull/228); Delegated agent
+work, not owner-approved; synthetic `stream-json` lines only; no `cursor-agent` in CI).**
+
+- **Parser and result.** `parseEvent`, `extractResult`, `classifyFailure` and `resumeArgs` in
+  `src/adapters/cursor/adapter.ts`; fields in `src/adapters/cursor/protocol.ts`. Refused shell calls at exit 0 map to
+  `PERMISSION_BLOCKED` (Q-65); session id from structured `init` / `result` only.
+- **Hardening (synthetic shapes).** Second `result` line and mid-run `session_id` change end `OUTPUT_PROTOCOL_ERROR`;
+  `apiKeySource` present but not the string `login` (including non-string) is `AUTH_REQUIRED`; non-finite usage dropped;
+  each key on a multi-key `tool_call` reported; unrecorded rate-limit, quota and sandbox text ends `TOOL_FAILURE`.
+- **Tests:** `src/adapters/cursor/cursor.test.ts` (`"cursor parser and result (T4.43)"`, `"cursor parser hardening
+  (T4.43, synthetic shapes)"`).
+
+**Out of scope (stay `Partial`).** Recorded rate-limit or sandbox event shapes; T4.6 fixture with a backing vendor unlike
+the harness.
 
 ### 4.6 OpenCode (M4)
 
@@ -2110,6 +2157,29 @@ Ampere. Decision: [Q-64](../ROADMAP.md#73-open-questions-for-zemdregon-not-block
 - **Isolation**: a scratch `HOME` collides with the host's background `opencode serve --service` unless
   `--standalone`; env-based per-run config is read by the client and not applied by the service.
 - **Resume**: `--session` resumes from another directory; `--continue` is per project.
+
+#### 4.6.5 OpenCode parser implementation evidence (M4, T4.53)
+
+Live-check context: [§4.6.4](#464-note-2026-10-14-contradictions-found-by-the-t451-live-checks-delegated-cells-above-not-edited).
+Task boundary: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.53`, `Partial`). Requirements: FR-ADP-04,
+FR-SES-03, FR-ADP-10 (`backingProvider` unset). HLD: [§2.4 T4.53](HLD.md#t453--parser-result-failure-classification-and-resume-partial).
+LLD as-built: [§2.0.2](LLD.md#202-opencode-adapter-implementation-evidence-m4-t452-t453).
+
+**Implementation evidence (on `origin/main`, [#229](https://github.com/zemdregon/switchboard/pull/229); Delegated agent
+work, not owner-approved; synthetic `--format json` lines only; no `opencode` in CI).**
+
+- **Parser and result.** `parseEvent`, `extractResult`, `classifyFailure` and `resumeArgs` in
+  `src/adapters/opencode/adapter.ts`; fields in `src/adapters/opencode/protocol.ts`. Success needs `step_finish` `stop`
+  (Q-85); structured `sessionID` only.
+- **Hardening.** Finite non-negative usage; unknown line `type` clipped to 64 characters; mid-run `sessionID` change ends
+  `OUTPUT_PROTOCOL_ERROR`; non-object roots and unstructured errors fail closed. Nested describe `"cases with no recorded
+  native shape (live check rows 7, 11, 14c)"` pins row 11 (permission denial not detected), row 14c (rate limit
+  `TOOL_FAILURE`) and tool input keys without `command` / `target`.
+- **Tests:** `src/adapters/opencode/opencode.test.ts` (`"opencode parser and result (T4.53)"`, including nested `"cases
+  with no recorded native shape (live check rows 7, 11, 14c)"`).
+
+**Out of scope (stay `Partial`).** Recorded permission-denial and rate-limit event shapes; `tool_use` input key names;
+T4.6 backing-vendor fixture.
 
 ### 4.7 Kimi Code (M4, blocked by B-1)
 
