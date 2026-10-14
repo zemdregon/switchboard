@@ -67,7 +67,11 @@ export interface CompileRequest {
   workspace: { cwd: string; writable: boolean };
   model?: string;
   verificationCommands?: string[][];
-  handoff?: { bundleArtifactId: string }; // M5
+  /**
+   * M5, T5.5 (ADR-0038 item 5.1, LLD §15.5): set for a handoff run, for the record only. No adapter reads it: the
+   * lifecycle has already put the rendered bundle and the new instruction in `objective` and passed `constraints: []`.
+   */
+  handoff?: { bundleArtifactId: string; bundleSha256: string };
   /**
    * T3.17 (Proposed shape; LLD §3.1 "Bypass", ADR-0017): true only when the lifecycle found an `APPROVED`, hash-matching
    * approval row whose scope sets bypass (`evaluateBypass`). Adapters never compute it. Equivalent to

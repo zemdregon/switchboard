@@ -197,6 +197,8 @@ export type ArtifactKind =
   | "pr_draft"; // T11.8, migration 0009
 
 export interface NewArtifactRow {
+  /** Pre-allocated with {@link Ledger.newArtifactId} when a row written first must name it (T5.5, LLD §15.2). */
+  id?: string;
   runId: string | null;
   metaSessionId: string | null;
   kind: ArtifactKind;
@@ -708,6 +710,8 @@ export interface Ledger {
   // ---- T3.3 additions (privileged approvals, LLD §1 and §3.1) ----------------------------------------------------
   /** A fresh `apv_` id, so a run's policy snapshot can name its approval before the row exists (FK order). */
   newApprovalId(): string;
+  /** A fresh `art_` id for {@link NewArtifactRow.id} (T5.5: the handoff run's request names its view). */
+  newArtifactId(): string;
   /** Insert a `PENDING` approval row with `requested_at` now. Call inside the admission transaction. */
   createApproval(input: NewApproval): ApprovalRow;
   getApproval(id: string): ApprovalRow | undefined;
@@ -1077,7 +1081,7 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
     },
 
     insertArtifact(input) {
-      const id = ids.id("art");
+      const id = input.id ?? ids.id("art");
       db.prepare(
         `INSERT INTO artifact (id, run_id, meta_session_id, kind, sha256, size_bytes, media_type, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1391,6 +1395,10 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
 
     newApprovalId() {
       return ids.id("apv");
+    },
+
+    newArtifactId() {
+      return ids.id("art");
     },
 
     createApproval(input) {

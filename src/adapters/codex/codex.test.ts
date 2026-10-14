@@ -2,6 +2,8 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { syntheticBundle } from "../../continuity/fixtures/handoff-bundle.js";
+import { INSTRUCTION_MARKER, renderHandoffPrompt } from "../../continuity/render.js";
 import { SIGNING_AGENT_VARIABLES } from "../../git/sign.js";
 import { resolveTrustProfile } from "../../policy/index.js";
 import type { OverridableProfile, PrivilegedScope, ProfileOverride } from "../../policy/types.js";
@@ -926,4 +928,33 @@ describe("sandbox and permission denials per compilable profile (synthetic fixtu
       });
     }
   }
+});
+
+describe("handoff runs change the prompt only (T5.5, LLD §15.5, ADR-0038 item 5.1)", () => {
+  const handoffRef = { bundleArtifactId: "art_01HANDOFF", bundleSha256: "f".repeat(64) };
+  const { prompt } = renderHandoffPrompt({ bundle: syntheticBundle(), instruction: "Fix the failing test." });
+  const withoutStdin = (inv: Invocation) => ({ ...inv, stdin: undefined });
+
+  it.each([
+    ["inspect", INSPECT_PROFILE],
+    ["edit", EDIT_PROFILE],
+  ] as const)(
+    "%s: argv, environment, policy flags and cwd equal the same-provider compile; stdin is the rendered prompt",
+    (_label, profile) => {
+      const plain = must(adapter().compile(request({ constraints: ["keep the public API"] }), profile));
+      const handoff = must(
+        adapter().compile(request({ objective: prompt, constraints: [], handoff: handoffRef }), profile),
+      );
+      expect(withoutStdin(handoff)).toEqual(withoutStdin(plain));
+      expect(handoff.stdin).toEqual({ kind: "text", value: prompt });
+      expect(handoff.argv.join("\n")).not.toContain(INSTRUCTION_MARKER);
+      expect(auditInvocation(handoff)).toEqual([]);
+    },
+  );
+
+  it("no adapter reads CompileRequest.handoff: the same request with it compiles identically", () => {
+    expect(adapter().compile(request({ handoff: handoffRef }), EDIT_PROFILE)).toEqual(
+      adapter().compile(request(), EDIT_PROFILE),
+    );
+  });
 });

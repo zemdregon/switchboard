@@ -70,6 +70,8 @@ export type FakeScenario =
    * T9.7 (FR-GIT-09): plays an agent without a tool channel that edits files and ends with a structured summary. The
    * objective is a JSON plan `{"files": {"<rel path>": "<content>" | null}, "summary": "<text>" | null, "ok": true}`
    * (`null` content deletes the file; a `null` summary emits a result without one; `ok: false` ends as a task failure).
+   * T5.5: in a handoff prompt the plan is the text after the `[instruction from the orchestrator]` line (as for
+   * `git_commit` and `git_attempts`); the CLI's state recorder keeps the whole prompt.
    */
   | "edit_files";
 

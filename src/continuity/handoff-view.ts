@@ -27,6 +27,8 @@ export const HANDOFF_VIEW_MEDIA_TYPE = "application/json";
 export interface HandoffViewLedger extends BundleLedger {
   immediate<T>(fn: () => T): T;
   insertArtifact(input: {
+    /** Pre-allocated id (T5.5: the receiving run's `request_json.handoff` names it in the same transaction). */
+    id?: string;
     runId: string | null;
     metaSessionId: string | null;
     kind: "handoff_view";
@@ -57,7 +59,13 @@ export interface StoredHandoffView {
  */
 export function recordHandoffView(
   ledger: HandoffViewLedger,
-  input: { receivingRunId: string; built: BuiltBundle; stored: { sha256: string; sizeBytes: number } },
+  input: {
+    receivingRunId: string;
+    built: BuiltBundle;
+    stored: { sha256: string; sizeBytes: number };
+    /** T5.5: an id pre-allocated with `Ledger.newArtifactId` so the run's request can name it (LLD §15.2). */
+    artifactId?: string;
+  },
 ): { artifactId: string; decisionId: string } {
   const { receivingRunId, built, stored } = input;
   if (stored.sha256 !== built.sha256) throw new HandoffBundleError("the stored view does not match the built bytes");
@@ -67,6 +75,7 @@ export function recordHandoffView(
       fail("the receiving run is in another session");
     if (built.bundle.as_of.runs.some((r) => r.run_id === receivingRunId)) fail("the receiving run is a source run");
     const artifactId = ledger.insertArtifact({
+      ...(input.artifactId !== undefined ? { id: input.artifactId } : {}),
       runId: receivingRunId,
       metaSessionId: built.bundle.as_of.meta_session_id,
       kind: "handoff_view",
@@ -90,6 +99,26 @@ export function recordHandoffView(
     }
     return { artifactId, decisionId };
   });
+}
+
+/**
+ * T5.5: build the bundle at `asOf` and put its bytes in the artifact store, writing no ledger row. The caller then
+ * submits the receiving run with `SubmitRequest.handoff = { built, stored, ... }`, and the lifecycle records the view
+ * ({@link recordHandoffView}) in the run's admission transaction. Throws {@link HandoffBundleError}.
+ */
+export async function buildAndPutHandoffView(
+  deps: BuildDeps & { store: HandoffViewStore },
+  input: { asOf: AsOf; bounds: BundleBounds },
+): Promise<{ built: BuiltBundle; stored: { sha256: string; sizeBytes: number } }> {
+  const built = await buildHandoffBundle(deps, input.asOf, input.bounds);
+  let stored: { sha256: string; sizeBytes: number };
+  try {
+    stored = await deps.store.put(built.bytes);
+  } catch {
+    return fail("the view could not be stored");
+  }
+  if (stored.sha256 !== built.sha256) fail("the stored view does not match the built bytes");
+  return { built, stored: { sha256: stored.sha256, sizeBytes: stored.sizeBytes } };
 }
 
 /**

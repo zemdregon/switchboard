@@ -29,6 +29,7 @@ import {
 } from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
 import type { ResolvedProject } from "../config/index.js";
+import { buildAndPutHandoffView, DEFAULT_BUNDLE_BOUNDS, INSTRUCTION_MARKER, takeAsOf } from "../continuity/index.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger, type TrustProfile } from "../ledger/index.js";
 import { RunLifecycle, type RunLifecycleOptions } from "../lifecycle/index.js";
@@ -1229,6 +1230,47 @@ describe("dispatch-time gate (FRD BR-20, T8)", () => {
     const done = await pollTerminal(d.body.run_id);
     expect(done).toMatchObject({ status: "FAILED", failure_code: "AUTH_REQUIRED" });
     expect(done.failure_detail).toContain("claude auth login");
+  });
+});
+
+describe("handoff runs on the MCP read surface (T5.5, FR-MCP-04)", () => {
+  it("get_run of a handoff run, with its events, carries no bundle text", async () => {
+    await setup({ adapters: [fakeWriter()] });
+    const goal = "add a feature canary-goal-7Q4";
+    const constraint = "canary-constraint-9Z2";
+    const d = await call("delegate_task", delegateArgs({ objective: goal, constraints: [constraint] }));
+    expect((await pollTerminal(d.body.run_id)).status).toBe("SUCCEEDED");
+    const sess = d.body.meta_session_id as string;
+
+    // The lifecycle hook T5.6 will call (no continue_task change here): build and store the view, admit the run.
+    const { built, stored } = await buildAndPutHandoffView(
+      { ledger, artifacts, redact: (x: Buffer) => artifacts.redactContent(x), store: artifacts },
+      { asOf: takeAsOf(ledger, sess), bounds: DEFAULT_BUNDLE_BOUNDS },
+    );
+    const bundleText = built.bytes.toString("utf8");
+    expect(bundleText).toContain(goal);
+    expect(bundleText).toContain(constraint);
+    const h = await lifecycle.submit({
+      clientId: "orchestrator",
+      objective: "continue the feature",
+      trustProfile: "edit-untrusted",
+      provider: "fake",
+      metaSessionId: sess,
+      constraints: [constraint],
+      handoff: { built, stored, fromProvider: "fake", reason: "no_binding" },
+    });
+    expect((await pollTerminal(h.runId)).status).toBe("SUCCEEDED");
+
+    const g = await call("get_run", { run_id: h.runId, include_events: { after_seq: 0, limit: 200 } });
+    expect(g.isError).toBe(false);
+    const text = JSON.stringify(g.body);
+    for (const t of [goal, constraint, "[untrusted data", INSTRUCTION_MARKER, "another agent started", bundleText]) {
+      expect(text).not.toContain(t);
+    }
+    // The view is named by id only (T5.10 owns its read surface).
+    const view = ledger.listArtifactsForRun(h.runId).find((a) => a.kind === "handoff_view");
+    expect(g.body.artifacts.handoff_view).toBe(view?.id);
+    expect(g.body.route.reasons.join(" ")).not.toContain(goal);
   });
 });
 
