@@ -51,7 +51,7 @@ Pre-release. The package is private and is not published to any registry; you bu
   version (operator tasks). Outside an approved `privileged` bypass scope every profile is ineligible for them. See
   [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks).
 
-What works today: `doctor`, `runs list|show|cancel`, `approve`, `deny`, `gc`, `capacity`,
+What works today: `doctor`, `runs list|show|cancel`, `approve`, `deny`, `gc`, `capacity`, `affinity list|reset`,
 `projects list|show|validate|approve`, `git push`, `inner status|test|resume`, and `serve` exposing nine MCP tools over
 stdio (twelve for a client with `manage_projects`). The five trust
 profile names exist; which of them a provider can run is listed in [Trust profiles](#trust-profiles) and by
@@ -314,6 +314,8 @@ switchboard runs list [--state <STATE>] [--limit <n>]
 switchboard runs show <id>
 switchboard runs cancel <id>
 switchboard capacity [--provider <id>]
+switchboard affinity list
+switchboard affinity reset <project_key>
 switchboard approve <run_id>
 switchboard deny <run_id>
 switchboard gc [--apply]
@@ -332,6 +334,11 @@ switchboard inner resume <task>
 it themselves. `approve` and `deny` act only on a `privileged` run waiting for approval (review its scope with
 `runs show` first); `deny` ends the run cancelled, and a second decision is refused. Add `--json` to any of these for
 machine-readable output. Exit codes: 0 success, 1 failure (including a refused decision), 2 usage error.
+
+`affinity list` shows the provider each project is kept on (the project id, or `ws:` and a hash of the workspace path),
+the model its last run reported, since when and why it last switched. `affinity reset <project_key>` makes the next
+routing step for that project choose again among the eligible providers, recorded as `user_request`; the first run
+that then succeeds consumes the reset. Resetting a project with no affinity exits 1 and writes nothing.
 
 `adapters validate <provider>` (`claude`, `codex`, or the config id such as `claude-code`) accepts the version of a
 provider CLI that is installed now. It runs the adapter's probe, its auth preflight and a conformance subset that ends

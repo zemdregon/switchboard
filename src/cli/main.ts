@@ -10,6 +10,7 @@ import { ConfigError } from "../config/index.js";
 import { ApprovalRefusedError } from "../lifecycle/approval.js";
 import { LockError } from "../lock/index.js";
 import { renderValidate, runAdaptersValidate } from "./adapters-validate.js";
+import { listAffinity, renderAffinityList, renderAffinityReset, resetAffinity } from "./affinity.js";
 import { renderCapacity, runCapacity } from "./capacity.js";
 import { consentHashPassphrase, consentPair, renderPair, renderPassphraseHash } from "./consent.js";
 import { renderDoctor, runDoctor } from "./doctor.js";
@@ -61,6 +62,10 @@ Commands:
                       Per-provider capacity: controller estimates (score, confidence, throttle risk) with their
                       sources, provider-reported reset and remaining figures when a provider reported them, free
                       slots and breaker state; the same data as the get_capacity MCP tool (read-only)
+  affinity list       List each project's provider affinity: provider, reported model, since when, last switch reason
+  affinity reset <project_key>
+                      Make the next routing step for the project choose afresh among eligible providers
+                      (recorded as user_request); the project key is as affinity list prints it
   gc [--apply]        Retention clean-up: dry run by default (lists what would go); --apply collects, and is refused
                       while serve runs or when retention.days is not set in the config
   projects list       List configured and dynamic projects (source config|dynamic; read-only, no lock)
@@ -172,6 +177,24 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         const projection = runCapacity(io, loaderArgv, values.provider);
         emit({ schema_version: JSON_SCHEMA_VERSION, ...projection }, renderCapacity(projection));
         return 0;
+      }
+      case "affinity": {
+        // T7.7 (FR-RTE-07, LLD §17.6): list is read-only; reset writes two columns of one existing row.
+        if (sub === "list") {
+          if (rest.length > 0) throw new UsageError("affinity list takes no arguments");
+          const report = listAffinity(io, loaderArgv);
+          emit(report, renderAffinityList(report));
+          return 0;
+        }
+        if (sub === "reset") {
+          const key = rest[0];
+          if (key === undefined || rest.length > 1)
+            throw new UsageError("affinity reset requires exactly one project key");
+          const report = resetAffinity(io, loaderArgv, key);
+          emit(report, renderAffinityReset(report));
+          return 0;
+        }
+        throw new UsageError(`unknown affinity subcommand ${JSON.stringify(sub ?? "")}; expected list or reset`);
       }
       case "doctor": {
         if (sub !== undefined) throw new UsageError("doctor takes no arguments");
