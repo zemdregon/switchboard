@@ -348,10 +348,11 @@ The inner agent's entities are therefore `inner_call` (history) and `inner_task_
 task), plus the columns above; no inner prompt or response body is stored anywhere (FR-INN-16).
 
 **M7 and M12 additions (Proposed).** The M7 forward migration adds the mutable `project_affinity` table
-([§3.2](#32-provider-and-model-affinity-m7)); `route_decision` keeps its columns and `reasons_json` gains an `affinity`
-object. The M12 migration adds the append-only `rag_record` table ([§14.10](#1410-events-and-records)); the per-project
-and global retrieval stores are separate SQLite files outside `ledger.db` ([§14.2](#142-stores-and-tables)).
-`rag_record` is added to the append-only list above.
+([§3.2](#32-provider-and-model-affinity-m7), with the columns of [§17.6](#176-affinity-details-fills-32));
+`route_decision` keeps its columns, `reasons_json` gains an `affinity` object and `features_json` a `schema_version`
+([§17.4](#174-decision-record-fr-rte-03)). The M12 migration adds the append-only `rag_record` table
+([§14.10](#1410-events-and-records)); the per-project and global retrieval stores are separate SQLite files outside
+`ledger.db` ([§14.2](#142-stores-and-tables)). `rag_record` is added to the append-only list above.
 
 **M5 additions (Proposed, Delegated, [ADR-0038](../adr/0038-handoff-bundle-and-continuity.md)).** No migration. The
 `decision` table gets its first writer: `decision` holds a kind from a closed list, `reason_summary` a controller
@@ -826,8 +827,8 @@ at admission and dispatch. An off-host profile is excluded from routing with the
 **`get_capacity`** (M6) `{ provider? }` returns the FR-CAP-02 fields per provider with `source`; `explicit_remaining` is
 null unless provider-reported. Detailed in [§16.3](#163-get_capacity-and-switchboard-capacity) (T6.1).
 **`explain_route`** (M7) `{ run_id }` returns candidates, eligibility reasons, features, weights, scores and the
-`affinity` object ([§3.2](#32-provider-and-model-affinity-m7)) from `route_decision`, no model reasoning. To be detailed
-in M7.
+`affinity` object ([§3.2](#32-provider-and-model-affinity-m7)) from `route_decision`, no model reasoning. Detailed in
+[§17.5](#175-explain_route) (T7.0).
 
 **Project additions (M9, Proposed).** `delegate_task` gains an optional `project` (string, a configured project ID) and
 `workspace_path` becomes optional; exactly one of the two must be present (FRD V12, FR-PRJ-03). `continue_task` takes no
@@ -1116,6 +1117,10 @@ Implements FR-RTE-06..09, FR-CAP-08 and [ADR-0032](../adr/0032-provider-model-af
 Everything here is **Proposed**; thresholds are Assumptions with no value fixed, chosen in M6 and M7 and recorded then.
 The mechanism extends the two-stage routing of [ADR-0008](../adr/0008-two-stage-routing.md): the hard filter (FR-RTE-01)
 is unchanged and runs first, and `require_provider` and the hints of FR-MCP-05 narrow it as before.
+
+*T7.0 (2026-10-14, Delegated):* [§17](#17-routing-m7) fills the points this section leaves open: the defaults (both
+thresholds `null`, so the estimate trigger is off), when the row is written, how each reason is detected, continuations,
+the reset record and three added columns ([§17.6](#176-affinity-details-fills-32)).
 
 **Configuration.** Part of the `routing` object of the config schema (TDD §3.1):
 
@@ -4112,3 +4117,159 @@ sorted by key, at most 100 with `truncated`; the bound is an Assumption). It cou
 process and were created in the window. `get_capacity` counts only the calling MCP client's own runs, so another
 client's project ids are never shown (Delegated, least privilege). The operator's `switchboard capacity` and `doctor` see
 every project. `doctor` prints one summary line, and `switchboard capacity` one line per project.
+
+## 17. Routing (M7)
+
+Implements FR-RTE-01 (full) to FR-RTE-04, FR-RTE-06 to FR-RTE-08 and FR-MCP-02 (`explain_route`) under
+[ADR-0044](../adr/0044-deterministic-route-scoring-and-replayable-decisions.md), which extends
+[ADR-0008](../adr/0008-two-stage-routing.md) and [ADR-0032](../adr/0032-provider-model-affinity.md). It details
+[§3.2](#32-provider-and-model-affinity-m7), which stays the owner of the affinity table and algorithm; where this
+section fills a point §3.2 leaves open it says so. Everything here is **Proposed** (T7.0, 2026-10-14, Delegated). Every
+default is an **Assumption**, configurable, and recorded in ROADMAP §7.3 (Q-80 to Q-82). No provider price, model
+ranking, quality score or sandbox-strength order is used: none is sourced.
+
+### 17.1 Configuration
+
+```jsonc
+{ "routing": {
+    "weights": {                 // each 0..100; default 1 (Q-80); all 0 = every candidate scores 0 (configured order)
+      "success": 1, "latency": 1, "capacity": 1, "security": 1, "handoff": 1, "cost": 1
+    },
+    "affinity": {
+      "enabled": true,           // §3.2
+      "low_water_mark": null,    // 0..1 or null; FR-CAP-02 capacity_score at or below which the affine provider is maxed out
+      "min_confidence": null,    // 0..1 or null; lowest estimate confidence at which the low-water mark counts
+      "idle_ttl": null           // only null is accepted in M7 (Q-52: no expiry)
+    }
+} }
+```
+
+Unknown keys and type errors abort startup (NFR-SEC-06). The estimate trigger for `capacity_exhausted` is on only when
+both `low_water_mark` and `min_confidence` are set (§3.2); the default leaves it off (Q-81), so only positive evidence of
+exhaustion switches. A value for `idle_ttl` is refused rather than ignored until expiry is built. Absent section: the
+defaults above.
+
+### 17.2 Heuristic features (FR-RTE-04)
+
+A pure function of the validated request: objective text, number of constraints, number of verification commands and
+whether the profile is writable. No repository metadata is read in M7 (no I/O in routing; Q-82). Output uses the
+[§13.6](#136-task-contracts) `route_features` enumeration, each feature stored as `{ "value": ..., "source":
+"heuristic" }` under `features_json.route_features` with `"classifier": "heuristic.v1"`:
+
+| Feature | Rule (`heuristic.v1`, Assumptions) |
+| --- | --- |
+| `context_volume` | objective plus constraints under 400 characters `small`, under 2000 `medium`, else `large` |
+| `autonomy` | read-only profile `low`; writable without verification commands `medium`; writable with them `high` |
+| `task_kind` | first match, case-insensitive whole words in the objective: `investigation` (investigate, why, explain, analyse, analyze, diagnose), `test` (test, tests), `docs` (doc, docs, readme, documentation), `refactor` (refactor, rename, restructure), `bug_fix` (fix, bug, crash, error, regression), `feature` (add, implement, create, support); else `other` |
+| `reasoning_depth` | `high` for `investigation` or `refactor` or `large`; `low` for `docs` or `small` (when not `high`); else `medium` |
+
+The inner agent's `route_features` (FR-INN-12) may replace the values later with `source: "inner"`; the heuristic stays
+the fallback. **No feature changes a route in M7**: a feature can only rank providers through a per-provider mapping
+(for example "provider X is better at refactors"), and no source gives one (Q-82). Features are recorded for
+`explain_route` and for later learning (FR-RTE-05, Deferred).
+
+### 17.3 Score (FR-RTE-02)
+
+Stage 2 runs over the eligible candidates only (BR-1). Each term is a number in [0, 1] where higher is better, computed
+per candidate from inputs stored in the decision (§17.4), so replay needs nothing else:
+
+| Term | Value | Source | When unknown |
+| --- | --- | --- | --- |
+| `success` | `(healthy + 1) / (healthy + counted + 2)` over the provider's runs that started a process within `capacity.window_seconds`, classified as the breaker classifies them (§16.4: counted, healthy, neutral) | Controller ledger | No runs: 0.5 (the formula gives it) |
+| `latency` | `min_median / median`, where `median` is the provider's median wall time of `SUCCEEDED` runs in the window and `min_median` the smallest median among the candidates | Controller ledger | No succeeded run: 0.5 |
+| `capacity` | the FR-CAP-02 `capacity_score` (§16.2) | M6 estimate | `null`: 0, the worst value, never headroom (Q-69) |
+| `security` | 0.5 for every candidate; every candidate already passed the profile's hard filter, and no sandbox-strength order is sourced | none | always 0.5 |
+| `handoff` | 1 when the candidate is the provider bound to the meta-session (`continue_task`), else 0; for `delegate_task` every candidate gets 1 | Controller ledger | — |
+| `cost` | 0.5 for every candidate; no price is sourced | none | always 0.5 |
+
+`score = Σ(weight_t × term_t) / Σ weight_t`, or 0 when every weight is 0. Numbers are IEEE doubles computed in a fixed
+term order and stored unrounded; JSON keeps them exact, so a replay compares with `===`.
+
+**Selection, first match wins:** (1) `require_provider`: the only candidate (BR-2); (2) affinity holds (§3.2 step 4);
+(3) `provider_preference` names an eligible candidate (BR-4; a hint, not an affinity reason, §3.2); (4) the highest
+score; (5) ties broken by configured candidate order. The stored `selection.basis` is `required_provider`, `affinity`,
+`provider_preference`, `score` or `configured_order` (a tie at the top), with the existing suffixes (privileged compile
+deferred, continuation mode). With the default weights and no history every candidate ties, so the M2 behaviour
+(configured order) is unchanged.
+
+### 17.4 Decision record (FR-RTE-03)
+
+`route_decision` keeps its columns (no migration for it). A decision written by M7 has `schema_version: 2` in
+`features_json`; a row without it is an M2 eligibility-only row, which replay and `explain_route` report as such.
+
+```jsonc
+// features_json
+{ "schema_version": 2, "trust_profile": "...", "client_max_profile": "...", "platform": "linux",
+  "required_provider": null, "provider_preference": null, "requirements": { },
+  "candidate_order": ["claude", "codex"],                       // configured order after project narrowing
+  "route_features": { "classifier": "heuristic.v1", "context_volume": { "value": "small", "source": "heuristic" } },
+  "score_inputs": { "claude": { "healthy": 3, "counted": 1, "median_ms": 41000, "capacity_score": null,
+                                "capacity_confidence": 0, "session_bound": false } } }
+// weights_json: the six weights in force
+// candidates_json: [{ "provider", "eligible", "reasons", "score": number|null, "terms": {six terms}|null }]
+// reasons_json: { "outcome", "request_reason", "selection": { "provider", "basis" }, "affinity": {§3.2},
+//                 "project"?, "continuation"? }
+```
+
+**Replay** (`replayRouteDecision`): parse the row, recompute every term and score from `score_inputs` and
+`weights_json`, apply the selection rule with the stored `required_provider`, `provider_preference`, `candidate_order`
+and `affinity` object, and compare provider, basis prefix and every score with the stored values. It reads no other row,
+calls no model and no provider, and reports any difference.
+
+### 17.5 `explain_route`
+
+Input `{ "run_id": string }` (closed schema). The caller must own the run, exactly as `get_run` checks it; an unknown run
+or another client's run is `INVALID_REQUEST` (no existence oracle). Output, from the run's latest `route_decision` only:
+
+```jsonc
+{ "run_id": "run_...", "schema_version": 1 | 2, "decided_at": "...", "selected_provider": "claude" | null,
+  "selection": { "provider": "...", "basis": "..." } | null,
+  "candidates": [{ "provider": "...", "eligible": true, "reasons": [{ "code": "...", "detail": "..." }],
+                   "score": 0.5 | null, "terms": { } | null }],
+  "features": { } | null, "weights": { } | null, "affinity": { } | null,
+  "continuation": { } | null, "project": { "id": "...", "excluded_providers": [] } | null,
+  "deciding_factors": ["..."] }                 // short controller strings, e.g. "affinity held (claude)"
+```
+
+`deciding_factors` is derived from the stored record by a fixed template (the basis, the affinity outcome and reason,
+the top two scores when scored, each excluded provider's primary code); it never contains model text. Reason details are
+bounded to 300 characters, as in eligibility errors. A run with no decision (none exists on `main`) returns every field
+`null` and `deciding_factors: ["no route decision recorded"]`.
+
+### 17.6 Affinity details (fills §3.2)
+
+- **Project key** as in §16.8: the project id, else `ws:` and the SHA-256 of the canonical workspace path.
+- **When the row is written.** Only when a run reaches `SUCCEEDED` and its route decision (or, for a retry successor
+  without one, its nearest ancestor's through `parent_run_id`) has `affinity.applies: true`. `provider` and `model` come
+  from the run (the model the adapter reported, §3.2 step 7), `since` changes only when the provider changes, and
+  `last_switch_reason` is the decision's reason. A first run that fails creates no row; the next decision is again a
+  first run (scored, reason `null`).
+- **Continuations.** A `continue_task` decision is governed by FR-SES-03 and BR-18, not by affinity: its `affinity`
+  object has `applies: false` and the row is not moved by it (Q-81, fail closed: only a delegate decision with a reason
+  moves a project). The quota failover successor (§16.6) is the exception: it is a `capacity_exhausted` switch with
+  `applies: true`.
+- **Detecting the reasons** from ledger facts at the routing step, after stage 1, in §3.2's order:
+  `user_request` when `require_provider` names a provider other than the affine one, or the row has a pending reset;
+  `ineligible` when the affine provider is not an eligible candidate for any reason other than
+  `QUOTA_EXHAUSTED_KNOWN` (including leaving the project's `allowed_providers`); `capacity_exhausted` when it is excluded
+  with `QUOTA_EXHAUSTED_KNOWN`, or the project's latest terminal run on it failed with `QUOTA_EXHAUSTED`, or the estimate
+  trigger fires (§17.1); `failed_after_retry` when the project's latest terminal run on it carries a
+  `retry_not_scheduled` event with reason `attempts_exhausted`. Only runs after the row's `last_run_id` count.
+- **Where scoring starts after a reason.** For `capacity_exhausted` and `failed_after_retry` the affine provider is left
+  out of the score when another candidate remains (otherwise it is kept: fail closed, no refusal for this alone); for
+  `user_request` and `ineligible` the candidates are as stage 1 left them.
+- **Model (FR-RTE-08).** When affinity holds and the request names no model, the run is admitted with the row's model
+  (`request_json.model`, passed to the adapter's `compile`); a `null` model means the adapter default. After a switch
+  the new provider runs with its adapter default: the row keeps only the current provider's model.
+  `delegate_task` has no model argument, so "an explicit model in the request" cannot occur until one is specified.
+- **Recorded object** (`reasons_json.affinity`): §3.2's fields plus `applies` (boolean) and `excluded_from_score`
+  (the affine provider when it was left out). Invariants (TDD §3.13.3): `held` implies a null reason and `scored`
+  false; a provider or model different from the row's, when `applies`, implies a non-null reason.
+- **Reset.** `switchboard affinity reset <project_key>` sets `reset_requested_at` and `reset_by` (OS user) on the
+  existing row in one transaction; no row means nothing to reset (exit non-zero, nothing written). The next routing step
+  for the project treats it as `user_request`, records a `routing_affinity_reset` event on that run and clears the two
+  columns when the row is next written. `switchboard affinity list [--json]` prints each row.
+- **Table columns added to §3.2's DDL** by the M7 migration: `reset_requested_at TEXT`, `reset_by TEXT`, `updated_at
+  TEXT NOT NULL`.
+- **Privileged.** Affinity never moves a `privileged` meta-session to another provider; a new `privileged` meta-session
+  routes like any other, under its own approval (the Q-61 rule for continuations is unchanged).
