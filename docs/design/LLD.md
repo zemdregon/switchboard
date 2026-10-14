@@ -3670,3 +3670,23 @@ Tests: `src/mcp/continue-handoff.test.ts` (both fakes: each BR-18 branch, the re
 end handoff with commits whose provenance names each run's provider and the transcript canaries absent from B's prompt
 and the bundle), the T5.6 case in `src/mcp/mcp.test.ts` (an unusable resume directory becomes a same-provider handoff),
 `src/continuity/policy.test.ts` and the `continuity` cases in `src/config/config.test.ts`.
+
+*As built (T5.10, 2026-10-14, Delegated, not owner-approved; no migration, no new operator command).* `get_artifacts`
+already lists the `handoff_view` row of a handoff run and `get_run` carries its id (T5.6); neither carries bundle text
+outside `get_artifacts`, whose purpose is the view. `runs show <run>` (`src/cli/runs.ts`) adds `run.handoff` for a run
+whose `request_json` names a bundle, in `--json` and as a "Handoff (FR-SES-05)" block in the text view:
+`bundle_artifact_id`, `bundle_sha256`, `as_of_sha256`, `renderer_version`, `from_provider` and `reason` from
+`request_json.handoff`; `source_run_ids` (the runs of the stored view's `as_of`, oldest first, read through the content
+address and checked against the recorded hash) and `source_run_id` (the last); `binding` (id, provider, harness, backing
+provider, model, creation time). Choices:
+
+- **Source runs** come from the stored view, not from a guess at the run history. A collected, altered or unreadable view
+  gives `null`, shown as `-`.
+- **Binding** is **Assumption**-grade: `provider_binding` has no run column, so it is the first binding of the run's
+  provider created at or after the run was created; `null` until the run reports a native session.
+- **No native session id** in this block (not needed to audit a handoff); the run's own events print what they print.
+- **Regenerating a view on demand** remains not planned: it would be a new operator command and needs an FR-OPS entry
+  first.
+
+Tests: the "handoff view on the read surfaces" cases in `src/mcp/continue-handoff.test.ts` (MCP and CLI on the two fakes,
+plain text and `--json`; a handoff section absent for a non-handoff run; a missing view gives unknown source runs).
