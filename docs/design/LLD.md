@@ -3497,6 +3497,50 @@ gets the prefix (a vertical bar and one space), so no value can forge a header, 
 come from the field's class, never from the value. The rendered prompt is at most `max_bundle_bytes` plus the
 instruction (`maxLength` 32768) plus the fixed text.
 
+*As built (T5.5, 2026-10-14, Delegated, not owner-approved; no migration).* Code: `src/continuity/render.ts`
+(`renderHandoffPrompt({ bundle, instruction }) → { prompt, rendererVersion, promptSha256, bodyBytes, omitted }`,
+`parseHandoffBundle`, `RENDERER_VERSION = 1`, `INSTRUCTION_MARKER`), `buildAndPutHandoffView` in
+`src/continuity/handoff-view.ts`, and the lifecycle hook
+`SubmitRequest.handoff = { built, stored, fromProvider, reason }` in `src/lifecycle/lifecycle.ts`, which T5.6 calls.
+Choices the design left open:
+
+- **Where the prompt is made.** The admission transaction writes the run row with `request_json.handoff`, the
+  `handoff_view` row and the `route_selected` (`mode=handoff`) and `handoff_built` decisions; the view's id is
+  pre-allocated (`Ledger.newArtifactId`, an optional `id` on the artifact insert, as for approval ids) because the run's
+  request names it. The prompt is rendered once at admission (an unusable bundle is refused before any write) and again
+  at dispatch, before PREFLIGHT, from the stored view: the row must be this run's `handoff_view`, not collected, with the
+  recorded hash, renderer version and `as_of` hash, and the store re-verifies the content address. Any failure ends the
+  run `TOOL_FAILURE` with `reason: HANDOFF_BUNDLE_UNAVAILABLE` before anything is probed, leased or spawned.
+  `request_json.objective` holds the new instruction, never the rendered prompt.
+- **Cleaning.** Untrusted values are redacted, line ends normalised, controls stripped, then redacted **again**, because
+  stripping can join a secret that a control character had split. Stricter than the list above (defence in depth):
+  U+200E, U+200F and U+061C are also removed, and U+2028 and U+2029 become new (prefixed) lines. Plain text gets the same
+  cleaning: orchestrator text (goal, constraints, earlier instructions) is indented by two spaces and controller values
+  are one line each (JSON-quoted unless printable ASCII, cut at 500 characters), so no bundle value can start a line at
+  column 0. `provider`, `harness`, `backing_provider` and `model` (the last three are reported by a provider's
+  `session_bound` event although the bundle classes them `controller`) are shown only when they are plain identifiers,
+  else as `(withheld: not a plain identifier)`. The new instruction is verbatim.
+- **Sources in block headers.** A run's value names its provider and run; repository text that belongs to no single run
+  (`changed_files`, `paths_to_inspect`, `diff_excerpts`) is headed `from repository commits <base>..<head>`
+  (**Assumption**: the header template names a provider and run only). `changed_files` and `paths_to_inspect` are one
+  block each, every output excerpt stream and every diff excerpt its own block.
+- **Size bound.** The body between the preamble and the instruction marker is at most `max_bundle_bytes` (UTF-8). The
+  line prefix can make the rendered text larger than the canonical JSON, so when it is over, the renderer drops whole
+  items in a fixed order (`diff_excerpts` from the last, output excerpts from the last command, `reported`, `instructions`,
+  `decisions` and `runs` from the oldest, `changed_files` and `paths_to_inspect` from the last, `failed_attempts` from the
+  oldest, `open_work` and `constraints` from the last, then `diagnostics`) and says so in a fact line; goal and Git are
+  never dropped, and if they alone do not fit, rendering fails closed (`HANDOFF_BUNDLE_UNAVAILABLE`; **Assumption**,
+  reachable only with a goal of thousands of short lines at the minimum bound). An instruction over 32,768 code points
+  is refused.
+- **Fake CLIs.** A plan scenario of the bundled fake CLI reads its plan from the text after the first line that is exactly
+  `[instruction from the orchestrator]` (the rendered text can hold that string only on indented or prefixed lines).
+- **Q-61 guard.** The hook refuses (`INVALID_REQUEST`, `PRIVILEGED_CROSS_PROVIDER`) a `privileged` handoff whose provider
+  differs from the source provider, so it cannot route around the fail-closed default; T5.6 owns the constant of §15.7.
+
+Tests: `src/continuity/render.test.ts`, `src/continuity/render-lifecycle.test.ts`, the T5.5 cases in
+`src/adapters/claude/claude.test.ts`, `src/adapters/codex/codex.test.ts`, `src/mcp/mcp.test.ts` and
+`src/continuity/import-boundary.test.ts`.
+
 ### 15.6 Working directory of a native resume
 
 Adapter declaration (static data on the adapter, like `gitWriteControl`, T5.7): `resumeCwd: 'bound' | 'independent' |
