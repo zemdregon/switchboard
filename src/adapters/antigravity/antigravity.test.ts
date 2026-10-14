@@ -1312,11 +1312,25 @@ describe("antigravity malicious-fixture leg (T4.36, NFR-SEC-03, FR-POL-04, FR-PO
     ).toEqual(expect.objectContaining({ code: "PERMISSION_BLOCKED" }));
   });
 
-  // KNOWN GAP, pinned (T4.36 roadmap row): ADR-0039 says a `git_write` verdict ends the run PERMISSION_BLOCKED, but
-  // `extractResult` returns ok for a clean SUCCESS envelope without looking at `tool_call.violation`, and the lifecycle
-  // trusts `result.ok`. `it.fails` turns red once the adapter fails the run; then make this a plain `it`.
-  it.fails("KNOWN GAP: a guard-flagged Git write with a SUCCESS envelope ends PERMISSION_BLOCKED", () => {
+  // Formerly a KNOWN GAP (T4.36 roadmap row): ADR-0039 says a `git_write` verdict ends the run PERMISSION_BLOCKED, and
+  // the lifecycle trusts `result.ok`, so `extractResult` must not call a flagged run clean even with a SUCCESS envelope.
+  it("a guard-flagged Git write with a SUCCESS envelope ends PERMISSION_BLOCKED (ADR-0039)", () => {
     const { result: r } = run([tool("run_command", { command: "git push origin main" }), result()]);
     expect(r).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    expect(r.failureDetail).toContain("git write attempted");
+  });
+
+  it("any guard verdict on a tool_call makes a SUCCESS envelope not clean (a provider_state verdict ends SANDBOX_VIOLATION)", () => {
+    const { events } = run([result()]);
+    const flagged: NormalizedEvent = {
+      kind: "tool_call",
+      tool: "shell",
+      name: "run_command",
+      violation: { kind: "provider_state", reason: "synthetic" },
+    };
+    expect(adapter().extractResult([flagged, ...events], EXIT0)).toMatchObject({
+      ok: false,
+      failureCode: "SANDBOX_VIOLATION",
+    });
   });
 });

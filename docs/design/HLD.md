@@ -303,10 +303,11 @@ component-level outcome. Mirrors the Grok Build declaration ([TDD
   `gitWriteRisks` in `src/adapters/git-write.ts`
 
 **Not shown by this evidence.** Whether settings deny rules hold under `--dangerously-skip-permissions` was not
-observed (T4.31 C8; operator task T4.38). T4.36 recorded a finding that `extractResult` returns `ok` for a clean
+observed (T4.31 C8; operator task T4.38). T4.36 recorded a finding that `extractResult` returned `ok` for a clean
 `SUCCESS` envelope without reading a guard `violation` on a Git write, although ADR-0039 ends such a run
-`PERMISSION_BLOCKED`; that gap is pinned by a known-gap test and tracked in the [ROADMAP
-§6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) T4.36 row, not closed by T4.37.
+`PERMISSION_BLOCKED`; that gap is now fixed (`extractResult` treats a flagged `tool_call` as not clean) and the former
+known-gap test passes as a plain test, as recorded in the [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks)
+T4.36 row. It was not closed by T4.37.
 
 ### 2.3 COMP-ADP Cursor implementation evidence (M4, T4.42, T4.43)
 
