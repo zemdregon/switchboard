@@ -340,7 +340,7 @@ the cell says so.
 | Question | Resolution |
 | --- | --- |
 | Does the operator CLI act in-process or through `serve`? | Own short-lived process writing operator records only; the daemon performs side effects ([ADR-0005](../adr/0005-sqlite-ledger.md), [TDD §3.5](TDD.md#35-concurrency-model)). |
-| Where do worktrees live? | `<data_dir>/worktrees/<sess>/<run>` ([LLD §5](LLD.md#5-workspace-and-lease-algorithm)). |
+| Where do worktrees live? | `<data_dir>/worktrees/<sess>/<run>` ([LLD §5](LLD.md#5-workspace-and-lease-algorithm)); a native resume reuses the path of the run that created its native session unless the adapter declares `resumeCwd: 'independent'` ([LLD §15.6](LLD.md#156-working-directory-of-a-native-resume), T5.7). |
 | Is reconciliation finished before MCP serves? | Yes (FR-EXE-06). |
 | What if a native session can no longer be resumed? | The run fails with the adapter's classified code; no silent fallback to handoff (Proposed, [FRD WF-2](../requirements/FRD.md#wf-2-continue-on-the-same-provider)). |
 | Per-run disk or CPU limits? | Not required for M1–M2; retention, timeouts and concurrency limits only. Tracked as risk R-8 in [ROADMAP §7](../ROADMAP.md#7-risks-blockers-and-open-questions). |

@@ -375,6 +375,8 @@ export interface ProviderAdapter {
   readonly transports: readonly Transport[];
   /** FR-GIT-01 declaration (M2, T2.2), reported by list_capabilities. */
   readonly gitWriteControl: GitWriteControl;
+  /** M5 (T5.7): whether a native resume is tied to its working directory (§15.6). */
+  readonly resumeCwd: 'bound' | 'independent' | 'unverified';
 
   /** FR-ADP-02 steps 1-5: binary, version, command, output formats, required flags. No auth, no model call. */
   probe(runner: ProbeRunner): Promise<ProbeResult>;
@@ -3472,6 +3474,41 @@ For `independent` (only after a dated capture records `PASS` for resume from ano
 provider's M4 operator item, for the validated version range), a resume uses a fresh path
 `<data_dir>/worktrees/<sess>/<run>` as before. Every resume re-sends the full policy flags whatever the declaration
 (TDD §4.10).
+
+*As built (T5.7, 2026-10-14, Delegated, not owner-approved).* `ProviderAdapter.resumeCwd` is required static data
+(`src/adapters/types.ts`); the lifecycle treats every value but `independent`, including a missing one, as `bound`
+(`resumeMayChangeDirectory`). Claude Code and Codex declare `unverified`, the fake `bound` by default (an option makes
+the test variants). The provider table (`src/adapters/providers.ts`) also names TDD §4.10's value for every provider,
+reserved ones included (Antigravity `bound`; Grok Build, Cursor, OpenCode, Kimi Code `unverified`; Muse Code has no
+entry until T4.72), and a registry test requires each adapter to declare its entry's value. The origin lookup and the
+plan are `src/lifecycle/resume-directory.ts`; the directory checks are `WorkspaceManager.inspectResumeDirectory` and
+`prepare({ resumeIn })` (`src/workspace/manager.ts`), which re-checks and then runs `git switch --no-guess -c` in the
+origin, or `git worktree add` at the same path when it is gone, inside the per-repository worktree serialisation.
+Decisions taken here:
+
+- **Checks beyond step 2** (Delegated, fail closed): the path must be a direct child of `<data_dir>/worktrees/<sess>/`
+  (so another meta-session's path is refused, FR-WS-08), a real directory (a symlink is refused), not `locked` in
+  `git worktree list` (Assumption: a lock means someone else holds it), and Git run inside it must resolve to the same
+  top level and the repository's common directory (a rewritten `.git` file is refused). The clean check is §5's
+  mutation check against the worktree's own `HEAD`, with the same nested-repository exclusions; ignored files are not
+  checked and stay in the directory (§5's known limit).
+- **Read-only resumes** (Delegated; §15.6 is silent): an `inspect-untrusted` resume runs read-only in the canonical
+  workspace, so it is allowed only when the origin also ran without a worktree in the same workspace, and a
+  write-profile resume of a session created without a worktree is refused; both are `directory_mismatch`.
+- **Until T5.6** (Delegated): an unusable directory cannot yet become a handoff, so `continue_task` refuses before any
+  run, decision or event is written with `TOOL_FAILURE` (not retryable), `details.reason =
+  "resume_directory_unavailable"` and `details.problem` (one of `no_origin_run`, `directory_mismatch`,
+  `outside_session_directory`, `not_a_directory`, `not_registered`, `locked`, `unclean`, `unreadable`). `TOOL_FAILURE`
+  rather than `INVALID_REQUEST` for the reason ADR-0038 item 7 gives: the request is valid and the fault is the
+  controller's state. T5.6 replaces this refusal with the handoff of step 3. If the LEASED re-check fails (a race after
+  admission), the run fails `LEASED → FAILED` before spawn with `TOOL_FAILURE` and the same `reason` and `problem` in
+  the transition event; nothing ran in any directory.
+- No migration and no new path scheme: run paths stay `<data_dir>/worktrees/<sess>/<run>`, and a resume's
+  `run.worktree_path` is its origin's path, so GC (which de-duplicates recorded paths) and the orphan sweep are
+  unchanged.
+
+Tests: `src/lifecycle/resume-directory.test.ts`, the T5.7 case in `src/mcp/mcp.test.ts` and the `resumeCwd` cases in
+`src/adapters/providers.test.ts`.
 
 ### 15.7 `continue_task` with handoff
 
