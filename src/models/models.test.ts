@@ -107,6 +107,34 @@ describe("ModelRegistry (T4.5)", () => {
     expect(r.contextLimit("p", "m-b")).toBeUndefined();
     expect(r.contextLimit("p", "__proto__")).toBeUndefined();
   });
+
+  it("returns operator-stated capability and models meeting capability floor (T7.8)", () => {
+    const r = new ModelRegistry(
+      new Map([
+        [
+          "p",
+          {
+            ids: ["m-low", "m-med", "m-high"],
+            aliases: { fast: "m-low", smart: "m-high" },
+            capabilities: { "m-low": "low", "m-med": "medium", "m-high": "high" },
+          },
+        ],
+      ]),
+    );
+    expect(r.capability("p", "m-low")).toBe("low");
+    expect(r.capability("p", "m-med")).toBe("medium");
+    expect(r.capability("p", "m-high")).toBe("high");
+    // Alias lookup
+    expect(r.capability("p", "fast")).toBe("low");
+    expect(r.capability("p", "smart")).toBe("high");
+    expect(r.capability("p", "unknown")).toBeUndefined();
+
+    // Floor filtering
+    expect(r.modelsMeetingCapability("p", "high")).toEqual(["m-high"]);
+    expect(r.modelsMeetingCapability("p", "medium")).toEqual(["m-med", "m-high"]);
+    expect(r.modelsMeetingCapability("p", "low")).toEqual(["m-low", "m-med", "m-high"]);
+    expect(r.modelsMeetingCapability("unknown-p", "low")).toEqual([]);
+  });
 });
 
 describe("eligibility with the model registry (T4.5)", () => {
@@ -158,14 +186,22 @@ describe("providers.<id>.models config (T4.5)", () => {
         );
         return loadConfig({ configPath: p });
       };
-      const ok = run({ ids: ["m-a"], aliases: { fast: "m-a" }, context_limits: { "m-a": 5000 } });
+      const ok = run({
+        ids: ["m-a"],
+        aliases: { fast: "m-a" },
+        context_limits: { "m-a": 5000 },
+        capabilities: { "m-a": "high" },
+      });
       expect(ok.providerModels.get("claude-code")).toEqual({
         ids: ["m-a"],
         aliases: { fast: "m-a" },
         context_limits: { "m-a": 5000 },
+        capabilities: { "m-a": "high" },
       });
       expect(() => run({ ids: ["bad id"] })).toThrow();
       expect(() => run({ context_limits: { "m-a": 0 } })).toThrow();
+      expect(() => run({ capabilities: { "m-a": "ultra" } })).toThrow();
+      expect(() => run({ capabilities: { "bad id": "high" } })).toThrow();
       expect(() => run({ extra: true })).toThrow();
     } finally {
       rmSync(tmp, { recursive: true, force: true });

@@ -21,7 +21,7 @@ import type {
   TrustProfile,
 } from "../adapters/types.js";
 import type { ProviderId as ConfigProviderId, SwitchboardConfig } from "../config/index.js";
-import type { ModelRegistry } from "../models/registry.js";
+import { capabilityMeetsFloor, type ModelRegistry } from "../models/registry.js";
 import {
   type CapabilityRequirements,
   type EligibilityDecision,
@@ -134,6 +134,68 @@ async function collectOne(
   }
   deps.models?.refresh(id, probe.modelsListed);
   let requirements = req.requirements;
+  if (requirements.minimumCapability !== undefined) {
+    if (deps.models === undefined) {
+      facts.compile = {
+        ineligible: true,
+        reason: "CAPABILITY_MISSING",
+        detail: `no model registry to evaluate minimum_capability "${requirements.minimumCapability}" for ${id}`,
+      };
+      return facts;
+    }
+    if (requirements.model !== undefined) {
+      const resolved = deps.models.resolve(id, requirements.model);
+      if (!resolved.ok) {
+        facts.compile = { ineligible: true, reason: "CAPABILITY_MISSING", detail: resolved.detail };
+        return facts;
+      }
+      const declared = deps.models.capability(id, resolved.model);
+      if (!capabilityMeetsFloor(declared, requirements.minimumCapability)) {
+        facts.compile = {
+          ineligible: true,
+          reason: "CAPABILITY_MISSING",
+          detail: `model ${JSON.stringify(resolved.model)} capability (${declared ?? "undeclared"}) does not meet minimum_capability "${requirements.minimumCapability}" for ${id}`,
+        };
+        return facts;
+      }
+      requirements = { ...requirements, model: resolved.model };
+      facts.compile = compileCheck(adapter, req.profile, requirements, req.cwd);
+      if (!("ineligible" in facts.compile)) {
+        facts.model = resolved.model;
+      }
+      return facts;
+    }
+    const eligibleModels = deps.models.modelsMeetingCapability(id, requirements.minimumCapability);
+    if (eligibleModels.length === 0) {
+      facts.compile = {
+        ineligible: true,
+        reason: "CAPABILITY_MISSING",
+        detail: `no model in the ${id} model registry meets minimum_capability "${requirements.minimumCapability}"`,
+      };
+      return facts;
+    }
+    let lastIneligible: Ineligible | undefined;
+    let selectedModel: string | undefined;
+    for (const candModel of eligibleModels) {
+      const verdict = compileCheck(adapter, req.profile, { ...requirements, model: candModel }, req.cwd);
+      if (!("ineligible" in verdict)) {
+        facts.compile = { ok: true };
+        facts.model = candModel;
+        selectedModel = candModel;
+        break;
+      }
+      lastIneligible = verdict;
+    }
+    if (selectedModel === undefined) {
+      facts.compile = lastIneligible ?? {
+        ineligible: true,
+        reason: "CAPABILITY_MISSING",
+        detail: `no model meeting minimum_capability "${requirements.minimumCapability}" could be compiled for ${id}`,
+      };
+    }
+    return facts;
+  }
+
   if (deps.models !== undefined && requirements.model !== undefined) {
     const resolved = deps.models.resolve(id, requirements.model);
     if (!resolved.ok) {
@@ -143,6 +205,9 @@ async function collectOne(
     requirements = { ...requirements, model: resolved.model };
   }
   facts.compile = compileCheck(adapter, req.profile, requirements, req.cwd);
+  if (!("ineligible" in facts.compile) && requirements.model !== undefined) {
+    facts.model = requirements.model;
+  }
   return facts;
 }
 
