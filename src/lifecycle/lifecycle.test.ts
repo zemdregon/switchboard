@@ -960,7 +960,8 @@ emit({ type: "result", ok: true, summary: "recorded" });
           expect(existsSync(rec.out), `${label} ${f}`).toBe(false);
         }
       }
-    });
+      // One run per declared bypass-class flag and case: the list grows with each M4 adapter (T4.32, T4.42, T4.52).
+    }, 180_000);
 
     it("a continuation runs under the client-policy approval as is; another client cannot use it", async () => {
       adapter.privilegedAs = "edit-untrusted";
