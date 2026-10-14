@@ -132,6 +132,7 @@ import {
   compileCheck,
   DEFAULT_WEIGHTS,
   type EligibilityReasonCode,
+  explainRoute,
   profilePlatformSupported,
   profileRank,
   type RouteDecisionResult,
@@ -950,6 +951,15 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     return capacityProjection(ledger, providers, settings, (deps.now ?? (() => new Date()))(), deps.clientId);
   };
 
+  /**
+   * T7.3 (FR-MCP-02, LLD §17.5): the run's stored route decision, explained. The caller must own the run (as `get_run`);
+   * nothing is probed, scored again or asked of a model.
+   */
+  const explainRouteTool = async (a: Args) => {
+    const run = ownRun(a.run_id as string);
+    return explainRoute(run.id, ledger.getRouteDecision(run.id), scrub);
+  };
+
   /** LLD §3 `list_projects`: the projects this client may use, without paths, remotes, identities or image data. */
   const listProjects = async () => ({
     projects: [
@@ -1034,6 +1044,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     list_capabilities: listCapabilities,
     list_projects: listProjects,
     get_capacity: getCapacity,
+    explain_route: explainRouteTool,
   };
 
   const ok = (value: object): CallToolResult => ({

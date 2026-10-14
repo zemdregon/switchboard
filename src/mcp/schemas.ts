@@ -44,6 +44,7 @@ export const TOOL_NAMES = [
   "list_capabilities",
   "list_projects",
   "get_capacity",
+  "explain_route",
 ] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];
 
@@ -311,6 +312,13 @@ const INPUTS = {
     additionalProperties: false,
     properties: { provider: PROVIDER },
   },
+  // T7.3 (LLD §17.5): the caller must own the run, as for get_run.
+  explain_route: {
+    type: "object",
+    additionalProperties: false,
+    required: ["run_id"],
+    properties: { run_id: RUN_ID },
+  },
 } as const;
 
 const PROJECT_INPUTS = {
@@ -544,6 +552,83 @@ const CAPACITY = {
   },
 } as const;
 
+/** T7.3 `explain_route` output (LLD §17.5); every field comes from the stored route decision. */
+const NUMBER_MAP = { type: "object", additionalProperties: { type: "number" } } as const;
+const ROUTE_EXPLANATION = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "run_id",
+    "schema_version",
+    "decided_at",
+    "selected_provider",
+    "selection",
+    "candidates",
+    "features",
+    "weights",
+    "affinity",
+    "continuation",
+    "project",
+    "deciding_factors",
+  ],
+  properties: {
+    run_id: RUN_ID,
+    schema_version: { type: ["integer", "null"], enum: [1, 2, null] },
+    decided_at: NULLABLE_STRING,
+    selected_provider: NULLABLE_STRING,
+    selection: {
+      anyOf: [
+        { type: "null" },
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["provider", "basis", "rule"],
+          properties: { provider: { type: "string" }, basis: { type: "string" }, rule: NULLABLE_STRING },
+        },
+      ],
+    },
+    candidates: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["provider", "eligible", "reasons", "score", "terms"],
+        properties: {
+          provider: { type: "string" },
+          eligible: { type: "boolean" },
+          reasons: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["code", "detail"],
+              properties: { code: { type: "string" }, detail: { type: "string", maxLength: 300 } },
+            },
+          },
+          score: { type: ["number", "null"] },
+          terms: { anyOf: [{ type: "null" }, NUMBER_MAP] },
+        },
+      },
+    },
+    features: { type: ["object", "null"] },
+    weights: { anyOf: [{ type: "null" }, NUMBER_MAP] },
+    affinity: { type: ["object", "null"] },
+    continuation: { type: ["object", "null"] },
+    project: {
+      anyOf: [
+        { type: "null" },
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["id", "excluded_providers"],
+          properties: { id: { type: "string" }, excluded_providers: { type: "array", items: { type: "string" } } },
+        },
+      ],
+    },
+    deciding_factors: { type: "array", items: { type: "string" } },
+  },
+} as const;
+
 const PROJECTS = {
   type: "object",
   additionalProperties: false,
@@ -619,6 +704,7 @@ const OUTPUTS = {
   list_capabilities: withError(CAPABILITIES),
   list_projects: withError(PROJECTS),
   get_capacity: withError(CAPACITY),
+  explain_route: withError(ROUTE_EXPLANATION),
 } as const;
 
 const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
@@ -657,6 +743,11 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
     "recent run outcomes, rate-limit signals, the circuit breaker and free slots, never provider-authoritative quota; " +
     "with no recent evidence they read unknown (score null, confidence 0). explicit_remaining and reset_at are set " +
     "only when the provider itself reported them. Optional provider narrows the answer to one provider.",
+  explain_route:
+    "Why a run went to its provider, read-only, from Switchboard's stored route decision: candidates with eligibility " +
+    "reasons, the recorded task features, weights and per-candidate scores, the selection rule, the project's " +
+    "provider affinity and short deciding factors. No model is asked; decisions recorded before scoring show " +
+    "eligibility only.",
 };
 
 const PROJECT_DESCRIPTIONS: Readonly<Record<ProjectToolName, string>> = {
