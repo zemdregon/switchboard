@@ -40,18 +40,18 @@ Pre-release. The package is private and is not published to any registry; you bu
   is tested on fake providers. It is not `Done`: what Claude Code and Codex print on a real rate limit or quota stop has
   not been captured (operator task T6.11), and no provider is known to publish an enforceable rate limit, so there is no
   rate gate. See [ROADMAP §6.11](docs/ROADMAP.md#611-m6-capacity-and-resilience-tasks).
-- **Milestone 7 (routing) is `Partial`.** `explain_route` and provider or model affinity (with `switchboard affinity
-  list|reset`) are implemented and tested on fake adapters, including an acceptance test through the MCP server. It is not
-  `Done`: `minimum_capability` stays refused until model pinning lands, cache-friendly prompt order waits on the M4
-  adapter lane, and the README routing section is still open (task T7.11). See
+- **Milestone 7 (routing) is `Partial`.** Tasks T7.0 to T7.7 and T7.10 are done on fake adapters: `explain_route`,
+  provider or model affinity (with `switchboard affinity list|reset`), including the acceptance test through the MCP
+  server. It is not `Done` until at least T7.8 (`minimum_capability`, blocked on model pinning in T7.12) and T7.11
+  (README and status) land; cache-friendly prompt order (T7.9) waits on the M4 adapter lane. See
   [ROADMAP §6.12](docs/ROADMAP.md#612-m7-routing-tasks).
 - **Milestone 11 (inner agent) is `Partial`.** An optional HTTP backend, privacy gates, `doctor` and `inner` reporting,
   and commit-message drafting on fakes are on main; most run-path hooks, PR drafting and a live backend are not. See
   [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
-- **Milestone 12 (retrieval index) is `Partial`.** Configuration, a per-project store, the scanner through chunker and
-  the embedding port (fake and `http` backends behind the locality gates) are on main and tested; background indexing
-  and retrieval at admission are not. See
-  [ROADMAP §6.7](docs/ROADMAP.md#67-m12-retrieval-index-tasks).
+- **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.3 are done on fakes: the spike, `rag`
+  configuration and per-project store, the scanner through chunker, and the embedding port (fake and `http` backends
+  behind the locality gates). From T12.4 (incremental background build) onward remains `Planned`; retrieval at
+  admission is not built yet. See [ROADMAP §6.7](docs/ROADMAP.md#67-m12-retrieval-index-tasks).
 - **Milestone 13 (network MCP transport) is done.** `serve` can expose the MCP tools over Streamable HTTP with OAuth
   2.1 (an embedded authorization server with an operator consent page, PKCE, client registration that the operator
   approves, audience-bound opaque tokens). It is off by default and binds to loopback; put your own TLS proxy in
