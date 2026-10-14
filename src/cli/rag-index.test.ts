@@ -14,7 +14,7 @@ import { loadConfig } from "../config/index.js";
 import { openLedger, RagLedger } from "../ledger/index.js";
 import { acquireDataDirLock } from "../lock/index.js";
 import { createFakeEmbedder, type FakeEmbedder } from "../retrieval/fake-embedder.js";
-import { ragStoreDir } from "../retrieval/store.js";
+import { openRagStore, ragStoreDir } from "../retrieval/store.js";
 import type { CliIo } from "./io.js";
 import { main } from "./main.js";
 import { startServeRag } from "./rag-index.js";
@@ -272,13 +272,52 @@ describe("index rebuild", () => {
     expect(j.stores[0]).toMatchObject({ revision: 1, complete: true, pending_requests: [] });
   });
 
-  it("refuses global (T12.7), an unknown project and a project with retrieval off", async () => {
+  it("refuses global while it is off, an unknown project and a project with retrieval off", async () => {
     expect((await run(["index", "rebuild", "global"])).code).toBe(2);
     expect((await run(["index", "rebuild", "nope"])).code).toBe(1);
     const off = await run(["index", "rebuild", "quiet"]);
     expect(off.code).toBe(2);
     expect(off.err).toContain("retrieval is off for project quiet (PROJECT_OFF)");
     expect((await run(["index", "frobnicate"])).code).toBe(2);
+  });
+});
+
+describe("global index (T12.7)", () => {
+  it("serve builds it after the projects from contributions only, and rebuild global is accepted", async () => {
+    writeConfig({ ...RAG, global: { enabled: true } }, { contribute_to_global: true });
+    await daemon();
+    const store = openRagStore(dataDir, { kind: "global" });
+    try {
+      expect(store.db.prepare("SELECT path, origin_project FROM rag_file ORDER BY path").all()).toEqual([
+        { path: "project:demo/main/a.ts", origin_project: "demo" },
+        { path: "project:demo/main/b.ts", origin_project: "demo" },
+      ]);
+    } finally {
+      store.close();
+    }
+    const r = await run(["index", "rebuild", "global", "--json"]);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out).requests).toMatchObject([{ project_key: null, status: "requested" }]);
+    await daemon();
+    const db = openLedger(dataDir);
+    try {
+      const built = db
+        .prepare("SELECT outcome FROM rag_record WHERE kind = 'index_built' AND project_key IS NULL")
+        .all() as { outcome: string }[];
+      expect(built.map((b) => b.outcome)).toEqual(["ok", "ok"]);
+      expect(db.prepare("SELECT outcome, detail FROM rag_request WHERE project_key IS NULL").get()).toMatchObject({
+        outcome: "applied",
+        detail: "QUEUED",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("is not built while off, even for a project that sets contribute_to_global", async () => {
+    writeConfig(RAG, { contribute_to_global: true });
+    await daemon();
+    expect(existsSync(ragStoreDir(dataDir, { kind: "global" }))).toBe(false);
   });
 });
 
