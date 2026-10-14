@@ -113,7 +113,17 @@ export interface SwitchboardConfig {
   transport?: { http?: HttpTransportConfig };
   /** Capacity and resilience (M6, T6.2; LLD §16.1, ADR-0043). Every key defaults to its LLD value (Assumptions). */
   capacity?: CapacityConfigInput;
+  /** Routing (M7, T7.1; LLD §17.1, ADR-0044). Every key defaults to its LLD value (Assumptions, Q-80). */
+  routing?: RoutingConfigInput;
 }
+
+/** `routing` as written in the config file (LLD §17.1). `affinity` arrives with T7.4. */
+export interface RoutingConfigInput {
+  weights?: Partial<Record<"success" | "latency" | "capacity" | "security" | "handoff" | "cost", number>>;
+}
+
+/** LLD §17.1 bounds of each `routing.weights` value (Assumption, Q-80); the default of 1 lives in `src/routing/score.ts`. */
+export const MAX_ROUTING_WEIGHT = 100;
 
 /** `capacity` as written in the config file (LLD §16.1). */
 export interface CapacityConfigInput {
@@ -443,6 +453,22 @@ export const configSchema = {
             base_ms: { type: "integer", minimum: 1, maximum: 600000 },
             cap_ms: { type: "integer", minimum: 1, maximum: 3600000 },
           },
+        },
+      },
+    },
+    routing: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        weights: {
+          type: "object",
+          additionalProperties: false,
+          properties: Object.fromEntries(
+            ["success", "latency", "capacity", "security", "handoff", "cost"].map((t) => [
+              t,
+              { type: "number", minimum: 0, maximum: MAX_ROUTING_WEIGHT },
+            ]),
+          ),
         },
       },
     },

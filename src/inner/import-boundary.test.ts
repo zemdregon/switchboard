@@ -15,6 +15,8 @@
  * - the retry and failure-classification logic: `src/lifecycle/lifecycle.ts` (holds the BR-7 retry set), `states.ts`,
  *   `src/mcp/errors.ts` (the retryable set);
  * - approvals and eligibility: `src/lifecycle/approval.ts`, `src/routing/eligibility.ts`;
+ * - the stage-2 scorer (M7, T7.1): `src/routing/score.ts` never reads features, so inner features (FR-INN-12) can be
+ *   recorded but cannot rank (Q-82);
  * - verification results: `src/lifecycle/verification.ts`;
  * - the push path and the sanitiser rule table: `src/git/push*.ts`, `publish-ref.ts`, `ref-guard.ts`,
  *   `credential-reach.ts`, `sanitize.ts`, `safe-pattern.ts`;
@@ -37,7 +39,7 @@ const PROTECTED: readonly RegExp[] = [
   /^adapters\//,
   /^lifecycle\/(lifecycle|states|approval|verification)\.ts$/,
   /^mcp\/errors\.ts$/,
-  /^routing\/eligibility\.ts$/,
+  /^routing\/(eligibility|score)\.ts$/,
   /^git\/(push[^/]*|publish-ref|ref-guard|credential-reach|sanitize|safe-pattern|commit)\.ts$/,
   /^artifacts\/redact\.ts$/,
   // T11.5 (FR-INN-15): usage and capacity code, the ledger and the envelope that reads usage never see the service.
