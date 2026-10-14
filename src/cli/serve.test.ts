@@ -244,7 +244,15 @@ async function runningRun(c: Client): Promise<{ runId: string; pgid: number }> {
   }
 }
 
-describe("serve over stdio (process level)", () => {
+/**
+ * T4.10: these blocks drive a real `serve` process (or the privileged path) with the test-only fake adapter, whose
+ * compile matrix is "verified on linux only" (Q-35, NFR-PORT-02), so on darwin eligibility ends `ELIGIBILITY_NONE` /
+ * `PROFILE_PLATFORM_UNVERIFIED` by design and the run never starts. The Q-35 rule is deliberately unchanged; they run
+ * on the Linux leg.
+ */
+const describeLinuxVerified = process.platform === "darwin" ? describe.skip : describe;
+
+describeLinuxVerified("serve over stdio (process level)", () => {
   it("writes only MCP framing to stdout, logs JSON lines to stderr and exits cleanly when stdin closes", async () => {
     const child = spawn(process.execPath, serveArgs(), { env: childEnv(), stdio: ["pipe", "pipe", "pipe"] });
     cleanup.push(() => void child.kill("SIGKILL"));
@@ -384,7 +392,7 @@ describe("serve over stdio (process level)", () => {
   }, 60_000);
 });
 
-describe("injected commit tool through serve (T9.4; FR-GIT-02, LLD §12.2, ADR-0026)", () => {
+describeLinuxVerified("injected commit tool through serve (T9.4; FR-GIT-02, LLD §12.2, ADR-0026)", () => {
   const writeProjectConfig = () =>
     writeFileSync(
       configPath,
@@ -613,7 +621,7 @@ describe("serve runs retention GC after reconciliation (T3.12; FR-WS-07, NFR-DAT
   }, 30_000);
 });
 
-describe("privileged end to end (fake adapter, T3.4; FRD WF-7, T3, T19; owner decision 17)", () => {
+describeLinuxVerified("privileged end to end (fake adapter, T3.4; FRD WF-7, T3, T19; owner decision 17)", () => {
   const SCOPE = {
     files: { access: "worktree" },
     shell: { mode: "none" },

@@ -327,7 +327,8 @@ describe("verification stage (T3.10, FR-EXE-08, FRD T11/T14, BR-16)", () => {
     ]);
     expect((await lc.waitForTerminal(runId)).state).toBe("SUCCEEDED");
     const names = JSON.parse(readFileSync(path.join(worktreeOf(runId), "env.json"), "utf8")) as string[];
-    expect(names).toEqual(["HOME", "PATH"]);
+    // macOS adds `__CF_USER_TEXT_ENCODING` to every process it starts (T4.10); it is not the controller's.
+    expect(names.filter((n) => n !== "__CF_USER_TEXT_ENCODING")).toEqual(["HOME", "PATH"]);
   }, 60_000);
 
   it("Git-write denial holds in VERIFYING: a verification commit is flagged and kept off the run branch", async () => {

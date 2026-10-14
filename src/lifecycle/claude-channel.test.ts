@@ -35,6 +35,9 @@ import type { ProjectSnapshot } from "../policy/index.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import { RunLifecycle } from "./index.js";
 
+/** macOS temp paths (`/private/var/folders/...`) are too long for the 100-byte socket bound (T4.10); `/tmp` is not. */
+const SHORT_TMP = process.platform === "darwin" ? "/tmp" : tmpdir();
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(HERE, "..", "cli", "bin.ts");
 const TS_REGISTER = path.join(HERE, "..", "reconcile", "fixtures", "ts-register.mjs");
@@ -230,7 +233,7 @@ const readRecord = (): Record<string, any> => JSON.parse(readFileSync(record, "u
 beforeEach(() => {
   shims = [];
   lifecycle = undefined;
-  root = realpathSync(mkdtempSync(path.join(tmpdir(), "sb-cch-")));
+  root = realpathSync(mkdtempSync(path.join(SHORT_TMP, "sb-cch-")));
   repo = path.join(root, "repo");
   mkdirSync(repo);
   g(repo, "init", "-q", "-b", "main");
@@ -281,7 +284,9 @@ describe("Claude Code channel behind the opt-in (T9.4b, fake claude replay)", ()
     // The server inherits the claude environment (live check, PR #41): only PATH, HOME and the token reach it, and the
     // controller always sets the token (an unset one would stay a literal ${...}).
     expect(rec.envKeys).toContain(TOOL_TOKEN_ENV);
-    for (const k of rec.envKeys as string[]) expect(["HOME", "PATH", TOOL_TOKEN_ENV], k).toContain(k);
+    // macOS adds `__CF_USER_TEXT_ENCODING` to every process it starts (T4.10); it is not the controller's.
+    for (const k of rec.envKeys as string[])
+      expect(["HOME", "PATH", TOOL_TOKEN_ENV, "__CF_USER_TEXT_ENCODING"], k).toContain(k);
     expect(rec.tools).toEqual(["commit"]);
     expect(rec.calls).toHaveLength(1);
     expect(rec.calls[0].isError).toBe(false);

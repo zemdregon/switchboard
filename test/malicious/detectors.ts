@@ -122,6 +122,12 @@ export function ledgerDump(db: Database.Database): string {
  * Environment names a child reported (fake `env_report` scenario output on stdout) that are outside `allowed`.
  * Returns undefined when the output holds no report (so a missing report cannot pass silently).
  */
+/**
+ * Names the operating system, not the controller, puts into every process it starts (T4.10): macOS adds
+ * `__CF_USER_TEXT_ENCODING` to the environment of each new process whatever `env` was passed to `spawn`.
+ */
+export const PLATFORM_INJECTED_ENV_NAMES: readonly string[] = ["__CF_USER_TEXT_ENCODING"];
+
 export function envLeaks(stdout: string, allowed: readonly string[]): string[] | undefined {
   for (const line of stdout.split("\n")) {
     try {
@@ -129,7 +135,9 @@ export function envLeaks(stdout: string, allowed: readonly string[]): string[] |
       if (ev.type !== "message" || typeof ev.text !== "string") continue;
       const report = JSON.parse(ev.text) as { env_names?: unknown };
       if (!Array.isArray(report.env_names)) continue;
-      return (report.env_names as string[]).filter((n) => !allowed.includes(n));
+      return (report.env_names as string[]).filter(
+        (n) => !allowed.includes(n) && !PLATFORM_INJECTED_ENV_NAMES.includes(n),
+      );
     } catch {
       // not a report line
     }
