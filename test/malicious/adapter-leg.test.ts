@@ -30,14 +30,14 @@ for (const f of files)
 describe("adapter malicious leg: discovery", () => {
   it("runs through the one shared replay helper: no per-adapter replay.mjs copy remains", () => {
     const adapters = path.join(DIR, "..", "..", "..", "src", "adapters");
-    for (const p of ["claude", "codex", "cursor", "grok"])
+    for (const p of ["antigravity", "claude", "codex", "cursor", "grok"])
       expect(readdirSync(path.join(adapters, p, "fixtures"))).not.toContain("replay.mjs");
     expect(readdirSync(path.join(adapters, "fixtures"))).toContain("replay.mjs");
   });
 
-  it("finds a case file for Claude Code, Codex, Cursor, Grok Build and OpenCode", () => {
+  it("finds a case file for Antigravity, Claude Code, Codex, Cursor, Grok Build and OpenCode", () => {
     expect(cases.map((c) => c.provider)).toEqual(
-      expect.arrayContaining(["claude", "codex", "cursor", "grok", "opencode"]),
+      expect.arrayContaining(["antigravity", "claude", "codex", "cursor", "grok", "opencode"]),
     );
     expect(new Set(cases.map((c) => c.provider)).size).toBe(cases.length);
   });

