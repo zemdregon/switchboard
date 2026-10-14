@@ -77,6 +77,19 @@ export const EVENT = {
 /** `end.stopReason` of a finished turn ([LIVE] 4a, 4b: `end_turn`; 8c, 8f show a cancelled tool ended the run `cancelled`). */
 export const STOP_REASON_END_TURN = "end_turn";
 
+/**
+ * Token counters of the `end` line's `usage` object ([LIVE] 4a, 4b; CLI version 1.0.50). Only these are recorded,
+ * `provider_reported`; any other key is dropped so an unexpected field never widens the usage record.
+ */
+export const USAGE_KEYS: readonly string[] = [
+  "input_tokens",
+  "cache_read_input_tokens",
+  "cache_creation_input_tokens",
+  "output_tokens",
+  "reasoning_tokens",
+  "total_tokens",
+];
+
 /** Message prefixes of the `error` line ([LIVE] 3c: `Not signed in. ...`; 5b: `Couldn't set model '...'`). */
 export const ERROR_NOT_SIGNED_IN_PREFIX = "Not signed in";
 export const ERROR_MODEL_PREFIX = "Couldn't set model";

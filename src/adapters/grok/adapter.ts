@@ -74,6 +74,7 @@ import {
   SANDBOX_WORKSPACE,
   SINGLE_FLAG,
   STOP_REASON_END_TURN,
+  USAGE_KEYS,
   VERSION_ARGS,
 } from "./protocol.js";
 
@@ -386,7 +387,7 @@ export class GrokAdapter implements ProviderAdapter {
         const usage = obj(e.usage);
         if (usage) {
           const metrics: Record<string, number | string | null> = {};
-          for (const [k, v] of Object.entries(usage)) if (typeof v === "number") metrics[k] = v;
+          for (const k of USAGE_KEYS) if (typeof usage[k] === "number") metrics[k] = usage[k] as number;
           if (typeof e.num_turns === "number") metrics.num_turns = e.num_turns;
           out.push({ kind: "usage", source: "provider_reported", metrics });
         }
@@ -414,7 +415,7 @@ export class GrokAdapter implements ProviderAdapter {
 
   #unknown(state: ParseState, rawType: string): NormalizedEvent[] {
     state.unknownEvents += 1;
-    return [{ kind: "unknown", rawType }];
+    return [{ kind: "unknown", rawType: clip(rawType, 64) }];
   }
 
   /**
