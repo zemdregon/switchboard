@@ -284,7 +284,9 @@ describe("Claude Code channel behind the opt-in (T9.4b, fake claude replay)", ()
     // The server inherits the claude environment (live check, PR #41): only PATH, HOME and the token reach it, and the
     // controller always sets the token (an unset one would stay a literal ${...}).
     expect(rec.envKeys).toContain(TOOL_TOKEN_ENV);
-    for (const k of rec.envKeys as string[]) expect(["HOME", "PATH", TOOL_TOKEN_ENV], k).toContain(k);
+    // macOS adds `__CF_USER_TEXT_ENCODING` to every process it starts (T4.10); it is not the controller's.
+    for (const k of rec.envKeys as string[])
+      expect(["HOME", "PATH", TOOL_TOKEN_ENV, "__CF_USER_TEXT_ENCODING"], k).toContain(k);
     expect(rec.tools).toEqual(["commit"]);
     expect(rec.calls).toHaveLength(1);
     expect(rec.calls[0].isError).toBe(false);
