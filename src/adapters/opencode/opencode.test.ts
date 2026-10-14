@@ -2,16 +2,27 @@
  * T4.52 (TDD §4.6): the OpenCode module, probe and compile matrix. SYNTHETIC: the executable path is a placeholder and
  * no `opencode` binary is run; probe output is the shape the 2026-10-14 live check recorded (`opencode v2.0.23`).
  */
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterAll, describe, expect, it } from "vitest";
+import { ArtifactStore } from "../../artifacts/index.js";
+import { GIT_FINALIZE_COMMIT_EVENT, GitPublisher, publishRefFor } from "../../git/index.js";
+import { createIdGenerator } from "../../ids/index.js";
+import { createLedger, openLedger } from "../../ledger/index.js";
+import { RunLifecycle } from "../../lifecycle/index.js";
+import { createSwitchboardServer } from "../../mcp/server.js";
 import { resolveTrustProfile } from "../../policy/profiles.js";
+import { WorkspaceManager } from "../../workspace/index.js";
 import { auditInvocation, bypassClassFlags } from "../audit.js";
 import { type ConformanceCase, missingRequiredKinds, runConformanceCase, runConformanceSuite } from "../conformance.js";
 import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
 import { providerEntry } from "../providers.js";
 import { AdapterRegistry } from "../registry.js";
+import { createProbeRunner } from "../run.js";
 import type {
   CompileRequest,
   ExitInfo,
@@ -23,7 +34,8 @@ import type {
   ResolvedProfile,
   TrustProfile,
 } from "../types.js";
-import { OpenCodeAdapter } from "./adapter.js";
+import { isIneligible } from "../types.js";
+import { OPENCODE_GIT_CAPABILITIES, OPENCODE_GIT_WRITE_CONTROL, OpenCodeAdapter } from "./adapter.js";
 import {
   DEFAULT_SESSION_ID,
   opencodeConformanceCases,
@@ -31,6 +43,7 @@ import {
   RESUMED_SESSION_ID,
   replayAdapter,
 } from "./fixtures/cases.js";
+import { GIT_WRITE_CONTROL_DETAIL, NON_PRIVILEGED_UNSUPPORTED_DETAIL } from "./protocol.js";
 
 const dirs: string[] = [];
 const makeCwd = () => {
@@ -581,5 +594,281 @@ describe("opencode conformance suite (synthetic recorded fixtures, FR-ADP-11, T4
     });
     expect(report.ok).toBe(false);
     expect(report.result?.ok).toBe(false);
+  });
+});
+
+describe("opencode Git declaration (T4.57, FR-GIT-01, FR-GIT-02, FR-GIT-09)", () => {
+  it("declares that OpenCode documents no Git write control, leaving FR-GIT-03 and FR-GIT-06", () => {
+    const c = adapter().gitWriteControl;
+    expect(c.kind).toBe("none-documented");
+    expect(c.remainingControls).toEqual(["FR-GIT-03", "FR-GIT-06"]);
+    expect(c.detail).toBe(GIT_WRITE_CONTROL_DETAIL);
+    expect(c.detail).toMatch(/opencode v2\.0\.23/);
+    expect(c.detail).toMatch(/ADR-0039/);
+    expect(c.detail).toMatch(/FR-GIT-03/);
+    expect(c.detail).toMatch(/FR-GIT-06/);
+    expect(adapter().gitWriteControl).toBe(OPENCODE_GIT_WRITE_CONTROL);
+  });
+
+  it("declares finalize-only commit channel (FR-GIT-09, owner decision 36)", () => {
+    const caps = adapter().gitCapabilities;
+    expect(caps.commitChannel).toBe("finalize-only");
+    expect(caps.detail).toMatch(/FR-GIT-09/);
+    expect(caps.detail).toMatch(/OPENCODE_CONFIG_CONTENT/);
+    expect(adapter().gitCapabilities).toBe(OPENCODE_GIT_CAPABILITIES);
+  });
+
+  it("list_capabilities reports OpenCode's Git-write declaration through MCP", async () => {
+    const root = realpathSync(makeCwd());
+    const dataDir = join(root, "data");
+    mkdirSync(dataDir);
+    const db = openLedger(dataDir);
+    const ids = createIdGenerator();
+    const ledger = createLedger(db, { ids });
+    const artifacts = new ArtifactStore(join(dataDir, "artifacts"));
+    const registry = new AdapterRegistry().register(adapter());
+    const real = createProbeRunner();
+    const probeRunner: ProbeRunner = async (argv, opts) =>
+      argv[0] === process.execPath
+        ? real(argv, opts)
+        : { exitCode: null, stdout: "", stderr: "", timedOut: false, spawnError: "refused in tests" };
+    const lifecycle = new RunLifecycle({
+      ledger,
+      workspace: new WorkspaceManager({ db, artifacts, dataDir, allowedRoots: [root], ids }),
+      artifacts,
+      adapters: registry,
+      allowedRoots: [root],
+      globalConcurrency: 1,
+      resolveProfile: (name) => resolveTrustProfile(name),
+      probeRunner,
+      eligibility: { platform: "linux", gate: (id, v, dir) => registry.gate(id, v, dir) },
+    });
+    const mcp = createSwitchboardServer({
+      lifecycle,
+      ledger,
+      artifacts,
+      registry,
+      config: {
+        allowedRoots: [root],
+        projects: [],
+        mcpClients: new Map([["c1", { id: "c1", maxTrustProfile: "edit-untrusted" as const }]]),
+      },
+      clientId: "c1",
+    });
+    const client = new Client({ name: "test-client", version: "0.0.0" });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    try {
+      await mcp.server.connect(serverSide);
+      await client.connect(clientSide);
+      const res = await client.callTool({ name: "list_capabilities", arguments: {} });
+      const body = JSON.parse((res.content as { text: string }[])[0]?.text ?? "{}");
+      const opencode = body.providers.find((p: { provider: string }) => p.provider === "opencode");
+      expect(opencode).toBeDefined();
+      expect(opencode.git_write_control).toEqual({
+        kind: "none-documented",
+        detail: GIT_WRITE_CONTROL_DETAIL,
+        remaining_controls: ["FR-GIT-03", "FR-GIT-06"],
+      });
+    } finally {
+      await client.close();
+      await mcp.close();
+      await lifecycle.shutdown();
+      db.close();
+    }
+  });
+
+  it("every compiled invocation carries no git command or credentials in argv/env and passes prompt after --", () => {
+    const profile = { ...privilegedProfile(BYPASS_SCOPE), bypassApproved: true };
+    const initial = adapter().compile(request({ bypassApproved: true }), profile);
+    const resumed = adapter().resumeArgs(
+      { provider: "opencode", nativeSessionId: "s-123" },
+      request({ bypassApproved: true }),
+      profile,
+    );
+    for (const [name, inv] of [
+      ["initial", initial],
+      ["resumed", resumed],
+    ] as const) {
+      if (isIneligible(inv)) throw new Error(`unexpected ineligible: ${inv.detail}`);
+      expect(inv.argv.slice(-2)).toEqual(["--", "fix the failing test"]);
+      expect(auditInvocation(inv, { profile, bypassApproved: true })).toEqual([]);
+      for (const a of inv.argv.slice(1)) {
+        expect(/\bgit\b|\bgh\b/.test(a), `${name} argv has git: ${a}`).toBe(false);
+      }
+      for (const a of inv.policyFlags) {
+        expect(/\bgit\b|\bgh\b/.test(a), `${name} policyFlags has git: ${a}`).toBe(false);
+      }
+      expect(inv.envAllowlist).toEqual(["PATH", "HOME"]);
+      for (const k of Object.keys(inv.env)) {
+        expect(/GIT|GITHUB|GH|OPENCODE_AUTH|OPENCODE_CONFIG/.test(k), `${name} env: ${k}`).toBe(false);
+      }
+    }
+  });
+
+  it.each([
+    "git commit",
+    "git commit -m x",
+    "git push",
+    "git push origin main",
+    "git branch -f main",
+    "git update-ref refs/heads/x HEAD",
+    "git tag v1",
+    "gh pr create",
+    "git reset --hard",
+    "git merge x",
+    "git rebase main",
+    "git cherry-pick abc",
+    "git stash",
+    "git -C . commit",
+    "git --git-dir=/repo/.git commit",
+    "/usr/bin/git push",
+    "env git commit",
+    "xargs git push",
+  ])("shell allowlist entry %j is Ineligible (PROFILE_UNSUPPORTED, FR-GIT-01)", (entry) => {
+    const editUntrusted = profileOf("edit-untrusted");
+    const r1 = adapter().compile(request(), { ...editUntrusted, shellAllowlist: [entry] });
+    expect(r1).toMatchObject({ ineligible: true, reason: "PROFILE_UNSUPPORTED" });
+    if ("ineligible" in r1 && r1.ineligible) {
+      expect(r1.detail).toContain("FR-GIT-01");
+      expect(r1.detail).toContain(entry);
+    }
+
+    const priv = privilegedProfile(BYPASS_SCOPE);
+    const r2 = adapter().compile(request({ bypassApproved: true }), {
+      ...priv,
+      bypassApproved: true,
+      shellAllowlist: [entry],
+    });
+    expect(r2).toMatchObject({ ineligible: true, reason: "PROFILE_UNSUPPORTED" });
+    if ("ineligible" in r2 && r2.ineligible) {
+      expect(r2.detail).toContain("FR-GIT-01");
+      expect(r2.detail).toContain(entry);
+    }
+  });
+
+  it("read-only commands in shell allowlist do not trigger FR-GIT-01 rejection", () => {
+    const editUntrusted = profileOf("edit-untrusted");
+    const r = adapter().compile(request(), {
+      ...editUntrusted,
+      shellAllowlist: ["git status", "git diff", "npm test"],
+    });
+    expect(r).toMatchObject({ ineligible: true, reason: "PROFILE_UNSUPPORTED" });
+    if ("ineligible" in r && r.ineligible) {
+      expect(r.detail).not.toContain("FR-GIT-01");
+      expect(r.detail).toContain(NON_PRIVILEGED_UNSUPPORTED_DETAIL);
+    }
+  });
+
+  it("a replayed write run in a finalize-only project gets the controller commit at FINALIZING", async () => {
+    const root = realpathSync(makeCwd());
+    const repo = join(root, "repo");
+    const bare = join(root, "remote.git");
+    mkdirSync(repo);
+    const g = (cwd: string, ...args: string[]) =>
+      execFileSync("git", ["-c", "commit.gpgsign=false", ...args], {
+        cwd,
+        env: {
+          PATH: process.env.PATH ?? "",
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_AUTHOR_NAME: "OpenCode Dev",
+          GIT_AUTHOR_EMAIL: "opencode@example.test",
+          GIT_COMMITTER_NAME: "OpenCode Dev",
+          GIT_COMMITTER_EMAIL: "opencode@example.test",
+        },
+        encoding: "utf8",
+      }).trim();
+
+    g(repo, "init", "-q", "-b", "main");
+    writeFileSync(join(repo, "README.md"), "initial\n");
+    g(repo, "add", "-A");
+    g(repo, "commit", "-q", "-m", "init");
+    g(root, "init", "-q", "--bare", "-b", "main", bare);
+    g(repo, "remote", "add", "origin", bare);
+    g(repo, "push", "-q", "origin", "main");
+
+    const dataDir = join(root, "data");
+    mkdirSync(dataDir);
+    const db = openLedger(dataDir);
+    const ids = createIdGenerator();
+    const ledger = createLedger(db, { ids });
+    const artifacts = new ArtifactStore(join(dataDir, "artifacts"));
+    const workspace = new WorkspaceManager({ db, artifacts, dataDir, allowedRoots: [root], ids });
+    const replay = replayAdapter("success_edit");
+    const finalizePublisher = new GitPublisher({
+      db,
+      scratchDir: join(dataDir, "git-scratch"),
+      allowedStates: ["FINALIZING"],
+    });
+    const real = createProbeRunner();
+    const probeRunner: ProbeRunner = async (argv, opts) => {
+      if (argv.includes("auth") && argv.includes("list")) {
+        return {
+          stdout: JSON.stringify([{ id: "opencode", name: "Synthetic", connections: [{ type: "oauth" }] }]),
+          stderr: "",
+          exitCode: 0,
+          timedOut: false,
+        };
+      }
+      return real(argv, opts);
+    };
+    const lifecycle = new RunLifecycle({
+      ledger,
+      workspace,
+      artifacts,
+      adapters: new AdapterRegistry().register(replay),
+      allowedRoots: [root],
+      globalConcurrency: 1,
+      resolveProfile: (name) => resolveTrustProfile(name),
+      finalizePublisher,
+      probeRunner,
+    });
+    lifecycle.start();
+
+    try {
+      const { runId, metaSessionId } = await lifecycle.submit({
+        clientId: "c",
+        objective: "write a file with opencode",
+        workspace: repo,
+        trustProfile: "privileged",
+        provider: "opencode",
+        project: {
+          id: "test-project",
+          name: "Test Project",
+          environment_kind: "host",
+          context_id: "primary",
+          base_ref: "main",
+          effective_max_profile: "privileged",
+          writable: true,
+          identity: { name: "OpenCode Dev", email: "opencode@example.test" },
+          push: { policy: "branch" },
+          finalize_commit: true,
+        },
+        privileged: {
+          scope: BYPASS_SCOPE,
+          approvedByClientPolicy: true,
+        },
+      });
+
+      const done = await lifecycle.waitForTerminal(runId);
+      expect(done.state, done.failure_detail ?? "").toBe("SUCCEEDED");
+
+      // Verify the controller made exactly one commit at FINALIZING
+      const events = ledger.listRunEvents(runId).map((e) => ({ type: e.type, p: JSON.parse(e.payload_json) }));
+      const finTransition = events.find((e) => e.type === "state_transition" && e.p.to === "FINALIZING");
+      expect(finTransition).toBeDefined();
+
+      const finCommit = events.find((e) => e.type === GIT_FINALIZE_COMMIT_EVENT);
+      expect(finCommit).toBeDefined();
+      expect(finCommit?.p).toMatchObject({ outcome: "committed" });
+
+      const pubRef = publishRefFor(metaSessionId);
+      const sha = g(repo, "rev-parse", "--verify", "--quiet", pubRef);
+      expect(sha).toMatch(/^[0-9a-f]{40}$/u);
+      expect(g(repo, "show", "--name-only", "--format=", sha)).toContain("hello.txt");
+    } finally {
+      await lifecycle.shutdown();
+      db.close();
+    }
   });
 });
