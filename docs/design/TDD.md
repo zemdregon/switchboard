@@ -1515,6 +1515,50 @@ text is not rewritten; each item names the claim above it that the check contrad
 - **`agent stdio`** as a fallback: it has no permission or sandbox flags.
 - **Resume**: `-r <id>` is not tied to the working directory; `-s` names a new session only (the [SESS] reading).
 
+#### 4.3.4 Grok Build Git declaration implementation evidence (M4, T4.27)
+
+Spike and live-check context: [§4.3.1](#431-grok-build-native-controls-per-profile-and-platform-t420) (documented
+`--allow`/`--deny` and per-run MCP), [§4.3.3](#433-note-2026-10-14-contradictions-found-by-the-t421-live-checks-delegated-cells-above-not-edited)
+(prefix-match Git deny, no headless MCP-definition flag). Task boundary and Done-when: [ROADMAP
+§6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.27`). Adapter contract: [LLD §2](LLD.md#2-adapter-contract)
+(`gitWriteControl`, `gitCapabilities`, `list_capabilities`). Requirements: FR-GIT-01, FR-GIT-02, FR-GIT-09;
+[ADR-0026](../adr/0026-per-run-tool-channel-socket-and-token.md), [ADR-0039](../adr/0039-switchboard-side-tool-call-guard.md)
+(Q-62). Mirrors the Cursor and OpenCode Git tasks ([T4.47](../ROADMAP.md#68-m4-adapter-expansion-tasks),
+[T4.57](../ROADMAP.md#68-m4-adapter-expansion-tasks)): declare `none-documented` when no per-run control is shown to
+hold, refuse Git-write shell allowlists at compile time, and use `finalize-only` until a per-run injected channel is
+sourced and approved.
+
+**Design evidence (on `origin/main`).** Delegated agent work, not owner-approved; no `grok` binary was run in CI.
+
+- **Static declaration (FR-GIT-01, FR-GIT-02).** `GROK_GIT_WRITE_CONTROL` (`kind` `none-documented`, not
+  `provider-deny-rules`: the 2026-10-14 live check showed `--deny 'Bash(git commit*)'` is a prefix match, so
+  `git -C . commit` and `/usr/bin/git commit` still created commits; Switchboard does not emit a Git `--deny` rule,
+  [ADR-0039](../adr/0039-switchboard-side-tool-call-guard.md), Q-62), `remainingControls` `["FR-GIT-03", "FR-GIT-06"]`,
+  detail `GIT_WRITE_CONTROL_DETAIL` in `src/adapters/grok/protocol.ts`. `GROK_GIT_CAPABILITIES` (`commitChannel`
+  `finalize-only`, owner decision 36, FR-GIT-09): no per-run MCP definition flag in headless mode; ACP `session/new`
+  `mcpServers` is documented but is not the adapter transport ([§4.3.1](#431-grok-build-native-controls-per-profile-and-platform-t420)).
+  Both are exposed on `GrokAdapter` in `src/adapters/grok/adapter.ts` and reported through `list_capabilities` like
+  the other M4 adapters.
+
+**Implementation evidence (T4.27 Done-when; lands in draft [#218](https://github.com/zemdregon/switchboard/pull/218),
+not on `main` at documentation time).** Fixtures only; same obligations as Cursor `cursor Git declaration (T4.47)` and
+OpenCode `opencode Git declaration (T4.57)`:
+
+- **Compile guard (FR-GIT-01).** Check 0 in `#build`: a shell allowlist entry that `gitWriteRisks` judges able to write
+  Git is `Ineligible` `PROFILE_UNSUPPORTED` citing FR-GIT-01 on every profile, including an approved bypass scope
+  (owner decision 46 does not waive this refusal).
+- **Argv.** FR-GIT-01 argv test: the objective stays in the single `--single=` argv word; no `git`/`gh` in argv, policy
+  flags or child environment; initial compile and `resumeArgs` replay.
+- **Finalize-only (FR-GIT-09).** A replayed successful edit run in a project with `finalize_commit` on the primary
+  context receives exactly one controller commit at FINALIZING (T9.7, BR-30), with the same sanitiser path as other
+  finalize-only adapters.
+- **Tests:** `src/adapters/grok/grok.test.ts` (`"grok Git declaration (T4.27, FR-GIT-01, FR-GIT-02, FR-GIT-09)"`):
+  declaration and `commitChannel` pinned; `list_capabilities` `git_write_control`; argv and allowlist cases above;
+  finalize-only lifecycle leg.
+
+**Out of scope for T4.27 (other tasks).** Operator live Git-write and bypass cells (T4.28), README final status after
+live validate (T4.29), and parsing `tool_call` lines for the Switchboard tool-call guard while T4.23 stays `Partial`.
+
 ### 4.4 Antigravity (`agy`, M4)
 
 Spike result, 2026-10-13 (T4.30; Delegated agent work, not owner-approved; documentation only). Nothing below was run:
