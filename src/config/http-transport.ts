@@ -13,6 +13,10 @@
  * - `bind` is an IP literal (a host name could resolve anywhere). Only `127.0.0.0/8` and `::1` count as loopback; any
  *   other address needs `allow_non_loopback: true`.
  * - `port` is required when enabled; 0 (an ephemeral port) is accepted for tests.
+ * - `allowed_origins` (T13.2, LLD §3.3) lists serialised origins (`scheme://host[:port]`, exactly as a browser sends
+ *   them: lower case, no default port, no path or trailing slash; at most 32). Default empty: any request that carries an
+ *   `Origin` header is refused with 403. A request with no `Origin` is not a browser cross-origin request and passes
+ *   this check; authentication still applies to it.
  */
 import net from "node:net";
 
@@ -22,6 +26,7 @@ export interface HttpTransportConfig {
   bind?: string;
   port?: number;
   allow_non_loopback?: boolean;
+  allowed_origins?: string[];
 }
 
 export const httpTransportSchema = {
@@ -33,6 +38,12 @@ export const httpTransportSchema = {
     bind: { type: "string", minLength: 1, maxLength: 64 },
     port: { type: "integer", minimum: 0, maximum: 65535 },
     allow_non_loopback: { type: "boolean" },
+    allowed_origins: {
+      type: "array",
+      maxItems: 32,
+      uniqueItems: true,
+      items: { type: "string", minLength: 1, maxLength: 2048 },
+    },
   },
 } as const;
 
@@ -52,6 +63,8 @@ export interface HttpTransportSettings {
   issuer: string;
   /** Path of the MCP endpoint on the listener: the pathname of `resource`. */
   mcpPath: string;
+  /** Origins allowed to send an `Origin` header (T13.2); empty refuses every request that has one. */
+  allowedOrigins: readonly string[];
 }
 
 const loopback = new net.BlockList();
@@ -97,6 +110,19 @@ export function checkHttpTransport(cfg: HttpTransportConfig | undefined): string
         errs.push(`${at}.public_url: the path must name the MCP endpoint (e.g. /mcp), not / or a reserved OAuth path`);
     }
   }
+  for (const [i, o] of (cfg.allowed_origins ?? []).entries()) {
+    let origin: string | undefined;
+    try {
+      origin = new URL(o).origin;
+    } catch {
+      // reported below
+    }
+    if (origin === undefined || origin === "null" || origin !== o) {
+      errs.push(
+        `${at}.allowed_origins[${i}]: must be a serialised origin such as https://app.example (no path or slash)`,
+      );
+    }
+  }
   if (cfg.bind !== undefined && net.isIP(cfg.bind) === 0) errs.push(`${at}.bind: must be an IP address literal`);
   const bind = cfg.bind ?? DEFAULT_HTTP_BIND;
   if (net.isIP(bind) !== 0 && !isLoopbackAddress(bind) && cfg.allow_non_loopback !== true) {
@@ -119,5 +145,6 @@ export function resolveHttpTransport(cfg: HttpTransportConfig | undefined): Http
     resource: url.href,
     issuer: url.origin,
     mcpPath: url.pathname,
+    allowedOrigins: [...(cfg.allowed_origins ?? [])],
   };
 }

@@ -7,6 +7,10 @@
  * authorization, token and registration endpoints are advertised as designed (ADR-0041 items 3 and 4) and answer 404
  * until their tasks land. The handler never reads the `Authorization` header, a body or a cookie, and logs nothing.
  *
+ * Every request first passes the `Origin` check (T13.2, FR-MCP-12, LLD §3.3): a request whose `Origin` header is not in
+ * `transport.http.allowed_origins` gets 403 before any routing, which blocks DNS rebinding and cross-site calls from a
+ * browser. No CORS headers are sent yet, so a browser page cannot read any response even from an allowed origin.
+ *
  * Delegated (T13.1): a plain `node:http` listener rather than the SDK's express `mcpAuthRouter`. The SDK's issuer check
  * accepts plain HTTP for localhost and can be relaxed by an environment variable, and its metadata advertises
  * `client_secret_post`; Switchboard needs neither. The SDK's `StreamableHTTPServerTransport.handleRequest(req, res)`
@@ -75,7 +79,13 @@ export function httpTransportHandler(s: HttpTransportSettings): (req: IncomingMe
     [new URL(prmUrl).pathname, protectedResourceMetadata(s)],
     [AUTHORIZATION_SERVER_WELL_KNOWN, authorizationServerMetadata(s)],
   ]);
+  const allowedOrigins = new Set(s.allowedOrigins);
   return (req, res) => {
+    const origin = req.headers.origin;
+    if (origin !== undefined && !allowedOrigins.has(origin)) {
+      send(res, 403, { error: "forbidden_origin" });
+      return;
+    }
     let pathname: string;
     try {
       pathname = new URL(req.url ?? "/", "http://listener.invalid").pathname;

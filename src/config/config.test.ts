@@ -100,6 +100,7 @@ describe("loadConfig", () => {
         resource: "https://sb.example.test/mcp",
         issuer: "https://sb.example.test",
         mcpPath: "/mcp",
+        allowedOrigins: [],
       });
     });
 
@@ -127,6 +128,23 @@ describe("loadConfig", () => {
       expect(() => http({ ...on, bind: "localhost" })).toThrow(/must be an IP address literal/);
       expect(http({ ...on, bind: "0.0.0.0", allow_non_loopback: true }).httpTransport?.bind).toBe("0.0.0.0");
       expect(http({ ...on, bind: "::1" }).httpTransport?.bind).toBe("::1");
+    });
+
+    it("accepts serialised origins only (T13.2)", () => {
+      const ok = ["https://app.example.test", "http://127.0.0.1:5173"];
+      expect(http({ ...on, allowed_origins: ok }).httpTransport?.allowedOrigins).toEqual(ok);
+      for (const bad of [
+        "https://app.example.test/",
+        "https://app.example.test/x",
+        "https://App.example.test",
+        "null",
+        "*",
+      ]) {
+        expect(() => http({ ...on, allowed_origins: [bad] })).toThrow(
+          /allowed_origins\[0\]: must be a serialised origin/,
+        );
+      }
+      expect(() => http({ ...on, allowed_origins: ok.concat(ok[0] as string) })).toThrow(/allowed_origins/);
     });
 
     it("requires public_url and port when enabled, and refuses unknown keys", () => {
