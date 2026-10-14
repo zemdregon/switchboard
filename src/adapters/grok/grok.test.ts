@@ -2,6 +2,7 @@
  * T4.22 (TDD §4.3): the Grok Build module, probe and compile matrix. SYNTHETIC: the executable path is a placeholder and
  * no `grok` binary is run; probe output is the shape the 2026-10-14 live check recorded (`grok 1.0.50 (...) [stable]`).
  */
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { resolveTrustProfile } from "../../policy/profiles.js";
 import { auditInvocation, bypassClassFlags } from "../audit.js";
@@ -116,7 +117,7 @@ describe("grok compile matrix (T4.22)", () => {
   });
 });
 
-describe("grok probe, auth, parser and resume placeholders (fail closed until T4.23, T4.24)", () => {
+describe("grok probe, parser and resume placeholders (fail closed until T4.23)", () => {
   const runner =
     (table: Record<string, { stdout: string; exitCode: number }>): ProbeRunner =>
     async (argv) => {
@@ -160,7 +161,7 @@ describe("grok probe, auth, parser and resume placeholders (fail closed until T4
     expect(missing.steps).toEqual([{ step: "binary", ok: false, detail: "grok not found on PATH" }]);
   });
 
-  it("auth is UNKNOWN, resume is Ineligible, no event is recognised and a clean exit never succeeds", () => {
+  it("resume is Ineligible, no event is recognised and a clean exit never succeeds", () => {
     const a = adapter();
     expect(
       a.resumeArgs({ provider: "codex", nativeSessionId: "s" }, request(), profileOf("edit-untrusted")),
@@ -185,9 +186,75 @@ describe("grok probe, auth, parser and resume placeholders (fail closed until T4
     });
     expect(r).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
   });
+});
 
-  it("authPreflight is UNKNOWN (fail closed)", async () => {
-    expect(await adapter().authPreflight(runner({}))).toMatchObject({ state: "UNKNOWN" });
+describe("grok auth preflight (T4.24, Q-10; SYNTHETIC outputs in the shapes of the 2026-10-14 live check)", () => {
+  const out =
+    (stdout: string, exitCode: number | null = 0, extra: Partial<ProbeOutput> = {}): ProbeRunner =>
+    async () => ({ stdout, stderr: "", exitCode, timedOut: false, ...extra });
+  const MODELS = "\nDefault model: m-default\nAvailable models:\n* m-default\n- m-other\n";
+
+  it("runs only `models` with a short timeout", async () => {
+    const seen: Array<{ argv: readonly string[]; timeoutMs?: number }> = [];
+    const r = await adapter().authPreflight(async (argv, opts) => {
+      seen.push({ argv, ...(opts?.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}) });
+      return { stdout: `You are logged in with grok.com.${MODELS}`, stderr: "", exitCode: 0, timedOut: false };
+    });
+    expect(r).toEqual({ state: "OK" });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.argv).toEqual([EXE, "models"]);
+    expect(seen[0]?.timeoutMs).toBeLessThanOrEqual(10_000);
+  });
+
+  it("a logged-out first line at exit 0 is AUTH_REQUIRED naming the native login", async () => {
+    expect(await adapter().authPreflight(out(`You are not authenticated.${MODELS}`))).toEqual({
+      state: "AUTH_REQUIRED",
+      loginCommand: "grok login",
+    });
+  });
+
+  it("any other output, exit code, timeout or spawn failure is UNKNOWN and never leaks past the first line", async () => {
+    const cases: Array<[string, ProbeRunner]> = [
+      ["unrecognised first line", out(`Welcome back.${MODELS}`)],
+      ["logged-in text at a non-zero exit", out("You are logged in with grok.com.\n", 1)],
+      ["logged-out text at a non-zero exit", out("You are not authenticated.\n", 2)],
+      ["empty output", out("")],
+      ["a null exit code", out("You are logged in with grok.com.\n", null)],
+      ["timeout", out("", null, { timedOut: true })],
+      ["spawn error", out("", null, { spawnError: "ENOENT" })],
+    ];
+    for (const [name, runner] of cases) {
+      const r = await adapter().authPreflight(runner);
+      expect(r, name).toMatchObject({ state: "UNKNOWN" });
+    }
+    const r = await adapter().authPreflight(out(`Welcome back\u0007 ${"x".repeat(200)}\nsecret: hunter2\n`));
+    expect(r.state).toBe("UNKNOWN");
+    if (r.state === "UNKNOWN") {
+      expect(r.reason.length).toBeLessThan(200);
+      expect(r.reason).not.toContain("hunter2");
+      expect(r.reason).not.toContain("\u0007");
+    }
+  });
+
+  it("by inspection, the adapter reads no file of the Grok home and no credential name (FR-AUTH-02)", () => {
+    const code = (f: string) =>
+      readFileSync(new URL(f, import.meta.url), "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/^\s*\/\/.*$/gm, "");
+    for (const f of ["./adapter.ts", "./protocol.ts"]) {
+      const src = code(f);
+      expect(src, f).not.toMatch(/auth\.json|\.grok|XAI_API_KEY|GROK_HOME|readFile|readdir|createReadStream/);
+    }
+  });
+
+  it("is UNKNOWN when the binary is not on PATH, without running anything", async () => {
+    let ran = false;
+    const r = await new GrokAdapter({ pathEnv: "/nonexistent" }).authPreflight(async () => {
+      ran = true;
+      return { stdout: "", stderr: "", exitCode: 0, timedOut: false };
+    });
+    expect(r).toMatchObject({ state: "UNKNOWN" });
+    expect(ran).toBe(false);
   });
 });
 
