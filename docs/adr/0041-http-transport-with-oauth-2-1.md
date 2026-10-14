@@ -67,7 +67,9 @@ on launch binding only ([ADR-0040](0040-mcp-caller-authentication-no-oauth-on-st
    subject, or a session ID from a different client, is refused. Session IDs are unguessable and are never accepted as
    authentication on their own.
    *As built (T13.4, Q-77):* the MCP endpoint is stateless (no session ID is issued or accepted); each request
-   authenticates with its own token.
+   authenticates with its own token. *As built (T13.5, Q-78, Delegated 2026-10-14):* a request carrying a session ID is
+   refused, and each meta-session opened over HTTP, with its runs, is bound to the token's OAuth client; another subject,
+   another client or stdio sees it as an unknown id.
 8. **Secrets and logs.** Tokens, authorization codes, pairing codes and passphrases are never written to the ledger,
    logs, telemetry or MCP responses (NFR-SEC-01, FR-TEL-03). Only hashes and audit metadata are stored.
 9. **Off by default.** The HTTP transport is compiled in only when the operator enables it in configuration. With it

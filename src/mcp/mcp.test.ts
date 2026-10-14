@@ -45,6 +45,7 @@ import {
   type HttpTransportListener,
   MAX_MCP_REQUESTS_PER_CLIENT,
   OAuthTokenStore,
+  SubjectBindingStore,
   type SwitchboardMcpServer,
   startHttpTransport,
   TOOL_NAMES,
@@ -263,8 +264,18 @@ async function setup(s: Setup): Promise<void> {
       ]),
     ),
   };
+  // T13.5: one binding store for every server, as `serve` does.
+  const subjectBindings = new SubjectBindingStore(db);
   for (const c of clients) {
-    const mcp = createSwitchboardServer({ lifecycle, ledger, artifacts, registry, config, clientId: c.id });
+    const mcp = createSwitchboardServer({
+      lifecycle,
+      ledger,
+      artifacts,
+      registry,
+      config,
+      clientId: c.id,
+      subjectBindings,
+    });
     const client = new Client({ name: `test-${c.id}`, version: "0.0.0" });
     const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
     await mcp.server.connect(serverSide);
@@ -287,7 +298,17 @@ async function setup(s: Setup): Promise<void> {
     httpListener = await startHttpTransport(settings, {
       tokens,
       clients: approvedClients,
-      mcpServerFor: (id) => createSwitchboardServer({ lifecycle, ledger, artifacts, registry, config, clientId: id }),
+      mcpServerFor: (id, subject) =>
+        createSwitchboardServer({
+          lifecycle,
+          ledger,
+          artifacts,
+          registry,
+          config,
+          clientId: id,
+          subject,
+          subjectBindings,
+        }),
     });
     const url = new URL(`http://127.0.0.1:${httpListener?.address.port}/mcp`);
     for (const t of s.http.tokens) {
@@ -1088,6 +1109,157 @@ describe("MCP over the HTTP transport (T13.4; FR-MCP-14, Q-77)", () => {
     // Served (and the refused 503) requests: the handler removed both headers before the MCP transport could read them.
     expect(seen.length).toBeGreaterThan(0);
     expect(seen.slice(0, MAX_MCP_REQUESTS_PER_CLIENT * 2).every((h) => h === undefined)).toBe(true);
+  });
+});
+
+describe("HTTP session binding by subject and client (T13.5; FR-MCP-15, Q-78)", () => {
+  const A = `sbc_${"a".repeat(22)}`;
+  const B = `sbc_${"b".repeat(22)}`;
+  const TOKEN_SHAPE = /sb(?:at|rt|ac)_[A-Za-z0-9_-]{43}/;
+  // Both OAuth clients map to the same configured MCP client, so only the subject tells them apart.
+  const shared = async (): Promise<{ stdio: number; a: number; b: number }> => {
+    await setup({
+      adapters: [fakeWriter()],
+      clients: [{ id: "shared", max: "edit-untrusted" }],
+      http: { map: { [A]: "shared", [B]: "shared" }, tokens: [{ oauthClientId: A }, { oauthClientId: B }] },
+      start: false,
+    });
+    return { stdio: 0, a: 1, b: 2 };
+  };
+  /** The error a caller gets for an id that never existed, with the id swapped in: the refusal must look the same. */
+  const unknownError = async (tool: string, args: Json, idKey: string, index: number): Promise<Json> => {
+    const ghost = { ...args, [idKey]: `${String(args[idKey]).slice(0, -4)}0000` };
+    const r = await call(tool, ghost, index);
+    return JSON.parse(JSON.stringify(r.body.error).replaceAll(ghost[idKey], String(args[idKey]))) as Json;
+  };
+
+  it("another subject, and stdio for the same MCP client, cannot read, continue or cancel an HTTP run", async () => {
+    const { stdio, a, b } = await shared();
+    const mine = await call("delegate_task", delegateArgs({ idempotency_key: "key-0001" }), a);
+    expect(mine.isError).toBe(false);
+    expect(ledger.getRunRecord(mine.body.run_id)?.client_id).toBe("shared");
+    expect(db.prepare("SELECT oauth_client_id FROM http_subject").all()).toEqual([{ oauth_client_id: A }]);
+    const attempts = [
+      ["get_run", { run_id: mine.body.run_id }, "run_id"],
+      ["cancel_run", { run_id: mine.body.run_id }, "run_id"],
+      ["get_artifacts", { run_id: mine.body.run_id }, "run_id"],
+      ["continue_task", { meta_session_id: mine.body.meta_session_id, instruction: "x" }, "meta_session_id"],
+    ] as const;
+    for (const other of [b, stdio]) {
+      for (const [tool, args, idKey] of attempts) {
+        const r = await call(tool, args, other);
+        expect(r.body.error?.code, `${tool} from ${other}`).toBe("INVALID_REQUEST");
+        // No existence oracle: exactly the answer for an id that does not exist.
+        expect(r.body.error, `${tool} from ${other}`).toEqual(await unknownError(tool, args, idKey, other));
+      }
+      // The same idempotency key and request from another subject neither replays nor reveals the run.
+      const replay = await call("delegate_task", delegateArgs({ idempotency_key: "key-0001" }), other);
+      expect(replay.body.error).toMatchObject({
+        code: "INVALID_REQUEST",
+        message: "idempotency key reused with different parameters",
+      });
+    }
+    expect(ledger.getRunRecord(mine.body.run_id)?.state).toBe("QUEUED");
+    // The subject that opened it still can, and its own replay is a replay.
+    expect((await call("get_run", { run_id: mine.body.run_id }, a)).body.status).toBe("QUEUED");
+    const again = await call("delegate_task", delegateArgs({ idempotency_key: "key-0001" }), a);
+    expect(again.body).toMatchObject({ run_id: mine.body.run_id, replayed: true });
+  });
+
+  it("a stdio run is unknown over HTTP", async () => {
+    const { stdio, a } = await shared();
+    const local = await call("delegate_task", delegateArgs(), stdio);
+    expect(local.isError).toBe(false);
+    expect((await call("get_run", { run_id: local.body.run_id }, a)).body.error?.code).toBe("INVALID_REQUEST");
+    expect((await call("cancel_run", { run_id: local.body.run_id }, a)).body.error?.code).toBe("INVALID_REQUEST");
+    expect(db.prepare("SELECT COUNT(*) AS n FROM http_subject").get()).toEqual({ n: 0 });
+    expect(ledger.getRunRecord(local.body.run_id)?.state).toBe("QUEUED");
+  });
+
+  it("a binding never changes hands, and an HTTP server without the bindings refuses to start", async () => {
+    await shared();
+    const store = new SubjectBindingStore(db);
+    store.bind("ms_1", A);
+    store.bind("ms_1", A); // idempotent for the same subject
+    expect(() => store.bind("ms_1", B)).toThrow(/another subject/);
+    expect(store.subjectOf("ms_1")).toBe(A);
+    expect(store.subjectOf("ms_2")).toBeUndefined();
+    const registry = new AdapterRegistry();
+    expect(() =>
+      createSwitchboardServer({
+        lifecycle,
+        ledger,
+        artifacts,
+        registry,
+        config: {
+          allowedRoots: [root],
+          mcpClients: new Map([["shared", { id: "shared", maxTrustProfile: "inspect-untrusted" }]]),
+        },
+        clientId: "shared",
+        subject: A,
+      }),
+    ).toThrow(/subject bindings/);
+  });
+
+  it("refuses an Mcp-Session-Id; responses and the ledger hold no token, even one planted in the objective", async () => {
+    await shared();
+    const listener = httpListener;
+    if (!listener) throw new Error("no listener");
+    const tokens = new OAuthTokenStore(db);
+    const issued = tokens.issue({
+      kind: "access",
+      clientId: A,
+      resource: HTTP_RESOURCE,
+      scopes: ["mcp"],
+      ttlMs: 60_000,
+    });
+    const planted = `sbat_${"Q".repeat(43)}`;
+    const url = `http://127.0.0.1:${listener.address.port}/mcp`;
+    const headers = {
+      authorization: `Bearer ${issued.token}`,
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+    };
+    const seen: string[] = [];
+    const post = async (body: unknown, extra: Record<string, string> = {}, token = issued.token) => {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { ...headers, authorization: `Bearer ${token}`, ...extra },
+        body: JSON.stringify(body),
+      });
+      seen.push(JSON.stringify([...r.headers]), await r.clone().text());
+      return r;
+    };
+    const tool = (name: string, args: Json) => ({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name, arguments: args },
+    });
+
+    const withSession = await post({ jsonrpc: "2.0", id: 1, method: "tools/list" }, { "mcp-session-id": "anything" });
+    expect(withSession.status).toBe(400);
+    expect(await withSession.json()).toMatchObject({ error: "invalid_request" });
+
+    const d = await post(tool("delegate_task", delegateArgs({ objective: `use ${planted} and ${issued.token}` })));
+    expect(d.status).toBe(200);
+    const runId = (JSON.parse(JSON.parse(await d.text()).result.content[0].text) as Json).run_id as string;
+    await post(tool("get_run", { run_id: runId, include_events: { after_seq: 0, limit: 50 } }));
+    await post(tool("get_run", { run_id: issued.token }));
+    await post(tool("get_artifacts", { run_id: runId }));
+    await post({ jsonrpc: "2.0", id: 1, method: "tools/list" }, {}, `${issued.token}x`); // a refused token
+
+    const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map(
+      (t) => t.name,
+    );
+    const rows = tables.map((t) => JSON.stringify(db.prepare(`SELECT * FROM "${t}"`).all()));
+    for (const surface of [...seen, ...rows]) {
+      expect(surface).not.toContain(issued.token);
+      expect(surface).not.toContain(planted);
+      expect(TOKEN_SHAPE.test(surface), surface.slice(0, 200)).toBe(false);
+    }
+    // Positive control: the scan would have found the token.
+    expect(TOKEN_SHAPE.test(`x ${issued.token} y`)).toBe(true);
   });
 });
 
