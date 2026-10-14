@@ -324,7 +324,12 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
   for (const [where, id] of httpTargets) {
     const entry = mcpById.get(id);
     if (entry === undefined) httpErrors.push(`$.transport.http.${where}: unknown mcp_clients id ${JSON.stringify(id)}`);
-    else if (entry.privileged_approval === "not_required") {
+    else if (where === "default_mcp_client" && entry.max_trust_profile === "privileged") {
+      httpErrors.push(
+        `$.transport.http.default_mcp_client: ${JSON.stringify(id)} has a privileged ceiling; map each OAuth client ` +
+          "to a privileged entry explicitly in transport.http.clients instead",
+      );
+    } else if (entry.privileged_approval === "not_required") {
       httpErrors.push(
         `$.transport.http.${where}: ${JSON.stringify(id)} has privileged_approval not_required; an HTTP client's ` +
           "privileged runs must wait for the operator (FR-MCP-14)",

@@ -128,9 +128,21 @@ describe("loadConfig", () => {
       const root = {
         ...base(),
         mcp_clients: [{ id: "root", max_trust_profile: "privileged", privileged_approval: "not_required" }],
-        transport: { http: { ...on, default_mcp_client: "root" } },
+        transport: { http: { ...on, clients: [{ oauth_client_id: A, mcp_client: "root" }] } },
       };
       expect(() => loadConfig({ configPath: write(root) })).toThrow(/privileged_approval not_required/);
+      // A privileged ceiling is never the default for every approved OAuth client; it needs an explicit mapping.
+      const privDefault = {
+        ...base(),
+        mcp_clients: [{ id: "root", max_trust_profile: "privileged" }],
+        transport: { http: { ...on, default_mcp_client: "root" } },
+      };
+      expect(() => loadConfig({ configPath: write(privDefault) })).toThrow(/privileged ceiling/);
+      const privMapped = {
+        ...privDefault,
+        transport: { http: { ...on, clients: [{ oauth_client_id: A, mcp_client: "root" }] } },
+      };
+      expect(loadConfig({ configPath: write(privMapped) }).httpTransport?.clientMap.get(A)).toBe("root");
     });
 
     it.each([
