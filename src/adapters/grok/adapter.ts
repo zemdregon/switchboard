@@ -27,6 +27,7 @@ import {
 } from "../../exec/index.js";
 import { resolveOnPath } from "../codex/adapter.js";
 import { classifyCommon } from "../failure.js";
+import { gitWriteRisks } from "../git-write.js";
 import { parseVersion } from "../manifest/index.js";
 import type {
   AcpMessage,
@@ -252,6 +253,7 @@ export class GrokAdapter implements ProviderAdapter {
 
   /**
    * Pure. Order of checks (the first unmet one is the reason):
+   * 0. shell allowlist entries that could write Git: PROFILE_UNSUPPORTED (FR-GIT-01);
    * 1. a bypass approval on a profile other than `privileged`: PROFILE_UNSUPPORTED (FR-POL-03);
    * 2. any profile other than `privileged`: PROFILE_UNSUPPORTED ({@link NON_PRIVILEGED_UNSUPPORTED_DETAIL});
    * 3. `privileged`: no scope binding, or `bypass: false`: PROFILE_UNSUPPORTED; `bypass: true` without an approval:
@@ -267,6 +269,13 @@ export class GrokAdapter implements ProviderAdapter {
    * with network `on` `workspace`; `--disable-web-search` with network `off`.
    */
   #build(request: CompileRequest, profile: ResolvedProfile, tail: string[]): Invocation | Ineligible {
+    const gitWrites = gitWriteRisks(profile.shellAllowlist ?? []);
+    if (gitWrites.length > 0) {
+      return ineligible(
+        "PROFILE_UNSUPPORTED",
+        `shell allowlist entries could write Git (FR-GIT-01): ${gitWrites.map((g) => g.command).join("; ")}`,
+      );
+    }
     if (profile.name !== "privileged") {
       if (profile.bypassApproved || request.bypassApproved === true) {
         return ineligible("PROFILE_UNSUPPORTED", GROK_BYPASS_OUTSIDE_PRIVILEGED);
