@@ -111,11 +111,27 @@ function usageEvent(e: Json): NormalizedEvent[] {
   return Object.keys(metrics).length > 0 ? [{ kind: "usage", source: "provider_reported", metrics }] : [];
 }
 
-function resultEvents(e: Json): NormalizedEvent[] {
+/**
+ * `system` / `permission_denied` (C-10; Claude Code 2.1.294, 2026-10-14, [live-checks-2026-10-14-claude-codex.md]): emitted
+ * when a tool call is denied, with top-level `tool_name`, `tool_use_id`, `decision_reason_type`, `message`. The final
+ * `result` event repeats the denial in `permission_denials`; the `tool_use_id` is remembered so it is reported once.
+ */
+function systemDenialEvents(e: Json, state: ParseState): NormalizedEvent[] {
+  const id = str(e.tool_use_id);
+  if (id !== undefined) {
+    state.claudeDeniedToolUseIds ??= new Set();
+    state.claudeDeniedToolUseIds.add(id);
+  }
+  return [...bindSession(e, state), { kind: "permission_denied", tool: str(e.tool_name) ?? "unknown" }];
+}
+
+function resultEvents(e: Json, state: ParseState): NormalizedEvent[] {
   const out: NormalizedEvent[] = [];
   out.push(...usageEvent(e));
   for (const raw of arr(e.permission_denials)) {
     const d = obj(raw);
+    const id = str(d?.tool_use_id);
+    if (id !== undefined && state.claudeDeniedToolUseIds?.has(id)) continue; // already reported from system/permission_denied
     out.push({ kind: "permission_denied", tool: str(d?.tool_name) ?? "unknown" });
   }
   out.push(...errorEvent(e));
@@ -153,6 +169,7 @@ export function parseClaudeLine(line: string, state: ParseState): NormalizedEven
   switch (type) {
     case "system":
       if (subtype === "init") return bindSession(e, state);
+      if (subtype === "permission_denied") return systemDenialEvents(e, state);
       break;
     case "assistant":
       return [...bindSession(e, state), ...assistantEvents(e)];
@@ -160,7 +177,7 @@ export function parseClaudeLine(line: string, state: ParseState): NormalizedEven
       // Tool results: observable outcome is already captured by tool_call + result/permission_denials.
       return bindSession(e, state);
     case "result":
-      return [...bindSession(e, state), ...resultEvents(e)];
+      return [...bindSession(e, state), ...resultEvents(e, state)];
     case "rate_limit_event":
       return [...bindSession(e, state), ...rateLimitEvents(e)];
     default:

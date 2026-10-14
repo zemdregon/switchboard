@@ -186,6 +186,8 @@ export interface ParseState {
   lines: number;
   unknownEvents: number;
   nativeSessionId?: string;
+  /** Claude Code only (C-10): `tool_use_id`s already reported from a `system/permission_denied` event, so the `result` event's `permission_denials` entry for the same call is not reported twice. */
+  claudeDeniedToolUseIds?: Set<string>;
   /** ACP only (T4.8): scratch state of the shared `session/update` mapper (`src/exec/acp/events.ts`). */
   acp?: AcpParseState;
 }
