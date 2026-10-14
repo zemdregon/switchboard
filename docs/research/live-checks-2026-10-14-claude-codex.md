@@ -1,0 +1,61 @@
+# Live checks on the operator's machine, 2026-10-14: Claude Code and Codex (smoke and validate)
+
+Status: research input (historical record once written). Run by an agent (Kimi Code) on the operator's own machine
+("Ampere", an Oracle Cloud Ubuntu ARM64 server), with the real provider CLIs, from a fresh clone of `main` at
+`f671e9c`. Everything here was **observed** on this host on 2026-10-14; nothing is stated from memory. The roadmap owns
+status (see [ROADMAP §6](../ROADMAP.md#6-milestones) and [§7](../ROADMAP.md#7-risks-blockers-and-open-questions)).
+Verdicts are Delegated findings, not owner decisions. Companion of
+[live-checks-2026-10-13.md](live-checks-2026-10-13.md), which a different host (x86_64) produced.
+
+## Environment
+
+| Item | Value |
+| --- | --- |
+| OS | Ubuntu 26.04.1 LTS, Linux 7.0.0-1013-oracle aarch64 |
+| Node.js / Git | v24.21.0 / 2.53.0 |
+| Claude Code | 2.1.294 |
+| Codex CLI | codex-cli 0.162.0 |
+| Grok Build | 1.0.50 (installed; `grok models` prints "You are not authenticated.") |
+| Antigravity (`agy`) | 1.3.0 (`agy models` lists models, so a login works) |
+| Cursor CLI (`cursor-agent`) | 2026.10.01-e373342 (`cursor-agent status`: logged in) |
+| OpenCode | v2.0.23 (`opencode auth list` shows one stored credential) |
+| Kimi Code | 2.1.1 (`kimi provider list` shows `managed:kimi-code`, source `oauth`) |
+| Muse Code | not installed |
+
+Login state was checked only with each CLI's own documented status or listing command; no credential file was read, and
+no account identifier is recorded here.
+
+## Results
+
+| # | Check | Verdict | Evidence |
+| --- | --- | --- | --- |
+| 1 | Baseline `npm ci`, `npm run build`, `npm test` | WORKS | 1691 tests in 71 files passed, 3 skipped, exit 0 (371 s) |
+| 2 | Claude live smoke (`SWITCHBOARD_LIVE_TESTS=1 SWITCHBOARD_LIVE_PROVIDER=claude npm run test:live`), first attempt | FAILS at the gate | installed 2.1.294 outside the then-recorded range `>=2.1.296 <2.2.0`; C-1 to C-5 HELD, C-V FAILED, C-6 to C-12, G-1, C-G2 NOT_CHECKED (provider never ran) |
+| 3 | `switchboard adapters validate claude` (T4.11) | WORKS | probe (5 steps), auth OK, 8 static conformance checks and the one structured-output smoke call passed; the manifest gained `validated_cli_version` `2.1.294`, `validated_on` `2026-10-14`, range `>=2.1.294 <2.2.0` and the dated evidence line; no other line changed |
+| 4 | Claude live smoke after check 3 | WORKS | **14 HELD, 0 FAILED, 2 NOT_CHECKED** (C-12, C-G2); run SUCCEEDED; stream: `system/init` x1, `assistant` x2, `rate_limit_event` x1, `user` x1, `result/success` x1; 0 unrecognised, 0 non-JSON; tool `Write`; `SMOKE.md` on the result branch; G-1 HELD (no foreign ref or commit) |
+| 5 | **C-10 investigation** (earlier report: "1 unknown event", claude 2.1.296, another host) | NOT REPRODUCED | 0 unknown events in this run's 6-line stream (2.1.294). The earlier run's kept artifacts are not on this host, and the smoke script prints only the COUNT of unknown events plus the native-type and normalized-kind maps — so the specific unknown type cannot be recovered from what is available here. See "C-10 finding" below |
+| 6 | Codex live smoke (`SWITCHBOARD_LIVE_PROVIDER=codex`) | FAILS at the gate (expected per README) | installed `codex-cli 0.162.0` outside the recorded range `>=0.162.1 <0.163.0`; X-1 to X-3 HELD, X-V FAILED, X-4 to X-9, G-1, X-G1 NOT_CHECKED (provider never ran) |
+| 7 | `switchboard adapters validate codex` (T4.11) | FAILS at the smoke step | probe, auth (`codex login status` exit 0) and 8 static checks ok; smoke: `TOOL_FAILURE (unknown: Reconnecting... 2/5 (workspace routing discovery unauthorized (401)))`; **nothing written** (exit 1, manifest byte-identical — the fail-closed behaviour of T4.4 held). One permitted retry: identical failure |
+| 8 | Codex login, diagnosed | LOGIN EXPIRED | a direct `codex exec --sandbox read-only "..."` in a scratch Git repo prints `Failed to refresh token: Your access token could not be refreshed because your refresh token has expired. Please log out and sign in again.` while `codex login status` still prints `Logged in using ChatGPT` with exit 0. **Q-10 finding: the exit code of `codex login status` does not detect an expired refresh token.** The operator must re-login natively; no agent may do it |
+
+## C-10 finding (the earlier "1 unknown event in the real stream")
+
+- On this host (claude 2.1.294) the smoke stream held only `system/init`, `assistant`, `user`, `rate_limit_event` and
+  `result/success`, all recognised by `src/adapters/claude/parse.ts` (normalised to `session_bound`, `tool_call`,
+  `message`, `usage`, `result`). C-10 **HELD**.
+- The earlier failure (13 held, 1 failed, 2 not checked, claude 2.1.296, a cloud sandbox) cannot be dissected here: its
+  artifacts are not on this host, and the script records only how many events were unknown, not which native type they
+  were. The script's "native event types" versus "normalized kinds" listing would identify the type in any future
+  failure (a native type present in the first list whose lines all land in `unknown`), so no script change is strictly
+  needed — but printing each unknown event's raw type explicitly would make it unmissable (Proposed, not done here).
+- No parser change is proposed: with no reproduction and no captured unknown line, adding an event kind would be
+  guessing (AGENTS.md, no invented facts). If C-10 fails again, the type list in the smoke output names the missing
+  kind and a scrubbed fixture can be captured then.
+
+## Limits
+
+- Only one successful Claude run was observed (the smoke's single task); C-12 (error category strings) and C-G2 (deny
+  rules against a deliberate Git write) remain NOT_CHECKED, as on 2026-10-13.
+- Codex never ran through Switchboard on this host (version gate, then the expired login); X-5 to X-9 stay NOT_CHECKED.
+- `codex exec` on this host also prints `Reading additional input from stdin...` and refuses outside a trusted Git
+  directory; the smoke's throwaway repository satisfies that.
