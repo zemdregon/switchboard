@@ -302,13 +302,17 @@ flowchart TD
     E --> F{Eligibility for provider B<br/>profile, auth, version, capacity}
     F -- none --> G[ELIGIBILITY_NONE or eligibility reason]
     F -- ok --> H[Build handoff bundle from ledger and Git only]
-    H --> I[New worktree or lease on same branch from head checkpoint]
+    H --> I[New worktree from head checkpoint]
     I --> J[Start new native session on B with bundle<br/>instruct: inspect repository first]
     J --> K[Store B native session binding on meta-session]
 ```
 
 The controller never reads provider transcript files (FR-SES-04,
-[ADR-0001](../adr/0001-controller-owned-canonical-state.md)).
+[ADR-0001](../adr/0001-controller-owned-canonical-state.md)). The bundle is built from ledger rows, controller events,
+controller artifacts and Git plumbing at a recorded `as_of`, rendered by one provider-neutral renderer that puts
+provider-reported and repository text in labelled untrusted blocks, and stored as the `handoff_view` artifact
+([ADR-0038](../adr/0038-handoff-bundle-and-continuity.md), [LLD §15](LLD.md#15-continuity-and-the-handoff-bundle-m5)).
+A same-provider resume (WF-2) instead reuses the worktree path that created the native session.
 
 ### 6.3 Telemetry flow
 
