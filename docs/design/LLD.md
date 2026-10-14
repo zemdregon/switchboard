@@ -3594,13 +3594,13 @@ ledger migration 15 adds `rag_record` as above, without the foreign key on `run_
 knowing about this table), with `CHECK`s on the kinds and counts and the append-only guards; and `rag_request` for the
 operator's `index rebuild` and `index clear`. T12.4 writes `index_built` (one row per finished build, including
 `skipped`) and `clear` (the counts removed) rows. Index builds are not tied to a run, so `rag_index_built` and
-`rag_index_cleared` are not written as run events; the `rag_record` row holds the same fields. The span and
-`rag_retrieval` arrive with T12.5.
+`rag_index_cleared` are not written as run events; the `rag_record` row holds the same fields. T12.5 writes the
+`retrieval` row and the `rag_retrieval` event ([§14.8](#148-freshness-and-fallback)); the span is not built.
 
 ### 14.11 Admission context pack (T12.5)
 
-*Design intent (2026-10-14, Delegated, ROADMAP T12.5); not implemented on `main` until the admission wiring and tests
-land in the same change as this section.* Implements FR-RAG-05, FR-RAG-07 and FR-RAG-08
+*Design intent (2026-10-14, Delegated, ROADMAP T12.5); built by T12.5 with the differences listed at the end of this
+section.* Implements FR-RAG-05, FR-RAG-07 and FR-RAG-08
 ([SRS](../requirements/SRS.md)) at `delegate_task` admission ([FRD WF-14](../requirements/FRD.md#wf-14-retrieval-for-a-run),
 [HLD §6.6](HLD.md#66-retrieval-for-a-run-wf-14-m12-proposed)).
 Selection steps are in [§14.6](#146-selection-and-token-budget); freshness rules in [§14.8](#148-freshness-and-fallback);
@@ -3692,8 +3692,15 @@ Retrieved text has **no policy authority** (BR-46, [ADR-0031](../adr/0031-retrie
   automatic push), `request_json`, the policy snapshot, eligibility and the chosen route match a run with retrieval off
   (FR-RAG-07).
 
-*Evidence (planned, T12.5):* `src/retrieval/import-boundary.test.ts` (or the existing embedding test extended per TDD),
-plus admission integration tests with the fake embedder; no new evidence row until those tests exist on `main`.
+*As built (T12.5, 2026-10-14, Delegated):* the build is described in the as-built note of
+[§14.8](#148-freshness-and-fallback); evidence is `src/retrieval/admission.test.ts`, `src/lifecycle/context-pack.test.ts`,
+`src/retrieval/import-boundary.test.ts` and `src/cli/rag-index.test.ts` (ROADMAP T12.5). Where it differs from the
+design above: retrieval runs at dispatch, after the workspace is prepared and before `compile`, not inside the admission
+transaction, and the lifecycle reaches it only through a structurally typed port; `snippet_ids_json` holds
+`{id, text_sha256}` only (path, revision and file hash are in the pack header, not the ledger); a timeout is
+`unavailable` / `TIMEOUT`, and a pack that freshness or the budget empties is `empty` (`NO_HITS`, `NOTHING_SELECTED`)
+rather than `skipped` / `empty_after_freshness`; the import-boundary test also forbids lifecycle dispatch and adapter
+`compile` modules; the hostile-pack behavioural test and the `rag.retrieve` span are not built.
 
 ## 15. Continuity and the handoff bundle (M5)
 

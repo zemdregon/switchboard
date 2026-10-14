@@ -58,7 +58,7 @@ AWAITING_APPROVAL and WAITING_CAPACITY as side states.
 | WF-11 Commit through the injected tool | The agent calls the shim, which forwards over the per-run socket to COMP-GIT; COMP-GIT checks run state with COMP-LED, builds the tree through COMP-WS, writes the commit on the publish ref, and records provenance and a `git_commit` event in one COMP-LED transaction. | Violations found at FINALIZING are reported as `git_policy_violation` events (BR-27). When the commit-message task is enabled and the agent gave no message, COMP-GIT asks COMP-INN for a draft of the committed paths' diff and sanitises it like any message; empty or unavailable returns a tool error (FR-INN-10). |
 | WF-12 Publish | COMP-GIT asks COMP-POL for the push decision (policy, ref, credential reach), pushes from the controller process, and records a `git_push` event and provenance update through COMP-LED. | Agent-originated and operator-originated pushes take the same path. |
 | WF-13 Inner task execution | A caller (COMP-GIT, COMP-RTE, handoff builder, COMP-EXE or COMP-OPS) asks COMP-INN for a task with controller-owned inputs; COMP-INN applies locality gating, redaction and budget, calls the backend port, validates, and writes an `inner_call` record through COMP-LED; the caller receives validated text or "unavailable" and applies its fallback. | Defined in the [FRD](../requirements/FRD.md) as WF-13; sequence in [HLD §6.5](HLD.md#65-inner-task-call-including-commit-message-drafting-wf-13-wf-11). No branch reaches COMP-POL, retry or push (FR-INN-06). |
-| WF-14 Retrieval for a run | In the `serve` daemon COMP-RAG scans the project's contexts (paths from COMP-PRJ), applies exclusions and redaction, embeds through the backend port under the inner-agent locality gates, and stores chunks in the project index; at admission COMP-MCP asks COMP-RAG for a context pack within the token budget; COMP-RAG returns snippets or nothing; COMP-LED records the run with the original text unchanged plus snippet ids and hashes, and index and retrieval records without content. | Defined in the [FRD](../requirements/FRD.md) as WF-14; sequence in [HLD §6.6](HLD.md#66-retrieval-for-a-run-wf-14-m12-proposed). Admission pack mechanism: [LLD §14.11](LLD.md#1411-admission-context-pack-t125), [TDD §3.13.8](TDD.md#3138-t125-admission-time-context-pack-2026-10-14) (design on `main`; runtime wiring pending [PR #182](https://github.com/zemdregon/switchboard/pull/182)). Nothing reaches COMP-POL, eligibility, retry or push (FR-RAG-07, BR-46). Failure at any step gives no pack (FR-RAG-08). The pack is placed after stable prompt content (FR-RTE-09). |
+| WF-14 Retrieval for a run | In the `serve` daemon COMP-RAG scans the project's contexts (paths from COMP-PRJ), applies exclusions and redaction, embeds through the backend port under the inner-agent locality gates, and stores chunks in the project index; at admission COMP-MCP asks COMP-RAG for a context pack within the token budget; COMP-RAG returns snippets or nothing; COMP-LED records the run with the original text unchanged plus snippet ids and hashes, and index and retrieval records without content. | Defined in the [FRD](../requirements/FRD.md) as WF-14; sequence in [HLD §6.6](HLD.md#66-retrieval-for-a-run-wf-14-m12-proposed). Admission pack mechanism: [LLD §14.11](LLD.md#1411-admission-context-pack-t125), [TDD §3.13.8](TDD.md#3138-t125-admission-time-context-pack-2026-10-14) (built by T12.5 on fakes; retrieval runs at dispatch through a lifecycle port, LLD §14.11 as-built note). Nothing reaches COMP-POL, eligibility, retry or push (FR-RAG-07, BR-46). Failure at any step gives no pack (FR-RAG-08). The pack is placed after stable prompt content (FR-RTE-09). |
 
 Routing note for WF-1, WF-2, WF-3 and WF-5 (M7): COMP-RTE reads the project's `project_affinity` row from COMP-LED after
 the eligibility filter and before scoring. WF-2 stays on the bound provider as before (FR-SES-03); the affinity only
@@ -207,13 +207,13 @@ in [LLD §14.11](LLD.md#1411-admission-context-pack-t125) (with [§14.6](LLD.md#
 in [TDD §3.13.8](TDD.md#3138-t125-admission-time-context-pack-2026-10-14); authority-boundary scenarios in [TDD
 §3.13.3](TDD.md#3133-testing-affinity-and-retrieval).
 
-**Runtime (not on `main` yet).** T12.4 (`rag_record`, background build) and admission wiring land with open
-[PR #182](https://github.com/zemdregon/switchboard/pull/182). Planned evidence when merged: COMP-MCP / lifecycle admission
-path, `src/retrieval/import-boundary.test.ts` and the hostile-pack admission integration tests in TDD §3.13.8.
+**Runtime (implemented, T12.5).** Tests: `src/retrieval/admission.test.ts`, `src/lifecycle/context-pack.test.ts`,
+`src/retrieval/import-boundary.test.ts`; module `src/retrieval/admission.ts`, reached from the lifecycle only through a
+structurally typed port. Differences from the design (retrieval at dispatch rather than inside the admission
+transaction; no hostile-pack behavioural test and no `rag.retrieve` span) are listed in the LLD §14.11 as-built note.
 
-**Not implemented yet on `main`:** WF-14 end-to-end admission behaviour for T12.5, `search_project_context`
-(FR-RAG-06), operator `index` and `doctor` retrieval sections (FR-RAG-11, FR-RAG-14, T12.4), global read and
-contribute (FR-RAG-09, FR-RAG-10, T12.7).
+**Not implemented yet on `main`:** `search_project_context` (FR-RAG-06, T12.6), global read and contribute (FR-RAG-09,
+FR-RAG-10, T12.7).
 
 ## 5. Requirements to design traceability
 
@@ -224,9 +224,9 @@ the cell says so.
 
 M12 retrieval through T12.3 (FR-RAG-01–04 on fakes) lists primary tests and modules under [TDD
 §3.13.5](TDD.md#3135-t121-config-and-store-2026-10-14)–[§3.13.7](TDD.md#3137-t123-embedding-port-and-locality-gates-2026-10-14).
-T12.5 admission pack design for FR-RAG-05, FR-RAG-07 and FR-RAG-08 is on `main` in [LLD
+T12.5 admission pack design for FR-RAG-05, FR-RAG-07 and FR-RAG-08 is in [LLD
 §14.11](LLD.md#1411-admission-context-pack-t125) and [TDD §3.13.8](TDD.md#3138-t125-admission-time-context-pack-2026-10-14);
-implementation evidence is pending [PR #182](https://github.com/zemdregon/switchboard/pull/182) ([§4.1](#t125--admission-context-pack-design-intent)).
+implementation evidence is in [§4.1](#t125--admission-context-pack-design-intent).
 
 | ID | Component(s) | Design element / mechanism | ADR(s) | Detail |
 | --- | --- | --- | --- | --- |
