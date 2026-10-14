@@ -770,7 +770,7 @@ per-milestone counts quoted below are dated when they were taken).
 | M3 | Isolation | **Partial** (2026-10-13): on main with tests are approvals (T3.4, `approve`/`deny`), privileged admission and compile matrices (T3.3, T3.5 to T3.7, T3.17, T3.18), profiles (T3.2), retention and GC (T3.12), the nested-repository fix (T3.20, `fb4dc1d`), the preflight cache (T3.21) and verification commands (T3.10: run on the host, refused under `inspect-untrusted`, recorded in a `test_report`). Not done: outer sandbox (T3.1), live leg (T3.9), T3.11, T3.13. Tasks in §6.5. Can reach only `Partial` without live provider runs (§6.5.2) | M2 | FR-POL-01 (all), 06, 09, FR-WS-07, FR-EXE-08, FR-OPS-02 (`approve`, `deny`), NFR-SEC-03 (Claude Code, Codex), NFR-DATA-01 | Malicious-fixture suite shows no escape for each profile on Claude Code and Codex; `privileged` runs wait for `approve` and end `CANCELLED` on `deny`; verification commands run and are recorded; retention deletes artifacts, worktrees and branches together | Malicious-fixture suite; integration tests |
 | M4 | Adapter expansion | **Partial** (2026-10-13): T4.1 (one provider registry table, PR #56) and T4.7 (ACP stdio client design, PR #57) are merged, and the six provider spikes T4.20 to T4.70 are documentation-only and merged (PR #55); the rest Planned. Kimi Code part blocked by B-1; Muse Code is Should. Tasks in §6.8 (Proposed breakdown, 2026-10-13, Delegated); what needs the operator or zemdregon is in §6.8.2 | M3, M9 (Proposed) | FR-ADP-05, 07, 08, 09, 10, 11 (others), 12, FR-EXE-03, FR-OPS-02 (`adapters validate`), NFR-SEC-03 (others), NFR-MAINT-01, NFR-PORT-02 | Grok Build, Antigravity, Cursor and OpenCode adapters pass conformance and malicious-fixture suites; the test suite passes on macOS; Kimi Code passes once B-1 clears (M4 may be marked `Partial` until then, with only Kimi outstanding); ACP transport used where it is the adapter's chosen surface; adding an adapter touched only its own module, manifest, fixtures and registry entry; `adapters validate` accepts a new CLI version only after its live checks pass | Conformance and fixture suites per adapter; diff inspection |
 | M5 | Continuity | **Partial** (2026-10-14, Delegated, not owner-approved): T5.0 to T5.11 and T5.13 are done as agent work on fakes, with evidence in each task row of §6.9 (T5.8 for the adapters that exist; T5.11 not run live); `Done` waits for T5.12 (operator live pair, Claude Code and Codex logins), for T5.8 to include each M4 adapter, and for the Q-61 note in §6.9.2. Tasks in §6.9 (Proposed breakdown, 2026-10-14, Delegated); what needs the operator or zemdregon is in §6.9.2 | M4 | FR-SES-02 (populated), 03 (all), 04, 05 (handoff view) | Provider A edits and tests; provider B continues from the handoff bundle and completes the task; no provider transcript file is opened (verified by file-access test) | End-to-end test with two fake adapters plus one opt-in live pair |
-| M6 | Capacity and resilience | Planned | M5 | FR-MCP-02 (`get_capacity`), 10, FR-CAP-01 (use), 02–07, FR-CAP-08 (cache observations and affinity counters; owner decision 40), FR-OPS-05, NFR-PERF-03 (per provider) | Injected rate-limit, overload, quota and crash failures produce the behaviour in FRD WF-5, with successor runs linked to their predecessors; `get_capacity` and `switchboard capacity` never return `explicit_remaining` unless the provider reported it; where a provider reports cache read or creation token counts they are recorded as labelled observations, and per project the runs that kept versus switched provider and model are counted by reason (FR-CAP-08, Proposed) | Fault-injection tests with fake adapters |
+| M6 | Capacity and resilience | Planned. Tasks in [§6.11](#611-m6-capacity-and-resilience-tasks) (Proposed breakdown, 2026-10-14, Delegated); what needs the operator or zemdregon is in §6.11.2 | M5 | FR-MCP-02 (`get_capacity`), 10, FR-CAP-01 (use), 02–07, FR-CAP-08 (cache observations and affinity counters; owner decision 40), FR-OPS-05, NFR-PERF-03 (per provider) | Injected rate-limit, overload, quota and crash failures produce the behaviour in FRD WF-5, with successor runs linked to their predecessors; `get_capacity` and `switchboard capacity` never return `explicit_remaining` unless the provider reported it; where a provider reports cache read or creation token counts they are recorded as labelled observations, and per project the runs that kept versus switched provider and model are counted by reason (FR-CAP-08, Proposed) | Fault-injection tests with fake adapters |
 | M7 | Routing | Planned | M6 | FR-MCP-02 (`explain_route`), FR-RTE-01 (full), 02–04, FR-RTE-06–09 (provider and model affinity; owner decision 40, Proposed) | Given stored features and weights, re-running the scorer reproduces every stored decision; `explain_route` lists the deciding factors; a project keeps its last provider and model across meta-sessions, and in a replay of stored routing decisions affinity changes only with an `affinity_switch_reason` from the closed list (`user_request`, `capacity_exhausted`, `ineligible`, `failed_after_retry`), never for a better score, lower cost or lower load; with several eligible providers and equal capacity no project is spread across providers | Deterministic replay test; property test over replayed decisions; fake-adapter fault injection |
 | M8 | Hardening | Planned | M7 | FR-TEL-02 | OTel traces reach a test collector with no forbidden attributes; a scheduled version canary on the operator's machine flags CLI updates before they reach routing | Collector test; version-bump test |
 | M9 | Projects and controlled commits | **Partial** (2026-10-13, T9.8 closure; Delegated reading of the Done rule, not owner-approved): every acceptance criterion in the next column that applies to `host` environments has a passing test on a fake provider with real Git in temporary repositories (T9.1 to T9.3, T9.5 to T9.7, T9.9 to T9.11 and T9.4 for the fake adapter; per-task evidence in §6.3), but `Done` is not claimed because of the exceptions E1 to E8 in the T9.8 status block of §6.3: no live run through Switchboard's own tool channel (T9.4b, the Claude opt-in is UNSUPPORTED), T9.0 and Codex `Partial`, signing tried only with a throwaway GnuPG key, push from dynamic projects not wired (Q-46), FR-WS-09 not accepted (Q-55), the `container` clauses waiting for M10, no malicious-fixture additions for Claude Code and Codex, and open risks R-18, R-41, R-59 and R-60. Numbered after M8 to keep existing milestone IDs stable; **sequenced after M3 and before M4** (Proposed) so new adapters declare their Git controls once | M3 | FR-PRJ-01–04, 06, 08, 10, FR-GIT-01 (fixtures), 02–10, FR-WS-05 (publication), FR-WS-08–09 (owner decision 42; T9.11) | A scripted MCP client lists projects and delegates to one (`host` environment, one repository context) and the lower of client and project ceilings applies; the agent's `commit` tool call produces a commit on the publish ref with the configured identity and no trailer, footer or identifier even when the message contains them; an agent attempt to commit, move a ref or push (shell or provider built-in) leaves nothing on the publish ref and appears as `git_policy_violation`; with push `none` nothing leaves the host, with `branch` against a local bare remote only the publish ref arrives and never checkpoint commits or run branches; every published commit has a `git_commit` row naming run, provider and model; a client with `manage_projects` can create a `host` project within its limits and use it, a `container` or push-enabled revision stays unusable until `projects approve`, and a client without the flag has no project-management tools; with `sign: true` the published commit verifies against the operator's key and a failed signature creates no commit; adapters that cannot take the channel without a bypass flag run in finalize-only mode only on opt-in | Fake-adapter integration tests with real Git repos and a local bare remote; sanitiser fixtures; malicious-fixture additions for Claude Code and Codex; argv inspection |
@@ -2028,10 +2028,11 @@ fake agent, FR-ADP-05, FR-ADP-10, FR-ADP-11 on fixtures, NFR-PORT-02 on the macO
 5. **macOS:** T4.10 is agent work; T4.12 needs a Mac and is optional for the criterion "the test suite passes on
    macOS".
 
-Later milestones (M6–M8) are intentionally kept at the level of the table in §6; break them into tasks when the
+Later milestones (M7 and M8) are intentionally kept at the level of the table in §6; break them into tasks when the
 preceding milestone completes. M4's breakdown (§6.8) was written early, on 2026-10-13, while M3 and M9 were `Partial`,
 because its spikes and shared groundwork need no live provider. M5 now has a breakdown too (§6.9, 2026-10-14, while M4
-was `Planned`), for the same reason and under §9.1 step 2: most of its tasks run on fake adapters.
+was `Planned`), for the same reason and under §9.1 step 2: most of its tasks run on fake adapters. M6 has one as well
+(§6.11, 2026-10-14), written when M5 reached `Partial` with only an operator task left.
 
 ### 6.9 M5 Continuity: tasks
 
@@ -2174,6 +2175,134 @@ Status (2026-10-14):
   and non-loopback refused: the T13.1 tests above. Unlisted `Origin` gets 403 on every path before routing, including a
   DNS-rebinding `POST` and `Origin: null`; with no `allowed_origins` every request that has an `Origin` is refused:
   `src/mcp/http.test.ts`. Config refusals for a non-serialised origin: `src/config/config.test.ts`.
+
+### 6.11 M6 Capacity and resilience: tasks
+
+*Proposed breakdown (2026-10-14, Delegated agent work, documentation only; not owner-approved), written under §9.1
+step 2 from the M6 row in §6 and the requirements it lists.* M6 depends on M5, which is `Partial` with only the
+operator task T5.12 left, so under §9.1 step 1 agents start M6 tasks that do not need that item (Proposed). It is
+numbered after §6.10 so that the M13 section keeps its anchor. Design: [ADR-0007](adr/0007-capacity-as-confidence-estimate.md)
+(capacity is a confidence-weighted estimate), [ADR-0032](adr/0032-provider-model-affinity.md) (affinity; cache and
+switch counts in M6, the affinity step in M7), [ADR-0006](adr/0006-worktree-checkpoints-no-blind-replay.md) (no blind
+replay), [ADR-0038](adr/0038-handoff-bundle-and-continuity.md) (the bundle a failover reuses),
+[FRD WF-5](requirements/FRD.md#wf-5-failure-handling-and-retry), [FRD §3](requirements/FRD.md#3-business-rules) (BR-3,
+BR-6 to BR-9, BR-41, BR-45), [FRD §4](requirements/FRD.md#4-canonical-run-state-machine) (T4, T7, T16, T18),
+[SDD §1](design/SDD.md#1-shared-design-patterns) (circuit breaker, bounded queue, "estimate, not authority"),
+[LLD §1](design/LLD.md#1-data-model) (`usage_observation`, `provider_health`, `run.parent_run_id`, `next_attempt_at`),
+[LLD §3](design/LLD.md#3-mcp-tool-contracts) (`get_capacity`), [LLD §3.2](design/LLD.md#32-provider-and-model-affinity-m7)
+(FR-CAP-08 accounting), [LLD §4](design/LLD.md#4-failure-taxonomy), [LLD §9](design/LLD.md#9-retryback-off-algorithm)
+and [TDD §5](design/TDD.md#5-implementation-strategy-by-milestone) (M6 row). LLD §3 says of `get_capacity` and LLD §9
+says of breakers, adaptive concurrency and failover "to be detailed in M6"; T6.1 writes that.
+
+**Facts the breakdown relies on (checked against `main` at `5531c78`, 2026-10-14).**
+
+- FR-CAP-01 (record) is **built** (M2, T2.5): `usage_observation` rows with `source` `provider_reported` from each
+  adapter's `usage` events (`src/usage/observations.ts`); `source` also allows `controller_estimated` (never written)
+  and `inner_agent` (T11.5, migration 0006). The MCP envelope's `usage.estimated` and `usage.capacity_confidence` are
+  always `null` (`src/mcp/envelope.ts`). Nothing reads `usage_observation` to estimate anything.
+- `provider_health` exists (migration 0001: `breaker_state` `CLOSED`/`OPEN`/`HALF_OPEN`, `breaker_until`,
+  `consecutive_failures`, `last_failure_code`, `capacity_json`) and **no code reads or writes it**. The only circuit
+  breaker in the code is the in-memory inner-agent one (`src/inner/breaker.ts`, T11.2), which is not a provider breaker.
+- FR-CAP-04 is **partly built** (M1): the bounded queue (`QUEUE_FULL` at admission, Q-5), the global limit and one
+  `limits.per_provider_concurrency` value applied to every provider in `pump()` (`src/lifecycle/lifecycle.ts`; defaults
+  4 and 1 in `src/config/load.ts`, the NFR-PERF-03 proposed targets). No per-provider breaker; the eligibility filter
+  (`src/routing/eligibility.ts`) has no circuit or capacity reason. NFR-PERF-03 "per provider" is therefore met only as
+  one shared value, not a value per provider.
+- FR-CAP-05 and FR-MCP-10 are **not built**: at FINALIZING the lifecycle records `retry_eligible` and `auto_retry:
+  false` in the `workspace_assessment` event (`RETRYABLE` in `src/lifecycle/lifecycle.ts` and
+  `src/reconcile/reconcile.ts`); `run.parent_run_id`, `attempt` and `next_attempt_at` exist and nothing sets them for a
+  retry; `WAITING_CAPACITY` is a valid state (cancel and reconciliation handle it) but no transition enters it; `get_run`
+  has no successor field. The FRD's `retry_of` link has no column of that name; LLD §9 uses `parent_run_id`.
+- FR-CAP-06: `QUOTA_EXHAUSTED` is a failure code (LLD §4) and BR-3 maps "known quota exhaustion" to it, but nothing
+  knows a quota is exhausted, nothing fails over and there is no `capacity.queue_horizon` key (named in
+  [TDD §3.1](design/TDD.md#31-configuration), absent from `src/config/schema.ts`). The M5 handoff bundle and
+  cross-provider `continue_task` (T5.4 to T5.6) exist and are what BR-8 failover reuses.
+- Rate-limit signals: adapters emit a `rate_limit` event with an optional `resetAt` (Claude Code from
+  `rate_limit_event.rate_limit_info`, `src/adapters/claude/parse.ts`; Codex and the fake adapter), stored as a bounded
+  `run_event` payload with `reset_at` (`compactEvent` in `src/lifecycle/lifecycle.ts`). The Claude shape is an
+  Assumption in that parser; no provider in the research reports remaining quota.
+- Cache token counts (Q-53): reported keys seen so far are `cache_read_input_tokens` and `cache_creation_input_tokens`
+  from Grok Build 1.0.50 ([live check 4a](research/live-checks-2026-10-14-grok.md)), `cacheReadTokens` and
+  `cacheWriteTokens` from Cursor CLI ([live check 5a](research/live-checks-2026-10-14-cursor.md)), and `cache.read` and
+  `cache.write` in OpenCode's documented `step_finish` ([TDD §4.6](design/TDD.md#46-opencode-m4)). Codex's
+  `cached_input_tokens` is in a **synthetic** fixture only (`src/adapters/codex/fixtures/success_edit.jsonl`). Claude
+  Code's parser copies every numeric `usage.*` key without naming cache keys. None is normalised.
+- `get_capacity`, `switchboard capacity` and a `capacity` configuration section do not exist. `providers.<id>.weight`
+  exists in the schema (a number in [0, 1]) and nothing reads it (ADR-0007's "relative weight ... as a prior").
+- T11.5 (§6.6) left one clause for M6: `get_capacity` and the estimator must be byte-identical with and without inner
+  calls, and must read `inner_agent` rows deliberately or ignore them, never as `provider_reported`.
+
+**Conventions (Proposed, Delegated).**
+
+- **Fail closed on unknown capacity.** No provider reports remaining quota in any source we hold, so an estimate built
+  from nothing has `capacity_score` and `explicit_remaining` `null` and `confidence` 0, and every surface shows it as
+  unknown, never as headroom. `explicit_remaining` is filled only from a key the adapter declares as provider-reported
+  remaining capacity, and no adapter declares one until a source shows it (FR-CAP-03). "Known quota exhaustion" for
+  BR-3 and FRD T7 needs positive evidence (a `QUOTA_EXHAUSTED` failure with a `reset_at` still in the future, or an
+  open breaker); an unknown estimate does not make a provider ineligible, because that would make every provider
+  ineligible. Where a number is needed and no source gives one (breaker threshold and cool-down, backoff, queue
+  horizon), the default is the conservative value LLD §9 or NFR-PERF-03 already proposes, or the most restrictive
+  sensible one, labelled an **Assumption**, and configurable.
+- **No invented provider numbers.** No task states a provider's limit, price, quota, reset window or tier size. T6.0
+  sources what each CLI reports; anything unsourced reads `Unverified: <operator task>`. FR-CAP-07's rate gate applies
+  only to a provider whose enforceable limit for the auth mode in use is sourced, and stays off otherwise.
+- **Design gate.** T6.1 (documentation only) writes the contracts before code: the estimator's inputs and output, the
+  `get_capacity` and `capacity` output, the breaker and retry state, the successor link and the `capacity` config keys.
+  Any new table, column or event type is specified in LLD §1 first and gets an ADR (AGENTS.md: persistence format and
+  external interface).
+- Every test runs on fake adapters with an injected clock and random source; no task here calls a live provider except
+  the operator task T6.11, which is skipped unless `SWITCHBOARD_LIVE_TESTS=1`. Adapter code (`src/adapters/**`) is not
+  edited for M6 except to declare a field T6.0 sources; normalisation of reported keys lives in the capacity module.
+- M6 writes no affinity row: the `project_affinity` table, the selection step and `affinity_switch_reason` are M7
+  (LLD §3.2). FR-CAP-08's kept-versus-switched counts are computed from runs and `route_decision` rows, with the reason
+  `unrecorded` until M7 writes one.
+
+| Task | Objective | References | Depends on | Done when |
+| --- | --- | --- | --- | --- |
+| T6.0 | Capacity-signal inventory (documentation only): for Claude Code, Codex and each M4 provider, record from its TDD §4 subsection, the research notes and live-check notes what its headless output reports per run: token counts, cache read and creation counts (Q-53) with their key names, cost (and whether it is a client-side estimate), a rate-limit or overload signal and its `reset_at` or retry-after field, any remaining-quota or limit field, and whether the provider publishes an enforceable rate limit for the auth mode Switchboard uses (FR-CAP-07). Each cell is sourced or reads `Unverified: <operator task>`; nothing is filled from memory | FR-CAP-01, 02, 07, 08, Q-53, ADR-0007, [TDD §4](design/TDD.md#4-provider-adapter-strategy), the 2026-10-14 live-check notes in `docs/research/` | — | A dated note under `docs/research/` holds the table with a source or `Unverified` in every cell and links each provider's TDD §4 subsection (TDD §4 itself is not edited while the M4 adapter work holds it); Q-53 is updated with what the table shows; the operator checks it needs are listed in T6.11 and in the note for the M4 operator checklists; `node scripts/check-docs.mjs` passes |
+| T6.1 | Capacity and resilience design (documentation only). **Needs a new ADR** (next free number, extending ADR-0007 without editing it). In a new LLD section, with LLD §1, §3 and §9 touched: (1) the estimator: inputs (`provider_reported` usage rows, `rate_limit` and failure events, run outcomes, breaker state, concurrency slots, the `weight` prior), window, how each FR-CAP-02 field is derived, the meaning of `confidence`, `sources` values, and what is never an input (`inner_agent` rows except the declared shared subscription, BR-41; retrieval and inner output, FR-INN-06); (2) storage: computed on read as a pure function of ledger rows and config, or cached in `provider_health.capacity_json`; (3) `get_capacity` input and output schema (with the optional FR-CAP-08 `affinity` block) and the `switchboard capacity` text and `--json` output, both from one projection, with wording rules for FR-CAP-03; (4) the per-provider breaker: which codes count, thresholds, cool-down, `HALF_OPEN` probe, persistence in `provider_health`, the eligibility reason and its BR-3 code, restart behaviour; (5) retry: successor-run fields (`parent_run_id` as the FRD's `retry_of`), `attempt`, `next_attempt_at`, the `WAITING_CAPACITY` timer, a reported retry-after, the event types, the `get_run` successor field (FR-MCP-10) and reconciliation; (6) BR-8 failover through the M5 bundle and BR-9 queueing, with `capacity.queue_horizon`; (7) per-provider concurrency keys (NFR-PERF-03); (8) the FR-CAP-07 rule (no gate without a T6.0 source); (9) the `capacity` config section, each default an Assumption | FR-CAP-01 to 08, FR-MCP-02, 10, FR-OPS-05, NFR-PERF-03, FRD WF-5, BR-3, BR-6 to BR-9, BR-41, T7, T16, T18, ADR-0006, ADR-0007, ADR-0032, ADR-0038, LLD §1, §3, §4, §9, SDD §1 | — | ADR (Proposed) and LLD text merged; LLD §3 and §9 no longer say "to be detailed in M6"; SDD rows FR-CAP-01 to 08, FR-MCP-10 and FR-OPS-05 and TDD §3.1 agree; each Delegated default is a Q entry in §7.3 answered by the orchestrator; `node scripts/check-docs.mjs` passes |
+| T6.2 | Capacity model and estimator: the `capacity` config section and a pure module (Proposed: `src/capacity/`) that computes the FR-CAP-02 estimate per provider from the T6.1 inputs, keeps reported values and estimates in separate fields with their `sources`, and leaves `explicit_remaining` null unless an adapter-declared provider-reported key is present | FR-CAP-01 (use), 02, 03, FR-INN-15, BR-41, ADR-0007, the T6.1 LLD section | T6.1 | Tests: no observation gives `capacity_score` and `explicit_remaining` null and `confidence` 0; rate-limit, overload and quota events lower the estimate and raise `throttle_risk`; `concurrency_available` follows the slots; `explicit_remaining` is null for every input without the declared key (property test over generated observations); output is byte-identical with and without `inner_agent` rows when no shared subscription is declared (closes the T11.5 clause); the same ledger and clock give the same output; config keys strict (NFR-SEC-06) |
+| T6.3 | `get_capacity` on the MCP server and `switchboard capacity` on the operator CLI, from the one T6.2 projection; `doctor` gains a capacity line per provider | FR-MCP-02, FR-OPS-05, FR-CAP-03, FR-MCP-04, FR-OPS-01, LLD §3, the T6.1 LLD section | T6.2 | MCP and CLI tests on fakes: `get_capacity` validates its input (unknown provider `INVALID_REQUEST`); `get_capacity` and `capacity --json` return the same fields and values for the same ledger; `explicit_remaining` is null unless reported; no surface prints an estimate as "remaining" or "quota left" (wording test over both outputs, FR-CAP-03); the tool is listed in `tools/list` with its schema and the existing tools are unchanged |
+| T6.4 | Per-provider circuit breaker (FR-CAP-04): the T6.1 state machine persisted in `provider_health`, fed by run outcomes; an open breaker removes the provider from eligibility with the T6.1 reason (BR-3 code), a `HALF_OPEN` probe run closes or re-opens it, and the state survives a controller restart | FR-CAP-04, FRD WF-5 (breaker), [FRD §6](requirements/FRD.md#6-adapter-availability-states) `DEGRADED`, BR-3, SDD §1, the T6.1 LLD section | T6.1 | Fault-injection tests with fakes and an injected clock: N counted failures open it; a non-counted code (for example `TEST_FAILURE`) does not; while open, `delegate_task` without `require_provider` routes elsewhere and with it returns the BR-3 code; after the cool-down exactly one probe run is admitted; success closes, failure re-opens; a restart keeps `OPEN` and `breaker_until`; `doctor` and `get_capacity` show it |
+| T6.5 | Automatic retry with successor runs (FR-CAP-05, FR-MCP-10): at T16 a `RATE_LIMIT_TRANSIENT`, `PROVIDER_OVERLOADED` or pre-mutation `PROCESS_CRASH` on a byte-identical workspace (BR-7) creates a successor run in the same meta-session (`parent_run_id`, `attempt + 1`, same `request_hash`) in `WAITING_CAPACITY` with `next_attempt_at` from LLD §9 (capped exponential backoff with full jitter, a reported retry-after respected), which T18 moves to `QUEUED`; `get_run` on the superseded run names its successor; attempts are bounded | FR-CAP-05, FR-MCP-10, FR-WS-04, BR-6, BR-7, FRD T16, T18, ADR-0006, LLD §9, the T6.1 LLD section | T6.1 | Fake-adapter tests with an injected clock and random source: each retryable code on a clean workspace gives one successor with the link and the delay inside the backoff bounds; a mutated workspace, a post-mutation crash and every non-retryable code give none (FR-WS-04 path unchanged); the chain stops at the attempt limit and returns the last code; `get_run` on the first run reports the successor; cancelling a waiting successor works; a restart while it waits keeps `next_attempt_at` and dispatches it afterwards; an open breaker (T6.4) ends the chain when both are present |
+| T6.6 | `QUOTA_EXHAUSTED` ladder (FR-CAP-06, BR-8, BR-9): fail over to another eligible provider when the request permits (no `require_provider`; a handoff from controller-owned evidence through the M5 bundle; a mutated workspace preserved and rolled back first), else wait in `WAITING_CAPACITY` until a known `reset_at` within `capacity.queue_horizon` (FRD T7, T18), else `FAILED` with `QUOTA_EXHAUSTED`. A known future `reset_at` also marks the provider exhausted for routing until then | FR-CAP-06, FR-SES-04, FR-WS-04, FR-MCP-10, BR-3, BR-6, BR-8, BR-9, FRD T7, T18, ADR-0038, the T6.1 LLD section | T6.5, T6.2 | Fake-adapter tests: with two fakes a quota failure fails over to the other with a `handoff_view` listing the failed attempt; with `require_provider`, a reset inside the horizon waits and is re-dispatched after it, a reset beyond the horizon or none returns `QUOTA_EXHAUSTED`; a mutated workspace is checkpointed and rolled back before the successor; no affinity is written (M7); the successor link is set in every branch that creates a run |
+| T6.7 | FR-CAP-08 cache observations and switch counts: map the cache read and creation keys T6.0 sources per provider (in the capacity module, not the adapters) into labelled fields of the capacity view, leave an absent count absent, and count per project the runs that kept the previous provider and model versus switched, by reason (`unrecorded` until M7); expose them in `get_capacity`'s optional `affinity` block and in `doctor` | FR-CAP-08, FR-CAP-01, Q-53, ADR-0032 item 8, LLD §3.2 | T6.0, T6.3 | Tests: a fixture usage row with each sourced key shape appears as a labelled cache figure and a provider with no sourced key shows none (never zero or an estimate); kept and switched counts match a constructed run history per project; the wording says "reported", never "cache hits" |
+| T6.8 | FR-CAP-07 token-bucket rate gate (Could): only for a provider whose enforceable limit for the auth mode in use T6.0 sources; configuration refuses a gate for any other provider | FR-CAP-07, ADR-0007, T6.0 | T6.0, T6.1 and a sourced limit | Blocked until T6.0 finds a source; if none exists the task is `Deferred` with that reason. When built: tests show the gate delays dispatch at the configured rate and is absent for providers without a sourced limit |
+| T6.9 | Per-provider concurrency limits (NFR-PERF-03 "per provider"): a per-provider override beside the global `limits.per_provider_concurrency`, defaulting to it, used by `pump()` and by `concurrency_available` | NFR-PERF-03, FR-CAP-04, the T6.1 LLD section | T6.1 | Tests: two fakes with different limits run that many at once each; the default stays 1 per provider; the global limit still caps the total; config keys strict |
+| T6.10 | M6 acceptance test on fake adapters: injected rate-limit, overload, quota and crash failures produce the behaviour in FRD WF-5 with successor runs linked to their predecessors; `get_capacity` and `switchboard capacity` never return `explicit_remaining` unless a provider reported it; a reported cache count is a labelled observation and per-project kept and switched counts are shown by reason | M6 acceptance criteria (§6), FRD WF-5, FR-CAP-01 to 08, FR-MCP-02, 10, FR-OPS-05 | T6.3 to T6.7, T6.9 | The test passes in CI with no provider installed; evidence recorded here and in the M6 row |
+| T6.11 | **Operator-only.** With native logins, capture what Claude Code and Codex print on a rate limit, an overload and a quota stop, if one occurs in normal use (no deliberate load on the operator's account beyond what normal work produces): event type, `reset_at` or retry-after, exit code, and whether any remaining-quota field appears; the T6.0 `Unverified` cells for those CLIs | FR-CAP-01, 02, 05, 06, T6.0, R-21, R-22 | T6.0 | Results in a dated note under `docs/research/`; the T6.0 cells and the parser Assumptions updated; each check `PASS`, `FAIL` or `NOT_CHECKED`; no credential, account identifier or transcript content in any capture |
+| T6.12 | README (what `get_capacity` and `capacity` show and never claim, retry and failover behaviour, the breaker), corrections to any FRD, SDD, HLD or TDD text the work proved wrong, and status here | NFR-MAINT-02, 03, FR-CAP-03 | T6.10 | The README matches the behaviour; the M6 row in §6 carries status and evidence; `node scripts/check-docs.mjs` passes |
+
+#### 6.11.1 Order, waves and hot files
+
+- **Wave A (agents, now; nothing needs a provider CLI or an owner decision):** T6.0 and T6.1 (documentation), then
+  T6.2, T6.4, T6.5 and T6.9 after T6.1, and T6.3 after T6.2.
+- **Wave B:** T6.6 after T6.5 and T6.2; T6.7 after T6.0 and T6.3; T6.10 after T6.3 to T6.7 and T6.9; T6.12 last.
+- **Blocked:** T6.8 until T6.0 sources an enforceable limit (else `Deferred`).
+- **Operator, whenever Claude Code and Codex are logged in:** T6.11.
+- **Outside M6:** M7 adds the affinity step and `affinity_switch_reason`; T6.6's failover is then a `capacity_exhausted`
+  switch (FR-RTE-07) and T6.7's `unrecorded` reasons become recorded ones. T11.5's open clause (§6.6) closes with T6.2.
+- **Hot files:** `src/lifecycle/lifecycle.ts` (T6.4, T6.5, T6.6, T6.9; its admission redaction belongs to the Q-68
+  work, which M6 does not touch); `src/routing/eligibility.ts` (T6.4, T6.6); `src/mcp/server.ts` and
+  `src/mcp/schemas.ts` (T6.3, T6.5; the HTTP transport, OAuth and Origin code in `src/mcp/http.ts` is M13's and is not
+  edited); `src/config/schema.ts` and `src/config/load.ts` (T6.2, T6.4, T6.9); `src/reconcile/reconcile.ts` (T6.5);
+  `docs/design/LLD.md` (T6.1). M6 does not edit TDD §4 (M4's). Tasks sharing a hot file run one after another, never in
+  parallel (AGENTS.md).
+
+#### 6.11.2 Blocks Done: what needs the operator or zemdregon
+
+M6 can reach `Partial` on fakes: the estimator, `get_capacity` and `capacity`, the breaker, retry with successors, the
+quota ladder, per-provider limits and the acceptance test T6.10. `Done` also needs:
+
+1. **The operator:** T6.11, so that the rate-limit and quota shapes the Claude Code and Codex parsers assume are
+   checked; until then the retry and quota paths are proven on fakes and synthetic fixtures only.
+2. **Sources for provider facts:** which CLIs report cache counts (Q-53) and whether any provider publishes an
+   enforceable limit for its subscription login (FR-CAP-07). Without a source, cache figures stay absent for that
+   provider and T6.8 is `Deferred`; neither blocks the M6 acceptance criteria (Delegated reading).
+3. **zemdregon:** nothing in this breakdown changes what a bypass run may do, so no owner question is opened. A retry or
+   failover of a `privileged` run follows the M5 rule: a failover to another provider is the cross-provider case of
+   Q-61 and is refused while Q-61 is open (fail closed), and a same-provider retry runs under the approval as is.
+4. **Not needed for M6:** the M7 affinity step (`project_affinity`, `affinity reset`, the replay test).
 
 ## 7. Risks, blockers and open questions
 
@@ -2405,6 +2534,10 @@ Notes carried from M2:
 - **M5 has a Proposed task breakdown** (§6.9, 2026-10-14, Delegated). Its wave A (§6.9.1) needs no provider CLI: T5.0
   (native-resume inventory) and T5.2 (second fake provider); T5.1 (continuity ADR and LLD) gates all bundle code. Its
   operator and owner items are in §6.9.2, including the new Q-61.
+- **M6 has a Proposed task breakdown** (§6.11, 2026-10-14, Delegated), because M5 is `Partial` with only the operator
+  task T5.12 left. Its wave A (§6.11.1) needs no provider CLI: T6.0 (capacity-signal inventory) and T6.1 (design, the
+  gate for code), then the estimator, `get_capacity` and `capacity`, the breaker, retry with successor runs and
+  per-provider limits. Unknown capacity is shown as unknown, never as headroom. Its operator items are in §6.11.2.
 
 ### 9.1 How an agent picks up work
 
@@ -2413,8 +2546,8 @@ Notes carried from M2:
    needs the operator or zemdregon; agents then work on the next milestone's tasks that do not depend on those items (as
    M3 wave A does while M2 waits for the live smoke run).
 2. Take the first task in that milestone's task table whose dependencies are done. If the milestone has no task table
-   yet (M6 onward; M4's is §6.8 and M5's §6.9), break it into tasks in the same format first, from its row in §6 and
-   the requirements it lists, and add them here before coding.
+   yet (M7 onward; M4's is §6.8, M5's §6.9 and M6's §6.11), break it into tasks in the same format first, from its
+   row in §6 and the requirements it lists, and add them here before coding.
 3. Read every reference in the task row: the SRS requirements, the FRD workflow or rule, the LLD/TDD section and the
    ADRs. Those are the contract; this roadmap only sequences them.
 4. Implement with tests that prove the task's "Done when" checks and the cited requirements' verification method.
