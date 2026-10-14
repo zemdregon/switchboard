@@ -119,16 +119,24 @@ describe("derived constants equal the pre-T4.1 values", () => {
 
   it("serve and doctor register the same adapters in the same order", () => {
     const ids = (r: { list(): { id: string }[] }) => r.list().map((a) => a.id);
-    expect(ids(buildRegistry({ enabled: false }))).toEqual(["claude", "codex", "grok", "cursor", "opencode"]);
+    expect(ids(buildRegistry({ enabled: false }))).toEqual([
+      "claude",
+      "codex",
+      "grok",
+      "antigravity",
+      "cursor",
+      "opencode",
+    ]);
     expect(ids(buildRegistry({ enabled: true, scenario: "success" }))).toEqual([
       "claude",
       "codex",
       "grok",
+      "antigravity",
       "cursor",
       "opencode",
       "fake",
     ]);
-    expect(ids(defaultAdapters())).toEqual(["fake", "claude", "codex", "grok", "cursor", "opencode"]);
+    expect(ids(defaultAdapters())).toEqual(["fake", "claude", "codex", "grok", "antigravity", "cursor", "opencode"]);
     // The Claude git_channel opt-in still reaches only the Claude adapter.
     const on = buildRegistry({ enabled: false }, { claudeGitChannel: true });
     expect(on.get("claude")?.gitCapabilities.commitChannel).toBe("injected");
@@ -193,6 +201,8 @@ describe("registerProvider refuses anything but a clean addition", () => {
     ["a flag with a value", { ...base, bypassFlags: ["--x=1"] }, /malformed bypass flag/],
     ["a flag without dashes", { ...base, bypassFlags: ["x"] }, /malformed bypass flag/],
     ["an empty flag", { ...base, bypassFlags: [""] }, /malformed bypass flag/],
+    ["three dashes", { ...base, bypassFlags: ["---x"] }, /malformed bypass flag/],
+    ["a lone dash", { ...base, bypassFlags: ["-"] }, /malformed bypass flag/],
     [
       "a malformed resumeCwd",
       { ...base, resumeCwd: "maybe" as NonNullable<ProviderEntry["resumeCwd"]> },
@@ -296,7 +306,7 @@ describe("scratch adapter registered from a fixture module (T4.1 Done when)", ()
       defaultAdapters()
         .list()
         .map((a) => a.id),
-    ).toEqual(["fake", "claude", "codex", "grok", "cursor", "opencode", SCRATCH_ID]);
+    ).toEqual(["fake", "claude", "codex", "grok", "antigravity", "cursor", "opencode", SCRATCH_ID]);
     const scratchOnly = () => {
       const r = buildRegistry({ enabled: false });
       const a = r.get(SCRATCH_ID as ProviderId);
@@ -324,7 +334,15 @@ describe("scratch adapter registered from a fixture module (T4.1 Done when)", ()
   it("list_capabilities on the registry serve builds reports it", async () => {
     register(SCRATCH_PROVIDER);
     const registry = buildRegistry({ enabled: false });
-    expect(registry.list().map((a) => a.id)).toEqual(["claude", "codex", "grok", "cursor", "opencode", SCRATCH_ID]);
+    expect(registry.list().map((a) => a.id)).toEqual([
+      "claude",
+      "codex",
+      "grok",
+      "antigravity",
+      "cursor",
+      "opencode",
+      SCRATCH_ID,
+    ]);
     const dataDir = path.join(tmp, "data");
     mkdirSync(dataDir);
     const db = openLedger(dataDir);
@@ -373,6 +391,7 @@ describe("scratch adapter registered from a fixture module (T4.1 Done when)", ()
         "claude",
         "codex",
         "grok",
+        "antigravity",
         "cursor",
         "opencode",
         SCRATCH_ID,

@@ -24,6 +24,7 @@
  * declaration stay in force.
  * Its static limit: TypeScript's `ProviderId` is the built-in union, so a runtime id needs a cast (tests only).
  */
+import { AntigravityAdapter } from "./antigravity/adapter.js";
 import { ClaudeAdapter } from "./claude/adapter.js";
 import { CodexAdapter } from "./codex/adapter.js";
 import { CursorAdapter } from "./cursor/adapter.js";
@@ -147,9 +148,30 @@ export const BUILTIN_PROVIDERS = [
     resumeCwd: "unverified",
     create: (): ProviderAdapter => new GrokAdapter(),
   },
-  // TDD §4.4.2: its one bypass flag (`--dangerously-skip-permissions`) is shared; `always-proceed` is a settings value.
-  // TDD §4.10 ([RS]): "Histories are scoped to the working directory", so `bound`.
-  { id: "antigravity", configId: "antigravity", kind: "real", bypassFlags: [], resumeCwd: "bound" },
+  {
+    id: "antigravity",
+    configId: "antigravity",
+    kind: "real",
+    // TDD §4.4.2: `--dangerously-skip-permissions` is shared; `always-proceed` is a settings value the audit cannot see.
+    // `agy`'s parser reports unknown flags with one dash (`-output-format`, T4.41 live check C3), as Go's `flag` package
+    // does, which accepts `-name` for `--name`; so the one-dash spelling is declared too (ADR-0045; Proposed, the
+    // spelling itself was not run). Also refused outside an approved bypass run (Proposed, T4.32): `--remote-control`
+    // (opens a remote-control tunnel, [CL v1.2.6]), the hidden `--gemini_dir` (a per-run state and credential directory,
+    // live check C17) and `--add-dir` (widens the workspace), each in both spellings. The adapter emits none of them.
+    // Active since the adapter (T4.32) added `create`.
+    bypassFlags: [
+      "-dangerously-skip-permissions",
+      "--remote-control",
+      "-remote-control",
+      "--gemini_dir",
+      "-gemini_dir",
+      "--add-dir",
+      "-add-dir",
+    ],
+    // TDD §4.10 ([RS]): "Histories are scoped to the working directory", so `bound`.
+    resumeCwd: "bound",
+    create: (): ProviderAdapter => new AntigravityAdapter(),
+  },
   {
     id: "cursor",
     configId: "cursor",
@@ -239,8 +261,11 @@ export const BUILTIN_CONFIG_TO_ADAPTER_ID: Readonly<Record<ConfigProviderId, Bui
 
 /** Id shape (Delegated): lower-case, starts with a letter, at most 32 characters; covers every built-in id. */
 const ID_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
-/** Flag shape (Delegated): `-x` or `--name`, no value part (`=`), no whitespace. The audit also matches `flag=value`. */
-const FLAG_PATTERN = /^(?:-[A-Za-z0-9]|--[A-Za-z0-9][A-Za-z0-9-]*)$/;
+/**
+ * Flag shape (Delegated): `-x`, `--name` or, for parsers that accept one dash before a long name, `-name` (ADR-0045);
+ * names may hold `-` and `_`; no value part (`=`), no whitespace. The audit also matches `flag=value`.
+ */
+const FLAG_PATTERN = /^(?:-[A-Za-z0-9]|-{1,2}[A-Za-z0-9][A-Za-z0-9_-]*)$/;
 /** Short flag shape (ADR-0037): one dash, one letter or digit. */
 const SHORT_FLAG_PATTERN = /^-[A-Za-z0-9]$/;
 /** Value shape (ADR-0037, Delegated): 1 to 128 characters, no whitespace or control characters. */

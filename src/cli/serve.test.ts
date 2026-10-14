@@ -309,6 +309,7 @@ describeLinuxVerified("serve over stdio (process level)", () => {
       "claude",
       "codex",
       "grok",
+      "antigravity",
       "cursor",
       "opencode",
       "fake",
