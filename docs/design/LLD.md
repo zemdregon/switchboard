@@ -3327,6 +3327,25 @@ blank-line or top-level-declaration boundaries; 40 lines and at most 4,096 bytes
 index in the file; a changed file is re-chunked whole.
 5. Stop adding chunks when `caps.max_chunks` or `caps.max_total_bytes` is reached; the store is marked incomplete.
 
+*As built (T12.2, 2026-10-14, Delegated; `src/retrieval/scan.ts`, `chunk.ts`, `denylist.ts`, `options.ts`):* a context
+with a `.git` entry is listed by `git ls-files -z --cached --others --exclude-standard` through the hardened Git helper
+(scrubbed environment, no hooks, no fsmonitor, no filter or diff drivers), with nested repositories excluded by
+pathspec; any other context is walked directly. Every path is checked with `lstat` and `realpath`: a symlink is followed
+only to a file inside the root, a symlinked directory is never descended (`special_file`), and a path whose parent
+directory is a symlink is skipped (`symlink_escape` when it leaves the root). Files are opened with `O_NOFOLLOW`, read
+to at most `max_file_bytes` (a larger file is skipped, not truncated) and skipped as binary on a NUL byte in the first
+8,000 bytes. The denylist and the operator globs are matched before the file is opened, on the link path and on the
+resolved path; the denylist matches the final path component only and is best effort (R-56). Redaction is the inner
+agent's `redactInput` (secret patterns, home path and identifier scrub, control characters except newline and tab), with
+a multi-line private-key block first replaced by one marker plus its newlines so line numbers hold. Chunks are 40 lines
+and at most 4,096 bytes, with no overlap (stable ids), a longer line split on a code-point boundary, empty windows
+dropped, and id `chk_` plus 24 hex characters of SHA-256 over path, ordinal and text hash. Caps apply per file: a file
+whose chunks would cross a cap is left out whole and the result is `complete: false` with the cap named. Skip reasons:
+`nested_repository`, `symlink_escape`, `special_file`, `binary`, `oversized`, `denylisted`, `excluded`, `unreadable`
+(an ignored file is never listed). `scanOptionsForContext` applies a context's `rag` block (off, lower caps, more
+globs) to the project's effective setting. Residual risk: a directory swapped for a symlink between the check and the
+open is not detected; only the project's contexts are scanned, never a run's worktree.
+
 ### 14.4 Embedding backend port and privacy gates
 
 ```ts
