@@ -3855,6 +3855,12 @@ Derivation, first match wins for `throttle_risk`:
 Numbers are rounded to two decimals, keys are sorted and providers are listed in registry order, so the same inputs
 give byte-identical canonical JSON.
 
+*As built (T6.2, 2026-10-14, Delegated):* `src/capacity/estimate.ts` (the pure function and `REMAINING_KEYS`, empty and
+frozen), `src/capacity/collect.ts` (the reads above through four read-only ledger helpers; a crash whose
+`failure_detail` carries `cause controller_restart` is flagged and not counted), `src/capacity/projection.ts` (the
+§16.3 object and its canonical JSON) and `src/config/capacity.ts`. A `CANCELLED` or pre-spawn run is in
+`terminal_runs` and the confidence count but is not evidence on its own.
+
 ### 16.3 `get_capacity` and `switchboard capacity`
 
 Input `{ provider?: string }`, a provider id known to the registry. An unknown id is `INVALID_REQUEST`. With no input,

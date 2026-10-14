@@ -21,8 +21,8 @@
  * - the commit algorithm (T11.4, Delegated): `src/git/commit.ts` applies the sanitiser to every message and receives the
  *   commit-message task only as an injected function from `git/channel.ts`, so it never imports the service itself;
  * - redaction: `src/artifacts/redact.ts`;
- * - usage accounting (T11.5): `src/usage/`, `src/ledger/` and `src/mcp/envelope.ts`; the capacity estimator (M6) will live
- *   under `src/usage/` or `src/routing/` and is added here when it exists.
+ * - usage accounting (T11.5): `src/usage/`, `src/ledger/` and `src/mcp/envelope.ts`; the capacity estimator (M6, T6.2)
+ *   lives under `src/capacity/` and is protected whole.
  * `lifecycle.ts` is protected whole because the retry decision lives inside it. A later task that must wire the inner
  * agent near dispatch (T11.11) has to split that logic out first, not relax this list silently.
  */
@@ -44,6 +44,8 @@ const PROTECTED: readonly RegExp[] = [
   /^usage\//,
   /^ledger\//,
   /^mcp\/envelope\.ts$/,
+  // T6.2 (FR-INN-15, BR-41): the capacity estimator and its projection never see the service.
+  /^capacity\//,
 ];
 const isInner = (rel: string) => rel.startsWith("inner/");
 const isProtected = (rel: string) => PROTECTED.some((re) => re.test(rel));
@@ -147,6 +149,7 @@ describe("inner-agent import boundary (FR-INN-06)", () => {
       "usage/observations.ts",
       "ledger/repo.ts",
       "mcp/envelope.ts",
+      "capacity/estimate.ts",
     ]) {
       expect(files.has(must), must).toBe(true);
       expect(isProtected(must), must).toBe(true);

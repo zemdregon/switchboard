@@ -1,3 +1,4 @@
+export * from "./capacity.js";
 export * from "./http-transport.js";
 export * from "./inner-agent.js";
 export * from "./load.js";

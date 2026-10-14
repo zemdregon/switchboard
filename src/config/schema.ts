@@ -108,7 +108,31 @@ export interface SwitchboardConfig {
   continuity?: { max_bundle_bytes?: number; max_diff_excerpt_bytes?: number; max_text_chars?: number };
   /** Network MCP transport (M13, T13.1; FR-MCP-12, LLD §3.3, ADR-0041). Absent or disabled means stdio only. */
   transport?: { http?: HttpTransportConfig };
+  /** Capacity and resilience (M6, T6.2; LLD §16.1, ADR-0043). Every key defaults to its LLD value (Assumptions). */
+  capacity?: CapacityConfigInput;
 }
+
+/** `capacity` as written in the config file (LLD §16.1). */
+export interface CapacityConfigInput {
+  window_seconds?: number;
+  confidence_runs?: number;
+  queue_horizon_seconds?: number;
+  breaker?: { failure_threshold?: number; open_seconds?: number };
+  retry?: { max_attempts?: number; base_ms?: number; cap_ms?: number };
+}
+
+/**
+ * LLD §16.1 defaults (T6.1; **Assumptions**, no measurement; Q-69 to Q-72). The retry values are LLD §9's proposed
+ * targets; a queue horizon of 0 means a run never waits for a provider reset unless the operator opts in (Q-72).
+ */
+export const DEFAULT_CAPACITY_WINDOW_SECONDS = 3600;
+export const DEFAULT_CAPACITY_CONFIDENCE_RUNS = 10;
+export const DEFAULT_CAPACITY_QUEUE_HORIZON_SECONDS = 0;
+export const DEFAULT_BREAKER_FAILURE_THRESHOLD = 3;
+export const DEFAULT_BREAKER_OPEN_SECONDS = 300;
+export const DEFAULT_RETRY_MAX_ATTEMPTS = 3;
+export const DEFAULT_RETRY_BASE_MS = 2000;
+export const DEFAULT_RETRY_CAP_MS = 120000;
 
 /**
  * LLD §15.4 defaults and the minimum of `continuity.max_bundle_bytes` (Assumptions, ADR-0038 item 5.5). They equal
@@ -390,6 +414,32 @@ export const configSchema = {
       type: "object",
       additionalProperties: false,
       properties: { http: httpTransportSchema },
+    },
+    capacity: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        window_seconds: { type: "integer", minimum: 60, maximum: 604800 },
+        confidence_runs: { type: "integer", minimum: 1, maximum: 1000 },
+        queue_horizon_seconds: { type: "integer", minimum: 0, maximum: 86400 },
+        breaker: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            failure_threshold: { type: "integer", minimum: 1, maximum: 100 },
+            open_seconds: { type: "integer", minimum: 1, maximum: 86400 },
+          },
+        },
+        retry: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            max_attempts: { type: "integer", minimum: 1, maximum: 10 },
+            base_ms: { type: "integer", minimum: 1, maximum: 600000 },
+            cap_ms: { type: "integer", minimum: 1, maximum: 3600000 },
+          },
+        },
+      },
     },
     profiles: {
       type: "object",
