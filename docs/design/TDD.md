@@ -366,13 +366,13 @@ benchmark uses the fake adapter only; a real provider CLI's probe cost is unmeas
 
 Proposed jobs on every pull request, all runnable with no provider installed: (1) install via `npm ci`; (2) `biome
 check`; (3) `tsc --noEmit`; (4) Vitest unit + integration + fake-provider + fault-injection; (5) `node
-scripts/check-docs.mjs`; (6) secret-pattern scan over test outputs; (7) `npm audit` as informational (Assumption). Jobs (1) to (5) also run on a macOS runner (T4.10, NFR-PORT-02), as a
-separate job `Typecheck, lint, test, docs check (macOS)` in `.github/workflows/ci.yml`; the tests it skips are listed in
-[ROADMAP T4.10](../ROADMAP.md#68-m4-adapter-expansion-tasks). The
-fault-injection job needs process-kill privileges only, no root. A scheduled job for version canaries is M8
-([ADR-0009](../adr/0009-version-gated-adapters.md)); it needs installed provider CLIs and logins and therefore cannot
-run on hosted runners without operator-managed credentials, which the project must not hold, so canaries run on the
-operator's machine (Assumption).
+scripts/check-docs.mjs`; (6) secret-pattern scan over test outputs; (7) `npm audit` as informational (Assumption).
+Jobs (1) to (5) also run on a macOS runner (T4.10, NFR-PORT-02), as a separate job `Typecheck, lint, test, docs check
+(macOS)` in `.github/workflows/ci.yml`; the tests it skips are listed in [ROADMAP
+T4.10](../ROADMAP.md#68-m4-adapter-expansion-tasks). The fault-injection job needs process-kill privileges only, no
+root. A scheduled job for version canaries is M8 ([ADR-0009](../adr/0009-version-gated-adapters.md)); it needs
+installed provider CLIs and logins and therefore cannot run on hosted runners without operator-managed credentials,
+which the project must not hold, so canaries run on the operator's machine (Assumption).
 
 ### 3.9 Versioning
 
