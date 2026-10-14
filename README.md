@@ -46,7 +46,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   tested, but no single test yet runs the whole path from PKCE to a tool call (task T13.9). Residual risks are listed
   under [HLD TB-12](docs/design/HLD.md#3-trust-boundaries). See
   [ROADMAP §6.10](docs/ROADMAP.md#610-m13-network-mcp-transport-tasks).
-- Providers other than Claude Code and Codex are not implemented.
+- Adapter modules for Grok Build, Cursor, OpenCode and Antigravity exist and are tested on synthetic fixtures, but
+  their compliance manifests admit no version, so none of them runs until `switchboard adapters validate` passes a
+  version (operator tasks). Outside an approved `privileged` bypass scope every profile is ineligible for them. See
+  [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks).
 
 What works today: `doctor`, `runs list|show|cancel`, `approve`, `deny`, `gc`, `capacity`,
 `projects list|show|validate|approve`, `git push`, `inner status|test|resume`, and `serve` exposing eight MCP tools over
