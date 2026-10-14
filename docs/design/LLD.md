@@ -3425,6 +3425,30 @@ and staleness (contexts changed since `built_at`). `index clear` deletes the sto
 (FR-RAG-14). `doctor` shows the same plus backend reachability from `probe` (FR-RAG-14). The worktree of a run is not
 scanned; the index reads the project's contexts at their configured base ref or checked-out state (§14.8).
 
+*As built (T12.4, 2026-10-14, Delegated; `src/retrieval/build.ts`, `indexer.ts`, `src/cli/rag-index.ts`,
+[ADR-0046](../adr/0046-retrieval-index-operator-requests-and-records.md)):* triggers are daemon start (every project
+with retrieval on), an applied `index rebuild`, and a periodic check every 15 minutes (Assumption); the `delegate_task`
+and configuration-change triggers arrive with T12.5. `trigger` only queues: the first step of a build runs on a later
+turn of the event loop, builds run one at a time, and admission never awaits one (a process test holds the embedding
+endpoint open and a run still completes). The gate is checked before a store is opened, so a refused backend creates
+nothing. The store path of a file is `<context id>/<relative path>`, so two contexts never collide, and chunk ids are
+derived from it. Caps are shared across a project's contexts; a context whose scan fails keeps its rows and makes the
+build `partial` (`context_unreadable`). Changed files are embedded 32 chunks per batch, one transaction per batch, which
+bumps `revision` and sets `complete = 0`; the final step sets `complete`, `built_at` and `base_ref_sha` (the primary
+context's `HEAD`, or null outside Git) without a revision bump, so an unchanged rebuild embeds nothing and keeps the
+revision. Outcomes: `ok`, `partial` (a cap, `max_build_ms`, `aborted`, `context_unreadable`), `failed` (a gate or backend
+code; the previous revision is kept when no batch committed) and `skipped` (off or gated). A stored model or schema
+change wipes the store first; a dimension change mid-build wipes it and restarts once. Shutdown aborts a build and
+waits at most 2 seconds (a scan in progress is not interruptible). `index status` (read-only, creates nothing) prints
+per store the mode, revision, `complete`, files, chunks, text and disk bytes, `built_at`, staleness (older than
+`max_staleness`, or the primary context's `HEAD` moved since the build; uncommitted edits are caught by the next
+periodic build), the last build outcome and pending requests, plus the backend kind, model, locality and gate; `--json`
+gives the same keys. `rebuild` and `clear` write `rag_request` rows (ADR-0046); `clear` applies itself under the lock
+when no daemon runs. The word `global` names the global store, so a project whose id is `global` is reached only by the
+no-argument form; `rebuild global` is refused until T12.7. `doctor` adds a `retrieval` section only when
+`rag.embedding` is configured: backend and gate, `probe` (not attempted when the gate refuses a remote endpoint) and one
+check per store, at most warnings.
+
 ### 14.6 Selection and token budget
 
 At admission (WF-14), after the policy snapshot and before dispatch, within `retrieval.admission_timeout_ms`:
@@ -3540,6 +3564,14 @@ Run events (`run_event.type`, bounded payloads, no text): `rag_index_built` (`pr
 `tokens_est`, `duration_ms`; written only for a retrieval tied to a run), `rag_index_cleared` (`project_key`, `files`,
 `chunks`). A span `rag.retrieve` (attributes: outcome, snippet count, duration, backend kind and locality; never text or
 the query) is added to [§7](#7-telemetry-spans). None of these events is a run failure code or influences retry (§4).
+
+*As built (T12.4, 2026-10-14, Delegated, [ADR-0046](../adr/0046-retrieval-index-operator-requests-and-records.md)):*
+ledger migration 15 adds `rag_record` as above, without the foreign key on `run_id` (retention GC deletes runs without
+knowing about this table), with `CHECK`s on the kinds and counts and the append-only guards; and `rag_request` for the
+operator's `index rebuild` and `index clear`. T12.4 writes `index_built` (one row per finished build, including
+`skipped`) and `clear` (the counts removed) rows. Index builds are not tied to a run, so `rag_index_built` and
+`rag_index_cleared` are not written as run events; the `rag_record` row holds the same fields. The span and
+`rag_retrieval` arrive with T12.5.
 
 ## 15. Continuity and the handoff bundle (M5)
 

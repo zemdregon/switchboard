@@ -1,5 +1,6 @@
 import type { AdapterRegistry } from "../adapters/index.js";
 import type { InnerBackend } from "../inner/port.js";
+import type { EmbeddingBackend } from "../retrieval/embedding.js";
 
 /** Injectable process surface so tests call `main` directly (no spawn). */
 export interface CliIo {
@@ -16,6 +17,8 @@ export interface CliIo {
   readonly now?: () => Date;
   /** Test seam (T11.7): an inner backend to use instead of the one the configuration names (`doctor`, `inner test`). */
   readonly innerBackend?: InnerBackend;
+  /** Test seam (T12.4): an embedding backend to use instead of the one `rag.embedding` names (`index`, `doctor`). */
+  readonly ragBackend?: EmbeddingBackend;
   /** `adapters validate` only (T4.4): the manifest directory to read and write. Tests inject it; default is the source tree. */
   readonly manifestDir?: string;
   /** `consent hash-passphrase` only (T13.8): test seam for reading stdin. */
