@@ -20,7 +20,8 @@
  *   guard (ADR-0039), FR-GIT-03 and FR-GIT-06;
  * - the parser (T4.43) reads only the `stream-json` fields the 2026-10-14 live check recorded; a refused tool call is a
  *   `permission_denied` event because the final `result` still says `success`; resume is `--resume <id>` through the
- *   same matrix. The auth preflight (T4.44) keys on `isAuthenticated` of `status --format json`. The manifest range
+ *   same matrix; a second `result`, a session id that changes mid-run and a credential source other than the login
+ *   fail the run. The auth preflight (T4.44) keys on `isAuthenticated` of `status --format json`. The manifest range
  *   admits no version, so none of this runs before `adapters validate` passes a version.
  */
 import {
@@ -30,7 +31,7 @@ import {
   DEFAULT_WALL_CLOCK_MS,
 } from "../../exec/index.js";
 import { resolveOnPath } from "../codex/adapter.js";
-import { classifyCommon } from "../failure.js";
+import { classifyCommon, PROVIDER_ERROR_CATEGORY_CODES } from "../failure.js";
 import { gitWriteRisks } from "../git-write.js";
 import { parseVersion } from "../manifest/index.js";
 import type {
@@ -140,6 +141,11 @@ const obj = (v: unknown): Json | undefined =>
   typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Json) : undefined;
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
 const ineligible = (reason: Ineligible["reason"], detail: string): Ineligible => ({ ineligible: true, reason, detail });
+/** `result` lines already seen per run: a second one is a protocol anomaly, never a success (fail closed). */
+const seenResults = new WeakMap<ParseState, number>();
+/** Category of a stream anomaly (two results, two session ids); classified OUTPUT_PROTOCOL_ERROR. */
+const PROTOCOL_CATEGORY = "protocol";
+const CATEGORY_CODES = { ...PROVIDER_ERROR_CATEGORY_CODES, [PROTOCOL_CATEGORY]: "OUTPUT_PROTOCOL_ERROR" } as const;
 
 export class CursorAdapter implements ProviderAdapter {
   readonly id = "cursor" as const;
@@ -382,21 +388,19 @@ export class CursorAdapter implements ProviderAdapter {
         return [];
       case EVENT.system: {
         if (subtype !== SUBTYPE_INIT) return this.#unknown(state, `${type}:${subtype ?? "none"}`);
-        const out: NormalizedEvent[] = [];
-        const id = str(e.session_id);
-        if (id !== undefined && id !== "" && state.nativeSessionId === undefined) {
-          state.nativeSessionId = id;
-          // `model` is a display name ([C2], [LIVE] 5b). No backing vendor is reported, so none is set (TDD §4.5:
-          // never derived from the display name).
-          const model = str(e.model);
-          out.push({ kind: "session_bound", nativeSessionId: id, ...(model ? { model: clip(model, 128) } : {}) });
-        }
-        const source = str(e.apiKeySource);
-        if (source !== undefined && source !== API_KEY_SOURCE_LOGIN) {
+        // `model` is a display name ([C2], [LIVE] 5b). No backing vendor is reported, so none is set (TDD §4.5:
+        // never derived from the display name).
+        const out = this.#bind(state, str(e.session_id), str(e.model));
+        // `apiKeySource` was the string `login` on every run ([LIVE] 5b). Another string, or a present value that is
+        // not a string, is not the native login: the run fails closed rather than ignoring an unexpected shape.
+        const rawSource = e.apiKeySource;
+        const source = str(rawSource);
+        if (rawSource !== undefined && source !== API_KEY_SOURCE_LOGIN) {
+          const shown = source === undefined ? "(not a string)" : clip(source, 32);
           out.push({
             kind: "provider_error",
             category: "auth",
-            message: `credential source ${clip(source, 32)} is not the native login; run \`${CURSOR_LOGIN_COMMAND}\``,
+            message: `credential source ${shown} is not the native login; run \`${CURSOR_LOGIN_COMMAND}\``,
           });
         }
         return out;
@@ -411,19 +415,23 @@ export class CursorAdapter implements ProviderAdapter {
         return this.#toolCall(e, subtype, state);
       case EVENT.result: {
         if (subtype === undefined) return this.#unknown(state, type);
+        const results = (seenResults.get(state) ?? 0) + 1;
+        seenResults.set(state, results);
         const out: NormalizedEvent[] = [];
-        const id = str(e.session_id);
-        if (id !== undefined && id !== "" && state.nativeSessionId === undefined) {
-          state.nativeSessionId = id;
-          out.push({ kind: "session_bound", nativeSessionId: id });
+        // One run prints one `result` ([LIVE] 5a, 5b); a second could flip an earlier failure, so the run fails closed.
+        if (results > 1) {
+          out.push({ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "more than one result line" });
         }
+        out.push(...this.#bind(state, str(e.session_id), undefined));
+        // Only finite, non-negative counters under the recorded keys are kept ([LIVE] 5a); anything else is dropped.
         const usage = obj(e.usage);
-        if (usage) {
-          const metrics: Record<string, number | string | null> = {};
-          for (const k of USAGE_KEYS) if (typeof usage[k] === "number") metrics[k] = usage[k] as number;
-          out.push({ kind: "usage", source: "provider_reported", metrics });
+        const metrics: Record<string, number | string | null> = {};
+        for (const k of USAGE_KEYS) {
+          const v = usage?.[k];
+          if (typeof v === "number" && Number.isFinite(v) && v >= 0) metrics[k] = v;
         }
-        const ok = subtype === SUBTYPE_SUCCESS && e.is_error === false;
+        if (Object.keys(metrics).length > 0) out.push({ kind: "usage", source: "provider_reported", metrics });
+        const ok = results === 1 && subtype === SUBTYPE_SUCCESS && e.is_error === false;
         out.push({ kind: "result", ok, ...(ok ? {} : { summary: `result ${clip(subtype, 64)}` }) });
         return out;
       }
@@ -432,32 +440,51 @@ export class CursorAdapter implements ProviderAdapter {
     }
   }
 
-  /** `tool_call` started: a `tool_call` event (command or path transient for the guard); completed: denial only. */
+  /**
+   * The first non-empty session id binds the session. A later, different id (a second `init` or a `result` for another
+   * session) makes the binding ambiguous, so the run fails closed; the first id stays bound.
+   */
+  #bind(state: ParseState, id: string | undefined, model: string | undefined): NormalizedEvent[] {
+    if (id === undefined || id === "") return [];
+    if (state.nativeSessionId !== undefined) {
+      if (id === state.nativeSessionId) return [];
+      return [{ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "session id changed mid-run" }];
+    }
+    state.nativeSessionId = id;
+    return [{ kind: "session_bound", nativeSessionId: id, ...(model ? { model: clip(model, 128) } : {}) }];
+  }
+
+  /**
+   * `tool_call` started: a `tool_call` event (command or path transient for the guard); completed: denial only. The
+   * object held one key in every recorded line ([LIVE] 7a, 7b, 11); should it hold several, each is reported, so a
+   * decoy first key cannot hide a shell call from the guard or a refusal from the result (Assumption: not recorded).
+   */
   #toolCall(e: Json, subtype: string | undefined, state: ParseState): NormalizedEvent[] {
     const call = obj(e.tool_call);
-    const key = call ? Object.keys(call)[0] : undefined;
-    if (call === undefined || key === undefined) return this.#unknown(state, `tool_call:${subtype ?? "none"}`);
-    const body = obj(call[key]);
-    const kind = TOOL_KEYS[key] ?? "other";
+    const keys = call ? Object.keys(call) : [];
+    if (call === undefined || keys.length === 0) return this.#unknown(state, `tool_call:${subtype ?? "none"}`);
     if (subtype === SUBTYPE_STARTED) {
-      const args = obj(body?.args);
-      const command = kind === "shell" ? str(args?.command) : undefined;
-      const target = kind === "read" || kind === "edit" ? str(args?.path) : undefined;
-      return [
-        {
+      return keys.map((key): NormalizedEvent => {
+        const kind = TOOL_KEYS[key] ?? "other";
+        const args = obj(obj(call[key])?.args);
+        const command = kind === "shell" ? str(args?.command) : undefined;
+        const target = kind === "read" || kind === "edit" ? str(args?.path) : undefined;
+        return {
           kind: "tool_call",
           tool: kind,
           name: clip(key, 64),
           ...(command !== undefined ? { command } : {}),
           ...(target !== undefined ? { target: clip(target, MAX_TARGET_CHARS) } : {}),
-        },
-      ];
+        };
+      });
     }
     if (subtype === SUBTYPE_COMPLETED) {
-      const result = obj(body?.result);
-      const denied =
-        result !== undefined && (TOOL_RESULT_REJECTED in result || TOOL_RESULT_PERMISSION_DENIED in result);
-      return denied ? [{ kind: "permission_denied", tool: clip(key, 64) }] : [];
+      return keys.flatMap((key): NormalizedEvent[] => {
+        const result = obj(obj(call[key])?.result);
+        const denied =
+          result !== undefined && (TOOL_RESULT_REJECTED in result || TOOL_RESULT_PERMISSION_DENIED in result);
+        return denied ? [{ kind: "permission_denied", tool: clip(key, 64) }] : [];
+      });
     }
     return this.#unknown(state, `tool_call:${subtype ?? "none"}`);
   }
@@ -510,6 +537,6 @@ export class CursorAdapter implements ProviderAdapter {
   }
 
   classifyFailure(evidence: FailureEvidence): FailureClassification {
-    return classifyCommon(evidence);
+    return classifyCommon(evidence, CATEGORY_CODES);
   }
 }

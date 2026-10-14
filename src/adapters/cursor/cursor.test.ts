@@ -552,9 +552,15 @@ describe("cursor parser and result (T4.43)", () => {
 
   it("the session id comes only from structured fields: the first init wins, result binds only when init is absent", () => {
     const other = "4f1c2a9e-0000-4000-8000-000000000002";
-    const { events, state } = parse([INIT, INIT.replace(SID, other), ASSIST(`session ${other}`), RESULT()]);
+    const { a, events, state } = parse([INIT, INIT.replace(SID, other), ASSIST(`session ${other}`), RESULT()]);
     expect(events.filter((e) => e.kind === "session_bound")).toHaveLength(1);
     expect(state.nativeSessionId).toBe(SID);
+    // A second id makes the binding ambiguous: the first stays bound and the run fails closed.
+    expect(a.extractResult(events, EXIT0)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      nativeSessionId: SID,
+    });
     const late = parse([ASSIST("ok"), RESULT()]);
     expect(late.events).toContainEqual({ kind: "session_bound", nativeSessionId: SID });
   });
@@ -591,6 +597,175 @@ describe("cursor parser and result (T4.43)", () => {
     expect(
       adapter().resumeArgs({ provider: "cursor", nativeSessionId: SID }, request(), profileOf("edit-untrusted")),
     ).toMatchObject({ reason: "PROFILE_UNSUPPORTED" });
+  });
+});
+
+/**
+ * T4.43 hardening (Delegated, not owner-approved): SYNTHETIC lines in the recorded shapes, bent the ways a stream could
+ * deviate from them. Each case fails closed or is pinned as observed; none is a recorded Cursor shape.
+ */
+describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
+  const SID = "4f1c2a9e-0000-4000-8000-00000000000c";
+  const line = (o: Record<string, unknown>) => JSON.stringify(o);
+  const INIT = (over: Record<string, unknown> = {}) =>
+    line({
+      type: "system",
+      subtype: "init",
+      apiKeySource: "login",
+      session_id: SID,
+      model: "Synthetic Model 1",
+      ...over,
+    });
+  const ASSIST = (text: string) =>
+    line({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text }] }, session_id: SID });
+  const RESULT = (over: Record<string, unknown> = {}) =>
+    line({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      result: "ok",
+      session_id: SID,
+      usage: { inputTokens: 11, outputTokens: 2, cacheReadTokens: 5, cacheWriteTokens: 0 },
+      ...over,
+    });
+  const TOOL = (subtype: string, call: Record<string, unknown>) =>
+    line({ type: "tool_call", subtype, call_id: "c1", tool_call: call, session_id: SID });
+  const EXIT0: ExitInfo = { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] };
+  const parse = (lines: string[], exit: ExitInfo = EXIT0) => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const events: NormalizedEvent[] = lines.flatMap((l) => a.parseEvent(l, state));
+    return { state, events, result: a.extractResult(events, exit) };
+  };
+
+  it("a second result line fails the run even when it reports success", () => {
+    const failedThenOk = parse([INIT(), RESULT({ subtype: "error", is_error: true }), RESULT()]);
+    expect(failedThenOk.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+    const okTwice = parse([INIT(), ASSIST("ok"), RESULT(), RESULT()]);
+    expect(okTwice.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+    expect(okTwice.events.filter((e) => e.kind === "result").map((e) => e.kind === "result" && e.ok)).toEqual([
+      true,
+      false,
+    ]);
+    // Results are counted per run: a new parse state starts at zero.
+    expect(parse([INIT(), RESULT()]).result).toMatchObject({ ok: true });
+  });
+
+  it("a result for another session fails the run and never rebinds; the same id again is fine", () => {
+    const other = "4f1c2a9e-0000-4000-8000-00000000000d";
+    const r = parse([INIT(), ASSIST("ok"), RESULT({ session_id: other })]);
+    expect(r.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", nativeSessionId: SID });
+    expect(r.state.nativeSessionId).toBe(SID);
+    expect(r.events.filter((e) => e.kind === "session_bound")).toHaveLength(1);
+    expect(parse([INIT(), INIT(), ASSIST("ok"), RESULT()]).result).toMatchObject({ ok: true });
+    // Non-string and empty ids never bind; a later structured id still can.
+    const late = parse([INIT({ session_id: 7 }), INIT({ session_id: "" }), ASSIST("ok"), RESULT()]);
+    expect(late.result).toMatchObject({ ok: true, nativeSessionId: SID });
+  });
+
+  it("a credential source that is not the string login fails the run AUTH_REQUIRED; an absent one does not", () => {
+    for (const apiKeySource of ["env", "flag", "", "LOGIN", null, 1, true, ["login"], { source: "login" }]) {
+      const r = parse([INIT({ apiKeySource }), ASSIST("ok"), RESULT()]);
+      expect(r.result, JSON.stringify(apiKeySource)).toMatchObject({ ok: false, failureCode: "AUTH_REQUIRED" });
+      expect(JSON.stringify(r.events)).toContain("cursor-agent login");
+    }
+    expect(parse([INIT({ apiKeySource: undefined }), ASSIST("ok"), RESULT()]).result).toMatchObject({ ok: true });
+  });
+
+  it("negative, non-finite and non-number usage values are dropped; no usable counter means no usage row", () => {
+    const r = parse([
+      INIT(),
+      RESULT({ usage: { inputTokens: -5, outputTokens: "3", cacheReadTokens: null, cacheWriteTokens: 4, extra: 9 } }),
+    ]);
+    expect(r.events.filter((e) => e.kind === "usage")).toEqual([
+      { kind: "usage", source: "provider_reported", metrics: { cacheWriteTokens: 4 } },
+    ]);
+    expect(r.result).toMatchObject({ ok: true });
+    for (const usage of [[11], "11", { inputTokens: -1 }, {}]) {
+      const none = parse([INIT(), RESULT({ usage })]);
+      expect(
+        none.events.some((e) => e.kind === "usage"),
+        JSON.stringify(usage),
+      ).toBe(false);
+    }
+  });
+
+  it("is_error other than false, or a subtype other than success, is never a success", () => {
+    for (const over of [
+      { is_error: true },
+      { is_error: "false" },
+      { is_error: undefined },
+      { subtype: "error_max_turns" },
+      { subtype: "Success" },
+    ]) {
+      expect(parse([INIT(), ASSIST("ok"), RESULT(over)]).result, JSON.stringify(over)).toMatchObject({ ok: false });
+    }
+  });
+
+  it("a tool_call object with several keys reports each, so a decoy key cannot hide a shell call or a refusal", () => {
+    const r = parse([
+      INIT(),
+      TOOL("started", {
+        getMcpToolsToolCall: { args: {} },
+        shellToolCall: { args: { command: "git push origin main" } },
+      }),
+      TOOL("completed", {
+        getMcpToolsToolCall: { result: { success: {} } },
+        shellToolCall: { result: { rejected: { command: "git push origin main" } } },
+      }),
+      RESULT(),
+    ]);
+    expect(r.events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "other", name: "getMcpToolsToolCall" },
+      { kind: "tool_call", tool: "shell", name: "shellToolCall", command: "git push origin main" },
+    ]);
+    expect(r.events).toContainEqual({ kind: "permission_denied", tool: "shellToolCall" });
+    expect(r.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    const empty = parse([INIT(), TOOL("started", {}), RESULT()]);
+    expect(empty.state.unknownEvents).toBe(1);
+  });
+
+  it("a shell call without a string command is reported without one (guard blind, pinned); a long path is clipped", () => {
+    const r = parse([
+      INIT(),
+      TOOL("started", { shellToolCall: { args: { command: ["git", "push"] } } }),
+      TOOL("started", { shellToolCall: {} }),
+      TOOL("started", { editToolCall: { args: { path: `/${"p".repeat(600)}` } } }),
+      RESULT(),
+    ]);
+    const calls = r.events.filter((e) => e.kind === "tool_call");
+    expect(calls.slice(0, 2)).toEqual([
+      { kind: "tool_call", tool: "shell", name: "shellToolCall" },
+      { kind: "tool_call", tool: "shell", name: "shellToolCall" },
+    ]);
+    expect(calls[2]).toMatchObject({ tool: "edit", target: `/${"p".repeat(511)}…` });
+  });
+
+  it("cases with no recorded native shape end TOOL_FAILURE, never RATE_LIMIT_TRANSIENT, SANDBOX_VIOLATION or success", () => {
+    // No rate-limit, quota or sandbox event was recorded (live check rows 4, 9, 14): text naming one is not read.
+    for (const text of ["429 Too Many Requests", "rate limit reached", "quota exceeded", "sandbox: operation denied"]) {
+      const asError = parse([INIT(), ASSIST(text), RESULT({ subtype: "error", is_error: true, result: text })]);
+      expect(asError.result, text).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+      expect(
+        asError.events.some((e) => e.kind === "rate_limit" || e.kind === "sandbox_violation"),
+        text,
+      ).toBe(false);
+      // A failed run prints no stream ([LIVE] 4, 14), so only the exit code is left.
+      expect(parse([], { ...EXIT0, exitCode: 1 }).result, text).toMatchObject({
+        ok: false,
+        failureCode: "TOOL_FAILURE",
+      });
+    }
+    // An unknown line type that could be a rate-limit event is counted, never a success on its own.
+    const unknownOnly = parse([INIT(), line({ type: "rate_limit", retry_after_ms: 1000 })]);
+    expect(unknownOnly.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", unknownEventCount: 1 });
+  });
+
+  it("non-object roots and lines after a malformed result never bind or succeed", () => {
+    const r = parse(["[]", "null", "1", '"result"', line({ type: 1 }), line({ type: "result", subtype: 5 })]);
+    expect(r.state.unknownEvents).toBe(6);
+    expect(r.state.nativeSessionId).toBeUndefined();
+    expect(r.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
   });
 });
 
