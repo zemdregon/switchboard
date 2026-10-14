@@ -76,9 +76,11 @@ function toolCall(block: Json): NormalizedEvent {
   const name = str(block.name) ?? "unknown";
   const tool = TOOL_KINDS[name] ?? "other";
   const input = obj(block.input);
-  // Record the file target for read/edit tools only; shell command text is not copied into events.
+  // Record the file target for read/edit tools only. A shell command line travels as the transient `command`, which
+  // `startAdapterRun` evaluates (ADR-0039) and drops before the event is stored.
   const target = tool === "read" || tool === "edit" ? (str(input?.file_path) ?? str(input?.path)) : undefined;
-  return { kind: "tool_call", tool, name, ...(target ? { target } : {}) };
+  const command = tool === "shell" ? str(input?.command) : undefined;
+  return { kind: "tool_call", tool, name, ...(target ? { target } : {}), ...(command ? { command } : {}) };
 }
 
 function assistantEvents(e: Json): NormalizedEvent[] {

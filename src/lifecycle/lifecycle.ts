@@ -70,6 +70,7 @@
  *   PERMISSION_BLOCKED (ROADMAP §6.2.1). PERMISSION_BLOCKED remains only for the client ceiling (BR-13), the
  *   privileged approval check (T3.4) and a refused bypass flag in the argv audit.
  */
+
 import { realpath } from "node:fs/promises";
 import {
   AcpPlanAuditError,
@@ -128,6 +129,8 @@ import {
   privilegedScopeHash,
   resolveTrustProfile,
 } from "../policy/index.js";
+import { workspaceReachesProviderState } from "../policy/provider-state.js";
+import { repoAgentConfigRefusal } from "../policy/repo-agent-config.js";
 import {
   type CollectDeps,
   collectFacts,
@@ -1195,6 +1198,19 @@ export class RunLifecycle {
           eligibility: [{ code: reasonCodeForIneligible(inv.reason), detail: inv.detail.slice(0, 300) }],
         },
       );
+    }
+    // ADR-0039 (Q-62, Q-63): Switchboard's own pre-spawn refusals, whatever the provider's policy or trust would do.
+    // A working directory that holds a provider state directory is refused for every run; repo-local agent config
+    // (MCP servers, hooks) is refused while repoConfig is `disabled`.
+    const stateReach = workspaceReachesProviderState(cwd, (this.opts.baseEnv ?? process.env).HOME);
+    if (stateReach !== undefined) {
+      return this.fail(runId, "PERMISSION_BLOCKED", `${req.provider}: ${stateReach}`, {
+        reason: "PROVIDER_STATE_REACHABLE",
+      });
+    }
+    const repoRefusal = repoAgentConfigRefusal(req.provider, profile.repoConfig, cwd);
+    if (repoRefusal !== undefined) {
+      return this.fail(runId, "PERMISSION_BLOCKED", repoRefusal, { reason: "REPO_AGENT_CONFIG_REFUSED" });
     }
     if (ws.mode === "worktree") {
       this.opts.workspace.extendLease(runId, 2 * inv.timeouts.wallClockMs + inv.timeouts.killGraceMs);

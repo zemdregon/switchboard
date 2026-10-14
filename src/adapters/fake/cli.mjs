@@ -2,7 +2,7 @@
 // Fake provider CLI for tests (T1.7, TDD §3.6). Needs no real provider, network or credentials.
 // Usage: cli.mjs [--scenario NAME] [--resume SESSION_ID] [--version | --auth-status | --smoke]
 // Scenarios: success, task_failure, auth_missing, rate_limit, partial_mutation, malformed_output, hang,
-// hang_ignore_term, env_report, git_commit, git_attempts, edit_files. The prompt, if any, arrives on stdin and is ignored except by git_commit.
+// hang_ignore_term, env_report, git_commit, git_attempts, edit_files, tool_calls. The prompt, if any, arrives on stdin and is ignored except by git_commit.
 // `env_report` lists the NAMES (never the values) of the environment variables the child received, for the
 // environment-allowlist test (T3.8, FR-EXE-07).
 //
@@ -141,6 +141,15 @@ if (argv.includes("--version")) {
       begin();
       await editFilesScenario();
       break;
+    case "tool_calls": {
+      // ADR-0039: reports the planned tool calls as events and runs NOTHING, so a test can feed the tool-call guard the
+      // command lines of a provider that ignored its deny rules (Q-62, Q-64) with no real Git or file access.
+      begin();
+      const plan = JSON.parse((await readPlan()) || "{}");
+      for (const c of plan.calls ?? []) emit({ type: "tool", ...c });
+      emit({ type: "result", ok: true, summary: "completed" });
+      break;
+    }
     case "hang":
     case "hang_ignore_term":
       if (scenario === "hang_ignore_term") process.on("SIGTERM", () => {});

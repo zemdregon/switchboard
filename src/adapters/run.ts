@@ -12,6 +12,7 @@ import {
   type ChannelAuditContext,
 } from "./audit.js";
 import { acpDeclarations } from "./providers.js";
+import { guardEvent, type ToolGuardContext } from "./tool-guard.js";
 import {
   type AcpMessage,
   createParseState,
@@ -101,6 +102,12 @@ export interface AdapterRunOptions {
   acp?: AdapterRunAcpOptions;
 }
 
+/** The guard's context for one run: HOME from the run's base environment (Switchboard's own when absent). */
+function toolGuardContext(cwd: string, opts: AdapterRunOptions, bypass: boolean): ToolGuardContext {
+  const home = (opts.baseEnv ?? process.env).HOME;
+  return { cwd, bypass, ...(home ? { home } : {}) };
+}
+
 export interface AdapterRun {
   cancel(): Promise<void>;
   done: Promise<AdapterRunOutcome>;
@@ -132,6 +139,7 @@ export function startAdapterRun(adapter: ProviderAdapter, inv: Invocation, opts:
 
   const state = createParseState();
   const events: NormalizedEvent[] = [];
+  const guardCtx = toolGuardContext(inv.cwd, opts, bypassPermitted(ctx));
   const run = supervise({
     argv: inv.argv,
     cwd: inv.cwd,
@@ -146,7 +154,8 @@ export function startAdapterRun(adapter: ProviderAdapter, inv: Invocation, opts:
     ...(opts.onSpawn ? { onSpawn: opts.onSpawn } : {}),
     // The supervisor already parsed the line; the adapter contract takes the line text, so re-serialize.
     onEvent: (value) => {
-      for (const ev of adapter.parseEvent(JSON.stringify(value), state)) {
+      for (const parsed of adapter.parseEvent(JSON.stringify(value), state)) {
+        const ev = guardEvent(parsed, guardCtx);
         events.push(ev);
         opts.onEvent?.(ev);
       }
@@ -198,7 +207,9 @@ function startAcpRun(
   const state = createParseState();
   const deniedToolCallIds = acpState(state).deniedToolCallIds;
   const events: NormalizedEvent[] = [];
-  const push = (ev: NormalizedEvent) => {
+  const guardCtx = toolGuardContext(inv.cwd, opts, bypassAdmitted);
+  const push = (raw: NormalizedEvent) => {
+    const ev = guardEvent(raw, guardCtx);
     events.push(ev);
     opts.onEvent?.(ev);
   };
