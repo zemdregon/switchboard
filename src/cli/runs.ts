@@ -49,6 +49,10 @@ export interface RunDetail extends RunSummary {
   finalize_commit?: { outcome: string; reason?: string; commit_sha?: string };
   /** T5.10 (FR-SES-05): present for a handoff run only (a run whose `request_json` names a bundle). */
   handoff?: HandoffRunView;
+  /** T6.5 (FR-MCP-10, LLD §16.5): the failed run this one retries, or null. */
+  retry_of: string | null;
+  /** T6.5 (FR-MCP-10): the run that supersedes this one (retry or failover successor), or null. */
+  superseded_by: string | null;
 }
 
 /**
@@ -207,7 +211,10 @@ export function showRun(
   try {
     const row = db
       .prepare(
-        `SELECT ${SUMMARY_COLS}, meta_session_id, attempt, failure_detail, branch, started_at, finished_at
+        `SELECT ${SUMMARY_COLS}, meta_session_id, attempt, failure_detail, branch, started_at, finished_at,
+                CASE WHEN attempt > 1 THEN parent_run_id END AS retry_of,
+                (SELECT s.id FROM run s WHERE s.parent_run_id = run.id ORDER BY s.attempt, s.created_at, s.id LIMIT 1)
+                  AS superseded_by
          FROM run WHERE id = ?`,
       )
       .get(runId) as Omit<RunDetail, "cancel_requested"> | undefined;
@@ -624,6 +631,9 @@ export function renderRun(d: {
     `  finished:    ${r.finished_at ?? "-"}`,
   ];
   if (r.failure_code) lines.push(`  failure:     ${r.failure_code}${r.failure_detail ? ` - ${r.failure_detail}` : ""}`);
+  // T6.5 (FR-MCP-10): the successor chain, one step each way.
+  if (r.retry_of) lines.push(`  retry of:    ${r.retry_of}`);
+  if (r.superseded_by) lines.push(`  superseded:  by ${r.superseded_by}`);
   if (r.git_policy_violations > 0) {
     lines.push(`  git policy:  VIOLATION (${r.git_policy_violations} git_policy_violation event(s); FR-GIT-03)`);
   }

@@ -1162,15 +1162,16 @@ describe("run lifecycle", () => {
     expect(artifactKinds(r.runId)).toContain("diff");
   });
 
-  it("a retryable code on a clean workspace is recorded as retry-eligible, but M1 creates no successor (FR-CAP-05 is M6)", async () => {
+  it("a retryable code on a clean workspace is retry-eligible and gets a linked successor (T6.5; FR-CAP-05)", async () => {
     const r = await submit("rate_limit");
     lifecycle.start();
     const done = await lifecycle.waitForTerminal(r.runId);
     expect(done.failure_code).toBe("RATE_LIMIT_TRANSIENT");
     const assess = events(r.runId).find((e) => e.type === "workspace_assessment")?.p;
-    expect(assess).toMatchObject({ mutated: false, retry_eligible: true, auto_retry: false });
-    await new Promise((res) => setTimeout(res, 50));
-    expect(ledger.listRunsForMetaSession(r.metaSessionId)).toHaveLength(1);
+    expect(assess).toMatchObject({ mutated: false, retry_eligible: true, auto_retry: true });
+    // Detailed retry behaviour is in retry.test.ts; here only the link (LLD §16.5).
+    const successor = ledger.listRunsForMetaSession(r.metaSessionId)[1];
+    expect(successor).toMatchObject({ parent_run_id: r.runId, attempt: 2 });
   });
 
   it("mutated failure: evidence checkpoint and diff kept, head rolled back to the pre-run checkpoint, never replayed", async () => {

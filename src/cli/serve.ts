@@ -445,6 +445,8 @@ async function runDaemon(
     perProviderConcurrency: config.limits.perProviderConcurrency,
     // T6.4: per-provider breaker thresholds (`capacity.breaker`, LLD §16.4).
     breaker: config.capacity.breaker,
+    // T6.5: automatic retry parameters and the reset wait bound (`capacity.retry`, `capacity.queue_horizon_seconds`).
+    retry: { ...config.capacity.retry, queueHorizonSeconds: config.capacity.queueHorizonSeconds },
     resolveProfile: createProfileResolver(config.profileOverrides),
     probeRunner: createProbeRunner(PROBE_ENV_ALLOWLIST),
     baseEnv: io.env,

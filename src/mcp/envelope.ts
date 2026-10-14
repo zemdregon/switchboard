@@ -57,6 +57,10 @@ export interface Envelope {
   artifacts: Record<string, string>;
   usage: { reported: ReportedUsage[] | null; estimated: null; capacity_confidence: null };
   approval?: { status: "PENDING" | "APPROVED" | "DENIED"; requested_at: string };
+  /** T6.5 (FR-MCP-10, LLD §16.5): the failed run this one retries; present only on a successor. */
+  retry_of?: string;
+  /** T6.5 (FR-MCP-10): the run that supersedes this one (its retry or failover successor); present only when set. */
+  superseded_by?: string;
   replayed?: boolean;
   events?: { seq: number; ts: string; type: string; payload: unknown }[];
 }
@@ -127,6 +131,16 @@ export function buildEnvelope(ledger: Ledger, run: RunRecord, scrub: (s: string)
     artifacts,
     usage: { reported: reportedUsage(ledger, run.id), estimated: null, capacity_confidence: null },
     ...approvalOf(ledger, run),
+    ...retryLinks(ledger, run),
+  };
+}
+
+/** T6.5 (FR-MCP-10): the successor chain links, one step each way. */
+function retryLinks(ledger: Ledger, run: RunRecord): Pick<Envelope, "retry_of" | "superseded_by"> {
+  const successor = ledger.findSuccessorRun(run.id);
+  return {
+    ...(run.parent_run_id !== null && run.attempt > 1 ? { retry_of: run.parent_run_id } : {}),
+    ...(successor !== undefined ? { superseded_by: successor.id } : {}),
   };
 }
 

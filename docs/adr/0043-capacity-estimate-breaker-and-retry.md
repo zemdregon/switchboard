@@ -56,8 +56,9 @@ event types), writes a table that nothing wrote before, and changes the run life
    `QUEUED` (T18). The chain ends without a successor when attempts are exhausted, when the provider's breaker is open,
    or when a provider-reported reset lies beyond the wait bound. A run orphaned by a controller restart is not retried
    automatically (the controller cannot know what the provider did outside the worktree); the orchestrator decides.
-5. **`get_run` gains `retry_of` and `superseded_by`** (both nullable, additive), so a caller's original `run_id` leads
-   to the attempt that is running now (FR-MCP-10).
+5. **`get_run` gains `retry_of` and `superseded_by`** (additive, present only when set, as `project_id` is), so a
+   caller's original `run_id` leads to the attempt that is running now (FR-MCP-10). `runs show` prints both, `null`
+   when unset.
 6. **One projection for `get_capacity`, `switchboard capacity` and `doctor`.** Each provider entry carries the FR-CAP-02
    fields. Each figure is labelled by source (`controller_estimated` for the estimate, `provider_reported` for
    `reset_at` and `explicit_remaining`). On any surface, the word "remaining" appears only next to a provider-reported
