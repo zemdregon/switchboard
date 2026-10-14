@@ -717,15 +717,16 @@ probe.
 "providers": { "<id>": { "models": {
   "ids": ["<model-id>"],                    // operator-held model ids; at most 256, unique
   "aliases": { "<alias>": "<model-id>" },   // alias to the id passed to the provider; at most 256
-  "context_limits": { "<model-id>": 0 }     // positive integer tokens, as the operator states them
+  "context_limits": { "<model-id>": 0 },    // positive integer tokens, as the operator states them
+  "capabilities": { "<model-id>": "low" }   // T7.8: "low" | "medium" | "high", operator-declared
 } } }
 ```
 
 An id, alias or key matches `^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$` (**Assumption**: plain-identifier shape, which also
 keeps option-like values out of argv). Examples use placeholders: neither this document nor adapter source names a model.
 
-**In-memory state (`src/models/registry.ts`, `ModelRegistry`).** Per adapter id: the configured `ids`, `aliases` and
-`context_limits`, and the last *listing*, a set of ids taken from `ProbeResult.modelsListed`.
+**In-memory state (`src/models/registry.ts`, `ModelRegistry`).** Per adapter id: the configured `ids`, `aliases`,
+`context_limits` and `capabilities`, and the last *listing*, a set of ids taken from `ProbeResult.modelsListed`.
 
 **Refresh rule.** Whenever eligibility collects facts and a provider's probe completed with every step `ok`, the
 collector calls `refresh(adapterId, probe.modelsListed)`:
@@ -757,8 +758,41 @@ The `Ineligible` follows the usual BR-3 mapping (`ELIGIBILITY_NONE`, or the name
 `require_provider`). `contextLimit(provider, id)` returns the configured limit or nothing; no consumer exists before M6/M7
 (capacity and affinity), and no default limit is ever supplied by Switchboard.
 
-**Not in scope.** Dispatch-time `compile` and `delegate_task` do not yet carry a `model` argument; wiring a request
-parameter is a separate change with its own contract update. `list_capabilities` `models` stays `[]` until then.
+**Capability floor and `minimum_capability` routing (T7.8, FR-RTE-01).** When a request specifies `minimum_capability`
+(`low`, `medium`, or `high`) in `routing`:
+
+1. Capability order is strictly `low` < `medium` < `high`. A model declared at capability $C$ meets floor $F$ if and only
+   if $\text{rank}(C) \ge \text{rank}(F)$.
+2. Operator-declared model capability comes from `providers.<id>.models.capabilities`. Switchboard assumes no capability
+   for any real model.
+3. Undeclared models fail closed with `CAPABILITY_MISSING`. An unrestricted provider (no `models` configuration) or a
+   provider with no models declared at or above the requested floor is ineligible (`CAPABILITY_MISSING`, detail naming the
+   provider and floor).
+4. Candidate models for an eligible provider are filtered to those meeting the floor; each candidate is verified against
+   the adapter's `compileCheck` before admission. With T7.12 model pinning, admitted providers compile with the candidate
+   model that satisfied the capability floor (`facts.model`), recorded in `request_json.model` and decision records.
+5. When `require_provider` is true, an ineligible required provider returns the BR-3 reason code (`ELIGIBILITY_NONE` with
+   `"required provider <provider> is ineligible: CAPABILITY_MISSING"`). When no providers meet the floor, routing returns
+   `ELIGIBILITY_NONE` with per-provider exclusion reasons.
+
+**Hard constraint mapping onto existing reasons (T7.8, FR-RTE-01, BR-3).** FR-RTE-01 requires evaluating the hard
+constraints and mapping exclusions onto existing reason codes:
+
+- *Minimum capability:* evaluated against operator-declared registry capabilities; models below the floor or
+  undeclared fail closed with `CAPABILITY_MISSING` (mapping to `ELIGIBILITY_NONE` under BR-3 or the required
+  provider reason).
+- *Sandbox strength:* enforced via trust profile compilation (`PROFILE_UNSUPPORTED`) and platform verification
+  (`PROFILE_PLATFORM_UNVERIFIED`).
+- *Required tools:* enforced via adapter capability check and trust profile compilation (`CAPABILITY_MISSING` /
+  `PROFILE_UNSUPPORTED`).
+- *Concurrency (Q-5: queue):* providers at concurrency limit or ingress queue full map to `ELIGIBILITY_NONE` with
+  reason `QUEUE_FULL` (BR-3 "at concurrency", ROADMAP Q-5).
+- *Health:* mapped to circuit breaker cool-down (`CIRCUIT_OPEN`) and binary/probe failure (`PROBE_FAILED`), both
+  mapping to `ELIGIBILITY_NONE` under BR-3.
+
+**Dispatch compile and model wiring (T7.12, T7.8).** Dispatch-time `compile` accepts a `model` parameter; admitted
+providers compile with the model that satisfied `minimum_capability` (T7.8) or the remembered model under affinity model
+pinning (T7.12). `list_capabilities` `models` reflects the registry listings.
 
 ## 3. MCP tool contracts
 

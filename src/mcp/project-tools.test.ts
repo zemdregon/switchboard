@@ -13,6 +13,7 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -654,7 +655,7 @@ describe("approval (BR-32): container, push and widening wait for the operator",
     symlinkSync(outside, repo);
     const moved = await call("delegate_task", delegate());
     expect(moved.body.error).toMatchObject({ code: "PERMISSION_BLOCKED", details: { reason: "OUTSIDE_ALLOWED_ROOT" } });
-    rmSync(repo);
+    unlinkSync(repo);
     renameSync(`${repo}-moved`, repo);
 
     await call("create_project", { project: definition({ id: "push-app" }, BRANCH) });

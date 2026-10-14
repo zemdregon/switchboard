@@ -18,6 +18,7 @@
 import type { FailureCode } from "../adapters/failure.js";
 import type { VersionGateResult } from "../adapters/manifest/index.js";
 import type { AuthResult, Ineligible, ProviderId, TrustProfile } from "../adapters/types.js";
+import type { ModelCapability } from "../models/registry.js";
 
 /** Ascending privilege order (SRS FR-POL-01 table order; matches `TRUST_PROFILES` in config). */
 export const TRUST_PROFILE_ORDER: readonly TrustProfile[] = [
@@ -156,10 +157,13 @@ export interface ProviderFacts {
   circuitOpenUntil?: string;
   /** T6.6: set while a provider-reported reset after a `QUOTA_EXHAUSTED` run is still ahead (that reset). */
   quotaExhaustedUntil?: string;
+  /** T7.8: model that satisfied capability check or compile check. */
+  model?: string;
 }
 
 export interface CapabilityRequirements {
   model?: string;
+  minimumCapability?: ModelCapability;
   shellAllowlist?: readonly string[];
   network: "off" | "allowlist" | "policy" | "scoped";
   writable: boolean;
@@ -314,6 +318,7 @@ function checkProvider(f: ProviderFacts, input: EligibilityInput): EligibilityRe
       trustProfile: input.trustProfile,
       requirements: {
         model: input.requirements.model ?? null,
+        minimumCapability: input.requirements.minimumCapability ?? null,
         shellAllowlist: input.requirements.shellAllowlist ? [...input.requirements.shellAllowlist] : null,
         network: input.requirements.network,
         writable: input.requirements.writable,

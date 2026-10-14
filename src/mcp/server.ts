@@ -33,8 +33,8 @@
  *   any scope of a small representative set (`REPRESENTATIVE_PRIVILEGED_SCOPES`, Proposed, LLD §3.1 "Listing").
  * - `verification_commands` (T3.10, FR-EXE-08): argv arrays run by the lifecycle after the agent (VERIFYING). V7
  *   refuses a non-empty list under `inspect-untrusted` (INVALID_REQUEST, `details.field`), and re-checks the shape
- *   (non-empty executable, no NUL). `minimum_capability` fails ELIGIBILITY_NONE: it is a hard constraint (BR-4) and no
- *   model registry exists before M7.
+ *   (non-empty executable, no NUL). `minimum_capability` evaluates against operator-declared model capability in the
+ *   model registry (T7.8, FR-RTE-01).
  * - The idempotency hash covers the validated, defaults-filled input with the workspace canonicalised, excluding
  *   `idempotency_key` and `wait_seconds` (which do not change what runs) and independent of the routed provider.
  * - Provider choice among eligible candidates: `provider_preference` if eligible, else candidate (registration) order
@@ -119,6 +119,7 @@ import {
   requestHash,
   verificationCommandsProblem,
 } from "../lifecycle/index.js";
+import type { ModelCapability } from "../models/registry.js";
 import {
   checkScopeLists,
   type PrivilegedScope,
@@ -240,7 +241,7 @@ interface ProjectResolution {
   /** T9.9: the in-force revision of a dynamic project; absent for a configured one. */
   readonly revision?: number;
 }
-type Routing = { provider_preference?: string; require_provider?: boolean; minimum_capability?: string };
+type Routing = { provider_preference?: string; require_provider?: boolean; minimum_capability?: ModelCapability };
 
 /** The lifecycle's V10 message (`findIdempotentRun`), reused so another subject's key is indistinguishable. */
 const IDEMPOTENCY_CONFLICT = "idempotency key reused with different parameters";
@@ -459,12 +460,10 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     if (routing.require_provider === true && named === undefined) {
       throw invalid("routing.require_provider needs routing.provider_preference", { field: "routing" });
     }
-    if (routing.minimum_capability !== undefined) {
-      throw new ToolError(
-        "ELIGIBILITY_NONE",
-        "minimum_capability cannot be evaluated yet (no model registry); omit it",
-        { field: "routing.minimum_capability" },
-      );
+    if (routing.minimum_capability !== undefined && !["low", "medium", "high"].includes(routing.minimum_capability)) {
+      throw invalid(`unknown minimum_capability ${routing.minimum_capability}`, {
+        field: "routing.minimum_capability",
+      });
     }
   };
 
@@ -562,32 +561,61 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
   };
 
   /**
-   * T7.12 (FR-RTE-08, Q-90, LLD §17.6): on a held decision, pin the project's remembered model when the adapter declares
+   * T7.12 (FR-RTE-08, Q-90, LLD §17.6) and T7.8: on a held decision, pin the project's remembered model when the adapter declares
    * that a reported model id is accepted by its model flag and stage 1 (the model registry and the adapter's own
-   * `compile`) still admits the provider with it; otherwise the run keeps the adapter default. The outcome is recorded
+   * `compile`) still admits the provider with it; otherwise the run keeps the adapter default. With T7.8 minimum_capability,
+   * admitted providers compile with the model that satisfied the capability check. The outcome is recorded
    * in the decision's `affinity.model_pin`. Never moves the provider (fail closed: a refused model is not a reason).
    */
   const pinModel = async (
     routed: RouteDecisionResult & { provider: ProviderId },
     question: Omit<EligibilityQuestion, "candidates" | "requiredProvider" | "model">,
     privileged: boolean,
+    minimumCapability?: ModelCapability,
+    satisfyingModel?: string,
   ): Promise<{ routed: RouteDecisionResult & { provider: ProviderId }; model: string | undefined }> => {
     const adapter = deps.registry.get(routed.provider);
     const plan = planModelPin(routed.affinity, adapter !== undefined && acceptsReportedModel(adapter), privileged);
-    if (plan === null) return { routed, model: undefined };
     const keep = (pin: Parameters<typeof withModelPin>[1]) => ({
       routed: { ...withModelPin(routed, pin), provider: routed.provider },
       model: pin.model ?? undefined,
     });
-    if (plan.candidate === null) return keep({ model: null, outcome: plan.outcome });
+    if (plan === null) {
+      if (minimumCapability !== undefined && satisfyingModel !== undefined) {
+        return { routed, model: satisfyingModel };
+      }
+      return { routed, model: undefined };
+    }
+    if (plan.candidate === null) {
+      if (minimumCapability !== undefined && satisfyingModel !== undefined) {
+        return {
+          routed: {
+            ...withModelPin(routed, { model: satisfyingModel, outcome: "pinned" }),
+            provider: routed.provider,
+          },
+          model: satisfyingModel,
+        };
+      }
+      return keep({ model: null, outcome: plan.outcome });
+    }
     const check = await lifecycle.checkEligibility({
       ...question,
       candidates: [routed.provider],
       requiredProvider: routed.provider,
       model: plan.candidate,
+      ...(minimumCapability !== undefined ? { minimumCapability } : {}),
     });
     if (!check.decision.eligible.includes(routed.provider)) {
       const code = check.decision.excluded[0]?.primary.code ?? "ELIGIBILITY_NONE";
+      if (minimumCapability !== undefined && satisfyingModel !== undefined) {
+        return {
+          routed: {
+            ...withModelPin(routed, { model: satisfyingModel, outcome: "pinned" }),
+            provider: routed.provider,
+          },
+          model: satisfyingModel,
+        };
+      }
       return keep({ model: null, outcome: "model_refused", refused_code: code });
     }
     return keep({ model: plan.candidate, outcome: "pinned" });
@@ -664,6 +692,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
 
     const required = routing?.require_provider === true ? (routing.provider_preference as ProviderId) : undefined;
     const privileged = scope?.ok === true;
+    const minimumCapability = routing?.minimum_capability;
     const narrowed = projectCandidates(resolved, required); // BR-23: before eligibility, so nothing is probed for them
     const answer = await lifecycle.checkEligibility({
       candidates: narrowed.candidates,
@@ -672,6 +701,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       clientMaxProfile: resolved?.effectiveMax ?? maxTrustProfile,
       cwd: workspace,
       ...(scope?.ok ? { profile: eligibilityProfile(scope.scope) } : {}),
+      ...(minimumCapability !== undefined ? { minimumCapability } : {}),
     }); // V11
     if (answer.decision.outcome.kind !== "eligible" && admissible(answer, privileged).length === 0) {
       throw eligibilityError(answer);
@@ -703,6 +733,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
           }
         : {}),
     });
+    const capModel = answer.input.facts.find((f) => f.provider === routed0.provider)?.model;
     const { routed, model } = await pinModel(
       routed0,
       {
@@ -711,6 +742,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         cwd: workspace,
       },
       privileged,
+      minimumCapability,
+      capModel,
     );
     const provider = routed.provider;
 
@@ -785,6 +818,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     const approvedScope = approval ? parsePrivilegedScope(approval.scope) : undefined;
     if (approvedScope && !approvedScope.ok) throw invalid(`meta-session ${sessionId} approval holds an invalid scope`);
     const privileged = approval !== undefined;
+    const minimumCapability = routing?.minimum_capability;
     const ask = (candidates: readonly ProviderId[], requiredProvider?: ProviderId) =>
       lifecycle.checkEligibility({
         candidates,
@@ -793,6 +827,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         clientMaxProfile: resolved?.effectiveMax ?? maxTrustProfile,
         cwd: workspace,
         ...(approvedScope?.ok ? { profile: eligibilityProfile(approvedScope.scope) } : {}),
+        ...(minimumCapability !== undefined ? { minimumCapability } : {}),
       });
 
     // ---- BR-18 (LLD §15.7 steps 1 to 4): resume or handoff, and on which provider. Nothing is written here. ----

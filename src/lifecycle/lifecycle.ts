@@ -149,7 +149,7 @@ import {
   type RunState,
   type TrustProfile,
 } from "../ledger/index.js";
-import { MODEL_ID_PATTERN } from "../models/registry.js";
+import { MODEL_ID_PATTERN, type ModelCapability } from "../models/registry.js";
 import {
   canonicalScopeJson,
   type PrivilegedScope,
@@ -374,6 +374,11 @@ export interface EligibilityQuestion {
    * as the run would be compiled. Absent: the adapter default.
    */
   readonly model?: string;
+  /**
+   * T7.8 (FR-RTE-01): minimum capability tier to evaluate against operator-declared model capabilities in the model
+   * registry. Absent: unconstrained.
+   */
+  readonly minimumCapability?: ModelCapability;
 }
 
 export interface MetaSessionContext {
@@ -980,6 +985,7 @@ export class RunLifecycle {
         requirements: {
           ...requirementsFor(q.trustProfile, profile),
           ...(q.model !== undefined ? { model: q.model } : {}),
+          ...(q.minimumCapability !== undefined ? { minimumCapability: q.minimumCapability } : {}),
         },
         cwd: q.cwd,
       },

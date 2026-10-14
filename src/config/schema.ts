@@ -257,6 +257,12 @@ const modelsSchema = {
       propertyNames: { pattern: MODEL_ID_PATTERN },
       additionalProperties: { type: "integer", minimum: 1 },
     },
+    capabilities: {
+      type: "object",
+      maxProperties: 256,
+      propertyNames: { pattern: MODEL_ID_PATTERN },
+      additionalProperties: { type: "string", enum: ["low", "medium", "high"] },
+    },
   },
 } as const;
 

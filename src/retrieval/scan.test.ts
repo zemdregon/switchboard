@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -164,7 +164,7 @@ describe("scanContext in a Git context", () => {
     const moved = await scanContext(root, OPTS);
     expect(allText(moved)).not.toContain(marker("escape-parent"));
     expect(reasonOf(moved, "docs/readme.md")).toBe("symlink_escape");
-    rmSync(path.join(root, "docs"));
+    unlinkSync(path.join(root, "docs"));
     symlinkSync(path.join(root, "inside"), path.join(root, "docs"));
     const inner = await scanContext(root, OPTS);
     expect(reasonOf(inner, "docs/readme.md")).toBe("special_file");

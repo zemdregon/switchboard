@@ -26,6 +26,7 @@ import { createIdGenerator } from "../../ids/index.js";
 import { createLedger, type Ledger, openLedger, type RouteDecisionRow, type TrustProfile } from "../../ledger/index.js";
 import { RunLifecycle } from "../../lifecycle/index.js";
 import { createSwitchboardServer, type SwitchboardMcpServer } from "../../mcp/index.js";
+import type { ModelRegistry } from "../../models/registry.js";
 import { WorkspaceManager } from "../../workspace/index.js";
 
 const GIT_ENV = {
@@ -151,6 +152,8 @@ export interface HarnessOptions {
   lifecycle?: Record<string, unknown>;
   /** Extra MCP server config (for example `routing`). */
   config?: Record<string, unknown>;
+  /** T7.8: model registry for minimum_capability tests. */
+  models?: ModelRegistry;
 }
 
 export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> {
@@ -195,6 +198,7 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
         eligible: true,
         evidence: { provider: id, observedVersion: version, validatedRange: "test", validatedCliVersion: "test" },
       }),
+      ...(opts.models !== undefined ? { models: opts.models } : {}),
     },
     ...(opts.lifecycle ?? {}),
   });
