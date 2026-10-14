@@ -72,8 +72,35 @@ describe("shipped manifests", () => {
 
 describe("semver", () => {
   it("parses version output", () => {
-    expect(parseVersion("2.1.296 (Claude Code)")).toMatchObject({ major: 2, minor: 1, patch: 296 });
-    expect(parseVersion("codex-cli 0.5.1")).toMatchObject({ major: 0, minor: 5, patch: 1 });
+    expect(parseVersion("2.1.296 (Claude Code)")).toMatchObject({ major: 2, minor: 1, patch: 296, prerelease: false });
+    expect(parseVersion("codex-cli 0.5.1")).toMatchObject({ major: 0, minor: 5, patch: 1, prerelease: false });
+    expect(parseVersion("2026.10.12-d47ca18")).toEqual({
+      major: 2026,
+      minor: 10,
+      patch: 12,
+      prerelease: false,
+      build: "d47ca18",
+    });
+    expect(parseVersion("2026.10.12+d47ca18")).toEqual({
+      major: 2026,
+      minor: 10,
+      patch: 12,
+      prerelease: false,
+      build: "d47ca18",
+    });
+    expect(parseVersion("2026.10.12-gd47ca18")).toEqual({
+      major: 2026,
+      minor: 10,
+      patch: 12,
+      prerelease: false,
+      build: "gd47ca18",
+    });
+    expect(parseVersion("2026.10.12-alpha.1")).toMatchObject({
+      major: 2026,
+      minor: 10,
+      patch: 12,
+      prerelease: true,
+    });
     expect(parseVersion("garbage")).toBeNull();
     expect(parseVersion(null)).toBeNull();
   });
@@ -88,6 +115,20 @@ describe("semver", () => {
     const pre = parseVersion("2.1.300-beta.1");
     if (!pre) throw new Error("unparseable");
     expect(satisfies(pre, ">=2.1.296 <2.2.0")).toBe(false);
+  });
+  it("evaluates ranges against CalVer versions with commit hash (T4.48)", () => {
+    const cur = parseVersion("2026.10.12-d47ca18");
+    if (!cur) throw new Error("unparseable");
+    expect(satisfies(cur, ">=2026.10.12 <2026.11.0")).toBe(true);
+    expect(satisfies(cur, ">=2026.10.12-d47ca18 <2026.11.0")).toBe(true);
+    expect(satisfies(cur, "=2026.10.12")).toBe(true);
+    expect(satisfies(cur, "2026.10.12")).toBe(true);
+    expect(satisfies(cur, ">=2026.10.13")).toBe(false);
+    expect(satisfies(cur, "<2026.10.12")).toBe(false);
+    expect(satisfies(cur, ">=2026.10.12-beta.1")).toBe(false);
+    const curPre = parseVersion("2026.10.12-preview.1");
+    if (!curPre) throw new Error("unparseable");
+    expect(satisfies(curPre, ">=2026.10.12 <2026.11.0")).toBe(false);
   });
 });
 

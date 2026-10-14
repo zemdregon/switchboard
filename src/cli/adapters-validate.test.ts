@@ -138,7 +138,41 @@ describe("adapters validate: success (T4.4)", () => {
     expect(text).toContain("commit the manifest file yourself");
     expect(text).toContain("Result: OK");
   });
+
+  it("validates a CalVer version with a commit hash (T4.48)", async () => {
+    const { buildUpdatedManifest } = await import("./adapters-validate.js");
+    const { text, changes } = buildUpdatedManifest(
+      MANIFEST,
+      "fake",
+      "2026.10.12-d47ca18",
+      "2026-10-14",
+      "cursor live check ok",
+    );
+    expect(changes).toEqual({
+      validated_cli_version: "2026.10.12",
+      validated_on: "2026-10-14",
+      validated_version_range: ">=2026.10.12 <2026.11.0",
+      notes_appended: "Evidence (adapters validate, 2026-10-14): cursor live check ok",
+    });
+    const m = parseManifest(text);
+    expect(m.validated_cli_version).toBe("2026.10.12");
+    expect(m.validated_version_range).toBe(">=2026.10.12 <2026.11.0");
+  });
+
+  it("validates a CalVer version with a commit hash end-to-end (T4.48)", async () => {
+    const r = await validate(new CalverCommitAdapter());
+    expect(r.code).toBe(0);
+    const m = parseManifest(readFileSync(file, "utf8"));
+    expect(m.validated_cli_version).toBe("2026.10.12");
+    expect(m.validated_version_range).toBe(">=2026.10.12 <2026.11.0");
+  });
 });
+
+class CalverCommitAdapter extends FakeAdapter {
+  override async probe(runner: Parameters<FakeAdapter["probe"]>[0]): Promise<ProbeResult> {
+    return { ...(await super.probe(runner)), binaryVersion: "2026.10.12-d47ca18" };
+  }
+}
 
 class StepFailAdapter extends FakeAdapter {
   override async probe(runner: Parameters<FakeAdapter["probe"]>[0]): Promise<ProbeResult> {
