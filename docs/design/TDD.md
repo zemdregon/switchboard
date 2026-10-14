@@ -244,6 +244,12 @@ and its hostile streams (credential-path read, out-of-worktree write, network at
 compile and parse behaviour against replayed, synthetic streams only; "no escape" on a real CLI is the operator leg
 (T3.9, T4.n8). Live scripts: `scripts/live-smoke.mjs` loads `scripts/live/providers/<id>.mjs` (the contract is in the
 header of those files) and still exits 0 without running anything unless `SWITCHBOARD_LIVE_TESTS=1`.
+`scripts/live-pair.mjs` (T5.11, `npm run test:live:pair`) is the M5 pair: it delegates one edit to the first provider of
+a pair and continues the same meta-session on the second through `continue_task`, for `claude:codex` and `codex:claude`
+by default (`SWITCHBOARD_LIVE_PAIR=<first>:<second>` for one direction), under the same rules (opt-in, no bypass flag,
+no credential read, no prompt or transcript printed). It records statuses, failure codes, bindings without native
+session ids, and the bundle's artifact id and SHA-256. A provider that is not installed, not in its validated range or
+not logged in makes its checks `NOT_CHECKED`, and the script exits 1. Running it is the operator task T5.12.
 
 Principles: tests pass with no provider CLI installed or logged in; secret-pattern scan over all test outputs
 (NFR-SEC-01); coverage targets are not set until M1 measurement (no number proposed).

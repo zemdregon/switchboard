@@ -19,6 +19,7 @@
     "test": "vitest run",
     "bench": "npm run build && node scripts/bench-perf.mjs",
     "test:live": "npm run build && node scripts/live-smoke.mjs",
+    "test:live:pair": "npm run build && node scripts/live-pair.mjs",
     "check-docs": "node scripts/check-docs.mjs"
   },
   "devDependencies": {
