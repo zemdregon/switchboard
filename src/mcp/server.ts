@@ -40,7 +40,11 @@
  * - Provider choice among eligible candidates: `provider_preference` if eligible, else candidate (registration) order
  *   (BR-4 tie-break until M7 scoring).
  * - Runs, meta-sessions and artifacts are visible only to the client that created them; another client's id is
- *   reported as unknown (INVALID_REQUEST), so ids are not an existence oracle across clients.
+ *   reported as unknown (INVALID_REQUEST), so ids are not an existence oracle across clients. Over the network
+ *   transport (T13.5, FR-MCP-15, Q-78) the same holds per subject: a meta-session opened over HTTP is bound to the
+ *   caller's OAuth client (`subject`) and is unknown to every other subject and to stdio; one opened over stdio is
+ *   unknown over HTTP. A run belongs to its meta-session. An idempotency key another subject used is reported exactly
+ *   like a key reused with different parameters.
  * - `continue_task` (T5.6; FRD BR-18, WF-2, WF-3; LLD §15.7; ADR-0038) chooses between a native resume and a handoff.
  *   With no other provider named, the session provider `P0` (latest binding, else latest run) resumes its native
  *   session when it is eligible and its origin directory is usable (T5.7); it is a handoff preferring `P0` when there
@@ -132,6 +136,7 @@ import {
 import { gitText } from "../workspace/git.js";
 import { buildEnvelope, compactEvents, type Envelope } from "./envelope.js";
 import { errorEnvelope, invalid, ToolError, toToolError } from "./errors.js";
+import type { SubjectBindings } from "./http-subjects.js";
 import { createProjectTools, dynamicListItem, type ProjectTools } from "./project-tools.js";
 import {
   inputSchema,
@@ -173,6 +178,13 @@ export interface McpServerDeps {
   readonly projectStore?: DynamicProjectStore;
   /** Configured MCP client this session is bound to (`serve --client <id>`). */
   readonly clientId: string;
+  /**
+   * T13.5 (FR-MCP-15, Q-78): the OAuth client id (token subject) of an HTTP request; absent on stdio. Requires
+   * `subjectBindings`.
+   */
+  readonly subject?: string;
+  /** T13.5: meta-session to subject bindings. Absent on stdio means no HTTP-bound meta-session is filtered out. */
+  readonly subjectBindings?: SubjectBindings;
   /** Routing candidate order (BR-4 tie-break). Defaults to registry registration order. */
   readonly candidateOrder?: readonly ProviderId[];
   /** Clock for `get_capacity` (T6.3); defaults to the system clock. */
@@ -202,6 +214,9 @@ interface ProjectResolution {
 }
 type Routing = { provider_preference?: string; require_provider?: boolean; minimum_capability?: string };
 
+/** The lifecycle's V10 message (`findIdempotentRun`), reused so another subject's key is indistinguishable. */
+const IDEMPOTENCY_CONFLICT = "idempotency key reused with different parameters";
+
 const INSTRUCTIONS =
   "Switchboard delegates coding tasks to provider CLIs. delegate_task and continue_task are asynchronous: they return " +
   "a run_id at once; poll get_run (or pass wait_seconds, at most 60) until status is SUCCEEDED, FAILED or CANCELLED, " +
@@ -213,6 +228,10 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
   if (!deps.lifecycle.gatesEligibility) {
     // NFR-SEC-06: never accept MCP work with a lifecycle that skips the version/manifest/auth gate at dispatch.
     throw new Error("the run lifecycle must be constructed with eligibility dependencies before serving MCP");
+  }
+  if (deps.subject !== undefined && deps.subjectBindings === undefined) {
+    // FR-MCP-15: an HTTP server that could not record or check its subject must not serve.
+    throw new Error("an MCP server for an HTTP subject needs the subject bindings");
   }
   const maxTrustProfile = client.maxTrustProfile;
   const { lifecycle, ledger } = deps;
@@ -260,9 +279,19 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     return order.filter((id) => registered.has(id));
   };
 
+  /** T13.5 (Q-78): the meta-session's subject is this caller's (its OAuth client over HTTP, none over stdio). */
+  const ownSubject = (metaSessionId: string): boolean =>
+    deps.subjectBindings === undefined || deps.subjectBindings.subjectOf(metaSessionId) === deps.subject;
+  /** Bind a meta-session opened by this request to its HTTP subject (stdio records nothing). */
+  const bindSubject = (metaSessionId: string): void => {
+    if (deps.subject !== undefined) deps.subjectBindings?.bind(metaSessionId, deps.subject);
+  };
+
   const ownRun = (runId: string): RunRecord => {
     const run = ledger.getRunRecord(runId);
-    if (!run || run.client_id !== deps.clientId) throw invalid(`unknown run ${runId}`);
+    if (!run || run.client_id !== deps.clientId || !ownSubject(run.meta_session_id)) {
+      throw invalid(`unknown run ${runId}`);
+    }
     return run;
   };
 
@@ -540,6 +569,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     const key = a.idempotency_key as string | undefined;
     if (key !== undefined) {
       const prior = lifecycle.findIdempotentRun(deps.clientId, key, hash); // V10
+      // T13.5: another subject's key reads exactly like a key reused with different parameters.
+      if (prior && !ownSubject(prior.meta_session_id)) throw invalid(IDEMPOTENCY_CONFLICT);
       if (prior) {
         await waitBounded(prior.id, a.wait_seconds as number);
         return envelopeOf(prior.id, { replayed: true });
@@ -597,6 +628,12 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
           }
         : {}),
     });
+    if (submitted.replayed) {
+      // A concurrent request with the same key won the admission race: it must be this subject's.
+      if (!ownSubject(submitted.metaSessionId)) throw invalid(IDEMPOTENCY_CONFLICT);
+    } else {
+      bindSubject(submitted.metaSessionId);
+    }
     await waitBounded(submitted.runId, a.wait_seconds as number);
     return envelopeOf(submitted.runId, submitted.replayed ? { replayed: true } : {});
   };
@@ -605,7 +642,9 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     const sessionId = a.meta_session_id as string;
     const session = ledger.getMetaSession(sessionId);
     const ctx = session ? lifecycle.metaSessionContext(sessionId) : undefined;
-    if (!session || !ctx || ctx.clientId !== deps.clientId) throw invalid(`unknown meta-session ${sessionId}`); // C2
+    if (!session || !ctx || ctx.clientId !== deps.clientId || !ownSubject(sessionId)) {
+      throw invalid(`unknown meta-session ${sessionId}`); // C2; T13.5 (Q-78) for the subject
+    }
     if (session.status !== "ACTIVE") throw invalid(`meta-session ${sessionId} is closed`);
     if (ctx.activeRunId !== undefined) {
       throw invalid(`meta-session ${sessionId} has an active run ${ctx.activeRunId}`, { run_id: ctx.activeRunId });

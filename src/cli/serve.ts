@@ -61,7 +61,7 @@ import {
   providerEntries,
   type VersionGateResult,
 } from "../adapters/index.js";
-import { ArtifactStore } from "../artifacts/index.js";
+import { ArtifactStore, defaultRedactor } from "../artifacts/index.js";
 import { ConfigError, loadConfig, type ResolvedConfig } from "../config/index.js";
 import { GitToolService } from "../git/channel.js";
 import { GitPublisher } from "../git/commit.js";
@@ -78,6 +78,7 @@ import {
   OAuthClientStore,
   OAuthTokenStore,
   PairingCodeStore,
+  SubjectBindingStore,
   type SwitchboardMcpServer,
   startHttpTransport,
   startStdioServer,
@@ -153,11 +154,17 @@ export interface Logger {
   error(msg: string, fields?: Record<string, unknown>): void;
 }
 
-/** JSON-lines logger on stderr (TDD §3.3). Callers pass ids, counts and codes only, never prompts or env values. */
+/**
+ * JSON-lines logger on stderr (TDD §3.3). Callers pass ids, counts and codes only, never prompts or env values. T13.5
+ * (FR-MCP-15): every line also passes the secret redactor, so a token or code that reached an error message is
+ * `[REDACTED]` before it leaves the process.
+ */
 export function stderrLogger(io: CliIo): Logger {
   const now = io.now ?? (() => new Date());
-  const write = (level: string, msg: string, fields: Record<string, unknown> = {}) =>
-    io.stderr.write(`${JSON.stringify({ ts: now().toISOString(), level, component: "serve", msg, ...fields })}\n`);
+  const write = (level: string, msg: string, fields: Record<string, unknown> = {}) => {
+    const line = JSON.stringify({ ts: now().toISOString(), level, component: "serve", msg, ...fields });
+    io.stderr.write(`${defaultRedactor(Buffer.from(line, "utf8")).toString("utf8")}\n`);
+  };
   return {
     info: (m, f) => write("info", m, f),
     warn: (m, f) => write("warn", m, f),
@@ -526,6 +533,8 @@ async function runDaemon(
       },
       ...(now ? { now } : {}),
       projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
+      // T13.5 (FR-MCP-15, Q-78): stdio sees only meta-sessions with no HTTP subject; HTTP sees only its own.
+      subjectBindings: new SubjectBindingStore(db, now ? { now } : {}),
     };
     mcp = await startStdioServer({ ...mcpDeps, clientId });
     mcp.server.onclose = () => resolveStop("mcp transport closed");
@@ -547,7 +556,9 @@ async function runDaemon(
       // client's maximum profile; the same lifecycle, ledger and policy as stdio.
       onClientRefused: (reason, oauthClientId) =>
         log.warn("refused an HTTP MCP request", { reason, client_id: oauthClientId }),
-      mcpServerFor: (mcpClientId) => createSwitchboardServer({ ...mcpDeps, clientId: mcpClientId }),
+      // T13.5 (FR-MCP-15, Q-78): each meta-session it opens is bound to the token's OAuth client.
+      mcpServerFor: (mcpClientId, oauthClientId) =>
+        createSwitchboardServer({ ...mcpDeps, clientId: mcpClientId, subject: oauthClientId }),
       // T13.7 (FR-MCP-16, Q-74): open registration creates a pending client only; the operator approves it later.
       clients: oauthClients,
       onClientRegistered: (clientId) =>

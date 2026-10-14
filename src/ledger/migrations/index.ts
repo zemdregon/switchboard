@@ -10,6 +10,7 @@ import { sql as sql0009 } from "./0009_pr_draft_artifact.js";
 import { sql as sql0010 } from "./0010_oauth_token.js";
 import { sql as sql0011 } from "./0011_oauth_client.js";
 import { sql as sql0012 } from "./0012_oauth_pairing_code.js";
+import { sql as sql0013 } from "./0013_http_subject.js";
 
 export interface Migration {
   readonly version: number;
@@ -33,4 +34,5 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 10, name: "oauth_token", sql: sql0010 },
   { version: 11, name: "oauth_client", sql: sql0011 },
   { version: 12, name: "oauth_pairing_code", sql: sql0012 },
+  { version: 13, name: "http_subject", sql: sql0013 },
 ];

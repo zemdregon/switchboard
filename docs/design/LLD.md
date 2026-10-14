@@ -1365,11 +1365,37 @@ CREATE TABLE oauth_pairing_code (        -- migration 0012 (T13.8); mutable only
   `createSwitchboardServer` for the mapped client (the same lifecycle, ledger, projects and policy as stdio, so the same
   ceiling and admission checks) and a fresh transport per request, JSON responses, closed when the response ends. Token
   scopes and claims never reach the server, so nothing in a token can raise the profile. Runs are recorded under the MCP
-  client id, so OAuth clients mapped to one entry share its runs. Code: `src/mcp/http.ts`,
+  client id; T13.5 also binds them to the OAuth client (below). Code: `src/mcp/http.ts`,
   `src/config/http-transport.ts`, `src/config/load.ts`, `src/cli/serve.ts`.
 - **Sessions.** The session identifier is random and stored with the subject and client; a mismatch returns HTTP 403 and
   an audit event with no token material. *As built (T13.4, Q-77):* the transport is stateless, so no session identifier
   is issued or accepted; every request authenticates with its own token.
+- **Session binding as built (T13.5, Q-78, Delegated).** A request with an `Mcp-Session-Id` header is refused with 400
+  `{"error":"invalid_request"}` before a server is built. What a caller returns to is a meta-session and its runs, so
+  those are bound: the server for an HTTP request carries the token's OAuth client id as its subject, and every
+  meta-session that `delegate_task` opens is recorded in `http_subject` (migration 0013, DDL below) right after
+  admission. A meta-session, and every run in it (automatic retry successors included), is then known only to its own
+  configured MCP client and its own subject: over HTTP the row must name the caller's OAuth client, over stdio there
+  must be no row. `get_run`, `cancel_run`, `get_artifacts` and `continue_task` from another subject, from another
+  client or from stdio get exactly the `INVALID_REQUEST` "unknown run" or "unknown meta-session" answer of an id that
+  does not exist, with nothing changed (not the 403 above: a different status would be an existence oracle). An
+  idempotency key another subject used gets the same answer as a key reused with different parameters. A binding never
+  changes hands, and an HTTP server built without the binding store refuses to start. Dynamic projects (T9.9) stay per
+  MCP client. Code: `src/mcp/http-subjects.ts`, `src/mcp/server.ts`, `src/mcp/http.ts`, `src/cli/serve.ts`.
+
+```sql
+CREATE TABLE http_subject (              -- migration 0013 (T13.5); insert-only, no foreign key (retention GC)
+  meta_session_id TEXT PRIMARY KEY,
+  oauth_client_id TEXT NOT NULL CHECK (oauth_client_id GLOB 'sbc_*'),
+  created_at      TEXT NOT NULL
+) STRICT;
+```
+
+- **Redaction at the telemetry boundary (T13.5, FR-MCP-15).** The secret redactor (`src/artifacts/redact.ts`) also
+  matches Switchboard's own `sbat_`, `sbrt_` and `sbac_` values, so a token or code in a prompt is redacted at admission
+  (Q-68) and one in a tool result or error is redacted by the MCP scrubber. Every `serve` log line passes the same
+  redactor before it is written to stderr. Pairing codes and passphrases have no distinctive shape and are never passed
+  to a log or a response at all.
 - **Forbidden.** Forwarding the inbound token, logging it, or storing it in the ledger.
 
 ## 4. Failure taxonomy

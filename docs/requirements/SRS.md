@@ -214,7 +214,7 @@ The five trust profiles and their intended semantics are:
 | FR-OPS-02 | The operator CLI shall provide `approve <run_id>` and `deny <run_id>` for `privileged` runs, and `adapters validate <provider>`, which runs the adapter's preflight and its live conformance subset against the installed binary and, on success, records that version as accepted. | Must | CAP-9, FR-POL-09, FR-ADP-03 | T | M3 (`approve`, `deny`), M4 (`adapters validate`) |
 | FR-OPS-04 | The operator shall configure Switchboard through one schema-validated config file covering the data directory, allowed workspace roots, concurrency limits, provider enablement and tier weights, and named MCP client entries with their maximum trust profile; `serve --client <name>` binds the stdio session to one client entry, which is the caller identity used by FR-MCP-06. | Must | CAP-3, CAP-9 | T | M1 |
 | FR-OPS-05 | The operator CLI shall provide `capacity`, showing the same estimates and sources as `get_capacity`. | Should | CAP-7, BO-5 | T | M6 |
-| FR-OPS-03 | The product shall have no web interface and no login commands. | Must | [R1] constraint, BO-2 | I | M1 (kept in all later milestones) |
+| FR-OPS-03 | The product shall have no web interface and no login commands. Exception: when the network transport is enabled, the one static, script-free, CSRF-protected operator consent page on the issuer origin that [ADR-0041](../adr/0041-http-transport-with-oauth-2-1.md) requires (FR-MCP-17, ROADMAP Q-76). | Must | [R1] constraint, BO-2 | I | M1 (kept in all later milestones) |
 
 ### 3.12 Projects and contexts (`FR-PRJ`)
 

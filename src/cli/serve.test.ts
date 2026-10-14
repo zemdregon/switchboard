@@ -37,6 +37,7 @@ import type { CliIo } from "./io.js";
 import { main } from "./main.js";
 import {
   readFakeSwitch,
+  stderrLogger,
   TEST_CLOCK_OFFSET_ENV,
   TEST_FAKE_ADAPTER_ENV,
   TEST_FAKE_ADAPTER_VALUE,
@@ -864,5 +865,24 @@ describe("test-only fake adapter switch", () => {
       expect(code).toBe(1);
       expect(err.join("")).toContain("unknown key (not permitted)");
     }
+  });
+});
+
+describe("the serve log is redacted at the telemetry boundary (T13.5; FR-MCP-15)", () => {
+  it("a token or code that reaches a log field leaves the process as [REDACTED]", () => {
+    const lines: string[] = [];
+    const log = stderrLogger({ stdout: { write: () => {} }, stderr: { write: (s) => lines.push(s) }, env: {} });
+    const secrets = ["sbat_", "sbrt_", "sbac_"].map((p) => `${p}${"x".repeat(21)}-_${"Y".repeat(20)}`);
+    log.warn("serve failed", { error: `upstream said Bearer ${secrets[0]}`, codes: [secrets[1], secrets[2]] });
+    log.info("unchanged", { client_id: "sbc_aaaaaaaaaaaaaaaaaaaaaa", note: "é" });
+    const text = lines.join("");
+    for (const s of secrets) expect(text).not.toContain(s);
+    expect(text.match(/\[REDACTED\]/g)?.length).toBe(3);
+    // Each line is still one JSON object, and ordinary fields pass through unchanged.
+    expect(lines.map((l) => JSON.parse(l) as Record<string, unknown>)[1]).toMatchObject({
+      msg: "unchanged",
+      client_id: "sbc_aaaaaaaaaaaaaaaaaaaaaa",
+      note: "é",
+    });
   });
 });

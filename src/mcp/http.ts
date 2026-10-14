@@ -16,7 +16,9 @@
  * the request is served by a stateless MCP server for that configured client, with its maximum trust profile. The
  * OAuth client must still be approved. Only POST is served; requests in flight are capped. The handler never echoes a
  * token, removes the `Authorization` and `Cookie` headers before the MCP server sees the request, and logs nothing
- * itself.
+ * itself. T13.5 (FR-MCP-15, Q-78): a request carrying an `Mcp-Session-Id` header is refused (400), since no session is
+ * ever issued; the MCP server is built for the token's subject, which binds every meta-session it opens to that OAuth
+ * client (`src/mcp/http-subjects.ts`).
  *
  * Every request first passes the `Origin` check (T13.2, FR-MCP-12, LLD §3.3): a request whose `Origin` header is not in
  * `transport.http.allowed_origins` gets 403 before any routing, which blocks DNS rebinding and cross-site calls from a
@@ -98,10 +100,11 @@ export interface HttpAuthDeps {
   /** Told when a valid token is refused at the MCP endpoint (T13.4): no `mcp` scope, or no MCP client mapping. */
   onClientRefused?: (reason: "missing_scope" | "unmapped_client", oauthClientId: string) => void;
   /**
-   * Builds the MCP server for one configured MCP client (T13.4; `serve` passes `createSwitchboardServer` with the same
-   * dependencies as stdio). Without it a valid, mapped token gets 501.
+   * Builds the MCP server for one configured MCP client and one token subject, the OAuth client id (T13.4, T13.5;
+   * `serve` passes `createSwitchboardServer` with the same dependencies as stdio plus the subject and its bindings).
+   * Without it a valid, mapped token gets 501.
    */
-  mcpServerFor?: (mcpClientId: string) => SwitchboardMcpServer;
+  mcpServerFor?: (mcpClientId: string, oauthClientId: string) => SwitchboardMcpServer;
   /** Client registry for `POST /register` (T13.7). Without one the endpoint answers 404. */
   clients?: Pick<OAuthClientStore, "register" | "get">;
   /** Told the id of each newly registered (pending) client, for the local audit log. */
@@ -177,10 +180,11 @@ async function handleRegistration(req: IncomingMessage, res: ServerResponse, aut
 async function serveMcp(
   req: IncomingMessage,
   res: ServerResponse,
-  mcpServerFor: (mcpClientId: string) => SwitchboardMcpServer,
+  mcpServerFor: (mcpClientId: string, oauthClientId: string) => SwitchboardMcpServer,
   mcpClientId: string,
+  oauthClientId: string,
 ): Promise<void> {
-  const mcp = mcpServerFor(mcpClientId);
+  const mcp = mcpServerFor(mcpClientId, oauthClientId);
   // No `sessionIdGenerator`: the SDK's stateless mode.
   const transport = new StreamableHTTPServerTransport({
     enableJsonResponse: true,
@@ -303,6 +307,11 @@ export function httpTransportHandler(
         send(res, 405, { error: "method_not_allowed" }, { allow: "POST" });
         return;
       }
+      // T13.5 (FR-MCP-15, Q-78): no session id is ever issued, so one presented is refused rather than ignored.
+      if (req.headers["mcp-session-id"] !== undefined) {
+        send(res, 400, { error: "invalid_request", error_description: "MCP sessions are not supported" });
+        return;
+      }
       const perClient = inFlight.get(verdict.token.clientId) ?? 0;
       if (inFlightTotal >= MAX_MCP_REQUESTS_IN_FLIGHT || perClient >= MAX_MCP_REQUESTS_PER_CLIENT) {
         send(res, 503, { error: "temporarily_unavailable" }, { "retry-after": "1" });
@@ -320,7 +329,7 @@ export function httpTransportHandler(
         if (n <= 0) inFlight.delete(oauthClientId);
         else inFlight.set(oauthClientId, n);
       });
-      serveMcp(req, res, auth.mcpServerFor, mcpClientId).catch(() => {
+      serveMcp(req, res, auth.mcpServerFor, mcpClientId, oauthClientId).catch(() => {
         if (!res.headersSent) send(res, 500, { error: "server_error" });
         else res.destroy();
       });
