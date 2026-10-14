@@ -71,6 +71,15 @@ already goes through.
   snapshot are the controls there.
 - Negative: a model that merely mentions `git commit` in a shell argument it does not run (`echo git commit`) is
   parsed as an `echo`, which is correct; `git commit` as an argument to an unknown wrapper is not seen.
+- Positive (2026-10-14, Delegated): the two pre-spawn refusals are tested through `RunLifecycle` with the fake CLI
+  (`src/lifecycle/lifecycle.test.ts`, "pre-spawn refusals"): each ends the run `FAILED` / `PERMISSION_BLOCKED` with
+  `PROVIDER_STATE_REACHABLE` or `REPO_AGENT_CONFIG_REFUSED`, no pid and no `RUNNING` state, and an approved scope with
+  `repository_config` `approved` or `enabled` is admitted. The tests found one wiring bug, fixed in the same change: a
+  privileged snapshot records `repoConfig: "scoped"`, so the check never refused a privileged run, including one whose
+  approved scope says `repository_config` `disabled`. The effective value now comes from the scope
+  (`effectiveRepoConfig`, `src/policy/repo-agent-config.ts`; an unmapped mode fails closed to `disabled`).
+- Negative: both refusals are lexical (`lstat` on the listed paths; resolved paths, symlinks not followed), run after
+  the adapter's compile, and use `HOME` from the lifecycle's `baseEnv` (the process environment by default).
 
 ## Revisit when
 

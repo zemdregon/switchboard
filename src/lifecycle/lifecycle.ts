@@ -130,7 +130,7 @@ import {
   resolveTrustProfile,
 } from "../policy/index.js";
 import { workspaceReachesProviderState } from "../policy/provider-state.js";
-import { repoAgentConfigRefusal } from "../policy/repo-agent-config.js";
+import { effectiveRepoConfig, repoAgentConfigRefusal } from "../policy/repo-agent-config.js";
 import {
   type CollectDeps,
   collectFacts,
@@ -1208,7 +1208,7 @@ export class RunLifecycle {
         reason: "PROVIDER_STATE_REACHABLE",
       });
     }
-    const repoRefusal = repoAgentConfigRefusal(req.provider, profile.repoConfig, cwd);
+    const repoRefusal = repoAgentConfigRefusal(req.provider, effectiveRepoConfig(profile), cwd);
     if (repoRefusal !== undefined) {
       return this.fail(runId, "PERMISSION_BLOCKED", repoRefusal, { reason: "REPO_AGENT_CONFIG_REFUSED" });
     }
