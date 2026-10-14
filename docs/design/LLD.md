@@ -30,9 +30,9 @@ Conventions:
 `workspace_checkpoint`, `usage_observation`, `route_decision`, and (M11) `inner_call` and (M12) `rag_record` (FR-SES-05,
 FR-RTE-03, FR-CAP-01, FR-INN-15). **Update-once** (pending to decided): `approval`. **Mutable current-state**:
 `meta_session`, `run`, `provider_health`, `adapter_version.validated_*`, (M7) `project_affinity`, (M11)
-`inner_task_state`, (M13) `oauth_token.revoked`/`revoked_at` and `oauth_client.status`/`decided_at`, and `artifact.deleted_at` only. Retention GC removes
-artifact files and worktrees and sets
-`artifact.deleted_at`; it never deletes `run_event` rows (Assumption).
+`inner_task_state`, (M13) `oauth_token.revoked`/`revoked_at` and `oauth_client.status`/`decided_at`, and
+`artifact.deleted_at` only. Retention GC removes artifact files and worktrees and sets `artifact.deleted_at`; it never
+deletes `run_event` rows (Assumption).
 
 ```sql
 CREATE TABLE schema_migrations (
