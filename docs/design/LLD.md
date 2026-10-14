@@ -3187,6 +3187,13 @@ is untrusted reference data and is never an input to COMP-POL, profile compilati
 push or commit (FR-RAG-07, BR-46); structure and an import-boundary test ([TDD §3.13](TDD.md#313-retrieval-index))
 enforce it. Any failure means "no pack" and an unchanged run (FR-RAG-08).
 
+*Note 2026-10-14 (T12.0, Delegated):* the spike measured brute-force search and fixed `caps.max_chunks` (25,000, also
+the schema maximum), `retrieval.top_k` (8), `retrieval.max_context_tokens` (4,000, controller estimate), the chunk window
+and the first backend shapes; see [TDD §3.13.4](TDD.md#3134-t120-spike-result-2026-10-14). The other `<..>` values below
+are chosen in T12.1. Q-48 is answered: SQLite, brute force, vectors scanned from memory. In this version
+`embedding.kind: "local"` is refused at load (no in-process model exists without a new native dependency); the tests use
+a deterministic in-process fake.
+
 ### 14.1 Configuration shape
 
 Part of the config schema ([TDD §3.1](TDD.md#31-configuration)). Without a configured `embedding` backend the feature is
@@ -3203,9 +3210,9 @@ inert and nothing else changes (`mode: "on"` without a backend is rejected at lo
       "timeout_ms": "<chosen in T12.0>", "max_concurrency": "<chosen in T12.0>"
     },
     "mode": "auto",                      // default; 'auto' = on iff embedding is configured and the project allows; 'off'; 'on'
-    "caps": { "max_files": "<..>", "max_file_bytes": "<..>", "max_chunks": "<..>", "max_total_bytes": "<..>",
+    "caps": { "max_files": "<..>", "max_file_bytes": "<..>", "max_chunks": 25000, "max_total_bytes": "<..>",
               "max_build_ms": "<..>" },  // FR-RAG-11; all required once the feature is on
-    "retrieval": { "top_k": "<..>", "max_context_tokens": "<fixed in T12.0>", "max_staleness": "<..>",
+    "retrieval": { "top_k": 8, "max_context_tokens": 4000, "max_staleness": "<..>",
                    "admission_timeout_ms": "<..>" },
     "exclude": [ "<glob>" ],             // operator additions to the built-in denylist (§14.3)
     "global": {                          // FR-RAG-09; absent or enabled:false = no global store exists
@@ -3292,8 +3299,9 @@ Scan (FR-RAG-02), per context of the project, in a stable order:
 3. Read at most `caps.max_file_bytes`. **Redact** every string with the telemetry redactor and the FR-INN-16 identifier
    scrub (§13.4 step 2) before chunking, so neither the embedding request nor the store holds the unredacted text.
 4. **Chunk** (Proposed): split on line boundaries into windows bounded by a size target and a small overlap, preferring
-blank-line or top-level-declaration boundaries; sizes are `<chosen in T12.0>`. The `ordinal` is the window index in the
-file; a changed file is re-chunked whole.
+blank-line or top-level-declaration boundaries; 40 lines and at most 4,096 bytes per window (T12.0,
+[TDD §3.13.4](TDD.md#3134-t120-spike-result-2026-10-14)); the overlap is chosen in T12.2. The `ordinal` is the window
+index in the file; a changed file is re-chunked whole.
 5. Stop adding chunks when `caps.max_chunks` or `caps.max_total_bytes` is reached; the store is marked incomplete.
 
 ### 14.4 Embedding backend port and privacy gates
