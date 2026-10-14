@@ -173,17 +173,26 @@ describe("matching is limited to the declared forms; existing matching unchanged
 });
 
 describe("declarations count only once the entry has an adapter (create)", () => {
-  it("with no registration, only the Claude Code mode value is active; the reserved entries' data is inert", () => {
+  it("with no registration, only the Claude Code and Grok Build values are active; reserved entries' data is inert", () => {
     expect(declaredBypassShortFlags()).toEqual([]);
-    expect(declaredBypassValues()).toEqual([{ flag: "--permission-mode", value: "bypassPermissions" }]);
+    const GROK_VALUES = [
+      { flag: "--permission-mode", value: "bypassPermissions" },
+      { flag: "--allow", value: "*" },
+      { flag: "--allow", value: "**" },
+      { flag: "--allowed-tools", value: "*" },
+      { flag: "--allowed-tools", value: "**" },
+    ];
+    // Claude Code's `--permission-mode bypassPermissions` and Grok Build's (declared since T4.22) are one value.
+    expect(declaredBypassValues()).toEqual(GROK_VALUES);
     expect(bypassClassShortFlags()).toEqual([]);
-    expect(bypassClassValues()).toEqual([{ flag: "--permission-mode", value: "bypassPermissions" }]);
-    // Cursor and Grok Build declarations: data only until T4.42 and T4.22 add their adapters.
-    for (const words of [["-f"], ["-pf"], ["--sandbox", "disabled"], ["--sandbox=disabled"], ["--allow", "*"]]) {
+    expect(bypassClassValues()).toEqual(GROK_VALUES);
+    // Cursor declarations: data only until T4.42 adds its adapter.
+    for (const words of [["-f"], ["-pf"], ["--sandbox", "disabled"], ["--sandbox=disabled"]]) {
       expect(auditInvocation(withArgv(...words)), words.join(" ")).toEqual([]);
     }
-    // The Claude Code value is active: Claude Code has an adapter.
+    // Claude Code's value and Grok Build's catch-all allow rule are active: both have an adapter.
     expect(auditInvocation(withArgv("--permission-mode", "bypassPermissions"))).toEqual([CLAUDE_MODE_HIT]);
+    expect(auditInvocation(withArgv("--allow", "*"))).toHaveLength(1);
   });
 
   it("the built-in declarations are exactly the sourced ones", () => {
