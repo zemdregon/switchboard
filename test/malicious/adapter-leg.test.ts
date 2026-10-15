@@ -29,6 +29,7 @@ import {
   grokCompiledCells,
   grokPartialStreams,
   grokRefusedScopes,
+  grokResidualGapStreams,
   grokResidualStreams,
 } from "./adapters/grok.case.js";
 import {
@@ -525,7 +526,7 @@ describe("adapter malicious leg: grok partial streams", () => {
   const GROK_EXITS = [0, 1, 2, 137] as const;
 
   it("names every Grok stream once, so no cell is shadowed by a duplicate", () => {
-    const names = [...c.streams(fx), ...grokPartialStreams(fx)].map((s) => s.name);
+    const names = [...c.streams(fx), ...grokPartialStreams(fx), ...grokResidualGapStreams(fx)].map((s) => s.name);
     expect(names.filter((n, i) => names.indexOf(n) !== i)).toEqual([]);
   });
 
@@ -589,7 +590,7 @@ describe("adapter malicious leg: grok partial streams", () => {
 
   it("positive control: without the ADR-0039 guard verdict, none of the residual blocked streams ends PERMISSION_BLOCKED", () => {
     const residuals = grokResidualStreams(fx);
-    expect(residuals.length).toBe(108);
+    expect(residuals.length).toBe(168);
     const adapter = c.makeAdapter("unused", 0);
     for (const s of residuals) {
       const state = { lines: 0, unknownEvents: 0 };
@@ -601,6 +602,25 @@ describe("adapter malicious leg: grok partial streams", () => {
         expectedExitCodes: [0],
       });
       expect(res.failureCode, s.name).not.toBe("PERMISSION_BLOCKED");
+    }
+  });
+
+  // Open gap (T4.23 sixth pass): a Git write past the 512-character clip of a target-only shell call is not guarded.
+  // Pinned, not hidden: when the parser or guard closes it, the gap check reports "gap closed"; move the streams into
+  // the residual batch then.
+  it("known gap still open: a Git write past the target clip of a target-only shell call ends as pinned, checkout untouched", async () => {
+    const gaps = grokResidualGapStreams(fx);
+    expect(gaps).toHaveLength(6);
+    for (const s of gaps) expect(await gapProblems(c, fx, s), s.name).toEqual([]);
+  });
+
+  it("positive control: the same target-only call within the clip ends PERMISSION_BLOCKED", async () => {
+    for (const s of grokResidualGapStreams(fx)) {
+      const lines = s.lines.map((line) => line.replace(/echo x{600} && /, ""));
+      expect(lines, s.name).not.toEqual(s.lines);
+      const o = await replayHostileStream(c, fx, { ...s, lines });
+      expect(o.failureCode, s.name).toBe("PERMISSION_BLOCKED");
+      expect(o.untouched, s.name).toBe(true);
     }
   });
 

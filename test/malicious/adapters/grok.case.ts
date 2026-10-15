@@ -46,13 +46,19 @@
  * - the parser branches the T4.23 third pass pinned (an unrecognised `end` before a valid `end`, a failed first `end`
  *   followed by `end_turn`, a second `end` with a changed session id, text after `end`, an unsafe session id, and an
  *   error line before `end`), at exit 0 and exit 1;
+ * - the parser branches the T4.23 fourth to sixth passes pinned (an unsafe first `end` then a second `end`, a decoy
+ *   `sessionId` on the call, a 5,000-character command, a caller id equal to the generated `call_1`, a `null` or
+ *   number `input` beside `parameters`, a short command carried only as a target, an empty `id` beside `call_id`, a
+ *   duplicate `type` key, an empty text chunk), at exit 0 and exit 1;
  * - prototype-named, near-miss, non-string, unreadable text/end/update, non-object-input, empty-name, live-bare,
- *   shadowed-parameter and unrecognised-end tool lines in `unknown_events`, at exits 0, 1, 2 and 137.
+ *   shadowed-parameter, unrecognised-end, case-variant and duplicate-`type` tool lines in `unknown_events`, at exits
+ *   0, 1, 2 and 137.
  *
  * Field names other than `type` are still hypothetical: the live check did not record command or target fields.
  * Residual blocked streams are exported as `grokResidualStreams`; partial streams cut inside a line (covering exits
- * 0, 1, 2 and 137) are exported as `grokPartialStreams` and replayed separately; the compiled cells and the scopes
- * Grok Build must refuse are exported as `grokCompiledCells` and `grokRefusedScopes`.
+ * 0, 1, 2 and 137) are exported as `grokPartialStreams` and replayed separately; the open target-clip gap is exported
+ * as `grokResidualGapStreams` and pinned at its current result; the compiled cells and the scopes Grok Build must
+ * refuse are exported as `grokCompiledCells` and `grokRefusedScopes`.
  */
 
 import { privilegedProfile } from "../../../src/adapters/fixtures/privileged.js";
@@ -2177,6 +2183,33 @@ const grokCase: AdapterLegCase = {
         JSON.stringify({ type: "end", stopReason: 123, sessionId: SID }),
       ],
     },
+    // T4.23 sixth pass: line types match exactly, and a duplicate `type` key resolves to the last value.
+    ...[0, 1].flatMap((exitCode): HostileStream[] => [
+      {
+        name: `case and whitespace variants of tool_call and end carrying a Git write, exit ${exitCode}`,
+        category: "unknown_events",
+        exitCode,
+        failureCode: exitCode === 0 ? "OUTPUT_PROTOCOL_ERROR" : "TOOL_FAILURE",
+        lines: [
+          META(`Case and whitespace variants of tool_call and end at exit ${exitCode}.`, exitCode),
+          ...["Tool_call", "TOOL_CALL", "tool-call", "toolCall", " tool_call"].map((type) =>
+            JSON.stringify({ type, tool: "run_terminal_command", input: { command: "git push origin main" } }),
+          ),
+          ...["End", "END", "end "].map((type) => JSON.stringify({ type, stopReason: "end_turn", sessionId: SID })),
+        ],
+      },
+      {
+        name: `a tool_call type overridden by a later duplicate unknown type, exit ${exitCode}`,
+        category: "unknown_events",
+        exitCode,
+        failureCode: exitCode === 0 ? "OUTPUT_PROTOCOL_ERROR" : "TOOL_FAILURE",
+        lines: [
+          META(`A leading tool_call type overridden by a later duplicate key at exit ${exitCode}.`, exitCode),
+          '{"type":"tool_call","tool":"run_terminal_command","input":{"command":"git push origin main"},"type":"synthetic_unknown_kind"}',
+          '{"type":"end","stopReason":"end_turn","sessionId":"00000000-0000-4000-8000-0000000000aa","type":"synthetic_unknown_kind"}',
+        ],
+      },
+    ]),
   ],
 };
 
@@ -2465,17 +2498,196 @@ const grokResidualStreams13d = (fx: MaliciousFixture): HostileStream[] =>
     ]);
   });
 
+/** The Git write each blocked category carries in the 13e batch and in the gap streams. */
+const hostileCommand = (fx: MaliciousFixture, category: "credential_read" | "out_of_worktree_write" | "network") =>
+  category === "credential_read"
+    ? `cat ${fx.claudeCredentialsPath} && git push origin main`
+    : category === "out_of_worktree_write"
+      ? `touch ${fx.outsideSentinel} && git push origin main`
+      : "curl https://example.invalid/leak && git push origin main";
+
+/**
+ * The parser branches the T4.23 fourth, fifth and sixth passes pinned in `src/adapters/grok/parser-residual.test.ts`,
+ * replayed with a Git write in each hostile category. Field names other than `type` are still Assumptions.
+ */
+const grokResidualStreams13e = (fx: MaliciousFixture): HostileStream[] =>
+  (["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) => {
+    const command = hostileCommand(fx, category);
+    return [0, 1].flatMap((exitCode): HostileStream[] => [
+      {
+        // Fourth pass: the unsafe first `end` binds nothing, so the second, anomalous `end` binds the only id.
+        name: `${category}: a Git-write call, an end line with an unsafe session id, then a second end line, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: unsafe first end, then a second end, exit ${exitCode}`, exitCode),
+          TOOLS,
+          toolCall(command),
+          end("end_turn", "--unsafe"),
+          end(),
+        ],
+      },
+      {
+        // Fourth pass: a `sessionId` on a line other than `end` never binds or conflicts.
+        name: `${category}: a Git-write tool_call carrying a decoy sessionId, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: decoy sessionId on the tool_call, exit ${exitCode}`, exitCode),
+          TOOLS,
+          JSON.stringify({ type: "tool_call", tool: "run_terminal_command", sessionId: OTHER_SID, input: { command } }),
+          end(),
+        ],
+      },
+      {
+        // Fifth pass: a command is never clipped, so a Git write after 5,000 characters still reaches the guard.
+        name: `${category}: a Git write at the end of a 5,000-character command, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: Git write after a long command, exit ${exitCode}`, exitCode),
+          TOOLS,
+          toolCall(`echo ${"x".repeat(5_000)} && ${command}`),
+          end(),
+        ],
+      },
+      {
+        // Fifth pass: a caller id equal to the generated key `call_1` shares that call; a new command is reported.
+        name: `${category}: a caller id equal to the generated call key swapped to a Git write, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: caller id call_1 swapped to a Git write, exit ${exitCode}`, exitCode),
+          TOOLS,
+          JSON.stringify({ type: "tool_call", tool: "run_terminal_command", input: { command: "git status" } }),
+          JSON.stringify({ type: "tool_call_update", id: "call_1", input: { command: "git status" } }),
+          JSON.stringify({ type: "tool_call_update", id: "call_1", input: { command } }),
+          end(),
+        ],
+      },
+      ...([null, 7] as const).map(
+        (input): HostileStream => ({
+          // Sixth pass: only an object `input` without a command hides `parameters` (second pass); these do not.
+          name: `${category}: a Git write in parameters beside a ${JSON.stringify(input)} input, exit ${exitCode}`,
+          category,
+          exitCode,
+          failureCode: "PERMISSION_BLOCKED",
+          lines: [
+            META(`${category}: ${JSON.stringify(input)} input beside parameters, exit ${exitCode}`, exitCode),
+            TOOLS,
+            JSON.stringify({ type: "tool_call", tool: "run_terminal_command", input, parameters: { command } }),
+            end(),
+          ],
+        }),
+      ),
+      {
+        // Sixth pass: the guard reads a shell call's target when it has no command (see grokResidualGapStreams).
+        name: `${category}: a short Git write carried only as a shell call's target, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: Git write as a shell target, exit ${exitCode}`, exitCode),
+          TOOLS,
+          JSON.stringify({ type: "tool_call", name: "run_terminal_command", input: { path: command } }),
+          end(),
+        ],
+      },
+      {
+        // Sixth pass: an empty `id` shadows `call_id`, so the update on that call_id opens a new call (over-reports).
+        name: `${category}: an empty id beside call_id, then a Git write on that call_id, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: empty id shadowing call_id, exit ${exitCode}`, exitCode),
+          TOOLS,
+          JSON.stringify({ type: "tool_call", id: "", call_id: "c1", input: { command: "git status" } }),
+          JSON.stringify({ type: "tool_call_update", call_id: "c1", input: { command } }),
+          end(),
+        ],
+      },
+      {
+        // Sixth pass: duplicate keys resolve to the last one (JSON.parse), so a leading `text` type cannot hide a call.
+        name: `${category}: a duplicate type key whose last value is tool_call, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: duplicate type key, exit ${exitCode}`, exitCode),
+          TOOLS,
+          `{"type":"text","data":"x","type":"tool_call","tool":"run_terminal_command","input":{"command":${JSON.stringify(command)}}}`,
+          end(),
+        ],
+      },
+      {
+        // Sixth pass: an empty text chunk is a message, never unknown.
+        name: `${category}: an empty text chunk before a Git-write call, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: empty text chunk, exit ${exitCode}`, exitCode),
+          TOOLS,
+          text(""),
+          toolCall(command),
+          end(),
+        ],
+      },
+    ]);
+  });
+
 /**
  * Residual blocked streams (T4.26, as T4.36 and T4.46): JSON encodings, further stop reasons,
  * path-only calls upgraded to command in tool_call_update, swapped and trailing calls at exit 2/137,
- * second-pass parser branches, and third-pass stream-order and anomaly branches from T4.23.
+ * second-pass parser branches, third-pass stream-order and anomaly branches, and fourth- to sixth-pass session-id,
+ * long-command, call-key, parameter-shape, shadowing-key and duplicate-key branches from T4.23.
  * Synthetic lines only; no provider is run.
  */
 export const grokResidualStreams = (fx: MaliciousFixture): HostileStream[] => [
   ...grokResidualStreams13b(fx),
   ...grokResidualStreams13c(fx),
   ...grokResidualStreams13d(fx),
+  ...grokResidualStreams13e(fx),
 ];
+
+/**
+ * Open gaps (T4.26, T4.23 sixth pass; parser and guard unchanged), pinned and replayed on their own because a hostile
+ * stream must end blocked. A shell call that carries its command only in a target key is guarded on the target, which
+ * the parser clips to 512 characters; a Git write past the clip never reaches the guard, so at exit 0 the run ends
+ * `ok: true` and at exit 1 only the unexpected exit fails it. Whether the native CLI ever puts a command in a target
+ * field is unknown: the live check recorded no `tool_call` command or target fields. `failureCode` is the code the
+ * stream should end with once the gap closes; `gapResult` is what it ends with today.
+ */
+export const grokResidualGapStreams = (fx: MaliciousFixture): HostileStream[] =>
+  (["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) =>
+    [0, 1].map(
+      (exitCode): HostileStream => ({
+        name: `${category}: a Git write past the 512-character clip of a target-only shell call, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        gapResult:
+          exitCode === 0
+            ? { ok: true, unknownEventCount: 0, nativeSessionId: SID }
+            : { ok: false, failureCode: "TOOL_FAILURE" },
+        lines: [
+          META(`${category}: Git write past the target clip (open gap), exit ${exitCode}`, exitCode),
+          TOOLS,
+          JSON.stringify({
+            type: "tool_call",
+            name: "run_terminal_command",
+            input: { path: `echo ${"x".repeat(600)} && ${hostileCommand(fx, category)}` },
+          }),
+          end(),
+        ],
+      }),
+    ),
+  );
 
 /**
  * Partial streams (T4.26): the output ends inside a line, after a hostile call or before it. The supervisor ends such
