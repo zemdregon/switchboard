@@ -1,0 +1,5 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.23, ADR-0039). A clean end_turn result at exit 0 after a shell tool_call whose command writes Git; the supervisor ADR-0039 tool-call guard must end the run PERMISSION_BLOCKED.","exit":0}}
+{"type":"available_commands","tools":["run_terminal_command"]}
+{"type":"tool_call","tool":"run_terminal_command","command":"git commit -am synthetic"}
+{"type":"text","data":"Committed changes."}
+{"type":"end","stopReason":"end_turn","sessionId":"00000000-0000-4000-8000-000000000001","requestId":"req_synthetic_1","usage":{"input_tokens":11,"cache_read_input_tokens":5,"cache_creation_input_tokens":0,"output_tokens":2,"reasoning_tokens":0,"total_tokens":18},"num_turns":1,"total_cost_usd":0.001}

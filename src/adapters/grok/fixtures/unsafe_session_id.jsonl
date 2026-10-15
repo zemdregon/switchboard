@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.23). An unsafe session ID in the end line is never bound and ends OUTPUT_PROTOCOL_ERROR.","exit":0}}
+{"type":"available_commands","tools":["run_terminal_command"]}
+{"type":"text","data":"Finished."}
+{"type":"end","stopReason":"end_turn","sessionId":"--dangerously-skip-permissions","requestId":"req_synthetic_1","usage":{"input_tokens":11,"cache_read_input_tokens":5,"cache_creation_input_tokens":0,"output_tokens":2,"reasoning_tokens":0,"total_tokens":18},"num_turns":1,"total_cost_usd":0.001}
