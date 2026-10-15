@@ -548,7 +548,8 @@ export class AntigravityAdapter implements ProviderAdapter {
    * Success needs a clean expected exit and a final `result` with `ok` (status `SUCCESS` and reported tokens, Q-86) and
    * no `provider_error`, `permission_denied`, `sandbox_violation` or `rate_limit` event and no `tool_call` the tool-call
    * guard flagged with a `violation` (fail closed; a soft denial and a print timeout both exit 0 with `SUCCESS`, [LIVE]
-   * C7, C10; a guard verdict ends the run in every run, bypass included, ADR-0039).
+   * C7, C10; a guard verdict ends the run in every run, bypass included, ADR-0039), and no `tool_call` after the
+   * `result` line (as Grok Build, Cursor and OpenCode).
    */
   extractResult(events: readonly NormalizedEvent[], exit: ExitInfo): RunResult {
     const unknownEventCount = events.filter((e) => e.kind === "unknown").length;
@@ -556,7 +557,11 @@ export class AntigravityAdapter implements ProviderAdapter {
     const nativeSessionId = bound?.kind === "session_bound" ? bound.nativeSessionId : undefined;
     const text = events.flatMap((e) => (e.kind === "message" ? [e.text] : [])).join("\n");
     const summary = text === "" ? undefined : text.slice(-MAX_SUMMARY_CHARS);
-    const final = events.findLast((e) => e.kind === "result");
+    const finalAt = events.findLastIndex((e) => e.kind === "result");
+    const final = events[finalAt];
+    // Proposed (fail closed): `result` was the last line of the recorded stream ([LIVE] C4), so a tool call after it
+    // means the run did not end on that result.
+    const trailingTool = finalAt >= 0 && events.slice(finalAt + 1).some((e) => e.kind === "tool_call");
     const base = {
       unknownEventCount,
       ...(nativeSessionId ? { nativeSessionId } : {}),
@@ -568,6 +573,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       exit.expectedExitCodes.includes(exit.exitCode) &&
       final?.kind === "result" &&
       final.ok &&
+      !trailingTool &&
       !events.some(
         (e) =>
           e.kind === "provider_error" ||
@@ -584,7 +590,8 @@ export class AntigravityAdapter implements ProviderAdapter {
       timedOut: exit.outcome === "timeout",
       cancelled: exit.outcome === "cancelled",
     });
-    return { ok: false, failureCode: c.code, failureDetail: c.detail, ...base };
+    const detail = trailingTool && c.code === "OUTPUT_PROTOCOL_ERROR" ? "tool call after the result line" : c.detail;
+    return { ok: false, failureCode: c.code, failureDetail: detail, ...base };
   }
 
   classifyFailure(evidence: FailureEvidence): FailureClassification {
