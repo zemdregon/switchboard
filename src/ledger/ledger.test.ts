@@ -567,11 +567,13 @@ describe("ledger migrations", () => {
 });
 
 describe("ledger pragmas", () => {
-  it("enables WAL, foreign keys and full synchronous", () => {
+  it("enables WAL, foreign keys, full synchronous and recursive triggers", () => {
     db = openLedger(dir);
     expect(db.pragma("journal_mode", { simple: true })).toBe("wal");
     expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
     expect(db.pragma("synchronous", { simple: true })).toBe(2);
+    // Q-96: REPLACE conflict resolution fires the BEFORE DELETE guards only when this is on.
+    expect(db.pragma("recursive_triggers", { simple: true })).toBe(1);
   });
 
   it("enforces foreign keys", () => {
@@ -599,6 +601,37 @@ describe("append-only tables", () => {
       /append-only/,
     );
     expect(ledger.listRunEvents(run.id)).toHaveLength(1);
+  });
+
+  it("run_event rejects INSERT OR REPLACE and REPLACE INTO on an existing id (Q-96, recursive_triggers)", () => {
+    db = openLedger(dir);
+    const d = db;
+    const { ledger, run } = seed(d);
+    const evt = ledger.appendRunEvent({ runId: run.id, type: "state_transition", payload: { to: "QUEUED" } });
+    const before = d.prepare("SELECT * FROM run_event WHERE id = ?").get(evt.id);
+    // SQLite resolves a REPLACE on a colliding primary key by deleting the old row first. With recursive_triggers on,
+    // that delete fires the BEFORE DELETE guard, so the whole statement aborts and the row is untouched.
+    for (const spelling of ["INSERT OR REPLACE INTO", "REPLACE INTO"]) {
+      expect(() =>
+        d
+          .prepare(
+            `${spelling} run_event (id, run_id, seq, ts, type, payload_json) VALUES (?, ?, 1, 't', 'rewritten', '{}')`,
+          )
+          .run(evt.id, run.id),
+      ).toThrow(/append-only/);
+    }
+    expect(d.prepare("SELECT * FROM run_event WHERE id = ?").get(evt.id)).toEqual(before);
+    expect(ledger.listRunEvents(run.id)).toHaveLength(1);
+    // The guard is on the guarded tables only: a REPLACE on a mutable table still works under the pragma.
+    const upsert = d.prepare(
+      `INSERT OR REPLACE INTO provider_health (provider, auth_state, version_state, breaker_state, updated_at)
+       VALUES ('claude-code', 'OK', 'UNVERIFIED', ?, 't')`,
+    );
+    upsert.run("CLOSED");
+    upsert.run("OPEN");
+    expect(d.prepare("SELECT breaker_state FROM provider_health WHERE provider = 'claude-code'").all()).toEqual([
+      { breaker_state: "OPEN" },
+    ]);
   });
 
   it("decision rejects UPDATE and DELETE", () => {
