@@ -757,7 +757,10 @@ chosen provider; a required provider that fails eligibility is never classified;
 or hung backend, or a throwing injected classifier keeps `heuristic.v1`; `explain_route` and replay read the stored
 row without a backend call; and a replayed `delegate_task` with the same idempotency key does not classify again. The
 human `runs show` text prints its usage section from provider-reported rows only and names nothing about the inner
-agent even with a planted labelled row (`src/inner/usage-surfaces.test.ts`). The
+agent even with a planted labelled row (`src/inner/usage-surfaces.test.ts`). The ledger's public usage insert refuses
+an `inner_agent` row with its FR-CAP-01 message and writes nothing, and no production module other than
+`src/ledger/repo.ts` writes the table, so the pipeline's own record under `shares_subscription_with` is the only writer
+of labelled rows (`src/inner/usage.test.ts`). The
 statements above about what `inner status`, `inner test`, `inner resume` and the `doctor` block print (states, the
 circuit line, rates, the canary verdict, the origin-only backend line, the resume notice) are pinned on the command
 output in `src/inner/cli-doctor-surfaces.test.ts`; the `no_backend` state is reachable from an on-disk config only
