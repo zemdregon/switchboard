@@ -329,6 +329,10 @@ the compile matrix), FR-ADP-10 (`backingProvider` unset: no vendor field was rec
   Second `result` line and mid-run session id change end `OUTPUT_PROTOCOL_ERROR`; non-`login` `apiKeySource` is
   `AUTH_REQUIRED`; usage drops non-finite values; multi-key `tool_call` objects report each key; unrecorded rate-limit,
   quota and sandbox text ends `TOOL_FAILURE`. Sourcing: [TDD §4.5.5](TDD.md#455-cursor-parser-implementation-evidence-m4-t443).
+- **ADR-0039 guard verdict (2026-10-15, [#238](https://github.com/zemdregon/switchboard/pull/238); Delegated, not
+  owner-approved).** `extractResult` treats a `tool_call` carrying a guard `violation` as not clean, so a `success`
+  `result` at exit 0 still ends `PERMISSION_BLOCKED` for `git_write` and `SANDBOX_VIOLATION` for `provider_state`
+  (tests in "cursor parser hardening (T4.43, synthetic shapes)").
 
 **Gaps (remain `Partial`, not `Done`).** No recorded rate-limit or sandbox stream shape; T4.6 backing-vendor fixture cannot
 be written without a vendor field (Q-65). Operator capture: T4.48 / T4.41 extension.
