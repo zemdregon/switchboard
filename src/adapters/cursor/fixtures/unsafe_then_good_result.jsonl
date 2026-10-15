@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.43 residual, fourth pass; mirrors Grok Build unsafe_then_good_end and Antigravity unsafe_then_good_result). A first result line with an unsafe session_id (never bound) and a second result line with a safe one: the run ends OUTPUT_PROTOCOL_ERROR, but the second, failing result supplies the only bound session id (a pinned gap).","exit":0}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"-unsafe","usage":{"inputTokens":10,"outputTokens":2}}
+{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"synthetic-cursor-session-0001","usage":{"inputTokens":500,"outputTokens":100}}
