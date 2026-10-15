@@ -159,6 +159,12 @@ is good. Refer to the owner as `zemdregon`. The routine that has been used:
   or worktree isolation that bypass keeps, or a trust or credential boundary.
 - **Live provider calls are opt-in.** Tests must pass without any provider CLI installed or logged in. Tests that call a
   real provider must be skipped unless explicitly enabled.
+- **Real provider CLI runs go through the budgeted channel only.** Use fakes and synthetics for nearly all work. On the
+  Ampere operator host, workers do not call real provider CLIs directly; the only allowed path is
+  `~/operator-runs/live-run.sh` (cheapest model, read-only, budgeted), and only as a `pre-check` before starting work or
+  a `final-verify` before a pull request is marked ready. Check `~/operator-runs/live-usage.sh` first, ask one scoped
+  question per run, never loop or re-run to be sure, and never run it in CI. Record findings in the pull request. See
+  `~/operator-runs/LIVE_TESTING.md` on that host.
 - **Small, reviewable changes.** One logical change per commit, with a message that says what changed and why. Open pull
   requests as drafts until checks pass.
 - **No invented facts.** Do not state CLI flags, model names, limits or prices from memory as fact; cite the research
