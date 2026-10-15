@@ -6,6 +6,15 @@
  * "one labelled observation per backend request with a shared subscription, none without, and never any provider usage
  * or capacity" is made where a run actually makes the calls. Scripted in-process fake backend and the scripted fake
  * provider CLI only: no network, no model, no provider CLI, no login.
+ *
+ * Post-#446 (Q-96 answered 2026-10-15, Delegated): `usage.test.ts` and `usage-surfaces.test.ts` pin that both `REPLACE`
+ * spellings are refused with `append-only` on each row `recordInnerCall` writes, after a call on the injected contract
+ * and the `inner test` CLI. The guard is on the table, not the path, so those pins hold for every caller of the same
+ * ledger; what they cannot see is which rows each production caller actually wrote (the commit channel's call under the
+ * run, admission's run-less call, the failover's call under the failed run) and whether the readers those callers feed
+ * (`runs show` with its commit row, `get_run` with events, `get_capacity`) stay byte-identical. `expectReplacesRefused`
+ * below repeats the pin on exactly those rows, so a caller that ever recorded through another connection (one without
+ * the pragma) or into an unguarded table would fail here and nowhere else.
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -66,6 +75,61 @@ const refSha = (cwd: string, ref: string): string => {
     return "";
   }
 };
+
+type Row = Record<string, unknown>;
+const REPLACE_SPELLINGS = ["INSERT OR REPLACE INTO", "REPLACE INTO"] as const;
+/** A huge count no honest row carries, so a rewrite that went through could not hide in any reader. */
+const REWRITTEN = 999_999;
+/**
+ * Both `REPLACE` spellings SQLite accepts, on each row one recorded inner call wrote, with the rewrite that would matter
+ * to a reader: the `inner_call` row with other counts and outcome (the inner diagnostics), the labelled observation
+ * relabelled `provider_reported` (the capacity collector's filter), the run's `inner_call` event with a rewritten
+ * payload (`runs show`, `get_run`). Every statement must be refused by the table's `append-only` guard: under
+ * `recursive_triggers = ON` (Q-96) the delete half of a REPLACE fires the `BEFORE DELETE` trigger. `labelled` is absent
+ * without the flag and `event` is absent for a call without a run id, since `recordInnerCall` then wrote neither.
+ */
+function expectReplacesRefused(db: Database.Database, rows: { call: Row; labelled?: Row; event?: Row }): void {
+  expect(db.pragma("recursive_triggers", { simple: true })).toBe(1);
+  for (const spelling of REPLACE_SPELLINGS) {
+    expect(() =>
+      db
+        .prepare(
+          `${spelling} inner_call (id, task, backend_kind, model_id, locality, template_version, outcome, reason,
+             attempts, latency_ms, tokens_in, tokens_out, input_bytes, output_bytes, input_sha256, run_id,
+             meta_session_id, created_at)
+           VALUES (@id, @task, @backend_kind, @model_id, @locality, @template_version, @outcome, @reason, @attempts,
+             @latency_ms, @tokens_in, @tokens_out, @input_bytes, @output_bytes, @input_sha256, @run_id,
+             @meta_session_id, @created_at)`,
+        )
+        .run({ ...rows.call, outcome: "rejected_validator", tokens_in: REWRITTEN, tokens_out: REWRITTEN }),
+    ).toThrow(/append-only/u);
+    if (rows.labelled !== undefined) {
+      expect(() =>
+        db
+          .prepare(
+            `${spelling} usage_observation (id, run_id, provider, harness, backing_provider, model, source, metrics_json,
+                                            observed_at)
+             VALUES (@id, @run_id, @provider, @harness, @backing_provider, @model, @source, @metrics_json, @observed_at)`,
+          )
+          .run({
+            ...rows.labelled,
+            source: "provider_reported",
+            metrics_json: JSON.stringify({ "usage.input_tokens": REWRITTEN, "usage.output_tokens": REWRITTEN }),
+          }),
+      ).toThrow(/append-only/u);
+    }
+    if (rows.event !== undefined) {
+      expect(() =>
+        db
+          .prepare(
+            `${spelling} run_event (id, run_id, seq, ts, type, payload_json, artifact_id)
+             VALUES (@id, @run_id, @seq, @ts, @type, @payload_json, @artifact_id)`,
+          )
+          .run({ ...rows.event, payload_json: JSON.stringify({ rewritten: true, tokens_in: REWRITTEN }) }),
+      ).toThrow(/append-only/u);
+    }
+  }
+}
 
 const IDENTITY = { name: "Ada Maintainer", email: "ada@example.test" };
 const SHIM = [process.execPath, "/nonexistent/bin.js", "tool-shim"];
@@ -436,6 +500,63 @@ describe("the commit tool channel (T11.4 production path) records inner usage as
       expect(db.prepare("SELECT COUNT(*) AS n FROM usage_observation").get()).toEqual({ n: 2 });
       expect(await surfaces(r.runId)).toEqual(before);
     });
+
+    it(`${label}: after the drafted commit, both REPLACE spellings are refused on the rows the channel's call wrote${shares === null ? "" : " (the labelled observation included)"}, and every reader is byte-identical (post-#446)`, async () => {
+      // The rows this caller wrote: the `inner_call` row under the run (the commit row points at it), the labelled
+      // observation under the run when the flag is set, and the run's `inner_call` event. The readers this caller feeds
+      // are the ones the first test enumerates plus the commit row and `runs show` whole (events and commits included),
+      // in both forms.
+      const r = await running();
+      const { svc } = inner(shares, [draft("Trim parser input", { in: 8, out: 3 })]);
+      const ch = await openFor(service(svc), r);
+      expect(await commit(ch, {})).toMatchObject({ ok: true, result: { files_changed: 1 } });
+      const state = async () => ({
+        calls: db.prepare("SELECT * FROM inner_call ORDER BY rowid").all() as Row[],
+        usage: db.prepare("SELECT * FROM usage_observation ORDER BY rowid").all() as Row[],
+        events: db.prepare("SELECT * FROM run_event WHERE run_id = ? ORDER BY seq").all(r.runId) as Row[],
+        commits: ledger.listGitCommits(r.runId),
+        listed: ledger.listInnerCalls({ runId: r.runId }),
+        show: await cli(["runs", "show", r.runId, "--json"]),
+        showText: await cli(["runs", "show", r.runId]),
+        surfaces: await surfaces(r.runId),
+      });
+      const before = await state();
+      const [call] = before.calls;
+      const labelled = before.usage.find((row) => row.source === "inner_agent");
+      const event = before.events.find((e) => e.type === "inner_call");
+      expect(before.calls).toHaveLength(1);
+      expect(call).toMatchObject({ task: "commit_message", outcome: "accepted", run_id: r.runId, tokens_in: 8 });
+      expect(before.usage.map((row) => row.source)).toEqual(
+        shares === null
+          ? ["provider_reported", "provider_reported"]
+          : ["provider_reported", "provider_reported", "inner_agent"],
+      );
+      if (shares !== null) expect(labelled).toMatchObject({ provider: shares, harness: shares, run_id: r.runId });
+      expect(event).toMatchObject({ type: "inner_call", run_id: r.runId });
+      expect(before.commits).toEqual([expect.objectContaining({ message_source: "inner", inner_call_id: call?.id })]);
+      expect(JSON.stringify(before)).not.toContain(String(REWRITTEN));
+
+      expectReplacesRefused(db, {
+        call: call as Row,
+        ...(labelled !== undefined ? { labelled } : {}),
+        ...(event !== undefined ? { event } : {}),
+      });
+      // The run's own provider-reported row is guarded by the same triggers: a REPLACE that inflates it is refused too,
+      // so the provider usage every surface above reads cannot be moved by this spelling either.
+      const reported = before.usage.find((row) => row.source === "provider_reported" && row.run_id === r.runId);
+      for (const spelling of REPLACE_SPELLINGS) {
+        expect(() =>
+          db
+            .prepare(
+              `${spelling} usage_observation (id, run_id, provider, harness, backing_provider, model, source, metrics_json,
+                                              observed_at)
+               VALUES (@id, @run_id, @provider, @harness, @backing_provider, @model, @source, @metrics_json, @observed_at)`,
+            )
+            .run({ ...reported, metrics_json: JSON.stringify({ "usage.input_tokens": REWRITTEN }) }),
+        ).toThrow(/append-only/u);
+      }
+      expect(await state()).toEqual(before);
+    });
   }
 });
 
@@ -573,6 +694,34 @@ describe("the MCP admission harness (T11.11 production path) records inner usage
       expect(JSON.stringify(afterBody)).not.toMatch(/inner/u);
       const filtered = (await h.ok("get_capacity", { provider: "grok" })) as Capacity;
       expect(entries(filtered)).toEqual({ grok: before.grok });
+
+      // Post-#446: the rows admission and continuation wrote are the two run-less `inner_call` rows and, with the flag,
+      // the two run-less labelled observations; no `inner_call` event exists anywhere, since neither call had a run id.
+      // Both REPLACE spellings are refused on each, and the readers this caller feeds (`get_capacity`, both runs'
+      // `get_run` with and without events) are byte-identical, as is every row.
+      const state = async () => ({
+        calls: h.db.prepare("SELECT * FROM inner_call ORDER BY rowid").all() as Row[],
+        usage: h.db.prepare("SELECT * FROM usage_observation ORDER BY rowid").all() as Row[],
+        events: h.db.prepare("SELECT type, run_id, payload_json FROM run_event ORDER BY run_id, seq").all() as Row[],
+        capacity: entries((await h.ok("get_capacity", {})) as Capacity),
+        runs: await Promise.all(
+          [first, second].flatMap((run) => [
+            h.ok("get_run", { run_id: run.run_id }),
+            h.ok("get_run", { run_id: run.run_id, include_events: {} }),
+          ]),
+        ),
+      });
+      const snapshot = await state();
+      expect(snapshot.calls).toHaveLength(2);
+      expect(snapshot.events.filter((e) => e.type === "inner_call")).toEqual([]);
+      const labelledRows = snapshot.usage.filter((row) => row.source === "inner_agent");
+      expect(labelledRows).toHaveLength(shares === null ? 0 : 2);
+      expect(JSON.stringify(snapshot)).not.toContain(String(REWRITTEN));
+      for (const [i, call] of snapshot.calls.entries()) {
+        expect(call).toMatchObject({ task: "route_features", run_id: null, outcome: "accepted" });
+        expectReplacesRefused(h.db, { call, ...(shares === null ? {} : { labelled: labelledRows[i] as Row }) });
+      }
+      expect(await state()).toEqual(snapshot);
     }, 120_000);
   }
 
@@ -703,6 +852,44 @@ describe("the MCP admission harness (T11.11 production path) records inner usage
       expect(JSON.stringify(afterBody)).not.toMatch(/inner/u);
       const filtered = (await h.ok("get_capacity", { provider: "grok" })) as Capacity;
       expect(entries(filtered)).toEqual({ grok: before.grok });
+
+      // Post-#446: this is the one `serve`-path classification that wrote all three guarded rows (the `inner_call` row
+      // under the failed run, its labelled observation under that run with the flag, and the failed run's `inner_call`
+      // event), beside admission's run-less pair. Both REPLACE spellings are refused on each of them, and the readers
+      // this caller feeds (`get_capacity`, both runs' `get_run` with and without events, the ledger's per-run list) are
+      // byte-identical, as is every row.
+      const state = async () => ({
+        calls: h.db.prepare("SELECT * FROM inner_call ORDER BY rowid").all() as Row[],
+        usage: h.db.prepare("SELECT * FROM usage_observation ORDER BY rowid").all() as Row[],
+        events: h.db.prepare("SELECT * FROM run_event ORDER BY run_id, seq").all() as Row[],
+        perRun: [failed, successor].map((run) => h.ledger.listUsageObservationsForRun(run.run_id)),
+        capacity: entries((await h.ok("get_capacity", {})) as Capacity),
+        runs: await Promise.all(
+          [failed, successor].flatMap((run) => [
+            h.ok("get_run", { run_id: run.run_id }),
+            h.ok("get_run", { run_id: run.run_id, include_events: {} }),
+          ]),
+        ),
+      });
+      const snapshot = await state();
+      const [admitted, failover] = snapshot.calls;
+      const labelledRows = snapshot.usage.filter((row) => row.source === "inner_agent");
+      const failoverEvents = snapshot.events.filter((e) => e.type === "inner_call");
+      expect(admitted).toMatchObject({ task: "route_features", run_id: null });
+      expect(failover).toMatchObject({ task: "route_features", run_id: failed.run_id, tokens_in: 6, tokens_out: 1 });
+      expect(labelledRows.map((row) => row.run_id)).toEqual(shares === null ? [] : [null, failed.run_id]);
+      expect(failoverEvents).toEqual([expect.objectContaining({ run_id: failed.run_id })]);
+      expect(JSON.stringify(snapshot)).not.toContain(String(REWRITTEN));
+      expectReplacesRefused(h.db, {
+        call: admitted as Row,
+        ...(shares === null ? {} : { labelled: labelledRows[0] as Row }),
+      });
+      expectReplacesRefused(h.db, {
+        call: failover as Row,
+        ...(shares === null ? {} : { labelled: labelledRows[1] as Row }),
+        event: failoverEvents[0] as Row,
+      });
+      expect(await state()).toEqual(snapshot);
     }, 120_000);
   }
 });
