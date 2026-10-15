@@ -6,6 +6,9 @@
  * are Assumptions (the live check recorded no `tool_call` shape), so these pin behaviour, not a native contract.
  * Second pass: parameter-object and empty-command shadowing (pinned gaps), id-less updates after an id'd call, the
  * trailing-tool detail under another failure code, and empty `message` / `stopReason` values.
+ * Third pass: stream order across `end` lines (an unrecognised `end`, a changed id, a failed first `end`, late text),
+ * usage deduplication (including the gap that a counter-less first `end` drops a second `end`'s total), and resume
+ * parity (more id shapes, refusal order with a missing binary, launcher and timeouts, no fork check: a pinned gap).
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -269,5 +272,181 @@ describe("grok parser residuals, second pass (T4.23, synthetic lines; parser unc
     });
     expect(report.checks.filter((k) => !k.ok)).toEqual([]);
     expect(report.result).toMatchObject({ ok: true, unknownEventCount: 1 });
+  });
+});
+
+describe("grok parser residuals, third pass: stream order, usage dedup and resume parity (T4.23, synthetic lines; parser unchanged)", () => {
+  const usages = (events: readonly { kind: string }[]) => events.filter((e) => e.kind === "usage");
+  const approved = { ...PRIVILEGED_BYPASS_PROFILE, bypassApproved: true };
+  const req = {
+    runId: "run_grok_t423_residual",
+    objective: "synthetic grok objective",
+    constraints: [],
+    workspace: { cwd: "/w", writable: true },
+    bypassApproved: true,
+  };
+
+  it("an unrecognised `end` does not take the first-end slot: its id and usage are dropped, the later `end` counts once", () => {
+    const { events, state } = parse([
+      line({ ...END, stopReason: 1, sessionId: "forged-id", usage: { input_tokens: 500 } }),
+      line({ ...END, usage: { input_tokens: 7 } }),
+    ]);
+    expect(events).toEqual([
+      { kind: "unknown", rawType: "end" },
+      { kind: "session_bound", nativeSessionId: SID },
+      { kind: "usage", source: "provider_reported", metrics: { input_tokens: 7 } },
+      { kind: "result", ok: true },
+    ]);
+    expect(state).toMatchObject({ unknownEvents: 1, nativeSessionId: SID });
+    expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({
+      ok: true,
+      nativeSessionId: SID,
+      unknownEventCount: 1,
+    });
+  });
+
+  it("pins the gap: a first `end` with no usable counter means a second `end`'s usage is never recorded", () => {
+    const { events } = parse([
+      line({ type: "end", stopReason: "end_turn", sessionId: SID }),
+      line({ ...END, usage: { input_tokens: 99, output_tokens: 3 } }),
+    ]);
+    // The run total is recorded by the first `end` only (FR-CAP-01); the second fails the run, so nothing is counted.
+    expect(usages(events)).toEqual([]);
+    expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+  });
+
+  it("an `end` with an unsafe session id still records its usage and result, in the order error, usage, result", () => {
+    const { events, state } = parse([line({ ...END, sessionId: "-r" })]);
+    expect(events).toEqual([
+      { kind: "provider_error", category: "protocol", message: "session id is not a safe argument" },
+      { kind: "usage", source: "provider_reported", metrics: { input_tokens: 10 } },
+      { kind: "result", ok: true },
+    ]);
+    expect(state.nativeSessionId).toBeUndefined();
+  });
+
+  it("a second `end` with a changed id emits both anomalies in order, no second usage, and keeps the first id", () => {
+    const { events, state } = parse([
+      line(END),
+      line({ ...END, sessionId: "other-session", usage: { input_tokens: 5 } }),
+    ]);
+    expect(events).toEqual([
+      { kind: "session_bound", nativeSessionId: SID },
+      { kind: "usage", source: "provider_reported", metrics: { input_tokens: 10 } },
+      { kind: "result", ok: true },
+      { kind: "provider_error", category: "protocol", message: "more than one end line" },
+      { kind: "provider_error", category: "protocol", message: "session id changed mid-run" },
+      { kind: "result", ok: false, summary: "stopReason end_turn" },
+    ]);
+    expect(state.nativeSessionId).toBe(SID);
+    expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      nativeSessionId: SID,
+    });
+  });
+
+  it("a failed first `end` records its usage; a later end_turn cannot flip it and the protocol error outranks it", () => {
+    const { events } = parse([line({ ...END, stopReason: "cancelled" }), line(END)]);
+    expect(usages(events)).toHaveLength(1);
+    expect(events.filter((e) => e.kind === "result")).toEqual([
+      { kind: "result", ok: false, summary: "stopReason cancelled" },
+      { kind: "result", ok: false, summary: "stopReason end_turn" },
+    ]);
+    expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+  });
+
+  it("an error line before the `end` does not stop the run total being recorded, though the run fails", () => {
+    const { events } = parse([line({ type: "error", message: "Not signed in" }), line(END)]);
+    expect(usages(events)).toEqual([{ kind: "usage", source: "provider_reported", metrics: { input_tokens: 10 } }]);
+    expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({ ok: false, failureCode: "AUTH_REQUIRED" });
+  });
+
+  it("text after the `end` line joins the summary and leaves a clean turn clean (only a tool call trips the order check)", () => {
+    const { events } = parse([line({ type: "text", data: "a" }), line(END), line({ type: "text", data: "b" })]);
+    expect(adapter().extractResult(events, EXIT_OK)).toEqual({
+      ok: true,
+      unknownEventCount: 0,
+      nativeSessionId: SID,
+      summary: "ab",
+    });
+  });
+
+  it("the parser and resumeArgs agree on more id shapes: both accept or both refuse", () => {
+    const a = adapter();
+    for (const [id, safe] of [
+      ["A:b.c-d_9", true],
+      ["9", true],
+      ["a\n", false],
+      ["\na", false],
+      ["é", false],
+      ["a b", false],
+      ["a/b", false],
+      ["a=b", false],
+      ["_a", false],
+      [":a", false],
+    ] as const) {
+      const state: ParseState = { lines: 0, unknownEvents: 0 };
+      a.parseEvent(line({ ...END, sessionId: id }), state);
+      const resumed = a.resumeArgs({ provider: "grok", nativeSessionId: id }, req, approved);
+      expect(state.nativeSessionId === id, JSON.stringify(id)).toBe(safe);
+      expect("ineligible" in resumed, JSON.stringify(id)).toBe(!safe);
+    }
+  });
+
+  it("resumeArgs refusal order: foreign binding, unsafe id, the compile matrix, then the missing binary (as compile)", () => {
+    const missing = new GrokAdapter({ pathEnv: "/nonexistent" });
+    const safe = { provider: "grok" as const, nativeSessionId: SID };
+    const notFound = { ineligible: true, reason: "CAPABILITY_MISSING", detail: "grok not found on PATH" };
+    expect(missing.compile(req, approved)).toEqual(notFound);
+    expect(missing.resumeArgs(safe, req, approved)).toEqual(notFound);
+    expect(missing.resumeArgs({ provider: "grok", nativeSessionId: "-r" }, req, approved)).toMatchObject({
+      detail: "native session id is not a safe single argument",
+    });
+    expect(missing.resumeArgs({ provider: "codex", nativeSessionId: "-r" }, req, approved)).toMatchObject({
+      detail: "binding is for codex",
+    });
+    // A matrix refusal comes before the missing binary on both paths.
+    const gitWrite = { ...approved, shellAllowlist: ["git push origin main"] };
+    const refused = missing.compile(req, gitWrite);
+    expect(refused).toMatchObject({ ineligible: true, reason: "PROFILE_UNSUPPORTED" });
+    expect(missing.resumeArgs(safe, req, gitWrite)).toEqual(refused);
+    const withModel = { ...req, model: "grok-4.7-build" };
+    expect(missing.resumeArgs(safe, withModel, approved)).toEqual(missing.compile(withModel, approved));
+    expect(missing.compile(withModel, approved)).toMatchObject({
+      reason: "CAPABILITY_MISSING",
+      detail: expect.stringContaining("T4.5"),
+    });
+  });
+
+  it("resume keeps the launcher arguments and constructor timeouts exactly as compile, with only `-r <id>` appended", () => {
+    const a = new GrokAdapter({
+      executable: "/opt/synthetic/grok",
+      launcherArgs: ["--launcher-a", "x"],
+      timeouts: { idleMs: 1_234 },
+    });
+    const first = a.compile(req, approved);
+    const resumed = a.resumeArgs({ provider: "grok", nativeSessionId: SID }, req, approved);
+    if ("ineligible" in first) throw new Error(first.detail);
+    expect(first.argv.slice(0, 3)).toEqual(["/opt/synthetic/grok", "--launcher-a", "x"]);
+    expect(first.timeouts.idleMs).toBe(1_234);
+    expect(resumed).toEqual({ ...first, argv: [...first.argv, "-r", SID] });
+    // Each call returns fresh arrays, so mutating one invocation never leaks into the next.
+    first.argv.push("--mutated");
+    first.timeouts.idleMs = 1;
+    const again = a.compile(req, approved);
+    if ("ineligible" in again) throw new Error(again.detail);
+    expect(again.argv).not.toContain("--mutated");
+    expect(again.timeouts.idleMs).toBe(1_234);
+  });
+
+  it("pins the gap: the parser has no resume context, so a resumed run whose `end` reports another id binds it", () => {
+    // No adapter or lifecycle code compares the bound id with the requested one ([LIVE] 6a returned the same id).
+    const a = adapter();
+    const resumed = a.resumeArgs({ provider: "grok", nativeSessionId: DEFAULT_SESSION_ID }, req, approved);
+    expect("ineligible" in resumed).toBe(false);
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const events = a.parseEvent(line(END), state);
+    expect(a.extractResult(events, EXIT_OK)).toMatchObject({ ok: true, nativeSessionId: SID });
   });
 });
