@@ -209,6 +209,88 @@ function recordedGroup(runId: string): number {
   }
 }
 
+function routeFeaturesOf(runId: string): { classifier?: string; task_kind?: { source?: string; model_id?: string } } {
+  const db = new Database(path.join(dataDir, LEDGER_FILE_NAME), { readonly: true, fileMustExist: true });
+  try {
+    const row = db.prepare("SELECT features_json FROM route_decision WHERE run_id = ?").get(runId) as
+      | { features_json: string }
+      | undefined;
+    return JSON.parse(row?.features_json ?? "{}").route_features ?? {};
+  } finally {
+    db.close();
+  }
+}
+
+const INNER_ROUTE_VALUES = {
+  context_volume: "large",
+  autonomy: "high",
+  reasoning_depth: "high",
+  task_kind: "investigation",
+};
+
+function innerCompletion(content: string): string {
+  return JSON.stringify({
+    model: "served-model",
+    choices: [{ index: 0, message: { role: "assistant", content } }],
+  });
+}
+
+async function listenInnerHttp(
+  handler: (res: http.ServerResponse) => void,
+): Promise<{ port: number; hits: () => number }> {
+  let hits = 0;
+  const server = http.createServer((req, res) => {
+    req.on("data", () => {});
+    req.on("end", () => {
+      hits += 1;
+      handler(res);
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  cleanup.push(
+    () =>
+      new Promise<void>((r) => {
+        server.closeAllConnections();
+        server.close(() => r());
+      }),
+  );
+  return { port: (server.address() as AddressInfo).port, hits: () => hits };
+}
+
+function writeInnerServeConfig(
+  inner: Record<string, unknown>,
+  extra: { projectInner?: "off" | "local_only" | "inherit" } = {},
+): void {
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      schema_version: 1,
+      data_dir: dataDir,
+      allowed_roots: [root],
+      mcp_clients: [
+        {
+          id: "orch",
+          max_trust_profile: "edit-untrusted",
+          ...(extra.projectInner !== undefined ? { projects: ["demo"] } : {}),
+        },
+      ],
+      inner_agent: inner,
+      ...(extra.projectInner !== undefined
+        ? {
+            projects: [
+              {
+                id: "demo",
+                name: "Demo",
+                inner_agent: extra.projectInner,
+                contexts: [{ id: "main", kind: "repository", path: repo, base_ref: "main" }],
+              },
+            ],
+          }
+        : {}),
+    }),
+  );
+}
+
 async function exitOf(child: ChildProcess): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
   if (child.exitCode !== null || child.signalCode !== null) return { code: child.exitCode, signal: child.signalCode };
   return new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
@@ -329,9 +411,91 @@ describeLinuxVerified("serve over stdio (process level)", () => {
     const done = await pollStatus(c.client, d.body.run_id, TERMINAL);
     expect(done.status, c.stderr()).toBe("SUCCEEDED");
     expect(done.provider.adapter).toBe("fake");
+    // T11.11: no inner_agent section keeps the heuristic classifier (FR-INN-01).
+    expect(routeFeaturesOf(d.body.run_id).classifier).toBe("heuristic.v1");
     const pgid = recordedGroup(d.body.run_id);
     expect(groupAlive(pgid)).toBe(false);
   }, 30_000);
+
+  it("T11.11: serve admission and continuation store inner route features from the configured backend", async () => {
+    const inner = await listenInnerHttp((res) => res.end(innerCompletion(JSON.stringify(INNER_ROUTE_VALUES))));
+    writeInnerServeConfig({
+      enabled: true,
+      backend: { kind: "http", base_url: `http://127.0.0.1:${inner.port}`, model: "configured-model" },
+      tasks: { route_features: { enabled: true, timeout_ms: 2000 } },
+    });
+    const c = await connect();
+    const d = await delegate(c.client);
+    expect(d.isError, JSON.stringify(d.body)).toBe(false);
+    const first = await pollStatus(c.client, d.body.run_id, TERMINAL);
+    expect(first.status, c.stderr()).toBe("SUCCEEDED");
+    expect(routeFeaturesOf(d.body.run_id)).toMatchObject({
+      classifier: "route_features.v1",
+      task_kind: {
+        value: "investigation",
+        source: "inner",
+        model_id: "served-model",
+        template_version: "route_features.v1",
+      },
+    });
+    const cont = await call(c.client, "continue_task", {
+      meta_session_id: d.body.meta_session_id,
+      instruction: "keep going",
+    });
+    expect(cont.isError, JSON.stringify(cont.body)).toBe(false);
+    const continued = await pollStatus(c.client, cont.body.run_id, TERMINAL);
+    expect(continued.status, c.stderr()).toBe("SUCCEEDED");
+    expect(routeFeaturesOf(cont.body.run_id).classifier).toBe("route_features.v1");
+    expect(inner.hits()).toBe(2);
+    recordedGroup(d.body.run_id);
+    recordedGroup(cont.body.run_id);
+  }, 60_000);
+
+  it("T11.11: serve keeps heuristic routing when the inner backend hangs", async () => {
+    const held: http.ServerResponse[] = [];
+    const inner = await listenInnerHttp((res) => held.push(res));
+    cleanup.push(() => {
+      for (const res of held) res.destroy();
+    });
+    writeInnerServeConfig({
+      enabled: true,
+      backend: { kind: "http", base_url: `http://127.0.0.1:${inner.port}`, model: "configured-model" },
+      tasks: { route_features: { enabled: true, timeout_ms: 100 } },
+    });
+    const c = await connect();
+    const d = await delegate(c.client);
+    expect(d.isError, JSON.stringify(d.body)).toBe(false);
+    const done = await pollStatus(c.client, d.body.run_id, TERMINAL);
+    expect(done.status, c.stderr()).toBe("SUCCEEDED");
+    expect(routeFeaturesOf(d.body.run_id).classifier).toBe("heuristic.v1");
+    expect(inner.hits()).toBe(1);
+    recordedGroup(d.body.run_id);
+  }, 40_000);
+
+  it("T11.11: a project set to off never calls the inner backend and stores the heuristic", async () => {
+    const inner = await listenInnerHttp((res) => res.end(innerCompletion(JSON.stringify(INNER_ROUTE_VALUES))));
+    writeInnerServeConfig(
+      {
+        enabled: true,
+        backend: { kind: "http", base_url: `http://127.0.0.1:${inner.port}`, model: "configured-model" },
+        tasks: { route_features: { enabled: true, timeout_ms: 2000 } },
+      },
+      { projectInner: "off" },
+    );
+    const c = await connect();
+    const d = await call(c.client, "delegate_task", {
+      objective: "add a feature",
+      project: "demo",
+      trust_profile: "edit-untrusted",
+      routing: { provider_preference: "fake", require_provider: true },
+    });
+    expect(d.isError, JSON.stringify(d.body)).toBe(false);
+    const done = await pollStatus(c.client, d.body.run_id, TERMINAL);
+    expect(done.status, c.stderr()).toBe("SUCCEEDED");
+    expect(routeFeaturesOf(d.body.run_id).classifier).toBe("heuristic.v1");
+    expect(inner.hits()).toBe(0);
+    recordedGroup(d.body.run_id);
+  }, 40_000);
 
   it("T12.4: a retrieval build hung on its embedding backend never blocks admission or shutdown (FR-RAG-11)", async () => {
     // A loopback embedding endpoint that accepts each request and never answers.

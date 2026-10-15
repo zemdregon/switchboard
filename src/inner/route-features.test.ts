@@ -9,7 +9,7 @@ import { classifyRequest } from "../routing/features.js";
 import { DEFAULT_WEIGHTS } from "../routing/score.js";
 import { createFakeBackend, type FakeStep } from "./fake-backend.js";
 import { createInnerAgent } from "./index.js";
-import { buildRouteFeaturesInput, classifyRouteFeatures } from "./route-features.js";
+import { buildRouteFeaturesInput, classifyRouteFeatures, createClassifyRouteFeaturesHook } from "./route-features.js";
 
 const input = { objective: "Fix parser", constraints: ["private constraint"], verificationCommands: 1, writable: true };
 const values = { context_volume: "large", autonomy: "high", reasoning_depth: "high", task_kind: "investigation" };
@@ -141,5 +141,25 @@ describe("routing classification (T11.11)", () => {
     });
     expect(prompt).not.toContain("private");
     expect(prompt).not.toContain("writable");
+  });
+  it("serve hook resolves project privacy at call time and falls back when off or the resolver throws", async () => {
+    const { backend, service } = setup();
+    const seen: { projectId: string; contextId: string }[] = [];
+    const hook = createClassifyRouteFeaturesHook(service, (projectId, contextId) => {
+      seen.push({ projectId, contextId });
+      if (projectId === "throw") throw new Error("resolver failed");
+      return projectId === "denied" ? "off" : "inherit";
+    });
+    const project = (id: string) => ({ project: { id, context_id: "main" } });
+    expect((await hook(input, project("demo"))).classifier).toBe("route_features.v1");
+    expect((await hook(input, {})).classifier).toBe("route_features.v1");
+    expect((await hook(input, project("denied"))).classifier).toBe("heuristic.v1");
+    expect((await hook(input, project("throw"))).classifier).toBe("heuristic.v1");
+    expect(seen).toEqual([
+      { projectId: "demo", contextId: "main" },
+      { projectId: "denied", contextId: "main" },
+      { projectId: "throw", contextId: "main" },
+    ]);
+    expect(backend.requests).toHaveLength(2);
   });
 });
