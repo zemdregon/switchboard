@@ -890,8 +890,9 @@ been used anywhere in the suite.
   through an inconsistent pin; a host with no bindable non-loopback interface skips the two peer tests), and the `cli`
   kind (reported `Ineligible`, never started; `src/cli/inner.test.ts`).
 - *Accounting and replay*: `src/inner/usage.test.ts`, `src/inner/usage-surfaces.test.ts`,
-  `src/inner/usage-channels.test.ts` (the `commit` tool channel and the MCP admission harness themselves),
-  `src/capacity/capacity.test.ts`; replay with the backend off in `src/inner/route-features.test.ts` and
+  `src/inner/usage-channels.test.ts` (the `commit` tool channel and the MCP admission harness themselves: admission,
+  continuation and, since 2026-10-15 post-#389, the quota failover, the one routing classification recorded under a
+  run), `src/capacity/capacity.test.ts`; replay with the backend off in `src/inner/route-features.test.ts` and
   `src/mcp/inner-route-features.test.ts`.
 - *Default test run makes zero live calls*: holds; `npm test` starts only fakes. **Not built:** the live-inner opt-in.
   `scripts/live-smoke.mjs` has no `SWITCHBOARD_LIVE_INNER` or `SWITCHBOARD_LIVE_INNER_CONFIG` switch and
