@@ -90,9 +90,11 @@ Pre-release. The package is private and is not published to any registry; you bu
   structured `backing_provider`/`model` on `session_bound` and own-property hardening
   ([#290](https://github.com/zemdregon/switchboard/pull/290))),
   auth-preflight, conformance suite (T4.55), malicious-fixture leg (partial: synthetic refusal shapes,
-  guard-blocked, trailing-tool and unreadable-event fail-closed replay streams and FR-POL-04, T4.56;
+  guard-blocked, trailing-tool and unreadable-event fail-closed replay streams in a widened hostile matrix and
+  FR-POL-04, T4.56;
   [#245](https://github.com/zemdregon/switchboard/pull/245),
-  [#284](https://github.com/zemdregon/switchboard/pull/284)) and Git declaration fixture tests on synthetic fixtures (README
+  [#284](https://github.com/zemdregon/switchboard/pull/284),
+  [#298](https://github.com/zemdregon/switchboard/pull/298)) and Git declaration fixture tests on synthetic fixtures (README
   [OpenCode CLI](#opencode-cli-milestone-4), ROADMAP T4.52 to
   T4.57); live smoke, live malicious leg and `adapters validate` remain operator work (T4.58). Other M4 providers are
   still catching up on those
@@ -711,8 +713,9 @@ Fixture evidence on `main`: `src/adapters/grok/fixtures/` (T4.23 Done-when and T
 mirrors Cursor T4.43 and OpenCode T4.53)", "grok auth preflight (T4.24, Q-10; SYNTHETIC outputs in the shapes of the
 2026-10-14 live check)", "grok conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.25)", "grok registry
 entry and manifest gate (T4.22)" and "grok Git declaration (T4.27, FR-GIT-01, FR-GIT-02, FR-GIT-09)"); CI also runs
-`test/malicious/adapters/grok.case.ts` and `test/malicious/adapter-leg.test.ts` ("adapter malicious leg: grok", T4.26
-partial; no `replayGap`). No end-to-end run through Switchboard against a logged-in `grok` has been recorded yet
+`test/malicious/adapters/grok.case.ts` and `test/malicious/adapter-leg.test.ts` ("adapter malicious leg: grok" and
+"adapter malicious leg: grok partial streams", T4.26 partial ([#291](https://github.com/zemdregon/switchboard/pull/291));
+no `replayGap`). No end-to-end run through Switchboard against a logged-in `grok` has been recorded yet
 (T4.28).
 
 ## Antigravity CLI (milestone 4)
@@ -791,8 +794,9 @@ runs `test/malicious/adapters/antigravity.case.ts` and `test/malicious/adapter-l
 antigravity", T4.36 partial — see [Known limitations](#known-limitations); guard-blocked streams
 [#257](https://github.com/zemdregon/switchboard/pull/257), trailing-tool streams
 [#262](https://github.com/zemdregon/switchboard/pull/262)). The conformance `resume` case stays partial until Q-86 and
-an operator resume capture (T4.35). No end-to-end run through Switchboard against a logged-in `agy` has been recorded
-yet (T4.38).
+an operator resume capture (T4.35; replay dialect Go `flag` boundaries merged
+[#292](https://github.com/zemdregon/switchboard/pull/292)). No end-to-end run through Switchboard against a logged-in
+`agy` has been recorded yet (T4.38).
 
 ## Cursor CLI (milestone 4)
 
@@ -933,13 +937,20 @@ The parser treats a guard-flagged `tool_call` (`violation`) as a failed run per
 `bash` — the name OpenCode's permission keys use — or any tool name absent from the recorded kinds whose input carries
 a string `command` parses as a shell tool, so its command line reaches the guard whatever the tool is called; a Git
 write through such a tool ends `PERMISSION_BLOCKED` at exit 0 and exit 1
-([#284](https://github.com/zemdregon/switchboard/pull/284)). CI's
+([#284](https://github.com/zemdregon/switchboard/pull/284)). A Git write not carried as an own string `command` on a
+shell-kind tool — a known file tool, a `cmd` alias, or a command only under an own `__proto__` key — is still invisible
+to the guard and stays in the pinned gap list
+([#298](https://github.com/zemdregon/switchboard/pull/298)). CI's
 malicious-fixture leg (T4.56) replays synthetic hostile streams where shell `tool_use` lines carry commands the guard
 can see (including Git writes chained with credential read, out-of-worktree write and network patterns), ending
 `PERMISSION_BLOCKED` at exit 0 and exit 1 across hostile categories, including calls after the final `stop` step
 ([#245](https://github.com/zemdregon/switchboard/pull/245)) and streams unreadable before that step, where an unknown
 event anywhere is never a success (exit 0 ends `OUTPUT_PROTOCOL_ERROR`)
-([#284](https://github.com/zemdregon/switchboard/pull/284)). In an approved bypass run the guard still enforces Git
+([#284](https://github.com/zemdregon/switchboard/pull/284)); the matrix now also covers `git branch -D`,
+`backing_provider`/`model` fields on the binding event, an own `__proto__` key beside a `command`, a second `stop`,
+`pending`/`running` writes, partial streams cut inside a line in every blocked category and unreadable known events,
+each never a success ([#298](https://github.com/zemdregon/switchboard/pull/298)). In an approved bypass run the guard
+still enforces Git
 writes only: an out-of-worktree denial recorded only as `tool_use`
 `state.status` `error` without refusal-specific fields still ends `ok` in the parser suite (T4.53 gap pinned); closing
 that needs operator capture of native refusal fields or an owner decision on classifying `status` `error` (ROADMAP
@@ -966,10 +977,14 @@ T4.56 pins ("an unknown or unreadable event anywhere, before or after the final 
 shell tool named bash, or any unlisted tool carrying a string command, reaches the tool-call guard"),
 "opencode conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.55)" and "opencode Git declaration (T4.57,
 FR-GIT-01, FR-GIT-02, FR-GIT-09)"); CI also runs `test/malicious/adapters/opencode.case.ts` and
-`test/malicious/adapter-leg.test.ts` ("adapter malicious leg: opencode", T4.56 partial — see
+`test/malicious/adapter-leg.test.ts` ("adapter malicious leg: opencode" and "adapter malicious leg: opencode partial
+streams", T4.56 partial — see
 [Known limitations](#known-limitations); guard-blocked, trailing-tool and unreadable-event streams
 [#245](https://github.com/zemdregon/switchboard/pull/245),
-[#284](https://github.com/zemdregon/switchboard/pull/284)). No end-to-end run through Switchboard against a logged-in
+[#284](https://github.com/zemdregon/switchboard/pull/284), with the blocked-gaps matrix, partial streams in every
+blocked category and unreadable-known-event streams in `opencodeBlockedGaps`, `opencodePartialStreams` and
+`opencodeUnreadableStreams` [#298](https://github.com/zemdregon/switchboard/pull/298)). No end-to-end run through
+Switchboard against a logged-in
 `opencode` has been recorded yet (T4.58).
 
 ## Trust profiles
@@ -1104,9 +1119,15 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   [#284](https://github.com/zemdregon/switchboard/pull/284) the leg also fails closed on a stream with an unknown or
   unreadable event anywhere, before or after the final `stop` step (exit 0 ends `OUTPUT_PROTOCOL_ERROR`, never
   success), and hostile commands reach the guard through a shell tool named `bash` and through an unlisted tool name
-  carrying a string `command`, each ending `PERMISSION_BLOCKED` when the command writes Git. The blocked streams still
+  carrying a string `command`, each ending `PERMISSION_BLOCKED` when the command writes Git. [#298](https://github.com/zemdregon/switchboard/pull/298)
+  widened the hostile matrix (`git branch -D`, `backing_provider`/`model` fields on the binding event, an own `__proto__`
+  key beside a `command`, a second `stop`, `pending`/`running` writes), added partial streams cut inside a line in every
+  blocked category and unreadable-known-event streams (`opencodeBlockedGaps`, `opencodePartialStreams`,
+  `opencodeUnreadableStreams`), each never success. The blocked streams still
   rest on synthetic `tool_use` command shapes; the live check recorded only `state.status` `error` without
-  refusal-specific fields, and the guard enforces Git writes only in bypass runs. FR-POL-04 cannot hold in the only
+  refusal-specific fields, and the guard enforces Git writes only in bypass runs — a Git write not carried as an own
+  string `command` on a shell-kind tool (a known file tool, a `cmd` alias, or a command only under an own `__proto__`
+  key) is still not seen by the guard. FR-POL-04 cannot hold in the only
   compiled scope because repository configuration is `enabled` and `opencode.json` and `AGENTS.md` load with no approval
   (live check rows 10a, 10c). Closing the remaining gap needs operator capture of native refusal fields (T4.58) or an
   owner decision on classifying `status` `error`. See ROADMAP T4.56 for the full gap list.

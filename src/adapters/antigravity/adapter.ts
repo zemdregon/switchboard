@@ -61,6 +61,7 @@ import {
   AUTH_STATUS_ARGS,
   AUTH_STATUS_LINE_MAX,
   AUTH_STATUS_TIMEOUT_MS,
+  BACKING_PROVIDER_KEY,
   DISABLE_AUTO_UPDATE_ENV,
   ERROR_AUTH_PREFIX,
   ERROR_MODEL_PREFIX,
@@ -137,6 +138,12 @@ type Json = Record<string, unknown>;
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 const obj = (v: unknown): Json | undefined =>
   typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Json) : undefined;
+/**
+ * Own-property read, so properties carried on Object.prototype or __proto__ smuggling are never read as event
+ * fields (Proposed, fail closed; as Cursor T4.43 and OpenCode T4.53).
+ */
+const ownProp = (o: Json | undefined, key: string): unknown =>
+  o !== undefined && Object.hasOwn(o, key) ? o[key] : undefined;
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
 const ineligible = (reason: Ineligible["reason"], detail: string): Ineligible => ({ ineligible: true, reason, detail });
 /**
@@ -391,20 +398,28 @@ export class AntigravityAdapter implements ProviderAdapter {
       return []; // the supervisor ends the run OUTPUT_PROTOCOL_ERROR on unparseable framing
     }
     const e = obj(doc);
-    const type = str(e?.event);
+    const type = str(ownProp(e, "event"));
     if (e === undefined || type === undefined) return this.#unknown(state, "none");
     switch (type) {
       case EVENT.init: {
-        const init = obj(e.init);
-        const id = str(e.conversation_id);
+        const init = obj(ownProp(e, "init"));
+        const id = str(ownProp(e, "conversation_id"));
         if (init === undefined || id === undefined) return this.#unknown(state, type);
-        return this.#bind(state, id, str(init.model));
+        const rawBacking =
+          ownProp(e, BACKING_PROVIDER_KEY) ??
+          ownProp(e, "backingProvider") ??
+          ownProp(init, BACKING_PROVIDER_KEY) ??
+          ownProp(init, "backingProvider");
+        const backingProvider = str(rawBacking);
+        const rawModel = ownProp(init, "model") ?? ownProp(e, "model");
+        const model = str(rawModel);
+        return this.#bind(state, id, model, backingProvider);
       }
       case EVENT.stepUpdate:
         return this.#step(e, state);
       case EVENT.result: {
-        const r = obj(e.result);
-        const status = str(r?.status);
+        const r = obj(ownProp(e, "result"));
+        const status = str(ownProp(r, "status"));
         if (r === undefined || status === undefined) return this.#unknown(state, type);
         const out: NormalizedEvent[] = [];
         const results = (seenResults.get(state) ?? 0) + 1;
@@ -413,12 +428,20 @@ export class AntigravityAdapter implements ProviderAdapter {
         if (results > 1) {
           out.push({ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "more than one result line" });
         }
-        const id = str(r.conversation_id);
-        if (id !== undefined) out.push(...this.#bind(state, id, undefined));
-        const usage = obj(r.usage);
+        const rawBacking =
+          ownProp(e, BACKING_PROVIDER_KEY) ??
+          ownProp(e, "backingProvider") ??
+          ownProp(r, BACKING_PROVIDER_KEY) ??
+          ownProp(r, "backingProvider");
+        const backingProvider = str(rawBacking);
+        const rawModel = ownProp(r, "model") ?? ownProp(e, "model");
+        const model = str(rawModel);
+        const id = str(ownProp(r, "conversation_id"));
+        if (id !== undefined) out.push(...this.#bind(state, id, model, backingProvider));
+        const usage = obj(ownProp(r, "usage"));
         const metrics: Record<string, number | string | null> = {};
         for (const k of USAGE_KEYS) {
-          const v = usage?.[k];
+          const v = ownProp(usage, k);
           if (typeof v === "number" && Number.isFinite(v) && v >= 0) metrics[k] = v;
         }
         // The envelope's usage is the run total and each `usage` event becomes one ledger row (FR-CAP-01), so only the
@@ -428,17 +451,17 @@ export class AntigravityAdapter implements ProviderAdapter {
         }
         // `denied_actions` was an array of `{action, display_name}` ([LIVE] C7, C18). Any other present value is
         // read as a denial rather than ignored, so an unexpected shape cannot hide one.
-        const rawDenied = r.denied_actions;
+        const rawDenied = ownProp(r, "denied_actions");
         const denied = Array.isArray(rawDenied) ? rawDenied : rawDenied === undefined || rawDenied === null ? [] : [{}];
         for (const d of denied) {
           const action = obj(d);
           out.push({
             kind: "permission_denied",
-            tool: clip(str(action?.display_name) ?? str(action?.action) ?? "unknown", 64),
+            tool: clip(str(ownProp(action, "display_name")) ?? str(ownProp(action, "action")) ?? "unknown", 64),
           });
         }
         // `error` was a string ([LIVE] C6, C10, C13); any other present value is an unknown error, never ignored.
-        const rawError = r.error;
+        const rawError = ownProp(r, "error");
         const error = str(rawError);
         if (error !== undefined && error !== "") {
           const category = error.startsWith(ERROR_MODEL_PREFIX)
@@ -453,7 +476,7 @@ export class AntigravityAdapter implements ProviderAdapter {
         // Q-86: `SUCCESS` with no tokens is what a print timeout returns ([LIVE] C10), so it is not a success.
         const total = metrics.total_tokens;
         const ok = results === 1 && status === STATUS_SUCCESS && typeof total === "number" && total > 0;
-        const response = str(r.response);
+        const response = str(ownProp(r, "response"));
         if (response !== undefined && response !== "") {
           out.push({ kind: "message", role: "assistant", text: clip(response, MAX_SUMMARY_CHARS) });
         }
@@ -474,7 +497,12 @@ export class AntigravityAdapter implements ProviderAdapter {
    * conversation) makes the binding ambiguous, so the run fails closed; the first id stays bound. An id that is not
    * one safe token (a control character, a leading `-`, over 256 characters) binds nothing and fails the run.
    */
-  #bind(state: ParseState, id: string, model: string | undefined): NormalizedEvent[] {
+  #bind(
+    state: ParseState,
+    id: string,
+    model: string | undefined,
+    backingProvider: string | undefined = undefined,
+  ): NormalizedEvent[] {
     if (id === "") return [];
     if (!SESSION_ID_RE.test(id)) {
       return [{ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "conversation id is not a safe token" }];
@@ -484,18 +512,25 @@ export class AntigravityAdapter implements ProviderAdapter {
       return [{ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "conversation id changed mid-run" }];
     }
     state.nativeSessionId = id;
-    return [{ kind: "session_bound", nativeSessionId: id, ...(model ? { model: clip(model, 128) } : {}) }];
+    return [
+      {
+        kind: "session_bound",
+        nativeSessionId: id,
+        ...(model ? { model: clip(model, 128) } : {}),
+        ...(backingProvider ? { backingProvider: clip(backingProvider, 128) } : {}),
+      },
+    ];
   }
 
   /** Tool steps become one `tool_call` each (the command or path is transient, for the guard); text deltas are dropped. */
   #step(e: Json, state: ParseState): NormalizedEvent[] {
-    const stepType = str(e.step_type);
-    const index = e.step_index;
+    const stepType = str(ownProp(e, "step_type"));
+    const index = ownProp(e, "step_index");
     if (stepType === undefined || typeof index !== "number") return this.#unknown(state, "step_update");
     // Every step carries the run's `conversation_id` ([H]; [LIVE] C4). A step for another conversation than the bound
     // one makes the run ambiguous, as a changed `init` or `result` id does, so the run fails closed; the step is still
     // read so the tool-call guard sees its command. A step never binds the session itself.
-    const stepId = str(e.conversation_id);
+    const stepId = str(ownProp(e, "conversation_id"));
     const bound = state.nativeSessionId;
     const changed = stepId !== undefined && stepId !== "" && bound !== undefined && stepId !== bound;
     const tool = this.#toolStep(e, stepType, index, state);
@@ -512,13 +547,20 @@ export class AntigravityAdapter implements ProviderAdapter {
     if (stepType !== STEP_TOOL) return [];
     const seen = seenToolSteps.get(state) ?? new Map<number, Set<string>>();
     seenToolSteps.set(state, seen);
-    const info = obj(e.tool_info);
-    const name = str(info?.name) ?? str(e.tool_name) ?? "unknown";
-    const params = obj(info?.parameters);
+    const info = obj(ownProp(e, "tool_info"));
+    const name = str(ownProp(info, "name")) ?? str(ownProp(e, "tool_name")) ?? str(ownProp(e, "name")) ?? "unknown";
+    const params =
+      obj(ownProp(info, "parameters")) ??
+      obj(ownProp(info, "args")) ??
+      obj(ownProp(info, "input")) ??
+      obj(ownProp(e, "parameters")) ??
+      obj(ownProp(e, "args")) ??
+      obj(ownProp(e, "input"));
     // Assumption: the parameter names below; the live check recorded `tool_info.{name,parameters}` but not their keys.
     // Without them the guard sees no command or path for this call.
-    const command = str(params?.command) ?? str(params?.CommandLine);
-    const target = str(params?.path) ?? str(params?.file_path) ?? str(params?.AbsolutePath);
+    const command = str(ownProp(params, "command")) ?? str(ownProp(params, "CommandLine"));
+    const target =
+      str(ownProp(params, "path")) ?? str(ownProp(params, "file_path")) ?? str(ownProp(params, "AbsolutePath"));
     const kind = command !== undefined ? "shell" : "other";
     const key = command !== undefined ? `command:${command}` : target !== undefined ? `target:${target}` : undefined;
     // A step is reported once, and again only when a later update names a command or path not yet reported for it, so

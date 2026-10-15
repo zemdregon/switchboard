@@ -77,7 +77,10 @@ import {
   SUBTYPE_STARTED,
   SUBTYPE_SUCCESS,
   TOOL_KEYS,
+  TOOL_RESULT_BLOCKED,
+  TOOL_RESULT_DENIED,
   TOOL_RESULT_PERMISSION_DENIED,
+  TOOL_RESULT_PERMISSION_DENIED_SNAKE,
   TOOL_RESULT_REJECTED,
   TRUST_FLAG,
   USAGE_KEYS,
@@ -148,22 +151,47 @@ const own = <T>(table: Readonly<Record<string, T>>, key: string): T | undefined 
 /** Own-property lookup on a parsed object, ignoring any prototype members. */
 const ownProp = (o: Json | undefined, key: string): unknown =>
   o !== undefined && Object.hasOwn(o, key) ? o[key] : undefined;
-/** Parameter container fallback (args > parameters > input). */
-const toolArgs = (entry: Json | undefined): Json | undefined =>
-  obj(ownProp(entry, "args")) ?? obj(ownProp(entry, "parameters")) ?? obj(ownProp(entry, "input"));
-/** Shell command parameter aliases: command > cmd > CommandLine. */
+/** Parameter container fallback (args > parameters > input > arguments > entry). */
+const toolArgs = (entry: Json | undefined): Json | undefined => {
+  if (entry === undefined) return undefined;
+  const explicit =
+    obj(ownProp(entry, "args")) ??
+    obj(ownProp(entry, "parameters")) ??
+    obj(ownProp(entry, "input")) ??
+    obj(ownProp(entry, "arguments"));
+  if (explicit !== undefined) return explicit;
+  const res = obj(ownProp(entry, "result"));
+  if (res !== undefined) {
+    const rejected = obj(ownProp(res, "rejected"));
+    if (rejected !== undefined) return rejected;
+    const permDenied = obj(ownProp(res, "permissionDenied")) ?? obj(ownProp(res, "permission_denied"));
+    if (permDenied !== undefined) return permDenied;
+  }
+  return entry;
+};
+/** Shell command parameter aliases: command > cmd > CommandLine > commandLine. */
 const toolCommand = (args: Json | undefined, kind: "read" | "edit" | "shell" | "other"): string | undefined =>
-  kind === "shell"
-    ? (str(ownProp(args, "command")) ?? str(ownProp(args, "cmd")) ?? str(ownProp(args, "CommandLine")))
+  kind === "shell" ||
+  (kind === "other" &&
+    (ownProp(args, "command") !== undefined ||
+      ownProp(args, "cmd") !== undefined ||
+      ownProp(args, "CommandLine") !== undefined ||
+      ownProp(args, "commandLine") !== undefined))
+    ? (str(ownProp(args, "command")) ??
+      str(ownProp(args, "cmd")) ??
+      str(ownProp(args, "CommandLine")) ??
+      str(ownProp(args, "commandLine")))
     : undefined;
-/** File target parameter aliases: path > filePath > file_path > AbsolutePath > target. */
+/** File target parameter aliases: path > filePath > file_path > AbsolutePath > absolute_path > target > file. */
 const toolTarget = (args: Json | undefined, kind: "read" | "edit" | "shell" | "other"): string | undefined =>
-  kind === "read" || kind === "edit"
+  kind === "read" || kind === "edit" || (kind === "other" && ownProp(args, "command") === undefined)
     ? (str(ownProp(args, "path")) ??
       str(ownProp(args, "filePath")) ??
       str(ownProp(args, "file_path")) ??
       str(ownProp(args, "AbsolutePath")) ??
-      str(ownProp(args, "target")))
+      str(ownProp(args, "absolute_path")) ??
+      str(ownProp(args, "target")) ??
+      str(ownProp(args, "file")))
     : undefined;
 /** `result` lines already seen per run: a second one is a protocol anomaly, never a success (fail closed). */
 const seenResults = new WeakMap<ParseState, number>();
@@ -279,7 +307,8 @@ export class CursorAdapter implements ProviderAdapter {
     } catch {
       return unknown("output is not JSON");
     }
-    const flag = obj(doc)?.[AUTH_STATUS_KEY];
+    const docObj = obj(doc);
+    const flag = docObj ? ownProp(docObj, AUTH_STATUS_KEY) : undefined;
     if (flag === true) return { state: "OK" };
     if (flag === false) return { state: "AUTH_REQUIRED", loginCommand: CURSOR_LOGIN_COMMAND };
     return unknown(`no boolean ${AUTH_STATUS_KEY}`);
@@ -423,7 +452,13 @@ export class CursorAdapter implements ProviderAdapter {
         // (T4.6: harness fronting another provider), it is bound as a plain string.
         const rawBacking = ownProp(e, BACKING_PROVIDER_KEY) ?? ownProp(e, "backingProvider");
         const backingProvider = str(rawBacking);
-        const out = this.#bind(state, str(ownProp(e, "session_id")), str(ownProp(e, "model")), backingProvider);
+        const candidateModel = str(ownProp(e, "model")) ?? str(ownProp(e, "model_id")) ?? str(ownProp(e, "modelId"));
+        const rawId =
+          str(ownProp(e, "session_id")) ??
+          str(ownProp(e, "sessionId")) ??
+          str(ownProp(e, "chat_id")) ??
+          str(ownProp(e, "chatId"));
+        const out = this.#bind(state, rawId, candidateModel, backingProvider);
         // `apiKeySource` was the string `login` on every run ([LIVE] 5b). Another string, or a present value that is
         // not a string, is not the native login: the run fails closed rather than ignoring an unexpected shape.
         const rawSource = ownProp(e, "apiKeySource");
@@ -440,9 +475,16 @@ export class CursorAdapter implements ProviderAdapter {
       }
       case EVENT.assistant: {
         const message = obj(ownProp(e, "message"));
-        const content = ownProp(message, "content");
-        if (!Array.isArray(content)) return this.#unknown(state, type);
-        const text = content.map((c) => str(ownProp(obj(c), "text")) ?? "").join("");
+        const rawContent = ownProp(message, "content") ?? ownProp(e, "content");
+        let text: string | undefined;
+        if (Array.isArray(rawContent)) {
+          text = rawContent.map((c) => (typeof c === "string" ? c : (str(ownProp(obj(c), "text")) ?? ""))).join("");
+        } else if (typeof rawContent === "string") {
+          text = rawContent;
+        } else {
+          text = str(ownProp(message, "text")) ?? str(ownProp(e, "text"));
+        }
+        if (text === undefined) return this.#unknown(state, type);
         return text === "" ? [] : [{ kind: "message", role: "assistant", text: clip(text, MAX_SUMMARY_CHARS) }];
       }
       case EVENT.toolCall:
@@ -456,8 +498,14 @@ export class CursorAdapter implements ProviderAdapter {
         if (results > 1) {
           out.push({ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "more than one result line" });
         }
+        const candidateModel = str(ownProp(e, "model")) ?? str(ownProp(e, "model_id")) ?? str(ownProp(e, "modelId"));
         const rawBacking = ownProp(e, BACKING_PROVIDER_KEY) ?? ownProp(e, "backingProvider");
-        out.push(...this.#bind(state, str(ownProp(e, "session_id")), undefined, str(rawBacking)));
+        const rawId =
+          str(ownProp(e, "session_id")) ??
+          str(ownProp(e, "sessionId")) ??
+          str(ownProp(e, "chat_id")) ??
+          str(ownProp(e, "chatId"));
+        out.push(...this.#bind(state, rawId, candidateModel, str(rawBacking)));
         // Only finite, non-negative counters under the recorded keys are kept ([LIVE] 5a); anything else is dropped.
         const usage = obj(ownProp(e, "usage"));
         const metrics: Record<string, number | string | null> = {};
@@ -465,7 +513,10 @@ export class CursorAdapter implements ProviderAdapter {
           const v = ownProp(usage, k);
           if (typeof v === "number" && Number.isFinite(v) && v >= 0) metrics[k] = v;
         }
-        if (Object.keys(metrics).length > 0) out.push({ kind: "usage", source: "provider_reported", metrics });
+        // The result line usage is the run total (FR-CAP-01), so only the first result line records it; a second would count twice.
+        if (results === 1 && Object.keys(metrics).length > 0) {
+          out.push({ kind: "usage", source: "provider_reported", metrics });
+        }
         const ok = results === 1 && subtype === SUBTYPE_SUCCESS && ownProp(e, "is_error") === false;
         out.push({ kind: "result", ok, ...(ok ? {} : { summary: `result ${clip(subtype, 64)}` }) });
         return out;
@@ -495,12 +546,23 @@ export class CursorAdapter implements ProviderAdapter {
       return [{ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "session id changed mid-run" }];
     }
     state.nativeSessionId = id;
+    const cleanModel =
+      model !== undefined && model !== "" && model !== "__proto__" && !(model in Object.prototype)
+        ? clip(model, 128)
+        : undefined;
+    const cleanBacking =
+      backingProvider !== undefined &&
+      backingProvider !== "" &&
+      backingProvider !== "__proto__" &&
+      !(backingProvider in Object.prototype)
+        ? clip(backingProvider, 128)
+        : undefined;
     return [
       {
         kind: "session_bound",
         nativeSessionId: id,
-        ...(model ? { model: clip(model, 128) } : {}),
-        ...(backingProvider ? { backingProvider: clip(backingProvider, 128) } : {}),
+        ...(cleanModel ? { model: cleanModel } : {}),
+        ...(cleanBacking ? { backingProvider: cleanBacking } : {}),
       },
     ];
   }
@@ -515,7 +577,7 @@ export class CursorAdapter implements ProviderAdapter {
     const call = obj(ownProp(e, "tool_call"));
     const keys = call ? Object.keys(call) : [];
     if (call === undefined || keys.length === 0) return this.#unknown(state, `tool_call:${subtype ?? "none"}`);
-    const callId = str(ownProp(e, "call_id"));
+    const callId = str(ownProp(e, "call_id")) ?? str(ownProp(e, "callId"));
     let seen = seenToolCalls.get(state);
     if (seen === undefined) {
       seen = new Map();
@@ -523,11 +585,13 @@ export class CursorAdapter implements ProviderAdapter {
     }
     if (subtype === SUBTYPE_STARTED) {
       return keys.map((key): NormalizedEvent => {
-        const kind = own(TOOL_KEYS, key) ?? "other";
+        const isProtoKey = key === "__proto__" || key in Object.prototype;
+        const kind = isProtoKey ? "other" : (own(TOOL_KEYS, key) ?? "other");
         const entry = obj(ownProp(call, key));
-        const args = toolArgs(entry);
-        const command = toolCommand(args, kind);
-        const target = toolTarget(args, kind);
+        const args = isProtoKey ? undefined : toolArgs(entry);
+        const command = isProtoKey ? undefined : toolCommand(args, kind);
+        const target = isProtoKey ? undefined : toolTarget(args, kind);
+        const effectiveKind = kind === "other" && command !== undefined ? "shell" : kind;
         const stepId = callId ? `${callId}:${key}` : key;
         const paramKey =
           command !== undefined ? `command:${command}` : target !== undefined ? `target:${target}` : undefined;
@@ -538,7 +602,7 @@ export class CursorAdapter implements ProviderAdapter {
         }
         return {
           kind: "tool_call",
-          tool: kind,
+          tool: effectiveKind,
           name: clip(key, 64),
           ...(command !== undefined ? { command } : {}),
           ...(target !== undefined ? { target: clip(target, MAX_TARGET_CHARS) } : {}),
@@ -548,11 +612,13 @@ export class CursorAdapter implements ProviderAdapter {
     if (subtype === SUBTYPE_COMPLETED) {
       const out: NormalizedEvent[] = [];
       for (const key of keys) {
-        const kind = own(TOOL_KEYS, key) ?? "other";
+        const isProtoKey = key === "__proto__" || key in Object.prototype;
+        const kind = isProtoKey ? "other" : (own(TOOL_KEYS, key) ?? "other");
         const entry = obj(ownProp(call, key));
-        const args = toolArgs(entry);
-        const command = toolCommand(args, kind);
-        const target = toolTarget(args, kind);
+        const args = isProtoKey ? undefined : toolArgs(entry);
+        const command = isProtoKey ? undefined : toolCommand(args, kind);
+        const target = isProtoKey ? undefined : toolTarget(args, kind);
+        const effectiveKind = kind === "other" && command !== undefined ? "shell" : kind;
         const stepId = callId ? `${callId}:${key}` : key;
         const paramKey =
           command !== undefined ? `command:${command}` : target !== undefined ? `target:${target}` : undefined;
@@ -562,7 +628,7 @@ export class CursorAdapter implements ProviderAdapter {
             seen.set(stepId, new Set([paramKey]));
             out.push({
               kind: "tool_call",
-              tool: kind,
+              tool: effectiveKind,
               name: clip(key, 64),
               ...(command !== undefined ? { command } : {}),
               ...(target !== undefined ? { target: clip(target, MAX_TARGET_CHARS) } : {}),
@@ -571,7 +637,7 @@ export class CursorAdapter implements ProviderAdapter {
             reported.add(paramKey);
             out.push({
               kind: "tool_call",
-              tool: kind,
+              tool: effectiveKind,
               name: clip(key, 64),
               ...(command !== undefined ? { command } : {}),
               ...(target !== undefined ? { target: clip(target, MAX_TARGET_CHARS) } : {}),
@@ -581,8 +647,15 @@ export class CursorAdapter implements ProviderAdapter {
         const result = obj(ownProp(entry, "result"));
         const denied =
           result !== undefined &&
-          (Object.hasOwn(result, TOOL_RESULT_REJECTED) || Object.hasOwn(result, TOOL_RESULT_PERMISSION_DENIED));
-        if (denied) {
+          (Object.hasOwn(result, TOOL_RESULT_REJECTED) ||
+            Object.hasOwn(result, TOOL_RESULT_PERMISSION_DENIED) ||
+            Object.hasOwn(result, TOOL_RESULT_PERMISSION_DENIED_SNAKE) ||
+            Object.hasOwn(result, TOOL_RESULT_DENIED) ||
+            Object.hasOwn(result, TOOL_RESULT_BLOCKED));
+        const errorText = str(ownProp(result, "error")) ?? str(ownProp(entry, "error"));
+        const isPermissionText =
+          errorText !== undefined && /permission|blocked|denied|unauthorized|not permitted/i.test(errorText);
+        if (denied || isPermissionText) {
           out.push({ kind: "permission_denied", tool: clip(key, 64) });
         }
       }

@@ -232,6 +232,9 @@ describe("adapter malicious leg: opencode partial streams", () => {
   it("a stream cut inside a line ends OUTPUT_PROTOCOL_ERROR (never success) and leaves the checkout untouched", async () => {
     const streams = opencodePartialStreams(fx);
     expect(new Set(streams.map((s) => s.exitCode))).toEqual(new Set([0, 1]));
+    for (const cat of ["credential_read", "out_of_worktree_write", "network"] as const) {
+      expect(new Set(streams.filter((s) => s.category === cat).map((s) => s.exitCode)), cat).toEqual(new Set([0, 1]));
+    }
     for (const s of streams) {
       const o = await replayHostileStream(c, fx, s);
       expect(o.failedChecks, s.name).toEqual([]);
@@ -243,10 +246,17 @@ describe("adapter malicious leg: opencode partial streams", () => {
 
   // An unknown kind before `stop` parses as `session_bound` plus `unknown` plus `result`, so it cannot sit in the
   // `unknown_events` category (that category must parse only as `unknown`). It is still not a success (T4.56).
-  it("an unreadable event before a final stop step is not a success and leaves the checkout untouched", async () => {
+  it("an unreadable event before or after a final stop step is not a success and leaves the checkout untouched", async () => {
     const streams = opencodeUnreadableStreams();
     expect(new Set(streams.map((s) => s.exitCode))).toEqual(new Set([0, 1]));
     for (const s of streams) {
+      // The replay helper consumes the provenance header; it is not a provider event.
+      const kinds = parsedKinds(c, { ...s, lines: s.lines.slice(1) });
+      expect(
+        kinds.filter((k) => k === "unknown"),
+        s.name,
+      ).toHaveLength(1);
+      expect(kinds, s.name).toContain("result");
       const o = await replayHostileStream(c, fx, s);
       expect(o.failedChecks, s.name).toEqual([]);
       expect(o.resultOk, s.name).toBe(false);

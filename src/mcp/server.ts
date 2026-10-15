@@ -131,7 +131,6 @@ import type { DynamicProjectStore } from "../projects/index.js";
 import { deleteRagStore } from "../retrieval/store.js";
 import {
   buildRouteDecision,
-  classifyRequest,
   collectAffinityFacts,
   collectScoreInputs,
   compileCheck,
@@ -710,12 +709,15 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     const routed0 = route(answer, {
       preference: routing?.provider_preference,
       privileged,
-      features: classifyRequest({
-        objective: a.objective as string,
-        constraints: a.constraints as string[],
-        verificationCommands: verification.length,
-        writable: profile !== "inspect-untrusted",
-      }),
+      features: await lifecycle.routeFeatures(
+        {
+          objective: a.objective as string,
+          constraints: a.constraints as string[],
+          verificationCommands: verification.length,
+          writable: profile !== "inspect-untrusted",
+        },
+        { ...(resolved ? { project: resolved.snapshot } : {}) },
+      ),
       sessionProvider: null,
       affinity: {
         projectId: resolved?.snapshot.id ?? null,
@@ -946,12 +948,15 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     const routed = route(answer, {
       preference,
       privileged,
-      features: classifyRequest({
-        objective: a.instruction as string,
-        constraints: ctx.constraints,
-        verificationCommands: 0,
-        writable: profile !== "inspect-untrusted",
-      }),
+      features: await lifecycle.routeFeatures(
+        {
+          objective: a.instruction as string,
+          constraints: ctx.constraints,
+          verificationCommands: 0,
+          writable: profile !== "inspect-untrusted",
+        },
+        { metaSessionId: sessionId, ...(resolved ? { project: resolved.snapshot } : {}) },
+      ),
       sessionProvider: p0,
       affinity: { projectId: ctx.projectId ?? null, workspace, applies: false, requiredProvider: required ?? null },
       basis: (selected) =>
