@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.23), in the streaming-json shapes recorded by the 2026-10-14 live check (rows 4b, 6a, 8f: a resumed run (-r returns the resumed sessionId) whose tool call is cancelled ends stopReason cancelled at exit 0).","exit":0,"requireResume":true}}
+{"type":"available_commands","tools":["run_terminal_command"]}
+{"type":"text","data":"The command was not run."}
+{"type":"end","stopReason":"cancelled","sessionId":"{{SESSION_ID}}","requestId":"req_synthetic_3","usage":{"input_tokens":11,"cache_read_input_tokens":5,"cache_creation_input_tokens":0,"output_tokens":2,"reasoning_tokens":0,"total_tokens":18},"num_turns":1,"total_cost_usd":0.001}
