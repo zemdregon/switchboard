@@ -79,10 +79,11 @@ Pre-release. The package is private and is not published to any registry; you bu
   T4.37); live smoke, live malicious leg and `adapters validate` for Antigravity remain operator work (T4.38). Cursor
   has conformance and malicious-fixture legs and a Git declaration on
   recorded fixtures (README [Cursor CLI](#cursor-cli-milestone-4), ROADMAP T4.45 to T4.47); live smoke, live malicious
-  leg and `adapters validate` for Cursor remain operator work (T4.48). OpenCode has a conformance suite and Git
-  declaration on synthetic fixtures and a malicious-fixture leg that is still partial (README
-  [OpenCode CLI](#opencode-cli-milestone-4), ROADMAP T4.55 to T4.57); live smoke, live malicious leg and
-  `adapters validate` for OpenCode remain operator work (T4.58). Other M4 providers are still catching up on those
+  leg and `adapters validate` for Cursor remain operator work (T4.48). OpenCode has module, compile-matrix, parser
+  (partial: T4.53), auth-preflight, conformance suite (T4.55), malicious-fixture leg (partial: `replayGap`, T4.56) and
+  Git declaration fixture tests on synthetic fixtures (README [OpenCode CLI](#opencode-cli-milestone-4), ROADMAP T4.52 to
+  T4.57); live smoke, live malicious leg and `adapters validate` remain operator work (T4.58). Other M4 providers are
+  still catching up on those
   legs. Manifests still admit no version until `switchboard adapters validate` passes a real CLI (operator tasks).
   Outside an approved `privileged` bypass scope every profile is ineligible for the new providers. See
   [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks).
@@ -835,27 +836,38 @@ writes, no sandbox is documented and a repository's `opencode.json` and `AGENTS.
 | `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one argv shape: `opencode run --format json --standalone -- <prompt>` with worktree file access, shell `broad`, network `on` and repository configuration `enabled`, and **no** `--auto` (owner decision 46, Q-83). A scope without `bypass`, or any narrowing Switchboard can express, is refused before spawn. Bypass-class flags such as `--auto` are never compiled outside that case (and are not emitted even inside it). |
 
 Resume continues the native session with `--session <session_id>` through the same matrix when the provider is eligible
-(synthetic fixtures in `src/adapters/opencode/opencode.test.ts`, T4.53).
+(synthetic fixtures in `src/adapters/opencode/opencode.test.ts`, T4.53). A `sessionID` that resume could not pass as
+one safe argument is never bound (`OUTPUT_PROTOCOL_ERROR`; [#245](https://github.com/zemdregon/switchboard/pull/245)).
+Rate-limit and permission-denial stream shapes, `backingProvider` on `session_bound` and the keys of
+`tool_use.part.state.input` are still unrecorded (T4.53 stays `Partial` on the roadmap).
 
 ### Git and commits
 
 `list_capabilities` reports `gitWriteControl` **`none-documented`**: OpenCode documents `bash` deny patterns in
 configuration, but on opencode v2.0.23 no per-run deny took effect in the live check, so Switchboard does not emit a
-deny rule. Git-write denial therefore relies on FR-GIT-03 (controller ref comparison) and FR-GIT-06 (the tool-call
-guard) in addition to any provider rule. Shell allowlist entries that could write Git make the run `Ineligible`
-(`PROFILE_UNSUPPORTED`, FR-GIT-01).
+deny rule. Shell allowlist entries that could write Git make the run `Ineligible` (`PROFILE_UNSUPPORTED`, FR-GIT-01),
+including on an approved bypass scope.
+
+The parser treats a guard-flagged `tool_call` (`violation`) as a failed run per
+[ADR-0039](docs/adr/0039-switchboard-side-tool-call-guard.md) even when a `step_finish` `stop` ends at exit 0
+(`src/adapters/opencode/opencode.test.ts`; [#245](https://github.com/zemdregon/switchboard/pull/245)). In an approved
+bypass run the guard enforces Git writes only; credential
+reads, out-of-worktree writes and network calls that OpenCode reports only as `tool_use` `state.status` `error`
+(indistinguishable from an ordinary tool error on the recorded fields) still end `ok` on synthetic fixtures until
+operator captures or an owner decision pins blocked outcomes (ROADMAP T4.56, T4.58).
 
 `commitChannel` is **`finalize-only`**: Switchboard does not inject a per-run MCP server through
 `OPENCODE_CONFIG_CONTENT` (not exercised on the 2026-10-14 live check). In the only compiled scope, repository
 `opencode.json` and `AGENTS.md` load (owner decision 26). To publish work, set `finalize_commit` on the project's primary
-context as for Codex ([How commits reach Git](#how-commits-reach-git)).
+context as for Codex ([How commits reach Git](#how-commits-reach-git)). In an approved bypass run, Git-write denial
+therefore rests on FR-GIT-03 and FR-GIT-06 in addition to any provider rule.
 
-Fixture evidence: `src/adapters/opencode/opencode.test.ts` ("opencode conformance suite (synthetic recorded fixtures,
-FR-ADP-11, T4.55)" and "opencode Git declaration (T4.57, FR-GIT-01, FR-GIT-02, FR-GIT-09)"); CI also runs
-`test/malicious/adapter-leg.test.ts` ("adapter malicious leg: opencode") with the case in
-`test/malicious/adapters/opencode.case.ts` (T4.56 is still `Partial` on the roadmap: hostile streams that end blocked
-are not pinned yet). No end-to-end run through Switchboard against a logged-in `opencode` has been recorded yet
-(T4.58).
+Fixture evidence on `main`: `src/adapters/opencode/opencode.test.ts` ("opencode compile matrix (T4.52)", "opencode
+probe and auth preflight (T4.52, T4.54)", "opencode parser and result (T4.53)", "opencode conformance suite (synthetic
+recorded fixtures, FR-ADP-11, T4.55)" and "opencode Git declaration (T4.57, FR-GIT-01, FR-GIT-02, FR-GIT-09)"); CI also
+runs `test/malicious/adapters/opencode.case.ts` and `test/malicious/adapter-leg.test.ts` ("adapter malicious leg:
+opencode", T4.56 partial while `replayGap` is set — see [Known limitations](#known-limitations)). No end-to-end run
+through Switchboard against a logged-in `opencode` has been recorded yet (T4.58).
 
 ## Trust profiles
 
@@ -972,6 +984,15 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   the only compiled scope because repository configuration is `enabled` and `GEMINI.md`, `AGENTS.md` and the `.agents`
   MCP server and hooks load with no approval (live check C11). The tool-call guard enforces Git writes per ADR-0039 in
   bypass runs; other hostile categories need T4.38. See ROADMAP T4.36 for the full gap list.
+- **OpenCode malicious-fixture leg is partial (ROADMAP T4.56).** CI runs `test/malicious/adapter-leg.test.ts` with
+  `test/malicious/adapters/opencode.case.ts` on synthetic `--format json` streams (no `opencode` installed). Compile
+  and isolation-flag checks pass for the approved bypass cell; hostile replay blocking checks are skipped while
+  `replayGap` is set because OpenCode reports a refused tool only as `tool_use` `state.status` `error`, which the
+  parser cannot tell apart from an ordinary tool error (T4.53), and the tool-call guard enforces Git writes only in
+  bypass runs (ADR-0039). FR-POL-04 cannot hold in the only compiled scope because repository configuration is
+  `enabled` and `opencode.json` and `AGENTS.md` load with no approval (live check rows 10a, 10c). Closing the gap needs
+  operator capture of refusal fields or an owner decision on classifying `status` `error`; none is recorded yet. See
+  ROADMAP T4.56 for the full gap list.
 - **Event shapes are partly verified.** The 2026-10-13 live checks confirmed the Claude Code stream-json shapes
   (C-1 to C-11 and G-1) on 2.1.296 and the Codex flags (X-1 to X-3) on 0.162.1. Claude error strings (C-12), the
   Git-write attempt (C-G2) and Codex through Switchboard (X-5 to X-9) are still unverified, and another CLI version may
