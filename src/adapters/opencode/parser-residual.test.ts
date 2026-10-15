@@ -9,18 +9,37 @@
  * trailing-tool and unreadable-event details, text after the last stop, usage dedupe gaps (a part id spent without
  * counters, first counters win, an empty-string id, dedupe across a changed id, state shared by two adapters), fresh
  * invocations from compile and resume, and parser/resume agreement on id shapes.
+ * Third pass (T4.6, FR-ADP-10; same terms): `backingProvider` and model on `session_bound` edge cases. Pinned gaps: a
+ * vendor or model first reported on a later line with the same id is dropped (fixture `backing_on_finish.jsonl`); a
+ * line whose id is empty, unsafe or changed loses its vendor; a non-null non-string root value shadows every other
+ * spelling and the part. Values are bound verbatim (no trim or case folding, the harness name kept); a resumed run
+ * binds the vendor its own stream reports (fixture `resume_backing.jsonl`), and resume never passes one.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { ArtifactStore } from "../../artifacts/index.js";
+import { createIdGenerator } from "../../ids/index.js";
+import { createLedger, openLedger } from "../../ledger/index.js";
+import { RunLifecycle } from "../../lifecycle/index.js";
 import { resolveTrustProfile } from "../../policy/profiles.js";
+import { WorkspaceManager } from "../../workspace/index.js";
 import { runConformanceCase } from "../conformance.js";
 import { privilegedProfile } from "../fixtures/privileged.js";
+import { AdapterRegistry } from "../registry.js";
+import { createProbeRunner } from "../run.js";
 import { guardEvent } from "../tool-guard.js";
-import type { CompileRequest, ParseState, ResolvedProfile } from "../types.js";
+import type { CompileRequest, NormalizedEvent, ParseState, ProbeRunner, ResolvedProfile } from "../types.js";
 import { OpenCodeAdapter } from "./adapter.js";
-import { BYPASS_SCOPE, PRIVILEGED_BYPASS_PROFILE, RESUMED_SESSION_ID, replayAdapter } from "./fixtures/cases.js";
+import {
+  BYPASS_SCOPE,
+  DEFAULT_SESSION_ID,
+  PRIVILEGED_BYPASS_PROFILE,
+  RESUMED_SESSION_ID,
+  replayAdapter,
+} from "./fixtures/cases.js";
 
 const dirs: string[] = [];
 const makeCwd = () => {
@@ -571,5 +590,405 @@ describe("opencode resume/compile parity across request axes (T4.53, FR-SES-03; 
       nativeSessionId: RESUMED_SESSION_ID,
       unknownEventCount: 0,
     });
+  });
+});
+
+describe("opencode parser residuals, third pass: backingProvider and model on session_bound (T4.53, T4.6, FR-ADP-10; synthetic lines; parser unchanged)", () => {
+  const bound = (events: readonly NormalizedEvent[]) => events.filter((e) => e.kind === "session_bound");
+  const parseRaw = (raws: string[]) => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    return { a, events: raws.flatMap((r) => a.parseEvent(r, state)), state };
+  };
+  const VENDOR = {
+    backing_provider: "late-vendor",
+    backingProvider: "late-camel",
+    model: "Late Model",
+  };
+
+  it("pins the gap: a backing vendor or model first reported on a later line with the same id is dropped, on every line type", () => {
+    for (const later of [
+      { ...TEXT("ok", SID), ...VENDOR },
+      { ...TOOL("read", { filePath: "a.txt" }, SID), ...VENDOR },
+      { ...FINISH("tool-calls", "prt_f0"), ...VENDOR },
+      { ...FINISH("stop", "prt_f1"), ...VENDOR },
+      { ...TEXT("ok", SID), part: { type: "text", text: "ok", ...VENDOR } },
+    ]) {
+      const { events, state } = parse([START(SID), later, FINISH("stop", "prt_f9")]);
+      expect(bound(events), JSON.stringify(later)).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+      expect(JSON.stringify(events)).not.toContain("late-");
+      expect(JSON.stringify(events)).not.toContain("Late Model");
+      expect(state.nativeSessionId).toBe(SID);
+      expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({
+        ok: true,
+        nativeSessionId: SID,
+      });
+    }
+  });
+
+  it("an id-less line carrying a vendor before the binding line loses it; the binding line reports only its own fields", () => {
+    const { events } = parse([{ ...START(), ...VENDOR }, { ...TEXT("ok", SID), model: "Text Model" }, FINISH("stop")]);
+    expect(bound(events)).toEqual([{ kind: "session_bound", nativeSessionId: SID, model: "Text Model" }]);
+    // An empty id is absent too: its vendor is lost, nothing is bound and nothing errors.
+    const empty = parse([{ ...START(""), ...VENDOR }, FINISH("stop")]);
+    expect(bound(empty.events)).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+    expect(empty.events.filter((e) => e.kind === "provider_error")).toEqual([]);
+  });
+
+  it("a line with an unsafe id binds nothing and its vendor is lost; the later safe id binds without it and the run fails", () => {
+    const { events, state } = parse([{ ...START("-x"), ...VENDOR }, TEXT("ok", SID), FINISH("stop")]);
+    expect(events[0]).toEqual({
+      kind: "provider_error",
+      category: "protocol",
+      message: "session id is not a safe argument",
+    });
+    expect(bound(events)).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+    expect(JSON.stringify(events)).not.toContain("late-");
+    expect(state.nativeSessionId).toBe(SID);
+    expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      nativeSessionId: SID,
+    });
+  });
+
+  it("a vendor on a line naming a changed id is never bound; the first binding and its vendor stay", () => {
+    const { events } = parse([
+      { ...START(SID), backing_provider: "first-vendor", model: "First" },
+      {
+        ...TEXT("ok", OTHER),
+        backing_provider: "changed-vendor",
+        model: "Changed",
+      },
+      FINISH("stop"),
+    ]);
+    expect(bound(events)).toEqual([
+      {
+        kind: "session_bound",
+        nativeSessionId: SID,
+        model: "First",
+        backingProvider: "first-vendor",
+      },
+    ]);
+    expect(JSON.stringify(events)).not.toContain("changed-vendor");
+    expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      nativeSessionId: SID,
+    });
+  });
+
+  it("the binding line's vendor is reported whatever the line type, including an error and an unknown type (gap: the run fails)", () => {
+    const withVendor = {
+      sessionID: SID,
+      backing_provider: "v-1",
+      model: "M-1",
+    };
+    const cases: [object, string | undefined][] = [
+      [
+        {
+          type: "error",
+          ...withVendor,
+          error: { type: "provider.auth", message: "x" },
+        },
+        "AUTH_REQUIRED",
+      ],
+      [{ type: "mystery_event", ...withVendor }, "OUTPUT_PROTOCOL_ERROR"],
+      [{ ...TOOL("read", { filePath: "a.txt" }), ...withVendor }, undefined],
+      [{ ...FINISH("stop"), ...withVendor }, undefined],
+    ];
+    for (const [first, code] of cases) {
+      const { events } = parse([first, FINISH("stop", "prt_last")]);
+      expect(bound(events), JSON.stringify(first)).toEqual([
+        {
+          kind: "session_bound",
+          nativeSessionId: SID,
+          model: "M-1",
+          backingProvider: "v-1",
+        },
+      ]);
+      const r = adapter().extractResult(events, EXIT_OK);
+      expect(r, JSON.stringify(first)).toMatchObject(code ? { ok: false, failureCode: code } : { ok: true });
+    }
+  });
+
+  it("a non-null non-string root backing_provider shadows root backingProvider and the part; root model alike shadows part model", () => {
+    for (const raw of [0, false, "", { vendor: "x" }, ["x"]]) {
+      const { events } = parse([
+        {
+          ...START(SID),
+          backing_provider: raw,
+          backingProvider: "root-camel",
+          model: raw,
+          part: {
+            type: "step-start",
+            backing_provider: "part-snake",
+            backingProvider: "part-camel",
+            model: "Part",
+          },
+        },
+      ]);
+      expect(bound(events), JSON.stringify(raw)).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+    }
+    // A null at each level falls through to the next spelling, in the order root snake, root camel, part snake, part camel.
+    const order = (o: Record<string, unknown>, p: Record<string, unknown>) =>
+      bound(parse([{ ...START(SID), ...o, part: { type: "step-start", ...p } }]).events)[0];
+    expect(order({ backing_provider: null, backingProvider: "rc" }, { backing_provider: "ps" })).toMatchObject({
+      backingProvider: "rc",
+    });
+    expect(
+      order({ backing_provider: null, backingProvider: null }, { backing_provider: "ps", backingProvider: "pc" }),
+    ).toMatchObject({
+      backingProvider: "ps",
+    });
+    expect(order({}, { backing_provider: null, backingProvider: "pc" })).toMatchObject({ backingProvider: "pc" });
+    expect(order({ model: null }, { model: "Part" })).toMatchObject({
+      model: "Part",
+    });
+  });
+
+  it("backingProvider and model are bound verbatim: no trim, no case folding, the harness name kept, 128 characters unclipped", () => {
+    const exact = "v".repeat(128);
+    for (const [vendor, model] of [
+      ["opencode", "opencode"],
+      ["  Anthropic  ", " Model With Spaces "],
+      ["ANTHROPIC", "claude-SONNET"],
+      [exact, exact],
+      ["éditeur", "modèle"],
+      ["a/b:c", "provider/model-1"],
+    ]) {
+      const { events } = parse([{ ...START(SID), model, backing_provider: vendor }]);
+      expect(bound(events), vendor).toEqual([
+        {
+          kind: "session_bound",
+          nativeSessionId: SID,
+          model,
+          backingProvider: vendor,
+        },
+      ]);
+    }
+    const over = parse([{ ...START(SID), model: `${exact}m`, backing_provider: `${exact}b` }]);
+    expect(bound(over.events)).toEqual([
+      {
+        kind: "session_bound",
+        nativeSessionId: SID,
+        model: `${exact}…`,
+        backingProvider: `${exact}…`,
+      },
+    ]);
+  });
+
+  it("Object.prototype member names are plain strings: bound verbatim, never resolved to an inherited member", () => {
+    for (const name of ["constructor", "hasOwnProperty", "valueOf", "toString", "__proto__", "__defineGetter__"]) {
+      const { events } = parse([{ ...START(SID), model: name, backing_provider: name }, FINISH("stop")]);
+      expect(bound(events), name).toEqual([
+        {
+          kind: "session_bound",
+          nativeSessionId: SID,
+          model: name,
+          backingProvider: name,
+        },
+      ]);
+      expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({
+        ok: true,
+        nativeSessionId: SID,
+      });
+    }
+  });
+
+  it("an own __proto__ key in the JSON, at the root or in the part, cannot supply a backing vendor, model or session id", () => {
+    const smuggled = `{"sessionID":"${SID}","model":"proto-model","backing_provider":"proto-vendor","backingProvider":"proto-camel"}`;
+    const root = parseRaw([`{"type":"step_start","__proto__":${smuggled},"part":{"type":"step-start"}}`]);
+    expect(bound(root.events)).toEqual([]);
+    expect(root.state.nativeSessionId).toBeUndefined();
+    const part = parseRaw([
+      `{"type":"step_start","sessionID":"${SID}","part":{"type":"step-start","__proto__":${smuggled}}}`,
+    ]);
+    expect(bound(part.events)).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+    expect(JSON.stringify([root.events, part.events])).not.toContain("proto-");
+  });
+
+  it("a resumed stream's binding carries its own vendor; resumeArgs never passes a vendor or model and ignores extra binding fields", () => {
+    const { events } = parse([
+      {
+        ...START(RESUMED_SESSION_ID),
+        backing_provider: "backing-resumed",
+        model: "Resumed Model",
+      },
+    ]);
+    expect(bound(events)).toEqual([
+      {
+        kind: "session_bound",
+        nativeSessionId: RESUMED_SESSION_ID,
+        model: "Resumed Model",
+        backingProvider: "backing-resumed",
+      },
+    ]);
+    const request: CompileRequest = {
+      runId: "run_opencode_t453_third",
+      objective: "resume",
+      constraints: [],
+      workspace: { cwd: "/work/tree", writable: true },
+      bypassApproved: true,
+    };
+    const plain = adapter().resumeArgs(
+      { provider: "opencode", nativeSessionId: RESUMED_SESSION_ID },
+      request,
+      PRIVILEGED_BYPASS_PROFILE,
+    );
+    const extra = {
+      provider: "opencode",
+      nativeSessionId: RESUMED_SESSION_ID,
+      backingProvider: "x-vendor",
+      model: "x-model",
+    } as const;
+    const withExtra = adapter().resumeArgs(extra, request, PRIVILEGED_BYPASS_PROFILE);
+    expect(withExtra).toEqual(plain);
+    expect(JSON.stringify(withExtra)).not.toContain("x-vendor");
+    expect(JSON.stringify(withExtra)).not.toContain("x-model");
+  });
+
+  it("fixture backing_on_finish replays to success with no backing vendor or model bound", async () => {
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: replayAdapter("backing_on_finish"),
+      request: {
+        runId: "run_opencode_backing_on_finish",
+        objective: "synthetic opencode objective",
+        constraints: [],
+        workspace: { cwd: makeCwd(), writable: true },
+        bypassApproved: true,
+      },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toEqual({
+      ok: true,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      unknownEventCount: 0,
+      summary: "ok",
+    });
+  });
+
+  it("fixture resume_backing replays a resumed run binding the resumed id with its vendor and model", async () => {
+    const report = await runConformanceCase({
+      kind: "resume",
+      adapter: replayAdapter("resume_backing"),
+      request: {
+        runId: "run_opencode_resume_backing",
+        objective: "synthetic opencode objective",
+        constraints: [],
+        workspace: { cwd: makeCwd(), writable: true },
+        bypassApproved: true,
+      },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      binding: { provider: "opencode", nativeSessionId: RESUMED_SESSION_ID },
+      expect: { ok: true, nativeSessionId: RESUMED_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: true,
+      nativeSessionId: RESUMED_SESSION_ID,
+      unknownEventCount: 0,
+    });
+  });
+
+  it("fixture backing_on_finish through RunLifecycle stores harness opencode with no backing vendor and no model", async () => {
+    const root = realpathSync(makeCwd());
+    const repo = join(root, "repo");
+    mkdirSync(repo);
+    const g = (...args: string[]) =>
+      execFileSync("git", ["-c", "commit.gpgsign=false", ...args], {
+        cwd: repo,
+        env: {
+          PATH: process.env.PATH ?? "",
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_AUTHOR_NAME: "OpenCode Dev",
+          GIT_AUTHOR_EMAIL: "opencode@example.test",
+          GIT_COMMITTER_NAME: "OpenCode Dev",
+          GIT_COMMITTER_EMAIL: "opencode@example.test",
+        },
+      });
+    g("init", "-q", "-b", "main");
+    writeFileSync(join(repo, "README.md"), "initial\n");
+    g("add", "-A");
+    g("commit", "-q", "-m", "init");
+    const dataDir = join(root, "data");
+    mkdirSync(dataDir);
+    const db = openLedger(dataDir);
+    const ids = createIdGenerator();
+    const ledger = createLedger(db, { ids });
+    const artifacts = new ArtifactStore(join(dataDir, "artifacts"));
+    const real = createProbeRunner();
+    // A synthetic stored login for the T4.54 auth preflight; every other probe runs the replay launcher.
+    const probeRunner: ProbeRunner = async (argv, opts) =>
+      argv.includes("auth") && argv.includes("list")
+        ? {
+            stdout: JSON.stringify([
+              {
+                id: "opencode",
+                name: "Synthetic",
+                connections: [{ type: "oauth" }],
+              },
+            ]),
+            stderr: "",
+            exitCode: 0,
+            timedOut: false,
+          }
+        : real(argv, opts);
+    const lifecycle = new RunLifecycle({
+      ledger,
+      workspace: new WorkspaceManager({
+        db,
+        artifacts,
+        dataDir,
+        allowedRoots: [root],
+        ids,
+      }),
+      artifacts,
+      adapters: new AdapterRegistry().register(replayAdapter("backing_on_finish")),
+      allowedRoots: [root],
+      globalConcurrency: 1,
+      resolveProfile: (name) => resolveTrustProfile(name),
+      probeRunner,
+    });
+    lifecycle.start();
+    try {
+      const { runId, metaSessionId } = await lifecycle.submit({
+        clientId: "c",
+        objective: "a vendor reported only on the step_finish line",
+        workspace: repo,
+        trustProfile: "privileged",
+        provider: "opencode",
+        privileged: { scope: BYPASS_SCOPE, approvedByClientPolicy: true },
+      });
+      const done = await lifecycle.waitForTerminal(runId);
+      expect(done.state, done.failure_detail ?? "").toBe("SUCCEEDED");
+      const bindings = ledger.listProviderBindings(metaSessionId);
+      expect(bindings).toEqual([
+        expect.objectContaining({
+          provider: "opencode",
+          harness: "opencode",
+          native_session_id: DEFAULT_SESSION_ID,
+        }),
+      ]);
+      expect(bindings[0]?.backing_provider ?? null).toBeNull();
+      expect(bindings[0]?.model ?? null).toBeNull();
+      const rows = ledger.listUsageObservationsForRun(runId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        provider: "opencode",
+        harness: "opencode",
+        source: "provider_reported",
+      });
+      expect(rows[0]?.backing_provider ?? null).toBeNull();
+      expect(JSON.stringify([bindings, rows])).not.toContain("backing-late");
+      expect(JSON.stringify([bindings, rows])).not.toContain("Finish Model 2");
+    } finally {
+      await lifecycle.shutdown();
+      db.close();
+    }
   });
 });

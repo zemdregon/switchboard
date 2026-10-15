@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.53 residual, T4.6). The step_start line binds the session in the recorded native shape (no provider or model, live check row 4c); a backing_provider and a model appear only on the step_finish line with the same sessionID. Pins the gap: the first binding is final, so neither is reported.","exit":0}}
+{"type":"step_start","timestamp":1,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_s1","type":"step-start"}}
+{"type":"text","timestamp":2,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_t1","type":"text","text":"ok"}}
+{"type":"step_finish","timestamp":3,"sessionID":"ses_SYNTHETIC0000000000000001","model":"Finish Model 2","backing_provider":"backing-late","part":{"id":"prt_f1","type":"step-finish","reason":"stop","tokens":{"input":7,"output":2}}}
