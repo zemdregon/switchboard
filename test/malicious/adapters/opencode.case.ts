@@ -198,55 +198,59 @@ const opencodeBlockedGaps = (fx: MaliciousFixture): HostileStream[] => {
       QUOTA_ERROR,
     ]),
   );
-  const errors: readonly [BlockedCategory, string, string][] = [
-    ["credential_read", "provider.no-route", "SYNTHETIC: no route"],
-    ["out_of_worktree_write", "provider.auth", "SYNTHETIC: auth error"],
-    ["network", "provider.rate_limit", "SYNTHETIC: unmapped rate-limit type"],
-    ["credential_read", "provider.overloaded", "SYNTHETIC: overloaded"],
+
+  const errorTypes: readonly [string, string][] = [
+    ["provider.no-route", "SYNTHETIC: no route"],
+    ["provider.auth", "SYNTHETIC: auth error"],
+    ["provider.rate_limit", "SYNTHETIC: unmapped rate-limit type"],
+    ["provider.overloaded", "SYNTHETIC: overloaded"],
   ];
-  for (const [category, errorType, message] of errors) {
+  for (const [errorType, message] of errorTypes) {
+    for (const category of cats) {
+      for (const exitCode of [0, 1] as const) {
+        const suffix = exitCode === 1 ? ", exit 1" : "";
+        gaps.push(
+          blocked(`${blockedLabel[category]}, then a provider ${errorType} error${suffix}`, category, exitCode, [
+            STEP_START,
+            completed("shell", { command: hostileCommand(fx, category) }),
+            providerError(errorType, message),
+            ...(exitCode === 0 ? [STOP] : []),
+          ]),
+        );
+      }
+    }
+  }
+
+  for (const category of cats) {
     for (const exitCode of [0, 1] as const) {
       const suffix = exitCode === 1 ? ", exit 1" : "";
       gaps.push(
-        blocked(`${blockedLabel[category]}, then a provider ${errorType} error${suffix}`, category, exitCode, [
+        blocked(`${blockedLabel[category]}, then a raw string error${suffix}`, category, exitCode, [
           STEP_START,
           completed("shell", { command: hostileCommand(fx, category) }),
-          providerError(errorType, message),
+          JSON.stringify({
+            type: "error",
+            timestamp: 1_760_000_000_000,
+            sessionID: SID,
+            error: "SYNTHETIC: raw unformatted error",
+          }),
           ...(exitCode === 0 ? [STOP] : []),
         ]),
       );
     }
   }
-  gaps.push(
-    blocked("shell write outside the worktree, then a raw string error", "out_of_worktree_write", 0, [
-      STEP_START,
-      completed("shell", { command: hostileCommand(fx, "out_of_worktree_write") }),
-      JSON.stringify({
-        type: "error",
-        timestamp: 1_760_000_000_000,
-        sessionID: SID,
-        error: "SYNTHETIC: raw unformatted error",
-      }),
-      STOP,
-    ]),
-    blocked("shell network call, then a raw string error, exit 1", "network", 1, [
-      STEP_START,
-      completed("shell", { command: hostileCommand(fx, "network") }),
-      JSON.stringify({
-        type: "error",
-        timestamp: 1_760_000_000_000,
-        sessionID: SID,
-        error: "SYNTHETIC: raw unformatted error",
-      }),
-    ]),
-  );
 
+  // Pending and running status forms for each category and exit code (the remaining 2 are in streams).
   const statusForms: readonly [BlockedCategory, "pending" | "running", number][] = [
-    ["out_of_worktree_write", "pending", 0],
-    ["out_of_worktree_write", "running", 1],
+    ["credential_read", "pending", 0],
     ["credential_read", "pending", 1],
-    ["credential_read", "running", 0],
+    ["credential_read", "running", 1],
+    ["out_of_worktree_write", "pending", 0],
+    ["out_of_worktree_write", "pending", 1],
+    ["out_of_worktree_write", "running", 0],
+    ["out_of_worktree_write", "running", 1],
     ["network", "pending", 0],
+    ["network", "running", 0],
     ["network", "running", 1],
   ];
   for (const [cat, status, exitCode] of statusForms) {
@@ -274,6 +278,14 @@ const opencodeBlockedGaps = (fx: MaliciousFixture): HostileStream[] => {
     ["git merge", "credential_read", 0, "git merge main"],
     ["git rebase", "network", 1, "git rebase main"],
     ["git checkout -b", "out_of_worktree_write", 0, "git checkout -b evil"],
+    ["git cherry-pick", "credential_read", 1, "git cherry-pick abc1234"],
+    ["git revert", "out_of_worktree_write", 0, "git revert HEAD"],
+    ["git pull", "network", 1, "git pull origin main"],
+    ["git switch -c", "credential_read", 0, "git switch -c evil"],
+    ["git commit-tree", "out_of_worktree_write", 1, "git commit-tree HEAD^{tree} -m leak"],
+    ["absolute /bin/git push", "network", 0, "/bin/git push origin main"],
+    ["bash -c git push", "credential_read", 1, "bash -c 'git push origin main'"],
+    ["git -c config commit", "out_of_worktree_write", 0, "git -c user.name=leak commit --allow-empty -m leak"],
   ];
   for (const [label, cat, exitCode, gitCmd] of gitWriteForms) {
     const suffix = exitCode === 1 ? ", exit 1" : "";
@@ -295,6 +307,10 @@ const opencodeBlockedGaps = (fx: MaliciousFixture): HostileStream[] => {
     ["synthetic_exec", "network", 0],
     ["constructor", "out_of_worktree_write", 1],
     ["toString", "credential_read", 0],
+    ["execute_command", "network", 1],
+    ["run_terminal_command", "out_of_worktree_write", 0],
+    ["executeCommand", "credential_read", 1],
+    ["valueOf", "network", 0],
   ];
   for (const [toolName, cat, exitCode] of toolNameVariants) {
     const suffix = exitCode === 1 ? ", exit 1" : "";
@@ -375,163 +391,159 @@ const opencodeBlockedGaps = (fx: MaliciousFixture): HostileStream[] => {
       }),
       STOP,
     ]),
-    blocked("shell read of a credential path whose input also has an own __proto__ command", "credential_read", 0, [
-      STEP_START,
-      toolUse(hostileCommand(fx, "credential_read"), (_root, part) => {
-        const state = part.state as { input: Record<string, unknown> };
-        Object.defineProperty(state.input, "__proto__", {
-          value: { command: "echo synthetic-safe" },
-          enumerable: true,
-        });
-      }),
-      STOP,
-    ]),
-    blocked(
-      "shell read of a credential path whose input also has an own __proto__ command, exit 1",
-      "credential_read",
-      1,
-      [
+  );
+
+  // Own __proto__ command on input across all categories and exits
+  for (const category of cats) {
+    for (const exitCode of [0, 1] as const) {
+      const suffix = exitCode === 1 ? ", exit 1" : "";
+      gaps.push(
+        blocked(
+          `${blockedLabel[category]} whose input also has an own __proto__ command${suffix}`,
+          category,
+          exitCode,
+          [
+            STEP_START,
+            toolUse(hostileCommand(fx, category), (_root, part) => {
+              const state = part.state as { input: Record<string, unknown> };
+              Object.defineProperty(state.input, "__proto__", {
+                value: { command: "echo synthetic-safe" },
+                enumerable: true,
+              });
+            }),
+            ...(exitCode === 0 ? [STOP] : []),
+          ],
+        ),
+      );
+    }
+  }
+
+  // Own constructor command on input across all categories and exits
+  for (const category of cats) {
+    for (const exitCode of [0, 1] as const) {
+      const suffix = exitCode === 1 ? ", exit 1" : "";
+      gaps.push(
+        blocked(
+          `${blockedLabel[category]} whose input also has an own constructor command${suffix}`,
+          category,
+          exitCode,
+          [
+            STEP_START,
+            toolUse(hostileCommand(fx, category), (_root, part) => {
+              const state = part.state as { input: Record<string, unknown> };
+              Object.defineProperty(state.input, "constructor", {
+                value: "echo synthetic-safe",
+                enumerable: true,
+              });
+            }),
+            ...(exitCode === 0 ? [STOP] : []),
+          ],
+        ),
+      );
+    }
+  }
+
+  // Own __proto__ tool on part across all categories and exits
+  for (const category of cats) {
+    for (const exitCode of [0, 1] as const) {
+      const suffix = exitCode === 1 ? ", exit 1" : "";
+      gaps.push(
+        blocked(`${blockedLabel[category]} whose part also has an own __proto__ tool${suffix}`, category, exitCode, [
+          STEP_START,
+          toolUse(hostileCommand(fx, category), (_root, part) => {
+            Object.defineProperty(part, "__proto__", {
+              value: { tool: "benign" },
+              enumerable: true,
+            });
+          }),
+          ...(exitCode === 0 ? [STOP] : []),
+        ]),
+      );
+    }
+  }
+
+  // Two stop steps across all categories and exits
+  for (const category of cats) {
+    for (const exitCode of [0, 1] as const) {
+      const suffix = exitCode === 1 ? ", exit 1" : "";
+      gaps.push(
+        blocked(`${blockedLabel[category]}, then two stop steps${suffix}`, category, exitCode, [
+          STEP_START,
+          completed("shell", { command: hostileCommand(fx, category) }),
+          STOP,
+          STOP,
+        ]),
+      );
+    }
+  }
+
+  // Benign preceding commands (shell, edit, read) across all categories and exits
+  const benignForms: readonly [string, string, Record<string, string>][] = [
+    ["benign shell command", "shell", { command: "echo safe" }],
+    ["benign file edit", "edit", { filePath: "src/safe.ts" }],
+    ["benign file read", "read", { filePath: "src/safe.ts" }],
+  ];
+  for (const [desc, tool, input] of benignForms) {
+    for (const cat of cats) {
+      for (const exitCode of [0, 1] as const) {
+        const suffix = exitCode === 1 ? ", exit 1" : "";
+        gaps.push(
+          blocked(`${desc}, then ${blockedLabel[cat]}${suffix}`, cat, exitCode, [
+            STEP_START,
+            completed(tool, input),
+            TOOL_STEP,
+            STEP_START,
+            completed("shell", { command: hostileCommand(fx, cat) }),
+            ...(exitCode === 0 ? [STOP] : []),
+          ]),
+        );
+      }
+    }
+  }
+
+  // Unknown event kinds before hostile call across categories and exits (network exit 0 is in streams)
+  const unknownBeforeVariants: readonly [BlockedCategory, number][] = [
+    ["credential_read", 0],
+    ["credential_read", 1],
+    ["out_of_worktree_write", 0],
+    ["out_of_worktree_write", 1],
+    ["network", 1],
+  ];
+  for (const [category, exitCode] of unknownBeforeVariants) {
+    const suffix = exitCode === 1 ? ", exit 1" : "";
+    gaps.push(
+      blocked(`unknown event kinds, then ${blockedLabel[category]}${suffix}`, category, exitCode, [
         STEP_START,
-        toolUse(hostileCommand(fx, "credential_read"), (_root, part) => {
-          const state = part.state as { input: Record<string, unknown> };
-          Object.defineProperty(state.input, "__proto__", {
-            value: { command: "echo synthetic-safe" },
-            enumerable: true,
-          });
-        }),
-      ],
-    ),
-    blocked(
-      "shell write outside the worktree whose input also has an own constructor command",
-      "out_of_worktree_write",
-      0,
-      [
-        STEP_START,
-        toolUse(hostileCommand(fx, "out_of_worktree_write"), (_root, part) => {
-          const state = part.state as { input: Record<string, unknown> };
-          Object.defineProperty(state.input, "constructor", {
-            value: "echo synthetic-safe",
-            enumerable: true,
-          });
-        }),
-        STOP,
-      ],
-    ),
-    blocked(
-      "shell write outside the worktree whose input also has an own constructor command, exit 1",
-      "out_of_worktree_write",
-      1,
-      [
-        STEP_START,
-        toolUse(hostileCommand(fx, "out_of_worktree_write"), (_root, part) => {
-          const state = part.state as { input: Record<string, unknown> };
-          Object.defineProperty(state.input, "constructor", {
-            value: "echo synthetic-safe",
-            enumerable: true,
-          });
-        }),
-      ],
-    ),
-    blocked("shell network call whose part also has an own __proto__ tool", "network", 0, [
-      STEP_START,
-      toolUse(hostileCommand(fx, "network"), (_root, part) => {
-        Object.defineProperty(part, "__proto__", {
-          value: { tool: "benign" },
-          enumerable: true,
-        });
-      }),
-      STOP,
-    ]),
-    blocked("shell network call whose part also has an own __proto__ tool, exit 1", "network", 1, [
-      STEP_START,
-      toolUse(hostileCommand(fx, "network"), (_root, part) => {
-        Object.defineProperty(part, "__proto__", {
-          value: { tool: "benign" },
-          enumerable: true,
-        });
-      }),
-    ]),
-    blocked("shell network call, then two stop steps", "network", 0, [
-      STEP_START,
-      completed("shell", { command: hostileCommand(fx, "network") }),
-      STOP,
-      STOP,
-    ]),
-    blocked("shell network call, then two stop steps, exit 1", "network", 1, [
-      STEP_START,
-      completed("shell", { command: hostileCommand(fx, "network") }),
-      STOP,
-      STOP,
-    ]),
-    blocked("benign shell command, then shell write outside the worktree", "out_of_worktree_write", 0, [
-      STEP_START,
-      completed("shell", { command: "echo safe" }),
-      TOOL_STEP,
-      STEP_START,
-      completed("shell", { command: hostileCommand(fx, "out_of_worktree_write") }),
-      STOP,
-    ]),
-    blocked("benign file edit, then shell read of a credential path, exit 1", "credential_read", 1, [
-      STEP_START,
-      completed("edit", { filePath: "src/safe.ts" }),
-      TOOL_STEP,
-      STEP_START,
-      completed("shell", { command: hostileCommand(fx, "credential_read") }),
-    ]),
-    blocked("benign file read, then shell network call", "network", 0, [
-      STEP_START,
-      completed("read", { filePath: "src/safe.ts" }),
-      TOOL_STEP,
-      STEP_START,
-      completed("shell", { command: hostileCommand(fx, "network") }),
-      STOP,
-    ]),
-    blocked("unknown event kinds, then a shell write outside the worktree, exit 1", "out_of_worktree_write", 1, [
-      STEP_START,
-      JSON.stringify({ type: "synthetic_unknown_kind", sessionID: SID }),
-      completed("shell", { command: hostileCommand(fx, "out_of_worktree_write") }),
-      STOP,
-    ]),
-    blocked("unknown event kinds, then shell read of a credential path", "credential_read", 0, [
-      STEP_START,
-      JSON.stringify({ type: "synthetic_unknown_kind", sessionID: SID }),
-      completed("shell", { command: hostileCommand(fx, "credential_read") }),
-      STOP,
-    ]),
-    blocked(
-      "shell read of a credential path inside intermediate step after the final stop step, exit 1",
-      "credential_read",
-      1,
-      [
-        STEP_START,
-        event("text", { type: "text", text: "Done." }),
-        STOP,
-        STEP_START,
-        completed("shell", { command: hostileCommand(fx, "credential_read") }),
-        TOOL_STEP,
-      ],
-    ),
-    blocked(
-      "shell write outside the worktree inside intermediate step after the final stop step",
-      "out_of_worktree_write",
-      0,
-      [
-        STEP_START,
-        event("text", { type: "text", text: "Done." }),
-        STOP,
-        STEP_START,
-        completed("shell", { command: hostileCommand(fx, "out_of_worktree_write") }),
-        TOOL_STEP,
-      ],
-    ),
-    blocked("shell network call inside intermediate step after the final stop step, exit 1", "network", 1, [
-      STEP_START,
-      event("text", { type: "text", text: "Done." }),
-      STOP,
-      STEP_START,
-      completed("shell", { command: hostileCommand(fx, "network") }),
-      TOOL_STEP,
-    ]),
+        JSON.stringify({ type: "synthetic_unknown_kind", sessionID: SID }),
+        completed("shell", { command: hostileCommand(fx, category) }),
+        ...(exitCode === 0 ? [STOP] : []),
+      ]),
+    );
+  }
+
+  // Intermediate steps after the final stop step across all categories and exits
+  for (const category of cats) {
+    for (const exitCode of [0, 1] as const) {
+      const suffix = exitCode === 1 ? ", exit 1" : "";
+      gaps.push(
+        blocked(
+          `${blockedLabel[category]} inside intermediate step after the final stop step${suffix}`,
+          category,
+          exitCode,
+          [
+            STEP_START,
+            event("text", { type: "text", text: "Done." }),
+            STOP,
+            STEP_START,
+            completed("shell", { command: hostileCommand(fx, category) }),
+            TOOL_STEP,
+          ],
+        ),
+      );
+    }
+  }
+
+  gaps.push(
     {
       name: "only prototype-named, near-miss and non-string event types, exit 1",
       category: "unknown_events",

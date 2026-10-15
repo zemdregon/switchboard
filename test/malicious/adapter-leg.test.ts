@@ -72,18 +72,21 @@ describe.each(cases.map((c) => [c.provider, c] as const))("adapter malicious leg
     expect(compileProblems(c, fx)).toEqual([]);
   });
 
-  it.skipIf(c.replayGap !== undefined)(
-    "each hostile stream ends in its blocked code (never success) and leaves the hostile checkout untouched",
-    async () => {
-      for (const s of c.streams(fx)) {
-        const o = await replayHostileStream(c, fx, s);
-        expect(o.failedChecks, s.name).toEqual([]);
-        expect(o.resultOk, s.name).toBe(false);
-        expect(o.failureCode, s.name).toBe(s.failureCode);
-        expect(o.untouched, s.name).toBe(true);
-      }
-    },
-  );
+  // Keep the expanded OpenCode matrix within the per-test budget without weakening the replay assertions.
+  for (const category of c.provider === "opencode" ? STREAM_CATEGORIES : [undefined]) {
+    it.skipIf(c.replayGap !== undefined)(
+      `${category ? `${category}: ` : ""}each hostile stream ends in its blocked code (never success) and leaves the hostile checkout untouched`,
+      async () => {
+        for (const s of c.streams(fx).filter((s) => category === undefined || s.category === category)) {
+          const o = await replayHostileStream(c, fx, s);
+          expect(o.failedChecks, s.name).toEqual([]);
+          expect(o.resultOk, s.name).toBe(false);
+          expect(o.failureCode, s.name).toBe(s.failureCode);
+          expect(o.untouched, s.name).toBe(true);
+        }
+      },
+    );
+  }
 
   // A declared replay gap is pinned, not hidden: no hostile stream ends in its blocked code yet, and a stream that
   // declares `gapResult` ends exactly there both without a process and through the supervisor replay (a full
@@ -234,6 +237,45 @@ describe("adapter malicious leg: opencode partial streams", () => {
     expect(new Set(streams.map((s) => s.exitCode))).toEqual(new Set([0, 1]));
     for (const cat of ["credential_read", "out_of_worktree_write", "network"] as const) {
       expect(new Set(streams.filter((s) => s.category === cat).map((s) => s.exitCode)), cat).toEqual(new Set([0, 1]));
+      for (const exitCode of [0, 1] as const) {
+        const cell = streams.filter((s) => s.category === cat && s.exitCode === exitCode);
+        const positions = cell.map((s) => {
+          const parsed: unknown[] = s.lines.map((line) => {
+            try {
+              return JSON.parse(line) as unknown;
+            } catch {
+              return undefined;
+            }
+          });
+          const cutAt = parsed.indexOf(undefined);
+          const hostileAt = parsed.findIndex((line) => {
+            if (typeof line !== "object" || line === null || !("type" in line) || line.type !== "tool_use")
+              return false;
+            if (!("part" in line) || typeof line.part !== "object" || line.part === null) return false;
+            const part = line.part as { tool?: unknown; state?: { input?: { command?: unknown } } };
+            return (part.tool === "shell" || part.tool === "bash") && typeof part.state?.input?.command === "string";
+          });
+          expect(cutAt, `${s.name}: malformed line`).toBeGreaterThanOrEqual(0);
+          if (hostileAt === -1) {
+            expect(s.lines[cutAt], `${s.name}: cut inside tool command`).toContain('"type":"tool_use"');
+            expect(s.lines[cutAt], `${s.name}: cut inside tool command`).toContain('"command":');
+            return "inside";
+          }
+          return cutAt < hostileAt ? "before" : "after";
+        });
+        expect(
+          positions.filter((position) => position === "before"),
+          `${cat}, exit ${exitCode}, before`,
+        ).toHaveLength(1);
+        expect(
+          positions.filter((position) => position === "inside"),
+          `${cat}, exit ${exitCode}, inside`,
+        ).toHaveLength(1);
+        expect(
+          positions.filter((position) => position === "after"),
+          `${cat}, exit ${exitCode}, after`,
+        ).toHaveLength(2);
+      }
     }
     for (const s of streams) {
       const o = await replayHostileStream(c, fx, s);
