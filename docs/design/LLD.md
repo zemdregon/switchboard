@@ -3,9 +3,9 @@
 | Field | Value |
 | --- | --- |
 | Status | Draft, baseline for milestone M1 |
-| Owns | SQLite schema (DDL), adapter TypeScript contract, MCP tool schemas, failure taxonomy, workspace/lease algorithm, compliance manifest schema, telemetry span list, supervisor/retry/idempotency details, inner-agent configuration, backend port, tables, call pipeline and task contracts (§13), provider and model affinity table, algorithm and routing-decision fields (§3.2), control-plane MCP tools, digest cursor, needs-attention derivation, budgets, loop breaker, pause, approval-proxy tools, tool profiles and notification-sink contracts (§3.4), retrieval-index configuration, stores, algorithms, tool contract and events (§14), continuity: handoff bundle schema, `as_of`, decision kinds, open-work derivation, prompt rendering and the resume working directory (§15), capacity estimator, `get_capacity` output, per-provider breaker, retry successors and the quota ladder (§16) |
+| Owns | SQLite schema (DDL), adapter TypeScript contract, MCP tool schemas, failure taxonomy, workspace/lease algorithm, compliance manifest schema, telemetry span list, supervisor/retry/idempotency details, inner-agent configuration, backend port, tables, call pipeline and task contracts (§13), provider and model affinity table, algorithm and routing-decision fields (§3.2), control-plane MCP tools, digest cursor, needs-attention derivation, budgets, loop breaker, pause, approval-proxy tools, tool profiles and notification-sink contracts (§3.4), retrieval-index configuration, stores, algorithms, tool contract and events (§14), continuity: handoff bundle schema, `as_of`, decision kinds, open-work derivation, prompt rendering and the resume working directory (§15), capacity estimator, `get_capacity` output, per-provider breaker, retry successors and the quota ladder (§16), project work-queue records, schedule syntax, creator-bound admission and CI trigger contracts (§18) |
 | Does not own | Requirements ([SRS](../requirements/SRS.md)); run state machine and workflows ([FRD](../requirements/FRD.md)); technology choices and per-provider strategy ([TDD](TDD.md)); component boundaries ([HLD](HLD.md)); scope and sequencing ([ROADMAP](../ROADMAP.md#6-milestones)) |
-| Last reconciled | 2026-10-14 |
+| Last reconciled | 2026-10-15 |
 
 Implementation status is owned by [ROADMAP §6](../ROADMAP.md#6-milestones); parts of this design are now implemented.
 M1 and M2 items are specified in detail; later items are marked "to be detailed in Mx".
@@ -5123,3 +5123,229 @@ helper, the quota failover's forced `capacity_exhausted`, and `recordAffinity` a
   by a run that succeeds; until then every decision for the project reads it as `user_request`.
 - With affinity disabled the `affinity` object is still recorded (`enabled: false`, `applies: false`), so `explain_route`
   and replay see the same shape.
+
+## 18. Project queue, schedules and CI triggers (M15, Proposed, T15.0)
+
+Design gate for FR-QUE-01 to 03, [ADR-0050](../adr/0050-ci-status-via-operator-gh-cli.md) (Proposed). Owner decisions 51
+and 54. Everything here is **Proposed** and **Delegated** unless an SRS ID or a Proposed ADR fixes it. Implementation
+tasks: T15.1 (queue table and admission), T15.2 (schedules), T15.3 (CI trigger with a fake `CiStatusPort` in tests).
+
+This section is **not** the FR-CAP-04 bounded **run-admission** queue (COMP-RTE ingress while a run is `QUEUED`). M15
+adds a durable **project work queue**: pending objectives that become `delegate_task` admissions under the **creating**
+client's identity and ceiling.
+
+### 18.1 Configuration (operator defaults)
+
+```jsonc
+{ "queue": {                              // Proposed top-level key; exact path in TDD §3.1
+    "max_items_per_project": 500,           // proposed target; enqueue over limit -> INVALID_REQUEST
+    "max_objective_bytes": 32768,           // matches delegate_task objective max
+    "dequeue_batch": 1 },                  // at most one admission per project per scheduler tick
+  "ci_trigger": {
+    "enabled": false,                      // master default off (FR-QUE-03 scope is per project below)
+    "poll_interval_seconds": 120,          // proposed target; 0 means disabled at operator level
+    "gh_binary": "gh" } }                   // resolved on PATH at serve startup; missing -> doctor warning
+```
+
+Per-project CI trigger settings live in ledger rows (§18.6), not in the static project config file, so dynamic projects
+can enable them without widening filesystem paths.
+
+### 18.2 Queue work item record (FR-QUE-01)
+
+Ledger migration **0017** (next after 0016; built in T15.1) adds `project_work_item` and `project_work_dependency`.
+
+**IDs.** `que_` plus 26 Crockford base32 characters (same alphabet as `run_`, `evt_`).
+
+```sql
+CREATE TABLE project_work_item (           -- migration 0017 (T15.1); mutable only in state, admitted_run_id, terminal_at
+  id              TEXT PRIMARY KEY,        -- que_*
+  project_id      TEXT NOT NULL,
+  creator_client_id TEXT NOT NULL,         -- mcp_clients[].id that created the row; never changes
+  state           TEXT NOT NULL CHECK (state IN (
+                    'PENDING','READY','ADMITTING','ADMITTED','DONE','CANCELLED','FAILED_ADMISSION')),
+  priority        INTEGER NOT NULL DEFAULT 0,  -- larger runs first among READY items; ties: created_at ASC, then id
+  request_json    TEXT NOT NULL,           -- JSON: delegate_task input shape (§3), without wait_seconds
+  source_kind     TEXT NOT NULL CHECK (source_kind IN ('mcp','schedule','ci_trigger')),
+  source_id       TEXT,                    -- schedule id or ci_trigger_event id when not mcp
+  idempotency_key TEXT,                    -- optional; unique per (creator_client_id, idempotency_key) when set
+  admitted_run_id TEXT,                    -- set when state becomes ADMITTED; FK to run optional (retention GC)
+  last_error_code TEXT,                    -- failure taxonomy code on FAILED_ADMISSION
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  terminal_at     TEXT
+);
+CREATE INDEX project_work_item_project_state_prio
+  ON project_work_item (project_id, state, priority DESC, created_at, id);
+CREATE UNIQUE INDEX project_work_item_creator_idem
+  ON project_work_item (creator_client_id, idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
+
+CREATE TABLE project_work_dependency (     -- migration 0017; insert-only
+  successor_id    TEXT NOT NULL REFERENCES project_work_item(id),
+  predecessor_id  TEXT NOT NULL REFERENCES project_work_item(id),
+  PRIMARY KEY (successor_id, predecessor_id)
+);
+```
+
+**`request_json`.** A JSON object validating as `delegate_task` input (§3) for the item's `project_id`: `objective`,
+`trust_profile`, optional `constraints`, `routing`, `verification_commands`, `privileged_scope` when profile is
+`privileged`, and `project` set to the queue item's `project_id` (workspace_path omitted). Values are frozen at enqueue
+time. At admission the controller may inject a fresh `idempotency_key` derived from `que_*` so dequeue retries do not
+collide with the client's direct `delegate_task` keys.
+
+**States.**
+
+| State | Meaning |
+| --- | --- |
+| `PENDING` | Waiting on dependencies (§18.3). |
+| `READY` | Dependencies satisfied; eligible for dequeue. |
+| `ADMITTING` | Dequeue started; ledger transaction in progress. |
+| `ADMITTED` | A `run` row exists; `admitted_run_id` set. |
+| `DONE` | Admitted run reached a terminal success state (`SUCCEEDED`). |
+| `CANCELLED` | Operator or creator cancelled before or instead of admission. |
+| `FAILED_ADMISSION` | Admission refused (ceiling, pause, `QUEUE_FULL`, and so on); not retried automatically unless the operator requeues. |
+
+A crash after `ADMITTING` leaves the item `ADMITTING`; startup reconciliation (same pass as FR-EXE-06) resets it to
+`READY` when no `admitted_run_id` is set.
+
+**Events.** Append `project_work_event` rows (type `enqueued`, `ready`, `admitted`, `done`, `cancelled`,
+`admission_failed`) in the same transaction as state changes. Shapes are **Proposed**; counts only in MCP listings.
+
+### 18.3 Priority and dependencies (FR-QUE-01)
+
+**Priority.** Among items in `READY` for one `project_id`, order by `priority` descending, then `created_at` ascending,
+then `id` ascending. Priority is an integer in `[-1000, 1000]` (default `0`). It is independent of `delegate_task`'s
+`priority` enum (`interactive` / `normal` / `batch`), which is copied into `request_json` when present.
+
+**Dependencies.** Edges are directed: `predecessor_id` must reach `DONE` before `successor_id` leaves `PENDING`. Cycles
+are rejected at enqueue with `INVALID_REQUEST`. A predecessor in `CANCELLED` or `FAILED_ADMISSION` blocks the successor
+until the operator removes the edge or cancels the successor (**Proposed** fail-closed behaviour). When the last blocking
+predecessor becomes `DONE`, the successor moves `PENDING` → `READY` in the same transaction as the predecessor's
+terminal event.
+
+**Fairness with FR-CAP-04.** Dequeue still passes through the existing run lifecycle admission path; a full global or
+per-provider admission queue returns `QUEUE_FULL` and leaves the work item `READY` for a later tick.
+
+### 18.4 Admission through the creating client's ceiling (FR-QUE-01)
+
+Dequeue is implemented inside COMP-RTE (scheduler tick) calling the same admission pipeline as MCP `delegate_task`, but:
+
+1. **Identity.** `creator_client_id` supplies the MCP client record for authorization, `projects` list,
+   `manage_projects` rules, and `effectiveMaxProfile` ([§11.2](#112-resolution-and-ceilings)). The tick does not use the
+   operator OS user or a console client's identity. A schedule or CI trigger does not widen the ceiling: only the
+   client that created the schedule row or CI template may have created the enqueued item, under that client's entry at
+   enqueue time.
+2. **Ceiling at admission time.** Steps (1)–(6) of §11.2 run with the **current** configuration. If the creator's
+   `max_trust_profile` or the project's ceiling is lower than `request_json.trust_profile`, admission returns
+   `PERMISSION_BLOCKED` and the item becomes `FAILED_ADMISSION`. A queued item is **never** admitted under another
+   client's ceiling, even if a different client could legally run the same objective today.
+3. **Dynamic projects.** Creator-only resolution and approval gates from [ADR-0030](../adr/0030-dynamic-project-revisions-and-approval.md)
+   apply unchanged. A widening revision still waits for `projects approve` before admission.
+4. **Pause and budgets.** Project pause (FR-CTL-05) and budget caps (FR-CTL-06) are checked like any `delegate_task`; the
+   work item stays `READY` when the refusal is retryable (`QUEUE_FULL`, pause), and becomes `FAILED_ADMISSION` when not
+   (`PERMISSION_BLOCKED`, `INVALID_REQUEST`).
+5. **Privileged.** `privileged` items follow WF-7: `AWAITING_APPROVAL` on the admitted run is allowed; the work item is
+   `ADMITTED` when the run row exists, and becomes `DONE` only when that run succeeds.
+
+**Proposed MCP tools (T15.1).** `enqueue_work`, `cancel_work`, `list_work` with the same project scoping as
+`list_runs` (§3.4.2). Shapes mirror the table fields; only the creator may cancel unless the operator uses CLI
+`switchboard queue cancel` (FR-OPS-01, T15.1).
+
+### 18.5 Schedules (FR-QUE-02)
+
+```sql
+CREATE TABLE project_schedule (            -- migration 0018 (T15.2); enabled default false
+  id              TEXT PRIMARY KEY,        -- sch_*
+  project_id      TEXT NOT NULL,
+  creator_client_id TEXT NOT NULL,
+  cron_expr       TEXT NOT NULL,           -- five fields, UTC; see below
+  enabled         INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+  template_json   TEXT NOT NULL,           -- delegate_task-shaped template; objective may contain {{schedule_fire_at}}
+  last_fire_at    TEXT,                    -- ISO-8601; dedup anchor
+  created_at      TEXT NOT NULL,
+  disabled_at     TEXT
+);
+```
+
+**Cron syntax.** Five fields: `minute hour day-of-month month day-of-week`, UTC only, subset of Vixie cron:
+
+- Minute `0-59`, hour `0-23`, day-of-month `1-31`, month `1-12`, weekday `0-7` (`0` and `7` = Sunday).
+- `*`, `,`, `-`, `/` with the usual meanings; no named months or `@yearly` aliases.
+- Invalid expressions are rejected at create time (`INVALID_REQUEST`).
+
+**Behaviour.** Schedules are **off by default** (`enabled = 0`). On each scheduler tick (injected clock in tests), for
+each enabled schedule whose expression matches the current minute and whose `last_fire_at` is not already this minute,
+the controller inserts one `project_work_item` with `source_kind = 'schedule'`, `source_id = sch_*`, and
+`template_json` copied into `request_json` after substituting `{{schedule_fire_at}}` with the tick timestamp. No second
+item for the same schedule in the same minute after restart (dedup uses `last_fire_at` updated in the same transaction as
+enqueue). **Operator CLI (T15.2):** `switchboard schedule list|disable <sch_id>`; disable sets `enabled = 0` and
+`disabled_at` and stops future fires.
+
+**Widening schedules.** A schedule created by a chat client that would enqueue a `privileged` or wider profile than the
+creator's current ceiling waits for operator approval (**Proposed**, discovery §8): row state `PENDING_APPROVAL` on the
+schedule until `switchboard schedule approve` (T15.2).
+
+### 18.6 CI failure trigger (FR-QUE-03, ADR-0050)
+
+**Published branch.** A branch "the project published" is a `refs/heads/*` publish ref ([§12.3](#123-commit-algorithm-and-refs))
+that COMP-GIT moved on a `git_push` event for a run whose `policy_snapshot_json` names the same `project_id`, and whose
+push succeeded. Other branches are out of scope for FR-QUE-03.
+
+```sql
+CREATE TABLE project_ci_trigger (          -- migration 0018 (T15.3); per project, off by default
+  project_id      TEXT PRIMARY KEY,
+  enabled         INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+  creator_client_id TEXT NOT NULL,         -- client that enabled the trigger
+  template_json   TEXT NOT NULL,           -- delegate_task-shaped template for fix-up work
+  created_at      TEXT NOT NULL
+);
+
+CREATE TABLE ci_trigger_event (            -- dedup and audit; text fields untrusted
+  id              TEXT PRIMARY KEY,        -- cie_*
+  project_id      TEXT NOT NULL,
+  publish_ref     TEXT NOT NULL,           -- refs/heads/...
+  external_id     TEXT NOT NULL,           -- stable id from gh JSON (check run or workflow run id)
+  conclusion      TEXT NOT NULL CHECK (conclusion IN ('failure','cancelled','timed_out')),
+  untrusted_summary TEXT,                  -- optional; max 500 chars; label untrusted_external_text in storage metadata
+  observed_at     TEXT NOT NULL,
+  work_item_id    TEXT,                    -- que_* when enqueue succeeded
+  UNIQUE (project_id, external_id)
+);
+```
+
+**`CiStatusPort` (Proposed).** Production implementation runs allowlisted `gh` argv arrays with `--json` and a closed field
+list, for example:
+
+- `gh api repos/{owner}/{repo}/commits/{sha}/check-runs --jq '...'` only after resolving `owner/repo` from the project's
+  remote via a read-only `git` call (no network credential in Switchboard).
+- Or `gh run list` / `gh run view` with `--json databaseId,conclusion,headBranch,status` for workflow conclusions on the
+  published branch.
+
+Exact argv templates are fixed in implementation (T15.3) and audited like provider argv ([ADR-0037](../adr/0037-argv-audit-short-flags-and-bypass-values.md));
+no `gh auth login`, no arbitrary `gh api` paths, no shell interpolation of branch names (pass argv array). Switchboard never
+sets `GH_TOKEN` or `GITHUB_TOKEN` for these calls ([ADR-0050](../adr/0050-ci-status-via-operator-gh-cli.md)).
+
+**Trigger logic.**
+
+1. On each poll interval (§18.1, per-project `enabled`), for each published ref of the project, call `CiStatusPort` for
+   the tip commit on that ref.
+2. When the latest relevant check or run has conclusion `failure`, `cancelled` or `timed_out`, and no `ci_trigger_event`
+   row exists for `(project_id, external_id)`, insert the event row and enqueue one work item from `template_json` with
+   `source_kind = 'ci_trigger'`.
+3. Optional `untrusted_summary` (from an operator-forwarded notification) is stored length-capped; it is **not**
+   passed to `delegate_task` objective unless the operator template explicitly references a controller substitution token
+   `{{ci_untrusted_summary}}`, which is wrapped in the same `untrusted_text` label pattern as §3.4.1 and never parsed for
+   instructions.
+
+**Tests (T15.3).** Inject `CiStatusPort` returning synthetic conclusions; never call real `gh` in CI.
+
+### 18.7 Scheduler integration (COMP-RTE)
+
+One **Proposed** scheduler loop in `serve` (after retrieval build, before or after admission dequeue):
+
+1. Fire due schedules (§18.5).
+2. Poll CI triggers when operator and project enabled (§18.6).
+3. For each project with `READY` items, dequeue up to `queue.dequeue_batch` items through §18.4.
+
+The loop respects project pause and holds when FR-CAP-04 admission queue is full. It does not run inside an MCP tool
+handler.

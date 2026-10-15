@@ -5,7 +5,7 @@
 | Status | Draft, baseline for milestone M1 |
 | Owns | How components collaborate per workflow, shared design patterns, interface responsibilities, error propagation, configuration model overview, requirement-to-design traceability |
 | Does not own | Components and boundaries ([HLD](HLD.md)), workflows and business rules ([FRD](../requirements/FRD.md)), requirements ([SRS](../requirements/SRS.md)), technology choices ([TDD](TDD.md)), schemas and contracts ([LLD](LLD.md)) |
-| Last reconciled | 2026-10-14 |
+| Last reconciled | 2026-10-15 |
 
 Implementation status is owned by [ROADMAP §6](../ROADMAP.md#6-milestones); no code, tests or configuration existed as
 of 2026-10-12, and parts of this design are now implemented. Component IDs (`COMP-*`) are
@@ -442,9 +442,9 @@ synthetic fixtures (Grok Build, Antigravity, Cursor, OpenCode; each task stays `
 | FR-CTL-09 | COMP-MCP, COMP-OPS | Single-use consent-page link (secondary); specified with T14.10 | [ADR-0047](../adr/0047-approval-proxy-over-mcp.md), [ADR-0041](../adr/0041-http-transport-with-oauth-2-1.md) | [LLD §3.3](LLD.md#33-network-mcp-transport-m13) (consent page); T14.10 |
 | FR-CTL-10 | COMP-TEL, COMP-OPS | Webhook and ntfy sinks; closed payload; filter and rate limit; off run path | [ADR-0048](../adr/0048-notification-sinks.md) | [LLD §3.4.9](LLD.md#349-notification-sinks-fr-ctl-10-adr-0048); [TDD §3.1](TDD.md#31-configuration) |
 | FR-CTL-11 | COMP-MCP, COMP-OPS | `tool_profile` `orchestrator` vs `console` at `tools/list` | — | [LLD §3.4.10](LLD.md#3410-tool_profile-fr-ctl-11) |
-| FR-QUE-01 | COMP-PRJ, COMP-RTE, COMP-LED | To be designed in T15.0: durable per-project queue; each item admitted through the creating client's ceiling | — | T15.0 LLD section (not yet assigned); [SRS §3.18](../requirements/SRS.md#318-project-queue-and-triggers-fr-que) |
-| FR-QUE-02 | COMP-RTE, COMP-OPS | To be designed in T15.0: cron-style schedules, off by default, admitted as FR-QUE-01 items | — | T15.0 LLD section (not yet assigned) |
-| FR-QUE-03 | COMP-PRJ, COMP-RTE | To be designed in T15.0: CI-failure trigger on published branches; untrusted event text; a new external-input boundary through the operator's `gh` CLI (owner decision 54) | ADR needed before build (T15.0) | T15.0 LLD section (not yet assigned) |
+| FR-QUE-01 | COMP-PRJ, COMP-RTE, COMP-LED, COMP-MCP | Durable `project_work_item` queue per project; priority and dependency edges; dequeue admits through the creating client's ceiling only | — | [LLD §18.2–18.4](LLD.md#182-queue-work-item-record-fr-que-01), [SRS §3.18](../requirements/SRS.md#318-project-queue-and-triggers-fr-que) |
+| FR-QUE-02 | COMP-RTE, COMP-OPS, COMP-LED | Cron-style `project_schedule` rows, off by default; each fire enqueues one FR-QUE-01 item; operator list and disable | — | [LLD §18.5](LLD.md#185-schedules-fr-que-02) |
+| FR-QUE-03 | COMP-PRJ, COMP-RTE, COMP-GIT, COMP-LED | CI failure on published publish refs; `CiStatusPort` via allowlisted `gh` subprocess; untrusted optional summary; dedup by external id | [ADR-0050](../adr/0050-ci-status-via-operator-gh-cli.md) | [LLD §18.6](LLD.md#186-ci-failure-trigger-fr-que-03-adr-0050); [HLD TB-15](HLD.md#3-trust-boundaries) |
 | NFR-SEC-01 | COMP-LED, COMP-TEL, COMP-MCP, COMP-EXE | Data-flow rule: credentials never enter the process; secret-pattern scan over fixtures and outputs | [ADR-0003](../adr/0003-no-credential-handling.md) | [LLD §7](LLD.md#7-telemetry-spans), [LLD §1](LLD.md#1-data-model) |
 | NFR-SEC-02 | COMP-EXE, COMP-ADP | Per-adapter reviewed env allowlist | — | [LLD §2](LLD.md#2-adapter-contract) |
 | NFR-SEC-03 | COMP-POL, COMP-ADP, COMP-WS | Malicious-fixture suite run per enabled adapter and profile | [ADR-0004](../adr/0004-trust-profiles-no-bypass-flags.md) | [TDD §4](TDD.md#4-provider-adapter-strategy) |
