@@ -884,6 +884,7 @@ been used anywhere in the suite.
   `LOCALITY_CHANGED` branch exists but no test exercises it, because a loopback bind cannot be made to look remote),
   and the `cli` kind (reported `Ineligible`, never started; `src/cli/inner.test.ts`).
 - *Accounting and replay*: `src/inner/usage.test.ts`, `src/inner/usage-surfaces.test.ts`,
+  `src/inner/usage-channels.test.ts` (the `commit` tool channel and the MCP admission harness themselves),
   `src/capacity/capacity.test.ts`; replay with the backend off in `src/inner/route-features.test.ts` and
   `src/mcp/inner-route-features.test.ts`.
 - *Default test run makes zero live calls*: holds; `npm test` starts only fakes. **Not built:** the live-inner opt-in.

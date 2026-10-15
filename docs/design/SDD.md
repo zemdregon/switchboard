@@ -253,7 +253,7 @@ a loopback address; no live inner backend, provider CLI or network host has been
 | T11.2 call pipeline | FR-INN-07, 08, 16 | `src/inner/pipeline.test.ts` (fallbacks within the bound, re-ask, breaker, slot, planted secrets, seven-row gate table) |
 | T11.3 `http` backend, locality, project override | FR-INN-03, 16 | `src/inner/http-backend.test.ts`, `src/config/config.test.ts` |
 | T11.4 commit-message task (on the `serve` path through the `commit` tool) | FR-INN-10, FR-GIT-04 | `src/git/commit-message.test.ts` (real tool socket; hostile drafts, `MESSAGE_REQUIRED`, modes, gates, `innerSettingResolver`), `src/ledger/ledger.test.ts` (migration 0007) |
-| T11.5 usage accounting | FR-INN-15, BR-41 | `src/inner/usage.test.ts`, `src/inner/usage-surfaces.test.ts`, `src/capacity/capacity.test.ts` ("inner-agent calls change nothing"), `src/cli/cli.test.ts` (`inner_shared_subscription`), `src/ledger/ledger.test.ts` (migration 0006) |
+| T11.5 usage accounting | FR-INN-15, BR-41 | `src/inner/usage.test.ts`, `src/inner/usage-surfaces.test.ts`, `src/inner/usage-channels.test.ts` (the `commit` tool channel and the MCP admission harness), `src/capacity/capacity.test.ts` ("inner-agent calls change nothing"), `src/cli/cli.test.ts` (`inner_shared_subscription`), `src/ledger/ledger.test.ts` (migration 0006) |
 | T11.6 quality monitoring and suspension | FR-INN-09 | `src/inner/suspension.test.ts`, `src/ledger/ledger.test.ts` (migration 0008) |
 | T11.7 `doctor`, `inner status`, `inner test`, `inner resume` | FR-INN-17 | `src/cli/inner.test.ts`, `src/inner/cli-run-isolation.test.ts` |
 | T11.8 PR-draft task (service function, not on a run path) | FR-INN-11, BR-38 | `src/inner/pr-draft.test.ts` (sanitiser, gates, no pull-request API client in `src/` or `package.json`) |

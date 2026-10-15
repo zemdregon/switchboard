@@ -400,7 +400,8 @@ row exist as service functions with their contracts and tests, and no run path, 
   `src/inner/run-title.test.ts`. Modules: `src/inner/commit-message.ts`, `src/inner/pr-draft.ts`,
   `src/inner/log-summary.ts`, `src/inner/handoff-condense.ts`, `src/inner/route-features.ts`, `src/inner/run-title.ts`.
 - **Accounting, suspension and operator surfaces (T11.5–T11.7).** Tests: `src/inner/usage.test.ts`,
-  `src/inner/usage-surfaces.test.ts`, `src/capacity/capacity.test.ts` (inner calls leave the projection byte-identical),
+  `src/inner/usage-surfaces.test.ts`, `src/inner/usage-channels.test.ts` (the `commit` tool channel and the MCP
+  admission harness themselves), `src/capacity/capacity.test.ts` (inner calls leave the projection byte-identical),
   `src/inner/suspension.test.ts`, `src/cli/inner.test.ts`, `src/inner/cli-run-isolation.test.ts` (`doctor` and the
   `inner` commands leave every non-inner table unchanged). Modules: `src/ledger/repo.ts` (`recordInnerCall`),
   `src/cli/inner.ts`, `src/cli/doctor.ts`.
