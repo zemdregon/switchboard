@@ -243,13 +243,22 @@ describe.each(cases.map((c) => [c.provider, c] as const))("adapter malicious leg
 describe("adapter malicious leg: opencode partial streams", () => {
   const c = cases.find((x) => x.provider === "opencode");
   if (!c) throw new Error("no opencode case file");
+  /** The exit codes the blocked matrix replays; the partial and unreadable streams cover each of them. */
+  const OPENCODE_EXITS = [0, 1, 2, 137] as const;
+
+  it("names every OpenCode stream once, so no cell is shadowed by a duplicate", () => {
+    const names = [...c.streams(fx), ...opencodePartialStreams(fx), ...opencodeUnreadableStreams()].map((s) => s.name);
+    expect(names.filter((n, i) => names.indexOf(n) !== i)).toEqual([]);
+  });
 
   it("a stream cut inside a line ends OUTPUT_PROTOCOL_ERROR (never success) and leaves the checkout untouched", async () => {
     const streams = opencodePartialStreams(fx);
-    expect(new Set(streams.map((s) => s.exitCode))).toEqual(new Set([0, 1]));
+    expect(new Set(streams.map((s) => s.exitCode))).toEqual(new Set(OPENCODE_EXITS));
     for (const cat of ["credential_read", "out_of_worktree_write", "network"] as const) {
-      expect(new Set(streams.filter((s) => s.category === cat).map((s) => s.exitCode)), cat).toEqual(new Set([0, 1]));
-      for (const exitCode of [0, 1] as const) {
+      expect(new Set(streams.filter((s) => s.category === cat).map((s) => s.exitCode)), cat).toEqual(
+        new Set(OPENCODE_EXITS),
+      );
+      for (const exitCode of OPENCODE_EXITS) {
         const cell = streams.filter((s) => s.category === cat && s.exitCode === exitCode);
         const positions = cell.map((s) => {
           const parsed: unknown[] = s.lines.map((line) => {
@@ -302,7 +311,7 @@ describe("adapter malicious leg: opencode partial streams", () => {
   // `unknown_events` category (that category must parse only as `unknown`). It is still not a success (T4.56).
   it("an unreadable event before or after a final stop step is not a success and leaves the checkout untouched", async () => {
     const streams = opencodeUnreadableStreams();
-    expect(new Set(streams.map((s) => s.exitCode))).toEqual(new Set([0, 1]));
+    expect(new Set(streams.map((s) => s.exitCode))).toEqual(new Set(OPENCODE_EXITS));
     for (const s of streams) {
       // The replay helper consumes the provenance header; it is not a provider event.
       const kinds = parsedKinds(c, { ...s, lines: s.lines.slice(1) });
@@ -316,6 +325,32 @@ describe("adapter malicious leg: opencode partial streams", () => {
       expect(o.resultOk, s.name).toBe(false);
       expect(o.failureCode, s.name).toBe(s.failureCode);
       expect(o.untouched, s.name).toBe(true);
+    }
+  });
+
+  // Positive controls: the two checks above fail on a broken variant (shown here, so a vacuous pass is visible).
+  it("positive control: a partial stream with its cut line dropped no longer ends OUTPUT_PROTOCOL_ERROR", async () => {
+    const cutBefore = opencodePartialStreams(fx).filter((s) => s.name.startsWith("output cut before"));
+    expect(cutBefore.length).toBeGreaterThan(0);
+    for (const s of cutBefore) {
+      const repaired = { ...s, lines: s.lines.filter((line) => line !== '{"type":"step_fin') };
+      expect(repaired.lines.length, s.name).toBe(s.lines.length - 1);
+      const o = await replayHostileStream(c, fx, repaired);
+      expect(o.ok, s.name).toBe(false);
+      expect(o.failureCode, s.name).toBe("PERMISSION_BLOCKED");
+      expect(o.untouched, s.name).toBe(true);
+    }
+  });
+
+  it("positive control: a mislabelled unreadable-stream expectation fails the replay", async () => {
+    for (const exitCode of OPENCODE_EXITS) {
+      const s = opencodeUnreadableStreams().find((x) => x.exitCode === exitCode);
+      if (!s) throw new Error(`no unreadable stream at exit ${exitCode}`);
+      const wrong = {
+        ...s,
+        failureCode: s.failureCode === "TOOL_FAILURE" ? ("OUTPUT_PROTOCOL_ERROR" as const) : ("TOOL_FAILURE" as const),
+      };
+      expect((await replayHostileStream(c, fx, wrong)).ok, s.name).toBe(false);
     }
   });
 });

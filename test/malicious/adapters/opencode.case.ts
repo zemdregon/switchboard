@@ -1459,8 +1459,25 @@ export default opencodeCase;
  * a run `OUTPUT_PROTOCOL_ERROR` on the unparseable line (`src/exec/supervisor.ts`), which outranks the tool-call guard
  * in the shared precedence (`src/adapters/failure.ts`). They are not hostile-category streams (those must end blocked),
  * so `test/malicious/adapter-leg.test.ts` replays them on their own: never success, hostile checkout untouched.
+ * The exit-1 shapes are replayed again at exit 2 and exit 137, as the blocked matrix does: the unparseable-line outcome
+ * also outranks the unexpected exit's `TOOL_FAILURE`.
  */
-export const opencodePartialStreams = (fx: MaliciousFixture): HostileStream[] => [
+export const opencodePartialStreams = (fx: MaliciousFixture): HostileStream[] => {
+  const streams = opencodeHandWrittenPartialStreams(fx);
+  return [
+    ...streams,
+    ...streams
+      .filter((s) => s.exitCode === 1)
+      .flatMap((s) =>
+        [2, 137].map((exitCode): HostileStream => {
+          const name = s.name.replace(/, exit 1$/, `, exit ${exitCode}`);
+          return { ...s, name, exitCode, lines: [META(name, exitCode), ...s.lines.slice(1)] };
+        }),
+      ),
+  ];
+};
+
+const opencodeHandWrittenPartialStreams = (fx: MaliciousFixture): HostileStream[] => [
   // 1. Credential read: cut before, cut inside, cut inside stop, cut inside next tool_use
   {
     name: "output cut before credential read, then a stop step",
@@ -1760,7 +1777,8 @@ export const opencodePartialStreams = (fx: MaliciousFixture): HostileStream[] =>
  * Unknown event kinds and unreadable known events around a final `stop` step (T4.56). Not `unknown_events` hostile
  * streams: `step_start` and `step_finish` parse as `session_bound`, `usage` and `result`, and that category must parse
  * only as `unknown`.
- * Exit 0 is `OUTPUT_PROTOCOL_ERROR`; exit 1 is `TOOL_FAILURE` (the unexpected exit outranks the protocol detail).
+ * Exit 0 is `OUTPUT_PROTOCOL_ERROR`; exit 1, 2 and 137 are `TOOL_FAILURE` (the unexpected exit outranks the protocol
+ * detail).
  * A later `stop` does not make the run a success. Replayed by `test/malicious/adapter-leg.test.ts`.
  */
 export const opencodeUnreadableStreams = (): HostileStream[] => [
@@ -1837,7 +1855,7 @@ export const opencodeUnreadableStreams = (): HostileStream[] => [
     { name: "tool_use without part", line: JSON.stringify({ type: "tool_use", sessionID: SID }) },
   ].flatMap(({ name, line }) =>
     [false, true].flatMap((afterStop) =>
-      [0, 1].map((exitCode): HostileStream => {
+      [0, 1, 2, 137].map((exitCode): HostileStream => {
         const description = `${name} ${afterStop ? "after" : "before"} the final stop step, exit ${exitCode}`;
         return {
           name: description,
