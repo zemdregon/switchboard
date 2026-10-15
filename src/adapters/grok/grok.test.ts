@@ -745,6 +745,119 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
       const { events } = parse([line({ type: "tool_call", tool: "run_terminal_command", input: { command: 1 } })]);
       expect(events).toEqual([{ kind: "tool_call", tool: "shell", name: "run_terminal_command" }]);
     });
+
+    it("a tool_call_update reporting a newly provided or swapped command is evaluated by the guard; identical reports are not duplicated", () => {
+      const ctx = { cwd: "/w", bypass: true };
+      const guarded = (lines: string[]) => parse(lines).events.map((e) => guardEvent(e, ctx));
+
+      // 1. Started without command, completed with command in tool_call_update: reported and guarded
+      const late = guarded([
+        line({ type: "tool_call", tool: "run_terminal_command" }),
+        line({ type: "tool_call_update", tool: "run_terminal_command", input: { command: "git push origin main" } }),
+        line(END),
+      ]);
+      expect(adapter().extractResult(late, EXIT_OK)).toMatchObject({
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+      });
+
+      // 2. Swapped command: started with benign "ls", tool_call_update swaps to "git push origin main"
+      const swapped = guarded([
+        line({ type: "tool_call", tool: "run_terminal_command", input: { command: "ls" } }),
+        line({ type: "tool_call_update", tool: "run_terminal_command", input: { command: "git push origin main" } }),
+        line(END),
+      ]);
+      expect(adapter().extractResult(swapped, EXIT_OK)).toMatchObject({
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+      });
+
+      // 3. Identical reports in tool_call and tool_call_update are not duplicated
+      const normal = parse([
+        line({ type: "tool_call", tool: "run_terminal_command", input: { command: "echo ok" } }),
+        line({ type: "tool_call_update", tool: "run_terminal_command", input: { command: "echo ok" } }),
+        line({ type: "tool_call_update", status: "completed" }),
+        line(END),
+      ]);
+      expect(normal.events.filter((e) => e.kind === "tool_call")).toEqual([
+        { kind: "tool_call", tool: "shell", name: "run_terminal_command", command: "echo ok" },
+      ]);
+      expect(adapter().extractResult(normal.events, EXIT_OK)).toMatchObject({ ok: true });
+    });
+
+    it("a trailing tool_call_update with command is evaluated by the guard after the end line", () => {
+      const ctx = { cwd: "/w", bypass: true };
+      const guarded = (lines: string[]) => parse(lines).events.map((e) => guardEvent(e, ctx));
+
+      // Guarded Git write in tool_call_update after end line ends PERMISSION_BLOCKED
+      const push = guarded([
+        line(END),
+        line({ type: "tool_call_update", tool: "run_terminal_command", input: { command: "git push origin main" } }),
+      ]);
+      expect(adapter().extractResult(push, EXIT_OK)).toMatchObject({
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+      });
+
+      // Benign command in tool_call_update after end line ends OUTPUT_PROTOCOL_ERROR ("tool call after the end line")
+      const plain = parse([
+        line(END),
+        line({ type: "tool_call_update", tool: "run_terminal_command", input: { command: "ls" } }),
+      ]);
+      const r = adapter().extractResult(plain.events, EXIT_OK);
+      expect(r).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "tool call after the end line",
+      });
+    });
+
+    it("parses alternative argument keys (parameters, args, arguments, cmd, CommandLine, filePath, file_path, AbsolutePath)", () => {
+      const ctx = { cwd: "/w", bypass: true };
+      const guarded = (lines: string[]) => parse(lines).events.map((e) => guardEvent(e, ctx));
+
+      for (const call of [
+        { type: "tool_call", parameters: { command: "git push origin main" } },
+        { type: "tool_call", args: { cmd: "git push origin main" } },
+        { type: "tool_call", arguments: { CommandLine: "git push origin main" } },
+        { type: "tool_call", cmd: "git push origin main" },
+      ]) {
+        expect(adapter().extractResult(guarded([line(call), line(END)]), EXIT_OK), JSON.stringify(call)).toMatchObject({
+          ok: false,
+          failureCode: "PERMISSION_BLOCKED",
+        });
+      }
+
+      for (const call of [
+        { type: "tool_call", tool: "edit_file", parameters: { file_path: "/w/b.ts" } },
+        { type: "tool_call", tool: "edit_file", args: { filePath: "/w/b.ts" } },
+        { type: "tool_call", tool: "edit_file", arguments: { AbsolutePath: "/w/b.ts" } },
+      ]) {
+        const p = parse([line(call), line(END)]);
+        expect(p.events[0], JSON.stringify(call)).toMatchObject({
+          kind: "tool_call",
+          tool: "read",
+          name: "edit_file",
+          target: "/w/b.ts",
+        });
+      }
+    });
+
+    it("prototype-named keys in tool_call and tool_call_update never smuggle commands or properties", () => {
+      const parsed = parse([
+        `{"type":"tool_call","__proto__":{"command":"git push origin main"}}`,
+        `{"type":"tool_call_update","__proto__":{"command":"git push origin main"}}`,
+        `{"type":"tool_call","parameters":{"__proto__":{"command":"git push origin main"}}}`,
+        `{"type":"tool_call","args":{"__proto__":{"command":"git push origin main"}}}`,
+        `{"type":"tool_call","arguments":{"__proto__":{"command":"git push origin main"}}}`,
+        `{"type":"end","stopReason":"end_turn","__proto__":{"sessionId":"smuggled"}}`,
+        `{"type":"end","stopReason":"end_turn","usage":{"__proto__":{"input_tokens":10}}}`,
+      ]);
+      expect(parsed.events.filter((e) => e.kind === "tool_call")).toEqual([]);
+      expect(parsed.state.nativeSessionId).not.toBe("smuggled");
+      const usage = parsed.events.find((e) => e.kind === "usage");
+      expect(usage).toBeUndefined();
+    });
   });
 
   it("ignores ACP messages and unparseable framing", () => {

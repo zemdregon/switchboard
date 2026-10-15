@@ -132,6 +132,9 @@ export interface GrokAdapterOptions {
   pathEnv?: string;
 }
 
+function ownProp(record: Record<string, unknown> | undefined, key: string): unknown {
+  return record !== undefined && Object.hasOwn(record, key) ? record[key] : undefined;
+}
 type Json = Record<string, unknown>;
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 const obj = (v: unknown): Json | undefined =>
@@ -140,6 +143,11 @@ const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s
 const ineligible = (reason: Ineligible["reason"], detail: string): Ineligible => ({ ineligible: true, reason, detail });
 /** `end` lines already seen per run: a second one is a protocol anomaly, never a success (fail closed, as Antigravity). */
 const seenEnds = new WeakMap<ParseState, number>();
+/**
+ * Reported parameter keys per tool call, so a late or swapped command in `tool_call_update` emits a tool_call event for
+ * the ADR-0039 guard without duplicating identical reports (mirrors Antigravity T4.33 and Cursor T4.43).
+ */
+const seenToolCalls = new WeakMap<ParseState, { counter: number; calls: Map<string, Set<string>> }>();
 /** Category of a stream anomaly (two `end` lines, two session ids); classified OUTPUT_PROTOCOL_ERROR. */
 const PROTOCOL_CATEGORY = "protocol";
 const CATEGORY_CODES = { ...PROVIDER_ERROR_CATEGORY_CODES, [PROTOCOL_CATEGORY]: "OUTPUT_PROTOCOL_ERROR" } as const;
@@ -379,7 +387,7 @@ export class GrokAdapter implements ProviderAdapter {
       return []; // the supervisor ends the run OUTPUT_PROTOCOL_ERROR on unparseable framing
     }
     const e = obj(doc);
-    const type = str(e?.type);
+    const type = str(ownProp(e, "type"));
     if (e === undefined || type === undefined) return this.#unknown(state, "none");
     switch (type) {
       case EVENT.availableCommands:
@@ -387,34 +395,15 @@ export class GrokAdapter implements ProviderAdapter {
       case EVENT.usage: // the `end` line carries the totals; this one has a `signature` field and no recorded use
         return [];
       case EVENT.text: {
-        const data = str(e.data);
+        const data = str(ownProp(e, "data"));
         if (data === undefined) return this.#unknown(state, type);
         return [{ kind: "message", role: "assistant", text: data }];
       }
-      case EVENT.toolCall: {
-        const input = obj(e.input);
-        const command = str(input?.command) ?? str(e.command);
-        const target = str(input?.path) ?? str(input?.filePath) ?? str(e.path) ?? str(e.target);
-        const name = str(e.tool) ?? str(e.name);
-        if (command === undefined && target === undefined && name === undefined) {
-          return this.#unknown(state, type);
-        }
-        const kind =
-          command !== undefined || name === "run_terminal_command" ? "shell" : target !== undefined ? "read" : "other";
-        return [
-          {
-            kind: "tool_call",
-            tool: kind,
-            name: clip(name ?? "run_terminal_command", 64),
-            ...(command !== undefined ? { command } : {}),
-            ...(target !== undefined && command === undefined ? { target: clip(target, MAX_TARGET_CHARS) } : {}),
-          },
-        ];
-      }
+      case EVENT.toolCall:
       case EVENT.toolCallUpdate:
-        return this.#unknown(state, type); // shape not recorded: see protocol.ts
+        return this.#handleToolCall(e, type, state);
       case EVENT.end: {
-        const stop = str(e.stopReason);
+        const stop = str(ownProp(e, "stopReason"));
         if (stop === undefined) return this.#unknown(state, type);
         const out: NormalizedEvent[] = [];
         const ends = (seenEnds.get(state) ?? 0) + 1;
@@ -423,20 +412,24 @@ export class GrokAdapter implements ProviderAdapter {
         if (ends > 1) {
           out.push({ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "more than one end line" });
         }
-        const id = str(e.sessionId);
+        const id = str(ownProp(e, "sessionId"));
         if (id !== undefined) out.push(...this.#bind(state, id));
-        const usage = obj(e.usage);
+        const usage = obj(ownProp(e, "usage"));
         const metrics: Record<string, number | string | null> = {};
         const count = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
-        for (const k of USAGE_KEYS) if (count(usage?.[k])) metrics[k] = usage?.[k] as number;
-        if (usage && count(e.num_turns)) metrics.num_turns = e.num_turns;
+        for (const k of USAGE_KEYS) {
+          const v = ownProp(usage, k);
+          if (count(v)) metrics[k] = v;
+        }
+        const numTurns = ownProp(e, "num_turns");
+        if (usage && count(numTurns)) metrics.num_turns = numTurns;
         if (Object.keys(metrics).length > 0) out.push({ kind: "usage", source: "provider_reported", metrics });
         const ok = ends === 1 && stop === STOP_REASON_END_TURN;
         out.push({ kind: "result", ok, ...(ok ? {} : { summary: `stopReason ${clip(stop, 64)}` }) });
         return out;
       }
       case EVENT.error: {
-        const message = str(e.message);
+        const message = str(ownProp(e, "message"));
         // `message` was a string ([LIVE] 3c, 5b); an `error` line of any other shape is still an error, never ignored.
         if (message === undefined)
           return [{ kind: "provider_error", category: "unknown", message: "error line without a string message" }];
@@ -450,6 +443,73 @@ export class GrokAdapter implements ProviderAdapter {
       default:
         return this.#unknown(state, type);
     }
+  }
+
+  /**
+   * Parse a `tool_call` or `tool_call_update` event. Reports parameter keys per tool call, so a late or swapped command
+   * in `tool_call_update` emits a tool_call event for the ADR-0039 guard without duplicating identical reports
+   * (mirrors Antigravity T4.33 and Cursor T4.43). Unreadable shapes stay `unknown`.
+   */
+  #handleToolCall(e: Json, type: string, state: ParseState): NormalizedEvent[] {
+    const input =
+      obj(ownProp(e, "input")) ??
+      obj(ownProp(e, "parameters")) ??
+      obj(ownProp(e, "args")) ??
+      obj(ownProp(e, "arguments"));
+    const command =
+      str(ownProp(input, "command")) ??
+      str(ownProp(input, "cmd")) ??
+      str(ownProp(input, "CommandLine")) ??
+      str(ownProp(e, "command")) ??
+      str(ownProp(e, "cmd"));
+    const target =
+      str(ownProp(input, "path")) ??
+      str(ownProp(input, "filePath")) ??
+      str(ownProp(input, "file_path")) ??
+      str(ownProp(input, "AbsolutePath")) ??
+      str(ownProp(e, "path")) ??
+      str(ownProp(e, "filePath")) ??
+      str(ownProp(e, "target"));
+    const name = str(ownProp(e, "tool")) ?? str(ownProp(e, "name")) ?? str(ownProp(e, "tool_name"));
+    if (command === undefined && target === undefined && name === undefined) {
+      return this.#unknown(state, type);
+    }
+    const callId = str(ownProp(e, "id")) ?? str(ownProp(e, "call_id")) ?? str(ownProp(e, "tool_call_id"));
+    let seen = seenToolCalls.get(state);
+    if (seen === undefined) {
+      seen = { counter: 0, calls: new Map() };
+      seenToolCalls.set(state, seen);
+    }
+    const isNew = type === EVENT.toolCall;
+    if (isNew && callId === undefined) {
+      seen.counter += 1;
+    }
+    const key = callId ?? (seen.counter > 0 ? `call_${seen.counter}` : `call_1`);
+    if (!isNew && seen.counter === 0 && callId === undefined) {
+      seen.counter = 1;
+    }
+    const paramKey =
+      command !== undefined ? `command:${command}` : target !== undefined ? `target:${target}` : undefined;
+    const reported = seen.calls.get(key);
+    if (reported === undefined) {
+      seen.calls.set(key, new Set(paramKey === undefined ? [] : [paramKey]));
+    } else if (paramKey === undefined || reported.has(paramKey)) {
+      // Already reported with this command/target, or update carries no parameters: do not duplicate.
+      return [];
+    } else {
+      reported.add(paramKey);
+    }
+    const kind =
+      command !== undefined || name === "run_terminal_command" ? "shell" : target !== undefined ? "read" : "other";
+    return [
+      {
+        kind: "tool_call",
+        tool: kind,
+        name: clip(name ?? "run_terminal_command", 64),
+        ...(command !== undefined ? { command } : {}),
+        ...(target !== undefined && command === undefined ? { target: clip(target, MAX_TARGET_CHARS) } : {}),
+      },
+    ];
   }
 
   /**
