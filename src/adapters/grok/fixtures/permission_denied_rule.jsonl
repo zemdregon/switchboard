@@ -1,0 +1,6 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.23), in the streaming-json shapes recorded by the 2026-10-14 live check (rows 4b, 8c: a deny rule leaves the tool not executed with status failed, and the run ends end_turn at exit 0). tool_call and tool_call_update carry only their type because no other field was recorded.","exit":0}}
+{"type":"available_commands","tools":["run_terminal_command"]}
+{"type":"tool_call"}
+{"type":"tool_call_update"}
+{"type":"text","data":"SYNTHETIC: the command was denied by permission policy."}
+{"type":"end","stopReason":"end_turn","sessionId":"00000000-0000-4000-8000-000000000001","requestId":"req_synthetic_1","usage":{"input_tokens":11,"cache_read_input_tokens":5,"cache_creation_input_tokens":0,"output_tokens":2,"reasoning_tokens":0,"total_tokens":18},"num_turns":1,"total_cost_usd":0.001}

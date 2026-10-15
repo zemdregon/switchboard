@@ -1,0 +1,6 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.23). The synthetic_* types are invented on purpose; tool_call_update and an end line without a string stopReason are recorded types in shapes the parser does not read (live check row 4b). None may end in success.","exit":0}}
+{"type":"available_commands","tools":["run_terminal_command"]}
+{"type":"synthetic_unknown_kind","sessionId":"00000000-0000-4000-8000-000000000001"}
+{"type":"tool_call_update"}
+{"type":"synthetic_result","stopReason":"end_turn","sessionId":"00000000-0000-4000-8000-000000000001"}
+{"type":"end","stopReason":null,"sessionId":"00000000-0000-4000-8000-000000000001"}
