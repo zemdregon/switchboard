@@ -913,3 +913,530 @@ describe("antigravity parser residuals, sixth pass: boundaries, falsy values, fr
     });
   });
 });
+
+/**
+ * Seventh pass (2026-10-15, Delegated, not owner-approved; mirrors Grok Build T4.23 sixth/seventh passes and
+ * Cursor T4.43 / OpenCode T4.53 residuals): result-only streams with backing vendor and model parity (T4.6, FR-ADP-10),
+ * init vs result precedence and shadowing, empty-string shadows on display_name and parameter containers,
+ * non-object container skips, multi-command aggregation across containers, case-sensitive error prefixes, duplicate
+ * event/conversation_id keys, and trailing-tool detail ranking against protocol errors vs guard violations.
+ * Synthetic lines only, parser unchanged.
+ */
+describe("antigravity parser residuals, seventh pass: result-only backing parity, shadowing, framing and ranking (T4.33)", () => {
+  const dirs: string[] = [];
+  afterAll(() => {
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  });
+  const rows = (events: readonly NormalizedEvent[]) =>
+    usageObservationsFromEvents(events, { runId: "run_antigravity_t433_seventh_usage", provider: "antigravity" });
+  const guarded = (lines: string[]) => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const raw = lines.flatMap((l) => a.parseEvent(l, state));
+    const events = raw.map((e) => guardEvent(e, { cwd: "/work/tree", home: "/home/synthetic", bypass: true }));
+    return { raw, events, result: a.extractResult(events, EXIT0) };
+  };
+
+  it("fixture backing_result_only replays a result-only stream with backing vendor and model through conformance and usage observation", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "sb-antigravity-t433-seventh-"));
+    dirs.push(cwd);
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: replayAdapter("backing_result_only"),
+      request: {
+        runId: "run_antigravity_t433_seventh_backing",
+        objective: "synthetic antigravity objective",
+        constraints: [],
+        workspace: { cwd, writable: true },
+        bypassApproved: true,
+      },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: "0b6c2d1e-0000-4000-8000-000000000001" },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toEqual({
+      ok: true,
+      unknownEventCount: 0,
+      nativeSessionId: "0b6c2d1e-0000-4000-8000-000000000001",
+      summary: "Answered from a result-only stream.",
+    });
+
+    const lines = readFileSync(fixturePath("backing_result_only"), "utf8")
+      .split("\n")
+      .filter((l) => l !== "" && !l.includes('"_fixture"'));
+    const parsed = run(lines);
+    expect(parsed.events.find((e) => e.kind === "session_bound")).toEqual({
+      kind: "session_bound",
+      nativeSessionId: "0b6c2d1e-0000-4000-8000-000000000001",
+      model: "gemini-3.8-flash-high",
+      backingProvider: "backing-g",
+    });
+    expect(rows(parsed.events)).toEqual([
+      expect.objectContaining({
+        harness: "antigravity",
+        model: "gemini-3.8-flash-high",
+        backingProvider: "backing-g",
+        source: "provider_reported",
+        metrics: expect.objectContaining({ total_tokens: 19 }),
+      }),
+    ]);
+  });
+
+  it("precedence and shadowing: root backing_provider shadows camelCase and inner init/result, while inner model shadows root model", () => {
+    // 1. Root snake_case backing_provider takes highest precedence; inner init.model takes precedence over root model
+    const r1 = run([
+      j({
+        event: "init",
+        conversation_id: CID,
+        backing_provider: "root-snake",
+        backingProvider: "root-camel",
+        model: "root-model",
+        init: { backing_provider: "init-snake", backingProvider: "init-camel", model: "inner-model" },
+      }),
+      RESULT(),
+    ]);
+    expect(r1.events.find((e) => e.kind === "session_bound")).toEqual({
+      kind: "session_bound",
+      nativeSessionId: CID,
+      model: "inner-model",
+      backingProvider: "root-snake",
+    });
+
+    // 2. Root camelCase backingProvider shadows inner init.backing_provider when root snake_case is omitted
+    const r2 = run([
+      j({
+        event: "init",
+        conversation_id: CID,
+        backingProvider: "root-camel",
+        init: { backing_provider: "init-snake" },
+      }),
+      RESULT(),
+    ]);
+    expect(r2.events.find((e) => e.kind === "session_bound")).toMatchObject({
+      backingProvider: "root-camel",
+    });
+
+    // 3. Pinned gap: non-null non-string root backing_provider (e.g. 0 or false) shadows inner backing_provider and leaves it unset
+    for (const falsyNonString of [0, false]) {
+      const r = run([
+        j({
+          event: "init",
+          conversation_id: CID,
+          backing_provider: falsyNonString,
+          init: { backing_provider: "inner-vendor" },
+        }),
+        RESULT(),
+      ]);
+      expect(r.events.find((e) => e.kind === "session_bound")).not.toHaveProperty("backingProvider");
+    }
+
+    // 4. Pinned gap: empty-string root backing_provider shadows inner backing_provider and is omitted from session_bound
+    const rEmpty = run([
+      j({
+        event: "init",
+        conversation_id: CID,
+        backing_provider: "",
+        init: { backing_provider: "inner-vendor" },
+      }),
+      RESULT(),
+    ]);
+    expect(rEmpty.events.find((e) => e.kind === "session_bound")).not.toHaveProperty("backingProvider");
+
+    // 5. Pinned gap: empty-string init.model shadows root model and is omitted from session_bound
+    const rEmptyModel = run([
+      j({
+        event: "init",
+        conversation_id: CID,
+        model: "root-model",
+        init: { model: "" },
+      }),
+      RESULT(),
+    ]);
+    expect(rEmptyModel.events.find((e) => e.kind === "session_bound")).not.toHaveProperty("model");
+  });
+
+  it("pins the gap: model and backing vendor on result are ignored once init has bound the session", () => {
+    // init binds with no model and no backing provider
+    const r = run([
+      INIT(),
+      RESULT({
+        model: "late-model",
+        backing_provider: "late-vendor",
+      }),
+    ]);
+    const bound = r.events.find((e) => e.kind === "session_bound");
+    expect(bound).toEqual({ kind: "session_bound", nativeSessionId: CID });
+    expect(bound).not.toHaveProperty("model");
+    expect(bound).not.toHaveProperty("backingProvider");
+    expect(rows(r.events)).toEqual([
+      expect.objectContaining({ model: null, backingProvider: null, source: "provider_reported" }),
+    ]);
+
+    // Similarly, a later result with different values cannot override what init bound
+    const r2 = run([
+      j({
+        event: "init",
+        conversation_id: CID,
+        backing_provider: "first-vendor",
+        init: { model: "first-model" },
+      }),
+      RESULT({
+        model: "second-model",
+        backing_provider: "second-vendor",
+      }),
+    ]);
+    expect(r2.events.find((e) => e.kind === "session_bound")).toEqual({
+      kind: "session_bound",
+      nativeSessionId: CID,
+      model: "first-model",
+      backingProvider: "first-vendor",
+    });
+  });
+
+  it("denied_actions: non-object entry yields unknown tool, empty display_name shadows action, and multiple denials order cleanly", () => {
+    // Non-object entries (strings, numbers): action is not an object, so tool falls back to "unknown" (gap pinned)
+    const rNonObj = run([INIT(), RESULT({ denied_actions: ["run_command", 42] })]);
+    expect(rNonObj.events.filter((e) => e.kind === "permission_denied")).toEqual([
+      { kind: "permission_denied", tool: "unknown" },
+      { kind: "permission_denied", tool: "unknown" },
+    ]);
+    expect(rNonObj.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "denied: unknown",
+    });
+
+    // Pinned gap: empty display_name shadows action, resulting in empty tool name
+    const rShadow = run([INIT(), RESULT({ denied_actions: [{ display_name: "", action: "run_command" }] })]);
+    expect(rShadow.events.find((e) => e.kind === "permission_denied")).toEqual({
+      kind: "permission_denied",
+      tool: "",
+    });
+    expect(rShadow.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "denied: ",
+    });
+
+    // Non-string display_name falls through to action
+    const rFallback = run([INIT(), RESULT({ denied_actions: [{ display_name: 7, action: "run_command" }] })]);
+    expect(rFallback.events.find((e) => e.kind === "permission_denied")).toEqual({
+      kind: "permission_denied",
+      tool: "run_command",
+    });
+
+    // Multiple denials preserve order, and extractResult names the first denial
+    const rMultiple = run([
+      INIT(),
+      RESULT({ denied_actions: [{ display_name: "edit_file" }, { action: "run_command" }] }),
+    ]);
+    expect(rMultiple.events.filter((e) => e.kind === "permission_denied")).toEqual([
+      { kind: "permission_denied", tool: "edit_file" },
+      { kind: "permission_denied", tool: "run_command" },
+    ]);
+    expect(rMultiple.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "denied: edit_file",
+    });
+  });
+
+  it("tool step parameter containers: command suppresses targets; a later command-less update reports target; multiple distinct commands report separately", () => {
+    // 1. When command is present, targets in all containers are suppressed
+    const rMixed = run([
+      INIT(),
+      STEP({
+        step_index: 1,
+        step_type: "tool",
+        tool_name: "bash",
+        tool_info: { parameters: { command: "ls", path: "/work/a.ts" } },
+      }),
+      RESULT(),
+    ]);
+    expect(rMixed.events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "shell", name: "bash", command: "ls" },
+    ]);
+
+    // 2. An update repeating the command with a new target evaluates commands (found in seen), emitting nothing
+    const rRepeatCmd = run([
+      INIT(),
+      STEP({
+        step_index: 1,
+        step_type: "tool",
+        tool_name: "bash",
+        tool_info: { parameters: { command: "ls" } },
+      }),
+      STEP({
+        step_index: 1,
+        step_type: "tool",
+        tool_name: "bash",
+        tool_info: { parameters: { command: "ls", path: "/work/b.ts" } },
+      }),
+      RESULT(),
+    ]);
+    expect(rRepeatCmd.events.filter((e) => e.kind === "tool_call")).toHaveLength(1);
+
+    // 3. But a later update with ONLY the new target has commands.length === 0, so target IS reported
+    const rTargetOnly = run([
+      INIT(),
+      STEP({
+        step_index: 1,
+        step_type: "tool",
+        tool_name: "bash",
+        tool_info: { parameters: { command: "ls" } },
+      }),
+      STEP({
+        step_index: 1,
+        step_type: "tool",
+        tool_name: "bash",
+        tool_info: { parameters: { path: "/work/b.ts" } },
+      }),
+      RESULT(),
+    ]);
+    expect(rTargetOnly.events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "shell", name: "bash", command: "ls" },
+      { kind: "tool_call", tool: "other", name: "bash", target: "/work/b.ts" },
+    ]);
+
+    // 4. Non-object parameter containers are ignored and do not shadow later containers
+    const rNonObj = run([
+      INIT(),
+      STEP({
+        step_index: 2,
+        step_type: "tool",
+        tool_name: "run_cmd",
+        tool_info: { parameters: "string-param", args: { command: "pwd" } },
+      }),
+      RESULT(),
+    ]);
+    expect(rNonObj.events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "shell", name: "run_cmd", command: "pwd" },
+    ]);
+
+    // 5. Multiple distinct commands in different containers report separate shell calls and trigger the guard
+    const rDistinct = guarded([
+      INIT(),
+      STEP({
+        step_index: 3,
+        step_type: "tool",
+        tool_name: "run_cmd",
+        tool_info: { parameters: { command: "echo 1" }, args: { command: "echo 2" } },
+        parameters: { CommandLine: "git commit -m msg" },
+      }),
+      RESULT(),
+    ]);
+    expect(rDistinct.raw.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "shell", name: "run_cmd", command: "echo 1" },
+      { kind: "tool_call", tool: "shell", name: "run_cmd", command: "echo 2" },
+      { kind: "tool_call", tool: "shell", name: "run_cmd", command: "git commit -m msg" },
+    ]);
+    expect(rDistinct.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "git write attempted: `git commit` can create commits, change refs or push",
+    });
+  });
+
+  it("error prefix matching is case-sensitive and un-trimmed; capitalised or whitespace-prefixed errors end TOOL_FAILURE", () => {
+    // Model errors
+    expect(run([INIT(), RESULT({ error: "invalid model selection: m1" })]).result).toMatchObject({
+      ok: false,
+      failureCode: "MODEL_UNAVAILABLE",
+      failureDetail: "model_unavailable: invalid model selection: m1",
+    });
+    // Capitalized or whitespace-prefixed falls back to TOOL_FAILURE (category unknown)
+    expect(run([INIT(), RESULT({ error: "Invalid model selection: m1" })]).result).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "unknown: Invalid model selection: m1",
+    });
+    expect(run([INIT(), RESULT({ error: " invalid model selection: m1" })]).result).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "unknown:  invalid model selection: m1",
+    });
+
+    // Auth errors
+    expect(run([INIT(), RESULT({ error: "authentication failed: expired" })]).result).toMatchObject({
+      ok: false,
+      failureCode: "AUTH_REQUIRED",
+      failureDetail: "auth: authentication failed: expired",
+    });
+    expect(run([INIT(), RESULT({ error: "Authentication failed: expired" })]).result).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "unknown: Authentication failed: expired",
+    });
+
+    // Non-string error payload
+    expect(run([INIT(), RESULT({ error: { code: 403 } })]).result).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "unknown: non-string error field",
+    });
+  });
+
+  it("duplicate JSON keys: a second event or conversation_id key resolves to the last one; a second step_type can hide a Git write", () => {
+    // Duplicate event in init: last event "step_update" wins, so conversation_id never binds from that line;
+    // a later result binds its own id instead
+    const eventDup =
+      '{"event":"init","conversation_id":"' +
+      CID +
+      '","init":{},"event":"step_update","step_index":0,"step_type":"agent_response"}';
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const stepEv = a.parseEvent(eventDup, state);
+    expect(stepEv).toEqual([]);
+    expect(state.nativeSessionId).toBeUndefined();
+    // A later result for OTHER binds OTHER (proving eventDup never bound CID)
+    const rOther = a.parseEvent(RESULT({ conversation_id: OTHER }), state);
+    expect(state.nativeSessionId).toBe(OTHER);
+    expect(rOther.find((e) => e.kind === "session_bound")).toEqual({
+      kind: "session_bound",
+      nativeSessionId: OTHER,
+    });
+
+    // Duplicate conversation_id in init: last one wins
+    const validWins = `{"event":"init","conversation_id":"-unsafe!","conversation_id":"${CID}","init":{}}`;
+    expect(run([validWins, RESULT()]).result).toMatchObject({ ok: true, nativeSessionId: CID });
+    const unsafeWins = `{"event":"init","conversation_id":"${CID}","conversation_id":"-unsafe!","init":{}}`;
+    expect(run([unsafeWins, RESULT()]).result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: conversation id is not a safe token",
+    });
+
+    // Pinned gap: duplicate step_type where second value is "agent_response" hides Git write from guard
+    const stepDup =
+      '{"event":"step_update","conversation_id":"' +
+      CID +
+      '","step_index":1,"step_type":"tool","tool_name":"run_command","tool_info":{"parameters":{"command":"git push origin main"}},"step_type":"agent_response"}';
+    const rHidden = guarded([INIT(), stepDup, RESULT()]);
+    expect(rHidden.raw.filter((e) => e.kind === "tool_call")).toEqual([]);
+    expect(rHidden.result).toMatchObject({ ok: true });
+
+    // Control: without duplicate key, guard detects the Git write
+    const rClean = guarded([
+      INIT(),
+      STEP({
+        step_index: 1,
+        step_type: "tool",
+        tool_name: "run_command",
+        tool_info: { parameters: { command: "git push origin main" } },
+      }),
+      RESULT(),
+    ]);
+    expect(rClean.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+  });
+
+  it("session id asymmetry: empty conversation_id parses cleanly without binding, but is refused by resumeArgs", () => {
+    const r = run([INIT({ conversation_id: "" }), RESULT({ conversation_id: "" })]);
+    expect(r.events.filter((e) => e.kind === "session_bound")).toEqual([]);
+    expect(r.events.filter((e) => e.kind === "provider_error")).toEqual([]);
+    expect(r.result).toEqual({ ok: true, unknownEventCount: 0, summary: "ok" });
+
+    const req: CompileRequest = {
+      runId: "run_01M4WBZSXSCWYKTKJN77A7MFJQ",
+      objective: "fix the failing test",
+      constraints: [],
+      workspace: { cwd: "/work/tree", writable: true },
+      bypassApproved: true,
+    };
+    const a = adapter();
+    // Empty session id in resumeArgs is refused under Q-86
+    expect(
+      a.resumeArgs({ provider: "antigravity", nativeSessionId: "" }, req, PRIVILEGED_BYPASS_PROFILE),
+    ).toMatchObject({
+      ineligible: true,
+      reason: "CAPABILITY_MISSING",
+      detail: expect.stringContaining("(Q-86)"),
+    });
+
+    // Foreign provider in resumeArgs is refused citing the foreign provider before Q-86
+    expect(a.resumeArgs({ provider: "grok" as never, nativeSessionId: CID }, req, PRIVILEGED_BYPASS_PROFILE)).toEqual({
+      ineligible: true,
+      reason: "CAPABILITY_MISSING",
+      detail: "binding is for grok",
+    });
+  });
+
+  it("trailing tool detail ranking: trailing tool masks protocol errors but does not mask permission denials, guard violations, or error envelopes", () => {
+    const trailingStep = STEP({
+      step_index: 2,
+      step_type: "tool",
+      tool_info: { parameters: { command: "ls" } },
+    });
+
+    // 1. Trailing tool masks protocol error ("more than one result line" -> "tool call after the result line")
+    const rProto = run([INIT(), RESULT(), RESULT(), trailingStep]);
+    expect(rProto.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the result line",
+    });
+
+    // 2. Trailing tool does NOT mask permission denial
+    const rDenial = run([INIT(), RESULT({ denied_actions: [{ display_name: "view_file" }] }), trailingStep]);
+    expect(rDenial.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "denied: view_file",
+    });
+
+    // 3. Trailing tool does NOT mask auth error
+    const rAuth = run([
+      INIT(),
+      RESULT({ status: "ERROR", error: "authentication failed: missing token" }),
+      trailingStep,
+    ]);
+    expect(rAuth.result).toMatchObject({
+      ok: false,
+      failureCode: "AUTH_REQUIRED",
+      failureDetail: "auth: authentication failed: missing token",
+    });
+
+    // 4. Guard violation on trailing tool outranks the trailing tool protocol error
+    const trailingPush = STEP({
+      step_index: 2,
+      step_type: "tool",
+      tool_info: { parameters: { command: "git push origin main" } },
+    });
+    const rGuard = guarded([INIT(), RESULT(), trailingPush]);
+    expect(rGuard.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "git write attempted: `git push` can create commits, change refs or push",
+    });
+  });
+
+  it("tool name fallback chain: tool_info.name > e.tool_name > e.name > unknown; empty strings shadow lower fallbacks", () => {
+    const namedCall = (stepObj: Record<string, unknown>) =>
+      run([INIT(), STEP({ step_index: 1, step_type: "tool", ...stepObj })]).events.find((e) => e.kind === "tool_call");
+
+    // tool_info.name non-string falls through to e.tool_name
+    expect(namedCall({ tool_info: { name: 123 }, tool_name: "step_tool_name" })).toMatchObject({
+      name: "step_tool_name",
+    });
+
+    // e.tool_name non-string falls through to e.name
+    expect(namedCall({ tool_name: false, name: "outer_name" })).toMatchObject({
+      name: "outer_name",
+    });
+
+    // e.tool_name empty string shadows e.name
+    expect(namedCall({ tool_name: "", name: "outer_name" })).toMatchObject({
+      name: "",
+    });
+
+    // No valid name falls through to "unknown"
+    expect(namedCall({ tool_name: 99, name: null })).toMatchObject({
+      name: "unknown",
+    });
+
+    // Tool name clipped to 64 chars
+    const longName = "n".repeat(70);
+    expect(namedCall({ name: longName })).toMatchObject({
+      name: `${"n".repeat(64)}…`,
+    });
+  });
+});
