@@ -1353,23 +1353,28 @@ describe("antigravity parser fallbacks and exact matching (T4.33, synthetic shap
     expect(guarded[1]).toMatchObject({ kind: "tool_call", violation: expect.anything() });
   });
 
-  it("`command` wins over `CommandLine`, `path` over the aliases, and a command drops the path from the report", () => {
-    const { events } = parse([
+  it("`command` is reported before `CommandLine` and `path` before the aliases, every distinct value reaches the guard, and a command drops the path from the report", () => {
+    const { events, result } = parse([
       INIT,
       TOOL(1, {
         tool_info: { name: "run_command", parameters: { command: "ls", CommandLine: "git push origin main" } },
       }),
       TOOL(2, { tool_info: { name: "edit", parameters: { path: "/a", file_path: "/b", AbsolutePath: "/c" } } }),
-      TOOL(3, { tool_info: { name: "edit", parameters: { file_path: "/b", AbsolutePath: "/c" } } }),
+      TOOL(3, { tool_info: { name: "edit", parameters: { file_path: "/b", AbsolutePath: "/b" } } }),
       TOOL(4, { tool_info: { name: "run_command", parameters: { command: "ls", path: "/work/tree" } } }),
       RESULT(),
     ]);
     expect(calls(events)).toEqual([
       { kind: "tool_call", tool: "shell", name: "run_command", command: "ls" },
+      { kind: "tool_call", tool: "shell", name: "run_command", command: "git push origin main" },
       { kind: "tool_call", tool: "other", name: "edit", target: "/a" },
+      { kind: "tool_call", tool: "other", name: "edit", target: "/b" },
+      { kind: "tool_call", tool: "other", name: "edit", target: "/c" },
       { kind: "tool_call", tool: "other", name: "edit", target: "/b" },
       { kind: "tool_call", tool: "shell", name: "run_command", command: "ls" },
     ]);
+    // The parser alone does not judge; the guard verdict on the lower-precedence Git write is checked below.
+    expect(result.ok).toBe(true);
   });
 
   it("the tool name falls back from tool_info.name to tool_name to `unknown`; names and paths are clipped", () => {
@@ -3457,5 +3462,99 @@ describe("antigravity parser residual pins (T4.33, synthetic shapes)", () => {
       failureDetail: "protocol: more than one result line",
       nativeSessionId: CID,
     });
+  });
+});
+
+describe("antigravity tool parameters cannot shadow a command (T4.33, synthetic shapes)", () => {
+  // Every parameter container and key is read, so an empty, non-string or benign value in a higher-precedence spot no
+  // longer hides a Git write in a lower one from the ADR-0039 guard. Synthetic lines only; the keys stay Assumptions.
+  const CID = "0b6c2d1e-0000-4000-8000-0000000000ce";
+  const j = (o: Record<string, unknown>) => JSON.stringify(o);
+  const USAGE = { input_tokens: 20, output_tokens: 3, thinking_tokens: 1, cache_read_tokens: 0, total_tokens: 24 };
+  const INIT = j({ event: "init", conversation_id: CID, init: { cwd: "/work/tree" } });
+  const RESULT = j({
+    event: "result",
+    result: { conversation_id: CID, status: "SUCCESS", response: "ok", usage: USAGE },
+  });
+  const STEP = (index: number, extra: Record<string, unknown>) =>
+    j({ event: "step_update", conversation_id: CID, step_index: index, state: "ACTIVE", step_type: "tool", ...extra });
+  const EXIT0: ExitInfo = { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] };
+  const run = (steps: string[]) => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const raw = [INIT, ...steps, RESULT].flatMap((l) => a.parseEvent(l, state));
+    const events = raw.map((e) => guardEvent(e, { cwd: "/work/tree", home: "/home/synthetic", bypass: true }));
+    return { state, calls: raw.filter((e) => e.kind === "tool_call"), result: a.extractResult(events, EXIT0) };
+  };
+  const PUSH = "git push origin main";
+
+  it("an empty, non-string or benign `command` does not hide a Git write under `CommandLine`", () => {
+    for (const command of ["", 7, null, ["git", "status"], { cmd: "ls" }, "ls"]) {
+      const r = run([STEP(1, { tool_info: { name: "run_command", parameters: { command, CommandLine: PUSH } } })]);
+      const label = JSON.stringify(command);
+      expect(
+        r.calls.flatMap((e) => (e.kind === "tool_call" && e.command !== undefined ? [e.command] : [])),
+        label,
+      ).toEqual(command === "ls" ? ["ls", PUSH] : [PUSH]);
+      expect(r.result, label).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: CID });
+    }
+  });
+
+  it("a container without a command does not hide a Git write in a later container", () => {
+    const shapes: Record<string, unknown>[] = [
+      { tool_info: { name: "run_command", parameters: { path: "/work/tree" }, args: { CommandLine: PUSH } } },
+      { tool_info: { name: "run_command", parameters: {}, input: { command: PUSH } } },
+      { tool_info: { name: "run_command", args: { command: "" } }, parameters: { command: PUSH } },
+      { tool_info: { name: "run_command", parameters: { command: "ls" } }, input: { CommandLine: PUSH } },
+    ];
+    for (const shape of shapes) {
+      const r = run([STEP(1, shape)]);
+      const label = JSON.stringify(shape);
+      expect(
+        r.calls.some((e) => e.kind === "tool_call" && e.tool === "shell" && e.command === PUSH),
+        label,
+      ).toBe(true);
+      // A command anywhere drops the path from the report, as before.
+      expect(
+        r.calls.some((e) => e.kind === "tool_call" && e.target !== undefined),
+        label,
+      ).toBe(false);
+      expect(r.result, label).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    }
+  });
+
+  it("the same command in several containers and keys is reported once; a clean call still succeeds", () => {
+    const r = run([
+      STEP(1, {
+        tool_info: { name: "run_command", parameters: { command: "ls", CommandLine: "ls" }, args: { command: "ls" } },
+        input: { CommandLine: "ls" },
+      }),
+    ]);
+    expect(r.calls).toEqual([{ kind: "tool_call", tool: "shell", name: "run_command", command: "ls" }]);
+    expect(r.result).toMatchObject({ ok: true, nativeSessionId: CID });
+  });
+
+  it("an empty `path` does not hide a later path key or container; with no value at all the call is reported bare", () => {
+    const outside = run([
+      STEP(1, { tool_info: { name: "write_to_file", parameters: { path: "" }, args: { file_path: "/etc/passwd" } } }),
+    ]);
+    expect(outside.calls).toEqual([{ kind: "tool_call", tool: "other", name: "write_to_file", target: "/etc/passwd" }]);
+    const bare = run([STEP(1, { tool_info: { name: "edit", parameters: { command: "", path: "", file_path: 3 } } })]);
+    expect(bare.calls).toEqual([{ kind: "tool_call", tool: "other", name: "edit" }]);
+    expect(bare.result).toMatchObject({ ok: true });
+  });
+
+  it("a later update reports only the commands its step has not reported yet", () => {
+    const params = (p: Record<string, unknown>) => ({ tool_info: { name: "run_command", parameters: p } });
+    const r = run([
+      STEP(1, params({ command: "ls" })),
+      STEP(1, params({ command: "ls", CommandLine: PUSH })),
+      STEP(1, params({ CommandLine: PUSH, command: "ls" })),
+    ]);
+    expect(r.calls).toEqual([
+      { kind: "tool_call", tool: "shell", name: "run_command", command: "ls" },
+      { kind: "tool_call", tool: "shell", name: "run_command", command: PUSH },
+    ]);
+    expect(r.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
   });
 });

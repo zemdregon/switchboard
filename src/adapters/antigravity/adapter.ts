@@ -94,6 +94,9 @@ const AUTH_UNKNOWN_REASON = "`agy models` output is not a recognised login state
 const MODEL_LINE = /^\S+\t\S.*$/;
 const MAX_SUMMARY_CHARS = 2_000;
 const MAX_TARGET_CHARS = 512;
+/** Tool parameter keys read as a command, then as a path (Assumption; see `#toolStep`). */
+const COMMAND_KEYS: readonly string[] = ["command", "CommandLine"];
+const TARGET_KEYS: readonly string[] = ["path", "file_path", "AbsolutePath"];
 
 /** FR-GIT-01 (ADR-0039): no per-run deny control; see protocol.ts. */
 export const ANTIGRAVITY_GIT_WRITE_CONTROL: GitWriteControl = {
@@ -549,36 +552,41 @@ export class AntigravityAdapter implements ProviderAdapter {
     seenToolSteps.set(state, seen);
     const info = obj(ownProp(e, "tool_info"));
     const name = str(ownProp(info, "name")) ?? str(ownProp(e, "tool_name")) ?? str(ownProp(e, "name")) ?? "unknown";
-    const params =
-      obj(ownProp(info, "parameters")) ??
-      obj(ownProp(info, "args")) ??
-      obj(ownProp(info, "input")) ??
-      obj(ownProp(e, "parameters")) ??
-      obj(ownProp(e, "args")) ??
-      obj(ownProp(e, "input"));
+    // Every container is read, not only the first object one, so a benign or empty container (or key) cannot shadow a
+    // command in another (fail closed). The first one found in this order is reported first.
+    const containers = [
+      obj(ownProp(info, "parameters")),
+      obj(ownProp(info, "args")),
+      obj(ownProp(info, "input")),
+      obj(ownProp(e, "parameters")),
+      obj(ownProp(e, "args")),
+      obj(ownProp(e, "input")),
+    ];
     // Assumption: the parameter names below; the live check recorded `tool_info.{name,parameters}` but not their keys.
-    // Without them the guard sees no command or path for this call.
-    const command = str(ownProp(params, "command")) ?? str(ownProp(params, "CommandLine"));
-    const target =
-      str(ownProp(params, "path")) ?? str(ownProp(params, "file_path")) ?? str(ownProp(params, "AbsolutePath"));
-    const kind = command !== undefined ? "shell" : "other";
-    const key = command !== undefined ? `command:${command}` : target !== undefined ? `target:${target}` : undefined;
+    // Without them the guard sees no command or path for this call. Empty and non-string values are skipped. Every
+    // distinct command is reported; paths are reported only when the call names no command.
+    const values = (keys: readonly string[]) => [
+      ...new Set(containers.flatMap((p) => keys.map((k) => str(ownProp(p, k)) ?? "").filter((v) => v !== ""))),
+    ];
+    const commands = values(COMMAND_KEYS);
+    const keys =
+      commands.length > 0 ? commands.map((c) => `command:${c}`) : values(TARGET_KEYS).map((t) => `target:${t}`);
     // A step is reported once, and again only when a later update names a command or path not yet reported for it, so
     // the tool-call guard sees every one whichever update carries `tool_info.parameters` (Assumption: not recorded)
     // and an update cannot swap a reported command for an unchecked one.
     const reported = seen.get(index);
-    if (reported === undefined) seen.set(index, new Set(key === undefined ? [] : [key]));
-    else if (key === undefined || reported.has(key)) return [];
-    else reported.add(key);
-    return [
-      {
-        kind: "tool_call",
-        tool: kind,
-        name: clip(name, 64),
-        ...(command !== undefined ? { command } : {}),
-        ...(target !== undefined && command === undefined ? { target: clip(target, MAX_TARGET_CHARS) } : {}),
-      },
-    ];
+    const fresh = reported === undefined ? keys : keys.filter((k) => !reported.has(k));
+    if (reported === undefined) seen.set(index, new Set(keys));
+    else for (const k of fresh) reported.add(k);
+    const call = (key: string | undefined): NormalizedEvent => ({
+      kind: "tool_call",
+      tool: key?.startsWith("command:") ? "shell" : "other",
+      name: clip(name, 64),
+      ...(key?.startsWith("command:") ? { command: key.slice("command:".length) } : {}),
+      ...(key?.startsWith("target:") ? { target: clip(key.slice("target:".length), MAX_TARGET_CHARS) } : {}),
+    });
+    if (reported === undefined && fresh.length === 0) return [call(undefined)];
+    return fresh.map(call);
   }
 
   #unknown(state: ParseState, rawType: string): NormalizedEvent[] {
