@@ -1,7 +1,7 @@
 /**
  * T11.5 (FR-INN-15, BR-41, ADR-0007) at the two production callers `serve` wires (T11.14): the git `commit` tool channel
- * over its Unix socket (T11.4, `src/git/channel.ts`) and the MCP admission harness whose `delegate_task` and
- * `continue_task` run the routing hook (T11.11, `src/lifecycle/lifecycle.ts`). `usage.test.ts` and
+ * over its Unix socket (T11.4, `src/git/channel.ts`) and the MCP admission harness whose `delegate_task`,
+ * `continue_task` and quota failover (T6.6) run the routing hook (T11.11, `src/lifecycle/lifecycle.ts`). `usage.test.ts` and
  * `usage-surfaces.test.ts` call the injected contracts directly; this file drives the callers themselves, so the claim
  * "one labelled observation per backend request with a shared subscription, none without, and never any provider usage
  * or capacity" is made where a run actually makes the calls. Scripted in-process fake backend and the scripted fake
@@ -570,6 +570,136 @@ describe("the MCP admission harness (T11.11 production path) records inner usage
       // counts now name it. `fake` never ran either.
       expect(after.grok).toBe(before.grok);
       expect(after.fake).toBe(before.fake);
+      expect(JSON.stringify(afterBody)).not.toMatch(/inner/u);
+      const filtered = (await h.ok("get_capacity", { provider: "grok" })) as Capacity;
+      expect(entries(filtered)).toEqual({ grok: before.grok });
+    }, 120_000);
+  }
+
+  // The third production call site of the routing hook (T11.14: admission, continuation and quota failover). The
+  // quota ladder (T6.6, `src/lifecycle/lifecycle.ts` `failoverTarget`) classifies the failover route under the run
+  // that failed, after it is terminal, so this is the one `serve`-path classification that carries a run id, and the
+  // run it carries belongs to the provider whose quota was just exhausted. `fake` is the only provider the scripted CLI
+  // stops on quota; the successor always lands on `fake-b` (first spare in configured order).
+  for (const shares of [null, "fake", "fake-b", "grok"]) {
+    const label = shares === null ? "no shared subscription" : `shares_subscription_with = ${shares}`;
+    it(`${label}: the quota failover classifies under the failed run, ${shares === null ? "no observation" : "one labelled row under that run"}, the successor's choice and capacity unmoved`, async () => {
+      const { harness: h, backend } = await setup(shares);
+      const before = entries((await h.ok("get_capacity", {})) as Capacity);
+
+      const failed = await h.delegate("quota");
+      expect(failed).toMatchObject({ status: "FAILED", failure_code: "QUOTA_EXHAUSTED" });
+      expect(failed.provider.adapter).toBe("fake");
+      await h.waitFor(() => h.ledger.findSuccessorRun(failed.run_id) !== undefined);
+      const successor = await h.settle(h.ledger.findSuccessorRun(failed.run_id)?.id as string);
+      expect(successor.status).toBe("SUCCEEDED");
+      // The labelled rows never reach the scorer (ADR-0007; `collectScoreInputs` reads provider-reported rows only), so
+      // the failover lands on the same provider whether the label names it, the exhausted provider or a spare.
+      expect(successor.provider.adapter).toBe("fake-b");
+      expect(backend.requests).toHaveLength(2);
+      expect(h.decisions()).toHaveLength(2);
+      for (const row of h.decisions()) {
+        expect(JSON.parse(row.features_json).route_features.task_kind).toMatchObject({
+          value: "docs",
+          source: "inner",
+        });
+      }
+
+      // Admission classified before a run existed; the failover classified under the failed run and its session.
+      expect(
+        h.db
+          .prepare(
+            `SELECT task, run_id, meta_session_id, outcome, attempts, tokens_in, tokens_out
+             FROM inner_call ORDER BY created_at, id`,
+          )
+          .all(),
+      ).toEqual([
+        {
+          task: "route_features",
+          run_id: null,
+          meta_session_id: null,
+          outcome: "accepted",
+          attempts: 1,
+          tokens_in: 4,
+          tokens_out: 2,
+        },
+        {
+          task: "route_features",
+          run_id: failed.run_id,
+          meta_session_id: failed.meta_session_id,
+          outcome: "accepted",
+          attempts: 1,
+          tokens_in: 6,
+          tokens_out: 1,
+        },
+      ]);
+      const inner = h.db
+        .prepare(
+          "SELECT run_id, provider, harness, model, metrics_json FROM usage_observation WHERE source = 'inner_agent' ORDER BY rowid",
+        )
+        .all();
+      expect(inner).toEqual(
+        shares === null
+          ? []
+          : [
+              {
+                run_id: null,
+                provider: shares,
+                harness: shares,
+                model: "fake-model",
+                metrics_json: JSON.stringify({ input_tokens: 4, output_tokens: 2 }),
+              },
+              {
+                // The failover's labelled row carries the failed run's id: usage of the shared subscription attributed
+                // to the run whose quota exhaustion caused the classification, not to the successor.
+                run_id: failed.run_id,
+                provider: shares,
+                harness: shares,
+                model: "fake-model",
+                metrics_json: JSON.stringify({ input_tokens: 6, output_tokens: 1 }),
+              },
+            ],
+      );
+      expect(
+        h.db.prepare("SELECT COUNT(*) AS n FROM usage_observation WHERE source = 'provider_reported'").get(),
+      ).toEqual({
+        n: 0,
+      });
+
+      // Neither envelope reports the labelled row as usage. The ledger's own per-run list returns every source, so it
+      // does show the labelled row under the failed run; the envelope is the reader that filters it out, which is the
+      // point (`usage-surfaces.test.ts`, "each reader keeps to its own table").
+      for (const run of [failed, successor]) {
+        expect(run.usage).toEqual({ reported: null, estimated: null, capacity_confidence: null });
+      }
+      expect(h.ledger.listUsageObservationsForRun(failed.run_id).map((o) => o.source)).toEqual(
+        shares === null ? [] : ["inner_agent"],
+      );
+      expect(h.ledger.listUsageObservationsForRun(successor.run_id)).toEqual([]);
+      // The failed run's event list gains the one `inner_call` event of the failover classification, with no token
+      // figure, beside its `quota_ladder` event; the successor's list has none (its route was decided on the failed run).
+      const events = async (runId: string) =>
+        (
+          (await h.ok("get_run", { run_id: runId, include_events: {} })) as {
+            events: { type: string; payload: unknown }[];
+          }
+        ).events;
+      const failedEvents = await events(failed.run_id);
+      const innerEvents = failedEvents.filter((e) => e.type === "inner_call");
+      expect(innerEvents).toHaveLength(1);
+      expect(innerEvents[0]?.payload).toMatchObject({ task: "route_features", outcome: "accepted", attempts: 1 });
+      expect(JSON.stringify(innerEvents[0]?.payload)).not.toMatch(/token|tokens_in|tokens_out|input_tokens/u);
+      expect(failedEvents.map((e) => e.type)).toContain("quota_ladder");
+      expect((await events(successor.run_id)).filter((e) => e.type === "inner_call")).toEqual([]);
+
+      // `get_capacity`: the exhausted provider and the successor count provider-reported rows only (none here), whatever
+      // the label charged; the spare that never ran is byte-identical (its clock aside) even when it is the label.
+      const afterBody = (await h.ok("get_capacity", {})) as Capacity;
+      const after = entries(afterBody);
+      for (const p of ["fake", "fake-b"]) {
+        expect(afterBody.providers.find((x) => x.provider === p)?.window.usage_observations).toBe(0);
+      }
+      expect(after.grok).toBe(before.grok);
       expect(JSON.stringify(afterBody)).not.toMatch(/inner/u);
       const filtered = (await h.ok("get_capacity", { provider: "grok" })) as Capacity;
       expect(entries(filtered)).toEqual({ grok: before.grok });

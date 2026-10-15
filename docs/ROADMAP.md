@@ -1859,6 +1859,22 @@ run's envelope reports any usage; the provider that ran (`fake-b`) counts provid
 whether or not the label charged it; a registered provider that never ran (`grok`) keeps a byte-identical `get_capacity`
 entry (filtered and unfiltered, its clock aside) even when two labelled rows with counts name it; and no `get_capacity`
 text names the inner agent. T11.5 stays **Done on fakes**; the live-backend residual (T11.13) is the only one left.
+*2026-10-15 post-[PR #389](https://github.com/zemdregon/switchboard/pull/389) residual pass (Delegated; scripted fake
+backend and the scripted fake provider CLI only, no production code changed, `src/inner/**` only):* the routing hook's
+third production call site, the quota failover (T6.6 `failoverTarget`, which T11.14 names beside admission and
+continuation), had no accounting evidence; `src/inner/usage-channels.test.ts` now drives it through the harness
+(`delegate_task` on the provider the fake CLI stops on quota, then the ladder's successor). The failover classification
+is recorded under the failed, terminal run and its session (the only `serve`-path classification that carries a run id);
+with the flag it writes one labelled row under that run id with the shared provider as label and the backend's counts,
+whether the label names the exhausted provider, the successor or a spare, and none without; the successor lands on the
+same provider under every label (the labelled rows never reach the scorer, ADR-0007); neither envelope reports the row,
+the ledger's own per-run list shows it under the failed run and the successor's is empty; the failed run's event list
+gains one `inner_call` event with no token figure beside its `quota_ladder` event and the successor's gains none;
+`get_capacity` counts provider-reported rows only for the exhausted provider and the successor, keeps the spare that never
+ran byte-identical (its clock aside) even when it is the label, and names the inner agent nowhere. The "each reader keeps
+to its own table" test in `src/inner/usage-surfaces.test.ts` now also holds the human `runs show` text byte-identical
+around the planted row and checks its usage section names nothing about the inner agent. T11.5 stays **Done on fakes**;
+the live-backend residual (T11.13) is the only one left.
 
 **T11.8 status (2026-10-13; Delegated): Done on fakes. No live inner backend, provider CLI, pull-request API or network
 host was used.** "Done when", clause by clause: *the draft passes the sanitiser*: a hostile fake backend returning a
