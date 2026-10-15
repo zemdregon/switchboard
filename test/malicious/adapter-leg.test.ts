@@ -21,6 +21,7 @@ import {
   STREAM_CATEGORIES,
   withFlagStripped,
 } from "./adapter-leg.js";
+import { grokPartialStreams } from "./adapters/grok.case.js";
 import { opencodePartialStreams, opencodeUnreadableStreams } from "./adapters/opencode.case.js";
 import { buildMaliciousFixture, type MaliciousFixture } from "./fixture.js";
 
@@ -250,6 +251,24 @@ describe("adapter malicious leg: opencode partial streams", () => {
       expect(o.failedChecks, s.name).toEqual([]);
       expect(o.resultOk, s.name).toBe(false);
       expect(o.failureCode, s.name).toBe(s.failureCode);
+      expect(o.untouched, s.name).toBe(true);
+    }
+  });
+});
+
+// Grok Build only (T4.26): streams cut inside a line, replayed on their own.
+describe("adapter malicious leg: grok partial streams", () => {
+  const c = cases.find((x) => x.provider === "grok");
+  if (!c) throw new Error("no grok case file");
+
+  it("a stream cut inside a line ends OUTPUT_PROTOCOL_ERROR (never success) and leaves the checkout untouched", async () => {
+    const streams = grokPartialStreams(fx);
+    expect(new Set(streams.map((s) => s.exitCode))).toEqual(new Set([0, 1]));
+    for (const s of streams) {
+      const o = await replayHostileStream(c, fx, s);
+      expect(o.failedChecks, s.name).toEqual([]);
+      expect(o.resultOk, s.name).toBe(false);
+      expect(o.failureCode, s.name).toBe("OUTPUT_PROTOCOL_ERROR");
       expect(o.untouched, s.name).toBe(true);
     }
   });
