@@ -1,0 +1,6 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: T4.43 recorded tool_call/result shapes reordered to prove a completed refusal after a success result at exit 0 still ends PERMISSION_BLOCKED; not a live sequence. Mirrors OpenCode T4.53 stop_then_error.","exit":0}}
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work/tree","session_id":"synthetic-cursor-session-0001","model":"Synthetic Model 1","permissionMode":"default"}
+{"type":"tool_call","subtype":"started","call_id":"c1","tool_call":{"shellToolCall":{"args":{"command":"echo hi","workingDirectory":"/work/tree"}}},"session_id":"synthetic-cursor-session-0001"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"SYNTHETIC: recognized turn."}]},"session_id":"synthetic-cursor-session-0001"}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"duration_api_ms":10,"result":"ok","session_id":"synthetic-cursor-session-0001","request_id":"req-late-deny","usage":{"inputTokens":11,"outputTokens":2,"cacheReadTokens":5,"cacheWriteTokens":0}}
+{"type":"tool_call","subtype":"completed","call_id":"c1","tool_call":{"shellToolCall":{"args":{"command":"echo hi"},"result":{"rejected":{"command":"echo hi","workingDirectory":"/work/tree","reason":"","isReadonly":false}}}},"session_id":"synthetic-cursor-session-0001"}

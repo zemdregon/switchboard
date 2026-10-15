@@ -930,8 +930,8 @@ describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
     // The same outcomes replayed end to end from fixture files through the supervisor, so each Done-when case has a
     // fixture: success (`success_edit`), task failure (`task_failure`), malformed (`malformed_output`), permission
     // denied (`permission_denied`), backing vendor (`backing_provider`) and the ones below, plus `resume_failure`,
-    // `error_after_result` and `malformed_after_result` (as Grok T4.23 and OpenCode T4.53). They pin the gaps; an
-    // operator capture (T4.41 extension) must change them.
+    // `error_after_result`, `malformed_after_result` and `denied_after_result` (as Grok T4.23 and OpenCode T4.53).
+    // They pin the gaps; an operator capture (T4.41 extension) must change them.
     const replayCase = (
       fixture: string,
       kind: ConformanceCase["kind"],
@@ -1118,6 +1118,24 @@ describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
         });
       },
     );
+
+    it("fixture denied_after_result replays a completed refusal after a success result to PERMISSION_BLOCKED", async () => {
+      // OpenCode T4.53 stop_then_error analog: a recognized success result does not erase a later structured denial.
+      const report = await runConformanceCase(
+        replayCase("denied_after_result", "task_failure", {
+          ok: false,
+          failureCode: "PERMISSION_BLOCKED",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+        nativeSessionId: DEFAULT_SESSION_ID,
+        unknownEventCount: 0,
+      });
+    });
 
     it("fixture resume_failure replays a resumed failed run to TOOL_FAILURE, preserving the resumed session id", async () => {
       // The only replayed resume so far is the T4.45 success; the failure leg of `--resume <id>` (a resumed run whose
@@ -2032,6 +2050,47 @@ describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
     }
   });
 
+  it("resumeArgs accepts valid alphanumeric, UUID and delimited session IDs and refuses unsafe or flag-like shapes", () => {
+    const a = adapter();
+    const profile = privilegedProfile(BYPASS_SCOPE);
+    const approved = { ...profile, bypassApproved: true };
+    const req = request({ bypassApproved: true });
+
+    for (const validId of ["0c1d5f2e-7c1a-4b66-9d0c-1f5b8a3a9e11", "session_123.456:789-abc", "A", "a".repeat(256)]) {
+      const r = a.resumeArgs({ provider: "cursor", nativeSessionId: validId }, req, approved);
+      expect("ineligible" in r, validId).toBe(false);
+      if (!("ineligible" in r)) {
+        expect(r.argv.slice(-2)).toEqual(["--resume", validId]);
+      }
+    }
+
+    for (const unsafeId of [
+      "",
+      "-f",
+      "--resume",
+      "--force",
+      "-dangerous",
+      "session id",
+      "session\nid",
+      "session\tid",
+      "../chat",
+      "foo/bar",
+      "/root",
+      "session;rm",
+      "$SESSION",
+      "`whoami`",
+      "session\x00null",
+      "a".repeat(257),
+    ]) {
+      const r = a.resumeArgs({ provider: "cursor", nativeSessionId: unsafeId }, req, approved);
+      expect(r, JSON.stringify(unsafeId)).toMatchObject({
+        ineligible: true,
+        reason: "CAPABILITY_MISSING",
+        detail: "native session id is not a safe single argument",
+      });
+    }
+  });
+
   it("second result line with usage does not record duplicate usage observation (FR-CAP-01)", () => {
     const r = parse([
       INIT(),
@@ -2357,6 +2416,175 @@ describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
       failureCode: "PERMISSION_BLOCKED",
     });
     expect(r2.failureDetail).toMatch(/^git write attempted/);
+  });
+
+  it("call_id and callId correlate started/completed reports; a different id is a new call", () => {
+    const same = parse([
+      INIT(),
+      line({
+        type: "tool_call",
+        subtype: "started",
+        call_id: "c1",
+        tool_call: { shellToolCall: { args: { command: "echo hi" } } },
+        session_id: SID,
+      }),
+      line({
+        type: "tool_call",
+        subtype: "completed",
+        callId: "c1",
+        tool_call: { shellToolCall: { args: { command: "echo hi" }, result: { rejected: {} } } },
+        session_id: SID,
+      }),
+      RESULT(),
+    ]);
+    expect(same.events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "shell", name: "shellToolCall", command: "echo hi" },
+    ]);
+    expect(same.events.filter((e) => e.kind === "permission_denied")).toEqual([
+      { kind: "permission_denied", tool: "shellToolCall" },
+    ]);
+    expect(same.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+
+    const swapped = parse([
+      INIT(),
+      line({
+        type: "tool_call",
+        subtype: "started",
+        call_id: "c1",
+        tool_call: { shellToolCall: { args: { command: "echo hi" } } },
+        session_id: SID,
+      }),
+      line({
+        type: "tool_call",
+        subtype: "completed",
+        callId: "c2",
+        tool_call: { shellToolCall: { args: { command: "git push origin main" }, result: { success: {} } } },
+        session_id: SID,
+      }),
+      RESULT(),
+    ]);
+    expect(swapped.events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "shell", name: "shellToolCall", command: "echo hi" },
+      { kind: "tool_call", tool: "shell", name: "shellToolCall", command: "git push origin main" },
+    ]);
+  });
+
+  it("editFileToolCall and writeFileToolCall are edit tools and carry their path", () => {
+    const r = parse([
+      INIT(),
+      TOOL("started", { editFileToolCall: { args: { path: "/w/a.ts" } } }),
+      TOOL("started", { writeFileToolCall: { args: { filePath: "/w/b.ts" } } }),
+      RESULT(),
+    ]);
+    expect(r.events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "edit", name: "editFileToolCall", target: "/w/a.ts" },
+      { kind: "tool_call", tool: "edit", name: "writeFileToolCall", target: "/w/b.ts" },
+    ]);
+    expect(r.result).toMatchObject({ ok: true });
+  });
+
+  it("extracts command from result.permission_denied when args omitted on completed call", () => {
+    const ctx = { cwd: "/w", bypass: true };
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const events = [
+      INIT(),
+      TOOL("started", { shellToolCall: {} }),
+      TOOL("completed", { shellToolCall: { result: { permission_denied: { command: "git push origin main" } } } }),
+      RESULT(),
+    ]
+      .flatMap((l) => a.parseEvent(l, state))
+      .map((e) => guardEvent(e, ctx));
+    const r = a.extractResult(events, EXIT0);
+    expect(r).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    expect(r.failureDetail).toMatch(/^git write attempted/);
+  });
+
+  it("session id key precedence is session_id over sessionId over chat_id over chatId", () => {
+    const p1 = parse([
+      line({
+        type: "system",
+        subtype: "init",
+        apiKeySource: "login",
+        sessionId: "sid-alias",
+        chat_id: "chat-snake",
+        chatId: "chat-camel",
+      }),
+      RESULT({ session_id: undefined }),
+    ]);
+    expect(p1.events.find((e) => e.kind === "session_bound")?.nativeSessionId).toBe("sid-alias");
+
+    const p2 = parse([
+      line({
+        type: "system",
+        subtype: "init",
+        apiKeySource: "login",
+        chat_id: "chat-snake",
+        chatId: "chat-camel",
+      }),
+      RESULT({ session_id: undefined }),
+    ]);
+    expect(p2.events.find((e) => e.kind === "session_bound")?.nativeSessionId).toBe("chat-snake");
+
+    const p3 = parse([RESULT({ session_id: undefined, sessionId: "from-result", chatId: "chat-camel" })]);
+    expect(p3.events.find((e) => e.kind === "session_bound")?.nativeSessionId).toBe("from-result");
+  });
+
+  it("a completed refusal after the result line still ends PERMISSION_BLOCKED; a later success result cannot erase it", () => {
+    const late = parse([
+      INIT(),
+      TOOL("started", { shellToolCall: { args: { command: "echo hi" } } }),
+      ASSIST("ok"),
+      RESULT(),
+      TOOL("completed", { shellToolCall: { args: { command: "echo hi" }, result: { rejected: {} } } }),
+    ]);
+    expect(late.events.filter((e) => e.kind === "permission_denied")).toEqual([
+      { kind: "permission_denied", tool: "shellToolCall" },
+    ]);
+    expect(late.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      nativeSessionId: SID,
+      unknownEventCount: 0,
+    });
+
+    const erased = parse([
+      INIT(),
+      TOOL("started", { shellToolCall: { args: { command: "echo hi" } } }),
+      RESULT(),
+      TOOL("completed", { shellToolCall: { args: { command: "echo hi" }, result: { rejected: {} } } }),
+      RESULT(),
+    ]);
+    expect(erased.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      nativeSessionId: SID,
+    });
+  });
+
+  it("CommandLine wins over commandLine; an unmapped tool with both command and path is shell", () => {
+    const cmd = parse([
+      INIT(),
+      TOOL("started", { shellToolCall: { args: { CommandLine: "echo from-pascal", commandLine: "echo from-camel" } } }),
+      RESULT(),
+    ]);
+    expect(cmd.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "shell",
+      command: "echo from-pascal",
+    });
+
+    const both = parse([
+      INIT(),
+      TOOL("started", { custom_tool: { args: { command: "echo only-cmd", path: "/w/decoy.ts" } } }),
+      RESULT(),
+    ]);
+    expect(both.events.find((e) => e.kind === "tool_call")).toEqual({
+      kind: "tool_call",
+      tool: "shell",
+      name: "custom_tool",
+      command: "echo only-cmd",
+    });
   });
 });
 
