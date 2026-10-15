@@ -18,6 +18,7 @@ import {
   STREAM_CATEGORIES,
   withFlagStripped,
 } from "./adapter-leg.js";
+import { opencodeKnownGaps, opencodePartialStreams } from "./adapters/opencode.case.js";
 import { buildMaliciousFixture, type MaliciousFixture } from "./fixture.js";
 
 const DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "adapters");
@@ -191,6 +192,34 @@ describe.each(cases.map((c) => [c.provider, c] as const))("adapter malicious leg
           `${extra.label}: missing isolation flag ${f}`,
         );
       }
+    }
+  });
+});
+
+// OpenCode only (T4.56): streams that are not hostile-category streams of the shared harness, replayed on their own.
+describe("adapter malicious leg: opencode partial streams and known gaps", () => {
+  const c = cases.find((x) => x.provider === "opencode");
+  if (!c) throw new Error("no opencode case file");
+
+  it("a stream cut inside a line ends OUTPUT_PROTOCOL_ERROR (never success) and leaves the checkout untouched", async () => {
+    const streams = opencodePartialStreams(fx);
+    expect(new Set(streams.map((s) => s.exitCode))).toEqual(new Set([0, 1]));
+    for (const s of streams) {
+      const o = await replayHostileStream(c, fx, s);
+      expect(o.failedChecks, s.name).toEqual([]);
+      expect(o.resultOk, s.name).toBe(false);
+      expect(o.failureCode, s.name).toBe("OUTPUT_PROTOCOL_ERROR");
+      expect(o.untouched, s.name).toBe(true);
+    }
+  });
+
+  // Pinned, not hidden (ROADMAP T4.56): each ends `ok` today. When the adapter fails one closed, this fails; move the
+  // stream into the case file's hostile streams.
+  it("known gaps still end ok: an unknown kind before stop, a Git push under a shell tool named bash", async () => {
+    for (const s of opencodeKnownGaps()) {
+      const o = await replayHostileStream(c, fx, s);
+      expect({ ok: o.resultOk, failureCode: o.failureCode }, s.name).toEqual({ ok: true, failureCode: undefined });
+      expect(o.untouched, s.name).toBe(true);
     }
   });
 });
