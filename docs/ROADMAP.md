@@ -1689,6 +1689,18 @@ code change: the pipeline now keeps a backend-reported count only when it is a n
 unknown otherwise (`tokenCount` in `src/inner/pipeline.ts`), the rule the HTTP backend already applied, so a `cli` or
 other backend cannot put a negative, fractional, non-finite or non-numeric figure into `inner_call` or the labelled
 observation (FR-INN-15 "as reported or unknown", FR-INN-07). The `doctor` warning was already in place and is unchanged.
+*2026-10-15 after [PR #330](https://github.com/zemdregon/switchboard/pull/330) (Delegated):* T11.14 named the production
+callers. Residuals closed on fakes (`src/inner/usage.test.ts`, `src/inner/usage-surfaces.test.ts`): a pipeline call with
+no `run_id` (inner test / T11.11 admission) still writes one labelled observation when `shares_subscription_with` is set
+and none otherwise; `createCommitMessageTask` and `createClassifyRouteFeaturesHook` (the contracts `serve` injects)
+do the same; `get_run` without `include_events` and `switchboard capacity --provider` stay byte-identical;
+`inner test` with the flag in the on-disk config writes one `inner_agent` row with `run_id` null for `claude-code`,
+while `get_capacity` and the `doctor --json` capacity object stay byte-identical and `inner_shared_subscription` is
+unchanged (config-derived). Honest: the doctor inner-agent section reports `inner_call` counts, so the whole
+`doctor --json` document is not identical once the section is present. **Remaining:** a live inner backend (T11.13,
+Planned); `get_capacity` over Streamable HTTP (Q-67 Yes; same handler as the in-memory tool, M13); the git `commit`
+tool channel and MCP admission harness themselves (the injected contracts they call are covered). T11.5 stays **Done
+on fakes**. Q-67 stays Yes.
 
 **T11.8 status (2026-10-13; Delegated): Done on fakes. No live inner backend, provider CLI, pull-request API or network
 host was used.** "Done when", clause by clause: *the draft passes the sanitiser*: a hostile fake backend returning a
