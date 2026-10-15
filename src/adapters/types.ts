@@ -41,7 +41,12 @@ export interface ProbeOutput {
 /** Supervisor-provided way to execute a provider binary for probe/authPreflight (LLD §2). Tests inject fakes. */
 export type ProbeRunner = (
   argv: readonly string[],
-  opts?: { readonly cwd?: string; readonly timeoutMs?: number },
+  opts?: {
+    readonly cwd?: string;
+    readonly timeoutMs?: number;
+    /** Proposed (T4.64): written to the probe's stdin, which is then closed. Without it stdin is not connected. */
+    readonly stdinText?: string;
+  },
 ) => Promise<ProbeOutput>;
 
 export interface ProbeResult {
