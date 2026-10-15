@@ -104,7 +104,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#262](https://github.com/zemdregon/switchboard/pull/262),
   [#280](https://github.com/zemdregon/switchboard/pull/280))
   and a Git declaration on synthetic fixtures (README [Antigravity CLI](#antigravity-cli-milestone-4), ROADMAP T4.32 to
-  T4.37); draft [#295](https://github.com/zemdregon/switchboard/pull/295) widens the synthetic malicious matrix only.
+  T4.37); [#295](https://github.com/zemdregon/switchboard/pull/295) through
+  [#373](https://github.com/zemdregon/switchboard/pull/373) extend synthetic parser, conformance and malicious replay
+  only and do not validate the live CLI.
   Live smoke, live malicious leg and `adapters validate` for Antigravity remain operator work (T4.38). Cursor has
   module, compile-matrix, parser (partial: T4.43 until operator capture; supervisor-replayed JSONL fixtures,
   [#283](https://github.com/zemdregon/switchboard/pull/283),
@@ -966,6 +968,17 @@ operator captures confirm their native shapes. Later updates that supply or chan
 guard again; commands under unrecorded parameter keys remain unseen. Native resume, blocked outcomes and provider
 validation stay open under ROADMAP T4.33, T4.35, T4.36 and T4.38.
 
+Residual parser pins ([#344](https://github.com/zemdregon/switchboard/pull/344), "antigravity parser residual pins
+(T4.33, synthetic shapes)") record a second guard gap: tool parameters on a step whose `step_type` is not exactly
+`tool` (for example `TOOL`, `checkpoint` or `agent_response`) never reach the guard, and the supervisor replays
+`non_tool_step_command.jsonl`, a Git write on such a step, to a success. They also pin that tool steps are
+deduplicated per `step_index`, so a repeated Git write in a new step is checked again; that the model and backing
+vendor bind once, from `init` before a later `result`; and that a `SUCCESS` envelope with tokens and no string
+conversation id succeeds with no session bound (a synthetic shape: every recorded success carried an id, and resume
+is not compiled). A mutation pass over the parser left eight non-equivalent survivors, now pinned in
+[`parser-residual.test.ts`](src/adapters/antigravity/parser-residual.test.ts) ("antigravity parser mutation residuals
+(T4.33, synthetic shapes)", [#359](https://github.com/zemdregon/switchboard/pull/359)).
+
 T4.35 conformance fixtures also cover a conversation id changing on a tool step (`OUTPUT_PROTOCOL_ERROR`, first id
 kept), non-array `denied_actions` (`PERMISSION_BLOCKED`, tool name `unknown`), and unrecorded sandbox-error text in an
 `ERROR` envelope (`sandbox_violation_error.jsonl`: `TOOL_FAILURE`, never `SANDBOX_VIOLATION`). The latter does not
@@ -974,7 +987,14 @@ and with escalation required, including an empty process group after escalation.
 resume ids and additional never-emitted flag spellings; these are fixture invocation checks, not native enforcement
 ([#332](https://github.com/zemdregon/switchboard/pull/332)). `resume_failure.jsonl` is checked with a manually appended
 conversation id (`TOOL_FAILURE`, resumed id kept) but remains outside the runnable suite while resume compilation is
-refused. T4.35 stays `Partial`: fixtures cannot establish native resume or captured rate-limit and sandbox categories.
+refused. Since [#347](https://github.com/zemdregon/switchboard/pull/347), [#361](https://github.com/zemdregon/switchboard/pull/361)
+and [#373](https://github.com/zemdregon/switchboard/pull/373)
+([`conformance-residual.test.ts`](src/adapters/antigravity/conformance-residual.test.ts)) every case fails when the
+replay refuses the compile, idle (both SIGTERM paths) and wall-clock timeouts replay with their kind pinned, an
+inventory test requires every fixture to be replayed or listed out with a reason and to carry SYNTHETIC provenance,
+and every runnable case pins its failure detail, session id, summary and unknown-event count, so it fails on any
+other case's fixture except eleven listed same-result pairs. T4.35 stays `Partial`: fixtures cannot establish native
+resume or captured rate-limit and sandbox categories.
 
 ### Git and commits
 
@@ -999,8 +1019,15 @@ replays synthetic hostile streams where shell `run_command` steps carry commands
 chained with credential read, out-of-worktree write and network patterns), ending `PERMISSION_BLOCKED` at exit 0 and exit
 1 on both recorded `denied_actions` soft denials, bypass-shaped envelopes with no `denied_actions`
 ([#257](https://github.com/zemdregon/switchboard/pull/257)) and the same patterns placed after a clean `SUCCESS` `result`
-([#262](https://github.com/zemdregon/switchboard/pull/262)). In an approved bypass run the guard still enforces Git
-writes only: the same hostile call without a Git write still ends `ok` (pinned); live blocked outcomes and FR-POL-04
+([#262](https://github.com/zemdregon/switchboard/pull/262)). Later synthetic streams add guarded `ERROR` envelopes,
+late and swapped commands, the `CommandLine` alias, other Git-write forms and parameter containers
+([#295](https://github.com/zemdregon/switchboard/pull/295)); every blocked category at exit 2 and 137 with no `result`
+line and the parser's fall-through paths ([#352](https://github.com/zemdregon/switchboard/pull/352)); and unsafe or
+changed conversation ids, `SUCCESS` envelopes with zero, missing, negative or non-number `total_tokens`, empty or
+null `denied_actions` and partial streams cut before, inside and after the hostile step
+([#368](https://github.com/zemdregon/switchboard/pull/368)). In an approved bypass run the guard still enforces Git
+writes only: the same hostile call without a Git write still ends `ok` (pinned), as does a Git write on a step that
+is not a `tool` step (above); live blocked outcomes and FR-POL-04
 need operator work (ROADMAP T4.36, T4.38).
 
 `commitChannel` is **`finalize-only`**: Switchboard does not inject a per-run MCP server (no headless MCP-definition
@@ -1029,11 +1056,17 @@ and the `backing_provider`, own-property, fallback, supervisor-exit and resume-r
 antigravity", T4.36 partial — see [Known limitations](#known-limitations); guard-blocked streams
 [#257](https://github.com/zemdregon/switchboard/pull/257), trailing-tool streams
 [#262](https://github.com/zemdregon/switchboard/pull/262), exit-code and hostile-repository-entry coverage
-[#280](https://github.com/zemdregon/switchboard/pull/280)). Draft
-[#295](https://github.com/zemdregon/switchboard/pull/295) (open) widens the synthetic malicious matrix — guarded
-`ERROR` envelopes with no `denied_actions` in every blocked category, commands arriving or swapped on `step_update`, a
-`CommandLine` alias, further Git-write forms and dialect-spelling compile isolation — in the case file only, and it
-changes neither the parser nor the compiled matrix. The conformance `resume` case stays partial until Q-86 and
+[#280](https://github.com/zemdregon/switchboard/pull/280), widened malicious matrix
+[#295](https://github.com/zemdregon/switchboard/pull/295), exit 2/137 and fall-through streams
+[#352](https://github.com/zemdregon/switchboard/pull/352), residual anomalies and inside-line cuts
+[#368](https://github.com/zemdregon/switchboard/pull/368), plus "adapter malicious leg: antigravity partial
+streams"); "antigravity parser residual pins (T4.33, synthetic shapes)"
+([#344](https://github.com/zemdregon/switchboard/pull/344)) with `non_tool_step_command.jsonl`;
+`src/adapters/antigravity/parser-residual.test.ts` ([#359](https://github.com/zemdregon/switchboard/pull/359)); and
+`src/adapters/antigravity/conformance-residual.test.ts`
+([#347](https://github.com/zemdregon/switchboard/pull/347), [#361](https://github.com/zemdregon/switchboard/pull/361),
+[#373](https://github.com/zemdregon/switchboard/pull/373)). None of these changed the parser or the compiled
+matrix. The conformance `resume` case stays partial until Q-86 and
 an operator resume capture (T4.35). No end-to-end run through Switchboard against a logged-in
 `agy` has been recorded yet (T4.38).
 
@@ -1553,11 +1586,15 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   hostile call arrives after the `result` line ([#262](https://github.com/zemdregon/switchboard/pull/262)); since
   [#280](https://github.com/zemdregon/switchboard/pull/280) every blocked category also replays at exit 0 and exit 1,
   including guarded streams with no `result` line, and the hostile fixture carries `GEMINI.md`,
-  `.agents/mcp_config.json` and `.agents/hooks.json` so the untouched check covers them. Draft
-  [#295](https://github.com/zemdregon/switchboard/pull/295) (open) adds guarded `ERROR` envelopes with no
+  `.agents/mcp_config.json` and `.agents/hooks.json` so the untouched check covers them.
+  [#295](https://github.com/zemdregon/switchboard/pull/295) adds guarded `ERROR` envelopes with no
   `denied_actions` in every blocked category, commands arriving or swapped on `step_update`, a `CommandLine` alias,
-  further Git-write forms and dialect-spelling compile isolation; fields other than the recorded and Assumption shapes
-  remain hypothetical, and no live CLI validation is implied. FR-POL-04
+  further Git-write forms and dialect-spelling compile isolation;
+  [#352](https://github.com/zemdregon/switchboard/pull/352) adds exit 2 and 137 and parser fall-through paths, and
+  [#368](https://github.com/zemdregon/switchboard/pull/368) adds conversation-id and `total_tokens` anomalies, empty
+  or null `denied_actions` and cuts inside the hostile line. Fields other than the recorded and Assumption shapes
+  remain hypothetical, a Git write on a step whose `step_type` is not `tool` is not seen by the guard (pinned,
+  [#344](https://github.com/zemdregon/switchboard/pull/344)), and no live CLI validation is implied. FR-POL-04
   cannot hold in the only
   compiled scope because repository configuration is `enabled` and `GEMINI.md`, `AGENTS.md` and the `.agents` MCP server
   and hooks load with no approval (live check C11). The blocked streams still rest on unrecorded
