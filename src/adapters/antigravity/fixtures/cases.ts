@@ -24,6 +24,9 @@ const MODEL_DETAIL =
   "model_unavailable: invalid model selection (--model synthetic-missing): SYNTHETIC. Available models: Synthetic Model";
 /** The guard's `failureDetail` for the `git commit` step in both Git-write fixtures (ADR-0039). */
 const GIT_DETAIL = "git write attempted: `git commit` can create commits, change refs or push";
+/** The guard's `failureDetail` for the two shadowed Git-write fixtures (PR #387: every parameter key and container). */
+const GIT_PUSH_DETAIL = "git write attempted: `git push` can create commits, change refs or push";
+const GIT_TAG_DETAIL = "git write attempted: `git tag` can create commits, change refs or push";
 
 /** The one scope Antigravity compiles (T4.32, owner decision 46, Q-84): an approved bypass with network on. */
 export const BYPASS_SCOPE = {
@@ -84,7 +87,8 @@ export function replayAdapter(fixture: string, o: ReplayOptions = {}): Antigravi
  * an `ERROR` envelope at exit 0 and exit 1 (TOOL_FAILURE: no rate-limit shape is recorded, so no `rate_limit` case),
  * multiple unreadable event lines at exit 0 without a result (OUTPUT_PROTOCOL_ERROR), a tool step after a clean
  * `result` (OUTPUT_PROTOCOL_ERROR), a guard-flagged Git write under a `SUCCESS` envelope with parameters and args
- * container aliases (PERMISSION_BLOCKED, ADR-0039), a `SUCCESS` envelope whose conversation id is not one safe token
+ * container aliases (PERMISSION_BLOCKED, ADR-0039), the same guard when an empty `command` key or a benign command in
+ * an earlier container would have shadowed the Git write (PR #387; PERMISSION_BLOCKED), a `SUCCESS` envelope whose conversation id is not one safe token
  * (OUTPUT_PROTOCOL_ERROR, nothing bound) and the same unsafe id on the `result` only, after a normal `init` (the first
  * id stays bound), a `step_update` for another conversation (OUTPUT_PROTOCOL_ERROR, first id kept), a non-array
  * `denied_actions` value (PERMISSION_BLOCKED), a stream with no `result` at exit 3 (the TDD §4.4.1 `AGY_ERROR` case,
@@ -351,6 +355,34 @@ export function antigravityConformanceCases(makeCwd: () => string): ConformanceC
         failureDetail: GIT_DETAIL,
         nativeSessionId: DEFAULT_SESSION_ID,
         summary: "Done.",
+        unknownEventCount: 0,
+      },
+    },
+    {
+      ...base,
+      kind: "task_failure",
+      adapter: replayAdapter("git_write_shadow_empty"),
+      request: request(),
+      expect: {
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+        failureDetail: GIT_PUSH_DETAIL,
+        nativeSessionId: DEFAULT_SESSION_ID,
+        summary: "Pushed.",
+        unknownEventCount: 0,
+      },
+    },
+    {
+      ...base,
+      kind: "task_failure",
+      adapter: replayAdapter("git_write_shadow_container"),
+      request: request(),
+      expect: {
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+        failureDetail: GIT_TAG_DETAIL,
+        nativeSessionId: DEFAULT_SESSION_ID,
+        summary: "Listed.",
         unknownEventCount: 0,
       },
     },

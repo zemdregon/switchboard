@@ -2365,6 +2365,26 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     return c;
   };
 
+  it("a Git write no benign or empty tool parameter can shadow ends PERMISSION_BLOCKED through the run (PR #387, ADR-0039)", async () => {
+    // Each fixture has a SUCCESS envelope with tokens and no denial, so only the tool-call guard can fail it. A parser
+    // that read only the first key (empty `command`) or the first container (`parameters.command: ls`) replays both
+    // fixtures to `ok`.
+    for (const [fixture, command, summary] of [
+      ["git_write_shadow_empty", "push", "Pushed."],
+      ["git_write_shadow_container", "tag", "Listed."],
+    ] as const) {
+      const report = await runConformanceCase(caseFor(fixture));
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+        failureDetail: `git write attempted: \`git ${command}\` can create commits, change refs or push`,
+        nativeSessionId: DEFAULT_SESSION_ID,
+        summary,
+      });
+    }
+  });
+
   it("a non-array denied_actions value is one denial: PERMISSION_BLOCKED, conversation id kept", async () => {
     const report = await runConformanceCase(caseFor("denied_not_array"));
     expect(report.checks.filter((k) => !k.ok)).toEqual([]);
