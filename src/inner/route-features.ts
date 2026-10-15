@@ -103,7 +103,7 @@ export async function classifyRouteFeatures(
 export type ClassifyRouteFeaturesHook = (
   input: ClassifierInput,
   context: {
-    readonly project?: { readonly id: string; readonly context_id: string };
+    readonly project?: { readonly id: string; readonly context_id?: string };
     readonly runId?: string;
     readonly metaSessionId?: string;
   },
@@ -117,7 +117,7 @@ export function createClassifyRouteFeaturesHook(
     let projectSetting: ProjectInnerSetting = "inherit";
     if (context.project !== undefined) {
       try {
-        projectSetting = resolveSetting(context.project.id, context.project.context_id);
+        projectSetting = resolveSetting(context.project.id, context.project.context_id ?? "main");
       } catch {
         projectSetting = "off";
       }
