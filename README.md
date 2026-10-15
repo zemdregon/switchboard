@@ -116,18 +116,21 @@ Pre-release. The package is private and is not published to any registry; you bu
   12 partial streams, [#316](https://github.com/zemdregon/switchboard/pull/316)) and Git declaration
   fixture tests on synthetic fixtures (README [Cursor CLI](#cursor-cli-milestone-4), ROADMAP T4.42 to T4.47); live
   smoke, live malicious leg and `adapters validate` remain operator work (T4.48). OpenCode has module, compile-matrix,
-  parser (partial: T4.53; every Done-when case has a
-  supervisor-replayed JSONL fixture on `main` ([#274](https://github.com/zemdregon/switchboard/pull/274)) plus
-  structured `backing_provider`/`model` on `session_bound` and own-property hardening
-  ([#290](https://github.com/zemdregon/switchboard/pull/290))),
-  auth-preflight, conformance suite (T4.55), malicious-fixture leg (partial: synthetic refusal shapes,
-  guard-blocked, trailing-tool and unreadable-event fail-closed replay streams in a widened hostile matrix and
+  probe, registry entry, parser (partial: T4.53 until operator capture; supervisor-replayed JSONL fixtures,
+  [#274](https://github.com/zemdregon/switchboard/pull/274),
+  [#290](https://github.com/zemdregon/switchboard/pull/290), terminal reason and late error handling
+  [#328](https://github.com/zemdregon/switchboard/pull/328), malformed step-start fail-closed, scope compile parity and
+  arrival-order independence
+  [#339](https://github.com/zemdregon/switchboard/pull/339)),
+  auth-preflight, conformance suite on synthetic fixtures (T4.55), malicious-fixture leg (partial: synthetic refusal
+  shapes, guard-blocked, trailing-tool and unreadable-event fail-closed replay streams in a widened hostile matrix and
   FR-POL-04, T4.56;
   [#245](https://github.com/zemdregon/switchboard/pull/245),
   [#284](https://github.com/zemdregon/switchboard/pull/284),
-  [#298](https://github.com/zemdregon/switchboard/pull/298)) and Git declaration fixture tests on synthetic fixtures (README
-  [OpenCode CLI](#opencode-cli-milestone-4), ROADMAP T4.52 to
-  T4.57); live smoke, live malicious leg and `adapters validate` remain operator work (T4.58). Other M4 providers are
+  [#298](https://github.com/zemdregon/switchboard/pull/298)) and Git declaration fixture tests on synthetic
+  fixtures (README [OpenCode CLI](#opencode-cli-milestone-4), ROADMAP T4.52 to T4.57); live smoke, live malicious leg
+  and `adapters validate` remain operator work (T4.58). T4.52, T4.54, T4.55 and T4.57 are Done against their Done-when
+  on synthetic fixtures; T4.53 and T4.56 stay Partial. Other M4 providers are
   still catching up on those
   legs. Manifests still admit no version until `switchboard adapters validate` passes a real CLI (operator tasks).
   Outside an approved `privileged` bypass scope every profile is ineligible for the new providers. See
@@ -1210,34 +1213,75 @@ writes, no sandbox is documented and a repository's `opencode.json` and `AGENTS.
 | `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one argv shape: `opencode run --format json --standalone -- <prompt>` with worktree file access, shell `broad`, network `on` and repository configuration `enabled`, and **no** `--auto` (owner decision 46, Q-83). A scope without `bypass`, or any narrowing Switchboard can express, is refused before spawn. Bypass-class flags such as `--auto` are never compiled outside that case (and are not emitted even inside it). Never emits `--continue`, `--fork`, `--server`, `--attach`, `--share`, `--dir` or `--model`. |
 
 Resume continues the native session with `--session <session_id>` through the same matrix when the provider is eligible
-(synthetic fixtures in `src/adapters/opencode/opencode.test.ts`, T4.53). Alphanumeric, UUID and delimited session ids
-compile; unsafe or flag-like ids, another provider's binding and every non-`privileged` profile are refused with
-reasons, and resume preserves the request's working directory and the compile-time env, flags and audit
-([#290](https://github.com/zemdregon/switchboard/pull/290)). A `sessionID` that resume could not pass as
-one safe argument is never bound (`OUTPUT_PROTOCOL_ERROR`; [#245](https://github.com/zemdregon/switchboard/pull/245)). A
+(synthetic fixtures in `src/adapters/opencode/opencode.test.ts`, T4.53). `resumeArgs` mirrors `compile` across every
+structured scope shape (the full `scopeShapes()` sweep with `bypassApproved` true/false; exactly one compiled approved
+bypass shape) appending `--session <id>` before the prompt, and rejects foreign provider bindings and ineligible
+profiles with exact reasons ([#339](https://github.com/zemdregon/switchboard/pull/339)). Alphanumeric, UUID and
+delimited session ids compile; unsafe or flag-like ids, another provider's binding and every non-`privileged` profile
+are refused with reasons, and resume preserves the request's working directory and the compile-time env, flags and audit
+([#290](https://github.com/zemdregon/switchboard/pull/290)). A `sessionID` that resume could not pass as one safe
+argument (matching `^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`, refusing leading dashes or flag syntax) is never bound
+(`OUTPUT_PROTOCOL_ERROR`; [#245](https://github.com/zemdregon/switchboard/pull/245)). Only an exact string `"stop"`
+reason on `step_finish` emits a result (case, whitespace, alternate reasons or non-string values never emit a result
+and fail closed as `OUTPUT_PROTOCOL_ERROR`; Q-85, [#328](https://github.com/zemdregon/switchboard/pull/328)). A
 `tool_use` line after the final `step_finish` `stop` is not a success (fail closed; a guard-flagged trailing call keeps
 `PERMISSION_BLOCKED` per ADR-0039). A trailing `tool_use` the parser cannot read still ends `OUTPUT_PROTOCOL_ERROR`
 instead of success. `tool_use` keys that name `Object.prototype` members map to `other` (own-key lookup;
 [#245](https://github.com/zemdregon/switchboard/pull/245)); since
 [#290](https://github.com/zemdregon/switchboard/pull/290), own-property reads cover every structured field, so
-prototype-named or `__proto__`-smuggled values fail closed as `unknown`, and a malformed `step_start` (a missing `part`,
-or an invalid `part.type`) is counted `unknown`, not ignored. An unknown or unreadable event anywhere in the stream —
+prototype-named or `__proto__`-smuggled values fail closed as `unknown`. A malformed `step_start` (a missing `part`,
+or a non-string `part.type` such as null, boolean, number, array or object) fails closed as `unknown`, ending
+`OUTPUT_PROTOCOL_ERROR`, while an omitted `part.type` remains accepted
+([#339](https://github.com/zemdregon/switchboard/pull/339)). An unknown or unreadable event anywhere in the stream —
 before or after the final `stop` — is never a success: exit 0 ends `OUTPUT_PROTOCOL_ERROR`, exit 1 stays `TOOL_FAILURE`,
 and a later `stop` does not wash an earlier unreadable line
-([#284](https://github.com/zemdregon/switchboard/pull/284)). Structured `backing_provider`/`backingProvider` and `model`
-fields on the event root or its part set `backingProvider` and `model` on `session_bound` (non-strings dropped) and are
-stored on `provider_reported` usage rows side by side with the harness `opencode`, shown in `get_run` — the T4.6
-fronted-harness case, replayed end to end by `backing_provider.jsonl`; they are never inferred from a display name, and
-native OpenCode captures name none, so there they stay unset
-([#290](https://github.com/zemdregon/switchboard/pull/290)). Rate-limit and permission-denial stream shapes and the keys
-of `tool_use.part.state.input` are still unrecorded (T4.53 stays
+([#284](https://github.com/zemdregon/switchboard/pull/284)). Opaque unknown envelopes (even carrying spoofed session ID,
+model, vendor, tokens or status) before or after clean `stop` cannot bind a session or smuggle status, usage, model or
+vendor, ending `OUTPUT_PROTOCOL_ERROR` ([#339](https://github.com/zemdregon/switchboard/pull/339)). Structured provider
+errors after a `stop` step cannot be erased by another `stop` or success text (`provider.no-route` →
+`MODEL_UNAVAILABLE`, `provider.quota` → `QUOTA_EXHAUSTED`, `provider.auth` → `AUTH_REQUIRED`, unmapped error →
+`TOOL_FAILURE`; [#328](https://github.com/zemdregon/switchboard/pull/328)). Structured `backing_provider` /
+`backingProvider` and `model` fields on the event root or its part set `backingProvider` and `model` on
+`session_bound` (non-strings dropped, clipped to 128 characters) and are stored on `provider_reported` usage rows side
+by side with the harness `opencode`, shown in `get_run` — the T4.6 fronted-harness case, replayed end to end by
+`backing_provider.jsonl`; they are never inferred from a display name, and native OpenCode captures name none, so there
+they stay unset ([#290](https://github.com/zemdregon/switchboard/pull/290)). The extra fields recorded in the 2026-10-14
+live check (`error.status`, `error.response`, `timestamp`, `messageID`, `step_start.snapshot`) never widen the usage
+record or reach an event; HTTP 429 `status` on an unmapped error type is never `RATE_LIMIT_TRANSIENT`; session ID
+aliases (`sessionId`, `session_id`) never bind a session; model aliases (`model_id`, `modelId`) never set model;
+and input aliases (`cmd`, `CommandLine`, `file_path`, `AbsolutePath`) never populate command or target (Assumption
+gap: input keys unrecorded). `ParseState` instances isolate `seenParts` WeakMap state across separate runs. Clean
+turns without text leave summary undefined; long text is clipped to 2,000 characters; and bounds clipping limits tool
+name to 64 chars and target to 512 chars. The `classifyFailure` precedence chain is pinned on synthetic fixtures:
+supervisor exit outcomes (`protocol_error`, `internal_error`, `crashed`, `spawn_error`, `timeout`, `cancelled`) outrank
+the ADR-0039 guard verdict; the guard outranks `permission_denied` and `sandbox_violation` events; denials outrank
+provider errors; a provider error outranks a `rate_limit` event, a failed `result` and the exit code; and the OpenCode
+`protocol` category maps to `OUTPUT_PROTOCOL_ERROR`. Precedence does not depend on arrival order, and free text in
+`stderrTail` never changes structured precedence ([#339](https://github.com/zemdregon/switchboard/pull/339)). Rate-limit
+and permission-denial stream shapes and the keys of `tool_use.part.state.input` are still unrecorded (T4.53 stays
 `Partial` on the roadmap). Supervisor-replayed JSONL fixtures pin today's gaps without inventing native fields
-([#274](https://github.com/zemdregon/switchboard/pull/274)): `permission_denied_outside` (live check row 11) ends
-`stop` at exit 0 with `state.status` `error` and is not detected as a denial (gap pinned); `rate_limit` (row 14c, never
+([#274](https://github.com/zemdregon/switchboard/pull/274),
+[#290](https://github.com/zemdregon/switchboard/pull/290),
+[#328](https://github.com/zemdregon/switchboard/pull/328),
+[#339](https://github.com/zemdregon/switchboard/pull/339)): `permission_denied_outside` (live check row 11) ends `stop`
+at exit 0 with `state.status` `error` and is not detected as a denial (gap pinned); `rate_limit` (row 14c, never
 reached) is an empty stream at exit 1 → `TOOL_FAILURE`; `rate_limit_error` is an unmapped error type at exit 0 →
-`TOOL_FAILURE`; `unknown_events` ends `OUTPUT_PROTOCOL_ERROR` with every unreadable line counted; `no_stop` (row 4a,
-Q-85) and `trailing_tool` (Q-85) end `OUTPUT_PROTOCOL_ERROR`; `session_changed` ends `OUTPUT_PROTOCOL_ERROR` with the
-first session id still bound.
+`TOOL_FAILURE`; `unknown_events` ends `OUTPUT_PROTOCOL_ERROR` with every unreadable line counted;
+`no_stop` (row 4a, Q-85) and `trailing_tool` (Q-85) end `OUTPUT_PROTOCOL_ERROR`; `session_changed` ends
+`OUTPUT_PROTOCOL_ERROR` with the first session id still bound; `git_write_guard` (ADR-0039) replays a guard-flagged
+Git write under a `stop` finish at exit 0 to `PERMISSION_BLOCKED`; `unsafe_session_id` replays an unsafe session id to
+`OUTPUT_PROTOCOL_ERROR` without binding; `sandbox_violation` replays unrecorded sandbox error text at exit 0 to a
+success, never `SANDBOX_VIOLATION` (gap pinned); `model_unavailable` (live check 14a) replays `provider.no-route`
+at exit 1 to `MODEL_UNAVAILABLE`; `quota_exhausted` (live check 14b) replays `provider.quota` with recorded status 402
+at exit 1 to `QUOTA_EXHAUSTED`; `unsafe_id_after_bound` replays an unsafe session id after a bound id to
+`OUTPUT_PROTOCOL_ERROR` keeping the first bound id; `stop_then_error` replays a late `provider.auth` error after a
+`stop` followed by another `stop` at exit 0 to `AUTH_REQUIRED`
+([#328](https://github.com/zemdregon/switchboard/pull/328)); `resume_failure` (live check rows 13a + 14a
+combined) replays a resumed failed run to `TOOL_FAILURE` preserving the resumed session id; and `malformed_step_start`
+replays a non-string `part.type` followed by `stop` to `OUTPUT_PROTOCOL_ERROR`
+([#339](https://github.com/zemdregon/switchboard/pull/339)). Closing the remaining gaps needs operator captures of
+native refusal fields and of `tool_use` input keys (ROADMAP T4.58). T4.53 stays `Partial` on that operator capture;
+T4.52, T4.54, T4.55 and T4.57 are `Done` against their Done-when on synthetic fixtures.
 
 ### Git and commits
 
@@ -1279,28 +1323,46 @@ therefore rests on FR-GIT-03 and FR-GIT-06 in addition to any provider rule.
 
 Fixture evidence on `main`: `src/adapters/opencode/fixtures/` (T4.53 Done-when and T4.55 conformance JSONL, including
 `permission_denied_outside`, `rate_limit`, `rate_limit_error`, `unknown_events`, `no_stop`, `trailing_tool` and
-`session_changed` from [#274](https://github.com/zemdregon/switchboard/pull/274), plus `backing_provider` from
-[#290](https://github.com/zemdregon/switchboard/pull/290)); `src/adapters/opencode/opencode.test.ts`
-("opencode compile matrix (T4.52)", "opencode bypass-class declaration (ADR-0035)", "opencode probe and auth preflight
-(T4.52, T4.54)", "opencode registry entry and manifest gate (T4.52)", "opencode parser and result (T4.53)",
+`session_changed` from [#274](https://github.com/zemdregon/switchboard/pull/274), `backing_provider` from
+[#290](https://github.com/zemdregon/switchboard/pull/290), `stop_then_error` from
+[#328](https://github.com/zemdregon/switchboard/pull/328), `malformed_step_start` from
+[#339](https://github.com/zemdregon/switchboard/pull/339), plus `git_write_guard`, `unsafe_session_id`,
+`sandbox_violation`, `model_unavailable`, `quota_exhausted`, `unsafe_id_after_bound`, and `resume_failure`);
+`src/adapters/opencode/opencode.test.ts` ("opencode compile matrix (T4.52)",
+"opencode bypass-class declaration (ADR-0035)", "opencode probe and auth preflight (T4.52, T4.54)",
+"opencode registry entry and manifest gate (T4.52)", "opencode parser and result (T4.53)",
 "cases with no recorded native shape (live check rows 7, 11, 14c)" fixture replay, parser hardening and trailing-tool
-pins in the same
-file, the `resumeArgs` edge-case pins ("accepts valid alphanumeric, UUID and delimited session IDs and refuses unsafe or
-flag-like shapes", "preserves request cwd and mirrors compile policyFlags, env and audit", "rejects foreign provider
-bindings and ineligible profiles with exact reasons"), "opencode backing-provider fixture (T4.53, T4.6, FR-ADP-10)", the
-T4.56 pins ("an unknown or unreadable event anywhere, before or after the final stop step, is never a success" and "a
-shell tool named bash, or any unlisted tool carrying a string command, reaches the tool-call guard"),
-"opencode conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.55)" and "opencode Git declaration (T4.57,
-FR-GIT-01, FR-GIT-02, FR-GIT-09)"); CI also runs `test/malicious/adapters/opencode.case.ts` and
-`test/malicious/adapter-leg.test.ts` ("adapter malicious leg: opencode" and "adapter malicious leg: opencode partial
-streams", T4.56 partial — see
-[Known limitations](#known-limitations); guard-blocked, trailing-tool and unreadable-event streams
-[#245](https://github.com/zemdregon/switchboard/pull/245),
+pins in the same file, exact string `stop` matching ("only an exact string stop reason emits a result (Q-85)",
+[#328](https://github.com/zemdregon/switchboard/pull/328)), late provider error preservation ("a structured provider
+error after a stop cannot be erased by another stop or success text",
+[#328](https://github.com/zemdregon/switchboard/pull/328)), malformed step-start fail-closed ("non-string step_start
+part.type is unreadable even before a clean stop; an omitted type remains accepted",
+[#339](https://github.com/zemdregon/switchboard/pull/339)), `resumeArgs` scope compile parity
+("resumeArgs mirrors compile across every structured scope, including exact refusals",
+[#339](https://github.com/zemdregon/switchboard/pull/339)), the `resumeArgs` edge-case pins ("accepts valid
+alphanumeric, UUID and delimited session IDs and refuses unsafe or flag-like shapes", "preserves request cwd and mirrors
+compile policyFlags, env and audit", "rejects foreign provider bindings and ineligible profiles with exact reasons"),
+`classifyFailure` precedence chain and arrival-order independence ("classifyFailure precedence: supervisor outcomes over
+the guard...", "classifyFailure precedence does not depend on lower-priority events arriving first",
+[#339](https://github.com/zemdregon/switchboard/pull/339)), recorded extra fields and alias exclusions ("recorded extra
+fields (error.status, error.response, timestamp, messageID, snapshot) are never usage metrics or events",
+"sessionId/session_id never bind a session; model_id/modelId never set model", "tool call without command or target keys
+emits tool_call with no command or target", "non-string command and path values are omitted, never coerced"),
+`seenParts` WeakMap isolation ("seenParts WeakMap state is isolated across separate ParseState instances"), summary
+clipping and bounds clipping ("clean turn with no text messages leaves summary undefined, not empty string; long text is
+clipped to 2000 chars", "bounds clipping: tool name > 64 chars, target > 512 chars"), "opencode backing-provider
+fixture (T4.53, T4.6, FR-ADP-10)", the T4.56 pins ("an unknown or unreadable event anywhere, before or after the
+final stop step, is never a success" and "a shell tool named bash, or any unlisted tool carrying a string command,
+reaches the tool-call guard"), "opencode conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.55)" and
+"opencode Git declaration (T4.57, FR-GIT-01, FR-GIT-02, FR-GIT-09)"); CI also runs
+`test/malicious/adapters/opencode.case.ts` and `test/malicious/adapter-leg.test.ts` ("adapter malicious leg: opencode"
+and "adapter malicious leg: opencode partial streams", T4.56 partial — see [Known limitations](#known-limitations);
+guard-blocked, trailing-tool and unreadable-event streams [#245](https://github.com/zemdregon/switchboard/pull/245),
 [#284](https://github.com/zemdregon/switchboard/pull/284), with the blocked-gaps matrix, partial streams in every
 blocked category and unreadable-known-event streams in `opencodeBlockedGaps`, `opencodePartialStreams` and
-`opencodeUnreadableStreams` [#298](https://github.com/zemdregon/switchboard/pull/298)). No end-to-end run through
-Switchboard against a logged-in
-`opencode` has been recorded yet (T4.58).
+`opencodeUnreadableStreams` [#298](https://github.com/zemdregon/switchboard/pull/298)). T4.52, T4.54, T4.55 and T4.57
+are `Done` against their Done-when on synthetic fixtures; T4.53 and T4.56 remain `Partial` (see those rows).
+No end-to-end run through Switchboard against a logged-in `opencode` has been recorded yet (T4.58).
 
 ## Trust profiles
 

@@ -32,7 +32,14 @@ import { type HttpTransportListener, startHttpTransport } from "../mcp/http.js";
 import { createSwitchboardServer, type SwitchboardMcpServer } from "../mcp/index.js";
 import { OAuthTokenStore } from "../mcp/oauth-tokens.js";
 import { WorkspaceManager } from "../workspace/index.js";
-import { createFakeBackend, createInnerAgent, type FakeStep, type InnerTaskContract } from "./index.js";
+import {
+  createClassifyRouteFeaturesHook,
+  createCommitMessageTask,
+  createFakeBackend,
+  createInnerAgent,
+  type FakeStep,
+  type InnerTaskContract,
+} from "./index.js";
 
 const NOW = new Date("2026-10-14T12:00:00.000Z");
 const now = () => NOW;
@@ -414,6 +421,139 @@ describe("inner test CLI and doctor when shares_subscription_with is in the on-d
     // Honest: the inner-agent section reports inner_call counts, so the whole doctor document is not identical.
     expect(after.inner_agent.tasks.find((t) => t.task === "run_title")?.total_calls).toBe(1);
   });
+
+  it("inner test without shares_subscription_with writes inner_call only; capacity and doctor.capacity stay byte-identical; warning is absent", async () => {
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schema_version: 1,
+        data_dir: dataDir,
+        allowed_roots: [path.join(root, "repos")],
+        mcp_clients: [{ id: "c1", max_trust_profile: "edit-untrusted" }],
+        limits: { per_provider_concurrency: 2 },
+        capacity: { window_seconds: 7200, confidence_runs: 4 },
+        inner_agent: {
+          enabled: true,
+          backend: {
+            kind: "http",
+            base_url: "http://127.0.0.1:1",
+            model: "cfg-model",
+          },
+          tasks: { run_title: { enabled: true } },
+        },
+      }),
+    );
+    finishedRun();
+    const client = await connect();
+    const backend = createFakeBackend({
+      script: [{ kind: "text", text: '{"title":"Fix greeting typo"}', usage: { in: 11, out: 5 } }],
+    });
+    const extra = { innerBackend: backend };
+    const before = {
+      tool: await capacityText(client),
+      capacity: await cli(["capacity", "--json"], false, extra),
+      doctor: JSON.parse(await cli(["doctor", "--json"], true, extra)) as {
+        checks: { id: string; status: string; detail: string }[];
+        capacity: unknown;
+        inner_agent: { tasks: { task: string; total_calls: number }[] };
+      },
+    };
+    const warn = before.doctor.checks.find((c) => c.id === "inner_shared_subscription");
+    expect(warn).toBeUndefined();
+    expect(before.doctor.inner_agent.tasks.find((t) => t.task === "run_title")?.total_calls).toBe(0);
+
+    const report = JSON.parse(await cli(["inner", "test", "run_title", "--json"], false, extra)) as {
+      accepted: boolean;
+      task: string;
+    };
+    expect(report).toMatchObject({ accepted: true, task: "run_title" });
+    expect(ledger.listInnerCalls()).toEqual([
+      expect.objectContaining({ task: "run_title", run_id: null, attempts: 1 }),
+    ]);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM usage_observation WHERE source = 'inner_agent'").get()).toEqual({
+      n: 0,
+    });
+
+    expect(await capacityText(client)).toBe(before.tool);
+    expect(await cli(["capacity", "--json"], false, extra)).toBe(before.capacity);
+    const after = JSON.parse(await cli(["doctor", "--json"], true, extra)) as typeof before.doctor;
+    expect(after.capacity).toEqual(before.doctor.capacity);
+    expect(after.checks.find((c) => c.id === "inner_shared_subscription")).toBeUndefined();
+    expect(after.inner_agent.tasks.find((t) => t.task === "run_title")?.total_calls).toBe(1);
+  });
+});
+
+describe("serve-path contracts (commit_message and route_features) leave capacity surfaces byte-identical (T11.5)", () => {
+  for (const shares of [null, PROVIDER]) {
+    const label = shares === null ? "no shared subscription" : `shares_subscription_with = ${shares}`;
+    it(`${label}: get_capacity and capacity --json stay byte-identical after commit-message and route-features calls`, async () => {
+      const runId = finishedRun();
+      const client = await connect();
+      const before = {
+        tool: await capacityText(client),
+        toolForProvider: await capacityText(client, { provider: PROVIDER }),
+        capacity: await cli(["capacity", "--json"]),
+      };
+
+      const settings = resolveInnerAgent({
+        enabled: true,
+        backend: {
+          kind: "http",
+          base_url: "http://127.0.0.1:1",
+          model: "cfg-model",
+          ...(shares !== null ? { shares_subscription_with: shares } : {}),
+        },
+        tasks: { commit_message: { enabled: true }, route_features: { enabled: true } },
+      });
+      const routeReply = '{"context_volume":"small","autonomy":"low","reasoning_depth":"low","task_kind":"docs"}';
+      const svc = createInnerAgent(settings, {
+        backend: createFakeBackend({
+          script: [
+            { kind: "text", text: '{"subject":"Fix typo"}', usage: { in: 15, out: 4 } },
+            { kind: "text", text: routeReply, usage: { in: 10, out: 2 } },
+            { kind: "text", text: routeReply, usage: { in: 12, out: 3 } },
+          ],
+        }),
+        ledger,
+      });
+
+      const runRecord = ledger.getRunRecord(runId);
+      if (!runRecord) throw new Error("run not found");
+
+      // 1. Commit message task (under runId)
+      const drafted = await createCommitMessageTask(svc, {
+        mode: "draft_if_missing",
+        runId,
+        metaSessionId: runRecord.meta_session_id,
+        projectSetting: "inherit",
+        nativeSessionIds: [],
+      }).draft({
+        numstat: "1\t0\tx.ts",
+        diff: "diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n@@ -0,0 +1 @@\n+x\n",
+        recentSubjects: [],
+        sanitise: (s) => s,
+      });
+      expect(drafted).toMatchObject({ ok: true, text: "Fix typo" });
+
+      // 2. Route features hook: admission (no runId) and continuation (under runId)
+      const hook = createClassifyRouteFeaturesHook(svc, () => "inherit");
+      const input = { objective: "Fix typo", constraints: [] as const, verificationCommands: 0, writable: true };
+      const adm = await hook(input, {});
+      const cont = await hook(input, { runId, metaSessionId: runRecord.meta_session_id });
+      expect(adm.task_kind).toMatchObject({ value: "docs", source: "inner" });
+      expect(cont.task_kind).toMatchObject({ value: "docs", source: "inner" });
+
+      expect(ledger.listInnerCalls()).toHaveLength(3);
+      const innerRows = db
+        .prepare("SELECT provider, source, metrics_json FROM usage_observation WHERE source = 'inner_agent'")
+        .all();
+      expect(innerRows).toHaveLength(shares === null ? 0 : 3);
+
+      expect(await capacityText(client)).toBe(before.tool);
+      expect(await capacityText(client, { provider: PROVIDER })).toBe(before.toolForProvider);
+      expect(await cli(["capacity", "--json"])).toBe(before.capacity);
+    });
+  }
 });
 
 describe("Streamable HTTP capacity isolation (T11.14 residual; FR-INN-15)", () => {

@@ -344,4 +344,86 @@ describe("inner-agent usage accounting (T11.5; FR-INN-15)", () => {
       [h.run.id, "inner_agent", { input_tokens: 6, output_tokens: 1 }],
     ]);
   });
+
+  it("createCommitMessageTask (T11.4 serve path) without shares_subscription_with writes inner_call only and leaves usage_observation empty", async () => {
+    const h = setup([GOOD]);
+    h.ledger.insertUsageObservation({
+      runId: h.run.id,
+      provider: "claude-code",
+      harness: "claude-code",
+      source: "provider_reported",
+      metrics: { "usage.input_tokens": 100 },
+    });
+    const before = h.snapshot();
+    const settings = resolveInnerAgent({
+      enabled: true,
+      backend: {
+        kind: "http",
+        base_url: "http://127.0.0.1:1",
+        model: "cfg-model",
+      },
+      tasks: { commit_message: { enabled: true } },
+    });
+    const svc = createInnerAgent(settings, {
+      backend: createFakeBackend({
+        script: [{ kind: "text", text: '{"subject":"Fix login"}', usage: { in: 8, out: 3 } }],
+      }),
+      ledger: h.ledger,
+    });
+    const drafted = await createCommitMessageTask(svc, {
+      mode: "draft_if_missing",
+      runId: h.run.id,
+      metaSessionId: h.run.meta_session_id,
+      projectSetting: "inherit",
+      nativeSessionIds: [],
+    }).draft({
+      numstat: "1\t0\texample.ts",
+      diff: "diff --git a/example.ts b/example.ts\n--- a/example.ts\n+++ b/example.ts\n@@ -0,0 +1 @@\n+x\n",
+      recentSubjects: ["Init"],
+      sanitise: (text) => text,
+    });
+    expect(drafted).toMatchObject({ ok: true, text: "Fix login" });
+    expect(h.ledger.listInnerCalls()).toEqual([
+      expect.objectContaining({ task: "commit_message", run_id: h.run.id, attempts: 1 }),
+    ]);
+    expect(h.usageRows().filter((r) => r.source === "inner_agent")).toHaveLength(0);
+    expect(h.snapshot()).toBe(before);
+    expect(h.ledger.listProviderReportedUsageSince("claude-code", "1970-01-01T00:00:00.000Z")).toHaveLength(1);
+    expect(h.db.prepare("SELECT COUNT(*) AS n FROM provider_health").get()).toEqual({ n: 0 });
+  });
+
+  it("createClassifyRouteFeaturesHook (T11.11 serve path) without shares_subscription_with writes inner_call only and leaves usage_observation empty", async () => {
+    const h = setup([GOOD]);
+    const settings = resolveInnerAgent({
+      enabled: true,
+      backend: {
+        kind: "http",
+        base_url: "http://127.0.0.1:1",
+        model: "cfg-model",
+      },
+      tasks: { route_features: { enabled: true } },
+    });
+    const reply = '{"context_volume":"small","autonomy":"low","reasoning_depth":"low","task_kind":"docs"}';
+    const svc = createInnerAgent(settings, {
+      backend: createFakeBackend({
+        script: [
+          { kind: "text", text: reply, usage: { in: 4, out: 2 } },
+          { kind: "text", text: reply, usage: { in: 6, out: 1 } },
+        ],
+      }),
+      ledger: h.ledger,
+    });
+    const hook = createClassifyRouteFeaturesHook(svc, () => "inherit");
+    const input = { objective: "Fix a typo", constraints: [] as const, verificationCommands: 0, writable: true };
+    const admitted = await hook(input, {});
+    expect(admitted.task_kind).toMatchObject({ value: "docs", source: "inner" });
+    const continued = await hook(input, { runId: h.run.id, metaSessionId: h.run.meta_session_id });
+    expect(continued.task_kind.source).toBe("inner");
+    expect(h.ledger.listInnerCalls().map((c) => [c.task, c.run_id, c.attempts])).toEqual([
+      ["route_features", null, 1],
+      ["route_features", h.run.id, 1],
+    ]);
+    expect(h.usageRows()).toHaveLength(0);
+    expect(h.db.prepare("SELECT COUNT(*) AS n FROM provider_health").get()).toEqual({ n: 0 });
+  });
 });

@@ -73,8 +73,8 @@ describe.each(cases.map((c) => [c.provider, c] as const))("adapter malicious leg
     expect(compileProblems(c, fx)).toEqual([]);
   });
 
-  // Keep the expanded OpenCode matrix within the per-test budget without weakening the replay assertions.
-  for (const category of c.provider === "opencode" ? STREAM_CATEGORIES : [undefined]) {
+  // Keep the expanded OpenCode and Grok Build matrices within the per-test budget without weakening the replay assertions.
+  for (const category of c.provider === "opencode" || c.provider === "grok" ? STREAM_CATEGORIES : [undefined]) {
     it.skipIf(c.replayGap !== undefined)(
       `${category ? `${category}: ` : ""}each hostile stream ends in its blocked code (never success) and leaves the hostile checkout untouched`,
       async () => {
