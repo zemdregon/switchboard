@@ -63,6 +63,9 @@ describe("adapter malicious leg: hostile repository", () => {
 });
 afterAll(() => fx.close());
 
+/** Providers whose hostile-stream replay runs one test per category. */
+const SPLIT_BY_CATEGORY = new Set(["antigravity", "grok", "opencode"]);
+
 describe.each(cases.map((c) => [c.provider, c] as const))("adapter malicious leg: %s", (_provider, c) => {
   it("covers every hostile category with a blocked failure code", () => {
     expect(coverageProblems(c.streams(fx))).toEqual([]);
@@ -73,8 +76,9 @@ describe.each(cases.map((c) => [c.provider, c] as const))("adapter malicious leg
     expect(compileProblems(c, fx)).toEqual([]);
   });
 
-  // Keep the expanded OpenCode and Grok Build matrices within the per-test budget without weakening the replay assertions.
-  for (const category of c.provider === "opencode" || c.provider === "grok" ? STREAM_CATEGORIES : [undefined]) {
+  // Keep the expanded OpenCode, Grok Build and Antigravity matrices within the per-test budget without weakening the
+  // replay assertions.
+  for (const category of SPLIT_BY_CATEGORY.has(c.provider) ? STREAM_CATEGORIES : [undefined]) {
     it.skipIf(c.replayGap !== undefined)(
       `${category ? `${category}: ` : ""}each hostile stream ends in its blocked code (never success) and leaves the hostile checkout untouched`,
       async () => {
