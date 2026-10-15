@@ -73,9 +73,12 @@ Pre-release. The package is private and is not published to any registry; you bu
   client and a macOS CI leg are done; Grok Build, Antigravity, Cursor and OpenCode each have a module, compile matrix
   and parser work on synthetic fixtures. Grok Build has module, compile-matrix, parser (partial: T4.23; every Done-when
   case has a supervisor-replayed JSONL fixture on `main` ([#260](https://github.com/zemdregon/switchboard/pull/260))),
-  auth-preflight, conformance suite (T4.25), malicious-fixture leg (T4.26) and Git declaration fixture tests on
-  synthetic fixtures (README [Grok Build CLI](#grok-build-cli-milestone-4), ROADMAP T4.22 to T4.27); live smoke, live
-  malicious leg and `adapters validate` remain operator work (T4.28). Antigravity has a
+  auth-preflight, conformance suite (T4.25), malicious-fixture leg (partial: T4.26; synthetic command fields,
+  readable native login and repository configuration gaps) and Git declaration fixture tests on synthetic fixtures
+  (README [Grok Build CLI](#grok-build-cli-milestone-4), ROADMAP T4.22 to T4.27); live smoke, live
+  malicious leg and `adapters validate` remain operator work (T4.28). Draft
+  [#302](https://github.com/zemdregon/switchboard/pull/302) extends synthetic malicious replay only; it does not
+  validate the live CLI or close T4.26's gaps. Antigravity has a
   conformance suite (partial: native resume, T4.35), a malicious-fixture leg (partial: synthetic refusal,
   guard-blocked and trailing-tool fail-closed replay streams and FR-POL-04, T4.36;
   [#257](https://github.com/zemdregon/switchboard/pull/257),
@@ -689,9 +692,11 @@ including on an approved bypass scope.
 The parser treats a guard-flagged `tool_call` (`violation`) as a failed run per
 [ADR-0039](docs/adr/0039-switchboard-side-tool-call-guard.md) even when `end` `stopReason` is `end_turn` at exit 0
 (`src/adapters/grok/grok.test.ts`; [#247](https://github.com/zemdregon/switchboard/pull/247)). In an approved bypass
-run the guard enforces Git writes only; other hostile categories that never appear as a refused `tool_call` on the
-recorded fields still end `ok` on synthetic fixtures until operator captures pin live blocked outcomes
-(ROADMAP T4.26, T4.28).
+run the guard enforces Git writes only: a credential read, outside write or network call chained with a parsed Git
+write is blocked because of the Git write, not because those other actions were refused. Native command/target fields
+remain unrecorded (ROADMAP T4.26, T4.28). A bare `tool_call` before a clean `end_turn` still succeeds; path keys, tool
+`content` text and a hostile lower-precedence argument key shadowed by a benign higher one remain invisible to the
+guard. Synthetic replay does not prove provider refusal or preventive isolation.
 
 `commitChannel` is **`finalize-only`**: Switchboard does not inject a per-run MCP server (no headless MCP-definition
 flag was found in the 2026-10-14 live check). In the only compiled scope, project `.mcp.json` and `.grok/config.toml`
@@ -710,8 +715,12 @@ mirrors Cursor T4.43 and OpenCode T4.53)", "grok auth preflight (T4.24, Q-10; SY
 entry and manifest gate (T4.22)" and "grok Git declaration (T4.27, FR-GIT-01, FR-GIT-02, FR-GIT-09)"); CI also runs
 `test/malicious/adapters/grok.case.ts` and `test/malicious/adapter-leg.test.ts` ("adapter malicious leg: grok" and
 "adapter malicious leg: grok partial streams", T4.26 partial ([#291](https://github.com/zemdregon/switchboard/pull/291));
-no `replayGap`). No end-to-end run through Switchboard against a logged-in `grok` has been recorded yet
-(T4.28).
+no `replayGap`). Draft [#302](https://github.com/zemdregon/switchboard/pull/302) adds synthetic argument-key and
+tool-name variants, commands arriving or changing only on `tool_call_update` (including `call_id` and `tool_call_id`),
+additional Git-write forms, and missing auth/rate-limit error combinations. Its bare, non-string and
+prototype-key tool lines remain `unknown`; cut-line streams end `OUTPUT_PROTOCOL_ERROR`, which outranks a guard
+verdict. These draft fixtures change neither the parser nor the compiled matrix; fields other than `type` remain
+hypothetical. No end-to-end run through Switchboard against a logged-in `grok` has been recorded yet (T4.28).
 
 ## Antigravity CLI (milestone 4)
 
@@ -1051,11 +1060,17 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
 - **Grok Build malicious-fixture leg is partial (ROADMAP T4.26).** CI runs `test/malicious/adapter-leg.test.ts` with
   `test/malicious/adapters/grok.case.ts` on synthetic `streaming-json` streams (no `grok` installed; no `replayGap`).
   Compile, isolation-flag and argv checks pass for each compiled bypass cell; hostile replay blocking streams test Git
-  writes blocked by Switchboard's tool-call guard per ADR-0039. FR-POL-04 cannot hold in the only compiled scope
+  writes blocked by Switchboard's tool-call guard per ADR-0039. Draft
+  [#302](https://github.com/zemdregon/switchboard/pull/302) expands synthetic command-key, update/call-id, Git-write,
+  provider-error and cut-line coverage; fields other than `type` remain hypothetical, and no live CLI validation is
+  implied. A bare `tool_call` before a clean `end_turn` still succeeds; path keys, tool `content` and shadowed
+  lower-precedence command keys are invisible to the guard. Partial lines end `OUTPUT_PROTOCOL_ERROR`, not a proven
+  provider refusal. FR-POL-04 cannot hold in the only compiled scope
   because repository configuration is `enabled` and `.mcp.json` and `.grok/config.toml` load without `--trust` (live
   check 10a). Native login credentials remain readable from inside the sandbox (live check 11b, Q-62). Other hostile
-  categories that never appear as a refused `tool_call` on the recorded fields need operator captures of live blocked
-  outcomes (T4.28). See ROADMAP T4.26 for the full gap list.
+  categories without a parsed Git write are not blocked by the bypass guard. Scrubbed native `tool_call` and
+  `tool_call_update` command/target and status fields, live blocked outcomes and `adapters validate` remain operator
+  work (T4.21 extension / T4.28). See ROADMAP T4.26 for the full gap list.
 - **Antigravity malicious-fixture leg is partial (ROADMAP T4.36).** CI runs `test/malicious/adapter-leg.test.ts` with
   `test/malicious/adapters/antigravity.case.ts` on synthetic `stream-json` streams (no `agy` installed; no `replayGap`).
   Compile, isolation-flag and argv checks pass for the approved bypass cell; hostile replay blocking covers every
