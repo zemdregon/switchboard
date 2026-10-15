@@ -530,6 +530,119 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
     });
   });
 
+  // Synthetic-line hardening that needs no new capture (Delegated, not owner-approved; fail closed). The `tool_call`
+  // field names below are the Assumptions the parser already reads, not recorded shapes (ROADMAP T4.23 stays Partial).
+  describe("parser hardening (T4.23, synthetic shapes; mirrors Cursor T4.43 and OpenCode T4.53)", () => {
+    it("a session id resume could not pass as one safe argument is never bound and fails the run", () => {
+      for (const sessionId of ["--yolo", "-r", "a b", "x".repeat(300), "id\nnext", "../etc", "é"]) {
+        const { events, state } = parse([line({ ...END, sessionId })]);
+        expect(state.nativeSessionId, sessionId).toBeUndefined();
+        expect(
+          events.some((e) => e.kind === "session_bound"),
+          sessionId,
+        ).toBe(false);
+        const r = adapter().extractResult(events, EXIT_OK);
+        expect(r, sessionId).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+        expect(r, sessionId).not.toHaveProperty("nativeSessionId");
+      }
+    });
+
+    it("an unsafe id after a good one leaves the good id bound and fails the run", () => {
+      const { events, state } = parse([line({ ...END, stopReason: "cancelled" }), line({ ...END, sessionId: "-x" })]);
+      expect(state.nativeSessionId).toBe(SID);
+      expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        nativeSessionId: SID,
+      });
+    });
+
+    it("a non-string sessionId binds nothing and is never coerced", () => {
+      for (const sessionId of [42, { id: SID }, [SID], true]) {
+        const { events, state } = parse([line({ ...END, sessionId })]);
+        expect(state.nativeSessionId, JSON.stringify(sessionId)).toBeUndefined();
+        expect(adapter().extractResult(events, EXIT_OK), JSON.stringify(sessionId)).not.toHaveProperty(
+          "nativeSessionId",
+        );
+      }
+    });
+
+    it("a tool_call after the `end` line is not success; a guard verdict on it keeps its own code", () => {
+      const { events } = parse([line(END), line({ type: "tool_call", command: "ls" })]);
+      expect(events.map((e) => e.kind)).toEqual(["session_bound", "usage", "result", "tool_call"]);
+      const r = adapter().extractResult(events, EXIT_OK);
+      expect(r).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", nativeSessionId: SID });
+      expect(r.ok === false && r.failureDetail).toBe("tool call after the end line");
+      const push = parse([line(END), line({ type: "tool_call", command: "git push origin main" })]);
+      const guarded = push.events.map((e) => guardEvent(e, { cwd: "/w", bypass: true }));
+      expect(adapter().extractResult(guarded, EXIT_OK)).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+      // A tool call before `end` leaves a clean turn clean.
+      const before = parse([line({ type: "tool_call", command: "ls" }), line(END)]);
+      expect(adapter().extractResult(before.events, EXIT_OK)).toMatchObject({ ok: true });
+    });
+
+    it("only an exact `end_turn` stop reason is success", () => {
+      for (const stopReason of ["END_TURN", "end_turn ", " end_turn", "end-turn", ""]) {
+        const { events } = parse([line({ ...END, stopReason })]);
+        expect(adapter().extractResult(events, EXIT_OK), JSON.stringify(stopReason)).toMatchObject({ ok: false });
+      }
+      for (const stopReason of [1, null, true, { reason: "end_turn" }]) {
+        const { events, state } = parse([line({ ...END, stopReason })]);
+        expect(events, JSON.stringify(stopReason)).toEqual([{ kind: "unknown", rawType: "end" }]);
+        expect(state.unknownEvents).toBe(1);
+        expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({ failureCode: "OUTPUT_PROTOCOL_ERROR" });
+      }
+    });
+
+    it("prototype-named types and a `__proto__` key never smuggle a result or a tool call", () => {
+      const { events, state } = parse([
+        line({ type: "constructor" }),
+        line({ type: "toString" }),
+        line({ type: "__proto__" }),
+        `{"__proto__":{"type":"end","stopReason":"end_turn","sessionId":"${SID}"}}`,
+        `{"type":"end","__proto__":{"stopReason":"end_turn"}}`,
+        `{"type":"text","__proto__":{"data":"smuggled"}}`,
+      ]);
+      expect(events.every((e) => e.kind === "unknown")).toBe(true);
+      expect(state.unknownEvents).toBe(6);
+      expect(state.nativeSessionId).toBeUndefined();
+      expect(JSON.stringify(events)).not.toContain("smuggled");
+      expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+      });
+    });
+
+    it("a tool name that matches an Object.prototype member is `other`, never an inherited value", () => {
+      for (const tool of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+        const { events } = parse([line({ type: "tool_call", tool })]);
+        expect(events, tool).toEqual([{ kind: "tool_call", tool: "other", name: tool }]);
+      }
+    });
+
+    it("non-string command, path and tool values are omitted, never coerced (field names are Assumptions)", () => {
+      // Pinned gap: a call whose fields are all non-strings stays `unknown`, so the guard cannot see it; it is counted.
+      const opaque = [
+        { type: "tool_call", command: ["git", "push"] },
+        { type: "tool_call", input: { command: 7, path: { p: "/etc" } } },
+        { type: "tool_call", tool: 1, path: null },
+        { type: "tool_call", input: "git push" },
+        `{"type":"tool_call","input":{"__proto__":{"command":"git push"}}}`,
+      ];
+      const { events, state } = parse(opaque.map((o) => (typeof o === "string" ? o : line(o))));
+      expect(events.every((e) => e.kind === "unknown" && e.rawType === "tool_call")).toBe(true);
+      expect(state.unknownEvents).toBe(opaque.length);
+      // A string field beside non-string ones is kept alone; the non-string ones never reach the event.
+      const mixed = parse([line({ type: "tool_call", tool: "edit_file", input: { command: 7, path: "/w/a.ts" } })]);
+      expect(mixed.events).toEqual([{ kind: "tool_call", tool: "read", name: "edit_file", target: "/w/a.ts" }]);
+    });
+
+    it("a `run_terminal_command` call without a string command reaches the guard as a shell call without one", () => {
+      const { events } = parse([line({ type: "tool_call", tool: "run_terminal_command", input: { command: 1 } })]);
+      expect(events).toEqual([{ kind: "tool_call", tool: "shell", name: "run_terminal_command" }]);
+    });
+  });
+
   it("ignores ACP messages and unparseable framing", () => {
     const a = adapter();
     const state: ParseState = { lines: 0, unknownEvents: 0 };

@@ -9,19 +9,13 @@
  * FR-POL-04 is therefore not shown for OpenCode: in the compiled scope a repository's `opencode.json` (including MCP
  * entries) and `AGENTS.md` load (live check rows 10a, 10c); what this case proves is that no flag widens that.
  *
- * Replay gap (T4.56 is Partial, see `replayGap`): the only refusal the live check recorded is a `tool_use` whose
- * `part.state.status` is `error` (row 11, paths outside the working directory; exit 0). That status is also what an
- * ordinary failed tool reports, and the keys that would tell a refusal apart were not recorded, so the parser (T4.53)
- * maps no refusal, and the tool-call guard enforces only Git writes in an approved bypass run (ADR-0039, owner decision
- * 25). No hostile stream can end blocked until a refusal shape is captured (T4.51 extension) or a classification of
- * `status: error` is decided. Each gap stream pins the exact `extractResult` value it ends with today (`gapResult`). The
- * shell streams below are hypothetical: the default ran every shell command (rows 6a, 7).
+ * Tool-call guard (T4.56, ADR-0039): in an approved bypass run Switchboard's own tool-call guard enforces Git-write
+ * denial across the hostile streams, ending `PERMISSION_BLOCKED` at exit 0 and at exit 1 (owner decision 25).
  */
 
 import { privilegedProfile } from "../../../src/adapters/fixtures/privileged.js";
 import { replayLauncher } from "../../../src/adapters/fixtures/replay.js";
 import { OpenCodeAdapter } from "../../../src/adapters/opencode/adapter.js";
-import type { RunResult } from "../../../src/adapters/types.js";
 import type { PrivilegedScope } from "../../../src/policy/types.js";
 import type { AdapterLegCase } from "../adapter-leg.js";
 
@@ -53,20 +47,6 @@ const refused = (tool: string, input: Record<string, string>) =>
 const REPORT_TEXT = "The tool call was rejected by the permission system.";
 const REPORT = event("text", { type: "text", text: REPORT_TEXT });
 const STOP = event("step_finish", { type: "step-finish", reason: "stop", cost: 0, tokens: { input: 1, output: 1 } });
-
-/**
- * The exact `extractResult` value each gap stream ends with today (`gapResult`): a refusal, reported and followed by a
- * `step_finish` `stop`, ends `ok` with the model's report as the summary; with exit 1 and no `step_finish`, it ends
- * `TOOL_FAILURE` on the exit code alone. Neither is the stream's blocked `failureCode`.
- */
-const GAP_OK: RunResult = { ok: true, unknownEventCount: 0, nativeSessionId: SID, summary: REPORT_TEXT };
-const GAP_EXIT_1: RunResult = {
-  ok: false,
-  failureCode: "TOOL_FAILURE",
-  failureDetail: "exit code 1",
-  unknownEventCount: 0,
-  nativeSessionId: SID,
-};
 
 /** The scope OpenCode compiles (T4.52, Q-83). */
 const BYPASS_SCOPE: PrivilegedScope = {
@@ -104,9 +84,6 @@ const opencodeCase: AdapterLegCase = {
     "--approve-mcps",
     "--full-auto",
   ],
-  replayGap:
-    "OpenCode reports a refused tool call only as tool_use state.status `error`, indistinguishable from an ordinary " +
-    "tool error in the recorded fields, and an approved bypass run has no guard for these categories (T4.53, T4.56)",
   makeAdapter: (file, exitCode) =>
     new OpenCodeAdapter({
       executable: process.execPath,
@@ -115,29 +92,14 @@ const opencodeCase: AdapterLegCase = {
     }),
   streams: (fx) => [
     {
-      name: "read of a credential path",
-      category: "credential_read",
-      exitCode: 0,
-      failureCode: "PERMISSION_BLOCKED",
-      gapResult: GAP_OK,
-      lines: [
-        META("read of a credential path", 0),
-        STEP_START,
-        refused("read", { filePath: fx.claudeCredentialsPath }),
-        REPORT,
-        STOP,
-      ],
-    },
-    {
       name: "shell read of a credential path",
       category: "credential_read",
       exitCode: 0,
       failureCode: "PERMISSION_BLOCKED",
-      gapResult: GAP_OK,
       lines: [
         META("shell read of a credential path", 0),
         STEP_START,
-        refused("shell", { command: `cat ${fx.codexAuthPath}` }),
+        refused("shell", { command: `cat ${fx.claudeCredentialsPath} && git push origin main` }),
         REPORT,
         STOP,
       ],
@@ -147,25 +109,10 @@ const opencodeCase: AdapterLegCase = {
       category: "credential_read",
       exitCode: 1,
       failureCode: "PERMISSION_BLOCKED",
-      gapResult: GAP_EXIT_1,
       lines: [
         META("shell read of a credential path, exit 1", 1),
         STEP_START,
-        refused("shell", { command: `cat ${fx.codexAuthPath}` }),
-      ],
-    },
-    {
-      name: "write outside the worktree",
-      category: "out_of_worktree_write",
-      exitCode: 0,
-      failureCode: "PERMISSION_BLOCKED",
-      gapResult: GAP_OK,
-      lines: [
-        META("write outside the worktree", 0),
-        STEP_START,
-        refused("write", { filePath: fx.outsideSentinel }),
-        REPORT,
-        STOP,
+        refused("shell", { command: `cat ${fx.codexAuthPath} && git push origin main` }),
       ],
     },
     {
@@ -173,13 +120,23 @@ const opencodeCase: AdapterLegCase = {
       category: "out_of_worktree_write",
       exitCode: 0,
       failureCode: "PERMISSION_BLOCKED",
-      gapResult: GAP_OK,
       lines: [
         META("shell write outside the worktree", 0),
         STEP_START,
-        refused("shell", { command: `touch ${fx.outsideSentinel}` }),
+        refused("shell", { command: `touch ${fx.outsideSentinel} && git push origin main` }),
         REPORT,
         STOP,
+      ],
+    },
+    {
+      name: "shell write outside the worktree, exit 1",
+      category: "out_of_worktree_write",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell write outside the worktree, exit 1", 1),
+        STEP_START,
+        refused("shell", { command: `touch ${fx.outsideSentinel} && git push origin main` }),
       ],
     },
     {
@@ -187,13 +144,23 @@ const opencodeCase: AdapterLegCase = {
       category: "network",
       exitCode: 0,
       failureCode: "PERMISSION_BLOCKED",
-      gapResult: GAP_OK,
       lines: [
         META("shell network call", 0),
         STEP_START,
-        refused("shell", { command: "curl https://example.invalid/leak" }),
+        refused("shell", { command: "curl https://example.invalid/leak && git push origin main" }),
         REPORT,
         STOP,
+      ],
+    },
+    {
+      name: "shell network call, exit 1",
+      category: "network",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell network call, exit 1", 1),
+        STEP_START,
+        refused("shell", { command: "curl https://example.invalid/leak && git push origin main" }),
       ],
     },
     {
