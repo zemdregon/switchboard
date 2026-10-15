@@ -50,6 +50,7 @@ import {
 import {
   cursorConformanceCases,
   DEFAULT_SESSION_ID,
+  fixturePath,
   PRIVILEGED_BYPASS_PROFILE,
   RESUMED_SESSION_ID,
   replayAdapter,
@@ -2012,6 +2013,54 @@ describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
 });
 
 describe("cursor conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.45)", () => {
+  const caseOf = (kind: ConformanceCase["kind"]): ConformanceCase => {
+    const c = cursorConformanceCases(makeCwd).find((x) => x.kind === kind);
+    if (!c) throw new Error(`missing ${kind} case`);
+    return c;
+  };
+  const shapeRequest = (): CompileRequest => ({
+    runId: "run_cursor_shape",
+    objective: "synthetic cursor objective",
+    constraints: [],
+    workspace: { cwd: makeCwd(), writable: true },
+    bypassApproved: true,
+  });
+  /**
+   * `a` with `compile` replaced. A Proxy that binds every other method to `a`, because the adapter's private `#`
+   * members throw on an `Object.create` copy.
+   */
+  const withCompile = (a: CursorAdapter, compile: CursorAdapter["compile"]): CursorAdapter =>
+    new Proxy(a, {
+      get(target, key) {
+        if (key === "compile") return compile;
+        const v: unknown = Reflect.get(target, key, target);
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    });
+  /** A copy of `a` whose compiled invocation is rewritten by `edit`, to show the replay refuses a wrong compile. */
+  const brokenBy = (a: CursorAdapter, edit: (inv: Invocation) => Invocation): CursorAdapter =>
+    withCompile(a, (r, p) => {
+      const inv = a.compile(r, p);
+      if ("ineligible" in inv) return inv;
+      return { ...edit(inv), policyFlags: [] };
+    });
+
+  const caseWhere = (name: string, pick: (e: ConformanceCase["expect"]) => boolean): ConformanceCase => {
+    const c = cursorConformanceCases(makeCwd).find((x) => pick(x.expect));
+    if (!c) throw new Error(`missing ${name} case`);
+    return c;
+  };
+
+  const caseFor = (fixture: string): ConformanceCase => {
+    const want = fixturePath(fixture);
+    const c = cursorConformanceCases(makeCwd).find((x) => {
+      const inv = x.adapter.compile(x.request, x.profile);
+      return !("ineligible" in inv) && inv.argv.includes(want);
+    });
+    if (!c) throw new Error(`missing ${fixture} case`);
+    return c;
+  };
+
   it("covers every FR-ADP-11 kind and passes the full suite", async () => {
     const cases = cursorConformanceCases(makeCwd);
     expect(missingRequiredKinds(cases)).toEqual([]);
@@ -2024,8 +2073,7 @@ describe("cursor conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.4
   });
 
   it("success with edit normalizes session, summary, tool calls and usage; drops reasoning", async () => {
-    const c = cursorConformanceCases(makeCwd).find((x) => x.kind === "success");
-    if (!c) throw new Error("missing success case");
+    const c = caseOf("success");
     const report = await runConformanceCase(c);
     expect(report.ok).toBe(true);
     expect(report.result).toMatchObject({
@@ -2038,8 +2086,7 @@ describe("cursor conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.4
   });
 
   it("resumed run preserves native session id", async () => {
-    const c = cursorConformanceCases(makeCwd).find((x) => x.kind === "resume");
-    if (!c) throw new Error("missing resume case");
+    const c = caseOf("resume");
     const report = await runConformanceCase(c);
     expect(report.ok).toBe(true);
     expect(report.result).toMatchObject({
@@ -2048,41 +2095,302 @@ describe("cursor conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.4
     });
   });
 
+  it("an unknown or mismatched session id in resume fails the resume case's id check", async () => {
+    const { binding: _binding, ...c } = caseOf("resume");
+    const unknown = replayAdapter("resume_unknown_id");
+    const report = await runConformanceCase({
+      ...c,
+      adapter: unknown,
+      binding: { provider: "cursor", nativeSessionId: RESUMED_SESSION_ID },
+    });
+    expect(report.ok).toBe(false);
+    expect(report.checks.filter((k) => !k.ok).map((k) => k.name)).toEqual(["native session id"]);
+    expect(report.result).toMatchObject({
+      ok: true,
+      nativeSessionId: "synthetic-cursor-session-different-0099",
+    });
+  });
+
+  it("the case list replays the refusal, anomaly, guard and exit code shapes, both cancellation paths", () => {
+    const cases = cursorConformanceCases(makeCwd);
+    const replays = (fixture: string) =>
+      cases.filter((x) => {
+        const inv = x.adapter.compile(x.request, x.profile);
+        return !("ineligible" in inv) && inv.argv.includes(fixturePath(fixture));
+      });
+    expect(replays("permission_denied").map((x) => [x.kind, x.expect.failureCode])).toEqual([
+      ["task_failure", "PERMISSION_BLOCKED"],
+    ]);
+    expect(replays("permission_denied_perm").map((x) => [x.kind, x.expect.failureCode])).toEqual([
+      ["task_failure", "PERMISSION_BLOCKED"],
+    ]);
+    expect(replays("git_write_guard").map((x) => [x.kind, x.expect.failureCode])).toEqual([
+      ["task_failure", "PERMISSION_BLOCKED"],
+    ]);
+    expect(replays("rate_limit_error").map((x) => [x.kind, x.expect.failureCode])).toEqual([
+      ["task_failure", "TOOL_FAILURE"],
+    ]);
+    expect(replays("sandbox_violation").map((x) => [x.kind, x.expect.failureCode])).toEqual([
+      ["task_failure", "TOOL_FAILURE"],
+    ]);
+    for (const fx of ["no_result", "two_results", "session_changed", "trailing_tool", "unsafe_id_after_bound"]) {
+      expect(replays(fx).map((x) => [x.kind, x.expect.failureCode])).toEqual([
+        ["malformed_output", "OUTPUT_PROTOCOL_ERROR"],
+      ]);
+    }
+    const cancels = cases.filter((x) => x.kind === "cancellation");
+    const argvOf = (x: ConformanceCase) => {
+      const inv = x.adapter.compile(x.request, x.profile);
+      return "ineligible" in inv ? [] : inv.argv;
+    };
+    expect(cancels.map((x) => argvOf(x).includes("--ignore-term"))).toEqual([true, false]);
+  });
+
+  it("a soft-denied shell command at exit 0 (rejected, live check row 7a) is PERMISSION_BLOCKED", async () => {
+    const report = await runConformanceCase(caseFor("permission_denied"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      nativeSessionId: DEFAULT_SESSION_ID,
+    });
+  });
+
+  it("a permissionDenied tool call at exit 0 (live check row 11) is PERMISSION_BLOCKED", async () => {
+    const report = await runConformanceCase(caseFor("permission_denied_perm"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      nativeSessionId: DEFAULT_SESSION_ID,
+    });
+  });
+
+  it("a logged-out or env apiKeySource at exit 0 ends AUTH_REQUIRED, not a success", async () => {
+    const report = await runConformanceCase(caseOf("auth_missing"));
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "AUTH_REQUIRED" });
+  });
+
+  it("a write before a soft-denied command (live check rows 7a, 7b) is PERMISSION_BLOCKED and the write stays", async () => {
+    const c = caseWhere("denied_after_write", (e) => e.mutatedPath === "b.txt");
+    const report = await runConformanceCase(c);
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      nativeSessionId: DEFAULT_SESSION_ID,
+    });
+    expect(readFileSync(join(c.request.workspace.cwd, "b.txt"), "utf8")).toContain("synthetic");
+  });
+
+  it("a SUCCESS envelope at exit 1 is TOOL_FAILURE and the write stays: the exit code is not overridden", async () => {
+    const c = caseWhere("success_exit_1", (e) => e.mutatedPath === "hello.txt" && !e.ok);
+    const report = await runConformanceCase(c);
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", failureDetail: "exit code 1" });
+    expect(readFileSync(join(c.request.workspace.cwd, "hello.txt"), "utf8")).toContain("synthetic");
+  });
+
+  it("an unrecorded event kind in a success is counted as unknown and does not change the result", async () => {
+    const report = await runConformanceCase(caseFor("unknown_event"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: true, nativeSessionId: DEFAULT_SESSION_ID, unknownEventCount: 1 });
+  });
+
+  it("an unsafe session id in init binds nothing and is OUTPUT_PROTOCOL_ERROR", async () => {
+    const report = await runConformanceCase(caseFor("unsafe_session_id"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: session id is not a safe argument",
+    });
+    expect(report.result?.nativeSessionId).toBeUndefined();
+  });
+
+  it("an unsafe session id after a bound one is OUTPUT_PROTOCOL_ERROR and keeps the first session id", async () => {
+    const report = await runConformanceCase(caseFor("unsafe_id_after_bound"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: session id is not a safe argument",
+      nativeSessionId: DEFAULT_SESSION_ID,
+    });
+  });
+
+  it("a tool step after a clean result line is OUTPUT_PROTOCOL_ERROR and keeps the session id", async () => {
+    const report = await runConformanceCase(caseFor("trailing_tool"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the result line",
+      nativeSessionId: DEFAULT_SESSION_ID,
+    });
+  });
+
+  it("a Git write under a success result with no denial ends PERMISSION_BLOCKED through the run (ADR-0039)", async () => {
+    const report = await runConformanceCase(caseFor("git_write_guard"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    expect(report.result?.failureDetail).toContain("git write attempted");
+  });
+
+  it.each([
+    ["a stream with no result line at exit 0", "no_result", "no result event"],
+    ["a second result line after a clean one", "two_results", "protocol: more than one result line"],
+    ["a result for another session id", "session_changed", "protocol: session id changed mid-run"],
+  ])("%s is OUTPUT_PROTOCOL_ERROR and keeps the first session id", async (_n, fixture, detail) => {
+    const report = await runConformanceCase(caseFor(fixture));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: detail,
+      nativeSessionId: DEFAULT_SESSION_ID,
+    });
+  });
+
+  it("names no rate_limit case and expects no RATE_LIMIT_TRANSIENT or SANDBOX_VIOLATION (unrecorded shapes)", () => {
+    const cases = cursorConformanceCases(makeCwd);
+    expect(cases.filter((c) => c.kind === "rate_limit")).toEqual([]);
+    const codes = cases.map((c) => c.expect.failureCode);
+    expect(codes).not.toContain("RATE_LIMIT_TRANSIENT");
+    expect(codes).not.toContain("SANDBOX_VIOLATION");
+  });
+
   it("partial mutation leaves the file in the cwd", async () => {
-    const c = cursorConformanceCases(makeCwd).find((x) => x.kind === "partial_mutation");
-    if (!c) throw new Error("missing partial_mutation case");
+    const c = caseOf("partial_mutation");
     const report = await runConformanceCase(c);
     expect(report.ok).toBe(true);
     expect(readFileSync(join(c.request.workspace.cwd, "partial.txt"), "utf8")).toContain("synthetic");
   });
 
-  it("permission denial ends PERMISSION_BLOCKED even at exit 0", async () => {
-    const req = {
-      runId: "run_cursor_perm",
-      objective: "permission test",
-      constraints: [],
-      workspace: { cwd: makeCwd(), writable: true },
-      bypassApproved: true,
-    };
-    const c: ConformanceCase = {
-      profile: PRIVILEGED_BYPASS_PROFILE,
-      kind: "task_failure",
-      adapter: replayAdapter("permission_denied"),
-      request: req,
-      expect: { ok: false, failureCode: "PERMISSION_BLOCKED" },
-    };
-    const report = await runConformanceCase(c);
-    expect(report.ok).toBe(true);
-    expect(report.result?.failureCode).toBe("PERMISSION_BLOCKED");
-  });
-
   it("hang that ignores SIGTERM is cancelled with the process group empty", async () => {
-    const c = cursorConformanceCases(makeCwd).find((x) => x.kind === "cancellation");
-    if (!c) throw new Error("missing cancellation case");
+    const c = cursorConformanceCases(makeCwd).find(
+      (x) =>
+        x.kind === "cancellation" &&
+        !("ineligible" in x.adapter.compile(x.request, x.profile)) &&
+        (x.adapter.compile(x.request, x.profile) as Invocation).argv.includes("--ignore-term"),
+    );
+    if (!c) throw new Error("missing cancellation ignoreTerm case");
     const report = await runConformanceCase(c);
     expect(report.ok).toBe(true);
     expect(report.checks.find((k) => k.name === "process group empty after run")?.ok).toBe(true);
   });
+
+  it("hang that honours SIGTERM is cancelled cleanly", async () => {
+    const c = cursorConformanceCases(makeCwd).find(
+      (x) =>
+        x.kind === "cancellation" &&
+        !("ineligible" in x.adapter.compile(x.request, x.profile)) &&
+        !(x.adapter.compile(x.request, x.profile) as Invocation).argv.includes("--ignore-term"),
+    );
+    if (!c) throw new Error("missing cancellation normal case");
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "CANCELLED" });
+  });
+
+  it("positive control: the same wrapper with the compile unchanged passes, so each refusal below is the replay's", async () => {
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: brokenBy(replayAdapter("success_edit"), (inv) => ({ ...inv, policyFlags: inv.policyFlags })),
+      request: shapeRequest(),
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+  });
+
+  const argvEdit =
+    (edit: (argv: string[]) => string[]) =>
+    (inv: Invocation): Invocation => ({ ...inv, argv: edit(inv.argv) });
+  it.each([
+    ["--print removed", argvEdit((a) => a.filter((w) => w !== "--print"))],
+    ["a second --print", argvEdit((a) => [...a, "--print"])],
+    [
+      "--output-format removed",
+      argvEdit((a) => a.filter((w, i) => w !== "--output-format" && a[i - 1] !== "--output-format")),
+    ],
+    [
+      "--output-format text",
+      argvEdit((a) => {
+        const i = a.indexOf("--output-format");
+        return [...a.slice(0, i), "--output-format", "text", ...a.slice(i + 2)];
+      }),
+    ],
+    [
+      "--output-format=stream-json in place of the two words",
+      argvEdit((a) => {
+        const i = a.indexOf("--output-format");
+        return [...a.slice(0, i), "--output-format=stream-json", ...a.slice(i + 2)];
+      }),
+    ],
+    ["a second --output-format stream-json", argvEdit((a) => [...a, "--output-format", "stream-json"])],
+    ["--trust removed", argvEdit((a) => a.filter((w) => w !== "--trust"))],
+    ["a second --trust", argvEdit((a) => [...a, "--trust"])],
+    ["--force removed", argvEdit((a) => a.filter((w) => w !== "--force"))],
+    ["a second --force", argvEdit((a) => [...a, "--force"])],
+    ["--dangerously-skip-permissions added", argvEdit((a) => [...a, "--dangerously-skip-permissions"])],
+    ["--yolo added", argvEdit((a) => [...a, "--yolo"])],
+    ["--always-approve added", argvEdit((a) => [...a, "--always-approve"])],
+    ["--approve-mcps added", argvEdit((a) => [...a, "--approve-mcps"])],
+    ["--full-auto added", argvEdit((a) => [...a, "--full-auto"])],
+    ["--auto-review added", argvEdit((a) => [...a, "--auto-review"])],
+    ["--worktree added", argvEdit((a) => [...a, "--worktree"])],
+    ["--workspace added", argvEdit((a) => [...a, "--workspace"])],
+    ["--add-dir added", argvEdit((a) => [...a, "--add-dir", "/tmp"])],
+    ["--api-key added", argvEdit((a) => [...a, "--api-key", "key"])],
+    ["--auth-token added", argvEdit((a) => [...a, "--auth-token", "token"])],
+    ["--sandbox added", argvEdit((a) => [...a, "--sandbox"])],
+    ["--sandbox=disabled added", argvEdit((a) => [...a, "--sandbox=disabled"])],
+    ["--sandbox=enabled added", argvEdit((a) => [...a, "--sandbox=enabled"])],
+    ["--continue added", argvEdit((a) => [...a, "--continue"])],
+    ["--model added", argvEdit((a) => [...a, "--model", "model"])],
+    ["-f added", argvEdit((a) => [...a, "-f"])],
+    ["-w added", argvEdit((a) => [...a, "-w"])],
+    ["-H added", argvEdit((a) => [...a, "-H", "key:val"])],
+    ["-e added", argvEdit((a) => [...a, "-e", "http://127.0.0.1:9"])],
+    ["-- terminator added", argvEdit((a) => [...a, "--"])],
+    ["positional prompt word on argv", argvEdit((a) => [...a, "unexpected_prompt_word"])],
+    ["--resume with a flag-like id", argvEdit((a) => [...a, "--resume", "-flag-id"])],
+    ["--resume with an empty id", argvEdit((a) => [...a, "--resume", ""])],
+    ["--resume with no id", argvEdit((a) => [...a, "--resume"])],
+    ["--resume=id in place of two words", argvEdit((a) => [...a, "--resume=synthetic-id"])],
+    ["a second --resume", argvEdit((a) => [...a, "--resume", "id1", "--resume", "id2"])],
+    [
+      "CURSOR_API_KEY environment variable present",
+      (inv: Invocation): Invocation => ({ ...inv, env: { ...inv.env, CURSOR_API_KEY: "secret" } }),
+    ],
+    [
+      "CURSOR_AUTH_TOKEN environment variable present",
+      (inv: Invocation): Invocation => ({ ...inv, env: { ...inv.env, CURSOR_AUTH_TOKEN: "secret" } }),
+    ],
+    [
+      "CURSOR_CONFIG_DIR environment variable present",
+      (inv: Invocation): Invocation => ({ ...inv, env: { ...inv.env, CURSOR_CONFIG_DIR: "/tmp" } }),
+    ],
+    [
+      "XDG_CONFIG_HOME environment variable present",
+      (inv: Invocation): Invocation => ({ ...inv, env: { ...inv.env, XDG_CONFIG_HOME: "/tmp" } }),
+    ],
+  ])(
+    "the replay refuses an argv or env cursor-agent would not be given (%s), so a wrong compile cannot pass",
+    async (_n, edit) => {
+      const report = await runConformanceCase({
+        kind: "success",
+        adapter: brokenBy(replayAdapter("success_edit"), edit),
+        request: shapeRequest(),
+        profile: PRIVILEGED_BYPASS_PROFILE,
+        expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+      });
+      expect(report.ok).toBe(false);
+      expect(report.result?.ok).toBe(false);
+    },
+  );
 });
 
 /**
