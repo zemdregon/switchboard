@@ -59,9 +59,11 @@ export const GROK_LOGIN_COMMAND = "grok login";
 
 /**
  * `streaming-json` line types observed in the 2026-10-14 live check ([LIVE] 4b, 5b, 3c; CLI version 1.0.50). Only the fields
- * named in the check are read; the shapes of `tool_call` and `tool_call_update` beyond their `type` were not recorded,
- * so those lines are `unknown` events (counted, never success, and invisible to the Q-62 tool-call guard until a
- * capture exists). `thought` carries reasoning text and is dropped (NFR-PRIV-02).
+ * named in the check are read; the shapes of `tool_call` and `tool_call_update` beyond their `type` were not recorded.
+ * The parser reads a command, target or tool name from them under **Assumption** field names (see adapter.ts), so the
+ * Q-62 tool-call guard sees synthetic calls; a line without any of them, such as the only recorded shape
+ * `{"type":"tool_call"}`, is an `unknown` event (counted, never success, invisible to the guard) until a capture
+ * exists. `thought` carries reasoning text and is dropped (NFR-PRIV-02).
  */
 export const EVENT = {
   availableCommands: "available_commands",
