@@ -22,6 +22,12 @@
  * a deduplicated tool update after result trips no order check; trailing-tool detail replacing two-results detail;
  * prototype-named model/backingProvider shadowing fallback keys; prototype-named tool keys; unclipped command reaching
  * the guard; call_id correlation; fractional usage counts; extractResult expectedExitCodes honouring).
+ * Sixth pass (as Antigravity T4.33 #448 and Grok T4.26 #449): result-only streams (the result binds model and backing
+ * vendor together, replayed through fixture `backing_result_only.jsonl` by conformance and `RunLifecycle`), framing
+ * (whitespace, byte-order mark), refusal shapes (presence not value, multi-key lines, call_id fallback). Pinned gaps:
+ * `apiKeySource` is checked on `system`/`init` only; a duplicated JSON key resolves to its last value, so it can flip a
+ * result or hide a tool call from the guard; a repeated `started` line is reported again; a string `result.error`
+ * shadows the entry's permission text; an empty session id is absent to the parser but refused by `resumeArgs`.
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -1532,6 +1538,410 @@ describe("cursor parser residuals, fifth pass: post-result tool lines, prototype
     });
     expect(adapter().extractResult(events, { ...EXIT_OK, exitCode: null })).toMatchObject({
       ok: false,
+    });
+  });
+});
+
+describe("cursor parser residuals, sixth pass: result-only streams, framing, tool repeats and refusal shapes (T4.43, T4.6, FR-ADP-10; synthetic lines; parser unchanged)", () => {
+  const ctx = { cwd: "/w", bypass: true };
+  const guarded = (lines: (string | object)[]) => parse(lines).events.map((e) => guardEvent(e, ctx));
+  const bound = (events: readonly NormalizedEvent[]) => events.filter((e) => e.kind === "session_bound");
+  const LS = { shellToolCall: { args: { command: "ls" } } };
+  const PUSH = { shellToolCall: { args: { command: "git push origin main" } } };
+
+  it("pins the gap: apiKeySource is read on system/init only, so a result-only stream or a result naming another source succeeds", () => {
+    const resultOnly = parse([RESULT({ apiKeySource: "api_key" })]);
+    expect(resultOnly.events.filter((e) => e.kind === "provider_error")).toEqual([]);
+    expect(resultOnly.a.extractResult(resultOnly.events, EXIT_OK)).toEqual({
+      ok: true,
+      unknownEventCount: 0,
+      nativeSessionId: SID,
+    });
+    const afterLogin = parse([INIT(), RESULT({ apiKeySource: "env" })]);
+    expect(afterLogin.a.extractResult(afterLogin.events, EXIT_OK)).toMatchObject({ ok: true, nativeSessionId: SID });
+
+    // An init that binds no id is still checked: its credential error stands and the result binds the id.
+    const idless = parse([INIT({ session_id: undefined, apiKeySource: "env" }), RESULT()]);
+    expect(idless.events[0]).toEqual({
+      kind: "provider_error",
+      category: "auth",
+      message: "credential source env is not the native login; run `cursor-agent login`",
+    });
+    expect(idless.a.extractResult(idless.events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "AUTH_REQUIRED",
+      nativeSessionId: SID,
+    });
+  });
+
+  it("a result-only stream binds the result's model and backing vendor together (single-result shape, Assumption)", () => {
+    const { events, a } = parse([
+      RESULT({
+        model: "Synthetic Model 3",
+        backing_provider: "backing-y",
+        backingProvider: "camel-ignored",
+      }),
+    ]);
+    expect(events).toEqual([
+      {
+        kind: "session_bound",
+        nativeSessionId: SID,
+        model: "Synthetic Model 3",
+        backingProvider: "backing-y",
+      },
+      {
+        kind: "usage",
+        source: "provider_reported",
+        metrics: { inputTokens: 10, outputTokens: 2 },
+      },
+      { kind: "result", ok: true },
+    ]);
+    expect(a.extractResult(events, EXIT_OK)).toEqual({
+      ok: true,
+      unknownEventCount: 0,
+      nativeSessionId: SID,
+    });
+    // A backing vendor without a model binds alone; the harness name is never put in its place.
+    expect(bound(parse([RESULT({ backingProvider: "backing-z" })]).events)).toEqual([
+      {
+        kind: "session_bound",
+        nativeSessionId: SID,
+        backingProvider: "backing-z",
+      },
+    ]);
+  });
+
+  it("fixture backing_result_only replays through conformance to success with the result's session id", async () => {
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: replayAdapter("backing_result_only"),
+      request: {
+        runId: "run_cursor_backing_result_only",
+        objective: "synthetic cursor objective",
+        constraints: [],
+        workspace: { cwd: makeCwd(), writable: true },
+        bypassApproved: true,
+      },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: true,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      unknownEventCount: 0,
+      summary: "Answered from a result-only stream.",
+    });
+  });
+
+  it("fixture backing_result_only through RunLifecycle stores harness cursor beside backing vendor backing-y and the result model", async () => {
+    const root = realpathSync(makeCwd());
+    const repo = join(root, "repo");
+    mkdirSync(repo);
+    const g = (...args: string[]) =>
+      execFileSync("git", ["-c", "commit.gpgsign=false", ...args], {
+        cwd: repo,
+        env: {
+          PATH: process.env.PATH ?? "",
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_AUTHOR_NAME: "Cursor Dev",
+          GIT_AUTHOR_EMAIL: "cursor@example.test",
+          GIT_COMMITTER_NAME: "Cursor Dev",
+          GIT_COMMITTER_EMAIL: "cursor@example.test",
+        },
+      });
+    g("init", "-q", "-b", "main");
+    writeFileSync(join(repo, "README.md"), "initial\n");
+    g("add", "-A");
+    g("commit", "-q", "-m", "init");
+    const dataDir = join(root, "data");
+    mkdirSync(dataDir);
+    const db = openLedger(dataDir);
+    const ids = createIdGenerator();
+    const ledger = createLedger(db, { ids });
+    const artifacts = new ArtifactStore(join(dataDir, "artifacts"));
+    const lifecycle = new RunLifecycle({
+      ledger,
+      workspace: new WorkspaceManager({
+        db,
+        artifacts,
+        dataDir,
+        allowedRoots: [root],
+        ids,
+      }),
+      artifacts,
+      adapters: new AdapterRegistry().register(replayAdapter("backing_result_only")),
+      allowedRoots: [root],
+      globalConcurrency: 1,
+      resolveProfile: (name) => resolveTrustProfile(name),
+    });
+    lifecycle.start();
+    try {
+      const { runId, metaSessionId } = await lifecycle.submit({
+        clientId: "c",
+        objective: "a vendor reported on a result-only stream",
+        workspace: repo,
+        trustProfile: "privileged",
+        provider: "cursor",
+        privileged: { scope: BYPASS_SCOPE, approvedByClientPolicy: true },
+      });
+      const done = await lifecycle.waitForTerminal(runId);
+      expect(done.state, done.failure_detail ?? "").toBe("SUCCEEDED");
+      expect(ledger.listProviderBindings(metaSessionId)).toEqual([
+        expect.objectContaining({
+          provider: "cursor",
+          harness: "cursor",
+          backing_provider: "backing-y",
+          model: "Synthetic Model 3",
+          native_session_id: DEFAULT_SESSION_ID,
+        }),
+      ]);
+      const rows = ledger.listUsageObservationsForRun(runId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        provider: "cursor",
+        harness: "cursor",
+        backing_provider: "backing-y",
+        model: "Synthetic Model 3",
+        source: "provider_reported",
+      });
+      expect(JSON.stringify(rows)).not.toContain("api_key");
+    } finally {
+      await lifecycle.shutdown();
+      db.close();
+    }
+  });
+
+  it("framing: surrounding whitespace parses; a byte-order mark is a counted framing error with no events", () => {
+    const padded = parse([`  ${RESULT()}\t `]);
+    expect(padded.events.at(-1)).toEqual({ kind: "result", ok: true });
+    const bom = parse([`﻿${RESULT()}`]);
+    expect(bom.events).toEqual([]);
+    expect(bom.state).toEqual({ lines: 1, unknownEvents: 0 });
+  });
+
+  it("pins the gap: a duplicated JSON key resolves to its last value, so a later key can flip a result or hide a tool call", () => {
+    const flipped = `{"type":"result","subtype":"error","is_error":true,"session_id":"${SID}","subtype":"success","is_error":false}`;
+    const r = parse([flipped]);
+    expect(r.events.at(-1)).toEqual({ kind: "result", ok: true });
+    expect(r.a.extractResult(r.events, EXIT_OK)).toMatchObject({
+      ok: true,
+      nativeSessionId: SID,
+    });
+
+    // A tool_call line whose second `type` is thinking is dropped whole: the guard never sees its Git write.
+    const hidden =
+      '{"type":"tool_call","subtype":"started","call_id":"c1",' +
+      '"tool_call":{"shellToolCall":{"args":{"command":"git push origin main"}}},"type":"thinking"}';
+    const h = parse([INIT(), hidden, RESULT()]);
+    expect(h.events.filter((e) => e.kind === "tool_call")).toEqual([]);
+    expect(adapter().extractResult(guarded([INIT(), hidden, RESULT()]), EXIT_OK)).toMatchObject({ ok: true });
+    // The same line without the duplicate key is blocked.
+    expect(adapter().extractResult(guarded([INIT(), TOOL("started", PUSH), RESULT()]), EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+  });
+
+  it("pins the asymmetry: a repeated started line is reported again, so a started repeat after result fails the run", () => {
+    const started = TOOL("started", LS, "t1");
+    const twice = parse([started, started]).events;
+    expect(twice).toEqual([
+      {
+        kind: "tool_call",
+        tool: "shell",
+        name: "shellToolCall",
+        command: "ls",
+      },
+      {
+        kind: "tool_call",
+        tool: "shell",
+        name: "shellToolCall",
+        command: "ls",
+      },
+    ]);
+    expect(adapter().extractResult(parse([INIT(), started, RESULT(), started]).events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the result line",
+    });
+    // A progress repeat reports nothing new, but its unknown `tool_call:progress` still trips the order check.
+    const progress = parse([INIT(), started, RESULT(), TOOL("progress", LS, "t1")]).events;
+    expect(progress.at(-1)).toEqual({
+      kind: "unknown",
+      rawType: "tool_call:progress",
+    });
+    expect(adapter().extractResult(progress, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the result line",
+    });
+    // Only a completed repeat is silent (fifth pass).
+    expect(
+      adapter().extractResult(parse([INIT(), started, RESULT(), TOOL("completed", LS, "t1")]).events, EXIT_OK),
+    ).toMatchObject({ ok: true });
+  });
+
+  it("a refusal key counts by presence, not value: null, false, 0 and an empty string are each a denial", () => {
+    for (const result of [
+      { rejected: null },
+      { rejected: false },
+      { permissionDenied: 0 },
+      { permission_denied: "" },
+      { denied: false },
+      { blocked: null },
+    ]) {
+      const label = JSON.stringify(result);
+      const call = TOOL("completed", {
+        shellToolCall: { args: { command: "ls" }, result },
+      });
+      const { events, a } = parse([INIT(), call, RESULT()]);
+      expect(
+        events.filter((e) => e.kind === "permission_denied"),
+        label,
+      ).toEqual([{ kind: "permission_denied", tool: "shellToolCall" }]);
+      expect(a.extractResult(events, EXIT_OK), label).toMatchObject({
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+        failureDetail: "denied: shellToolCall",
+      });
+    }
+    const success = parse([
+      INIT(),
+      TOOL("completed", {
+        shellToolCall: { args: { command: "ls" }, result: { success: {} } },
+      }),
+      RESULT(),
+    ]);
+    expect(success.a.extractResult(success.events, EXIT_OK)).toMatchObject({
+      ok: true,
+    });
+  });
+
+  it("pins the gap: a string result.error shadows the entry's error, so permission text on the entry is missed", () => {
+    const run = (entry: Record<string, unknown>) => {
+      const { events, a } = parse([
+        INIT(),
+        TOOL("completed", {
+          shellToolCall: { args: { command: "ls" }, ...entry },
+        }),
+        RESULT(),
+      ]);
+      return a.extractResult(events, EXIT_OK);
+    };
+    expect(run({ error: "Permission denied by policy" })).toMatchObject({
+      failureCode: "PERMISSION_BLOCKED",
+    });
+    // A non-string result.error falls through to the entry's text.
+    expect(run({ result: { error: 42 }, error: "Permission denied by policy" })).toMatchObject({
+      failureCode: "PERMISSION_BLOCKED",
+    });
+    // A string result.error wins, even when it is unrelated text.
+    expect(
+      run({
+        result: { error: "timed out" },
+        error: "Permission denied by policy",
+      }),
+    ).toMatchObject({ ok: true });
+  });
+
+  it("a completed line with a clean key and a refused key reports both calls and one denial naming the refused key", () => {
+    const { events, a } = parse([
+      TOOL("completed", {
+        readToolCall: { args: { path: "a.txt" }, result: { success: {} } },
+        shellToolCall: { args: { command: "ls" }, result: { rejected: {} } },
+      }),
+      RESULT(),
+    ]);
+    expect(events.slice(0, 3)).toEqual([
+      {
+        kind: "tool_call",
+        tool: "read",
+        name: "readToolCall",
+        target: "a.txt",
+      },
+      {
+        kind: "tool_call",
+        tool: "shell",
+        name: "shellToolCall",
+        command: "ls",
+      },
+      { kind: "permission_denied", tool: "shellToolCall" },
+    ]);
+    expect(a.extractResult(events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "denied: shellToolCall",
+    });
+  });
+
+  it("a non-string call_id falls through to callId, and with neither a string the tool key is the step id", () => {
+    const raw = (subtype: string, ids: Record<string, unknown>, call: Record<string, unknown>) =>
+      line({ type: "tool_call", subtype, ...ids, tool_call: call });
+    const viaCamel = parse([
+      raw("started", { call_id: 7, callId: "c2" }, LS),
+      raw("completed", { callId: "c2" }, LS),
+      raw("completed", { call_id: "c2" }, LS),
+      raw("completed", { call_id: "c3" }, LS),
+    ]).events;
+    // c2 is one step (deduplicated); c3 is another call.
+    expect(viaCamel).toEqual([
+      {
+        kind: "tool_call",
+        tool: "shell",
+        name: "shellToolCall",
+        command: "ls",
+      },
+      {
+        kind: "tool_call",
+        tool: "shell",
+        name: "shellToolCall",
+        command: "ls",
+      },
+    ]);
+    const neither = parse([
+      raw("started", { call_id: 7, callId: { id: "x" } }, LS),
+      raw("completed", {}, LS),
+      raw("completed", { callId: null }, PUSH),
+    ]).events;
+    expect(neither).toEqual([
+      {
+        kind: "tool_call",
+        tool: "shell",
+        name: "shellToolCall",
+        command: "ls",
+      },
+      {
+        kind: "tool_call",
+        tool: "shell",
+        name: "shellToolCall",
+        command: "git push origin main",
+      },
+    ]);
+  });
+
+  it("pins the asymmetry: an empty session id is absent to the parser (no error, nothing bound) but refused by resumeArgs", () => {
+    const { events, state, a } = parse([INIT({ session_id: "" }), RESULT({ session_id: "" })]);
+    expect(bound(events)).toEqual([]);
+    expect(events.filter((e) => e.kind === "provider_error")).toEqual([]);
+    expect(state.nativeSessionId).toBeUndefined();
+    // A success with no native session id: nothing can be resumed from it.
+    expect(a.extractResult(events, EXIT_OK)).toEqual({
+      ok: true,
+      unknownEventCount: 0,
+    });
+    const req: CompileRequest = {
+      runId: "run_cursor_t443_residual_p6",
+      objective: "synthetic cursor objective",
+      constraints: [],
+      workspace: { cwd: "/w", writable: true },
+      bypassApproved: true,
+    };
+    expect(a.resumeArgs({ provider: "cursor", nativeSessionId: "" }, req, PRIVILEGED_BYPASS_PROFILE)).toEqual({
+      ineligible: true,
+      reason: "CAPABILITY_MISSING",
+      detail: "native session id is not a safe single argument",
     });
   });
 });
