@@ -9,9 +9,11 @@ const opt = (list, name) => {
 
 const PROMPT = "--prompt=";
 const SKIP = "--dangerously-skip-permissions";
-// Every spelling of a value flag the replay reads: `agy` parses like Go's `flag` package (ADR-0045), where one or two
-// dashes and `=value` name the same flag and a repeated flag keeps its last value, while `opt` reads only the first
-// separate-word value. So each must appear exactly as the dialect reads it, or not at all.
+// Every spelling of a flag the replay reads: `agy` parses like Go's `flag` package (ADR-0045), where one or two dashes
+// and `=value` name the same flag and a repeated flag keeps its last value, while `opt` reads only the first
+// separate-word value. A bool flag accepts `=true` and `=false` the same way, so `--dangerously-skip-permissions=false`
+// after the bare word would turn the approved bypass off. Each flag must appear exactly as the dialect reads it, or
+// not at all.
 const spellings = (argv, name) => argv.filter((a) => new RegExp(`^--?${name}(=|$)`).test(a));
 
 // Mirrors BYPASS_FLAGS in src/adapters/audit.ts and the Antigravity `bypassFlags` in src/adapters/providers.ts minus
@@ -64,12 +66,20 @@ export default {
     const conversation = spellings(argv, "conversation");
     if (conversation.length > 0) {
       const id = opt(argv, "--conversation");
-      if (conversation.join(" ") !== "--conversation" || id === undefined || id.startsWith("-")) {
+      // An empty word is not "no id". Go's flag accepts it, and the replay's requireResume only rejects a missing
+      // value, so the resume fixture would replace {{SESSION_ID}} with "" and the adapter would report a success that
+      // binds nothing (an empty conversation_id is the recorded C6/C10 shape, not an error). A one-dash `-conversation`
+      // is the same flag (ADR-0045) and is not in the refused list, so the spelling check is what stops it.
+      if (conversation.join(" ") !== "--conversation" || id === undefined || id === "" || id.startsWith("-")) {
         fail("expected at most one `--conversation <id>` with an id", 64);
       }
     }
     if (argv.filter((a) => a.startsWith(PROMPT)).length !== 1) fail("expected exactly one --prompt=<prompt> word", 64);
-    if (argv.filter((a) => a === SKIP).length !== 1) fail(`expected ${SKIP} exactly once (approved bypass cell)`, 64);
+    // Count every spelling, not only the bare word: `=false` beside it is still one flag to Go's `flag`, and the last
+    // value wins. The approved cell emits the bare word once.
+    if (spellings(argv, "dangerously-skip-permissions").join(" ") !== SKIP) {
+      fail(`expected ${SKIP} exactly once, as its own word (a repeated or \`=\` form would override it)`, 64);
+    }
     const flags = argv.filter((a) => !a.startsWith(PROMPT));
     const refused = flags.filter((a) => REFUSED.some((f) => a === f || a.startsWith(`${f}=`)));
     if (refused.length > 0) fail(`flag refused: ${refused.join(" ")}`, 64);

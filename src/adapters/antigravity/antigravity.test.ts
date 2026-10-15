@@ -1512,6 +1512,11 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     ["a stream with no result line at exit 0", "no_result", "no result event"],
     ["a second, successful result after a C10 zero-token one", "two_results", "protocol: more than one result line"],
     ["a result for another conversation", "conversation_changed", "protocol: conversation id changed mid-run"],
+    [
+      "an unsafe conversation id after a bound one",
+      "unsafe_id_after_bound",
+      "protocol: conversation id is not a safe token",
+    ],
   ])("%s is OUTPUT_PROTOCOL_ERROR and keeps the first conversation id", async (_n, fixture, detail) => {
     const report = await runConformanceCase(caseFor(fixture));
     expect(report.checks.filter((k) => !k.ok)).toEqual([]);
@@ -1545,6 +1550,17 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
       failureCode: "TOOL_FAILURE",
       nativeSessionId: DEFAULT_SESSION_ID,
     });
+  });
+
+  it("an unsafe conversation id in a SUCCESS envelope binds nothing and is OUTPUT_PROTOCOL_ERROR", async () => {
+    const report = await runConformanceCase(caseFor("unsafe_conversation_id"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: conversation id is not a safe token",
+    });
+    expect(report.result?.nativeSessionId).toBeUndefined();
   });
 
   it("a tool step after a clean result line is OUTPUT_PROTOCOL_ERROR and keeps the conversation id", async () => {
@@ -1606,10 +1622,25 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     ["-dangerously-skip-permissions added", argvEdit((a) => [...a, "-dangerously-skip-permissions"])],
     ["--gemini_dir= added", argvEdit((a) => [...a, "--gemini_dir=/tmp/synthetic"])],
     // agy parses like Go's flag package (ADR-0045): a repeated flag keeps its last value, and one or two dashes and
-    // `=value` name the same flag, so these would override what the dialect reads (2026-10-15, Delegated).
+    // `=value` name the same flag, so these would override what the dialect reads (2026-10-15, Delegated). A bool
+    // flag's `=false` beside the bare word is the same hole.
     ["a second --output-format json", argvEdit((a) => [...a, "--output-format", "json"])],
     ["-output-format=json added", argvEdit((a) => [...a, "-output-format=json"])],
+    [
+      "--output-format=stream-json in place of the two words",
+      argvEdit((a) => {
+        const i = a.indexOf("--output-format");
+        return [...a.slice(0, i), "--output-format=stream-json", ...a.slice(i + 2)];
+      }),
+    ],
+    ["a second --prompt= word", argvEdit((a) => [...a, "--prompt=synthetic other prompt"])],
+    ["--dangerously-skip-permissions=false added", argvEdit((a) => [...a, "--dangerously-skip-permissions=false"])],
+    ["--dangerously-skip-permissions=true added", argvEdit((a) => [...a, "--dangerously-skip-permissions=true"])],
+    ["--conversation with a flag-like id", argvEdit((a) => [...a, "--conversation", "-resume-id"])],
+    ["--conversation with an empty id", argvEdit((a) => [...a, "--conversation", ""])],
+    ["-conversation added", argvEdit((a) => [...a, "-conversation", RESUMED_SESSION_ID])],
     ["-prompt= added", argvEdit((a) => [...a, "-prompt=synthetic other prompt"])],
+    ["-p= added", argvEdit((a) => [...a, "-p=synthetic other prompt"])],
     ["--p added", argvEdit((a) => [...a, "--p", "synthetic other prompt"])],
     ["-sandbox added", argvEdit((a) => [...a, "-sandbox"])],
     ["--conversation= added", argvEdit((a) => [...a, `--conversation=${RESUMED_SESSION_ID}`])],
@@ -1620,11 +1651,31 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     ],
     ["auto-update not disabled", (inv: Invocation): Invocation => ({ ...inv, env: {} })],
     [
+      "auto-update set to a value other than true",
+      (inv: Invocation): Invocation => ({ ...inv, env: { AGY_CLI_DISABLE_AUTO_UPDATE: "false" } }),
+    ],
+    [
       "GEMINI_API_KEY in the environment",
       (inv: Invocation): Invocation => ({
         ...inv,
         env: { ...inv.env, GEMINI_API_KEY: "synthetic-not-a-key" },
         envAllowlist: [...inv.envAllowlist, "GEMINI_API_KEY"],
+      }),
+    ],
+    [
+      "GOOGLE_API_KEY in the environment",
+      (inv: Invocation): Invocation => ({
+        ...inv,
+        env: { ...inv.env, GOOGLE_API_KEY: "synthetic-not-a-key" },
+        envAllowlist: [...inv.envAllowlist, "GOOGLE_API_KEY"],
+      }),
+    ],
+    [
+      "GOOGLE_GEMINI_BASE_URL in the environment",
+      (inv: Invocation): Invocation => ({
+        ...inv,
+        env: { ...inv.env, GOOGLE_GEMINI_BASE_URL: "http://synthetic.example" },
+        envAllowlist: [...inv.envAllowlist, "GOOGLE_GEMINI_BASE_URL"],
       }),
     ],
   ])(
