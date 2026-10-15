@@ -35,11 +35,18 @@ import type {
   ParseState,
   ProbeOutput,
   ProbeRunner,
+  ProviderId,
   ResolvedProfile,
   TrustProfile,
 } from "../types.js";
 import { isIneligible } from "../types.js";
-import { CURSOR_GIT_CAPABILITIES, CURSOR_GIT_WRITE_CONTROL, CursorAdapter } from "./adapter.js";
+import {
+  CURSOR_BYPASS_NOT_APPROVED,
+  CURSOR_GIT_CAPABILITIES,
+  CURSOR_GIT_WRITE_CONTROL,
+  CURSOR_PRIVILEGED_NEEDS_BYPASS,
+  CursorAdapter,
+} from "./adapter.js";
 import {
   cursorConformanceCases,
   DEFAULT_SESSION_ID,
@@ -931,6 +938,57 @@ describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
         nativeSessionId: DEFAULT_SESSION_ID,
       });
     });
+
+    it("fixture git_write_guard (ADR-0039) replays a guard-flagged Git write under success result at exit 0 to PERMISSION_BLOCKED", async () => {
+      const report = await runConformanceCase(
+        replayCase("git_write_guard", "task_failure", {
+          ok: false,
+          failureCode: "PERMISSION_BLOCKED",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+        nativeSessionId: DEFAULT_SESSION_ID,
+      });
+      expect(report.result?.failureDetail).toMatch(/^git write attempted/);
+    });
+
+    it("fixture no_result replays text output at exit 0 without a result line to OUTPUT_PROTOCOL_ERROR", async () => {
+      const report = await runConformanceCase(
+        replayCase("no_result", "malformed_output", {
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "no result event",
+        nativeSessionId: DEFAULT_SESSION_ID,
+      });
+    });
+
+    it("fixture unsafe_session_id replays an unsafe session id in init to OUTPUT_PROTOCOL_ERROR without binding", async () => {
+      const report = await runConformanceCase(
+        replayCase("unsafe_session_id", "malformed_output", {
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "protocol: session id is not a safe argument",
+        unknownEventCount: 0,
+      });
+      expect(report.result).not.toHaveProperty("nativeSessionId");
+    });
   });
 
   // ADR-0039: a guard verdict ends the run in every run, bypass included, and the lifecycle trusts `result.ok`, so a
@@ -1261,6 +1319,368 @@ describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
       TOOL("started", { shellToolCall: { args: { command: "ls" } } }),
     ]);
     expect(secondResult).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+  });
+
+  it("parameter container fallback (args > parameters > input) and parameter key precedence", () => {
+    // Command precedence: command > cmd > CommandLine
+    const p1 = parse([
+      INIT(),
+      TOOL("started", {
+        shellToolCall: {
+          args: { command: "cmd1", cmd: "cmd2", CommandLine: "cmd3" },
+        },
+      }),
+      RESULT(),
+    ]);
+    expect(p1.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "shell",
+      command: "cmd1",
+    });
+
+    const p2 = parse([
+      INIT(),
+      TOOL("started", {
+        shellToolCall: {
+          args: { cmd: "cmd2", CommandLine: "cmd3" },
+        },
+      }),
+      RESULT(),
+    ]);
+    expect(p2.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "shell",
+      command: "cmd2",
+    });
+
+    const p3 = parse([
+      INIT(),
+      TOOL("started", {
+        shellToolCall: {
+          args: { CommandLine: "cmd3" },
+        },
+      }),
+      RESULT(),
+    ]);
+    expect(p3.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "shell",
+      command: "cmd3",
+    });
+
+    // Container fallback: args > parameters > input
+    const p4 = parse([
+      INIT(),
+      TOOL("started", {
+        shellToolCall: {
+          parameters: { command: "cmd_from_params" },
+        },
+      }),
+      RESULT(),
+    ]);
+    expect(p4.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "shell",
+      command: "cmd_from_params",
+    });
+
+    const p5 = parse([
+      INIT(),
+      TOOL("started", {
+        shellToolCall: {
+          input: { command: "cmd_from_input" },
+        },
+      }),
+      RESULT(),
+    ]);
+    expect(p5.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "shell",
+      command: "cmd_from_input",
+    });
+
+    // Target precedence: path > filePath > file_path > AbsolutePath > target
+    const p6 = parse([
+      INIT(),
+      TOOL("started", {
+        readToolCall: {
+          args: { path: "p1", filePath: "p2", file_path: "p3", AbsolutePath: "p4", target: "p5" },
+        },
+      }),
+      RESULT(),
+    ]);
+    expect(p6.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "read",
+      target: "p1",
+    });
+
+    const p7 = parse([
+      INIT(),
+      TOOL("started", {
+        editToolCall: {
+          args: { filePath: "p2", file_path: "p3", AbsolutePath: "p4", target: "p5" },
+        },
+      }),
+      RESULT(),
+    ]);
+    expect(p7.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "edit",
+      target: "p2",
+    });
+
+    const p8 = parse([
+      INIT(),
+      TOOL("started", {
+        writeToolCall: {
+          parameters: { file_path: "p3", AbsolutePath: "p4", target: "p5" },
+        },
+      }),
+      RESULT(),
+    ]);
+    expect(p8.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "edit",
+      target: "p3",
+    });
+
+    const p9 = parse([
+      INIT(),
+      TOOL("started", {
+        readToolCall: {
+          input: { AbsolutePath: "p4", target: "p5" },
+        },
+      }),
+      RESULT(),
+    ]);
+    expect(p9.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "read",
+      target: "p4",
+    });
+
+    const p10 = parse([
+      INIT(),
+      TOOL("started", {
+        editToolCall: {
+          input: { target: "p5" },
+        },
+      }),
+      RESULT(),
+    ]);
+    expect(p10.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "edit",
+      target: "p5",
+    });
+  });
+
+  it("extractResult classifies supervisor exit outcomes (protocol_error, internal_error, crashed, spawn_error)", () => {
+    const baseExit = { exitCode: null, signal: null, expectedExitCodes: [0] };
+
+    const proto = adapter().extractResult([], { ...baseExit, outcome: "protocol_error" });
+    expect(proto).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "unparseable provider output",
+    });
+
+    const internal = adapter().extractResult([], { ...baseExit, outcome: "internal_error" });
+    expect(internal).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "event handling failed",
+    });
+
+    const crashedSig = adapter().extractResult([], { ...baseExit, outcome: "crashed", signal: "SIGKILL" });
+    expect(crashedSig).toMatchObject({
+      ok: false,
+      failureCode: "PROCESS_CRASH",
+      failureDetail: "signal SIGKILL",
+    });
+
+    const crashedNoSig = adapter().extractResult([], { ...baseExit, outcome: "crashed", signal: null });
+    expect(crashedNoSig).toMatchObject({
+      ok: false,
+      failureCode: "PROCESS_CRASH",
+      failureDetail: "crashed",
+    });
+
+    const spawnErr = adapter().extractResult([], { ...baseExit, outcome: "spawn_error" });
+    expect(spawnErr).toMatchObject({
+      ok: false,
+      failureCode: "PROCESS_CRASH",
+      failureDetail: "spawn_error",
+    });
+
+    const exitErr = adapter().extractResult([], {
+      outcome: "exited",
+      exitCode: 2,
+      signal: null,
+      expectedExitCodes: [0],
+    });
+    expect(exitErr).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "exit code 2",
+    });
+  });
+
+  it("extractResult honors normalized failure events (permission_denied, sandbox_violation, rate_limit)", () => {
+    const endEvent: NormalizedEvent = { kind: "result", ok: true };
+
+    const perm = adapter().extractResult([{ kind: "permission_denied", tool: "shellToolCall" }, endEvent], EXIT0);
+    expect(perm).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "denied: shellToolCall",
+    });
+
+    const sbx = adapter().extractResult([{ kind: "sandbox_violation", detail: "out of worktree" }, endEvent], EXIT0);
+    expect(sbx).toMatchObject({ ok: false, failureCode: "SANDBOX_VIOLATION", failureDetail: "out of worktree" });
+
+    const rl = adapter().extractResult([{ kind: "rate_limit" }, endEvent], EXIT0);
+    expect(rl).toMatchObject({
+      ok: false,
+      failureCode: "RATE_LIMIT_TRANSIENT",
+      failureDetail: "rate limit reported",
+    });
+  });
+
+  it("seenResults and seenToolCalls WeakMap state is isolated across separate ParseState instances", () => {
+    const a = adapter();
+    const state1: ParseState = { lines: 0, unknownEvents: 0 };
+    const state2: ParseState = { lines: 0, unknownEvents: 0 };
+
+    // Result line on state1
+    const ev1 = a.parseEvent(RESULT(), state1);
+    expect(ev1.some((e) => e.kind === "result" && e.ok)).toBe(true);
+
+    // Result line on fresh state2 is also a first result line, not a second duplicate
+    const ev2 = a.parseEvent(RESULT(), state2);
+    expect(ev2.some((e) => e.kind === "result" && e.ok)).toBe(true);
+    expect(ev2.some((e) => e.kind === "provider_error")).toBe(false);
+
+    // Second result line on state1 triggers protocol error
+    const ev1Second = a.parseEvent(RESULT(), state1);
+    expect(ev1Second.some((e) => e.kind === "provider_error" && e.category === "protocol")).toBe(true);
+
+    // Tool calls across state1 and state2 are tracked independently
+    const toolLine = TOOL("started", { shellToolCall: { args: { command: "echo independent" } } });
+    const tc1 = a.parseEvent(toolLine, state1);
+    expect(tc1.some((e) => e.kind === "tool_call")).toBe(true);
+    const tc2 = a.parseEvent(toolLine, state2);
+    expect(tc2.some((e) => e.kind === "tool_call")).toBe(true);
+  });
+
+  it("clean turn with no text messages leaves summary undefined, not empty string; long text is clipped to 2000 chars", () => {
+    const noText = parse([INIT(), RESULT()]);
+    expect(noText.result).toMatchObject({ ok: true });
+    expect(noText.result).not.toHaveProperty("summary");
+
+    const longText = "a".repeat(2500);
+    const long = parse([INIT(), ASSIST(longText), RESULT()]);
+    expect(long.result).toMatchObject({ ok: true });
+    expect(long.result.summary).toHaveLength(2000);
+    expect(long.result.summary).toBe(`${"a".repeat(1999)}…`);
+  });
+
+  it("bounds and clipping fallbacks: tool key > 64 chars, result subtype > 64 chars, model > 128 chars, backingProvider > 128 chars", () => {
+    const longKey = "custom_tool_key_".repeat(5); // 80 chars
+    const rKey = parse([INIT(), TOOL("started", { [longKey]: { args: { command: "echo 1" } } }), RESULT()]);
+    const tc = rKey.events.find((e) => e.kind === "tool_call");
+    expect(tc).toMatchObject({
+      kind: "tool_call",
+      name: `${longKey.slice(0, 64)}…`,
+    });
+
+    const longSubtype = `custom_error_subtype_${"e".repeat(80)}`;
+    const rSub = parse([INIT(), RESULT({ subtype: longSubtype, is_error: true })]);
+    const res = adapter().extractResult(rSub.events, EXIT0);
+    expect(res).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: `result ${longSubtype.slice(0, 64)}…`,
+    });
+
+    const longModel = "M".repeat(200);
+    const longBacking = "B".repeat(200);
+    const rInit = parse([INIT({ model: longModel, backing_provider: longBacking }), RESULT()]);
+    const bound = rInit.events.find((e) => e.kind === "session_bound");
+    expect(bound).toMatchObject({
+      kind: "session_bound",
+      model: `${longModel.slice(0, 128)}…`,
+      backingProvider: `${longBacking.slice(0, 128)}…`,
+    });
+  });
+
+  it("resumeArgs comprehensive matrix: cwd preservation, policyFlag parity, foreign provider, profile, and id rejection", () => {
+    const a = adapter();
+    const profile = privilegedProfile(BYPASS_SCOPE);
+    const approved = { ...profile, bypassApproved: true };
+    const customReq = request({ workspace: { cwd: "/custom/workspace/dir", writable: true }, bypassApproved: true });
+    const id = "synthetic-cursor-session-0042";
+
+    // Successful resume preserves cwd, matches compile policyFlags, and passes audit
+    const resumed = a.resumeArgs({ provider: "cursor", nativeSessionId: id }, customReq, approved);
+    expect("ineligible" in resumed).toBe(false);
+    if ("ineligible" in resumed) return;
+    expect(resumed.cwd).toBe("/custom/workspace/dir");
+    expect(resumed.argv.slice(-2)).toEqual(["--resume", id]);
+    const first = a.compile(customReq, approved);
+    expect("ineligible" in first).toBe(false);
+    if ("ineligible" in first) return;
+    expect(resumed.policyFlags).toEqual(first.policyFlags);
+    expect(resumed.argv.slice(0, -2)).toEqual(first.argv);
+    expect(auditInvocation(resumed, { profile, bypassApproved: true })).toEqual([]);
+
+    // Foreign provider bindings rejected
+    for (const provider of ["claude", "codex", "grok", "antigravity", "opencode", "other"] as const) {
+      expect(
+        a.resumeArgs({ provider: provider as ProviderId, nativeSessionId: id }, customReq, approved),
+      ).toMatchObject({
+        ineligible: true,
+        reason: "CAPABILITY_MISSING",
+        detail: `binding is for ${provider}`,
+      });
+    }
+
+    // Ineligible non-privileged profiles
+    for (const name of PROFILES) {
+      expect(a.resumeArgs({ provider: "cursor", nativeSessionId: id }, customReq, profileOf(name))).toMatchObject({
+        ineligible: true,
+        reason: "PROFILE_UNSUPPORTED",
+      });
+    }
+
+    // Privileged without bypass
+    const noBypass = privilegedProfile({ ...BYPASS_SCOPE, bypass: false });
+    expect(
+      a.resumeArgs({ provider: "cursor", nativeSessionId: id }, customReq, { ...noBypass, bypassApproved: true }),
+    ).toMatchObject({
+      ineligible: true,
+      reason: "PROFILE_UNSUPPORTED",
+      detail: CURSOR_PRIVILEGED_NEEDS_BYPASS,
+    });
+
+    // Privileged with bypass but not approved
+    expect(
+      a.resumeArgs({ provider: "cursor", nativeSessionId: id }, request({ bypassApproved: false }), profile),
+    ).toMatchObject({
+      ineligible: true,
+      reason: "PROFILE_UNSUPPORTED",
+      detail: CURSOR_BYPASS_NOT_APPROVED,
+    });
+
+    // Dangerous / unsafe session ids
+    for (const bad of ["--force", "-f", "chat x", "../chat", "a".repeat(257), ""]) {
+      expect(a.resumeArgs({ provider: "cursor", nativeSessionId: bad }, customReq, approved), bad).toMatchObject({
+        ineligible: true,
+        reason: "CAPABILITY_MISSING",
+        detail: "native session id is not a safe single argument",
+      });
+    }
   });
 });
 
