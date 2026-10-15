@@ -1,6 +1,8 @@
 # ADR-0041: Network MCP transport (Streamable HTTP) with embedded OAuth 2.1
 
-- Status: Accepted (Delegated, 2026-10-14: orchestrator Linus under owner decision 25; Q-67 is Yes)
+- Status: Accepted (Delegated, 2026-10-14: orchestrator Linus under owner decision 25; Q-67 is Yes); the statement in
+  item 6 that approval stays with the operator CLI is superseded in part by [ADR-0047](0047-approval-proxy-over-mcp.md)
+  for clients the operator marks `approval_proxy` (Proposed, 2026-10-15)
 - Date: 2026-10-14
 - Decided by: Delegated (Linus, 2026-10-14), recording the owner decision that Switchboard will be embedded in
   Grok Bot as a public-facing MCP server, so HTTP transport and OAuth are critical. Under [owner

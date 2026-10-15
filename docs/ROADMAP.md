@@ -653,17 +653,94 @@ words, verbatim, are only this:** "bypass runs dont need permissions requests, a
     3. Non-bypass profiles are unchanged: deny by default from the frozen profile.
     No new ADR (ADR-0036 is still Proposed and is amended in place); residual risk is covered by R-38 and R-62.
 
-Decisions 10 to 13, 17, 19, 21 and 22 each choose the less restrictive of the options put to zemdregon (decision 18 is the
-principle behind the 2026-10-13 ones); decisions 20 and 23 keep the stricter behaviour already implemented. Their residual
-risks are recorded for zemdregon as R-23 to R-26, R-34, R-38 and R-39 in §7.1 (not blocking); decision 24's as R-38 and
-R-40; decision 26's as R-41; decision 27's as R-35 (mitigated); decision 28's as R-42 (mitigated);
-decision 29 has none beyond the stale-for-TTL window noted in it; decision 30 closes R-44; decision 32's is R-45 (not blocking);
+49\. Control plane as milestone M14 (2026-10-15; answers discovery §10 question 1). **zemdregon's words, verbatim, are
+    only this:** "1 yes" *Delegated wording of what he answered, not his words, and not owner-approved beyond his
+    answer.* The question was whether the control plane (inbox, digest, steering, pause and budgets) should become the
+    next milestone after M2's live checks, ahead of the remaining M4 adapter tasks ([research
+    note](research/orchestration-layer-discovery-2026-10-15.md), §10). The answer makes it milestone **M14 Control
+    plane** (§6, [§6.13](#613-m14-control-plane-tasks)), with FR-CTL-01 to 11 and CAP-15 (SRS §3.17, PRD §3). It is
+    sequenced right after M2's operator live checks and before the remaining M4 adapter tasks. Agent work already under
+    way on M4 may finish, and a new pick under §9.1 prefers M14. The sequencing alone changes no bypass rule; decision
+    50 is the part that does.
+
+50\. Approval proxy over MCP for marked clients (2026-10-15; answers discovery §10 question 2). **zemdregon's words,
+    verbatim, are only this:** "the chat bot connected to MCP is allowed to proxy approvals from the owner, but consent
+    page approvals can exist as a secondary method." *Delegated wording of what he answered, not his words, and not
+    owner-approved beyond his answer.* An MCP client that the operator marks `approval_proxy` in the configuration file
+    may approve or deny pending approvals (privileged scopes including `bypass`, dynamic projects, push-enabled
+    revisions) on the owner's behalf through MCP tools. The consent-page approval link is a secondary method
+    (FR-CTL-09), and the CLI `approve`/`deny` stays. This amends the "never through MCP" rule of FR-MCP-06, FR-MCP-14,
+    FR-POL-09 and FR-PRJ-10 for that client only, recorded in [ADR-0047](adr/0047-approval-proxy-over-mcp.md)
+    (Proposed). It is the one decision in this group that changes what a bypass run may do: a marked client may now give
+    the approval of a bypass scope.
+
+    - **Delegated controls (not asked), each fail closed:** off by default; the flag is set only in operator
+      configuration, never over MCP; a proxy client may decide only approvals for the clients the operator lists for it
+      (default: itself); a decision names the exact `approval_id` and the `approval_digest` returned when it was listed,
+      which binds it to the frozen scope shown; listed approval descriptions contain only controller-generated fields,
+      never agent text; each proxied decision is recorded with `decided_via: mcp_proxy` and the client; each proxied
+      decision is announced to the configured notification sinks ([ADR-0048](adr/0048-notification-sinks.md)). Residual
+      risk: R-65.
+
+51\. Project queue, schedules and CI triggers, as a narrowed CAP-14 (2026-10-15; answers discovery §10 question 3).
+    **zemdregon's words, verbatim, are only this:** "your recommendation" *Delegated wording of the recommendation, not
+    his words, and not owner-approved beyond his answer.* The discovery note recommended moving the narrowed form of
+    CAP-14, "fix CI on branches this project published", forward as a queue and a trigger (its §6, rank 6). That is
+    CAP-16 and milestone **M15 Project queue, schedules and CI triggers** (§6,
+    [§6.14](#614-m15-project-queue-schedules-and-ci-triggers-tasks)), sequenced after M14. The general FR-SUB-01 stays
+    Deferred (decision 43). Reading CI status needs a credential path, and ADR-0003 forbids Switchboard handling
+    credentials, so the CI trigger (FR-QUE-03, T15.3) is blocked on **Q-91**. Its Proposed answer is to run the
+    operator's logged-in `gh` CLI as an external tool, as provider CLIs are run; that is a trust and credential
+    boundary, so zemdregon must answer it. Requirements FR-QUE-01 to 03 (SRS §3.18). Residual risk: none beyond Q-91.
+
+52\. First notification channel: the Grok bot (2026-10-15; answers discovery §10 question 4; question 5 not answered).
+    **zemdregon's words, verbatim, are only this:** "Grok Bot" *Delegated wording of what he answered, not his words,
+    and not owner-approved beyond his answer.* The first notification channel is the Grok bot. Delegated: it is
+    delivered through an operator-configured webhook sink aimed at the Grok bot's inbound endpoint
+    ([ADR-0048](adr/0048-notification-sinks.md), Proposed), with the generic webhook as the sink kind. That endpoint and
+    its message format are unverified (**Q-92**), so the Grok target waits for Q-92 and the generic webhook does not.
+    Question 5, which chat client to support first, was not answered (**Q-93**). **Assumption:** the Grok bot is also
+    the first chat client, consistent with owner decision 36. Residual risk: R-66 (not blocking).
+
+53\. Notification sinks: a generic webhook the operator points at the Grok bot, plus ntfy (2026-10-15; answers
+Q-92). **zemdregon's words, verbatim, are only this:** "grok bot supports generating webhooks, but thats for
+deployments not in code, also add ntfy support.."
+    *Delegated wording of what he answered, not his words, and not owner-approved beyond his answer.* The Grok bot
+    generates its own inbound webhook at deployment time, so Switchboard ships **no Grok-specific code**: the operator
+    pastes the Grok bot's generated webhook URL into a generic webhook sink. Q-92 is closed; the message format the
+    Grok bot expects is still unchecked, so the generic sink sends the closed JSON payload of ADR-0048 and its fit with
+    the Grok bot is verified when the operator deploys it (**Assumption** until then). **ntfy** is added as a second
+    sink kind in M14 (T14.9), under the same closed-payload rule; an ntfy topic URL or access token is operator
+    configuration and is redacted like a webhook URL. ntfy's publish interface is to be cited from its documentation in
+    T14.0, not stated here. No requirement ID changes; FR-CTL-10 and ADR-0048 are amended in place (both Proposed).
+
+54\. CI status is read through the operator's logged-in `gh` CLI (2026-10-15; answers Q-91). **zemdregon's words,
+verbatim, are only this:** "yes"
+    *Delegated wording of what he answered, not his words, and not owner-approved beyond his answer.* The CI trigger
+    (FR-QUE-03, T15.3) reads CI status by running the operator's logged-in `gh` CLI as an external tool, the way provider
+    CLIs are run. Switchboard never reads, copies, stores or logs the GitHub credential (ADR-0003 unchanged); `gh` uses
+    its own login. The T15.0 ADR records this external-input boundary. T15.3 is no longer blocked.
+
+55\. The first chat client is the Grok bot (2026-10-15; answers Q-93). **zemdregon's words, verbatim, are only
+this:** "grok bot."
+    *Delegated wording of what he answered, not his words, and not owner-approved beyond his answer.* M14's console tool
+    profile (T14.11) and acceptance test (T14.13) target the Grok bot first; the Claude app and OpenClaw follow. The
+    Assumption in decision 52 is now an owner answer.
+
+Decisions 10 to 13, 17, 19, 21 and 22 each choose the less restrictive of the options put to zemdregon (decision 18 is
+the principle behind the 2026-10-13 ones); decisions 20 and 23 keep the stricter behaviour already implemented. Their
+residual risks are recorded for zemdregon as R-23 to R-26, R-34, R-38 and R-39 in §7.1 (not blocking); decision 24's as
+R-38 and R-40; decision 26's as R-41; decision 27's as R-35 (mitigated); decision 28's as R-42 (mitigated); decision 29
+has none beyond the stale-for-TTL window noted in it; decision 30 closes R-44; decision 32's is R-45 (not blocking);
 decision 33's is R-46 (not blocking); decision 34's is R-47 (not blocking); decision 35's are R-48 and R-49 (not
-blocking); decision 36's is R-50 (not blocking); decision 37's is R-51 (accepted by the owner for bypass); decision
-38's is R-52 (not blocking); decision 39's are R-53 and R-54 (not blocking); decision 40's are R-55 to R-58
-(not blocking); decision 41's is R-59 (not blocking); decisions 42 and 43 have none, and their open question is Q-55;
-decision 44 has none beyond R-52; decision 45's is R-61 (accepted by zemdregon for approved bypass runs; open for
-other deployments); decision 46's is R-38 (dated note; accepted by zemdregon for his own bypass runs, not blocking).
+blocking); decision 36's is R-50 (not blocking); decision 37's is R-51 (accepted by the owner for bypass); decision 38's
+is R-52 (not blocking); decision 39's are R-53 and R-54 (not blocking); decision 40's are R-55 to R-58 (not blocking);
+decision 41's is R-59 (not blocking); decisions 42 and 43 have none, and their open question is Q-55; decision 44 has
+none beyond R-52; decision 45's is R-61 (accepted by zemdregon for approved bypass runs; open for other deployments);
+decision 46's is R-38 (dated note; accepted by zemdregon for his own bypass runs, not blocking). Decision 49 has none;
+decision 50's is R-65 (accepted by zemdregon through decision 50, a Delegated reading of his answer); decisions 49 and
+51 have none beyond Q-91; decision 52's is R-66 (not blocking); decision 53's is R-66; decision 54's is none
+beyond ADR-0003, which it keeps; decision 55 has none.
 
 ### 4.3 Stated intent (confirmed constraints)
 
@@ -759,7 +836,8 @@ is kept and only the mechanism changes.
 Status values: `Done`, `In progress`, `Partial`, `Planned`, `Blocked`, `Deferred`. No milestone has dates; none were
 set. Sizes are not estimated. M9 and M10 were added on 2026-10-12 for owner decisions 6 and 7 (projects; tool-only
 commits); M11 on 2026-10-13 for owner decision 14 (inner agent); M12 on 2026-10-13 for owner decision 40 (retrieval
-index). Test count on 2026-10-13: `npm test` passes with 51 files and 1175 tests (1172 passed, 3 skipped; the
+index). M14 and M15 were added on 2026-10-15 for owner decisions 49 and 51 (control plane; project queue and CI
+triggers). Test count on 2026-10-13: `npm test` passes with 51 files and 1175 tests (1172 passed, 3 skipped; the
 per-milestone counts quoted below are dated when they were taken).
 
 | ID | Milestone | Status | Depends on | Requirements delivered (first delivery) | Acceptance criteria | Verification |
@@ -778,6 +856,8 @@ per-milestone counts quoted below are dated when they were taken).
 | M11 | Inner agent | Partial (Proposed): T11.1 to T11.12 done on fakes, see [T11.1 to T11.12 status](#66-m11-inner-agent-tasks) (T11.10 handoff condensation is a service function, not on the production `serve` path; T11.11 routing classification is on the production `serve` hook); T11.0 and T11.13 Planned; T11.14 Partial (usage-evidence limits and the merged [PR #334](https://github.com/zemdregon/switchboard/pull/334), [PR #338](https://github.com/zemdregon/switchboard/pull/338), [PR #343](https://github.com/zemdregon/switchboard/pull/343) and T11.5 residual usage-surface pins [PR #362](https://github.com/zemdregon/switchboard/pull/362) evidence are recorded in §6.6; the design-document as-built evidence, HLD §2.5, SDD §4.3, TDD §3.12 and LLD §13.8, merged as [PR #353](https://github.com/zemdregon/switchboard/pull/353)). Owner decision 14; numbered after M10 to keep milestone IDs stable; **sequenced after M9** (Proposed). Tasks that use another milestone's output wait for it (§6.6) | M2 (configuration, ledger); M9 for commit and PR tasks; M3, M4, M5, M7 for the tasks that use them | FR-INN-01–17 | With no inner agent configured nothing changes and the suite passes; with a fake backend, enabled tasks are used and invalid, empty, slow or unreachable output falls back without failing or delaying a run beyond the bound; a commit with no agent message gets a sanitised drafted message with no trailer, footer or identifier even when the backend returns them; inner usage never appears in provider usage or capacity unless a shared subscription is declared; a `remote` backend needs `allow_remote` and diffs need the per-task opt-in, and a planted secret never reaches a captured prompt; no inner output reaches any policy component; `doctor` and `inner status` report state | Fake-backend integration and fault-injection tests; hostile-backend sanitiser fixtures; import-boundary test; secret-in-prompt test; inspection of the privacy gates; one opt-in live run against an operator-chosen backend |
 | M12 | Retrieval index | **Partial** (2026-10-14, Delegated, not owner-approved): T12.0 to T12.8 are done on fakes with evidence in [§6.7](#67-m12-retrieval-index-tasks), [README §Retrieval index](../README.md#retrieval-index-milestone-12) (T12.8), [HLD §2.1](design/HLD.md#21-comp-rag-implementation-evidence-m12-t121t123), [SDD §4.1](design/SDD.md#41-comp-rag-implementation-evidence-m12-t121t123), [LLD §14](design/LLD.md#14-retrieval-index), [TDD §3.13](design/TDD.md#313-retrieval-index) (spike in [§3.13.4](design/TDD.md#3134-t120-spike-result-2026-10-14)), [SRS §3.15](requirements/SRS.md#implementation-evidence-partial-m12) and [PRD CAP-13](requirements/PRD.md#implementation-evidence-partial-m12--cap-13): `rag` config and store through chunker and the embedding port (`src/config/rag.test.ts`, `src/retrieval/scan.test.ts`, `src/retrieval/http-embedder.test.ts`); background build, `index` CLI and `doctor` (`src/cli/rag-index.test.ts`, `src/cli/serve.test.ts`); admission context pack (`src/lifecycle/context-pack.test.ts`, `src/retrieval/admission.test.ts`, `src/retrieval/import-boundary.test.ts`); `search_project_context` (`src/mcp/search-context.test.ts`); global sharing (`src/retrieval/global.test.ts`). T12.9 (agent-callable search, Could) remains Planned; `Done` waits on an opt-in live embedding backend and the residual gaps in §6.7 (for example MCP `global`/`both` scope on the tool). Owner decision 40; numbered after M11; **sequenced after M9** and the M11 backend port (T11.1) (Proposed) | M2 (configuration, ledger); M9 (projects, contexts); M11 T11.1 and T11.3 (backend port, locality gates); T9.4b for the agent-callable tool | FR-RAG-01–14, CAP-13, BO-9 | With no embedding backend configured nothing changes and the suite passes; with a fake backend a project index is built in the background and incrementally, never blocks admission, and a failed or stale retrieval falls back to no retrieval without failing the run; excluded files (nested repositories, escaping symlinks, binary, oversized, denylisted) and a planted secret never reach the store or a captured embedding request; no project's index is readable from another project's run or query, and the global index is read only by a project with `use_global` and holds only contributed or operator-added content, each snippet labelled with its origin; retrieved content reaches no policy component (import-boundary test); `search_project_context` returns only the client's projects within the size bound; `index status\|rebuild\|clear` and `doctor` report state; the token saving is not asserted until measured | Fake-embedding-backend integration and fault-injection tests; exclusion and secret fixtures; cross-project isolation tests; import-boundary test; inspection of the privacy gates; one opt-in live run against an operator-chosen backend |
 | M13 | Network MCP transport | **Done** (2026-10-14, Delegated by the orchestrator, not owner-approved): T13.1 to T13.9 are Done with tests (see [§6.10](#610-m13-network-mcp-transport-tasks)), and each acceptance clause maps to a named, passing test: PKCE to tool calls over Streamable HTTP, `src/mcp/mcp.test.ts` (T13.9); another audience, `src/mcp/oauth-tokens.test.ts` and `test/malicious/controller.test.ts`; an unlisted `Origin`, `src/mcp/http.test.ts`; a `privileged` claim, `src/mcp/mcp.test.ts` (T13.4) and the T13.6 suite; no token in responses, ledger or logs, the T13.5, T13.6 and T13.9 scans; no listener when off, `src/mcp/http.test.ts`. ADR-0041 Accepted (2026-10-14). Residual risks, accepted with this status and listed under [HLD TB-12](design/HLD.md#3-trust-boundaries): TLS is the operator's proxy, a stolen access token works until it expires or the client is revoked, the passphrase lockout can be held by someone who knows the passphrase, OAuth clients mapped to one MCP client share its dynamic projects, and a refused cross-subject lookup writes no audit event | M2 (MCP slice), M3 (privileged refusal), ADR-0040 (Accepted) | FR-MCP-12–17, CAP-1, CAP-3, BO-2, BO-3 | An OAuth 2.1 client that completed PKCE against Switchboard's embedded authorization server can list and call tools over Streamable HTTP; a token for another audience, an unlisted `Origin`, or a `privileged` claim is refused; no token appears in responses, ledger or logs; with the option off no listener opens | Tests named in §6.10 (T13.2 to T13.6); the suite and the malicious-fixture suite for the HTTP path |
+| M14 | Control plane | Planned (Proposed, 2026-10-15, owner decision 49; task breakdown in [§6.13](#613-m14-control-plane-tasks)). No task started | M2 (operator live checks), M6, M13 | FR-CTL-01–11, CAP-15 | A scripted MCP client gets a digest across two projects showing needs-attention reasons, pending approvals and finished runs from a cursor; a run that fails the same way N times parks and is flagged; a budget cap refuses admission with a needs-attention reason; pause holds admission; steering a run on a fake adapter continues the same native session with the note; an `approval_proxy` client decides a pending privileged approval only with the matching digest, and a client without the flag gets no approval tools; a notification sink receives metadata-only payloads and never a planted secret or agent text | Fake-adapter integration tests, malicious-fixture additions for the proxy and digest, and a sink capture test (§6.13); ADR-0047 and ADR-0048 accepted before their tasks start |
+| M15 | Project queue, schedules and CI triggers | Planned (Proposed, 2026-10-15, owner decision 51; task breakdown in [§6.14](#614-m15-project-queue-schedules-and-ci-triggers-tasks)). The CI trigger (T15.3) reads CI through the operator's `gh` CLI (owner decision 54) | M14 | FR-QUE-01–03, CAP-16 | A queued item is admitted only under its creating client's ceiling; a schedule runs only when enabled; a CI-failure trigger admits work only for branches the project published, and its event text is treated as untrusted | Fake-adapter tests for the queue and schedules; trigger tests with a fake CI event (T15.3) |
 
 ### 6.1 M1 Foundation: tasks
 
@@ -2640,6 +2720,76 @@ replay, property and fault-injection tests). Open items that do not block it:
    matching term stays neutral and `minimum_capability` needs an operator-declared capability (T7.8).
 3. **Another lane:** T7.9 and T7.12 wait for `src/adapters/**` (T7.12: Q-90).
 
+### 6.13 M14 Control plane: tasks
+
+*Proposed breakdown (2026-10-15, Delegated agent work, documentation only; not owner-approved), written from the M14 row
+in §6 and the requirements it lists.* Owner decision 49 sets the milestone and its place after M2's live checks;
+decisions 50 to 52 set its approval-proxy, channel and CAP-16 answers. Requirements: [SRS
+§3.17](requirements/SRS.md#317-control-plane-fr-ctl) (FR-CTL-01 to 11) and [PRD
+CAP-15](requirements/PRD.md#3-capabilities). Design records: [ADR-0047](adr/0047-approval-proxy-over-mcp.md) and
+[ADR-0048](adr/0048-notification-sinks.md), both Proposed; the discovery note, §5 and §6 (recommendations 1 to 5, 9 and
+10).
+**Facts the breakdown relies on (discovery note §3, checked on `main` at `066a03c`; not re-checked for this change).**
+
+- The MCP server advertises tools only and has no tool that lists runs or reports changes since a point in time.
+`get_run` is the only per-run read (`src/mcp/server.ts`).
+- Approval is given only through the operator CLI (`approve`, `deny`, `projects approve`; FR-OPS-02), and the M13
+consent page serves client registration and sign-in (FR-MCP-17, [ADR-0041](adr/0041-http-transport-with-oauth-2-1.md)).
+- `run_event` is append-only (T1.3), so a cursor over it is stable. Pause and attention need no new run state: the FRD
+run state machine is unchanged, and `needs_attention` is a derived flag (FR-CTL-03).
+**Conventions (Proposed, Delegated).**
+
+- **No new run state.** Pause holds admission; a running run finishes. Needs-attention is derived on read.
+- **Closed payloads.** A proxied approval listing, a proxied decision and a sink payload carry controller-generated
+fields only, never agent text, prompts, diffs or code. Agent-written text in a digest is labelled untrusted and
+length-capped.
+- **Operator values, not provider facts.** Budgets, N, T and the successor cap are operator settings. Their defaults are
+Assumptions, recorded in the T14.0 LLD section, and no number is presented as a provider limit (ADR-0007).
+- **Design gate.** T14.0 writes the contracts before code (AGENTS.md). A persistence change (`decided_via`, pause and
+budget state) is covered by ADR-0047 or by an ADR written first.
+
+| Task | Objective | References | Depends on | Done when |
+| --- | --- | --- | --- | --- |
+| T14.0 | Control-plane design (documentation only): the LLD section for the new tools, the digest cursor, the closed reason list, the budget and loop-breaker configuration and the Assumption defaults for N, T and the successor cap; HLD component and trust-boundary notes for the approval proxy and the sinks; no new run state. | FR-CTL-01 to 11, ADR-0047, ADR-0048, [LLD §3](design/LLD.md#3-mcp-tool-contracts), [HLD](design/HLD.md), [SDD §5](design/SDD.md#5-requirements-to-design-traceability), [FRD §4](requirements/FRD.md#4-canonical-run-state-machine) | M14 row | The LLD section names every tool's input and output schema, the cursor format, the reason list and the config keys (Proposed); the HLD notes the new egress and the proxy boundary; `node scripts/check-docs.mjs` passes. **Status: Planned.** |
+| T14.1 | `list_runs` MCP tool: filters by project, status and time; the compact envelope of FR-MCP-04; caller scoping as `get_run`. | FR-CTL-01, FR-MCP-02, FR-MCP-04, T14.0 | T14.0 | MCP tests through the SDK client: the tool is listed with closed schemas and the existing tools are unchanged; another client's runs and unknown projects are not returned; each row equals the `get_run` envelope for the same run. **Status: Planned.** |
+| T14.2 | Derived `needs_attention` flag and reason on `get_run`, `list_runs` and the digest, from ledger state only; no migration and no run state. | FR-CTL-03, FR-CTL-07 (inputs), [FRD §4](requirements/FRD.md#4-canonical-run-state-machine) | T14.1 | Tests: each of the five reasons derives from ledger rows; a terminal run with no reason has no flag; the existing state-machine tests are unchanged. **Status: Planned.** |
+| T14.3 | `get_digest(since_cursor)`: per project, the runs that need attention, finished, failed, pending approvals and budget state, with a new cursor from `run_event`. | FR-CTL-02, FR-TEL-01, FR-MCP-04, T14.0 | T14.2 | Tests: a cursor returns only events after it; the same cursor returns the same digest; a planted instruction in a run summary arrives labelled untrusted and length-capped. **Status: Planned.** |
+| T14.4 | Budgets: operator caps on runs per day, concurrent runs, wall-clock per run and reported usage per window, checked at admission; a refusal flags the project `budget_exhausted`. | FR-CTL-06, FR-CAP-04, NFR-PERF-03, ADR-0007, T14.0 | T14.2 | Tests: at each cap admission is refused with the needs-attention reason; an unset cap is reported as unset; no output presents a cap as a provider limit. **Status: Planned.** |
+| T14.5 | Loop breaker and stall: N identical failures in a meta-session park it (`parked_loop`, no successor admitted); a run with no events for T minutes is flagged `stalled` and not cancelled; successor runs per meta-session are capped. | FR-CTL-07, FR-CAP-05, FR-MCP-10, T14.0 | T14.2 | Fake-adapter tests on an injected clock: N identical failures park the meta-session and admit no successor; a silent run is flagged only; the cap refuses the next successor with a reason. **Status: Planned.** |
+| T14.6 | Pause: `pause_project` and `resume_project` over MCP for the caller's projects; an operator-only CLI pause and resume for all projects. A pause holds admission; running runs finish. | FR-CTL-05, FR-OPS-01, FR-SES-06, T14.0 | T14.2 | Tests: a paused project admits nothing and its running runs finish; a client cannot pause another client's project; the CLI pause is global, and its effect on a running `serve` is specified in T14.0. **Status: Planned.** |
+| T14.7 | `steer_run(run_id, note)`: live input at the next boundary where the adapter declares it, otherwise a stop at a boundary and a resume of the same native session with the note. Starts with a per-adapter live-input spike. | FR-CTL-04, FR-SES-03, BR-7, [LLD §2](design/LLD.md#2-adapter-contract), T14.0 | T14.1 | Spike note per adapter (documentation): whether live input is documented for it. Tests on fake adapters: a steered run continues the same native session with the note; no replay occurs; the note is a controller event in the ledger. **Status: Planned.** |
+| T14.8 | Approval proxy tools (ADR-0047): for a client marked `approval_proxy`, list pending approvals with their `approval_digest` and decide one by exact `approval_id` and digest; `decided_via: mcp_proxy` in the record; clients without the flag get no approval tools. | FR-CTL-08, FR-MCP-06, FR-MCP-14, FR-POL-09, FR-PRJ-10, ADR-0047, ADR-0017 (item 5), T14.0, T14.9 | T14.0, T14.1, T14.9 | Malicious-fixture additions: a missing, stale or mismatched digest refuses and writes nothing; a client not in the target list is refused; a client without the flag has no approval tools in `tools/list`; no listed description contains agent text; each decision records `decided_via` and the client; the decision is announced to the sinks. **Status: Planned.** |
+| T14.9 | Notification sinks (ADR-0048): operator-configured, off by default; two sink kinds, a generic webhook (the operator points it at the Grok bot's deployment-generated webhook, owner decision 53; no Grok-specific code) and ntfy (owner decision 53); a per-sink event filter and rate limit; the closed payload; best-effort delivery off the run path. | FR-CTL-10, NFR-PRIV-01, NFR-SEC-01, FR-TEL-03, ADR-0048, owner decision 53, T14.0 | T14.0 | Sink capture test: a local capture server receives only the closed fields and never a planted secret, prompt or agent text; with no sink configured no request is made; a sink timeout or failure never fails or delays a run; the ntfy sink sends the same closed fields; a configured webhook or ntfy URL or token never appears in logs, the ledger or telemetry. **Status: Planned.** |
+| T14.10 | Consent-page approval link (secondary method, FR-CTL-09): a single-use, expiring link to the M13 consent page for one approval. | FR-CTL-09, FR-MCP-17, ADR-0041, ADR-0047, T14.8 | T14.8 | Tests: a link works once and then expires; it carries no bearer token or secret; an unauthenticated visit is refused by the consent page. **Status: Planned.** |
+| T14.11 | Per-client `tool_profile`: `orchestrator` (default, today's set) or `console` (digest, `list_runs`, `get_run`, `delegate_task`, `steer_run` and pause). | FR-CTL-11, FR-MCP-02, [LLD §3](design/LLD.md#3-mcp-tool-contracts), T14.0 | T14.1, T14.3, T14.7 | Tests: `tools/list` for a `console` client returns exactly its set with closed schemas; an `orchestrator` client is unchanged. **Status: Planned.** |
+| T14.12 | MCP 2026-07-28 readiness spike (documentation): SDK support for the stateless core, Multi Round-Trip Requests, `subscriptions/listen` and the Tasks extension; whether the target clients speak them; the plan to move from Dynamic Client Registration (FR-MCP-16) to Client ID Metadata Documents. | FR-MCP-12 to FR-MCP-17, ADR-0041, [discovery note §4](research/orchestration-layer-discovery-2026-10-15.md#4-landscape-what-comparable-tools-offer) and §6 (recommendation 10), T14.0 | T14.0 | A spike note with primary sources; an ADR superseding part of ADR-0041 only if the plan requires it. No code. **Status: Planned.** |
+| T14.13 | M14 acceptance test on fake adapters through the MCP server (the criteria in the M14 row), the README section, corrections to any FRD, SDD, HLD or TDD text the work proves wrong, and status here. | M14 acceptance criteria, NFR-MAINT-02, NFR-MAINT-03 | T14.1 to T14.11 | The test passes in CI with no provider installed; the M14 row carries status and evidence; `node scripts/check-docs.mjs` passes. **Status: Planned.** |
+
+**Order and hot files.** T14.0 first. T14.1 and T14.2 next; T14.3 to T14.6 after T14.2; T14.7 after T14.1 (its spike may
+run earlier); T14.9 after T14.0; T14.8 after T14.1 and T14.9; T14.10 after T14.8; T14.11 last among the features; T14.12
+may run any time after T14.0; T14.13 last. Hot files: `src/mcp/server.ts` (T14.1, T14.3, T14.8, T14.11) and
+`src/ledger/repo.ts` (T14.4, T14.6, T14.8). Tasks sharing a hot file run one after another.
+**Blocks Done.** No task needs a provider login. zemdregon owes: acceptance of ADR-0047 and ADR-0048 (both Proposed).
+Q-92 and Q-93 are answered (owner decisions 53 and 55); the Grok bot is the first chat client.
+
+### 6.14 M15 Project queue, schedules and CI triggers: tasks
+
+*Proposed breakdown (2026-10-15, Delegated agent work, documentation only; not owner-approved), written from the M15 row
+in §6.* Owner decision 51 sets the milestone and the narrowing of CAP-14. Requirements: [SRS
+§3.18](requirements/SRS.md#318-project-queue-and-triggers-fr-que) (FR-QUE-01 to 03) and [PRD
+CAP-16](requirements/PRD.md#3-capabilities). Each queue item reuses the admission path of `delegate_task` (FR-MCP-03)
+and the dynamic-project ceiling rules (FR-PRJ-10), and the approval and ceiling rules of M14 (§6.13). The CI trigger
+reads CI through the operator's `gh` CLI (owner decision 54, answering Q-91).
+
+| Task | Objective | References | Depends on | Done when |
+| --- | --- | --- | --- | --- |
+| T15.0 | Queue and trigger design (documentation only): the queue record, its priority and dependency rules, the schedule syntax, admission through the creating client's ceiling, the CI event as untrusted input, and an ADR (next free number) for the new external-input boundary of FR-QUE-03 (CI read through the operator's `gh` CLI, owner decision 54). | FR-QUE-01 to 03, [ADR-0003](adr/0003-no-credential-handling.md), [ADR-0030](adr/0030-dynamic-project-revisions-and-approval.md), FR-CTL-08, [SDD §5](design/SDD.md#5-requirements-to-design-traceability) | M14 (T14.0) | The LLD section and the trigger ADR are written as Proposed; the ADR states that no credential enters the process; `node scripts/check-docs.mjs` passes. **Status: Planned.** |
+| T15.1 | Durable per-project queue: a forward ledger migration (next free number) adding the queue table as T15.0 specifies, and admission of each item through `delegate_task` under the creating client's ceiling. | FR-QUE-01, FR-PRJ-10, FR-MCP-03, FR-CAP-04, T15.0 | T15.0, T14.1 | Tests: the migration applies on a fresh ledger and on the previous version; an item is admitted only under its creator's ceiling; a dynamic project's widening still waits for the operator; the queue survives a controller restart with no run lost (NFR-REL-01). **Status: Planned.** |
+| T15.2 | Schedules (cron-style), off by default, admitted as T15.1 items; the operator can list and disable them through the CLI. A schedule that a chat client creates and that widens its reach waits for operator approval (a Proposed control from the discovery note, §8). | FR-QUE-02, FR-OPS-01, T15.1 | T15.1 | Tests on an injected clock: a schedule is inert until enabled; each due time enqueues one item, with no duplicate after a restart; `disable` stops future admissions; a widening schedule from a chat client waits for approval. **Status: Planned.** |
+| T15.3 | CI-failure trigger on branches the project published: reads CI status through the operator's logged-in `gh` CLI as an external tool (owner decision 54) and admits a queued item; the event text is untrusted. | FR-QUE-03, FR-QUE-01, [ADR-0003](adr/0003-no-credential-handling.md), owner decision 54 | T15.1, T15.0 | Tests with a fake CI event: the trigger admits work only for branches the project published; the event text is labelled untrusted, length-capped and never authorises an action; Switchboard reads and stores no credential. **Status: Planned.** |
+
+**Blocks Done.** M15 needs no provider login. Q-91 is answered (owner decision 54).
+
 ## 7. Risks, blockers and open questions
 
 ### 7.1 Risks
@@ -2710,6 +2860,8 @@ replay, property and fault-injection tests). Open items that do not block it:
 | R-62 | *Proposed (Delegated, M4 T4.7), not blocking.* If ACP lets the agent ask the client for permission during a run (Unverified: the ACP specification is not in [R2]), then under an ACP transport the controller, not a provider flag, answers those requests. A bug or an over-broad answer grants what the compiled profile does not allow, and the argv audit (FR-POL-03), which inspects argv only, does not see it | A run could write, execute or reach the network beyond its profile with no bypass-class flag on its argv | Deny by default; answers derived only from the frozen policy snapshot; an answer that allows everything is bypass-class and refused outside an approved bypass scope; the T4.7 ADR; fake-agent tests (T4.8); the live legs of the providers that use ACP (§6.8) *Update 2026-10-13 (T4.7, Delegated):* the ACP specification v1 (agentclientprotocol.com, retrieved 2026-10-13) confirms the premise: `session/request_permission` is a client method the agent may call, the client answers with one of the agent's options (`allow_once`, `allow_always`, `reject_once`, `reject_always`) or `cancelled`, and may answer automatically. [ADR-0036](adr/0036-per-run-acp-stdio-client.md) mitigates by: a pure `decidePermission` over the frozen snapshot only; deny by default; only `allow_once` or `reject_once`, never an `always` option; locations checked against the worktree; an answer within a bound, never left pending; no `fs` or `terminal` capability; declared bypass-class modes audited; native controls stay required, so answers only narrow. Remains: option kinds are "a hint" and tool kinds and locations are reported by the agent itself, so a mislabelled request can be allowed within the profile's kinds; whether each provider honours a rejection, inherits its environment into MCP servers, or blocks after `-32601` is Unverified until its live leg; the approved-bypass answer is open for zemdregon (ADR-0036 open item 1) *Update 2026-10-13 (T4.8, Delegated):* the client and `decidePermission` are built and tested against a scripted fake agent only (`src/exec/acp/client.test.ts`, `src/policy/acp-permission.test.ts`): out-of-profile requests get `reject_once` (or `cancelled` with `session/cancel`), `allow_always` is never selected, a decision over 1 s is a rejection, and the allow-once-for-everything answer of owner decision 48 needs an approved bypass run. The mislabelling and per-provider items above remain |
 | R-63 | *Proposed (Delegated, M5 T5.1), not blocking.* Provider-reported text carried in a handoff bundle (a previous agent's summary or failure details) can be steered by a hostile repository, and the bundle moves it from provider A's session into provider B's prompt | A prompt injection crosses providers and sessions; under an approved bypass scope the receiving agent has broad powers | Bundle fields come from controller records (FR-SES-04, ADR-0001); provider-reported text is bounded, redacted and labelled as untrusted data; the receiving run keeps its own frozen profile (FR-POL-02); a cross-provider `privileged` continuation is refused until Q-61 is answered; the T5.1 ADR decides what text is carried. *Update 2026-10-14 (T5.1, [ADR-0038](adr/0038-handoff-bundle-and-continuity.md), Delegated):* the only provider-reported text carried is each run's structured result `summary` and its `failure_detail`; repository-produced text is file paths, diff excerpts and verification output excerpts. Each is redacted, bounded (`continuity.max_text_chars`, default 2000, Assumption), stripped of control and bidirectional characters and rendered only inside a labelled block whose every line is prefixed, so it cannot forge the prompt's structure; the preamble tells the agent to verify against the repository. Remains: an agent may still follow injected text within its own profile; labels do not prevent that |
 | R-64 | *Proposed (Delegated, M5 T5.4), not blocking.* LLD §15.4 first claimed that truncation never fails a handoff build; it does not hold, because 64 constraints of 2,000 characters alone exceed the 16 KiB minimum and `as_of` grows with the number of runs | A session with very many runs cannot be handed off: `continue_task` returns `TOOL_FAILURE` with `HANDOFF_BUNDLE_UNAVAILABLE` and writes nothing | The builder drops further fields in a fixed order and then fails closed ([LLD §15.1](design/LLD.md#151-bundle-schema-version-1) "As built"); §15.4 now says so. Open: cap `as_of` (or summarise old runs) if real sessions reach it; evidence `src/continuity/bundle.test.ts`. Delegated; owner not asked |
+| R-65 | *Delegated reading of owner decision 50, not blocking (ADR-0047, Proposed).* A prompt-injected or compromised client that the operator marked `approval_proxy`, or a stolen token for it, can approve pending `privileged` and bypass runs, dynamic projects and push-enabled revisions without the operator at a terminal | Approvals, including those of bypass scopes, are given by a model-driven client rather than by the owner at a terminal | **Open.** The Delegated controls of decision 50: off by default and set only in operator configuration; listed targets only; the exact `approval_id` and `approval_digest`; controller-generated text only; `decided_via: mcp_proxy` and sink announcements. Accepted by zemdregon through decision 50 (a Delegated reading of his answer, not his words) |
+| R-66 | *Delegated, not blocking (ADR-0048, owner decision 52).* A notification sink is a new egress path: an operator-configured webhook, including the Grok bot's endpoint, receives event metadata outside the host | Project, event kind, reason code, run ID and link reach a third-party service the operator chose | **Open.** Closed payload fields only, never code, prompts, diffs or agent text; off by default; operator-chosen sinks only; a per-sink filter and rate limit (FR-CTL-10); HTTPS with verification on |
 
 Numbering: R-36, R-37 and Q-32 to Q-35 (§7.3) were written on the M3 wave B branch as R-29, R-30 and Q-27 to
 Q-30. PR #17 merged all but Q-30 into main under those numbers, which main already used for other items; they were
@@ -2816,6 +2968,9 @@ No blocker affects M1, M2 or M9.
 | Q-85 | *Answered 2026-10-14 (Delegated by the worker under the orchestrator's M4 instruction to choose the safer, fail-closed option; not owner-approved; no bypass effect).* When is an OpenCode run a success (T4.53), given that the T4.51 live check saw correct answers exit 0 with no `step_finish` (TDD §4.6.4, contradiction 12)? | **Decided:** only a clean expected exit with a `step_finish` whose `part.reason` is `stop` and no `error` event is a success; a run that exits 0 with text but no `stop` ends `OUTPUT_PROTOCOL_ERROR`. Some good runs will fail (the live check saw the missing `step_finish` intermittently); that is the fail-closed cost, since exit 0 alone also follows a run cut short after a tool step ([I-38661], [I-27697] in TDD §4.6). Revisit when a capture shows a reliable terminal marker. [TDD §4.6](design/TDD.md#46-opencode-m4) "Success rule" row |
 | Q-86 | *Answered 2026-10-14 (Delegated by the worker under the orchestrator's M4 instruction to choose the safer, fail-closed option; not owner-approved; no bypass effect).* What makes an Antigravity run a success, and is `--conversation <id>` resume compiled (T4.33), given that a soft denial, a print timeout and an unknown conversation id all exit 0 with `status` `SUCCESS` (T4.31 C7, C9, C10)? | **Decided:** success needs a clean expected exit, a `result` with `status` `SUCCESS`, a reported `total_tokens` above 0 (a print timeout reported zero usage) and no `denied_actions` entry or `error` text; anything else fails. Resume is **not** compiled: an unknown id silently starts a new conversation, so a continuation that lost its history would look like one that kept it, and only a stderr warning (not passed to the adapter) says otherwise. Revisit when a capture shows a structured marker of a resumed conversation (for example a `num_turns` that counts earlier turns, seen in C9 but not yet a documented contract). [TDD §4.4.1](design/TDD.md#441-antigravity-output-shapes-and-exit-codes-t430) |
 | Q-90 | *Delegated, answered by the orchestrator (2026-10-14, T7.5; not zemdregon, no bypass effect).* FR-RTE-08 asks to reuse a project's last model; should the remembered model be passed to the adapter's `compile`? | **Decided (fail closed, keep the provider):** not yet. The model each run's native session reported is remembered in `project_affinity.model` and shown by `explain_route`, but not passed to `compile`, because the Codex adapter refuses any model (`CAPABILITY_MISSING`) and no adapter declares that a reported model id is accepted by its model flag; pinning could make a held provider ineligible. T7.12 adds pinning once adapters declare it. (Numbered Q-90, not the next free number, because the parallel M4 work takes consecutive numbers.) [LLD §17.6](design/LLD.md#176-affinity-details-fills-32) |
+| Q-91 | *Opened 2026-10-15 by owner decision 51 (discovery §10 question 3; Delegated wording).* Which credential path may Switchboard use to read CI status for branches a project published? ADR-0003 forbids the controller handling credentials, so reading CI status needs one. | **Answered 2026-10-15 (owner decision 54): yes.** CI status is read by running the operator's logged-in `gh` CLI as an external tool; Switchboard handles no credential (ADR-0003). |
+| Q-92 | *Opened 2026-10-15 by owner decision 52 (discovery §10 question 4).* What inbound endpoint and message format does the Grok bot accept for notifications? Nobody has checked. | **Answered 2026-10-15 (owner decision 53):** the Grok bot generates its own webhook at deployment; the operator points the generic webhook sink at it, so no Grok-specific code. ntfy is added as a second sink kind. The message-format fit is checked at deployment. |
+| Q-93 | *Opened 2026-10-15 (discovery §10 question 5; not answered in zemdregon's reply).* Which chat client matters most first: the Claude app over HTTP, the Grok bot or OpenClaw? | **Answered 2026-10-15 (owner decision 55):** the Grok bot. |
 
 ## 8. Deferred and excluded work
 
@@ -2839,9 +2994,12 @@ No blocker affects M1, M2 or M9.
 | Learned reranking of retrieved snippets | Deferred | No measurement yet that retrieval helps (R-57); no requirement | — |
 | Code-graph or symbol-level retrieval | Deferred | Not asked for; text chunks first | — |
 | Retrieval index shared across operators or installations | Excluded | Multi-user and hosted operation are excluded; the global index is one installation's | ADR-0011, FR-RAG-09 |
-| Agent subscriptions to PR and merge events (CI pass or fail, another agent's commit to the PR, merge) | Deferred (Proposed, optional; owner's words in decision 43) | Optional, after everything else in the plan. Needs PRD use case, SRS requirements and a milestone before it is built; the GitHub webhook path and its trust rules are unspecified | CAP-14 (PRD §3); FR-SUB-01 (SRS §3.16, Deferred) |
+| Agent subscriptions to PR and merge events (CI pass or fail, another agent's commit to the PR, merge) | Deferred (Proposed, optional; owner's words in decision 43) | Optional, after everything else in the plan. Needs PRD use case, SRS requirements and a milestone before it is built; the GitHub webhook path and its trust rules are unspecified. *(Note 2026-10-15, owner decision 51: the narrowed form, fixing CI on branches a project published, is scheduled in M15 as CAP-16 and FR-QUE-03; FR-SUB-01 stays Deferred.)* | CAP-14 (PRD §3); FR-SUB-01 (SRS §3.16, Deferred) |
 
 ## 9. Next actionable milestone
+
+**Decision 49 (2026-10-15): after M2's live checks, the next milestone is M14 Control plane (§6.13), ahead of the
+remaining M4 adapter tasks.** Agent work already under way on M4 may finish.
 
 **Close M2, then M3.** M2 is `Partial` (§6, §6.2). Its code and documentation are in place; the remaining work needs the
 operator or zemdregon, in this order:
@@ -2907,8 +3065,8 @@ Notes carried from M2:
    needs the operator or zemdregon; agents then work on the next milestone's tasks that do not depend on those items (as
    M3 wave A does while M2 waits for the live smoke run).
 2. Take the first task in that milestone's task table whose dependencies are done. If the milestone has no task table
-   yet (M8 onward; M4's is §6.8, M5's §6.9, M6's §6.11 and M7's §6.12), break it into tasks in the same format first,
-   from its row in §6 and the requirements it lists, and add them here before coding.
+   yet (M8 onward; M4's is §6.8, M5's §6.9, M6's §6.11, M7's §6.12, M14's §6.13 and M15's §6.14), break it into tasks in
+   the same format first, from its row in §6 and the requirements it lists, and add them here before coding.
 3. Read every reference in the task row: the SRS requirements, the FRD workflow or rule, the LLD/TDD section and the
    ADRs. Those are the contract; this roadmap only sequences them.
 4. Implement with tests that prove the task's "Done when" checks and the cited requirements' verification method.
