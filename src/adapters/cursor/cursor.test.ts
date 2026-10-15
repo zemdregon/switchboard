@@ -16,6 +16,7 @@ import { createLedger, openLedger } from "../../ledger/index.js";
 import { RunLifecycle } from "../../lifecycle/index.js";
 import { createSwitchboardServer } from "../../mcp/server.js";
 import { resolveTrustProfile } from "../../policy/profiles.js";
+import { usageObservationsFromEvents } from "../../usage/observations.js";
 import { WorkspaceManager } from "../../workspace/index.js";
 import { auditInvocation, bypassClassFlags, bypassClassShortFlags, bypassClassValues } from "../audit.js";
 import { type ConformanceCase, missingRequiredKinds, runConformanceCase, runConformanceSuite } from "../conformance.js";
@@ -467,6 +468,49 @@ describe("cursor parser and result (T4.43)", () => {
     });
   });
 
+  it("harness and backing provider mismatch per T4.6 (FR-ADP-10): structured backing_provider is reported, never derived from display name", () => {
+    // 1. Without backing_provider in init (the documented T4.41 shape): backingProvider is unset, never inferred from model
+    const standard = parse([INIT, ASSIST("ok"), RESULT()]);
+    const standardBound = standard.events.find((e) => e.kind === "session_bound");
+    expect(standardBound).toBeDefined();
+    expect(standardBound).not.toHaveProperty("backingProvider");
+    expect(standardBound).toMatchObject({ kind: "session_bound", nativeSessionId: SID, model: "Synthetic Model 1" });
+
+    // 2. With backing_provider in init (T4.6: harness 'cursor' fronting another provider, e.g. 'backing-x'):
+    const fronted = parse([
+      line({
+        type: "system",
+        subtype: "init",
+        apiKeySource: "login",
+        cwd: "/work/tree",
+        session_id: SID,
+        model: "Synthetic Model 1",
+        backing_provider: "backing-x",
+      }),
+      ASSIST("ok"),
+      RESULT(),
+    ]);
+    const frontedBound = fronted.events.find((e) => e.kind === "session_bound");
+    expect(frontedBound).toEqual({
+      kind: "session_bound",
+      nativeSessionId: SID,
+      model: "Synthetic Model 1",
+      backingProvider: "backing-x",
+    });
+
+    // Verify end-to-end usage observation records harness 'cursor' alongside backingProvider 'backing-x' (T4.6, FR-ADP-10)
+    const usageRows = usageObservationsFromEvents(fronted.events, { runId: "run_t46_cursor", provider: "cursor" });
+    expect(usageRows).toHaveLength(1);
+    expect(usageRows[0]).toMatchObject({
+      runId: "run_t46_cursor",
+      provider: "cursor",
+      harness: "cursor",
+      backingProvider: "backing-x",
+      model: "Synthetic Model 1",
+      metrics: { inputTokens: 11, outputTokens: 2, cacheReadTokens: 5, cacheWriteTokens: 0 },
+    });
+  });
+
   it("a refused shell call is PERMISSION_BLOCKED although result says success and the exit is 0 (Q-65)", () => {
     for (const refusal of [
       { rejected: { command: "git push", workingDirectory: "/w", reason: "", isReadonly: false } },
@@ -899,6 +943,91 @@ describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
       { kind: "tool_call", tool: "edit", name: "writeToolCall" },
       { kind: "tool_call", tool: "shell", name: "shellToolCall" },
     ]);
+  });
+
+  it("a tool call completed with a newly provided or swapped command/path is reported for the guard; identical reports are not duplicated", () => {
+    // 1. Started without args, completed with command: reported on completed
+    const lateCommand = parse([
+      INIT(),
+      TOOL("started", { shellToolCall: {} }),
+      TOOL("completed", { shellToolCall: { args: { command: "echo shellok" }, result: { success: {} } } }),
+      RESULT(),
+    ]);
+    expect(lateCommand.events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "shell", name: "shellToolCall" },
+      { kind: "tool_call", tool: "shell", name: "shellToolCall", command: "echo shellok" },
+    ]);
+
+    // 2. Swapped command: started with benign "ls", completed swaps to "git push origin main"
+    const swapped = parse([
+      INIT(),
+      TOOL("started", { shellToolCall: { args: { command: "ls" } } }),
+      TOOL("completed", {
+        shellToolCall: { args: { command: "git push origin main" }, result: { success: {} } },
+      }),
+      RESULT(),
+    ]);
+    const calls = swapped.events.filter((e) => e.kind === "tool_call");
+    expect(calls).toEqual([
+      { kind: "tool_call", tool: "shell", name: "shellToolCall", command: "ls" },
+      { kind: "tool_call", tool: "shell", name: "shellToolCall", command: "git push origin main" },
+    ]);
+
+    // ADR-0039: The swapped command reaching the guard ends PERMISSION_BLOCKED
+    const guarded = swapped.events.map((e) => guardEvent(e, { cwd: "/w", bypass: true }));
+    expect(adapter().extractResult(guarded, EXIT0)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+
+    // 3. Identical reports in started and completed (as in live check row 7a) are not duplicated
+    const normal = parse([
+      INIT(),
+      TOOL("started", { shellToolCall: { args: { command: "echo shellok" } } }),
+      TOOL("completed", {
+        shellToolCall: { args: { command: "echo shellok" }, result: { rejected: {} } },
+      }),
+      RESULT(),
+    ]);
+    expect(normal.events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "shell", name: "shellToolCall", command: "echo shellok" },
+    ]);
+    expect(normal.events.filter((e) => e.kind === "permission_denied")).toEqual([
+      { kind: "permission_denied", tool: "shellToolCall" },
+    ]);
+  });
+
+  it("a permission denial on completed at exit 1 still ends PERMISSION_BLOCKED with the tool name", () => {
+    const exit1: ExitInfo = { outcome: "exited", exitCode: 1, signal: null, expectedExitCodes: [0] };
+    const r = parse(
+      [
+        INIT(),
+        TOOL("started", { shellToolCall: { args: { command: "git commit" } } }),
+        TOOL("completed", {
+          shellToolCall: {
+            result: { permissionDenied: { error: "Command blocked by permissions configuration" } },
+          },
+        }),
+      ],
+      exit1,
+    );
+    expect(r.events).toContainEqual({ kind: "permission_denied", tool: "shellToolCall" });
+    expect(r.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "denied: shellToolCall",
+    });
+  });
+
+  it("non-string backing_provider is omitted, never coerced", () => {
+    const r = parse([
+      INIT({ backing_provider: ["invalid", "vendor"], model: "Synthetic Model 1" }),
+      ASSIST("ok"),
+      RESULT(),
+    ]);
+    const bound = r.events.find((e) => e.kind === "session_bound");
+    expect(bound).toBeDefined();
+    expect(bound).not.toHaveProperty("backingProvider");
   });
 });
 
