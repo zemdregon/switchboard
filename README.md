@@ -101,8 +101,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#449](https://github.com/zemdregon/switchboard/pull/449) extend synthetic malicious replay and compile pins only (including
   completing both cut-line positions across categories and exits, parser fall-through paths at exit `2` and `137`,
   trailing `tool_call_update` after `end`, JSON-encoding variants, and replays of the T4.23 second to sixth parser
-  residual passes); #449 also pins, without fixing, an open guard gap: a Git write past the 512-character target clip
-  of a target-only shell call is not seen. Parser residual pins
+  residual passes); #449 also pinned a guard gap (a Git write past the 512-character target clip of a target-only shell
+  call was not seen), since closed in the parser (2026-10-15, synthetic only). Parser residual pins
   ([#342](https://github.com/zemdregon/switchboard/pull/342),
   [#354](https://github.com/zemdregon/switchboard/pull/354),
   [#372](https://github.com/zemdregon/switchboard/pull/372)) leave the parser unchanged; none of them validate the
@@ -931,11 +931,11 @@ writes only: a credential read, outside write or network call chained with a par
 Git write, not because those other actions were refused. Native command/target fields remain unrecorded (ROADMAP T4.26,
 T4.28). A bare `tool_call` before a clean `end_turn` still succeeds; path keys, tool `content` text, a hostile
 lower-precedence argument key shadowed by a benign higher one, and a command in a container shadowed by an earlier
-object container without one remain invisible to the guard. A shell call carrying its command only in a target key is
-guarded on the target, which the parser clips to 512 characters (a command is never clipped), so a Git write past the
-clip is not seen: the replay ends `ok` at exit 0 and `TOOL_FAILURE` (the exit code only) at exit 1. This gap is pinned,
-not fixed ([#449](https://github.com/zemdregon/switchboard/pull/449), `grokResidualGapStreams`); whether the native CLI
-ever sends a command in a target field is unknown. Synthetic replay does not
+object container without one remain invisible to the guard. A shell call carrying its command only in a target key now
+hands the whole target to the guard (the kept target is still clipped to 512 characters), and a nameless target-only
+update on a shell call stays a shell call, so a Git write past the clip ends `PERMISSION_BLOCKED` at exits 0 and 1
+(gap pinned in [#449](https://github.com/zemdregon/switchboard/pull/449), closed 2026-10-15 on synthetic lines only);
+whether the native CLI ever sends a command in a target field is unknown. Synthetic replay does not
 prove provider refusal or preventive isolation.
 
 `commitChannel` is **`finalize-only`**: Switchboard does not inject a per-run MCP server (no headless MCP-definition
@@ -1025,14 +1025,15 @@ argv (exactly one `--sandbox` and its value, `--disable-web-search` exactly when
 [#449](https://github.com/zemdregon/switchboard/pull/449) replays the fourth to sixth passes (decoy `sessionId`, a
 5,000-character command, a caller id equal to `call_1`, `null` or number `input` beside `parameters`, a short
 target-only Git write, an empty `id` beside `call_id`, a duplicate `type` key, an empty text chunk) in each hostile
-category at exits `0` and `1`, and adds case-variant and duplicate-`type` `unknown_events` lines: 325 streams on `main`
-(304 blocked — 102 `credential_read`, 102 `out_of_worktree_write`, 100 `network` — and 21 unknown-event; 24
-`grokPartialStreams`; 168 `grokResidualStreams`, which a positive control shows none end `PERMISSION_BLOCKED` without
-the guard verdict). It also pins the open target-clip gap above as 6 `grokResidualGapStreams`, kept outside the blocked
-count, with a positive control that the same call within the clip ends `PERMISSION_BLOCKED`. Bare, non-string and
+category at exits `0` and `1`, and adds case-variant and duplicate-`type` `unknown_events` lines. With the target-only
+shell gap closed in the parser (2026-10-15), the 6 streams #449 kept outside the blocked count, plus 6 for a nameless
+target-only update on a shell call, replay in the blocked batch: 337 streams (316 blocked — 106 `credential_read`, 106
+`out_of_worktree_write`, 104 `network` — and 21 unknown-event; 24 `grokPartialStreams`; 180 `grokResidualStreams`,
+which a positive control shows none end `PERMISSION_BLOCKED` without the guard verdict). Bare, non-string and
 prototype-key tool lines remain `unknown`; cut-line streams end `OUTPUT_PROTOCOL_ERROR`, which outranks a guard
-verdict. These case-file updates change neither the parser nor the compiled matrix; fields other than `type` remain
-hypothetical. No end-to-end run through Switchboard against a logged-in `grok` has been recorded yet (T4.28).
+verdict. Apart from that target-only fix, these case-file updates change neither the parser nor the compiled matrix;
+fields other than `type` remain hypothetical. No end-to-end run through Switchboard against a logged-in `grok` has
+been recorded yet (T4.28).
 
 ## Antigravity CLI (milestone 4)
 
@@ -1786,9 +1787,10 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   parser-residual coverage on `main` (#308 completes both cut positions for each category and exit code; #326 through
   #449 widen the matrix to 325 streams, 304 blocked and 21 unknown-event, with 24 `grokPartialStreams`; #393 pins the
   compiled cells' argv and refused scopes); fields other than `type` remain hypothetical, and no live CLI validation is
-  implied. Open, pinned gap ([#449](https://github.com/zemdregon/switchboard/pull/449)): a Git write past the
-  512-character clip of a target-only shell call is not guarded, so that replay ends `ok` at exit 0
-  (`grokResidualGapStreams`, 6 streams outside the 304 blocked). A bare `tool_call` before a clean `end_turn` still succeeds;
+  implied. The gap [#449](https://github.com/zemdregon/switchboard/pull/449) pinned (a Git write past the
+  512-character clip of a target-only shell call was not guarded) is closed in the parser on synthetic lines
+  (2026-10-15): those streams, plus a nameless target-only update on a shell call, now replay blocked (337 streams, 316
+  blocked). A bare `tool_call` before a clean `end_turn` still succeeds;
   path keys, tool `content`, shadowed lower-precedence command keys and a command in a container shadowed by an earlier
   object container without one (#372) are invisible to the guard. A bare unreadable `tool_call_update` after a clean
   `end_turn` still succeeds at exit 0 (T4.26 residual). Partial lines end `OUTPUT_PROTOCOL_ERROR`, not a proven

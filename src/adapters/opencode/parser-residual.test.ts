@@ -19,6 +19,15 @@
  * reporting no id succeeds unbound (gap); an empty or unsafe root `sessionID` shadows a safe part id (gap); a shell
  * command is never clipped and carries no target; prototype-named event types, error types and part ids are plain
  * strings; and the result honours the invocation's expected exit codes.
+ * Sixth pass (2026-10-15, same terms; mirrors Grok T4.23 sixth pass and Cursor/Antigravity fifth passes): an
+ * unrecognized tool name whose input carries a command falls back to shell and reaches the guard (fixture
+ * `custom_tool_command.jsonl`); non-object state or input drops the command so a raw string command escapes the guard
+ * to success (gap); an empty-string filePath shadows a valid path (gap); read/edit tools ignore input command; an
+ * unreadable tool_use after the last stop reports the trailing-tool detail, masking unreadable-event counts, while an
+ * unreadable non-tool line reports the unreadable-event count; multiple stop steps succeed if no tool follows the last
+ * one; duplicate JSON keys resolve to the last one; line types match exactly (case/whitespace variants are unknown); an
+ * empty text part emits no message and counts nothing unknown; a BOM line is unparseable framing; token metrics read
+ * from part.tokens only (root tokens dropped, non-negative fractions kept); and summary takes the last 2,000 characters.
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -1117,5 +1126,443 @@ describe("opencode parser residuals, fourth pass: resume id gaps, id shadowing, 
       if ("ineligible" in inv) throw new Error(inv.detail);
       expect(inv.expectedExitCodes).toEqual([0]);
     }
+  });
+});
+
+describe("opencode parser residuals, sixth pass: fallback tools, input shapes, trailing details and framing (T4.53, synthetic lines; parser unchanged)", () => {
+  const request = (): CompileRequest => ({
+    runId: "run_opencode_t453_sixth",
+    objective: "synthetic opencode objective",
+    constraints: [],
+    workspace: { cwd: makeCwd(), writable: true },
+    bypassApproved: true,
+  });
+  const parseRaw = (raws: string[]) => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    return { a, events: raws.flatMap((r) => a.parseEvent(r, state)), state };
+  };
+
+  it("an unrecognized tool name whose input carries a string command falls back to shell and is guarded", () => {
+    for (const toolName of ["custom_exec", "terminal_cmd", "run", "powershell", ""]) {
+      const call = TOOL(toolName, { command: "git push origin main" });
+      const { events } = parse([START(SID), call, FINISH("stop")]);
+      expect(
+        events.find((e) => e.kind === "tool_call"),
+        toolName,
+      ).toEqual({
+        kind: "tool_call",
+        tool: "shell",
+        name: toolName,
+        command: "git push origin main",
+      });
+      expect(adapter().extractResult(guarded([START(SID), call, FINISH("stop")]), EXIT_OK), toolName).toMatchObject({
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+        nativeSessionId: SID,
+      });
+    }
+    // Without a string command in input, an unrecognized tool is `other` and has no command or target.
+    const withoutCommand = parse([START(SID), TOOL("custom_exec", { path: "/work/file.txt" }), FINISH("stop")]).events;
+    expect(withoutCommand.find((e) => e.kind === "tool_call")).toEqual({
+      kind: "tool_call",
+      tool: "other",
+      name: "custom_exec",
+    });
+  });
+
+  it("fixture custom_tool_command replays a Git write behind an unrecognized tool to PERMISSION_BLOCKED", async () => {
+    const report = await runConformanceCase({
+      kind: "task_failure",
+      adapter: replayAdapter("custom_tool_command"),
+      request: request(),
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", unknownEventCount: 0 });
+  });
+
+  it("pins the gap: a non-object state or input drops the command, so a raw command escapes the guard to success", () => {
+    // When state or input is a string or array instead of an object, input is undefined and command is lost.
+    for (const badInput of ["git push origin main", ["git push origin main"], 7, null]) {
+      const call = {
+        type: "tool_use",
+        sessionID: SID,
+        part: { tool: "shell", state: { status: "completed", input: badInput } },
+      };
+      const { events } = parse([START(SID), call, FINISH("stop")]);
+      expect(
+        events.find((e) => e.kind === "tool_call"),
+        JSON.stringify(badInput),
+      ).toEqual({
+        kind: "tool_call",
+        tool: "shell",
+        name: "shell",
+      });
+      // The guard sees no command, so the run succeeds (gap pinned).
+      expect(
+        adapter().extractResult(guarded([START(SID), call, FINISH("stop")]), EXIT_OK),
+        JSON.stringify(badInput),
+      ).toEqual({ ok: true, unknownEventCount: 0, nativeSessionId: SID });
+    }
+    // Similarly, input placed directly on part instead of part.state is ignored.
+    const directInput = {
+      type: "tool_use",
+      sessionID: SID,
+      part: { tool: "shell", input: { command: "git push origin main" } },
+    };
+    expect(adapter().extractResult(guarded([START(SID), directInput, FINISH("stop")]), EXIT_OK)).toEqual({
+      ok: true,
+      unknownEventCount: 0,
+      nativeSessionId: SID,
+    });
+  });
+
+  it("pins the gap: an empty-string filePath shadows a valid path in read and edit tools", () => {
+    const { events } = parse([
+      START(SID),
+      TOOL("read", { filePath: "", path: "/work/notes.txt" }),
+      TOOL("edit", { filePath: "", path: "/work/code.ts" }),
+      FINISH("stop"),
+    ]);
+    const tools = events.filter((e) => e.kind === "tool_call");
+    expect(tools).toEqual([
+      { kind: "tool_call", tool: "read", name: "read", target: "" },
+      { kind: "tool_call", tool: "edit", name: "edit", target: "" },
+    ]);
+    // Only a non-string or missing filePath falls through to path.
+    for (const root of [undefined, null, 7]) {
+      const fb = parse([START(SID), TOOL("read", { filePath: root, path: "/work/notes.txt" }), FINISH("stop")]).events;
+      expect(
+        fb.find((e) => e.kind === "tool_call"),
+        JSON.stringify(root),
+      ).toEqual({
+        kind: "tool_call",
+        tool: "read",
+        name: "read",
+        target: "/work/notes.txt",
+      });
+    }
+  });
+
+  it("read and edit tools ignore input.command, and tool names longer than 64 characters are clipped", () => {
+    const call = TOOL("read", { command: "git push origin main", filePath: "/work/notes.txt" });
+    const { events } = parse([START(SID), call, FINISH("stop")]);
+    expect(events.find((e) => e.kind === "tool_call")).toEqual({
+      kind: "tool_call",
+      tool: "read",
+      name: "read",
+      target: "/work/notes.txt",
+    });
+    // The command is ignored, so the guard sees no command and the run succeeds.
+    expect(adapter().extractResult(guarded([START(SID), call, FINISH("stop")]), EXIT_OK)).toEqual({
+      ok: true,
+      unknownEventCount: 0,
+      nativeSessionId: SID,
+    });
+
+    const longName = "x".repeat(80);
+    const longTool = parse([START(SID), TOOL(longName, { command: "ls" }), FINISH("stop")]).events;
+    expect(longTool.find((e) => e.kind === "tool_call")).toMatchObject({
+      name: `${"x".repeat(64)}…`,
+      tool: "shell",
+    });
+  });
+
+  it("detail ranking: an unreadable tool_use after stop reports the trailing-tool detail, masking unreadable counts", () => {
+    const unreadableToolUse = { type: "tool_use", sessionID: SID, part: { type: "tool" } };
+    const { events } = parse([START(SID), TEXT("hello"), FINISH("stop"), unreadableToolUse]);
+    expect(events.at(-1)).toEqual({ kind: "unknown", rawType: "tool_use" });
+    expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the final stop step",
+      unknownEventCount: 1,
+    });
+
+    // An unreadable non-tool line after stop reports the unreadable count, not the trailing-tool detail.
+    for (const nonTool of [
+      { type: "tool_call", sessionID: SID },
+      { type: "telemetry", sessionID: SID },
+      { type: "step_start", sessionID: SID, part: { type: "invalid" } },
+    ]) {
+      const res = adapter().extractResult(parse([START(SID), TEXT("hello"), FINISH("stop"), nonTool]).events, EXIT_OK);
+      expect(res, JSON.stringify(nonTool)).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "1 unreadable event(s) in the stream",
+        unknownEventCount: 1,
+      });
+    }
+
+    // A provider error before stop outranks both trailing tools and unreadable events.
+    const errRes = adapter().extractResult(
+      parse([START(SID), ERROR("provider.auth"), FINISH("stop"), unreadableToolUse]).events,
+      EXIT_OK,
+    );
+    expect(errRes).toMatchObject({
+      ok: false,
+      failureCode: "AUTH_REQUIRED",
+      failureDetail: "auth: provider.auth: synthetic",
+    });
+  });
+
+  it("multiple stop steps succeed when no tool call follows the last one; a tool between stops is not trailing", () => {
+    const doubleStop = parse([
+      START(SID),
+      FINISH("stop", "prt_f1"),
+      TOOL("shell", { command: "git status" }),
+      FINISH("stop", "prt_f2"),
+    ]).events;
+    // The tool call comes before prt_f2 (the final stop), so it is not trailing and the run succeeds.
+    expect(adapter().extractResult(doubleStop, EXIT_OK)).toEqual({
+      ok: true,
+      unknownEventCount: 0,
+      nativeSessionId: SID,
+    });
+
+    // A tool call after the second stop is trailing and fails the run.
+    const trailingAfterSecond = parse([
+      START(SID),
+      FINISH("stop", "prt_f1"),
+      FINISH("stop", "prt_f2"),
+      TOOL("shell", { command: "git status" }),
+    ]).events;
+    expect(adapter().extractResult(trailingAfterSecond, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the final stop step",
+    });
+  });
+
+  it("duplicate JSON keys resolve to the last one (JSON.parse), so a leading type cannot forge or hide a stop", () => {
+    // Leading stop hidden by trailing text:
+    const { events: hiddenEvents } = parseRaw([
+      `{"type":"step_finish","part":{"type":"step-finish","reason":"stop"},"sessionID":"${SID}","type":"text","part":{"type":"text","text":"hidden stop"}}`,
+    ]);
+    expect(hiddenEvents).toEqual([
+      { kind: "session_bound", nativeSessionId: SID },
+      { kind: "message", role: "assistant", text: "hidden stop" },
+    ]);
+    expect(adapter().extractResult(hiddenEvents, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+    });
+
+    // Leading text overridden by trailing step_finish stop:
+    const { events: realEvents } = parseRaw([
+      `{"type":"text","part":{"type":"text","text":"hello"},"type":"step_finish","sessionID":"${SID}","part":{"type":"step-finish","reason":"stop"}}`,
+    ]);
+    expect(adapter().extractResult(realEvents, EXIT_OK)).toEqual({
+      ok: true,
+      unknownEventCount: 0,
+      nativeSessionId: SID,
+    });
+
+    // Duplicate reason where last is cancelled:
+    const { events: forgedEvents } = parseRaw([
+      `{"type":"step_finish","sessionID":"${SID}","part":{"type":"step-finish","reason":"stop","reason":"cancelled"}}`,
+    ]);
+    expect(adapter().extractResult(forgedEvents, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+    });
+  });
+
+  it("line types match exactly: a case or whitespace variant is unknown, never a result or tool call", () => {
+    const variants = [
+      "Step_finish",
+      "STEP_FINISH",
+      " step_finish",
+      "step_finish ",
+      "step-finish",
+      "stepFinish",
+      "tool_call",
+      "Tool_use",
+      "TOOL_USE",
+      "Text",
+      "TEXT",
+      "Step_start",
+      "Error",
+    ];
+    const { events, state } = parse(
+      variants.map((type) => ({
+        type,
+        part: { type: "step-finish", reason: "stop" },
+      })),
+    );
+    expect(events).toEqual(variants.map((rawType) => ({ kind: "unknown", rawType })));
+    expect(state).toEqual({ lines: variants.length, unknownEvents: variants.length });
+    expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+    });
+  });
+
+  it("an empty text part emits no message and counts nothing unknown; a non-string text part is unknown", () => {
+    const { events, state } = parse([START(SID), TEXT(""), FINISH("stop")]);
+    expect(events.filter((e) => e.kind === "message")).toEqual([]);
+    expect(state.unknownEvents).toBe(0);
+    expect(adapter().extractResult(events, EXIT_OK)).toEqual({
+      ok: true,
+      unknownEventCount: 0,
+      nativeSessionId: SID,
+    });
+
+    // A non-string text part counts as unknown and fails the turn.
+    for (const badText of [null, 7, ["hello"], { text: "nested" }]) {
+      const bad = parse([
+        START(SID),
+        { type: "text", sessionID: SID, part: { type: "text", text: badText } },
+        FINISH("stop"),
+      ]);
+      expect(
+        bad.events.find((e) => e.kind === "unknown"),
+        JSON.stringify(badText),
+      ).toEqual({
+        kind: "unknown",
+        rawType: "text",
+      });
+      expect(adapter().extractResult(bad.events, EXIT_OK), JSON.stringify(badText)).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+      });
+    }
+  });
+
+  it("a byte-order mark before a line is unparseable framing: counted as a line, emitting nothing, never unknown", () => {
+    const { events, state } = parseRaw([`\uFEFF${line(FINISH("stop"))}`]);
+    expect(events).toEqual([]);
+    expect(state).toEqual({ lines: 1, unknownEvents: 0 });
+    // Without a readable stop, the supervisor ends the run OUTPUT_PROTOCOL_ERROR.
+    expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+    });
+  });
+
+  it("token metrics read from part.tokens only: root tokens dropped, non-negative fractions kept, nested cache read", () => {
+    // Root tokens and root cost are dropped:
+    const rootOnly = parse([
+      {
+        type: "step_finish",
+        sessionID: SID,
+        tokens: { input: 10, output: 5 },
+        cost: 0.05,
+        part: { type: "step-finish", reason: "stop" },
+      },
+    ]).events;
+    expect(rootOnly.filter((e) => e.kind === "usage")).toEqual([]);
+
+    // Fractional tokens and nested cache read:
+    const valid = parse([
+      {
+        type: "step_finish",
+        sessionID: SID,
+        part: {
+          type: "step-finish",
+          reason: "stop",
+          cost: 0.0025,
+          tokens: {
+            input: 2.5,
+            output: 1.0,
+            reasoning: 0,
+            cache: { read: 5.5, write: 0 },
+          },
+        },
+      },
+    ]).events;
+    expect(valid.filter((e) => e.kind === "usage")).toEqual([
+      {
+        kind: "usage",
+        source: "provider_reported",
+        metrics: {
+          input: 2.5,
+          output: 1.0,
+          reasoning: 0,
+          cache_read: 5.5,
+          cache_write: 0,
+          cost_usd: 0.0025,
+        },
+      },
+    ]);
+
+    // Negative, non-finite, and non-object cache dropped:
+    const invalid = parse([
+      {
+        type: "step_finish",
+        sessionID: SID,
+        part: {
+          type: "step-finish",
+          reason: "stop",
+          cost: -0.01,
+          tokens: {
+            input: -5,
+            output: "10" as unknown as number,
+            reasoning: Number.NaN,
+            cache: 5 as unknown as object,
+          },
+        },
+      },
+    ]).events;
+    expect(invalid.filter((e) => e.kind === "usage")).toEqual([]);
+  });
+
+  it("summary takes the last 2,000 characters of joined text across messages", () => {
+    const msg1 = "a".repeat(1_000);
+    const msg2 = "b".repeat(1_000);
+    const msg3 = "c".repeat(1_000);
+    const { events } = parse([TEXT(msg1), TEXT(msg2), TEXT(msg3), FINISH("stop")]);
+    const res = adapter().extractResult(events, EXIT_OK);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected success");
+    const fullText = `${msg1}\n${msg2}\n${msg3}`;
+    expect(res.summary).toHaveLength(2_000);
+    expect(res.summary).toBe(fullText.slice(-2_000));
+    expect(res.summary?.endsWith(msg3)).toBe(true);
+  });
+
+  it("error payload variants: string, numeric, boolean, array, and null/omitted", () => {
+    // String error:
+    const strErr = parse([START(SID), { type: "error", error: "server crashed" }, FINISH("stop")]).events;
+    expect(strErr.find((e) => e.kind === "provider_error")).toEqual({
+      kind: "provider_error",
+      category: "unknown",
+      message: "error: server crashed",
+    });
+
+    // Numeric / boolean / array error: JSON.stringify formatted:
+    for (const val of [502, false, ["e1", "e2"]]) {
+      const valErr = parse([START(SID), { type: "error", error: val }, FINISH("stop")]).events;
+      expect(
+        valErr.find((e) => e.kind === "provider_error"),
+        JSON.stringify(val),
+      ).toEqual({
+        kind: "provider_error",
+        category: "unknown",
+        message: JSON.stringify(val),
+      });
+    }
+
+    // Null or omitted error payload is unknown:
+    for (const empty of [undefined, null]) {
+      const emptyErr = parse([START(SID), { type: "error", error: empty }, FINISH("stop")]);
+      expect(
+        emptyErr.events.find((e) => e.kind === "unknown"),
+        String(empty),
+      ).toEqual({
+        kind: "unknown",
+        rawType: "error",
+      });
+    }
+
+    // Known error categories:
+    const quota = parse([START(SID), ERROR("provider.quota"), FINISH("stop")]).events;
+    expect(quota.find((e) => e.kind === "provider_error")).toEqual({
+      kind: "provider_error",
+      category: "quota",
+      message: "provider.quota: synthetic",
+    });
   });
 });
