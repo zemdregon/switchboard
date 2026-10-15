@@ -1,0 +1,6 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.53). The synthetic_* types are invented on purpose; tool_use without a string part.tool, step_finish without a string part.reason and text without a string part.text are recorded types in shapes the parser does not read. No line carries a sessionID. None may end in success.","exit":0}}
+{"type":"synthetic_unknown_kind","timestamp":1}
+{"type":"tool_use","timestamp":1,"part":{"type":"tool","state":{"status":"completed","input":{"command":"synthetic"}}}}
+{"type":"text","timestamp":1,"part":{"type":"text","text":["SYNTHETIC"]}}
+{"type":"step_finish","timestamp":1,"part":{"type":"step-finish","reason":null}}
+{"type":"synthetic_result","timestamp":1,"part":{"type":"step-finish","reason":"stop"}}

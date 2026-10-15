@@ -891,6 +891,100 @@ describe("opencode parser and result (T4.53)", () => {
         { kind: "tool_call", tool: "edit", name: "edit", target: "b.txt" },
       ]);
     });
+
+    // The same outcomes replayed end to end from fixture files through the supervisor, so each Done-when case has a
+    // fixture: success (`success_edit`), task failure (`task_failure`), malformed (`malformed_output`) and the ones
+    // below. They pin the gaps; a capture (T4.51 extension) must change them.
+    const replayCase = (
+      fixture: string,
+      kind: ConformanceCase["kind"],
+      exp: ConformanceCase["expect"],
+    ): ConformanceCase => ({
+      kind,
+      adapter: replayAdapter(fixture),
+      request: {
+        runId: "run_opencode_t453_fixture",
+        objective: "synthetic opencode objective",
+        constraints: [],
+        workspace: { cwd: makeCwd(), writable: true },
+        bypassApproved: true,
+      },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: exp,
+    });
+
+    it("fixture permission_denied_outside (row 11) replays to a stop success with nothing counted unknown (gap)", async () => {
+      const report = await runConformanceCase(
+        replayCase("permission_denied_outside", "task_failure", { ok: true, nativeSessionId: DEFAULT_SESSION_ID }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({ ok: true, unknownEventCount: 0 });
+    });
+
+    it("fixture rate_limit (row 14c, never reached) replays an empty stream at exit 1 to TOOL_FAILURE, never RATE_LIMIT_TRANSIENT", async () => {
+      const report = await runConformanceCase(
+        replayCase("rate_limit", "rate_limit", { ok: false, failureCode: "TOOL_FAILURE" }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", unknownEventCount: 0 });
+      expect(report.result).not.toHaveProperty("nativeSessionId");
+    });
+
+    it("fixture rate_limit_error replays an unmapped error type at exit 0 to TOOL_FAILURE, never RATE_LIMIT_TRANSIENT or success", async () => {
+      const report = await runConformanceCase(
+        replayCase("rate_limit_error", "rate_limit", {
+          ok: false,
+          failureCode: "TOOL_FAILURE",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", unknownEventCount: 0 });
+    });
+
+    it("fixture unknown_events replays to OUTPUT_PROTOCOL_ERROR: every unreadable line is counted and none binds a session", async () => {
+      const report = await runConformanceCase(
+        replayCase("unknown_events", "malformed_output", { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", unknownEventCount: 5 });
+      expect(report.result).not.toHaveProperty("nativeSessionId");
+    });
+
+    it("fixture no_stop (row 4a, Q-85) replays text at exit 0 without a stop step to OUTPUT_PROTOCOL_ERROR", async () => {
+      const report = await runConformanceCase(
+        replayCase("no_stop", "malformed_output", {
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({ summary: "SYNTHETIC: answer without a final step.", unknownEventCount: 0 });
+    });
+
+    it("fixture trailing_tool (Q-85) replays a tool_use after the stop step to OUTPUT_PROTOCOL_ERROR", async () => {
+      const report = await runConformanceCase(
+        replayCase("trailing_tool", "malformed_output", {
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({ failureDetail: "tool call after the final stop step" });
+    });
+
+    it("fixture session_changed replays to OUTPUT_PROTOCOL_ERROR with the first session id still bound", async () => {
+      const report = await runConformanceCase(
+        replayCase("session_changed", "malformed_output", {
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    });
   });
 });
 
