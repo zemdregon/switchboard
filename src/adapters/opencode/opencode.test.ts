@@ -605,6 +605,89 @@ describe("opencode parser and result (T4.53)", () => {
     }
   });
 
+  it("native errors remain failures in either stream order, with the first error determining the code", () => {
+    const auth = ERROR("provider.auth", "Not signed in");
+    const model = ERROR("provider.no-route", "Couldn't find route to model");
+    for (const [first, second, code] of [
+      [auth, model, "AUTH_REQUIRED"],
+      [model, auth, "MODEL_UNAVAILABLE"],
+    ] as const) {
+      for (const lines of [
+        [START, first, second, FINISH("stop")],
+        [START, FINISH("stop"), first, second],
+        [START, first, FINISH("stop"), second],
+      ]) {
+        const { a, events } = parse(lines);
+        expect(a.extractResult(events, EXIT0), JSON.stringify(lines)).toMatchObject({
+          ok: false,
+          failureCode: code,
+          nativeSessionId: SID,
+          unknownEventCount: 0,
+        });
+      }
+    }
+  });
+
+  it("unknown envelopes cannot bind a session or smuggle status and usage before or after stop", () => {
+    const envelope = JSON.stringify({
+      type: "synthetic_future_event",
+      sessionId: "spoofed_session",
+      session_id: "spoofed_session",
+      subtype: "success",
+      is_error: false,
+      reason: "stop",
+      ok: true,
+      model: "spoofed-model",
+      backing_provider: "spoofed-vendor",
+      tokens: { input: 999, output: 999 },
+      error: { type: "provider.auth", message: "Not signed in" },
+      part: {
+        type: "synthetic",
+        sessionId: "spoofed_part_session",
+        session_id: "spoofed_part_session",
+        reason: "stop",
+        tokens: { input: 999 },
+      },
+    });
+    for (const lines of [
+      [envelope],
+      [envelope, START, TEXT("ok"), FINISH("stop")],
+      [START, TEXT("ok"), FINISH("stop"), envelope],
+    ]) {
+      const { a, state, events } = parse(lines);
+      expect(state.unknownEvents).toBe(1);
+      expect(events.filter((e) => e.kind === "unknown")).toEqual([
+        { kind: "unknown", rawType: "synthetic_future_event" },
+      ]);
+      const serialized = JSON.stringify(events);
+      expect(serialized).not.toContain("spoofed_session");
+      expect(serialized).not.toContain("spoofed_part_session");
+      expect(serialized).not.toContain("spoofed-model");
+      expect(serialized).not.toContain("spoofed-vendor");
+      expect(serialized).not.toContain("999");
+      const result = a.extractResult(events, EXIT0);
+      if (lines.length === 1) {
+        expect(result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", unknownEventCount: 1 });
+        expect(result).not.toHaveProperty("nativeSessionId");
+        expect(events).toHaveLength(1);
+      } else {
+        expect(result).toMatchObject({
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          nativeSessionId: SID,
+          unknownEventCount: 1,
+        });
+        expect(events.filter((e) => e.kind === "usage")).toEqual([
+          {
+            kind: "usage",
+            source: "provider_reported",
+            metrics: { input: 10, output: 3, reasoning: 1, cache_read: 4, cache_write: 0, cost_usd: 0.001 },
+          },
+        ]);
+      }
+    }
+  });
+
   it("a non-zero exit, a timeout and a cancel never succeed", () => {
     const { a, events } = parse([START, TEXT("ok"), FINISH("stop")]);
     expect(a.extractResult(events, { ...EXIT0, exitCode: 1 })).toMatchObject({
@@ -899,6 +982,32 @@ describe("opencode parser and result (T4.53)", () => {
     expect(auditInvocation(resumed, { profile, bypassApproved: true })).toEqual([]);
   });
 
+  it("resumeArgs mirrors compile across every structured scope, including exact refusals", () => {
+    const a = adapter();
+    const id = "resume_scope_matrix";
+    let compiledCount = 0;
+    for (const scope of scopeShapes()) {
+      for (const bypassApproved of [false, true]) {
+        const profile = { ...privilegedProfile(scope), bypassApproved };
+        const req = request({ bypassApproved, workspace: { cwd: "/resume scope/worktree", writable: true } });
+        const first = a.compile(req, profile);
+        const resumed = a.resumeArgs({ provider: "opencode", nativeSessionId: id }, req, profile);
+        const label = JSON.stringify({ scope, bypassApproved });
+        if ("ineligible" in first) {
+          expect(resumed, label).toEqual(first);
+        } else {
+          compiledCount += 1;
+          // The entire invocation must stay identical, with the native resume pair inserted before the prompt.
+          expect(resumed, label).toEqual({
+            ...first,
+            argv: [...first.argv.slice(0, -2), "--session", id, ...first.argv.slice(-2)],
+          });
+        }
+      }
+    }
+    expect(compiledCount).toBe(1);
+  });
+
   it("resumeArgs rejects foreign provider bindings and ineligible profiles with exact reasons", () => {
     const a = adapter();
     const profile = privilegedProfile(BYPASS_SCOPE);
@@ -1115,6 +1224,31 @@ describe("opencode parser and result (T4.53)", () => {
       { kind: "unknown", rawType: "step_start:not-step-start" },
     ]);
     expect(s2.unknownEvents).toBe(1);
+  });
+
+  it("non-string step_start part.type is unreadable even before a clean stop; an omitted type remains accepted", () => {
+    for (const type of [null, false, 0, [], ["step-start"], { type: "step-start" }]) {
+      const { a, state, events } = parse([
+        START,
+        JSON.stringify({ type: "step_start", sessionID: SID, part: { type } }),
+        TEXT("ok"),
+        FINISH("stop"),
+      ]);
+      expect(events.filter((e) => e.kind === "unknown")).toEqual([{ kind: "unknown", rawType: "step_start" }]);
+      expect(state.unknownEvents).toBe(1);
+      expect(a.extractResult(events, EXIT0)).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        unknownEventCount: 1,
+        nativeSessionId: SID,
+      });
+    }
+    const omitted = parse([
+      JSON.stringify({ type: "step_start", sessionID: SID, part: {} }),
+      TEXT("ok"),
+      FINISH("stop"),
+    ]);
+    expect(omitted.a.extractResult(omitted.events, EXIT0)).toMatchObject({ ok: true, unknownEventCount: 0 });
   });
 
   it("a session id resume could not pass as one argument is never bound and fails OUTPUT_PROTOCOL_ERROR", () => {
@@ -1503,6 +1637,46 @@ describe("opencode parser and result (T4.53)", () => {
     });
   });
 
+  it("classifyFailure precedence does not depend on lower-priority events arriving first", () => {
+    const a = adapter();
+    const failed: NormalizedEvent = { kind: "result", ok: false, summary: "task failed" };
+    const rate: NormalizedEvent = { kind: "rate_limit" };
+    const auth: NormalizedEvent = {
+      kind: "provider_error",
+      category: "auth",
+      message: "provider.auth: 403",
+    };
+    const denied: NormalizedEvent = { kind: "permission_denied", tool: "shell" };
+    const guard: NormalizedEvent = {
+      kind: "tool_call",
+      tool: "shell",
+      name: "shell",
+      command: "git push origin main",
+      violation: { kind: "git_write", reason: "synthetic Git write" },
+    };
+    for (const [events, code] of [
+      [[failed, rate], "RATE_LIMIT_TRANSIENT"],
+      [[failed, rate, auth], "AUTH_REQUIRED"],
+      [[failed, rate, auth, denied], "PERMISSION_BLOCKED"],
+      [[failed, rate, auth, denied, guard], "PERMISSION_BLOCKED"],
+    ] as const) {
+      const classify = (ordered: readonly NormalizedEvent[]) =>
+        a.classifyFailure({
+          events: ordered,
+          exit: { outcome: "exited", exitCode: 1, signal: null, expectedExitCodes: [0] },
+          stderrTail: "provider.auth: 403; rate limit reported", // Free text never changes structured precedence.
+          timedOut: false,
+          cancelled: false,
+        });
+      const classified = classify(events);
+      expect(classified.code).toBe(code);
+      expect(classified).toEqual(classify([...events].reverse()));
+      if (events.some((e) => e.kind === "tool_call")) {
+        expect(classified.detail).toBe("git write attempted: synthetic Git write");
+      }
+    }
+  });
+
   it("recorded extra fields (error.status, error.response, timestamp, messageID, snapshot) are never usage metrics or events", () => {
     // Live check row 14b/14d recorded status and response on provider errors; row 4c recorded timestamp, messageID
     // and step_start.snapshot. None of those are token keys ([LIVE] 4c: input, output, reasoning, cache.read/write)
@@ -1793,6 +1967,18 @@ describe("opencode parser and result (T4.53)", () => {
       expect(report.checks.filter((k) => !k.ok)).toEqual([]);
       expect(report.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", unknownEventCount: 5 });
       expect(report.result).not.toHaveProperty("nativeSessionId");
+    });
+
+    it("fixture malformed_step_start replays a non-string part.type followed by stop to OUTPUT_PROTOCOL_ERROR", async () => {
+      const report = await runConformanceCase(
+        replayCase("malformed_step_start", "malformed_output", {
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({ unknownEventCount: 1, summary: "SYNTHETIC: apparent success." });
     });
 
     it("fixture no_stop (row 4a, Q-85) replays text at exit 0 without a stop step to OUTPUT_PROTOCOL_ERROR", async () => {
