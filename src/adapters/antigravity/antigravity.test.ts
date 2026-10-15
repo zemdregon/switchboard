@@ -16,6 +16,7 @@ import { createLedger, openLedger } from "../../ledger/index.js";
 import { RunLifecycle } from "../../lifecycle/index.js";
 import { createSwitchboardServer } from "../../mcp/server.js";
 import { resolveTrustProfile } from "../../policy/profiles.js";
+import { usageObservationsFromEvents } from "../../usage/observations.js";
 import { WorkspaceManager } from "../../workspace/index.js";
 import { auditInvocation, bypassClassFlags } from "../audit.js";
 import { type ConformanceCase, missingRequiredKinds, runConformanceCase, runConformanceSuite } from "../conformance.js";
@@ -33,6 +34,7 @@ import type {
   ParseState,
   ProbeOutput,
   ProbeRunner,
+  ProviderId,
   ResolvedProfile,
   TrustProfile,
 } from "../types.js";
@@ -1303,6 +1305,529 @@ describe("antigravity parser fallbacks and exact matching (T4.33, synthetic shap
       const r = parse([INIT, RESULT({ response })]).result;
       expect(r, JSON.stringify(response)).toMatchObject({ ok: true });
       expect(r, JSON.stringify(response)).not.toHaveProperty("summary");
+    }
+  });
+
+  it("harness and backing provider mismatch per T4.6 (FR-ADP-10): structured backing_provider is reported, never derived from display name", async () => {
+    // 1. Without backing_provider in init: backingProvider is unset
+    const standard = parse([INIT, RESULT()]);
+    const standardBound = standard.events.find((e) => e.kind === "session_bound");
+    expect(standardBound).toBeDefined();
+    expect(standardBound).not.toHaveProperty("backingProvider");
+    expect(standardBound).not.toHaveProperty("model");
+
+    // 2. With backing_provider and model in init (T4.6: harness 'antigravity' fronting another provider, e.g. 'backing-g'):
+    const fronted = parse([
+      j({
+        event: "init",
+        conversation_id: CID,
+        backing_provider: "backing-g",
+        init: { cwd: "/work/tree", model: "Synthetic Gemini 1" },
+      }),
+      RESULT(),
+    ]);
+    const frontedBound = fronted.events.find((e) => e.kind === "session_bound");
+    expect(frontedBound).toEqual({
+      kind: "session_bound",
+      nativeSessionId: CID,
+      model: "Synthetic Gemini 1",
+      backingProvider: "backing-g",
+    });
+
+    // 3. Alternative camelCase spelling backingProvider is accepted in init or result
+    const camel = parse([
+      j({
+        event: "init",
+        conversation_id: CID,
+        backingProvider: "backing-h",
+        init: { cwd: "/work/tree", model: "Synthetic Gemini 2" },
+      }),
+      RESULT(),
+    ]);
+    expect(camel.events.find((e) => e.kind === "session_bound")).toEqual({
+      kind: "session_bound",
+      nativeSessionId: CID,
+      model: "Synthetic Gemini 2",
+      backingProvider: "backing-h",
+    });
+
+    // 4. Structured backing_provider and model in result envelope when init had none
+    const inResult = parse([
+      j({ event: "init", conversation_id: CID, init: { cwd: "/work/tree" } }),
+      RESULT({ backing_provider: "backing-r", model: "Result Model" }),
+    ]);
+    // The session is bound on init; result does not re-bind already bound session
+    expect(inResult.events.find((e) => e.kind === "session_bound")).toEqual({
+      kind: "session_bound",
+      nativeSessionId: CID,
+    });
+
+    // 4b. When result arrives with no prior init, it binds backingProvider and model
+    const aloneWithBacking = parse([RESULT({ backing_provider: "backing-r", model: "Result Model" })]);
+    expect(aloneWithBacking.events.find((e) => e.kind === "session_bound")).toEqual({
+      kind: "session_bound",
+      nativeSessionId: CID,
+      model: "Result Model",
+      backingProvider: "backing-r",
+    });
+
+    // 5. Non-string model and backing_provider are dropped, not coerced
+    const nonStr = parse([
+      j({
+        event: "init",
+        conversation_id: CID,
+        backing_provider: 12345,
+        init: { cwd: "/work/tree", model: { id: "invalid" } },
+      }),
+      RESULT(),
+    ]);
+    expect(nonStr.events.find((e) => e.kind === "session_bound")).toEqual({
+      kind: "session_bound",
+      nativeSessionId: CID,
+    });
+
+    // 6. Long strings are clipped to 128 characters
+    const longVal = "x".repeat(150);
+    const clipped = parse([
+      j({
+        event: "init",
+        conversation_id: CID,
+        backing_provider: longVal,
+        init: { cwd: "/work/tree", model: longVal },
+      }),
+      RESULT(),
+    ]);
+    expect(clipped.events.find((e) => e.kind === "session_bound")).toEqual({
+      kind: "session_bound",
+      nativeSessionId: CID,
+      model: `${"x".repeat(128)}…`,
+      backingProvider: `${"x".repeat(128)}…`,
+    });
+
+    // 7. End-to-end usage observation records harness 'antigravity' alongside backingProvider 'backing-g' (T4.6, FR-ADP-10)
+    const usageRows = usageObservationsFromEvents(fronted.events, {
+      runId: "run_t46_antigravity",
+      provider: "antigravity",
+    });
+    expect(usageRows).toHaveLength(1);
+    expect(usageRows[0]).toMatchObject({
+      runId: "run_t46_antigravity",
+      provider: "antigravity",
+      harness: "antigravity",
+      backingProvider: "backing-g",
+      model: "Synthetic Gemini 1",
+      metrics: { input_tokens: 20, output_tokens: 3, thinking_tokens: 1, cache_read_tokens: 0, total_tokens: 24 },
+    });
+
+    // 8. Replay backing_provider fixture end to end through supervisor
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: replayAdapter("backing_provider"),
+      request: {
+        runId: "run_antigravity_backing_provider",
+        objective: "synthetic antigravity objective",
+        constraints: [],
+        workspace: { cwd: makeCwd(), writable: true },
+        bypassApproved: true,
+      },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: true,
+      nativeSessionId: DEFAULT_SESSION_ID,
+    });
+  });
+
+  it("prototype safety (ownProp): inherited prototype properties or __proto__ smuggling are never read as event fields", () => {
+    // Top-level event smuggling via JSON.parse __proto__
+    const protoSmuggled = parse(['{"__proto__":{"event":"init"}}']);
+    expect(protoSmuggled.state.unknownEvents).toBe(1);
+    expect(protoSmuggled.events).toEqual([{ kind: "unknown", rawType: "none" }]);
+
+    // Tool call parameter prototype pollution: properties not directly on params are ignored
+    const cleanTool = parse([
+      INIT,
+      j({
+        event: "step_update",
+        conversation_id: CID,
+        step_index: 1,
+        state: "ACTIVE",
+        step_type: "tool",
+        tool_info: {
+          name: "custom_tool",
+          parameters: Object.create({ command: "git push origin main", path: "/escaped" }),
+        },
+      }),
+      RESULT(),
+    ]);
+    const tc = cleanTool.events.find((e) => e.kind === "tool_call");
+    expect(tc).toMatchObject({
+      kind: "tool_call",
+      tool: "other",
+      name: "custom_tool",
+    });
+    expect(tc).not.toHaveProperty("command");
+    expect(tc).not.toHaveProperty("target");
+  });
+
+  it("parameter container fallback (parameters > args > input) and alias precedence", () => {
+    // Command precedence: command > CommandLine
+    const p1 = parse([
+      INIT,
+      TOOL(1, {
+        tool_info: {
+          name: "run_command",
+          parameters: { command: "cmd1", CommandLine: "cmd2" },
+        },
+      }),
+      RESULT(),
+    ]);
+    expect(p1.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "shell",
+      command: "cmd1",
+    });
+
+    const p2 = parse([
+      INIT,
+      TOOL(1, {
+        tool_info: {
+          name: "run_command",
+          parameters: { CommandLine: "cmd2" },
+        },
+      }),
+      RESULT(),
+    ]);
+    expect(p2.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "shell",
+      command: "cmd2",
+    });
+
+    // Container fallback: args > parameters > input on tool_info
+    const pArgs = parse([
+      INIT,
+      TOOL(1, {
+        tool_info: {
+          name: "run_command",
+          args: { command: "cmd_from_args" },
+        },
+      }),
+      RESULT(),
+    ]);
+    expect(pArgs.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "shell",
+      command: "cmd_from_args",
+    });
+
+    const pInput = parse([
+      INIT,
+      TOOL(1, {
+        tool_info: {
+          name: "run_command",
+          input: { command: "cmd_from_input" },
+        },
+      }),
+      RESULT(),
+    ]);
+    expect(pInput.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "shell",
+      command: "cmd_from_input",
+    });
+
+    // Container fallback on step_update level when tool_info is absent or empty
+    const pStepLevel = parse([
+      INIT,
+      j({
+        event: "step_update",
+        conversation_id: CID,
+        step_index: 1,
+        state: "ACTIVE",
+        step_type: "tool",
+        tool_name: "step_tool",
+        parameters: { command: "cmd_from_step" },
+      }),
+      RESULT(),
+    ]);
+    expect(pStepLevel.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "shell",
+      name: "step_tool",
+      command: "cmd_from_step",
+    });
+
+    // Target precedence: path > file_path > AbsolutePath
+    const pTarget1 = parse([
+      INIT,
+      TOOL(1, {
+        tool_info: {
+          name: "read_file",
+          parameters: { path: "p1", file_path: "p2", AbsolutePath: "p3" },
+        },
+      }),
+      RESULT(),
+    ]);
+    expect(pTarget1.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "other",
+      target: "p1",
+    });
+
+    const pTarget2 = parse([
+      INIT,
+      TOOL(1, {
+        tool_info: {
+          name: "read_file",
+          parameters: { file_path: "p2", AbsolutePath: "p3" },
+        },
+      }),
+      RESULT(),
+    ]);
+    expect(pTarget2.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "other",
+      target: "p2",
+    });
+
+    const pTarget3 = parse([
+      INIT,
+      TOOL(1, {
+        tool_info: {
+          name: "read_file",
+          parameters: { AbsolutePath: "p3" },
+        },
+      }),
+      RESULT(),
+    ]);
+    expect(pTarget3.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "other",
+      target: "p3",
+    });
+
+    // Tool name fallback: tool_info.name > step.tool_name > step.name > "unknown"
+    const pNameFallback = parse([
+      INIT,
+      j({
+        event: "step_update",
+        conversation_id: CID,
+        step_index: 1,
+        state: "ACTIVE",
+        step_type: "tool",
+        name: "fallback_name",
+        parameters: { path: "/x" },
+      }),
+      RESULT(),
+    ]);
+    expect(pNameFallback.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      name: "fallback_name",
+    });
+  });
+
+  it("extractResult classifies supervisor exit outcomes (protocol_error, internal_error, crashed, spawn_error, timeout, cancelled)", () => {
+    const baseExit = { exitCode: null, signal: null, expectedExitCodes: [0] };
+
+    const proto = adapter().extractResult([], { ...baseExit, outcome: "protocol_error" });
+    expect(proto).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "unparseable provider output",
+    });
+
+    const internal = adapter().extractResult([], { ...baseExit, outcome: "internal_error" });
+    expect(internal).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "event handling failed",
+    });
+
+    const crashedSig = adapter().extractResult([], { ...baseExit, outcome: "crashed", signal: "SIGKILL" });
+    expect(crashedSig).toMatchObject({
+      ok: false,
+      failureCode: "PROCESS_CRASH",
+      failureDetail: "signal SIGKILL",
+    });
+
+    const crashedNoSig = adapter().extractResult([], { ...baseExit, outcome: "crashed", signal: null });
+    expect(crashedNoSig).toMatchObject({
+      ok: false,
+      failureCode: "PROCESS_CRASH",
+      failureDetail: "crashed",
+    });
+
+    const spawnErr = adapter().extractResult([], { ...baseExit, outcome: "spawn_error" });
+    expect(spawnErr).toMatchObject({
+      ok: false,
+      failureCode: "PROCESS_CRASH",
+      failureDetail: "spawn_error",
+    });
+
+    const timeout = adapter().extractResult([], { ...baseExit, outcome: "timeout", timeoutKind: "wall_clock" });
+    expect(timeout).toMatchObject({
+      ok: false,
+      failureCode: "PROCESS_TIMEOUT",
+      failureDetail: "wall_clock timeout",
+    });
+
+    const cancelled = adapter().extractResult([], { ...baseExit, outcome: "cancelled" });
+    expect(cancelled).toMatchObject({
+      ok: false,
+      failureCode: "CANCELLED",
+      failureDetail: "run cancelled",
+    });
+
+    const exitErr = adapter().extractResult([], {
+      outcome: "exited",
+      exitCode: 2,
+      signal: null,
+      expectedExitCodes: [0],
+    });
+    expect(exitErr).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "exit code 2",
+    });
+  });
+
+  it("extractResult honors normalized failure events (permission_denied, sandbox_violation, rate_limit)", () => {
+    const endEvent: NormalizedEvent = { kind: "result", ok: true };
+
+    const perm = adapter().extractResult([{ kind: "permission_denied", tool: "run_command" }, endEvent], EXIT0);
+    expect(perm).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "denied: run_command",
+    });
+
+    const sbx = adapter().extractResult([{ kind: "sandbox_violation", detail: "out of worktree" }, endEvent], EXIT0);
+    expect(sbx).toMatchObject({ ok: false, failureCode: "SANDBOX_VIOLATION", failureDetail: "out of worktree" });
+
+    const rl = adapter().extractResult([{ kind: "rate_limit" }, endEvent], EXIT0);
+    expect(rl).toMatchObject({
+      ok: false,
+      failureCode: "RATE_LIMIT_TRANSIENT",
+      failureDetail: "rate limit reported",
+    });
+  });
+
+  it("seenResults and seenToolSteps WeakMap state is isolated across separate ParseState instances", () => {
+    const a = adapter();
+    const state1: ParseState = { lines: 0, unknownEvents: 0 };
+    const state2: ParseState = { lines: 0, unknownEvents: 0 };
+
+    // Result line on state1
+    const ev1 = a.parseEvent(RESULT(), state1);
+    expect(ev1.some((e) => e.kind === "result" && e.ok)).toBe(true);
+
+    // Result line on fresh state2 is also a first result line, not a second duplicate
+    const ev2 = a.parseEvent(RESULT(), state2);
+    expect(ev2.some((e) => e.kind === "result" && e.ok)).toBe(true);
+    expect(ev2.some((e) => e.kind === "provider_error")).toBe(false);
+
+    // Second result line on state1 triggers protocol error
+    const ev1Second = a.parseEvent(RESULT(), state1);
+    expect(ev1Second.some((e) => e.kind === "provider_error" && e.category === "protocol")).toBe(true);
+
+    // Tool steps across state1 and state2 are tracked independently
+    const toolLine = TOOL(1, { tool_info: { name: "tool1", parameters: { command: "echo independent" } } });
+    const tc1 = a.parseEvent(toolLine, state1);
+    expect(tc1.some((e) => e.kind === "tool_call")).toBe(true);
+    const tc2 = a.parseEvent(toolLine, state2);
+    expect(tc2.some((e) => e.kind === "tool_call")).toBe(true);
+  });
+
+  it("bounds and clipping fallbacks: tool name > 64 chars, target > 512 chars, denied action > 64 chars, result summary > 64 chars, model > 128 chars, backingProvider > 128 chars", () => {
+    const longName = "custom_tool_name_".repeat(5); // 85 chars
+    const longPath = `/work/tree/${"p".repeat(600)}`;
+    const rTool = parse([INIT, TOOL(1, { tool_info: { name: longName, parameters: { path: longPath } } }), RESULT()]);
+    const tc = rTool.events.find((e) => e.kind === "tool_call");
+    expect(tc).toMatchObject({
+      kind: "tool_call",
+      name: `${longName.slice(0, 64)}…`,
+      target: `${longPath.slice(0, 512)}…`,
+    });
+
+    const longDenied = "denied_action_".repeat(6);
+    const rDenied = parse([INIT, RESULT({ denied_actions: [{ display_name: longDenied }] })]);
+    const pd = rDenied.events.find((e) => e.kind === "permission_denied");
+    expect(pd).toMatchObject({
+      kind: "permission_denied",
+      tool: `${longDenied.slice(0, 64)}…`,
+    });
+
+    const longStatus = `custom_error_status_${"s".repeat(80)}`;
+    const rStatus = parse([INIT, RESULT({ status: longStatus })]);
+    const res = adapter().extractResult(rStatus.events, EXIT0);
+    expect(res).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: `${longStatus.slice(0, 64)}…`,
+    });
+
+    const longModel = "M".repeat(200);
+    const longBacking = "B".repeat(200);
+    const rInit = parse([
+      j({
+        event: "init",
+        conversation_id: CID,
+        backing_provider: longBacking,
+        init: { cwd: "/work/tree", model: longModel },
+      }),
+      RESULT(),
+    ]);
+    const bound = rInit.events.find((e) => e.kind === "session_bound");
+    expect(bound).toMatchObject({
+      kind: "session_bound",
+      model: `${longModel.slice(0, 128)}…`,
+      backingProvider: `${longBacking.slice(0, 128)}…`,
+    });
+  });
+
+  it("resumeArgs comprehensive matrix: foreign provider refusals, ineligible profiles, and safe/unsafe session ids", () => {
+    const a = adapter();
+    const profile = privilegedProfile(BYPASS_SCOPE);
+    const approved = { ...profile, bypassApproved: true };
+    const customReq = request({ workspace: { cwd: "/custom/workspace/dir", writable: true }, bypassApproved: true });
+    const id = "0b6c2d1e-0000-4000-8000-000000000042";
+
+    // Antigravity bindings return Ineligible (Q-86)
+    const res = a.resumeArgs({ provider: "antigravity", nativeSessionId: id }, customReq, approved);
+    expect(res).toMatchObject({
+      ineligible: true,
+      reason: "CAPABILITY_MISSING",
+      detail: expect.stringContaining("Q-86"),
+    });
+
+    // Foreign provider bindings rejected
+    for (const provider of ["claude", "codex", "grok", "cursor", "opencode", "kimi", "muse", "fake", "other"]) {
+      expect(
+        a.resumeArgs({ provider: provider as ProviderId, nativeSessionId: id }, customReq, approved),
+      ).toMatchObject({
+        ineligible: true,
+        reason: "CAPABILITY_MISSING",
+        detail: `binding is for ${provider}`,
+      });
+    }
+
+    // Ineligible non-privileged profiles
+    for (const name of PROFILES) {
+      expect(a.resumeArgs({ provider: "antigravity", nativeSessionId: id }, customReq, profileOf(name))).toMatchObject({
+        ineligible: true,
+        reason: "CAPABILITY_MISSING",
+      });
+    }
+
+    // Dangerous / unsafe session ids fail closed
+    for (const bad of ["--force", "-f", "chat x", "../chat", "a".repeat(257), ""]) {
+      expect(a.resumeArgs({ provider: "antigravity", nativeSessionId: bad }, customReq, approved), bad).toMatchObject({
+        ineligible: true,
+        reason: "CAPABILITY_MISSING",
+      });
     }
   });
 });

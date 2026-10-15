@@ -114,3 +114,9 @@ export const USAGE_KEYS: readonly string[] = [
   "cache_read_tokens",
   "total_tokens",
 ];
+
+/**
+ * Structured backing vendor key for fronted harnesses (T4.6, FR-ADP-10; as Cursor T4.43 and OpenCode T4.53).
+ * Native Antigravity output reports no backing vendor ([LIVE] C4); this structured field is accepted when present.
+ */
+export const BACKING_PROVIDER_KEY = "backing_provider";
