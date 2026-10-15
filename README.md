@@ -680,12 +680,21 @@ and handoff-condensation (T11.10, **Done on fakes**) tasks exist as service func
 nor any `inner` command calls them on a run path (`inner test` exercises the pipeline with its built-in synthetic
 fixture only). The `inner status|test|resume` commands are CLI-only and never touch run data: with a populated run
 ledger and no shared-subscription declaration, those diagnostics leave every non-inner table unchanged and do not
-link inner calls to the run. With `shares_subscription_with`, a backend request also records labelled usage with no
-run link. [Pending PR #334](https://github.com/zemdregon/switchboard/pull/334) proposes additional fake-backend usage
-checks for these CLI calls and the injected commit-message and routing contracts; it is not merged evidence. Usage
-accounting through the full production commit-tool channel, MCP admission harness and Streamable HTTP capacity tool
-remains unverified by those tests. No hosted or live backend has been exercised: every test uses a scripted fake or a
-local fake server.
+link inner calls to the run (`src/inner/cli-run-isolation.test.ts`). With `shares_subscription_with`, a backend
+request also records labelled usage with no run link. Merged fake-backend evidence for usage accounting
+([PR #334](https://github.com/zemdregon/switchboard/pull/334),
+[PR #338](https://github.com/zemdregon/switchboard/pull/338) and
+[PR #343](https://github.com/zemdregon/switchboard/pull/343)): the injected commit-message task and routing hook that
+`serve` wires write one labelled observation per backend request with a shared subscription and none without
+(`src/inner/usage.test.ts`); `get_capacity` (filtered and unfiltered, over an in-process transport and over
+authenticated Streamable HTTP),
+`switchboard capacity --json` and the `doctor --json` capacity object are byte-identical before and after those
+contracts, `inner test` and accepted, rejected and unavailable calls, with and without a shared subscription
+(`src/inner/usage-surfaces.test.ts`); and the estimator reads `provider_reported` rows only, so the projection is
+unchanged whether the shared subscription names the provider under test, another provider or none
+(`src/capacity/capacity.test.ts`). Those tests call the injected contracts directly; the production `commit` tool channel
+and the MCP admission harness that call them are not themselves driven with inner usage checks. No hosted or live
+backend has been exercised: every test uses a scripted fake or a local fake server.
 
 ## Grok Build CLI (milestone 4)
 
