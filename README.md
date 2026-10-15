@@ -724,21 +724,30 @@ Resume is not compiled: `resumeArgs` is `Ineligible` for every profile until a l
 `settings.json` or `/permissions` scopes, none per run, and Switchboard writes no configuration file. Whether deny rules
 hold under `--dangerously-skip-permissions` was not observed (T4.31 C8). Git-write denial therefore relies on FR-GIT-03
 (controller ref comparison) and FR-GIT-06 (the tool-call guard) in addition to any provider rule. Shell allowlist
-entries that could write Git make the run `Ineligible` (`PROFILE_UNSUPPORTED`, FR-GIT-01).
+entries that could write Git make the run `Ineligible` (`PROFILE_UNSUPPORTED`, FR-GIT-01), including on an approved
+bypass scope.
+
+The parser treats a guard-flagged `tool_call` (`violation`) as a failed run per
+[ADR-0039](docs/adr/0039-switchboard-side-tool-call-guard.md) even when the envelope `status` is `SUCCESS` at exit 0
+(`src/adapters/antigravity/antigravity.test.ts`). In an approved bypass run the guard enforces Git writes only;
+credential reads, out-of-worktree writes and network calls that never appear in `denied_actions` still end `ok` on
+synthetic fixtures until operator captures pin live blocked outcomes (ROADMAP T4.36, T4.38).
 
 `commitChannel` is **`finalize-only`**: Switchboard does not inject a per-run MCP server (no headless MCP-definition
 flag is documented). In the only compiled scope, repository `.agents/mcp_config.json`, `.agents/hooks.json`, `GEMINI.md`
 and `AGENTS.md` load (observed on the 2026-10-14 live check). To publish work, set `finalize_commit` on the project's
 primary context as for Codex ([How commits reach Git](#how-commits-reach-git)).
 
-Fixture evidence: `src/adapters/antigravity/antigravity.test.ts` ("antigravity compile matrix (T4.32)", "antigravity
-probe (T4.32)", "antigravity auth preflight (T4.34; SYNTHETIC outputs in the shapes of the 2026-10-14 live check C3b,
-C3c)", "antigravity parser and result (T4.33)", "antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
-T4.35)", "antigravity Git declaration (T4.37, FR-GIT-01, FR-GIT-02, FR-GIT-09)" and "antigravity malicious-fixture leg
-(T4.36, NFR-SEC-03, FR-POL-04, FR-POL-06; SYNTHETIC lines)"); CI also runs
-`test/malicious/adapter-leg.test.ts` ("adapter malicious leg: antigravity"). The conformance `resume` case and parts of
-the malicious leg stay partial on the roadmap (T4.35, T4.36) until operator captures close the gaps. No end-to-end run
-through Switchboard against a logged-in `agy` has been recorded yet (T4.38).
+Fixture evidence on `main`: `src/adapters/antigravity/antigravity.test.ts` ("antigravity compile matrix (T4.32)",
+"antigravity probe (T4.32)", "antigravity auth preflight (T4.34; SYNTHETIC outputs in the shapes of the 2026-10-14 live
+check C3b, C3c)", "antigravity parser and result (T4.33)", "antigravity conformance suite (synthetic recorded
+fixtures, FR-ADP-11, T4.35)", "antigravity Git declaration (T4.37, FR-GIT-01, FR-GIT-02, FR-GIT-09)" and "antigravity
+malicious-fixture leg (T4.36, NFR-SEC-03, FR-POL-04, FR-POL-06; SYNTHETIC lines)"); CI also runs
+`test/malicious/adapters/antigravity.case.ts` and `test/malicious/adapter-leg.test.ts` ("adapter malicious leg:
+antigravity", T4.36 partial — see [Known limitations](#known-limitations)). Draft
+[PR #243](https://github.com/zemdregon/switchboard/pull/243) (not merged) adds more T4.35 conformance fixtures for
+live-check C6, C10 and C18 shapes. The conformance `resume` case stays partial until Q-86 and an operator resume capture
+(T4.35). No end-to-end run through Switchboard against a logged-in `agy` has been recorded yet (T4.38).
 
 ## Cursor CLI (milestone 4)
 
@@ -956,6 +965,13 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   is set because `tool_call` / `tool_call_update` fields were not recorded (T4.23), so sandbox and policy denials can
   still end at exit 0 in an approved bypass run, and credential reads inside the sandbox are not refused (Q-62). See
   ROADMAP T4.26 for the full gap list.
+- **Antigravity malicious-fixture leg is partial (ROADMAP T4.36).** CI runs `test/malicious/adapter-leg.test.ts` with
+  `test/malicious/adapters/antigravity.case.ts` on synthetic `stream-json` streams (no `agy` installed). Compile,
+  isolation-flag and argv checks pass for the approved bypass cell; hostile replay blocking uses mostly unrecorded denial
+  shapes (only a shell `run_command` soft denial without bypass was captured on 2026-10-14). FR-POL-04 cannot hold in
+  the only compiled scope because repository configuration is `enabled` and `GEMINI.md`, `AGENTS.md` and the `.agents`
+  MCP server and hooks load with no approval (live check C11). The tool-call guard enforces Git writes per ADR-0039 in
+  bypass runs; other hostile categories need T4.38. See ROADMAP T4.36 for the full gap list.
 - **Event shapes are partly verified.** The 2026-10-13 live checks confirmed the Claude Code stream-json shapes
   (C-1 to C-11 and G-1) on 2.1.296 and the Codex flags (X-1 to X-3) on 0.162.1. Claude error strings (C-12), the
   Git-write attempt (C-G2) and Codex through Switchboard (X-5 to X-9) are still unverified, and another CLI version may
