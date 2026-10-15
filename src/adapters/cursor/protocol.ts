@@ -138,3 +138,10 @@ export const TOOL_RESULT_PERMISSION_DENIED = "permissionDenied";
 
 /** `result.usage` keys ([LIVE] 5a: `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`). */
 export const USAGE_KEYS: readonly string[] = ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens"];
+
+/**
+ * Optional backing provider key ([LIVE] row 102 checked for `backing_provider`; none observed in native CLI).
+ * Supported if structured output reports it, so a harness fronting another provider can satisfy T4.6 without
+ * deriving a vendor from the model display name.
+ */
+export const BACKING_PROVIDER_KEY = "backing_provider";

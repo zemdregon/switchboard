@@ -59,6 +59,7 @@ import {
   AUTH_STATUS_ARGS,
   AUTH_STATUS_KEY,
   AUTH_STATUS_TIMEOUT_MS,
+  BACKING_PROVIDER_KEY,
   CURSOR_BINARY,
   CURSOR_LOGIN_COMMAND,
   EVENT,
@@ -146,6 +147,12 @@ const own = <T>(table: Readonly<Record<string, T>>, key: string): T | undefined 
   Object.hasOwn(table, key) ? table[key] : undefined;
 /** `result` lines already seen per run: a second one is a protocol anomaly, never a success (fail closed). */
 const seenResults = new WeakMap<ParseState, number>();
+/**
+ * Track reported command and target keys per tool call (`call_id` or tool name) within a run's parse state,
+ * so a later update (`completed`) reporting a swapped or newly provided command/path reaches the tool-call guard
+ * without duplicating identical reports.
+ */
+const seenToolCalls = new WeakMap<ParseState, Map<string, Set<string>>>();
 /** Category of a stream anomaly (two results, two session ids); classified OUTPUT_PROTOCOL_ERROR. */
 const PROTOCOL_CATEGORY = "protocol";
 const CATEGORY_CODES = { ...PROVIDER_ERROR_CATEGORY_CODES, [PROTOCOL_CATEGORY]: "OUTPUT_PROTOCOL_ERROR" } as const;
@@ -391,9 +398,12 @@ export class CursorAdapter implements ProviderAdapter {
         return [];
       case EVENT.system: {
         if (subtype !== SUBTYPE_INIT) return this.#unknown(state, `${type}:${subtype ?? "none"}`);
-        // `model` is a display name ([C2], [LIVE] 5b). No backing vendor is reported, so none is set (TDD §4.5:
-        // never derived from the display name).
-        const out = this.#bind(state, str(e.session_id), str(e.model));
+        // `model` is a display name ([C2], [LIVE] 5b). No backing vendor was observed in native output ([LIVE] 102),
+        // so none is invented from the display name (TDD §4.5). If structured output reports a backing provider
+        // (T4.6: harness fronting another provider), it is bound as a plain string.
+        const rawBacking = e[BACKING_PROVIDER_KEY] ?? e.backingProvider;
+        const backingProvider = str(rawBacking);
+        const out = this.#bind(state, str(e.session_id), str(e.model), backingProvider);
         // `apiKeySource` was the string `login` on every run ([LIVE] 5b). Another string, or a present value that is
         // not a string, is not the native login: the run fails closed rather than ignoring an unexpected shape.
         const rawSource = e.apiKeySource;
@@ -425,7 +435,8 @@ export class CursorAdapter implements ProviderAdapter {
         if (results > 1) {
           out.push({ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "more than one result line" });
         }
-        out.push(...this.#bind(state, str(e.session_id), undefined));
+        const rawBacking = e[BACKING_PROVIDER_KEY] ?? e.backingProvider;
+        out.push(...this.#bind(state, str(e.session_id), undefined, str(rawBacking)));
         // Only finite, non-negative counters under the recorded keys are kept ([LIVE] 5a); anything else is dropped.
         const usage = obj(e.usage);
         const metrics: Record<string, number | string | null> = {};
@@ -448,7 +459,12 @@ export class CursorAdapter implements ProviderAdapter {
    * session) makes the binding ambiguous, so the run fails closed; the first id stays bound. An id resume could not pass
    * as one safe argument is never bound and fails the run (Proposed, fail closed).
    */
-  #bind(state: ParseState, id: string | undefined, model: string | undefined): NormalizedEvent[] {
+  #bind(
+    state: ParseState,
+    id: string | undefined,
+    model: string | undefined,
+    backingProvider?: string | undefined,
+  ): NormalizedEvent[] {
     if (id === undefined || id === "") return [];
     if (!SESSION_ID_RE.test(id)) {
       return [{ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "session id is not a safe argument" }];
@@ -458,24 +474,46 @@ export class CursorAdapter implements ProviderAdapter {
       return [{ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "session id changed mid-run" }];
     }
     state.nativeSessionId = id;
-    return [{ kind: "session_bound", nativeSessionId: id, ...(model ? { model: clip(model, 128) } : {}) }];
+    return [
+      {
+        kind: "session_bound",
+        nativeSessionId: id,
+        ...(model ? { model: clip(model, 128) } : {}),
+        ...(backingProvider ? { backingProvider: clip(backingProvider, 128) } : {}),
+      },
+    ];
   }
 
   /**
-   * `tool_call` started: a `tool_call` event (command or path transient for the guard); completed: denial only. The
-   * object held one key in every recorded line ([LIVE] 7a, 7b, 11); should it hold several, each is reported, so a
-   * decoy first key cannot hide a shell call from the guard or a refusal from the result (Assumption: not recorded).
+   * `tool_call` started: a `tool_call` event (command or path transient for the guard); completed: denial, plus any
+   * newly provided or swapped command/path not reported in started (so an update cannot swap a reported command for an
+   * unchecked one). The object held one key in every recorded line ([LIVE] 7a, 7b, 11); should it hold several, each is
+   * reported, so a decoy first key cannot hide a shell call from the guard or a refusal from the result.
    */
   #toolCall(e: Json, subtype: string | undefined, state: ParseState): NormalizedEvent[] {
     const call = obj(e.tool_call);
     const keys = call ? Object.keys(call) : [];
     if (call === undefined || keys.length === 0) return this.#unknown(state, `tool_call:${subtype ?? "none"}`);
+    const callId = str(e.call_id);
+    let seen = seenToolCalls.get(state);
+    if (seen === undefined) {
+      seen = new Map();
+      seenToolCalls.set(state, seen);
+    }
     if (subtype === SUBTYPE_STARTED) {
       return keys.map((key): NormalizedEvent => {
         const kind = own(TOOL_KEYS, key) ?? "other";
         const args = obj(obj(call[key])?.args);
         const command = kind === "shell" ? str(args?.command) : undefined;
         const target = kind === "read" || kind === "edit" ? str(args?.path) : undefined;
+        const stepId = callId ? `${callId}:${key}` : key;
+        const paramKey =
+          command !== undefined ? `command:${command}` : target !== undefined ? `target:${target}` : undefined;
+        if (paramKey !== undefined) {
+          const reported = seen.get(stepId);
+          if (reported === undefined) seen.set(stepId, new Set([paramKey]));
+          else reported.add(paramKey);
+        }
         return {
           kind: "tool_call",
           tool: kind,
@@ -486,12 +524,46 @@ export class CursorAdapter implements ProviderAdapter {
       });
     }
     if (subtype === SUBTYPE_COMPLETED) {
-      return keys.flatMap((key): NormalizedEvent[] => {
-        const result = obj(obj(call[key])?.result);
+      const out: NormalizedEvent[] = [];
+      for (const key of keys) {
+        const kind = own(TOOL_KEYS, key) ?? "other";
+        const entry = obj(call[key]);
+        const args = obj(entry?.args);
+        const command = kind === "shell" ? str(args?.command) : undefined;
+        const target = kind === "read" || kind === "edit" ? str(args?.path) : undefined;
+        const stepId = callId ? `${callId}:${key}` : key;
+        const paramKey =
+          command !== undefined ? `command:${command}` : target !== undefined ? `target:${target}` : undefined;
+        if (paramKey !== undefined) {
+          const reported = seen.get(stepId);
+          if (reported === undefined) {
+            seen.set(stepId, new Set([paramKey]));
+            out.push({
+              kind: "tool_call",
+              tool: kind,
+              name: clip(key, 64),
+              ...(command !== undefined ? { command } : {}),
+              ...(target !== undefined ? { target: clip(target, MAX_TARGET_CHARS) } : {}),
+            });
+          } else if (!reported.has(paramKey)) {
+            reported.add(paramKey);
+            out.push({
+              kind: "tool_call",
+              tool: kind,
+              name: clip(key, 64),
+              ...(command !== undefined ? { command } : {}),
+              ...(target !== undefined ? { target: clip(target, MAX_TARGET_CHARS) } : {}),
+            });
+          }
+        }
+        const result = obj(entry?.result);
         const denied =
           result !== undefined && (TOOL_RESULT_REJECTED in result || TOOL_RESULT_PERMISSION_DENIED in result);
-        return denied ? [{ kind: "permission_denied", tool: clip(key, 64) }] : [];
-      });
+        if (denied) {
+          out.push({ kind: "permission_denied", tool: clip(key, 64) });
+        }
+      }
+      return out;
     }
     return this.#unknown(state, `tool_call:${subtype ?? "none"}`);
   }
