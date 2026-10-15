@@ -126,6 +126,7 @@ describe("derived constants equal the pre-T4.1 values", () => {
       "antigravity",
       "cursor",
       "opencode",
+      "kimi",
     ]);
     expect(ids(buildRegistry({ enabled: true, scenario: "success" }))).toEqual([
       "claude",
@@ -134,9 +135,19 @@ describe("derived constants equal the pre-T4.1 values", () => {
       "antigravity",
       "cursor",
       "opencode",
+      "kimi",
       "fake",
     ]);
-    expect(ids(defaultAdapters())).toEqual(["fake", "claude", "codex", "grok", "antigravity", "cursor", "opencode"]);
+    expect(ids(defaultAdapters())).toEqual([
+      "fake",
+      "claude",
+      "codex",
+      "grok",
+      "antigravity",
+      "cursor",
+      "opencode",
+      "kimi",
+    ]);
     // The Claude git_channel opt-in still reaches only the Claude adapter.
     const on = buildRegistry({ enabled: false }, { claudeGitChannel: true });
     expect(on.get("claude")?.gitCapabilities.commitChannel).toBe("injected");
@@ -306,7 +317,7 @@ describe("scratch adapter registered from a fixture module (T4.1 Done when)", ()
       defaultAdapters()
         .list()
         .map((a) => a.id),
-    ).toEqual(["fake", "claude", "codex", "grok", "antigravity", "cursor", "opencode", SCRATCH_ID]);
+    ).toEqual(["fake", "claude", "codex", "grok", "antigravity", "cursor", "opencode", "kimi", SCRATCH_ID]);
     const scratchOnly = () => {
       const r = buildRegistry({ enabled: false });
       const a = r.get(SCRATCH_ID as ProviderId);
@@ -341,6 +352,7 @@ describe("scratch adapter registered from a fixture module (T4.1 Done when)", ()
       "antigravity",
       "cursor",
       "opencode",
+      "kimi",
       SCRATCH_ID,
     ]);
     const dataDir = path.join(tmp, "data");
@@ -394,6 +406,7 @@ describe("scratch adapter registered from a fixture module (T4.1 Done when)", ()
         "antigravity",
         "cursor",
         "opencode",
+        "kimi",
         SCRATCH_ID,
       ]);
       // No compliance manifest: fail closed (ADR-0009), but listed with its declarations.

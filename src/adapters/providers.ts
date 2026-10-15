@@ -30,6 +30,7 @@ import { CodexAdapter } from "./codex/adapter.js";
 import { CursorAdapter } from "./cursor/adapter.js";
 import { FakeAdapter, type FakeScenario } from "./fake/adapter.js";
 import { GrokAdapter } from "./grok/adapter.js";
+import { KimiAdapter } from "./kimi/adapter.js";
 import { OpenCodeAdapter } from "./opencode/adapter.js";
 import type { AcpDeclarations, ProviderAdapter, ResumeCwd } from "./types.js";
 
@@ -214,9 +215,33 @@ export const BUILTIN_PROVIDERS = [
     resumeCwd: "unverified",
     create: (): ProviderAdapter => new OpenCodeAdapter(),
   },
-  // TDD §4.10: `Unverified: T4.61` (Kimi Code). Muse Code (`bound`, [M-ext]: `--allow-workspace-switch` is needed when
-  // the workspace differs) gets its entry with its module (T4.72).
-  { id: "kimi", configId: "kimi-code", kind: "real", bypassFlags: [], resumeCwd: "unverified" },
+  {
+    id: "kimi",
+    configId: "kimi-code",
+    kind: "real",
+    // ADR-0049 item 1 and TDD §4.7 ([K1]; `--help` of 2.1.1 in the T4.61 live check lists each): `--auto` (Never Ask)
+    // and `--plan` (which `-p` rejects anyway); `--yolo` is a shared `BYPASS_FLAGS` entry and `-y` its short spelling.
+    // `-p`/`--prompt` (Never Ask, bypass-class per ADR-0049) are NOT declared: this audit is shared by every provider,
+    // and Claude Code's `-p` and Antigravity's `--prompt` are ordinary flags in their runs, so a declaration here would
+    // refuse them (open question in ROADMAP T4.62). The Kimi compile gate alone emits `--prompt`, and only in an
+    // approved bypass run. Active since the adapter (T4.62) added `create`.
+    bypassFlags: ["--auto", "--plan"],
+    bypassShortFlags: ["-y"],
+    // ADR-0049 item 2 (modes observed in `session/new`, T4.61 row 9): `auto` and `yolo` as a mode id or as the value of
+    // the `mode` config option are refused in an ACP plan outside the approved bypass case.
+    acp: {
+      bypassModeIds: ["auto", "yolo"],
+      bypassConfigValues: [
+        { configId: "mode", value: "auto" },
+        { configId: "mode", value: "yolo" },
+      ],
+    },
+    // TDD §4.10: `Unverified: T4.68` (where the session id appears and resume from another directory).
+    resumeCwd: "unverified",
+    create: (): ProviderAdapter => new KimiAdapter(),
+  },
+  // Muse Code (`bound`, [M-ext]: `--allow-workspace-switch` is needed when the workspace differs) gets its entry with
+  // its module (T4.72).
   {
     id: "fake",
     kind: "test",
