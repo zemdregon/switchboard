@@ -759,8 +759,12 @@ row without a backend call; and a replayed `delegate_task` with the same idempot
 human `runs show` text prints its usage section from provider-reported rows only and names nothing about the inner
 agent even with a planted labelled row (`src/inner/usage-surfaces.test.ts`). The ledger's public usage insert refuses
 an `inner_agent` row with its FR-CAP-01 message and writes nothing, and no production module other than
-`src/ledger/repo.ts` writes the table, so the pipeline's own record under `shares_subscription_with` is the only writer
-of labelled rows (`src/inner/usage.test.ts`). The
+`src/ledger/repo.ts` writes the table in any SQLite spelling (`INSERT`, `INSERT OR <conflict>`, `REPLACE`), so the
+pipeline's own record under `shares_subscription_with` is the only writer of labelled rows
+(`src/inner/usage.test.ts`). The same file pins why that scan covers `REPLACE`: the table's append-only triggers refuse
+`UPDATE` and `DELETE`, but SQLite's `REPLACE` conflict resolution deletes the colliding row without firing them under
+the ledger's default `recursive_triggers`, so the scan is the only guard for that spelling (as-built; no Switchboard
+surface issues one; Q-96 in the roadmap). The
 statements above about what `inner status`, `inner test`, `inner resume` and the `doctor` block print (states, the
 circuit line, rates, the canary verdict, the origin-only backend line, the resume notice) are pinned on the command
 output in `src/inner/cli-doctor-surfaces.test.ts`; the `no_backend` state is reachable from an on-disk config only
