@@ -2333,7 +2333,7 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     const report = await runConformanceCase(
       caseWhere(
         "slash_command",
-        (e) => e.failureCode === "TOOL_FAILURE" && e.nativeSessionId === undefined && !e.mutatedPath,
+        (e) => e.failureCode === "TOOL_FAILURE" && e.nativeSessionId === null && !e.mutatedPath,
       ),
     );
     expect(report.checks.filter((k) => !k.ok)).toEqual([]);

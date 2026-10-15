@@ -8,7 +8,12 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { type ConformanceCase, runConformanceCase } from "../conformance.js";
+import {
+  type ConformanceCase,
+  type ConformanceCaseReport,
+  checkExpectation,
+  runConformanceCase,
+} from "../conformance.js";
 import type { Invocation } from "../types.js";
 import type { AntigravityAdapter } from "./adapter.js";
 import {
@@ -97,7 +102,17 @@ describe("antigravity whole-stream order shapes in the case list (T4.35, T4.33 f
           return !("ineligible" in inv) && inv.argv.includes(fixturePath(fixture));
         })
         .map((c) => [c.kind, c.expect]);
-    expect(listed("unknown_then_result")).toEqual([["success", { ok: true, nativeSessionId: DEFAULT_SESSION_ID }]]);
+    expect(listed("unknown_then_result")).toEqual([
+      [
+        "success",
+        {
+          ok: true,
+          nativeSessionId: DEFAULT_SESSION_ID,
+          summary: "SYNTHETIC: recognized turn.",
+          unknownEventCount: 1,
+        },
+      ],
+    ]);
     expect(listed("error_after_result")).toEqual([
       [
         "malformed_output",
@@ -106,6 +121,8 @@ describe("antigravity whole-stream order shapes in the case list (T4.35, T4.33 f
           failureCode: "OUTPUT_PROTOCOL_ERROR",
           failureDetail: "protocol: more than one result line",
           nativeSessionId: DEFAULT_SESSION_ID,
+          summary: "Done.",
+          unknownEventCount: 0,
         },
       ],
     ]);
@@ -117,6 +134,8 @@ describe("antigravity whole-stream order shapes in the case list (T4.35, T4.33 f
           failureCode: "OUTPUT_PROTOCOL_ERROR",
           failureDetail: "unparseable provider output",
           nativeSessionId: DEFAULT_SESSION_ID,
+          summary: "Done.",
+          unknownEventCount: 0,
         },
       ],
     ]);
@@ -185,5 +204,100 @@ describe("antigravity timeout cases through the replay (T4.35, FR-ADP-11)", () =
       expect(report.result).toMatchObject({ ok: false, failureCode: "PROCESS_TIMEOUT" });
       expect(report.checks.filter((k) => !k.ok).map((k) => k.name)).toEqual(["failure detail matches"]);
     }
+  });
+});
+
+describe("each antigravity conformance case pins its own fixture (T4.35, FR-ADP-11)", () => {
+  /** `kind:fixture` plus the replay options that change the run, so two cases on one fixture get distinct labels. */
+  const label = (c: ConformanceCase): string => {
+    const inv = c.adapter.compile(c.request, c.profile);
+    const own = "ineligible" in inv ? [] : inv.argv.slice(0, inv.argv.indexOf("--"));
+    const opts = [
+      own.includes("--exit-code") ? `exit ${own[own.indexOf("--exit-code") + 1]}` : "",
+      own.includes("--write") ? "write" : "",
+      own.includes("--ignore-term") ? "ignores SIGTERM" : "",
+      c.kind === "timeout" ? (c.expect.failureDetail ?? "") : "",
+    ].filter((o) => o !== "");
+    return `${c.kind}:${fixtureOf(c)}${opts.length > 0 ? ` (${opts.join(", ")})` : ""}`;
+  };
+
+  // A swap the case cannot tell apart, with the reason. The pair normalizes to one result, so no field the harness
+  // reads can separate them; each is still its own case because it reaches that result from a different stream shape
+  // or supervisor path. Every other swap must fail the case.
+  const SAME_RESULT: Record<string, string> = {
+    "task_failure:slash_command <- task_failure:credits_command":
+      "C6 /usage and /credits envelopes differ only in `command`, which is ignored",
+    "task_failure:credits_command <- task_failure:slash_command":
+      "C6 /usage and /credits envelopes differ only in `command`, which is ignored",
+    "task_failure:git_write_guard <- task_failure:git_write_guard_args":
+      "the same `git commit` read from `parameters` and from `args`",
+    "task_failure:git_write_guard_args <- task_failure:git_write_guard":
+      "the same `git commit` read from `parameters` and from `args`",
+    "malformed_output:conversation_changed <- malformed_output:step_conversation_changed":
+      "the changed id on the result and on a step is one protocol error",
+    "malformed_output:step_conversation_changed <- malformed_output:conversation_changed":
+      "the changed id on the result and on a step is one protocol error",
+    "task_failure:task_failure <- partial_mutation:task_failure (exit 1, write)":
+      "same fixture; the case does not require that no file is written",
+    "timeout:hang (idle timeout) <- timeout:hang (ignores SIGTERM, idle timeout)":
+      "same fixture; only the kill path differs",
+    "timeout:hang (ignores SIGTERM, idle timeout) <- timeout:hang (idle timeout)":
+      "same fixture; only the kill path differs",
+    "cancellation:hang (ignores SIGTERM) <- cancellation:hang": "same fixture; only the kill path differs",
+    "cancellation:hang <- cancellation:hang (ignores SIGTERM)": "same fixture; only the kill path differs",
+  };
+
+  let runs: { c: ConformanceCase; name: string; report: ConformanceCaseReport }[] | undefined;
+  const runAll = async () => {
+    if (runs) return runs;
+    runs = [];
+    for (const c of runnable()) runs.push({ c, name: label(c), report: await runConformanceCase(c) });
+    return runs;
+  };
+
+  it("every runnable case pins its detail, session id or none, summary or none, and unknown event count", () => {
+    const loose = runnable()
+      .filter(
+        (c) =>
+          (!c.expect.ok && c.expect.failureDetail === undefined) ||
+          c.expect.nativeSessionId === undefined ||
+          c.expect.summary === undefined ||
+          c.expect.unknownEventCount === undefined,
+      )
+      .map(label);
+    expect(loose).toEqual([]);
+    const names = runnable().map(label);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it("a case fails when another case's fixture is replayed in its place, except the listed same-result pairs", async () => {
+    const all = await runAll();
+    expect(all.filter((r) => !r.report.ok).map((r) => r.name)).toEqual([]);
+    const passing: string[] = [];
+    for (const a of all) {
+      for (const b of all) {
+        if (a === b || b.report.result === undefined) continue;
+        const checks = checkExpectation(a.c.expect, b.report.result, b.c.request.workspace.cwd);
+        if (checks.every((k) => k.ok)) passing.push(`${a.name} <- ${b.name}`);
+      }
+    }
+    expect(passing.sort()).toEqual(Object.keys(SAME_RESULT).sort());
+  });
+
+  it("before the whole result was pinned, most swaps passed (the hole these expectations close)", async () => {
+    const all = await runAll();
+    // The expectations as they stood: code, plus a session id or detail on some cases. Strip the new pins.
+    const loose = (c: ConformanceCase): ConformanceCase["expect"] => {
+      const { summary: _s, unknownEventCount: _u, ...rest } = c.expect;
+      return rest.nativeSessionId === null ? (({ nativeSessionId: _n, ...r }) => r)(rest) : rest;
+    };
+    let passing = 0;
+    for (const a of all) {
+      for (const b of all) {
+        if (a === b || b.report.result === undefined) continue;
+        if (checkExpectation(loose(a.c), b.report.result, b.c.request.workspace.cwd).every((k) => k.ok)) passing += 1;
+      }
+    }
+    expect(passing).toBeGreaterThan(Object.keys(SAME_RESULT).length);
   });
 });
