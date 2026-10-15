@@ -3,7 +3,7 @@
  * path is a placeholder and no `kimi` binary is run; probe output is the shape the 2026-10-15 live check recorded
  * (`2.1.1`; `--help` options and subcommands).
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { resolveTrustProfile } from "../../policy/profiles.js";
@@ -11,6 +11,7 @@ import { auditAcpPlan, auditInvocation, bypassClassFlags, bypassClassShortFlags 
 import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
 import { acpDeclarations, providerEntry } from "../providers.js";
 import { AdapterRegistry } from "../registry.js";
+import { createProbeRunner } from "../run.js";
 import type { CompileRequest, Invocation, ProbeOutput, ProbeRunner, ResolvedProfile, TrustProfile } from "../types.js";
 import { isIneligible } from "../types.js";
 import { KimiAdapter } from "./adapter.js";
@@ -183,7 +184,7 @@ describe("kimi compile matrix (T4.62)", () => {
   });
 });
 
-describe("kimi probe and auth placeholder (fail closed until T4.64; parser and resume: parser-residual.test.ts)", () => {
+describe("kimi probe (auth preflight: below; parser and resume: parser-residual.test.ts)", () => {
   const runner =
     (table: Record<string, { stdout: string; exitCode: number }>): ProbeRunner =>
     async (argv) => {
@@ -236,9 +237,8 @@ describe("kimi probe and auth placeholder (fail closed until T4.64; parser and r
     expect(missing.steps).toEqual([{ step: "binary", ok: false, detail: "kimi not found on PATH" }]);
   });
 
-  it("auth is UNKNOWN; resume refuses a foreign binding and fails closed where compile does (T4.63)", async () => {
+  it("resume refuses a foreign binding and fails closed where compile does (T4.63)", () => {
     const a = adapter();
-    expect(await a.authPreflight(runner({}))).toMatchObject({ state: "UNKNOWN" });
     expect(
       a.resumeArgs({ provider: "codex", nativeSessionId: "s" }, request(), profileOf("edit-untrusted")),
     ).toMatchObject({ reason: "CAPABILITY_MISSING", detail: "binding is for codex" });
@@ -252,8 +252,15 @@ describe("kimi probe and auth placeholder (fail closed until T4.64; parser and r
   it("reads no credential or configuration file and names no credential variable it would pass", () => {
     for (const f of ["adapter.ts", "protocol.ts"]) {
       const src = readFileSync(fileURLToPath(new URL(`./${f}`, import.meta.url)), "utf8");
-      expect(src, f).not.toMatch(/from "node:fs"|readFile|credentials\//);
+      expect(src, f).not.toMatch(/from "node:fs|readFile|credentials\//);
     }
+    // T4.64: the scratch directory module only creates and removes its own directory.
+    const scratch = readFileSync(fileURLToPath(new URL("./scratch.ts", import.meta.url)), "utf8").replace(
+      /\/\*[\s\S]*?\*\//g,
+      "",
+    );
+    expect(scratch).toMatch(/^import \{ mkdtemp, rm \} from "node:fs\/promises";$/m);
+    expect(scratch).not.toMatch(/readFile|readdir|createReadStream|opendir|KIMI_CODE_HOME|kimi-code/);
   });
 });
 
@@ -271,5 +278,147 @@ describe("kimi registry entry and manifest gate (T4.62)", () => {
     for (const v of ["2.1.1", "2.2.0", "0.0.0", null]) {
       expect(registry.gate("kimi", v).eligible, String(v)).toBe(false);
     }
+  });
+});
+
+/**
+ * T4.64 (FR-AUTH-01/02, NFR-SEC-06, ADR-0049 item 4): the ACP auth probe. SYNTHETIC replies in the shapes of the
+ * 2026-10-15 live check ([LIVE] 8 `initialize`, 9 logged-in `session/new`, 10 logged-out `-32000`); no `kimi` is run.
+ */
+describe("kimi auth preflight (T4.64, ADR-0049 item 4; SYNTHETIC ACP replies)", () => {
+  const INIT_OK = {
+    jsonrpc: "2.0",
+    id: 1,
+    result: { protocolVersion: 1, agentInfo: { name: "Kimi Code CLI", version: "2.1.1" }, authMethods: [] },
+  };
+  const NEW_OK = { jsonrpc: "2.0", id: 2, result: { sessionId: "session_0b8a4c1e-2f3d-4e5a-9b6c-7d8e9f0a1b2c" } };
+  const NEW_AUTH = { jsonrpc: "2.0", id: 2, error: { code: -32000, message: "Authentication required" } };
+  const UPDATE = { jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "x" } } };
+  const lines = (...msgs: unknown[]) => msgs.map((m) => (typeof m === "string" ? m : JSON.stringify(m))).join("\n");
+  const out =
+    (stdout: string, extra: Partial<ProbeOutput> = {}): ProbeRunner =>
+    async () => ({ stdout: `${stdout}\n`, stderr: "", exitCode: 0, timedOut: false, ...extra });
+
+  it("runs only `kimi acp` in a fresh scratch directory, writes initialize then session/new, and removes the directory", async () => {
+    const seen: Array<{
+      argv: readonly string[];
+      cwd?: string;
+      timeoutMs?: number;
+      stdinText?: string;
+      existed: boolean;
+    }> = [];
+    const r = await adapter().authPreflight(async (argv, opts) => {
+      seen.push({ argv, ...opts, existed: opts?.cwd !== undefined && existsSync(opts.cwd) });
+      return { stdout: lines(INIT_OK, UPDATE, NEW_OK), stderr: "", exitCode: null, timedOut: true };
+    });
+    expect(r).toEqual({ state: "OK" });
+    expect(seen).toHaveLength(1);
+    const call = seen[0];
+    expect(call?.argv).toEqual([EXE, "acp"]);
+    expect(call?.existed).toBe(true);
+    expect(call?.cwd).toMatch(/switchboard-kimi-auth-/);
+    expect(existsSync(call?.cwd ?? "")).toBe(false);
+    expect(call?.timeoutMs).toBeLessThanOrEqual(30_000);
+    const sent = (call?.stdinText ?? "")
+      .trimEnd()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    expect(sent).toEqual([
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: 1,
+          clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+          clientInfo: { name: "switchboard", version: "0.0.0" },
+        },
+      },
+      { jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: call?.cwd, mcpServers: [] } },
+    ]);
+    // Never a login, an `authenticate`, a mode change or a prompt (no model call, no bypass-class mode).
+    expect(call?.stdinText).not.toMatch(/authenticate|--login|session\/prompt|set_mode|yolo|auto/);
+  });
+
+  it("a logged-out session/new (-32000) is AUTH_REQUIRED naming `kimi login`, at any exit or timeout", async () => {
+    for (const extra of [{}, { exitCode: 1 }, { exitCode: null, timedOut: true }]) {
+      expect(await adapter().authPreflight(out(lines(INIT_OK, NEW_AUTH), extra))).toEqual({
+        state: "AUTH_REQUIRED",
+        loginCommand: "kimi login",
+      });
+    }
+  });
+
+  it("anything unrecognised is UNKNOWN (fail closed) and the reason carries no provider text", async () => {
+    const cases: Array<[string, ProbeRunner]> = [
+      ["empty output", out("")],
+      ["no session/new reply", out(lines(INIT_OK))],
+      ["no initialize reply", out(lines(NEW_OK))],
+      ["initialize error", out(lines({ jsonrpc: "2.0", id: 1, error: { code: -32603, message: "x" } }, NEW_OK))],
+      ["initialize version 2", out(lines({ ...INIT_OK, result: { protocolVersion: 2 } }, NEW_OK))],
+      ["initialize -32000", out(lines({ jsonrpc: "2.0", id: 1, error: { code: -32000, message: "a" } }, NEW_AUTH))],
+      ["another session/new error", out(lines(INIT_OK, { jsonrpc: "2.0", id: 2, error: { code: -32603 } }))],
+      ["-32000 with a result too", out(lines(INIT_OK, { ...NEW_AUTH, result: NEW_OK.result }))],
+      ["a string error code", out(lines(INIT_OK, { jsonrpc: "2.0", id: 2, error: { code: "-32000" } }))],
+      ["no sessionId", out(lines(INIT_OK, { jsonrpc: "2.0", id: 2, result: {} }))],
+      ["a flag-like sessionId", out(lines(INIT_OK, { jsonrpc: "2.0", id: 2, result: { sessionId: "--yolo" } }))],
+      ["a string id", out(lines(INIT_OK, { ...NEW_OK, id: "2" }))],
+      ["two session/new replies", out(lines(INIT_OK, NEW_OK, NEW_AUTH))],
+      ["two initialize replies", out(lines(INIT_OK, INIT_OK, NEW_OK))],
+      ["a non-JSON line", out(lines("Welcome to Kimi", INIT_OK, NEW_OK))],
+      ["a JSON array line", out(lines("[1]", INIT_OK, NEW_OK))],
+      ["a truncated reply on timeout", out(`${lines(INIT_OK)}\n{"jsonrpc":"2.0","id":2,"res`, { timedOut: true })],
+      ["spawn error", out("", { exitCode: null, spawnError: "ENOENT" })],
+    ];
+    for (const [name, runner] of cases) {
+      const r = await adapter().authPreflight(runner);
+      expect(r, name).toMatchObject({ state: "UNKNOWN" });
+    }
+    const leak = await adapter().authPreflight(
+      out(lines(INIT_OK, { jsonrpc: "2.0", id: 2, error: { code: -32603, message: "secret: hunter2" } })),
+    );
+    expect(leak).toEqual({
+      state: "UNKNOWN",
+      reason: "Kimi Code ACP auth probe was inconclusive (session/new error -32603, exit 0)",
+    });
+  });
+
+  it("is UNKNOWN when the binary is not on PATH, without running anything", async () => {
+    let ran = false;
+    const r = await new KimiAdapter({ pathEnv: "/nonexistent" }).authPreflight(async () => {
+      ran = true;
+      return { stdout: "", stderr: "", exitCode: 0, timedOut: false };
+    });
+    expect(r).toEqual({ state: "UNKNOWN", reason: "kimi not found on PATH" });
+    expect(ran).toBe(false);
+  });
+
+  it("removes the scratch directory when the runner throws", async () => {
+    let dir: string | undefined;
+    await expect(
+      adapter().authPreflight(async (_argv, opts) => {
+        dir = opts?.cwd;
+        throw new Error("runner failed");
+      }),
+    ).resolves.toMatchObject({ state: "UNKNOWN" });
+    expect(dir).toBeDefined();
+    expect(existsSync(dir ?? "")).toBe(false);
+  });
+});
+
+describe("kimi auth preflight through the real probe runner (T4.64; SYNTHETIC `kimi acp` stand-in)", () => {
+  const SCRIPT = fileURLToPath(new URL("./fixtures/fake-acp-auth.mjs", import.meta.url));
+  const via = (scenario: string) =>
+    new KimiAdapter({ executable: process.execPath, launcherArgs: [SCRIPT, `--scenario=${scenario}`] }).authPreflight(
+      createProbeRunner(),
+    );
+
+  it("stdin reaches the process: logged in is OK, logged out is AUTH_REQUIRED, no reply is UNKNOWN", async () => {
+    expect(await via("logged-in")).toEqual({ state: "OK" });
+    expect(await via("logged-out")).toEqual({ state: "AUTH_REQUIRED", loginCommand: "kimi login" });
+    expect(await via("silent")).toMatchObject({
+      state: "UNKNOWN",
+      reason: expect.stringContaining("initialize missing"),
+    });
   });
 });

@@ -52,6 +52,19 @@ export const REQUIRED_HELP_FLAGS: readonly string[] = [PROMPT_FLAG, OUTPUT_FORMA
 export const KIMI_LOGIN_COMMAND = "kimi login";
 
 /**
+ * Auth preflight (T4.64, ADR-0049 item 4): no status command exists ([LIVE] 2, 6), so the probe is `kimi acp` sent
+ * `initialize` (id {@link AUTH_PROBE_INITIALIZE_ID}) then `session/new` (id {@link AUTH_PROBE_SESSION_ID}) on stdin.
+ * Logged in, `session/new` returns a `sessionId` ([LIVE] 9); logged out, `initialize` still succeeds and `session/new`
+ * answers JSON-RPC `-32000` `Authentication required` ([LIVE] 10). Neither needs a model call. **Assumptions**
+ * (Unverified: T4.68): both requests may be written before the `initialize` reply, and the replies are printed before
+ * the process ends at stdin end-of-file or the probe timeout ([LIVE] 10 ended it by `timeout` after the replies).
+ */
+export const AUTH_PROBE_INITIALIZE_ID = 1;
+export const AUTH_PROBE_SESSION_ID = 2;
+export const ACP_METHOD_INITIALIZE = "initialize";
+export const ACP_METHOD_SESSION_NEW = "session/new";
+
+/**
  * ACP session modes ([LIVE] 9: `session/new` lists `default` "Manual approvals; tools execute normally.", `plan`
  * "Read-only planning; no tool execution.", `auto` "Auto-approve safe operations.", `yolo` "Auto-approve everything.";
  * `currentModeId` `default`). `auto` and `yolo` are bypass-class (ADR-0049 item 2; registry `acp` declaration).
