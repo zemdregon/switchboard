@@ -23,7 +23,16 @@ import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
 import { providerEntry } from "../providers.js";
 import { AdapterRegistry } from "../registry.js";
 import { createProbeRunner } from "../run.js";
-import type { CompileRequest, ParseState, ProbeOutput, ProbeRunner, ResolvedProfile, TrustProfile } from "../types.js";
+import { guardEvent } from "../tool-guard.js";
+import type {
+  CompileRequest,
+  NormalizedEvent,
+  ParseState,
+  ProbeOutput,
+  ProbeRunner,
+  ResolvedProfile,
+  TrustProfile,
+} from "../types.js";
 import { isIneligible } from "../types.js";
 import { GROK_GIT_CAPABILITIES, GROK_GIT_WRITE_CONTROL, GrokAdapter } from "./adapter.js";
 import {
@@ -468,6 +477,49 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
           JSON.stringify(usage),
         ).toBe(false);
       }
+    });
+
+    // ADR-0039: a guard verdict ends the run in every run, bypass included, and the lifecycle trusts `result.ok`, so a
+    // flagged tool_call must not be called clean even with an `end_turn` result at exit 0. The parser emits no
+    // `tool_call` yet (shape not recorded), so these feed the guarded event the runner would store.
+    it("a guard-flagged Git write with an end_turn result ends PERMISSION_BLOCKED (ADR-0039)", () => {
+      const { events } = parse([line({ type: "text", data: "pushed" }), line(END)]);
+      const call: NormalizedEvent = { kind: "tool_call", tool: "shell", name: "run", command: "git push origin main" };
+      const flagged = guardEvent(call, { cwd: "/w", bypass: true });
+      expect(flagged).toMatchObject({ kind: "tool_call", violation: { kind: "git_write" } });
+      expect(flagged).not.toHaveProperty("command");
+      const r = adapter().extractResult([flagged, ...events], EXIT_OK);
+      expect(r).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: SID });
+      expect(r.failureDetail).toMatch(/^git write attempted/);
+      // An unflagged tool_call leaves a clean turn clean.
+      const plain = guardEvent({ ...call, command: "git status" }, { cwd: "/w", bypass: true });
+      expect(adapter().extractResult([plain, ...events], EXIT_OK)).toMatchObject({ ok: true });
+    });
+
+    it("any guard verdict on a tool_call makes an end_turn result not clean (a provider_state verdict ends SANDBOX_VIOLATION)", () => {
+      const { events } = parse([line({ type: "text", data: "ok" }), line(END)]);
+      const flagged: NormalizedEvent = {
+        kind: "tool_call",
+        tool: "read",
+        name: "read_file",
+        violation: { kind: "provider_state", reason: "synthetic" },
+      };
+      expect(adapter().extractResult([flagged, ...events], EXIT_OK)).toMatchObject({
+        ok: false,
+        failureCode: "SANDBOX_VIOLATION",
+      });
+    });
+
+    it("pins the gap: a Grok tool_call line is `unknown`, so the guard has nothing to flag", () => {
+      const { events } = parse([
+        line({ type: "tool_call", command: "git push origin main" }),
+        line({ type: "text", data: "pushed" }),
+        line(END),
+      ]);
+      const guarded = events.map((e) => guardEvent(e, { cwd: "/w", bypass: true }));
+      expect(guarded.some((e) => e.kind === "tool_call")).toBe(false);
+      // Not detected here; for an approved bypass run Git-write denial rests on FR-GIT-03 and FR-GIT-06 (T4.23).
+      expect(adapter().extractResult(guarded, EXIT_OK)).toMatchObject({ ok: true, unknownEventCount: 1 });
     });
   });
 
