@@ -100,10 +100,16 @@ Pre-release. The package is private and is not published to any registry; you bu
   and a Git declaration on synthetic fixtures (README [Antigravity CLI](#antigravity-cli-milestone-4), ROADMAP T4.32 to
   T4.37); draft [#295](https://github.com/zemdregon/switchboard/pull/295) widens the synthetic malicious matrix only.
   Live smoke, live malicious leg and `adapters validate` for Antigravity remain operator work (T4.38). Cursor has
-  module, compile-matrix, parser (partial: T4.43), auth-preflight, conformance suite (T4.45), malicious-fixture leg
-  (T4.46) and Git declaration fixture tests on synthetic fixtures (README
-  [Cursor CLI](#cursor-cli-milestone-4), ROADMAP T4.42 to T4.47); live smoke, live malicious leg and `adapters validate`
-  remain operator work (T4.48). OpenCode has module, compile-matrix, parser (partial: T4.53; every Done-when case has a
+  module, compile-matrix, parser (partial: T4.43; supervisor-replayed JSONL fixtures,
+  [#283](https://github.com/zemdregon/switchboard/pull/283),
+  [#287](https://github.com/zemdregon/switchboard/pull/287),
+  [#299](https://github.com/zemdregon/switchboard/pull/299)), auth-preflight, a conformance suite on synthetic
+  fixtures (partial: T4.45; replay dialect hardening, 41 compile/env refusal checks, and fixtures including
+  `denied_after_write`, `permission_denied_perm`, `resume_unknown_id`, `unknown_event`, and `unsafe_id_after_bound`,
+  [#309](https://github.com/zemdregon/switchboard/pull/309)), malicious-fixture leg (T4.46) and Git declaration
+  fixture tests on synthetic fixtures (README [Cursor CLI](#cursor-cli-milestone-4), ROADMAP T4.42 to T4.47); live
+  smoke, live malicious leg and `adapters validate` remain operator work (T4.48). OpenCode has module, compile-matrix,
+  parser (partial: T4.53; every Done-when case has a
   supervisor-replayed JSONL fixture on `main` ([#274](https://github.com/zemdregon/switchboard/pull/274)) plus
   structured `backing_provider`/`model` on `session_bound` and own-property hardening
   ([#290](https://github.com/zemdregon/switchboard/pull/290))),
@@ -883,9 +889,15 @@ an operator resume capture (T4.35). No end-to-end run through Switchboard agains
 ## Cursor CLI (milestone 4)
 
 Config id `cursor`; routing and `list_capabilities` id `cursor`. Switchboard runs the **`cursor-agent`** binary with
-`--print --output-format stream-json` and the prompt on stdin ([TDD §4.5.2](docs/design/TDD.md#452-transport-decision);
-observed on 2026-10-14 in [`docs/research/live-checks-2026-10-14-cursor.md`](docs/research/live-checks-2026-10-14-cursor.md)).
-Do not invoke bare `agent` on `PATH`: on some hosts that name is Grok Build's CLI, not Cursor's (same live check).
+`--print --output-format stream-json` and the prompt on stdin
+([TDD §4.5.2](docs/design/TDD.md#452-transport-decision); observed on 2026-10-14 in
+[`docs/research/live-checks-2026-10-14-cursor.md`](docs/research/live-checks-2026-10-14-cursor.md)).
+Do not invoke bare `agent` on `PATH`: on some hosts that name is Grok Build's CLI, not Cursor's (same live check). The
+prompt travels on stdin ([LIVE] 6a: with no positional argument piped text is the prompt, so it is neither visible in
+the process table nor read as a flag). Switchboard passes an environment allowlist (`PATH` and `HOME` so the CLI finds
+its native login) and never passes `CURSOR_API_KEY`, `CURSOR_AUTH_TOKEN` (credentials stay out of the child
+environment, ADR-0003), `CURSOR_CONFIG_DIR` or `XDG_CONFIG_HOME` (which would alter or rewrite configuration files);
+these are refused by the dialect.
 
 The compliance manifest range admits no version until an operator runs `switchboard adapters validate cursor` and
 commits the manifest diff (ROADMAP T4.48). Until then `doctor` reports `ADAPTER_VERSION_UNVERIFIED` for Cursor.
@@ -893,7 +905,9 @@ commits the manifest diff (ROADMAP T4.48). Until then `doctor` reports `ADAPTER_
 ### Login
 
 See the [login table](#log-in-to-the-providers-natively) above. Switchboard never runs `cursor-agent login`; it only
-runs `cursor-agent status --format json` during preflight.
+runs `cursor-agent status --format json` during preflight (10 s timeout), keying strictly on boolean `isAuthenticated`
+(`true` -> `OK`, `false` -> `AUTH_REQUIRED`; non-zero exit, timeout, spawn error, non-JSON or missing boolean ->
+`UNKNOWN`), and never stores or logs the account fields.
 
 ### Trust profiles
 
@@ -909,21 +923,35 @@ servers), and no per-run permission flag is documented.
 | `edit-untrusted` | no | As `inspect-untrusted` |
 | `test-sandboxed` | no | As `inspect-untrusted` |
 | `trusted-development` | no | As `inspect-untrusted` |
-| `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one argv shape: `cursor-agent --print --output-format stream-json --trust --force` with the prompt on stdin, worktree file access, shell `broad`, network `on` and repository configuration `enabled`, and **no** `--sandbox` flag (owner decision 46). A scope without `bypass`, or any narrowing Switchboard can express, is refused before spawn. Bypass-class flags such as `--approve-mcps` and `--yolo` are never compiled outside that case. |
+| `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one argv shape: `cursor-agent --print --output-format stream-json --trust --force` with the prompt on stdin, worktree file access, shell `broad`, network `on` and repository configuration `enabled`, and **no** `--sandbox` flag (owner decision 46). A scope without `bypass`, or any narrowing Switchboard can express (read-only files or unwritable workspace, shell allowlist or none, network off or allowlist, repository configuration disabled or approved, or model overrides), is refused before spawn (`Ineligible: CAPABILITY_MISSING`). Bypass approved on any profile other than `privileged`, or `privileged` without approval, is refused `PROFILE_UNSUPPORTED` (FR-POL-03, ADR-0017). Bypass-class flags such as `--approve-mcps` and `--yolo` are never compiled outside that case. |
 
 Resume continues the native session with `--resume <session_id>` through the same matrix when the provider is eligible
 (synthetic fixtures in `src/adapters/cursor/cursor.test.ts`, T4.43). A `session_id` that resume could not pass as one
-safe argument is never bound (`OUTPUT_PROTOCOL_ERROR`; [#248](https://github.com/zemdregon/switchboard/pull/248),
-[#287](https://github.com/zemdregon/switchboard/pull/287)). Session ID resolution also admits `sessionId`, `chat_id` and
-`chatId` ([#299](https://github.com/zemdregon/switchboard/pull/299)). A `tool_call` after the `result` line is not a
-success (fail closed; a guard-flagged trailing call keeps `PERMISSION_BLOCKED` per ADR-0039; an unreadable trailing
-`tool_call` line also fails closed as `OUTPUT_PROTOCOL_ERROR`,
+safe argument (matching `^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`, refusing leading dashes, empty strings or flag syntax) is
+never bound (`OUTPUT_PROTOCOL_ERROR` on stream without binding, `CAPABILITY_MISSING` in `resumeArgs`;
+[#248](https://github.com/zemdregon/switchboard/pull/248), [#287](https://github.com/zemdregon/switchboard/pull/287),
+`unsafe_session_id.jsonl`). An unsafe session id in `result` after a normal `init` also fails `OUTPUT_PROTOCOL_ERROR`
+while preserving the first bound id (`unsafe_id_after_bound.jsonl`,
+[#309](https://github.com/zemdregon/switchboard/pull/309)). Session ID resolution also admits `sessionId`, `chat_id` and
+`chatId` ([#299](https://github.com/zemdregon/switchboard/pull/299)). A session id changing mid-run ends
+`OUTPUT_PROTOCOL_ERROR` with the first id bound (`session_changed.jsonl`). `apiKeySource` must be `login`; any other
+value fails with `AUTH_REQUIRED` (`auth_missing.jsonl`). Resumed runs pass `--resume <session_id>` through the same
+compile matrix, preserving cwd and policy flags; `resumeCwd` is `unverified` (TDD §4.10, live check 8c).
+`reportedModelFlag` is `not_accepted` (`init` reports a display name, not a model id, [LIVE] 5b; `--model` is not
+emitted, FR-RTE-08). Exactly one `result` line is permitted; a second `result` line fails closed as
+`OUTPUT_PROTOCOL_ERROR` ("more than one result line", `two_results.jsonl`), does not flip a prior failure, and usage
+deduplication ignores usage on subsequent result lines (FR-CAP-01;
+[#299](https://github.com/zemdregon/switchboard/pull/299)). A `tool_call` after the `result` line is not a success
+(fail closed; a guard-flagged trailing call keeps `PERMISSION_BLOCKED` per ADR-0039; an unflagged trailing call ends
+`OUTPUT_PROTOCOL_ERROR` with detail `tool call after the result line`, `trailing_tool.jsonl`; an unreadable trailing
+`tool_call` line that parses as `unknown` also fails closed as `OUTPUT_PROTOCOL_ERROR`,
 [#268](https://github.com/zemdregon/switchboard/pull/268)). `tool_call` keys that name `Object.prototype` members map to
 `other` (own-key lookup; [#248](https://github.com/zemdregon/switchboard/pull/248),
-[#268](https://github.com/zemdregon/switchboard/pull/268)). Structured `backing_provider` and model on synthetic
-`session_bound` events and the T4.6 end-to-end fixture are on `main`
+[#268](https://github.com/zemdregon/switchboard/pull/268)). Structured `backing_provider`/`backingProvider` and model on
+synthetic `session_bound` events and the T4.6 end-to-end fixture are on `main`
 ([#275](https://github.com/zemdregon/switchboard/pull/275); `backing_provider.jsonl`), and model / `backingProvider`
-resolution across `init` and `result` (when `init` is omitted) with prototype pollution protection are in
+resolution across `init` and `result` (when `init` is omitted) with prototype pollution protection (`__proto__` and
+`Object.prototype` members omitted, strings clipped to 128 characters) are in
 [#299](https://github.com/zemdregon/switchboard/pull/299); native CLI captures report only a model display name and no
 vendor, so without an explicit structured `backing_provider` (supported for fronted harnesses, T4.6) `backingProvider`
 stays unset (never inferred from model display name; T4.43 stays `Partial` on the roadmap).
@@ -937,23 +965,38 @@ parameter container fallback (`args` > `parameters` > `input` > `arguments` > en
 `AbsolutePath` > `absolute_path` > `target` > `file`), and completed call refusal fallbacks (`result.rejected`,
 `result.permissionDenied`) ensure shell and file tool calls reach the guard
 ([#287](https://github.com/zemdregon/switchboard/pull/287), [#299](https://github.com/zemdregon/switchboard/pull/299)).
-Unmapped tool names carrying a command map to `tool: "shell"` so the ADR-0039 tool-call guard intercepts unauthorized
-Git writes (`PERMISSION_BLOCKED`; [#299](https://github.com/zemdregon/switchboard/pull/299)). Tool refusal aliases
-normalize `permission_denied`, `denied`, `blocked`, and permission error text to `permission_denied` events
-([#299](https://github.com/zemdregon/switchboard/pull/299)).
+Late or swapped commands on `tool_call` `completed` are tracked via `seenToolCalls` and re-evaluated by the guard
+without duplicating identical reports. Unmapped tool names carrying a command, or named with shell aliases
+(`bashToolCall`, `terminalToolCall`, `execToolCall`, `runCommandToolCall`, `executeCommandToolCall`), map to
+`tool: "shell"` so the ADR-0039 tool-call guard intercepts unauthorized Git writes (`PERMISSION_BLOCKED`;
+[#299](https://github.com/zemdregon/switchboard/pull/299)). Tool refusal aliases normalize `permission_denied`,
+`denied`, `blocked`, and permission error text to `permission_denied` events
+([#299](https://github.com/zemdregon/switchboard/pull/299)). Assistant message text is clipped to 2,000 characters,
+target paths to 512 characters, and tool names and result subtypes to 64 characters; non-string values are dropped,
+never coerced.
 
 Supervisor-replayed JSONL fixtures under `src/adapters/cursor/fixtures/` pin today's gaps without inventing native
 fields ([#283](https://github.com/zemdregon/switchboard/pull/283),
-[#287](https://github.com/zemdregon/switchboard/pull/287)): `rate_limit` (rows 4 and 14, never reached/forced) replays
+[#287](https://github.com/zemdregon/switchboard/pull/287),
+[#309](https://github.com/zemdregon/switchboard/pull/309)): `rate_limit` (rows 4 and 14, never reached/forced) replays
 an empty stream at exit 1 to `TOOL_FAILURE`, never `RATE_LIMIT_TRANSIENT`; `rate_limit_error` replays an in-stream
 error result at exit 0 to `TOOL_FAILURE`; `sandbox_violation` (row 9, unrecorded sandbox error text at exit 0) replays
 to `TOOL_FAILURE`, never `SANDBOX_VIOLATION`; `unknown_events` replays to `OUTPUT_PROTOCOL_ERROR` with every unreadable
-line counted and no session bound; `trailing_tool` replays a `tool_call` after the `result` line to
-`OUTPUT_PROTOCOL_ERROR`; `session_changed` replays a conflicting `session_id` to `OUTPUT_PROTOCOL_ERROR` with the first
-id bound; `two_results` replays more than one result line to `OUTPUT_PROTOCOL_ERROR`; `git_write_guard` (ADR-0039)
-replays a guard-flagged Git write under a `success` result at exit 0 to `PERMISSION_BLOCKED`; `no_result` replays text
-output at exit 0 without a `result` line to `OUTPUT_PROTOCOL_ERROR`; `unsafe_session_id` replays an unsafe session id
-in `init` to `OUTPUT_PROTOCOL_ERROR` without binding. Closing the remaining gaps needs operator captures of a
+line counted and no session bound; `unknown_event` replays an unrecorded event in an otherwise clean success to `ok`
+with one unknown event counted ([#309](https://github.com/zemdregon/switchboard/pull/309)); `trailing_tool` replays a
+`tool_call` after the `result` line to `OUTPUT_PROTOCOL_ERROR`; `session_changed` replays a conflicting `session_id` to
+`OUTPUT_PROTOCOL_ERROR` with the first id bound; `two_results` replays more than one result line to
+`OUTPUT_PROTOCOL_ERROR`; `git_write_guard` (ADR-0039) replays a guard-flagged Git write under a `success` result at exit
+0 to `PERMISSION_BLOCKED`; `no_result` replays text output at exit 0 without a `result` line to
+`OUTPUT_PROTOCOL_ERROR`; `unsafe_session_id` replays an unsafe session id in `init` to `OUTPUT_PROTOCOL_ERROR` without
+binding; `unsafe_id_after_bound` replays an unsafe session id in `result` after a normal `init` to
+`OUTPUT_PROTOCOL_ERROR` while preserving the first bound id ([#309](https://github.com/zemdregon/switchboard/pull/309));
+`permission_denied` (row 7a `result.rejected`) and `permission_denied_perm` (row 11 `result.permissionDenied`,
+[#309](https://github.com/zemdregon/switchboard/pull/309)) replay soft denials to `PERMISSION_BLOCKED`;
+`denied_after_write` replays a workspace write before a soft denial to `PERMISSION_BLOCKED` with the write visible in
+partial mutation ([#309](https://github.com/zemdregon/switchboard/pull/309)); and `resume_unknown_id` replays an
+unknown session id answered with success to verify that native session id mismatch fails the conformance resume test
+([#309](https://github.com/zemdregon/switchboard/pull/309)). Closing the remaining gaps needs operator captures of a
 rate-limited or quota-stopped run and of any native backing-vendor field (ROADMAP T4.48).
 
 ### Git and commits
@@ -976,15 +1019,21 @@ approved bypass run, Git-write denial therefore rests on FR-GIT-03 and FR-GIT-06
 Fixture evidence on `main`: `src/adapters/cursor/fixtures/` (T4.43 Done-when and T4.45 conformance JSONL, including
 `backing_provider.jsonl` from [#275](https://github.com/zemdregon/switchboard/pull/275), Done-when fixtures from
 [#283](https://github.com/zemdregon/switchboard/pull/283), anomaly and parameter fallback fixtures from
-[#287](https://github.com/zemdregon/switchboard/pull/287)); `src/adapters/cursor/cursor.test.ts` ("cursor compile matrix
+[#287](https://github.com/zemdregon/switchboard/pull/287), and conformance/refusal fixtures from
+[#309](https://github.com/zemdregon/switchboard/pull/309)); `src/adapters/cursor/cursor.test.ts` ("cursor compile matrix
 (T4.42)", "cursor bypass-class declaration (ADR-0035, ADR-0037)", "cursor probe and auth preflight (T4.42, T4.44)",
 "cursor registry entry and manifest gate (T4.42)", "cursor parser and result (T4.43)", "cursor parser hardening (T4.43,
 synthetic shapes)", "cases with no recorded native shape (live check rows 4, 9, 14)" fixture replay, "cursor conformance
 suite (synthetic recorded fixtures, FR-ADP-11, T4.45)", "cursor backing-provider fixture (T4.43, T4.6, FR-ADP-10)",
 "cursor Git declaration (T4.47, FR-GIT-01, FR-GIT-02, FR-GIT-09)" and "cursor malicious-fixture leg (T4.46, NFR-SEC-03,
 FR-POL-04, FR-POL-06)"); CI also runs `test/malicious/adapters/cursor.case.ts` and `test/malicious/adapter-leg.test.ts`
-("adapter malicious leg: cursor"). No end-to-end run through Switchboard against a logged-in `cursor-agent` has been
-recorded yet (T4.48).
+("adapter malicious leg: cursor"). The conformance suite replay dialect
+(`src/adapters/fixtures/replay-dialects/cursor.mjs`) enforces single `--print`, `--output-format stream-json`,
+`--trust`, `--force`, safe non-flag `--resume <id>`, no `--`, no positional arguments, and refuses credentials and
+config env variables (`CURSOR_API_KEY`, `CURSOR_AUTH_TOKEN`, `CURSOR_CONFIG_DIR`, `XDG_CONFIG_HOME`) and
+unauthorized or never-compiled flags (41 compile/env refusal checks pass in CI;
+[#309](https://github.com/zemdregon/switchboard/pull/309)). No end-to-end run through Switchboard against a logged-in
+`cursor-agent` has been recorded yet (T4.48).
 
 ## OpenCode CLI (milestone 4)
 
