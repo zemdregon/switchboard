@@ -137,6 +137,12 @@ const ineligible = (reason: Ineligible["reason"], detail: string): Ineligible =>
 /** Own-key lookup, so a native value such as `constructor` or `__proto__` never resolves to an inherited member. */
 const own = <T>(table: Readonly<Record<string, T>>, key: string): T | undefined =>
   Object.hasOwn(table, key) ? table[key] : undefined;
+/**
+ * Own-property read, so properties carried on Object.prototype or __proto__ smuggling are never read as event
+ * fields (Proposed, fail closed; as Cursor T4.43).
+ */
+const ownProp = (o: Json | undefined, key: string): unknown =>
+  o !== undefined && Object.hasOwn(o, key) ? o[key] : undefined;
 /** Part ids already counted per run, so a repeated `step_finish` is not recorded twice (TDD §4.6, Proposed). */
 const seenParts = new WeakMap<ParseState, Set<string>>();
 /** Category of a stream anomaly (session id changed mid-run); classified OUTPUT_PROTOCOL_ERROR. */
@@ -370,8 +376,9 @@ export class OpenCodeAdapter implements ProviderAdapter {
    * One `--format json` line -> normalized events (T4.53). Structured fields only (FR-ADP-04): the session id is the
    * `sessionID` of the first event that carries one, and only if resume could pass it as one argument. The run's result comes only from a `step_finish` whose
    * `part.reason` is `stop` (Q-85): a run that exits 0 without one is not a success, although the live check saw such
-   * runs answer correctly ([LIVE] 4a). Events do not name the provider or model used ([LIVE] 4c), so `session_bound`
-   * carries neither.
+   * runs answer correctly ([LIVE] 4a). Events do not name the provider or model used in native captures ([LIVE] 4c);
+   * structured backing_provider and model fields are supported for fronted harnesses (T4.6, FR-ADP-10) and stay unset
+   * when not reported.
    */
   parseEvent(input: string | AcpMessage, state: ParseState): NormalizedEvent[] {
     if (typeof input !== "string") return []; // no ACP transport for OpenCode (TDD §4.6)
@@ -383,43 +390,68 @@ export class OpenCodeAdapter implements ProviderAdapter {
       return []; // the supervisor ends the run OUTPUT_PROTOCOL_ERROR on unparseable framing
     }
     const e = obj(doc);
-    const type = str(e?.type);
+    const type = str(ownProp(e, "type"));
     if (e === undefined || type === undefined) return this.#unknown(state, "none");
     const out: NormalizedEvent[] = [];
-    const id = str(e.sessionID);
+    const part = obj(ownProp(e, "part"));
+    const rawBacking =
+      ownProp(e, "backing_provider") ??
+      ownProp(e, "backingProvider") ??
+      ownProp(part, "backing_provider") ??
+      ownProp(part, "backingProvider");
+    const rawModel = ownProp(e, "model") ?? ownProp(part, "model");
+    const backingProvider = str(rawBacking);
+    const model = str(rawModel);
+
+    const id = str(ownProp(e, "sessionID")) ?? str(ownProp(part, "sessionID"));
     if (id !== undefined && id !== "") {
       if (!SESSION_ID_RE.test(id)) {
         // Proposed (fail closed): an id resume could not pass as one safe argument is never bound.
         out.push({ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "session id is not a safe argument" });
       } else if (state.nativeSessionId === undefined) {
         state.nativeSessionId = id;
-        out.push({ kind: "session_bound", nativeSessionId: id });
+        out.push({
+          kind: "session_bound",
+          nativeSessionId: id,
+          ...(model ? { model: clip(model, 128) } : {}),
+          ...(backingProvider ? { backingProvider: clip(backingProvider, 128) } : {}),
+        });
       } else if (id !== state.nativeSessionId) {
         out.push({ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "session id changed mid-run" });
       }
     }
-    const part = obj(e.part);
     switch (type) {
-      case EVENT.stepStart:
+      case EVENT.stepStart: {
+        if (part === undefined) return [...out, ...this.#unknown(state, type)];
+        const partType = str(ownProp(part, "type"));
+        if (partType !== undefined && partType !== "step-start") {
+          return [...out, ...this.#unknown(state, `${type}:${partType}`)];
+        }
         return out;
+      }
       case EVENT.text: {
-        const text = str(part?.text);
+        const text = str(ownProp(part, "text"));
         if (text === undefined) return [...out, ...this.#unknown(state, type)];
         return text === ""
           ? out
           : [...out, { kind: "message", role: "assistant", text: clip(text, MAX_SUMMARY_CHARS) }];
       }
       case EVENT.toolUse: {
-        const name = str(part?.tool);
+        const name = str(ownProp(part, "tool"));
         if (name === undefined) return [...out, ...this.#unknown(state, type)];
-        const input = obj(obj(part?.state)?.input);
+        const partState = obj(ownProp(part, "state"));
+        const input = obj(ownProp(partState, "input"));
         // Assumption: the shell input names its command line `command` and the file tools their path `filePath` or
         // `path`; the live check recorded `state.input` but not its keys. Without them the guard sees no command.
         // Proposed (fail closed, T4.56): a tool name not in TOOL_KINDS whose input carries a string `command` is a shell
         // tool, so its command line reaches the tool-call guard (ADR-0039) whatever the tool is called.
-        const kind = own(TOOL_KINDS, name) ?? (str(input?.command) !== undefined ? "shell" : "other");
-        const command = kind === "shell" ? str(input?.command) : undefined;
-        const target = kind === "read" || kind === "edit" ? (str(input?.filePath) ?? str(input?.path)) : undefined;
+        const inputCommand = str(ownProp(input, "command"));
+        const kind = own(TOOL_KINDS, name) ?? (inputCommand !== undefined ? "shell" : "other");
+        const command = kind === "shell" ? inputCommand : undefined;
+        const target =
+          kind === "read" || kind === "edit"
+            ? (str(ownProp(input, "filePath")) ?? str(ownProp(input, "path")))
+            : undefined;
         return [
           ...out,
           {
@@ -432,9 +464,9 @@ export class OpenCodeAdapter implements ProviderAdapter {
         ];
       }
       case EVENT.stepFinish: {
-        const reason = str(part?.reason);
+        const reason = str(ownProp(part, "reason"));
         if (reason === undefined) return [...out, ...this.#unknown(state, type)];
-        const partId = str(part?.id);
+        const partId = str(ownProp(part, "id"));
         const seen = seenParts.get(state) ?? new Set<string>();
         seenParts.set(state, seen);
         if (partId === undefined || !seen.has(partId)) {
@@ -446,10 +478,10 @@ export class OpenCodeAdapter implements ProviderAdapter {
         return out;
       }
       case EVENT.error: {
-        const rawErr = e.error;
+        const rawErr = ownProp(e, "error");
         const err = obj(rawErr);
-        const errType = str(err?.type);
-        const message = str(err?.message) ?? str(rawErr);
+        const errType = str(ownProp(err, "type"));
+        const message = str(ownProp(err, "message")) ?? str(rawErr);
         if (errType === undefined && message === undefined) {
           if (rawErr === undefined || rawErr === null) return [...out, ...this.#unknown(state, type)];
           const ev: NormalizedEvent = {
@@ -475,13 +507,14 @@ export class OpenCodeAdapter implements ProviderAdapter {
   /** `step_finish` token counts and cost, as reported (no sums, no defaults; FR-CAP-01). */
   #metrics(part: Json | undefined): Record<string, number | string | null> {
     const metrics: Record<string, number | string | null> = {};
-    const tokens = obj(part?.tokens);
+    const tokens = obj(ownProp(part, "tokens"));
     for (const [path, metric] of TOKEN_KEYS) {
       let v: unknown = tokens;
-      for (const k of path) v = obj(v)?.[k];
+      for (const k of path) v = obj(v) ? ownProp(obj(v), k) : undefined;
       if (typeof v === "number" && Number.isFinite(v) && v >= 0) metrics[metric] = v;
     }
-    if (typeof part?.cost === "number" && Number.isFinite(part.cost) && part.cost >= 0) metrics.cost_usd = part.cost;
+    const cost = ownProp(part, "cost");
+    if (typeof cost === "number" && Number.isFinite(cost) && cost >= 0) metrics.cost_usd = cost;
     return metrics;
   }
 

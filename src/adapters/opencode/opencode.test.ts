@@ -14,8 +14,10 @@ import { GIT_FINALIZE_COMMIT_EVENT, GitPublisher, publishRefFor } from "../../gi
 import { createIdGenerator } from "../../ids/index.js";
 import { createLedger, openLedger } from "../../ledger/index.js";
 import { RunLifecycle } from "../../lifecycle/index.js";
+import { buildEnvelope } from "../../mcp/envelope.js";
 import { createSwitchboardServer } from "../../mcp/server.js";
 import { resolveTrustProfile } from "../../policy/profiles.js";
+import { usageObservationsFromEvents } from "../../usage/observations.js";
 import { WorkspaceManager } from "../../workspace/index.js";
 import { auditInvocation, bypassClassFlags } from "../audit.js";
 import { type ConformanceCase, missingRequiredKinds, runConformanceCase, runConformanceSuite } from "../conformance.js";
@@ -32,11 +34,19 @@ import type {
   ParseState,
   ProbeOutput,
   ProbeRunner,
+  ProviderId,
   ResolvedProfile,
   TrustProfile,
 } from "../types.js";
 import { isIneligible } from "../types.js";
-import { OPENCODE_GIT_CAPABILITIES, OPENCODE_GIT_WRITE_CONTROL, OpenCodeAdapter } from "./adapter.js";
+import {
+  OPENCODE_BYPASS_NOT_APPROVED,
+  OPENCODE_BYPASS_OUTSIDE_PRIVILEGED,
+  OPENCODE_GIT_CAPABILITIES,
+  OPENCODE_GIT_WRITE_CONTROL,
+  OPENCODE_PRIVILEGED_NEEDS_BYPASS,
+  OpenCodeAdapter,
+} from "./adapter.js";
 import {
   DEFAULT_SESSION_ID,
   opencodeConformanceCases,
@@ -403,6 +413,105 @@ describe("opencode parser and result (T4.53)", () => {
     expect(bound).not.toHaveProperty("model");
   });
 
+  it("harness and backing provider mismatch per T4.6 (FR-ADP-10): structured backing_provider is reported, never derived from display name", () => {
+    // 1. Without backing_provider in step_start (the documented T4.51 shape): backingProvider is unset
+    const standard = parse([START, TEXT("ok"), FINISH("stop")]);
+    const standardBound = standard.events.find((e) => e.kind === "session_bound");
+    expect(standardBound).toBeDefined();
+    expect(standardBound).not.toHaveProperty("backingProvider");
+    expect(standardBound).not.toHaveProperty("model");
+
+    // 2. With backing_provider and model in step_start (T4.6: harness 'opencode' fronting another provider, e.g. 'backing-x'):
+    const fronted = parse([
+      line(
+        "step_start",
+        { id: "prt_s1", type: "step-start" },
+        {
+          model: "Synthetic Model 1",
+          backing_provider: "backing-x",
+        },
+      ),
+      TEXT("ok"),
+      FINISH("stop"),
+    ]);
+    const frontedBound = fronted.events.find((e) => e.kind === "session_bound");
+    expect(frontedBound).toEqual({
+      kind: "session_bound",
+      nativeSessionId: SID,
+      model: "Synthetic Model 1",
+      backingProvider: "backing-x",
+    });
+
+    // 3. Alternative camelCase spelling backingProvider is accepted
+    const camel = parse([
+      line(
+        "step_start",
+        { id: "prt_s1", type: "step-start" },
+        {
+          model: "Synthetic Model 1",
+          backingProvider: "backing-y",
+        },
+      ),
+      TEXT("ok"),
+      FINISH("stop"),
+    ]);
+    expect(camel.events.find((e) => e.kind === "session_bound")).toEqual({
+      kind: "session_bound",
+      nativeSessionId: SID,
+      model: "Synthetic Model 1",
+      backingProvider: "backing-y",
+    });
+
+    // 4. Non-string model and backing_provider are dropped, not coerced
+    const nonStr = parse([
+      line(
+        "step_start",
+        { id: "prt_s1", type: "step-start" },
+        {
+          model: 12345,
+          backing_provider: { vendor: "invalid" },
+        },
+      ),
+      TEXT("ok"),
+      FINISH("stop"),
+    ]);
+    const nonStrBound = nonStr.events.find((e) => e.kind === "session_bound");
+    expect(nonStrBound).toEqual({ kind: "session_bound", nativeSessionId: SID });
+
+    // 5. Long strings are clipped to 128 characters
+    const longVal = "x".repeat(150);
+    const clipped = parse([
+      line(
+        "step_start",
+        { id: "prt_s1", type: "step-start" },
+        {
+          model: longVal,
+          backing_provider: longVal,
+        },
+      ),
+      TEXT("ok"),
+      FINISH("stop"),
+    ]);
+    expect(clipped.events.find((e) => e.kind === "session_bound")).toEqual({
+      kind: "session_bound",
+      nativeSessionId: SID,
+      model: `${"x".repeat(128)}…`,
+      backingProvider: `${"x".repeat(128)}…`,
+    });
+
+    // Verify end-to-end usage observation records harness 'opencode' alongside backingProvider 'backing-x' (T4.6, FR-ADP-10)
+    const usageRows = usageObservationsFromEvents(fronted.events, { runId: "run_t46_opencode", provider: "opencode" });
+    expect(usageRows).toHaveLength(1);
+    expect(usageRows[0]).toMatchObject({
+      runId: "run_t46_opencode",
+      provider: "opencode",
+      harness: "opencode",
+      backingProvider: "backing-x",
+      model: "Synthetic Model 1",
+      metrics: { input: 10, output: 3, reasoning: 1, cache_read: 4, cache_write: 0, cost_usd: 0.001 },
+    });
+  });
+
   it("a run that exits 0 with text but no step_finish stop is not a success (Q-85)", () => {
     for (const lines of [
       [START, TEXT("ok")],
@@ -674,6 +783,224 @@ describe("opencode parser and result (T4.53)", () => {
     }
   });
 
+  it("resumeArgs accepts valid alphanumeric, UUID and delimited session IDs and refuses unsafe or flag-like shapes", () => {
+    const a = adapter();
+    const profile = privilegedProfile(BYPASS_SCOPE);
+    const approved = { ...profile, bypassApproved: true };
+    const req = request({ bypassApproved: true });
+
+    // Valid IDs: UUID, alphanumeric with ., _, :, - and up to 256 chars
+    for (const validId of ["0c1d5f2e-7c1a-4b66-9d0c-1f5b8a3a9e11", "session_123.456:789-abc", "A", "a".repeat(256)]) {
+      const r = a.resumeArgs({ provider: "opencode", nativeSessionId: validId }, req, approved);
+      expect("ineligible" in r, validId).toBe(false);
+      if (!("ineligible" in r)) {
+        expect(r.argv.slice(-4)).toEqual(["--session", validId, "--", "fix the failing test"]);
+      }
+    }
+
+    // Unsafe IDs: empty, leading dash/flag, spaces, control chars, shell metachars, length > 256
+    for (const unsafeId of [
+      "",
+      "-s",
+      "--session",
+      "--auto",
+      "-dangerous",
+      "session id",
+      "session\nid",
+      "session\tid",
+      "../escape",
+      "foo/bar",
+      "/root",
+      "; rm -rf /",
+      "$SESSION",
+      "`whoami`",
+      "session\x00null",
+      "a".repeat(257),
+    ]) {
+      const r = a.resumeArgs({ provider: "opencode", nativeSessionId: unsafeId }, req, approved);
+      expect(r, JSON.stringify(unsafeId)).toMatchObject({
+        ineligible: true,
+        reason: "CAPABILITY_MISSING",
+        detail: "native session id is not a safe single argument",
+      });
+    }
+  });
+
+  it("resumeArgs preserves request cwd and mirrors compile policyFlags, env and audit", () => {
+    const a = adapter();
+    const profile = privilegedProfile(BYPASS_SCOPE);
+    const approved = { ...profile, bypassApproved: true };
+    const req = request({ workspace: { cwd: "/custom/workspace/dir", writable: true }, bypassApproved: true });
+    const id = "00000000-0000-4000-8000-000000000042";
+    const resumed = a.resumeArgs({ provider: "opencode", nativeSessionId: id }, req, approved);
+    expect("ineligible" in resumed).toBe(false);
+    if ("ineligible" in resumed) return;
+    expect(resumed.cwd).toBe("/custom/workspace/dir");
+    expect(resumed.argv.slice(-4)).toEqual(["--session", id, "--", "fix the failing test"]);
+    const first = a.compile(req, approved);
+    expect("ineligible" in first).toBe(false);
+    if ("ineligible" in first) return;
+    expect(resumed.policyFlags).toEqual(first.policyFlags);
+    expect(resumed.env).toEqual(first.env);
+    expect(resumed.envAllowlist).toEqual(first.envAllowlist);
+    expect(auditInvocation(resumed, { profile, bypassApproved: true })).toEqual([]);
+  });
+
+  it("resumeArgs rejects foreign provider bindings and ineligible profiles with exact reasons", () => {
+    const a = adapter();
+    const profile = privilegedProfile(BYPASS_SCOPE);
+    const approved = { ...profile, bypassApproved: true };
+    const req = request({ bypassApproved: true });
+    const id = "00000000-0000-4000-8000-000000000042";
+
+    // Foreign providers
+    for (const provider of ["claude", "codex", "grok", "antigravity", "cursor", "kimi", "muse", "fake", "other"]) {
+      expect(a.resumeArgs({ provider: provider as ProviderId, nativeSessionId: id }, req, approved)).toMatchObject({
+        ineligible: true,
+        reason: "CAPABILITY_MISSING",
+        detail: `binding is for ${provider}`,
+      });
+    }
+
+    // Ineligible non-privileged profiles
+    for (const name of ["inspect-untrusted", "edit-untrusted", "test-sandboxed", "trusted-development"] as const) {
+      expect(a.resumeArgs({ provider: "opencode", nativeSessionId: id }, req, profileOf(name))).toMatchObject({
+        ineligible: true,
+        reason: "PROFILE_UNSUPPORTED",
+      });
+    }
+
+    // Bypass approved outside privileged
+    expect(
+      a.resumeArgs({ provider: "opencode", nativeSessionId: id }, req, {
+        ...profileOf("edit-untrusted"),
+        bypassApproved: true,
+      }),
+    ).toMatchObject({
+      ineligible: true,
+      reason: "PROFILE_UNSUPPORTED",
+      detail: OPENCODE_BYPASS_OUTSIDE_PRIVILEGED,
+    });
+
+    // Privileged without approved scope binding
+    expect(
+      a.resumeArgs({ provider: "opencode", nativeSessionId: id }, req, {
+        name: "privileged",
+        fileAccess: "scoped",
+        shell: "scoped",
+        network: "scoped",
+        repoConfig: "scoped",
+        bypassApproved: true,
+      }),
+    ).toMatchObject({
+      ineligible: true,
+      reason: "PROFILE_UNSUPPORTED",
+      detail: "privileged without an approved scope binding (LLD §3.1)",
+    });
+
+    // Privileged without bypass
+    const noBypass = privilegedProfile({ ...BYPASS_SCOPE, bypass: false });
+    expect(
+      a.resumeArgs({ provider: "opencode", nativeSessionId: id }, req, { ...noBypass, bypassApproved: true }),
+    ).toMatchObject({
+      ineligible: true,
+      reason: "PROFILE_UNSUPPORTED",
+      detail: OPENCODE_PRIVILEGED_NEEDS_BYPASS,
+    });
+
+    // Privileged with bypass but not approved
+    expect(
+      a.resumeArgs({ provider: "opencode", nativeSessionId: id }, request({ bypassApproved: false }), profile),
+    ).toMatchObject({
+      ineligible: true,
+      reason: "PROFILE_UNSUPPORTED",
+      detail: OPENCODE_BYPASS_NOT_APPROVED,
+    });
+
+    // Privileged read-only files
+    expect(
+      a.resumeArgs({ provider: "opencode", nativeSessionId: id }, req, {
+        ...privilegedProfile({ ...BYPASS_SCOPE, files: { access: "read-only" } }),
+        bypassApproved: true,
+      }),
+    ).toMatchObject({
+      ineligible: true,
+      reason: "CAPABILITY_MISSING",
+    });
+
+    // Unwritable workspace
+    expect(
+      a.resumeArgs(
+        { provider: "opencode", nativeSessionId: id },
+        request({ workspace: { cwd: "/work", writable: false }, bypassApproved: true }),
+        approved,
+      ),
+    ).toMatchObject({
+      ineligible: true,
+      reason: "CAPABILITY_MISSING",
+    });
+
+    // Narrow shell mode
+    expect(
+      a.resumeArgs({ provider: "opencode", nativeSessionId: id }, req, {
+        ...privilegedProfile({ ...BYPASS_SCOPE, shell: { mode: "none" } }),
+        bypassApproved: true,
+      }),
+    ).toMatchObject({
+      ineligible: true,
+      reason: "CAPABILITY_MISSING",
+    });
+
+    // Narrow network mode
+    expect(
+      a.resumeArgs({ provider: "opencode", nativeSessionId: id }, req, {
+        ...privilegedProfile({ ...BYPASS_SCOPE, network: { mode: "off" } }),
+        bypassApproved: true,
+      }),
+    ).toMatchObject({
+      ineligible: true,
+      reason: "CAPABILITY_MISSING",
+    });
+
+    // Narrow repository_config mode
+    expect(
+      a.resumeArgs({ provider: "opencode", nativeSessionId: id }, req, {
+        ...privilegedProfile({ ...BYPASS_SCOPE, repository_config: { mode: "disabled" } }),
+        bypassApproved: true,
+      }),
+    ).toMatchObject({
+      ineligible: true,
+      reason: "CAPABILITY_MISSING",
+    });
+
+    // Requested model
+    expect(
+      a.resumeArgs(
+        { provider: "opencode", nativeSessionId: id },
+        request({ model: "custom-model", bypassApproved: true }),
+        approved,
+      ),
+    ).toMatchObject({
+      ineligible: true,
+      reason: "CAPABILITY_MISSING",
+    });
+
+    // Git write risks in shell allowlist
+    expect(
+      a.resumeArgs({ provider: "opencode", nativeSessionId: id }, req, { ...approved, shellAllowlist: ["git commit"] }),
+    ).toMatchObject({
+      ineligible: true,
+      reason: "PROFILE_UNSUPPORTED",
+    });
+
+    // Missing executable
+    const noExe = new OpenCodeAdapter({ pathEnv: "" });
+    expect(noExe.resumeArgs({ provider: "opencode", nativeSessionId: id }, req, approved)).toMatchObject({
+      ineligible: true,
+      reason: "CAPABILITY_MISSING",
+    });
+  });
+
   it("native values that name Object.prototype members map to `other`, `shell` and `unknown`, never an inherited member", () => {
     const { a, events } = parse([
       START,
@@ -696,6 +1023,45 @@ describe("opencode parser and result (T4.53)", () => {
       { kind: "provider_error", category: "unknown", message: "__proto__: synthetic" },
     ]);
     expect(a.extractResult(events, EXIT0)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+  });
+
+  it("__proto__ smuggling of type or sessionID fails closed as unknown and does not bind session", () => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const doc = JSON.stringify({
+      __proto__: { type: "step_finish", sessionID: SID, part: { reason: "stop" } },
+    });
+    const ev = a.parseEvent(doc, state);
+    expect(ev).toEqual([{ kind: "unknown", rawType: "none" }]);
+    expect(state.nativeSessionId).toBeUndefined();
+    expect(state.unknownEvents).toBe(1);
+    expect(a.extractResult(ev, EXIT0)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      unknownEventCount: 1,
+    });
+  });
+
+  it("malformed step_start missing part or with invalid part.type fails closed as unknown", () => {
+    const a = adapter();
+    const s1: ParseState = { lines: 0, unknownEvents: 0 };
+    const ev1 = a.parseEvent(JSON.stringify({ type: "step_start", timestamp: 1, sessionID: SID }), s1);
+    expect(ev1).toEqual([
+      { kind: "session_bound", nativeSessionId: SID },
+      { kind: "unknown", rawType: "step_start" },
+    ]);
+    expect(s1.unknownEvents).toBe(1);
+
+    const s2: ParseState = { lines: 0, unknownEvents: 0 };
+    const ev2 = a.parseEvent(
+      JSON.stringify({ type: "step_start", timestamp: 1, sessionID: SID, part: { type: "not-step-start" } }),
+      s2,
+    );
+    expect(ev2).toEqual([
+      { kind: "session_bound", nativeSessionId: SID },
+      { kind: "unknown", rawType: "step_start:not-step-start" },
+    ]);
+    expect(s2.unknownEvents).toBe(1);
   });
 
   it("a session id resume could not pass as one argument is never bound and fails OUTPUT_PROTOCOL_ERROR", () => {
@@ -1424,6 +1790,109 @@ describe("opencode Git declaration (T4.57, FR-GIT-01, FR-GIT-02, FR-GIT-09)", ()
       const sha = g(repo, "rev-parse", "--verify", "--quiet", pubRef);
       expect(sha).toMatch(/^[0-9a-f]{40}$/u);
       expect(g(repo, "show", "--name-only", "--format=", sha)).toContain("hello.txt");
+    } finally {
+      await lifecycle.shutdown();
+      db.close();
+    }
+  });
+});
+
+/**
+ * T4.53 with T4.6 (FR-ADP-10): a replayed fixture whose backing vendor differs from the harness. SYNTHETIC: native OpenCode
+ * output reports no backing vendor ([LIVE] row 4c), so `backing_provider` is the structured key a fronted run would
+ * carry, not a recorded field.
+ */
+describe("opencode backing-provider fixture (T4.53, T4.6, FR-ADP-10)", () => {
+  it("a replayed run stores harness opencode and backing vendor side by side and shows both in get_run", async () => {
+    const root = realpathSync(makeCwd());
+    const repo = join(root, "repo");
+    mkdirSync(repo);
+    const g = (...args: string[]) =>
+      execFileSync("git", ["-c", "commit.gpgsign=false", ...args], {
+        cwd: repo,
+        env: {
+          PATH: process.env.PATH ?? "",
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_AUTHOR_NAME: "OpenCode Dev",
+          GIT_AUTHOR_EMAIL: "opencode@example.test",
+          GIT_COMMITTER_NAME: "OpenCode Dev",
+          GIT_COMMITTER_EMAIL: "opencode@example.test",
+        },
+      });
+    g("init", "-q", "-b", "main");
+    writeFileSync(join(repo, "README.md"), "initial\n");
+    g("add", "-A");
+    g("commit", "-q", "-m", "init");
+
+    const dataDir = join(root, "data");
+    mkdirSync(dataDir);
+    const db = openLedger(dataDir);
+    const ids = createIdGenerator();
+    const ledger = createLedger(db, { ids });
+    const artifacts = new ArtifactStore(join(dataDir, "artifacts"));
+    const real = createProbeRunner();
+    const probeRunner: ProbeRunner = async (argv, opts) => {
+      if (argv.includes("auth") && argv.includes("list")) {
+        return {
+          stdout: JSON.stringify([{ id: "opencode", name: "Synthetic", connections: [{ type: "oauth" }] }]),
+          stderr: "",
+          exitCode: 0,
+          timedOut: false,
+        };
+      }
+      return real(argv, opts);
+    };
+    const lifecycle = new RunLifecycle({
+      ledger,
+      workspace: new WorkspaceManager({ db, artifacts, dataDir, allowedRoots: [root], ids }),
+      artifacts,
+      adapters: new AdapterRegistry().register(replayAdapter("backing_provider")),
+      allowedRoots: [root],
+      globalConcurrency: 1,
+      resolveProfile: (name) => resolveTrustProfile(name),
+      probeRunner,
+    });
+    lifecycle.start();
+    try {
+      const { runId, metaSessionId } = await lifecycle.submit({
+        clientId: "c",
+        objective: "answer through a backing vendor",
+        workspace: repo,
+        trustProfile: "privileged",
+        provider: "opencode",
+        privileged: { scope: BYPASS_SCOPE, approvedByClientPolicy: true },
+      });
+      const done = await lifecycle.waitForTerminal(runId);
+      expect(done.state, done.failure_detail ?? "").toBe("SUCCEEDED");
+
+      // The session_bound event's fields land on the provider binding (T5.3), never inferred from the display name.
+      expect(ledger.listProviderBindings(metaSessionId)).toEqual([
+        expect.objectContaining({
+          provider: "opencode",
+          harness: "opencode",
+          backing_provider: "backing-x",
+          model: "Synthetic Model 1",
+          native_session_id: DEFAULT_SESSION_ID,
+        }),
+      ]);
+
+      const rows = ledger.listUsageObservationsForRun(runId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        provider: "opencode",
+        harness: "opencode",
+        backing_provider: "backing-x",
+        model: "Synthetic Model 1",
+        source: "provider_reported",
+      });
+      expect(buildEnvelope(ledger, done, (s) => s).usage?.reported).toEqual([
+        expect.objectContaining({
+          harness: "opencode",
+          backing_provider: "backing-x",
+          model: "Synthetic Model 1",
+        }),
+      ]);
     } finally {
       await lifecycle.shutdown();
       db.close();
