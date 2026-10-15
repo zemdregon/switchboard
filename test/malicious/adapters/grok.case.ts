@@ -47,13 +47,15 @@
  *   shadowed-parameter (object `input` without a command) tool lines in `unknown_events`, at exit 0, 1 and 2.
  *
  * Field names other than `type` are still hypothetical: the live check did not record command or target fields.
- * Partial streams cut inside a line are exported as `grokPartialStreams` and replayed separately.
+ * Partial streams cut inside a line are exported as `grokPartialStreams` and replayed separately; the compiled cells and
+ * the scopes Grok Build must refuse are exported as `grokCompiledCells` and `grokRefusedScopes`.
  */
 
 import { privilegedProfile } from "../../../src/adapters/fixtures/privileged.js";
 import { replayLauncher } from "../../../src/adapters/fixtures/replay.js";
 import { GrokAdapter } from "../../../src/adapters/grok/adapter.js";
 import { BYPASS_SCOPE, PRIVILEGED_BYPASS_PROFILE } from "../../../src/adapters/grok/fixtures/cases.js";
+import type { Ineligible, Invocation, ResolvedProfile } from "../../../src/adapters/index.js";
 import type { AdapterLegCase, HostileStream } from "../adapter-leg.js";
 import type { MaliciousFixture } from "../fixture.js";
 
@@ -2456,5 +2458,130 @@ export const grokPartialStreams = (fx: MaliciousFixture): HostileStream[] => [
       toolCall(`touch ${fx.outsideSentinel} && git commit --allow-empty -m x`),
       '{"type":"tool_call_update","parameters":{"command":"git reset',
     ],
+  },
+];
+
+/**
+ * The compiled cells (T4.26), pinned beyond flag presence: `compileProblems` only asks whether each isolation word is
+ * somewhere in the argv, so a compile that adds a second, wider `--sandbox` value, writes `--sandbox=<value>`, or
+ * separates `--sandbox` from its value would still pass it. Which of two `--sandbox` values the CLI honours was not
+ * checked (**Assumption:** the last, as clap-style parsers do), so the leg requires exactly one. `writable: false` is
+ * the read-only workspace request, which compiles `read-only` from a worktree scope.
+ */
+export interface GrokCompiledCell {
+  label: string;
+  profile: ResolvedProfile;
+  writable: boolean;
+  sandbox: "strict" | "workspace" | "read-only";
+  /** `--disable-web-search` is compiled exactly when network is `off`. */
+  webSearchOff: boolean;
+}
+
+export const grokCompiledCells: readonly GrokCompiledCell[] = [
+  { label: "strict", profile: PRIVILEGED_BYPASS_PROFILE, writable: true, sandbox: "strict", webSearchOff: true },
+  {
+    label: "workspace (network on)",
+    profile: privilegedProfile({ ...BYPASS_SCOPE, network: { mode: "on" } }),
+    writable: true,
+    sandbox: "workspace",
+    webSearchOff: false,
+  },
+  {
+    label: "read-only files",
+    profile: privilegedProfile({ ...BYPASS_SCOPE, files: { access: "read-only" } }),
+    writable: true,
+    sandbox: "read-only",
+    webSearchOff: true,
+  },
+  {
+    label: "read-only workspace request",
+    profile: PRIVILEGED_BYPASS_PROFILE,
+    writable: false,
+    sandbox: "read-only",
+    webSearchOff: true,
+  },
+];
+
+/** The policy flags one cell must compile, in order, as one contiguous run of the argv. */
+export const grokCellPolicyFlags = (cell: GrokCompiledCell): string[] => [
+  "--sandbox",
+  cell.sandbox,
+  ...(cell.webSearchOff ? ["--disable-web-search"] : []),
+  "--always-approve",
+];
+
+/** Findings for one compiled cell; empty when its sandbox, web-search and approval flags are exactly the cell's. */
+export function grokCellProblems(inv: Invocation, cell: GrokCompiledCell): string[] {
+  const problems: string[] = [];
+  const count = (flag: string) => inv.argv.filter((a) => a === flag).length;
+  for (const [flag, want] of [
+    ["--sandbox", 1],
+    ["--always-approve", 1],
+    ["--disable-web-search", cell.webSearchOff ? 1 : 0],
+  ] as const) {
+    if (count(flag) !== want) problems.push(`${cell.label}: ${flag} ${count(flag)} times, want ${want}`);
+  }
+  for (const a of inv.argv) {
+    if (/^--(sandbox|always-approve|disable-web-search)=/.test(a)) problems.push(`${cell.label}: inline form ${a}`);
+  }
+  const at = inv.argv.indexOf("--sandbox");
+  if (at !== -1 && inv.argv[at + 1] !== cell.sandbox)
+    problems.push(`${cell.label}: --sandbox ${inv.argv[at + 1]}, want ${cell.sandbox}`);
+  const want = grokCellPolicyFlags(cell);
+  if (JSON.stringify(inv.policyFlags) !== JSON.stringify(want))
+    problems.push(`${cell.label}: policyFlags ${JSON.stringify(inv.policyFlags)}, want ${JSON.stringify(want)}`);
+  if (at === -1 || JSON.stringify(inv.argv.slice(at, at + want.length)) !== JSON.stringify(want))
+    problems.push(`${cell.label}: argv does not carry ${want.join(" ")} contiguously`);
+  return problems;
+}
+
+/**
+ * Scopes Grok Build must refuse (src/adapters/grok/adapter.ts `#build` steps 3 to 6), each in the hostile checkout.
+ * `compileProblems` checks the isolation of a non-`disabled` repository configuration only if it compiles, so the
+ * refusal itself is pinned here: repository configuration `disabled` or `approved` in every compiled cell (FR-POL-04
+ * cannot hold, owner decisions 26 and 46; a refusal is not a claim that project sources are inert), read-only files
+ * with network `on`, network `allowlist`, a non-`broad` shell, and a bypass scope whose run is not approved.
+ */
+export const grokRefusedScopes: readonly {
+  label: string;
+  profile: ResolvedProfile;
+  bypassApproved: boolean;
+  reason: Ineligible["reason"];
+}[] = [
+  ...(["disabled", "approved"] as const).flatMap((mode) =>
+    [
+      ["strict", BYPASS_SCOPE],
+      ["workspace (network on)", { ...BYPASS_SCOPE, network: { mode: "on" } }],
+      ["read-only files", { ...BYPASS_SCOPE, files: { access: "read-only" } }],
+    ].map(([label, scope]) => ({
+      label: `${label}, repository_config ${mode}`,
+      profile: privilegedProfile({ ...(scope as typeof BYPASS_SCOPE), repository_config: { mode } }),
+      bypassApproved: true,
+      reason: "CAPABILITY_MISSING" as const,
+    })),
+  ),
+  {
+    label: "read-only files, network on",
+    profile: privilegedProfile({ ...BYPASS_SCOPE, files: { access: "read-only" }, network: { mode: "on" } }),
+    bypassApproved: true,
+    reason: "CAPABILITY_MISSING",
+  },
+  {
+    label: "network allowlist",
+    profile: privilegedProfile({ ...BYPASS_SCOPE, network: { mode: "allowlist", hosts: ["example.invalid"] } }),
+    bypassApproved: true,
+    reason: "CAPABILITY_MISSING",
+  },
+  {
+    label: "shell none",
+    profile: privilegedProfile({ ...BYPASS_SCOPE, shell: { mode: "none" } }),
+    bypassApproved: true,
+    reason: "CAPABILITY_MISSING",
+  },
+  {
+    label: "bypass scope, run not approved",
+    profile: PRIVILEGED_BYPASS_PROFILE,
+    bypassApproved: false,
+    reason: "PROFILE_UNSUPPORTED",
   },
 ];
