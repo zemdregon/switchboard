@@ -127,6 +127,13 @@ export const TOOL_KEYS: Readonly<Record<string, "read" | "edit" | "shell">> = {
   editToolCall: "edit",
   writeToolCall: "edit",
   shellToolCall: "shell",
+  bashToolCall: "shell",
+  terminalToolCall: "shell",
+  execToolCall: "shell",
+  runCommandToolCall: "shell",
+  executeCommandToolCall: "shell",
+  editFileToolCall: "edit",
+  writeFileToolCall: "edit",
 };
 
 /**
@@ -135,9 +142,23 @@ export const TOOL_KEYS: Readonly<Record<string, "read" | "edit" | "shell">> = {
  */
 export const TOOL_RESULT_REJECTED = "rejected";
 export const TOOL_RESULT_PERMISSION_DENIED = "permissionDenied";
+export const TOOL_RESULT_PERMISSION_DENIED_SNAKE = "permission_denied";
+export const TOOL_RESULT_DENIED = "denied";
+export const TOOL_RESULT_BLOCKED = "blocked";
 
 /** `result.usage` keys ([LIVE] 5a: `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`). */
-export const USAGE_KEYS: readonly string[] = ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens"];
+export const USAGE_KEYS: readonly string[] = [
+  "inputTokens",
+  "outputTokens",
+  "cacheReadTokens",
+  "cacheWriteTokens",
+  "totalTokens",
+  "input_tokens",
+  "output_tokens",
+  "cache_read_tokens",
+  "cache_write_tokens",
+  "total_tokens",
+];
 
 /**
  * Optional backing provider key ([LIVE] row 102 checked for `backing_provider`; none observed in native CLI).

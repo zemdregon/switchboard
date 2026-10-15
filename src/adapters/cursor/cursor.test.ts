@@ -1682,6 +1682,333 @@ describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
       });
     }
   });
+
+  it("second result line with usage does not record duplicate usage observation (FR-CAP-01)", () => {
+    const r = parse([
+      INIT(),
+      ASSIST("ok"),
+      RESULT({ usage: { inputTokens: 10, outputTokens: 2 } }),
+      RESULT({ usage: { inputTokens: 20, outputTokens: 4 } }),
+    ]);
+    expect(r.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+    const usageEvents = r.events.filter((e) => e.kind === "usage");
+    expect(usageEvents).toHaveLength(1);
+    expect(usageEvents[0]).toMatchObject({
+      kind: "usage",
+      source: "provider_reported",
+      metrics: { inputTokens: 10, outputTokens: 2 },
+    });
+    const observations = usageObservationsFromEvents(r.events, {
+      runId: "run_usage_observation_test",
+      provider: "cursor",
+    });
+    expect(observations).toHaveLength(1);
+    expect(observations[0]?.metrics).toEqual({ inputTokens: 10, outputTokens: 2 });
+  });
+
+  it("session_bound carries model and backingProvider from init or result (model, model_id, modelId, backing_provider, backingProvider)", () => {
+    // 1. From init: model_id, modelId, backingProvider
+    const p1 = parse([
+      INIT({ model: undefined, model_id: "claude-3-7-sonnet", backingProvider: "anthropic" }),
+      RESULT(),
+    ]);
+    expect(p1.events.find((e) => e.kind === "session_bound")).toEqual({
+      kind: "session_bound",
+      nativeSessionId: SID,
+      model: "claude-3-7-sonnet",
+      backingProvider: "anthropic",
+    });
+
+    const p2 = parse([
+      INIT({ model: undefined, modelId: "claude-3-5-sonnet", backing_provider: "anthropic" }),
+      RESULT(),
+    ]);
+    expect(p2.events.find((e) => e.kind === "session_bound")).toEqual({
+      kind: "session_bound",
+      nativeSessionId: SID,
+      model: "claude-3-5-sonnet",
+      backingProvider: "anthropic",
+    });
+
+    // Model precedence: model > model_id > modelId
+    const pPrecedence = parse([
+      INIT({ model: "model-wins", model_id: "model-id-loses", modelId: "modelId-loses" }),
+      RESULT(),
+    ]);
+    expect(pPrecedence.events.find((e) => e.kind === "session_bound")).toEqual({
+      kind: "session_bound",
+      nativeSessionId: SID,
+      model: "model-wins",
+    });
+
+    // 2. From result without init (single result / json format)
+    const p3 = parse([RESULT({ model: "claude-4-opus", backing_provider: "anthropic-direct" })]);
+    expect(p3.events.find((e) => e.kind === "session_bound")).toEqual({
+      kind: "session_bound",
+      nativeSessionId: SID,
+      model: "claude-4-opus",
+      backingProvider: "anthropic-direct",
+    });
+
+    // 3. Session ID resolution from sessionId, chat_id, chatId in init and result
+    const sessionKeyCases: readonly [string, string][] = [
+      ["sessionId", "session-uuid-1"],
+      ["chat_id", "session-uuid-2"],
+      ["chatId", "session-uuid-3"],
+    ];
+    for (const [key, val] of sessionKeyCases) {
+      const pInit = parse([line({ type: "system", subtype: "init", apiKeySource: "login", [key]: val }), RESULT()]);
+      expect(pInit.events.find((e) => e.kind === "session_bound")?.nativeSessionId, key).toBe(val);
+
+      const pRes = parse([RESULT({ session_id: undefined, [key]: val })]);
+      expect(pRes.events.find((e) => e.kind === "session_bound")?.nativeSessionId, key).toBe(val);
+    }
+
+    // 4. Prototype pollution prevention: __proto__ or Object.prototype keys in model or backingProvider are omitted
+    const pProto = parse([INIT({ model: "toString", backing_provider: "__proto__" }), RESULT()]);
+    expect(pProto.events.find((e) => e.kind === "session_bound")).toEqual({
+      kind: "session_bound",
+      nativeSessionId: SID,
+    });
+  });
+
+  it("parses assistant message content variants (array of strings, string content, message.text, e.text, e.content)", () => {
+    // Array of plain strings
+    const p1 = parse([
+      INIT(),
+      line({ type: "assistant", message: { content: ["first part ", "second part"] } }),
+      RESULT(),
+    ]);
+    expect(p1.events.find((e) => e.kind === "message")).toEqual({
+      kind: "message",
+      role: "assistant",
+      text: "first part second part",
+    });
+
+    // String content inside message
+    const p2 = parse([INIT(), line({ type: "assistant", message: { content: "single string response" } }), RESULT()]);
+    expect(p2.events.find((e) => e.kind === "message")).toEqual({
+      kind: "message",
+      role: "assistant",
+      text: "single string response",
+    });
+
+    // message.text
+    const p3 = parse([INIT(), line({ type: "assistant", message: { text: "text in message" } }), RESULT()]);
+    expect(p3.events.find((e) => e.kind === "message")).toEqual({
+      kind: "message",
+      role: "assistant",
+      text: "text in message",
+    });
+
+    // e.text top-level
+    const p4 = parse([INIT(), line({ type: "assistant", text: "text in event" }), RESULT()]);
+    expect(p4.events.find((e) => e.kind === "message")).toEqual({
+      kind: "message",
+      role: "assistant",
+      text: "text in event",
+    });
+
+    // e.content top-level
+    const p5 = parse([INIT(), line({ type: "assistant", content: "content in event" }), RESULT()]);
+    expect(p5.events.find((e) => e.kind === "message")).toEqual({
+      kind: "message",
+      role: "assistant",
+      text: "content in event",
+    });
+  });
+
+  it("parses tool arguments directly on entry, arguments container, and alias parameters", () => {
+    // Top-level arguments in entry
+    const p1 = parse([INIT(), TOOL("started", { shellToolCall: { command: "echo direct" } }), RESULT()]);
+    expect(p1.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "shell",
+      command: "echo direct",
+    });
+
+    const p2 = parse([INIT(), TOOL("started", { editToolCall: { filePath: "/w/file.ts" } }), RESULT()]);
+    expect(p2.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "edit",
+      target: "/w/file.ts",
+    });
+
+    // Container fallback: arguments
+    const p3 = parse([
+      INIT(),
+      TOOL("started", { shellToolCall: { arguments: { commandLine: "echo args_cmd" } } }),
+      RESULT(),
+    ]);
+    expect(p3.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "shell",
+      command: "echo args_cmd",
+    });
+
+    // Target aliases: absolute_path and file
+    const p4 = parse([INIT(), TOOL("started", { editToolCall: { args: { absolute_path: "/w/abs.ts" } } }), RESULT()]);
+    expect(p4.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "edit",
+      target: "/w/abs.ts",
+    });
+
+    const p5 = parse([INIT(), TOOL("started", { readToolCall: { args: { file: "/w/read.ts" } } }), RESULT()]);
+    expect(p5.events.find((e) => e.kind === "tool_call")).toMatchObject({
+      kind: "tool_call",
+      tool: "read",
+      target: "/w/read.ts",
+    });
+  });
+
+  it("unmapped tool names with a command are treated as shell and guarded against Git writes (ADR-0039)", () => {
+    const ctx = { cwd: "/w", bypass: true };
+    const a = adapter();
+
+    for (const toolName of [
+      "bashToolCall",
+      "terminalToolCall",
+      "execToolCall",
+      "runCommandToolCall",
+      "executeCommandToolCall",
+      "custom_tool",
+      "function",
+    ]) {
+      const state: ParseState = { lines: 0, unknownEvents: 0 };
+      const lines = [INIT(), TOOL("started", { [toolName]: { args: { command: "git push origin main" } } }), RESULT()];
+      const events = lines.flatMap((l) => a.parseEvent(l, state)).map((e) => guardEvent(e, ctx));
+      const r = a.extractResult(events, EXIT0);
+      expect(r, toolName).toMatchObject({
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+      });
+      expect(r.failureDetail, toolName).toMatch(/^git write attempted/);
+    }
+  });
+
+  it("tool refusal aliases (permission_denied, denied, blocked, error message)", () => {
+    const refusalCases: readonly [string, unknown][] = [
+      ["permission_denied", {}],
+      ["denied", {}],
+      ["blocked", {}],
+      ["error", "Permission denied by system"],
+    ];
+    for (const [refusalKey, body] of refusalCases) {
+      const r = parse([
+        INIT(),
+        TOOL("started", { shellToolCall: { args: { command: "echo test" } } }),
+        TOOL("completed", { shellToolCall: { result: { [refusalKey]: body } } }),
+        RESULT(),
+      ]);
+      expect(
+        r.events.some((e) => e.kind === "permission_denied"),
+        refusalKey,
+      ).toBe(true);
+      expect(r.result, refusalKey).toMatchObject({
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+      });
+    }
+
+    // Error text on entry
+    const rEntry = parse([
+      INIT(),
+      TOOL("started", { shellToolCall: { args: { command: "echo test" } } }),
+      TOOL("completed", { shellToolCall: { error: "Command blocked by security policy" } }),
+      RESULT(),
+    ]);
+    expect(rEntry.events.some((e) => e.kind === "permission_denied")).toBe(true);
+    expect(rEntry.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+  });
+
+  it("parses snake_case and totalTokens usage metrics", () => {
+    const r = parse([
+      INIT(),
+      RESULT({
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          total_tokens: 15,
+          cache_read_tokens: 2,
+          cache_write_tokens: 1,
+        },
+      }),
+    ]);
+    const u = r.events.find((e) => e.kind === "usage");
+    expect(u).toMatchObject({
+      kind: "usage",
+      source: "provider_reported",
+      metrics: {
+        input_tokens: 10,
+        output_tokens: 5,
+        total_tokens: 15,
+        cache_read_tokens: 2,
+        cache_write_tokens: 1,
+      },
+    });
+
+    const rCamel = parse([
+      INIT(),
+      RESULT({
+        usage: {
+          inputTokens: 10,
+          outputTokens: 5,
+          totalTokens: 15,
+        },
+      }),
+    ]);
+    const uCamel = rCamel.events.find((e) => e.kind === "usage");
+    expect(uCamel).toMatchObject({
+      kind: "usage",
+      source: "provider_reported",
+      metrics: {
+        inputTokens: 10,
+        outputTokens: 5,
+        totalTokens: 15,
+      },
+    });
+  });
+
+  it("extracts command from result.rejected or result.permissionDenied when args omitted on completed call", () => {
+    const ctx = { cwd: "/w", bypass: true };
+    const a = adapter();
+
+    // 1. result.rejected with command
+    const state1: ParseState = { lines: 0, unknownEvents: 0 };
+    const lines1 = [
+      INIT(),
+      TOOL("started", { shellToolCall: {} }),
+      TOOL("completed", { shellToolCall: { result: { rejected: { command: "git push origin main" } } } }),
+      RESULT(),
+    ];
+    const events1 = lines1.flatMap((l) => a.parseEvent(l, state1)).map((e) => guardEvent(e, ctx));
+    const r1 = a.extractResult(events1, EXIT0);
+    expect(r1).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+    expect(r1.failureDetail).toMatch(/^git write attempted/);
+
+    // 2. result.permissionDenied with command
+    const state2: ParseState = { lines: 0, unknownEvents: 0 };
+    const lines2 = [
+      INIT(),
+      TOOL("started", { shellToolCall: {} }),
+      TOOL("completed", { shellToolCall: { result: { permissionDenied: { command: "git commit -m x" } } } }),
+      RESULT(),
+    ];
+    const events2 = lines2.flatMap((l) => a.parseEvent(l, state2)).map((e) => guardEvent(e, ctx));
+    const r2 = a.extractResult(events2, EXIT0);
+    expect(r2).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+    expect(r2.failureDetail).toMatch(/^git write attempted/);
+  });
 });
 
 describe("cursor conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.45)", () => {
