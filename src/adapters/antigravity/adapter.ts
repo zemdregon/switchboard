@@ -476,8 +476,9 @@ export class AntigravityAdapter implements ProviderAdapter {
         } else if (error === undefined && rawError !== undefined && rawError !== null) {
           out.push({ kind: "provider_error", category: "unknown", message: "non-string error field" });
         }
-        // Q-86: `SUCCESS` with no tokens is what a print timeout returns ([LIVE] C10), so it is not a success.
-        const total = metrics.total_tokens;
+        // Q-86: `SUCCESS` with no tokens is what a print timeout returns ([LIVE] C10), so it is not a success. Own
+        // property only, so a total inherited from Object.prototype is never read as a reported one (fail closed).
+        const total = ownProp(metrics, "total_tokens");
         const ok = results === 1 && status === STATUS_SUCCESS && typeof total === "number" && total > 0;
         const response = str(ownProp(r, "response"));
         if (response !== undefined && response !== "") {
