@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.43). The 2026-10-14 live check could not run the sandbox (row 9: AppArmor user namespace restriction prevented sandbox start, exit 1 with no stream). In-stream unrecorded sandbox violation text fails closed to TOOL_FAILURE, never SANDBOX_VIOLATION or success.","exit":0}}
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work/tree","session_id":"synthetic-cursor-session-0001","model":"Synthetic Model 1","permissionMode":"default"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"sandbox: operation denied"}]},"session_id":"synthetic-cursor-session-0001"}
+{"type":"result","subtype":"error","is_error":true,"result":"sandbox: operation denied","session_id":"synthetic-cursor-session-0001"}

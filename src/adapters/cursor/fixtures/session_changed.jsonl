@@ -1,0 +1,5 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.43). A conflicting session_id mid-run fails OUTPUT_PROTOCOL_ERROR with the first id bound.","exit":0}}
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work/tree","session_id":"synthetic-cursor-session-0001","model":"Synthetic Model 1","permissionMode":"default"}
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work/tree","session_id":"synthetic-cursor-session-0002","model":"Synthetic Model 1","permissionMode":"default"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]},"session_id":"synthetic-cursor-session-0001"}
+{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"synthetic-cursor-session-0001"}
