@@ -538,3 +538,189 @@ describe("antigravity parser residuals, fourth pass: event order and provider_re
     ]);
   });
 });
+
+/**
+ * Fifth pass (2026-10-15, Delegated, not owner-approved; mirrors Grok Build T4.23 fifth pass): step lines after the
+ * `result` line that the trailing-tool check misses (a deduplicated or unreadable step, pinned gaps), the trailing-tool
+ * detail masking an earlier protocol anomaly, prototype-named values, `step_index` shapes, and `extractResult` against
+ * the compiled expected exit codes. Synthetic lines only, parser unchanged. The `tool_info.parameters` keys are still
+ * the parser's Assumptions (gap (3) in the roadmap row), so these pin behaviour, not a native contract.
+ */
+describe("antigravity parser residuals, fifth pass: post-result steps, prototype values and exit codes (T4.33)", () => {
+  const dirs: string[] = [];
+  afterAll(() => {
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  });
+  const tool = (index: number, parameters: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+    STEP({ step_index: index, step_type: "tool", tool_info: { name: "run_command", parameters }, ...extra });
+  const guarded = (lines: string[]) => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const events = lines
+      .flatMap((l) => a.parseEvent(l, state))
+      .map((e) => guardEvent(e, { cwd: "/work/tree", home: "/home/synthetic", bypass: true }));
+    return a.extractResult(events, EXIT0);
+  };
+
+  it("pins the gap: a tool step repeated unchanged after the result is deduplicated, so the run still succeeds", () => {
+    const before = tool(1, { command: "ls" });
+    const r = run([INIT(), before, RESULT(), before]);
+    expect(r.events.filter((e) => e.kind === "tool_call")).toHaveLength(1);
+    expect(r.events.at(-1)?.kind).toBe("result");
+    expect(r.result).toEqual({ ok: true, unknownEventCount: 0, nativeSessionId: CID, summary: "ok" });
+    // A new command on the same step after the result is reported, so it trips the order check and reaches the guard.
+    const swapped = tool(1, { command: "git push origin main" });
+    expect(run([INIT(), before, RESULT(), swapped]).result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the result line",
+    });
+    expect(guarded([INIT(), before, RESULT(), swapped])).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+  });
+
+  it("fixture trailing_repeat_step replays a repeated step after a clean result to success at exit 0 (gap, pinned)", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "sb-antigravity-t433-fifth-"));
+    dirs.push(cwd);
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: replayAdapter("trailing_repeat_step"),
+      request: {
+        runId: "run_antigravity_t433_fifth",
+        objective: "synthetic antigravity objective",
+        constraints: [],
+        workspace: { cwd, writable: true },
+        bypassApproved: true,
+      },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toEqual({
+      ok: true,
+      unknownEventCount: 0,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      summary: "Done.",
+    });
+  });
+
+  it("pins the gap: an unreadable or non-tool step after the result is no tool call, so the run still succeeds", () => {
+    // No numeric step_index: a counted unknown line, not a tool call, so the order check skips it.
+    const unreadable = STEP({ step_index: "1", step_type: "tool", tool_info: { parameters: { command: "ls" } } });
+    const r = run([INIT(), RESULT(), unreadable]);
+    expect(r.events.at(-1)).toEqual({ kind: "unknown", rawType: "step_update" });
+    expect(r.result).toEqual({ ok: true, unknownEventCount: 1, nativeSessionId: CID, summary: "ok" });
+    // A command on a step that is not exactly `tool` emits nothing at all.
+    const response = STEP({ step_index: 2, step_type: "agent_response", tool_info: { parameters: { command: "ls" } } });
+    expect(run([INIT(), RESULT(), response]).result).toEqual({
+      ok: true,
+      unknownEventCount: 0,
+      nativeSessionId: CID,
+      summary: "ok",
+    });
+    // A bare `tool` step after the result is a tool call, so it fails the run (the control for both gaps above).
+    expect(run([INIT(), RESULT(), STEP({ step_index: 3, step_type: "tool" })]).result).toMatchObject({
+      ok: false,
+      failureDetail: "tool call after the result line",
+    });
+  });
+
+  it("the trailing-tool detail replaces an earlier protocol detail: the code stands, the first cause is not named", () => {
+    const step = tool(4, { path: "a.ts" });
+    expect(run([INIT(), RESULT(), RESULT(), step]).result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the result line",
+    });
+    // A step for another conversation after the result: the changed id is emitted but the trailing tool is named.
+    const other = run([INIT(), RESULT(), tool(4, { path: "a.ts" }, { conversation_id: OTHER })]);
+    expect(other.events.slice(-2).map((e) => e.kind)).toEqual(["provider_error", "tool_call"]);
+    expect(other.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the result line",
+    });
+    // A failure that is not a protocol error keeps its own detail, the trailing tool notwithstanding.
+    expect(run([INIT(), RESULT({ status: "ERROR" }), step]).result).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "ERROR",
+    });
+  });
+
+  it("prototype-named event, step and status values are plain strings: a counted unknown, an ignored step or a failed status", () => {
+    for (const name of ["toString", "constructor", "__proto__", "hasOwnProperty"]) {
+      const r = run([INIT(), j({ event: name }), STEP({ step_index: 1, step_type: name }), RESULT()]);
+      expect(
+        r.events.filter((e) => e.kind === "unknown"),
+        name,
+      ).toEqual([{ kind: "unknown", rawType: name }]);
+      expect(r.result, name).toEqual({ ok: true, unknownEventCount: 1, nativeSessionId: CID, summary: "ok" });
+      expect(run([INIT(), RESULT({ status: name })]).result, name).toMatchObject({
+        ok: false,
+        failureCode: "TOOL_FAILURE",
+        failureDetail: name,
+      });
+    }
+  });
+
+  it("pins the gap: a prototype-named model, tool name or denied action is kept as an ordinary string", () => {
+    const r = run([
+      j({ event: "init", conversation_id: CID, init: { model: "constructor" }, backing_provider: "toString" }),
+      STEP({ step_index: 1, step_type: "tool", tool_info: { name: "__proto__", parameters: { path: "a.ts" } } }),
+      RESULT({ denied_actions: [{ display_name: "hasOwnProperty" }] }),
+    ]);
+    expect(r.events.filter((e) => e.kind !== "usage" && e.kind !== "message")).toEqual([
+      { kind: "session_bound", nativeSessionId: CID, model: "constructor", backingProvider: "toString" },
+      { kind: "tool_call", tool: "other", name: "__proto__", target: "a.ts" },
+      { kind: "permission_denied", tool: "hasOwnProperty" },
+      { kind: "result", ok: true },
+    ]);
+    expect(r.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: CID });
+  });
+
+  it("pins the gap: any number is a step index, so fractional and negative indexes are distinct steps", () => {
+    const steps = [1, 1.5, -1, 0].map((i) => tool(i, { command: "ls" }));
+    const r = run([INIT(), ...steps, tool(1.5, { command: "ls" }), RESULT()]);
+    expect(r.events.filter((e) => e.kind === "tool_call")).toHaveLength(4);
+    expect(r.result).toMatchObject({ ok: true, unknownEventCount: 0 });
+    // The same command under two keys or containers of one step is reported once.
+    const twice = run([INIT(), tool(5, { command: "ls", CommandLine: "ls" }, { args: { command: "ls" } }), RESULT()]);
+    expect(twice.events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "shell", name: "run_command", command: "ls" },
+    ]);
+  });
+
+  it("extractResult honours the compiled expected exit codes: exit 0 only, and every other outcome fails", () => {
+    const req: CompileRequest = {
+      runId: "run_01M4WBZSXSCWYKTKJN77A7MFJQ",
+      objective: "fix the failing test",
+      constraints: [],
+      workspace: { cwd: "/work/tree", writable: true },
+      bypassApproved: true,
+    };
+    const compiled = adapter().compile(req, PRIVILEGED_BYPASS_PROFILE);
+    if (isIneligible(compiled)) throw new Error(`unexpected refusal: ${compiled.detail}`);
+    expect(compiled.expectedExitCodes).toEqual([0]);
+    const events = run([INIT(), RESULT()]).events;
+    const exit = (o: Partial<ExitInfo>): ExitInfo => ({
+      ...EXIT0,
+      expectedExitCodes: compiled.expectedExitCodes,
+      ...o,
+    });
+    expect(adapter().extractResult(events, exit({}))).toMatchObject({ ok: true, nativeSessionId: CID });
+    expect(adapter().extractResult(events, exit({ exitCode: 3 }))).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "exit code 3",
+      nativeSessionId: CID,
+      summary: "ok",
+    });
+    expect(adapter().extractResult(events, exit({ exitCode: null, signal: "SIGKILL" }))).toMatchObject({ ok: false });
+    for (const outcome of ["crashed", "protocol_error", "internal_error"] as const) {
+      expect(adapter().extractResult(events, exit({ outcome })), outcome).toMatchObject({ ok: false });
+    }
+  });
+});

@@ -13,6 +13,15 @@
  * model first reported on a `result` after `init` bound the same id is dropped (fixture `backing_on_result.jsonl`); an
  * `init` without a usable id loses its vendor; a non-null non-string `backing_provider` shadows `backingProvider`
  * (unlike `model`); values are bound verbatim (no trim or case folding, the harness name kept).
+ * Fourth pass (as Grok T4.23 #416 and Antigravity T4.33 #424): session-id gaps (a first result that binds nothing leaves
+ * the slot open, so a second, failing result binds the only id, replayed through fixture `unsafe_then_good_result.jsonl`;
+ * fixture `resume_other_id.jsonl` replaying `--resume <id>` answered with another session id; session id on non-binding
+ * lines; earlier binding finality; non-object and zero usage metrics; compile/resume bypass approval source parity).
+ * Fifth pass (as Grok T4.23 #430): post-result tool lines, prototype values and exit codes (an unreadable non-tool line
+ * after result is a counted unknown leaving the turn clean, replayed through fixture `trailing_bare_update.jsonl`;
+ * a deduplicated tool update after result trips no order check; trailing-tool detail replacing two-results detail;
+ * prototype-named model/backingProvider shadowing fallback keys; prototype-named tool keys; unclipped command reaching
+ * the guard; call_id correlation; fractional usage counts; extractResult expectedExitCodes honouring).
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -38,8 +47,14 @@ import type {
   ParseState,
   ResolvedProfile,
 } from "../types.js";
-import { CURSOR_BYPASS_OUTSIDE_PRIVILEGED, CursorAdapter } from "./adapter.js";
-import { BYPASS_SCOPE, DEFAULT_SESSION_ID, PRIVILEGED_BYPASS_PROFILE, replayAdapter } from "./fixtures/cases.js";
+import { CURSOR_BYPASS_NOT_APPROVED, CURSOR_BYPASS_OUTSIDE_PRIVILEGED, CursorAdapter } from "./adapter.js";
+import {
+  BYPASS_SCOPE,
+  DEFAULT_SESSION_ID,
+  PRIVILEGED_BYPASS_PROFILE,
+  RESUMED_SESSION_ID,
+  replayAdapter,
+} from "./fixtures/cases.js";
 
 const dirs: string[] = [];
 const makeCwd = () => {
@@ -1198,5 +1213,325 @@ describe("cursor parser residuals, third pass: backingProvider and model on sess
       await lifecycle.shutdown();
       db.close();
     }
+  });
+});
+
+describe("cursor parser residuals, fourth pass: session-id gaps, usage shapes and resume parity (T4.43, synthetic lines; parser unchanged)", () => {
+  const req: CompileRequest = {
+    runId: "run_cursor_t443_residual_p4",
+    objective: "synthetic cursor objective",
+    constraints: [],
+    workspace: { cwd: "/w", writable: true },
+    bypassApproved: true,
+  };
+  const bound = (events: readonly NormalizedEvent[]) => events.filter((e) => e.kind === "session_bound");
+
+  it("pins the gap: a first result that binds nothing leaves the slot open, so a second, failing result binds the only id", () => {
+    for (const first of ["--unsafe", "-unsafe", "", 7, undefined]) {
+      const label = JSON.stringify(first) ?? "undefined";
+      const { events, state, a } = parse([
+        RESULT({ session_id: first, usage: { inputTokens: 10 } }),
+        RESULT({ session_id: SID, usage: { inputTokens: 500 } }),
+      ]);
+      // The first result takes the usage slot (its usage is the run total); the second is a protocol anomaly whose
+      // id still binds, because #bind only refuses a change from an id already bound.
+      expect(bound(events), label).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+      expect(
+        events.filter((e) => e.kind === "usage"),
+        label,
+      ).toEqual([{ kind: "usage", source: "provider_reported", metrics: { inputTokens: 10 } }]);
+      expect(state.nativeSessionId, label).toBe(SID);
+      expect(a.extractResult(events, EXIT_OK), label).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        nativeSessionId: SID,
+      });
+    }
+  });
+
+  it("fixture unsafe_then_good_result replays to OUTPUT_PROTOCOL_ERROR with the second result's id bound (gap, pinned)", async () => {
+    const report = await runConformanceCase({
+      kind: "task_failure",
+      adapter: replayAdapter("unsafe_then_good_result"),
+      request: { ...req, workspace: { cwd: makeCwd(), writable: true } },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      nativeSessionId: DEFAULT_SESSION_ID,
+      unknownEventCount: 0,
+      summary: "Done.",
+    });
+  });
+
+  it("pins the gap end to end: fixture resume_other_id passes --resume <requested>, binds the reported id and succeeds", async () => {
+    const a = replayAdapter("resume_other_id");
+    const binding = { provider: "cursor" as const, nativeSessionId: RESUMED_SESSION_ID };
+    const request = { ...req, workspace: { cwd: makeCwd(), writable: true } };
+    const inv = a.resumeArgs(binding, request, PRIVILEGED_BYPASS_PROFILE);
+    if ("ineligible" in inv) throw new Error(inv.detail);
+    expect(inv.argv.slice(-2)).toEqual(["--resume", RESUMED_SESSION_ID]);
+    const report = await runConformanceCase({
+      kind: "resume",
+      adapter: a,
+      request,
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      binding,
+      expect: { ok: true, nativeSessionId: RESUMED_SESSION_ID },
+    });
+    // Only the conformance harness compares the ids; the adapter result is a success on the other session.
+    expect(report.checks.filter((k) => !k.ok).map((k) => k.name)).toEqual(["native session id"]);
+    expect(report.result).toMatchObject({ ok: true, nativeSessionId: "00000000-0000-4000-8000-000000000099" });
+  });
+
+  it("a session_id on any line other than system/init and result never binds or conflicts, before or after binding", () => {
+    const decoys = [
+      line({ type: "assistant", message: { content: "hi" }, session_id: "decoy-session" }),
+      line({ type: "thinking", text: "t", session_id: "decoy-session" }),
+      line({ type: "user", message: { content: "p" }, session_id: "decoy-session" }),
+      TOOL("started", { shellToolCall: { args: { command: "ls" } } }, "c1"),
+    ];
+    const none = parse([...decoys, RESULT({ session_id: undefined })]);
+    expect(bound(none.events)).toEqual([]);
+    expect(none.state.nativeSessionId).toBeUndefined();
+
+    const { events, state } = parse([...decoys, INIT(), ...decoys]);
+    expect(bound(events)).toEqual([{ kind: "session_bound", nativeSessionId: SID, model: "Synthetic Model 1" }]);
+    expect(state.nativeSessionId).toBe(SID);
+    // The decoy ids never raise "session id changed mid-run".
+    expect(events.filter((e) => e.kind === "provider_error")).toEqual([]);
+  });
+
+  it("the first binding is final: a model on a later result never amends it, unless the init bound nothing", () => {
+    const later = parse([INIT(), RESULT({ model: "Late Model", backingProvider: "Late Vendor" })]).events;
+    expect(bound(later)).toEqual([{ kind: "session_bound", nativeSessionId: SID, model: "Synthetic Model 1" }]);
+
+    const lost = parse([
+      INIT({ session_id: "-unsafe", model: "First Model" }),
+      RESULT({ model: "Second Model", backingProvider: "Second Vendor" }),
+    ]).events;
+    expect(bound(lost)).toEqual([
+      { kind: "session_bound", nativeSessionId: SID, model: "Second Model", backingProvider: "Second Vendor" },
+    ]);
+  });
+
+  it("a non-object usage records nothing; zero counters are recorded; non-finite and negative counters are dropped", () => {
+    for (const usage of [[], null, "10", 10, [{ inputTokens: 5 }]]) {
+      const { events, a } = parse([RESULT({ usage })]);
+      expect(
+        events.filter((e) => e.kind === "usage"),
+        JSON.stringify(usage),
+      ).toEqual([]);
+      expect(a.extractResult(events, EXIT_OK), JSON.stringify(usage)).toMatchObject({ ok: true });
+    }
+    const zero = parse([RESULT({ usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } })]).events;
+    expect(zero.filter((e) => e.kind === "usage")).toEqual([
+      { kind: "usage", source: "provider_reported", metrics: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } },
+    ]);
+    const negative = parse([RESULT({ usage: { inputTokens: -1, outputTokens: NaN, totalTokens: Infinity } })]).events;
+    expect(negative.filter((e) => e.kind === "usage")).toEqual([]);
+    const mixed = parse([RESULT({ usage: { inputTokens: 10, outputTokens: -5 } })]).events;
+    expect(mixed.filter((e) => e.kind === "usage")).toEqual([
+      { kind: "usage", source: "provider_reported", metrics: { inputTokens: 10 } },
+    ]);
+  });
+
+  it("resume and compile agree on where the bypass approval comes from: profile, request, both or neither", () => {
+    const a = adapter();
+    const binding = { provider: "cursor" as const, nativeSessionId: SID };
+    for (const [onProfile, onRequest] of [
+      [true, true],
+      [true, false],
+      [false, true],
+      [false, false],
+    ] as const) {
+      const profile: ResolvedProfile = { ...PRIVILEGED_BYPASS_PROFILE, bypassApproved: onProfile };
+      const request: CompileRequest = { ...req, bypassApproved: onRequest };
+      const first = a.compile(request, profile);
+      const resumed = a.resumeArgs(binding, request, profile);
+      const label = `profile=${onProfile} request=${onRequest}`;
+      if ("ineligible" in first) {
+        expect(onProfile || onRequest, label).toBe(false);
+        expect(first, label).toEqual({
+          ineligible: true,
+          reason: "PROFILE_UNSUPPORTED",
+          detail: CURSOR_BYPASS_NOT_APPROVED,
+        });
+        expect(resumed, label).toEqual(first);
+      } else {
+        expect(onProfile || onRequest, label).toBe(true);
+        expect(resumed, label).toEqual({ ...first, argv: [...first.argv, "--resume", SID] });
+      }
+    }
+  });
+});
+
+describe("cursor parser residuals, fifth pass: post-result tool lines, prototype values and exit codes (T4.43, synthetic lines; parser unchanged)", () => {
+  const ctx = { cwd: "/w", bypass: true };
+  const guarded = (lines: (string | object)[]) => parse(lines).events.map((e) => guardEvent(e, ctx));
+  const bound = (events: readonly NormalizedEvent[]) => events.filter((e) => e.kind === "session_bound");
+
+  it("pins the gap: an unreadable non-tool line after result is a counted unknown that leaves the turn clean", () => {
+    for (const lineObj of [
+      { type: "tool_call_update" },
+      { type: "telemetry", data: "ping" },
+      { type: "progress", pct: 50 },
+    ]) {
+      const { events, a } = parse([INIT(), RESULT(), line(lineObj)]);
+      expect(events.at(-1), JSON.stringify(lineObj)).toEqual({ kind: "unknown", rawType: lineObj.type });
+      expect(a.extractResult(events, EXIT_OK), JSON.stringify(lineObj)).toEqual({
+        ok: true,
+        unknownEventCount: 1,
+        nativeSessionId: SID,
+      });
+    }
+    // An unreadable line typed tool_call matches startsWith("tool_call:") and fails the run.
+    const call = parse([INIT(), RESULT(), line({ type: "tool_call" })]).events;
+    expect(adapter().extractResult(call, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the result line",
+    });
+  });
+
+  it("fixture trailing_bare_update replays an unreadable update after result at exit 0 to success (gap)", async () => {
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: replayAdapter("trailing_bare_update"),
+      request: {
+        runId: "run_cursor_t443_trailing_bare",
+        objective: "synthetic cursor objective",
+        constraints: [],
+        workspace: { cwd: makeCwd(), writable: true },
+        bypassApproved: true,
+      },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: true, unknownEventCount: 1, summary: "Done." });
+  });
+
+  it("pins the gap: an update after result that repeats a reported call is deduplicated, so the order check sees nothing", () => {
+    const before = TOOL("started", { shellToolCall: { args: { command: "ls" } } }, "t1");
+    const repeat = TOOL("completed", { shellToolCall: { args: { command: "ls" } } }, "t1");
+    const { events, a } = parse([INIT(), before, RESULT(), repeat]);
+    expect(events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "shell", name: "shellToolCall", command: "ls" },
+    ]);
+    expect(a.extractResult(events, EXIT_OK)).toMatchObject({ ok: true, nativeSessionId: SID });
+
+    // A swapped command on the same call after result is reported, tripping the order check and the guard.
+    const swapped = TOOL("completed", { shellToolCall: { args: { command: "git push origin main" } } }, "t1");
+    expect(a.extractResult(parse([INIT(), before, RESULT(), swapped]).events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the result line",
+    });
+    expect(a.extractResult(guarded([INIT(), before, RESULT(), swapped]), EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+  });
+
+  it("the trailing-tool detail replaces a two-result detail: the code is OUTPUT_PROTOCOL_ERROR, the first cause is replaced", () => {
+    const tool = TOOL("started", { shellToolCall: { args: { command: "ls" } } });
+    const twoResults = parse([RESULT(), RESULT()]).events;
+    expect(adapter().extractResult(twoResults, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: more than one result line",
+    });
+    expect(adapter().extractResult(parse([RESULT(), RESULT(), tool]).events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the result line",
+    });
+    // A tool call between the two result lines is before the final result, so the two-result detail stands.
+    expect(adapter().extractResult(parse([RESULT(), tool, RESULT()]).events, EXIT_OK)).toMatchObject({
+      failureDetail: "protocol: more than one result line",
+    });
+  });
+
+  it("a prototype-named model or backing provider shadows its fallback key and binds none (as an empty one)", () => {
+    for (const name of ["toString", "constructor", "__proto__", "hasOwnProperty", "valueOf"]) {
+      const { events } = parse([
+        INIT({
+          model: name,
+          model_id: "cursor-fallback-model",
+          backing_provider: name,
+          backingProvider: "backing-fallback",
+        }),
+      ]);
+      expect(bound(events), name).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+    }
+  });
+
+  it("tool calls with prototype-named keys emit kind other and no command or target", () => {
+    for (const name of ["constructor", "toString", "__proto__", "valueOf"]) {
+      const { events } = parse([TOOL("started", { [name]: { args: { command: "git status" } } })]);
+      expect(
+        events.filter((e) => e.kind === "tool_call"),
+        name,
+      ).toEqual([{ kind: "tool_call", tool: "other", name }]);
+    }
+  });
+
+  it("a command is never clipped (a target is), so a Git write at the end of a long command still reaches the guard", () => {
+    const command = `echo ${"x".repeat(5_000)} && git push origin main`;
+    const call = TOOL("started", { shellToolCall: { args: { command } } });
+    expect(parse([call]).events).toEqual([{ kind: "tool_call", tool: "shell", name: "shellToolCall", command }]);
+    expect(adapter().extractResult(guarded([call, RESULT()]), EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+  });
+
+  it("call_id correlation: empty string falls back to key, while numeric string is preserved as prefix", () => {
+    const { events } = parse([
+      TOOL("started", { shellToolCall: { args: { command: "git status" } } }, ""),
+      TOOL("completed", { shellToolCall: { args: { command: "git status" } } }, ""),
+      TOOL("completed", { shellToolCall: { args: { command: "git push origin main" } } }, ""),
+    ]);
+    // The repeat is deduplicated because stepId is key ("shellToolCall"); the swapped command is reported.
+    expect(events).toEqual([
+      { kind: "tool_call", tool: "shell", name: "shellToolCall", command: "git status" },
+      { kind: "tool_call", tool: "shell", name: "shellToolCall", command: "git push origin main" },
+    ]);
+    // With call_id: "0", stepId is "0:shellToolCall", so it is treated as its own step.
+    const withZero = parse([TOOL("started", { shellToolCall: { args: { command: "git status" } } }, "0")]);
+    expect(withZero.events).toEqual([
+      { kind: "tool_call", tool: "shell", name: "shellToolCall", command: "git status" },
+    ]);
+  });
+
+  it("usage is read from result.usage only: counters at root or non-numeric counters are dropped", () => {
+    const rootOnly = parse([
+      line({ type: "result", subtype: "success", session_id: SID, inputTokens: 10, totalTokens: 10 }),
+    ]).events;
+    expect(rootOnly.filter((e) => e.kind === "usage")).toEqual([]);
+
+    const fractional = parse([RESULT({ usage: { inputTokens: 1.5, outputTokens: 0 } })]).events;
+    expect(fractional.filter((e) => e.kind === "usage")).toEqual([
+      { kind: "usage", source: "provider_reported", metrics: { inputTokens: 1.5, outputTokens: 0 } },
+    ]);
+  });
+
+  it("extractResult honours the compiled expected exit codes rather than a hard-coded 0", () => {
+    const { events } = parse([RESULT()]);
+    expect(adapter().extractResult(events, { ...EXIT_OK, exitCode: 2, expectedExitCodes: [0, 2] })).toMatchObject({
+      ok: true,
+    });
+    expect(adapter().extractResult(events, { ...EXIT_OK, exitCode: 0, expectedExitCodes: [2] })).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "exit code 0",
+    });
+    expect(adapter().extractResult(events, { ...EXIT_OK, exitCode: null })).toMatchObject({
+      ok: false,
+    });
   });
 });

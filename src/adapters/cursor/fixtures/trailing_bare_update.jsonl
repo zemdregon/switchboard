@@ -1,0 +1,5 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.43 residual, fifth pass; mirrors Grok Build trailing_bare_update). A clean result at exit 0 followed by a bare tool_call_update line. Pins the gap: the trailing-tool order check keys on tool_call events and unknown tool_call lines only, so the unreadable update is a counted unknown event and the run succeeds with unknownEventCount 1.","exit":0}}
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work/tree","session_id":"synthetic-cursor-session-0001","model":"Synthetic Model 1","permissionMode":"default"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]},"session_id":"synthetic-cursor-session-0001"}
+{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"synthetic-cursor-session-0001","usage":{"inputTokens":11,"outputTokens":2}}
+{"type":"tool_call_update"}

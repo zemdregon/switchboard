@@ -15,6 +15,9 @@
  * pinned gaps), the trailing-tool detail masking a two-`end` anomaly, prototype-named model values and `modelUsage` keys,
  * an unclipped command, a caller id that collides with a generated call key, usage key placement and fractional counts,
  * and `extractResult` honouring the compiled expected exit codes.
+ * Sixth pass: a non-object `input` that does not shadow `parameters` (replayed end to end), a shell command carried
+ * only in a clipped target (pinned gap), empty `tool` and `id` values that shadow their fallback keys (pinned gaps), a
+ * target dropped beside a command, duplicate JSON keys, exact-case line types, empty text and a byte-order mark.
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -732,5 +735,145 @@ describe("grok parser residuals, fifth pass: post-end tool lines, prototype valu
       failureDetail: "exit code 0",
     });
     expect(adapter().extractResult(events, { ...EXIT_OK, exitCode: null })).toMatchObject({ ok: false });
+  });
+});
+
+describe("grok parser residuals, sixth pass: parameter shapes, shadowing keys and line framing (T4.23, synthetic lines; parser unchanged)", () => {
+  const ctx = { cwd: "/w", bypass: true };
+  const guarded = (lines: (string | object)[]) => parse(lines).events.map((e) => guardEvent(e, ctx));
+
+  it("a non-object `input` does not shadow `parameters`: the Git write there is read and guarded", () => {
+    // Contrast the second pass: only an object `input` without a command hides the later parameter keys.
+    for (const input of [["ignored"], "git status", 7, null]) {
+      const call = line({ type: "tool_call", input, parameters: { command: "git push origin main" } });
+      expect(parse([call]).events, JSON.stringify(input)).toEqual([shell("git push origin main")]);
+      expect(adapter().extractResult(guarded([call, line(END)]), EXIT_OK), JSON.stringify(input)).toMatchObject({
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+      });
+    }
+  });
+
+  it("fixture array_input_parameters replays a Git write behind an array `input` to PERMISSION_BLOCKED", async () => {
+    const report = await runConformanceCase({
+      kind: "task_failure",
+      adapter: replayAdapter("array_input_parameters"),
+      request: {
+        runId: "run_grok_t423_residual",
+        objective: "synthetic grok objective",
+        constraints: [],
+        workspace: { cwd: makeCwd(), writable: true },
+        bypassApproved: true,
+      },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", unknownEventCount: 0 });
+  });
+
+  it("pins the gap: a shell command carried only in a target is guarded as the clipped target, so a late Git write is lost", () => {
+    const asTarget = (path: string) => line({ type: "tool_call", name: "run_terminal_command", input: { path } });
+    // The guard reads a shell call's `target` when it has no `command`, so a short Git write is still blocked.
+    expect(adapter().extractResult(guarded([asTarget("git push origin main"), line(END)]), EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+    // The target is clipped to 512 characters (a command never is), so a Git write past the clip never reaches it.
+    const long = `echo ${"x".repeat(600)} && git push origin main`;
+    const [ev] = parse([asTarget(long)]).events;
+    expect(ev).toMatchObject({ kind: "tool_call", tool: "shell", target: `${long.slice(0, 512)}…` });
+    expect(adapter().extractResult(guarded([asTarget(long), line(END)]), EXIT_OK)).toEqual({
+      ok: true,
+      unknownEventCount: 0,
+      nativeSessionId: SID,
+    });
+  });
+
+  it("pins the gap: an empty `tool` shadows `name` and `tool_name`, so a named call is mislabelled or unknown", () => {
+    const withTarget = parse([line({ type: "tool_call", tool: "", name: "edit_file", input: { path: "/w/a" } })]);
+    expect(withTarget.events).toEqual([
+      { kind: "tool_call", tool: "read", name: "run_terminal_command", target: "/w/a" },
+    ]);
+    const nameOnly = parse([line({ type: "tool_call", tool: "", name: "web_fetch", tool_name: "web_fetch" })]);
+    expect(nameOnly.events).toEqual([{ kind: "unknown", rawType: "tool_call" }]);
+    expect(nameOnly.state.unknownEvents).toBe(1);
+    // A non-string `tool` is not a string, so it falls through to `name`.
+    expect(parse([line({ type: "tool_call", tool: 7, name: "web_fetch" })]).events).toEqual([
+      { kind: "tool_call", tool: "other", name: "web_fetch" },
+    ]);
+  });
+
+  it("pins the gap: an empty `id` shadows `call_id`, so a later update on that call_id is a new call (over-reports)", () => {
+    const { events } = parse([
+      line({ type: "tool_call", id: "", call_id: "c1", input: { command: "git status" } }),
+      line({ type: "tool_call_update", call_id: "c1", input: { command: "git status" } }),
+    ]);
+    expect(events).toEqual([shell("git status"), shell("git status")]);
+    // A non-string `id` falls through to `call_id`, so the same update is deduplicated.
+    const typed = parse([
+      line({ type: "tool_call", id: 7, call_id: "c1", input: { command: "git status" } }),
+      line({ type: "tool_call_update", call_id: "c1", input: { command: "git status" } }),
+    ]);
+    expect(typed.events).toEqual([shell("git status")]);
+  });
+
+  it("a target beside a command is never reported, and a later update with only a new target on that call is", () => {
+    const { events } = parse([
+      line({ type: "tool_call", id: "t1", input: { command: "cat a", path: "/w/a" } }),
+      line({ type: "tool_call_update", id: "t1", input: { command: "cat a", path: "/w/b" } }),
+      line({ type: "tool_call_update", id: "t1", input: { path: "/w/b" } }),
+    ]);
+    // The dedup key is the command when there is one, so the second line (same command, new path) emits nothing.
+    expect(events).toEqual([
+      shell("cat a"),
+      { kind: "tool_call", tool: "read", name: "run_terminal_command", target: "/w/b" },
+    ]);
+  });
+
+  it("an empty-string target is a target: it shadows later target keys and the call is a `read` with an empty target", () => {
+    const { events, state } = parse([
+      line({ type: "tool_call", input: { path: "", filePath: "/w/a" }, target: "/w/b" }),
+    ]);
+    expect(events).toEqual([{ kind: "tool_call", tool: "read", name: "run_terminal_command", target: "" }]);
+    expect(state.unknownEvents).toBe(0);
+  });
+
+  it("duplicate JSON keys resolve to the last one (JSON.parse), so a leading `type` cannot forge or hide an `end`", () => {
+    const hidden = parse([`{"type":"end","stopReason":"end_turn","sessionId":"${SID}","type":"text","data":"x"}`]);
+    expect(hidden.events).toEqual([{ kind: "message", role: "assistant", text: "x" }]);
+    expect(hidden.state.nativeSessionId).toBeUndefined();
+    const real = parse([`{"type":"text","data":"x","type":"end","stopReason":"end_turn","sessionId":"${SID}"}`]);
+    expect(real.events).toEqual([
+      { kind: "session_bound", nativeSessionId: SID },
+      { kind: "result", ok: true },
+    ]);
+    const forged = parse([`{"type":"end","stopReason":"end_turn","stopReason":"cancelled","sessionId":"${SID}"}`]);
+    expect(adapter().extractResult(forged.events, EXIT_OK)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+  });
+
+  it("line types match exactly: a case or whitespace variant of `end` or `tool_call` is an unknown, never a result", () => {
+    const variants = ["End", "END", " end", "end ", "Tool_call", "TOOL_CALL", "tool-call", "toolCall"];
+    const { events, state } = parse(
+      variants.map((type) => line({ ...END, type, input: { command: "git push origin main" } })),
+    );
+    expect(events).toEqual(variants.map((rawType) => ({ kind: "unknown", rawType })));
+    expect(state).toEqual({ lines: variants.length, unknownEvents: variants.length });
+    expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+  });
+
+  it("an empty text chunk is a message, never unknown, and leaves the summary absent on a clean turn", () => {
+    const { events, state } = parse([line({ type: "text", data: "" }), line(END)]);
+    expect(events[0]).toEqual({ kind: "message", role: "assistant", text: "" });
+    expect(state.unknownEvents).toBe(0);
+    expect(adapter().extractResult(events, EXIT_OK)).toEqual({ ok: true, unknownEventCount: 0, nativeSessionId: SID });
+  });
+
+  it("a byte-order mark before a line is unparseable framing: counted as a line, emitting nothing, never unknown", () => {
+    const { events, state } = parse([`﻿${line(END)}`]);
+    expect(events).toEqual([]);
+    expect(state).toEqual({ lines: 1, unknownEvents: 0 });
+    // With no result the parser alone can never report success; the supervisor ends such a run OUTPUT_PROTOCOL_ERROR.
+    expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
   });
 });

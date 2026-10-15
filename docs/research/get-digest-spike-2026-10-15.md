@@ -177,7 +177,7 @@ does not forward agent text to sinks.
 | **T14.0** | Schemas, cursor type, scan budget target, section names ([LLD §3.4](../design/LLD.md#34-control-plane-m14-proposed-t140)) |
 | **T14.1** `list_runs` | Shared envelope builder and caller scoping; parity: digest envelopes for a `run_id` match `get_run` / `list_runs` for the same caller ([FR-CTL-01](../requirements/SRS.md), [LLD §3.4.2](../design/LLD.md#342-list_runs-fr-ctl-01)) |
 | **T14.2** | `needs_attention` derivation and reason priority — [spike](needs-attention-derivation-spike-2026-10-15.md) and [LLD §3.4.5](../design/LLD.md#345-needs-attention-derivation-fr-ctl-03) only |
-| **T14.4** | `budget` facts |
+| **T14.4** | `budget` facts — [operator budget admission spike](operator-budget-admission-spike-2026-10-15.md) |
 | **T14.5** | Inputs to `needs_attention` reasons (`parked_loop`, `stalled`, `failed_after_retry`) |
 | **T14.6** | `paused` flag |
 | **T14.8** | `pending_approvals` population rules for proxy clients ([approval proxy spike](approval-proxy-spike-2026-10-15.md)) |
