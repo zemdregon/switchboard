@@ -1,0 +1,5 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.23, ADR-0039). A tool_call whose object `input` carries no command shadows a Git write in `parameters` (the parser reads the first object key only), then a clean end_turn result at exit 0. Pins the gap: the call is an unknown event the tool-call guard never sees, so the run succeeds with unknownEventCount 1.","exit":0}}
+{"type":"available_commands","tools":["run_terminal_command"]}
+{"type":"tool_call","input":{},"parameters":{"command":"git push origin main"}}
+{"type":"text","data":"Pushed."}
+{"type":"end","stopReason":"end_turn","sessionId":"00000000-0000-4000-8000-000000000001","requestId":"req_synthetic_1","usage":{"input_tokens":11,"output_tokens":2,"total_tokens":13},"num_turns":1}
