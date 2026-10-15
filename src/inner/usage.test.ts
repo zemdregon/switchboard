@@ -749,6 +749,12 @@ describe("the http backend's reported usage reaches the labelled observation as 
  * migration 0006 added the `inner_agent` value), so a guard loosened to let `inner_agent` through the general path
  * would have passed every test. The scan below is textual and simple, like `run-path-reach.test.ts`: word-bounded,
  * so the migration's `usage_observation_new` does not match, and checked on a synthetic tree so it cannot be vacuous.
+ *
+ * Post-#432: the scan must cover every spelling SQLite accepts for a write, not `INSERT INTO` alone, because one of
+ * them also gets past the table's append-only guards. `INSERT OR REPLACE` / `REPLACE INTO` resolve a colliding id by
+ * deleting the old row, and SQLite fires no `BEFORE DELETE` trigger for that delete unless `recursive_triggers` is on,
+ * which the ledger leaves at the default (off). The last test pins that as-built fact on the real ledger (Q-96), so the
+ * widened scan is the guard that a REPLACE statement in a production module would fail.
  */
 describe("recordInnerCall under the flag is the only writer of inner_agent rows (T11.5; FR-INN-15, FR-CAP-01)", () => {
   it("the public insert refuses an inner_agent row shaped exactly like a labelled one, and writes nothing", async () => {
@@ -789,7 +795,12 @@ describe("recordInnerCall under the flag is the only writer of inner_agent rows 
   });
 
   const SRC = path.resolve(import.meta.dirname, "..");
-  const INSERT_RE = /INSERT\s+INTO\s+usage_observation(?![\w$])/gu;
+  /**
+   * Every write spelling SQLite accepts: `INSERT`, `INSERT OR <conflict clause>` and the `REPLACE` alias, with an
+   * optional schema qualifier, case-insensitive. `INSERT ... ON CONFLICT DO UPDATE` is still an `INSERT INTO` and matches.
+   */
+  const INSERT_RE =
+    /(?:INSERT(?:\s+OR\s+(?:REPLACE|ROLLBACK|ABORT|FAIL|IGNORE))?|REPLACE)\s+INTO\s+(?:\w+\s*\.\s*)?usage_observation(?![\w$])/giu;
 
   function productionTree(): Map<string, string> {
     const files = new Map<string, string>();
@@ -813,13 +824,71 @@ describe("recordInnerCall under the flag is the only writer of inner_agent rows 
       .filter(([, n]) => n > 0)
       .sort(([a], [b]) => a.localeCompare(b));
 
-  it("the scanner finds a planted write in a synthetic tree and ignores the migration's rebuilt table (not vacuous)", () => {
+  it("the scanner finds a planted write in a synthetic tree in every spelling and ignores the migration's rebuilt table (not vacuous)", () => {
     const synthetic = new Map<string, string>([
       ["ledger/migrations/0006_usage_inner_agent.ts", "INSERT INTO usage_observation_new (id) SELECT id FROM x;"],
       ["cli/planted.ts", "db.prepare(`INSERT   INTO\n usage_observation (id) VALUES (?)`).run(id);"],
       ["cli/comment.ts", "// usage_observation is read here, never written"],
+      [
+        "cli/other-table.ts",
+        "INSERT OR REPLACE INTO inner_call (id) VALUES (?); REPLACE INTO usage_observation_x (id) VALUES (?)",
+      ],
+      [
+        "ledger/replace.ts",
+        "INSERT OR REPLACE INTO usage_observation (id) VALUES (?); REPLACE INTO main.usage_observation (id) VALUES (?); INSERT OR IGNORE INTO usage_observation (id) VALUES (?)",
+      ],
+      [
+        "cli/lower.ts",
+        "insert into usage_observation (id) values (?) on conflict (id) do update set model = excluded.model",
+      ],
     ]);
-    expect(writers(synthetic)).toEqual([["cli/planted.ts", 1]]);
+    expect(writers(synthetic)).toEqual([
+      ["cli/lower.ts", 1],
+      ["cli/planted.ts", 1],
+      ["ledger/replace.ts", 3],
+    ]);
+  });
+
+  it("the append-only guards refuse UPDATE and DELETE but not a REPLACE under the ledger's pragmas, which is why the scan covers every spelling (as-built, Q-96)", async () => {
+    const h = setup([GOOD], { shares: "claude-code" });
+    expect(await h.call()).toMatchObject({ accepted: true });
+    const [row] = h.usageRows();
+    expect(row).toMatchObject({ source: "inner_agent", provider: "claude-code" });
+    const since = "2000-01-01T00:00:00.000Z";
+    // Plain rewrites are refused by the two triggers migration 0006 recreated, and the labelled row never reaches the
+    // capacity collector's one usage read.
+    expect(() =>
+      h.db.prepare("UPDATE usage_observation SET source = 'provider_reported' WHERE id = ?").run(row?.id as string),
+    ).toThrow(/append-only/u);
+    expect(() => h.db.prepare("DELETE FROM usage_observation WHERE id = ?").run(row?.id as string)).toThrow(
+      /append-only/u,
+    );
+    expect(h.ledger.listProviderReportedUsageSince("claude-code", since)).toEqual([]);
+    // SQLite's REPLACE conflict resolution deletes the colliding row without firing BEFORE DELETE triggers unless
+    // `recursive_triggers` is on; `openLedger` leaves it at the default. So the same relabelling as a REPLACE goes
+    // through, and the row now counts as provider-reported usage. No production module issues such a statement (the
+    // scan above) and the id is the ledger's own; this pins the as-built guard, not a reachable surface.
+    expect(h.db.pragma("recursive_triggers", { simple: true })).toBe(0);
+    h.db
+      .prepare(
+        `INSERT OR REPLACE INTO usage_observation (id, run_id, provider, harness, backing_provider, model, source,
+                                                   metrics_json, observed_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'provider_reported', ?, ?)`,
+      )
+      .run(
+        row?.id as string,
+        row?.run_id as string,
+        row?.provider as string,
+        row?.harness as string,
+        row?.backing_provider as string | null,
+        row?.model as string,
+        row?.metrics_json as string,
+        row?.observed_at as string,
+      );
+    expect(h.usageRows()).toEqual([{ ...row, source: "provider_reported" }]);
+    expect(h.ledger.listProviderReportedUsageSince("claude-code", since)).toEqual([
+      { metrics_json: row?.metrics_json, observed_at: row?.observed_at },
+    ]);
   });
 
   it("only the ledger repository writes usage_observation: its two statements, the provider-reported insert and recordInnerCall", () => {
