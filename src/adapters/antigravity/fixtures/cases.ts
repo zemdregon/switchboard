@@ -66,8 +66,10 @@ export function replayAdapter(fixture: string, o: ReplayOptions = {}): Antigravi
 }
 
 /**
- * `makeCwd` returns a fresh empty directory per case. Covers every FR-ADP-11 kind plus timeout, partial_mutation and a
- * soft-denied tool (a second `task_failure`, PERMISSION_BLOCKED).
+ * `makeCwd` returns a fresh empty directory per case. Covers every FR-ADP-11 kind plus timeout and partial_mutation,
+ * and the other recorded fail-at-exit-0-or-1 shapes: a soft-denied tool (C7, PERMISSION_BLOCKED), an invalid model
+ * envelope at exit 1 (C10, MODEL_UNAVAILABLE), a slash-command envelope with no turn (C6, TOOL_FAILURE) and a write
+ * that ran before a soft-denied command (C18 run 2, PERMISSION_BLOCKED with the write visible).
  */
 export function antigravityConformanceCases(makeCwd: () => string): ConformanceCase[] {
   const request = (): CompileRequest => ({
@@ -99,6 +101,20 @@ export function antigravityConformanceCases(makeCwd: () => string): ConformanceC
       adapter: replayAdapter("permission_denied"),
       request: request(),
       expect: { ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: DEFAULT_SESSION_ID },
+    },
+    {
+      ...base,
+      kind: "task_failure",
+      adapter: replayAdapter("model_unavailable"),
+      request: request(),
+      expect: { ok: false, failureCode: "MODEL_UNAVAILABLE" },
+    },
+    {
+      ...base,
+      kind: "task_failure",
+      adapter: replayAdapter("slash_command"),
+      request: request(),
+      expect: { ok: false, failureCode: "TOOL_FAILURE" },
     },
     {
       ...base,
@@ -142,6 +158,18 @@ export function antigravityConformanceCases(makeCwd: () => string): ConformanceC
       adapter: replayAdapter("task_failure", { exitCode: 1, write: "partial.txt" }),
       request: request(),
       expect: { ok: false, failureCode: "TOOL_FAILURE", mutatedPath: "partial.txt" },
+    },
+    {
+      ...base,
+      kind: "partial_mutation",
+      adapter: replayAdapter("denied_after_write"),
+      request: request(),
+      expect: {
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+        nativeSessionId: DEFAULT_SESSION_ID,
+        mutatedPath: "b.txt",
+      },
     },
   ];
 }
