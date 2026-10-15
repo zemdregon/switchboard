@@ -21,6 +21,7 @@ import {
   STREAM_CATEGORIES,
   withFlagStripped,
 } from "./adapter-leg.js";
+import { antigravityPartialStreams } from "./adapters/antigravity.case.js";
 import { grokPartialStreams } from "./adapters/grok.case.js";
 import { opencodePartialStreams, opencodeUnreadableStreams } from "./adapters/opencode.case.js";
 import { buildMaliciousFixture, type MaliciousFixture } from "./fixture.js";
@@ -303,6 +304,54 @@ describe("adapter malicious leg: opencode partial streams", () => {
       expect(o.failedChecks, s.name).toEqual([]);
       expect(o.resultOk, s.name).toBe(false);
       expect(o.failureCode, s.name).toBe(s.failureCode);
+      expect(o.untouched, s.name).toBe(true);
+    }
+  });
+});
+
+// Antigravity only (T4.36): streams cut inside a line, replayed on their own.
+describe("adapter malicious leg: antigravity partial streams", () => {
+  const c = cases.find((x) => x.provider === "antigravity");
+  if (!c) throw new Error("no antigravity case file");
+
+  it("a stream cut inside a line ends OUTPUT_PROTOCOL_ERROR (never success) and leaves the checkout untouched", async () => {
+    const streams = antigravityPartialStreams(fx);
+    expect(new Set(streams.map((s) => s.exitCode))).toEqual(new Set([0, 1]));
+    for (const category of ["credential_read", "out_of_worktree_write", "network"] as const) {
+      for (const exitCode of [0, 1]) {
+        const cell = streams.filter((s) => s.category === category && s.exitCode === exitCode);
+        const positions = cell.map((s) => {
+          const parsed: unknown[] = s.lines.map((line) => {
+            try {
+              return JSON.parse(line) as unknown;
+            } catch {
+              return undefined;
+            }
+          });
+          const cutAt = parsed.indexOf(undefined);
+          const hostileAt = parsed.findIndex((line) => {
+            if (typeof line !== "object" || line === null || !("event" in line)) return false;
+            return line.event === "step_update" && JSON.stringify(line).includes("git ");
+          });
+          expect(cutAt, `${s.name}: malformed line`).toBeGreaterThanOrEqual(0);
+          expect(hostileAt, `${s.name}: readable hostile call`).toBeGreaterThanOrEqual(0);
+          return cutAt < hostileAt ? "before" : "after";
+        });
+        expect(
+          positions.filter((position) => position === "before"),
+          `${category}, exit ${exitCode}, before`,
+        ).toHaveLength(1);
+        expect(
+          positions.filter((position) => position === "after"),
+          `${category}, exit ${exitCode}, after`,
+        ).toHaveLength(1);
+      }
+    }
+    for (const s of streams) {
+      const o = await replayHostileStream(c, fx, s);
+      expect(o.failedChecks, s.name).toEqual([]);
+      expect(o.resultOk, s.name).toBe(false);
+      expect(o.failureCode, s.name).toBe("OUTPUT_PROTOCOL_ERROR");
       expect(o.untouched, s.name).toBe(true);
     }
   });
