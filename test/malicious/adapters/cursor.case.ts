@@ -10,7 +10,8 @@
  * Residual cells (`cursorResidualStreams`, T4.46, synthetic only): every blocked category at exits 2 and 137 (a
  * reported denial outranks `TOOL_FAILURE`); completed shell calls the provider did NOT refuse that carry a Git write, so
  * only Switchboard's tool-call guard (ADR-0039) ends them `PERMISSION_BLOCKED`, at exits 0 and 1; a hostile Git-write
- * command in `started` swapped to a benign one in `completed`; a benign decoy key beside a hostile shell key; an
+ * command in `started` swapped to a benign one in `completed`; a Git write in a `progress` or subtype-less `tool_call`
+ * line (parsed `unknown`, yet the guard still sees it); a benign decoy key beside a hostile shell key; an
  * unmapped tool key carrying a `command` (promoted to shell); a denied call followed by a separate benign call; and a
  * denied call after the `result` line. Unknown-event streams at exits 2 and 137 end `TOOL_FAILURE`, and bare or
  * unreadable known event kinds parse only as `unknown`.
@@ -361,6 +362,24 @@ export const cursorResidualStreams = (fx: MaliciousFixture): HostileStream[] => 
           ...shellRan(`unmapped-${exitCode}`, command, command, "syntheticRunToolCall"),
           result,
         ]),
+        // A subtype no capture recorded stays `unknown`, but the guard still sees its Git write (T4.43).
+        ...(["progress", undefined] as const).map((subtype) =>
+          blocked(
+            `${subtype ?? "subtype-less"} tool_call line carrying ${category} with a Git write, exit ${exitCode}`,
+            category,
+            exitCode,
+            [
+              JSON.stringify({
+                type: "tool_call",
+                ...(subtype ? { subtype } : {}),
+                call_id: `${subtype ?? "none"}-${exitCode}`,
+                session_id: SID,
+                tool_call: { shellToolCall: { args: { command } } },
+              }),
+              result,
+            ],
+          ),
+        ),
         blocked(`benign decoy key beside a hostile shell key on ${category}, exit ${exitCode}`, category, exitCode, [
           JSON.stringify({
             type: "tool_call",
@@ -399,11 +418,7 @@ export const cursorResidualStreams = (fx: MaliciousFixture): HostileStream[] => 
   const unreadable = [
     JSON.stringify({ type: "tool_call" }),
     JSON.stringify({ type: "tool_call", subtype: "started", call_id: "bare", tool_call: {} }),
-    JSON.stringify({
-      type: "tool_call",
-      subtype: "progress",
-      tool_call: { shellToolCall: { args: { command: "ls" } } },
-    }),
+    JSON.stringify({ type: "tool_call", subtype: "progress", tool_call: { shellToolCall: {} } }),
     JSON.stringify({ type: "system", subtype: "status", session_id: SID }),
     JSON.stringify({ type: "result", is_error: false, session_id: SID }),
     JSON.stringify({ type: 7 }),
