@@ -1,0 +1,3 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.35). No rate-limit or quota shape was recorded by the 2026-10-14 live check, so the error text below is invented; it pins that such text in an ERROR envelope at exit 1 (the C10 envelope shape) fails closed as TOOL_FAILURE, never RATE_LIMIT_TRANSIENT or success.","exit":1}}
+{"event":"init","conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","init":{"cwd":"/work/tree","tools":["run_command","write_to_file"],"permission_mode":"always-proceed","model":"synthetic-model"}}
+{"event":"result","result":{"conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","status":"ERROR","response":"","error":"RESOURCE_EXHAUSTED: SYNTHETIC quota exceeded, 429 Too Many Requests"}}

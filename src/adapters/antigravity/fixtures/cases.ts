@@ -73,7 +73,10 @@ export function replayAdapter(fixture: string, o: ReplayOptions = {}): Antigravi
  * negatives that need no capture: the `/credits` envelope (C6, TOOL_FAILURE), a stream with no `result`, a second
  * `result` after a C10 one and a `result` for another conversation (each OUTPUT_PROTOCOL_ERROR with the first id kept),
  * a `SUCCESS` envelope at exit 1 (TOOL_FAILURE with the write visible) and an unrecorded event kind in a success (still
- * `ok`, counted as unknown).
+ * `ok`, counted as unknown), plus invented rate-limit text in an `ERROR` envelope (TOOL_FAILURE: no rate-limit shape is
+ * recorded, so no `rate_limit` case), a tool step after a clean `result` (OUTPUT_PROTOCOL_ERROR) and a guard-flagged Git
+ * write under a `SUCCESS` envelope (PERMISSION_BLOCKED, ADR-0039). No case expects SANDBOX_VIOLATION: the one compiled
+ * cell is an approved bypass, where the provider-state guard does not apply.
  */
 export function antigravityConformanceCases(makeCwd: () => string): ConformanceCase[] {
   const request = (): CompileRequest => ({
@@ -136,6 +139,20 @@ export function antigravityConformanceCases(makeCwd: () => string): ConformanceC
     },
     {
       ...base,
+      kind: "task_failure",
+      adapter: replayAdapter("rate_limit_unrecorded"),
+      request: request(),
+      expect: { ok: false, failureCode: "TOOL_FAILURE", nativeSessionId: DEFAULT_SESSION_ID },
+    },
+    {
+      ...base,
+      kind: "task_failure",
+      adapter: replayAdapter("git_write_guard"),
+      request: request(),
+      expect: { ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: DEFAULT_SESSION_ID },
+    },
+    {
+      ...base,
       kind: "auth_missing",
       adapter: replayAdapter("auth_missing"),
       request: request(),
@@ -166,6 +183,13 @@ export function antigravityConformanceCases(makeCwd: () => string): ConformanceC
       ...base,
       kind: "malformed_output",
       adapter: replayAdapter("conversation_changed"),
+      request: request(),
+      expect: { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", nativeSessionId: DEFAULT_SESSION_ID },
+    },
+    {
+      ...base,
+      kind: "malformed_output",
+      adapter: replayAdapter("trailing_tool"),
       request: request(),
       expect: { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", nativeSessionId: DEFAULT_SESSION_ID },
     },
