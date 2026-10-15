@@ -708,8 +708,9 @@ Fixture evidence on `main`: `src/adapters/grok/fixtures/` (T4.23 Done-when and T
 mirrors Cursor T4.43 and OpenCode T4.53)", "grok auth preflight (T4.24, Q-10; SYNTHETIC outputs in the shapes of the
 2026-10-14 live check)", "grok conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.25)", "grok registry
 entry and manifest gate (T4.22)" and "grok Git declaration (T4.27, FR-GIT-01, FR-GIT-02, FR-GIT-09)"); CI also runs
-`test/malicious/adapters/grok.case.ts` and `test/malicious/adapter-leg.test.ts` ("adapter malicious leg: grok", T4.26
-partial; no `replayGap`). No end-to-end run through Switchboard against a logged-in `grok` has been recorded yet
+`test/malicious/adapters/grok.case.ts` and `test/malicious/adapter-leg.test.ts` ("adapter malicious leg: grok" and
+"adapter malicious leg: grok partial streams", T4.26 partial ([#291](https://github.com/zemdregon/switchboard/pull/291));
+no `replayGap`). No end-to-end run through Switchboard against a logged-in `grok` has been recorded yet
 (T4.28).
 
 ## Antigravity CLI (milestone 4)
@@ -788,8 +789,9 @@ runs `test/malicious/adapters/antigravity.case.ts` and `test/malicious/adapter-l
 antigravity", T4.36 partial — see [Known limitations](#known-limitations); guard-blocked streams
 [#257](https://github.com/zemdregon/switchboard/pull/257), trailing-tool streams
 [#262](https://github.com/zemdregon/switchboard/pull/262)). The conformance `resume` case stays partial until Q-86 and
-an operator resume capture (T4.35). No end-to-end run through Switchboard against a logged-in `agy` has been recorded
-yet (T4.38).
+an operator resume capture (T4.35; replay dialect Go `flag` boundaries merged
+[#292](https://github.com/zemdregon/switchboard/pull/292)). No end-to-end run through Switchboard against a logged-in
+`agy` has been recorded yet (T4.38).
 
 ## Cursor CLI (milestone 4)
 
@@ -894,8 +896,10 @@ one safe argument is never bound (`OUTPUT_PROTOCOL_ERROR`; [#245](https://github
 `PERMISSION_BLOCKED` per ADR-0039). A trailing `tool_use` the parser cannot read still ends `OUTPUT_PROTOCOL_ERROR`
 instead of success. `tool_use` keys that name `Object.prototype` members map to `other` (own-key lookup;
 [#245](https://github.com/zemdregon/switchboard/pull/245)). Rate-limit and permission-denial stream shapes,
-`backingProvider` on `session_bound` and the keys of `tool_use.part.state.input` are still unrecorded (T4.53 stays
-`Partial` on the roadmap). Supervisor-replayed JSONL fixtures pin today's gaps without inventing native fields
+Structured `backing_provider` / `model` on synthetic `session_bound` events and the T4.6 end-to-end fixture are on
+`main` ([#290](https://github.com/zemdregon/switchboard/pull/290); `backing_provider.jsonl`); the keys of
+`tool_use.part.state.input` are still unrecorded (T4.53 stays `Partial` on the roadmap). Supervisor-replayed JSONL
+fixtures pin today's gaps without inventing native fields
 ([#274](https://github.com/zemdregon/switchboard/pull/274)): `permission_denied_outside` (live check row 11) ends
 `stop` at exit 0 with `state.status` `error` and is not detected as a denial (gap pinned); `rate_limit` (row 14c, never
 reached) is an empty stream at exit 1 → `TOOL_FAILURE`; `rate_limit_error` is an unmapped error type at exit 0 →
