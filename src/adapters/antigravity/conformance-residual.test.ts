@@ -2,9 +2,10 @@
  * T4.35 residual (2026-10-15, Delegated agent work, not owner-approved; synthetic fixtures only, no `agy` run, adapter
  * and parser unchanged). The suite in antigravity.test.ts shows each case passes; these tests show each case can fail:
  * a compile the replay refuses (exit 64 for the argv, exit 65 for an empty prompt) writes nothing to stdout and must
- * not satisfy any case's expectation.
+ * not satisfy any case's expectation. Later passes pin that every in-run failure detail family is reached by a case,
+ * which cases fail when their stream is reordered, and that every one-word slip in the compiled argv exits 64.
  */
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -23,6 +24,7 @@ import {
   fixturePath,
   replayAdapter,
 } from "./fixtures/cases.js";
+import { SKIP_PERMISSIONS_FLAG } from "./protocol.js";
 
 const dirs: string[] = [];
 const makeCwd = () => {
@@ -207,20 +209,20 @@ describe("antigravity timeout cases through the replay (T4.35, FR-ADP-11)", () =
   });
 });
 
-describe("each antigravity conformance case pins its own fixture (T4.35, FR-ADP-11)", () => {
-  /** `kind:fixture` plus the replay options that change the run, so two cases on one fixture get distinct labels. */
-  const label = (c: ConformanceCase): string => {
-    const inv = c.adapter.compile(c.request, c.profile);
-    const own = "ineligible" in inv ? [] : inv.argv.slice(0, inv.argv.indexOf("--"));
-    const opts = [
-      own.includes("--exit-code") ? `exit ${own[own.indexOf("--exit-code") + 1]}` : "",
-      own.includes("--write") ? "write" : "",
-      own.includes("--ignore-term") ? "ignores SIGTERM" : "",
-      c.kind === "timeout" ? (c.expect.failureDetail ?? "") : "",
-    ].filter((o) => o !== "");
-    return `${c.kind}:${fixtureOf(c)}${opts.length > 0 ? ` (${opts.join(", ")})` : ""}`;
-  };
+/** `kind:fixture` plus the replay options that change the run, so two cases on one fixture get distinct labels. */
+const label = (c: ConformanceCase): string => {
+  const inv = c.adapter.compile(c.request, c.profile);
+  const own = "ineligible" in inv ? [] : inv.argv.slice(0, inv.argv.indexOf("--"));
+  const opts = [
+    own.includes("--exit-code") ? `exit ${own[own.indexOf("--exit-code") + 1]}` : "",
+    own.includes("--write") ? "write" : "",
+    own.includes("--ignore-term") ? "ignores SIGTERM" : "",
+    c.kind === "timeout" ? (c.expect.failureDetail ?? "") : "",
+  ].filter((o) => o !== "");
+  return `${c.kind}:${fixtureOf(c)}${opts.length > 0 ? ` (${opts.join(", ")})` : ""}`;
+};
 
+describe("each antigravity conformance case pins its own fixture (T4.35, FR-ADP-11)", () => {
   // A swap the case cannot tell apart, with the reason. The pair normalizes to one result, so no field the harness
   // reads can separate them; each is still its own case because it reaches that result from a different stream shape
   // or supervisor path. Every other swap must fail the case.
@@ -300,4 +302,224 @@ describe("each antigravity conformance case pins its own fixture (T4.35, FR-ADP-
     }
     expect(passing).toBeGreaterThan(Object.keys(SAME_RESULT).length);
   });
+});
+
+describe("every in-run failure detail the antigravity parser can produce is reached by a case (T4.35, FR-ADP-11)", () => {
+  // Each detail family `extractResult` and the shared classifier can end a compiled run with, matched against the
+  // case list. Before this pass no case reached a non-string `error` or a status other than SUCCESS or ERROR.
+  const FAMILIES: Record<string, RegExp> = {
+    "provider error, model": /^model_unavailable: /,
+    "provider error, auth": /^auth: /,
+    "provider error, unmapped string": /^unknown: (?!non-string error field$)/,
+    "provider error, non-string error field": /^unknown: non-string error field$/,
+    "protocol, second result": /^protocol: more than one result line$/,
+    "protocol, changed id": /^protocol: conversation id changed mid-run$/,
+    "protocol, unsafe id": /^protocol: conversation id is not a safe token$/,
+    "zero-token SUCCESS (Q-86)": /^SUCCESS with no reported tokens$/,
+    "status other than SUCCESS with no error": /^SYNTHETIC_CANCELLED$/,
+    "soft denial": /^denied: /,
+    "Git-write guard (ADR-0039)": /^git write attempted: /,
+    "tool after the result": /^tool call after the result line$/,
+    "unparseable line": /^unparseable provider output$/,
+    "no result": /^no result event$/,
+    "unexpected exit": /^exit code \d+$/,
+    "idle timeout": /^idle timeout$/,
+    "wall-clock timeout": /^wall_clock timeout$/,
+    cancellation: /^run cancelled$/,
+  };
+  // Details the classifier knows that a compiled Antigravity run cannot reach, with the reason. No case may expect one.
+  const UNREACHABLE: [RegExp, string][] = [
+    [
+      /^provider state reached: /,
+      "the provider-state guard does not apply in the one compiled cell, an approved bypass",
+    ],
+    [/^rate limit reported$/, "the parser emits no rate_limit event (no recorded shape, T4.33)"],
+    [/^event handling failed$/, "an internal supervisor error, not a stream shape"],
+    [/^(signal |spawn_error$|crashed$)/, "a crash of the process, not a stream shape the replay writes"],
+  ];
+
+  it("each family is named by at least one runnable case, and each case's detail is in exactly one family", () => {
+    const details = runnable().map((c) => [label(c), c.expect.failureDetail] as const);
+    const unmatched = Object.entries(FAMILIES)
+      .filter(([, re]) => !details.some(([, d]) => d !== undefined && re.test(d)))
+      .map(([name]) => name);
+    expect(unmatched).toEqual([]);
+    const outside = details
+      .filter(([, d]) => d !== undefined && Object.values(FAMILIES).filter((re) => re.test(d)).length !== 1)
+      .map(([name]) => name);
+    expect(outside).toEqual([]);
+    expect(details.filter(([, d]) => d !== undefined && UNREACHABLE.some(([re]) => re.test(d)))).toEqual([]);
+  });
+
+  it.each([
+    ["error_not_string", "unknown: non-string error field", "ok"],
+    ["status_unrecorded", "SYNTHETIC_CANCELLED", undefined],
+  ])("%s carries tokens and binds the id, yet ends TOOL_FAILURE (%s)", async (fixture, detail, summary) => {
+    const c = runnable().find((x) => fixtureOf(x) === fixture);
+    if (!c) throw new Error(`missing ${fixture} case`);
+    const report = await runConformanceCase(c);
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toEqual({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: detail,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      unknownEventCount: 0,
+      ...(summary === undefined ? {} : { summary }),
+    });
+  });
+});
+
+describe("antigravity whole-stream order: which cases pin the order of their own stream (T4.35, synthetic only)", () => {
+  /** `c` replaying a copy of its fixture whose event lines are rewritten by `edit` (the metadata line stays first). */
+  const reordered = (c: ConformanceCase, dir: string, tag: string, edit: (lines: string[]) => string[]) => {
+    const a = c.adapter as AntigravityAdapter;
+    const adapter = new Proxy(a, {
+      get(target, key) {
+        if (key === "compile") {
+          return (...args: Parameters<AntigravityAdapter["compile"]>) => {
+            const inv = target.compile(...args);
+            if ("ineligible" in inv) return inv;
+            const at = inv.argv.indexOf("--fixture") + 1;
+            const [meta = "", ...events] = readFileSync(inv.argv[at] ?? "", "utf8")
+              .split("\n")
+              .filter((l) => l.trim() !== "");
+            const copy = join(dir, `${tag}-${fixtureOf(c)}.jsonl`);
+            writeFileSync(copy, `${[meta, ...edit(events)].join("\n")}\n`);
+            return { ...inv, argv: inv.argv.map((w, i) => (i === at ? copy : w)) } satisfies Invocation;
+          };
+        }
+        const v: unknown = Reflect.get(target, key, target);
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    });
+    return { ...c, adapter };
+  };
+  const isResult = (l: string) => {
+    try {
+      return (JSON.parse(l) as { event?: unknown }).event === "result";
+    } catch {
+      return false;
+    }
+  };
+  const ORDERS = {
+    reversed: (lines: string[]) => [...lines].reverse(),
+    "result first": (lines: string[]) => [...lines.filter(isResult), ...lines.filter((l) => !isResult(l))],
+  };
+  // The cases a reordered stream fails, with what the reorder changes. Every other case reaches the same result in
+  // any order: one result line (or none) decides it, and the parser reads init, non-tool steps, unknown lines and
+  // denials the same before or after that line.
+  const ORDER_SENSITIVE: Record<keyof typeof ORDERS, Record<string, string>> = {
+    reversed: {
+      "success:success_edit": "the write_to_file tool step lands after the result line",
+      "malformed_output:malformed_output": "the result's response is read before the unparseable line ends the run",
+      "malformed_output:conversation_changed": "the other conversation's result comes first and binds its id",
+      "malformed_output:step_conversation_changed": "the other conversation's tool step lands after the result line",
+      "malformed_output:trailing_tool": "the trailing tool step moves before the result: a clean success",
+      "malformed_output:error_after_result": "the auth envelope comes first, so its error decides the code",
+      "malformed_output:malformed_after_result":
+        "the unparseable line comes first and ends the run before any id binds",
+    },
+    "result first": {
+      "success:success_edit": "the write_to_file tool step lands after the result line",
+      "malformed_output:malformed_output": "the result's response is read before the unparseable line ends the run",
+      "malformed_output:conversation_changed": "the other conversation's result comes first and binds its id",
+      "malformed_output:step_conversation_changed": "the other conversation's tool step lands after the result line",
+    },
+  };
+
+  let swept: Record<string, { name: string; report: ConformanceCaseReport }[]> | undefined;
+  const sweep = async () => {
+    if (swept) return swept;
+    const dir = makeCwd();
+    const out: Record<string, { name: string; report: ConformanceCaseReport }[]> = {};
+    for (const [tag, edit] of Object.entries(ORDERS)) {
+      const reports: { name: string; report: ConformanceCaseReport }[] = [];
+      // A hanging fixture has one line; its order is the supervisor's, not the stream's.
+      for (const c of runnable().filter((x) => x.kind !== "timeout" && x.kind !== "cancellation")) {
+        reports.push({ name: label(c), report: await runConformanceCase(reordered(c, dir, tag, edit)) });
+      }
+      out[tag] = reports;
+    }
+    swept = out;
+    return out;
+  };
+
+  it.each(Object.keys(ORDERS) as (keyof typeof ORDERS)[])(
+    "with its events %s, exactly the listed order-sensitive cases fail",
+    async (tag) => {
+      const failing = (await sweep())[tag]?.filter((r) => !r.report.ok).map((r) => r.name) ?? [];
+      expect(failing.sort()).toEqual(Object.keys(ORDER_SENSITIVE[tag]).sort());
+    },
+    60_000,
+  );
+
+  it("pins the gap: init and non-tool steps after a clean result leave the run a success (only a tool step trips)", async () => {
+    // unknown_then_result is listed as an order shape, yet its unknown line after the result passes the same case.
+    const successes = (await sweep())["result first"]?.filter((r) => r.name.startsWith("success:")) ?? [];
+    expect(successes.map((r) => [r.name, r.report.result?.ok])).toEqual([
+      ["success:success_edit", false],
+      ["success:unknown_event", true],
+      ["success:backing_provider", true],
+      ["success:unknown_then_result", true],
+    ]);
+    expect(successes[0]?.report.result?.failureDetail).toBe("tool call after the result line");
+  });
+});
+
+describe("the antigravity replay dialect refuses every one-word slip in the compiled argv (T4.35, ADR-0045)", () => {
+  /** The provider argv of the success case (after the launcher's `--`), rewritten by `edit`. */
+  const run = (edit: (words: string[]) => string[]) => {
+    const c = runnable().find((x) => fixtureOf(x) === "success_edit" && x.kind === "success");
+    if (!c) throw new Error("missing success_edit case");
+    return runConformanceCase(
+      refusedBy(c, (argv) => {
+        const sep = argv.indexOf("--");
+        return [...argv.slice(0, sep + 1), ...edit(argv.slice(sep + 1))];
+      }),
+    );
+  };
+  const COMPILED = [
+    "--prompt=synthetic antigravity objective",
+    "--output-format",
+    "stream-json",
+    SKIP_PERMISSIONS_FLAG,
+  ];
+
+  it("the compiled provider argv is the four words the dialect expects", () => {
+    const c = runnable()[0];
+    if (!c) throw new Error("no case");
+    const inv = c.adapter.compile(c.request, c.profile);
+    expect("ineligible" in inv ? [] : inv.argv.slice(inv.argv.indexOf("--") + 1)).toEqual(COMPILED);
+  });
+
+  it("positive control: every order of the three flags replays the success (Go's flag package is order-free)", async () => {
+    const groups = [[COMPILED[0] ?? ""], [COMPILED[1] ?? "", COMPILED[2] ?? ""], [COMPILED[3] ?? ""]];
+    const orders = [
+      [0, 1, 2],
+      [0, 2, 1],
+      [1, 0, 2],
+      [1, 2, 0],
+      [2, 0, 1],
+      [2, 1, 0],
+    ];
+    for (const order of orders) {
+      const report = await run(() => order.flatMap((i) => groups[i] ?? []));
+      expect([order, report.ok]).toEqual([order, true]);
+    }
+  });
+
+  it.each(COMPILED.map((w, i) => [w, i] as const))(
+    "deleting or doubling %s exits 64, so the slip cannot replay the success",
+    async (_w, i) => {
+      for (const edit of [
+        (words: string[]) => words.filter((_, j) => j !== i),
+        (words: string[]) => words.flatMap((x, j) => (j === i ? [x, x] : [x])),
+      ]) {
+        const report = await run(edit);
+        expect(report.ok).toBe(false);
+        expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", failureDetail: "exit code 64" });
+      }
+    },
+  );
 });
