@@ -78,7 +78,7 @@ Pre-release. The package is private and is not published to any registry; you bu
   client and a macOS CI leg are done; Grok Build, Antigravity, Cursor and OpenCode each have a module, compile matrix
   and parser work on synthetic fixtures. Grok Build has module, compile-matrix, parser (partial: T4.23; every Done-when
   case has a supervisor-replayed JSONL fixture on `main` ([#260](https://github.com/zemdregon/switchboard/pull/260))),
-  auth-preflight, conformance suite (T4.25),   malicious-fixture leg (partial: T4.26; synthetic command fields,
+  auth-preflight, conformance suite (T4.25), malicious-fixture leg (partial: T4.26; synthetic command fields,
   readable native login and repository configuration gaps;
   [#291](https://github.com/zemdregon/switchboard/pull/291),
   [#302](https://github.com/zemdregon/switchboard/pull/302),
@@ -750,8 +750,9 @@ commits the manifest diff (ROADMAP T4.28). Until then `doctor` reports `ADAPTER_
 
 ### Login
 
-See the [login table](#log-in-to-the-providers-natively) above. Switchboard never runs `grok login`; it only runs
-`grok models` during preflight.
+See the [login table](#log-in-to-the-providers-natively) above. Switchboard never runs `grok login`. The `doctor`
+probe runs `grok version` and `grok --help` (the help text must list the required flags), and auth preflight runs
+`grok models`, which lists model names and makes no model call (`src/adapters/grok/protocol.ts`).
 
 ### Trust profiles
 
@@ -803,7 +804,10 @@ native captures observed a model id string in `modelUsage` (live check 4a) but n
 structured `backing_provider` `backingProvider` stays unset. Usage counters on the `end` line (`input_tokens`,
 `cache_read_input_tokens`, `cache_creation_input_tokens`, `output_tokens`, `reasoning_tokens`, `total_tokens` and
 non-negative `num_turns`) are recorded `provider_reported` on the first `end` line only; a second `end` line fails
-closed as `OUTPUT_PROTOCOL_ERROR` and does not duplicate usage (FR-CAP-01). The extra cost and correlation fields
+closed as `OUTPUT_PROTOCOL_ERROR` and does not duplicate usage (FR-CAP-01). `num_turns` without a `usage` object records
+no usage; with an empty `usage` object it records `num_turns` alone. An empty structured `model` or `backing_provider`
+shadows its fallback key and binds none, while a non-string `model` falls through to `model_id`, then to the first own
+`modelUsage` key ([#354](https://github.com/zemdregon/switchboard/pull/354)). The extra cost and correlation fields
 recorded on `end` in the 2026-10-14 live check (`total_cost_usd`, `total_cost_usd_ticks`, `requestId`, live check 4a)
 never widen the usage record or reach an event ([#313](https://github.com/zemdregon/switchboard/pull/313)). Mid-stream
 standalone `usage` lines (row 4b) emit no usage event whatever counters or signatures they carry (the `end` line is
@@ -860,10 +864,15 @@ empty-string command is a command that shadows `cmd` and the top-level command. 
 see: `shadowed_parameters.jsonl` replays a Git write under `parameters` behind an empty `input` to `end_turn` success
 with one unknown event ([#372](https://github.com/zemdregon/switchboard/pull/372)). Late or swapped commands on
 `tool_call_update` are correlated by call id and re-evaluated by the guard without duplicating identical reports.
-Id-less lines are numbered `call_1`, `call_2` and so on; an id-less update does not correlate to an earlier id'd call
-and is reported again (over-reporting, never under-reporting), and an id-less Git-write update with no `tool_call`
-before it is still guarded (`idless_update_guard.jsonl` replays to `PERMISSION_BLOCKED`;
-[#354](https://github.com/zemdregon/switchboard/pull/354), [#372](https://github.com/zemdregon/switchboard/pull/372)).
+An empty call id counts as no id. Each id-less `tool_call` opens the next number (`call_1`, `call_2` and so on), so
+two id-less calls with the same command are both reported, and an id-less `tool_call_update` correlates to the latest
+id-less call (`call_1` before any `tool_call`). An id-less update does not correlate to an earlier id'd call and is
+reported again (over-reporting, never under-reporting), and an id-less Git-write update with no `tool_call` before it
+is still guarded (`idless_update_guard.jsonl` replays to `PERMISSION_BLOCKED`). A repeated `tool_call` with the same id
+and command is not reported twice and is never counted unknown; a name-only update emits nothing on a call already
+reported and is reported as `other` on an unseen call; a target added to a call already reported with a command is a
+separate `read` event ([#354](https://github.com/zemdregon/switchboard/pull/354),
+[#372](https://github.com/zemdregon/switchboard/pull/372)).
 Tool kind maps to `shell` when a command is present or tool name is `run_terminal_command` (a target-only
 `run_terminal_command` call is a `shell` event carrying the target), `read` when target is present without command,
 and `other` otherwise. In an approved bypass run
