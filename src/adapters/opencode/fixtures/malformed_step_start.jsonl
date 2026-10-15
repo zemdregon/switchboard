@@ -1,0 +1,5 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: malformed non-string step_start.part.type followed by a valid stop. Not a native capture; malformed structured fields must remain unknown even after apparent success.","exit":0}}
+{"type":"step_start","sessionID":"ses_SYNTHETIC0000000000000001","part":{"type":"step-start"}}
+{"type":"step_start","sessionID":"ses_SYNTHETIC0000000000000001","part":{"type":false}}
+{"type":"text","sessionID":"ses_SYNTHETIC0000000000000001","part":{"text":"SYNTHETIC: apparent success."}}
+{"type":"step_finish","sessionID":"ses_SYNTHETIC0000000000000001","part":{"reason":"stop"}}

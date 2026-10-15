@@ -423,9 +423,10 @@ export class OpenCodeAdapter implements ProviderAdapter {
     switch (type) {
       case EVENT.stepStart: {
         if (part === undefined) return [...out, ...this.#unknown(state, type)];
-        const partType = str(ownProp(part, "type"));
-        if (partType !== undefined && partType !== "step-start") {
-          return [...out, ...this.#unknown(state, `${type}:${partType}`)];
+        const rawPartType = ownProp(part, "type");
+        const partType = str(rawPartType);
+        if (rawPartType !== undefined && partType !== "step-start") {
+          return [...out, ...this.#unknown(state, partType === undefined ? type : `${type}:${partType}`)];
         }
         return out;
       }

@@ -1117,6 +1117,31 @@ describe("opencode parser and result (T4.53)", () => {
     expect(s2.unknownEvents).toBe(1);
   });
 
+  it("non-string step_start part.type is unreadable even before a clean stop; an omitted type remains accepted", () => {
+    for (const type of [null, false, 0, [], ["step-start"], { type: "step-start" }]) {
+      const { a, state, events } = parse([
+        START,
+        JSON.stringify({ type: "step_start", sessionID: SID, part: { type } }),
+        TEXT("ok"),
+        FINISH("stop"),
+      ]);
+      expect(events.filter((e) => e.kind === "unknown")).toEqual([{ kind: "unknown", rawType: "step_start" }]);
+      expect(state.unknownEvents).toBe(1);
+      expect(a.extractResult(events, EXIT0)).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        unknownEventCount: 1,
+        nativeSessionId: SID,
+      });
+    }
+    const omitted = parse([
+      JSON.stringify({ type: "step_start", sessionID: SID, part: {} }),
+      TEXT("ok"),
+      FINISH("stop"),
+    ]);
+    expect(omitted.a.extractResult(omitted.events, EXIT0)).toMatchObject({ ok: true, unknownEventCount: 0 });
+  });
+
   it("a session id resume could not pass as one argument is never bound and fails OUTPUT_PROTOCOL_ERROR", () => {
     for (const bad of ["--auto", "-s", "ses x", "../ses", "a".repeat(257)]) {
       const withId = (type: string, part: Record<string, unknown>) =>
@@ -1793,6 +1818,18 @@ describe("opencode parser and result (T4.53)", () => {
       expect(report.checks.filter((k) => !k.ok)).toEqual([]);
       expect(report.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", unknownEventCount: 5 });
       expect(report.result).not.toHaveProperty("nativeSessionId");
+    });
+
+    it("fixture malformed_step_start replays a non-string part.type followed by stop to OUTPUT_PROTOCOL_ERROR", async () => {
+      const report = await runConformanceCase(
+        replayCase("malformed_step_start", "malformed_output", {
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({ unknownEventCount: 1, summary: "SYNTHETIC: apparent success." });
     });
 
     it("fixture no_stop (row 4a, Q-85) replays text at exit 0 without a stop step to OUTPUT_PROTOCOL_ERROR", async () => {
