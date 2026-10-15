@@ -919,6 +919,42 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     expect(report.result).toMatchObject({ ok: false, failureCode: "AUTH_REQUIRED" });
   });
 
+  /** The first case whose expectation matches `pick` (several cases share a kind). */
+  const caseWhere = (name: string, pick: (e: ConformanceCase["expect"]) => boolean): ConformanceCase => {
+    const c = antigravityConformanceCases(makeCwd).find((x) => pick(x.expect));
+    if (!c) throw new Error(`missing ${name} case`);
+    return c;
+  };
+
+  it("an invalid model ERROR envelope at exit 1 (live check C10) is MODEL_UNAVAILABLE and binds no session", async () => {
+    const report = await runConformanceCase(
+      caseWhere("model_unavailable", (e) => e.failureCode === "MODEL_UNAVAILABLE"),
+    );
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "MODEL_UNAVAILABLE" });
+    expect(report.result?.nativeSessionId).toBeUndefined();
+  });
+
+  it("a slash-command SUCCESS envelope with no turn (live check C6) is TOOL_FAILURE; its command key is ignored", async () => {
+    const report = await runConformanceCase(
+      caseWhere(
+        "slash_command",
+        (e) => e.failureCode === "TOOL_FAILURE" && e.nativeSessionId === undefined && !e.mutatedPath,
+      ),
+    );
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", unknownEventCount: 0 });
+    expect(report.result?.nativeSessionId).toBeUndefined();
+  });
+
+  it("a write before a soft-denied command (live check C18 run 2) is PERMISSION_BLOCKED and the write stays", async () => {
+    const c = caseWhere("denied_after_write", (e) => e.mutatedPath === "b.txt");
+    const report = await runConformanceCase(c);
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    expect(readFileSync(join(c.request.workspace.cwd, "b.txt"), "utf8")).toContain("synthetic");
+  });
+
   it("partial mutation leaves the file in the cwd", async () => {
     const c = caseOf("partial_mutation");
     const report = await runConformanceCase(c);

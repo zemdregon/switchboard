@@ -1,0 +1,2 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.35), in the shapes recorded by the 2026-10-14 live check (C10 bad model, recorded with --output-format json: exit 1, status ERROR, empty conversation_id and an invalid model selection error; the stream-json nesting under result is an Assumption, and the model and list below are invented).","exit":1}}
+{"event":"result","result":{"conversation_id":"","status":"ERROR","response":"","error":"invalid model selection (--model synthetic-missing): SYNTHETIC. Available models: Synthetic Model"}}
