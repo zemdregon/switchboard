@@ -932,6 +932,206 @@ describe("antigravity parser hardening (T4.33, synthetic shapes)", () => {
 });
 
 /**
+ * T4.33 Done-when cases whose native shape the 2026-10-14 live check did NOT record (ROADMAP T4.33 "Not done" (2):
+ * exit 3 with `AGY_ERROR` on stderr, rate limit, sandbox violation; and usage shapes other than the C4 envelope).
+ * SYNTHETIC: each pins today's fail-closed (or, for a sandbox violation, undetected) outcome; a capture (T4.31
+ * extension) must change them. Mirrors Grok Build's "cases with no recorded native shape" (T4.23).
+ */
+describe("antigravity cases with no recorded native shape (T4.33, synthetic shapes)", () => {
+  const CID = "0b6c2d1e-0000-4000-8000-00000000000e";
+  const j = (o: Record<string, unknown>) => JSON.stringify(o);
+  const INIT = j({
+    event: "init",
+    conversation_id: CID,
+    init: { cwd: "/work/tree", permission_mode: "always-proceed" },
+  });
+  const USAGE = { input_tokens: 20, output_tokens: 3, thinking_tokens: 1, cache_read_tokens: 0, total_tokens: 24 };
+  const RESULT = (over: Record<string, unknown> = {}, outer: Record<string, unknown> = {}) =>
+    j({
+      event: "result",
+      ...outer,
+      result: { conversation_id: CID, status: "SUCCESS", response: "ok", num_turns: 1, usage: USAGE, ...over },
+    });
+  const STEP = (o: Record<string, unknown>) => j({ event: "step_update", conversation_id: CID, ...o });
+  const EXIT0: ExitInfo = { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] };
+  const EXIT3: ExitInfo = { ...EXIT0, exitCode: 3 };
+  const parse = (lines: string[]) => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const events: NormalizedEvent[] = lines.flatMap((l) => a.parseEvent(l, state));
+    return { a, state, events };
+  };
+  const neverRateLimit = (events: readonly NormalizedEvent[]) =>
+    expect(events.some((e) => e.kind === "rate_limit" || e.kind === "sandbox_violation")).toBe(false);
+
+  it("exit 3 (AGY_ERROR on stderr, not passed to the adapter) with no result is TOOL_FAILURE, never a rate limit", () => {
+    const { a, events } = parse([
+      INIT,
+      STEP({ step_index: 1, state: "ACTIVE", step_type: "agent_response", text_delta: "x" }),
+    ]);
+    expect(a.extractResult(events, EXIT3)).toEqual({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "exit code 3",
+      nativeSessionId: CID,
+      unknownEventCount: 0,
+    });
+    // A C10-shaped ERROR envelope at exit 3 carrying invented retry text is still TOOL_FAILURE.
+    const envelope = parse([INIT, RESULT({ status: "ERROR", response: "", error: "UNAVAILABLE: retry after 30s" })]);
+    expect(envelope.a.extractResult(envelope.events, EXIT3)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+    neverRateLimit([...events, ...envelope.events]);
+  });
+
+  it("an AGY_ERROR-shaped object or an invented error event on stdout is an unknown line, never a rate limit", () => {
+    const agyError = j({ status: "RESOURCE_EXHAUSTED", code: 429, retryable: true, error_id: "synthetic" });
+    const { a, state, events } = parse([INIT, agyError, j({ event: "error", error: { code: 429 } }), RESULT()]);
+    expect(events.filter((e) => e.kind === "unknown")).toEqual([
+      { kind: "unknown", rawType: "none" },
+      { kind: "unknown", rawType: "error" },
+    ]);
+    expect(state.unknownEvents).toBe(2);
+    neverRateLimit(events);
+    // Unknown lines do not change a clean envelope (as `unknown_event.jsonl`); at exit 3 the run fails.
+    expect(a.extractResult(events, EXIT0)).toMatchObject({ ok: true, unknownEventCount: 2 });
+    expect(a.extractResult(events, EXIT3)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+  });
+
+  it("pins the gap: a tool step's tool_info.error or output is not read, so a sandbox violation is NOT detected", () => {
+    // TDD §4.4.1 names `tool_info.error` {type, message} on a failed tool; its values were not recorded and FR-ADP-04
+    // forbids reading status from text, so the parser emits no `sandbox_violation`. In the one compiled cell (approved
+    // bypass) `--sandbox` is not compiled anyway (Q-84). A capture that shows a structured marker replaces this test.
+    const { a, events } = parse([
+      INIT,
+      STEP({
+        step_index: 2,
+        state: "DONE",
+        step_type: "tool",
+        tool_name: "run_command",
+        tool_info: {
+          name: "run_command",
+          output: "Operation not permitted",
+          error: { type: "SANDBOX_DENIED", message: "sandbox blocked a write outside the workspace" },
+        },
+      }),
+      RESULT(),
+    ]);
+    expect(events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "other", name: "run_command" },
+    ]);
+    neverRateLimit(events);
+    expect(a.extractResult(events, EXIT0)).toMatchObject({ ok: true, nativeSessionId: CID, unknownEventCount: 0 });
+  });
+
+  it("usage comes only from the result envelope's recorded snake_case keys; other shapes record nothing and fail", () => {
+    // Per-step usage alone (the envelope has none): no usage row, and no total_tokens, so not a success (Q-86).
+    const stepOnly = parse([
+      INIT,
+      STEP({ step_index: 1, state: "DONE", step_type: "agent_response", usage: USAGE }),
+      RESULT({ usage: undefined }),
+    ]);
+    expect(stepOnly.events.some((e) => e.kind === "usage")).toBe(false);
+    expect(stepOnly.a.extractResult(stepOnly.events, EXIT0)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+    // Usage beside `result` rather than inside it, camelCase keys and a nested total are not read.
+    for (const [over, outer] of [
+      [{ usage: undefined }, { usage: USAGE }],
+      [{ usage: { inputTokens: 20, outputTokens: 3, totalTokens: 24 } }, {}],
+      [{ usage: { total: { total_tokens: 24 } } }, {}],
+      [{ usage: { total_tokens: "24" } }, {}],
+    ] as const) {
+      const r = parse([INIT, RESULT(over, outer)]);
+      const label = JSON.stringify([over, outer]);
+      expect(
+        r.events.some((e) => e.kind === "usage"),
+        label,
+      ).toBe(false);
+      expect(r.a.extractResult(r.events, EXIT0), label).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+    }
+    // A number that overflows to Infinity in JSON is dropped like any non-finite value.
+    const overflow = parse([INIT, RESULT().replace('"total_tokens":24', '"total_tokens":1e999')]);
+    expect(overflow.events.find((e) => e.kind === "usage")).toEqual({
+      kind: "usage",
+      source: "provider_reported",
+      metrics: { input_tokens: 20, output_tokens: 3, thinking_tokens: 1, cache_read_tokens: 0 },
+    });
+    expect(overflow.a.extractResult(overflow.events, EXIT0)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+  });
+
+  it("num_turns, duration_seconds and the slash-command quota data are never usage metrics", () => {
+    // C9: on a resumed conversation `num_turns` counted earlier turns and `duration_seconds` looked cumulative; C6:
+    // `/usage` and `/credits` put quota under `command.data`. Neither is a documented per-run counter, so only the five
+    // USAGE_KEYS are recorded (FR-CAP-01) and a resume marker is not inferred from them (Q-86).
+    const { events } = parse([
+      INIT,
+      RESULT({
+        num_turns: 3,
+        duration_seconds: 100,
+        command: { name: "credits", data: { remaining_credits: 50, upgrade_uri: "https://example.invalid" } },
+        usage: { ...USAGE, num_turns: 3, remaining_credits: 50 },
+      }),
+    ]);
+    expect(events.filter((e) => e.kind === "usage")).toEqual([
+      { kind: "usage", source: "provider_reported", metrics: USAGE },
+    ]);
+  });
+
+  // The same outcomes replayed end to end from fixture files through the supervisor (as Grok Build's T4.23 fixtures).
+  const replayCase = (
+    fixture: string,
+    kind: ConformanceCase["kind"],
+    exp: ConformanceCase["expect"],
+  ): ConformanceCase => ({
+    kind,
+    adapter: replayAdapter(fixture),
+    request: {
+      runId: "run_antigravity_t433_fixture",
+      objective: "synthetic antigravity objective",
+      constraints: [],
+      workspace: { cwd: makeCwd(), writable: true },
+      bypassApproved: true,
+    },
+    profile: PRIVILEGED_BYPASS_PROFILE,
+    expect: exp,
+  });
+  const fixtureEvents = (fixture: string) =>
+    parse(
+      readFileSync(fixturePath(fixture), "utf8")
+        .split("\n")
+        .filter((l) => l !== "" && !l.includes('"_fixture"')),
+    ).events;
+
+  it("fixture agy_error_exit3 replays a stream with no result at exit 3 to TOOL_FAILURE, never RATE_LIMIT_TRANSIENT", async () => {
+    const report = await runConformanceCase(
+      replayCase("agy_error_exit3", "task_failure", { ok: false, failureCode: "TOOL_FAILURE" }),
+    );
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "exit code 3",
+      nativeSessionId: DEFAULT_SESSION_ID,
+    });
+  });
+
+  it("fixture sandbox_violation_unrecorded replays to a success: the tool's error is not read (gap, pinned)", async () => {
+    const report = await runConformanceCase(
+      replayCase("sandbox_violation_unrecorded", "task_failure", { ok: true, nativeSessionId: DEFAULT_SESSION_ID }),
+    );
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: true, unknownEventCount: 0 });
+    neverRateLimit(fixtureEvents("sandbox_violation_unrecorded"));
+  });
+
+  it("fixture usage_unrecorded replays to TOOL_FAILURE and records no usage row", async () => {
+    const report = await runConformanceCase(
+      replayCase("usage_unrecorded", "task_failure", { ok: false, failureCode: "TOOL_FAILURE" }),
+    );
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: false, nativeSessionId: DEFAULT_SESSION_ID });
+    expect(fixtureEvents("usage_unrecorded").some((e) => e.kind === "usage")).toBe(false);
+  });
+});
+
+/**
  * T4.35 (FR-ADP-11): the shared conformance suite over synthetic recorded fixtures (`./fixtures/*.jsonl`, in the
  * `stream-json` shapes of the 2026-10-14 live check), replayed by `replay.mjs --provider antigravity` in place of the
  * binary, so it passes with no `agy` installed. The prompt reaches the replay as the `--prompt=` argv word. The
