@@ -23,6 +23,8 @@ export interface CliIo {
   readonly manifestDir?: string;
   /** `consent hash-passphrase` only (T13.8): test seam for reading stdin. */
   readonly readStdin?: () => Promise<string>;
+  /** Test seam (NFR-SEC-04): the effective uid `serve` and `doctor` check. Defaults to `process.geteuid()`. */
+  readonly effectiveUid?: () => number | undefined;
 }
 
 /** Stable `--json` schema version for every command (Proposed). */

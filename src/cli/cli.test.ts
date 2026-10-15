@@ -122,6 +122,7 @@ describe("doctor", () => {
     expect(j.ok).toBe(true);
     expect(j.checks.map((c: { id: string }) => c.id)).toEqual([
       "node",
+      "unprivileged",
       "git",
       "config",
       "data_dir",
@@ -179,6 +180,27 @@ describe("doctor", () => {
     const warn = await run(["doctor", ...cfg()], { adapters: new AdapterRegistry().register(noAuth) });
     expect(warn.code).toBe(0);
     expect(warn.out).toContain("AUTH_REQUIRED, run natively: fake-cli login");
+  });
+
+  it("fails the unprivileged check as root or with an unreadable uid, and passes as non-root (NFR-SEC-04)", async () => {
+    const asUid = async (uid: number | undefined) => {
+      const r = await run(["doctor", "--json", ...cfg()], { adapters: fakeOnly(), effectiveUid: () => uid });
+      const j = JSON.parse(r.out);
+      return { code: r.code, ok: j.ok, c: j.checks.find((c: { id: string }) => c.id === "unprivileged") };
+    };
+    const user = await asUid(1000);
+    expect(user).toMatchObject({ code: 0, ok: true, c: { status: "ok", detail: "effective uid 1000 (not root)" } });
+    const root = await asUid(0);
+    expect(root).toMatchObject({ code: 1, ok: false, c: { label: "Unprivileged user", status: "fail" } });
+    expect(root.c.detail).toMatch(/^RUNNING_AS_ROOT: running as root \(effective uid 0\)/);
+    const unknown = await asUid(undefined);
+    expect(unknown).toMatchObject({ code: 1, ok: false, c: { status: "fail" } });
+    expect(unknown.c.detail).toMatch(/^UID_UNKNOWN: /);
+
+    const text = await run(["doctor", ...cfg()], { adapters: fakeOnly(), effectiveUid: () => 0 });
+    expect(text.code).toBe(1);
+    expect(text.out).toContain("[FAIL] Unprivileged user: RUNNING_AS_ROOT: running as root");
+    expect(text.out).toContain("Result: FAILED");
   });
 
   it("registers the fake, Claude Code and Codex adapters by default", () => {

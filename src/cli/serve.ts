@@ -3,6 +3,8 @@
  * ADR-0002, ADR-0005, ADR-0011). The long-lived daemon: the only process that performs side effects for a data
  * directory. Startup order (each step fails closed and releases what it took):
  *
+ *   0. refuse to start as root, or when the effective uid cannot be read (NFR-SEC-04, `./unprivileged.ts`), before
+ *      the config is read or anything is opened;
  *   1. load and validate the config; the `--client` id must name an `mcp_clients` entry (FR-OPS-04, R-9);
  *   2. take the data-directory lock, so a second `serve` fails clearly (ADR-0005, TDD §3.5);
  *   3. open and migrate the ledger; refuse to serve if it cannot be opened (NFR-SEC-06);
@@ -92,6 +94,7 @@ import { runRetentionGc, WorkspaceManager } from "../workspace/index.js";
 import { type CliIo, PROBE_ENV_ALLOWLIST } from "./io.js";
 import { applyOperatorRequests } from "./operator.js";
 import { ragBackendFor, type ServeRag, startServeRag } from "./rag-index.js";
+import { checkUnprivileged } from "./unprivileged.js";
 
 export const TEST_FAKE_ADAPTER_ENV = "SWITCHBOARD_TEST_FAKE_ADAPTER";
 export const TEST_FAKE_ADAPTER_VALUE = "enable-test-only-fake-adapter";
@@ -249,10 +252,16 @@ export function defaultShimCommand(): string[] {
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err)).split("\n")[0] ?? "";
 
 /**
- * Run the daemon until shutdown. Resolves with the exit code. Throws ConfigError (config, unknown client, bad test
+ * Run the daemon until shutdown. Resolves with the exit code; 1 without touching anything when running as root
+ * (NFR-SEC-04). Throws ConfigError (config, unknown client, bad test
  * switch) and LockError (another serve holds the data directory) before anything else is touched; the caller maps them.
  */
 export async function serve(io0: CliIo, opts: ServeOptions): Promise<number> {
+  const privilege = checkUnprivileged(io0.effectiveUid);
+  if (!privilege.ok) {
+    stderrLogger(io0).error(`refusing to serve: ${privilege.message}`, { code: privilege.code });
+    return 1;
+  }
   const fake = readFakeSwitch(io0.env);
   const offset = fake.enabled ? (fake.clockOffsetMs ?? 0) : 0;
   const base = io0.now ?? (() => new Date());
