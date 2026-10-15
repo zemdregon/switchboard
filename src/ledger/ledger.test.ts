@@ -256,6 +256,68 @@ describe("ledger migrations", () => {
     expect(() => d.prepare("DELETE FROM artifact WHERE id = ?").run(art)).toThrow(/FOREIGN KEY/u);
   });
 
+  it("0016 widens artifact.kind to handoff_condense, keeping rows, references and foreign keys (T11.10)", () => {
+    db = new Database(path.join(dir, LEDGER_FILE_NAME));
+    db.pragma("foreign_keys = ON");
+    const d = db;
+    const upTo15 = MIGRATIONS.filter((m) => m.version < 16);
+    expect(migrate(d, undefined, upTo15)).toEqual(upTo15.map((m) => m.version));
+    const { ledger, session, run } = seed(d);
+    const art = ledger.insertArtifact({
+      runId: run.id,
+      metaSessionId: session.id,
+      kind: "handoff_view",
+      sha256: "a".repeat(64),
+      sizeBytes: 3,
+      mediaType: "application/json",
+    });
+    ledger.appendRunEvent({ runId: run.id, type: "handoff_built", artifactId: art });
+    expect(() =>
+      ledger.insertArtifact({
+        runId: run.id,
+        metaSessionId: session.id,
+        kind: "handoff_condense",
+        sha256: "b".repeat(64),
+        sizeBytes: 1,
+        mediaType: "application/json",
+      }),
+    ).toThrow(/CHECK/u);
+    expect(
+      migrate(
+        d,
+        undefined,
+        MIGRATIONS.filter((m) => m.version <= 16),
+      ),
+    ).toEqual([16]);
+    expect(d.pragma("foreign_keys", { simple: true })).toBe(1);
+    expect(d.pragma("foreign_key_check")).toEqual([]);
+    expect(d.prepare("SELECT id, kind, deleted_at FROM artifact").all()).toEqual([
+      { id: art, kind: "handoff_view", deleted_at: null },
+    ]);
+    expect(ledger.listRunEvents(run.id)[0]?.artifact_id).toBe(art);
+    const condensed = ledger.insertArtifact({
+      runId: run.id,
+      metaSessionId: session.id,
+      kind: "handoff_condense",
+      sha256: "b".repeat(64),
+      sizeBytes: 1,
+      mediaType: "application/json",
+    });
+    expect(ledger.listArtifactsForRun(run.id).map((a) => a.kind)).toEqual(["handoff_view", "handoff_condense"]);
+    expect(condensed).toMatch(/^art_/u);
+    expect(() =>
+      d
+        .prepare(
+          "INSERT INTO artifact (id, kind, sha256, size_bytes, media_type, created_at) VALUES ('art_x','nope','a',1,'t','t')",
+        )
+        .run(),
+    ).toThrow(/CHECK/u);
+    expect(d.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='artifact_run'").all()).toHaveLength(
+      1,
+    );
+    expect(() => d.prepare("DELETE FROM artifact WHERE id = ?").run(art)).toThrow(/FOREIGN KEY/u);
+  });
+
   it("git_commit and git_push are append-only and enforce their foreign keys and checks (LLD §1)", () => {
     db = openLedger(dir);
     const { ledger, session, run } = seed(db);

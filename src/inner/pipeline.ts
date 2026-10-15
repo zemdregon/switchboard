@@ -58,11 +58,12 @@ export interface InnerTaskContract<T, F> {
   /** The deterministic fallback (LLD §13.7). Must not depend on a second model call. */
   fallback: () => F;
   /**
-   * Store an accepted value and return the ID of the artifact that holds it (the `pr_draft` artifact, T11.8). Runs after
-   * the sanitiser and before the call is recorded, so the `inner_call` run event can reference the artifact (LLD §13.6).
+   * Store an accepted value and return the ID of the artifact that holds it (a `pr_draft` or condensed-text artifact).
+   * Runs after the sanitiser and before the call is recorded, so the `inner_call` run event can reference the artifact
+   * (LLD §13.6). `context.model_id` is the id the call will record (the backend's reported id, else the configured one).
    * A throw or a null result is `fallback_unavailable` (`PERSIST_FAILED`): the value is not handed out unstored.
    */
-  persist?: (value: T) => Promise<string | null>;
+  persist?: (value: T, context?: { readonly model_id: string }) => Promise<string | null>;
   /** Bounded, non-body fields merged into the `inner_call` run event of an accepted call (for example `run_title`). */
   event_payload?: (value: T) => Record<string, unknown>;
 }
@@ -558,7 +559,7 @@ export function createInnerPipeline(deps: PipelineDeps): InnerPipeline {
       if (contract.persist !== undefined) {
         let id: string | null = null;
         try {
-          id = await contract.persist(value);
+          id = await contract.persist(value, { model_id: rec.modelId });
         } catch {
           id = null;
         }

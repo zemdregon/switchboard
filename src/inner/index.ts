@@ -24,6 +24,7 @@ export * from "./breaker.js";
 export * from "./commit-message.js";
 export * from "./config.js";
 export * from "./fake-backend.js";
+export * from "./handoff-condense.js";
 export * from "./http-backend.js";
 export * from "./log-summary.js";
 export * from "./pipeline.js";

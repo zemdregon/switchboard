@@ -87,6 +87,7 @@ export const MCP_ARTIFACT_KINDS = [
   "log_summary",
   "handoff_view",
   "pr_draft",
+  "handoff_condense",
 ] as const;
 
 const TRUST_PROFILE = {
