@@ -74,7 +74,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   auth-preflight, conformance suite (T4.25), malicious-fixture leg (T4.26) and Git declaration fixture tests on
   synthetic fixtures (README [Grok Build CLI](#grok-build-cli-milestone-4), ROADMAP T4.22 to T4.27); live smoke, live
   malicious leg and `adapters validate` remain operator work (T4.28). Antigravity has a
-  conformance suite (partial: native resume, T4.35), a malicious-fixture leg (partial: live shapes and FR-POL-04, T4.36)
+  conformance suite (partial: native resume, T4.35), a malicious-fixture leg (partial: synthetic refusal and
+  guard-blocked replay streams and FR-POL-04, T4.36)
   and a Git declaration on synthetic fixtures (README [Antigravity CLI](#antigravity-cli-milestone-4), ROADMAP T4.35 to
   T4.37); live smoke, live malicious leg and `adapters validate` for Antigravity remain operator work (T4.38). Cursor has
   module, compile-matrix, parser (partial: T4.43), auth-preflight, conformance suite (T4.45), malicious-fixture leg
@@ -745,9 +746,13 @@ bypass scope.
 
 The parser treats a guard-flagged `tool_call` (`violation`) as a failed run per
 [ADR-0039](docs/adr/0039-switchboard-side-tool-call-guard.md) even when the envelope `status` is `SUCCESS` at exit 0
-(`src/adapters/antigravity/antigravity.test.ts`). In an approved bypass run the guard enforces Git writes only;
-credential reads, out-of-worktree writes and network calls that never appear in `denied_actions` still end `ok` on
-synthetic fixtures until operator captures pin live blocked outcomes (ROADMAP T4.36, T4.38).
+(`src/adapters/antigravity/antigravity.test.ts`). CI's malicious-fixture leg (T4.36) replays synthetic hostile streams
+where shell `run_command` steps carry commands the guard can see (including Git writes chained with credential read,
+out-of-worktree write and network patterns), ending `PERMISSION_BLOCKED` at exit 0 and exit 1 on both recorded
+`denied_actions` soft denials and bypass-shaped envelopes with no `denied_actions`
+([#257](https://github.com/zemdregon/switchboard/pull/257)). In an approved bypass run the guard still enforces Git
+writes only: the same hostile call without a Git write still ends `ok` (pinned); live blocked outcomes and FR-POL-04
+need operator work (ROADMAP T4.36, T4.38).
 
 `commitChannel` is **`finalize-only`**: Switchboard does not inject a per-run MCP server (no headless MCP-definition
 flag is documented). In the only compiled scope, repository `.agents/mcp_config.json`, `.agents/hooks.json`, `GEMINI.md`
@@ -760,10 +765,10 @@ check C3b, C3c)", "antigravity parser and result (T4.33)", "antigravity conforma
 fixtures, FR-ADP-11, T4.35)", "antigravity Git declaration (T4.37, FR-GIT-01, FR-GIT-02, FR-GIT-09)" and "antigravity
 malicious-fixture leg (T4.36, NFR-SEC-03, FR-POL-04, FR-POL-06; SYNTHETIC lines)"); CI also runs
 `test/malicious/adapters/antigravity.case.ts` and `test/malicious/adapter-leg.test.ts` ("adapter malicious leg:
-antigravity", T4.36 partial — see [Known limitations](#known-limitations)). Draft
-[PR #243](https://github.com/zemdregon/switchboard/pull/243) (not merged) adds more T4.35 conformance fixtures for
-live-check C6, C10 and C18 shapes. The conformance `resume` case stays partial until Q-86 and an operator resume capture
-(T4.35). No end-to-end run through Switchboard against a logged-in `agy` has been recorded yet (T4.38).
+antigravity", T4.36 partial — see [Known limitations](#known-limitations); guard-blocked streams
+[#257](https://github.com/zemdregon/switchboard/pull/257)). The conformance `resume` case stays partial until Q-86 and
+an operator resume capture (T4.35). No end-to-end run through Switchboard against a logged-in `agy` has been recorded
+yet (T4.38).
 
 ## Cursor CLI (milestone 4)
 
@@ -1008,12 +1013,15 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   categories that never appear as a refused `tool_call` on the recorded fields need operator captures of live blocked
   outcomes (T4.28). See ROADMAP T4.26 for the full gap list.
 - **Antigravity malicious-fixture leg is partial (ROADMAP T4.36).** CI runs `test/malicious/adapter-leg.test.ts` with
-  `test/malicious/adapters/antigravity.case.ts` on synthetic `stream-json` streams (no `agy` installed). Compile,
-  isolation-flag and argv checks pass for the approved bypass cell; hostile replay blocking uses mostly unrecorded denial
-  shapes (only a shell `run_command` soft denial without bypass was captured on 2026-10-14). FR-POL-04 cannot hold in
-  the only compiled scope because repository configuration is `enabled` and `GEMINI.md`, `AGENTS.md` and the `.agents`
-  MCP server and hooks load with no approval (live check C11). The tool-call guard enforces Git writes per ADR-0039 in
-  bypass runs; other hostile categories need T4.38. See ROADMAP T4.36 for the full gap list.
+  `test/malicious/adapters/antigravity.case.ts` on synthetic `stream-json` streams (no `agy` installed; no `replayGap`).
+  Compile, isolation-flag and argv checks pass for the approved bypass cell; hostile replay blocking covers every
+  hostile category with both recorded soft-denial shapes (shell `run_command` without bypass, live check C7) and
+  guard-blocked streams where a hostile command is chained with a Git write under a `SUCCESS` envelope with no
+  `denied_actions` ([#257](https://github.com/zemdregon/switchboard/pull/257)). FR-POL-04 cannot hold in the only
+  compiled scope because repository configuration is `enabled` and `GEMINI.md`, `AGENTS.md` and the `.agents` MCP server
+  and hooks load with no approval (live check C11). The blocked streams still rest on hypothetical
+  `tool_info.parameters.command` keys; a hostile call without a Git write still ends `ok` in bypass runs (pinned). Live
+  blocked outcomes need T4.38. See ROADMAP T4.36 for the full gap list.
 - **OpenCode malicious-fixture leg is partial (ROADMAP T4.56).** CI runs `test/malicious/adapter-leg.test.ts` with
   `test/malicious/adapters/opencode.case.ts` on synthetic `--format json` streams (no `opencode` installed). Compile,
   isolation-flag and hostile replay blocking checks pass for the approved bypass cell: every hostile category replays

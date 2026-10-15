@@ -391,6 +391,55 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
       expect(adapter().extractResult([], exit1)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
       expect(errorLine.events.some((e) => e.kind === "rate_limit")).toBe(false);
     });
+
+    // The same outcomes replayed end to end from fixture files through the supervisor, so each Done-when case has a
+    // fixture: success (`success_edit`), task failure and 8f denial (`task_failure`), malformed (`malformed_output`) and
+    // the four below. They pin the gaps; a capture (T4.21 extension) must change them.
+    const replayCase = (
+      fixture: string,
+      kind: ConformanceCase["kind"],
+      exp: ConformanceCase["expect"],
+    ): ConformanceCase => ({
+      kind,
+      adapter: replayAdapter(fixture),
+      request: {
+        runId: "run_grok_t423_fixture",
+        objective: "synthetic grok objective",
+        constraints: [],
+        workspace: { cwd: makeCwd(), writable: true },
+        bypassApproved: true,
+      },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: exp,
+    });
+
+    it.each([
+      ["sandbox_violation", "7g"],
+      ["permission_denied_rule", "8c"],
+    ])("fixture %s (live check %s) replays to end_turn success with the opaque tool lines counted (gap)", async (f) => {
+      const report = await runConformanceCase(
+        replayCase(f, "task_failure", { ok: true, nativeSessionId: DEFAULT_SESSION_ID }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({ ok: true, unknownEventCount: 2 });
+    });
+
+    it("fixture rate_limit (5d, never forced) replays an empty stream at exit 1 to TOOL_FAILURE, never RATE_LIMIT_TRANSIENT", async () => {
+      const report = await runConformanceCase(
+        replayCase("rate_limit", "rate_limit", { ok: false, failureCode: "TOOL_FAILURE" }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", unknownEventCount: 0 });
+    });
+
+    it("fixture unknown_events replays to OUTPUT_PROTOCOL_ERROR: every unknown line is counted and none binds a session", async () => {
+      const report = await runConformanceCase(
+        replayCase("unknown_events", "malformed_output", { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", unknownEventCount: 4 });
+      expect(report.result).not.toHaveProperty("nativeSessionId");
+    });
   });
 
   describe("parser hardening (T4.23, synthetic shapes; mirrors Antigravity T4.33)", () => {
