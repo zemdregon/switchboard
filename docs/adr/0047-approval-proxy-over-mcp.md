@@ -74,8 +74,9 @@ stop a proxy client from approving (R-65).
   by zemdregon through owner decision 50 as a Delegated reading). Its mitigations are the controls in Decision 2.
 - A token for a proxy client is a credential Switchboard issues (ADR-0041); it is not a provider credential, so
   ADR-0003 is not engaged. Tokens stay hashed and revocable as in ADR-0041.
-- The approval record gains a `decided_via` value, and the list output gains a digest. Both are specified in the T14.0
-  LLD section before any code (AGENTS.md: a persistence change needs an ADR, which this is).
+- The approval record gains a `decided_via` value, and the list output gains a digest. Both are specified in [LLD
+  §3.4.8](../design/LLD.md#348-approval-proxy-tools-fr-ctl-08-adr-0047) before any code (AGENTS.md: a persistence change
+  needs an ADR, which this is).
 - Bypass runs keep their existing limits: approval never widens scope, and Git-write denial and worktree isolation
   still apply (decisions 22 and 46).
 - Nothing changes for deployments that do not set `approval_proxy`.
