@@ -5,7 +5,7 @@
  * host's shared background service, [LIVE] ESCAPED). The adapter never reads OpenCode credential or configuration files
  * (`auth.json`, `mcp-auth.json`, `.env`), never runs `auth login`, `auth list` output into logs or `auth export`, never
  * writes provider configuration, never sets `OPENCODE_PERMISSION` or `OPENCODE_CONFIG_CONTENT` (ignored on v2.0.23, Q-64),
- * and never emits `--auto`, `--continue`, `--fork`, `--server`, `--share` or `--model`.
+ * and never emits `--auto`, `--continue`, `--fork`, `--server`, `--attach`, `--share`, `--dir` or `--model`.
  *
  * Compile matrix (Proposed, fail closed; Delegated decisions from the 2026-10-14 live check, Q-64 and Q-83):
  * - the four non-`privileged` profiles are `Ineligible: PROFILE_UNSUPPORTED`: no per-run deny took effect, the default

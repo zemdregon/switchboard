@@ -1387,7 +1387,7 @@ writes, no sandbox is documented and a repository's `opencode.json` and `AGENTS.
 | `edit-untrusted` | no | As `inspect-untrusted` |
 | `test-sandboxed` | no | As `inspect-untrusted` |
 | `trusted-development` | no | As `inspect-untrusted` |
-| `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one argv shape: `opencode run --format json --standalone -- <prompt>` with worktree file access, shell `broad`, network `on` and repository configuration `enabled`, and **no** `--auto` (owner decision 46, Q-83). A scope without `bypass`, or any narrowing Switchboard can express, is refused before spawn. Bypass-class flags such as `--auto` are never compiled outside that case (and are not emitted even inside it). Never emits `--continue`, `--fork`, `--server`, `--attach`, `--share`, `--dir` or `--model`. |
+| `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one argv shape: `opencode run --format json --standalone -- <prompt>` with worktree file access, shell `broad`, network `on` and repository configuration `enabled`, and **no** `--auto` (owner decision 46, Q-83). A scope without `bypass`, or any narrowing Switchboard can express, is refused before spawn. Bypass-class flags such as `--auto` are never compiled outside that case (and are not emitted even inside it). Never emits `--continue`, `--fork`, `--server`, `--attach`, `--share`, `--dir` or `--model` (the compile test pins the exact argv and an env of only `OPENCODE_DISABLE_AUTOUPDATE=1`; the malicious leg checks these, plus `--auto` and the bypass flags, as `neverEnabledFlags`). |
 
 Resume continues the native session with `--session <session_id>` through the same matrix when the provider is eligible
 (synthetic fixtures in `src/adapters/opencode/opencode.test.ts`, T4.53). `resumeArgs` mirrors `compile` across every
@@ -1495,7 +1495,7 @@ malicious-fixture leg (T4.56) replays synthetic hostile streams where shell `too
 can see (including Git writes chained with credential read, out-of-worktree write and network patterns), ending
 `PERMISSION_BLOCKED` at exit 0 and exit 1 across hostile categories, including calls after the final `stop` step
 ([#245](https://github.com/zemdregon/switchboard/pull/245)) and streams unreadable before that step, where an unknown
-event anywhere is never a success (exit 0 ends `OUTPUT_PROTOCOL_ERROR`)
+event anywhere is never a success (exit 0 ends `OUTPUT_PROTOCOL_ERROR`; exits 1, 2 and 137 end `TOOL_FAILURE`)
 ([#284](https://github.com/zemdregon/switchboard/pull/284)); the matrix was widened across
 [#298](https://github.com/zemdregon/switchboard/pull/298),
 [#312](https://github.com/zemdregon/switchboard/pull/312),
@@ -1566,11 +1566,12 @@ command, reaches the tool-call guard",
 "a guard-flagged Git write ends PERMISSION_BLOCKED at exit 2 and exit 137, and survives subsequent benign calls (T4.56)",
 [#355](https://github.com/zemdregon/switchboard/pull/355)), "opencode conformance suite (synthetic recorded fixtures,
 FR-ADP-11, T4.55)" and "opencode Git declaration (T4.57, FR-GIT-01, FR-GIT-02, FR-GIT-09)");
-CI also runs `test/malicious/adapters/opencode.case.ts` (275 synthetic streams: 263 blocked, 12 unknown-event; 24
-`opencodePartialStreams`, 72 `opencodeUnreadableStreams`) and `test/malicious/adapter-leg.test.ts` ("adapter malicious leg:
-discovery", "adapter malicious leg: opencode" and "adapter malicious leg: opencode partial streams", T4.56 partial — see
-[Known limitations](#known-limitations); guard-blocked, trailing-tool and unreadable-event streams
-[#245](https://github.com/zemdregon/switchboard/pull/245),
+CI also runs `test/malicious/adapters/opencode.case.ts` (275 synthetic streams: 263 blocked — 88 `credential_read`, 90
+`out_of_worktree_write`, 85 `network` — and 12 `unknown_events`, 3 ending `OUTPUT_PROTOCOL_ERROR` at exit 0 and 9
+`TOOL_FAILURE` at exits 1, 2 and 137; 24 `opencodePartialStreams`, 72 `opencodeUnreadableStreams`) and
+`test/malicious/adapter-leg.test.ts` ("adapter malicious leg: discovery", "adapter malicious leg: opencode" and
+"adapter malicious leg: opencode partial streams", T4.56 partial — see [Known limitations](#known-limitations);
+guard-blocked, trailing-tool and unreadable-event streams [#245](https://github.com/zemdregon/switchboard/pull/245),
 [#284](https://github.com/zemdregon/switchboard/pull/284),
 [#298](https://github.com/zemdregon/switchboard/pull/298), matrix gap fills
 [#312](https://github.com/zemdregon/switchboard/pull/312),
@@ -1748,8 +1749,12 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   `rebase`, `checkout -b`), command-bearing tool names (`bash` at exit 1, `sh`, `terminal`, `run_command`, etc.), exits
   2 and 137 in every hostile category (guard outranks `TOOL_FAILURE`), empty tool names, swapped commands, separate benign
   calls after hostile calls, JSON encodings (\u escapes, duplicate command keys, CRLF), hypothetical stop reasons
-  (`max_tokens`, `refusal` at exit 0), and path-to-command upgrades, with all 263 blocked streams ending
-  `PERMISSION_BLOCKED` and canaries untouched (0 of 263 without guard verdict).
+  (`max_tokens`, `refusal` at exit 0), and path-to-command upgrades. The leg asserts, for each of the 263 blocked
+  streams (88 `credential_read`, 90 `out_of_worktree_write`, 85 `network`; 119 at exit 0, 108 at exit 1 and 18 each
+  at exits 2 and 137), a non-ok result ending
+  `PERMISSION_BLOCKED`, no failed conformance check, and an unchanged hostile checkout, outside sentinel, hook log and
+  config log; it does not assert the guard verdict per stream separately. The 12 `unknown_events` streams end
+  `OUTPUT_PROTOCOL_ERROR` at exit 0 (3) or `TOOL_FAILURE` at exits 1, 2 and 137 (9).
   The blocked streams still rest on synthetic `tool_use` command shapes; the live check recorded only `state.status`
   `error` without refusal-specific fields, and the guard enforces Git writes only in bypass runs — a Git write not
   carried as an own string `command` on a shell-kind tool (a known file tool, a `cmd` alias, or a command only under an
