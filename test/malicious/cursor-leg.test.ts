@@ -1,7 +1,15 @@
 /** T4.46 synthetic matrix: compile/parse evidence only, never native containment evidence. */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { addAgentEntries, compileProblems, replayHostileStream, STREAM_CATEGORIES } from "./adapter-leg.js";
-import cursorCase, { cursorPartialStreams } from "./adapters/cursor.case.js";
+import { createParseState } from "../../src/adapters/index.js";
+import {
+  addAgentEntries,
+  compileProblems,
+  gapOutcome,
+  parsedKinds,
+  replayHostileStream,
+  STREAM_CATEGORIES,
+} from "./adapter-leg.js";
+import cursorCase, { cursorPartialStreams, cursorResidualStreams } from "./adapters/cursor.case.js";
 import { buildMaliciousFixture, type MaliciousFixture } from "./fixture.js";
 
 let fx: MaliciousFixture;
@@ -12,7 +20,7 @@ beforeAll(() => {
 afterAll(() => fx.close());
 
 describe("Cursor malicious leg matrix (T4.46)", () => {
-  it("covers each hostile category at exit 0 and exit 1", () => {
+  it("covers each hostile category at exits 0, 1, 2 and 137", () => {
     for (const category of STREAM_CATEGORIES) {
       expect(
         new Set(
@@ -22,7 +30,7 @@ describe("Cursor malicious leg matrix (T4.46)", () => {
             .map((s) => s.exitCode),
         ),
         category,
-      ).toEqual(new Set([0, 1]));
+      ).toEqual(new Set([0, 1, 2, 137]));
     }
     expect(compileProblems(cursorCase, fx)).toEqual([]);
     expect(cursorCase.neverEnabledFlags).toContain("--approve-mcps");
@@ -60,5 +68,40 @@ describe("Cursor malicious leg matrix (T4.46)", () => {
       expect(outcome.failureCode, stream.name).toBe("OUTPUT_PROTOCOL_ERROR");
       expect(outcome.untouched, stream.name).toBe(true);
     }
+  });
+
+  it("ends every residual cell in its code with canaries untouched; unrefused Git writes rely on the guard", async () => {
+    const streams = cursorResidualStreams(fx);
+    const names = streams.map((s) => s.name);
+    expect(new Set(names).size, "unique names").toBe(names.length);
+    const unrefused = streams.filter((s) => s.name.startsWith("unrefused shell"));
+    expect(unrefused).toHaveLength(6);
+    for (const s of unrefused) {
+      // No provider refusal in the stream: PERMISSION_BLOCKED comes from the ADR-0039 guard verdict alone.
+      expect(parsedKinds(cursorCase, s), s.name).not.toContain("permission_denied");
+      expect(gapOutcome(cursorCase, fx, s), s.name).toMatchObject({
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+        failureDetail: expect.stringContaining("git write attempted") as unknown,
+      });
+    }
+    for (const s of streams) {
+      const outcome = await replayHostileStream(cursorCase, fx, s);
+      expect(outcome.failedChecks, s.name).toEqual([]);
+      expect(outcome.resultOk, s.name).toBe(false);
+      expect(outcome.failureCode, s.name).toBe(s.failureCode);
+      expect(outcome.untouched, s.name).toBe(true);
+    }
+  });
+
+  it("positive control: the same unrefused Git-write stream with no guard verdict would end ok", () => {
+    const s = cursorResidualStreams(fx).find((x) => x.name === "unrefused shell network with a Git write, exit 0");
+    if (!s) throw new Error("missing unrefused network stream");
+    const adapter = cursorCase.makeAdapter("unused", 0);
+    const state = createParseState();
+    const events = s.lines.slice(1).flatMap((line) => adapter.parseEvent(line, state));
+    expect(
+      adapter.extractResult(events, { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] }).ok,
+    ).toBe(true);
   });
 });

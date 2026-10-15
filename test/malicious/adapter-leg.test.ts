@@ -338,12 +338,20 @@ describe("adapter malicious leg: antigravity partial streams", () => {
             return line.event === "step_update" && JSON.stringify(line).includes("git ");
           });
           expect(cutAt, `${s.name}: malformed line`).toBeGreaterThanOrEqual(0);
-          expect(hostileAt, `${s.name}: readable hostile call`).toBeGreaterThanOrEqual(0);
+          if (hostileAt === -1) {
+            expect(s.lines[cutAt], `${s.name}: cut inside the hostile step`).toContain('"event":"step_update"');
+            expect(s.lines[cutAt], `${s.name}: cut inside the hostile step`).toContain("git ");
+            return "inside";
+          }
           return cutAt < hostileAt ? "before" : "after";
         });
         expect(
           positions.filter((position) => position === "before"),
           `${category}, exit ${exitCode}, before`,
+        ).toHaveLength(1);
+        expect(
+          positions.filter((position) => position === "inside"),
+          `${category}, exit ${exitCode}, inside`,
         ).toHaveLength(1);
         expect(
           positions.filter((position) => position === "after"),
