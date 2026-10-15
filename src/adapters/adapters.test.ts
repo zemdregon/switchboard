@@ -12,7 +12,7 @@ import {
   bypassPermitted,
   findBypassFlags,
 } from "./audit.js";
-import { missingRequiredKinds, runConformanceCase, runConformanceSuite } from "./conformance.js";
+import { checkExpectation, missingRequiredKinds, runConformanceCase, runConformanceSuite } from "./conformance.js";
 import { FakeAdapter } from "./fake/adapter.js";
 import { FAKE_PROFILE, fakeConformanceCases } from "./fake/cases.js";
 import { LOOSE_SCOPE, privilegedProfile } from "./fixtures/privileged.js";
@@ -103,6 +103,27 @@ describe("conformance harness", () => {
     const other = await runConformanceCase({ ...c, expect: { ...c.expect, failureDetail: "exit code 64" } });
     expect(other.checks.find((k) => k.name === "failure detail matches")).toMatchObject({ ok: false, detail });
     expect(other.ok).toBe(false);
+  });
+
+  it("checks a null session id, the summary and the unknown event count only when the expectation sets them", () => {
+    const cwd = makeCwd();
+    const bound = { ok: true, nativeSessionId: "s-1", summary: "done", unknownEventCount: 2 };
+    const unbound = { ok: true, unknownEventCount: 0 };
+    const failed = (exp: Parameters<typeof checkExpectation>[0], r: Parameters<typeof checkExpectation>[1]) =>
+      checkExpectation(exp, r, cwd)
+        .filter((k) => !k.ok)
+        .map((k) => k.name);
+    expect(checkExpectation({ ok: true }, bound, cwd).map((k) => k.name)).toEqual([
+      "result.ok matches",
+      "failure code matches",
+    ]);
+    const pinned = { ok: true, nativeSessionId: "s-1", summary: "done", unknownEventCount: 2 };
+    expect(failed(pinned, bound)).toEqual([]);
+    expect(failed(pinned, unbound)).toEqual(["native session id", "summary matches", "unknown event count matches"]);
+    // `null` pins absence: a run that binds a session or carries a summary fails it.
+    const none = { ok: true, nativeSessionId: null, summary: null, unknownEventCount: 0 };
+    expect(failed(none, unbound)).toEqual([]);
+    expect(failed(none, bound)).toEqual(["native session id", "summary matches", "unknown event count matches"]);
   });
 });
 

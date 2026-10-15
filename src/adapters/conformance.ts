@@ -39,8 +39,15 @@ export interface ConformanceExpectation {
    * run the replay refused (exit 64 or 65 with no output), so the case proves the fixture was replayed.
    */
   failureDetail?: string;
-  /** Native session id the result must carry (also the id a resume case must preserve). */
-  nativeSessionId?: string;
+  /**
+   * Native session id the result must carry (also the id a resume case must preserve). `null`: the run must bind no
+   * session, so a fixture that binds one cannot stand in for one that does not.
+   */
+  nativeSessionId?: string | null;
+  /** Exact result summary, or `null` for none. Tells apart cases whose code, detail and session id agree. */
+  summary?: string | null;
+  /** Exact count of provider events the parser did not recognize. */
+  unknownEventCount?: number;
   /** Path relative to the request cwd that must exist after the run (workspace mutation evidence). */
   mutatedPath?: string;
 }
@@ -115,6 +122,38 @@ export function checkAdapterStatics(c: ConformanceCase): ConformanceCheck[] {
   return checks;
 }
 
+/**
+ * The checks a finished run's `result` (in workspace `cwd`) must pass for `exp`. Exported so a suite can hold one
+ * case's expectation against another case's run and show the expectation tells the two fixtures apart.
+ */
+export function checkExpectation(exp: ConformanceExpectation, result: RunResult, cwd: string): ConformanceCheck[] {
+  const checks: ConformanceCheck[] = [];
+  const check = (name: string, ok: boolean, detail?: string) =>
+    checks.push({ name, ok, ...(detail ? { detail } : {}) });
+  check("result.ok matches", result.ok === exp.ok, `ok=${result.ok}`);
+  check("failure code matches", result.failureCode === exp.failureCode, `code=${result.failureCode ?? "none"}`);
+  if (exp.failureDetail !== undefined) {
+    check("failure detail matches", result.failureDetail === exp.failureDetail, result.failureDetail ?? "none");
+  }
+  if (exp.nativeSessionId !== undefined) {
+    check("native session id", result.nativeSessionId === (exp.nativeSessionId ?? undefined), result.nativeSessionId);
+  }
+  if (exp.summary !== undefined) {
+    check("summary matches", result.summary === (exp.summary ?? undefined), result.summary ?? "none");
+  }
+  if (exp.unknownEventCount !== undefined) {
+    check(
+      "unknown event count matches",
+      result.unknownEventCount === exp.unknownEventCount,
+      String(result.unknownEventCount),
+    );
+  }
+  if (exp.mutatedPath !== undefined) {
+    check("workspace mutation visible", existsSync(join(cwd, exp.mutatedPath)), exp.mutatedPath);
+  }
+  return checks;
+}
+
 /** Run one case end to end through the supervisor and the adapter. */
 export async function runConformanceCase(c: ConformanceCase): Promise<ConformanceCaseReport> {
   const checks = checkAdapterStatics(c);
@@ -143,19 +182,7 @@ export async function runConformanceCase(c: ConformanceCase): Promise<Conformanc
   }
   const outcome = await run.done;
   const { result } = outcome;
-  const exp = c.expect;
-
-  check("result.ok matches", result.ok === exp.ok, `ok=${result.ok}`);
-  check("failure code matches", result.failureCode === exp.failureCode, `code=${result.failureCode ?? "none"}`);
-  if (exp.failureDetail !== undefined) {
-    check("failure detail matches", result.failureDetail === exp.failureDetail, result.failureDetail ?? "none");
-  }
-  if (exp.nativeSessionId !== undefined) {
-    check("native session id", result.nativeSessionId === exp.nativeSessionId, result.nativeSessionId);
-  }
-  if (exp.mutatedPath !== undefined) {
-    check("workspace mutation visible", existsSync(join(c.request.workspace.cwd, exp.mutatedPath)), exp.mutatedPath);
-  }
+  checks.push(...checkExpectation(c.expect, result, c.request.workspace.cwd));
   check("process group empty after run", outcome.groupEmpty);
   return { kind: c.kind, ok: checks.every((k) => k.ok), checks, result };
 }
