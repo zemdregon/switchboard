@@ -221,6 +221,8 @@ adapter runs with known `project_id`/`run_id` only.
 
 - [Approval proxy spike](approval-proxy-spike-2026-10-15.md): proxied `decide_approval` triggers `approval_decided`
   (T14.8; cross-link only).
+- [Consent-page approval link spike](consent-page-approval-link-spike-2026-10-15.md): `approval_pending` `link` may target
+  the consent page (T14.10; cross-link only).
 - [MCP 2026-07-28 readiness spike](mcp-2026-07-28-readiness-spike-2026-10-15.md): `subscriptions/listen` is not a
   substitute for these sinks.
 - [Adapter steer-input spike](adapter-steer-input-spike-2026-10-15.md): unrelated egress; cross-link only.
