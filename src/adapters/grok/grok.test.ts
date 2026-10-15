@@ -27,6 +27,7 @@ import { createProbeRunner } from "../run.js";
 import { guardEvent } from "../tool-guard.js";
 import type {
   CompileRequest,
+  FailureEvidence,
   NormalizedEvent,
   ParseState,
   ProbeOutput,
@@ -649,6 +650,31 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
       expect(report.checks.filter((k) => !k.ok)).toEqual([]);
       expect(report.result).toMatchObject({ ok: false, failureCode: "MODEL_UNAVAILABLE", unknownEventCount: 0 });
       expect(report.result).not.toHaveProperty("nativeSessionId");
+    });
+
+    it("fixture resume_failure (live check 6a resumed, 8f cancelled) replays a resumed failed run to TOOL_FAILURE, preserving the resumed session id", async () => {
+      // The only replayed resume so far is the conformance success; the failure leg of `-r <id>` (a resumed run whose
+      // tool call is cancelled, rows 6a + 8f combined) is replayed here end to end.
+      const report = await runConformanceCase({
+        kind: "resume",
+        adapter: replayAdapter("resume_failure"),
+        request: {
+          runId: "run_grok_t423_resume_failure",
+          objective: "synthetic grok objective",
+          constraints: [],
+          workspace: { cwd: makeCwd(), writable: true },
+          bypassApproved: true,
+        },
+        profile: PRIVILEGED_BYPASS_PROFILE,
+        binding: { provider: "grok", nativeSessionId: RESUMED_SESSION_ID },
+        expect: { ok: false, failureCode: "TOOL_FAILURE", nativeSessionId: RESUMED_SESSION_ID },
+      });
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: "TOOL_FAILURE",
+        nativeSessionId: RESUMED_SESSION_ID,
+      });
     });
   });
 
@@ -1595,6 +1621,106 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
       });
     });
 
+    it("classifyFailure precedence: supervisor outcomes over the guard, the guard over denials, denials over provider errors, a provider error over a rate_limit event, a failed result and the exit code", () => {
+      const a = adapter();
+      const evidence = (
+        events: readonly NormalizedEvent[],
+        exit: Partial<FailureEvidence["exit"]> = {},
+        extra: Partial<FailureEvidence> = {},
+      ): FailureEvidence => ({
+        events,
+        exit: { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0], ...exit },
+        stderrTail: "",
+        timedOut: false,
+        cancelled: false,
+        ...extra,
+      });
+      const GUARDED: NormalizedEvent = {
+        kind: "tool_call",
+        tool: "shell",
+        name: "run_terminal_command",
+        command: "git push origin main",
+        violation: { kind: "git_write", reason: "git push origin main" },
+      };
+      const DENIED: NormalizedEvent = { kind: "permission_denied", tool: "bash" };
+      const AUTH: NormalizedEvent = { kind: "provider_error", category: "auth", message: "Not signed in" };
+      const UNKNOWN_ERR: NormalizedEvent = { kind: "provider_error", category: "unknown", message: "boom" };
+      const PROTOCOL_ERR: NormalizedEvent = { kind: "provider_error", category: "protocol", message: "two ends" };
+      const FAILED_RESULT: NormalizedEvent = { kind: "result", ok: false, summary: "stopReason cancelled" };
+      const EXIT_1 = { exitCode: 1 };
+
+      // Supervisor-determined outcomes beat every stream signal, the ADR-0039 guard included.
+      expect(a.classifyFailure(evidence([GUARDED], { outcome: "cancelled" }))).toEqual({
+        code: "CANCELLED",
+        detail: "run cancelled",
+      });
+      expect(a.classifyFailure(evidence([GUARDED], {}, { cancelled: true }))).toEqual({
+        code: "CANCELLED",
+        detail: "run cancelled",
+      });
+      expect(a.classifyFailure(evidence([GUARDED], {}, { timedOut: true }))).toEqual({
+        code: "PROCESS_TIMEOUT",
+        detail: "unknown timeout",
+      });
+      expect(a.classifyFailure(evidence([GUARDED], { outcome: "protocol_error", exitCode: null }))).toEqual({
+        code: "OUTPUT_PROTOCOL_ERROR",
+        detail: "unparseable provider output",
+      });
+      expect(a.classifyFailure(evidence([GUARDED], { outcome: "crashed", exitCode: null, signal: "SIGKILL" }))).toEqual(
+        { code: "PROCESS_CRASH", detail: "signal SIGKILL" },
+      );
+
+      // ADR-0039: the guard verdict beats denials, provider errors, results and exit codes.
+      expect(a.classifyFailure(evidence([GUARDED, DENIED]))).toEqual({
+        code: "PERMISSION_BLOCKED",
+        detail: "git write attempted: git push origin main",
+      });
+      expect(
+        a.classifyFailure(
+          evidence([{ ...GUARDED, violation: { kind: "provider_state", reason: "synthetic" } }, DENIED, AUTH]),
+        ),
+      ).toEqual({ code: "SANDBOX_VIOLATION", detail: "provider state reached: synthetic" });
+
+      // Denials beat provider errors and unexpected exits.
+      expect(a.classifyFailure(evidence([DENIED, AUTH], EXIT_1))).toEqual({
+        code: "PERMISSION_BLOCKED",
+        detail: "denied: bash",
+      });
+      expect(
+        a.classifyFailure(evidence([{ kind: "sandbox_violation", detail: "out of worktree" }, UNKNOWN_ERR])),
+      ).toEqual({ code: "SANDBOX_VIOLATION", detail: "out of worktree" });
+
+      // A provider error beats a rate_limit event, a failed result and the exit code; the grok `protocol`
+      // category maps to OUTPUT_PROTOCOL_ERROR.
+      expect(a.classifyFailure(evidence([UNKNOWN_ERR, { kind: "rate_limit" }]))).toEqual({
+        code: "TOOL_FAILURE",
+        detail: "unknown: boom",
+      });
+      expect(a.classifyFailure(evidence([AUTH, FAILED_RESULT]))).toEqual({
+        code: "AUTH_REQUIRED",
+        detail: "auth: Not signed in",
+      });
+      expect(a.classifyFailure(evidence([PROTOCOL_ERR], EXIT_1))).toEqual({
+        code: "OUTPUT_PROTOCOL_ERROR",
+        detail: "protocol: two ends",
+      });
+
+      // A rate_limit event and a failed result beat the exit code; the exit code beats "no result".
+      expect(a.classifyFailure(evidence([{ kind: "rate_limit" }], EXIT_1))).toEqual({
+        code: "RATE_LIMIT_TRANSIENT",
+        detail: "rate limit reported",
+      });
+      expect(a.classifyFailure(evidence([FAILED_RESULT], EXIT_1))).toEqual({
+        code: "TOOL_FAILURE",
+        detail: "stopReason cancelled",
+      });
+      expect(a.classifyFailure(evidence([], EXIT_1))).toEqual({ code: "TOOL_FAILURE", detail: "exit code 1" });
+      expect(a.classifyFailure(evidence([]))).toEqual({
+        code: "OUTPUT_PROTOCOL_ERROR",
+        detail: "no result event",
+      });
+    });
+
     it("seenEnds and seenToolCalls state is isolated across separate ParseState instances", () => {
       const a = adapter();
       const state1: ParseState = { lines: 0, unknownEvents: 0 };
@@ -1731,6 +1857,107 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
       const ev2 = a.parseEvent(line({ ...END, usage: { input_tokens: 99 } }), state);
       expect(ev2.filter((e) => e.kind === "usage")).toHaveLength(0);
       expect(ev2.some((e) => e.kind === "provider_error" && e.category === "protocol")).toBe(true);
+    });
+
+    it("the recorded end-line cost fields and requestId are never usage metrics or events (live check 4a/4b)", () => {
+      // Row 4a recorded total_cost_usd, total_cost_usd_ticks and requestId on the result object; the parser reads
+      // only the six token counters, num_turns and (elsewhere) model/modelUsage, so the costs and the request id
+      // never widen the usage record or reach an event.
+      const { events } = parse([
+        line({
+          type: "end",
+          stopReason: "end_turn",
+          sessionId: SID,
+          requestId: "req_recorded_1",
+          usage: {
+            input_tokens: 10,
+            cache_read_input_tokens: 5,
+            cache_creation_input_tokens: 0,
+            output_tokens: 2,
+            reasoning_tokens: 0,
+            total_tokens: 18,
+          },
+          num_turns: 1,
+          total_cost_usd: 0.001,
+          total_cost_usd_ticks: 1000,
+        }),
+      ]);
+      expect(events.find((e) => e.kind === "usage")).toEqual({
+        kind: "usage",
+        source: "provider_reported",
+        metrics: {
+          input_tokens: 10,
+          cache_read_input_tokens: 5,
+          cache_creation_input_tokens: 0,
+          output_tokens: 2,
+          reasoning_tokens: 0,
+          total_tokens: 18,
+          num_turns: 1,
+        },
+      });
+      expect(JSON.stringify(events)).not.toContain("req_recorded_1");
+      expect(JSON.stringify(events)).not.toContain("total_cost_usd");
+      expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({ ok: true, nativeSessionId: SID });
+    });
+
+    it("a standalone usage line emits no usage event, whatever it carries (the end line is the run total)", () => {
+      // Row 4b recorded the standalone usage line with a signature field and no recorded use; even with counters it
+      // must not emit usage, so the run total is never counted away from the end line.
+      const withEnd = parse([line({ type: "usage", signature: "s", input_tokens: 99, output_tokens: 99 }), line(END)]);
+      expect(withEnd.events.filter((e) => e.kind === "usage")).toHaveLength(1);
+      expect(withEnd.events.find((e) => e.kind === "usage")).toMatchObject({
+        metrics: { input_tokens: 10, output_tokens: 2, num_turns: 1 },
+      });
+      const alone = parse([line({ type: "usage", signature: "s", input_tokens: 99 })]);
+      expect(alone.events).toEqual([]);
+      expect(alone.state.unknownEvents).toBe(0);
+      expect(adapter().extractResult(alone.events, EXIT_OK)).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+      });
+    });
+
+    it("available_commands, thought and usage lines drop on any shape, never counted", () => {
+      // These three recorded types are dropped whole ([LIVE] 4b: tools list, reasoning text, signature line); a
+      // malformed shape of one of them is still one of them, so it is dropped too, not counted unknown.
+      const { events, state } = parse([
+        line({ type: "available_commands" }),
+        line({ type: "available_commands", tools: "not-an-array" }),
+        line({ type: "thought" }),
+        line({ type: "thought", data: 42 }),
+        line({ type: "usage" }),
+        line({ type: "usage", signature: 7 }),
+      ]);
+      expect(events).toEqual([]);
+      expect(state.unknownEvents).toBe(0);
+      expect(state.lines).toBe(6);
+    });
+
+    it("modelUsage with several model keys resolves the first own key; a non-object or empty modelUsage binds no model", () => {
+      const multi = parse([
+        line({
+          ...END,
+          modelUsage: {
+            "grok-4.7-build": { inputTokens: 10 },
+            "grok-4.6": { inputTokens: 20 },
+          },
+        }),
+      ]);
+      expect(multi.events.find((e) => e.kind === "session_bound")).toEqual({
+        kind: "session_bound",
+        nativeSessionId: SID,
+        model: "grok-4.7-build",
+      });
+      for (const modelUsage of ["grok-4.7-build", 42, ["grok-4.7-build"], {}]) {
+        const { events } = parse([line({ ...END, modelUsage })]);
+        expect(
+          events.find((e) => e.kind === "session_bound"),
+          JSON.stringify(modelUsage),
+        ).toEqual({
+          kind: "session_bound",
+          nativeSessionId: SID,
+        });
+      }
     });
 
     it("empty string tool call ID falls back to generated counter, and empty tool name falls back when command is present", () => {
