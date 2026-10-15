@@ -231,7 +231,7 @@ startup reconciliation applies them. Run state transitions use an optimistic ver
 | Project and environment (M9, M10) | Configuration validation (unknown context kind, path outside allowed roots), ceiling arithmetic, `host` runs through a project; container tests need a container runtime and are opt-in (skipped in CI until Q-6 is settled) | No for `host`; runtime for `container` | FR-PRJ-01..09 |
 | Live provider smoke | Opt-in only: `scripts/live-smoke.mjs` (`npm run test:live`) is skipped unless `SWITCHBOARD_LIVE_TESTS=1`; not part of `npm test`, never runs in CI (see below) | Yes | [AGENTS.md](../../AGENTS.md) |
 | Controller-overhead benchmark | `scripts/bench-perf.mjs` (`npm run bench`) times the real MCP server over the in-memory transport with the fake adapter; not part of `npm test` (see [§3.6.1](#361-controller-overhead-benchmark-t27)) | No | NFR-PERF-01, NFR-PERF-02 |
-| Inner agent (M11) | Scripted fake backend as a local HTTP server, hostile-output fixtures, planted-secret prompt capture, import-boundary test; details in [§3.12](#312-inner-agent) | No | FR-INN-01..17 |
+| Inner agent (M11) | Scripted fake backend as a local HTTP server, hostile-output fixtures, planted-secret prompt capture, import-boundary test; details in [§3.12](#312-inner-agent) (as built: an in-process scripted fake plus a loopback fake HTTP server; the §3.12 as-built note maps each item to its test file) | No | FR-INN-01..17 |
 | Affinity replay (M7) | Table-driven and property tests over stored `route_decision` rows and a scripted fake adapter set: for any sequence of runs in a project, the provider and model change only when the decision carries an `affinity_switch_reason` from the closed list; a better score, lower cost or lower load never moves a project; no return after recovery; `require_provider`, `affinity reset`, `QUOTA_EXHAUSTED`, breaker open and exhausted retry each produce exactly their reason. Details in [§3.13.3](#3133-testing-affinity-and-retrieval) | No | FR-RTE-06..09, FR-CAP-08 |
 | Retrieval index (M12) | Deterministic fake embedding backend, hostile-content fixtures, planted-secret scan, isolation and import-boundary tests; details in [§3.13](#313-retrieval-index) | No | FR-RAG-01..14 |
 | Docs check | `scripts/check-docs.mjs` must pass on every change (links, anchors, ID references) | No | NFR-MAINT-02 |
@@ -857,6 +857,46 @@ so the choices below are Delegated, not owner-approved, and unverified until the
 Implements FR-INN-01..17 and [ADR-0016](../adr/0016-inner-agent.md) for M11 (COMP-INN, TB-10); schemas, pipeline and task
 contracts are in [LLD §13](LLD.md#13-inner-agent). Status: **Proposed**. zemdregon decided that an inner agent exists and
 which tasks motivate it (owner decision 14); everything below is Delegated and unverified until M11 lands.
+
+*As built (2026-10-15, T11.14, Delegated; T11.1 to T11.12 are Done on fakes, [ROADMAP
+§6.6](../ROADMAP.md#66-m11-inner-agent-tasks)).* The design text above and below is unchanged; this note says what the
+tests on `main` prove against each bullet and what is not built. No live inner backend, provider CLI or network host has
+been used anywhere in the suite.
+
+- *Scripted fake backend*: built as an in-process scripted fake that records the exact requests it received
+  (`src/inner/fake-backend.ts`, `src/inner/inner.test.ts`), plus a fake HTTP server bound to a loopback address for the
+  `http` kind (`src/inner/http-backend.test.ts`, `src/cli/inner.test.ts`, `src/cli/serve.test.ts`), not one HTTP server
+  for every test.
+- *Hostile backend fixtures*: `src/git/commit-message.test.ts` (over the real tool socket: a clean commit or
+  `MESSAGE_REQUIRED`, never a run state change), `src/inner/pr-draft.test.ts`, `src/inner/log-summary.test.ts` (a false
+  "all tests passed" changes no status, exit code or count), `src/inner/handoff-condense.test.ts`,
+  `src/inner/run-title.test.ts`; oversized, invalid JSON, wrong types, extra keys and non-UTF-8 output in
+  `src/inner/pipeline.test.ts`.
+- *Secret-planted test*: `src/inner/pipeline.test.ts`, `src/inner/http-backend.test.ts` and each task test above; the
+  scan covers the captured request, `inner_call` rows, run events and captured log lines. There are no spans to scan
+  (below).
+- *Import-boundary test*: `src/inner/import-boundary.test.ts`, deliberately not transitive (the file states the gap). The
+  "second test" exists as the byte-identical-records assertions in `src/inner/log-summary.test.ts` and
+  `src/inner/handoff-condense.test.ts` and the unchanged-commit assertions in `src/git/commit-message.test.ts`.
+- *Privacy gates and locality*: table-driven over the seven rows in `src/inner/pipeline.test.ts` and against the fake
+  server with an injected resolver in `src/inner/http-backend.test.ts`. **Not built:** the Unix-socket form
+  (`base_url` is `http`/`https` only, T11.3), the resolves-loopback-at-load-elsewhere-at-connect case (the
+  `LOCALITY_CHANGED` branch exists but no test exercises it, because a loopback bind cannot be made to look remote),
+  and the `cli` kind (reported `Ineligible`, never started; `src/cli/inner.test.ts`).
+- *Accounting and replay*: `src/inner/usage.test.ts`, `src/inner/usage-surfaces.test.ts`,
+  `src/capacity/capacity.test.ts`; replay with the backend off in `src/inner/route-features.test.ts` and
+  `src/mcp/inner-route-features.test.ts`.
+- *Default test run makes zero live calls*: holds; `npm test` starts only fakes. **Not built:** the live-inner opt-in.
+  `scripts/live-smoke.mjs` has no `SWITCHBOARD_LIVE_INNER` or `SWITCHBOARD_LIVE_INNER_CONFIG` switch and
+  `npm run test:live` exercises no inner backend; the names stay Proposed and no live inner run has happened.
+- *Threading*: the `commit` wait is as described. The production routing hook is awaited during MCP admission and
+  continuation (and quota failover), not only at dispatch after the acknowledgement (ROADMAP T11.11 residual).
+- *Observability*: the `inner_call`, `inner_degraded` and `inner_task_suspended` run events are built
+  (`src/inner/pipeline.test.ts`, `src/inner/suspension.test.ts`). The `inner.call` **span is not built**: no span
+  exporter exists in the tree; the pipeline writes one body-free structured log line named `inner.call` instead
+  ([LLD §13.8](LLD.md#138-telemetry-and-events) as-built note). `doctor`, `inner status` and `inner test` are as
+  described, and `inner resume <task>` is built too (FR-INN-17; `src/cli/inner.test.ts`).
+- *OpenCode `cli` kind*: unchanged; the T11.0 spike has not run.
 
 - **Technology (Proposed).** The `http` kind uses the Node built-in `fetch`/HTTP client (and `node:net`/`node:http`
   for a Unix socket); no new dependency and no vendor SDK, so the controller does not pick a provider or carry a provider's

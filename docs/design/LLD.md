@@ -1803,7 +1803,7 @@ export is derived. Redaction is by construction: spans are built from an allowli
 | `workspace.diff` | `controller.delegate` | mutation detection + post checkpoint |
 | `verification.tests` | `controller.delegate` | M3 |
 | `run.finalize` | `controller.delegate` | terminal transition |
-| `inner.call` | `controller.delegate` when the call belongs to a run, else root | M11; one per inner-agent call, attributes in [§13.8](#138-telemetry-and-events); never on a run's critical path beyond the per-call bound |
+| `inner.call` | `controller.delegate` when the call belongs to a run, else root | M11; one per inner-agent call, attributes in [§13.8](#138-telemetry-and-events); never on a run's critical path beyond the per-call bound. **Not built as of 2026-10-15**: no span exporter exists; the pipeline writes a body-free log line of this name instead (§13.8 as-built note) |
 
 **Allowed attributes:** `run.id`, `session.id`, `provider`, `adapter.version`, `model`, `trust_profile`, `run.state`,
 `failure.code`, `retry.attempt`, `transport`, durations, `exit.code`, `exit.signal`, tool kind
@@ -3372,6 +3372,17 @@ reported or configured), `inner.outcome`, `inner.reason` (short code), `inner.at
 `inner.breaker_state`, and, for run-linked calls, `run.id` and `session.id`. Forbidden: the prompt, the response, the diff,
 log excerpts, objective text, any message text, the backend URL's userinfo. The exporter drops every attribute not on this
 list, and a test asserts it.
+
+*As built (2026-10-15, T11.14, Delegated):* the span is **not emitted**. No span exporter exists in the tree, so neither
+the span nor the attribute-drop test is built, and the paragraph above stays the design. The pipeline writes one
+structured log line named `inner.call` for every pipeline outcome, with or without a ledger (`src/inner/pipeline.ts`),
+carrying `task`, `outcome`, `reason`,
+`attempts`, `latency_ms`, `input_bytes`, `output_bytes`, `locality`, `breaker_state` and `call_id`, never a body or a
+token count (captured logs are asserted free of prompt, response, secret and credential text in
+`src/inner/pipeline.test.ts` and `src/inner/http-backend.test.ts`). The run events in the table below are built as
+described (`src/inner/pipeline.test.ts`, `src/inner/suspension.test.ts`). One correction to the last paragraph: the
+`doctor` canary writes no `inner_call` row (T11.7 Delegated choice, [ROADMAP §6.6](../ROADMAP.md#66-m11-inner-agent-tasks));
+`inner test` writes one with no run.
 
 **Run events** (append-only `run_event.type`, bounded payloads, no text, M11), written only for calls tied to a run:
 
