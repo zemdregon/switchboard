@@ -1623,7 +1623,8 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     ["--gemini_dir= added", argvEdit((a) => [...a, "--gemini_dir=/tmp/synthetic"])],
     // agy parses like Go's flag package (ADR-0045): a repeated flag keeps its last value, and one or two dashes and
     // `=value` name the same flag, so these would override what the dialect reads (2026-10-15, Delegated). A bool
-    // flag's `=false` beside the bare word is the same hole.
+    // flag's `=false` beside the bare word is the same hole. Parsing also stops at `--` or a positional, and an
+    // unknown flag is rejected (live check C3), so those shapes exit 64 instead of replaying a success.
     ["a second --output-format json", argvEdit((a) => [...a, "--output-format", "json"])],
     ["-output-format=json added", argvEdit((a) => [...a, "-output-format=json"])],
     [
@@ -1643,6 +1644,42 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     ["-p= added", argvEdit((a) => [...a, "-p=synthetic other prompt"])],
     ["--p added", argvEdit((a) => [...a, "--p", "synthetic other prompt"])],
     ["-sandbox added", argvEdit((a) => [...a, "-sandbox"])],
+    // Go's flag stops at `--` or the first non-flag word, and a bool flag does not take the next word. A bypass flag
+    // that sits only after either would not reach agy, but a whole-argv scan used to count it and replay a success.
+    // An unknown flag, including an underscore spelling, is "flag provided but not defined" (live check C3).
+    [
+      "-- before --dangerously-skip-permissions",
+      argvEdit((a) => {
+        const i = a.indexOf("--dangerously-skip-permissions");
+        return [...a.slice(0, i), "--", ...a.slice(i)];
+      }),
+    ],
+    [
+      "a positional before --dangerously-skip-permissions",
+      argvEdit((a) => {
+        const i = a.indexOf("--dangerously-skip-permissions");
+        return [...a.slice(0, i), "false", ...a.slice(i)];
+      }),
+    ],
+    ["a trailing positional", argvEdit((a) => [...a, "extra"])],
+    ["--debug added", argvEdit((a) => [...a, "--debug"])],
+    ["--dangerously_skip_permissions added", argvEdit((a) => [...a, "--dangerously_skip_permissions"])],
+    ["--dangerously-skip-permissions repeated", argvEdit((a) => [...a, "--dangerously-skip-permissions"])],
+    [
+      "--help before the compiled flags",
+      argvEdit((a) => {
+        const i = a.indexOf("--");
+        return [...a.slice(0, i + 1), "--help", ...a.slice(i + 1)];
+      }),
+    ],
+    [
+      "--version before the compiled flags",
+      argvEdit((a) => {
+        const i = a.indexOf("--");
+        return [...a.slice(0, i + 1), "--version", ...a.slice(i + 1)];
+      }),
+    ],
+    ["bad flag syntax ---", argvEdit((a) => [...a, "---"])],
     ["--conversation= added", argvEdit((a) => [...a, `--conversation=${RESUMED_SESSION_ID}`])],
     ["--conversation with no id", argvEdit((a) => [...a, "--conversation"])],
     [
