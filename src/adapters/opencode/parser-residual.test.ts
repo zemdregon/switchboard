@@ -14,6 +14,11 @@
  * line whose id is empty, unsafe or changed loses its vendor; a non-null non-string root value shadows every other
  * spelling and the part. Values are bound verbatim (no trim or case folding, the harness name kept); a resumed run
  * binds the vendor its own stream reports (fixture `resume_backing.jsonl`), and resume never passes one.
+ * Fourth pass (2026-10-15, same terms; mirrors Grok T4.23 fourth and fifth passes): a resumed stream reporting another
+ * safe id binds it and succeeds, caught only by the conformance check (fixture `resume_other_id.jsonl`, gap); one
+ * reporting no id succeeds unbound (gap); an empty or unsafe root `sessionID` shadows a safe part id (gap); a shell
+ * command is never clipped and carries no target; prototype-named event types, error types and part ids are plain
+ * strings; and the result honours the invocation's expected exit codes.
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -989,6 +994,128 @@ describe("opencode parser residuals, third pass: backingProvider and model on se
     } finally {
       await lifecycle.shutdown();
       db.close();
+    }
+  });
+});
+
+describe("opencode parser residuals, fourth pass: resume id gaps, id shadowing, prototype values and exit codes (T4.53, synthetic lines; parser unchanged)", () => {
+  const OTHER_RESUMED = "ses_SYNTHETIC0000000000000099";
+  const request = (): CompileRequest => ({
+    runId: "run_opencode_t453_fourth",
+    objective: "synthetic opencode objective",
+    constraints: [],
+    workspace: { cwd: makeCwd(), writable: true },
+    bypassApproved: true,
+  });
+
+  it("pins the gap end to end: fixture resume_other_id passes `--session <requested>`, binds the reported id and succeeds", async () => {
+    const a = replayAdapter("resume_other_id");
+    const binding = { provider: "opencode" as const, nativeSessionId: RESUMED_SESSION_ID };
+    const req = request();
+    const inv = a.resumeArgs(binding, req, PRIVILEGED_BYPASS_PROFILE);
+    if ("ineligible" in inv) throw new Error(inv.detail);
+    expect(inv.argv.slice(-4)).toEqual(["--session", RESUMED_SESSION_ID, "--", req.objective]);
+    const report = await runConformanceCase({
+      kind: "resume",
+      adapter: a,
+      request: req,
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      binding,
+      expect: { ok: true, nativeSessionId: RESUMED_SESSION_ID },
+    });
+    // Only the conformance harness compares the ids; the adapter result is a success on the other session.
+    expect(report.checks.filter((k) => !k.ok).map((k) => k.name)).toEqual(["native session id"]);
+    expect(report.result).toMatchObject({ ok: true, nativeSessionId: OTHER_RESUMED, unknownEventCount: 0 });
+  });
+
+  it("pins the gap: a resumed stream that reports no sessionID succeeds with nothing bound (the parser never sees the request)", () => {
+    const { sessionID: _bound, ...idless } = FINISH("stop", "prt_f1");
+    const { events, state } = parse([START(), TEXT("resumed"), idless]);
+    expect(events.filter((e) => e.kind === "session_bound")).toEqual([]);
+    expect(state.nativeSessionId).toBeUndefined();
+    expect(adapter().extractResult(events, EXIT_OK)).toEqual({ ok: true, unknownEventCount: 0, summary: "resumed" });
+  });
+
+  it("pins the gap: a root sessionID that is an empty string shadows a safe part id, so the line binds nothing", () => {
+    const withPart = (root: unknown) => ({
+      type: "step_start",
+      sessionID: root,
+      part: { type: "step-start", sessionID: SID },
+    });
+    const empty = parse([withPart("")]);
+    expect(empty.events).toEqual([]);
+    expect(empty.state.nativeSessionId).toBeUndefined();
+    // An unsafe root id shadows the part's too: the line errors and binds nothing.
+    expect(parse([withPart("--auto")]).events).toEqual([
+      { kind: "provider_error", category: "protocol", message: "session id is not a safe argument" },
+    ]);
+    // Only a missing, null or non-string root value falls through to the part's id.
+    for (const root of [undefined, null, 7, { id: OTHER }]) {
+      expect(parse([withPart(root)]).state.nativeSessionId, JSON.stringify(root)).toBe(SID);
+    }
+  });
+
+  it("a shell command is never clipped (a target is), so a Git write past 2,000 characters still reaches the guard", () => {
+    const command = `echo ${"x".repeat(2_100)} && git push origin main`;
+    const { events } = parse([START(SID), TOOL("shell", { command, filePath: "/work/tree/a" }), FINISH("stop")]);
+    // A shell tool carries no target, even when its input names a path.
+    expect(events.find((e) => e.kind === "tool_call")).toEqual({
+      kind: "tool_call",
+      tool: "shell",
+      name: "shell",
+      command,
+    });
+    expect(
+      adapter().extractResult(guarded([START(SID), TOOL("shell", { command }), FINISH("stop")]), EXIT_OK),
+    ).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: SID });
+  });
+
+  it("prototype-named values are plain strings: an event type is unknown, an error type unmapped, a part id an ordinary key", () => {
+    for (const name of ["constructor", "__proto__", "hasOwnProperty", "valueOf"]) {
+      const unknown = parse([{ type: name, sessionID: SID }]);
+      expect(unknown.events.at(-1), name).toEqual({ kind: "unknown", rawType: name });
+      expect(unknown.state.unknownEvents, name).toBe(1);
+      const failed = parse([ERROR(name), FINISH("stop")]).events;
+      expect(
+        failed.find((e) => e.kind === "provider_error"),
+        name,
+      ).toEqual({
+        kind: "provider_error",
+        category: "unknown",
+        message: `${name}: synthetic`,
+      });
+      expect(adapter().extractResult(failed, EXIT_OK), name).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+      // Each prototype-named part id dedupes its own repeat and collides with no other id.
+      const usage = parse([FINISH("tool-calls", name), FINISH("tool-calls", name), FINISH("stop", "prt_other")]).events;
+      expect(
+        usage.filter((e) => e.kind === "usage"),
+        name,
+      ).toHaveLength(2);
+    }
+  });
+
+  it("extractResult honours the compiled expected exit codes rather than a hard-coded 0", () => {
+    const { events } = parse([FINISH("stop")]);
+    expect(adapter().extractResult(events, { ...EXIT_OK, exitCode: 2, expectedExitCodes: [0, 2] })).toEqual({
+      ok: true,
+      unknownEventCount: 0,
+      nativeSessionId: SID,
+    });
+    expect(adapter().extractResult(events, { ...EXIT_OK, expectedExitCodes: [2] })).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "exit code 0",
+      nativeSessionId: SID,
+    });
+    expect(adapter().extractResult(events, { ...EXIT_OK, exitCode: null })).toMatchObject({ ok: false });
+    // compile and resumeArgs both expect exit 0 only, so a resumed run is judged the same way.
+    const req = request();
+    for (const inv of [
+      adapter().compile(req, PRIVILEGED_BYPASS_PROFILE),
+      adapter().resumeArgs({ provider: "opencode", nativeSessionId: SID }, req, PRIVILEGED_BYPASS_PROFILE),
+    ]) {
+      if ("ineligible" in inv) throw new Error(inv.detail);
+      expect(inv.expectedExitCodes).toEqual([0]);
     }
   });
 });
