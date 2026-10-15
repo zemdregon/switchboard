@@ -85,7 +85,10 @@ export function replayAdapter(fixture: string, o: ReplayOptions = {}): Antigravi
  * stderr only: TOOL_FAILURE), in-stream sandbox-violation text in an `ERROR` envelope at exit 0 (TOOL_FAILURE, never
  * SANDBOX_VIOLATION: the parser emits no sandbox category) and
  * a `SUCCESS` envelope whose usage keys were not recorded (TOOL_FAILURE, Q-86), and a cancellation of a process that
- * honours SIGTERM as well as one that ignores it. No case expects SANDBOX_VIOLATION: the one compiled cell is an
+ * honours SIGTERM as well as one that ignores it. The whole-stream order shapes (an unknown line before the result,
+ * a late auth envelope after a clean result and an unparseable line after it) are cases too. A case whose code,
+ * session id and mutation would also match a replay refusal (exit 64 or 65, no output) names its `failureDetail`, so
+ * every case fails when the replay refuses the compile. No case expects SANDBOX_VIOLATION: the one compiled cell is an
  * approved bypass, where the provider-state guard does not apply; the `sandbox_violation_unrecorded` fixture replays to
  * a success (T4.33 gap), so it is not a conformance case.
  */
@@ -122,6 +125,13 @@ export function antigravityConformanceCases(makeCwd: () => string): ConformanceC
     },
     {
       ...base,
+      kind: "success",
+      adapter: replayAdapter("unknown_then_result"),
+      request: request(),
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    },
+    {
+      ...base,
       kind: "task_failure",
       adapter: replayAdapter("task_failure"),
       request: request(),
@@ -153,14 +163,16 @@ export function antigravityConformanceCases(makeCwd: () => string): ConformanceC
       kind: "task_failure",
       adapter: replayAdapter("slash_command"),
       request: request(),
-      expect: { ok: false, failureCode: "TOOL_FAILURE" },
+      // No session or write to show the fixture ran: without the detail a replay refusal would also pass (T4.35).
+      expect: { ok: false, failureCode: "TOOL_FAILURE", failureDetail: "SUCCESS with no reported tokens" },
     },
     {
       ...base,
       kind: "task_failure",
       adapter: replayAdapter("credits_command"),
       request: request(),
-      expect: { ok: false, failureCode: "TOOL_FAILURE" },
+      // No session or write to show the fixture ran: without the detail a replay refusal would also pass (T4.35).
+      expect: { ok: false, failureCode: "TOOL_FAILURE", failureDetail: "SUCCESS with no reported tokens" },
     },
     {
       ...base,
@@ -174,7 +186,8 @@ export function antigravityConformanceCases(makeCwd: () => string): ConformanceC
       kind: "task_failure",
       adapter: replayAdapter("rate_limit"),
       request: request(),
-      expect: { ok: false, failureCode: "TOOL_FAILURE" },
+      // No session or write to show the fixture ran: without the detail a replay refusal would also pass (T4.35).
+      expect: { ok: false, failureCode: "TOOL_FAILURE", failureDetail: "exit code 1" },
     },
     {
       ...base,
@@ -280,6 +293,30 @@ export function antigravityConformanceCases(makeCwd: () => string): ConformanceC
       adapter: replayAdapter("unsafe_id_after_bound"),
       request: request(),
       expect: { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", nativeSessionId: DEFAULT_SESSION_ID },
+    },
+    {
+      ...base,
+      kind: "malformed_output",
+      adapter: replayAdapter("error_after_result"),
+      request: request(),
+      expect: {
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "protocol: more than one result line",
+        nativeSessionId: DEFAULT_SESSION_ID,
+      },
+    },
+    {
+      ...base,
+      kind: "malformed_output",
+      adapter: replayAdapter("malformed_after_result"),
+      request: request(),
+      expect: {
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "unparseable provider output",
+        nativeSessionId: DEFAULT_SESSION_ID,
+      },
     },
     {
       ...base,

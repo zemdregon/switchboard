@@ -34,6 +34,11 @@ export type ConformanceCaseKind =
 export interface ConformanceExpectation {
   ok: boolean;
   failureCode?: FailureCode;
+  /**
+   * Exact `failureDetail` the result must carry. Set it when code, session id and mutation alone would also match a
+   * run the replay refused (exit 64 or 65 with no output), so the case proves the fixture was replayed.
+   */
+  failureDetail?: string;
   /** Native session id the result must carry (also the id a resume case must preserve). */
   nativeSessionId?: string;
   /** Path relative to the request cwd that must exist after the run (workspace mutation evidence). */
@@ -142,6 +147,9 @@ export async function runConformanceCase(c: ConformanceCase): Promise<Conformanc
 
   check("result.ok matches", result.ok === exp.ok, `ok=${result.ok}`);
   check("failure code matches", result.failureCode === exp.failureCode, `code=${result.failureCode ?? "none"}`);
+  if (exp.failureDetail !== undefined) {
+    check("failure detail matches", result.failureDetail === exp.failureDetail, result.failureDetail ?? "none");
+  }
   if (exp.nativeSessionId !== undefined) {
     check("native session id", result.nativeSessionId === exp.nativeSessionId, result.nativeSessionId);
   }
