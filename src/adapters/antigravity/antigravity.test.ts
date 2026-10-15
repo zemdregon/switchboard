@@ -710,7 +710,7 @@ describe("antigravity parser hardening (T4.33, synthetic shapes)", () => {
     expect(usageNotObject.result).toMatchObject({ ok: false });
   });
 
-  it("a tool step is reported once; a later update that first carries the command is reported for the guard", () => {
+  it("a tool step is reported once; a later update that names a new command or path is reported for the guard", () => {
     const late = parse([
       INIT,
       TOOL(3, "ACTIVE"),
@@ -729,9 +729,22 @@ describe("antigravity parser hardening (T4.33, synthetic shapes)", () => {
       TOOL(4, "DONE"),
       RESULT(),
     ]);
+    // A later update that swaps the path (or command) is reported too, so it cannot hide an unchecked one; repeats
+    // and updates without parameters add nothing.
     expect(early.events.filter((e) => e.kind === "tool_call")).toEqual([
       { kind: "tool_call", tool: "other", name: "write_to_file", target: "/work/tree/a.txt" },
+      { kind: "tool_call", tool: "other", name: "write_to_file", target: "/elsewhere" },
     ]);
+    const swapped = parse([
+      INIT,
+      TOOL(5, "ACTIVE", { name: "run_command", parameters: { command: "ls" } }),
+      TOOL(5, "DONE", { name: "run_command", parameters: { command: "git push origin main" } }),
+      TOOL(5, "DONE", { name: "run_command", parameters: { command: "ls" } }),
+      TOOL(5, "DONE", { name: "run_command", parameters: { command: "git push origin main" } }),
+      RESULT(),
+    ]);
+    const commands = swapped.events.flatMap((e) => (e.kind === "tool_call" ? [e.command] : []));
+    expect(commands).toEqual(["ls", "git push origin main"]);
     // Steps are keyed per run: a new parse state starts with no seen steps.
     expect(
       parse([INIT, TOOL(3, "ACTIVE", { name: "run_command", parameters: { command: "ls" } })]).events,
@@ -741,6 +754,81 @@ describe("antigravity parser hardening (T4.33, synthetic shapes)", () => {
       name: "run_command",
       command: "ls",
     });
+  });
+
+  it("a conversation id that is not one safe token binds nothing and fails the run; an empty id binds nothing", () => {
+    for (const id of ["-c", "--dangerously-skip-permissions", "a b", "x\ny", "../x", "x".repeat(257)]) {
+      const r = parse([j({ event: "init", conversation_id: id, init: {} }), RESULT({ conversation_id: id })]);
+      expect(r.state.nativeSessionId, id).toBeUndefined();
+      expect(
+        r.events.some((e) => e.kind === "session_bound"),
+        id,
+      ).toBe(false);
+      expect(r.result, id).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+      expect(r.result, id).not.toHaveProperty("nativeSessionId");
+    }
+    // Recorded shapes: an empty id (C6, C10) binds nothing and is no anomaly; a later UUID still binds.
+    const late = parse([j({ event: "init", conversation_id: "", init: {} }), RESULT()]);
+    expect(late.result).toMatchObject({ ok: true, nativeSessionId: CID });
+  });
+
+  it("status and event names are matched exactly; SUCCESS without total_tokens is not a success (Q-86)", () => {
+    for (const status of ["success", "Success", " SUCCESS", "SUCCESS "]) {
+      expect(parse([INIT, RESULT({ status })]).result, status).toMatchObject({
+        ok: false,
+        failureCode: "TOOL_FAILURE",
+      });
+    }
+    const noTotal = parse([INIT, RESULT({ usage: { input_tokens: 20, output_tokens: 3 } })]);
+    expect(noTotal.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+    const r = parse([INIT, j({ event: "Result", result: { status: "SUCCESS", usage: USAGE } })]);
+    expect(r.state.unknownEvents).toBe(1);
+    expect(r.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+  });
+
+  it("a tool step after the result line still reaches the guard", () => {
+    const { events } = parse([
+      INIT,
+      RESULT(),
+      TOOL(9, "ACTIVE", { name: "run_command", parameters: { command: "git push origin main" } }),
+    ]);
+    expect(events.at(-1)).toEqual({
+      kind: "tool_call",
+      tool: "shell",
+      name: "run_command",
+      command: "git push origin main",
+    });
+  });
+
+  it("pins the Assumption gap: a command under an unrecorded parameter key or of another type is not seen", () => {
+    // The live check recorded `tool_info.parameters` but not its keys (T4.33 "Not done" (3)). These reports carry no
+    // command, so the tool-call guard cannot flag them and FR-GIT-03 and FR-GIT-06 remain; a capture replaces this test.
+    const { events, result } = parse([
+      INIT,
+      TOOL(6, "ACTIVE", { name: "run_command", parameters: { cmd: "git push origin main" } }),
+      TOOL(7, "ACTIVE", { name: "run_command", parameters: { command: ["git", "push"] } }),
+      TOOL(8, "ACTIVE", { name: "run_command", parameters: "git push origin main" }),
+      RESULT(),
+    ]);
+    expect(events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "other", name: "run_command" },
+      { kind: "tool_call", tool: "other", name: "run_command" },
+      { kind: "tool_call", tool: "other", name: "run_command" },
+    ]);
+    expect(result).toMatchObject({ ok: true });
+  });
+
+  it("pins the gap: init.permission_mode is not read, so it never changes the outcome", () => {
+    // Recorded: `request-review` ([LIVE] C7b, C18); [H] documents `always-proceed` under the bypass flag. Whether a
+    // mismatch with the compiled flag should fail the run is not decided; the outcome rests on the result envelope.
+    for (const mode of ["always-proceed", "request-review", "brand-new", undefined]) {
+      const init = j({
+        event: "init",
+        conversation_id: CID,
+        init: mode === undefined ? {} : { permission_mode: mode },
+      });
+      expect(parse([init, RESULT()]).result, String(mode)).toMatchObject({ ok: true, nativeSessionId: CID });
+    }
   });
 
   it("malformed step and init lines are unknown and counted; non-object roots and arrays never bind or succeed", () => {

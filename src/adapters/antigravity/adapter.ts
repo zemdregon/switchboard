@@ -19,7 +19,7 @@
  *   FR-GIT-06;
  * - the parser (T4.33) reads only the `stream-json` fields the 2026-10-14 live check recorded; soft denials fail the run
  *   and `SUCCESS` with no reported tokens is not a success (Q-86); a `denied_actions` or `error` value of an unrecorded
- *   shape, a second `result` and a changed conversation id fail the run too; resume is not compiled (Q-86). The auth
+ *   shape, a second `result`, a changed conversation id and one that is not a safe token fail the run too; resume is not compiled (Q-86). The auth
  *   preflight (T4.34) is `agy models`, keyed on the observed exit codes and stderr. The manifest range admits no version, so none of this runs before `adapters validate` passes a
  *   version.
  */
@@ -141,9 +141,15 @@ const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s
 const ineligible = (reason: Ineligible["reason"], detail: string): Ineligible => ({ ineligible: true, reason, detail });
 /**
  * Tool steps already reported per run (a step streams ACTIVE then DONE, [LIVE] C7), keyed by `step_index`; the value
- * is whether the report carried a command or path, so a later update that first carries one is still reported.
+ * is the set of commands and paths already reported for the step, so a later update that names a new one is still
+ * reported to the tool-call guard.
  */
-const seenToolSteps = new WeakMap<ParseState, Map<number, boolean>>();
+const seenToolSteps = new WeakMap<ParseState, Map<number, Set<string>>>();
+/**
+ * Native ids are kept only as one safe token (Proposed, the shape Grok and Cursor check before resume): every recorded
+ * `conversation_id` was a UUID or empty ([LIVE] C4, C6, C9, C10).
+ */
+const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 /** `result` lines already seen per run: a second one is a protocol anomaly, never a success (fail closed). */
 const seenResults = new WeakMap<ParseState, number>();
 /** Category of a stream anomaly (two results, two conversation ids); classified OUTPUT_PROTOCOL_ERROR. */
@@ -465,10 +471,14 @@ export class AntigravityAdapter implements ProviderAdapter {
 
   /**
    * The first non-empty id binds the session. A later, different id (a second `init` or a `result` for another
-   * conversation) makes the binding ambiguous, so the run fails closed; the first id stays bound.
+   * conversation) makes the binding ambiguous, so the run fails closed; the first id stays bound. An id that is not
+   * one safe token (a control character, a leading `-`, over 256 characters) binds nothing and fails the run.
    */
   #bind(state: ParseState, id: string, model: string | undefined): NormalizedEvent[] {
     if (id === "") return [];
+    if (!SESSION_ID_RE.test(id)) {
+      return [{ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "conversation id is not a safe token" }];
+    }
     if (state.nativeSessionId !== undefined) {
       if (id === state.nativeSessionId) return [];
       return [{ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "conversation id changed mid-run" }];
@@ -500,10 +510,8 @@ export class AntigravityAdapter implements ProviderAdapter {
     // Only tool steps are actions; the final answer arrives whole in `result.response`, so `agent_response` deltas,
     // `user_input` and `checkpoint` steps are not kept.
     if (stepType !== STEP_TOOL) return [];
-    const seen = seenToolSteps.get(state) ?? new Map<number, boolean>();
+    const seen = seenToolSteps.get(state) ?? new Map<number, Set<string>>();
     seenToolSteps.set(state, seen);
-    // Already reported with a command or path: later updates of the step add nothing.
-    if (seen.get(index) === true) return [];
     const info = obj(e.tool_info);
     const name = str(info?.name) ?? str(e.tool_name) ?? "unknown";
     const params = obj(info?.parameters);
@@ -512,11 +520,14 @@ export class AntigravityAdapter implements ProviderAdapter {
     const command = str(params?.command) ?? str(params?.CommandLine);
     const target = str(params?.path) ?? str(params?.file_path) ?? str(params?.AbsolutePath);
     const kind = command !== undefined ? "shell" : "other";
-    const carries = command !== undefined || target !== undefined;
-    // Reported once without parameters: a later update is reported again only when it first names a command or path,
-    // so the tool-call guard sees it whichever update carries `tool_info.parameters` (Assumption: not recorded).
-    if (seen.has(index) && !carries) return [];
-    seen.set(index, carries);
+    const key = command !== undefined ? `command:${command}` : target !== undefined ? `target:${target}` : undefined;
+    // A step is reported once, and again only when a later update names a command or path not yet reported for it, so
+    // the tool-call guard sees every one whichever update carries `tool_info.parameters` (Assumption: not recorded)
+    // and an update cannot swap a reported command for an unchecked one.
+    const reported = seen.get(index);
+    if (reported === undefined) seen.set(index, new Set(key === undefined ? [] : [key]));
+    else if (key === undefined || reported.has(key)) return [];
+    else reported.add(key);
     return [
       {
         kind: "tool_call",
