@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.53). An unsafe sessionID after a normal bound id fails OUTPUT_PROTOCOL_ERROR while keeping the first id bound.","exit":0}}
+{"type":"step_start","timestamp":1,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"sessionID":"ses_SYNTHETIC0000000000000001","messageID":"msg_1","id":"prt_s1","type":"step-start","snapshot":"synthetic"}}
+{"type":"text","timestamp":1,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"sessionID":"ses_SYNTHETIC0000000000000001","messageID":"msg_1","id":"prt_t1","type":"text","text":"SYNTHETIC: first id bound."}}
+{"type":"step_finish","timestamp":1,"sessionID":"--auto","part":{"sessionID":"--auto","messageID":"msg_1","id":"prt_f1","type":"step-finish","reason":"stop","cost":0.001,"tokens":{"input":11,"output":2,"reasoning":0,"cache":{"read":5,"write":0}}}}

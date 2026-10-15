@@ -29,6 +29,7 @@ import { guardEvent } from "../tool-guard.js";
 import type {
   CompileRequest,
   ExitInfo,
+  FailureEvidence,
   Invocation,
   NormalizedEvent,
   ParseState,
@@ -1333,6 +1334,216 @@ describe("opencode parser and result (T4.53)", () => {
     });
   });
 
+  it("classifyFailure precedence: supervisor outcomes over the guard, the guard over denials, denials over provider errors, a provider error over a rate_limit event, a failed result and the exit code", () => {
+    const a = adapter();
+    const evidence = (
+      events: readonly NormalizedEvent[],
+      exit: Partial<FailureEvidence["exit"]> = {},
+      extra: Partial<FailureEvidence> = {},
+    ): FailureEvidence => ({
+      events,
+      exit: { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0], ...exit },
+      stderrTail: "",
+      timedOut: false,
+      cancelled: false,
+      ...extra,
+    });
+    const GUARDED: NormalizedEvent = {
+      kind: "tool_call",
+      tool: "shell",
+      name: "shell",
+      command: "git push origin main",
+      violation: { kind: "git_write", reason: "git push origin main" },
+    };
+    const DENIED: NormalizedEvent = { kind: "permission_denied", tool: "shell" };
+    const AUTH: NormalizedEvent = { kind: "provider_error", category: "auth", message: "provider.auth: 403" };
+    const UNKNOWN_ERR: NormalizedEvent = { kind: "provider_error", category: "unknown", message: "boom" };
+    const PROTOCOL_ERR: NormalizedEvent = {
+      kind: "provider_error",
+      category: "protocol",
+      message: "session id changed mid-run",
+    };
+    const FAILED_RESULT: NormalizedEvent = { kind: "result", ok: false, summary: "task failed" };
+    const EXIT_1 = { exitCode: 1 };
+
+    // Supervisor-determined outcomes beat every stream signal, the ADR-0039 guard included.
+    expect(a.classifyFailure(evidence([GUARDED], { outcome: "cancelled" }))).toEqual({
+      code: "CANCELLED",
+      detail: "run cancelled",
+    });
+    expect(a.classifyFailure(evidence([GUARDED], {}, { cancelled: true }))).toEqual({
+      code: "CANCELLED",
+      detail: "run cancelled",
+    });
+    expect(a.classifyFailure(evidence([GUARDED], {}, { timedOut: true }))).toEqual({
+      code: "PROCESS_TIMEOUT",
+      detail: "unknown timeout",
+    });
+    expect(a.classifyFailure(evidence([GUARDED], { outcome: "timeout", timeoutKind: "wall_clock" }))).toEqual({
+      code: "PROCESS_TIMEOUT",
+      detail: "wall_clock timeout",
+    });
+    expect(a.classifyFailure(evidence([GUARDED], { outcome: "protocol_error", exitCode: null }))).toEqual({
+      code: "OUTPUT_PROTOCOL_ERROR",
+      detail: "unparseable provider output",
+    });
+    expect(a.classifyFailure(evidence([GUARDED], { outcome: "internal_error", exitCode: null }))).toEqual({
+      code: "OUTPUT_PROTOCOL_ERROR",
+      detail: "event handling failed",
+    });
+    expect(a.classifyFailure(evidence([GUARDED], { outcome: "crashed", exitCode: null, signal: "SIGKILL" }))).toEqual({
+      code: "PROCESS_CRASH",
+      detail: "signal SIGKILL",
+    });
+    expect(a.classifyFailure(evidence([GUARDED], { outcome: "spawn_error", exitCode: null }))).toEqual({
+      code: "PROCESS_CRASH",
+      detail: "spawn_error",
+    });
+
+    // ADR-0039: the guard verdict beats denials, provider errors, results and exit codes.
+    expect(a.classifyFailure(evidence([GUARDED, DENIED]))).toEqual({
+      code: "PERMISSION_BLOCKED",
+      detail: "git write attempted: git push origin main",
+    });
+    expect(
+      a.classifyFailure(
+        evidence([{ ...GUARDED, violation: { kind: "provider_state", reason: "synthetic" } }, DENIED, AUTH]),
+      ),
+    ).toEqual({ code: "SANDBOX_VIOLATION", detail: "provider state reached: synthetic" });
+
+    // Denials beat provider errors and unexpected exits.
+    expect(a.classifyFailure(evidence([DENIED, AUTH], EXIT_1))).toEqual({
+      code: "PERMISSION_BLOCKED",
+      detail: "denied: shell",
+    });
+    expect(
+      a.classifyFailure(evidence([{ kind: "sandbox_violation", detail: "out of worktree" }, UNKNOWN_ERR])),
+    ).toEqual({ code: "SANDBOX_VIOLATION", detail: "out of worktree" });
+
+    // A provider error beats a rate_limit event, a failed result and the exit code; the OpenCode `protocol`
+    // category maps to OUTPUT_PROTOCOL_ERROR.
+    expect(a.classifyFailure(evidence([UNKNOWN_ERR, { kind: "rate_limit" }]))).toEqual({
+      code: "TOOL_FAILURE",
+      detail: "unknown: boom",
+    });
+    expect(a.classifyFailure(evidence([AUTH, FAILED_RESULT]))).toEqual({
+      code: "AUTH_REQUIRED",
+      detail: "auth: provider.auth: 403",
+    });
+    expect(a.classifyFailure(evidence([PROTOCOL_ERR], EXIT_1))).toEqual({
+      code: "OUTPUT_PROTOCOL_ERROR",
+      detail: "protocol: session id changed mid-run",
+    });
+
+    // A rate_limit event and a failed result beat the exit code; the exit code beats "no result".
+    expect(a.classifyFailure(evidence([{ kind: "rate_limit" }], EXIT_1))).toEqual({
+      code: "RATE_LIMIT_TRANSIENT",
+      detail: "rate limit reported",
+    });
+    expect(a.classifyFailure(evidence([FAILED_RESULT], EXIT_1))).toEqual({
+      code: "TOOL_FAILURE",
+      detail: "task failed",
+    });
+    expect(a.classifyFailure(evidence([], EXIT_1))).toEqual({ code: "TOOL_FAILURE", detail: "exit code 1" });
+    expect(a.classifyFailure(evidence([]))).toEqual({
+      code: "OUTPUT_PROTOCOL_ERROR",
+      detail: "no result event",
+    });
+  });
+
+  it("recorded extra fields (error.status, error.response, timestamp, messageID, snapshot) are never usage metrics or events", () => {
+    // Live check row 14b/14d recorded status and response on provider errors; row 4c recorded timestamp, messageID
+    // and step_start.snapshot. None of those are token keys ([LIVE] 4c: input, output, reasoning, cache.read/write)
+    // or a usage event.
+    const quota = parse([
+      START,
+      JSON.stringify({
+        type: "error",
+        timestamp: 1,
+        sessionID: SID,
+        error: {
+          type: "provider.quota",
+          message: "Insufficient account funds",
+          status: 402,
+          response: { error: { message: "Insufficient account funds", input: 99 } },
+        },
+      }),
+    ]);
+    expect(quota.events.filter((e) => e.kind === "usage")).toEqual([]);
+    expect(quota.events.find((e) => e.kind === "provider_error")).toEqual({
+      kind: "provider_error",
+      category: "quota",
+      message: "provider.quota: Insufficient account funds",
+    });
+    expect(JSON.stringify(quota.events)).not.toContain("402");
+    expect(quota.a.extractResult(quota.events, { ...EXIT0, exitCode: 1 })).toMatchObject({
+      ok: false,
+      failureCode: "QUOTA_EXHAUSTED",
+    });
+
+    // An HTTP 429 status on an unmapped error type is not RATE_LIMIT_TRANSIENT (status is not read).
+    const throttled = parse([
+      START,
+      JSON.stringify({
+        type: "error",
+        timestamp: 1,
+        sessionID: SID,
+        error: { type: "provider.rate_limit", message: "429 Too Many Requests", status: 429 },
+      }),
+    ]);
+    expect(throttled.events.some((e) => e.kind === "rate_limit")).toBe(false);
+    expect(throttled.a.extractResult(throttled.events, EXIT0)).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+    });
+
+    const finish = parse([START, TEXT("ok"), FINISH("stop")]);
+    const usage = finish.events.find((e) => e.kind === "usage");
+    expect(usage).toEqual({
+      kind: "usage",
+      source: "provider_reported",
+      metrics: { input: 10, output: 3, reasoning: 1, cache_read: 4, cache_write: 0, cost_usd: 0.001 },
+    });
+    expect(JSON.stringify(finish.events)).not.toContain("messageID");
+    expect(JSON.stringify(finish.events)).not.toContain("snapshot");
+    expect(JSON.stringify(finish.events.filter((e) => e.kind === "usage"))).not.toContain("timestamp");
+  });
+
+  it("sessionId/session_id never bind a session; model_id/modelId never set model (recorded key is sessionID / model)", () => {
+    // Live check row 4c names sessionID and does not name a model. Aliases used by other adapters are not OpenCode's.
+    // Parsed alone so a later helper line cannot bind via the recorded `sessionID` key.
+    const camel = parse([
+      JSON.stringify({
+        type: "step_start",
+        timestamp: 1,
+        sessionId: SID,
+        part: { sessionId: SID, id: "prt_s1", type: "step-start" },
+      }),
+    ]);
+    expect(camel.state.nativeSessionId).toBeUndefined();
+    expect(camel.events.some((e) => e.kind === "session_bound")).toBe(false);
+
+    const snake = parse([
+      JSON.stringify({
+        type: "step_start",
+        timestamp: 1,
+        session_id: SID,
+        part: { session_id: SID, id: "prt_s1", type: "step-start" },
+      }),
+    ]);
+    expect(snake.state.nativeSessionId).toBeUndefined();
+    expect(snake.events.some((e) => e.kind === "session_bound")).toBe(false);
+
+    const aliasedModel = parse([
+      line("step_start", { id: "prt_s1", type: "step-start" }, { model_id: "opencode/gpt-5-nano", modelId: "other" }),
+      TEXT("ok"),
+      FINISH("stop"),
+    ]);
+    const bound = aliasedModel.events.find((e) => e.kind === "session_bound");
+    expect(bound).toEqual({ kind: "session_bound", nativeSessionId: SID });
+    expect(bound).not.toHaveProperty("model");
+  });
+
   it("seenParts WeakMap state is isolated across separate ParseState instances", () => {
     const a = adapter();
     const state1: ParseState = { lines: 0, unknownEvents: 0 };
@@ -1432,11 +1643,24 @@ describe("opencode parser and result (T4.53)", () => {
 
     it("tool call without command or target keys emits tool_call with no command or target (Assumption gap)", () => {
       // Live check row 4c recorded state.input but not its keys. If a tool call arrives with unexpected input keys,
-      // command and target are omitted from the tool_call event.
-      const { events } = parse([START, TOOL("shell", { script: "git commit" }), TOOL("read", { file: "foo.txt" })]);
+      // command and target are omitted from the tool_call event. Cursor/Grok aliases (cmd, CommandLine, file_path)
+      // are not recorded for OpenCode, so they stay invisible to the ADR-0039 guard.
+      const { events } = parse([
+        START,
+        TOOL("shell", { script: "git commit" }),
+        TOOL("shell", { cmd: "git push origin main" }),
+        TOOL("shell", { CommandLine: "git commit -am synthetic" }),
+        TOOL("read", { file: "foo.txt" }),
+        TOOL("read", { file_path: "/tmp/outside.txt" }),
+        TOOL("write", { AbsolutePath: "hello.txt" }),
+      ]);
       expect(events.filter((e) => e.kind === "tool_call")).toEqual([
         { kind: "tool_call", tool: "shell", name: "shell" },
+        { kind: "tool_call", tool: "shell", name: "shell" },
+        { kind: "tool_call", tool: "shell", name: "shell" },
         { kind: "tool_call", tool: "read", name: "read" },
+        { kind: "tool_call", tool: "read", name: "read" },
+        { kind: "tool_call", tool: "edit", name: "write" },
       ]);
     });
 
@@ -1460,8 +1684,9 @@ describe("opencode parser and result (T4.53)", () => {
 
     // The same outcomes replayed end to end from fixture files through the supervisor, so each Done-when case has a
     // fixture: success (`success_edit`), task failure (`task_failure`), malformed (`malformed_output`) and the ones
-    // below, plus `git_write_guard`, `unsafe_session_id`, `sandbox_violation` and `model_unavailable` (as Grok T4.23
-    // and Cursor T4.43). They pin the gaps; a capture (T4.51 extension) must change them.
+    // below, plus `git_write_guard`, `unsafe_session_id`, `sandbox_violation`, `model_unavailable`, `quota_exhausted`,
+    // `unsafe_id_after_bound` and `resume_failure` (as Grok T4.23 and Cursor T4.43). They pin the gaps; a capture
+    // (T4.51 extension) must change them.
     const replayCase = (
       fixture: string,
       kind: ConformanceCase["kind"],
@@ -1606,6 +1831,64 @@ describe("opencode parser and result (T4.53)", () => {
         ok: false,
         failureCode: "MODEL_UNAVAILABLE",
         nativeSessionId: DEFAULT_SESSION_ID,
+        unknownEventCount: 0,
+      });
+    });
+
+    it("fixture quota_exhausted (live check 14b) replays provider.quota with recorded status 402 at exit 1 to QUOTA_EXHAUSTED", async () => {
+      const report = await runConformanceCase(
+        replayCase("quota_exhausted", "task_failure", {
+          ok: false,
+          failureCode: "QUOTA_EXHAUSTED",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: "QUOTA_EXHAUSTED",
+        nativeSessionId: DEFAULT_SESSION_ID,
+        unknownEventCount: 0,
+      });
+    });
+
+    it("fixture unsafe_id_after_bound replays an unsafe sessionID after a bound id to OUTPUT_PROTOCOL_ERROR, keeping the first id", async () => {
+      const report = await runConformanceCase(
+        replayCase("unsafe_id_after_bound", "malformed_output", {
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        nativeSessionId: DEFAULT_SESSION_ID,
+        unknownEventCount: 0,
+      });
+    });
+
+    it("fixture resume_failure (live check 13a resumed, 14a error) replays a resumed failed run to TOOL_FAILURE, preserving the resumed session id", async () => {
+      const report = await runConformanceCase({
+        kind: "resume",
+        adapter: replayAdapter("resume_failure"),
+        request: {
+          runId: "run_opencode_t453_resume_failure",
+          objective: "synthetic opencode objective",
+          constraints: [],
+          workspace: { cwd: makeCwd(), writable: true },
+          bypassApproved: true,
+        },
+        profile: PRIVILEGED_BYPASS_PROFILE,
+        binding: { provider: "opencode", nativeSessionId: RESUMED_SESSION_ID },
+        expect: { ok: false, failureCode: "TOOL_FAILURE", nativeSessionId: RESUMED_SESSION_ID },
+      });
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: "TOOL_FAILURE",
+        nativeSessionId: RESUMED_SESSION_ID,
         unknownEventCount: 0,
       });
     });
