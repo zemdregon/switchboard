@@ -3,16 +3,19 @@
  * `adapters/*.case.ts` (one file per provider) and runs the shared harness over it. CI needs no provider CLI: the
  * adapters run against the shared replay helper. See ./adapter-leg.ts for exactly what this leg does and does not prove.
  */
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { isIneligible, type ProviderAdapter } from "../../src/adapters/index.js";
 import {
   type AdapterLegCase,
+  addAgentEntries,
   compileProblems,
   coverageProblems,
   gapOutcome,
   gapProblems,
+  HOSTILE_REPO_ENTRIES,
   parsedKinds,
   replayHostileStream,
   STREAM_CATEGORIES,
@@ -47,6 +50,13 @@ describe("adapter malicious leg: discovery", () => {
 let fx: MaliciousFixture;
 beforeAll(() => {
   fx = buildMaliciousFixture();
+  addAgentEntries(fx);
+});
+
+describe("adapter malicious leg: hostile repository", () => {
+  it("carries every hostile repository entry the leg checks for", () => {
+    expect(HOSTILE_REPO_ENTRIES.filter((e) => !existsSync(path.join(fx.repo, e)))).toEqual([]);
+  });
 });
 afterAll(() => fx.close());
 
@@ -179,6 +189,23 @@ describe.each(cases.map((c) => [c.provider, c] as const))("adapter malicious leg
     expect(compileProblems(withFlag, fx).join()).toContain("forbidden flag");
     const missing = { ...c, isolationFlags: [...c.isolationFlags, "--synthetic-not-a-flag"] };
     expect(compileProblems(missing, fx).join()).toContain("missing isolation flag");
+  });
+
+  it("positive control: an argv naming any hostile repository entry is reported", () => {
+    for (const entry of HOSTILE_REPO_ENTRIES) {
+      const named: AdapterLegCase = {
+        ...c,
+        makeAdapter: (file, exitCode) => {
+          const real = c.makeAdapter(file, exitCode);
+          const compile: ProviderAdapter["compile"] = (request, profile) => {
+            const inv = real.compile(request, profile);
+            return isIneligible(inv) ? inv : { ...inv, argv: [...inv.argv, path.join(fx.repo, entry)] };
+          };
+          return Object.assign(Object.create(real) as ProviderAdapter, { compile });
+        },
+      };
+      expect(compileProblems(named, fx).join(), entry).toContain(`hostile repository entry ${entry}`);
+    }
   });
 
   it("positive control: a deliberately broken compile that drops any one isolation flag is reported", () => {
