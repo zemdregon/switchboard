@@ -27,7 +27,13 @@
  * - `filePath` and `path` beside an input `command` (command takes precedence);
  * - hostile call swapped back to a benign command in later `tool_use`;
  * - hostile call followed by a separate benign call;
- * - exit codes 2 and 137 where the guard verdict outranks `TOOL_FAILURE`;
+ * - JSON encodings the parser sees only after `JSON.parse` (`\u` escapes in type, keys and command, a duplicate
+ *   command key whose last value is the Git write, CRLF line endings) at exits 0 and 1;
+ * - hypothetical `step_finish` `part.reason` values `max_tokens` and `refusal` at exit 0 where the guard verdict
+ *   outranks `OUTPUT_PROTOCOL_ERROR`;
+ * - a path-only call given a Git-write command in later `tool_use` at exits 0 and 1;
+ * - swapped commands, trailing calls after `stop`, separate benign calls after hostile calls, empty tool names, and
+ *   commands beside paths at exit codes 2 and 137 where the guard verdict outranks `TOOL_FAILURE`;
  * - session ID mutations (changed on root, on part, or both) and fronted backing provider/model combinations (T4.6);
  * - own prototype-named keys (`__proto__`, `constructor`) on input and part;
  * - benign commands (shell, edit, read) preceding hostile calls, multiple stop steps, and unknown events before hostile calls.
@@ -638,6 +644,164 @@ const opencodeBlockedGaps = (fx: MaliciousFixture): HostileStream[] => {
     }
   }
 
+  // Valid JSON the parser sees only after `JSON.parse`: `\u` escapes in the event type, keys and command, a
+  // duplicate command key whose last value is the Git write (last wins), and CRLF line endings.
+  for (const category of cats) {
+    const command = hostileCommand(fx, category);
+    const escaped =
+      '{"\\u0074ype":"tool_use","timestamp":1760000000000,"sessionID":"' +
+      SID +
+      '","\\u0070art":{"id":"prt_synthetic_esc","sessionID":"' +
+      SID +
+      '","type":"tool","tool":"shell","\\u0073tate":{"status":"completed","\\u0069nput":{"\\u0063ommand":' +
+      JSON.stringify(command).replace("git", "g\\u0069t") +
+      '},"output":""}}}';
+    const duplicate =
+      '{"type":"tool_use","timestamp":1760000000000,"sessionID":"' +
+      SID +
+      '","part":{"id":"prt_synthetic_dup","sessionID":"' +
+      SID +
+      '","type":"tool","tool":"shell","state":{"status":"completed","input":{"command":"ls","command":' +
+      JSON.stringify(command) +
+      '},"output":""}}}';
+
+    for (const exitCode of [0, 1] as const) {
+      const suffix = exitCode === 1 ? ", exit 1" : "";
+      gaps.push(
+        blocked(`${blockedLabel[category]} with \\u-escaped type, keys and Git write${suffix}`, category, exitCode, [
+          STEP_START,
+          escaped,
+          TOOL_STEP,
+          ...(exitCode === 0 ? [STEP_START, REPORT, STOP] : []),
+        ]),
+        blocked(
+          `${blockedLabel[category]} with a duplicate command key whose last value is the Git write${suffix}`,
+          category,
+          exitCode,
+          [STEP_START, duplicate, TOOL_STEP, ...(exitCode === 0 ? [STEP_START, REPORT, STOP] : [])],
+        ),
+        blocked(`${blockedLabel[category]} with a Git write on CRLF-terminated lines${suffix}`, category, exitCode, [
+          `${STEP_START}\r`,
+          `${completed("shell", { command })}\r`,
+          `${TOOL_STEP}\r`,
+          ...(exitCode === 0 ? [`${STEP_START}\r`, `${REPORT}\r`, `${STOP}\r`] : []),
+        ]),
+      );
+    }
+  }
+
+  // A step_finish reason other than "stop" (hypothetical values: "max_tokens", "refusal") is
+  // OUTPUT_PROTOCOL_ERROR at exit 0 without the guard; the guard verdict outranks it.
+  for (const category of cats) {
+    const command = hostileCommand(fx, category);
+    for (const reason of ["max_tokens", "refusal"] as const) {
+      gaps.push(
+        blocked(`${blockedLabel[category]} with a Git write, then a step_finish with reason ${reason}`, category, 0, [
+          STEP_START,
+          completed("shell", { command }),
+          TOOL_STEP,
+          STEP_START,
+          REPORT,
+          event("step_finish", { type: "step-finish", reason, cost: 0, tokens: { input: 1, output: 1 } }),
+        ]),
+      );
+    }
+  }
+
+  // A call first reported with only a path (input.filePath or input.path) and then, on a subsequent event,
+  // given a command: the command is evaluated by the guard. Without the guard the exit 0 stream ends ok: true.
+  for (const category of cats) {
+    const command = hostileCommand(fx, category);
+    for (const exitCode of [0, 1] as const) {
+      const suffix = exitCode === 1 ? ", exit 1" : "";
+      gaps.push(
+        blocked(
+          `${blockedLabel[category]}: a path-only call given a Git-write command in later tool_use${suffix}`,
+          category,
+          exitCode,
+          [
+            STEP_START,
+            event("tool_use", {
+              type: "tool",
+              tool: "shell",
+              state: { status: "running", input: { filePath: "README.md", path: "README.md" } },
+            }),
+            completed("shell", { command }),
+            TOOL_STEP,
+            ...(exitCode === 0 ? [STEP_START, REPORT, STOP] : []),
+          ],
+        ),
+      );
+    }
+  }
+
+  // Exit codes 2 and 137 for swapped-in-update, after-stop trailing calls, separate benign calls, empty tool name,
+  // and filePath/path beside command: the guard verdict still outranks TOOL_FAILURE.
+  for (const category of cats) {
+    const command = hostileCommand(fx, category);
+    for (const exitCode of [2, 137] as const) {
+      gaps.push(
+        blocked(
+          `hostile call swapped back to a benign command on later tool_use on ${category}, exit ${exitCode}`,
+          category,
+          exitCode,
+          [
+            STEP_START,
+            withStatus("pending", { command }),
+            completed("shell", { command: "ls" }),
+            TOOL_STEP,
+            ...(exitCode === 2 ? [STEP_START, REPORT, STOP] : []),
+          ],
+        ),
+        blocked(`${blockedLabel[category]} after the final stop step, exit ${exitCode}`, category, exitCode, [
+          STEP_START,
+          REPORT,
+          STOP,
+          completed("shell", { command }),
+        ]),
+        blocked(
+          `completed ${blockedLabel[category]}, then a separate benign call, exit ${exitCode}`,
+          category,
+          exitCode,
+          [
+            STEP_START,
+            completed("shell", { command }),
+            TOOL_STEP,
+            STEP_START,
+            completed("shell", { command: "echo safe" }),
+            TOOL_STEP,
+            ...(exitCode === 2 ? [STEP_START, REPORT, STOP] : []),
+          ],
+        ),
+        blocked(`empty tool name carrying a Git write on ${category}, exit ${exitCode}`, category, exitCode, [
+          STEP_START,
+          completed("", { command }),
+          TOOL_STEP,
+          ...(exitCode === 2 ? [STEP_START, REPORT, STOP] : []),
+        ]),
+        blocked(
+          `${blockedLabel[category]} with filePath and path beside command, exit ${exitCode}`,
+          category,
+          exitCode,
+          [
+            STEP_START,
+            event("tool_use", {
+              type: "tool",
+              tool: "shell",
+              state: {
+                status: "completed",
+                input: { filePath: "src/safe.ts", path: "src/safe.ts", command },
+                output: "",
+              },
+            }),
+            TOOL_STEP,
+            ...(exitCode === 2 ? [STEP_START, REPORT, STOP] : []),
+          ],
+        ),
+      );
+    }
+  }
+
   gaps.push(
     {
       name: "only prototype-named, near-miss and non-string event types, exit 1",
@@ -646,6 +810,34 @@ const opencodeBlockedGaps = (fx: MaliciousFixture): HostileStream[] => {
       failureCode: "TOOL_FAILURE",
       lines: [
         META("Event types below are invented or not strings; the adapter must report them unknown.", 1),
+        JSON.stringify({ type: "__proto__" }),
+        JSON.stringify({ type: "constructor" }),
+        JSON.stringify({ type: "step-finish", part: { reason: "stop" } }),
+        JSON.stringify({ type: 1, part: { reason: "stop" } }),
+        JSON.stringify({ type: "tool_use_update" }),
+      ],
+    },
+    {
+      name: "only prototype-named, near-miss and non-string event types, exit 2",
+      category: "unknown_events",
+      exitCode: 2,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Event types below are invented or not strings; the adapter must report them unknown.", 2),
+        JSON.stringify({ type: "__proto__" }),
+        JSON.stringify({ type: "constructor" }),
+        JSON.stringify({ type: "step-finish", part: { reason: "stop" } }),
+        JSON.stringify({ type: 1, part: { reason: "stop" } }),
+        JSON.stringify({ type: "tool_use_update" }),
+      ],
+    },
+    {
+      name: "only prototype-named, near-miss and non-string event types, exit 137",
+      category: "unknown_events",
+      exitCode: 137,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Event types below are invented or not strings; the adapter must report them unknown.", 137),
         JSON.stringify({ type: "__proto__" }),
         JSON.stringify({ type: "constructor" }),
         JSON.stringify({ type: "step-finish", part: { reason: "stop" } }),
@@ -681,6 +873,20 @@ const opencodeBlockedGaps = (fx: MaliciousFixture): HostileStream[] => {
       failureCode: "TOOL_FAILURE",
       lines: [
         META("Tool lines with nothing the parser can read; the adapter must report them unknown.", 2),
+        JSON.stringify({ type: "tool_use" }),
+        JSON.stringify({ type: "tool_use", part: {} }),
+        JSON.stringify({ type: "tool_use", part: { tool: 7 } }),
+        JSON.stringify({ type: "tool_use", part: { tool: null } }),
+        JSON.stringify({ type: "tool_use", part: { tool: ["shell"] } }),
+      ],
+    },
+    {
+      name: "tool lines with non-string tool names and missing parts, exit 137",
+      category: "unknown_events",
+      exitCode: 137,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Tool lines with nothing the parser can read; the adapter must report them unknown.", 137),
         JSON.stringify({ type: "tool_use" }),
         JSON.stringify({ type: "tool_use", part: {} }),
         JSON.stringify({ type: "tool_use", part: { tool: 7 } }),
