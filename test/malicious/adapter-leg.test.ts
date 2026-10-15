@@ -3,21 +3,25 @@
  * `adapters/*.case.ts` (one file per provider) and runs the shared harness over it. CI needs no provider CLI: the
  * adapters run against the shared replay helper. See ./adapter-leg.ts for exactly what this leg does and does not prove.
  */
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { isIneligible, type ProviderAdapter } from "../../src/adapters/index.js";
 import {
   type AdapterLegCase,
+  addAgentEntries,
   compileProblems,
   coverageProblems,
   gapOutcome,
   gapProblems,
+  HOSTILE_REPO_ENTRIES,
   parsedKinds,
   replayHostileStream,
   STREAM_CATEGORIES,
   withFlagStripped,
 } from "./adapter-leg.js";
+import { opencodeKnownGaps, opencodePartialStreams } from "./adapters/opencode.case.js";
 import { buildMaliciousFixture, type MaliciousFixture } from "./fixture.js";
 
 const DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "adapters");
@@ -47,6 +51,13 @@ describe("adapter malicious leg: discovery", () => {
 let fx: MaliciousFixture;
 beforeAll(() => {
   fx = buildMaliciousFixture();
+  addAgentEntries(fx);
+});
+
+describe("adapter malicious leg: hostile repository", () => {
+  it("carries every hostile repository entry the leg checks for", () => {
+    expect(HOSTILE_REPO_ENTRIES.filter((e) => !existsSync(path.join(fx.repo, e)))).toEqual([]);
+  });
 });
 afterAll(() => fx.close());
 
@@ -181,6 +192,23 @@ describe.each(cases.map((c) => [c.provider, c] as const))("adapter malicious leg
     expect(compileProblems(missing, fx).join()).toContain("missing isolation flag");
   });
 
+  it("positive control: an argv naming any hostile repository entry is reported", () => {
+    for (const entry of HOSTILE_REPO_ENTRIES) {
+      const named: AdapterLegCase = {
+        ...c,
+        makeAdapter: (file, exitCode) => {
+          const real = c.makeAdapter(file, exitCode);
+          const compile: ProviderAdapter["compile"] = (request, profile) => {
+            const inv = real.compile(request, profile);
+            return isIneligible(inv) ? inv : { ...inv, argv: [...inv.argv, path.join(fx.repo, entry)] };
+          };
+          return Object.assign(Object.create(real) as ProviderAdapter, { compile });
+        },
+      };
+      expect(compileProblems(named, fx).join(), entry).toContain(`hostile repository entry ${entry}`);
+    }
+  });
+
   it("positive control: a deliberately broken compile that drops any one isolation flag is reported", () => {
     for (const f of c.isolationFlags) {
       expect(compileProblems(withFlagStripped(c, f), fx).join(), f).toContain(`missing isolation flag ${f}`);
@@ -191,6 +219,34 @@ describe.each(cases.map((c) => [c.provider, c] as const))("adapter malicious leg
           `${extra.label}: missing isolation flag ${f}`,
         );
       }
+    }
+  });
+});
+
+// OpenCode only (T4.56): streams that are not hostile-category streams of the shared harness, replayed on their own.
+describe("adapter malicious leg: opencode partial streams and known gaps", () => {
+  const c = cases.find((x) => x.provider === "opencode");
+  if (!c) throw new Error("no opencode case file");
+
+  it("a stream cut inside a line ends OUTPUT_PROTOCOL_ERROR (never success) and leaves the checkout untouched", async () => {
+    const streams = opencodePartialStreams(fx);
+    expect(new Set(streams.map((s) => s.exitCode))).toEqual(new Set([0, 1]));
+    for (const s of streams) {
+      const o = await replayHostileStream(c, fx, s);
+      expect(o.failedChecks, s.name).toEqual([]);
+      expect(o.resultOk, s.name).toBe(false);
+      expect(o.failureCode, s.name).toBe("OUTPUT_PROTOCOL_ERROR");
+      expect(o.untouched, s.name).toBe(true);
+    }
+  });
+
+  // Pinned, not hidden (ROADMAP T4.56): each ends `ok` today. When the adapter fails one closed, this fails; move the
+  // stream into the case file's hostile streams.
+  it("known gaps still end ok: an unknown kind before stop, a Git push under a shell tool named bash", async () => {
+    for (const s of opencodeKnownGaps()) {
+      const o = await replayHostileStream(c, fx, s);
+      expect({ ok: o.resultOk, failureCode: o.failureCode }, s.name).toEqual({ ok: true, failureCode: undefined });
+      expect(o.untouched, s.name).toBe(true);
     }
   });
 });

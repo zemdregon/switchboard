@@ -2,7 +2,8 @@
  * T11.5 (FR-INN-15, ADR-0007, LLD §13.4 step 13): inner-agent usage is recorded in `inner_call` only. Nothing reaches
  * `usage_observation`, provider health or what the envelope reports as usage, unless the operator declared
  * `shares_subscription_with`, in which case each call that reached the backend adds exactly one `inner_agent` row.
- * Scripted fake backend only; no network, no provider CLI.
+ * Scripted fake backend only; no network, no provider CLI. The `get_capacity` and `switchboard capacity` surfaces are
+ * covered in `usage-surfaces.test.ts`.
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,7 +12,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { resolveInnerAgent } from "../config/inner-agent.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, openLedger } from "../ledger/index.js";
-import { createFakeBackend, createInnerAgent, type FakeStep, type InnerTaskContract } from "./index.js";
+import { buildEnvelope } from "../mcp/envelope.js";
+import { createFakeBackend, createInnerAgent, type FakeStep, type InnerTaskContract, tokenCount } from "./index.js";
 
 const contract: InnerTaskContract<{ title: string }, { title: string }> = {
   task: "run_title",
@@ -36,7 +38,15 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-function setup(script: readonly FakeStep[], shares?: string, allowRemote?: boolean, locality?: "local" | "remote") {
+interface SetupOptions {
+  shares?: string;
+  allowRemote?: boolean;
+  locality?: "local" | "remote";
+  timeoutMs?: number;
+  breaker?: { failure_threshold: number; open_ms: number };
+}
+
+function setup(script: readonly FakeStep[], opts: SetupOptions = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), "sb-usage-"));
   dirs.push(dir);
   const db = openLedger(dir);
@@ -50,6 +60,7 @@ function setup(script: readonly FakeStep[], shares?: string, allowRemote?: boole
     request: {},
     requestHash: "h",
     clientId: "c",
+    provider: "claude-code",
   });
   const settings = resolveInnerAgent({
     enabled: true,
@@ -57,24 +68,28 @@ function setup(script: readonly FakeStep[], shares?: string, allowRemote?: boole
       kind: "http",
       base_url: "http://127.0.0.1:1",
       model: "cfg-model",
-      ...(shares !== undefined ? { shares_subscription_with: shares } : {}),
-      ...(allowRemote !== undefined ? { allow_remote: allowRemote } : {}),
+      ...(opts.shares !== undefined ? { shares_subscription_with: opts.shares } : {}),
+      ...(opts.allowRemote !== undefined ? { allow_remote: opts.allowRemote } : {}),
+      ...(opts.timeoutMs !== undefined ? { timeout_ms: opts.timeoutMs } : {}),
     },
     tasks: { run_title: { enabled: true } },
+    ...(opts.breaker !== undefined ? { breaker: opts.breaker } : {}),
   });
   const svc = createInnerAgent(settings, {
-    backend: createFakeBackend({ script, ...(locality !== undefined ? { locality } : {}) }),
+    backend: createFakeBackend({ script, ...(opts.locality !== undefined ? { locality: opts.locality } : {}) }),
     ledger,
   });
   const call = () => svc.call(contract, { user: "objective: tidy", run_id: run.id });
+  const usageRows = () =>
+    db.prepare("SELECT * FROM usage_observation ORDER BY rowid").all() as Record<string, unknown>[];
   /** Every usage-related table and read model, serialised, for a byte comparison. */
   const snapshot = () =>
     JSON.stringify({
-      usage: db.prepare("SELECT * FROM usage_observation ORDER BY rowid").all(),
+      usage: usageRows(),
       health: db.prepare("SELECT * FROM provider_health ORDER BY provider").all(),
       forRun: ledger.listUsageObservationsForRun(run.id),
     });
-  return { db, ledger, run, call, snapshot };
+  return { db, ledger, run, call, snapshot, usageRows };
 }
 
 describe("inner-agent usage accounting (T11.5; FR-INN-15)", () => {
@@ -90,12 +105,14 @@ describe("inner-agent usage accounting (T11.5; FR-INN-15)", () => {
   });
 
   it("with shares_subscription_with, each call that reached the backend adds one labelled observation", async () => {
-    const h = setup([GOOD, { kind: "text", text: "bad" }, { kind: "text", text: "bad again" }], "claude-code");
+    const h = setup([GOOD, { kind: "text", text: "bad" }, { kind: "text", text: "bad again" }], {
+      shares: "claude-code",
+    });
     const r1 = await h.call();
     const r2 = await h.call(); // one call, two attempts (re-ask): still one observation
     expect(r1.accepted).toBe(true);
     expect(r2.accepted).toBe(false);
-    const rows = h.db.prepare("SELECT * FROM usage_observation ORDER BY rowid").all() as Record<string, unknown>[];
+    const rows = h.usageRows();
     expect(rows).toHaveLength(2);
     expect(rows).toHaveLength(h.ledger.listInnerCalls().length);
     expect(rows[0]).toMatchObject({
@@ -114,10 +131,93 @@ describe("inner-agent usage accounting (T11.5; FR-INN-15)", () => {
   });
 
   it("writes no observation for a call the privacy gate refused (no request was made)", async () => {
-    const h = setup([GOOD], "claude-code", false, "remote");
+    const h = setup([GOOD], { shares: "claude-code", allowRemote: false, locality: "remote" });
     const r = await h.call();
     expect(r).toMatchObject({ accepted: false, outcome: "fallback_disabled", reason: "REMOTE_NOT_ALLOWED" });
     expect(h.ledger.listInnerCalls()).toHaveLength(1);
     expect(h.db.prepare("SELECT COUNT(*) AS n FROM usage_observation").get()).toEqual({ n: 0 });
+  });
+
+  it("writes no observation for a call the open breaker denied, and one for the failed calls that opened it", async () => {
+    const h = setup([{ kind: "error" }], { shares: "claude-code", breaker: { failure_threshold: 2, open_ms: 60_000 } });
+    expect(await h.call()).toMatchObject({ reason: "BACKEND_ERROR" });
+    expect(await h.call()).toMatchObject({ reason: "BACKEND_ERROR" });
+    expect(await h.call()).toMatchObject({ outcome: "fallback_unavailable", reason: "CIRCUIT_OPEN" });
+    const calls = h.ledger.listInnerCalls();
+    expect(calls.map((c) => [c.reason, c.attempts])).toEqual([
+      ["BACKEND_ERROR", 1],
+      ["BACKEND_ERROR", 1],
+      ["CIRCUIT_OPEN", 0],
+    ]);
+    // A request that failed may still have consumed the subscription: one row each, with unknown (empty) metrics.
+    const rows = h.usageRows();
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => JSON.parse(String(r.metrics_json)))).toEqual([{}, {}]);
+    expect(rows.every((r) => r.source === "inner_agent")).toBe(true);
+  });
+
+  it("a call that timed out after reaching the backend yields one observation with unknown metrics", async () => {
+    const h = setup([{ kind: "hang" }], { shares: "claude-code", timeoutMs: 50 });
+    expect(await h.call()).toMatchObject({ outcome: "fallback_unavailable", reason: "TIMEOUT" });
+    expect(h.ledger.listInnerCalls().map((c) => c.attempts)).toEqual([1]);
+    expect(h.usageRows().map((r) => JSON.parse(String(r.metrics_json)))).toEqual([{}]);
+  });
+
+  it("sums the counts of a re-ask, and records only non-negative safe integers; anything else is unknown", async () => {
+    const h = setup(
+      [
+        { kind: "text", text: "bad", usage: { in: 7, out: 2 } },
+        { kind: "text", text: '{"title":"ok"}', usage: { in: 5, out: 3 } }, // re-ask of call 1: 12 in, 5 out
+        { kind: "text", text: '{"title":"ok"}', usage: { in: 3, out: null } }, // call 2: out unknown
+        { kind: "text", text: '{"title":"ok"}', usage: { in: -1, out: 2.5 } }, // call 3: both bogus
+        { kind: "text", text: '{"title":"ok"}', usage: { in: Number.NaN, out: Number.POSITIVE_INFINITY } }, // call 4
+        // call 5: a backend that does not honour the port's number type is still a backend
+        { kind: "text", text: '{"title":"ok"}', usage: { in: "12" as unknown as number, out: 2 ** 53 } },
+      ],
+      { shares: "claude-code" },
+    );
+    for (let i = 0; i < 5; i++) await h.call();
+    expect(h.ledger.listInnerCalls().map((c) => [c.tokens_in, c.tokens_out])).toEqual([
+      [12, 5],
+      [3, null],
+      [null, null],
+      [null, null],
+      [null, null],
+    ]);
+    expect(h.usageRows().map((r) => JSON.parse(String(r.metrics_json)))).toEqual([
+      { input_tokens: 12, output_tokens: 5 },
+      { input_tokens: 3 },
+      {},
+      {},
+      {},
+    ]);
+    expect([0, 1, 2 ** 53 - 1].map(tokenCount)).toEqual([0, 1, 2 ** 53 - 1]);
+    expect([-0.5, 1.5, 2 ** 53, Number.NaN, -1, "3", null, undefined, true].map(tokenCount)).toEqual(
+      Array(9).fill(null),
+    );
+  });
+
+  it("the run's envelope and provider-reported view are byte-identical with and without shared-subscription calls", async () => {
+    const h = setup([GOOD, { kind: "text", text: "bad" }, { kind: "text", text: "bad again" }], {
+      shares: "claude-code",
+    });
+    h.ledger.insertUsageObservation({
+      runId: h.run.id,
+      provider: "claude-code",
+      harness: "claude-code",
+      source: "provider_reported",
+      metrics: { "usage.input_tokens": 100 },
+    });
+    const record = () => h.ledger.getRunRecord(h.run.id);
+    const envelope = () =>
+      JSON.stringify(buildEnvelope(h.ledger, record() as NonNullable<ReturnType<typeof record>>, (s) => s));
+    const before = envelope();
+    expect(JSON.parse(before).usage.reported).toEqual([expect.objectContaining({ source: "provider_reported" })]);
+    await h.call();
+    await h.call();
+    expect(h.usageRows().filter((r) => r.source === "inner_agent")).toHaveLength(2);
+    // The envelope reads provider_reported rows only (envelope.ts): the inner_agent rows do not appear as provider usage.
+    expect(envelope()).toBe(before);
+    expect(h.ledger.listProviderReportedUsageSince("claude-code", "1970-01-01T00:00:00.000Z")).toHaveLength(1);
   });
 });
