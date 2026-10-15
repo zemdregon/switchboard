@@ -312,6 +312,29 @@ describe("grok probe and resume (T4.22, T4.23)", () => {
     expect(auditInvocation(resumed, { profile, bypassApproved: true })).toEqual([]);
   });
 
+  it("resumeArgs mirrors compile across every structured scope, including exact refusals", () => {
+    const a = adapter();
+    const id = "resume_scope_matrix";
+    let compiled = 0;
+    for (const scope of scopeShapes()) {
+      for (const bypassApproved of [false, true]) {
+        const profile = { ...privilegedProfile(scope), bypassApproved };
+        const req = request({ bypassApproved, workspace: { cwd: "/resume scope/worktree", writable: true } });
+        const first = a.compile(req, profile);
+        const resumed = a.resumeArgs({ provider: "grok", nativeSessionId: id }, req, profile);
+        const label = JSON.stringify({ scope, bypassApproved });
+        if ("ineligible" in first) {
+          expect(resumed, label).toEqual(first);
+        } else {
+          compiled += 1;
+          // The entire invocation must stay identical, with only the native resume pair appended.
+          expect(resumed, label).toEqual({ ...first, argv: [...first.argv, "-r", id] });
+        }
+      }
+    }
+    expect(compiled).toBe(3);
+  });
+
   it("resumeArgs rejects foreign provider bindings and ineligible profiles with exact reasons", () => {
     const a = adapter();
     const profile = privilegedProfile(BYPASS_SCOPE);
@@ -391,6 +414,59 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
     expect(events.find((e) => e.kind === "usage")).toMatchObject({
       metrics: { input_tokens: 10, output_tokens: 2, num_turns: 1 },
     });
+  });
+
+  it("native errors remain failures in either stream order, with the first error determining the code", () => {
+    const auth = { type: "error", message: "Not signed in" };
+    const model = { type: "error", message: "Couldn't set model synthetic-model" };
+    for (const [first, second, code] of [
+      [auth, model, "AUTH_REQUIRED"],
+      [model, auth, "MODEL_UNAVAILABLE"],
+    ] as const) {
+      for (const lines of [
+        [first, second, END],
+        [END, first, second],
+        [first, END, second],
+      ]) {
+        const { events } = parse(lines.map(line));
+        expect(adapter().extractResult(events, EXIT_OK), JSON.stringify(lines)).toMatchObject({
+          ok: false,
+          failureCode: code,
+          nativeSessionId: SID,
+          unknownEventCount: 0,
+        });
+      }
+    }
+  });
+
+  it("unknown envelopes cannot bind a session or smuggle status and usage before or after end", () => {
+    const envelope = {
+      type: "synthetic_future_event",
+      sessionId: "spoofed_session",
+      stopReason: "end_turn",
+      ok: true,
+      usage: { input_tokens: 999 },
+      error: { message: "Not signed in" },
+      result: END,
+    };
+    for (const lines of [[envelope], [envelope, END], [END, envelope]]) {
+      const { events, state } = parse(lines.map(line));
+      expect(state.unknownEvents).toBe(1);
+      expect(events.filter((e) => e.kind === "unknown")).toEqual([
+        { kind: "unknown", rawType: "synthetic_future_event" },
+      ]);
+      const result = adapter().extractResult(events, EXIT_OK);
+      if (lines.length === 1) {
+        expect(result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", unknownEventCount: 1 });
+        expect(result).not.toHaveProperty("nativeSessionId");
+        expect(events).toHaveLength(1);
+      } else {
+        expect(result).toMatchObject({ ok: true, nativeSessionId: SID, unknownEventCount: 1 });
+        expect(events.filter((e) => e.kind === "usage")).toEqual([
+          { kind: "usage", source: "provider_reported", metrics: { input_tokens: 10, output_tokens: 2, num_turns: 1 } },
+        ]);
+      }
+    }
   });
 
   it("the session id comes only from the structured `end` line, never from text", () => {
@@ -1745,6 +1821,41 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
         code: "OUTPUT_PROTOCOL_ERROR",
         detail: "no result event",
       });
+    });
+
+    it("classifyFailure precedence does not depend on lower-priority events arriving first", () => {
+      const a = adapter();
+      const failed: NormalizedEvent = { kind: "result", ok: false, summary: "task failed" };
+      const rate: NormalizedEvent = { kind: "rate_limit" };
+      const auth: NormalizedEvent = { kind: "provider_error", category: "auth", message: "Not signed in" };
+      const denied: NormalizedEvent = { kind: "permission_denied", tool: "bash" };
+      const guard: NormalizedEvent = {
+        kind: "tool_call",
+        tool: "shell",
+        name: "run_terminal_command",
+        violation: { kind: "git_write", reason: "synthetic Git write" },
+      };
+      for (const [events, code] of [
+        [[failed, rate], "RATE_LIMIT_TRANSIENT"],
+        [[failed, rate, auth], "AUTH_REQUIRED"],
+        [[failed, rate, auth, denied], "PERMISSION_BLOCKED"],
+        [[failed, rate, auth, denied, guard], "PERMISSION_BLOCKED"],
+      ] as const) {
+        const classify = (ordered: readonly NormalizedEvent[]) =>
+          a.classifyFailure({
+            events: ordered,
+            exit: { ...EXIT_OK, exitCode: 1 },
+            stderrTail: "Not signed in; too many requests", // Free text never changes structured precedence.
+            timedOut: false,
+            cancelled: false,
+          });
+        const result = classify(events);
+        expect(result.code).toBe(code);
+        expect(result).toEqual(classify([...events].reverse()));
+        if (events.some((e) => e.kind === "tool_call")) {
+          expect(result.detail).toBe("git write attempted: synthetic Git write");
+        }
+      }
     });
 
     it("seenEnds and seenToolCalls state is isolated across separate ParseState instances", () => {
