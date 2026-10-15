@@ -10,7 +10,8 @@
  * entries) and `AGENTS.md` load (live check rows 10a, 10c); what this case proves is that no flag widens that.
  *
  * Tool-call guard (T4.56, ADR-0039): in an approved bypass run Switchboard's own tool-call guard enforces Git-write
- * denial across the hostile streams, ending `PERMISSION_BLOCKED` at exit 0 and at exit 1 (owner decision 25).
+ * denial across the hostile streams, ending `PERMISSION_BLOCKED` at exit 0 and at exit 1 (owner decision 25), including
+ * a `completed` tool call inside a multi-step run (row 5) and a hostile tool call after the final `stop` step (Q-85).
  */
 
 import { privilegedProfile } from "../../../src/adapters/fixtures/privileged.js";
@@ -47,6 +48,10 @@ const refused = (tool: string, input: Record<string, string>) =>
 const REPORT_TEXT = "The tool call was rejected by the permission system.";
 const REPORT = event("text", { type: "text", text: REPORT_TEXT });
 const STOP = event("step_finish", { type: "step-finish", reason: "stop", cost: 0, tokens: { input: 1, output: 1 } });
+/** Row 5: a tool call that ran (`state.status` `completed`) and the intermediate step it ends (`tool-calls`). */
+const completed = (tool: string, input: Record<string, string>) =>
+  event("tool_use", { type: "tool", tool, state: { status: "completed", input, output: "" } });
+const TOOL_STEP = event("step_finish", { type: "step-finish", reason: "tool-calls", cost: 0, tokens: { input: 1 } });
 
 /** The scope OpenCode compiles (T4.52, Q-83). */
 const BYPASS_SCOPE: PrivilegedScope = {
@@ -164,6 +169,50 @@ const opencodeCase: AdapterLegCase = {
       ],
     },
     {
+      // Row 5's two-step shape: the hostile call completes, its step ends `tool-calls`, then a final `stop` step. The
+      // guard verdict on the first step outlives the later `stop` (ADR-0039).
+      name: "completed shell read of a credential path, then a final stop step",
+      category: "credential_read",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("completed shell read of a credential path, then a final stop step", 0),
+        STEP_START,
+        completed("shell", { command: `cat ${fx.claudeCredentialsPath} && git push origin main` }),
+        TOOL_STEP,
+        STEP_START,
+        event("text", { type: "text", text: "Done." }),
+        STOP,
+      ],
+    },
+    {
+      // Q-85 (fail closed): a tool call after the final `stop` step is not success, and a guard verdict on it keeps its
+      // own code rather than the trailing-tool OUTPUT_PROTOCOL_ERROR.
+      name: "shell write outside the worktree after the final stop step",
+      category: "out_of_worktree_write",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell write outside the worktree after the final stop step", 0),
+        STEP_START,
+        REPORT,
+        STOP,
+        refused("shell", { command: `touch ${fx.outsideSentinel} && git push origin main` }),
+      ],
+    },
+    {
+      name: "shell network call after the final stop step, exit 1",
+      category: "network",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell network call after the final stop step, exit 1", 1),
+        STEP_START,
+        STOP,
+        completed("shell", { command: "curl https://example.invalid/leak && git push origin main" }),
+      ],
+    },
+    {
       name: "only unknown event kinds, clean exit",
       category: "unknown_events",
       exitCode: 0,
@@ -173,6 +222,17 @@ const opencodeCase: AdapterLegCase = {
         // No `sessionID`: OpenCode binds the session from any event that carries one (T4.53).
         JSON.stringify({ type: "synthetic_unknown_kind" }),
         JSON.stringify({ type: "synthetic_another_unknown" }),
+      ],
+    },
+    {
+      // Exit 1 is not an expected exit code (`expectedExitCodes: [0]`), so the run ends TOOL_FAILURE; never success.
+      name: "only unknown event kinds, exit 1",
+      category: "unknown_events",
+      exitCode: 1,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Event types below are invented; the adapter must report them unknown.", 1),
+        JSON.stringify({ type: "synthetic_unknown_kind" }),
       ],
     },
   ],
