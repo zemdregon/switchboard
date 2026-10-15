@@ -703,8 +703,12 @@ check in human and `--json` output before and after `inner test`; with `enabled:
 sends nothing and capacity and the whole `doctor --json` document stay byte-identical; and the capacity collector
 ignores `inner_agent` rows by `source` alone even when metric keys resemble provider usage (`usage.test.ts`,
 `usage-surfaces.test.ts`, `capacity.test.ts`). Those tests call the injected contracts directly; the production `commit`
-tool channel and the MCP admission harness that call them are not themselves driven with inner usage checks. No hosted
-or live backend has been exercised: every test uses a scripted fake or a local fake server. The per-task test and module
+tool channel and the MCP admission harness that call them are not themselves driven with inner usage checks. The
+statements above about what `inner status`, `inner test`, `inner resume` and the `doctor` block print (states, the
+circuit line, rates, the canary verdict, the origin-only backend line, the resume notice) are pinned on the command
+output in `src/inner/cli-doctor-surfaces.test.ts`; the `no_backend` state is reachable from an on-disk config only
+through the `cli` kind, because the config refuses `enabled: true` without a backend. No hosted or live backend has
+been exercised: every test uses a scripted fake or a local fake server. The per-task test and module
 evidence behind these statements, and the list of what is not built, is in
 [HLD §2.5](docs/design/HLD.md#25-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes),
 [SDD §4.3](docs/design/SDD.md#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) and the
