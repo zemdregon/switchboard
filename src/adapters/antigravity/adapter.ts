@@ -535,8 +535,9 @@ export class AntigravityAdapter implements ProviderAdapter {
 
   /**
    * Success needs a clean expected exit and a final `result` with `ok` (status `SUCCESS` and reported tokens, Q-86) and
-   * no `provider_error`, `permission_denied`, `sandbox_violation` or `rate_limit` event (fail closed; a soft denial and
-   * a print timeout both exit 0 with `SUCCESS`, [LIVE] C7, C10).
+   * no `provider_error`, `permission_denied`, `sandbox_violation` or `rate_limit` event and no `tool_call` the tool-call
+   * guard flagged with a `violation` (fail closed; a soft denial and a print timeout both exit 0 with `SUCCESS`, [LIVE]
+   * C7, C10; a guard verdict ends the run in every run, bypass included, ADR-0039).
    */
   extractResult(events: readonly NormalizedEvent[], exit: ExitInfo): RunResult {
     const unknownEventCount = events.filter((e) => e.kind === "unknown").length;
@@ -561,7 +562,8 @@ export class AntigravityAdapter implements ProviderAdapter {
           e.kind === "provider_error" ||
           e.kind === "permission_denied" ||
           e.kind === "sandbox_violation" ||
-          e.kind === "rate_limit",
+          e.kind === "rate_limit" ||
+          (e.kind === "tool_call" && e.violation !== undefined),
       );
     if (clean) return { ok: true, ...base };
     const c = this.classifyFailure({
