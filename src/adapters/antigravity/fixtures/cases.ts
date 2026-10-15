@@ -80,7 +80,9 @@ export function replayAdapter(fixture: string, o: ReplayOptions = {}): Antigravi
  * `result` (OUTPUT_PROTOCOL_ERROR), a guard-flagged Git write under a `SUCCESS` envelope with parameters and args
  * container aliases (PERMISSION_BLOCKED, ADR-0039), a `SUCCESS` envelope whose conversation id is not one safe token
  * (OUTPUT_PROTOCOL_ERROR, nothing bound) and the same unsafe id on the `result` only, after a normal `init` (the first
- * id stays bound), a stream with no `result` at exit 3 (the TDD §4.4.1 `AGY_ERROR` case, stderr only: TOOL_FAILURE) and
+ * id stays bound), a `step_update` for another conversation (OUTPUT_PROTOCOL_ERROR, first id kept), a non-array
+ * `denied_actions` value (PERMISSION_BLOCKED), a stream with no `result` at exit 3 (the TDD §4.4.1 `AGY_ERROR` case,
+ * stderr only: TOOL_FAILURE) and
  * a `SUCCESS` envelope whose usage keys were not recorded (TOOL_FAILURE, Q-86), and a cancellation of a process that
  * honours SIGTERM as well as one that ignores it. No case expects SANDBOX_VIOLATION: the one compiled cell is an
  * approved bypass, where the provider-state guard does not apply; the `sandbox_violation_unrecorded` fixture replays to
@@ -128,6 +130,13 @@ export function antigravityConformanceCases(makeCwd: () => string): ConformanceC
       ...base,
       kind: "task_failure",
       adapter: replayAdapter("permission_denied"),
+      request: request(),
+      expect: { ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: DEFAULT_SESSION_ID },
+    },
+    {
+      ...base,
+      kind: "task_failure",
+      adapter: replayAdapter("denied_not_array"),
       request: request(),
       expect: { ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: DEFAULT_SESSION_ID },
     },
@@ -233,6 +242,13 @@ export function antigravityConformanceCases(makeCwd: () => string): ConformanceC
       ...base,
       kind: "malformed_output",
       adapter: replayAdapter("conversation_changed"),
+      request: request(),
+      expect: { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", nativeSessionId: DEFAULT_SESSION_ID },
+    },
+    {
+      ...base,
+      kind: "malformed_output",
+      adapter: replayAdapter("step_conversation_changed"),
       request: request(),
       expect: { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", nativeSessionId: DEFAULT_SESSION_ID },
     },

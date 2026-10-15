@@ -1975,6 +1975,30 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     expect(fresh.result).toMatchObject({ ok: false, failureDetail: "exit code 64" });
   });
 
+  it("a resumed C10 zero-token SUCCESS (resume_failure) is TOOL_FAILURE and keeps the --conversation id", async () => {
+    // resumeArgs stays Ineligible (Q-86), so the dialect is given the id the same way as the success resume fixture.
+    const { binding: _binding, ...c } = caseOf("resume");
+    const failed = replayAdapter("resume_failure");
+    const withId = withCompile(failed, (r, p) => {
+      const inv = failed.compile(r, p);
+      return "ineligible" in inv ? inv : { ...inv, argv: [...inv.argv, "--conversation", RESUMED_SESSION_ID] };
+    });
+    const report = await runConformanceCase({
+      ...c,
+      adapter: withId,
+      expect: { ok: false, failureCode: "TOOL_FAILURE", nativeSessionId: RESUMED_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "SUCCESS with no reported tokens",
+      nativeSessionId: RESUMED_SESSION_ID,
+    });
+    const fresh = await runConformanceCase({ ...c, adapter: failed });
+    expect(fresh.result).toMatchObject({ ok: false, failureDetail: "exit code 64" });
+  });
+
   it("the case list replays the exit 3 and unrecorded usage shapes, both cancellation paths, and not the sandbox gap", () => {
     const cases = antigravityConformanceCases(makeCwd);
     const replays = (fixture: string) =>
@@ -1990,6 +2014,12 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     ]);
     expect(replays("git_write_guard_args").map((x) => [x.kind, x.expect.failureCode])).toEqual([
       ["task_failure", "PERMISSION_BLOCKED"],
+    ]);
+    expect(replays("denied_not_array").map((x) => [x.kind, x.expect.failureCode])).toEqual([
+      ["task_failure", "PERMISSION_BLOCKED"],
+    ]);
+    expect(replays("step_conversation_changed").map((x) => [x.kind, x.expect.failureCode])).toEqual([
+      ["malformed_output", "OUTPUT_PROTOCOL_ERROR"],
     ]);
     expect(replays("backing_provider").map((x) => [x.kind, x.expect.ok])).toEqual([["success", true]]);
     expect(replays("sandbox_violation_unrecorded")).toEqual([]);
@@ -2085,6 +2115,17 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     return c;
   };
 
+  it("a non-array denied_actions value is one denial: PERMISSION_BLOCKED, conversation id kept", async () => {
+    const report = await runConformanceCase(caseFor("denied_not_array"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "denied: unknown",
+      nativeSessionId: DEFAULT_SESSION_ID,
+    });
+  });
+
   it("a /credits SUCCESS envelope with no turn (live check C6) is TOOL_FAILURE and binds no session", async () => {
     const report = await runConformanceCase(caseFor("credits_command"));
     expect(report.checks.filter((k) => !k.ok)).toEqual([]);
@@ -2096,6 +2137,7 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     ["a stream with no result line at exit 0", "no_result", "no result event"],
     ["a second, successful result after a C10 zero-token one", "two_results", "protocol: more than one result line"],
     ["a result for another conversation", "conversation_changed", "protocol: conversation id changed mid-run"],
+    ["a step for another conversation", "step_conversation_changed", "protocol: conversation id changed mid-run"],
     [
       "an unsafe conversation id after a bound one",
       "unsafe_id_after_bound",
@@ -2381,6 +2423,69 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
         return [...a.slice(0, i + 1), "-version", ...a.slice(i + 1)];
       }),
     ],
+    // Declared bypass spellings and never-emitted C2 flags (providers.ts, adapter.ts header, live check C2/C7b/C17).
+    // Go's flag keeps the last value, so an `=` form or a prompt alias beside the compiled word is the same flag.
+    ["--yolo added", argvEdit((a) => [...a, "--yolo"])],
+    ["--force added", argvEdit((a) => [...a, "--force"])],
+    ["--always-approve added", argvEdit((a) => [...a, "--always-approve"])],
+    ["--approve-mcps added", argvEdit((a) => [...a, "--approve-mcps"])],
+    ["--full-auto added", argvEdit((a) => [...a, "--full-auto"])],
+    ["--remote-control added", argvEdit((a) => [...a, "--remote-control"])],
+    ["-remote-control added", argvEdit((a) => [...a, "-remote-control"])],
+    ["--add-dir added", argvEdit((a) => [...a, "--add-dir", "/tmp/synthetic"])],
+    ["-add-dir added", argvEdit((a) => [...a, "-add-dir", "/tmp/synthetic"])],
+    ["-gemini_dir added", argvEdit((a) => [...a, "-gemini_dir", "/tmp/synthetic"])],
+    ["--mode=plan added", argvEdit((a) => [...a, "--mode=plan"])],
+    ["--print-timeout added", argvEdit((a) => [...a, "--print-timeout", "1s"])],
+    ["-c added", argvEdit((a) => [...a, "-c"])],
+    ["--sandbox=false added", argvEdit((a) => [...a, "--sandbox=false"])],
+    ["--print= beside --prompt=", argvEdit((a) => [...a, "--print=synthetic other prompt"])],
+    ["-p as two words beside --prompt=", argvEdit((a) => [...a, "-p", "synthetic other prompt"])],
+    ["--output-format=json beside the two words", argvEdit((a) => [...a, "--output-format=json"])],
+    ["a second --output-format stream-json", argvEdit((a) => [...a, "--output-format", "stream-json"])],
+    [
+      "--output-format removed",
+      argvEdit((a) => a.filter((w, i) => w !== "--output-format" && a[i - 1] !== "--output-format")),
+    ],
+    [
+      "--prompt as two words in place of --prompt=",
+      argvEdit((a) => {
+        const i = a.findIndex((w) => w.startsWith("--prompt="));
+        const value = a[i]?.slice("--prompt=".length) ?? "";
+        return [...a.slice(0, i), "--prompt", value, ...a.slice(i + 1)];
+      }),
+    ],
+    [
+      "-dangerously-skip-permissions in place of the bare word",
+      argvEdit((a) => a.map((w) => (w === "--dangerously-skip-permissions" ? "-dangerously-skip-permissions" : w))),
+    ],
+    [
+      "-h before the compiled flags",
+      argvEdit((a) => {
+        const i = a.indexOf("--");
+        return [...a.slice(0, i + 1), "-h", ...a.slice(i + 1)];
+      }),
+    ],
+    [
+      "--h before the compiled flags",
+      argvEdit((a) => {
+        const i = a.indexOf("--");
+        return [...a.slice(0, i + 1), "--h", ...a.slice(i + 1)];
+      }),
+    ],
+    [
+      "models positional before the compiled flags",
+      argvEdit((a) => {
+        const i = a.indexOf("--");
+        return [...a.slice(0, i + 1), "models", ...a.slice(i + 1)];
+      }),
+    ],
+    ["--config-dir added", argvEdit((a) => [...a, "--config-dir", "/tmp/synthetic"])],
+    ["a trailing --", argvEdit((a) => [...a, "--"])],
+    ["--conversation with a slash id", argvEdit((a) => [...a, "--conversation", "../.gemini"])],
+    ["--conversation with a space in the id", argvEdit((a) => [...a, "--conversation", "not a token"])],
+    ["--conversation id longer than 256 characters", argvEdit((a) => [...a, "--conversation", `a${"b".repeat(256)}`])],
+    ["auto-update set to 1", (inv: Invocation): Invocation => ({ ...inv, env: { AGY_CLI_DISABLE_AUTO_UPDATE: "1" } })],
   ])(
     "the replay refuses an invocation agy would not be given (%s), so a wrong compile cannot pass",
     async (_n, edit) => {

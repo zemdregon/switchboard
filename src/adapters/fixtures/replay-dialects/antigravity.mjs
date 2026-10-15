@@ -80,6 +80,10 @@ const parseFlag = (word) => {
 // API-key mode stays disabled (adapter.ts ANTIGRAVITY_ENV_ALLOWLIST): none of these may reach the provider process.
 const REFUSED_ENV = ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL", "GOOGLE_CLOUD_PROJECT"];
 
+// Same shape as adapter.ts SESSION_ID_RE. Go's flag accepts any next word, including a path or a 257-character id.
+// A success fixture has no {{SESSION_ID}} placeholder, so those argv used to replay it as a pass.
+const SAFE_CONVERSATION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+
 /** @type {import("./claude.mjs").Dialect} */
 export default {
   check(argv, fail) {
@@ -148,10 +152,9 @@ export default {
         conversation.hasEq ||
         conversation.raw !== "--conversation" ||
         typeof id !== "string" ||
-        id === "" ||
-        id.startsWith("-")
+        !SAFE_CONVERSATION_ID.test(id)
       ) {
-        fail("expected at most one `--conversation <id>` with an id", 64);
+        fail("expected at most one `--conversation <id>` with one safe token", 64);
       }
     }
     const allowed = new Set(["output-format", "prompt", "dangerously-skip-permissions", "conversation"]);
