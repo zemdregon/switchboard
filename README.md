@@ -70,10 +70,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   [ROADMAP §6.10](docs/ROADMAP.md#610-m13-network-mcp-transport-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
   client and a macOS CI leg are done; Grok Build, Antigravity, Cursor and OpenCode each have a module, compile matrix
-  and parser work on synthetic fixtures. Grok Build has module, compile-matrix, parser (partial) and auth-preflight
-  coverage on synthetic fixtures (README [Grok Build CLI](#grok-build-cli-milestone-4), ROADMAP T4.22 to T4.24); the
-  conformance suite, malicious-fixture leg and Git declaration fixture tests are still open (T4.25 to T4.27; T4.25 PR
-  [#210](https://github.com/zemdregon/switchboard/pull/210) was open at documentation time). Antigravity has a
+  and parser work on synthetic fixtures. Grok Build has module, compile-matrix, parser (partial), auth-preflight,
+  conformance suite (T4.25), malicious-fixture leg (partial: `replayGap`, T4.26) and Git declaration fixture tests
+  on synthetic fixtures (README [Grok Build CLI](#grok-build-cli-milestone-4), ROADMAP T4.22 to T4.27); live smoke,
+  live malicious leg and `adapters validate` remain operator work (T4.28). Antigravity has a
   conformance suite (partial: native resume, T4.35), a malicious-fixture leg (partial: live shapes and FR-POL-04, T4.36)
   and a Git declaration on synthetic fixtures (README [Antigravity CLI](#antigravity-cli-milestone-4), ROADMAP T4.35 to
   T4.37); live smoke, live malicious leg and `adapters validate` for Antigravity remain operator work (T4.38). Cursor
@@ -661,21 +661,25 @@ Resume continues the native session with `-r <session_id>` through the same matr
 
 `list_capabilities` reports `gitWriteControl` **`none-documented`**: Grok Build documents `--deny` rules, but they are
 prefix matches and the live check showed forms that could still run `git commit` (step 9); Switchboard does not emit a
-deny rule. Git-write denial therefore relies on FR-GIT-03 (controller ref comparison) and FR-GIT-06 (the tool-call
-guard) in addition to any provider rule. The parser does not yet read `tool_call` / `tool_call_update` shapes (T4.23
-Partial), so the guard cannot see Grok Build's shell commands until a capture records those lines.
+deny rule.
 
 `commitChannel` is **`finalize-only`**: Switchboard does not inject a per-run MCP server (no headless MCP-definition
 flag was found in the 2026-10-14 live check). In the only compiled scope, project `.mcp.json` and `.grok/config.toml`
 MCP servers load without `--trust` (observed step 10a). To publish work, set `finalize_commit` on the project's primary
-context as for Codex ([How commits reach Git](#how-commits-reach-git)).
+context as for Codex ([How commits reach Git](#how-commits-reach-git)). Shell allowlist entries that could write Git make
+the run `Ineligible` (`PROFILE_UNSUPPORTED`, FR-GIT-01), including on an approved bypass scope.
+
+The parser does not yet read `tool_call` / `tool_call_update` shapes (T4.23 Partial), so Switchboard's tool-call guard
+(ADR-0039) cannot see Grok Build's shell commands until a capture records those lines; `extractResult` on `main` does not
+yet mirror Cursor's ADR-0039 handling for a guard verdict on a parsed `tool_call` (other lane). In an approved bypass
+run, Git-write denial therefore rests on FR-GIT-03 and FR-GIT-06 in addition to any provider rule.
 
 Fixture evidence on `main`: `src/adapters/grok/grok.test.ts` ("grok compile matrix (T4.22)", "grok probe and resume
 (T4.22, T4.23)", "grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-10-14 live check recorded)",
-"grok auth preflight (T4.24, Q-10; SYNTHETIC outputs in the shapes of the 2026-10-14 live check)"). Conformance,
-malicious-fixture and Git-declaration argv tests are not on `main` yet (ROADMAP T4.25 to T4.27; T4.25 was open as PR
-[#210](https://github.com/zemdregon/switchboard/pull/210) at documentation time). No end-to-end run through Switchboard
-against a logged-in `grok` has been recorded yet (T4.28).
+"grok auth preflight (T4.24, Q-10; SYNTHETIC outputs in the shapes of the 2026-10-14 live check)", "grok conformance
+suite (synthetic recorded fixtures, FR-ADP-11, T4.25)" and "grok Git declaration (T4.27, FR-GIT-01, FR-GIT-02,
+FR-GIT-09)"); CI also runs `test/malicious/adapter-leg.test.ts` ("adapter malicious leg: grok", T4.26 partial while
+`replayGap` is set). No end-to-end run through Switchboard against a logged-in `grok` has been recorded yet (T4.28).
 
 ## Antigravity CLI (milestone 4)
 
