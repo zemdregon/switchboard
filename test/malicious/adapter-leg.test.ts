@@ -18,11 +18,18 @@ import {
   HOSTILE_REPO_ENTRIES,
   parsedKinds,
   replayHostileStream,
+  requestFor,
   STREAM_CATEGORIES,
   withFlagStripped,
 } from "./adapter-leg.js";
 import { antigravityPartialStreams } from "./adapters/antigravity.case.js";
-import { grokPartialStreams } from "./adapters/grok.case.js";
+import {
+  grokCellPolicyFlags,
+  grokCellProblems,
+  grokCompiledCells,
+  grokPartialStreams,
+  grokRefusedScopes,
+} from "./adapters/grok.case.js";
 import { opencodePartialStreams, opencodeUnreadableStreams } from "./adapters/opencode.case.js";
 import { buildMaliciousFixture, type MaliciousFixture } from "./fixture.js";
 
@@ -415,6 +422,63 @@ describe("adapter malicious leg: grok partial streams", () => {
       expect(o.resultOk, s.name).toBe(false);
       expect(o.failureCode, s.name).toBe("OUTPUT_PROTOCOL_ERROR");
       expect(o.untouched, s.name).toBe(true);
+    }
+  });
+});
+
+// Grok Build only (T4.26): the compiled cells pinned beyond flag presence, and the scopes it must refuse.
+describe("adapter malicious leg: grok compiled cells", () => {
+  const c = cases.find((x) => x.provider === "grok");
+  if (!c) throw new Error("no grok case file");
+  const compileCell = (cell: (typeof grokCompiledCells)[number]) => {
+    const inv = c
+      .makeAdapter(path.join(fx.base, "unused.jsonl"), 0)
+      .compile({ ...requestFor(fx.repo, true), workspace: { cwd: fx.repo, writable: cell.writable } }, cell.profile);
+    if (isIneligible(inv)) throw new Error(`${cell.label} does not compile: ${inv.reason}: ${inv.detail}`);
+    return inv;
+  };
+
+  it("each cell compiles one --sandbox with its value, web search off exactly with network off, and one --always-approve", () => {
+    expect(new Set(grokCompiledCells.map((cell) => cell.sandbox))).toEqual(
+      new Set(["strict", "workspace", "read-only"]),
+    );
+    for (const cell of grokCompiledCells) expect(grokCellProblems(compileCell(cell), cell), cell.label).toEqual([]);
+  });
+
+  it("positive control: a widening second --sandbox, an inline or detached value, or a policyFlags drift is reported", () => {
+    for (const cell of grokCompiledCells) {
+      const inv = compileCell(cell);
+      const at = inv.argv.indexOf("--sandbox");
+      const broken: [string, string[], string[]][] = [
+        ["second --sandbox workspace", [...inv.argv, "--sandbox", "workspace"], inv.policyFlags],
+        ["inline --sandbox=", inv.argv.map((a, i) => (i === at ? `--sandbox=${cell.sandbox}` : a)), inv.policyFlags],
+        ["value detached", [...inv.argv.filter((_, i) => i !== at + 1), cell.sandbox], inv.policyFlags],
+        ["second --always-approve", [...inv.argv, "--always-approve"], inv.policyFlags],
+        [
+          "web search flipped",
+          cell.webSearchOff
+            ? inv.argv.filter((a) => a !== "--disable-web-search")
+            : [...inv.argv, "--disable-web-search"],
+          inv.policyFlags,
+        ],
+        ["policyFlags without the sandbox", inv.argv, inv.policyFlags.slice(2)],
+      ];
+      for (const [label, argv, policyFlags] of broken) {
+        expect(grokCellProblems({ ...inv, argv, policyFlags }, cell).length, `${cell.label}: ${label}`).toBeGreaterThan(
+          0,
+        );
+      }
+      expect(grokCellPolicyFlags(cell)).toEqual(inv.policyFlags);
+    }
+  });
+
+  it("refuses repository configuration disabled or approved in every cell, and every other unsupported scope", () => {
+    expect(grokRefusedScopes.filter((s) => s.label.includes("repository_config"))).toHaveLength(6);
+    for (const s of grokRefusedScopes) {
+      const inv = c
+        .makeAdapter(path.join(fx.base, "unused.jsonl"), 0)
+        .compile(requestFor(fx.repo, s.bypassApproved), s.profile);
+      expect(isIneligible(inv) ? inv.reason : "compiled", s.label).toBe(s.reason);
     }
   });
 });
