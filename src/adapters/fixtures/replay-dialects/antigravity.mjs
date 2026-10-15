@@ -28,10 +28,15 @@ const STRING_FLAGS = new Set([
   "conversation",
   "gemini_dir",
   "add-dir",
-  "sandbox",
   "mode",
   "model",
   "print-timeout",
+  "agent",
+  "effort",
+  "input-format",
+  "json-schema",
+  "log-file",
+  "project",
 ]);
 const BOOL_FLAGS = new Set([
   "dangerously-skip-permissions",
@@ -45,6 +50,11 @@ const BOOL_FLAGS = new Set([
   "c",
   "help",
   "version",
+  "sandbox",
+  "disable-slash-commands",
+  "prompt-interactive",
+  "i",
+  "new-project",
 ]);
 
 /** @returns {{ kind: "end" | "positional" | "bad" } | { kind: "flag", dashes: string, name: string, hasEq: boolean, value: string | undefined, raw: string }} */
@@ -68,7 +78,7 @@ const parseFlag = (word) => {
 };
 
 // API-key mode stays disabled (adapter.ts ANTIGRAVITY_ENV_ALLOWLIST): none of these may reach the provider process.
-const REFUSED_ENV = ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL"];
+const REFUSED_ENV = ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL", "GOOGLE_CLOUD_PROJECT"];
 
 /** @type {import("./claude.mjs").Dialect} */
 export default {
@@ -155,8 +165,8 @@ export default {
   probe(argv) {
     // Only the whole argv. A run that starts with `--help` or `--version` and then the compiled flags must fall
     // through to `check` (exit 64), not exit 0 with probe text and no fixture.
-    if (argv.length === 1 && argv[0] === "--version") return "0.0.1\n";
-    if (argv.length === 1 && argv[0] === "--help") {
+    if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "-version")) return "0.0.1\n";
+    if (argv.length === 1 && (argv[0] === "--help" || argv[0] === "-help" || argv[0] === "-h" || argv[0] === "--h")) {
       return "SYNTHETIC help: --prompt --output-format --dangerously-skip-permissions --conversation\n";
     }
     return undefined;
