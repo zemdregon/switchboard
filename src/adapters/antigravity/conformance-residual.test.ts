@@ -152,6 +152,8 @@ describe("antigravity fixture inventory (T4.35, FR-ADP-11)", () => {
     sandbox_violation_unrecorded: "replays to a success: the tool's error is not read (T4.33 gap, pinned)",
     unsafe_then_good_result:
       "pins the T4.33 binding gap (an unsafe init id leaves the binding to the result) in parser-residual.test.ts",
+    usage_unreconciled:
+      "replays to a success: fractional and unreconciled counters are recorded as reported (T4.33 gap, pinned)",
     resume_failure: "needs `--conversation <id>`, which is not compiled while resumeArgs is Ineligible (Q-86)",
     resume_unknown_id: "needs `--conversation <id>`, which is not compiled while resumeArgs is Ineligible (Q-86)",
   };

@@ -4,17 +4,18 @@
  * `stream-json` shapes of the 2026-10-14 live check (C4, C7, C10); no new capture, no `agy` run, parser unchanged.
  * Outside the T4.35 case list and the T4.36 malicious leg.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { usageObservationsFromEvents } from "../../usage/observations.js";
 import { runConformanceCase } from "../conformance.js";
 import { privilegedProfile } from "../fixtures/privileged.js";
 import { guardEvent } from "../tool-guard.js";
 import type { CompileRequest, ExitInfo, NormalizedEvent, ParseState, ResolvedProfile } from "../types.js";
 import { isIneligible } from "../types.js";
 import { AntigravityAdapter } from "./adapter.js";
-import { DEFAULT_SESSION_ID, PRIVILEGED_BYPASS_PROFILE, replayAdapter } from "./fixtures/cases.js";
+import { DEFAULT_SESSION_ID, fixturePath, PRIVILEGED_BYPASS_PROFILE, replayAdapter } from "./fixtures/cases.js";
 
 const CID = "0b6c2d1e-0000-4000-8000-0000000000ee";
 const OTHER = "0b6c2d1e-0000-4000-8000-0000000000ef";
@@ -375,5 +376,165 @@ describe("antigravity parser residuals, third pass (T4.33, synthetic shapes)", (
       { kind: "result", ok: true },
     ]);
     expect(r.result).toEqual({ ok: true, unknownEventCount: 0, nativeSessionId: CID, summary: "ok" });
+  });
+});
+
+/**
+ * Fourth pass (2026-10-15, Delegated, not owner-approved; mirrors the Grok Build, Cursor and OpenCode event-order and
+ * usage residuals): the order of the events one `result` line emits, and `provider_reported` usage edge cases, each
+ * through `usageObservationsFromEvents` as the lifecycle records it (FR-CAP-01, ADR-0007). Synthetic lines only. One
+ * gap is closed: the Q-86 total is read as an own property, so an inherited `total_tokens` no longer passes for a
+ * reported one (the old parser fails that test). The other gaps below are pinned, not fixed.
+ */
+describe("antigravity parser residuals, fourth pass: event order and provider_reported usage (T4.33)", () => {
+  const dirs: string[] = [];
+  afterAll(() => {
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  });
+  const rows = (events: readonly NormalizedEvent[]) =>
+    usageObservationsFromEvents(events, { runId: "run_antigravity_t433_usage", provider: "antigravity" });
+  const usageOf = (events: readonly NormalizedEvent[]) => events.filter((e) => e.kind === "usage");
+
+  it("a result with no init emits session_bound (with the result's model) before its usage, message and result", () => {
+    const r = run([RESULT({ model: "synthetic-model" })]);
+    expect(r.events.map((e) => e.kind)).toEqual(["session_bound", "usage", "message", "result"]);
+    // The usage row carries the model the same line bound, because session_bound comes first.
+    expect(rows(r.events)).toEqual([
+      expect.objectContaining({ harness: "antigravity", model: "synthetic-model", source: "provider_reported" }),
+    ]);
+    expect(r.result).toEqual({ ok: true, unknownEventCount: 0, nativeSessionId: CID, summary: "ok" });
+  });
+
+  it("pins the gap: a result whose id is not a safe token records its usage, in the order error, usage, result, with no model", () => {
+    const r = run([RESULT({ conversation_id: "-c", model: "synthetic-model" })]);
+    expect(r.events.map((e) => e.kind)).toEqual(["provider_error", "usage", "message", "result"]);
+    // Nothing bound, so the model on that line reaches no usage row (it is dropped with the unsafe id).
+    expect(rows(r.events)).toEqual([expect.objectContaining({ model: null, backingProvider: null, metrics: USAGE })]);
+    expect(r.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: conversation id is not a safe token",
+    });
+    expect(r.result).not.toHaveProperty("nativeSessionId");
+  });
+
+  it("a failed envelope emits usage, denials, its error, message and result in that order; usage is recorded once", () => {
+    const r = run([
+      INIT(),
+      RESULT({ status: "ERROR", denied_actions: [{ action: "run_command", display_name: "Run" }], error: "boom" }),
+    ]);
+    expect(r.events.map((e) => e.kind)).toEqual([
+      "session_bound",
+      "usage",
+      "permission_denied",
+      "provider_error",
+      "message",
+      "result",
+    ]);
+    expect(rows(r.events)).toHaveLength(1);
+    // A denial outranks the envelope's error (FR-POL-04).
+    expect(r.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: CID });
+  });
+
+  it("a failed first result records its usage; a later success cannot flip it and the protocol error outranks it", () => {
+    const r = run([INIT(), RESULT({ status: "ERROR" }), RESULT({ usage: { ...USAGE, total_tokens: 99 } })]);
+    expect(usageOf(r.events)).toEqual([{ kind: "usage", source: "provider_reported", metrics: USAGE }]);
+    // The second line is never ok; its event summary reuses the Q-86 wording although it reported tokens (the run's
+    // failure detail below is the protocol error, so that summary is not surfaced).
+    expect(r.events.filter((e) => e.kind === "result")).toEqual([
+      { kind: "result", ok: false, summary: "ERROR" },
+      { kind: "result", ok: false, summary: "SUCCESS with no reported tokens" },
+    ]);
+    expect(r.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: more than one result line",
+      nativeSessionId: CID,
+    });
+  });
+
+  it("a total with no other counter is recorded alone and is a success; nothing is computed from components", () => {
+    const totalOnly = run([INIT(), RESULT({ usage: { total_tokens: 24 } })]);
+    expect(usageOf(totalOnly.events)).toEqual([
+      { kind: "usage", source: "provider_reported", metrics: { total_tokens: 24 } },
+    ]);
+    expect(totalOnly.result).toMatchObject({ ok: true });
+    // Components with no total: still recorded, no total is summed in, and the run fails (Q-86).
+    const parts = { input_tokens: 20, output_tokens: 3 };
+    const noTotal = run([INIT(), RESULT({ usage: parts })]);
+    expect(rows(noTotal.events)).toEqual([expect.objectContaining({ metrics: parts })]);
+    expect(noTotal.result).toMatchObject({ ok: false, failureDetail: "SUCCESS with no reported tokens" });
+  });
+
+  it("pins the gap: fractional counters are recorded as reported and a fractional total above zero is a success", () => {
+    const usage = { ...USAGE, thinking_tokens: 0.5, total_tokens: 0.25 };
+    const r = run([INIT(), RESULT({ usage })]);
+    expect(usageOf(r.events)).toEqual([{ kind: "usage", source: "provider_reported", metrics: usage }]);
+    expect(r.result).toMatchObject({ ok: true, nativeSessionId: CID });
+  });
+
+  it("pins the gap: a total below the sum of its components is recorded unreconciled and the run succeeds", () => {
+    const usage = { ...USAGE, total_tokens: 1 };
+    const r = run([INIT(), RESULT({ usage })]);
+    expect(rows(r.events)).toEqual([expect.objectContaining({ metrics: usage })]);
+    expect(r.result).toMatchObject({ ok: true });
+  });
+
+  it("usage counters are own properties only: an inherited total_tokens is never recorded and fails the run", () => {
+    const proto = Object.prototype as Record<string, unknown>;
+    proto.total_tokens = 24;
+    try {
+      const r = run([INIT(), RESULT({ usage: { input_tokens: 20 } })]);
+      expect(usageOf(r.events)).toEqual([
+        { kind: "usage", source: "provider_reported", metrics: { input_tokens: 20 } },
+      ]);
+      expect(r.result).toMatchObject({ ok: false, failureDetail: "SUCCESS with no reported tokens" });
+    } finally {
+      delete proto.total_tokens;
+    }
+    // A JSON `__proto__` key inside usage is an own key named `__proto__`, never a counter.
+    const smuggled = run([INIT(), RESULT().replace('"usage":{', '"usage":{"__proto__":{"total_tokens":99},')]);
+    expect(usageOf(smuggled.events)).toEqual([{ kind: "usage", source: "provider_reported", metrics: USAGE }]);
+  });
+
+  it("a null usage records no row and no total, so a SUCCESS envelope fails (Q-86)", () => {
+    const r = run([INIT(), RESULT({ usage: null })]);
+    expect(rows(r.events)).toEqual([]);
+    expect(r.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+  });
+
+  it("fixture usage_unreconciled replays to a success with the reported numbers recorded as is (gap, pinned)", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "sb-antigravity-t433-usage-"));
+    dirs.push(cwd);
+    const report = await runConformanceCase({
+      kind: "task_failure",
+      adapter: replayAdapter("usage_unreconciled"),
+      request: {
+        runId: "run_antigravity_t433_usage",
+        objective: "synthetic antigravity objective",
+        constraints: [],
+        workspace: { cwd, writable: true },
+        bypassApproved: true,
+      },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toEqual({
+      ok: true,
+      unknownEventCount: 0,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      summary: "Done.",
+    });
+    const lines = readFileSync(fixturePath("usage_unreconciled"), "utf8")
+      .split("\n")
+      .filter((l) => l !== "" && !l.includes('"_fixture"'));
+    expect(rows(run(lines).events)).toEqual([
+      expect.objectContaining({
+        model: "synthetic-model",
+        source: "provider_reported",
+        metrics: { input_tokens: 20, output_tokens: 3, thinking_tokens: 0.5, cache_read_tokens: 0, total_tokens: 7 },
+      }),
+    ]);
   });
 });
