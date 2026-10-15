@@ -150,6 +150,8 @@ describe("antigravity fixture inventory (T4.35, FR-ADP-11)", () => {
   const OUT_OF_SUITE: Record<string, string> = {
     non_tool_step_command: "replays to a success: a command off a `tool` step is not seen (T4.33 gap, pinned)",
     sandbox_violation_unrecorded: "replays to a success: the tool's error is not read (T4.33 gap, pinned)",
+    trailing_repeat_step:
+      "replays to a success: a repeated tool step after the result is deduplicated, so the order check misses it (T4.33 gap, pinned)",
     unsafe_then_good_result:
       "pins the T4.33 binding gap (an unsafe init id leaves the binding to the result) in parser-residual.test.ts",
     usage_unreconciled:
