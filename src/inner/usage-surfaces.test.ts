@@ -710,6 +710,89 @@ describe("inner test CLI and doctor when shares_subscription_with is in the on-d
     // Nothing was called, so the whole doctor document (inner section included) is byte-identical this time.
     expect(await cli(["doctor", "--json"], true, extra)).toBe(before.doctor);
   });
+
+  it("the shared provider disabled for routing (providers.<id>.enabled: false) keeps the warning and the label: the subscription is consumed whether or not the provider is routed to", async () => {
+    // FR-INN-15's warning is about subscription consumption, not routing. `providers.claude-code.enabled: false` takes
+    // the provider out of routing, but the inner agent still draws on its subscription, so `doctor` must carry the very
+    // check it carries with the provider enabled, `inner status` must still name it, and each backend request still
+    // writes its labelled row under claude-code. The fake registry has no claude adapter, so the capacity surfaces
+    // compared here are the fake provider's; the label never reaches any of them (the estimator reads provider-reported
+    // rows only). Delegated: the routing switch does not silence the warning.
+    const config = (providers?: Record<string, unknown>) =>
+      JSON.stringify({
+        schema_version: 1,
+        data_dir: dataDir,
+        allowed_roots: [path.join(root, "repos")],
+        mcp_clients: [{ id: "c1", max_trust_profile: "edit-untrusted" }],
+        limits: { per_provider_concurrency: 2 },
+        capacity: { window_seconds: 7200, confidence_runs: 4 },
+        ...(providers !== undefined ? { providers } : {}),
+        inner_agent: {
+          enabled: true,
+          backend: {
+            kind: "http",
+            base_url: "http://127.0.0.1:1",
+            model: "cfg-model",
+            shares_subscription_with: "claude-code",
+          },
+          tasks: { run_title: { enabled: true } },
+        },
+      });
+    type Doctor = { checks: { id: string }[]; capacity: unknown; inner_agent: { tasks: { task: string }[] } };
+    const warning = (doc: Doctor) => doc.checks.filter((c) => c.id === "inner_shared_subscription");
+    finishedRun();
+    const client = await connect();
+    const backend = createFakeBackend({
+      script: [{ kind: "text", text: '{"title":"Fix greeting typo"}', usage: { in: 11, out: 5 } }],
+    });
+    const extra = { innerBackend: backend };
+
+    writeFileSync(configPath, config());
+    const enabledWarning = warning(JSON.parse(await cli(["doctor", "--json"], true, extra)) as Doctor);
+    expect(enabledWarning).toEqual([expect.objectContaining({ status: "warn" })]);
+
+    writeFileSync(configPath, config({ "claude-code": { enabled: false } }));
+    const before = {
+      tool: await capacityText(client),
+      capacity: await cli(["capacity", "--json"], false, extra),
+      doctor: JSON.parse(await cli(["doctor", "--json"], true, extra)) as Doctor,
+    };
+    expect(warning(before.doctor)).toEqual(enabledWarning);
+    expect(await cli(["doctor"], true, extra)).toMatch(
+      /^\[warn\] Inner agent subscription: the inner agent shares the claude-code subscription: its calls consume claude-code capacity; /mu,
+    );
+    expect(await cli(["inner", "status"], true, extra)).toContain("shares subscription with: claude-code\n");
+
+    expect(JSON.parse(await cli(["inner", "test", "run_title", "--json"], false, extra))).toMatchObject({
+      accepted: true,
+    });
+    expect(backend.requests).toHaveLength(1);
+    expect(ledger.listInnerCalls()).toEqual([
+      expect.objectContaining({ task: "run_title", run_id: null, attempts: 1 }),
+    ]);
+    expect(
+      db
+        .prepare(
+          "SELECT run_id, provider, harness, source, metrics_json FROM usage_observation WHERE source = 'inner_agent'",
+        )
+        .all(),
+    ).toEqual([
+      {
+        run_id: null,
+        provider: "claude-code",
+        harness: "claude-code",
+        source: "inner_agent",
+        metrics_json: JSON.stringify({ input_tokens: 11, output_tokens: 5 }),
+      },
+    ]);
+    expect(ledger.listProviderReportedUsageSince("claude-code", "1970-01-01T00:00:00.000Z")).toHaveLength(0);
+
+    expect(await capacityText(client)).toBe(before.tool);
+    expect(await cli(["capacity", "--json"], false, extra)).toBe(before.capacity);
+    const after = JSON.parse(await cli(["doctor", "--json"], true, extra)) as Doctor;
+    expect(after.capacity).toEqual(before.doctor.capacity);
+    expect(warning(after)).toEqual(enabledWarning);
+  });
 });
 
 describe("serve-path contracts (commit_message and route_features) leave capacity surfaces byte-identical (T11.5)", () => {

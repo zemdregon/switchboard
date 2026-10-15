@@ -307,7 +307,10 @@ never as provider usage, and never in `capacity_score`. That warning and that la
 config id: with `shares_subscription_with` set to any other string, `doctor` (text and `--json`) exits 1 on its
 `config` check with the loader's message naming the key, carries no `inner_shared_subscription` check and no inner-agent
 block, and `inner test` exits 1 with the same message, sends nothing and writes neither an `inner_call` row nor an
-observation (`src/inner/usage-surfaces.test.ts`, [#407](https://github.com/zemdregon/switchboard/pull/407)). Inner
+observation (`src/inner/usage-surfaces.test.ts`, [#407](https://github.com/zemdregon/switchboard/pull/407)). The
+warning follows the declaration, not routing: with the shared provider disabled in config (`providers.<id>.enabled:
+false`) `doctor` carries the identical check, `inner status` still names the provider and each backend request still
+writes its labelled row (`src/inner/usage-surfaces.test.ts`). Inner
 calls leave the capacity projection unchanged; when the inner-agent section is present, its call counts change, so the
 whole `doctor --json` document does not stay byte-identical. With no `inner_agent` section the output is unchanged.
 
@@ -724,7 +727,9 @@ contracts, `inner test` and accepted, rejected and unavailable calls, with and w
 second HTTP session opened after the calls, which gets its own server instance, reads the same `get_capacity` and
 `get_run` bytes, so the equality is a property of the ledger rather than of one session's memory (merged
 [#407](https://github.com/zemdregon/switchboard/pull/407)); and the estimator reads `provider_reported` rows only, so
-the projection is unchanged whether the shared subscription names the provider under test, another provider or none
+the projection is unchanged whether the shared subscription names the provider under test, another provider or none,
+and so is the provider-reported cache block of `switchboard capacity` (T6.7) even when a labelled or planted
+`inner_agent` row carries the cache key names it reads
 (`src/capacity/capacity.test.ts`). Merged [#362](https://github.com/zemdregon/switchboard/pull/362) additionally pins
 T11.5 surfaces on fakes: a suspended task (T11.6) and a project set to `off` deny without a request and write no
 observation; a re-ask that hits the deadline keeps the first attempt's token counts; the shared-subscription label
