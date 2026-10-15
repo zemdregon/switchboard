@@ -412,10 +412,15 @@ describe("each reader keeps to its own table: an inner_agent usage row moves no 
       capacity: await cli(["capacity", "--json"]),
       capacityText: await cli(["capacity"]),
       show: await cli(["runs", "show", runId, "--json"]),
+      showText: await cli(["runs", "show", runId]),
       getRun: await toolText(client, "get_run", { run_id: runId }),
       getRunEvents: await toolText(client, "get_run", { run_id: runId, include_events: {} }),
     });
     const before = await surfaces();
+    // The human `runs show` prints a usage section only from provider-reported rows (`src/cli/runs.ts`): it names the
+    // run's provider-reported row and nothing about the inner agent.
+    expect(before.showText).toMatch(/usage/iu);
+    expect(before.showText).not.toMatch(/inner/iu);
     const doctor = JSON.parse(before.doctorJson) as {
       checks: { id: string }[];
       inner_agent: { tasks: { task: string; total_calls: number }[] };
