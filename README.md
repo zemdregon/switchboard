@@ -719,7 +719,8 @@ check in human and `--json` output before and after `inner test`; with `enabled:
 sends nothing and capacity and the whole `doctor --json` document stay byte-identical; and the capacity collector
 ignores `inner_agent` rows by `source` alone even when metric keys resemble provider usage (`usage.test.ts`,
 `usage-surfaces.test.ts`, `capacity.test.ts`). Those tests call the injected contracts directly; the production `commit`
-tool channel and the MCP admission harness that call them are not themselves driven with inner usage checks. The
+tool channel (over its Unix socket) and the MCP admission harness (`delegate_task` and `continue_task`) that call them
+are driven with the same inner usage checks in `src/inner/usage-channels.test.ts`, on fakes. The
 statements above about what `inner status`, `inner test`, `inner resume` and the `doctor` block print (states, the
 circuit line, rates, the canary verdict, the origin-only backend line, the resume notice) are pinned on the command
 output in `src/inner/cli-doctor-surfaces.test.ts`; the `no_backend` state is reachable from an on-disk config only
