@@ -1743,6 +1743,23 @@ inner agent (ADR-0007). No production code changed. T11.5 stays **Done on fakes*
 channel and admission-harness residuals above are unchanged. The same post-#356 cross-check tests merged as
 [PR #362](https://github.com/zemdregon/switchboard/pull/362) (documentation-only follow-up for T11.14; T11.5 surfaces
 unchanged).
+*2026-10-15 post-#370 residual evidence (Delegated; fakes and a loopback server only, no production code changed):*
+four claims above had no test at the surface that makes them. `src/inner/usage.test.ts`: (1) *one transaction*: a
+SQLite trigger that refuses every `inner_agent` observation also takes the `inner_call` row and the run event with it
+(the caller still gets the accepted value, no call id, `inner.record_failed` with no database text); dropping the
+trigger restores row, observation and event, and without the flag the trigger never fires, so no observation insert is
+even attempted. (2) *`attempts >= 1`, not the reason code*: a `TIMEOUT` while resolving locality, a `BUSY` call that
+never got the slot and a `STATE_UNREADABLE` denial each record a call with `attempts` 0 and no observation, while the
+`TIMEOUT` of a request that was sent records one with `{}`. (3) *the `http` backend's figures as reported or unknown*: a
+loopback chat-completions server's `prompt_tokens`/`completion_tokens` reach the labelled observation exactly; an
+absent `usage` block, a fractional, negative, string or unsafe-integer count and the Anthropic-style key names leave
+that figure unknown, and `total_tokens` is never recorded. `src/inner/usage-surfaces.test.ts`: (4) *each reader keeps
+to its own table*: a planted `inner_agent` row that no inner call made (the provider with capacity evidence, the
+finished run, a huge count) changes nothing in `inner status` (JSON and text), the whole `doctor` document (JSON and
+text, inner section present), `get_capacity` (filtered and unfiltered), `capacity` (JSON and text), `runs show --json`
+or `get_run` (with and without `include_events`), while the ledger's own per-run list does return it; and `get_run
+include_events` gains exactly three `inner_call` events with no token figure around a byte-identical envelope. T11.5
+stays **Done on fakes**; the live-backend, commit-tool channel and admission-harness residuals are unchanged.
 
 **T11.8 status (2026-10-13; Delegated): Done on fakes. No live inner backend, provider CLI, pull-request API or network
 host was used.** "Done when", clause by clause: *the draft passes the sanitiser*: a hostile fake backend returning a

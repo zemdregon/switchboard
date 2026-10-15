@@ -6,6 +6,8 @@
  * covered in `usage-surfaces.test.ts`.
  */
 import { mkdtempSync, rmSync } from "node:fs";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -17,8 +19,11 @@ import {
   createClassifyRouteFeaturesHook,
   createCommitMessageTask,
   createFakeBackend,
+  createHttpBackend,
   createInnerAgent,
   type FakeStep,
+  type InnerBackend,
+  type InnerLogEntry,
   type InnerTaskContract,
   tokenCount,
 } from "./index.js";
@@ -51,8 +56,14 @@ interface SetupOptions {
   allowRemote?: boolean;
   locality?: "local" | "remote";
   timeoutMs?: number;
+  maxConcurrency?: number;
+  /** Extra task rows beside the always-enabled `run_title`. */
+  tasks?: Record<string, { enabled: boolean; timeout_ms?: number }>;
   breaker?: { failure_threshold: number; open_ms: number };
   suspension?: { window_calls: number; min_calls: number; rejection_threshold: number };
+  /** Wraps the scripted fake (e.g. to slow `resolveLocality`); receives the fake built from `script`. */
+  wrapBackend?: (fake: InnerBackend) => InnerBackend;
+  logger?: (e: InnerLogEntry) => void;
 }
 
 function setup(script: readonly FakeStep[], opts: SetupOptions = {}) {
@@ -80,18 +91,24 @@ function setup(script: readonly FakeStep[], opts: SetupOptions = {}) {
       ...(opts.shares !== undefined ? { shares_subscription_with: opts.shares } : {}),
       ...(opts.allowRemote !== undefined ? { allow_remote: opts.allowRemote } : {}),
       ...(opts.timeoutMs !== undefined ? { timeout_ms: opts.timeoutMs } : {}),
+      ...(opts.maxConcurrency !== undefined ? { max_concurrency: opts.maxConcurrency } : {}),
     },
-    tasks: { run_title: { enabled: true } },
+    tasks: { run_title: { enabled: true }, ...opts.tasks },
     ...(opts.breaker !== undefined ? { breaker: opts.breaker } : {}),
     ...(opts.suspension !== undefined ? { suspension: opts.suspension } : {}),
   });
+  const fake = createFakeBackend({ script, ...(opts.locality !== undefined ? { locality: opts.locality } : {}) });
+  const backend = opts.wrapBackend !== undefined ? opts.wrapBackend(fake) : fake;
   const svc = createInnerAgent(settings, {
-    backend: createFakeBackend({ script, ...(opts.locality !== undefined ? { locality: opts.locality } : {}) }),
+    backend,
     ledger,
+    ...(opts.logger !== undefined ? { logger: opts.logger } : {}),
   });
   const call = () => svc.call(contract, { user: "objective: tidy", run_id: run.id });
   const usageRows = () =>
     db.prepare("SELECT * FROM usage_observation ORDER BY rowid").all() as Record<string, unknown>[];
+  const runEventCount = () =>
+    (db.prepare("SELECT COUNT(*) AS n FROM run_event WHERE run_id = ?").get(run.id) as { n: number }).n;
   /** Every usage-related table and read model, serialised, for a byte comparison. */
   const snapshot = () =>
     JSON.stringify({
@@ -99,8 +116,33 @@ function setup(script: readonly FakeStep[], opts: SetupOptions = {}) {
       health: db.prepare("SELECT * FROM provider_health ORDER BY provider").all(),
       forRun: ledger.listUsageObservationsForRun(run.id),
     });
-  return { db, ledger, run, svc, call, snapshot, usageRows };
+  return { db, ledger, run, settings, backend, svc, call, snapshot, usageRows, runEventCount };
 }
+
+/**
+ * A trigger that refuses every `inner_agent` observation. The ledger writes the `inner_call` row, the observation and the
+ * run event inside one `BEGIN IMMEDIATE` transaction (`recordInnerCall`); a refused observation must therefore take the
+ * call row and the event down with it, and a call that writes no observation must be untouched by the trigger.
+ */
+const REFUSE_OBSERVATION = "observation-refused-7f2e";
+function refuseInnerObservations(db: { exec(sql: string): unknown }, on: boolean): void {
+  db.exec(
+    on
+      ? `CREATE TRIGGER refuse_inner_observation BEFORE INSERT ON usage_observation WHEN NEW.source = 'inner_agent'
+           BEGIN SELECT RAISE(ABORT, '${REFUSE_OBSERVATION}'); END;`
+      : "DROP TRIGGER refuse_inner_observation;",
+  );
+}
+
+/** A backend whose locality resolution never answers until the deadline aborts it; `complete` is the fake's. */
+const slowLocality = (fake: InnerBackend): InnerBackend => ({
+  ...fake,
+  resolveLocality: (signal) =>
+    new Promise((_, reject) => {
+      if (signal.aborted) return reject(new Error("aborted"));
+      signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    }),
+});
 
 describe("inner-agent usage accounting (T11.5; FR-INN-15)", () => {
   it("without shares_subscription_with, calls are recorded in inner_call only: usage and health are byte-identical", async () => {
@@ -509,6 +551,192 @@ describe("inner-agent usage accounting (T11.5; FR-INN-15)", () => {
       ["route_features", h.run.id, 1],
     ]);
     expect(h.usageRows()).toHaveLength(0);
+    expect(h.db.prepare("SELECT COUNT(*) AS n FROM provider_health").get()).toEqual({ n: 0 });
+  });
+});
+
+describe("the labelled observation and the inner_call row are one transaction (T11.5; FR-INN-15, ADR-0005)", () => {
+  it("a refused observation takes the call row and its run event with it; the caller still gets the accepted value", async () => {
+    const logs: InnerLogEntry[] = [];
+    const h = setup([GOOD, GOOD], { shares: "claude-code", logger: (e) => logs.push(e) });
+    refuseInnerObservations(h.db, true);
+    const r = await h.call();
+    // The pipeline's result is not the ledger's business: the value is accepted and used, but there is no call id,
+    // because nothing was recorded.
+    expect(r).toMatchObject({ accepted: true, value: { title: "Fix login" } });
+    expect(r.call_id).toBeUndefined();
+    expect(h.ledger.listInnerCalls()).toEqual([]);
+    expect(h.usageRows()).toEqual([]);
+    expect(h.runEventCount()).toBe(0);
+    expect(logs.filter((l) => l.event === "inner.record_failed")).toEqual([
+      { event: "inner.record_failed", task: "run_title", outcome: "accepted" },
+    ]);
+    expect(JSON.stringify(logs)).not.toContain(REFUSE_OBSERVATION); // the database's message is not a log field
+    // Prove the guard was the only cause: without it the same call records one row, one observation, one event.
+    refuseInnerObservations(h.db, false);
+    expect((await h.call()).call_id).toEqual(expect.any(String));
+    expect(h.ledger.listInnerCalls()).toHaveLength(1);
+    expect(h.usageRows().map((x) => x.source)).toEqual(["inner_agent"]);
+    expect(h.runEventCount()).toBe(1);
+  });
+
+  it("without shares_subscription_with no observation insert is attempted at all: the refusing trigger never fires", async () => {
+    const logs: InnerLogEntry[] = [];
+    const h = setup([GOOD], { logger: (e) => logs.push(e) });
+    refuseInnerObservations(h.db, true);
+    const before = h.snapshot();
+    const r = await h.call();
+    expect(r).toMatchObject({ accepted: true });
+    expect(r.call_id).toEqual(expect.any(String));
+    expect(h.ledger.listInnerCalls()).toHaveLength(1);
+    expect(h.runEventCount()).toBe(1);
+    expect(h.snapshot()).toBe(before);
+    expect(logs.some((l) => l.event === "inner.record_failed")).toBe(false);
+  });
+});
+
+describe("the observation follows `attempts >= 1`, not the reason code (T11.5; FR-INN-15)", () => {
+  it("a TIMEOUT while resolving locality made no request: inner_call row with attempts 0, no observation", async () => {
+    const h = setup([GOOD], { shares: "claude-code", timeoutMs: 100, wrapBackend: slowLocality });
+    expect(await h.call()).toMatchObject({ outcome: "fallback_unavailable", reason: "TIMEOUT" });
+    expect(h.ledger.listInnerCalls().map((c) => [c.reason, c.attempts, c.tokens_in])).toEqual([["TIMEOUT", 0, null]]);
+    expect(h.usageRows()).toEqual([]);
+  });
+
+  it("a TIMEOUT after the request was sent writes one; a BUSY call that never got the slot writes none", async () => {
+    // One slot, one hanging request: the first call (run_title, the backend's 400 ms bound) reaches the backend and
+    // times out there (attempts 1, one observation with unknown counts); the second (log_summary, a 100 ms task bound)
+    // waits for the slot until its own deadline and is BUSY (attempts 0, no observation).
+    const h = setup([{ kind: "hang" }], {
+      shares: "claude-code",
+      timeoutMs: 400,
+      maxConcurrency: 1,
+      tasks: { log_summary: { enabled: true, timeout_ms: 100 } },
+    });
+    const first = h.call();
+    await new Promise((r) => setTimeout(r, 20));
+    const second = await h.svc.call(
+      { ...contract, task: "log_summary" },
+      { user: "objective: tidy", run_id: h.run.id },
+    );
+    expect(second).toMatchObject({ outcome: "fallback_unavailable", reason: "BUSY" });
+    expect(await first).toMatchObject({ outcome: "fallback_unavailable", reason: "TIMEOUT" });
+    const calls = h.ledger
+      .listInnerCalls()
+      .map((c) => [c.task, c.reason ?? "", c.attempts] as const)
+      .sort((a, b) => a[1].localeCompare(b[1]));
+    expect(calls).toEqual([
+      ["log_summary", "BUSY", 0],
+      ["run_title", "TIMEOUT", 1],
+    ]);
+    expect(h.usageRows().map((r) => [r.source, JSON.parse(String(r.metrics_json))])).toEqual([["inner_agent", {}]]);
+  });
+
+  it("STATE_UNREADABLE (the suspension state cannot be read) fails closed without a request: no observation", async () => {
+    const h = setup([GOOD], { shares: "claude-code" });
+    const svc = createInnerAgent(h.settings, {
+      backend: h.backend,
+      ledger: {
+        recordInnerCall: (row, events) => h.ledger.recordInnerCall(row, events),
+        getInnerTaskState: () => {
+          throw new Error("database is locked");
+        },
+      },
+    });
+    const r = await svc.call(contract, { user: "objective: tidy", run_id: h.run.id });
+    expect(r).toMatchObject({ outcome: "fallback_unavailable", reason: "STATE_UNREADABLE" });
+    expect(h.ledger.listInnerCalls().map((c) => [c.reason, c.attempts])).toEqual([["STATE_UNREADABLE", 0]]);
+    expect(h.usageRows()).toEqual([]);
+    expect(h.db.prepare("SELECT COUNT(*) AS n FROM provider_health").get()).toEqual({ n: 0 });
+  });
+});
+
+describe("the http backend's reported usage reaches the labelled observation as reported or unknown (T11.5; FR-INN-03)", () => {
+  const servers: http.Server[] = [];
+  afterEach(async () => {
+    for (const s of servers.splice(0)) {
+      s.closeAllConnections();
+      await new Promise<void>((r) => s.close(() => r()));
+    }
+  });
+
+  /** A loopback chat-completions server that answers each request with the next scripted `usage` block (or none). */
+  async function serve(usages: readonly (object | undefined)[]): Promise<number> {
+    let i = 0;
+    const server = http.createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        const usage = usages[Math.min(i, usages.length - 1)];
+        i++;
+        res.setHeader("content-type", "application/json");
+        res.end(
+          JSON.stringify({
+            model: "served-model",
+            choices: [{ index: 0, message: { role: "assistant", content: '{"title":"Fix login"}' } }],
+            ...(usage !== undefined ? { usage } : {}),
+          }),
+        );
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    servers.push(server);
+    return (server.address() as AddressInfo).port;
+  }
+
+  it("prompt_tokens/completion_tokens are the only figures read; absent, fractional, negative, string or unsafe ones are unknown", async () => {
+    const port = await serve([
+      { prompt_tokens: 11, completion_tokens: 5, total_tokens: 16 }, // total_tokens is never recorded
+      undefined, // no usage block at all
+      { prompt_tokens: 7.5, completion_tokens: 3 },
+      { prompt_tokens: "9", completion_tokens: -1 },
+      { prompt_tokens: 2 ** 53, completion_tokens: 4 }, // an integer, but not a safe one
+      { input_tokens: 12, output_tokens: 6 }, // the Anthropic-style keys are not the OpenAI-style ones this backend reads
+    ]);
+    const h = setup([], { shares: "claude-code" });
+    const settings = resolveInnerAgent({
+      enabled: true,
+      backend: {
+        kind: "http",
+        base_url: `http://127.0.0.1:${port}`,
+        model: "cfg-model",
+        shares_subscription_with: "codex",
+        timeout_ms: 2000,
+      },
+      tasks: { run_title: { enabled: true } },
+    });
+    const svc = createInnerAgent(settings, {
+      backend: createHttpBackend(settings.backend as NonNullable<typeof settings.backend>),
+      ledger: h.ledger,
+    });
+    for (let i = 0; i < 6; i++) {
+      expect(await svc.call(contract, { user: "objective: tidy", run_id: h.run.id })).toMatchObject({ accepted: true });
+    }
+    expect(h.ledger.listInnerCalls().map((c) => [c.backend_kind, c.model_id, c.tokens_in, c.tokens_out])).toEqual([
+      ["http", "served-model", 11, 5],
+      ["http", "served-model", null, null],
+      ["http", "served-model", null, 3],
+      ["http", "served-model", null, null],
+      ["http", "served-model", null, 4],
+      ["http", "served-model", null, null],
+    ]);
+    expect(
+      h.usageRows().map((r) => [r.provider, r.harness, r.model, r.source, JSON.parse(String(r.metrics_json))]),
+    ).toEqual([
+      ["codex", "codex", "served-model", "inner_agent", { input_tokens: 11, output_tokens: 5 }],
+      ["codex", "codex", "served-model", "inner_agent", {}],
+      ["codex", "codex", "served-model", "inner_agent", { output_tokens: 3 }],
+      ["codex", "codex", "served-model", "inner_agent", {}],
+      ["codex", "codex", "served-model", "inner_agent", { output_tokens: 4 }],
+      ["codex", "codex", "served-model", "inner_agent", {}],
+    ]);
+    // The exact metrics above are the whole story: no total, no estimate, no default and no clamp appears anywhere.
+    expect(
+      h
+        .usageRows()
+        .map((r) => String(r.metrics_json))
+        .join("\n"),
+    ).not.toMatch(/total|9007199254740991/u);
+    expect(h.ledger.listProviderReportedUsageSince("codex", "1970-01-01T00:00:00.000Z")).toHaveLength(0);
     expect(h.db.prepare("SELECT COUNT(*) AS n FROM provider_health").get()).toEqual({ n: 0 });
   });
 });
