@@ -75,8 +75,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   auth-preflight, conformance suite (T4.25), malicious-fixture leg (T4.26) and Git declaration fixture tests on
   synthetic fixtures (README [Grok Build CLI](#grok-build-cli-milestone-4), ROADMAP T4.22 to T4.27); live smoke, live
   malicious leg and `adapters validate` remain operator work (T4.28). Antigravity has a
-  conformance suite (partial: native resume, T4.35), a malicious-fixture leg (partial: synthetic refusal and
-  guard-blocked replay streams and FR-POL-04, T4.36)
+  conformance suite (partial: native resume, T4.35), a malicious-fixture leg (partial: synthetic refusal,
+  guard-blocked and trailing-tool fail-closed replay streams and FR-POL-04, T4.36;
+  [#257](https://github.com/zemdregon/switchboard/pull/257),
+  [#262](https://github.com/zemdregon/switchboard/pull/262))
   and a Git declaration on synthetic fixtures (README [Antigravity CLI](#antigravity-cli-milestone-4), ROADMAP T4.35 to
   T4.37); live smoke, live malicious leg and `adapters validate` for Antigravity remain operator work (T4.38). Cursor has
   module, compile-matrix, parser (partial: T4.43), auth-preflight, conformance suite (T4.45), malicious-fixture leg
@@ -741,7 +743,10 @@ per-run approval flag, and no per-run deny rule was shown to hold under the bypa
 | `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one argv shape: `agy --prompt=<prompt> --output-format stream-json --dangerously-skip-permissions` with `AGY_CLI_DISABLE_AUTO_UPDATE=true`, worktree file access, shell `broad`, network `on` and repository configuration `enabled`, and **no** `--sandbox` (owner decision 46, Q-84). A scope without `bypass`, or any narrowing Switchboard can express (read-only files, shell allowlist, network off or repository configuration other than `enabled`), is refused before spawn. |
 
 Resume is not compiled: `resumeArgs` is `Ineligible` for every profile until a live capture shows how resume is marked
-(Q-86; synthetic fixtures in `src/adapters/antigravity/antigravity.test.ts`, T4.33 and T4.35).
+(Q-86; synthetic fixtures in `src/adapters/antigravity/antigravity.test.ts`, T4.33 and T4.35). A `tool_call` after the
+`result` line is not a success (fail closed; a guard-flagged trailing call keeps `PERMISSION_BLOCKED` per ADR-0039;
+unflagged → `OUTPUT_PROTOCOL_ERROR` with detail `tool call after the result line`; Proposed order — live check C4 had
+`result` last; [#262](https://github.com/zemdregon/switchboard/pull/262)).
 
 ### Git and commits
 
@@ -754,11 +759,13 @@ bypass scope.
 
 The parser treats a guard-flagged `tool_call` (`violation`) as a failed run per
 [ADR-0039](docs/adr/0039-switchboard-side-tool-call-guard.md) even when the envelope `status` is `SUCCESS` at exit 0
-(`src/adapters/antigravity/antigravity.test.ts`). CI's malicious-fixture leg (T4.36) replays synthetic hostile streams
-where shell `run_command` steps carry commands the guard can see (including Git writes chained with credential read,
-out-of-worktree write and network patterns), ending `PERMISSION_BLOCKED` at exit 0 and exit 1 on both recorded
-`denied_actions` soft denials and bypass-shaped envelopes with no `denied_actions`
-([#257](https://github.com/zemdregon/switchboard/pull/257)). In an approved bypass run the guard still enforces Git
+(`src/adapters/antigravity/antigravity.test.ts`). The same `extractResult` path fails closed on a `tool_call` after the
+final `result` line ([#262](https://github.com/zemdregon/switchboard/pull/262)). CI's malicious-fixture leg (T4.36)
+replays synthetic hostile streams where shell `run_command` steps carry commands the guard can see (including Git writes
+chained with credential read, out-of-worktree write and network patterns), ending `PERMISSION_BLOCKED` at exit 0 and exit
+1 on both recorded `denied_actions` soft denials, bypass-shaped envelopes with no `denied_actions`
+([#257](https://github.com/zemdregon/switchboard/pull/257)) and the same patterns placed after a clean `SUCCESS` `result`
+([#262](https://github.com/zemdregon/switchboard/pull/262)). In an approved bypass run the guard still enforces Git
 writes only: the same hostile call without a Git write still ends `ok` (pinned); live blocked outcomes and FR-POL-04
 need operator work (ROADMAP T4.36, T4.38).
 
@@ -771,10 +778,12 @@ Fixture evidence on `main`: `src/adapters/antigravity/antigravity.test.ts` ("ant
 "antigravity probe (T4.32)", "antigravity auth preflight (T4.34; SYNTHETIC outputs in the shapes of the 2026-10-14 live
 check C3b, C3c)", "antigravity parser and result (T4.33)", "antigravity conformance suite (synthetic recorded
 fixtures, FR-ADP-11, T4.35)", "antigravity Git declaration (T4.37, FR-GIT-01, FR-GIT-02, FR-GIT-09)" and "antigravity
-malicious-fixture leg (T4.36, NFR-SEC-03, FR-POL-04, FR-POL-06; SYNTHETIC lines)"); CI also runs
-`test/malicious/adapters/antigravity.case.ts` and `test/malicious/adapter-leg.test.ts` ("adapter malicious leg:
+malicious-fixture leg (T4.36, NFR-SEC-03, FR-POL-04, FR-POL-06; SYNTHETIC lines)", parser hardening and trailing-tool
+pins in the same file, and "a %s chained with a Git write and no denial ends PERMISSION_BLOCKED (ADR-0039)"); CI also
+runs `test/malicious/adapters/antigravity.case.ts` and `test/malicious/adapter-leg.test.ts` ("adapter malicious leg:
 antigravity", T4.36 partial — see [Known limitations](#known-limitations); guard-blocked streams
-[#257](https://github.com/zemdregon/switchboard/pull/257)). The conformance `resume` case stays partial until Q-86 and
+[#257](https://github.com/zemdregon/switchboard/pull/257), trailing-tool streams
+[#262](https://github.com/zemdregon/switchboard/pull/262)). The conformance `resume` case stays partial until Q-86 and
 an operator resume capture (T4.35). No end-to-end run through Switchboard against a logged-in `agy` has been recorded
 yet (T4.38).
 
@@ -1025,7 +1034,9 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   Compile, isolation-flag and argv checks pass for the approved bypass cell; hostile replay blocking covers every
   hostile category with both recorded soft-denial shapes (shell `run_command` without bypass, live check C7) and
   guard-blocked streams where a hostile command is chained with a Git write under a `SUCCESS` envelope with no
-  `denied_actions` ([#257](https://github.com/zemdregon/switchboard/pull/257)). FR-POL-04 cannot hold in the only
+  `denied_actions` ([#257](https://github.com/zemdregon/switchboard/pull/257)) and trailing-tool streams where the same
+  hostile call arrives after the `result` line ([#262](https://github.com/zemdregon/switchboard/pull/262)). FR-POL-04
+  cannot hold in the only
   compiled scope because repository configuration is `enabled` and `GEMINI.md`, `AGENTS.md` and the `.agents` MCP server
   and hooks load with no approval (live check C11). The blocked streams still rest on hypothetical
   `tool_info.parameters.command` keys; a hostile call without a Git write still ends `ok` in bypass runs (pinned). Live
