@@ -302,6 +302,8 @@ describe("get_capacity, switchboard capacity, doctor and runs show with and with
         // get_run without include_events is the envelope (no event list): inner_call events must not appear, and usage
         // stays provider_reported only.
         getRun: await toolText(client, "get_run", { run_id: runId }),
+        // get_run with include_events is the same envelope plus the compact event list (LLD §3).
+        getRunEvents: await toolText(client, "get_run", { run_id: runId, include_events: {} }),
       };
       // The estimate has evidence (a terminal run and a usage row): the comparison is not between two empty answers.
       const parsed = JSON.parse(before.tool) as {
@@ -345,8 +347,113 @@ describe("get_capacity, switchboard capacity, doctor and runs show with and with
       expect(beforeEvents).toEqual([]);
       expect(afterEvents.map((e) => e.type)).toEqual(["inner_call", "inner_call", "inner_call"]);
       expect(JSON.stringify(afterEvents)).not.toMatch(/token|usage/u);
+      // The MCP tool's event list says the same: three inner_call events, no token figure, the envelope around them
+      // byte-identical (so the `usage` object a primary agent reads is unchanged by the inner calls).
+      const [beforeEnvelope, beforeToolEvents] = splitEvents(before.getRunEvents);
+      const [afterEnvelope, afterToolEvents] = splitEvents(
+        await toolText(client, "get_run", { run_id: runId, include_events: {} }),
+      );
+      expect(afterEnvelope).toBe(beforeEnvelope);
+      expect(beforeToolEvents).toEqual([]);
+      expect(afterToolEvents.map((e) => e.type)).toEqual(["inner_call", "inner_call", "inner_call"]);
+      expect(JSON.stringify(afterToolEvents)).not.toMatch(/token|usage/u);
     });
   }
+});
+
+describe("each reader keeps to its own table: an inner_agent usage row moves no inner diagnostic and no provider surface (T11.5; ADR-0007)", () => {
+  it("a labelled observation no inner call made changes nothing in inner status, doctor, get_capacity, capacity, runs show or get_run", async () => {
+    // The pipeline writes an inner_agent row only beside an inner_call row, so this row can only be planted directly
+    // (the ledger's own `insertUsageObservation` refuses the source). It names the provider with capacity evidence, the
+    // finished run and a huge count, so that any reader that joined `usage_observation` without its `source` filter,
+    // or any inner diagnostic that read `usage_observation` instead of `inner_call`, would show it. The on-disk flag
+    // must name a configured provider id (the fake adapter's is not one), so the real call charges claude-code.
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schema_version: 1,
+        data_dir: dataDir,
+        allowed_roots: [path.join(root, "repos")],
+        mcp_clients: [{ id: "c1", max_trust_profile: "edit-untrusted" }],
+        limits: { per_provider_concurrency: 2 },
+        capacity: { window_seconds: 7200, confidence_runs: 4 },
+        inner_agent: {
+          enabled: true,
+          backend: {
+            kind: "http",
+            base_url: "http://127.0.0.1:1",
+            model: "cfg-model",
+            shares_subscription_with: "claude-code",
+          },
+          tasks: { run_title: { enabled: true } },
+        },
+      }),
+    );
+    const runId = finishedRun();
+    const client = await connect();
+    const extra = {
+      innerBackend: createFakeBackend({
+        script: [{ kind: "text", text: '{"title":"Fix greeting typo"}', usage: { in: 11, out: 5 } }],
+      }),
+    };
+    // One real call first, so the inner diagnostics compare populated documents (one call, one labelled row), not
+    // empty ones.
+    expect(JSON.parse(await cli(["inner", "test", "run_title", "--json"], false, extra))).toMatchObject({
+      accepted: true,
+    });
+    expect(ledger.listInnerCalls()).toHaveLength(1);
+    const surfaces = async () => ({
+      innerStatusJson: await cli(["inner", "status", "--json"], true, extra),
+      innerStatus: await cli(["inner", "status"], true, extra),
+      doctorJson: await cli(["doctor", "--json"], true, extra),
+      doctor: await cli(["doctor"], true, extra),
+      tool: await capacityText(client),
+      toolForProvider: await capacityText(client, { provider: PROVIDER }),
+      capacity: await cli(["capacity", "--json"]),
+      capacityText: await cli(["capacity"]),
+      show: await cli(["runs", "show", runId, "--json"]),
+      getRun: await toolText(client, "get_run", { run_id: runId }),
+      getRunEvents: await toolText(client, "get_run", { run_id: runId, include_events: {} }),
+    });
+    const before = await surfaces();
+    const doctor = JSON.parse(before.doctorJson) as {
+      checks: { id: string }[];
+      inner_agent: { tasks: { task: string; total_calls: number }[] };
+    };
+    expect(doctor.checks.map((c) => c.id)).toContain("inner_shared_subscription");
+    expect(doctor.inner_agent.tasks.find((t) => t.task === "run_title")?.total_calls).toBe(1);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM usage_observation WHERE source = 'inner_agent'").get()).toEqual({
+      n: 1,
+    });
+
+    const PLANTED = 987_654_321;
+    db.prepare(
+      `INSERT INTO usage_observation (id, run_id, provider, harness, backing_provider, model, source, metrics_json,
+                                      observed_at)
+       VALUES ('use_planted_inner', ?, ?, ?, NULL, 'cfg-model', 'inner_agent', ?, ?)`,
+    ).run(
+      runId,
+      PROVIDER,
+      PROVIDER,
+      JSON.stringify({ input_tokens: PLANTED, output_tokens: PLANTED }),
+      NOW.toISOString(),
+    );
+    expect(db.prepare("SELECT COUNT(*) AS n FROM usage_observation WHERE source = 'inner_agent'").get()).toEqual({
+      n: 2,
+    });
+
+    const after = await surfaces();
+    expect(after).toEqual(before);
+    expect(JSON.stringify(after)).not.toContain(String(PLANTED));
+    // The ledger's own run view returns the planted row (it lists every source for the run); the readers above are what
+    // filter it out, which is the point.
+    expect(
+      ledger
+        .listUsageObservationsForRun(runId)
+        .map((o) => o.source)
+        .sort(),
+    ).toEqual(["inner_agent", "provider_reported"]);
+  });
 });
 
 describe("inner test CLI and doctor when shares_subscription_with is in the on-disk config (T11.5 after #330)", () => {
