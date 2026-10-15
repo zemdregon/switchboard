@@ -510,16 +510,23 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
       });
     });
 
-    it("pins the gap: a Grok tool_call line is `unknown`, so the guard has nothing to flag", () => {
+    it("a synthetic tool_call line with command is parsed and guarded, so a Git write ends PERMISSION_BLOCKED (ADR-0039)", () => {
       const { events } = parse([
         line({ type: "tool_call", command: "git push origin main" }),
         line({ type: "text", data: "pushed" }),
         line(END),
       ]);
       const guarded = events.map((e) => guardEvent(e, { cwd: "/w", bypass: true }));
-      expect(guarded.some((e) => e.kind === "tool_call")).toBe(false);
-      // Not detected here; for an approved bypass run Git-write denial rests on FR-GIT-03 and FR-GIT-06 (T4.23).
-      expect(adapter().extractResult(guarded, EXIT_OK)).toMatchObject({ ok: true, unknownEventCount: 1 });
+      expect(guarded.some((e) => e.kind === "tool_call")).toBe(true);
+      expect(adapter().extractResult(guarded, EXIT_OK)).toMatchObject({
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+      });
+    });
+
+    it("a tool_call line without tool or command fields remains unknown", () => {
+      const { events } = parse([line({ type: "tool_call" }), line({ type: "text", data: "pushed" }), line(END)]);
+      expect(events[0]).toMatchObject({ kind: "unknown", rawType: "tool_call" });
     });
   });
 

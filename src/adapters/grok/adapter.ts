@@ -13,9 +13,9 @@
  * - `privileged` compiles only when its scope sets `bypass` and the run is approved (owner decision 46: the bypass
  *   cell does not wait for Git-write denial to be shown to hold). Sandbox profile and permission mode are compiled
  *   together, never one without the other ([R2] L613 to L615): `--always-approve` always with `--sandbox`;
- * - the parser reads only the `streaming-json` fields the 2026-10-14 live check recorded (T4.23): `tool_call` and
- *   `tool_call_update` lines are `unknown` events until a capture records their shape, so Switchboard's own tool-call
- *   guard (ADR-0039, T4.27) cannot see Grok Build's commands yet; resume is `-r <id>` through the same matrix. The auth
+ * - the parser reads the `streaming-json` fields the 2026-10-14 live check recorded (T4.23): `tool_call` lines with
+ *   synthetic fields are parsed and guarded (ADR-0039, T4.27), while unrecorded tool lines are `unknown` events;
+ *   resume is `-r <id>` through the same matrix. The auth
  *   preflight keys on the first line of `grok models` (T4.24). The manifest range admits no version, so none of this
  *   runs before `adapters validate` passes a version.
  */
@@ -88,6 +88,7 @@ export const GROK_ENV_ALLOWLIST: readonly string[] = ["PATH", "HOME"];
 
 const PROBE_TIMEOUT_MS = 10_000;
 const MAX_SUMMARY_CHARS = 2_000;
+const MAX_TARGET_CHARS = 512;
 /** Native ids are passed as one argv element; refuse anything that could be read as a flag (Proposed). */
 const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const AUTH_UNKNOWN_REASON = "`grok models` first line is not a recognised login state";
@@ -388,7 +389,26 @@ export class GrokAdapter implements ProviderAdapter {
         if (data === undefined) return this.#unknown(state, type);
         return [{ kind: "message", role: "assistant", text: data }];
       }
-      case EVENT.toolCall:
+      case EVENT.toolCall: {
+        const input = obj(e.input);
+        const command = str(input?.command) ?? str(e.command);
+        const target = str(input?.path) ?? str(input?.filePath) ?? str(e.path) ?? str(e.target);
+        const name = str(e.tool) ?? str(e.name);
+        if (command === undefined && target === undefined && name === undefined) {
+          return this.#unknown(state, type);
+        }
+        const kind =
+          command !== undefined || name === "run_terminal_command" ? "shell" : target !== undefined ? "read" : "other";
+        return [
+          {
+            kind: "tool_call",
+            tool: kind,
+            name: clip(name ?? "run_terminal_command", 64),
+            ...(command !== undefined ? { command } : {}),
+            ...(target !== undefined && command === undefined ? { target: clip(target, MAX_TARGET_CHARS) } : {}),
+          },
+        ];
+      }
       case EVENT.toolCallUpdate:
         return this.#unknown(state, type); // shape not recorded: see protocol.ts
       case EVENT.end: {
@@ -452,8 +472,7 @@ export class GrokAdapter implements ProviderAdapter {
   /**
    * Success needs a clean expected exit and a final `result` with `ok` and no `provider_error`, `permission_denied`,
    * `sandbox_violation` or `rate_limit` event and no `tool_call` the tool-call guard flagged with a `violation` (fail
-   * closed, as Codex; a guard verdict ends the run in every run, bypass included, ADR-0039). The parser emits no
-   * `tool_call` yet (T4.23), so the last check takes effect once a capture records that shape. The summary is the
+   * closed, as Codex; a guard verdict ends the run in every run, bypass included, ADR-0039). The summary is the
    * joined assistant text, last {@link MAX_SUMMARY_CHARS} characters.
    */
   extractResult(events: readonly NormalizedEvent[], exit: ExitInfo): RunResult {
