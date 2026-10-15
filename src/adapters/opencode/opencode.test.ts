@@ -23,6 +23,7 @@ import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
 import { providerEntry } from "../providers.js";
 import { AdapterRegistry } from "../registry.js";
 import { createProbeRunner } from "../run.js";
+import { guardEvent } from "../tool-guard.js";
 import type {
   CompileRequest,
   ExitInfo,
@@ -475,6 +476,38 @@ describe("opencode parser and result (T4.53)", () => {
   it("the session id is never taken from text", () => {
     const { state } = parse([JSON.stringify({ type: "text", part: { text: `use ${SID}` } })]);
     expect(state.nativeSessionId).toBeUndefined();
+  });
+
+  // ADR-0039: a guard verdict ends the run in every run, bypass included, and the lifecycle trusts `result.ok`, so a
+  // flagged tool_call must not be called clean even when the step finishes with `stop` at exit 0 (as T4.36, PR #237).
+  it("a guard-flagged Git write with a stop finish at exit 0 ends PERMISSION_BLOCKED (ADR-0039)", () => {
+    const { a, events } = parse([
+      START,
+      TOOL("shell", { command: "git push origin main" }),
+      TEXT("ok"),
+      FINISH("stop"),
+    ]);
+    const ctx = { cwd: "/work/tree", home: "/home/synthetic", bypass: true };
+    const guarded = events.map((e) => guardEvent(e, ctx));
+    expect(guarded.find((e) => e.kind === "tool_call")).toHaveProperty("violation.kind", "git_write");
+    const r = a.extractResult(guarded, EXIT0);
+    expect(r).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: SID, summary: "ok" });
+    expect(r.failureDetail).toMatch(/^git write attempted/);
+  });
+
+  it("any guard verdict on a tool_call makes a clean run not clean (a provider_state verdict ends SANDBOX_VIOLATION)", () => {
+    const { a, events } = parse([START, TEXT("ok"), FINISH("stop")]);
+    expect(a.extractResult(events, EXIT0)).toMatchObject({ ok: true });
+    const flagged: NormalizedEvent = {
+      kind: "tool_call",
+      tool: "shell",
+      name: "shell",
+      violation: { kind: "provider_state", reason: "synthetic" },
+    };
+    expect(a.extractResult([flagged, ...events], EXIT0)).toMatchObject({
+      ok: false,
+      failureCode: "SANDBOX_VIOLATION",
+    });
   });
 
   it("resume is --session <id> through the same matrix; another provider's binding and a flag-like id are refused", () => {
