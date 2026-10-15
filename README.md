@@ -47,11 +47,12 @@ Pre-release. The package is private and is not published to any registry; you bu
   of this is tested on fake providers. It is not `Done`: the cache-friendly prompt order is not built (ROADMAP T7.9,
   Could) and real-provider model flags wait for adapter work. See [Routing and affinity](#routing-and-affinity) and
   [ROADMAP §6.12](docs/ROADMAP.md#612-m7-routing-tasks).
-- **Milestone 11 (inner agent) is `Partial`.** An optional HTTP backend, privacy gates, `doctor` and `inner` reporting,
-  commit-message drafting, handoff condensation and record-only routing classification on fakes are on main. Two tasks
-  are wired into production `serve` run paths: the commit-message task (the optional `message` on the `commit` tool) and
-  routing classification (`serve` admission, continuation and quota failover, with heuristic fallback when inner is off
-  or unavailable). PR drafting, the other service-function tasks and a live backend are not. See
+- **Milestone 11 (inner agent) is `Partial`.** T11.1 to T11.12 are done on fakes: an optional HTTP backend, privacy
+  gates, `doctor` and `inner` reporting, commit-message drafting, handoff condensation (T11.10, a service function) and
+  record-only routing classification (T11.11). Two tasks are wired into production `serve` run paths: the commit-message
+  task (the optional `message` on the `commit` tool) and routing classification (`serve` admission, continuation and
+  quota failover, with heuristic fallback when inner is off or unavailable). Handoff condensation, PR drafting,
+  verification-summary, run-title and a live backend are not. See
   [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
 - **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.7 are done on fakes: the spike, `rag`
   configuration and per-project store, the scanner through chunker, the embedding port (fake and `http` backends
@@ -659,13 +660,15 @@ command prints a base URL's userinfo, a header, a key or any prompt or response 
 
 Which tasks run today (2026-10-15): two tasks are wired into production `serve` run paths — the commit-message task
 (the optional `message` on the `commit` tool offered to the provider CLI in the run's worktree) and routing
-classification (`serve` admission, continuation and quota failover through `RunLifecycleOptions.classifyRouteFeatures`).
-Features are stored with source, model and template version and never change eligibility or `require_provider` (Q-82);
-when the inner agent is off, the task is disabled, a project is `off`, or the backend is unavailable, dispatch records
-the heuristic classifier. The PR-draft, verification-summary, run-title and handoff-condensation tasks exist as service
-functions, tested on fakes; neither `serve` nor any `inner` command calls them on a run path (`inner test` exercises the
-pipeline with its built-in synthetic fixture only). The `inner status|test|resume` commands are CLI-only and never touch
-run data. No hosted or live backend has been exercised: every test uses a scripted fake or a local fake server.
+classification (T11.11, **Done on fakes**; `serve` admission, continuation and quota failover through
+`RunLifecycleOptions.classifyRouteFeatures`). Features are stored with source, model and template version and never
+change eligibility or `require_provider` (Q-82); when the inner agent is off, the task is disabled, a project is `off`,
+or the backend is unavailable, dispatch records the heuristic classifier. The PR-draft, verification-summary, run-title
+and handoff-condensation (T11.10, **Done on fakes**) tasks exist as service functions, tested on fakes; neither `serve`
+nor any `inner` command calls them on a run path (`inner test` exercises the pipeline with its built-in synthetic
+fixture only). The `inner status|test|resume` commands are CLI-only and never touch run data: with a populated run
+ledger those diagnostics leave every non-inner table unchanged and do not link inner calls to the run. No hosted or
+live backend has been exercised: every test uses a scripted fake or a local fake server.
 
 ## Grok Build CLI (milestone 4)
 
