@@ -214,6 +214,8 @@ Future malicious-fixture additions (ROADMAP §6.13 T14.8 column) should plan for
 
 - [console tool-profile spike](console-tool-profile-spike-2026-10-15.md): `tools/list` layers including `approval_proxy`.
 - [notification sinks spike](notification-sinks-spike-2026-10-15.md): closed sink payloads for `approval_decided`.
+- [consent-page approval link spike](consent-page-approval-link-spike-2026-10-15.md): T14.10 browser path
+  (cross-link only).
 - [orchestration-layer discovery](../research/orchestration-layer-discovery-2026-10-15.md): owner decision 50 context.
 
 ## Open points for implementation (not blockers for this doc spike)
