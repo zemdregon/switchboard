@@ -2039,6 +2039,26 @@ neutralised too, the REPLACE then goes through). `src/inner/usage-channels.test.
 admission paths write through the same `recordInnerCall`, and the guard is on the table, not the path. T11.5 stays
 **Done on fakes**; the live-backend residual (T11.13) is the only one left. Opened as
 [PR #446](https://github.com/zemdregon/switchboard/pull/446).
+*2026-10-15 post-#446 channel pass (Delegated; fakes only, no production code change, `src/inner/usage-channels.test.ts`
+only):* the T11.5 and T11.14 rows, FR-INN-15, ADR-0007 and the three usage test files were re-read on `main` after #446
+(`de7ce4d`; #447 is a research spike, so the reader and writer inventory is unchanged). The #446 pins hold for every
+caller of the same ledger, but cannot see which rows each production caller wrote or whether that caller's own readers
+move, so `src/inner/usage-channels.test.ts` now repeats the pin at the three `serve`-wired call sites T11.14 names, after
+a real harness-driven call: the commit tool over its Unix socket (one new test per flag setting: the `inner_call` row
+under the run that the commit row points at, the labelled observation under the run with the flag, the run's
+`inner_call` event and the run's own provider-reported row; `runs show` in both forms with its events and commit row,
+`listGitCommits`, `listInnerCalls`, `capacity`, the envelope, `provider_health` and `listProviderReportedUsageSince` are
+byte-identical), MCP admission and continuation (the existing test extended: both run-less `inner_call` rows and, with
+the flag, both run-less labelled rows; no `inner_call` event exists anywhere; `get_capacity` and both runs' `get_run`
+with and without events are byte-identical) and the quota failover (the existing test extended: admission's run-less
+pair and the failover's three rows under the failed run, including its `inner_call` event; `get_capacity`, both runs'
+`get_run` with and without events and the ledger's per-run list are byte-identical). Each statement is `INSERT OR
+REPLACE INTO` and `REPLACE INTO` with the rewrite that would matter (other counts and outcome, the `provider_reported`
+relabel, a rewritten event payload), refused with `append-only`, through one shared test-file helper; no `src/ledger/**`
+or other production file changed. All nine tests carrying the new pins fail with the pragma line removed from
+`src/ledger/db.ts` and the pragma read neutralised (the REPLACE then goes through); the six pre-existing tests without
+them still pass under that mutation, so the pins are the only thing that catches it at the channels. T11.5 stays **Done
+on fakes**; the live-backend residual (T11.13) is the only one left.
 
 **T11.8 status (2026-10-13; Delegated): Done on fakes. No live inner backend, provider CLI, pull-request API or network
 host was used.** "Done when", clause by clause: *the draft passes the sanitiser*: a hostile fake backend returning a
