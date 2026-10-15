@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.53), in the --format json shapes recorded by the 2026-10-14 live check (row 4c) with the root sessionID omitted, an empty text part and a stop step_finish with no part id, tokens or cost. Not a native capture: the part's sessionID binds, the empty text adds no summary and the run succeeds at exit 0 with nothing counted unknown.","exit":0}}
+{"type":"step_start","timestamp":1,"part":{"sessionID":"ses_SYNTHETIC0000000000000001","messageID":"msg_1","id":"prt_s1","type":"step-start","snapshot":"synthetic"}}
+{"type":"text","timestamp":1,"part":{"sessionID":"ses_SYNTHETIC0000000000000001","messageID":"msg_1","id":"prt_t1","type":"text","text":""}}
+{"type":"step_finish","timestamp":1,"part":{"sessionID":"ses_SYNTHETIC0000000000000001","messageID":"msg_1","type":"step-finish","reason":"stop"}}
