@@ -48,9 +48,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   Could) and real-provider model flags wait for adapter work. See [Routing and affinity](#routing-and-affinity) and
   [ROADMAP §6.12](docs/ROADMAP.md#612-m7-routing-tasks).
 - **Milestone 11 (inner agent) is `Partial`.** An optional HTTP backend, privacy gates, `doctor` and `inner` reporting,
-  commit-message drafting, handoff condensation and record-only routing classification on fakes are on main; routing
-  classification is wired into production `serve` admission and continuation (heuristic fallback when inner is off or
-  unavailable). PR drafting, other run-path hooks and a live backend are not. See
+  commit-message drafting, handoff condensation and record-only routing classification on fakes are on main. Two tasks
+  are wired into production `serve` run paths: the commit-message task (the optional `message` on the `commit` tool) and
+  routing classification (`serve` admission, continuation and quota failover, with heuristic fallback when inner is off
+  or unavailable). PR drafting, the other service-function tasks and a live backend are not. See
   [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
 - **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.7 are done on fakes: the spike, `rag`
   configuration and per-project store, the scanner through chunker, the embedding port (fake and `http` backends
@@ -263,8 +264,10 @@ When the config has an `inner_agent` section, `doctor` adds an "Inner agent" blo
 the backend kind, its locality (`local` for a loopback address, `remote` for anything else), the model, whether a fixed
 canary answered within schema, the circuit state of the `doctor` process, and each enabled task with its rejection and
 fallback rates and whether it is suspended. Its findings are at most `[warn]` and never change the exit code. `doctor`
-contacts the backend only for that canary, and never a `remote` backend unless `allow_remote` is true. With no
-`inner_agent` section the output is unchanged.
+contacts the backend only for that canary, and never a `remote` backend unless `allow_remote` is true. When the backend
+declares `shares_subscription_with`, the check list also carries a `[warn]` (`inner_shared_subscription`): the inner
+agent's calls consume that provider's capacity, and each call records one usage observation labelled `inner_agent` —
+never as provider usage, and never in `capacity_score`. With no `inner_agent` section the output is unchanged.
 
 When `rag.embedding` is configured, `doctor` adds a "Retrieval index" block (and a `retrieval` key in `--json`): the
 backend kind, model and locality; whether the privacy gate allows it; a one-line `probe` of the embedding endpoint
@@ -654,13 +657,15 @@ or when nothing was sent because the agent or the task is off. A task whose reje
 threshold is suspended and falls back until you run `inner resume <task>` (quality counting then restarts). Neither
 command prints a base URL's userinfo, a header, a key or any prompt or response text.
 
-Which tasks run today (2026-10-15): the commit-message task is wired into a run path (the optional `message` on the
-`commit` tool), and routing classification is wired into production `serve` admission, continuation and quota failover
-through `RunLifecycleOptions.classifyRouteFeatures`. Features are stored with source, model and template version and
-never change eligibility or `require_provider` (Q-82); when the inner agent is off, the task is disabled, a project is
-`off`, or the backend is unavailable, dispatch records the heuristic classifier. The PR-draft, verification-summary,
-run-title and handoff-condensation tasks exist as service functions, tested on fakes; nothing calls them on a run path
-yet. No hosted or live backend has been exercised: every test uses a scripted fake or a local fake server.
+Which tasks run today (2026-10-15): two tasks are wired into production `serve` run paths — the commit-message task
+(the optional `message` on the `commit` tool offered to the provider CLI in the run's worktree) and routing
+classification (`serve` admission, continuation and quota failover through `RunLifecycleOptions.classifyRouteFeatures`).
+Features are stored with source, model and template version and never change eligibility or `require_provider` (Q-82);
+when the inner agent is off, the task is disabled, a project is `off`, or the backend is unavailable, dispatch records
+the heuristic classifier. The PR-draft, verification-summary, run-title and handoff-condensation tasks exist as service
+functions, tested on fakes; neither `serve` nor any `inner` command calls them on a run path (`inner test` exercises the
+pipeline with its built-in synthetic fixture only). The `inner status|test|resume` commands are CLI-only and never touch
+run data. No hosted or live backend has been exercised: every test uses a scripted fake or a local fake server.
 
 ## Grok Build CLI (milestone 4)
 
@@ -1262,7 +1267,9 @@ you control. `approve` and `deny` keep working for clients left at `"required"`.
   out. A backend is `local` only if every address it resolves to is loopback; a `remote` backend is unused until you set
   `allow_remote`, and a task that sends repository content (diffs, log excerpts) to a remote backend needs its own
   `allow_source_content`. A project can only restrict it (`off` or `local_only`). Prompts are redacted first, bodies are
-  never logged, and nothing it returns reaches a policy, approval or failure decision.
+  never logged, and nothing it returns reaches a policy, approval or failure decision. Its calls are recorded separately
+  as `inner_agent` usage observations and never counted as provider usage or capacity; only a declared
+  `shares_subscription_with` records one labelled observation per call against that provider (and `doctor` warns).
 - **Retrieval privacy.** The retrieval index is off by default and uses the same locality gates for its embedding
   backend. Chunk text and MCP search results are untrusted reference data; they never reach profile compilation,
   eligibility, approvals, routing, commit or push logic, and a retrieval failure never fails a run. Ledger rows for
