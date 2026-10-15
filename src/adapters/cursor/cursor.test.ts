@@ -2588,6 +2588,201 @@ describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
   });
 });
 
+/**
+ * T4.43 residual branches (2026-10-15, Delegated, not owner-approved). SYNTHETIC lines only, no new capture and no
+ * `cursor-agent` run; parser unchanged. Each case pins a `#toolCall`, assistant or resume branch no earlier test reached.
+ */
+describe("cursor parser residual branches (T4.43, synthetic)", () => {
+  const SID = "4f1c2a9e-0000-4000-8000-00000000000d";
+  const line = (o: Record<string, unknown>) => JSON.stringify(o);
+  const INIT = line({ type: "system", subtype: "init", apiKeySource: "login", session_id: SID, model: "Synthetic" });
+  const RESULT = line({ type: "result", subtype: "success", is_error: false, result: "ok", session_id: SID });
+  const TOOL = (subtype: string | undefined, call: Record<string, unknown>, callId: string | null = "c1") =>
+    line({
+      type: "tool_call",
+      ...(subtype === undefined ? {} : { subtype }),
+      ...(callId === null ? {} : { call_id: callId }),
+      tool_call: call,
+      session_id: SID,
+    });
+  const EXIT0: ExitInfo = { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] };
+  const parse = (lines: string[]) => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const events = lines.flatMap((l) => a.parseEvent(l, state));
+    // The guard strips the transient command and path, so shapes are read before it and the result after it.
+    const guarded = events.map((e) => guardEvent(e, { cwd: "/w", bypass: true }));
+    return { state, events, result: a.extractResult(guarded, EXIT0) };
+  };
+  const calls = (events: readonly NormalizedEvent[]) => events.filter((e) => e.kind === "tool_call");
+
+  it("a tool entry that is not an object reports the tool without parameters; completed reports nothing", () => {
+    const r = parse([
+      INIT,
+      TOOL("started", { shellToolCall: "git push origin main" }),
+      TOOL("started", { readToolCall: null }, "c2"),
+      TOOL("started", { editToolCall: ["a.txt"] }, "c3"),
+      TOOL("completed", { shellToolCall: "git push origin main" }),
+      RESULT,
+    ]);
+    expect(calls(r.events)).toEqual([
+      { kind: "tool_call", tool: "shell", name: "shellToolCall" },
+      { kind: "tool_call", tool: "read", name: "readToolCall" },
+      { kind: "tool_call", tool: "edit", name: "editToolCall" },
+    ]);
+    // A string entry is never read as a command, so it carries no denial either (pinned; the guard sees no command).
+    expect(r.events.some((e) => e.kind === "permission_denied")).toBe(false);
+    expect(r.state.unknownEvents).toBe(0);
+  });
+
+  it("without call_id the tool key is the step id: identical reports are not duplicated, a swap is reported", () => {
+    const same = parse([
+      INIT,
+      TOOL("started", { shellToolCall: { args: { command: "ls" } } }, null),
+      TOOL("completed", { shellToolCall: { args: { command: "ls" }, result: { success: {} } } }, null),
+      RESULT,
+    ]);
+    expect(calls(same.events)).toEqual([{ kind: "tool_call", tool: "shell", name: "shellToolCall", command: "ls" }]);
+    expect(same.result).toMatchObject({ ok: true });
+
+    const swapped = parse([
+      INIT,
+      TOOL("started", { shellToolCall: { args: { command: "ls" } } }, null),
+      TOOL("completed", { shellToolCall: { args: { command: "git push origin main" } } }, null),
+      RESULT,
+    ]);
+    expect(calls(swapped.events).map((e) => (e.kind === "tool_call" ? e.command : undefined))).toEqual([
+      "ls",
+      "git push origin main",
+    ]);
+    expect(swapped.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+
+    // A completed line that adds a call_id is another step id, so its command is reported again (fail closed).
+    const relabelled = parse([
+      INIT,
+      TOOL("started", { shellToolCall: { args: { command: "ls" } } }, null),
+      TOOL("completed", { shellToolCall: { args: { command: "ls" } } }, "c9"),
+      RESULT,
+    ]);
+    expect(calls(relabelled.events)).toHaveLength(2);
+  });
+
+  it("a second started line for the same call reporting a swapped command reaches the guard (ADR-0039)", () => {
+    const r = parse([
+      INIT,
+      TOOL("started", { shellToolCall: { args: { command: "ls" } } }),
+      TOOL("started", { shellToolCall: { args: { command: "git commit -am x" } } }),
+      TOOL("started", { shellToolCall: { args: { command: "git commit -am x" } } }),
+      RESULT,
+    ]);
+    // `started` always reports (its set only feeds `completed` de-duplication), so the repeat is reported too.
+    expect(calls(r.events).map((e) => (e.kind === "tool_call" ? e.command : undefined))).toEqual([
+      "ls",
+      "git commit -am x",
+      "git commit -am x",
+    ]);
+    expect(r.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+  });
+
+  it("completed reports a path it first carries, a swapped path, and clips a long path to 512 characters", () => {
+    const long = `/w/${"a".repeat(600)}`;
+    const r = parse([
+      INIT,
+      TOOL("completed", { readToolCall: { args: { path: "/w/a.txt" }, result: { success: {} } } }),
+      TOOL("started", { editToolCall: { args: { path: "/w/b.txt" } } }, "c2"),
+      TOOL("completed", { editToolCall: { args: { path: "/w/c.txt" }, result: { success: {} } } }, "c2"),
+      TOOL("completed", { editToolCall: { args: { path: long } } }, "c3"),
+      RESULT,
+    ]);
+    expect(calls(r.events)).toEqual([
+      { kind: "tool_call", tool: "read", name: "readToolCall", target: "/w/a.txt" },
+      { kind: "tool_call", tool: "edit", name: "editToolCall", target: "/w/b.txt" },
+      { kind: "tool_call", tool: "edit", name: "editToolCall", target: "/w/c.txt" },
+      { kind: "tool_call", tool: "edit", name: "editToolCall", target: `${long.slice(0, 512)}…` },
+    ]);
+    expect(r.result).toMatchObject({ ok: true });
+  });
+
+  it("an unmapped tool first carrying a command on completed is reported as shell and guarded (ADR-0039)", () => {
+    const r = parse([
+      INIT,
+      TOOL("completed", { customToolCall: { args: { command: "git push origin main" } } }),
+      RESULT,
+    ]);
+    expect(calls(r.events)).toEqual([
+      { kind: "tool_call", tool: "shell", name: "customToolCall", command: "git push origin main" },
+    ]);
+    expect(r.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+  });
+
+  it("a prototype-named key on completed reports no parameters but its refusal still fails the run", () => {
+    const refused = parse([
+      INIT,
+      `{"type":"tool_call","subtype":"completed","call_id":"c1","session_id":"${SID}","tool_call":{"__proto__":{"args":{"command":"git push"},"result":{"rejected":{}}}}}`,
+      TOOL("completed", { constructor: { args: { path: "/w/x" }, error: "Permission denied by user" } }, "c2"),
+      RESULT,
+    ]);
+    expect(calls(refused.events)).toEqual([]);
+    expect(refused.events.filter((e) => e.kind === "permission_denied")).toEqual([
+      { kind: "permission_denied", tool: "__proto__" },
+      { kind: "permission_denied", tool: "constructor" },
+    ]);
+    expect(refused.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+
+    const quiet = parse([INIT, TOOL("completed", { toString: { args: { command: "git push" } } }), RESULT]);
+    expect(quiet.events.filter((e) => e.kind === "tool_call" || e.kind === "permission_denied")).toEqual([]);
+    expect(quiet.result).toMatchObject({ ok: true });
+  });
+
+  it("assistant content arrays skip non-text parts; empty text is dropped, not unknown", () => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const msg = (content: unknown) => line({ type: "assistant", message: { role: "assistant", content } });
+    expect(
+      a.parseEvent(msg([{ type: "image" }, 42, null, "a", { text: 7 }, { type: "text", text: "b" }]), state),
+    ).toEqual([{ kind: "message", role: "assistant", text: "ab" }]);
+    expect(a.parseEvent(msg([]), state)).toEqual([]);
+    expect(a.parseEvent(msg([{ type: "image" }]), state)).toEqual([]);
+    expect(a.parseEvent(msg(""), state)).toEqual([]);
+    expect(a.parseEvent(line({ type: "assistant", message: { text: "" } }), state)).toEqual([]);
+    expect(state.unknownEvents).toBe(0);
+  });
+
+  it("a tool_call without a usable subtype is unknown `tool_call:none`; after the result it fails the run", () => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const call = { shellToolCall: { args: { command: "git push" } } };
+    expect(a.parseEvent(TOOL(undefined, call), state)).toEqual([{ kind: "unknown", rawType: "tool_call:none" }]);
+    expect(a.parseEvent(line({ type: "tool_call", subtype: 7, tool_call: call }), state)).toEqual([
+      { kind: "unknown", rawType: "tool_call:none" },
+    ]);
+    expect(state.unknownEvents).toBe(2);
+
+    const trailing = parse([INIT, RESULT, TOOL(undefined, call)]);
+    expect(trailing.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the result line",
+      nativeSessionId: SID,
+      unknownEventCount: 1,
+    });
+  });
+
+  it("resume on a privileged profile with no scope binding is refused with the compile reason (FR-SES-03)", () => {
+    const { privilegedScope: _dropped, ...unscoped } = { ...privilegedProfile(BYPASS_SCOPE), bypassApproved: true };
+    const req = request({ bypassApproved: true });
+    const resumed = adapter().resumeArgs({ provider: "cursor", nativeSessionId: SID }, req, unscoped);
+    const fresh = adapter().compile(req, unscoped);
+    const expected = {
+      ineligible: true,
+      reason: "PROFILE_UNSUPPORTED",
+      detail: "privileged without an approved scope binding (LLD §3.1)",
+    };
+    expect(resumed).toEqual(expected);
+    expect(fresh).toEqual(expected);
+  });
+});
+
 describe("cursor conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.45)", () => {
   const caseOf = (kind: ConformanceCase["kind"]): ConformanceCase => {
     const c = cursorConformanceCases(makeCwd).find((x) => x.kind === kind);
