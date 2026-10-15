@@ -52,6 +52,7 @@ interface SetupOptions {
   locality?: "local" | "remote";
   timeoutMs?: number;
   breaker?: { failure_threshold: number; open_ms: number };
+  suspension?: { window_calls: number; min_calls: number; rejection_threshold: number };
 }
 
 function setup(script: readonly FakeStep[], opts: SetupOptions = {}) {
@@ -82,6 +83,7 @@ function setup(script: readonly FakeStep[], opts: SetupOptions = {}) {
     },
     tasks: { run_title: { enabled: true } },
     ...(opts.breaker !== undefined ? { breaker: opts.breaker } : {}),
+    ...(opts.suspension !== undefined ? { suspension: opts.suspension } : {}),
   });
   const svc = createInnerAgent(settings, {
     backend: createFakeBackend({ script, ...(opts.locality !== undefined ? { locality: opts.locality } : {}) }),
@@ -169,6 +171,89 @@ describe("inner-agent usage accounting (T11.5; FR-INN-15)", () => {
     expect(await h.call()).toMatchObject({ outcome: "fallback_unavailable", reason: "TIMEOUT" });
     expect(h.ledger.listInnerCalls().map((c) => c.attempts)).toEqual([1]);
     expect(h.usageRows().map((r) => JSON.parse(String(r.metrics_json)))).toEqual([{}]);
+  });
+
+  it("a re-ask that timed out keeps the counts the first attempt reported: one call, one observation, attempts 2", async () => {
+    // "tokens as reported or unknown" (FR-INN-15): the first attempt consumed the subscription and reported its counts;
+    // the deadline hit during the re-ask does not make them unknown, and the timed-out call is still exactly one row.
+    const h = setup([{ kind: "text", text: "bad", usage: { in: 7, out: 2 } }, { kind: "hang" }], {
+      shares: "claude-code",
+      timeoutMs: 1000, // generous: the first attempt must land before the deadline even on a loaded CI runner
+    });
+    expect(await h.call()).toMatchObject({ outcome: "fallback_unavailable", reason: "TIMEOUT" });
+    expect(h.ledger.listInnerCalls().map((c) => [c.attempts, c.tokens_in, c.tokens_out])).toEqual([[2, 7, 2]]);
+    expect(h.usageRows().map((r) => [r.source, JSON.parse(String(r.metrics_json))])).toEqual([
+      ["inner_agent", { input_tokens: 7, output_tokens: 2 }],
+    ]);
+  });
+
+  it("a suspended task (T11.6) denies without a request: no observation; the rejected calls that suspended it wrote one each", async () => {
+    const h = setup([{ kind: "text", text: "bad" }], {
+      shares: "claude-code",
+      suspension: { window_calls: 10, min_calls: 2, rejection_threshold: 0.4 },
+    });
+    expect(await h.call()).toMatchObject({ outcome: "rejected_validator" }); // 1/1 rejected, below min_calls
+    expect(await h.call()).toMatchObject({ outcome: "rejected_validator" }); // 2/2 > 0.4: suspends in this transaction
+    expect(h.svc.isSuspended("run_title")).toBe(true);
+    expect(await h.call()).toMatchObject({ outcome: "fallback_suspended", reason: "TASK_SUSPENDED" });
+    expect(h.ledger.listInnerCalls().map((c) => [c.outcome, c.attempts])).toEqual([
+      ["rejected_validator", 2],
+      ["rejected_validator", 2],
+      ["fallback_suspended", 0],
+    ]);
+    // Two rows (the two rejected calls reached the backend, counts unknown), none for the denied third call.
+    expect(h.usageRows().map((r) => [r.source, r.run_id, JSON.parse(String(r.metrics_json))])).toEqual([
+      ["inner_agent", h.run.id, {}],
+      ["inner_agent", h.run.id, {}],
+    ]);
+    // The operator's resume (FR-INN-09) writes no usage either: the ledger's usage rows are a function of calls made.
+    expect(h.svc.resumeTask("run_title")).toMatchObject({ suspended: false });
+    expect(h.usageRows()).toHaveLength(2);
+    expect(h.db.prepare("SELECT COUNT(*) AS n FROM provider_health").get()).toEqual({ n: 0 });
+  });
+
+  it("a project or context set to off (T11.3 gate, step 1) writes no observation: no request was made", async () => {
+    const h = setup([GOOD], { shares: "claude-code" });
+    expect(
+      await h.svc.call(contract, { user: "objective: tidy", run_id: h.run.id, project_setting: "off" }),
+    ).toMatchObject({ outcome: "fallback_disabled", reason: "PROJECT_OFF" });
+    expect(h.ledger.listInnerCalls().map((c) => [c.reason, c.attempts])).toEqual([["PROJECT_OFF", 0]]);
+    expect(h.usageRows()).toHaveLength(0);
+  });
+
+  it("the label follows the configured provider, not the run's provider (observation carries the run id)", async () => {
+    // The run is on claude-code; the operator declared the backend shares the codex subscription. The row charges
+    // codex (that is the subscription consumed), still under the run that caused it, and claude-code's provider-reported
+    // view and envelope are untouched.
+    const h = setup([GOOD], { shares: "codex" });
+    h.ledger.insertUsageObservation({
+      runId: h.run.id,
+      provider: "claude-code",
+      harness: "claude-code",
+      source: "provider_reported",
+      metrics: { "usage.input_tokens": 100 },
+    });
+    const record = () => h.ledger.getRunRecord(h.run.id);
+    const envelope = () =>
+      JSON.stringify(buildEnvelope(h.ledger, record() as NonNullable<ReturnType<typeof record>>, (s) => s));
+    const before = envelope();
+    expect(await h.call()).toMatchObject({ accepted: true });
+    expect(h.usageRows().filter((r) => r.source === "inner_agent")).toEqual([
+      expect.objectContaining({
+        run_id: h.run.id,
+        provider: "codex",
+        harness: "codex",
+        backing_provider: null,
+        model: "fake-model",
+        source: "inner_agent",
+        metrics_json: JSON.stringify({ input_tokens: 10, output_tokens: 4 }),
+      }),
+    ]);
+    expect(envelope()).toBe(before);
+    const since = "1970-01-01T00:00:00.000Z";
+    expect(h.ledger.listProviderReportedUsageSince("claude-code", since)).toHaveLength(1);
+    expect(h.ledger.listProviderReportedUsageSince("codex", since)).toHaveLength(0);
+    expect(h.db.prepare("SELECT COUNT(*) AS n FROM provider_health").get()).toEqual({ n: 0 });
   });
 
   it("sums the counts of a re-ask, and records only non-negative safe integers; anything else is unknown", async () => {
