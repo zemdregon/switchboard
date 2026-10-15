@@ -256,6 +256,15 @@ class TransportFailure extends Error {
 
 const sha256 = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
 
+/**
+ * A backend-reported token count as the ledger may store it (FR-INN-15 "as reported or unknown"): a non-negative safe
+ * integer, else `null` (unknown). The same rule the HTTP backend applies to `prompt_tokens`/`completion_tokens`, applied
+ * here too so that every backend kind, including a future `cli` one, meets it before a figure is recorded.
+ */
+export function tokenCount(v: unknown): number | null {
+  return typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null;
+}
+
 export function createInnerPipeline(deps: PipelineDeps): InnerPipeline {
   const { settings, backend } = deps;
   const backendSettings = settings.backend;
@@ -512,8 +521,13 @@ export function createInnerPipeline(deps: PipelineDeps): InnerPipeline {
         admitted = false;
         if (t !== undefined) transition = t;
         if (typeof result.model_id === "string" && result.model_id !== "") rec.modelId = result.model_id;
-        tokIn = tokIn !== null && result.usage?.in != null ? tokIn + result.usage.in : null;
-        tokOut = tokOut !== null && result.usage?.out != null ? tokOut + result.usage.out : null;
+        // FR-INN-15 "tokens as reported or unknown": a count is kept only when every attempt reported a non-negative safe
+        // integer; anything else (absent, null, negative, fractional, non-finite, non-numeric) makes the total unknown.
+        // The backend is untrusted data (FR-INN-07); the count is never estimated, clamped or defaulted.
+        const inCount = tokenCount(result.usage?.in);
+        const outCount = tokenCount(result.usage?.out);
+        tokIn = tokIn !== null && inCount !== null ? tokenCount(tokIn + inCount) : null;
+        tokOut = tokOut !== null && outCount !== null ? tokenCount(tokOut + outCount) : null;
         rec.tokensIn = tokIn;
         rec.tokensOut = tokOut;
 
