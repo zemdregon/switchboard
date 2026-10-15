@@ -1201,6 +1201,72 @@ describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
     expect(r.failureDetail).toMatch(/^git write attempted/);
   });
 
+  it("a progress or subtype-less tool_call line is unknown, but its Git write still reaches the guard (ADR-0039)", () => {
+    const ctx = { cwd: "/w", bypass: true };
+    const PUSH = { shellToolCall: { args: { command: "git push origin main" } } };
+    const NO_SUBTYPE = line({ type: "tool_call", call_id: "c1", tool_call: PUSH, session_id: SID });
+    for (const [label, push] of [
+      ["progress", TOOL("progress", PUSH)],
+      ["no subtype", NO_SUBTYPE],
+      ["unrecorded subtype", TOOL("synthetic_update", PUSH)],
+    ] as const) {
+      const { state, events } = parse([INIT(), push, ASSIST("pushed"), RESULT()]);
+      expect(state.unknownEvents, label).toBe(1);
+      expect(events, label).toContainEqual({
+        kind: "tool_call",
+        tool: "shell",
+        name: "shellToolCall",
+        command: "git push origin main",
+      });
+      const guarded = events.map((e) => guardEvent(e, ctx));
+      expect(adapter().extractResult(guarded, EXIT0), label).toMatchObject({
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+        failureDetail: expect.stringMatching(/^git write attempted/) as unknown,
+      });
+    }
+    // A Git write swapped in by a progress update after a benign started is reported; a repeat is not.
+    const swapped = parse([
+      INIT(),
+      TOOL("started", { shellToolCall: { args: { command: "ls" } } }),
+      TOOL("progress", PUSH),
+      TOOL("progress", PUSH),
+      RESULT(),
+    ]);
+    expect(swapped.events.filter((e) => e.kind === "tool_call" && e.command === "git push origin main")).toHaveLength(
+      1,
+    );
+    expect(
+      adapter().extractResult(
+        swapped.events.map((e) => guardEvent(e, ctx)),
+        EXIT0,
+      ),
+    ).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    // A refusal in a progress line is a denial, never a clean turn.
+    const refused = parse([
+      INIT(),
+      TOOL("progress", { shellToolCall: { args: { command: "ls" }, result: { rejected: { command: "ls" } } } }),
+      RESULT(),
+    ]);
+    expect(refused.events).toContainEqual({ kind: "permission_denied", tool: "shellToolCall" });
+    expect(refused.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    // Success path: a benign command or path in a progress line, or one already reported, leaves a clean turn clean.
+    for (const lines of [
+      [TOOL("progress", { shellToolCall: { args: { command: "ls" } } })],
+      [TOOL("progress", { readToolCall: { args: { path: "a.txt" } } })],
+      [TOOL("started", { shellToolCall: { args: { command: "ls" } } }), TOOL("progress", { shellToolCall: {} })],
+    ]) {
+      const r = parse([INIT(), ...lines, ASSIST("ok"), RESULT()]);
+      expect(
+        adapter().extractResult(
+          r.events.map((e) => guardEvent(e, ctx)),
+          EXIT0,
+        ),
+        JSON.stringify(lines),
+      ).toMatchObject({ ok: true, unknownEventCount: 1 });
+    }
+  });
+
   it("any guard verdict on a tool_call makes a success result not clean (a provider_state verdict ends SANDBOX_VIOLATION)", () => {
     const { events } = parse([INIT(), ASSIST("ok"), RESULT()]);
     const flagged: NormalizedEvent = {
@@ -2765,17 +2831,25 @@ describe("cursor parser residual branches (T4.43, synthetic)", () => {
     expect(state.unknownEvents).toBe(0);
   });
 
-  it("a tool_call without a usable subtype is unknown `tool_call:none`; after the result it fails the run", () => {
+  it("a tool_call without a usable subtype is unknown `tool_call:none` and still reports its command; after the result it fails the run", () => {
     const a = adapter();
     const state: ParseState = { lines: 0, unknownEvents: 0 };
     const call = { shellToolCall: { args: { command: "git push" } } };
-    expect(a.parseEvent(TOOL(undefined, call), state)).toEqual([{ kind: "unknown", rawType: "tool_call:none" }]);
+    const push = { kind: "tool_call", tool: "shell", name: "shellToolCall", command: "git push" };
+    expect(a.parseEvent(TOOL(undefined, call), state)).toEqual([{ kind: "unknown", rawType: "tool_call:none" }, push]);
     expect(a.parseEvent(line({ type: "tool_call", subtype: 7, tool_call: call }), state)).toEqual([
       { kind: "unknown", rawType: "tool_call:none" },
+      push,
     ]);
     expect(state.unknownEvents).toBe(2);
 
-    const trailing = parse([INIT, RESULT, TOOL(undefined, call)]);
+    // The guard now sees a trailing Git write (ADR-0039), so its verdict outranks the protocol anomaly.
+    expect(parse([INIT, RESULT, TOOL(undefined, call)]).result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      unknownEventCount: 1,
+    });
+    const trailing = parse([INIT, RESULT, TOOL(undefined, { shellToolCall: { args: { command: "ls" } } })]);
     expect(trailing.result).toMatchObject({
       ok: false,
       failureCode: "OUTPUT_PROTOCOL_ERROR",
