@@ -674,6 +674,103 @@ describe("opencode parser and result (T4.53)", () => {
     }
   });
 
+  it("native values that name Object.prototype members map to `other` and `unknown`, never an inherited member", () => {
+    const { a, events } = parse([
+      START,
+      TOOL("constructor", { command: "git push" }),
+      TOOL("__proto__", {}),
+      TOOL("toString", {}),
+      ERROR("toString", "synthetic"),
+      ERROR("__proto__", "synthetic"),
+      TEXT("ok"),
+      FINISH("stop"),
+    ]);
+    expect(events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "other", name: "constructor" },
+      { kind: "tool_call", tool: "other", name: "__proto__" },
+      { kind: "tool_call", tool: "other", name: "toString" },
+    ]);
+    expect(events.filter((e) => e.kind === "provider_error")).toEqual([
+      { kind: "provider_error", category: "unknown", message: "toString: synthetic" },
+      { kind: "provider_error", category: "unknown", message: "__proto__: synthetic" },
+    ]);
+    expect(a.extractResult(events, EXIT0)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+  });
+
+  it("a session id resume could not pass as one argument is never bound and fails OUTPUT_PROTOCOL_ERROR", () => {
+    for (const bad of ["--auto", "-s", "ses x", "../ses", "a".repeat(257)]) {
+      const withId = (type: string, part: Record<string, unknown>) =>
+        JSON.stringify({ type, timestamp: 1, sessionID: bad, part });
+      const { a, state, events } = parse([
+        withId("step_start", { id: "prt_s1", type: "step-start" }),
+        withId("text", { id: "prt_t1", type: "text", text: "ok" }),
+        withId("step_finish", { id: "prt_f1", type: "step-finish", reason: "stop" }),
+      ]);
+      expect(state.nativeSessionId, bad).toBeUndefined();
+      expect(
+        events.some((e) => e.kind === "session_bound"),
+        bad,
+      ).toBe(false);
+      const r = a.extractResult(events, EXIT0);
+      expect(r, bad).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+      expect(r, bad).not.toHaveProperty("nativeSessionId");
+    }
+    // A bad id after a good one leaves the good one bound and still fails the run.
+    const mixed = parse([
+      START,
+      JSON.stringify({ type: "text", sessionID: "--auto", part: { text: "x" } }),
+      FINISH("stop"),
+    ]);
+    expect(mixed.state.nativeSessionId).toBe(SID);
+    expect(mixed.a.extractResult(mixed.events, EXIT0)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+    });
+  });
+
+  it("a tool call after the last stop step is not a success (Q-85, fail closed); a later stop makes it clean again", () => {
+    const trailing = parse([START, TEXT("ok"), FINISH("stop"), START, TOOL("read", { filePath: "a.txt" })]);
+    expect(trailing.a.extractResult(trailing.events, EXIT0)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the final stop step",
+      nativeSessionId: SID,
+    });
+    const intermediate = parse([
+      START,
+      TOOL("read", { filePath: "a.txt" }),
+      FINISH("tool-calls", "prt_f1"),
+      START,
+      TEXT("ok"),
+      FINISH("stop", "prt_f2"),
+      START,
+      TOOL("read", { filePath: "b.txt" }),
+      FINISH("tool-calls", "prt_f3"),
+    ]);
+    expect(intermediate.a.extractResult(intermediate.events, EXIT0)).toMatchObject({ ok: false });
+    const restopped = parse([
+      START,
+      TEXT("ok"),
+      FINISH("stop", "prt_f1"),
+      START,
+      TOOL("read", {}),
+      FINISH("stop", "prt_f2"),
+    ]);
+    expect(restopped.a.extractResult(restopped.events, EXIT0)).toMatchObject({ ok: true });
+    // A guard verdict on the trailing call keeps its own code (ADR-0039).
+    const ctx = { cwd: "/work/tree", home: "/home/synthetic", bypass: true };
+    const flagged = parse([START, TEXT("ok"), FINISH("stop"), TOOL("shell", { command: "git push origin main" })]);
+    expect(
+      flagged.a.extractResult(
+        flagged.events.map((e) => guardEvent(e, ctx)),
+        EXIT0,
+      ),
+    ).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+  });
+
   // Done-when cases whose native shape the T4.51 live check did NOT record (ROADMAP T4.53 stays Partial).
   // These pin today's observed outcomes; an operator capture (T4.51 extension) must change them.
   describe("cases with no recorded native shape (live check rows 7, 11, 14c)", () => {
@@ -723,6 +820,24 @@ describe("opencode parser and result (T4.53)", () => {
       expect(events.filter((e) => e.kind === "tool_call")).toEqual([
         { kind: "tool_call", tool: "shell", name: "shell" },
         { kind: "tool_call", tool: "read", name: "read" },
+      ]);
+    });
+
+    it("non-string command and path values are omitted, never coerced (Assumption gap: input keys unrecorded)", () => {
+      // Live check row 4c did not record state.input's keys or value types, so an argv-array or object command is not
+      // joined into a string the guard would read; it stays invisible to the guard until a capture names the shape.
+      const { events } = parse([
+        START,
+        TOOL("shell", { command: ["git", "push"] }),
+        TOOL("shell", { command: { argv: "git push" } }),
+        TOOL("write", { filePath: 7, path: ["a"] }),
+        TOOL("edit", { filePath: null, path: "b.txt" }),
+      ]);
+      expect(events.filter((e) => e.kind === "tool_call")).toEqual([
+        { kind: "tool_call", tool: "shell", name: "shell" },
+        { kind: "tool_call", tool: "shell", name: "shell" },
+        { kind: "tool_call", tool: "edit", name: "write" },
+        { kind: "tool_call", tool: "edit", name: "edit", target: "b.txt" },
       ]);
     });
   });
