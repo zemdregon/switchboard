@@ -1,0 +1,2 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.63), in the stream-json record shapes of the scrubbed 2026-10-15 capture (captured_success.jsonl); the error record shape is an Assumption and its text the ACP -32000 message observed logged out (live check row 10).","exit":1}}
+{"role":"meta","type":"error","message":"Authentication required. SYNTHETIC: run kimi login."}
