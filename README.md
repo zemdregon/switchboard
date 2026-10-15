@@ -70,7 +70,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [ROADMAP §6.10](docs/ROADMAP.md#610-m13-network-mcp-transport-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
   client and a macOS CI leg are done; Grok Build, Antigravity, Cursor and OpenCode each have a module, compile matrix
-  and parser work on synthetic fixtures. Grok Build has module, compile-matrix, parser (partial: T4.23),
+  and parser work on synthetic fixtures. Grok Build has module, compile-matrix, parser (partial: T4.23; every Done-when
+  case has a supervisor-replayed JSONL fixture on `main` ([#260](https://github.com/zemdregon/switchboard/pull/260))),
   auth-preflight, conformance suite (T4.25), malicious-fixture leg (T4.26) and Git declaration fixture tests on
   synthetic fixtures (README [Grok Build CLI](#grok-build-cli-milestone-4), ROADMAP T4.22 to T4.27); live smoke, live
   malicious leg and `adapters validate` remain operator work (T4.28). Antigravity has a
@@ -665,8 +666,12 @@ argument is never bound (`OUTPUT_PROTOCOL_ERROR`; [#252](https://github.com/zemd
 `PERMISSION_BLOCKED`). `tool_call` keys that name `Object.prototype` members map to `other`, prototype-named types
 never smuggle a result, and only an exact `end_turn` stop reason is success
 ([#252](https://github.com/zemdregon/switchboard/pull/252)). Non-string command, path and tool fields are omitted,
-never coerced. Rate-limit and sandbox stream shapes, unrecorded `tool_call` / `tool_call_update` fields and
-`backingProvider` on `session_bound` are still unrecorded (T4.23 stays `Partial` on the roadmap).
+never coerced. Rate-limit, permission-denial and sandbox-violation event shapes, unrecorded `tool_call` /
+`tool_call_update` fields and `backingProvider` on `session_bound` are still unrecorded (T4.23 stays `Partial` on the
+roadmap). Supervisor-replayed JSONL fixtures pin today's gaps without inventing native fields
+([#260](https://github.com/zemdregon/switchboard/pull/260)): `sandbox_violation` and `permission_denied_rule` (live
+check 7g and 8c) end `end_turn` at exit 0 with opaque `tool_call` lines counted; `rate_limit` (5d, never forced) is an
+empty stream at exit 1 → `TOOL_FAILURE`; `unknown_events` ends `OUTPUT_PROTOCOL_ERROR` with every unknown line counted.
 
 ### Git and commits
 
@@ -688,8 +693,11 @@ MCP servers load without `--trust` (observed step 10a). To publish work, set `fi
 primary context as for Codex ([How commits reach Git](#how-commits-reach-git)). In an approved bypass run, Git-write
 denial therefore rests on FR-GIT-03 and FR-GIT-06 in addition to any provider rule.
 
-Fixture evidence on `main`: `src/adapters/grok/grok.test.ts` ("grok compile matrix (T4.22)", "grok probe and resume
-(T4.22, T4.23)", "grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-10-14 live check recorded)",
+Fixture evidence on `main`: `src/adapters/grok/fixtures/` (T4.23 Done-when and T4.25 conformance JSONL, including
+`sandbox_violation`, `permission_denied_rule`, `rate_limit` and `unknown_events` from
+[#260](https://github.com/zemdregon/switchboard/pull/260)); `src/adapters/grok/grok.test.ts` ("grok compile matrix
+(T4.22)", "grok probe and resume (T4.22, T4.23)", "grok parser and result (T4.23; SYNTHETIC lines in the shapes the
+2026-10-14 live check recorded)", "cases with no recorded native shape (live check 5d, 7g, 8c, 8f)" fixture replay,
 "parser hardening (T4.23, synthetic shapes; mirrors Antigravity T4.33)", "parser hardening (T4.23, synthetic shapes;
 mirrors Cursor T4.43 and OpenCode T4.53)", "grok auth preflight (T4.24, Q-10; SYNTHETIC outputs in the shapes of the
 2026-10-14 live check)", "grok conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.25)", "grok registry
