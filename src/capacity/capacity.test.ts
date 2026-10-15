@@ -424,4 +424,41 @@ describe("capacity projection over the ledger (T6.2, LLD §16.2 and §16.3)", ()
       },
     ]);
   });
+
+  it("excludes inner_agent rows by source alone: a provider-shaped, in-window, huge-count row changes nothing (ADR-0007)", () => {
+    // The collector's filter is `source = 'provider_reported'` (collect.ts), not the metric keys or the figure. An
+    // inner_agent row written with the very key names a provider-reported row uses, a remaining-style key, and a
+    // count large enough to dominate any estimate still leaves the projection byte-identical and the usage input
+    // unchanged; nothing in the projection names the inner agent as a source.
+    const r = run("fake", "SUCCEEDED");
+    ledger.insertUsageObservation({
+      runId: r,
+      provider: "fake",
+      harness: "fake",
+      source: "provider_reported",
+      metrics: { "usage.input_tokens": 100, "usage.output_tokens": 20 },
+    });
+    const before = capacityJson(project());
+    expect(JSON.parse(before).providers[0].window.usage_observations).toBe(1);
+    const insert = db.prepare(
+      `INSERT INTO usage_observation (id, run_id, provider, harness, backing_provider, model, source, metrics_json, observed_at)
+       VALUES (?, ?, 'fake', 'fake', NULL, 'm', 'inner_agent', ?, ?)`,
+    );
+    insert.run(
+      "use-inner-shaped",
+      r,
+      JSON.stringify({ "usage.input_tokens": 2 ** 53 - 1, "usage.output_tokens": 2 ** 53 - 1, remaining: 0 }),
+      NOW.toISOString(),
+    );
+    insert.run("use-inner-null-run", null, JSON.stringify({ "usage.input_tokens": 1 }), NOW.toISOString());
+    expect(collectCapacityInputs(ledger, fake, SETTINGS.windowSeconds, NOW).usage).toEqual([
+      { metrics: { "usage.input_tokens": 100, "usage.output_tokens": 20 }, observedAt: NOW.toISOString() },
+    ]);
+    const after = capacityJson(project());
+    expect(after).toBe(before);
+    expect(JSON.parse(after).providers[0]).toMatchObject({ capacity_score: 1, explicit_remaining: null });
+    const sources = (JSON.parse(after) as { providers: { sources: string[] }[] }).providers.flatMap((p) => p.sources);
+    expect(sources).toContain("controller:run_outcomes");
+    expect(sources.filter((s) => /inner/u.test(s))).toEqual([]);
+  });
 });
