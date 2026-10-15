@@ -145,6 +145,9 @@ const ineligible = (reason: Ineligible["reason"], detail: string): Ineligible =>
 /** Own-key lookup, so a native key such as `constructor` or `__proto__` never resolves to an inherited member. */
 const own = <T>(table: Readonly<Record<string, T>>, key: string): T | undefined =>
   Object.hasOwn(table, key) ? table[key] : undefined;
+/** Own-property lookup on a parsed object, ignoring any prototype members. */
+const ownProp = (o: Json | undefined, key: string): unknown =>
+  o !== undefined && Object.hasOwn(o, key) ? o[key] : undefined;
 /** `result` lines already seen per run: a second one is a protocol anomaly, never a success (fail closed). */
 const seenResults = new WeakMap<ParseState, number>();
 /**
@@ -389,9 +392,9 @@ export class CursorAdapter implements ProviderAdapter {
       return []; // the supervisor ends the run OUTPUT_PROTOCOL_ERROR on unparseable framing
     }
     const e = obj(doc);
-    const type = str(e?.type);
+    const type = str(ownProp(e, "type"));
     if (e === undefined || type === undefined) return this.#unknown(state, "none");
-    const subtype = str(e.subtype);
+    const subtype = str(ownProp(e, "subtype"));
     switch (type) {
       case EVENT.user:
       case EVENT.thinking:
@@ -401,12 +404,12 @@ export class CursorAdapter implements ProviderAdapter {
         // `model` is a display name ([C2], [LIVE] 5b). No backing vendor was observed in native output ([LIVE] 102),
         // so none is invented from the display name (TDD §4.5). If structured output reports a backing provider
         // (T4.6: harness fronting another provider), it is bound as a plain string.
-        const rawBacking = e[BACKING_PROVIDER_KEY] ?? e.backingProvider;
+        const rawBacking = ownProp(e, BACKING_PROVIDER_KEY) ?? ownProp(e, "backingProvider");
         const backingProvider = str(rawBacking);
-        const out = this.#bind(state, str(e.session_id), str(e.model), backingProvider);
+        const out = this.#bind(state, str(ownProp(e, "session_id")), str(ownProp(e, "model")), backingProvider);
         // `apiKeySource` was the string `login` on every run ([LIVE] 5b). Another string, or a present value that is
         // not a string, is not the native login: the run fails closed rather than ignoring an unexpected shape.
-        const rawSource = e.apiKeySource;
+        const rawSource = ownProp(e, "apiKeySource");
         const source = str(rawSource);
         if (rawSource !== undefined && source !== API_KEY_SOURCE_LOGIN) {
           const shown = source === undefined ? "(not a string)" : clip(source, 32);
@@ -419,9 +422,10 @@ export class CursorAdapter implements ProviderAdapter {
         return out;
       }
       case EVENT.assistant: {
-        const content = obj(e.message)?.content;
+        const message = obj(ownProp(e, "message"));
+        const content = ownProp(message, "content");
         if (!Array.isArray(content)) return this.#unknown(state, type);
-        const text = content.map((c) => str(obj(c)?.text) ?? "").join("");
+        const text = content.map((c) => str(ownProp(obj(c), "text")) ?? "").join("");
         return text === "" ? [] : [{ kind: "message", role: "assistant", text: clip(text, MAX_SUMMARY_CHARS) }];
       }
       case EVENT.toolCall:
@@ -435,17 +439,17 @@ export class CursorAdapter implements ProviderAdapter {
         if (results > 1) {
           out.push({ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "more than one result line" });
         }
-        const rawBacking = e[BACKING_PROVIDER_KEY] ?? e.backingProvider;
-        out.push(...this.#bind(state, str(e.session_id), undefined, str(rawBacking)));
+        const rawBacking = ownProp(e, BACKING_PROVIDER_KEY) ?? ownProp(e, "backingProvider");
+        out.push(...this.#bind(state, str(ownProp(e, "session_id")), undefined, str(rawBacking)));
         // Only finite, non-negative counters under the recorded keys are kept ([LIVE] 5a); anything else is dropped.
-        const usage = obj(e.usage);
+        const usage = obj(ownProp(e, "usage"));
         const metrics: Record<string, number | string | null> = {};
         for (const k of USAGE_KEYS) {
-          const v = usage?.[k];
+          const v = ownProp(usage, k);
           if (typeof v === "number" && Number.isFinite(v) && v >= 0) metrics[k] = v;
         }
         if (Object.keys(metrics).length > 0) out.push({ kind: "usage", source: "provider_reported", metrics });
-        const ok = results === 1 && subtype === SUBTYPE_SUCCESS && e.is_error === false;
+        const ok = results === 1 && subtype === SUBTYPE_SUCCESS && ownProp(e, "is_error") === false;
         out.push({ kind: "result", ok, ...(ok ? {} : { summary: `result ${clip(subtype, 64)}` }) });
         return out;
       }
@@ -491,10 +495,10 @@ export class CursorAdapter implements ProviderAdapter {
    * reported, so a decoy first key cannot hide a shell call from the guard or a refusal from the result.
    */
   #toolCall(e: Json, subtype: string | undefined, state: ParseState): NormalizedEvent[] {
-    const call = obj(e.tool_call);
+    const call = obj(ownProp(e, "tool_call"));
     const keys = call ? Object.keys(call) : [];
     if (call === undefined || keys.length === 0) return this.#unknown(state, `tool_call:${subtype ?? "none"}`);
-    const callId = str(e.call_id);
+    const callId = str(ownProp(e, "call_id"));
     let seen = seenToolCalls.get(state);
     if (seen === undefined) {
       seen = new Map();
@@ -503,9 +507,10 @@ export class CursorAdapter implements ProviderAdapter {
     if (subtype === SUBTYPE_STARTED) {
       return keys.map((key): NormalizedEvent => {
         const kind = own(TOOL_KEYS, key) ?? "other";
-        const args = obj(obj(call[key])?.args);
-        const command = kind === "shell" ? str(args?.command) : undefined;
-        const target = kind === "read" || kind === "edit" ? str(args?.path) : undefined;
+        const entry = obj(ownProp(call, key));
+        const args = obj(ownProp(entry, "args"));
+        const command = kind === "shell" ? str(ownProp(args, "command")) : undefined;
+        const target = kind === "read" || kind === "edit" ? str(ownProp(args, "path")) : undefined;
         const stepId = callId ? `${callId}:${key}` : key;
         const paramKey =
           command !== undefined ? `command:${command}` : target !== undefined ? `target:${target}` : undefined;
@@ -527,10 +532,10 @@ export class CursorAdapter implements ProviderAdapter {
       const out: NormalizedEvent[] = [];
       for (const key of keys) {
         const kind = own(TOOL_KEYS, key) ?? "other";
-        const entry = obj(call[key]);
-        const args = obj(entry?.args);
-        const command = kind === "shell" ? str(args?.command) : undefined;
-        const target = kind === "read" || kind === "edit" ? str(args?.path) : undefined;
+        const entry = obj(ownProp(call, key));
+        const args = obj(ownProp(entry, "args"));
+        const command = kind === "shell" ? str(ownProp(args, "command")) : undefined;
+        const target = kind === "read" || kind === "edit" ? str(ownProp(args, "path")) : undefined;
         const stepId = callId ? `${callId}:${key}` : key;
         const paramKey =
           command !== undefined ? `command:${command}` : target !== undefined ? `target:${target}` : undefined;
@@ -556,9 +561,10 @@ export class CursorAdapter implements ProviderAdapter {
             });
           }
         }
-        const result = obj(entry?.result);
+        const result = obj(ownProp(entry, "result"));
         const denied =
-          result !== undefined && (TOOL_RESULT_REJECTED in result || TOOL_RESULT_PERMISSION_DENIED in result);
+          result !== undefined &&
+          (Object.hasOwn(result, TOOL_RESULT_REJECTED) || Object.hasOwn(result, TOOL_RESULT_PERMISSION_DENIED));
         if (denied) {
           out.push({ kind: "permission_denied", tool: clip(key, 64) });
         }
@@ -590,8 +596,17 @@ export class CursorAdapter implements ProviderAdapter {
     const finalAt = events.findLastIndex((e) => e.kind === "result");
     const final = events[finalAt];
     // Proposed (fail closed): `result` was the last line of every recorded run ([LIVE] 5a, 5b), so a tool call after it
-    // means the run did not end on that result.
-    const trailingTool = finalAt >= 0 && events.slice(finalAt + 1).some((e) => e.kind === "tool_call");
+    // means the run did not end on that result. A `tool_call` line the parser could not read counts too: an unreadable
+    // or bare `tool_call` line parses as `unknown` and must not leave the turn clean (as Grok Build and OpenCode).
+    const trailingTool =
+      finalAt >= 0 &&
+      events
+        .slice(finalAt + 1)
+        .some(
+          (e) =>
+            e.kind === "tool_call" ||
+            (e.kind === "unknown" && (e.rawType === EVENT.toolCall || e.rawType.startsWith(`${EVENT.toolCall}:`))),
+        );
     const base = {
       unknownEventCount,
       ...(nativeSessionId ? { nativeSessionId } : {}),

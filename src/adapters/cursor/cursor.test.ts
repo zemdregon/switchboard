@@ -1029,6 +1029,112 @@ describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
     expect(bound).toBeDefined();
     expect(bound).not.toHaveProperty("backingProvider");
   });
+
+  it("prototype-named types and a `__proto__` key never smuggle a result, assistant text or a tool call", () => {
+    const r = parse([
+      line({ type: "constructor" }),
+      line({ type: "toString" }),
+      line({ type: "__proto__" }),
+      `{"__proto__":{"type":"result","subtype":"success","session_id":"${SID}"}}`,
+      `{"type":"result","__proto__":{"subtype":"success"}}`,
+      `{"type":"assistant","__proto__":{"message":{"content":[{"text":"smuggled"}]}}}`,
+      `{"type":"tool_call","subtype":"started","__proto__":{"tool_call":{"shellToolCall":{"args":{"command":"git push origin main"}}}}}`,
+      `{"type":"system","__proto__":{"subtype":"init"}}`,
+    ]);
+    expect(r.events.every((e) => e.kind === "unknown")).toBe(true);
+    expect(r.state.unknownEvents).toBe(8);
+    expect(r.state.nativeSessionId).toBeUndefined();
+    expect(JSON.stringify(r.events)).not.toContain("smuggled");
+    expect(r.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+    });
+  });
+
+  it("a trailing tool_call the parser cannot read is still a tool call after the result line", () => {
+    // The bare line or unreadable tool_call shapes parse as `unknown` and must not leave the turn clean.
+    for (const call of [
+      { type: "tool_call" },
+      { type: "tool_call", subtype: "started" },
+      { type: "tool_call", tool_call: {} },
+      { type: "tool_call", subtype: "started", tool_call: {} },
+      { type: "tool_call", subtype: "completed", tool_call: {} },
+      { type: "tool_call", subtype: "unknown_subtype", tool_call: { readToolCall: {} } },
+    ]) {
+      const r = parse([INIT(), ASSIST("ok"), RESULT(), line(call)]);
+      expect(r.events.at(-1), JSON.stringify(call)).toEqual(
+        expect.objectContaining({ kind: "unknown", rawType: expect.stringMatching(/^tool_call(:.*)?$/) }),
+      );
+      expect(r.result, JSON.stringify(call)).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "tool call after the result line",
+        nativeSessionId: SID,
+      });
+    }
+    // A read-shaped call after the result fails the same way.
+    const read = parse([
+      INIT(),
+      ASSIST("ok"),
+      RESULT(),
+      TOOL("started", { readToolCall: { args: { path: "a.txt" } } }),
+    ]);
+    expect(read.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the result line",
+    });
+    // Other unknown lines, user echo and late assistant text after result do not trip it.
+    const quiet = parse([
+      INIT(),
+      ASSIST("ok"),
+      RESULT(),
+      line({ type: "user", text: "echo" }),
+      line({ type: "thinking", text: "thought" }),
+      ASSIST("late"),
+      line({ type: "synthetic_unknown_kind" }),
+    ]);
+    expect(quiet.result).toMatchObject({ ok: true });
+    // The same unreadable line before result leaves a clean turn clean.
+    const before = parse([INIT(), line({ type: "tool_call" }), ASSIST("ok"), RESULT()]);
+    expect(before.result).toMatchObject({ ok: true });
+  });
+
+  it("a guard-flagged trailing tool_call ends PERMISSION_BLOCKED at exit 1, after a failed result and a second result (ADR-0039)", () => {
+    const ctx = { cwd: "/w", bypass: true };
+    const guarded = (lines: string[], exit: ExitInfo = EXIT0) => {
+      const parsed = parse(lines, exit);
+      return adapter().extractResult(
+        parsed.events.map((e) => guardEvent(e, ctx)),
+        exit,
+      );
+    };
+    const PUSH = TOOL("started", { shellToolCall: { args: { command: "git push origin main" } } });
+    const EXIT1: ExitInfo = { outcome: "exited", exitCode: 1, signal: null, expectedExitCodes: [0] };
+    // ADR-0039: the guard verdict precedes the unexpected exit, the failed result and the protocol anomaly.
+    for (const [label, lines, exit] of [
+      ["exit 1", [INIT(), RESULT(), PUSH], EXIT1],
+      ["failed result", [INIT(), RESULT({ subtype: "error", is_error: true }), PUSH], EXIT0],
+      ["second result", [INIT(), RESULT(), RESULT(), PUSH], EXIT0],
+    ] as const) {
+      expect(guarded([...lines], exit), label).toMatchObject({
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+        nativeSessionId: SID,
+      });
+    }
+    // Without the Git write the same exit-1 trailing call is an unexpected exit, never success.
+    const plain = guarded([INIT(), RESULT(), TOOL("started", { shellToolCall: { args: { command: "ls" } } })], EXIT1);
+    expect(plain).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+    // Without the Git write a second result line ends OUTPUT_PROTOCOL_ERROR.
+    const secondResult = guarded([
+      INIT(),
+      RESULT(),
+      RESULT(),
+      TOOL("started", { shellToolCall: { args: { command: "ls" } } }),
+    ]);
+    expect(secondResult).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+  });
 });
 
 describe("cursor conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.45)", () => {
