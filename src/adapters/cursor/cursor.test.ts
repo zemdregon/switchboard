@@ -14,6 +14,7 @@ import { GIT_FINALIZE_COMMIT_EVENT, GitPublisher, publishRefFor } from "../../gi
 import { createIdGenerator } from "../../ids/index.js";
 import { createLedger, openLedger } from "../../ledger/index.js";
 import { RunLifecycle } from "../../lifecycle/index.js";
+import { buildEnvelope } from "../../mcp/envelope.js";
 import { createSwitchboardServer } from "../../mcp/server.js";
 import { resolveTrustProfile } from "../../policy/profiles.js";
 import { usageObservationsFromEvents } from "../../usage/observations.js";
@@ -1208,6 +1209,97 @@ describe("cursor conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.4
     const report = await runConformanceCase(c);
     expect(report.ok).toBe(true);
     expect(report.checks.find((k) => k.name === "process group empty after run")?.ok).toBe(true);
+  });
+});
+
+/**
+ * T4.43 with T4.6 (FR-ADP-10): a replayed fixture whose backing vendor differs from the harness. SYNTHETIC: native Cursor
+ * output reports no backing vendor ([LIVE] row 102), so `backing_provider` is the structured key a fronted run would
+ * carry, not a recorded field.
+ */
+describe("cursor backing-provider fixture (T4.43, T4.6, FR-ADP-10)", () => {
+  it("a replayed run stores harness cursor and backing vendor side by side and shows both in get_run", async () => {
+    const root = realpathSync(makeCwd());
+    const repo = join(root, "repo");
+    mkdirSync(repo);
+    const g = (...args: string[]) =>
+      execFileSync("git", ["-c", "commit.gpgsign=false", ...args], {
+        cwd: repo,
+        env: {
+          PATH: process.env.PATH ?? "",
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_AUTHOR_NAME: "Cursor Dev",
+          GIT_AUTHOR_EMAIL: "cursor@example.test",
+          GIT_COMMITTER_NAME: "Cursor Dev",
+          GIT_COMMITTER_EMAIL: "cursor@example.test",
+        },
+      });
+    g("init", "-q", "-b", "main");
+    writeFileSync(join(repo, "README.md"), "initial\n");
+    g("add", "-A");
+    g("commit", "-q", "-m", "init");
+
+    const dataDir = join(root, "data");
+    mkdirSync(dataDir);
+    const db = openLedger(dataDir);
+    const ids = createIdGenerator();
+    const ledger = createLedger(db, { ids });
+    const artifacts = new ArtifactStore(join(dataDir, "artifacts"));
+    const lifecycle = new RunLifecycle({
+      ledger,
+      workspace: new WorkspaceManager({ db, artifacts, dataDir, allowedRoots: [root], ids }),
+      artifacts,
+      adapters: new AdapterRegistry().register(replayAdapter("backing_provider")),
+      allowedRoots: [root],
+      globalConcurrency: 1,
+      resolveProfile: (name) => resolveTrustProfile(name),
+    });
+    lifecycle.start();
+    try {
+      const { runId, metaSessionId } = await lifecycle.submit({
+        clientId: "c",
+        objective: "answer through a backing vendor",
+        workspace: repo,
+        trustProfile: "privileged",
+        provider: "cursor",
+        privileged: { scope: BYPASS_SCOPE, approvedByClientPolicy: true },
+      });
+      const done = await lifecycle.waitForTerminal(runId);
+      expect(done.state, done.failure_detail ?? "").toBe("SUCCEEDED");
+
+      // The session_bound event's fields land on the provider binding (T5.3), never inferred from the display name.
+      expect(ledger.listProviderBindings(metaSessionId)).toEqual([
+        expect.objectContaining({
+          provider: "cursor",
+          harness: "cursor",
+          backing_provider: "backing-x",
+          model: "Synthetic Model 1",
+          native_session_id: DEFAULT_SESSION_ID,
+        }),
+      ]);
+
+      const rows = ledger.listUsageObservationsForRun(runId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        provider: "cursor",
+        harness: "cursor",
+        backing_provider: "backing-x",
+        model: "Synthetic Model 1",
+        source: "provider_reported",
+      });
+      expect(buildEnvelope(ledger, done, (s) => s).usage?.reported).toEqual([
+        expect.objectContaining({
+          harness: "cursor",
+          backing_provider: "backing-x",
+          model: "Synthetic Model 1",
+          metrics: expect.objectContaining({ inputTokens: 13, outputTokens: 3 }),
+        }),
+      ]);
+    } finally {
+      await lifecycle.shutdown();
+      db.close();
+    }
   });
 });
 
