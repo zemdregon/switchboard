@@ -768,7 +768,10 @@ servers), and no per-run permission flag is documented.
 | `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one argv shape: `cursor-agent --print --output-format stream-json --trust --force` with the prompt on stdin, worktree file access, shell `broad`, network `on` and repository configuration `enabled`, and **no** `--sandbox` flag (owner decision 46). A scope without `bypass`, or any narrowing Switchboard can express, is refused before spawn. Bypass-class flags such as `--approve-mcps` and `--yolo` are never compiled outside that case. |
 
 Resume continues the native session with `--resume <session_id>` through the same matrix when the provider is eligible
-(synthetic fixtures in `src/adapters/cursor/cursor.test.ts`, T4.43).
+(synthetic fixtures in `src/adapters/cursor/cursor.test.ts`, T4.43). The parser treats a guard-flagged `tool_call`
+(`violation`) as a failed run per [ADR-0039](docs/adr/0039-switchboard-side-tool-call-guard.md) even when `result` is
+`success` at exit 0 ([#238](https://github.com/zemdregon/switchboard/pull/238)). Rate-limit and sandbox stream shapes and
+`backingProvider` on `session_bound` are still unrecorded (T4.43 stays `Partial` on the roadmap).
 
 ### Git and commits
 

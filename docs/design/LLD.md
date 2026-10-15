@@ -736,7 +736,7 @@ suite (T4.35), malicious-fixture leg (T4.36), operator live smoke and `adapters 
 
 Compile matrix and transport: [TDD §4.5](TDD.md#45-cursor-cli-m4). Task status: [ROADMAP
 §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.42`, `T4.43`). On `origin/main` as of
-[#228](https://github.com/zemdregon/switchboard/pull/228) (2026-10-14, Delegated, not owner-approved; synthetic
+[#238](https://github.com/zemdregon/switchboard/pull/238) (2026-10-15, Delegated, not owner-approved; synthetic
 fixtures only; no `cursor-agent` in CI).
 
 **As built (T4.42).** Module `src/adapters/cursor/`; manifest `src/adapters/manifests/cursor.json` (range `<0.0.0`).
@@ -752,7 +752,9 @@ stream-json fields in `protocol.ts`. Success needs a terminal `result` with `sub
 `rejected` / `permissionDenied` as `PERMISSION_BLOCKED` at exit 0 (Q-65). Hardening ([#228](https://github.com/zemdregon/switchboard/pull/228)):
 a second `result` line or changed `session_id` ends `OUTPUT_PROTOCOL_ERROR`; `apiKeySource` other than the string
 `login` is `AUTH_REQUIRED`; usage omits non-finite counters; each key on a multi-key `tool_call` is reported; unrecorded
-rate-limit, quota and sandbox text ends `TOOL_FAILURE`. `backingProvider` stays unset (no vendor field in the live check).
+rate-limit, quota and sandbox text ends `TOOL_FAILURE`. ADR-0039 ([#238](https://github.com/zemdregon/switchboard/pull/238)):
+any `tool_call` the guard flagged with a `violation` makes the run not clean (`PERMISSION_BLOCKED` / `SANDBOX_VIOLATION`
+even when `result` is `success` at exit 0). `backingProvider` stays unset (no vendor field in the live check).
 
 - **Tests:** `src/adapters/cursor/cursor.test.ts` (`cursor parser and result (T4.43)`, `cursor parser hardening (T4.43,
   synthetic shapes)`).

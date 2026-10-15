@@ -1994,15 +1994,19 @@ Task boundary: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4
 FR-SES-03, FR-ADP-10 (`backingProvider` unset). HLD: [§2.3 T4.43](HLD.md#t443--parser-result-failure-classification-and-resume-partial).
 LLD as-built: [§2.0.1](LLD.md#201-cursor-adapter-implementation-evidence-m4-t442-t443).
 
-**Implementation evidence (on `origin/main`, [#228](https://github.com/zemdregon/switchboard/pull/228); Delegated agent
+**Implementation evidence (on `origin/main`, [#238](https://github.com/zemdregon/switchboard/pull/238); Delegated agent
 work, not owner-approved; synthetic `stream-json` lines only; no `cursor-agent` in CI).**
 
 - **Parser and result.** `parseEvent`, `extractResult`, `classifyFailure` and `resumeArgs` in
   `src/adapters/cursor/adapter.ts`; fields in `src/adapters/cursor/protocol.ts`. Refused shell calls at exit 0 map to
   `PERMISSION_BLOCKED` (Q-65); session id from structured `init` / `result` only.
-- **Hardening (synthetic shapes).** Second `result` line and mid-run `session_id` change end `OUTPUT_PROTOCOL_ERROR`;
-  `apiKeySource` present but not the string `login` (including non-string) is `AUTH_REQUIRED`; non-finite usage dropped;
-  each key on a multi-key `tool_call` reported; unrecorded rate-limit, quota and sandbox text ends `TOOL_FAILURE`.
+- **Hardening (synthetic shapes, [#228](https://github.com/zemdregon/switchboard/pull/228)).** Second `result` line and
+  mid-run `session_id` change end `OUTPUT_PROTOCOL_ERROR`; `apiKeySource` present but not the string `login` (including
+  non-string) is `AUTH_REQUIRED`; non-finite usage dropped; each key on a multi-key `tool_call` reported; unrecorded
+  rate-limit, quota and sandbox text ends `TOOL_FAILURE`.
+- **ADR-0039 guard verdict ([#238](https://github.com/zemdregon/switchboard/pull/238)).** `extractResult` treats a
+  `tool_call` carrying a guard `violation` as not clean, so `classifyFailure` ends `PERMISSION_BLOCKED` for `git_write`
+  and `SANDBOX_VIOLATION` for `provider_state` even when `result` is `success` at exit 0.
 - **Tests:** `src/adapters/cursor/cursor.test.ts` (`"cursor parser and result (T4.43)"`, `"cursor parser hardening
   (T4.43, synthetic shapes)"`).
 
