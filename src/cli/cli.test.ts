@@ -208,7 +208,7 @@ describe("doctor", () => {
       defaultAdapters()
         .list()
         .map((a) => a.id),
-    ).toEqual(["fake", "claude", "codex", "grok", "antigravity", "cursor", "opencode"]);
+    ).toEqual(["fake", "claude", "codex", "grok", "antigravity", "cursor", "opencode", "kimi"]);
   });
 
   it("warns, not fails, when real provider CLIs are not installed, and labels real vs fake", async () => {
