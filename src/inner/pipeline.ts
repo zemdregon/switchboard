@@ -48,7 +48,7 @@ export interface InnerTaskContract<T, F> {
   /** Rules beyond the schema. Return null when the value is fine, else any string (it is discarded, never logged). */
   validate?: (value: unknown) => string | null;
   /** Map the validated JSON to the value handed to the caller. Default: the parsed JSON itself. */
-  accept?: (value: unknown) => T;
+  accept?: (value: unknown, context?: { readonly model_id: string }) => T;
   /** `commit_message` and `pr_draft` only: the LLD §12.4 sanitiser. Return null when nothing usable is left. */
   sanitise?: (value: T) => T | null;
   /** Task-specific budget truncation (for example whole diff hunks). Default: head 25% and tail 75%. */
@@ -550,7 +550,7 @@ export function createInnerPipeline(deps: PipelineDeps): InnerPipeline {
       if (!valid) return finish("rejected_validator", lastClass.toUpperCase());
 
       // Step 10: sanitiser (commit_message and pr_draft only).
-      let value: T = contract.accept !== undefined ? contract.accept(parsed) : (parsed as T);
+      let value: T = contract.accept !== undefined ? contract.accept(parsed, { model_id: rec.modelId }) : (parsed as T);
       if (contract.sanitise !== undefined) {
         const clean = contract.sanitise(value);
         if (clean === null) return finish("rejected_sanitiser", "EMPTY_AFTER_SANITISER");
