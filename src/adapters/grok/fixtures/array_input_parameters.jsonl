@@ -1,0 +1,5 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.23 residual, sixth pass; ADR-0039). A tool_call whose `input` is an array, not an object, so it does not shadow `parameters` (contrast shadowed_parameters.jsonl): the parser reads the Git write there, the tool-call guard flags it and the clean end_turn result at exit 0 ends PERMISSION_BLOCKED. Field names are Assumptions; no live capture recorded a tool_call shape.","exit":0}}
+{"type":"available_commands","tools":["run_terminal_command"]}
+{"type":"tool_call","input":["ignored"],"parameters":{"command":"git push origin main"}}
+{"type":"text","data":"Pushed."}
+{"type":"end","stopReason":"end_turn","sessionId":"00000000-0000-4000-8000-000000000001","requestId":"req_synthetic_1","usage":{"input_tokens":11,"output_tokens":2,"total_tokens":13},"num_turns":1}
