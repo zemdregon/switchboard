@@ -74,7 +74,7 @@ export function routeFeaturesContract(fallback: RouteFeatures): InnerTaskContrac
     fallback: () => fallback,
   };
 }
-/** Caller stores the result in buildRouteDecision.features; replay never calls this service. No dispatch caller yet. */
+/** Caller stores the result in buildRouteDecision.features; replay never calls this service. Dispatch callers may inject this through the lifecycle feature callback. */
 export async function classifyRouteFeatures(
   service: InnerAgentService,
   input: ClassifierInput,
