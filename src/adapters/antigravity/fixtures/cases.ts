@@ -75,8 +75,13 @@ export function replayAdapter(fixture: string, o: ReplayOptions = {}): Antigravi
  * a `SUCCESS` envelope at exit 1 (TOOL_FAILURE with the write visible) and an unrecorded event kind in a success (still
  * `ok`, counted as unknown), plus invented rate-limit text in an `ERROR` envelope (TOOL_FAILURE: no rate-limit shape is
  * recorded, so no `rate_limit` case), a tool step after a clean `result` (OUTPUT_PROTOCOL_ERROR) and a guard-flagged Git
- * write under a `SUCCESS` envelope (PERMISSION_BLOCKED, ADR-0039). No case expects SANDBOX_VIOLATION: the one compiled
- * cell is an approved bypass, where the provider-state guard does not apply.
+ * write under a `SUCCESS` envelope (PERMISSION_BLOCKED, ADR-0039), a `SUCCESS` envelope whose conversation id is not one
+ * safe token (OUTPUT_PROTOCOL_ERROR, nothing bound) and the same unsafe id on the `result` only, after a normal `init`
+ * (the first id stays bound), a stream with no `result` at exit 3 (the TDD §4.4.1
+ * `AGY_ERROR` case, stderr only: TOOL_FAILURE) and a `SUCCESS` envelope whose usage keys were not recorded (TOOL_FAILURE,
+ * Q-86), and a cancellation of a process that honours SIGTERM as well as one that ignores it. No case expects
+ * SANDBOX_VIOLATION: the one compiled cell is an approved bypass, where the provider-state guard does not apply; the
+ * `sandbox_violation_unrecorded` fixture replays to a success (T4.33 gap), so it is not a conformance case.
  */
 export function antigravityConformanceCases(makeCwd: () => string): ConformanceCase[] {
   const request = (): CompileRequest => ({
@@ -147,6 +152,20 @@ export function antigravityConformanceCases(makeCwd: () => string): ConformanceC
     {
       ...base,
       kind: "task_failure",
+      adapter: replayAdapter("agy_error_exit3"),
+      request: request(),
+      expect: { ok: false, failureCode: "TOOL_FAILURE", nativeSessionId: DEFAULT_SESSION_ID },
+    },
+    {
+      ...base,
+      kind: "task_failure",
+      adapter: replayAdapter("usage_unrecorded"),
+      request: request(),
+      expect: { ok: false, failureCode: "TOOL_FAILURE", nativeSessionId: DEFAULT_SESSION_ID },
+    },
+    {
+      ...base,
+      kind: "task_failure",
       adapter: replayAdapter("git_write_guard"),
       request: request(),
       expect: { ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: DEFAULT_SESSION_ID },
@@ -195,6 +214,20 @@ export function antigravityConformanceCases(makeCwd: () => string): ConformanceC
     },
     {
       ...base,
+      kind: "malformed_output",
+      adapter: replayAdapter("unsafe_conversation_id"),
+      request: request(),
+      expect: { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" },
+    },
+    {
+      ...base,
+      kind: "malformed_output",
+      adapter: replayAdapter("unsafe_id_after_bound"),
+      request: request(),
+      expect: { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", nativeSessionId: DEFAULT_SESSION_ID },
+    },
+    {
+      ...base,
       kind: "timeout",
       adapter: replayAdapter("hang", { hang: true, timeouts: { idleMs: 400 } }),
       request: request(),
@@ -204,6 +237,13 @@ export function antigravityConformanceCases(makeCwd: () => string): ConformanceC
       ...base,
       kind: "cancellation",
       adapter: replayAdapter("hang", { hang: true, ignoreTerm: true, timeouts: { idleMs: 10_000 } }),
+      request: request(),
+      expect: { ok: false, failureCode: "CANCELLED" },
+    },
+    {
+      ...base,
+      kind: "cancellation",
+      adapter: replayAdapter("hang", { hang: true, timeouts: { idleMs: 10_000 } }),
       request: request(),
       expect: { ok: false, failureCode: "CANCELLED" },
     },
