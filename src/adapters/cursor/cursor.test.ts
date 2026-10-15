@@ -30,6 +30,7 @@ import { guardEvent } from "../tool-guard.js";
 import type {
   CompileRequest,
   ExitInfo,
+  FailureEvidence,
   Invocation,
   NormalizedEvent,
   ParseState,
@@ -829,8 +830,9 @@ describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
 
     // The same outcomes replayed end to end from fixture files through the supervisor, so each Done-when case has a
     // fixture: success (`success_edit`), task failure (`task_failure`), malformed (`malformed_output`), permission
-    // denied (`permission_denied`), backing vendor (`backing_provider`) and the ones below. They pin the gaps; an operator
-    // capture (T4.41 extension) must change them.
+    // denied (`permission_denied`), backing vendor (`backing_provider`) and the ones below, plus `resume_failure`,
+    // `error_after_result` and `malformed_after_result` (as Grok T4.23 and OpenCode T4.53). They pin the gaps; an
+    // operator capture (T4.41 extension) must change them.
     const replayCase = (
       fixture: string,
       kind: ConformanceCase["kind"],
@@ -989,6 +991,59 @@ describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
         unknownEventCount: 0,
       });
       expect(report.result).not.toHaveProperty("nativeSessionId");
+    });
+
+    it.each([
+      ["unknown_event", true, undefined, 1],
+      ["error_after_result", false, "AUTH_REQUIRED", 0],
+      ["malformed_after_result", false, "OUTPUT_PROTOCOL_ERROR", 0],
+    ] as const)(
+      "fixture %s preserves structured session binding and checks the whole stream",
+      async (fixture, ok, failureCode, unknownEventCount) => {
+        // Unknown JSON can coexist with a recognized result, but cannot supply it. A late credential source that is
+        // not the native login, and malformed framing after the result, must still invalidate that result; malformed
+        // JSON is rejected by the supervisor before parseEvent.
+        const report = await runConformanceCase(
+          replayCase(fixture, ok ? "success" : "malformed_output", {
+            ok,
+            ...(failureCode ? { failureCode } : {}),
+            nativeSessionId: DEFAULT_SESSION_ID,
+          }),
+        );
+        expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+        expect(report.result).toMatchObject({
+          ok,
+          ...(failureCode ? { failureCode } : {}),
+          nativeSessionId: DEFAULT_SESSION_ID,
+          unknownEventCount,
+        });
+      },
+    );
+
+    it("fixture resume_failure replays a resumed failed run to TOOL_FAILURE, preserving the resumed session id", async () => {
+      // The only replayed resume so far is the T4.45 success; the failure leg of `--resume <id>` (a resumed run whose
+      // result is an error) is replayed here end to end.
+      const report = await runConformanceCase({
+        kind: "resume",
+        adapter: replayAdapter("resume_failure"),
+        request: {
+          runId: "run_cursor_t443_resume_failure",
+          objective: "synthetic cursor objective",
+          constraints: [],
+          workspace: { cwd: makeCwd(), writable: true },
+          bypassApproved: true,
+        },
+        profile: PRIVILEGED_BYPASS_PROFILE,
+        binding: { provider: "cursor", nativeSessionId: RESUMED_SESSION_ID },
+        expect: { ok: false, failureCode: "TOOL_FAILURE", nativeSessionId: RESUMED_SESSION_ID },
+      });
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: "TOOL_FAILURE",
+        nativeSessionId: RESUMED_SESSION_ID,
+        unknownEventCount: 0,
+      });
     });
   });
 
@@ -1547,6 +1602,160 @@ describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
       failureCode: "RATE_LIMIT_TRANSIENT",
       failureDetail: "rate limit reported",
     });
+  });
+
+  it("classifyFailure precedence: supervisor outcomes over the guard, the guard over denials, denials over provider errors, a provider error over a rate_limit event, a failed result and the exit code", () => {
+    const a = adapter();
+    const evidence = (
+      events: readonly NormalizedEvent[],
+      exit: Partial<FailureEvidence["exit"]> = {},
+      extra: Partial<FailureEvidence> = {},
+    ): FailureEvidence => ({
+      events,
+      exit: { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0], ...exit },
+      stderrTail: "",
+      timedOut: false,
+      cancelled: false,
+      ...extra,
+    });
+    const GUARDED: NormalizedEvent = {
+      kind: "tool_call",
+      tool: "shell",
+      name: "shellToolCall",
+      command: "git push origin main",
+      violation: { kind: "git_write", reason: "git push origin main" },
+    };
+    const DENIED: NormalizedEvent = { kind: "permission_denied", tool: "shellToolCall" };
+    const AUTH: NormalizedEvent = {
+      kind: "provider_error",
+      category: "auth",
+      message: "credential source env is not the native login",
+    };
+    const UNKNOWN_ERR: NormalizedEvent = { kind: "provider_error", category: "unknown", message: "boom" };
+    const PROTOCOL_ERR: NormalizedEvent = {
+      kind: "provider_error",
+      category: "protocol",
+      message: "more than one result line",
+    };
+    const FAILED_RESULT: NormalizedEvent = { kind: "result", ok: false, summary: "result error" };
+    const EXIT_1 = { exitCode: 1 };
+
+    // Supervisor-determined outcomes beat every stream signal, the ADR-0039 guard included.
+    expect(a.classifyFailure(evidence([GUARDED], { outcome: "cancelled" }))).toEqual({
+      code: "CANCELLED",
+      detail: "run cancelled",
+    });
+    expect(a.classifyFailure(evidence([GUARDED], {}, { cancelled: true }))).toEqual({
+      code: "CANCELLED",
+      detail: "run cancelled",
+    });
+    expect(a.classifyFailure(evidence([GUARDED], {}, { timedOut: true }))).toEqual({
+      code: "PROCESS_TIMEOUT",
+      detail: "unknown timeout",
+    });
+    expect(a.classifyFailure(evidence([GUARDED], { outcome: "timeout", timeoutKind: "wall_clock" }))).toEqual({
+      code: "PROCESS_TIMEOUT",
+      detail: "wall_clock timeout",
+    });
+    expect(a.classifyFailure(evidence([GUARDED], { outcome: "protocol_error", exitCode: null }))).toEqual({
+      code: "OUTPUT_PROTOCOL_ERROR",
+      detail: "unparseable provider output",
+    });
+    expect(a.classifyFailure(evidence([GUARDED], { outcome: "internal_error", exitCode: null }))).toEqual({
+      code: "OUTPUT_PROTOCOL_ERROR",
+      detail: "event handling failed",
+    });
+    expect(a.classifyFailure(evidence([GUARDED], { outcome: "crashed", exitCode: null, signal: "SIGKILL" }))).toEqual({
+      code: "PROCESS_CRASH",
+      detail: "signal SIGKILL",
+    });
+    expect(a.classifyFailure(evidence([GUARDED], { outcome: "spawn_error", exitCode: null }))).toEqual({
+      code: "PROCESS_CRASH",
+      detail: "spawn_error",
+    });
+
+    // ADR-0039: the guard verdict beats denials, provider errors, results and exit codes.
+    expect(a.classifyFailure(evidence([GUARDED, DENIED]))).toEqual({
+      code: "PERMISSION_BLOCKED",
+      detail: "git write attempted: git push origin main",
+    });
+    expect(
+      a.classifyFailure(
+        evidence([{ ...GUARDED, violation: { kind: "provider_state", reason: "synthetic" } }, DENIED, AUTH]),
+      ),
+    ).toEqual({ code: "SANDBOX_VIOLATION", detail: "provider state reached: synthetic" });
+
+    // Denials beat provider errors and unexpected exits.
+    expect(a.classifyFailure(evidence([DENIED, AUTH], EXIT_1))).toEqual({
+      code: "PERMISSION_BLOCKED",
+      detail: "denied: shellToolCall",
+    });
+    expect(
+      a.classifyFailure(evidence([{ kind: "sandbox_violation", detail: "out of worktree" }, UNKNOWN_ERR])),
+    ).toEqual({ code: "SANDBOX_VIOLATION", detail: "out of worktree" });
+
+    // A provider error beats a rate_limit event, a failed result and the exit code; the Cursor `protocol`
+    // category maps to OUTPUT_PROTOCOL_ERROR.
+    expect(a.classifyFailure(evidence([UNKNOWN_ERR, { kind: "rate_limit" }]))).toEqual({
+      code: "TOOL_FAILURE",
+      detail: "unknown: boom",
+    });
+    expect(a.classifyFailure(evidence([AUTH, FAILED_RESULT]))).toEqual({
+      code: "AUTH_REQUIRED",
+      detail: "auth: credential source env is not the native login",
+    });
+    expect(a.classifyFailure(evidence([PROTOCOL_ERR], EXIT_1))).toEqual({
+      code: "OUTPUT_PROTOCOL_ERROR",
+      detail: "protocol: more than one result line",
+    });
+
+    // A rate_limit event and a failed result beat the exit code; the exit code beats "no result".
+    expect(a.classifyFailure(evidence([{ kind: "rate_limit" }], EXIT_1))).toEqual({
+      code: "RATE_LIMIT_TRANSIENT",
+      detail: "rate limit reported",
+    });
+    expect(a.classifyFailure(evidence([FAILED_RESULT], EXIT_1))).toEqual({
+      code: "TOOL_FAILURE",
+      detail: "result error",
+    });
+    expect(a.classifyFailure(evidence([], EXIT_1))).toEqual({ code: "TOOL_FAILURE", detail: "exit code 1" });
+    expect(a.classifyFailure(evidence([]))).toEqual({
+      code: "OUTPUT_PROTOCOL_ERROR",
+      detail: "no result event",
+    });
+  });
+
+  it("recorded extra fields (duration_ms, duration_api_ms, request_id, permissionMode, cwd, timestamp_ms) are never usage metrics or events", () => {
+    // Live check 5a/5b recorded duration_ms, duration_api_ms and request_id on result; 5b recorded permissionMode and
+    // cwd on init and timestamp_ms on thinking. The parser reads only usage counters plus session/model/backing keys,
+    // so those extra fields never widen the usage record or reach an event.
+    const { events, result } = parse([
+      INIT({ permissionMode: "default", cwd: "/work/tree" }),
+      line({ type: "user", message: { content: [{ type: "text", text: "the prompt" }] }, session_id: SID }),
+      line({
+        type: "thinking",
+        subtype: "delta",
+        text: "private reasoning",
+        session_id: SID,
+        timestamp_ms: 1,
+      }),
+      ASSIST("ok"),
+      RESULT({ duration_ms: 10, duration_api_ms: 10, request_id: "req-recorded-1" }),
+    ]);
+    expect(events.find((e) => e.kind === "usage")).toEqual({
+      kind: "usage",
+      source: "provider_reported",
+      metrics: { inputTokens: 11, outputTokens: 2, cacheReadTokens: 5, cacheWriteTokens: 0 },
+    });
+    const serialized = JSON.stringify(events);
+    expect(serialized).not.toContain("req-recorded-1");
+    expect(serialized).not.toContain("duration_ms");
+    expect(serialized).not.toContain("duration_api_ms");
+    expect(serialized).not.toContain("permissionMode");
+    expect(serialized).not.toContain("/work/tree");
+    expect(serialized).not.toContain("timestamp_ms");
+    expect(serialized).not.toContain("private reasoning");
+    expect(result).toMatchObject({ ok: true, nativeSessionId: SID });
   });
 
   it("seenResults and seenToolCalls WeakMap state is isolated across separate ParseState instances", () => {

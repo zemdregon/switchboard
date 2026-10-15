@@ -1,0 +1,5 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: T4.43 recorded result/init shapes reordered to prove a late credential source that is not login invalidates a success result at exit 0; not a live sequence. apiKeySource env after a bound login init is AUTH_REQUIRED (live check 5b).","exit":0}}
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work/tree","session_id":"synthetic-cursor-session-0001","model":"Synthetic Model 1","permissionMode":"default"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"SYNTHETIC: recognized turn."}]},"session_id":"synthetic-cursor-session-0001"}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"duration_api_ms":10,"result":"ok","session_id":"synthetic-cursor-session-0001","request_id":"req-late-auth","usage":{"inputTokens":11,"outputTokens":2,"cacheReadTokens":5,"cacheWriteTokens":0}}
+{"type":"system","subtype":"init","apiKeySource":"env","cwd":"/work/tree","session_id":"synthetic-cursor-session-0001","model":"Synthetic Model 1","permissionMode":"default"}

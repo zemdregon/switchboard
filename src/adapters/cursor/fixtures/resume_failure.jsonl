@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.43), in the stream-json shapes recorded by the 2026-10-14 live check. The only replayed resume so far is the T4.45 success; this is the failure leg (`--resume` returns the resumed session_id while the run ends an error result).","exit":0,"requireResume":true}}
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work/tree","session_id":"{{SESSION_ID}}","model":"Synthetic Model 1","permissionMode":"default"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"SYNTHETIC: resumed task failed."}]},"session_id":"{{SESSION_ID}}"}
+{"type":"result","subtype":"error","is_error":true,"duration_ms":10,"duration_api_ms":10,"result":"SYNTHETIC: resumed task failed","session_id":"{{SESSION_ID}}","request_id":"req-resume-failure"}
