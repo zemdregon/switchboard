@@ -13,11 +13,13 @@ export type TaskKind = "bug_fix" | "feature" | "refactor" | "test" | "docs" | "i
 
 export interface FeatureValue<T extends string> {
   value: T;
-  source: "heuristic";
+  source: "heuristic" | "inner";
+  model_id?: string;
+  template_version?: string;
 }
 
 export interface RouteFeatures {
-  classifier: typeof CLASSIFIER_VERSION;
+  classifier: typeof CLASSIFIER_VERSION | "route_features.v1";
   context_volume: FeatureValue<ContextVolume>;
   autonomy: FeatureValue<Level>;
   reasoning_depth: FeatureValue<Level>;
