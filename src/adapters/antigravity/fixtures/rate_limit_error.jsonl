@@ -1,0 +1,3 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.35). An in-stream ERROR envelope at exit 0 carrying invented rate-limit text: fails closed as TOOL_FAILURE, never RATE_LIMIT_TRANSIENT or success.","exit":0}}
+{"event":"init","conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","init":{"cwd":"/work/tree","tools":["run_command"],"permission_mode":"always-proceed","model":"synthetic-model"}}
+{"event":"result","result":{"conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","status":"ERROR","response":"","error":"RESOURCE_EXHAUSTED: rate limit exceeded, 429 Too Many Requests"}}

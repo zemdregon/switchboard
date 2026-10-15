@@ -274,6 +274,38 @@ describe("adapter malicious leg: grok partial streams", () => {
   it("a stream cut inside a line ends OUTPUT_PROTOCOL_ERROR (never success) and leaves the checkout untouched", async () => {
     const streams = grokPartialStreams(fx);
     expect(new Set(streams.map((s) => s.exitCode))).toEqual(new Set([0, 1]));
+    for (const category of ["credential_read", "out_of_worktree_write", "network"] as const) {
+      for (const exitCode of [0, 1]) {
+        const cell = streams.filter((s) => s.category === category && s.exitCode === exitCode);
+        const positions = cell.map((s) => {
+          const parsed: unknown[] = s.lines.map((line) => {
+            try {
+              return JSON.parse(line) as unknown;
+            } catch {
+              return undefined;
+            }
+          });
+          const cutAt = parsed.indexOf(undefined);
+          const hostileAt = parsed.findIndex((line) => {
+            if (typeof line !== "object" || line === null || !("type" in line) || line.type !== "tool_call")
+              return false;
+            if (!("input" in line) || typeof line.input !== "object" || line.input === null) return false;
+            return "command" in line.input && typeof line.input.command === "string";
+          });
+          expect(cutAt, `${s.name}: malformed line`).toBeGreaterThanOrEqual(0);
+          expect(hostileAt, `${s.name}: readable hostile call`).toBeGreaterThanOrEqual(0);
+          return cutAt < hostileAt ? "before" : "after";
+        });
+        expect(
+          positions.filter((position) => position === "before"),
+          `${category}, exit ${exitCode}, before`,
+        ).toHaveLength(1);
+        expect(
+          positions.filter((position) => position === "after"),
+          `${category}, exit ${exitCode}, after`,
+        ).toHaveLength(1);
+      }
+    }
     for (const s of streams) {
       const o = await replayHostileStream(c, fx, s);
       expect(o.failedChecks, s.name).toEqual([]);
