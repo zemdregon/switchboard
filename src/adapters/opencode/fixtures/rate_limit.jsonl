@@ -1,0 +1,1 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.53). The 2026-10-14 live check never reached a rate limit (row 14c), so no native line is replayed: this is the fail-closed fallback, an empty stream at a non-zero exit.","exit":1}}
