@@ -85,7 +85,8 @@ export function replayAdapter(fixture: string, o: ReplayOptions = {}): Antigravi
  * stderr only: TOOL_FAILURE), in-stream sandbox-violation text in an `ERROR` envelope at exit 0 (TOOL_FAILURE, never
  * SANDBOX_VIOLATION: the parser emits no sandbox category) and
  * a `SUCCESS` envelope whose usage keys were not recorded (TOOL_FAILURE, Q-86), and a cancellation of a process that
- * honours SIGTERM as well as one that ignores it. The whole-stream order shapes (an unknown line before the result,
+ * honours SIGTERM as well as one that ignores it, and an idle timeout on both paths beside a wall-clock timeout (each
+ * names its timeout kind). The whole-stream order shapes (an unknown line before the result,
  * a late auth envelope after a clean result and an unparseable line after it) are cases too. A case whose code,
  * session id and mutation would also match a replay refusal (exit 64 or 65, no output) names its `failureDetail`, so
  * every case fails when the replay refuses the compile. No case expects SANDBOX_VIOLATION: the one compiled cell is an
@@ -330,7 +331,21 @@ export function antigravityConformanceCases(makeCwd: () => string): ConformanceC
       kind: "timeout",
       adapter: replayAdapter("hang", { hang: true, timeouts: { idleMs: 400 } }),
       request: request(),
-      expect: { ok: false, failureCode: "PROCESS_TIMEOUT" },
+      expect: { ok: false, failureCode: "PROCESS_TIMEOUT", failureDetail: "idle timeout" },
+    },
+    {
+      ...base,
+      kind: "timeout",
+      adapter: replayAdapter("hang", { hang: true, ignoreTerm: true, timeouts: { idleMs: 400 } }),
+      request: request(),
+      expect: { ok: false, failureCode: "PROCESS_TIMEOUT", failureDetail: "idle timeout" },
+    },
+    {
+      ...base,
+      kind: "timeout",
+      adapter: replayAdapter("hang", { hang: true, timeouts: { wallClockMs: 400, idleMs: 10_000 } }),
+      request: request(),
+      expect: { ok: false, failureCode: "PROCESS_TIMEOUT", failureDetail: "wall_clock timeout" },
     },
     {
       ...base,

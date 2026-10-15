@@ -4,9 +4,9 @@
  * a compile the replay refuses (exit 64 for the argv, exit 65 for an empty prompt) writes nothing to stdout and must
  * not satisfy any case's expectation.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { type ConformanceCase, runConformanceCase } from "../conformance.js";
 import type { Invocation } from "../types.js";
@@ -16,6 +16,7 @@ import {
   antigravityConformanceCases,
   DEFAULT_SESSION_ID,
   fixturePath,
+  replayAdapter,
 } from "./fixtures/cases.js";
 
 const dirs: string[] = [];
@@ -119,5 +120,70 @@ describe("antigravity whole-stream order shapes in the case list (T4.35, T4.33 f
         },
       ],
     ]);
+  });
+});
+
+describe("antigravity fixture inventory (T4.35, FR-ADP-11)", () => {
+  // Each fixture outside the case list, with the reason it stays out. Adding a fixture without a case or a reason here
+  // fails, so a synthetic shape cannot sit unreplayed.
+  const OUT_OF_SUITE: Record<string, string> = {
+    non_tool_step_command: "replays to a success: a command off a `tool` step is not seen (T4.33 gap, pinned)",
+    sandbox_violation_unrecorded: "replays to a success: the tool's error is not read (T4.33 gap, pinned)",
+    resume_failure: "needs `--conversation <id>`, which is not compiled while resumeArgs is Ineligible (Q-86)",
+    resume_unknown_id: "needs `--conversation <id>`, which is not compiled while resumeArgs is Ineligible (Q-86)",
+  };
+  const dir = dirname(fixturePath("hang"));
+  const onDisk = readdirSync(dir)
+    .filter((f) => f.endsWith(".jsonl"))
+    .map((f) => f.slice(0, -".jsonl".length))
+    .sort();
+  const replayed = () =>
+    new Set(
+      antigravityConformanceCases(makeCwd)
+        .map((c) => fixtureOf(c))
+        .filter((f) => f !== ""),
+    );
+
+  it("every fixture is replayed by a case or listed out of the suite with a reason, never both", () => {
+    const listed = replayed();
+    expect(onDisk.filter((f) => !listed.has(f) && !Object.hasOwn(OUT_OF_SUITE, f))).toEqual([]);
+    expect(Object.keys(OUT_OF_SUITE).filter((f) => listed.has(f))).toEqual([]);
+    expect(Object.keys(OUT_OF_SUITE).filter((f) => !onDisk.includes(f))).toEqual([]);
+    expect([...listed].filter((f) => !onDisk.includes(f))).toEqual([]);
+  });
+
+  it.each(onDisk)("%s starts with SYNTHETIC provenance metadata", (name) => {
+    const first: unknown = JSON.parse(readFileSync(fixturePath(name), "utf8").split("\n")[0] ?? "");
+    expect(first).toMatchObject({ _fixture: { synthetic: true, note: expect.stringMatching(/^SYNTHETIC: /) } });
+  });
+});
+
+describe("antigravity timeout cases through the replay (T4.35, FR-ADP-11)", () => {
+  const timeouts = () => antigravityConformanceCases(makeCwd).filter((c) => c.kind === "timeout");
+  const own = (c: ConformanceCase): string[] => {
+    const inv = c.adapter.compile(c.request, c.profile);
+    return "ineligible" in inv ? [] : inv.argv.slice(0, inv.argv.indexOf("--"));
+  };
+
+  it("lists idle timeouts on both SIGTERM paths and a wall-clock timeout, each naming its kind", () => {
+    expect(timeouts().map((c) => [own(c).includes("--ignore-term"), c.expect.failureDetail])).toEqual([
+      [false, "idle timeout"],
+      [true, "idle timeout"],
+      [false, "wall_clock timeout"],
+    ]);
+  });
+
+  it("swapping the idle and wall-clock budgets fails the detail check, so the timeout kind is pinned", async () => {
+    for (const c of timeouts()) {
+      const wall = c.expect.failureDetail === "wall_clock timeout";
+      const swapped = replayAdapter("hang", {
+        hang: true,
+        ignoreTerm: own(c).includes("--ignore-term"),
+        timeouts: wall ? { idleMs: 400 } : { wallClockMs: 400, idleMs: 10_000 },
+      });
+      const report = await runConformanceCase({ ...c, adapter: swapped });
+      expect(report.result).toMatchObject({ ok: false, failureCode: "PROCESS_TIMEOUT" });
+      expect(report.checks.filter((k) => !k.ok).map((k) => k.name)).toEqual(["failure detail matches"]);
+    }
   });
 });
