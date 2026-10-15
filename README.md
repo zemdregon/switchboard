@@ -118,7 +118,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   `git_write_guard_args`,
   [#309](https://github.com/zemdregon/switchboard/pull/309),
   [#315](https://github.com/zemdregon/switchboard/pull/315)), malicious-fixture leg (T4.46; category/exit matrix and
-  12 partial streams, [#316](https://github.com/zemdregon/switchboard/pull/316)) and Git declaration
+  12 partial streams, [#316](https://github.com/zemdregon/switchboard/pull/316); residual cells at exits 2 and 137 and
+  guard-only Git writes, [#367](https://github.com/zemdregon/switchboard/pull/367)) and Git declaration
   fixture tests on synthetic fixtures (README [Cursor CLI](#cursor-cli-milestone-4), ROADMAP T4.42 to T4.47); live
   smoke, live malicious leg and `adapters validate` remain operator work (T4.48). OpenCode has module, compile-matrix,
   probe, registry entry, parser (partial: T4.53 until operator capture; supervisor-replayed JSONL fixtures,
@@ -1217,8 +1218,18 @@ suite (synthetic recorded fixtures, FR-ADP-11, T4.45)", "cursor backing-provider
 "cursor Git declaration (T4.47, FR-GIT-01, FR-GIT-02, FR-GIT-09)" and "cursor malicious-fixture leg (T4.46, NFR-SEC-03,
 FR-POL-04, FR-POL-06)"); CI also runs `test/malicious/adapters/cursor.case.ts`,
 `test/malicious/adapter-leg.test.ts` ("adapter malicious leg: cursor") and
-`test/malicious/cursor-leg.test.ts` ("Cursor malicious leg matrix (T4.46)": each hostile category at exit 0 and
-exit 1, plus 12 partial streams; [#316](https://github.com/zemdregon/switchboard/pull/316)). The conformance suite
+`test/malicious/cursor-leg.test.ts` ("Cursor malicious leg matrix (T4.46)": each hostile category at exits 0, 1, 2
+and 137, plus 12 partial streams; [#316](https://github.com/zemdregon/switchboard/pull/316)). The residual cells
+(`cursorResidualStreams`, [#367](https://github.com/zemdregon/switchboard/pull/367)) replay each blocked category
+denied at exits 2 and 137 to `PERMISSION_BLOCKED`. Completed shell calls the provider did not refuse but that carry
+a Git write end `PERMISSION_BLOCKED` at exits 0 and 1, including a hostile `started` command swapped to `ls` in
+`completed`, an unmapped tool key carrying `command` and a benign `readToolCall` decoy key beside the shell key; the
+six plain cells parse no `permission_denied`, so the ADR-0039 guard verdict alone blocks them, and a positive control
+shows the same stream without that verdict would end `ok`. A denial followed by a separate benign call, or after the
+`result` line, still ends `PERMISSION_BLOCKED`; unknown-event streams at exits 2 and 137 end `TOOL_FAILURE`; and bare
+or unreadable `tool_call`, `system`, `result` and non-string `type` lines parse only as `unknown`
+(`OUTPUT_PROTOCOL_ERROR` at exit 0, `TOOL_FAILURE` at exit 1). These are compile and parse evidence only, not native
+containment. The conformance suite
 replay dialect (`src/adapters/fixtures/replay-dialects/cursor.mjs`) enforces single `--print`,
 `--output-format stream-json`, `--trust`, `--force`, safe non-flag `--resume <id>`, no `--`, no positional arguments,
 and refuses credentials and config env variables (`CURSOR_API_KEY`, `CURSOR_AUTH_TOKEN`, `CURSOR_CONFIG_DIR`,
