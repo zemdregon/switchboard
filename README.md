@@ -90,13 +90,19 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#326](https://github.com/zemdregon/switchboard/pull/326),
   [#345](https://github.com/zemdregon/switchboard/pull/345),
   [#351](https://github.com/zemdregon/switchboard/pull/351),
-  [#358](https://github.com/zemdregon/switchboard/pull/358)) and Git declaration fixture tests on
+  [#358](https://github.com/zemdregon/switchboard/pull/358),
+  [#378](https://github.com/zemdregon/switchboard/pull/378),
+  [#393](https://github.com/zemdregon/switchboard/pull/393),
+  [#422](https://github.com/zemdregon/switchboard/pull/422),
+  [#449](https://github.com/zemdregon/switchboard/pull/449)) and Git declaration fixture tests on
   synthetic fixtures (README [Grok Build CLI](#grok-build-cli-milestone-4), ROADMAP T4.22 to T4.27); live smoke, live
   malicious leg and `adapters validate` remain operator work (T4.28).
   [#302](https://github.com/zemdregon/switchboard/pull/302) through
-  [#358](https://github.com/zemdregon/switchboard/pull/358) extend synthetic malicious replay only (including
+  [#449](https://github.com/zemdregon/switchboard/pull/449) extend synthetic malicious replay and compile pins only (including
   completing both cut-line positions across categories and exits, parser fall-through paths at exit `2` and `137`,
-  trailing `tool_call_update` after `end`, and JSON-encoding variants); parser residual pins
+  trailing `tool_call_update` after `end`, JSON-encoding variants, and replays of the T4.23 second to sixth parser
+  residual passes); #449 also pins, without fixing, an open guard gap: a Git write past the 512-character target clip
+  of a target-only shell call is not seen. Parser residual pins
   ([#342](https://github.com/zemdregon/switchboard/pull/342),
   [#354](https://github.com/zemdregon/switchboard/pull/354),
   [#372](https://github.com/zemdregon/switchboard/pull/372)) leave the parser unchanged; none of them validate the
@@ -925,7 +931,11 @@ writes only: a credential read, outside write or network call chained with a par
 Git write, not because those other actions were refused. Native command/target fields remain unrecorded (ROADMAP T4.26,
 T4.28). A bare `tool_call` before a clean `end_turn` still succeeds; path keys, tool `content` text, a hostile
 lower-precedence argument key shadowed by a benign higher one, and a command in a container shadowed by an earlier
-object container without one remain invisible to the guard. Synthetic replay does not
+object container without one remain invisible to the guard. A shell call carrying its command only in a target key is
+guarded on the target, which the parser clips to 512 characters (a command is never clipped), so a Git write past the
+clip is not seen: the replay ends `ok` at exit 0 and `TOOL_FAILURE` (the exit code only) at exit 1. This gap is pinned,
+not fixed ([#449](https://github.com/zemdregon/switchboard/pull/449), `grokResidualGapStreams`); whether the native CLI
+ever sends a command in a target field is unknown. Synthetic replay does not
 prove provider refusal or preventive isolation.
 
 `commitChannel` is **`finalize-only`**: Switchboard does not inject a per-run MCP server (no headless MCP-definition
@@ -969,7 +979,11 @@ T4.26 partial
 [#326](https://github.com/zemdregon/switchboard/pull/326),
 [#345](https://github.com/zemdregon/switchboard/pull/345),
 [#351](https://github.com/zemdregon/switchboard/pull/351),
-[#358](https://github.com/zemdregon/switchboard/pull/358));
+[#358](https://github.com/zemdregon/switchboard/pull/358),
+[#378](https://github.com/zemdregon/switchboard/pull/378),
+[#393](https://github.com/zemdregon/switchboard/pull/393),
+[#422](https://github.com/zemdregon/switchboard/pull/422),
+[#449](https://github.com/zemdregon/switchboard/pull/449));
 no `replayGap`). [#302](https://github.com/zemdregon/switchboard/pull/302) added synthetic argument-key and
 tool-name variants (`input.cmd`, top-level `command`, `CommandLine` on `arguments` / `input` / the event, `name` and
 `tool_name`), commands arriving or changing only on `tool_call_update` (including `call_id` and `tool_call_id`),
@@ -999,7 +1013,23 @@ without the guard verdict the 6 at exit `0` end `ok`, the T4.26 residual above).
 resolves (`\u` escapes in type, key and command, a duplicate `command` key whose last value is the Git write, CRLF
 lines), hypothetical `stopReason` values `max_tokens` and `refusal` after a Git-write call, a call first reported with
 only `input.path` then given a Git-write command on the same id, and swapped or after-`end` Git writes at exit `2` and
-`137` (188 streams total: 178 blocked, 10 unknown-event; 12 `grokPartialStreams` unchanged). Bare, non-string and
+`137` (188 streams total: 178 blocked, 10 unknown-event; 12 `grokPartialStreams` unchanged).
+[#378](https://github.com/zemdregon/switchboard/pull/378) replays the T4.23 second-pass branches (a top-level command
+beside an empty `input`, an id-less update after an id'd call, an empty error message, an empty `stopReason`, a
+target-only call upgraded to a Git write) and adds the shadowed-container gap as `unknown_events` (220 streams: 208
+blocked, 12 unknown-event). [#393](https://github.com/zemdregon/switchboard/pull/393) pins the four compiled cells'
+argv (exactly one `--sandbox` and its value, `--disable-web-search` exactly when network is off, one
+`--always-approve`) and the refused scopes, with broken-compile positive controls.
+[#422](https://github.com/zemdregon/switchboard/pull/422) replays the third-pass `end`-line branches and widens
+`grokPartialStreams` to exits `2` and `137` (261 streams: 244 blocked, 17 unknown-event; 24 `grokPartialStreams`).
+[#449](https://github.com/zemdregon/switchboard/pull/449) replays the fourth to sixth passes (decoy `sessionId`, a
+5,000-character command, a caller id equal to `call_1`, `null` or number `input` beside `parameters`, a short
+target-only Git write, an empty `id` beside `call_id`, a duplicate `type` key, an empty text chunk) in each hostile
+category at exits `0` and `1`, and adds case-variant and duplicate-`type` `unknown_events` lines: 325 streams on `main`
+(304 blocked — 102 `credential_read`, 102 `out_of_worktree_write`, 100 `network` — and 21 unknown-event; 24
+`grokPartialStreams`; 168 `grokResidualStreams`, which a positive control shows none end `PERMISSION_BLOCKED` without
+the guard verdict). It also pins the open target-clip gap above as 6 `grokResidualGapStreams`, kept outside the blocked
+count, with a positive control that the same call within the clip ends `PERMISSION_BLOCKED`. Bare, non-string and
 prototype-key tool lines remain `unknown`; cut-line streams end `OUTPUT_PROTOCOL_ERROR`, which outranks a guard
 verdict. These case-file updates change neither the parser nor the compiled matrix; fields other than `type` remain
 hypothetical. No end-to-end run through Switchboard against a logged-in `grok` has been recorded yet (T4.28).
@@ -1751,11 +1781,14 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   Compile, isolation-flag and argv checks pass for each compiled bypass cell; hostile replay blocking streams test Git
   writes blocked by Switchboard's tool-call guard per ADR-0039.
   [#302](https://github.com/zemdregon/switchboard/pull/302) through
-  [#358](https://github.com/zemdregon/switchboard/pull/358) expand synthetic command-key, update/call-id, Git-write,
-  provider-error, cut-line, parser fall-through, exit `2`/`137`, trailing-update and JSON-encoding coverage on `main`
-  (#308 completes both cut positions for each category and exit code; #326, #345, #351 and #358 widen the matrix to 188
-  streams, 178 blocked and 10 unknown-event, with 12 `grokPartialStreams`); fields other than `type` remain
-  hypothetical, and no live CLI validation is implied. A bare `tool_call` before a clean `end_turn` still succeeds;
+  [#449](https://github.com/zemdregon/switchboard/pull/449) expand synthetic command-key, update/call-id, Git-write,
+  provider-error, cut-line, parser fall-through, exit `2`/`137`, trailing-update, JSON-encoding and T4.23
+  parser-residual coverage on `main` (#308 completes both cut positions for each category and exit code; #326 through
+  #449 widen the matrix to 325 streams, 304 blocked and 21 unknown-event, with 24 `grokPartialStreams`; #393 pins the
+  compiled cells' argv and refused scopes); fields other than `type` remain hypothetical, and no live CLI validation is
+  implied. Open, pinned gap ([#449](https://github.com/zemdregon/switchboard/pull/449)): a Git write past the
+  512-character clip of a target-only shell call is not guarded, so that replay ends `ok` at exit 0
+  (`grokResidualGapStreams`, 6 streams outside the 304 blocked). A bare `tool_call` before a clean `end_turn` still succeeds;
   path keys, tool `content`, shadowed lower-precedence command keys and a command in a container shadowed by an earlier
   object container without one (#372) are invisible to the guard. A bare unreadable `tool_call_update` after a clean
   `end_turn` still succeeds at exit 0 (T4.26 residual). Partial lines end `OUTPUT_PROTOCOL_ERROR`, not a proven

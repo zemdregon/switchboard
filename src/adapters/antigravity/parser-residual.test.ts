@@ -724,3 +724,192 @@ describe("antigravity parser residuals, fifth pass: post-result steps, prototype
     }
   });
 });
+
+/**
+ * Sixth pass (2026-10-15, Delegated, not owner-approved; mirrors Grok Build T4.23 sixth pass and the OpenCode framing
+ * residuals): exact clip and session-id boundaries, falsy present values that must still fail, line framing, duplicate
+ * JSON keys and an empty name that shadows its fallback. Synthetic lines only, parser unchanged; the boundary and
+ * falsy-value tests each fail under a one-line mutation (`>` to `>=` in `clip`, `{0,255}` to `{0,256}`, a truthiness
+ * test for `denied_actions` or `error`). Duplicate keys and the empty-name shadow are pinned gaps: no recorded `agy`
+ * line repeats a key or carries an empty tool name ([LIVE] C4, C7), so these pin behaviour, not a native contract.
+ */
+describe("antigravity parser residuals, sixth pass: boundaries, falsy values, framing and duplicate keys (T4.33)", () => {
+  const dirs: string[] = [];
+  afterAll(() => {
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  });
+  const kept = (n: number, c = "x") => c.repeat(n);
+  const cut = (n: number, c = "x") => `${c.repeat(n)}…`;
+
+  it("every clip keeps a value of exactly its limit whole and clips one character more", () => {
+    const toolName = (name: string) =>
+      run([INIT(), STEP({ step_index: 1, step_type: "tool", tool_info: { name } }), RESULT()]).events.find(
+        (e) => e.kind === "tool_call",
+      );
+    expect(toolName(kept(64))).toMatchObject({ name: kept(64) });
+    expect(toolName(kept(65))).toMatchObject({ name: cut(64) });
+    const target = (path: string) =>
+      run([
+        INIT(),
+        STEP({ step_index: 1, step_type: "tool", tool_info: { name: "view_file", parameters: { path } } }),
+      ]).events.find((e) => e.kind === "tool_call");
+    expect(target(kept(512))).toMatchObject({ target: kept(512) });
+    expect(target(kept(513))).toMatchObject({ target: cut(512) });
+    const bound = (v: string) =>
+      run([j({ event: "init", conversation_id: CID, backing_provider: v, init: { model: v } })]).events[0];
+    expect(bound(kept(128))).toEqual({
+      kind: "session_bound",
+      nativeSessionId: CID,
+      model: kept(128),
+      backingProvider: kept(128),
+    });
+    expect(bound(kept(129))).toMatchObject({ model: cut(128), backingProvider: cut(128) });
+    const denied = (display_name: string) =>
+      run([INIT(), RESULT({ denied_actions: [{ display_name }] })]).events.find((e) => e.kind === "permission_denied");
+    expect(denied(kept(64))).toEqual({ kind: "permission_denied", tool: kept(64) });
+    expect(denied(kept(65))).toEqual({ kind: "permission_denied", tool: cut(64) });
+    const unknown = (name: string) => run([j({ event: name })]).events;
+    expect(unknown(kept(64))).toEqual([{ kind: "unknown", rawType: kept(64) }]);
+    expect(unknown(kept(65))).toEqual([{ kind: "unknown", rawType: cut(64) }]);
+    const status = (s: string) => run([INIT(), RESULT({ status: s })]).result;
+    expect(status(kept(64, "E"))).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: kept(64, "E"),
+    });
+    expect(status(kept(65, "E"))).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: cut(64, "E"),
+    });
+    const message = (response: string) => run([INIT(), RESULT({ response })]).events.find((e) => e.kind === "message");
+    expect(message(kept(2_000))).toMatchObject({ text: kept(2_000) });
+    expect(message(kept(2_001))).toMatchObject({ text: cut(2_000) });
+  });
+
+  it("a conversation id of 256 characters binds and one of 257 does not; it must start with a letter or digit", () => {
+    const binds = (id: string) =>
+      run([j({ event: "init", conversation_id: id, init: {} })]).events.some((e) => e.kind === "session_bound");
+    expect(binds(`a${"b".repeat(255)}`)).toBe(true);
+    expect(binds(`a${"b".repeat(256)}`)).toBe(false);
+    for (const id of ["0", "Z", "a.b:c_d-e", "9:"]) expect(binds(id), id).toBe(true);
+    for (const id of [".a", "_a", ":a", "a/b", "a b", "aé"]) expect(binds(id), id).toBe(false);
+  });
+
+  it("pins the gap: a step's conversation_id is compared, never checked as a safe token, so an unsafe one is a changed id", () => {
+    const r = run([INIT(), STEP({ conversation_id: "-c", step_index: 1, step_type: "agent_response" }), RESULT()]);
+    expect(r.events.filter((e) => e.kind === "provider_error")).toEqual([
+      { kind: "provider_error", category: "protocol", message: "conversation id changed mid-run" },
+    ]);
+    expect(r.result).toMatchObject({ ok: false, failureDetail: "protocol: conversation id changed mid-run" });
+    // The comparison is exact: the bound id in upper case is another conversation.
+    const upper = run([INIT(), STEP({ conversation_id: CID.toUpperCase(), step_index: 1, step_type: "x" }), RESULT()]);
+    expect(upper.result).toMatchObject({ ok: false, failureDetail: "protocol: conversation id changed mid-run" });
+  });
+
+  it("a falsy denied_actions other than null is still one unknown denial; null and an empty array deny nothing", () => {
+    for (const value of [false, 0, "", {}]) {
+      const r = run([INIT(), RESULT({ denied_actions: value })]);
+      expect(
+        r.events.filter((e) => e.kind === "permission_denied"),
+        String(value),
+      ).toEqual([{ kind: "permission_denied", tool: "unknown" }]);
+      expect(r.result, String(value)).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    }
+    for (const value of [null, []]) {
+      expect(run([INIT(), RESULT({ denied_actions: value })]).result).toMatchObject({ ok: true });
+    }
+  });
+
+  it("a falsy error other than null or an empty string is a non-string error field and fails the run", () => {
+    for (const value of [false, 0, [], {}]) {
+      const r = run([INIT(), RESULT({ error: value })]);
+      expect(
+        r.events.filter((e) => e.kind === "provider_error"),
+        JSON.stringify(value),
+      ).toEqual([{ kind: "provider_error", category: "unknown", message: "non-string error field" }]);
+      expect(r.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+    }
+    expect(run([INIT(), RESULT({ error: "" })]).result).toMatchObject({ ok: true });
+  });
+
+  it("line framing: surrounding whitespace and a trailing CR parse; a BOM is unparseable and not counted unknown", () => {
+    const r = run([` ${INIT()}\t`, `${RESULT()}\r`]);
+    expect(r.result).toEqual({ ok: true, unknownEventCount: 0, nativeSessionId: CID, summary: "ok" });
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    expect(a.parseEvent(`﻿${INIT()}`, state)).toEqual([]);
+    expect(state).toMatchObject({ lines: 1, unknownEvents: 0 });
+    // Top-level JSON that is not an object is a counted unknown line with no event name.
+    for (const line of ["[]", "7", '"init"', "null", "true"]) {
+      expect(a.parseEvent(line, state), line).toEqual([{ kind: "unknown", rawType: "none" }]);
+    }
+    expect(state).toMatchObject({ lines: 6, unknownEvents: 5 });
+  });
+
+  it("pins the gap: a duplicated JSON key keeps its last value, so a later SUCCESS status hides an earlier ERROR", () => {
+    const twice = RESULT({ status: "ERROR" }).replace(/\}\}$/, ',"status":"SUCCESS"}}');
+    expect(run([INIT(), twice]).result).toEqual({
+      ok: true,
+      unknownEventCount: 0,
+      nativeSessionId: CID,
+      summary: "ok",
+    });
+    // The reverse order fails, and a duplicated event name is read by its last value too.
+    const reverse = RESULT().replace(/\}\}$/, ',"status":"ERROR"}}');
+    expect(run([INIT(), reverse]).result).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "ERROR",
+    });
+    const renamed = RESULT().replace(/\}$/, ',"event":"telemetry"}');
+    expect(run([INIT(), renamed]).events.at(-1)).toEqual({ kind: "unknown", rawType: "telemetry" });
+  });
+
+  it("fixture duplicate_status_key replays an ERROR status overwritten by SUCCESS to a success at exit 0 (gap, pinned)", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "sb-antigravity-t433-sixth-"));
+    dirs.push(cwd);
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: replayAdapter("duplicate_status_key"),
+      request: {
+        runId: "run_antigravity_t433_sixth",
+        objective: "synthetic antigravity objective",
+        constraints: [],
+        workspace: { cwd, writable: true },
+        bypassApproved: true,
+      },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toEqual({
+      ok: true,
+      unknownEventCount: 0,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      summary: "Done.",
+    });
+  });
+
+  it("pins the gap: an empty tool_info.name shadows tool_name, so the call is named by the empty string", () => {
+    const named = (info: Record<string, unknown>) =>
+      run([INIT(), STEP({ step_index: 1, step_type: "tool", tool_name: "list_dir", tool_info: info })]).events.find(
+        (e) => e.kind === "tool_call",
+      );
+    expect(named({ name: "" })).toEqual({ kind: "tool_call", tool: "other", name: "" });
+    // A non-string name is skipped, so the fallback names the call (the control for the gap above).
+    expect(named({ name: 7 })).toEqual({ kind: "tool_call", tool: "other", name: "list_dir" });
+    // An empty step_type is not `tool`: an ignored step, not an unknown line.
+    const empty = run([INIT(), STEP({ step_index: 2, step_type: "" }), RESULT()]);
+    expect(empty.result).toEqual({ ok: true, unknownEventCount: 0, nativeSessionId: CID, summary: "ok" });
+  });
+
+  it("the summary is the last 2,000 characters of every message joined by newlines, so an earlier response can be cut", () => {
+    const r = run([INIT(), RESULT({ response: kept(1_500, "a") }), RESULT({ response: kept(1_500, "b") })]);
+    expect(r.result).toMatchObject({
+      ok: false,
+      failureDetail: "protocol: more than one result line",
+      summary: `${kept(499, "a")}\n${kept(1_500, "b")}`,
+    });
+  });
+});
