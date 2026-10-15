@@ -55,7 +55,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   verification-summary, run-title and a live backend are not. T11.5 usage-surface pins merged
   [#362](https://github.com/zemdregon/switchboard/pull/362) (suspended-task and project-off denials, re-ask deadline
   counts, shared-subscription label routing, whole `inner_shared_subscription` doctor checks, `enabled: false` with the
-  flag set, capacity collector `source` exclusion). See [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
+  flag set, capacity collector `source` exclusion) and [#396](https://github.com/zemdregon/switchboard/pull/396)
+  (usage accounting at the quota-failover routing call site, the one `serve`-path classification recorded under a
+  run). See [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
 - **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.7 are done on fakes: the spike, `rag`
   configuration and per-project store, the scanner through chunker, the embedding port (fake and `http` backends
   behind the locality gates), incremental background indexing in `serve`, `switchboard index status|rebuild|clear`
@@ -721,8 +723,26 @@ check in human and `--json` output before and after `inner test`; with `enabled:
 sends nothing and capacity and the whole `doctor --json` document stay byte-identical; and the capacity collector
 ignores `inner_agent` rows by `source` alone even when metric keys resemble provider usage (`usage.test.ts`,
 `usage-surfaces.test.ts`, `capacity.test.ts`). Those tests call the injected contracts directly; the production `commit`
-tool channel (over its Unix socket) and the MCP admission harness (`delegate_task` and `continue_task`) that call them
-are driven with the same inner usage checks in `src/inner/usage-channels.test.ts`, on fakes. The
+tool channel (over its Unix socket) and all three `serve` call sites of the routing hook (admission through
+`delegate_task`, continuation through `continue_task` and, merged
+[#396](https://github.com/zemdregon/switchboard/pull/396), the quota failover) are driven with the same inner usage
+checks in `src/inner/usage-channels.test.ts`, on fakes. Admission and continuation classify before their run exists,
+so those `inner_call` rows and any labelled observations carry no run id. The quota failover (the T6.6 ladder)
+classifies under the run that just failed on quota, after it is terminal, and is the one `serve`-path classification
+that carries a run id: with `shares_subscription_with` it writes one labelled row under that failed run (the shared
+provider as label, the backend's counts), whether the label names the exhausted provider, the successor or a spare,
+and none without; the successor lands on the same provider under every label, because labelled rows never reach the
+scorer (ADR-0007); neither run's envelope reports the row and the ledger's per-run list shows it under the failed run
+only; the failed run's event list gains one `inner_call` event with no token figure beside its `quota_ladder` event
+and the successor's gains none; and `get_capacity` counts provider-reported rows only for the exhausted provider and
+the successor, keeps a spare that never ran byte-identical (its clock aside) even when it is the label, and names the
+inner agent nowhere. The same three call sites are pinned for provenance and fallback in
+`src/mcp/inner-route-features.test.ts`: the failover is classified only after eligibility and without changing the
+chosen provider; a required provider that fails eligibility is never classified; a disabled task, an invalid, erroring
+or hung backend, or a throwing injected classifier keeps `heuristic.v1`; `explain_route` and replay read the stored
+row without a backend call; and a replayed `delegate_task` with the same idempotency key does not classify again. The
+human `runs show` text prints its usage section from provider-reported rows only and names nothing about the inner
+agent even with a planted labelled row (`src/inner/usage-surfaces.test.ts`). The
 statements above about what `inner status`, `inner test`, `inner resume` and the `doctor` block print (states, the
 circuit line, rates, the canary verdict, the origin-only backend line, the resume notice) are pinned on the command
 output in `src/inner/cli-doctor-surfaces.test.ts`; the `no_backend` state is reachable from an on-disk config only
