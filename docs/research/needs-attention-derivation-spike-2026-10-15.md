@@ -111,7 +111,7 @@ tests expand the set; until then, implement §3.4.5 literally (`RUNNING` or `LEA
 
 | Source | Ledger fact | Typical `run_event` / notes |
 | --- | --- | --- |
-| Admission refusal (FR-CTL-06) | Active budget refusal on the project or global scope in `control_plane_state.budget_flags_json` ([LLD §3.4.7](../design/LLD.md#347-pause-and-budget-persistence-proposed), written by T14.4) | `budget_refused` recorded on the project ([LLD §3.4.6](../design/LLD.md#346-budgets-and-loop-breaker-fr-ctl-06-fr-ctl-07)) |
+| Admission refusal (FR-CTL-06) | Active budget refusal on the project or global scope in `control_plane_state.budget_flags_json` ([LLD §3.4.7](../design/LLD.md#347-pause-and-budget-persistence-proposed), written by T14.4) | `budget_refused` recorded on the project ([LLD §3.4.6](../design/LLD.md#346-budgets-and-loop-breaker-fr-ctl-06-fr-ctl-07)); cap keys and admission rules: [operator budget admission spike](operator-budget-admission-spike-2026-10-15.md) (T14.4) |
 | Project linkage | Resolve `project_id` from `meta_session.project_id` or `run.project_id` / policy snapshot | Refusal persists until window reset or operator raises cap |
 
 `needs_attention` for this reason may attach to the **newest non-terminal run** in the project or to a synthetic digest
@@ -197,9 +197,9 @@ Deriving `active: true` without a closed `reason` is forbidden by schema. Derivi
 | --- | --- | --- |
 | `list_runs` MCP tool | T14.1 | Envelope parity tests; shared derivation entry point |
 | Budget refusal persistence and admission checks | T14.4 | `budget_exhausted` facts in `control_plane_state` |
-| Loop breaker, stall detector, successor cap | T14.5 | `parked_loop`, `stalled`, `failed_after_retry` inputs |
+| Loop breaker, stall detector, successor cap | T14.5 | `parked_loop`, `stalled`, `failed_after_retry` inputs — [loop breaker spike](loop-breaker-stall-successor-cap-spike-2026-10-15.md) |
 | `get_digest` assembly | T14.3 | Project-level arrays and `budget.exhausted`; consumes T14.2 derivation |
-| Pause | T14.6 | `paused` on digest; pause holds admission but is **not** a `needs_attention_reason` |
+| Pause | T14.6 | `paused` on digest; pause holds admission but is **not** a `needs_attention_reason` — [pause spike](project-pause-resume-spike-2026-10-15.md) |
 | Notification delivery | T14.9 | Emit `needs_attention` sink events when the derived flag becomes true (cross-link only) |
 | Approval proxy / consent link | T14.8 / T14.10 | `pending_approvals` and consent URLs; not alternate reason enums |
 

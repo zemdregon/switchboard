@@ -35,6 +35,7 @@ export function createProbeRunner(envAllowlist: readonly string[] = ["PATH"]): P
       argv,
       envAllowlist,
       ...(opts?.cwd ? { cwd: opts.cwd } : {}),
+      ...(opts?.stdinText !== undefined ? { stdinText: opts.stdinText } : {}),
       wallClockMs: opts?.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS,
       killGraceMs: 500,
     }).result;

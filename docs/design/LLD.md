@@ -25,7 +25,10 @@ Conventions:
 - **JSON columns** hold validated JSON text (`CHECK (json_valid(col))`). Prompts and provider output do not live in JSON
   columns; large payloads go to artifacts (FR-TEL-03).
 - All tables are `STRICT`. Foreign keys `ON`. `PRAGMA journal_mode=WAL; synchronous=FULL` (Proposed: durability over
-  speed for crash safety, NFR-REL-01); `busy_timeout` set although only one writer exists.
+  speed for crash safety, NFR-REL-01); `busy_timeout` set although only one writer exists. `recursive_triggers=ON`
+  (Delegated, [ROADMAP Q-96](../ROADMAP.md#73-open-questions-for-zemdregon-not-blocking-m2-unless-noted)): without it
+  SQLite's `REPLACE` conflict resolution deletes a colliding row without firing the `BEFORE DELETE` guards below, so
+  `INSERT OR REPLACE` could rewrite an append-only row; with it the guard fires and the statement aborts.
 - **Append-only** (enforced by `BEFORE UPDATE/DELETE` triggers that `RAISE(ABORT)`): `run_event`, `decision`,
 `workspace_checkpoint`, `usage_observation`, `route_decision`, and (M11) `inner_call` and (M12) `rag_record` (FR-SES-05,
 FR-RTE-03, FR-CAP-01, FR-INN-15). **Update-once** (pending to decided): `approval`. **Mutable current-state**:
