@@ -1351,6 +1351,8 @@ describe("opencode parser and result (T4.53)", () => {
 
   it("an unknown or unreadable event anywhere, before or after the final stop step, is never a success (T4.56)", () => {
     const EXIT1: ExitInfo = { ...EXIT0, exitCode: 1 };
+    const EXIT2: ExitInfo = { ...EXIT0, exitCode: 2 };
+    const EXIT137: ExitInfo = { ...EXIT0, exitCode: 137 };
     for (const [label, lines] of [
       ["unknown kind before stop", [START, line("synthetic_unknown_kind", {}), TEXT("ok"), FINISH("stop")]],
       ["unknown kind after stop", [START, TEXT("ok"), FINISH("stop"), line("synthetic_unknown_kind", {})]],
@@ -1367,6 +1369,8 @@ describe("opencode parser and result (T4.53)", () => {
       expect(r0, label).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
       expect(r0.ok === false && r0.failureDetail, label).toMatch(/unreadable event\(s\) in the stream$/);
       expect(a.extractResult(events, EXIT1), label).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+      expect(a.extractResult(events, EXIT2), label).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+      expect(a.extractResult(events, EXIT137), label).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
     }
     // A later `stop` does not wash an earlier unreadable line back to success.
     const washed = parse([
@@ -1387,13 +1391,32 @@ describe("opencode parser and result (T4.53)", () => {
 
   it("a shell tool named bash, or any unlisted tool carrying a string command, reaches the tool-call guard (T4.56)", () => {
     const ctx = { cwd: "/work/tree", home: "/home/synthetic", bypass: true };
-    for (const name of ["bash", "synthetic_exec", "sh"]) {
+    for (const name of ["bash", "synthetic_exec", "sh", ""]) {
       const { a, events } = parse([START, TOOL(name, { command: "git push origin main" }), TEXT("ok"), FINISH("stop")]);
       const call = events.find((e) => e.kind === "tool_call");
       expect(call, name).toEqual({ kind: "tool_call", tool: "shell", name, command: "git push origin main" });
       const guarded = events.map((e) => guardEvent(e, ctx));
       expect(a.extractResult(guarded, EXIT0), name).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
     }
+    // A command outranks filePath and path: the call is a shell tool and reaches the guard.
+    const pathAndCmd = parse([
+      START,
+      TOOL("shell", { filePath: "src/safe.ts", path: "src/safe.ts", command: "git push origin main" }),
+      FINISH("stop"),
+    ]);
+    expect(pathAndCmd.events.find((e) => e.kind === "tool_call")).toEqual({
+      kind: "tool_call",
+      tool: "shell",
+      name: "shell",
+      command: "git push origin main",
+    });
+    expect(
+      pathAndCmd.a.extractResult(
+        pathAndCmd.events.map((e) => guardEvent(e, ctx)),
+        EXIT0,
+      ),
+    ).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+
     // No string `command`: an unlisted tool stays `other` and a read-only call leaves the run clean.
     for (const input of [{}, { command: 7 }, { pattern: "git push" }]) {
       const { a, events } = parse([START, TOOL("grep", input), TEXT("ok"), FINISH("stop")]);
@@ -1428,6 +1451,69 @@ describe("opencode parser and result (T4.53)", () => {
         EXIT0,
       ),
     ).toMatchObject({ ok: true });
+  });
+
+  it("a guard-flagged Git write ends PERMISSION_BLOCKED at exit 2 and exit 137, and survives subsequent benign calls (T4.56)", () => {
+    const ctx = { cwd: "/work/tree", home: "/home/synthetic", bypass: true };
+    const guarded = (lines: string[]) => parse(lines).events.map((e) => guardEvent(e, ctx));
+    const PUSH = TOOL("shell", { command: "git push origin main" });
+    const EXIT2: ExitInfo = { ...EXIT0, exitCode: 2 };
+    const EXIT137: ExitInfo = { ...EXIT0, exitCode: 137 };
+
+    // ADR-0039: guard verdict outranks non-zero exit codes 2 and 137.
+    expect(adapter().extractResult(guarded([START, PUSH, TEXT("ok"), FINISH("stop")]), EXIT2)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+    expect(adapter().extractResult(guarded([START, PUSH]), EXIT137)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+
+    // A benign call after the hostile call does not wash the guard verdict.
+    const thenBenign = guarded([
+      START,
+      PUSH,
+      FINISH("tool-calls", "prt_f1"),
+      START,
+      TOOL("shell", { command: "echo safe" }, "completed"),
+      FINISH("stop", "prt_f2"),
+    ]);
+    expect(adapter().extractResult(thenBenign, EXIT0)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+    expect(adapter().extractResult(thenBenign, { ...EXIT0, exitCode: 1 })).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+
+    // A hostile call swapped back to a benign command in a later update still ends PERMISSION_BLOCKED.
+    const swapped = guarded([
+      START,
+      line("tool_use", {
+        id: "prt_u1",
+        type: "tool",
+        tool: "shell",
+        state: { status: "pending", input: { command: "git push origin main" } },
+      }),
+      line("tool_use", {
+        id: "prt_u1",
+        type: "tool",
+        tool: "shell",
+        state: { status: "completed", input: { command: "ls" } },
+      }),
+      FINISH("stop"),
+    ]);
+    expect(adapter().extractResult(swapped, EXIT0)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+
+    // Without the Git write, exit 2 and 137 end TOOL_FAILURE, never PERMISSION_BLOCKED.
+    const plain = guarded([START, TOOL("shell", { command: "ls" }), TEXT("ok"), FINISH("stop")]);
+    expect(adapter().extractResult(plain, EXIT2)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+    expect(adapter().extractResult(plain, EXIT137)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
   });
 
   it("a guard-flagged trailing tool_use ends PERMISSION_BLOCKED at exit 1, after an intermediate step and a second stop", () => {
