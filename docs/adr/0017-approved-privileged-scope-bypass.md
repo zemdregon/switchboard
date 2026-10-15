@@ -2,7 +2,8 @@
 
 - Status: Accepted (amended before merge, 2026-10-13); approval requirement amended by
   [ADR-0019](0019-per-client-privileged-approval.md) for MCP clients configured `privileged_approval: "not_required"`
-  (2026-10-13)
+  (2026-10-13); item 6 ("No MCP tool approves") is superseded in part by
+  [ADR-0047](0047-approval-proxy-over-mcp.md) for clients the operator marks `approval_proxy` (Proposed, 2026-10-15)
 - Date: 2026-10-12
 - Numbering: drafted as ADR-0016 on the M3 plan branch; renumbered ADR-0017 on 2026-10-13 when main, merged first,
   had already used 0016 for [the inner agent](0016-inner-agent.md). Owner decision 17 was numbered 14 on that branch
