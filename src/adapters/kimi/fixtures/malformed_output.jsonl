@@ -1,0 +1,3 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.63), in the stream-json record shapes of the scrubbed 2026-10-15 capture (captured_success.jsonl).","exit":0}}
+{"role":"assistant","content":"ok"}
+SYNTHETIC this line is deliberately not valid JSON {

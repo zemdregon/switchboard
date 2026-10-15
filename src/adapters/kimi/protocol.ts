@@ -2,7 +2,8 @@
  * Kimi Code CLI surface used by the Kimi Code adapter (T4.62, TDD §4.7, ADR-0049). Every spelling is cited to a TDD §4.7
  * source tag ([K1] command reference, [K4] configuration, [K5] MCP, [K10] environment variables and data locations;
  * Kimi Code documentation retrieved 2026-10-13, listed in `docs/research/kimi-code-spike-2026-10-13.md`), to the T4.61
- * live checks ([LIVE] row: `docs/research/live-checks-2026-10-15-kimi.md`, Kimi Code CLI 2.1.1), or marked
+ * live checks ([LIVE] row: `docs/research/live-checks-2026-10-15-kimi.md`, Kimi Code CLI 2.1.1), to the scrubbed
+ * `stream-json` capture of that check's validation run ([CAP], below), or marked
  * **Assumption**. Keep every native spelling in this file so a later capture (T4.68) touches one place. The manifest
  * range admits no version, so none of this runs until `adapters validate` passes a version (ADR-0009, T4.4).
  */
@@ -34,7 +35,11 @@ export const OUTPUT_STREAM_JSON = "stream-json";
  */
 export const MODEL_FLAG = "--model";
 
-/** Resume a named session ([K1], [LIVE] 2: `-S, --session [id]`). `-c`/`--continue` is never used: it names no session. */
+/**
+ * Resume a named session ([K1], [LIVE] 2: `-S, --session [id]`). `-c`/`--continue` is never used: it names no session.
+ * Compiled as two words `--session <id>` (the help's form); the id is checked to start with a letter or digit first, so
+ * it is never read as a flag. The `kimi -r <id>` named in the [CAP] resume hint is not in the 2.1.1 help and is not used.
+ */
 export const SESSION_FLAG = "--session";
 
 /** ACP server subcommand ([K1], [LIVE] 4: `kimi acp`; its `--login` flag is never passed, the client never logs in). */
@@ -58,6 +63,39 @@ export const ACP_BYPASS_MODES: readonly string[] = ["auto", "yolo"];
 /** ACP config option ids ([LIVE] 9: `configOptions` for `model`, `thinking` and `mode`). */
 export const ACP_CONFIG_MODE = "mode";
 export const ACP_CONFIG_MODEL = "model";
+
+/**
+ * `stream-json` records (T4.63). [CAP] is the one scrubbed capture of a successful `-p` run (CLI 2.1.1, the T4.61
+ * validation run of live-checks follow-up 1, exit 0; reproduced as `fixtures/captured_success.jsonl`):
+ * `{"role":"meta","type":"system.version","version":"2.1.1"}`, then `{"role":"assistant","content":"ok"}`, then
+ * `{"role":"meta","type":"session.resume_hint","session_id":"session_<uuid>","command":…,"content":…}` as the last line.
+ * No usage, model or terminal `result` record was printed. [K1] documents assistant messages, assistant messages carrying
+ * `tool_calls`, and tool messages; their field names below are an **Assumption** (OpenAI-style chat records, the shape
+ * the captured assistant record follows) until T4.68 captures a tool call.
+ */
+export const ROLE = { assistant: "assistant", tool: "tool", meta: "meta" } as const;
+/** [CAP] line 1: the CLI version, carries no run state. */
+export const META_VERSION = "system.version";
+/**
+ * [CAP] line 3: the resume hint, with the session id in `session_id`. It was the last line of the one recorded run, so
+ * the parser treats it as the end of the turn (**Assumption**, T4.68: whether a failed turn prints it too is unobserved,
+ * so success also needs exit 0).
+ */
+export const META_RESUME_HINT = "session.resume_hint";
+/** Field of the resume hint that carries the session id ([CAP]). */
+export const RESUME_HINT_SESSION_KEY = "session_id";
+/** Assistant field carrying tool calls ([K1] "Assistant messages carrying `tool_calls`"); item shape **Assumption**. */
+export const TOOL_CALLS_KEY = "tool_calls";
+/**
+ * Error records: none observed. **Assumption** (fail closed): a `meta` record whose `type` is `error` or ends in `.error`
+ * is a provider error, its text in `message` or `content`.
+ */
+export const META_ERROR_RE = /(^|\.)error$/;
+/**
+ * Message prefix read as a login failure: the ACP `session/new` error text `Authentication required` ([LIVE] 10).
+ * Whether `-p` prints the same text is **Unverified: T4.68**.
+ */
+export const ERROR_AUTH_PREFIX = "Authentication required";
 
 /**
  * FR-GIT-01 declaration (ADR-0049 item 5; TDD §4.7 "Git writes and injected tools"). Deny rules exist only in

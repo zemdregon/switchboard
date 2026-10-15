@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.63), in the stream-json record shapes of the scrubbed 2026-10-15 capture (captured_success.jsonl); --session <id> returns the same session id (Assumption, T4.68).","exit":0,"requireResume":true}}
+{"role":"meta","type":"system.version","version":"0.0.1"}
+{"role":"assistant","content":"Resumed earlier session."}
+{"role":"meta","type":"session.resume_hint","session_id":"{{SESSION_ID}}","command":"kimi -r {{SESSION_ID}}","content":"To resume this session: kimi -r {{SESSION_ID}}"}

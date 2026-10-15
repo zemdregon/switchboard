@@ -183,7 +183,7 @@ describe("kimi compile matrix (T4.62)", () => {
   });
 });
 
-describe("kimi probe, auth, parser and resume placeholders (fail closed until T4.63, T4.64)", () => {
+describe("kimi probe and auth placeholder (fail closed until T4.64; parser and resume: parser-residual.test.ts)", () => {
   const runner =
     (table: Record<string, { stdout: string; exitCode: number }>): ProbeRunner =>
     async (argv) => {
@@ -236,7 +236,7 @@ describe("kimi probe, auth, parser and resume placeholders (fail closed until T4
     expect(missing.steps).toEqual([{ step: "binary", ok: false, detail: "kimi not found on PATH" }]);
   });
 
-  it("auth is UNKNOWN, resume is Ineligible, no event is recognised and a clean exit never succeeds", async () => {
+  it("auth is UNKNOWN; resume refuses a foreign binding and fails closed where compile does (T4.63)", async () => {
     const a = adapter();
     expect(await a.authPreflight(runner({}))).toMatchObject({ state: "UNKNOWN" });
     expect(
@@ -244,14 +244,7 @@ describe("kimi probe, auth, parser and resume placeholders (fail closed until T4
     ).toMatchObject({ reason: "CAPABILITY_MISSING", detail: "binding is for codex" });
     expect(
       a.resumeArgs({ provider: "kimi", nativeSessionId: "s" }, request(), profileOf("edit-untrusted")),
-    ).toMatchObject({ ineligible: true });
-    const state = { lines: 0, unknownEvents: 0 } as Parameters<KimiAdapter["parseEvent"]>[1];
-    expect(a.parseEvent('{"role":"assistant","content":"done"}', state)).toEqual([
-      { kind: "unknown", rawType: "unparsed" },
-    ]);
-    expect(a.parseEvent({ jsonrpc: "2.0", id: 3, result: { stopReason: "end_turn" } }, state)).toEqual([
-      { kind: "unknown", rawType: "unparsed" },
-    ]);
+    ).toMatchObject({ ineligible: true, reason: "PROFILE_UNSUPPORTED" });
     const r = a.extractResult([], { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] });
     expect(r).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
   });
