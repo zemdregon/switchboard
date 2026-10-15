@@ -1,10 +1,12 @@
 /**
  * T11.5 done-when, at the surfaces it names (FR-INN-15, BR-41, ADR-0007): `get_capacity` on the MCP server,
- * `switchboard capacity --json` and `runs show --json` are byte-identical with and without inner calls made through the
- * real inner-agent pipeline, both when no subscription is shared and when `shares_subscription_with` names the very
- * provider the estimate is for. The unit tests in `usage.test.ts` and `../capacity/capacity.test.ts` prove the same at
- * the stored rows and the projection; this file proves it at the published tool and CLI output. Fake adapter and fake
- * inner backend only; no provider CLI, login or network.
+ * `switchboard capacity` (JSON and text) and `runs show --json` are byte-identical with and without inner calls made
+ * through the real inner-agent pipeline, both when no subscription is shared and when `shares_subscription_with` names
+ * the very provider the estimate is for. The estimator's projection is rendered once for every surface (T6.3, FR-OPS-05:
+ * one projection for `get_capacity`, `switchboard capacity` and `doctor`), so the `doctor --json` document and a
+ * `get_capacity` call filtered with `{ provider }` are covered here too. The unit tests in `usage.test.ts` and
+ * `../capacity/capacity.test.ts` prove the same at the stored rows and the projection; this file proves it at the
+ * published tool and CLI output. Fake adapter and fake inner backend only; no provider CLI, login or network.
  */
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -177,13 +179,13 @@ async function connect(): Promise<Client> {
 }
 
 /** The exact text the tool returns (what a caller sees), not a re-serialisation. */
-async function capacityText(client: Client): Promise<string> {
-  const res = await client.callTool({ name: "get_capacity", arguments: {} });
+async function capacityText(client: Client, args: Record<string, unknown> = {}): Promise<string> {
+  const res = await client.callTool({ name: "get_capacity", arguments: args });
   expect(res.isError).not.toBe(true);
   return (res.content as { text: string }[])[0]?.text ?? "";
 }
 
-async function cli(args: string[]): Promise<string> {
+async function cli(args: string[], allowNonZero = false): Promise<string> {
   const out: string[] = [];
   const io: CliIo = {
     stdout: { write: (s) => out.push(s) },
@@ -192,7 +194,8 @@ async function cli(args: string[]): Promise<string> {
     adapters: registry(),
     now,
   };
-  expect(await main([...args, "--config", configPath], io)).toBe(0);
+  const code = await main([...args, "--config", configPath], io);
+  if (!allowNonZero) expect(code).toBe(0);
   return out.join("");
 }
 
@@ -216,7 +219,7 @@ function innerAgent(shares: string | null) {
   return createInnerAgent(settings, { backend: createFakeBackend({ script: SCRIPT }), ledger });
 }
 
-describe("get_capacity, switchboard capacity and runs show with and without inner calls (T11.5; FR-INN-15, BR-41)", () => {
+describe("get_capacity, switchboard capacity, doctor and runs show with and without inner calls (T11.5; FR-INN-15, BR-41)", () => {
   for (const shares of [null, PROVIDER]) {
     const label = shares === null ? "no shared subscription" : `shares_subscription_with = ${shares}`;
     it(`${label}: every surface is byte-identical after three inner calls under a run of the provider`, async () => {
@@ -224,7 +227,14 @@ describe("get_capacity, switchboard capacity and runs show with and without inne
       const client = await connect();
       const before = {
         tool: await capacityText(client),
+        toolForProvider: await capacityText(client, { provider: PROVIDER }),
         capacity: await cli(["capacity", "--json"]),
+        capacityText: await cli(["capacity"]),
+        // The third renderer of the one projection (T6.3, FR-OPS-05). The on-disk config declares no inner agent, so
+        // doctor's inner sections and the config-derived inner_shared_subscription warning are absent and its document
+        // is a function of config, probes and the ledger; inner calls alone must not change it. Probe failures are
+        // environment facts identical on both sides, so a non-zero exit is allowed and the stdout is still compared.
+        doctor: await cli(["doctor", "--json"], true),
         show: await cli(["runs", "show", runId, "--json"]),
       };
       // The estimate has evidence (a terminal run and a usage row): the comparison is not between two empty answers.
@@ -232,7 +242,10 @@ describe("get_capacity, switchboard capacity and runs show with and without inne
         providers: { window: { terminal_runs: number; usage_observations: number } }[];
       };
       expect(parsed.providers[0]?.window).toMatchObject({ terminal_runs: 1, usage_observations: 1 });
+      const filtered = JSON.parse(before.toolForProvider) as { providers: unknown[] };
+      expect(filtered.providers).toHaveLength(1);
       expect((JSON.parse(before.show) as { usage: unknown[] }).usage).toHaveLength(1);
+      expect(JSON.parse(before.doctor).capacity.providers).toHaveLength(1);
 
       const svc = innerAgent(shares);
       const results = [];
@@ -251,7 +264,10 @@ describe("get_capacity, switchboard capacity and runs show with and without inne
       }
 
       expect(await capacityText(client)).toBe(before.tool);
+      expect(await capacityText(client, { provider: PROVIDER })).toBe(before.toolForProvider);
       expect(await cli(["capacity", "--json"])).toBe(before.capacity);
+      expect(await cli(["capacity"])).toBe(before.capacityText);
+      expect(await cli(["doctor", "--json"], true)).toBe(before.doctor);
       // `runs show` lists the run's events, and each inner call is one `inner_call` run event by design (LLD §13.4 step
       // 13), so the events gained are exactly those; everything else, the provider-reported usage view included, is
       // byte-identical, and no event payload carries a token figure.

@@ -1672,12 +1672,16 @@ choices and Assumptions: an observation is written only when a backend request w
 denied call consumed nothing; `harness` is the provider id (as for `provider_binding`); `model` is the call's `model_id`;
 `metrics_json` holds `input_tokens` and `output_tokens` only when the backend reported them, else `{}` (key names are an
 Assumption, no spec fixes them); no new ADR (ADR-0016 item 8 and ADR-0005 cover the persistence change).
-*2026-10-15 (Delegated): the done-when proved at its named surfaces.* `get_capacity` (the tool's returned text),
-`switchboard capacity --json` and the `runs show --json` document minus its event list are byte-identical before and
+*2026-10-15 (Delegated): the done-when proved at its named surfaces.* `get_capacity` (the tool's returned text,
+unfiltered and filtered with `{ provider }`), `switchboard capacity --json`, the human `switchboard capacity` text,
+the `doctor --json` document (the third renderer of the one projection, T6.3, FR-OPS-05) and the `runs show --json`
+document minus its event list are byte-identical before and
 after three inner calls (accepted, rejected after a re-ask, backend error) made through the real pipeline under a
 finished run of the provider that already has a provider-reported usage row, both with no shared subscription and with
 `shares_subscription_with` naming that provider; the only change to `runs show` is three `inner_call` events, none
-carrying a token figure (`src/inner/usage-surfaces.test.ts`). The run's MCP envelope is byte-identical too
+carrying a token figure (`src/inner/usage-surfaces.test.ts`). The `doctor` document is unchanged because its inner
+sections and the `inner_shared_subscription` warning are config-derived: inner calls alone, without an operator
+declaration in the config, change no surface. The run's MCP envelope is byte-identical too
 (`src/inner/usage.test.ts`). Also covered there: an open-breaker denial writes no observation while the failed requests
 that opened it write one each with `{}`; a timed-out request writes one with `{}`; a re-ask's counts are summed. One
 code change: the pipeline now keeps a backend-reported count only when it is a non-negative safe integer and records
