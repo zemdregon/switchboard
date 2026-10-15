@@ -25,8 +25,8 @@
  * - redaction: `src/artifacts/redact.ts`;
  * - usage accounting (T11.5): `src/usage/`, `src/ledger/` and `src/mcp/envelope.ts`; the capacity estimator (M6, T6.2)
  *   lives under `src/capacity/` and is protected whole.
- * `lifecycle.ts` is protected whole because the retry decision lives inside it. A later task that must wire the inner
- * agent near dispatch (T11.11) has to split that logic out first, not relax this list silently.
+ * `lifecycle.ts` is protected whole because the retry decision lives inside it. T11.11 wires the inner agent near
+ * dispatch by injecting `classifyRouteFeatures` from `serve.ts` (and tests), so this module never imports `src/inner/`.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";

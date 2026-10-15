@@ -69,7 +69,7 @@ import { GitToolService } from "../git/channel.js";
 import { GitPublisher } from "../git/commit.js";
 import { GitPusher, pushContextResolver } from "../git/push.js";
 import { createIdGenerator } from "../ids/index.js";
-import { createConfiguredInnerAgent, PROMPT_PROVIDER_NAMES } from "../inner/index.js";
+import { createClassifyRouteFeaturesHook, createConfiguredInnerAgent, PROMPT_PROVIDER_NAMES } from "../inner/index.js";
 import { createLedger, openLedger, RagLedger } from "../ledger/index.js";
 import { RunLifecycle } from "../lifecycle/index.js";
 import { acquireDataDirLock, type DataDirLock } from "../lock/index.js";
@@ -514,6 +514,10 @@ async function runDaemon(
       timeoutMs: config.rag.retrieval.admissionTimeoutMs,
       prepare: async (request) => rag?.prepareContextPack(request),
     },
+    // T11.11 (FR-INN-12, Q-82): record-only route features from the configured inner agent and the
+    // project/context privacy resolver. Heuristic fallback when the agent is off, the task is disabled,
+    // a privacy gate denies, or the call fails. Never ranks; lifecycle never imports the service.
+    classifyRouteFeatures: createClassifyRouteFeaturesHook(innerAgent, innerSettingFor),
     onTransition: (n) => log.info("run transition", { run_id: n.runId, from: n.from, to: n.to, rule: n.rule }),
     ...(now ? { now } : {}),
   });

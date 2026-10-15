@@ -1,5 +1,6 @@
 /** T11.11; FR-INN-12, FR-RTE-04, LLD §13.6. Optional injected classifier; values never rank (Q-82). */
 import { type ClassifierInput, classifyRequest, type RouteFeatures } from "../routing/features.js";
+import type { ProjectInnerSetting } from "./config.js";
 import type { InnerAgentService } from "./index.js";
 import type { InnerCallInput, InnerTaskContract } from "./pipeline.js";
 
@@ -92,4 +93,39 @@ export async function classifyRouteFeatures(
   } catch {
     return fallback;
   }
+}
+
+/**
+ * Production shape of `RunLifecycleOptions.classifyRouteFeatures` (T11.11). `serve` injects this so
+ * `lifecycle.ts` never imports the service (FR-INN-06). A missing project is `inherit` (workspace-path runs, LLD
+ * §13.1); a resolver throw is `off` (fail closed). Features stay record-only (Q-82).
+ */
+export type ClassifyRouteFeaturesHook = (
+  input: ClassifierInput,
+  context: {
+    readonly project?: { readonly id: string; readonly context_id: string };
+    readonly runId?: string;
+    readonly metaSessionId?: string;
+  },
+) => Promise<RouteFeatures>;
+
+export function createClassifyRouteFeaturesHook(
+  service: InnerAgentService,
+  resolveSetting: (projectId: string, contextId: string) => ProjectInnerSetting,
+): ClassifyRouteFeaturesHook {
+  return (input, context) => {
+    let projectSetting: ProjectInnerSetting = "inherit";
+    if (context.project !== undefined) {
+      try {
+        projectSetting = resolveSetting(context.project.id, context.project.context_id);
+      } catch {
+        projectSetting = "off";
+      }
+    }
+    return classifyRouteFeatures(service, input, {
+      project_setting: projectSetting,
+      ...(context.runId !== undefined ? { run_id: context.runId } : {}),
+      ...(context.metaSessionId !== undefined ? { meta_session_id: context.metaSessionId } : {}),
+    });
+  };
 }

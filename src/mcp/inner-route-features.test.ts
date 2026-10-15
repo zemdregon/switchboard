@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { resolveInnerAgent } from "../config/inner-agent.js";
 import { createFakeBackend, type FakeStep } from "../inner/fake-backend.js";
 import { createInnerAgent } from "../inner/index.js";
-import { classifyRouteFeatures } from "../inner/route-features.js";
+import { createClassifyRouteFeaturesHook } from "../inner/route-features.js";
 import type { RunLifecycleOptions } from "../lifecycle/lifecycle.js";
 import { replayRouteDecision } from "../routing/decision.js";
 import { down, type Harness, startHarness } from "../routing/fixtures/harness.js";
@@ -26,14 +26,15 @@ async function setup(script: readonly FakeStep[], enabled = true) {
     { backend },
   );
   const contexts: Parameters<NonNullable<RunLifecycleOptions["classifyRouteFeatures"]>>[1][] = [];
+  const hook = createClassifyRouteFeaturesHook(service, () => "inherit");
   h = await startHarness({
     lifecycle: {
       classifyRouteFeatures: (
-        input: Parameters<typeof classifyRouteFeatures>[1],
+        input: Parameters<NonNullable<RunLifecycleOptions["classifyRouteFeatures"]>>[0],
         context: (typeof contexts)[number],
       ) => {
         contexts.push(context);
-        return classifyRouteFeatures(service, input);
+        return hook(input, context);
       },
     },
   });
