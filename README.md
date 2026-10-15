@@ -269,7 +269,9 @@ fallback rates and whether it is suspended. Its findings are at most `[warn]` an
 contacts the backend only for that canary, and never a `remote` backend unless `allow_remote` is true. When the backend
 declares `shares_subscription_with`, the check list also carries a `[warn]` (`inner_shared_subscription`): the inner
 agent's calls consume that provider's capacity, and each call records one usage observation labelled `inner_agent` —
-never as provider usage, and never in `capacity_score`. With no `inner_agent` section the output is unchanged.
+never as provider usage, and never in `capacity_score`. Inner calls leave the capacity projection unchanged;
+when the inner-agent section is present, its call counts change, so the whole `doctor --json` document does not stay
+byte-identical. With no `inner_agent` section the output is unchanged.
 
 When `rag.embedding` is configured, `doctor` adds a "Retrieval index" block (and a `retrieval` key in `--json`): the
 backend kind, model and locality; whether the privacy gate allows it; a one-line `probe` of the embedding endpoint
@@ -668,8 +670,13 @@ or the backend is unavailable, dispatch records the heuristic classifier. The PR
 and handoff-condensation (T11.10, **Done on fakes**) tasks exist as service functions, tested on fakes; neither `serve`
 nor any `inner` command calls them on a run path (`inner test` exercises the pipeline with its built-in synthetic
 fixture only). The `inner status|test|resume` commands are CLI-only and never touch run data: with a populated run
-ledger those diagnostics leave every non-inner table unchanged and do not link inner calls to the run. No hosted or
-live backend has been exercised: every test uses a scripted fake or a local fake server.
+ledger and no shared-subscription declaration, those diagnostics leave every non-inner table unchanged and do not
+link inner calls to the run. With `shares_subscription_with`, a backend request also records labelled usage with no
+run link. [Pending PR #334](https://github.com/zemdregon/switchboard/pull/334) proposes additional fake-backend usage
+checks for these CLI calls and the injected commit-message and routing contracts; it is not merged evidence. Usage
+accounting through the full production commit-tool channel, MCP admission harness and Streamable HTTP capacity tool
+remains unverified by those tests. No hosted or live backend has been exercised: every test uses a scripted fake or a
+local fake server.
 
 ## Grok Build CLI (milestone 4)
 
