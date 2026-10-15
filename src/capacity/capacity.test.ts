@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { renderCapacity } from "../cli/capacity.js";
 import { createLedger, type Ledger, openLedger, type RunState } from "../ledger/index.js";
 import { RECONCILE_CAUSE } from "../reconcile/reconcile.js";
 import {
@@ -460,5 +461,84 @@ describe("capacity projection over the ledger (T6.2, LLD §16.2 and §16.3)", ()
     const sources = (JSON.parse(after) as { providers: { sources: string[] }[] }).providers.flatMap((p) => p.sources);
     expect(sources).toContain("controller:run_outcomes");
     expect(sources.filter((s) => /inner/u.test(s))).toEqual([]);
+  });
+
+  it("the T6.7 cache block (FR-CAP-08) reads provider-reported rows only: labelled and planted inner_agent rows with Grok's cache keys change nothing (ADR-0007)", () => {
+    // `cacheObservation` (cache.ts) is the second reader of usage metrics after the estimator, added by T6.7 after T11.5
+    // first closed. The provider-shaped pin above uses `fake`, which has no sourced cache key map, so that block had
+    // never been shown to ignore an inner row; Grok is the one provider with a map. Two rows that could only move the
+    // block if the filter were anything but `source`: the labelled row the pipeline's own `recordInnerCall` writes
+    // under the flag naming grok (it can carry input_tokens and output_tokens only), and a planted row carrying the
+    // very keys the map reads with counts that would dominate the sums. The usage input, the whole projection (its
+    // `cache` block included) and the `switchboard capacity` text stay byte-identical.
+    const grok: CapacityProviderInfo = { id: "grok", enabled: true, weight: null, concurrencyLimit: 1 };
+    const r = run("grok", "SUCCEEDED");
+    const reported = { cache_read_input_tokens: 100, cache_creation_input_tokens: 20, input_tokens: 5 };
+    ledger.insertUsageObservation({
+      runId: r,
+      provider: "grok",
+      harness: "grok",
+      source: "provider_reported",
+      metrics: reported,
+    });
+    const projectGrok = () => capacityProjection(ledger, [grok], SETTINGS, NOW);
+    const before = projectGrok();
+    expect(before.providers[0]?.cache).toMatchObject({ read: 100, creation: 20, rows: 1, source: "provider_reported" });
+    const beforeJson = capacityJson(before);
+    const beforeText = renderCapacity(before);
+    expect(beforeText).toContain("provider-reported cache tokens: read 100, creation 20 (1 reports)");
+
+    ledger.recordInnerCall(
+      {
+        task: "run_title",
+        backend_kind: "http",
+        model_id: "m",
+        locality: "local",
+        template_version: "1",
+        outcome: "accepted",
+        reason: null,
+        attempts: 1,
+        latency_ms: 5,
+        tokens_in: 250,
+        tokens_out: 25,
+        input_bytes: 10,
+        output_bytes: 5,
+        input_sha256: "0".repeat(64),
+        run_id: r,
+        meta_session_id: null,
+      },
+      { sharedSubscriptionWith: "grok" },
+    );
+    db.prepare(
+      `INSERT INTO usage_observation (id, run_id, provider, harness, backing_provider, model, source, metrics_json, observed_at)
+       VALUES (?, ?, 'grok', 'grok', NULL, 'm', 'inner_agent', ?, ?)`,
+    ).run(
+      "use-inner-cache-shaped",
+      r,
+      JSON.stringify({ cache_read_input_tokens: 2 ** 53 - 1, cache_creation_input_tokens: 2 ** 53 - 1 }),
+      NOW.toISOString(),
+    );
+    expect(
+      db
+        .prepare("SELECT provider, metrics_json FROM usage_observation WHERE source = 'inner_agent' ORDER BY rowid")
+        .all(),
+    ).toEqual([
+      { provider: "grok", metrics_json: JSON.stringify({ input_tokens: 250, output_tokens: 25 }) },
+      {
+        provider: "grok",
+        metrics_json: JSON.stringify({
+          cache_read_input_tokens: 2 ** 53 - 1,
+          cache_creation_input_tokens: 2 ** 53 - 1,
+        }),
+      },
+    ]);
+    expect(collectCapacityInputs(ledger, grok, SETTINGS.windowSeconds, NOW).usage).toEqual([
+      { metrics: reported, observedAt: NOW.toISOString() },
+    ]);
+    const after = projectGrok();
+    expect(capacityJson(after)).toBe(beforeJson);
+    expect(renderCapacity(after)).toBe(beforeText);
+    expect(after.providers[0]?.cache).toMatchObject({ read: 100, creation: 20, rows: 1 });
+    expect(`${capacityJson(after)}${renderCapacity(after)}`).not.toMatch(/9007199254740991|inner/u);
   });
 });
