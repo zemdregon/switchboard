@@ -111,7 +111,7 @@ tests expand the set; until then, implement §3.4.5 literally (`RUNNING` or `LEA
 
 | Source | Ledger fact | Typical `run_event` / notes |
 | --- | --- | --- |
-| Admission refusal (FR-CTL-06) | Active budget refusal on the project or global scope in `control_plane_state.budget_flags_json` ([LLD §3.4.7](../design/LLD.md#347-pause-and-budget-persistence-proposed), written by T14.4) | `budget_refused` recorded on the project ([LLD §3.4.6](../design/LLD.md#346-budgets-and-loop-breaker-fr-ctl-06-fr-ctl-07)) |
+| Admission refusal (FR-CTL-06) | Active budget refusal on the project or global scope in `control_plane_state.budget_flags_json` ([LLD §3.4.7](../design/LLD.md#347-pause-and-budget-persistence-proposed), written by T14.4) | `budget_refused` recorded on the project ([LLD §3.4.6](../design/LLD.md#346-budgets-and-loop-breaker-fr-ctl-06-fr-ctl-07)); cap keys and admission rules: [operator budget admission spike](operator-budget-admission-spike-2026-10-15.md) (T14.4) |
 | Project linkage | Resolve `project_id` from `meta_session.project_id` or `run.project_id` / policy snapshot | Refusal persists until window reset or operator raises cap |
 
 `needs_attention` for this reason may attach to the **newest non-terminal run** in the project or to a synthetic digest
