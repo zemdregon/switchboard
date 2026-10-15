@@ -3,11 +3,14 @@
  * path is a placeholder and no `kimi` binary is run; probe output is the shape the 2026-10-15 live check recorded
  * (`2.1.1`; `--help` options and subcommands).
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { resolveTrustProfile } from "../../policy/profiles.js";
 import { auditAcpPlan, auditInvocation, bypassClassFlags, bypassClassShortFlags } from "../audit.js";
+import { type ConformanceCase, missingRequiredKinds, runConformanceCase, runConformanceSuite } from "../conformance.js";
 import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
 import { acpDeclarations, providerEntry } from "../providers.js";
 import { AdapterRegistry } from "../registry.js";
@@ -15,6 +18,13 @@ import { createProbeRunner } from "../run.js";
 import type { CompileRequest, Invocation, ProbeOutput, ProbeRunner, ResolvedProfile, TrustProfile } from "../types.js";
 import { isIneligible } from "../types.js";
 import { KimiAdapter } from "./adapter.js";
+import {
+  DEFAULT_SESSION_ID,
+  kimiConformanceCases,
+  PRIVILEGED_BYPASS_PROFILE,
+  RESUMED_SESSION_ID,
+  replayAdapter,
+} from "./fixtures/cases.js";
 
 const EXE = "/opt/synthetic/kimi";
 const request = (over: Partial<CompileRequest> = {}): CompileRequest => ({
@@ -420,5 +430,206 @@ describe("kimi auth preflight through the real probe runner (T4.64; SYNTHETIC `k
       state: "UNKNOWN",
       reason: expect.stringContaining("initialize missing"),
     });
+  });
+});
+
+/**
+ * T4.65 (FR-ADP-11): the shared conformance suite over synthetic recorded fixtures (`./fixtures/*.jsonl`, in the
+ * `stream-json` record shapes of the scrubbed 2026-10-15 capture), replayed by `replay.mjs --provider kimi` in place of
+ * the binary, so it passes with no `kimi` installed. Only the approved bypass cell is replayed (ADR-0049 item 1); the
+ * prompt reaches the replay as the one `--prompt=` argv word. The restricted `kimi acp` cell is not a conformance case
+ * here: its ACP client runs against the shared fake ACP agent (T4.8) and its permission round trip is T4.68.
+ */
+describe("kimi conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.65)", () => {
+  const dirs: string[] = [];
+  const makeCwd = () => {
+    const d = mkdtempSync(join(tmpdir(), "sb-kimi-t465-"));
+    dirs.push(d);
+    return d;
+  };
+  afterAll(() => {
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  });
+  const caseOf = (kind: ConformanceCase["kind"]): ConformanceCase => {
+    const c = kimiConformanceCases(makeCwd).find((x) => x.kind === kind);
+    if (!c) throw new Error(`missing ${kind} case`);
+    return c;
+  };
+  const shapeRequest = (over: Partial<CompileRequest> = {}): CompileRequest => ({
+    runId: "run_kimi_shape",
+    objective: "synthetic kimi objective",
+    constraints: [],
+    workspace: { cwd: makeCwd(), writable: true },
+    bypassApproved: true,
+    ...over,
+  });
+  /**
+   * `a` with its compiled invocation rewritten by `edit`, to show the replay refuses a wrong compile. A proxy, not
+   * `Object.create`: the adapter's private fields are only readable with `a` itself as `this`.
+   */
+  const brokenBy = (a: KimiAdapter, edit: (inv: Invocation) => Invocation): KimiAdapter => {
+    const compile: KimiAdapter["compile"] = (r, p) => {
+      const inv = a.compile(r, p);
+      return isIneligible(inv) ? inv : { ...edit(inv), policyFlags: [] };
+    };
+    return new Proxy(a, {
+      get(target, key) {
+        if (key === "compile") return compile;
+        const v: unknown = Reflect.get(target, key, target);
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    });
+  };
+  /** Rewrites only the provider words after the launcher's `--`. */
+  const argvEdit =
+    (edit: (words: string[]) => string[]) =>
+    (inv: Invocation): Invocation => {
+      const sep = inv.argv.indexOf("--");
+      return { ...inv, argv: [...inv.argv.slice(0, sep + 1), ...edit(inv.argv.slice(sep + 1))] };
+    };
+  const SUCCESS = {
+    ok: true,
+    nativeSessionId: DEFAULT_SESSION_ID,
+    summary: "Reading the file first.\nAdded hello.txt.",
+  };
+
+  it("covers every FR-ADP-11 kind and passes the full suite", async () => {
+    const cases = kimiConformanceCases(makeCwd);
+    expect(missingRequiredKinds(cases)).toEqual([]);
+    expect(new Set(cases.map((c) => c.kind))).toEqual(
+      new Set([
+        "success",
+        "task_failure",
+        "resume",
+        "auth_missing",
+        "malformed_output",
+        "cancellation",
+        "timeout",
+        "partial_mutation",
+      ]),
+    );
+    const report = await runConformanceSuite(cases);
+    const failing = report.cases.flatMap((c) =>
+      c.checks.filter((k) => !k.ok).map((k) => `${c.kind}: ${k.name} ${k.detail ?? ""}`),
+    );
+    expect(failing).toEqual([]);
+    expect(report.ok).toBe(true);
+  });
+
+  it("success with edit normalizes session, summary and the edit; tool output is never an event", async () => {
+    const c = caseOf("success");
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({ ...SUCCESS, unknownEventCount: 0 });
+    expect(readFileSync(join(c.request.workspace.cwd, "hello.txt"), "utf8")).toContain("synthetic");
+  });
+
+  it("resumed run appends --session <id> and nothing else, and preserves the native session id", async () => {
+    const c = caseOf("resume");
+    const inv = compiled(
+      c.adapter.resumeArgs(c.binding ?? { provider: "kimi", nativeSessionId: "" }, c.request, c.profile),
+    );
+    expect(inv.argv.slice(inv.argv.indexOf("--") + 1)).toEqual([
+      "--prompt=synthetic kimi objective",
+      "--output-format",
+      "stream-json",
+      "--session",
+      RESUMED_SESSION_ID,
+    ]);
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({ ok: true, nativeSessionId: RESUMED_SESSION_ID });
+  });
+
+  it("the login error record ends AUTH_REQUIRED with no session, never a success", async () => {
+    const report = await runConformanceCase(caseOf("auth_missing"));
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "AUTH_REQUIRED" });
+    expect(report.result?.nativeSessionId).toBeUndefined();
+  });
+
+  it("partial mutation leaves the file in the cwd and still fails", async () => {
+    const c = caseOf("partial_mutation");
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(readFileSync(join(c.request.workspace.cwd, "partial.txt"), "utf8")).toContain("synthetic");
+  });
+
+  it("positive controls: the unedited bypass compile, with and without a model, replays to success", async () => {
+    for (const over of [{}, { model: "synthetic-model" }]) {
+      const report = await runConformanceCase({
+        kind: "success",
+        adapter: brokenBy(replayAdapter("success_edit"), (inv) => inv),
+        request: shapeRequest(over),
+        profile: PRIVILEGED_BYPASS_PROFILE,
+        expect: SUCCESS,
+      });
+      expect(
+        report.checks.filter((k) => !k.ok),
+        JSON.stringify(over),
+      ).toEqual([]);
+    }
+  });
+
+  it.each([
+    ["--prompt= removed", (w: string[]) => w.filter((x) => !x.startsWith("--prompt="))],
+    ["--prompt= repeated", (w: string[]) => [w[0] ?? "", ...w]],
+    [
+      "two-word --prompt",
+      (w: string[]) => w.flatMap((x) => (x.startsWith("--prompt=") ? ["--prompt", x.slice(9)] : [x])),
+    ],
+    [
+      "-p instead of --prompt=",
+      (w: string[]) => w.flatMap((x) => (x.startsWith("--prompt=") ? ["-p", x.slice(9)] : [x])),
+    ],
+    ["--output-format text", (w: string[]) => w.map((x) => (x === "stream-json" ? "text" : x))],
+    ["--output-format removed", (w: string[]) => w.filter((x) => x !== "--output-format" && x !== "stream-json")],
+    ["--output-format=stream-json", (w: string[]) => [w[0] ?? "", "--output-format=stream-json"]],
+    ["flags reordered", (w: string[]) => [...w.slice(1), w[0] ?? ""]],
+    ["--yolo added", (w: string[]) => [...w, "--yolo"]],
+    ["-y added", (w: string[]) => [...w, "-y"]],
+    ["--auto added", (w: string[]) => [...w, "--auto"]],
+    ["--plan added", (w: string[]) => [...w, "--plan"]],
+    ["--continue added", (w: string[]) => [...w, "--continue"]],
+    ["--agent-file added", (w: string[]) => [...w, "--agent-file", "agent.yaml"]],
+    ["--add-dir added", (w: string[]) => [...w, "--add-dir", "/"]],
+    ["--skills-dir added", (w: string[]) => [...w, "--skills-dir", "skills"]],
+    ["-r <id> added", (w: string[]) => [...w, "-r", DEFAULT_SESSION_ID]],
+    ["-S <id> added", (w: string[]) => [...w, "-S", DEFAULT_SESSION_ID]],
+    ["--session=<id> form", (w: string[]) => [...w, `--session=${DEFAULT_SESSION_ID}`]],
+    ["--session with a flag-like id", (w: string[]) => [...w, "--session", "--yolo"]],
+    ["--session without an id", (w: string[]) => [...w, "--session"]],
+    ["two-word --model", (w: string[]) => ["--model", "synthetic-model", ...w]],
+    ["--model= after the prompt", (w: string[]) => [w[0] ?? "", "--model=synthetic-model", ...w.slice(1)]],
+    ["acp subcommand prepended", (w: string[]) => ["acp", ...w]],
+    ["a positional word appended", (w: string[]) => [...w, "extra"]],
+  ])(
+    "the replay refuses an argv Kimi Code would not be given (%s), so a wrong compile cannot pass",
+    async (_n, edit) => {
+      const report = await runConformanceCase({
+        kind: "success",
+        adapter: brokenBy(replayAdapter("success_edit"), argvEdit(edit)),
+        request: shapeRequest(),
+        profile: PRIVILEGED_BYPASS_PROFILE,
+        expect: SUCCESS,
+      });
+      expect(report.ok).toBe(false);
+      expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", failureDetail: "exit code 64" });
+    },
+  );
+
+  it("the replay refuses a run whose environment carries KIMI_CODE_HOME (configuration and credential relocation)", async () => {
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: brokenBy(replayAdapter("success_edit"), (inv) => ({
+        ...inv,
+        env: { ...inv.env, KIMI_CODE_HOME: "/nonexistent/synthetic-kimi-home" },
+      })),
+      request: shapeRequest(),
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: SUCCESS,
+    });
+    expect(report.ok).toBe(false);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", failureDetail: "exit code 64" });
   });
 });
