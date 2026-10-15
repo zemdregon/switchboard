@@ -46,6 +46,8 @@
  * A Git write that is not an own string `command` on a shell-kind tool (a known file tool, a `cmd` alias, or a command
  * only under an own `__proto__` key) is not in the blocked list: the parser does not pass it to the guard (T4.53
  * Assumptions). Closing that needs a scrubbed capture of native input keys, not another synthetic `command` shape.
+ * Those shapes are exported as `opencodeGuardBlindStreams`, each with the `gapResult` it ends with today, so the gap is
+ * pinned rather than hidden.
  */
 
 import { privilegedProfile } from "../../../src/adapters/fixtures/privileged.js";
@@ -1868,3 +1870,49 @@ export const opencodeUnreadableStreams = (): HostileStream[] => [
     ),
   ),
 ];
+
+/**
+ * Known gap (1) of T4.56, pinned rather than hidden: a Git write the parser does not hand to the tool-call guard
+ * (ADR-0039) because it is not an own string `command` on a shell-kind tool. SYNTHETIC shapes, not recordings: the live
+ * check recorded `state.input` but not its keys (T4.53 Assumptions). `failureCode` is the code the stream should end
+ * with once the gap closes; `gapResult` is what it ends with today (success at exit 0 after a `stop` step,
+ * `TOOL_FAILURE` at exit 1), so `test/malicious/adapter-leg.test.ts` fails when either changes. The replay helper runs
+ * no command, so the hostile checkout stays untouched either way: this is parser evidence, not confinement evidence.
+ */
+export const opencodeGuardBlindStreams = (fx: MaliciousFixture): HostileStream[] => {
+  const cats: BlockedCategory[] = ["credential_read", "out_of_worktree_write", "network"];
+  const shapes: readonly [string, (command: string) => string][] = [
+    [
+      "a known file tool write carrying a command",
+      (command) => completed("write", { filePath: "src/safe.ts", command }),
+    ],
+    ["a known file tool read carrying a command", (command) => completed("read", { filePath: "src/safe.ts", command })],
+    ["a shell tool whose command sits under a cmd key", (command) => completed("shell", { cmd: command })],
+    [
+      "a shell tool whose command sits only under an own __proto__ key",
+      (command) =>
+        toolUse("unused", (_root, part) => {
+          const input: Record<string, unknown> = {};
+          Object.defineProperty(input, "__proto__", { value: { command }, enumerable: true });
+          (part.state as { input: unknown }).input = input;
+        }),
+    ],
+  ];
+  const out: HostileStream[] = [];
+  for (const [shape, line] of shapes) {
+    for (const category of cats) {
+      for (const exitCode of [0, 1] as const) {
+        const name = `guard-blind: ${blockedLabel[category]} under ${shape}, exit ${exitCode}`;
+        out.push({
+          ...blocked(name, category, exitCode, [
+            STEP_START,
+            line(hostileCommand(fx, category)),
+            ...(exitCode === 0 ? [STOP] : []),
+          ]),
+          gapResult: exitCode === 0 ? { ok: true } : { ok: false, failureCode: "TOOL_FAILURE" },
+        });
+      }
+    }
+  }
+  return out;
+};

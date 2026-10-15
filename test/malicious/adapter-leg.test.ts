@@ -30,7 +30,11 @@ import {
   grokPartialStreams,
   grokRefusedScopes,
 } from "./adapters/grok.case.js";
-import { opencodePartialStreams, opencodeUnreadableStreams } from "./adapters/opencode.case.js";
+import {
+  opencodeGuardBlindStreams,
+  opencodePartialStreams,
+  opencodeUnreadableStreams,
+} from "./adapters/opencode.case.js";
 import { buildMaliciousFixture, type MaliciousFixture } from "./fixture.js";
 
 const DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "adapters");
@@ -247,7 +251,12 @@ describe("adapter malicious leg: opencode partial streams", () => {
   const OPENCODE_EXITS = [0, 1, 2, 137] as const;
 
   it("names every OpenCode stream once, so no cell is shadowed by a duplicate", () => {
-    const names = [...c.streams(fx), ...opencodePartialStreams(fx), ...opencodeUnreadableStreams()].map((s) => s.name);
+    const names = [
+      ...c.streams(fx),
+      ...opencodePartialStreams(fx),
+      ...opencodeUnreadableStreams(),
+      ...opencodeGuardBlindStreams(fx),
+    ].map((s) => s.name);
     expect(names.filter((n, i) => names.indexOf(n) !== i)).toEqual([]);
   });
 
@@ -351,6 +360,53 @@ describe("adapter malicious leg: opencode partial streams", () => {
         failureCode: s.failureCode === "TOOL_FAILURE" ? ("OUTPUT_PROTOCOL_ERROR" as const) : ("TOOL_FAILURE" as const),
       };
       expect((await replayHostileStream(c, fx, wrong)).ok, s.name).toBe(false);
+    }
+  });
+
+  // Known gap (1): a Git write that is not an own string `command` on a shell-kind tool never reaches the guard. Each
+  // stream is pinned at the result it ends with today, without a process and through the replay; when one ends
+  // PERMISSION_BLOCKED the gap has closed, so move it into the blocked list.
+  it("known gap: a Git write the guard cannot see is pinned at its current result, not blocked", async () => {
+    const streams = opencodeGuardBlindStreams(fx);
+    expect(streams).toHaveLength(24);
+    for (const cat of ["credential_read", "out_of_worktree_write", "network"] as const) {
+      expect(new Set(streams.filter((s) => s.category === cat).map((s) => s.exitCode)), cat).toEqual(new Set([0, 1]));
+    }
+    for (const s of streams) {
+      expect(s.failureCode, s.name).toBe("PERMISSION_BLOCKED");
+      expect(await gapProblems(c, fx, s), s.name).toEqual([]);
+    }
+  });
+
+  it("positive control: a mislabelled guard-blind pin is reported, and the same call under an own command key is blocked", async () => {
+    const s = opencodeGuardBlindStreams(fx).find((x) => x.name.includes("cmd key") && x.exitCode === 0);
+    if (!s) throw new Error("no cmd-key stream");
+    const wrong = { ...s, gapResult: { ok: false, failureCode: "TOOL_FAILURE" as const } };
+    expect((await gapProblems(c, fx, wrong)).join()).toContain("want");
+    const renamed = { ...s, lines: s.lines.map((line) => line.replace('"cmd":', '"command":')) };
+    expect(renamed.lines).not.toEqual(s.lines);
+    expect((await gapProblems(c, fx, renamed)).join()).toContain("gap closed");
+    const o = await replayHostileStream(c, fx, renamed);
+    expect(o.failureCode).toBe("PERMISSION_BLOCKED");
+    expect(o.untouched).toBe(true);
+  });
+
+  // The blocked list rests on the guard verdict, not on the adapter's own failure mapping: with the verdict removed
+  // (parseEvent and extractResult only), none of the blocked streams ends PERMISSION_BLOCKED.
+  it("positive control: without the ADR-0039 guard verdict, no blocked OpenCode stream ends PERMISSION_BLOCKED", () => {
+    const blocked = c.streams(fx).filter((s) => s.failureCode === "PERMISSION_BLOCKED");
+    expect(blocked.length).toBeGreaterThan(200);
+    const adapter = c.makeAdapter("unused", 0);
+    for (const s of blocked) {
+      const state = { lines: 0, unknownEvents: 0 };
+      const events = s.lines.slice(1).flatMap((line) => adapter.parseEvent(line, state));
+      const res = adapter.extractResult(events, {
+        outcome: "exited",
+        exitCode: s.exitCode,
+        signal: null,
+        expectedExitCodes: [0],
+      });
+      expect(res.failureCode, s.name).not.toBe("PERMISSION_BLOCKED");
     }
   });
 });
