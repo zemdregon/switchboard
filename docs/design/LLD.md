@@ -759,7 +759,8 @@ any `tool_call` the guard flagged with a `violation` makes the run not clean (`P
 even when `result` is `success` at exit 0). `backingProvider` stays unset (no vendor field in the live check).
 
 - **Tests:** `src/adapters/cursor/cursor.test.ts` (`cursor parser and result (T4.43)`, `cursor parser hardening (T4.43,
-  synthetic shapes)`).
+  synthetic shapes)`, `cursor parser residual branches (T4.43, synthetic)`); `src/adapters/cursor/parser-residual.test.ts`
+  ([#360](https://github.com/zemdregon/switchboard/pull/360)); fixture `fixtures/idless_guard.jsonl`.
 - **Design sourcing:** [TDD §4.5.5](TDD.md#455-cursor-parser-implementation-evidence-m4-t443); HLD [§2.3
   T4.43](HLD.md#t443--parser-result-failure-classification-and-resume-partial).
 

@@ -333,6 +333,9 @@ the compile matrix), FR-ADP-10 (`backingProvider` unset: no vendor field was rec
   owner-approved).** `extractResult` treats a `tool_call` carrying a guard `violation` as not clean, so a `success`
   `result` at exit 0 still ends `PERMISSION_BLOCKED` for `git_write` and `SANDBOX_VIOLATION` for `provider_state`
   (tests in "cursor parser hardening (T4.43, synthetic shapes)").
+- **Residual parser pins (2026-10-15, [#360](https://github.com/zemdregon/switchboard/pull/360); synthetic lines only,
+  parser unchanged).** `src/adapters/cursor/parser-residual.test.ts` and `idless_guard.jsonl` (supervisor replay) extend
+  the T4.43 evidence listed in [TDD §4.5.5](TDD.md#455-cursor-parser-implementation-evidence-m4-t443).
 
 **Gaps (remain `Partial`, not `Done`).** No recorded rate-limit or sandbox stream shape; T4.6 backing-vendor fixture cannot
 be written without a vendor field (Q-65). Operator capture: T4.48 / T4.41 extension.

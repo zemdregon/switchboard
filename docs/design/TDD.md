@@ -2050,7 +2050,14 @@ work, not owner-approved; synthetic `stream-json` lines only; no `cursor-agent` 
   `tool_call` carrying a guard `violation` as not clean, so `classifyFailure` ends `PERMISSION_BLOCKED` for `git_write`
   and `SANDBOX_VIOLATION` for `provider_state` even when `result` is `success` at exit 0.
 - **Tests:** `src/adapters/cursor/cursor.test.ts` (`"cursor parser and result (T4.43)"`, `"cursor parser hardening
-  (T4.43, synthetic shapes)"`).
+  (T4.43, synthetic shapes)"`, `"cursor parser residual branches (T4.43, synthetic)"`).
+- **Residual parser pins (2026-10-15, synthetic lines only, parser unchanged; merged
+  [PR #360](https://github.com/zemdregon/switchboard/pull/360)).** `src/adapters/cursor/parser-residual.test.ts` pins
+  line counting, empty-string fallbacks, `apiKeySource` formatting, assistant and tool-parameter fall-through, tool-kind
+  exclusivity, id-less `tool_call` correlation, refusal regexes, exit codes 2 and 137 under ADR-0039, provider_error
+  category mapping, trailing assistant/unknown events after `result`, and `resumeArgs` refusals for model, workspace,
+  shell-allowlist and missing-executable cases. Fixture `src/adapters/cursor/fixtures/idless_guard.jsonl` replays an
+  id-less Git write under a `success` `result` at exit 0 to `PERMISSION_BLOCKED`.
 
 **Out of scope (stay `Partial`).** Recorded rate-limit or sandbox event shapes; T4.6 fixture with a backing vendor unlike
 the harness.
