@@ -24,7 +24,7 @@ built, and the discovery note recommended this one for the same reason.
 
 1. **Operator-chosen and off by default.** Sinks are defined only in operator configuration. With none defined, no
    outbound notification is made and behaviour is unchanged. The configuration keys are **Proposed** and are fixed in
-   the T14.0 design, not here.
+   [LLD §3.4.9](../design/LLD.md#349-notification-sinks-fr-ctl-10-adr-0048) and [TDD §3.1](../design/TDD.md#31-configuration).
 2. **Two kinds: webhook and ntfy.** A generic HTTPS webhook with an operator-given URL; the Grok bot is reached by
    pasting the webhook the Grok bot generates at deployment into this sink, with no Grok-specific code (owner decision
    53). An ntfy sink publishes to an operator-given ntfy server and topic (owner decision 53); its publish interface is

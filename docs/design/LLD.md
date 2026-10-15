@@ -3,7 +3,7 @@
 | Field | Value |
 | --- | --- |
 | Status | Draft, baseline for milestone M1 |
-| Owns | SQLite schema (DDL), adapter TypeScript contract, MCP tool schemas, failure taxonomy, workspace/lease algorithm, compliance manifest schema, telemetry span list, supervisor/retry/idempotency details, inner-agent configuration, backend port, tables, call pipeline and task contracts (§13), provider and model affinity table, algorithm and routing-decision fields (§3.2), retrieval-index configuration, stores, algorithms, tool contract and events (§14), continuity: handoff bundle schema, `as_of`, decision kinds, open-work derivation, prompt rendering and the resume working directory (§15), capacity estimator, `get_capacity` output, per-provider breaker, retry successors and the quota ladder (§16) |
+| Owns | SQLite schema (DDL), adapter TypeScript contract, MCP tool schemas, failure taxonomy, workspace/lease algorithm, compliance manifest schema, telemetry span list, supervisor/retry/idempotency details, inner-agent configuration, backend port, tables, call pipeline and task contracts (§13), provider and model affinity table, algorithm and routing-decision fields (§3.2), control-plane MCP tools, digest cursor, needs-attention derivation, budgets, loop breaker, pause, approval-proxy tools, tool profiles and notification-sink contracts (§3.4), retrieval-index configuration, stores, algorithms, tool contract and events (§14), continuity: handoff bundle schema, `as_of`, decision kinds, open-work derivation, prompt rendering and the resume working directory (§15), capacity estimator, `get_capacity` output, per-provider breaker, retry successors and the quota ladder (§16) |
 | Does not own | Requirements ([SRS](../requirements/SRS.md)); run state machine and workflows ([FRD](../requirements/FRD.md)); technology choices and per-provider strategy ([TDD](TDD.md)); component boundaries ([HLD](HLD.md)); scope and sequencing ([ROADMAP](../ROADMAP.md#6-milestones)) |
 | Last reconciled | 2026-10-14 |
 
@@ -1195,7 +1195,9 @@ only, FR-OPS-02) on the run that requested the approval. It recomputes the hash 
 AWAITING_APPROVAL, the row is `PENDING` and the recomputed hash equals `scope_hash`; otherwise it is a CLI error and
 nothing changes. `approve` on a later run of the meta-session is a CLI error: it is not AWAITING_APPROVAL and has no
 row of its own. `deny` writes `DENIED` and the run ends CANCELLED (WF-7). No MCP tool, timer or client ceiling
-approves, and no configuration value does except the per-client `privileged_approval` setting below. An approval never
+approves, except `decide_approval` for clients the operator marks `approval_proxy`
+([§3.4.8](#348-approval-proxy-tools-fr-ctl-08-adr-0047), ADR-0047, Proposed), and no configuration value does except
+the per-client `privileged_approval` setting below. An approval never
 expires and is never revoked automatically (owner decision 17); a manual revoke is ROADMAP Q-30.
 
 **Client policy (2026-10-13, owner decision 22; Delegated realisation, [ADR-0019](../adr/0019-per-client-privileged-approval.md)).**
@@ -1571,6 +1573,285 @@ CREATE TABLE http_subject (              -- migration 0013 (T13.5); insert-only,
   redactor before it is written to stderr. Pairing codes and passphrases have no distinctive shape and are never passed
   to a log or a response at all.
 - **Forbidden.** Forwarding the inbound token, logging it, or storing it in the ledger.
+
+### 3.4 Control plane (M14, Proposed, T14.0)
+
+Design gate for FR-CTL-01 to 11, [ADR-0047](../adr/0047-approval-proxy-over-mcp.md) and
+[ADR-0048](../adr/0048-notification-sinks.md) (both Proposed). Owner decisions 49 to 55 (merged in #388). Everything
+here is **Proposed** and **Delegated** unless an SRS ID or a Proposed ADR fixes it. **No new run state** is added: pause
+holds admission only; `needs_attention` is derived on read (FR-CTL-03); the FRD state machine is unchanged.
+
+**Components (SDD).** COMP-MCP exposes the tools and applies `tool_profile` at `tools/list`. COMP-LED supplies
+`run`, `run_event`, `approval` and project revision facts. COMP-RTE enforces pause, budgets, the loop breaker and the
+successor cap at admission. COMP-POL applies approval-proxy binding and records proxied decisions. COMP-TEL builds
+closed sink payloads and delivers them off the run path ([HLD](HLD.md#3-trust-boundaries) TB-13, TB-14). COMP-EXE and
+COMP-ADP implement `steer_run` at a boundary (T14.7).
+
+#### 3.4.1 Shared types
+
+Extend `$defs` in §3.0:
+
+```jsonc
+{ "$defs": {
+  "needs_attention_reason": { "enum": [
+      "awaiting_approval", "parked_loop", "failed_after_retry", "stalled", "budget_exhausted" ] },
+  "needs_attention": { "type": "object", "required": ["active"], "properties": {
+      "active": { "type": "boolean" },
+      "reason": { "$ref": "#/$defs/needs_attention_reason" } } },  // required when active is true
+  "digest_cursor": { "type": "string", "pattern": "^evt_[0-9A-HJKMNP-TV-Z]{26}$" },
+  "untrusted_text": { "type": "object", "required": ["text","label"], "properties": {
+      "text": { "type": "string", "maxLength": 500 },
+      "label": { "const": "untrusted_agent_text" } } },
+  "approval_kind": { "enum": ["privileged_scope","dynamic_project","push_revision"] },
+  "approval_proxy_item": { "type": "object", "required": [
+      "approval_id","approval_digest","kind","requested_at","target_client_id" ], "properties": {
+      "approval_id": { "type": "string" },
+      "approval_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+      "kind": { "$ref": "#/$defs/approval_kind" },
+      "project_id": { "type": "string" },
+      "run_id": { "type": "string" },
+      "revision": { "type": "integer" },
+      "target_client_id": { "type": "string" },
+      "scope_summary": { "type": "string", "maxLength": 512 },   // controller-generated only
+      "requested_at": { "type": "string" } } },
+  "sink_event_kind": { "enum": [
+      "run_terminal","needs_attention","approval_pending","approval_decided","budget_exhausted","project_paused" ] },
+  "notification_payload": { "type": "object", "required": [
+      "project_id","event_kind","reason_code","run_id","link" ], "properties": {
+      "project_id": { "type": "string" },
+      "event_kind": { "$ref": "#/$defs/sink_event_kind" },
+      "reason_code": { "type": "string" },   // needs_attention reason or approval_kind
+      "run_id": { "type": ["string","null"] },
+      "link": { "type": "string", "maxLength": 2048 } } } } }
+```
+
+The compact **envelope** (§3.0) gains optional `needs_attention` (FR-CTL-03) on `get_run`, `list_runs` and digest run
+rows. When `active` is false, `reason` is absent. Derivation rules are in §3.4.5; implementation is T14.2.
+
+#### 3.4.2 `list_runs` (FR-CTL-01)
+
+```jsonc
+{ "input": { "type": "object", "properties": {
+    "project_id": { "type": "string" },
+    "status": { "$ref": "#/$defs/status" },
+    "status_in": { "type": "array", "items": { "$ref": "#/$defs/status" }, "maxItems": 16 },
+    "since": { "type": "string" },          // ISO-8601 lower bound on run.created_at, inclusive
+    "until": { "type": "string" },          // ISO-8601 upper bound, exclusive
+    "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 },
+    "cursor": { "type": "string", "maxLength": 128 } } },   // opaque pagination within the filter
+  "output": { "type": "object", "required": ["runs"], "properties": {
+    "runs": { "type": "array", "items": { "$ref": "#/$defs/envelope" } },
+    "next_cursor": { "type": ["string","null"] } } } }
+```
+
+**Scoping.** Same rules as `get_run`: the caller sees only runs it started (`client_id` match) and runs of projects it
+may use (`mcp_clients[].projects` and dynamic projects it created). Unknown `project_id` → `INVALID_REQUEST`; a project
+outside the caller's list → `PERMISSION_BLOCKED`. Rows are ordered by `created_at` descending, then `run_id`.
+
+#### 3.4.3 `get_digest` (FR-CTL-02)
+
+```jsonc
+{ "input": { "type": "object", "properties": {
+    "since_cursor": { "$ref": "#/$defs/digest_cursor" } } },   // absent = full snapshot (within retention)
+  "output": { "type": "object", "required": ["projects","cursor"], "properties": {
+    "cursor": { "$ref": "#/$defs/digest_cursor" },
+    "projects": { "type": "array", "items": { "type": "object", "required": ["project_id"], "properties": {
+      "project_id": { "type": "string" },
+      "paused": { "type": "boolean" },
+      "budget": { "type": "object", "properties": {
+          "exhausted": { "type": "boolean" },
+          "caps": { "type": "array", "items": { "type": "object", "required": ["key","limit","used"], "properties": {
+              "key": { "enum": ["runs_per_day","concurrent_runs","wall_clock_per_run","usage_per_window"] },
+              "limit": { "type": ["integer","null"] },   // null = unset (never shown as a provider limit)
+              "used": { "type": "integer" },
+              "window_ends_at": { "type": ["string","null"] } } } } } },
+      "needs_attention": { "type": "array", "items": { "type": "object", "required": [
+          "run_id","reason" ], "properties": {
+          "run_id": { "type": "string" },
+          "reason": { "$ref": "#/$defs/needs_attention_reason" },
+          "envelope": { "$ref": "#/$defs/envelope" } } } },
+      "finished": { "type": "array", "items": { "$ref": "#/$defs/envelope" } },
+      "failed": { "type": "array", "items": { "$ref": "#/$defs/envelope" } },
+      "pending_approvals": { "type": "array", "items": { "$ref": "#/$defs/approval_proxy_item" } },
+      "untrusted_summaries": { "type": "array", "items": { "type": "object", "required": [
+          "run_id","field" ], "properties": {
+          "run_id": { "type": "string" },
+          "field": { "enum": ["result.summary"] },
+          "content": { "$ref": "#/$defs/untrusted_text" } } } } } } } } } }
+```
+
+**Cursor over `run_event` (FR-TEL-01).** Each digest call reads `run_event` rows with `(ts, id)` strictly after the
+position named by `since_cursor`, up to a bounded scan budget (proposed target: 10 000 events per call). The returned
+`cursor` is the last `run_event.id` (`evt_` plus 26 Crockford base32 characters) included in that scan. A repeated call
+with the same
+`since_cursor` after no new events returns an empty delta and the same cursor. Events before retention GC are not
+replayed; a cursor older than retention behaves like an absent cursor (full snapshot within retention). Digest assembly
+is scoped to projects the caller may use; other clients' runs never appear.
+
+**Agent text.** Any `result.summary` (or other agent-written field included later) is copied into `untrusted_summaries`
+as `untrusted_text`, never as authoritative instruction text (FR-CTL-02).
+
+#### 3.4.4 `steer_run`, pause and resume (FR-CTL-04, FR-CTL-05)
+
+**`steer_run`**
+
+```jsonc
+{ "input": { "type": "object", "required": ["run_id","note"], "properties": {
+    "run_id": { "type": "string" },
+    "note": { "type": "string", "minLength": 1, "maxLength": 4096 } } },
+  "output": { "$ref": "#/$defs/envelope" } }
+```
+
+The note is recorded as a controller `steer_requested` `run_event` (bounded payload: length and hash only in the event;
+full text in a controller-owned artifact if needed, never in MCP output). Delivery: at the next adapter boundary, live
+input when the adapter declares `liveInput: true` in §2; otherwise stop at a boundary and continue the same native
+session with the note (FR-SES-03, BR-7). Unknown run or a run the caller cannot see → `INVALID_REQUEST` or
+`PERMISSION_BLOCKED` as for `get_run`. Terminal runs → no-op returning the terminal envelope.
+
+**`pause_project` / `resume_project`**
+
+```jsonc
+{ "input": { "type": "object", "required": ["project_id"], "properties": {
+    "project_id": { "type": "string" } } },
+  "output": { "type": "object", "required": ["project_id","paused"], "properties": {
+    "project_id": { "type": "string" },
+    "paused": { "type": "boolean" } } } }
+```
+
+Only projects the caller may use; another client's project → `PERMISSION_BLOCKED`. Pause sets a ledger flag (§3.4.7);
+admission checks it before QUEUED (running runs finish). **Operator CLI (global).** `switchboard pause` and
+`switchboard resume` (names Proposed) set `control_plane.global_paused` (§3.4.7). While global pause is on, no project
+admits new runs. Effect on an already-running `serve` daemon: the CLI writes an append-only `operator_pause_requested`
+`run_event` on a synthetic control record (or a dedicated `control_plane_event` table, T14.6 chooses one shape); the
+daemon applies it on its operator poll, same pattern as `approve` (§3.1). A paused project or global pause is visible in
+`get_digest` (`paused: true`).
+
+#### 3.4.5 Needs-attention derivation (FR-CTL-03)
+
+Closed reason list (exactly these five values):
+
+| Reason | Derived when (ledger facts only) |
+| --- | --- |
+| `awaiting_approval` | Run `status` is `AWAITING_APPROVAL`, or a `PENDING` approval row exists for a run of this meta-session the caller may see |
+| `parked_loop` | Meta-session flag `parked_loop` is set (§3.4.6); the newest run shows this reason |
+| `failed_after_retry` | Run `FAILED` and `attempt` equals `control_plane.loop_breaker.max_successors_per_meta_session` or the meta-session is parked |
+| `stalled` | Run non-terminal, `RUNNING` or `LEASED`, and no `run_event` for this run in the last *T* minutes (§3.4.6); run is **not** cancelled |
+| `budget_exhausted` | Project (or global) budget refusal is active for admission (§3.4.6) |
+
+Multiple reasons may apply; the envelope and digest expose the highest-priority reason only (proposed order:
+`budget_exhausted`, `parked_loop`, `awaiting_approval`, `stalled`, `failed_after_retry`). Priority is **Proposed** for
+stable UI; T14.2 may adjust with tests.
+
+#### 3.4.6 Budgets and loop breaker (FR-CTL-06, FR-CTL-07)
+
+**Configuration keys** (operator values; never presented as provider limits, ADR-0007). Validated at config load; unset
+cap means unlimited for that dimension.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `control_plane.budgets.global.runs_per_day` | integer ≥ 0 or absent | Admission count per UTC day, all projects |
+| `control_plane.budgets.global.concurrent_runs` | integer ≥ 0 or absent | Non-terminal runs at once |
+| `control_plane.budgets.global.wall_clock_per_run_seconds` | integer ≥ 0 or absent | Wall clock from `LEASED` to terminal |
+| `control_plane.budgets.global.usage_per_window` | object or absent | `{ "window_seconds", "max_reported_tokens" }` over provider-reported usage in the window |
+| `control_plane.budgets.projects.<id>.*` | same shape | Overrides for one project id |
+| `control_plane.loop_breaker.identical_failure_threshold` | integer ≥ 2 | **N**: same `failure_code` or same failing verification name *N* times in one meta-session → park |
+| `control_plane.loop_breaker.stall_minutes` | integer ≥ 1 | **T**: minutes without a `run_event` on a non-terminal run → `stalled` flag only |
+| `control_plane.loop_breaker.max_successors_per_meta_session` | integer ≥ 1 | Cap on successor runs (§16.5 and quota failover successors count toward the same total) |
+
+**Assumption defaults** (operator tuning; not provider facts): **N** = 3, **T** = 30 minutes, **successor cap** = 8.
+
+On budget refusal at admission, the controller records `budget_refused` on the project (ledger or `project_event`) and
+sets `needs_attention` reason `budget_exhausted` until the window resets or the operator raises the cap. `get_digest`
+reports `budget.exhausted` and per-cap `used`/`limit` with `limit: null` when unset.
+
+On the *N*th identical failure in a meta-session, the controller sets `meta_session.parked_loop = true` (Proposed
+column or side table), admits no further successors, and surfaces `parked_loop`. Stall detection uses the injectable
+clock (tests); it never cancels the run.
+
+#### 3.4.7 Pause and budget persistence (Proposed)
+
+```sql
+CREATE TABLE control_plane_state (      -- migration T14.6; one row per project_id or '*' for global
+  project_id    TEXT PRIMARY KEY,       -- configured or dynamic project id, or '*' for global pause
+  paused        INTEGER NOT NULL CHECK (paused IN (0,1)),
+  paused_by     TEXT,                   -- mcp:<client_id> or os user for CLI
+  paused_at     TEXT,
+  budget_flags_json TEXT CHECK (budget_flags_json IS NULL OR json_valid(budget_flags_json))
+) STRICT;
+```
+
+`meta_session` gains `parked_loop INTEGER NOT NULL DEFAULT 0` (T14.5). `approval.decided_by` accepts
+`mcp_proxy:<client_id>` (T14.8, ADR-0047); no separate `decided_via` column.
+
+#### 3.4.8 Approval proxy tools (FR-CTL-08, ADR-0047)
+
+Offered in `tools/list` only when `mcp_clients[].approval_proxy` is true (default false). Set only in operator
+configuration; never over MCP. Optional `mcp_clients[].approval_proxy_targets`: string array of client ids (default: the
+client itself).
+
+**`list_pending_approvals`**
+
+```jsonc
+{ "input": { "type": "object", "properties": {
+    "project_id": { "type": "string" } } },
+  "output": { "type": "object", "required": ["approvals"], "properties": {
+    "approvals": { "type": "array", "items": { "$ref": "#/$defs/approval_proxy_item" } } } } }
+```
+
+Lists `PENDING` approvals for listed target clients only. `approval_digest` = SHA-256 over a canonical JSON object:
+`{ "v": 1, "approval_id", "kind", "scope_hash" | "revision_hash", "target_client_id", "requested_at" }` (privileged
+uses §3.1 `scope_hash`; dynamic project uses ADR-0030 revision hash). Descriptions are controller-generated fields only
+(ADR-0047 item 2d).
+
+**`decide_approval`**
+
+```jsonc
+{ "input": { "type": "object", "required": ["approval_id","approval_digest","decision"], "properties": {
+    "approval_id": { "type": "string" },
+    "approval_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "decision": { "enum": ["approve","deny"] } } },
+  "output": { "type": "object", "required": ["approval_id","status"], "properties": {
+    "approval_id": { "type": "string" },
+    "status": { "enum": ["APPROVED","DENIED"] } } } }
+```
+
+Fail closed: wrong digest, stale id, target client not in `approval_proxy_targets`, or row not `PENDING` →
+`INVALID_REQUEST`, nothing written. On success, same transitions as CLI `approve`/`deny` (§3.1), with `decided_by =
+"mcp_proxy:<proxy_client_id>"` and a `approval_decided` `run_event`. Each success triggers sink delivery
+(§3.4.9). Clients without `approval_proxy` do not see these tools (absent from `tools/list`, not error at list time).
+
+*Amends §3.1 **Approve**:* except for `approval_proxy` clients using §3.4.8, no MCP tool approves.
+
+#### 3.4.9 Notification sinks (FR-CTL-10, ADR-0048)
+
+**Configuration** (`notification_sinks[]`, off when absent):
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | string | Operator-chosen label |
+| `kind` | `webhook` \| `ntfy` | Delivery mechanism |
+| `url` | string (https) | Webhook URL (operator may point this at the Grok bot's deployment-generated webhook; no Grok-specific code) |
+| `ntfy` | object | For `kind: ntfy`: `{ "server", "topic", "token"?: string }`; publish uses ntfy's documented HTTP publish API ([ntfy publish](https://docs.ntfy.sh/publish/), cited here per owner decision 53) |
+| `events` | array of `sink_event_kind` | Filter; default all kinds |
+| `max_per_minute` | integer ≥ 1 | Rate limit; excess dropped and counted |
+
+**Payload** is exactly `notification_payload` (§3.4.1). **Link** is an operator-configured base URL plus stable path
+(`/digest` or `/runs/<run_id>` on the MCP HTTP `public_url` when set, else a placeholder `switchboard://run/<run_id>` for
+stdio-only deployments). Delivery is asynchronous, bounded timeout (proposed target: 5 s), HTTPS with verification;
+failures append `sink_delivery_failed` counts to the ledger without payload or URL (NFR-SEC-01). Never blocks admission
+or run execution.
+
+#### 3.4.10 `tool_profile` (FR-CTL-11)
+
+`mcp_clients[].tool_profile`: `orchestrator` (default) or `console`. `tools/list` returns:
+
+| Profile | Tools |
+| --- | --- |
+| `orchestrator` | Today's full set (unchanged) |
+| `console` | `get_digest`, `list_runs`, `get_run`, `delegate_task`, `steer_run`, `pause_project`, `resume_project` |
+
+Approval-proxy tools are added to the list only when `approval_proxy` is true, regardless of profile. `console` is the
+first target for the Grok bot (owner decision 55); orchestrator profile stays for primary coding agents.
 
 ## 4. Failure taxonomy
 
