@@ -20,8 +20,8 @@
  *   guard (ADR-0039), FR-GIT-03 and FR-GIT-06;
  * - the parser (T4.43) reads only the `stream-json` fields the 2026-10-14 live check recorded; a refused tool call is a
  *   `permission_denied` event because the final `result` still says `success`; resume is `--resume <id>` through the
- *   same matrix; a second `result`, a session id that changes mid-run and a credential source other than the login
- *   fail the run. The auth preflight (T4.44) keys on `isAuthenticated` of `status --format json`. The manifest range
+ *   same matrix; a second `result`, a session id that changes mid-run or is not a safe argument, a tool call after the
+ *   `result` and a credential source other than the login fail the run. The auth preflight (T4.44) keys on `isAuthenticated` of `status --format json`. The manifest range
  *   admits no version, so none of this runs before `adapters validate` passes a version.
  */
 import {
@@ -141,6 +141,9 @@ const obj = (v: unknown): Json | undefined =>
   typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Json) : undefined;
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
 const ineligible = (reason: Ineligible["reason"], detail: string): Ineligible => ({ ineligible: true, reason, detail });
+/** Own-key lookup, so a native key such as `constructor` or `__proto__` never resolves to an inherited member. */
+const own = <T>(table: Readonly<Record<string, T>>, key: string): T | undefined =>
+  Object.hasOwn(table, key) ? table[key] : undefined;
 /** `result` lines already seen per run: a second one is a protocol anomaly, never a success (fail closed). */
 const seenResults = new WeakMap<ParseState, number>();
 /** Category of a stream anomaly (two results, two session ids); classified OUTPUT_PROTOCOL_ERROR. */
@@ -442,10 +445,14 @@ export class CursorAdapter implements ProviderAdapter {
 
   /**
    * The first non-empty session id binds the session. A later, different id (a second `init` or a `result` for another
-   * session) makes the binding ambiguous, so the run fails closed; the first id stays bound.
+   * session) makes the binding ambiguous, so the run fails closed; the first id stays bound. An id resume could not pass
+   * as one safe argument is never bound and fails the run (Proposed, fail closed).
    */
   #bind(state: ParseState, id: string | undefined, model: string | undefined): NormalizedEvent[] {
     if (id === undefined || id === "") return [];
+    if (!SESSION_ID_RE.test(id)) {
+      return [{ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "session id is not a safe argument" }];
+    }
     if (state.nativeSessionId !== undefined) {
       if (id === state.nativeSessionId) return [];
       return [{ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "session id changed mid-run" }];
@@ -465,7 +472,7 @@ export class CursorAdapter implements ProviderAdapter {
     if (call === undefined || keys.length === 0) return this.#unknown(state, `tool_call:${subtype ?? "none"}`);
     if (subtype === SUBTYPE_STARTED) {
       return keys.map((key): NormalizedEvent => {
-        const kind = TOOL_KEYS[key] ?? "other";
+        const kind = own(TOOL_KEYS, key) ?? "other";
         const args = obj(obj(call[key])?.args);
         const command = kind === "shell" ? str(args?.command) : undefined;
         const target = kind === "read" || kind === "edit" ? str(args?.path) : undefined;
@@ -497,9 +504,10 @@ export class CursorAdapter implements ProviderAdapter {
   /**
    * Success needs a clean expected exit and a final `result` with `ok` and no `provider_error`, `permission_denied`,
    * `sandbox_violation` or `rate_limit` event and no `tool_call` the tool-call guard flagged with a `violation` (fail
-   * closed, as Grok Build; a guard verdict ends the run in every run, bypass included, ADR-0039). The summary is the
-   * joined assistant text, last {@link MAX_SUMMARY_CHARS} characters. A failed run prints no stream at all ([LIVE] 4,
-   * 14), so it ends `TOOL_FAILURE` on its exit code; the stderr text is not read (the adapter contract passes none).
+   * closed, as Grok Build; a guard verdict ends the run in every run, bypass included, ADR-0039), and no `tool_call`
+   * after the `result` line. The summary is the joined assistant text, last {@link MAX_SUMMARY_CHARS} characters. A
+   * failed run prints no stream at all ([LIVE] 4, 14), so it ends `TOOL_FAILURE` on its exit code; the stderr text is
+   * not read (the adapter contract passes none).
    */
   extractResult(events: readonly NormalizedEvent[], exit: ExitInfo): RunResult {
     const unknownEventCount = events.filter((e) => e.kind === "unknown").length;
@@ -507,7 +515,11 @@ export class CursorAdapter implements ProviderAdapter {
     const nativeSessionId = bound?.kind === "session_bound" ? bound.nativeSessionId : undefined;
     const text = events.flatMap((e) => (e.kind === "message" ? [e.text] : [])).join("\n");
     const summary = text === "" ? undefined : text.slice(-MAX_SUMMARY_CHARS);
-    const final = events.findLast((e) => e.kind === "result");
+    const finalAt = events.findLastIndex((e) => e.kind === "result");
+    const final = events[finalAt];
+    // Proposed (fail closed): `result` was the last line of every recorded run ([LIVE] 5a, 5b), so a tool call after it
+    // means the run did not end on that result.
+    const trailingTool = finalAt >= 0 && events.slice(finalAt + 1).some((e) => e.kind === "tool_call");
     const base = {
       unknownEventCount,
       ...(nativeSessionId ? { nativeSessionId } : {}),
@@ -519,6 +531,7 @@ export class CursorAdapter implements ProviderAdapter {
       exit.expectedExitCodes.includes(exit.exitCode) &&
       final?.kind === "result" &&
       final.ok &&
+      !trailingTool &&
       !events.some(
         (e) =>
           e.kind === "provider_error" ||
@@ -535,7 +548,8 @@ export class CursorAdapter implements ProviderAdapter {
       timedOut: exit.outcome === "timeout",
       cancelled: exit.outcome === "cancelled",
     });
-    return { ok: false, failureCode: c.code, failureDetail: c.detail, ...base };
+    const detail = trailingTool && c.code === "OUTPUT_PROTOCOL_ERROR" ? "tool call after the result line" : c.detail;
+    return { ok: false, failureCode: c.code, failureDetail: detail, ...base };
   }
 
   classifyFailure(evidence: FailureEvidence): FailureClassification {

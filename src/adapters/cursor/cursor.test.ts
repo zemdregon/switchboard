@@ -802,6 +802,104 @@ describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
     expect(r.state.nativeSessionId).toBeUndefined();
     expect(r.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
   });
+
+  it("tool_call keys that name Object.prototype members map to `other`, never an inherited member", () => {
+    const r = parse([
+      INIT(),
+      TOOL("started", { constructor: { args: { command: "git push" } } }),
+      // JSON.parse makes `__proto__` an own key, so Object.keys reports it.
+      `{"type":"tool_call","subtype":"started","call_id":"c1","tool_call":{"__proto__":{"args":{"path":"a.txt"}}}}`,
+      TOOL("started", { toString: { args: {} }, hasOwnProperty: { args: {} } }),
+      ASSIST("ok"),
+      RESULT(),
+    ]);
+    expect(r.events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "other", name: "constructor" },
+      { kind: "tool_call", tool: "other", name: "__proto__" },
+      { kind: "tool_call", tool: "other", name: "toString" },
+      { kind: "tool_call", tool: "other", name: "hasOwnProperty" },
+    ]);
+    expect(r.result).toMatchObject({ ok: true });
+  });
+
+  it("a session id resume could not pass as one argument is never bound and fails OUTPUT_PROTOCOL_ERROR", () => {
+    for (const bad of ["--force", "-f", "chat x", "../chat", "a".repeat(257)]) {
+      for (const lines of [
+        [INIT({ session_id: bad }), ASSIST("ok"), RESULT({ session_id: bad })],
+        // Without init the result's id is the only candidate; it is refused the same way.
+        [ASSIST("ok"), RESULT({ session_id: bad })],
+      ]) {
+        const r = parse(lines);
+        expect(r.state.nativeSessionId, bad).toBeUndefined();
+        expect(
+          r.events.some((e) => e.kind === "session_bound"),
+          bad,
+        ).toBe(false);
+        expect(r.result, bad).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+        expect(r.result, bad).not.toHaveProperty("nativeSessionId");
+      }
+    }
+    // A bad id after a good one leaves the good one bound and still fails the run.
+    const mixed = parse([INIT(), ASSIST("ok"), RESULT({ session_id: "--resume" })]);
+    expect(mixed.state.nativeSessionId).toBe(SID);
+    expect(mixed.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", nativeSessionId: SID });
+  });
+
+  it("a tool call after the result line is not a success (fail closed); a guard verdict on it keeps its own code", () => {
+    const trailing = parse([
+      INIT(),
+      ASSIST("ok"),
+      RESULT(),
+      TOOL("started", { readToolCall: { args: { path: "a.txt" } } }),
+    ]);
+    expect(trailing.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the result line",
+      nativeSessionId: SID,
+    });
+    // A completed call that adds nothing, or an assistant line, after the result does not trip it.
+    const quiet = parse([
+      INIT(),
+      TOOL("started", { readToolCall: { args: { path: "a.txt" } } }),
+      RESULT(),
+      TOOL("completed", { readToolCall: { result: { success: {} } } }),
+      ASSIST("late text"),
+    ]);
+    expect(quiet.result).toMatchObject({ ok: true });
+    // ADR-0039: a guard-flagged trailing call ends PERMISSION_BLOCKED, not OUTPUT_PROTOCOL_ERROR.
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const events = [
+      INIT(),
+      ASSIST("ok"),
+      RESULT(),
+      TOOL("started", { shellToolCall: { args: { command: "git push origin main" } } }),
+    ]
+      .flatMap((l) => a.parseEvent(l, state))
+      .map((e) => guardEvent(e, { cwd: "/w", bypass: true }));
+    expect(a.extractResult(events, EXIT0)).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+  });
+
+  it("non-string path and model values are omitted, never coerced (Assumption gap: value types unrecorded)", () => {
+    const r = parse([
+      INIT({ model: { name: "Synthetic Model 1" } }),
+      TOOL("started", { readToolCall: { args: { path: ["a.txt"] } } }),
+      TOOL("started", { editToolCall: { args: { path: 7 } } }),
+      TOOL("started", { writeToolCall: { args: { path: null } } }),
+      TOOL("started", { shellToolCall: { args: { command: { argv: "git push" } } } }),
+      RESULT(),
+    ]);
+    expect(r.events.filter((e) => e.kind === "session_bound")).toEqual([
+      { kind: "session_bound", nativeSessionId: SID },
+    ]);
+    expect(r.events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "read", name: "readToolCall" },
+      { kind: "tool_call", tool: "edit", name: "editToolCall" },
+      { kind: "tool_call", tool: "edit", name: "writeToolCall" },
+      { kind: "tool_call", tool: "shell", name: "shellToolCall" },
+    ]);
+  });
 });
 
 describe("cursor conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.45)", () => {
