@@ -1,0 +1,3 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.53), in the --format json shapes recorded by the 2026-10-14 live check (rows 13a, 14a: a resumed run (--session returns the resumed sessionID) whose stream is a provider error). The only replayed resume so far is the T4.55 success; this is the failure leg.","exit":1,"requireResume":true}}
+{"type":"step_start","timestamp":1,"sessionID":"{{SESSION_ID}}","part":{"sessionID":"{{SESSION_ID}}","messageID":"msg_1","id":"prt_s1","type":"step-start","snapshot":"synthetic"}}
+{"type":"error","timestamp":1,"sessionID":"{{SESSION_ID}}","error":{"type":"synthetic.failure","message":"SYNTHETIC: resumed task failed"}}
