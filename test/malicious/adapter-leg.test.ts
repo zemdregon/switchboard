@@ -29,6 +29,7 @@ import {
   grokCompiledCells,
   grokPartialStreams,
   grokRefusedScopes,
+  grokResidualStreams,
 } from "./adapters/grok.case.js";
 import { opencodePartialStreams, opencodeUnreadableStreams } from "./adapters/opencode.case.js";
 import { buildMaliciousFixture, type MaliciousFixture } from "./fixture.js";
@@ -443,12 +444,19 @@ describe("adapter malicious leg: antigravity partial streams", () => {
 describe("adapter malicious leg: grok partial streams", () => {
   const c = cases.find((x) => x.provider === "grok");
   if (!c) throw new Error("no grok case file");
+  /** The exit codes the blocked matrix replays; the partial streams cover each of them. */
+  const GROK_EXITS = [0, 1, 2, 137] as const;
+
+  it("names every Grok stream once, so no cell is shadowed by a duplicate", () => {
+    const names = [...c.streams(fx), ...grokPartialStreams(fx)].map((s) => s.name);
+    expect(names.filter((n, i) => names.indexOf(n) !== i)).toEqual([]);
+  });
 
   it("a stream cut inside a line ends OUTPUT_PROTOCOL_ERROR (never success) and leaves the checkout untouched", async () => {
     const streams = grokPartialStreams(fx);
-    expect(new Set(streams.map((s) => s.exitCode))).toEqual(new Set([0, 1]));
+    expect(new Set(streams.map((s) => s.exitCode))).toEqual(new Set(GROK_EXITS));
     for (const category of ["credential_read", "out_of_worktree_write", "network"] as const) {
-      for (const exitCode of [0, 1]) {
+      for (const exitCode of GROK_EXITS) {
         const cell = streams.filter((s) => s.category === category && s.exitCode === exitCode);
         const positions = cell.map((s) => {
           const parsed: unknown[] = s.lines.map((line) => {
@@ -486,6 +494,48 @@ describe("adapter malicious leg: grok partial streams", () => {
       expect(o.failureCode, s.name).toBe("OUTPUT_PROTOCOL_ERROR");
       expect(o.untouched, s.name).toBe(true);
     }
+  });
+
+  // Positive controls: the checks above fail on a broken variant (shown here, so a vacuous pass is visible).
+  it("positive control: a partial stream with its cut line dropped no longer ends OUTPUT_PROTOCOL_ERROR", async () => {
+    const cutBefore = grokPartialStreams(fx).filter((s) => s.name.startsWith("output cut before"));
+    expect(cutBefore.length).toBeGreaterThan(0);
+    for (const s of cutBefore) {
+      const repaired = { ...s, lines: s.lines.filter((line) => line !== '{"type":"tool_') };
+      expect(repaired.lines.length, s.name).toBe(s.lines.length - 1);
+      const o = await replayHostileStream(c, fx, repaired);
+      expect(o.ok, s.name).toBe(false);
+      expect(o.failureCode, s.name).toBe("PERMISSION_BLOCKED");
+      expect(o.untouched, s.name).toBe(true);
+    }
+  });
+
+  it("positive control: without the ADR-0039 guard verdict, none of the residual blocked streams ends PERMISSION_BLOCKED", () => {
+    const residuals = grokResidualStreams(fx);
+    expect(residuals.length).toBe(108);
+    const adapter = c.makeAdapter("unused", 0);
+    for (const s of residuals) {
+      const state = { lines: 0, unknownEvents: 0 };
+      const events = s.lines.slice(1).flatMap((line) => adapter.parseEvent(line, state));
+      const res = adapter.extractResult(events, {
+        outcome: "exited",
+        exitCode: s.exitCode,
+        signal: null,
+        expectedExitCodes: [0],
+      });
+      expect(res.failureCode, s.name).not.toBe("PERMISSION_BLOCKED");
+    }
+  });
+
+  it("positive control: an unrefused Git-write stream with no guard verdict would end ok", () => {
+    const s = grokResidualStreams(fx).find((x) => x.name.includes("duplicate command key") && x.exitCode === 0);
+    if (!s) throw new Error("missing unrefused stream");
+    const adapter = c.makeAdapter("unused", 0);
+    const state = { lines: 0, unknownEvents: 0 };
+    const events = s.lines.slice(1).flatMap((line) => adapter.parseEvent(line, state));
+    expect(
+      adapter.extractResult(events, { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] }).ok,
+    ).toBe(true);
   });
 });
 
