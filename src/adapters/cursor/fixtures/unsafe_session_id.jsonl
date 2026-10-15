@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.43). An unsafe session id in init (flag-like or invalid argument) ends OUTPUT_PROTOCOL_ERROR without binding.","exit":0}}
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work/tree","session_id":"--resume-injection","model":"Synthetic Model 1","permissionMode":"default"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Unsafe session id test."}]},"session_id":"--resume-injection"}
+{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"--resume-injection"}
