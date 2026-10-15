@@ -14,6 +14,7 @@ import { GIT_FINALIZE_COMMIT_EVENT, GitPublisher, publishRefFor } from "../../gi
 import { createIdGenerator } from "../../ids/index.js";
 import { createLedger, openLedger } from "../../ledger/index.js";
 import { RunLifecycle } from "../../lifecycle/index.js";
+import { buildEnvelope } from "../../mcp/envelope.js";
 import { createSwitchboardServer } from "../../mcp/server.js";
 import { resolveTrustProfile } from "../../policy/profiles.js";
 import { usageObservationsFromEvents } from "../../usage/observations.js";
@@ -165,7 +166,7 @@ describe("antigravity compile matrix (T4.32)", () => {
     for (const a of r.argv.slice(1)) expect(never.includes(a), a).toBe(false);
     expect(r.env).toEqual({ AGY_CLI_DISABLE_AUTO_UPDATE: "true" });
     expect(r.envAllowlist).toEqual(["PATH", "HOME"]);
-    for (const name of ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL"]) {
+    for (const name of ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL", "GOOGLE_CLOUD_PROJECT"]) {
       expect(r.envAllowlist).not.toContain(name);
     }
     expect(r.stdin).toEqual({ kind: "none" });
@@ -2244,7 +2245,13 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
         const inv = x.adapter.compile(x.request, x.profile);
         return !("ineligible" in inv) && inv.argv.includes(fixturePath(fixture));
       });
-    for (const fixture of ["agy_error_exit3", "usage_unrecorded", "rate_limit", "rate_limit_error"]) {
+    for (const fixture of [
+      "agy_error_exit3",
+      "usage_unrecorded",
+      "rate_limit",
+      "rate_limit_error",
+      "sandbox_violation_error",
+    ]) {
       expect(replays(fixture).map((x) => [x.kind, x.expect.failureCode])).toEqual([["task_failure", "TOOL_FAILURE"]]);
     }
     expect(replays("unknown_events").map((x) => [x.kind, x.expect.failureCode])).toEqual([
@@ -2468,6 +2475,19 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     });
   });
 
+  it("an in-stream ERROR envelope at exit 0 with sandbox-violation text replays to TOOL_FAILURE, never SANDBOX_VIOLATION", async () => {
+    // No sandbox shape is recorded (T4.33): the text is an unmapped provider error, so the run fails closed as
+    // TOOL_FAILURE. The detected SANDBOX_VIOLATION path stays pinned at the parser level only.
+    const report = await runConformanceCase(caseFor("sandbox_violation_error"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "unknown: sandbox: operation denied by seccomp profile",
+      nativeSessionId: DEFAULT_SESSION_ID,
+    });
+  });
+
   it("multiple unreadable/unrecognized event lines at exit 0 replay to OUTPUT_PROTOCOL_ERROR with counted unknown events and no session bound", async () => {
     const report = await runConformanceCase(caseFor("unknown_events"));
     expect(report.checks.filter((k) => !k.ok)).toEqual([]);
@@ -2499,6 +2519,32 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     const report = await runConformanceCase(c);
     expect(report.ok).toBe(true);
     expect(readFileSync(join(c.request.workspace.cwd, "partial.txt"), "utf8")).toContain("synthetic");
+  });
+
+  it("hang that ignores SIGTERM is cancelled with the process group empty", async () => {
+    const c = antigravityConformanceCases(makeCwd).find(
+      (x) =>
+        x.kind === "cancellation" &&
+        !("ineligible" in x.adapter.compile(x.request, x.profile)) &&
+        (x.adapter.compile(x.request, x.profile) as Invocation).argv.includes("--ignore-term"),
+    );
+    if (!c) throw new Error("missing cancellation ignoreTerm case");
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(report.checks.find((k) => k.name === "process group empty after run")?.ok).toBe(true);
+  });
+
+  it("hang that honours SIGTERM is cancelled cleanly", async () => {
+    const c = antigravityConformanceCases(makeCwd).find(
+      (x) =>
+        x.kind === "cancellation" &&
+        !("ineligible" in x.adapter.compile(x.request, x.profile)) &&
+        !(x.adapter.compile(x.request, x.profile) as Invocation).argv.includes("--ignore-term"),
+    );
+    if (!c) throw new Error("missing cancellation normal case");
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "CANCELLED" });
   });
 
   it("positive control: the same wrapper with the compile unchanged passes, so each refusal below is the replay's", async () => {
@@ -3012,6 +3058,106 @@ describe("antigravity Git declaration (T4.37, FR-GIT-01, FR-GIT-02, FR-GIT-09)",
       const sha = g(repo, "rev-parse", "--verify", "--quiet", publishRefFor(metaSessionId));
       expect(sha).toMatch(/^[0-9a-f]{40}$/u);
       expect(g(repo, "show", "--name-only", "--format=", sha)).toContain("hello.txt");
+    } finally {
+      await lifecycle.shutdown();
+      db.close();
+    }
+  });
+});
+
+describe("antigravity backing-provider fixture (T4.35, T4.6, FR-ADP-10)", () => {
+  it("a replayed run stores harness antigravity and backing vendor side by side and shows both in get_run", async () => {
+    // Mirrors Grok Build T4.23 and Cursor T4.43: the parser/conformance level is pinned in the T4.33 describes;
+    // this one carries the fixture through RunLifecycle into the ledger and the get_run envelope.
+    const root = realpathSync(makeCwd());
+    const repo = join(root, "repo");
+    mkdirSync(repo);
+    const g = (...args: string[]) =>
+      execFileSync("git", ["-c", "commit.gpgsign=false", ...args], {
+        cwd: repo,
+        env: {
+          PATH: process.env.PATH ?? "",
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_AUTHOR_NAME: "Antigravity Dev",
+          GIT_AUTHOR_EMAIL: "antigravity@example.test",
+          GIT_COMMITTER_NAME: "Antigravity Dev",
+          GIT_COMMITTER_EMAIL: "antigravity@example.test",
+        },
+      });
+    g("init", "-q", "-b", "main");
+    writeFileSync(join(repo, "README.md"), "initial\n");
+    g("add", "-A");
+    g("commit", "-q", "-m", "init");
+
+    const dataDir = join(root, "data");
+    mkdirSync(dataDir);
+    const db = openLedger(dataDir);
+    const ids = createIdGenerator();
+    const ledger = createLedger(db, { ids });
+    const artifacts = new ArtifactStore(join(dataDir, "artifacts"));
+    const real = createProbeRunner();
+    const probeRunner: ProbeRunner = async (argv, opts) => {
+      if (argv.includes("models")) {
+        return {
+          stdout: "m-flash\tModel Flash\n",
+          stderr: "",
+          exitCode: 0,
+          timedOut: false,
+        };
+      }
+      return real(argv, opts);
+    };
+    const lifecycle = new RunLifecycle({
+      ledger,
+      workspace: new WorkspaceManager({ db, artifacts, dataDir, allowedRoots: [root], ids }),
+      artifacts,
+      adapters: new AdapterRegistry().register(replayAdapter("backing_provider")),
+      allowedRoots: [root],
+      globalConcurrency: 1,
+      resolveProfile: (name) => resolveTrustProfile(name),
+      probeRunner,
+    });
+    lifecycle.start();
+    try {
+      const { runId, metaSessionId } = await lifecycle.submit({
+        clientId: "c",
+        objective: "answer through a backing vendor",
+        workspace: repo,
+        trustProfile: "privileged",
+        provider: "antigravity",
+        privileged: { scope: BYPASS_SCOPE, approvedByClientPolicy: true },
+      });
+      const done = await lifecycle.waitForTerminal(runId);
+      expect(done.state, done.failure_detail ?? "").toBe("SUCCEEDED");
+
+      // The session_bound event's fields land on the provider binding (T5.3), never inferred from the display name.
+      expect(ledger.listProviderBindings(metaSessionId)).toEqual([
+        expect.objectContaining({
+          provider: "antigravity",
+          harness: "antigravity",
+          backing_provider: "backing-g",
+          model: "synthetic-model",
+          native_session_id: DEFAULT_SESSION_ID,
+        }),
+      ]);
+
+      const rows = ledger.listUsageObservationsForRun(runId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        provider: "antigravity",
+        harness: "antigravity",
+        backing_provider: "backing-g",
+        model: "synthetic-model",
+        source: "provider_reported",
+      });
+      expect(buildEnvelope(ledger, done, (s) => s).usage?.reported).toEqual([
+        expect.objectContaining({
+          harness: "antigravity",
+          backing_provider: "backing-g",
+          model: "synthetic-model",
+        }),
+      ]);
     } finally {
       await lifecycle.shutdown();
       db.close();
