@@ -134,6 +134,9 @@ const obj = (v: unknown): Json | undefined =>
   typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Json) : undefined;
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
 const ineligible = (reason: Ineligible["reason"], detail: string): Ineligible => ({ ineligible: true, reason, detail });
+/** Own-key lookup, so a native value such as `constructor` or `__proto__` never resolves to an inherited member. */
+const own = <T>(table: Readonly<Record<string, T>>, key: string): T | undefined =>
+  Object.hasOwn(table, key) ? table[key] : undefined;
 /** Part ids already counted per run, so a repeated `step_finish` is not recorded twice (TDD §4.6, Proposed). */
 const seenParts = new WeakMap<ParseState, Set<string>>();
 /** Category of a stream anomaly (session id changed mid-run); classified OUTPUT_PROTOCOL_ERROR. */
@@ -365,7 +368,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
 
   /**
    * One `--format json` line -> normalized events (T4.53). Structured fields only (FR-ADP-04): the session id is the
-   * `sessionID` of the first event that carries one. The run's result comes only from a `step_finish` whose
+   * `sessionID` of the first event that carries one, and only if resume could pass it as one argument. The run's result comes only from a `step_finish` whose
    * `part.reason` is `stop` (Q-85): a run that exits 0 without one is not a success, although the live check saw such
    * runs answer correctly ([LIVE] 4a). Events do not name the provider or model used ([LIVE] 4c), so `session_bound`
    * carries neither.
@@ -385,7 +388,10 @@ export class OpenCodeAdapter implements ProviderAdapter {
     const out: NormalizedEvent[] = [];
     const id = str(e.sessionID);
     if (id !== undefined && id !== "") {
-      if (state.nativeSessionId === undefined) {
+      if (!SESSION_ID_RE.test(id)) {
+        // Proposed (fail closed): an id resume could not pass as one safe argument is never bound.
+        out.push({ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "session id is not a safe argument" });
+      } else if (state.nativeSessionId === undefined) {
         state.nativeSessionId = id;
         out.push({ kind: "session_bound", nativeSessionId: id });
       } else if (id !== state.nativeSessionId) {
@@ -406,7 +412,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
       case EVENT.toolUse: {
         const name = str(part?.tool);
         if (name === undefined) return [...out, ...this.#unknown(state, type)];
-        const kind = TOOL_KINDS[name] ?? "other";
+        const kind = own(TOOL_KINDS, name) ?? "other";
         const input = obj(obj(part?.state)?.input);
         // Assumption: the shell input names its command line `command` and the file tools their path `filePath` or
         // `path`; the live check recorded `state.input` but not its keys. Without them the guard sees no command.
@@ -451,7 +457,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
           };
           return [...out, ev];
         }
-        const category = (errType !== undefined ? ERROR_TYPE_CATEGORIES[errType] : undefined) ?? "unknown";
+        const category = (errType !== undefined ? own(ERROR_TYPE_CATEGORIES, errType) : undefined) ?? "unknown";
         const ev: NormalizedEvent = {
           kind: "provider_error",
           category,
@@ -485,8 +491,8 @@ export class OpenCodeAdapter implements ProviderAdapter {
   /**
    * Success needs a clean expected exit, a `step_finish` with reason `stop` (Q-85) and no `provider_error`,
    * `permission_denied`, `sandbox_violation` or `rate_limit` event and no `tool_call` the tool-call guard flagged with a
-   * `violation` (fail closed; a guard verdict ends the run in every run, bypass included, ADR-0039). The summary is the
-   * joined assistant text, last {@link MAX_SUMMARY_CHARS} characters.
+   * `violation` (fail closed; a guard verdict ends the run in every run, bypass included, ADR-0039), and no `tool_call`
+   * after the last `stop`. The summary is the joined assistant text, last {@link MAX_SUMMARY_CHARS} characters.
    */
   extractResult(events: readonly NormalizedEvent[], exit: ExitInfo): RunResult {
     const unknownEventCount = events.filter((e) => e.kind === "unknown").length;
@@ -494,7 +500,10 @@ export class OpenCodeAdapter implements ProviderAdapter {
     const nativeSessionId = bound?.kind === "session_bound" ? bound.nativeSessionId : undefined;
     const text = events.flatMap((e) => (e.kind === "message" ? [e.text] : [])).join("\n");
     const summary = text === "" ? undefined : text.slice(-MAX_SUMMARY_CHARS);
-    const final = events.findLast((e) => e.kind === "result");
+    const finalAt = events.findLastIndex((e) => e.kind === "result");
+    const final = events[finalAt];
+    // Proposed (fail closed, Q-85): a tool call after the last `stop` step means the run did not end on that step.
+    const trailingTool = finalAt >= 0 && events.slice(finalAt + 1).some((e) => e.kind === "tool_call");
     const base = {
       unknownEventCount,
       ...(nativeSessionId ? { nativeSessionId } : {}),
@@ -506,6 +515,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
       exit.expectedExitCodes.includes(exit.exitCode) &&
       final?.kind === "result" &&
       final.ok &&
+      !trailingTool &&
       !events.some(
         (e) =>
           e.kind === "provider_error" ||
@@ -522,7 +532,9 @@ export class OpenCodeAdapter implements ProviderAdapter {
       timedOut: exit.outcome === "timeout",
       cancelled: exit.outcome === "cancelled",
     });
-    return { ok: false, failureCode: c.code, failureDetail: c.detail, ...base };
+    const detail =
+      trailingTool && c.code === "OUTPUT_PROTOCOL_ERROR" ? "tool call after the final stop step" : c.detail;
+    return { ok: false, failureCode: c.code, failureDetail: detail, ...base };
   }
 
   classifyFailure(evidence: FailureEvidence): FailureClassification {
