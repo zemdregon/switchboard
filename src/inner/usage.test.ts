@@ -892,6 +892,83 @@ describe("recordInnerCall under the flag is the only writer of inner_agent rows 
     expect(h.ledger.listProviderReportedUsageSince("claude-code", since)).toEqual([]);
   });
 
+  it("both REPLACE spellings are refused on each of the three rows one recorded call writes: inner_call, the labelled observation and the inner_call event (post-#442)", async () => {
+    // `recordInnerCall` writes three guarded rows in one transaction (`src/ledger/repo.ts`): the `inner_call` row the
+    // inner diagnostics read, the labelled observation and the run's `inner_call` event. The pin above covers one
+    // spelling on one of them. Under the pragma a rewrite of any of the three, in either spelling SQLite accepts, is
+    // refused with the same guard, and what the consumers read (the envelope's provider usage, the capacity collector's
+    // read, the call list) is byte-identical. The rewrites chosen are the ones that would matter: counts the inner
+    // diagnostics report, the label the capacity collector filters on, and the event payload `runs show` prints.
+    const h = setup([GOOD], { shares: "claude-code" });
+    h.ledger.insertUsageObservation({
+      runId: h.run.id,
+      provider: "claude-code",
+      harness: "claude-code",
+      source: "provider_reported",
+      metrics: { "usage.input_tokens": 100 },
+    });
+    expect(await h.call()).toMatchObject({ accepted: true });
+    const since = "1970-01-01T00:00:00.000Z";
+    const record = () => h.ledger.getRunRecord(h.run.id);
+    const envelope = () =>
+      JSON.stringify(buildEnvelope(h.ledger, record() as NonNullable<ReturnType<typeof record>>, (s) => s));
+    const state = () => ({
+      calls: h.db.prepare("SELECT * FROM inner_call ORDER BY rowid").all() as Record<string, unknown>[],
+      usage: h.usageRows(),
+      events: h.db.prepare("SELECT * FROM run_event WHERE run_id = ? ORDER BY seq").all(h.run.id) as Record<
+        string,
+        unknown
+      >[],
+      listed: h.ledger.listInnerCalls(),
+      envelope: envelope(),
+      reported: h.ledger.listProviderReportedUsageSince("claude-code", since),
+    });
+    const before = state();
+    const [call] = before.calls;
+    const labelled = before.usage.find((r) => r.source === "inner_agent");
+    const event = before.events.find((e) => e.type === "inner_call");
+    expect(call).toMatchObject({ outcome: "accepted", tokens_in: 10, tokens_out: 4 });
+    expect(labelled).toMatchObject({ provider: "claude-code", run_id: h.run.id });
+    expect(event).toMatchObject({ type: "inner_call" });
+    expect(before.reported).toHaveLength(1);
+    expect(JSON.parse(before.envelope).usage.reported).toHaveLength(1);
+    expect(h.db.pragma("recursive_triggers", { simple: true })).toBe(1);
+
+    for (const spelling of ["INSERT OR REPLACE INTO", "REPLACE INTO"]) {
+      expect(() =>
+        h.db
+          .prepare(
+            `${spelling} inner_call (id, task, backend_kind, model_id, locality, template_version, outcome, reason,
+               attempts, latency_ms, tokens_in, tokens_out, input_bytes, output_bytes, input_sha256, run_id,
+               meta_session_id, created_at)
+             VALUES (@id, @task, @backend_kind, @model_id, @locality, @template_version, @outcome, @reason, @attempts,
+               @latency_ms, @tokens_in, @tokens_out, @input_bytes, @output_bytes, @input_sha256, @run_id,
+               @meta_session_id, @created_at)`,
+          )
+          .run({ ...call, outcome: "rejected_validator", tokens_in: 999_999, tokens_out: 999_999 }),
+      ).toThrow(/append-only/u);
+      expect(() =>
+        h.db
+          .prepare(
+            `${spelling} usage_observation (id, run_id, provider, harness, backing_provider, model, source, metrics_json,
+                                            observed_at)
+             VALUES (@id, @run_id, @provider, @harness, @backing_provider, @model, @source, @metrics_json, @observed_at)`,
+          )
+          .run({ ...labelled, source: "provider_reported" }),
+      ).toThrow(/append-only/u);
+      expect(() =>
+        h.db
+          .prepare(
+            `${spelling} run_event (id, run_id, seq, ts, type, payload_json, artifact_id)
+             VALUES (@id, @run_id, @seq, @ts, @type, @payload_json, @artifact_id)`,
+          )
+          .run({ ...event, payload_json: JSON.stringify({ rewritten: true, tokens_in: 999_999 }) }),
+      ).toThrow(/append-only/u);
+    }
+    expect(state()).toEqual(before);
+    expect(JSON.stringify(state())).not.toContain("999999");
+  });
+
   it("only the ledger repository writes usage_observation: its two statements, the provider-reported insert and recordInnerCall", () => {
     const files = productionTree();
     expect(writers(files)).toEqual([["ledger/repo.ts", 2]]);

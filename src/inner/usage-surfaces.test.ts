@@ -283,6 +283,24 @@ function splitEvents(json: string): [string, { type: string }[]] {
   return [JSON.stringify(rest), events];
 }
 
+/** Every production reader of `usage_observation` and `inner_call`, as the text each returns, for a byte comparison. */
+async function readerSurfaces(client: Client, runId: string, extra: Partial<CliIo>) {
+  return {
+    innerStatusJson: await cli(["inner", "status", "--json"], true, extra),
+    innerStatus: await cli(["inner", "status"], true, extra),
+    doctorJson: await cli(["doctor", "--json"], true, extra),
+    doctor: await cli(["doctor"], true, extra),
+    tool: await capacityText(client),
+    toolForProvider: await capacityText(client, { provider: PROVIDER }),
+    capacity: await cli(["capacity", "--json"]),
+    capacityText: await cli(["capacity"]),
+    show: await cli(["runs", "show", runId, "--json"]),
+    showText: await cli(["runs", "show", runId]),
+    getRun: await toolText(client, "get_run", { run_id: runId }),
+    getRunEvents: await toolText(client, "get_run", { run_id: runId, include_events: {} }),
+  };
+}
+
 function innerAgent(shares: string | null) {
   const settings = resolveInnerAgent({
     enabled: true,
@@ -418,20 +436,7 @@ describe("each reader keeps to its own table: an inner_agent usage row moves no 
       accepted: true,
     });
     expect(ledger.listInnerCalls()).toHaveLength(1);
-    const surfaces = async () => ({
-      innerStatusJson: await cli(["inner", "status", "--json"], true, extra),
-      innerStatus: await cli(["inner", "status"], true, extra),
-      doctorJson: await cli(["doctor", "--json"], true, extra),
-      doctor: await cli(["doctor"], true, extra),
-      tool: await capacityText(client),
-      toolForProvider: await capacityText(client, { provider: PROVIDER }),
-      capacity: await cli(["capacity", "--json"]),
-      capacityText: await cli(["capacity"]),
-      show: await cli(["runs", "show", runId, "--json"]),
-      showText: await cli(["runs", "show", runId]),
-      getRun: await toolText(client, "get_run", { run_id: runId }),
-      getRunEvents: await toolText(client, "get_run", { run_id: runId, include_events: {} }),
-    });
+    const surfaces = () => readerSurfaces(client, runId, extra);
     const before = await surfaces();
     // The human `runs show` prints a usage section only from provider-reported rows (`src/cli/runs.ts`): it names the
     // run's provider-reported row and nothing about the inner agent.
@@ -474,6 +479,140 @@ describe("each reader keeps to its own table: an inner_agent usage row moves no 
         .map((o) => o.source)
         .sort(),
     ).toEqual(["inner_agent", "provider_reported"]);
+  });
+
+  it("a REPLACE that relabels a labelled or planted inner_agent row as provider_reported, or rewrites the inner_call row, is refused before any reader sees it; the same row honestly inserted does move the readers (post-#442)", async () => {
+    // Q-96 (answered 2026-10-15, Delegated): `openLedger` sets `recursive_triggers = ON`, so SQLite's REPLACE conflict
+    // resolution now fires the BEFORE DELETE guard instead of silently rewriting a guarded row. `usage.test.ts` pins
+    // that on the rows; this pins it at the readers the test above enumerates, with the rewrite that would matter most
+    // to them: the planted row (the provider with capacity evidence, under the finished run, a huge count) relabelled
+    // `provider_reported`, the real labelled row rewritten to that same shape, and the `inner_call` row the inner
+    // diagnostics report rewritten with other counts and outcome. The last step inserts the planted shape the honest
+    // way and shows every provider reader move, so a REPLACE that went through could not have hidden.
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schema_version: 1,
+        data_dir: dataDir,
+        allowed_roots: [path.join(root, "repos")],
+        mcp_clients: [{ id: "c1", max_trust_profile: "edit-untrusted" }],
+        limits: { per_provider_concurrency: 2 },
+        capacity: { window_seconds: 7200, confidence_runs: 4 },
+        inner_agent: {
+          enabled: true,
+          backend: {
+            kind: "http",
+            base_url: "http://127.0.0.1:1",
+            model: "cfg-model",
+            shares_subscription_with: "claude-code",
+          },
+          tasks: { run_title: { enabled: true } },
+        },
+      }),
+    );
+    const runId = finishedRun();
+    const client = await connect();
+    const extra = {
+      innerBackend: createFakeBackend({
+        script: [{ kind: "text", text: '{"title":"Fix greeting typo"}', usage: { in: 11, out: 5 } }],
+      }),
+    };
+    expect(JSON.parse(await cli(["inner", "test", "run_title", "--json"], false, extra))).toMatchObject({
+      accepted: true,
+    });
+    const PLANTED = 987_654_321;
+    db.prepare(
+      `INSERT INTO usage_observation (id, run_id, provider, harness, backing_provider, model, source, metrics_json,
+                                      observed_at)
+       VALUES ('use_planted_inner', ?, ?, ?, NULL, 'cfg-model', 'inner_agent', ?, ?)`,
+    ).run(
+      runId,
+      PROVIDER,
+      PROVIDER,
+      JSON.stringify({ input_tokens: PLANTED, output_tokens: PLANTED }),
+      NOW.toISOString(),
+    );
+    const rows = () => ({
+      usage: db.prepare("SELECT * FROM usage_observation ORDER BY rowid").all() as Record<string, unknown>[],
+      calls: db.prepare("SELECT * FROM inner_call ORDER BY rowid").all() as Record<string, unknown>[],
+    });
+    const before = { rows: rows(), surfaces: await readerSurfaces(client, runId, extra) };
+    const labelled = before.rows.usage.find((r) => r.source === "inner_agent" && r.id !== "use_planted_inner");
+    const planted = before.rows.usage.find((r) => r.id === "use_planted_inner");
+    const [call] = before.rows.calls;
+    expect(labelled).toMatchObject({ provider: "claude-code", run_id: null, source: "inner_agent" });
+    expect(planted).toMatchObject({ provider: PROVIDER, run_id: runId, source: "inner_agent" });
+    expect(call).toMatchObject({ task: "run_title", outcome: "accepted", tokens_in: 11, tokens_out: 5 });
+    type Capacity = { providers: { window: { terminal_runs: number; usage_observations: number } }[] };
+    expect((JSON.parse(before.surfaces.tool) as Capacity).providers[0]?.window).toMatchObject({
+      terminal_runs: 1,
+      usage_observations: 1,
+    });
+    expect(db.pragma("recursive_triggers", { simple: true })).toBe(1);
+
+    const rewriteUsage = (spelling: string, row: Record<string, unknown>) =>
+      db
+        .prepare(
+          `${spelling} usage_observation (id, run_id, provider, harness, backing_provider, model, source, metrics_json,
+                                          observed_at)
+           VALUES (@id, @run_id, @provider, @harness, @backing_provider, @model, @source, @metrics_json, @observed_at)`,
+        )
+        .run(row);
+    const rewriteCall = (spelling: string, row: Record<string, unknown>) =>
+      db
+        .prepare(
+          `${spelling} inner_call (id, task, backend_kind, model_id, locality, template_version, outcome, reason,
+             attempts, latency_ms, tokens_in, tokens_out, input_bytes, output_bytes, input_sha256, run_id,
+             meta_session_id, created_at)
+           VALUES (@id, @task, @backend_kind, @model_id, @locality, @template_version, @outcome, @reason, @attempts,
+             @latency_ms, @tokens_in, @tokens_out, @input_bytes, @output_bytes, @input_sha256, @run_id,
+             @meta_session_id, @created_at)`,
+        )
+        .run(row);
+    for (const spelling of ["INSERT OR REPLACE INTO", "REPLACE INTO"]) {
+      expect(() => rewriteUsage(spelling, { ...planted, source: "provider_reported" })).toThrow(/append-only/u);
+      expect(() =>
+        rewriteUsage(spelling, {
+          ...labelled,
+          run_id: runId,
+          provider: PROVIDER,
+          harness: PROVIDER,
+          source: "provider_reported",
+          metrics_json: planted?.metrics_json,
+        }),
+      ).toThrow(/append-only/u);
+      expect(() =>
+        rewriteCall(spelling, { ...call, outcome: "rejected_validator", tokens_in: 999_999, tokens_out: 999_999 }),
+      ).toThrow(/append-only/u);
+    }
+    expect(rows()).toEqual(before.rows);
+    expect(await readerSurfaces(client, runId, extra)).toEqual(before.surfaces);
+    expect(JSON.stringify(before.surfaces)).not.toContain(String(PLANTED));
+
+    // Not vacuous: the planted shape written the honest way (a new id, the lifecycle's own writer) moves every provider
+    // reader the refused relabel would have moved, and none of the inner diagnostics, which read `inner_call` only.
+    ledger.insertUsageObservation({
+      runId,
+      provider: PROVIDER,
+      harness: PROVIDER,
+      source: "provider_reported",
+      metrics: { input_tokens: PLANTED, output_tokens: PLANTED },
+    });
+    const after = await readerSurfaces(client, runId, extra);
+    expect((JSON.parse(after.tool) as Capacity).providers[0]?.window).toMatchObject({
+      terminal_runs: 1,
+      usage_observations: 2,
+    });
+    // (The human `doctor` capacity line prints the verdict, not the window counts, so it alone does not move.)
+    for (const key of ["tool", "toolForProvider", "capacity", "capacityText", "doctorJson"] as const) {
+      expect(after[key]).not.toBe(before.surfaces[key]);
+    }
+    expect((JSON.parse(after.show) as { usage: unknown[] }).usage).toHaveLength(2);
+    expect(after.showText).toContain(String(PLANTED));
+    expect((JSON.parse(after.getRun) as { usage: { reported: unknown[] } }).usage.reported).toHaveLength(2);
+    expect(after.getRunEvents).toContain(String(PLANTED));
+    expect(after.innerStatusJson).toBe(before.surfaces.innerStatusJson);
+    expect(after.innerStatus).toBe(before.surfaces.innerStatus);
   });
 });
 
