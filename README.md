@@ -84,8 +84,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   module, compile-matrix, parser (partial: T4.43), auth-preflight, conformance suite (T4.45), malicious-fixture leg
   (T4.46) and Git declaration fixture tests on synthetic fixtures (README
   [Cursor CLI](#cursor-cli-milestone-4), ROADMAP T4.42 to T4.47); live smoke, live malicious leg and `adapters validate`
-  remain operator work (T4.48). OpenCode has module, compile-matrix, parser
-  (partial: T4.53), auth-preflight, conformance suite (T4.55), malicious-fixture leg (partial: synthetic refusal shapes,
+  remain operator work (T4.48). OpenCode has module, compile-matrix, parser (partial: T4.53; every Done-when case has a
+  supervisor-replayed JSONL fixture on `main` ([#274](https://github.com/zemdregon/switchboard/pull/274))),
+  auth-preflight, conformance suite (T4.55), malicious-fixture leg (partial: synthetic refusal shapes,
   guard-blocked and trailing-tool fail-closed replay streams and FR-POL-04, T4.56;
   [#245](https://github.com/zemdregon/switchboard/pull/245)) and Git declaration fixture tests on synthetic fixtures (README
   [OpenCode CLI](#opencode-cli-milestone-4), ROADMAP T4.52 to
@@ -892,7 +893,13 @@ one safe argument is never bound (`OUTPUT_PROTOCOL_ERROR`; [#245](https://github
 instead of success. `tool_use` keys that name `Object.prototype` members map to `other` (own-key lookup;
 [#245](https://github.com/zemdregon/switchboard/pull/245)). Rate-limit and permission-denial stream shapes,
 `backingProvider` on `session_bound` and the keys of `tool_use.part.state.input` are still unrecorded (T4.53 stays
-`Partial` on the roadmap).
+`Partial` on the roadmap). Supervisor-replayed JSONL fixtures pin today's gaps without inventing native fields
+([#274](https://github.com/zemdregon/switchboard/pull/274)): `permission_denied_outside` (live check row 11) ends
+`stop` at exit 0 with `state.status` `error` and is not detected as a denial (gap pinned); `rate_limit` (row 14c, never
+reached) is an empty stream at exit 1 → `TOOL_FAILURE`; `rate_limit_error` is an unmapped error type at exit 0 →
+`TOOL_FAILURE`; `unknown_events` ends `OUTPUT_PROTOCOL_ERROR` with every unreadable line counted; `no_stop` (row 4a,
+Q-85) and `trailing_tool` (Q-85) end `OUTPUT_PROTOCOL_ERROR`; `session_changed` ends `OUTPUT_PROTOCOL_ERROR` with the
+first session id still bound.
 
 ### Git and commits
 
@@ -919,10 +926,14 @@ T4.56, T4.58).
 context as for Codex ([How commits reach Git](#how-commits-reach-git)). In an approved bypass run, Git-write denial
 therefore rests on FR-GIT-03 and FR-GIT-06 in addition to any provider rule.
 
-Fixture evidence on `main`: `src/adapters/opencode/opencode.test.ts` ("opencode compile matrix (T4.52)", "opencode
-bypass-class declaration (ADR-0035)", "opencode probe and auth preflight (T4.52, T4.54)", "opencode registry entry and
-manifest gate (T4.52)", "opencode parser and result (T4.53)", parser hardening and trailing-tool pins in the same file,
-"opencode conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.55)" and "opencode Git declaration (T4.57,
+Fixture evidence on `main`: `src/adapters/opencode/fixtures/` (T4.53 Done-when and T4.55 conformance JSONL, including
+`permission_denied_outside`, `rate_limit`, `rate_limit_error`, `unknown_events`, `no_stop`, `trailing_tool` and
+`session_changed` from [#274](https://github.com/zemdregon/switchboard/pull/274)); `src/adapters/opencode/opencode.test.ts`
+("opencode compile matrix (T4.52)", "opencode bypass-class declaration (ADR-0035)", "opencode probe and auth preflight
+(T4.52, T4.54)", "opencode registry entry and manifest gate (T4.52)", "opencode parser and result (T4.53)",
+"cases with no recorded native shape (live check rows 7, 11, 14c)" fixture replay, parser hardening and trailing-tool
+pins in the same
+file, "opencode conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.55)" and "opencode Git declaration (T4.57,
 FR-GIT-01, FR-GIT-02, FR-GIT-09)"); CI also runs `test/malicious/adapters/opencode.case.ts` and
 `test/malicious/adapter-leg.test.ts` ("adapter malicious leg: opencode", T4.56 partial — see
 [Known limitations](#known-limitations); guard-blocked and trailing-tool streams
