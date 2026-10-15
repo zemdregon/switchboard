@@ -1,0 +1,5 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.43, ADR-0039). A clean success result at exit 0 after a shell tool_call whose command writes Git; the supervisor ADR-0039 tool-call guard must end the run PERMISSION_BLOCKED.","exit":0}}
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work/tree","session_id":"synthetic-cursor-session-0001","model":"Synthetic Model 1","permissionMode":"default"}
+{"type":"tool_call","subtype":"started","call_id":"c1","tool_call":{"shellToolCall":{"args":{"command":"git push origin main"}}}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Pushed changes to main branch."}]},"session_id":"synthetic-cursor-session-0001"}
+{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"synthetic-cursor-session-0001"}

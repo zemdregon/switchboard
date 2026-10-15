@@ -148,6 +148,23 @@ const own = <T>(table: Readonly<Record<string, T>>, key: string): T | undefined 
 /** Own-property lookup on a parsed object, ignoring any prototype members. */
 const ownProp = (o: Json | undefined, key: string): unknown =>
   o !== undefined && Object.hasOwn(o, key) ? o[key] : undefined;
+/** Parameter container fallback (args > parameters > input). */
+const toolArgs = (entry: Json | undefined): Json | undefined =>
+  obj(ownProp(entry, "args")) ?? obj(ownProp(entry, "parameters")) ?? obj(ownProp(entry, "input"));
+/** Shell command parameter aliases: command > cmd > CommandLine. */
+const toolCommand = (args: Json | undefined, kind: "read" | "edit" | "shell" | "other"): string | undefined =>
+  kind === "shell"
+    ? (str(ownProp(args, "command")) ?? str(ownProp(args, "cmd")) ?? str(ownProp(args, "CommandLine")))
+    : undefined;
+/** File target parameter aliases: path > filePath > file_path > AbsolutePath > target. */
+const toolTarget = (args: Json | undefined, kind: "read" | "edit" | "shell" | "other"): string | undefined =>
+  kind === "read" || kind === "edit"
+    ? (str(ownProp(args, "path")) ??
+      str(ownProp(args, "filePath")) ??
+      str(ownProp(args, "file_path")) ??
+      str(ownProp(args, "AbsolutePath")) ??
+      str(ownProp(args, "target")))
+    : undefined;
 /** `result` lines already seen per run: a second one is a protocol anomaly, never a success (fail closed). */
 const seenResults = new WeakMap<ParseState, number>();
 /**
@@ -508,9 +525,9 @@ export class CursorAdapter implements ProviderAdapter {
       return keys.map((key): NormalizedEvent => {
         const kind = own(TOOL_KEYS, key) ?? "other";
         const entry = obj(ownProp(call, key));
-        const args = obj(ownProp(entry, "args"));
-        const command = kind === "shell" ? str(ownProp(args, "command")) : undefined;
-        const target = kind === "read" || kind === "edit" ? str(ownProp(args, "path")) : undefined;
+        const args = toolArgs(entry);
+        const command = toolCommand(args, kind);
+        const target = toolTarget(args, kind);
         const stepId = callId ? `${callId}:${key}` : key;
         const paramKey =
           command !== undefined ? `command:${command}` : target !== undefined ? `target:${target}` : undefined;
@@ -533,9 +550,9 @@ export class CursorAdapter implements ProviderAdapter {
       for (const key of keys) {
         const kind = own(TOOL_KEYS, key) ?? "other";
         const entry = obj(ownProp(call, key));
-        const args = obj(ownProp(entry, "args"));
-        const command = kind === "shell" ? str(ownProp(args, "command")) : undefined;
-        const target = kind === "read" || kind === "edit" ? str(ownProp(args, "path")) : undefined;
+        const args = toolArgs(entry);
+        const command = toolCommand(args, kind);
+        const target = toolTarget(args, kind);
         const stepId = callId ? `${callId}:${key}` : key;
         const paramKey =
           command !== undefined ? `command:${command}` : target !== undefined ? `target:${target}` : undefined;
