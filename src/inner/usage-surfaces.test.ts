@@ -7,13 +7,15 @@
  * `get_capacity` call filtered with `{ provider }` are covered here too. The unit tests in `usage.test.ts` and
  * `../capacity/capacity.test.ts` prove the same at the stored rows and the projection; this file proves it at the
  * published tool and CLI output. After #330: `get_run`, `capacity --provider`, and `inner test` with the flag in the
- * on-disk config. Fake adapter and fake inner backend only; no provider CLI, login or network.
+ * on-disk config. Fake adapter and fake inner backend only; no provider CLI, login or external network.
  */
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeAdapter } from "../adapters/fake/adapter.js";
@@ -21,11 +23,14 @@ import { AdapterRegistry, type ResolvedProfile } from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
 import { main } from "../cli/index.js";
 import type { CliIo } from "../cli/io.js";
+import { resolveHttpTransport } from "../config/http-transport.js";
 import { resolveInnerAgent } from "../config/inner-agent.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger, type TrustProfile } from "../ledger/index.js";
 import { RunLifecycle } from "../lifecycle/index.js";
+import { type HttpTransportListener, startHttpTransport } from "../mcp/http.js";
 import { createSwitchboardServer, type SwitchboardMcpServer } from "../mcp/index.js";
+import { OAuthTokenStore } from "../mcp/oauth-tokens.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import { createFakeBackend, createInnerAgent, type FakeStep, type InnerTaskContract } from "./index.js";
 
@@ -71,6 +76,7 @@ let configPath: string;
 let db: Database.Database;
 let ledger: Ledger;
 let lifecycle: RunLifecycle | undefined;
+let httpListener: HttpTransportListener | undefined;
 const servers: { mcp: SwitchboardMcpServer; client: Client }[] = [];
 
 const registry = () => new AdapterRegistry().register(new FakeAdapter({ script: "/nonexistent/fake-cli.mjs" }));
@@ -103,6 +109,8 @@ afterEach(async () => {
     await s.client.close();
     await s.mcp.close();
   }
+  await httpListener?.close();
+  httpListener = undefined;
   db.close();
   rmSync(root, { recursive: true, force: true });
 });
@@ -136,7 +144,7 @@ function finishedRun(): string {
   return r.id;
 }
 
-async function connect(): Promise<Client> {
+async function connect(http = false): Promise<Client> {
   const reg = registry();
   const artifacts = new ArtifactStore(path.join(dataDir, "artifacts"));
   const workspace = new WorkspaceManager({ db, artifacts, dataDir, allowedRoots: [root], ids: createIdGenerator() });
@@ -156,21 +164,60 @@ async function connect(): Promise<Client> {
       }),
     },
   });
-  const mcp = createSwitchboardServer({
-    lifecycle,
-    ledger,
-    artifacts,
-    registry: reg,
-    config: {
-      allowedRoots: [root],
-      mcpClients: new Map([["c1", { id: "c1", maxTrustProfile: "edit-untrusted" as TrustProfile }]]),
-      capacity: { windowSeconds: 7200, confidenceRuns: 4 },
-      limits: { perProviderConcurrency: 2 },
-    },
-    clientId: "c1",
-    now,
-  });
+  const activeLifecycle = lifecycle;
+  const makeServer = () =>
+    createSwitchboardServer({
+      lifecycle: activeLifecycle,
+      ledger,
+      artifacts,
+      registry: reg,
+      config: {
+        allowedRoots: [root],
+        mcpClients: new Map([["c1", { id: "c1", maxTrustProfile: "edit-untrusted" as TrustProfile }]]),
+        capacity: { windowSeconds: 7200, confidenceRuns: 4 },
+        limits: { perProviderConcurrency: 2 },
+      },
+      clientId: "c1",
+      now,
+    });
   const client = new Client({ name: "test", version: "0.0.0" });
+  if (http) {
+    const settings = resolveHttpTransport({
+      enabled: true,
+      public_url: "https://sb.example.test/mcp",
+      port: 0,
+      default_mcp_client: "c1",
+    });
+    if (!settings) throw new Error("HTTP settings missing");
+    const tokens = new OAuthTokenStore(db);
+    httpListener = await startHttpTransport(settings, {
+      tokens,
+      clients: {
+        register: () => {
+          throw new Error("not used");
+        },
+        get: (clientId) => ({ clientId, status: "approved", redirectUris: [], grantTypes: [], createdAt: "" }),
+      },
+      mcpServerFor: () => makeServer(),
+    });
+    if (!httpListener) throw new Error("HTTP listener missing");
+    const { token } = tokens.issue({
+      kind: "access",
+      clientId: "usage-fixture",
+      resource: settings.resource,
+      scopes: ["mcp"],
+      ttlMs: 60_000,
+    });
+    const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${httpListener.address.port}/mcp`), {
+      requestInit: { headers: { authorization: `Bearer ${token}` } },
+    });
+    // The SDK sessionId type needs a cast with exactOptionalPropertyTypes (as in the M13 tests).
+    await client.connect(transport as Transport);
+    await client.listTools();
+    servers.push({ mcp: { close: async () => {} } as SwitchboardMcpServer, client });
+    return client;
+  }
+  const mcp = makeServer();
   const [c, s] = InMemoryTransport.createLinkedPair();
   await mcp.server.connect(s);
   await client.connect(c);
@@ -367,4 +414,56 @@ describe("inner test CLI and doctor when shares_subscription_with is in the on-d
     // Honest: the inner-agent section reports inner_call counts, so the whole doctor document is not identical.
     expect(after.inner_agent.tasks.find((t) => t.task === "run_title")?.total_calls).toBe(1);
   });
+});
+
+describe("Streamable HTTP capacity isolation (T11.14 residual; FR-INN-15)", () => {
+  for (const shares of [null, PROVIDER]) {
+    it(`keeps filtered and unfiltered responses byte-identical with shared subscription ${shares}`, async () => {
+      const runId = finishedRun();
+      const client = await connect(true);
+      const before = [await capacityText(client), await capacityText(client, { provider: PROVIDER })];
+      expect(JSON.parse(before[0] as string).providers[0].window).toMatchObject({
+        terminal_runs: 1,
+        usage_observations: 1,
+      });
+      const providerRows = db.prepare("SELECT * FROM usage_observation WHERE source = 'provider_reported'").all();
+      const service = innerAgent(shares);
+      const outcomes = [];
+      for (let i = 0; i < 3; i++)
+        outcomes.push((await service.call(contract, { user: "tidy", run_id: runId })).outcome);
+      expect(outcomes).toEqual(["accepted", "rejected_validator", "fallback_unavailable"]);
+      expect(ledger.listInnerCalls()).toHaveLength(3);
+      const innerRows = db
+        .prepare(
+          "SELECT provider, run_id, metrics_json FROM usage_observation WHERE source = 'inner_agent' ORDER BY rowid",
+        )
+        .all();
+      expect(innerRows).toEqual(
+        shares === null
+          ? []
+          : [
+              {
+                provider: PROVIDER,
+                run_id: runId,
+                metrics_json: JSON.stringify({ input_tokens: 1_000_000, output_tokens: 50_000 }),
+              },
+              {
+                provider: PROVIDER,
+                run_id: runId,
+                metrics_json: JSON.stringify({ input_tokens: 20, output_tokens: 2 }),
+              },
+              {
+                provider: PROVIDER,
+                run_id: runId,
+                metrics_json: JSON.stringify({}),
+              },
+            ],
+      );
+      expect(db.prepare("SELECT * FROM usage_observation WHERE source = 'provider_reported'").all()).toEqual(
+        providerRows,
+      );
+      expect(await capacityText(client)).toBe(before[0]);
+      expect(await capacityText(client, { provider: PROVIDER })).toBe(before[1]);
+    });
+  }
 });
