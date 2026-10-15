@@ -341,7 +341,9 @@ call has no run. All three have `<table>_no_update` / `<table>_no_delete` guards
 
 **M11 additions (Proposed).** One forward migration (ADR-0005) adds the append-only `inner_call` table and the mutable
 `inner_task_state` table (DDL in [§13.3](#133-data)), adds `pr_draft` to the `artifact.kind` check, adds `inner_agent` to
-the `usage_observation.source` check (FR-INN-15), and adds two columns to `git_commit` (§12.7). SQLite cannot alter a
+the `usage_observation.source` check (FR-INN-15), and adds two columns to `git_commit` (§12.7). T11.10 (2026-10-15,
+Delegated) adds `handoff_condense` by migration 0016, the same rebuild, so the condensation sits beside its
+`handoff_view`. SQLite cannot alter a
 `CHECK`, so the two checks are widened by the migration runner's table-rebuild step. `route_decision.features_json` keeps
 its column; only its content gains per-feature `source`, `model_id` and `template_version` (§13.6, `route_features`).
 The inner agent's entities are therefore `inner_call` (history) and `inner_task_state` (current suspension state per
@@ -973,10 +975,12 @@ refused with `INVALID_REQUEST` while ROADMAP Q-61 is open, and a bundle that can
 (type and bounded payload; no raw output).
 **`cancel_run`** `{ run_id, reason? }` returns the envelope; cancellation is asynchronous (WF-4) and the status may
 still be non-terminal. Cancelling a terminal run is a no-op returning its envelope.
-**`get_artifacts`** `{ run_id, kinds?: ["diff"|"test_report"|"changed_files"|"log_summary"|"handoff_view"|"pr_draft"],
+**`get_artifacts`** `{ run_id, kinds?: ["diff"|"test_report"|"changed_files"|"log_summary"|"handoff_view"|"pr_draft"|"handoff_condense"],
 max_inline_bytes?: int }` returns `[{artifact_id, kind, sha256, size_bytes, inline_text?}]`; inline only when under
 `max_inline_bytes` (default 65536, proposed target). `pr_draft` exists only when the PR-draft task produced an accepted
-draft (M11, [§13.6](#136-task-contracts)); Switchboard never opens a pull request with it (FR-INN-11).
+draft (M11, [§13.6](#136-task-contracts)); Switchboard never opens a pull request with it (FR-INN-11). `handoff_condense`
+exists only when the handoff-condensation task stored one beside the raw `handoff_view` (M11, T11.10, [§13.6](#136-task-contracts));
+it does not replace the view.
 **`list_capabilities`** `{}` returns `{ schema_version, providers: [{provider, adapter_status, binary_version,
 validated_range, auth_state, supported_profiles[], transports[], models[], sandbox_features[], git_write_control?}] }`;
 reads cached preflight (NFR-PERF-02). `git_write_control` is `{ kind: "provider-deny-rules" | "none-documented", detail,
@@ -3271,6 +3275,45 @@ an **Assumption** unless the table says it:
   `src/inner/` (the import-boundary test is unchanged).
 - **Trigger.** No run path calls `summariseVerification` automatically (the lifecycle may not import the service); the
   entry point is the service function, like `createPrDraft`.
+
+*As built (2026-10-15, Delegated, T11.10; table above unchanged), `handoff_condense`:* template `handoff_condense.v1`
+(`src/inner/handoff-condense.ts`), a fixed system text that names no product, provider, tool or identifier. Each point
+is an **Assumption** unless the table says it:
+
+- **Beside the view, not inside it.** The table says the bundle stores each condensed field. The view is a pure function
+  of `(as_of, bounds, builder_version)` (FR-SES-05, ADR-0038) and model output is not regenerable, so the fields are a
+  second artifact of kind `handoff_condense` (`application/json`) stored next to the `handoff_view`. The view's bytes
+  are not rewritten. Migration 0016 widens `artifact.kind` by the same table rebuild as 0009. `get_artifacts` lists the
+  kind (§3).
+- **What is sent.** Only non-empty prose, under fixed headings, in this order: `goal`, `constraints`, `instructions`,
+  `decisions`, `failed_attempt_notes`, `open_tasks`, `diff_excerpts`. Constraints and instruction text are bullet lines.
+  A decision line is `- <kind>: <summary>`. A summary that is only a failure code, an id, a SHA or an integer is
+  omitted, and control characters other than newline and tab are stripped.
+  Failed-attempt notes are `reported[].text` only (`- summary:` and `- failure_detail:`); `failed_attempts` has no prose
+  column, so its codes, commits and artifact ids are not sent. An open-task line is the kind with underscores as words,
+  plus string `argv` when the detail is an object; a detail that is a failure code, a pure integer, an id (`run_`,
+  `ms_`, `art_`, `sess_`, `dec_`, `evt_`, `apv_`, `gcm_`) or a SHA is dropped, and so are `index`, `outcome`,
+  `exit_code` and `run_id`. Diff excerpts are `== <path> ==` plus the text; the `truncated` flag is not sent. Statuses,
+  exit codes, counts, run and session ids, commit SHAs and verification output are not sent. Control characters other
+  than newline and tab are stripped in the extractor, so a secret split by one is contiguous when the pipeline redacts.
+- **Budget.** Sections before `diff_excerpts:` stay whole; the excerpts keep a head of 25% and a tail of 75% of what
+  remains (§13.4 step 3). If that header leaves fewer than 200 bytes, head and tail apply to the whole prompt.
+- **Validator.** The schema requires exactly the fields that were sent (`additionalProperties: false`, each string
+  1..600). Beyond it, all or nothing: one line (no newline, carriage return, tab or other control), no longer than its
+  own source field in Unicode code points, and every whole digit run must occur as a whole digit run in the text the
+  model was given (redacted, then budgeted), so `17` is not matched by `1700`. There is no URL ban; the table does not
+  require one. There is no sanitiser step. Stored text passes the artifact redactor.
+- **Fallback and storage.** When the task is enabled and nothing is accepted, every requested field is the raw text cut
+  at 600 code points, with `[truncated: <n> characters omitted]` after the cut and not counted in the 600, `source:
+  "heuristic"`, no `model_id` and no `template_version`. The same source applies to every field. With the task not
+  enabled, nothing is written (§13.7 row 1). An accepted field adds `source: "inner"`, the backend-reported `model_id`
+  (passed into `persist`) and `template_version`. Both results record one `handoff_condense` run event whose payload is
+  ids, the source, and a map of field name to source: no prose. On accept, the `inner_call` event's `artifact_id` is
+  the condensation artifact; on fallback it stays null and the `handoff_condense` event points at the heuristic
+  artifact.
+- **Output cap.** The raw completion may be at most `4 * (64 + 7 * 600) + 2048` bytes.
+- **Trigger.** Nothing calls `condenseHandoffBundle` automatically (the lifecycle may not import the service). The
+  `inner test` fixture stays the synthetic stand-in and does not send this task's source content.
 
 *As built (2026-10-14, Delegated, T11.12; table above unchanged), `run_title`:* template `run_title.v1`
 (`src/inner/run-title.ts`), a fixed system text that names no product, provider, tool or identifier. Each point is an

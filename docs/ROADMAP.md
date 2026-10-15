@@ -1510,7 +1510,7 @@ call a live model in the default test run.
 | T11.7 | `doctor` inner-agent section, `inner status`, `inner test` with the built-in fixture | FR-INN-17 | T11.3, T11.6 | Plain-text and `--json` output; `inner test` sends no repository data (asserted on the captured prompt) |
 | T11.8 | PR-draft task and the `pr_draft` artifact kind | FR-INN-11, [LLD §3](design/LLD.md#3-mcp-tool-contracts) | T11.4 | Draft passes the sanitiser; Switchboard makes no call to any pull-request API (test asserts no such client exists) |
 | T11.9 | Log and verification-output summary | FR-INN-13, FR-EXE-08 | T11.2, M3 | Statuses, exit codes and counts in the envelope come from records in every test; the summary carries a source label and a raw-artifact pointer; fallback is deterministic head and tail |
-| T11.10 | Handoff-bundle condensation | FR-INN-13, FR-SES-04 | T11.2, T5.4 (M5 bundle builder, §6.9) | Structured bundle fields are identical with and without the inner agent; condensed fields are labelled and link to raw artifacts |
+| T11.10 | Handoff-bundle condensation | FR-INN-13, FR-SES-04 | T11.2, T5.4 (M5 bundle builder, §6.9) | Structured bundle fields are identical with and without the inner agent; condensed fields are labelled and link to raw artifacts *Status:* **Done on fakes** (2026-10-15, Delegated). Evidence in the T11.10 status note below |
 | T11.11 | Routing classification feature | FR-INN-12, FR-RTE-04, ADR-0008 | T11.2, M7 | Stored feature with source, model and template version; replay reproduces the decision with the backend off; the feature never changes eligibility or `require_provider` |
 | T11.12 | Run title and one-line summary (Could) | FR-INN-14 | T11.2 | Length cap and control-character stripping tested |
 | T11.13 | `cli` backend using OpenCode (Should) | FR-INN-04, FR-ADP-08, FR-ADP-03 | T11.0, M4 (OpenCode adapter and manifest) | Runs only on a version inside the manifest range and only with the verified tool-free flags; otherwise reports `Ineligible`; no bypass flag in argv (argv audit) |
@@ -1797,6 +1797,37 @@ Proposed), and the `log_summary` run event carries the bounded text because the 
 ledger-only. **Not covered:** no run path calls `summariseVerification` yet (the lifecycle may not import the service,
 FR-INN-06; a hook or an `inner` command is a later wiring task), summarising other logs than verification output, the
 `inner.call` telemetry span (no exporter yet), and a live backend.
+
+**T11.10 status (2026-10-15; Delegated): Done on fakes. No live inner backend, provider CLI or network was used.** "Done
+when", clause by clause (all in `src/inner/handoff-condense.test.ts`): *structured bundle fields are identical with and
+without the inner agent*: every test stores a version 1 `handoff_view` (the T5.5 synthetic bundle, redacted as other
+artifacts are) and compares its bytes before and after condensation, with the task disabled and enabled, on accept, on
+rejection, on fallback and on a privacy denial; the parsed bundle and the run record are unchanged. The builder under
+`src/continuity/` is not modified, so the view stays the pure function of `(as_of, bounds, builder_version)` (FR-SES-05).
+*Condensed fields are labelled and link to raw artifacts*: an accepted field is `{ text, source: "inner", model_id,
+template_version: "handoff_condense.v1", raw_artifact_id, raw_sha256 }` of that view; a fallback field is the same shape
+with `source: "heuristic"` and no model or template. The text lives in a `handoff_condense` artifact beside the view
+(migration 0016), not inside it. The `handoff_condense` run event names the source per field and the two artifact ids and
+carries no prose. *Fallback is deterministic truncation*: a field longer than 600 code points keeps the first 600 and the
+marker `[truncated: <n> characters omitted]`, the same text twice, an emoji not split. Empty output, non-JSON output, a
+value longer than its source, an invented digit run, an extra key and a missing field each store that fallback after one
+re-ask, and the re-ask does not echo the rejected completion. A backend error stores the same fallback with no second
+call. *Privacy gates as for diffs*: the contract sets
+`sends_source_content`, so a remote backend without `allow_remote` or without `allow_source_content`, and a project set
+to `off` or `local_only`, send no byte and store the fallback; both opt-ins allow the call. A planted secret, home path,
+native session id and provider name never reach the prompt, and the secret does not appear in the stored events or call
+rows. With the task not enabled, nothing is called or written. A run with no view, a view that does not parse, and a view
+with no prose are refused without a call. Delivered: `src/inner/handoff-condense.ts` (contract `handoff_condense.v1`,
+extractor, validator, truncation, entry point `condenseHandoffBundle`), migration `0016_handoff_condense_artifact`, and
+`handoff_condense` on `ArtifactKind` and `MCP_ARTIFACT_KINDS`. The continuity import-boundary test is unchanged.
+Delegated choices and Assumptions are in [LLD §13.6](design/LLD.md#136-task-contracts) (T11.10 note): condensation is a
+sidecar artifact rather than a rewrite of the regenerable view; failed-attempt notes are the provider-reported
+`reported` text, because `failed_attempts` has no prose column; open-task lines drop failure codes, counts and ids; the
+digit rule is whole digit runs against the text the model was given; accepted values are one line; the event payload has
+no prose.
+**Not covered:** no run path calls `condenseHandoffBundle` yet (the lifecycle may not import the service, FR-INN-06; a
+hook or an `inner` command is a later wiring task), the `inner test` fixture stays the synthetic stand-in, the
+`inner.call` telemetry span (no exporter yet), the M11 summary row and the README (left for T11.14), and a live backend.
 
 **T11.12 status (2026-10-14; Delegated): Done on fakes. No live inner backend, provider CLI or network was used.** "Done
 when" (*length cap and control-character stripping tested*), in `src/inner/run-title.test.ts`: a title over 80 or a
