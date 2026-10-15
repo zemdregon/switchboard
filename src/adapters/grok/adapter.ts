@@ -15,8 +15,9 @@
  *   together, never one without the other ([R2] L613 to L615): `--always-approve` always with `--sandbox`;
  * - the parser reads the `streaming-json` fields the 2026-10-14 live check recorded (T4.23): `tool_call` lines with
  *   synthetic fields are parsed and guarded (ADR-0039, T4.27), while unrecorded tool lines are `unknown` events;
- *   resume is `-r <id>` through the same matrix. The auth
- *   preflight keys on the first line of `grok models` (T4.24). The manifest range admits no version, so none of this
+ *   resume is `-r <id>` through the same matrix; a second `end`, a session id that changes mid-run or is not a safe
+ *   argument and a tool call after the `end` line fail the run. The auth preflight keys on the first line of
+ *   `grok models` (T4.24). The manifest range admits no version, so none of this
  *   runs before `adapters validate` passes a version.
  */
 import {
@@ -364,8 +365,9 @@ export class GrokAdapter implements ProviderAdapter {
    * One `streaming-json` line -> normalized events (T4.23). Structured fields only (FR-ADP-04): the session id is read
    * from the `end` line's `sessionId` and nowhere else. A line whose type or shape is not recognised is an `unknown`
    * event and never a result; a final result exists only when an `end` line carries a string `stopReason`. Hardening
-   * (fail closed): a second `end` line or a changed session id is OUTPUT_PROTOCOL_ERROR, an `error` line without a
-   * string message is still an error, and only finite non-negative usage counters are recorded.
+   * (fail closed): a second `end` line, a changed session id or one that is not a safe argument is
+   * OUTPUT_PROTOCOL_ERROR, an `error` line without a string message is still an error, and only finite non-negative
+   * usage counters are recorded.
    */
   parseEvent(input: string | AcpMessage, state: ParseState): NormalizedEvent[] {
     if (typeof input !== "string") return []; // no ACP transport for Grok Build (TDD §4.3.1)
@@ -452,10 +454,14 @@ export class GrokAdapter implements ProviderAdapter {
 
   /**
    * The first non-empty id binds the session. A later, different id (a second `end` for another session) makes the
-   * binding ambiguous, so the run fails closed; the first id stays bound.
+   * binding ambiguous, so the run fails closed; the first id stays bound. An id resume could not pass as one safe
+   * argument is never bound and fails the run (Proposed, fail closed, as Cursor and OpenCode).
    */
   #bind(state: ParseState, id: string): NormalizedEvent[] {
     if (id === "") return [];
+    if (!SESSION_ID_RE.test(id)) {
+      return [{ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "session id is not a safe argument" }];
+    }
     if (state.nativeSessionId !== undefined) {
       if (id === state.nativeSessionId) return [];
       return [{ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "session id changed mid-run" }];
@@ -472,8 +478,8 @@ export class GrokAdapter implements ProviderAdapter {
   /**
    * Success needs a clean expected exit and a final `result` with `ok` and no `provider_error`, `permission_denied`,
    * `sandbox_violation` or `rate_limit` event and no `tool_call` the tool-call guard flagged with a `violation` (fail
-   * closed, as Codex; a guard verdict ends the run in every run, bypass included, ADR-0039). The summary is the
-   * joined assistant text, last {@link MAX_SUMMARY_CHARS} characters.
+   * closed, as Codex; a guard verdict ends the run in every run, bypass included, ADR-0039), and no `tool_call` after
+   * the `end` line. The summary is the joined assistant text, last {@link MAX_SUMMARY_CHARS} characters.
    */
   extractResult(events: readonly NormalizedEvent[], exit: ExitInfo): RunResult {
     const unknownEventCount = events.filter((e) => e.kind === "unknown").length;
@@ -481,7 +487,11 @@ export class GrokAdapter implements ProviderAdapter {
     const nativeSessionId = bound?.kind === "session_bound" ? bound.nativeSessionId : undefined;
     const text = events.flatMap((e) => (e.kind === "message" ? [e.text] : [])).join("");
     const summary = text === "" ? undefined : text.slice(-MAX_SUMMARY_CHARS);
-    const final = events.findLast((e) => e.kind === "result");
+    const finalAt = events.findLastIndex((e) => e.kind === "result");
+    const final = events[finalAt];
+    // Proposed (fail closed): `end` was the last line of every recorded run ([LIVE] 4a, 4b), so a tool call after it
+    // means the run did not end on that result.
+    const trailingTool = finalAt >= 0 && events.slice(finalAt + 1).some((e) => e.kind === "tool_call");
     const base = {
       unknownEventCount,
       ...(nativeSessionId ? { nativeSessionId } : {}),
@@ -493,6 +503,7 @@ export class GrokAdapter implements ProviderAdapter {
       exit.expectedExitCodes.includes(exit.exitCode) &&
       final?.kind === "result" &&
       final.ok &&
+      !trailingTool &&
       !events.some(
         (e) =>
           e.kind === "provider_error" ||
@@ -509,7 +520,8 @@ export class GrokAdapter implements ProviderAdapter {
       timedOut: exit.outcome === "timeout",
       cancelled: exit.outcome === "cancelled",
     });
-    return { ok: false, failureCode: c.code, failureDetail: c.detail, ...base };
+    const detail = trailingTool && c.code === "OUTPUT_PROTOCOL_ERROR" ? "tool call after the end line" : c.detail;
+    return { ok: false, failureCode: c.code, failureDetail: detail, ...base };
   }
 
   /**
