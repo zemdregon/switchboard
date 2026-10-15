@@ -163,10 +163,19 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#369](https://github.com/zemdregon/switchboard/pull/369)) and Git declaration fixture tests on synthetic
   fixtures (README [OpenCode CLI](#opencode-cli-milestone-4), ROADMAP T4.52 to T4.57); live smoke, live malicious leg
   and `adapters validate` remain operator work (T4.58). T4.52, T4.54, T4.55 and T4.57 are Done against their Done-when
-  on synthetic fixtures; T4.53 and T4.56 stay Partial. Other M4 providers are
+  on synthetic fixtures; T4.53 and T4.56 stay Partial. Kimi Code has module, compile matrix, probe and registry entry
+  ([#429](https://github.com/zemdregon/switchboard/pull/429)), parser and resume (partial: T4.63, one scrubbed capture
+  plus synthetic fixtures, [#436](https://github.com/zemdregon/switchboard/pull/436)), auth preflight (partial: T4.64,
+  [#444](https://github.com/zemdregon/switchboard/pull/444)), a conformance suite (T4.65,
+  [#455](https://github.com/zemdregon/switchboard/pull/455)), a malicious-fixture leg (partial: T4.66,
+  [#459](https://github.com/zemdregon/switchboard/pull/459)) and a Git declaration (T4.67,
+  [#464](https://github.com/zemdregon/switchboard/pull/464)), all on synthetic fixtures (README
+  [Kimi Code CLI](#kimi-code-cli-milestone-4), ROADMAP T4.62 to T4.69); live smoke, live malicious leg and
+  `adapters validate` remain operator work (T4.68). Other M4 providers are
   still catching up on those
   legs. Manifests still admit no version until `switchboard adapters validate` passes a real CLI (operator tasks).
-  Outside an approved `privileged` bypass scope every profile is ineligible for the new providers. See
+  Outside an approved `privileged` bypass scope every profile is ineligible for the new providers, except that Kimi
+  Code also compiles a `privileged` scope without `bypass` through `kimi acp` (ADR-0049). See
   [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks).
 
 What works today: `doctor`, `runs list|show|cancel`, `approve`, `deny`, `gc`, `capacity`, `affinity list|reset`,
@@ -224,6 +233,7 @@ each provider's own CLI, and Switchboard asks that CLI whether it is logged in.
 | Antigravity | Launch **`agy`** without arguments (the adapter returns `AUTH_REQUIRED` naming `agy`; the CLI's stderr also says to launch without arguments to sign in) | Auth preflight runs `agy models` and keys on exit code and stderr (`<slug>\t<name>` lines at exit 0 vs `Error: Please sign in` at exit 1 on the 2026-10-14 live check, `agy` 1.3.4; [`docs/research/live-checks-2026-10-14-antigravity.md`](docs/research/live-checks-2026-10-14-antigravity.md)); check Google's Antigravity documentation for the login step |
 | Cursor CLI | `cursor-agent login` (the adapter returns `AUTH_REQUIRED` naming it) | Auth preflight runs `cursor-agent status --format json` and keys on `isAuthenticated` (exit 0 both logged in and logged out on the 2026-10-14 live check; [`docs/research/live-checks-2026-10-14-cursor.md`](docs/research/live-checks-2026-10-14-cursor.md)); check Cursor's documentation for the login step |
 | OpenCode | `opencode auth login` (the adapter returns `AUTH_REQUIRED` naming it) | Auth preflight runs `opencode auth list --format json --standalone` and treats any non-environment connection type as logged in (exit 0 in every state on the 2026-10-14 live check, `opencode v2.0.23`; [`docs/research/live-checks-2026-10-14-opencode.md`](docs/research/live-checks-2026-10-14-opencode.md)); check OpenCode's documentation for the login step |
+| Kimi Code | `kimi login` (the adapter returns `AUTH_REQUIRED` naming it; Switchboard never runs `kimi login` or `kimi acp --login`) | No status command exists; auth preflight runs `kimi acp` and sends ACP `initialize` then `session/new`, keying on the JSON-RPC replies only: a `sessionId` is logged in, error `-32000` (`Authentication required`) is logged out (Kimi Code CLI 2.1.1, rows 8 to 10 of [`docs/research/live-checks-2026-10-15-kimi.md`](docs/research/live-checks-2026-10-15-kimi.md), no model call); the probe through Switchboard is synthetic-only until T4.68; check Moonshot's Kimi Code documentation for the login step |
 
 Do not copy credential files between machines or users. Do not put API keys or tokens in the Switchboard config; it has
 no place for them and rejects unknown keys.
@@ -1673,6 +1683,121 @@ upgrades and exit 2/137 variations [#369](https://github.com/zemdregon/switchboa
 T4.57 are `Done` against their Done-when on synthetic fixtures; T4.53 and T4.56 remain `Partial` (see those rows).
 No end-to-end run through Switchboard against a logged-in `opencode` has been recorded yet (T4.58).
 
+## Kimi Code CLI (milestone 4)
+
+Config id `kimi-code`; routing and `list_capabilities` id `kimi`. Switchboard runs the **`kimi`** binary on one of two
+native surfaces, one process per run ([ADR-0049](docs/adr/0049-kimi-code-transport-and-bypass-class.md),
+[TDD §4.7](docs/design/TDD.md#47-kimi-code-m4-blocked-by-b-1); flags observed on Kimi Code CLI 2.1.1 in
+[`docs/research/live-checks-2026-10-15-kimi.md`](docs/research/live-checks-2026-10-15-kimi.md), which made no model
+call):
+
+- an approved `privileged` scope that sets `bypass` runs `kimi --prompt=<prompt> --output-format stream-json`
+  (subprocess JSONL). `kimi -p`/`--prompt` never asks before a tool call, so it is bypass-class and nothing is added to
+  restrict that run;
+- a `privileged` scope without `bypass` runs `kimi acp` (ACP over stdio through the shared ACP client,
+  [ADR-0036](docs/adr/0036-per-run-acp-stdio-client.md)): the prompt travels in the ACP plan, `session/new` carries an empty
+  `mcpServers`, the session mode is `plan` for read-only files and stays `default` otherwise, and the controller answers
+  every `session/request_permission`.
+
+The bypass prompt and a requested model are one argv word each (`--prompt=<prompt>`, `--model=<alias>`), so a leading
+`-` is never read as a flag; the prompt is visible in the process list. That the CLI accepts the `=` form is an
+Assumption until the operator capture (T4.68): if it does not, the run fails at argument parsing. Every compiled
+invocation has an empty environment with an allowlist of `PATH` and `HOME`; `KIMI_CODE_HOME`, which relocates Kimi's
+configuration, sessions and credentials, is never passed. The adapter never reads a Kimi credential or configuration
+file and never writes provider configuration (`src/adapters/kimi/adapter.ts`, `src/adapters/kimi/protocol.ts`).
+
+The compliance manifest range (`src/adapters/manifests/kimi.json`) admits no version until an operator runs
+`switchboard adapters validate kimi-code` and commits the manifest diff (ROADMAP T4.68). Until then `doctor` reports
+`ADAPTER_VERSION_UNVERIFIED` for Kimi Code, and none of the paths below runs against a real `kimi`.
+
+### Login
+
+See the [login table](#log-in-to-the-providers-natively) above. Switchboard never runs `kimi login` or
+`kimi acp --login`. Kimi Code has no auth status command, so the auth preflight (T4.64) runs `kimi acp` in a fresh
+private scratch directory and writes ACP `initialize` and `session/new` (that directory, no `mcpServers`) on stdin; it
+never sends `authenticate` or a prompt, so no model call is made. Only the JSON-RPC replies decide, whatever the exit
+code: a `session/new` result with a safe `sessionId` is `OK`, a `session/new` error `-32000` is `AUTH_REQUIRED` naming
+`kimi login` (live check rows 8 to 10), and anything else is `UNKNOWN` (fail closed). The reason carries codes only,
+never provider text. The probe session is persisted in Kimi's own data directory (live check row 12), so the preflight
+cache bounds it to once per window. The `doctor` probe runs `kimi --version` and `kimi --help`, which must list
+`--prompt`, `--output-format`, `--model`, `--session` and the `acp` subcommand.
+
+### Trust profiles
+
+Kimi Code has no sandbox or network control on either surface, and a trusted workspace loads the repository's
+`.kimi-code/mcp.json`, `local.toml` and agent files with no per-run flag to disable them, so the adapter compiles only
+the `privileged` cells below (Delegated, fail closed; T4.62).
+
+| Profile | Available now | Effect in this version |
+| --- | --- | --- |
+| `inspect-untrusted` | no | `PROFILE_UNSUPPORTED` (`list_capabilities` / `ELIGIBILITY_NONE`): no sandbox or network control, and repository configuration cannot be disabled |
+| `edit-untrusted` | no | As `inspect-untrusted` |
+| `test-sandboxed` | no | As `inspect-untrusted` |
+| `trusted-development` | no | As `inspect-untrusted` |
+| `privileged` | yes, two cells | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). Both cells need network `on` and repository configuration `enabled` (owner decision 26, Q-37); anything narrower is `CAPABILITY_MISSING`. **With `bypass`:** only worktree file access with shell `broad` compiles, as `kimi [--model=<alias>] --prompt=<prompt> --output-format stream-json` with nothing added; read-only files or a narrower shell are `CAPABILITY_MISSING` because Never Ask cannot be narrowed. **Without `bypass`:** `kimi acp`, mode `plan` for read-only files and `default` for worktree files, with the shell scope held by the controller's permission answers (`Unverified: T4.68`; if `default` mode turns out not to ask, this cell becomes `Ineligible` and Kimi Code is privileged-bypass only, ADR-0049 item 3). A bypass approval on any other profile, or a `bypass` scope without an approval, is `PROFILE_UNSUPPORTED`. |
+
+**Bypass-class flags (ADR-0049).** The registry entry (`src/adapters/providers.ts`) declares `--auto` and `--plan`
+(with the shared `--yolo`) and the short `-y` as bypass flags, and the ACP modes `auto` and `yolo` (as a mode id or the
+`mode` config option) as bypass modes, so the argv and ACP plan audits refuse them outside an approved bypass run. The
+adapter never emits them even inside one, and never emits `--continue`, `--agent`, `--agent-file`, `--skills-dir` or
+`--add-dir`. `-p`/`--prompt` are not declared to the shared argv audit, because Claude Code's `-p` and Antigravity's
+`--prompt` are ordinary flags in their runs; the Kimi compile gate alone keeps `--prompt` to the approved bypass cell
+(open question Q-95, ROADMAP T4.62).
+
+Resume (FR-SES-03) runs the stored native id through the same matrix, with the same refusals: `--session <id>` after
+the bypass cell's flags (nothing else added), or ACP `session/resume` for a restricted run. A binding of another
+provider, or an id that is not one safe argument (`^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`), is refused. Whether the
+resumed run keeps its model, and resume from another directory, are `Unverified: T4.68` (`resumeCwd` is
+`unverified`).
+
+### Parser evidence and gaps
+
+The `stream-json` parser (T4.63, [#436](https://github.com/zemdregon/switchboard/pull/436)) reads the records of the
+one scrubbed 2.1.1 capture (`src/adapters/kimi/fixtures/captured_success.jsonl`, from the T4.61 validation run): `meta`
+`system.version` is ignored, `assistant` text is a message, `tool` output is never an event, and `meta`
+`session.resume_hint` binds `session_id` and ends the turn. Success also needs exit 0, so exit 0 without the hint ends
+`OUTPUT_PROTOCOL_ERROR` and a non-zero exit `TOOL_FAILURE`. A second hint, a changed or unsafe session id, an
+`assistant` or `tool` record after the hint, and a tool call whose name or arguments cannot be read all end
+`OUTPUT_PROTOCOL_ERROR`. ACP messages use the shared mapping, with `-32000` as `AUTH_REQUIRED`. The `tool_calls` and
+`tool` field names, the error record and its `Authentication required` text in `-p`, the exit codes and the usage and
+model fields are **Assumptions** until the operator capture (T4.68), so T4.63 stays `Partial`; no model is recorded
+from a Kimi run (`reportedModelFlag` `not_accepted`). Tests: `src/adapters/kimi/parser-residual.test.ts` and the
+"kimi compile matrix (T4.62)", "kimi probe", "kimi registry entry and manifest gate (T4.62)" and "kimi auth preflight
+(T4.64, ...)" suites in `src/adapters/kimi/kimi.test.ts` ([#429](https://github.com/zemdregon/switchboard/pull/429),
+[#444](https://github.com/zemdregon/switchboard/pull/444)).
+
+The conformance suite (T4.65, [#455](https://github.com/zemdregon/switchboard/pull/455); "kimi conformance suite
+(synthetic recorded fixtures, FR-ADP-11, T4.65)") replays the synthetic fixtures in `src/adapters/kimi/fixtures/`
+(`kimiConformanceCases` in `cases.ts`) through the replay dialect `src/adapters/fixtures/replay-dialects/kimi.mjs`,
+which accepts only the approved bypass argv and exits 64 for any other word, a bypass-class or never-emitted flag, or
+`KIMI_CODE_HOME` in the environment. Only the bypass cell is a conformance case; the `kimi acp` permission round trip
+is T4.68.
+
+### Git and commits
+
+`list_capabilities` reports `gitWriteControl` **`none-documented`** (`remainingControls` `FR-GIT-03`, `FR-GIT-06`):
+Kimi Code CLI 2.1.1 has no per-run permission-rule flag, and deny rules live only in the user's `config.toml`, which
+Switchboard never edits and whose matching was not observed. Shell allowlist entries that could write Git make the run
+`Ineligible` (`PROFILE_UNSUPPORTED`, FR-GIT-01) ahead of every other check, including on an approved bypass scope.
+`commitChannel` is **`finalize-only`**: no tool is injected and ACP `mcpServers` stays empty until tool exposure is
+observed (T4.68). To publish work, set `finalize_commit` on the project's primary context
+([How commits reach Git](#how-commits-reach-git)). In an approved bypass run, Git-write denial rests on the ADR-0039
+tool-call guard, FR-GIT-03 and FR-GIT-06. Tests: `src/adapters/kimi/git-declaration.test.ts` ("kimi Git declaration
+(T4.67, FR-GIT-01, FR-GIT-02, FR-GIT-09)", [#464](https://github.com/zemdregon/switchboard/pull/464)), including one
+controller commit at FINALIZING for a replayed write run in a finalize-only project.
+
+CI's malicious-fixture leg (T4.66, [#459](https://github.com/zemdregon/switchboard/pull/459);
+`test/malicious/adapters/kimi.case.ts`, "adapter malicious leg: kimi" and "adapter malicious leg: kimi partial and
+unguarded streams" in `test/malicious/adapter-leg.test.ts`) replays the approved bypass cell only: 204 synthetic
+streams that chain a Git write with a credential read, an outside write or a network call end `PERMISSION_BLOCKED` at
+exits 0, 1, 2 and 137, four `unknown_events` streams end `OUTPUT_PROTOCOL_ERROR` or `TOOL_FAILURE`, and 36 partial
+streams end `OUTPUT_PROTOCOL_ERROR`. Because `kimi --prompt` never asks and prints no denial record, a credential read,
+outside write or network call **without** a Git write ends `ok` at exit 0 by design (owner decision 25: in a bypass run
+the guard enforces Git writes only), pinned as `kimiUnguardedStreams`. The live malicious leg is operator work (T4.68).
+
+T4.65 and T4.67 are `Done` against their Done-when on synthetic fixtures; T4.62 to T4.64 and T4.66 stay `Partial`.
+No end-to-end run through Switchboard against a logged-in `kimi` has been recorded yet (T4.68).
+
 ## Trust profiles
 
 A trust profile says what a delegated agent may do ([ADR-0004](docs/adr/0004-trust-profiles-no-bypass-flags.md)). Each
@@ -1858,6 +1983,13 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   compiled scope because repository configuration is `enabled` and `opencode.json` and `AGENTS.md` load with no approval
   (live check rows 10a, 10c). Closing the remaining gap needs operator capture of native refusal fields (T4.58) or an
   owner decision on classifying `status` `error`. See ROADMAP T4.56 for the full gap list.
+- **Kimi Code is validated on synthetic fixtures only (ROADMAP T4.62 to T4.68).** The parser rests on one scrubbed
+  `stream-json` capture of a successful run plus synthetic lines; tool-call and error record fields, exit codes, the
+  `--prompt=` one-word form, the auth probe's stdin timing and the `kimi acp` permission round trip in `default` mode
+  are Assumptions until the operator capture (T4.68). If `default` mode does not ask, the restricted ACP cell becomes
+  `Ineligible`. The malicious-fixture leg (T4.66) replays the approved bypass cell only: a credential read, outside
+  write or network call without a Git write ends `ok` there by design (owner decision 25), and the live malicious leg
+  is operator work. See [Kimi Code CLI](#kimi-code-cli-milestone-4).
 - **Event shapes are partly verified.** The 2026-10-13 live checks confirmed the Claude Code stream-json shapes
   (C-1 to C-11 and G-1) on 2.1.296 and the Codex flags (X-1 to X-3) on 0.162.1. Claude error strings (C-12), the
   Git-write attempt (C-G2) and Codex through Switchboard (X-5 to X-9) are still unverified, and another CLI version may
@@ -1867,8 +1999,8 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   compile them (see `list_capabilities`); a `privileged` `continue_task` only on the same provider (ROADMAP
   Q-61 is open).
 - `adapters validate` is implemented for every registered provider, but only Claude Code and Codex have a manifest
-  range on `main` today. Grok Build, Antigravity, Cursor, OpenCode and the other M4 adapters still need operator
-  captures before their manifests admit a version (ROADMAP T4.28, T4.38, T4.48, T4.58 and §6.8.2).
+  range on `main` today. Grok Build, Antigravity, Cursor, OpenCode, Kimi Code and the other M4 adapters still need
+  operator captures before their manifests admit a version (ROADMAP T4.28, T4.38, T4.48, T4.58, T4.68 and §6.8.2).
 - Routing (milestone 7) evaluates `minimum_capability` against operator-declared model capabilities in the model
   registry instead of refusing it (ROADMAP §6.12 T7.8, `src/routing/minimum-capability.test.ts`); undeclared models
   fail closed with `CAPABILITY_MISSING` (mapping to `ELIGIBILITY_NONE`), and admitted providers compile with the
