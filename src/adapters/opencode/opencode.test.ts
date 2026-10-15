@@ -771,6 +771,57 @@ describe("opencode parser and result (T4.53)", () => {
     });
   });
 
+  it("a trailing tool_use the parser cannot read is still a tool call after the final stop step", () => {
+    // No string `part.tool`: the line parses as `unknown` and must not leave the run clean (as Grok, T4.26).
+    for (const call of [
+      JSON.stringify({ type: "tool_use", timestamp: 1, sessionID: SID }),
+      line("tool_use", { type: "tool" }),
+      line("tool_use", { type: "tool", tool: 7, state: { input: { command: "ls" } } }),
+    ]) {
+      const label = call;
+      const { a, events } = parse([START, TEXT("ok"), FINISH("stop"), call]);
+      expect(events.at(-1), label).toEqual({ kind: "unknown", rawType: "tool_use" });
+      const r = a.extractResult(events, EXIT0);
+      expect(r, label).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", nativeSessionId: SID });
+      expect(r.ok === false && r.failureDetail, label).toBe("tool call after the final stop step");
+    }
+    // Other unknown lines, late text and an intermediate step after `stop` do not trip it.
+    const quiet = parse([
+      START,
+      TEXT("ok"),
+      FINISH("stop"),
+      TEXT("late", "prt_t2"),
+      line("synthetic_unknown_kind", {}),
+      FINISH("tool-calls", "prt_f2"),
+    ]);
+    expect(quiet.a.extractResult(quiet.events, EXIT0)).toMatchObject({ ok: true });
+    // The same unreadable line before `stop` leaves a clean run clean.
+    const before = parse([START, line("tool_use", { type: "tool" }), TEXT("ok"), FINISH("stop")]);
+    expect(before.a.extractResult(before.events, EXIT0)).toMatchObject({ ok: true });
+  });
+
+  it("a guard-flagged trailing tool_use ends PERMISSION_BLOCKED at exit 1, after an intermediate step and a second stop", () => {
+    const ctx = { cwd: "/work/tree", home: "/home/synthetic", bypass: true };
+    const guarded = (lines: string[]) => parse(lines).events.map((e) => guardEvent(e, ctx));
+    const PUSH = TOOL("shell", { command: "git push origin main" });
+    const EXIT1: ExitInfo = { ...EXIT0, exitCode: 1 };
+    // ADR-0039: the guard verdict precedes the unexpected exit and the trailing-tool protocol anomaly.
+    for (const [label, lines, exit] of [
+      ["exit 1", [START, TEXT("ok"), FINISH("stop"), PUSH], EXIT1],
+      ["intermediate step", [START, TEXT("ok"), FINISH("stop"), START, PUSH, FINISH("tool-calls", "prt_f2")], EXIT0],
+      ["second stop", [START, FINISH("stop"), START, FINISH("stop", "prt_f2"), PUSH], EXIT0],
+    ] as const) {
+      expect(adapter().extractResult(guarded([...lines]), exit), label).toMatchObject({
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+        nativeSessionId: SID,
+      });
+    }
+    // Without the Git write the same exit-1 trailing call is an unexpected exit, never success.
+    const plain = guarded([START, TEXT("ok"), FINISH("stop"), TOOL("shell", { command: "ls" })]);
+    expect(adapter().extractResult(plain, EXIT1)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+  });
+
   // Done-when cases whose native shape the T4.51 live check did NOT record (ROADMAP T4.53 stays Partial).
   // These pin today's observed outcomes; an operator capture (T4.51 extension) must change them.
   describe("cases with no recorded native shape (live check rows 7, 11, 14c)", () => {

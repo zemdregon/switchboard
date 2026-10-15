@@ -491,8 +491,9 @@ export class OpenCodeAdapter implements ProviderAdapter {
   /**
    * Success needs a clean expected exit, a `step_finish` with reason `stop` (Q-85) and no `provider_error`,
    * `permission_denied`, `sandbox_violation` or `rate_limit` event and no `tool_call` the tool-call guard flagged with a
-   * `violation` (fail closed; a guard verdict ends the run in every run, bypass included, ADR-0039), and no `tool_call`
-   * after the last `stop`. The summary is the joined assistant text, last {@link MAX_SUMMARY_CHARS} characters.
+   * `violation` (fail closed; a guard verdict ends the run in every run, bypass included, ADR-0039), and no `tool_use`
+   * line, read or not, after the last `stop`. The summary is the joined assistant text, last
+   * {@link MAX_SUMMARY_CHARS} characters.
    */
   extractResult(events: readonly NormalizedEvent[], exit: ExitInfo): RunResult {
     const unknownEventCount = events.filter((e) => e.kind === "unknown").length;
@@ -502,8 +503,13 @@ export class OpenCodeAdapter implements ProviderAdapter {
     const summary = text === "" ? undefined : text.slice(-MAX_SUMMARY_CHARS);
     const finalAt = events.findLastIndex((e) => e.kind === "result");
     const final = events[finalAt];
-    // Proposed (fail closed, Q-85): a tool call after the last `stop` step means the run did not end on that step.
-    const trailingTool = finalAt >= 0 && events.slice(finalAt + 1).some((e) => e.kind === "tool_call");
+    // Proposed (fail closed, Q-85): a tool call after the last `stop` step means the run did not end on that step. A
+    // `tool_use` line the parser could not read (no string `part.tool`) counts too: it parses as `unknown`, as Grok.
+    const trailingTool =
+      finalAt >= 0 &&
+      events
+        .slice(finalAt + 1)
+        .some((e) => e.kind === "tool_call" || (e.kind === "unknown" && e.rawType === EVENT.toolUse));
     const base = {
       unknownEventCount,
       ...(nativeSessionId ? { nativeSessionId } : {}),
