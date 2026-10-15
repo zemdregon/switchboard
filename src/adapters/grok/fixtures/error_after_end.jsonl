@@ -1,0 +1,3 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: T4.23 recorded error/end shapes reordered to prove a late provider error invalidates end_turn at exit 0; not a live sequence.","exit":0}}
+{"type":"end","stopReason":"end_turn","sessionId":"00000000-0000-4000-8000-000000000001"}
+{"type":"error","message":"Not signed in. SYNTHETIC late error."}
