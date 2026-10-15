@@ -52,8 +52,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   record-only routing classification (T11.11). Two tasks are wired into production `serve` run paths: the commit-message
   task (the optional `message` on the `commit` tool) and routing classification (`serve` admission, continuation and
   quota failover, with heuristic fallback when inner is off or unavailable). Handoff condensation, PR drafting,
-  verification-summary, run-title and a live backend are not. See
-  [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
+  verification-summary, run-title and a live backend are not. T11.5 usage-surface pins merged
+  [#362](https://github.com/zemdregon/switchboard/pull/362) (suspended-task and project-off denials, re-ask deadline
+  counts, shared-subscription label routing, whole `inner_shared_subscription` doctor checks, `enabled: false` with the
+  flag set, capacity collector `source` exclusion). See [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
 - **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.7 are done on fakes: the spike, `rag`
   configuration and per-project store, the scanner through chunker, the embedding port (fake and `http` backends
   behind the locality gates), incremental background indexing in `serve`, `switchboard index status|rebuild|clear`
@@ -108,8 +110,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#283](https://github.com/zemdregon/switchboard/pull/283),
   [#287](https://github.com/zemdregon/switchboard/pull/287),
   [#299](https://github.com/zemdregon/switchboard/pull/299),
-  [#324](https://github.com/zemdregon/switchboard/pull/324), residual ordering and resume/compile parity
-  [#333](https://github.com/zemdregon/switchboard/pull/333)), auth-preflight, a conformance suite on synthetic
+  [#324](https://github.com/zemdregon/switchboard/pull/324), residual ordering and resume/compile-parity pins
+  [#333](https://github.com/zemdregon/switchboard/pull/333), parser residual branches and `idless_guard.jsonl`
+  [#360](https://github.com/zemdregon/switchboard/pull/360)), auth-preflight, a conformance suite on synthetic
   fixtures (T4.45; replay dialect hardening, 59 compile/env refusal checks, and fixtures including
   `denied_after_write`, `permission_denied_perm`, `resume_unknown_id`, `unknown_event`, `unsafe_id_after_bound` and
   `git_write_guard_args`,
@@ -692,9 +695,16 @@ authenticated Streamable HTTP),
 contracts, `inner test` and accepted, rejected and unavailable calls, with and without a shared subscription
 (`src/inner/usage-surfaces.test.ts`); and the estimator reads `provider_reported` rows only, so the projection is
 unchanged whether the shared subscription names the provider under test, another provider or none
-(`src/capacity/capacity.test.ts`). Those tests call the injected contracts directly; the production `commit` tool channel
-and the MCP admission harness that call them are not themselves driven with inner usage checks. No hosted or live
-backend has been exercised: every test uses a scripted fake or a local fake server. The per-task test and module
+(`src/capacity/capacity.test.ts`). Merged [#362](https://github.com/zemdregon/switchboard/pull/362) additionally pins
+T11.5 surfaces on fakes: a suspended task (T11.6) and a project set to `off` deny without a request and write no
+observation; a re-ask that hits the deadline keeps the first attempt's token counts; the shared-subscription label
+follows `shares_subscription_with` (not the run's provider); `doctor` asserts the full `inner_shared_subscription`
+check in human and `--json` output before and after `inner test`; with `enabled: false` and the flag set, `inner test`
+sends nothing and capacity and the whole `doctor --json` document stay byte-identical; and the capacity collector
+ignores `inner_agent` rows by `source` alone even when metric keys resemble provider usage (`usage.test.ts`,
+`usage-surfaces.test.ts`, `capacity.test.ts`). Those tests call the injected contracts directly; the production `commit`
+tool channel and the MCP admission harness that call them are not themselves driven with inner usage checks. No hosted
+or live backend has been exercised: every test uses a scripted fake or a local fake server. The per-task test and module
 evidence behind these statements, and the list of what is not built, is in
 [HLD §2.5](docs/design/HLD.md#25-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes),
 [SDD §4.3](docs/design/SDD.md#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) and the
@@ -1157,8 +1167,13 @@ lower-priority events arrive first ([#333](https://github.com/zemdregon/switchbo
 (`apiKeySource` other than `login`) and protocol (mid-run session-id change) errors stay failures in either order
 around `result`; the first `provider_error` wins, and a failed `result` never outranks `AUTH_REQUIRED`. Opaque
 unknown envelopes before or after `result` cannot bind a session or smuggle status, usage, model, vendor or a
-credential source ([#333](https://github.com/zemdregon/switchboard/pull/333)). Closing the remaining gaps needs
-operator captures of a rate-limited or quota-stopped run and of any native backing-vendor field (ROADMAP T4.48).
+credential source ([#333](https://github.com/zemdregon/switchboard/pull/333)). Parser residual pins in
+`src/adapters/cursor/parser-residual.test.ts` (line counting, empty-string fallbacks, `apiKeySource` formatting,
+tool-parameter fall-through, id-less `tool_call` correlation, provider_error categories, `resumeArgs` refusals) and
+supervisor replay of `idless_guard.jsonl` (id-less Git write under `success` at exit 0 → `PERMISSION_BLOCKED`) are on
+`main` ([#360](https://github.com/zemdregon/switchboard/pull/360); ROADMAP T4.43, [TDD §4.5.5](docs/design/TDD.md#455-cursor-parser-implementation-evidence-m4-t443)).
+Closing the remaining gaps needs operator captures of a rate-limited or quota-stopped run and of any native
+backing-vendor field (ROADMAP T4.48).
 T4.43 stays `Partial` on that operator capture; T4.45 to T4.47 are `Done` against their Done-when on synthetic
 fixtures.
 
@@ -1186,9 +1201,11 @@ Fixture evidence on `main`: `src/adapters/cursor/fixtures/` (T4.43 Done-when and
 [#309](https://github.com/zemdregon/switchboard/pull/309), remaining T4.45 fixtures including
 `git_write_guard_args.jsonl` from [#315](https://github.com/zemdregon/switchboard/pull/315), and stream-order,
 `classifyFailure`-precedence and recorded-field pins with `resume_failure.jsonl`, `error_after_result.jsonl` and
-`malformed_after_result.jsonl` from [#324](https://github.com/zemdregon/switchboard/pull/324)); residual ordering and
-resume/compile-parity pins in `src/adapters/cursor/cursor.test.ts` from
-[#333](https://github.com/zemdregon/switchboard/pull/333); `src/adapters/cursor/cursor.test.ts` ("cursor compile matrix
+`malformed_after_result.jsonl` from [#324](https://github.com/zemdregon/switchboard/pull/324), `idless_guard.jsonl` from
+[#360](https://github.com/zemdregon/switchboard/pull/360)); residual ordering and resume/compile-parity pins in
+`src/adapters/cursor/cursor.test.ts` from [#333](https://github.com/zemdregon/switchboard/pull/333); parser residual
+branches in `src/adapters/cursor/parser-residual.test.ts` from
+[#360](https://github.com/zemdregon/switchboard/pull/360); `src/adapters/cursor/cursor.test.ts` ("cursor compile matrix
 (T4.42)", "cursor bypass-class declarations (ADR-0035, ADR-0037)", "cursor probe and auth preflight (T4.42, T4.44)",
 "cursor registry entry and manifest gate (T4.42)", "cursor parser and result (T4.43)", "cursor parser hardening (T4.43,
 synthetic shapes)", "cases with no recorded native shape (live check rows 4, 9, 14)" fixture replay, "cursor conformance
