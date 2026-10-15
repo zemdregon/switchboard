@@ -16,7 +16,8 @@
  * an unclipped command, a caller id that collides with a generated call key, usage key placement and fractional counts,
  * and `extractResult` honouring the compiled expected exit codes.
  * Sixth pass: a non-object `input` that does not shadow `parameters` (replayed end to end), a shell command carried
- * only in a clipped target (pinned gap), empty `tool` and `id` values that shadow their fallback keys (pinned gaps), a
+ * only in a target (gap closed 2026-10-15: a shell target is never clipped and a nameless target-only update on a shell
+ * call stays `shell`), empty `tool` and `id` values that shadow their fallback keys (pinned gaps), a
  * target dropped beside a command, duplicate JSON keys, exact-case line types, empty text and a byte-order mark.
  */
 import { mkdtempSync, rmSync } from "node:fs";
@@ -95,14 +96,15 @@ describe("grok parser residuals (T4.23, synthetic lines; parser unchanged)", () 
     expect(state.unknownEvents).toBe(0);
   });
 
-  it("a target added to a call already reported with a command is reported as a separate `read` event", () => {
+  it("a target added to a call already reported with a command is reported again, guarded as that shell call's command", () => {
     const { events } = parse([
       line({ type: "tool_call", id: "t1", tool: "edit_file", input: { command: "cat x" } }),
       line({ type: "tool_call_update", id: "t1", tool: "edit_file", input: { path: ".git/config" } }),
     ]);
     expect(events).toEqual([
       { kind: "tool_call", tool: "shell", name: "edit_file", command: "cat x" },
-      { kind: "tool_call", tool: "read", name: "edit_file", target: ".git/config" },
+      // The call is a shell call, so a target-only update is its command line for the guard (2026-10-15).
+      { kind: "tool_call", tool: "shell", name: "edit_file", command: ".git/config", target: ".git/config" },
     ]);
   });
 
@@ -213,7 +215,13 @@ describe("grok parser residuals, second pass (T4.23, synthetic lines; parser unc
 
   it("the run_terminal_command name makes a target-only call a `shell` event that carries the target", () => {
     const { events } = parse([line({ type: "tool_call", name: "run_terminal_command", input: { path: "/w/a" } })]);
-    expect(events).toEqual([{ kind: "tool_call", tool: "shell", name: "run_terminal_command", target: "/w/a" }]);
+    // The target is also the guard's transient command, which guardEvent strips before the event is kept.
+    expect(events).toEqual([
+      { kind: "tool_call", tool: "shell", name: "run_terminal_command", command: "/w/a", target: "/w/a" },
+    ]);
+    expect(events.map((e) => guardEvent(e, { cwd: "/w", bypass: true }))).toEqual([
+      { kind: "tool_call", tool: "shell", name: "run_terminal_command", target: "/w/a" },
+    ]);
   });
 
   it("an id-less tool_call_update after an id'd tool_call does not correlate to it: it opens call_1 and reports again", () => {
@@ -738,7 +746,7 @@ describe("grok parser residuals, fifth pass: post-end tool lines, prototype valu
   });
 });
 
-describe("grok parser residuals, sixth pass: parameter shapes, shadowing keys and line framing (T4.23, synthetic lines; parser unchanged)", () => {
+describe("grok parser residuals, sixth pass: parameter shapes, shadowing keys and line framing (T4.23, synthetic lines; target-only shell gap closed in the parser)", () => {
   const ctx = { cwd: "/w", bypass: true };
   const guarded = (lines: (string | object)[]) => parse(lines).events.map((e) => guardEvent(e, ctx));
 
@@ -772,22 +780,58 @@ describe("grok parser residuals, sixth pass: parameter shapes, shadowing keys an
     expect(report.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", unknownEventCount: 0 });
   });
 
-  it("pins the gap: a shell command carried only in a target is guarded as the clipped target, so a late Git write is lost", () => {
+  it("a shell command carried only in a target reaches the guard whole, so a Git write past the 512-character clip is blocked at exit 0 and 1", () => {
     const asTarget = (path: string) => line({ type: "tool_call", name: "run_terminal_command", input: { path } });
-    // The guard reads a shell call's `target` when it has no `command`, so a short Git write is still blocked.
+    // The guard reads a shell call's `target` when it has no `command`, so a short Git write is blocked.
     expect(adapter().extractResult(guarded([asTarget("git push origin main"), line(END)]), EXIT_OK)).toMatchObject({
       ok: false,
       failureCode: "PERMISSION_BLOCKED",
     });
-    // The target is clipped to 512 characters (a command never is), so a Git write past the clip never reaches it.
+    // Closed gap (#449, #451): the guard read the clipped target, so a Git write past the clip was lost.
     const long = `echo ${"x".repeat(600)} && git push origin main`;
     const [ev] = parse([asTarget(long)]).events;
-    expect(ev).toMatchObject({ kind: "tool_call", tool: "shell", target: `${long.slice(0, 512)}…` });
-    expect(adapter().extractResult(guarded([asTarget(long), line(END)]), EXIT_OK)).toEqual({
-      ok: true,
-      unknownEventCount: 0,
-      nativeSessionId: SID,
+    // The guard gets the whole line as the transient command; the kept target is still clipped.
+    expect(ev).toEqual({
+      kind: "tool_call",
+      tool: "shell",
+      name: "run_terminal_command",
+      command: long,
+      target: `${long.slice(0, 512)}…`,
     });
+    for (const exitCode of [0, 1]) {
+      expect(adapter().extractResult(guarded([asTarget(long), line(END)]), { ...EXIT_OK, exitCode })).toMatchObject({
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+      });
+    }
+    // A file tool's target is still clipped.
+    const read = parse([line({ type: "tool_call", tool: "read_file", input: { path: long } })]).events[0];
+    expect(read).toMatchObject({ tool: "read", target: `${long.slice(0, 512)}…` });
+  });
+
+  it("a target-only update without a name on a shell call stays `shell`, so its Git write is blocked at exit 0 and 1", () => {
+    const lines = [
+      line({ type: "tool_call", id: "c1", name: "run_terminal_command", input: { path: "." } }),
+      line({ type: "tool_call_update", id: "c1", input: { path: `echo ${"x".repeat(600)} && git push origin main` } }),
+      line(END),
+    ];
+    // Before the fix the update was a `read` event, so the guard checked the command line as a path only.
+    expect(parse(lines).events[1]).toMatchObject({ kind: "tool_call", tool: "shell" });
+    for (const exitCode of [0, 1]) {
+      expect(adapter().extractResult(guarded(lines), { ...EXIT_OK, exitCode })).toMatchObject({
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+      });
+    }
+    // Outside bypass the provider-state check still sees a path in that update, read as a command word.
+    const cred = parse([
+      line({ type: "tool_call", id: "c1", name: "run_terminal_command", input: { path: "." } }),
+      line({ type: "tool_call_update", id: "c1", input: { path: "~/.grok/auth.json" } }),
+    ]).events.map((e) => guardEvent(e, { cwd: "/w", home: "/h", bypass: false }));
+    expect(cred[1]).toMatchObject({ tool: "shell", violation: { kind: "provider_state" } });
+    // Positive control: without the shell opener the same update is a file target, read but not a command.
+    const fileOnly = parse([line({ type: "tool_call_update", id: "c2", input: { path: "/w/a" } })]).events;
+    expect(fileOnly).toEqual([{ kind: "tool_call", tool: "read", name: "run_terminal_command", target: "/w/a" }]);
   });
 
   it("pins the gap: an empty `tool` shadows `name` and `tool_name`, so a named call is mislabelled or unknown", () => {
@@ -827,7 +871,7 @@ describe("grok parser residuals, sixth pass: parameter shapes, shadowing keys an
     // The dedup key is the command when there is one, so the second line (same command, new path) emits nothing.
     expect(events).toEqual([
       shell("cat a"),
-      { kind: "tool_call", tool: "read", name: "run_terminal_command", target: "/w/b" },
+      { kind: "tool_call", tool: "shell", name: "run_terminal_command", command: "/w/b", target: "/w/b" },
     ]);
   });
 
