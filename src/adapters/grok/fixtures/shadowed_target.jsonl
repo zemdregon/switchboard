@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.23 residual, eighth pass). A run_terminal_command call whose input.path is a harmless command and whose top-level target is a Git write. The tool-call field names are Assumptions (no tool_call shape was recorded live). Pins the gap: input.path outranks the top-level target, so only `ls` reaches the ADR-0039 guard and the run succeeds at exit 0.","exit":0}}
+{"type":"text","data":"Listed the files."}
+{"type":"tool_call","id":"t1","name":"run_terminal_command","input":{"path":"ls"},"target":"git push origin main"}
+{"type":"end","stopReason":"end_turn","sessionId":"00000000-0000-4000-8000-000000000001","requestId":"req_synthetic_1","usage":{"input_tokens":8,"output_tokens":2,"total_tokens":10},"num_turns":1}

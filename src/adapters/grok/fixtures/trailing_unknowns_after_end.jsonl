@@ -1,0 +1,10 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.23 residual, eighth pass). A clean end_turn result at exit 0 followed by lines the parser cannot read: an unrecorded event type, a text line without data, a JSON array, and an end line without a string stopReason that names another session. Each is a counted unknown event; none is a tool_call line, so the trailing-tool check does not fire. Pins the gap: the stopReason-less end is not counted as a second end and its sessionId neither binds nor conflicts, so the run succeeds with unknownEventCount 4. The thought, usage and available_commands lines emit nothing.","exit":0}}
+{"type":"text","data":"Done."}
+{"type":"end","stopReason":"end_turn","sessionId":"00000000-0000-4000-8000-000000000001","requestId":"req_synthetic_1","usage":{"input_tokens":11,"output_tokens":2,"total_tokens":13},"num_turns":1}
+{"type":"synthetic_future_event","data":"x"}
+{"type":"text"}
+[]
+{"type":"end","stopReason":null,"sessionId":"00000000-0000-4000-8000-000000000099","usage":{"input_tokens":500}}
+{"type":"thought","data":"after the end"}
+{"type":"usage","signature":"synthetic"}
+{"type":"available_commands"}
