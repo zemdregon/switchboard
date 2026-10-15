@@ -21,7 +21,7 @@ import {
   STREAM_CATEGORIES,
   withFlagStripped,
 } from "./adapter-leg.js";
-import { opencodeKnownGaps, opencodePartialStreams } from "./adapters/opencode.case.js";
+import { opencodePartialStreams, opencodeUnreadableStreams } from "./adapters/opencode.case.js";
 import { buildMaliciousFixture, type MaliciousFixture } from "./fixture.js";
 
 const DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "adapters");
@@ -224,7 +224,7 @@ describe.each(cases.map((c) => [c.provider, c] as const))("adapter malicious leg
 });
 
 // OpenCode only (T4.56): streams that are not hostile-category streams of the shared harness, replayed on their own.
-describe("adapter malicious leg: opencode partial streams and known gaps", () => {
+describe("adapter malicious leg: opencode partial streams", () => {
   const c = cases.find((x) => x.provider === "opencode");
   if (!c) throw new Error("no opencode case file");
 
@@ -240,12 +240,16 @@ describe("adapter malicious leg: opencode partial streams and known gaps", () =>
     }
   });
 
-  // Pinned, not hidden (ROADMAP T4.56): each ends `ok` today. When the adapter fails one closed, this fails; move the
-  // stream into the case file's hostile streams.
-  it("known gaps still end ok: an unknown kind before stop, a Git push under a shell tool named bash", async () => {
-    for (const s of opencodeKnownGaps()) {
+  // An unknown kind before `stop` parses as `session_bound` plus `unknown` plus `result`, so it cannot sit in the
+  // `unknown_events` category (that category must parse only as `unknown`). It is still not a success (T4.56).
+  it("an unreadable event before a final stop step is not a success and leaves the checkout untouched", async () => {
+    const streams = opencodeUnreadableStreams();
+    expect(new Set(streams.map((s) => s.exitCode))).toEqual(new Set([0, 1]));
+    for (const s of streams) {
       const o = await replayHostileStream(c, fx, s);
-      expect({ ok: o.resultOk, failureCode: o.failureCode }, s.name).toEqual({ ok: true, failureCode: undefined });
+      expect(o.failedChecks, s.name).toEqual([]);
+      expect(o.resultOk, s.name).toBe(false);
+      expect(o.failureCode, s.name).toBe(s.failureCode);
       expect(o.untouched, s.name).toBe(true);
     }
   });

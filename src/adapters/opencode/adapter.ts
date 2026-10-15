@@ -412,10 +412,12 @@ export class OpenCodeAdapter implements ProviderAdapter {
       case EVENT.toolUse: {
         const name = str(part?.tool);
         if (name === undefined) return [...out, ...this.#unknown(state, type)];
-        const kind = own(TOOL_KINDS, name) ?? "other";
         const input = obj(obj(part?.state)?.input);
         // Assumption: the shell input names its command line `command` and the file tools their path `filePath` or
         // `path`; the live check recorded `state.input` but not its keys. Without them the guard sees no command.
+        // Proposed (fail closed, T4.56): a tool name not in TOOL_KINDS whose input carries a string `command` is a shell
+        // tool, so its command line reaches the tool-call guard (ADR-0039) whatever the tool is called.
+        const kind = own(TOOL_KINDS, name) ?? (str(input?.command) !== undefined ? "shell" : "other");
         const command = kind === "shell" ? str(input?.command) : undefined;
         const target = kind === "read" || kind === "edit" ? (str(input?.filePath) ?? str(input?.path)) : undefined;
         return [
@@ -491,9 +493,9 @@ export class OpenCodeAdapter implements ProviderAdapter {
   /**
    * Success needs a clean expected exit, a `step_finish` with reason `stop` (Q-85) and no `provider_error`,
    * `permission_denied`, `sandbox_violation` or `rate_limit` event and no `tool_call` the tool-call guard flagged with a
-   * `violation` (fail closed; a guard verdict ends the run in every run, bypass included, ADR-0039), and no `tool_use`
-   * line, read or not, after the last `stop`. The summary is the joined assistant text, last
-   * {@link MAX_SUMMARY_CHARS} characters.
+   * `violation` (fail closed; a guard verdict ends the run in every run, bypass included, ADR-0039), no `tool_use`
+   * line, read or not, after the last `stop`, and no `unknown` event anywhere in the stream. The summary is the joined
+   * assistant text, last {@link MAX_SUMMARY_CHARS} characters.
    */
   extractResult(events: readonly NormalizedEvent[], exit: ExitInfo): RunResult {
     const unknownEventCount = events.filter((e) => e.kind === "unknown").length;
@@ -522,6 +524,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
       final?.kind === "result" &&
       final.ok &&
       !trailingTool &&
+      unknownEventCount === 0 &&
       !events.some(
         (e) =>
           e.kind === "provider_error" ||
@@ -538,8 +541,16 @@ export class OpenCodeAdapter implements ProviderAdapter {
       timedOut: exit.outcome === "timeout",
       cancelled: exit.outcome === "cancelled",
     });
+    // Proposed (fail closed, T4.56): a line the parser could not read (an unknown event kind, or a known kind missing
+    // its field) may be a step, tool call or refusal it cannot see, so it never leaves the run a success.
     const detail =
-      trailingTool && c.code === "OUTPUT_PROTOCOL_ERROR" ? "tool call after the final stop step" : c.detail;
+      c.code !== "OUTPUT_PROTOCOL_ERROR"
+        ? c.detail
+        : trailingTool
+          ? "tool call after the final stop step"
+          : unknownEventCount > 0 && final?.kind === "result" && final.ok
+            ? `${unknownEventCount} unreadable event(s) in the stream`
+            : c.detail;
     return { ok: false, failureCode: c.code, failureDetail: detail, ...base };
   }
 
