@@ -221,6 +221,28 @@ function routeFeaturesOf(runId: string): { classifier?: string; task_kind?: { so
   }
 }
 
+/** T11.11/T11.14 residual: the daemon's stored route decisions and `inner_call` audit rows (read-only). */
+function routingLedger(): {
+  decisions: { run_id: string; selected_provider: string | null; features_json: string; candidates_json: string }[];
+  innerCalls: { task: string; run_id: string | null; meta_session_id: string | null; outcome: string }[];
+} {
+  const db = new Database(path.join(dataDir, LEDGER_FILE_NAME), { readonly: true, fileMustExist: true });
+  try {
+    return {
+      decisions: db
+        .prepare(
+          "SELECT run_id, selected_provider, features_json, candidates_json FROM route_decision ORDER BY created_at, id",
+        )
+        .all() as ReturnType<typeof routingLedger>["decisions"],
+      innerCalls: db
+        .prepare("SELECT task, run_id, meta_session_id, outcome FROM inner_call ORDER BY created_at, id")
+        .all() as ReturnType<typeof routingLedger>["innerCalls"],
+    };
+  } finally {
+    db.close();
+  }
+}
+
 const INNER_ROUTE_VALUES = {
   context_volume: "large",
   autonomy: "high",
@@ -497,6 +519,112 @@ describeLinuxVerified("serve over stdio (process level)", () => {
     expect(inner.hits()).toBe(0);
     recordedGroup(d.body.run_id);
   }, 40_000);
+
+  it("T11.11/T11.14: serve replay, explain_route and a later continuation with the backend down never re-classify or change routing", async () => {
+    // The backend answers the first two classifications and fails every later one.
+    let served = 0;
+    const inner = await listenInnerHttp((res) => {
+      served += 1;
+      if (served <= 2) return res.end(innerCompletion(JSON.stringify(INNER_ROUTE_VALUES)));
+      res.statusCode = 500;
+      res.end("inner backend down");
+    });
+    writeInnerServeConfig({
+      enabled: true,
+      backend: { kind: "http", base_url: `http://127.0.0.1:${inner.port}`, model: "configured-model" },
+      tasks: { route_features: { enabled: true, timeout_ms: 2000 } },
+    });
+    const c = await connect();
+    const request = {
+      objective: "add a feature",
+      workspace_path: repo,
+      trust_profile: "edit-untrusted",
+      routing: { provider_preference: "fake", require_provider: true },
+      idempotency_key: "idem-serve-t1111",
+    };
+    const d = await call(c.client, "delegate_task", request);
+    expect(d.isError, JSON.stringify(d.body)).toBe(false);
+    expect(d.body).not.toHaveProperty("replayed");
+    const first = await pollStatus(c.client, d.body.run_id, TERMINAL);
+    expect(first.status, c.stderr()).toBe("SUCCEEDED");
+    expect(first.provider.adapter).toBe("fake");
+    const cont = await call(c.client, "continue_task", {
+      meta_session_id: d.body.meta_session_id,
+      instruction: "keep going",
+    });
+    expect(cont.isError, JSON.stringify(cont.body)).toBe(false);
+    const continued = await pollStatus(c.client, cont.body.run_id, TERMINAL);
+    expect(continued.status, c.stderr()).toBe("SUCCEEDED");
+    expect(continued.provider.adapter).toBe("fake");
+    expect(inner.hits()).toBe(2);
+    const stored = routingLedger();
+    expect(stored.decisions.map((row) => row.run_id)).toEqual([d.body.run_id, cont.body.run_id]);
+    for (const row of stored.decisions) {
+      expect(row.selected_provider).toBe("fake");
+      const features = JSON.parse(row.features_json);
+      expect(features.required_provider).toBe("fake");
+      expect(features.route_features).toMatchObject({
+        classifier: "route_features.v1",
+        task_kind: { value: "investigation", source: "inner", model_id: "served-model" },
+      });
+    }
+    expect(stored.innerCalls).toEqual([
+      { task: "route_features", run_id: null, meta_session_id: null, outcome: "accepted" },
+      { task: "route_features", run_id: null, meta_session_id: d.body.meta_session_id, outcome: "accepted" },
+    ]);
+
+    // Replay with the same idempotency key and explain_route answer from the ledger: no backend hit, no new row.
+    const replayed = await call(c.client, "delegate_task", request);
+    expect(replayed.isError, JSON.stringify(replayed.body)).toBe(false);
+    expect(replayed.body).toMatchObject({ replayed: true, run_id: d.body.run_id });
+    for (const runId of [d.body.run_id, cont.body.run_id]) {
+      const explained = await call(c.client, "explain_route", { run_id: runId });
+      expect(explained.isError, JSON.stringify(explained.body)).toBe(false);
+      expect(explained.body.features.route_features).toEqual(
+        JSON.parse(stored.decisions.find((row) => row.run_id === runId)?.features_json ?? "{}").route_features,
+      );
+    }
+    expect(inner.hits()).toBe(2);
+    expect(routingLedger()).toEqual(stored);
+
+    // A later continuation finds the backend down: the heuristic is stored, the audit row says so, and the run still
+    // resumes on the same provider with the same eligibility verdicts.
+    const later = await call(c.client, "continue_task", {
+      meta_session_id: d.body.meta_session_id,
+      instruction: "keep going",
+    });
+    expect(later.isError, JSON.stringify(later.body)).toBe(false);
+    const resumed = await pollStatus(c.client, later.body.run_id, TERMINAL);
+    expect(resumed.status, c.stderr()).toBe("SUCCEEDED");
+    expect(resumed.provider.adapter).toBe("fake");
+    expect(inner.hits()).toBe(3);
+    const after = routingLedger();
+    expect(after.decisions.slice(0, 2)).toEqual(stored.decisions);
+    const laterRow = after.decisions[2];
+    expect(laterRow?.run_id).toBe(later.body.run_id);
+    expect(laterRow?.selected_provider).toBe("fake");
+    expect(JSON.parse(laterRow?.features_json ?? "{}").route_features).toMatchObject({
+      classifier: "heuristic.v1",
+      task_kind: { value: "other", source: "heuristic" },
+    });
+    const verdicts = (row: { candidates_json: string } | undefined) =>
+      (JSON.parse(row?.candidates_json ?? "[]") as { provider: string; eligible: boolean }[]).map((x) => [
+        x.provider,
+        x.eligible,
+      ]);
+    expect(verdicts(laterRow)).toEqual(verdicts(stored.decisions[1]));
+    expect(after.innerCalls.slice(0, 2)).toEqual(stored.innerCalls);
+    expect(after.innerCalls[2]).toEqual({
+      task: "route_features",
+      run_id: null,
+      meta_session_id: d.body.meta_session_id,
+      outcome: "fallback_unavailable",
+    });
+    expect(after.innerCalls).toHaveLength(3);
+    recordedGroup(d.body.run_id);
+    recordedGroup(cont.body.run_id);
+    recordedGroup(later.body.run_id);
+  }, 90_000);
 
   it("T12.4: a retrieval build hung on its embedding backend never blocks admission or shutdown (FR-RAG-11)", async () => {
     // A loopback embedding endpoint that accepts each request and never answers.
