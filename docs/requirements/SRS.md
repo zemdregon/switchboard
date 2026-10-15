@@ -412,7 +412,7 @@ FR-QUE-03 reads CI through the operator's logged-in `gh` CLI (owner decision 54)
 | --- | --- | --- | --- | --- | --- |
 | FR-QUE-01 | Each project shall have a durable queue of work items with priority and dependencies. Each item is admitted exactly as a `delegate_task` from the client that created it, under that client's ceiling; a queued item is never admitted under another client's ceiling. | Should | CAP-16, BO-1, BO-4 | T | M15 |
 | FR-QUE-02 | Schedules (cron-style) shall be off by default, shall be admitted exactly as FR-QUE-01 items, and the operator shall be able to list and disable them. | Should | CAP-16, BO-3 | T | M15 |
-| FR-QUE-03 | A trigger shall admit work when CI fails on a branch the project published (the narrowed CAP-14 of owner decision 51). The event text is untrusted. CI status is read by running the operator's logged-in `gh` CLI as an external tool; the controller handles no credential (owner decision 54, ADR-0003). | Should | CAP-16, owner decisions 51 and 54 | T, I | M15 |
+| FR-QUE-03 | A trigger shall admit work when CI fails on a branch the project published (the narrowed CAP-14 of owner decision 51). The event text is untrusted. CI status is read by running the operator's logged-in `gh` CLI as an external tool; the controller handles no credential (owner decision 54, ADR-0003, [ADR-0050](../adr/0050-ci-status-via-operator-gh-cli.md)). | Should | CAP-16, owner decisions 51 and 54 | T, I | M15 |
 
 ## 4. Nonfunctional requirements
 
