@@ -836,10 +836,12 @@ pinned on synthetic fixtures — foreign provider bindings, flag-like or unsafe 
 no `--conversation` ever compiled ([#297](https://github.com/zemdregon/switchboard/pull/297)). Structured
 `backing_provider` on `init` or `result` sets `backingProvider` on `session_bound` (clipped, non-strings dropped) and
 feeds `provider_reported` usage observations on synthetic fixtures (`backing_provider.jsonl`,
-[#297](https://github.com/zemdregon/switchboard/pull/297)); without it `backingProvider` stays unset, never inferred
-from the model display name, because the 2026-10-14 live check recorded a display name only, no vendor. A `tool_call`
-after the
-`result` line is not a success (fail closed; a guard-flagged trailing call keeps `PERMISSION_BLOCKED` per ADR-0039;
+[#297](https://github.com/zemdregon/switchboard/pull/297)). The fixture also runs through `RunLifecycle`, checking
+the ledger provider binding and usage observation and the `get_run` usage envelope: harness `antigravity`, backing
+vendor and model remain separate ([#332](https://github.com/zemdregon/switchboard/pull/332)). Without it
+`backingProvider` stays unset, never inferred from the model display name, because the 2026-10-14 live check
+recorded a display name only, no vendor. A `tool_call` after the `result` line is not a success
+(fail closed; a guard-flagged trailing call keeps `PERMISSION_BLOCKED` per ADR-0039;
 unflagged → `OUTPUT_PROTOCOL_ERROR` with detail `tool call after the result line`; Proposed order — live check C4 had
 `result` last; [#262](https://github.com/zemdregon/switchboard/pull/262)).
 
@@ -860,6 +862,16 @@ synthetic checks, not captures of native rate limiting, sandbox enforcement or `
 operator captures confirm their native shapes. Later updates that supply or change a command or path reach the
 guard again; commands under unrecorded parameter keys remain unseen. Native resume, blocked outcomes and provider
 validation stay open under ROADMAP T4.33, T4.35, T4.36 and T4.38.
+
+T4.35 conformance fixtures also cover a conversation id changing on a tool step (`OUTPUT_PROTOCOL_ERROR`, first id
+kept), non-array `denied_actions` (`PERMISSION_BLOCKED`, tool name `unknown`), and unrecorded sandbox-error text in an
+`ERROR` envelope (`sandbox_violation_error.jsonl`: `TOOL_FAILURE`, never `SANDBOX_VIOLATION`). The latter does not
+close the successful-envelope sandbox gap above. Supervisor tests check cancellation both with SIGTERM honoured
+and with escalation required, including an empty process group after escalation. The replay dialect refuses unsafe
+resume ids and additional never-emitted flag spellings; these are fixture invocation checks, not native enforcement
+([#332](https://github.com/zemdregon/switchboard/pull/332)). `resume_failure.jsonl` is checked with a manually appended
+conversation id (`TOOL_FAILURE`, resumed id kept) but remains outside the runnable suite while resume compilation is
+refused. T4.35 stays `Partial`: fixtures cannot establish native resume or captured rate-limit and sandbox categories.
 
 ### Git and commits
 
@@ -902,7 +914,8 @@ check C3b, C3c)", "antigravity parser and result (T4.33)", "antigravity parser h
 synthetic shapes)" ([#276](https://github.com/zemdregon/switchboard/pull/276)), "antigravity conformance suite
 (synthetic recorded fixtures, FR-ADP-11, T4.35)" (dialect edge cases
 [#281](https://github.com/zemdregon/switchboard/pull/281), Go `flag` boundaries
-[#292](https://github.com/zemdregon/switchboard/pull/292)), "antigravity Git declaration (T4.37, FR-GIT-01, FR-GIT-02,
+[#292](https://github.com/zemdregon/switchboard/pull/292), widened conformance and lifecycle evidence
+[#332](https://github.com/zemdregon/switchboard/pull/332)), "antigravity Git declaration (T4.37, FR-GIT-01, FR-GIT-02,
 FR-GIT-09)" and "antigravity malicious-fixture leg (T4.36, NFR-SEC-03, FR-POL-04, FR-POL-06; SYNTHETIC lines)",
 trailing-tool pins in the same file, "a %s chained with a Git write and no denial ends PERMISSION_BLOCKED (ADR-0039)",
 and the `backing_provider`, own-property, fallback, supervisor-exit and resume-refusal matrices
