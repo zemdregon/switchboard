@@ -1007,8 +1007,21 @@ Synthetic fixtures in [`antigravity.test.ts`](src/adapters/antigravity/antigravi
 checks than exit 0: a clean expected exit, one `result` with exact `SUCCESS` status and positive `total_tokens`,
 and no denial, envelope error or guard violation. Duplicate results, changed or unsafe conversation ids and missing
 results fail closed; duplicate result usage is not counted twice. Unrecorded rate-limit or quota text is
-`TOOL_FAILURE`, not `RATE_LIMIT_TRANSIENT`. An unknown event in an otherwise clean success is counted without
-changing the result; an entirely unreadable stream is `OUTPUT_PROTOCOL_ERROR`.
+`TOOL_FAILURE`, not `RATE_LIMIT_TRANSIENT`: the supervisor replays `rate_limit.jsonl` (an empty stream at exit 1) and
+`rate_limit_error.jsonl` (an `ERROR` envelope at exit 0) to `TOOL_FAILURE`, and `git_write_guard_args.jsonl` (a Git
+write under `args.CommandLine`) to `PERMISSION_BLOCKED`
+([#305](https://github.com/zemdregon/switchboard/pull/305)). An unknown event in an otherwise clean success is counted
+without changing the result; an entirely unreadable stream is `OUTPUT_PROTOCOL_ERROR` (`unknown_events.jsonl`, every
+line counted and no session bound, [#305](https://github.com/zemdregon/switchboard/pull/305)). Stream-order fixtures
+replay through the supervisor ([#325](https://github.com/zemdregon/switchboard/pull/325)): `unknown_then_result.jsonl`
+succeeds with one unknown event counted and binds only the later result's conversation id; `error_after_result.jsonl`
+stays `OUTPUT_PROTOCOL_ERROR`, because a late auth envelope is a second result, not `AUTH_REQUIRED`; and
+`malformed_after_result.jsonl` fails in the supervisor after the result was emitted, keeping the conversation id. The
+same change pins the `classifyFailure` precedence: supervisor outcomes over the guard, the guard over denials,
+denials over provider errors, a provider error over a `rate_limit` event, a failed result and the exit code.
+`init.permission_mode` is not read (a pinned gap, [#249](https://github.com/zemdregon/switchboard/pull/249)): every
+recorded run showed `request-review`, and whether a value that disagrees with the compiled bypass flag should fail the
+run is not decided, so the outcome rests on the `result` envelope alone.
 
 The supervisor replays `agy_error_exit3.jsonl` and `usage_unrecorded.jsonl` to `TOOL_FAILURE`.
 `sandbox_violation_unrecorded.jsonl` deliberately pins a gap: a tool-output error beneath a successful envelope
@@ -1095,12 +1108,15 @@ check C3b, C3c)", "antigravity parser and result (T4.33)", "antigravity parser h
 synthetic shapes)" ([#276](https://github.com/zemdregon/switchboard/pull/276)), "antigravity conformance suite
 (synthetic recorded fixtures, FR-ADP-11, T4.35)" (dialect edge cases
 [#281](https://github.com/zemdregon/switchboard/pull/281), Go `flag` boundaries
-[#292](https://github.com/zemdregon/switchboard/pull/292), widened conformance and lifecycle evidence
-[#332](https://github.com/zemdregon/switchboard/pull/332)), "antigravity Git declaration (T4.37, FR-GIT-01, FR-GIT-02,
-FR-GIT-09)" and "antigravity malicious-fixture leg (T4.36, NFR-SEC-03, FR-POL-04, FR-POL-06; SYNTHETIC lines)",
-trailing-tool pins in the same file, "a %s chained with a Git write and no denial ends PERMISSION_BLOCKED (ADR-0039)",
-and the `backing_provider`, own-property, fallback, supervisor-exit and resume-refusal matrices
-([#297](https://github.com/zemdregon/switchboard/pull/297)); supervisor-replayed fixtures include
+[#292](https://github.com/zemdregon/switchboard/pull/292), rate-limit, unknown-event and `args` fixtures
+[#305](https://github.com/zemdregon/switchboard/pull/305), stream-order replays and `classifyFailure` precedence
+[#325](https://github.com/zemdregon/switchboard/pull/325), widened conformance and lifecycle evidence
+[#332](https://github.com/zemdregon/switchboard/pull/332)), "antigravity backing-provider fixture (T4.35, T4.6,
+FR-ADP-10)" ([#332](https://github.com/zemdregon/switchboard/pull/332)), "antigravity Git declaration (T4.37,
+FR-GIT-01, FR-GIT-02, FR-GIT-09)" and "antigravity malicious-fixture leg (T4.36, NFR-SEC-03, FR-POL-04,
+FR-POL-06; SYNTHETIC lines)", trailing-tool pins in the same file, "a %s chained with a Git write and no denial
+ends PERMISSION_BLOCKED (ADR-0039)", and the `backing_provider`, own-property, fallback, supervisor-exit and
+resume-refusal matrices ([#297](https://github.com/zemdregon/switchboard/pull/297)); supervisor-replayed fixtures include
 `backing_provider.jsonl` and the unrecorded-shape pins `agy_error_exit3.jsonl`,
 `sandbox_violation_unrecorded.jsonl` and `usage_unrecorded.jsonl`; CI also runs
 `test/malicious/adapters/antigravity.case.ts` and `test/malicious/adapter-leg.test.ts` ("adapter malicious leg:
@@ -1114,8 +1130,9 @@ antigravity", T4.36 partial — see [Known limitations](#known-limitations); gua
 streams"); "antigravity parser residual pins (T4.33, synthetic shapes)"
 ([#344](https://github.com/zemdregon/switchboard/pull/344)) with `non_tool_step_command.jsonl`;
 `src/adapters/antigravity/parser-residual.test.ts` ([#359](https://github.com/zemdregon/switchboard/pull/359)); and
-`src/adapters/antigravity/conformance-residual.test.ts`
-([#347](https://github.com/zemdregon/switchboard/pull/347), [#361](https://github.com/zemdregon/switchboard/pull/361),
+`src/adapters/antigravity/conformance-residual.test.ts` (including "antigravity whole-stream order shapes in the case
+list (T4.35, T4.33 fixtures)";
+[#347](https://github.com/zemdregon/switchboard/pull/347), [#361](https://github.com/zemdregon/switchboard/pull/361),
 [#373](https://github.com/zemdregon/switchboard/pull/373)). None of these changed the parser or the compiled
 matrix. The conformance `resume` case stays partial until Q-86 and
 an operator resume capture (T4.35). No end-to-end run through Switchboard against a logged-in
