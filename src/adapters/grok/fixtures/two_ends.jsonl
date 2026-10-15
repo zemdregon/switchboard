@@ -1,0 +1,5 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.23). A second end line fails the run OUTPUT_PROTOCOL_ERROR even if both report end_turn.","exit":0}}
+{"type":"available_commands","tools":["run_terminal_command"]}
+{"type":"text","data":"First turn complete."}
+{"type":"end","stopReason":"end_turn","sessionId":"00000000-0000-4000-8000-000000000001","requestId":"req_synthetic_1","usage":{"input_tokens":11,"cache_read_input_tokens":5,"cache_creation_input_tokens":0,"output_tokens":2,"reasoning_tokens":0,"total_tokens":18},"num_turns":1,"total_cost_usd":0.001}
+{"type":"end","stopReason":"end_turn","sessionId":"00000000-0000-4000-8000-000000000001","requestId":"req_synthetic_2","usage":{"input_tokens":5,"cache_read_input_tokens":2,"cache_creation_input_tokens":0,"output_tokens":1,"reasoning_tokens":0,"total_tokens":8},"num_turns":2,"total_cost_usd":0.0005}

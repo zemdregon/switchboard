@@ -30,11 +30,18 @@ import type {
   ParseState,
   ProbeOutput,
   ProbeRunner,
+  ProviderId,
   ResolvedProfile,
   TrustProfile,
 } from "../types.js";
 import { isIneligible } from "../types.js";
-import { GROK_GIT_CAPABILITIES, GROK_GIT_WRITE_CONTROL, GrokAdapter } from "./adapter.js";
+import {
+  GROK_BYPASS_NOT_APPROVED,
+  GROK_GIT_CAPABILITIES,
+  GROK_GIT_WRITE_CONTROL,
+  GROK_PRIVILEGED_NEEDS_BYPASS,
+  GrokAdapter,
+} from "./adapter.js";
 import {
   DEFAULT_SESSION_ID,
   grokConformanceCases,
@@ -240,6 +247,112 @@ describe("grok probe and resume (T4.22, T4.23)", () => {
     if (!("ineligible" in first)) expect(r.policyFlags).toEqual(first.policyFlags);
     expect(auditInvocation(r, { profile, bypassApproved: true })).toEqual([]);
   });
+
+  it("resumeArgs accepts valid alphanumeric, UUID and delimited session IDs and refuses unsafe or flag-like shapes", () => {
+    const a = adapter();
+    const profile = privilegedProfile(BYPASS_SCOPE);
+    const approved = { ...profile, bypassApproved: true };
+    const req = request({ bypassApproved: true });
+
+    // Valid IDs: UUID, alphanumeric with ., _, :, - and up to 256 chars
+    for (const validId of ["0c1d5f2e-7c1a-4b66-9d0c-1f5b8a3a9e11", "session_123.456:789-abc", "A", "a".repeat(256)]) {
+      const r = a.resumeArgs({ provider: "grok", nativeSessionId: validId }, req, approved);
+      expect("ineligible" in r, validId).toBe(false);
+      if (!("ineligible" in r)) {
+        expect(r.argv.slice(-2)).toEqual(["-r", validId]);
+      }
+    }
+
+    // Unsafe IDs: empty, leading dash/flag, spaces, control chars, shell metachars, length > 256
+    for (const unsafeId of [
+      "",
+      "-r",
+      "--resume",
+      "-s",
+      "--single",
+      "-dangerous",
+      "session id",
+      "session\nid",
+      "session\tid",
+      "session;rm",
+      "session&rm",
+      "session|rm",
+      "$SESSION",
+      "`whoami`",
+      "session\x00null",
+      "a".repeat(257),
+    ]) {
+      const r = a.resumeArgs({ provider: "grok", nativeSessionId: unsafeId }, req, approved);
+      expect(r, JSON.stringify(unsafeId)).toMatchObject({
+        ineligible: true,
+        reason: "CAPABILITY_MISSING",
+        detail: "native session id is not a safe single argument",
+      });
+    }
+  });
+
+  it("resumeArgs preserves request cwd and mirrors compile policyFlags and audit", () => {
+    const a = adapter();
+    const profile = privilegedProfile(BYPASS_SCOPE);
+    const approved = { ...profile, bypassApproved: true };
+    const req = request({ workspace: { cwd: "/custom/workspace/dir", writable: true }, bypassApproved: true });
+    const id = "00000000-0000-4000-8000-000000000042";
+    const resumed = a.resumeArgs({ provider: "grok", nativeSessionId: id }, req, approved);
+    expect("ineligible" in resumed).toBe(false);
+    if ("ineligible" in resumed) return;
+    expect(resumed.cwd).toBe("/custom/workspace/dir");
+    expect(resumed.argv.slice(-2)).toEqual(["-r", id]);
+    const first = a.compile(req, approved);
+    expect("ineligible" in first).toBe(false);
+    if ("ineligible" in first) return;
+    expect(resumed.policyFlags).toEqual(first.policyFlags);
+    expect(resumed.argv.slice(0, -2)).toEqual(first.argv);
+    expect(auditInvocation(resumed, { profile, bypassApproved: true })).toEqual([]);
+  });
+
+  it("resumeArgs rejects foreign provider bindings and ineligible profiles with exact reasons", () => {
+    const a = adapter();
+    const profile = privilegedProfile(BYPASS_SCOPE);
+    const approved = { ...profile, bypassApproved: true };
+    const req = request({ bypassApproved: true });
+    const id = "00000000-0000-4000-8000-000000000042";
+
+    // Foreign providers
+    for (const provider of ["claude", "codex", "antigravity", "cursor", "opencode", "other"]) {
+      expect(a.resumeArgs({ provider: provider as ProviderId, nativeSessionId: id }, req, approved)).toMatchObject({
+        ineligible: true,
+        reason: "CAPABILITY_MISSING",
+        detail: `binding is for ${provider}`,
+      });
+    }
+
+    // Ineligible profiles
+    for (const name of ["inspect-untrusted", "edit-untrusted", "test-sandboxed", "trusted-development"] as const) {
+      expect(a.resumeArgs({ provider: "grok", nativeSessionId: id }, req, profileOf(name))).toMatchObject({
+        ineligible: true,
+        reason: "PROFILE_UNSUPPORTED",
+      });
+    }
+
+    // Privileged without bypass
+    const noBypass = privilegedProfile({ ...BYPASS_SCOPE, bypass: false });
+    expect(
+      a.resumeArgs({ provider: "grok", nativeSessionId: id }, req, { ...noBypass, bypassApproved: true }),
+    ).toMatchObject({
+      ineligible: true,
+      reason: "PROFILE_UNSUPPORTED",
+      detail: GROK_PRIVILEGED_NEEDS_BYPASS,
+    });
+
+    // Privileged with bypass but not approved
+    expect(
+      a.resumeArgs({ provider: "grok", nativeSessionId: id }, request({ bypassApproved: false }), profile),
+    ).toMatchObject({
+      ineligible: true,
+      reason: "PROFILE_UNSUPPORTED",
+      detail: GROK_BYPASS_NOT_APPROVED,
+    });
+  });
 });
 
 describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-10-14 live check recorded)", () => {
@@ -438,6 +551,93 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
       );
       expect(report.checks.filter((k) => !k.ok)).toEqual([]);
       expect(report.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", unknownEventCount: 4 });
+      expect(report.result).not.toHaveProperty("nativeSessionId");
+    });
+
+    it("fixture rate_limit_error replays an unmapped error line at exit 0 to TOOL_FAILURE, never RATE_LIMIT_TRANSIENT or success", async () => {
+      const report = await runConformanceCase(
+        replayCase("rate_limit_error", "rate_limit", { ok: false, failureCode: "TOOL_FAILURE" }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", unknownEventCount: 0 });
+      expect(report.result).not.toHaveProperty("nativeSessionId");
+    });
+
+    it("fixture git_write_guard (ADR-0039) replays a guard-flagged Git write under end_turn at exit 0 to PERMISSION_BLOCKED", async () => {
+      const report = await runConformanceCase(
+        replayCase("git_write_guard", "task_failure", {
+          ok: false,
+          failureCode: "PERMISSION_BLOCKED",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    });
+
+    it("fixture no_end replays text at exit 0 without an end line to OUTPUT_PROTOCOL_ERROR", async () => {
+      const report = await runConformanceCase(
+        replayCase("no_end", "malformed_output", { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        summary: "SYNTHETIC: finished work without an end line.",
+      });
+      expect(report.result).not.toHaveProperty("nativeSessionId");
+    });
+
+    it("fixture two_ends replays a second end line at exit 0 to OUTPUT_PROTOCOL_ERROR", async () => {
+      const report = await runConformanceCase(
+        replayCase("two_ends", "malformed_output", {
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+    });
+
+    it("fixture trailing_tool replays a tool_call after the end line to OUTPUT_PROTOCOL_ERROR", async () => {
+      const report = await runConformanceCase(
+        replayCase("trailing_tool", "malformed_output", {
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "tool call after the end line",
+      });
+    });
+
+    it("fixture session_changed replays to OUTPUT_PROTOCOL_ERROR with the first session id still bound", async () => {
+      const report = await runConformanceCase(
+        replayCase("session_changed", "malformed_output", {
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        nativeSessionId: DEFAULT_SESSION_ID,
+      });
+    });
+
+    it("fixture unsafe_session_id replays an unsafe session id in the end line to OUTPUT_PROTOCOL_ERROR without binding", async () => {
+      const report = await runConformanceCase(
+        replayCase("unsafe_session_id", "malformed_output", { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
       expect(report.result).not.toHaveProperty("nativeSessionId");
     });
   });
@@ -857,6 +1057,156 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
       expect(parsed.state.nativeSessionId).not.toBe("smuggled");
       const usage = parsed.events.find((e) => e.kind === "usage");
       expect(usage).toBeUndefined();
+    });
+
+    it("primitive JSON root values, null, arrays, and objects without string type parse as unknown event with rawType 'none'", () => {
+      const r = parse([
+        "123",
+        "true",
+        "false",
+        "null",
+        "[1, 2]",
+        '"just a string"',
+        "{}",
+        line({ type: 123 }),
+        line({ type: null }),
+        line({ type: {} }),
+      ]);
+      expect(r.events).toHaveLength(10);
+      expect(r.events.every((e) => e.kind === "unknown" && e.rawType === "none")).toBe(true);
+      expect(r.state.unknownEvents).toBe(10);
+      expect(adapter().extractResult(r.events, EXIT_OK)).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        unknownEventCount: 10,
+      });
+    });
+
+    it("rawType is clipped to 64 characters with an ellipsis", () => {
+      const longType = "custom_event_type_name_".repeat(5);
+      const r = parse([line({ type: longType })]);
+      expect(r.events).toEqual([{ kind: "unknown", rawType: `${longType.slice(0, 64)}…` }]);
+      expect(r.state.unknownEvents).toBe(1);
+    });
+
+    it("assistant text event with non-string data is counted unknown, and long summary keeps its last 2,000 characters", () => {
+      const r = parse([
+        line({ type: "text", data: 42 }),
+        line({ type: "text", data: null }),
+        line({ type: "text", data: { text: "nested" } }),
+      ]);
+      expect(r.events).toEqual([
+        { kind: "unknown", rawType: "text" },
+        { kind: "unknown", rawType: "text" },
+        { kind: "unknown", rawType: "text" },
+      ]);
+      expect(r.state.unknownEvents).toBe(3);
+
+      const longText = `head-${"a".repeat(2_500)}-tail`;
+      const withLong = parse([line({ type: "text", data: longText }), line(END)]);
+      const res = adapter().extractResult(withLong.events, EXIT_OK);
+      expect(res.ok).toBe(true);
+      expect(res.summary).toHaveLength(2_000);
+      expect(res.summary?.endsWith("-tail")).toBe(true);
+      expect(res.summary?.startsWith("head-")).toBe(false);
+    });
+
+    it("error event with non-string message is provider_error, and long message is clipped to 2,000 characters", () => {
+      const nonString = parse([
+        line({ type: "error", message: 123 }),
+        line({ type: "error", message: null }),
+        line({ type: "error" }),
+      ]);
+      expect(nonString.events).toEqual([
+        { kind: "provider_error", category: "unknown", message: "error line without a string message" },
+        { kind: "provider_error", category: "unknown", message: "error line without a string message" },
+        { kind: "provider_error", category: "unknown", message: "error line without a string message" },
+      ]);
+
+      const longMessage = `error-${"e".repeat(2_500)}`;
+      const withLong = parse([line({ type: "error", message: longMessage })]);
+      expect(withLong.events).toEqual([
+        {
+          kind: "provider_error",
+          category: "unknown",
+          message: `${longMessage.slice(0, 2_000)}…`,
+        },
+      ]);
+    });
+
+    it("unrecorded sandbox_violation and permission_denied events parse as unknown events, not detected natively", () => {
+      const r = parse([line({ type: "sandbox_violation" }), line({ type: "permission_denied" }), line(END)]);
+      expect(r.events.slice(0, 2)).toEqual([
+        { kind: "unknown", rawType: "sandbox_violation" },
+        { kind: "unknown", rawType: "permission_denied" },
+      ]);
+      expect(adapter().extractResult(r.events, EXIT_OK)).toMatchObject({
+        ok: true,
+        unknownEventCount: 2,
+        nativeSessionId: SID,
+      });
+    });
+
+    it("end line with non-string stopReason parses as unknown event, and non-string or empty sessionId binds nothing", () => {
+      const badStop = parse([line({ ...END, stopReason: 123 }), line({ ...END, stopReason: null })]);
+      expect(badStop.events).toEqual([
+        { kind: "unknown", rawType: "end" },
+        { kind: "unknown", rawType: "end" },
+      ]);
+      expect(badStop.state.unknownEvents).toBe(2);
+
+      const nonStringId = parse([line({ ...END, sessionId: 42 })]);
+      expect(nonStringId.events.some((e) => e.kind === "session_bound")).toBe(false);
+      expect(adapter().extractResult(nonStringId.events, EXIT_OK)).toMatchObject({ ok: true });
+      expect(adapter().extractResult(nonStringId.events, EXIT_OK)).not.toHaveProperty("nativeSessionId");
+
+      const emptyId = parse([line({ ...END, sessionId: "" })]);
+      expect(emptyId.events.some((e) => e.kind === "session_bound")).toBe(false);
+      expect(adapter().extractResult(emptyId.events, EXIT_OK)).toMatchObject({ ok: true });
+      expect(adapter().extractResult(emptyId.events, EXIT_OK)).not.toHaveProperty("nativeSessionId");
+    });
+
+    it("end line usage counters drop non-numeric, negative, Infinity and NaN values; num_turns is kept only when finite and non-negative", () => {
+      const badUsage = parse([
+        line({
+          ...END,
+          usage: {
+            input_tokens: -1,
+            output_tokens: "10",
+            total_tokens: Number.NaN,
+            cache_read_input_tokens: Number.POSITIVE_INFINITY,
+            reasoning_tokens: 5,
+            cache_creation_input_tokens: 0,
+          },
+          num_turns: -2,
+        }),
+      ]);
+      const usageEv = badUsage.events.find((e) => e.kind === "usage");
+      expect(usageEv).toEqual({
+        kind: "usage",
+        source: "provider_reported",
+        metrics: {
+          reasoning_tokens: 5,
+          cache_creation_input_tokens: 0,
+        },
+      });
+
+      const goodTurns = parse([
+        line({
+          ...END,
+          usage: { total_tokens: 15 },
+          num_turns: 3,
+        }),
+      ]);
+      const turnsEv = goodTurns.events.find((e) => e.kind === "usage");
+      expect(turnsEv).toEqual({
+        kind: "usage",
+        source: "provider_reported",
+        metrics: {
+          total_tokens: 15,
+          num_turns: 3,
+        },
+      });
     });
   });
 
