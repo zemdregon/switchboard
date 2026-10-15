@@ -53,12 +53,13 @@ export function replayAdapter(fixture: string, o: ReplayOptions = {}): CursorAda
 /**
  * `makeCwd` returns a fresh empty directory per case. Covers every FR-ADP-11 kind plus timeout and partial_mutation,
  * and the recorded fail-at-exit-0-or-1 shapes: soft-denied shell commands (live check row 7a `rejected` and row 11
- * `permissionDenied`, each PERMISSION_BLOCKED at exit 0), an ADR-0039 guard-flagged Git write (PERMISSION_BLOCKED at exit 0),
- * unrecorded rate-limit and sandbox error text at exit 0 (TOOL_FAILURE), stream anomalies (no result line, two result lines,
- * conflicting session id, trailing tool call, and unsafe session id in init or after a bound id, each OUTPUT_PROTOCOL_ERROR),
- * unknown event counting in a success, both cancellation paths (SIGTERM and SIGKILL escalation on ignore-term), and
- * workspace mutations preserved on failure (denied after write with PERMISSION_BLOCKED, partial mutation at exit 1, and
- * success edit at exit 1 with TOOL_FAILURE).
+ * `permissionDenied`, each PERMISSION_BLOCKED at exit 0), an ADR-0039 guard-flagged Git write (PERMISSION_BLOCKED at exit 0)
+ * including the `args.CommandLine` alias, unrecorded rate-limit (empty stream at exit 1, never RATE_LIMIT_TRANSIENT) and
+ * sandbox error text at exit 0 (TOOL_FAILURE), a structured backing vendor on success (T4.6), stream anomalies (no result
+ * line, two result lines, conflicting session id, trailing tool call, and unsafe session id in init or after a bound id,
+ * each OUTPUT_PROTOCOL_ERROR), unknown event counting in a success, both cancellation paths (SIGTERM and SIGKILL
+ * escalation on ignore-term), and workspace mutations preserved on failure (denied after write with PERMISSION_BLOCKED,
+ * partial mutation at exit 1, and success edit at exit 1 with TOOL_FAILURE).
  */
 export function cursorConformanceCases(makeCwd: () => string): ConformanceCase[] {
   const request = (writable = true): CompileRequest => ({
@@ -81,6 +82,13 @@ export function cursorConformanceCases(makeCwd: () => string): ConformanceCase[]
       ...base,
       kind: "success",
       adapter: replayAdapter("unknown_event"),
+      request: request(),
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    },
+    {
+      ...base,
+      kind: "success",
+      adapter: replayAdapter("backing_provider"),
       request: request(),
       expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
     },
@@ -111,6 +119,20 @@ export function cursorConformanceCases(makeCwd: () => string): ConformanceCase[]
       adapter: replayAdapter("git_write_guard"),
       request: request(),
       expect: { ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: DEFAULT_SESSION_ID },
+    },
+    {
+      ...base,
+      kind: "task_failure",
+      adapter: replayAdapter("git_write_guard_args"),
+      request: request(),
+      expect: { ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: DEFAULT_SESSION_ID },
+    },
+    {
+      ...base,
+      kind: "task_failure",
+      adapter: replayAdapter("rate_limit"),
+      request: request(),
+      expect: { ok: false, failureCode: "TOOL_FAILURE" },
     },
     {
       ...base,

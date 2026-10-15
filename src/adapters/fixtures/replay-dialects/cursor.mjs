@@ -1,5 +1,6 @@
 // Cursor dialect of the shared replay helper (T4.45, FR-ADP-11): headless invocation `--print --output-format stream-json --trust --force [--resume <id>]`
-// with prompt on stdin (src/adapters/cursor/adapter.ts). Session placeholder: {{SESSION_ID}}.
+// with prompt on stdin (src/adapters/cursor/adapter.ts). Session placeholder: {{SESSION_ID}}. Compiled bool flags are
+// the bare word once: an `=` form (`--force=false` beside `--force`) is the same flag and is refused.
 
 // Flags the adapter refuses: shared BYPASS_FLAGS, Cursor-declared bypass flags and short flags (providers.ts),
 // plus flags the adapter never compiles (protocol.ts).
@@ -27,10 +28,12 @@ const REFUSED_FLAGS = [
   "--permission-mode",
   "--allow",
   "--deny",
+  "--list-models",
   "-w",
   "-H",
   "-e",
   "-f",
+  "-p",
 ];
 
 const REFUSED_ENV = ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "CURSOR_CONFIG_DIR", "XDG_CONFIG_HOME"];
@@ -85,6 +88,14 @@ export default {
     const forceCount = argv.filter((a) => a === "--force").length;
     if (forceCount !== 1) {
       fail("expected --force exactly once", 64);
+    }
+
+    // Compiled bool flags are the bare word once. An `=` form beside or instead of that word is the same flag
+    // (as Antigravity T4.35: Go/POSIX keep the last value), so `--force=false` next to `--force` must not replay.
+    for (const flag of ["--print", "--trust", "--force"]) {
+      if (argv.some((a) => a.startsWith(`${flag}=`))) {
+        fail(`expected ${flag} as its own word (a \`=\` form is the same flag)`, 64);
+      }
     }
 
     const resumeIndices = [];
