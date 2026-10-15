@@ -119,7 +119,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#287](https://github.com/zemdregon/switchboard/pull/287),
   [#299](https://github.com/zemdregon/switchboard/pull/299),
   [#324](https://github.com/zemdregon/switchboard/pull/324), residual ordering and resume/compile-parity pins
-  [#333](https://github.com/zemdregon/switchboard/pull/333), parser residual branches and `idless_guard.jsonl`
+  [#333](https://github.com/zemdregon/switchboard/pull/333), resume-id matrix and `denied_after_result.jsonl`
+  [#341](https://github.com/zemdregon/switchboard/pull/341), parser residual branches
+  [#348](https://github.com/zemdregon/switchboard/pull/348) and `idless_guard.jsonl`
   [#360](https://github.com/zemdregon/switchboard/pull/360)), auth-preflight, a conformance suite on synthetic
   fixtures (T4.45; replay dialect hardening, 59 compile/env refusal checks, and fixtures including
   `denied_after_write`, `permission_denied_perm`, `resume_unknown_id`, `unknown_event`, `unsafe_id_after_bound` and
@@ -1161,17 +1163,22 @@ servers), and no per-run permission flag is documented.
 Resume continues the native session with `--resume <session_id>` through the same matrix when the provider is eligible
 (synthetic fixtures in `src/adapters/cursor/cursor.test.ts`, T4.43). `resumeArgs` matches `compile` across every
 structured scope, including exact refusals (one compiled bypass cell; `--resume <session_id>` is appended;
-[#333](https://github.com/zemdregon/switchboard/pull/333)). A `session_id` that resume could not pass as one
+[#333](https://github.com/zemdregon/switchboard/pull/333)); alphanumeric, UUID and delimited ids compile while unsafe
+or flag-like shapes are refused ([#341](https://github.com/zemdregon/switchboard/pull/341)), and resume on
+`privileged` with no scope binding is refused with the compile reason
+([#348](https://github.com/zemdregon/switchboard/pull/348)). A `session_id` that resume could not pass as one
 safe argument (matching `^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`, refusing leading dashes, empty strings or flag syntax) is
 never bound (`OUTPUT_PROTOCOL_ERROR` on stream without binding, `CAPABILITY_MISSING` in `resumeArgs`;
 [#248](https://github.com/zemdregon/switchboard/pull/248), [#287](https://github.com/zemdregon/switchboard/pull/287),
 `unsafe_session_id.jsonl`). An unsafe session id in `result` after a normal `init` also fails `OUTPUT_PROTOCOL_ERROR`
 while preserving the first bound id (`unsafe_id_after_bound.jsonl`,
 [#309](https://github.com/zemdregon/switchboard/pull/309)). Session ID resolution also admits `sessionId`, `chat_id` and
-`chatId` ([#299](https://github.com/zemdregon/switchboard/pull/299)). A session id changing mid-run ends
+`chatId` ([#299](https://github.com/zemdregon/switchboard/pull/299)), in that order after `session_id`
+([#341](https://github.com/zemdregon/switchboard/pull/341)). A session id changing mid-run ends
 `OUTPUT_PROTOCOL_ERROR` with the first id bound (`session_changed.jsonl`). `apiKeySource` must be `login`; any other
-value fails with `AUTH_REQUIRED` (`auth_missing.jsonl`). Resumed runs pass `--resume <session_id>` through the same
-compile matrix, preserving cwd and policy flags; `resumeCwd` is `unverified` (TDD §4.10, live check 8c).
+present value, including a non-string, fails with `AUTH_REQUIRED` (`auth_missing.jsonl`). Resumed runs pass
+`--resume <session_id>` through the same compile matrix, preserving cwd and policy flags; `resumeCwd` is `unverified`
+(TDD §4.10, live check 8c).
 `reportedModelFlag` is `not_accepted` (`init` reports a display name, not a model id, [LIVE] 5b; `--model` is not
 emitted, FR-RTE-08). Exactly one `result` line is permitted; a second `result` line fails closed as
 `OUTPUT_PROTOCOL_ERROR` ("more than one result line", `two_results.jsonl`), does not flip a prior failure, and usage
@@ -1180,12 +1187,15 @@ deduplication ignores usage on subsequent result lines (FR-CAP-01;
 (fail closed; a guard-flagged trailing call keeps `PERMISSION_BLOCKED` per ADR-0039; an unflagged trailing call ends
 `OUTPUT_PROTOCOL_ERROR` with detail `tool call after the result line`, `trailing_tool.jsonl`; an unreadable trailing
 `tool_call` line that parses as `unknown` also fails closed as `OUTPUT_PROTOCOL_ERROR`,
-[#268](https://github.com/zemdregon/switchboard/pull/268)). `tool_call` keys that name `Object.prototype` members map to
+[#268](https://github.com/zemdregon/switchboard/pull/268)). A completed refusal after the `result` line still ends
+`PERMISSION_BLOCKED`, and a later success `result` cannot erase it (`denied_after_result.jsonl`,
+[#341](https://github.com/zemdregon/switchboard/pull/341)). `tool_call` keys that name `Object.prototype` members map to
 `other` (own-key lookup; [#248](https://github.com/zemdregon/switchboard/pull/248),
 [#268](https://github.com/zemdregon/switchboard/pull/268)). Structured `backing_provider`/`backingProvider` and model on
 synthetic `session_bound` events and the T4.6 end-to-end fixture are on `main`
 ([#275](https://github.com/zemdregon/switchboard/pull/275); `backing_provider.jsonl`), and model / `backingProvider`
-resolution across `init` and `result` (when `init` is omitted) with prototype pollution protection (`__proto__` and
+resolution across `init` and `result` (when `init` is omitted; model from `model`, then `model_id`, then
+`modelId`) with prototype pollution protection (`__proto__` and
 `Object.prototype` members omitted, strings clipped to 128 characters) are in
 [#299](https://github.com/zemdregon/switchboard/pull/299); native CLI captures report only a model display name and no
 vendor, so without an explicit structured `backing_provider` (supported for fronted harnesses, T4.6) `backingProvider`
@@ -1194,14 +1204,21 @@ stays unset (never inferred from model display name; T4.43 stays `Partial` on th
 Usage deduplication suppresses reporting on a second `result` line so the run total is reported once (FR-CAP-01;
 [#299](https://github.com/zemdregon/switchboard/pull/299)); usage metrics admit snake_case keys and `totalTokens`
 ([#299](https://github.com/zemdregon/switchboard/pull/299)). Assistant message parsing admits plain strings, arrays of
-strings, `message.text`, `e.text` and `e.content` ([#299](https://github.com/zemdregon/switchboard/pull/299)). Tool
+strings, `message.text`, `e.text` and `e.content` ([#299](https://github.com/zemdregon/switchboard/pull/299)); array
+parts may also be objects with a string `text`, other parts are skipped, and empty text is dropped rather than counted
+as unknown ([#348](https://github.com/zemdregon/switchboard/pull/348)). Tool
 parameter container fallback (`args` > `parameters` > `input` > `arguments` > entry fallback), command aliases
 (`command` > `cmd` > `CommandLine` > `commandLine`), target aliases (`path` > `filePath` > `file_path` >
 `AbsolutePath` > `absolute_path` > `target` > `file`), and completed call refusal fallbacks (`result.rejected`,
 `result.permissionDenied`) ensure shell and file tool calls reach the guard
 ([#287](https://github.com/zemdregon/switchboard/pull/287), [#299](https://github.com/zemdregon/switchboard/pull/299)).
-Late or swapped commands on `tool_call` `completed` are tracked via `seenToolCalls` and re-evaluated by the guard
-without duplicating identical reports. Unmapped tool names carrying a command, or named with shell aliases
+`editFileToolCall` and `writeFileToolCall` are edit tools carrying their path
+([#341](https://github.com/zemdregon/switchboard/pull/341)). Late or swapped commands or paths on `tool_call`
+`completed` (or a repeated `started`) are tracked via `seenToolCalls` and re-evaluated by the guard without
+duplicating identical reports; `call_id` or `callId` correlates `started` and `completed` (a different id is a new
+call), and without either the tool key is the step id ([#341](https://github.com/zemdregon/switchboard/pull/341),
+[#348](https://github.com/zemdregon/switchboard/pull/348)). Unmapped tool names carrying a command, or named with
+shell aliases
 (`bashToolCall`, `terminalToolCall`, `execToolCall`, `runCommandToolCall`, `executeCommandToolCall`), map to
 `tool: "shell"` so the ADR-0039 tool-call guard intercepts unauthorized Git writes (`PERMISSION_BLOCKED`;
 [#299](https://github.com/zemdregon/switchboard/pull/299)). Tool refusal aliases normalize `permission_denied`,
@@ -1215,7 +1232,8 @@ fields ([#283](https://github.com/zemdregon/switchboard/pull/283),
 [#287](https://github.com/zemdregon/switchboard/pull/287),
 [#309](https://github.com/zemdregon/switchboard/pull/309),
 [#315](https://github.com/zemdregon/switchboard/pull/315),
-[#324](https://github.com/zemdregon/switchboard/pull/324)): `rate_limit` (rows 4 and 14, never reached/forced) replays
+[#324](https://github.com/zemdregon/switchboard/pull/324),
+[#341](https://github.com/zemdregon/switchboard/pull/341)): `rate_limit` (rows 4 and 14, never reached/forced) replays
 an empty stream at exit 1 to `TOOL_FAILURE`, never `RATE_LIMIT_TRANSIENT`; `rate_limit_error` replays an in-stream
 error result at exit 0 to `TOOL_FAILURE`; `sandbox_violation` (row 9, unrecorded sandbox error text at exit 0) replays
 to `TOOL_FAILURE`, never `SANDBOX_VIOLATION`; `unknown_events` replays to `OUTPUT_PROTOCOL_ERROR` with every unreadable
@@ -1242,7 +1260,9 @@ error to `TOOL_FAILURE`, preserving the resumed session id; `error_after_result`
 `apiKeySource` is not `login` after a success `result` at exit 0 to `AUTH_REQUIRED` with the first session id
 preserved; and `malformed_after_result` replays malformed framing after a recognized `result` to
 `OUTPUT_PROTOCOL_ERROR` through the supervisor, keeping the structured session id (all
-[#324](https://github.com/zemdregon/switchboard/pull/324)). The `classifyFailure` precedence chain is pinned in the same
+[#324](https://github.com/zemdregon/switchboard/pull/324)); and `denied_after_result` replays a completed refusal after
+a success `result` at exit 0 to `PERMISSION_BLOCKED` ([#341](https://github.com/zemdregon/switchboard/pull/341)). The
+`classifyFailure` precedence chain is pinned in the same
 change: supervisor cancel, timeout, `protocol_error`, `internal_error`, crash and spawn outcomes beat every stream
 signal including the ADR-0039 guard verdict; the guard beats denials; denials beat provider errors; a provider error
 beats a `rate_limit` event, a failed `result` and the exit code; and the Cursor `protocol` category maps to
@@ -1254,7 +1274,11 @@ lower-priority events arrive first ([#333](https://github.com/zemdregon/switchbo
 (`apiKeySource` other than `login`) and protocol (mid-run session-id change) errors stay failures in either order
 around `result`; the first `provider_error` wins, and a failed `result` never outranks `AUTH_REQUIRED`. Opaque
 unknown envelopes before or after `result` cannot bind a session or smuggle status, usage, model, vendor or a
-credential source ([#333](https://github.com/zemdregon/switchboard/pull/333)). Parser residual pins in
+credential source ([#333](https://github.com/zemdregon/switchboard/pull/333)). The "cursor parser residual branches
+(T4.43, synthetic)" suite in `src/adapters/cursor/cursor.test.ts` pins non-object tool entries, id-less step ids,
+paths first carried or swapped on `completed`, unmapped tools first carrying a command on `completed`, prototype-named
+keys on `completed` whose refusal still fails the run, and a `tool_call` without a usable subtype (`unknown`, failing
+the run after `result`) ([#348](https://github.com/zemdregon/switchboard/pull/348)). Parser residual pins in
 `src/adapters/cursor/parser-residual.test.ts` (line counting, empty-string fallbacks, `apiKeySource` formatting,
 tool-parameter fall-through, id-less `tool_call` correlation, provider_error categories, `resumeArgs` refusals) and
 supervisor replay of `idless_guard.jsonl` (id-less Git write under `success` at exit 0 → `PERMISSION_BLOCKED`) are on
@@ -1288,10 +1312,13 @@ Fixture evidence on `main`: `src/adapters/cursor/fixtures/` (T4.43 Done-when and
 [#309](https://github.com/zemdregon/switchboard/pull/309), remaining T4.45 fixtures including
 `git_write_guard_args.jsonl` from [#315](https://github.com/zemdregon/switchboard/pull/315), and stream-order,
 `classifyFailure`-precedence and recorded-field pins with `resume_failure.jsonl`, `error_after_result.jsonl` and
-`malformed_after_result.jsonl` from [#324](https://github.com/zemdregon/switchboard/pull/324), `idless_guard.jsonl` from
+`malformed_after_result.jsonl` from [#324](https://github.com/zemdregon/switchboard/pull/324),
+`denied_after_result.jsonl` from [#341](https://github.com/zemdregon/switchboard/pull/341), `idless_guard.jsonl` from
 [#360](https://github.com/zemdregon/switchboard/pull/360)); residual ordering and resume/compile-parity pins in
-`src/adapters/cursor/cursor.test.ts` from [#333](https://github.com/zemdregon/switchboard/pull/333); parser residual
-branches in `src/adapters/cursor/parser-residual.test.ts` from
+`src/adapters/cursor/cursor.test.ts` from [#333](https://github.com/zemdregon/switchboard/pull/333), resume-id,
+correlation and edit-key pins from [#341](https://github.com/zemdregon/switchboard/pull/341) and "cursor parser residual
+branches (T4.43, synthetic)" from [#348](https://github.com/zemdregon/switchboard/pull/348); "cursor parser residuals
+(T4.43, synthetic lines; parser unchanged)" in `src/adapters/cursor/parser-residual.test.ts` from
 [#360](https://github.com/zemdregon/switchboard/pull/360); `src/adapters/cursor/cursor.test.ts` ("cursor compile matrix
 (T4.42)", "cursor bypass-class declarations (ADR-0035, ADR-0037)", "cursor probe and auth preflight (T4.42, T4.44)",
 "cursor registry entry and manifest gate (T4.42)", "cursor parser and result (T4.43)", "cursor parser hardening (T4.43,
