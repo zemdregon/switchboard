@@ -9,13 +9,25 @@
  * (including the gap that a counter-less first result drops a second result's total), and resume parity (more id
  * shapes, refusal order with a missing binary, launcher and timeouts, either approval source, no resume context: a
  * pinned gap).
+ * Third pass (T4.6, FR-ADP-10): `backingProvider` and model on `session_bound` edge cases. Pinned gaps: a vendor or
+ * model first reported on a `result` after `init` bound the same id is dropped (fixture `backing_on_result.jsonl`); an
+ * `init` without a usable id loses its vendor; a non-null non-string `backing_provider` shadows `backingProvider`
+ * (unlike `model`); values are bound verbatim (no trim or case folding, the harness name kept).
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { ArtifactStore } from "../../artifacts/index.js";
+import { createIdGenerator } from "../../ids/index.js";
+import { createLedger, openLedger } from "../../ledger/index.js";
+import { RunLifecycle } from "../../lifecycle/index.js";
+import { resolveTrustProfile } from "../../policy/profiles.js";
+import { WorkspaceManager } from "../../workspace/index.js";
 import { runConformanceCase } from "../conformance.js";
 import { privilegedProfile } from "../fixtures/privileged.js";
+import { AdapterRegistry } from "../registry.js";
 import { guardEvent } from "../tool-guard.js";
 import type {
   AcpMessage,
@@ -864,5 +876,327 @@ describe("cursor parser residuals, second pass: stream order, usage dedup and re
     expect("ineligible" in resumed).toBe(false);
     const { events } = parse([INIT(), RESULT()], a);
     expect(a.extractResult(events, EXIT_OK)).toMatchObject({ ok: true, nativeSessionId: SID });
+  });
+});
+
+describe("cursor parser residuals, third pass: backingProvider and model on session_bound (T4.43, T4.6, FR-ADP-10; synthetic lines; parser unchanged)", () => {
+  const bound = (events: readonly NormalizedEvent[]) => events.filter((e) => e.kind === "session_bound");
+
+  it("pins the gap: a backing vendor or model first reported on a result after init bound the same id is dropped", () => {
+    const { a, events, state } = parse([
+      INIT(),
+      RESULT({
+        model: "Result Model 2",
+        backing_provider: "backing-late",
+        backingProvider: "backing-late-camel",
+      }),
+    ]);
+    // The first binding is final (#bind returns early on the same id), so session_bound is emitted once, from init.
+    expect(bound(events)).toEqual([
+      {
+        kind: "session_bound",
+        nativeSessionId: SID,
+        model: "Synthetic Model 1",
+      },
+    ]);
+    expect(JSON.stringify(events)).not.toContain("backing-late");
+    expect(JSON.stringify(events)).not.toContain("Result Model 2");
+    expect(state.nativeSessionId).toBe(SID);
+    expect(a.extractResult(events, EXIT_OK)).toEqual({
+      ok: true,
+      unknownEventCount: 0,
+      nativeSessionId: SID,
+    });
+  });
+
+  it("an init without a usable id loses its model and backing vendor; the result binds with its own fields only", () => {
+    for (const id of ["", undefined, 42]) {
+      const { events } = parse([
+        INIT({
+          session_id: id,
+          model: "Init Model",
+          backing_provider: "init-vendor",
+        }),
+        RESULT({ model: undefined }),
+      ]);
+      expect(bound(events), String(id)).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+    }
+    const withResultFields = parse([
+      INIT({ session_id: "", backing_provider: "init-vendor" }),
+      RESULT({ model: "Result Model", backingProvider: "result-vendor" }),
+    ]);
+    expect(bound(withResultFields.events)).toEqual([
+      {
+        kind: "session_bound",
+        nativeSessionId: SID,
+        model: "Result Model",
+        backingProvider: "result-vendor",
+      },
+    ]);
+  });
+
+  it("an init with an unsafe id binds nothing and its backing vendor is lost; the run fails even if the result binds", () => {
+    const { a, events, state } = parse([
+      INIT({ session_id: "-x", backing_provider: "init-vendor" }),
+      RESULT({ model: undefined }),
+    ]);
+    expect(events.slice(0, 1)).toEqual([
+      {
+        kind: "provider_error",
+        category: "protocol",
+        message: "session id is not a safe argument",
+      },
+    ]);
+    expect(bound(events)).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+    expect(state.nativeSessionId).toBe(SID);
+    expect(a.extractResult(events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      nativeSessionId: SID,
+    });
+  });
+
+  it("pins the asymmetry: a non-null non-string backing_provider shadows backingProvider, while a non-string model falls through", () => {
+    for (const raw of [42, false, { vendor: "x" }, ["x"]]) {
+      const { events } = parse([INIT({ backing_provider: raw, backingProvider: "camel-vendor" }), RESULT()]);
+      expect(bound(events), JSON.stringify(raw)).toEqual([
+        {
+          kind: "session_bound",
+          nativeSessionId: SID,
+          model: "Synthetic Model 1",
+        },
+      ]);
+    }
+    // The same shapes on the result line (no init) behave alike.
+    const onResult = parse([RESULT({ backing_provider: 0, backingProvider: "camel-vendor" })]);
+    expect(bound(onResult.events)).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+    // `model` is read per key with str(), so a non-string falls through to model_id.
+    const model = parse([
+      INIT({
+        model: 7,
+        model_id: "via-model-id",
+        backing_provider: 7,
+        backingProvider: "camel",
+      }),
+    ]);
+    expect(bound(model.events)).toEqual([{ kind: "session_bound", nativeSessionId: SID, model: "via-model-id" }]);
+  });
+
+  it("backingProvider and model are bound verbatim: no trim, no case folding, the harness name kept, 128 characters unclipped", () => {
+    const exact = "v".repeat(128);
+    for (const [vendor, model] of [
+      ["cursor", "cursor"],
+      ["  Anthropic  ", " Model With Spaces "],
+      ["ANTHROPIC", "claude-SONNET"],
+      [exact, exact],
+      ["éditeur", "modèle"],
+    ]) {
+      const { events } = parse([INIT({ model, backing_provider: vendor })]);
+      expect(bound(events), vendor).toEqual([
+        {
+          kind: "session_bound",
+          nativeSessionId: SID,
+          model,
+          backingProvider: vendor,
+        },
+      ]);
+    }
+    const over = parse([INIT({ model: `${exact}m`, backing_provider: `${exact}b` })]);
+    expect(bound(over.events)).toEqual([
+      {
+        kind: "session_bound",
+        nativeSessionId: SID,
+        model: `${exact}…`,
+        backingProvider: `${exact}…`,
+      },
+    ]);
+  });
+
+  it("Object.prototype member names as backingProvider or model are omitted, never bound; the session still binds", () => {
+    for (const name of ["constructor", "hasOwnProperty", "valueOf", "isPrototypeOf", "__proto__", "__defineGetter__"]) {
+      const { events, a } = parse([INIT({ model: name, backing_provider: name }), RESULT()]);
+      expect(bound(events), name).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+      expect(a.extractResult(events, EXIT_OK)).toMatchObject({
+        ok: true,
+        nativeSessionId: SID,
+      });
+    }
+    // A name that only contains a prototype member name is kept.
+    const near = parse([INIT({ model: "constructor-2", backing_provider: "valueOf-vendor" })]);
+    expect(bound(near.events)).toEqual([
+      {
+        kind: "session_bound",
+        nativeSessionId: SID,
+        model: "constructor-2",
+        backingProvider: "valueOf-vendor",
+      },
+    ]);
+  });
+
+  it("an own __proto__ key in the JSON cannot supply a backing vendor, model or session id", () => {
+    const raw =
+      '{"type":"system","subtype":"init","apiKeySource":"login","__proto__":{"session_id":"' +
+      SID +
+      '","model":"proto-model","backing_provider":"proto-vendor"}}';
+    const { events, state } = parse([raw]);
+    expect(bound(events)).toEqual([]);
+    expect(state.nativeSessionId).toBeUndefined();
+    expect(JSON.stringify(events)).not.toContain("proto-vendor");
+  });
+
+  it("backing_provider on lines other than system/init and result never reaches session_bound", () => {
+    const withVendor = {
+      backing_provider: "smuggled-vendor",
+      model: "smuggled-model",
+      session_id: SID,
+    };
+    const { a, events, state } = parse([
+      line({ type: "system", subtype: "status", ...withVendor }),
+      line({ type: "assistant", message: { content: "hi" }, ...withVendor }),
+      line({ type: "thinking", text: "t", ...withVendor }),
+      line({ type: "user", message: { content: "p" }, ...withVendor }),
+      TOOL("started", { readToolCall: { args: { path: "a.txt" } } }),
+      INIT({ model: undefined }),
+      RESULT(),
+    ]);
+    expect(bound(events)).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+    expect(JSON.stringify(events)).not.toContain("smuggled");
+    expect(state.unknownEvents).toBe(1); // system:status
+    // An unknown line before the result is counted, not fatal; the vendor it carried is simply never read.
+    expect(a.extractResult(events, EXIT_OK)).toEqual({
+      ok: true,
+      unknownEventCount: 1,
+      nativeSessionId: SID,
+      summary: "hi",
+    });
+  });
+
+  it("a backing vendor on a second result, or a late init with a changed id, is never bound", () => {
+    const second = parse([INIT(), RESULT(), RESULT({ backing_provider: "second-vendor" })]);
+    expect(bound(second.events)).toEqual([
+      {
+        kind: "session_bound",
+        nativeSessionId: SID,
+        model: "Synthetic Model 1",
+      },
+    ]);
+    const changed = parse([
+      INIT(),
+      INIT({
+        session_id: "4f1c2a9e-0000-4000-8000-0000000000ff",
+        backing_provider: "changed-vendor",
+      }),
+      RESULT(),
+    ]);
+    expect(bound(changed.events)).toEqual([
+      {
+        kind: "session_bound",
+        nativeSessionId: SID,
+        model: "Synthetic Model 1",
+      },
+    ]);
+    expect(JSON.stringify(changed.events)).not.toContain("changed-vendor");
+  });
+
+  it("fixture backing_on_result replays to success with the init model bound and no backing vendor", async () => {
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: replayAdapter("backing_on_result"),
+      request: {
+        runId: "run_cursor_backing_on_result",
+        objective: "synthetic cursor objective",
+        constraints: [],
+        workspace: { cwd: makeCwd(), writable: true },
+        bypassApproved: true,
+      },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: true,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      unknownEventCount: 0,
+    });
+  });
+
+  it("fixture backing_on_result through RunLifecycle stores harness cursor with no backing vendor and the init model", async () => {
+    const root = realpathSync(makeCwd());
+    const repo = join(root, "repo");
+    mkdirSync(repo);
+    const g = (...args: string[]) =>
+      execFileSync("git", ["-c", "commit.gpgsign=false", ...args], {
+        cwd: repo,
+        env: {
+          PATH: process.env.PATH ?? "",
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_AUTHOR_NAME: "Cursor Dev",
+          GIT_AUTHOR_EMAIL: "cursor@example.test",
+          GIT_COMMITTER_NAME: "Cursor Dev",
+          GIT_COMMITTER_EMAIL: "cursor@example.test",
+        },
+      });
+    g("init", "-q", "-b", "main");
+    writeFileSync(join(repo, "README.md"), "initial\n");
+    g("add", "-A");
+    g("commit", "-q", "-m", "init");
+    const dataDir = join(root, "data");
+    mkdirSync(dataDir);
+    const db = openLedger(dataDir);
+    const ids = createIdGenerator();
+    const ledger = createLedger(db, { ids });
+    const artifacts = new ArtifactStore(join(dataDir, "artifacts"));
+    const lifecycle = new RunLifecycle({
+      ledger,
+      workspace: new WorkspaceManager({
+        db,
+        artifacts,
+        dataDir,
+        allowedRoots: [root],
+        ids,
+      }),
+      artifacts,
+      adapters: new AdapterRegistry().register(replayAdapter("backing_on_result")),
+      allowedRoots: [root],
+      globalConcurrency: 1,
+      resolveProfile: (name) => resolveTrustProfile(name),
+    });
+    lifecycle.start();
+    try {
+      const { runId, metaSessionId } = await lifecycle.submit({
+        clientId: "c",
+        objective: "a vendor reported only on the result line",
+        workspace: repo,
+        trustProfile: "privileged",
+        provider: "cursor",
+        privileged: { scope: BYPASS_SCOPE, approvedByClientPolicy: true },
+      });
+      const done = await lifecycle.waitForTerminal(runId);
+      expect(done.state, done.failure_detail ?? "").toBe("SUCCEEDED");
+      const bindings = ledger.listProviderBindings(metaSessionId);
+      expect(bindings).toEqual([
+        expect.objectContaining({
+          provider: "cursor",
+          harness: "cursor",
+          model: "Synthetic Model 1",
+          native_session_id: DEFAULT_SESSION_ID,
+        }),
+      ]);
+      expect(bindings[0]?.backing_provider ?? null).toBeNull();
+      const rows = ledger.listUsageObservationsForRun(runId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        provider: "cursor",
+        harness: "cursor",
+        source: "provider_reported",
+      });
+      expect(rows[0]?.backing_provider ?? null).toBeNull();
+      expect(JSON.stringify([bindings, rows])).not.toContain("backing-late");
+      expect(JSON.stringify([bindings, rows])).not.toContain("Result Model 2");
+    } finally {
+      await lifecycle.shutdown();
+      db.close();
+    }
   });
 });
