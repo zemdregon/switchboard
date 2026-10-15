@@ -750,11 +750,12 @@ describe("the http backend's reported usage reaches the labelled observation as 
  * would have passed every test. The scan below is textual and simple, like `run-path-reach.test.ts`: word-bounded,
  * so the migration's `usage_observation_new` does not match, and checked on a synthetic tree so it cannot be vacuous.
  *
- * Post-#432: the scan must cover every spelling SQLite accepts for a write, not `INSERT INTO` alone, because one of
- * them also gets past the table's append-only guards. `INSERT OR REPLACE` / `REPLACE INTO` resolve a colliding id by
- * deleting the old row, and SQLite fires no `BEFORE DELETE` trigger for that delete unless `recursive_triggers` is on,
- * which the ledger leaves at the default (off). The last test pins that as-built fact on the real ledger (Q-96), so the
- * widened scan is the guard that a REPLACE statement in a production module would fail.
+ * Post-#432: the scan covers every spelling SQLite accepts for a write, not `INSERT INTO` alone, because one of them
+ * used to get past the table's append-only guards. `INSERT OR REPLACE` / `REPLACE INTO` resolve a colliding id by
+ * deleting the old row, and SQLite fires no `BEFORE DELETE` trigger for that delete unless `recursive_triggers` is on.
+ * Q-96 (answered 2026-10-15, Delegated): `openLedger` now sets it on, so the REPLACE spelling is refused by the same
+ * guards as `UPDATE` and `DELETE`. The last-but-one test pins that on the real ledger; the widened scan stays as the
+ * sole-writer pin and as defence in depth should the pragma ever be dropped.
  */
 describe("recordInnerCall under the flag is the only writer of inner_agent rows (T11.5; FR-INN-15, FR-CAP-01)", () => {
   it("the public insert refuses an inner_agent row shaped exactly like a labelled one, and writes nothing", async () => {
@@ -849,7 +850,7 @@ describe("recordInnerCall under the flag is the only writer of inner_agent rows 
     ]);
   });
 
-  it("the append-only guards refuse UPDATE and DELETE but not a REPLACE under the ledger's pragmas, which is why the scan covers every spelling (as-built, Q-96)", async () => {
+  it("the append-only guards refuse UPDATE, DELETE and a REPLACE of a labelled row under the ledger's pragmas (as-built, Q-96 answered)", async () => {
     const h = setup([GOOD], { shares: "claude-code" });
     expect(await h.call()).toMatchObject({ accepted: true });
     const [row] = h.usageRows();
@@ -864,31 +865,31 @@ describe("recordInnerCall under the flag is the only writer of inner_agent rows 
       /append-only/u,
     );
     expect(h.ledger.listProviderReportedUsageSince("claude-code", since)).toEqual([]);
-    // SQLite's REPLACE conflict resolution deletes the colliding row without firing BEFORE DELETE triggers unless
-    // `recursive_triggers` is on; `openLedger` leaves it at the default. So the same relabelling as a REPLACE goes
-    // through, and the row now counts as provider-reported usage. No production module issues such a statement (the
-    // scan above) and the id is the ledger's own; this pins the as-built guard, not a reachable surface.
-    expect(h.db.pragma("recursive_triggers", { simple: true })).toBe(0);
-    h.db
-      .prepare(
-        `INSERT OR REPLACE INTO usage_observation (id, run_id, provider, harness, backing_provider, model, source,
-                                                   metrics_json, observed_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'provider_reported', ?, ?)`,
-      )
-      .run(
-        row?.id as string,
-        row?.run_id as string,
-        row?.provider as string,
-        row?.harness as string,
-        row?.backing_provider as string | null,
-        row?.model as string,
-        row?.metrics_json as string,
-        row?.observed_at as string,
-      );
-    expect(h.usageRows()).toEqual([{ ...row, source: "provider_reported" }]);
-    expect(h.ledger.listProviderReportedUsageSince("claude-code", since)).toEqual([
-      { metrics_json: row?.metrics_json, observed_at: row?.observed_at },
-    ]);
+    // SQLite's REPLACE conflict resolution deletes the colliding row, and fires the BEFORE DELETE guard for that
+    // delete only when `recursive_triggers` is on. `openLedger` sets it (Q-96, answered 2026-10-15, Delegated, fail
+    // closed), so the same relabelling spelled as a REPLACE is refused too, the row is untouched and it never reaches
+    // the capacity collector's read. Before the pragma this statement went through and relabelled the row.
+    expect(h.db.pragma("recursive_triggers", { simple: true })).toBe(1);
+    expect(() =>
+      h.db
+        .prepare(
+          `INSERT OR REPLACE INTO usage_observation (id, run_id, provider, harness, backing_provider, model, source,
+                                                     metrics_json, observed_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'provider_reported', ?, ?)`,
+        )
+        .run(
+          row?.id as string,
+          row?.run_id as string,
+          row?.provider as string,
+          row?.harness as string,
+          row?.backing_provider as string | null,
+          row?.model as string,
+          row?.metrics_json as string,
+          row?.observed_at as string,
+        ),
+    ).toThrow(/append-only/u);
+    expect(h.usageRows()).toEqual([row]);
+    expect(h.ledger.listProviderReportedUsageSince("claude-code", since)).toEqual([]);
   });
 
   it("only the ledger repository writes usage_observation: its two statements, the provider-reported insert and recordInnerCall", () => {

@@ -25,11 +25,12 @@
  * `stream-json` parser reads the recorded `meta`/`assistant` records and the documented tool records (field names an
  * Assumption), binds the session id from the resume hint and ends the turn there; ACP messages use the shared mapping
  * (`mapAcpMessage`, ADR-0036). Resume is `--session <id>` in the bypass cell and ACP `session/resume` otherwise, through
- * the same matrix. The auth preflight (T4.64) is a fail-closed placeholder. The manifest range admits no version, so
- * none of this runs before `adapters validate` passes a version (FR-ADP-09, T4.68).
+ * the same matrix. The auth preflight (T4.64) is the ACP probe of ADR-0049 item 4 (`initialize`, then `session/new` in a
+ * scratch directory; `-32000` is AUTH_REQUIRED, anything unrecognised UNKNOWN). The manifest range admits no version,
+ * so none of this runs before `adapters validate` passes a version (FR-ADP-09, T4.68).
  */
 
-import { acpRunSucceeded, mapAcpMessage } from "../../exec/acp/events.js";
+import { ACP_AUTH_REQUIRED_CODE, acpRunSucceeded, mapAcpMessage } from "../../exec/acp/events.js";
 import {
   DEFAULT_IDLE_MS,
   DEFAULT_KILL_GRACE_MS,
@@ -54,6 +55,7 @@ import type {
   NativeBinding,
   NormalizedEvent,
   ParseState,
+  ProbeOutput,
   ProbeResult,
   ProbeRunner,
   ProviderAdapter,
@@ -62,8 +64,12 @@ import type {
 } from "../types.js";
 import {
   ACP_CONFIG_MODEL,
+  ACP_METHOD_INITIALIZE,
+  ACP_METHOD_SESSION_NEW,
   ACP_MODE_PLAN,
   ACP_SUBCOMMAND,
+  AUTH_PROBE_INITIALIZE_ID,
+  AUTH_PROBE_SESSION_ID,
   ERROR_AUTH_PREFIX,
   GIT_WRITE_CONTROL_DETAIL,
   HELP_FLAG,
@@ -84,6 +90,7 @@ import {
   TOOL_CALLS_KEY,
   VERSION_ARGS,
 } from "./protocol.js";
+import { withScratchDir } from "./scratch.js";
 
 /**
  * Environment names passed through to Kimi Code (FR-EXE-07, NFR-SEC-02). Proposed: `PATH` for the binary and `HOME` so
@@ -93,6 +100,12 @@ import {
 export const KIMI_ENV_ALLOWLIST: readonly string[] = ["PATH", "HOME"];
 
 const PROBE_TIMEOUT_MS = 10_000;
+/**
+ * Auth probe bound (Proposed): [LIVE] 8 to 10 replied within 2 s; under the ADR-0036 item 4 `initialize` target (30 s).
+ * If the CLI keeps running after stdin closes, every probe lasts this long, which the preflight cache absorbs.
+ */
+const AUTH_PROBE_TIMEOUT_MS = 15_000;
+const AUTH_UNKNOWN_REASON = "Kimi Code ACP auth probe was inconclusive";
 /** A model alias passed as one argv word or config value; refuse anything that could be read as a flag (Proposed). */
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._/:-]{0,127}$/;
 /**
@@ -115,6 +128,11 @@ const str = (v: unknown): string | undefined => (typeof v === "string" ? v : und
 const obj = (v: unknown): Json | undefined =>
   typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Json) : undefined;
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
+/** A JSON-RPC response's error code for an UNKNOWN reason: an integer only, never provider text. */
+const errorCode = (response: Json): string => {
+  const code = ownProp(obj(ownProp(response, "error")), "code");
+  return Number.isSafeInteger(code) ? `error ${String(code)}` : "without a usable result";
+};
 
 /** Per-run `stream-json` state: whether the resume hint (end of the turn) was seen. */
 const seenHints = new WeakMap<ParseState, number>();
@@ -255,12 +273,92 @@ export class KimiAdapter implements ProviderAdapter {
     return { binaryPath: exe, binaryVersion: version, steps };
   }
 
-  /** FR-AUTH-01/02: the ACP probe of ADR-0049 item 4 arrives with T4.64; until then the state is unknown (fail closed). */
-  async authPreflight(_runner: ProbeRunner): Promise<AuthResult> {
-    return {
-      state: "UNKNOWN",
-      reason: "Kimi Code auth preflight is not implemented (T4.64); no status command exists ([LIVE] 2, 6)",
+  /**
+   * FR-AUTH-01/02 via the ACP probe (T4.64, ADR-0049 item 4; spellings and Assumptions in protocol.ts): `kimi acp` in a
+   * fresh scratch directory, sent `initialize` (version 1, no client capability, the ADR-0036 client's shape) and
+   * `session/new` (that directory, no `mcpServers`) on stdin. Only the JSON-RPC replies decide, whatever the exit code
+   * or timeout: an `initialize` result with protocol version 1 and then a `session/new` result with a safe `sessionId`
+   * is OK; a `session/new` error `-32000` is AUTH_REQUIRED naming `kimi login`; anything else (no or duplicate replies,
+   * another error, a line that is not JSON, a spawn failure) is UNKNOWN (fail closed, NFR-SEC-06). The reason carries
+   * codes only, never provider text. Never `authenticate`, `--login` or a prompt: no model call and no login. No Kimi
+   * file is read and `KIMI_CODE_HOME` is never set. The probe session persists in Kimi's data directory ([LIVE] 12),
+   * so this runs once per preflight window (the preflight cache), not per run.
+   */
+  async authPreflight(runner: ProbeRunner): Promise<AuthResult> {
+    const exe = this.#exe;
+    if (exe === undefined) return { state: "UNKNOWN", reason: `${KIMI_BINARY} not found on PATH` };
+    let r: ProbeOutput;
+    try {
+      r = await withScratchDir((dir) => {
+        const lines = [
+          {
+            jsonrpc: "2.0",
+            id: AUTH_PROBE_INITIALIZE_ID,
+            method: ACP_METHOD_INITIALIZE,
+            params: {
+              protocolVersion: 1,
+              clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+              clientInfo: { name: "switchboard", version: "0.0.0" },
+            },
+          },
+          {
+            jsonrpc: "2.0",
+            id: AUTH_PROBE_SESSION_ID,
+            method: ACP_METHOD_SESSION_NEW,
+            params: { cwd: dir, mcpServers: [] },
+          },
+        ];
+        const stdinText = lines.map((l) => `${JSON.stringify(l)}\n`).join("");
+        return runner([exe, ...this.#launcher, ACP_SUBCOMMAND], {
+          cwd: dir,
+          timeoutMs: AUTH_PROBE_TIMEOUT_MS,
+          stdinText,
+        });
+      });
+    } catch {
+      return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (the probe could not run)` };
+    }
+    if (r.spawnError !== undefined) return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (${r.spawnError})` };
+    const replies = new Map<unknown, Json[]>();
+    for (const line of r.stdout.split("\n")) {
+      if (line.trim() === "") continue;
+      let msg: Json | undefined;
+      try {
+        msg = obj(JSON.parse(line));
+      } catch {
+        msg = undefined;
+      }
+      if (msg === undefined) return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (stdout line is not JSON)` };
+      // Agent notifications and requests (`session/update`, ...) carry a method; only responses decide.
+      if (Object.hasOwn(msg, "method") || !Object.hasOwn(msg, "id")) continue;
+      replies.set(msg.id, [...(replies.get(msg.id) ?? []), msg]);
+    }
+    const one = (id: number): Json | "missing" | "duplicate" => {
+      const got = replies.get(id) ?? [];
+      return got.length === 0 ? "missing" : got.length > 1 ? "duplicate" : (got[0] as Json);
     };
+    const exit = r.timedOut ? "timed out" : `exit ${r.exitCode}`;
+    const init = one(AUTH_PROBE_INITIALIZE_ID);
+    if (typeof init === "string") {
+      return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (initialize ${init}, ${exit})` };
+    }
+    if (ownProp(obj(ownProp(init, "result")), "protocolVersion") !== 1) {
+      return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (initialize ${errorCode(init)}, ${exit})` };
+    }
+    const session = one(AUTH_PROBE_SESSION_ID);
+    if (typeof session === "string") {
+      return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (session/new ${session}, ${exit})` };
+    }
+    const error = obj(ownProp(session, "error"));
+    if (error !== undefined) {
+      if (ownProp(error, "code") === ACP_AUTH_REQUIRED_CODE && !Object.hasOwn(session, "result")) {
+        return { state: "AUTH_REQUIRED", loginCommand: KIMI_LOGIN_COMMAND };
+      }
+      return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (session/new ${errorCode(session)}, ${exit})` };
+    }
+    const sessionId = str(ownProp(obj(ownProp(session, "result")), "sessionId"));
+    if (sessionId !== undefined && SESSION_ID_RE.test(sessionId)) return { state: "OK" };
+    return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (session/new returned no usable sessionId, ${exit})` };
   }
 
   compile(request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible {

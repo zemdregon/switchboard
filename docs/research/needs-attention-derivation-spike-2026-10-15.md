@@ -197,9 +197,9 @@ Deriving `active: true` without a closed `reason` is forbidden by schema. Derivi
 | --- | --- | --- |
 | `list_runs` MCP tool | T14.1 | Envelope parity tests; shared derivation entry point |
 | Budget refusal persistence and admission checks | T14.4 | `budget_exhausted` facts in `control_plane_state` |
-| Loop breaker, stall detector, successor cap | T14.5 | `parked_loop`, `stalled`, `failed_after_retry` inputs |
+| Loop breaker, stall detector, successor cap | T14.5 | `parked_loop`, `stalled`, `failed_after_retry` inputs — [loop breaker spike](loop-breaker-stall-successor-cap-spike-2026-10-15.md) |
 | `get_digest` assembly | T14.3 | Project-level arrays and `budget.exhausted`; consumes T14.2 derivation |
-| Pause | T14.6 | `paused` on digest; pause holds admission but is **not** a `needs_attention_reason` |
+| Pause | T14.6 | `paused` on digest; pause holds admission but is **not** a `needs_attention_reason` — [pause spike](project-pause-resume-spike-2026-10-15.md) |
 | Notification delivery | T14.9 | Emit `needs_attention` sink events when the derived flag becomes true (cross-link only) |
 | Approval proxy / consent link | T14.8 / T14.10 | `pending_approvals` and consent URLs; not alternate reason enums |
 
