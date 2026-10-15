@@ -32,6 +32,7 @@ import {
   grokResidualGapStreams,
   grokResidualStreams,
 } from "./adapters/grok.case.js";
+import { kimiBlockedStreams, kimiPartialStreams, kimiUnguardedStreams } from "./adapters/kimi.case.js";
 import {
   opencodeGuardBlindStreams,
   opencodePartialStreams,
@@ -50,14 +51,14 @@ for (const f of files)
 describe("adapter malicious leg: discovery", () => {
   it("runs through the one shared replay helper: no per-adapter replay.mjs copy remains", () => {
     const adapters = path.join(DIR, "..", "..", "..", "src", "adapters");
-    for (const p of ["antigravity", "claude", "codex", "cursor", "grok", "opencode"])
+    for (const p of ["antigravity", "claude", "codex", "cursor", "grok", "kimi", "opencode"])
       expect(readdirSync(path.join(adapters, p, "fixtures"))).not.toContain("replay.mjs");
     expect(readdirSync(path.join(adapters, "fixtures"))).toContain("replay.mjs");
   });
 
-  it("finds a case file for Antigravity, Claude Code, Codex, Cursor, Grok Build and OpenCode", () => {
+  it("finds a case file for Antigravity, Claude Code, Codex, Cursor, Grok Build, Kimi Code and OpenCode", () => {
     expect(cases.map((c) => c.provider)).toEqual(
-      expect.arrayContaining(["antigravity", "claude", "codex", "cursor", "grok", "opencode"]),
+      expect.arrayContaining(["antigravity", "claude", "codex", "cursor", "grok", "kimi", "opencode"]),
     );
     expect(new Set(cases.map((c) => c.provider)).size).toBe(cases.length);
   });
@@ -77,7 +78,7 @@ describe("adapter malicious leg: hostile repository", () => {
 afterAll(() => fx.close());
 
 /** Providers whose hostile-stream replay runs one test per category. */
-const SPLIT_BY_CATEGORY = new Set(["antigravity", "grok", "opencode"]);
+const SPLIT_BY_CATEGORY = new Set(["antigravity", "grok", "kimi", "opencode"]);
 
 describe.each(cases.map((c) => [c.provider, c] as const))("adapter malicious leg: %s", (_provider, c) => {
   it("covers every hostile category with a blocked failure code", () => {
@@ -410,6 +411,102 @@ describe("adapter malicious leg: opencode partial streams", () => {
       });
       expect(res.failureCode, s.name).not.toBe("PERMISSION_BLOCKED");
     }
+  });
+});
+
+// Kimi Code only (T4.66): streams that are not hostile-category streams of the shared harness, replayed on their own.
+describe("adapter malicious leg: kimi partial and unguarded streams", () => {
+  const c = cases.find((x) => x.provider === "kimi");
+  if (!c) throw new Error("no kimi case file");
+  const KIMI_EXITS = [0, 1, 2, 137] as const;
+
+  it("names every Kimi Code stream once, so no cell is shadowed by a duplicate", () => {
+    const names = [...c.streams(fx), ...kimiPartialStreams(fx), ...kimiUnguardedStreams(fx)].map((s) => s.name);
+    expect(names.filter((n, i) => names.indexOf(n) !== i)).toEqual([]);
+  });
+
+  it("runs every blocked shape in every category at exits 0, 1, 2 and 137", () => {
+    const streams = kimiBlockedStreams(fx);
+    // 14 shapes at four exit codes plus six Git-write spellings at two, per category (ROADMAP T4.66 evidence).
+    expect(streams).toHaveLength(3 * (14 * KIMI_EXITS.length + 6 * 2));
+    for (const cat of ["credential_read", "out_of_worktree_write", "network"] as const) {
+      expect(new Set(streams.filter((s) => s.category === cat).map((s) => s.exitCode)), cat).toEqual(
+        new Set(KIMI_EXITS),
+      );
+    }
+    expect(streams.every((s) => s.failureCode === "PERMISSION_BLOCKED")).toBe(true);
+  });
+
+  it("a stream cut before, inside or after the hostile call ends OUTPUT_PROTOCOL_ERROR and leaves the checkout untouched", async () => {
+    const streams = kimiPartialStreams(fx);
+    expect(streams).toHaveLength(3 * KIMI_EXITS.length * 3);
+    for (const s of streams) {
+      expect(
+        s.lines.some((line) => {
+          try {
+            JSON.parse(line);
+            return false;
+          } catch {
+            return true;
+          }
+        }),
+        `${s.name}: malformed line`,
+      ).toBe(true);
+      const o = await replayHostileStream(c, fx, s);
+      expect(o.failedChecks, s.name).toEqual([]);
+      expect(o.resultOk, s.name).toBe(false);
+      expect(o.failureCode, s.name).toBe("OUTPUT_PROTOCOL_ERROR");
+      expect(o.untouched, s.name).toBe(true);
+    }
+  });
+
+  it("positive control: a partial stream with its cut line dropped ends PERMISSION_BLOCKED instead", async () => {
+    for (const s of kimiPartialStreams(fx).filter((x) => x.name.startsWith("output cut before"))) {
+      const repaired = { ...s, lines: s.lines.filter((line) => line !== '{"role":"assist') };
+      expect(repaired.lines.length, s.name).toBe(s.lines.length - 1);
+      const o = await replayHostileStream(c, fx, repaired);
+      expect(o.failureCode, s.name).toBe("PERMISSION_BLOCKED");
+      expect(o.untouched, s.name).toBe(true);
+    }
+  });
+
+  // Owner decision 25: in an approved bypass the guard enforces Git-write denial only. A hostile action with no Git
+  // write is pinned at the result it ends with, so the boundary of this leg is visible, not hidden.
+  it("approved bypass: a hostile call with no Git write is not blocked, pinned at its current result", async () => {
+    const streams = kimiUnguardedStreams(fx);
+    expect(streams).toHaveLength(6);
+    for (const s of streams) expect(await gapProblems(c, fx, s), s.name).toEqual([]);
+  });
+
+  it("positive control: the same unguarded call chained with a Git write ends PERMISSION_BLOCKED", async () => {
+    for (const s of kimiUnguardedStreams(fx)) {
+      const lines = s.lines.map((line) => line.replace(/(\\"command\\":\\"[^\\]*)/, "$1 && git push origin main"));
+      expect(lines, s.name).not.toEqual(s.lines);
+      expect((await gapProblems(c, fx, { ...s, lines })).join(), s.name).toContain("gap closed");
+    }
+  });
+
+  // The blocked list rests on the guard verdict, not on the adapter's own failure mapping: with the verdict removed
+  // (parseEvent and extractResult only), none of the blocked streams ends PERMISSION_BLOCKED.
+  it("positive control: without the ADR-0039 guard verdict, no blocked Kimi Code stream ends PERMISSION_BLOCKED", () => {
+    const streams = kimiBlockedStreams(fx);
+    expect(streams.length).toBeGreaterThan(150);
+    const adapter = c.makeAdapter("unused", 0);
+    let ok = 0;
+    for (const s of streams) {
+      const state = { lines: 0, unknownEvents: 0 };
+      const events = s.lines.slice(1).flatMap((line) => adapter.parseEvent(line, state));
+      const res = adapter.extractResult(events, {
+        outcome: "exited",
+        exitCode: s.exitCode,
+        signal: null,
+        expectedExitCodes: [0],
+      });
+      expect(res.failureCode, s.name).not.toBe("PERMISSION_BLOCKED");
+      if (res.ok) ok += 1;
+    }
+    // Without the guard, the plain cells at exit 0 would end ok.
+    expect(ok).toBeGreaterThan(0);
   });
 });
 
