@@ -19,8 +19,13 @@
  * only in a target (gap closed 2026-10-15: a shell target is never clipped and a nameless target-only update on a shell
  * call stays `shell`), empty `tool` and `id` values that shadow their fallback keys (pinned gaps), a
  * target dropped beside a command, duplicate JSON keys, exact-case line types, empty text and a byte-order mark.
+ * Seventh pass (T4.6, FR-ADP-10): `backing_provider` over `backingProvider` (a non-string falls through), model and
+ * vendor bound independently and verbatim (clipped past 128), lost with an `end` that binds nothing (pinned gap) and
+ * never amended, a resumed run carrying both (replayed end to end); after #458, a call opened `shell` by its command
+ * stays `shell`, a target-only call under another tool name is a `read` (pinned gap), a `read` renamed
+ * `run_terminal_command` with the same target is deduplicated (pinned gap), and the transient command is stripped.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -28,7 +33,13 @@ import { runConformanceCase } from "../conformance.js";
 import { guardEvent } from "../tool-guard.js";
 import type { ParseState } from "../types.js";
 import { GROK_BYPASS_NOT_APPROVED, GrokAdapter } from "./adapter.js";
-import { DEFAULT_SESSION_ID, PRIVILEGED_BYPASS_PROFILE, RESUMED_SESSION_ID, replayAdapter } from "./fixtures/cases.js";
+import {
+  DEFAULT_SESSION_ID,
+  fixturePath,
+  PRIVILEGED_BYPASS_PROFILE,
+  RESUMED_SESSION_ID,
+  replayAdapter,
+} from "./fixtures/cases.js";
 
 const dirs: string[] = [];
 const makeCwd = () => {
@@ -919,5 +930,203 @@ describe("grok parser residuals, sixth pass: parameter shapes, shadowing keys an
     expect(state).toEqual({ lines: 1, unknownEvents: 0 });
     // With no result the parser alone can never report success; the supervisor ends such a run OUTPUT_PROTOCOL_ERROR.
     expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+  });
+});
+
+describe("grok parser residuals, seventh pass: backingProvider and model parity, shell-kind edges after #458 (T4.23, T4.6, FR-ADP-10; synthetic lines; parser unchanged)", () => {
+  const ctx = { cwd: "/w", bypass: true };
+  const guarded = (lines: (string | object)[]) => parse(lines).events.map((e) => guardEvent(e, ctx));
+  const bound = (lines: (string | object)[]) => parse(lines).events.filter((e) => e.kind === "session_bound");
+
+  it("backing_provider outranks backingProvider; a non-string one falls through (unlike Cursor's pinned asymmetry)", () => {
+    expect(bound([line({ ...END, backing_provider: "snake", backingProvider: "camel" })])).toEqual([
+      { kind: "session_bound", nativeSessionId: SID, backingProvider: "snake" },
+    ]);
+    // `str()` drops a non-string before `??`, so every non-string value falls through to the camel-case key.
+    for (const raw of [null, 0, 7, false, true, {}, ["x"]]) {
+      expect(bound([line({ ...END, backing_provider: raw, backingProvider: "camel" })]), JSON.stringify(raw)).toEqual([
+        { kind: "session_bound", nativeSessionId: SID, backingProvider: "camel" },
+      ]);
+    }
+    // Neither key a string: no vendor, and the binding itself still happens.
+    expect(bound([line({ ...END, backing_provider: 1, backingProvider: 2 })])).toEqual([
+      { kind: "session_bound", nativeSessionId: SID },
+    ]);
+  });
+
+  it("model and backingProvider are independent: either binds without the other, and neither is ever defaulted", () => {
+    expect(bound([line({ ...END, model: "grok-4.7-build" })])).toEqual([
+      { kind: "session_bound", nativeSessionId: SID, model: "grok-4.7-build" },
+    ]);
+    expect(bound([line({ ...END, backingProvider: "backing-x" })])).toEqual([
+      { kind: "session_bound", nativeSessionId: SID, backingProvider: "backing-x" },
+    ]);
+    // Neither is ever inferred from the harness: no "grok" vendor, no model from `requestId` or `usage`.
+    expect(bound([line({ ...END, requestId: "req_1" })])).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+  });
+
+  it("model and backingProvider are bound verbatim: no trim, no case folding, the harness name kept, 128 characters unclipped", () => {
+    for (const value of [" grok-4.7-build ", "Grok-4.7-BUILD", "grok", "\t", "a".repeat(128)]) {
+      expect(bound([line({ ...END, model: value, backing_provider: value })]), JSON.stringify(value)).toEqual([
+        { kind: "session_bound", nativeSessionId: SID, model: value, backingProvider: value },
+      ]);
+    }
+    const long = "b".repeat(129);
+    expect(bound([line({ ...END, model: long, backing_provider: long })])).toEqual([
+      {
+        kind: "session_bound",
+        nativeSessionId: SID,
+        model: `${"b".repeat(128)}…`,
+        backingProvider: `${"b".repeat(128)}…`,
+      },
+    ]);
+  });
+
+  it("pins the gap: an `end` that binds nothing loses its model and vendor, so only a later binding `end` supplies them", () => {
+    for (const sessionId of ["", "-r", 7, undefined]) {
+      const first = { ...END, sessionId, model: "first-model", backing_provider: "first-vendor" };
+      expect(bound([line(first)]), JSON.stringify(sessionId)).toEqual([]);
+      // The second `end` is a protocol error, but its vendor is the only one bound (as its id, fourth pass).
+      const both = parse([line(first), line({ ...END, backing_provider: "second-vendor" })]);
+      expect(both.events.filter((e) => e.kind === "session_bound")).toEqual([
+        { kind: "session_bound", nativeSessionId: SID, backingProvider: "second-vendor" },
+      ]);
+      expect(adapter().extractResult(both.events, EXIT_OK)).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        nativeSessionId: SID,
+      });
+    }
+  });
+
+  it("the first binding is final for the vendor too: a later `end` with the same id never amends or adds one", () => {
+    const { events } = parse([
+      line({ ...END, backing_provider: "first-vendor" }),
+      line({ ...END, backing_provider: "second-vendor", model: "late-model" }),
+    ]);
+    expect(events.filter((e) => e.kind === "session_bound")).toEqual([
+      { kind: "session_bound", nativeSessionId: SID, backingProvider: "first-vendor" },
+    ]);
+    // A first binding without a vendor stays without one.
+    const late = parse([line(END), line({ ...END, backing_provider: "late-vendor" })]).events;
+    expect(late.filter((e) => e.kind === "session_bound")).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+  });
+
+  it("a structured model outranks modelUsage even when the model is also a modelUsage key, and the vendor is unaffected", () => {
+    const modelUsage = { "usage-model": { inputTokens: 1 }, "named-model": { inputTokens: 2 } };
+    expect(bound([line({ ...END, model: "named-model", modelUsage, backingProvider: "v" })])).toEqual([
+      { kind: "session_bound", nativeSessionId: SID, model: "named-model", backingProvider: "v" },
+    ]);
+    expect(bound([line({ ...END, model_id: "id-model", modelUsage })])).toEqual([
+      { kind: "session_bound", nativeSessionId: SID, model: "id-model" },
+    ]);
+  });
+
+  it("fixture resume_backing_provider: `-r <id>` resumes, the same id binds with model and vendor, and the run succeeds", async () => {
+    const a = replayAdapter("resume_backing_provider");
+    const binding = { provider: "grok" as const, nativeSessionId: RESUMED_SESSION_ID };
+    const request = {
+      runId: "run_grok_t423_residual",
+      objective: "synthetic grok objective",
+      constraints: [],
+      workspace: { cwd: makeCwd(), writable: true },
+      bypassApproved: true,
+    };
+    const inv = a.resumeArgs(binding, request, PRIVILEGED_BYPASS_PROFILE);
+    if ("ineligible" in inv) throw new Error(inv.detail);
+    expect(inv.argv.slice(-2)).toEqual(["-r", RESUMED_SESSION_ID]);
+    const report = await runConformanceCase({
+      kind: "resume",
+      adapter: a,
+      request,
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      binding,
+      expect: { ok: true, nativeSessionId: RESUMED_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: true, nativeSessionId: RESUMED_SESSION_ID, unknownEventCount: 0 });
+    // The same lines through the parser: the resumed binding carries the modelUsage model and the vendor.
+    const lines = readFileSync(fixturePath("resume_backing_provider"), "utf8").split("\n").filter(Boolean).slice(1);
+    expect(parse(lines).events.filter((e) => e.kind !== "message")).toEqual([
+      {
+        kind: "session_bound",
+        nativeSessionId: RESUMED_SESSION_ID,
+        model: "grok-4.7-build",
+        backingProvider: "backing-x",
+      },
+      {
+        kind: "usage",
+        source: "provider_reported",
+        metrics: { input_tokens: 9, output_tokens: 3, total_tokens: 12, num_turns: 1 },
+      },
+      { kind: "result", ok: true },
+    ]);
+  });
+
+  it("a call opened as `shell` by its command stays `shell`: a later target-only update is guarded as a command", () => {
+    const open = line({ type: "tool_call", id: "s1", tool: "bash", input: { command: "ls" } });
+    const lines = [
+      open,
+      line({ type: "tool_call_update", id: "s1", tool: "read_file", input: { path: "git push origin main" } }),
+      line(END),
+    ];
+    // The update's own name says `read_file`, but the call is already `shell`: over-guard, never under.
+    expect(parse(lines).events[1]).toEqual({
+      kind: "tool_call",
+      tool: "shell",
+      name: "read_file",
+      command: "git push origin main",
+      target: "git push origin main",
+    });
+    expect(adapter().extractResult(guarded(lines), EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+    // The `shell` mark is per call key: another call's target-only update stays a `read`.
+    const other = parse([open, line({ type: "tool_call_update", id: "s2", input: { path: "/w/a" } })]).events;
+    expect(other[1]).toMatchObject({ tool: "read", target: "/w/a" });
+  });
+
+  it("pins the gap: a target-only call named other than run_terminal_command is a `read`, so a Git write there is unguarded", () => {
+    // Only `run_terminal_command` (or a command key) makes a call `shell`; the native shell tool name is an Assumption.
+    const lines = [line({ type: "tool_call", tool: "bash", input: { path: "git push origin main" } }), line(END)];
+    expect(parse(lines).events[0]).toEqual({
+      kind: "tool_call",
+      tool: "read",
+      name: "bash",
+      target: "git push origin main",
+    });
+    expect(adapter().extractResult(guarded(lines), EXIT_OK)).toEqual({
+      ok: true,
+      unknownEventCount: 0,
+      nativeSessionId: SID,
+    });
+  });
+
+  it("pins the gap: a `read` call later renamed run_terminal_command with the same target is deduplicated, so never guarded", () => {
+    const read = line({ type: "tool_call", id: "r1", tool: "read_file", input: { path: "git push origin main" } });
+    const rename = { type: "tool_call_update", id: "r1", name: "run_terminal_command" };
+    const lines = [read, line({ ...rename, input: { path: "git push origin main" } }), line(END)];
+    // The dedup key is `target:<value>` for both lines, whatever the kind, so the rename emits nothing.
+    expect(parse(lines).events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "read", name: "read_file", target: "git push origin main" },
+    ]);
+    expect(adapter().extractResult(guarded(lines), EXIT_OK)).toMatchObject({ ok: true });
+    // Positive control: a new target in the renamed update is reported as `shell` and blocked.
+    const swapped = [read, line({ ...rename, input: { path: "git push origin dev" } }), line(END)];
+    expect(adapter().extractResult(guarded(swapped), EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+  });
+
+  it("the transient guard command is stripped by guardEvent; only the clipped target is kept on the event", () => {
+    const long = `echo ${"x".repeat(600)} && git push origin main`;
+    const [kept] = guarded([line({ type: "tool_call", name: "run_terminal_command", input: { path: long } })]);
+    expect(kept).not.toHaveProperty("command");
+    expect(kept).toMatchObject({ tool: "shell", target: `${long.slice(0, 512)}…`, violation: { kind: "git_write" } });
+    // An empty-string target on a shell call is an empty command: kept, never a violation.
+    const [empty] = guarded([line({ type: "tool_call", name: "run_terminal_command", input: { path: "" } })]);
+    expect(empty).toEqual({ kind: "tool_call", tool: "shell", name: "run_terminal_command", target: "" });
   });
 });
