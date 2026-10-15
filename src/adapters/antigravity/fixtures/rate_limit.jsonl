@@ -1,0 +1,1 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.35). The 2026-10-14 live check never forced a rate limit, so no native shape was recorded: an empty stream at exit 1 replays to TOOL_FAILURE, never RATE_LIMIT_TRANSIENT or success.","exit":1}}

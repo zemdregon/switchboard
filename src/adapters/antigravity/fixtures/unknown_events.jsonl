@@ -1,0 +1,6 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.35). Invented event kinds and unreadable event lines: every unreadable line is counted and none binds a session; replays to OUTPUT_PROTOCOL_ERROR.","exit":0}}
+{"event":"synthetic_unrecognized_kind","sessionId":"0b6c2d1e-0000-4000-8000-000000000001"}
+{"status":"RESOURCE_EXHAUSTED","code":429}
+{"event":"step_update"}
+{"event":"brand_new_event","detail":"synthetic"}
+{"event":"result"}

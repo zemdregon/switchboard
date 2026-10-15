@@ -21,6 +21,7 @@ import { WorkspaceManager } from "../../workspace/index.js";
 import { auditInvocation, bypassClassFlags } from "../audit.js";
 import { type ConformanceCase, missingRequiredKinds, runConformanceCase, runConformanceSuite } from "../conformance.js";
 import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
+import { REPLAY_SCRIPT } from "../fixtures/replay.js";
 import { PreflightCache } from "../preflight-cache.js";
 import { providerEntry } from "../providers.js";
 import { AdapterRegistry } from "../registry.js";
@@ -1131,6 +1132,57 @@ describe("antigravity cases with no recorded native shape (T4.33, synthetic shap
     expect(report.result).toMatchObject({ ok: false, nativeSessionId: DEFAULT_SESSION_ID });
     expect(fixtureEvents("usage_unrecorded").some((e) => e.kind === "usage")).toBe(false);
   });
+
+  it("fixture rate_limit replays an empty stream at exit 1 to TOOL_FAILURE, never RATE_LIMIT_TRANSIENT", async () => {
+    const report = await runConformanceCase(
+      replayCase("rate_limit", "task_failure", { ok: false, failureCode: "TOOL_FAILURE" }),
+    );
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", unknownEventCount: 0 });
+    expect(report.result).not.toHaveProperty("nativeSessionId");
+  });
+
+  it("fixture rate_limit_error replays an in-stream ERROR envelope at exit 0 to TOOL_FAILURE, never RATE_LIMIT_TRANSIENT or success", async () => {
+    const report = await runConformanceCase(
+      replayCase("rate_limit_error", "task_failure", {
+        ok: false,
+        failureCode: "TOOL_FAILURE",
+        nativeSessionId: DEFAULT_SESSION_ID,
+      }),
+    );
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", unknownEventCount: 0 });
+  });
+
+  it("fixture unknown_events replays to OUTPUT_PROTOCOL_ERROR: every unreadable line is counted and none binds a session", async () => {
+    const report = await runConformanceCase(
+      replayCase("unknown_events", "malformed_output", { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" }),
+    );
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", unknownEventCount: 5 });
+    expect(report.result).not.toHaveProperty("nativeSessionId");
+  });
+
+  it("fixture backing_provider replays structured backing vendor and model on session_bound", async () => {
+    const report = await runConformanceCase(
+      replayCase("backing_provider", "success", { ok: true, nativeSessionId: DEFAULT_SESSION_ID }),
+    );
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: true, nativeSessionId: DEFAULT_SESSION_ID });
+  });
+
+  it("fixture git_write_guard_args replays args.CommandLine Git write to PERMISSION_BLOCKED (ADR-0039)", async () => {
+    const report = await runConformanceCase(
+      replayCase("git_write_guard_args", "task_failure", {
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+        nativeSessionId: DEFAULT_SESSION_ID,
+      }),
+    );
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    expect(report.result?.failureDetail).toContain("git write attempted");
+  });
 });
 
 /**
@@ -1930,9 +1982,16 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
         const inv = x.adapter.compile(x.request, x.profile);
         return !("ineligible" in inv) && inv.argv.includes(fixturePath(fixture));
       });
-    for (const fixture of ["agy_error_exit3", "usage_unrecorded"]) {
+    for (const fixture of ["agy_error_exit3", "usage_unrecorded", "rate_limit", "rate_limit_error"]) {
       expect(replays(fixture).map((x) => [x.kind, x.expect.failureCode])).toEqual([["task_failure", "TOOL_FAILURE"]]);
     }
+    expect(replays("unknown_events").map((x) => [x.kind, x.expect.failureCode])).toEqual([
+      ["malformed_output", "OUTPUT_PROTOCOL_ERROR"],
+    ]);
+    expect(replays("git_write_guard_args").map((x) => [x.kind, x.expect.failureCode])).toEqual([
+      ["task_failure", "PERMISSION_BLOCKED"],
+    ]);
+    expect(replays("backing_provider").map((x) => [x.kind, x.expect.ok])).toEqual([["success", true]]);
     expect(replays("sandbox_violation_unrecorded")).toEqual([]);
     const cancels = cases.filter((x) => x.kind === "cancellation");
     const argvOf = (x: ConformanceCase) => {
@@ -2106,6 +2165,47 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     expect(report.result?.failureDetail).toContain("git write attempted");
   });
 
+  it("a backing_provider SUCCESS envelope (T4.6, FR-ADP-10) normalizes ok, session id and does not fail", async () => {
+    const report = await runConformanceCase(caseFor("backing_provider"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: true, nativeSessionId: DEFAULT_SESSION_ID });
+  });
+
+  it("an empty stream at exit 1 (rate limit never forced) replays to TOOL_FAILURE, never RATE_LIMIT_TRANSIENT", async () => {
+    const report = await runConformanceCase(caseFor("rate_limit"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+    expect(report.result?.nativeSessionId).toBeUndefined();
+  });
+
+  it("an in-stream ERROR envelope at exit 0 with rate-limit text replays to TOOL_FAILURE, never RATE_LIMIT_TRANSIENT", async () => {
+    const report = await runConformanceCase(caseFor("rate_limit_error"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      nativeSessionId: DEFAULT_SESSION_ID,
+    });
+  });
+
+  it("multiple unreadable/unrecognized event lines at exit 0 replay to OUTPUT_PROTOCOL_ERROR with counted unknown events and no session bound", async () => {
+    const report = await runConformanceCase(caseFor("unknown_events"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      unknownEventCount: 5,
+    });
+    expect(report.result?.nativeSessionId).toBeUndefined();
+  });
+
+  it("a Git write under args.CommandLine in a SUCCESS envelope ends PERMISSION_BLOCKED (ADR-0039)", async () => {
+    const report = await runConformanceCase(caseFor("git_write_guard_args"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    expect(report.result?.failureDetail).toContain("git write attempted");
+  });
+
   it("names no rate_limit case and expects no RATE_LIMIT_TRANSIENT or SANDBOX_VIOLATION (no recorded shape, T4.33)", () => {
     const cases = antigravityConformanceCases(makeCwd);
     expect(cases.filter((c) => c.kind === "rate_limit")).toEqual([]);
@@ -2240,6 +2340,47 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
         envAllowlist: [...inv.envAllowlist, "GOOGLE_GEMINI_BASE_URL"],
       }),
     ],
+    [
+      "GOOGLE_CLOUD_PROJECT in the environment",
+      (inv: Invocation): Invocation => ({
+        ...inv,
+        env: { ...inv.env, GOOGLE_CLOUD_PROJECT: "synthetic-project" },
+        envAllowlist: [...inv.envAllowlist, "GOOGLE_CLOUD_PROJECT"],
+      }),
+    ],
+    [
+      "--sandbox before --dangerously-skip-permissions",
+      argvEdit((a) => {
+        const i = a.indexOf("--dangerously-skip-permissions");
+        return [...a.slice(0, i), "--sandbox", ...a.slice(i)];
+      }),
+    ],
+    ["--agent added", argvEdit((a) => [...a, "--agent", "synthetic-agent"])],
+    ["-agent added", argvEdit((a) => [...a, "-agent", "synthetic-agent"])],
+    ["--effort added", argvEdit((a) => [...a, "--effort", "high"])],
+    ["--input-format added", argvEdit((a) => [...a, "--input-format", "text"])],
+    ["--disable-slash-commands added", argvEdit((a) => [...a, "--disable-slash-commands"])],
+    ["-disable-slash-commands added", argvEdit((a) => [...a, "-disable-slash-commands"])],
+    ["-i added", argvEdit((a) => [...a, "-i"])],
+    ["--prompt-interactive added", argvEdit((a) => [...a, "--prompt-interactive"])],
+    ["--new-project added", argvEdit((a) => [...a, "--new-project"])],
+    ["--project added", argvEdit((a) => [...a, "--project", "synthetic-project"])],
+    ["--log-file added", argvEdit((a) => [...a, "--log-file", "/tmp/synthetic.log"])],
+    ["--json-schema added", argvEdit((a) => [...a, "--json-schema", "{}"])],
+    [
+      "-help before the compiled flags",
+      argvEdit((a) => {
+        const i = a.indexOf("--");
+        return [...a.slice(0, i + 1), "-help", ...a.slice(i + 1)];
+      }),
+    ],
+    [
+      "-version before the compiled flags",
+      argvEdit((a) => {
+        const i = a.indexOf("--");
+        return [...a.slice(0, i + 1), "-version", ...a.slice(i + 1)];
+      }),
+    ],
   ])(
     "the replay refuses an invocation agy would not be given (%s), so a wrong compile cannot pass",
     async (_n, edit) => {
@@ -2255,6 +2396,29 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
       expect(report.result?.failureDetail).toBe("exit code 64");
     },
   );
+
+  it("dialect probe answers single-word version and help variants and rejects non-probe invocations", () => {
+    const probe = (argv: string[]): string | undefined => {
+      try {
+        return execFileSync(
+          process.execPath,
+          [REPLAY_SCRIPT, "--provider", "antigravity", "--fixture", fixturePath("success_edit"), "--", ...argv],
+          { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+      } catch {
+        return undefined;
+      }
+    };
+    expect(probe(["--version"])).toBe("0.0.1\n");
+    expect(probe(["-version"])).toBe("0.0.1\n");
+    expect(probe(["--help"])).toContain("SYNTHETIC help:");
+    expect(probe(["-help"])).toContain("SYNTHETIC help:");
+    expect(probe(["-h"])).toContain("SYNTHETIC help:");
+    expect(probe(["--h"])).toContain("SYNTHETIC help:");
+    expect(probe(["--version", "--prompt=ok"])).toBeUndefined();
+    expect(probe(["--help", "--output-format", "stream-json"])).toBeUndefined();
+    expect(probe([])).toBeUndefined();
+  });
 });
 
 describe("antigravity Git declaration (T4.37, FR-GIT-01, FR-GIT-02, FR-GIT-09)", () => {
