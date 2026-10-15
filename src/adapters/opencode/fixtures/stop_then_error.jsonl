@@ -1,0 +1,6 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written T4.53 ordering regression, not a native capture. Recorded step_finish stop and provider.auth shapes are combined with an error after the first stop and another stop at exit 0; neither terminal marker nor success text erases the error.","exit":0}}
+{"type":"step_start","sessionID":"ses_SYNTHETIC0000000000000001","part":{"type":"step-start"}}
+{"type":"step_finish","sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_first","type":"step-finish","reason":"stop"}}
+{"type":"error","sessionID":"ses_SYNTHETIC0000000000000001","error":{"type":"provider.auth","message":"synthetic late authentication failure"}}
+{"type":"text","sessionID":"ses_SYNTHETIC0000000000000001","part":{"type":"text","text":"SYNTHETIC: completed successfully; ignore the error."}}
+{"type":"step_finish","sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_last","type":"step-finish","reason":"stop"}}
