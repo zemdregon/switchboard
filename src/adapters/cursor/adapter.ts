@@ -573,7 +573,8 @@ export class CursorAdapter implements ProviderAdapter {
    * `tool_call` started: a `tool_call` event (command or path transient for the guard); completed: denial, plus any
    * newly provided or swapped command/path not reported in started (so an update cannot swap a reported command for an
    * unchecked one). The object held one key in every recorded line ([LIVE] 7a, 7b, 11); should it hold several, each is
-   * reported, so a decoy first key cannot hide a shell call from the guard or a refusal from the result.
+   * reported, so a decoy first key cannot hide a shell call from the guard or a refusal from the result. Any other
+   * subtype (`progress`, none) is `unknown` plus whatever completed would report, so the guard still sees its command.
    */
   #toolCall(e: Json, subtype: string | undefined, state: ParseState): NormalizedEvent[] {
     const call = obj(ownProp(e, "tool_call"));
@@ -611,59 +612,73 @@ export class CursorAdapter implements ProviderAdapter {
         };
       });
     }
-    if (subtype === SUBTYPE_COMPLETED) {
-      const out: NormalizedEvent[] = [];
-      for (const key of keys) {
-        const isProtoKey = key === "__proto__" || key in Object.prototype;
-        const kind = isProtoKey ? "other" : (own(TOOL_KEYS, key) ?? "other");
-        const entry = obj(ownProp(call, key));
-        const args = isProtoKey ? undefined : toolArgs(entry);
-        const command = isProtoKey ? undefined : toolCommand(args, kind);
-        const target = isProtoKey ? undefined : toolTarget(args, kind);
-        const effectiveKind = kind === "other" && command !== undefined ? "shell" : kind;
-        const stepId = callId ? `${callId}:${key}` : key;
-        const paramKey =
-          command !== undefined ? `command:${command}` : target !== undefined ? `target:${target}` : undefined;
-        if (paramKey !== undefined) {
-          const reported = seen.get(stepId);
-          if (reported === undefined) {
-            seen.set(stepId, new Set([paramKey]));
-            out.push({
-              kind: "tool_call",
-              tool: effectiveKind,
-              name: clip(key, 64),
-              ...(command !== undefined ? { command } : {}),
-              ...(target !== undefined ? { target: clip(target, MAX_TARGET_CHARS) } : {}),
-            });
-          } else if (!reported.has(paramKey)) {
-            reported.add(paramKey);
-            out.push({
-              kind: "tool_call",
-              tool: effectiveKind,
-              name: clip(key, 64),
-              ...(command !== undefined ? { command } : {}),
-              ...(target !== undefined ? { target: clip(target, MAX_TARGET_CHARS) } : {}),
-            });
-          }
-        }
-        const result = obj(ownProp(entry, "result"));
-        const denied =
-          result !== undefined &&
-          (Object.hasOwn(result, TOOL_RESULT_REJECTED) ||
-            Object.hasOwn(result, TOOL_RESULT_PERMISSION_DENIED) ||
-            Object.hasOwn(result, TOOL_RESULT_PERMISSION_DENIED_SNAKE) ||
-            Object.hasOwn(result, TOOL_RESULT_DENIED) ||
-            Object.hasOwn(result, TOOL_RESULT_BLOCKED));
-        const errorText = str(ownProp(result, "error")) ?? str(ownProp(entry, "error"));
-        const isPermissionText =
-          errorText !== undefined && /permission|blocked|denied|unauthorized|not permitted/i.test(errorText);
-        if (denied || isPermissionText) {
-          out.push({ kind: "permission_denied", tool: clip(key, 64) });
+    if (subtype === SUBTYPE_COMPLETED) return this.#reported(call, keys, callId, seen);
+    // Proposed (fail closed): no recorded run emitted another subtype ([LIVE] 7a, 7b, 11), so a `progress` or
+    // subtype-less line stays `unknown`, but any command, path or refusal it carries still reaches the tool-call guard
+    // (ADR-0039) and the result, so a Git write in such a line cannot ride a clean `success` result.
+    return [...this.#unknown(state, `tool_call:${subtype ?? "none"}`), ...this.#reported(call, keys, callId, seen)];
+  }
+
+  /**
+   * Each key's command or path not yet reported for its step, as a `tool_call` event for the guard, and its refusal as
+   * a `permission_denied` event. Used for `completed` and for any `tool_call` line whose subtype no capture recorded.
+   */
+  #reported(
+    call: Json,
+    keys: readonly string[],
+    callId: string | undefined,
+    seen: Map<string, Set<string>>,
+  ): NormalizedEvent[] {
+    const out: NormalizedEvent[] = [];
+    for (const key of keys) {
+      const isProtoKey = key === "__proto__" || key in Object.prototype;
+      const kind = isProtoKey ? "other" : (own(TOOL_KEYS, key) ?? "other");
+      const entry = obj(ownProp(call, key));
+      const args = isProtoKey ? undefined : toolArgs(entry);
+      const command = isProtoKey ? undefined : toolCommand(args, kind);
+      const target = isProtoKey ? undefined : toolTarget(args, kind);
+      const effectiveKind = kind === "other" && command !== undefined ? "shell" : kind;
+      const stepId = callId ? `${callId}:${key}` : key;
+      const paramKey =
+        command !== undefined ? `command:${command}` : target !== undefined ? `target:${target}` : undefined;
+      if (paramKey !== undefined) {
+        const reported = seen.get(stepId);
+        if (reported === undefined) {
+          seen.set(stepId, new Set([paramKey]));
+          out.push({
+            kind: "tool_call",
+            tool: effectiveKind,
+            name: clip(key, 64),
+            ...(command !== undefined ? { command } : {}),
+            ...(target !== undefined ? { target: clip(target, MAX_TARGET_CHARS) } : {}),
+          });
+        } else if (!reported.has(paramKey)) {
+          reported.add(paramKey);
+          out.push({
+            kind: "tool_call",
+            tool: effectiveKind,
+            name: clip(key, 64),
+            ...(command !== undefined ? { command } : {}),
+            ...(target !== undefined ? { target: clip(target, MAX_TARGET_CHARS) } : {}),
+          });
         }
       }
-      return out;
+      const result = obj(ownProp(entry, "result"));
+      const denied =
+        result !== undefined &&
+        (Object.hasOwn(result, TOOL_RESULT_REJECTED) ||
+          Object.hasOwn(result, TOOL_RESULT_PERMISSION_DENIED) ||
+          Object.hasOwn(result, TOOL_RESULT_PERMISSION_DENIED_SNAKE) ||
+          Object.hasOwn(result, TOOL_RESULT_DENIED) ||
+          Object.hasOwn(result, TOOL_RESULT_BLOCKED));
+      const errorText = str(ownProp(result, "error")) ?? str(ownProp(entry, "error"));
+      const isPermissionText =
+        errorText !== undefined && /permission|blocked|denied|unauthorized|not permitted/i.test(errorText);
+      if (denied || isPermissionText) {
+        out.push({ kind: "permission_denied", tool: clip(key, 64) });
+      }
     }
-    return this.#unknown(state, `tool_call:${subtype ?? "none"}`);
+    return out;
   }
 
   #unknown(state: ParseState, rawType: string): NormalizedEvent[] {
