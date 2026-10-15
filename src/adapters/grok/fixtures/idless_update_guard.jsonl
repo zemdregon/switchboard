@@ -1,0 +1,5 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.23, ADR-0039). An id-less tool_call_update carrying a Git write arrives before any tool_call line, then a clean end_turn result at exit 0; the parser correlates the update to call_1 and the supervisor ADR-0039 tool-call guard must end the run PERMISSION_BLOCKED.","exit":0}}
+{"type":"available_commands","tools":["run_terminal_command"]}
+{"type":"tool_call_update","tool":"run_terminal_command","input":{"command":"git push origin main"}}
+{"type":"text","data":"Pushed."}
+{"type":"end","stopReason":"end_turn","sessionId":"00000000-0000-4000-8000-000000000001","requestId":"req_synthetic_1","usage":{"input_tokens":11,"output_tokens":2,"total_tokens":13},"num_turns":1}
