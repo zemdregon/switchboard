@@ -94,7 +94,8 @@ export function replayAdapter(fixture: string, o: ReplayOptions = {}): Antigravi
  * `denied_actions` value (PERMISSION_BLOCKED), a stream with no `result` at exit 3 (the TDD §4.4.1 `AGY_ERROR` case,
  * stderr only: TOOL_FAILURE), in-stream sandbox-violation text in an `ERROR` envelope at exit 0 (TOOL_FAILURE, never
  * SANDBOX_VIOLATION: the parser emits no sandbox category) and
- * a `SUCCESS` envelope whose usage keys were not recorded (TOOL_FAILURE, Q-86), and a cancellation of a process that
+ * a `SUCCESS` envelope whose usage keys were not recorded (TOOL_FAILURE, Q-86), an object `error` beside a `SUCCESS`
+ * status with tokens and an invented status with tokens and no error (each TOOL_FAILURE), and a cancellation of a process that
  * honours SIGTERM as well as one that ignores it, and an idle timeout on both paths beside a wall-clock timeout (each
  * names its timeout kind). The whole-stream order shapes (an unknown line before the result,
  * a late auth envelope after a clean result and an unparseable line after it) are cases too. A case whose code,
@@ -327,6 +328,34 @@ export function antigravityConformanceCases(makeCwd: () => string): ConformanceC
         failureDetail: "SUCCESS with no reported tokens",
         nativeSessionId: DEFAULT_SESSION_ID,
         summary: "ok",
+        unknownEventCount: 0,
+      },
+    },
+    {
+      ...base,
+      kind: "task_failure",
+      adapter: replayAdapter("error_not_string"),
+      request: request(),
+      expect: {
+        ok: false,
+        failureCode: "TOOL_FAILURE",
+        failureDetail: "unknown: non-string error field",
+        nativeSessionId: DEFAULT_SESSION_ID,
+        summary: "ok",
+        unknownEventCount: 0,
+      },
+    },
+    {
+      ...base,
+      kind: "task_failure",
+      adapter: replayAdapter("status_unrecorded"),
+      request: request(),
+      expect: {
+        ok: false,
+        failureCode: "TOOL_FAILURE",
+        failureDetail: "SYNTHETIC_CANCELLED",
+        nativeSessionId: DEFAULT_SESSION_ID,
+        summary: null,
         unknownEventCount: 0,
       },
     },

@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.35), in the stream-json shapes recorded by the 2026-10-14 live check (C4; only SUCCESS and ERROR statuses were recorded). An invented status with tokens and no error is not a success: the run fails with the status as its detail.","exit":0}}
+{"event":"init","conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","init":{"cwd":"/work/tree","tools":["run_command","write_to_file"],"permission_mode":"always-proceed","model":"synthetic-model"}}
+{"event":"step_update","conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","step_index":0,"state":"DONE","step_type":"user_input"}
+{"event":"result","result":{"conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","status":"SYNTHETIC_CANCELLED","response":"","duration_seconds":3,"num_turns":1,"usage":{"input_tokens":20,"output_tokens":3,"thinking_tokens":1,"cache_read_tokens":0,"total_tokens":24}}}
