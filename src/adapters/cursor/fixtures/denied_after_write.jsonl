@@ -1,0 +1,8 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.45), in the shapes recorded by the 2026-10-14 live check (rows 7a, 7b: edit applied and file exists, shellToolCall rejected, exit 0).","exit":0,"write":{"path":"b.txt","content":"synthetic write before a denied cursor command\n"}}}
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work/tree","session_id":"synthetic-cursor-session-0001","model":"Synthetic Model 1","permissionMode":"default"}
+{"type":"tool_call","subtype":"started","call_id":"c1","tool_call":{"editToolCall":{"args":{"path":"b.txt"}}},"session_id":"synthetic-cursor-session-0001"}
+{"type":"tool_call","subtype":"completed","call_id":"c1","tool_call":{"editToolCall":{"result":{"success":{}}}},"session_id":"synthetic-cursor-session-0001"}
+{"type":"tool_call","subtype":"started","call_id":"c2","tool_call":{"shellToolCall":{"args":{"command":"echo denied"}}},"session_id":"synthetic-cursor-session-0001"}
+{"type":"tool_call","subtype":"completed","call_id":"c2","tool_call":{"shellToolCall":{"args":{"command":"echo denied"},"result":{"rejected":{"command":"echo denied","workingDirectory":"/work/tree","reason":"","isReadonly":false}}}},"session_id":"synthetic-cursor-session-0001"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Wrote b.txt; shell command was blocked."}]},"session_id":"synthetic-cursor-session-0001"}
+{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"synthetic-cursor-session-0001","usage":{"inputTokens":20,"outputTokens":5}}
