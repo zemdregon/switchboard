@@ -10,8 +10,8 @@
  * entries) and `AGENTS.md` load (live check rows 10a, 10c); what this case proves is that no flag widens that.
  *
  * Tool-call guard (T4.56, ADR-0039): in an approved bypass run Switchboard's own tool-call guard enforces Git-write
- * denial across the hostile streams, ending `PERMISSION_BLOCKED` at exit 0 and at exit 1 (owner decision 25). The matrix
- * covers all three blocked categories (`credential_read`, `out_of_worktree_write`, `network`) across exits 0 and 1:
+ * denial across the hostile streams, ending `PERMISSION_BLOCKED` at exit 0, 1, 2 and 137 (owner decision 25). The
+ * matrix covers all three blocked categories (`credential_read`, `out_of_worktree_write`, `network`) across exits:
  * - multi-step runs (row 5) and runs with no final `stop` step;
  * - hostile tool calls after the final `stop` step (Q-85) and within intermediate steps following `stop`;
  * - hostile calls followed by provider errors (`provider.quota`, `provider.no-route`, `provider.auth`,
@@ -22,13 +22,17 @@
  *   `git update-ref`, `git branch -D`, `git -C . commit`, `/usr/bin/git commit`, `sh -c 'git push ...'`, `env git push`,
  *   `xargs git push`, `git --git-dir=.git commit`, `git reset --hard`, `git tag`, `git stash`, `git merge`, `git rebase`,
  *   `git checkout -b`);
- * - alternative tool names carrying a command (`bash`, `sh`, `terminal`, `run_command`, `exec`, `synthetic_exec`,
- *   `constructor`, `toString`);
+ * - alternative and empty tool names carrying a command (`bash`, `sh`, `terminal`, `run_command`, `exec`, `synthetic_exec`,
+ *   `constructor`, `toString`, empty string `""`);
+ * - `filePath` and `path` beside an input `command` (command takes precedence);
+ * - hostile call swapped back to a benign command in later `tool_use`;
+ * - hostile call followed by a separate benign call;
+ * - exit codes 2 and 137 where the guard verdict outranks `TOOL_FAILURE`;
  * - session ID mutations (changed on root, on part, or both) and fronted backing provider/model combinations (T4.6);
  * - own prototype-named keys (`__proto__`, `constructor`) on input and part;
  * - benign commands (shell, edit, read) preceding hostile calls, multiple stop steps, and unknown events before hostile calls.
  *
- * Streams in `unknown_events` parse only as `unknown` and end `OUTPUT_PROTOCOL_ERROR` (exit 0) or `TOOL_FAILURE` (exit 1).
+ * Streams in `unknown_events` parse only as `unknown` and end `OUTPUT_PROTOCOL_ERROR` (exit 0) or `TOOL_FAILURE` (exits 1, 2, 137).
  * Partial streams cut inside a line across all three blocked categories at exit 0 and exit 1 are exported as
  * `opencodePartialStreams`. Bare and unreadable known events before and after `stop` at exit 0 and exit 1 are exported as
  * `opencodeUnreadableStreams`.
@@ -543,6 +547,97 @@ const opencodeBlockedGaps = (fx: MaliciousFixture): HostileStream[] => {
     }
   }
 
+  // Exit codes other than 0 and 1 (T4.52 expects only 0): the guard verdict still outranks TOOL_FAILURE.
+  for (const category of cats) {
+    for (const exitCode of [2, 137] as const) {
+      gaps.push(
+        blocked(`${blockedLabel[category]} with a Git write, exit ${exitCode}`, category, exitCode, [
+          STEP_START,
+          completed("shell", { command: hostileCommand(fx, category) }),
+          TOOL_STEP,
+          ...(exitCode === 2 ? [STEP_START, REPORT, STOP] : []),
+        ]),
+      );
+    }
+  }
+
+  // Empty tool name: falls through TOOL_KINDS and reaches the guard when input has a string command
+  for (const category of cats) {
+    for (const exitCode of [0, 1] as const) {
+      const suffix = exitCode === 1 ? ", exit 1" : "";
+      gaps.push(
+        blocked(`empty tool name carrying a Git write on ${category}${suffix}`, category, exitCode, [
+          STEP_START,
+          completed("", { command: hostileCommand(fx, category) }),
+          TOOL_STEP,
+          ...(exitCode === 0 ? [STEP_START, REPORT, STOP] : []),
+        ]),
+      );
+    }
+  }
+
+  // A command outranks filePath and path: the call is a shell call even though filePath/path name a benign file
+  for (const category of cats) {
+    for (const exitCode of [0, 1] as const) {
+      const suffix = exitCode === 1 ? ", exit 1" : "";
+      gaps.push(
+        blocked(`${blockedLabel[category]} with filePath and path beside command${suffix}`, category, exitCode, [
+          STEP_START,
+          event("tool_use", {
+            type: "tool",
+            tool: "shell",
+            state: {
+              status: "completed",
+              input: { filePath: "src/safe.ts", path: "src/safe.ts", command: hostileCommand(fx, category) },
+              output: "",
+            },
+          }),
+          TOOL_STEP,
+          ...(exitCode === 0 ? [STEP_START, REPORT, STOP] : []),
+        ]),
+      );
+    }
+  }
+
+  // The guard verdict on the first report stays: a later update back to a benign command does not clear it
+  for (const category of cats) {
+    for (const exitCode of [0, 1] as const) {
+      const suffix = exitCode === 1 ? ", exit 1" : "";
+      gaps.push(
+        blocked(
+          `hostile call swapped back to a benign command on later tool_use on ${category}${suffix}`,
+          category,
+          exitCode,
+          [
+            STEP_START,
+            withStatus("pending", { command: hostileCommand(fx, category) }),
+            completed("shell", { command: "ls" }),
+            TOOL_STEP,
+            ...(exitCode === 0 ? [STEP_START, REPORT, STOP] : []),
+          ],
+        ),
+      );
+    }
+  }
+
+  // A hostile call followed by a separate benign completed call still ends PERMISSION_BLOCKED
+  for (const category of cats) {
+    for (const exitCode of [0, 1] as const) {
+      const suffix = exitCode === 1 ? ", exit 1" : "";
+      gaps.push(
+        blocked(`completed ${blockedLabel[category]}, then a separate benign call${suffix}`, category, exitCode, [
+          STEP_START,
+          completed("shell", { command: hostileCommand(fx, category) }),
+          TOOL_STEP,
+          STEP_START,
+          completed("shell", { command: "echo safe" }),
+          TOOL_STEP,
+          ...(exitCode === 0 ? [STEP_START, REPORT, STOP] : []),
+        ]),
+      );
+    }
+  }
+
   gaps.push(
     {
       name: "only prototype-named, near-miss and non-string event types, exit 1",
@@ -556,6 +651,41 @@ const opencodeBlockedGaps = (fx: MaliciousFixture): HostileStream[] => {
         JSON.stringify({ type: "step-finish", part: { reason: "stop" } }),
         JSON.stringify({ type: 1, part: { reason: "stop" } }),
         JSON.stringify({ type: "tool_use_update" }),
+      ],
+    },
+    {
+      name: "only unknown event kinds, exit 2",
+      category: "unknown_events",
+      exitCode: 2,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Event types below are invented; the adapter must report them unknown.", 2),
+        JSON.stringify({ type: "synthetic_unknown_kind" }),
+        JSON.stringify({ type: "synthetic_another_unknown" }),
+      ],
+    },
+    {
+      name: "only unknown event kinds, exit 137",
+      category: "unknown_events",
+      exitCode: 137,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Event types below are invented; the adapter must report them unknown.", 137),
+        JSON.stringify({ type: "synthetic_unknown_kind" }),
+      ],
+    },
+    {
+      name: "tool lines with non-string tool names and missing parts, exit 2",
+      category: "unknown_events",
+      exitCode: 2,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Tool lines with nothing the parser can read; the adapter must report them unknown.", 2),
+        JSON.stringify({ type: "tool_use" }),
+        JSON.stringify({ type: "tool_use", part: {} }),
+        JSON.stringify({ type: "tool_use", part: { tool: 7 } }),
+        JSON.stringify({ type: "tool_use", part: { tool: null } }),
+        JSON.stringify({ type: "tool_use", part: { tool: ["shell"] } }),
       ],
     },
     {

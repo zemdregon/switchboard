@@ -694,7 +694,12 @@ contracts, `inner test` and accepted, rejected and unavailable calls, with and w
 unchanged whether the shared subscription names the provider under test, another provider or none
 (`src/capacity/capacity.test.ts`). Those tests call the injected contracts directly; the production `commit` tool channel
 and the MCP admission harness that call them are not themselves driven with inner usage checks. No hosted or live
-backend has been exercised: every test uses a scripted fake or a local fake server.
+backend has been exercised: every test uses a scripted fake or a local fake server. The per-task test and module
+evidence behind these statements, and the list of what is not built, is in
+[HLD §2.5](docs/design/HLD.md#25-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes),
+[SDD §4.3](docs/design/SDD.md#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) and the
+[TDD §3.12](docs/design/TDD.md#312-inner-agent) as-built note
+([PR #353](https://github.com/zemdregon/switchboard/pull/353)).
 
 ## Grok Build CLI (milestone 4)
 
@@ -1575,10 +1580,16 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   merge with `use_global` does).
 - The inner agent (milestone 11) is tested on a scripted in-process fake backend and a loopback fake HTTP server only.
   No live inner backend has been exercised, and `npm run test:live` has no inner-agent leg. The `cli` backend kind is
-  reported `Ineligible` by `doctor` and never started (ROADMAP T11.0, T11.13). The PR-draft, verification-summary,
-  handoff-condensation and run-title tasks are service functions that no run path, hook or `inner` command calls yet.
-  The `inner.call` telemetry span of LLD §13.8 is not emitted (no span exporter exists); the pipeline writes a
-  body-free `inner.call` log line instead. See [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
+  reported `Ineligible` by `doctor` and never started (`src/cli/inner.test.ts`; ROADMAP T11.0, T11.13). The PR-draft,
+  verification-summary, handoff-condensation and run-title tasks are service functions that no run path, hook or
+  `inner` command calls yet. The `inner.call` telemetry span of
+  [LLD §13.8](docs/design/LLD.md#138-telemetry-and-events) is not emitted (no span exporter exists); the pipeline
+  writes a body-free `inner.call` log line instead. What the suite proves per task, and what is not built, is recorded
+  in the [TDD §3.12](docs/design/TDD.md#312-inner-agent) as-built note,
+  [HLD §2.5](docs/design/HLD.md#25-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) and
+  [SDD §4.3](docs/design/SDD.md#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) (merged as
+  [PR #353](https://github.com/zemdregon/switchboard/pull/353)). See
+  [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
 
 ### Optional live smoke test
 

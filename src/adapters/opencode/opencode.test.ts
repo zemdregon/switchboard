@@ -1351,6 +1351,8 @@ describe("opencode parser and result (T4.53)", () => {
 
   it("an unknown or unreadable event anywhere, before or after the final stop step, is never a success (T4.56)", () => {
     const EXIT1: ExitInfo = { ...EXIT0, exitCode: 1 };
+    const EXIT2: ExitInfo = { ...EXIT0, exitCode: 2 };
+    const EXIT137: ExitInfo = { ...EXIT0, exitCode: 137 };
     for (const [label, lines] of [
       ["unknown kind before stop", [START, line("synthetic_unknown_kind", {}), TEXT("ok"), FINISH("stop")]],
       ["unknown kind after stop", [START, TEXT("ok"), FINISH("stop"), line("synthetic_unknown_kind", {})]],
@@ -1367,6 +1369,8 @@ describe("opencode parser and result (T4.53)", () => {
       expect(r0, label).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
       expect(r0.ok === false && r0.failureDetail, label).toMatch(/unreadable event\(s\) in the stream$/);
       expect(a.extractResult(events, EXIT1), label).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+      expect(a.extractResult(events, EXIT2), label).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+      expect(a.extractResult(events, EXIT137), label).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
     }
     // A later `stop` does not wash an earlier unreadable line back to success.
     const washed = parse([
@@ -1387,13 +1391,32 @@ describe("opencode parser and result (T4.53)", () => {
 
   it("a shell tool named bash, or any unlisted tool carrying a string command, reaches the tool-call guard (T4.56)", () => {
     const ctx = { cwd: "/work/tree", home: "/home/synthetic", bypass: true };
-    for (const name of ["bash", "synthetic_exec", "sh"]) {
+    for (const name of ["bash", "synthetic_exec", "sh", ""]) {
       const { a, events } = parse([START, TOOL(name, { command: "git push origin main" }), TEXT("ok"), FINISH("stop")]);
       const call = events.find((e) => e.kind === "tool_call");
       expect(call, name).toEqual({ kind: "tool_call", tool: "shell", name, command: "git push origin main" });
       const guarded = events.map((e) => guardEvent(e, ctx));
       expect(a.extractResult(guarded, EXIT0), name).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
     }
+    // A command outranks filePath and path: the call is a shell tool and reaches the guard.
+    const pathAndCmd = parse([
+      START,
+      TOOL("shell", { filePath: "src/safe.ts", path: "src/safe.ts", command: "git push origin main" }),
+      FINISH("stop"),
+    ]);
+    expect(pathAndCmd.events.find((e) => e.kind === "tool_call")).toEqual({
+      kind: "tool_call",
+      tool: "shell",
+      name: "shell",
+      command: "git push origin main",
+    });
+    expect(
+      pathAndCmd.a.extractResult(
+        pathAndCmd.events.map((e) => guardEvent(e, ctx)),
+        EXIT0,
+      ),
+    ).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+
     // No string `command`: an unlisted tool stays `other` and a read-only call leaves the run clean.
     for (const input of [{}, { command: 7 }, { pattern: "git push" }]) {
       const { a, events } = parse([START, TOOL("grep", input), TEXT("ok"), FINISH("stop")]);
@@ -1428,6 +1451,69 @@ describe("opencode parser and result (T4.53)", () => {
         EXIT0,
       ),
     ).toMatchObject({ ok: true });
+  });
+
+  it("a guard-flagged Git write ends PERMISSION_BLOCKED at exit 2 and exit 137, and survives subsequent benign calls (T4.56)", () => {
+    const ctx = { cwd: "/work/tree", home: "/home/synthetic", bypass: true };
+    const guarded = (lines: string[]) => parse(lines).events.map((e) => guardEvent(e, ctx));
+    const PUSH = TOOL("shell", { command: "git push origin main" });
+    const EXIT2: ExitInfo = { ...EXIT0, exitCode: 2 };
+    const EXIT137: ExitInfo = { ...EXIT0, exitCode: 137 };
+
+    // ADR-0039: guard verdict outranks non-zero exit codes 2 and 137.
+    expect(adapter().extractResult(guarded([START, PUSH, TEXT("ok"), FINISH("stop")]), EXIT2)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+    expect(adapter().extractResult(guarded([START, PUSH]), EXIT137)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+
+    // A benign call after the hostile call does not wash the guard verdict.
+    const thenBenign = guarded([
+      START,
+      PUSH,
+      FINISH("tool-calls", "prt_f1"),
+      START,
+      TOOL("shell", { command: "echo safe" }, "completed"),
+      FINISH("stop", "prt_f2"),
+    ]);
+    expect(adapter().extractResult(thenBenign, EXIT0)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+    expect(adapter().extractResult(thenBenign, { ...EXIT0, exitCode: 1 })).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+
+    // A hostile call swapped back to a benign command in a later update still ends PERMISSION_BLOCKED.
+    const swapped = guarded([
+      START,
+      line("tool_use", {
+        id: "prt_u1",
+        type: "tool",
+        tool: "shell",
+        state: { status: "pending", input: { command: "git push origin main" } },
+      }),
+      line("tool_use", {
+        id: "prt_u1",
+        type: "tool",
+        tool: "shell",
+        state: { status: "completed", input: { command: "ls" } },
+      }),
+      FINISH("stop"),
+    ]);
+    expect(adapter().extractResult(swapped, EXIT0)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+
+    // Without the Git write, exit 2 and 137 end TOOL_FAILURE, never PERMISSION_BLOCKED.
+    const plain = guarded([START, TOOL("shell", { command: "ls" }), TEXT("ok"), FINISH("stop")]);
+    expect(adapter().extractResult(plain, EXIT2)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+    expect(adapter().extractResult(plain, EXIT137)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
   });
 
   it("a guard-flagged trailing tool_use ends PERMISSION_BLOCKED at exit 1, after an intermediate step and a second stop", () => {
@@ -1825,6 +1911,130 @@ describe("opencode parser and result (T4.53)", () => {
     });
   });
 
+  // Residual parser branches (synthetic lines, no new capture; as Cursor T4.43 PR #348 and Grok T4.26 PR #351).
+  it("an empty text part is readable but adds no message: the run stays clean, nothing is unknown and summary is unset", () => {
+    const { a, state, events } = parse([START, TEXT(""), FINISH("stop")]);
+    expect(events.some((e) => e.kind === "message")).toBe(false);
+    expect(state.unknownEvents).toBe(0);
+    expect(a.extractResult(events, EXIT0)).toEqual({ ok: true, nativeSessionId: SID, unknownEventCount: 0 });
+
+    // Empty text never masks real text: the summary is the non-empty part only.
+    const mixed = parse([START, TEXT("", "prt_t1"), TEXT("done", "prt_t2"), TEXT("", "prt_t3"), FINISH("stop")]);
+    expect(mixed.a.extractResult(mixed.events, EXIT0)).toMatchObject({ ok: true, summary: "done" });
+  });
+
+  it("an error with a structured type and no string message keeps the type's category and fails the run", () => {
+    const errLine = (error: unknown) => JSON.stringify({ type: "error", timestamp: 1, sessionID: SID, error });
+    const cases: [unknown, string, string][] = [
+      [{ type: "provider.auth" }, "auth", "AUTH_REQUIRED"],
+      [{ type: "provider.quota", message: 402 }, "quota", "QUOTA_EXHAUSTED"],
+      [{ type: "provider.no-route", message: null }, "model_unavailable", "MODEL_UNAVAILABLE"],
+      [{ type: "provider.rate_limit" }, "unknown", "TOOL_FAILURE"],
+    ];
+    for (const [error, category, code] of cases) {
+      const { a, state, events } = parse([START, errLine(error), TEXT("ok"), FINISH("stop")]);
+      const type = (error as { type: string }).type;
+      expect(events).toContainEqual({ kind: "provider_error", category, message: `${type}: ` });
+      expect(state.unknownEvents).toBe(0);
+      expect(a.extractResult(events, EXIT0)).toMatchObject({ ok: false, failureCode: code, nativeSessionId: SID });
+    }
+  });
+
+  it("the part's sessionID binds when the root has none or a non-string one; an empty id binds nothing and is no error", () => {
+    const partOnly = parse([
+      JSON.stringify({ type: "step_start", timestamp: 1, part: { sessionID: SID, id: "prt_s1", type: "step-start" } }),
+      TEXT("ok"),
+      FINISH("stop"),
+    ]);
+    expect(partOnly.events[0]).toEqual({ kind: "session_bound", nativeSessionId: SID });
+    expect(partOnly.a.extractResult(partOnly.events, EXIT0)).toMatchObject({ ok: true, nativeSessionId: SID });
+
+    const nonStringRoot = parse([line("step_start", { id: "prt_s1", type: "step-start" }, { sessionID: 42 })]);
+    expect(nonStringRoot.events).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+
+    // The root id wins over a different part id on the same line (the root is read first); no mismatch is raised.
+    const OTHER = "ses_0000000000000000000000000B";
+    const both = parse([line("step_start", { id: "prt_s1", type: "step-start", sessionID: OTHER })]);
+    expect(both.events).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+
+    // An empty id is treated as absent: nothing bound, no protocol error, and a later real id still binds first.
+    const blank = (type: string, part: Record<string, unknown>) =>
+      JSON.stringify({ type, timestamp: 1, sessionID: "", part: { sessionID: "", ...part } });
+    const empty = parse([blank("step_start", { type: "step-start" }), blank("text", { text: "ok" }), FINISH("stop")]);
+    expect(empty.events.filter((e) => e.kind === "provider_error")).toEqual([]);
+    expect(empty.events.filter((e) => e.kind === "session_bound")).toEqual([
+      { kind: "session_bound", nativeSessionId: SID },
+    ]);
+    const emptyOnly = parse([blank("step_start", { type: "step-start" }), blank("step_finish", { reason: "stop" })]);
+    expect(emptyOnly.state.nativeSessionId).toBeUndefined();
+    expect(emptyOnly.a.extractResult(emptyOnly.events, EXIT0)).toEqual({ ok: true, unknownEventCount: 0 });
+  });
+
+  it("backing_provider and model fall back to the part; a non-string root value shadows the part; later events never report them (T4.6)", () => {
+    const START_WITH = (part: Record<string, unknown>, root: Record<string, unknown> = {}) =>
+      line("step_start", { id: "prt_s1", type: "step-start", ...part }, root);
+    const bound = (lines: string[]) => parse(lines).events.find((e) => e.kind === "session_bound");
+
+    expect(bound([START_WITH({ backing_provider: "backing-p", model: "Part Model" })])).toEqual({
+      kind: "session_bound",
+      nativeSessionId: SID,
+      model: "Part Model",
+      backingProvider: "backing-p",
+    });
+    expect(bound([START_WITH({ backingProvider: "backing-q" })])).toEqual({
+      kind: "session_bound",
+      nativeSessionId: SID,
+      backingProvider: "backing-q",
+    });
+    // The root is read first; the part is only a fallback.
+    expect(
+      bound([START_WITH({ backing_provider: "part-x", model: "Part" }, { backing_provider: "root-x", model: "Root" })]),
+    ).toEqual({ kind: "session_bound", nativeSessionId: SID, model: "Root", backingProvider: "root-x" });
+    // A present but non-string root value is not skipped in favour of the part (fail closed: dropped, never merged).
+    expect(
+      bound([START_WITH({ backing_provider: "part-x", model: "Part" }, { backing_provider: 7, model: false })]),
+    ).toEqual({ kind: "session_bound", nativeSessionId: SID });
+    // A null root value counts as absent, so the part's value is read.
+    expect(bound([START_WITH({ backing_provider: "part-x" }, { backing_provider: null })])).toEqual({
+      kind: "session_bound",
+      nativeSessionId: SID,
+      backingProvider: "part-x",
+    });
+
+    // Only the binding event reports them: a later line naming a vendor or model changes nothing (gap pinned).
+    const late = parse([
+      START,
+      line("text", { id: "prt_t1", text: "ok" }, { backing_provider: "late", model: "Late" }),
+    ]);
+    expect(late.events.filter((e) => e.kind === "session_bound")).toEqual([
+      { kind: "session_bound", nativeSessionId: SID },
+    ]);
+  });
+
+  it("a step_finish without a part id is counted every time; one with no readable counters emits no usage but still the result", () => {
+    const noId = (reason: string, part: Record<string, unknown> = {}) =>
+      line("step_finish", { type: "step-finish", reason, tokens: { input: 2 }, ...part });
+    const repeated = parse([START, noId("tool-calls"), noId("stop"), noId("stop")]);
+    expect(repeated.events.filter((e) => e.kind === "usage")).toHaveLength(3);
+
+    const bare = parse([
+      START,
+      TEXT("ok"),
+      line("step_finish", { id: "prt_f1", type: "step-finish", reason: "stop", tokens: { cache: "4" }, cost: "0.1" }),
+    ]);
+    expect(bare.events.some((e) => e.kind === "usage")).toBe(false);
+    expect(bare.events.at(-1)).toEqual({ kind: "result", ok: true });
+    expect(bare.a.extractResult(bare.events, EXIT0)).toMatchObject({ ok: true, unknownEventCount: 0 });
+
+    // A tokens value that is not an object records only the cost.
+    const arrTokens = parse([START, noId("stop", { tokens: [10, 3], cost: 0.002 })]);
+    expect(arrTokens.events.find((e) => e.kind === "usage")).toEqual({
+      kind: "usage",
+      source: "provider_reported",
+      metrics: { cost_usd: 0.002 },
+    });
+  });
+
   // Done-when cases whose native shape the T4.51 live check did NOT record (ROADMAP T4.53 stays Partial).
   // These pin today's observed outcomes; an operator capture (T4.51 extension) must change them.
   describe("cases with no recorded native shape (live check rows 7, 11, 14c)", () => {
@@ -1911,7 +2121,7 @@ describe("opencode parser and result (T4.53)", () => {
     // The same outcomes replayed end to end from fixture files through the supervisor, so each Done-when case has a
     // fixture: success (`success_edit`), task failure (`task_failure`), malformed (`malformed_output`) and the ones
     // below, plus `git_write_guard`, `unsafe_session_id`, `sandbox_violation`, `model_unavailable`, `quota_exhausted`,
-    // `unsafe_id_after_bound` and `resume_failure` (as Grok T4.23 and Cursor T4.43). They pin the gaps; a capture
+    // `unsafe_id_after_bound`, `resume_failure`, `error_type_only` and `part_session_empty_text` (as Grok T4.23 and Cursor T4.43). They pin the gaps; a capture
     // (T4.51 extension) must change them.
     const replayCase = (
       fixture: string,
@@ -2147,6 +2357,31 @@ describe("opencode parser and result (T4.53)", () => {
         nativeSessionId: RESUMED_SESSION_ID,
         unknownEventCount: 0,
       });
+    });
+
+    it("fixture error_type_only replays a provider.auth error with no message at exit 1 to AUTH_REQUIRED", async () => {
+      const report = await runConformanceCase(
+        replayCase("error_type_only", "task_failure", {
+          ok: false,
+          failureCode: "AUTH_REQUIRED",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: "AUTH_REQUIRED",
+        nativeSessionId: DEFAULT_SESSION_ID,
+        unknownEventCount: 0,
+      });
+    });
+
+    it("fixture part_session_empty_text replays a part-only sessionID, empty text and an id-less stop to a success with no summary", async () => {
+      const report = await runConformanceCase(
+        replayCase("part_session_empty_text", "task_failure", { ok: true, nativeSessionId: DEFAULT_SESSION_ID }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toEqual({ ok: true, nativeSessionId: DEFAULT_SESSION_ID, unknownEventCount: 0 });
     });
   });
 });
