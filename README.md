@@ -76,10 +76,11 @@ Pre-release. The package is private and is not published to any registry; you bu
   live malicious leg and `adapters validate` remain operator work (T4.28). Antigravity has a
   conformance suite (partial: native resume, T4.35), a malicious-fixture leg (partial: live shapes and FR-POL-04, T4.36)
   and a Git declaration on synthetic fixtures (README [Antigravity CLI](#antigravity-cli-milestone-4), ROADMAP T4.35 to
-  T4.37); live smoke, live malicious leg and `adapters validate` for Antigravity remain operator work (T4.38). Cursor
-  has conformance and malicious-fixture legs and a Git declaration on
-  recorded fixtures (README [Cursor CLI](#cursor-cli-milestone-4), ROADMAP T4.45 to T4.47); live smoke, live malicious
-  leg and `adapters validate` for Cursor remain operator work (T4.48). OpenCode has module, compile-matrix, parser
+  T4.37); live smoke, live malicious leg and `adapters validate` for Antigravity remain operator work (T4.38). Cursor has
+  module, compile-matrix, parser (partial: T4.43), auth-preflight, conformance suite (T4.45), malicious-fixture leg
+  (T4.46) and Git declaration fixture tests on synthetic fixtures (README
+  [Cursor CLI](#cursor-cli-milestone-4), ROADMAP T4.42 to T4.47); live smoke, live malicious leg and `adapters validate`
+  remain operator work (T4.48). OpenCode has module, compile-matrix, parser
   (partial: T4.53), auth-preflight, conformance suite (T4.55), malicious-fixture leg (partial: `replayGap`, T4.56) and
   Git declaration fixture tests on synthetic fixtures (README [OpenCode CLI](#opencode-cli-milestone-4), ROADMAP T4.52 to
   T4.57); live smoke, live malicious leg and `adapters validate` remain operator work (T4.58). Other M4 providers are
@@ -782,27 +783,37 @@ servers), and no per-run permission flag is documented.
 | `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one argv shape: `cursor-agent --print --output-format stream-json --trust --force` with the prompt on stdin, worktree file access, shell `broad`, network `on` and repository configuration `enabled`, and **no** `--sandbox` flag (owner decision 46). A scope without `bypass`, or any narrowing Switchboard can express, is refused before spawn. Bypass-class flags such as `--approve-mcps` and `--yolo` are never compiled outside that case. |
 
 Resume continues the native session with `--resume <session_id>` through the same matrix when the provider is eligible
-(synthetic fixtures in `src/adapters/cursor/cursor.test.ts`, T4.43). The parser treats a guard-flagged `tool_call`
-(`violation`) as a failed run per [ADR-0039](docs/adr/0039-switchboard-side-tool-call-guard.md) even when `result` is
-`success` at exit 0 ([#238](https://github.com/zemdregon/switchboard/pull/238)). Rate-limit and sandbox stream shapes and
-`backingProvider` on `session_bound` are still unrecorded (T4.43 stays `Partial` on the roadmap).
+(synthetic fixtures in `src/adapters/cursor/cursor.test.ts`, T4.43). A `session_id` that resume could not pass as one
+safe argument is never bound (`OUTPUT_PROTOCOL_ERROR`; [#248](https://github.com/zemdregon/switchboard/pull/248)). A
+`tool_call` after the `result` line is not a success (fail closed; a guard-flagged trailing call keeps
+`PERMISSION_BLOCKED` per ADR-0039). `tool_call` keys that name `Object.prototype` members map to `other` (own-key lookup;
+[#248](https://github.com/zemdregon/switchboard/pull/248)). Rate-limit and sandbox stream shapes and `backingProvider` on
+`session_bound` are still unrecorded (T4.43 stays `Partial` on the roadmap).
 
 ### Git and commits
 
 `list_capabilities` reports `gitWriteControl` **`none-documented`**: Cursor documents permission rules in configuration
-files, not per-run argv, and Switchboard does not write a per-run `CURSOR_CONFIG_DIR` file. Git-write denial therefore
-relies on FR-GIT-03 (controller ref comparison) and FR-GIT-06 (the tool-call guard) in addition to any provider rule.
-Shell allowlist entries that could write Git make the run `Ineligible` (`PROFILE_UNSUPPORTED`, FR-GIT-01).
+files, not per-run argv, and Switchboard does not write a per-run `CURSOR_CONFIG_DIR` file. Shell allowlist entries that
+could write Git make the run `Ineligible` (`PROFILE_UNSUPPORTED`, FR-GIT-01), including on an approved bypass scope.
+
+The parser treats a guard-flagged `tool_call` (`violation`) as a failed run per
+[ADR-0039](docs/adr/0039-switchboard-side-tool-call-guard.md) even when `result` is `success` at exit 0
+(`src/adapters/cursor/cursor.test.ts`; [#238](https://github.com/zemdregon/switchboard/pull/238)). In an approved bypass
+run the guard enforces Git writes only; other hostile categories that never appear as a refused `tool_call` on the
+recorded fields still end `ok` on synthetic fixtures until operator captures pin live blocked outcomes (ROADMAP T4.48).
 
 `commitChannel` is **`finalize-only`**: Switchboard does not inject a `commit` tool or pass `--approve-mcps`, so
 repository `.mcp.json` servers stay unapproved (observed on the 2026-10-14 live check). To publish work, set
-`finalize_commit` on the project's primary context as for Codex ([How commits reach Git](#how-commits-reach-git)).
+`finalize_commit` on the project's primary context as for Codex ([How commits reach Git](#how-commits-reach-git)). In an
+approved bypass run, Git-write denial therefore rests on FR-GIT-03 and FR-GIT-06 in addition to any provider rule.
 
-Fixture evidence: `src/adapters/cursor/cursor.test.ts` ("cursor Git declaration (T4.47, FR-GIT-01, FR-GIT-02,
-FR-GIT-09)"), the conformance suite ("cursor conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.45)") and
-the malicious-fixture leg ("cursor malicious-fixture leg (T4.46, NFR-SEC-03, FR-POL-04, FR-POL-06)"); CI also runs
-`test/malicious/adapter-leg.test.ts` ("adapter malicious leg: cursor"). No end-to-end run through Switchboard against a
-logged-in `cursor-agent` has been recorded yet (T4.48).
+Fixture evidence on `main`: `src/adapters/cursor/cursor.test.ts` ("cursor compile matrix (T4.42)", "cursor bypass-class
+declaration (ADR-0035, ADR-0037)", "cursor probe and auth preflight (T4.42, T4.44)", "cursor registry entry and
+manifest gate (T4.42)", "cursor parser and result (T4.43)", "cursor parser hardening (T4.43, synthetic shapes)",
+"cursor conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.45)", "cursor Git declaration (T4.47, FR-GIT-01,
+FR-GIT-02, FR-GIT-09)" and "cursor malicious-fixture leg (T4.46, NFR-SEC-03, FR-POL-04, FR-POL-06)"); CI also runs
+`test/malicious/adapters/cursor.case.ts` and `test/malicious/adapter-leg.test.ts` ("adapter malicious leg: cursor").
+No end-to-end run through Switchboard against a logged-in `cursor-agent` has been recorded yet (T4.48).
 
 ## OpenCode CLI (milestone 4)
 
