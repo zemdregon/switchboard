@@ -147,6 +147,7 @@ export interface Harness {
 }
 
 export interface HarnessOptions {
+  allowedRoots?: readonly string[];
   maxAttempts?: number;
   /** Extra `RunLifecycle` options (for example `routing`). */
   lifecycle?: Record<string, unknown>;
@@ -176,7 +177,12 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
   const db = openLedger(dataDir);
   const ledger = createLedger(db, { ids: createIdGenerator() });
   const artifacts = new ArtifactStore(path.join(dataDir, "artifacts"));
-  const workspace = new WorkspaceManager({ db, artifacts, dataDir, allowedRoots: [root], ids: createIdGenerator() });
+  const allowedRoots = [
+    root,
+    ...(opts.allowedRoots ?? []),
+    ...((opts.config?.allowedRoots as readonly string[] | undefined) ?? []),
+  ];
+  const workspace = new WorkspaceManager({ db, artifacts, dataDir, allowedRoots, ids: createIdGenerator() });
   const registry = new AdapterRegistry()
     .register(scripted("fake", script))
     .register(scripted("fake-b", script, true))
@@ -186,7 +192,7 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
     workspace,
     artifacts,
     adapters: registry,
-    allowedRoots: [root],
+    allowedRoots,
     globalConcurrency: 4,
     perProviderConcurrency: 1,
     resolveProfile: profileFor,
@@ -215,7 +221,7 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
       artifacts,
       registry,
       config: {
-        allowedRoots: [root],
+        allowedRoots,
         mcpClients,
         capacity: { windowSeconds: 3600, confidenceRuns: 10 },
         limits: { perProviderConcurrency: 1 },
