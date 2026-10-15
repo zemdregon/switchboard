@@ -104,7 +104,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   module, compile-matrix, parser (partial: T4.43; supervisor-replayed JSONL fixtures,
   [#283](https://github.com/zemdregon/switchboard/pull/283),
   [#287](https://github.com/zemdregon/switchboard/pull/287),
-  [#299](https://github.com/zemdregon/switchboard/pull/299)), auth-preflight, a conformance suite on synthetic
+  [#299](https://github.com/zemdregon/switchboard/pull/299),
+  [#324](https://github.com/zemdregon/switchboard/pull/324)), auth-preflight, a conformance suite on synthetic
   fixtures (partial: T4.45; replay dialect hardening, 41 compile/env refusal checks, and fixtures including
   `denied_after_write`, `permission_denied_perm`, `resume_unknown_id`, `unknown_event`, and `unsafe_id_after_bound`,
   [#309](https://github.com/zemdregon/switchboard/pull/309)), malicious-fixture leg (T4.46) and Git declaration
@@ -1002,12 +1003,15 @@ never coerced.
 Supervisor-replayed JSONL fixtures under `src/adapters/cursor/fixtures/` pin today's gaps without inventing native
 fields ([#283](https://github.com/zemdregon/switchboard/pull/283),
 [#287](https://github.com/zemdregon/switchboard/pull/287),
-[#309](https://github.com/zemdregon/switchboard/pull/309)): `rate_limit` (rows 4 and 14, never reached/forced) replays
+[#309](https://github.com/zemdregon/switchboard/pull/309),
+[#324](https://github.com/zemdregon/switchboard/pull/324)): `rate_limit` (rows 4 and 14, never reached/forced) replays
 an empty stream at exit 1 to `TOOL_FAILURE`, never `RATE_LIMIT_TRANSIENT`; `rate_limit_error` replays an in-stream
 error result at exit 0 to `TOOL_FAILURE`; `sandbox_violation` (row 9, unrecorded sandbox error text at exit 0) replays
 to `TOOL_FAILURE`, never `SANDBOX_VIOLATION`; `unknown_events` replays to `OUTPUT_PROTOCOL_ERROR` with every unreadable
 line counted and no session bound; `unknown_event` replays an unrecorded event in an otherwise clean success to `ok`
-with one unknown event counted ([#309](https://github.com/zemdregon/switchboard/pull/309)); `trailing_tool` replays a
+with one unknown event counted ([#309](https://github.com/zemdregon/switchboard/pull/309)) and is replayed again so an
+unknown shape cannot supply a result while a later recognized `result` still succeeds
+([#324](https://github.com/zemdregon/switchboard/pull/324)); `trailing_tool` replays a
 `tool_call` after the `result` line to `OUTPUT_PROTOCOL_ERROR`; `session_changed` replays a conflicting `session_id` to
 `OUTPUT_PROTOCOL_ERROR` with the first id bound; `two_results` replays more than one result line to
 `OUTPUT_PROTOCOL_ERROR`; `git_write_guard` (ADR-0039) replays a guard-flagged Git write under a `success` result at exit
@@ -1018,9 +1022,21 @@ binding; `unsafe_id_after_bound` replays an unsafe session id in `result` after 
 `permission_denied` (row 7a `result.rejected`) and `permission_denied_perm` (row 11 `result.permissionDenied`,
 [#309](https://github.com/zemdregon/switchboard/pull/309)) replay soft denials to `PERMISSION_BLOCKED`;
 `denied_after_write` replays a workspace write before a soft denial to `PERMISSION_BLOCKED` with the write visible in
-partial mutation ([#309](https://github.com/zemdregon/switchboard/pull/309)); and `resume_unknown_id` replays an
+partial mutation ([#309](https://github.com/zemdregon/switchboard/pull/309)); `resume_unknown_id` replays an
 unknown session id answered with success to verify that native session id mismatch fails the conformance resume test
-([#309](https://github.com/zemdregon/switchboard/pull/309)). Closing the remaining gaps needs operator captures of a
+([#309](https://github.com/zemdregon/switchboard/pull/309)); `resume_failure` replays a resumed run whose `result` is an
+error to `TOOL_FAILURE`, preserving the resumed session id; `error_after_result` replays a late `system`/`init` whose
+`apiKeySource` is not `login` after a success `result` at exit 0 to `AUTH_REQUIRED` with the first session id
+preserved; and `malformed_after_result` replays malformed framing after a recognized `result` to
+`OUTPUT_PROTOCOL_ERROR` through the supervisor, keeping the structured session id (all
+[#324](https://github.com/zemdregon/switchboard/pull/324)). The `classifyFailure` precedence chain is pinned in the same
+change: supervisor cancel, timeout, `protocol_error`, `internal_error`, crash and spawn outcomes beat every stream
+signal including the ADR-0039 guard verdict; the guard beats denials; denials beat provider errors; a provider error
+beats a `rate_limit` event, a failed `result` and the exit code; and the Cursor `protocol` category maps to
+`OUTPUT_PROTOCOL_ERROR` ([#324](https://github.com/zemdregon/switchboard/pull/324)). The extra fields the live check
+recorded (`duration_ms`, `duration_api_ms` and `request_id` on `result`; `permissionMode` and `cwd` on `init`;
+`timestamp_ms` on `thinking`) never widen the usage record or reach an event
+([#324](https://github.com/zemdregon/switchboard/pull/324)). Closing the remaining gaps needs operator captures of a
 rate-limited or quota-stopped run and of any native backing-vendor field (ROADMAP T4.48).
 
 ### Git and commits
@@ -1043,8 +1059,10 @@ approved bypass run, Git-write denial therefore rests on FR-GIT-03 and FR-GIT-06
 Fixture evidence on `main`: `src/adapters/cursor/fixtures/` (T4.43 Done-when and T4.45 conformance JSONL, including
 `backing_provider.jsonl` from [#275](https://github.com/zemdregon/switchboard/pull/275), Done-when fixtures from
 [#283](https://github.com/zemdregon/switchboard/pull/283), anomaly and parameter fallback fixtures from
-[#287](https://github.com/zemdregon/switchboard/pull/287), and conformance/refusal fixtures from
-[#309](https://github.com/zemdregon/switchboard/pull/309)); `src/adapters/cursor/cursor.test.ts` ("cursor compile matrix
+[#287](https://github.com/zemdregon/switchboard/pull/287), conformance/refusal fixtures from
+[#309](https://github.com/zemdregon/switchboard/pull/309), and stream-order, `classifyFailure`-precedence and
+recorded-field pins with `resume_failure.jsonl`, `error_after_result.jsonl` and `malformed_after_result.jsonl` from
+[#324](https://github.com/zemdregon/switchboard/pull/324)); `src/adapters/cursor/cursor.test.ts` ("cursor compile matrix
 (T4.42)", "cursor bypass-class declaration (ADR-0035, ADR-0037)", "cursor probe and auth preflight (T4.42, T4.44)",
 "cursor registry entry and manifest gate (T4.42)", "cursor parser and result (T4.43)", "cursor parser hardening (T4.43,
 synthetic shapes)", "cases with no recorded native shape (live check rows 4, 9, 14)" fixture replay, "cursor conformance
