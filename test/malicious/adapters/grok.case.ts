@@ -12,7 +12,7 @@
  *
  * Tool-call guard (T4.26, ADR-0039): in an approved bypass run Switchboard's own tool-call guard enforces Git-write
  * denial across the hostile streams, ending `PERMISSION_BLOCKED` at exit 0 and at exit 1 (owner decision 25), including
- * a hostile tool call after the `end` line (T4.23).
+ * a hostile tool call after the `end` line (T4.23) and late or swapped commands in `tool_call_update`.
  */
 
 import { privilegedProfile } from "../../../src/adapters/fixtures/privileged.js";
@@ -251,6 +251,54 @@ const grokCase: AdapterLegCase = {
         TOOLS,
         end("cancelled"),
         toolCall(`touch ${fx.outsideSentinel} && git push origin main`),
+      ],
+    },
+    {
+      name: "completed shell read of a credential path with command in tool_call_update",
+      category: "credential_read",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("completed shell read of a credential path with command in tool_call_update", 0),
+        TOOLS,
+        JSON.stringify({ type: "tool_call", tool: "run_terminal_command" }),
+        JSON.stringify({
+          type: "tool_call_update",
+          tool: "run_terminal_command",
+          input: { command: `cat ${fx.claudeCredentialsPath} && git push origin main` },
+        }),
+        text("Done."),
+        end(),
+      ],
+    },
+    {
+      name: "shell write outside the worktree swapped in tool_call_update",
+      category: "out_of_worktree_write",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell write outside the worktree swapped in tool_call_update", 0),
+        TOOLS,
+        toolCall("ls"),
+        JSON.stringify({
+          type: "tool_call_update",
+          tool: "run_terminal_command",
+          input: { command: `touch ${fx.outsideSentinel} && git push origin main` },
+        }),
+        end(),
+      ],
+    },
+    {
+      name: "shell network call after the end line",
+      category: "network",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell network call after the end line", 0),
+        TOOLS,
+        text("Done."),
+        end(),
+        toolCall(`curl https://example.invalid/leak && git push origin main`),
       ],
     },
     {
