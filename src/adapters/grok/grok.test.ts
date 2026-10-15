@@ -577,6 +577,32 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
       expect(report.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
     });
 
+    it.each([
+      ["unknown_then_end", true, undefined, 1],
+      ["error_after_end", false, "AUTH_REQUIRED", 0],
+      ["malformed_after_end", false, "OUTPUT_PROTOCOL_ERROR", 0],
+    ] as const)(
+      "fixture %s preserves structured session binding and checks the whole stream",
+      async (fixture, ok, failureCode, unknownEventCount) => {
+        // Unknown JSON can coexist with a recognized result, but cannot supply it. Late error events and malformed
+        // framing must still invalidate that result; malformed JSON is rejected by the supervisor before parseEvent.
+        const report = await runConformanceCase(
+          replayCase(fixture, ok ? "success" : "malformed_output", {
+            ok,
+            ...(failureCode ? { failureCode } : {}),
+            nativeSessionId: DEFAULT_SESSION_ID,
+          }),
+        );
+        expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+        expect(report.result).toMatchObject({
+          ok,
+          ...(failureCode ? { failureCode } : {}),
+          nativeSessionId: DEFAULT_SESSION_ID,
+          unknownEventCount,
+        });
+      },
+    );
+
     it("fixture no_end replays text at exit 0 without an end line to OUTPUT_PROTOCOL_ERROR", async () => {
       const report = await runConformanceCase(
         replayCase("no_end", "malformed_output", { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" }),

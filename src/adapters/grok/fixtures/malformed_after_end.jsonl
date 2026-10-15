@@ -1,0 +1,3 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: T4.23 malformed framing after a recognized end must fail through the supervisor, even though an end_turn was already emitted.","exit":0}}
+{"type":"end","stopReason":"end_turn","sessionId":"00000000-0000-4000-8000-000000000001"}
+SYNTHETIC deliberately malformed trailing JSON {

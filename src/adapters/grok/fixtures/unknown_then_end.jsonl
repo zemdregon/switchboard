@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: T4.23 unknown shape supplies no result; a later recognized end independently supplies success. No native shape claimed.","exit":0}}
+{"type":"synthetic_future_event","sessionId":"must-not-bind","ok":true}
+{"type":"text","data":"SYNTHETIC: recognized turn."}
+{"type":"end","stopReason":"end_turn","sessionId":"00000000-0000-4000-8000-000000000001"}
