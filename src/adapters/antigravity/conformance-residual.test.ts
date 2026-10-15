@@ -148,6 +148,8 @@ describe("antigravity fixture inventory (T4.35, FR-ADP-11)", () => {
   // Each fixture outside the case list, with the reason it stays out. Adding a fixture without a case or a reason here
   // fails, so a synthetic shape cannot sit unreplayed.
   const OUT_OF_SUITE: Record<string, string> = {
+    duplicate_status_key:
+      "replays to a success: a duplicated `status` key keeps its last value, so SUCCESS hides ERROR (T4.33 gap, pinned)",
     non_tool_step_command: "replays to a success: a command off a `tool` step is not seen (T4.33 gap, pinned)",
     sandbox_violation_unrecorded: "replays to a success: the tool's error is not read (T4.33 gap, pinned)",
     trailing_repeat_step:
