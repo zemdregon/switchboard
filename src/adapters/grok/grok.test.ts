@@ -14,6 +14,7 @@ import { GIT_FINALIZE_COMMIT_EVENT, GitPublisher, publishRefFor } from "../../gi
 import { createIdGenerator } from "../../ids/index.js";
 import { createLedger, openLedger } from "../../ledger/index.js";
 import { RunLifecycle } from "../../lifecycle/index.js";
+import { buildEnvelope } from "../../mcp/envelope.js";
 import { createSwitchboardServer } from "../../mcp/server.js";
 import { resolveTrustProfile } from "../../policy/profiles.js";
 import { WorkspaceManager } from "../../workspace/index.js";
@@ -1021,7 +1022,7 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
       });
     });
 
-    it("parses alternative argument keys (parameters, args, arguments, cmd, CommandLine, filePath, file_path, AbsolutePath)", () => {
+    it("parses alternative argument keys (parameters, args, arguments, cmd, CommandLine, filePath, file_path, AbsolutePath, target)", () => {
       const ctx = { cwd: "/w", bypass: true };
       const guarded = (lines: string[]) => parse(lines).events.map((e) => guardEvent(e, ctx));
 
@@ -1030,6 +1031,7 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
         { type: "tool_call", args: { cmd: "git push origin main" } },
         { type: "tool_call", arguments: { CommandLine: "git push origin main" } },
         { type: "tool_call", cmd: "git push origin main" },
+        { type: "tool_call", CommandLine: "git push origin main" },
       ]) {
         expect(adapter().extractResult(guarded([line(call), line(END)]), EXIT_OK), JSON.stringify(call)).toMatchObject({
           ok: false,
@@ -1041,6 +1043,9 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
         { type: "tool_call", tool: "edit_file", parameters: { file_path: "/w/b.ts" } },
         { type: "tool_call", tool: "edit_file", args: { filePath: "/w/b.ts" } },
         { type: "tool_call", tool: "edit_file", arguments: { AbsolutePath: "/w/b.ts" } },
+        { type: "tool_call", tool: "edit_file", input: { target: "/w/b.ts" } },
+        { type: "tool_call", tool: "edit_file", file_path: "/w/b.ts" },
+        { type: "tool_call", tool: "edit_file", AbsolutePath: "/w/b.ts" },
       ]) {
         const p = parse([line(call), line(END)]);
         expect(p.events[0], JSON.stringify(call)).toMatchObject({
@@ -1604,6 +1609,147 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
       expect(ev2.some((e) => e.kind === "result" && e.ok)).toBe(true);
       expect(ev2.some((e) => e.kind === "provider_error")).toBe(false);
     });
+
+    it("session_bound carries model and backingProvider (from model, model_id, modelUsage, backing_provider, backingProvider)", () => {
+      // From modelUsage (live check row 4a reported model id grok-4.7-build)
+      const p1 = parse([
+        line({
+          ...END,
+          modelUsage: { "grok-4.7-build": { inputTokens: 10, outputTokens: 2 } },
+        }),
+      ]);
+      expect(p1.events.find((e) => e.kind === "session_bound")).toEqual({
+        kind: "session_bound",
+        nativeSessionId: SID,
+        model: "grok-4.7-build",
+      });
+
+      // From model_id
+      const p2 = parse([line({ ...END, model_id: "grok-4.6" })]);
+      expect(p2.events.find((e) => e.kind === "session_bound")).toEqual({
+        kind: "session_bound",
+        nativeSessionId: SID,
+        model: "grok-4.6",
+      });
+
+      // From model directly
+      const p3 = parse([line({ ...END, model: "grok-4.7" })]);
+      expect(p3.events.find((e) => e.kind === "session_bound")).toEqual({
+        kind: "session_bound",
+        nativeSessionId: SID,
+        model: "grok-4.7",
+      });
+
+      // Precedence: model > model_id > modelUsage
+      const p4 = parse([
+        line({
+          ...END,
+          model: "model-wins",
+          model_id: "model-id-loses",
+          modelUsage: { "usage-loses": {} },
+        }),
+      ]);
+      expect(p4.events.find((e) => e.kind === "session_bound")).toEqual({
+        kind: "session_bound",
+        nativeSessionId: SID,
+        model: "model-wins",
+      });
+
+      // Backing provider (backing_provider and backingProvider)
+      const p5 = parse([
+        line({
+          ...END,
+          model: "grok-4.7",
+          backing_provider: "backing-x",
+        }),
+      ]);
+      expect(p5.events.find((e) => e.kind === "session_bound")).toEqual({
+        kind: "session_bound",
+        nativeSessionId: SID,
+        model: "grok-4.7",
+        backingProvider: "backing-x",
+      });
+
+      const p6 = parse([
+        line({
+          ...END,
+          model: "grok-4.7",
+          backingProvider: "backing-y",
+        }),
+      ]);
+      expect(p6.events.find((e) => e.kind === "session_bound")).toEqual({
+        kind: "session_bound",
+        nativeSessionId: SID,
+        model: "grok-4.7",
+        backingProvider: "backing-y",
+      });
+
+      // Non-strings dropped, long values clipped to 128 chars
+      const longModel = "m".repeat(150);
+      const longBacking = "b".repeat(150);
+      const p7 = parse([
+        line({
+          ...END,
+          model: longModel,
+          backing_provider: longBacking,
+        }),
+      ]);
+      expect(p7.events.find((e) => e.kind === "session_bound")).toEqual({
+        kind: "session_bound",
+        nativeSessionId: SID,
+        model: `${longModel.slice(0, 128)}…`,
+        backingProvider: `${longBacking.slice(0, 128)}…`,
+      });
+
+      const p8 = parse([
+        line({
+          ...END,
+          model: 123,
+          backing_provider: null,
+        }),
+      ]);
+      expect(p8.events.find((e) => e.kind === "session_bound")).toEqual({
+        kind: "session_bound",
+        nativeSessionId: SID,
+      });
+
+      // Prototype keys in modelUsage never smuggle a model
+      const p9 = parse([
+        `{"type":"end","stopReason":"end_turn","sessionId":"${SID}","modelUsage":{"__proto__":{"polluted":"true"}}}`,
+      ]);
+      expect(p9.events.find((e) => e.kind === "session_bound")).toEqual({
+        kind: "session_bound",
+        nativeSessionId: SID,
+      });
+    });
+
+    it("a second end line does not emit a second usage event (FR-CAP-01)", () => {
+      const a = adapter();
+      const state: ParseState = { lines: 0, unknownEvents: 0 };
+      const ev1 = a.parseEvent(line(END), state);
+      expect(ev1.filter((e) => e.kind === "usage")).toHaveLength(1);
+      const ev2 = a.parseEvent(line({ ...END, usage: { input_tokens: 99 } }), state);
+      expect(ev2.filter((e) => e.kind === "usage")).toHaveLength(0);
+      expect(ev2.some((e) => e.kind === "provider_error" && e.category === "protocol")).toBe(true);
+    });
+
+    it("empty string tool call ID falls back to generated counter, and empty tool name falls back when command is present", () => {
+      // Empty string ID uses call_counter
+      const p1 = parse([
+        line({ type: "tool_call", id: "", input: { command: "echo 1" } }),
+        line({ type: "tool_call_update", id: "", input: { command: "echo 1 update" } }),
+      ]);
+      expect(p1.events).toHaveLength(2);
+      expect(p1.events[1]).toMatchObject({ kind: "tool_call", command: "echo 1 update" });
+
+      // Empty string tool name with command falls back to run_terminal_command
+      const p2 = parse([line({ type: "tool_call", tool: "", input: { command: "echo 2" } })]);
+      expect(p2.events[0]).toMatchObject({ kind: "tool_call", name: "run_terminal_command", tool: "shell" });
+
+      // Empty string tool name without command or target parses as unknown
+      const p3 = parse([line({ type: "tool_call", tool: "" })]);
+      expect(p3.events[0]).toEqual({ kind: "unknown", rawType: "tool_call" });
+    });
   });
 
   it("ignores ACP messages and unparseable framing", () => {
@@ -2064,6 +2210,109 @@ describe("grok Git declaration (T4.27, FR-GIT-01, FR-GIT-02, FR-GIT-09)", () => 
       const sha = g(repo, "rev-parse", "--verify", "--quiet", publishRefFor(metaSessionId));
       expect(sha).toMatch(/^[0-9a-f]{40}$/u);
       expect(g(repo, "show", "--name-only", "--format=", sha)).toContain("hello.txt");
+    } finally {
+      await lifecycle.shutdown();
+      db.close();
+    }
+  });
+});
+
+/**
+ * T4.23 with T4.6 (FR-ADP-10): a replayed fixture whose backing vendor differs from the harness. SYNTHETIC: live check
+ * row 4a reported model id grok-4.7-build in modelUsage; backing_provider is the structured key a fronted run would
+ * carry, not a recorded field.
+ */
+describe("grok backing-provider fixture (T4.23, T4.6, FR-ADP-10)", () => {
+  it("a replayed run stores harness grok and backing vendor side by side and shows both in get_run", async () => {
+    const root = realpathSync(makeCwd());
+    const repo = join(root, "repo");
+    mkdirSync(repo);
+    const g = (...args: string[]) =>
+      execFileSync("git", ["-c", "commit.gpgsign=false", ...args], {
+        cwd: repo,
+        env: {
+          PATH: process.env.PATH ?? "",
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_AUTHOR_NAME: "Grok Dev",
+          GIT_AUTHOR_EMAIL: "grok@example.test",
+          GIT_COMMITTER_NAME: "Grok Dev",
+          GIT_COMMITTER_EMAIL: "grok@example.test",
+        },
+      });
+    g("init", "-q", "-b", "main");
+    writeFileSync(join(repo, "README.md"), "initial\n");
+    g("add", "-A");
+    g("commit", "-q", "-m", "init");
+
+    const dataDir = join(root, "data");
+    mkdirSync(dataDir);
+    const db = openLedger(dataDir);
+    const ids = createIdGenerator();
+    const ledger = createLedger(db, { ids });
+    const artifacts = new ArtifactStore(join(dataDir, "artifacts"));
+    const real = createProbeRunner();
+    const probeRunner: ProbeRunner = async (argv, opts) => {
+      if (argv.includes("models")) {
+        return {
+          stdout: `${AUTH_LOGGED_IN_PREFIX} with grok.com.\nDefault model: grok-4.7\n`,
+          stderr: "",
+          exitCode: 0,
+          timedOut: false,
+        };
+      }
+      return real(argv, opts);
+    };
+    const lifecycle = new RunLifecycle({
+      ledger,
+      workspace: new WorkspaceManager({ db, artifacts, dataDir, allowedRoots: [root], ids }),
+      artifacts,
+      adapters: new AdapterRegistry().register(replayAdapter("backing_provider")),
+      allowedRoots: [root],
+      globalConcurrency: 1,
+      resolveProfile: (name) => resolveTrustProfile(name),
+      probeRunner,
+    });
+    lifecycle.start();
+    try {
+      const { runId, metaSessionId } = await lifecycle.submit({
+        clientId: "c",
+        objective: "answer through a backing vendor",
+        workspace: repo,
+        trustProfile: "privileged",
+        provider: "grok",
+        privileged: { scope: BYPASS_SCOPE, approvedByClientPolicy: true },
+      });
+      const done = await lifecycle.waitForTerminal(runId);
+      expect(done.state, done.failure_detail ?? "").toBe("SUCCEEDED");
+
+      // The session_bound event's fields land on the provider binding (T5.3), never inferred from the display name.
+      expect(ledger.listProviderBindings(metaSessionId)).toEqual([
+        expect.objectContaining({
+          provider: "grok",
+          harness: "grok",
+          backing_provider: "backing-x",
+          model: "grok-4.7-build",
+          native_session_id: DEFAULT_SESSION_ID,
+        }),
+      ]);
+
+      const rows = ledger.listUsageObservationsForRun(runId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        provider: "grok",
+        harness: "grok",
+        backing_provider: "backing-x",
+        model: "grok-4.7-build",
+        source: "provider_reported",
+      });
+      expect(buildEnvelope(ledger, done, (s) => s).usage?.reported).toEqual([
+        expect.objectContaining({
+          harness: "grok",
+          backing_provider: "backing-x",
+          model: "grok-4.7-build",
+        }),
+      ]);
     } finally {
       await lifecycle.shutdown();
       db.close();
