@@ -674,7 +674,7 @@ describe("opencode parser and result (T4.53)", () => {
     }
   });
 
-  it("native values that name Object.prototype members map to `other` and `unknown`, never an inherited member", () => {
+  it("native values that name Object.prototype members map to `other`, `shell` and `unknown`, never an inherited member", () => {
     const { a, events } = parse([
       START,
       TOOL("constructor", { command: "git push" }),
@@ -686,7 +686,8 @@ describe("opencode parser and result (T4.53)", () => {
       FINISH("stop"),
     ]);
     expect(events.filter((e) => e.kind === "tool_call")).toEqual([
-      { kind: "tool_call", tool: "other", name: "constructor" },
+      // An unlisted tool name whose input carries a string `command` is a shell tool (fail closed, T4.56).
+      { kind: "tool_call", tool: "shell", name: "constructor", command: "git push" },
       { kind: "tool_call", tool: "other", name: "__proto__" },
       { kind: "tool_call", tool: "other", name: "toString" },
     ]);
@@ -785,19 +786,95 @@ describe("opencode parser and result (T4.53)", () => {
       expect(r, label).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", nativeSessionId: SID });
       expect(r.ok === false && r.failureDetail, label).toBe("tool call after the final stop step");
     }
-    // Other unknown lines, late text and an intermediate step after `stop` do not trip it.
-    const quiet = parse([
+    // Late text and an intermediate step after `stop` do not trip it.
+    const quiet = parse([START, TEXT("ok"), FINISH("stop"), TEXT("late", "prt_t2"), FINISH("tool-calls", "prt_f2")]);
+    expect(quiet.a.extractResult(quiet.events, EXIT0)).toMatchObject({ ok: true });
+    // The same unreadable line before `stop` is an unreadable event, not a trailing tool call; still not a success.
+    const before = parse([START, line("tool_use", { type: "tool" }), TEXT("ok"), FINISH("stop")]);
+    const r = before.a.extractResult(before.events, EXIT0);
+    expect(r).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", unknownEventCount: 1 });
+    expect(r.ok === false && r.failureDetail).toBe("1 unreadable event(s) in the stream");
+  });
+
+  it("an unknown or unreadable event anywhere, before or after the final stop step, is never a success (T4.56)", () => {
+    const EXIT1: ExitInfo = { ...EXIT0, exitCode: 1 };
+    for (const [label, lines] of [
+      ["unknown kind before stop", [START, line("synthetic_unknown_kind", {}), TEXT("ok"), FINISH("stop")]],
+      ["unknown kind after stop", [START, TEXT("ok"), FINISH("stop"), line("synthetic_unknown_kind", {})]],
+      ["step_finish without a reason", [START, line("step_finish", { type: "step-finish" }), FINISH("stop", "prt_f2")]],
+      ["text without text", [START, line("text", { type: "text" }), FINISH("stop")]],
+      ["no type", [START, JSON.stringify({ sessionID: SID }), TEXT("ok"), FINISH("stop")]],
+    ] as const) {
+      const { a, events } = parse([...lines]);
+      expect(
+        events.some((e) => e.kind === "unknown"),
+        label,
+      ).toBe(true);
+      const r0 = a.extractResult(events, EXIT0);
+      expect(r0, label).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+      expect(r0.ok === false && r0.failureDetail, label).toMatch(/unreadable event\(s\) in the stream$/);
+      expect(a.extractResult(events, EXIT1), label).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+    }
+    // A later `stop` does not wash an earlier unreadable line back to success.
+    const washed = parse([
       START,
+      line("synthetic_unknown_kind", {}),
       TEXT("ok"),
       FINISH("stop"),
-      TEXT("late", "prt_t2"),
-      line("synthetic_unknown_kind", {}),
-      FINISH("tool-calls", "prt_f2"),
+      START,
+      TEXT("again", "prt_t2"),
+      FINISH("stop", "prt_f2"),
     ]);
-    expect(quiet.a.extractResult(quiet.events, EXIT0)).toMatchObject({ ok: true });
-    // The same unreadable line before `stop` leaves a clean run clean.
-    const before = parse([START, line("tool_use", { type: "tool" }), TEXT("ok"), FINISH("stop")]);
-    expect(before.a.extractResult(before.events, EXIT0)).toMatchObject({ ok: true });
+    expect(washed.a.extractResult(washed.events, EXIT0)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      unknownEventCount: 1,
+    });
+  });
+
+  it("a shell tool named bash, or any unlisted tool carrying a string command, reaches the tool-call guard (T4.56)", () => {
+    const ctx = { cwd: "/work/tree", home: "/home/synthetic", bypass: true };
+    for (const name of ["bash", "synthetic_exec", "sh"]) {
+      const { a, events } = parse([START, TOOL(name, { command: "git push origin main" }), TEXT("ok"), FINISH("stop")]);
+      const call = events.find((e) => e.kind === "tool_call");
+      expect(call, name).toEqual({ kind: "tool_call", tool: "shell", name, command: "git push origin main" });
+      const guarded = events.map((e) => guardEvent(e, ctx));
+      expect(a.extractResult(guarded, EXIT0), name).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    }
+    // No string `command`: an unlisted tool stays `other` and a read-only call leaves the run clean.
+    for (const input of [{}, { command: 7 }, { pattern: "git push" }]) {
+      const { a, events } = parse([START, TOOL("grep", input), TEXT("ok"), FINISH("stop")]);
+      expect(
+        events.find((e) => e.kind === "tool_call"),
+        JSON.stringify(input),
+      ).toEqual({
+        kind: "tool_call",
+        tool: "other",
+        name: "grep",
+      });
+      expect(
+        a.extractResult(
+          events.map((e) => guardEvent(e, ctx)),
+          EXIT0,
+        ),
+      ).toMatchObject({ ok: true });
+    }
+    // A known file tool keeps its kind even when `command` is also present. A benign shell command stays a success.
+    const read = parse([START, TOOL("read", { filePath: "a.txt", command: "git push origin main" }), FINISH("stop")]);
+    expect(read.events.find((e) => e.kind === "tool_call")).toEqual({
+      kind: "tool_call",
+      tool: "read",
+      name: "read",
+      target: "a.txt",
+    });
+    const benign = parse([START, TOOL("bash", { command: "echo ok" }), TEXT("ok"), FINISH("stop")]);
+    expect(benign.events.find((e) => e.kind === "tool_call")).toMatchObject({ tool: "shell", command: "echo ok" });
+    expect(
+      benign.a.extractResult(
+        benign.events.map((e) => guardEvent(e, ctx)),
+        EXIT0,
+      ),
+    ).toMatchObject({ ok: true });
   });
 
   it("a guard-flagged trailing tool_use ends PERMISSION_BLOCKED at exit 1, after an intermediate step and a second stop", () => {

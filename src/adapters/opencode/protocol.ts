@@ -96,12 +96,18 @@ export const EVENT = {
 /** `step_finish.part.reason` of the final step ([LIVE] 4c, 5: `stop`; `tool-calls` ends an intermediate step). */
 export const REASON_STOP = "stop";
 
-/** `tool_use.part.tool` of the shell tool ([LIVE] 6a: `shell`, not `bash`) and the file tools ([LIVE] 4c). */
+/**
+ * `tool_use.part.tool` of the shell tool ([LIVE] 6a: `shell`, not `bash`) and the file tools ([LIVE] 4c). `bash` is
+ * **Assumption** (fail closed): it is the name OpenCode's permission keys use ([D-perm]; [LIVE] note 7), so a stream
+ * that names the shell tool `bash` still reaches the tool-call guard. The adapter also treats any other tool name whose
+ * input carries a string `command` as a shell tool (see `parseEvent`).
+ */
 export const TOOL_KINDS: Readonly<Record<string, "read" | "edit" | "shell">> = {
   read: "read",
   write: "edit",
   edit: "edit",
   shell: "shell",
+  bash: "shell",
 };
 
 /**

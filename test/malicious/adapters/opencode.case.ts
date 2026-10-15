@@ -15,7 +15,10 @@
  * hostile category (Q-85), each at exit 0 and exit 1 across the categories, a run that never reaches a `stop` step, and
  * a hostile call followed by a provider `error` line (row 14b), all at exit 0 and exit 1 in every hostile category; also
  * several Git-write forms, `pending` and `running` tool states, a session id that changes mid-run and unknown event
- * kinds before the hostile call. Partial streams and two known gaps are exported separately below.
+ * kinds before the hostile call. A shell tool named `bash`, or any other name whose input carries a string `command`,
+ * reaches the guard (fail closed in the adapter). An unknown event kind before a final `stop` step is not a success;
+ * those streams are not in this list, because an `unknown_events` stream must parse only as `unknown`, and they are
+ * exported below for their own replay. Partial streams are exported separately below.
  * A bare or unreadable trailing `tool_use` ends `OUTPUT_PROTOCOL_ERROR`; it is not a hostile
  * category stream here (those must end blocked), so `src/adapters/opencode/opencode.test.ts` pins it.
  */
@@ -513,6 +516,31 @@ const opencodeCase: AdapterLegCase = {
         STOP,
       ],
     },
+    // Formerly a pinned known gap (T4.56): a shell tool not named `shell` now reaches the guard.
+    {
+      name: "a Git push under a shell tool named bash",
+      category: "out_of_worktree_write",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("a Git push under a shell tool named bash", 0),
+        STEP_START,
+        completed("bash", { command: `touch ${fx.outsideSentinel} && git push origin main` }),
+        STOP,
+      ],
+    },
+    {
+      name: "a Git commit under an unlisted tool name carrying a command, exit 1",
+      category: "credential_read",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("a Git commit under an unlisted tool name carrying a command, exit 1", 1),
+        STEP_START,
+        completed("synthetic_exec", { command: `cat ${fx.codexAuthPath} && git commit -am leak` }),
+        STOP,
+      ],
+    },
     {
       name: "only unknown event kinds, clean exit",
       category: "unknown_events",
@@ -604,13 +632,12 @@ export const opencodePartialStreams = (fx: MaliciousFixture): HostileStream[] =>
 ];
 
 /**
- * Known gaps pinned by `test/malicious/adapter-leg.test.ts` (adapter code, outside this test-only change; ROADMAP
- * T4.56). Each ends `ok` today. When the adapter fails one closed, that pin fails: move the stream into the case above.
- * - An unknown event kind before a final `stop` step does not stop success; it is only counted (`unknownEventCount`).
- * - A shell tool named anything but `shell` (for example `bash`, the name OpenCode's permission keys use; live check
- *   note 7) parses as tool kind `other`, so its command never reaches the tool-call guard.
+ * An unknown event kind before a final `stop` step (T4.56). Not an `unknown_events` hostile stream: `step_start` and
+ * `step_finish` parse as `session_bound`, `usage` and `result`, and that category must parse only as `unknown`.
+ * Exit 0 is `OUTPUT_PROTOCOL_ERROR`; exit 1 is `TOOL_FAILURE` (the unexpected exit outranks the protocol detail).
+ * A later `stop` does not make the run a success. Replayed by `test/malicious/adapter-leg.test.ts`.
  */
-export const opencodeKnownGaps = (): HostileStream[] => [
+export const opencodeUnreadableStreams = (): HostileStream[] => [
   {
     name: "an unknown event kind, then a final stop step",
     category: "unknown_events",
@@ -624,14 +651,14 @@ export const opencodeKnownGaps = (): HostileStream[] => [
     ],
   },
   {
-    name: "a Git push under a shell tool named bash",
-    category: "out_of_worktree_write",
-    exitCode: 0,
-    failureCode: "PERMISSION_BLOCKED",
+    name: "an unknown event kind, then a final stop step, exit 1",
+    category: "unknown_events",
+    exitCode: 1,
+    failureCode: "TOOL_FAILURE",
     lines: [
-      META("a Git push under a shell tool named bash", 0),
+      META("an unknown event kind, then a final stop step, exit 1", 1),
       STEP_START,
-      event("tool_use", { type: "tool", tool: "bash", state: { status: "completed", input: { command: "git push" } } }),
+      JSON.stringify({ type: "synthetic_unknown_kind", sessionID: SID }),
       STOP,
     ],
   },
