@@ -396,6 +396,7 @@ describeLinuxVerified("serve over stdio (process level)", () => {
       "antigravity",
       "cursor",
       "opencode",
+      "kimi",
       "fake",
     ]);
     expect(msgs.at(-1)).toBe("stopped");

@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.43 residual, T4.6). The init line binds the session in the recorded native shape (display name, no backing vendor, live check row 102); a backing_provider and another model appear only on the result line with the same session id. Pins the gap: the first binding is final, so neither is reported.","exit":0}}
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work/tree","session_id":"synthetic-cursor-session-0001","model":"Synthetic Model 1","permissionMode":"default"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]},"session_id":"synthetic-cursor-session-0001"}
+{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"synthetic-cursor-session-0001","model":"Result Model 2","backing_provider":"backing-late","usage":{"inputTokens":7,"outputTokens":2}}

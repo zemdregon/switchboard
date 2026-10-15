@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.23 residual, fifth pass). A clean end_turn result at exit 0 followed by a bare tool_call_update line with no readable field. Pins the gap: the trailing-tool order check keys on tool_call events and unknown tool_call lines only, so the unreadable update is a counted unknown event and the run succeeds with unknownEventCount 1.","exit":0}}
+{"type":"text","data":"Done."}
+{"type":"end","stopReason":"end_turn","sessionId":"00000000-0000-4000-8000-000000000001","requestId":"req_synthetic_1","usage":{"input_tokens":11,"output_tokens":2,"total_tokens":13},"num_turns":1}
+{"type":"tool_call_update"}

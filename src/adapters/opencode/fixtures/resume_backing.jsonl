@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.53 residual, T4.6). A resumed run (--session <id>, live check rows 13a, 15a) whose first line carries a structured backing_provider and model, the key a fronted harness would carry; native OpenCode output reports neither (row 4c).","exit":0,"requireResume":true}}
+{"type":"step_start","timestamp":1,"sessionID":"{{SESSION_ID}}","model":"Resumed Model","backing_provider":"backing-resumed","part":{"sessionID":"{{SESSION_ID}}","id":"prt_s1","type":"step-start"}}
+{"type":"text","timestamp":2,"sessionID":"{{SESSION_ID}}","part":{"sessionID":"{{SESSION_ID}}","id":"prt_t1","type":"text","text":"Resumed through the backing vendor."}}
+{"type":"step_finish","timestamp":3,"sessionID":"{{SESSION_ID}}","part":{"sessionID":"{{SESSION_ID}}","id":"prt_f1","type":"step-finish","reason":"stop","tokens":{"input":5,"output":1}}}

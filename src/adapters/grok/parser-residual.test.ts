@@ -11,6 +11,10 @@
  * parity (more id shapes, refusal order with a missing binary, launcher and timeouts, no fork check: a pinned gap).
  * Fourth pass: a failing second `end` that binds the only id (pinned gap), a resumed run reporting another id replayed
  * end to end (pinned gap), `sessionId` on non-`end` lines, a late model, non-object and zero usage, bypass-approval parity.
+ * Fifth pass: tool lines after `end` that the order check misses (an unreadable or deduplicated `tool_call_update`,
+ * pinned gaps), the trailing-tool detail masking a two-`end` anomaly, prototype-named model values and `modelUsage` keys,
+ * an unclipped command, a caller id that collides with a generated call key, usage key placement and fractional counts,
+ * and `extractResult` honouring the compiled expected exit codes.
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -591,5 +595,142 @@ describe("grok parser residuals, fourth pass: session-id gaps, usage shapes and 
         expect(resumed, label).toEqual({ ...first, argv: [...first.argv, "-r", SID] });
       }
     }
+  });
+});
+
+describe("grok parser residuals, fifth pass: post-end tool lines, prototype values and exit codes (T4.23, synthetic lines; parser unchanged)", () => {
+  const ctx = { cwd: "/w", bypass: true };
+  const guarded = (lines: (string | object)[]) => parse(lines).events.map((e) => guardEvent(e, ctx));
+  const bound = (events: readonly { kind: string }[]) => events.filter((e) => e.kind === "session_bound");
+
+  it("pins the gap: an unreadable tool_call_update after `end` is a counted unknown that leaves the turn clean", () => {
+    // The order check keys on `tool_call` events and unknown `tool_call` lines; an unknown `tool_call_update` is neither.
+    for (const update of [{ type: "tool_call_update" }, { type: "tool_call_update", input: { command: 7 } }]) {
+      const { events } = parse([line(END), line(update)]);
+      expect(events.at(-1), JSON.stringify(update)).toEqual({ kind: "unknown", rawType: "tool_call_update" });
+      expect(adapter().extractResult(events, EXIT_OK), JSON.stringify(update)).toEqual({
+        ok: true,
+        unknownEventCount: 1,
+        nativeSessionId: SID,
+      });
+    }
+    // The same bare line typed `tool_call` fails the run, so the asymmetry is the rawType alone.
+    const call = parse([line(END), line({ type: "tool_call" })]).events;
+    expect(adapter().extractResult(call, EXIT_OK)).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+  });
+
+  it("fixture trailing_bare_update replays an unreadable update after end_turn at exit 0 to success (gap)", async () => {
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: replayAdapter("trailing_bare_update"),
+      request: {
+        runId: "run_grok_t423_residual",
+        objective: "synthetic grok objective",
+        constraints: [],
+        workspace: { cwd: makeCwd(), writable: true },
+        bypassApproved: true,
+      },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: true, unknownEventCount: 1, summary: "Done." });
+  });
+
+  it("pins the gap: an update after `end` that repeats a reported call is deduplicated, so the order check sees nothing", () => {
+    const before = line({ type: "tool_call", id: "t1", input: { command: "ls" } });
+    const repeat = line({ type: "tool_call_update", id: "t1", input: { command: "ls" } });
+    const { events } = parse([before, line(END), repeat]);
+    expect(events.filter((e) => e.kind === "tool_call")).toEqual([shell("ls")]);
+    expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({ ok: true, nativeSessionId: SID });
+    // A swapped command on the same call after `end` is reported, so it trips the check (and reaches the guard).
+    const swapped = line({ type: "tool_call_update", id: "t1", input: { command: "git push origin main" } });
+    expect(adapter().extractResult(parse([before, line(END), swapped]).events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the end line",
+    });
+    expect(adapter().extractResult(guarded([before, line(END), swapped]), EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+  });
+
+  it("the trailing-tool detail replaces a two-`end` detail: the code is the same, the first cause is not named", () => {
+    const tool = line({ type: "tool_call", input: { command: "ls" } });
+    const twoEnds = parse([line(END), line(END)]).events;
+    expect(adapter().extractResult(twoEnds, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: more than one end line",
+    });
+    expect(adapter().extractResult(parse([line(END), line(END), tool]).events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the end line",
+    });
+    // A tool call between the two `end` lines is before the final result, so the two-`end` detail stands.
+    expect(adapter().extractResult(parse([line(END), tool, line(END)]).events, EXIT_OK)).toMatchObject({
+      failureDetail: "protocol: more than one end line",
+    });
+  });
+
+  it("a prototype-named model or backing provider shadows its fallback key and binds none (as an empty one)", () => {
+    for (const name of ["toString", "constructor", "__proto__", "hasOwnProperty"]) {
+      const { events } = parse([
+        line({ ...END, model: name, model_id: "grok-fallback", backing_provider: name, backingProvider: "backing-x" }),
+      ]);
+      expect(bound(events), name).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+    }
+  });
+
+  it("modelUsage skips prototype-named keys and binds the first ordinary own key", () => {
+    const { events } = parse([line({ ...END, modelUsage: { constructor: {}, toString: {}, "grok-4.7-build": {} } })]);
+    expect(bound(events)).toEqual([{ kind: "session_bound", nativeSessionId: SID, model: "grok-4.7-build" }]);
+    const only = parse([line({ ...END, modelUsage: { constructor: {}, valueOf: {} } })]).events;
+    expect(bound(only)).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+  });
+
+  it("a command is never clipped (a target is), so a Git write at the end of a long command still reaches the guard", () => {
+    const command = `echo ${"x".repeat(5_000)} && git push origin main`;
+    const call = line({ type: "tool_call", input: { command } });
+    expect(parse([call]).events).toEqual([shell(command)]);
+    expect(adapter().extractResult(guarded([call, line(END)]), EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+  });
+
+  it("a caller id equal to a generated key shares that call: the same command is deduplicated, a new one reported", () => {
+    const { events } = parse([
+      line({ type: "tool_call", input: { command: "git status" } }),
+      line({ type: "tool_call_update", id: "call_1", input: { command: "git status" } }),
+      line({ type: "tool_call_update", id: "call_1", input: { command: "git push origin main" } }),
+    ]);
+    // Never under-reports: the guard saw the first command once and sees the new one.
+    expect(events).toEqual([shell("git status"), shell("git push origin main")]);
+  });
+
+  it("usage is read from its recorded place only: num_turns inside usage and counters beside it are dropped", () => {
+    const { events } = parse([
+      line({ ...END, usage: { num_turns: 4, input_tokens: 1.5, requestId: 3 }, output_tokens: 9, total_tokens: 9 }),
+    ]);
+    // A fractional count is finite and non-negative, so it is recorded as reported (no integer check).
+    expect(events.filter((e) => e.kind === "usage")).toEqual([
+      { kind: "usage", source: "provider_reported", metrics: { input_tokens: 1.5 } },
+    ]);
+  });
+
+  it("extractResult honours the compiled expected exit codes rather than a hard-coded 0", () => {
+    const { events } = parse([line(END)]);
+    expect(adapter().extractResult(events, { ...EXIT_OK, exitCode: 2, expectedExitCodes: [0, 2] })).toMatchObject({
+      ok: true,
+    });
+    expect(adapter().extractResult(events, { ...EXIT_OK, expectedExitCodes: [2] })).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "exit code 0",
+    });
+    expect(adapter().extractResult(events, { ...EXIT_OK, exitCode: null })).toMatchObject({ ok: false });
   });
 });

