@@ -73,8 +73,11 @@ Pre-release. The package is private and is not published to any registry; you bu
   and parser work on synthetic fixtures. Grok Build has module, compile-matrix, parser (partial) and auth-preflight
   coverage on synthetic fixtures (README [Grok Build CLI](#grok-build-cli-milestone-4), ROADMAP T4.22 to T4.24); the
   conformance suite, malicious-fixture leg and Git declaration fixture tests are still open (T4.25 to T4.27; T4.25 PR
-  [#210](https://github.com/zemdregon/switchboard/pull/210) was open at documentation time). Cursor has conformance
-  and malicious-fixture legs and a Git declaration on
+  [#210](https://github.com/zemdregon/switchboard/pull/210) was open at documentation time). Antigravity has a
+  conformance suite (partial: native resume, T4.35), a malicious-fixture leg (partial: live shapes and FR-POL-04, T4.36)
+  and a Git declaration on synthetic fixtures (README [Antigravity CLI](#antigravity-cli-milestone-4), ROADMAP T4.35 to
+  T4.37); live smoke, live malicious leg and `adapters validate` for Antigravity remain operator work (T4.38). Cursor
+  has conformance and malicious-fixture legs and a Git declaration on
   recorded fixtures (README [Cursor CLI](#cursor-cli-milestone-4), ROADMAP T4.45 to T4.47); live smoke, live malicious
   leg and `adapters validate` for Cursor remain operator work (T4.48). OpenCode has a conformance suite and Git
   declaration on synthetic fixtures and a malicious-fixture leg that is still partial (README
@@ -136,6 +139,7 @@ each provider's own CLI, and Switchboard asks that CLI whether it is logged in.
 | Claude Code | `claude auth login` (the adapter returns `AUTH_REQUIRED` naming it) | Taken from the adapter; check Anthropic's documentation |
 | Codex | `codex login`; status is read with `codex login status` (exit code 0 logged in, 1 not) | `codex login status` observed on codex-cli 0.162.1 (`docs/research/live-checks-2026-10-13.md`); output format undocumented, so only the exit code is used; check OpenAI's documentation for the login step |
 | Grok Build | `grok login` (the adapter returns `AUTH_REQUIRED` naming it; the CLI's own error text also names `grok login --device-code`) | Auth preflight runs `grok models` and keys on the first stdout line (`You are logged in with grok.com.` vs `You are not authenticated.`; exit 0 in both states on the 2026-10-14 live check, `grok 1.0.50`; [`docs/research/live-checks-2026-10-14-grok.md`](docs/research/live-checks-2026-10-14-grok.md)); check xAI's documentation for the login step |
+| Antigravity | Launch **`agy`** without arguments (the adapter returns `AUTH_REQUIRED` naming `agy`; the CLI's stderr also says to launch without arguments to sign in) | Auth preflight runs `agy models` and keys on exit code and stderr (`<slug>\t<name>` lines at exit 0 vs `Error: Please sign in` at exit 1 on the 2026-10-14 live check, `agy` 1.3.4; [`docs/research/live-checks-2026-10-14-antigravity.md`](docs/research/live-checks-2026-10-14-antigravity.md)); check Google's Antigravity documentation for the login step |
 | Cursor CLI | `cursor-agent login` (the adapter returns `AUTH_REQUIRED` naming it) | Auth preflight runs `cursor-agent status --format json` and keys on `isAuthenticated` (exit 0 both logged in and logged out on the 2026-10-14 live check; [`docs/research/live-checks-2026-10-14-cursor.md`](docs/research/live-checks-2026-10-14-cursor.md)); check Cursor's documentation for the login step |
 | OpenCode | `opencode auth login` (the adapter returns `AUTH_REQUIRED` naming it) | Auth preflight runs `opencode auth list --format json --standalone` and treats any non-environment connection type as logged in (exit 0 in every state on the 2026-10-14 live check, `opencode v2.0.23`; [`docs/research/live-checks-2026-10-14-opencode.md`](docs/research/live-checks-2026-10-14-opencode.md)); check OpenCode's documentation for the login step |
 
@@ -673,6 +677,65 @@ malicious-fixture and Git-declaration argv tests are not on `main` yet (ROADMAP 
 [#210](https://github.com/zemdregon/switchboard/pull/210) at documentation time). No end-to-end run through Switchboard
 against a logged-in `grok` has been recorded yet (T4.28).
 
+## Antigravity CLI (milestone 4)
+
+Config id `antigravity`; routing and `list_capabilities` id `antigravity`. Switchboard runs the **`agy`** binary with
+`--prompt=<prompt> --output-format stream-json`
+([TDD §4.4.2](docs/design/TDD.md#442-antigravity-native-controls-per-profile-and-platform-t430); observed on
+2026-10-14 in [`docs/research/live-checks-2026-10-14-antigravity.md`](docs/research/live-checks-2026-10-14-antigravity.md),
+`agy` 1.3.4). The prompt is one argv word (`--prompt=<prompt>`), not stdin (an Assumption in the adapter). Switchboard
+sets `AGY_CLI_DISABLE_AUTO_UPDATE=true` on every run and never puts `GEMINI_API_KEY`, `GOOGLE_API_KEY` or
+`GOOGLE_GEMINI_BASE_URL` in the child environment (API-key mode stays disabled).
+
+The compliance manifest range admits no version until an operator runs `switchboard adapters validate antigravity` and
+commits the manifest diff (ROADMAP T4.38). Until then `doctor` reports `ADAPTER_VERSION_UNVERIFIED` for Antigravity.
+
+### Login
+
+See the [login table](#log-in-to-the-providers-natively) above. Switchboard never launches `agy` for sign-in; it only
+runs `agy models` during preflight.
+
+### Trust profiles
+
+The adapter compiles only what [TDD §4.4.2](docs/design/TDD.md#442-antigravity-native-controls-per-profile-and-platform-t430)
+records for the 2026-10-14 live check (Q-63, Q-84): every profile other than an approved `privileged` bypass scope is
+refused (`PROFILE_UNSUPPORTED`), because `toolPermission` is a settings value, not per run, soft denials can leave
+`status` `SUCCESS` at exit 0, repository `GEMINI.md`, `AGENTS.md` and the `.agents` MCP server and hooks load with no
+per-run approval flag, and no per-run deny rule was shown to hold under the bypass flag (T4.31 C8 not run).
+
+| Profile | Available now | Effect in this version |
+| --- | --- | --- |
+| `inspect-untrusted` | no | `PROFILE_UNSUPPORTED` (`list_capabilities` / `ELIGIBILITY_NONE`) |
+| `edit-untrusted` | no | As `inspect-untrusted` |
+| `test-sandboxed` | no | As `inspect-untrusted` |
+| `trusted-development` | no | As `inspect-untrusted` |
+| `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one argv shape: `agy --prompt=<prompt> --output-format stream-json --dangerously-skip-permissions` with `AGY_CLI_DISABLE_AUTO_UPDATE=true`, worktree file access, shell `broad`, network `on` and repository configuration `enabled`, and **no** `--sandbox` (owner decision 46, Q-84). A scope without `bypass`, or any narrowing Switchboard can express (read-only files, shell allowlist, network off or repository configuration other than `enabled`), is refused before spawn. |
+
+Resume is not compiled: `resumeArgs` is `Ineligible` for every profile until a live capture shows how resume is marked
+(Q-86; synthetic fixtures in `src/adapters/antigravity/antigravity.test.ts`, T4.33 and T4.35).
+
+### Git and commits
+
+`list_capabilities` reports `gitWriteControl` **`none-documented`**: Antigravity documents Git deny rules only in
+`settings.json` or `/permissions` scopes, none per run, and Switchboard writes no configuration file. Whether deny rules
+hold under `--dangerously-skip-permissions` was not observed (T4.31 C8). Git-write denial therefore relies on FR-GIT-03
+(controller ref comparison) and FR-GIT-06 (the tool-call guard) in addition to any provider rule. Shell allowlist
+entries that could write Git make the run `Ineligible` (`PROFILE_UNSUPPORTED`, FR-GIT-01).
+
+`commitChannel` is **`finalize-only`**: Switchboard does not inject a per-run MCP server (no headless MCP-definition
+flag is documented). In the only compiled scope, repository `.agents/mcp_config.json`, `.agents/hooks.json`, `GEMINI.md`
+and `AGENTS.md` load (observed on the 2026-10-14 live check). To publish work, set `finalize_commit` on the project's
+primary context as for Codex ([How commits reach Git](#how-commits-reach-git)).
+
+Fixture evidence: `src/adapters/antigravity/antigravity.test.ts` ("antigravity compile matrix (T4.32)", "antigravity
+probe (T4.32)", "antigravity auth preflight (T4.34; SYNTHETIC outputs in the shapes of the 2026-10-14 live check C3b,
+C3c)", "antigravity parser and result (T4.33)", "antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
+T4.35)", "antigravity Git declaration (T4.37, FR-GIT-01, FR-GIT-02, FR-GIT-09)" and "antigravity malicious-fixture leg
+(T4.36, NFR-SEC-03, FR-POL-04, FR-POL-06; SYNTHETIC lines)"); CI also runs
+`test/malicious/adapter-leg.test.ts` ("adapter malicious leg: antigravity"). The conformance `resume` case and parts of
+the malicious leg stay partial on the roadmap (T4.35, T4.36) until operator captures close the gaps. No end-to-end run
+through Switchboard against a logged-in `agy` has been recorded yet (T4.38).
+
 ## Cursor CLI (milestone 4)
 
 Config id `cursor`; routing and `list_capabilities` id `cursor`. Switchboard runs the **`cursor-agent`** binary with
@@ -895,8 +958,8 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   compile them (see `list_capabilities`); a `privileged` `continue_task` only on the same provider (ROADMAP
   Q-61 is open).
 - `adapters validate` is implemented for every registered provider, but only Claude Code and Codex have a manifest range
-  on `main` today. Cursor, OpenCode and the other M4 adapters still need operator captures before their manifests
-  admit a version (ROADMAP T4.48, T4.58 and §6.8.2).
+  on `main` today. Antigravity, Cursor, OpenCode and the other M4 adapters still need operator captures before their
+  manifests admit a version (ROADMAP T4.38, T4.48, T4.58 and §6.8.2).
 - Routing (milestone 7) evaluates `minimum_capability` against operator-declared model capabilities in the model
   registry instead of refusing it (ROADMAP §6.12 T7.8, `src/routing/minimum-capability.test.ts`); undeclared models
   fail closed with `CAPABILITY_MISSING` (mapping to `ELIGIBILITY_NONE`), and admitted providers compile with the
