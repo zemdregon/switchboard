@@ -173,8 +173,9 @@ describe("matching is limited to the declared forms; existing matching unchanged
 });
 
 describe("declarations count only once the entry has an adapter (create)", () => {
-  it("with no registration, the Claude Code, Grok Build and Cursor declarations are active; reserved data is inert", () => {
-    const CURSOR_SHORT = ["-f", "-w", "-H", "-e"];
+  it("with no registration, the Claude Code, Grok Build, Cursor and Kimi Code declarations are active", () => {
+    // Cursor's short flags (T4.42) and Kimi Code's `-y` (T4.62).
+    const CURSOR_SHORT = ["-f", "-w", "-H", "-e", "-y"];
     expect(declaredBypassShortFlags()).toEqual(CURSOR_SHORT);
     const ACTIVE_VALUES = [
       { flag: "--permission-mode", value: "bypassPermissions" },
@@ -221,7 +222,7 @@ describe("declarations count only once the entry has an adapter (create)", () =>
       antigravity: { short: [], values: [] },
       cursor: { short: ["-f", "-w", "-H", "-e"], values: [{ flag: "--sandbox", value: "disabled" }] },
       opencode: { short: [], values: [] },
-      kimi: { short: [], values: [] },
+      kimi: { short: ["-y"], values: [] },
       fake: { short: [], values: [] },
     });
   });
