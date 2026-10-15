@@ -6,7 +6,8 @@
  * one projection for `get_capacity`, `switchboard capacity` and `doctor`), so the `doctor --json` document and a
  * `get_capacity` call filtered with `{ provider }` are covered here too. The unit tests in `usage.test.ts` and
  * `../capacity/capacity.test.ts` prove the same at the stored rows and the projection; this file proves it at the
- * published tool and CLI output. Fake adapter and fake inner backend only; no provider CLI, login or network.
+ * published tool and CLI output. After #330: `get_run`, `capacity --provider`, and `inner test` with the flag in the
+ * on-disk config. Fake adapter and fake inner backend only; no provider CLI, login or network.
  */
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -185,7 +186,7 @@ async function capacityText(client: Client, args: Record<string, unknown> = {}):
   return (res.content as { text: string }[])[0]?.text ?? "";
 }
 
-async function cli(args: string[], allowNonZero = false): Promise<string> {
+async function cli(args: string[], allowNonZero = false, extra: Partial<CliIo> = {}): Promise<string> {
   const out: string[] = [];
   const io: CliIo = {
     stdout: { write: (s) => out.push(s) },
@@ -193,10 +194,17 @@ async function cli(args: string[], allowNonZero = false): Promise<string> {
     env: {},
     adapters: registry(),
     now,
+    ...extra,
   };
   const code = await main([...args, "--config", configPath], io);
   if (!allowNonZero) expect(code).toBe(0);
   return out.join("");
+}
+
+async function toolText(client: Client, name: string, args: Record<string, unknown> = {}): Promise<string> {
+  const res = await client.callTool({ name, arguments: args });
+  expect(res.isError).not.toBe(true);
+  return (res.content as { text: string }[])[0]?.text ?? "";
 }
 
 /** A `runs show --json` document as [everything but `events`, re-serialised canonically; the events]. */
@@ -229,6 +237,7 @@ describe("get_capacity, switchboard capacity, doctor and runs show with and with
         tool: await capacityText(client),
         toolForProvider: await capacityText(client, { provider: PROVIDER }),
         capacity: await cli(["capacity", "--json"]),
+        capacityProvider: await cli(["capacity", "--provider", PROVIDER, "--json"]),
         capacityText: await cli(["capacity"]),
         // The third renderer of the one projection (T6.3, FR-OPS-05). The on-disk config declares no inner agent, so
         // doctor's inner sections and the config-derived inner_shared_subscription warning are absent and its document
@@ -236,6 +245,9 @@ describe("get_capacity, switchboard capacity, doctor and runs show with and with
         // environment facts identical on both sides, so a non-zero exit is allowed and the stdout is still compared.
         doctor: await cli(["doctor", "--json"], true),
         show: await cli(["runs", "show", runId, "--json"]),
+        // get_run without include_events is the envelope (no event list): inner_call events must not appear, and usage
+        // stays provider_reported only.
+        getRun: await toolText(client, "get_run", { run_id: runId }),
       };
       // The estimate has evidence (a terminal run and a usage row): the comparison is not between two empty answers.
       const parsed = JSON.parse(before.tool) as {
@@ -266,8 +278,10 @@ describe("get_capacity, switchboard capacity, doctor and runs show with and with
       expect(await capacityText(client)).toBe(before.tool);
       expect(await capacityText(client, { provider: PROVIDER })).toBe(before.toolForProvider);
       expect(await cli(["capacity", "--json"])).toBe(before.capacity);
+      expect(await cli(["capacity", "--provider", PROVIDER, "--json"])).toBe(before.capacityProvider);
       expect(await cli(["capacity"])).toBe(before.capacityText);
       expect(await cli(["doctor", "--json"], true)).toBe(before.doctor);
+      expect(await toolText(client, "get_run", { run_id: runId })).toBe(before.getRun);
       // `runs show` lists the run's events, and each inner call is one `inner_call` run event by design (LLD §13.4 step
       // 13), so the events gained are exactly those; everything else, the provider-reported usage view included, is
       // byte-identical, and no event payload carries a token figure.
@@ -279,4 +293,78 @@ describe("get_capacity, switchboard capacity, doctor and runs show with and with
       expect(JSON.stringify(afterEvents)).not.toMatch(/token|usage/u);
     });
   }
+});
+
+describe("inner test CLI and doctor when shares_subscription_with is in the on-disk config (T11.5 after #330)", () => {
+  it("inner test writes a labelled observation with null run_id; capacity and doctor.capacity stay byte-identical; the warning is config-derived", async () => {
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schema_version: 1,
+        data_dir: dataDir,
+        allowed_roots: [path.join(root, "repos")],
+        mcp_clients: [{ id: "c1", max_trust_profile: "edit-untrusted" }],
+        limits: { per_provider_concurrency: 2 },
+        capacity: { window_seconds: 7200, confidence_runs: 4 },
+        inner_agent: {
+          enabled: true,
+          backend: {
+            kind: "http",
+            base_url: "http://127.0.0.1:1",
+            model: "cfg-model",
+            shares_subscription_with: "claude-code",
+          },
+          tasks: { run_title: { enabled: true } },
+        },
+      }),
+    );
+    finishedRun();
+    const client = await connect();
+    const backend = createFakeBackend({
+      script: [{ kind: "text", text: '{"title":"Fix greeting typo"}', usage: { in: 11, out: 5 } }],
+    });
+    const extra = { innerBackend: backend };
+    const before = {
+      tool: await capacityText(client),
+      capacity: await cli(["capacity", "--json"], false, extra),
+      doctor: JSON.parse(await cli(["doctor", "--json"], true, extra)) as {
+        checks: { id: string; status: string; detail: string }[];
+        capacity: unknown;
+        inner_agent: { tasks: { task: string; total_calls: number }[] };
+      },
+    };
+    const warn = before.doctor.checks.find((c) => c.id === "inner_shared_subscription");
+    expect(warn).toMatchObject({ status: "warn" });
+    expect(warn?.detail).toMatch(/shares the claude-code subscription/);
+    expect(before.doctor.inner_agent.tasks.find((t) => t.task === "run_title")?.total_calls).toBe(0);
+
+    const report = JSON.parse(await cli(["inner", "test", "run_title", "--json"], false, extra)) as {
+      accepted: boolean;
+      task: string;
+    };
+    expect(report).toMatchObject({ accepted: true, task: "run_title" });
+    expect(ledger.listInnerCalls()).toEqual([
+      expect.objectContaining({ task: "run_title", run_id: null, attempts: 1 }),
+    ]);
+    expect(
+      db
+        .prepare("SELECT run_id, provider, source, metrics_json FROM usage_observation WHERE source = 'inner_agent'")
+        .all(),
+    ).toEqual([
+      {
+        run_id: null,
+        provider: "claude-code",
+        source: "inner_agent",
+        metrics_json: JSON.stringify({ input_tokens: 11, output_tokens: 5 }),
+      },
+    ]);
+
+    expect(await capacityText(client)).toBe(before.tool);
+    expect(await cli(["capacity", "--json"], false, extra)).toBe(before.capacity);
+    const after = JSON.parse(await cli(["doctor", "--json"], true, extra)) as typeof before.doctor;
+    expect(after.capacity).toEqual(before.doctor.capacity);
+    expect(after.checks.find((c) => c.id === "inner_shared_subscription")).toEqual(warn);
+    // Honest: the inner-agent section reports inner_call counts, so the whole doctor document is not identical.
+    expect(after.inner_agent.tasks.find((t) => t.task === "run_title")?.total_calls).toBe(1);
+  });
 });
