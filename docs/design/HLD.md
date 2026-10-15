@@ -372,7 +372,9 @@ notes are in [TDD §3.12](TDD.md#312-inner-agent). Requirement-to-test traceabil
 [SDD §4.3](SDD.md#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes). Task status and clause-by-clause
 Done-when evidence: [ROADMAP §6.6](../ROADMAP.md#66-m11-inner-agent-tasks). The pointers below are HLD-level evidence
 only (written 2026-10-15, T11.14, Delegated). No live inner backend, provider CLI or network host has been used: every
-backend in the tests is the scripted in-process fake or a fake HTTP server bound to a loopback address.
+backend in the tests is the scripted in-process fake or a fake HTTP server bound to a loopback address (one exception,
+2026-10-15 post-#383: `src/inner/http-peer-check.test.ts` binds a listener on a non-loopback interface of the test host
+itself, never a remote host, to exercise the socket peer re-check).
 
 **Boundary evidence (TB-10, FR-INN-06, FR-INN-16).** `src/inner/import-boundary.test.ts` fails the build when COMP-POL,
 a profile compiler, the retry logic, the push path, `src/git/commit.ts`, `src/usage/`, `src/ledger/` or the MCP
@@ -389,10 +391,14 @@ tool socket). COMP-RTE asks for stage-2 route features through `RunLifecycleOpti
 continuation and quota failover (`src/cli/serve.test.ts`, `src/mcp/inner-route-features.test.ts`); the features are
 record-only (Q-82). The PR-draft, verification-summary, handoff-condensation and run-title callers named in the COMP-INN
 row exist as service functions with their contracts and tests, and no run path, hook or `inner` command calls them yet
-(ROADMAP T11.8, T11.9, T11.10, T11.12 "Not covered").
+(ROADMAP T11.8, T11.9, T11.10, T11.12 "Not covered"); `src/inner/run-path-reach.test.ts` pins this statically (the
+commit-message task referenced only from `src/git/channel.ts`, the routing hook only from `src/cli/serve.ts`, the four
+modules from nowhere outside `src/inner/`, and not imported by the `inner test` fixtures).
 
 - **Service, pipeline and backend (T11.1–T11.3).** Tests: `src/inner/inner.test.ts`, `src/inner/pipeline.test.ts`,
-  `src/inner/http-backend.test.ts`, `src/config/config.test.ts` ("inner_agent"). Modules: `src/config/inner-agent.ts`,
+  `src/inner/http-backend.test.ts`, `src/inner/http-peer-check.test.ts` (the `LOCALITY_CHANGED` peer re-check),
+  `src/inner/log-line.test.ts` (the `inner.call` log line), `src/config/config.test.ts` ("inner_agent"). Modules:
+  `src/config/inner-agent.ts`,
   `src/inner/index.ts`, `src/inner/port.ts`, `src/inner/fake-backend.ts`, `src/inner/pipeline.ts`,
   `src/inner/breaker.ts`, `src/inner/truncate.ts`, `src/inner/http-backend.ts`, `src/projects/inner-setting.ts`.
 - **Task contracts (T11.4, T11.8–T11.12).** Tests: `src/git/commit-message.test.ts`, `src/inner/pr-draft.test.ts`,

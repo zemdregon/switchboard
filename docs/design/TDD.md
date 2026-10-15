@@ -879,10 +879,16 @@ been used anywhere in the suite.
   "second test" exists as the byte-identical-records assertions in `src/inner/log-summary.test.ts` and
   `src/inner/handoff-condense.test.ts` and the unchanged-commit assertions in `src/git/commit-message.test.ts`.
 - *Privacy gates and locality*: table-driven over the seven rows in `src/inner/pipeline.test.ts` and against the fake
-  server with an injected resolver in `src/inner/http-backend.test.ts`. **Not built:** the Unix-socket form
-  (`base_url` is `http`/`https` only, T11.3), the resolves-loopback-at-load-elsewhere-at-connect case (the
-  `LOCALITY_CHANGED` branch exists but no test exercises it, because a loopback bind cannot be made to look remote),
-  and the `cli` kind (reported `Ineligible`, never started; `src/cli/inner.test.ts`).
+  server with an injected resolver in `src/inner/http-backend.test.ts`. The socket peer re-check (`LOCALITY_CHANGED`)
+  is exercised in `src/inner/http-peer-check.test.ts` (2026-10-15, post-#383): the transport is handed a pin gated
+  `local` whose address is a non-loopback interface of the test host, the established socket is destroyed with the
+  fixed code before a byte is written (a raw listener counts one connection and zero bytes), the same peer passes under
+  a `remote` pin, and through the scripted fake the pipeline records that failure as `fallback_unavailable` with the
+  generic `BACKEND_ERROR` reason and no address in any row, event or log. **Not built:** the Unix-socket form
+  (`base_url` is `http`/`https` only, T11.3), the full-stack resolves-loopback-at-load-elsewhere-at-connect case (the
+  transport connects only to its pinned address, so on one host the peer can disagree with the classification only
+  through an inconsistent pin; a host with no bindable non-loopback interface skips the two peer tests), and the `cli`
+  kind (reported `Ineligible`, never started; `src/cli/inner.test.ts`).
 - *Accounting and replay*: `src/inner/usage.test.ts`, `src/inner/usage-surfaces.test.ts`,
   `src/inner/usage-channels.test.ts` (the `commit` tool channel and the MCP admission harness themselves),
   `src/capacity/capacity.test.ts`; replay with the backend off in `src/inner/route-features.test.ts` and
@@ -895,7 +901,12 @@ been used anywhere in the suite.
 - *Observability*: the `inner_call`, `inner_degraded` and `inner_task_suspended` run events are built
   (`src/inner/pipeline.test.ts`, `src/inner/suspension.test.ts`). The `inner.call` **span is not built**: no span
   exporter exists in the tree; the pipeline writes one body-free structured log line named `inner.call` instead
-  ([LLD §13.8](LLD.md#138-telemetry-and-events) as-built note). `doctor`, `inner status` and `inner test` are as
+  ([LLD §13.8](LLD.md#138-telemetry-and-events) as-built note; its contract, one line per outcome with a fixed scalar
+  key set, no token count, model id or body, and `call_id` null without a ledger, is pinned by
+  `src/inner/log-line.test.ts`). Which tasks production code reaches is pinned statically by
+  `src/inner/run-path-reach.test.ts` (commit-message from the commit tool channel, routing classification from
+  `serve`; the PR-draft, verification-summary, run-title and handoff-condensation modules have no caller outside
+  `src/inner/`, and the `inner test` fixtures do not import them). `doctor`, `inner status` and `inner test` are as
   described, and `inner resume <task>` is built too (FR-INN-17; `src/cli/inner.test.ts`).
 - *OpenCode `cli` kind*: unchanged; the T11.0 spike has not run.
 
