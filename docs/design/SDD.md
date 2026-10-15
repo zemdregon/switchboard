@@ -217,8 +217,8 @@ FR-RAG-10, T12.7).
 
 ### 4.2 COMP-ADP M4 parser implementation evidence (`Partial`)
 
-Milestone boundaries and Done-when gaps: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.33`, `T4.43`,
-`T4.53`). Mechanism and failure taxonomy: [LLD §2](LLD.md#2-adapter-contract), [LLD §4](LLD.md#4-failure-taxonomy);
+Milestone boundaries and Done-when gaps: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.23`, `T4.33`,
+`T4.43`, `T4.53`). Mechanism and failure taxonomy: [LLD §2](LLD.md#2-adapter-contract), [LLD §4](LLD.md#4-failure-taxonomy);
 provider-specific as-built detail in [LLD §2.0](LLD.md#20-antigravity-adapter-implementation-evidence-m4-t432-t433-t437),
 [§2.0.1](LLD.md#201-cursor-adapter-implementation-evidence-m4-t442-t443) and
 [§2.0.2](LLD.md#202-opencode-adapter-implementation-evidence-m4-t452-t453); sourcing in [TDD
@@ -230,9 +230,14 @@ T4.53](HLD.md#t453--parser-result-failure-classification-and-resume-partial).
 
 | Task | Requirements (primary) | Tests (parser suites) |
 | --- | --- | --- |
+| T4.23 Grok Build (`Partial`) | FR-ADP-04, FR-SES-03, FR-EXE-03 | `src/adapters/grok/grok.test.ts` (`grok parser to resume round trip (T4.23 residual; SYNTHETIC lines, parser unchanged)`); `src/adapters/grok/protocol.ts` EVENT comment ([#384](https://github.com/zemdregon/switchboard/pull/384)); [ROADMAP T4.23](../ROADMAP.md#68-m4-adapter-expansion-tasks) ([#385](https://github.com/zemdregon/switchboard/pull/385)) |
 | T4.33 Antigravity (`Partial`) | FR-ADP-04, FR-CAP-01, FR-SES-03 | `src/adapters/antigravity/antigravity.test.ts` (`antigravity parser and result (T4.33)`, `antigravity parser hardening (T4.33, synthetic shapes)`) |
 | T4.43 Cursor (`Partial`) | FR-ADP-04, FR-SES-03, FR-ADP-10 | `src/adapters/cursor/cursor.test.ts` (`cursor parser and result (T4.43)`, `cursor parser hardening (T4.43, synthetic shapes)`, `cursor parser residual branches (T4.43, synthetic)`); `src/adapters/cursor/parser-residual.test.ts` and `fixtures/idless_guard.jsonl` ([#360](https://github.com/zemdregon/switchboard/pull/360)) |
 | T4.53 OpenCode (`Partial`) | FR-ADP-04, FR-SES-03, FR-ADP-10 | `src/adapters/opencode/opencode.test.ts` (`opencode parser and result (T4.53)`, nested `cases with no recorded native shape (live check rows 7, 11, 14c)`) |
+
+Grok T4.23: parser-to-resume and session-id/`resumeArgs` boundary pins landed in
+[#384](https://github.com/zemdregon/switchboard/pull/384); unrecorded native `tool_call` parameter shapes and operator
+capture gaps remain open (ROADMAP T4.23, [#385](https://github.com/zemdregon/switchboard/pull/385)).
 
 Cursor T4.43: ADR-0039 `extractResult` guard over a flagged `tool_call` landed in
 [#238](https://github.com/zemdregon/switchboard/pull/238); rate-limit or sandbox stream shapes and the T4.6 backing-vendor
@@ -279,7 +284,7 @@ M12 retrieval through T12.3 (FR-RAG-01–04 on fakes) lists primary tests and mo
 T12.5 admission pack design for FR-RAG-05, FR-RAG-07 and FR-RAG-08 is in [LLD
 §14.11](LLD.md#1411-admission-context-pack-t125) and [TDD §3.13.8](TDD.md#3138-t125-admission-time-context-pack-2026-10-14);
 implementation evidence is in [§4.1](#t125--admission-context-pack-design-intent). M4 adapter parser hardening on
-synthetic fixtures (Antigravity, Cursor, OpenCode; each task stays `Partial`) is summarized in [§4.2](#42-comp-adp-m4-parser-implementation-evidence-partial).
+synthetic fixtures (Grok Build, Antigravity, Cursor, OpenCode; each task stays `Partial`) is summarized in [§4.2](#42-comp-adp-m4-parser-implementation-evidence-partial).
 
 | ID | Component(s) | Design element / mechanism | ADR(s) | Detail |
 | --- | --- | --- | --- | --- |
