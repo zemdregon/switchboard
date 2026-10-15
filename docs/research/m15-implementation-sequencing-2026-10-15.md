@@ -1,5 +1,7 @@
 # M15 implementation sequencing, 2026-10-15
 
+Merged as [PR #460](https://github.com/zemdregon/switchboard/pull/460).
+
 - Date: 2026-10-15
 - Status: Research input (Delegated agent work, documentation only; not owner-approved). This note **orders**
   implementation waves and hot files; normative shapes, scheduler steps and trust rules remain
