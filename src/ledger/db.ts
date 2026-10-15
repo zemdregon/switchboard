@@ -16,8 +16,9 @@ export interface OpenLedgerOptions {
 
 /**
  * Open (creating if needed) the ledger at `<dataDir>/ledger.sqlite` with WAL, `synchronous=FULL` (Proposed in LLD §1),
- * foreign keys on and a busy timeout, then apply pending migrations. Throws {@link LedgerError} if WAL cannot be
- * enabled. The caller is responsible for holding the data-directory lock (src/lock).
+ * foreign keys on, recursive triggers on (so `REPLACE` cannot bypass the append-only guards, Q-96) and a busy timeout,
+ * then apply pending migrations. Throws {@link LedgerError} if WAL cannot be enabled. The caller is responsible for
+ * holding the data-directory lock (src/lock).
  */
 export function openLedger(dataDir: string, options: OpenLedgerOptions = {}): Database.Database {
   mkdirSync(dataDir, { recursive: true });
@@ -32,6 +33,9 @@ export function openLedgerFile(file: string, options: OpenLedgerOptions = {}): D
     if (mode !== "wal") throw new LedgerError(`could not enable WAL journal mode (got ${String(mode)})`);
     db.pragma("synchronous = FULL");
     db.pragma("foreign_keys = ON");
+    // Q-96 (Delegated, fail closed): without this, SQLite's REPLACE conflict resolution deletes a colliding row
+    // without firing the BEFORE DELETE guards, so `INSERT OR REPLACE` could rewrite an append-only row (ADR-0005).
+    db.pragma("recursive_triggers = ON");
     migrate(db, options.now);
     return db;
   } catch (err) {
