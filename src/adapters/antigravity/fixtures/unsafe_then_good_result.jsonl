@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.33 residual, third pass; mirrors Grok Build unsafe_then_good_end). An init line whose conversation_id is not one safe token (never bound) and a result envelope with a safe one: the run ends OUTPUT_PROTOCOL_ERROR, but the result supplies the only bound conversation id although init reported another (a pinned gap).","exit":0}}
+{"event":"init","conversation_id":"-c","init":{"cwd":"/work/tree","tools":["view_file"],"permission_mode":"always-proceed","model":"synthetic-model"}}
+{"event":"step_update","conversation_id":"-c","step_index":0,"state":"DONE","step_type":"agent_response","text_delta":"Done."}
+{"event":"result","result":{"conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","status":"SUCCESS","response":"Done.","duration_seconds":2,"num_turns":1,"usage":{"input_tokens":20,"output_tokens":3,"thinking_tokens":1,"cache_read_tokens":0,"total_tokens":24}}}
