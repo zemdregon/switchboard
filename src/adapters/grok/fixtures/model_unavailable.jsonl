@@ -1,0 +1,2 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.23), in the streaming-json shapes recorded by the 2026-10-14 live check (row 5b).","exit":1}}
+{"type":"error","message":"Couldn't set model 'bad-model': Invalid params"}
