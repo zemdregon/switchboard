@@ -397,7 +397,7 @@ are Proposed. The derived flag of FR-CTL-03 is not a run state, so the FRD is un
 | FR-CTL-07 | The loop breaker shall park a meta-session, with no successor admitted and reason `parked_loop`, when the same failure code or the same failing verification occurs N times in it. A running run with no events for T minutes shall be flagged `stalled`. Successor runs per meta-session shall be capped. N, T and the cap are operator settings with Proposed defaults. | Must | CAP-15, BO-3 | T | M14 |
 | FR-CTL-08 | An MCP client whose operator configuration sets `approval_proxy` may list pending approvals and decide them through MCP tools, under the controls of owner decision 50 and [ADR-0047](../adr/0047-approval-proxy-over-mcp.md): listed targets only, an exact `approval_id` and `approval_digest`, controller-generated text only, `decided_via: mcp_proxy` in the record, and announcement to the configured sinks. A client without the flag gets no approval tools. | Must | CAP-15, BO-3, owner decision 50 | T, I | M14 |
 | FR-CTL-09 | An approval may be decided through a single-use, expiring link to the M13 consent page, authenticated as FR-MCP-17 requires. The link carries no token or secret. It is a secondary method to FR-CTL-08 and the CLI. | Should | CAP-15, BO-3, owner decision 50 | T | M14 |
-| FR-CTL-10 | Notification sinks ([ADR-0048](../adr/0048-notification-sinks.md)) shall be operator-configured and off by default. The first sink is a generic webhook, and the Grok bot is its first target (Q-92). Each sink has an event filter and a rate limit. A payload carries only the project, event kind, reason code, run ID and link, never code, prompts, diffs or agent text. | Should | CAP-15, BO-5, NFR-PRIV-01 | T, I | M14 |
+| FR-CTL-10 | Notification sinks ([ADR-0048](../adr/0048-notification-sinks.md)) shall be operator-configured and off by default. Two sink kinds are provided: a generic webhook, which the operator points at the Grok bot's deployment-generated webhook (no Grok-specific code), and ntfy (owner decision 53). Each sink has an event filter and a rate limit. A payload carries only the project, event kind, reason code, run ID and link, never code, prompts, diffs or agent text. | Should | CAP-15, BO-5, NFR-PRIV-01 | T, I | M14 |
 | FR-CTL-11 | Each configured MCP client shall have a `tool_profile`: `orchestrator` (default, the current tool set) or `console` (digest, `list_runs`, `get_run`, `delegate_task`, `steer_run` and pause). | Should | CAP-15, BO-1 | T | M14 |
 
 ### 3.18 Project queue and triggers (`FR-QUE`)
@@ -405,13 +405,14 @@ are Proposed. The derived flag of FR-CTL-03 is not a run state, so the FRD is un
 Owner decision 51 (2026-10-15, [ROADMAP §4.2](../ROADMAP.md#42-owner-decisions)) moves the narrowed form of CAP-14,
 fixing CI on branches a project published, forward as CAP-16 and milestone M15. The general subscription of FR-SUB-01
 stays **Deferred**. Reading CI status needs a credential path that ADR-0003 does not allow the controller to hold, so
-FR-QUE-03 is blocked on Q-91. Everything below is **Delegated** and **Proposed**; the design is to be written in T15.0.
+FR-QUE-03 reads CI through the operator's logged-in `gh` CLI (owner decision 54). Everything below is **Delegated** and
+**Proposed**; the design is to be written in T15.0.
 
 | ID | Requirement | Priority | Source | Verify | Milestone |
 | --- | --- | --- | --- | --- | --- |
 | FR-QUE-01 | Each project shall have a durable queue of work items with priority and dependencies. Each item is admitted exactly as a `delegate_task` from the client that created it, under that client's ceiling; a queued item is never admitted under another client's ceiling. | Should | CAP-16, BO-1, BO-4 | T | M15 |
 | FR-QUE-02 | Schedules (cron-style) shall be off by default, shall be admitted exactly as FR-QUE-01 items, and the operator shall be able to list and disable them. | Should | CAP-16, BO-3 | T | M15 |
-| FR-QUE-03 | A trigger shall admit work when CI fails on a branch the project published (the narrowed CAP-14 of owner decision 51). The event text is untrusted. The trigger is blocked on Q-91. | Should | CAP-16, owner decision 51 | T, I | M15 |
+| FR-QUE-03 | A trigger shall admit work when CI fails on a branch the project published (the narrowed CAP-14 of owner decision 51). The event text is untrusted. CI status is read by running the operator's logged-in `gh` CLI as an external tool; the controller handles no credential (owner decision 54, ADR-0003). | Should | CAP-16, owner decisions 51 and 54 | T, I | M15 |
 
 ## 4. Nonfunctional requirements
 
