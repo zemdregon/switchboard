@@ -145,9 +145,13 @@ const ineligible = (reason: Ineligible["reason"], detail: string): Ineligible =>
 const seenEnds = new WeakMap<ParseState, number>();
 /**
  * Reported parameter keys per tool call, so a late or swapped command in `tool_call_update` emits a tool_call event for
- * the ADR-0039 guard without duplicating identical reports (mirrors Antigravity T4.33 and Cursor T4.43).
+ * the ADR-0039 guard without duplicating identical reports (mirrors Antigravity T4.33 and Cursor T4.43). `shellCalls`
+ * holds the keys of calls already reported as `shell`.
  */
-const seenToolCalls = new WeakMap<ParseState, { counter: number; calls: Map<string, Set<string>> }>();
+const seenToolCalls = new WeakMap<
+  ParseState,
+  { counter: number; calls: Map<string, Set<string>>; shellCalls: Set<string> }
+>();
 /** Category of a stream anomaly (two `end` lines, two session ids); classified OUTPUT_PROTOCOL_ERROR. */
 const PROTOCOL_CATEGORY = "protocol";
 const CATEGORY_CODES = { ...PROVIDER_ERROR_CATEGORY_CODES, [PROTOCOL_CATEGORY]: "OUTPUT_PROTOCOL_ERROR" } as const;
@@ -508,7 +512,7 @@ export class GrokAdapter implements ProviderAdapter {
     const callId = rawCallId !== undefined && rawCallId !== "" ? rawCallId : undefined;
     let seen = seenToolCalls.get(state);
     if (seen === undefined) {
-      seen = { counter: 0, calls: new Map() };
+      seen = { counter: 0, calls: new Map(), shellCalls: new Set() };
       seenToolCalls.set(state, seen);
     }
     const isNew = type === EVENT.toolCall;
@@ -530,14 +534,24 @@ export class GrokAdapter implements ProviderAdapter {
     } else {
       reported.add(paramKey);
     }
+    // A call opened as a shell call stays one, so a later target-only update without a name is guarded as a command.
     const kind =
-      command !== undefined || name === "run_terminal_command" ? "shell" : target !== undefined ? "read" : "other";
+      command !== undefined || name === "run_terminal_command" || seen.shellCalls.has(key)
+        ? "shell"
+        : target !== undefined
+          ? "read"
+          : "other";
+    if (kind === "shell") seen.shellCalls.add(key);
+    // A shell call carrying its command line only in a target hands the whole line to the ADR-0039 guard as the
+    // transient `command` (never clipped, stripped before the event is kept), so a Git write past the 512-character
+    // target clip is still seen (T4.23 sixth-pass gap); the kept target stays clipped.
+    const guardCommand = command ?? (kind === "shell" ? target : undefined);
     return [
       {
         kind: "tool_call",
         tool: kind,
         name: clip(name ?? "run_terminal_command", 64),
-        ...(command !== undefined ? { command } : {}),
+        ...(guardCommand !== undefined ? { command: guardCommand } : {}),
         ...(target !== undefined && command === undefined ? { target: clip(target, MAX_TARGET_CHARS) } : {}),
       },
     ];

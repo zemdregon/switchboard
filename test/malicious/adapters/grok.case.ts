@@ -50,15 +50,16 @@
  *   `sessionId` on the call, a 5,000-character command, a caller id equal to the generated `call_1`, a `null` or
  *   number `input` beside `parameters`, a short command carried only as a target, an empty `id` beside `call_id`, a
  *   duplicate `type` key, an empty text chunk), at exit 0 and exit 1;
+ * - the target-only shell gap closed on 2026-10-15 (a Git write past the 512-character target clip, and a nameless
+ *   target-only update on a shell call), at exit 0 and exit 1;
  * - prototype-named, near-miss, non-string, unreadable text/end/update, non-object-input, empty-name, live-bare,
  *   shadowed-parameter, unrecognised-end, case-variant and duplicate-`type` tool lines in `unknown_events`, at exits
  *   0, 1, 2 and 137.
  *
  * Field names other than `type` are still hypothetical: the live check did not record command or target fields.
  * Residual blocked streams are exported as `grokResidualStreams`; partial streams cut inside a line (covering exits
- * 0, 1, 2 and 137) are exported as `grokPartialStreams` and replayed separately; the open target-clip gap is exported
- * as `grokResidualGapStreams` and pinned at its current result; the compiled cells and the scopes Grok Build must
- * refuse are exported as `grokCompiledCells` and `grokRefusedScopes`.
+ * 0, 1, 2 and 137) are exported as `grokPartialStreams` and replayed separately; the compiled cells and the scopes
+ * Grok Build must refuse are exported as `grokCompiledCells` and `grokRefusedScopes`.
  */
 
 import { privilegedProfile } from "../../../src/adapters/fixtures/privileged.js";
@@ -2498,7 +2499,7 @@ const grokResidualStreams13d = (fx: MaliciousFixture): HostileStream[] =>
     ]);
   });
 
-/** The Git write each blocked category carries in the 13e batch and in the gap streams. */
+/** The Git write each blocked category carries in the 13e and 13f batches. */
 const hostileCommand = (fx: MaliciousFixture, category: "credential_read" | "out_of_worktree_write" | "network") =>
   category === "credential_read"
     ? `cat ${fx.claudeCredentialsPath} && git push origin main`
@@ -2585,7 +2586,7 @@ const grokResidualStreams13e = (fx: MaliciousFixture): HostileStream[] =>
         }),
       ),
       {
-        // Sixth pass: the guard reads a shell call's target when it has no command (see grokResidualGapStreams).
+        // Sixth pass: the guard reads a shell call's target when it has no command (see grokResidualStreams13f).
         name: `${category}: a short Git write carried only as a shell call's target, exit ${exitCode}`,
         category,
         exitCode,
@@ -2645,48 +2646,56 @@ const grokResidualStreams13e = (fx: MaliciousFixture): HostileStream[] =>
  * Residual blocked streams (T4.26, as T4.36 and T4.46): JSON encodings, further stop reasons,
  * path-only calls upgraded to command in tool_call_update, swapped and trailing calls at exit 2/137,
  * second-pass parser branches, third-pass stream-order and anomaly branches, and fourth- to sixth-pass session-id,
- * long-command, call-key, parameter-shape, shadowing-key and duplicate-key branches from T4.23.
- * Synthetic lines only; no provider is run.
+ * long-command, call-key, parameter-shape, shadowing-key and duplicate-key branches from T4.23, and the closed
+ * target-only shell gap. Synthetic lines only; no provider is run.
  */
 export const grokResidualStreams = (fx: MaliciousFixture): HostileStream[] => [
   ...grokResidualStreams13b(fx),
   ...grokResidualStreams13c(fx),
   ...grokResidualStreams13d(fx),
   ...grokResidualStreams13e(fx),
+  ...grokResidualStreams13f(fx),
 ];
 
 /**
- * Open gaps (T4.26, T4.23 sixth pass; parser and guard unchanged), pinned and replayed on their own because a hostile
- * stream must end blocked. A shell call that carries its command only in a target key is guarded on the target, which
- * the parser clips to 512 characters; a Git write past the clip never reaches the guard, so at exit 0 the run ends
- * `ok: true` and at exit 1 only the unexpected exit fails it. Whether the native CLI ever puts a command in a target
- * field is unknown: the live check recorded no `tool_call` command or target fields. `failureCode` is the code the
- * stream should end with once the gap closes; `gapResult` is what it ends with today.
+ * The target-only shell gap #449 pinned and #451 documented, closed on 2026-10-15 (T4.23, T4.26): a shell call that
+ * carries its command only in a target key hands the whole line to the guard, not the 512-character clip, and a
+ * target-only update without a name on a shell call stays a shell call. Each was an `ok` run at exit 0 and only a
+ * `TOOL_FAILURE` at exit 1 before the fix; both now end blocked. Whether the native CLI ever puts a command in a
+ * target field is unknown: the live check recorded no `tool_call` command or target fields.
  */
-export const grokResidualGapStreams = (fx: MaliciousFixture): HostileStream[] =>
+const grokResidualStreams13f = (fx: MaliciousFixture): HostileStream[] =>
   (["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) =>
-    [0, 1].map(
-      (exitCode): HostileStream => ({
-        name: `${category}: a Git write past the 512-character clip of a target-only shell call, exit ${exitCode}`,
-        category,
-        exitCode,
-        failureCode: "PERMISSION_BLOCKED",
-        gapResult:
-          exitCode === 0
-            ? { ok: true, unknownEventCount: 0, nativeSessionId: SID }
-            : { ok: false, failureCode: "TOOL_FAILURE" },
-        lines: [
-          META(`${category}: Git write past the target clip (open gap), exit ${exitCode}`, exitCode),
-          TOOLS,
-          JSON.stringify({
-            type: "tool_call",
-            name: "run_terminal_command",
-            input: { path: `echo ${"x".repeat(600)} && ${hostileCommand(fx, category)}` },
-          }),
-          end(),
-        ],
-      }),
-    ),
+    [0, 1].flatMap((exitCode): HostileStream[] => {
+      const long = `echo ${"x".repeat(600)} && ${hostileCommand(fx, category)}`;
+      return [
+        {
+          name: `${category}: a Git write past the 512-character clip of a target-only shell call, exit ${exitCode}`,
+          category,
+          exitCode,
+          failureCode: "PERMISSION_BLOCKED",
+          lines: [
+            META(`${category}: Git write past the target clip, exit ${exitCode}`, exitCode),
+            TOOLS,
+            JSON.stringify({ type: "tool_call", name: "run_terminal_command", input: { path: long } }),
+            end(),
+          ],
+        },
+        {
+          name: `${category}: a nameless target-only update on a shell call carrying a Git write, exit ${exitCode}`,
+          category,
+          exitCode,
+          failureCode: "PERMISSION_BLOCKED",
+          lines: [
+            META(`${category}: nameless target-only update on a shell call, exit ${exitCode}`, exitCode),
+            TOOLS,
+            JSON.stringify({ type: "tool_call", id: "call_s", name: "run_terminal_command", input: { path: "." } }),
+            JSON.stringify({ type: "tool_call_update", id: "call_s", input: { path: long } }),
+            end(),
+          ],
+        },
+      ];
+    }),
   );
 
 /**
