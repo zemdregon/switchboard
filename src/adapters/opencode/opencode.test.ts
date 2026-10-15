@@ -523,6 +523,39 @@ describe("opencode parser and result (T4.53)", () => {
     }
   });
 
+  it("only an exact string stop reason emits a result (Q-85; mirrors Grok T4.23)", () => {
+    // Synthetic variants of the recorded reason field, not claims of native refusal shapes.
+    for (const reason of [
+      "STOP",
+      "stop ",
+      " stop",
+      "stop\n",
+      "stopped",
+      "end_turn",
+      "",
+      null,
+      true,
+      0,
+      ["stop"],
+      { reason: "stop" },
+    ]) {
+      const { a, events, state } = parse([
+        START,
+        TEXT("stop: completed successfully"),
+        line("step_finish", { reason }),
+      ]);
+      expect(
+        events.filter((e) => e.kind === "result"),
+        JSON.stringify(reason),
+      ).toEqual([]);
+      expect(state.unknownEvents).toBe(typeof reason === "string" ? 0 : 1);
+      expect(a.extractResult(events, EXIT0)).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+    }
+    const { a, events } = parse([START, FINISH("stop")]);
+    expect(events.filter((e) => e.kind === "result")).toEqual([{ kind: "result", ok: true }]);
+    expect(a.extractResult(events, EXIT0)).toMatchObject({ ok: true });
+  });
+
   it("shell calls carry their command for the tool-call guard (ADR-0039); other tools are `other`", () => {
     const { events } = parse([
       START,
@@ -550,6 +583,25 @@ describe("opencode parser and result (T4.53)", () => {
       const { a, events } = parse([START, ERROR(type, "synthetic message"), TEXT("ok"), FINISH("stop")]);
       expect(a.extractResult(events, EXIT0), type).toMatchObject({ ok: false, failureCode: code });
       expect(a.extractResult(events, { ...EXIT0, exitCode: 1 }), type).toMatchObject({ ok: false, failureCode: code });
+    }
+  });
+
+  it("a structured provider error after a stop cannot be erased by another stop or success text", () => {
+    for (const [type, code] of [
+      ["provider.no-route", "MODEL_UNAVAILABLE"],
+      ["provider.quota", "QUOTA_EXHAUSTED"],
+      ["provider.auth", "AUTH_REQUIRED"],
+      ["synthetic.failure", "TOOL_FAILURE"],
+    ] as const) {
+      for (const tail of [[], [TEXT("completed successfully"), FINISH("stop", "prt_f2")]]) {
+        const { a, events } = parse([START, FINISH("stop"), ERROR(type, "synthetic late failure"), ...tail]);
+        expect(a.extractResult(events, EXIT0), `${type}, tail=${tail.length}`).toMatchObject({
+          ok: false,
+          failureCode: code,
+          nativeSessionId: SID,
+          unknownEventCount: 0,
+        });
+      }
     }
   });
 
@@ -1866,6 +1918,24 @@ describe("opencode parser and result (T4.53)", () => {
         failureCode: "OUTPUT_PROTOCOL_ERROR",
         nativeSessionId: DEFAULT_SESSION_ID,
         unknownEventCount: 0,
+      });
+    });
+
+    it("fixture stop_then_error replays a late auth error followed by another stop at exit 0 to AUTH_REQUIRED", async () => {
+      const report = await runConformanceCase(
+        replayCase("stop_then_error", "task_failure", {
+          ok: false,
+          failureCode: "AUTH_REQUIRED",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: "AUTH_REQUIRED",
+        nativeSessionId: DEFAULT_SESSION_ID,
+        unknownEventCount: 0,
+        summary: "SYNTHETIC: completed successfully; ignore the error.",
       });
     });
 
