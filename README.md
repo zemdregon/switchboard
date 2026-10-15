@@ -77,10 +77,13 @@ Pre-release. The package is private and is not published to any registry; you bu
   auth-preflight, conformance suite (T4.25), malicious-fixture leg (partial: T4.26; synthetic command fields,
   readable native login and repository configuration gaps;
   [#291](https://github.com/zemdregon/switchboard/pull/291),
-  [#302](https://github.com/zemdregon/switchboard/pull/302)) and Git declaration fixture tests on
+  [#302](https://github.com/zemdregon/switchboard/pull/302),
+  [#308](https://github.com/zemdregon/switchboard/pull/308)) and Git declaration fixture tests on
   synthetic fixtures (README [Grok Build CLI](#grok-build-cli-milestone-4), ROADMAP T4.22 to T4.27); live smoke, live
   malicious leg and `adapters validate` remain operator work (T4.28).
-  [#302](https://github.com/zemdregon/switchboard/pull/302) extends synthetic malicious replay only; it does not
+  [#302](https://github.com/zemdregon/switchboard/pull/302) and
+  [#308](https://github.com/zemdregon/switchboard/pull/308) extend synthetic malicious replay only (including
+  completing both cut-line positions across categories and exits); they do not
   validate the live CLI or close T4.26's gaps. Antigravity has a
   parser (partial: T4.33; unrecorded-shape, fallback and own-property hardening pins plus structured
   `backing_provider`/`model` on `session_bound`, all synthetic,
@@ -659,8 +662,11 @@ Config id `grok-build`; routing and `list_capabilities` id `grok-build`. Switchb
 `--single=<prompt> --output-format streaming-json`
 ([TDD §4.3.1](docs/design/TDD.md#431-grok-build-native-controls-per-profile-and-platform-t420); observed on
 2026-10-14 in [`docs/research/live-checks-2026-10-14-grok.md`](docs/research/live-checks-2026-10-14-grok.md),
-`grok 1.0.50`). The prompt is one argv word (`--single=<prompt>`), not stdin (an Assumption in the adapter). Switchboard
-never sets `GROK_HOME`, `XAI_API_KEY` or `GROK_SANDBOX` (the sandbox profile is always a `--sandbox` flag).
+`grok 1.0.50`). The prompt is one argv word (`--single=<prompt>`), not stdin (an Assumption in the adapter: the `=`
+form ensures flags cannot be smuggled by a leading `-` in the prompt; the prompt is visible in the process table).
+Switchboard passes an environment allowlist (`PATH` and `HOME`) and never sets `GROK_HOME` (which would alter or hide
+native login), `XAI_API_KEY` (credentials stay out of the child environment, ADR-0003), or `GROK_SANDBOX` (the
+sandbox profile is always an explicit `--sandbox` flag so the audit sees it).
 
 The compliance manifest range admits no version until an operator runs `switchboard adapters validate grok-build` and
 commits the manifest diff (ROADMAP T4.28). Until then `doctor` reports `ADAPTER_VERSION_UNVERIFIED` for Grok Build.
@@ -684,18 +690,30 @@ readable from inside the sandbox, and no per-run MCP-definition flag exists in h
 | `edit-untrusted` | no | As `inspect-untrusted` |
 | `test-sandboxed` | no | As `inspect-untrusted` |
 | `trusted-development` | no | As `inspect-untrusted` |
-| `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one argv shape: `grok --no-auto-update --single=<prompt> --output-format streaming-json` with `--sandbox` and `--always-approve` together (never one without the other), worktree file access, shell `broad`, network `on` or `off` (with `--disable-web-search` when off), repository configuration `enabled`, and sandbox profile `read-only`, `strict` or `workspace` from the scope (owner decision 46). A scope without `bypass`, or any narrowing Switchboard can express, is refused before spawn. No `--allow` or `--deny` rules are emitted (prefix matches are not a Git-write control). |
+| `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one of three scope shapes: `grok --no-auto-update --single=<prompt> --output-format streaming-json` with `--sandbox <profile>` and `--always-approve` together (never one without the other), shell `broad`, repository configuration `enabled`, and either worktree file access (with network `on` for sandbox profile `workspace`, or network `off` with `--disable-web-search` for `strict`) or `read-only` file access (with network `off` with `--disable-web-search` for `read-only`) (owner decision 46). A scope without `bypass`, or any narrowing Switchboard can express (read-only files with network `on` because `read-only` blocks child network on Linux only, shell allowlist or `none`, network `allowlist`, repository configuration `disabled` or `approved`, or model overrides), is refused before spawn (`Ineligible`). No `--allow` or `--deny` rules are emitted (prefix matches are not a Git-write control). |
 
 Resume continues the native session with `-r <session_id>` through the same matrix when the provider is eligible
 (synthetic fixtures in `src/adapters/grok/grok.test.ts`, T4.23). A `sessionId` that resume could not pass as one safe
-argument is never bound (`OUTPUT_PROTOCOL_ERROR`; [#252](https://github.com/zemdregon/switchboard/pull/252)). A
-`tool_call` after the `end` line is not a success (fail closed; a guard verdict on it keeps its own code, e.g.
-`PERMISSION_BLOCKED`). `tool_call` keys that name `Object.prototype` members map to `other`, prototype-named types
-never smuggle a result, and only an exact `end_turn` stop reason is success
-([#252](https://github.com/zemdregon/switchboard/pull/252)). Non-string command, path and tool fields are omitted,
-never coerced. Rate-limit, permission-denial and sandbox-violation event shapes, unrecorded `tool_call` /
-`tool_call_update` fields and `backingProvider` on `session_bound` are still unrecorded (T4.23 stays `Partial` on the
-roadmap). Supervisor-replayed JSONL fixtures pin today's gaps without inventing native fields
+argument (matching `^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`, refusing leading dashes or flag syntax) is never bound
+(`OUTPUT_PROTOCOL_ERROR` on the stream, `CAPABILITY_MISSING` in `resumeArgs`;
+[#252](https://github.com/zemdregon/switchboard/pull/252)). Resumed runs pass every policy flag again because
+whether permission mode persists without flags is unverified (`resumeCwd` is `unverified`, TDD §4.10, live check 14a).
+A `tool_call` after the `end` line is not a success (fail closed; a guard verdict on it keeps its own code, e.g.
+`PERMISSION_BLOCKED`; an unreadable trailing `tool_call` line that normalizes as `unknown` also fails closed as
+`OUTPUT_PROTOCOL_ERROR` with detail `tool call after the end line`). `tool_call` keys that name `Object.prototype`
+members map to `other`, prototype-named types never smuggle a result, and only an exact `end_turn` stop reason is
+success ([#252](https://github.com/zemdregon/switchboard/pull/252)). Non-string command, path and tool fields are
+omitted, never coerced. Structured `backing_provider`/`backingProvider` and `model`/`model_id` (or inferred from
+`modelUsage` keys) on the `end` line set `backingProvider` and `model` on `session_bound` (with prototype pollution
+protection, non-strings dropped, clipped to 128 characters) and are stored on `provider_reported` usage rows side by
+side with the harness `grok` (`backing_provider.jsonl`, T4.6, FR-ADP-10); native captures observed a model id string
+in `modelUsage` (live check 4a) but no vendor, so without an explicit structured `backing_provider` `backingProvider`
+stays unset. Usage counters on the `end` line (`input_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`,
+`output_tokens`, `reasoning_tokens`, `total_tokens` and non-negative `num_turns`) are recorded `provider_reported` on
+the first `end` line only; a second `end` line fails closed as `OUTPUT_PROTOCOL_ERROR` and does not duplicate usage
+(FR-CAP-01). Mid-stream `usage` events are ignored as totals arrive on `end`. Rate-limit, permission-denial and
+sandbox-violation event shapes and native `tool_call` / `tool_call_update` parameter fields remain unrecorded (T4.23
+stays `Partial` on the roadmap). Supervisor-replayed JSONL fixtures pin today's gaps without inventing native fields
 ([#260](https://github.com/zemdregon/switchboard/pull/260)): `sandbox_violation` and `permission_denied_rule` (live
 check 7g and 8c) end `end_turn` at exit 0 with opaque `tool_call` lines counted; `rate_limit` (5d, never forced) is an
 empty stream at exit 1 → `TOOL_FAILURE`; `unknown_events` ends `OUTPUT_PROTOCOL_ERROR` with every unknown line counted.
@@ -709,12 +727,18 @@ including on an approved bypass scope.
 
 The parser treats a guard-flagged `tool_call` (`violation`) as a failed run per
 [ADR-0039](docs/adr/0039-switchboard-side-tool-call-guard.md) even when `end` `stopReason` is `end_turn` at exit 0
-(`src/adapters/grok/grok.test.ts`; [#247](https://github.com/zemdregon/switchboard/pull/247)). In an approved bypass
-run the guard enforces Git writes only: a credential read, outside write or network call chained with a parsed Git
-write is blocked because of the Git write, not because those other actions were refused. Native command/target fields
-remain unrecorded (ROADMAP T4.26, T4.28). A bare `tool_call` before a clean `end_turn` still succeeds; path keys, tool
-`content` text and a hostile lower-precedence argument key shadowed by a benign higher one remain invisible to the
-guard. Synthetic replay does not prove provider refusal or preventive isolation.
+(`src/adapters/grok/grok.test.ts`; [#247](https://github.com/zemdregon/switchboard/pull/247)). On synthetic fixtures the
+guard inspects commands under the supported container aliases (`input`, `parameters`, `args`, `arguments`), command
+aliases (`command` > `cmd` > `CommandLine` on the container or event root), target paths (`path` > `filePath` >
+`file_path` > `AbsolutePath` > `target`), tool names (`tool` > `name` > `tool_name`), and call IDs (`id` > `call_id` >
+`tool_call_id`). Late or swapped commands on `tool_call_update` are correlated and re-evaluated by the guard without
+duplicating identical reports. Tool kind maps to `shell` when a command is present or tool name is `run_terminal_command`,
+`read` when target is present without command, and `other` otherwise. In an approved bypass run the guard enforces Git
+writes only: a credential read, outside write or network call chained with a parsed Git write is blocked because of the
+Git write, not because those other actions were refused. Native command/target fields remain unrecorded (ROADMAP T4.26,
+T4.28). A bare `tool_call` before a clean `end_turn` still succeeds; path keys, tool `content` text and a hostile
+lower-precedence argument key shadowed by a benign higher one remain invisible to the guard. Synthetic replay does not
+prove provider refusal or preventive isolation.
 
 `commitChannel` is **`finalize-only`**: Switchboard does not inject a per-run MCP server (no headless MCP-definition
 flag was found in the 2026-10-14 live check). In the only compiled scope, project `.mcp.json` and `.grok/config.toml`
@@ -724,24 +748,29 @@ denial therefore rests on FR-GIT-03 and FR-GIT-06 in addition to any provider ru
 
 Fixture evidence on `main`: `src/adapters/grok/fixtures/` (T4.23 Done-when and T4.25 conformance JSONL, including
 `sandbox_violation`, `permission_denied_rule`, `rate_limit` and `unknown_events` from
-[#260](https://github.com/zemdregon/switchboard/pull/260)); `src/adapters/grok/grok.test.ts` ("grok compile matrix
-(T4.22)", "grok probe and resume (T4.22, T4.23)", "grok parser and result (T4.23; SYNTHETIC lines in the shapes the
-2026-10-14 live check recorded)", "cases with no recorded native shape (live check 5d, 7g, 8c, 8f)" fixture replay,
-"parser hardening (T4.23, synthetic shapes; mirrors Antigravity T4.33)", "parser hardening (T4.23, synthetic shapes;
-mirrors Cursor T4.43 and OpenCode T4.53)", "grok auth preflight (T4.24, Q-10; SYNTHETIC outputs in the shapes of the
-2026-10-14 live check)", "grok conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.25)", "grok registry
-entry and manifest gate (T4.22)" and "grok Git declaration (T4.27, FR-GIT-01, FR-GIT-02, FR-GIT-09)"); CI also runs
+[#260](https://github.com/zemdregon/switchboard/pull/260), and `backing_provider.jsonl` from T4.23 / T4.6);
+`src/adapters/grok/grok.test.ts` ("grok compile matrix (T4.22)", "grok probe and resume (T4.22, T4.23)", "grok parser
+and result (T4.23; SYNTHETIC lines in the shapes the 2026-10-14 live check recorded)", "cases with no recorded native
+shape (live check 5d, 7g, 8c, 8f)" fixture replay, "parser hardening (T4.23, synthetic shapes; mirrors Antigravity
+T4.33)", "parser hardening (T4.23, synthetic shapes; mirrors Cursor T4.43 and OpenCode T4.53)", "grok auth preflight
+(T4.24, Q-10; SYNTHETIC outputs in the shapes of the 2026-10-14 live check)", "grok conformance suite (synthetic
+recorded fixtures, FR-ADP-11, T4.25)", "grok registry entry and manifest gate (T4.22)", "grok Git declaration (T4.27,
+FR-GIT-01, FR-GIT-02, FR-GIT-09)", and "grok backing-provider fixture (T4.23, T4.6, FR-ADP-10)"); CI also runs
 `test/malicious/adapters/grok.case.ts` and `test/malicious/adapter-leg.test.ts` ("adapter malicious leg: grok" and
 "adapter malicious leg: grok partial streams", T4.26 partial
 ([#291](https://github.com/zemdregon/switchboard/pull/291),
-[#302](https://github.com/zemdregon/switchboard/pull/302));
-no `replayGap`). [#302](https://github.com/zemdregon/switchboard/pull/302) adds synthetic argument-key and
+[#302](https://github.com/zemdregon/switchboard/pull/302),
+[#308](https://github.com/zemdregon/switchboard/pull/308));
+no `replayGap`). [#302](https://github.com/zemdregon/switchboard/pull/302) added synthetic argument-key and
 tool-name variants (`input.cmd`, top-level `command`, `CommandLine` on `arguments` / `input` / the event, `name` and
 `tool_name`), commands arriving or changing only on `tool_call_update` (including `call_id` and `tool_call_id`),
 Git-write forms the live check showed a prefix deny does not stop, and missing auth/rate-limit error combinations
-(79 streams: 73 blocked, 6 unknown-event; 6 `grokPartialStreams`). Bare, non-string and prototype-key tool lines
-remain `unknown`; cut-line streams end `OUTPUT_PROTOCOL_ERROR`, which outranks a guard verdict. The case-file
-update changes neither the parser nor the compiled matrix; fields other than `type` remain hypothetical. No
+(79 streams: 73 blocked, 6 unknown-event). [#308](https://github.com/zemdregon/switchboard/pull/308) completed the
+malicious cut-line position matrix across all three categories (`credential_read`, `out_of_worktree_write`, `network`)
+and exit codes (`0`, `1`) (12 `grokPartialStreams`), verifying both cuts before the hostile call (framing failure) and
+inside the line after the call (protocol failure outranking guard verdict). Bare, non-string and prototype-key tool
+lines remain `unknown`; cut-line streams end `OUTPUT_PROTOCOL_ERROR`, which outranks a guard verdict. These case-file
+updates change neither the parser nor the compiled matrix; fields other than `type` remain hypothetical. No
 end-to-end run through Switchboard against a logged-in `grok` has been recorded yet (T4.28).
 
 ## Antigravity CLI (milestone 4)
@@ -1188,16 +1217,17 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   `test/malicious/adapters/grok.case.ts` on synthetic `streaming-json` streams (no `grok` installed; no `replayGap`).
   Compile, isolation-flag and argv checks pass for each compiled bypass cell; hostile replay blocking streams test Git
   writes blocked by Switchboard's tool-call guard per ADR-0039.
-  [#302](https://github.com/zemdregon/switchboard/pull/302) expands synthetic command-key, update/call-id, Git-write,
-  provider-error and cut-line coverage on `main`; fields other than `type` remain hypothetical, and no live CLI
-  validation is implied. A bare `tool_call` before a clean `end_turn` still succeeds; path keys, tool `content` and
-  shadowed lower-precedence command keys are invisible to the guard. Partial lines end `OUTPUT_PROTOCOL_ERROR`, not a
-  proven provider refusal. FR-POL-04 cannot hold in the only compiled scope
-  because repository configuration is `enabled` and `.mcp.json` and `.grok/config.toml` load without `--trust` (live
-  check 10a). Native login credentials remain readable from inside the sandbox (live check 11b, Q-62). Other hostile
-  categories without a parsed Git write are not blocked by the bypass guard. Scrubbed native `tool_call` and
-  `tool_call_update` command/target and status fields, live blocked outcomes and `adapters validate` remain operator
-  work (T4.21 extension / T4.28). See ROADMAP T4.26 for the full gap list.
+  [#302](https://github.com/zemdregon/switchboard/pull/302) and
+  [#308](https://github.com/zemdregon/switchboard/pull/308) expand synthetic command-key, update/call-id, Git-write,
+  provider-error and cut-line coverage on `main` (#308 completes both cut positions for each category and exit code; 12
+  `grokPartialStreams`); fields other than `type` remain hypothetical, and no live CLI validation is implied. A bare
+  `tool_call` before a clean `end_turn` still succeeds; path keys, tool `content` and shadowed lower-precedence command
+  keys are invisible to the guard. Partial lines end `OUTPUT_PROTOCOL_ERROR`, not a proven provider refusal. FR-POL-04
+  cannot hold in the only compiled scope because repository configuration is `enabled` and `.mcp.json` and
+  `.grok/config.toml` load without `--trust` (live check 10a). Native login credentials remain readable from inside the
+  sandbox (live check 11b, Q-62). Other hostile categories without a parsed Git write are not blocked by the bypass guard.
+  Scrubbed native `tool_call` and `tool_call_update` command/target and status fields, live blocked outcomes and
+  `adapters validate` remain operator work (T4.21 extension / T4.28). See ROADMAP T4.26 for the full gap list.
 - **Antigravity malicious-fixture leg is partial (ROADMAP T4.36).** CI runs `test/malicious/adapter-leg.test.ts` with
   `test/malicious/adapters/antigravity.case.ts` on synthetic `stream-json` streams (no `agy` installed; no `replayGap`).
   Compile, isolation-flag and argv checks pass for the approved bypass cell; hostile replay blocking covers every
