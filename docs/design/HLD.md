@@ -150,7 +150,7 @@ flowchart TB
 | COMP-EXE | Execution Supervisor | Spawn provider processes (on the host or inside the project's container) in their own process group with allowlisted environment; subprocess JSON/JSONL and (M4) ACP client transports; timeouts, cancellation, grace-then-kill; capture stdout events and stderr separately; run verification commands; startup reconciliation of orphaned runs. | FR-EXE-01..08, FR-EXE-07, NFR-REL-02 |
 | COMP-ADP | Adapter Registry and provider adapters | Per provider: probe, version gate, auth preflight, compile trust profile to native controls, parse native structured output, resume, cancel; model registry; compliance manifests; conformance suites. | FR-ADP-01..11, FR-AUTH-02, NFR-MAINT-01 |
 | COMP-TEL | Telemetry Pipeline | Turn lifecycle observations into run events and OTel spans; redact prompts, environment and full shell output; export only to an operator-configured endpoint. | FR-TEL-01..03, NFR-OBS-01, NFR-PRIV-01 |
-| COMP-OPS | Operator CLI | `serve`, `doctor`, `runs list/show/cancel`, `gc`, `approve`, `deny`, `git push`, `projects list/show/approve/validate` (implemented), plus `adapters validate` (M4), `capacity` (M6), `affinity list` and `affinity reset` (M7), `inner status`/`inner test <task>` (M11) and `index status\|rebuild\|clear` (M12); the only path to privileged approval and version acceptance. | FR-OPS-01..03, FR-POL-09, FR-ADP-03, FR-PRJ-08, FR-INN-17, FR-RAG-11, FR-RAG-14, FR-RTE-07 |
+| COMP-OPS | Operator CLI | `serve`, `doctor`, `runs list/show/cancel`, `gc`, `approve`, `deny`, `git push`, `projects list/show/approve/validate` (implemented), plus `adapters validate` (M4), `capacity` (M6), `affinity list` and `affinity reset` (M7), `inner status`/`inner test <task>`/`inner resume <task>` (M11, implemented on fakes; `inner resume` named by FR-INN-17) and `index status\|rebuild\|clear` (M12); the only path to privileged approval and version acceptance. | FR-OPS-01..03, FR-POL-09, FR-ADP-03, FR-PRJ-08, FR-INN-17, FR-RAG-11, FR-RAG-14, FR-RTE-07 |
 | COMP-INN | Inner Agent Service (M11) | Optional, advisory text service behind one backend port (`http` or `cli` kind). Runs the per-task pipeline: deterministic redaction, input budget, call with per-call timeout and circuit breaker, parse and validate against the task schema, at most one re-ask, then accept or deterministic fallback. Applies locality gating (`local` or `remote`, `allow_remote`, `allow_source_content`, project `inner_agent` setting), tracks per-task rejection rate and suspends a task, and writes `inner_call` records (sizes and hashes only, never bodies) through COMP-LED. Holds **no policy authority**: its output reaches no decision in COMP-POL, eligibility, approvals, ceilings, push policy, sanitiser rules, redaction or failure classification, and it cannot change a run's status. Callers: COMP-GIT (commit and PR text), COMP-RTE (stage-2 route features), the handoff builder over COMP-LED and COMP-WS data, COMP-EXE (result and log summaries), COMP-OPS (`doctor`, `inner` commands). | FR-INN-01..17, FR-INN-06, NFR-PRIV-01 |
 | COMP-RAG | Retrieval Index Service (M12, Proposed) | Optional. Per project, builds and incrementally maintains an index of the project's readable contexts in the data directory (never in the repository), and optionally a separate deployment-wide index. Scans with exclusions and a secret denylist, redacts, chunks, embeds through one backend port (kinds `local` and `http`, same locality gates as COMP-INN), stores chunk text and vectors, and answers bounded top-k queries. Callers: admission (context pack prepended to the delegated prompt within a token budget), COMP-MCP (`search_project_context`, read-only), COMP-OPS (`index` commands, `doctor`), and later the per-run tool channel (FR-RAG-13). Building runs in the `serve` daemon and never blocks admission. Retrieved content is untrusted data and has **no policy authority**: it reaches no decision in COMP-POL, eligibility, approvals, ceilings, push or commit. Any failure falls back to no retrieval and never fails a run. Records counts and durations through COMP-LED, never content, and never as provider usage. | FR-RAG-01..14, FR-RAG-07, NFR-PRIV-01 |
 
@@ -361,6 +361,52 @@ through the compile matrix), FR-ADP-10 (`backingProvider` unset: events name no 
 
 **Gaps (remain `Partial`, not `Done`).** No permission-denial or rate-limit event shape recorded; tool input key names
 are Assumptions; T4.6 backing-vendor fixture cannot be written. Operator capture: T4.58 / T4.51 extension.
+
+### 2.5 COMP-INN implementation evidence (M11, T11.1–T11.12, Done on fakes)
+
+Schemas, pipeline, privacy gates and task contracts are in [LLD §13](LLD.md#13-inner-agent); the as-built testing
+notes are in [TDD §3.12](TDD.md#312-inner-agent). Requirement-to-test traceability is in
+[SDD §4.3](SDD.md#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes). Task status and clause-by-clause
+Done-when evidence: [ROADMAP §6.6](../ROADMAP.md#66-m11-inner-agent-tasks). The pointers below are HLD-level evidence
+only (written 2026-10-15, T11.14, Delegated). No live inner backend, provider CLI or network host has been used: every
+backend in the tests is the scripted in-process fake or a fake HTTP server bound to a loopback address.
+
+**Boundary evidence (TB-10, FR-INN-06, FR-INN-16).** `src/inner/import-boundary.test.ts` fails the build when COMP-POL,
+a profile compiler, the retry logic, the push path, `src/git/commit.ts`, `src/usage/`, `src/ledger/` or the MCP
+envelope imports `src/inner/` (direct, type-only, re-export and dynamic forms; deliberately not transitive, the gap is
+stated in the file). Locality classification, the pinned connection and the refusal of a `remote` backend or of source
+content without the opt-ins: `src/inner/http-backend.test.ts`, `src/inner/pipeline.test.ts` (the seven-row gate table).
+Planted secrets, home paths, controller and native session IDs and provider names never reach a captured prompt, a
+ledger row, a run event or a log line: `src/inner/pipeline.test.ts`, `src/inner/http-backend.test.ts` and every task
+test below.
+
+**Callers wired into a production `serve` run path.** COMP-GIT asks COMP-INN for a commit draft through the injected
+`CommitMessageTask` (`src/git/commit.ts`, wired by `src/cli/serve.ts`; `src/git/commit-message.test.ts` over the real
+tool socket). COMP-RTE asks for stage-2 route features through `RunLifecycleOptions.classifyRouteFeatures` on admission,
+continuation and quota failover (`src/cli/serve.test.ts`, `src/mcp/inner-route-features.test.ts`); the features are
+record-only (Q-82). The PR-draft, verification-summary, handoff-condensation and run-title callers named in the COMP-INN
+row exist as service functions with their contracts and tests, and no run path, hook or `inner` command calls them yet
+(ROADMAP T11.8, T11.9, T11.10, T11.12 "Not covered").
+
+- **Service, pipeline and backend (T11.1–T11.3).** Tests: `src/inner/inner.test.ts`, `src/inner/pipeline.test.ts`,
+  `src/inner/http-backend.test.ts`, `src/config/config.test.ts` ("inner_agent"). Modules: `src/config/inner-agent.ts`,
+  `src/inner/index.ts`, `src/inner/port.ts`, `src/inner/fake-backend.ts`, `src/inner/pipeline.ts`,
+  `src/inner/breaker.ts`, `src/inner/truncate.ts`, `src/inner/http-backend.ts`, `src/projects/inner-setting.ts`.
+- **Task contracts (T11.4, T11.8–T11.12).** Tests: `src/git/commit-message.test.ts`, `src/inner/pr-draft.test.ts`,
+  `src/inner/log-summary.test.ts`, `src/inner/handoff-condense.test.ts`, `src/inner/route-features.test.ts`,
+  `src/inner/run-title.test.ts`. Modules: `src/inner/commit-message.ts`, `src/inner/pr-draft.ts`,
+  `src/inner/log-summary.ts`, `src/inner/handoff-condense.ts`, `src/inner/route-features.ts`, `src/inner/run-title.ts`.
+- **Accounting, suspension and operator surfaces (T11.5–T11.7).** Tests: `src/inner/usage.test.ts`,
+  `src/inner/usage-surfaces.test.ts`, `src/capacity/capacity.test.ts` (inner calls leave the projection byte-identical),
+  `src/inner/suspension.test.ts`, `src/cli/inner.test.ts`, `src/inner/cli-run-isolation.test.ts` (`doctor` and the
+  `inner` commands leave every non-inner table unchanged). Modules: `src/ledger/repo.ts` (`recordInnerCall`),
+  `src/cli/inner.ts`, `src/cli/doctor.ts`.
+
+**Gaps (M11 stays `Partial`).** The `cli` backend kind is reported `Ineligible` and never started (T11.0, T11.13); the
+`inner.call` span of [LLD §7](LLD.md#7-telemetry-spans) and [LLD §13.8](LLD.md#138-telemetry-and-events) is not
+emitted (no span exporter exists in the tree; the pipeline writes a structured log line of the same name without
+bodies); the Unix-socket form of `base_url` is not built; no opt-in live inner run exists (TDD §3.12 as-built note);
+and the four callers above are not on a run path.
 
 ## 3. Trust boundaries
 
