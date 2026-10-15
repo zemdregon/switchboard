@@ -1265,6 +1265,129 @@ describe("opencode parser and result (T4.53)", () => {
     expect(adapter().extractResult(plain, EXIT1)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
   });
 
+  it("extractResult classifies supervisor exit outcomes (protocol_error, internal_error, crashed, spawn_error)", () => {
+    const baseExit = { exitCode: null, signal: null, expectedExitCodes: [0] };
+
+    const proto = adapter().extractResult([], { ...baseExit, outcome: "protocol_error" });
+    expect(proto).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "unparseable provider output",
+    });
+
+    const internal = adapter().extractResult([], { ...baseExit, outcome: "internal_error" });
+    expect(internal).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "event handling failed",
+    });
+
+    const crashedSig = adapter().extractResult([], { ...baseExit, outcome: "crashed", signal: "SIGKILL" });
+    expect(crashedSig).toMatchObject({
+      ok: false,
+      failureCode: "PROCESS_CRASH",
+      failureDetail: "signal SIGKILL",
+    });
+
+    const crashedNoSig = adapter().extractResult([], { ...baseExit, outcome: "crashed", signal: null });
+    expect(crashedNoSig).toMatchObject({
+      ok: false,
+      failureCode: "PROCESS_CRASH",
+      failureDetail: "crashed",
+    });
+
+    const spawnErr = adapter().extractResult([], { ...baseExit, outcome: "spawn_error" });
+    expect(spawnErr).toMatchObject({
+      ok: false,
+      failureCode: "PROCESS_CRASH",
+      failureDetail: "spawn_error",
+    });
+
+    const exitErr = adapter().extractResult([], {
+      outcome: "exited",
+      exitCode: 2,
+      signal: null,
+      expectedExitCodes: [0],
+    });
+    expect(exitErr).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "exit code 2",
+    });
+  });
+
+  it("extractResult honors normalized failure events (permission_denied, sandbox_violation, rate_limit)", () => {
+    const endEvent: NormalizedEvent = { kind: "result", ok: true };
+
+    const perm = adapter().extractResult([{ kind: "permission_denied", tool: "shell" }, endEvent], EXIT0);
+    expect(perm).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", failureDetail: "denied: shell" });
+
+    const sbx = adapter().extractResult([{ kind: "sandbox_violation", detail: "out of worktree" }, endEvent], EXIT0);
+    expect(sbx).toMatchObject({ ok: false, failureCode: "SANDBOX_VIOLATION", failureDetail: "out of worktree" });
+
+    const rl = adapter().extractResult([{ kind: "rate_limit" }, endEvent], EXIT0);
+    expect(rl).toMatchObject({
+      ok: false,
+      failureCode: "RATE_LIMIT_TRANSIENT",
+      failureDetail: "rate limit reported",
+    });
+  });
+
+  it("seenParts WeakMap state is isolated across separate ParseState instances", () => {
+    const a = adapter();
+    const state1: ParseState = { lines: 0, unknownEvents: 0 };
+    const state2: ParseState = { lines: 0, unknownEvents: 0 };
+    const finish = FINISH("stop", "prt_f1");
+
+    const ev1 = a.parseEvent(finish, state1);
+    expect(ev1.filter((e) => e.kind === "usage")).toHaveLength(1);
+    expect(ev1.some((e) => e.kind === "result" && e.ok)).toBe(true);
+
+    // The same part id on a fresh state is counted once, not skipped as already seen on state1.
+    const ev2 = a.parseEvent(finish, state2);
+    expect(ev2.filter((e) => e.kind === "usage")).toHaveLength(1);
+    expect(ev2.some((e) => e.kind === "result" && e.ok)).toBe(true);
+
+    const ev1Repeat = a.parseEvent(finish, state1);
+    expect(ev1Repeat.filter((e) => e.kind === "usage")).toHaveLength(0);
+    expect(ev1Repeat.some((e) => e.kind === "result" && e.ok)).toBe(true);
+  });
+
+  it("clean turn with no text messages leaves summary undefined, not empty string; long text is clipped to 2000 chars", () => {
+    const noText = parse([START, FINISH("stop")]);
+    expect(noText.a.extractResult(noText.events, EXIT0)).toMatchObject({ ok: true, nativeSessionId: SID });
+    expect(noText.a.extractResult(noText.events, EXIT0)).not.toHaveProperty("summary");
+
+    const longText = "a".repeat(2500);
+    const long = parse([START, TEXT(longText), FINISH("stop")]);
+    const res = long.a.extractResult(long.events, EXIT0);
+    expect(res).toMatchObject({ ok: true });
+    expect(res.summary).toHaveLength(2000);
+    expect(res.summary).toBe(`${"a".repeat(1999)}…`);
+  });
+
+  it("bounds clipping: tool name > 64 chars, target > 512 chars", () => {
+    const longName = "custom_tool_name_".repeat(5);
+    const longPath = `/work/tree/${"p".repeat(600)}`;
+    const { events } = parse([
+      START,
+      TOOL(longName, { filePath: longPath }),
+      TOOL("read", { filePath: longPath }),
+      FINISH("stop"),
+    ]);
+    expect(events.find((e) => e.kind === "tool_call" && e.name.startsWith("custom_tool_name_"))).toMatchObject({
+      kind: "tool_call",
+      tool: "other",
+      name: `${longName.slice(0, 64)}…`,
+    });
+    expect(events.find((e) => e.kind === "tool_call" && e.tool === "read")).toMatchObject({
+      kind: "tool_call",
+      tool: "read",
+      name: "read",
+      target: `${longPath.slice(0, 512)}…`,
+    });
+  });
+
   // Done-when cases whose native shape the T4.51 live check did NOT record (ROADMAP T4.53 stays Partial).
   // These pin today's observed outcomes; an operator capture (T4.51 extension) must change them.
   describe("cases with no recorded native shape (live check rows 7, 11, 14c)", () => {
@@ -1337,7 +1460,8 @@ describe("opencode parser and result (T4.53)", () => {
 
     // The same outcomes replayed end to end from fixture files through the supervisor, so each Done-when case has a
     // fixture: success (`success_edit`), task failure (`task_failure`), malformed (`malformed_output`) and the ones
-    // below. They pin the gaps; a capture (T4.51 extension) must change them.
+    // below, plus `git_write_guard`, `unsafe_session_id`, `sandbox_violation` and `model_unavailable` (as Grok T4.23
+    // and Cursor T4.43). They pin the gaps; a capture (T4.51 extension) must change them.
     const replayCase = (
       fixture: string,
       kind: ConformanceCase["kind"],
@@ -1427,6 +1551,63 @@ describe("opencode parser and result (T4.53)", () => {
         }),
       );
       expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    });
+
+    it("fixture git_write_guard (ADR-0039) replays a guard-flagged Git write under a stop finish at exit 0 to PERMISSION_BLOCKED", async () => {
+      const report = await runConformanceCase(
+        replayCase("git_write_guard", "task_failure", {
+          ok: false,
+          failureCode: "PERMISSION_BLOCKED",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+        nativeSessionId: DEFAULT_SESSION_ID,
+      });
+      expect(report.result?.failureDetail).toMatch(/^git write attempted/);
+    });
+
+    it("fixture unsafe_session_id replays an unsafe sessionID to OUTPUT_PROTOCOL_ERROR without binding", async () => {
+      const report = await runConformanceCase(
+        replayCase("unsafe_session_id", "malformed_output", { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "protocol: session id is not a safe argument",
+        unknownEventCount: 0,
+      });
+      expect(report.result).not.toHaveProperty("nativeSessionId");
+    });
+
+    it("fixture sandbox_violation (unrecorded shape) replays sandbox error text at exit 0 to a success, never SANDBOX_VIOLATION (gap)", async () => {
+      const report = await runConformanceCase(
+        replayCase("sandbox_violation", "task_failure", { ok: true, nativeSessionId: DEFAULT_SESSION_ID }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({ ok: true, nativeSessionId: DEFAULT_SESSION_ID, unknownEventCount: 0 });
+      expect(report.result).not.toHaveProperty("failureCode");
+    });
+
+    it("fixture model_unavailable (live check 14a) replays provider.no-route at exit 1 to MODEL_UNAVAILABLE", async () => {
+      const report = await runConformanceCase(
+        replayCase("model_unavailable", "task_failure", {
+          ok: false,
+          failureCode: "MODEL_UNAVAILABLE",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: "MODEL_UNAVAILABLE",
+        nativeSessionId: DEFAULT_SESSION_ID,
+        unknownEventCount: 0,
+      });
     });
   });
 });
