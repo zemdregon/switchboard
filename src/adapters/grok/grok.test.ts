@@ -1080,6 +1080,28 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
       expect(adapter().extractResult(before.events, EXIT_OK)).toMatchObject({ ok: true });
     });
 
+    it("pinned residual: a tool_call_update after the `end` line that emits no tool_call leaves a clean turn clean", () => {
+      // Residual (w411, parser unchanged): unlike an unreadable `tool_call`, an update with only status and content
+      // (row 7a shape) or one repeating an already reported command emits no `tool_call`, so it is not counted as a
+      // call after `end`. It carries no new command, so no Git write is missed; the malicious leg replays both shapes
+      // after a guarded call (test/malicious/adapters/grok.case.ts). Turns red if the parser starts counting them.
+      const CALL = { type: "tool_call", id: "c1", tool: "run_terminal_command", input: { command: "echo ok" } };
+      for (const [label, lines] of [
+        ["status and content only", [line(END), line({ type: "tool_call_update", status: "completed", content: "x" })]],
+        ["repeated command", [line(CALL), line(END), line({ ...CALL, type: "tool_call_update", status: "completed" })]],
+      ] as const) {
+        const { events } = parse([...lines]);
+        expect(events.filter((e) => e.kind === "tool_call").length, label).toBeLessThanOrEqual(1);
+        expect(adapter().extractResult(events, EXIT_OK), label).toMatchObject({ ok: true, nativeSessionId: SID });
+      }
+      // The guard verdict on the call before `end` still decides when the repeated update follows it.
+      const push = { ...CALL, input: { command: "git push origin main" } };
+      const guarded = parse([line(push), line(END), line({ ...push, type: "tool_call_update" })]).events.map((e) =>
+        guardEvent(e, { cwd: "/w", bypass: true }),
+      );
+      expect(adapter().extractResult(guarded, EXIT_OK)).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    });
+
     it("a guard-flagged trailing tool_call ends PERMISSION_BLOCKED at exit 1, after a failed `end` and a second `end`", () => {
       const ctx = { cwd: "/w", bypass: true };
       const guarded = (lines: string[]) => parse(lines).events.map((e) => guardEvent(e, ctx));
