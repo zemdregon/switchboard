@@ -2127,12 +2127,19 @@ describe("cursor conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.4
     expect(replays("git_write_guard").map((x) => [x.kind, x.expect.failureCode])).toEqual([
       ["task_failure", "PERMISSION_BLOCKED"],
     ]);
+    expect(replays("git_write_guard_args").map((x) => [x.kind, x.expect.failureCode])).toEqual([
+      ["task_failure", "PERMISSION_BLOCKED"],
+    ]);
+    expect(replays("rate_limit").map((x) => [x.kind, x.expect.failureCode])).toEqual([
+      ["task_failure", "TOOL_FAILURE"],
+    ]);
     expect(replays("rate_limit_error").map((x) => [x.kind, x.expect.failureCode])).toEqual([
       ["task_failure", "TOOL_FAILURE"],
     ]);
     expect(replays("sandbox_violation").map((x) => [x.kind, x.expect.failureCode])).toEqual([
       ["task_failure", "TOOL_FAILURE"],
     ]);
+    expect(replays("backing_provider").map((x) => [x.kind, x.expect.ok])).toEqual([["success", true]]);
     for (const fx of ["no_result", "two_results", "session_changed", "trailing_tool", "unsafe_id_after_bound"]) {
       expect(replays(fx).map((x) => [x.kind, x.expect.failureCode])).toEqual([
         ["malformed_output", "OUTPUT_PROTOCOL_ERROR"],
@@ -2238,6 +2245,26 @@ describe("cursor conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.4
     expect(report.result?.failureDetail).toContain("git write attempted");
   });
 
+  it("a Git write under args.CommandLine (ADR-0039 alias) ends PERMISSION_BLOCKED through the run", async () => {
+    const report = await runConformanceCase(caseFor("git_write_guard_args"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    expect(report.result?.failureDetail).toContain("git write attempted");
+  });
+
+  it("an empty stream at exit 1 (rows 4, 14 never forced) is TOOL_FAILURE, never RATE_LIMIT_TRANSIENT", async () => {
+    const report = await runConformanceCase(caseFor("rate_limit"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+    expect(report.result?.nativeSessionId).toBeUndefined();
+  });
+
+  it("a backing_provider success (T4.6, FR-ADP-10) normalizes ok and session id and does not fail", async () => {
+    const report = await runConformanceCase(caseFor("backing_provider"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: true, nativeSessionId: DEFAULT_SESSION_ID });
+  });
+
   it.each([
     ["a stream with no result line at exit 0", "no_result", "no result event"],
     ["a second result line after a clean one", "two_results", "protocol: more than one result line"],
@@ -2334,6 +2361,15 @@ describe("cursor conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.4
     ["a second --trust", argvEdit((a) => [...a, "--trust"])],
     ["--force removed", argvEdit((a) => a.filter((w) => w !== "--force"))],
     ["a second --force", argvEdit((a) => [...a, "--force"])],
+    ["--print=true beside the compiled --print", argvEdit((a) => [...a, "--print=true"])],
+    ["--trust=false beside the compiled --trust", argvEdit((a) => [...a, "--trust=false"])],
+    ["--force=false beside the compiled --force", argvEdit((a) => [...a, "--force=false"])],
+    ["--print= replacing --print", argvEdit((a) => a.map((w) => (w === "--print" ? "--print=true" : w)))],
+    ["-p added (short --print, never compiled)", argvEdit((a) => [...a, "-p"])],
+    ["-pf cluster added", argvEdit((a) => [...a, "-pf"])],
+    ["--list-models added", argvEdit((a) => [...a, "--list-models"])],
+    ["--help added to a run argv", argvEdit((a) => [...a, "--help"])],
+    ["--version added to a run argv", argvEdit((a) => [...a, "--version"])],
     ["--dangerously-skip-permissions added", argvEdit((a) => [...a, "--dangerously-skip-permissions"])],
     ["--yolo added", argvEdit((a) => [...a, "--yolo"])],
     ["--always-approve added", argvEdit((a) => [...a, "--always-approve"])],
@@ -2341,10 +2377,19 @@ describe("cursor conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.4
     ["--full-auto added", argvEdit((a) => [...a, "--full-auto"])],
     ["--auto-review added", argvEdit((a) => [...a, "--auto-review"])],
     ["--worktree added", argvEdit((a) => [...a, "--worktree"])],
+    ["--worktree-base added", argvEdit((a) => [...a, "--worktree-base", "/tmp"])],
+    ["--skip-worktree-setup added", argvEdit((a) => [...a, "--skip-worktree-setup"])],
     ["--workspace added", argvEdit((a) => [...a, "--workspace"])],
     ["--add-dir added", argvEdit((a) => [...a, "--add-dir", "/tmp"])],
+    ["--plugin-dir added", argvEdit((a) => [...a, "--plugin-dir", "/tmp"])],
     ["--api-key added", argvEdit((a) => [...a, "--api-key", "key"])],
     ["--auth-token added", argvEdit((a) => [...a, "--auth-token", "token"])],
+    ["--header added", argvEdit((a) => [...a, "--header", "k:v"])],
+    ["--endpoint added", argvEdit((a) => [...a, "--endpoint", "http://127.0.0.1:9"])],
+    ["--mode added", argvEdit((a) => [...a, "--mode", "plan"])],
+    ["--permission-mode added", argvEdit((a) => [...a, "--permission-mode", "yolo"])],
+    ["--allow added", argvEdit((a) => [...a, "--allow", "Shell(*)"])],
+    ["--deny added", argvEdit((a) => [...a, "--deny", "Shell(git)"])],
     ["--sandbox added", argvEdit((a) => [...a, "--sandbox"])],
     ["--sandbox=disabled added", argvEdit((a) => [...a, "--sandbox=disabled"])],
     ["--sandbox=enabled added", argvEdit((a) => [...a, "--sandbox=enabled"])],
