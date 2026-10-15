@@ -1058,6 +1058,23 @@ describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
       expect(report.result?.failureDetail).toMatch(/^git write attempted/);
     });
 
+    it("fixture subtype_less_result replays an unreadable error result before a success result to OUTPUT_PROTOCOL_ERROR", async () => {
+      const report = await runConformanceCase(
+        replayCase("subtype_less_result", "malformed_output", {
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        nativeSessionId: DEFAULT_SESSION_ID,
+        unknownEventCount: 1,
+      });
+    });
+
     it("fixture no_result replays text output at exit 0 without a result line to OUTPUT_PROTOCOL_ERROR", async () => {
       const report = await runConformanceCase(
         replayCase("no_result", "malformed_output", {
@@ -2766,6 +2783,43 @@ describe("cursor parser residual branches (T4.43, synthetic)", () => {
       nativeSessionId: SID,
       unknownEventCount: 1,
     });
+  });
+
+  it("a subtype-less result line still counts as a result: beside a readable one the run fails closed", () => {
+    const BARE_ERR = line({ type: "result", is_error: true, session_id: SID });
+    const NUM_SUB = line({ type: "result", subtype: 7, is_error: true });
+    for (const [label, lines] of [
+      ["bare before", [INIT, BARE_ERR, RESULT]],
+      ["bare after", [INIT, RESULT, BARE_ERR]],
+      ["non-string subtype after", [INIT, RESULT, NUM_SUB]],
+    ] as const) {
+      const r = parse([...lines]);
+      expect(r.events, label).toContainEqual({ kind: "unknown", rawType: "result" });
+      expect(r.events, label).toContainEqual({
+        kind: "provider_error",
+        category: "protocol",
+        message: "more than one result line",
+      });
+      expect(r.result, label).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        nativeSessionId: SID,
+        unknownEventCount: 1,
+      });
+    }
+
+    // Alone, a subtype-less result is only an unknown event and no result: the run still never succeeds.
+    const alone = parse([INIT, BARE_ERR]);
+    expect(alone.events.some((e) => e.kind === "result" || e.kind === "provider_error")).toBe(false);
+    expect(alone.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", unknownEventCount: 1 });
+
+    // A readable result counted after an unreadable one records no usage row (the run total is counted once).
+    const usage = parse([
+      INIT,
+      BARE_ERR,
+      line({ type: "result", subtype: "success", is_error: false, session_id: SID, usage: { inputTokens: 3 } }),
+    ]);
+    expect(usage.events.some((e) => e.kind === "usage")).toBe(false);
   });
 
   it("resume on a privileged profile with no scope binding is refused with the compile reason (FR-SES-03)", () => {

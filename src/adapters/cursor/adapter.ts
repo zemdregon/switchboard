@@ -490,14 +490,16 @@ export class CursorAdapter implements ProviderAdapter {
       case EVENT.toolCall:
         return this.#toolCall(e, subtype, state);
       case EVENT.result: {
-        if (subtype === undefined) return this.#unknown(state, type);
+        // Every `result` line counts, readable or not, so a subtype-less line beside a readable one is still a second
+        // result and cannot hide a failure before or after it (Proposed, fail closed).
         const results = (seenResults.get(state) ?? 0) + 1;
         seenResults.set(state, results);
-        const out: NormalizedEvent[] = [];
+        const out: NormalizedEvent[] = subtype === undefined ? this.#unknown(state, type) : [];
         // One run prints one `result` ([LIVE] 5a, 5b); a second could flip an earlier failure, so the run fails closed.
         if (results > 1) {
           out.push({ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "more than one result line" });
         }
+        if (subtype === undefined) return out;
         const candidateModel = str(ownProp(e, "model")) ?? str(ownProp(e, "model_id")) ?? str(ownProp(e, "modelId"));
         const rawBacking = ownProp(e, BACKING_PROVIDER_KEY) ?? ownProp(e, "backingProvider");
         const rawId =
