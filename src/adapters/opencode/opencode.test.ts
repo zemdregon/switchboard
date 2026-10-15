@@ -2386,6 +2386,456 @@ describe("opencode parser and result (T4.53)", () => {
   });
 });
 
+describe("opencode parser to resume round trip and residual branches (T4.53 residual; SYNTHETIC lines, parser unchanged)", () => {
+  const SID = "ses_0000000000000000000000000A";
+  const EXIT0: ExitInfo = { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] };
+  const line = (type: string, part: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      type,
+      timestamp: 1,
+      sessionID: SID,
+      part: { sessionID: SID, messageID: "msg_1", ...part },
+      ...extra,
+    });
+  const START = line("step_start", { id: "prt_s1", type: "step-start" });
+  const TEXT = (text: string, id = "prt_t1") => line("text", { id, type: "text", text });
+  const FINISH = (reason: string, id = "prt_f1") => line("step_finish", { id, type: "step-finish", reason });
+  const parse = (lines: string[], a = adapter()) => {
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const events: NormalizedEvent[] = lines.flatMap((l) => a.parseEvent(l, state));
+    return { a, state, events };
+  };
+  const approved = { ...privilegedProfile(BYPASS_SCOPE), bypassApproved: true };
+  const req = request({ bypassApproved: true });
+
+  it("the parser and resumeArgs agree on the session id boundary: 256 characters bind and resume, 257 do neither", () => {
+    // One SESSION_ID_RE guards both sides; mutating either side's length limit turns this red.
+    const a = adapter();
+    for (const [id, safe] of [
+      ["a".repeat(256), true],
+      ["a".repeat(257), false],
+      ["0", true],
+      ["-0", false],
+      [".a", false],
+      [":a", false],
+      ["_a", false],
+      ["session/1", false],
+      ["session 1", false],
+      ["session\n1", false],
+    ] as const) {
+      const state: ParseState = { lines: 0, unknownEvents: 0 };
+      const startLine = JSON.stringify({
+        type: "step_start",
+        timestamp: 1,
+        sessionID: id,
+        part: { id: "p1", type: "step-start" },
+      });
+      const finishLine = JSON.stringify({
+        type: "step_finish",
+        timestamp: 2,
+        sessionID: id,
+        part: { id: "f1", reason: "stop" },
+      });
+      const events = [startLine, finishLine].flatMap((l) => a.parseEvent(l, state));
+      const r = a.extractResult(events, EXIT0);
+      const resumed = a.resumeArgs({ provider: "opencode", nativeSessionId: id }, req, approved);
+      const label = `${id.slice(0, 8)} (${id.length})`;
+      if (safe) {
+        expect(state.nativeSessionId, label).toBe(id);
+        expect(r, label).toMatchObject({ ok: true, nativeSessionId: id });
+        expect(isIneligible(resumed), label).toBe(false);
+        if (!isIneligible(resumed)) {
+          expect(resumed.argv.slice(-4), label).toEqual(["--session", id, "--", "fix the failing test"]);
+        }
+      } else {
+        expect(state.nativeSessionId, label).toBeUndefined();
+        expect(r, label).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+        expect(r.nativeSessionId, label).toBeUndefined();
+        expect(resumed, label).toMatchObject({
+          ineligible: true,
+          reason: "CAPABILITY_MISSING",
+          detail: "native session id is not a safe single argument",
+        });
+      }
+    }
+  });
+
+  it("the id a run binds is the id the next resume passes, and a resumed run that rebinds it stays clean", () => {
+    const a = adapter();
+    const first: ParseState = { lines: 0, unknownEvents: 0 };
+    const startLine = JSON.stringify({
+      type: "step_start",
+      timestamp: 1,
+      sessionID: DEFAULT_SESSION_ID,
+      part: { id: "p1", type: "step-start" },
+    });
+    const finishLine = JSON.stringify({
+      type: "step_finish",
+      timestamp: 2,
+      sessionID: DEFAULT_SESSION_ID,
+      part: { id: "f1", reason: "stop" },
+    });
+    const events1 = [startLine, finishLine].flatMap((l) => a.parseEvent(l, first));
+    const r1 = a.extractResult(events1, EXIT0);
+    expect(r1).toMatchObject({ ok: true, nativeSessionId: DEFAULT_SESSION_ID });
+    if (!r1.ok || r1.nativeSessionId === undefined) return;
+    const resumed = a.resumeArgs({ provider: "opencode", nativeSessionId: r1.nativeSessionId }, req, approved);
+    expect(isIneligible(resumed)).toBe(false);
+    if (isIneligible(resumed)) return;
+    expect(resumed.argv.slice(-4)).toEqual(["--session", DEFAULT_SESSION_ID, "--", "fix the failing test"]);
+
+    const second: ParseState = { lines: 0, unknownEvents: 0 };
+    const events2 = [startLine, finishLine].flatMap((l) => a.parseEvent(l, second));
+    const r2 = a.extractResult(events2, EXIT0);
+    expect(r2).toMatchObject({ ok: true, nativeSessionId: DEFAULT_SESSION_ID });
+  });
+
+  it("privileged without a scope binding is refused by compile and resumeArgs with the same reason", () => {
+    const { privilegedScope: _dropped, ...unscoped } = approved;
+    const profile: ResolvedProfile = unscoped;
+    const expected = {
+      ineligible: true,
+      reason: "PROFILE_UNSUPPORTED",
+      detail: "privileged without an approved scope binding (LLD §3.1)",
+    };
+    const a = adapter();
+    expect(a.compile(req, profile)).toEqual(expected);
+    expect(a.resumeArgs({ provider: "opencode", nativeSessionId: DEFAULT_SESSION_ID }, req, profile)).toEqual(expected);
+
+    // Provider and id checks still take precedence: foreign or unsafe binding names its own reason.
+    expect(a.resumeArgs({ provider: "codex", nativeSessionId: DEFAULT_SESSION_ID }, req, profile)).toMatchObject({
+      reason: "CAPABILITY_MISSING",
+      detail: "binding is for codex",
+    });
+    expect(a.resumeArgs({ provider: "opencode", nativeSessionId: "--auto" }, req, profile)).toMatchObject({
+      reason: "CAPABILITY_MISSING",
+      detail: "native session id is not a safe single argument",
+    });
+  });
+
+  it("ParseState.lines counts every string line (valid, malformed, unknown, primitives) and ignores non-string inputs", () => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    a.parseEvent(JSON.stringify({ type: "step_start", sessionID: SID, part: { type: "step-start" } }), state);
+    a.parseEvent("malformed { not json", state);
+    a.parseEvent(JSON.stringify({ type: "future_telemetry_event" }), state);
+    a.parseEvent('"string primitive"', state);
+    a.parseEvent("12345", state);
+    a.parseEvent("true", state);
+    a.parseEvent(JSON.stringify({ type: "text", sessionID: SID, part: { text: "hello" } }), state);
+    a.parseEvent(JSON.stringify({ type: "step_finish", sessionID: SID, part: { reason: "stop" } }), state);
+
+    expect(state.lines).toBe(8);
+    // Non-string input (e.g. ACP message) returns [] and does NOT increment lines
+    const acp = a.parseEvent({ jsonrpc: "2.0", method: "init" } as never, state);
+    expect(acp).toEqual([]);
+    expect(state.lines).toBe(8);
+  });
+
+  it("empty string root model and backing_provider shadow part fallbacks; null values fall through", () => {
+    const a = adapter();
+    // 1. Root model="" shadows part.model, leaving model unset
+    const s1: ParseState = { lines: 0, unknownEvents: 0 };
+    const ev1 = a.parseEvent(
+      JSON.stringify({
+        type: "step_start",
+        sessionID: SID,
+        model: "",
+        part: { id: "p1", type: "step-start", model: "part-model-1" },
+      }),
+      s1,
+    );
+    const bound1 = ev1.find((e) => e.kind === "session_bound");
+    expect(bound1).toBeDefined();
+    expect(bound1).not.toHaveProperty("model");
+
+    // Root model=null falls through to part.model
+    const s2: ParseState = { lines: 0, unknownEvents: 0 };
+    const ev2 = a.parseEvent(
+      JSON.stringify({
+        type: "step_start",
+        sessionID: SID,
+        model: null,
+        part: { id: "p1", type: "step-start", model: "part-model-2" },
+      }),
+      s2,
+    );
+    expect(ev2.find((e) => e.kind === "session_bound")?.model).toBe("part-model-2");
+
+    // 2. Root backing_provider="" shadows part.backing_provider, leaving backingProvider unset
+    const s3: ParseState = { lines: 0, unknownEvents: 0 };
+    const ev3 = a.parseEvent(
+      JSON.stringify({
+        type: "step_start",
+        sessionID: SID,
+        backing_provider: "",
+        part: { id: "p1", type: "step-start", backing_provider: "vendor-fallback" },
+      }),
+      s3,
+    );
+    const bound3 = ev3.find((e) => e.kind === "session_bound");
+    expect(bound3).toBeDefined();
+    expect(bound3).not.toHaveProperty("backingProvider");
+
+    // Root backing_provider=null falls through to part.backing_provider
+    const s4: ParseState = { lines: 0, unknownEvents: 0 };
+    const ev4 = a.parseEvent(
+      JSON.stringify({
+        type: "step_start",
+        sessionID: SID,
+        backing_provider: null,
+        part: { id: "p1", type: "step-start", backing_provider: "vendor-via-part" },
+      }),
+      s4,
+    );
+    expect(ev4.find((e) => e.kind === "session_bound")?.backingProvider).toBe("vendor-via-part");
+
+    // Root backing_provider="" shadows root backingProvider="other"
+    const s5: ParseState = { lines: 0, unknownEvents: 0 };
+    const ev5 = a.parseEvent(
+      JSON.stringify({
+        type: "step_start",
+        sessionID: SID,
+        backing_provider: "",
+        backingProvider: "other-vendor",
+        part: { id: "p1", type: "step-start" },
+      }),
+      s5,
+    );
+    const bound5 = ev5.find((e) => e.kind === "session_bound");
+    expect(bound5).toBeDefined();
+    expect(bound5).not.toHaveProperty("backingProvider");
+  });
+
+  it("tool kind exclusivity and container key fallbacks: read/edit never extract command, shell never extracts target", () => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    // 1. read/edit carrying command ignore command
+    const readWithCmd = a.parseEvent(
+      JSON.stringify({
+        type: "tool_use",
+        sessionID: SID,
+        part: { tool: "read", state: { input: { filePath: "a.ts", command: "git push" } } },
+      }),
+      state,
+    );
+    expect(readWithCmd.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "read", name: "read", target: "a.ts" },
+    ]);
+
+    const editWithCmd = a.parseEvent(
+      JSON.stringify({
+        type: "tool_use",
+        sessionID: SID,
+        part: { tool: "edit", state: { input: { path: "b.ts", command: "rm -rf /" } } },
+      }),
+      state,
+    );
+    expect(editWithCmd.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "edit", name: "edit", target: "b.ts" },
+    ]);
+
+    // 2. shell/bash carrying path ignore path
+    const shellWithPath = a.parseEvent(
+      JSON.stringify({
+        type: "tool_use",
+        sessionID: SID,
+        part: { tool: "shell", state: { input: { command: "echo test", filePath: "c.ts", path: "d.ts" } } },
+      }),
+      state,
+    );
+    expect(shellWithPath.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "shell", name: "shell", command: "echo test" },
+    ]);
+
+    // 3. filePath="" shadows path in read/edit tool
+    const shadowedPath = a.parseEvent(
+      JSON.stringify({
+        type: "tool_use",
+        sessionID: SID,
+        part: { tool: "read", state: { input: { filePath: "", path: "fallback.ts" } } },
+      }),
+      state,
+    );
+    expect(shadowedPath.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "read", name: "read", target: "" },
+    ]);
+
+    // 4. filePath=null falls through to path
+    const nullFilePath = a.parseEvent(
+      JSON.stringify({
+        type: "tool_use",
+        sessionID: SID,
+        part: { tool: "read", state: { input: { filePath: null, path: "fallback.ts" } } },
+      }),
+      state,
+    );
+    expect(nullFilePath.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "read", name: "read", target: "fallback.ts" },
+    ]);
+
+    // 5. Unmapped tool with only target/path and no command remains tool: "other" with no target extracted
+    const unmappedWithPath = a.parseEvent(
+      JSON.stringify({
+        type: "tool_use",
+        sessionID: SID,
+        part: { tool: "custom_analyzer", state: { input: { path: "file.ts", filePath: "file.ts" } } },
+      }),
+      state,
+    );
+    expect(unmappedWithPath.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "other", name: "custom_analyzer" },
+    ]);
+  });
+
+  it("token metrics parsing handles zero values, non-finite numbers, and invalid cache objects", () => {
+    const a = adapter();
+    const s1: ParseState = { lines: 0, unknownEvents: 0 };
+    // Finite zeroes are valid non-negative metrics
+    const zeroMetrics = a.parseEvent(
+      JSON.stringify({
+        type: "step_finish",
+        sessionID: SID,
+        part: {
+          id: "f_zero",
+          reason: "stop",
+          cost: 0,
+          tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        },
+      }),
+      s1,
+    );
+    expect(zeroMetrics.find((e) => e.kind === "usage")).toEqual({
+      kind: "usage",
+      source: "provider_reported",
+      metrics: { input: 0, output: 0, reasoning: 0, cache_read: 0, cache_write: 0, cost_usd: 0 },
+    });
+
+    // Non-finite values (Infinity, NaN) and non-object cache are dropped
+    const s2: ParseState = { lines: 0, unknownEvents: 0 };
+    const invalidMetrics = a.parseEvent(
+      JSON.stringify({
+        type: "step_finish",
+        sessionID: SID,
+        part: {
+          id: "f_inv",
+          reason: "stop",
+          cost: "0.01",
+          tokens: { input: null, output: {}, reasoning: false, cache: "not an object" },
+        },
+      }),
+      s2,
+    );
+    expect(invalidMetrics.some((e) => e.kind === "usage")).toBe(false);
+  });
+
+  it("error event variations: null error, primitive messages, non-string messages and unmapped categories", () => {
+    const a = adapter();
+    // 1. error: null or missing error field counts as unknown event
+    const s1: ParseState = { lines: 0, unknownEvents: 0 };
+    const evNull = a.parseEvent(JSON.stringify({ type: "error", sessionID: SID, error: null }), s1);
+    expect(evNull).toEqual([
+      { kind: "session_bound", nativeSessionId: SID },
+      { kind: "unknown", rawType: "error" },
+    ]);
+    expect(s1.unknownEvents).toBe(1);
+
+    // 2. error with message only and no type
+    const s2: ParseState = { lines: 0, unknownEvents: 0 };
+    const evMsgOnly = a.parseEvent(
+      JSON.stringify({ type: "error", sessionID: SID, error: { message: "connection reset by peer" } }),
+      s2,
+    );
+    expect(evMsgOnly.find((e) => e.kind === "provider_error")).toEqual({
+      kind: "provider_error",
+      category: "unknown",
+      message: "error: connection reset by peer",
+    });
+
+    // 3. error with array payload
+    const s3: ParseState = { lines: 0, unknownEvents: 0 };
+    const evArr = a.parseEvent(JSON.stringify({ type: "error", sessionID: SID, error: ["server", "maintenance"] }), s3);
+    expect(evArr.find((e) => e.kind === "provider_error")).toEqual({
+      kind: "provider_error",
+      category: "unknown",
+      message: '["server","maintenance"]',
+    });
+  });
+
+  it("extractResult joins multiple text messages with newlines and summary takes the last 2000 characters", () => {
+    const a = adapter();
+    const head = "h".repeat(1200);
+    const tail = "t".repeat(1200);
+    const { events } = parse([
+      START,
+      line("text", { id: "t1", text: head }),
+      line("text", { id: "t2", text: tail }),
+      FINISH("stop"),
+    ]);
+    const r = a.extractResult(events, EXIT0);
+    expect(r.ok).toBe(true);
+    expect(r.summary).toHaveLength(2000);
+    const full = `${head}\n${tail}`;
+    expect(r.summary).toBe(full.slice(-2000));
+  });
+
+  it("trailing tool_use after stop vs non-tool unknown event after stop have distinct failure details", () => {
+    const a = adapter();
+    // 1. Trailing tool_use with no tool name parses as unknown with rawType "tool_use" -> detail "tool call after the final stop step"
+    const trailingTool = parse([
+      START,
+      TEXT("ok"),
+      FINISH("stop"),
+      JSON.stringify({ type: "tool_use", sessionID: SID, part: {} }),
+    ]);
+    const rTool = a.extractResult(trailingTool.events, EXIT0);
+    expect(rTool).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the final stop step",
+    });
+
+    // 2. Trailing step_start without part parses as unknown with rawType "step_start" -> detail "1 unreadable event(s) in the stream"
+    const trailingStep = parse([
+      START,
+      TEXT("ok"),
+      FINISH("stop"),
+      JSON.stringify({ type: "step_start", sessionID: SID }),
+    ]);
+    const rStep = a.extractResult(trailingStep.events, EXIT0);
+    expect(rStep).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "1 unreadable event(s) in the stream",
+    });
+  });
+
+  it("supervisor exit outcomes: timeout kinds and empty-stream exit 0", () => {
+    const a = adapter();
+    const baseExit = { exitCode: null, signal: null, expectedExitCodes: [0] };
+    // Idle timeout
+    expect(a.extractResult([], { ...baseExit, outcome: "timeout", timeoutKind: "idle" })).toMatchObject({
+      ok: false,
+      failureCode: "PROCESS_TIMEOUT",
+      failureDetail: "idle timeout",
+    });
+    // Wall-clock timeout
+    expect(a.extractResult([], { ...baseExit, outcome: "timeout", timeoutKind: "wall_clock" })).toMatchObject({
+      ok: false,
+      failureCode: "PROCESS_TIMEOUT",
+      failureDetail: "wall_clock timeout",
+    });
+    // Clean exit 0 with empty event stream ends OUTPUT_PROTOCOL_ERROR with detail "no result event"
+    expect(a.extractResult([], { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] })).toMatchObject(
+      {
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "no result event",
+      },
+    );
+  });
+});
+
 /**
  * T4.55 (FR-ADP-11): the shared conformance suite over synthetic recorded fixtures (`./fixtures/*.jsonl`, in the
  * `--format json` shapes of the 2026-10-14 live check), replayed by `replay.mjs --provider opencode` in place of the
