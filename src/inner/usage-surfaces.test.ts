@@ -7,7 +7,10 @@
  * `get_capacity` call filtered with `{ provider }` are covered here too. The unit tests in `usage.test.ts` and
  * `../capacity/capacity.test.ts` prove the same at the stored rows and the projection; this file proves it at the
  * published tool and CLI output. After #330: `get_run`, `capacity --provider`, and `inner test` with the flag in the
- * on-disk config. Fake adapter and fake inner backend only; no provider CLI, login or external network.
+ * on-disk config. After #399: the Streamable HTTP session pins `get_run` too and a second session opened after the
+ * calls, and a flag naming an unknown provider id is refused at `doctor` and `inner test` before either surface can
+ * name it. Fake adapter and fake inner backend only; no provider CLI, login or external network (the HTTP transport
+ * listens on loopback).
  */
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -84,6 +87,7 @@ let db: Database.Database;
 let ledger: Ledger;
 let lifecycle: RunLifecycle | undefined;
 let httpListener: HttpTransportListener | undefined;
+let httpToken: string | undefined;
 const servers: { mcp: SwitchboardMcpServer; client: Client }[] = [];
 
 const registry = () => new AdapterRegistry().register(new FakeAdapter({ script: "/nonexistent/fake-cli.mjs" }));
@@ -118,6 +122,7 @@ afterEach(async () => {
   }
   await httpListener?.close();
   httpListener = undefined;
+  httpToken = undefined;
   db.close();
   rmSync(root, { recursive: true, force: true });
 });
@@ -215,14 +220,8 @@ async function connect(http = false): Promise<Client> {
       scopes: ["mcp"],
       ttlMs: 60_000,
     });
-    const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${httpListener.address.port}/mcp`), {
-      requestInit: { headers: { authorization: `Bearer ${token}` } },
-    });
-    // The SDK sessionId type needs a cast with exactOptionalPropertyTypes (as in the M13 tests).
-    await client.connect(transport as Transport);
-    await client.listTools();
-    servers.push({ mcp: { close: async () => {} } as SwitchboardMcpServer, client });
-    return client;
+    httpToken = token;
+    return connectHttpSession();
   }
   const mcp = makeServer();
   const [c, s] = InMemoryTransport.createLinkedPair();
@@ -230,6 +229,23 @@ async function connect(http = false): Promise<Client> {
   await client.connect(c);
   await client.listTools();
   servers.push({ mcp, client });
+  return client;
+}
+
+/**
+ * A new Streamable HTTP session against the listener `connect(true)` started: the transport calls `mcpServerFor` once
+ * per session, so this client talks to a fresh `SwitchboardMcpServer` instance over the same lifecycle and ledger.
+ */
+async function connectHttpSession(): Promise<Client> {
+  if (!httpListener || httpToken === undefined) throw new Error("connect(true) first");
+  const client = new Client({ name: "test", version: "0.0.0" });
+  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${httpListener.address.port}/mcp`), {
+    requestInit: { headers: { authorization: `Bearer ${httpToken}` } },
+  });
+  // The SDK sessionId type needs a cast with exactOptionalPropertyTypes (as in the M13 tests).
+  await client.connect(transport as Transport);
+  await client.listTools();
+  servers.push({ mcp: { close: async () => {} } as SwitchboardMcpServer, client });
   return client;
 }
 
@@ -779,6 +795,14 @@ describe("Streamable HTTP capacity isolation (T11.14 residual; FR-INN-15)", () =
         terminal_runs: 1,
         usage_observations: 1,
       });
+      // The run's envelope over the same transport: `get_run` without `include_events` and with it (LLD §3). The
+      // envelope's `usage` object is what a remote primary agent reads, so it is pinned here as it is in memory.
+      const beforeGetRun = await toolText(client, "get_run", { run_id: runId });
+      const [beforeEnvelope, beforeEvents] = splitEvents(
+        await toolText(client, "get_run", { run_id: runId, include_events: {} }),
+      );
+      expect((JSON.parse(beforeGetRun) as { usage: { reported: unknown[] } }).usage.reported).toHaveLength(1);
+      expect(beforeEvents).toEqual([]);
       const providerRows = db.prepare("SELECT * FROM usage_observation WHERE source = 'provider_reported'").all();
       const service = innerAgent(shares);
       const outcomes = [];
@@ -817,6 +841,99 @@ describe("Streamable HTTP capacity isolation (T11.14 residual; FR-INN-15)", () =
       );
       expect(await capacityText(client)).toBe(before[0]);
       expect(await capacityText(client, { provider: PROVIDER })).toBe(before[1]);
+      expect(await toolText(client, "get_run", { run_id: runId })).toBe(beforeGetRun);
+      const [afterEnvelope, afterEvents] = splitEvents(
+        await toolText(client, "get_run", { run_id: runId, include_events: {} }),
+      );
+      expect(afterEnvelope).toBe(beforeEnvelope);
+      expect(afterEvents.map((e) => e.type)).toEqual(["inner_call", "inner_call", "inner_call"]);
+      expect(JSON.stringify(afterEvents)).not.toMatch(/token|usage/u);
+
+      // A second session opened after the calls gets its own server instance from `mcpServerFor`, so the equality
+      // above is not a property of one session's in-memory state: a remote client that connects later reads the
+      // same bytes from the ledger.
+      const later = await connectHttpSession();
+      expect(await capacityText(later)).toBe(before[0]);
+      expect(await capacityText(later, { provider: PROVIDER })).toBe(before[1]);
+      expect(await toolText(later, "get_run", { run_id: runId })).toBe(beforeGetRun);
+      const [laterEnvelope, laterEvents] = splitEvents(
+        await toolText(later, "get_run", { run_id: runId, include_events: {} }),
+      );
+      expect(laterEnvelope).toBe(beforeEnvelope);
+      expect(laterEvents.map((e) => e.type)).toEqual(["inner_call", "inner_call", "inner_call"]);
     });
   }
+});
+
+describe("the flag must name a configured provider: doctor and inner test when it does not (T11.5; FR-INN-15)", () => {
+  it("doctor fails on the config check naming the key, emits no inner_shared_subscription warning; inner test sends nothing and writes no row", async () => {
+    // The warning text and the observation label are both taken from `shares_subscription_with` as written, so a
+    // value that is not a configured provider id must be refused before either surface can name it (a warning about
+    // a provider that does not exist, or a labelled row no estimate could ever belong to). The loader's refusal is a
+    // unit test (`src/config/config.test.ts`); this is the same refusal at the two FR-INN-15 surfaces.
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schema_version: 1,
+        data_dir: dataDir,
+        allowed_roots: [path.join(root, "repos")],
+        mcp_clients: [{ id: "c1", max_trust_profile: "edit-untrusted" }],
+        inner_agent: {
+          enabled: true,
+          backend: {
+            kind: "http",
+            base_url: "http://127.0.0.1:1",
+            model: "cfg-model",
+            shares_subscription_with: "claude-cod",
+          },
+          tasks: { run_title: { enabled: true } },
+        },
+      }),
+    );
+    const backend = createFakeBackend({ script: [{ kind: "text", text: '{"title":"Fix greeting typo"}' }] });
+    const run = async (args: string[]) => {
+      const out: string[] = [];
+      const err: string[] = [];
+      const io: CliIo = {
+        stdout: { write: (s) => out.push(s) },
+        stderr: { write: (s) => err.push(s) },
+        env: {},
+        adapters: registry(),
+        now,
+        innerBackend: backend,
+      };
+      const code = await main([...args, "--config", configPath], io);
+      return { code, out: out.join(""), err: err.join("") };
+    };
+    const refusal = "inner_agent.backend.shares_subscription_with: must name a configured provider id or be null";
+
+    const doctorJson = await run(["doctor", "--json"]);
+    expect(doctorJson.code).toBe(1);
+    const doc = JSON.parse(doctorJson.out) as {
+      ok: boolean;
+      checks: { id: string; status: string; detail: string }[];
+      inner_agent?: unknown;
+    };
+    expect(doc.ok).toBe(false);
+    expect(doc.checks.find((c) => c.id === "config")).toMatchObject({ status: "fail" });
+    expect(doc.checks.find((c) => c.id === "config")?.detail).toContain(refusal);
+    expect(doc.checks.map((c) => c.id)).not.toContain("inner_shared_subscription");
+    expect(doc.inner_agent).toBeUndefined();
+    expect(doctorJson.out).not.toMatch(/claude-cod subscription|Inner agent subscription/u);
+
+    const doctorText = await run(["doctor"]);
+    expect(doctorText.code).toBe(1);
+    // The loader's message spans two lines: the heading, then the offending key with its JSON path.
+    expect(doctorText.out).toMatch(
+      /^\[FAIL\] Config: Invalid config:\n\s+\$\.inner_agent\.backend\.shares_subscription_with: must name a configured provider id or be null$/mu,
+    );
+    expect(doctorText.out).not.toMatch(/\[warn\] Inner agent subscription/u);
+
+    const test = await run(["inner", "test", "run_title", "--json"]);
+    expect(test.code).toBe(1);
+    expect(test.out + test.err).toContain(refusal);
+    expect(backend.requests).toHaveLength(0);
+    expect(ledger.listInnerCalls()).toEqual([]);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM usage_observation").get()).toEqual({ n: 0 });
+  });
 });

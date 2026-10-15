@@ -1875,6 +1875,22 @@ ran byte-identical (its clock aside) even when it is the label, and names the in
 to its own table" test in `src/inner/usage-surfaces.test.ts` now also holds the human `runs show` text byte-identical
 around the planted row and checks its usage section names nothing about the inner agent. T11.5 stays **Done on fakes**;
 the live-backend residual (T11.13) is the only one left.
+*2026-10-15 post-[PR #399](https://github.com/zemdregon/switchboard/pull/399) cross-check (Delegated; fakes and a
+loopback Streamable HTTP listener only, no production code changed, `src/inner/usage-surfaces.test.ts` only):* the T11.5
+row, FR-INN-15, ADR-0007 and the three usage test files were re-read on `main`. The doctor warning text (whole check in
+JSON and the `[warn]` line, config-derived), the `shares_subscription_with` label (the run's provider, a different
+provider, a spare that never ran, `run_id` null) and the capacity pins (`get_capacity`, `capacity`, `doctor.capacity`,
+the estimator and the collector's `source` filter) were already covered; two residuals were not. (1) *Streamable HTTP*:
+the session that made the calls pinned `get_capacity` only; it now also holds `get_run` byte-identical (without
+`include_events`, and the envelope with it around exactly three `inner_call` events carrying no token figure), and a
+second HTTP session opened after the calls, which gets its own server instance from `mcpServerFor`, reads the same
+`get_capacity` (filtered and unfiltered) and `get_run` bytes, so the equality is a property of the ledger, not of one
+session's memory. (2) *The flag must name a configured provider*: with `shares_subscription_with` set to a string that
+is not a provider id, `doctor` (JSON and text) fails on the `config` check with the loader's message naming the key,
+emits no `inner_shared_subscription` check and no inner-agent section, and `inner test` exits 1 with the same message,
+sends nothing and writes neither an `inner_call` row nor an observation, so neither the warning text nor a labelled row
+can ever name a provider no estimate belongs to. T11.5 stays **Done on fakes**; the live-backend residual (T11.13) is
+the only one left.
 
 **T11.8 status (2026-10-13; Delegated): Done on fakes. No live inner backend, provider CLI, pull-request API or network
 host was used.** "Done when", clause by clause: *the draft passes the sanitiser*: a hostile fake backend returning a
