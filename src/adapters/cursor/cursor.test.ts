@@ -24,6 +24,7 @@ import { evaluateVersionGate } from "../manifest/index.js";
 import { providerEntry } from "../providers.js";
 import { AdapterRegistry } from "../registry.js";
 import { createProbeRunner } from "../run.js";
+import { guardEvent } from "../tool-guard.js";
 import type {
   CompileRequest,
   ExitInfo,
@@ -759,6 +760,40 @@ describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
     // An unknown line type that could be a rate-limit event is counted, never a success on its own.
     const unknownOnly = parse([INIT(), line({ type: "rate_limit", retry_after_ms: 1000 })]);
     expect(unknownOnly.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", unknownEventCount: 1 });
+  });
+
+  // ADR-0039: a guard verdict ends the run in every run, bypass included, and the lifecycle trusts `result.ok`, so a
+  // flagged tool_call must not be called clean even with a `success` result at exit 0.
+  it("a guard-flagged Git write with a success result ends PERMISSION_BLOCKED (ADR-0039)", () => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const ctx = { cwd: "/w", bypass: true };
+    const events = [
+      INIT(),
+      TOOL("started", { shellToolCall: { args: { command: "git push origin main", workingDirectory: "/w" } } }),
+      ASSIST("pushed"),
+      RESULT(),
+    ]
+      .flatMap((l) => a.parseEvent(l, state))
+      .map((e) => guardEvent(e, ctx));
+    expect(events).toContainEqual(expect.objectContaining({ kind: "tool_call", violation: expect.anything() }));
+    const r = a.extractResult(events, EXIT0);
+    expect(r).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    expect(r.failureDetail).toMatch(/^git write attempted/);
+  });
+
+  it("any guard verdict on a tool_call makes a success result not clean (a provider_state verdict ends SANDBOX_VIOLATION)", () => {
+    const { events } = parse([INIT(), ASSIST("ok"), RESULT()]);
+    const flagged: NormalizedEvent = {
+      kind: "tool_call",
+      tool: "shell",
+      name: "shellToolCall",
+      violation: { kind: "provider_state", reason: "synthetic" },
+    };
+    expect(adapter().extractResult([flagged, ...events], EXIT0)).toMatchObject({
+      ok: false,
+      failureCode: "SANDBOX_VIOLATION",
+    });
   });
 
   it("non-object roots and lines after a malformed result never bind or succeed", () => {
