@@ -2229,6 +2229,86 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
     expect(state.unknownEvents).toBe(0);
   });
 });
+
+describe("grok parser to resume round trip (T4.23 residual; SYNTHETIC lines, parser unchanged)", () => {
+  const EXIT_OK = { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] } as const;
+  const endLine = (sessionId: string) =>
+    JSON.stringify({ type: "end", stopReason: "end_turn", sessionId, usage: { input_tokens: 1 } });
+  const approved = { ...privilegedProfile(BYPASS_SCOPE), bypassApproved: true };
+  const req = request({ bypassApproved: true });
+
+  it("the parser and resumeArgs agree on the session id boundary: 256 characters bind and resume, 257 do neither", () => {
+    // One SESSION_ID_RE guards both sides; a drift would bind an id resume refuses (a dead binding) or resume one the
+    // parser never binds. Mutating either side's length limit turns this red.
+    for (const [id, safe] of [
+      ["a".repeat(256), true],
+      ["a".repeat(257), false],
+      ["0", true],
+      ["-0", false],
+      [".a", false],
+    ] as const) {
+      const a = adapter();
+      const state: ParseState = { lines: 0, unknownEvents: 0 };
+      const events = a.parseEvent(endLine(id), state);
+      const r = a.extractResult(events, EXIT_OK);
+      const resumed = a.resumeArgs({ provider: "grok", nativeSessionId: id }, req, approved);
+      const label = `${id.slice(0, 8)} (${id.length})`;
+      if (safe) {
+        expect(state.nativeSessionId, label).toBe(id);
+        expect(r, label).toMatchObject({ ok: true, nativeSessionId: id });
+        expect(isIneligible(resumed), label).toBe(false);
+        if (!isIneligible(resumed)) expect(resumed.argv.slice(-2), label).toEqual(["-r", id]);
+      } else {
+        expect(state.nativeSessionId, label).toBeUndefined();
+        expect(r, label).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+        expect(r.nativeSessionId, label).toBeUndefined();
+        expect(resumed, label).toMatchObject({
+          ineligible: true,
+          reason: "CAPABILITY_MISSING",
+          detail: "native session id is not a safe single argument",
+        });
+      }
+    }
+  });
+
+  it("the id a run binds is the id the next resume passes, and a resumed run that rebinds it stays clean", () => {
+    const a = adapter();
+    const first: ParseState = { lines: 0, unknownEvents: 0 };
+    const r1 = a.extractResult(a.parseEvent(endLine(DEFAULT_SESSION_ID), first), EXIT_OK);
+    expect(r1).toMatchObject({ ok: true, nativeSessionId: DEFAULT_SESSION_ID });
+    if (!r1.ok || r1.nativeSessionId === undefined) return;
+    const resumed = a.resumeArgs({ provider: "grok", nativeSessionId: r1.nativeSessionId }, req, approved);
+    expect(isIneligible(resumed)).toBe(false);
+    if (isIneligible(resumed)) return;
+    expect(resumed.argv.slice(-2)).toEqual(["-r", DEFAULT_SESSION_ID]);
+    // [LIVE] 6a: the resumed run's `end` carries the same id, so it binds once on a fresh state and succeeds.
+    const second: ParseState = { lines: 0, unknownEvents: 0 };
+    const r2 = a.extractResult(a.parseEvent(endLine(DEFAULT_SESSION_ID), second), EXIT_OK);
+    expect(r2).toMatchObject({ ok: true, nativeSessionId: DEFAULT_SESSION_ID });
+  });
+
+  it("privileged without a scope binding is refused by compile and resumeArgs with the same reason", () => {
+    const { privilegedScope: _dropped, ...unscoped } = approved;
+    const profile: ResolvedProfile = unscoped;
+    const expected = {
+      ineligible: true,
+      reason: "PROFILE_UNSUPPORTED",
+      detail: "privileged without an approved scope binding (LLD §3.1)",
+    };
+    const a = adapter();
+    expect(a.compile(req, profile)).toEqual(expected);
+    expect(a.resumeArgs({ provider: "grok", nativeSessionId: DEFAULT_SESSION_ID }, req, profile)).toEqual(expected);
+    // The provider and id checks still come first: a foreign or unsafe binding names its own reason.
+    expect(a.resumeArgs({ provider: "codex", nativeSessionId: DEFAULT_SESSION_ID }, req, profile)).toMatchObject({
+      reason: "CAPABILITY_MISSING",
+      detail: "binding is for codex",
+    });
+    expect(a.resumeArgs({ provider: "grok", nativeSessionId: "--yolo" }, req, profile)).toMatchObject({
+      reason: "CAPABILITY_MISSING",
+      detail: "native session id is not a safe single argument",
+    });
+  });
+});
 describe("grok auth preflight (T4.24, Q-10; SYNTHETIC outputs in the shapes of the 2026-10-14 live check)", () => {
   const out =
     (stdout: string, exitCode: number | null = 0, extra: Partial<ProbeOutput> = {}): ProbeRunner =>
