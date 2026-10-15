@@ -55,9 +55,11 @@ Pre-release. The package is private and is not published to any registry; you bu
   verification-summary, run-title and a live backend are not. T11.5 usage-surface pins merged
   [#362](https://github.com/zemdregon/switchboard/pull/362) (suspended-task and project-off denials, re-ask deadline
   counts, shared-subscription label routing, whole `inner_shared_subscription` doctor checks, `enabled: false` with the
-  flag set, capacity collector `source` exclusion) and [#396](https://github.com/zemdregon/switchboard/pull/396)
+  flag set, capacity collector `source` exclusion), [#396](https://github.com/zemdregon/switchboard/pull/396)
   (usage accounting at the quota-failover routing call site, the one `serve`-path classification recorded under a
-  run). See [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
+  run) and [#407](https://github.com/zemdregon/switchboard/pull/407) (`get_run` byte-identical over Streamable HTTP
+  and from a second session; a `shares_subscription_with` value that is no provider config id refused at `doctor`
+  and `inner test`). See [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
 - **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.7 are done on fakes: the spike, `rag`
   configuration and per-project store, the scanner through chunker, the embedding port (fake and `http` backends
   behind the locality gates), incremental background indexing in `serve`, `switchboard index status|rebuild|clear`
@@ -258,7 +260,7 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `routing` | no | `{ "weights"?: { "success", "latency", "capacity", "security", "handoff", "cost" }, "affinity"?: { "enabled", "low_water_mark", "min_confidence", "idle_ttl" } }`. Each weight 0 to 100, default 1; all 0 means configured order. `affinity.enabled` defaults to `true`; `low_water_mark` and `min_confidence` (0 to 1) are set together or both left `null` (the default, which leaves the estimate trigger off); `idle_ttl` accepts only `null` (no expiry). Unknown keys stop startup. See [Routing and affinity](#routing-and-affinity) and LLD section 17.1. |
 | `timeouts.preflight_ttl_seconds` | no | Integer 0 to 3600. How long a successful adapter preflight is cached (default 60); 0 disables the cache. |
 | `git.sanitize_patterns` | no | Up to 16 extra regular-expression sources (200 characters each, restricted subset in `src/git/safe-pattern.ts`). A commit-message line that matches one is removed, in addition to the built-in attribution rules. |
-| `inner_agent` | no | The optional inner agent (ADR-0016): a cheap or self-hosted model for small tasks. Off unless you write the section and set `enabled: true`; there is no default backend, model or task, and no key, token or header field (a hosted service goes through a gateway you run). Shape: `{ "enabled", "backend": { "kind": "http", "base_url", "model", "timeout_ms"?, "max_concurrency"?, "allow_remote"?, "shares_subscription_with"? }, "tasks": { "<task>": { "enabled", ... } }, "breaker"?, "suspension"? }`; `base_url` may not carry userinfo or a query. Full shape: LLD section 13.1. Inspect it with `doctor` and `inner status`. |
+| `inner_agent` | no | The optional inner agent (ADR-0016): a cheap or self-hosted model for small tasks. Off unless you write the section and set `enabled: true`; there is no default backend, model or task, and no key, token or header field (a hosted service goes through a gateway you run). Shape: `{ "enabled", "backend": { "kind": "http", "base_url", "model", "timeout_ms"?, "max_concurrency"?, "allow_remote"?, "shares_subscription_with"? }, "tasks": { "<task>": { "enabled", ... } }, "breaker"?, "suspension"? }`; `base_url` may not carry userinfo or a query, and `shares_subscription_with` must be one of the provider config ids listed below this table (`claude-code`, `codex`, ...) or `null`: any other string stops startup, so `doctor` fails its config check naming the key and `inner test` exits 1 before sending anything. Full shape: LLD section 13.1. Inspect it with `doctor` and `inner status`. |
 | `rag` | no | The optional retrieval index (ADR-0031): off unless you configure an `embedding` backend. No credential fields; `mode` defaults to `auto` (on only when a backend exists and the project allows). Projects and contexts may narrow caps and exclusions; `use_global` and `contribute_to_global` default to false and cannot be set on dynamic projects. Full shape: [LLD §14.1](docs/design/LLD.md#141-configuration-shape) and [Retrieval index](#retrieval-index-milestone-12). |
 | `profiles.<name>` | no | Overrides for `inspect-untrusted`, `edit-untrusted`, `test-sandboxed` or `trusted-development`: `file_access`, `shell`, `shell_allowlist`, `network`, `network_allowlist`, `repo_config`. They may tighten or loosen a default; `doctor` lists them and every run records them. `privileged` has none. See the `edit-untrusted` limit under [Trust profiles](#trust-profiles). |
 
@@ -301,9 +303,13 @@ fallback rates and whether it is suspended. Its findings are at most `[warn]` an
 contacts the backend only for that canary, and never a `remote` backend unless `allow_remote` is true. When the backend
 declares `shares_subscription_with`, the check list also carries a `[warn]` (`inner_shared_subscription`): the inner
 agent's calls consume that provider's capacity, and each call records one usage observation labelled `inner_agent` —
-never as provider usage, and never in `capacity_score`. Inner calls leave the capacity projection unchanged;
-when the inner-agent section is present, its call counts change, so the whole `doctor --json` document does not stay
-byte-identical. With no `inner_agent` section the output is unchanged.
+never as provider usage, and never in `capacity_score`. That warning and that label are only ever a known provider
+config id: with `shares_subscription_with` set to any other string, `doctor` (text and `--json`) exits 1 on its
+`config` check with the loader's message naming the key, carries no `inner_shared_subscription` check and no inner-agent
+block, and `inner test` exits 1 with the same message, sends nothing and writes neither an `inner_call` row nor an
+observation (`src/inner/usage-surfaces.test.ts`, [#407](https://github.com/zemdregon/switchboard/pull/407)). Inner
+calls leave the capacity projection unchanged; when the inner-agent section is present, its call counts change, so the
+whole `doctor --json` document does not stay byte-identical. With no `inner_agent` section the output is unchanged.
 
 When `rag.embedding` is configured, `doctor` adds a "Retrieval index" block (and a `retrieval` key in `--json`): the
 backend kind, model and locality; whether the privacy gate allows it; a one-line `probe` of the embedding endpoint
@@ -713,8 +719,12 @@ request also records labelled usage with no run link. Merged fake-backend eviden
 authenticated Streamable HTTP),
 `switchboard capacity --json` and the `doctor --json` capacity object are byte-identical before and after those
 contracts, `inner test` and accepted, rejected and unavailable calls, with and without a shared subscription
-(`src/inner/usage-surfaces.test.ts`); and the estimator reads `provider_reported` rows only, so the projection is
-unchanged whether the shared subscription names the provider under test, another provider or none
+(`src/inner/usage-surfaces.test.ts`); over the same Streamable HTTP session `get_run` is byte-identical too (without
+`include_events`, and the envelope with it around exactly three `inner_call` events carrying no token figure), and a
+second HTTP session opened after the calls, which gets its own server instance, reads the same `get_capacity` and
+`get_run` bytes, so the equality is a property of the ledger rather than of one session's memory (merged
+[#407](https://github.com/zemdregon/switchboard/pull/407)); and the estimator reads `provider_reported` rows only, so
+the projection is unchanged whether the shared subscription names the provider under test, another provider or none
 (`src/capacity/capacity.test.ts`). Merged [#362](https://github.com/zemdregon/switchboard/pull/362) additionally pins
 T11.5 surfaces on fakes: a suspended task (T11.6) and a project set to `off` deny without a request and write no
 observation; a re-ask that hits the deadline keeps the first attempt's token counts; the shared-subscription label
