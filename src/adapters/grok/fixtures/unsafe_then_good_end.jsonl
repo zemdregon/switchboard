@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.23 residual, fourth pass). A first end line with an unsafe sessionId (never bound) and a second end line with a safe one: the run ends OUTPUT_PROTOCOL_ERROR, but the second, failing end supplies the only bound session id (a pinned gap).","exit":0}}
+{"type":"text","data":"Finished."}
+{"type":"end","stopReason":"end_turn","sessionId":"--unsafe","requestId":"req_synthetic_1","usage":{"input_tokens":11,"output_tokens":2,"total_tokens":13},"num_turns":1}
+{"type":"end","stopReason":"end_turn","sessionId":"00000000-0000-4000-8000-000000000001","requestId":"req_synthetic_1","usage":{"input_tokens":500,"output_tokens":500,"total_tokens":1000},"num_turns":1}

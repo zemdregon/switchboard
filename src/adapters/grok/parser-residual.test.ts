@@ -9,6 +9,8 @@
  * Third pass: stream order across `end` lines (an unrecognised `end`, a changed id, a failed first `end`, late text),
  * usage deduplication (including the gap that a counter-less first `end` drops a second `end`'s total), and resume
  * parity (more id shapes, refusal order with a missing binary, launcher and timeouts, no fork check: a pinned gap).
+ * Fourth pass: a failing second `end` that binds the only id (pinned gap), a resumed run reporting another id replayed
+ * end to end (pinned gap), `sessionId` on non-`end` lines, a late model, non-object and zero usage, bypass-approval parity.
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,8 +19,8 @@ import { afterAll, describe, expect, it } from "vitest";
 import { runConformanceCase } from "../conformance.js";
 import { guardEvent } from "../tool-guard.js";
 import type { ParseState } from "../types.js";
-import { GrokAdapter } from "./adapter.js";
-import { DEFAULT_SESSION_ID, PRIVILEGED_BYPASS_PROFILE, replayAdapter } from "./fixtures/cases.js";
+import { GROK_BYPASS_NOT_APPROVED, GrokAdapter } from "./adapter.js";
+import { DEFAULT_SESSION_ID, PRIVILEGED_BYPASS_PROFILE, RESUMED_SESSION_ID, replayAdapter } from "./fixtures/cases.js";
 
 const dirs: string[] = [];
 const makeCwd = () => {
@@ -448,5 +450,146 @@ describe("grok parser residuals, third pass: stream order, usage dedup and resum
     const state: ParseState = { lines: 0, unknownEvents: 0 };
     const events = a.parseEvent(line(END), state);
     expect(a.extractResult(events, EXIT_OK)).toMatchObject({ ok: true, nativeSessionId: SID });
+  });
+});
+
+describe("grok parser residuals, fourth pass: session-id gaps, usage shapes and resume parity (T4.23, synthetic lines; parser unchanged)", () => {
+  const req = {
+    runId: "run_grok_t423_residual",
+    objective: "synthetic grok objective",
+    constraints: [],
+    workspace: { cwd: "/w", writable: true },
+    bypassApproved: true,
+  };
+  const bound = (events: readonly { kind: string }[]) => events.filter((e) => e.kind === "session_bound");
+
+  it("pins the gap: a first `end` that binds nothing leaves the slot open, so a second, failing `end` binds the only id", () => {
+    for (const first of ["--unsafe", "", 7, undefined]) {
+      const label = JSON.stringify(first) ?? "undefined";
+      const { events, state } = parse([
+        line({ ...END, sessionId: first }),
+        line({ ...END, usage: { input_tokens: 500 } }),
+      ]);
+      // The first `end` takes the first-end slot (its usage is the run total); the second is a protocol anomaly whose
+      // id still binds, because #bind only refuses a change from an id already bound.
+      expect(bound(events), label).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+      expect(
+        events.filter((e) => e.kind === "usage"),
+        label,
+      ).toEqual([{ kind: "usage", source: "provider_reported", metrics: { input_tokens: 10 } }]);
+      expect(state.nativeSessionId, label).toBe(SID);
+      expect(adapter().extractResult(events, EXIT_OK), label).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        nativeSessionId: SID,
+      });
+    }
+  });
+
+  it("fixture unsafe_then_good_end replays to OUTPUT_PROTOCOL_ERROR with the second end's id bound (gap)", async () => {
+    const report = await runConformanceCase({
+      kind: "task_failure",
+      adapter: replayAdapter("unsafe_then_good_end"),
+      request: { ...req, workspace: { cwd: makeCwd(), writable: true } },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ unknownEventCount: 0, summary: "Finished." });
+  });
+
+  it("pins the gap end to end: fixture resume_other_id passes `-r <requested>`, binds the reported id and succeeds", async () => {
+    const a = replayAdapter("resume_other_id");
+    const binding = { provider: "grok" as const, nativeSessionId: RESUMED_SESSION_ID };
+    const request = { ...req, workspace: { cwd: makeCwd(), writable: true } };
+    const inv = a.resumeArgs(binding, request, PRIVILEGED_BYPASS_PROFILE);
+    if ("ineligible" in inv) throw new Error(inv.detail);
+    expect(inv.argv.slice(-2)).toEqual(["-r", RESUMED_SESSION_ID]);
+    const report = await runConformanceCase({
+      kind: "resume",
+      adapter: a,
+      request,
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      binding,
+      expect: { ok: true, nativeSessionId: RESUMED_SESSION_ID },
+    });
+    // Only the conformance harness compares the ids; the adapter result is a success on the other session.
+    expect(report.checks.filter((k) => !k.ok).map((k) => k.name)).toEqual(["native session id"]);
+    expect(report.result).toMatchObject({ ok: true, nativeSessionId: "00000000-0000-4000-8000-000000000099" });
+  });
+
+  it("a sessionId on any line other than `end` never binds or conflicts, before or after the `end` line", () => {
+    const decoys = ["error", "text", "tool_call", "tool_call_update", "thought", "usage", "available_commands"].map(
+      (type) => line({ type, sessionId: "decoy-session", data: "d", message: "m", input: { command: "ls" } }),
+    );
+    const none = parse([...decoys, line({ ...END, sessionId: undefined })]);
+    expect(bound(none.events)).toEqual([]);
+    expect(none.state.nativeSessionId).toBeUndefined();
+
+    const { events, state } = parse([...decoys, line(END), ...decoys]);
+    expect(bound(events)).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+    expect(state.nativeSessionId).toBe(SID);
+    // The decoy ids never raise "session id changed mid-run"; only the error line is a provider error.
+    expect(events.filter((e) => e.kind === "provider_error")).toEqual([
+      { kind: "provider_error", category: "unknown", message: "m" },
+      { kind: "provider_error", category: "unknown", message: "m" },
+    ]);
+  });
+
+  it("the first binding is final: a model on a later `end` never amends it, unless the first `end` bound nothing", () => {
+    const later = parse([line(END), line({ ...END, model: "grok-late", backing_provider: "late" })]).events;
+    expect(bound(later)).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+
+    const lost = parse([
+      line({ ...END, sessionId: "-x", model: "grok-first" }),
+      line({ ...END, model: "grok-second", backingProvider: "backing-second" }),
+    ]).events;
+    expect(bound(lost)).toEqual([
+      { kind: "session_bound", nativeSessionId: SID, model: "grok-second", backingProvider: "backing-second" },
+    ]);
+  });
+
+  it("a non-object usage records nothing even with num_turns; zero counters are counts and are recorded", () => {
+    for (const usage of [[], null, "10", 10, [{ input_tokens: 5 }]]) {
+      const { events } = parse([line({ ...END, usage, num_turns: 2 })]);
+      expect(
+        events.filter((e) => e.kind === "usage"),
+        JSON.stringify(usage),
+      ).toEqual([]);
+      expect(adapter().extractResult(events, EXIT_OK), JSON.stringify(usage)).toMatchObject({ ok: true });
+    }
+    const zero = parse([line({ ...END, usage: { input_tokens: 0, output_tokens: 0 }, num_turns: 0 })]).events;
+    expect(zero.filter((e) => e.kind === "usage")).toEqual([
+      { kind: "usage", source: "provider_reported", metrics: { input_tokens: 0, output_tokens: 0, num_turns: 0 } },
+    ]);
+  });
+
+  it("resume and compile agree on where the bypass approval comes from: profile, request, both or neither", () => {
+    const a = adapter();
+    const binding = { provider: "grok" as const, nativeSessionId: SID };
+    for (const [onProfile, onRequest] of [
+      [true, true],
+      [true, false],
+      [false, true],
+      [false, false],
+    ] as const) {
+      const profile = { ...PRIVILEGED_BYPASS_PROFILE, bypassApproved: onProfile };
+      const request = { ...req, bypassApproved: onRequest };
+      const first = a.compile(request, profile);
+      const resumed = a.resumeArgs(binding, request, profile);
+      const label = `profile=${onProfile} request=${onRequest}`;
+      if ("ineligible" in first) {
+        expect(onProfile || onRequest, label).toBe(false);
+        expect(first, label).toEqual({
+          ineligible: true,
+          reason: "PROFILE_UNSUPPORTED",
+          detail: GROK_BYPASS_NOT_APPROVED,
+        });
+        expect(resumed, label).toEqual(first);
+      } else {
+        expect(onProfile || onRequest, label).toBe(true);
+        expect(resumed, label).toEqual({ ...first, argv: [...first.argv, "-r", SID] });
+      }
+    }
   });
 });
