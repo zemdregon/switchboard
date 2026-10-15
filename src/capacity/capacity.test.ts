@@ -11,6 +11,7 @@ import {
   type CapacityProviderInfo,
   capacityJson,
   capacityProjection,
+  collectCapacityInputs,
   estimateCapacity,
   REMAINING_KEYS,
   RESTART_MARKER,
@@ -283,7 +284,7 @@ describe("capacity projection over the ledger (T6.2, LLD §16.2 and §16.3)", ()
     expect(capacityJson(project())).toBe(capacityJson(project()));
   });
 
-  it("inner-agent usage changes nothing, even when it names the provider (BR-41, FR-INN-15; closes the T11.5 clause)", () => {
+  it("inner-agent calls change nothing, with or without shared subscription (BR-41, FR-INN-15; closes the T11.5 clause)", () => {
     const r = run("fake", "SUCCEEDED");
     ledger.insertUsageObservation({
       runId: r,
@@ -294,6 +295,37 @@ describe("capacity projection over the ledger (T6.2, LLD §16.2 and §16.3)", ()
     });
     const before = capacityJson(project());
     expect(JSON.parse(before).providers[0].window.usage_observations).toBe(1);
+
+    // 1. Without shared subscription: recorded in inner_call only, usage_observation untouched.
+    for (let i = 0; i < 3; i++) {
+      ledger.recordInnerCall({
+        task: "run_title",
+        backend_kind: "http",
+        model_id: "m",
+        locality: "local",
+        template_version: "1",
+        outcome: "accepted",
+        reason: null,
+        attempts: 1,
+        latency_ms: 5,
+        tokens_in: 100,
+        tokens_out: 10,
+        input_bytes: 10,
+        output_bytes: 5,
+        input_sha256: "0".repeat(64),
+        run_id: i === 0 ? r : null,
+        meta_session_id: null,
+      });
+    }
+    const innerUnshared = db
+      .prepare("SELECT COUNT(*) AS n FROM usage_observation WHERE source = 'inner_agent'")
+      .get() as {
+      n: number;
+    };
+    expect(innerUnshared.n).toBe(0);
+    expect(capacityJson(project())).toBe(before);
+
+    // 2. With shared subscription naming the provider: labelled observations written, capacity remains byte-identical.
     for (let i = 0; i < 3; i++) {
       ledger.recordInnerCall(
         {
@@ -311,16 +343,85 @@ describe("capacity projection over the ledger (T6.2, LLD §16.2 and §16.3)", ()
           input_bytes: 10,
           output_bytes: 5,
           input_sha256: "0".repeat(64),
-          run_id: null,
+          run_id: i === 0 ? r : null,
           meta_session_id: null,
         },
         { sharedSubscriptionWith: "fake" },
       );
     }
-    const inner = db.prepare("SELECT COUNT(*) AS n FROM usage_observation WHERE source = 'inner_agent'").get() as {
+    const innerShared = db
+      .prepare("SELECT COUNT(*) AS n FROM usage_observation WHERE source = 'inner_agent'")
+      .get() as {
       n: number;
     };
-    expect(inner.n).toBe(3);
+    expect(innerShared.n).toBe(3);
     expect(capacityJson(project())).toBe(before);
+
+    // 3. With shared subscription naming another provider: neither provider's capacity changes.
+    ledger.recordInnerCall(
+      {
+        task: "run_title",
+        backend_kind: "http",
+        model_id: "m",
+        locality: "local",
+        template_version: "1",
+        outcome: "accepted",
+        reason: null,
+        attempts: 1,
+        latency_ms: 5,
+        tokens_in: 50,
+        tokens_out: 5,
+        input_bytes: 10,
+        output_bytes: 5,
+        input_sha256: "0".repeat(64),
+        run_id: null,
+        meta_session_id: null,
+      },
+      { sharedSubscriptionWith: "fake-b" },
+    );
+    expect(capacityJson(project())).toBe(before);
+  });
+
+  it("collectCapacityInputs ignores inner_agent and controller_estimated observations (BR-41, FR-INN-15)", () => {
+    const r = run("fake", "SUCCEEDED");
+    ledger.insertUsageObservation({
+      runId: r,
+      provider: "fake",
+      harness: "fake",
+      source: "provider_reported",
+      metrics: { "usage.input_tokens": 100 },
+    });
+    db.prepare(
+      `INSERT INTO usage_observation (id, run_id, provider, harness, backing_provider, model, source, metrics_json, observed_at)
+       VALUES (?, ?, 'fake', 'fake', NULL, NULL, 'controller_estimated', ?, ?)`,
+    ).run("use-est", r, JSON.stringify({ "usage.input_tokens": 500 }), NOW.toISOString());
+    ledger.recordInnerCall(
+      {
+        task: "run_title",
+        backend_kind: "http",
+        model_id: "m",
+        locality: "local",
+        template_version: "1",
+        outcome: "accepted",
+        reason: null,
+        attempts: 1,
+        latency_ms: 5,
+        tokens_in: 250,
+        tokens_out: 25,
+        input_bytes: 10,
+        output_bytes: 5,
+        input_sha256: "0".repeat(64),
+        run_id: r,
+        meta_session_id: null,
+      },
+      { sharedSubscriptionWith: "fake" },
+    );
+    const inputs = collectCapacityInputs(ledger, fake, SETTINGS.windowSeconds, NOW);
+    expect(inputs.usage).toEqual([
+      {
+        metrics: { "usage.input_tokens": 100 },
+        observedAt: "2026-10-14T12:00:00.000Z",
+      },
+    ]);
   });
 });
