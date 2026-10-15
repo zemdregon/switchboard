@@ -69,7 +69,11 @@ export function replayAdapter(fixture: string, o: ReplayOptions = {}): Antigravi
  * `makeCwd` returns a fresh empty directory per case. Covers every FR-ADP-11 kind plus timeout and partial_mutation,
  * and the other recorded fail-at-exit-0-or-1 shapes: a soft-denied tool (C7, PERMISSION_BLOCKED), an invalid model
  * envelope at exit 1 (C10, MODEL_UNAVAILABLE), a slash-command envelope with no turn (C6, TOOL_FAILURE) and a write
- * that ran before a soft-denied command (C18 run 2, PERMISSION_BLOCKED with the write visible).
+ * that ran before a soft-denied command (C18 run 2, PERMISSION_BLOCKED with the write visible). Also synthetic
+ * negatives that need no capture: the `/credits` envelope (C6, TOOL_FAILURE), a stream with no `result`, a second
+ * `result` after a C10 one and a `result` for another conversation (each OUTPUT_PROTOCOL_ERROR with the first id kept),
+ * a `SUCCESS` envelope at exit 1 (TOOL_FAILURE with the write visible) and an unrecorded event kind in a success (still
+ * `ok`, counted as unknown).
  */
 export function antigravityConformanceCases(makeCwd: () => string): ConformanceCase[] {
   const request = (): CompileRequest => ({
@@ -87,6 +91,13 @@ export function antigravityConformanceCases(makeCwd: () => string): ConformanceC
       adapter: replayAdapter("success_edit"),
       request: request(),
       expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID, mutatedPath: "hello.txt" },
+    },
+    {
+      ...base,
+      kind: "success",
+      adapter: replayAdapter("unknown_event"),
+      request: request(),
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
     },
     {
       ...base,
@@ -118,6 +129,13 @@ export function antigravityConformanceCases(makeCwd: () => string): ConformanceC
     },
     {
       ...base,
+      kind: "task_failure",
+      adapter: replayAdapter("credits_command"),
+      request: request(),
+      expect: { ok: false, failureCode: "TOOL_FAILURE" },
+    },
+    {
+      ...base,
       kind: "auth_missing",
       adapter: replayAdapter("auth_missing"),
       request: request(),
@@ -129,6 +147,27 @@ export function antigravityConformanceCases(makeCwd: () => string): ConformanceC
       adapter: replayAdapter("malformed_output"),
       request: request(),
       expect: { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" },
+    },
+    {
+      ...base,
+      kind: "malformed_output",
+      adapter: replayAdapter("no_result"),
+      request: request(),
+      expect: { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", nativeSessionId: DEFAULT_SESSION_ID },
+    },
+    {
+      ...base,
+      kind: "malformed_output",
+      adapter: replayAdapter("two_results"),
+      request: request(),
+      expect: { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", nativeSessionId: DEFAULT_SESSION_ID },
+    },
+    {
+      ...base,
+      kind: "malformed_output",
+      adapter: replayAdapter("conversation_changed"),
+      request: request(),
+      expect: { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", nativeSessionId: DEFAULT_SESSION_ID },
     },
     {
       ...base,
@@ -170,6 +209,13 @@ export function antigravityConformanceCases(makeCwd: () => string): ConformanceC
         nativeSessionId: DEFAULT_SESSION_ID,
         mutatedPath: "b.txt",
       },
+    },
+    {
+      ...base,
+      kind: "partial_mutation",
+      adapter: replayAdapter("success_edit", { exitCode: 1 }),
+      request: request(),
+      expect: { ok: false, failureCode: "TOOL_FAILURE", nativeSessionId: DEFAULT_SESSION_ID, mutatedPath: "hello.txt" },
     },
   ];
 }

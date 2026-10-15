@@ -42,6 +42,7 @@ import {
   ANTIGRAVITY_RUNNABLE_KINDS,
   antigravityConformanceCases,
   DEFAULT_SESSION_ID,
+  fixturePath,
   PRIVILEGED_BYPASS_PROFILE,
   RESUMED_SESSION_ID,
   replayAdapter,
@@ -1041,6 +1042,53 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     expect(report.checks.filter((k) => !k.ok)).toEqual([]);
     expect(report.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
     expect(readFileSync(join(c.request.workspace.cwd, "b.txt"), "utf8")).toContain("synthetic");
+  });
+
+  /** The one case that replays `fixture` (several cases share a kind and an expectation). */
+  const caseFor = (fixture: string): ConformanceCase => {
+    const want = fixturePath(fixture);
+    const c = antigravityConformanceCases(makeCwd).find((x) => {
+      const inv = x.adapter.compile(x.request, x.profile);
+      return !("ineligible" in inv) && inv.argv.includes(want);
+    });
+    if (!c) throw new Error(`missing ${fixture} case`);
+    return c;
+  };
+
+  it("a /credits SUCCESS envelope with no turn (live check C6) is TOOL_FAILURE and binds no session", async () => {
+    const report = await runConformanceCase(caseFor("credits_command"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", unknownEventCount: 0 });
+    expect(report.result?.nativeSessionId).toBeUndefined();
+  });
+
+  it.each([
+    ["a stream with no result line at exit 0", "no_result", "no result event"],
+    ["a second, successful result after a C10 zero-token one", "two_results", "protocol: more than one result line"],
+    ["a result for another conversation", "conversation_changed", "protocol: conversation id changed mid-run"],
+  ])("%s is OUTPUT_PROTOCOL_ERROR and keeps the first conversation id", async (_n, fixture, detail) => {
+    const report = await runConformanceCase(caseFor(fixture));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: detail,
+      nativeSessionId: DEFAULT_SESSION_ID,
+    });
+  });
+
+  it("a SUCCESS envelope with tokens at exit 1 is TOOL_FAILURE and the write stays: the exit code is not overridden", async () => {
+    const c = caseWhere("success_exit_1", (e) => e.mutatedPath === "hello.txt" && !e.ok);
+    const report = await runConformanceCase(c);
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", failureDetail: "exit code 1" });
+    expect(readFileSync(join(c.request.workspace.cwd, "hello.txt"), "utf8")).toContain("synthetic");
+  });
+
+  it("an unrecorded event kind in a success is counted as unknown and does not change the result", async () => {
+    const report = await runConformanceCase(caseFor("unknown_event"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: true, nativeSessionId: DEFAULT_SESSION_ID, unknownEventCount: 1 });
   });
 
   it("partial mutation leaves the file in the cwd", async () => {

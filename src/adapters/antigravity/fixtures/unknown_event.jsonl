@@ -1,0 +1,5 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.35), in the stream-json shapes recorded by the 2026-10-14 live check (C4), plus one event kind that was not recorded (invented name): it is counted as unknown and does not change the result.","exit":0}}
+{"event":"init","conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","init":{"cwd":"/work/tree","tools":["run_command","write_to_file"],"permission_mode":"always-proceed","model":"synthetic-model"}}
+{"event":"step_update","conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","step_index":0,"state":"DONE","step_type":"user_input"}
+{"event":"synthetic_unrecorded_event","conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","detail":"SYNTHETIC"}
+{"event":"result","result":{"conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","status":"SUCCESS","response":"ok","duration_seconds":3,"num_turns":1,"usage":{"input_tokens":20,"output_tokens":3,"thinking_tokens":1,"cache_read_tokens":0,"total_tokens":24}}}
