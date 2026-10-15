@@ -3305,3 +3305,157 @@ describe("antigravity malicious-fixture leg (T4.36, NFR-SEC-03, FR-POL-04, FR-PO
     });
   });
 });
+
+describe("antigravity parser residual pins (T4.33, synthetic shapes)", () => {
+  // Branches of `parseEvent` no earlier block pins. Synthetic lines only, no new capture, parser unchanged.
+  const CID = "0b6c2d1e-0000-4000-8000-0000000000cc";
+  const OTHER = "0b6c2d1e-0000-4000-8000-0000000000cd";
+  const j = (o: Record<string, unknown>) => JSON.stringify(o);
+  const USAGE = { input_tokens: 20, output_tokens: 3, thinking_tokens: 1, cache_read_tokens: 0, total_tokens: 24 };
+  const INIT = (init: Record<string, unknown> = {}, outer: Record<string, unknown> = {}) =>
+    j({ event: "init", conversation_id: CID, ...outer, init: { cwd: "/work/tree", ...init } });
+  const STEP = (o: Record<string, unknown>) => j({ event: "step_update", conversation_id: CID, state: "DONE", ...o });
+  const RESULT = (over: Record<string, unknown> = {}, outer: Record<string, unknown> = {}) =>
+    j({
+      event: "result",
+      ...outer,
+      result: { conversation_id: CID, status: "SUCCESS", response: "ok", usage: USAGE, ...over },
+    });
+  const EXIT0: ExitInfo = { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] };
+  /** Lines through the parser and the tool-call guard as an approved bypass run sees them, then the result. */
+  const run = (lines: string[]) => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const raw = lines.flatMap((l) => a.parseEvent(l, state));
+    const events = raw.map((e) => guardEvent(e, { cwd: "/work/tree", home: "/home/synthetic", bypass: true }));
+    return { state, raw, events, result: a.extractResult(events, EXIT0) };
+  };
+  const bound = (lines: string[]) => run(lines).raw.filter((e) => e.kind === "session_bound");
+
+  it("tool steps are deduplicated per step_index, not per command: the same Git write in a second step is checked again", () => {
+    const push = (index: number) =>
+      STEP({
+        step_index: index,
+        step_type: "tool",
+        tool_name: "run_command",
+        tool_info: { name: "run_command", parameters: { command: "git push origin main" } },
+      });
+    const r = run([INIT(), push(1), push(2), push(1), RESULT()]);
+    expect(r.raw.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "shell", name: "run_command", command: "git push origin main" },
+      { kind: "tool_call", tool: "shell", name: "run_command", command: "git push origin main" },
+    ]);
+    const flagged = r.events.filter((e) => e.kind === "tool_call" && e.violation !== undefined);
+    expect(flagged).toHaveLength(2);
+    expect(r.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: CID });
+  });
+
+  it("pins the gap: tool parameters on a step whose step_type is not exactly `tool` never reach the guard", () => {
+    const params = { name: "run_command", parameters: { command: "git push origin main" } };
+    for (const stepType of ["agent_response", "user_input", "checkpoint", "TOOL", "Tool", " tool"]) {
+      const r = run([INIT(), STEP({ step_index: 1, step_type: stepType, tool_info: params }), RESULT()]);
+      expect(
+        r.raw.some((e) => e.kind === "tool_call"),
+        stepType,
+      ).toBe(false);
+      // Not an unknown line either: any string step_type with a numeric step_index is a readable step.
+      expect(r.state.unknownEvents, stepType).toBe(0);
+      expect(r.result, stepType).toMatchObject({ ok: true, nativeSessionId: CID });
+    }
+  });
+
+  it("fixture non_tool_step_command replays to a success: a command off a `tool` step is not seen (gap, pinned)", async () => {
+    const report = await runConformanceCase({
+      kind: "task_failure",
+      adapter: replayAdapter("non_tool_step_command"),
+      request: {
+        runId: "run_antigravity_t433_residual",
+        objective: "synthetic antigravity objective",
+        constraints: [],
+        workspace: { cwd: makeCwd(), writable: true },
+        bypassApproved: true,
+      },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: true, unknownEventCount: 0 });
+    const lines = readFileSync(fixturePath("non_tool_step_command"), "utf8")
+      .split("\n")
+      .filter((l) => l !== "" && !l.includes('"_fixture"'));
+    expect(run(lines).raw.some((e) => e.kind === "tool_call")).toBe(false);
+  });
+
+  it("init reads init.model before the line's model, and the line's backing vendor before init's (snake before camel)", () => {
+    expect(bound([INIT({ model: "inner" }, { model: "outer" })])).toEqual([
+      { kind: "session_bound", nativeSessionId: CID, model: "inner" },
+    ]);
+    expect(bound([INIT({}, { model: "outer" })])).toEqual([
+      { kind: "session_bound", nativeSessionId: CID, model: "outer" },
+    ]);
+    const all = { backing_provider: "outer-snake", backingProvider: "outer-camel" };
+    const nested = { backing_provider: "inner-snake", backingProvider: "inner-camel" };
+    const backing = (init: Record<string, unknown>, outer: Record<string, unknown>) => {
+      const [b] = bound([INIT(init, outer)]);
+      return b?.kind === "session_bound" ? b.backingProvider : undefined;
+    };
+    expect(backing(nested, all)).toBe("outer-snake");
+    expect(backing(nested, { backingProvider: "outer-camel" })).toBe("outer-camel");
+    expect(backing(nested, {})).toBe("inner-snake");
+    expect(backing({ backingProvider: "inner-camel" }, {})).toBe("inner-camel");
+    // A non-string higher-precedence value is read and dropped, not skipped over to the next spelling.
+    expect(backing(nested, { backing_provider: 7 })).toBeUndefined();
+  });
+
+  it("a result with no init reads result.model before the line's model and the line's backing vendor before the envelope's", () => {
+    expect(bound([RESULT({ model: "inner" }, { model: "outer" })])).toEqual([
+      { kind: "session_bound", nativeSessionId: CID, model: "inner" },
+    ]);
+    expect(bound([RESULT({}, { model: "outer" })])).toEqual([
+      { kind: "session_bound", nativeSessionId: CID, model: "outer" },
+    ]);
+    expect(bound([RESULT({ backing_provider: "inner-snake" }, { backingProvider: "outer-camel" })])[0]).toMatchObject({
+      backingProvider: "outer-camel",
+    });
+    expect(bound([RESULT({ backingProvider: "inner-camel" })])[0]).toMatchObject({ backingProvider: "inner-camel" });
+  });
+
+  it("once init has bound, the result's model and backing vendor change nothing: no second session_bound", () => {
+    const r = run([
+      INIT({ model: "init-model" }, { backing_provider: "init-vendor" }),
+      RESULT({ model: "result-model", backing_provider: "result-vendor" }),
+    ]);
+    expect(r.raw.filter((e) => e.kind === "session_bound")).toEqual([
+      { kind: "session_bound", nativeSessionId: CID, model: "init-model", backingProvider: "init-vendor" },
+    ]);
+    expect(r.result).toMatchObject({ ok: true, nativeSessionId: CID });
+  });
+
+  it("pins: a SUCCESS envelope with tokens and no conversation id anywhere succeeds with no nativeSessionId", () => {
+    // Resume is not compiled (Q-86), so an unbound success loses nothing a continuation could use; a recorded success
+    // always carried a UUID ([LIVE] C4), so this shape is synthetic.
+    for (const id of [undefined, "", 7, null, { id: CID }]) {
+      const r = run([RESULT({ conversation_id: id })]);
+      expect(r.state.nativeSessionId, JSON.stringify(id)).toBeUndefined();
+      expect(r.result, JSON.stringify(id)).toEqual({ ok: true, unknownEventCount: 0, summary: "ok" });
+    }
+    // With init bound, a result id that is not a string is no anomaly and does not rebind.
+    expect(run([INIT(), RESULT({ conversation_id: 7 })]).result).toMatchObject({ ok: true, nativeSessionId: CID });
+  });
+
+  it("a second result for another conversation reports both anomalies, keeps the first id and records usage once", () => {
+    const r = run([INIT(), RESULT(), RESULT({ conversation_id: OTHER })]);
+    expect(r.raw.flatMap((e) => (e.kind === "provider_error" ? [`${e.category}: ${e.message}`] : []))).toEqual([
+      "protocol: more than one result line",
+      "protocol: conversation id changed mid-run",
+    ]);
+    expect(r.raw.filter((e) => e.kind === "usage")).toHaveLength(1);
+    expect(r.state.nativeSessionId).toBe(CID);
+    expect(r.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: more than one result line",
+      nativeSessionId: CID,
+    });
+  });
+});
