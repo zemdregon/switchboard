@@ -255,8 +255,8 @@ a loopback address; no live inner backend, provider CLI or network host has been
 | Task | Requirements (primary) | Tests |
 | --- | --- | --- |
 | T11.1 config, port, fake backend, `inner_call`, import boundary | FR-INN-01, 02, 05, 06 | `src/config/config.test.ts` ("inner_agent"), `src/inner/inner.test.ts`, `src/inner/import-boundary.test.ts`, `src/ledger/ledger.test.ts` (migration 0005) |
-| T11.2 call pipeline | FR-INN-07, 08, 16 | `src/inner/pipeline.test.ts` (fallbacks within the bound, re-ask, breaker, slot, planted secrets, seven-row gate table) |
-| T11.3 `http` backend, locality, project override | FR-INN-03, 16 | `src/inner/http-backend.test.ts`, `src/config/config.test.ts` |
+| T11.2 call pipeline | FR-INN-07, 08, 16 | `src/inner/pipeline.test.ts` (fallbacks within the bound, re-ask, breaker, slot, planted secrets, seven-row gate table), `src/inner/log-line.test.ts` (the `inner.call` log line's key set, one line per outcome, no body or token count) |
+| T11.3 `http` backend, locality, project override | FR-INN-03, 16 | `src/inner/http-backend.test.ts`, `src/inner/http-peer-check.test.ts` (the `LOCALITY_CHANGED` socket peer re-check: refused before a byte is written, fixed code only), `src/config/config.test.ts` |
 | T11.4 commit-message task (on the `serve` path through the `commit` tool) | FR-INN-10, FR-GIT-04 | `src/git/commit-message.test.ts` (real tool socket; hostile drafts, `MESSAGE_REQUIRED`, modes, gates, `innerSettingResolver`), `src/ledger/ledger.test.ts` (migration 0007) |
 | T11.5 usage accounting | FR-INN-15, BR-41 | `src/inner/usage.test.ts`, `src/inner/usage-surfaces.test.ts`, `src/inner/usage-channels.test.ts` (the `commit` tool channel and the MCP admission harness), `src/capacity/capacity.test.ts` ("inner-agent calls change nothing"), `src/cli/cli.test.ts` (`inner_shared_subscription`), `src/ledger/ledger.test.ts` (migration 0006) |
 | T11.6 quality monitoring and suspension | FR-INN-09 | `src/inner/suspension.test.ts`, `src/ledger/ledger.test.ts` (migration 0008) |

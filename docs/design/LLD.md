@@ -3380,7 +3380,10 @@ structured log line named `inner.call` for every pipeline outcome, with or witho
 carrying `task`, `outcome`, `reason`,
 `attempts`, `latency_ms`, `input_bytes`, `output_bytes`, `locality`, `breaker_state` and `call_id`, never a body or a
 token count (captured logs are asserted free of prompt, response, secret and credential text in
-`src/inner/pipeline.test.ts` and `src/inner/http-backend.test.ts`). The run events in the table below are built as
+`src/inner/pipeline.test.ts` and `src/inner/http-backend.test.ts`; the line's own contract, exactly that key set and
+nothing else, scalar values, one line per outcome including the gate denials that contact no backend, `call_id` equal
+to the row id or null without a ledger, and a throwing logger never changing a result, is pinned by
+`src/inner/log-line.test.ts`, 2026-10-15 post-#383). The run events in the table below are built as
 described (`src/inner/pipeline.test.ts`, `src/inner/suspension.test.ts`). One correction to the last paragraph: the
 `doctor` canary writes no `inner_call` row (T11.7 Delegated choice, [ROADMAP §6.6](../ROADMAP.md#66-m11-inner-agent-tasks));
 `inner test` writes one with no run.
