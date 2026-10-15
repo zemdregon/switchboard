@@ -1558,6 +1558,12 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
 - Retrieval is tested with a deterministic in-process fake embedder and scripted HTTP fixtures; no live embedding model
   runs in CI. `search_project_context` with `scope: "global"` or `"both"` does not read the global store yet (admission
   merge with `use_global` does).
+- The inner agent (milestone 11) is tested on a scripted in-process fake backend and a loopback fake HTTP server only.
+  No live inner backend has been exercised, and `npm run test:live` has no inner-agent leg. The `cli` backend kind is
+  reported `Ineligible` by `doctor` and never started (ROADMAP T11.0, T11.13). The PR-draft, verification-summary,
+  handoff-condensation and run-title tasks are service functions that no run path, hook or `inner` command calls yet.
+  The `inner.call` telemetry span of LLD §13.8 is not emitted (no span exporter exists); the pipeline writes a
+  body-free `inner.call` log line instead. See [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
 
 ### Optional live smoke test
 
