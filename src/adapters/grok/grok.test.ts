@@ -640,6 +640,15 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
       expect(report.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
       expect(report.result).not.toHaveProperty("nativeSessionId");
     });
+
+    it("fixture model_unavailable (live check 5b) replays an invalid model error at exit 1 to MODEL_UNAVAILABLE", async () => {
+      const report = await runConformanceCase(
+        replayCase("model_unavailable", "task_failure", { ok: false, failureCode: "MODEL_UNAVAILABLE" }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({ ok: false, failureCode: "MODEL_UNAVAILABLE", unknownEventCount: 0 });
+      expect(report.result).not.toHaveProperty("nativeSessionId");
+    });
   });
 
   describe("parser hardening (T4.23, synthetic shapes; mirrors Antigravity T4.33)", () => {
@@ -1207,6 +1216,393 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
           num_turns: 3,
         },
       });
+    });
+
+    it("command precedence: input.command > input.cmd > input.CommandLine > e.command > e.cmd", () => {
+      const p1 = parse([
+        line({
+          type: "tool_call",
+          input: { command: "cmd1", cmd: "cmd2", CommandLine: "cmd3" },
+          command: "cmd4",
+          cmd: "cmd5",
+        }),
+      ]);
+      expect(p1.events[0]).toMatchObject({ kind: "tool_call", tool: "shell", command: "cmd1" });
+
+      const p2 = parse([
+        line({
+          type: "tool_call",
+          input: { cmd: "cmd2", CommandLine: "cmd3" },
+          command: "cmd4",
+          cmd: "cmd5",
+        }),
+      ]);
+      expect(p2.events[0]).toMatchObject({ kind: "tool_call", tool: "shell", command: "cmd2" });
+
+      const p3 = parse([
+        line({
+          type: "tool_call",
+          input: { CommandLine: "cmd3" },
+          command: "cmd4",
+          cmd: "cmd5",
+        }),
+      ]);
+      expect(p3.events[0]).toMatchObject({ kind: "tool_call", tool: "shell", command: "cmd3" });
+
+      const p4 = parse([
+        line({
+          type: "tool_call",
+          command: "cmd4",
+          cmd: "cmd5",
+        }),
+      ]);
+      expect(p4.events[0]).toMatchObject({ kind: "tool_call", tool: "shell", command: "cmd4" });
+
+      const p5 = parse([
+        line({
+          type: "tool_call",
+          cmd: "cmd5",
+        }),
+      ]);
+      expect(p5.events[0]).toMatchObject({ kind: "tool_call", tool: "shell", command: "cmd5" });
+    });
+
+    it("target path precedence: input.path > filePath > file_path > AbsolutePath > e.path > e.filePath > e.target", () => {
+      const p1 = parse([
+        line({
+          type: "tool_call",
+          tool: "read_file",
+          input: { path: "/p1", filePath: "/p2", file_path: "/p3", AbsolutePath: "/p4" },
+          path: "/p5",
+          filePath: "/p6",
+          target: "/p7",
+        }),
+      ]);
+      expect(p1.events[0]).toMatchObject({ kind: "tool_call", tool: "read", target: "/p1" });
+
+      const p2 = parse([
+        line({
+          type: "tool_call",
+          tool: "read_file",
+          input: { filePath: "/p2", file_path: "/p3", AbsolutePath: "/p4" },
+          path: "/p5",
+          filePath: "/p6",
+          target: "/p7",
+        }),
+      ]);
+      expect(p2.events[0]).toMatchObject({ kind: "tool_call", tool: "read", target: "/p2" });
+
+      const p3 = parse([
+        line({
+          type: "tool_call",
+          tool: "read_file",
+          input: { file_path: "/p3", AbsolutePath: "/p4" },
+          path: "/p5",
+          filePath: "/p6",
+          target: "/p7",
+        }),
+      ]);
+      expect(p3.events[0]).toMatchObject({ kind: "tool_call", tool: "read", target: "/p3" });
+
+      const p4 = parse([
+        line({
+          type: "tool_call",
+          tool: "read_file",
+          input: { AbsolutePath: "/p4" },
+          path: "/p5",
+          filePath: "/p6",
+          target: "/p7",
+        }),
+      ]);
+      expect(p4.events[0]).toMatchObject({ kind: "tool_call", tool: "read", target: "/p4" });
+
+      const p5 = parse([
+        line({
+          type: "tool_call",
+          tool: "read_file",
+          path: "/p5",
+          filePath: "/p6",
+          target: "/p7",
+        }),
+      ]);
+      expect(p5.events[0]).toMatchObject({ kind: "tool_call", tool: "read", target: "/p5" });
+
+      const p6 = parse([
+        line({
+          type: "tool_call",
+          tool: "read_file",
+          filePath: "/p6",
+          target: "/p7",
+        }),
+      ]);
+      expect(p6.events[0]).toMatchObject({ kind: "tool_call", tool: "read", target: "/p6" });
+
+      const p7 = parse([
+        line({
+          type: "tool_call",
+          tool: "read_file",
+          target: "/p7",
+        }),
+      ]);
+      expect(p7.events[0]).toMatchObject({ kind: "tool_call", tool: "read", target: "/p7" });
+    });
+
+    it("when both command and target are present, command wins and target is omitted; long target is clipped to 512 characters", () => {
+      const both = parse([
+        line({
+          type: "tool_call",
+          input: { command: "ls", path: "/w/dir" },
+        }),
+      ]);
+      expect(both.events[0]).toEqual({
+        kind: "tool_call",
+        tool: "shell",
+        name: "run_terminal_command",
+        command: "ls",
+      });
+      expect(both.events[0]).not.toHaveProperty("target");
+
+      const longTarget = `/work/${"p".repeat(600)}`;
+      const clipped = parse([
+        line({
+          type: "tool_call",
+          tool: "read_file",
+          input: { path: longTarget },
+        }),
+      ]);
+      expect(clipped.events[0]).toEqual({
+        kind: "tool_call",
+        tool: "read",
+        name: "read_file",
+        target: `${longTarget.slice(0, 512)}…`,
+      });
+    });
+
+    it("tool name precedence (tool > name > tool_name), fallback to run_terminal_command, and clipping to 64 characters", () => {
+      const p1 = parse([
+        line({
+          type: "tool_call",
+          tool: "t1",
+          name: "t2",
+          tool_name: "t3",
+          input: { command: "echo 1" },
+        }),
+      ]);
+      expect(p1.events[0]).toMatchObject({ kind: "tool_call", name: "t1" });
+
+      const p2 = parse([
+        line({
+          type: "tool_call",
+          name: "t2",
+          tool_name: "t3",
+          input: { command: "echo 2" },
+        }),
+      ]);
+      expect(p2.events[0]).toMatchObject({ kind: "tool_call", name: "t2" });
+
+      const p3 = parse([
+        line({
+          type: "tool_call",
+          tool_name: "t3",
+          input: { command: "echo 3" },
+        }),
+      ]);
+      expect(p3.events[0]).toMatchObject({ kind: "tool_call", name: "t3" });
+
+      // Fallback to run_terminal_command
+      const p4 = parse([
+        line({
+          type: "tool_call",
+          input: { command: "echo 4" },
+        }),
+      ]);
+      expect(p4.events[0]).toMatchObject({ kind: "tool_call", name: "run_terminal_command", tool: "shell" });
+
+      // Tool name clipping to 64 chars
+      const longName = "custom_tool_name_".repeat(5);
+      const p5 = parse([
+        line({
+          type: "tool_call",
+          tool: longName,
+          input: { command: "echo 5" },
+        }),
+      ]);
+      expect(p5.events[0]).toMatchObject({
+        kind: "tool_call",
+        name: `${longName.slice(0, 64)}…`,
+      });
+
+      // Tool kind discrimination: other when not shell and no target
+      const p6 = parse([
+        line({
+          type: "tool_call",
+          tool: "calculate_hash",
+        }),
+      ]);
+      expect(p6.events[0]).toEqual({
+        kind: "tool_call",
+        tool: "other",
+        name: "calculate_hash",
+      });
+    });
+
+    it("tool call ID precedence (id > call_id > tool_call_id) and multi-call correlation in tool_call_update", () => {
+      // id precedence
+      const p1 = parse([
+        line({ type: "tool_call", id: "id1", call_id: "id2", tool_call_id: "id3", input: { command: "echo 1" } }),
+        line({ type: "tool_call_update", id: "id1", input: { command: "echo 1 updated" } }),
+      ]);
+      expect(p1.events).toHaveLength(2);
+      expect(p1.events[1]).toMatchObject({ kind: "tool_call", command: "echo 1 updated" });
+
+      // call_id used
+      const p2 = parse([
+        line({ type: "tool_call", call_id: "call_abc", input: { command: "echo a" } }),
+        line({ type: "tool_call_update", call_id: "call_abc", input: { command: "echo a updated" } }),
+      ]);
+      expect(p2.events).toHaveLength(2);
+      expect(p2.events[1]).toMatchObject({ kind: "tool_call", command: "echo a updated" });
+
+      // tool_call_id used
+      const p3 = parse([
+        line({ type: "tool_call", tool_call_id: "tcid_xyz", input: { command: "echo x" } }),
+        line({ type: "tool_call_update", tool_call_id: "tcid_xyz", input: { command: "echo x updated" } }),
+      ]);
+      expect(p3.events).toHaveLength(2);
+      expect(p3.events[1]).toMatchObject({ kind: "tool_call", command: "echo x updated" });
+    });
+
+    it("non-turn stopReason longer than 64 characters is clipped with an ellipsis in result summary", () => {
+      const longStop = `custom_stop_reason_${"s".repeat(80)}`;
+      const r = parse([line({ ...END, stopReason: longStop })]);
+      const res = adapter().extractResult(r.events, EXIT_OK);
+      expect(res.ok).toBe(false);
+      expect(res.failureCode).toBe("TOOL_FAILURE");
+      const resEvent = r.events.find((e) => e.kind === "result");
+      expect(resEvent).toMatchObject({
+        kind: "result",
+        ok: false,
+        summary: `stopReason ${longStop.slice(0, 64)}…`,
+      });
+    });
+
+    it("error message prefixes match case-sensitively at the start; non-matching prefixes fall back to TOOL_FAILURE", () => {
+      const exit1 = { outcome: "exited", exitCode: 1, signal: null, expectedExitCodes: [0] } as const;
+      for (const msg of [
+        "not signed in",
+        "NOT SIGNED IN",
+        " Not signed in",
+        "error: Not signed in",
+        "couldn't set model",
+        "COULDN'T SET MODEL",
+        " Couldn't set model",
+        "error: Couldn't set model",
+      ]) {
+        const { events } = parse([line({ type: "error", message: msg })]);
+        expect(events[0], msg).toMatchObject({ kind: "provider_error", category: "unknown", message: msg });
+        expect(adapter().extractResult(events, exit1), msg).toMatchObject({
+          ok: false,
+          failureCode: "TOOL_FAILURE",
+        });
+      }
+    });
+
+    it("clean turn with no text messages leaves summary undefined, not empty string", () => {
+      const r = parse([
+        line({ type: "available_commands", tools: ["cmd1"] }),
+        line({ type: "thought", data: "internal thinking" }),
+        line({ type: "usage", signature: "sig" }),
+        line(END),
+      ]);
+      const res = adapter().extractResult(r.events, EXIT_OK);
+      expect(res.ok).toBe(true);
+      expect(res).not.toHaveProperty("summary");
+    });
+
+    it("extractResult classifies supervisor exit outcomes (protocol_error, internal_error, crashed, spawn_error)", () => {
+      const baseExit = { exitCode: null, signal: null, expectedExitCodes: [0] };
+
+      const proto = adapter().extractResult([], { ...baseExit, outcome: "protocol_error" });
+      expect(proto).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "unparseable provider output",
+      });
+
+      const internal = adapter().extractResult([], { ...baseExit, outcome: "internal_error" });
+      expect(internal).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "event handling failed",
+      });
+
+      const crashedSig = adapter().extractResult([], { ...baseExit, outcome: "crashed", signal: "SIGKILL" });
+      expect(crashedSig).toMatchObject({
+        ok: false,
+        failureCode: "PROCESS_CRASH",
+        failureDetail: "signal SIGKILL",
+      });
+
+      const crashedNoSig = adapter().extractResult([], { ...baseExit, outcome: "crashed", signal: null });
+      expect(crashedNoSig).toMatchObject({
+        ok: false,
+        failureCode: "PROCESS_CRASH",
+        failureDetail: "crashed",
+      });
+
+      const spawnErr = adapter().extractResult([], { ...baseExit, outcome: "spawn_error" });
+      expect(spawnErr).toMatchObject({
+        ok: false,
+        failureCode: "PROCESS_CRASH",
+        failureDetail: "spawn_error",
+      });
+
+      const exitErr = adapter().extractResult([], {
+        outcome: "exited",
+        exitCode: 2,
+        signal: null,
+        expectedExitCodes: [0],
+      });
+      expect(exitErr).toMatchObject({
+        ok: false,
+        failureCode: "TOOL_FAILURE",
+        failureDetail: "exit code 2",
+      });
+    });
+
+    it("extractResult honors normalized failure events (permission_denied, sandbox_violation, rate_limit)", () => {
+      const endEvent: NormalizedEvent = { kind: "result", ok: true };
+
+      const perm = adapter().extractResult([{ kind: "permission_denied", tool: "bash" }, endEvent], EXIT_OK);
+      expect(perm).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", failureDetail: "denied: bash" });
+
+      const sbx = adapter().extractResult(
+        [{ kind: "sandbox_violation", detail: "out of worktree" }, endEvent],
+        EXIT_OK,
+      );
+      expect(sbx).toMatchObject({ ok: false, failureCode: "SANDBOX_VIOLATION", failureDetail: "out of worktree" });
+
+      const rl = adapter().extractResult([{ kind: "rate_limit" }, endEvent], EXIT_OK);
+      expect(rl).toMatchObject({
+        ok: false,
+        failureCode: "RATE_LIMIT_TRANSIENT",
+        failureDetail: "rate limit reported",
+      });
+    });
+
+    it("seenEnds and seenToolCalls state is isolated across separate ParseState instances", () => {
+      const a = adapter();
+      const state1: ParseState = { lines: 0, unknownEvents: 0 };
+      const state2: ParseState = { lines: 0, unknownEvents: 0 };
+
+      // End line on state1
+      const ev1 = a.parseEvent(line(END), state1);
+      expect(ev1.some((e) => e.kind === "result" && e.ok)).toBe(true);
+
+      // End line on fresh state2 is also a first end line, not a second one
+      const ev2 = a.parseEvent(line(END), state2);
+      expect(ev2.some((e) => e.kind === "result" && e.ok)).toBe(true);
+      expect(ev2.some((e) => e.kind === "provider_error")).toBe(false);
     });
   });
 
