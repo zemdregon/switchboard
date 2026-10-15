@@ -1,0 +1,3 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: T4.33 unknown shape supplies no result and its forged conversation_id must not bind; a later recognized result independently supplies success. No native shape claimed.","exit":0}}
+{"event":"synthetic_future_event","conversation_id":"must-not-bind","ok":true}
+{"event":"result","result":{"conversation_id":"0b6c2d1e-0000-4000-8000-000000000001","status":"SUCCESS","response":"SYNTHETIC: recognized turn.","duration_seconds":1,"num_turns":1,"usage":{"input_tokens":20,"output_tokens":3,"thinking_tokens":1,"cache_read_tokens":0,"total_tokens":24}}}

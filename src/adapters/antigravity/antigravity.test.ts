@@ -30,6 +30,7 @@ import { guardEvent } from "../tool-guard.js";
 import type {
   CompileRequest,
   ExitInfo,
+  FailureEvidence,
   Invocation,
   NormalizedEvent,
   ParseState,
@@ -730,6 +731,61 @@ describe("antigravity parser hardening (T4.33, synthetic shapes)", () => {
     expect(a.extractResult(guarded, EXIT0).failureDetail).toMatch(/^git write attempted/);
   });
 
+  it("an auth or model error on a clean SUCCESS envelope fails it; an unknown line after it does not rebind", () => {
+    // The error field is independent of status. A SUCCESS envelope with tokens is otherwise a success (Q-86); the
+    // recorded auth and model prefixes still fail it. An unknown line cannot supply a conversation id.
+    expect(parse([INIT, RESULT({ error: "authentication failed or timed out" })]).result).toMatchObject({
+      ok: false,
+      failureCode: "AUTH_REQUIRED",
+      failureDetail: "auth: authentication failed or timed out",
+      nativeSessionId: CID,
+    });
+    expect(parse([INIT, RESULT({ error: "invalid model selection (--model x)" })]).result).toMatchObject({
+      ok: false,
+      failureCode: "MODEL_UNAVAILABLE",
+      failureDetail: "model_unavailable: invalid model selection (--model x)",
+    });
+    const after = parse([
+      INIT,
+      RESULT(),
+      j({ event: "synthetic_future_event", conversation_id: "must-not-bind", ok: true }),
+    ]);
+    expect(after.result).toMatchObject({ ok: true, nativeSessionId: CID, unknownEventCount: 1 });
+    expect(after.state.nativeSessionId).toBe(CID);
+    expect(JSON.stringify(after.events)).not.toContain("must-not-bind");
+  });
+
+  it("a denial on a second result beats that line's protocol error; a late auth error does not", () => {
+    const authLate = parse([
+      INIT,
+      RESULT(),
+      RESULT({ status: "ERROR", response: "", error: "authentication failed or timed out" }),
+    ]);
+    expect(authLate.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: more than one result line",
+      nativeSessionId: CID,
+    });
+    expect(authLate.events.filter((e) => e.kind === "usage")).toHaveLength(1);
+    const deniedLate = parse([
+      INIT,
+      RESULT(),
+      RESULT({
+        status: "ERROR",
+        response: "",
+        error: "authentication failed or timed out",
+        denied_actions: [{ display_name: "RunCommand" }],
+      }),
+    ]);
+    expect(deniedLate.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "denied: RunCommand",
+      nativeSessionId: CID,
+    });
+  });
+
   it("negative and non-number usage values are dropped; zero total is not a success", () => {
     const r = parse([
       INIT,
@@ -1182,6 +1238,75 @@ describe("antigravity cases with no recorded native shape (T4.33, synthetic shap
     expect(report.checks.filter((k) => !k.ok)).toEqual([]);
     expect(report.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
     expect(report.result?.failureDetail).toContain("git write attempted");
+  });
+
+  // Whole-stream order, mirroring Grok Build T4.23 (`unknown_then_end`, `error_after_end`, `malformed_after_end`).
+  // Outside the T4.35 case list. Antigravity has no separate error event: a late auth envelope is a second `result`.
+  it("fixture unknown_then_result counts an unknown shape and binds only the later result's conversation id", async () => {
+    const report = await runConformanceCase(
+      replayCase("unknown_then_result", "success", { ok: true, nativeSessionId: DEFAULT_SESSION_ID }),
+    );
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: true,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      unknownEventCount: 1,
+      summary: "SYNTHETIC: recognized turn.",
+    });
+    const events = fixtureEvents("unknown_then_result");
+    expect(events.filter((e) => e.kind === "session_bound")).toEqual([
+      { kind: "session_bound", nativeSessionId: DEFAULT_SESSION_ID },
+    ]);
+    expect(JSON.stringify(events)).not.toContain("must-not-bind");
+  });
+
+  it("fixture error_after_result stays OUTPUT_PROTOCOL_ERROR: a late auth envelope is a second result, not AUTH_REQUIRED", async () => {
+    const report = await runConformanceCase(
+      replayCase("error_after_result", "malformed_output", {
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        nativeSessionId: DEFAULT_SESSION_ID,
+      }),
+    );
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: more than one result line",
+      nativeSessionId: DEFAULT_SESSION_ID,
+      unknownEventCount: 0,
+    });
+    expect(report.result?.failureDetail).not.toContain("auth:");
+    const events = fixtureEvents("error_after_result");
+    expect(events.filter((e) => e.kind === "usage")).toHaveLength(1);
+    expect(events.filter((e) => e.kind === "usage")).toEqual([
+      {
+        kind: "usage",
+        source: "provider_reported",
+        metrics: { input_tokens: 20, output_tokens: 3, thinking_tokens: 1, cache_read_tokens: 0, total_tokens: 24 },
+      },
+    ]);
+  });
+
+  it("fixture malformed_after_result fails in the supervisor after the result was emitted and keeps the conversation id", async () => {
+    const parsed = fixtureEvents("malformed_after_result");
+    expect(parsed.some((e) => e.kind === "result" && e.ok)).toBe(true);
+    expect(parsed.find((e) => e.kind === "session_bound")).toMatchObject({ nativeSessionId: DEFAULT_SESSION_ID });
+    const report = await runConformanceCase(
+      replayCase("malformed_after_result", "malformed_output", {
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        nativeSessionId: DEFAULT_SESSION_ID,
+      }),
+    );
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "unparseable provider output",
+      nativeSessionId: DEFAULT_SESSION_ID,
+      unknownEventCount: 0,
+    });
   });
 });
 
@@ -1764,6 +1889,119 @@ describe("antigravity parser fallbacks and exact matching (T4.33, synthetic shap
       ok: false,
       failureCode: "RATE_LIMIT_TRANSIENT",
       failureDetail: "rate limit reported",
+    });
+  });
+
+  it("classifyFailure precedence: supervisor outcomes over the guard, the guard over denials, denials over provider errors, a provider error over a rate_limit event, a failed result and the exit code", () => {
+    // The parser emits no rate_limit (no recorded shape). This pins classifyCommon's order on normalized events,
+    // including the Antigravity `protocol` category, the way Grok Build T4.23 does.
+    const a = adapter();
+    const evidence = (
+      events: readonly NormalizedEvent[],
+      exit: Partial<FailureEvidence["exit"]> = {},
+      extra: Partial<FailureEvidence> = {},
+    ): FailureEvidence => ({
+      events,
+      exit: { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0], ...exit },
+      stderrTail: "",
+      timedOut: false,
+      cancelled: false,
+      ...extra,
+    });
+    const GUARDED: NormalizedEvent = {
+      kind: "tool_call",
+      tool: "shell",
+      name: "run_command",
+      command: "git push origin main",
+      violation: { kind: "git_write", reason: "git push origin main" },
+    };
+    const DENIED: NormalizedEvent = { kind: "permission_denied", tool: "run_command" };
+    const AUTH: NormalizedEvent = {
+      kind: "provider_error",
+      category: "auth",
+      message: "authentication failed or timed out",
+    };
+    const UNKNOWN_ERR: NormalizedEvent = { kind: "provider_error", category: "unknown", message: "boom" };
+    const PROTOCOL_ERR: NormalizedEvent = {
+      kind: "provider_error",
+      category: "protocol",
+      message: "more than one result line",
+    };
+    const FAILED_RESULT: NormalizedEvent = { kind: "result", ok: false, summary: "ERROR" };
+    const EXIT_1 = { exitCode: 1 };
+
+    expect(a.classifyFailure(evidence([GUARDED], { outcome: "cancelled" }))).toEqual({
+      code: "CANCELLED",
+      detail: "run cancelled",
+    });
+    expect(a.classifyFailure(evidence([GUARDED], {}, { cancelled: true }))).toEqual({
+      code: "CANCELLED",
+      detail: "run cancelled",
+    });
+    expect(a.classifyFailure(evidence([GUARDED], {}, { timedOut: true }))).toEqual({
+      code: "PROCESS_TIMEOUT",
+      detail: "unknown timeout",
+    });
+    expect(a.classifyFailure(evidence([GUARDED], { outcome: "protocol_error", exitCode: null }))).toEqual({
+      code: "OUTPUT_PROTOCOL_ERROR",
+      detail: "unparseable provider output",
+    });
+    expect(a.classifyFailure(evidence([GUARDED], { outcome: "internal_error", exitCode: null }))).toEqual({
+      code: "OUTPUT_PROTOCOL_ERROR",
+      detail: "event handling failed",
+    });
+    expect(a.classifyFailure(evidence([GUARDED], { outcome: "crashed", exitCode: null, signal: "SIGKILL" }))).toEqual({
+      code: "PROCESS_CRASH",
+      detail: "signal SIGKILL",
+    });
+    expect(a.classifyFailure(evidence([GUARDED], { outcome: "spawn_error", exitCode: null }))).toEqual({
+      code: "PROCESS_CRASH",
+      detail: "spawn_error",
+    });
+
+    expect(a.classifyFailure(evidence([GUARDED, DENIED]))).toEqual({
+      code: "PERMISSION_BLOCKED",
+      detail: "git write attempted: git push origin main",
+    });
+    expect(
+      a.classifyFailure(
+        evidence([{ ...GUARDED, violation: { kind: "provider_state", reason: "synthetic" } }, DENIED, AUTH]),
+      ),
+    ).toEqual({ code: "SANDBOX_VIOLATION", detail: "provider state reached: synthetic" });
+
+    expect(a.classifyFailure(evidence([DENIED, AUTH], EXIT_1))).toEqual({
+      code: "PERMISSION_BLOCKED",
+      detail: "denied: run_command",
+    });
+    expect(
+      a.classifyFailure(evidence([{ kind: "sandbox_violation", detail: "out of worktree" }, UNKNOWN_ERR])),
+    ).toEqual({ code: "SANDBOX_VIOLATION", detail: "out of worktree" });
+
+    expect(a.classifyFailure(evidence([UNKNOWN_ERR, { kind: "rate_limit" }]))).toEqual({
+      code: "TOOL_FAILURE",
+      detail: "unknown: boom",
+    });
+    expect(a.classifyFailure(evidence([AUTH, FAILED_RESULT]))).toEqual({
+      code: "AUTH_REQUIRED",
+      detail: "auth: authentication failed or timed out",
+    });
+    expect(a.classifyFailure(evidence([PROTOCOL_ERR], EXIT_1))).toEqual({
+      code: "OUTPUT_PROTOCOL_ERROR",
+      detail: "protocol: more than one result line",
+    });
+
+    expect(a.classifyFailure(evidence([{ kind: "rate_limit" }], EXIT_1))).toEqual({
+      code: "RATE_LIMIT_TRANSIENT",
+      detail: "rate limit reported",
+    });
+    expect(a.classifyFailure(evidence([FAILED_RESULT], EXIT_1))).toEqual({
+      code: "TOOL_FAILURE",
+      detail: "ERROR",
+    });
+    expect(a.classifyFailure(evidence([], EXIT_1))).toEqual({ code: "TOOL_FAILURE", detail: "exit code 1" });
+    expect(a.classifyFailure(evidence([]))).toEqual({
+      code: "OUTPUT_PROTOCOL_ERROR",
+      detail: "no result event",
     });
   });
 
