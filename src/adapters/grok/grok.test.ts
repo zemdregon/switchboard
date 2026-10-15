@@ -630,6 +630,61 @@ describe("grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-
       expect(adapter().extractResult(before.events, EXIT_OK)).toMatchObject({ ok: true });
     });
 
+    it("a trailing tool_call the parser cannot read is still a tool call after the `end` line", () => {
+      // The bare line is the only `tool_call` shape the live check recorded (row 4b); a shape with no readable field is
+      // the same line to the parser. Both parse as `unknown` and must not leave the turn clean.
+      for (const call of [{ type: "tool_call" }, { type: "tool_call", input: { command: 7 } }]) {
+        const { events } = parse([line(END), line(call)]);
+        expect(events.at(-1), JSON.stringify(call)).toEqual({ kind: "unknown", rawType: "tool_call" });
+        const r = adapter().extractResult(events, EXIT_OK);
+        expect(r, JSON.stringify(call)).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+        expect(r.ok === false && r.failureDetail, JSON.stringify(call)).toBe("tool call after the end line");
+      }
+      // A read-shaped call (target only) after `end` fails the same way.
+      const read = parse([line(END), line({ type: "tool_call", tool: "read_file", input: { path: "a.txt" } })]);
+      expect(adapter().extractResult(read.events, EXIT_OK)).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+      });
+      // Other unknown lines, `tool_call_update` and late text after `end` do not trip it.
+      const quiet = parse([
+        line(END),
+        line({ type: "tool_call_update" }),
+        line({ type: "text", data: "late" }),
+        line({ type: "synthetic_unknown_kind" }),
+      ]);
+      expect(adapter().extractResult(quiet.events, EXIT_OK)).toMatchObject({ ok: true });
+      // The same unreadable line before `end` leaves a clean turn clean (fixtures sandbox_violation.jsonl, row 4b).
+      const before = parse([line({ type: "tool_call" }), line(END)]);
+      expect(adapter().extractResult(before.events, EXIT_OK)).toMatchObject({ ok: true });
+    });
+
+    it("a guard-flagged trailing tool_call ends PERMISSION_BLOCKED at exit 1, after a failed `end` and a second `end`", () => {
+      const ctx = { cwd: "/w", bypass: true };
+      const guarded = (lines: string[]) => parse(lines).events.map((e) => guardEvent(e, ctx));
+      const PUSH = line({
+        type: "tool_call",
+        tool: "run_terminal_command",
+        input: { command: "git push origin main" },
+      });
+      const EXIT_1 = { ...EXIT_OK, exitCode: 1 } as const;
+      // ADR-0039: the guard verdict precedes the unexpected exit, the failed stop reason and the protocol anomaly.
+      for (const [label, lines, exit] of [
+        ["exit 1", [line(END), PUSH], EXIT_1],
+        ["cancelled end", [line({ ...END, stopReason: "cancelled" }), PUSH], EXIT_OK],
+        ["second end", [line(END), line(END), PUSH], EXIT_OK],
+      ] as const) {
+        expect(adapter().extractResult(guarded([...lines]), exit), label).toMatchObject({
+          ok: false,
+          failureCode: "PERMISSION_BLOCKED",
+          nativeSessionId: SID,
+        });
+      }
+      // Without the Git write the same exit-1 trailing call is an unexpected exit, never success.
+      const plain = guarded([line(END), line({ type: "tool_call", command: "ls" })]);
+      expect(adapter().extractResult(plain, EXIT_1)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+    });
+
     it("only an exact `end_turn` stop reason is success", () => {
       for (const stopReason of ["END_TURN", "end_turn ", " end_turn", "end-turn", ""]) {
         const { events } = parse([line({ ...END, stopReason })]);

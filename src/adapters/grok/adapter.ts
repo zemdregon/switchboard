@@ -478,8 +478,9 @@ export class GrokAdapter implements ProviderAdapter {
   /**
    * Success needs a clean expected exit and a final `result` with `ok` and no `provider_error`, `permission_denied`,
    * `sandbox_violation` or `rate_limit` event and no `tool_call` the tool-call guard flagged with a `violation` (fail
-   * closed, as Codex; a guard verdict ends the run in every run, bypass included, ADR-0039), and no `tool_call` after
-   * the `end` line. The summary is the joined assistant text, last {@link MAX_SUMMARY_CHARS} characters.
+   * closed, as Codex; a guard verdict ends the run in every run, bypass included, ADR-0039), and no `tool_call` line,
+   * read or not, after the `end` line. The summary is the joined assistant text, last {@link MAX_SUMMARY_CHARS}
+   * characters.
    */
   extractResult(events: readonly NormalizedEvent[], exit: ExitInfo): RunResult {
     const unknownEventCount = events.filter((e) => e.kind === "unknown").length;
@@ -490,8 +491,13 @@ export class GrokAdapter implements ProviderAdapter {
     const finalAt = events.findLastIndex((e) => e.kind === "result");
     const final = events[finalAt];
     // Proposed (fail closed): `end` was the last line of every recorded run ([LIVE] 4a, 4b), so a tool call after it
-    // means the run did not end on that result.
-    const trailingTool = finalAt >= 0 && events.slice(finalAt + 1).some((e) => e.kind === "tool_call");
+    // means the run did not end on that result. A `tool_call` line the parser could not read counts too: the bare
+    // `{"type":"tool_call"}` is the only shape the live check recorded (row 4b), and it parses as `unknown`.
+    const trailingTool =
+      finalAt >= 0 &&
+      events
+        .slice(finalAt + 1)
+        .some((e) => e.kind === "tool_call" || (e.kind === "unknown" && e.rawType === EVENT.toolCall));
     const base = {
       unknownEventCount,
       ...(nativeSessionId ? { nativeSessionId } : {}),

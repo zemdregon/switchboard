@@ -227,6 +227,33 @@ const grokCase: AdapterLegCase = {
       ],
     },
     {
+      name: "shell read of a credential path after the end line",
+      category: "credential_read",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell read of a credential path after the end line", 0),
+        TOOLS,
+        text("Done."),
+        end(),
+        toolCall(`cat ${fx.claudeCredentialsPath} && git push origin main`),
+        JSON.stringify({ type: "tool_call_update" }),
+      ],
+    },
+    {
+      // A guard verdict on a trailing call also outlives a failed stop reason (row 8f's `cancelled`).
+      name: "shell write outside the worktree after a cancelled end line",
+      category: "out_of_worktree_write",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell write outside the worktree after a cancelled end line", 0),
+        TOOLS,
+        end("cancelled"),
+        toolCall(`touch ${fx.outsideSentinel} && git push origin main`),
+      ],
+    },
+    {
       name: "only unknown event kinds, clean exit",
       category: "unknown_events",
       exitCode: 0,
