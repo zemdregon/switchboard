@@ -786,6 +786,7 @@ Config id `antigravity`; routing and `list_capabilities` id `antigravity`. Switc
 ([TDD §4.4.2](docs/design/TDD.md#442-antigravity-native-controls-per-profile-and-platform-t430); observed on
 2026-10-14 in [`docs/research/live-checks-2026-10-14-antigravity.md`](docs/research/live-checks-2026-10-14-antigravity.md),
 `agy` 1.3.4). The prompt is one argv word (`--prompt=<prompt>`), not stdin (an Assumption in the adapter). Switchboard
+passes only `PATH` and `HOME` from the parent environment and
 sets `AGY_CLI_DISABLE_AUTO_UPDATE=true` on every run and never puts `GEMINI_API_KEY`, `GOOGLE_API_KEY` or
 `GOOGLE_GEMINI_BASE_URL` in the child environment (API-key mode stays disabled).
 
@@ -811,7 +812,7 @@ per-run approval flag, and no per-run deny rule was shown to hold under the bypa
 | `edit-untrusted` | no | As `inspect-untrusted` |
 | `test-sandboxed` | no | As `inspect-untrusted` |
 | `trusted-development` | no | As `inspect-untrusted` |
-| `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one argv shape: `agy --prompt=<prompt> --output-format stream-json --dangerously-skip-permissions` with `AGY_CLI_DISABLE_AUTO_UPDATE=true`, worktree file access, shell `broad`, network `on` and repository configuration `enabled`, and **no** `--sandbox` (owner decision 46, Q-84). A scope without `bypass`, or any narrowing Switchboard can express (read-only files, shell allowlist, network off or repository configuration other than `enabled`), is refused before spawn. |
+| `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one argv shape: `agy --prompt=<prompt> --output-format stream-json --dangerously-skip-permissions` with `AGY_CLI_DISABLE_AUTO_UPDATE=true`, worktree file access, shell `broad`, network `on` and repository configuration `enabled`, and **no** `--sandbox` (owner decision 46, Q-84). A scope without `bypass` is refused (`PROFILE_UNSUPPORTED`). Any narrowing Switchboard can express (read-only files or an unwritable workspace, shell allowlist, network off or repository configuration other than `enabled`) is refused before spawn (`CAPABILITY_MISSING`). An explicit model request is also refused (`CAPABILITY_MISSING`); `--model` is never emitted. |
 
 Resume is not compiled: `resumeArgs` is `Ineligible` for every profile until a live capture shows how resume is marked
 (Q-86; synthetic fixtures in `src/adapters/antigravity/antigravity.test.ts`, T4.33 and T4.35). A full refusal matrix is
@@ -825,6 +826,24 @@ after the
 `result` line is not a success (fail closed; a guard-flagged trailing call keeps `PERMISSION_BLOCKED` per ADR-0039;
 unflagged → `OUTPUT_PROTOCOL_ERROR` with detail `tool call after the result line`; Proposed order — live check C4 had
 `result` last; [#262](https://github.com/zemdregon/switchboard/pull/262)).
+
+### Parser evidence and gaps
+
+Synthetic fixtures in [`antigravity.test.ts`](src/adapters/antigravity/antigravity.test.ts) pin stricter success
+checks than exit 0: a clean expected exit, one `result` with exact `SUCCESS` status and positive `total_tokens`,
+and no denial, envelope error or guard violation. Duplicate results, changed or unsafe conversation ids and missing
+results fail closed; duplicate result usage is not counted twice. Unrecorded rate-limit or quota text is
+`TOOL_FAILURE`, not `RATE_LIMIT_TRANSIENT`. An unknown event in an otherwise clean success is counted without
+changing the result; an entirely unreadable stream is `OUTPUT_PROTOCOL_ERROR`.
+
+The supervisor replays `agy_error_exit3.jsonl` and `usage_unrecorded.jsonl` to `TOOL_FAILURE`.
+`sandbox_violation_unrecorded.jsonl` deliberately pins a gap: a tool-output error beneath a successful envelope
+still ends `ok`, because the parser does not interpret that error as a native sandbox-violation event. These are
+synthetic checks, not captures of native rate limiting, sandbox enforcement or `AGY_ERROR` stderr
+([#272](https://github.com/zemdregon/switchboard/pull/272)). Tool parameter aliases remain **Assumptions** until
+operator captures confirm their native shapes. Later updates that supply or change a command or path reach the
+guard again; commands under unrecorded parameter keys remain unseen. Native resume, blocked outcomes and provider
+validation stay open under ROADMAP T4.33, T4.35, T4.36 and T4.38.
 
 ### Git and commits
 
