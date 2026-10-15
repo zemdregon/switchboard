@@ -653,6 +653,29 @@ describe("cursor parser and result (T4.43)", () => {
       adapter().resumeArgs({ provider: "cursor", nativeSessionId: SID }, request(), profileOf("edit-untrusted")),
     ).toMatchObject({ reason: "PROFILE_UNSUPPORTED" });
   });
+
+  it("resumeArgs mirrors compile across every structured scope, including exact refusals", () => {
+    const a = adapter();
+    const id = "resume_scope_matrix";
+    let compiledCount = 0;
+    for (const scope of scopeShapes()) {
+      for (const bypassApproved of [false, true]) {
+        const profile = { ...privilegedProfile(scope), bypassApproved };
+        const req = request({ bypassApproved, workspace: { cwd: "/resume scope/worktree", writable: true } });
+        const first = a.compile(req, profile);
+        const resumed = a.resumeArgs({ provider: "cursor", nativeSessionId: id }, req, profile);
+        const label = JSON.stringify({ scope, bypassApproved });
+        if ("ineligible" in first) {
+          expect(resumed, label).toEqual(first);
+        } else {
+          compiledCount += 1;
+          // The entire invocation must stay identical, with only the native resume pair appended.
+          expect(resumed, label).toEqual({ ...first, argv: [...first.argv, "--resume", id] });
+        }
+      }
+    }
+    expect(compiledCount).toBe(1);
+  });
 });
 
 /**
@@ -725,6 +748,82 @@ describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
       expect(JSON.stringify(r.events)).toContain("cursor-agent login");
     }
     expect(parse([INIT({ apiKeySource: undefined }), ASSIST("ok"), RESULT()]).result).toMatchObject({ ok: true });
+  });
+
+  it("native credential and protocol errors remain failures in either stream order, with the first provider_error determining the code", () => {
+    const other = "4f1c2a9e-0000-4000-8000-0000000000aa";
+    const bind = INIT();
+    const auth = INIT({ apiKeySource: "env" });
+    const protocol = INIT({ session_id: other });
+    const ok = RESULT();
+    for (const [first, second, code] of [
+      [auth, protocol, "AUTH_REQUIRED"],
+      [protocol, auth, "OUTPUT_PROTOCOL_ERROR"],
+    ] as const) {
+      for (const lines of [
+        [bind, first, second, ok],
+        [bind, ok, first, second],
+        [bind, first, ok, second],
+      ]) {
+        expect(parse(lines).result, JSON.stringify(lines)).toMatchObject({
+          ok: false,
+          failureCode: code,
+          nativeSessionId: SID,
+          unknownEventCount: 0,
+        });
+      }
+    }
+    // A failed result never outranks a later or earlier non-login credential source (classifyCommon order).
+    expect(parse([INIT({ apiKeySource: "env" }), RESULT({ subtype: "error", is_error: true })]).result).toMatchObject({
+      ok: false,
+      failureCode: "AUTH_REQUIRED",
+      nativeSessionId: SID,
+    });
+    expect(parse([RESULT({ subtype: "error", is_error: true }), INIT({ apiKeySource: "env" })]).result).toMatchObject({
+      ok: false,
+      failureCode: "AUTH_REQUIRED",
+      nativeSessionId: SID,
+    });
+  });
+
+  it("unknown envelopes cannot bind a session or smuggle status and usage before or after result", () => {
+    const envelope = line({
+      type: "synthetic_future_event",
+      session_id: "spoofed_session",
+      subtype: "success",
+      is_error: false,
+      apiKeySource: "env",
+      model: "spoofed-model",
+      backing_provider: "spoofed-vendor",
+      usage: { inputTokens: 999, outputTokens: 999 },
+      result: { subtype: "success", is_error: false, session_id: SID },
+    });
+    for (const lines of [[envelope], [envelope, RESULT()], [RESULT(), envelope]]) {
+      const { events, state, result } = parse(lines);
+      expect(state.unknownEvents).toBe(1);
+      expect(events.filter((e) => e.kind === "unknown")).toEqual([
+        { kind: "unknown", rawType: "synthetic_future_event" },
+      ]);
+      const serialized = JSON.stringify(events);
+      expect(serialized).not.toContain("spoofed_session");
+      expect(serialized).not.toContain("spoofed-model");
+      expect(serialized).not.toContain("spoofed-vendor");
+      expect(serialized).not.toContain("999");
+      if (lines.length === 1) {
+        expect(result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", unknownEventCount: 1 });
+        expect(result).not.toHaveProperty("nativeSessionId");
+        expect(events).toHaveLength(1);
+      } else {
+        expect(result).toMatchObject({ ok: true, nativeSessionId: SID, unknownEventCount: 1 });
+        expect(events.filter((e) => e.kind === "usage")).toEqual([
+          {
+            kind: "usage",
+            source: "provider_reported",
+            metrics: { inputTokens: 11, outputTokens: 2, cacheReadTokens: 5, cacheWriteTokens: 0 },
+          },
+        ]);
+      }
+    }
   });
 
   it("negative, non-finite and non-number usage values are dropped; no usable counter means no usage row", () => {
@@ -1723,6 +1822,46 @@ describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
       code: "OUTPUT_PROTOCOL_ERROR",
       detail: "no result event",
     });
+  });
+
+  it("classifyFailure precedence does not depend on lower-priority events arriving first", () => {
+    const a = adapter();
+    const failed: NormalizedEvent = { kind: "result", ok: false, summary: "task failed" };
+    const rate: NormalizedEvent = { kind: "rate_limit" };
+    const auth: NormalizedEvent = {
+      kind: "provider_error",
+      category: "auth",
+      message: "credential source env is not the native login",
+    };
+    const denied: NormalizedEvent = { kind: "permission_denied", tool: "shellToolCall" };
+    const guard: NormalizedEvent = {
+      kind: "tool_call",
+      tool: "shell",
+      name: "shellToolCall",
+      command: "git push origin main",
+      violation: { kind: "git_write", reason: "synthetic Git write" },
+    };
+    for (const [events, code] of [
+      [[failed, rate], "RATE_LIMIT_TRANSIENT"],
+      [[failed, rate, auth], "AUTH_REQUIRED"],
+      [[failed, rate, auth, denied], "PERMISSION_BLOCKED"],
+      [[failed, rate, auth, denied, guard], "PERMISSION_BLOCKED"],
+    ] as const) {
+      const classify = (ordered: readonly NormalizedEvent[]) =>
+        a.classifyFailure({
+          events: ordered,
+          exit: { outcome: "exited", exitCode: 1, signal: null, expectedExitCodes: [0] },
+          stderrTail: "Not signed in; too many requests", // Free text never changes structured precedence.
+          timedOut: false,
+          cancelled: false,
+        });
+      const classified = classify(events);
+      expect(classified.code).toBe(code);
+      expect(classified).toEqual(classify([...events].reverse()));
+      if (events.some((e) => e.kind === "tool_call")) {
+        expect(classified.detail).toBe("git write attempted: synthetic Git write");
+      }
+    }
   });
 
   it("recorded extra fields (duration_ms, duration_api_ms, request_id, permissionMode, cwd, timestamp_ms) are never usage metrics or events", () => {
