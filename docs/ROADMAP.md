@@ -2222,6 +2222,22 @@ Residual vs [TDD §3.12](design/TDD.md#312-inner-agent): the wired production ho
 admission/continuation rather than only after acknowledgement. **Not covered:** a live backend, repository metadata in
 the prompt (Q-82, M7), and deferring the wait past the acknowledgement.
 
+*2026-10-15 residual pins (Delegated; T11.11/T11.14; fakes only, no production code change):* the record-only claim is
+now pinned twin-run in `src/mcp/inner-route-features.test.ts`: the same request admitted once with an accepted
+classification and once with the backend erroring stores decisions that differ only in `route_features` (both bounded
+to the LLD §13.6 shape), with the same candidate verdicts and reasons, `required_provider`, selection rule, weights,
+compile verdict (provider, no model pin) and stored request and policy snapshot, for a required provider and for a
+preference with an excluded candidate; the audit rows are one `inner_call` per classification with no run id and no
+prompt text. The quota failover's decision replays and explains with the backend off, and a continuation after the
+failover classifies under the session, stores the heuristic when the backend fails, and still selects the failover's
+provider; a replayed `delegate_task` (same idempotency key) with the backend off writes no decision or audit row.
+`src/cli/serve.test.ts` repeats the replay, `explain_route` and later-continuation pins on the production `serve` path,
+where the resumed run succeeds. **Gaps, stated honestly:** the compiled argv is not persisted, so the argv pin is the
+compile verdict plus byte-identical compile inputs, not an argv diff; `continue_task` has no idempotency key by design
+(FR-MCP-08), so its "replay" is the stored decision's replay only; the harness's scripted spare cannot resume a native
+session, so the post-failover continuation is pinned at the decision and audit rows and fails at dispatch exactly as it
+does without a classifier; `serve` has one eligible test adapter, so the failover itself is pinned on the harness only.
+
 **T11.12 status (2026-10-14; Delegated): Done on fakes. No live inner backend, provider CLI or network was used.** "Done
 when" (*length cap and control-character stripping tested*), in `src/inner/run-title.test.ts`: a title over 80 or a
 summary over 200 characters is rejected (not cut) and the objective's first line is shown, exactly at the cap is
