@@ -84,13 +84,19 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#302](https://github.com/zemdregon/switchboard/pull/302),
   [#308](https://github.com/zemdregon/switchboard/pull/308),
   [#326](https://github.com/zemdregon/switchboard/pull/326),
-  [#345](https://github.com/zemdregon/switchboard/pull/345)) and Git declaration fixture tests on
+  [#345](https://github.com/zemdregon/switchboard/pull/345),
+  [#351](https://github.com/zemdregon/switchboard/pull/351),
+  [#358](https://github.com/zemdregon/switchboard/pull/358)) and Git declaration fixture tests on
   synthetic fixtures (README [Grok Build CLI](#grok-build-cli-milestone-4), ROADMAP T4.22 to T4.27); live smoke, live
   malicious leg and `adapters validate` remain operator work (T4.28).
   [#302](https://github.com/zemdregon/switchboard/pull/302) through
-  [#345](https://github.com/zemdregon/switchboard/pull/345) extend synthetic malicious replay only (including
-  completing both cut-line positions across categories and exits, and parser fall-through paths at exit `2` and `137`);
-  they do not validate the live CLI or close T4.26's gaps. Antigravity has a
+  [#358](https://github.com/zemdregon/switchboard/pull/358) extend synthetic malicious replay only (including
+  completing both cut-line positions across categories and exits, parser fall-through paths at exit `2` and `137`,
+  trailing `tool_call_update` after `end`, and JSON-encoding variants); parser residual pins
+  ([#342](https://github.com/zemdregon/switchboard/pull/342),
+  [#354](https://github.com/zemdregon/switchboard/pull/354),
+  [#372](https://github.com/zemdregon/switchboard/pull/372)) leave the parser unchanged; none of them validate the
+  live CLI or close T4.23's or T4.26's gaps. Antigravity has a
   parser (partial: T4.33; unrecorded-shape, fallback and own-property hardening pins plus structured
   `backing_provider`/`model` on `session_bound`, all synthetic,
   [#272](https://github.com/zemdregon/switchboard/pull/272),
@@ -773,7 +779,15 @@ A `tool_call` after the `end` line is not a success (fail closed; a guard verdic
 `OUTPUT_PROTOCOL_ERROR` with detail `tool call after the end line`). A bare unreadable `tool_call_update` after a clean
 `end_turn` (for example only `status` and `content`, with no readable command) still ends `ok` at exit 0 today: it
 carries no command the guard can read, but it is inconsistent with the trailing `tool_call` rule (ROADMAP T4.26 residual;
-parser change is outside fixture-only work). `tool_call` keys that name `Object.prototype`
+parser change is outside fixture-only work). The `tool call after the end line` detail is set only when the code is
+`OUTPUT_PROTOCOL_ERROR`; under a cancelled `stopReason` or a non-zero exit the classifier's own detail is kept
+([#372](https://github.com/zemdregon/switchboard/pull/372)). A clean `end_turn` line is never the run verdict on its
+own: a process that never exits after it ends `PROCESS_TIMEOUT` on the idle timeout or `CANCELLED` on cancel
+(`hang_after_end.jsonl`), the same clean stream at exit `1`, `2` or `137` ends `TOOL_FAILURE`, and a line over the
+compiled 1 MiB `maxLineBytes` after it ends `OUTPUT_PROTOCOL_ERROR`, each keeping the structured session id
+([#342](https://github.com/zemdregon/switchboard/pull/342), [#351](https://github.com/zemdregon/switchboard/pull/351)).
+An `error` line with an empty message is still a provider error, and an empty `stopReason` is a result that is not
+success ([#372](https://github.com/zemdregon/switchboard/pull/372)). `tool_call` keys that name `Object.prototype`
 members map to `other`, prototype-named types never smuggle a result, and only an exact `end_turn` stop reason is
 success ([#252](https://github.com/zemdregon/switchboard/pull/252)). Non-string command, path and tool fields are
 omitted, never coerced. Structured `backing_provider`/`backingProvider` and `model`/`model_id` (or inferred from
@@ -836,14 +850,25 @@ The parser treats a guard-flagged `tool_call` (`violation`) as a failed run per
 guard inspects commands under the supported container aliases (`input`, `parameters`, `args`, `arguments`), command
 aliases (`command` > `cmd` > `CommandLine` on the container or event root), target paths (`path` > `filePath` >
 `file_path` > `AbsolutePath` > `target`), tool names (`tool` > `name` > `tool_name`), and call IDs
-(`id` > `call_id` > `tool_call_id`). Late or swapped commands on `tool_call_update` are correlated and re-evaluated by
-the guard without duplicating identical reports. Tool kind maps to `shell` when a command is present or tool name is
-`run_terminal_command`, `read` when target is present without command, and `other` otherwise. In an approved bypass run
+(`id` > `call_id` > `tool_call_id`). Only the first object container is read; containers are not merged, so an object
+`input` without a command shadows `parameters`, `args` and `arguments` (a top-level `command` is still read), and an
+empty-string command is a command that shadows `cmd` and the top-level command. Both are pinned gaps the guard cannot
+see: `shadowed_parameters.jsonl` replays a Git write under `parameters` behind an empty `input` to `end_turn` success
+with one unknown event ([#372](https://github.com/zemdregon/switchboard/pull/372)). Late or swapped commands on
+`tool_call_update` are correlated by call id and re-evaluated by the guard without duplicating identical reports.
+Id-less lines are numbered `call_1`, `call_2` and so on; an id-less update does not correlate to an earlier id'd call
+and is reported again (over-reporting, never under-reporting), and an id-less Git-write update with no `tool_call`
+before it is still guarded (`idless_update_guard.jsonl` replays to `PERMISSION_BLOCKED`;
+[#354](https://github.com/zemdregon/switchboard/pull/354), [#372](https://github.com/zemdregon/switchboard/pull/372)).
+Tool kind maps to `shell` when a command is present or tool name is `run_terminal_command` (a target-only
+`run_terminal_command` call is a `shell` event carrying the target), `read` when target is present without command,
+and `other` otherwise. In an approved bypass run
 the guard enforces Git
 writes only: a credential read, outside write or network call chained with a parsed Git write is blocked because of the
 Git write, not because those other actions were refused. Native command/target fields remain unrecorded (ROADMAP T4.26,
-T4.28). A bare `tool_call` before a clean `end_turn` still succeeds; path keys, tool `content` text and a hostile
-lower-precedence argument key shadowed by a benign higher one remain invisible to the guard. Synthetic replay does not
+T4.28). A bare `tool_call` before a clean `end_turn` still succeeds; path keys, tool `content` text, a hostile
+lower-precedence argument key shadowed by a benign higher one, and a command in a container shadowed by an earlier
+object container without one remain invisible to the guard. Synthetic replay does not
 prove provider refusal or preventive isolation.
 
 `commitChannel` is **`finalize-only`**: Switchboard does not inject a per-run MCP server (no headless MCP-definition
@@ -857,7 +882,13 @@ Fixture evidence on `main`: `src/adapters/grok/fixtures/` (T4.23 Done-when and T
 [#260](https://github.com/zemdregon/switchboard/pull/260), `backing_provider.jsonl` from T4.23 / T4.6,
 `resume_failure.jsonl` from [#313](https://github.com/zemdregon/switchboard/pull/313), and `unknown_then_end.jsonl`,
 `error_after_end.jsonl`, and `malformed_after_end.jsonl` from
-[#319](https://github.com/zemdregon/switchboard/pull/319)); `src/adapters/grok/grok.test.ts` ("grok compile matrix
+[#319](https://github.com/zemdregon/switchboard/pull/319), `hang_after_end.jsonl` from
+[#342](https://github.com/zemdregon/switchboard/pull/342) and [#351](https://github.com/zemdregon/switchboard/pull/351),
+`idless_update_guard.jsonl` from [#354](https://github.com/zemdregon/switchboard/pull/354), and
+`shadowed_parameters.jsonl` from [#372](https://github.com/zemdregon/switchboard/pull/372));
+`src/adapters/grok/parser-residual.test.ts` ("grok parser residuals (T4.23, synthetic lines; parser unchanged)" and
+its "second pass", [#354](https://github.com/zemdregon/switchboard/pull/354),
+[#372](https://github.com/zemdregon/switchboard/pull/372)); `src/adapters/grok/grok.test.ts` ("grok compile matrix
 (T4.22)", "grok probe and resume (T4.22, T4.23)", "resumeArgs mirrors compile across every structured scope"
 ([#331](https://github.com/zemdregon/switchboard/pull/331)), "grok parser and result (T4.23; SYNTHETIC lines in the
 shapes the 2026-10-14 live check recorded)", "cases with no recorded native shape (live check 5d, 7g, 8c, 8f)" fixture
@@ -879,7 +910,9 @@ T4.26 partial
 [#302](https://github.com/zemdregon/switchboard/pull/302),
 [#308](https://github.com/zemdregon/switchboard/pull/308),
 [#326](https://github.com/zemdregon/switchboard/pull/326),
-[#345](https://github.com/zemdregon/switchboard/pull/345));
+[#345](https://github.com/zemdregon/switchboard/pull/345),
+[#351](https://github.com/zemdregon/switchboard/pull/351),
+[#358](https://github.com/zemdregon/switchboard/pull/358));
 no `replayGap`). [#302](https://github.com/zemdregon/switchboard/pull/302) added synthetic argument-key and
 tool-name variants (`input.cmd`, top-level `command`, `CommandLine` on `arguments` / `input` / the event, `name` and
 `tool_name`), commands arriving or changing only on `tool_call_update` (including `call_id` and `tool_call_id`),
@@ -900,10 +933,19 @@ covered: non-object `input`, null `parameters`, a non-string `command` beside `c
 separate hostile one, a hostile call swapped back to a benign command in `tool_call_update`, and every hostile category
 at exit `2` and `137` (15 streams, all `PERMISSION_BLOCKED` with the guard enabled); `unknown_events` adds non-object
 `input`, empty or non-string tool names, null `parameters`, and an exit-`2` unknown-only stream (134 streams total: 124
-blocked, 10 unknown-event; 12 `grokPartialStreams` unchanged). Bare, non-string and prototype-key tool lines remain
-`unknown`; cut-line streams end `OUTPUT_PROTOCOL_ERROR`, which outranks a guard verdict. These case-file updates change
-neither the parser nor the compiled matrix; fields other than `type` remain hypothetical. No end-to-end run through
-Switchboard against a logged-in `grok` has been recorded yet (T4.28).
+blocked, 10 unknown-event; 12 `grokPartialStreams` unchanged).
+[#351](https://github.com/zemdregon/switchboard/pull/351) adds, per hostile category at exit `0` and `1`, a guarded call
+before `end` followed after it by an unreadable or a repeated `tool_call_update` (12 streams, all `PERMISSION_BLOCKED`;
+without the guard verdict the 6 at exit `0` end `ok`, the T4.26 residual above).
+[#358](https://github.com/zemdregon/switchboard/pull/358) (escapes corrected in
+[#363](https://github.com/zemdregon/switchboard/pull/363)) adds 42 blocked streams: JSON encodings only `JSON.parse`
+resolves (`\u` escapes in type, key and command, a duplicate `command` key whose last value is the Git write, CRLF
+lines), hypothetical `stopReason` values `max_tokens` and `refusal` after a Git-write call, a call first reported with
+only `input.path` then given a Git-write command on the same id, and swapped or after-`end` Git writes at exit `2` and
+`137` (188 streams total: 178 blocked, 10 unknown-event; 12 `grokPartialStreams` unchanged). Bare, non-string and
+prototype-key tool lines remain `unknown`; cut-line streams end `OUTPUT_PROTOCOL_ERROR`, which outranks a guard
+verdict. These case-file updates change neither the parser nor the compiled matrix; fields other than `type` remain
+hypothetical. No end-to-end run through Switchboard against a logged-in `grok` has been recorded yet (T4.28).
 
 ## Antigravity CLI (milestone 4)
 
@@ -1578,18 +1620,20 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   Compile, isolation-flag and argv checks pass for each compiled bypass cell; hostile replay blocking streams test Git
   writes blocked by Switchboard's tool-call guard per ADR-0039.
   [#302](https://github.com/zemdregon/switchboard/pull/302) through
-  [#345](https://github.com/zemdregon/switchboard/pull/345) expand synthetic command-key, update/call-id, Git-write,
-  provider-error, cut-line, parser fall-through and exit `2`/`137` coverage on `main` (#308 completes both cut positions
-  for each category and exit code; #326 and #345 widen the matrix to 134 hostile streams with 12 `grokPartialStreams`);
-  fields other than `type` remain hypothetical, and no live CLI validation is implied. A bare `tool_call` before a clean
-  `end_turn` still succeeds; path keys, tool `content` and shadowed lower-precedence command keys are invisible to the
-  guard. A bare unreadable `tool_call_update` after a clean `end_turn` still succeeds at exit 0 (T4.26 residual). Partial
-  lines end `OUTPUT_PROTOCOL_ERROR`, not a proven provider refusal. FR-POL-04
-  cannot hold in the only compiled scope because repository configuration is `enabled` and `.mcp.json` and
-  `.grok/config.toml` load without `--trust` (live check 10a). Native login credentials remain readable from inside the
-  sandbox (live check 11b, Q-62). Other hostile categories without a parsed Git write are not blocked by the bypass guard.
-  Scrubbed native `tool_call` and `tool_call_update` command/target and status fields, live blocked outcomes and
-  `adapters validate` remain operator work (T4.21 extension / T4.28). See ROADMAP T4.26 for the full gap list.
+  [#358](https://github.com/zemdregon/switchboard/pull/358) expand synthetic command-key, update/call-id, Git-write,
+  provider-error, cut-line, parser fall-through, exit `2`/`137`, trailing-update and JSON-encoding coverage on `main`
+  (#308 completes both cut positions for each category and exit code; #326, #345, #351 and #358 widen the matrix to 188
+  streams, 178 blocked and 10 unknown-event, with 12 `grokPartialStreams`); fields other than `type` remain
+  hypothetical, and no live CLI validation is implied. A bare `tool_call` before a clean `end_turn` still succeeds;
+  path keys, tool `content`, shadowed lower-precedence command keys and a command in a container shadowed by an earlier
+  object container without one (#372) are invisible to the guard. A bare unreadable `tool_call_update` after a clean
+  `end_turn` still succeeds at exit 0 (T4.26 residual). Partial lines end `OUTPUT_PROTOCOL_ERROR`, not a proven
+  provider refusal. FR-POL-04 cannot hold in the only compiled scope because repository configuration is `enabled`
+  and `.mcp.json` and `.grok/config.toml` load without `--trust` (live check 10a). Native login credentials remain
+  readable from inside the sandbox (live check 11b, Q-62). Other hostile categories without a parsed Git write are not
+  blocked by the bypass guard. Scrubbed native `tool_call` and `tool_call_update` command/target and status fields, live
+  blocked outcomes and `adapters validate` remain operator work (T4.21 extension / T4.28). See ROADMAP T4.26 for the
+  full gap list.
 - **Antigravity malicious-fixture leg is partial (ROADMAP T4.36).** CI runs `test/malicious/adapter-leg.test.ts` with
   `test/malicious/adapters/antigravity.case.ts` on synthetic `stream-json` streams (no `agy` installed; no `replayGap`).
   Compile, isolation-flag and argv checks pass for the approved bypass cell; hostile replay blocking covers every
