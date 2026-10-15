@@ -1708,6 +1708,16 @@ on fakes**. Q-67 stays Yes.
 unavailable fake inner calls. Responses remain byte-identical both with and without `shares_subscription_with`;
 the expected separate inner usage rows are asserted. The production commit-tool channel, MCP admission harness and
 live backend remain outstanding.
+*2026-10-15 capacity parity evidence (Delegated):* `src/capacity/capacity.test.ts` proves the estimator and canonical
+projection are byte-identical before and after inner calls with no shared subscription (recording only `inner_call` rows)
+as well as with `shares_subscription_with` naming either the provider under test or a distinct provider, and asserts
+`collectCapacityInputs` strictly ignores `inner_agent` and `controller_estimated` usage observations.
+`src/inner/usage.test.ts` proves `createCommitMessageTask` and `createClassifyRouteFeaturesHook` write no usage observation
+when `shares_subscription_with` is unset. `src/inner/usage-surfaces.test.ts` proves `inner test` without shared
+subscription leaves `usage_observation` empty, omits the `inner_shared_subscription` warning and keeps `get_capacity`
+and `doctor.capacity` byte-identical, and proves both `get_capacity` (filtered and unfiltered) and `capacity --json`
+remain byte-identical before and after the injected `commit_message` and `route_features` serve-path contracts with
+and without a shared subscription.
 
 **T11.8 status (2026-10-13; Delegated): Done on fakes. No live inner backend, provider CLI, pull-request API or network
 host was used.** "Done when", clause by clause: *the draft passes the sanitiser*: a hostile fake backend returning a
