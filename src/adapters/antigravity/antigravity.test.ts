@@ -1132,6 +1132,182 @@ describe("antigravity cases with no recorded native shape (T4.33, synthetic shap
 });
 
 /**
+ * T4.33: parser branches with no test until now (2026-10-15, Delegated, not owner-approved). SYNTHETIC lines; no new
+ * capture and the parser is unchanged. Each pins what `parseEvent` does today with a field shape the live check did
+ * not record, so a capture that differs breaks a named test rather than passing silently.
+ */
+describe("antigravity parser fallbacks and exact matching (T4.33, synthetic shapes)", () => {
+  const CID = "0b6c2d1e-0000-4000-8000-00000000000f";
+  const j = (o: Record<string, unknown>) => JSON.stringify(o);
+  const INIT = j({ event: "init", conversation_id: CID, init: { cwd: "/work/tree" } });
+  const USAGE = { input_tokens: 20, output_tokens: 3, thinking_tokens: 1, cache_read_tokens: 0, total_tokens: 24 };
+  const RESULT = (over: Record<string, unknown> = {}) =>
+    j({ event: "result", result: { conversation_id: CID, status: "SUCCESS", response: "ok", usage: USAGE, ...over } });
+  const TOOL = (index: number, extra: Record<string, unknown>) =>
+    j({ event: "step_update", conversation_id: CID, step_index: index, state: "ACTIVE", step_type: "tool", ...extra });
+  const EXIT0: ExitInfo = { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] };
+  const parse = (lines: string[], exit: ExitInfo = EXIT0) => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const events: NormalizedEvent[] = lines.flatMap((l) => a.parseEvent(l, state));
+    return { state, events, result: a.extractResult(events, exit) };
+  };
+  const calls = (events: readonly NormalizedEvent[]) => events.filter((e) => e.kind === "tool_call");
+
+  it("each Assumption parameter key reaches the guard: CommandLine as a command, file_path and AbsolutePath as paths", () => {
+    // protocol.ts: the keys of `tool_info.parameters` were not recorded (T4.33 "Not done" (3)); these are the aliases
+    // the parser reads besides `command` and `path`.
+    const { events } = parse([
+      INIT,
+      TOOL(1, { tool_info: { name: "run_command", parameters: { CommandLine: "git push origin main" } } }),
+      TOOL(2, { tool_info: { name: "write_to_file", parameters: { file_path: "/work/tree/a.txt" } } }),
+      TOOL(3, { tool_info: { name: "view_file", parameters: { AbsolutePath: "/work/tree/b.txt" } } }),
+      RESULT(),
+    ]);
+    expect(calls(events)).toEqual([
+      { kind: "tool_call", tool: "shell", name: "run_command", command: "git push origin main" },
+      { kind: "tool_call", tool: "other", name: "write_to_file", target: "/work/tree/a.txt" },
+      { kind: "tool_call", tool: "other", name: "view_file", target: "/work/tree/b.txt" },
+    ]);
+    const guarded = events.map((e) => guardEvent(e, { cwd: "/work/tree", home: "/home/synthetic", bypass: true }));
+    expect(guarded[1]).toMatchObject({ kind: "tool_call", violation: expect.anything() });
+  });
+
+  it("`command` wins over `CommandLine`, `path` over the aliases, and a command drops the path from the report", () => {
+    const { events } = parse([
+      INIT,
+      TOOL(1, {
+        tool_info: { name: "run_command", parameters: { command: "ls", CommandLine: "git push origin main" } },
+      }),
+      TOOL(2, { tool_info: { name: "edit", parameters: { path: "/a", file_path: "/b", AbsolutePath: "/c" } } }),
+      TOOL(3, { tool_info: { name: "edit", parameters: { file_path: "/b", AbsolutePath: "/c" } } }),
+      TOOL(4, { tool_info: { name: "run_command", parameters: { command: "ls", path: "/work/tree" } } }),
+      RESULT(),
+    ]);
+    expect(calls(events)).toEqual([
+      { kind: "tool_call", tool: "shell", name: "run_command", command: "ls" },
+      { kind: "tool_call", tool: "other", name: "edit", target: "/a" },
+      { kind: "tool_call", tool: "other", name: "edit", target: "/b" },
+      { kind: "tool_call", tool: "shell", name: "run_command", command: "ls" },
+    ]);
+  });
+
+  it("the tool name falls back from tool_info.name to tool_name to `unknown`; names and paths are clipped", () => {
+    const longPath = `/work/tree/${"p".repeat(600)}`;
+    const { events } = parse([
+      INIT,
+      TOOL(1, { tool_name: "outer", tool_info: { name: "inner" } }),
+      TOOL(2, { tool_name: "outer", tool_info: { name: 7 } }),
+      TOOL(3, {}),
+      TOOL(4, { tool_info: { name: "n".repeat(100), parameters: { path: longPath } } }),
+      RESULT(),
+    ]);
+    const reported = calls(events);
+    expect(reported.slice(0, 3).map((e) => (e.kind === "tool_call" ? e.name : undefined))).toEqual([
+      "inner",
+      "outer",
+      "unknown",
+    ]);
+    expect(reported[3]).toEqual({
+      kind: "tool_call",
+      tool: "other",
+      name: `${"n".repeat(64)}…`,
+      target: `${longPath.slice(0, 512)}…`,
+    });
+  });
+
+  it("a denied entry is named by display_name, then action, then `unknown`; non-object entries still deny", () => {
+    const { events, result } = parse([
+      INIT,
+      RESULT({
+        denied_actions: [
+          { action: "command", display_name: "RunCommand" },
+          { action: "command" },
+          { display_name: 3, action: "write" },
+          {},
+          "RunCommand",
+          null,
+          { display_name: "D".repeat(100) },
+        ],
+      }),
+    ]);
+    expect(events.flatMap((e) => (e.kind === "permission_denied" ? [e.tool] : []))).toEqual([
+      "RunCommand",
+      "command",
+      "write",
+      "unknown",
+      "unknown",
+      "unknown",
+      `${"D".repeat(64)}…`,
+    ]);
+    expect(result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+  });
+
+  it("error prefixes match case-sensitively at the start only; anything else is TOOL_FAILURE with a clipped message", () => {
+    const exit1: ExitInfo = { ...EXIT0, exitCode: 1 };
+    for (const error of [
+      "Invalid model selection (--model x)",
+      " invalid model selection",
+      "error: invalid model selection",
+      "Authentication failed or timed out",
+      "AUTHENTICATION FAILED",
+      "login: authentication failed",
+    ]) {
+      const r = parse([INIT, RESULT({ status: "ERROR", response: "", error })], exit1);
+      expect(r.result, error).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+      expect(r.events, error).toContainEqual({ kind: "provider_error", category: "unknown", message: error });
+    }
+    const long = `invalid model selection ${"m".repeat(3_000)}`;
+    const r = parse([INIT, RESULT({ status: "ERROR", response: "", error: long })], exit1);
+    expect(r.result).toMatchObject({ ok: false, failureCode: "MODEL_UNAVAILABLE" });
+    expect(r.events).toContainEqual({
+      kind: "provider_error",
+      category: "model_unavailable",
+      message: `${long.slice(0, 2_000)}…`,
+    });
+  });
+
+  it("a result with no init binds the envelope's id; a non-string status is an unknown line and never succeeds", () => {
+    const alone = parse([RESULT()]);
+    expect(alone.events[0]).toEqual({ kind: "session_bound", nativeSessionId: CID });
+    expect(alone.result).toMatchObject({ ok: true, nativeSessionId: CID });
+    for (const status of [1, null, true, { s: "SUCCESS" }, ["SUCCESS"]]) {
+      const r = parse([INIT, RESULT({ status })]);
+      expect(r.state.unknownEvents, JSON.stringify(status)).toBe(1);
+      expect(r.events.some((e) => e.kind === "result" || e.kind === "usage")).toBe(false);
+      expect(r.result, JSON.stringify(status)).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+    }
+  });
+
+  it("init.model is kept only as a string and clipped; a non-string model binds the id without one", () => {
+    const bound = (model: unknown) =>
+      parse([j({ event: "init", conversation_id: CID, init: { model } }), RESULT()]).events[0];
+    expect(bound("m".repeat(200))).toEqual({
+      kind: "session_bound",
+      nativeSessionId: CID,
+      model: `${"m".repeat(128)}…`,
+    });
+    for (const model of [7, null, { id: "x" }, ""]) {
+      expect(bound(model), JSON.stringify(model)).toEqual({ kind: "session_bound", nativeSessionId: CID });
+    }
+  });
+
+  it("a long response is clipped, then the summary keeps its last 2,000 characters; an empty or non-string one is none", () => {
+    // The message is clipped to 2,000 characters plus `…` and `extractResult` keeps the tail, so the first character
+    // drops; pinned as is.
+    const long = `x${"a".repeat(1_998)}bc`;
+    const summary = parse([INIT, RESULT({ response: long })]).result.summary;
+    expect(summary).toBe(`${"a".repeat(1_998)}b…`);
+    expect(summary).toHaveLength(2_000);
+    for (const response of ["", 5, null, ["ok"]]) {
+      const r = parse([INIT, RESULT({ response })]).result;
+      expect(r, JSON.stringify(response)).toMatchObject({ ok: true });
+      expect(r, JSON.stringify(response)).not.toHaveProperty("summary");
+    }
+  });
+});
+
+/**
  * T4.35 (FR-ADP-11): the shared conformance suite over synthetic recorded fixtures (`./fixtures/*.jsonl`, in the
  * `stream-json` shapes of the 2026-10-14 live check), replayed by `replay.mjs --provider antigravity` in place of the
  * binary, so it passes with no `agy` installed. The prompt reaches the replay as the `--prompt=` argv word. The
