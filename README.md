@@ -102,14 +102,18 @@ Pre-release. The package is private and is not published to any registry; you bu
   and a Git declaration on synthetic fixtures (README [Antigravity CLI](#antigravity-cli-milestone-4), ROADMAP T4.32 to
   T4.37); draft [#295](https://github.com/zemdregon/switchboard/pull/295) widens the synthetic malicious matrix only.
   Live smoke, live malicious leg and `adapters validate` for Antigravity remain operator work (T4.38). Cursor has
-  module, compile-matrix, parser (partial: T4.43; supervisor-replayed JSONL fixtures,
+  module, compile-matrix, parser (partial: T4.43 until operator capture; supervisor-replayed JSONL fixtures,
   [#283](https://github.com/zemdregon/switchboard/pull/283),
   [#287](https://github.com/zemdregon/switchboard/pull/287),
   [#299](https://github.com/zemdregon/switchboard/pull/299),
-  [#324](https://github.com/zemdregon/switchboard/pull/324)), auth-preflight, a conformance suite on synthetic
-  fixtures (partial: T4.45; replay dialect hardening, 41 compile/env refusal checks, and fixtures including
-  `denied_after_write`, `permission_denied_perm`, `resume_unknown_id`, `unknown_event`, and `unsafe_id_after_bound`,
-  [#309](https://github.com/zemdregon/switchboard/pull/309)), malicious-fixture leg (T4.46) and Git declaration
+  [#324](https://github.com/zemdregon/switchboard/pull/324), residual ordering and resume/compile parity
+  [#333](https://github.com/zemdregon/switchboard/pull/333)), auth-preflight, a conformance suite on synthetic
+  fixtures (T4.45; replay dialect hardening, 59 compile/env refusal checks, and fixtures including
+  `denied_after_write`, `permission_denied_perm`, `resume_unknown_id`, `unknown_event`, `unsafe_id_after_bound` and
+  `git_write_guard_args`,
+  [#309](https://github.com/zemdregon/switchboard/pull/309),
+  [#315](https://github.com/zemdregon/switchboard/pull/315)), malicious-fixture leg (T4.46; category/exit matrix and
+  12 partial streams, [#316](https://github.com/zemdregon/switchboard/pull/316)) and Git declaration
   fixture tests on synthetic fixtures (README [Cursor CLI](#cursor-cli-milestone-4), ROADMAP T4.42 to T4.47); live
   smoke, live malicious leg and `adapters validate` remain operator work (T4.48). OpenCode has module, compile-matrix,
   parser (partial: T4.53; every Done-when case has a
@@ -974,7 +978,9 @@ servers), and no per-run permission flag is documented.
 | `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one argv shape: `cursor-agent --print --output-format stream-json --trust --force` with the prompt on stdin, worktree file access, shell `broad`, network `on` and repository configuration `enabled`, and **no** `--sandbox` flag (owner decision 46). A scope without `bypass`, or any narrowing Switchboard can express (read-only files or unwritable workspace, shell allowlist or none, network off or allowlist, repository configuration disabled or approved, or model overrides), is refused before spawn (`Ineligible: CAPABILITY_MISSING`). Bypass approved on any profile other than `privileged`, or `privileged` without approval, is refused `PROFILE_UNSUPPORTED` (FR-POL-03, ADR-0017). Bypass-class flags such as `--approve-mcps` and `--yolo` are never compiled outside that case. |
 
 Resume continues the native session with `--resume <session_id>` through the same matrix when the provider is eligible
-(synthetic fixtures in `src/adapters/cursor/cursor.test.ts`, T4.43). A `session_id` that resume could not pass as one
+(synthetic fixtures in `src/adapters/cursor/cursor.test.ts`, T4.43). `resumeArgs` matches `compile` across every
+structured scope, including exact refusals (one compiled bypass cell; `--resume <session_id>` is appended;
+[#333](https://github.com/zemdregon/switchboard/pull/333)). A `session_id` that resume could not pass as one
 safe argument (matching `^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`, refusing leading dashes, empty strings or flag syntax) is
 never bound (`OUTPUT_PROTOCOL_ERROR` on stream without binding, `CAPABILITY_MISSING` in `resumeArgs`;
 [#248](https://github.com/zemdregon/switchboard/pull/248), [#287](https://github.com/zemdregon/switchboard/pull/287),
@@ -1027,6 +1033,7 @@ Supervisor-replayed JSONL fixtures under `src/adapters/cursor/fixtures/` pin tod
 fields ([#283](https://github.com/zemdregon/switchboard/pull/283),
 [#287](https://github.com/zemdregon/switchboard/pull/287),
 [#309](https://github.com/zemdregon/switchboard/pull/309),
+[#315](https://github.com/zemdregon/switchboard/pull/315),
 [#324](https://github.com/zemdregon/switchboard/pull/324)): `rate_limit` (rows 4 and 14, never reached/forced) replays
 an empty stream at exit 1 to `TOOL_FAILURE`, never `RATE_LIMIT_TRANSIENT`; `rate_limit_error` replays an in-stream
 error result at exit 0 to `TOOL_FAILURE`; `sandbox_violation` (row 9, unrecorded sandbox error text at exit 0) replays
@@ -1038,8 +1045,10 @@ unknown shape cannot supply a result while a later recognized `result` still suc
 `tool_call` after the `result` line to `OUTPUT_PROTOCOL_ERROR`; `session_changed` replays a conflicting `session_id` to
 `OUTPUT_PROTOCOL_ERROR` with the first id bound; `two_results` replays more than one result line to
 `OUTPUT_PROTOCOL_ERROR`; `git_write_guard` (ADR-0039) replays a guard-flagged Git write under a `success` result at exit
-0 to `PERMISSION_BLOCKED`; `no_result` replays text output at exit 0 without a `result` line to
-`OUTPUT_PROTOCOL_ERROR`; `unsafe_session_id` replays an unsafe session id in `init` to `OUTPUT_PROTOCOL_ERROR` without
+0 to `PERMISSION_BLOCKED`; `git_write_guard_args` replays the same Git write under `args.CommandLine`
+([#315](https://github.com/zemdregon/switchboard/pull/315)); `no_result` replays text output at exit 0 without a
+`result` line to `OUTPUT_PROTOCOL_ERROR`; `unsafe_session_id` replays an unsafe session id in `init` to
+`OUTPUT_PROTOCOL_ERROR` without
 binding; `unsafe_id_after_bound` replays an unsafe session id in `result` after a normal `init` to
 `OUTPUT_PROTOCOL_ERROR` while preserving the first bound id ([#309](https://github.com/zemdregon/switchboard/pull/309));
 `permission_denied` (row 7a `result.rejected`) and `permission_denied_perm` (row 11 `result.permissionDenied`,
@@ -1059,8 +1068,15 @@ beats a `rate_limit` event, a failed `result` and the exit code; and the Cursor 
 `OUTPUT_PROTOCOL_ERROR` ([#324](https://github.com/zemdregon/switchboard/pull/324)). The extra fields the live check
 recorded (`duration_ms`, `duration_api_ms` and `request_id` on `result`; `permissionMode` and `cwd` on `init`;
 `timestamp_ms` on `thinking`) never widen the usage record or reach an event
-([#324](https://github.com/zemdregon/switchboard/pull/324)). Closing the remaining gaps needs operator captures of a
-rate-limited or quota-stopped run and of any native backing-vendor field (ROADMAP T4.48).
+([#324](https://github.com/zemdregon/switchboard/pull/324)). The same `classifyFailure` precedence holds when
+lower-priority events arrive first ([#333](https://github.com/zemdregon/switchboard/pull/333)). Native credential
+(`apiKeySource` other than `login`) and protocol (mid-run session-id change) errors stay failures in either order
+around `result`; the first `provider_error` wins, and a failed `result` never outranks `AUTH_REQUIRED`. Opaque
+unknown envelopes before or after `result` cannot bind a session or smuggle status, usage, model, vendor or a
+credential source ([#333](https://github.com/zemdregon/switchboard/pull/333)). Closing the remaining gaps needs
+operator captures of a rate-limited or quota-stopped run and of any native backing-vendor field (ROADMAP T4.48).
+T4.43 stays `Partial` on that operator capture; T4.45 to T4.47 are `Done` against their Done-when on synthetic
+fixtures.
 
 ### Git and commits
 
@@ -1083,21 +1099,28 @@ Fixture evidence on `main`: `src/adapters/cursor/fixtures/` (T4.43 Done-when and
 `backing_provider.jsonl` from [#275](https://github.com/zemdregon/switchboard/pull/275), Done-when fixtures from
 [#283](https://github.com/zemdregon/switchboard/pull/283), anomaly and parameter fallback fixtures from
 [#287](https://github.com/zemdregon/switchboard/pull/287), conformance/refusal fixtures from
-[#309](https://github.com/zemdregon/switchboard/pull/309), and stream-order, `classifyFailure`-precedence and
-recorded-field pins with `resume_failure.jsonl`, `error_after_result.jsonl` and `malformed_after_result.jsonl` from
-[#324](https://github.com/zemdregon/switchboard/pull/324)); `src/adapters/cursor/cursor.test.ts` ("cursor compile matrix
-(T4.42)", "cursor bypass-class declaration (ADR-0035, ADR-0037)", "cursor probe and auth preflight (T4.42, T4.44)",
+[#309](https://github.com/zemdregon/switchboard/pull/309), remaining T4.45 fixtures including
+`git_write_guard_args.jsonl` from [#315](https://github.com/zemdregon/switchboard/pull/315), and stream-order,
+`classifyFailure`-precedence and recorded-field pins with `resume_failure.jsonl`, `error_after_result.jsonl` and
+`malformed_after_result.jsonl` from [#324](https://github.com/zemdregon/switchboard/pull/324)); residual ordering and
+resume/compile-parity pins in `src/adapters/cursor/cursor.test.ts` from
+[#333](https://github.com/zemdregon/switchboard/pull/333); `src/adapters/cursor/cursor.test.ts` ("cursor compile matrix
+(T4.42)", "cursor bypass-class declarations (ADR-0035, ADR-0037)", "cursor probe and auth preflight (T4.42, T4.44)",
 "cursor registry entry and manifest gate (T4.42)", "cursor parser and result (T4.43)", "cursor parser hardening (T4.43,
 synthetic shapes)", "cases with no recorded native shape (live check rows 4, 9, 14)" fixture replay, "cursor conformance
 suite (synthetic recorded fixtures, FR-ADP-11, T4.45)", "cursor backing-provider fixture (T4.43, T4.6, FR-ADP-10)",
 "cursor Git declaration (T4.47, FR-GIT-01, FR-GIT-02, FR-GIT-09)" and "cursor malicious-fixture leg (T4.46, NFR-SEC-03,
-FR-POL-04, FR-POL-06)"); CI also runs `test/malicious/adapters/cursor.case.ts` and `test/malicious/adapter-leg.test.ts`
-("adapter malicious leg: cursor"). The conformance suite replay dialect
-(`src/adapters/fixtures/replay-dialects/cursor.mjs`) enforces single `--print`, `--output-format stream-json`,
-`--trust`, `--force`, safe non-flag `--resume <id>`, no `--`, no positional arguments, and refuses credentials and
-config env variables (`CURSOR_API_KEY`, `CURSOR_AUTH_TOKEN`, `CURSOR_CONFIG_DIR`, `XDG_CONFIG_HOME`) and
-unauthorized or never-compiled flags (41 compile/env refusal checks pass in CI;
-[#309](https://github.com/zemdregon/switchboard/pull/309)). No end-to-end run through Switchboard against a logged-in
+FR-POL-04, FR-POL-06)"); CI also runs `test/malicious/adapters/cursor.case.ts`,
+`test/malicious/adapter-leg.test.ts` ("adapter malicious leg: cursor") and
+`test/malicious/cursor-leg.test.ts` ("Cursor malicious leg matrix (T4.46)": each hostile category at exit 0 and
+exit 1, plus 12 partial streams; [#316](https://github.com/zemdregon/switchboard/pull/316)). The conformance suite
+replay dialect (`src/adapters/fixtures/replay-dialects/cursor.mjs`) enforces single `--print`,
+`--output-format stream-json`, `--trust`, `--force`, safe non-flag `--resume <id>`, no `--`, no positional arguments,
+and refuses credentials and config env variables (`CURSOR_API_KEY`, `CURSOR_AUTH_TOKEN`, `CURSOR_CONFIG_DIR`,
+`XDG_CONFIG_HOME`) and unauthorized or never-compiled flags (59 compile/env refusal checks pass in CI, including `=`
+forms of compiled `--print`/`--trust`/`--force`;
+[#309](https://github.com/zemdregon/switchboard/pull/309),
+[#315](https://github.com/zemdregon/switchboard/pull/315)). No end-to-end run through Switchboard against a logged-in
 `cursor-agent` has been recorded yet (T4.48).
 
 ## OpenCode CLI (milestone 4)
