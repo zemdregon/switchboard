@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.53, T4.6). Native OpenCode output reports no backing vendor (live check row 4c); backing_provider is the structured key a fronted harness would carry, not a recorded field.","exit":0}}
+{"type":"step_start","timestamp":1,"sessionID":"ses_SYNTHETIC0000000000000001","model":"Synthetic Model 1","backing_provider":"backing-x","part":{"id":"prt_s1","type":"step-start"}}
+{"type":"text","timestamp":2,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_t1","type":"text","text":"Answered through the backing vendor."}}
+{"type":"step_finish","timestamp":3,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_f1","type":"step-finish","reason":"stop","tokens":{"input":10,"output":3,"reasoning":1,"cache":{"read":4,"write":0}},"cost":0.001}}
