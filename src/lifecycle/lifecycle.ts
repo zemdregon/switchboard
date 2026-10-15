@@ -162,6 +162,7 @@ import { workspaceReachesProviderState } from "../policy/provider-state.js";
 import { effectiveRepoConfig, repoAgentConfigRefusal } from "../policy/repo-agent-config.js";
 import {
   buildRouteDecision,
+  type ClassifierInput,
   type CollectDeps,
   classifyRequest,
   collectAffinityFacts,
@@ -174,6 +175,7 @@ import {
   failureCodeForIneligible,
   failureCodeForReason,
   filterEligible,
+  type RouteFeatures,
   type RouteScoringSettings,
   reasonCodeForIneligible,
   requirementsFor,
@@ -520,6 +522,11 @@ export interface RunLifecycleOptions {
    * the capacity window, provider configuration). Unset means the LLD defaults.
    */
   readonly routing?: RouteScoringSettings;
+  /** T11.11: bounded advisory classifier, called only after eligibility. Never receives routing authority. */
+  readonly classifyRouteFeatures?: (
+    input: ClassifierInput,
+    context: { readonly project?: ProjectSnapshot; readonly runId?: string; readonly metaSessionId?: string },
+  ) => Promise<RouteFeatures>;
   /**
    * T12.5 (FR-RAG-05, FR-RAG-08, LLD §14.6): the retrieval context pack. When set, a fresh (not resumed, not handoff)
    * run admitted under a project asks it for a pack after its workspace is prepared and before compile; the text is
@@ -654,6 +661,18 @@ export class RunLifecycle {
   }
 
   // ---- public API ---------------------------------------------------------------------------------------------
+
+  /** T11.11: features are stored only; the stage-1 filter and stage-2 scorer never read them (Q-82). */
+  async routeFeatures(
+    input: ClassifierInput,
+    context: { readonly project?: ProjectSnapshot; readonly runId?: string; readonly metaSessionId?: string } = {},
+  ): Promise<RouteFeatures> {
+    try {
+      return (await this.opts.classifyRouteFeatures?.(input, context)) ?? classifyRequest(input);
+    } catch {
+      return classifyRequest(input);
+    }
+  }
 
   /** Begin dispatching queued runs. Call after startup reconciliation. */
   start(): void {
@@ -2507,6 +2526,7 @@ export class RunLifecycle {
       notes.push("failover:none_eligible");
       return undefined;
     }
+    const snapshot = JSON.parse(failed.policy_snapshot_json) as { project?: ProjectSnapshot };
     const scoring = this.opts.routing ?? DEFAULT_ROUTE_SCORING;
     const from = failed.provider as string;
     const scoreInputs = collectScoreInputs(this.ledger, answer.decision.eligible, scoring, this.now(), from);
@@ -2515,12 +2535,19 @@ export class RunLifecycle {
       decision: answer.decision,
       admissible: answer.decision.eligible,
       preference: null,
-      features: classifyRequest({
-        objective: req.objective,
-        constraints: req.constraints ?? [],
-        verificationCommands: req.verification_commands?.length ?? 0,
-        writable: failed.trust_profile !== "inspect-untrusted",
-      }),
+      features: await this.routeFeatures(
+        {
+          objective: req.objective,
+          constraints: req.constraints ?? [],
+          verificationCommands: req.verification_commands?.length ?? 0,
+          writable: failed.trust_profile !== "inspect-untrusted",
+        },
+        {
+          runId: failed.id,
+          metaSessionId: failed.meta_session_id,
+          ...(snapshot.project ? { project: snapshot.project } : {}),
+        },
+      ),
       scoreInputs,
       // T7.5 (FR-CAP-06 amended, FR-RTE-07): a capacity failover re-bases the project's affinity on success.
       affinity: collectAffinityFacts(

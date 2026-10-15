@@ -413,7 +413,29 @@ export class GrokAdapter implements ProviderAdapter {
           out.push({ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "more than one end line" });
         }
         const id = str(ownProp(e, "sessionId"));
-        if (id !== undefined) out.push(...this.#bind(state, id));
+        const modelUsage = obj(ownProp(e, "modelUsage"));
+        const modelFromUsage =
+          modelUsage !== undefined
+            ? Object.keys(modelUsage).find(
+                (k) =>
+                  typeof k === "string" &&
+                  k !== "" &&
+                  k !== "__proto__" &&
+                  !(k in Object.prototype) &&
+                  Object.hasOwn(modelUsage, k),
+              )
+            : undefined;
+        const candidateModel = str(ownProp(e, "model")) ?? str(ownProp(e, "model_id")) ?? modelFromUsage;
+        const rawModel =
+          candidateModel !== undefined && candidateModel !== "__proto__" && !(candidateModel in Object.prototype)
+            ? candidateModel
+            : undefined;
+        const candidateBacking = str(ownProp(e, "backing_provider")) ?? str(ownProp(e, "backingProvider"));
+        const rawBacking =
+          candidateBacking !== undefined && candidateBacking !== "__proto__" && !(candidateBacking in Object.prototype)
+            ? candidateBacking
+            : undefined;
+        if (id !== undefined) out.push(...this.#bind(state, id, rawModel, rawBacking));
         const usage = obj(ownProp(e, "usage"));
         const metrics: Record<string, number | string | null> = {};
         const count = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
@@ -423,7 +445,10 @@ export class GrokAdapter implements ProviderAdapter {
         }
         const numTurns = ownProp(e, "num_turns");
         if (usage && count(numTurns)) metrics.num_turns = numTurns;
-        if (Object.keys(metrics).length > 0) out.push({ kind: "usage", source: "provider_reported", metrics });
+        // The end line usage is the run total (FR-CAP-01), so only the first end line records it; a second would count twice.
+        if (ends === 1 && Object.keys(metrics).length > 0) {
+          out.push({ kind: "usage", source: "provider_reported", metrics });
+        }
         const ok = ends === 1 && stop === STOP_REASON_END_TURN;
         out.push({ kind: "result", ok, ...(ok ? {} : { summary: `stopReason ${clip(stop, 64)}` }) });
         return out;
@@ -461,20 +486,26 @@ export class GrokAdapter implements ProviderAdapter {
       str(ownProp(input, "cmd")) ??
       str(ownProp(input, "CommandLine")) ??
       str(ownProp(e, "command")) ??
-      str(ownProp(e, "cmd"));
+      str(ownProp(e, "cmd")) ??
+      str(ownProp(e, "CommandLine"));
     const target =
       str(ownProp(input, "path")) ??
       str(ownProp(input, "filePath")) ??
       str(ownProp(input, "file_path")) ??
       str(ownProp(input, "AbsolutePath")) ??
+      str(ownProp(input, "target")) ??
       str(ownProp(e, "path")) ??
       str(ownProp(e, "filePath")) ??
+      str(ownProp(e, "file_path")) ??
+      str(ownProp(e, "AbsolutePath")) ??
       str(ownProp(e, "target"));
-    const name = str(ownProp(e, "tool")) ?? str(ownProp(e, "name")) ?? str(ownProp(e, "tool_name"));
+    const rawName = str(ownProp(e, "tool")) ?? str(ownProp(e, "name")) ?? str(ownProp(e, "tool_name"));
+    const name = rawName !== undefined && rawName !== "" ? rawName : undefined;
     if (command === undefined && target === undefined && name === undefined) {
       return this.#unknown(state, type);
     }
-    const callId = str(ownProp(e, "id")) ?? str(ownProp(e, "call_id")) ?? str(ownProp(e, "tool_call_id"));
+    const rawCallId = str(ownProp(e, "id")) ?? str(ownProp(e, "call_id")) ?? str(ownProp(e, "tool_call_id"));
+    const callId = rawCallId !== undefined && rawCallId !== "" ? rawCallId : undefined;
     let seen = seenToolCalls.get(state);
     if (seen === undefined) {
       seen = { counter: 0, calls: new Map() };
@@ -515,9 +546,15 @@ export class GrokAdapter implements ProviderAdapter {
   /**
    * The first non-empty id binds the session. A later, different id (a second `end` for another session) makes the
    * binding ambiguous, so the run fails closed; the first id stays bound. An id resume could not pass as one safe
-   * argument is never bound and fails the run (Proposed, fail closed, as Cursor and OpenCode).
+   * argument is never bound and fails the run (Proposed, fail closed, as Cursor and OpenCode). Structured model and
+   * backing_provider are supported for fronted harnesses (T4.6, FR-ADP-10; live check 4a observed a model id string).
    */
-  #bind(state: ParseState, id: string): NormalizedEvent[] {
+  #bind(
+    state: ParseState,
+    id: string,
+    model?: string | undefined,
+    backingProvider?: string | undefined,
+  ): NormalizedEvent[] {
     if (id === "") return [];
     if (!SESSION_ID_RE.test(id)) {
       return [{ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "session id is not a safe argument" }];
@@ -527,7 +564,17 @@ export class GrokAdapter implements ProviderAdapter {
       return [{ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "session id changed mid-run" }];
     }
     state.nativeSessionId = id;
-    return [{ kind: "session_bound", nativeSessionId: id }];
+    const cleanModel = model !== undefined && model !== "" ? clip(model, 128) : undefined;
+    const cleanBacking =
+      backingProvider !== undefined && backingProvider !== "" ? clip(backingProvider, 128) : undefined;
+    return [
+      {
+        kind: "session_bound",
+        nativeSessionId: id,
+        ...(cleanModel ? { model: cleanModel } : {}),
+        ...(cleanBacking ? { backingProvider: cleanBacking } : {}),
+      },
+    ];
   }
 
   #unknown(state: ParseState, rawType: string): NormalizedEvent[] {

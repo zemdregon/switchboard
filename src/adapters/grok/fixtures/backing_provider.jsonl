@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.23, T4.6). Live check row 4a reported model id grok-4.7-build in modelUsage; backing_provider is the structured key a fronted harness would carry, not a recorded field.","exit":0}}
+{"type":"available_commands","tools":["run_terminal_command","read_file"]}
+{"type":"text","data":"Answered through the backing vendor."}
+{"type":"end","stopReason":"end_turn","sessionId":"00000000-0000-4000-8000-000000000001","requestId":"req_synthetic_backing","modelUsage":{"grok-4.7-build":{"inputTokens":12,"outputTokens":4,"modelCalls":1}},"backing_provider":"backing-x","usage":{"input_tokens":12,"output_tokens":4,"total_tokens":16},"num_turns":1}
