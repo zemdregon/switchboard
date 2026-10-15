@@ -9,11 +9,15 @@ const opt = (list, name) => {
 
 const PROMPT = "--prompt=";
 const SKIP = "--dangerously-skip-permissions";
+// Every spelling of a value flag the replay reads: `agy` parses like Go's `flag` package (ADR-0045), where one or two
+// dashes and `=value` name the same flag and a repeated flag keeps its last value, while `opt` reads only the first
+// separate-word value. So each must appear exactly as the dialect reads it, or not at all.
+const spellings = (argv, name) => argv.filter((a) => new RegExp(`^--?${name}(=|$)`).test(a));
 
 // Mirrors BYPASS_FLAGS in src/adapters/audit.ts and the Antigravity `bypassFlags` in src/adapters/providers.ts minus
 // `--dangerously-skip-permissions` (the one bypass flag the approved cell compiles, checked below), plus flags the
-// adapter never emits (adapter.ts header) and the bare prompt spellings: the replay refuses to run if any appear
-// (defence in depth).
+// adapter never emits (adapter.ts header) and the bare prompt spellings, each also with the other dash count Go's `flag`
+// accepts: the replay refuses to run if any appear (defence in depth).
 const REFUSED = [
   "--yolo",
   "--force",
@@ -28,14 +32,23 @@ const REFUSED = [
   "--add-dir",
   "-add-dir",
   "--sandbox",
+  "-sandbox",
   "--mode",
+  "-mode",
   "--model",
+  "-model",
   "--continue",
+  "-continue",
   "-c",
+  "--c",
   "--print-timeout",
+  "-print-timeout",
   "--print",
+  "-print",
   "--prompt",
+  "-prompt",
   "-p",
+  "--p",
 ];
 
 // API-key mode stays disabled (adapter.ts ANTIGRAVITY_ENV_ALLOWLIST): none of these may reach the provider process.
@@ -45,6 +58,16 @@ const REFUSED_ENV = ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL
 export default {
   check(argv, fail) {
     if (opt(argv, "--output-format") !== "stream-json") fail("expected agy --output-format stream-json", 64);
+    if (spellings(argv, "output-format").join(" ") !== "--output-format") {
+      fail("expected exactly one `--output-format stream-json` (a repeated or `=` form would override it)", 64);
+    }
+    const conversation = spellings(argv, "conversation");
+    if (conversation.length > 0) {
+      const id = opt(argv, "--conversation");
+      if (conversation.join(" ") !== "--conversation" || id === undefined || id.startsWith("-")) {
+        fail("expected at most one `--conversation <id>` with an id", 64);
+      }
+    }
     if (argv.filter((a) => a.startsWith(PROMPT)).length !== 1) fail("expected exactly one --prompt=<prompt> word", 64);
     if (argv.filter((a) => a === SKIP).length !== 1) fail(`expected ${SKIP} exactly once (approved bypass cell)`, 64);
     const flags = argv.filter((a) => !a.startsWith(PROMPT));
