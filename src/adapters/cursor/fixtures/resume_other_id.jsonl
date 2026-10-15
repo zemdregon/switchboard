@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.43 residual, fourth pass). A resumed run (--resume <id>) whose init and result lines report a different, safe session_id: the adapter binds it and succeeds (no adapter code compares it with the requested id, a pinned gap); only the conformance harness's native session id check catches it. [LIVE] 8a to 8c returned the same id.","exit":0,"requireResume":true}}
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work/tree","session_id":"00000000-0000-4000-8000-000000000099","model":"Synthetic Model 1","permissionMode":"default"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Resumed into another session."}]},"session_id":"00000000-0000-4000-8000-000000000099"}
+{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"00000000-0000-4000-8000-000000000099","usage":{"inputTokens":11,"outputTokens":2}}
