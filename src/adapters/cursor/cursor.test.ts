@@ -787,24 +787,150 @@ describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
     expect(calls[2]).toMatchObject({ tool: "edit", target: `/${"p".repeat(511)}…` });
   });
 
-  it("cases with no recorded native shape end TOOL_FAILURE, never RATE_LIMIT_TRANSIENT, SANDBOX_VIOLATION or success", () => {
-    // No rate-limit, quota or sandbox event was recorded (live check rows 4, 9, 14): text naming one is not read.
-    for (const text of ["429 Too Many Requests", "rate limit reached", "quota exceeded", "sandbox: operation denied"]) {
-      const asError = parse([INIT(), ASSIST(text), RESULT({ subtype: "error", is_error: true, result: text })]);
-      expect(asError.result, text).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
-      expect(
-        asError.events.some((e) => e.kind === "rate_limit" || e.kind === "sandbox_violation"),
-        text,
-      ).toBe(false);
-      // A failed run prints no stream ([LIVE] 4, 14), so only the exit code is left.
-      expect(parse([], { ...EXIT0, exitCode: 1 }).result, text).toMatchObject({
+  // Done-when cases whose native shape the 2026-10-14 live check did NOT record (ROADMAP T4.43 stays Partial).
+  // These pin today's observed outcomes; an operator capture (T4.41 extension) must change them.
+  describe("cases with no recorded native shape (live check rows 4, 9, 14)", () => {
+    it("cases with no recorded native shape end TOOL_FAILURE, never RATE_LIMIT_TRANSIENT, SANDBOX_VIOLATION or success", () => {
+      // No rate-limit, quota or sandbox event was recorded (live check rows 4, 9, 14): text naming one is not read.
+      for (const text of [
+        "429 Too Many Requests",
+        "rate limit reached",
+        "quota exceeded",
+        "sandbox: operation denied",
+      ]) {
+        const asError = parse([INIT(), ASSIST(text), RESULT({ subtype: "error", is_error: true, result: text })]);
+        expect(asError.result, text).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+        expect(
+          asError.events.some((e) => e.kind === "rate_limit" || e.kind === "sandbox_violation"),
+          text,
+        ).toBe(false);
+        // A failed run prints no stream ([LIVE] 4, 14), so only the exit code is left.
+        expect(parse([], { ...EXIT0, exitCode: 1 }).result, text).toMatchObject({
+          ok: false,
+          failureCode: "TOOL_FAILURE",
+        });
+      }
+      // An unknown line type that could be a rate-limit event is counted, never a success on its own.
+      const unknownOnly = parse([INIT(), line({ type: "rate_limit", retry_after_ms: 1000 })]);
+      expect(unknownOnly.result).toMatchObject({
         ok: false,
-        failureCode: "TOOL_FAILURE",
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        unknownEventCount: 1,
       });
-    }
-    // An unknown line type that could be a rate-limit event is counted, never a success on its own.
-    const unknownOnly = parse([INIT(), line({ type: "rate_limit", retry_after_ms: 1000 })]);
-    expect(unknownOnly.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", unknownEventCount: 1 });
+    });
+
+    // The same outcomes replayed end to end from fixture files through the supervisor, so each Done-when case has a
+    // fixture: success (`success_edit`), task failure (`task_failure`), malformed (`malformed_output`), permission
+    // denied (`permission_denied`), backing vendor (`backing_provider`) and the ones below. They pin the gaps; an operator
+    // capture (T4.41 extension) must change them.
+    const replayCase = (
+      fixture: string,
+      kind: ConformanceCase["kind"],
+      exp: ConformanceCase["expect"],
+    ): ConformanceCase => ({
+      kind,
+      adapter: replayAdapter(fixture),
+      request: {
+        runId: "run_cursor_t443_fixture",
+        objective: "synthetic cursor objective",
+        constraints: [],
+        workspace: { cwd: makeCwd(), writable: true },
+        bypassApproved: true,
+      },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: exp,
+    });
+
+    it("fixture rate_limit (rows 4, 14, never forced) replays an empty stream at exit 1 to TOOL_FAILURE, never RATE_LIMIT_TRANSIENT", async () => {
+      const report = await runConformanceCase(
+        replayCase("rate_limit", "rate_limit", { ok: false, failureCode: "TOOL_FAILURE" }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", unknownEventCount: 0 });
+      expect(report.result).not.toHaveProperty("nativeSessionId");
+    });
+
+    it("fixture rate_limit_error replays an in-stream error result at exit 0 to TOOL_FAILURE, never RATE_LIMIT_TRANSIENT or success", async () => {
+      const report = await runConformanceCase(
+        replayCase("rate_limit_error", "rate_limit", {
+          ok: false,
+          failureCode: "TOOL_FAILURE",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", unknownEventCount: 0 });
+    });
+
+    it("fixture sandbox_violation (row 9 unrecorded shape) replays unrecorded sandbox error text to TOOL_FAILURE, never SANDBOX_VIOLATION", async () => {
+      const report = await runConformanceCase(
+        replayCase("sandbox_violation", "task_failure", {
+          ok: false,
+          failureCode: "TOOL_FAILURE",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", unknownEventCount: 0 });
+    });
+
+    it("fixture unknown_events replays to OUTPUT_PROTOCOL_ERROR: every unreadable line is counted and none binds a session", async () => {
+      const report = await runConformanceCase(
+        replayCase("unknown_events", "malformed_output", { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", unknownEventCount: 5 });
+      expect(report.result).not.toHaveProperty("nativeSessionId");
+    });
+
+    it("fixture trailing_tool replays a tool_call after the result line to OUTPUT_PROTOCOL_ERROR", async () => {
+      const report = await runConformanceCase(
+        replayCase("trailing_tool", "malformed_output", {
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "tool call after the result line",
+        nativeSessionId: DEFAULT_SESSION_ID,
+      });
+    });
+
+    it("fixture session_changed replays a conflicting session_id to OUTPUT_PROTOCOL_ERROR with the first id bound", async () => {
+      const report = await runConformanceCase(
+        replayCase("session_changed", "malformed_output", {
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        nativeSessionId: DEFAULT_SESSION_ID,
+      });
+    });
+
+    it("fixture two_results replays more than one result line to OUTPUT_PROTOCOL_ERROR", async () => {
+      const report = await runConformanceCase(
+        replayCase("two_results", "malformed_output", {
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          nativeSessionId: DEFAULT_SESSION_ID,
+        }),
+      );
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        nativeSessionId: DEFAULT_SESSION_ID,
+      });
+    });
   });
 
   // ADR-0039: a guard verdict ends the run in every run, bypass included, and the lifecycle trusts `result.ok`, so a

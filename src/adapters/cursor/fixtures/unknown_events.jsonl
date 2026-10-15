@@ -1,0 +1,6 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.43). Invented types and recorded types in unreadable shapes: every unreadable line is counted and none binds a session; replays to OUTPUT_PROTOCOL_ERROR.","exit":0}}
+{"type":"brand_new","some_field":"val"}
+{"type":"system","subtype":"compact"}
+{"no_type":true}
+{"type":"tool_call","subtype":"started"}
+{"type":"result"}
