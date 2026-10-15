@@ -14,6 +14,7 @@ import { GIT_FINALIZE_COMMIT_EVENT, GitPublisher, publishRefFor } from "../../gi
 import { createIdGenerator } from "../../ids/index.js";
 import { createLedger, openLedger } from "../../ledger/index.js";
 import { RunLifecycle } from "../../lifecycle/index.js";
+import { buildEnvelope } from "../../mcp/envelope.js";
 import { createSwitchboardServer } from "../../mcp/server.js";
 import { resolveTrustProfile } from "../../policy/profiles.js";
 import { usageObservationsFromEvents } from "../../usage/observations.js";
@@ -165,7 +166,7 @@ describe("antigravity compile matrix (T4.32)", () => {
     for (const a of r.argv.slice(1)) expect(never.includes(a), a).toBe(false);
     expect(r.env).toEqual({ AGY_CLI_DISABLE_AUTO_UPDATE: "true" });
     expect(r.envAllowlist).toEqual(["PATH", "HOME"]);
-    for (const name of ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL"]) {
+    for (const name of ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL", "GOOGLE_CLOUD_PROJECT"]) {
       expect(r.envAllowlist).not.toContain(name);
     }
     expect(r.stdin).toEqual({ kind: "none" });
@@ -2213,6 +2214,30 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     expect(fresh.result).toMatchObject({ ok: false, failureDetail: "exit code 64" });
   });
 
+  it("a resumed C10 zero-token SUCCESS (resume_failure) is TOOL_FAILURE and keeps the --conversation id", async () => {
+    // resumeArgs stays Ineligible (Q-86), so the dialect is given the id the same way as the success resume fixture.
+    const { binding: _binding, ...c } = caseOf("resume");
+    const failed = replayAdapter("resume_failure");
+    const withId = withCompile(failed, (r, p) => {
+      const inv = failed.compile(r, p);
+      return "ineligible" in inv ? inv : { ...inv, argv: [...inv.argv, "--conversation", RESUMED_SESSION_ID] };
+    });
+    const report = await runConformanceCase({
+      ...c,
+      adapter: withId,
+      expect: { ok: false, failureCode: "TOOL_FAILURE", nativeSessionId: RESUMED_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "SUCCESS with no reported tokens",
+      nativeSessionId: RESUMED_SESSION_ID,
+    });
+    const fresh = await runConformanceCase({ ...c, adapter: failed });
+    expect(fresh.result).toMatchObject({ ok: false, failureDetail: "exit code 64" });
+  });
+
   it("the case list replays the exit 3 and unrecorded usage shapes, both cancellation paths, and not the sandbox gap", () => {
     const cases = antigravityConformanceCases(makeCwd);
     const replays = (fixture: string) =>
@@ -2220,7 +2245,13 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
         const inv = x.adapter.compile(x.request, x.profile);
         return !("ineligible" in inv) && inv.argv.includes(fixturePath(fixture));
       });
-    for (const fixture of ["agy_error_exit3", "usage_unrecorded", "rate_limit", "rate_limit_error"]) {
+    for (const fixture of [
+      "agy_error_exit3",
+      "usage_unrecorded",
+      "rate_limit",
+      "rate_limit_error",
+      "sandbox_violation_error",
+    ]) {
       expect(replays(fixture).map((x) => [x.kind, x.expect.failureCode])).toEqual([["task_failure", "TOOL_FAILURE"]]);
     }
     expect(replays("unknown_events").map((x) => [x.kind, x.expect.failureCode])).toEqual([
@@ -2228,6 +2259,12 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     ]);
     expect(replays("git_write_guard_args").map((x) => [x.kind, x.expect.failureCode])).toEqual([
       ["task_failure", "PERMISSION_BLOCKED"],
+    ]);
+    expect(replays("denied_not_array").map((x) => [x.kind, x.expect.failureCode])).toEqual([
+      ["task_failure", "PERMISSION_BLOCKED"],
+    ]);
+    expect(replays("step_conversation_changed").map((x) => [x.kind, x.expect.failureCode])).toEqual([
+      ["malformed_output", "OUTPUT_PROTOCOL_ERROR"],
     ]);
     expect(replays("backing_provider").map((x) => [x.kind, x.expect.ok])).toEqual([["success", true]]);
     expect(replays("sandbox_violation_unrecorded")).toEqual([]);
@@ -2323,6 +2360,17 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     return c;
   };
 
+  it("a non-array denied_actions value is one denial: PERMISSION_BLOCKED, conversation id kept", async () => {
+    const report = await runConformanceCase(caseFor("denied_not_array"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "denied: unknown",
+      nativeSessionId: DEFAULT_SESSION_ID,
+    });
+  });
+
   it("a /credits SUCCESS envelope with no turn (live check C6) is TOOL_FAILURE and binds no session", async () => {
     const report = await runConformanceCase(caseFor("credits_command"));
     expect(report.checks.filter((k) => !k.ok)).toEqual([]);
@@ -2334,6 +2382,7 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     ["a stream with no result line at exit 0", "no_result", "no result event"],
     ["a second, successful result after a C10 zero-token one", "two_results", "protocol: more than one result line"],
     ["a result for another conversation", "conversation_changed", "protocol: conversation id changed mid-run"],
+    ["a step for another conversation", "step_conversation_changed", "protocol: conversation id changed mid-run"],
     [
       "an unsafe conversation id after a bound one",
       "unsafe_id_after_bound",
@@ -2426,6 +2475,19 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     });
   });
 
+  it("an in-stream ERROR envelope at exit 0 with sandbox-violation text replays to TOOL_FAILURE, never SANDBOX_VIOLATION", async () => {
+    // No sandbox shape is recorded (T4.33): the text is an unmapped provider error, so the run fails closed as
+    // TOOL_FAILURE. The detected SANDBOX_VIOLATION path stays pinned at the parser level only.
+    const report = await runConformanceCase(caseFor("sandbox_violation_error"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "unknown: sandbox: operation denied by seccomp profile",
+      nativeSessionId: DEFAULT_SESSION_ID,
+    });
+  });
+
   it("multiple unreadable/unrecognized event lines at exit 0 replay to OUTPUT_PROTOCOL_ERROR with counted unknown events and no session bound", async () => {
     const report = await runConformanceCase(caseFor("unknown_events"));
     expect(report.checks.filter((k) => !k.ok)).toEqual([]);
@@ -2457,6 +2519,32 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     const report = await runConformanceCase(c);
     expect(report.ok).toBe(true);
     expect(readFileSync(join(c.request.workspace.cwd, "partial.txt"), "utf8")).toContain("synthetic");
+  });
+
+  it("hang that ignores SIGTERM is cancelled with the process group empty", async () => {
+    const c = antigravityConformanceCases(makeCwd).find(
+      (x) =>
+        x.kind === "cancellation" &&
+        !("ineligible" in x.adapter.compile(x.request, x.profile)) &&
+        (x.adapter.compile(x.request, x.profile) as Invocation).argv.includes("--ignore-term"),
+    );
+    if (!c) throw new Error("missing cancellation ignoreTerm case");
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(report.checks.find((k) => k.name === "process group empty after run")?.ok).toBe(true);
+  });
+
+  it("hang that honours SIGTERM is cancelled cleanly", async () => {
+    const c = antigravityConformanceCases(makeCwd).find(
+      (x) =>
+        x.kind === "cancellation" &&
+        !("ineligible" in x.adapter.compile(x.request, x.profile)) &&
+        !(x.adapter.compile(x.request, x.profile) as Invocation).argv.includes("--ignore-term"),
+    );
+    if (!c) throw new Error("missing cancellation normal case");
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "CANCELLED" });
   });
 
   it("positive control: the same wrapper with the compile unchanged passes, so each refusal below is the replay's", async () => {
@@ -2619,6 +2707,69 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
         return [...a.slice(0, i + 1), "-version", ...a.slice(i + 1)];
       }),
     ],
+    // Declared bypass spellings and never-emitted C2 flags (providers.ts, adapter.ts header, live check C2/C7b/C17).
+    // Go's flag keeps the last value, so an `=` form or a prompt alias beside the compiled word is the same flag.
+    ["--yolo added", argvEdit((a) => [...a, "--yolo"])],
+    ["--force added", argvEdit((a) => [...a, "--force"])],
+    ["--always-approve added", argvEdit((a) => [...a, "--always-approve"])],
+    ["--approve-mcps added", argvEdit((a) => [...a, "--approve-mcps"])],
+    ["--full-auto added", argvEdit((a) => [...a, "--full-auto"])],
+    ["--remote-control added", argvEdit((a) => [...a, "--remote-control"])],
+    ["-remote-control added", argvEdit((a) => [...a, "-remote-control"])],
+    ["--add-dir added", argvEdit((a) => [...a, "--add-dir", "/tmp/synthetic"])],
+    ["-add-dir added", argvEdit((a) => [...a, "-add-dir", "/tmp/synthetic"])],
+    ["-gemini_dir added", argvEdit((a) => [...a, "-gemini_dir", "/tmp/synthetic"])],
+    ["--mode=plan added", argvEdit((a) => [...a, "--mode=plan"])],
+    ["--print-timeout added", argvEdit((a) => [...a, "--print-timeout", "1s"])],
+    ["-c added", argvEdit((a) => [...a, "-c"])],
+    ["--sandbox=false added", argvEdit((a) => [...a, "--sandbox=false"])],
+    ["--print= beside --prompt=", argvEdit((a) => [...a, "--print=synthetic other prompt"])],
+    ["-p as two words beside --prompt=", argvEdit((a) => [...a, "-p", "synthetic other prompt"])],
+    ["--output-format=json beside the two words", argvEdit((a) => [...a, "--output-format=json"])],
+    ["a second --output-format stream-json", argvEdit((a) => [...a, "--output-format", "stream-json"])],
+    [
+      "--output-format removed",
+      argvEdit((a) => a.filter((w, i) => w !== "--output-format" && a[i - 1] !== "--output-format")),
+    ],
+    [
+      "--prompt as two words in place of --prompt=",
+      argvEdit((a) => {
+        const i = a.findIndex((w) => w.startsWith("--prompt="));
+        const value = a[i]?.slice("--prompt=".length) ?? "";
+        return [...a.slice(0, i), "--prompt", value, ...a.slice(i + 1)];
+      }),
+    ],
+    [
+      "-dangerously-skip-permissions in place of the bare word",
+      argvEdit((a) => a.map((w) => (w === "--dangerously-skip-permissions" ? "-dangerously-skip-permissions" : w))),
+    ],
+    [
+      "-h before the compiled flags",
+      argvEdit((a) => {
+        const i = a.indexOf("--");
+        return [...a.slice(0, i + 1), "-h", ...a.slice(i + 1)];
+      }),
+    ],
+    [
+      "--h before the compiled flags",
+      argvEdit((a) => {
+        const i = a.indexOf("--");
+        return [...a.slice(0, i + 1), "--h", ...a.slice(i + 1)];
+      }),
+    ],
+    [
+      "models positional before the compiled flags",
+      argvEdit((a) => {
+        const i = a.indexOf("--");
+        return [...a.slice(0, i + 1), "models", ...a.slice(i + 1)];
+      }),
+    ],
+    ["--config-dir added", argvEdit((a) => [...a, "--config-dir", "/tmp/synthetic"])],
+    ["a trailing --", argvEdit((a) => [...a, "--"])],
+    ["--conversation with a slash id", argvEdit((a) => [...a, "--conversation", "../.gemini"])],
+    ["--conversation with a space in the id", argvEdit((a) => [...a, "--conversation", "not a token"])],
+    ["--conversation id longer than 256 characters", argvEdit((a) => [...a, "--conversation", `a${"b".repeat(256)}`])],
+    ["auto-update set to 1", (inv: Invocation): Invocation => ({ ...inv, env: { AGY_CLI_DISABLE_AUTO_UPDATE: "1" } })],
   ])(
     "the replay refuses an invocation agy would not be given (%s), so a wrong compile cannot pass",
     async (_n, edit) => {
@@ -2907,6 +3058,106 @@ describe("antigravity Git declaration (T4.37, FR-GIT-01, FR-GIT-02, FR-GIT-09)",
       const sha = g(repo, "rev-parse", "--verify", "--quiet", publishRefFor(metaSessionId));
       expect(sha).toMatch(/^[0-9a-f]{40}$/u);
       expect(g(repo, "show", "--name-only", "--format=", sha)).toContain("hello.txt");
+    } finally {
+      await lifecycle.shutdown();
+      db.close();
+    }
+  });
+});
+
+describe("antigravity backing-provider fixture (T4.35, T4.6, FR-ADP-10)", () => {
+  it("a replayed run stores harness antigravity and backing vendor side by side and shows both in get_run", async () => {
+    // Mirrors Grok Build T4.23 and Cursor T4.43: the parser/conformance level is pinned in the T4.33 describes;
+    // this one carries the fixture through RunLifecycle into the ledger and the get_run envelope.
+    const root = realpathSync(makeCwd());
+    const repo = join(root, "repo");
+    mkdirSync(repo);
+    const g = (...args: string[]) =>
+      execFileSync("git", ["-c", "commit.gpgsign=false", ...args], {
+        cwd: repo,
+        env: {
+          PATH: process.env.PATH ?? "",
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_AUTHOR_NAME: "Antigravity Dev",
+          GIT_AUTHOR_EMAIL: "antigravity@example.test",
+          GIT_COMMITTER_NAME: "Antigravity Dev",
+          GIT_COMMITTER_EMAIL: "antigravity@example.test",
+        },
+      });
+    g("init", "-q", "-b", "main");
+    writeFileSync(join(repo, "README.md"), "initial\n");
+    g("add", "-A");
+    g("commit", "-q", "-m", "init");
+
+    const dataDir = join(root, "data");
+    mkdirSync(dataDir);
+    const db = openLedger(dataDir);
+    const ids = createIdGenerator();
+    const ledger = createLedger(db, { ids });
+    const artifacts = new ArtifactStore(join(dataDir, "artifacts"));
+    const real = createProbeRunner();
+    const probeRunner: ProbeRunner = async (argv, opts) => {
+      if (argv.includes("models")) {
+        return {
+          stdout: "m-flash\tModel Flash\n",
+          stderr: "",
+          exitCode: 0,
+          timedOut: false,
+        };
+      }
+      return real(argv, opts);
+    };
+    const lifecycle = new RunLifecycle({
+      ledger,
+      workspace: new WorkspaceManager({ db, artifacts, dataDir, allowedRoots: [root], ids }),
+      artifacts,
+      adapters: new AdapterRegistry().register(replayAdapter("backing_provider")),
+      allowedRoots: [root],
+      globalConcurrency: 1,
+      resolveProfile: (name) => resolveTrustProfile(name),
+      probeRunner,
+    });
+    lifecycle.start();
+    try {
+      const { runId, metaSessionId } = await lifecycle.submit({
+        clientId: "c",
+        objective: "answer through a backing vendor",
+        workspace: repo,
+        trustProfile: "privileged",
+        provider: "antigravity",
+        privileged: { scope: BYPASS_SCOPE, approvedByClientPolicy: true },
+      });
+      const done = await lifecycle.waitForTerminal(runId);
+      expect(done.state, done.failure_detail ?? "").toBe("SUCCEEDED");
+
+      // The session_bound event's fields land on the provider binding (T5.3), never inferred from the display name.
+      expect(ledger.listProviderBindings(metaSessionId)).toEqual([
+        expect.objectContaining({
+          provider: "antigravity",
+          harness: "antigravity",
+          backing_provider: "backing-g",
+          model: "synthetic-model",
+          native_session_id: DEFAULT_SESSION_ID,
+        }),
+      ]);
+
+      const rows = ledger.listUsageObservationsForRun(runId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        provider: "antigravity",
+        harness: "antigravity",
+        backing_provider: "backing-g",
+        model: "synthetic-model",
+        source: "provider_reported",
+      });
+      expect(buildEnvelope(ledger, done, (s) => s).usage?.reported).toEqual([
+        expect.objectContaining({
+          harness: "antigravity",
+          backing_provider: "backing-g",
+          model: "synthetic-model",
+        }),
+      ]);
     } finally {
       await lifecycle.shutdown();
       db.close();
