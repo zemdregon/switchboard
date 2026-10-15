@@ -5,7 +5,7 @@
  * Scripted fake backend only; no network, no provider CLI. The `get_capacity` and `switchboard capacity` surfaces are
  * covered in `usage-surfaces.test.ts`.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -738,5 +738,105 @@ describe("the http backend's reported usage reaches the labelled observation as 
     ).not.toMatch(/total|9007199254740991/u);
     expect(h.ledger.listProviderReportedUsageSince("codex", "1970-01-01T00:00:00.000Z")).toHaveLength(0);
     expect(h.db.prepare("SELECT COUNT(*) AS n FROM provider_health").get()).toEqual({ n: 0 });
+  });
+});
+
+/**
+ * T11.5 says "no code path outside `Ledger.recordInnerCall` writes usage for an inner call". Two things make that true:
+ * the ledger's public insert (`insertUsageObservation`, the lifecycle's provider-reported writer) refuses every source
+ * but `provider_reported` (FR-CAP-01), and no production module other than the ledger repository writes the table at
+ * all. Until now the refusal was pinned for `controller_estimated` only (`src/usage/usage.test.ts`, written before
+ * migration 0006 added the `inner_agent` value), so a guard loosened to let `inner_agent` through the general path
+ * would have passed every test. The scan below is textual and simple, like `run-path-reach.test.ts`: word-bounded,
+ * so the migration's `usage_observation_new` does not match, and checked on a synthetic tree so it cannot be vacuous.
+ */
+describe("recordInnerCall under the flag is the only writer of inner_agent rows (T11.5; FR-INN-15, FR-CAP-01)", () => {
+  it("the public insert refuses an inner_agent row shaped exactly like a labelled one, and writes nothing", async () => {
+    const h = setup([GOOD], { shares: "claude-code" });
+    const before = h.snapshot();
+    const labelledShape = {
+      runId: h.run.id,
+      provider: "claude-code",
+      harness: "claude-code",
+      backingProvider: null,
+      model: "fake-model",
+      metrics: { input_tokens: 10, output_tokens: 4 },
+    };
+    expect(() =>
+      h.ledger.insertUsageObservation({
+        ...labelledShape,
+        // biome-ignore lint/suspicious/noExplicitAny: deliberately violating the type to prove the runtime guard
+        source: "inner_agent" as any,
+      }),
+    ).toThrow(/accepts only provider_reported rows \(FR-CAP-01\)/u);
+    expect(h.snapshot()).toBe(before);
+    expect(h.usageRows()).toEqual([]);
+    // The same shape reaches the table through the pipeline's own record, and only there: one call, one labelled row.
+    expect(await h.call()).toMatchObject({ accepted: true });
+    expect(h.usageRows()).toHaveLength(1);
+    expect(h.usageRows()[0]).toMatchObject({
+      run_id: h.run.id,
+      provider: "claude-code",
+      harness: "claude-code",
+      backing_provider: null,
+      model: "fake-model",
+      source: "inner_agent",
+      metrics_json: JSON.stringify({ input_tokens: 10, output_tokens: 4 }),
+    });
+    // The accepted provider-reported form still goes through, so the guard is on the source and nothing else.
+    h.ledger.insertUsageObservation({ ...labelledShape, source: "provider_reported" });
+    expect(h.usageRows().map((r) => r.source)).toEqual(["inner_agent", "provider_reported"]);
+  });
+
+  const SRC = path.resolve(import.meta.dirname, "..");
+  const INSERT_RE = /INSERT\s+INTO\s+usage_observation(?![\w$])/gu;
+
+  function productionTree(): Map<string, string> {
+    const files = new Map<string, string>();
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.isFile() && full.endsWith(".ts") && !full.endsWith(".d.ts") && !full.endsWith(".test.ts")) {
+          files.set(path.relative(SRC, full).split(path.sep).join("/"), readFileSync(full, "utf8"));
+        }
+      }
+    };
+    walk(SRC);
+    return files;
+  }
+
+  /** `[file, statement count]` for every file whose text writes the table. Pure over a map. */
+  const writers = (files: ReadonlyMap<string, string>): [string, number][] =>
+    [...files]
+      .map(([rel, text]): [string, number] => [rel, [...text.matchAll(INSERT_RE)].length])
+      .filter(([, n]) => n > 0)
+      .sort(([a], [b]) => a.localeCompare(b));
+
+  it("the scanner finds a planted write in a synthetic tree and ignores the migration's rebuilt table (not vacuous)", () => {
+    const synthetic = new Map<string, string>([
+      ["ledger/migrations/0006_usage_inner_agent.ts", "INSERT INTO usage_observation_new (id) SELECT id FROM x;"],
+      ["cli/planted.ts", "db.prepare(`INSERT   INTO\n usage_observation (id) VALUES (?)`).run(id);"],
+      ["cli/comment.ts", "// usage_observation is read here, never written"],
+    ]);
+    expect(writers(synthetic)).toEqual([["cli/planted.ts", 1]]);
+  });
+
+  it("only the ledger repository writes usage_observation: its two statements, the provider-reported insert and recordInnerCall", () => {
+    const files = productionTree();
+    expect(writers(files)).toEqual([["ledger/repo.ts", 2]]);
+    const repo = files.get("ledger/repo.ts") as string;
+    const [general, labelled] = [...repo.matchAll(INSERT_RE)].map((m) => m.index);
+    const guard = repo.indexOf('throw new Error("usage_observation accepts only provider_reported rows (FR-CAP-01)")');
+    const record = repo.indexOf("recordInnerCall(input, events) {");
+    expect(guard).toBeGreaterThan(-1);
+    expect(record).toBeGreaterThan(-1);
+    // The first statement is the guarded general insert; the second is recordInnerCall's, the only one that writes
+    // the label as a literal.
+    expect(guard).toBeLessThan(general as number);
+    expect(general as number).toBeLessThan(record);
+    expect(record).toBeLessThan(labelled as number);
+    expect(repo.slice(general, record)).not.toContain("'inner_agent'");
+    expect(repo.slice(labelled, (labelled as number) + 400)).toContain("'inner_agent'");
   });
 });
