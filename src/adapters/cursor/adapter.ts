@@ -496,9 +496,10 @@ export class CursorAdapter implements ProviderAdapter {
 
   /**
    * Success needs a clean expected exit and a final `result` with `ok` and no `provider_error`, `permission_denied`,
-   * `sandbox_violation` or `rate_limit` event (fail closed, as Grok Build). The summary is the joined assistant text,
-   * last {@link MAX_SUMMARY_CHARS} characters. A failed run prints no stream at all ([LIVE] 4, 14), so it ends
-   * `TOOL_FAILURE` on its exit code; the stderr text is not read (the adapter contract passes none).
+   * `sandbox_violation` or `rate_limit` event and no `tool_call` the tool-call guard flagged with a `violation` (fail
+   * closed, as Grok Build; a guard verdict ends the run in every run, bypass included, ADR-0039). The summary is the
+   * joined assistant text, last {@link MAX_SUMMARY_CHARS} characters. A failed run prints no stream at all ([LIVE] 4,
+   * 14), so it ends `TOOL_FAILURE` on its exit code; the stderr text is not read (the adapter contract passes none).
    */
   extractResult(events: readonly NormalizedEvent[], exit: ExitInfo): RunResult {
     const unknownEventCount = events.filter((e) => e.kind === "unknown").length;
@@ -523,7 +524,8 @@ export class CursorAdapter implements ProviderAdapter {
           e.kind === "provider_error" ||
           e.kind === "permission_denied" ||
           e.kind === "sandbox_violation" ||
-          e.kind === "rate_limit",
+          e.kind === "rate_limit" ||
+          (e.kind === "tool_call" && e.violation !== undefined),
       );
     if (clean) return { ok: true, ...base };
     const c = this.classifyFailure({
