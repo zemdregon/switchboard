@@ -89,6 +89,21 @@ describe("conformance harness", () => {
     const report = await runConformanceCase({ ...c, expect: { ok: true } });
     expect(report.ok).toBe(false);
   });
+
+  it("checks failureDetail only when the case sets it", async () => {
+    const c = fakeConformanceCases(makeCwd).find((x) => x.kind === "task_failure");
+    if (!c) throw new Error("missing");
+    const unset = await runConformanceCase(c);
+    expect(unset.checks.map((k) => k.name)).not.toContain("failure detail matches");
+    const detail = unset.result?.failureDetail;
+    if (detail === undefined) throw new Error("fake task_failure has no failureDetail");
+    const same = await runConformanceCase({ ...c, expect: { ...c.expect, failureDetail: detail } });
+    expect(same.checks.find((k) => k.name === "failure detail matches")?.ok).toBe(true);
+    expect(same.ok).toBe(true);
+    const other = await runConformanceCase({ ...c, expect: { ...c.expect, failureDetail: "exit code 64" } });
+    expect(other.checks.find((k) => k.name === "failure detail matches")).toMatchObject({ ok: false, detail });
+    expect(other.ok).toBe(false);
+  });
 });
 
 describe("probe and auth preflight", () => {
