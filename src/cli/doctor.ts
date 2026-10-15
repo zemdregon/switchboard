@@ -22,6 +22,7 @@ import { projectCapacity } from "./capacity.js";
 import { type InnerDoctorSection, innerDoctorSection, renderInnerDoctor } from "./inner.js";
 import { type CliIo, JSON_SCHEMA_VERSION, PROBE_ENV_ALLOWLIST } from "./io.js";
 import { type RagDoctorSection, ragDoctorSection, renderRagDoctor } from "./rag-index.js";
+import { checkUnprivileged } from "./unprivileged.js";
 
 /** Minimum Node major from package.json `engines` (>=22). */
 export const MIN_NODE_MAJOR = 22;
@@ -369,6 +370,14 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
   const major = Number.parseInt(nodeVersion.split(".")[0] ?? "", 10);
   checks.push(
     check("node", "Node.js", major >= MIN_NODE_MAJOR ? "ok" : "fail", `${nodeVersion} (need >= ${MIN_NODE_MAJOR})`),
+  );
+
+  // NFR-SEC-04: the same check `serve` refuses on; root or an unreadable uid fails doctor.
+  const privilege = checkUnprivileged(io.effectiveUid);
+  checks.push(
+    privilege.ok
+      ? check("unprivileged", "Unprivileged user", "ok", `effective uid ${privilege.uid} (not root)`)
+      : check("unprivileged", "Unprivileged user", "fail", `${privilege.code}: ${privilege.message}`),
   );
 
   const need = MIN_GIT_VERSION.join(".");

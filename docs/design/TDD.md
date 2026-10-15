@@ -197,7 +197,9 @@ repositories) and `src/cli/projects-dynamic.test.ts` (`projects list|show|approv
   reachable paths. Limits to evaluate: an outer wrapper cannot hide credentials from the provider CLI itself (it needs
   them) and cannot tell the CLI's own network use from agent-run commands, so it complements, not replaces, native
   sandboxes ([R2] prefers native controls first). Outcome recorded in an ADR if adopted.
-- **Run as unprivileged user** (NFR-SEC-04): startup refuses to run as root unless explicitly overridden (Proposed).
+- **Run as unprivileged user** (NFR-SEC-04): `serve` refuses to start, and `doctor` fails a check, when the effective uid
+  is 0 or cannot be read (`src/cli/unprivileged.ts`). Delegated, not owner-approved: there is no override, since no ADR
+  defines one; root inside a user namespace (rootless containers) is refused too (open question, ROADMAP §6.1.1).
 
 ### 3.5 Concurrency model
 

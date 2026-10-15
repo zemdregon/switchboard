@@ -824,7 +824,7 @@ describeLinuxVerified("privileged end to end (fake adapter, T3.4; FRD WF-7, T3, 
 });
 
 describe("serve refuses to start (in process, before touching stdio)", () => {
-  async function run(args: string[], env: Record<string, string> = {}) {
+  async function run(args: string[], env: Record<string, string> = {}, extra: Partial<CliIo> = {}) {
     const out: string[] = [];
     const err: string[] = [];
     const io: CliIo = {
@@ -832,6 +832,7 @@ describe("serve refuses to start (in process, before touching stdio)", () => {
       stderr: { write: (s) => err.push(s) },
       env,
       homedir: path.join(root, "home"),
+      ...extra,
     };
     const code = await main(args, io);
     return { code, out: out.join(""), err: err.join("") };
@@ -865,6 +866,52 @@ describe("serve refuses to start (in process, before touching stdio)", () => {
     const log = JSON.parse(r.err.trim().split("\n").at(-1) as string) as Json;
     expect(log).toMatchObject({ level: "error", msg: "refusing to serve: the ledger cannot be opened" });
     expect(existsSync(path.join(dataDir, LOCK_FILE_NAME))).toBe(false);
+  });
+
+  it("refuses to start as root before reading the config or touching the data directory (NFR-SEC-04)", async () => {
+    const canary = "sk-ant-canary-NFRSEC04-0123456789abcdef";
+    const env = { ANTHROPIC_API_KEY: canary, HOME: path.join(root, "home"), [TEST_FAKE_ADAPTER_ENV]: "1" };
+    const r = await run(["serve", "--client", "orch", "--config", configPath], env, { effectiveUid: () => 0 });
+    expect(r.code).toBe(1);
+    expect(r.out).toBe("");
+    const lines = r.err.trim().split("\n");
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0] as string)).toMatchObject({
+      level: "error",
+      component: "serve",
+      msg: "refusing to serve: running as root (effective uid 0); run switchboard as an unprivileged user (NFR-SEC-04)",
+      code: "RUNNING_AS_ROOT",
+    });
+    // Checked first: the mistyped test switch above is not even reported, and nothing was created or opened.
+    expect(existsSync(dataDir)).toBe(false);
+    expect(existsSync(path.join(dataDir, LOCK_FILE_NAME))).toBe(false);
+    expect(existsSync(path.join(dataDir, LEDGER_FILE_NAME))).toBe(false);
+    // The refusal carries no environment value, credential, path or config content.
+    for (const leaked of [canary, root, configPath, "ANTHROPIC_API_KEY", TEST_FAKE_ADAPTER_ENV]) {
+      expect(r.err).not.toContain(leaked);
+    }
+  });
+
+  it("refuses an existing data directory as root without taking the lock or opening the ledger (NFR-SEC-04)", async () => {
+    mkdirSync(dataDir, { recursive: true });
+    const r = await run(["serve", "--client", "orch", "--config", configPath], {}, { effectiveUid: () => 0 });
+    expect(r.code).toBe(1);
+    expect(readdirSync(dataDir)).toEqual([]);
+  });
+
+  it("refuses to start when the effective uid cannot be read (NFR-SEC-04, fail closed)", async () => {
+    const r = await run(["serve", "--client", "orch", "--config", configPath], {}, { effectiveUid: () => undefined });
+    expect(r.code).toBe(1);
+    expect(r.out).toBe("");
+    expect(JSON.parse(r.err.trim())).toMatchObject({ level: "error", code: "UID_UNKNOWN" });
+    expect(existsSync(dataDir)).toBe(false);
+  });
+
+  it("a non-root uid passes the check and reaches the next startup step (NFR-SEC-04)", async () => {
+    const r = await run(["serve", "--client", "intruder", "--config", configPath], {}, { effectiveUid: () => 1000 });
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('unknown MCP client "intruder"');
+    expect(r.err).not.toContain("RUNNING_AS_ROOT");
   });
 
   it("refuses a mistyped test switch value instead of ignoring it", async () => {
