@@ -1725,6 +1725,22 @@ subscription leaves `usage_observation` empty, omits the `inner_shared_subscript
 and `doctor.capacity` byte-identical, and proves both `get_capacity` (filtered and unfiltered) and `capacity --json`
 remain byte-identical before and after the injected `commit_message` and `route_features` serve-path contracts with
 and without a shared subscription.
+*2026-10-15 post-#356 cross-check (Delegated; fakes only):* the T11.5 row, FR-INN-15, ADR-0007 and the two usage test
+files were re-read on `main` after [PR #356](https://github.com/zemdregon/switchboard/pull/356); the residual gaps
+found were closed in the same files. `src/inner/usage.test.ts`: a suspended task (T11.6) and a project set to `off`
+deny without a request and write no observation, while the rejected calls that caused the suspension wrote one each
+and `inner resume` writes none; a re-ask that hit the deadline keeps the counts the first attempt reported (one call,
+one row, `attempts` 2); the label follows `shares_subscription_with` (a run on `claude-code` sharing `codex` charges
+`codex` under that run id) and the run's envelope and provider-reported view stay byte-identical.
+`src/inner/usage-surfaces.test.ts`: the `inner_shared_subscription` check is asserted whole (id, label, status and the
+full detail text) in `doctor --json` and as the `[warn]` line of the human `doctor`, identical before and after an
+`inner test` call; with `enabled: false` and the flag set, the warning is absent, `inner test` sends nothing, neither an
+`inner_call` nor an observation is written and `get_capacity`, `capacity --json` and the whole `doctor --json` document
+are byte-identical. `src/capacity/capacity.test.ts`: the collector excludes `inner_agent` rows by `source` alone; a row
+shaped like a provider-reported one (same metric keys, a `remaining` key, a count of 2^53-1, in the window, with and
+without a run id) leaves the usage input and the canonical projection byte-identical and no projection source names the
+inner agent (ADR-0007). No production code changed. T11.5 stays **Done on fakes**; the live-backend, commit-tool
+channel and admission-harness residuals above are unchanged.
 
 **T11.8 status (2026-10-13; Delegated): Done on fakes. No live inner backend, provider CLI, pull-request API or network
 host was used.** "Done when", clause by clause: *the draft passes the sanitiser*: a hostile fake backend returning a

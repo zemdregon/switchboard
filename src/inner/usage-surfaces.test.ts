@@ -481,6 +481,107 @@ describe("inner test CLI and doctor when shares_subscription_with is in the on-d
     expect(after.checks.find((c) => c.id === "inner_shared_subscription")).toBeUndefined();
     expect(after.inner_agent.tasks.find((t) => t.task === "run_title")?.total_calls).toBe(1);
   });
+
+  it("the doctor warning names the provider exactly, in JSON and in the human line, and reads the same after a call", async () => {
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schema_version: 1,
+        data_dir: dataDir,
+        allowed_roots: [path.join(root, "repos")],
+        mcp_clients: [{ id: "c1", max_trust_profile: "edit-untrusted" }],
+        inner_agent: {
+          enabled: true,
+          backend: {
+            kind: "http",
+            base_url: "http://127.0.0.1:1",
+            model: "cfg-model",
+            shares_subscription_with: "codex",
+          },
+          tasks: { run_title: { enabled: true } },
+        },
+      }),
+    );
+    const extra = {
+      innerBackend: createFakeBackend({ script: [{ kind: "text", text: '{"title":"Fix greeting typo"}' }] }),
+    };
+    const detail =
+      "the inner agent shares the codex subscription: its calls consume codex capacity; each call is recorded as a " +
+      "usage observation labelled inner_agent (not as provider usage, and it does not change capacity_score)";
+    const jsonCheck = async () =>
+      (JSON.parse(await cli(["doctor", "--json"], true, extra)) as { checks: Record<string, unknown>[] }).checks.filter(
+        (c) => c.id === "inner_shared_subscription",
+      );
+    const humanLine = async () =>
+      (await cli(["doctor"], true, extra)).match(/^\[warn\] Inner agent subscription: .*$/gmu);
+    expect(await jsonCheck()).toEqual([
+      { id: "inner_shared_subscription", label: "Inner agent subscription", status: "warn", detail },
+    ]);
+    expect(await humanLine()).toEqual([`[warn] Inner agent subscription: ${detail}`]);
+
+    expect(JSON.parse(await cli(["inner", "test", "run_title", "--json"], false, extra))).toMatchObject({
+      accepted: true,
+    });
+    expect(db.prepare("SELECT provider FROM usage_observation WHERE source = 'inner_agent'").all()).toEqual([
+      { provider: "codex" },
+    ]);
+    // Config-derived: one check, same text, whether or not calls have been made.
+    expect(await jsonCheck()).toEqual([
+      { id: "inner_shared_subscription", label: "Inner agent subscription", status: "warn", detail },
+    ]);
+    expect(await humanLine()).toEqual([`[warn] Inner agent subscription: ${detail}`]);
+  });
+
+  it("enabled: false with the flag set: no warning, inner test makes no call, no row of either kind, capacity unchanged", async () => {
+    // FR-INN-15's warning is about an inner agent that consumes the provider's capacity; a disabled one consumes nothing
+    // (FR-INN-01), so doctor says nothing and the ledger gains neither an inner_call nor an observation.
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schema_version: 1,
+        data_dir: dataDir,
+        allowed_roots: [path.join(root, "repos")],
+        mcp_clients: [{ id: "c1", max_trust_profile: "edit-untrusted" }],
+        limits: { per_provider_concurrency: 2 },
+        capacity: { window_seconds: 7200, confidence_runs: 4 },
+        inner_agent: {
+          enabled: false,
+          backend: {
+            kind: "http",
+            base_url: "http://127.0.0.1:1",
+            model: "cfg-model",
+            shares_subscription_with: "claude-code",
+          },
+          tasks: { run_title: { enabled: true } },
+        },
+      }),
+    );
+    finishedRun();
+    const client = await connect();
+    const backend = createFakeBackend({ script: [{ kind: "text", text: '{"title":"Fix greeting typo"}' }] });
+    const extra = { innerBackend: backend };
+    const before = {
+      tool: await capacityText(client),
+      capacity: await cli(["capacity", "--json"], false, extra),
+      doctor: await cli(["doctor", "--json"], true, extra),
+    };
+    const doctor = JSON.parse(before.doctor) as { checks: { id: string }[]; inner_agent: { state: string } };
+    expect(doctor.checks.map((c) => c.id)).not.toContain("inner_shared_subscription");
+    expect(doctor.inner_agent.state).toBe("off");
+    expect(await cli(["doctor"], true, extra)).not.toMatch(/Inner agent subscription/u);
+
+    const report = await cli(["inner", "test", "run_title", "--json"], true, extra);
+    expect(JSON.parse(report)).toMatchObject({ ran: false, accepted: false, outcome: "off" });
+    expect(backend.requests).toHaveLength(0);
+    expect(ledger.listInnerCalls()).toEqual([]);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM usage_observation WHERE source = 'inner_agent'").get()).toEqual({
+      n: 0,
+    });
+    expect(await capacityText(client)).toBe(before.tool);
+    expect(await cli(["capacity", "--json"], false, extra)).toBe(before.capacity);
+    // Nothing was called, so the whole doctor document (inner section included) is byte-identical this time.
+    expect(await cli(["doctor", "--json"], true, extra)).toBe(before.doctor);
+  });
 });
 
 describe("serve-path contracts (commit_message and route_features) leave capacity surfaces byte-identical (T11.5)", () => {
