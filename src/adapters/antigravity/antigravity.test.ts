@@ -1124,6 +1124,42 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     expect(report.result).toMatchObject({ ok: true, nativeSessionId: DEFAULT_SESSION_ID, unknownEventCount: 1 });
   });
 
+  it("invented rate-limit text in an ERROR envelope at exit 1 is TOOL_FAILURE: no rate-limit shape is recorded", async () => {
+    const report = await runConformanceCase(caseFor("rate_limit_unrecorded"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      nativeSessionId: DEFAULT_SESSION_ID,
+    });
+  });
+
+  it("a tool step after a clean result line is OUTPUT_PROTOCOL_ERROR and keeps the conversation id", async () => {
+    const report = await runConformanceCase(caseFor("trailing_tool"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the result line",
+      nativeSessionId: DEFAULT_SESSION_ID,
+    });
+  });
+
+  it("a Git write under a SUCCESS envelope with no denial ends PERMISSION_BLOCKED through the run (ADR-0039)", async () => {
+    const report = await runConformanceCase(caseFor("git_write_guard"));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    expect(report.result?.failureDetail).toContain("git write attempted");
+  });
+
+  it("names no rate_limit case and expects no RATE_LIMIT_TRANSIENT or SANDBOX_VIOLATION (no recorded shape, T4.33)", () => {
+    const cases = antigravityConformanceCases(makeCwd);
+    expect(cases.filter((c) => c.kind === "rate_limit")).toEqual([]);
+    const codes = cases.map((c) => c.expect.failureCode);
+    expect(codes).not.toContain("RATE_LIMIT_TRANSIENT");
+    expect(codes).not.toContain("SANDBOX_VIOLATION");
+  });
+
   it("partial mutation leaves the file in the cwd", async () => {
     const c = caseOf("partial_mutation");
     const report = await runConformanceCase(c);
