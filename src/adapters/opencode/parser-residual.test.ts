@@ -5,6 +5,10 @@
  * before a safe one, an id that changes and changes back, the first provider error deciding the code, the trailing
  * tool check counted from the last `stop`, part-id usage dedupe across step reasons, and resume/compile parity across
  * request axes (not only scopes), with binding refusals ahead of every compile refusal. No native shape is claimed.
+ * Second pass (2026-10-15, same terms): the order of a binding error line, an unknown type that binds (gap), the
+ * trailing-tool and unreadable-event details, text after the last stop, usage dedupe gaps (a part id spent without
+ * counters, first counters win, an empty-string id, dedupe across a changed id, state shared by two adapters), fresh
+ * invocations from compile and resume, and parser/resume agreement on id shapes.
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -245,6 +249,170 @@ describe("opencode parser residuals: stream order (T4.53, synthetic lines; parse
   });
 });
 
+describe("opencode stream-order residuals, second pass (T4.53, synthetic lines; parser unchanged)", () => {
+  it("an error line that first carries a sessionID binds it before its provider_error, and the failure keeps the id", () => {
+    const { events } = parse([ERROR("provider.quota"), FINISH("stop")]);
+    expect(events.slice(0, 2)).toEqual([
+      { kind: "session_bound", nativeSessionId: SID },
+      {
+        kind: "provider_error",
+        category: "quota",
+        message: "provider.quota: synthetic",
+      },
+    ]);
+    expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "QUOTA_EXHAUSTED",
+      nativeSessionId: SID,
+    });
+  });
+
+  it("pins the gap: an unknown event type carrying the first sessionID binds it, though the run then fails", () => {
+    const { events, state } = parse([{ type: "synthetic_future", sessionID: SID }, TEXT("ok"), FINISH("stop")]);
+    expect(events.slice(0, 2)).toEqual([
+      { kind: "session_bound", nativeSessionId: SID },
+      { kind: "unknown", rawType: "synthetic_future" },
+    ]);
+    expect(state).toEqual({ lines: 3, unknownEvents: 1, nativeSessionId: SID });
+    expect(adapter().extractResult(events, EXIT_OK)).toEqual({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "1 unreadable event(s) in the stream",
+      unknownEventCount: 1,
+      nativeSessionId: SID,
+      summary: "ok",
+    });
+  });
+
+  it("an unreadable tool_use after the last stop reports the trailing-tool detail, not the unreadable-event one", () => {
+    const unreadableTool = { type: "tool_use", sessionID: SID, part: { state: { input: { command: "ls" } } } };
+    expect(adapter().extractResult(parse([FINISH("stop"), unreadableTool]).events, EXIT_OK)).toEqual({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the final stop step",
+      unknownEventCount: 1,
+      nativeSessionId: SID,
+    });
+    // An unreadable step_finish after the stop is not a tool call: it is reported as an unreadable event.
+    const unreadableStep = { type: "step_finish", sessionID: SID, part: { type: "step-finish" } };
+    expect(adapter().extractResult(parse([FINISH("stop"), unreadableStep]).events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "1 unreadable event(s) in the stream",
+      unknownEventCount: 1,
+    });
+  });
+
+  it("an unreadable line with no stop keeps the classifier's detail; a stop that follows switches to the count", () => {
+    const unreadable = { type: "synthetic_future", sessionID: SID };
+    const noStop = adapter().extractResult(parse([unreadable, TEXT("ok")]).events, EXIT_OK);
+    expect(noStop).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+    expect(noStop.failureDetail).not.toBe("1 unreadable event(s) in the stream");
+    expect(adapter().extractResult(parse([unreadable, unreadable, FINISH("stop")]).events, EXIT_OK)).toMatchObject({
+      failureDetail: "2 unreadable event(s) in the stream",
+      unknownEventCount: 2,
+    });
+  });
+
+  it("text after the last stop joins the summary and leaves a clean run clean (only a tool call trips the order check)", () => {
+    const { events } = parse([TEXT("before"), FINISH("stop"), TEXT("after")]);
+    expect(adapter().extractResult(events, EXIT_OK)).toEqual({
+      ok: true,
+      unknownEventCount: 0,
+      nativeSessionId: SID,
+      summary: "before\nafter",
+    });
+  });
+
+  it("an unsafe id on the stop line still records that line's usage and result, in the order error, usage, result", () => {
+    const { events, state } = parse([FINISH("stop", "prt_f1", "--auto")]);
+    expect(events.map((e) => e.kind)).toEqual(["provider_error", "usage", "result"]);
+    expect(state.nativeSessionId).toBeUndefined();
+    expect(adapter().extractResult(events, EXIT_OK)).toEqual({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: session id is not a safe argument",
+      unknownEventCount: 0,
+    });
+  });
+});
+
+describe("opencode usage dedupe gaps (T4.53, FR-CAP-01; synthetic lines, parser unchanged)", () => {
+  const step = (part: object, id: string | undefined = SID) => ({
+    type: "step_finish",
+    ...sid(id),
+    part: { type: "step-finish", ...part },
+  });
+  const usage = (lines: object[]) => parse(lines).events.filter((e) => e.kind === "usage");
+
+  it("pins the gap: a part id first seen with no readable counters is spent, so its later counters are never recorded", () => {
+    expect(
+      usage([
+        step({ id: "prt_a", reason: "tool-calls" }),
+        step({ id: "prt_a", reason: "stop", tokens: { input: 5, output: 2 } }),
+      ]),
+    ).toEqual([]);
+  });
+
+  it("the first counters for a part id win: a repeat with other values is dropped, never summed or replaced", () => {
+    expect(
+      usage([
+        step({ id: "prt_a", reason: "tool-calls", tokens: { input: 1 } }),
+        step({ id: "prt_a", reason: "stop", tokens: { input: 9, output: 4 }, cost: 0.5 }),
+      ]),
+    ).toEqual([{ kind: "usage", source: "provider_reported", metrics: { input: 1 } }]);
+  });
+
+  it("a step_finish with no reason is unreadable and does not spend its part id; the later readable one records", () => {
+    const { events, state } = parse([
+      step({ id: "prt_a", tokens: { input: 7 } }),
+      step({ id: "prt_a", reason: "stop", tokens: { input: 3 } }),
+    ]);
+    expect(events.filter((e) => e.kind === "usage")).toEqual([
+      { kind: "usage", source: "provider_reported", metrics: { input: 3 } },
+    ]);
+    expect(state.unknownEvents).toBe(1);
+  });
+
+  it("pins the gap: an empty-string part id is a dedupe key, while a non-string part id is no key at all", () => {
+    expect(
+      usage([
+        step({ id: "", reason: "tool-calls", tokens: { input: 1 } }),
+        step({ id: "", reason: "stop", tokens: { input: 2 } }),
+      ]),
+    ).toHaveLength(1);
+    expect(
+      usage([
+        step({ id: 7, reason: "tool-calls", tokens: { input: 1 } }),
+        step({ id: 7, reason: "stop", tokens: { input: 2 } }),
+      ]),
+    ).toHaveLength(2);
+  });
+
+  it("pins the gap: dedupe ignores the session id, so a changed-id line reusing a part id records no usage", () => {
+    const { events } = parse([
+      step({ id: "prt_a", reason: "tool-calls", tokens: { input: 1 } }),
+      step({ id: "prt_a", reason: "stop", tokens: { input: 2 } }, OTHER),
+    ]);
+    expect(events.filter((e) => e.kind === "usage")).toHaveLength(1);
+    // The changed id still fails the run, so no usage of the other session reaches a successful result.
+    expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      nativeSessionId: SID,
+    });
+  });
+
+  it("dedupe state belongs to the ParseState, not the adapter: two adapters sharing one state count a part once", () => {
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const a = adapter().parseEvent(line(FINISH("tool-calls", "prt_shared")), state);
+    const b = adapter().parseEvent(line(FINISH("stop", "prt_shared")), state);
+    expect([...a, ...b].filter((e) => e.kind === "usage")).toHaveLength(1);
+    expect(b).toEqual([{ kind: "result", ok: true }]);
+    expect(state.lines).toBe(2);
+  });
+});
+
 describe("opencode resume/compile parity across request axes (T4.53, FR-SES-03; adapter unchanged)", () => {
   const base: CompileRequest = {
     runId: "run_opencode_t453_parity",
@@ -334,6 +502,51 @@ describe("opencode resume/compile parity across request axes (T4.53, FR-SES-03; 
           }
         }
       }
+    }
+  });
+
+  it("compile and resumeArgs return fresh objects: mutating one invocation changes no later one, and inputs stay intact", () => {
+    const a = adapter();
+    const req = structuredClone(base);
+    const first = a.compile(req, approved);
+    if ("ineligible" in first) throw new Error("expected an invocation");
+    const snapshot = structuredClone(first);
+    first.argv.push("--auto");
+    first.envAllowlist.push("OPENCODE_CONFIG_CONTENT");
+    first.policyFlags.push("--auto");
+    first.timeouts.idleMs = 1;
+    first.env.OPENCODE_PERMISSION = "{}";
+    expect(a.compile(req, approved)).toEqual(snapshot);
+    const resumed = a.resumeArgs({ provider: "opencode", nativeSessionId: OTHER }, req, approved);
+    expect(resumed).toEqual({
+      ...snapshot,
+      argv: [...snapshot.argv.slice(0, -2), "--session", OTHER, "--", req.objective],
+    });
+    expect(req).toEqual(base);
+  });
+
+  it("the parser and resumeArgs agree on id shapes: every id the parser binds resumes, every id it refuses is refused", () => {
+    const ids = [
+      "a",
+      "0",
+      "ses_x",
+      "a.b:c-d_e",
+      "A".repeat(256),
+      "A".repeat(257),
+      "-a",
+      ".a",
+      "_a",
+      ":a",
+      "a b",
+      "a/b",
+      "a\n",
+      "é",
+    ];
+    for (const id of ids) {
+      const { state } = parse([START(id)]);
+      const bound = state.nativeSessionId === id;
+      const resumed = adapter().resumeArgs({ provider: "opencode", nativeSessionId: id }, base, approved);
+      expect("ineligible" in resumed, JSON.stringify(id)).toBe(!bound);
     }
   });
 
