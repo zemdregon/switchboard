@@ -70,10 +70,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   [ROADMAP §6.10](docs/ROADMAP.md#610-m13-network-mcp-transport-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
   client and a macOS CI leg are done; Grok Build, Antigravity, Cursor and OpenCode each have a module, compile matrix
-  and parser work on synthetic fixtures. Grok Build has module, compile-matrix, parser (partial), auth-preflight,
-  conformance suite (T4.25), malicious-fixture leg (partial: `replayGap`, T4.26) and Git declaration fixture tests
-  on synthetic fixtures (README [Grok Build CLI](#grok-build-cli-milestone-4), ROADMAP T4.22 to T4.27); live smoke,
-  live malicious leg and `adapters validate` remain operator work (T4.28). Antigravity has a
+  and parser work on synthetic fixtures. Grok Build has module, compile-matrix, parser (partial: T4.23),
+  auth-preflight, conformance suite (T4.25), malicious-fixture leg (T4.26) and Git declaration fixture tests on
+  synthetic fixtures (README [Grok Build CLI](#grok-build-cli-milestone-4), ROADMAP T4.22 to T4.27); live smoke, live
+  malicious leg and `adapters validate` remain operator work (T4.28). Antigravity has a
   conformance suite (partial: native resume, T4.35), a malicious-fixture leg (partial: live shapes and FR-POL-04, T4.36)
   and a Git declaration on synthetic fixtures (README [Antigravity CLI](#antigravity-cli-milestone-4), ROADMAP T4.35 to
   T4.37); live smoke, live malicious leg and `adapters validate` for Antigravity remain operator work (T4.38). Cursor has
@@ -658,31 +658,44 @@ readable from inside the sandbox, and no per-run MCP-definition flag exists in h
 | `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one argv shape: `grok --no-auto-update --single=<prompt> --output-format streaming-json` with `--sandbox` and `--always-approve` together (never one without the other), worktree file access, shell `broad`, network `on` or `off` (with `--disable-web-search` when off), repository configuration `enabled`, and sandbox profile `read-only`, `strict` or `workspace` from the scope (owner decision 46). A scope without `bypass`, or any narrowing Switchboard can express, is refused before spawn. No `--allow` or `--deny` rules are emitted (prefix matches are not a Git-write control). |
 
 Resume continues the native session with `-r <session_id>` through the same matrix when the provider is eligible
-(synthetic fixtures in `src/adapters/grok/grok.test.ts`, T4.23).
+(synthetic fixtures in `src/adapters/grok/grok.test.ts`, T4.23). A `sessionId` that resume could not pass as one safe
+argument is never bound (`OUTPUT_PROTOCOL_ERROR`; [#252](https://github.com/zemdregon/switchboard/pull/252)). A
+`tool_call` after the `end` line is not a success (fail closed; a guard verdict on it keeps its own code, e.g.
+`PERMISSION_BLOCKED`). `tool_call` keys that name `Object.prototype` members map to `other`, prototype-named types
+never smuggle a result, and only an exact `end_turn` stop reason is success
+([#252](https://github.com/zemdregon/switchboard/pull/252)). Non-string command, path and tool fields are omitted,
+never coerced. Rate-limit and sandbox stream shapes, unrecorded `tool_call` / `tool_call_update` fields and
+`backingProvider` on `session_bound` are still unrecorded (T4.23 stays `Partial` on the roadmap).
 
 ### Git and commits
 
 `list_capabilities` reports `gitWriteControl` **`none-documented`**: Grok Build documents `--deny` rules, but they are
 prefix matches and the live check showed forms that could still run `git commit` (step 9); Switchboard does not emit a
-deny rule.
+deny rule. Shell allowlist entries that could write Git make the run `Ineligible` (`PROFILE_UNSUPPORTED`, FR-GIT-01),
+including on an approved bypass scope.
+
+The parser treats a guard-flagged `tool_call` (`violation`) as a failed run per
+[ADR-0039](docs/adr/0039-switchboard-side-tool-call-guard.md) even when `end` `stopReason` is `end_turn` at exit 0
+(`src/adapters/grok/grok.test.ts`; [#247](https://github.com/zemdregon/switchboard/pull/247)). In an approved bypass
+run the guard enforces Git writes only; other hostile categories that never appear as a refused `tool_call` on the
+recorded fields still end `ok` on synthetic fixtures until operator captures pin live blocked outcomes
+(ROADMAP T4.26, T4.28).
 
 `commitChannel` is **`finalize-only`**: Switchboard does not inject a per-run MCP server (no headless MCP-definition
 flag was found in the 2026-10-14 live check). In the only compiled scope, project `.mcp.json` and `.grok/config.toml`
-MCP servers load without `--trust` (observed step 10a). To publish work, set `finalize_commit` on the project's primary
-context as for Codex ([How commits reach Git](#how-commits-reach-git)). Shell allowlist entries that could write Git make
-the run `Ineligible` (`PROFILE_UNSUPPORTED`, FR-GIT-01), including on an approved bypass scope.
-
-The parser does not yet read `tool_call` / `tool_call_update` shapes (T4.23 Partial), so Switchboard's tool-call guard
-(ADR-0039) cannot see Grok Build's shell commands until a capture records those lines; `extractResult` on `main` does not
-yet mirror Cursor's ADR-0039 handling for a guard verdict on a parsed `tool_call` (other lane). In an approved bypass
-run, Git-write denial therefore rests on FR-GIT-03 and FR-GIT-06 in addition to any provider rule.
+MCP servers load without `--trust` (observed step 10a). To publish work, set `finalize_commit` on the project's
+primary context as for Codex ([How commits reach Git](#how-commits-reach-git)). In an approved bypass run, Git-write
+denial therefore rests on FR-GIT-03 and FR-GIT-06 in addition to any provider rule.
 
 Fixture evidence on `main`: `src/adapters/grok/grok.test.ts` ("grok compile matrix (T4.22)", "grok probe and resume
 (T4.22, T4.23)", "grok parser and result (T4.23; SYNTHETIC lines in the shapes the 2026-10-14 live check recorded)",
-"grok auth preflight (T4.24, Q-10; SYNTHETIC outputs in the shapes of the 2026-10-14 live check)", "grok conformance
-suite (synthetic recorded fixtures, FR-ADP-11, T4.25)" and "grok Git declaration (T4.27, FR-GIT-01, FR-GIT-02,
-FR-GIT-09)"); CI also runs `test/malicious/adapter-leg.test.ts` ("adapter malicious leg: grok", T4.26 partial while
-`replayGap` is set). No end-to-end run through Switchboard against a logged-in `grok` has been recorded yet (T4.28).
+"parser hardening (T4.23, synthetic shapes; mirrors Antigravity T4.33)", "parser hardening (T4.23, synthetic shapes;
+mirrors Cursor T4.43 and OpenCode T4.53)", "grok auth preflight (T4.24, Q-10; SYNTHETIC outputs in the shapes of the
+2026-10-14 live check)", "grok conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.25)", "grok registry
+entry and manifest gate (T4.22)" and "grok Git declaration (T4.27, FR-GIT-01, FR-GIT-02, FR-GIT-09)"); CI also runs
+`test/malicious/adapters/grok.case.ts` and `test/malicious/adapter-leg.test.ts` ("adapter malicious leg: grok", T4.26
+partial; no `replayGap`). No end-to-end run through Switchboard against a logged-in `grok` has been recorded yet
+(T4.28).
 
 ## Antigravity CLI (milestone 4)
 
@@ -987,11 +1000,13 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
   other Codex version fails the version gate. The `codex login status` exit codes were observed on that version only;
   its output format is undocumented.
 - **Grok Build malicious-fixture leg is partial (ROADMAP T4.26).** CI runs `test/malicious/adapter-leg.test.ts` with
-  `test/malicious/adapters/grok.case.ts` on synthetic `streaming-json` streams (no `grok` installed). Compile and
-  isolation-flag checks pass for each compiled bypass cell; hostile replay blocking checks are skipped while `replayGap`
-  is set because `tool_call` / `tool_call_update` fields were not recorded (T4.23), so sandbox and policy denials can
-  still end at exit 0 in an approved bypass run, and credential reads inside the sandbox are not refused (Q-62). See
-  ROADMAP T4.26 for the full gap list.
+  `test/malicious/adapters/grok.case.ts` on synthetic `streaming-json` streams (no `grok` installed; no `replayGap`).
+  Compile, isolation-flag and argv checks pass for each compiled bypass cell; hostile replay blocking streams test Git
+  writes blocked by Switchboard's tool-call guard per ADR-0039. FR-POL-04 cannot hold in the only compiled scope
+  because repository configuration is `enabled` and `.mcp.json` and `.grok/config.toml` load without `--trust` (live
+  check 10a). Native login credentials remain readable from inside the sandbox (live check 11b, Q-62). Other hostile
+  categories that never appear as a refused `tool_call` on the recorded fields need operator captures of live blocked
+  outcomes (T4.28). See ROADMAP T4.26 for the full gap list.
 - **Antigravity malicious-fixture leg is partial (ROADMAP T4.36).** CI runs `test/malicious/adapter-leg.test.ts` with
   `test/malicious/adapters/antigravity.case.ts` on synthetic `stream-json` streams (no `agy` installed). Compile,
   isolation-flag and argv checks pass for the approved bypass cell; hostile replay blocking uses mostly unrecorded denial
@@ -1017,9 +1032,9 @@ tested against malicious repositories (milestone 3). Report vulnerabilities as d
 - Only Claude Code and Codex; profiles beyond `inspect-untrusted` and `edit-untrusted` only where the adapter can
   compile them (see `list_capabilities`); a `privileged` `continue_task` only on the same provider (ROADMAP
   Q-61 is open).
-- `adapters validate` is implemented for every registered provider, but only Claude Code and Codex have a manifest range
-  on `main` today. Antigravity, Cursor, OpenCode and the other M4 adapters still need operator captures before their
-  manifests admit a version (ROADMAP T4.38, T4.48, T4.58 and §6.8.2).
+- `adapters validate` is implemented for every registered provider, but only Claude Code and Codex have a manifest
+  range on `main` today. Grok Build, Antigravity, Cursor, OpenCode and the other M4 adapters still need operator
+  captures before their manifests admit a version (ROADMAP T4.28, T4.38, T4.48, T4.58 and §6.8.2).
 - Routing (milestone 7) evaluates `minimum_capability` against operator-declared model capabilities in the model
   registry instead of refusing it (ROADMAP §6.12 T7.8, `src/routing/minimum-capability.test.ts`); undeclared models
   fail closed with `CAPABILITY_MISSING` (mapping to `ELIGIBILITY_NONE`), and admitted providers compile with the
