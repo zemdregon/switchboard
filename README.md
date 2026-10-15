@@ -48,7 +48,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   Could) and real-provider model flags wait for adapter work. See [Routing and affinity](#routing-and-affinity) and
   [ROADMAP §6.12](docs/ROADMAP.md#612-m7-routing-tasks).
 - **Milestone 11 (inner agent) is `Partial`.** An optional HTTP backend, privacy gates, `doctor` and `inner` reporting,
-  and commit-message drafting on fakes are on main; most run-path hooks, PR drafting and a live backend are not. See
+  commit-message drafting, handoff condensation and record-only routing classification on fakes are on main; most
+  run-path hooks, PR drafting and a live backend are not. See
   [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
 - **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.7 are done on fakes: the spike, `rag`
   configuration and per-project store, the scanner through chunker, the embedding port (fake and `http` backends
@@ -624,11 +625,12 @@ or when nothing was sent because the agent or the task is off. A task whose reje
 threshold is suspended and falls back until you run `inner resume <task>` (quality counting then restarts). Neither
 command prints a base URL's userinfo, a header, a key or any prompt or response text.
 
-Which tasks run today (2026-10-14): only the commit-message task is wired into a run path (the optional `message` on
-the `commit` tool). The PR-draft, verification-summary and run-title tasks exist as service functions, tested on fakes,
-and nothing calls them yet; the handoff-condensation and routing tasks need milestones 11 and 7 (the handoff bundle of
-milestone 5 is built without it). No hosted or live backend has been
-exercised: every test uses a scripted fake or a local fake server.
+Which tasks run today (2026-10-15): only the commit-message task is wired into a run path (the optional `message` on
+the `commit` tool). The PR-draft, verification-summary, run-title, handoff-condensation and routing-classification
+tasks exist as service functions, tested on fakes (routing classification in `src/inner/route-features.test.ts`, merged
+as [PR #288](https://github.com/zemdregon/switchboard/pull/288)); nothing calls them on a run path yet, and dispatch
+still records the heuristic classifier only. No hosted or live backend has been exercised: every test uses a scripted
+fake or a local fake server.
 
 ## Grok Build CLI (milestone 4)
 
