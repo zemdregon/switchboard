@@ -499,6 +499,7 @@ before every spawn `findBypassFlags` reads `argv`, then `policyFlags`, word by w
 | Flag (`BYPASS_FLAGS` and every entry's `bypassFlags`) | The word equals the flag or starts with `<flag>=` (unchanged since T3.17) | The flag |
 | Short flag (`bypassShortFlags` of entries with `create`, and any `-x` in the flag list) | A word of one dash and letters or digits, with an optional `=value`, whose letters include the short flag's letter (`-f`, `-f=1`, `-pf`): deliberate over-refusal | The short flag |
 | Value (`bypassValues` of entries with `create`) | The flag word directly followed by the value word, or `<flag>=<value>`, within one list; value compared case-insensitively | `<flag> <value>` |
+| Provider-scoped flag (`providerScopedBypassFlags`; T4.62, [ADR-0049](../adr/0049-kimi-code-transport-and-bypass-class.md) item 1) | Only when the caller names the adapter id the argv was compiled for (the pre-spawn check always does): that entry's list, or every entry's list when the id is not in the table (fail closed). The word equals the flag or starts with `<flag>=`; a short `-x` also when `x` is among the letters and digits opening a single-dash word (`-xvalue`, `-yx`) | The flag |
 
 Any hit is refused (`BypassFlagError`) unless the run's context is `privileged` with `bypassApproved` and a scope that
 sets `bypass`. Registration refuses malformed declarations: short flags must be `-x`; values must be

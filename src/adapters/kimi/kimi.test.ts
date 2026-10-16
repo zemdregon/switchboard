@@ -173,14 +173,18 @@ describe("kimi compile matrix (T4.62)", () => {
   it("the audits refuse what the registry declares outside the approved bypass case", () => {
     expect(bypassClassFlags()).toEqual(expect.arrayContaining(["--yolo", "--auto", "--plan"]));
     expect(bypassClassShortFlags()).toContain("-y");
-    // Not declared: the shared audit would otherwise refuse Claude Code's `-p` and Antigravity's `--prompt`.
+    // Provider-scoped, not shared: Claude Code's `-p` and Antigravity's `--prompt` stay ordinary flags (Q-95).
     expect(bypassClassFlags()).not.toContain("-p");
     expect(bypassClassFlags()).not.toContain("--prompt");
+    expect(providerEntry("kimi")?.providerScopedBypassFlags).toEqual(["-p", "--prompt"]);
     const argv = (...words: string[]) => ({ argv: [EXE, ...words], policyFlags: [] });
     expect(auditInvocation(argv("--auto"))).toEqual(["--auto"]);
     expect(auditInvocation(argv("--plan"))).toEqual(["--plan"]);
     expect(auditInvocation(argv("-y"))).toEqual(["-y"]);
     expect(auditInvocation(argv("-yp"))).toEqual(["-y"]);
+    expect(auditInvocation(argv("-yp"), undefined, "kimi")).toEqual(["-y", "-p"]);
+    expect(auditInvocation(argv("-p", "x"), undefined, "kimi")).toEqual(["-p"]);
+    expect(auditInvocation(argv("--prompt", "x"), undefined, "kimi")).toEqual(["--prompt"]);
     const restricted = compiled(adapter().compile(request(), privilegedProfile({ ...BYPASS_SCOPE, bypass: false })));
     const plan = restricted.acp as NonNullable<Invocation["acp"]>;
     for (const mode of ["auto", "yolo", "YOLO"]) {
@@ -191,6 +195,40 @@ describe("kimi compile matrix (T4.62)", () => {
       ).toHaveLength(1);
     }
     expect(acpDeclarations("kimi")?.bypassModeIds).toEqual(["auto", "yolo"]);
+  });
+});
+
+describe("kimi -p/--prompt in the argv audit (T4.62, ADR-0049 item 1, Q-95)", () => {
+  const approved = { ...privilegedProfile(BYPASS_SCOPE), bypassApproved: true };
+  const bypassCell = () => compiled(adapter().compile(request({ bypassApproved: true }), approved));
+
+  it("the approved bypass cell passes the audit, the Kimi-scoped flags included", () => {
+    const inv = bypassCell();
+    expect(inv.argv).toContain("--prompt=--yolo fix the failing test");
+    expect(auditInvocation(inv, { profile: approved, bypassApproved: true }, "kimi")).toEqual([]);
+  });
+
+  it("the same argv outside the approved bypass cell is refused even with the compile gate bypassed", () => {
+    const inv = bypassCell();
+    const refusing = [
+      undefined,
+      { profile: { ...approved, bypassApproved: false }, bypassApproved: false },
+      { profile: privilegedProfile({ ...BYPASS_SCOPE, bypass: false }), bypassApproved: true },
+      ...PROFILES.map((name) => ({ profile: profileOf(name), bypassApproved: true })),
+    ];
+    for (const ctx of refusing) expect(auditInvocation(inv, ctx, "kimi"), ctx?.profile.name).toEqual(["--prompt"]);
+    // Every short and two-word spelling the compile could be edited into is refused too.
+    const edits: Array<[string, string[], string[]]> = [
+      ["-p <prompt>", ["-p", "x"], ["-p"]],
+      ["-p=<prompt>", ["-p=x"], ["-p"]],
+      ["-p<prompt>", ["-px"], ["-p"]],
+      ["--prompt <prompt>", ["--prompt", "x"], ["--prompt"]],
+    ];
+    for (const [label, words, hits] of edits) {
+      const edited = { ...inv, argv: [EXE, ...words], policyFlags: [] };
+      expect(auditInvocation(edited, undefined, "kimi"), label).toEqual(hits);
+      expect(auditInvocation(edited, { profile: approved, bypassApproved: true }, "kimi"), label).toEqual([]);
+    }
   });
 });
 

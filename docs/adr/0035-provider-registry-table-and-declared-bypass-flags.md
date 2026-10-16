@@ -70,6 +70,15 @@ must reach the argv audit, a security control (T3.17), without each adapter edit
 - The `git_channel` key stays Claude Code only (ADR-0029); a new provider's injected channel needs its own ADR
   (ROADMAP §6.8 conventions).
 
+## Implementation note (T4.62, 2026-10-16, Delegated)
+
+The union in item 2 is unchanged and still applies to every argv. On top of it an entry may declare
+`providerScopedBypassFlags` for a flag that is bypass-class in its own CLI only (Kimi Code's `-p`/`--prompt`; Claude
+Code's `-p` is its print flag): the audit refuses them only in argv compiled for that entry's adapter id, or in every
+argv whose adapter id the table does not know (fail closed). The provider id comes from the registered adapter at the
+pre-spawn check, not from the adapter's own list of its dangerous flags, so the alternative rejected above still does
+not apply. See [ADR-0049](0049-kimi-code-transport-and-bypass-class.md) "Implementation" and the LLD audit contract.
+
 ## Revisit when
 
 - A provider's bypass equivalent is a flag value rather than a flag (Claude Code's `--permission-mode
