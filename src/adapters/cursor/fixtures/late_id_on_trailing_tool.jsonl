@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.43 residual, tenth pass). An id-less success result is followed by a tool_call started line whose session_id is the usual synthetic id. The parser does not bind a session id from tool_call (fourth-pass decoy pin), so the trailing-tool order check fails the run with no native session. Assumption: no capture shows a first session id only on a tool_call after result.","exit":0}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"SYNTHETIC: done"}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{"inputTokens":4,"outputTokens":1}}
+{"type":"tool_call","subtype":"started","call_id":"c-late","tool_call":{"readToolCall":{"args":{"path":"a.txt"}}},"session_id":"synthetic-cursor-session-0001"}
