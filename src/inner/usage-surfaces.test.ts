@@ -301,7 +301,11 @@ async function readerSurfaces(client: Client, runId: string, extra: Partial<CliI
   };
 }
 
-function innerAgent(shares: string | null, script: readonly FakeStep[] = SCRIPT) {
+function innerAgent(
+  shares: string | null,
+  script: readonly FakeStep[] = SCRIPT,
+  opts: { breaker?: { failure_threshold: number; open_ms: number }; now?: () => number } = {},
+) {
   const settings = resolveInnerAgent({
     enabled: true,
     backend: {
@@ -310,9 +314,33 @@ function innerAgent(shares: string | null, script: readonly FakeStep[] = SCRIPT)
       model: "cfg-model",
       shares_subscription_with: shares,
     },
+    ...(opts.breaker !== undefined ? { breaker: opts.breaker } : {}),
     tasks: { run_title: { enabled: true } },
   });
-  return createInnerAgent(settings, { backend: createFakeBackend({ script }), ledger });
+  return createInnerAgent(settings, {
+    backend: createFakeBackend({ script }),
+    ledger,
+    ...(opts.now !== undefined ? { now: opts.now } : {}),
+  });
+}
+
+/** `cli` with the exit code and stderr kept, for a surface that is expected to refuse. */
+async function cliFull(
+  args: string[],
+  extra: Partial<CliIo> = {},
+): Promise<{ code: number; out: string; err: string }> {
+  const out: string[] = [];
+  const err: string[] = [];
+  const io: CliIo = {
+    stdout: { write: (s) => out.push(s) },
+    stderr: { write: (s) => err.push(s) },
+    env: {},
+    adapters: registry(),
+    now,
+    ...extra,
+  };
+  const code = await main([...args, "--config", configPath], io);
+  return { code, out: out.join(""), err: err.join("") };
 }
 
 /** The human `runs show` split into [everything but its event lines (`  seq  ts  type  payload`); the event lines]. */
@@ -1406,5 +1434,451 @@ describe("a duplicate-id insert in every non-REPLACE conflict spelling is refuse
     expect(after.getRun).toContain(String(PLANTED));
     expect(after.innerStatusJson).toBe(before.surfaces.innerStatusJson);
     expect(after.innerStatus).toBe(before.surfaces.innerStatus);
+  });
+});
+
+describe("a task suspended and resumed through inner test and inner resume: the rejections charge, the denial does not, every provider reader is byte-identical (T11.5 residual post-#509; FR-INN-15, FR-INN-09)", () => {
+  it("two rejected inner tests write a labelled row each and suspend the task; the suspended test writes a row with no observation; resume writes neither; the next test charges again", async () => {
+    // `src/cli/inner.test.ts` pins the suspended state at `inner status`, `doctor` and `inner test` with rows seeded
+    // straight into the ledger, and `src/inner/usage.test.ts` pins the rows a suspension writes on the injected
+    // contract; nothing had driven the suspension through the published command under the flag and read what each
+    // step writes beside what the provider readers show. The window is the smallest the config allows (two calls, both
+    // needed, more than half rejected), so the second rejected `inner test` suspends the task. Distinctive counts, so
+    // a reader that surfaced one is caught by a substring check over every surface.
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schema_version: 1,
+        data_dir: dataDir,
+        allowed_roots: [path.join(root, "repos")],
+        mcp_clients: [{ id: "c1", max_trust_profile: "edit-untrusted" }],
+        limits: { per_provider_concurrency: 2 },
+        capacity: { window_seconds: 7200, confidence_runs: 4 },
+        inner_agent: {
+          enabled: true,
+          backend: {
+            kind: "http",
+            base_url: "http://127.0.0.1:1",
+            model: "cfg-model",
+            shares_subscription_with: "claude-code",
+          },
+          suspension: { window_calls: 2, min_calls: 2, rejection_threshold: 0.5 },
+          tasks: { run_title: { enabled: true } },
+        },
+      }),
+    );
+    const REJECTED_IN = 123_457;
+    const REJECTED_OUT = 7_001;
+    const ACCEPTED_IN = 555_001;
+    const ACCEPTED_OUT = 9_009;
+    const figures = [REJECTED_IN, REJECTED_OUT, 2 * REJECTED_IN, 2 * REJECTED_OUT, ACCEPTED_IN, ACCEPTED_OUT].map(
+      String,
+    );
+    const runId = finishedRun();
+    const client = await connect();
+    // Each `inner test` builds a fresh service over the one backend instance, whose script index carries across the
+    // invocations: four off-schema answers (two rejected tests of two attempts each), then the accepted answer. The
+    // denied test consumes nothing, so the accepted step is still the next one after the resume.
+    const backend = createFakeBackend({
+      script: [
+        ...Array<FakeStep>(4).fill({ kind: "text", text: "not json", usage: { in: REJECTED_IN, out: REJECTED_OUT } }),
+        { kind: "text", text: '{"title":"Fix greeting typo"}', usage: { in: ACCEPTED_IN, out: ACCEPTED_OUT } },
+      ],
+    });
+    const extra = { innerBackend: backend };
+    // The readers keep the fixed clock (the projection is a function of it). The writing commands tick, because the
+    // quality window counts calls strictly after `resumed_at`, and a resume and a call stamped the same instant
+    // would never be told apart (as built in the ledger and the status reader alike).
+    let tick = 0;
+    const writing = { ...extra, now: () => new Date(NOW.getTime() + ++tick * 1000) };
+    type Doctor = {
+      ok: boolean;
+      checks: { id: string; status: string; detail: string }[];
+      capacity: unknown;
+      inner_agent: { checks: { id: string; status: string; detail: string }[]; tasks: { task: string }[] };
+    };
+    type InnerStatus = {
+      inner_agent: {
+        tasks: {
+          task: string;
+          suspended: boolean;
+          suspended_basis: unknown;
+          total_calls: number;
+          calls: Record<string, number>;
+          window: { calls: number };
+        }[];
+      };
+    };
+    const surfaces = async () => {
+      const { innerStatusJson, innerStatus, doctorJson, doctor, ...provider } = await readerSurfaces(
+        client,
+        runId,
+        extra,
+      );
+      const doc = JSON.parse(doctorJson) as Doctor;
+      return {
+        provider,
+        // The config-derived warning and the capacity block are what FR-INN-15 pins at doctor; the inner-agent section
+        // is the one part expected to move, by the counts and the task's state.
+        doctorStable: { ok: doc.ok, checks: doc.checks, capacity: doc.capacity },
+        doctorInner: doc.inner_agent,
+        doctorText: doctor,
+        inner: { json: innerStatusJson, text: innerStatus },
+      };
+    };
+    const runTitle = (json: string) =>
+      (JSON.parse(json) as InnerStatus).inner_agent.tasks.find((t) => t.task === "run_title");
+    const taskCheck = (inner: Doctor["inner_agent"]) => inner.checks.find((c) => c.id === "inner_task_run_title");
+    const labelled = () =>
+      db
+        .prepare(
+          "SELECT run_id, provider, metrics_json FROM usage_observation WHERE source = 'inner_agent' ORDER BY rowid",
+        )
+        .all();
+    const calls = () =>
+      ledger.listInnerCalls().map((c) => [c.outcome, c.reason, c.attempts, c.tokens_in, c.tokens_out]);
+    const test = async () =>
+      JSON.parse((await cliFull(["inner", "test", "run_title", "--json"], writing)).out) as {
+        ran: boolean;
+        accepted: boolean;
+        outcome: string;
+        reason: string | null;
+        call: { attempts: number } | null;
+      };
+
+    const before = await surfaces();
+    expect(before.doctorStable.checks.find((c) => c.id === "inner_shared_subscription")).toMatchObject({
+      status: "warn",
+    });
+    expect(taskCheck(before.doctorInner)).toMatchObject({ status: "ok" });
+    expect(runTitle(before.inner.json)).toMatchObject({ suspended: false, total_calls: 0 });
+
+    // Two rejected tests: each reached the backend twice, so each charges its summed counts under claude-code with no
+    // run; the second one suspends the task in the same transaction (no run, so no `inner_task_suspended` event exists
+    // anywhere).
+    for (let i = 0; i < 2; i++) {
+      expect(await test()).toMatchObject({
+        ran: true,
+        accepted: false,
+        outcome: "rejected_validator",
+        reason: "NOT_JSON",
+        call: { attempts: 2 },
+      });
+    }
+    expect(backend.requests).toHaveLength(4);
+    expect(calls()).toEqual([
+      ["rejected_validator", "NOT_JSON", 2, 2 * REJECTED_IN, 2 * REJECTED_OUT],
+      ["rejected_validator", "NOT_JSON", 2, 2 * REJECTED_IN, 2 * REJECTED_OUT],
+    ]);
+    expect(labelled()).toEqual(
+      Array(2).fill({
+        run_id: null,
+        provider: "claude-code",
+        metrics_json: JSON.stringify({ input_tokens: 2 * REJECTED_IN, output_tokens: 2 * REJECTED_OUT }),
+      }),
+    );
+    expect(ledger.getInnerTaskState("run_title")).toMatchObject({
+      suspended: true,
+      suspended_basis: { window_calls: 2, rejected: 2, total: 2, threshold: 0.5 },
+      resumed_at: null,
+      version: 1,
+    });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM run_event").get()).toEqual({ n: 0 });
+
+    const suspended = await surfaces();
+    expect(suspended.provider).toEqual(before.provider);
+    expect(suspended.doctorStable).toEqual(before.doctorStable);
+    expect(taskCheck(suspended.doctorInner)).toMatchObject({ status: "warn" });
+    expect(taskCheck(suspended.doctorInner)?.detail).toMatch(/^SUSPENDED since .*switchboard inner resume run_title/u);
+    expect(suspended.doctorText).toMatch(/Inner task run_title: SUSPENDED since /u);
+    expect(runTitle(suspended.inner.json)).toMatchObject({
+      suspended: true,
+      suspended_basis: { rejected: 2, total: 2 },
+      total_calls: 2,
+      calls: { rejected_validator: 2 },
+    });
+    expect(suspended.inner.text).toMatch(/^run_title +yes +SUSPENDED +2 /mu);
+
+    // The suspended test: denied before any request, a row at attempts 0 and nothing consumed, so no observation.
+    expect(await test()).toMatchObject({
+      ran: true,
+      accepted: false,
+      outcome: "fallback_suspended",
+      reason: "TASK_SUSPENDED",
+      call: { attempts: 0 },
+    });
+    expect(backend.requests).toHaveLength(4);
+    expect(calls()).toHaveLength(3);
+    expect(calls()[2]).toEqual(["fallback_suspended", "TASK_SUSPENDED", 0, null, null]);
+    expect(labelled()).toHaveLength(2);
+    const denied = await surfaces();
+    expect(denied.provider).toEqual(before.provider);
+    expect(denied.doctorStable).toEqual(before.doctorStable);
+    expect(runTitle(denied.inner.json)).toMatchObject({
+      suspended: true,
+      total_calls: 3,
+      calls: { rejected_validator: 2, fallback_suspended: 1 },
+    });
+
+    // The operator re-enable is a state write only: no call row, no observation, no request, and the quality window
+    // restarts (the two rejections stay in the history and the totals).
+    const resumed = await cliFull(["inner", "resume", "run_title", "--json"], writing);
+    expect(resumed.code).toBe(0);
+    expect(JSON.parse(resumed.out)).toMatchObject({ task: "run_title", resumed: true, version: 2 });
+    expect(backend.requests).toHaveLength(4);
+    expect(calls()).toHaveLength(3);
+    expect(labelled()).toHaveLength(2);
+    expect(ledger.getInnerTaskState("run_title")).toMatchObject({ suspended: false, version: 2 });
+    const afterResume = await surfaces();
+    expect(afterResume.provider).toEqual(before.provider);
+    expect(afterResume.doctorStable).toEqual(before.doctorStable);
+    expect(taskCheck(afterResume.doctorInner)).toMatchObject({ status: "ok" });
+    expect(runTitle(afterResume.inner.json)).toMatchObject({ suspended: false, total_calls: 3, window: { calls: 0 } });
+
+    // Charging resumes with the task: the accepted test reaches the backend once and writes its labelled row.
+    expect(await test()).toMatchObject({ ran: true, accepted: true, outcome: "accepted", call: { attempts: 1 } });
+    expect(backend.requests).toHaveLength(5);
+    expect(calls()[3]).toEqual(["accepted", null, 1, ACCEPTED_IN, ACCEPTED_OUT]);
+    expect(labelled()).toHaveLength(3);
+    expect(labelled()[2]).toEqual({
+      run_id: null,
+      provider: "claude-code",
+      metrics_json: JSON.stringify({ input_tokens: ACCEPTED_IN, output_tokens: ACCEPTED_OUT }),
+    });
+    const after = await surfaces();
+    expect(after.provider).toEqual(before.provider);
+    expect(after.doctorStable).toEqual(before.doctorStable);
+    expect(runTitle(after.inner.json)).toMatchObject({
+      suspended: false,
+      total_calls: 4,
+      calls: { accepted: 1, rejected_validator: 2, fallback_suspended: 1 },
+      window: { calls: 1 },
+    });
+    // Observations are the rows at attempts >= 1 throughout, and no surface carries a count of either kind.
+    expect(labelled()).toHaveLength(calls().filter(([, , attempts]) => (attempts as number) >= 1).length);
+    for (const doc of [before, suspended, denied, afterResume, after]) {
+      for (const figure of figures) expect(JSON.stringify(doc)).not.toContain(figure);
+      expect(JSON.stringify(doc.inner)).not.toMatch(/token/u);
+      expect(JSON.stringify(doc.doctorInner)).not.toMatch(/token/u);
+    }
+  });
+});
+
+describe("the breaker's whole cycle under a run at the published event surfaces: open, denied, failed probe, recovered (T11.5 residual post-#509; FR-INN-15, FR-INN-08)", () => {
+  // #501 pinned the opening at the two production channels and #509 the rows of the half-open probe on the injected
+  // contract; nothing had read the `recovered` transition, or the denial and the probes beside it, at `get_run`,
+  // `runs show`, `get_capacity`, `capacity`, `doctor` or `inner status`. An injected breaker clock walks the circuit
+  // through every state under the run with capacity evidence, over the in-memory transport and a Streamable HTTP
+  // session (and a second session opened after the calls).
+  const PROBE_IN = 444_001;
+  const PROBE_OUT = 5_005;
+  const CLOSED_IN = 333_002;
+  const CLOSED_OUT = 6_006;
+  const script: readonly FakeStep[] = [
+    { kind: "error", message: "backend-secret-one" }, // 1: a transport failure (closed, 1 of 2)
+    { kind: "error", message: "backend-secret-two" }, // 2: the second opens the circuit (degraded)
+    // 3: denied while open (no request, no step consumed)
+    { kind: "error", message: "backend-secret-three" }, // 4: the first probe fails (re-opened, no transition)
+    { kind: "text", text: '{"title":"Fix login"}', usage: { in: PROBE_IN, out: PROBE_OUT } }, // 5: the probe recovers
+    { kind: "text", text: '{"title":"Fix login"}', usage: { in: CLOSED_IN, out: CLOSED_OUT } }, // 6: closed again
+  ];
+  const figures = [PROBE_IN, PROBE_OUT, CLOSED_IN, CLOSED_OUT].map(String);
+  for (const http of [false, true]) {
+    for (const shares of [null, PROVIDER]) {
+      const label = `${http ? "Streamable HTTP" : "in-memory"}, ${shares === null ? "no shared subscription" : `shares_subscription_with = ${shares}`}`;
+      it(`${label}: six calls write ${shares === null ? "no observation" : "five labelled rows (none for the denial)"}, the run gains two inner_degraded events with no count, and every reader is byte-identical`, async () => {
+        const runId = finishedRun();
+        const client = await connect(http);
+        const surfaces = async (c: Client) => {
+          const { innerStatusJson, innerStatus, ...s } = await readerSurfaces(c, runId, {});
+          const [show, showEvents] = splitEvents(s.show);
+          const [getRunEvents, toolEvents] = splitEvents(s.getRunEvents);
+          const [showText, showTextEvents] = splitEventLines(s.showText);
+          return {
+            stable: { ...s, show, showText, getRunEvents },
+            events: {
+              show: showEvents,
+              tool: toolEvents as { type: string; payload: unknown }[],
+              showText: showTextEvents,
+            },
+            inner: { json: innerStatusJson, text: innerStatus },
+          };
+        };
+        const before = await surfaces(client);
+        expect(before.events.tool).toEqual([]);
+        expect(
+          (JSON.parse(before.stable.tool) as { providers: { window: unknown }[] }).providers[0]?.window,
+        ).toMatchObject({
+          terminal_runs: 1,
+          usage_observations: 1,
+        });
+
+        let clock = 1_000_000;
+        const svc = innerAgent(shares, script, { breaker: { failure_threshold: 2, open_ms: 1000 }, now: () => clock });
+        const call = () => svc.call(contract, { user: "objective: tidy", run_id: runId });
+        const outcomes: [string, string | undefined, string][] = [];
+        const step = async () => {
+          const r = await call();
+          outcomes.push([r.outcome, r.accepted ? undefined : r.reason, svc.breakerState]);
+        };
+        await step(); // 1
+        await step(); // 2: opens
+        await step(); // 3: denied
+        clock += 1000;
+        await step(); // 4: the probe fails
+        clock += 1000;
+        await step(); // 5: the probe recovers
+        await step(); // 6
+        expect(outcomes).toEqual([
+          ["fallback_unavailable", "BACKEND_ERROR", "closed"],
+          ["fallback_unavailable", "BACKEND_ERROR", "open"],
+          ["fallback_unavailable", "CIRCUIT_OPEN", "open"],
+          ["fallback_unavailable", "BACKEND_ERROR", "open"],
+          ["accepted", undefined, "closed"],
+          ["accepted", undefined, "closed"],
+        ]);
+        expect(ledger.listInnerCalls().map((c) => [c.attempts, c.tokens_in, c.tokens_out])).toEqual([
+          [1, null, null],
+          [1, null, null],
+          [0, null, null],
+          [1, null, null],
+          [1, PROBE_IN, PROBE_OUT],
+          [1, CLOSED_IN, CLOSED_OUT],
+        ]);
+        const labelled = db
+          .prepare(
+            "SELECT run_id, provider, metrics_json FROM usage_observation WHERE source = 'inner_agent' ORDER BY rowid",
+          )
+          .all();
+        expect(labelled).toEqual(
+          shares === null
+            ? []
+            : [
+                {},
+                {},
+                {},
+                { input_tokens: PROBE_IN, output_tokens: PROBE_OUT },
+                { input_tokens: CLOSED_IN, output_tokens: CLOSED_OUT },
+              ].map((metrics) => ({ run_id: runId, provider: PROVIDER, metrics_json: JSON.stringify(metrics) })),
+        );
+
+        const check = (after: Awaited<ReturnType<typeof surfaces>>) => {
+          expect(after.stable).toEqual(before.stable);
+          // Eight events: a call event per call, the `degraded` transition after the second and the `recovered` one
+          // after the fifth (the failed probe re-opens an already degraded circuit: no transition).
+          const types = [
+            "inner_call",
+            "inner_call",
+            "inner_degraded",
+            "inner_call",
+            "inner_call",
+            "inner_call",
+            "inner_degraded",
+            "inner_call",
+          ];
+          expect(after.events.show.map((e) => e.type)).toEqual(types);
+          expect(after.events.tool.map((e) => e.type)).toEqual(types);
+          expect(after.events.showText.map((l) => l.match(/ {2}(\S+) {2}\{/u)?.[1])).toEqual(types);
+          // The transition payloads carry the state, the reason code and the circuit state: never the backend's
+          // message, and the recovery has no reason (as built).
+          expect(after.events.tool.filter((e) => e.type === "inner_degraded").map((e) => e.payload)).toEqual([
+            { state: "degraded", reason: "BACKEND_ERROR", breaker_state: "open", backend_kind: "http" },
+            { state: "recovered", reason: "", breaker_state: "closed", backend_kind: "http" },
+          ]);
+          const text = JSON.stringify(after.events);
+          expect(text).not.toMatch(/token|usage|backend-secret/u);
+          for (const figure of figures) expect(JSON.stringify(after)).not.toContain(figure);
+          expect(
+            JSON.parse(after.inner.json).inner_agent.tasks.find((t: { task: string }) => t.task === "run_title"),
+          ).toMatchObject({ total_calls: 6, calls: { accepted: 2, fallback_unavailable: 4 } });
+          expect(after.inner.text).toMatch(/^run_title +no +active +6 +2 +0 +4 /mu);
+        };
+        check(await surfaces(client));
+        if (http) check(await surfaces(await connectHttpSession()));
+      });
+    }
+  }
+});
+
+describe("a provider the flag names but no adapter registers is refused by get_capacity and capacity --provider before and after its labelled rows (T11.5 residual post-#509; FR-INN-15, FR-CAP-03)", () => {
+  it("the labelled rows under claude-code make no provider appear: the refusal, the provider list and doctor's capacity block are the same bytes", async () => {
+    // The capacity surfaces enumerate the registry, never the ledger's rows. The on-disk flag must name a configured
+    // provider id, and `claude-code` is one, but this registry holds the fake adapter only: a reader that listed the
+    // providers with usage rows, or that let a filtered projection through for a provider with inner_agent rows only,
+    // would answer for claude-code after the call and not before. Nothing had pinned the refusal on both sides.
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schema_version: 1,
+        data_dir: dataDir,
+        allowed_roots: [path.join(root, "repos")],
+        mcp_clients: [{ id: "c1", max_trust_profile: "edit-untrusted" }],
+        limits: { per_provider_concurrency: 2 },
+        capacity: { window_seconds: 7200, confidence_runs: 4 },
+        inner_agent: {
+          enabled: true,
+          backend: {
+            kind: "http",
+            base_url: "http://127.0.0.1:1",
+            model: "cfg-model",
+            shares_subscription_with: "claude-code",
+          },
+          tasks: { run_title: { enabled: true } },
+        },
+      }),
+    );
+    const PLANTED = 987_654_321;
+    finishedRun();
+    const client = await connect();
+    const extra = {
+      innerBackend: createFakeBackend({
+        script: [{ kind: "text", text: '{"title":"Fix greeting typo"}', usage: { in: PLANTED, out: PLANTED } }],
+      }),
+    };
+    const surfaces = async () => {
+      const refused = await client.callTool({ name: "get_capacity", arguments: { provider: "claude-code" } });
+      expect(refused.isError).toBe(true);
+      const cliRefused = await cliFull(["capacity", "--provider", "claude-code", "--json"], extra);
+      expect(cliRefused.code).not.toBe(0);
+      const doctor = JSON.parse(await cli(["doctor", "--json"], true, extra)) as {
+        capacity: { providers: { provider: string }[] };
+      };
+      return {
+        toolRefusal: (refused.content as { text: string }[]).map((c) => c.text).join("\n"),
+        tool: await capacityText(client),
+        cliRefusal: { code: cliRefused.code, out: cliRefused.out, err: cliRefused.err },
+        capacity: await cli(["capacity", "--json"], false, extra),
+        doctorCapacity: JSON.stringify(doctor.capacity),
+        providers: doctor.capacity.providers.map((p) => p.provider),
+      };
+    };
+    const before = await surfaces();
+    expect((JSON.parse(before.toolRefusal) as { error: { code: string; message: string } }).error).toMatchObject({
+      code: "INVALID_REQUEST",
+      message: expect.stringMatching(/unknown provider "claude-code"/u) as string,
+    });
+    // A usage error under --json is a JSON document on stdout, exit 2, nothing on stderr.
+    expect(before.cliRefusal.code).toBe(2);
+    expect(before.cliRefusal.err).toBe("");
+    expect(JSON.parse(before.cliRefusal.out)).toMatchObject({
+      error: { code: "USAGE", message: 'unknown provider "claude-code"; expected one of fake' },
+    });
+    expect(before.providers).toEqual([PROVIDER]);
+    expect((JSON.parse(before.tool) as { providers: { provider: string }[] }).providers.map((p) => p.provider)).toEqual(
+      [PROVIDER],
+    );
+
+    expect(JSON.parse(await cli(["inner", "test", "run_title", "--json"], false, extra))).toMatchObject({
+      accepted: true,
+    });
+    expect(
+      db.prepare("SELECT provider, metrics_json FROM usage_observation WHERE source = 'inner_agent'").all(),
+    ).toEqual([
+      { provider: "claude-code", metrics_json: JSON.stringify({ input_tokens: PLANTED, output_tokens: PLANTED }) },
+    ]);
+
+    const after = await surfaces();
+    expect(after).toEqual(before);
+    expect(JSON.stringify(after)).not.toContain(String(PLANTED));
   });
 });

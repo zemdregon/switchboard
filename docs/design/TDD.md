@@ -188,6 +188,13 @@ repositories) and `src/cli/projects-dynamic.test.ts` (`projects list|show|approv
   the operator's user can read (including provider credential files under `HOME`), use the network, and write or push
   Git refs; ref changes are detected and controller-owned refs restored, pushes are not visible (R-61). Optional
   confinement is T3.11. Detail: [LLD §8.1](LLD.md#81-verification-stage-m3-t310).
+- **Outer sandbox (T3.1, Delegated).** bubblewrap (filesystem view and namespaces) and `prlimit` (per-process
+  resource limits) are the chosen mechanisms; Landlock is detected and reported but not applied. Availability is a
+  working probe on the host, reported by `doctor`; a profile listed in `outer_sandbox.required_profiles` is refused at
+  admission (`ELIGIBILITY_NONE`) rather than run unconfined, and, because no process is wrapped yet, it is refused even
+  where both tools work. Limits: the CLI's own credentials and its network access cannot be withheld from commands its
+  agent runs. Decision: [ADR-0051](../adr/0051-outer-sandbox-detection-and-fail-closed-requirement.md); detail:
+  [LLD §8.4](LLD.md#84-outer-sandbox-m3-t31).
 - **Credential boundary.** Nothing reads credential files or keyrings (ADR-0003, FR-AUTH-01). Code review gate plus a
   lint rule (Proposed) forbidding references to known credential paths outside test fixtures.
 - **Same-account limitation [R2].** A dedicated OS user limits host blast radius but does not isolate provider

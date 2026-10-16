@@ -134,6 +134,17 @@ export interface RunRecord extends RunRow {
   finished_at: string | null;
 }
 
+/** T14.1: filter for `listRunsForClient`. `since` is inclusive and `until` exclusive, both on `created_at` (ISO). */
+export interface RunListFilter {
+  clientId: string;
+  projectId?: string;
+  states?: readonly RunState[];
+  since?: string;
+  until?: string;
+  before?: { createdAt: string; id: string };
+  limit: number;
+}
+
 /** Mutable `run` columns a transition may set alongside the state (state and version are managed by the helper). */
 export interface RunFieldPatch {
   failure_code?: string | null;
@@ -707,6 +718,11 @@ export interface Ledger {
   /** Runs in `state`, highest priority first, then oldest (`created_at`, then ULID order). */
   listRunsInState(state: RunState): RunRecord[];
   listRunsForMetaSession(metaSessionId: string): RunRecord[];
+  /**
+   * T14.1 (FR-CTL-01, LLD §3.4.2): one client's runs, newest first (`created_at` descending, then `id` descending),
+   * narrowed by the optional filters; `before` is the keyset position of the last row of the previous page. Read-only.
+   */
+  listRunsForClient(filter: RunListFilter): RunRecord[];
   setMetaSessionHead(metaSessionId: string, commit: string): void;
   insertArtifact(input: NewArtifactRow): string;
 
@@ -1209,6 +1225,35 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
       return db
         .prepare(`${RUN_RECORD_SQL} WHERE meta_session_id = ? ORDER BY created_at, id`)
         .all(metaSessionId) as RunRecord[];
+    },
+
+    listRunsForClient(f) {
+      const where = ["client_id = ?"];
+      const args: unknown[] = [f.clientId];
+      if (f.projectId !== undefined) {
+        where.push("project_id = ?");
+        args.push(f.projectId);
+      }
+      if (f.states !== undefined) {
+        if (f.states.length === 0) return [];
+        where.push(`state IN (${f.states.map(() => "?").join(", ")})`);
+        args.push(...f.states);
+      }
+      if (f.since !== undefined) {
+        where.push("created_at >= ?");
+        args.push(f.since);
+      }
+      if (f.until !== undefined) {
+        where.push("created_at < ?");
+        args.push(f.until);
+      }
+      if (f.before !== undefined) {
+        where.push("(created_at < ? OR (created_at = ? AND id < ?))");
+        args.push(f.before.createdAt, f.before.createdAt, f.before.id);
+      }
+      return db
+        .prepare(`${RUN_RECORD_SQL} WHERE ${where.join(" AND ")} ORDER BY created_at DESC, id DESC LIMIT ?`)
+        .all(...args, f.limit) as RunRecord[];
     },
 
     setMetaSessionHead(metaSessionId, commit) {

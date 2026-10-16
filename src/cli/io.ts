@@ -1,4 +1,5 @@
 import type { AdapterRegistry } from "../adapters/index.js";
+import type { OuterSandboxAvailability } from "../exec/outer-sandbox.js";
 import type { InnerBackend } from "../inner/port.js";
 import type { EmbeddingBackend } from "../retrieval/embedding.js";
 
@@ -25,6 +26,8 @@ export interface CliIo {
   readonly readStdin?: () => Promise<string>;
   /** Test seam (NFR-SEC-04): the effective uid `serve` and `doctor` check. Defaults to `process.geteuid()`. */
   readonly effectiveUid?: () => number | undefined;
+  /** Test seam (T3.1): outer-sandbox availability for `doctor` instead of probing this host. */
+  readonly outerSandbox?: OuterSandboxAvailability;
 }
 
 /** Stable `--json` schema version for every command (Proposed). */
