@@ -5,6 +5,7 @@
 - Status: Research input (Delegated agent work, not owner-approved). Runtime, mounts and the ADR-0020 `PATH`
   scan were **observed** on this host. Provider native login and "CLI works without a Git client" were **not**
   live-checked: no provider CLI was installed or run, not even `--version`, inside or outside a container.
+  [PR #523](https://github.com/zemdregon/switchboard/pull/523).
 - Used by: [ROADMAP](../ROADMAP.md) T10.0, R-13, R-40; [ADR-0013](../adr/0013-projects-environments-and-contexts.md)
   (container mechanism stays Proposed); [ADR-0020](../adr/0020-container-image-without-git-client.md) (rule unchanged);
   [TDD §3.11](../design/TDD.md#311-container-environments).

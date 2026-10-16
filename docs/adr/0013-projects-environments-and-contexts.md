@@ -82,6 +82,7 @@ Container mechanism **Status stays Proposed**. This section records what T10.0 o
 Decision. Evidence:
 [docs/research/container-runtime-spike-2026-10-16.md](../research/container-runtime-spike-2026-10-16.md).
 Delegated agent work, not owner-approved. No provider CLI was installed or run.
+[PR #523](https://github.com/zemdregon/switchboard/pull/523).
 
 - **Runtime.** This host runs **rootless Docker** Engine 29.8.2 (`Security Options` includes `rootless`;
   `Docker Root Dir` `/home/ubuntu/.local/share/docker`; cgroup v2). Podman is **not installed**. The Proposed
