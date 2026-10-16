@@ -1,0 +1,5 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.63, thirteenth pass), in the stream-json record shapes of the scrubbed 2026-10-15 capture (captured_success.jsonl); the tool record and tool_calls item shapes are Assumptions (T4.68). A clean resume hint, then a tool-role record carrying a Git-writing tool_calls item: the tool role never emits calls (unlike an assistant record after the hint, twelfth pass), so the late-record protocol error is the failure, not PERMISSION_BLOCKED.","exit":0}}
+{"role":"meta","type":"system.version","version":"0.0.1"}
+{"role":"assistant","content":"ok"}
+{"role":"meta","type":"session.resume_hint","session_id":"session_00000000-0000-4000-8000-000000000001","command":"kimi -r session_00000000-0000-4000-8000-000000000001","content":"To resume this session: kimi -r session_00000000-0000-4000-8000-000000000001"}
+{"role":"tool","tool_call_id":"call_9","content":null,"tool_calls":[{"id":"call_9","type":"function","function":{"name":"Shell","arguments":"{\"command\":\"git push\"}"}}]}

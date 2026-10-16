@@ -2250,3 +2250,289 @@ describe("kimi parser residuals, twelfth pass (T4.63, synthetic only)", () => {
     });
   }
 });
+
+/**
+ * Thirteenth pass (T4.63, 2026-10-16, Delegated agent work, not owner-approved; synthetic lines and fixtures only, no
+ * `kimi` run). Failure-tail contrast with the twelfth pass (a `tool` role after the hint never emits `tool_calls`, even
+ * a Git write), session-id JSON escapes and flag-like ids that still bind, duplicate `type` last-wins, `.error`-suffixed
+ * version/hint types, pre-seeded parse state, and extractResult outcomes not yet named (`spawn_error`, a
+ * `permission_denied` after a late protocol error). Limits are pinned as limits, not controls (Unverified: T4.68).
+ */
+describe("kimi parser residuals, thirteenth pass (T4.63, synthetic only)", () => {
+  const extract = (events: NormalizedEvent[], exit = EXIT_OK) => adapter().extractResult(events, exit);
+  const ctx = { cwd: "/w", bypass: true };
+  const LATE_TOOL = "tool record after the resume hint";
+  const LATE = "assistant record after the resume hint";
+  const UNREADABLE = "tool call without a readable name and arguments";
+  const CHANGED = "session id changed mid-run";
+  const binding = (nativeSessionId: string) => ({ provider: "kimi", nativeSessionId }) as const;
+
+  it("a Git write on a `tool` role after the hint is not emitted, so the late-record protocol error is the failure", () => {
+    const events = parse([
+      line({ role: "assistant", content: "ok" }),
+      line(hint()),
+      line({
+        role: "tool",
+        tool_call_id: "call_9",
+        content: null,
+        tool_calls: [call("Shell", { command: "git push" })],
+      }),
+    ]).events.map((e) => guardEvent(e, ctx));
+    expect(events.slice(0, 3)).toEqual([
+      { kind: "message", role: "assistant", text: "ok" },
+      { kind: "session_bound", nativeSessionId: SID },
+      { kind: "result", ok: true },
+    ]);
+    expect(events.slice(3)).toEqual([{ kind: "provider_error", category: "protocol", message: LATE_TOOL }]);
+    expect(events.some((e) => e.kind === "tool_call")).toBe(false);
+    expect(extract(events)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: `protocol: ${LATE_TOOL}`,
+      nativeSessionId: SID,
+      summary: "ok",
+    });
+  });
+
+  it("limit, not a control: a Git write only on a `tool` role before the hint is invisible, so a clean hint succeeds (Unverified: T4.68)", () => {
+    const events = parse([
+      line({ role: "assistant", content: "ok" }),
+      line({
+        role: "tool",
+        tool_call_id: "call_9",
+        content: null,
+        tool_calls: [call("Shell", { command: "git push" })],
+      }),
+      line(hint()),
+    ]).events.map((e) => guardEvent(e, ctx));
+    expect(events.some((e) => e.kind === "tool_call")).toBe(false);
+    expect(events.some((e) => e.kind === "provider_error")).toBe(false);
+    expect(extract(events)).toEqual({ ok: true, unknownEventCount: 0, nativeSessionId: SID, summary: "ok" });
+  });
+
+  it("a null or non-object `tool_calls` item is unreadable; a later Git write in the same list still reaches the guard", () => {
+    for (const hole of [null, "Shell", 7]) {
+      const parsed = parse([
+        line(toolMsg(hole, call("Shell", { command: "git push" }, "call_2"))),
+        line(hint()),
+      ]).events.map((e) => guardEvent(e, ctx));
+      expect(parsed[0], JSON.stringify(hole)).toEqual({
+        kind: "provider_error",
+        category: "protocol",
+        message: UNREADABLE,
+      });
+      expect(parsed[1], JSON.stringify(hole)).toMatchObject({
+        kind: "tool_call",
+        tool: "shell",
+        name: "Shell",
+        violation: { kind: "git_write" },
+      });
+      expect(extract(parsed), JSON.stringify(hole)).toMatchObject({
+        failureCode: "PERMISSION_BLOCKED",
+        nativeSessionId: SID,
+      });
+    }
+  });
+
+  it("a `system.version.error` or `session.resume_hint.error` type is a provider error, never ignored version or a hint", () => {
+    const versionError = parse([
+      line({ role: "assistant", content: "ok" }),
+      line({ role: "meta", type: "system.version.error", message: "SYNTHETIC version.error" }),
+      line(hint()),
+    ]);
+    expect(versionError.events[1]).toEqual({
+      kind: "provider_error",
+      category: "unknown",
+      message: "SYNTHETIC version.error",
+    });
+    expect(extract(versionError.events)).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "unknown: SYNTHETIC version.error",
+      nativeSessionId: SID,
+      summary: "ok",
+    });
+    const hintError = parse([
+      line({ role: "meta", type: "session.resume_hint.error", session_id: SID, message: "SYNTHETIC hint.error" }),
+      line({ role: "assistant", content: "after" }),
+    ]);
+    expect(hintError.state.nativeSessionId).toBeUndefined();
+    expect(hintError.events[0]).toEqual({
+      kind: "provider_error",
+      category: "unknown",
+      message: "SYNTHETIC hint.error",
+    });
+    expect(hintError.events.some((e) => e.kind === "result")).toBe(false);
+    expect(extract(hintError.events)).toMatchObject({
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "unknown: SYNTHETIC hint.error",
+      summary: "after",
+    });
+  });
+
+  it("limit, not a control: with a duplicated `type` key only the last one is seen (JSON.parse; Unverified: T4.68)", () => {
+    const asError = `{"role":"meta","type":"session.resume_hint","session_id":"${SID}","type":"error","message":"SYNTHETIC last"}`;
+    const { events, state } = parse([asError]);
+    expect(events).toEqual([{ kind: "provider_error", category: "unknown", message: "SYNTHETIC last" }]);
+    expect(state.nativeSessionId).toBeUndefined();
+    const asHint = `{"role":"meta","type":"error","message":"SYNTHETIC ignored","type":"session.resume_hint","session_id":"${SID}"}`;
+    const bound = parse([asHint]);
+    expect(bound.events).toEqual([
+      { kind: "session_bound", nativeSessionId: SID },
+      { kind: "result", ok: true },
+    ]);
+    expect(bound.state.nativeSessionId).toBe(SID);
+  });
+
+  it("JSON unicode escapes in `session_id` are decoded before the safety check", () => {
+    const escapedSafe = `{"role":"meta","type":"session.resume_hint","session_id":"\\u0073${SID.slice(1)}","command":"kimi -r ${SID}","content":"To resume this session: kimi -r ${SID}"}`;
+    const { events, state } = parse([escapedSafe]);
+    expect(state.nativeSessionId).toBe(SID);
+    expect(extract(events)).toEqual({ ok: true, unknownEventCount: 0, nativeSessionId: SID });
+    const escapedUnsafe = `{"role":"meta","type":"session.resume_hint","session_id":"\\u002drf"}`;
+    const refused = parse([escapedUnsafe]);
+    expect(refused.state.nativeSessionId).toBeUndefined();
+    expect(refused.events[0]).toEqual({
+      kind: "provider_error",
+      category: "protocol",
+      message: "session id is not a safe argument",
+    });
+    expect(extract(refused.events)).toMatchObject({ failureCode: "OUTPUT_PROTOCOL_ERROR" });
+    const escapedZero = `{"role":"meta","type":"session.resume_hint","session_id":"\\u0030"}`;
+    expect(parse([escapedZero]).state.nativeSessionId).toBe("0");
+    expect(compiled(adapter().resumeArgs(binding("0"), request(), PRIVILEGED_BYPASS_PROFILE)).argv.slice(-2)).toEqual([
+      "--session",
+      "0",
+    ]);
+  });
+
+  it("limit, not a control: flag-like ids that start with an alphanumeric bind and resume as one `--session` pair (Unverified: T4.68)", () => {
+    for (const id of ["yolo", "auto", "plan", "acp", "help", "session--yolo", "1-c"]) {
+      const { events, state } = parse([line(hint(id))]);
+      expect(state.nativeSessionId, id).toBe(id);
+      expect(extract(events), id).toEqual({ ok: true, unknownEventCount: 0, nativeSessionId: id });
+      const inv = compiled(adapter().resumeArgs(binding(id), request(), PRIVILEGED_BYPASS_PROFILE));
+      expect(inv.argv.slice(-2), id).toEqual(["--session", id]);
+      expect(
+        inv.argv.filter((w) => w === "--session"),
+        id,
+      ).toHaveLength(1);
+      expect(auditInvocation(inv), id).toEqual([]);
+    }
+  });
+
+  it("a parse state pre-seeded with an id emits no session_bound for a matching hint; extractResult therefore has no id", () => {
+    const a = adapter();
+    const seeded: ParseState = { lines: 0, unknownEvents: 0, nativeSessionId: SID };
+    const matched = a.parseEvent(line(hint()), seeded);
+    expect(matched).toEqual([{ kind: "result", ok: true }]);
+    expect(seeded.nativeSessionId).toBe(SID);
+    expect(extract(matched)).toEqual({ ok: true, unknownEventCount: 0 });
+    const other: ParseState = { lines: 0, unknownEvents: 0, nativeSessionId: SID };
+    const changed = a.parseEvent(line(hint("session_other")), other);
+    expect(changed).toEqual([
+      { kind: "provider_error", category: "protocol", message: CHANGED },
+      { kind: "result", ok: true },
+    ]);
+    expect(other.nativeSessionId).toBe(SID);
+    expect(extract(changed)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: `protocol: ${CHANGED}`,
+    });
+    expect(extract(changed)).not.toHaveProperty("nativeSessionId");
+    const inv = compiled(a.resumeArgs(binding(SID), request(), PRIVILEGED_BYPASS_PROFILE));
+    expect(inv.argv.slice(-2)).toEqual(["--session", SID]);
+  });
+
+  it("limit, not a control: a serialized hint inside assistant text never binds or ends the turn (Unverified: T4.68)", () => {
+    const text = line(hint("session_other"));
+    const { events, state } = parse([line({ role: "assistant", content: text })]);
+    expect(events).toEqual([{ kind: "message", role: "assistant", text }]);
+    expect(state.nativeSessionId).toBeUndefined();
+    expect(extract(events)).toMatchObject({
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "no result event",
+      summary: text,
+    });
+  });
+
+  it("a late `system.version` after the hint is still ignored: not a late record, not unknown, so the run succeeds", () => {
+    const { events, state } = parse([
+      line({ role: "assistant", content: "ok" }),
+      line(hint()),
+      line({ ...VERSION, message: "Authentication required", session_id: "session_other" }),
+    ]);
+    expect(events).toEqual([
+      { kind: "message", role: "assistant", text: "ok" },
+      { kind: "session_bound", nativeSessionId: SID },
+      { kind: "result", ok: true },
+    ]);
+    expect(state.unknownEvents).toBe(0);
+    expect(extract(events)).toEqual({ ok: true, unknownEventCount: 0, nativeSessionId: SID, summary: "ok" });
+  });
+
+  it("a spawn_error exit fails a clean hint as PROCESS_CRASH; a permission_denied after a late protocol error still wins", () => {
+    const { events } = parse([line(hint())]);
+    expect(extract(events, { ...EXIT_OK, outcome: "spawn_error" })).toMatchObject({
+      ok: false,
+      failureCode: "PROCESS_CRASH",
+      failureDetail: "spawn_error",
+      nativeSessionId: SID,
+    });
+    const late = parse([
+      line({ role: "assistant", content: "ok" }),
+      line(hint()),
+      line({ role: "assistant", content: "late" }),
+    ]);
+    expect(late.events.some((e) => e.kind === "provider_error" && e.message === LATE)).toBe(true);
+    expect(extract([{ kind: "permission_denied", tool: "Shell" }, ...late.events])).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "denied: Shell",
+      nativeSessionId: SID,
+      summary: "ok\nlate",
+    });
+  });
+
+  const replays: [string, ConformanceCase][] = [
+    [
+      "tool_calls_on_tool_after_hint: a Git-writing tool_calls item on a tool role after a clean hint at exit 0 is OUTPUT_PROTOCOL_ERROR, not PERMISSION_BLOCKED",
+      {
+        kind: "malformed_output",
+        adapter: replayAdapter("tool_calls_on_tool_after_hint"),
+        profile: PRIVILEGED_BYPASS_PROFILE,
+        request: request(),
+        expect: {
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          failureDetail: `protocol: ${LATE_TOOL}`,
+          nativeSessionId: DEFAULT_SESSION_ID,
+          summary: "ok",
+        },
+      },
+    ],
+    [
+      "version_error_suffix: a system.version.error type under a clean hint at exit 0 is TOOL_FAILURE, not ignored as version",
+      {
+        kind: "task_failure",
+        adapter: replayAdapter("version_error_suffix"),
+        profile: PRIVILEGED_BYPASS_PROFILE,
+        request: request(),
+        expect: {
+          ok: false,
+          failureCode: "TOOL_FAILURE",
+          failureDetail: "unknown: SYNTHETIC version.error",
+          nativeSessionId: DEFAULT_SESSION_ID,
+          summary: "ok",
+        },
+      },
+    ],
+  ];
+  for (const [name, c] of replays) {
+    it(name, async () => {
+      const report = await runConformanceCase(c);
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    });
+  }
+});
