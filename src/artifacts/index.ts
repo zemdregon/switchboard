@@ -90,8 +90,7 @@ export class ArtifactStore {
     if (await this.isIntact(finalPath, sha256)) return result;
 
     const dir = path.dirname(finalPath);
-    await mkdir(dir, { recursive: true, mode: DIR_MODE });
-    await this.fixDirModes(dir);
+    await this.ensureDir(dir);
 
     const tmp = path.join(dir, `.tmp-${process.pid}-${randomBytes(8).toString("hex")}`);
     try {
@@ -164,14 +163,26 @@ export class ArtifactStore {
     }
   }
 
-  /** mkdir's mode is subject to umask and ignored for pre-existing dirs; enforce 0700 on root and shard dirs. */
-  private async fixDirModes(leafDir: string): Promise<void> {
-    let dir = leafDir;
+  /**
+   * mkdir's mode is subject to umask and ignored for pre-existing dirs. Under a restrictive process umask (e.g. 0177),
+   * recursive mkdir creates directories without the execute bit (0600), so creating child shards fails with EACCES.
+   * Ensure root and each shard directory exist and chmod each to 0700 level-by-level from root down.
+   */
+  private async ensureDir(leafDir: string): Promise<void> {
+    const root = path.resolve(this.root);
+    const prefix = root.endsWith(path.sep) ? root : root + path.sep;
+    const chain: string[] = [];
+    let dir = path.resolve(leafDir);
     while (true) {
-      await chmod(dir, DIR_MODE);
-      if (dir === this.root || path.dirname(dir) === dir) return;
+      chain.unshift(dir);
+      if (dir === root || path.dirname(dir) === dir) break;
       dir = path.dirname(dir);
-      if (!dir.startsWith(this.root)) return;
+      if (dir !== root && !dir.startsWith(prefix)) break;
+    }
+
+    for (const d of chain) {
+      await mkdir(d, { recursive: true, mode: DIR_MODE });
+      await chmod(d, DIR_MODE);
     }
   }
 }
