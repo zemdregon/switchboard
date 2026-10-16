@@ -1,5 +1,6 @@
 /**
- * T4.72 (TDD §4.8): the Muse Code module, manifest, probe, registry entry and compile matrix. SYNTHETIC: no `muse`
+ * T4.72 and T4.73 (TDD §4.8): the Muse Code module, manifest, probe, registry entry, compile matrix, parser, result
+ * and resume. SYNTHETIC: no `muse`
  * binary was installed or run. Executable paths are placeholders or the node stand-in `fixtures/fake-muse.mjs`, and
  * the version line is the format a third party reported ([Orca]), not a capture.
  */
@@ -31,6 +32,7 @@ import { AdapterRegistry } from "../registry.js";
 import { createProbeRunner } from "../run.js";
 import type {
   CompileRequest,
+  ExitInfo,
   Invocation,
   ParseState,
   ProbeOutput,
@@ -50,7 +52,10 @@ import {
 } from "./adapter.js";
 import {
   BYPASS_SCOPE,
+  DEFAULT_SESSION_ID,
   PRIVILEGED_BYPASS_PROFILE,
+  RESUMED_SESSION_ID,
+  readFixture,
   SYNTHETIC_EXEC_HELP_STDOUT,
   SYNTHETIC_VERSION_STDOUT,
 } from "./fixtures/cases.js";
@@ -473,32 +478,7 @@ describe("muse probe on synthetic output (T4.72, FR-ADP-02)", () => {
   });
 });
 
-describe("muse fail-closed placeholders (T4.73, T4.75 to T4.77 are later tasks)", () => {
-  const state = (): ParseState => ({ lines: 0, unknownEvents: 0 }) as ParseState;
-
-  it("resume Ineligible, parser unknown and a clean exit is OUTPUT_PROTOCOL_ERROR", async () => {
-    const a = adapter();
-    expect(a.resumeArgs({ provider: "muse", nativeSessionId: "s" }, request(), approved())).toMatchObject({
-      reason: "CAPABILITY_MISSING",
-      detail: expect.stringContaining("T4.73"),
-    });
-    expect(a.resumeArgs({ provider: "grok", nativeSessionId: "s" }, request(), approved())).toMatchObject({
-      reason: "CAPABILITY_MISSING",
-      detail: "binding is for grok",
-    });
-    const s = state();
-    const events = a.parseEvent('{"kind":"run_terminal","terminal":"completed"}', s);
-    expect(events).toEqual([{ kind: "unknown", rawType: "unparsed" }]);
-    expect(s).toMatchObject({ lines: 1, unknownEvents: 1 });
-    const r = a.extractResult(events, {
-      outcome: "exited",
-      exitCode: 0,
-      signal: null,
-      expectedExitCodes: [0],
-    } as never);
-    expect(r).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", unknownEventCount: 1 });
-  });
-
+describe("muse fail-closed placeholders (T4.75 to T4.77 are later tasks)", () => {
   it("declares the fail-closed Git values: none-documented and finalize-only", () => {
     const a = adapter();
     expect(a.gitWriteControl).toBe(MUSE_GIT_WRITE_CONTROL);
@@ -591,6 +571,197 @@ describe("muse auth preflight (T4.74, Q-10; SYNTHETIC outputs following Grok T4.
       expect(src, f).not.toMatch(/auth\.json|MUSE_HOME|readFile|readdir|createReadStream/);
     }
     expect(code("./adapter.ts")).not.toMatch(/\.muse|META_API_KEY/);
+  });
+});
+
+describe("muse parser and result (T4.73; SYNTHETIC fixtures in reported or Assumption shapes, no muse was run)", () => {
+  const exited = (exitCode: number): ExitInfo => ({
+    outcome: "exited",
+    exitCode,
+    signal: null,
+    expectedExitCodes: [0],
+  });
+  const parse = (lines: readonly string[]) => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    return { a, state, events: lines.flatMap((l) => a.parseEvent(l, state)) };
+  };
+  const runFixture = (name: string) => {
+    const { exitCode, lines } = readFixture(name);
+    const { a, state, events } = parse(lines);
+    return { state, events, result: a.extractResult(events, exited(exitCode)) };
+  };
+
+  it("terminal success: deltas joined, session id from run_started only, the other SDK kinds dropped", () => {
+    const { state, events, result } = runFixture("success_edit");
+    expect(events.map((e) => e.kind)).toEqual(["session_bound", "message", "message", "result"]);
+    expect(JSON.stringify(events)).not.toContain("prompt echo");
+    expect(state).toMatchObject({ lines: 9, unknownEvents: 0, nativeSessionId: DEFAULT_SESSION_ID });
+    expect(result).toEqual({
+      ok: true,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      summary: "Added hello.txt.",
+      unknownEventCount: 0,
+    });
+  });
+
+  it.each([
+    ["task_failure", "TOOL_FAILURE", "terminal failed: synthetic task failure"],
+    ["exit0_failed_terminal", "TOOL_FAILURE", "terminal failed: synthetic failure at exit 0"],
+    ["exit0_cancelled_terminal", "TOOL_FAILURE", "terminal cancelled: synthetic cancel"],
+    ["completed_nonzero_exit", "TOOL_FAILURE", "exit code 1"],
+    ["usage_error", "TOOL_FAILURE", "exit code 2"],
+    ["no_terminal", "OUTPUT_PROTOCOL_ERROR", "no result event"],
+  ] as const)(
+    "terminal failure: fixture %s ends FAILED with %s (exit code alone never decides)",
+    (name, code, detail) => {
+      const { result } = runFixture(name);
+      expect(result).toMatchObject({ ok: false, failureCode: code, failureDetail: detail });
+    },
+  );
+
+  it("exit code 0 with a failed terminal record ends FAILED, never success", () => {
+    const { exitCode, lines } = readFixture("exit0_failed_terminal");
+    expect(exitCode).toBe(0);
+    const { result } = runFixture("exit0_failed_terminal");
+    expect(result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", nativeSessionId: DEFAULT_SESSION_ID });
+    expect(lines.some((l) => l.includes('"terminal":"failed"'))).toBe(true);
+  });
+
+  it("unknown kinds fail closed: counted and clipped, never a result or a session, so an unknown-only exit 0 fails", () => {
+    const { state, events, result } = runFixture("unknown_kinds");
+    expect(events).toEqual([
+      { kind: "unknown", rawType: "synthetic_future_record" },
+      { kind: "unknown", rawType: "run_terminal_v2" },
+      { kind: "unknown", rawType: "none" },
+    ]);
+    expect(state.unknownEvents).toBe(3);
+    expect(result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", unknownEventCount: 3 });
+    const long = parse([JSON.stringify({ kind: "x".repeat(200) })]).events[0];
+    expect(long).toEqual({ kind: "unknown", rawType: `${"x".repeat(64)}…` });
+    for (const bad of ["[]", "null", "3", '"run_terminal"', '{"kind":7}']) {
+      expect(
+        parse([bad]).events.map((e) => e.kind),
+        bad,
+      ).toEqual(["unknown"]);
+    }
+  });
+
+  it("an unknown kind supplies no result or session; a later recognised completed terminal still counts it", () => {
+    const { result } = runFixture("unknown_then_terminal");
+    expect(result).toEqual({ ok: true, nativeSessionId: DEFAULT_SESSION_ID, summary: "ok", unknownEventCount: 1 });
+  });
+
+  it("a known kind without its field is unknown: a non-string terminal gives no result", () => {
+    const { result } = runFixture("terminal_not_string");
+    expect(result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", unknownEventCount: 1 });
+    expect(parse(['{"kind":"run_output_delta","delta":"x"}']).events).toEqual([
+      { kind: "unknown", rawType: "run_output_delta" },
+    ]);
+  });
+
+  it.each(["record_after_terminal", "two_terminals", "session_changed", "unsafe_session_id"])(
+    "stream anomaly %s is OUTPUT_PROTOCOL_ERROR, never success",
+    (name) => {
+      const { result } = runFixture(name);
+      expect(result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+    },
+  );
+
+  it("an id that is not a uuid is never bound; a changed id keeps the first binding", () => {
+    expect(runFixture("unsafe_session_id").state.nativeSessionId).toBeUndefined();
+    expect(runFixture("unsafe_session_id").result.nativeSessionId).toBeUndefined();
+    expect(runFixture("session_changed").result.nativeSessionId).toBe(DEFAULT_SESSION_ID);
+  });
+
+  it.each(["rate_limit", "permission_denied", "sandbox_violation"])(
+    "no native shape is sourced for %s: a failed terminal naming it is TOOL_FAILURE, never a narrower code or success",
+    (name) => {
+      const { result } = runFixture(name);
+      expect(result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+    },
+  );
+
+  it("supervisor outcomes win over a completed terminal: timeout, cancel, crash and unparseable framing", () => {
+    const { a, events } = parse(readFixture("success_edit").lines);
+    const base = { exitCode: null, signal: null, expectedExitCodes: [0] } as const;
+    expect(a.extractResult(events, { ...base, outcome: "timeout", timeoutKind: "idle" })).toMatchObject({
+      ok: false,
+      failureCode: "PROCESS_TIMEOUT",
+    });
+    expect(a.extractResult(events, { ...base, outcome: "cancelled" })).toMatchObject({ failureCode: "CANCELLED" });
+    expect(a.extractResult(events, { ...base, outcome: "crashed", signal: "SIGKILL" })).toMatchObject({
+      failureCode: "PROCESS_CRASH",
+    });
+    expect(a.extractResult(events, { ...base, outcome: "protocol_error" })).toMatchObject({
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+    });
+    expect(parse(["{not json"]).events).toEqual([]);
+  });
+
+  it("a session id is taken from structured output only, never from assistant or terminal text", () => {
+    const { state } = parse([
+      JSON.stringify({ kind: "run_output_delta", text: `session ${RESUMED_SESSION_ID}` }),
+      JSON.stringify({ kind: "run_terminal", terminal: "completed", text: RESUMED_SESSION_ID, reason: null }),
+    ]);
+    expect(state.nativeSessionId).toBeUndefined();
+  });
+});
+
+describe("muse resume args (T4.73, FR-SES-03)", () => {
+  it("resume args compile where compile compiles: `--session-id <uuid>` before the prompt, every policy flag again", () => {
+    const req = request({ bypassApproved: true });
+    for (const mode of ["off", "on"] as const) {
+      const profile = approved({ ...BYPASS_SCOPE, network: { mode } } as PrivilegedScope);
+      const first = compiled(adapter().compile(req, profile));
+      const resumed = compiled(
+        adapter().resumeArgs({ provider: "muse", nativeSessionId: RESUMED_SESSION_ID }, req, profile),
+      );
+      const at = first.argv.length - 1;
+      expect(resumed.argv).toEqual([...first.argv.slice(0, at), "--session-id", RESUMED_SESSION_ID, req.objective]);
+      expect(resumed.policyFlags).toEqual(first.policyFlags);
+      expect(resumed.argv).not.toContain("--allow-workspace-switch");
+      expect(auditInvocation(resumed, approvedCtx(profile))).toEqual([]);
+      expect(auditInvocation(resumed).sort()).toEqual(auditInvocation(first).sort());
+    }
+  });
+
+  it("resume is Ineligible wherever compile is, with the same reason", () => {
+    const binding = { provider: "muse", nativeSessionId: RESUMED_SESSION_ID } as const;
+    for (const name of NON_PRIVILEGED) {
+      const profile = resolveTrustProfile(name);
+      expect(adapter().resumeArgs(binding, request(), profile)).toEqual(adapter().compile(request(), profile));
+    }
+    const noApproval = privilegedProfile(BYPASS_SCOPE);
+    expect(adapter().resumeArgs(binding, request(), noApproval)).toEqual(adapter().compile(request(), noApproval));
+  });
+
+  it("refuses another provider's binding and an id that is not a uuid", () => {
+    const req = request({ bypassApproved: true });
+    expect(adapter().resumeArgs({ provider: "grok", nativeSessionId: RESUMED_SESSION_ID }, req, approved())).toEqual({
+      ineligible: true,
+      reason: "CAPABILITY_MISSING",
+      detail: "binding is for grok",
+    });
+    for (const id of ["--yolo", "", "s", `${RESUMED_SESSION_ID} x`, `${RESUMED_SESSION_ID}\n`]) {
+      expect(adapter().resumeArgs({ provider: "muse", nativeSessionId: id }, req, approved()), id).toMatchObject({
+        ineligible: true,
+        reason: "CAPABILITY_MISSING",
+      });
+    }
+  });
+
+  it("the resume fixture binds the resumed id, which compiles back into the same resume argv", () => {
+    const { exitCode, lines } = readFixture("resume");
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const events = lines.flatMap((l) => a.parseEvent(l, state));
+    const r = a.extractResult(events, { outcome: "exited", exitCode, signal: null, expectedExitCodes: [0] });
+    expect(r).toMatchObject({ ok: true, nativeSessionId: RESUMED_SESSION_ID });
+    const inv = compiled(
+      a.resumeArgs({ provider: "muse", nativeSessionId: r.nativeSessionId ?? "" }, request(), approved()),
+    );
+    expect(inv.argv.slice(-3)).toEqual(["--session-id", RESUMED_SESSION_ID, request().objective]);
   });
 });
 

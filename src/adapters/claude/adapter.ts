@@ -537,7 +537,9 @@ export const CLAUDE_CHANNEL_BYPASS_ONLY =
 /**
  * The fragment {@link CLAUDE_GIT_CHANNEL_CAPABILITIES} appends for one approved bypass run (T9.4b, ADR-0029, ADR-0033;
  * Delegated mechanism):
- *   argv:  `--mcp-config <dir>/mcp-config.json --allowedTools mcp__switchboard-git__commit[ mcp__switchboard-git__push]`
+ *   argv:  `--mcp-config <dir>/mcp-config.json --allowedTools mcp__switchboard-git__commit[ mcp__switchboard-git__push]
+ *          [ mcp__switchboard-git__search_project_context]` (one exact rule per offered tool; the read-only search,
+ *          T12.9 / FR-RAG-13, only when retrieval is on for the run's project, so otherwise the argv is as before)
  *   removeFlags: `--safe-mode` (owner decision 41; a no-op where decision 26 already omitted it)
  *   env:   exactly `ShimSpec.env` (the token, FR-POL-08: never argv or the file)
  *   file:  `{"mcpServers":{"switchboard-git":{"type":"stdio","command":<ShimSpec.command[0]>,"args":<the rest>,

@@ -33,21 +33,25 @@ import { lstat, open, realpath } from "node:fs/promises";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { effectiveProjectRag, type ProjectRagConfig, type RagSettings } from "../config/index.js";
+import {
+  MAX_QUERY_LENGTH,
+  MAX_RESULT_TEXT_BYTES,
+  MAX_SEARCH_LIMIT,
+  MAX_SEARCH_TEXT_BYTES,
+} from "../git/tool-protocol.js";
 import type { RagRecordInput } from "../ledger/index.js";
 import { type EmbeddingBackend, embedGated, type Locality } from "../retrieval/embedding.js";
 import { RAG_SCHEMA_VERSION, ragStoreDir } from "../retrieval/store.js";
 import { invalid } from "./errors.js";
 
 export const SEARCH_TOOL_NAME = "search_project_context";
-/** The `retrieval.top_k` schema maximum (LLD §14.1). */
-export const MAX_SEARCH_LIMIT = 32;
-/** The chunk bound of the scanner (T12.0, LLD §14.3). */
-export const MAX_RESULT_TEXT_BYTES = 4096;
-/** Total `text` bytes in one response (Delegated: the `get_artifacts` inline default). */
-export const MAX_SEARCH_TEXT_BYTES = 65_536;
+/**
+ * The bounds are defined once in the import-free tool protocol (T12.9) so the per-run channel form of this tool
+ * (FR-RAG-13) uses the same values; re-exported here unchanged.
+ */
+export { MAX_QUERY_LENGTH, MAX_RESULT_TEXT_BYTES, MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_BYTES };
 /** Candidates examined per requested result before giving up on stale hits (Delegated). */
 export const SEARCH_CANDIDATE_FACTOR = 4;
-export const MAX_QUERY_LENGTH = 2000;
 
 export type SearchScope = "project" | "global" | "both";
 export type SearchStatus = "ok" | "unavailable" | "stale" | "incomplete";

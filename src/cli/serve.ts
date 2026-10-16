@@ -102,6 +102,7 @@ import { createClassifyRouteFeaturesHook, createConfiguredInnerAgent, PROMPT_PRO
 import { createLedger, openLedger, RagLedger } from "../ledger/index.js";
 import { type EnvironmentResolver, RunLifecycle } from "../lifecycle/index.js";
 import { acquireDataDirLock, type DataDirLock } from "../lock/index.js";
+import { createChannelSearchPort, searchProjectResolver } from "../mcp/channel-search.js";
 import {
   AttemptLimiter,
   AuthorizationServer,
@@ -116,6 +117,7 @@ import {
   startHttpTransport,
   startStdioServer,
 } from "../mcp/index.js";
+import type { SearchContextDeps } from "../mcp/search-context.js";
 import { type ModelConfig, ModelRegistry } from "../models/index.js";
 import { createProfileResolver } from "../policy/index.js";
 import { DynamicProjectStore, innerSettingResolver, toResolved } from "../projects/index.js";
@@ -468,6 +470,20 @@ async function runDaemon(
     new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
   );
 
+  // T12.6 (FR-RAG-06): read-only search over a project's store; absent without an embedding backend (FR-RAG-04). The
+  // same handler serves the MCP tool and, T12.9 (FR-RAG-13), the per-run tool channel.
+  const searchContext: SearchContextDeps | undefined =
+    config.rag.embedding !== undefined
+      ? {
+          dataDir: config.dataDir,
+          settings: config.rag,
+          backend: ragBackendFor(io, config.rag.embedding),
+          record: (r: Parameters<RagLedger["record"]>[0]) => void new RagLedger(db, { ids }).record(r),
+          ...(io.homedir !== undefined ? { homeDir: io.homedir } : {}),
+          ...(now ? { now } : {}),
+        }
+      : undefined;
+
   // T9.4: commit intents left by a crash (ADR-0025), then socket directories of channels a crash left open (ADR-0026).
   let gitTools: GitToolService;
   let finalizePublisher: GitPublisher;
@@ -506,6 +522,15 @@ async function runDaemon(
       shimCommand: defaultShimCommand(),
       innerAgent,
       innerSettingFor,
+      // T12.9 (FR-RAG-13): offered on a run's channel only when retrieval is on for its project.
+      ...(searchContext !== undefined
+        ? {
+            search: createChannelSearchPort(
+              searchContext,
+              searchProjectResolver(config.projects, new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) })),
+            ),
+          }
+        : {}),
       fallbackDirs: [io.env.XDG_RUNTIME_DIR, os.tmpdir()].filter((d): d is string => typeof d === "string" && d !== ""),
       ...(now ? { now } : {}),
     });
@@ -962,18 +987,7 @@ async function runDaemon(
       // T13.5 (FR-MCP-15, Q-78): stdio sees only meta-sessions with no HTTP subject; HTTP sees only its own.
       subjectBindings: new SubjectBindingStore(db, now ? { now } : {}),
       // T12.6 (FR-RAG-06): read-only search over a project's store; absent without an embedding backend (FR-RAG-04).
-      ...(config.rag.embedding !== undefined
-        ? {
-            searchContext: {
-              dataDir: config.dataDir,
-              settings: config.rag,
-              backend: ragBackendFor(io, config.rag.embedding),
-              record: (r: Parameters<RagLedger["record"]>[0]) => void new RagLedger(db, { ids }).record(r),
-              ...(io.homedir !== undefined ? { homeDir: io.homedir } : {}),
-              ...(now ? { now } : {}),
-            },
-          }
-        : {}),
+      ...(searchContext !== undefined ? { searchContext } : {}),
     };
     mcp = await startStdioServer({ ...mcpDeps, clientId });
     mcp.server.onclose = () => resolveStop("mcp transport closed");

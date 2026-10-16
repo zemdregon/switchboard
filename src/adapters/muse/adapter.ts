@@ -18,9 +18,12 @@
  *   spawn ({@link MUSE_PRIVILEGED_NEEDS_BYPASS});
  * - `privileged` with `bypass` and an approval compiles per owner decision 46: approvals `on-request`, network
  *   `restricted` for `off` or `unrestricted` for `on`, `--trust-workspace` for repository configuration `enabled`.
- * Parser and result (T4.73), auth preflight (T4.74), conformance (T4.75), malicious leg (T4.76) and the Git declaration
- * (T4.77) are later tasks; until then the parser recognises nothing, a clean exit is `OUTPUT_PROTOCOL_ERROR`, resume is
- * `Ineligible` and the auth state is `UNKNOWN`.
+ * Parser, result, failure classification and resume (T4.73, Delegated, not owner-approved; synthetic fixtures, no `muse`
+ * was run): record kinds and fields are reported or **Assumption** spellings in protocol.ts, `Unverified: T4.71`. Success
+ * needs a `run_terminal` record with `terminal: "completed"` and a clean expected exit; exit code `0` alone never is
+ * ([M-ext]: it "reports how the run ended, not whether the work is correct", BR-16). Auth preflight (T4.74),
+ * conformance (T4.75), malicious leg (T4.76) and the Git declaration (T4.77) are later tasks; until then the auth state
+ * is `UNKNOWN`.
  */
 import {
   DEFAULT_IDLE_MS,
@@ -29,7 +32,7 @@ import {
   DEFAULT_WALL_CLOCK_MS,
 } from "../../exec/index.js";
 import { resolveOnPath } from "../codex/adapter.js";
-import { classifyCommon } from "../failure.js";
+import { classifyCommon, PROVIDER_ERROR_CATEGORY_CODES } from "../failure.js";
 import { gitWriteRisks } from "../git-write.js";
 import { parseVersion } from "../manifest/index.js";
 import type {
@@ -60,6 +63,7 @@ import {
   AUTH_STATUS_ARGS,
   AUTH_STATUS_LINE_MAX,
   AUTH_STATUS_TIMEOUT_MS,
+  DELTA_TEXT_FIELD,
   EXEC_SUBCOMMAND,
   GIT_WRITE_CONTROL_DETAIL,
   HELP_ARGS,
@@ -67,10 +71,14 @@ import {
   MUSE_BINARY,
   MUSE_LOGIN_COMMAND,
   NON_PRIVILEGED_UNSUPPORTED_DETAIL,
+  RECORD,
   REQUIRED_HELP_FLAGS,
   SANDBOX_NETWORK_FLAG,
   SANDBOX_NETWORK_RESTRICTED,
   SANDBOX_NETWORK_UNRESTRICTED,
+  SESSION_ID_FIELD,
+  SESSION_ID_FLAG,
+  TERMINAL_COMPLETED,
   TRUST_WORKSPACE_FLAG,
   VERSION_ARGS,
   WORKTREE_OFF,
@@ -87,6 +95,9 @@ export const MUSE_ENV_ALLOWLIST: readonly string[] = ["PATH", "HOME"];
 
 const PROBE_TIMEOUT_MS = 10_000;
 const AUTH_UNKNOWN_REASON = "`muse auth status` first line is not a recognised login state";
+const MAX_SUMMARY_CHARS = 2_000;
+/** `--session-id <uuid>` ([M-ext]): only a canonical uuid is bound or resumed, so the id is one argument, never a flag. */
+const SESSION_ID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
 /** FR-GIT-01 (ADR-0039): no per-command deny control is documented; see protocol.ts. */
 export const MUSE_GIT_WRITE_CONTROL: GitWriteControl = {
@@ -128,7 +139,19 @@ export interface MuseAdapterOptions {
   pathEnv?: string;
 }
 
+type Json = Record<string, unknown>;
+const ownProp = (record: Json | undefined, key: string): unknown =>
+  record !== undefined && Object.hasOwn(record, key) ? record[key] : undefined;
+const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+const obj = (v: unknown): Json | undefined =>
+  typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Json) : undefined;
+const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
 const ineligible = (reason: Ineligible["reason"], detail: string): Ineligible => ({ ineligible: true, reason, detail });
+/** `run_terminal` records already seen per run: any record after the first is a protocol anomaly (fail closed). */
+const seenTerminals = new WeakMap<ParseState, number>();
+/** Category of a stream anomaly (a record after `run_terminal`, a changed or unsafe session id): OUTPUT_PROTOCOL_ERROR. */
+const PROTOCOL_CATEGORY = "protocol";
+const CATEGORY_CODES = { ...PROVIDER_ERROR_CATEGORY_CODES, [PROTOCOL_CATEGORY]: "OUTPUT_PROTOCOL_ERROR" } as const;
 
 export class MuseAdapter implements ProviderAdapter {
   readonly id = "muse" as const;
@@ -197,15 +220,7 @@ export class MuseAdapter implements ProviderAdapter {
     return { binaryPath: exe, binaryVersion: version, steps };
   }
 
-  /**
-   * FR-AUTH-02 via `muse auth status` (T4.74, Q-10 pattern following Grok T4.24): no status command is documented
-   * ([M-auth], [M-log]; TDD §4.8), so `muse auth status` and its replies are **Assumptions** (Unverified: T4.71,
-   * TDD §4.8.1 item 3). Keyed on the first stdout line at exit 0: a line that starts with `Logged in` is OK,
-   * `Not logged in` is AUTH_REQUIRED naming `muse login`; any other first line, a non-zero exit, null exit, timeout,
-   * empty output or spawn error is UNKNOWN (fail closed). The output is never stored; at most its first line, filtered
-   * and truncated, appears in an UNKNOWN reason. The command never reads `~/.config/muse` or credential files, never
-   * passes `META_API_KEY` and never starts a login.
-   */
+  /** FR-AUTH-01/02 (T4.74): `muse auth status` is assumed until T4.71; first-line prefixes are Assumption spellings. */
   async authPreflight(runner: ProbeRunner): Promise<AuthResult> {
     const exe = this.#exe;
     if (exe === undefined) return { state: "UNKNOWN", reason: `${MUSE_BINARY} not found on PATH` };
@@ -225,16 +240,21 @@ export class MuseAdapter implements ProviderAdapter {
   }
 
   compile(request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible {
-    return this.#build(request, profile);
+    return this.#build(request, profile, []);
   }
 
-  /** FR-SES-03: `--session-id` resume arrives with the parser (T4.73); a binding of another provider is never compiled. */
-  resumeArgs(binding: NativeBinding, _request: CompileRequest, _profile: ResolvedProfile): Invocation | Ineligible {
+  /**
+   * FR-SES-03 (T4.73): `muse exec --session-id <uuid> <prompt>` ([M-ext], corrected) with the id the parser bound from
+   * structured output, compiled by the same matrix as a first run (same Ineligible reasons, every policy flag passed
+   * again: whether a resumed run keeps its flags is `Unverified: T4.71` item 14). A binding of another provider or an
+   * id that is not a uuid is never compiled; `--allow-workspace-switch` is never emitted (`resumeCwd` is `bound`).
+   */
+  resumeArgs(binding: NativeBinding, request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible {
     if (binding.provider !== "muse") return ineligible("CAPABILITY_MISSING", `binding is for ${binding.provider}`);
-    return ineligible(
-      "CAPABILITY_MISSING",
-      "Muse Code resume is not compiled until its parser records the session id (T4.73)",
-    );
+    if (!SESSION_ID_RE.test(binding.nativeSessionId)) {
+      return ineligible("CAPABILITY_MISSING", "native session id is not a uuid (`--session-id <uuid>`, [M-ext])");
+    }
+    return this.#build(request, profile, [SESSION_ID_FLAG, binding.nativeSessionId]);
   }
 
   /**
@@ -254,7 +274,7 @@ export class MuseAdapter implements ProviderAdapter {
    * 9. an objective that is empty or starts with `-`: CAPABILITY_MISSING (the prompt is one positional word [M-ext];
    *    no end-of-options marker is sourced, so a leading dash could be read as a flag).
    */
-  #build(request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible {
+  #build(request: CompileRequest, profile: ResolvedProfile, resume: readonly string[]): Invocation | Ineligible {
     const gitWrites = gitWriteRisks(profile.shellAllowlist ?? []);
     if (gitWrites.length > 0) {
       return ineligible(
@@ -331,7 +351,7 @@ export class MuseAdapter implements ProviderAdapter {
     return {
       transport: "subprocess-jsonl",
       // The prompt is the last argv word (inline prompt, [M-ext]); it is visible in the process list.
-      argv: [this.#exe, ...this.#launcher, EXEC_SUBCOMMAND, JSON_FLAG, ...policyFlags, request.objective],
+      argv: [this.#exe, ...this.#launcher, EXEC_SUBCOMMAND, JSON_FLAG, ...policyFlags, ...resume, request.objective],
       env: {},
       envAllowlist: [...MUSE_ENV_ALLOWLIST],
       cwd: request.workspace.cwd,
@@ -345,16 +365,122 @@ export class MuseAdapter implements ProviderAdapter {
     };
   }
 
-  /** T4.73 writes the parser from captures; until then nothing is recognised and a clean exit cannot succeed. */
+  /**
+   * One `--json` record per line (T4.73; spellings in protocol.ts, `Unverified: T4.71`). `run_started` binds the
+   * session id from its structured field only; `run_output_delta` text becomes assistant messages; `run_terminal`
+   * becomes the `result` (ok only for `terminal: "completed"`); the other [SDK] kinds carry nothing Switchboard records
+   * and are dropped (`turn_input_user` echoes the prompt; no usage field is sourced, so none is recorded, FR-CAP-01).
+   * Any other kind, a record without a string `kind`, or a known kind without its field is `unknown`: counted, never a
+   * result. Fail closed (Delegated): any record after the first `run_terminal`, a session id that is not a uuid and a
+   * changed session id are OUTPUT_PROTOCOL_ERROR.
+   */
   parseEvent(input: string | AcpMessage, state: ParseState): NormalizedEvent[] {
-    if (typeof input === "string") state.lines += 1;
-    state.unknownEvents += 1;
-    return [{ kind: "unknown", rawType: "unparsed" }];
+    if (typeof input !== "string") return []; // no ACP transport for Muse Code (TDD §4.8)
+    state.lines += 1;
+    let doc: unknown;
+    try {
+      doc = JSON.parse(input);
+    } catch {
+      return []; // the supervisor ends the run OUTPUT_PROTOCOL_ERROR on unparseable framing
+    }
+    const terminalsBefore = seenTerminals.get(state) ?? 0;
+    const events = this.#record(obj(doc), state);
+    if (terminalsBefore === 0) return events;
+    // `run_terminal` "marks the end" ([Orca]); a later record could flip or extend the outcome, so the run fails.
+    return [{ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "record after run_terminal" }, ...events];
   }
 
-  /** Never success before the parser exists (T4.73): a result needs a `result` event, which nothing emits yet. */
+  #record(e: Json | undefined, state: ParseState): NormalizedEvent[] {
+    const kind = str(ownProp(e, "kind"));
+    if (e === undefined || kind === undefined) return this.#unknown(state, "none");
+    switch (kind) {
+      case RECORD.runStarted: {
+        const id = ownProp(e, SESSION_ID_FIELD);
+        if (id === undefined) return [];
+        if (typeof id !== "string") return this.#unknown(state, kind);
+        return this.#bind(state, id);
+      }
+      case RECORD.runOutputDelta: {
+        const text = str(ownProp(e, DELTA_TEXT_FIELD));
+        if (text === undefined) return this.#unknown(state, kind);
+        return text === "" ? [] : [{ kind: "message", role: "assistant", text }];
+      }
+      case RECORD.runTerminal: {
+        const terminal = str(ownProp(e, "terminal"));
+        if (terminal === undefined) return this.#unknown(state, kind);
+        seenTerminals.set(state, (seenTerminals.get(state) ?? 0) + 1);
+        if (terminal === TERMINAL_COMPLETED) {
+          const text = str(ownProp(e, "text"));
+          return [{ kind: "result", ok: true, ...(text ? { summary: text.slice(-MAX_SUMMARY_CHARS) } : {}) }];
+        }
+        const reason = str(ownProp(e, "reason"));
+        const summary = `terminal ${clip(terminal, 64)}${reason ? `: ${clip(reason, MAX_SUMMARY_CHARS)}` : ""}`;
+        return [{ kind: "result", ok: false, summary }];
+      }
+      case RECORD.taskLifecycle:
+      case RECORD.commandAccepted:
+      case RECORD.commandResult:
+      case RECORD.modelConfigured:
+      case RECORD.toolResult:
+      case RECORD.turnInputUser:
+        return [];
+      default:
+        return this.#unknown(state, kind);
+    }
+  }
+
+  /** The first uuid binds the session; a different later id, or one that is not a uuid, fails the run (fail closed). */
+  #bind(state: ParseState, id: string): NormalizedEvent[] {
+    if (!SESSION_ID_RE.test(id)) {
+      return [{ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "session id is not a uuid" }];
+    }
+    if (state.nativeSessionId !== undefined) {
+      if (id === state.nativeSessionId) return [];
+      return [{ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "session id changed mid-run" }];
+    }
+    state.nativeSessionId = id;
+    return [{ kind: "session_bound", nativeSessionId: id }];
+  }
+
+  #unknown(state: ParseState, rawType: string): NormalizedEvent[] {
+    state.unknownEvents += 1;
+    return [{ kind: "unknown", rawType: clip(rawType, 64) }];
+  }
+
+  /**
+   * Success needs a clean expected exit, a final `result` with `ok` (a `run_terminal` of `completed`) and no
+   * `provider_error`, `permission_denied`, `sandbox_violation`, `rate_limit` or guard-flagged `tool_call` event (fail
+   * closed, as Grok Build T4.23). Exit `0` with any other terminal value is a failure; unknown records are counted and
+   * never make a result. The summary is the joined assistant text (last {@link MAX_SUMMARY_CHARS} characters), else the
+   * terminal record's text.
+   */
   extractResult(events: readonly NormalizedEvent[], exit: ExitInfo): RunResult {
     const unknownEventCount = events.filter((e) => e.kind === "unknown").length;
+    const bound = events.findLast((e) => e.kind === "session_bound");
+    const nativeSessionId = bound?.kind === "session_bound" ? bound.nativeSessionId : undefined;
+    const final = events.findLast((e) => e.kind === "result");
+    const text = events.flatMap((e) => (e.kind === "message" ? [e.text] : [])).join("");
+    const summary = text !== "" ? text.slice(-MAX_SUMMARY_CHARS) : final?.kind === "result" ? final.summary : undefined;
+    const base = {
+      unknownEventCount,
+      ...(nativeSessionId ? { nativeSessionId } : {}),
+      ...(summary ? { summary } : {}),
+    };
+    const clean =
+      exit.outcome === "exited" &&
+      exit.exitCode !== null &&
+      exit.expectedExitCodes.includes(exit.exitCode) &&
+      final?.kind === "result" &&
+      final.ok &&
+      !events.some(
+        (e) =>
+          e.kind === "provider_error" ||
+          e.kind === "permission_denied" ||
+          e.kind === "sandbox_violation" ||
+          e.kind === "rate_limit" ||
+          (e.kind === "tool_call" && e.violation !== undefined),
+      );
+    if (clean) return { ok: true, ...base };
     const c = this.classifyFailure({
       events,
       exit,
@@ -362,10 +488,15 @@ export class MuseAdapter implements ProviderAdapter {
       timedOut: exit.outcome === "timeout",
       cancelled: exit.outcome === "cancelled",
     });
-    return { ok: false, failureCode: c.code, failureDetail: c.detail, unknownEventCount };
+    return { ok: false, failureCode: c.code, failureDetail: c.detail, ...base };
   }
 
+  /**
+   * Shared precedence (failure.ts); a stream anomaly (category `protocol`) is OUTPUT_PROTOCOL_ERROR. No native error,
+   * rate-limit, permission or sandbox record is sourced (TDD §4.8), so a failed terminal and an unexpected exit code
+   * ([M-ext]: `1` failed or cancelled, `2` usage error, `130`, `143`) are TOOL_FAILURE, never a narrower code.
+   */
   classifyFailure(evidence: FailureEvidence): FailureClassification {
-    return classifyCommon(evidence);
+    return classifyCommon(evidence, CATEGORY_CODES);
   }
 }

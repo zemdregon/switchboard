@@ -1,0 +1,10 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.73); no muse was run. Kind and run_terminal spellings reported ([Orca]) or Assumption (protocol.ts), Unverified: T4.71. Completed run.","exit":0}}
+{"kind":"command_accepted"}
+{"kind":"run_started","session_id":"00000000-0000-4000-8000-000000000001"}
+{"kind":"turn_input_user","text":"synthetic prompt echo, dropped"}
+{"kind":"model_configured","model":"synthetic-model"}
+{"kind":"task_lifecycle","state":"running"}
+{"kind":"run_output_delta","text":"Added "}
+{"kind":"tool_result","ok":true}
+{"kind":"run_output_delta","text":"hello.txt."}
+{"kind":"run_terminal","terminal":"completed","text":"Added hello.txt.","reason":null}

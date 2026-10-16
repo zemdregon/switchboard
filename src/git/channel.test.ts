@@ -30,6 +30,8 @@ import { WorkspaceManager } from "../workspace/index.js";
 import {
   type ChannelLimits,
   ChannelOpenError,
+  type ChannelSearchInput,
+  type ChannelSearchPort,
   GIT_CHANNEL_CLOSED,
   GIT_CHANNEL_OPENED,
   GIT_TOOL_DENIED,
@@ -39,8 +41,14 @@ import {
 import { GitPublisher, type GitPublisherOptions, publishRefFor } from "./index.js";
 import {
   CHANNEL_MCP_CONFIG_FILE,
+  MAX_QUERY_LENGTH,
   MAX_REQUEST_BYTES,
+  MAX_RESPONSE_BYTES,
+  MAX_RESULT_TEXT_BYTES,
+  MAX_SEARCH_LIMIT,
   MAX_SOCKET_PATH_BYTES,
+  parseToolList,
+  SEARCH_TOOL,
   TOKEN_PREFIX,
   TOOL_TOKEN_ENV,
 } from "./tool-protocol.js";
@@ -112,6 +120,7 @@ function service(
     dataDir?: string;
     fallbackDirs?: string[];
     publisher?: Partial<GitPublisherOptions>;
+    search?: ChannelSearchPort;
   } = {},
 ): GitToolService {
   const publisher = new GitPublisher({ db, scratchDir: path.join(root, "scratch"), ...opts.publisher });
@@ -122,6 +131,7 @@ function service(
     shimCommand: SHIM,
     fallbackDirs: opts.fallbackDirs ?? [],
     ...(opts.limits ? { limits: opts.limits } : {}),
+    ...(opts.search ? { search: opts.search } : {}),
   });
   services.push(s);
   return s;
@@ -645,5 +655,182 @@ describe("token hygiene and the shim's own checks", () => {
     const ch = await openFor(service(), r);
     expect(statSync(path.join(dataDir, "runs")).mode & 0o777).toBe(0o700);
     await ch.close();
+  });
+});
+
+describe("project search on the channel (T12.9; FR-RAG-13, LLD §14.7)", () => {
+  /** A port standing in for the T12.6 handler wired in `serve` (`src/mcp/channel-search.test.ts` covers the real one). */
+  function fakePort(over: Partial<ChannelSearchPort> = {}) {
+    const calls: ChannelSearchInput[] = [];
+    const port: ChannelSearchPort = {
+      offeredFor: (projectId) => projectId === "web",
+      search: async (input) => {
+        calls.push(input);
+        return {
+          ok: true,
+          result: {
+            status: "ok",
+            index_revision: 1,
+            results: [{ path: "src/a.ts", context_id: "main", untrusted: true, text: "export const a = 1;" }],
+          },
+        };
+      },
+      ...over,
+    };
+    return { port, calls };
+  }
+  const shimOf = (ch: OpenChannel) => shimConfig(["--socket", ch.socketPath], { [TOOL_TOKEN_ENV]: tokenOf(ch) });
+
+  it("without a port, or retrieval off for the project, or a throwing port: the channel is exactly as before", async () => {
+    for (const search of [
+      undefined,
+      fakePort({ offeredFor: () => false }).port,
+      fakePort({
+        offeredFor: () => {
+          throw new Error("boom");
+        },
+      }).port,
+    ]) {
+      const r = await running();
+      const ch = await openFor(service(search ? { search } : {}), r);
+      expect(ch.shim.command).toEqual([...SHIM, "--socket", ch.socketPath, "--tools", "commit"]);
+      expect(ch.shim.toolNames).toEqual(["commit"]);
+      const ans = await raw(ch.socketPath, req(tokenOf(ch), { query: "a" }, SEARCH_TOOL));
+      expect(ans).toMatchObject({ ok: false, error: { code: "UNKNOWN_TOOL" } });
+      await ch.close();
+      expect(
+        JSON.parse(ledger.listRunEvents(r.runId).find((e) => e.type === GIT_CHANNEL_CLOSED)?.payload_json ?? "{}"),
+      ).not.toHaveProperty("searches");
+    }
+  });
+
+  it("offered when retrieval is on: the shim gets the tool, the agent's call reaches the run's project only", async () => {
+    const { port, calls } = fakePort();
+    const r = await running();
+    const ch = await openFor(service({ search: port }), r);
+    expect(ch.shim.toolNames).toEqual(["commit", SEARCH_TOOL]);
+    expect(ch.shim.command).toEqual([...SHIM, "--socket", ch.socketPath, "--tools", `commit,${SEARCH_TOOL}`]);
+    const opened = ledger.listRunEvents(r.runId).find((e) => e.type === GIT_CHANNEL_OPENED);
+    expect(JSON.parse(opened?.payload_json ?? "{}").tools).toEqual(["commit", SEARCH_TOOL]);
+
+    const ans = await forward(shimOf(ch), SEARCH_TOOL, { query: "where is a", limit: 3 });
+    expect(ans).toEqual({
+      ok: true,
+      result: {
+        status: "ok",
+        index_revision: 1,
+        results: [{ path: "src/a.ts", context_id: "main", untrusted: true, text: "export const a = 1;" }],
+      },
+    });
+    expect(calls).toEqual([{ runId: r.runId, projectId: "web", query: "where is a", limit: 3 }]);
+    await ch.close();
+    const closed = ledger.listRunEvents(r.runId).find((e) => e.type === GIT_CHANNEL_CLOSED);
+    expect(JSON.parse(closed?.payload_json ?? "{}")).toMatchObject({ searches: 1, commits: 0 });
+    // Nothing about the query or the snippets reaches the ledger.
+    const all = JSON.stringify(ledger.listRunEvents(r.runId));
+    expect(all).not.toContain("where is a");
+    expect(all).not.toContain("export const a");
+  });
+
+  it("refuses another project, a path, unknown keys and out-of-bounds arguments before the handler runs", async () => {
+    const { port, calls } = fakePort();
+    const r = await running();
+    const ch = await openFor(service({ search: port }), r);
+    const bad: Record<string, unknown>[] = [
+      { query: "a", project: "other" },
+      { query: "a", project: "web" },
+      { query: "a", path: "../other/secret.ts" },
+      { query: "a", paths: ["/etc/passwd"] },
+      { query: "a", context: "main" },
+      {},
+      { query: "" },
+      { query: 7 },
+      { query: "x".repeat(MAX_QUERY_LENGTH + 1) },
+      { query: "a", limit: 0 },
+      { query: "a", limit: MAX_SEARCH_LIMIT + 1 },
+      { query: "a", limit: 1.5 },
+      { query: "a", limit: "3" },
+      { query: "a", scope: "everything" },
+    ];
+    for (const args of bad) {
+      const ans = await raw(ch.socketPath, req(tokenOf(ch), args, SEARCH_TOOL));
+      expect(ans, JSON.stringify(args).slice(0, 80)).toMatchObject({ ok: false, error: { code: "INVALID_ARGUMENTS" } });
+    }
+    // The bounds themselves are accepted.
+    const edge = await raw(
+      ch.socketPath,
+      req(tokenOf(ch), { query: "x".repeat(MAX_QUERY_LENGTH), limit: MAX_SEARCH_LIMIT, scope: "both" }, SEARCH_TOOL),
+    );
+    expect(edge.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.projectId).toBe("web");
+    expect(denied(r.runId).filter((d) => d.code === "INVALID_ARGUMENTS")).toHaveLength(bad.length);
+  });
+
+  it("token, run state and binding are checked as for commit; port refusals and failures map to fixed codes", async () => {
+    const { port, calls } = fakePort();
+    const r = await running();
+    const ch = await openFor(service({ search: port }), r);
+    const forged = `${TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
+    expect(await raw(ch.socketPath, req(forged, { query: "a" }, SEARCH_TOOL))).toMatchObject({
+      ok: false,
+      error: { code: "TOKEN_INVALID" },
+    });
+    ledger.casRunState({
+      runId: r.runId,
+      from: "RUNNING",
+      to: "FINALIZING",
+      expectedVersion: ledger.getRunRecord(r.runId)?.version ?? 0,
+      payload: { rule: "T12" },
+    });
+    expect(await raw(ch.socketPath, req(tokenOf(ch), { query: "a" }, SEARCH_TOOL))).toMatchObject({
+      ok: false,
+      error: { code: "NOT_RUNNING" },
+    });
+    expect(calls).toHaveLength(0);
+    await ch.close();
+
+    for (const [search, code] of [
+      [async () => ({ ok: false as const, code: "PROJECT_UNAVAILABLE" }), "PROJECT_UNAVAILABLE"],
+      [async () => ({ ok: false as const, code: "SOMETHING_ELSE" }), "INTERNAL_ERROR"],
+      [
+        async () => {
+          throw new Error("store exploded at /secret/path");
+        },
+        "INTERNAL_ERROR",
+      ],
+    ] as const) {
+      const r2 = await running();
+      const ch2 = await openFor(service({ search: fakePort({ search }).port }), r2);
+      const ans = await raw(ch2.socketPath, req(tokenOf(ch2), { query: "a" }, SEARCH_TOOL));
+      expect(ans).toMatchObject({ ok: false, error: { code } });
+      expect(JSON.stringify(ans)).not.toContain("/secret/path");
+      await ch2.close();
+    }
+  });
+
+  it("a result whose JSON would exceed the shim's response bound is trimmed and marked truncated", async () => {
+    // 32 snippets of 4096 control characters: each escapes to six bytes, far beyond MAX_RESPONSE_BYTES.
+    const text = "\u0001".repeat(MAX_RESULT_TEXT_BYTES);
+    const results = Array.from({ length: MAX_SEARCH_LIMIT }, (_, i) => ({ path: `f${i}.ts`, text }));
+    const { port } = fakePort({ search: async () => ({ ok: true, result: { status: "ok", results } }) });
+    const r = await running();
+    const ch = await openFor(service({ search: port }), r);
+    const ans = await forward(shimOf(ch), SEARCH_TOOL, { query: "a" });
+    expect(ans.ok).toBe(true);
+    if (!ans.ok) return;
+    const kept = ans.result.results as unknown[];
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept.length).toBeLessThan(MAX_SEARCH_LIMIT);
+    expect(ans.result.truncated).toBe(true);
+    expect(Buffer.byteLength(`${JSON.stringify(ans)}\n`)).toBeLessThanOrEqual(MAX_RESPONSE_BYTES);
+  });
+
+  it("the shim accepts the search tool in --tools, alone or with the Git tools, and nothing else", () => {
+    expect(parseToolList(`commit,${SEARCH_TOOL}`)).toEqual(["commit", SEARCH_TOOL]);
+    expect(parseToolList(`commit,push,${SEARCH_TOOL}`)).toEqual(["commit", "push", SEARCH_TOOL]);
+    expect(parseToolList(`${SEARCH_TOOL},${SEARCH_TOOL}`)).toBeUndefined();
+    expect(parseToolList("commit,search_project_context_global")).toBeUndefined();
+    expect(parseToolList("commit,*")).toBeUndefined();
   });
 });

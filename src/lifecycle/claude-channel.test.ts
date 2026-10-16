@@ -9,7 +9,16 @@
  * `claude` binary is never run; no login, network or credential is used; repositories are temporary.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,12 +35,25 @@ import {
   type ShimSpec,
 } from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
-import { GIT_CHANNEL_CLOSED, GIT_CHANNEL_OPENED, GitToolService } from "../git/channel.js";
+import { effectiveProjectRag, resolveRag } from "../config/index.js";
+import { type ChannelSearchPort, GIT_CHANNEL_CLOSED, GIT_CHANNEL_OPENED, GitToolService } from "../git/channel.js";
 import { GitPublisher, publishRefFor } from "../git/index.js";
-import { CHANNEL_MCP_CONFIG_FILE, TOKEN_PREFIX, TOOL_TOKEN_ENV } from "../git/tool-protocol.js";
+import {
+  CHANNEL_MCP_CONFIG_FILE,
+  MAX_RESULT_TEXT_BYTES,
+  MAX_SEARCH_LIMIT,
+  MAX_SEARCH_TEXT_BYTES,
+  SEARCH_TOOL,
+  TOKEN_PREFIX,
+  TOOL_TOKEN_ENV,
+} from "../git/tool-protocol.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger } from "../ledger/index.js";
+import { createChannelSearchPort } from "../mcp/channel-search.js";
+import type { SearchProject } from "../mcp/search-context.js";
 import type { ProjectSnapshot } from "../policy/index.js";
+import { buildProjectIndex } from "../retrieval/build.js";
+import { createFakeEmbedder, FAKE_EMBEDDING_MODEL } from "../retrieval/fake-embedder.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import { RunLifecycle } from "./index.js";
 
@@ -114,10 +136,10 @@ let lifecycle: RunLifecycle | undefined;
 let shims: ShimSpec[];
 
 /** The real Claude adapter replaying a fixture; `--mcp-commit` makes the replay act on the channel definition. */
-function claude(gitChannel: boolean): ClaudeAdapter {
+function claude(gitChannel: boolean, extra: readonly string[] = []): ClaudeAdapter {
   return new ClaudeAdapter({
     binaryPath: process.execPath,
-    launcherArgs: replayLauncher("claude", fixturePath("success-edit.jsonl"), ["--mcp-commit", record]),
+    launcherArgs: replayLauncher("claude", fixturePath("success-edit.jsonl"), ["--mcp-commit", record, ...extra]),
     timeouts: PATIENT,
     gitChannel,
   });
@@ -413,5 +435,147 @@ describe("Claude Code channel behind the opt-in (T9.4b, fake claude replay)", ()
     const { done } = await submitPrivileged(lc);
     expect(done.failure_code).toBe("PERMISSION_BLOCKED");
     expect(existsSync(record)).toBe(false);
+  });
+});
+
+/**
+ * T12.9 (FR-RAG-13, LLD §14.7): the read-only `search_project_context` on the same channel, served by the T12.6 handler
+ * through `createChannelSearchPort` (as `serve` wires it) over a store built with the deterministic fake embedder. The
+ * replay calls it through the real shim after `commit` (`--mcp-calls`). Fakes only: no embedding backend, provider,
+ * network or credential is used.
+ */
+describe("project search through the Claude channel (T12.9, fake claude replay)", () => {
+  const RAG_SETTINGS = resolveRag({
+    embedding: { kind: "http", base_url: "http://127.0.0.1:1", model: FAKE_EMBEDDING_MODEL },
+  });
+  const fake = createFakeEmbedder({ dimension: 32 });
+  let other: SearchProject;
+
+  /** Index `repo` as project `web` (and a second project `other`), and reopen the service with the search port. */
+  async function withSearch(webRag?: { mode: "off" }): Promise<ChannelSearchPort> {
+    const web: SearchProject = {
+      id: "web",
+      ...(webRag ? { rag: webRag } : {}),
+      contexts: [{ id: "main", path: repo }],
+    };
+    const otherRepo = path.join(root, "other");
+    mkdirSync(otherRepo);
+    writeFileSync(path.join(otherRepo, "secret.md"), "hello hello OTHER_PROJECT_MARKER hello\n");
+    other = { id: "other", contexts: [{ id: "main", path: otherRepo }] };
+    for (const p of [web, other]) {
+      const effective = effectiveProjectRag(RAG_SETTINGS, p.rag);
+      if (!effective.enabled) continue;
+      await buildProjectIndex(
+        {
+          dataDir,
+          backend: fake,
+          embedding: { model: FAKE_EMBEDDING_MODEL, allowRemote: false, allowSourceContent: false },
+          homeDir: "/nonexistent-home",
+        },
+        { id: p.id, effective, contexts: p.contexts.map((c) => ({ ...c, primary: true })) },
+      );
+    }
+    const port = createChannelSearchPort(
+      { dataDir, settings: RAG_SETTINGS, backend: fake, homeDir: "/nonexistent-home" },
+      (id) => [web, other].find((p) => p.id === id),
+    );
+    await service.closeAll();
+    const publisher = new GitPublisher({ db, scratchDir: path.join(dataDir, "git-scratch") });
+    service = new GitToolService({
+      db,
+      dataDir,
+      publisher,
+      shimCommand: SHIM_COMMAND,
+      fallbackDirs: [root],
+      search: port,
+    });
+    return port;
+  }
+
+  const callsFile = (calls: object[]) => {
+    const f = path.join(root, "calls.json");
+    writeFileSync(f, JSON.stringify(calls));
+    return ["--mcp-calls", f];
+  };
+
+  it("retrieval on: one more exact allow rule; the agent gets T12.6-bounded results for its own project only", async () => {
+    await withSearch();
+    const calls = callsFile([
+      { name: SEARCH_TOOL, arguments: { query: "hello", limit: MAX_SEARCH_LIMIT } },
+      { name: SEARCH_TOOL, arguments: { query: "hello", project: "other" } },
+      { name: SEARCH_TOOL, arguments: { query: "hello", path: "../other/secret.md" } },
+      { name: SEARCH_TOOL, arguments: { query: "hello", scope: "global" } },
+      { name: SEARCH_TOOL, arguments: { query: "hello", limit: MAX_SEARCH_LIMIT + 1 } },
+    ]);
+    const lc = start(capturing(claude(true, calls)));
+    const { runId, done } = await submitPrivileged(lc);
+    expect(done.state, done.failure_detail ?? "").toBe("SUCCEEDED");
+    const rec = readRecord();
+    expect(rec.error).toBeUndefined();
+
+    // argv: the same fragment with one more exact rule; never a wildcard or another server.
+    const argv: string[] = rec.argv;
+    expect(argv.slice(-3)).toEqual([
+      "--allowedTools",
+      "mcp__switchboard-git__commit",
+      "mcp__switchboard-git__search_project_context",
+    ]);
+    expect(argv.filter((a) => a.includes("mcp__"))).toHaveLength(2);
+    expect(argv.some((a) => a.includes("*") && a.includes("mcp__"))).toBe(false);
+    expect(rec.servers).toEqual(["switchboard-git"]);
+    expect(rec.tools).toEqual(["commit", SEARCH_TOOL]);
+    expect(shims[0]?.toolNames).toEqual(["commit", SEARCH_TOOL]);
+
+    const [commit, own, otherProject, outside, global, tooMany] = rec.calls;
+    expect(commit.isError).toBe(false);
+    expect(own.isError).toBe(false);
+    const result = JSON.parse(own.text);
+    expect(result.status).toBe("ok");
+    expect(result.results.length).toBeGreaterThan(0);
+    expect(result.results.length).toBeLessThanOrEqual(MAX_SEARCH_LIMIT);
+    let total = 0;
+    for (const h of result.results) {
+      expect(h).toMatchObject({ context_id: "main", untrusted: true });
+      expect(h.path).toBe("README.md"); // the only file of project `web`
+      expect(Buffer.byteLength(h.text)).toBeLessThanOrEqual(MAX_RESULT_TEXT_BYTES);
+      total += Buffer.byteLength(h.text);
+    }
+    expect(total).toBeLessThanOrEqual(MAX_SEARCH_TEXT_BYTES);
+    expect(own.text).not.toContain("OTHER_PROJECT_MARKER");
+    for (const refused of [otherProject, outside, global, tooMany]) {
+      expect(refused.isError).toBe(true);
+      expect(JSON.parse(refused.text).code).toBe("INVALID_ARGUMENTS");
+      expect(refused.text).not.toContain("OTHER_PROJECT_MARKER");
+    }
+    const ev = events(runId);
+    expect(ev.find((e) => e.type === GIT_CHANNEL_OPENED)?.p).toMatchObject({ tools: ["commit", SEARCH_TOOL] });
+    expect(ev.find((e) => e.type === GIT_CHANNEL_CLOSED)?.p).toMatchObject({ commits: 1, searches: 1, removed: true });
+  });
+
+  it("retrieval off for the project: argv and channel definition byte-identical to a channel without search", async () => {
+    const run = async () => {
+      rmSync(record, { force: true });
+      shims = [];
+      const lc = start(capturing(claude(true)));
+      const { done } = await submitPrivileged(lc);
+      expect(done.state, done.failure_detail ?? "").toBe("SUCCEEDED");
+      await lc.shutdown();
+      lifecycle = undefined;
+      const rec = readRecord();
+      // The channel directory is per run; compare everything else.
+      const dir = path.dirname(rec.argv[rec.argv.indexOf("--mcp-config") + 1]);
+      return {
+        flags: (rec.argv as string[]).filter((a) => a.startsWith("-") || a.startsWith("mcp__")),
+        config: String(rec.config).replaceAll(dir, "<dir>"),
+        tools: rec.tools,
+      };
+    };
+    const before = await run();
+    expect(before.tools).toEqual(["commit"]);
+    const port = await withSearch({ mode: "off" });
+    expect(port.offeredFor("web")).toBe(false);
+    expect(port.offeredFor("other")).toBe(true); // the port works; the run's own project decides
+    const after = await run();
+    expect(after).toEqual(before);
   });
 });
