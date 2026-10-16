@@ -149,8 +149,8 @@ export interface Harness {
 export interface HarnessOptions {
   allowedRoots?: readonly string[];
   maxAttempts?: number;
-  /** Extra `RunLifecycle` options (for example `routing`). */
-  lifecycle?: Record<string, unknown>;
+  /** Extra `RunLifecycle` options (for example `routing`); a function receives the harness ledger (T14.4 budgets). */
+  lifecycle?: Record<string, unknown> | ((deps: { ledger: Ledger }) => Record<string, unknown>);
   /** Extra MCP server config (for example `routing`). */
   config?: Record<string, unknown>;
   /** T7.8: model registry for minimum_capability tests. */
@@ -206,7 +206,7 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
       }),
       ...(opts.models !== undefined ? { models: opts.models } : {}),
     },
-    ...(opts.lifecycle ?? {}),
+    ...(typeof opts.lifecycle === "function" ? opts.lifecycle({ ledger }) : (opts.lifecycle ?? {})),
   });
   lifecycle.start();
   const mcpClients = new Map([

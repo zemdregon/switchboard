@@ -32,6 +32,7 @@ import {
   providerGeneration,
 } from "../adapters/providers.js";
 import { MODEL_ID_PATTERN, type ModelConfig } from "../models/registry.js";
+import { type BudgetsConfigInput, budgetCapsSchema } from "./budgets.js";
 import { type HttpTransportConfig, httpTransportSchema } from "./http-transport.js";
 import {
   type InnerAgentConfig,
@@ -128,6 +129,8 @@ export interface SwitchboardConfig {
   routing?: RoutingConfigInput;
   /** Notification sinks (M14, T14.9; FR-CTL-10, LLD §3.4.9, ADR-0048). Absent or empty means off: no outbound call. */
   notification_sinks?: NotificationSinkConfig[];
+  /** Control plane (M14; LLD §3.4.6). T14.4 reads `budgets`; an absent cap is unlimited, never a provider limit. */
+  control_plane?: ControlPlaneConfigInput;
   /**
    * Outer sandbox (T3.1; LLD §8.4, ADR-0051). A profile listed in `required_profiles` is refused at admission unless
    * it can run inside the outer sandbox; absent or empty means nothing changes. `privileged` cannot be listed.
@@ -144,6 +147,11 @@ export interface RoutingConfigInput {
 
 /** LLD §17.1 bounds of each `routing.weights` value (Assumption, Q-80); the default of 1 lives in `src/routing/score.ts`. */
 export const MAX_ROUTING_WEIGHT = 100;
+
+/** `control_plane` as written in the config file (LLD §3.4.6); `budgets` so far (T14.4). */
+export interface ControlPlaneConfigInput {
+  budgets?: BudgetsConfigInput;
+}
 
 /** `capacity` as written in the config file (LLD §16.1). */
 export interface CapacityConfigInput {
@@ -485,6 +493,25 @@ export const configSchema = {
             max_attempts: { type: "integer", minimum: 1, maximum: 10 },
             base_ms: { type: "integer", minimum: 1, maximum: 600000 },
             cap_ms: { type: "integer", minimum: 1, maximum: 3600000 },
+          },
+        },
+      },
+    },
+    control_plane: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        // T14.4 (FR-CTL-06, LLD §3.4.6): operator caps; unset means unlimited. Ranges are in `budgets.ts`.
+        budgets: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            global: budgetCapsSchema,
+            projects: {
+              type: "object",
+              propertyNames: { pattern: PROJECT_ID_PATTERN },
+              additionalProperties: budgetCapsSchema,
+            },
           },
         },
       },

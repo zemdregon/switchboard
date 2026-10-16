@@ -8,6 +8,7 @@ import { validateOperatorPatterns } from "../git/safe-pattern.js";
 import type { ModelConfig } from "../models/registry.js";
 import { ProfileOverrideError, validateProfileOverrides } from "../policy/profiles.js";
 import type { ProfileOverride, ProfileOverrides } from "../policy/types.js";
+import { type BudgetSettings, resolveBudgets } from "./budgets.js";
 import { type CapacitySettings, checkCapacity, resolveCapacity } from "./capacity.js";
 import { ConfigError } from "./errors.js";
 import { checkHttpTransport, type HttpTransportSettings, resolveHttpTransport } from "./http-transport.js";
@@ -39,6 +40,11 @@ export { ConfigError } from "./errors.js";
 /** Defaults: NFR-PERF-03 (4 global, 1 per provider; proposed targets). */
 export const DEFAULT_GLOBAL_CONCURRENCY = 4;
 export const DEFAULT_PER_PROVIDER_CONCURRENCY = 1;
+
+/** Resolved `control_plane` section (M14); T14.4 resolves `budgets`. */
+export interface ControlPlaneSettings {
+  budgets: BudgetSettings;
+}
 
 export interface ResolvedConfig {
   /** Absolute path of the config file that was loaded. */
@@ -98,6 +104,8 @@ export interface ResolvedConfig {
   capacity: CapacitySettings;
   /** Routing settings (M7, T7.1; LLD §17.1), always set, defaulted per key. */
   routing: RoutingSettings;
+  /** Control-plane settings (M14; LLD §3.4.6), always set. T14.4: `budgets`, every unset cap unlimited. */
+  controlPlane: ControlPlaneSettings;
   /**
    * Validated `transport.http` (T13.1; FR-MCP-12, ADR-0041). Absent unless the section sets `enabled: true`; absent
    * means `serve` opens no listener.
@@ -423,6 +431,7 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
     capacity: resolveCapacity(cfg.capacity),
     rag: resolveRag(cfg.rag),
     routing: resolveRouting(cfg.routing),
+    controlPlane: { budgets: resolveBudgets(cfg.control_plane?.budgets) },
     notificationSinks: resolveNotificationSinks(cfg.notification_sinks),
     claudeCodeGitChannel: cfg.providers?.["claude-code"]?.git_channel === true,
     profileOverrides,

@@ -53,6 +53,9 @@ export function toToolError(err: unknown): ToolError {
   if (err instanceof HandoffBundleError) return new ToolError(err.code, err.message, { reason: err.details.reason });
   if (err instanceof LifecycleError) {
     if (err.code === "QUEUE_FULL") return new ToolError("ELIGIBILITY_NONE", err.message, { reason: "QUEUE_FULL" });
+    // T14.4 (FR-CTL-06): an operator budget refusal, the same code as `QUEUE_FULL` (nothing is written, the state may
+    // change); `details` names the cap as the digest does and the needs-attention reason `budget_exhausted`.
+    if (err.code === "BUDGET_EXHAUSTED") return new ToolError("ELIGIBILITY_NONE", err.message, { ...err.details });
     return new ToolError("INVALID_REQUEST", err.message);
   }
   // COMP-POL refused to resolve the profile (fail closed, NFR-SEC-06); the error names its own taxonomy code.

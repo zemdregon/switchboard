@@ -127,6 +127,13 @@ import {
   takeAsOf,
 } from "../continuity/index.js";
 import {
+  type BudgetAdmission,
+  type BudgetRefusal,
+  budgetRefusalDetails,
+  budgetRefusalMessage,
+  registerBudgets,
+} from "../control/budgets.js";
+import {
   type Environment,
   EnvironmentRefusal,
   type RunContext as EnvironmentRunContext,
@@ -228,7 +235,7 @@ import {
   verificationSummary,
 } from "./verification.js";
 
-export type LifecycleErrorCode = "INVALID_REQUEST" | "QUEUE_FULL";
+export type LifecycleErrorCode = "INVALID_REQUEST" | "QUEUE_FULL" | "BUDGET_EXHAUSTED";
 
 /** Admission or API error. No run row is written when it is thrown from `submit`. */
 const archivedMessage = (id: string): string =>
@@ -239,9 +246,18 @@ export class LifecycleError extends Error {
   constructor(
     readonly code: LifecycleErrorCode,
     message: string,
+    /** T14.4: closed, controller-generated facts about the refusal (`BUDGET_EXHAUSTED`); empty otherwise. */
+    readonly details: Readonly<Record<string, unknown>> = {},
   ) {
     super(message);
   }
+}
+
+/** T14.4 (FR-CTL-06): what `onBudgetRefused` receives; the lifecycle wrote nothing for this request. */
+export interface BudgetRefusalNotice {
+  /** The project of the refused request, or null for a workspace-path run. */
+  readonly projectId: string | null;
+  readonly refusal: BudgetRefusal;
 }
 
 export type RunPriority = "interactive" | "normal" | "batch";
@@ -523,6 +539,14 @@ export interface RunLifecycleOptions {
   readonly retry?: { maxAttempts: number; baseMs: number; capMs: number; queueHorizonSeconds?: number };
   /** T6.5: random source in [0, 1) for the backoff jitter; injectable for tests. */
   readonly random?: () => number;
+  /**
+   * T14.4 (FR-CTL-06, LLD §3.4.6): operator budget caps (`control_plane.budgets`), asked inside the admission
+   * transaction of `submit` and before a retry successor is created. Unset means no cap. The lifecycle publishes the
+   * same evaluator to the read path (`registerBudgets`), so `needs_attention` reflects what refuses admission.
+   */
+  readonly budgets?: BudgetAdmission;
+  /** T14.4: observer for every budget refusal (operator log, `budget_exhausted` sink event). Must not throw. */
+  readonly onBudgetRefused?: (notice: BudgetRefusalNotice) => void;
   /** T6.6: handoff bundle bounds for a quota failover (`continuity.*`, LLD §15.4). Unset means the LLD defaults. */
   readonly continuityBounds?: BundleBounds;
   /**
@@ -687,6 +711,7 @@ export class RunLifecycle {
     this.runner = opts.probeRunner ?? createProbeRunner();
     this.maxQueueDepth = opts.maxQueueDepth ?? DEFAULT_MAX_QUEUE_DEPTH;
     this.refGuard = opts.refGuard ?? new RefGuard({ ledger: opts.ledger });
+    if (opts.budgets !== undefined) registerBudgets(opts.ledger, opts.budgets);
   }
 
   // ---- public API ---------------------------------------------------------------------------------------------
@@ -765,6 +790,13 @@ export class RunLifecycle {
           }
           return { runId: prior.id, metaSessionId: prior.meta_session_id, state: prior.state, replayed: true };
         }
+      }
+      // T14.4 (FR-CTL-06): operator budget caps, in the admission transaction so the counts include every row written
+      // before this one. A refusal writes nothing; the project stays flagged `budget_exhausted` on read while it holds.
+      const refusal = this.opts.budgets?.refusal(req.project?.id, this.now());
+      if (refusal !== undefined) {
+        this.budgetRefused({ projectId: req.project?.id ?? null, refusal });
+        throw new LifecycleError("BUDGET_EXHAUSTED", budgetRefusalMessage(refusal), budgetRefusalDetails(refusal));
       }
       if (initial === "QUEUED" && this.ledger.countRunsInStates(QUEUE_STATES) >= this.maxQueueDepth) {
         throw new LifecycleError("QUEUE_FULL", `queue is full (${this.maxQueueDepth} runs waiting)`);
@@ -2485,6 +2517,13 @@ export class RunLifecycle {
       notScheduled("attempts_exhausted", { attempt: failed.attempt, max_attempts: settings.maxAttempts });
       return;
     }
+    // T14.4 (FR-CTL-06): a retry successor is a new run row, so the operator caps apply to it as to `submit`.
+    const refusal = this.opts.budgets?.refusal(failed.project_id ?? undefined, now);
+    if (refusal !== undefined) {
+      this.budgetRefused({ projectId: failed.project_id, refusal });
+      notScheduled("budget_exhausted", budgetRefusalDetails(refusal));
+      return;
+    }
     if (breakerAdmission(this.breakerOf(failed.provider), now) === "deny") {
       notScheduled("breaker_open");
       return;
@@ -2553,6 +2592,13 @@ export class RunLifecycle {
       else if (reset - now.getTime() > horizonMs) notes.push("wait:reset_beyond_horizon");
       else {
         const notBefore = new Date(reset).toISOString();
+        // T14.4 (FR-CTL-06): the wait successor is a new run row; the operator caps apply.
+        const refusal = this.opts.budgets?.refusal(failed.project_id ?? undefined, now);
+        if (refusal !== undefined) {
+          this.budgetRefused({ projectId: failed.project_id, refusal });
+          record({ outcome: "returned", reason: "budget_exhausted", ...budgetRefusalDetails(refusal) });
+          return;
+        }
         const id = this.ledger.immediate(() => this.createSuccessor(failed, notBefore, "QUOTA_EXHAUSTED"));
         this.scheduleWake(reset);
         record({ outcome: "wait", successor_run_id: id, not_before: notBefore });
@@ -2744,6 +2790,15 @@ export class RunLifecycle {
         continue;
       }
       this.tryMove(run, "QUEUED", {}, { reason: "next_attempt_due" }, "T18");
+    }
+  }
+
+  /** T14.4: the refusal observer never fails or delays admission. */
+  private budgetRefused(notice: BudgetRefusalNotice): void {
+    try {
+      this.opts.onBudgetRefused?.(notice);
+    } catch {
+      // Observer errors are the observer's problem (as `onTransition`).
     }
   }
 

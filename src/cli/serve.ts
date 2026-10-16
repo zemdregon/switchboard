@@ -69,7 +69,7 @@ import {
 } from "../adapters/index.js";
 import { ArtifactStore, defaultRedactor } from "../artifacts/index.js";
 import { ConfigError, loadConfig, type ResolvedConfig } from "../config/index.js";
-import { SinkDispatcher, sinkOutcomeRecorder, transitionNotifier } from "../control/index.js";
+import { BudgetEvaluator, SinkDispatcher, sinkOutcomeRecorder, transitionNotifier } from "../control/index.js";
 import { detectOuterSandbox, type OuterSandboxAvailability, outerSandboxRefusal } from "../exec/outer-sandbox.js";
 import { GitToolService } from "../git/channel.js";
 import { GitPublisher } from "../git/commit.js";
@@ -513,6 +513,35 @@ async function runDaemon(
         });
   if (sinks) log.info("notification sinks configured", { sinks: sinks.sinkIds });
   const notifySinks = sinks ? transitionNotifier(sinks, (runId) => ledger.getRunRecord(runId)?.project_id) : undefined;
+  // T14.4 (FR-CTL-06, LLD §3.4.6): operator budget caps (`control_plane.budgets`); with none configured, admission
+  // never queries the ledger for them. A refusal is logged with the cap (operator values only) and, once per
+  // exhausted window and scope, sent to the sinks as `budget_exhausted` (no run id: nothing was written).
+  const budgets = new BudgetEvaluator({ ledger, settings: config.controlPlane.budgets, ...(now ? { now } : {}) });
+  if (budgets.configured) log.info("operator budget caps configured", { source: "control_plane.budgets" });
+  const notifiedExhaustion = new Map<string, string>();
+  const onBudgetRefused: NonNullable<ConstructorParameters<typeof RunLifecycle>[0]["onBudgetRefused"]> = ({
+    projectId,
+    refusal,
+  }) => {
+    log.warn("admission refused by operator budget cap", {
+      project_id: projectId ?? "-",
+      scope: refusal.scope,
+      cap: refusal.cap,
+      limit: refusal.limit,
+      used: refusal.used,
+      window_ends_at: refusal.window_ends_at,
+    });
+    if (!sinks) return;
+    const key = `${refusal.cap}|${refusal.window_ends_at ?? ""}`;
+    if (notifiedExhaustion.get(refusal.project_id) === key) return;
+    notifiedExhaustion.set(refusal.project_id, key);
+    sinks.emit({
+      projectId: refusal.project_id,
+      eventKind: "budget_exhausted",
+      reasonCode: "budget_exhausted",
+      runId: null,
+    });
+  };
   const lifecycle = new RunLifecycle({
     ledger,
     workspace,
@@ -561,6 +590,8 @@ async function runDaemon(
       log.info("run transition", { run_id: n.runId, from: n.from, to: n.to, rule: n.rule });
       notifySinks?.(n);
     },
+    budgets,
+    onBudgetRefused,
     ...(now ? { now } : {}),
   });
 
