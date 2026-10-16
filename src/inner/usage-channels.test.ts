@@ -33,6 +33,15 @@
  * throws): a project `off`, a context `off` under a project that is not, and a resolver throw each write one run-less
  * `fallback_disabled` / `PROJECT_OFF` row with `attempts` 0 and no observation even with the flag, make no request and
  * store the heuristic, while an `inherit` project through the same hook classifies through the backend.
+ *
+ * Post-#496 residual (Delegated): the breaker (T11.2, LLD §13.4 step 6) at both production callers, where `usage.test.ts`
+ * pins it on the injected contract only. `serve` builds one service for the commit channel and the routing hook, so the
+ * circuit two failed drafts open over the socket is the one the hook is then denied by: the failed calls write their
+ * rows (and, with the flag, labelled rows with unknown counts), the run's one `inner_degraded` event carries the reason
+ * code and no count or backend message, and each denied call is a `CIRCUIT_OPEN` row at `attempts` 0 with no
+ * observation. At the admission harness the circuit opens on a run-less call, so no `inner_degraded` event exists
+ * anywhere; the quota failover under the open circuit is denied run-less at admission and under the failed run with an
+ * `inner_call` event carrying the reason, no observation even when the label is that run's own provider.
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -47,7 +56,7 @@ import { ArtifactStore } from "../artifacts/index.js";
 import { main } from "../cli/index.js";
 import type { CliIo } from "../cli/io.js";
 import { resolveInnerAgent } from "../config/inner-agent.js";
-import { GitToolService, type OpenChannel } from "../git/channel.js";
+import { GIT_TOOL_DENIED, GitToolService, type OpenChannel } from "../git/channel.js";
 import { GitPublisher, publishRefFor } from "../git/index.js";
 import { TOOL_TOKEN_ENV } from "../git/tool-protocol.js";
 import { createIdGenerator } from "../ids/index.js";
@@ -214,7 +223,12 @@ describe("the commit tool channel (T11.4 production path) records inner usage as
   function inner(
     shares: string | null,
     script: readonly FakeStep[],
-    o: { locality?: "local" | "remote" } = {},
+    o: {
+      locality?: "local" | "remote";
+      breaker?: { failure_threshold: number; open_ms: number };
+      /** Also enable `route_features`, so the hook `serve` builds on the same service can be driven (default: off). */
+      routeFeatures?: boolean;
+    } = {},
   ): { svc: InnerAgentService; backend: FakeBackend } {
     const settings = resolveInnerAgent({
       enabled: true,
@@ -225,7 +239,11 @@ describe("the commit tool channel (T11.4 production path) records inner usage as
         allow_remote: false,
         ...(shares !== null ? { shares_subscription_with: shares } : {}),
       },
-      tasks: { commit_message: { enabled: true } },
+      tasks: {
+        commit_message: { enabled: true },
+        ...(o.routeFeatures === true ? { route_features: { enabled: true } } : {}),
+      },
+      ...(o.breaker !== undefined ? { breaker: o.breaker } : {}),
     });
     const backend = createFakeBackend({ locality: o.locality ?? "local", script });
     const svc = createInnerAgent(settings, {
@@ -580,6 +598,189 @@ describe("the commit tool channel (T11.4 production path) records inner usage as
       }
       expect(await state()).toEqual(before);
     });
+
+    // Post-#496 residual (Delegated): the breaker (T11.2, step 6) at the production callers. `usage.test.ts` pins on the
+    // injected contract that a denied call writes no observation and the failed calls that opened the circuit one each;
+    // what that cannot see is the rows and events the callers write around the transition, nor that `serve` builds one
+    // service (`src/cli/serve.ts`: the same `innerAgent` goes to `GitToolService` and to `createClassifyRouteFeaturesHook`),
+    // so the circuit a commit channel opens is the one the routing hook is then denied by. Two drafts whose backend
+    // errors open it over the socket: each writes a `BACKEND_ERROR` row with `attempts` 1 (with the flag, a labelled row
+    // with `{}` each: the request may have consumed the subscription) and the second writes the run's one
+    // `inner_degraded` event in the same transaction, carrying the reason code, never the backend's message or a count.
+    // The third draft and a classification through the production hook on the same service are denied `CIRCUIT_OPEN`
+    // with `attempts` 0 after the locality lookup and the redaction (so `locality` is `local` and `input_bytes` is not 0)
+    // and before any request: no observation even with the flag, no further `inner_degraded` event, the heuristic
+    // classifies. The agent's own message still commits while the circuit is open, and no provider surface moves.
+    it(`${label}: two failed drafts open the breaker over the socket (one inner_degraded event under the run${shares === null ? "" : ", one labelled row with unknown counts each"}); the denied draft and the routing hook on the same service write CIRCUIT_OPEN rows with attempts 0 and no observation`, async () => {
+      const r = await running();
+      const { svc, backend } = inner(
+        shares,
+        [
+          { kind: "error", message: "boom" },
+          { kind: "error", message: "boom" },
+          draft("Never used", { in: 1, out: 1 }),
+        ],
+        { breaker: { failure_threshold: 2, open_ms: 60_000 }, routeFeatures: true },
+      );
+      const ch = await openFor(service(svc), r);
+      const before = await surfaces(r.runId);
+      const [beforeRest, beforeEvents, beforeCommits] = splitEvents(await cli(["runs", "show", r.runId, "--json"]));
+      expect(beforeCommits).toEqual([]);
+      const runEvents = () =>
+        db.prepare("SELECT * FROM run_event WHERE run_id = ? ORDER BY seq").all(r.runId) as (Row & {
+          type: string;
+          payload_json: string;
+          ts: string;
+        })[];
+      const innerEventsBefore = runEvents().filter((e) => /^inner_/u.test(e.type));
+      expect(innerEventsBefore).toEqual([]);
+
+      // (1) and (2): the backend errors after each request; the second failure is the transition.
+      expect(await commit(ch, {})).toMatchObject({ ok: false, error: { code: "MESSAGE_REQUIRED" } });
+      expect(svc.breakerState).toBe("closed");
+      expect(await commit(ch, {})).toMatchObject({ ok: false, error: { code: "MESSAGE_REQUIRED" } });
+      expect(svc.breakerState).toBe("open");
+      expect(backend.requests).toHaveLength(2);
+      const opened = ledger.listInnerCalls({ runId: r.runId });
+      expect(opened.map((c) => [c.task, c.outcome, c.reason, c.attempts, c.tokens_in, c.model_id])).toEqual([
+        ["commit_message", "fallback_unavailable", "BACKEND_ERROR", 1, null, "local-model"],
+        ["commit_message", "fallback_unavailable", "BACKEND_ERROR", 1, null, "local-model"],
+      ]);
+      const unknown = (runId: string) => ({
+        run_id: runId,
+        provider: shares,
+        harness: shares,
+        backing_provider: null,
+        model: "local-model",
+        metrics_json: "{}",
+      });
+      expect(innerRows()).toEqual(shares === null ? [] : [unknown(r.runId), unknown(r.runId)]);
+      // The run's events so far: two `inner_call` events and, after the second, the one `inner_degraded` event, stamped
+      // with the second call row's `created_at` (one transaction), naming the reason code and the breaker's state and
+      // carrying neither the backend's message nor a token figure.
+      const afterOpen = runEvents().filter((e) => /^inner_/u.test(e.type));
+      expect(afterOpen.map((e) => e.type)).toEqual(["inner_call", "inner_call", "inner_degraded"]);
+      const degraded = afterOpen[2];
+      expect(JSON.parse(degraded?.payload_json ?? "{}")).toEqual({
+        state: "degraded",
+        reason: "BACKEND_ERROR",
+        breaker_state: "open",
+        backend_kind: "http",
+      });
+      expect(degraded?.ts).toBe(opened[1]?.created_at);
+      expect(JSON.stringify(afterOpen)).not.toMatch(/boom|token|usage/u);
+
+      // (3): the draft the open circuit denies: no request, a row with `attempts` 0 after the lookup and the redaction,
+      // no observation even with the flag, and no second transition event.
+      expect(await commit(ch, {})).toMatchObject({ ok: false, error: { code: "MESSAGE_REQUIRED" } });
+      expect(backend.requests).toHaveLength(2);
+      expect(refSha(repo, publishRefFor(r.sessionId))).toBe("");
+      const denied = ledger.listInnerCalls({ runId: r.runId })[2];
+      expect(denied).toMatchObject({
+        task: "commit_message",
+        outcome: "fallback_unavailable",
+        reason: "CIRCUIT_OPEN",
+        attempts: 0,
+        tokens_in: null,
+        tokens_out: null,
+        model_id: "local-model",
+        locality: "local",
+        latency_ms: 0,
+      });
+      expect(denied?.input_bytes).toBeGreaterThan(0);
+      expect(innerRows()).toHaveLength(shares === null ? 0 : 2);
+      expect(runEvents().filter((e) => e.type === "inner_degraded")).toHaveLength(1);
+
+      // (4): the routing hook `serve` builds on the same service (the production shape, under this run and session) is
+      // denied by the circuit the commit channel opened: the heuristic classifies, the row is `CIRCUIT_OPEN` with
+      // `attempts` 0 under the run, no request, no observation.
+      const hook = createClassifyRouteFeaturesHook(svc, () => "inherit");
+      const features = await hook(
+        { objective: "ok", constraints: [], verificationCommands: 0, writable: true },
+        { runId: r.runId, metaSessionId: r.sessionId },
+      );
+      expect(features.classifier).toBe("heuristic.v1");
+      expect(backend.requests).toHaveLength(2);
+      const calls = ledger.listInnerCalls({ runId: r.runId });
+      expect(calls.map((c) => [c.task, c.outcome, c.reason, c.attempts, c.meta_session_id])).toEqual([
+        ["commit_message", "fallback_unavailable", "BACKEND_ERROR", 1, r.sessionId],
+        ["commit_message", "fallback_unavailable", "BACKEND_ERROR", 1, r.sessionId],
+        ["commit_message", "fallback_unavailable", "CIRCUIT_OPEN", 0, r.sessionId],
+        ["route_features", "fallback_unavailable", "CIRCUIT_OPEN", 0, r.sessionId],
+      ]);
+      expect(innerRows()).toEqual(shares === null ? [] : [unknown(r.runId), unknown(r.runId)]);
+      expect(svc.breakerState).toBe("open");
+
+      // (5): the agent's own message commits while the circuit is open; the channel does not depend on the backend.
+      expect(await commit(ch, { message: "Agent wrote this" })).toMatchObject({ ok: true });
+      expect(g(repo, "log", "-1", "--format=%s", publishRefFor(r.sessionId))).toBe("Agent wrote this");
+      expect(ledger.listInnerCalls({ runId: r.runId })).toHaveLength(4);
+      expect(ledger.listGitCommits(r.runId)[0]).toMatchObject({ message_source: "agent", inner_call_id: null });
+
+      // Readers: every provider surface is byte-identical; `runs show` gains the inner events (the degraded one right
+      // after the second call's, before the channel's own refusal event for that draft, and listed with its reason code
+      // in both forms), the channel's refusal of each undrafted commit, the commit intent and the commit, none with a
+      // token figure, a usage key or the backend's message.
+      expect(await surfaces(r.runId)).toEqual(before);
+      const [afterRest, afterEvents, afterCommits] = splitEvents(await cli(["runs", "show", r.runId, "--json"]));
+      expect(afterRest).toBe(beforeRest);
+      const gained = afterEvents.slice(beforeEvents.length);
+      expect(gained.map((e) => e.type)).toEqual([
+        "inner_call",
+        GIT_TOOL_DENIED,
+        "inner_call",
+        "inner_degraded",
+        GIT_TOOL_DENIED,
+        "inner_call",
+        GIT_TOOL_DENIED,
+        "inner_call",
+        "git_commit_intent",
+        "git_commit",
+      ]);
+      expect(afterCommits).toEqual([expect.objectContaining({ message_source: "agent", inner_call_id: null })]);
+      expect(JSON.stringify([gained, afterCommits])).not.toMatch(/boom|token|usage/u);
+      expect(JSON.stringify(gained)).toMatch(/CIRCUIT_OPEN/u);
+      const text = await cli(["runs", "show", r.runId]);
+      expect(text).toMatch(/ {2}inner_degraded {2}\{/u);
+      expect(text).toMatch(/CIRCUIT_OPEN/u);
+      expect(text).not.toMatch(/boom|inner_agent/u);
+      // The text form prints the run's own provider-reported usage (the row `running()` planted), so the no-token pin
+      // is on the inner event lines: four `inner_call` lines and the `inner_degraded` line, none with a count.
+      const innerLines = text.split("\n").filter((line) => / {2}inner_(?:call|degraded) {2}\{/u.test(line));
+      expect(innerLines).toHaveLength(5);
+      expect(innerLines.join("\n")).not.toMatch(/token|usage/u);
+
+      // Post-#446 on these rows: the four call rows, the two labelled rows (with the flag), the four `inner_call` events
+      // and the `inner_degraded` event refuse both REPLACE spellings, and every reader is byte-identical afterwards.
+      const state = async () => ({
+        calls: db.prepare("SELECT * FROM inner_call ORDER BY rowid").all() as Row[],
+        usage: db.prepare("SELECT * FROM usage_observation ORDER BY rowid").all() as Row[],
+        events: runEvents(),
+        commits: ledger.listGitCommits(r.runId),
+        show: await cli(["runs", "show", r.runId, "--json"]),
+        showText: text,
+        surfaces: await surfaces(r.runId),
+      });
+      const snapshot = await state();
+      expect(snapshot.calls).toHaveLength(4);
+      const labelledRows = snapshot.usage.filter((row) => row.source === "inner_agent");
+      expect(labelledRows).toHaveLength(shares === null ? 0 : 2);
+      const callEvents = snapshot.events.filter((e) => e.type === "inner_call");
+      expect(callEvents).toHaveLength(4);
+      expect(JSON.stringify(snapshot)).not.toContain(String(REWRITTEN));
+      for (const [i, call] of snapshot.calls.entries()) {
+        expectReplacesRefused(db, {
+          call,
+          ...(i < 2 && shares !== null ? { labelled: labelledRows[i] as Row } : {}),
+          event: callEvents[i] as Row,
+        });
+      }
+      expectReplacesRefused(db, {
+        call: snapshot.calls[1] as Row,
+        event: snapshot.events.find((e) => e.type === "inner_degraded") as Row,
+      });
+      expect(await state()).toEqual(snapshot);
+    });
   }
 });
 
@@ -648,11 +849,13 @@ describe("the MCP admission harness (T11.11 production path) records inner usage
     /** The hook's project resolver, built once the harness (and so its ledger) exists. Default: every project `inherit`. */
     resolveSetting?: (harness: Harness) => (projectId: string, contextId: string) => ProjectInnerSetting;
     harness?: HarnessOptions;
+    /** The breaker's thresholds (default: the configured defaults, which no test here reaches). */
+    breaker?: { failure_threshold: number; open_ms: number };
   }
   async function setup(
     shares: string | null,
     options: SetupOptions = {},
-  ): Promise<{ harness: Harness; backend: FakeBackend }> {
+  ): Promise<{ harness: Harness; backend: FakeBackend; service: InnerAgentService }> {
     const backend = createFakeBackend({
       script: options.script ?? [
         { kind: "text", text: reply, usage: { in: 4, out: 2 } },
@@ -683,11 +886,12 @@ describe("the MCP admission harness (T11.11 production path) records inner usage
           ...(shares !== null ? { shares_subscription_with: shares } : {}),
         },
         tasks: { route_features: { enabled: true, timeout_ms: 500 } },
+        ...(options.breaker !== undefined ? { breaker: options.breaker } : {}),
       }),
       { backend, ledger: h.ledger },
     );
     hook = createClassifyRouteFeaturesHook(service, options.resolveSetting?.(h) ?? (() => "inherit"));
-    return { harness: h, backend };
+    return { harness: h, backend, service };
   }
 
   // `fake-b` is the provider every run here lands on; `grok` is registered, eligible and never chosen.
@@ -1550,6 +1754,211 @@ describe("the MCP admission harness (T11.11 production path) records inner usage
       for (const call of snapshot.calls) {
         const labelled = call.outcome === "accepted" && shares !== null ? { labelled: labelledRows[0] as Row } : {};
         expectReplacesRefused(h.db, { call, ...labelled });
+      }
+      expect(await state()).toEqual(snapshot);
+    }, 120_000);
+  }
+
+  // Post-#496 residual (Delegated): the breaker (T11.2, step 6) at the admission harness. Admission classifies before a
+  // run exists, so when the second failed admission opens the circuit the `inner_degraded` event the pipeline hands the
+  // ledger has no run to be written under: the degradation is on record in the two `BACKEND_ERROR` rows (and, with the
+  // flag, their two labelled rows with `{}`) and nowhere in any run's event list or `runs show`. The quota failover is
+  // then driven under the open circuit: its admission is denied run-less, and its failover classification, the one
+  // `serve`-path call with a run id, is denied under the failed run with a `CIRCUIT_OPEN` row at `attempts` 0 and an
+  // `inner_call` event carrying that reason and no count, and no observation even when the label is the failed run's own
+  // provider. The heuristic classifies every denied call, the successor is unmoved and no provider surface moves.
+  for (const shares of [null, "fake"]) {
+    const label = shares === null ? "no shared subscription" : `shares_subscription_with = ${shares}`;
+    it(`${label}: two failed admissions open the breaker with no event anywhere (${shares === null ? "no observation" : "two run-less labelled rows with unknown counts"}); the quota failover under the open circuit is denied run-less at admission and under the failed run with a CIRCUIT_OPEN event, no observation`, async () => {
+      const {
+        harness: h,
+        backend,
+        service,
+      } = await setup(shares, {
+        script: [
+          { kind: "error", message: "boom" },
+          { kind: "error", message: "boom" },
+          { kind: "text", text: reply },
+        ],
+        breaker: { failure_threshold: 2, open_ms: 60_000 },
+      });
+      const before = entries((await h.ok("get_capacity", {})) as Capacity);
+      const innerEvents = () =>
+        h.db
+          .prepare("SELECT type, run_id, payload_json FROM run_event WHERE type LIKE 'inner_%' ORDER BY run_id, seq")
+          .all() as (Row & { type: string; run_id: string; payload_json: string })[];
+
+      // Two admissions whose classification fails after the request was sent; the second opens the circuit. Both runs
+      // are put on `fake` (a requirement, so routing cannot move them), the one provider the scripted CLI stops on quota,
+      // so that the workspace's affinity then keeps the quota run there too (affinity outranks a preference).
+      const first = await h.delegate("ok", { provider_preference: "fake", require_provider: true });
+      expect(service.breakerState).toBe("closed");
+      const second = await h.delegate("ok", { provider_preference: "fake", require_provider: true });
+      expect(service.breakerState).toBe("open");
+      for (const run of [first, second])
+        expect(run).toMatchObject({ status: "SUCCEEDED", provider: { adapter: "fake" } });
+      expect(backend.requests).toHaveLength(2);
+      expect(innerEvents()).toEqual([]);
+
+      // The failover under the open circuit: admission denied run-less, the failover classification denied under the
+      // failed run, no request for either; the successor lands where it always does.
+      const failed = await h.delegate("quota");
+      expect(failed).toMatchObject({
+        status: "FAILED",
+        failure_code: "QUOTA_EXHAUSTED",
+        provider: { adapter: "fake" },
+      });
+      await h.waitFor(() => h.ledger.findSuccessorRun(failed.run_id) !== undefined);
+      const successor = await h.settle(h.ledger.findSuccessorRun(failed.run_id)?.id as string);
+      expect(successor).toMatchObject({ status: "SUCCEEDED", provider: { adapter: "fake-b" } });
+      expect(backend.requests).toHaveLength(2);
+      expect(service.breakerState).toBe("open");
+      expect(h.decisions()).toHaveLength(4);
+      for (const row of h.decisions()) {
+        expect(JSON.parse(row.features_json).route_features).toMatchObject({
+          classifier: "heuristic.v1",
+          task_kind: { source: "heuristic" },
+        });
+      }
+
+      const failedCall = {
+        task: "route_features",
+        run_id: null,
+        meta_session_id: null,
+        outcome: "fallback_unavailable",
+        reason: "BACKEND_ERROR",
+        attempts: 1,
+        tokens_in: null,
+        tokens_out: null,
+        model_id: "configured-model",
+        locality: "local",
+      };
+      const deniedCall = { ...failedCall, reason: "CIRCUIT_OPEN", attempts: 0 };
+      expect(
+        h.db
+          .prepare(
+            `SELECT task, run_id, meta_session_id, outcome, reason, attempts, tokens_in, tokens_out, model_id, locality
+             FROM inner_call ORDER BY created_at, id`,
+          )
+          .all(),
+      ).toEqual([
+        failedCall,
+        failedCall,
+        deniedCall,
+        { ...deniedCall, run_id: failed.run_id, meta_session_id: failed.meta_session_id },
+      ]);
+      // A denied call made no request, so the lookup and the redaction ran (`locality` local, bytes counted) but the
+      // only observations are the two failed requests', run-less with unknown counts under the configured model id.
+      for (const row of h.db.prepare("SELECT input_bytes FROM inner_call").all() as { input_bytes: number }[]) {
+        expect(row.input_bytes).toBeGreaterThan(0);
+      }
+      expect(
+        h.db
+          .prepare(
+            "SELECT run_id, provider, harness, model, metrics_json, source FROM usage_observation ORDER BY rowid",
+          )
+          .all()
+          .filter((row) => (row as Row).source === "inner_agent"),
+      ).toEqual(
+        shares === null
+          ? []
+          : [
+              {
+                run_id: null,
+                provider: shares,
+                harness: shares,
+                model: "configured-model",
+                metrics_json: "{}",
+                source: "inner_agent",
+              },
+              {
+                run_id: null,
+                provider: shares,
+                harness: shares,
+                model: "configured-model",
+                metrics_json: "{}",
+                source: "inner_agent",
+              },
+            ],
+      );
+      // The only inner event in the ledger is the failover denial's `inner_call` under the failed run, with the reason
+      // and no count; no `inner_degraded` event exists, since the transition happened on a run-less call.
+      const events = innerEvents();
+      expect(events.map((e) => [e.type, e.run_id])).toEqual([["inner_call", failed.run_id]]);
+      expect(JSON.parse(events[0]?.payload_json ?? "{}")).toMatchObject({
+        task: "route_features",
+        outcome: "fallback_unavailable",
+        reason: "CIRCUIT_OPEN",
+        attempts: 0,
+        locality: "local",
+      });
+      expect(events[0]?.payload_json).not.toMatch(/token|boom/u);
+
+      // Readers: no run reports usage; the exhausted provider (three runs, two labelled rows naming it with the flag)
+      // and the successor count provider-reported rows only; the spare that never ran is byte-identical.
+      const runs = [first, second, failed, successor];
+      for (const run of runs) {
+        expect(run.usage).toEqual({ reported: null, estimated: null, capacity_confidence: null });
+        expect(h.ledger.listUsageObservationsForRun(run.run_id)).toEqual([]);
+      }
+      const afterBody = (await h.ok("get_capacity", {})) as Capacity;
+      for (const p of ["fake", "fake-b"]) {
+        expect(afterBody.providers.find((x) => x.provider === p)?.window.usage_observations).toBe(
+          (
+            h.db
+              .prepare(
+                "SELECT COUNT(*) AS n FROM usage_observation WHERE source = 'provider_reported' AND provider = ?",
+              )
+              .get(p) as { n: number }
+          ).n,
+        );
+      }
+      expect(JSON.parse(entries(afterBody).fake ?? "{}")).toMatchObject({
+        window: { terminal_runs: 3, quota_exhausted: 1 },
+      });
+      expect(entries(afterBody).grok).toBe(before.grok);
+      expect(JSON.stringify(afterBody)).not.toMatch(/inner|CIRCUIT_OPEN/u);
+
+      // `runs show`: the failed run lists the denial with its reason in both forms, none shows a usage section, a token
+      // figure, a degraded event or the backend's message.
+      const state = async () => ({
+        calls: h.db.prepare("SELECT * FROM inner_call ORDER BY rowid").all() as Row[],
+        usage: h.db.prepare("SELECT * FROM usage_observation ORDER BY rowid").all() as Row[],
+        events: h.db.prepare("SELECT * FROM run_event ORDER BY run_id, seq").all() as Row[],
+        capacity: entries((await h.ok("get_capacity", {})) as Capacity),
+        runs: await Promise.all(
+          runs.flatMap((run) => [
+            h.ok("get_run", { run_id: run.run_id }),
+            h.ok("get_run", { run_id: run.run_id, include_events: {} }),
+          ]),
+        ),
+        shows: await shows(h, runs),
+      });
+      const snapshot = await state();
+      expect(snapshot.calls).toHaveLength(4);
+      const [, , failedShow, successorShow] = snapshot.shows;
+      expect(
+        JSON.parse(failedShow?.json ?? "{}").events.filter((e: { type: string }) => e.type === "inner_call"),
+      ).toEqual([
+        expect.objectContaining({ payload: expect.objectContaining({ reason: "CIRCUIT_OPEN", attempts: 0 }) }),
+      ]);
+      expect(failedShow?.text).toMatch(/ {2}inner_call {2}\{/u);
+      expect(failedShow?.text).toMatch(/CIRCUIT_OPEN/u);
+      for (const doc of [successorShow?.json, successorShow?.text]) expect(doc).not.toMatch(/inner|CIRCUIT_OPEN/u);
+      for (const { json, text } of snapshot.shows) {
+        expect(JSON.parse(json)).not.toHaveProperty("usage");
+        expect(json).not.toMatch(/token|inner_agent|inner_degraded|boom/u);
+        expect(text).not.toMatch(/token|inner_agent|inner_degraded|boom/u);
+      }
+      expect(JSON.stringify(snapshot)).not.toContain(String(REWRITTEN));
+      const labelledRows = snapshot.usage.filter((row) => row.source === "inner_agent");
+      const denialEvent = snapshot.events.find((e) => e.type === "inner_call");
+      for (const [i, call] of snapshot.calls.entries()) {
+        expectReplacesRefused(h.db, {
+          call,
+          ...(i < 2 && shares !== null ? { labelled: labelledRows[i] as Row } : {}),
+          ...(i === 3 ? { event: denialEvent as Row } : {}),
+        });
       }
       expect(await state()).toEqual(snapshot);
     }, 120_000);
