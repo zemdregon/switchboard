@@ -15,7 +15,7 @@
  *   configuration that requires confinement (fail closed; no claim of a control that is not enforced).
  */
 import { execFile } from "node:child_process";
-import { accessSync, constants, readFileSync, statSync } from "node:fs";
+import { accessSync, constants, readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 
 export const OUTER_SANDBOX_MECHANISMS = ["bubblewrap", "prlimit", "landlock"] as const;
@@ -283,4 +283,42 @@ export function describeOuterSandbox(availability: OuterSandboxAvailability): st
     const s = availability.mechanisms[m];
     return `${m}: ${s.available ? "available" : "unavailable"} (${s.detail})`;
   }).join("; ");
+}
+
+/**
+ * Wraps a verification command `argv` in bubblewrap for confined verification (T3.11; FR-EXE-08, FR-POL-06, decision 11).
+ * Mounts the host root read-only (`--ro-bind / /`), provides fresh `/dev` and `/proc`, unshares all namespaces
+ * (user, ipc, pid, net, uts, cgroup), sets the working directory to the worktree and binds the worktree directory writable.
+ * Writes outside the worktree are refused by the kernel with EROFS (read-only file system).
+ */
+export function wrapOuterSandboxVerification(
+  bwrapPath: string,
+  worktreePath: string,
+  argv: readonly string[],
+): string[] {
+  let bindPath = worktreePath;
+  try {
+    bindPath = realpathSync(worktreePath);
+  } catch {
+    // If realpath fails (e.g. mock or not yet created), use worktreePath as is.
+  }
+  return [
+    bwrapPath,
+    "--ro-bind",
+    "/",
+    "/",
+    "--dev",
+    "/dev",
+    "--proc",
+    "/proc",
+    "--bind",
+    bindPath,
+    bindPath,
+    "--chdir",
+    bindPath,
+    "--unshare-all",
+    "--die-with-parent",
+    "--",
+    ...argv,
+  ];
 }

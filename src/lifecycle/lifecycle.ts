@@ -134,6 +134,7 @@ import {
   hostEnvironment,
   type ReadOnlyContextMount,
 } from "../environment/index.js";
+import type { OuterSandboxAvailability } from "../exec/outer-sandbox.js";
 import { procStartTicks } from "../exec/proc-info.js";
 import { ChannelOpenError, type GitToolService, type OpenChannel } from "../git/channel.js";
 import type { GitPublisher } from "../git/commit.js";
@@ -550,6 +551,15 @@ export interface RunLifecycleOptions {
    * the host). `prepare` runs just before spawn, after the pre-spawn refusals; `teardown` runs on every path after it.
    */
   readonly environments?: EnvironmentResolver;
+  /**
+   * T3.11 (FR-EXE-08, FR-POL-06, decision 11): optional confined verification in the outer sandbox from T3.1.
+   * When true, verification commands run inside bubblewrap with the worktree writable and the rest read-only.
+   */
+  readonly confinedVerification?: boolean | undefined;
+  /** Profiles whose verification commands must run inside the outer sandbox. */
+  readonly outerSandboxRequiredProfiles?: readonly string[] | undefined;
+  /** Outer sandbox availability detection result. */
+  readonly outerSandbox?: OuterSandboxAvailability | undefined;
 }
 
 /** T10.1: where a run is placed (LLD §11.3). `serve` composes it from the configuration and the container backend. */
@@ -1713,7 +1723,7 @@ export class RunLifecycle {
     if (pending.kind === "success" && commands.length > 0) {
       // T11 (FR-EXE-08): the agent exited successfully and verification was supplied.
       this.move(this.current(runId), "VERIFYING", exitFields, { ...exitPayload, commands: commands.length }, "T11");
-      verification = await this.verify(exec, runId, meta, ws, inv, commands);
+      verification = await this.verify(exec, runId, meta, ws, inv, commands, run0.trust_profile);
       pending = verification.pending;
       const verified = verification;
       // T14: pending success, `TEST_FAILURE` (BR-16) or cancelled; the per-command summary is in the event.
@@ -1773,6 +1783,7 @@ export class RunLifecycle {
     ws: PreparedWorkspace,
     inv: { envAllowlist: readonly string[]; timeouts: { wallClockMs: number; killGraceMs: number } },
     commands: readonly (readonly string[])[],
+    profile?: TrustProfile,
   ): Promise<VerificationOutcomeRecord> {
     if (ws.mode !== "worktree") {
       // Admission refuses verification under inspect-untrusted, the only profile without a worktree (fail closed).
@@ -1782,6 +1793,11 @@ export class RunLifecycle {
     const { wallClockMs, killGraceMs } = inv.timeouts;
     // The stage may take up to one more wall clock: keep the lease ahead of it (as at LEASED).
     this.opts.workspace.extendLease(runId, 2 * wallClockMs + (commands.length + 1) * killGraceMs);
+    const confined =
+      this.opts.confinedVerification ??
+      (this.opts.outerSandboxRequiredProfiles !== undefined &&
+        profile !== undefined &&
+        this.opts.outerSandboxRequiredProfiles.includes(profile as string));
     const stage = startVerification({
       commands,
       cwd: ws.worktreePath,
@@ -1789,6 +1805,8 @@ export class RunLifecycle {
       ...(this.opts.baseEnv ? { baseEnv: this.opts.baseEnv } : {}),
       wallClockMs,
       killGraceMs,
+      confined,
+      ...(this.opts.outerSandbox ? { outerSandbox: this.opts.outerSandbox } : {}),
       onSpawn: (index, { pid, pgid }) => {
         // LLD §8: pid, pgid and start ticks persisted before any output is read, so a restart can kill an orphan.
         this.ledger.updateRunFields(

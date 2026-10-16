@@ -859,3 +859,22 @@ describe("routing (T7.1; LLD §17.1, ADR-0044)", () => {
     expect(() => load([])).toThrow(/\$\.routing/);
   });
 });
+
+describe("confined verification config (T3.11)", () => {
+  it("defaults to false when unconfigured", () => {
+    const cfg = loadConfig({ configPath: write(base()) });
+    expect(cfg.confinedVerification).toBe(false);
+  });
+
+  it("can be enabled via programmatic option or SWITCHBOARD_CONFINED_VERIFICATION env", () => {
+    const p = write(base());
+    const cfgOpt = loadConfig({ configPath: p, confinedVerification: true });
+    expect(cfgOpt.confinedVerification).toBe(true);
+
+    const cfgEnv = loadConfig({ configPath: p, env: { SWITCHBOARD_CONFINED_VERIFICATION: "true" } });
+    expect(cfgEnv.confinedVerification).toBe(true);
+
+    const cfgEnv1 = loadConfig({ configPath: p, env: { SWITCHBOARD_CONFINED_VERIFICATION: "1" } });
+    expect(cfgEnv1.confinedVerification).toBe(true);
+  });
+});

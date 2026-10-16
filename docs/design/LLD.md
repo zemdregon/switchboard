@@ -2291,6 +2291,12 @@ T11, T14) in `src/lifecycle/verification.ts`, driven by `src/lifecycle/lifecycle
   `git commit` on the run branch, a new tag) is recorded as `git_policy_violation` and controller-owned refs are put
   back before the checkpoint, exactly as for the agent. Prevention is not possible: the commands are arbitrary code on
   the host. A push to a remote cannot be seen (ROADMAP R-61).
+- **Confinement (T3.11, FR-EXE-08, FR-POL-06, decision 11).** Optional hardening: when `confinedVerification` is
+  configured (or opted in via `SWITCHBOARD_CONFINED_VERIFICATION`), verification commands run wrapped in the outer sandbox
+  (`bubblewrap`, §8.4) with the worktree writable and the rest of the host filesystem read-only, all namespaces unshared
+  (including network) and `--die-with-parent`. Writes outside the worktree are refused by the kernel with `EROFS`
+  (read-only file system). If confined verification is requested but bubblewrap is unavailable, verification commands fail
+  closed (`TEST_FAILURE`) without running unconfined.
 - **Restart (WF-8).** A VERIFYING run found at startup has its recorded command group killed and ends FAILED
   `PROCESS_CRASH` (cause `controller_restart`) through T14 and T16; the commands are never run again. A recorded
   operator cancel ends it CANCELLED instead.
@@ -2443,7 +2449,8 @@ Admission (`outerSandboxRefusal`): a run whose profile is listed is refused by t
 `OUTER_SANDBOX_NOT_ENFORCED` (both available; this build wraps no process, ADR-0051 item 4). Detection that did not run
 counts as unavailable. `serve` detects once at startup, only when the list is not empty; `doctor` always reports the
 `outer_sandbox` check (`ok` when nothing is required, `fail` for a missing mechanism, `warn` when only the wrapping is
-missing).
+missing). Wrapping verification commands is implemented by T3.11 (`wrapOuterSandboxVerification`, §8.1); wrapping the
+provider process itself remains follow-up work.
 
 ## 9. Retry/back-off algorithm
 

@@ -75,6 +75,11 @@ export interface ResolvedConfig {
    * inside the outer sandbox. Empty (the default) changes nothing.
    */
   outerSandboxRequiredProfiles: readonly Exclude<TrustProfile, "privileged">[];
+  /**
+   * T3.11 (FR-EXE-08, FR-POL-06, decision 11): optional confined verification in the outer sandbox from T3.1.
+   * True when opted in (via SWITCHBOARD_CONFINED_VERIFICATION env or programmatic option). Default false.
+   */
+  confinedVerification: boolean;
   /** Validated `projects[]` (FR-PRJ-01; T9.1); empty when the config has none. Paths are as written, not yet canonical. */
   projects: ResolvedProject[];
   /** Validated `git.sanitize_patterns` (FR-GIT-04; T9.3): sources in the safe subset, in configuration order. */
@@ -253,7 +258,9 @@ function canonical(p: string, label: string, baseDir: string): string {
 }
 
 /** Load, validate and canonicalize the config. Fails closed on any problem (NFR-SEC-06). */
-export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): ResolvedConfig {
+export function loadConfig(
+  opts: ResolveEnv & { configPath?: string; confinedVerification?: boolean } = {},
+): ResolvedConfig {
   const configPath = opts.configPath ? path.resolve(opts.configPath) : resolveConfigPath(opts);
   let text: string;
   try {
@@ -427,6 +434,12 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
     claudeCodeGitChannel: cfg.providers?.["claude-code"]?.git_channel === true,
     profileOverrides,
     outerSandboxRequiredProfiles: [...(cfg.outer_sandbox?.required_profiles ?? [])],
+    confinedVerification:
+      opts.confinedVerification ??
+      (opts.env?.SWITCHBOARD_CONFINED_VERIFICATION === "true" ||
+        opts.env?.SWITCHBOARD_CONFINED_VERIFICATION === "1" ||
+        process.env.SWITCHBOARD_CONFINED_VERIFICATION === "true" ||
+        process.env.SWITCHBOARD_CONFINED_VERIFICATION === "1"),
     // Proposed: a provider not listed is enabled with no explicit weight; listing it can disable it.
     providers: new Map(
       Object.entries(cfg.providers ?? {}).map(([id, p]) => [
