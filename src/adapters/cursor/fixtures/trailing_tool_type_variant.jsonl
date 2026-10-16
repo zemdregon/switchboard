@@ -1,0 +1,5 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.43 residual, eighth pass). A clean result at exit 0 followed by a line whose type is Tool_Call (a case variant of tool_call) carrying a Git write. Pins the gap: the type match is exact, so the line is a counted unknown that neither trips the trailing-tool order check nor reaches the tool-call guard, and the run succeeds. No capture shows such a line.","exit":0}}
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work/tree","session_id":"synthetic-cursor-session-0001","model":"Synthetic Model 1","permissionMode":"default"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]},"session_id":"synthetic-cursor-session-0001"}
+{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"synthetic-cursor-session-0001","usage":{"inputTokens":11,"outputTokens":2}}
+{"type":"Tool_Call","subtype":"started","call_id":"call-9","tool_call":{"shellToolCall":{"args":{"command":"git push origin main"}}},"session_id":"synthetic-cursor-session-0001"}

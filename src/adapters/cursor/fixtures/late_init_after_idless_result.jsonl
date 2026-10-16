@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.43 residual, eighth pass). A result line with no session id comes first and binds nothing; a late system/init then binds its id, model and backing vendor after the result. Pins the gap: no order check covers a binding after the result line, so the run succeeds with the late id. Every live capture put init first ([LIVE] 5a, 5b).","exit":0}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{"inputTokens":4,"outputTokens":1}}
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work/tree","session_id":"synthetic-cursor-session-0001","model":"Synthetic Model 1","backing_provider":"backing-late","permissionMode":"default"}
