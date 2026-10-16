@@ -331,6 +331,8 @@ describe("mcp_clients[].privileged_approval (owner decision 22, ADR-0019)", () =
       maxPushPolicy: "none",
       // T14.8 default: no approval proxy tools.
       approvalProxy: false,
+      // T14.11 default: today's full tool set.
+      toolProfile: "orchestrator",
     });
     expect(c.mcpClients.get("ops")?.privilegedApproval).toBe("required");
     expect(c.mcpClients.get("strict")?.privilegedApproval).toBe("required");
@@ -463,6 +465,47 @@ describe("mcp_clients[].approval_proxy and approval_proxy_targets (T14.8, FR-CTL
         ),
       }),
     ).toThrow(/\$\.mcp_clients\[0\]\.approval_proxy_targets\[0\]: unknown client id "zz"/);
+  });
+});
+
+describe("mcp_clients[].tool_profile (T14.11, FR-CTL-11)", () => {
+  const clients = (...entries: Record<string, unknown>[]) => ({ ...base(), mcp_clients: entries });
+
+  it("defaults to orchestrator; console is accepted", () => {
+    const c = loadConfig({
+      configPath: write(
+        clients(
+          { id: "plain", max_trust_profile: "edit-untrusted" },
+          { id: "orch", max_trust_profile: "edit-untrusted", tool_profile: "orchestrator" },
+          { id: "bot", max_trust_profile: "inspect-untrusted", tool_profile: "console", approval_proxy: true },
+        ),
+      ),
+    });
+    expect(c.mcpClients.get("plain")?.toolProfile).toBe("orchestrator");
+    expect(c.mcpClients.get("orch")?.toolProfile).toBe("orchestrator");
+    expect(c.mcpClients.get("bot")).toMatchObject({ toolProfile: "console", approvalProxy: true });
+  });
+
+  it("refuses an unknown or mistyped value at load", () => {
+    for (const value of ["Console", "chat", "", 1, null, true]) {
+      expect(
+        () =>
+          loadConfig({
+            configPath: write(clients({ id: "a", max_trust_profile: "edit-untrusted", tool_profile: value })),
+          }),
+        String(value),
+      ).toThrow(/\$\.mcp_clients\[0\]\.tool_profile: must be one of orchestrator, console/);
+    }
+  });
+
+  it("refuses console with manage_projects (fail closed: the console set has no project-admin tools)", () => {
+    expect(() =>
+      loadConfig({
+        configPath: write(
+          clients({ id: "a", max_trust_profile: "edit-untrusted", tool_profile: "console", manage_projects: true }),
+        ),
+      }),
+    ).toThrow(/\$\.mcp_clients\[0\]\.tool_profile: console offers no project-admin tools/);
   });
 });
 

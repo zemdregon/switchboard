@@ -30,8 +30,10 @@ import {
   DEFAULT_PRIVILEGED_APPROVAL,
   DEFAULT_RETENTION_DAYS,
   DEFAULT_RETENTION_INTERVAL,
+  DEFAULT_TOOL_PROFILE,
   type PrivilegedApprovalMode,
   type SwitchboardConfig,
+  type ToolProfile,
   type TrustProfile,
 } from "./schema.js";
 
@@ -152,6 +154,11 @@ export interface ResolvedMcpClient {
    * it with `approvalProxy` (default: the client itself); a hand-built proxy entry without it targets only itself.
    */
   readonly approvalProxyTargets?: readonly string[];
+  /**
+   * `tool_profile` (FR-CTL-11, T14.11, LLD §3.4.10): which tools `tools/list` offers. `loadConfig` always sets it
+   * (default `orchestrator`); a hand-built entry without it is read as `orchestrator`, today's set.
+   */
+  readonly toolProfile?: ToolProfile;
 }
 
 const INTERVAL_UNIT_MS = { m: 60_000, h: 3_600_000, d: 86_400_000 } as const;
@@ -323,6 +330,14 @@ export function loadConfig(
           `true (client ${JSON.stringify(c.id)}); remove it or set approval_proxy`,
       );
     }
+    // T14.11 (Delegated, fail closed): the console set has no project-admin tools, so manage_projects there would be a
+    // silent no-op.
+    if (c.tool_profile === "console" && c.manage_projects === true) {
+      throw new ConfigError(
+        `Invalid config: $.mcp_clients[${i}].tool_profile: console offers no project-admin tools (client ` +
+          `${JSON.stringify(c.id)} sets manage_projects: true); remove manage_projects or use orchestrator`,
+      );
+    }
   }
   // T14.8 (NFR-SEC-06): an approval target must be a configured client; an unknown id aborts startup.
   for (const [i, c] of cfg.mcp_clients.entries()) {
@@ -442,6 +457,7 @@ export function loadConfig(
           maxPushPolicy: c.max_push_policy ?? "none",
           approvalProxy: c.approval_proxy === true,
           ...(c.approval_proxy === true ? { approvalProxyTargets: [...(c.approval_proxy_targets ?? [c.id])] } : {}),
+          toolProfile: c.tool_profile ?? DEFAULT_TOOL_PROFILE,
         },
       ]),
     ),

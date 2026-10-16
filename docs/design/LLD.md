@@ -1975,6 +1975,12 @@ or run execution.
 Approval-proxy tools are added to the list only when `approval_proxy` is true, regardless of profile. `console` is the
 first target for the Grok bot (owner decision 55); orchestrator profile stays for primary coding agents.
 
+As built (T14.11, Delegated): the filter lives in `src/mcp/tool-profile.ts` and applies to `tools/call` as well as
+`tools/list`; a console client's call to any other tool fails `INVALID_REQUEST` exactly like an unknown tool (a
+project-admin call is still recorded, FR-PRJ-10). A console name with no registered handler yet is absent rather than
+invented. Config load refuses an unknown `tool_profile` value and refuses `console` together with `manage_projects:
+true`, which would otherwise be a silent no-op.
+
 ## 4. Failure taxonomy
 
 `failure_code` on a `FAILED` run holds exactly one of these codes. `ELIGIBILITY_NONE` and `INVALID_REQUEST` were **added
