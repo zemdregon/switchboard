@@ -20,6 +20,11 @@
  * projects (default false: the tools are absent). `max_push_policy` (default `none`) is the widest push policy a dynamic
  * project of this client may declare; `load.ts` refuses it without `manage_projects: true`.
  *
+ * `mcp_clients[].approval_proxy` and `mcp_clients[].approval_proxy_targets` (T14.8; FR-CTL-08, ADR-0047, LLD §3.4.8,
+ * TDD §3.1): `approval_proxy: true` offers the client `list_pending_approvals` and `decide_approval` (default false: the
+ * tools are absent). `approval_proxy_targets` (default: the client itself) lists the client ids whose approvals it may
+ * decide; `load.ts` refuses it without `approval_proxy: true` and refuses an id that is not a configured client.
+ *
  * `providers.claude-code.git_channel` (T9.4b; ADR-0029 item 7, owner decision 36; key and default Delegated): the
  * operator opt-in that lets the Claude Code adapter receive the injected tool channel through a controller-written
  * `--mcp-config` file. Default false (argv unchanged, `commitChannel: "none"`). Accepted only under `claude-code`.
@@ -90,6 +95,10 @@ export interface SwitchboardConfig {
     manage_projects?: boolean;
     /** T9.9 (FR-PRJ-10): the widest push policy a dynamic project of this client may declare. Default `none`. */
     max_push_policy?: (typeof PUSH_POLICIES)[number];
+    /** T14.8 (FR-CTL-08, ADR-0047): offers list_pending_approvals and decide_approval. Default false. */
+    approval_proxy?: boolean;
+    /** T14.8: client ids whose pending approvals this proxy may decide. Default: the client itself. */
+    approval_proxy_targets?: string[];
   }[];
   limits?: { global_concurrency?: number; per_provider_concurrency?: number };
   providers?: Partial<
@@ -127,10 +136,15 @@ export interface SwitchboardConfig {
   capacity?: CapacityConfigInput;
   /** Routing (M7, T7.1; LLD §17.1, ADR-0044). Every key defaults to its LLD value (Assumptions, Q-80). */
   routing?: RoutingConfigInput;
+  /**
+   * Control plane (M14; LLD §3.4.6). T14.4 reads `budgets` (an absent cap is unlimited, never a provider limit); T14.5
+   * reads `loop_breaker`, every key defaulting to its LLD Assumption value.
+   */
+  control_plane?: ControlPlaneConfigInput;
   /** Notification sinks (M14, T14.9; FR-CTL-10, LLD §3.4.9, ADR-0048). Absent or empty means off: no outbound call. */
   notification_sinks?: NotificationSinkConfig[];
-  /** Control plane (M14; LLD §3.4.6). T14.4 reads `budgets`; an absent cap is unlimited, never a provider limit. */
-  control_plane?: ControlPlaneConfigInput;
+  /** Optional OTLP/HTTP trace destination; absent or empty disables telemetry (LLD §7, T8.1). */
+  telemetry?: { otlp_endpoint?: string };
   /**
    * Outer sandbox (T3.1; LLD §8.4, ADR-0051). A profile listed in `required_profiles` is refused at admission unless
    * it can run inside the outer sandbox; absent or empty means nothing changes. `privileged` cannot be listed.
@@ -148,9 +162,14 @@ export interface RoutingConfigInput {
 /** LLD §17.1 bounds of each `routing.weights` value (Assumption, Q-80); the default of 1 lives in `src/routing/score.ts`. */
 export const MAX_ROUTING_WEIGHT = 100;
 
-/** `control_plane` as written in the config file (LLD §3.4.6); `budgets` so far (T14.4). */
+/** `control_plane` as written in the config file (LLD §3.4.6); `budgets` (T14.4) and `loop_breaker` (T14.5) so far. */
 export interface ControlPlaneConfigInput {
   budgets?: BudgetsConfigInput;
+  loop_breaker?: {
+    identical_failure_threshold?: number;
+    stall_minutes?: number;
+    max_successors_per_meta_session?: number;
+  };
 }
 
 /** `capacity` as written in the config file (LLD §16.1). */
@@ -416,6 +435,13 @@ export const configSchema = {
           projects: { type: "array", uniqueItems: true, items: { type: "string", pattern: PROJECT_ID_PATTERN } },
           manage_projects: { type: "boolean" },
           max_push_policy: { enum: [...PUSH_POLICIES] },
+          approval_proxy: { type: "boolean" },
+          approval_proxy_targets: {
+            type: "array",
+            uniqueItems: true,
+            minItems: 1,
+            items: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,63}$" },
+          },
         },
       },
     },
@@ -514,6 +540,16 @@ export const configSchema = {
             },
           },
         },
+        // LLD §3.4.6 lower bounds; the upper bounds are Proposed sanity limits (T14.5, Delegated).
+        loop_breaker: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            identical_failure_threshold: { type: "integer", minimum: 2, maximum: 100 },
+            stall_minutes: { type: "integer", minimum: 1, maximum: 10080 },
+            max_successors_per_meta_session: { type: "integer", minimum: 1, maximum: 100 },
+          },
+        },
       },
     },
     routing: {
@@ -543,6 +579,11 @@ export const configSchema = {
       },
     },
     notification_sinks: notificationSinksSchema,
+    telemetry: {
+      type: "object",
+      additionalProperties: false,
+      properties: { otlp_endpoint: { type: "string" } },
+    },
     profiles: {
       type: "object",
       additionalProperties: false,

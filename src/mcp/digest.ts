@@ -28,11 +28,9 @@
  */
 
 import { createHash } from "node:crypto";
-import {
-  type ControlPlaneFacts,
-  type NeedsAttentionReason,
-  NO_CONTROL_PLANE_FACTS,
-} from "../control/needs-attention.js";
+import { budgetControlFacts } from "../control/budgets.js";
+import { loopBreakerControlFacts } from "../control/loop-attention.js";
+import type { ControlPlaneFacts, NeedsAttentionReason } from "../control/needs-attention.js";
 import type { ApprovalRow, Ledger, RunEventRow, RunRecord } from "../ledger/index.js";
 import { canonicalJson } from "../lifecycle/request.js";
 import { buildEnvelope, type Envelope } from "./envelope.js";
@@ -97,7 +95,8 @@ export function assembleDigest(
   scrub: (s: string) => string,
   options: DigestOptions,
 ): Digest {
-  const control = options.control ?? NO_CONTROL_PLANE_FACTS;
+  // T14.4/T14.5: the same default facts as `get_run` (budgets, park events), so a digest entry carries its reason.
+  const control = options.control ?? loopBreakerControlFacts(ledger, budgetControlFacts(ledger));
   const visibleRuns = new Map<string, RunRecord | null>();
   const visibleRun = (runId: string): RunRecord | undefined => {
     if (!visibleRuns.has(runId)) {

@@ -1748,6 +1748,32 @@ input when the adapter declares `liveInput: true` in §2; otherwise stop at a bo
 session with the note (FR-SES-03, BR-7). Unknown run or a run the caller cannot see → `INVALID_REQUEST` or
 `PERMISSION_BLOCKED` as for `get_run`. Terminal runs → no-op returning the terminal envelope.
 
+**Implemented (T14.7, Delegated, not owner-approved).** `src/mcp/server.ts` registers `steer_run` (appended last to the
+tool list, output the `get_run` envelope); `src/lifecycle/steer.ts` and `RunLifecycle.steer` in
+`src/lifecycle/lifecycle.ts` deliver the note. Choices this section leaves open:
+
+- Scoping is exactly `get_run`'s: an unknown run and another client's (or HTTP subject's) run are both
+  `INVALID_REQUEST`, so a run id is not an existence oracle across clients (the server's standing rule). Nothing is
+  recorded for a refused call.
+- No adapter declares `liveInput` yet: the field is not in the §2 contract, and the [steer
+  spike](../research/adapter-steer-input-spike-2026-10-15.md) leaves Claude (S1) and Codex (S2) live input unverified.
+  Every note is therefore delivered by boundary-resume. On the ephemeral headless transports the boundary is the end of
+  the provider's current turn (the process exits with a result); a running turn is not interrupted.
+- At that boundary, when notes are queued and the turn succeeded with a reported native session id, the lifecycle
+  compiles `resumeArgs` for that session in the same run (same worktree, same channel and environment wrapping, the
+  same pre-spawn audits) with the notes, joined by a blank line, as the whole prompt and no constraints. The objective
+  is never sent again (BR-7, no replay); no successor run or meta-session is created. The resumed turn's pid and pgid
+  replace the run's (`steer_turn_spawned` event); every turn's stdout and stderr stay artifacts of the run, and the run
+  finishes on the last turn's result.
+- Events (bounded, no note text): `steer_requested` `{note_chars, note_sha256, delivery: "boundary_resume"}` on every
+  accepted call against a non-terminal run; `steer_delivered` `{delivery, notes}` when a resumed turn is spawned;
+  `steer_undelivered` `{reason, notes}` otherwise, with `reason` one of `past_boundary` (verifying, finalizing, or the
+  last turn already ended), `not_in_this_process` (a slot state no executor here owns), `turn_not_successful`,
+  `no_native_session`, `resume_refused` (compile, environment or audit refusal; `stage` says which) and `run_ended`.
+  A note is never retried.
+- Notes wait in controller memory only (no artifact, no migration): a daemon restart loses queued notes, while their
+  `steer_requested` events remain. Durable storage is left to a later task if the console needs it.
+
 **`pause_project` / `resume_project`**
 
 ```jsonc
@@ -1851,6 +1877,25 @@ On the *N*th identical failure in a meta-session, the controller sets `meta_sess
 column or side table), admits no further successors, and surfaces `parked_loop`. Stall detection uses the injectable
 clock (tests); it never cancels the run.
 
+**Implemented (T14.5, Delegated, not owner-approved).** `src/control/loop-breaker.ts` holds the write side and
+`src/control/loop-attention.ts` the read side; `control_plane.loop_breaker` is resolved by `src/config/control-plane.ts`.
+Choices the text above leaves open:
+
+- The `parked_loop` flag is an append-only `loop_breaker_parked` `run_event` on the *N*th failing run, written in the
+  transaction of its `FAILED` transition (payload: `meta_session_id`, `threshold`, `fingerprint`, `run_ids`). No
+  migration; the §3.4.7 column, when T14.6 adds it, can be backfilled from these events. No automatic unpark.
+- A failure's fingerprints are `code:<failure_code>` and, when a verification command did not pass,
+  `verification:<16 hex of SHA-256 over that command's argv from request_json>`; any fingerprint reaching *N* parks.
+- The cap counts `attempt` (1 on the first run): a §16.5 retry, §16.6 wait or §16.6 failover successor is refused when
+  its `attempt` would exceed `max_successors_per_meta_session`, consistent with `failed_after_retry` (§3.4.5). A refused
+  retry records `retry_not_scheduled` with reason `successor_cap` or `meta_session_parked`; the quota ladder records
+  `outcome: returned` with the same reason. A new run into a parked meta-session is refused at admission with
+  `INVALID_REQUEST` and writes nothing.
+- Stall evaluation (`findStalledRuns`) is read-only; it never cancels, signals or transitions the run. The envelope and
+  the digest read the park events by default; `get_run`/`list_runs` still pass only `now`, so *T* and the cap on that
+  path are the Assumption defaults until `src/mcp/server.ts` passes
+  `loopBreakerAttention(…, config.controlPlane.loopBreaker)`.
+
 #### 3.4.7 Pause and budget persistence (Proposed)
 
 ```sql
@@ -1904,6 +1949,34 @@ Fail closed: wrong digest, stale id, target client not in `approval_proxy_target
 (§3.4.9). Clients without `approval_proxy` do not see these tools (absent from `tools/list`, not error at list time).
 
 *Amends §3.1 **Approve**:* except for `approval_proxy` clients using §3.4.8, no MCP tool approves.
+
+**Implementation (T14.8, `src/control/approval-proxy.ts`, wired in `src/mcp/server.ts` and `src/cli/serve.ts`;
+Delegated, not owner-approved):**
+
+- Configuration: `approval_proxy` is a boolean (default false); `approval_proxy_targets` is a non-empty list of unique
+  configured client ids and is refused at load without `approval_proxy: true` or when it names an unknown client.
+  Without it a proxy targets only itself. `tool_profile` is not consulted.
+- Kinds: `privileged_scope` lists a `PENDING` row whose run is AWAITING_APPROVAL and passes every §3.1 hash check
+  (`approval_id` is the `apv_` row id). A dynamic project revision lists while it is the latest, `PENDING_APPROVAL` and
+  undecided (`approval_id` is the `prv_` revision row id); it is `push_revision` when its approval reasons include
+  `push_policy`, `commit_identity` or `commit_signing`, else `dynamic_project`. `requested_at` is the row's
+  `requested_at` or the revision's `created_at`; `target_client_id` is the run's client or the revision's creator.
+- `revision_hash` (ADR-0030 stores none): hex SHA-256 over `canonicalJson({ v: 1, project_id, revision, client_id,
+  definition_json, approval_reasons_json, created_at })` of the revision row.
+- `scope_summary` uses closed vocabularies and counts only (for example "shell allowlist of 1 command(s)"); it never
+  repeats an argv, host, path, objective, project name or other request or agent text.
+- Every failed check (unknown or non-pending id, not a listed target, digest missing, malformed or different) returns
+  the same `INVALID_REQUEST` message and writes nothing; the digest is compared in constant time inside the decision's
+  `BEGIN IMMEDIATE` transaction. A client without the flag gets the unknown-tool answer.
+- Recording: a privileged decision appends `operator_decision_requested` (`requested_by = "mcp_proxy:<client_id>"`) and
+  applies it through the lifecycle's `applyApprovalDecision` in the same transaction, so `decided_by`,
+  `approval_decided` and the T3/T19 transition are those of the CLI path. A revision decision goes through the project
+  store's `decide` with `decided_by` (and the `project_event` `operator`) `mcp_proxy:<client_id>`. A proxied approve of
+  a scope with `bypass: true` is an `APPROVED` row like any other for the §3.1 **Bypass** check, which still requires
+  every hash to match (ADR-0047 Decision 1 and 2g; ADR-0017 item 5's "operator CLI" wording is not edited here).
+- Sinks (§3.4.9, read-only reuse): a privileged approve is announced by the existing transition hook (T3,
+  `approval_decided` / `privileged_scope`); a privileged deny and every revision decision are announced with
+  `approval_decided` and the `approval_kind` as reason code (`run_id` null for a revision) through the same dispatcher.
 
 #### 3.4.9 Notification sinks (FR-CTL-10, ADR-0048)
 
@@ -1960,6 +2033,44 @@ or run execution.
 
 Approval-proxy tools are added to the list only when `approval_proxy` is true, regardless of profile. `console` is the
 first target for the Grok bot (owner decision 55); orchestrator profile stays for primary coding agents.
+
+#### 3.4.11 Consent-page approval link (FR-CTL-09, ADR-0047)
+
+A secondary way to decide one pending approval (ADR-0047 Decision 3), after the CLI (§3.1) and the approval proxy
+(§3.4.8): a single-use, expiring link to the M13 consent page (§3.3). Available only when the HTTP transport is
+configured. Research input: [consent-page approval link spike](../research/consent-page-approval-link-spike-2026-10-15.md).
+
+**Implementation (T14.10, `src/control/consent-link.ts`, `src/control/consent-link-page.ts`, routed in
+`src/mcp/http.ts`, wired in `src/cli/serve.ts`; Delegated, not owner-approved):**
+
+- Link: `<issuer origin>/approval/<handle>`, where the handle is `sbal_` plus 32 random bytes in base64url. Nothing
+  else: no query, no OAuth token, no authorization code, no `approval_digest`, no passphrase, no pairing code, no
+  approval or run id and no scope text. The handle is not a credential; it only selects which approval an
+  authenticated operator is shown.
+- Handles are held in memory by the one `serve` process that owns the listener, as SHA-256 hashes (as the T13.8
+  authorization codes); no ledger table is added and a restart drops every link (fail closed). Lifetime 30 minutes
+  (**Assumption**), at most 256 live links (**Assumption**).
+- Issuance: on each operator poll `serve` issues a link for every decidable approval that has no live one and logs
+  `approval_id`, the URL and its expiry. Decidable means listed by §3.4.8's rules for a proxy that targets every
+  configured client (read-only reuse), so the kinds, `scope_summary` and `approval_digest` are those of §3.4.8. A
+  pending approval whose link expired gets a new handle; the old one stays dead.
+- A link dies at its first decision (whatever the outcome), at expiry, and as soon as its approval is decided another
+  way, stops being decidable or changes: the digest stored at issue is compared with a fresh one on every use.
+- Page flow (FR-MCP-17; no login session, Q-76): `GET` shows one fixed sign-in form, identical for a live, spent,
+  expired, unknown or malformed handle, with no approval field. A `POST` with the operator passphrase or a one-time
+  pairing code is required before the link is looked up; a dead link then gets a fixed 410 page, a live one the closed
+  §3.4.8 item fields (without the digest) and Approve / Deny. The decision `POST` spends the link.
+- CSRF and headers as §3.3's consent page: a single-use server-side visit id and CSRF token per step, the token also in
+  a `__Host-sb_approval` cookie (`Secure`, `HttpOnly`, `SameSite=Strict`), no foreign `Origin` and no cross-site
+  `Sec-Fetch-Site`; each visit is bound to its handle's hash, so a form for one link cannot decide another. The
+  transport admits a same-origin `Origin` under `/approval/` only when the page is mounted.
+- Attempt limits: wrong passphrases count against the same lockout as the OAuth consent page (one `AttemptLimiter`
+  shared by `serve`); wrong pairing codes are throttled as there.
+- Recording: as §3.4.8, with `requested_by` / `decided_by` `consent_page`; the digest is re-checked inside the
+  decision's `BEGIN IMMEDIATE` transaction and any mismatch writes nothing. Sinks (§3.4.9) are told as for the proxy: a
+  privileged approve by the transition hook, a privileged deny and every revision decision as `approval_decided`.
+- Audit: page events carry event names, reason codes, methods and (after sign-in only) approval ids; never a handle,
+  URL, passphrase or pairing code.
 
 ## 4. Failure taxonomy
 
@@ -2219,6 +2330,16 @@ or hook payloads. Immediately before OTLP export, the pipeline drops any attribu
 (defence in depth; T8.4). Forbidden categories must not be set even on internal builders; CI asserts both drop behaviour
 and absence of forbidden keys on exported spans (T8.3, T8.4).
 
+**T8.1 transport (2026-10-16, Delegated).** `src/config/load.ts` validates the optional URL without echoing its value
+in errors. `src/telemetry/index.ts` creates an inert, instance-local transport in `serve`; the first completed span
+loads the API, trace SDK and OTLP/HTTP exporter. No global provider is registered and no resource detectors run.
+The explicit endpoint is passed to the exporter. A bounded batch processor queues at most 512 spans, exports batches
+of at most 64 after 100 ms, and bounds each export at 1 second (Delegated best-effort defaults, not measured targets).
+Pending initialization accepts at most 512 spans; failures are dropped without logging exporter error bodies or URLs.
+Shutdown closes only an initialized transport. Wrapper emission and attribute builders remain T8.2; the export-time
+attribute filter remains T8.4. Tests: `src/config/config.test.ts`, `src/telemetry/index.test.ts` and
+`src/cli/serve.test.ts` (startup with OTel imports rejected).
+
 **Collector test harness (T8.3, M8 acceptance).** Shape for the integration test, without requiring a provider CLI:
 
 1. Start an in-process OTLP/HTTP receiver on loopback with an ephemeral port (or equivalent test fixture).
@@ -2324,6 +2445,12 @@ T11, T14) in `src/lifecycle/verification.ts`, driven by `src/lifecycle/lifecycle
   `git commit` on the run branch, a new tag) is recorded as `git_policy_violation` and controller-owned refs are put
   back before the checkpoint, exactly as for the agent. Prevention is not possible: the commands are arbitrary code on
   the host. A push to a remote cannot be seen (ROADMAP R-61).
+- **Confinement (T3.11, FR-EXE-08, FR-POL-06, decision 11).** Optional hardening: when `confinedVerification` is
+  configured (or opted in via `SWITCHBOARD_CONFINED_VERIFICATION`), verification commands run wrapped in the outer sandbox
+  (`bubblewrap`, §8.4) with the worktree writable and the rest of the host filesystem read-only, all namespaces unshared
+  (including network) and `--die-with-parent`. Writes outside the worktree are refused by the kernel with `EROFS`
+  (read-only file system). If confined verification is requested but bubblewrap is unavailable, verification commands fail
+  closed (`TEST_FAILURE`) without running unconfined.
 - **Restart (WF-8).** A VERIFYING run found at startup has its recorded command group killed and ends FAILED
   `PROCESS_CRASH` (cause `controller_restart`) through T14 and T16; the commands are never run again. A recorded
   operator cancel ends it CANCELLED instead.
@@ -2476,7 +2603,8 @@ Admission (`outerSandboxRefusal`): a run whose profile is listed is refused by t
 `OUTER_SANDBOX_NOT_ENFORCED` (both available; this build wraps no process, ADR-0051 item 4). Detection that did not run
 counts as unavailable. `serve` detects once at startup, only when the list is not empty; `doctor` always reports the
 `outer_sandbox` check (`ok` when nothing is required, `fail` for a missing mechanism, `warn` when only the wrapping is
-missing).
+missing). Wrapping verification commands is implemented by T3.11 (`wrapOuterSandboxVerification`, §8.1); wrapping the
+provider process itself remains follow-up work.
 
 ## 9. Retry/back-off algorithm
 

@@ -8,8 +8,8 @@ import { validateOperatorPatterns } from "../git/safe-pattern.js";
 import type { ModelConfig } from "../models/registry.js";
 import { ProfileOverrideError, validateProfileOverrides } from "../policy/profiles.js";
 import type { ProfileOverride, ProfileOverrides } from "../policy/types.js";
-import { type BudgetSettings, resolveBudgets } from "./budgets.js";
 import { type CapacitySettings, checkCapacity, resolveCapacity } from "./capacity.js";
+import { type ControlPlaneSettings, resolveControlPlane } from "./control-plane.js";
 import { ConfigError } from "./errors.js";
 import { checkHttpTransport, type HttpTransportSettings, resolveHttpTransport } from "./http-transport.js";
 import { checkInnerAgent, type InnerAgentSettings, resolveInnerAgent } from "./inner-agent.js";
@@ -40,11 +40,6 @@ export { ConfigError } from "./errors.js";
 /** Defaults: NFR-PERF-03 (4 global, 1 per provider; proposed targets). */
 export const DEFAULT_GLOBAL_CONCURRENCY = 4;
 export const DEFAULT_PER_PROVIDER_CONCURRENCY = 1;
-
-/** Resolved `control_plane` section (M14); T14.4 resolves `budgets`. */
-export interface ControlPlaneSettings {
-  budgets: BudgetSettings;
-}
 
 export interface ResolvedConfig {
   /** Absolute path of the config file that was loaded. */
@@ -81,6 +76,11 @@ export interface ResolvedConfig {
    * inside the outer sandbox. Empty (the default) changes nothing.
    */
   outerSandboxRequiredProfiles: readonly Exclude<TrustProfile, "privileged">[];
+  /**
+   * T3.11 (FR-EXE-08, FR-POL-06, decision 11): optional confined verification in the outer sandbox from T3.1.
+   * True when opted in (via SWITCHBOARD_CONFINED_VERIFICATION env or programmatic option). Default false.
+   */
+  confinedVerification: boolean;
   /** Validated `projects[]` (FR-PRJ-01; T9.1); empty when the config has none. Paths are as written, not yet canonical. */
   projects: ResolvedProject[];
   /** Validated `git.sanitize_patterns` (FR-GIT-04; T9.3): sources in the safe subset, in configuration order. */
@@ -104,7 +104,10 @@ export interface ResolvedConfig {
   capacity: CapacitySettings;
   /** Routing settings (M7, T7.1; LLD §17.1), always set, defaulted per key. */
   routing: RoutingSettings;
-  /** Control-plane settings (M14; LLD §3.4.6), always set. T14.4: `budgets`, every unset cap unlimited. */
+  /**
+   * Control-plane settings (M14; LLD §3.4.6), always set, defaulted per key. T14.4: every unset budget cap is
+   * unlimited; T14.5: unset loop-breaker keys take the LLD defaults.
+   */
   controlPlane: ControlPlaneSettings;
   /**
    * Validated `transport.http` (T13.1; FR-MCP-12, ADR-0041). Absent unless the section sets `enabled: true`; absent
@@ -116,6 +119,8 @@ export interface ResolvedConfig {
    * outbound notification is made. Holds operator destinations and tokens: never log or serialise it (FR-TEL-03).
    */
   notificationSinks: NotificationSinkSettings[];
+  /** Validated OTLP/HTTP endpoint (LLD §7); absent means no export or dependency load. */
+  telemetry?: { otlpEndpoint: string };
 }
 
 export interface ResolvedMcpClient {
@@ -142,6 +147,16 @@ export interface ResolvedMcpClient {
    * always sets it (default `none`); a hand-built entry without it is read as `none` (fail closed).
    */
   readonly maxPushPolicy?: "none" | "branch";
+  /**
+   * `approval_proxy` (FR-CTL-08, T14.8, ADR-0047): offers `list_pending_approvals` and `decide_approval`. `loadConfig`
+   * always sets it (default false); a hand-built entry without it is read as false (fail closed).
+   */
+  readonly approvalProxy?: boolean;
+  /**
+   * `approval_proxy_targets` (T14.8): client ids whose pending approvals this proxy may decide. `loadConfig` always sets
+   * it with `approvalProxy` (default: the client itself); a hand-built proxy entry without it targets only itself.
+   */
+  readonly approvalProxyTargets?: readonly string[];
 }
 
 const INTERVAL_UNIT_MS = { m: 60_000, h: 3_600_000, d: 86_400_000 } as const;
@@ -261,7 +276,9 @@ function canonical(p: string, label: string, baseDir: string): string {
 }
 
 /** Load, validate and canonicalize the config. Fails closed on any problem (NFR-SEC-06). */
-export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): ResolvedConfig {
+export function loadConfig(
+  opts: ResolveEnv & { configPath?: string; confinedVerification?: boolean } = {},
+): ResolvedConfig {
   const configPath = opts.configPath ? path.resolve(opts.configPath) : resolveConfigPath(opts);
   let text: string;
   try {
@@ -303,6 +320,24 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
         `Invalid config: $.mcp_clients[${i}].max_push_policy: applies only to a client with manage_projects: true ` +
           `(client ${JSON.stringify(c.id)}); remove it or set manage_projects`,
       );
+    }
+    // T14.8 (Delegated, fail closed): approval targets mean nothing without approval_proxy.
+    if (c.approval_proxy_targets !== undefined && c.approval_proxy !== true) {
+      throw new ConfigError(
+        `Invalid config: $.mcp_clients[${i}].approval_proxy_targets: applies only to a client with approval_proxy: ` +
+          `true (client ${JSON.stringify(c.id)}); remove it or set approval_proxy`,
+      );
+    }
+  }
+  // T14.8 (NFR-SEC-06): an approval target must be a configured client; an unknown id aborts startup.
+  for (const [i, c] of cfg.mcp_clients.entries()) {
+    for (const [j, id] of (c.approval_proxy_targets ?? []).entries()) {
+      if (!ids.has(id)) {
+        throw new ConfigError(
+          `Invalid config: $.mcp_clients[${i}].approval_proxy_targets[${j}]: unknown client id ${JSON.stringify(id)} ` +
+            `(client ${JSON.stringify(c.id)}); add it to mcp_clients or remove it`,
+        );
+      }
     }
   }
 
@@ -387,6 +422,17 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
   if (capacityErrors.length > 0) {
     throw new ConfigError(`Invalid config:\n${capacityErrors.map((l) => `  ${l}`).join("\n")}`);
   }
+  const otlpEndpoint = cfg.telemetry?.otlp_endpoint;
+  if (otlpEndpoint) {
+    let valid = false;
+    try {
+      const url = new URL(otlpEndpoint);
+      valid = ["http:", "https:"].includes(url.protocol) && url.hostname !== "" && otlpEndpoint === otlpEndpoint.trim();
+    } catch {
+      // Never include the endpoint (it may contain credentials) in a config error.
+    }
+    if (!valid) throw new ConfigError("$.telemetry.otlp_endpoint: must be an absolute http or https URL");
+  }
   const sinkErrors = checkNotificationSinks(cfg.notification_sinks);
   if (sinkErrors.length > 0) {
     throw new ConfigError(`Invalid config:\n${sinkErrors.map((l) => `  ${l}`).join("\n")}`);
@@ -410,6 +456,8 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
           projects: [...(c.projects ?? [])],
           manageProjects: c.manage_projects === true,
           maxPushPolicy: c.max_push_policy ?? "none",
+          approvalProxy: c.approval_proxy === true,
+          ...(c.approval_proxy === true ? { approvalProxyTargets: [...(c.approval_proxy_targets ?? [c.id])] } : {}),
         },
       ]),
     ),
@@ -431,11 +479,18 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
     capacity: resolveCapacity(cfg.capacity),
     rag: resolveRag(cfg.rag),
     routing: resolveRouting(cfg.routing),
-    controlPlane: { budgets: resolveBudgets(cfg.control_plane?.budgets) },
+    controlPlane: resolveControlPlane(cfg.control_plane),
     notificationSinks: resolveNotificationSinks(cfg.notification_sinks),
+    ...(otlpEndpoint ? { telemetry: { otlpEndpoint } } : {}),
     claudeCodeGitChannel: cfg.providers?.["claude-code"]?.git_channel === true,
     profileOverrides,
     outerSandboxRequiredProfiles: [...(cfg.outer_sandbox?.required_profiles ?? [])],
+    confinedVerification:
+      opts.confinedVerification ??
+      (opts.env?.SWITCHBOARD_CONFINED_VERIFICATION === "true" ||
+        opts.env?.SWITCHBOARD_CONFINED_VERIFICATION === "1" ||
+        process.env.SWITCHBOARD_CONFINED_VERIFICATION === "true" ||
+        process.env.SWITCHBOARD_CONFINED_VERIFICATION === "1"),
     // Proposed: a provider not listed is enabled with no explicit weight; listing it can disable it.
     providers: new Map(
       Object.entries(cfg.providers ?? {}).map(([id, p]) => [

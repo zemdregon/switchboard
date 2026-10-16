@@ -69,7 +69,16 @@ import {
 } from "../adapters/index.js";
 import { ArtifactStore, defaultRedactor } from "../artifacts/index.js";
 import { ConfigError, loadConfig, type ResolvedConfig } from "../config/index.js";
-import { BudgetEvaluator, SinkDispatcher, sinkOutcomeRecorder, transitionNotifier } from "../control/index.js";
+import {
+  type ApprovalAnnouncement,
+  ApprovalLinkPage,
+  BudgetEvaluator,
+  ConsentLinkStore,
+  createConsentApprovalSource,
+  SinkDispatcher,
+  sinkOutcomeRecorder,
+  transitionNotifier,
+} from "../control/index.js";
 import { detectOuterSandbox, type OuterSandboxAvailability, outerSandboxRefusal } from "../exec/outer-sandbox.js";
 import { GitToolService } from "../git/channel.js";
 import { GitPublisher } from "../git/commit.js";
@@ -80,6 +89,7 @@ import { createLedger, openLedger, RagLedger } from "../ledger/index.js";
 import { RunLifecycle } from "../lifecycle/index.js";
 import { acquireDataDirLock, type DataDirLock } from "../lock/index.js";
 import {
+  AttemptLimiter,
   AuthorizationServer,
   createSwitchboardServer,
   type HttpTransportListener,
@@ -97,6 +107,7 @@ import { DynamicProjectStore, innerSettingResolver } from "../projects/index.js"
 import { queueSchedulerSettingsFromConfig, runProjectWorkQueueTick } from "../queue/index.js";
 import { reconcile } from "../reconcile/index.js";
 import { pruneRagStores } from "../retrieval/store.js";
+import { createTelemetry } from "../telemetry/index.js";
 import { runRetentionGc, WorkspaceManager } from "../workspace/index.js";
 import { type CliIo, PROBE_ENV_ALLOWLIST } from "./io.js";
 import { applyOperatorRequests } from "./operator.js";
@@ -487,21 +498,30 @@ async function runDaemon(
   }
   let outerSandbox: OuterSandboxAvailability | undefined;
   const outerSandboxRequired = config.outerSandboxRequiredProfiles;
-  if (outerSandboxRequired.length > 0) {
+  const confinedVerification = config.confinedVerification;
+  if (outerSandboxRequired.length > 0 || confinedVerification) {
     outerSandbox = await detectOuterSandbox({ path: io.env.PATH ?? "" });
     const m = outerSandbox.mechanisms;
-    log.warn("outer_sandbox.required_profiles is set: runs under these profiles are refused at admission", {
-      adr: "ADR-0051",
-      profiles: outerSandboxRequired,
-      bubblewrap: m.bubblewrap.available,
-      prlimit: m.prlimit.available,
-      landlock: m.landlock.available,
-    });
+    if (outerSandboxRequired.length > 0) {
+      log.warn("outer_sandbox.required_profiles is set: runs under these profiles are refused at admission", {
+        adr: "ADR-0051",
+        profiles: outerSandboxRequired,
+        bubblewrap: m.bubblewrap.available,
+        prlimit: m.prlimit.available,
+        landlock: m.landlock.available,
+      });
+    }
+    if (confinedVerification) {
+      log.info("confined verification is enabled (T3.11): verification commands run in the outer sandbox", {
+        bubblewrap: m.bubblewrap.available,
+      });
+    }
   }
   const registry = buildRegistry(fake, { claudeGitChannel: config.claudeCodeGitChannel });
   // T12.4 / T12.5: set below once background indexing has started; until then (and with no embedding backend) the
   // context-pack port answers `undefined` and a run is compiled without a pack.
   let rag: ServeRag | undefined;
+  const telemetry = createTelemetry(config); // inert until T8.2 submits the first completed span
   // T14.9 (FR-CTL-10, ADR-0048): notification sinks only when the operator configured one; none means no request at all.
   const sinks =
     config.notificationSinks.length === 0
@@ -556,6 +576,8 @@ async function runDaemon(
     breaker: config.capacity.breaker,
     // T6.5: automatic retry parameters and the reset wait bound (`capacity.retry`, `capacity.queue_horizon_seconds`).
     retry: { ...config.capacity.retry, queueHorizonSeconds: config.capacity.queueHorizonSeconds },
+    // T14.5: loop breaker N, T and successor cap (`control_plane.loop_breaker`, LLD §3.4.6).
+    loopBreaker: config.controlPlane.loopBreaker,
     // T6.6: bundle bounds for a quota failover handoff (`continuity.*`, LLD §15.4).
     continuityBounds: config.continuity,
     // T7.2: stage-2 settings for the quota failover's choice (`routing.weights`, the capacity window; LLD §17.3).
@@ -577,6 +599,10 @@ async function runDaemon(
     preflightCache: new PreflightCache({ ttlMs: config.preflightTtlMs }),
     gitTools,
     finalizePublisher,
+    // T3.11 (FR-EXE-08, FR-POL-06, decision 11): confined verification in the outer sandbox.
+    confinedVerification,
+    outerSandboxRequiredProfiles: outerSandboxRequired,
+    ...(outerSandbox ? { outerSandbox } : {}),
     // T12.5 (FR-RAG-05, FR-RAG-08): retrieval at dispatch; no pack when retrieval is inert or fails.
     contextPack: {
       timeoutMs: config.rag.retrieval.admissionTimeoutMs,
@@ -594,6 +620,47 @@ async function runDaemon(
     onBudgetRefused,
     ...(now ? { now } : {}),
   });
+
+  // T14.10 (FR-CTL-09, ADR-0047 Decision 3): single-use, expiring consent-page links, only with the HTTP transport. A
+  // sweep on each operator poll issues a link for every decidable approval without a live one and logs its URL, which
+  // is not a credential: opening it still needs the passphrase or a pairing code (FR-MCP-17).
+  const consentLinks = config.httpTransport
+    ? new ConsentLinkStore({
+        issuer: config.httpTransport.issuer,
+        source: createConsentApprovalSource({
+          ledger,
+          clientIds: [...config.mcpClients.keys()],
+          projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
+          applyDecision: (req) => lifecycle.applyApprovalDecision(req),
+          ...(sinks !== undefined
+            ? {
+                announce: (a: ApprovalAnnouncement) =>
+                  sinks.emit({
+                    projectId: a.projectId,
+                    eventKind: "approval_decided",
+                    reasonCode: a.kind,
+                    runId: a.runId,
+                  }),
+              }
+            : {}),
+        }),
+        ...(now ? { now } : {}),
+      })
+    : undefined;
+  const sweepConsentLinks = (): void => {
+    if (!consentLinks) return;
+    try {
+      for (const l of consentLinks.sweep()) {
+        log.info("consent-page approval link issued", {
+          approval_id: l.approvalId,
+          url: l.url,
+          expires_at: l.expiresAt,
+        });
+      }
+    } catch (err) {
+      log.warn("issuing consent-page approval links failed", { error: message(err) });
+    }
+  };
 
   let polling = false;
   const applyRequests = async (): Promise<void> => {
@@ -672,6 +739,7 @@ async function runDaemon(
     void applyRequests();
     void rag?.applyRequests();
     void runQueueTick();
+    sweepConsentLinks();
   }, OPERATOR_POLL_MS);
   const gcTimer = config.retentionEnabled
     ? setInterval(() => void gcPass("interval"), Math.min(config.retention.intervalMs, MAX_TIMER_MS))
@@ -702,6 +770,13 @@ async function runDaemon(
       },
       ...(now ? { now } : {}),
       projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
+      // T14.8 (FR-CTL-08, ADR-0047 2f): proxied decisions the transition hook does not announce reach the same sinks.
+      ...(sinks !== undefined
+        ? {
+            announceApproval: (a: ApprovalAnnouncement) =>
+              sinks.emit({ projectId: a.projectId, eventKind: "approval_decided", reasonCode: a.kind, runId: a.runId }),
+          }
+        : {}),
       // T13.5 (FR-MCP-15, Q-78): stdio sees only meta-sessions with no HTTP subject; HTTP sees only its own.
       subjectBindings: new SubjectBindingStore(db, now ? { now } : {}),
       // T12.6 (FR-RAG-06): read-only search over a project's store; absent without an embedding backend (FR-RAG-04).
@@ -731,6 +806,9 @@ async function runDaemon(
     // verified against the hashed rows in the ledger; a refusal logs its reason code only, never the token.
     const oauthTokens = new OAuthTokenStore(db, now ? { now } : {});
     const oauthClients = new OAuthClientStore(db, now ? { now } : {});
+    // One wrong-passphrase lockout for the OAuth consent page and the approval-link page (T14.10).
+    const passphraseLimiter = new AttemptLimiter();
+    const pairing = new PairingCodeStore(db, now ? { now } : {});
     httpListener = await startHttpTransport(config.httpTransport, {
       tokens: oauthTokens,
       onTokenRejected: (reason) => log.warn("refused an HTTP bearer token", { reason }),
@@ -752,12 +830,29 @@ async function runDaemon(
             authorizationServer: new AuthorizationServer(config.httpTransport, {
               clients: oauthClients,
               tokens: oauthTokens,
-              pairing: new PairingCodeStore(db, now ? { now } : {}),
+              pairing,
+              limiter: passphraseLimiter,
               ...(config.httpTransport.passphraseHash !== undefined
                 ? { passphraseHash: config.httpTransport.passphraseHash }
                 : {}),
               ...(now ? { now } : {}),
               onEvent: (event, fields) => log.info("OAuth authorization event", { event, ...fields }),
+            }),
+          }
+        : {}),
+      // T14.10 (FR-CTL-09, FR-MCP-17): the approval-link page on the same origin, with the same authentication.
+      ...(config.httpTransport && consentLinks
+        ? {
+            approvalLinks: new ApprovalLinkPage({
+              issuer: config.httpTransport.issuer,
+              links: consentLinks,
+              pairing,
+              limiter: passphraseLimiter,
+              ...(config.httpTransport.passphraseHash !== undefined
+                ? { passphraseHash: config.httpTransport.passphraseHash }
+                : {}),
+              ...(now ? { now } : {}),
+              onEvent: (event, fields) => log.info("consent-page approval link event", { event, ...fields }),
             }),
           }
         : {}),
@@ -808,6 +903,7 @@ async function runDaemon(
       log.error("lifecycle shutdown failed", { error: message(err) });
       code = 1;
     }
+    await telemetry.close();
     await sinks?.close(); // aborts deliveries in flight; never throws
     process.stdin.destroy(); // nothing reads stdin any more; do not let it hold the event loop open
     process.off("SIGINT", ignore);

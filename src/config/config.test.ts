@@ -40,6 +40,50 @@ describe("loadConfig", () => {
     expect(c.dataDir).toBe(path.join(tmp, "data"));
   });
 
+  describe("telemetry (T8.1, FR-TEL-02, NFR-PRIV-01)", () => {
+    it("is disabled when absent, empty or without an endpoint", () => {
+      for (const telemetry of [undefined, {}, { otlp_endpoint: "" }]) {
+        expect(loadConfig({ configPath: write({ ...base(), telemetry }) }).telemetry).toBeUndefined();
+      }
+    });
+
+    it("accepts explicit HTTP and HTTPS collector endpoints", () => {
+      for (const endpoint of ["http://127.0.0.1:4318/v1/traces", "https://collector.example.test/traces"]) {
+        expect(
+          loadConfig({ configPath: write({ ...base(), telemetry: { otlp_endpoint: endpoint } }) }).telemetry,
+        ).toEqual({ otlpEndpoint: endpoint });
+      }
+    });
+
+    it("rejects invalid endpoints at config load without echoing their values", () => {
+      for (const endpoint of [
+        "relative",
+        "ftp://collector.test",
+        "https://",
+        " ",
+        " http://collector.test",
+        "http://secret-canary@[",
+      ]) {
+        const load = () => loadConfig({ configPath: write({ ...base(), telemetry: { otlp_endpoint: endpoint } }) });
+        expect(load).toThrow("$.telemetry.otlp_endpoint: must be an absolute http or https URL");
+        try {
+          load();
+        } catch (error) {
+          expect(String(error)).toBe("ConfigError: $.telemetry.otlp_endpoint: must be an absolute http or https URL");
+        }
+      }
+    });
+
+    it("rejects wrong endpoint types and unknown telemetry keys", () => {
+      expect(() => loadConfig({ configPath: write({ ...base(), telemetry: { otlp_endpoint: 42 } }) })).toThrow(
+        /telemetry.otlp_endpoint/,
+      );
+      expect(() =>
+        loadConfig({ configPath: write({ ...base(), telemetry: { endpoint: "http://collector.test" } }) }),
+      ).toThrow(/telemetry.endpoint: unknown key/);
+    });
+  });
+
   it("rejects an unknown top-level key with its path", () => {
     expect(() => loadConfig({ configPath: write({ ...base(), surprise: 1 }) })).toThrow(/\$\.surprise: unknown key/);
   });
@@ -329,6 +373,8 @@ describe("mcp_clients[].privileged_approval (owner decision 22, ADR-0019)", () =
       // T9.9 defaults: no project-management tools, no push for dynamic projects.
       manageProjects: false,
       maxPushPolicy: "none",
+      // T14.8 default: no approval proxy tools.
+      approvalProxy: false,
     });
     expect(c.mcpClients.get("ops")?.privilegedApproval).toBe("required");
     expect(c.mcpClients.get("strict")?.privilegedApproval).toBe("required");
@@ -397,6 +443,70 @@ describe("mcp_clients[].manage_projects and max_push_policy (T9.9, FR-PRJ-10)", 
         configPath: write(clients({ id: "a", max_trust_profile: "edit-untrusted", max_push_policy: "branch" })),
       }),
     ).toThrow(/\$\.mcp_clients\[0\]\.max_push_policy: applies only to a client with manage_projects: true/);
+  });
+});
+
+describe("mcp_clients[].approval_proxy and approval_proxy_targets (T14.8, FR-CTL-08, ADR-0047)", () => {
+  const clients = (...entries: Record<string, unknown>[]) => ({ ...base(), mcp_clients: entries });
+
+  it("defaults to off; a proxy targets itself unless the operator lists targets", () => {
+    const c = loadConfig({
+      configPath: write(
+        clients(
+          { id: "plain", max_trust_profile: "edit-untrusted" },
+          { id: "bot", max_trust_profile: "inspect-untrusted", approval_proxy: true },
+          {
+            id: "relay",
+            max_trust_profile: "inspect-untrusted",
+            approval_proxy: true,
+            approval_proxy_targets: ["plain"],
+          },
+        ),
+      ),
+    });
+    expect(c.mcpClients.get("plain")?.approvalProxy).toBe(false);
+    expect(c.mcpClients.get("plain")?.approvalProxyTargets).toBeUndefined();
+    expect(c.mcpClients.get("bot")).toMatchObject({ approvalProxy: true, approvalProxyTargets: ["bot"] });
+    expect(c.mcpClients.get("relay")).toMatchObject({ approvalProxy: true, approvalProxyTargets: ["plain"] });
+  });
+
+  it("is strict: an invalid approval_proxy value refuses the config", () => {
+    for (const value of ["yes", 1, null]) {
+      expect(
+        () =>
+          loadConfig({
+            configPath: write(clients({ id: "a", max_trust_profile: "edit-untrusted", approval_proxy: value })),
+          }),
+        String(value),
+      ).toThrow(/\$\.mcp_clients\[0\]\.approval_proxy: must be boolean/);
+    }
+    expect(() =>
+      loadConfig({
+        configPath: write(
+          clients({ id: "a", max_trust_profile: "edit-untrusted", approval_proxy: true, approval_proxy_targets: [] }),
+        ),
+      }),
+    ).toThrow(/\$\.mcp_clients\[0\]\.approval_proxy_targets/);
+  });
+
+  it("refuses targets without approval_proxy, and a target that is not a configured client (fail closed)", () => {
+    expect(() =>
+      loadConfig({
+        configPath: write(clients({ id: "a", max_trust_profile: "edit-untrusted", approval_proxy_targets: ["a"] })),
+      }),
+    ).toThrow(/\$\.mcp_clients\[0\]\.approval_proxy_targets: applies only to a client with approval_proxy: true/);
+    expect(() =>
+      loadConfig({
+        configPath: write(
+          clients({
+            id: "a",
+            max_trust_profile: "edit-untrusted",
+            approval_proxy: true,
+            approval_proxy_targets: ["zz"],
+          }),
+        ),
+      }),
+    ).toThrow(/\$\.mcp_clients\[0\]\.approval_proxy_targets\[0\]: unknown client id "zz"/);
   });
 });
 
@@ -857,5 +967,24 @@ describe("routing (T7.1; LLD §17.1, ADR-0044)", () => {
     expect(() => load({ weights: { cost: 101 } })).toThrow(/\$\.routing\.weights\.cost/);
     expect(() => load({ weights: { cost: "1" } })).toThrow(/\$\.routing\.weights\.cost/);
     expect(() => load([])).toThrow(/\$\.routing/);
+  });
+});
+
+describe("confined verification config (T3.11)", () => {
+  it("defaults to false when unconfigured", () => {
+    const cfg = loadConfig({ configPath: write(base()) });
+    expect(cfg.confinedVerification).toBe(false);
+  });
+
+  it("can be enabled via programmatic option or SWITCHBOARD_CONFINED_VERIFICATION env", () => {
+    const p = write(base());
+    const cfgOpt = loadConfig({ configPath: p, confinedVerification: true });
+    expect(cfgOpt.confinedVerification).toBe(true);
+
+    const cfgEnv = loadConfig({ configPath: p, env: { SWITCHBOARD_CONFINED_VERIFICATION: "true" } });
+    expect(cfgEnv.confinedVerification).toBe(true);
+
+    const cfgEnv1 = loadConfig({ configPath: p, env: { SWITCHBOARD_CONFINED_VERIFICATION: "1" } });
+    expect(cfgEnv1.confinedVerification).toBe(true);
   });
 });

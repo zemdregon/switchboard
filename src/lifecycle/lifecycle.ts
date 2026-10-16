@@ -81,6 +81,7 @@ import {
   type ChannelAuditContext,
   createProbeRunner,
   type FailureCode,
+  type Invocation,
   IsolationAuditError,
   isIneligible,
   McpConfigAuditError,
@@ -134,6 +135,14 @@ import {
   registerBudgets,
 } from "../control/budgets.js";
 import {
+  DEFAULT_LOOP_BREAKER,
+  type LoopBreakerSettings,
+  parkedRefusal,
+  recordLoopPark,
+  type SuccessorRefusal,
+  successorRefusal,
+} from "../control/loop-breaker.js";
+import {
   type Environment,
   EnvironmentRefusal,
   type RunContext as EnvironmentRunContext,
@@ -141,6 +150,7 @@ import {
   hostEnvironment,
   type ReadOnlyContextMount,
 } from "../environment/index.js";
+import type { OuterSandboxAvailability } from "../exec/outer-sandbox.js";
 import { procStartTicks } from "../exec/proc-info.js";
 import { ChannelOpenError, type GitToolService, type OpenChannel } from "../git/channel.js";
 import type { GitPublisher } from "../git/commit.js";
@@ -225,6 +235,18 @@ import {
   type TransitionRule,
 } from "./states.js";
 import {
+  STEER_DELIVERED_EVENT,
+  STEER_DELIVERY,
+  STEER_NOTE_MAX,
+  STEER_REQUESTED_EVENT,
+  STEER_UNDELIVERED_EVENT,
+  SteerInbox,
+  type SteerResult,
+  type SteerUndeliveredReason,
+  steerPrompt,
+  steerRequestedPayload,
+} from "./steer.js";
+import {
   startVerification,
   VERIFICATION_COMMAND_EVENT,
   VERIFICATION_STARTED_EVENT,
@@ -240,6 +262,9 @@ export type LifecycleErrorCode = "INVALID_REQUEST" | "QUEUE_FULL" | "BUDGET_EXHA
 /** Admission or API error. No run row is written when it is thrown from `submit`. */
 const archivedMessage = (id: string): string =>
   `meta-session ${id} is archived (collected or being collected by retention GC); start a new task instead`;
+
+const parkedMessage = (id: string, parked: SuccessorRefusal): string =>
+  `meta-session ${id} is parked by the loop breaker (${parked.reason === "meta_session_parked" ? `${parked.threshold} identical failures, ${parked.fingerprint}` : parked.reason}); start a new task instead`;
 
 export class LifecycleError extends Error {
   override readonly name = "LifecycleError";
@@ -547,6 +572,11 @@ export interface RunLifecycleOptions {
   readonly budgets?: BudgetAdmission;
   /** T14.4: observer for every budget refusal (operator log, `budget_exhausted` sink event). Must not throw. */
   readonly onBudgetRefused?: (notice: BudgetRefusalNotice) => void;
+  /**
+   * T14.5 (FR-CTL-07, LLD §3.4.6): `control_plane.loop_breaker` (**N**, **T**, successor cap). Unset means the LLD
+   * Assumption defaults. The loop breaker cannot be turned off.
+   */
+  readonly loopBreaker?: LoopBreakerSettings;
   /** T6.6: handoff bundle bounds for a quota failover (`continuity.*`, LLD §15.4). Unset means the LLD defaults. */
   readonly continuityBounds?: BundleBounds;
   /**
@@ -574,6 +604,15 @@ export interface RunLifecycleOptions {
    * the host). `prepare` runs just before spawn, after the pre-spawn refusals; `teardown` runs on every path after it.
    */
   readonly environments?: EnvironmentResolver;
+  /**
+   * T3.11 (FR-EXE-08, FR-POL-06, decision 11): optional confined verification in the outer sandbox from T3.1.
+   * When true, verification commands run inside bubblewrap with the worktree writable and the rest read-only.
+   */
+  readonly confinedVerification?: boolean | undefined;
+  /** Profiles whose verification commands must run inside the outer sandbox. */
+  readonly outerSandboxRequiredProfiles?: readonly string[] | undefined;
+  /** Outer sandbox availability detection result. */
+  readonly outerSandbox?: OuterSandboxAvailability | undefined;
 }
 
 /** T10.1: where a run is placed (LLD §11.3). `serve` composes it from the configuration and the container backend. */
@@ -687,6 +726,8 @@ export class RunLifecycle {
   private readonly runner: ProbeRunner;
   private readonly maxQueueDepth: number;
   private readonly inflight = new Map<string, Execution>();
+  /** T14.7 (FR-CTL-04): steer notes waiting for a run's next boundary (`./steer.ts`). */
+  private readonly steerInbox = new SteerInbox();
   private readonly waiters = new Map<string, ((run: RunRecord) => void)[]>();
   private started = false;
   private stopped = false;
@@ -822,6 +863,11 @@ export class RunLifecycle {
         if (active) {
           throw new LifecycleError("INVALID_REQUEST", `meta-session ${metaSessionId} has an active run ${active.id}`);
         }
+        // T14.5 (FR-CTL-07): a meta-session parked by the loop breaker admits no further run; start a new task instead.
+        const parked = parkedRefusal(this.ledger, metaSessionId);
+        if (parked) {
+          throw new LifecycleError("INVALID_REQUEST", parkedMessage(metaSessionId, parked));
+        }
         // T5.6 (Delegated, fail closed): the bundle was built outside this transaction, so it must still describe the
         // session as it is now: the same runs and the same base and head. Otherwise a run admitted and finished in
         // between would be missing from it; refuse with the bundle failure code and write nothing (ADR-0038 item 7).
@@ -956,7 +1002,10 @@ export class RunLifecycle {
       } catch (err) {
         if (err !== LOST_RACE) throw err;
       }
-      if (moved) return moved.state;
+      if (moved) {
+        this.flushSteer(runId);
+        return moved.state;
+      }
       return this.cancel(runId, reason, decidedBy); // lost a race (e.g. dispatched meanwhile): re-read and re-decide
     }
     const exec = this.inflight.get(runId);
@@ -964,6 +1013,33 @@ export class RunLifecycle {
     exec.cancelRequested = true;
     if (exec.handle) void exec.handle.cancel();
     return (this.ledger.getRunRecord(runId) as RunRecord).state;
+  }
+
+  /**
+   * T14.7 `steer_run` (FR-CTL-04, LLD §3.4.4): record a controller `steer_requested` event (length and hash only) and
+   * queue `note` for the run's next boundary, where it is delivered by boundary-resume (`./steer.ts`). A terminal run is
+   * a no-op (nothing recorded). A note that can no longer reach a boundary is recorded `steer_undelivered` at once.
+   */
+  steer(runId: string, note: string): SteerResult {
+    const run = this.ledger.getRunRecord(runId);
+    if (!run) throw new LifecycleError("INVALID_REQUEST", `unknown run ${runId}`);
+    if (typeof note !== "string" || note.length === 0 || note.length > STEER_NOTE_MAX) {
+      throw new LifecycleError("INVALID_REQUEST", `note must be 1 to ${STEER_NOTE_MAX} characters`);
+    }
+    if (isTerminal(run.state)) return { accepted: false, reason: "terminal" };
+    this.ledger.appendRunEvent({ runId, type: STEER_REQUESTED_EVENT, payload: steerRequestedPayload(note) });
+    const exec = this.inflight.get(runId);
+    let reason: SteerUndeliveredReason | undefined;
+    if (SLOT_STATES.includes(run.state) && exec === undefined) reason = "not_in_this_process";
+    else if (this.steerInbox.isClosed(runId) || run.state === "VERIFYING" || run.state === "FINALIZING") {
+      reason = "past_boundary";
+    }
+    if (reason !== undefined) {
+      this.steerUndelivered(runId, reason, 1);
+      return { accepted: false, reason };
+    }
+    this.steerInbox.push(runId, note);
+    return { accepted: true };
   }
 
   /**
@@ -1320,6 +1396,7 @@ export class RunLifecycle {
       .catch((err: unknown) => this.contain(exec, err))
       .finally(() => {
         this.inflight.delete(runId);
+        this.flushSteer(runId);
         this.pump();
       });
   }
@@ -1526,6 +1603,8 @@ export class RunLifecycle {
     const bound = new Map<string, { model: string | null; backingProvider: string | null }>();
     let channel: OpenChannel | undefined;
     let channelAudit: ChannelAuditContext | undefined;
+    /** The channel's argv and environment changes, re-applied to a T14.7 boundary-resume turn. */
+    let withChannel = (i: Invocation): Invocation => i;
     // T9.4b (ADR-0033, owner decision 41): an adapter may narrow its `injected` declaration per run (Claude Code: only
     // an approved bypass run). A run it declines is treated exactly like one of an adapter without a channel.
     const caps = adapter.gitCapabilities;
@@ -1600,12 +1679,13 @@ export class RunLifecycle {
           });
         }
         channelAudit = { toolNames: [...channel.shim.toolNames], ...(mcpConfigPath ? { mcpConfigPath } : {}) };
-        inv = {
-          ...inv,
-          argv: [...inv.argv.filter((a) => !remove.has(a)), ...extra.argv],
-          policyFlags: inv.policyFlags.filter((a) => !remove.has(a)),
-          env: { ...inv.env, ...extra.env },
-        };
+        withChannel = (i) => ({
+          ...i,
+          argv: [...i.argv.filter((a) => !remove.has(a)), ...extra.argv],
+          policyFlags: i.policyFlags.filter((a) => !remove.has(a)),
+          env: { ...i.env, ...extra.env },
+        });
+        inv = withChannel(inv);
       }
     }
     if (exec.cancelRequested) {
@@ -1650,26 +1730,41 @@ export class RunLifecycle {
     // RUNNING (T9): pid/pgid persisted in the same transaction, before any output is read (LLD §8).
     let spawned = false;
     let out: AdapterRunOutcome;
+    const onEvent = (ev: NormalizedEvent): void => {
+      if (ev.kind === "session_bound") {
+        if (!nativeIds.includes(ev.nativeSessionId)) nativeIds.push(ev.nativeSessionId);
+        // T5.3 (FR-ADP-10): remember what `session_bound` reported, for the binding row written after the run.
+        if (!bound.has(ev.nativeSessionId)) {
+          bound.set(ev.nativeSessionId, { model: ev.model ?? null, backingProvider: ev.backingProvider ?? null });
+        }
+      }
+      this.ledger.appendRunEvent({ runId, type: "provider_event", payload: compactEvent(ev) });
+    };
+    const runOptions = (turnInv: Invocation) => ({
+      bypassApproved: profile.bypassApproved,
+      // T3.17: the audit admits a bypass flag only for this profile being privileged with a scope that sets bypass.
+      profile,
+      // T9.4b: `--mcp-config` and MCP allow rules only in the channel's exact shape (ADR-0029 item 6).
+      ...(channelAudit ? { channel: channelAudit } : {}),
+      ...(this.opts.baseEnv ? { baseEnv: this.opts.baseEnv } : {}),
+      // T4.8 (ADR-0036 item 9): an `acp-stdio` run answers permission requests from this frozen snapshot only.
+      // No read-only context is passed yet (fail closed: reads outside the worktree are rejected).
+      ...(turnInv.transport === "acp-stdio"
+        ? {
+            acp: {
+              snapshot: { profile, worktree: turnInv.cwd, writable: ws.mode === "worktree", readOnlyContexts: [] },
+              onRunEvent: (e: { type: string; payload: unknown }) =>
+                this.ledger.appendRunEvent({ runId, type: e.type, payload: e.payload }),
+            },
+          }
+        : {}),
+      onEvent,
+    });
     try {
       let agent: AdapterRun;
       try {
         agent = startAdapterRun(adapter, inv, {
-          bypassApproved: profile.bypassApproved,
-          // T3.17: the audit admits a bypass flag only for this profile being privileged with a scope that sets bypass.
-          profile,
-          // T9.4b: `--mcp-config` and MCP allow rules only in the channel's exact shape (ADR-0029 item 6).
-          ...(channelAudit ? { channel: channelAudit } : {}),
-          ...(this.opts.baseEnv ? { baseEnv: this.opts.baseEnv } : {}),
-          // T4.8 (ADR-0036 item 9): an `acp-stdio` run answers permission requests from this frozen snapshot only.
-          // No read-only context is passed yet (fail closed: reads outside the worktree are rejected).
-          ...(inv.transport === "acp-stdio"
-            ? {
-                acp: {
-                  snapshot: { profile, worktree: inv.cwd, writable: ws.mode === "worktree", readOnlyContexts: [] },
-                  onRunEvent: (e) => this.ledger.appendRunEvent({ runId, type: e.type, payload: e.payload }),
-                },
-              }
-            : {}),
+          ...runOptions(inv),
           onSpawn: ({ pid, pgid }) => {
             this.move(
               this.current(runId),
@@ -1678,16 +1773,6 @@ export class RunLifecycle {
               { pid, pgid },
             );
             spawned = true;
-          },
-          onEvent: (ev) => {
-            if (ev.kind === "session_bound") {
-              if (!nativeIds.includes(ev.nativeSessionId)) nativeIds.push(ev.nativeSessionId);
-              // T5.3 (FR-ADP-10): remember what `session_bound` reported, for the binding row written after the run.
-              if (!bound.has(ev.nativeSessionId)) {
-                bound.set(ev.nativeSessionId, { model: ev.model ?? null, backingProvider: ev.backingProvider ?? null });
-              }
-            }
-            this.ledger.appendRunEvent({ runId, type: "provider_event", payload: compactEvent(ev) });
           },
         });
       } catch (err) {
@@ -1712,6 +1797,66 @@ export class RunLifecycle {
       }
       exec.handle = agent;
       out = await agent.done;
+      // T14.7 (FR-CTL-04, FR-SES-03, BR-7; LLD §3.4.4): the turn's end is the boundary. While steer notes are queued
+      // and the turn succeeded with a native session, resume that same session in this run with only the notes as the
+      // prompt (never the objective again: no replay). Each earlier turn's streams are kept as artifacts of the run.
+      for (let notes = this.steerAtBoundary(exec, out); notes.length > 0; notes = this.steerAtBoundary(exec, out)) {
+        const binding = { provider: req.provider, nativeSessionId: out.result.nativeSessionId as string };
+        const turnReq = {
+          runId,
+          objective: steerPrompt(notes),
+          constraints: [],
+          workspace: compileReq.workspace,
+          ...(req.model !== undefined ? { model: req.model } : {}),
+        };
+        const compiled = adapter.resumeArgs(binding, turnReq, profile);
+        if (isIneligible(compiled)) {
+          this.steerUndelivered(runId, "resume_refused", notes.length, { stage: "compile", reason: compiled.reason });
+          break;
+        }
+        let turnInv: Invocation;
+        try {
+          await environment.teardown(environmentRun);
+          turnInv = (await environment.prepare(environmentRun, withChannel(compiled))).invocation;
+        } catch (err) {
+          if (!(err instanceof EnvironmentRefusal)) throw err;
+          this.steerUndelivered(runId, "resume_refused", notes.length, { stage: "environment", reason: err.reason });
+          break;
+        }
+        if (ws.mode === "worktree") {
+          this.opts.workspace.extendLease(runId, 2 * turnInv.timeouts.wallClockMs + turnInv.timeouts.killGraceMs);
+        }
+        let turn: AdapterRun;
+        try {
+          turn = startAdapterRun(adapter, turnInv, {
+            ...runOptions(turnInv),
+            onSpawn: ({ pid, pgid }) => {
+              this.ledger.updateRunFields(
+                runId,
+                { pid, pgid, proc_start_ticks: procStartTicks(pid) },
+                { type: "steer_turn_spawned", payload: { pid, pgid } },
+              );
+            },
+          });
+        } catch (err) {
+          const audits = [BypassFlagError, McpConfigAuditError, AcpPlanAuditError, IsolationAuditError];
+          if (!audits.some((E) => err instanceof E)) throw err;
+          this.steerUndelivered(runId, "resume_refused", notes.length, { stage: "audit" });
+          break;
+        }
+        this.ledger.appendRunEvent({
+          runId,
+          type: STEER_DELIVERED_EVENT,
+          payload: { delivery: STEER_DELIVERY, notes: notes.length },
+        });
+        exec.handle = turn;
+        // A cancel that arrived while the turn was being prepared stops it at once.
+        if (exec.cancelRequested) void turn.cancel();
+        const earlier = out;
+        out = await turn.done;
+        await this.storeStreams(runId, run0.meta_session_id, earlier);
+      }
+      this.steerInbox.close(runId); // a refused resume also ends steering: later notes are undelivered at once
     } finally {
       // LLD §12.2: the socket is closed and removed when the run leaves RUNNING; calls in progress finish first.
       await channel?.close();
@@ -1745,7 +1890,7 @@ export class RunLifecycle {
     if (pending.kind === "success" && commands.length > 0) {
       // T11 (FR-EXE-08): the agent exited successfully and verification was supplied.
       this.move(this.current(runId), "VERIFYING", exitFields, { ...exitPayload, commands: commands.length }, "T11");
-      verification = await this.verify(exec, runId, meta, ws, inv, commands);
+      verification = await this.verify(exec, runId, meta, ws, inv, commands, run0.trust_profile);
       pending = verification.pending;
       const verified = verification;
       // T14: pending success, `TEST_FAILURE` (BR-16) or cancelled; the per-command summary is in the event.
@@ -1805,6 +1950,7 @@ export class RunLifecycle {
     ws: PreparedWorkspace,
     inv: { envAllowlist: readonly string[]; timeouts: { wallClockMs: number; killGraceMs: number } },
     commands: readonly (readonly string[])[],
+    profile?: TrustProfile,
   ): Promise<VerificationOutcomeRecord> {
     if (ws.mode !== "worktree") {
       // Admission refuses verification under inspect-untrusted, the only profile without a worktree (fail closed).
@@ -1814,6 +1960,11 @@ export class RunLifecycle {
     const { wallClockMs, killGraceMs } = inv.timeouts;
     // The stage may take up to one more wall clock: keep the lease ahead of it (as at LEASED).
     this.opts.workspace.extendLease(runId, 2 * wallClockMs + (commands.length + 1) * killGraceMs);
+    const confined =
+      this.opts.confinedVerification ??
+      (this.opts.outerSandboxRequiredProfiles !== undefined &&
+        profile !== undefined &&
+        this.opts.outerSandboxRequiredProfiles.includes(profile as string));
     const stage = startVerification({
       commands,
       cwd: ws.worktreePath,
@@ -1821,6 +1972,8 @@ export class RunLifecycle {
       ...(this.opts.baseEnv ? { baseEnv: this.opts.baseEnv } : {}),
       wallClockMs,
       killGraceMs,
+      confined,
+      ...(this.opts.outerSandbox ? { outerSandbox: this.opts.outerSandbox } : {}),
       onSpawn: (index, { pid, pgid }) => {
         // LLD §8: pid, pgid and start ticks persisted before any output is read, so a restart can kill an orphan.
         this.ledger.updateRunFields(
@@ -2082,6 +2235,8 @@ export class RunLifecycle {
           { failure_code: outcome.code, failure_detail: outcome.detail, finished_at: finished },
           payload,
         );
+        // T14.5 (FR-CTL-07): the Nth identical failure parks the meta-session, before any successor is considered.
+        recordLoopPark(this.ledger, failed, this.opts.loopBreaker ?? DEFAULT_LOOP_BREAKER);
         // T6.5 (FRD T16, BR-6, BR-7): after the breaker step of the same transition, in the same transaction.
         this.scheduleRetry(failed, outcome.code, retryEligible);
       }
@@ -2270,6 +2425,39 @@ export class RunLifecycle {
   }
 
   /** Cancel before a process exists (T19 from PREFLIGHT or LEASED, FRD §4.3): slot and lease released, no workspace change. */
+  /**
+   * T14.7: at a turn's end, the queued steer notes to deliver by resuming the turn's native session, or none. With none
+   * queued the run's last boundary has passed (later notes are undelivered at once). Notes that cannot be delivered
+   * (the turn failed or was cancelled, or reported no native session) are recorded `steer_undelivered`.
+   */
+  private steerAtBoundary(exec: Execution, out: AdapterRunOutcome): string[] {
+    const runId = exec.runId;
+    const queued = this.steerInbox.pending(runId);
+    let reason: SteerUndeliveredReason | undefined;
+    if (queued === 0) reason = undefined;
+    else if (pendingOf(exec, out).kind !== "success") reason = "turn_not_successful";
+    else if (!out.result.nativeSessionId) reason = "no_native_session";
+    else return this.steerInbox.take(runId);
+    this.steerInbox.close(runId);
+    if (reason !== undefined) this.steerUndelivered(runId, reason, this.steerInbox.take(runId).length);
+    return [];
+  }
+
+  /** T14.7: a run's queued notes that no boundary will deliver any more (the run ended). */
+  private flushSteer(runId: string): void {
+    const left = this.steerInbox.clear(runId);
+    if (left > 0) this.steerUndelivered(runId, "run_ended", left);
+  }
+
+  private steerUndelivered(
+    runId: string,
+    reason: SteerUndeliveredReason,
+    notes: number,
+    extra: Record<string, unknown> = {},
+  ): void {
+    this.ledger.appendRunEvent({ runId, type: STEER_UNDELIVERED_EVENT, payload: { reason, notes, ...extra } });
+  }
+
   private cancelEarly(runId: string): void {
     this.ledger.immediate(() => {
       this.opts.workspace.releaseLease(runId);
@@ -2517,6 +2705,13 @@ export class RunLifecycle {
       notScheduled("attempts_exhausted", { attempt: failed.attempt, max_attempts: settings.maxAttempts });
       return;
     }
+    // T14.5 (FR-CTL-07): a parked meta-session or a full successor cap admits no successor.
+    const refused = successorRefusal(this.ledger, failed, this.opts.loopBreaker ?? DEFAULT_LOOP_BREAKER);
+    if (refused) {
+      const { reason, ...extra } = refused;
+      notScheduled(reason, extra);
+      return;
+    }
     // T14.4 (FR-CTL-06): a retry successor is a new run row, so the operator caps apply to it as to `submit`.
     const refusal = this.opts.budgets?.refusal(failed.project_id ?? undefined, now);
     if (refusal !== undefined) {
@@ -2575,6 +2770,12 @@ export class RunLifecycle {
       const settings = this.opts.retry ?? DEFAULT_RETRY;
       if (failed.attempt >= settings.maxAttempts) {
         record({ outcome: "returned", reason: "attempts_exhausted" });
+        return;
+      }
+      // T14.5 (FR-CTL-07): failover and wait successors count toward the same cap and stop at a park.
+      const refused = successorRefusal(this.ledger, failed, this.opts.loopBreaker ?? DEFAULT_LOOP_BREAKER);
+      if (refused) {
+        record({ outcome: "returned", ...refused });
         return;
       }
       const routed = await this.failoverTarget(failed, notes);

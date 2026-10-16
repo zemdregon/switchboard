@@ -90,6 +90,8 @@ export interface AuthorizationServerDeps {
   passphraseHash?: string;
   /** Injected by tests to skip scrypt's cost. */
   verifyPassphrase?: (passphrase: string, encoded: string) => Promise<boolean>;
+  /** Wrong-passphrase lockout; `serve` shares one with the approval-link page (T14.10) so both count together. */
+  limiter?: AttemptLimiter;
   now?: () => Date;
   randomBytes?: (n: number) => Buffer;
   onEvent?: (event: AuthEvent, fields: AuthEventFields) => void;
@@ -123,7 +125,7 @@ function sameSecret(a: string | undefined, expectedHash: Buffer): boolean {
 }
 
 /** Parse a form body; undefined when any parameter is repeated (RFC 6749 §3.1, §3.2). */
-function parseForm(text: string): Map<string, string> | undefined {
+export function parseForm(text: string): Map<string, string> | undefined {
   const out = new Map<string, string>();
   for (const [k, v] of new URLSearchParams(text)) {
     if (out.has(k)) return undefined;
@@ -132,7 +134,8 @@ function parseForm(text: string): Map<string, string> | undefined {
   return out;
 }
 
-function cookie(req: IncomingMessage, name: string): string | undefined {
+/** The one cookie `name`; undefined when it is absent or sent twice. */
+export function cookie(req: IncomingMessage, name: string): string | undefined {
   const header = req.headers.cookie;
   if (header === undefined) return undefined;
   let found: string | undefined;
@@ -186,7 +189,7 @@ export class AuthorizationServer {
   private readonly consents = new Map<string, ConsentRequest>();
   private readonly codes = new Map<string, CodeGrant>();
   /** Wrong passphrases: a global lockout. */
-  private readonly limiter = new AttemptLimiter();
+  private readonly limiter: AttemptLimiter;
   /** Times of recent wrong pairing codes (a separate, short throttle; never a lockout). */
   private pairingFailures: number[] = [];
   private verifying = false;
@@ -201,6 +204,7 @@ export class AuthorizationServer {
     this.now = deps.now ?? (() => new Date());
     this.random = deps.randomBytes ?? randomBytes;
     this.checkPassphrase = deps.verifyPassphrase ?? defaultVerifyPassphrase;
+    this.limiter = deps.limiter ?? new AttemptLimiter();
   }
 
   /** True while {@link MAX_PAIRING_FAILURES_PER_MINUTE} wrong pairing codes fall within the last minute. */

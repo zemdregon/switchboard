@@ -1070,4 +1070,25 @@ describe("doctor outer sandbox (T3.1, ADR-0051)", () => {
     expect(sandboxCheck(j)?.status).toBe("ok");
     expect(sandboxCheck(j)?.detail).toContain("bubblewrap: unavailable");
   });
+
+  it("reports confined verification status when SWITCHBOARD_CONFINED_VERIFICATION is enabled (T3.11)", async () => {
+    writeRequired(undefined);
+    const runDoctorWithEnv = async (present: boolean) =>
+      JSON.parse(
+        (
+          await run(["doctor", "--json", ...cfg()], {
+            adapters: fakeOnly(),
+            outerSandbox: avail(present),
+            env: { SWITCHBOARD_CONFINED_VERIFICATION: "1" },
+          })
+        ).out,
+      );
+    const present = await runDoctorWithEnv(true);
+    expect(sandboxCheck(present)?.status).toBe("ok");
+    expect(sandboxCheck(present)?.detail).toContain("confined verification enabled (T3.11)");
+
+    const missing = await runDoctorWithEnv(false);
+    expect(sandboxCheck(missing)?.status).toBe("fail");
+    expect(sandboxCheck(missing)?.detail).toContain("confined verification enabled but bubblewrap unavailable");
+  });
 });
