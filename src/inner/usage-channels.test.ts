@@ -24,6 +24,15 @@
  * under that run, the `inner_call` event carrying the reason, both REPLACE spellings refused on each, the successor
  * unmoved. The `get_capacity` provider entries after a quota failover are also compared across harnesses: one with no
  * classifier hook at all against one labelled under each provider, byte for byte.
+ *
+ * Post-#471 residual (Delegated): two accounting edges the harness tests had not produced. A reported zero (admission
+ * accepted at 0/0; a continuation whose first answer is off schema at 0/0 and whose re-ask is accepted at 3/1) is
+ * recorded as the figure 0 and summed as a number, so the labelled row carries `input_tokens: 0` rather than omitting a
+ * falsy count or marking it unknown. And the project gate at the production callers through the production resolver
+ * (`innerSettingResolver` over the harness's own ledger, with the hook's own fail-closed branch for a resolver that
+ * throws): a project `off`, a context `off` under a project that is not, and a resolver throw each write one run-less
+ * `fallback_disabled` / `PROJECT_OFF` row with `attempts` 0 and no observation even with the flag, make no request and
+ * store the heuristic, while an `inherit` project through the same hook classifies through the backend.
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -45,7 +54,8 @@ import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger } from "../ledger/index.js";
 import type { RunLifecycleOptions } from "../lifecycle/lifecycle.js";
 import { buildEnvelope } from "../mcp/envelope.js";
-import { type Harness, type Json, startHarness } from "../routing/fixtures/harness.js";
+import { DynamicProjectStore, innerSettingResolver, toResolved } from "../projects/index.js";
+import { type Harness, type HarnessOptions, type Json, startHarness } from "../routing/fixtures/harness.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import {
   createClassifyRouteFeaturesHook,
@@ -55,6 +65,7 @@ import {
   type FakeStep,
   type InnerAgentService,
   PROMPT_PROVIDER_NAMES,
+  type ProjectInnerSetting,
 } from "./index.js";
 
 /** macOS temp paths (`/private/var/folders/...`) are too long for the 100-byte socket bound (T4.10); `/tmp` is not. */
@@ -574,9 +585,11 @@ describe("the commit tool channel (T11.4 production path) records inner usage as
 
 describe("the MCP admission harness (T11.11 production path) records inner usage as T11.5 says (FR-INN-15)", () => {
   let h: Harness | undefined;
+  const extraDirs: string[] = [];
   afterEach(async () => {
     await h?.close();
     h = undefined;
+    for (const d of extraDirs.splice(0)) rmSync(d, { recursive: true, force: true });
   });
 
   const reply = JSON.stringify({
@@ -629,15 +642,26 @@ describe("the MCP admission harness (T11.11 production path) records inner usage
   /** Both forms of `runs show` for each (untyped) run body, in order. */
   const shows = (h: Harness, runs: readonly Json[]) => Promise.all(runs.map((run) => show(h, run.run_id as string)));
 
-  async function setup(shares: string | null): Promise<{ harness: Harness; backend: FakeBackend }> {
+  interface SetupOptions {
+    /** The backend's answers, in order. Default: two accepted classifications with counts 4/2 and 6/1. */
+    script?: readonly FakeStep[];
+    /** The hook's project resolver, built once the harness (and so its ledger) exists. Default: every project `inherit`. */
+    resolveSetting?: (harness: Harness) => (projectId: string, contextId: string) => ProjectInnerSetting;
+    harness?: HarnessOptions;
+  }
+  async function setup(
+    shares: string | null,
+    options: SetupOptions = {},
+  ): Promise<{ harness: Harness; backend: FakeBackend }> {
     const backend = createFakeBackend({
-      script: [
+      script: options.script ?? [
         { kind: "text", text: reply, usage: { in: 4, out: 2 } },
         { kind: "text", text: reply, usage: { in: 6, out: 1 } },
       ],
     });
     let hook: ReturnType<typeof createClassifyRouteFeaturesHook> | undefined;
     h = await startHarness({
+      ...(options.harness ?? {}),
       lifecycle: {
         classifyRouteFeatures: (
           input: Parameters<NonNullable<RunLifecycleOptions["classifyRouteFeatures"]>>[0],
@@ -646,6 +670,7 @@ describe("the MCP admission harness (T11.11 production path) records inner usage
           if (!hook) throw new Error("hook not initialized");
           return hook(input, context);
         },
+        ...(options.harness?.lifecycle ?? {}),
       },
     });
     const service = createInnerAgent(
@@ -661,7 +686,7 @@ describe("the MCP admission harness (T11.11 production path) records inner usage
       }),
       { backend, ledger: h.ledger },
     );
-    hook = createClassifyRouteFeaturesHook(service, () => "inherit");
+    hook = createClassifyRouteFeaturesHook(service, options.resolveSetting?.(h) ?? (() => "inherit"));
     return { harness: h, backend };
   }
 
@@ -1190,4 +1215,343 @@ describe("the MCP admission harness (T11.11 production path) records inner usage
       h = undefined;
     }
   }, 180_000);
+
+  // Post-#471 residual (Delegated): a reported zero is a figure, not an unknown (FR-INN-15 "as reported or unknown";
+  // `tokenCount(0)` is 0 and the ledger writes a metric for every non-null count). No channel test had recorded one, so
+  // a ledger that dropped falsy counts (`if (row.tokens_in)` for `!== null`) or a pipeline that summed a zero as
+  // unknown would have passed every pin so far (`src/inner/usage.test.ts` pins `tokenCount(0)` as a unit only).
+  // Admission reports 0/0 and is accepted; the continuation's first answer is off schema with 0/0 and the re-ask is
+  // accepted with 3/1, so its figure is 0 + 3 and 0 + 1 over two attempts: summed, never unknown.
+  for (const shares of [null, "fake-b"]) {
+    const label = shares === null ? "no shared subscription" : `shares_subscription_with = ${shares}`;
+    it(`${label}: zero reported counts are recorded as zero and summed through a re-ask, ${shares === null ? "no observation" : "two labelled rows carrying the zeros"}, provider capacity unmoved`, async () => {
+      const { harness: h, backend } = await setup(shares, {
+        script: [
+          { kind: "text", text: reply, usage: { in: 0, out: 0 } },
+          { kind: "text", text: "not json", usage: { in: 0, out: 0 } },
+          { kind: "text", text: reply, usage: { in: 3, out: 1 } },
+        ],
+      });
+      const before = entries((await h.ok("get_capacity", {})) as Capacity);
+
+      const first = await h.delegate("ok", { provider_preference: "fake-b", require_provider: true });
+      expect(first.provider.adapter).toBe("fake-b");
+      const continued = await h.ok("continue_task", { meta_session_id: first.meta_session_id, instruction: "ok" });
+      const second = await h.settle(continued.run_id);
+      expect(second.provider.adapter).toBe("fake-b");
+      expect(backend.requests).toHaveLength(3);
+      for (const row of h.decisions()) {
+        expect(JSON.parse(row.features_json).route_features.task_kind).toMatchObject({
+          value: "docs",
+          source: "inner",
+        });
+      }
+      expect(
+        h.db
+          .prepare(
+            `SELECT task, run_id, outcome, reason, attempts, tokens_in, tokens_out, model_id
+             FROM inner_call ORDER BY created_at, id`,
+          )
+          .all(),
+      ).toEqual([
+        {
+          task: "route_features",
+          run_id: null,
+          outcome: "accepted",
+          reason: null,
+          attempts: 1,
+          tokens_in: 0,
+          tokens_out: 0,
+          model_id: "fake-model",
+        },
+        {
+          task: "route_features",
+          run_id: null,
+          outcome: "accepted",
+          reason: null,
+          attempts: 2,
+          tokens_in: 3,
+          tokens_out: 1,
+          model_id: "fake-model",
+        },
+      ]);
+      // The labelled rows carry the zero as a key with the value 0, exactly as a non-zero count would be carried, and
+      // the summed figure; nothing is omitted as falsy and nothing is unknown.
+      const inner = h.db
+        .prepare(
+          "SELECT run_id, provider, harness, model, metrics_json FROM usage_observation WHERE source = 'inner_agent' ORDER BY rowid",
+        )
+        .all();
+      expect(inner).toEqual(
+        shares === null
+          ? []
+          : [
+              {
+                run_id: null,
+                provider: shares,
+                harness: shares,
+                model: "fake-model",
+                metrics_json: JSON.stringify({ input_tokens: 0, output_tokens: 0 }),
+              },
+              {
+                run_id: null,
+                provider: shares,
+                harness: shares,
+                model: "fake-model",
+                metrics_json: JSON.stringify({ input_tokens: 3, output_tokens: 1 }),
+              },
+            ],
+      );
+      expect(h.db.prepare("SELECT COUNT(*) AS n FROM usage_observation WHERE source = 'inner_agent'").get()).toEqual({
+        n: shares === null ? 0 : 2,
+      });
+
+      // Readers: a zero-count labelled row under the provider that ran moves its window no more than a counted one.
+      for (const run of [first, second]) {
+        expect(run.usage).toEqual({ reported: null, estimated: null, capacity_confidence: null });
+        expect(h.ledger.listUsageObservationsForRun(run.run_id)).toEqual([]);
+      }
+      const providerReported = (
+        h.db
+          .prepare("SELECT COUNT(*) AS n FROM usage_observation WHERE source = 'provider_reported' AND provider = ?")
+          .get("fake-b") as { n: number }
+      ).n;
+      const afterBody = (await h.ok("get_capacity", {})) as Capacity;
+      const after = entries(afterBody);
+      expect(afterBody.providers.find((p) => p.provider === "fake-b")?.window.usage_observations).toBe(
+        providerReported,
+      );
+      expect(after.grok).toBe(before.grok);
+      expect(after.fake).toBe(before.fake);
+      expect(JSON.stringify(afterBody)).not.toMatch(/inner/u);
+
+      const state = async () => ({
+        calls: h.db.prepare("SELECT * FROM inner_call ORDER BY rowid").all() as Row[],
+        usage: h.db.prepare("SELECT * FROM usage_observation ORDER BY rowid").all() as Row[],
+        events: h.db.prepare("SELECT type, run_id, payload_json FROM run_event ORDER BY run_id, seq").all() as Row[],
+        capacity: entries((await h.ok("get_capacity", {})) as Capacity),
+        runs: await Promise.all(
+          [first, second].flatMap((run) => [
+            h.ok("get_run", { run_id: run.run_id }),
+            h.ok("get_run", { run_id: run.run_id, include_events: {} }),
+          ]),
+        ),
+        shows: await shows(h, [first, second]),
+      });
+      const snapshot = await state();
+      expect(snapshot.events.filter((e) => e.type === "inner_call")).toEqual([]);
+      expect(JSON.stringify(snapshot)).not.toContain(String(REWRITTEN));
+      for (const { json, text } of snapshot.shows) {
+        expect(JSON.parse(json)).not.toHaveProperty("usage");
+        expect(text).not.toMatch(/inner|token/u);
+        expect(json).not.toMatch(/inner|token/u);
+      }
+      const labelledRows = snapshot.usage.filter((row) => row.source === "inner_agent");
+      for (const [i, call] of snapshot.calls.entries()) {
+        expectReplacesRefused(h.db, { call, ...(shares === null ? {} : { labelled: labelledRows[i] as Row }) });
+      }
+      expect(await state()).toEqual(snapshot);
+    }, 120_000);
+  }
+
+  // Post-#471 residual (Delegated): route-feature gating at the production callers through the production resolver.
+  // `serve` builds the hook over `innerSettingResolver` (configured projects first, then the dynamic store, unknown is
+  // `off`; `src/git/commit-message.test.ts` pins the resolver as a unit) and the hook turns a resolver throw into `off`
+  // (`src/inner/route-features.ts`). `src/mcp/inner-route-features.test.ts` pins the stored heuristic and the request
+  // count for a project `off` and a throwing resolver, but nothing had read what those denials write. Here the same
+  // resolver, over the harness's own ledger, serves a project set `off`, a project whose context is `off` under a
+  // project that is not (the most restrictive wins), a project the resolver cannot read, and an `inherit` project.
+  // Each denial is zero-cost: one run-less `inner_call` row with `fallback_disabled` / `PROJECT_OFF`, `attempts` 0, no
+  // count, the configured model id and the initial `remote` locality (no lookup happened), no observation even with the
+  // flag (nothing was consumed), no backend request, the heuristic stored (Q-82). The `inherit` project classifies
+  // through the backend with the same hook, so the gate and not the wiring is what decides; the continuation under the
+  // denied session is denied the same way with the session id on its row.
+  for (const shares of [null, "fake-b"]) {
+    const label = shares === null ? "no shared subscription" : `shares_subscription_with = ${shares}`;
+    it(`${label}: an admission or continuation the project gate denies through the production resolver (off, context off, resolver throwing) writes one run-less fallback_disabled row with attempts 0 and ${shares === null ? "no observation" : "no observation despite the flag"}; the inherit project classifies`, async () => {
+      const repo = realpathSync(mkdtempSync(path.join(SHORT_TMP, "sb-inner-proj-")));
+      extraDirs.push(repo);
+      g(repo, "init", "-q", "-b", "main");
+      writeFileSync(path.join(repo, "README.md"), "hello\n");
+      g(repo, "add", "-A");
+      g(repo, "commit", "-q", "-m", "init");
+      const ctx = (inner_agent?: ProjectInnerSetting) => ({
+        id: "main",
+        kind: "repository" as const,
+        path: repo,
+        base_ref: "main",
+        ...(inner_agent !== undefined ? { inner_agent } : {}),
+      });
+      const projects = [
+        toResolved({ id: "open", name: "Open", contexts: [ctx()] }),
+        toResolved({ id: "shut", name: "Shut", inner_agent: "off", contexts: [ctx()] }),
+        toResolved({ id: "ctxshut", name: "Context shut", inner_agent: "inherit", contexts: [ctx("off")] }),
+        toResolved({ id: "boom", name: "Boom", contexts: [ctx()] }),
+      ];
+      const ids = projects.map((p) => p.id);
+      const { harness: h, backend } = await setup(shares, {
+        resolveSetting: (harness) => {
+          const real = innerSettingResolver(projects, new DynamicProjectStore(harness.db));
+          return (projectId, contextId) => {
+            if (projectId === "boom") throw new Error("resolver threw");
+            return real(projectId, contextId);
+          };
+        },
+        harness: {
+          lifecycle: { allowedRoots: [repo] },
+          config: {
+            allowedRoots: [repo],
+            projects,
+            mcpClients: new Map([
+              ["orch", { id: "orch", maxTrustProfile: "edit-untrusted", projects: ids }],
+              ["other", { id: "other", maxTrustProfile: "edit-untrusted" }],
+            ]),
+          },
+        },
+      });
+      const before = entries((await h.ok("get_capacity", {})) as Capacity);
+      const delegate = async (project: string) =>
+        h.settle(
+          (
+            await h.ok("delegate_task", {
+              project,
+              objective: "ok",
+              trust_profile: "edit-untrusted",
+            })
+          ).run_id,
+        );
+
+      const shut = await delegate("shut");
+      const shutContinued = await h.settle(
+        (await h.ok("continue_task", { meta_session_id: shut.meta_session_id, instruction: "ok" })).run_id,
+      );
+      const ctxshut = await delegate("ctxshut");
+      const boom = await delegate("boom");
+      expect(backend.requests).toHaveLength(0);
+      const open = await delegate("open");
+      expect(backend.requests).toHaveLength(1);
+      const runs = [shut, shutContinued, ctxshut, boom, open];
+      // Project runs land on `fake` (configured order); `fake-b` and `grok` never run and are the byte-identical pair.
+      for (const run of runs)
+        expect(run, JSON.stringify(run)).toMatchObject({ status: "SUCCEEDED", provider: { adapter: "fake" } });
+
+      // Stored decisions: the heuristic for every denied classification, the backend's for the open project (Q-82).
+      const classifierOf = (run: Json) =>
+        JSON.parse(h.decisions().find((d) => d.run_id === run.run_id)?.features_json ?? "{}").route_features.classifier;
+      for (const run of [shut, shutContinued, ctxshut, boom]) expect(classifierOf(run)).toBe("heuristic.v1");
+      expect(classifierOf(open)).toBe("route_features.v1");
+
+      const denied = {
+        task: "route_features",
+        run_id: null,
+        outcome: "fallback_disabled",
+        reason: "PROJECT_OFF",
+        attempts: 0,
+        tokens_in: null,
+        tokens_out: null,
+        model_id: "configured-model",
+        locality: "remote",
+        input_bytes: 0,
+      };
+      expect(
+        h.db
+          .prepare(
+            `SELECT task, run_id, meta_session_id, outcome, reason, attempts, tokens_in, tokens_out, model_id, locality,
+                    input_bytes
+             FROM inner_call ORDER BY created_at, id`,
+          )
+          .all(),
+      ).toEqual([
+        { ...denied, meta_session_id: null },
+        { ...denied, meta_session_id: shut.meta_session_id },
+        { ...denied, meta_session_id: null },
+        { ...denied, meta_session_id: null },
+        {
+          task: "route_features",
+          run_id: null,
+          meta_session_id: null,
+          outcome: "accepted",
+          reason: null,
+          attempts: 1,
+          tokens_in: 4,
+          tokens_out: 2,
+          model_id: "fake-model",
+          locality: "local",
+          input_bytes: expect.any(Number),
+        },
+      ]);
+      // The only observation is the open project's: a denial consumed nothing, so the flag writes nothing for it.
+      expect(
+        h.db
+          .prepare(
+            "SELECT run_id, provider, harness, model, metrics_json, source FROM usage_observation ORDER BY rowid",
+          )
+          .all()
+          .filter((row) => (row as Row).source === "inner_agent"),
+      ).toEqual(
+        shares === null
+          ? []
+          : [
+              {
+                run_id: null,
+                provider: shares,
+                harness: shares,
+                model: "fake-model",
+                metrics_json: JSON.stringify({ input_tokens: 4, output_tokens: 2 }),
+                source: "inner_agent",
+              },
+            ],
+      );
+
+      // Readers: no run reports usage; the providers that never ran are byte-identical; the one that ran counts
+      // provider-reported rows only.
+      for (const run of runs) {
+        expect(run.usage).toEqual({ reported: null, estimated: null, capacity_confidence: null });
+        expect(h.ledger.listUsageObservationsForRun(run.run_id)).toEqual([]);
+      }
+      const afterBody = (await h.ok("get_capacity", {})) as Capacity;
+      const after = entries(afterBody);
+      expect(after.grok).toBe(before.grok);
+      expect(after["fake-b"]).toBe(before["fake-b"]);
+      expect(afterBody.providers.find((p) => p.provider === "fake")?.window.usage_observations).toBe(
+        (
+          h.db
+            .prepare("SELECT COUNT(*) AS n FROM usage_observation WHERE source = 'provider_reported' AND provider = ?")
+            .get("fake") as { n: number }
+        ).n,
+      );
+      expect(JSON.stringify(afterBody)).not.toMatch(/inner/u);
+
+      const state = async () => ({
+        calls: h.db.prepare("SELECT * FROM inner_call ORDER BY rowid").all() as Row[],
+        usage: h.db.prepare("SELECT * FROM usage_observation ORDER BY rowid").all() as Row[],
+        events: h.db.prepare("SELECT type, run_id, payload_json FROM run_event ORDER BY run_id, seq").all() as Row[],
+        capacity: entries((await h.ok("get_capacity", {})) as Capacity),
+        runs: await Promise.all(
+          runs.flatMap((run) => [
+            h.ok("get_run", { run_id: run.run_id }),
+            h.ok("get_run", { run_id: run.run_id, include_events: {} }),
+          ]),
+        ),
+        shows: await shows(h, runs),
+      });
+      const snapshot = await state();
+      expect(snapshot.calls).toHaveLength(5);
+      // Run-less calls write no event, denied or not, so no run carries an `inner_call` event or a reason code.
+      expect(snapshot.events.filter((e) => e.type === "inner_call")).toEqual([]);
+      expect(JSON.stringify(snapshot.runs)).not.toMatch(/PROJECT_OFF|fallback_disabled|inner_call|token/u);
+      for (const { json, text } of snapshot.shows) {
+        expect(JSON.parse(json)).not.toHaveProperty("usage");
+        expect(text).not.toMatch(/inner|token|PROJECT_OFF/u);
+        expect(json).not.toMatch(/inner|token|PROJECT_OFF/u);
+      }
+      expect(JSON.stringify(snapshot)).not.toContain(String(REWRITTEN));
+      const labelledRows = snapshot.usage.filter((row) => row.source === "inner_agent");
+      for (const call of snapshot.calls) {
+        const labelled = call.outcome === "accepted" && shares !== null ? { labelled: labelledRows[0] as Row } : {};
+        expectReplacesRefused(h.db, { call, ...labelled });
+      }
+      expect(await state()).toEqual(snapshot);
+    }, 120_000);
+  }
 });
