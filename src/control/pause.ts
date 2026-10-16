@@ -120,11 +120,7 @@ export function requestGlobalPause(
     if (!opts.direct) {
       return { ...base, outcome: "requested", paused: ledger.getControlPlaneState(GLOBAL_PAUSE_SCOPE)?.paused === 1 };
     }
-    applyPauseRequest(
-      ledger,
-      { requestEventId: event.id, scope: GLOBAL_PAUSE_SCOPE, paused: opts.paused, ...base },
-      "cli_direct",
-    );
+    applyPauseRequest(ledger, { ...base, scope: GLOBAL_PAUSE_SCOPE, paused: opts.paused }, "cli_direct");
     return { ...base, outcome: "applied", paused: opts.paused };
   });
 }
