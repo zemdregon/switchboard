@@ -10,3 +10,4 @@ export * from "./oauth-tokens.js";
 export * from "./schemas.js";
 export * from "./scrub.js";
 export * from "./server.js";
+export * from "./tool-profile.js";

@@ -450,4 +450,23 @@ describe("createContainerEnvironment.teardown and sweepOrphans", () => {
     expect(fake.removed).not.toContain("unrelated");
     expect(events.every((e) => e.payload.step === "orphan_removed" && e.payload.run_id === "GONE")).toBe(true);
   });
+
+  it("T10.2: sweepOrphans leaves a container whose run the caller does not own (another controller's) alone", async () => {
+    const fake = fakeRuntime({
+      existing: { [containerName("MINE")]: container("MINE"), [containerName("THEIRS")]: container("THEIRS") },
+    });
+    const events: EnvironmentEvent[] = [];
+    const env = createContainerEnvironment({ runtime: fake.runtime, onEvent: (e) => events.push(e) });
+    const r = await env.sweepOrphans(new Set(), { owns: (runId) => runId === "MINE" });
+    expect(r.removed).toEqual([containerName("MINE")]);
+    expect(fake.calls).not.toContain(`remove ${containerName("THEIRS")}`);
+    expect(events.map((e) => e.payload.run_id)).toEqual(["MINE"]);
+  });
+
+  it("T10.2: a listing failure is thrown, not swallowed, so reconciliation fails closed", async () => {
+    const fake = fakeRuntime();
+    fake.runtime.listByLabel = () => Promise.reject(new ContainerRuntimeError("docker ps exited 1: daemon gone"));
+    const env = createContainerEnvironment({ runtime: fake.runtime });
+    await expect(env.sweepOrphans(new Set())).rejects.toThrow("daemon gone");
+  });
 });

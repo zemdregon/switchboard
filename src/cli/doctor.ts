@@ -7,9 +7,13 @@ import {
   type AuthResult,
   configIdForAdapterId,
   createProbeRunner,
+  emptyVersionCanaryStore,
+  evaluateVersionCanary,
   type ProbeResult,
   providerEntries,
   providerEntry,
+  readVersionCanaryStore,
+  recordAdapterVersion,
 } from "../adapters/index.js";
 import type { CapacityProjection } from "../capacity/index.js";
 import { loadConfig, type ResolvedConfig } from "../config/index.js";
@@ -316,14 +320,19 @@ export function defaultAdapters(): AdapterRegistry {
  * `providers.<config id>.enabled: false` disables a provider (default on). Doctor reports it as skipped without
  * running it. The fake adapter and adapters with no config id are always probed, as before.
  */
-function isDisabledInConfig(cfg: ResolvedConfig | undefined, adapterId: string): boolean {
+export function isDisabledInConfig(cfg: ResolvedConfig | undefined, adapterId: string): boolean {
   if (cfg === undefined) return false;
   const configId = configIdForAdapterId(adapterId);
   return configId !== undefined && cfg.providers.get(configId)?.enabled === false;
 }
 
-async function probeAdapters(registry: AdapterRegistry, cfg?: ResolvedConfig): Promise<DoctorAdapterReport[]> {
+async function probeAdapters(
+  registry: AdapterRegistry,
+  cfg?: ResolvedConfig,
+  opts?: { now?: () => Date },
+): Promise<DoctorAdapterReport[]> {
   const runner = createProbeRunner(PROBE_ENV_ALLOWLIST);
+  const versionStore = cfg?.dataDir !== undefined ? readVersionCanaryStore(cfg.dataDir) : emptyVersionCanaryStore();
   const out: DoctorAdapterReport[] = [];
   for (const a of registry.list()) {
     const entry = providerEntry(a.id);
@@ -366,7 +375,15 @@ async function probeAdapters(registry: AdapterRegistry, cfg?: ResolvedConfig): P
     let versionGate: DoctorAdapterReport["version_gate"] = null;
     if (kind === "real" && probe !== undefined && !notInstalled) {
       try {
-        const g = registry.gate(a.id, probe.binaryVersion);
+        const manifestGate = registry.gate(a.id, probe.binaryVersion);
+        const canary =
+          cfg?.dataDir !== undefined
+            ? evaluateVersionCanary(manifestGate, a.id, versionStore)
+            : { gate: manifestGate, bump: false, recordVersion: null };
+        const g = canary.gate;
+        if (cfg?.dataDir !== undefined && canary.recordVersion !== null) {
+          recordAdapterVersion(cfg.dataDir, a.id, canary.recordVersion, opts?.now ?? (() => new Date()));
+        }
         versionGate = g.eligible
           ? { eligible: true, code: null, detail: `version ${probe.binaryVersion} is in the validated range` }
           : { eligible: false, code: g.code, detail: g.detail };
@@ -466,7 +483,7 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
   checks.push(checkOuterSandbox(cfg, io.outerSandbox ?? (await detectOuterSandbox({ path: io.env.PATH ?? "" }))));
 
   const registry = io.adapters ?? defaultAdapters();
-  const adapters = await probeAdapters(registry, cfg);
+  const adapters = await probeAdapters(registry, cfg, { now: io.now ?? (() => new Date()) });
   const innerAgent = cfg ? await innerDoctorSection(io, cfg) : undefined;
   let retrieval: RagDoctorSection | undefined;
   try {

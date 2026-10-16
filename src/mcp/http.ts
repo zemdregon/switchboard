@@ -23,7 +23,9 @@
  * Every request first passes the `Origin` check (T13.2, FR-MCP-12, LLD §3.3): a request whose `Origin` header is not in
  * `transport.http.allowed_origins` gets 403 before any routing, which blocks DNS rebinding and cross-site calls from a
  * browser. The one exception is the consent form, which posts to `/authorize` from the issuer's own origin (T13.8; the
- * authorization server then checks CSRF itself). No CORS headers are sent yet, so a browser page cannot read any response even from an allowed origin.
+ * authorization server then checks CSRF itself) and the consent page's approval-link form under `/approval/` (T14.10,
+ * which checks CSRF the same way). No CORS headers are sent yet, so a browser page cannot read any response even from
+ * an allowed origin.
  *
  * Delegated (T13.1): a plain `node:http` listener rather than the SDK's express `mcpAuthRouter`. The SDK's issuer check
  * accepts plain HTTP for localhost and can be relaxed by an environment variable, and its metadata advertises
@@ -40,6 +42,7 @@ import {
   type HttpTransportSettings,
   PROTECTED_RESOURCE_WELL_KNOWN,
 } from "../config/http-transport.js";
+import { CONSENT_LINK_PATH } from "../control/consent-link.js";
 import { mediaType, readBody } from "./http-body.js";
 import { checkClientMetadata, type OAuthClientStore, registrationResponse } from "./oauth-clients.js";
 import type { AuthorizationServer } from "./oauth-server.js";
@@ -111,6 +114,8 @@ export interface HttpAuthDeps {
   onClientRegistered?: (clientId: string) => void;
   /** Authorization and token endpoints with the consent page (T13.8). Without one both answer 404. */
   authorizationServer?: Pick<AuthorizationServer, "handleAuthorize" | "handleToken">;
+  /** Consent-page approval links under `/approval/` (T14.10, FR-CTL-09). Without one the prefix answers 404. */
+  approvalLinks?: { handle(req: IncomingMessage, res: ServerResponse, pathname: string): Promise<void> };
 }
 
 /** Delegated (Q-77, Assumptions): bounds on the stateless MCP endpoint, which builds a server per request. */
@@ -230,8 +235,11 @@ export function httpTransportHandler(
       return;
     }
     const origin = req.headers.origin;
-    // T13.8: the consent form posts from the issuer's own origin, which is allowed on `/authorize` only.
-    const sameOriginConsent = origin === s.issuer && pathname === AS_ENDPOINT_PATHS.authorization;
+    // T13.8: the consent form posts from the issuer's own origin, which is allowed on `/authorize`; T14.10 adds the
+    // approval-link form under `/approval/` when that page is configured.
+    const approvalLink = pathname.startsWith(CONSENT_LINK_PATH);
+    const sameOriginConsent =
+      origin === s.issuer && (pathname === AS_ENDPOINT_PATHS.authorization || (approvalLink && !!auth.approvalLinks));
     if (origin !== undefined && !allowedOrigins.has(origin) && !sameOriginConsent) {
       send(res, 403, { error: "forbidden_origin" });
       return;
@@ -257,6 +265,18 @@ export function httpTransportHandler(
       }
       const handled = pathname === AS_ENDPOINT_PATHS.token ? as.handleToken(req, res) : as.handleAuthorize(req, res);
       handled.catch(() => {
+        if (!res.headersSent) send(res, 500, { error: "server_error" });
+        else res.destroy();
+      });
+      return;
+    }
+    if (approvalLink && pathname !== s.mcpPath) {
+      const links = auth.approvalLinks;
+      if (!links) {
+        send(res, 404, { error: "not_found" });
+        return;
+      }
+      links.handle(req, res, pathname).catch(() => {
         if (!res.headersSent) send(res, 500, { error: "server_error" });
         else res.destroy();
       });

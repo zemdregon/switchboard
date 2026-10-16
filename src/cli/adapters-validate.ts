@@ -42,6 +42,8 @@ import { adapterIdForConfigId } from "../adapters/providers.js";
 import type { AdapterRegistry } from "../adapters/registry.js";
 import { createProbeRunner, startAdapterRun } from "../adapters/run.js";
 import { isIneligible, type ProviderAdapter, type ProviderId } from "../adapters/types.js";
+import { recordAdapterVersion } from "../adapters/version-canary.js";
+import { loadConfig } from "../config/index.js";
 import { resolveProfile } from "../policy/index.js";
 import { defaultAdapters } from "./doctor.js";
 import { type CliIo, JSON_SCHEMA_VERSION, PROBE_ENV_ALLOWLIST, UsageError } from "./io.js";
@@ -194,7 +196,11 @@ function resolveAdapter(registry: AdapterRegistry, arg: string): ProviderAdapter
   return id === undefined ? undefined : registry.get(id);
 }
 
-export async function runAdaptersValidate(io: CliIo, providerArg: string): Promise<ValidateReport> {
+export async function runAdaptersValidate(
+  io: CliIo,
+  providerArg: string,
+  configArgv: readonly string[] = [],
+): Promise<ValidateReport> {
   const registry = io.adapters ?? defaultAdapters();
   const adapter = resolveAdapter(registry, providerArg);
   if (!adapter) {
@@ -354,6 +360,18 @@ export async function runAdaptersValidate(io: CliIo, providerArg: string): Promi
       throw err;
     }
     steps.push({ id: "write", status: "ok", detail: `${manifestPath} updated; review and commit it` });
+    try {
+      const cfg = loadConfig({
+        argv: configArgv,
+        env: io.env,
+        ...(io.homedir !== undefined ? { homedir: io.homedir } : {}),
+      });
+      if (binaryVersion !== null) {
+        recordAdapterVersion(cfg.dataDir, provider, binaryVersion, io.now ?? (() => new Date()));
+      }
+    } catch {
+      // Recording the canary baseline is best-effort when config is unavailable; validation still succeeded.
+    }
     return done(null, { written: true, manifest_path: manifestPath, changes });
   } catch (err) {
     return fail("write", `nothing written: ${clip((err as Error).message)}`);

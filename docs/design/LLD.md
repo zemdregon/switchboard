@@ -975,6 +975,16 @@ change (no decisions or open-work input). BR-18 chooses resume or handoff, a cro
 refused with `INVALID_REQUEST` while ROADMAP Q-61 is open, and a bundle that cannot be built is `TOOL_FAILURE` with
 `details.reason = "HANDOFF_BUNDLE_UNAVAILABLE"`; steps in [§15.7](#157-continue_task-with-handoff).
 
+*M3 as built (T3.13 summary, 2026-10-16, Delegated; the owners are the sections linked):* `delegate_task`
+`verification_commands` are refused `INVALID_REQUEST` under `inspect-untrusted` (FRD V7) and otherwise run in
+VERIFYING; each command's outcome is in `result.verification` and the full output in the `test_report` artifact
+([§8.1](#81-verification-stage-m3-t310)). A `privileged` request carries `privileged_scope` and waits in
+AWAITING_APPROVAL unless the client's `privileged_approval` is `not_required`; `get_run` shows the approval status, never
+the scope, and no MCP tool decides an approval ([§3.1](#31-privileged-scope-m3); the operator's `approve` and `deny`
+are CLI commands). A profile listed in `outer_sandbox.required_profiles` is refused at admission with
+`ELIGIBILITY_NONE` and an `OUTER_SANDBOX_*` reason ([§8.4](#84-outer-sandbox-m3-t31)). A request on an `ARCHIVED`
+meta-session (collected by retention GC, [§5](#5-workspace-and-lease-algorithm)) is `INVALID_REQUEST`.
+
 **`get_run`** `{ run_id, include_events?: { after_seq, limit<=200 } }` returns the envelope plus optional compact events
 (type and bounded payload; no raw output).
 **`cancel_run`** `{ run_id, reason? }` returns the envelope; cancellation is asynchronous (WF-4) and the status may
@@ -1748,6 +1758,32 @@ input when the adapter declares `liveInput: true` in §2; otherwise stop at a bo
 session with the note (FR-SES-03, BR-7). Unknown run or a run the caller cannot see → `INVALID_REQUEST` or
 `PERMISSION_BLOCKED` as for `get_run`. Terminal runs → no-op returning the terminal envelope.
 
+**Implemented (T14.7, Delegated, not owner-approved).** `src/mcp/server.ts` registers `steer_run` (appended last to the
+tool list, output the `get_run` envelope); `src/lifecycle/steer.ts` and `RunLifecycle.steer` in
+`src/lifecycle/lifecycle.ts` deliver the note. Choices this section leaves open:
+
+- Scoping is exactly `get_run`'s: an unknown run and another client's (or HTTP subject's) run are both
+  `INVALID_REQUEST`, so a run id is not an existence oracle across clients (the server's standing rule). Nothing is
+  recorded for a refused call.
+- No adapter declares `liveInput` yet: the field is not in the §2 contract, and the [steer
+  spike](../research/adapter-steer-input-spike-2026-10-15.md) leaves Claude (S1) and Codex (S2) live input unverified.
+  Every note is therefore delivered by boundary-resume. On the ephemeral headless transports the boundary is the end of
+  the provider's current turn (the process exits with a result); a running turn is not interrupted.
+- At that boundary, when notes are queued and the turn succeeded with a reported native session id, the lifecycle
+  compiles `resumeArgs` for that session in the same run (same worktree, same channel and environment wrapping, the
+  same pre-spawn audits) with the notes, joined by a blank line, as the whole prompt and no constraints. The objective
+  is never sent again (BR-7, no replay); no successor run or meta-session is created. The resumed turn's pid and pgid
+  replace the run's (`steer_turn_spawned` event); every turn's stdout and stderr stay artifacts of the run, and the run
+  finishes on the last turn's result.
+- Events (bounded, no note text): `steer_requested` `{note_chars, note_sha256, delivery: "boundary_resume"}` on every
+  accepted call against a non-terminal run; `steer_delivered` `{delivery, notes}` when a resumed turn is spawned;
+  `steer_undelivered` `{reason, notes}` otherwise, with `reason` one of `past_boundary` (verifying, finalizing, or the
+  last turn already ended), `not_in_this_process` (a slot state no executor here owns), `turn_not_successful`,
+  `no_native_session`, `resume_refused` (compile, environment or audit refusal; `stage` says which) and `run_ended`.
+  A note is never retried.
+- Notes wait in controller memory only (no artifact, no migration): a daemon restart loses queued notes, while their
+  `steer_requested` events remain. Durable storage is left to a later task if the console needs it.
+
 **`pause_project` / `resume_project`**
 
 ```jsonc
@@ -1813,6 +1849,39 @@ cap means unlimited for that dimension.
 On budget refusal at admission, the controller records `budget_refused` on the project (ledger or `project_event`) and
 sets `needs_attention` reason `budget_exhausted` until the window resets or the operator raises the cap. `get_digest`
 reports `budget.exhausted` and per-cap `used`/`limit` with `limit: null` when unset.
+
+**Implemented (T14.4, budgets; Delegated, not owner-approved).** `src/config/budgets.ts` validates and resolves
+`control_plane.budgets` (an absent cap is unset, never a default number; a cap of `0` admits nothing in its scope);
+`src/control/budgets.ts` evaluates the four caps over ledger rows at the lifecycle clock, and `RunLifecycle.submit`
+asks it inside the admission transaction (also before a retry or quota-wait successor row is created, LLD §16.5,
+§16.6). Choices this section leaves open:
+
+- **Derived on read, no migration.** Whether a refusal is active is recomputed from `run` and `usage_observation`
+  rows plus the configuration, so exhaustion clears by itself when the UTC day rolls over, observations age out, a
+  run ends or the operator raises the cap. `control_plane_state.budget_flags_json` (§3.4.7) is therefore not written;
+  `budget_refused` is recorded through the lifecycle's `onBudgetRefused` hook (operator log line and, once per
+  exhausted window and scope, the `budget_exhausted` sink event with `run_id: null`), not as a ledger row, until the
+  T14.6 migration exists.
+- **Scopes.** A project override replaces the global cap for that project's own counting; the global cap still counts
+  every run (all projects and workspace-path runs). Both are enforced, project scope first; a workspace-path run meets
+  the global caps only.
+- **Over a cap.** `runs_per_day` (run rows created since UTC midnight, whatever their state), `concurrent_runs`
+  (non-terminal rows) and `usage_per_window` refuse when `used >= limit`; `wall_clock_per_run` refuses while a
+  non-terminal run in the scope has run longer than the cap since `started_at` (set at LEASED) and clears when it ends.
+  Admission never pre-checks a run's own duration; the provider process timeouts are unchanged.
+- **Reported tokens.** `provider_reported` rows in `now - window_seconds .. now`: `total_tokens` when reported, else
+  every finite numeric metric named `tokens` or ending in `_tokens` (conservative: a subset may count twice, so the
+  cap bites earlier, never later). `controller_estimated` and `inner_agent` rows never count.
+- **Error mapping.** `LifecycleError` `BUDGET_EXHAUSTED` maps to `ELIGIBILITY_NONE` with `details.reason =
+  "BUDGET_EXHAUSTED"`, `details.needs_attention_reason = "budget_exhausted"`, and `scope`, `project_id`, `cap` (as
+  `caps[].key`), `limit`, `used`, `window_ends_at` (the `QUEUE_FULL` precedent, ROADMAP Q-5; no new top-level code).
+  A queued work item (T15.1) refused by a cap is retried, not failed. Messages use operator wording (cap, budget);
+  nothing is phrased as a provider quota or rate limit (ADR-0007).
+- **Read path.** The lifecycle publishes the evaluator it refuses with (`registerBudgets`), and `src/mcp/envelope.ts`
+  reads it through `budgetControlFacts` when the caller passes no `control`, so `get_run` and `list_runs` show
+  `budget_exhausted` on the project's non-terminal runs with no server change. `BudgetEvaluator.status` builds the
+  §3.4.3 `budget` object (`limit: null` when unset); `get_digest` reports it once `src/mcp/server.ts` passes
+  `control: budgetControlFacts(ledger)` and `src/mcp/digest.ts` includes `budget.caps` (slot owning those files).
 
 On the *N*th identical failure in a meta-session, the controller sets `meta_session.parked_loop = true` (Proposed
 column or side table), admits no further successors, and surfaces `parked_loop`. Stall detection uses the injectable
@@ -1975,6 +2044,50 @@ or run execution.
 Approval-proxy tools are added to the list only when `approval_proxy` is true, regardless of profile. `console` is the
 first target for the Grok bot (owner decision 55); orchestrator profile stays for primary coding agents.
 
+As built (T14.11, Delegated): the filter lives in `src/mcp/tool-profile.ts` and applies to `tools/call` as well as
+`tools/list`; a console client's call to any other tool fails `INVALID_REQUEST` exactly like an unknown tool (a
+project-admin call is still recorded, FR-PRJ-10). A console name with no registered handler yet is absent rather than
+invented. Config load refuses an unknown `tool_profile` value and refuses `console` together with `manage_projects:
+true`, which would otherwise be a silent no-op.
+
+#### 3.4.11 Consent-page approval link (FR-CTL-09, ADR-0047)
+
+A secondary way to decide one pending approval (ADR-0047 Decision 3), after the CLI (§3.1) and the approval proxy
+(§3.4.8): a single-use, expiring link to the M13 consent page (§3.3). Available only when the HTTP transport is
+configured. Research input: [consent-page approval link spike](../research/consent-page-approval-link-spike-2026-10-15.md).
+
+**Implementation (T14.10, `src/control/consent-link.ts`, `src/control/consent-link-page.ts`, routed in
+`src/mcp/http.ts`, wired in `src/cli/serve.ts`; Delegated, not owner-approved):**
+
+- Link: `<issuer origin>/approval/<handle>`, where the handle is `sbal_` plus 32 random bytes in base64url. Nothing
+  else: no query, no OAuth token, no authorization code, no `approval_digest`, no passphrase, no pairing code, no
+  approval or run id and no scope text. The handle is not a credential; it only selects which approval an
+  authenticated operator is shown.
+- Handles are held in memory by the one `serve` process that owns the listener, as SHA-256 hashes (as the T13.8
+  authorization codes); no ledger table is added and a restart drops every link (fail closed). Lifetime 30 minutes
+  (**Assumption**), at most 256 live links (**Assumption**).
+- Issuance: on each operator poll `serve` issues a link for every decidable approval that has no live one and logs
+  `approval_id`, the URL and its expiry. Decidable means listed by §3.4.8's rules for a proxy that targets every
+  configured client (read-only reuse), so the kinds, `scope_summary` and `approval_digest` are those of §3.4.8. A
+  pending approval whose link expired gets a new handle; the old one stays dead.
+- A link dies at its first decision (whatever the outcome), at expiry, and as soon as its approval is decided another
+  way, stops being decidable or changes: the digest stored at issue is compared with a fresh one on every use.
+- Page flow (FR-MCP-17; no login session, Q-76): `GET` shows one fixed sign-in form, identical for a live, spent,
+  expired, unknown or malformed handle, with no approval field. A `POST` with the operator passphrase or a one-time
+  pairing code is required before the link is looked up; a dead link then gets a fixed 410 page, a live one the closed
+  §3.4.8 item fields (without the digest) and Approve / Deny. The decision `POST` spends the link.
+- CSRF and headers as §3.3's consent page: a single-use server-side visit id and CSRF token per step, the token also in
+  a `__Host-sb_approval` cookie (`Secure`, `HttpOnly`, `SameSite=Strict`), no foreign `Origin` and no cross-site
+  `Sec-Fetch-Site`; each visit is bound to its handle's hash, so a form for one link cannot decide another. The
+  transport admits a same-origin `Origin` under `/approval/` only when the page is mounted.
+- Attempt limits: wrong passphrases count against the same lockout as the OAuth consent page (one `AttemptLimiter`
+  shared by `serve`); wrong pairing codes are throttled as there.
+- Recording: as §3.4.8, with `requested_by` / `decided_by` `consent_page`; the digest is re-checked inside the
+  decision's `BEGIN IMMEDIATE` transaction and any mismatch writes nothing. Sinks (§3.4.9) are told as for the proxy: a
+  privileged approve by the transition hook, a privileged deny and every revision decision as `approval_decided`.
+- Audit: page events carry event names, reason codes, methods and (after sign-in only) approval ids; never a handle,
+  URL, passphrase or pairing code.
+
 ## 4. Failure taxonomy
 
 `failure_code` on a `FAILED` run holds exactly one of these codes. `ELIGIBILITY_NONE` and `INVALID_REQUEST` were **added
@@ -2108,7 +2221,8 @@ internal: they are never pushed and never part of the publish ref (FR-GIT-08). *
 made on the run branch `switchboard/<sess>/<run>` with the identity in `src/workspace/git.ts`; M9 must not change
 that, only add the publish ref beside it.
 
-**GC (FR-WS-07, NFR-DATA-01, M3; to be detailed in M3).** Retention job deletes, per expired terminal run, in one
+**GC (FR-WS-07, NFR-DATA-01, M3; the as-built paragraph after this one wins where they differ).**
+Retention job deletes, per expired terminal run, in one
 logical unit: worktree directory (`git worktree remove --force`, then `git worktree prune`), controller branch,
 artifact files (set `deleted_at`). Never touches branches outside `switchboard/`. *Proposed (FR-WS-09, owner decision
 42):* a concurrent run's worktree may also be removed on merge or abandon before retention; the branch and
@@ -2127,7 +2241,9 @@ collected. Orphans are reported but not yet removed. The sweep does not count a 
 (`refs/heads/<prefix><sess>`, §12.3) of a meta-session that has a ledger row as an orphan; one whose session is
 unknown is still reported. GC marks first (R-42, decision 28): one transaction re-checks idleness, sets the
 meta-session `ARCHIVED` and appends the intent event, and admission refuses an `ARCHIVED` meta-session with
-`INVALID_REQUEST`; a marked, unfinished session is a candidate again and rolls forward.
+`INVALID_REQUEST`; a marked, unfinished session is a candidate again and rolls forward. *Not built (T3.12 stays
+`Partial`, ROADMAP §6.5):* removing orphans after the retention period, as the paragraph above proposes; a test of the
+interval pass; a process-level `SIGKILL` mid-GC test (in-process crash injection at every step covers the order).
 
 **Crash safety.** Order is intent row (with the `ARCHIVED` mark, one transaction), then Git action, then outcome
 row. On startup reconciliation (WF-8) a run in
@@ -2778,6 +2894,28 @@ section was silent or the build differs:
   through MCP; the injected tool channel is not reachable from inside a container; `projects validate`'s
   no-Git-client check is T10.3. Tests: `src/environment/container.test.ts`, `src/environment/docker-runtime.test.ts`,
   `src/lifecycle/environment.test.ts`, opt-in `src/environment/container-docker.test.ts`.
+
+*As built (2026-10-16, T10.2, Delegated; text above unchanged).* `environment` events and the startup sweep:
+
+- **Ledger write.** `environmentEventSink(ledger)` (`src/environment/ledger-events.ts`) is the `onEvent` callback the
+  controller composes: each event is appended as a `run_event` of type `environment` with the payload as emitted
+  (`detail` truncated to 500 characters). An event of a run the ledger does not know, or a failed write, goes to a log
+  line; the sink never throws. The port itself stays ledger-free.
+- **Startup sweep.** `reconcile` takes `environments` and, before any run is examined, calls each one's
+  `sweepOrphans(new Set(), { owns })`: nothing is live at startup (the data-directory lock is held and nothing has
+  been started), so every labelled run or probe container of a run this ledger knows is an orphan. `owns` (a new
+  optional argument, `SweepOptions`) leaves a container of a run the ledger does not know alone: it belongs to another
+  controller on the same runtime. A listing failure fails reconciliation and so `serve` (fail closed: an orphan could
+  still write the worktree). Each non-terminal `container` run gets a `reconciliation` event `environment_sweep`
+  (`swept`, `containers_removed`) after its process group is handled and before its worktree is assessed (FR-PRJ-07,
+  FR-EXE-06); with no container environment configured it records `swept: false`.
+- **`serve`.** `orphanSweepEnvironments` composes the Docker-backed container environment with the ledger sink only
+  when a configured project is `container`; a runtime whose `info` is unavailable is skipped with a warning
+  (Assumption: a rootless daemon that does not answer runs no container).
+- **Not built in T10.2:** the lifecycle's own container environment is still not composed by `serve` (T10.1 gap 1);
+  when it is, it takes the same sink. Tests: `src/reconcile/reconcile.test.ts` ("T10.2: startup orphan sweep and
+  environment run events"), `src/environment/ledger-events.test.ts`, `src/environment/container.test.ts`,
+  `src/cli/serve-orphan-sweep.test.ts`.
 
 ## 12. Injected Git tools, commits and publication
 

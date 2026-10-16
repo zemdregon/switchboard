@@ -12,3 +12,4 @@ export * from "./providers.js";
 export * from "./registry.js";
 export * from "./run.js";
 export * from "./types.js";
+export * from "./version-canary.js";

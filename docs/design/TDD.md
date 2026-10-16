@@ -885,7 +885,8 @@ above is unchanged and the Proposed items stay Proposed).* What `src/environment
 - *Limits*: `--cpus`, `--memory` (+ equal `--memory-swap`), `--pids-limit` 512 (Assumption). **`disk_mb` is not
   enforced** by this backend and is recorded as such, never claimed.
 - *Cleanup*: labels `switchboard.run`, `switchboard.project`, `switchboard.role`; `--rm` plus `teardown` (force
-  remove by name on every terminal path); `sweepOrphans` implemented, its startup call is T10.2.
+  remove by name on every terminal path); `sweepOrphans` is called by startup reconciliation before any worktree is
+  assessed, and its removals are `environment` run events (T10.2, [LLD §11.3](LLD.md#113-environment-port)).
 - *Not reachable yet*: admission still refuses container projects and `serve` does not compose the environment
   resolver (T10.1 gaps in [ROADMAP §6.4](../ROADMAP.md#64-m10-container-environments-tasks)); the injected Git tool
   channel is host-side only. Tests: `src/environment/*.test.ts` (fakes) and the opt-in Docker leg
@@ -1382,6 +1383,15 @@ customisations; they do not confine what an allowed command does (ADR-0015; [R2 
 | Approval behaviour | Compiles (as implemented today): `--permission-mode dontAsk --permission-prompts none`; "none" means "nobody: anything that would prompt is denied automatically" [H]; `dontAsk` denies rather than approves [R2 L24, L86–88]; a denial ends `PERMISSION_BLOCKED` (FR-POL-05) | Compiles (as implemented today): as `inspect-untrusted` | Could compile: as `inspect-untrusted` | Could compile: as `inspect-untrusted` | Compiles (as implemented today): as `inspect-untrusted` when the scope has no `bypass`; in an approved bypass run `--permission-mode` is omitted and `--permission-prompts none` kept (Assumption: [H] does not say how an explicit mode combines with `--dangerously-skip-permissions`) |
 | Bypass flag availability | Compiles (as implemented today): never emitted (FR-POL-03, [AC]). [H] lists `--dangerously-skip-permissions` ("Bypass all permission checks"), `--allow-dangerously-skip-permissions` and the mode `bypassPermissions`; `--restricted` "refuses bypassPermissions" [H] | Compiles (as implemented today): never emitted [AC] | Could compile: never emitted (FR-POL-03) | Compiles (as implemented today): never emitted; a `bypassApproved` on this profile is Ineligible: `PROFILE_UNSUPPORTED` (FR-POL-03) [AC] | Compiles (as implemented today, T3.17): `--dangerously-skip-permissions` ("Bypass all permission checks. Recommended only for sandboxes with no internet access." [H]) only when the scope sets `bypass: true` and the run's `bypassApproved` is true ([ADR-0017](../adr/0017-approved-privileged-scope-bypass.md), T3.4); `--restricted` is omitted because it "refuses bypassPermissions" [H] (owner decision 19, Q-33); the argv audit admits the flag only for `privileged` with `bypassApproved` and scope `bypass` [AC]. **Assumption, unverified:** the Git deny rules and `--tools` still apply under the flag: Unknown: live check in T3.9 (R-26, live-smoke C-G2). This matters for `host` environments only: in a `container` environment (M10, planned) the image has no Git client and the Git directory is not mounted, so FR-GIT-01 does not rest on the deny rules (owner decision 24, R-38) |
 
+**M3 status of this matrix (T3.13, 2026-10-16, Delegated).** The cells above are what `main` compiles (T3.5, T3.17,
+T3.19); none is edited here. Since the spike: T3.1 ([ADR-0051](../adr/0051-outer-sandbox-detection-and-fail-closed-requirement.md),
+[LLD §8.4](LLD.md#84-outer-sandbox-m3-t31)) detects bubblewrap and `prlimit` but wraps no provider process, so it does
+not supply the outer sandbox `test-sandboxed` needs, and that column stays `Ineligible: PROFILE_UNSUPPORTED`. Live
+checks on 2026-10-13 ([live checks](../research/live-checks-2026-10-13.md), not the T3.9 suite) bear on two
+assumptions: under `--dangerously-skip-permissions` the Git deny rules and `--tools` held (checks 14 and 16, R-38), and
+omitting `--safe-mode` and `--strict-mcp-config` loads the repository's `CLAUDE.md`, hooks and `.mcp.json` (check 15,
+R-41). Every remaining `Unknown: live check in T3.9` cell is still unknown ([ROADMAP §6.5.2](../ROADMAP.md#652-what-m3-cannot-complete-without-live-providers)).
+
 ### 4.2 Codex (M2)
 
 | Aspect | Detail |
@@ -1421,6 +1431,15 @@ Linux host prerequisites of the sandbox (bubblewrap being installed, user namesp
 | Native sandbox | Compiles (as implemented today): `--sandbox read-only`, bubblewrap on Linux [R2 L128–129]. Host prerequisites: Unknown: live check in T3.9 (R-37); whether it keeps commands away from `~/.codex` credentials: Unknown: live check in T3.9 (R-23, FR-POL-06). Unverified (documentation only) | Compiles (as implemented today): `--sandbox workspace-write`; prerequisites and confinement as `inspect-untrusted`. Unverified (documentation only) | Could compile: `--sandbox workspace-write`; prerequisites and confinement: Unknown: live check in T3.9. Unverified (documentation only) | Could compile: as `test-sandboxed`. Unverified (documentation only) | Compiles (as implemented today): follows `files.access` [S, AX]; prerequisites and confinement as `trusted-development`: Unknown: live check in T3.9. Unverified (documentation only) |
 | Approval behaviour | Unknown: live check in T3.9. [R2] documents no Codex approval flag, nor what `codex exec` does with an action that would need approval; the adapter reads an item `status` of `declined` as a denial (Assumption, `STATUS_DECLINED` in [AX]) | Unknown: live check in T3.9, as `inspect-untrusted` | Unknown: live check in T3.9 | Unknown: live check in T3.9 | Unknown: live check in T3.9 |
 | Bypass flag availability | Compiles (as implemented today): never emitted (FR-POL-03) [AX]. [R2] names `--yolo` ([R2 L28, L125]: the posture "should not be built around `--yolo`") and `--full-auto` ("a deprecated compatibility option", [R2 L126]). Unverified (documentation only) | Compiles (as implemented today): never emitted [AX]. Unverified (documentation only) | Could compile: never emitted (FR-POL-03). Unverified (documentation only) | Could compile: never emitted (FR-POL-03). Unverified (documentation only) | Ineligible: `PROFILE_UNSUPPORTED` (as implemented today, T3.17) for any scope with `bypass: true`, approved or not: [R2] names `--yolo` only as a posture the controller "should not be built around" [R2 L28, L125] and `--full-auto` as "a deprecated compatibility option" [R2 L126], and documents neither what they disable nor a dangerous sandbox mode, which is not precise enough to emit (AGENTS.md); verify live (T3.9, R-26) before a Codex bypass compiles [AX]. Unverified (documentation only) |
+
+**M3 status of this matrix (T3.13, 2026-10-16, Delegated).** The cells above are what `main` compiles (T3.6, T3.17);
+none is edited here, and "Unverified (documentation only)" still describes how they were derived. A live check on
+codex-cli 0.162.1 on 2026-10-13 ([live checks](../research/live-checks-2026-10-13.md), check 12; not the T3.9 suite)
+observed under `--sandbox workspace-write`: writes outside the workspace blocked except under `/tmp` (12a ESCAPED, 12b
+HELD), network blocked (12c), reads of a canary outside the workspace **not** blocked (12d ESCAPED, R-23), Unix sockets
+blocked (12e) and `git commit` refused on Git metadata (12f, X-G1 HELD). So the "Native sandbox" and "Network" cells'
+open questions are partly answered for that version; FR-POL-06 for Codex is not met (reads are not confined), and the
+cells are unchanged until T3.9 records results ([ROADMAP §6.5.2](../ROADMAP.md#652-what-m3-cannot-complete-without-live-providers)).
 
 ### 4.3 Grok Build (M4)
 

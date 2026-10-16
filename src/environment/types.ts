@@ -2,7 +2,7 @@
  * Environment port (LLD §11.3; FR-PRJ-04, FR-PRJ-05, FR-PRJ-07; T10.1). COMP-EXE reaches the provider process through
  * this one port so `host` and `container` share the supervisor: `prepare` turns the adapter's compiled invocation into
  * the one the supervisor spawns, `teardown` runs on every terminal path, and `sweepOrphans` is the startup
- * reconciliation hook (its wiring is T10.2).
+ * reconciliation hook (T10.2: called by `reconcile` before any worktree is assessed).
  *
  * The port is pure data in and out. It never reads the ledger, never touches credentials and never starts the provider
  * process itself; the lifecycle still audits the prepared invocation (bypass flags, MCP arguments, `--safe-mode`) and
@@ -107,7 +107,10 @@ export class EnvironmentRefusal extends Error {
   }
 }
 
-/** `environment` run events (FR-PRJ-07). Persisting them in the ledger is T10.2; T10.1 emits them to a callback. */
+/**
+ * `environment` run events (FR-PRJ-07). An environment emits them to its `onEvent` callback; `environmentEventSink`
+ * (./ledger-events.ts) is the callback that appends them to the run's ledger events (T10.2).
+ */
 export interface EnvironmentEvent {
   readonly type: "environment";
   readonly payload: {
@@ -120,6 +123,16 @@ export interface EnvironmentEvent {
   } & Record<string, unknown>;
 }
 
+/** Options of `sweepOrphans` (T10.2). */
+export interface SweepOptions {
+  /**
+   * Whether the run a container is labelled with belongs to this controller (its ledger knows the run). A container of
+   * a run it does not own is another controller's on the same runtime and is left alone, unrecorded. Absent: every
+   * labelled container not in `knownRunIds` is an orphan.
+   */
+  readonly owns?: (runId: string) => boolean;
+}
+
 export interface Environment {
   readonly kind: EnvironmentKind;
   /** host: returns the invocation unchanged. container: creates the container and wraps the invocation to run in it. */
@@ -127,5 +140,5 @@ export interface Environment {
   /** Always called, on every terminal path; idempotent. */
   teardown(run: Pick<RunContext, "runId">): Promise<void>;
   /** Startup reconciliation: containers carrying switchboard labels with no matching live run (FR-PRJ-07). */
-  sweepOrphans(knownRunIds: ReadonlySet<string>): Promise<{ removed: string[] }>;
+  sweepOrphans(knownRunIds: ReadonlySet<string>, opts?: SweepOptions): Promise<{ removed: string[] }>;
 }

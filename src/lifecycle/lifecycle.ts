@@ -81,6 +81,7 @@ import {
   type ChannelAuditContext,
   createProbeRunner,
   type FailureCode,
+  type Invocation,
   IsolationAuditError,
   isIneligible,
   McpConfigAuditError,
@@ -126,6 +127,13 @@ import {
   renderHandoffPrompt,
   takeAsOf,
 } from "../continuity/index.js";
+import {
+  type BudgetAdmission,
+  type BudgetRefusal,
+  budgetRefusalDetails,
+  budgetRefusalMessage,
+  registerBudgets,
+} from "../control/budgets.js";
 import {
   DEFAULT_LOOP_BREAKER,
   type LoopBreakerSettings,
@@ -229,6 +237,18 @@ import {
   type TransitionRule,
 } from "./states.js";
 import {
+  STEER_DELIVERED_EVENT,
+  STEER_DELIVERY,
+  STEER_NOTE_MAX,
+  STEER_REQUESTED_EVENT,
+  STEER_UNDELIVERED_EVENT,
+  SteerInbox,
+  type SteerResult,
+  type SteerUndeliveredReason,
+  steerPrompt,
+  steerRequestedPayload,
+} from "./steer.js";
+import {
   startVerification,
   VERIFICATION_COMMAND_EVENT,
   VERIFICATION_STARTED_EVENT,
@@ -239,7 +259,7 @@ import {
   verificationSummary,
 } from "./verification.js";
 
-export type LifecycleErrorCode = "INVALID_REQUEST" | "QUEUE_FULL";
+export type LifecycleErrorCode = "INVALID_REQUEST" | "QUEUE_FULL" | "BUDGET_EXHAUSTED";
 
 /** Admission or API error. No run row is written when it is thrown from `submit`. */
 const archivedMessage = (id: string): string =>
@@ -253,9 +273,18 @@ export class LifecycleError extends Error {
   constructor(
     readonly code: LifecycleErrorCode,
     message: string,
+    /** T14.4: closed, controller-generated facts about the refusal (`BUDGET_EXHAUSTED`); empty otherwise. */
+    readonly details: Readonly<Record<string, unknown>> = {},
   ) {
     super(message);
   }
+}
+
+/** T14.4 (FR-CTL-06): what `onBudgetRefused` receives; the lifecycle wrote nothing for this request. */
+export interface BudgetRefusalNotice {
+  /** The project of the refused request, or null for a workspace-path run. */
+  readonly projectId: string | null;
+  readonly refusal: BudgetRefusal;
 }
 
 export type RunPriority = "interactive" | "normal" | "batch";
@@ -543,6 +572,14 @@ export interface RunLifecycleOptions {
   /** T6.5: random source in [0, 1) for the backoff jitter; injectable for tests. */
   readonly random?: () => number;
   /**
+   * T14.4 (FR-CTL-06, LLD §3.4.6): operator budget caps (`control_plane.budgets`), asked inside the admission
+   * transaction of `submit` and before a retry successor is created. Unset means no cap. The lifecycle publishes the
+   * same evaluator to the read path (`registerBudgets`), so `needs_attention` reflects what refuses admission.
+   */
+  readonly budgets?: BudgetAdmission;
+  /** T14.4: observer for every budget refusal (operator log, `budget_exhausted` sink event). Must not throw. */
+  readonly onBudgetRefused?: (notice: BudgetRefusalNotice) => void;
+  /**
    * T14.5 (FR-CTL-07, LLD §3.4.6): `control_plane.loop_breaker` (**N**, **T**, successor cap). Unset means the LLD
    * Assumption defaults. The loop breaker cannot be turned off.
    */
@@ -696,6 +733,8 @@ export class RunLifecycle {
   private readonly runner: ProbeRunner;
   private readonly maxQueueDepth: number;
   private readonly inflight = new Map<string, Execution>();
+  /** T14.7 (FR-CTL-04): steer notes waiting for a run's next boundary (`./steer.ts`). */
+  private readonly steerInbox = new SteerInbox();
   private readonly waiters = new Map<string, ((run: RunRecord) => void)[]>();
   private started = false;
   private stopped = false;
@@ -723,6 +762,7 @@ export class RunLifecycle {
     this.maxQueueDepth = opts.maxQueueDepth ?? DEFAULT_MAX_QUEUE_DEPTH;
     this.refGuard = opts.refGuard ?? new RefGuard({ ledger: opts.ledger });
     this.spans = new SpanTracker(opts.telemetry);
+    if (opts.budgets !== undefined) registerBudgets(opts.ledger, opts.budgets);
   }
 
   // ---- public API ---------------------------------------------------------------------------------------------
@@ -803,6 +843,13 @@ export class RunLifecycle {
           }
           return { runId: prior.id, metaSessionId: prior.meta_session_id, state: prior.state, replayed: true };
         }
+      }
+      // T14.4 (FR-CTL-06): operator budget caps, in the admission transaction so the counts include every row written
+      // before this one. A refusal writes nothing; the project stays flagged `budget_exhausted` on read while it holds.
+      const refusal = this.opts.budgets?.refusal(req.project?.id, this.now());
+      if (refusal !== undefined) {
+        this.budgetRefused({ projectId: req.project?.id ?? null, refusal });
+        throw new LifecycleError("BUDGET_EXHAUSTED", budgetRefusalMessage(refusal), budgetRefusalDetails(refusal));
       }
       if (initial === "QUEUED" && this.ledger.countRunsInStates(QUEUE_STATES) >= this.maxQueueDepth) {
         throw new LifecycleError("QUEUE_FULL", `queue is full (${this.maxQueueDepth} runs waiting)`);
@@ -970,7 +1017,10 @@ export class RunLifecycle {
       } catch (err) {
         if (err !== LOST_RACE) throw err;
       }
-      if (moved) return moved.state;
+      if (moved) {
+        this.flushSteer(runId);
+        return moved.state;
+      }
       return this.cancel(runId, reason, decidedBy); // lost a race (e.g. dispatched meanwhile): re-read and re-decide
     }
     const exec = this.inflight.get(runId);
@@ -978,6 +1028,33 @@ export class RunLifecycle {
     exec.cancelRequested = true;
     if (exec.handle) void exec.handle.cancel();
     return (this.ledger.getRunRecord(runId) as RunRecord).state;
+  }
+
+  /**
+   * T14.7 `steer_run` (FR-CTL-04, LLD §3.4.4): record a controller `steer_requested` event (length and hash only) and
+   * queue `note` for the run's next boundary, where it is delivered by boundary-resume (`./steer.ts`). A terminal run is
+   * a no-op (nothing recorded). A note that can no longer reach a boundary is recorded `steer_undelivered` at once.
+   */
+  steer(runId: string, note: string): SteerResult {
+    const run = this.ledger.getRunRecord(runId);
+    if (!run) throw new LifecycleError("INVALID_REQUEST", `unknown run ${runId}`);
+    if (typeof note !== "string" || note.length === 0 || note.length > STEER_NOTE_MAX) {
+      throw new LifecycleError("INVALID_REQUEST", `note must be 1 to ${STEER_NOTE_MAX} characters`);
+    }
+    if (isTerminal(run.state)) return { accepted: false, reason: "terminal" };
+    this.ledger.appendRunEvent({ runId, type: STEER_REQUESTED_EVENT, payload: steerRequestedPayload(note) });
+    const exec = this.inflight.get(runId);
+    let reason: SteerUndeliveredReason | undefined;
+    if (SLOT_STATES.includes(run.state) && exec === undefined) reason = "not_in_this_process";
+    else if (this.steerInbox.isClosed(runId) || run.state === "VERIFYING" || run.state === "FINALIZING") {
+      reason = "past_boundary";
+    }
+    if (reason !== undefined) {
+      this.steerUndelivered(runId, reason, 1);
+      return { accepted: false, reason };
+    }
+    this.steerInbox.push(runId, note);
+    return { accepted: true };
   }
 
   /**
@@ -1334,6 +1411,7 @@ export class RunLifecycle {
       .catch((err: unknown) => this.contain(exec, err))
       .finally(() => {
         this.inflight.delete(runId);
+        this.flushSteer(runId);
         this.pump();
       });
   }
@@ -1540,6 +1618,8 @@ export class RunLifecycle {
     const bound = new Map<string, { model: string | null; backingProvider: string | null }>();
     let channel: OpenChannel | undefined;
     let channelAudit: ChannelAuditContext | undefined;
+    /** The channel's argv and environment changes, re-applied to a T14.7 boundary-resume turn. */
+    let withChannel = (i: Invocation): Invocation => i;
     // T9.4b (ADR-0033, owner decision 41): an adapter may narrow its `injected` declaration per run (Claude Code: only
     // an approved bypass run). A run it declines is treated exactly like one of an adapter without a channel.
     const caps = adapter.gitCapabilities;
@@ -1614,12 +1694,13 @@ export class RunLifecycle {
           });
         }
         channelAudit = { toolNames: [...channel.shim.toolNames], ...(mcpConfigPath ? { mcpConfigPath } : {}) };
-        inv = {
-          ...inv,
-          argv: [...inv.argv.filter((a) => !remove.has(a)), ...extra.argv],
-          policyFlags: inv.policyFlags.filter((a) => !remove.has(a)),
-          env: { ...inv.env, ...extra.env },
-        };
+        withChannel = (i) => ({
+          ...i,
+          argv: [...i.argv.filter((a) => !remove.has(a)), ...extra.argv],
+          policyFlags: i.policyFlags.filter((a) => !remove.has(a)),
+          env: { ...i.env, ...extra.env },
+        });
+        inv = withChannel(inv);
       }
     }
     if (exec.cancelRequested) {
@@ -1666,26 +1747,41 @@ export class RunLifecycle {
     // T8.2: the provider.spawn span covers the observed process lifetime (onSpawn to process exit).
     let spawnStartedAt: number | undefined;
     let out: AdapterRunOutcome;
+    const onEvent = (ev: NormalizedEvent): void => {
+      if (ev.kind === "session_bound") {
+        if (!nativeIds.includes(ev.nativeSessionId)) nativeIds.push(ev.nativeSessionId);
+        // T5.3 (FR-ADP-10): remember what `session_bound` reported, for the binding row written after the run.
+        if (!bound.has(ev.nativeSessionId)) {
+          bound.set(ev.nativeSessionId, { model: ev.model ?? null, backingProvider: ev.backingProvider ?? null });
+        }
+      }
+      this.ledger.appendRunEvent({ runId, type: "provider_event", payload: compactEvent(ev) });
+    };
+    const runOptions = (turnInv: Invocation) => ({
+      bypassApproved: profile.bypassApproved,
+      // T3.17: the audit admits a bypass flag only for this profile being privileged with a scope that sets bypass.
+      profile,
+      // T9.4b: `--mcp-config` and MCP allow rules only in the channel's exact shape (ADR-0029 item 6).
+      ...(channelAudit ? { channel: channelAudit } : {}),
+      ...(this.opts.baseEnv ? { baseEnv: this.opts.baseEnv } : {}),
+      // T4.8 (ADR-0036 item 9): an `acp-stdio` run answers permission requests from this frozen snapshot only.
+      // No read-only context is passed yet (fail closed: reads outside the worktree are rejected).
+      ...(turnInv.transport === "acp-stdio"
+        ? {
+            acp: {
+              snapshot: { profile, worktree: turnInv.cwd, writable: ws.mode === "worktree", readOnlyContexts: [] },
+              onRunEvent: (e: { type: string; payload: unknown }) =>
+                this.ledger.appendRunEvent({ runId, type: e.type, payload: e.payload }),
+            },
+          }
+        : {}),
+      onEvent,
+    });
     try {
       let agent: AdapterRun;
       try {
         agent = startAdapterRun(adapter, inv, {
-          bypassApproved: profile.bypassApproved,
-          // T3.17: the audit admits a bypass flag only for this profile being privileged with a scope that sets bypass.
-          profile,
-          // T9.4b: `--mcp-config` and MCP allow rules only in the channel's exact shape (ADR-0029 item 6).
-          ...(channelAudit ? { channel: channelAudit } : {}),
-          ...(this.opts.baseEnv ? { baseEnv: this.opts.baseEnv } : {}),
-          // T4.8 (ADR-0036 item 9): an `acp-stdio` run answers permission requests from this frozen snapshot only.
-          // No read-only context is passed yet (fail closed: reads outside the worktree are rejected).
-          ...(inv.transport === "acp-stdio"
-            ? {
-                acp: {
-                  snapshot: { profile, worktree: inv.cwd, writable: ws.mode === "worktree", readOnlyContexts: [] },
-                  onRunEvent: (e) => this.ledger.appendRunEvent({ runId, type: e.type, payload: e.payload }),
-                },
-              }
-            : {}),
+          ...runOptions(inv),
           onSpawn: ({ pid, pgid }) => {
             this.move(
               this.current(runId),
@@ -1696,16 +1792,6 @@ export class RunLifecycle {
             spawned = true;
             spawnStartedAt = this.now().getTime();
             this.spans.spawnStarted(runId, spawnStartedAt);
-          },
-          onEvent: (ev) => {
-            if (ev.kind === "session_bound") {
-              if (!nativeIds.includes(ev.nativeSessionId)) nativeIds.push(ev.nativeSessionId);
-              // T5.3 (FR-ADP-10): remember what `session_bound` reported, for the binding row written after the run.
-              if (!bound.has(ev.nativeSessionId)) {
-                bound.set(ev.nativeSessionId, { model: ev.model ?? null, backingProvider: ev.backingProvider ?? null });
-              }
-            }
-            this.ledger.appendRunEvent({ runId, type: "provider_event", payload: compactEvent(ev) });
           },
         });
       } catch (err) {
@@ -1752,6 +1838,91 @@ export class RunLifecycle {
         });
         spawnStartedAt = undefined;
       }
+      // T14.7 (FR-CTL-04, FR-SES-03, BR-7; LLD §3.4.4): the turn's end is the boundary. While steer notes are queued
+      // and the turn succeeded with a native session, resume that same session in this run with only the notes as the
+      // prompt (never the objective again: no replay). Each earlier turn's streams are kept as artifacts of the run.
+      for (let notes = this.steerAtBoundary(exec, out); notes.length > 0; notes = this.steerAtBoundary(exec, out)) {
+        const binding = { provider: req.provider, nativeSessionId: out.result.nativeSessionId as string };
+        const turnReq = {
+          runId,
+          objective: steerPrompt(notes),
+          constraints: [],
+          workspace: compileReq.workspace,
+          ...(req.model !== undefined ? { model: req.model } : {}),
+        };
+        const compiled = adapter.resumeArgs(binding, turnReq, profile);
+        if (isIneligible(compiled)) {
+          this.steerUndelivered(runId, "resume_refused", notes.length, { stage: "compile", reason: compiled.reason });
+          break;
+        }
+        let turnInv: Invocation;
+        try {
+          await environment.teardown(environmentRun);
+          turnInv = (await environment.prepare(environmentRun, withChannel(compiled))).invocation;
+        } catch (err) {
+          if (!(err instanceof EnvironmentRefusal)) throw err;
+          this.steerUndelivered(runId, "resume_refused", notes.length, { stage: "environment", reason: err.reason });
+          break;
+        }
+        if (ws.mode === "worktree") {
+          this.opts.workspace.extendLease(runId, 2 * turnInv.timeouts.wallClockMs + turnInv.timeouts.killGraceMs);
+        }
+        let turn: AdapterRun;
+        // T8.2: a steer turn is a second observed process of the same run, so it gets its own provider.spawn span.
+        let turnStartAt: number | undefined;
+        try {
+          turn = startAdapterRun(adapter, turnInv, {
+            ...runOptions(turnInv),
+            onSpawn: ({ pid, pgid }) => {
+              this.ledger.updateRunFields(
+                runId,
+                { pid, pgid, proc_start_ticks: procStartTicks(pid) },
+                { type: "steer_turn_spawned", payload: { pid, pgid } },
+              );
+              turnStartAt = this.now().getTime();
+              this.spans.spawnStarted(runId, turnStartAt);
+            },
+          });
+        } catch (err) {
+          const audits = [BypassFlagError, McpConfigAuditError, AcpPlanAuditError, IsolationAuditError];
+          if (!audits.some((E) => err instanceof E)) throw err;
+          this.steerUndelivered(runId, "resume_refused", notes.length, { stage: "audit" });
+          break;
+        }
+        this.ledger.appendRunEvent({
+          runId,
+          type: STEER_DELIVERED_EVENT,
+          payload: { delivery: STEER_DELIVERY, notes: notes.length },
+        });
+        exec.handle = turn;
+        // A cancel that arrived while the turn was being prepared stops it at once.
+        if (exec.cancelRequested) void turn.cancel();
+        const earlier = out;
+        try {
+          out = await turn.done;
+        } catch (err) {
+          // T8.2: as for the first turn, no exit facts were observed; drop the span start.
+          this.spans.discardSpawn(runId);
+          throw err;
+        }
+        if (turnStartAt !== undefined) {
+          this.spans.spawnFinished(runId, this.now().getTime(), {
+            runId,
+            sessionId: run0.meta_session_id,
+            provider: req.provider,
+            trustProfile: run0.trust_profile,
+            adapterVersion: binaryVersion ?? undefined,
+            ...(req.model !== undefined ? { model: req.model } : {}),
+            transport: turnInv.transport,
+            attempt: run0.attempt,
+            exitCode: out.exit.exitCode,
+            exitSignal: out.exit.signal,
+          });
+          turnStartAt = undefined;
+        }
+        await this.storeStreams(runId, run0.meta_session_id, earlier);
+      }
+      this.steerInbox.close(runId); // a refused resume also ends steering: later notes are undelivered at once
     } finally {
       // LLD §12.2: the socket is closed and removed when the run leaves RUNNING; calls in progress finish first.
       await channel?.close();
@@ -2320,6 +2491,39 @@ export class RunLifecycle {
   }
 
   /** Cancel before a process exists (T19 from PREFLIGHT or LEASED, FRD §4.3): slot and lease released, no workspace change. */
+  /**
+   * T14.7: at a turn's end, the queued steer notes to deliver by resuming the turn's native session, or none. With none
+   * queued the run's last boundary has passed (later notes are undelivered at once). Notes that cannot be delivered
+   * (the turn failed or was cancelled, or reported no native session) are recorded `steer_undelivered`.
+   */
+  private steerAtBoundary(exec: Execution, out: AdapterRunOutcome): string[] {
+    const runId = exec.runId;
+    const queued = this.steerInbox.pending(runId);
+    let reason: SteerUndeliveredReason | undefined;
+    if (queued === 0) reason = undefined;
+    else if (pendingOf(exec, out).kind !== "success") reason = "turn_not_successful";
+    else if (!out.result.nativeSessionId) reason = "no_native_session";
+    else return this.steerInbox.take(runId);
+    this.steerInbox.close(runId);
+    if (reason !== undefined) this.steerUndelivered(runId, reason, this.steerInbox.take(runId).length);
+    return [];
+  }
+
+  /** T14.7: a run's queued notes that no boundary will deliver any more (the run ended). */
+  private flushSteer(runId: string): void {
+    const left = this.steerInbox.clear(runId);
+    if (left > 0) this.steerUndelivered(runId, "run_ended", left);
+  }
+
+  private steerUndelivered(
+    runId: string,
+    reason: SteerUndeliveredReason,
+    notes: number,
+    extra: Record<string, unknown> = {},
+  ): void {
+    this.ledger.appendRunEvent({ runId, type: STEER_UNDELIVERED_EVENT, payload: { reason, notes, ...extra } });
+  }
+
   private cancelEarly(runId: string): void {
     this.ledger.immediate(() => {
       this.opts.workspace.releaseLease(runId);
@@ -2602,6 +2806,13 @@ export class RunLifecycle {
       notScheduled(reason, extra);
       return;
     }
+    // T14.4 (FR-CTL-06): a retry successor is a new run row, so the operator caps apply to it as to `submit`.
+    const refusal = this.opts.budgets?.refusal(failed.project_id ?? undefined, now);
+    if (refusal !== undefined) {
+      this.budgetRefused({ projectId: failed.project_id, refusal });
+      notScheduled("budget_exhausted", budgetRefusalDetails(refusal));
+      return;
+    }
     if (breakerAdmission(this.breakerOf(failed.provider), now) === "deny") {
       notScheduled("breaker_open");
       return;
@@ -2676,6 +2887,13 @@ export class RunLifecycle {
       else if (reset - now.getTime() > horizonMs) notes.push("wait:reset_beyond_horizon");
       else {
         const notBefore = new Date(reset).toISOString();
+        // T14.4 (FR-CTL-06): the wait successor is a new run row; the operator caps apply.
+        const refusal = this.opts.budgets?.refusal(failed.project_id ?? undefined, now);
+        if (refusal !== undefined) {
+          this.budgetRefused({ projectId: failed.project_id, refusal });
+          record({ outcome: "returned", reason: "budget_exhausted", ...budgetRefusalDetails(refusal) });
+          return;
+        }
         const id = this.ledger.immediate(() => this.createSuccessor(failed, notBefore, "QUOTA_EXHAUSTED"));
         this.scheduleWake(reset);
         record({ outcome: "wait", successor_run_id: id, not_before: notBefore });
@@ -2867,6 +3085,15 @@ export class RunLifecycle {
         continue;
       }
       this.tryMove(run, "QUEUED", {}, { reason: "next_attempt_due" }, "T18");
+    }
+  }
+
+  /** T14.4: the refusal observer never fails or delays admission. */
+  private budgetRefused(notice: BudgetRefusalNotice): void {
+    try {
+      this.opts.onBudgetRefused?.(notice);
+    } catch {
+      // Observer errors are the observer's problem (as `onTransition`).
     }
   }
 

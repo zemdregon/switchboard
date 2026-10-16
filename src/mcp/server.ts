@@ -82,6 +82,10 @@
  * - `get_digest` (T14.3; FR-CTL-02, FR-TEL-01, LLD §3.4.3) is read-only and scoped as `get_run`: its cursor is a
  *   `run_event.id` of this caller's own runs, and run summaries arrive only as labelled, capped untrusted text
  *   (`./digest.ts` holds the Proposed assembly rules).
+ * - `steer_run` (T14.7; FR-CTL-04, FR-SES-03, BR-7, LLD §3.4.4) is scoped as `get_run` (another client's run is
+ *   unknown, INVALID_REQUEST) and hands the note to the lifecycle, which records `steer_requested` (length and hash
+ *   only) and delivers it by boundary-resume of the same native session (`../lifecycle/steer.ts`). A terminal run is a
+ *   no-op returning its envelope. The note never appears in any tool output.
  */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -191,6 +195,7 @@ import {
   searchEnabledFor,
   searchProjectContext,
 } from "./search-context.js";
+import { applyToolProfile, profileOffers } from "./tool-profile.js";
 
 export const SERVER_NAME = "switchboard";
 /** Proposed: tracks package.json `version`. */
@@ -1120,6 +1125,13 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     return envelopeOf(run.id);
   };
 
+  /** T14.7 (FR-CTL-04, LLD §3.4.4): see `../lifecycle/steer.ts`; scoped exactly as `get_run`. */
+  const steerRun = async (a: Args): Promise<Envelope> => {
+    const run = ownRun(a.run_id as string);
+    lifecycle.steer(run.id, a.note as string);
+    return envelopeOf(run.id);
+  };
+
   const getArtifacts = async (a: Args) => {
     const run = ownRun(a.run_id as string);
     const kinds = new Set<string>((a.kinds as string[] | undefined) ?? MCP_ARTIFACT_KINDS);
@@ -1330,6 +1342,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     explain_route: explainRouteTool,
     list_runs: listRuns,
     get_digest: getDigest,
+    steer_run: steerRun,
   };
 
   const ok = (value: object): CallToolResult => ({
@@ -1343,6 +1356,15 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
 
   const callTool = async (name: string, rawArgs: unknown): Promise<CallToolResult> => {
     try {
+      if (!profileOffers(client.toolProfile, name)) {
+        // T14.11 (FR-CTL-11): a tool outside the client's profile is answered exactly like an unknown tool.
+        if ((PROJECT_TOOL_NAMES as readonly string[]).includes(name)) {
+          projectTools?.recordNotOffered(name as ProjectToolName, rawArgs);
+        }
+        throw invalid(`unknown tool ${JSON.stringify(name.slice(0, 64))}`, {
+          tools: TOOL_NAMES.filter((n) => profileOffers(client.toolProfile, n)),
+        });
+      }
       if ((PROJECT_TOOL_NAMES as readonly string[]).includes(name)) {
         // T9.9 (FR-PRJ-10): offered only with manage_projects; otherwise answered exactly like an unknown tool, but recorded.
         if (client.manageProjects === true && projectTools !== undefined) {
@@ -1399,7 +1421,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
   );
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
+    // T14.11 (FR-CTL-11): a console client sees only the console set; an orchestrator list is unchanged.
+    tools: applyToolProfile(client.toolProfile, [
       ...toolDescriptors({
         manageProjects: client.manageProjects === true && projectTools !== undefined,
         searchContext: searchOffered(),
@@ -1408,7 +1431,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       ...(approvalProxy !== undefined
         ? approvalProxyToolDescriptors().map((d) => ({ ...d, outputSchema: withError(d.outputSchema) }))
         : []),
-    ],
+    ]),
   }));
   server.setRequestHandler(CallToolRequestSchema, async (req) => callTool(req.params.name, req.params.arguments));
 
