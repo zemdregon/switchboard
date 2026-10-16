@@ -1041,10 +1041,18 @@ returns, per project the client lists in `mcp_clients[].projects`: `id`, `name`,
 project's, **Proposed** addition) and `allowed_providers?` (config ids). It returns no path, remote, identity or image
 reference. Errors: unknown project `INVALID_REQUEST`; project not in the client's list (or the client has no list)
 `PERMISSION_BLOCKED`; profile above the effective ceiling `PERMISSION_BLOCKED` with `details.requested`,
-`client_max_profile`, `project` and `effective_max_profile`; a `container` project `TOOL_FAILURE` with
-`details.reason = "ENVIRONMENT_NOT_IMPLEMENTED"` before anything is written (M10; LLD §3 names no other code, so no new
-code is added); base ref that does not resolve `INVALID_REQUEST`. Implementation: `src/mcp/server.ts`,
-`src/mcp/schemas.ts`.
+`client_max_profile`, `project` and `effective_max_profile`; at T9.2 time a `container` project always failed
+`TOOL_FAILURE` with `details.reason = "ENVIRONMENT_NOT_IMPLEMENTED"` before anything was written (M10; LLD §3 names no
+other code, so no new code is added); base ref that does not resolve `INVALID_REQUEST`. Implementation:
+`src/mcp/server.ts`, `src/mcp/schemas.ts`.
+
+*As built (2026-10-16, Delegated, T10.1, [PR #554](https://github.com/zemdregon/switchboard/pull/554)):* a
+`container` project is admitted when the lifecycle has container placement for that project (`serve` composes
+`runEnvironments` when a configured project is `container`; a host-only configuration composes nothing and admission
+still refuses with `TOOL_FAILURE`, `details.reason = "ENVIRONMENT_NOT_IMPLEMENTED"`, before any side effect). The
+work-queue admission path matches (`src/queue/admission.ts`). `image_digest` is frozen into the snapshot at admission.
+Tests: `src/mcp/mcp.test.ts` ("container projects through MCP admission (T10.1; ...)"), `src/mcp/project-tools.test.ts`,
+`src/queue/work-queue.test.ts`.
 
 *As built (2026-10-13, Delegated, T9.9, [ADR-0030](../adr/0030-dynamic-project-revisions-and-approval.md)):* the three
 tools are in `tools/list` only for a client with `manage_projects`; for any other client a call is answered exactly as
@@ -2939,10 +2947,13 @@ section was silent or the build differs:
   is the helper for the admission path.
 - **Events** go to the environment's `onEvent` callback (`image_checked`, `prepared`, `refused`, `removed`,
   `remove_failed`, `orphan_removed`); the ledger write and the startup sweep call are T10.2.
-- **Not built in T10.1:** admission still refuses container projects (`src/mcp/server.ts`,
-  `ENVIRONMENT_NOT_IMPLEMENTED`) and `serve` does not compose the resolver yet, so no container run is reachable
-  through MCP; the injected tool channel is not reachable from inside a container; `projects validate`'s
-  no-Git-client check is T10.3. Tests: `src/environment/container.test.ts`, `src/environment/docker-runtime.test.ts`,
+- **Admission and `serve` (2026-10-16, #554).** `serve` composes `runEnvironments` when a configured project is
+  `container` (`src/cli/serve.ts`); MCP and work-queue admission refuse a `container` project only when placement is
+  missing (`TOOL_FAILURE`, `ENVIRONMENT_NOT_IMPLEMENTED`, `src/mcp/server.ts`, `src/queue/admission.ts`). A passing
+  container run through MCP is therefore reachable on fakes when `serve` wires placement; live provider CLIs in the
+  image remain on the operator's T10.0 checklist.
+- **Still open after T10.1:** the injected Git tool channel is not reachable from inside a container (host-side socket
+  and shim only). Tests: `src/environment/container.test.ts`, `src/environment/docker-runtime.test.ts`,
   `src/lifecycle/environment.test.ts`, opt-in `src/environment/container-docker.test.ts`.
 
 *As built (2026-10-16, T10.2, Delegated; text above unchanged).* `environment` events and the startup sweep:
@@ -2961,10 +2972,10 @@ section was silent or the build differs:
   FR-EXE-06); with no container environment configured it records `swept: false`.
 - **`serve`.** `orphanSweepEnvironments` composes the Docker-backed container environment with the ledger sink only
   when a configured project is `container`; a runtime whose `info` is unavailable is skipped with a warning
-  (Assumption: a rootless daemon that does not answer runs no container).
-- **Not built in T10.2:** the lifecycle's own container environment is still not composed by `serve` (T10.1 gap 1);
-  when it is, it takes the same sink. Tests: `src/reconcile/reconcile.test.ts` ("T10.2: startup orphan sweep and
-  environment run events"), `src/environment/ledger-events.test.ts`, `src/environment/container.test.ts`,
+  (Assumption: a rootless daemon that does not answer runs no container). The lifecycle's run-time resolver is
+  composed separately by `runEnvironments` (T10.1, #554) with the same ledger sink. Tests:
+  `src/reconcile/reconcile.test.ts` ("T10.2: startup orphan sweep and environment run events"),
+  `src/environment/ledger-events.test.ts`, `src/environment/container.test.ts`,
   `src/cli/serve-orphan-sweep.test.ts`.
 
 *As built (2026-10-16, T10.3, Delegated; text above unchanged).* Validation, retention and the container leg of the
@@ -2976,8 +2987,9 @@ malicious-fixture suite:
   unambiguous (`CONTAINER_IMAGE_NOT_PINNED`, `_NOT_PRESENT`, `_AMBIGUOUS`; never pulled), and the no-Git-client scan
   completes with no `git` or `gh` on the image's `PATH` (`CONTAINER_IMAGE_CHECK_FAILED`,
   `CONTAINER_IMAGE_HAS_GIT_CLIENT`). The scan is the same throwaway probe container (`switchboard-probe-validate-<hex>`,
-  no network, read-only root, `--rm`, and removed by name afterwards). `ENVIRONMENT_NOT_IMPLEMENTED` is still reported
-  while admission refuses container runs (T10.1 gap 1).
+  no network, read-only root, `--rm`, and removed by name afterwards). A project that passes these checks validates
+  clean (`projects validate` does not emit `ENVIRONMENT_NOT_IMPLEMENTED`; admission refusal when `serve` does not wire
+  placement is separate, T10.1 #554).
 - **Retention** (FR-PRJ-09): `runRetentionGc` takes an optional `containerRuntime`; its new `containers` step, after
   the intent and before the worktrees, force-removes every run and probe container labelled with one of the unit's run
   ids (`removeRunContainers`, `src/environment/container.ts`; `GcSessionTargets.runIds`). A listing or removal failure
