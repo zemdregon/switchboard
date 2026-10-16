@@ -11,7 +11,16 @@
  * Every detector has a positive control in "positive controls" below that plants what it looks for and shows it fires.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -46,6 +55,7 @@ import {
   type SwitchboardMcpServer,
   startHttpTransport,
 } from "../../src/mcp/index.js";
+import { collectOrphans, runRetentionGc } from "../../src/workspace/gc.js";
 import { driverOverrides, GitError, git, gitText } from "../../src/workspace/git.js";
 import { WorkspaceManager } from "../../src/workspace/index.js";
 import {
@@ -99,6 +109,8 @@ class HarnessAdapter implements ProviderAdapter {
   worktreesDir: string | undefined;
   /** Environment names the unmodified fake adapter declares (allowlist plus adapter-set variables). */
   declaredEnv: string[] = [];
+  /** Every invocation compiled for a run worktree: what the controller hands the provider (argv, stdin, env). */
+  readonly invocations: Invocation[] = [];
   private readonly base = new FakeAdapter({ timeouts: SHORT });
 
   private inner(): FakeAdapter {
@@ -117,6 +129,7 @@ class HarnessAdapter implements ProviderAdapter {
     // place content only in a controller-created run worktree, just before spawn.
     if (this.worktreesDir !== undefined && req.workspace.cwd.startsWith(this.worktreesDir + path.sep)) {
       this.beforeSpawn?.(req.workspace.cwd);
+      this.invocations.push(inv);
     }
     return { ...inv, envAllowlist: [...inv.envAllowlist, ...this.extraAllowlist] };
   }
@@ -165,7 +178,7 @@ interface Harness {
   /** Text of every MCP tool result this harness received. */
   readonly mcpTexts: string[];
   call(name: string, args: Json): Promise<{ isError: boolean; body: Json }>;
-  delegate(scenario: FakeScenario, beforeSpawn?: (cwd: string) => void): Promise<RunOutcome>;
+  delegate(scenario: FakeScenario, beforeSpawn?: (cwd: string) => void, objective?: string): Promise<RunOutcome>;
   cont(metaSessionId: string, scenario: FakeScenario): Promise<RunOutcome>;
   close(): Promise<void>;
 }
@@ -291,11 +304,11 @@ async function openHarness(transport: "stdio" | "http" = "stdio"): Promise<Harne
     adapter,
     mcpTexts,
     call,
-    async delegate(scenario, beforeSpawn) {
+    async delegate(scenario, beforeSpawn, objective) {
       adapter.scenario = scenario;
       adapter.beforeSpawn = beforeSpawn;
       const d = await call("delegate_task", {
-        objective: `run the ${scenario} scenario`,
+        objective: objective ?? `run the ${scenario} scenario`,
         workspace_path: fx.repo,
         trust_profile: "edit-untrusted",
       });
@@ -360,6 +373,36 @@ function linkPlanter(fx: MaliciousFixture, prefix: string) {
   };
   return { plant, targets };
 }
+
+/** The prompt-injection lines of the fixture's agent instruction files (AGENTS.md, CLAUDE.md), headings excluded. */
+function instructionLines(fx: MaliciousFixture): string[] {
+  const text = ["AGENTS.md", "CLAUDE.md"].map((f) => readFileSync(path.join(fx.repo, f), "utf8")).join("\n");
+  return [...new Set(text.split("\n").filter((l) => l.trim() !== "" && !l.startsWith("#")))];
+}
+
+/** Where the instruction lines show up: compiled invocations (argv, stdin, env), ledger rows, artifacts, MCP, log. */
+function instructionScan(h: Harness): Record<string, boolean> {
+  const lines = instructionLines(h.fx);
+  const has = (text: string) => lines.some((l) => text.includes(l));
+  return {
+    invocations: has(JSON.stringify(h.adapter.invocations)),
+    ledger: has(ledgerDump(h.db)),
+    artifacts: has(treeText(path.join(h.fx.dataDir, "artifacts"))),
+    mcp: has(h.mcpTexts.join("\n")),
+    log: has(h.http?.logLines.join("\n") ?? ""),
+  };
+}
+const NOT_LOADED = { invocations: false, ledger: false, artifacts: false, mcp: false, log: false };
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const lexists = (p: string): boolean => {
+  try {
+    lstatSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 const diffTexts = (run: RunOutcome): string[] =>
   run.artifacts.filter((a) => a.kind === "diff").map((a) => String(a.inline_text ?? ""));
@@ -460,6 +503,12 @@ describe.each(["stdio", "http"] as const)(
 
     it("(3) FR-POL-04: repository agent configuration (.mcp.json, .claude/settings.json, .codex/config.toml) is never executed", () => {
       expect(readIfExists(h.fx.configLog)).toBe("");
+    });
+
+    it("(3) FR-POL-04: repository agent instructions (AGENTS.md, CLAUDE.md) are not loaded into the provider request, the ledger, artifacts, MCP or the log", () => {
+      expect(instructionLines(h.fx).length).toBeGreaterThan(0);
+      expect(h.adapter.invocations.length).toBeGreaterThan(0);
+      expect(instructionScan(h)).toEqual(NOT_LOADED);
     });
 
     it("(4) symlinks: diffs and artifacts store link targets only, never the bytes behind an outside-pointing link", () => {
@@ -729,6 +778,93 @@ describe("T3.8 controller Git runner vs. unhardened Git, operation by operation"
   });
 });
 
+describe("T3.8 GC on the hostile fixture: symlinks are never followed out of the data directory", () => {
+  // T3.12 retention GC and orphan collection over worktrees the real lifecycle created. The links point at the fixture's
+  // outside directory and fake home (canary credentials); the GC positive control below shows that a link-following
+  // removal changes both hashes.
+  let h: Harness;
+  let outsideHash: string;
+  let homeHash: string;
+  beforeEach(async () => {
+    h = await openHarness();
+    outsideHash = treeHash(h.fx.outsideDir);
+    homeHash = treeHash(h.fx.fakeHome);
+  });
+  afterEach(async () => {
+    await h.close();
+  });
+  const sessionGc = () =>
+    runRetentionGc({
+      db: h.db,
+      artifacts: h.artifacts,
+      dataDir: h.fx.dataDir,
+      days: 1,
+      now: new Date(Date.now() + 3 * DAY_MS),
+    });
+
+  it(
+    "session GC removes an expired worktree holding outside-pointing links; the link targets stay byte-identical",
+    async () => {
+      const planter = linkPlanter(h.fx, "gc");
+      const operatorRefs = refs(h.fx.repo, { withoutRunBranches: true });
+      const run = await h.delegate("success", planter.plant);
+      expect(run.envelope.status).toBe("SUCCEEDED");
+      const wt = run.record.worktree_path as string;
+      expect(lstatSync(path.join(wt, "gc-dir")).isSymbolicLink()).toBe(true);
+      const res = await sessionGc();
+      expect(res.errors).toEqual([]);
+      expect(res.collected.map((u) => u.sessionId)).toEqual([run.metaSessionId]);
+      expect(lexists(wt)).toBe(false);
+      expect(treeHash(h.fx.outsideDir)).toBe(outsideHash);
+      expect(treeHash(h.fx.fakeHome)).toBe(homeHash);
+      expect(refs(h.fx.repo, { withoutRunBranches: true })).toEqual(operatorRefs);
+      expect(leakScan(h)).toEqual(NO_LEAKS);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "session GC of a worktree path replaced by a symlink to outside unlinks it without following",
+    async () => {
+      const run = await h.delegate("success");
+      const wt = run.record.worktree_path as string;
+      plainGit(h.fx.repo, "worktree", "remove", "--force", wt);
+      symlinkSync(h.fx.outsideDir, wt);
+      const res = await sessionGc();
+      expect(res.errors).toEqual([]);
+      expect(lexists(wt)).toBe(false);
+      expect(treeHash(h.fx.outsideDir)).toBe(outsideHash);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "orphan GC unlinks a symlinked session directory and a symlinked run entry without following them",
+    async () => {
+      const run = await h.delegate("success");
+      const wt = run.record.worktree_path as string;
+      const sessionLink = path.join(path.dirname(path.dirname(wt)), "sess_planted");
+      const runLink = path.join(path.dirname(wt), "run_planted");
+      symlinkSync(h.fx.outsideDir, sessionLink);
+      symlinkSync(h.fx.fakeHome, runLink);
+      const orphans = (now: Date) => collectOrphans({ db: h.db, dataDir: h.fx.dataDir, days: 1, now });
+      const first = await orphans(new Date());
+      expect(first.errors).toEqual([]);
+      expect(first.marked).toBe(2);
+      expect(first.removedWorktrees).toEqual([]);
+      const second = await orphans(new Date(Date.now() + 3 * DAY_MS));
+      expect(second.errors).toEqual([]);
+      expect(second.removedWorktrees.map((p) => path.basename(p)).sort()).toEqual(["run_planted", "sess_planted"]);
+      expect(lexists(sessionLink)).toBe(false);
+      expect(lexists(runLink)).toBe(false);
+      expect(existsSync(wt)).toBe(true); // the ledger's own worktree is not an orphan
+      expect(treeHash(h.fx.outsideDir)).toBe(outsideHash);
+      expect(treeHash(h.fx.fakeHome)).toBe(homeHash);
+    },
+    TEST_TIMEOUT,
+  );
+});
+
 describe("T3.8 positive controls: every detector fires when its invariant is broken", () => {
   let h: Harness;
   beforeEach(async () => {
@@ -845,6 +981,50 @@ describe("T3.8 positive controls: every detector fires when its invariant is bro
     },
     TEST_TIMEOUT,
   );
+
+  it(
+    "instruction detector: a controller that loads AGENTS.md into the prompt is caught in the invocation and the ledger; stored, in artifacts and MCP",
+    async () => {
+      // The broken variant: the request carries the repository's instruction file, as a controller that loaded it would.
+      const loaded = readFileSync(path.join(h.fx.repo, "AGENTS.md"), "utf8");
+      const run = await h.delegate("success", undefined, `run the success scenario\n\n${loaded}`);
+      expect(run.envelope.status).toBe("SUCCEEDED");
+      expect(instructionScan(h)).toEqual({ ...NOT_LOADED, invocations: true, ledger: true });
+      // The artifact and MCP arms: the file stored as a diff artifact of the run and read back through get_artifacts.
+      const stored = await h.artifacts.put(loaded);
+      h.ledger.insertArtifact({
+        runId: run.runId,
+        metaSessionId: run.metaSessionId,
+        kind: "diff",
+        sha256: stored.sha256,
+        sizeBytes: stored.sizeBytes,
+        mediaType: "text/x-diff",
+      });
+      await h.call("get_artifacts", { run_id: run.runId, kinds: ["diff"], max_inline_bytes: 1_048_576 });
+      expect(instructionScan(h)).toEqual({
+        ...NOT_LOADED,
+        invocations: true,
+        ledger: true,
+        artifacts: true,
+        mcp: true,
+      });
+    },
+    TEST_TIMEOUT,
+  );
+
+  it("GC detector: a link-following removal changes the outside directory and the fake home", () => {
+    const { fx } = h;
+    const outsideHash = treeHash(fx.outsideDir);
+    const homeHash = treeHash(fx.fakeHome);
+    const scratch = path.join(fx.dataDir, "worktrees", "sess_probe", "run_probe");
+    mkdirSync(scratch, { recursive: true });
+    const planter = linkPlanter(fx, "probe");
+    planter.plant(scratch);
+    // The broken variant: resolve each link and delete what it points at, as a GC that followed links would.
+    for (const name of ["probe-abs", "probe-home"]) rmSync(realpathSync(path.join(scratch, name)), { force: true });
+    expect(treeHash(fx.outsideDir)).not.toBe(outsideHash);
+    expect(treeHash(fx.fakeHome)).not.toBe(homeHash);
+  });
 
   it("workspace-root detector: the refusal is specific (an allowed repository passes the root checks)", async () => {
     // Fails later, on the missing meta-session, which proves the root and repository checks themselves passed.
