@@ -1818,6 +1818,25 @@ On the *N*th identical failure in a meta-session, the controller sets `meta_sess
 column or side table), admits no further successors, and surfaces `parked_loop`. Stall detection uses the injectable
 clock (tests); it never cancels the run.
 
+**Implemented (T14.5, Delegated, not owner-approved).** `src/control/loop-breaker.ts` holds the write side and
+`src/control/loop-attention.ts` the read side; `control_plane.loop_breaker` is resolved by `src/config/control-plane.ts`.
+Choices the text above leaves open:
+
+- The `parked_loop` flag is an append-only `loop_breaker_parked` `run_event` on the *N*th failing run, written in the
+  transaction of its `FAILED` transition (payload: `meta_session_id`, `threshold`, `fingerprint`, `run_ids`). No
+  migration; the §3.4.7 column, when T14.6 adds it, can be backfilled from these events. No automatic unpark.
+- A failure's fingerprints are `code:<failure_code>` and, when a verification command did not pass,
+  `verification:<16 hex of SHA-256 over that command's argv from request_json>`; any fingerprint reaching *N* parks.
+- The cap counts `attempt` (1 on the first run): a §16.5 retry, §16.6 wait or §16.6 failover successor is refused when
+  its `attempt` would exceed `max_successors_per_meta_session`, consistent with `failed_after_retry` (§3.4.5). A refused
+  retry records `retry_not_scheduled` with reason `successor_cap` or `meta_session_parked`; the quota ladder records
+  `outcome: returned` with the same reason. A new run into a parked meta-session is refused at admission with
+  `INVALID_REQUEST` and writes nothing.
+- Stall evaluation (`findStalledRuns`) is read-only; it never cancels, signals or transitions the run. The envelope and
+  the digest read the park events by default; `get_run`/`list_runs` still pass only `now`, so *T* and the cap on that
+  path are the Assumption defaults until `src/mcp/server.ts` passes
+  `loopBreakerAttention(…, config.controlPlane.loopBreaker)`.
+
 #### 3.4.7 Pause and budget persistence (Proposed)
 
 ```sql

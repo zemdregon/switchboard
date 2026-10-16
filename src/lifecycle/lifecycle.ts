@@ -127,6 +127,14 @@ import {
   takeAsOf,
 } from "../continuity/index.js";
 import {
+  DEFAULT_LOOP_BREAKER,
+  type LoopBreakerSettings,
+  parkedRefusal,
+  recordLoopPark,
+  type SuccessorRefusal,
+  successorRefusal,
+} from "../control/loop-breaker.js";
+import {
   type Environment,
   EnvironmentRefusal,
   type RunContext as EnvironmentRunContext,
@@ -234,6 +242,9 @@ export type LifecycleErrorCode = "INVALID_REQUEST" | "QUEUE_FULL";
 /** Admission or API error. No run row is written when it is thrown from `submit`. */
 const archivedMessage = (id: string): string =>
   `meta-session ${id} is archived (collected or being collected by retention GC); start a new task instead`;
+
+const parkedMessage = (id: string, parked: SuccessorRefusal): string =>
+  `meta-session ${id} is parked by the loop breaker (${parked.reason === "meta_session_parked" ? `${parked.threshold} identical failures, ${parked.fingerprint}` : parked.reason}); start a new task instead`;
 
 export class LifecycleError extends Error {
   override readonly name = "LifecycleError";
@@ -524,6 +535,11 @@ export interface RunLifecycleOptions {
   readonly retry?: { maxAttempts: number; baseMs: number; capMs: number; queueHorizonSeconds?: number };
   /** T6.5: random source in [0, 1) for the backoff jitter; injectable for tests. */
   readonly random?: () => number;
+  /**
+   * T14.5 (FR-CTL-07, LLD §3.4.6): `control_plane.loop_breaker` (**N**, **T**, successor cap). Unset means the LLD
+   * Assumption defaults. The loop breaker cannot be turned off.
+   */
+  readonly loopBreaker?: LoopBreakerSettings;
   /** T6.6: handoff bundle bounds for a quota failover (`continuity.*`, LLD §15.4). Unset means the LLD defaults. */
   readonly continuityBounds?: BundleBounds;
   /**
@@ -799,6 +815,11 @@ export class RunLifecycle {
         const active = sessionRuns.find((r) => !isTerminal(r.state));
         if (active) {
           throw new LifecycleError("INVALID_REQUEST", `meta-session ${metaSessionId} has an active run ${active.id}`);
+        }
+        // T14.5 (FR-CTL-07): a meta-session parked by the loop breaker admits no further run; start a new task instead.
+        const parked = parkedRefusal(this.ledger, metaSessionId);
+        if (parked) {
+          throw new LifecycleError("INVALID_REQUEST", parkedMessage(metaSessionId, parked));
         }
         // T5.6 (Delegated, fail closed): the bundle was built outside this transaction, so it must still describe the
         // session as it is now: the same runs and the same base and head. Otherwise a run admitted and finished in
@@ -2068,6 +2089,8 @@ export class RunLifecycle {
           { failure_code: outcome.code, failure_detail: outcome.detail, finished_at: finished },
           payload,
         );
+        // T14.5 (FR-CTL-07): the Nth identical failure parks the meta-session, before any successor is considered.
+        recordLoopPark(this.ledger, failed, this.opts.loopBreaker ?? DEFAULT_LOOP_BREAKER);
         // T6.5 (FRD T16, BR-6, BR-7): after the breaker step of the same transition, in the same transaction.
         this.scheduleRetry(failed, outcome.code, retryEligible);
       }
@@ -2503,6 +2526,13 @@ export class RunLifecycle {
       notScheduled("attempts_exhausted", { attempt: failed.attempt, max_attempts: settings.maxAttempts });
       return;
     }
+    // T14.5 (FR-CTL-07): a parked meta-session or a full successor cap admits no successor.
+    const refused = successorRefusal(this.ledger, failed, this.opts.loopBreaker ?? DEFAULT_LOOP_BREAKER);
+    if (refused) {
+      const { reason, ...extra } = refused;
+      notScheduled(reason, extra);
+      return;
+    }
     if (breakerAdmission(this.breakerOf(failed.provider), now) === "deny") {
       notScheduled("breaker_open");
       return;
@@ -2554,6 +2584,12 @@ export class RunLifecycle {
       const settings = this.opts.retry ?? DEFAULT_RETRY;
       if (failed.attempt >= settings.maxAttempts) {
         record({ outcome: "returned", reason: "attempts_exhausted" });
+        return;
+      }
+      // T14.5 (FR-CTL-07): failover and wait successors count toward the same cap and stop at a park.
+      const refused = successorRefusal(this.ledger, failed, this.opts.loopBreaker ?? DEFAULT_LOOP_BREAKER);
+      if (refused) {
+        record({ outcome: "returned", ...refused });
         return;
       }
       const routed = await this.failoverTarget(failed, notes);

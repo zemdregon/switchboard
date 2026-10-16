@@ -135,6 +135,8 @@ export interface SwitchboardConfig {
   capacity?: CapacityConfigInput;
   /** Routing (M7, T7.1; LLD §17.1, ADR-0044). Every key defaults to its LLD value (Assumptions, Q-80). */
   routing?: RoutingConfigInput;
+  /** Control plane (M14; LLD §3.4.6). T14.5 reads `loop_breaker`; every key defaults to its LLD Assumption value. */
+  control_plane?: ControlPlaneConfigInput;
   /** Notification sinks (M14, T14.9; FR-CTL-10, LLD §3.4.9, ADR-0048). Absent or empty means off: no outbound call. */
   notification_sinks?: NotificationSinkConfig[];
   /**
@@ -153,6 +155,15 @@ export interface RoutingConfigInput {
 
 /** LLD §17.1 bounds of each `routing.weights` value (Assumption, Q-80); the default of 1 lives in `src/routing/score.ts`. */
 export const MAX_ROUTING_WEIGHT = 100;
+
+/** `control_plane` as written in the config file (LLD §3.4.6); only `loop_breaker` so far (T14.5). */
+export interface ControlPlaneConfigInput {
+  loop_breaker?: {
+    identical_failure_threshold?: number;
+    stall_minutes?: number;
+    max_successors_per_meta_session?: number;
+  };
+}
 
 /** `capacity` as written in the config file (LLD §16.1). */
 export interface CapacityConfigInput {
@@ -501,6 +512,22 @@ export const configSchema = {
             max_attempts: { type: "integer", minimum: 1, maximum: 10 },
             base_ms: { type: "integer", minimum: 1, maximum: 600000 },
             cap_ms: { type: "integer", minimum: 1, maximum: 3600000 },
+          },
+        },
+      },
+    },
+    control_plane: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        // LLD §3.4.6 lower bounds; the upper bounds are Proposed sanity limits (T14.5, Delegated).
+        loop_breaker: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            identical_failure_threshold: { type: "integer", minimum: 2, maximum: 100 },
+            stall_minutes: { type: "integer", minimum: 1, maximum: 10080 },
+            max_successors_per_meta_session: { type: "integer", minimum: 1, maximum: 100 },
           },
         },
       },

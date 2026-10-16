@@ -22,8 +22,11 @@
  *
  * T14.2 (FR-CTL-03, LLD §3.4.5): when the caller passes needs-attention options (`get_run`, `list_runs`), the envelope
  * carries `needs_attention`, derived on read by `src/control/needs-attention.ts` from ledger rows only; nothing is stored.
+ * T14.5 (FR-CTL-07): unless the caller passes its own `control` facts, `parked_loop` reads the loop breaker's park
+ * events (`src/control/loop-attention.ts`).
  */
 
+import { loopBreakerControlFacts } from "../control/loop-attention.js";
 import {
   type ControlPlaneFacts,
   type NeedsAttention,
@@ -148,7 +151,14 @@ export function buildEnvelope(
     usage: { reported: reportedUsage(ledger, run.id), estimated: null, capacity_confidence: null },
     ...approvalOf(ledger, run),
     ...retryLinks(ledger, run),
-    ...(attention !== undefined ? { needs_attention: needsAttentionOf(ledger, run, attention) } : {}),
+    ...(attention !== undefined
+      ? {
+          needs_attention: needsAttentionOf(ledger, run, {
+            ...attention,
+            control: attention.control ?? loopBreakerControlFacts(ledger),
+          }),
+        }
+      : {}),
   };
 }
 

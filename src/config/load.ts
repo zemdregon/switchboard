@@ -9,6 +9,7 @@ import type { ModelConfig } from "../models/registry.js";
 import { ProfileOverrideError, validateProfileOverrides } from "../policy/profiles.js";
 import type { ProfileOverride, ProfileOverrides } from "../policy/types.js";
 import { type CapacitySettings, checkCapacity, resolveCapacity } from "./capacity.js";
+import { type ControlPlaneSettings, resolveControlPlane } from "./control-plane.js";
 import { ConfigError } from "./errors.js";
 import { checkHttpTransport, type HttpTransportSettings, resolveHttpTransport } from "./http-transport.js";
 import { checkInnerAgent, type InnerAgentSettings, resolveInnerAgent } from "./inner-agent.js";
@@ -103,6 +104,8 @@ export interface ResolvedConfig {
   capacity: CapacitySettings;
   /** Routing settings (M7, T7.1; LLD §17.1), always set, defaulted per key. */
   routing: RoutingSettings;
+  /** Control-plane settings (M14, T14.5; LLD §3.4.6), always set, defaulted per key. */
+  controlPlane: ControlPlaneSettings;
   /**
    * Validated `transport.http` (T13.1; FR-MCP-12, ADR-0041). Absent unless the section sets `enabled: true`; absent
    * means `serve` opens no listener.
@@ -460,6 +463,7 @@ export function loadConfig(
     capacity: resolveCapacity(cfg.capacity),
     rag: resolveRag(cfg.rag),
     routing: resolveRouting(cfg.routing),
+    controlPlane: resolveControlPlane(cfg.control_plane),
     notificationSinks: resolveNotificationSinks(cfg.notification_sinks),
     claudeCodeGitChannel: cfg.providers?.["claude-code"]?.git_channel === true,
     profileOverrides,
