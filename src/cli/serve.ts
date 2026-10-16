@@ -97,6 +97,7 @@ import { DynamicProjectStore, innerSettingResolver } from "../projects/index.js"
 import { queueSchedulerSettingsFromConfig, runProjectWorkQueueTick } from "../queue/index.js";
 import { reconcile } from "../reconcile/index.js";
 import { pruneRagStores } from "../retrieval/store.js";
+import { createTelemetry } from "../telemetry/index.js";
 import { runRetentionGc, WorkspaceManager } from "../workspace/index.js";
 import { type CliIo, PROBE_ENV_ALLOWLIST } from "./io.js";
 import { applyOperatorRequests } from "./operator.js";
@@ -502,6 +503,7 @@ async function runDaemon(
   // T12.4 / T12.5: set below once background indexing has started; until then (and with no embedding backend) the
   // context-pack port answers `undefined` and a run is compiled without a pack.
   let rag: ServeRag | undefined;
+  const telemetry = createTelemetry(config); // inert until T8.2 submits the first completed span
   // T14.9 (FR-CTL-10, ADR-0048): notification sinks only when the operator configured one; none means no request at all.
   const sinks =
     config.notificationSinks.length === 0
@@ -777,6 +779,7 @@ async function runDaemon(
       log.error("lifecycle shutdown failed", { error: message(err) });
       code = 1;
     }
+    await telemetry.close();
     await sinks?.close(); // aborts deliveries in flight; never throws
     process.stdin.destroy(); // nothing reads stdin any more; do not let it hold the event loop open
     process.off("SIGINT", ignore);

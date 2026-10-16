@@ -128,6 +128,8 @@ export interface SwitchboardConfig {
   routing?: RoutingConfigInput;
   /** Notification sinks (M14, T14.9; FR-CTL-10, LLD §3.4.9, ADR-0048). Absent or empty means off: no outbound call. */
   notification_sinks?: NotificationSinkConfig[];
+  /** Optional OTLP/HTTP trace destination; absent or empty disables telemetry (LLD §7, T8.1). */
+  telemetry?: { otlp_endpoint?: string };
   /**
    * Outer sandbox (T3.1; LLD §8.4, ADR-0051). A profile listed in `required_profiles` is refused at admission unless
    * it can run inside the outer sandbox; absent or empty means nothing changes. `privileged` cannot be listed.
@@ -516,6 +518,11 @@ export const configSchema = {
       },
     },
     notification_sinks: notificationSinksSchema,
+    telemetry: {
+      type: "object",
+      additionalProperties: false,
+      properties: { otlp_endpoint: { type: "string" } },
+    },
     profiles: {
       type: "object",
       additionalProperties: false,
