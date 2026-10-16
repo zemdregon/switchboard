@@ -38,7 +38,8 @@
  * T3.12 (Proposed, Delegated): when the config sets `retention.days`, one retention GC pass (`runRetentionGc`) runs right
  * after reconciliation, before the lifecycle starts and MCP accepts calls (so no run can race it), and then every
  * `retention.interval` (default 24h). With `retention.days` unset nothing is collected, whatever the default value is.
- * A failing pass is logged and never stops serving; units are crash-safe and a later pass rolls them forward.
+ * A failing pass is logged and never stops serving; units are crash-safe and a later pass rolls them forward. Each pass
+ * then collects orphans (`collectOrphans`, ADR-0054): marked on first sighting, removed once marked for `retention.days`.
  *
  * T3.4: the operator poll also applies `approve`/`deny` records (`applyOperatorRequests`), and startup reconciliation
  * applies those recorded while no daemon ran.
@@ -121,7 +122,7 @@ import { queueSchedulerSettingsFromConfig, runProjectWorkQueueTick } from "../qu
 import { reconcile } from "../reconcile/index.js";
 import { pruneRagStores } from "../retrieval/store.js";
 import { createTelemetry } from "../telemetry/index.js";
-import { runRetentionGc, WorkspaceManager } from "../workspace/index.js";
+import { collectOrphans, runRetentionGc, WorkspaceManager } from "../workspace/index.js";
 import { type CliIo, PROBE_ENV_ALLOWLIST } from "./io.js";
 import { applyOperatorRequests } from "./operator.js";
 import { ragBackendFor, type ServeRag, startServeRag } from "./rag-index.js";
@@ -545,6 +546,22 @@ async function runDaemon(
         log.warn("retention gc unit failed", { session_id: e.sessionId, step: e.step, error: e.message });
       for (const c of r.collected)
         for (const w of c.warnings) log.warn("retention gc warning", { session_id: c.sessionId, warning: w });
+      const o = await collectOrphans({
+        db,
+        dataDir: config.dataDir,
+        days: config.retention.days,
+        ...(now ? { now: now() } : {}),
+      });
+      log.info("orphan gc finished", {
+        when,
+        marked: o.marked,
+        waiting: o.waiting,
+        worktrees_removed: o.removedWorktrees.length,
+        branches_removed: o.removedBranches.length,
+        errors: o.errors.length,
+      });
+      for (const e of o.errors) log.warn("orphan gc failed", { target: e.target, step: e.step, error: e.message });
+      for (const w of o.warnings) log.warn("orphan gc warning", { warning: w });
     } catch (err) {
       log.error("retention gc failed", { when, error: message(err) });
     } finally {

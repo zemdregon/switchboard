@@ -2287,13 +2287,18 @@ rows are kept, Q-19). It is wired three ways, none with a new config key. `docto
 the same by default (dry run); `--apply` collects, needs `retention.days` set in the config and the data-directory
 lock (so it is refused while `serve` runs). `serve` runs one pass after reconciliation, before the lifecycle starts or
 MCP accepts calls, and then every `retention.interval`, only when `retention.days` is set: unset means nothing is
-collected. Orphans are reported but not yet removed. The sweep does not count a publish ref
+collected. Orphans are removed by the same collecting passes (`gc --apply`, `serve`), never by `doctor` or the dry run
+(`collectOrphans`, [ADR-0054](../adr/0054-orphan-gc-mark-first-ledger-table.md)): the first pass that sees one records
+it in `gc_orphan` (ledger migration 19) and removes nothing; a later pass removes it once that mark is older than
+`retention.days`, in the session GC order (intent transaction that re-checks the ledger, removal, outcome), worktree
+directories first, then `git worktree prune`, then `switchboard/*` branches. Removal is refused through a symlinked
+`worktrees` or session directory; a symlinked orphan is unlinked, not followed. The sweep does not count a publish ref
 (`refs/heads/<prefix><sess>`, §12.3) of a meta-session that has a ledger row as an orphan; one whose session is
 unknown is still reported. GC marks first (R-42, decision 28): one transaction re-checks idleness, sets the
 meta-session `ARCHIVED` and appends the intent event, and admission refuses an `ARCHIVED` meta-session with
-`INVALID_REQUEST`; a marked, unfinished session is a candidate again and rolls forward. *Not built (T3.12 stays
-`Partial`, ROADMAP §6.5):* removing orphans after the retention period, as the paragraph above proposes; a test of the
-interval pass; a process-level `SIGKILL` mid-GC test (in-process crash injection at every step covers the order).
+`INVALID_REQUEST`; a marked, unfinished session is a candidate again and rolls forward. *Not built (no claim):* a test
+of the `serve` interval timer itself (each pass runs the same function as the tested startup pass); a process-level
+`SIGKILL` mid-GC test (in-process crash injection after every step, for sessions and orphans, covers the order).
 
 **Crash safety.** Order is intent row (with the `ARCHIVED` mark, one transaction), then Git action, then outcome
 row. On startup reconciliation (WF-8) a run in

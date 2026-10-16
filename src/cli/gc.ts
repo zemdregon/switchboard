@@ -10,6 +10,8 @@
  *   meta-session's runs, before its worktrees. A runtime that does not answer is skipped with `container_runtime`
  *   saying so (its containers are swept at the next `serve` start, T10.2); a runtime that answers but fails to remove
  *   stops that unit, keeping its worktrees for the next pass.
+ * - `--apply` also collects orphans (`collectOrphans`, ADR-0054): the first pass that sees one only marks it; a later
+ *   pass removes it once the mark is older than `retention.days`. The dry run only reports them.
  */
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -19,7 +21,14 @@ import { ConfigError, loadConfig, type ResolvedConfig } from "../config/index.js
 import { type ContainerRuntime, createDockerRuntime } from "../environment/index.js";
 import { LEDGER_FILE_NAME, openLedger } from "../ledger/index.js";
 import { acquireDataDirLock } from "../lock/index.js";
-import { findOrphans, type GcPlan, type GcResult, planRetentionGc, runRetentionGc } from "../workspace/index.js";
+import {
+  collectOrphans,
+  findOrphans,
+  type GcPlan,
+  type GcResult,
+  planRetentionGc,
+  runRetentionGc,
+} from "../workspace/index.js";
 import { type CliIo, JSON_SCHEMA_VERSION } from "./io.js";
 
 export interface GcReport {
@@ -49,7 +58,17 @@ export interface GcReport {
   readonly errors?: { session_id: string; step: string; message: string }[];
   /** Apply only, when a `container` project is configured but no runtime answered: containers were not removed. */
   readonly container_runtime?: string;
+  /** Orphans the sweep reports after this command (for `--apply`: what is left after removal). */
   readonly orphans: { worktrees: string[]; branches: { repo_root: string; branch: string }[] };
+  /** Apply only: orphan removal (LLD §5). An orphan is removed once it has been marked for `retention_days`. */
+  readonly orphans_collected?: {
+    marked: number;
+    waiting: number;
+    worktrees_removed: string[];
+    branches_removed: { repo_root: string; branch: string }[];
+    warnings: string[];
+    errors: { target: string; step: string; message: string }[];
+  };
 }
 
 const toUnits = (plan: GcPlan): GcReport["units"] =>
@@ -123,6 +142,7 @@ export async function runGcCommand(
         days,
         now,
       });
+      const o = await collectOrphans({ db, dataDir: config.dataDir, days, now });
       const orphans = await findOrphans({ db, dataDir: config.dataDir });
       return {
         schema_version: JSON_SCHEMA_VERSION,
@@ -143,6 +163,14 @@ export async function runGcCommand(
         errors: result.errors.map((e) => ({ session_id: e.sessionId, step: e.step, message: e.message })),
         ...(runtimeSkipped !== undefined ? { container_runtime: runtimeSkipped } : {}),
         orphans: orphanView(orphans),
+        orphans_collected: {
+          marked: o.marked,
+          waiting: o.waiting,
+          worktrees_removed: o.removedWorktrees,
+          branches_removed: o.removedBranches.map((b) => ({ repo_root: b.repoRoot, branch: b.branch })),
+          warnings: o.warnings,
+          errors: o.errors,
+        },
       };
     } finally {
       db.close();
@@ -197,9 +225,26 @@ export function renderGc(r: GcReport): string {
   if (r.container_runtime !== undefined) lines.push(`  containers: ${r.container_runtime}`);
   for (const e of r.errors ?? [])
     lines.push(`  ERROR ${e.session_id} at ${e.step}: ${e.message} (re-run to roll forward)`);
+  const oc = r.orphans_collected;
+  if (oc) {
+    const removed = oc.worktrees_removed.length + oc.branches_removed.length;
+    lines.push(
+      "",
+      `Orphans: ${removed} removed, ${oc.marked} newly marked, ${oc.waiting} waiting out the ${r.retention_days} day retention`,
+    );
+    for (const w of oc.worktrees_removed) lines.push(`  removed worktree directory ${w}`);
+    for (const b of oc.branches_removed) lines.push(`  removed branch ${b.branch} in ${b.repo_root}`);
+    for (const w of oc.warnings) lines.push(`  warning: ${w}`);
+    for (const e of oc.errors) lines.push(`  ERROR ${e.target} at ${e.step}: ${e.message} (re-run to roll forward)`);
+  }
   const n = r.orphans.worktrees.length + r.orphans.branches.length;
   if (n > 0) {
-    lines.push("", `Orphans (reported only, never removed): ${n}`);
+    lines.push(
+      "",
+      r.mode === "dry-run"
+        ? `Orphans (--apply marks them and removes each once marked for ${r.retention_days} days): ${n}`
+        : `Orphans remaining: ${n}`,
+    );
     for (const w of r.orphans.worktrees) lines.push(`  worktree directory ${w}`);
     for (const b of r.orphans.branches) lines.push(`  branch ${b.branch} in ${b.repo_root}`);
   }

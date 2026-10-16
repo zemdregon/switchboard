@@ -1,4 +1,5 @@
 export {
+  collectOrphans,
   findOrphans,
   type GcOptions,
   type GcPlan,
@@ -6,6 +7,9 @@ export {
   type GcResult,
   type GcStep,
   type GcUnitResult,
+  type OrphanGcOptions,
+  type OrphanGcResult,
+  type OrphanGcStep,
   type OrphanReport,
   planRetentionGc,
   runRetentionGc,

@@ -245,6 +245,7 @@ const listIds = (ids: readonly string[]): string =>
  * Retention and orphan reporting (T3.12; FR-WS-07, LLD §5). Strictly read-only: the ledger is opened read-only and
  * nothing is deleted. Reports which meta-sessions the configured retention would collect (`switchboard gc` shows the
  * detail, `gc --apply` collects) and the orphan sweep: worktree directories or `switchboard/*` branches with no ledger row.
+ * Orphans are removed by `gc --apply` and `serve` (`collectOrphans`), never here.
  */
 async function checkRetentionAndOrphans(cfg: ResolvedConfig, now: Date): Promise<DoctorCheck[]> {
   const file = path.join(cfg.dataDir, LEDGER_FILE_NAME);
@@ -293,7 +294,7 @@ async function checkRetentionAndOrphans(cfg: ResolvedConfig, now: Date): Promise
             "orphans",
             "Orphan sweep",
             "warn",
-            `${n} orphan(s) with no ledger row, reported only (never removed): ${listIds(parts)}${warn}`,
+            `${n} orphan(s) with no ledger row (${cfg.retentionEnabled ? `gc --apply or serve removes each once marked for ${cfg.retention.days} days` : "not removed: retention.days is not set"}): ${listIds(parts)}${warn}`,
           ),
     );
     return out;

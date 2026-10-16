@@ -22,6 +22,7 @@ const EXPECTED_TABLES = [
   "control_plane_event",
   "control_plane_state",
   "decision",
+  "gc_orphan",
   "git_commit",
   "git_push",
   "http_subject",
