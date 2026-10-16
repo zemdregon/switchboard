@@ -52,10 +52,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   benefit is claimed). Real-provider model flags wait for adapter work. See
   [Routing and affinity](#routing-and-affinity) and [ROADMAP §6.12](docs/ROADMAP.md#612-m7-routing-tasks).
 - **Milestone 8 (hardening) is `Partial`.** Optional OTLP trace export (`telemetry.otlp_endpoint`, off by default) and
-  lazy exporter load (T8.1), the operator version canary (T8.5) and a CI test that excludes routing after a synthetic
-  binary version bump until `adapters validate` records the version (T8.6) and the export-time attribute allowlist
-  that drops any key not listed in LLD §7 before export (T8.4) are done on fakes. Wrapper span emission, the collector
-  integration test and full M8 acceptance closure (T8.2, T8.3, T8.7) are not done. See
+  lazy exporter load (T8.1), wrapper span emission (T8.2), the export-time attribute allowlist that drops any key not
+  listed in LLD §7 before export (T8.4), the operator version canary (T8.5) and a CI test that excludes routing after a
+  synthetic binary version bump until `adapters validate` records the version (T8.6) are done on fakes. The collector
+  integration test and full M8 acceptance closure (T8.3, T8.7) are not done. See
   [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and
   [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
 - **Milestone 10 (container environments) is `Partial`.** The environment port, orphan sweep, malicious-fixture
@@ -442,8 +442,8 @@ listens for telemetry. Invalid URLs are rejected at config load without echoing 
 only allowlisted attributes from controller-observed facts (prompts, commands and credentials never belong on spans);
 see [LLD §7](docs/design/LLD.md#7-telemetry-spans) and [ADR-0012](docs/adr/0012-telemetry-at-wrapper-boundary.md).
 Before export, Switchboard drops any span attribute whose key is not on the LLD §7 allowlist (T8.4,
-`src/telemetry/allowlist.ts`). Emitting `controller.delegate`, `provider.spawn` and related spans at the wrapper
-boundary (T8.2) and proving export through a test collector without forbidden keys (T8.3) are not built yet.
+`src/telemetry/allowlist.ts`). `controller.delegate` and `provider.spawn` spans are emitted at the wrapper boundary
+(T8.2); proving export through a test collector without forbidden keys (T8.3) is not built yet.
 
 **Version canary (T8.5).** Switchboard records each enabled provider's probed CLI version under the data directory
 (`version-canary.json`). A version change marks the adapter `ADAPTER_VERSION_UNVERIFIED` until you run
