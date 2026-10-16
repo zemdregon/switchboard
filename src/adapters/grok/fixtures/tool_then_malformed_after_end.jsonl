@@ -1,0 +1,5 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.23 residual, eleventh pass). A clean end_turn, then a benign run_terminal_command tool_call after the end line, then a malformed line that ends the run protocol_error in the supervisor. The tool-call field names are Assumptions (no tool_call shape was recorded live). Pins the gap: the run fails OUTPUT_PROTOCOL_ERROR, but the trailing-tool detail replaces the supervisor's unparseable-output detail.","exit":0}}
+{"type":"text","data":"Listed the files."}
+{"type":"end","stopReason":"end_turn","sessionId":"00000000-0000-4000-8000-000000000001","requestId":"req_synthetic_1","usage":{"input_tokens":8,"output_tokens":2,"total_tokens":10},"num_turns":1}
+{"type":"tool_call","id":"t1","name":"run_terminal_command","input":{"command":"ls"}}
+SYNTHETIC deliberately malformed trailing JSON {
