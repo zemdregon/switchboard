@@ -263,6 +263,31 @@ describe("T11.6 quality monitoring and suspension", () => {
     expect((await b.svc.call(contract(), { user: "x" })).accepted).toBe(true);
   });
 
+  it("roadmap 'Done when': every call after the suspension falls back, with a good backend, until re-enabled", async () => {
+    const s = setup({ window_calls: 4, min_calls: 4, rejection_threshold: 0.5 });
+    const { svc, ledger, backend } = s.open();
+    backend.setScript([BAD]);
+    for (let i = 0; i < 4; i++) await svc.call(contract(), { user: "x", run_id: s.runId }); // 4/4 > 0.5
+    expect(svc.isSuspended("run_title")).toBe(true);
+
+    // the backend would now answer well, but a suspended task never reaches it
+    backend.setScript([GOOD]);
+    const requests = backend.requests.length;
+    for (let i = 0; i < 5; i++) {
+      const r = await svc.call(contract(), { user: "x", run_id: s.runId });
+      expect(r).toMatchObject({ accepted: false, fallback: "fallback", outcome: "fallback_suspended" });
+    }
+    expect(backend.requests.length).toBe(requests);
+    expect(outcomes(ledger).slice(-5)).toEqual(Array(5).fill("fallback_suspended"));
+    expect(svc.isSuspended("run_title")).toBe(true);
+
+    // re-enabled: the next call reaches the backend again and its answer is used
+    expect(svc.resumeTask("run_title")?.suspended).toBe(false);
+    const r = await svc.call(contract(), { user: "x", run_id: s.runId });
+    expect(r).toMatchObject({ accepted: true, value: { title: "Fix login" }, outcome: "accepted" });
+    expect(backend.requests.length).toBe(requests + 1);
+  });
+
   it("without a ledger there is no state: never suspended, resume is a no-op", async () => {
     const settings = resolveInnerAgent({
       enabled: true,
