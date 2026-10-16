@@ -2243,6 +2243,22 @@ Shutdown closes only an initialized transport. Wrapper emission and attribute bu
 attribute filter remains T8.4. Tests: `src/config/config.test.ts`, `src/telemetry/index.test.ts` and
 `src/cli/serve.test.ts` (startup with OTel imports rejected).
 
+**T8.2 wrapper emission (2026-10-16, Delegated agent work, not owner-approved).** `src/telemetry/spans.ts` holds the
+builders and the per-process `SpanTracker`: `controller.delegate` starts at each non-replayed admission (`submit`)
+and completes on the terminal transition (`tryMove`, one funnel for every terminal path) with `run.id`,
+`session.id`, `provider`, `trust_profile`, the T7.12 pinned `model` when set, `retry.attempt` for a successor
+(attempt > 1), `run.state` and `failure.code` on failure; `provider.spawn` starts in the spawn callback (T9,
+`onSpawn`) and completes when the supervised process exits with `adapter.version` (preflight), `model`,
+`transport`, `exit.code` and `exit.signal`. Both carry `duration_ms` beside the intrinsic span start/end times.
+Builders accept only typed controller-observed facts, so prompt, constraints, command lines, env values and
+stdout/stderr text have no path onto a span by construction (FR-TEL-03, ADR-0012); no provider transcript or global
+hook config is read. `RunLifecycle` takes an optional `Telemetry` (unset = no emission, fire-and-forget when set);
+`serve` passes the T8.1 instance. A run whose process never spawned (spawn error) exports no `provider.spawn` span;
+a run admitted before telemetry existed exports nothing. Spans currently export as roots; parent links and the
+forbidden-key collector assertions are T8.3, and the export-time allowlist drop filter is T8.4. Tests:
+`src/telemetry/spans.test.ts` (fake-adapter run through the lifecycle into an in-process OTLP collector, a planted
+objective canary asserted absent from every attribute and raw OTLP body, and builder/tracker unit tests).
+
 **Collector test harness (T8.3, M8 acceptance).** Shape for the integration test, without requiring a provider CLI:
 
 1. Start an in-process OTLP/HTTP receiver on loopback with an ephemeral port (or equivalent test fixture).

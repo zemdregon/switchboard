@@ -197,6 +197,8 @@ import {
   reasonCodeForIneligible,
   requirementsFor,
 } from "../routing/index.js";
+import type { Telemetry } from "../telemetry/index.js";
+import { type DelegateSpanFacts, SpanTracker } from "../telemetry/spans.js";
 import { usageObservationsFromEvents } from "../usage/index.js";
 import { gitText } from "../workspace/git.js";
 import { type PreparedWorkspace, ResumeDirectoryUnavailableError, type WorkspaceManager } from "../workspace/index.js";
@@ -490,6 +492,11 @@ export interface RunLifecycleOptions {
   readonly leaseTtlMs?: number;
   /** Observer for every committed transition (tests, telemetry). Must not throw. */
   readonly onTransition?: (notice: TransitionNotice) => void;
+  /**
+   * T8.2 (FR-TEL-02, LLD §7, ADR-0012): completed-span sink for wrapper-boundary span export. Unset (or an endpoint
+   * absent from the config) means no span emission; either way emission is fire-and-forget and never fails a run.
+   */
+  readonly telemetry?: Telemetry;
   /** Injectable clock for `started_at` / `finished_at`. */
   readonly now?: () => Date;
   /**
@@ -704,6 +711,8 @@ export class RunLifecycle {
   /** T6.4: one timer for the earliest moment a held run may become dispatchable (breaker cool-down). */
   private wakeTimer: ReturnType<typeof setTimeout> | undefined;
   private wakeAt: number | undefined;
+  /** T8.2: wrapper-boundary span tracker; inert when no telemetry sink is configured. */
+  private readonly spans: SpanTracker;
 
   constructor(private readonly opts: RunLifecycleOptions) {
     if (!Number.isInteger(opts.globalConcurrency) || opts.globalConcurrency < 1) {
@@ -713,6 +722,7 @@ export class RunLifecycle {
     this.runner = opts.probeRunner ?? createProbeRunner();
     this.maxQueueDepth = opts.maxQueueDepth ?? DEFAULT_MAX_QUEUE_DEPTH;
     this.refGuard = opts.refGuard ?? new RefGuard({ ledger: opts.ledger });
+    this.spans = new SpanTracker(opts.telemetry);
   }
 
   // ---- public API ---------------------------------------------------------------------------------------------
@@ -764,6 +774,8 @@ export class RunLifecycle {
       req.requestHash ?? requestHash(priv?.kind === "request" ? { ...stored, privileged_scope: priv.scope } : stored);
     const initial: RunState = priv?.kind === "request" && !priv.clientPolicy ? "AWAITING_APPROVAL" : "QUEUED";
     const profile = priv === undefined ? this.opts.resolveProfile(req.trustProfile) : undefined;
+    // T8.2: the delegation span covers admission-to-terminal for one accepted request; a replay reuses the prior run.
+    const admittedAt = this.now().getTime();
 
     const result = this.ledger.immediate((): SubmitResult => {
       // T5.5: a handoff run's request names its view, whose id is allocated here so both rows share this transaction.
@@ -929,7 +941,10 @@ export class RunLifecycle {
       }
       return { runId: run.id, metaSessionId, state: initial, replayed: false };
     });
-    if (!result.replayed) queueMicrotask(() => this.pump());
+    if (!result.replayed) {
+      this.spans.delegateStarted(result.runId, admittedAt);
+      queueMicrotask(() => this.pump());
+    }
     return result;
   }
 
@@ -1648,6 +1663,8 @@ export class RunLifecycle {
 
     // RUNNING (T9): pid/pgid persisted in the same transaction, before any output is read (LLD §8).
     let spawned = false;
+    // T8.2: the provider.spawn span covers the observed process lifetime (onSpawn to process exit).
+    let spawnStartedAt: number | undefined;
     let out: AdapterRunOutcome;
     try {
       let agent: AdapterRun;
@@ -1677,6 +1694,8 @@ export class RunLifecycle {
               { pid, pgid },
             );
             spawned = true;
+            spawnStartedAt = this.now().getTime();
+            this.spans.spawnStarted(runId, spawnStartedAt);
           },
           onEvent: (ev) => {
             if (ev.kind === "session_bound") {
@@ -1710,7 +1729,29 @@ export class RunLifecycle {
         throw err;
       }
       exec.handle = agent;
-      out = await agent.done;
+      try {
+        out = await agent.done;
+      } catch (err) {
+        // T8.2: the process outcome was never observed; drop the span start instead of inventing exit facts.
+        this.spans.discardSpawn(runId);
+        throw err;
+      }
+      if (spawnStartedAt !== undefined) {
+        // T8.2: complete provider.spawn from the observed exit; a spawn error never reached onSpawn, so no span starts.
+        this.spans.spawnFinished(runId, this.now().getTime(), {
+          runId,
+          sessionId: run0.meta_session_id,
+          provider: req.provider,
+          trustProfile: run0.trust_profile,
+          adapterVersion: binaryVersion ?? undefined,
+          ...(req.model !== undefined ? { model: req.model } : {}),
+          transport: inv.transport,
+          attempt: run0.attempt,
+          exitCode: out.exit.exitCode,
+          exitSignal: out.exit.signal,
+        });
+        spawnStartedAt = undefined;
+      }
     } finally {
       // LLD §12.2: the socket is closed and removed when the run leaves RUNNING; calls in progress finish first.
       await channel?.close();
@@ -2348,7 +2389,10 @@ export class RunLifecycle {
       },
     });
     if (!moved) return undefined;
-    if (isTerminal(to)) this.recordBreakerOutcome(moved);
+    if (isTerminal(to)) {
+      this.recordBreakerOutcome(moved);
+      this.endDelegateSpan(moved);
+    }
     if (to === "SUCCEEDED") {
       this.recordAffinity(moved);
       const workItem = this.ledger.findWorkItemByAdmittedRunId(moved.id);
@@ -2357,6 +2401,31 @@ export class RunLifecycle {
     this.opts.onTransition?.({ runId: run.id, from: run.state, to, rule: rule.id });
     if (isTerminal(to)) queueMicrotask(() => this.settle(run.id));
     return moved;
+  }
+
+  /**
+   * T8.2 (FR-TEL-02, LLD §7, ADR-0012): complete the run's `controller.delegate` span from the terminal row.
+   * Only controller-observed facts are used; the stored request is parsed for the pinned model alone and the
+   * objective/constraints never reach the span builders.
+   */
+  private endDelegateSpan(run: RunRecord): void {
+    let model: string | undefined;
+    try {
+      model = (JSON.parse(run.request_json) as StoredRequest).model;
+    } catch {
+      // A span is best effort: a request that cannot be parsed exports without the model attribute.
+    }
+    const facts: DelegateSpanFacts = {
+      runId: run.id,
+      sessionId: run.meta_session_id,
+      provider: run.provider,
+      trustProfile: run.trust_profile,
+      ...(model !== undefined ? { model } : {}),
+      attempt: run.attempt,
+      terminalState: run.state,
+      failureCode: run.failure_code,
+    };
+    this.spans.delegateFinished(run.id, this.now().getTime(), facts);
   }
 
   // ---- per-provider breaker (T6.4; FR-CAP-04, LLD §16.4) ------------------------------------------------------
