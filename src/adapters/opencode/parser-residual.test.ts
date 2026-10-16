@@ -28,6 +28,9 @@
  * one; duplicate JSON keys resolve to the last one; line types match exactly (case/whitespace variants are unknown); an
  * empty text part emits no message and counts nothing unknown; a BOM line is unparseable framing; token metrics read
  * from part.tokens only (root tokens dropped, non-negative fractions kept); and summary takes the last 2,000 characters.
+ * Seventh pass (2026-10-16, same terms): custom command value/status boundaries, resume id/vendor mismatches,
+ * non-stop finishes after stop, and late errors that a later stop cannot erase. These pin observed synthetic
+ * behaviour, including gaps; no new native shape or production fix is claimed.
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -1564,5 +1567,174 @@ describe("opencode parser residuals, sixth pass: fallback tools, input shapes, t
       category: "quota",
       message: "provider.quota: synthetic",
     });
+  });
+});
+
+describe("opencode parser residuals, seventh pass: custom command boundaries, resume backing mismatches and late finishes (T4.53; synthetic lines; parser unchanged)", () => {
+  it("custom tools require a string input.command: empty strings are retained, alternate keys and non-strings are dropped", () => {
+    for (const command of ["", "printf synthetic", "git push origin main"]) {
+      const { events } = parse([START(SID), TOOL("mcp__terminal__run", { command }), FINISH("stop")]);
+      expect(
+        events.find((e) => e.kind === "tool_call"),
+        command,
+      ).toEqual({
+        kind: "tool_call",
+        tool: "shell",
+        name: "mcp__terminal__run",
+        command,
+      });
+      expect(
+        adapter().extractResult(
+          events.map((e) => guardEvent(e, { cwd: "/work/tree", bypass: true })),
+          EXIT_OK,
+        ),
+      ).toMatchObject(command.startsWith("git") ? { ok: false, failureCode: "PERMISSION_BLOCKED" } : { ok: true });
+    }
+    for (const input of [
+      { command: ["git", "push"] },
+      { command: { command: "git push" } },
+      { command: null },
+      { command: false },
+      { command: 7 },
+      { cmd: "git push" },
+      { commands: ["git push"] },
+    ]) {
+      const lines = [START(SID), TOOL("mcp__terminal__run", input), FINISH("stop")];
+      expect(
+        parse(lines).events.find((e) => e.kind === "tool_call"),
+        line(input),
+      ).toEqual({
+        kind: "tool_call",
+        tool: "other",
+        name: "mcp__terminal__run",
+      });
+      // Gap: these synthetic command shapes never reach the guard as commands.
+      expect(adapter().extractResult(guarded(lines), EXIT_OK), line(input)).toMatchObject({ ok: true });
+    }
+  });
+
+  it("custom command extraction ignores tool status and output: pending and failed calls still reach the Git guard", () => {
+    for (const status of ["pending", "running", "error", "completed", undefined]) {
+      const call = {
+        type: "tool_use",
+        part: {
+          tool: "custom_exec",
+          state: { status, input: { command: "git push origin main" }, output: "not executed" },
+        },
+      };
+      expect(parse([call]).events).toEqual([
+        { kind: "tool_call", tool: "shell", name: "custom_exec", command: "git push origin main" },
+      ]);
+      expect(
+        adapter().extractResult(guarded([START(SID), call, FINISH("stop")]), EXIT_OK),
+        String(status),
+      ).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: SID });
+    }
+  });
+
+  it("custom names remain other without a command, including prototype names and a shell prefix", () => {
+    for (const name of ["constructor", "__proto__", `bash${"x".repeat(70)}`]) {
+      const { events } = parse([TOOL(name, { command: "printf synthetic" })]);
+      expect(events).toEqual([
+        {
+          kind: "tool_call",
+          tool: "shell",
+          name: name.length > 64 ? `${name.slice(0, 64)}…` : name,
+          command: "printf synthetic",
+        },
+      ]);
+      expect(parse([TOOL(name, {})]).events).toEqual([
+        {
+          kind: "tool_call",
+          tool: "other",
+          name: name.length > 64 ? `${name.slice(0, 64)}…` : name,
+        },
+      ]);
+    }
+  });
+
+  it("pins the resume gap: another id and backing vendor on the first line succeed; the requested id returning later fails", () => {
+    const req: CompileRequest = {
+      runId: "run_opencode_t453_seventh",
+      objective: "resume synthetic",
+      constraints: [],
+      workspace: { cwd: "/work/tree", writable: true },
+      bypassApproved: true,
+    };
+    const binding = {
+      provider: "opencode",
+      nativeSessionId: SID,
+      backingProvider: "old-vendor",
+      model: "old-model",
+    } as const;
+    const invocation = adapter().resumeArgs(binding, req, PRIVILEGED_BYPASS_PROFILE);
+    if ("ineligible" in invocation) throw new Error(invocation.detail);
+    expect(invocation.argv.slice(-4)).toEqual(["--session", SID, "--", req.objective]);
+    expect(invocation.argv).not.toContain("old-vendor");
+    expect(invocation.argv).not.toContain("old-model");
+    const first = { ...START(OTHER), backing_provider: "new-vendor", model: "new-model" };
+    const mismatch = parse([first, FINISH("stop", "prt_other", OTHER)]);
+    expect(mismatch.events.filter((e) => e.kind === "session_bound")).toEqual([
+      { kind: "session_bound", nativeSessionId: OTHER, backingProvider: "new-vendor", model: "new-model" },
+    ]);
+    expect(adapter().extractResult(mismatch.events, EXIT_OK)).toEqual({
+      ok: true,
+      nativeSessionId: OTHER,
+      unknownEventCount: 0,
+    });
+    const returned = parse([first, FINISH("stop", "prt_requested", SID)]);
+    expect(returned.events.filter((e) => e.kind === "session_bound")).toEqual(
+      mismatch.events.filter((e) => e.kind === "session_bound"),
+    );
+    expect(adapter().extractResult(returned.events, EXIT_OK)).toMatchObject({
+      ok: false,
+      nativeSessionId: OTHER,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: session id changed mid-run",
+    });
+  });
+
+  it("pins the gap: a non-stop finish after stop records usage but never revokes that stop, even with an unknown reason", () => {
+    for (const reason of ["tool-calls", "length", "", "STOP"]) {
+      const { events } = parse([START(SID), FINISH("stop", "prt_stop"), FINISH(reason, "prt_late")]);
+      expect(events.filter((e) => e.kind === "result")).toEqual([{ kind: "result", ok: true }]);
+      expect(events.filter((e) => e.kind === "usage")).toHaveLength(2);
+      expect(adapter().extractResult(events, EXIT_OK), reason).toEqual({
+        ok: true,
+        nativeSessionId: SID,
+        unknownEventCount: 0,
+      });
+      // A non-stop finish also cannot repair a trailing tool: only a later stop resets the trailing boundary.
+      const withTool = [START(SID), FINISH("stop"), TOOL("read", { path: "late.txt" }), FINISH(reason)];
+      expect(adapter().extractResult(parse(withTool).events, EXIT_OK), reason).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "tool call after the final stop step",
+      });
+    }
+  });
+
+  it("late errors survive a later stop and fresh usage; stream order still chooses the first error", () => {
+    for (const [first, second, code] of [
+      ["provider.auth", "provider.quota", "AUTH_REQUIRED"],
+      ["provider.quota", "provider.auth", "QUOTA_EXHAUSTED"],
+    ] as const) {
+      const { events } = parse([
+        START(SID),
+        FINISH("stop", "prt_initial"),
+        ERROR(first),
+        FINISH("tool-calls", "prt_intermediate"),
+        ERROR(second),
+        FINISH("stop", "prt_final"),
+      ]);
+      expect(events.filter((e) => e.kind === "result")).toHaveLength(2);
+      expect(events.filter((e) => e.kind === "usage")).toHaveLength(3);
+      expect(events.at(-1)).toEqual({ kind: "result", ok: true });
+      expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({
+        ok: false,
+        failureCode: code,
+        nativeSessionId: SID,
+      });
+    }
   });
 });
