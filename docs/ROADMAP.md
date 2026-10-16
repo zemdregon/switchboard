@@ -2252,7 +2252,7 @@ the registry, never the rows). Each pin was shown to fail under the drift it gua
 the #509 half-open probe pin; the suspension check skipped before the request fails the new suspension test, the
 `src/inner/usage.test.ts` suspension row pin and the #509 `rejected_sanitiser` pin; `get_capacity` letting an
 unregistered provider through fails only the new refusal test. Opened as
-[PR #PRNUM](https://github.com/zemdregon/switchboard/pull/PRNUM). T11.5 stays **Done on fakes**; the live-backend
+[PR #518](https://github.com/zemdregon/switchboard/pull/518). T11.5 stays **Done on fakes**; the live-backend
 residual (T11.13) is the only one left.
 
 **T11.8 status (2026-10-13; Delegated): Done on fakes. No live inner backend, provider CLI, pull-request API or network
