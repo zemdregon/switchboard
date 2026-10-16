@@ -79,6 +79,9 @@
  *   list, or a live dynamic project it created): an id it may not use is PERMISSION_BLOCKED; any other id, including
  *   another client's dynamic project, is INVALID_REQUEST, like an unknown run. Rows are newest first (`created_at`,
  *   then `run_id`, both descending); the cursor is an opaque keyset position (Delegated).
+ * - `get_digest` (T14.3; FR-CTL-02, FR-TEL-01, LLD §3.4.3) is read-only and scoped as `get_run`: its cursor is a
+ *   `run_event.id` of this caller's own runs, and run summaries arrive only as labelled, capped untrusted text
+ *   (`./digest.ts` holds the Proposed assembly rules).
  */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -154,6 +157,7 @@ import {
   withModelPin,
 } from "../routing/index.js";
 import { gitText } from "../workspace/git.js";
+import { assembleDigest } from "./digest.js";
 import { buildEnvelope, compactEvents, type Envelope } from "./envelope.js";
 import { errorEnvelope, invalid, ToolError, toToolError } from "./errors.js";
 import type { SubjectBindings } from "./http-subjects.js";
@@ -1057,6 +1061,23 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     };
   };
 
+  /** T14.3 (FR-CTL-02, LLD §3.4.3): see `./digest.ts`; scoped exactly as `get_run` and `list_runs`. */
+  const getDigest = async (a: Args) =>
+    assembleDigest(
+      ledger,
+      {
+        clientId: deps.clientId,
+        visible: (run) => ownSubject(run.meta_session_id),
+        projectIds: [
+          ...projectsForClient(deps.config.projects ?? [], client).map((p) => p.id),
+          ...(projectTools?.listForClient().map((e) => e.project.id) ?? []),
+        ],
+      },
+      a.since_cursor as string | undefined,
+      scrub,
+      attentionAt(),
+    );
+
   const cancelRun = async (a: Args): Promise<Envelope> => {
     const run = ownRun(a.run_id as string);
     await lifecycle.cancel(run.id, (a.reason as string | undefined) ?? "cancel_run");
@@ -1272,6 +1293,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     get_capacity: getCapacity,
     explain_route: explainRouteTool,
     list_runs: listRuns,
+    get_digest: getDigest,
   };
 
   const ok = (value: object): CallToolResult => ({
