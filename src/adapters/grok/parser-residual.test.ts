@@ -34,6 +34,11 @@
  * third `end` still fail the run, and the guard outranks both anomalies), hostile token shapes (`__proto__` keys
  * never forge a field, `-0` and the largest double are recorded, clips split a surrogate pair: pinned), and the resume
  * round trip (the returned id compiles back, binding model and vendor ignored, a newline-split prompt stays one word).
+ * Tenth pass: fail-closed order after `end` (the order check needs a counted `end`; its detail replaces an unsafe-id
+ * anomaly, replayed end to end: pinned gap; it never replaces a supervisor outcome or an unexpected exit; a native-login
+ * read after `end` is failed by the order check in a bypass run and by the guard otherwise; a Git write after a line
+ * break in the command is blocked), hostile token shapes (prototype-named call ids, clipped stopReason and error
+ * details, non-ASCII and control code points in a session id), and resume argv parity (flag-value ids, empty objective).
  */
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -41,7 +46,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { runConformanceCase } from "../conformance.js";
 import { privilegedProfile } from "../fixtures/privileged.js";
-import { guardEvent } from "../tool-guard.js";
+import { guardEvent, type ToolGuardContext } from "../tool-guard.js";
 import type { ParseState } from "../types.js";
 import { GROK_BYPASS_NOT_APPROVED, GROK_ENV_ALLOWLIST, GrokAdapter } from "./adapter.js";
 import {
@@ -1573,5 +1578,210 @@ describe("grok parser residuals, ninth pass: fail-closed order after `end`, resu
     expect(resumed.argv.filter((w) => w.startsWith("--single"))).toEqual([`--single=${objective}`]);
     expect(resumed.argv.filter((w) => w === "-r" || w === "--always-approve")).toEqual(["--always-approve", "-r"]);
     expect(resumed.argv.slice(-2)).toEqual(["-r", SID]);
+  });
+});
+
+describe("grok parser residuals, tenth pass: fail-closed order after `end`, resume argv parity and hostile token shapes (T4.23, synthetic lines; parser unchanged)", () => {
+  const bypassCtx: ToolGuardContext = { cwd: "/w", bypass: true };
+  const guarded = (lines: (string | object)[], ctx = bypassCtx) => parse(lines).events.map((e) => guardEvent(e, ctx));
+  const approved = { ...PRIVILEGED_BYPASS_PROFILE, bypassApproved: true };
+  const req = {
+    runId: "run_grok_t423_residual",
+    objective: "synthetic grok objective",
+    constraints: [],
+    workspace: { cwd: "/w", writable: true },
+    bypassApproved: true,
+  };
+  const call = (o: object) => line({ type: "tool_call", name: "run_terminal_command", ...o });
+  const LS = call({ id: "t1", input: { command: "ls" } });
+
+  it("the order check needs a counted `end`: a tool call after an `end` with a non-string stopReason is `no result event`", () => {
+    for (const stopReason of [7, null, { reason: "end_turn" }, ["end_turn"]]) {
+      const { events, state } = parse([line({ ...END, stopReason }), LS]);
+      const label = JSON.stringify(stopReason);
+      // The uncounted `end` is an unknown, so it binds no id and the tool call has no result before it.
+      expect(state, label).toEqual({ lines: 2, unknownEvents: 1 });
+      expect(adapter().extractResult(events, EXIT_OK), label).toEqual({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "no result event",
+        unknownEventCount: 1,
+      });
+    }
+    // Contrast: an uncounted `end` after a counted one leaves the counted result in place, so the order check fires.
+    const after = parse([line(END), line({ ...END, stopReason: 7 }), LS]).events;
+    expect(adapter().extractResult(after, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the end line",
+      unknownEventCount: 1,
+      nativeSessionId: SID,
+    });
+  });
+
+  it("pins the gap: the trailing-tool detail replaces an unsafe session-id anomaly, and no id is returned either way", () => {
+    const unsafe = line({ ...END, sessionId: "-r" });
+    expect(adapter().extractResult(parse([unsafe]).events, EXIT_OK)).toEqual({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: session id is not a safe argument",
+      unknownEventCount: 0,
+    });
+    expect(adapter().extractResult(parse([unsafe, LS]).events, EXIT_OK)).toEqual({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the end line",
+      unknownEventCount: 0,
+    });
+  });
+
+  it("fixture unsafe_id_then_tool replays an unsafe-id end_turn and a later tool call to OUTPUT_PROTOCOL_ERROR (gap)", async () => {
+    const report = await runConformanceCase({
+      kind: "task_failure",
+      adapter: replayAdapter("unsafe_id_then_tool"),
+      request: { ...req, workspace: { cwd: makeCwd(), writable: true } },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: {
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "tool call after the end line",
+        nativeSessionId: null,
+      },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: false, unknownEventCount: 0, summary: "Listed the files." });
+    expect(report.result).not.toHaveProperty("nativeSessionId");
+  });
+
+  it("the trailing-tool detail is used only under OUTPUT_PROTOCOL_ERROR: supervisor outcomes and unexpected exits keep theirs", () => {
+    const events = parse([line(END), LS]).events;
+    for (const [exit, code, detail] of [
+      [{ ...EXIT_OK, outcome: "cancelled" }, "CANCELLED", "run cancelled"],
+      [{ ...EXIT_OK, outcome: "timeout", timeoutKind: "idle" }, "PROCESS_TIMEOUT", "idle timeout"],
+      [{ ...EXIT_OK, outcome: "crashed", exitCode: null, signal: "SIGKILL" }, "PROCESS_CRASH", "signal SIGKILL"],
+      [{ ...EXIT_OK, exitCode: 1 }, "TOOL_FAILURE", "exit code 1"],
+      // An exit code the invocation expects is clean, so the order check decides.
+      [{ ...EXIT_OK, exitCode: 3, expectedExitCodes: [0, 3] }, "OUTPUT_PROTOCOL_ERROR", "tool call after the end line"],
+    ] as const) {
+      expect(adapter().extractResult(events, exit as never), JSON.stringify(exit)).toEqual({
+        ok: false,
+        failureCode: code,
+        failureDetail: detail,
+        unknownEventCount: 0,
+        nativeSessionId: SID,
+      });
+    }
+  });
+
+  it("a read of the native login path after `end` is failed by the order check in a bypass run, by the guard otherwise", () => {
+    const cred = line({ type: "tool_call", tool: "read_file", input: { path: "~/.grok/auth.json" } });
+    const lines = [line(END), cred];
+    // Owner decision 25: the provider-state check is not enforced in an approved bypass run (tool-guard.ts), and
+    // Grok Build compiles only bypass runs, so the order check is what fails this one.
+    const bypass = guarded(lines);
+    expect(bypass.at(-1)).toEqual({ kind: "tool_call", tool: "read", name: "read_file", target: "~/.grok/auth.json" });
+    expect(adapter().extractResult(bypass, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the end line",
+    });
+    // Before `end` the same read leaves a bypass turn clean (pinned: nothing else in the parser looks at the path).
+    expect(adapter().extractResult(guarded([cred, line(END)]), EXIT_OK)).toMatchObject({ ok: true });
+    // Outside bypass the guard verdict outranks the order check.
+    const strict = guarded(lines, { cwd: "/w", home: "/home/u", bypass: false });
+    expect(adapter().extractResult(strict, EXIT_OK)).toMatchObject({ ok: false, failureCode: "SANDBOX_VIOLATION" });
+  });
+
+  it("hostile call ids (`__proto__`, `constructor`, `toString`, `hasOwnProperty`) are plain correlation keys", () => {
+    for (const id of ["__proto__", "constructor", "toString", "hasOwnProperty"]) {
+      const opened = call({ id, input: { command: "ls" } });
+      const update = (command: string) => line({ type: "tool_call_update", id, input: { command } });
+      // The same command on an update or a repeated tool_call is deduplicated (ninth-pass gap), with no throw.
+      const { events } = parse([opened, update("ls"), line(END), opened]);
+      expect(
+        events.filter((e) => e.kind === "tool_call"),
+        id,
+      ).toEqual([shell("ls")]);
+      expect(adapter().extractResult(events, EXIT_OK), id).toMatchObject({ ok: true });
+      // A new command on the same id after `end` is reported, so the order check fires.
+      const late = parse([opened, line(END), update("pwd")]).events;
+      expect(late.at(-1), id).toEqual(shell("pwd"));
+      expect(adapter().extractResult(late, EXIT_OK), id).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "tool call after the end line",
+      });
+    }
+  });
+
+  it("a Git write after a line break in the command reaches the guard whole, after `end` too, and outranks the order check", () => {
+    for (const command of ["ls\ngit push origin main", "ls\r\ngit push origin main", "ls;\n\tgit commit -m x"]) {
+      const before = guarded([call({ input: { command } }), line(END)]);
+      expect(before[0], JSON.stringify(command)).toMatchObject({ tool: "shell", violation: { kind: "git_write" } });
+      expect(before[0], JSON.stringify(command)).not.toHaveProperty("command");
+      const after = guarded([line(END), call({ input: { command } })]);
+      expect(adapter().extractResult(after, EXIT_OK), JSON.stringify(command)).toMatchObject({
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+        nativeSessionId: SID,
+      });
+    }
+  });
+
+  it("long native strings are clipped in failure details: stopReason at 64 code units, an error message at 2,000", () => {
+    const stop = `${"x".repeat(100)}\u001b[31m`;
+    expect(adapter().extractResult(parse([line({ ...END, stopReason: stop })]).events, EXIT_OK)).toEqual({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: `stopReason ${"x".repeat(64)}…`,
+      unknownEventCount: 0,
+      nativeSessionId: SID,
+    });
+    const message = `Not signed in. ${"y".repeat(2_100)}`;
+    const r = adapter().extractResult(parse([line({ type: "error", message }), line(END)]).events, EXIT_OK);
+    expect(r).toMatchObject({ ok: false, failureCode: "AUTH_REQUIRED" });
+    // The category prefix is read off the unclipped message; the detail carries `<category>: ` plus the clip.
+    expect(r.ok === false && r.failureDetail).toBe(`auth: ${message.slice(0, 2_000)}…`);
+  });
+
+  it("hostile session-id code points are refused by the parser and by resumeArgs alike, without binding", () => {
+    const a = adapter();
+    for (const id of ["a b", "a\u0000", "\uD83D", "\u{1F600}", "１", "a​b", "a\tb", "a\r", "A".repeat(257)]) {
+      const state: ParseState = { lines: 0, unknownEvents: 0 };
+      const events = a.parseEvent(line({ ...END, sessionId: id }), state);
+      const label = JSON.stringify(id);
+      expect(events[0], label).toEqual({
+        kind: "provider_error",
+        category: "protocol",
+        message: "session id is not a safe argument",
+      });
+      expect(state.nativeSessionId, label).toBeUndefined();
+      expect(a.resumeArgs({ provider: "grok", nativeSessionId: id }, req, approved), label).toEqual({
+        ineligible: true,
+        reason: "CAPABILITY_MISSING",
+        detail: "native session id is not a safe single argument",
+      });
+    }
+    // An empty id is neither bound nor an anomaly on the parser side, but resume still refuses it.
+    const empty = parse([line({ ...END, sessionId: "" })]);
+    expect(empty.events).toEqual([
+      { kind: "usage", source: "provider_reported", metrics: { input_tokens: 10 } },
+      { kind: "result", ok: true },
+    ]);
+    expect(a.resumeArgs({ provider: "grok", nativeSessionId: "" }, req, approved)).toMatchObject({ ineligible: true });
+  });
+
+  it("resume argv parity: an id spelled like a flag value and an empty objective append one trailing `-r <id>` pair", () => {
+    const a = adapter();
+    for (const objective of ["", req.objective]) {
+      const request = { ...req, objective };
+      const first = a.compile(request, approved);
+      if ("ineligible" in first) throw new Error(first.detail);
+      expect(first.argv.filter((w) => w.startsWith("--single"))).toEqual([`--single=${objective}`]);
+      for (const id of ["strict", "read-only", "streaming-json", "end_turn", "always-approve"]) {
+        const resumed = a.resumeArgs({ provider: "grok", nativeSessionId: id }, request, approved);
+        expect(resumed, `${objective}/${id}`).toEqual({ ...first, argv: [...first.argv, "-r", id] });
+      }
+    }
   });
 });
