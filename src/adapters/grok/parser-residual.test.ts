@@ -45,7 +45,11 @@
  * ids named after Object.prototype members), and resume argv parity (pure on frozen inputs, delimiter-ended ids).
  * Twelfth pass: the unsupported ACP input boundary (object messages ignored, serialized messages unknown, native
  * top-level types still dispatched), opaque text, raw target deduplication before clipping, exact call-id strings,
- * JSON object key ordering for modelUsage, and pre-seeded session state. Synthetic behaviour only, not a capture.
+ * JSON object key ordering for modelUsage, and pre-seeded session state.
+ * Thirteenth pass: line framing (JSON whitespace and CRLF around a line, blank lines), top-level values that are not
+ * objects and non-string `type` values (unknown `none`, an array-wrapped `end` replayed end to end), exact-case error
+ * prefixes without a word boundary (pinned), non-string session ids, call-id and command fallback keys, text without
+ * a string `data`, and `num_turns` shapes. Synthetic behaviour only, not a capture.
  */
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -2082,5 +2086,176 @@ describe("grok parser residuals, twelfth pass: ACP boundaries and raw structured
     });
     expect(changed[0]).toEqual({ kind: "provider_error", category: "protocol", message: "session id changed mid-run" });
     expect(a.extractResult(changed, EXIT_OK)).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+  });
+});
+
+describe("grok parser residuals, thirteenth pass: line framing, non-object lines and fallback keys (T4.23, synthetic lines; parser unchanged)", () => {
+  const req = {
+    runId: "run_grok_t423_residual",
+    objective: "synthetic grok objective",
+    constraints: [],
+    workspace: { cwd: "/w", writable: true },
+    bypassApproved: true,
+  };
+
+  it("JSON whitespace around a line (CRLF, tabs, spaces) is framing only; blank and whitespace-only lines are unparseable", () => {
+    const text = line({ type: "text", data: "done" });
+    const { events, state } = parse([`\t${text}`, "", "   ", "\r", `  ${line(END)}\r`]);
+    expect(events.map((e) => e.kind)).toEqual(["message", "session_bound", "usage", "result"]);
+    expect(state).toEqual({ lines: 5, unknownEvents: 0, nativeSessionId: SID });
+    expect(adapter().extractResult(events, EXIT_OK)).toEqual({
+      ok: true,
+      nativeSessionId: SID,
+      summary: "done",
+      unknownEventCount: 0,
+    });
+  });
+
+  it("a top-level value that is not an object is an unknown `none` line, even an array wrapping an `end`", () => {
+    const values = ["[]", `[${line(END)}]`, "null", "0", '"end"', "true"];
+    const { events, state } = parse(values);
+    expect(events).toEqual(values.map(() => ({ kind: "unknown", rawType: "none" })));
+    expect(state).toEqual({ lines: 6, unknownEvents: 6 });
+    expect(adapter().extractResult(events, EXIT_OK)).toEqual({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "no result event",
+      unknownEventCount: 6,
+    });
+  });
+
+  it("a non-string `type` is an unknown `none` line: `end` fields beside it never bind, count usage or decide", () => {
+    const types = [1, null, ["end"], { end: true }, true];
+    const { events, state } = parse(types.map((type) => line({ ...END, type })));
+    expect(events).toEqual(types.map(() => ({ kind: "unknown", rawType: "none" })));
+    expect(state).toEqual({ lines: 5, unknownEvents: 5 });
+    const after = parse([line(END), ...types.map((type) => line({ ...END, sessionId: "other-id", type }))]);
+    expect(after.events.filter((e) => e.kind === "provider_error")).toEqual([]);
+    expect(adapter().extractResult(after.events, EXIT_OK)).toMatchObject({
+      ok: true,
+      nativeSessionId: SID,
+      unknownEventCount: 5,
+    });
+  });
+
+  it("fixture array_wrapped_end replays an array-wrapped end_turn at exit 0 to OUTPUT_PROTOCOL_ERROR, no id bound", async () => {
+    const report = await runConformanceCase({
+      kind: "task_failure",
+      adapter: replayAdapter("array_wrapped_end"),
+      request: { ...req, workspace: { cwd: makeCwd(), writable: true } },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", failureDetail: "no result event" },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toEqual({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "no result event",
+      unknownEventCount: 1,
+      summary: "Listed the files.",
+    });
+  });
+
+  it("error categories match an exact-case prefix at the start of the message, with no word boundary (pinned)", () => {
+    const cases = [
+      ["Not signed in. Run grok login.", "auth", "AUTH_REQUIRED"],
+      ["Not signed inside the sandbox", "auth", "AUTH_REQUIRED"],
+      ["Couldn't set model 'synthetic'", "model_unavailable", "MODEL_UNAVAILABLE"],
+      ["not signed in", "unknown", "TOOL_FAILURE"],
+      [" Not signed in", "unknown", "TOOL_FAILURE"],
+      ["Error: Not signed in", "unknown", "TOOL_FAILURE"],
+      ["Couldn\u2019t set model 'synthetic'", "unknown", "TOOL_FAILURE"],
+    ] as const;
+    for (const [message, category, code] of cases) {
+      const { events } = parse([line({ type: "error", message }), line(END)]);
+      expect(events[0], message).toEqual({ kind: "provider_error", category, message });
+      expect(adapter().extractResult(events, EXIT_OK), message).toMatchObject({
+        ok: false,
+        failureCode: code,
+        failureDetail: `${category}: ${message}`,
+      });
+    }
+  });
+
+  it("the error category is read from the unclipped message: a long auth message is AUTH_REQUIRED, its detail clipped", () => {
+    const message = `Not signed in. ${"x".repeat(3000)}`;
+    const { events } = parse([line({ type: "error", message })]);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ kind: "provider_error", category: "auth" });
+    const kept = (events[0] as { message: string }).message;
+    expect(kept.length).toBeLessThan(message.length);
+    expect(message.startsWith(kept.slice(0, -1))).toBe(true);
+    expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({ ok: false, failureCode: "AUTH_REQUIRED" });
+  });
+
+  it("a non-string `end` sessionId binds nothing and raises nothing: the turn succeeds without an id", () => {
+    for (const sessionId of [42, null, { id: SID }, [SID], true]) {
+      const { events, state } = parse([line({ ...END, sessionId })]);
+      expect(
+        events.map((e) => e.kind),
+        JSON.stringify(sessionId),
+      ).toEqual(["usage", "result"]);
+      expect(state.nativeSessionId).toBeUndefined();
+      expect(adapter().extractResult(events, EXIT_OK)).toEqual({ ok: true, unknownEventCount: 0 });
+    }
+  });
+
+  it("call-id fallback keys share one key space: `id` outranks `call_id`, which outranks `tool_call_id`", () => {
+    const { events } = parse([
+      line({ type: "tool_call", call_id: "k", command: "pwd" }),
+      line({ type: "tool_call_update", tool_call_id: "k", command: "pwd" }),
+      line({ type: "tool_call_update", id: 7, call_id: "k", command: "pwd" }),
+      line({ type: "tool_call_update", id: "other", call_id: "k", command: "pwd" }),
+      line({ type: "tool_call_update", call_id: "", tool_call_id: "k", command: "pwd" }),
+    ]);
+    // A non-string id falls through to call_id; an empty call_id shadows tool_call_id (as an empty id, sixth pass)
+    // and leaves the update id-less, so it opens call_1 and reports again.
+    expect(events).toEqual([shell("pwd"), shell("pwd"), shell("pwd")]);
+  });
+
+  it("a non-string command falls through `input.command`, `input.cmd`, `input.CommandLine` to the top level, guarded", () => {
+    const ctx: ToolGuardContext = { cwd: "/w", bypass: false };
+    const inputs = [
+      { input: { command: 42, cmd: "git push origin main" } },
+      { input: { command: null, cmd: ["ls"], CommandLine: "git push origin main" } },
+      { input: { command: {} }, command: "git push origin main" },
+      { input: null, parameters: { command: "git push origin main" } },
+    ];
+    for (const o of inputs) {
+      const { events } = parse([line({ type: "tool_call", id: "c", ...o })]);
+      expect(events, JSON.stringify(o)).toEqual([shell("git push origin main")]);
+      expect(events.map((e) => guardEvent(e, ctx))[0], JSON.stringify(o)).toHaveProperty("violation");
+    }
+  });
+
+  it("a text line without a string `data` is an unknown `text` line; the turn still succeeds with no summary", () => {
+    const { events, state } = parse([
+      line({ type: "text", data: 5 }),
+      line({ type: "text" }),
+      line({ type: "text", text: "hidden" }),
+      line({ type: "text", data: null }),
+      line(END),
+    ]);
+    expect(events.slice(0, 4)).toEqual(Array.from({ length: 4 }, () => ({ kind: "unknown", rawType: "text" })));
+    expect(state.unknownEvents).toBe(4);
+    expect(adapter().extractResult(events, EXIT_OK)).toEqual({ ok: true, nativeSessionId: SID, unknownEventCount: 4 });
+  });
+
+  it("num_turns is recorded only as a finite non-negative number: strings, negatives and null drop, fractions stay", () => {
+    for (const [numTurns, kept] of [
+      ["3", false],
+      [-1, false],
+      [null, false],
+      [2.5, true],
+      [0, true],
+    ] as const) {
+      const { events } = parse([line({ ...END, num_turns: numTurns })]);
+      const usage = events.find((e) => e.kind === "usage");
+      expect(usage, String(numTurns)).toEqual({
+        kind: "usage",
+        source: "provider_reported",
+        metrics: { input_tokens: 10, ...(kept ? { num_turns: numTurns } : {}) },
+      });
+    }
   });
 });
