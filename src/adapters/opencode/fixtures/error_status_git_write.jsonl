@@ -1,0 +1,5 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.53 tenth residual pass, ADR-0039). A shell tool_use carrying a Git write reports state.status error (the live-check row 11 denial spelling) and then a stop. Pins that status is ignored: the command still reaches the tool-call guard and the run ends PERMISSION_BLOCKED. Not a recorded native refusal shape.","exit":0}}
+{"type":"step_start","timestamp":1,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_s1","type":"step-start"}}
+{"type":"tool_use","timestamp":2,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_u1","type":"tool","tool":"shell","state":{"status":"error","input":{"command":"git push origin main"},"error":"SYNTHETIC: rejected"}}}
+{"type":"text","timestamp":3,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_t1","type":"text","text":"SYNTHETIC: denied write"}}
+{"type":"step_finish","timestamp":4,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_f1","type":"step-finish","reason":"stop","tokens":{"input":7,"output":2}}}
