@@ -58,12 +58,18 @@ import type {
 import {
   APPROVAL_MODE_FLAG,
   APPROVAL_ON_REQUEST,
+  AUTH_LOGGED_IN_PREFIX,
+  AUTH_LOGGED_OUT_PREFIX,
+  AUTH_STATUS_ARGS,
+  AUTH_STATUS_LINE_MAX,
+  AUTH_STATUS_TIMEOUT_MS,
   DELTA_TEXT_FIELD,
   EXEC_SUBCOMMAND,
   GIT_WRITE_CONTROL_DETAIL,
   HELP_ARGS,
   JSON_FLAG,
   MUSE_BINARY,
+  MUSE_LOGIN_COMMAND,
   NON_PRIVILEGED_UNSUPPORTED_DETAIL,
   RECORD,
   REQUIRED_HELP_FLAGS,
@@ -88,6 +94,7 @@ import {
 export const MUSE_ENV_ALLOWLIST: readonly string[] = ["PATH", "HOME"];
 
 const PROBE_TIMEOUT_MS = 10_000;
+const AUTH_UNKNOWN_REASON = "`muse auth status` first line is not a recognised login state";
 const MAX_SUMMARY_CHARS = 2_000;
 /** `--session-id <uuid>` ([M-ext]): only a canonical uuid is bound or resumed, so the id is one argument, never a flag. */
 const SESSION_ID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -213,12 +220,23 @@ export class MuseAdapter implements ProviderAdapter {
     return { binaryPath: exe, binaryVersion: version, steps };
   }
 
-  /** FR-AUTH-01/02: no status command is documented ([M-auth], [M-log]); T4.74 decides the check. Fail closed until then. */
-  async authPreflight(_runner: ProbeRunner): Promise<AuthResult> {
-    return {
-      state: "UNKNOWN",
-      reason: "Muse Code auth preflight is not implemented (T4.74); no auth status command is documented (TDD §4.8)",
-    };
+  /** FR-AUTH-01/02 (T4.74): `muse auth status` is assumed until T4.71; first-line prefixes are Assumption spellings. */
+  async authPreflight(runner: ProbeRunner): Promise<AuthResult> {
+    const exe = this.#exe;
+    if (exe === undefined) return { state: "UNKNOWN", reason: `${MUSE_BINARY} not found on PATH` };
+    const r = await runner([exe, ...this.#launcher, ...AUTH_STATUS_ARGS], { timeoutMs: AUTH_STATUS_TIMEOUT_MS });
+    if (r.spawnError !== undefined) return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (${r.spawnError})` };
+    if (r.timedOut) return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (timed out)` };
+    const first = (r.stdout.split("\n").find((l) => l.trim() !== "") ?? "").trim();
+    if (r.exitCode === 0) {
+      if (first.startsWith(AUTH_LOGGED_IN_PREFIX)) return { state: "OK" };
+      if (first.startsWith(AUTH_LOGGED_OUT_PREFIX)) return { state: "AUTH_REQUIRED", loginCommand: MUSE_LOGIN_COMMAND };
+    }
+    const line = Array.from(first)
+      .filter((c) => c >= " " && c !== "\x7f")
+      .join("")
+      .slice(0, AUTH_STATUS_LINE_MAX);
+    return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (exit ${r.exitCode}${line ? `: ${line}` : ""})` };
   }
 
   compile(request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible {

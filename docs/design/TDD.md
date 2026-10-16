@@ -2563,8 +2563,13 @@ child environment is `PATH` and `HOME` only: `META_API_KEY` never reaches it, an
 (reported only, confirmed by neither T4.70 nor T4.71). Registry declarations: `--disable-approval`, `--disable-sandbox`,
 `--trust-workspace`, and the values `--approval-mode never`, `--sandbox-network unrestricted` and `enabled`. Interaction
 found: the argv audit is shared, so Cursor's declared short flag `-w` refuses `-w off` outside an approved bypass run;
-a future non-bypass Muse Code cell needs that resolved first (open question in ROADMAP T4.72). Parser, resume, auth
-preflight, conformance, malicious leg and the Git declaration are T4.73 to T4.77 (fail-closed placeholders until then).
+a future non-bypass Muse Code cell needs that resolved first (open question in ROADMAP T4.72). *Update 2026-10-16
+(T4.74, Delegated agent work, not owner-approved; fixtures only):* auth preflight runs `muse auth status` (Assumption
+pending T4.71) following the Grok T4.24 precedent: exit 0 first line starting `Logged in` is `OK`, `Not logged in` is
+`AUTH_REQUIRED` naming `muse login` (replies are Assumptions pending T4.71); anything else, non-zero exit, null exit,
+timeout, empty output or spawn error is `UNKNOWN` (fail closed); reasons carry at most 80 filtered characters and no
+account values; `META_API_KEY` never reaches the preflight environment. Parser, resume, conformance, malicious leg and
+the Git declaration are T4.73, T4.75 to T4.77 (fail-closed placeholders until then).
 
 *As built (T4.73, 2026-10-16; Delegated agent work, not owner-approved; fixtures only, no `muse` was run).* The parser
 reads one `--json` record per line by its `kind`: `run_started` binds the session id from a structured `session_id`
