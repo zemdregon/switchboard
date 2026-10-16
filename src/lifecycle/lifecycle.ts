@@ -126,6 +126,14 @@ import {
   renderHandoffPrompt,
   takeAsOf,
 } from "../continuity/index.js";
+import {
+  type Environment,
+  EnvironmentRefusal,
+  type RunContext as EnvironmentRunContext,
+  environmentKindOf,
+  hostEnvironment,
+  type ReadOnlyContextMount,
+} from "../environment/index.js";
 import { procStartTicks } from "../exec/proc-info.js";
 import { ChannelOpenError, type GitToolService, type OpenChannel } from "../git/channel.js";
 import type { GitPublisher } from "../git/commit.js";
@@ -533,6 +541,27 @@ export interface RunLifecycleOptions {
    * appended to the prompt compiled for the adapter, never to the stored request. Unset: no run gets a pack.
    */
   readonly contextPack?: ContextPackPort;
+  /**
+   * T10.1 (FR-PRJ-04, FR-PRJ-05, LLD §11.3): the environment port. Asked once per run with the frozen project
+   * snapshot (or undefined for a run by workspace path) for the environment the provider process runs in and the
+   * project facts the snapshot deliberately does not carry (read-only context paths, limits). Unset, or an answer
+   * whose kind differs from the snapshot's `environment_kind`: a `host` run uses the identity environment as before
+   * and a `container` run is refused `ELIGIBILITY_NONE` before any lease or worktree (fail closed: never silently on
+   * the host). `prepare` runs just before spawn, after the pre-spawn refusals; `teardown` runs on every path after it.
+   */
+  readonly environments?: EnvironmentResolver;
+}
+
+/** T10.1: where a run is placed (LLD §11.3). `serve` composes it from the configuration and the container backend. */
+export interface EnvironmentPlacement {
+  readonly environment: Environment;
+  /** The project's declared read-only contexts (FR-PRJ-05); empty for `host`, which mounts nothing. */
+  readonly readOnlyContexts: readonly ReadOnlyContextMount[];
+  readonly limits?: EnvironmentRunContext["limits"];
+}
+
+export interface EnvironmentResolver {
+  resolve(project: ProjectSnapshot | undefined): EnvironmentPlacement | undefined;
 }
 
 /**
@@ -1303,6 +1332,23 @@ export class RunLifecycle {
     }
     const adapter = this.opts.adapters.get(req.provider);
     if (!adapter) return this.fail(runId, "ELIGIBILITY_NONE", `adapter ${req.provider} is not registered`);
+    // T10.1 (LLD §11.3, FR-PRJ-04): the environment, decided from the frozen snapshot before anything is probed,
+    // leased or created. A `container` run with no container environment is refused here, never run on the host.
+    const snapshotProject = (JSON.parse(run0.policy_snapshot_json) as { project?: ProjectSnapshot }).project;
+    const environmentKind = environmentKindOf({ project: snapshotProject });
+    const placement =
+      this.opts.environments?.resolve(snapshotProject) ??
+      (environmentKind === "host" ? { environment: hostEnvironment, readOnlyContexts: [] } : undefined);
+    if (placement === undefined || placement.environment.kind !== environmentKind) {
+      return this.fail(
+        runId,
+        "ELIGIBILITY_NONE",
+        `no ${environmentKind} environment is available for project ${snapshotProject?.id ?? "(none)"}` +
+          `${placement === undefined ? "" : ` (resolver answered ${placement.environment.kind})`}`,
+        { reason: "ENVIRONMENT_UNAVAILABLE", stage: "environment", environment_kind: environmentKind },
+      );
+    }
+    const environment = placement.environment;
     // T5.5 (LLD §15.5): a handoff run's prompt is rendered from its stored view before anything is probed, leased or
     // spawned; a view that cannot be read, verified or rendered fails the run here (fail closed).
     let handoffPrompt: { prompt: string; ref: { bundleArtifactId: string; bundleSha256: string } } | undefined;
@@ -1536,6 +1582,39 @@ export class RunLifecycle {
       return this.cancelEarly(runId);
     }
 
+    // T10.1 (LLD §11.3, FR-PRJ-05): the environment wraps the audited invocation last, so the pre-spawn audits below
+    // see the provider's arguments unchanged after the runtime's. `host` is the identity. A container refusal
+    // (runtime missing, image absent or carrying a Git client, network not enforceable) ends the run before spawn
+    // with the reason in the transition event; `teardown` runs on every path from here on.
+    const environmentRun: EnvironmentRunContext = {
+      runId,
+      ...(snapshotProject !== undefined ? { projectId: snapshotProject.id } : {}),
+      worktreePath: cwd,
+      readOnlyContexts: placement.readOnlyContexts,
+      profile,
+      ...(snapshotProject?.image_digest !== undefined ? { imageDigest: snapshotProject.image_digest } : {}),
+      ...(placement.limits !== undefined ? { limits: placement.limits } : {}),
+    };
+    try {
+      inv = (await environment.prepare(environmentRun, inv)).invocation;
+    } catch (err) {
+      await channel?.close();
+      await environment.teardown(environmentRun);
+      if (err instanceof EnvironmentRefusal) {
+        return this.fail(runId, "ELIGIBILITY_NONE", err.message.slice(0, 500), {
+          reason: err.reason,
+          stage: "environment",
+          environment_kind: environment.kind,
+        });
+      }
+      throw err;
+    }
+    if (exec.cancelRequested) {
+      await channel?.close();
+      await environment.teardown(environmentRun);
+      return this.cancelEarly(runId);
+    }
+
     // RUNNING (T9): pid/pgid persisted in the same transaction, before any output is read (LLD §8).
     let spawned = false;
     let out: AdapterRunOutcome;
@@ -1604,6 +1683,8 @@ export class RunLifecycle {
     } finally {
       // LLD §12.2: the socket is closed and removed when the run leaves RUNNING; calls in progress finish first.
       await channel?.close();
+      // T10.1 (FR-PRJ-05): the container is removed when the run ends, whatever ended it; idempotent, never throws.
+      await environment.teardown(environmentRun);
     }
     const meta = run0.meta_session_id;
     const streams = await this.storeStreams(runId, meta, out);

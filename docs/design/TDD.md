@@ -865,6 +865,33 @@ so the choices below are Delegated, not owner-approved, and unverified until the
 - **Cleanup.** Every container carries labels with the run and project IDs. Removal at run end, and a label sweep at
   startup before worktrees are assessed (FR-PRJ-07).
 
+*As built (2026-10-16, T10.1, Delegated; [ADR-0052](../adr/0052-container-environment-docker-backend.md); the text
+above is unchanged and the Proposed items stay Proposed).* What `src/environment/` does against each bullet:
+
+- *Runtime*: rootless **Docker** through its CLI (`docker-runtime.ts`), observed on the operator host in the
+  [T10.0 spike](../research/container-runtime-spike-2026-10-16.md); Podman is not installed there. A daemon that does
+  not report `rootless` is refused (`CONTAINER_RUNTIME_UNAVAILABLE`). The runtime port (`runtime.ts`) is the
+  replaceable seam.
+- *Image*: resolved by `image_digest` among local images only (never pulled); the no-Git-client check runs as a
+  `PATH` scan in a throwaway probe container before any run (ADR-0020); a scan that cannot complete also refuses.
+  `projects validate` does not run the check yet (T10.3).
+- *Mounts*: exactly the worktree (rw) and the declared read-only contexts (ro), each at its own host path, so `cwd`
+  and argument paths stay valid; nothing else. No login volume yet (its mount point per provider waits for the
+  operator's T10.0 result).
+- *Provider logins*: unchanged, Proposed, not exercised.
+- *Network*: `off` and an empty allowlist are `--network none`; a non-empty allowlist is **refused** (Docker enforces
+  no host allowlist); `policy` runs on the default network with the enforcement recorded as the provider's; a
+  privileged scope follows its `network.mode`.
+- *Limits*: `--cpus`, `--memory` (+ equal `--memory-swap`), `--pids-limit` 512 (Assumption). **`disk_mb` is not
+  enforced** by this backend and is recorded as such, never claimed.
+- *Cleanup*: labels `switchboard.run`, `switchboard.project`, `switchboard.role`; `--rm` plus `teardown` (force
+  remove by name on every terminal path); `sweepOrphans` implemented, its startup call is T10.2.
+- *Not reachable yet*: admission still refuses container projects and `serve` does not compose the environment
+  resolver (T10.1 gaps in [ROADMAP §6.4](../ROADMAP.md#64-m10-container-environments-tasks)); the injected Git tool
+  channel is host-side only. Tests: `src/environment/*.test.ts` (fakes) and the opt-in Docker leg
+  `src/environment/container-docker.test.ts` (`SWITCHBOARD_CONTAINER_TESTS=1`; skipped without a rootless daemon
+  and a local base image).
+
 ### 3.12 Inner agent
 
 Implements FR-INN-01..17 and [ADR-0016](../adr/0016-inner-agent.md) for M11 (COMP-INN, TB-10); schemas, pipeline and task

@@ -2669,6 +2669,36 @@ container `switchboard.run` and `switchboard.project`, and record `environment` 
 container run stay in the controller on the host.
 Container details: [TDD §3.11](TDD.md#311-container-environments).
 
+*As built (2026-10-16, T10.1, Delegated; [ADR-0052](../adr/0052-container-environment-docker-backend.md); text above
+unchanged).* Code: `src/environment/types.ts` (the port: `prepare` returns `{ invocation, container? }`, `teardown`
+takes the run id, `sweepOrphans` as above), `src/environment/host.ts` (identity), `src/environment/container.ts` (the
+`container` implementation over the runtime port `src/environment/runtime.ts`), `src/environment/docker-runtime.ts`
+(rootless Docker CLI driver), `src/environment/select.ts` (`environmentKindOf`, `snapshotEnvironment`). Where this
+section was silent or the build differs:
+
+- **`prepare` does not create the container.** It checks the runtime (rootless only), resolves `image_digest` among
+  local images (never pulls), runs the ADR-0020 `PATH` scan in a labelled probe container, and returns the invocation
+  wrapped as `docker run --rm --name switchboard-run-<run> ... <image id> <executable> <provider arguments>`. The
+  container is created at spawn, by the supervisor, so the pre-spawn audits (T3.17, T9.4b, ADR-0033) see the
+  provider's arguments unchanged. `teardown` force-removes the run and probe containers by name; `--rm` covers the
+  normal exit. The executable is argv[0]'s basename, resolved by the image's `PATH`.
+- **Lifecycle seam.** `RunLifecycleOptions.environments` (`EnvironmentResolver.resolve(projectSnapshot)` returning
+  the environment plus the project's read-only context paths and limits, which the snapshot does not carry). The kind
+  is decided from `project.environment_kind` before any lease or worktree; a `container` run with no container
+  environment, or a resolver answering the wrong kind, fails `ELIGIBILITY_NONE` (`ENVIRONMENT_UNAVAILABLE`). `prepare`
+  runs after the Git tool channel and immediately before the audits and spawn; its refusal fails the run
+  `ELIGIBILITY_NONE` with the `EnvironmentRefusal` reason in the transition event; `teardown` runs in the same
+  `finally` as the channel close.
+- **Snapshot.** `ProjectSnapshot.image_digest` (FR-PRJ-04), frozen at admission for `container`; `snapshotEnvironment`
+  is the helper for the admission path.
+- **Events** go to the environment's `onEvent` callback (`image_checked`, `prepared`, `refused`, `removed`,
+  `remove_failed`, `orphan_removed`); the ledger write and the startup sweep call are T10.2.
+- **Not built in T10.1:** admission still refuses container projects (`src/mcp/server.ts`,
+  `ENVIRONMENT_NOT_IMPLEMENTED`) and `serve` does not compose the resolver yet, so no container run is reachable
+  through MCP; the injected tool channel is not reachable from inside a container; `projects validate`'s
+  no-Git-client check is T10.3. Tests: `src/environment/container.test.ts`, `src/environment/docker-runtime.test.ts`,
+  `src/lifecycle/environment.test.ts`, opt-in `src/environment/container-docker.test.ts`.
+
 ## 12. Injected Git tools, commits and publication
 
 Implements FR-GIT-01..09 and [ADR-0014](../adr/0014-tool-only-commits-and-publication.md). **Proposed** mechanisms; zemdregon
