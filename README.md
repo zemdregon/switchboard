@@ -435,8 +435,8 @@ listens for telemetry. Invalid URLs are rejected at config load without echoing 
 only allowlisted attributes from controller-observed facts (prompts, commands and credentials never belong on spans);
 see [LLD §7](docs/design/LLD.md#7-telemetry-spans) and [ADR-0012](docs/adr/0012-telemetry-at-wrapper-boundary.md).
 Before export, Switchboard drops any span attribute whose key is not on the LLD §7 allowlist (T8.4,
-`src/telemetry/allowlist.ts`). Emitting `controller.delegate`, `provider.spawn` and related spans at the wrapper boundary (T8.2) and proving export
-through a test collector without forbidden keys (T8.3) are not built yet.
+`src/telemetry/allowlist.ts`). Emitting `controller.delegate`, `provider.spawn` and related spans at the wrapper
+boundary (T8.2) and proving export through a test collector without forbidden keys (T8.3) are not built yet.
 
 **Version canary (T8.5).** Switchboard records each enabled provider's probed CLI version under the data directory
 (`version-canary.json`). A version change marks the adapter `ADAPTER_VERSION_UNVERIFIED` until you run
