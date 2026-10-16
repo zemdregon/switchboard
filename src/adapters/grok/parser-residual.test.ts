@@ -43,6 +43,9 @@
  * internal_error detail, replayed end to end: pinned gap; a failed stopReason keeps TOOL_FAILURE; silent line types
  * carrying tool-shaped fields emit nothing; end counts and call keys are per ParseState), hostile token shapes (session
  * ids named after Object.prototype members), and resume argv parity (pure on frozen inputs, delimiter-ended ids).
+ * Twelfth pass: the unsupported ACP input boundary (object messages ignored, serialized messages unknown, native
+ * top-level types still dispatched), opaque text, raw target deduplication before clipping, exact call-id strings,
+ * JSON object key ordering for modelUsage, and pre-seeded session state. Synthetic behaviour only, not a capture.
  */
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1963,5 +1966,121 @@ describe("grok parser residuals, eleventh pass: fail-closed order after `end`, r
         id,
       ).toHaveLength(1);
     }
+  });
+});
+
+describe("grok parser residuals, twelfth pass: ACP boundaries and raw structured values (T4.23, synthetic lines; parser unchanged)", () => {
+  it("ACP result, error and tool updates never supply native status, bindings, usage or guard calls", () => {
+    const messages = [
+      { jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn", sessionId: SID, usage: END.usage } },
+      { jsonrpc: "2.0", id: 2, error: { code: -32000, message: "Not signed in" } },
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: { sessionId: SID, update: { sessionUpdate: "tool_call", command: "git push origin main" } },
+      },
+    ];
+    expect(adapter().transports).toEqual(["subprocess-jsonl"]);
+    const objects = parse(messages);
+    expect(objects).toEqual({ events: [], state: { lines: 0, unknownEvents: 0 } });
+    expect(adapter().extractResult(objects.events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+    });
+    const serialized = parse(messages.map(line));
+    expect(serialized.events).toEqual(messages.map(() => ({ kind: "unknown", rawType: "none" })));
+    expect(serialized.state).toEqual({ lines: 3, unknownEvents: 3 });
+    expect(adapter().extractResult(serialized.events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      unknownEventCount: 3,
+    });
+  });
+
+  it("pins the gap: an ACP error after a native end is ignored as an object and only counted as serialized JSON", () => {
+    const error = { jsonrpc: "2.0", id: 1, error: { code: -32000, message: "Not signed in" } };
+    for (const [input, count] of [
+      [error, 0],
+      [line(error), 1],
+    ] as const) {
+      const { events } = parse([line(END), input]);
+      expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({
+        ok: true,
+        nativeSessionId: SID,
+        unknownEventCount: count,
+      });
+      expect(events.some((e) => e.kind === "provider_error")).toBe(false);
+    }
+  });
+
+  it("a JSON-RPC-looking string still dispatches its top-level native type; the same object is ignored", () => {
+    const hybrid = { jsonrpc: "2.0", id: 1, type: "error", message: "Not signed in", result: END };
+    expect(parse([hybrid]).events).toEqual([]);
+    const { events, state } = parse([line(END), line(hybrid)]);
+    expect(events.at(-1)).toEqual({ kind: "provider_error", category: "auth", message: "Not signed in" });
+    expect(state).toEqual({ lines: 2, unknownEvents: 0, nativeSessionId: SID });
+    expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({ ok: false, failureCode: "AUTH_REQUIRED" });
+  });
+
+  it("text containing a serialized end or error stays text and supplies neither a result nor a session", () => {
+    const text = `${line(END)}\n${line({ type: "error", message: "Not signed in" })}`;
+    const { events, state } = parse([line({ type: "text", data: text })]);
+    expect(events).toEqual([{ kind: "message", role: "assistant", text }]);
+    expect(state).toEqual({ lines: 1, unknownEvents: 0 });
+    expect(adapter().extractResult(events, EXIT_OK)).toEqual({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "no result event",
+      unknownEventCount: 0,
+      summary: text,
+    });
+  });
+
+  it("target deduplication compares the full raw target, so different suffixes beyond the clip emit twice", () => {
+    const prefix = "x".repeat(512);
+    const { events } = parse([
+      line({ type: "tool_call", id: "clip", input: { path: `${prefix}a` } }),
+      line({ type: "tool_call_update", id: "clip", input: { path: `${prefix}b` } }),
+      line({ type: "tool_call_update", id: "clip", input: { path: `${prefix}a` } }),
+    ]);
+    expect(events).toHaveLength(2);
+    expect(events[0]).toEqual({ kind: "tool_call", tool: "read", name: "run_terminal_command", target: `${prefix}…` });
+    expect(events[1]).toEqual(events[0]);
+  });
+
+  it("call ids are exact opaque strings: case and surrounding whitespace create independent dedupe keys", () => {
+    const ids = ["Call", "call", " call", "call "];
+    const { events, state } = parse([
+      ...ids.map((id) => line({ type: "tool_call", id, command: "pwd" })),
+      ...ids.map((id) => line({ type: "tool_call_update", id, command: "pwd" })),
+    ]);
+    expect(events).toEqual(ids.map(() => shell("pwd")));
+    expect(state).toEqual({ lines: 8, unknownEvents: 0 });
+  });
+
+  it("modelUsage selects the first Object.keys key: integer-like names sort before the source's first model", () => {
+    const { events } = parse([
+      '{"type":"end","stopReason":"end_turn","sessionId":"model-order","modelUsage":{"grok-first":{},"12":{},"2":{}}}',
+    ]);
+    expect(events[0]).toEqual({ kind: "session_bound", nativeSessionId: "model-order", model: "2" });
+    expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({ ok: true, nativeSessionId: "model-order" });
+  });
+
+  it("a pre-seeded nativeSessionId suppresses a matching binding event; only emitted bindings reach the result", () => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0, nativeSessionId: SID };
+    const events = a.parseEvent(
+      line({ ...END, model: "synthetic-model", backing_provider: "synthetic-vendor" }),
+      state,
+    );
+    expect(events.map((e) => e.kind)).toEqual(["usage", "result"]);
+    expect(a.extractResult(events, EXIT_OK)).toEqual({ ok: true, unknownEventCount: 0 });
+    const changed = a.parseEvent(line({ ...END, sessionId: "another-id" }), {
+      lines: 0,
+      unknownEvents: 0,
+      nativeSessionId: SID,
+    });
+    expect(changed[0]).toEqual({ kind: "provider_error", category: "protocol", message: "session id changed mid-run" });
+    expect(a.extractResult(changed, EXIT_OK)).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
   });
 });
