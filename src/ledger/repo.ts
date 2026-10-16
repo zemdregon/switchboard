@@ -491,6 +491,8 @@ export interface GcSessionTargets {
   worktreePaths: string[];
   /** Recorded `switchboard/<sess>/...` branch names (run rows and checkpoints), de-duplicated. */
   branches: string[];
+  /** Ids of the session's runs: their `container` environment containers carry them as a label (T10.3, FR-PRJ-09). */
+  runIds: string[];
 }
 
 export interface GcArtifactPlan {
@@ -1788,7 +1790,8 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
 
     gcSessionTargets(sessionId) {
       const prefix = `switchboard/${sessionId}/`;
-      const runs = db.prepare("SELECT worktree_path, branch FROM run WHERE meta_session_id = ?").all(sessionId) as {
+      const runs = db.prepare("SELECT id, worktree_path, branch FROM run WHERE meta_session_id = ?").all(sessionId) as {
+        id: string;
         worktree_path: string | null;
         branch: string | null;
       }[];
@@ -1799,7 +1802,7 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
       const branches = [
         ...new Set([...runs.map((r) => r.branch), ...cps.map((c) => c.branch)].filter((b): b is string => !!b)),
       ].filter((b) => b.startsWith(prefix));
-      return { worktreePaths, branches };
+      return { worktreePaths, branches, runIds: runs.map((r) => r.id) };
     },
 
     gcArtifactPlan(sessionId) {

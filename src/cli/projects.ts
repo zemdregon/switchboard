@@ -4,7 +4,13 @@
  * place the filesystem rules run (FR-PRJ-02, FR-POL-10): absolute path, canonical path under an allowed root (the same
  * `realpath` + `isUnderAllowedRoot` check workspaces use, so `..` and symlink escapes land outside), a Git repository
  * whose top level is itself under an allowed root, and a base ref that resolves to a commit.
+ *
+ * T10.3 (FR-PRJ-05, FR-PRJ-08, ADR-0020): for a `container` project `validate` also checks environment availability
+ * with the container runtime: it answers and is rootless, the pinned image is present locally (never pulled), and the
+ * image has no `git` or `gh` on its `PATH`, by the same throwaway probe container creation uses (no network, read-only
+ * root, removed). It starts no run. `ENVIRONMENT_NOT_IMPLEMENTED` stays reported while admission refuses container runs.
  */
+import { randomBytes } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -15,6 +21,13 @@ import {
   type ResolvedConfig,
   type ResolvedProject,
 } from "../config/index.js";
+import {
+  type ContainerRuntime,
+  createDockerRuntime,
+  probeContainerName,
+  SWITCHBOARD_PROJECT_LABEL,
+  SWITCHBOARD_ROLE_LABEL,
+} from "../environment/index.js";
 import { repoSigningConfigUnsafe, testSignature } from "../git/sign.js";
 import { gitText } from "../workspace/git.js";
 import { type CliIo, JSON_SCHEMA_VERSION } from "./io.js";
@@ -140,7 +153,17 @@ function configFailures(err: ConfigError): ProjectFailure[] {
   return out;
 }
 
-export async function validateProjects(io: CliIo, argv: readonly string[], only?: string): Promise<ProjectsValidation> {
+export interface ValidateDeps {
+  /** The container runtime for `container` projects (default: the rootless Docker CLI driver). Test seam. */
+  readonly makeRuntime?: () => ContainerRuntime;
+}
+
+export async function validateProjects(
+  io: CliIo,
+  argv: readonly string[],
+  only?: string,
+  deps: ValidateDeps = {},
+): Promise<ProjectsValidation> {
   let config: ResolvedConfig;
   try {
     config = load(io, argv);
@@ -152,9 +175,14 @@ export async function validateProjects(io: CliIo, argv: readonly string[], only?
     throw new UnknownProjectError(`unknown project ${only}`);
   }
   const projects: ProjectsValidation["projects"] = [];
+  let runtime: ContainerRuntime | undefined;
   for (const [i, p] of config.projects.entries()) {
     if (only !== undefined && p.id !== only) continue;
     const failures = await checkProject(config, p, `$.projects[${i}]`);
+    if (p.environment.kind === "container") {
+      runtime ??= (deps.makeRuntime ?? createDockerRuntime)();
+      failures.push(...(await checkContainerEnvironment(runtime, p, `$.projects[${i}].environment`)));
+    }
     if (failures.length === 0) failures.push(...(await checkSigning(io, p, `$.projects[${i}]`)));
     projects.push({ id: p.id, ok: failures.length === 0, failures });
   }
@@ -201,6 +229,72 @@ async function checkSigning(io: CliIo, p: ResolvedProject, at: string): Promise<
     }
   }
   return out;
+}
+
+/**
+ * T10.3 (FR-PRJ-05, FR-PRJ-08): environment availability of a `container` project, in the order `prepare` checks it;
+ * the first failure stops the checks that depend on it. Codes: `CONTAINER_RUNTIME_UNAVAILABLE` (no answer, or not
+ * rootless), `CONTAINER_IMAGE_NOT_PINNED`, `CONTAINER_IMAGE_NOT_PRESENT`, `CONTAINER_IMAGE_AMBIGUOUS`,
+ * `CONTAINER_IMAGE_CHECK_FAILED` (the scan did not complete: not "clean") and `CONTAINER_IMAGE_HAS_GIT_CLIENT`.
+ */
+export async function checkContainerEnvironment(
+  runtime: ContainerRuntime,
+  p: ResolvedProject,
+  at: string,
+): Promise<ProjectFailure[]> {
+  const fail = (where: string, code: string, message: string): ProjectFailure[] => [{ path: where, code, message }];
+  try {
+    const info = await runtime.info();
+    if (!info.available) return fail(`${at}.kind`, "CONTAINER_RUNTIME_UNAVAILABLE", info.detail);
+    if (!info.rootless) {
+      return fail(
+        `${at}.kind`,
+        "CONTAINER_RUNTIME_UNAVAILABLE",
+        `${info.detail}; only a rootless runtime is used (NFR-SEC-04)`,
+      );
+    }
+    const digest = p.environment.imageDigest;
+    if (digest === undefined) {
+      return fail(`${at}.image_digest`, "CONTAINER_IMAGE_NOT_PINNED", "the project pins no image digest (ADR-0013)");
+    }
+    const resolved = await runtime.resolveImage(digest);
+    if (resolved.kind === "not_present") {
+      return fail(
+        `${at}.image_digest`,
+        "CONTAINER_IMAGE_NOT_PRESENT",
+        `no local image has id or digest ${digest}; Switchboard never pulls (ADR-0013)`,
+      );
+    }
+    if (resolved.kind === "ambiguous") {
+      return fail(
+        `${at}.image_digest`,
+        "CONTAINER_IMAGE_AMBIGUOUS",
+        `${resolved.imageIds.length} local images match ${digest}`,
+      );
+    }
+    const probe = probeContainerName(`validate-${randomBytes(6).toString("hex")}`);
+    try {
+      const scan = await runtime.scanImageForGitClient(resolved.imageId, probe, {
+        [SWITCHBOARD_PROJECT_LABEL]: p.id,
+        [SWITCHBOARD_ROLE_LABEL]: "probe",
+      });
+      if (!scan.completed) {
+        return fail(`${at}.image_digest`, "CONTAINER_IMAGE_CHECK_FAILED", `image ${resolved.imageId}: ${scan.detail}`);
+      }
+      if (scan.found.length > 0) {
+        return fail(
+          `${at}.image_digest`,
+          "CONTAINER_IMAGE_HAS_GIT_CLIENT",
+          `image ${resolved.imageId} has a Git client on its PATH (${scan.detail}); no run would start (FR-PRJ-05, ADR-0020)`,
+        );
+      }
+    } finally {
+      await runtime.remove(probe).catch(() => undefined);
+    }
+    return [];
+  } catch (err) {
+    return fail(`${at}.kind`, "CONTAINER_IMAGE_CHECK_FAILED", (err as Error).message);
+  }
 }
 
 /** The T9.1 filesystem rules for one project; also run on dynamic projects (T9.9) at creation and at admission. */

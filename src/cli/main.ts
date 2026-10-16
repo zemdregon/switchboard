@@ -255,7 +255,10 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
       case "gc": {
         if (sub !== undefined) throw new UsageError("gc takes no positional arguments");
         if (values.apply && values["dry-run"]) throw new UsageError("--apply and --dry-run cannot be combined");
-        const report = await runGcCommand(io, loaderArgv, { apply: values.apply === true });
+        const report = await runGcCommand(io, loaderArgv, {
+          apply: values.apply === true,
+          ...(io.containerRuntime !== undefined ? { makeRuntime: io.containerRuntime } : {}),
+        });
         emit(report, renderGc(report));
         return report.errors && report.errors.length > 0 ? 1 : 0;
       }
@@ -315,7 +318,9 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         }
         if (sub === "validate") {
           if (rest.length > 1) throw new UsageError("projects validate takes at most one project id");
-          const report = await validateProjects(io, loaderArgv, rest[0]);
+          const report = await validateProjects(io, loaderArgv, rest[0], {
+            ...(io.containerRuntime !== undefined ? { makeRuntime: io.containerRuntime } : {}),
+          });
           emit(report, renderValidation(report));
           return report.ok ? 0 : 1;
         }

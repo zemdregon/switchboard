@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Ledger, RunRecord } from "../ledger/index.js";
 import { GitError, git } from "../workspace/git.js";
+import { inspectWorktreeGitLink, restoreWorktreeGitLink } from "../workspace/git-link.js";
 import { DEFAULT_PUBLISH_PREFIX, isRunBranchRef, publishRefFor } from "./publish-ref.js";
 
 /**
@@ -40,6 +41,11 @@ import { DEFAULT_PUBLISH_PREFIX, isRunBranchRef, publishRefFor } from "./publish
  * content) BEFORE any ref is restored (intent before effect), then one `git_ref_check` event with the outcome. The run's
  * outcome is not changed (BR-27). Nothing here depends on the trust profile: an approved bypass run is checked and
  * handled exactly like any other (owner decision 22: Git-write denial stays enforced in bypass runs).
+ *
+ * - **Worktree `.git` link** (T10.3): checked first, because the worktree `HEAD` below and the controller's checkpoint
+ *   are read through it. A link the agent rewrote, replaced or removed is a violation (`worktree_link`, `link_changed`,
+ *   restored): it is recorded, then the expected link to the run's worktree entry is written back, before any ref is
+ *   read through the worktree (see `src/workspace/git-link.ts`).
  *
  * Fail closed: a check that cannot complete is itself recorded as a violation (`check_failed`); a run that reached
  * RUNNING without a LEASED snapshot gets `snapshot_missing` and still has its run branch, worktree `HEAD` and publish ref
@@ -107,6 +113,7 @@ export type ViolationScope =
   | "switchboard"
   | "other"
   | "unlisted"
+  | "worktree_link"
   | "guard";
 
 export type ViolationKind =
@@ -116,6 +123,7 @@ export type ViolationKind =
   | "head_changed"
   | "unlisted_refs_changed"
   | "snapshot_missing"
+  | "link_changed"
   | "check_failed";
 
 export interface ViolationEntry {
@@ -238,7 +246,29 @@ export class RefGuard {
     }
     let violations: ViolationEntry[];
     let current: Map<string, string>;
+    let linkViolations = 0;
     try {
+      // T10.3: the worktree's `.git` link first; recorded (intent before effect), then restored, before anything is read
+      // through it. A restore that fails throws into the `check_failed` path below.
+      const link = await inspectWorktreeGitLink(facts.repoRoot, facts.worktreePath);
+      if (link.ok === false) {
+        const entry: ViolationEntry = {
+          scope: "worktree_link",
+          kind: "link_changed",
+          ref: null,
+          old: null,
+          new: null,
+          action: "restore",
+          detail: `the worktree's .git was ${link.found === "file" ? "a file pointing elsewhere" : `a ${link.found}`}`,
+        };
+        this.ledger.appendRunEvent({
+          runId,
+          type: GIT_POLICY_VIOLATION_EVENT,
+          payload: { v: 1, violation_count: 1, truncated: false, violations: [entry] },
+        });
+        linkViolations = 1;
+        await restoreWorktreeGitLink(facts.worktreePath, link.adminDir);
+      }
       current = await listRefs(facts.repoRoot);
       violations = await this.compare(facts, snapshot, current);
     } catch (err) {
@@ -261,10 +291,23 @@ export class RefGuard {
         type: GIT_REF_CHECK_EVENT,
         payload: { v: 1, result: "failed", reason: entry.detail },
       });
-      return { result: "failed", violations: 1 };
+      return { result: "failed", violations: 1 + linkViolations };
     }
 
     const afterDigest = digestOf([...current.keys()].sort(compare), current);
+    if (violations.length === 0 && linkViolations > 0) {
+      this.ledger.appendRunEvent({
+        runId,
+        type: GIT_REF_CHECK_EVENT,
+        payload: {
+          v: 1,
+          result: "violation",
+          violation_count: linkViolations,
+          restored: [{ scope: "worktree_link", ref: ".git", to: null, ok: true }],
+        },
+      });
+      return { result: "violation", violations: linkViolations };
+    }
     if (violations.length === 0) {
       this.ledger.appendRunEvent({
         runId,
@@ -297,12 +340,13 @@ export class RefGuard {
         restored.push({ scope: r.scope, ref: r.ref, to: r.to, ok: false, error: errorText(err) });
       }
     }
+    if (linkViolations > 0) restored.unshift({ scope: "worktree_link", ref: ".git", to: null, ok: true });
     this.ledger.appendRunEvent({
       runId,
       type: GIT_REF_CHECK_EVENT,
-      payload: { v: 1, result: "violation", violation_count: violations.length, restored },
+      payload: { v: 1, result: "violation", violation_count: violations.length + linkViolations, restored },
     });
-    return { result: "violation", violations: violations.length };
+    return { result: "violation", violations: violations.length + linkViolations };
   }
 
   // ---- internals ----------------------------------------------------------------------------------------------
