@@ -1,4 +1,5 @@
 import type { AdapterRegistry } from "../adapters/index.js";
+import type { ContainerRuntime } from "../environment/runtime.js";
 import type { OuterSandboxAvailability } from "../exec/outer-sandbox.js";
 import type { InnerBackend } from "../inner/port.js";
 import type { EmbeddingBackend } from "../retrieval/embedding.js";
@@ -28,6 +29,8 @@ export interface CliIo {
   readonly effectiveUid?: () => number | undefined;
   /** Test seam (T3.1): outer-sandbox availability for `doctor` instead of probing this host. */
   readonly outerSandbox?: OuterSandboxAvailability;
+  /** Test seam (T10.3): the container runtime `projects validate` and `gc --apply` use instead of rootless Docker. */
+  readonly containerRuntime?: () => ContainerRuntime;
 }
 
 /** Stable `--json` schema version for every command (Proposed). */

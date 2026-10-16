@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { approvalCausePrefix, type DecisionInput, renderDecisionSummary } from "../continuity/decisions.js";
 import { deriveOpenWork, type OpenWorkRun } from "../continuity/open-work.js";
 import { defaultIds, type IdGenerator } from "../ids/index.js";
+import { type ControlPlaneLedgerSlice, createControlPlaneLedgerSlice } from "./control-plane.js";
 import { DecisionRefusedError } from "./errors.js";
 import {
   createWorkQueueLedgerSlice,
@@ -491,6 +492,8 @@ export interface GcSessionTargets {
   worktreePaths: string[];
   /** Recorded `switchboard/<sess>/...` branch names (run rows and checkpoints), de-duplicated. */
   branches: string[];
+  /** Ids of the session's runs: their `container` environment containers carry them as a label (T10.3, FR-PRJ-09). */
+  runIds: string[];
 }
 
 export interface GcArtifactPlan {
@@ -705,7 +708,7 @@ export interface InnerTaskStateRow {
   version: number;
 }
 
-export interface Ledger {
+export interface Ledger extends ControlPlaneLedgerSlice {
   createMetaSession(input: NewMetaSession): MetaSessionRow;
   getMetaSession(id: string): MetaSessionRow | undefined;
   createRun(input: NewRun): RunRow;
@@ -994,6 +997,16 @@ export interface Ledger {
   listDistinctProjectIdsWithReadyWork(): string[];
 }
 
+export {
+  type ControlPlaneEventRow,
+  type ControlPlaneEventType,
+  type ControlPlaneStateRow,
+  GLOBAL_PAUSE_SCOPE,
+  OPERATOR_PAUSE_APPLIED,
+  OPERATOR_PAUSE_REQUESTED,
+  OPERATOR_RESUME_REQUESTED,
+  type PendingPauseRequest,
+} from "./control-plane.js";
 export type { EnqueueWorkItemInput, WorkItemRow, WorkItemState, WorkListFilter } from "./work-queue.js";
 
 export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledger {
@@ -1788,7 +1801,8 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
 
     gcSessionTargets(sessionId) {
       const prefix = `switchboard/${sessionId}/`;
-      const runs = db.prepare("SELECT worktree_path, branch FROM run WHERE meta_session_id = ?").all(sessionId) as {
+      const runs = db.prepare("SELECT id, worktree_path, branch FROM run WHERE meta_session_id = ?").all(sessionId) as {
+        id: string;
         worktree_path: string | null;
         branch: string | null;
       }[];
@@ -1799,7 +1813,7 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
       const branches = [
         ...new Set([...runs.map((r) => r.branch), ...cps.map((c) => c.branch)].filter((b): b is string => !!b)),
       ].filter((b) => b.startsWith(prefix));
-      return { worktreePaths, branches };
+      return { worktreePaths, branches, runIds: runs.map((r) => r.id) };
     },
 
     gcArtifactPlan(sessionId) {
@@ -2175,5 +2189,7 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
     },
 
     ...createWorkQueueLedgerSlice(db, { ids, ts, immediate }),
+    // T14.6 (FR-CTL-05): pause rows and operator pause signals (migration 0018).
+    ...createControlPlaneLedgerSlice(db, { ids, ts, immediate }),
   };
 }

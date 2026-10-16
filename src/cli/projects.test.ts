@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { ContainerRuntime, GitClientScan, ImageResolution } from "../environment/index.js";
 import { createThrowawaySigner, gpgAvailable, type ThrowawaySigner } from "../git/fixtures/throwaway-gpg.js";
 import { main } from "./index.js";
 import type { CliIo } from "./io.js";
@@ -63,13 +64,58 @@ beforeEach(() => {
   repo = path.join(roots, "web-app");
   mkRepo(repo);
   configPath = path.join(tmp, "config.json");
+  containerRuntime = fakeRuntime();
 });
 afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+/** A scripted container runtime (T10.3): no Docker is involved; records the probes it was asked to run and remove. */
+function fakeRuntime(
+  over: { available?: boolean; rootless?: boolean; image?: ImageResolution; scan?: GitClientScan } = {},
+): ContainerRuntime & { probes: string[]; removed: string[] } {
+  const probes: string[] = [];
+  const removed: string[] = [];
+  return {
+    name: "fake",
+    probes,
+    removed,
+    clientEnvAllowlist: [],
+    info: () =>
+      Promise.resolve({
+        available: over.available ?? true,
+        rootless: over.rootless ?? true,
+        serverVersion: "1",
+        clientPath: null,
+        detail: over.available === false ? "fake runtime: no answer" : "fake runtime",
+      }),
+    resolveImage: () => Promise.resolve(over.image ?? { kind: "found", imageId: `sha256:${"b".repeat(64)}` }),
+    scanImageForGitClient: (_id, probe) => {
+      probes.push(probe);
+      return Promise.resolve(
+        over.scan ?? { completed: true, found: [], detail: "no git or gh executable on the image PATH" },
+      );
+    },
+    runArgv: () => {
+      throw new Error("validate never starts a run");
+    },
+    inspect: () => Promise.resolve(null),
+    remove: (name) => {
+      removed.push(name);
+      return Promise.resolve({ removed: false });
+    },
+    listByLabel: () => Promise.resolve([]),
+  };
+}
+let containerRuntime: ContainerRuntime = fakeRuntime();
 
 async function run(args: string[], env: Record<string, string> = {}) {
   const out: string[] = [];
   const err: string[] = [];
-  const io: CliIo = { stdout: { write: (s) => out.push(s) }, stderr: { write: (s) => err.push(s) }, env };
+  const io: CliIo = {
+    stdout: { write: (s) => out.push(s) },
+    stderr: { write: (s) => err.push(s) },
+    env,
+    containerRuntime: () => containerRuntime,
+  };
   const code = await main([...args, "--config", configPath], io);
   return { code, out: out.join(""), err: err.join("") };
 }
@@ -244,8 +290,76 @@ describe("projects validate (T9.1, FR-PRJ-01, 02, 04)", () => {
       code: "ENVIRONMENT_NOT_IMPLEMENTED",
       message: "container environments are not implemented yet (M10)",
     });
+    expect(report.projects[0]?.failures).toHaveLength(1); // the environment checks pass with the scripted runtime
     expect((await run(["projects", "list"])).code).toBe(0);
     expect((await run(["projects", "validate"])).out).toContain("container environments are not implemented yet (M10)");
+  });
+
+  describe("container environment checks (T10.3, FR-PRJ-05, FR-PRJ-08, ADR-0020)", () => {
+    const digest = `sha256:${"a".repeat(64)}`;
+    const containerFailures = async () => {
+      writeConfig([project({ environment: { kind: "container", image_digest: digest } })]);
+      const { code, report } = await validateJson();
+      expect(code).toBe(1);
+      return (report.projects[0]?.failures ?? []).filter((f) => f.code !== "ENVIRONMENT_NOT_IMPLEMENTED");
+    };
+
+    it("an image with git or gh on its PATH fails the no-Git-client check, through the probe, which is removed", async () => {
+      const rt = fakeRuntime({
+        scan: {
+          completed: true,
+          found: [
+            { name: "git", path: "/usr/bin/git" },
+            { name: "gh", path: "/usr/local/bin/gh" },
+          ],
+          detail: "found git at /usr/bin/git, gh at /usr/local/bin/gh",
+        },
+      });
+      containerRuntime = rt;
+      expect(await containerFailures()).toEqual([
+        {
+          path: "$.projects[0].environment.image_digest",
+          code: "CONTAINER_IMAGE_HAS_GIT_CLIENT",
+          message: expect.stringContaining("git at /usr/bin/git, gh at /usr/local/bin/gh") as string,
+        },
+      ]);
+      expect(rt.probes).toHaveLength(1);
+      expect(rt.probes[0]).toMatch(/^switchboard-probe-validate-[0-9a-f]{12}$/);
+      expect(rt.removed).toEqual(rt.probes); // never left behind, even when the scan answered
+      expect((await run(["projects", "validate"])).out).toContain("(CONTAINER_IMAGE_HAS_GIT_CLIENT)");
+    });
+
+    it("a scan that cannot complete is a failure, never a clean result", async () => {
+      containerRuntime = fakeRuntime({ scan: { completed: false, found: [], detail: "scan exited 125" } });
+      expect((await containerFailures()).map((f) => f.code)).toEqual(["CONTAINER_IMAGE_CHECK_FAILED"]);
+    });
+
+    it("the runtime must answer and be rootless; the image must be present locally and unambiguous", async () => {
+      const cases: Array<[Parameters<typeof fakeRuntime>[0], string, string]> = [
+        [{ available: false }, "CONTAINER_RUNTIME_UNAVAILABLE", "$.projects[0].environment.kind"],
+        [{ rootless: false }, "CONTAINER_RUNTIME_UNAVAILABLE", "$.projects[0].environment.kind"],
+        [{ image: { kind: "not_present" } }, "CONTAINER_IMAGE_NOT_PRESENT", "$.projects[0].environment.image_digest"],
+        [
+          { image: { kind: "ambiguous", imageIds: ["sha256:1", "sha256:2"] } },
+          "CONTAINER_IMAGE_AMBIGUOUS",
+          "$.projects[0].environment.image_digest",
+        ],
+      ];
+      for (const [over, code, at] of cases) {
+        const rt = fakeRuntime(over);
+        containerRuntime = rt;
+        expect(await containerFailures()).toMatchObject([{ code, path: at }]);
+        expect(rt.probes).toEqual([]); // no probe when an earlier check fails
+      }
+    });
+
+    it("a host project never consults the container runtime", async () => {
+      const rt = fakeRuntime({ available: false });
+      containerRuntime = rt;
+      writeConfig([project()]);
+      expect((await validateJson()).report.ok).toBe(true);
+      expect(rt.probes).toEqual([]);
+    });
   });
 
   it("requires an image digest for container and forbids container fields on host", async () => {

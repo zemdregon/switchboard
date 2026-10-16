@@ -347,3 +347,21 @@ export function createContainerEnvironment(opts: ContainerEnvironmentOptions): E
 
   return { kind: "container", prepare, teardown, sweepOrphans };
 }
+
+/**
+ * Retention (T10.3, FR-PRJ-09): force-removes every container (run and probe) labelled with one of `runIds`, and returns
+ * their names. Unlike `teardown` it throws when the runtime cannot list or remove: the GC step that calls it then keeps
+ * the worktrees a container may still mount and is retried on the next pass (roll forward). No volume is removed: this
+ * backend creates none (TDD §3.11 as built; no login volume is mounted yet).
+ */
+export async function removeRunContainers(runtime: ContainerRuntime, runIds: readonly string[]): Promise<string[]> {
+  const wanted = new Set(runIds);
+  if (wanted.size === 0) return [];
+  const removed: string[] = [];
+  for (const c of await runtime.listByLabel(SWITCHBOARD_RUN_LABEL)) {
+    const runId = c.labels[SWITCHBOARD_RUN_LABEL];
+    if (runId === undefined || !wanted.has(runId)) continue;
+    if ((await runtime.remove(c.name)).removed) removed.push(c.name);
+  }
+  return removed.sort();
+}
