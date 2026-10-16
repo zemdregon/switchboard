@@ -1493,3 +1493,307 @@ describe("kimi parser residuals, ninth pass (T4.63, synthetic only)", () => {
     });
   }
 });
+
+/**
+ * Tenth pass (T4.63, 2026-10-16, Delegated agent work, not owner-approved; synthetic lines and fixtures only, no `kimi`
+ * run). Error-type matching at its edges, assistant `content` shapes that are neither a string nor a list, tool-call
+ * fields where an empty string shadows a fallback, top-level JSON that is not an object, fields the hint carries but the
+ * parser never reads, and line counting across the two transports. Limits are pinned as limits, not controls
+ * (Unverified: T4.68).
+ */
+describe("kimi parser residuals, tenth pass (T4.63, synthetic only)", () => {
+  const extract = (events: NormalizedEvent[], exit = EXIT_OK) => adapter().extractResult(events, exit);
+  const ctx = { cwd: "/w", bypass: true };
+  const UNREADABLE = "tool call without a readable name and arguments";
+  const meta = (type: string) => line({ role: "meta", type, message: "SYNTHETIC failure" });
+
+  it("an error type matches only as the whole type or its last dotted segment", () => {
+    for (const type of ["error", "system.error", "api.stream.error", ".error"]) {
+      expect(parse([meta(type)]).events, type).toEqual([
+        {
+          kind: "provider_error",
+          category: "unknown",
+          message: "SYNTHETIC failure",
+        },
+      ]);
+    }
+    // Limit (Unverified: T4.68): a type that only resembles an error is unknown meta, never a provider error.
+    for (const type of ["errors", "error.retry", "suberror", "system_error", "Error", "system.ERROR", "error "]) {
+      const { events, state } = parse([meta(type)]);
+      expect(events, type).toEqual([{ kind: "unknown", rawType: `meta:${type}` }]);
+      expect(state.unknownEvents, type).toBe(1);
+    }
+  });
+
+  it("limit, not a control: an unmatched error type before a clean hint at exit 0 succeeds; a non-zero exit still fails", () => {
+    const { events } = parse([line({ role: "assistant", content: "ok" }), meta("error.retry"), line(hint())]);
+    expect(extract(events)).toEqual({
+      ok: true,
+      unknownEventCount: 1,
+      nativeSessionId: SID,
+      summary: "ok",
+    });
+    expect(extract(events, exitWith(1))).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "exit code 1",
+    });
+  });
+
+  it("an error record that also carries a hint's `session_id` is an error and never binds", () => {
+    const { events, state } = parse([
+      line({
+        role: "meta",
+        type: "error",
+        message: "SYNTHETIC failure",
+        session_id: "session_other",
+      }),
+      line(hint()),
+    ]);
+    expect(events).toEqual([
+      {
+        kind: "provider_error",
+        category: "unknown",
+        message: "SYNTHETIC failure",
+      },
+      { kind: "session_bound", nativeSessionId: SID },
+      { kind: "result", ok: true },
+    ]);
+    expect(state.nativeSessionId).toBe(SID);
+    expect(extract(events)).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      nativeSessionId: SID,
+    });
+  });
+
+  it("assistant content that is an object, number or boolean is no text: unknown alone, a late record after the hint", () => {
+    for (const content of [{ type: "text", text: "x" }, 7, true]) {
+      const before = parse([line({ role: "assistant", content }), line(hint())]);
+      expect(before.events[0], JSON.stringify(content)).toEqual({
+        kind: "unknown",
+        rawType: "assistant",
+      });
+      expect(extract(before.events)).toEqual({
+        ok: true,
+        unknownEventCount: 1,
+        nativeSessionId: SID,
+      });
+      const after = parse([line(hint()), line({ role: "assistant", content })]);
+      expect(after.events.slice(2), JSON.stringify(content)).toEqual([
+        {
+          kind: "provider_error",
+          category: "protocol",
+          message: "assistant record after the resume hint",
+        },
+      ]);
+      expect(after.state.unknownEvents).toBe(0);
+    }
+    // With tool calls beside it, the calls are still read and the record is not unknown.
+    const [only] = parse([
+      line({
+        role: "assistant",
+        content: { text: "x" },
+        tool_calls: [call("Glob", {})],
+      }),
+    ]).events;
+    expect(only).toEqual({ kind: "tool_call", tool: "other", name: "Glob" });
+  });
+
+  it("list content keeps only object `text` parts with string text, joined with no separator", () => {
+    const { events, state } = parse([
+      line({
+        role: "assistant",
+        content: [
+          "SYNTHETIC bare string",
+          null,
+          7,
+          ["nested"],
+          { type: "TEXT", text: "upper" },
+          { type: "text", text: "a" },
+          { text: "untyped" },
+          { type: "text" },
+          { type: "text", text: "" },
+          { type: "text", text: "b" },
+        ],
+      }),
+    ]);
+    expect(events).toEqual([{ kind: "message", role: "assistant", text: "ab" }]);
+    expect(state.unknownEvents).toBe(0);
+    // A list with no readable part is empty text: no message, and not unknown either.
+    const empty = parse([line({ role: "assistant", content: ["x", { type: "image" }] })]);
+    expect(empty.events).toEqual([]);
+    expect(empty.state.unknownEvents).toBe(0);
+  });
+
+  it("an empty `function.name` shadows a readable top-level name, so the call is unreadable and fails closed", () => {
+    const item = {
+      id: "c",
+      name: "Shell",
+      function: { name: "", arguments: '{"command":"git push"}' },
+    };
+    const { events } = parse([line(toolMsg(item)), line(hint())]);
+    expect(events[0]).toEqual({
+      kind: "provider_error",
+      category: "protocol",
+      message: UNREADABLE,
+    });
+    expect(extract(events)).toMatchObject({
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: `protocol: ${UNREADABLE}`,
+    });
+  });
+
+  it("a `function` that is not an object is ignored, so top-level name and arguments are read and reach the guard", () => {
+    for (const fn of ["Shell", ["Shell"], 7, null]) {
+      const [ev] = parse([
+        line(
+          toolMsg({
+            id: "c",
+            function: fn,
+            name: "Shell",
+            arguments: '{"command":"git push"}',
+          }),
+        ),
+      ]).events;
+      expect(guardEvent(ev as NormalizedEvent, ctx), JSON.stringify(fn)).toMatchObject({
+        kind: "tool_call",
+        tool: "shell",
+        name: "Shell",
+        violation: { kind: "git_write" },
+      });
+    }
+  });
+
+  it("non-string, non-object raw arguments (number, boolean, list) are unreadable; null and missing read as none", () => {
+    for (const args of [7, false, [], ["git", "push"]]) {
+      expect(parse([line(toolMsg(call("Shell", args)))]).events, JSON.stringify(args)).toEqual([
+        { kind: "provider_error", category: "protocol", message: UNREADABLE },
+      ]);
+    }
+    expect(parse([line(toolMsg({ id: "c", function: { name: "Shell" } }))]).events).toEqual([
+      { kind: "tool_call", tool: "other", name: "Shell" },
+    ]);
+  });
+
+  it("limit, not a control: an empty `command` shadows `cmd`, so a Git write in `cmd` is not seen (Unverified: T4.68)", () => {
+    const parsed = parse([line(toolMsg(call("Shell", { command: "", cmd: "git push" }))), line(hint())]).events;
+    expect(parsed[0]).toEqual({
+      kind: "tool_call",
+      tool: "shell",
+      name: "Shell",
+      command: "",
+    });
+    const events = parsed.map((e) => guardEvent(e, ctx));
+    expect(events[0]).toEqual({
+      kind: "tool_call",
+      tool: "shell",
+      name: "Shell",
+    });
+    expect(extract(events)).toMatchObject({ ok: true });
+  });
+
+  it("target keys are read in order path, file_path, filePath, target; an empty `path` shadows the rest", () => {
+    const targets = parse([
+      line(
+        toolMsg(
+          call("WriteFile", { file_path: "b", filePath: "c", target: "d" }),
+          call("WriteFile", { filePath: "c", target: "d" }, "call_2"),
+          call("ReadFile", { path: 7, target: "d" }, "call_3"),
+          call("WriteFile", { path: "", file_path: "b" }, "call_4"),
+        ),
+      ),
+    ]).events;
+    expect(targets).toEqual([
+      { kind: "tool_call", tool: "edit", name: "WriteFile", target: "b" },
+      { kind: "tool_call", tool: "edit", name: "WriteFile", target: "c" },
+      { kind: "tool_call", tool: "read", name: "ReadFile", target: "d" },
+      { kind: "tool_call", tool: "edit", name: "WriteFile", target: "" },
+    ]);
+  });
+
+  it("top-level JSON that is not an object (null, a number, a string, a boolean) is unknown and never a result", () => {
+    const { events, state } = parse(["null", "42", '"meta"', "true", "[]"]);
+    expect(events).toEqual(Array.from({ length: 5 }, () => ({ kind: "unknown", rawType: "none" })));
+    expect(state).toMatchObject({ lines: 5, unknownEvents: 5 });
+    expect(extract(events)).toMatchObject({
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "no result event",
+    });
+  });
+
+  it("limit, not a control: a hint's failure-looking fields are never read; only the exit code can fail it (Unverified: T4.68)", () => {
+    const failed = {
+      ...hint(),
+      ok: false,
+      status: "failed",
+      exit_code: 1,
+      error: "SYNTHETIC failure",
+    };
+    const { events } = parse([line(failed)]);
+    expect(events).toEqual([
+      { kind: "session_bound", nativeSessionId: SID },
+      { kind: "result", ok: true },
+    ]);
+    expect(extract(events)).toEqual({
+      ok: true,
+      unknownEventCount: 0,
+      nativeSessionId: SID,
+    });
+    expect(extract(events, exitWith(1))).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+    });
+  });
+
+  it("`lines` counts every input, an unparseable line and an ACP message included (the shared mapping counts ACP)", () => {
+    const { state } = parse([
+      line(VERSION),
+      { jsonrpc: "2.0", method: "session/update", params: { update: {} } },
+      "{not json",
+      { jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" } },
+    ]);
+    expect(state.lines).toBe(4);
+  });
+
+  const replays: [string, ConformanceCase][] = [
+    [
+      "function_name_empty: an empty `function.name` over a top-level Git write at exit 0 is OUTPUT_PROTOCOL_ERROR",
+      {
+        kind: "malformed_output",
+        adapter: replayAdapter("function_name_empty"),
+        profile: PRIVILEGED_BYPASS_PROFILE,
+        request: request(),
+        expect: {
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          failureDetail: `protocol: ${UNREADABLE}`,
+          nativeSessionId: DEFAULT_SESSION_ID,
+          summary: "ok",
+        },
+      },
+    ],
+    [
+      "error_type_variant: an unmatched error type with no hint at exit 1 is TOOL_FAILURE on the exit code",
+      {
+        kind: "task_failure",
+        adapter: replayAdapter("error_type_variant"),
+        profile: PRIVILEGED_BYPASS_PROFILE,
+        request: request(),
+        expect: {
+          ok: false,
+          failureCode: "TOOL_FAILURE",
+          failureDetail: "exit code 1",
+          nativeSessionId: null,
+          summary: "ok",
+        },
+      },
+    ],
+  ];
+  for (const [name, c] of replays) {
+    it(name, async () => {
+      const report = await runConformanceCase(c);
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    });
+  }
+});
