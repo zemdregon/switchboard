@@ -1,0 +1,6 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.53 eighth residual pass, T4.6). No line carries a sessionID until the final stop step_finish, which also reports a backing_provider and a model. Pins that a late first id binds on that line with its vendor and model, and earlier id-less lines (text, a read tool call, an intermediate step) are kept. Not a recorded native shape.","exit":0}}
+{"type":"step_start","timestamp":1,"part":{"id":"prt_s1","type":"step-start"}}
+{"type":"tool_use","timestamp":2,"part":{"id":"prt_u1","type":"tool","tool":"read","state":{"status":"completed","input":{"filePath":"notes.txt"},"output":"SYNTHETIC"}}}
+{"type":"step_finish","timestamp":3,"part":{"id":"prt_f1","type":"step-finish","reason":"tool-calls","tokens":{"input":5,"output":1}}}
+{"type":"text","timestamp":4,"part":{"id":"prt_t1","type":"text","text":"SYNTHETIC: late"}}
+{"type":"step_finish","timestamp":5,"sessionID":"ses_SYNTHETIC0000000000000001","backing_provider":"backing-late-bind","model":"Late Bind Model","part":{"id":"prt_f2","type":"step-finish","reason":"stop","tokens":{"input":7,"output":2}}}

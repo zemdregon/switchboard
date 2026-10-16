@@ -31,9 +31,14 @@
  * Seventh pass (2026-10-16, same terms): custom command value/status boundaries, resume id/vendor mismatches,
  * non-stop finishes after stop, and late errors that a later stop cannot erase. These pin observed synthetic
  * behaviour, including gaps; no new native shape or production fix is claimed.
+ * Eighth pass (2026-10-16, same terms): a first id reported late (after the stop, on a trailing tool, text, non-stop
+ * finish or error line) binds there with its vendor (fixture `late_session_bound.jsonl`); vendor/model spelling
+ * parity, independence, 128-character clipping and an empty-string root shadowing the part (gap); the run result never
+ * carries vendor or model; resume argv positions and id-length boundaries; and fail-closed trailing events, with an
+ * open step_start after the last stop still a success (gap, fixture `trailing_step_start.jsonl`).
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -48,11 +53,20 @@ import { privilegedProfile } from "../fixtures/privileged.js";
 import { AdapterRegistry } from "../registry.js";
 import { createProbeRunner } from "../run.js";
 import { guardEvent } from "../tool-guard.js";
-import type { CompileRequest, NormalizedEvent, ParseState, ProbeRunner, ResolvedProfile } from "../types.js";
+import type {
+  CompileRequest,
+  ExitInfo,
+  NativeBinding,
+  NormalizedEvent,
+  ParseState,
+  ProbeRunner,
+  ResolvedProfile,
+} from "../types.js";
 import { OpenCodeAdapter } from "./adapter.js";
 import {
   BYPASS_SCOPE,
   DEFAULT_SESSION_ID,
+  fixturePath,
   PRIVILEGED_BYPASS_PROFILE,
   RESUMED_SESSION_ID,
   replayAdapter,
@@ -1734,6 +1748,313 @@ describe("opencode parser residuals, seventh pass: custom command boundaries, re
         ok: false,
         failureCode: code,
         nativeSessionId: SID,
+      });
+    }
+  });
+});
+
+describe("opencode parser residuals, eighth pass: late binding, vendor parity, resume argv boundaries and trailing events (T4.53, T4.6; synthetic lines; parser unchanged)", () => {
+  const request = (cwd = makeCwd()): CompileRequest => ({
+    runId: "run_opencode_t453_eighth",
+    objective: "synthetic opencode objective",
+    constraints: [],
+    workspace: { cwd, writable: true },
+    bypassApproved: true,
+  });
+  // `sessionID: undefined` is dropped by JSON.stringify, so the line carries no id (FINISH and ERROR default to SID).
+  const noId = <T extends object>(o: T) => ({ ...o, sessionID: undefined });
+  const bound = (events: NormalizedEvent[]) => events.filter((e) => e.kind === "session_bound");
+
+  it("a first id on a trailing tool_use binds there with its vendor; the run still fails on the trailing tool", () => {
+    const { events } = parse([
+      START(),
+      TEXT("done"),
+      noId(FINISH("stop", "prt_stop")),
+      { ...TOOL("read", { filePath: "late.txt" }, SID), backing_provider: "late-vendor", model: "late-model" },
+    ]);
+    expect(events.slice(-2)).toEqual([
+      { kind: "session_bound", nativeSessionId: SID, backingProvider: "late-vendor", model: "late-model" },
+      { kind: "tool_call", tool: "read", name: "read", target: "late.txt" },
+    ]);
+    expect(adapter().extractResult(events, EXIT_OK)).toEqual({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the final stop step",
+      nativeSessionId: SID,
+      unknownEventCount: 0,
+      summary: "done",
+    });
+  });
+
+  it("a first id reported after the stop on a text line or a non-stop finish binds late and the run succeeds", () => {
+    for (const late of [TEXT("after", SID), FINISH("tool-calls", "prt_late", SID)]) {
+      const { events } = parse([START(), TEXT("before"), noId(FINISH("stop", "prt_stop")), late]);
+      expect(bound(events), late.type).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+      expect(events.findIndex((e) => e.kind === "session_bound")).toBeGreaterThan(
+        events.findIndex((e) => e.kind === "result"),
+      );
+      expect(adapter().extractResult(events, EXIT_OK), late.type).toMatchObject({ ok: true, nativeSessionId: SID });
+    }
+  });
+
+  it("a first id on an error line after the stop binds, and the run fails with that error's code keeping the id", () => {
+    const { events } = parse([START(), noId(FINISH("stop", "prt_stop")), ERROR("provider.quota", SID)]);
+    expect(events.slice(-2)).toEqual([
+      { kind: "session_bound", nativeSessionId: SID },
+      { kind: "provider_error", category: "quota", message: "provider.quota: synthetic" },
+    ]);
+    expect(adapter().extractResult(events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "QUOTA_EXHAUSTED",
+      nativeSessionId: SID,
+    });
+  });
+
+  it("a stream that never reports an id succeeds unbound, and extractResult reads only the first session_bound it is given", () => {
+    const unbound = parse([START(), TEXT("ok"), noId(FINISH("stop"))]).events;
+    expect(bound(unbound)).toEqual([]);
+    expect(adapter().extractResult(unbound, EXIT_OK)).toEqual({ ok: true, unknownEventCount: 0, summary: "ok" });
+    // The parser never emits two bindings; a hand-built list with two shows extractResult keeps the first.
+    const twice: NormalizedEvent[] = [
+      { kind: "session_bound", nativeSessionId: SID },
+      { kind: "session_bound", nativeSessionId: OTHER, backingProvider: "other" },
+      { kind: "result", ok: true },
+    ];
+    expect(adapter().extractResult(twice, EXIT_OK)).toEqual({ ok: true, nativeSessionId: SID, unknownEventCount: 0 });
+  });
+
+  it("fixture late_session_bound replays to success, binding the id, vendor and model first reported on the stop line", async () => {
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: replayAdapter("late_session_bound"),
+      request: request(),
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toEqual({
+      ok: true,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      unknownEventCount: 0,
+      summary: "SYNTHETIC: late",
+    });
+    const lines = readFileSync(fixturePath("late_session_bound"), "utf8").trim().split("\n").slice(1);
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const events = lines.flatMap((l) => a.parseEvent(l, state));
+    expect(bound(events)).toEqual([
+      {
+        kind: "session_bound",
+        nativeSessionId: DEFAULT_SESSION_ID,
+        backingProvider: "backing-late-bind",
+        model: "Late Bind Model",
+      },
+    ]);
+    expect(events.filter((e) => e.kind === "usage")).toHaveLength(2);
+  });
+
+  it("vendor spelling parity: each of the four spellings, and model at root or in the part, binds the same event", () => {
+    const want = { kind: "session_bound", nativeSessionId: SID, backingProvider: "vendor-x", model: "model-y" };
+    const variants: [string, object][] = [
+      ["root snake", { ...START(SID), backing_provider: "vendor-x", model: "model-y" }],
+      ["root camel", { ...START(SID), backingProvider: "vendor-x", model: "model-y" }],
+      ["part snake", { ...START(SID), part: { type: "step-start", backing_provider: "vendor-x", model: "model-y" } }],
+      ["part camel", { ...START(SID), part: { type: "step-start", backingProvider: "vendor-x", model: "model-y" } }],
+    ];
+    for (const [label, first] of variants) {
+      const { events, state } = parse([first, FINISH("stop")]);
+      expect(bound(events), label).toEqual([want]);
+      expect(state.unknownEvents, label).toBe(0);
+    }
+  });
+
+  it("vendor and model are independent: either alone binds alone, and an empty string binds neither", () => {
+    expect(bound(parse([{ ...START(SID), backing_provider: "only-vendor" }]).events)).toEqual([
+      { kind: "session_bound", nativeSessionId: SID, backingProvider: "only-vendor" },
+    ]);
+    expect(bound(parse([{ ...START(SID), model: "only-model" }]).events)).toEqual([
+      { kind: "session_bound", nativeSessionId: SID, model: "only-model" },
+    ]);
+    expect(bound(parse([{ ...START(SID), backing_provider: "", model: "" }]).events)).toEqual([
+      { kind: "session_bound", nativeSessionId: SID },
+    ]);
+  });
+
+  it("pins the gap: an empty-string root vendor or model shadows the part's value, while a null root falls through", () => {
+    const part = { type: "step-start", backing_provider: "part-vendor", model: "part-model" };
+    expect(bound(parse([{ ...START(SID), backing_provider: "", model: "", part }]).events)).toEqual([
+      { kind: "session_bound", nativeSessionId: SID },
+    ]);
+    expect(bound(parse([{ ...START(SID), backing_provider: null, model: null, part }]).events)).toEqual([
+      { kind: "session_bound", nativeSessionId: SID, backingProvider: "part-vendor", model: "part-model" },
+    ]);
+  });
+
+  it("vendor and model past 128 characters are clipped to 128 plus an ellipsis; the session id is never clipped", () => {
+    const long = "v".repeat(129);
+    const id = `s${"0".repeat(255)}`;
+    expect(bound(parse([{ ...START(id), backing_provider: long, model: long }]).events)).toEqual([
+      {
+        kind: "session_bound",
+        nativeSessionId: id,
+        backingProvider: `${"v".repeat(128)}…`,
+        model: `${"v".repeat(128)}…`,
+      },
+    ]);
+  });
+
+  it("the run result never carries a backing vendor or model, whatever session_bound reported", () => {
+    const { events } = parse([{ ...START(SID), backing_provider: "vendor-x", model: "model-y" }, FINISH("stop")]);
+    const ok = adapter().extractResult(events, EXIT_OK);
+    expect(Object.keys(ok).sort()).toEqual(["nativeSessionId", "ok", "unknownEventCount"]);
+    const failed = adapter().extractResult(events, EXIT_1);
+    expect(Object.keys(failed).sort()).toEqual([
+      "failureCode",
+      "failureDetail",
+      "nativeSessionId",
+      "ok",
+      "unknownEventCount",
+    ]);
+  });
+
+  it("resume argv boundaries: `--session <id>` sits between `--standalone` and `--` exactly once, whatever the objective", () => {
+    const a = new OpenCodeAdapter({
+      executable: "/opt/synthetic/node",
+      launcherArgs: ["replay.mjs", "--session", "x"],
+    });
+    for (const objective of ["", "--", "--session", `--session ${OTHER}`, "-s", "\n"]) {
+      const req = { ...request("/work/tree"), objective };
+      const inv = a.resumeArgs({ provider: "opencode", nativeSessionId: SID }, req, PRIVILEGED_BYPASS_PROFILE);
+      if ("ineligible" in inv) throw new Error(inv.detail);
+      expect(inv.argv, JSON.stringify(objective)).toEqual([
+        "/opt/synthetic/node",
+        "replay.mjs",
+        "--session",
+        "x",
+        "run",
+        "--format",
+        "json",
+        "--standalone",
+        "--session",
+        SID,
+        "--",
+        objective,
+      ]);
+      // Launcher words come first and are the replay's own; the run's options run from `run` to the final `--`.
+      const run = inv.argv.indexOf("run");
+      expect(
+        inv.argv.slice(run, -2).filter((w) => w === "--session"),
+        JSON.stringify(objective),
+      ).toHaveLength(1);
+      expect(inv.policyFlags).toEqual(["--standalone"]);
+    }
+  });
+
+  it("resume id boundaries: 256 characters pass verbatim, 257 or a non-alphanumeric first character are refused", () => {
+    const resume = (nativeSessionId: string) =>
+      adapter().resumeArgs({ provider: "opencode", nativeSessionId }, request("/work/tree"), PRIVILEGED_BYPASS_PROFILE);
+    for (const id of ["s", `s${"0".repeat(255)}`, "ses_a.b:c-d", "0"]) {
+      const inv = resume(id);
+      if ("ineligible" in inv) throw new Error(`${id}: ${inv.detail}`);
+      expect(inv.argv.slice(-3, -2), id).toEqual([id]);
+    }
+    for (const id of [`s${"0".repeat(256)}`, "-s", "_ses", ".ses", ":ses", "--", "", "ses id", "ses\n"]) {
+      expect(resume(id), JSON.stringify(id)).toEqual({
+        ineligible: true,
+        reason: "CAPABILITY_MISSING",
+        detail: "native session id is not a safe single argument",
+      });
+    }
+    expect(
+      adapter().resumeArgs(
+        // A persisted binding with a case-variant provider name (not a ProviderName) is another provider.
+        { provider: "OpenCode", nativeSessionId: SID } as unknown as NativeBinding,
+        request("/work/tree"),
+        PRIVILEGED_BYPASS_PROFILE,
+      ),
+    ).toEqual({ ineligible: true, reason: "CAPABILITY_MISSING", detail: "binding is for OpenCode" });
+  });
+
+  it("pins the gap: a step_start after the last stop opens a step that never finishes, and the run still succeeds", () => {
+    const { events, state } = parse([START(SID), TEXT("done"), FINISH("stop"), START(SID)]);
+    expect(state.unknownEvents).toBe(0);
+    expect(adapter().extractResult(events, EXIT_OK)).toEqual({
+      ok: true,
+      nativeSessionId: SID,
+      unknownEventCount: 0,
+      summary: "done",
+    });
+  });
+
+  it("fixture trailing_step_start replays the open trailing step to success (gap)", async () => {
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: replayAdapter("trailing_step_start"),
+      request: request(),
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toEqual({
+      ok: true,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      unknownEventCount: 0,
+      summary: "SYNTHETIC: done",
+    });
+  });
+
+  it("fail closed after the last stop: an unknown line, a changed id, an unsafe id or a malformed step_start each fail", () => {
+    const cases: [label: string, trailing: object, code: string, detail: string][] = [
+      [
+        "unknown type",
+        { type: "session.idle", sessionID: SID },
+        "OUTPUT_PROTOCOL_ERROR",
+        "1 unreadable event(s) in the stream",
+      ],
+      [
+        "step_start of another part type",
+        { type: "step_start", sessionID: SID, part: { type: "text" } },
+        "OUTPUT_PROTOCOL_ERROR",
+        "1 unreadable event(s) in the stream",
+      ],
+      ["changed id", TEXT("late", OTHER), "OUTPUT_PROTOCOL_ERROR", "protocol: session id changed mid-run"],
+      ["unsafe id", TEXT("late", "-bad"), "OUTPUT_PROTOCOL_ERROR", "protocol: session id is not a safe argument"],
+    ];
+    for (const [label, trailing, code, detail] of cases) {
+      const { events } = parse([START(SID), FINISH("stop"), trailing]);
+      expect(adapter().extractResult(events, EXIT_OK), label).toMatchObject({
+        ok: false,
+        failureCode: code,
+        failureDetail: detail,
+        nativeSessionId: SID,
+      });
+    }
+  });
+
+  it("a guarded Git write after the last stop reports the guard's code, not the trailing-tool detail", () => {
+    const events = guarded([START(SID), FINISH("stop"), TOOL("shell", { command: "git push origin main" }, SID)]);
+    const r = adapter().extractResult(events, EXIT_OK);
+    expect(r).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: SID });
+    if (r.ok) throw new Error("unreachable");
+    expect(r.failureDetail).toMatch(/^git write attempted: /);
+  });
+
+  it("a clean stopped stream never succeeds on a non-exited outcome, and keeps its id on every one", () => {
+    const { events } = parse([START(SID), TEXT("done"), FINISH("stop")]);
+    const outcomes: [outcome: ExitInfo["outcome"], code: string][] = [
+      ["timeout", "PROCESS_TIMEOUT"],
+      ["cancelled", "CANCELLED"],
+      ["crashed", "PROCESS_CRASH"],
+      ["spawn_error", "PROCESS_CRASH"],
+      ["protocol_error", "OUTPUT_PROTOCOL_ERROR"],
+      ["internal_error", "OUTPUT_PROTOCOL_ERROR"],
+    ];
+    for (const [outcome, code] of outcomes) {
+      expect(adapter().extractResult(events, { ...EXIT_OK, outcome, exitCode: null }), outcome).toMatchObject({
+        ok: false,
+        failureCode: code,
+        nativeSessionId: SID,
+        summary: "done",
       });
     }
   });
