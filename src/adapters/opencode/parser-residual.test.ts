@@ -36,6 +36,12 @@
  * parity, independence, 128-character clipping and an empty-string root shadowing the part (gap); the run result never
  * carries vendor or model; resume argv positions and id-length boundaries; and fail-closed trailing events, with an
  * open step_start after the last stop still a success (gap, fixture `trailing_step_start.jsonl`).
+ * Ninth pass (2026-10-16, same terms): an id on an untyped or non-object line never binds (gap); a known line missing
+ * its field binds before its unknown event; a pre-seeded parse state emits no binding (gap); the bound id round-trips
+ * into resume argv verbatim; the trailing-tool and unreadable-event details mask a protocol error or a supervisor
+ * outcome's detail (gap, fixture `trailing_tool_changed_id.jsonl`) but never another code's; unmapped error types are
+ * TOOL_FAILURE and long messages are clipped; stderrTail never changes the code; and a binding's extra fields never
+ * reach the invocation. ACP input stays inert.
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -2056,6 +2062,281 @@ describe("opencode parser residuals, eighth pass: late binding, vendor parity, r
         nativeSessionId: SID,
         summary: "done",
       });
+    }
+  });
+});
+
+describe("opencode parser residuals, ninth pass: untyped binding, pre-seeded state, detail masking, error tails and resume round-trip (T4.53; synthetic lines; parser unchanged)", () => {
+  const request = (cwd = makeCwd()): CompileRequest => ({
+    runId: "run_opencode_t453_ninth",
+    objective: "synthetic opencode objective",
+    constraints: [],
+    workspace: { cwd, writable: true },
+    bypassApproved: true,
+  });
+  const fresh = (): ParseState => ({ lines: 0, unknownEvents: 0 });
+
+  it("pins the gap: a safe id on a line with no string type, or on a non-object line, never binds; the next typed line binds it", () => {
+    const untyped: unknown[] = [
+      { sessionID: SID, part: { sessionID: SID, type: "step-start" } },
+      { type: 7, sessionID: SID },
+      { type: null, sessionID: SID },
+      [{ type: "step_start", sessionID: SID }],
+      SID,
+      null,
+      42,
+    ];
+    for (const raw of untyped) {
+      const a = adapter();
+      const state = fresh();
+      expect(a.parseEvent(line(raw), state), JSON.stringify(raw)).toEqual([{ kind: "unknown", rawType: "none" }]);
+      expect(state, JSON.stringify(raw)).toEqual({ lines: 1, unknownEvents: 1 });
+      expect(a.parseEvent(line(START(SID)), state), JSON.stringify(raw)).toEqual([
+        { kind: "session_bound", nativeSessionId: SID },
+      ]);
+    }
+    const { events } = parse([{ sessionID: SID }, START(SID), TEXT("ok"), FINISH("stop")]);
+    expect(adapter().extractResult(events, EXIT_OK)).toEqual({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "1 unreadable event(s) in the stream",
+      nativeSessionId: SID,
+      unknownEventCount: 1,
+      summary: "ok",
+    });
+  });
+
+  it("a known line missing its field binds its id first, then counts the unknown event", () => {
+    const missing: object[] = [
+      { type: "step_start", sessionID: SID },
+      { type: "text", sessionID: SID, part: { type: "text" } },
+      { type: "tool_use", sessionID: SID, part: { state: { input: { command: "ls" } } } },
+      { type: "step_finish", sessionID: SID, part: { tokens: { input: 1 } } },
+      { type: "error", sessionID: SID },
+    ];
+    for (const raw of missing) {
+      const { events, state } = parse([raw]);
+      const type = (raw as { type: string }).type;
+      expect(events, type).toEqual([
+        { kind: "session_bound", nativeSessionId: SID },
+        { kind: "unknown", rawType: type },
+      ]);
+      expect(state, type).toEqual({ lines: 1, unknownEvents: 1, nativeSessionId: SID });
+    }
+  });
+
+  it("ACP-shaped input stays inert: no binding, no line count and no unknown event, even with a session id", () => {
+    const a = adapter();
+    const state = fresh();
+    const acp = { jsonrpc: "2.0", method: "session/update", params: { sessionId: SID, sessionID: SID } };
+    expect(a.parseEvent(acp as never, state)).toEqual([]);
+    expect(state).toEqual({ lines: 0, unknownEvents: 0 });
+  });
+
+  it("pins the gap: a parse state pre-seeded with an id emits no session_bound for it, so the result carries no id", () => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0, nativeSessionId: SID };
+    const events = [START(SID), TEXT("ok"), FINISH("stop")].flatMap((l) => a.parseEvent(line(l), state));
+    expect(events.filter((e) => e.kind === "session_bound")).toEqual([]);
+    expect(a.extractResult(events, EXIT_OK)).toEqual({ ok: true, unknownEventCount: 0, summary: "ok" });
+    // A different safe id, or an unsafe one, against the seeded id is still a protocol error.
+    for (const [id, message] of [
+      [OTHER, "session id changed mid-run"],
+      ["-bad", "session id is not a safe argument"],
+    ] as const) {
+      const seeded: ParseState = { lines: 0, unknownEvents: 0, nativeSessionId: SID };
+      expect(a.parseEvent(line(TEXT("x", id)), seeded), id).toEqual([
+        { kind: "provider_error", category: "protocol", message },
+        { kind: "message", role: "assistant", text: "x" },
+      ]);
+      expect(seeded.nativeSessionId, id).toBe(SID);
+    }
+  });
+
+  it("the bound id round-trips into resume argv verbatim, including ids spelled like the run's own words", () => {
+    for (const id of ["run", "json", "standalone", "session", "stop", "0", `s${"0".repeat(255)}`]) {
+      const { events } = parse([START(id), TEXT("ok"), FINISH("stop", undefined, id)]);
+      const r = adapter().extractResult(events, EXIT_OK);
+      expect(r, id).toMatchObject({ ok: true, nativeSessionId: id });
+      const req = request("/work/tree");
+      const inv = adapter().resumeArgs(
+        { provider: "opencode", nativeSessionId: r.nativeSessionId ?? "" },
+        req,
+        PRIVILEGED_BYPASS_PROFILE,
+      );
+      if ("ineligible" in inv) throw new Error(`${id}: ${inv.detail}`);
+      expect(inv.argv, id).toEqual([
+        "/opt/synthetic/opencode",
+        "run",
+        "--format",
+        "json",
+        "--standalone",
+        "--session",
+        id,
+        "--",
+        req.objective,
+      ]);
+    }
+  });
+
+  it("resumeArgs reads only provider and nativeSessionId: extra binding fields never reach the invocation", () => {
+    const req = request("/work/tree");
+    const plain = adapter().resumeArgs({ provider: "opencode", nativeSessionId: SID }, req, PRIVILEGED_BYPASS_PROFILE);
+    const extra = {
+      provider: "opencode",
+      nativeSessionId: SID,
+      cwd: "/elsewhere",
+      backingProvider: "vendor-x",
+      model: "model-y",
+      args: ["--auto"],
+    } as unknown as NativeBinding;
+    const resumed = adapter().resumeArgs(extra, req, PRIVILEGED_BYPASS_PROFILE);
+    expect(resumed).toEqual(plain);
+    expect(JSON.stringify(resumed)).not.toMatch(/elsewhere|vendor-x|model-y|--auto/);
+  });
+
+  it("pins the gap: the trailing-tool detail masks a protocol error raised on the same trailing tool line", () => {
+    for (const [label, id] of [
+      ["changed id", OTHER],
+      ["unsafe id", "-bad"],
+    ] as const) {
+      const { events } = parse([START(SID), TEXT("done"), FINISH("stop"), TOOL("read", { filePath: "x" }, id)]);
+      expect(
+        events.some((e) => e.kind === "provider_error" && e.category === "protocol"),
+        label,
+      ).toBe(true);
+      expect(adapter().extractResult(events, EXIT_OK), label).toEqual({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "tool call after the final stop step",
+        nativeSessionId: SID,
+        unknownEventCount: 0,
+        summary: "done",
+      });
+    }
+  });
+
+  it("fixture trailing_tool_changed_id replays to OUTPUT_PROTOCOL_ERROR with the trailing-tool detail (gap)", async () => {
+    const report = await runConformanceCase({
+      kind: "malformed_output",
+      adapter: replayAdapter("trailing_tool_changed_id"),
+      request: request(),
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: {
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "tool call after the final stop step",
+        nativeSessionId: DEFAULT_SESSION_ID,
+        summary: "SYNTHETIC: done",
+        unknownEventCount: 0,
+      },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+  });
+
+  it("pins the gap: supervisor outcomes classified OUTPUT_PROTOCOL_ERROR take the trailing-tool or unreadable-event detail", () => {
+    const stopped = parse([START(SID), TEXT("done"), FINISH("stop")]).events;
+    const withTool = parse([START(SID), FINISH("stop"), TOOL("read", { path: "x" }, SID)]).events;
+    const withUnknown = parse([START(SID), { type: "session.idle" }, FINISH("stop")]).events;
+    const cases: [label: string, events: NormalizedEvent[], outcome: ExitInfo["outcome"], detail: string][] = [
+      ["protocol_error, clean", stopped, "protocol_error", "unparseable provider output"],
+      ["internal_error, clean", stopped, "internal_error", "event handling failed"],
+      ["protocol_error, trailing tool", withTool, "protocol_error", "tool call after the final stop step"],
+      ["internal_error, trailing tool", withTool, "internal_error", "tool call after the final stop step"],
+      ["protocol_error, unknown", withUnknown, "protocol_error", "1 unreadable event(s) in the stream"],
+      ["internal_error, unknown", withUnknown, "internal_error", "1 unreadable event(s) in the stream"],
+    ];
+    for (const [label, events, outcome, detail] of cases) {
+      expect(adapter().extractResult(events, { ...EXIT_OK, outcome, exitCode: null }), label).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: detail,
+        nativeSessionId: SID,
+      });
+    }
+  });
+
+  it("codes other than OUTPUT_PROTOCOL_ERROR keep the classifier's detail with a trailing tool or unreadable events", () => {
+    const trailing = TOOL("read", { path: "x" }, SID);
+    const cases: [label: string, lines: object[], exit: ExitInfo, code: string, detail: string][] = [
+      [
+        "idle timeout",
+        [START(SID), FINISH("stop"), trailing],
+        { ...EXIT_OK, outcome: "timeout", exitCode: null, timeoutKind: "idle" },
+        "PROCESS_TIMEOUT",
+        "idle timeout",
+      ],
+      [
+        "cancelled",
+        [START(SID), FINISH("stop"), trailing],
+        { ...EXIT_OK, outcome: "cancelled", exitCode: null },
+        "CANCELLED",
+        "run cancelled",
+      ],
+      [
+        "quota error",
+        [START(SID), ERROR("provider.quota"), FINISH("stop"), trailing],
+        EXIT_OK,
+        "QUOTA_EXHAUSTED",
+        "quota: provider.quota: synthetic",
+      ],
+      [
+        "exit 1, unknown",
+        [START(SID), { type: "session.idle" }, FINISH("stop")],
+        EXIT_1,
+        "TOOL_FAILURE",
+        "exit code 1",
+      ],
+    ];
+    for (const [label, lines, exit, code, detail] of cases) {
+      expect(adapter().extractResult(parse(lines).events, exit), label).toMatchObject({
+        ok: false,
+        failureCode: code,
+        failureDetail: detail,
+        nativeSessionId: SID,
+      });
+    }
+  });
+
+  it("pins the gap: only three error types map; overload or rate-limit spellings are TOOL_FAILURE with an `unknown:` detail", () => {
+    for (const type of ["provider.overloaded", "provider.rate_limit", "rate_limit", "overloaded", "Provider.Quota"]) {
+      const { events } = parse([START(SID), ERROR(type), FINISH("stop")]);
+      expect(
+        events.filter((e) => e.kind === "rate_limit"),
+        type,
+      ).toEqual([]);
+      expect(adapter().extractResult(events, EXIT_OK), type).toMatchObject({
+        ok: false,
+        failureCode: "TOOL_FAILURE",
+        failureDetail: `unknown: ${type}: synthetic`,
+      });
+    }
+  });
+
+  it("an error message past 2,000 characters is clipped to 2,000 plus an ellipsis, structured or raw", () => {
+    const long = "m".repeat(3_000);
+    const structured = parse([{ type: "error", sessionID: SID, error: { type: "provider.quota", message: long } }]);
+    const raw = parse([{ type: "error", sessionID: SID, error: { detail: long } }]);
+    for (const [label, events, category, prefix] of [
+      ["structured", structured.events, "quota", "provider.quota: "],
+      ["raw", raw.events, "unknown", '{"detail":"'],
+    ] as const) {
+      const err = events.find((e) => e.kind === "provider_error");
+      if (err?.kind !== "provider_error") throw new Error(label);
+      expect(err.category, label).toBe(category);
+      expect(err.message, label).toHaveLength(2_001);
+      expect(err.message.startsWith(prefix), label).toBe(true);
+      expect(err.message.endsWith("m…"), label).toBe(true);
+    }
+  });
+
+  it("classifyFailure ignores stderrTail: a tail naming auth, quota or a rate limit never changes the code", () => {
+    const events = parse([START(SID), TEXT("done")]).events;
+    const base = { events, exit: EXIT_OK, timedOut: false, cancelled: false };
+    const want = adapter().classifyFailure({ ...base, stderrTail: "" });
+    expect(want).toEqual({ code: "OUTPUT_PROTOCOL_ERROR", detail: "no result event" });
+    for (const tail of ["Error: not logged in", "quota exceeded", "429 rate limit", "provider.auth"]) {
+      expect(adapter().classifyFailure({ ...base, stderrTail: tail }), tail).toEqual(want);
     }
   });
 });
