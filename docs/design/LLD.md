@@ -1748,6 +1748,32 @@ input when the adapter declares `liveInput: true` in §2; otherwise stop at a bo
 session with the note (FR-SES-03, BR-7). Unknown run or a run the caller cannot see → `INVALID_REQUEST` or
 `PERMISSION_BLOCKED` as for `get_run`. Terminal runs → no-op returning the terminal envelope.
 
+**Implemented (T14.7, Delegated, not owner-approved).** `src/mcp/server.ts` registers `steer_run` (appended last to the
+tool list, output the `get_run` envelope); `src/lifecycle/steer.ts` and `RunLifecycle.steer` in
+`src/lifecycle/lifecycle.ts` deliver the note. Choices this section leaves open:
+
+- Scoping is exactly `get_run`'s: an unknown run and another client's (or HTTP subject's) run are both
+  `INVALID_REQUEST`, so a run id is not an existence oracle across clients (the server's standing rule). Nothing is
+  recorded for a refused call.
+- No adapter declares `liveInput` yet: the field is not in the §2 contract, and the [steer
+  spike](../research/adapter-steer-input-spike-2026-10-15.md) leaves Claude (S1) and Codex (S2) live input unverified.
+  Every note is therefore delivered by boundary-resume. On the ephemeral headless transports the boundary is the end of
+  the provider's current turn (the process exits with a result); a running turn is not interrupted.
+- At that boundary, when notes are queued and the turn succeeded with a reported native session id, the lifecycle
+  compiles `resumeArgs` for that session in the same run (same worktree, same channel and environment wrapping, the
+  same pre-spawn audits) with the notes, joined by a blank line, as the whole prompt and no constraints. The objective
+  is never sent again (BR-7, no replay); no successor run or meta-session is created. The resumed turn's pid and pgid
+  replace the run's (`steer_turn_spawned` event); every turn's stdout and stderr stay artifacts of the run, and the run
+  finishes on the last turn's result.
+- Events (bounded, no note text): `steer_requested` `{note_chars, note_sha256, delivery: "boundary_resume"}` on every
+  accepted call against a non-terminal run; `steer_delivered` `{delivery, notes}` when a resumed turn is spawned;
+  `steer_undelivered` `{reason, notes}` otherwise, with `reason` one of `past_boundary` (verifying, finalizing, or the
+  last turn already ended), `not_in_this_process` (a slot state no executor here owns), `turn_not_successful`,
+  `no_native_session`, `resume_refused` (compile, environment or audit refusal; `stage` says which) and `run_ended`.
+  A note is never retried.
+- Notes wait in controller memory only (no artifact, no migration): a daemon restart loses queued notes, while their
+  `steer_requested` events remain. Durable storage is left to a later task if the console needs it.
+
 **`pause_project` / `resume_project`**
 
 ```jsonc
@@ -1980,6 +2006,44 @@ As built (T14.11, Delegated): the filter lives in `src/mcp/tool-profile.ts` and 
 project-admin call is still recorded, FR-PRJ-10). A console name with no registered handler yet is absent rather than
 invented. Config load refuses an unknown `tool_profile` value and refuses `console` together with `manage_projects:
 true`, which would otherwise be a silent no-op.
+
+#### 3.4.11 Consent-page approval link (FR-CTL-09, ADR-0047)
+
+A secondary way to decide one pending approval (ADR-0047 Decision 3), after the CLI (§3.1) and the approval proxy
+(§3.4.8): a single-use, expiring link to the M13 consent page (§3.3). Available only when the HTTP transport is
+configured. Research input: [consent-page approval link spike](../research/consent-page-approval-link-spike-2026-10-15.md).
+
+**Implementation (T14.10, `src/control/consent-link.ts`, `src/control/consent-link-page.ts`, routed in
+`src/mcp/http.ts`, wired in `src/cli/serve.ts`; Delegated, not owner-approved):**
+
+- Link: `<issuer origin>/approval/<handle>`, where the handle is `sbal_` plus 32 random bytes in base64url. Nothing
+  else: no query, no OAuth token, no authorization code, no `approval_digest`, no passphrase, no pairing code, no
+  approval or run id and no scope text. The handle is not a credential; it only selects which approval an
+  authenticated operator is shown.
+- Handles are held in memory by the one `serve` process that owns the listener, as SHA-256 hashes (as the T13.8
+  authorization codes); no ledger table is added and a restart drops every link (fail closed). Lifetime 30 minutes
+  (**Assumption**), at most 256 live links (**Assumption**).
+- Issuance: on each operator poll `serve` issues a link for every decidable approval that has no live one and logs
+  `approval_id`, the URL and its expiry. Decidable means listed by §3.4.8's rules for a proxy that targets every
+  configured client (read-only reuse), so the kinds, `scope_summary` and `approval_digest` are those of §3.4.8. A
+  pending approval whose link expired gets a new handle; the old one stays dead.
+- A link dies at its first decision (whatever the outcome), at expiry, and as soon as its approval is decided another
+  way, stops being decidable or changes: the digest stored at issue is compared with a fresh one on every use.
+- Page flow (FR-MCP-17; no login session, Q-76): `GET` shows one fixed sign-in form, identical for a live, spent,
+  expired, unknown or malformed handle, with no approval field. A `POST` with the operator passphrase or a one-time
+  pairing code is required before the link is looked up; a dead link then gets a fixed 410 page, a live one the closed
+  §3.4.8 item fields (without the digest) and Approve / Deny. The decision `POST` spends the link.
+- CSRF and headers as §3.3's consent page: a single-use server-side visit id and CSRF token per step, the token also in
+  a `__Host-sb_approval` cookie (`Secure`, `HttpOnly`, `SameSite=Strict`), no foreign `Origin` and no cross-site
+  `Sec-Fetch-Site`; each visit is bound to its handle's hash, so a form for one link cannot decide another. The
+  transport admits a same-origin `Origin` under `/approval/` only when the page is mounted.
+- Attempt limits: wrong passphrases count against the same lockout as the OAuth consent page (one `AttemptLimiter`
+  shared by `serve`); wrong pairing codes are throttled as there.
+- Recording: as §3.4.8, with `requested_by` / `decided_by` `consent_page`; the digest is re-checked inside the
+  decision's `BEGIN IMMEDIATE` transaction and any mismatch writes nothing. Sinks (§3.4.9) are told as for the proxy: a
+  privileged approve by the transition hook, a privileged deny and every revision decision as `approval_decided`.
+- Audit: page events carry event names, reason codes, methods and (after sign-in only) approval ids; never a handle,
+  URL, passphrase or pairing code.
 
 ## 4. Failure taxonomy
 

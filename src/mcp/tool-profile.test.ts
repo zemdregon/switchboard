@@ -53,7 +53,7 @@ const second = async (): Promise<Harness> => {
 const names = async (x: Harness, clientId: string): Promise<string[]> =>
   (await x.client(clientId).listTools()).tools.map((t) => t.name);
 
-/** The console names this server registers today (T14.6 and T14.7 add the rest when their handlers land). */
+/** The console names this server registers today (T14.6 adds the pause tools when their handlers land). */
 const registeredConsole = CONSOLE_TOOL_NAMES.filter((n) => (TOOL_NAMES as readonly string[]).includes(n));
 
 describe("tool_profile console (T14.11, FR-CTL-11)", () => {
@@ -130,15 +130,18 @@ describe("tool_profile orchestrator (T14.11, FR-CTL-11)", () => {
 
 describe("applyToolProfile (T14.11)", () => {
   const descriptor = (name: string) => ({ name });
+  // A Set, so the list stays duplicate-free as T14.6 adds the pause tools to TOOL_NAMES (T14.7 added steer_run).
   const all = [
-    ...TOOL_NAMES,
-    "steer_run",
-    "pause_project",
-    "resume_project",
-    "create_project",
-    "update_project",
-    "delete_project",
-    "search_project_context",
+    ...new Set([
+      ...TOOL_NAMES,
+      "steer_run",
+      "pause_project",
+      "resume_project",
+      "create_project",
+      "update_project",
+      "delete_project",
+      "search_project_context",
+    ]),
   ].map(descriptor);
 
   it("keeps exactly the seven console tools once steer_run and the pause tools are registered", () => {
