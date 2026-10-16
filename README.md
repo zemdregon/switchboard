@@ -85,7 +85,12 @@ Pre-release. The package is private and is not published to any registry; you bu
   fake backend (accepted lying prose, a rejected success claim, empty, error, not-JSON and a privacy denial) the
   envelope's status, failure code, per-check exit codes and outcome counts equal the run row and terminal transition
   read from the ledger, `raw_artifact` resolves to the stored `test_report`, and the fallback equals a head-8/tail-12
-  excerpt written out by hand. That summary is still a service function that no run path calls (see below). T11.1 (the
+  excerpt written out by hand. That summary is still a service function that no run path calls (see below). The T11.8
+  PR-draft row carries its `Done on fakes` status since [#598](https://github.com/zemdregon/switchboard/pull/598),
+  which added the suite `pr_draft task: roadmap 'Done when' (T11.8)` to `src/inner/pr-draft.test.ts`: the stored
+  draft is a fixed point of the commit-message sanitiser, drafting makes no network call and starts no program but
+  `git`, and the only `gh` argv allowlist in `src/` (the CI-failure trigger) admits no pull-request call; it too is a
+  service function that no run path calls. T11.1 (the
   `inner_agent` config schema, the backend port, the scripted
   fake backend, the `inner_call` table, the disabled-by-default path and the import-boundary test) is `Done`; its
   roadmap row was reconciled to the 2026-10-16 status contract in
@@ -103,7 +108,14 @@ Pre-release. The package is private and is not published to any registry; you bu
   (usage accounting at the quota-failover routing call site, the one `serve`-path classification recorded under a
   run) and [#407](https://github.com/zemdregon/switchboard/pull/407) (`get_run` byte-identical over Streamable HTTP
   and from a second session; a `shares_subscription_with` value that is no provider config id refused at `doctor`
-  and `inner test`). See [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
+  and `inner test`). The M11 documentation task (T11.14) is `Done` (2026-10-16, Delegated, not owner-approved): the
+  `inner_agent` row under [Configure](#configure), the `doctor` block, the inner-agent entry of the
+  [Security model](#security-model), the inner-agent operator commands with the "which tasks run today" table, and
+  the [Known limitations](#known-limitations) entry describe what is built on fakes, which tasks sit on a production
+  `serve` run path, which are CLI-only, and that no live backend has been exercised; each is cited to its test. The
+  milestone itself stays `Partial` until T11.13 (the `cli` backend, OpenCode) and T11.0 close, and this README is
+  updated in the same change as any M11 code change (NFR-MAINT-02). See
+  [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
 - **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.7 are done on fakes: the spike, `rag`
   configuration and per-project store, the scanner through chunker, the embedding port (fake and `http` backends
   behind the locality gates), incremental background indexing in `serve`, `switchboard index status|rebuild|clear`
@@ -338,7 +350,7 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `timeouts.preflight_ttl_seconds` | no | Integer 0 to 3600. How long a successful adapter preflight is cached (default 60); 0 disables the cache. |
 | `telemetry.otlp_endpoint` | no | `http` or `https` URL for OTLP/HTTP trace export. When omitted or empty, Switchboard does not load OpenTelemetry at startup and makes no outbound telemetry connection. See [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and [LLD §7](docs/design/LLD.md#7-telemetry-spans). |
 | `git.sanitize_patterns` | no | Up to 16 extra regular-expression sources (200 characters each, restricted subset in `src/git/safe-pattern.ts`). A commit-message line that matches one is removed, in addition to the built-in attribution rules. |
-| `inner_agent` | no | The optional inner agent (ADR-0016): a cheap or self-hosted model for small tasks. Off unless you write the section and set `enabled: true`; there is no default backend, model or task, and no key, token or header field (a hosted service goes through a gateway you run). Shape: `{ "enabled", "backend": { "kind": "http", "base_url", "model", "timeout_ms"?, "max_concurrency"?, "allow_remote"?, "shares_subscription_with"? }, "tasks": { "<task>": { "enabled", ... } }, "breaker"?, "suspension"? }`; `base_url` may not carry userinfo or a query, and `shares_subscription_with` must be one of the provider config ids listed below this table (`claude-code`, `codex`, ...) or `null`: any other string stops startup, so `doctor` fails its config check naming the key and `inner test` exits 1 before sending anything. Full shape: LLD section 13.1. Inspect it with `doctor` and `inner status`. |
+| `inner_agent` | no | The optional inner agent (ADR-0016): a cheap or self-hosted model for small tasks. Off unless you write the section and set `enabled: true`; there is no default backend, model or task, and no key, token or header field (a hosted service goes through a gateway you run). Shape: `{ "enabled", "backend": { "kind": "http", "base_url", "model", "timeout_ms"?, "max_concurrency"?, "allow_remote"?, "shares_subscription_with"? }, "tasks": { "<task>": { "enabled", ... } }, "breaker"?, "suspension"? }`; `base_url` may not carry userinfo or a query, and `shares_subscription_with` must be one of the provider config ids listed below this table (`claude-code`, `codex`, ...) or `null`: any other string stops startup, so `doctor` fails its config check naming the key and `inner test` exits 1 before sending anything. Full shape: LLD section 13.1. Inspect it with `doctor` and `inner status`. Which tasks a production `serve` run path calls today, which exist only as service functions and which commands are CLI-only is tabulated under the inner-agent operator commands of [Run as an MCP server](#run-as-an-mcp-server); no live backend has been exercised. |
 | `rag` | no | The optional retrieval index (ADR-0031): off unless you configure an `embedding` backend. No credential fields; `mode` defaults to `auto` (on only when a backend exists and the project allows). Projects and contexts may narrow caps and exclusions; `use_global` and `contribute_to_global` default to false and cannot be set on dynamic projects. Full shape: [LLD §14.1](docs/design/LLD.md#141-configuration-shape) and [Retrieval index](#retrieval-index-milestone-12). |
 | `profiles.<name>` | no | Overrides for `inspect-untrusted`, `edit-untrusted`, `test-sandboxed` or `trusted-development`: `file_access`, `shell`, `shell_allowlist`, `network`, `network_allowlist`, `repo_config`. They may tighten or loosen a default; `doctor` lists them and every run records them. `privileged` has none. See the `edit-untrusted` limit under [Trust profiles](#trust-profiles). |
 | `outer_sandbox.required_profiles` | no | List of distinct non-privileged profile names (default empty, which changes nothing). A listed profile is refused with `ELIGIBILITY_NONE` unless bubblewrap and `prlimit` work on the host; because this build does not yet wrap the provider process, a listed profile is refused even when both work (`OUTER_SANDBOX_NOT_ENFORCED`). `doctor` reports the check. See [Trust profiles](#trust-profiles) and LLD section 8.4. |
@@ -940,18 +952,20 @@ T11.6 behaviour is pinned on a scripted fake backend in `src/inner/suspension.te
 keeps falling back with a good backend until re-enabled, and the re-enable is recorded and restarts the window. Neither
 command prints a base URL's userinfo, a header, a key or any prompt or response text.
 
-Which tasks run today (2026-10-15): two tasks are wired into production `serve` run paths — the commit-message task
-(the optional `message` on the `commit` tool offered to the provider CLI in the run's worktree) and routing
-classification (T11.11, **Done on fakes**; `serve` admission, continuation and quota failover through
-`RunLifecycleOptions.classifyRouteFeatures`). Features are stored with source, model and template version and never
-change eligibility or `require_provider` (Q-82); when the inner agent is off, the task is disabled, a project is `off`,
-or the backend is unavailable, dispatch records the heuristic classifier. The PR-draft, verification-summary, run-title
-and handoff-condensation (T11.10, **Done on fakes**) tasks exist as service functions, tested on fakes; neither `serve`
-nor any `inner` command calls them on a run path (`inner test` exercises the pipeline with its built-in synthetic
-fixture only). The `inner status|test|resume` commands are CLI-only and never touch run data: with a populated run
-ledger and no shared-subscription declaration, those diagnostics leave every non-inner table unchanged and do not
-link inner calls to the run (`src/inner/cli-run-isolation.test.ts`). With `shares_subscription_with`, a backend
-request also records labelled usage with no run link. Merged fake-backend evidence for usage accounting
+Which tasks run today (2026-10-16). Every inner-agent task is **Done on fakes** (ROADMAP §6.6); what differs is
+where, if anywhere, production code calls it. The table is pinned statically by `src/inner/run-path-reach.test.ts`
+(it scans `src/` for callers of each task module), so wiring a task onto a new path must change that test, this table
+and the T11.14 roadmap row together:
+
+| Task | Where it runs today | Evidence (fakes only) |
+| --- | --- | --- |
+| Commit message (T11.4) | **Production `serve` run path**: the optional `message` on the `commit` tool offered to the provider CLI in the run's worktree (`src/git/channel.ts` is its only caller). | `src/inner/usage-channels.test.ts` drives the tool over its Unix socket. |
+| Routing classification (T11.11) | **Production `serve` run path**: admission (`delegate_task`), continuation (`continue_task`) and quota failover, through `RunLifecycleOptions.classifyRouteFeatures` (`src/cli/serve.ts` is its only caller). Record-only: features are stored with source, model and template version and never change eligibility or `require_provider` (Q-82); when the inner agent is off, the task is disabled, a project is `off` or the backend is unavailable, dispatch records the heuristic classifier. | `src/mcp/inner-route-features.test.ts`, `src/inner/usage-channels.test.ts`, `src/cli/serve.test.ts`. |
+| PR draft (T11.8), verification summary (T11.9), run title (T11.12), handoff condensation (T11.10) | **Service functions only**: modules under `src/inner/` with no caller outside it. Neither `serve` nor any `inner` command calls them on a run path, and the `inner test` fixtures import none of them. | `src/inner/pr-draft.test.ts` (merged [#598](https://github.com/zemdregon/switchboard/pull/598)), `src/inner/log-summary.test.ts` ([#594](https://github.com/zemdregon/switchboard/pull/594)), `src/inner/run-title.test.ts`, `src/inner/handoff-condense.test.ts`. |
+| `inner status`, `inner test <task>`, `inner resume <task>` | **CLI only**, never on a run path. `inner test` sends the built-in synthetic fixture through the real pipeline and nothing from any repository; with a populated run ledger and no shared-subscription declaration the three commands leave every non-inner table unchanged and link no inner call to a run. With `shares_subscription_with`, a backend request also records labelled usage with no run link. | `src/inner/cli-run-isolation.test.ts`, `src/cli/inner.test.ts` ([#591](https://github.com/zemdregon/switchboard/pull/591)), `src/inner/cli-doctor-surfaces.test.ts`. |
+| A live backend | **Not exercised.** Every test uses a scripted in-process fake or a loopback fake HTTP server; `npm run test:live` has no inner-agent leg; the `cli` backend kind (T11.13, OpenCode) is Planned and is reported `Ineligible` by `doctor` and never started. Nothing above is a claim about a real model. | `src/cli/inner.test.ts`. |
+
+Merged fake-backend evidence for usage accounting
 ([PR #334](https://github.com/zemdregon/switchboard/pull/334),
 [PR #338](https://github.com/zemdregon/switchboard/pull/338) and
 [PR #343](https://github.com/zemdregon/switchboard/pull/343)): the injected commit-message task and routing hook that
