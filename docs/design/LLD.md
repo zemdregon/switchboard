@@ -975,6 +975,16 @@ change (no decisions or open-work input). BR-18 chooses resume or handoff, a cro
 refused with `INVALID_REQUEST` while ROADMAP Q-61 is open, and a bundle that cannot be built is `TOOL_FAILURE` with
 `details.reason = "HANDOFF_BUNDLE_UNAVAILABLE"`; steps in [§15.7](#157-continue_task-with-handoff).
 
+*M3 as built (T3.13 summary, 2026-10-16, Delegated; the owners are the sections linked):* `delegate_task`
+`verification_commands` are refused `INVALID_REQUEST` under `inspect-untrusted` (FRD V7) and otherwise run in
+VERIFYING; each command's outcome is in `result.verification` and the full output in the `test_report` artifact
+([§8.1](#81-verification-stage-m3-t310)). A `privileged` request carries `privileged_scope` and waits in
+AWAITING_APPROVAL unless the client's `privileged_approval` is `not_required`; `get_run` shows the approval status, never
+the scope, and no MCP tool decides an approval ([§3.1](#31-privileged-scope-m3); the operator's `approve` and `deny`
+are CLI commands). A profile listed in `outer_sandbox.required_profiles` is refused at admission with
+`ELIGIBILITY_NONE` and an `OUTER_SANDBOX_*` reason ([§8.4](#84-outer-sandbox-m3-t31)). A request on an `ARCHIVED`
+meta-session (collected by retention GC, [§5](#5-workspace-and-lease-algorithm)) is `INVALID_REQUEST`.
+
 **`get_run`** `{ run_id, include_events?: { after_seq, limit<=200 } }` returns the envelope plus optional compact events
 (type and bounded payload; no raw output).
 **`cancel_run`** `{ run_id, reason? }` returns the envelope; cancellation is asynchronous (WF-4) and the status may
@@ -2211,7 +2221,8 @@ internal: they are never pushed and never part of the publish ref (FR-GIT-08). *
 made on the run branch `switchboard/<sess>/<run>` with the identity in `src/workspace/git.ts`; M9 must not change
 that, only add the publish ref beside it.
 
-**GC (FR-WS-07, NFR-DATA-01, M3; to be detailed in M3).** Retention job deletes, per expired terminal run, in one
+**GC (FR-WS-07, NFR-DATA-01, M3; the as-built paragraph after this one wins where they differ).**
+Retention job deletes, per expired terminal run, in one
 logical unit: worktree directory (`git worktree remove --force`, then `git worktree prune`), controller branch,
 artifact files (set `deleted_at`). Never touches branches outside `switchboard/`. *Proposed (FR-WS-09, owner decision
 42):* a concurrent run's worktree may also be removed on merge or abandon before retention; the branch and
@@ -2230,7 +2241,9 @@ collected. Orphans are reported but not yet removed. The sweep does not count a 
 (`refs/heads/<prefix><sess>`, §12.3) of a meta-session that has a ledger row as an orphan; one whose session is
 unknown is still reported. GC marks first (R-42, decision 28): one transaction re-checks idleness, sets the
 meta-session `ARCHIVED` and appends the intent event, and admission refuses an `ARCHIVED` meta-session with
-`INVALID_REQUEST`; a marked, unfinished session is a candidate again and rolls forward.
+`INVALID_REQUEST`; a marked, unfinished session is a candidate again and rolls forward. *Not built (T3.12 stays
+`Partial`, ROADMAP §6.5):* removing orphans after the retention period, as the paragraph above proposes; a test of the
+interval pass; a process-level `SIGKILL` mid-GC test (in-process crash injection at every step covers the order).
 
 **Crash safety.** Order is intent row (with the `ARCHIVED` mark, one transaction), then Git action, then outcome
 row. On startup reconciliation (WF-8) a run in
