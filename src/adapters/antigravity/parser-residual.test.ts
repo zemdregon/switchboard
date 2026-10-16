@@ -1818,3 +1818,208 @@ describe("antigravity parser residuals, tenth pass: Q-86 numeric edges, denial s
     expect(adapter().extractResult(guarded, EXIT0)).toMatchObject({ ok: true, unknownEventCount: 1 });
   });
 });
+
+/**
+ * Eleventh pass (2026-10-16, Delegated, not owner-approved): envelope shapes that are not objects, non-string ids and
+ * presentation fields, an empty or near-miss status, overflowing step indexes and the failure tail when the supervisor
+ * ends a run that printed a clean result. Synthetic lines only (no new fixture: the fixture inventory is owned by the
+ * T4.35 conformance file); no new capture, no `agy` run, parser unchanged.
+ */
+describe("antigravity parser residuals, eleventh pass: envelope shapes, non-string fields, status edges and the failure tail (T4.33)", () => {
+  const observations = (events: readonly NormalizedEvent[]) =>
+    usageObservationsFromEvents(events, { runId: "run_antigravity_t433_eleventh_usage", provider: "antigravity" });
+
+  it.each([
+    ["null", "none"],
+    ["42", "none"],
+    ['"result"', "none"],
+    ["[]", "none"],
+    [j({ event: 7, conversation_id: CID }), "none"],
+    [j({ event: null, result: { status: "SUCCESS", usage: USAGE } }), "none"],
+    [j({ event: ["result"], result: { status: "SUCCESS", usage: USAGE } }), "none"],
+    [j({ event: "init", conversation_id: CID, init: [] }), "init"],
+    [j({ event: "init", conversation_id: CID, init: "cwd" }), "init"],
+    [j({ event: "init", conversation_id: 42, init: { cwd: "/work/tree" } }), "init"],
+    [j({ event: "result", result: [{ status: "SUCCESS", usage: USAGE }] }), "result"],
+    [j({ event: "result", result: "SUCCESS" }), "result"],
+    [j({ event: "result", result: null }), "result"],
+  ] as const)("line %s is one counted unknown (rawType %s) that binds and reports nothing", (line, rawType) => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    expect(a.parseEvent(line, state)).toEqual([{ kind: "unknown", rawType }]);
+    expect(state).toEqual({ lines: 1, unknownEvents: 1 });
+    // Beside a good stream it never flips the verdict or the bound id; alone it is no result.
+    expect(run([INIT(), line, RESULT()]).result).toEqual({
+      ok: true,
+      unknownEventCount: 1,
+      nativeSessionId: CID,
+      summary: "ok",
+    });
+    expect(run([line]).result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "no result event",
+    });
+  });
+
+  it.each([[42], [true], [{ id: CID }], [[CID]], [null]])(
+    "pins the gap: a result-only stream whose conversation_id is %j succeeds with no session bound",
+    (id) => {
+      const r = run([RESULT({ conversation_id: id })]);
+      expect(r.events.some((e) => e.kind === "session_bound" || e.kind === "provider_error")).toBe(false);
+      // A non-string id is not read as an id at all, so it is neither bound nor refused as unsafe.
+      expect(r.result).toEqual({ ok: true, unknownEventCount: 0, summary: "ok" });
+      expect(observations(r.events)).toEqual([expect.objectContaining({ metrics: USAGE })]);
+      // With init first, the non-string result id is not compared, so it is never a changed id either.
+      expect(run([INIT(), RESULT({ conversation_id: id })]).result).toMatchObject({ ok: true, nativeSessionId: CID });
+    },
+  );
+
+  it.each([[42], [{ text: "ok" }], [["ok"]], [true], [null]])(
+    "a non-string response %j emits no message, leaves no summary and does not fail the run",
+    (response) => {
+      const r = run([INIT(), RESULT({ response })]);
+      expect(r.events.some((e) => e.kind === "message")).toBe(false);
+      expect(r.result).toEqual({ ok: true, unknownEventCount: 0, nativeSessionId: CID });
+    },
+  );
+
+  it("a non-string or empty model is dropped from session_bound; the outer model is read only when init has none", () => {
+    const bound = (lines: string[]) => run(lines).events.filter((e) => e.kind === "session_bound");
+    const init = (inner: Record<string, unknown>, outer: Record<string, unknown> = {}) =>
+      j({ event: "init", conversation_id: CID, ...outer, init: { cwd: "/work/tree", ...inner } });
+    expect(bound([init({ model: 42 }), RESULT()])).toEqual([{ kind: "session_bound", nativeSessionId: CID }]);
+    expect(bound([init({ model: "" }), RESULT()])).toEqual([{ kind: "session_bound", nativeSessionId: CID }]);
+    // `??` falls through only on null or a missing key: a non-string inner model shadows a good outer one.
+    expect(bound([init({ model: 42 }, { model: "outer" }), RESULT()])).toEqual([
+      { kind: "session_bound", nativeSessionId: CID },
+    ]);
+    expect(bound([init({ model: null }, { model: "outer" }), RESULT()])).toEqual([
+      { kind: "session_bound", nativeSessionId: CID, model: "outer" },
+    ]);
+  });
+
+  it("pins the gap: a non-string root backing_provider shadows a good nested one; a null root falls through", () => {
+    const bound = (outer: Record<string, unknown>) =>
+      run([
+        j({
+          event: "init",
+          conversation_id: CID,
+          ...outer,
+          init: { cwd: "/work/tree", backing_provider: "google" },
+        }),
+        RESULT(),
+      ]).events.filter((e) => e.kind === "session_bound");
+    expect(bound({ backing_provider: 42 })).toEqual([{ kind: "session_bound", nativeSessionId: CID }]);
+    expect(bound({ backing_provider: "" })).toEqual([{ kind: "session_bound", nativeSessionId: CID }]);
+    expect(bound({ backing_provider: null })).toEqual([
+      { kind: "session_bound", nativeSessionId: CID, backingProvider: "google" },
+    ]);
+    expect(bound({ backing_provider: null, backingProvider: "camel" })).toEqual([
+      { kind: "session_bound", nativeSessionId: CID, backingProvider: "camel" },
+    ]);
+  });
+
+  it.each([
+    ["success", "success"],
+    [" SUCCESS", " SUCCESS"],
+    ["SUCCESS\n", "SUCCESS\n"],
+    ["SUCCESS​", "SUCCESS​"],
+    ["Success", "Success"],
+  ])("a near-miss status %j is not SUCCESS: TOOL_FAILURE with the raw status as the detail", (status, detail) => {
+    const r = run([INIT(), RESULT({ status })]);
+    expect(r.events.filter((e) => e.kind === "result")).toEqual([{ kind: "result", ok: false, summary: detail }]);
+    expect(r.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", failureDetail: detail, summary: "ok" });
+    // The tokens are still the run's reported usage (FR-CAP-01).
+    expect(observations(r.events)).toEqual([expect.objectContaining({ metrics: USAGE })]);
+  });
+
+  it("pins the gap: an empty status takes the result slot and fails with an empty failure detail", () => {
+    const r = run([INIT(), RESULT({ status: "" })]);
+    expect(r.events.filter((e) => e.kind === "result")).toEqual([{ kind: "result", ok: false, summary: "" }]);
+    // classifyCommon reads `summary ?? "task failed"`, so the empty summary survives as the detail.
+    expect(r.result).toEqual({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "",
+      unknownEventCount: 0,
+      nativeSessionId: CID,
+      summary: "ok",
+    });
+    // It is a result, so a later SUCCESS is a second result, not the first.
+    expect(run([INIT(), RESULT({ status: "" }), RESULT()]).result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: more than one result line",
+    });
+  });
+
+  it("pins the gap: every overflowing step_index parses to Infinity, so 1e309 and 2e309 are one step", () => {
+    const step = (index: string, command: string) =>
+      `{"event":"step_update","conversation_id":"${CID}","state":"DONE","step_type":"tool","step_index":${index},` +
+      `"tool_info":{"name":"run_command","parameters":{"command":"${command}"}}}`;
+    const r = run([INIT(), step("1e309", "pwd"), step("2e309", "pwd"), step("-1e309", "pwd"), RESULT()]);
+    // Infinity and -Infinity are two keys; the repeat on +Infinity is deduplicated.
+    expect(r.events.filter((e) => e.kind === "tool_call")).toHaveLength(2);
+    // A different command on the collapsed index is still reported, so the guard still sees a Git write.
+    const g = run([INIT(), step("1e309", "pwd"), step("2e309", "git push origin main"), RESULT()]);
+    expect(g.events.filter((e) => e.kind === "tool_call").map((e) => e.kind === "tool_call" && e.command)).toEqual([
+      "pwd",
+      "git push origin main",
+    ]);
+    const guarded = g.events.map((e) => guardEvent(e, { cwd: "/work/tree", home: "/home/synthetic", bypass: true }));
+    expect(guarded.filter((e) => e.kind === "tool_call" && e.violation !== undefined)).toHaveLength(1);
+    expect(adapter().extractResult(guarded, EXIT0)).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+  });
+
+  it("a supervisor outcome outranks every parsed failure, and the trailing-tool detail never replaces it", () => {
+    const trailing = STEP({
+      step_index: 9,
+      step_type: "tool",
+      tool_info: { name: "run_command", parameters: { command: "ls" } },
+    });
+    const events = run([
+      INIT(),
+      RESULT({ denied_actions: [{ action: "edit_file" }], error: "authentication failed" }),
+      trailing,
+    ]).events;
+    const a = adapter();
+    const base = { nativeSessionId: CID, summary: "ok", unknownEventCount: 0 };
+    expect(a.extractResult(events, { ...EXIT0, outcome: "timeout", exitCode: null, timeoutKind: "idle" })).toEqual({
+      ok: false,
+      failureCode: "PROCESS_TIMEOUT",
+      failureDetail: "idle timeout",
+      ...base,
+    });
+    expect(a.extractResult(events, { ...EXIT0, outcome: "cancelled", exitCode: null })).toEqual({
+      ok: false,
+      failureCode: "CANCELLED",
+      failureDetail: "run cancelled",
+      ...base,
+    });
+    // A clean result is no defence either: the timeout ends the run whatever the stream said.
+    const clean = run([INIT(), RESULT()]).events;
+    expect(a.extractResult(clean, { ...EXIT0, outcome: "timeout", exitCode: null })).toMatchObject({
+      ok: false,
+      failureCode: "PROCESS_TIMEOUT",
+      failureDetail: "unknown timeout",
+      nativeSessionId: CID,
+    });
+  });
+
+  it("pins the gap: classifyFailure never reads the stderr tail, so an auth or rate-limit tail changes nothing", () => {
+    const events = run([INIT(), RESULT({ status: "ERROR" })]).events;
+    const classify = (stderrTail: string) =>
+      adapter().classifyFailure({ events, exit: EXIT0, stderrTail, timedOut: false, cancelled: false });
+    const plain = classify("");
+    expect(plain).toEqual({ code: "TOOL_FAILURE", detail: "ERROR" });
+    for (const tail of [
+      "Error: Please sign in to view available models.",
+      "authentication failed",
+      "429 Too Many Requests: rate limit exceeded",
+      "AGY_ERROR exit 3",
+    ]) {
+      expect(classify(tail), tail).toEqual(plain);
+    }
+  });
+});
