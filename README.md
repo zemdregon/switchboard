@@ -51,11 +51,12 @@ Pre-release. The package is private and is not published to any registry; you bu
   of this is tested on fake providers. The cache-friendly prompt order is built (ROADMAP T7.9, Could; no cache
   benefit is claimed). Real-provider model flags wait for adapter work. See
   [Routing and affinity](#routing-and-affinity) and [ROADMAP §6.12](docs/ROADMAP.md#612-m7-routing-tasks).
-- **Milestone 8 (hardening) is `Partial`.** Optional OTLP trace export (`telemetry.otlp_endpoint`, off by default) and
-  lazy exporter load (T8.1), wrapper span emission (T8.2), the export-time attribute allowlist that drops any key not
-  listed in LLD §7 before export (T8.4), the operator version canary (T8.5) and a CI test that excludes routing after a
-  synthetic binary version bump until `adapters validate` records the version (T8.6) are done on fakes. The collector
-  integration test and full M8 acceptance closure (T8.3, T8.7) are not done. See
+- **Milestone 8 (hardening) is `Partial`.** Optional OTLP trace export (`telemetry.otlp_endpoint`, off by default),
+  lazy exporter load (T8.1), wrapper-boundary span emission for `controller.delegate` and `provider.spawn` (T8.2), a
+  collector integration test with parent links and a forbidden-attribute scan (T8.3), export-time allowlist enforcement
+  (T8.4), the operator version canary (T8.5) and a CI test that excludes routing after a synthetic binary version bump
+  until `adapters validate` records the version (T8.6) are done on fakes. Full M8 acceptance closure (T8.7) is not
+  done. See
   [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and
   [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
 - **Milestone 10 (container environments) is `Partial`.** The environment port, orphan sweep, malicious-fixture
@@ -95,11 +96,12 @@ Pre-release. The package is private and is not published to any registry; you bu
   front of it. A test runs the whole path from client registration and PKCE to a tool call. Residual risks are listed
   under [HLD TB-12](docs/design/HLD.md#3-trust-boundaries). See
   [ROADMAP §6.10](docs/ROADMAP.md#610-m13-network-mcp-transport-tasks).
-- **Milestone 14 (control plane) is `Partial`.** T14.0–T14.5, T14.7–T14.9 and T14.11 are implemented on fakes;
-  digest, `list_runs`, `get_run`, budgets, the loop breaker, `steer_run`, the approval proxy and notification sinks are
-  covered by unit and malicious-fixture tests. The M14 acceptance file (`src/mcp/m14-acceptance.test.ts`) runs
-  scenarios A, B, C, E, F and G; scenario D (pause) stays skipped until T14.6 lands. ADR-0047 and ADR-0048 remain
-  Proposed. See [Control plane (milestone 14)](#control-plane-milestone-14) and
+- **Milestone 14 (control plane) is `Partial`.** T14.0–T14.11 are implemented on fakes, including pause
+  ([#539](https://github.com/zemdregon/switchboard/pull/539)); digest, `list_runs`, `get_run`, budgets, the loop
+  breaker, `steer_run`, pause/resume, the approval proxy and notification sinks are covered by unit and
+  malicious-fixture tests. The M14 acceptance file (`src/mcp/m14-acceptance.test.ts`) runs scenarios A, B, C, E, F and
+  G; scenario D (pause) is still an `it.skip` placeholder while `src/mcp/pause.test.ts` exercises T14.6. ADR-0047 and
+  ADR-0048 remain Proposed. See [Control plane (milestone 14)](#control-plane-milestone-14) and
   [ROADMAP §6.13](docs/ROADMAP.md#613-m14-control-plane-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
   client and a macOS CI leg are done; Grok Build, Antigravity, Cursor and OpenCode each have a module, compile matrix
@@ -433,17 +435,22 @@ evidence is in [ROADMAP §6.7](docs/ROADMAP.md#67-m12-retrieval-index-tasks).
 ## Telemetry and adapter versioning (milestone 8)
 
 Milestone 8 hardens telemetry export and adapter version change detection. It is **`Partial`**: configuration, a lazy OTLP
-exporter shell, the version canary and the CI version-bump test are in place on fakes; full wrapper spans and the
-collector integration test are not.
+exporter, wrapper-boundary spans (T8.2), the collector integration test (T8.3), export-time allowlist drop (T8.4), the
+version canary and the CI version-bump test are in place on fakes; acceptance closure (T8.7) is not.
 
 **Trace export (T8.0, T8.1).** Set `telemetry.otlp_endpoint` to an `http` or `https` URL when you want OTLP/HTTP traces.
 When the key is absent or empty, `serve` behaves as before M8: no OpenTelemetry packages load at startup and nothing
 listens for telemetry. Invalid URLs are rejected at config load without echoing the value. Spans are intended to carry
 only allowlisted attributes from controller-observed facts (prompts, commands and credentials never belong on spans);
 see [LLD §7](docs/design/LLD.md#7-telemetry-spans) and [ADR-0012](docs/adr/0012-telemetry-at-wrapper-boundary.md).
-Before export, Switchboard drops any span attribute whose key is not on the LLD §7 allowlist (T8.4,
-`src/telemetry/allowlist.ts`). `controller.delegate` and `provider.spawn` spans are emitted at the wrapper boundary
-(T8.2); proving export through a test collector without forbidden keys (T8.3) is not built yet.
+
+**Wrapper spans (T8.2).** With an endpoint configured, `serve` emits `controller.delegate` and `provider.spawn` from
+controller-observed facts only (lifecycle and spawn callbacks). `src/telemetry/spans.test.ts` runs a fake-adapter
+delegate path through an in-process collector and asserts allowlisted attributes plus absence of a planted prompt
+canary. Parent-link and forbidden-key assertions are T8.3.
+
+**Allowlist drop (T8.4).** Before export, Switchboard drops any span attribute whose key is not on the LLD §7
+allowlist, and any non-scalar value (`src/telemetry/allowlist.ts`, tested in `src/telemetry/allowlist.test.ts`).
 
 **Version canary (T8.5).** Switchboard records each enabled provider's probed CLI version under the data directory
 (`version-canary.json`). A version change marks the adapter `ADAPTER_VERSION_UNVERIFIED` until you run
@@ -456,8 +463,8 @@ Details: [docs/operations/version-canary.md](docs/operations/version-canary.md).
 preflight cache, and asserts routing excludes the provider until validation records the new version. No provider CLI is
 installed in CI.
 
-Tests on fakes: `src/config/config.test.ts`, `src/telemetry/index.test.ts`, `src/adapters/version-canary.test.ts`,
-`src/adapters/version-bump-preflight.test.ts`. Per-task evidence is in
+Tests on fakes: `src/config/config.test.ts`, `src/telemetry/index.test.ts`, `src/telemetry/spans.test.ts`,
+`src/adapters/version-canary.test.ts`, `src/adapters/version-bump-preflight.test.ts`. Per-task evidence is in
 [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
 
 ## Container environments (milestone 10)
@@ -484,36 +491,36 @@ Per-task evidence is in [ROADMAP §6.4](docs/ROADMAP.md#64-m10-container-environ
 
 ## Control plane (milestone 14)
 
-One orchestrator client can poll `get_digest`, list runs and (when implemented) steer or pause work. A separate
+One orchestrator client can poll `get_digest`, list runs, steer runs and pause or resume projects. A separate
 `approval_proxy` client and `notification_sinks` are operator-configured; they are off unless you set them in config.
 
 ### Configuration
 
 Control-plane knobs live in `config.json` (no duplicate schema here):
 
-- `mcp_clients[]`: per client, `tool_profile` (`orchestrator` default or `console` when T14.11 lands),
-  `approval_proxy` and `approval_proxy_targets` for the proxy client (ADR-0047).
-- `control_plane.budgets` and `control_plane.loop_breaker` (T14.4–T14.5; not enforced until those tasks merge).
+- `mcp_clients[]`: per client, `tool_profile` (`orchestrator` default or `console`), `approval_proxy` and
+  `approval_proxy_targets` for the proxy client (ADR-0047).
+- `control_plane.budgets` and `control_plane.loop_breaker` (T14.4–T14.5).
 - `notification_sinks[]`: webhook and ntfy kinds, filters and rate limits (ADR-0048); off by default.
 
 See [TDD §3.1](docs/design/TDD.md#31-configuration) and [LLD §3.4](docs/design/LLD.md#34-control-plane-m14-proposed-t140).
 
 ### MCP tools
 
-| Surface | Orchestrator (default) | `console` profile (T14.11) | `approval_proxy` client |
+| Surface | Orchestrator (default) | `console` profile | `approval_proxy` client |
 | --- | --- | --- | --- |
-| `get_digest`, `list_runs`, `get_run` | yes | planned: yes | yes (read) |
-| `delegate_task`, `cancel_run`, … | yes | planned: subset | no extra |
+| `get_digest`, `list_runs`, `get_run` | yes | yes | yes (read) |
+| `delegate_task`, `cancel_run`, … | yes | subset (`delegate_task` only) | no extra |
 | `list_pending_approvals`, `decide_approval` | no | no | yes |
-| `pause_project`, `resume_project`, `steer_run` | planned (T14.6–T14.7) | planned | planned |
+| `pause_project`, `resume_project`, `steer_run` | yes | yes | no |
 
 Tool outputs use closed controller fields only (no transcripts). Pending approvals expose an `approval_digest`, not
 scope bodies.
 
 ### Operator commands
 
-Global pause and resume CLI commands are specified in LLD §3.4; budget and loop-breaker defaults are configuration-only
-until T14.4–T14.5 merge. Sinks stay off unless `notification_sinks` is set.
+Global pause and resume use `switchboard pause` and `switchboard resume` (applied directly or queued for a running
+`serve`). Sinks stay off unless `notification_sinks` is set.
 
 ### `doctor`
 
@@ -524,14 +531,15 @@ and ADR-0047/0048 acceptance follow owner review of those ADRs.
 
 Fixtures only; no live provider CLI:
 
-- M14 acceptance: `src/mcp/m14-acceptance.test.ts` (scenarios A–C and E–G; D skipped pending T14.6).
+- M14 acceptance: `src/mcp/m14-acceptance.test.ts` (scenarios A–C and E–G; D is an `it.skip` placeholder).
+- Pause (T14.6): `src/mcp/pause.test.ts`, `src/control/pause.test.ts`, `src/cli/pause.test.ts`.
 - Approval proxy (T14.8): `test/malicious/approval-proxy.test.ts`.
 - Notification sinks (T14.9): `src/control/sinks.test.ts`.
 - Digest and envelopes: `src/mcp/digest.test.ts`, `src/mcp/list-runs.test.ts`, `src/mcp/needs-attention.test.ts`.
 
 ### Known limitations
 
-- Consent-page approval links (T14.10) and the `console` tool profile (T14.11) are not complete on `main`.
+- M14 acceptance scenario D (pause) is not wired in `m14-acceptance.test.ts` yet; T14.6 is covered in `pause.test.ts`.
 - The Grok bot is the intended first console client (owner decisions 53/55); ADR-0047 and ADR-0048 are still Proposed.
 
 ## Run as an MCP server

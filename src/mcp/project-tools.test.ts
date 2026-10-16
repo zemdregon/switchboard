@@ -577,7 +577,8 @@ describe("approval (BR-32): container, push and widening wait for the operator",
     expect(container.body).toMatchObject({ status: "PENDING_APPROVAL", approval_needed: ["container_environment"] });
     expect((await call("delegate_task", delegate({ project: "box-app" }))).body.error.code).toBe("PERMISSION_BLOCKED");
     store.decide({ projectId: "box-app", decision: "APPROVED", decidedBy: "op" });
-    // approved, but containers are M10: refused before any side effect, as for a configured container project
+    // approved, but this controller has no container environment wired (T10.1): refused before any side effect, as
+    // for a configured container project
     const m10 = await call("delegate_task", delegate({ project: "box-app" }));
     expect(m10.body.error).toMatchObject({ code: "TOOL_FAILURE", details: { reason: "ENVIRONMENT_NOT_IMPLEMENTED" } });
   });
