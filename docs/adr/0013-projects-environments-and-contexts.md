@@ -73,7 +73,41 @@ could be tempted to do to give the provider CLI its login.
 - Container orphans become a reconciliation concern (FR-PRJ-07), and per-run container limits partly answer risk R-8.
 - Still to verify in the M10 spike: that the rootless runtime fits the host, that the provider CLI can live in an
   operator-pinned image, and that each provider's native login works inside the volume and is acceptable under its terms
-  (R-2).
+  (R-2). *Update 2026-10-16:* the first of those is observed on the Ampere host (rootless Docker); the login and
+  Git-free CLI questions remain open. See [Spike findings](#spike-findings-2026-10-16-t100).
+
+## Spike findings (2026-10-16, T10.0)
+
+Container mechanism **Status stays Proposed**. This section records what T10.0 observed; it does not change the
+Decision. Evidence:
+[docs/research/container-runtime-spike-2026-10-16.md](../research/container-runtime-spike-2026-10-16.md).
+Delegated agent work, not owner-approved. No provider CLI was installed or run.
+
+- **Runtime.** This host runs **rootless Docker** Engine 29.8.2 (`Security Options` includes `rootless`;
+  `Docker Root Dir` `/home/ubuntu/.local/share/docker`; cgroup v2). Podman is **not installed**. The Proposed
+  "rootless Podman" candidate in the Decision is unverified here. The environment port (TDD §3.11) stays a small
+  CLI wrapper, so T10.1 can drive rootless Docker on this host without locking the Decision to one runtime.
+- **User namespace.** Container uid 0 maps to the host user (uid 1001). Container uid 1000 and uid 1 **cannot
+  write host bind mounts** (`Permission denied`). FR-PRJ-05 worktree writes and any in-volume login that writes a
+  bind-mounted directory must run as container uid 0. Named volumes were writable by uid 0; other uids were not
+  tested on named volumes.
+- **Image without a Git client (ADR-0020).** `node:22-bookworm-slim` (already present; not built) has no `git` and
+  no `gh` on `PATH`. `command -v git` / `command -v gh` plus a `PATH` directory scan, with `--network none` and
+  `--read-only`, is a workable refusal check. Whether each provider CLI *runs* without a Git client is
+  **Unverified: operator (T10.0 live)**. No provider is marked `host`-only.
+- **Mounts and limits.** A rw worktree bind, a read-only context bind (write → `Read-only file system`),
+  `--network none` (DNS `EAI_AGAIN`, TCP `ENETUNREACH`), `--memory 128m` / `--pids-limit 64` (inspect:
+  `Memory=134217728`, `PidsLimit=64`), and `docker rm` at the end all behaved as specified. Spike-prefixed
+  containers and the login-stand-in volume were removed. The public slim image was not removed (this spike did
+  not create it).
+- **In-volume native login.** Documentation-only table in the research note. Every provider cell is
+  **Unverified: operator (T10.0 live)**. File-based stores (Claude `CLAUDE_CONFIG_DIR` / `~/.claude`, Codex
+  `CODEX_HOME` / `~/.codex/auth.json`, Grok `GROK_HOME` / `~/.grok`, Antigravity token file under `$HOME` or
+  `--gemini_dir`, Cursor under `HOME` not `CURSOR_CONFIG_DIR` alone, Kimi `KIMI_CODE_HOME/credentials/`, Muse
+  `~/.config/muse/auth.json`) look compatible with a volume *if* the operator can complete native login as uid 0
+  with network, then reuse the volume on a `--network none` run. OpenCode's default user service may not exist in
+  a container (`--standalone` is the documented isolation path). Antigravity's Ampere live check recorded a
+  **file** token, not a keyring; that is not treated as `host`-only. Login was not attempted.
 
 ## Revisit when
 
