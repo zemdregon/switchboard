@@ -1797,3 +1797,195 @@ describe("kimi parser residuals, tenth pass (T4.63, synthetic only)", () => {
     });
   }
 });
+
+describe("kimi parser residuals, eleventh pass (T4.63, synthetic only)", () => {
+  const extract = (events: NormalizedEvent[], exit = EXIT_OK) => adapter().extractResult(events, exit);
+  const ctx = { cwd: "/w", bypass: true };
+  const NOT_A_LIST = "tool_calls is not a list";
+
+  it("a falsy `tool_calls` that is not a list (false, 0, empty string) fails closed; only null and a missing key are skipped", () => {
+    for (const calls of [false, 0, ""]) {
+      const { events } = parse([line({ role: "assistant", content: "ok", tool_calls: calls }), line(hint())]);
+      expect(events, JSON.stringify(calls)).toEqual([
+        { kind: "message", role: "assistant", text: "ok" },
+        { kind: "provider_error", category: "protocol", message: NOT_A_LIST },
+        { kind: "session_bound", nativeSessionId: SID },
+        { kind: "result", ok: true },
+      ]);
+      expect(extract(events), JSON.stringify(calls)).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: `protocol: ${NOT_A_LIST}`,
+      });
+    }
+    const skipped = parse([line({ role: "assistant", content: "ok", tool_calls: null }), line(hint())]).events;
+    expect(extract(skipped)).toMatchObject({ ok: true, summary: "ok" });
+  });
+
+  it("a non-string `function.name` (number, null, object) falls back to the top-level name, so a Git write reaches the guard", () => {
+    for (const fnName of [7, null, { name: "ReadFile" }]) {
+      const item = {
+        id: "c",
+        type: "function",
+        name: "Shell",
+        function: { name: fnName, arguments: '{"command":"git push"}' },
+      };
+      const [ev] = parse([line(toolMsg(item))]).events;
+      expect(ev, JSON.stringify(fnName)).toEqual({
+        kind: "tool_call",
+        tool: "shell",
+        name: "Shell",
+        command: "git push",
+      });
+      expect(guardEvent(ev as NormalizedEvent, ctx), JSON.stringify(fnName)).toMatchObject({
+        kind: "tool_call",
+        violation: { kind: "git_write" },
+      });
+    }
+    // Without a top-level name the same call is unreadable (fail closed).
+    const [bare] = parse([line(toolMsg({ id: "c", function: { name: 7, arguments: "{}" } }))]).events;
+    expect(bare).toMatchObject({ kind: "provider_error", category: "protocol" });
+  });
+
+  it("limit, not a control: a whitespace-only or control-character name is readable (only the empty string is refused; Unverified: T4.68)", () => {
+    for (const name of [" ", "\t", "\u0000"]) {
+      const [ev] = parse([line(toolMsg(call(name, { command: "git push" })))]).events;
+      expect(ev, JSON.stringify(name)).toEqual({ kind: "tool_call", tool: "shell", name, command: "git push" });
+      // The command is still read, so the guard still sees the Git write.
+      expect(guardEvent(ev as NormalizedEvent, ctx), JSON.stringify(name)).toMatchObject({
+        violation: { kind: "git_write" },
+      });
+    }
+  });
+
+  it("limit, not a control: a path-only call is an edit by a case-insensitive substring of its name, else a read (Proposed; Kimi's tool names: T4.68)", () => {
+    const kinds = (name: string) => parse([line(toolMsg(call(name, { path: "src/a.ts" })))]).events[0];
+    for (const name of ["overwrite_notes", "DELETE", "RemoveDir", "ApplyPatch", "ReadCreatedAt", "unmoved"]) {
+      expect(kinds(name), name).toEqual({ kind: "tool_call", tool: "edit", name, target: "src/a.ts" });
+    }
+    // A shell-named tool with only a path is a read: only a string command makes a shell call.
+    for (const name of ["Bash", "Shell", "ReadFile", "wr1te"]) {
+      expect(kinds(name), name).toEqual({ kind: "tool_call", tool: "read", name, target: "src/a.ts" });
+    }
+  });
+
+  it("limit, not a control: a case-variant role is unknown, so after the hint it is only counted, never a late record (Unverified: T4.68)", () => {
+    const { events, state } = parse([
+      line({ role: "assistant", content: "ok" }),
+      line(hint()),
+      line({ role: "Assistant", content: "late" }),
+      line({ role: "TOOL", content: "late" }),
+      line({ role: "Meta", type: "error", message: "late" }),
+    ]);
+    expect(events.slice(3)).toEqual([
+      { kind: "unknown", rawType: "Assistant" },
+      { kind: "unknown", rawType: "TOOL" },
+      { kind: "unknown", rawType: "Meta" },
+    ]);
+    expect(state.unknownEvents).toBe(3);
+    expect(extract(events)).toEqual({ ok: true, unknownEventCount: 3, nativeSessionId: SID, summary: "ok" });
+  });
+
+  it("JSON whitespace around a record (CRLF, tab, spaces) still parses; a non-breaking space or a trailing comma makes it unparseable", () => {
+    for (const raw of [`${line(hint())}\r`, `\t ${line(hint())}  `, `${line(hint())}\r\n`]) {
+      expect(parse([raw]).events, JSON.stringify(raw)).toEqual([
+        { kind: "session_bound", nativeSessionId: SID },
+        { kind: "result", ok: true },
+      ]);
+    }
+    const nbsp = String.fromCharCode(0xa0);
+    for (const raw of [`${line(hint())}${nbsp}`, `${nbsp}${line(hint())}`, `${line(hint()).slice(0, -1)},}`]) {
+      const { events, state } = parse([raw]);
+      expect(events, JSON.stringify(raw)).toEqual([]);
+      expect(state).toMatchObject({ lines: 1, unknownEvents: 0 });
+      expect(state.nativeSessionId).toBeUndefined();
+    }
+  });
+
+  it("a `system.version` record carrying a hint's or an error's fields is ignored: no binding, no error, not unknown", () => {
+    const loaded = { ...VERSION, session_id: SID, message: "Authentication required", content: "x", tool_calls: [] };
+    const { events, state } = parse([line(loaded)]);
+    expect(events).toEqual([]);
+    expect(state).toMatchObject({ lines: 1, unknownEvents: 0 });
+    expect(state.nativeSessionId).toBeUndefined();
+    // So it neither ends the turn nor makes a later record late.
+    const after = parse([line(loaded), line({ role: "assistant", content: "ok" }), line(hint())]).events;
+    expect(extract(after)).toEqual({ ok: true, unknownEventCount: 0, nativeSessionId: SID, summary: "ok" });
+  });
+
+  it("a JSON-RPC message arriving as a stream-json line is role-less and unknown, never an ACP result or a binding", () => {
+    const rpc = [
+      { jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" } },
+      { jsonrpc: "2.0", id: 2, result: { sessionId: SID } },
+      { jsonrpc: "2.0", id: 4, error: { code: -32000, message: "Authentication required" } },
+    ];
+    const { events, state } = parse(rpc.map(line));
+    expect(events).toEqual(rpc.map(() => ({ kind: "unknown", rawType: "none" })));
+    expect(state.nativeSessionId).toBeUndefined();
+    // Even a clean exit 0 has no result to succeed on.
+    expect(extract(events)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "no result event",
+    });
+  });
+
+  it("an ACP message carrying a hint's fields takes the shared mapping: it never binds or ends the stream-json turn", () => {
+    const disguised = {
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: { update: {} },
+      role: "meta",
+      type: "session.resume_hint",
+      session_id: SID,
+    } as unknown as AcpMessage;
+    const { events, state } = parse([disguised, line({ role: "assistant", content: "ok" }), line(hint())]);
+    // The disguised message maps first and neither binds nor ends the turn, so the assistant record is not late.
+    expect(events[0]?.kind).not.toBe("session_bound");
+    expect(events.filter((e) => e.kind === "provider_error")).toEqual([]);
+    expect(events.filter((e) => e.kind === "session_bound")).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+    expect(events.filter((e) => e.kind === "result")).toEqual([{ kind: "result", ok: true }]);
+    expect(state.nativeSessionId).toBe(SID);
+    expect(extract(events)).toMatchObject({ ok: true, nativeSessionId: SID, summary: "ok" });
+  });
+
+  const replays: [string, ConformanceCase][] = [
+    [
+      "function_name_number: a number `function.name` falls back to the top-level name; its Git write is PERMISSION_BLOCKED",
+      {
+        kind: "malformed_output",
+        adapter: replayAdapter("function_name_number"),
+        profile: PRIVILEGED_BYPASS_PROFILE,
+        request: request(),
+        expect: {
+          ok: false,
+          failureCode: "PERMISSION_BLOCKED",
+          nativeSessionId: DEFAULT_SESSION_ID,
+          summary: "ok",
+        },
+      },
+    ],
+    [
+      "tool_calls_false: a `tool_calls` of false under a clean hint at exit 0 is OUTPUT_PROTOCOL_ERROR",
+      {
+        kind: "malformed_output",
+        adapter: replayAdapter("tool_calls_false"),
+        profile: PRIVILEGED_BYPASS_PROFILE,
+        request: request(),
+        expect: {
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          failureDetail: `protocol: ${NOT_A_LIST}`,
+          nativeSessionId: DEFAULT_SESSION_ID,
+          summary: "ok",
+        },
+      },
+    ],
+  ];
+  for (const [name, c] of replays) {
+    it(name, async () => {
+      const report = await runConformanceCase(c);
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    });
+  }
+});
