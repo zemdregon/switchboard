@@ -20,8 +20,11 @@ Pre-release. The package is private and is not published to any registry; you bu
   2.1.296 (14 of 16 checks held; two need a failing run) and codex-cli 0.162.1 (flag assumptions held; Codex has not
   run through Switchboard). The opt-in `npm run test:live` smoke test has not been run by the operator personally. See
   [ROADMAP §6.2](docs/ROADMAP.md#62-m2-claude-code-adapter-and-mcp-slice-tasks).
-- **Milestone 3 (isolation) is `Partial`.** Approvals, privileged runs and retention are implemented; the live
-  malicious-fixture checks are not. See [ROADMAP §6](docs/ROADMAP.md#6-milestones) for each task.
+- **Milestone 3 (isolation) is `Partial`.** Trust profiles and overrides, approvals (`approve`, `deny`), privileged
+  runs, verification commands (optionally confined in bubblewrap), outer-sandbox detection and retention (`gc`) are
+  implemented and tested on fakes. Not done: the operator's live malicious-fixture leg (T3.9) and the adversarial
+  fake-provider scenarios awaiting zemdregon's review (T3.8b). See
+  [ROADMAP §6.5](docs/ROADMAP.md#65-m3-isolation-tasks) for each task.
 - **Milestone 9 (projects and controlled commits) is `Partial`.** Projects, the agent `commit` tool, finalize-only
   commits, ref snapshots, push, dynamic projects, signing and concurrent-run worktrees are implemented and tested for
   `host` environments on a fake provider with real Git in temporary repositories. It is not `Done`: nothing has run
@@ -285,6 +288,7 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `inner_agent` | no | The optional inner agent (ADR-0016): a cheap or self-hosted model for small tasks. Off unless you write the section and set `enabled: true`; there is no default backend, model or task, and no key, token or header field (a hosted service goes through a gateway you run). Shape: `{ "enabled", "backend": { "kind": "http", "base_url", "model", "timeout_ms"?, "max_concurrency"?, "allow_remote"?, "shares_subscription_with"? }, "tasks": { "<task>": { "enabled", ... } }, "breaker"?, "suspension"? }`; `base_url` may not carry userinfo or a query, and `shares_subscription_with` must be one of the provider config ids listed below this table (`claude-code`, `codex`, ...) or `null`: any other string stops startup, so `doctor` fails its config check naming the key and `inner test` exits 1 before sending anything. Full shape: LLD section 13.1. Inspect it with `doctor` and `inner status`. |
 | `rag` | no | The optional retrieval index (ADR-0031): off unless you configure an `embedding` backend. No credential fields; `mode` defaults to `auto` (on only when a backend exists and the project allows). Projects and contexts may narrow caps and exclusions; `use_global` and `contribute_to_global` default to false and cannot be set on dynamic projects. Full shape: [LLD §14.1](docs/design/LLD.md#141-configuration-shape) and [Retrieval index](#retrieval-index-milestone-12). |
 | `profiles.<name>` | no | Overrides for `inspect-untrusted`, `edit-untrusted`, `test-sandboxed` or `trusted-development`: `file_access`, `shell`, `shell_allowlist`, `network`, `network_allowlist`, `repo_config`. They may tighten or loosen a default; `doctor` lists them and every run records them. `privileged` has none. See the `edit-untrusted` limit under [Trust profiles](#trust-profiles). |
+| `outer_sandbox.required_profiles` | no | List of distinct non-privileged profile names (default empty, which changes nothing). A listed profile is refused with `ELIGIBILITY_NONE` unless bubblewrap and `prlimit` work on the host; because this build does not yet wrap the provider process, a listed profile is refused even when both work (`OUTER_SANDBOX_NOT_ENFORCED`). `doctor` reports the check. See [Trust profiles](#trust-profiles) and LLD section 8.4. |
 
 `<id>` is one of `claude-code`, `codex`, `grok-build`, `antigravity`, `cursor`, `opencode`, `kimi-code`. Only
 `claude-code` and `codex` pass the version gate on `main` today; the other ids name registered M4 adapters whose
@@ -1887,13 +1891,20 @@ redacted). `cancel_run` stops a running command, and a controller restart ends t
 the commands again. They are refused under `inspect-untrusted`. **They run on your host as your user, outside any
 provider sandbox** (ROADMAP owner decision 11, R-24): they can read your files and use the network. Supply them only for
 repositories you trust. A Git ref they move is reported as a policy violation and controller refs are put back, but a
-push they make cannot be seen.
+push they make cannot be seen. **Optional confinement:** set `SWITCHBOARD_CONFINED_VERIFICATION=1` in `serve`'s
+environment (there is no config key yet) and the commands run inside bubblewrap instead: the worktree stays writable,
+the rest of the host is read-only and every namespace, network included, is unshared. Without a working `bwrap` the
+commands do not run and the run ends `TEST_FAILURE`; they never fall back to running unconfined. `doctor` reports
+whether bubblewrap is usable. Confinement does not hide files your user can read (ROADMAP T3.11, ADR-0051).
 
 **Codex and the shell.** Codex has no command allowlist that Switchboard can set, so under both untrusted profiles the
 Codex agent can run shell commands inside Codex's own sandbox. Whether that sandbox keeps those commands away from
 Codex's credential store (`~/.codex`) and other files your user can read has **not been verified**. If you delegate
 untrusted repositories, prefer Claude Code, or set `providers.codex.enabled` to `false`, until the live check planned
-for milestone 3 settles it (ROADMAP R-23).
+for milestone 3 settles it (ROADMAP R-23). A first live check on 2026-10-13 (not yet the operator's T3.9 suite)
+found that, under `--sandbox workspace-write`, a canary file outside the workspace **could be read** and `/tmp` **could
+be written**, while writes elsewhere, the network, Unix sockets and Git metadata were blocked
+([live checks](docs/research/live-checks-2026-10-13.md), check 12).
 
 **Profile overrides.** `profiles.<name>` in the config may loosen a profile's defaults, but only explicitly, with the
 change recorded in every run's policy snapshot and reported by `doctor`. **Known limit:** a `profiles.edit-untrusted`
@@ -1906,8 +1917,11 @@ network hosts and repository configuration, plus a `bypass` setting that default
 `switchboard approve <run_id>`. A provider bypass flag such as `--dangerously-skip-permissions` is passed only when the
 approved scope explicitly sets `bypass` ([ADR-0017](docs/adr/0017-approved-privileged-scope-bypass.md)). For Claude
 Code an approved bypass run drops `--restricted`, which refuses bypass, and keeps the other isolation flags
-([ADR-0018](docs/adr/0018-claude-bypass-omits-restricted.md)); whether Claude's Git deny rules still hold under bypass
-is not verified yet (ROADMAP R-38). That gap concerns agents running on your host. Container environments, planned
+([ADR-0018](docs/adr/0018-claude-bypass-omits-restricted.md)). Claude's Git deny rules held under bypass in a live
+check on 2026-10-13 (six commit and ref spellings, directly and through `serve` with an approved scope; checks 14 and
+16 in [the live checks](docs/research/live-checks-2026-10-13.md)), but the operator's malicious-fixture leg (T3.9) has
+not run, so this rests on one check of one version (ROADMAP R-38). That gap concerns agents running on your host.
+Container environments, planned
 for milestone 10 and not available yet, are meant to close it: their image has no Git client, they mount neither the
 repository's Git directory nor any credentials, and Switchboard makes commits and pushes on the host through its own
 tools (ROADMAP owner decision 24). Host-run agents remain supported. Claude Code compiles a privileged scope only with
@@ -1955,8 +1969,10 @@ you control. `approve` and `deny` keep working for clients left at `"required"`.
 - **Fail closed.** An invalid config, an unknown client id, an unverified CLI version or an unavailable profile refuses
   to run rather than weakening anything.
 
-This is a summary of design intent and the implemented checks, not a security guarantee. The isolation has not yet been
-tested against malicious repositories (milestone 3). Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
+This is a summary of design intent and the implemented checks, not a security guarantee. The controller side is tested
+against hostile repository content in CI with a fake provider (`test/malicious/`, ROADMAP T3.8); the isolation of the
+real provider CLIs has not yet been tested against malicious repositories by the operator's live leg (ROADMAP T3.9).
+Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 
 ## Known limitations
 
