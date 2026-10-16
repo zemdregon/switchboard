@@ -41,6 +41,7 @@ import {
 } from "../adapters/providers.js";
 import { MODEL_ID_PATTERN, type ModelConfig } from "../models/registry.js";
 import { type BudgetsConfigInput, budgetCapsSchema } from "./budgets.js";
+import type { CiTriggerConfigInput } from "./ci-trigger.js";
 import { type HttpTransportConfig, httpTransportSchema } from "./http-transport.js";
 import {
   type InnerAgentConfig,
@@ -153,6 +154,8 @@ export interface SwitchboardConfig {
   control_plane?: ControlPlaneConfigInput;
   /** Notification sinks (M14, T14.9; FR-CTL-10, LLD §3.4.9, ADR-0048). Absent or empty means off: no outbound call. */
   notification_sinks?: NotificationSinkConfig[];
+  /** CI-failure trigger (M15, T15.3; FR-QUE-03, LLD §18.6, ADR-0050). Absent or `enabled: false` means no `gh` call. */
+  ci_trigger?: CiTriggerConfigInput;
   /** Optional OTLP/HTTP trace destination; absent or empty disables telemetry (LLD §7, T8.1). */
   telemetry?: { otlp_endpoint?: string };
   /**
@@ -418,6 +421,43 @@ export const projectSchema = {
 } as const;
 
 /** Defaults (Proposed): 30 days (NFR-DATA-01), GC pass every 24 hours. */
+/** `ci_trigger` (T15.3; FR-QUE-03, LLD §18.1, §18.6; types and resolution in `ci-trigger.ts`). */
+const ciTriggerSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    enabled: { type: "boolean" },
+    // 0 turns polling off at the operator level (LLD §18.1); the upper bound is a Proposed sanity limit (one day).
+    poll_interval_seconds: { type: "integer", minimum: 0, maximum: 86400 },
+    gh_binary: { type: "string", minLength: 1, maxLength: 4096, pattern: "^[^\\s;|&$`<>]+$" },
+    use_check_runs_fallback: { type: "boolean" },
+    projects: {
+      type: "array",
+      maxItems: 256,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["project", "client", "template"],
+        properties: {
+          project: { type: "string", pattern: PROJECT_ID_PATTERN },
+          client: { type: "string", minLength: 1 },
+          enabled: { type: "boolean" },
+          template: {
+            type: "object",
+            additionalProperties: false,
+            required: ["objective", "trust_profile"],
+            properties: {
+              objective: { type: "string", minLength: 1, maxLength: 32768 },
+              trust_profile: { enum: TRUST_PROFILES.filter((p) => p !== "privileged") },
+              constraints: { type: "array", maxItems: 64, items: { type: "string", minLength: 1, maxLength: 2000 } },
+            },
+          },
+        },
+      },
+    },
+  },
+} as const;
+
 export const DEFAULT_RETENTION_DAYS = 30;
 export const DEFAULT_RETENTION_INTERVAL = "24h";
 
@@ -590,6 +630,7 @@ export const configSchema = {
       },
     },
     notification_sinks: notificationSinksSchema,
+    ci_trigger: ciTriggerSchema,
     telemetry: {
       type: "object",
       additionalProperties: false,
