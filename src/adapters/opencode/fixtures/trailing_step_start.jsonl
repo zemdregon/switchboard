@@ -1,0 +1,5 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.53 eighth residual pass, Q-85). A step_start after the last stop step opens a step that never finishes. Pins the gap: only a tool call or an unreadable line after the last stop fails the run, so this stream is a success. Not a recorded native shape.","exit":0}}
+{"type":"step_start","timestamp":1,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_s1","type":"step-start"}}
+{"type":"text","timestamp":2,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_t1","type":"text","text":"SYNTHETIC: done"}}
+{"type":"step_finish","timestamp":3,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_f1","type":"step-finish","reason":"stop","tokens":{"input":7,"output":2}}}
+{"type":"step_start","timestamp":4,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_s2","type":"step-start"}}
