@@ -9,6 +9,7 @@ import type { ModelConfig } from "../models/registry.js";
 import { ProfileOverrideError, validateProfileOverrides } from "../policy/profiles.js";
 import type { ProfileOverride, ProfileOverrides } from "../policy/types.js";
 import { type CapacitySettings, checkCapacity, resolveCapacity } from "./capacity.js";
+import { type CiTriggerSettings, checkCiTrigger, resolveCiTrigger } from "./ci-trigger.js";
 import { type ControlPlaneSettings, resolveControlPlane } from "./control-plane.js";
 import { ConfigError } from "./errors.js";
 import { checkHttpTransport, type HttpTransportSettings, resolveHttpTransport } from "./http-transport.js";
@@ -121,6 +122,8 @@ export interface ResolvedConfig {
    * outbound notification is made. Holds operator destinations and tokens: never log or serialise it (FR-TEL-03).
    */
   notificationSinks: NotificationSinkSettings[];
+  /** `ci_trigger` (T15.3; FR-QUE-03, LLD §18.6), always set; disabled unless the operator turns it on. */
+  ciTrigger: CiTriggerSettings;
   /** Validated OTLP/HTTP endpoint (LLD §7); absent means no export or dependency load. */
   telemetry?: { otlpEndpoint: string };
 }
@@ -448,6 +451,14 @@ export function loadConfig(
     }
     if (!valid) throw new ConfigError("$.telemetry.otlp_endpoint: must be an absolute http or https URL");
   }
+  const ciErrors = checkCiTrigger(
+    cfg.ci_trigger,
+    new Map(cfg.mcp_clients.map((c) => [c.id, c])),
+    new Set((cfg.projects ?? []).map((p) => p.id)),
+  );
+  if (ciErrors.length > 0) {
+    throw new ConfigError(`Invalid config:\n${ciErrors.map((l) => `  ${l}`).join("\n")}`);
+  }
   const sinkErrors = checkNotificationSinks(cfg.notification_sinks);
   if (sinkErrors.length > 0) {
     throw new ConfigError(`Invalid config:\n${sinkErrors.map((l) => `  ${l}`).join("\n")}`);
@@ -497,6 +508,7 @@ export function loadConfig(
     routing: resolveRouting(cfg.routing),
     controlPlane: resolveControlPlane(cfg.control_plane),
     notificationSinks: resolveNotificationSinks(cfg.notification_sinks),
+    ciTrigger: resolveCiTrigger(cfg.ci_trigger),
     ...(otlpEndpoint ? { telemetry: { otlpEndpoint } } : {}),
     claudeCodeGitChannel: cfg.providers?.["claude-code"]?.git_channel === true,
     profileOverrides,
