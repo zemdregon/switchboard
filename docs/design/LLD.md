@@ -1849,6 +1849,34 @@ Fail closed: wrong digest, stale id, target client not in `approval_proxy_target
 
 *Amends §3.1 **Approve**:* except for `approval_proxy` clients using §3.4.8, no MCP tool approves.
 
+**Implementation (T14.8, `src/control/approval-proxy.ts`, wired in `src/mcp/server.ts` and `src/cli/serve.ts`;
+Delegated, not owner-approved):**
+
+- Configuration: `approval_proxy` is a boolean (default false); `approval_proxy_targets` is a non-empty list of unique
+  configured client ids and is refused at load without `approval_proxy: true` or when it names an unknown client.
+  Without it a proxy targets only itself. `tool_profile` is not consulted.
+- Kinds: `privileged_scope` lists a `PENDING` row whose run is AWAITING_APPROVAL and passes every §3.1 hash check
+  (`approval_id` is the `apv_` row id). A dynamic project revision lists while it is the latest, `PENDING_APPROVAL` and
+  undecided (`approval_id` is the `prv_` revision row id); it is `push_revision` when its approval reasons include
+  `push_policy`, `commit_identity` or `commit_signing`, else `dynamic_project`. `requested_at` is the row's
+  `requested_at` or the revision's `created_at`; `target_client_id` is the run's client or the revision's creator.
+- `revision_hash` (ADR-0030 stores none): hex SHA-256 over `canonicalJson({ v: 1, project_id, revision, client_id,
+  definition_json, approval_reasons_json, created_at })` of the revision row.
+- `scope_summary` uses closed vocabularies and counts only (for example "shell allowlist of 1 command(s)"); it never
+  repeats an argv, host, path, objective, project name or other request or agent text.
+- Every failed check (unknown or non-pending id, not a listed target, digest missing, malformed or different) returns
+  the same `INVALID_REQUEST` message and writes nothing; the digest is compared in constant time inside the decision's
+  `BEGIN IMMEDIATE` transaction. A client without the flag gets the unknown-tool answer.
+- Recording: a privileged decision appends `operator_decision_requested` (`requested_by = "mcp_proxy:<client_id>"`) and
+  applies it through the lifecycle's `applyApprovalDecision` in the same transaction, so `decided_by`,
+  `approval_decided` and the T3/T19 transition are those of the CLI path. A revision decision goes through the project
+  store's `decide` with `decided_by` (and the `project_event` `operator`) `mcp_proxy:<client_id>`. A proxied approve of
+  a scope with `bypass: true` is an `APPROVED` row like any other for the §3.1 **Bypass** check, which still requires
+  every hash to match (ADR-0047 Decision 1 and 2g; ADR-0017 item 5's "operator CLI" wording is not edited here).
+- Sinks (§3.4.9, read-only reuse): a privileged approve is announced by the existing transition hook (T3,
+  `approval_decided` / `privileged_scope`); a privileged deny and every revision decision are announced with
+  `approval_decided` and the `approval_kind` as reason code (`run_id` null for a revision) through the same dispatcher.
+
 #### 3.4.9 Notification sinks (FR-CTL-10, ADR-0048)
 
 **Configuration** (`notification_sinks[]`, off when absent):

@@ -114,6 +114,15 @@ import {
   refusesPrivilegedCrossProvider,
   takeAsOf,
 } from "../continuity/index.js";
+import {
+  APPROVAL_PROXY_INPUTS,
+  APPROVAL_PROXY_TOOL_NAMES,
+  type ApprovalAnnouncement,
+  ApprovalProxyError,
+  type ApprovalProxyToolName,
+  approvalProxyToolDescriptors,
+  createApprovalProxy,
+} from "../control/approval-proxy.js";
 import type { Ledger, RunRecord, RunState, TrustProfile } from "../ledger/index.js";
 import {
   type EligibilityAnswer,
@@ -169,6 +178,7 @@ import {
   TOOL_SCHEMA_VERSION,
   type ToolName,
   toolDescriptors,
+  withError,
 } from "./schemas.js";
 import { createScrubber } from "./scrub.js";
 import {
@@ -223,6 +233,11 @@ export interface McpServerDeps {
   readonly candidateOrder?: readonly ProviderId[];
   /** Clock for `get_capacity` (T6.3) and the routing window (T7.2); defaults to the system clock. */
   readonly now?: () => Date;
+  /**
+   * T14.8 (FR-CTL-08, ADR-0047 2f): announces a `decide_approval` decision to the notification sinks when the
+   * lifecycle's transition hook does not (see `src/control/approval-proxy.ts`). Absent means no sink is configured.
+   */
+  readonly announceApproval?: (a: ApprovalAnnouncement) => void;
 }
 
 export interface SwitchboardMcpServer {
@@ -300,6 +315,27 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
               }
             : {}),
         });
+  // T14.8 (FR-CTL-08, ADR-0047): only for a client the operator marked approval_proxy; otherwise the tools do not exist.
+  const approvalProxy =
+    client.approvalProxy === true
+      ? createApprovalProxy({
+          ledger,
+          clientId: deps.clientId,
+          client,
+          ...(deps.projectStore !== undefined ? { projectStore: deps.projectStore } : {}),
+          applyDecision: (req) => lifecycle.applyApprovalDecision(req),
+          ...(deps.announceApproval !== undefined ? { announce: deps.announceApproval } : {}),
+        })
+      : undefined;
+  const approvalValidators =
+    approvalProxy === undefined
+      ? undefined
+      : (Object.fromEntries(
+          APPROVAL_PROXY_TOOL_NAMES.map((n) => [
+            n,
+            new Ajv2020({ allErrors: true, strict: true }).compile(APPROVAL_PROXY_INPUTS[n]),
+          ]),
+        ) as Record<ApprovalProxyToolName, ValidateFunction>);
   const whileAdmitting = async <T>(projectId: unknown, fn: () => Promise<T>): Promise<T> => {
     if (typeof projectId !== "string") return fn();
     admittingCount.set(projectId, (admittingCount.get(projectId) ?? 0) + 1);
@@ -1292,6 +1328,19 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         }
         projectTools?.recordNotOffered(name as ProjectToolName, rawArgs);
       }
+      if ((APPROVAL_PROXY_TOOL_NAMES as readonly string[]).includes(name) && approvalProxy && approvalValidators) {
+        // T14.8: a refusal (any failed check) is INVALID_REQUEST and writes nothing.
+        const tool = name as ApprovalProxyToolName;
+        const args = structuredClone(rawArgs ?? {}) as Args;
+        const validate = approvalValidators[tool];
+        if (!validate(args)) throw schemaError(validate.errors ?? []);
+        try {
+          return ok(tool === "list_pending_approvals" ? approvalProxy.list(args) : approvalProxy.decide(args as never));
+        } catch (err) {
+          if (err instanceof ApprovalProxyError) throw invalid(err.message);
+          throw err;
+        }
+      }
       if ((SEARCH_TOOL_NAMES as readonly string[]).includes(name) && searchOffered()) {
         // T12.6 (FR-RAG-06): read-only; when not offered it is answered exactly like an unknown tool.
         const args = structuredClone(rawArgs ?? {}) as Args;
@@ -1328,10 +1377,16 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
   );
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: toolDescriptors({
-      manageProjects: client.manageProjects === true && projectTools !== undefined,
-      searchContext: searchOffered(),
-    }),
+    tools: [
+      ...toolDescriptors({
+        manageProjects: client.manageProjects === true && projectTools !== undefined,
+        searchContext: searchOffered(),
+      }),
+      // T14.8: listed only for an approval_proxy client (absent, not refused, for every other client).
+      ...(approvalProxy !== undefined
+        ? approvalProxyToolDescriptors().map((d) => ({ ...d, outputSchema: withError(d.outputSchema) }))
+        : []),
+    ],
   }));
   server.setRequestHandler(CallToolRequestSchema, async (req) => callTool(req.params.name, req.params.arguments));
 

@@ -69,7 +69,12 @@ import {
 } from "../adapters/index.js";
 import { ArtifactStore, defaultRedactor } from "../artifacts/index.js";
 import { ConfigError, loadConfig, type ResolvedConfig } from "../config/index.js";
-import { SinkDispatcher, sinkOutcomeRecorder, transitionNotifier } from "../control/index.js";
+import {
+  type ApprovalAnnouncement,
+  SinkDispatcher,
+  sinkOutcomeRecorder,
+  transitionNotifier,
+} from "../control/index.js";
 import { detectOuterSandbox, type OuterSandboxAvailability, outerSandboxRefusal } from "../exec/outer-sandbox.js";
 import { GitToolService } from "../git/channel.js";
 import { GitPublisher } from "../git/commit.js";
@@ -640,6 +645,13 @@ async function runDaemon(
       },
       ...(now ? { now } : {}),
       projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
+      // T14.8 (FR-CTL-08, ADR-0047 2f): proxied decisions the transition hook does not announce reach the same sinks.
+      ...(sinks !== undefined
+        ? {
+            announceApproval: (a: ApprovalAnnouncement) =>
+              sinks.emit({ projectId: a.projectId, eventKind: "approval_decided", reasonCode: a.kind, runId: a.runId }),
+          }
+        : {}),
       // T13.5 (FR-MCP-15, Q-78): stdio sees only meta-sessions with no HTTP subject; HTTP sees only its own.
       subjectBindings: new SubjectBindingStore(db, now ? { now } : {}),
       // T12.6 (FR-RAG-06): read-only search over a project's store; absent without an embedding backend (FR-RAG-04).
