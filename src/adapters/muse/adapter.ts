@@ -55,11 +55,17 @@ import type {
 import {
   APPROVAL_MODE_FLAG,
   APPROVAL_ON_REQUEST,
+  AUTH_LOGGED_IN_PREFIX,
+  AUTH_LOGGED_OUT_PREFIX,
+  AUTH_STATUS_ARGS,
+  AUTH_STATUS_LINE_MAX,
+  AUTH_STATUS_TIMEOUT_MS,
   EXEC_SUBCOMMAND,
   GIT_WRITE_CONTROL_DETAIL,
   HELP_ARGS,
   JSON_FLAG,
   MUSE_BINARY,
+  MUSE_LOGIN_COMMAND,
   NON_PRIVILEGED_UNSUPPORTED_DETAIL,
   REQUIRED_HELP_FLAGS,
   SANDBOX_NETWORK_FLAG,
@@ -80,6 +86,7 @@ import {
 export const MUSE_ENV_ALLOWLIST: readonly string[] = ["PATH", "HOME"];
 
 const PROBE_TIMEOUT_MS = 10_000;
+const AUTH_UNKNOWN_REASON = "`muse auth status` first line is not a recognised login state";
 
 /** FR-GIT-01 (ADR-0039): no per-command deny control is documented; see protocol.ts. */
 export const MUSE_GIT_WRITE_CONTROL: GitWriteControl = {
@@ -190,12 +197,31 @@ export class MuseAdapter implements ProviderAdapter {
     return { binaryPath: exe, binaryVersion: version, steps };
   }
 
-  /** FR-AUTH-01/02: no status command is documented ([M-auth], [M-log]); T4.74 decides the check. Fail closed until then. */
-  async authPreflight(_runner: ProbeRunner): Promise<AuthResult> {
-    return {
-      state: "UNKNOWN",
-      reason: "Muse Code auth preflight is not implemented (T4.74); no auth status command is documented (TDD §4.8)",
-    };
+  /**
+   * FR-AUTH-02 via `muse auth status` (T4.74, Q-10 pattern following Grok T4.24): no status command is documented
+   * ([M-auth], [M-log]; TDD §4.8), so `muse auth status` and its replies are **Assumptions** (Unverified: T4.71,
+   * TDD §4.8.1 item 3). Keyed on the first stdout line at exit 0: a line that starts with `Logged in` is OK,
+   * `Not logged in` is AUTH_REQUIRED naming `muse login`; any other first line, a non-zero exit, null exit, timeout,
+   * empty output or spawn error is UNKNOWN (fail closed). The output is never stored; at most its first line, filtered
+   * and truncated, appears in an UNKNOWN reason. The command never reads `~/.config/muse` or credential files, never
+   * passes `META_API_KEY` and never starts a login.
+   */
+  async authPreflight(runner: ProbeRunner): Promise<AuthResult> {
+    const exe = this.#exe;
+    if (exe === undefined) return { state: "UNKNOWN", reason: `${MUSE_BINARY} not found on PATH` };
+    const r = await runner([exe, ...this.#launcher, ...AUTH_STATUS_ARGS], { timeoutMs: AUTH_STATUS_TIMEOUT_MS });
+    if (r.spawnError !== undefined) return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (${r.spawnError})` };
+    if (r.timedOut) return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (timed out)` };
+    const first = (r.stdout.split("\n").find((l) => l.trim() !== "") ?? "").trim();
+    if (r.exitCode === 0) {
+      if (first.startsWith(AUTH_LOGGED_IN_PREFIX)) return { state: "OK" };
+      if (first.startsWith(AUTH_LOGGED_OUT_PREFIX)) return { state: "AUTH_REQUIRED", loginCommand: MUSE_LOGIN_COMMAND };
+    }
+    const line = Array.from(first)
+      .filter((c) => c >= " " && c !== "\x7f")
+      .join("")
+      .slice(0, AUTH_STATUS_LINE_MAX);
+    return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (exit ${r.exitCode}${line ? `: ${line}` : ""})` };
   }
 
   compile(request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible {

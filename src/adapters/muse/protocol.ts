@@ -69,8 +69,23 @@ export const META_API_KEY_ENV = "META_API_KEY";
  */
 export const NO_AUTO_UPDATE_ENV = "MUSE_NO_AUTO_UPDATE";
 
-/** Native login named on `AUTH_REQUIRED` by T4.74 ([M-log]; reported [Orca]). No status command is documented. */
+/** Native login command named on `AUTH_REQUIRED` ([M-log]; reported [Orca]). */
 export const MUSE_LOGIN_COMMAND = "muse login";
+
+/**
+ * Auth status (T4.74, Q-10; FR-AUTH-02; Grok T4.24 precedent).
+ * Meta documents `muse auth set` and `muse logout` ([M-auth]; TDD §4.8), but no auth status command is documented
+ * (TDD §4.8 "Auth preflight", Unverified: T4.71). `muse auth status` is an **Assumption** (pending T4.71; try
+ * `muse auth --help` per TDD §4.8.1 item 3). Its exit code is assumed to be 0 for both states as Grok Build, keyed on
+ * the first line of stdout: `Logged in` is OK, `Not logged in` is AUTH_REQUIRED naming the native login (both replies
+ * are **Assumptions** pending T4.71). Any other first line, a non-zero exit, a timeout, empty output, null exit or a
+ * spawn error is UNKNOWN (fail closed).
+ */
+export const AUTH_STATUS_ARGS: readonly string[] = ["auth", "status"];
+export const AUTH_LOGGED_IN_PREFIX = "Logged in";
+export const AUTH_LOGGED_OUT_PREFIX = "Not logged in";
+export const AUTH_STATUS_TIMEOUT_MS = 10_000;
+export const AUTH_STATUS_LINE_MAX = 80;
 
 /** Flags the probe requires in `muse exec --help` (each confirmed or corrected by Meta's pages in TDD §4.8). */
 export const REQUIRED_HELP_FLAGS: readonly string[] = [JSON_FLAG, APPROVAL_MODE_FLAG, SANDBOX_NETWORK_FLAG];

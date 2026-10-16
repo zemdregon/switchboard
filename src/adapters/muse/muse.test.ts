@@ -54,7 +54,14 @@ import {
   SYNTHETIC_EXEC_HELP_STDOUT,
   SYNTHETIC_VERSION_STDOUT,
 } from "./fixtures/cases.js";
-import { META_API_KEY_ENV, NO_AUTO_UPDATE_ENV } from "./protocol.js";
+import {
+  AUTH_LOGGED_IN_PREFIX,
+  AUTH_LOGGED_OUT_PREFIX,
+  AUTH_STATUS_ARGS,
+  META_API_KEY_ENV,
+  MUSE_LOGIN_COMMAND,
+  NO_AUTO_UPDATE_ENV,
+} from "./protocol.js";
 
 const FAKE_MUSE = fileURLToPath(new URL("./fixtures/fake-muse.mjs", import.meta.url));
 const EXE = "/opt/synthetic/muse";
@@ -466,15 +473,11 @@ describe("muse probe on synthetic output (T4.72, FR-ADP-02)", () => {
   });
 });
 
-describe("muse fail-closed placeholders (T4.73 to T4.77 are later tasks)", () => {
+describe("muse fail-closed placeholders (T4.73, T4.75 to T4.77 are later tasks)", () => {
   const state = (): ParseState => ({ lines: 0, unknownEvents: 0 }) as ParseState;
 
-  it("auth is UNKNOWN, resume Ineligible, parser unknown and a clean exit is OUTPUT_PROTOCOL_ERROR", async () => {
+  it("resume Ineligible, parser unknown and a clean exit is OUTPUT_PROTOCOL_ERROR", async () => {
     const a = adapter();
-    const never: ProbeRunner = async () => {
-      throw new Error("the auth placeholder must not run anything");
-    };
-    expect(await a.authPreflight(never)).toMatchObject({ state: "UNKNOWN", reason: expect.stringContaining("T4.74") });
     expect(a.resumeArgs({ provider: "muse", nativeSessionId: "s" }, request(), approved())).toMatchObject({
       reason: "CAPABILITY_MISSING",
       detail: expect.stringContaining("T4.73"),
@@ -503,6 +506,91 @@ describe("muse fail-closed placeholders (T4.73 to T4.77 are later tasks)", () =>
     expect(a.gitCapabilities).toBe(MUSE_GIT_CAPABILITIES);
     expect(a.gitCapabilities.commitChannel).toBe("finalize-only");
     expect(a.transports).toEqual(["subprocess-jsonl"]);
+  });
+});
+
+describe("muse auth preflight (T4.74, Q-10; SYNTHETIC outputs following Grok T4.24 precedent)", () => {
+  const out =
+    (stdout: string, exitCode: number | null = 0, extra: Partial<ProbeOutput> = {}): ProbeRunner =>
+    async () => ({ stdout, stderr: "", exitCode, timedOut: false, ...extra });
+  const STATUS_EXTRA = "\nAccount: test-user@example.com\nOrg: test-org\n";
+
+  it("runs only `auth status` with a short timeout and passes no META_API_KEY", async () => {
+    vi.stubEnv(META_API_KEY_ENV, "sb-canary-secret");
+    const seen: Array<{ argv: readonly string[]; timeoutMs?: number; env?: unknown }> = [];
+    const r = await adapter().authPreflight(async (argv, opts) => {
+      seen.push({
+        argv,
+        ...(opts?.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
+        env: (opts as { env?: unknown } | undefined)?.env,
+      });
+      return {
+        stdout: `${AUTH_LOGGED_IN_PREFIX} as test-user@example.com.${STATUS_EXTRA}`,
+        stderr: "",
+        exitCode: 0,
+        timedOut: false,
+      };
+    });
+    expect(r).toEqual({ state: "OK" });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.argv).toEqual([EXE, ...AUTH_STATUS_ARGS]);
+    expect(seen[0]?.timeoutMs).toBeLessThanOrEqual(10_000);
+    expect(seen[0]?.env).toBeUndefined();
+  });
+
+  it("a logged-out first line at exit 0 is AUTH_REQUIRED naming the native login", async () => {
+    expect(await adapter().authPreflight(out(`${AUTH_LOGGED_OUT_PREFIX}.${STATUS_EXTRA}`))).toEqual({
+      state: "AUTH_REQUIRED",
+      loginCommand: MUSE_LOGIN_COMMAND,
+    });
+  });
+
+  it("any other output, exit code, timeout or spawn failure is UNKNOWN and never leaks past the first line or carries an account value", async () => {
+    const cases: Array<[string, ProbeRunner]> = [
+      ["unrecognised first line", out(`Welcome to Muse Code.${STATUS_EXTRA}`)],
+      ["logged-in text at a non-zero exit", out(`${AUTH_LOGGED_IN_PREFIX}\n`, 1)],
+      ["logged-out text at a non-zero exit", out(`${AUTH_LOGGED_OUT_PREFIX}\n`, 2)],
+      ["empty output", out("")],
+      ["a null exit code", out(`${AUTH_LOGGED_IN_PREFIX}\n`, null)],
+      ["timeout", out("", null, { timedOut: true })],
+      ["spawn error", out("", null, { spawnError: "ENOENT" })],
+    ];
+    for (const [name, runner] of cases) {
+      const r = await adapter().authPreflight(runner);
+      expect(r, name).toMatchObject({ state: "UNKNOWN" });
+    }
+    const r = await adapter().authPreflight(
+      out(`Welcome back\u0007 ${"x".repeat(200)}\nsecret: hunter2\naccount: test-user@example.com\n`),
+    );
+    expect(r.state).toBe("UNKNOWN");
+    if (r.state === "UNKNOWN") {
+      expect(r.reason.length).toBeLessThan(200);
+      expect(r.reason).not.toContain("hunter2");
+      expect(r.reason).not.toContain("test-user@example.com");
+      expect(r.reason).not.toContain("\u0007");
+    }
+  });
+
+  it("is UNKNOWN when the binary is not on PATH, without running anything", async () => {
+    let ran = false;
+    const r = await new MuseAdapter({ pathEnv: "/nonexistent" }).authPreflight(async () => {
+      ran = true;
+      return { stdout: "", stderr: "", exitCode: 0, timedOut: false };
+    });
+    expect(r).toMatchObject({ state: "UNKNOWN" });
+    expect(ran).toBe(false);
+  });
+
+  it("by inspection, the adapter reads no file of the Muse home and no credential name (FR-AUTH-02)", () => {
+    const code = (f: string) =>
+      readFileSync(new URL(f, import.meta.url), "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/^\s*\/\/.*$/gm, "");
+    for (const f of ["./adapter.ts", "./protocol.ts"]) {
+      const src = code(f);
+      expect(src, f).not.toMatch(/auth\.json|MUSE_HOME|readFile|readdir|createReadStream/);
+    }
+    expect(code("./adapter.ts")).not.toMatch(/\.muse|META_API_KEY/);
   });
 });
 
