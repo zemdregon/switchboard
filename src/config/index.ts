@@ -2,6 +2,7 @@ export * from "./capacity.js";
 export * from "./http-transport.js";
 export * from "./inner-agent.js";
 export * from "./load.js";
+export * from "./notification-sinks.js";
 export * from "./projects.js";
 export * from "./rag.js";
 export * from "./routing.js";

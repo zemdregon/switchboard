@@ -39,6 +39,7 @@ import {
   PROJECT_INNER_SETTINGS,
   type ProjectInnerSetting,
 } from "./inner-agent.js";
+import { type NotificationSinkConfig, notificationSinksSchema } from "./notification-sinks.js";
 import {
   type ContextRagConfig,
   contextRagSchema,
@@ -125,6 +126,8 @@ export interface SwitchboardConfig {
   capacity?: CapacityConfigInput;
   /** Routing (M7, T7.1; LLD §17.1, ADR-0044). Every key defaults to its LLD value (Assumptions, Q-80). */
   routing?: RoutingConfigInput;
+  /** Notification sinks (M14, T14.9; FR-CTL-10, LLD §3.4.9, ADR-0048). Absent or empty means off: no outbound call. */
+  notification_sinks?: NotificationSinkConfig[];
 }
 
 /** `routing` as written in the config file (LLD §17.1). */
@@ -507,6 +510,7 @@ export const configSchema = {
         },
       },
     },
+    notification_sinks: notificationSinksSchema,
     profiles: {
       type: "object",
       additionalProperties: false,

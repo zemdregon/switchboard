@@ -65,6 +65,7 @@ import {
 } from "../adapters/index.js";
 import { ArtifactStore, defaultRedactor } from "../artifacts/index.js";
 import { ConfigError, loadConfig, type ResolvedConfig } from "../config/index.js";
+import { SinkDispatcher, sinkOutcomeRecorder, transitionNotifier } from "../control/index.js";
 import { GitToolService } from "../git/channel.js";
 import { GitPublisher } from "../git/commit.js";
 import { GitPusher, pushContextResolver } from "../git/push.js";
@@ -478,6 +479,17 @@ async function runDaemon(
   // T12.4 / T12.5: set below once background indexing has started; until then (and with no embedding backend) the
   // context-pack port answers `undefined` and a run is compiled without a pack.
   let rag: ServeRag | undefined;
+  // T14.9 (FR-CTL-10, ADR-0048): notification sinks only when the operator configured one; none means no request at all.
+  const sinks =
+    config.notificationSinks.length === 0
+      ? undefined
+      : new SinkDispatcher({
+          sinks: config.notificationSinks,
+          ...(config.httpTransport !== undefined ? { linkBase: config.httpTransport.resource } : {}),
+          onOutcome: sinkOutcomeRecorder({ log, appendRunEvent: (e) => ledger.appendRunEvent(e) }),
+        });
+  if (sinks) log.info("notification sinks configured", { sinks: sinks.sinkIds });
+  const notifySinks = sinks ? transitionNotifier(sinks, (runId) => ledger.getRunRecord(runId)?.project_id) : undefined;
   const lifecycle = new RunLifecycle({
     ledger,
     workspace,
@@ -518,7 +530,10 @@ async function runDaemon(
     // project/context privacy resolver. Heuristic fallback when the agent is off, the task is disabled,
     // a privacy gate denies, or the call fails. Never ranks; lifecycle never imports the service.
     classifyRouteFeatures: createClassifyRouteFeaturesHook(innerAgent, innerSettingFor),
-    onTransition: (n) => log.info("run transition", { run_id: n.runId, from: n.from, to: n.to, rule: n.rule }),
+    onTransition: (n) => {
+      log.info("run transition", { run_id: n.runId, from: n.from, to: n.to, rule: n.rule });
+      notifySinks?.(n);
+    },
     ...(now ? { now } : {}),
   });
 
@@ -709,6 +724,7 @@ async function runDaemon(
       log.error("lifecycle shutdown failed", { error: message(err) });
       code = 1;
     }
+    await sinks?.close(); // aborts deliveries in flight; never throws
     process.stdin.destroy(); // nothing reads stdin any more; do not let it hold the event loop open
     process.off("SIGINT", ignore);
     process.off("SIGTERM", ignore);
