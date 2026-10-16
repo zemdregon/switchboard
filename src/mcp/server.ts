@@ -73,6 +73,12 @@
  *   (a revision waiting for approval is PERMISSION_BLOCKED with `details.reason = approval_required`), after the same
  *   filesystem checks as at creation, and is frozen into the policy snapshot exactly like a configured project; the
  *   route decision's `project` reasons name the revision.
+ * - `list_runs` (T14.1; FR-CTL-01, FR-MCP-04, LLD §3.4.2) is read-only and scoped exactly as `get_run`: only runs this
+ *   client started, over this caller's subject, so every row is the envelope `get_run` returns for that run (the same
+ *   builder). A `project_id` filter must name a project this client may use (a configured project in its `projects`
+ *   list, or a live dynamic project it created): an id it may not use is PERMISSION_BLOCKED; any other id, including
+ *   another client's dynamic project, is INVALID_REQUEST, like an unknown run. Rows are newest first (`created_at`,
+ *   then `run_id`, both descending); the cursor is an opaque keyset position (Delegated).
  */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -108,7 +114,7 @@ import {
   refusesPrivilegedCrossProvider,
   takeAsOf,
 } from "../continuity/index.js";
-import type { Ledger, RunRecord, TrustProfile } from "../ledger/index.js";
+import type { Ledger, RunRecord, RunState, TrustProfile } from "../ledger/index.js";
 import {
   type EligibilityAnswer,
   type EligibilityQuestion,
@@ -1000,6 +1006,50 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     return envelopeOf(run.id, inc ? { events: compactEvents(ledger, run.id, inc.after_seq, inc.limit, scrub) } : {});
   };
 
+  /** T14.1 (LLD §3.4.2): a project filter must name a project this client may use (see the module comment). */
+  const checkListProject = (projectId: string): void => {
+    if ((projectTools?.listForClient() ?? []).some((e) => e.project.id === projectId)) return;
+    const configured = (deps.config.projects ?? []).some((p) => p.id === projectId);
+    if (!configured) throw invalid(`unknown project ${JSON.stringify(projectId)}`, { field: "project_id" });
+    if (!(client.projects ?? []).includes(projectId)) {
+      throw new ToolError("PERMISSION_BLOCKED", `project ${projectId} is not in this client's project list`, {
+        project: projectId,
+      });
+    }
+  };
+
+  const listRuns = async (a: Args) => {
+    if (a.project_id !== undefined) checkListProject(a.project_id as string);
+    const since = a.since === undefined ? undefined : instant(a.since as string, "since");
+    const until = a.until === undefined ? undefined : instant(a.until as string, "until");
+    const states = a.status !== undefined ? [a.status as RunState] : (a.status_in as RunState[] | undefined)?.slice();
+    const limit = a.limit as number;
+    let before = a.cursor === undefined ? undefined : decodeRunCursor(a.cursor as string);
+    // Over HTTP a meta-session of another subject is filtered after the query, so read in batches until a page is full.
+    const page: RunRecord[] = [];
+    for (;;) {
+      const batch = ledger.listRunsForClient({
+        clientId: deps.clientId,
+        ...(a.project_id !== undefined ? { projectId: a.project_id as string } : {}),
+        ...(states !== undefined ? { states } : {}),
+        ...(since !== undefined ? { since } : {}),
+        ...(until !== undefined ? { until } : {}),
+        ...(before !== undefined ? { before } : {}),
+        limit: limit + 1,
+      });
+      for (const run of batch) if (page.length <= limit && ownSubject(run.meta_session_id)) page.push(run);
+      const last = batch.at(-1);
+      if (page.length > limit || last === undefined || batch.length <= limit) break;
+      before = { createdAt: last.created_at, id: last.id };
+    }
+    const rows = page.slice(0, limit);
+    const tail = rows.at(-1);
+    return {
+      runs: rows.map((run) => buildEnvelope(ledger, run, scrub)),
+      next_cursor: page.length > limit && tail !== undefined ? encodeRunCursor(tail) : null,
+    };
+  };
+
   const cancelRun = async (a: Args): Promise<Envelope> => {
     const run = ownRun(a.run_id as string);
     await lifecycle.cancel(run.id, (a.reason as string | undefined) ?? "cancel_run");
@@ -1214,6 +1264,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     list_projects: listProjects,
     get_capacity: getCapacity,
     explain_route: explainRouteTool,
+    list_runs: listRuns,
   };
 
   const ok = (value: object): CallToolResult => ({
@@ -1370,6 +1421,13 @@ function schemaError(errors: readonly ErrorObject[]): ToolError {
       errors: [{ path: "$", message: "must have exactly one of workspace_path and project" }],
     });
   }
+  // T14.1: the root `not` of list_runs.
+  if (errors.some((e) => e.keyword === "not" && e.instancePath === "")) {
+    return invalid("invalid arguments: give at most one of status and status_in", {
+      field: "status_in",
+      errors: [{ path: "$", message: "must not have both status and status_in" }],
+    });
+  }
   const list = errors.slice(0, 10).map((e) => {
     // `$.a.b[0]` notation (as config errors use): JSON pointers would read like filesystem paths.
     let where = e.instancePath
@@ -1386,4 +1444,31 @@ function schemaError(errors: readonly ErrorObject[]): ToolError {
     errors: list,
     ...(first ? { field: first.path } : {}),
   });
+}
+
+/** T14.1: a schema-shaped ISO-8601 instant as the ledger's canonical UTC form; an impossible date is INVALID_REQUEST. */
+function instant(value: string, field: string): string {
+  const [y, m, d] = value.slice(0, 10).split("-").map(Number) as [number, number, number];
+  const ms = Date.parse(value);
+  // Date.parse rolls an impossible day over (February 31 reads as March 3), so check the calendar day first.
+  if (Number.isNaN(ms) || d < 1 || d > new Date(Date.UTC(y, m, 0)).getUTCDate()) {
+    throw invalid(`invalid arguments: $.${field} is not a valid date-time`, { field });
+  }
+  return new Date(ms).toISOString();
+}
+
+const RUN_CURSOR =
+  /^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z)\|(run_[0-9A-HJKMNP-TV-Z]{26})$/u;
+
+/** T14.1 (LLD §3.4.2, Delegated): the opaque cursor is the last row's keyset position, base64url-encoded. */
+function encodeRunCursor(run: RunRecord): string {
+  return Buffer.from(`${run.created_at}|${run.id}`, "utf8").toString("base64url");
+}
+
+function decodeRunCursor(cursor: string): { createdAt: string; id: string } {
+  const m = RUN_CURSOR.exec(Buffer.from(cursor, "base64url").toString("utf8"));
+  if (m === null || m[1] === undefined || m[2] === undefined) {
+    throw invalid("invalid arguments: $.cursor is not a cursor list_runs returned", { field: "cursor" });
+  }
+  return { createdAt: m[1], id: m[2] };
 }

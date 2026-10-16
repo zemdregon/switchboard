@@ -1647,9 +1647,23 @@ rows. When `active` is false, `reason` is absent. Derivation rules are in §3.4.
     "next_cursor": { "type": ["string","null"] } } } }
 ```
 
-**Scoping.** Same rules as `get_run`: the caller sees only runs it started (`client_id` match) and runs of projects it
-may use (`mcp_clients[].projects` and dynamic projects it created). Unknown `project_id` → `INVALID_REQUEST`; a project
-outside the caller's list → `PERMISSION_BLOCKED`. Rows are ordered by `created_at` descending, then `run_id`.
+**Scoping.** Same rules as `get_run` (T14.1 corrected the earlier wording, Delegated): the caller sees only runs it
+started (`client_id` match, and over HTTP only meta-sessions of its own subject, FR-MCP-15), so every row is the
+envelope `get_run` returns for that run and no row exists that `get_run` would refuse. A run of another client is never
+listed, even in a project both clients may use. The project rule narrows the filter, not the rows: `project_id` must
+name a project the caller may use (`mcp_clients[].projects`, or a dynamic project it created and has not deleted). An
+id that is neither configured nor one of the caller's dynamic projects (including another client's dynamic project) →
+`INVALID_REQUEST`; a configured project outside the caller's list → `PERMISSION_BLOCKED`. Rows are ordered by
+`created_at` descending, then `run_id` descending. Implementation: `src/mcp/server.ts` (`listRuns`),
+`Ledger.listRunsForClient` (read-only); tests: `src/mcp/list-runs.test.ts`.
+
+**Input details (T14.1, Proposed, Delegated).** The input object is closed. `status` and `status_in` are alternatives
+(both → `INVALID_REQUEST`, `details.field = "status_in"`); `status_in` is non-empty and duplicate-free. `since` and
+`until` are ISO-8601 date-times with seconds and a zone (`Z` or `±hh:mm`), compared as instants (normalised to UTC);
+an impossible date is `INVALID_REQUEST`. `project_id` uses the configuration's project-id pattern. `next_cursor` is
+always present: a string when more rows match, else `null`. The cursor is the last row's keyset position
+(`created_at`, `run_id`) encoded as base64url; a cursor that does not decode to one is `INVALID_REQUEST`
+(`details.field = "cursor"`). Scoping is re-applied on every page, so a cursor never widens what the caller sees.
 
 #### 3.4.3 `get_digest` (FR-CTL-02)
 
