@@ -17,9 +17,11 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ArtifactStore } from "../artifacts/index.js";
+import { isAllowedGhArgv } from "../ci/gh-argv.js";
 import { resolveInnerAgent } from "../config/inner-agent.js";
+import { createSanitizer } from "../git/sanitize.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger } from "../ledger/index.js";
 import { MCP_ARTIFACT_KINDS } from "../mcp/schemas.js";
@@ -37,6 +39,28 @@ import {
   type PrDraftDeps,
   validatePrDraft,
 } from "./index.js";
+
+// Every program started through `node:child_process` while a draft is made (the T11.8 "Done when" suite reads it). The
+// wrappers forward to the real functions, so the Git runner and the test's own Git helper behave as without the mock.
+const spawned = vi.hoisted(() => ({ programs: [] as string[] }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:child_process")>();
+  const wrap = <F extends (...args: never[]) => unknown>(fn: F): F =>
+    ((file: string, ...rest: unknown[]) => {
+      spawned.programs.push(file);
+      return (fn as unknown as (...a: unknown[]) => unknown)(file, ...rest);
+    }) as unknown as F;
+  return {
+    ...real,
+    execFile: wrap(real.execFile),
+    execFileSync: wrap(real.execFileSync),
+    spawn: wrap(real.spawn),
+    spawnSync: wrap(real.spawnSync),
+    exec: wrap(real.exec),
+    execSync: wrap(real.execSync),
+    fork: wrap(real.fork),
+  };
+});
 
 const GIT_ENV = {
   PATH: process.env.PATH ?? "",
@@ -384,5 +408,77 @@ describe("Switchboard makes no pull-request API call (FR-INN-11, BR-38)", () => 
     expect(names.filter((n) => /octokit|github|gitlab|bitbucket|gitea/iu.test(n))).toEqual([]);
     const src = readFileSync(path.join(SRC, "inner", "pr-draft.ts"), "utf8");
     expect(src).not.toMatch(/from\s+["'](?:node:)?(?:https?|http2|net|tls|dgram|child_process)["']|\bfetch\s*\(/u);
+  });
+});
+
+describe("pr_draft task: roadmap 'Done when' (T11.8)", () => {
+  const NATIVE = "native-sess-4f2a9c";
+  const hostile = () => ({
+    title: `Add widget module ${runId}`,
+    body: [
+      "Adds a widget and bumps it.",
+      "",
+      `Session ${NATIVE} of ${sessionId}.`,
+      "Co-authored-by: Bot <bot@example.test>",
+      "Signed-off-by: Claude <noreply@anthropic.com>",
+      "Generated-by: Some Tool",
+      "Generated with Claude Code",
+      "Claude-Session: https://claude.ai/code/session_01abc",
+    ].join("\n"),
+  });
+
+  it("draft passes the sanitiser: the stored draft is a fixed point of the commit-message sanitiser", async () => {
+    commitTwice();
+    const raw = hostile();
+    const sanitizer = createSanitizer({ nativeSessionIds: [NATIVE] });
+    // Not vacuous: the same sanitiser removes something from the raw backend output.
+    const removed = (t: string) => Object.values(sanitizer.sanitize(t).report.rules).reduce((a, n) => a + n, 0);
+    expect(removed(raw.title) + removed(raw.body)).toBeGreaterThan(0);
+    const { deps: d } = deps({ script: [text(raw)] });
+    const r = await createPrDraft(d, { runId, nativeSessionIds: [NATIVE] });
+    expect(r.ok).toBe(true);
+    const [art] = prArtifacts();
+    const stored = JSON.parse((await store.get(art?.sha256 ?? "")).toString("utf8")) as { title: string; body: string };
+    for (const field of [stored.title, stored.body]) {
+      const again = sanitizer.sanitize(field);
+      expect(again.message).toBe(field);
+      expect(removed(field)).toBe(0);
+    }
+    for (const leaked of [runId, sessionId, NATIVE, "Co-authored-by", "Signed-off-by", "Generated", "claude.ai"]) {
+      expect(`${stored.title}\n${stored.body}`).not.toContain(leaked);
+    }
+  });
+
+  it("makes no network call and starts no program but git while drafting", async () => {
+    commitTwice();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    spawned.programs.length = 0;
+    try {
+      const { deps: d } = deps({ script: [text({ title: "Add widget", body: "Adds a widget." })] });
+      const r = await createPrDraft(d, { runId });
+      expect(r.ok).toBe(true);
+      expect(fetchSpy).not.toHaveBeenCalled();
+      // Not vacuous: the draft reads the run's diff through Git, so the recorder saw it.
+      expect(spawned.programs.length).toBeGreaterThan(0);
+      expect(new Set(spawned.programs)).toEqual(new Set(["git"]));
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("the only gh argv allowlist in src/ (the CI-failure trigger) admits no pull-request call", () => {
+    const pullRequestArgv: string[][] = [
+      ["pr", "create", "--title", "T", "--body", "B"],
+      ["pr", "edit", "1", "--body", "B"],
+      ["pr", "comment", "1", "--body", "B"],
+      ["pr", "review", "1", "--approve"],
+      ["pr", "merge", "1", "--squash"],
+      ["pr", "ready", "1"],
+      ["api", "repos/o/r/pulls", "--paginate", "--jq", "."],
+      ["api", "-X", "POST", "repos/o/r/pulls", "-f", "title=T"],
+      ["api", "-X", "POST", "repos/o/r/issues/1/comments", "-f", "body=B"],
+      ["api", "graphql", "-f", "query=mutation{createPullRequest}"],
+    ];
+    expect(pullRequestArgv.filter((argv) => isAllowedGhArgv(argv))).toEqual([]);
   });
 });
