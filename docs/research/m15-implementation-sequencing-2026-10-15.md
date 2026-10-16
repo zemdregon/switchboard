@@ -3,6 +3,8 @@
 Merged as [PR #460](https://github.com/zemdregon/switchboard/pull/460).
 
 - Roadmap §6.14 cross-links to this note: merged [PR #463](https://github.com/zemdregon/switchboard/pull/463).
+- Steward squash-merge [PR #467](https://github.com/zemdregon/switchboard/pull/467) refreshed the §6.14 cross-links
+  on `main`.
 
 - Date: 2026-10-15
 - Status: Research input (Delegated agent work, documentation only; not owner-approved). This note **orders**
