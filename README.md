@@ -15,10 +15,12 @@ Pre-release. The package is private and is not published to any registry; you bu
   (`doctor`, `runs`). See [ROADMAP §6](docs/ROADMAP.md#6-milestones) for the evidence.
 - **Milestone 2 (Claude Code and Codex adapters plus the MCP slice) is `Partial`.** The Claude Code and Codex
   adapters, the MCP server and `switchboard serve` exist and pass their tests on recorded or synthetic fixtures and a
-  fake provider. The 2026-10-13 operator-machine live checks
-  ([`docs/research/live-checks-2026-10-13.md`](docs/research/live-checks-2026-10-13.md)) ran the real Claude Code
-  2.1.296 (14 of 16 checks held; two need a failing run) and codex-cli 0.162.1 (flag assumptions held; Codex has not
-  run through Switchboard). The opt-in `npm run test:live` smoke test has not been run by the operator personally. See
+  fake provider. On Ampere 2026-10-14 the operator ran the opt-in `npm run test:live` smoke through real
+  `switchboard serve` ([`docs/research/live-checks-2026-10-14-claude-codex.md`](docs/research/live-checks-2026-10-14-claude-codex.md)):
+  Claude Code 2.1.294 **14 HELD, 0 FAILED, 2 NOT_CHECKED** (C-12, C-G2); Codex 0.162.0 after `adapters validate codex`
+  **10 HELD, 0 FAILED, 3 NOT_CHECKED** (X-4, X-9, X-G1). Earlier checks on another host are in
+  [`docs/research/live-checks-2026-10-13.md`](docs/research/live-checks-2026-10-13.md). `Done` waits on those residual
+  operator cells and on `doctor` with a provider installed. See
   [ROADMAP §6.2](docs/ROADMAP.md#62-m2-claude-code-adapter-and-mcp-slice-tasks).
 - **Milestone 3 (isolation) is `Partial`.** Trust profiles and overrides, approvals (`approve`, `deny`), privileged
   runs, verification commands (optionally confined in bubblewrap), outer-sandbox detection and retention (`gc`) are
@@ -54,10 +56,12 @@ Pre-release. The package is private and is not published to any registry; you bu
   [Routing and affinity](#routing-and-affinity) and [ROADMAP §6.12](docs/ROADMAP.md#612-m7-routing-tasks).
 - **Milestone 8 (hardening) is `Partial`.** Optional OTLP trace export (`telemetry.otlp_endpoint`, off by default),
   lazy exporter load (T8.1), wrapper-boundary span emission for `controller.delegate` and `provider.spawn` (T8.2), the
-  collector integration test with parent links and the forbidden-attribute scan (T8.3), export-time allowlist
-  enforcement (T8.4), the operator version canary (T8.5) and a CI test that excludes routing after a synthetic binary
-  version bump until `adapters validate` records the version (T8.6) are done on fakes. Full M8 acceptance closure
-  (T8.7) is not done. See
+  collector integration test with parent links and the forbidden-attribute scan (T8.3,
+  [#552](https://github.com/zemdregon/switchboard/pull/552); milestone and README reconcile
+  [#558](https://github.com/zemdregon/switchboard/pull/558)), export-time allowlist enforcement (T8.4,
+  [#549](https://github.com/zemdregon/switchboard/pull/549)), the operator version canary (T8.5) and a CI test that
+  excludes routing after a synthetic binary version bump until `adapters validate` records the version (T8.6) are done
+  on fakes. Full M8 acceptance closure (T8.7, after T8.4) is not done. See
   [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and
   [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
 - **Milestone 10 (container environments) is `Partial`.** The environment port, MCP admission and `serve` composition
@@ -447,8 +451,12 @@ evidence is in [ROADMAP §6.7](docs/ROADMAP.md#67-m12-retrieval-index-tasks).
 ## Telemetry and adapter versioning (milestone 8)
 
 Milestone 8 hardens telemetry export and adapter version change detection. It is **`Partial`**: configuration, a lazy OTLP
-exporter, wrapper-boundary spans (T8.2), the collector integration test (T8.3), the export-time allowlist drop (T8.4),
-the version canary and the CI version-bump test are in place on fakes; acceptance closure (T8.7) is not.
+exporter, wrapper-boundary spans (T8.2), the collector integration test (T8.3,
+[#552](https://github.com/zemdregon/switchboard/pull/552)), the export-time allowlist drop (T8.4,
+[#549](https://github.com/zemdregon/switchboard/pull/549)), the version canary and the CI version-bump test are in
+place on fakes; acceptance closure (T8.7) is not.
+[#558](https://github.com/zemdregon/switchboard/pull/558) reconciled this section and the M8 milestone row after T8.3
+landed.
 
 **Trace export (T8.0, T8.1).** Set `telemetry.otlp_endpoint` to an `http` or `https` URL when you want OTLP/HTTP traces.
 When the key is absent or empty, `serve` behaves as before M8: no OpenTelemetry packages load at startup and nothing
@@ -470,7 +478,11 @@ OTLP pointed at the in-process collector fixture `src/telemetry/fixtures/collect
 the LLD §7 parent links (`provider.spawn` under `controller.delegate`, one trace per run; `src/telemetry/links.ts`)
 and the absence of every forbidden attribute category from LLD §7. The scan has positive controls: planting a
 forbidden category on an exported span fails the lifecycle path (same file), and `src/telemetry/collector.test.ts`
-checks each forbidden key and value class individually. No provider CLI is installed in CI.
+checks each forbidden key and value class individually. No provider CLI is installed in CI. The collector test landed
+in [#552](https://github.com/zemdregon/switchboard/pull/552).
+[#558](https://github.com/zemdregon/switchboard/pull/558) fixed an M14 acceptance scenario F flake in
+`src/mcp/m14-acceptance.test.ts`: the wrong-digest probe flips the last hex digit so it cannot collide with a
+digest that already ends in `0`.
 
 **Version canary (T8.5).** Switchboard records each enabled provider's probed CLI version under the data directory
 (`version-canary.json`). A version change marks the adapter `ADAPTER_VERSION_UNVERIFIED` until you run

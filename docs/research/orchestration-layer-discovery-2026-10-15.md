@@ -170,7 +170,7 @@ The rank weighs value to the stated goal against cost and risk. Owner decisions 
 
 | Rank | Recommendation | Reason |
 | --- | --- | --- |
-| 1 | **Finish live verification before new features.** Close M2's operator live checks (ROADMAP §9), then the M4, M5 and M6 "Blocks Done" lists. | Almost everything is `Partial` on fakes and synthetic fixtures. A control plane over unverified adapters would report confident status about behaviour nobody has seen. |
+| 1 | **Finish live verification before new features.** Close M2's operator live checks (ROADMAP §9), then the M4, M5 and M6 "Blocks Done" lists. | Almost everything is `Partial` on fakes and synthetic fixtures. A control plane over unverified adapters would report confident status about behaviour nobody has seen. *Update 2026-10-16 (Delegated, ROADMAP reconcile):* M2's `npm run test:live` smoke **ran on Ampere 2026-10-14** ([live-checks-2026-10-14-claude-codex.md](live-checks-2026-10-14-claude-codex.md)); residual **Operator** cells (C-12, C-G2, X-4, X-9, X-G1) remain NOT_CHECKED per that record. |
 | 2 | **Defer Muse Code (FR-ADP-12).** | zemdregon has no access yet (Q-27, "not yet"), and the evidence is third-party (R-33). |
 | 3 | **Freeze the deployment-wide index and agent-callable search** (T12.7 follow-ups, T12.6) until recommendation 11 has data. | Unmeasured benefit, extra cross-project risk (R-55, R-56). |
 | 4 | **Demote inner-agent routing classification (IT-3).** | Sticky affinity (ADR-0032) means most runs never reach stage-2 scoring, so the feature rarely matters (Inferred). |
