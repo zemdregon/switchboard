@@ -1647,9 +1647,23 @@ rows. When `active` is false, `reason` is absent. Derivation rules are in §3.4.
     "next_cursor": { "type": ["string","null"] } } } }
 ```
 
-**Scoping.** Same rules as `get_run`: the caller sees only runs it started (`client_id` match) and runs of projects it
-may use (`mcp_clients[].projects` and dynamic projects it created). Unknown `project_id` → `INVALID_REQUEST`; a project
-outside the caller's list → `PERMISSION_BLOCKED`. Rows are ordered by `created_at` descending, then `run_id`.
+**Scoping.** Same rules as `get_run` (T14.1 corrected the earlier wording, Delegated): the caller sees only runs it
+started (`client_id` match, and over HTTP only meta-sessions of its own subject, FR-MCP-15), so every row is the
+envelope `get_run` returns for that run and no row exists that `get_run` would refuse. A run of another client is never
+listed, even in a project both clients may use. The project rule narrows the filter, not the rows: `project_id` must
+name a project the caller may use (`mcp_clients[].projects`, or a dynamic project it created and has not deleted). An
+id that is neither configured nor one of the caller's dynamic projects (including another client's dynamic project) →
+`INVALID_REQUEST`; a configured project outside the caller's list → `PERMISSION_BLOCKED`. Rows are ordered by
+`created_at` descending, then `run_id` descending. Implementation: `src/mcp/server.ts` (`listRuns`),
+`Ledger.listRunsForClient` (read-only); tests: `src/mcp/list-runs.test.ts`.
+
+**Input details (T14.1, Proposed, Delegated).** The input object is closed. `status` and `status_in` are alternatives
+(both → `INVALID_REQUEST`, `details.field = "status_in"`); `status_in` is non-empty and duplicate-free. `since` and
+`until` are ISO-8601 date-times with seconds and a zone (`Z` or `±hh:mm`), compared as instants (normalised to UTC);
+an impossible date is `INVALID_REQUEST`. `project_id` uses the configuration's project-id pattern. `next_cursor` is
+always present: a string when more rows match, else `null`. The cursor is the last row's keyset position
+(`created_at`, `run_id`) encoded as base64url; a cursor that does not decode to one is `INVALID_REQUEST`
+(`details.field = "cursor"`). Scoping is re-applied on every page, so a cursor never widens what the caller sees.
 
 #### 3.4.3 `get_digest` (FR-CTL-02)
 
@@ -2121,9 +2135,37 @@ export is derived. Redaction is by construction: spans are built from an allowli
 `artifact.id`, `artifact.sha256`, `artifact.size_bytes`, and (M11) the `inner.*` attributes listed in §13.8.
 **Forbidden (FR-TEL-03, NFR-SEC-01):** prompt or objective text, constraints text, shell command lines and tool
 arguments, file contents and diffs, stdout/stderr text, environment variable names or values beyond a count,
-credential-like values, absolute home paths (use run-relative paths), provider reasoning text (NFR-PRIV-02). Large
-payloads are artifacts referenced by ID and hash. The exporter drops any attribute not on the allowlist and a test
-asserts it.
+credential-like values (including OAuth access or refresh tokens, API keys and webhook or sink URLs), absolute home
+paths (use run-relative paths), provider reasoning text (NFR-PRIV-02), MCP request or response bodies, and inner-agent
+prompt or response text. Large payloads are artifacts referenced by ID and hash only, never inlined on spans.
+
+**Configuration (FR-TEL-02, NFR-PRIV-01).** One optional key, documented in [TDD §3.1](TDD.md#31-configuration):
+
+| Key | Default | Behaviour |
+| --- | --- | --- |
+| `telemetry.otlp_endpoint` | absent (no export) | When omitted or empty, Switchboard does not load `@opentelemetry/api` or an OTLP exporter at startup, opens no telemetry listener, and makes no outbound OTLP connection (NFR-PRIV-01). When set, it must be an `http` or `https` URL validated at config load (T8.1); traces export to that endpoint only. |
+
+**Lazy load and export pipeline (T8.1, ADR-0012).** OTel packages are imported only after a non-empty
+`telemetry.otlp_endpoint` is loaded, on first span export, not at module top level, so configs without telemetry match
+pre-M8 startup and test runs that omit the key. Span attributes are built only from controller-observed facts (ledger
+events, spawn metadata, routing decisions, artifact IDs and hashes), never from provider global config, transcript files
+or hook payloads. Immediately before OTLP export, the pipeline drops any attribute whose key is not on the allowlist
+(defence in depth; T8.4). Forbidden categories must not be set even on internal builders; CI asserts both drop behaviour
+and absence of forbidden keys on exported spans (T8.3, T8.4).
+
+**Collector test harness (T8.3, M8 acceptance).** Shape for the integration test, without requiring a provider CLI:
+
+1. Start an in-process OTLP/HTTP receiver on loopback with an ephemeral port (or equivalent test fixture).
+2. Load config with `telemetry.otlp_endpoint` set to that URL; run one `delegate_task` through finalize on the fake
+   adapter.
+3. Read recorded spans from the fixture and assert: expected span names and parent links from the table above; every
+   attribute key is on the allowlist; no forbidden category appears (including a planted objective string in the delegate
+   request); secret-pattern scans over exported attributes match NFR-SEC-01 expectations for fixtures.
+
+**Traceability (T8.0, 2026-10-16, Delegated).** The forbidden list above implements FR-TEL-03 and NFR-SEC-01 for
+telemetry. [HLD TB-6](HLD.md#3-trust-boundaries) and [SDD §5](SDD.md#5-requirements-to-design-traceability) rows for
+FR-TEL-02, FR-TEL-03, NFR-SEC-01 and NFR-PRIV-01 point here; no separate requirement definitions are added in those
+documents.
 
 ## 8. Run supervisor details
 
@@ -2338,6 +2380,37 @@ contract, a header line or empty output makes the whole table unusable (`unknown
   Windows has no such groups and stays Deferred (NFR-PORT-03). Routing refuses every profile off Linux anyway
   (`VERIFIED_PROFILE_PLATFORMS` and `SANDBOX_DEPENDENT_PROFILES` in `src/routing/eligibility.ts`, ROADMAP Q-35), so
   no provider run reaches this port on macOS until a profile's macOS cells are verified (T4.12).
+
+### 8.4 Outer sandbox (M3, T3.1)
+
+Decision and limits: [ADR-0051](../adr/0051-outer-sandbox-detection-and-fail-closed-requirement.md) (Proposed,
+Delegated). Code: `src/exec/outer-sandbox.ts`; the gate is passed to `createProfileResolver` (`src/policy/profiles.ts`)
+by `serve`.
+
+Configuration (`SwitchboardConfig.outer_sandbox`, `src/config/schema.ts`):
+
+```json
+"outer_sandbox": { "required_profiles": ["test-sandboxed"] }
+```
+
+`required_profiles` is a list of distinct non-privileged profile names; absent or empty is the default and changes
+nothing. `privileged` is rejected at config load.
+
+Detection (`detectOuterSandbox`, never throws; each probe runs with `PATH` only and a 5 s timeout, killed on expiry):
+
+| Mechanism | Available when | Version |
+| --- | --- | --- |
+| `bubblewrap` | Linux, `bwrap` found on the daemon's `PATH`, and `bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all --die-with-parent -- true` exits 0 | `bubblewrap <v>` from `--version` |
+| `prlimit` | Linux, `prlimit` found on `PATH`, and `prlimit --core=0:0 -- true` exits 0 | `util-linux <v>` from `--version` |
+| `landlock` | Linux and `/sys/kernel/security/lsm` names `landlock` | Always `null`: the ABI needs a system call Node.js does not expose |
+
+Admission (`outerSandboxRefusal`): a run whose profile is listed is refused by the profile resolver with
+`ProfileUnavailableError` (`ELIGIBILITY_NONE`, FRD BR-3) before any row is written. The message carries
+`OUTER_SANDBOX_UNAVAILABLE` (bubblewrap or `prlimit` unavailable, each probe's detail included) or
+`OUTER_SANDBOX_NOT_ENFORCED` (both available; this build wraps no process, ADR-0051 item 4). Detection that did not run
+counts as unavailable. `serve` detects once at startup, only when the list is not empty; `doctor` always reports the
+`outer_sandbox` check (`ok` when nothing is required, `fail` for a missing mechanism, `warn` when only the wrapping is
+missing).
 
 ## 9. Retry/back-off algorithm
 

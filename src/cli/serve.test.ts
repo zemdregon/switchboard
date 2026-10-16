@@ -440,6 +440,46 @@ describeLinuxVerified("serve over stdio (process level)", () => {
     expect(groupAlive(pgid)).toBe(false);
   }, 30_000);
 
+  it("T3.1: a profile requiring a missing outer sandbox is refused ELIGIBILITY_NONE with no run; others still run", async () => {
+    // The daemon's PATH holds git only, so bwrap and prlimit are missing: the configured-but-missing case.
+    const cfg = JSON.parse(readFileSync(configPath, "utf8"));
+    writeFileSync(configPath, JSON.stringify({ ...cfg, outer_sandbox: { required_profiles: ["edit-untrusted"] } }));
+    const c = await connect();
+    const d = await delegate(c.client);
+    expect(d.isError, JSON.stringify(d.body)).toBe(true);
+    expect(JSON.stringify(d.body)).toContain('"code":"ELIGIBILITY_NONE"');
+    expect(JSON.stringify(d.body)).toContain("OUTER_SANDBOX_UNAVAILABLE");
+    expect(JSON.stringify(d.body)).toContain("bwrap not found on PATH");
+    expect(c.stderr()).toContain("outer_sandbox.required_profiles is set");
+    const runs = () => {
+      const db = new Database(path.join(dataDir, LEDGER_FILE_NAME), { readonly: true, fileMustExist: true });
+      try {
+        return (db.prepare("SELECT trust_profile FROM run").all() as { trust_profile: string }[]).map(
+          (r) => r.trust_profile,
+        );
+      } finally {
+        db.close();
+      }
+    };
+    expect(runs()).toEqual([]);
+    // list_capabilities leaves the refused profile out of the fake's supported_profiles.
+    const caps = await call(c.client, "list_capabilities");
+    const fakeCaps = caps.body.providers.find((p: Json) => p.provider === "fake");
+    expect(fakeCaps.supported_profiles).toContain("inspect-untrusted");
+    expect(fakeCaps.supported_profiles).not.toContain("edit-untrusted");
+    // A profile the config does not list is unchanged.
+    const ok = await call(c.client, "delegate_task", {
+      objective: "look around",
+      workspace_path: repo,
+      trust_profile: "inspect-untrusted",
+      routing: { provider_preference: "fake", require_provider: true },
+    });
+    expect(ok.isError, JSON.stringify(ok.body)).toBe(false);
+    expect((await pollStatus(c.client, ok.body.run_id, TERMINAL)).status, c.stderr()).toBe("SUCCEEDED");
+    recordedGroup(ok.body.run_id);
+    expect(runs()).toEqual(["inspect-untrusted"]);
+  }, 30_000);
+
   it("T11.11: serve admission and continuation store inner route features from the configured backend", async () => {
     const inner = await listenInnerHttp((res) => res.end(innerCompletion(JSON.stringify(INNER_ROUTE_VALUES))));
     writeInnerServeConfig({

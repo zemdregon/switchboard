@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeAdapter } from "../adapters/fake/adapter.js";
 import { AdapterRegistry, type AuthResult, ClaudeAdapter, CodexAdapter } from "../adapters/index.js";
+import type { OuterSandboxMechanism } from "../exec/outer-sandbox.js";
 import { createLedger, type Ledger, openLedger, type RunState } from "../ledger/index.js";
 import { acquireDataDirLock, LOCK_FILE_NAME } from "../lock/index.js";
 import { canonicalScopeJson, parsePrivilegedScope, privilegedScopeHash } from "../policy/index.js";
@@ -130,6 +131,7 @@ describe("doctor", () => {
       "lock",
       "gc",
       "orphans",
+      "outer_sandbox",
     ]);
     for (const c of j.checks) expect(Object.keys(c).sort()).toEqual(["detail", "id", "label", "status"]);
     expect(j.adapters).toHaveLength(1);
@@ -992,5 +994,80 @@ describe("doctor inner-agent shared subscription (T11.5, FR-INN-15)", () => {
     writeInner({});
     const d = JSON.parse((await run(["doctor", "--json", ...cfg()], { adapters: fakeOnly() })).out);
     expect(d.checks.map((x: { id: string }) => x.id)).not.toContain("inner_shared_subscription");
+  });
+});
+
+describe("doctor outer sandbox (T3.1, ADR-0051)", () => {
+  const fakeOnly = () => new AdapterRegistry().register(new FakeAdapter());
+  const mech = (mechanism: OuterSandboxMechanism, available: boolean) => ({
+    mechanism,
+    available,
+    path: null,
+    version: null,
+    detail: `${mechanism} ${available ? "probe ran" : "not found on PATH"}`,
+  });
+  const avail = (present: boolean) =>
+    ({
+      platform: "linux",
+      mechanisms: {
+        bubblewrap: mech("bubblewrap", present),
+        prlimit: mech("prlimit", present),
+        landlock: mech("landlock", present),
+      },
+    }) as const;
+  const writeRequired = (required: string[] | undefined) =>
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schema_version: 1,
+        data_dir: dataDir,
+        allowed_roots: [path.join(tmp, "repos")],
+        mcp_clients: [{ id: "ops", max_trust_profile: "trusted-development" }],
+        ...(required !== undefined ? { outer_sandbox: { required_profiles: required } } : {}),
+      }),
+    );
+  const doctor = async (present: boolean) =>
+    JSON.parse((await run(["doctor", "--json", ...cfg()], { adapters: fakeOnly(), outerSandbox: avail(present) })).out);
+  const sandboxCheck = (j: { checks: { id: string; status: string; detail: string }[] }) =>
+    j.checks.find((x) => x.id === "outer_sandbox");
+
+  it("reports availability as ok when no profile requires the sandbox, present or not", async () => {
+    writeRequired(undefined);
+    for (const present of [true, false]) {
+      const j = await doctor(present);
+      expect(sandboxCheck(j)?.status).toBe("ok");
+      expect(sandboxCheck(j)?.detail).toMatch(/^not required by config; bubblewrap: (un)?available /);
+      expect(j.ok).toBe(true);
+    }
+  });
+
+  it("fails when a required mechanism is missing and warns when present (runs still refused, not yet wrapped)", async () => {
+    writeRequired(["test-sandboxed", "trusted-development"]);
+    const missing = await doctor(false);
+    expect(sandboxCheck(missing)?.status).toBe("fail");
+    expect(sandboxCheck(missing)?.detail).toMatch(
+      /^required for test-sandboxed, trusted-development: runs under them are refused \(OUTER_SANDBOX_UNAVAILABLE\)/,
+    );
+    expect(missing.ok).toBe(false);
+    const present = await doctor(true);
+    expect(sandboxCheck(present)?.status).toBe("warn");
+    expect(sandboxCheck(present)?.detail).toContain("(OUTER_SANDBOX_NOT_ENFORCED)");
+    expect(present.ok).toBe(true);
+  });
+
+  it("rejects privileged and unknown names in outer_sandbox.required_profiles at config load", async () => {
+    for (const bad of [["privileged"], ["nope"], ["edit-untrusted", "edit-untrusted"]]) {
+      writeRequired(bad);
+      const j = await doctor(true);
+      expect(j.checks.find((x: { id: string }) => x.id === "config").status).toBe("fail");
+      expect(sandboxCheck(j)?.status).toBe("ok");
+    }
+  });
+
+  it("with an empty PATH the real detection degrades to unavailable without failing doctor", async () => {
+    writeRequired(undefined);
+    const j = JSON.parse((await run(["doctor", "--json", ...cfg()], { adapters: fakeOnly() })).out);
+    expect(sandboxCheck(j)?.status).toBe("ok");
+    expect(sandboxCheck(j)?.detail).toContain("bubblewrap: unavailable");
   });
 });

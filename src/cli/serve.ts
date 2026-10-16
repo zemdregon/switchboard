@@ -43,6 +43,10 @@
  * T3.4: the operator poll also applies `approve`/`deny` records (`applyOperatorRequests`), and startup reconciliation
  * applies those recorded while no daemon ran.
  *
+ * T3.1 (LLD §8.4, ADR-0051; Delegated): when `outer_sandbox.required_profiles` is set, the outer-sandbox mechanisms are
+ * detected once at startup (with the daemon's `PATH`) and a warning is logged; each listed profile is then refused by
+ * the profile resolver (`ELIGIBILITY_NONE`) at admission, so no run under it starts unconfined. Unset: no detection.
+ *
  * T9.4 (FR-GIT-02, FR-GIT-07, LLD §12.2, ADR-0025, ADR-0026; Delegated): after reconciliation and before anything else
  * runs, `GitPublisher.recover()` resolves commit intents a crash left open (roll forward or abort), and the tool
  * service sweeps socket directories of channels that were open when the previous daemon died. The lifecycle gets the
@@ -66,6 +70,7 @@ import {
 import { ArtifactStore, defaultRedactor } from "../artifacts/index.js";
 import { ConfigError, loadConfig, type ResolvedConfig } from "../config/index.js";
 import { SinkDispatcher, sinkOutcomeRecorder, transitionNotifier } from "../control/index.js";
+import { detectOuterSandbox, type OuterSandboxAvailability, outerSandboxRefusal } from "../exec/outer-sandbox.js";
 import { GitToolService } from "../git/channel.js";
 import { GitPublisher } from "../git/commit.js";
 import { GitPusher, pushContextResolver } from "../git/push.js";
@@ -475,6 +480,19 @@ async function runDaemon(
       { adr: "ADR-0033" },
     );
   }
+  let outerSandbox: OuterSandboxAvailability | undefined;
+  const outerSandboxRequired = config.outerSandboxRequiredProfiles;
+  if (outerSandboxRequired.length > 0) {
+    outerSandbox = await detectOuterSandbox({ path: io.env.PATH ?? "" });
+    const m = outerSandbox.mechanisms;
+    log.warn("outer_sandbox.required_profiles is set: runs under these profiles are refused at admission", {
+      adr: "ADR-0051",
+      profiles: outerSandboxRequired,
+      bubblewrap: m.bubblewrap.available,
+      prlimit: m.prlimit.available,
+      landlock: m.landlock.available,
+    });
+  }
   const registry = buildRegistry(fake, { claudeGitChannel: config.claudeCodeGitChannel });
   // T12.4 / T12.5: set below once background indexing has started; until then (and with no embedding backend) the
   // context-pack port answers `undefined` and a run is compiled without a pack.
@@ -514,7 +532,11 @@ async function runDaemon(
       providers: config.providers,
       limits: config.limits,
     },
-    resolveProfile: createProfileResolver(config.profileOverrides),
+    // T3.1 (ADR-0051): a profile in `outer_sandbox.required_profiles` is refused here (fail closed).
+    resolveProfile: createProfileResolver(
+      config.profileOverrides,
+      (p) => outerSandboxRefusal(p, outerSandboxRequired, outerSandbox)?.message,
+    ),
     probeRunner: createProbeRunner(PROBE_ENV_ALLOWLIST),
     baseEnv: io.env,
     eligibility: { gate: gateFor(registry, fake), isEnabled: enablement(config, fake), models: modelRegistry(config) },

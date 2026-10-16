@@ -286,12 +286,21 @@ export function resolveTrustProfile(name: TrustProfile, options: ResolveOptions 
  * resolve (the M2 gate is lifted; eligibility is decided by each adapter's compile of the resolved snapshot). An
  * unknown name throws {@link ProfileUnavailableError}; `privileged` always throws here, because it resolves only from
  * a scope binding (the lifecycle calls {@link resolveTrustProfile} for it, T3.3).
+ *
+ * T3.1 (ADR-0051): `refusal`, when set, is asked about every non-privileged name first; a message refuses that profile
+ * with {@link ProfileUnavailableError} (`ELIGIBILITY_NONE`, FRD BR-3) before anything is resolved, so admission and
+ * `checkEligibility` fail closed and `list_capabilities` leaves the profile out. `serve` passes the outer-sandbox gate.
  */
-export function createProfileResolver(overrides: ProfileOverrides = {}): (name: TrustProfile) => ResolvedProfile {
+export function createProfileResolver(
+  overrides: ProfileOverrides = {},
+  refusal?: (name: TrustProfile) => string | undefined,
+): (name: TrustProfile) => ResolvedProfile {
   return (name) => {
     if (name === "privileged" || !(OVERRIDABLE_PROFILES as readonly string[]).includes(name)) {
       throw new ProfileUnavailableError(String(name));
     }
+    const refused = refusal?.(name);
+    if (refused !== undefined) throw new ProfileUnavailableError(name, refused);
     return resolveTrustProfile(name, { overrides });
   };
 }

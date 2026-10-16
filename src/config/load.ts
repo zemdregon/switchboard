@@ -70,6 +70,11 @@ export interface ResolvedConfig {
   preflightTtlMs: number;
   /** Validated `profiles.<name>` overrides in COMP-POL's camelCase form (owner decision 12); empty when none. */
   profileOverrides: ProfileOverrides;
+  /**
+   * `outer_sandbox.required_profiles` (T3.1; LLD §8.4, ADR-0051): profiles refused at admission unless they can run
+   * inside the outer sandbox. Empty (the default) changes nothing.
+   */
+  outerSandboxRequiredProfiles: readonly Exclude<TrustProfile, "privileged">[];
   /** Validated `projects[]` (FR-PRJ-01; T9.1); empty when the config has none. Paths are as written, not yet canonical. */
   projects: ResolvedProject[];
   /** Validated `git.sanitize_patterns` (FR-GIT-04; T9.3): sources in the safe subset, in configuration order. */
@@ -421,6 +426,7 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
     notificationSinks: resolveNotificationSinks(cfg.notification_sinks),
     claudeCodeGitChannel: cfg.providers?.["claude-code"]?.git_channel === true,
     profileOverrides,
+    outerSandboxRequiredProfiles: [...(cfg.outer_sandbox?.required_profiles ?? [])],
     // Proposed: a provider not listed is enabled with no explicit weight; listing it can disable it.
     providers: new Map(
       Object.entries(cfg.providers ?? {}).map(([id, p]) => [
