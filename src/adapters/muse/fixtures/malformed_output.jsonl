@@ -1,0 +1,5 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.75); no muse was run. Kind and run_terminal spellings reported ([Orca]) or Assumption (protocol.ts), Unverified: T4.71. One line is deliberately not JSON, between valid records.","exit":0}}
+{"kind":"run_started","session_id":"00000000-0000-4000-8000-000000000001"}
+{"kind":"run_output_delta","text":"ok"}
+SYNTHETIC this line is deliberately not valid JSON {
+{"kind":"run_terminal","terminal":"completed","text":"ok","reason":null}

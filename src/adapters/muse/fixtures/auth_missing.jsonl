@@ -1,0 +1,1 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.75); no muse was run. Kind and run_terminal spellings reported ([Orca]) or Assumption (protocol.ts), Unverified: T4.71. Logged-out muse exec --json: no record is sourced (TDD §4.8.1 item 3), so exit 1 ([M-ext] failed) with no records; the T4.74 preflight owns AUTH_REQUIRED.","exit":1}}
