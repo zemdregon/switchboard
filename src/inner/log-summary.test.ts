@@ -559,3 +559,95 @@ describe("log_summary pieces", () => {
     expect(envelope().result.verification_summary?.notable).toBeUndefined();
   });
 });
+
+describe("log_summary task: roadmap 'Done when' (T11.9)", () => {
+  /** Statuses, exit codes and counts read straight from the ledger records: the run row and the terminal transition. */
+  const fromRecords = () => {
+    const rec = ledger.getRunRecord(runId);
+    const terminal = ledger
+      .listRunEvents(runId)
+      .filter((e) => e.type === "state_transition")
+      .map(
+        (e) => JSON.parse(e.payload_json) as { to?: string; verification?: { outcome: string; exit_code: unknown }[] },
+      )
+      .find((p) => p.to === "FAILED");
+    const checks = (terminal?.verification ?? []).map((v) => [v.outcome, v.exit_code]);
+    const counts: Record<string, number> = {};
+    for (const [o] of checks) counts[o as string] = (counts[o as string] ?? 0) + 1;
+    return { status: rec?.state, failure_code: rec?.failure_code, checks, counts };
+  };
+  const fromEnvelope = () => {
+    const e = envelope();
+    const checks = e.result.verification.map((v) => [v.outcome, v.exit_code]);
+    const counts: Record<string, number> = {};
+    for (const [o] of checks) counts[o as string] = (counts[o as string] ?? 0) + 1;
+    return { status: e.status, failure_code: e.failure_code, checks, counts };
+  };
+
+  // The fallback written out by hand from the seeded output: 8 head lines, a marker, 12 tail lines, line and byte counts.
+  const combined = [
+    "== check 1 ==",
+    "all good here",
+    "== check 2 ==",
+    ...Array.from({ length: 60 }, (_, i) => `line ${i + 1}: ${i === 59 ? "FAILED 3 tests" : "ok"}`),
+  ];
+  const expectedFallback = [
+    `excerpt of raw output: ${combined.length} lines, ${Buffer.byteLength(combined.join("\n"))} bytes`,
+    ...combined.slice(0, 8),
+    `[... ${combined.length - 20} lines omitted ...]`,
+    ...combined.slice(-12),
+  ].join("\n");
+
+  const paths: [string, Opts, "inner" | "heuristic"][] = [
+    ["accepted prose that lies about the result", { script: [text({ summary: "Everything is fine." })] }, "inner"],
+    [
+      "a rejected success claim with invented figures",
+      { script: [text({ summary: "All 3 checks passed with exit code 0." })] },
+      "heuristic",
+    ],
+    ["an empty reply", { script: [{ kind: "empty" }] }, "heuristic"],
+    ["a backend error", { script: [{ kind: "error", message: "down" }] }, "heuristic"],
+    ["a reply that is not JSON", { script: [{ kind: "text", text: "SUCCEEDED, 0 failed" }] }, "heuristic"],
+    ["a privacy denial", { locality: "remote", allowRemote: false }, "heuristic"],
+  ];
+
+  it.each(paths)(
+    "%s: the envelope's figures equal the records, labelled source and raw pointer",
+    async (_n, o, source) => {
+      await seedFailedRun();
+      const records0 = fromRecords();
+      expect(records0).toEqual({
+        status: "FAILED",
+        failure_code: "TEST_FAILURE",
+        checks: [
+          ["passed", 0],
+          ["failed", 1],
+          ["not_run", null],
+        ],
+        counts: { passed: 1, failed: 1, not_run: 1 },
+      });
+      const { deps: d } = deps(o);
+      const r = await summariseVerification(d, { runId });
+      expect(r.ok && r.source).toBe(source);
+
+      // statuses, exit codes and counts in the envelope come from the records, not from the backend
+      expect(fromEnvelope()).toEqual(fromRecords());
+      expect(fromRecords()).toEqual(records0);
+
+      // the summary carries a source label and a raw-artifact pointer that resolves to the controller's test_report
+      const v = envelope().result.verification_summary;
+      expect(v?.source).toBe(source);
+      expect(v?.label).toMatch(source === "inner" ? /inner-agent generated/u : /heuristic/u);
+      const raw = ledger.listArtifactsForRun(runId).find((a) => a.id === v?.raw_artifact.id);
+      expect(raw).toMatchObject({ kind: "test_report", sha256: v?.raw_artifact.sha256 });
+      const body = await store.get(v?.raw_artifact.sha256 ?? "");
+      expect(parseTestReport(body)).not.toBeNull();
+
+      // the fallback is the deterministic head and tail, the same bytes whatever made the call fall back
+      if (source === "heuristic") {
+        expect(v?.text).toBe(expectedFallback);
+        expect(heuristicExcerpt(parseTestReport(body) as RecordedCheck[])).toBe(expectedFallback);
+      }
+    },
+  );
+});
