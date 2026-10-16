@@ -126,4 +126,28 @@ describe("artifact store", () => {
       await expect(store.has(h)).rejects.toMatchObject({ code: "INVALID_HASH" });
     }
   });
+
+  it("succeeds and creates traversable directories under a hostile umask", async () => {
+    const origUmask = process.umask(0o177);
+    try {
+      const hostileStore = new ArtifactStore(path.join(dir, "hostile-artifacts"));
+      const res = await hostileStore.put("hostile umask payload");
+      expect(await hostileStore.has(res.sha256)).toBe(true);
+      expect((await hostileStore.get(res.sha256)).toString()).toBe("hostile umask payload");
+
+      const file = hostileStore.pathFor(res.sha256);
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+
+      const shard1 = path.dirname(path.dirname(file));
+      const shard2 = path.dirname(file);
+      for (const d of [hostileStore.root, shard1, shard2]) {
+        const mode = statSync(d).mode & 0o777;
+        expect(mode).toBe(0o700);
+        expect(mode & 0o100).toBe(0o100);
+        expect(readdirSync(d)).toBeDefined();
+      }
+    } finally {
+      process.umask(origUmask);
+    }
+  });
 });
