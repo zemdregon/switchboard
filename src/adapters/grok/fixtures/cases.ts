@@ -74,7 +74,13 @@ export function grokConformanceCases(makeCwd: () => string): ConformanceCase[] {
       kind: "task_failure",
       adapter: replayAdapter("task_failure"),
       request: request(),
-      expect: { ok: false, failureCode: "TOOL_FAILURE" },
+      // Session id and detail: a compile the replay refuses (exit 64 or 65, no output) is TOOL_FAILURE too (T4.22).
+      expect: {
+        ok: false,
+        failureCode: "TOOL_FAILURE",
+        failureDetail: "stopReason cancelled",
+        nativeSessionId: DEFAULT_SESSION_ID,
+      },
     },
     {
       ...base,
