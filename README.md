@@ -44,9 +44,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   decision is stored and replays exactly, `explain_route` shows why a run went where it did, a project stays on its
   provider until a listed reason moves it (`switchboard affinity list|reset`), and `minimum_capability` is enforced
   against operator-declared model capabilities in the model registry (`src/routing/minimum-capability.test.ts`). All
-  of this is tested on fake providers. It is not `Done`: the cache-friendly prompt order is not built (ROADMAP T7.9,
-  Could) and real-provider model flags wait for adapter work. See [Routing and affinity](#routing-and-affinity) and
-  [ROADMAP §6.12](docs/ROADMAP.md#612-m7-routing-tasks).
+  of this is tested on fake providers. The cache-friendly prompt order is built (ROADMAP T7.9, Could; no cache
+  benefit is claimed). Real-provider model flags wait for adapter work. See
+  [Routing and affinity](#routing-and-affinity) and [ROADMAP §6.12](docs/ROADMAP.md#612-m7-routing-tasks).
 - **Milestone 11 (inner agent) is `Partial`.** T11.1 to T11.12 are done on fakes: an optional HTTP backend, privacy
   gates, `doctor` and `inner` reporting, commit-message drafting, handoff condensation (T11.10, a service function) and
   record-only routing classification (T11.11). Two tasks are wired into production `serve` run paths: the commit-message
@@ -551,6 +551,12 @@ to another provider. The model is remembered (the one the provider's session rep
 `minimum_capability`) and pinned at compile for adapters declaring acceptance of reported model flags (Claude Code
 today; `src/routing/model-pin.test.ts`); an undeclared adapter keeps its default model.
 `routing.affinity.enabled: false` turns affinity off.
+
+**Prompt order.** Every adapter sends the delegated prompt in one fixed order: stable content first (the run's
+constraints under a `Constraints:` heading, or a handoff's fixed preamble and bundle), then the task text, then a
+retrieval context pack when there is one. Two runs of a project with the same constraints therefore send the same text
+up to the task text (`src/adapters/prompt.ts`, `src/adapters/prompt-order.test.ts`). This is hygiene only: no cache
+benefit is claimed, for any provider, and none has been measured (ROADMAP T7.9, Q-53).
 
 **`explain_route`** returns, from the stored decision only, the candidates with their eligibility reasons, the
 features, the weights, each candidate's terms and score, the rule that selected the provider, the affinity outcome and
