@@ -289,8 +289,9 @@ describe("pause holds admission (T14.6, FR-CTL-05)", () => {
   it("the global pause holds every admission, including a workspace-path run, until resume", async () => {
     makeLifecycle();
     ledger.setPaused({ projectId: GLOBAL_PAUSE_SCOPE, paused: true, by: "op" });
-    for (const attempt of [inProject("ok"), submit("ok")]) {
-      const err = await attempt.catch((e: unknown) => e);
+    // One at a time: a second promise created before the first is awaited would reject with no handler attached.
+    for (const attempt of [() => inProject("ok"), () => submit("ok")]) {
+      const err = await attempt().catch((e: unknown) => e);
       expect((err as LifecycleError).code).toBe("PAUSED");
       expect((err as LifecycleError).details).toEqual({ reason: "GLOBAL_PAUSED" });
     }
