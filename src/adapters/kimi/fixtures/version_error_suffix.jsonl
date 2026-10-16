@@ -1,0 +1,5 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.63, thirteenth pass), in the stream-json record shapes of the scrubbed 2026-10-15 capture (captured_success.jsonl); the error record shape is an Assumption (T4.68). A meta type that is system.version.error (not the exact system.version spelling) matches the error suffix and is a provider error, so a later clean hint at exit 0 still ends TOOL_FAILURE (contrast eleventh pass: a system.version record that only carries error fields is ignored).","exit":0}}
+{"role":"meta","type":"system.version","version":"0.0.1"}
+{"role":"assistant","content":"ok"}
+{"role":"meta","type":"system.version.error","message":"SYNTHETIC version.error"}
+{"role":"meta","type":"session.resume_hint","session_id":"session_00000000-0000-4000-8000-000000000001","command":"kimi -r session_00000000-0000-4000-8000-000000000001","content":"To resume this session: kimi -r session_00000000-0000-4000-8000-000000000001"}
