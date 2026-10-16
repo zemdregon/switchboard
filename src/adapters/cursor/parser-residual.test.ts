@@ -44,6 +44,22 @@
  * slot open, so a late `init` binds id, model and vendor after the result (fixture `late_init_after_idless_result.jsonl`
  * replays to success); a case or spelling variant of the `tool_call` type after the result is an unknown the guard never
  * sees (fixture `trailing_tool_type_variant.jsonl` replays a Git write to success).
+ * Ninth pass (T4.6, FR-ADP-10, FR-SES-03, FR-CAP-01): refusal-container fallback and refusal-text shapes (a
+ * `result.rejected` object is the parameter container when no `args` family key exists, so a command smuggled inside a
+ * refusal reaches the guard from both `started` and `completed` lines, fixture `denied_rejected_command.jsonl`; the
+ * permission-text regex is case-insensitive, needs the literal space in `not permitted`, and matches `permission` as a
+ * substring; multi-key completed lines emit each key's call then denial in key order); late-init persistence and alias
+ * equivalence (fixture `late_init_after_idless_result.jsonl` through RunLifecycle stores the late model and backing
+ * vendor on the provider binding, while the usage row, stamped by `usageObservationsFromEvents` before the late
+ * binding, keeps null model and vendor; session-id aliases resolve before the id comparison, so one id under two keys
+ * never conflicts, while a late unsafe id after an id-less result fails closed with no session); trailing unknowns (the
+ * rawType clip boundary is exact at 64, an unrecorded trailing `tool_call` subtype `queued` is an unknown plus a reported
+ * call whose Git write the guard sees, fixture `trailing_tool_queued.jsonl`, and the trailing-tool detail rewrite applies
+ * only when classification is OUTPUT_PROTOCOL_ERROR); resume parity (flag-like ids refused, trailing-punctuation ids
+ * safe, a returned resume invocation is mutable without leaking into the next compile); hostile usage token shapes
+ * (per-key type gating keeps only finite non-negative numbers, prototype-named and `__proto__` keys and unrecorded
+ * spellings such as `cost` never fabricate counters, an all-hostile first result also drops the second result's
+ * counters). Parser unchanged.
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -2439,5 +2455,435 @@ describe("cursor parser residuals, eighth pass: denied-on-started interactions, 
       expect(id, label).toBe(SID);
       expect(resumed(id ?? ""), label).toEqual(resumed(SID));
     }
+  });
+});
+
+describe("cursor parser residuals, ninth pass: refusal-container fallback, late-init persistence and aliases, trailing clip boundary and unrecorded subtypes, resume id edges and usage key gating (T4.43, T4.6, FR-ADP-10, FR-SES-03, FR-CAP-01; synthetic lines; parser unchanged)", () => {
+  const bound = (events: readonly NormalizedEvent[]) => events.filter((e) => e.kind === "session_bound");
+  const denials = (events: readonly NormalizedEvent[]) => events.filter((e) => e.kind === "permission_denied");
+  const usages = (events: readonly NormalizedEvent[]) => events.filter((e) => e.kind === "usage");
+  const ctx = { cwd: "/w", bypass: true };
+  const guarded = (lines: (string | object)[]) => {
+    const r = parse(lines);
+    return { ...r, events: r.events.map((e) => guardEvent(e, ctx)) };
+  };
+  const PUSH = { shellToolCall: { args: { command: "git push origin main" } } };
+  const REFUSED_PUSH = {
+    shellToolCall: { result: { rejected: { command: "git push origin main", reason: "not allowed" } } },
+  };
+  const req: CompileRequest = {
+    runId: "run_cursor_t443_residual_p9",
+    objective: "synthetic cursor objective",
+    constraints: [],
+    workspace: { cwd: "/w", writable: true },
+    bypassApproved: true,
+  };
+
+  it("pins the gap: a started line whose refusal object carries the command reports the command (never a denial), so the guard still sees the Git write", () => {
+    const { events, a } = parse([INIT(), TOOL("started", REFUSED_PUSH), RESULT()]);
+    // The parameter-container fallback treats result.rejected as the container, so the smuggled command is reported.
+    expect(events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "shell", name: "shellToolCall", command: "git push origin main" },
+    ]);
+    // A started line never reports a refusal, and without the guard the run would end clean.
+    expect(denials(events)).toEqual([]);
+    expect(a.extractResult(events, EXIT_OK)).toMatchObject({ ok: true, nativeSessionId: SID });
+    const g = guarded([INIT(), TOOL("started", REFUSED_PUSH), RESULT()]);
+    const res = g.a.extractResult(g.events, EXIT_OK);
+    expect(res).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: SID });
+    expect(res.failureDetail).toMatch(/^git write attempted/);
+  });
+
+  it("fixture denied_rejected_command replays a command smuggled in a started-line refusal object to PERMISSION_BLOCKED", async () => {
+    const report = await runConformanceCase({
+      kind: "task_failure",
+      adapter: replayAdapter("denied_rejected_command"),
+      request: { ...req, workspace: { cwd: makeCwd(), writable: true } },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      nativeSessionId: DEFAULT_SESSION_ID,
+      unknownEventCount: 0,
+    });
+    expect(report.result?.failureDetail).toMatch(/^git write attempted/);
+  });
+
+  it("the same refusal-container fallback on a completed line reports the call and the denial; a seen command deduplicates", () => {
+    const { events, a } = parse([INIT(), TOOL("completed", REFUSED_PUSH), RESULT()]);
+    expect(events.slice(1, 3)).toEqual([
+      { kind: "tool_call", tool: "shell", name: "shellToolCall", command: "git push origin main" },
+      { kind: "permission_denied", tool: "shellToolCall" },
+    ]);
+    expect(a.extractResult(events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "denied: shellToolCall",
+    });
+    // A started line that already reported the command leaves only the denial new on the completed fallback.
+    const pair = parse([INIT(), TOOL("started", PUSH), TOOL("completed", REFUSED_PUSH), RESULT()]);
+    expect(pair.events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "shell", name: "shellToolCall", command: "git push origin main" },
+    ]);
+    expect(denials(pair.events)).toEqual([{ kind: "permission_denied", tool: "shellToolCall" }]);
+  });
+
+  it("refusal-text edges: case-insensitive and substring matches block, hyphenated or doubled-space `not permitted` and non-string errors do not", () => {
+    const run = (error: unknown) => {
+      const { events, a } = parse([
+        INIT(),
+        TOOL("completed", { shellToolCall: { args: { command: "ls" }, error } }),
+        RESULT(),
+      ]);
+      return a.extractResult(events, EXIT_OK);
+    };
+    expect(run("PERMISSION DENIED BY POLICY")).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    expect(run("route blocked by firewall")).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    // The alternation matches `permission` anywhere, so benign text containing it is still blocked (fail closed).
+    expect(run("Permission granted for the write")).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    // The space in `not permitted` is literal: hyphenated or doubled-space variants do not match.
+    expect(run("Access not-permitted here")).toMatchObject({ ok: true });
+    expect(run("Access not  permitted here")).toMatchObject({ ok: true });
+    // A non-string error (text nested in an object) is not read.
+    expect(run({ message: "Permission denied" })).toMatchObject({ ok: true });
+  });
+
+  it("a multi-key completed line reports each key's call then its denial in key order, and the first denial names the detail", () => {
+    const multi = {
+      readToolCall: { args: { path: "a.txt" }, result: { rejected: {} } },
+      shellToolCall: { args: { command: "git push origin main" }, result: { denied: {} } },
+    };
+    const { events, a } = parse([INIT(), TOOL("completed", multi), RESULT()]);
+    expect(events.slice(1, 5)).toEqual([
+      { kind: "tool_call", tool: "read", name: "readToolCall", target: "a.txt" },
+      { kind: "permission_denied", tool: "readToolCall" },
+      { kind: "tool_call", tool: "shell", name: "shellToolCall", command: "git push origin main" },
+      { kind: "permission_denied", tool: "shellToolCall" },
+    ]);
+    expect(a.extractResult(events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "denied: readToolCall",
+    });
+    // The guard violation on the second key's Git write outranks the first key's denial.
+    const g = guarded([INIT(), TOOL("completed", multi), RESULT()]);
+    const res = g.a.extractResult(g.events, EXIT_OK);
+    expect(res).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    expect(res.failureDetail).toMatch(/^git write attempted/);
+  });
+
+  it("fixture late_init_after_idless_result through RunLifecycle pins the gap: the binding row keeps the late init's model and vendor, the usage row stays null", async () => {
+    const root = realpathSync(makeCwd());
+    const repo = join(root, "repo");
+    mkdirSync(repo);
+    const g = (...args: string[]) =>
+      execFileSync("git", ["-c", "commit.gpgsign=false", ...args], {
+        cwd: repo,
+        env: {
+          PATH: process.env.PATH ?? "",
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_AUTHOR_NAME: "Cursor Dev",
+          GIT_AUTHOR_EMAIL: "cursor@example.test",
+          GIT_COMMITTER_NAME: "Cursor Dev",
+          GIT_COMMITTER_EMAIL: "cursor@example.test",
+        },
+      });
+    g("init", "-q", "-b", "main");
+    writeFileSync(join(repo, "README.md"), "initial\n");
+    g("add", "-A");
+    g("commit", "-q", "-m", "init");
+    const dataDir = join(root, "data");
+    mkdirSync(dataDir);
+    const db = openLedger(dataDir);
+    const ids = createIdGenerator();
+    const ledger = createLedger(db, { ids });
+    const artifacts = new ArtifactStore(join(dataDir, "artifacts"));
+    const lifecycle = new RunLifecycle({
+      ledger,
+      workspace: new WorkspaceManager({
+        db,
+        artifacts,
+        dataDir,
+        allowedRoots: [root],
+        ids,
+      }),
+      artifacts,
+      adapters: new AdapterRegistry().register(replayAdapter("late_init_after_idless_result")),
+      allowedRoots: [root],
+      globalConcurrency: 1,
+      resolveProfile: (name) => resolveTrustProfile(name),
+    });
+    lifecycle.start();
+    try {
+      const { runId, metaSessionId } = await lifecycle.submit({
+        clientId: "c",
+        objective: "a session bound by a late init after an id-less result",
+        workspace: repo,
+        trustProfile: "privileged",
+        provider: "cursor",
+        privileged: { scope: BYPASS_SCOPE, approvedByClientPolicy: true },
+      });
+      const done = await lifecycle.waitForTerminal(runId);
+      expect(done.state, done.failure_detail ?? "").toBe("SUCCEEDED");
+      const bindings = ledger.listProviderBindings(metaSessionId);
+      expect(bindings).toEqual([
+        expect.objectContaining({
+          provider: "cursor",
+          harness: "cursor",
+          model: "Synthetic Model 1",
+          backing_provider: "backing-late",
+          native_session_id: DEFAULT_SESSION_ID,
+        }),
+      ]);
+      const rows = ledger.listUsageObservationsForRun(runId);
+      expect(rows).toHaveLength(1);
+      // Pinned gap: usageObservationsFromEvents stamps a usage row with the session_bound that preceded it; the usage
+      // event here arrives on the result line before the late init binds, so the row keeps null model and vendor even
+      // though the provider binding written after the run carries both.
+      expect(rows[0]).toMatchObject({
+        provider: "cursor",
+        harness: "cursor",
+        backing_provider: null,
+        model: null,
+        source: "provider_reported",
+      });
+    } finally {
+      await lifecycle.shutdown();
+      db.close();
+    }
+  });
+
+  it("session-id aliases resolve before the id comparison, so one id under two keys never conflicts", () => {
+    const combos: (string | object)[][] = [
+      [
+        RESULT({ session_id: undefined, chatId: "alias-target" }),
+        INIT({ session_id: "alias-target", model: "Late Model" }),
+      ],
+      [
+        RESULT({ session_id: undefined, sessionId: "alias-target" }),
+        INIT({ session_id: undefined, chat_id: "alias-target" }),
+      ],
+      [
+        INIT({ session_id: undefined, chatId: "alias-target", model: undefined }),
+        RESULT({ session_id: "alias-target" }),
+      ],
+    ];
+    for (const lines of combos) {
+      const { events, state, a } = parse(lines);
+      expect(
+        events.filter((e) => e.kind === "provider_error"),
+        JSON.stringify(lines),
+      ).toEqual([]);
+      expect(state.nativeSessionId, JSON.stringify(lines)).toBe("alias-target");
+      expect(a.extractResult(events, EXIT_OK), JSON.stringify(lines)).toMatchObject({
+        ok: true,
+        nativeSessionId: "alias-target",
+      });
+      // The first binding is still final: the late line's model and vendor never amend it.
+      expect(bound(events), JSON.stringify(lines)).toEqual([
+        { kind: "session_bound", nativeSessionId: "alias-target" },
+      ]);
+    }
+    // A different value under another alias still conflicts and keeps the first id.
+    const conflict = parse([
+      RESULT({ session_id: undefined, chatId: "alias-target" }),
+      INIT({ session_id: "other-value" }),
+    ]);
+    expect(conflict.events.filter((e) => e.kind === "provider_error")).toEqual([
+      { kind: "provider_error", category: "protocol", message: "session id changed mid-run" },
+    ]);
+    expect(conflict.state.nativeSessionId).toBe("alias-target");
+  });
+
+  it("a late init with an unsafe id after an id-less result binds nothing and fails closed with no session", () => {
+    const { events, state, a } = parse([RESULT({ session_id: undefined }), INIT({ session_id: "-x" })]);
+    expect(events.filter((e) => e.kind === "provider_error")).toEqual([
+      { kind: "provider_error", category: "protocol", message: "session id is not a safe argument" },
+    ]);
+    expect(bound(events)).toEqual([]);
+    expect(state.nativeSessionId).toBeUndefined();
+    const r = a.extractResult(events, EXIT_OK);
+    expect(r).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: session id is not a safe argument",
+    });
+    expect(r).not.toHaveProperty("nativeSessionId");
+  });
+
+  it("pins the boundary: a trailing unknown type of exactly 64 characters is kept whole; 65 clips to 64 plus the ellipsis", () => {
+    const exact = `t${"y".repeat(63)}`;
+    expect(exact).toHaveLength(64);
+    const at = parse([INIT(), RESULT(), line({ type: exact })]);
+    expect(at.events.at(-1)).toEqual({ kind: "unknown", rawType: exact });
+    expect(at.a.extractResult(at.events, EXIT_OK)).toEqual({
+      ok: true,
+      unknownEventCount: 1,
+      nativeSessionId: SID,
+    });
+    const over = `t${"y".repeat(64)}`;
+    const r = parse([INIT(), RESULT(), line({ type: over })]);
+    expect(r.events.at(-1)).toEqual({ kind: "unknown", rawType: `${over.slice(0, 64)}…` });
+    expect(r.a.extractResult(r.events, EXIT_OK)).toMatchObject({
+      ok: true,
+      unknownEventCount: 1,
+      nativeSessionId: SID,
+    });
+    // Neither clipped rawType starts with tool_call, so the trailing-tool order check stays untripped.
+  });
+
+  it("pins the gap: a trailing tool_call line with an unrecorded subtype is an unknown plus a reported call, so the guard sees its Git write", () => {
+    const lines = [INIT(), RESULT(), TOOL("queued", PUSH)];
+    const { events, a } = parse(lines);
+    expect(events.slice(-2)).toEqual([
+      { kind: "unknown", rawType: "tool_call:queued" },
+      { kind: "tool_call", tool: "shell", name: "shellToolCall", command: "git push origin main" },
+    ]);
+    expect(a.extractResult(events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the result line",
+      unknownEventCount: 1,
+      nativeSessionId: SID,
+    });
+    const g = guarded(lines);
+    const res = g.a.extractResult(g.events, EXIT_OK);
+    expect(res).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", unknownEventCount: 1 });
+    expect(res.failureDetail).toMatch(/^git write attempted/);
+  });
+
+  it("fixture trailing_tool_queued replays an unrecorded trailing tool_call subtype carrying a Git write to PERMISSION_BLOCKED", async () => {
+    const report = await runConformanceCase({
+      kind: "task_failure",
+      adapter: replayAdapter("trailing_tool_queued"),
+      request: { ...req, workspace: { cwd: makeCwd(), writable: true } },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      nativeSessionId: DEFAULT_SESSION_ID,
+      unknownEventCount: 1,
+    });
+    expect(report.result?.failureDetail).toMatch(/^git write attempted/);
+  });
+
+  it("pins the asymmetry: a trailing unreadable tool_call after a failed result keeps the result's failure detail", () => {
+    const { events, a } = parse([INIT(), RESULT({ subtype: "error", is_error: true }), line({ type: "tool_call" })]);
+    expect(a.extractResult(events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "result error",
+      unknownEventCount: 1,
+      nativeSessionId: SID,
+    });
+    // After a clean first result the same line rewrites an OUTPUT_PROTOCOL_ERROR detail (fifth pass).
+    const clean = parse([INIT(), RESULT(), line({ type: "tool_call" })]);
+    expect(clean.a.extractResult(clean.events, EXIT_OK)).toMatchObject({
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the result line",
+    });
+  });
+
+  it("the parser and resumeArgs agree on flag-like and trailing-punctuation id shapes", () => {
+    const a = adapter();
+    for (const [id, safe] of [
+      ["a:", true],
+      ["a-", true],
+      ["a.", true],
+      ["a_", true],
+      ["Z_9:x-y.z", true],
+      ["a", true],
+      ["--", false],
+      ["--resume", false],
+      ["-1", false],
+      ["-", false],
+    ] as const) {
+      const state: ParseState = { lines: 0, unknownEvents: 0 };
+      a.parseEvent(INIT({ session_id: id }), state);
+      const resumed = a.resumeArgs({ provider: "cursor", nativeSessionId: id }, req, PRIVILEGED_BYPASS_PROFILE);
+      expect(state.nativeSessionId === id, JSON.stringify(id)).toBe(safe);
+      expect("ineligible" in resumed, JSON.stringify(id)).toBe(!safe);
+      if (safe) {
+        if ("ineligible" in resumed) throw new Error(resumed.detail);
+        expect(resumed.argv.slice(-2), JSON.stringify(id)).toEqual(["--resume", id]);
+        expect(
+          resumed.argv.filter((v) => v === id),
+          JSON.stringify(id),
+        ).toHaveLength(1);
+      }
+    }
+  });
+
+  it("mutating a returned resume invocation never leaks into a later compile or resume", () => {
+    const a = adapter({ launcherArgs: ["--launch", "x"] });
+    const first = a.compile(req, PRIVILEGED_BYPASS_PROFILE);
+    if ("ineligible" in first) throw new Error(first.detail);
+    const resumedOnce = a.resumeArgs({ provider: "cursor", nativeSessionId: SID }, req, PRIVILEGED_BYPASS_PROFILE);
+    if ("ineligible" in resumedOnce) throw new Error(resumedOnce.detail);
+    resumedOnce.argv.push("--mutated");
+    resumedOnce.policyFlags.push("--mutated");
+    resumedOnce.envAllowlist.push("CURSOR_API_KEY");
+    resumedOnce.timeouts.idleMs = 1;
+    const again = a.compile(req, PRIVILEGED_BYPASS_PROFILE);
+    if ("ineligible" in again) throw new Error(again.detail);
+    expect(again.argv).not.toContain("--mutated");
+    expect(again.policyFlags).toEqual(["--trust", "--force"]);
+    expect(again.envAllowlist).toEqual(["PATH", "HOME"]);
+    expect(again.timeouts.idleMs).not.toBe(1);
+    const againResumed = a.resumeArgs({ provider: "cursor", nativeSessionId: SID }, req, PRIVILEGED_BYPASS_PROFILE);
+    expect(againResumed).toEqual({ ...again, argv: [...again.argv, "--resume", SID] });
+  });
+
+  it("pins the gap: usage counters gate per key, so string, boolean, null, object and array counters are dropped while numeric siblings are kept", () => {
+    const { events, a } = parse([
+      RESULT({
+        usage: {
+          inputTokens: "10",
+          outputTokens: true,
+          cacheReadTokens: { value: 1 },
+          cacheWriteTokens: [1],
+          totalTokens: null,
+          input_tokens: 7,
+        },
+      }),
+    ]);
+    expect(usages(events)).toEqual([{ kind: "usage", source: "provider_reported", metrics: { input_tokens: 7 } }]);
+    expect(a.extractResult(events, EXIT_OK)).toMatchObject({ ok: true, nativeSessionId: SID });
+    // Every counter hostile: no usage event at all, and the run is still clean.
+    const allHostile = parse([RESULT({ usage: { inputTokens: "10", outputTokens: false } })]);
+    expect(usages(allHostile.events)).toEqual([]);
+    expect(allHostile.a.extractResult(allHostile.events, EXIT_OK)).toMatchObject({ ok: true });
+  });
+
+  it("prototype-named usage keys and a __proto__ payload can never fabricate counters", () => {
+    const protoNamed = parse([RESULT({ usage: { toString: 10, constructor: 5, hasOwnProperty: 1 } })]);
+    expect(usages(protoNamed.events)).toEqual([]);
+    // An own __proto__ key in the JSON is just another unread spelling.
+    const raw = (usage: string) =>
+      `{"type":"result","subtype":"success","is_error":false,"session_id":"${SID}","usage":${usage}}`;
+    const protoOnly = parse([raw('{"__proto__":{"inputTokens":50}}')]);
+    expect(usages(protoOnly.events)).toEqual([]);
+    // A legitimate key beside a __proto__ payload is still recorded.
+    const mixed = parse([raw('{"__proto__":{"inputTokens":50},"inputTokens":7}')]);
+    expect(usages(mixed.events)).toEqual([{ kind: "usage", source: "provider_reported", metrics: { inputTokens: 7 } }]);
+  });
+
+  it("usage keys outside the ten recorded spellings are never read, so a cost-style counter never reaches the run total", () => {
+    const { events, a } = parse([RESULT({ usage: { input: 3, tokens: 4, cost: 0.25, characters: 9 } })]);
+    expect(usages(events)).toEqual([]);
+    expect(a.extractResult(events, EXIT_OK)).toMatchObject({ ok: true, nativeSessionId: SID });
+  });
+
+  it("pins the mirror gap: an all-hostile first result drops the second result's counters too, so no usage is recorded at all", () => {
+    const { events, a } = parse([RESULT({ usage: { inputTokens: "bad" } }), RESULT({ usage: { inputTokens: 10 } })]);
+    expect(usages(events)).toEqual([]);
+    expect(a.extractResult(events, EXIT_OK)).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
   });
 });
