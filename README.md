@@ -78,7 +78,14 @@ Pre-release. The package is private and is not published to any registry; you bu
   handoff condensation (T11.10, a service function) and record-only routing classification (T11.11). The T11.6 roadmap
   row carries its `Done on fakes` status since [#586](https://github.com/zemdregon/switchboard/pull/586), which also
   added `src/inner/suspension.test.ts`: on a scripted fake backend, every call after a suspension falls back without
-  reaching a now-good backend, and the first call after the task is re-enabled is accepted from it. T11.1 (the
+  reaching a now-good backend, and the first call after the task is re-enabled is accepted from it. The T11.9
+  verification-output summary row carries its `Done on fakes` status since
+  [#594](https://github.com/zemdregon/switchboard/pull/594), which added the suite
+  `log_summary task: roadmap 'Done when' (T11.9)` to `src/inner/log-summary.test.ts`: over six paths on the scripted
+  fake backend (accepted lying prose, a rejected success claim, empty, error, not-JSON and a privacy denial) the
+  envelope's status, failure code, per-check exit codes and outcome counts equal the run row and terminal transition
+  read from the ledger, `raw_artifact` resolves to the stored `test_report`, and the fallback equals a head-8/tail-12
+  excerpt written out by hand. That summary is still a service function that no run path calls (see below). T11.1 (the
   `inner_agent` config schema, the backend port, the scripted
   fake backend, the `inner_call` table, the disabled-by-default path and the import-boundary test) is `Done`; its
   roadmap row was reconciled to the 2026-10-16 status contract in
