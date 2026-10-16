@@ -20,6 +20,7 @@ const EXPECTED_TABLES = [
   "approval",
   "artifact",
   "decision",
+  "gc_orphan",
   "git_commit",
   "git_push",
   "http_subject",

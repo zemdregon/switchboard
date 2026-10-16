@@ -67,7 +67,7 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(tmp, { recursive: true, force: true }));
 
-async function cli(args: string[]) {
+async function cli(args: string[], now: Date = NOW) {
   const out: string[] = [];
   const err: string[] = [];
   const io: CliIo = {
@@ -75,7 +75,7 @@ async function cli(args: string[]) {
     stderr: { write: (s) => err.push(s) },
     env: { PATH: process.env.PATH ?? "" },
     user: "tester",
-    now: () => NOW,
+    now: () => now,
     adapters: new AdapterRegistry().register(new FakeAdapter()),
   };
   const code = await main([...args, "--config", configPath], io);
@@ -266,6 +266,40 @@ describe("switchboard gc", () => {
     expect(r.code, r.err).toBe(0);
     expect(branches()).not.toContain(expired.branch);
     expect(sessionStatus(expired.sess)).toBe("ARCHIVED");
+  });
+
+  it("--apply removes orphans only after they have been marked for retention.days, never outside switchboard/", async () => {
+    writeConfig({ days: 30 });
+    const later = new Date(NOW.getTime() + 31 * 86_400_000);
+    const live = await unit(new Date(later.getTime() - 86_400_000)); // still recent at `later`
+    const orphanDir = path.join(dataDir, "worktrees", "sess_ghost", "run_x");
+    mkdirSync(orphanDir, { recursive: true });
+    const ghost = "switchboard/sess_ghost/run_x";
+    g(repo, "branch", ghost);
+    g(repo, "branch", "feature/not-ours");
+
+    // First pass: marked, nothing removed.
+    const first = JSON.parse((await cli(["gc", "--apply", "--json"])).out) as {
+      orphans_collected: { marked: number; worktrees_removed: string[]; branches_removed: unknown[] };
+    };
+    expect(first.orphans_collected).toMatchObject({ marked: 2, worktrees_removed: [], branches_removed: [] });
+    expect(existsSync(orphanDir)).toBe(true);
+    expect(branches()).toContain(ghost);
+
+    // A dry run after the retention period still changes nothing.
+    expect((await cli(["gc"], later)).out).toContain("--apply marks them");
+    expect(existsSync(orphanDir)).toBe(true);
+
+    // After the retention period: removed; the live unit and branches outside switchboard/ stay.
+    const r = await cli(["gc", "--apply"], later);
+    expect(r.code, r.err).toBe(0);
+    expect(r.out).toContain("Orphans: 2 removed");
+    expect(existsSync(path.join(dataDir, "worktrees", "sess_ghost"))).toBe(false);
+    expect(branches()).not.toContain(ghost);
+    expect(branches()).toEqual(expect.arrayContaining(["main", "feature/not-ours", live.branch]));
+    expect(existsSync(live.wt)).toBe(true);
+    expect(sessionStatus(live.sess)).toBe("ACTIVE");
+    expect(query<{ n: number }>("SELECT COUNT(*) AS n FROM gc_orphan WHERE removed_at IS NOT NULL")[0]?.n).toBe(2);
   });
 
   it("validates its flags", async () => {
