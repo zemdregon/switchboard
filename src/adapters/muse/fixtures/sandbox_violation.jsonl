@@ -1,0 +1,3 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.73); no muse was run. Kind and run_terminal spellings reported ([Orca]) or Assumption (protocol.ts), Unverified: T4.71. No native sandbox record is sourced: a failed terminal naming the sandbox is TOOL_FAILURE.","exit":1}}
+{"kind":"run_started","session_id":"00000000-0000-4000-8000-000000000001"}
+{"kind":"run_terminal","terminal":"failed","text":"","reason":"sandbox blocked write outside workspace"}

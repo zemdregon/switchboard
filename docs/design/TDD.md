@@ -2538,6 +2538,16 @@ found: the argv audit is shared, so Cursor's declared short flag `-w` refuses `-
 a future non-bypass Muse Code cell needs that resolved first (open question in ROADMAP T4.72). Parser, resume, auth
 preflight, conformance, malicious leg and the Git declaration are T4.73 to T4.77 (fail-closed placeholders until then).
 
+*As built (T4.73, 2026-10-16; Delegated agent work, not owner-approved; fixtures only, no `muse` was run).* The parser
+reads one `--json` record per line by its `kind`: `run_started` binds the session id from a structured `session_id`
+field (**Assumption**; only a uuid binds), `run_output_delta` `text` becomes assistant messages, `run_terminal` is the
+result, and the other [SDK] kinds are dropped; spellings other than `run_terminal` ([Orca]) are the snake_case of the
+[SDK] names, an **Assumption** until T4.71. Success needs `terminal: "completed"` and an expected exit, so exit `0` with
+any other terminal value ends `FAILED`; an unknown kind is counted and never makes a result; a record after the first
+`run_terminal`, a changed or non-uuid session id is `OUTPUT_PROTOCOL_ERROR`; failures without a sourced native shape
+are `TOOL_FAILURE`; no usage is recorded. Resume compiles `muse exec --session-id <uuid> <prompt>` through the same
+matrix (never `--allow-workspace-switch`). Evidence: ROADMAP T4.73 and `src/adapters/muse/muse.test.ts`.
+
 #### 4.8.1 T4.71 operator checklist
 
 *Operator-only, Proposed.* Needs an installed Muse Code CLI. Use a throwaway Git repository and a controller-made
