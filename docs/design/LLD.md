@@ -1708,6 +1708,29 @@ is scoped to projects the caller may use; other clients' runs never appear.
 **Agent text.** Any `result.summary` (or other agent-written field included later) is copied into `untrusted_summaries`
 as `untrusted_text`, never as authoritative instruction text (FR-CTL-02).
 
+**Implemented (T14.3, Delegated, not owner-approved).** `src/mcp/digest.ts` assembles the digest read-only and
+`src/mcp/server.ts` scopes it as `get_run`. Choices this section leaves open:
+
+- The scan reads only the events of the caller's own visible runs (ledger read helpers `getRunEvent` and
+  `listRunEventsForClient`, no migration), so the cursor never names or advances over another client's event. A
+  `since_cursor` that is not the id of such an event is `INVALID_REQUEST` (`details.field = "since_cursor"`):
+  `run_event` has no delete, so there is no garbage-collected cursor to treat as absent.
+- Delta: a run touched by the scan is listed in `needs_attention` when its flag (§3.4.5, the same `needsAttentionOf`)
+  is active at read time, in `finished` / `failed` when the scan holds its `state_transition` to `SUCCEEDED` /
+  `FAILED`, and its meta-session's `PENDING` approval in `pending_approvals`; only the projects of touched runs are
+  listed. With nothing new, `projects` is empty and `cursor` equals `since_cursor`.
+- Snapshot (no `since_cursor`): every project the caller may use plus the projects of its runs, with all current flags
+  and approvals and the newest 50 finished and failed runs per project. The output `cursor` is the caller's newest
+  event, or `null` when it has none (amendment to the output schema above, which cannot name "no event").
+- Every section of a listed project is present. Runs without a project (workspace-path runs) are not in the digest.
+- Agent text: `result.summary` is removed from digest envelopes and appears once per run in `untrusted_summaries`,
+  capped at 500 UTF-16 code units with a trailing "…" and no split surrogate pair; `result.verification_summary` is
+  removed as well (it stays on `get_run`).
+- `budget.exhausted` reads the same `ControlPlaneFacts` port as §3.4.5 (no budgets exist before T14.4); `budget.caps`
+  and `paused` are omitted, not reported as unset or false, until T14.4 and T14.6 persist them.
+- `pending_approvals` lists `privileged_scope` approvals; `approval_digest` is the §3.4.8 SHA-256 over controller
+  fields. Dynamic-project and push revisions join with T14.8.
+
 #### 3.4.4 `steer_run`, pause and resume (FR-CTL-04, FR-CTL-05)
 
 **`steer_run`**
