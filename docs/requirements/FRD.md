@@ -661,6 +661,16 @@ sequenceDiagram
   failing cases are printed. No fallback to "best effort" (ADR-0009).
 - **Postconditions:** acceptance is an auditable record of the version, time and suite result; routing never used the
   unverified version.
+- **As built (M8, T8.5 and T8.6, 2026-10-16, Delegated):** detection has two layers. The preflight cache invalidates on
+  a binary identity change (BR-20, NFR-PERF-02), and a version canary compares the probed version with the last
+  recorded value in `version-canary.json` under the data directory (or the manifest's `validated_cli_version` when no
+  row exists); a change makes the adapter `ADAPTER_VERSION_UNVERIFIED` in `doctor`, in `serve` routing and in the
+  operator-scheduled `switchboard adapters version-canary` command
+  ([docs/operations/version-canary.md](../operations/version-canary.md)). A successful `adapters validate` writes the
+  manifest and records the validated version in that file; it does not insert an `adapter_version` ledger row, so the
+  auditable acceptance record above is the reviewed manifest change plus the canary file, not a ledger row (a gap
+  against this postcondition, not a design change). Tests: `src/adapters/version-canary.test.ts`,
+  `src/adapters/version-bump-preflight.test.ts`.
 
 ### WF-10 Delegate to a project
 
