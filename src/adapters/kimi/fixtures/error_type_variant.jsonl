@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.63, tenth pass), in the stream-json record shapes of the scrubbed 2026-10-15 capture (captured_success.jsonl); the error record shape is an Assumption (T4.68). A meta record whose type only resembles an error (error.retry) is unknown, not a provider error; the turn prints no hint and exits 1, so the run still fails TOOL_FAILURE on the exit code (fail closed).","exit":1}}
+{"role":"meta","type":"system.version","version":"0.0.1"}
+{"role":"assistant","content":"ok"}
+{"role":"meta","type":"error.retry","message":"SYNTHETIC upstream failure"}
