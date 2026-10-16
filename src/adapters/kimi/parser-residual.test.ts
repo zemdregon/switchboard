@@ -1989,3 +1989,264 @@ describe("kimi parser residuals, eleventh pass (T4.63, synthetic only)", () => {
     });
   }
 });
+
+/**
+ * Twelfth pass (T4.63, 2026-10-16, Delegated agent work, not owner-approved; synthetic lines and fixtures only, no
+ * `kimi` run). Failure-tail order after the hint (a Git write still reaches the guard; an unreadable late call still
+ * names the late record first), session-id spellings the parser does not read (`sessionId`, whitespace-only ids),
+ * prototype-member and delimiter-ending ids that do bind and resume, non-string meta types, duplicate `role` keys,
+ * clip boundaries, and extractResult outcomes not yet named (`sandbox_violation`, `internal_error`). Limits are pinned
+ * as limits, not controls (Unverified: T4.68).
+ */
+describe("kimi parser residuals, twelfth pass (T4.63, synthetic only)", () => {
+  const extract = (events: NormalizedEvent[], exit = EXIT_OK) => adapter().extractResult(events, exit);
+  const ctx = { cwd: "/w", bypass: true };
+  const LATE = "assistant record after the resume hint";
+  const UNREADABLE = "tool call without a readable name and arguments";
+  const UNSAFE = "session id is not a safe argument";
+  const binding = (nativeSessionId: string) => ({ provider: "kimi", nativeSessionId }) as const;
+
+  it("a Git write after the hint is still emitted, so the guard outranks the late-record protocol error", () => {
+    const events = parse([
+      line({ role: "assistant", content: "ok" }),
+      line(hint()),
+      line(toolMsg(call("Shell", { command: "git push" }))),
+    ]).events.map((e) => guardEvent(e, ctx));
+    expect(events.slice(0, 3)).toEqual([
+      { kind: "message", role: "assistant", text: "ok" },
+      { kind: "session_bound", nativeSessionId: SID },
+      { kind: "result", ok: true },
+    ]);
+    expect(events[3]).toEqual({ kind: "provider_error", category: "protocol", message: LATE });
+    expect(events[4]).toMatchObject({
+      kind: "tool_call",
+      tool: "shell",
+      name: "Shell",
+      violation: { kind: "git_write" },
+    });
+    expect(events[4]).not.toHaveProperty("command");
+    expect(extract(events)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      nativeSessionId: SID,
+      summary: "ok",
+    });
+  });
+
+  it("an unreadable tool call after the hint keeps the late-record error first; that name is the failure", () => {
+    const { events } = parse([line(hint()), line(toolMsg(call("Shell", '{"command":"git push')))]);
+    expect(events.slice(2)).toEqual([
+      { kind: "provider_error", category: "protocol", message: LATE },
+      { kind: "provider_error", category: "protocol", message: UNREADABLE },
+    ]);
+    expect(extract(events)).toMatchObject({
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: `protocol: ${LATE}`,
+      nativeSessionId: SID,
+    });
+  });
+
+  it("a whitespace-only session id ends the turn as unsafe (unlike empty, which does not); the next safe hint is a second hint", () => {
+    for (const id of [" ", "\t", "\n"]) {
+      const { events, state } = parse([line(hint(id)), line({ role: "assistant", content: "after" })]);
+      expect(state.nativeSessionId, JSON.stringify(id)).toBeUndefined();
+      expect(events[0], JSON.stringify(id)).toEqual({
+        kind: "provider_error",
+        category: "protocol",
+        message: UNSAFE,
+      });
+      expect(events[1], JSON.stringify(id)).toEqual({ kind: "result", ok: true });
+      expect(events[2], JSON.stringify(id)).toMatchObject({ kind: "provider_error", message: LATE });
+      expect(extract(events), JSON.stringify(id)).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+      });
+    }
+    const twice = parse([line(hint(" ")), line(hint())]);
+    expect(twice.events).toEqual([
+      { kind: "provider_error", category: "protocol", message: UNSAFE },
+      { kind: "result", ok: true },
+      { kind: "provider_error", category: "protocol", message: "more than one resume hint" },
+      { kind: "session_bound", nativeSessionId: SID },
+      { kind: "result", ok: false, summary: "second resume hint" },
+    ]);
+    expect(extract(twice.events)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      nativeSessionId: SID,
+    });
+  });
+
+  it("limit, not a control: only `session_id` binds; `sessionId`, `SessionId` and `session-id` are unknown and end no turn (Unverified: T4.68)", () => {
+    for (const key of ["sessionId", "SessionId", "session-id"]) {
+      const rec = { role: "meta", type: "session.resume_hint", [key]: SID, content: `kimi -r ${SID}` };
+      const { events, state } = parse([line(rec), line({ role: "assistant", content: "after" })]);
+      expect(events, key).toEqual([
+        { kind: "unknown", rawType: "session.resume_hint" },
+        { kind: "message", role: "assistant", text: "after" },
+      ]);
+      expect(state.nativeSessionId, key).toBeUndefined();
+      expect(extract(events), key).toMatchObject({
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "no result event",
+        summary: "after",
+      });
+    }
+  });
+
+  it("session ids named after Object.prototype members bind verbatim and resume as one trailing `--session` pair", () => {
+    for (const id of ["constructor", "toString", "valueOf", "hasOwnProperty", "isPrototypeOf"]) {
+      const { events, state } = parse([line(hint(id))]);
+      expect(state.nativeSessionId, id).toBe(id);
+      expect(extract(events), id).toEqual({ ok: true, unknownEventCount: 0, nativeSessionId: id });
+      const inv = compiled(adapter().resumeArgs(binding(id), request(), PRIVILEGED_BYPASS_PROFILE));
+      expect(inv.argv.slice(-2), id).toEqual(["--session", id]);
+      expect(
+        inv.argv.filter((w) => w === "--session"),
+        id,
+      ).toHaveLength(1);
+    }
+  });
+
+  it("ids that end in a delimiter or repeat one round-trip from the hint to one trailing `--session <id>` pair", () => {
+    for (const id of ["a-", "a:", "a.", "a_", "a--session", "1..2", "Z-_-:.0"]) {
+      const { events, state } = parse([line(hint(id))]);
+      expect(state.nativeSessionId, id).toBe(id);
+      expect(extract(events).nativeSessionId, id).toBe(id);
+      const inv = compiled(adapter().resumeArgs(binding(id), request(), PRIVILEGED_BYPASS_PROFILE));
+      expect(inv.argv.slice(-2), id).toEqual(["--session", id]);
+    }
+    for (const id of ["+1", "=x", "@host", "$var", "a/b", "a b"]) {
+      expect(parse([line(hint(id))]).state.nativeSessionId, id).toBeUndefined();
+      expect(isIneligible(adapter().resumeArgs(binding(id), request(), PRIVILEGED_BYPASS_PROFILE)), id).toBe(true);
+    }
+  });
+
+  it("a non-string hint `type` is unknown meta:none and never an error or a binding", () => {
+    for (const type of [7, null, true, ["error"], { error: true }]) {
+      const { events, state } = parse([
+        line({ role: "meta", type, session_id: SID, message: "Authentication required" }),
+      ]);
+      expect(events, JSON.stringify(type)).toEqual([{ kind: "unknown", rawType: "meta:none" }]);
+      expect(state.nativeSessionId, JSON.stringify(type)).toBeUndefined();
+      expect(extract(events), JSON.stringify(type)).toMatchObject({
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "no result event",
+      });
+    }
+  });
+
+  it("limit, not a control: with a duplicated `role` key only the last one is seen (JSON.parse; Unverified: T4.68)", () => {
+    const asHint = `{"role":"assistant","content":"x","role":"meta","type":"session.resume_hint","session_id":"${SID}"}`;
+    const { events, state } = parse([asHint]);
+    expect(events).toEqual([
+      { kind: "session_bound", nativeSessionId: SID },
+      { kind: "result", ok: true },
+    ]);
+    expect(state.nativeSessionId).toBe(SID);
+    const asAssistant = `{"role":"meta","type":"session.resume_hint","session_id":"${SID}","role":"assistant","content":"x"}`;
+    const late = parse([asAssistant]);
+    expect(late.events).toEqual([{ kind: "message", role: "assistant", text: "x" }]);
+    expect(late.state.nativeSessionId).toBeUndefined();
+  });
+
+  it("limit, not a control: an empty-string `function.arguments` is readable as none, so a top-level Git write is not seen (Unverified: T4.68)", () => {
+    const item = {
+      id: "c",
+      name: "Shell",
+      arguments: { command: "git push" },
+      function: { name: "Shell", arguments: "" },
+    };
+    const parsed = parse([line(toolMsg(item)), line(hint())]).events;
+    expect(parsed[0]).toEqual({ kind: "tool_call", tool: "other", name: "Shell" });
+    const events = parsed.map((e) => guardEvent(e, ctx));
+    expect(events[0]).toEqual({ kind: "tool_call", tool: "other", name: "Shell" });
+    expect(extract(events)).toMatchObject({ ok: true, nativeSessionId: SID });
+  });
+
+  it("a message of 4000 characters is kept whole; one more character is clipped to 4000 plus an ellipsis, and the summary still keeps the last 2000", () => {
+    const exact = parse([line({ role: "assistant", content: "x".repeat(4000) }), line(hint())]);
+    const exactMsg = exact.events.find((e) => e.kind === "message");
+    expect(exactMsg?.kind === "message" && exactMsg.text.length).toBe(4000);
+    expect(extract(exact.events).summary).toHaveLength(2000);
+    const over = parse([line({ role: "assistant", content: "y".repeat(4001) }), line(hint())]);
+    const overMsg = over.events.find((e) => e.kind === "message");
+    expect(overMsg?.kind === "message" && overMsg.text.length).toBe(4001);
+    expect(overMsg?.kind === "message" && overMsg.text.endsWith("…")).toBe(true);
+    expect(extract(over.events).summary).toHaveLength(2000);
+  });
+
+  it("a sandbox_violation event fails a clean hint as SANDBOX_VIOLATION; an internal_error exit is OUTPUT_PROTOCOL_ERROR even with a hint", () => {
+    const { events } = parse([line(hint())]);
+    expect(extract([{ kind: "sandbox_violation", detail: "SYNTHETIC outside worktree" }, ...events])).toMatchObject({
+      ok: false,
+      failureCode: "SANDBOX_VIOLATION",
+      failureDetail: "SYNTHETIC outside worktree",
+      nativeSessionId: SID,
+    });
+    expect(extract(events, { ...EXIT_OK, outcome: "internal_error" })).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "event handling failed",
+      nativeSessionId: SID,
+    });
+  });
+
+  it("resume is pure: frozen inputs compile, and mutating one invocation's argv or timeouts never leaks into the next", () => {
+    const a = adapter();
+    const frozenBinding = Object.freeze(binding(SID));
+    const frozenReq = Object.freeze({ ...request(), workspace: Object.freeze({ cwd: makeCwd(), writable: true }) });
+    const frozenProfile = Object.freeze({ ...PRIVILEGED_BYPASS_PROFILE });
+    const resumed = compiled(a.resumeArgs(frozenBinding, frozenReq, frozenProfile));
+    const snapshot = structuredClone(resumed);
+    resumed.argv.splice(-2, 2);
+    resumed.timeouts.wallClockMs = 1;
+    resumed.policyFlags.push("--session");
+    const again = compiled(a.resumeArgs(frozenBinding, frozenReq, frozenProfile));
+    expect(again).toEqual(snapshot);
+    expect(again.argv.slice(-2)).toEqual(["--session", SID]);
+    const fresh = compiled(a.compile(frozenReq, frozenProfile));
+    expect(fresh.argv).not.toContain("--session");
+    expect({ ...fresh, argv: [...fresh.argv, "--session", SID] }).toEqual(snapshot);
+  });
+
+  const replays: [string, ConformanceCase][] = [
+    [
+      "git_write_after_hint: a Git-writing shell call after a clean hint at exit 0 is PERMISSION_BLOCKED",
+      {
+        kind: "task_failure",
+        adapter: replayAdapter("git_write_after_hint"),
+        profile: PRIVILEGED_BYPASS_PROFILE,
+        request: request(),
+        expect: {
+          ok: false,
+          failureCode: "PERMISSION_BLOCKED",
+          nativeSessionId: DEFAULT_SESSION_ID,
+          summary: "ok",
+        },
+      },
+    ],
+    [
+      "session_id_camel: a hint that carries only `sessionId` at exit 0 is OUTPUT_PROTOCOL_ERROR with no session bound",
+      {
+        kind: "malformed_output",
+        adapter: replayAdapter("session_id_camel"),
+        profile: PRIVILEGED_BYPASS_PROFILE,
+        request: request(),
+        expect: {
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          failureDetail: "no result event",
+          nativeSessionId: null,
+          summary: "ok",
+        },
+      },
+    ],
+  ];
+  for (const [name, c] of replays) {
+    it(name, async () => {
+      const report = await runConformanceCase(c);
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    });
+  }
+});
