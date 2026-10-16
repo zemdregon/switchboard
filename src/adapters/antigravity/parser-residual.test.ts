@@ -1440,3 +1440,117 @@ describe("antigravity parser residuals, seventh pass: result-only backing parity
     });
   });
 });
+
+/**
+ * Eighth pass (2026-10-15, Delegated, not owner-approved): as Grok T4.23 and Cursor T4.43 residuals,
+ * pin observed parser behavior and label gaps rather than claiming native coverage. Synthetic lines only;
+ * duplicate status/usage keys, post-result step identity and drifting totals; no new capture, parser unchanged.
+ */
+describe("antigravity parser residuals, eighth pass: divergent duplicate keys, trailing steps and usage drift (T4.33)", () => {
+  const rows = (events: readonly NormalizedEvent[]) =>
+    usageObservationsFromEvents(events, { runId: "run_antigravity_t433_eighth_usage", provider: "antigravity" });
+  const tool = (index: number, command: string) =>
+    STEP({ step_index: index, step_type: "tool", tool_info: { name: "run_command", parameters: { command } } });
+  const duplicateStatus = (extra: Record<string, unknown>) =>
+    RESULT(extra).replace('"status":"SUCCESS"', '"status":"ERROR","status":"SUCCESS"');
+
+  it("a later duplicate SUCCESS status cannot erase an independent error or denied_actions payload", () => {
+    const denied = run([INIT(), duplicateStatus({ denied_actions: [{ action: "edit_file" }] })]);
+    expect(denied.events.filter((e) => e.kind === "result")).toEqual([{ kind: "result", ok: true }]);
+    expect(denied.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "denied: edit_file",
+    });
+    const errored = run([INIT(), duplicateStatus({ error: "invalid model selection: unavailable" })]);
+    expect(errored.events.filter((e) => e.kind === "result")).toEqual([{ kind: "result", ok: true }]);
+    expect(errored.result).toMatchObject({ ok: false, failureCode: "MODEL_UNAVAILABLE" });
+    // Gap/control: absent those separate signals, JSON.parse has discarded the earlier ERROR.
+    expect(run([INIT(), duplicateStatus({})]).result).toMatchObject({ ok: true });
+  });
+
+  it("pins the gap: a last non-string status makes the whole result unknown, dropping its denial and usage", () => {
+    const line = RESULT({ denied_actions: [{ action: "edit_file" }] }).replace(
+      '"status":"SUCCESS"',
+      '"status":"SUCCESS","status":null',
+    );
+    const r = run([INIT(), line]);
+    expect(r.events).toEqual([
+      { kind: "session_bound", nativeSessionId: CID },
+      { kind: "unknown", rawType: "result" },
+    ]);
+    expect(rows(r.events)).toEqual([]);
+    expect(r.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", unknownEventCount: 1 });
+  });
+
+  it("pins the gap: a duplicate usage object replaces its earlier counters rather than merging or validating them", () => {
+    const line = RESULT().replace('"usage":', '"usage":{"total_tokens":0,"input_tokens":999},"usage":');
+    const r = run([INIT(), line]);
+    expect(rows(r.events)).toEqual([expect.objectContaining({ source: "provider_reported", metrics: USAGE })]);
+    expect(r.result).toMatchObject({ ok: true });
+    const reversed = RESULT()
+      .replace('"usage":', '"usage":{"total_tokens":999},"usage":')
+      .replace('"total_tokens":24', '"total_tokens":0');
+    const failed = run([INIT(), reversed]);
+    expect(rows(failed.events)).toEqual([expect.objectContaining({ metrics: { ...USAGE, total_tokens: 0 } })]);
+    expect(failed.result).toMatchObject({ ok: false, failureDetail: "SUCCESS with no reported tokens" });
+  });
+
+  it("a repeated command on a fresh step index after result is a trailing tool, not a deduplicated repeat", () => {
+    const r = run([INIT(), tool(1, "pwd"), RESULT(), tool(2, "pwd")]);
+    expect(r.events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "shell", name: "run_command", command: "pwd" },
+      { kind: "tool_call", tool: "shell", name: "run_command", command: "pwd" },
+    ]);
+    expect(r.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the result line",
+    });
+    expect(run([INIT(), tool(1, "pwd"), RESULT(), tool(1, "pwd")]).result).toMatchObject({ ok: true });
+  });
+
+  it("a post-result changed command on the same step index still reaches the Git guard", () => {
+    const r = run([INIT(), tool(1, "pwd"), RESULT(), tool(1, "git commit -m synthetic")]);
+    expect(r.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+    const events = r.events.map((e) => guardEvent(e, { cwd: "/work/tree", home: "/home/synthetic", bypass: true }));
+    expect(events.filter((e) => e.kind === "tool_call")).toHaveLength(2);
+    expect(adapter().extractResult(events, EXIT0)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "git write attempted: `git commit` can create commits, change refs or push",
+    });
+  });
+
+  it("step counter drift before and after result does not add or replace the provider-reported run total", () => {
+    const step = (index: number, total: number) =>
+      STEP({
+        step_index: index,
+        step_type: "agent_response",
+        usage: { total_tokens: total },
+        total_tokens: total,
+      });
+    const r = run([INIT(), step(1, 100), step(1, 1), RESULT(), step(2, 999)]);
+    expect(r.events.map((e) => e.kind)).toEqual(["session_bound", "usage", "message", "result"]);
+    expect(rows(r.events)).toEqual([expect.objectContaining({ source: "provider_reported", metrics: USAGE })]);
+    expect(r.result).toMatchObject({ ok: true });
+  });
+
+  it.each([1, 999])(
+    "a second result drifting to %s tokens fails without revising the first usage observation",
+    (total) => {
+      const r = run([INIT(), RESULT(), RESULT({ usage: { total_tokens: total } })]);
+      expect(rows(r.events)).toEqual([expect.objectContaining({ source: "provider_reported", metrics: USAGE })]);
+      expect(r.events.filter((e) => e.kind === "result")).toEqual([
+        { kind: "result", ok: true },
+        { kind: "result", ok: false, summary: "SUCCESS with no reported tokens" },
+      ]);
+      // Gap: that summary does not distinguish duplicate results from missing tokens, even with a positive total.
+      expect(r.result).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "protocol: more than one result line",
+      });
+    },
+  );
+});
