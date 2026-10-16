@@ -60,6 +60,15 @@
  * (per-key type gating keeps only finite non-negative numbers, prototype-named and `__proto__` keys and unrecorded
  * spellings such as `cost` never fabricate counters, an all-hostile first result also drops the second result's
  * counters). Parser unchanged.
+ * Tenth pass (T4.6, FR-ADP-10, FR-SES-03): late session binding after an id-less result (a first id on a trailing
+ * unknown or tool_call never binds, fixtures `late_id_on_trailing_unknown.jsonl` and `late_id_on_trailing_tool.jsonl`;
+ * a trailing `system`/`init` after a trailing tool still binds; a whitespace id is unsafe while empty stays unbound);
+ * trailing events after finish (the trailing-tool detail rewrites only OUTPUT_PROTOCOL_ERROR; two trailing tools keep
+ * it once; a `type: permission_denied` line is unknown, never a denial); resume argv identity (prompt on stdin even
+ * when it looks like `--resume`, never `--resume=` or `-r`, flag-value ids, empty objective); denied tool interactions
+ * (case-variant refusal keys never deny, fixture `denied_key_case_variant.jsonl`; a Git write with those keys still
+ * reaches the guard; a progress-line refusal after result is a denial that outranks the trailing unknown; a string
+ * `result` is not a denial). Parser unchanged.
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -2885,5 +2894,312 @@ describe("cursor parser residuals, ninth pass: refusal-container fallback, late-
     const { events, a } = parse([RESULT({ usage: { inputTokens: "bad" } }), RESULT({ usage: { inputTokens: 10 } })]);
     expect(usages(events)).toEqual([]);
     expect(a.extractResult(events, EXIT_OK)).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+  });
+});
+
+describe("cursor parser residuals, tenth pass: late session binding after result, trailing events after finish, resume argv identity and denied tool interactions (T4.43, T4.6, FR-ADP-10, FR-SES-03; synthetic lines; parser unchanged)", () => {
+  const bound = (events: readonly NormalizedEvent[]) => events.filter((e) => e.kind === "session_bound");
+  const denials = (events: readonly NormalizedEvent[]) => events.filter((e) => e.kind === "permission_denied");
+  const ctx = { cwd: "/w", bypass: true };
+  const guarded = (lines: (string | object)[]) => {
+    const r = parse(lines);
+    return { ...r, events: r.events.map((e) => guardEvent(e, ctx)) };
+  };
+  const req: CompileRequest = {
+    runId: "run_cursor_t443_residual_p10",
+    objective: "synthetic cursor objective",
+    constraints: [],
+    workspace: { cwd: "/w", writable: true },
+    bypassApproved: true,
+  };
+  const READ = { readToolCall: { args: { path: "a.txt" } } };
+  const LS = { shellToolCall: { args: { command: "ls" } } };
+
+  it("pins the gap: a first id on a trailing non-binding line after an id-less result never binds; the run succeeds with no session", () => {
+    const decoys = [
+      line({ type: "session.idle", session_id: SID, backing_provider: "late-idle", model: "Idle" }),
+      line({ type: "assistant", message: { content: "late" }, session_id: SID }),
+      line({ type: "thinking", text: "t", session_id: SID }),
+      line({ type: "user", message: { content: "p" }, session_id: SID }),
+      line({ type: "tool_call_update", session_id: SID, tool_call: LS }),
+    ];
+    for (const trailing of decoys) {
+      const { events, state, a } = parse([RESULT({ session_id: undefined }), trailing]);
+      expect(bound(events), trailing).toEqual([]);
+      expect(state.nativeSessionId, trailing).toBeUndefined();
+      const r = a.extractResult(events, EXIT_OK);
+      expect(r, trailing).toMatchObject({ ok: true });
+      expect(r, trailing).not.toHaveProperty("nativeSessionId");
+    }
+    // A late init after that unknown still binds: the slot stayed open.
+    const late = parse([
+      RESULT({ session_id: undefined }),
+      line({ type: "session.idle", session_id: "ignored-id" }),
+      INIT({ model: "Late Model", backing_provider: "backing-late-unknown" }),
+    ]);
+    expect(bound(late.events)).toEqual([
+      {
+        kind: "session_bound",
+        nativeSessionId: SID,
+        model: "Late Model",
+        backingProvider: "backing-late-unknown",
+      },
+    ]);
+    expect(late.a.extractResult(late.events, EXIT_OK)).toMatchObject({
+      ok: true,
+      unknownEventCount: 1,
+      nativeSessionId: SID,
+    });
+  });
+
+  it("fixture late_id_on_trailing_unknown replays an id-less result then a session.idle id to success with no session (gap)", async () => {
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: replayAdapter("late_id_on_trailing_unknown"),
+      request: { ...req, workspace: { cwd: makeCwd(), writable: true } },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: null, unknownEventCount: 1, summary: "SYNTHETIC: done" },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toEqual({
+      ok: true,
+      unknownEventCount: 1,
+      summary: "SYNTHETIC: done",
+    });
+    expect(report.result).not.toHaveProperty("nativeSessionId");
+  });
+
+  it("pins the gap: a first id on a trailing tool_call after an id-less result fails as trailing-tool with no session", () => {
+    const { events, state, a } = parse([RESULT({ session_id: undefined }), TOOL("started", READ)]);
+    expect(bound(events)).toEqual([]);
+    expect(state.nativeSessionId).toBeUndefined();
+    const r = a.extractResult(events, EXIT_OK);
+    expect(r).toEqual({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the result line",
+      unknownEventCount: 0,
+    });
+    expect(r).not.toHaveProperty("nativeSessionId");
+  });
+
+  it("fixture late_id_on_trailing_tool replays an id-less result then a tool_call id to the trailing-tool detail with no session (gap)", async () => {
+    const report = await runConformanceCase({
+      kind: "malformed_output",
+      adapter: replayAdapter("late_id_on_trailing_tool"),
+      request: { ...req, workspace: { cwd: makeCwd(), writable: true } },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: {
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "tool call after the result line",
+        nativeSessionId: null,
+        summary: "SYNTHETIC: done",
+        unknownEventCount: 0,
+      },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).not.toHaveProperty("nativeSessionId");
+  });
+
+  it("a trailing system/init after a trailing tool still binds; the failure is trailing-tool with the late id", () => {
+    const { events, a } = parse([
+      RESULT({ session_id: undefined }),
+      TOOL("started", READ),
+      INIT({ model: "Late Model", backing_provider: "backing-late-tool" }),
+    ]);
+    expect(events.map((e) => e.kind)).toEqual(["usage", "result", "tool_call", "session_bound"]);
+    expect(bound(events)).toEqual([
+      {
+        kind: "session_bound",
+        nativeSessionId: SID,
+        model: "Late Model",
+        backingProvider: "backing-late-tool",
+      },
+    ]);
+    expect(a.extractResult(events, EXIT_OK)).toEqual({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the result line",
+      unknownEventCount: 0,
+      nativeSessionId: SID,
+    });
+  });
+
+  it("a late whitespace session id is an unsafe argument; an empty one stays unbound; parser and resumeArgs agree on hostile code points", () => {
+    const a = adapter();
+    const space = parse([RESULT({ session_id: undefined }), INIT({ session_id: " " })]);
+    expect(space.events.filter((e) => e.kind === "provider_error")).toEqual([
+      { kind: "provider_error", category: "protocol", message: "session id is not a safe argument" },
+    ]);
+    expect(bound(space.events)).toEqual([]);
+    expect(space.a.extractResult(space.events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: session id is not a safe argument",
+    });
+    expect(space.a.extractResult(space.events, EXIT_OK)).not.toHaveProperty("nativeSessionId");
+    // Contrast: empty string is absent, so the same order is a clean run with no session (sixth pass).
+    const empty = parse([RESULT({ session_id: undefined }), INIT({ session_id: "" })]);
+    expect(empty.a.extractResult(empty.events, EXIT_OK)).toEqual({ ok: true, unknownEventCount: 0 });
+
+    for (const id of ["a\u0000", "a\tb", "a\r", "\uD83D", "😀", "１", "a b"]) {
+      const state: ParseState = { lines: 0, unknownEvents: 0 };
+      const events = a.parseEvent(INIT({ session_id: id }), state);
+      const label = JSON.stringify(id);
+      expect(events[0], label).toEqual({
+        kind: "provider_error",
+        category: "protocol",
+        message: "session id is not a safe argument",
+      });
+      expect(state.nativeSessionId, label).toBeUndefined();
+      expect(a.resumeArgs({ provider: "cursor", nativeSessionId: id }, req, PRIVILEGED_BYPASS_PROFILE), label).toEqual({
+        ineligible: true,
+        reason: "CAPABILITY_MISSING",
+        detail: "native session id is not a safe single argument",
+      });
+    }
+  });
+
+  it("the trailing-tool detail is used only under OUTPUT_PROTOCOL_ERROR: supervisor outcomes and unexpected exits keep theirs", () => {
+    const events = parse([INIT(), RESULT(), TOOL("started", READ)]).events;
+    for (const [exit, code, detail] of [
+      [{ ...EXIT_OK, outcome: "cancelled" }, "CANCELLED", "run cancelled"],
+      [{ ...EXIT_OK, outcome: "timeout", timeoutKind: "idle" }, "PROCESS_TIMEOUT", "idle timeout"],
+      [{ ...EXIT_OK, outcome: "crashed", exitCode: null, signal: "SIGKILL" }, "PROCESS_CRASH", "signal SIGKILL"],
+      [{ ...EXIT_OK, exitCode: 1 }, "TOOL_FAILURE", "exit code 1"],
+      [
+        { ...EXIT_OK, exitCode: 3, expectedExitCodes: [0, 3] },
+        "OUTPUT_PROTOCOL_ERROR",
+        "tool call after the result line",
+      ],
+    ] as const) {
+      expect(adapter().extractResult(events, exit as never), JSON.stringify(exit)).toEqual({
+        ok: false,
+        failureCode: code,
+        failureDetail: detail,
+        unknownEventCount: 0,
+        nativeSessionId: SID,
+      });
+    }
+  });
+
+  it("two trailing tools keep the trailing-tool detail once; a type:permission_denied line is unknown, never a denial", () => {
+    const two = parse([INIT(), RESULT(), TOOL("started", READ, "c1"), TOOL("started", READ, "c2")]).events;
+    expect(two.filter((e) => e.kind === "tool_call")).toHaveLength(2);
+    expect(adapter().extractResult(two, EXIT_OK)).toEqual({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the result line",
+      unknownEventCount: 0,
+      nativeSessionId: SID,
+    });
+    const named = parse([
+      INIT(),
+      RESULT(),
+      line({ type: "permission_denied", tool: "shellToolCall", session_id: SID }),
+    ]).events;
+    expect(denials(named)).toEqual([]);
+    expect(named.at(-1)).toEqual({ kind: "unknown", rawType: "permission_denied" });
+    expect(adapter().extractResult(named, EXIT_OK)).toEqual({
+      ok: true,
+      unknownEventCount: 1,
+      nativeSessionId: SID,
+    });
+  });
+
+  it("resume argv is compile argv plus one `--resume <id>` pair: prompt stays on stdin, never `--resume=` or `-r`", () => {
+    const a = adapter();
+    for (const objective of ["", req.objective, `--resume ${SID} --force --print`]) {
+      const request = { ...req, objective };
+      const first = a.compile(request, PRIVILEGED_BYPASS_PROFILE);
+      if ("ineligible" in first) throw new Error(first.detail);
+      expect(first.stdin).toEqual({ kind: "text", value: objective });
+      expect(first.argv).not.toContain(objective);
+      for (const id of ["print", "force", "trust", "stream-json", "yolo"]) {
+        const resumed = a.resumeArgs({ provider: "cursor", nativeSessionId: id }, request, PRIVILEGED_BYPASS_PROFILE);
+        expect(resumed, `${JSON.stringify(objective)}/${id}`).toEqual({
+          ...first,
+          argv: [...first.argv, "--resume", id],
+        });
+        if ("ineligible" in resumed) throw new Error(resumed.detail);
+        expect(resumed.argv.filter((w) => w === "--resume")).toEqual(["--resume"]);
+        expect(resumed.argv.some((w) => w.startsWith("--resume="))).toBe(false);
+        expect(resumed.argv).not.toContain("-r");
+        expect(resumed.argv).not.toContain("--continue");
+        expect(resumed.stdin).toEqual(first.stdin);
+      }
+    }
+    // The format value `stream-json` and a resume id spelled the same are two occurrences of one word.
+    const stream = a.resumeArgs({ provider: "cursor", nativeSessionId: "stream-json" }, req, PRIVILEGED_BYPASS_PROFILE);
+    if ("ineligible" in stream) throw new Error(stream.detail);
+    expect(stream.argv.filter((w) => w === "stream-json")).toEqual(["stream-json", "stream-json"]);
+  });
+
+  it("pins the gap: case-variant refusal keys never emit permission_denied; a Git write with those keys still reaches the guard", () => {
+    for (const key of ["Rejected", "PermissionDenied", "PERMISSION_DENIED", "DENIED", "Blocked", "permission-denied"]) {
+      const { events, a } = parse([
+        INIT(),
+        TOOL("completed", { shellToolCall: { args: { command: "ls" }, result: { [key]: {} } } }),
+        RESULT(),
+      ]);
+      expect(denials(events), key).toEqual([]);
+      expect(a.extractResult(events, EXIT_OK), key).toMatchObject({ ok: true, nativeSessionId: SID });
+    }
+    // The same capitalised key on a Git write is not a denial; the guard still sees the command.
+    const g = guarded([
+      INIT(),
+      TOOL("completed", { shellToolCall: { args: { command: "git push origin main" }, result: { Rejected: {} } } }),
+      RESULT(),
+    ]);
+    expect(denials(g.events)).toEqual([]);
+    const res = g.a.extractResult(g.events, EXIT_OK);
+    expect(res).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: SID });
+    expect(res.failureDetail).toMatch(/^git write attempted/);
+  });
+
+  it("fixture denied_key_case_variant replays a completed result.Rejected shell call to success at exit 0 (gap)", async () => {
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: replayAdapter("denied_key_case_variant"),
+      request: { ...req, workspace: { cwd: makeCwd(), writable: true } },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID, unknownEventCount: 0, summary: "The listing ran." },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toEqual({
+      ok: true,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      unknownEventCount: 0,
+      summary: "The listing ran.",
+    });
+  });
+
+  it("a progress-line refusal after result is a denial that outranks the trailing unknown; a string result is not a denial", () => {
+    const progress = parse([
+      INIT(),
+      RESULT(),
+      TOOL("progress", { shellToolCall: { args: { command: "ls" }, result: { rejected: {} } } }),
+    ]);
+    expect(progress.events.slice(-3)).toEqual([
+      { kind: "unknown", rawType: "tool_call:progress" },
+      { kind: "tool_call", tool: "shell", name: "shellToolCall", command: "ls" },
+      { kind: "permission_denied", tool: "shellToolCall" },
+    ]);
+    expect(progress.a.extractResult(progress.events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "denied: shellToolCall",
+      unknownEventCount: 1,
+      nativeSessionId: SID,
+    });
+    // A string `result` is not an object, so neither denial keys nor a nested command are read.
+    const asString = parse([
+      INIT(),
+      TOOL("completed", { shellToolCall: { args: { command: "ls" }, result: "rejected" } }),
+      RESULT(),
+    ]);
+    expect(denials(asString.events)).toEqual([]);
+    expect(asString.a.extractResult(asString.events, EXIT_OK)).toMatchObject({ ok: true, nativeSessionId: SID });
   });
 });
