@@ -15,10 +15,12 @@ Pre-release. The package is private and is not published to any registry; you bu
   (`doctor`, `runs`). See [ROADMAP §6](docs/ROADMAP.md#6-milestones) for the evidence.
 - **Milestone 2 (Claude Code and Codex adapters plus the MCP slice) is `Partial`.** The Claude Code and Codex
   adapters, the MCP server and `switchboard serve` exist and pass their tests on recorded or synthetic fixtures and a
-  fake provider. The 2026-10-13 operator-machine live checks
-  ([`docs/research/live-checks-2026-10-13.md`](docs/research/live-checks-2026-10-13.md)) ran the real Claude Code
-  2.1.296 (14 of 16 checks held; two need a failing run) and codex-cli 0.162.1 (flag assumptions held; Codex has not
-  run through Switchboard). The opt-in `npm run test:live` smoke test has not been run by the operator personally. See
+  fake provider. On Ampere 2026-10-14 the operator ran the opt-in `npm run test:live` smoke through real
+  `switchboard serve` ([`docs/research/live-checks-2026-10-14-claude-codex.md`](docs/research/live-checks-2026-10-14-claude-codex.md)):
+  Claude Code 2.1.294 **14 HELD, 0 FAILED, 2 NOT_CHECKED** (C-12, C-G2); Codex 0.162.0 after `adapters validate codex`
+  **10 HELD, 0 FAILED, 3 NOT_CHECKED** (X-4, X-9, X-G1). Earlier checks on another host are in
+  [`docs/research/live-checks-2026-10-13.md`](docs/research/live-checks-2026-10-13.md). `Done` waits on those residual
+  operator cells and on `doctor` with a provider installed. See
   [ROADMAP §6.2](docs/ROADMAP.md#62-m2-claude-code-adapter-and-mcp-slice-tasks).
 - **Milestone 3 (isolation) is `Partial`.** Trust profiles and overrides, approvals (`approve`, `deny`), privileged
   runs, verification commands (optionally confined in bubblewrap), outer-sandbox detection and retention (`gc`) are
