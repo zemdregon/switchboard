@@ -1748,6 +1748,32 @@ input when the adapter declares `liveInput: true` in §2; otherwise stop at a bo
 session with the note (FR-SES-03, BR-7). Unknown run or a run the caller cannot see → `INVALID_REQUEST` or
 `PERMISSION_BLOCKED` as for `get_run`. Terminal runs → no-op returning the terminal envelope.
 
+**Implemented (T14.7, Delegated, not owner-approved).** `src/mcp/server.ts` registers `steer_run` (appended last to the
+tool list, output the `get_run` envelope); `src/lifecycle/steer.ts` and `RunLifecycle.steer` in
+`src/lifecycle/lifecycle.ts` deliver the note. Choices this section leaves open:
+
+- Scoping is exactly `get_run`'s: an unknown run and another client's (or HTTP subject's) run are both
+  `INVALID_REQUEST`, so a run id is not an existence oracle across clients (the server's standing rule). Nothing is
+  recorded for a refused call.
+- No adapter declares `liveInput` yet: the field is not in the §2 contract, and the [steer
+  spike](../research/adapter-steer-input-spike-2026-10-15.md) leaves Claude (S1) and Codex (S2) live input unverified.
+  Every note is therefore delivered by boundary-resume. On the ephemeral headless transports the boundary is the end of
+  the provider's current turn (the process exits with a result); a running turn is not interrupted.
+- At that boundary, when notes are queued and the turn succeeded with a reported native session id, the lifecycle
+  compiles `resumeArgs` for that session in the same run (same worktree, same channel and environment wrapping, the
+  same pre-spawn audits) with the notes, joined by a blank line, as the whole prompt and no constraints. The objective
+  is never sent again (BR-7, no replay); no successor run or meta-session is created. The resumed turn's pid and pgid
+  replace the run's (`steer_turn_spawned` event); every turn's stdout and stderr stay artifacts of the run, and the run
+  finishes on the last turn's result.
+- Events (bounded, no note text): `steer_requested` `{note_chars, note_sha256, delivery: "boundary_resume"}` on every
+  accepted call against a non-terminal run; `steer_delivered` `{delivery, notes}` when a resumed turn is spawned;
+  `steer_undelivered` `{reason, notes}` otherwise, with `reason` one of `past_boundary` (verifying, finalizing, or the
+  last turn already ended), `not_in_this_process` (a slot state no executor here owns), `turn_not_successful`,
+  `no_native_session`, `resume_refused` (compile, environment or audit refusal; `stage` says which) and `run_ended`.
+  A note is never retried.
+- Notes wait in controller memory only (no artifact, no migration): a daemon restart loses queued notes, while their
+  `steer_requested` events remain. Durable storage is left to a later task if the console needs it.
+
 **`pause_project` / `resume_project`**
 
 ```jsonc
