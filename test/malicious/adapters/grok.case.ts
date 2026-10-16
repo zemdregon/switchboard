@@ -2655,6 +2655,7 @@ export const grokResidualStreams = (fx: MaliciousFixture): HostileStream[] => [
   ...grokResidualStreams13d(fx),
   ...grokResidualStreams13e(fx),
   ...grokResidualStreams13f(fx),
+  ...grokEighthPassStreams(fx),
 ];
 
 /**
@@ -2691,6 +2692,47 @@ const grokResidualStreams13f = (fx: MaliciousFixture): HostileStream[] =>
             TOOLS,
             JSON.stringify({ type: "tool_call", id: "call_s", name: "run_terminal_command", input: { path: "." } }),
             JSON.stringify({ type: "tool_call_update", id: "call_s", input: { path: long } }),
+            end(),
+          ],
+        },
+      ];
+    }),
+  );
+
+/**
+ * #470 eighth-pass positive controls replayed through the malicious harness (T4.26, ADR-0039).
+ * A non-string command must not hide a hostile shell target. A read renamed with a new target must retain shell
+ * identity for a later nameless target update. The shadowed-target and deduplicated-rename gaps remain separate;
+ * these controls make no claim that those gaps are closed. Synthetic fields only, not a native capture.
+ */
+export const grokEighthPassStreams = (fx: MaliciousFixture): HostileStream[] =>
+  (["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) =>
+    [0, 1].flatMap((exitCode): HostileStream[] => {
+      const command = hostileCommand(fx, category);
+      return [
+        {
+          name: `${category}: a non-string command beside a hostile shell target, exit ${exitCode}`,
+          category,
+          exitCode,
+          failureCode: "PERMISSION_BLOCKED",
+          lines: [
+            META(`${category}: non-string command beside shell target (#470)`, exitCode),
+            TOOLS,
+            JSON.stringify({ type: "tool_call", name: "run_terminal_command", input: { command: 0, path: command } }),
+            end(),
+          ],
+        },
+        {
+          name: `${category}: a read renamed with a new target before a nameless hostile update, exit ${exitCode}`,
+          category,
+          exitCode,
+          failureCode: "PERMISSION_BLOCKED",
+          lines: [
+            META(`${category}: shell identity after read rename (#470)`, exitCode),
+            TOOLS,
+            JSON.stringify({ type: "tool_call", id: "r1", tool: "read_file", input: { path: "notes.txt" } }),
+            JSON.stringify({ type: "tool_call_update", id: "r1", name: "run_terminal_command", input: { path: "ls" } }),
+            JSON.stringify({ type: "tool_call_update", id: "r1", input: { path: command } }),
             end(),
           ],
         },

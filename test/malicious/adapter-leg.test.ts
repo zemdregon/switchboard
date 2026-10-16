@@ -686,7 +686,7 @@ describe("adapter malicious leg: grok partial streams", () => {
 
   it("positive control: without the ADR-0039 guard verdict, none of the residual blocked streams ends PERMISSION_BLOCKED", () => {
     const residuals = grokResidualStreams(fx);
-    expect(residuals.length).toBe(180);
+    expect(residuals.length).toBe(192);
     const adapter = c.makeAdapter("unused", 0);
     for (const s of residuals) {
       const state = { lines: 0, unknownEvents: 0 };
