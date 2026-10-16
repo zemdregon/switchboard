@@ -1,0 +1,3 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.53 twelfth residual pass). The error payload is a bare string spelling the provider.quota type (not the live-check row 14b object shape) and the process exits 1. Pins that a string payload is read as a message, never as a type: the run ends TOOL_FAILURE, not QUOTA_EXHAUSTED (gap). Not a recorded native shape.","exit":1}}
+{"type":"step_start","timestamp":1,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_s1","type":"step-start"}}
+{"type":"error","timestamp":2,"sessionID":"ses_SYNTHETIC0000000000000001","error":"provider.quota"}

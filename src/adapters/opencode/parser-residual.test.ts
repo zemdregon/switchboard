@@ -55,6 +55,12 @@
  * stay provider errors that a later stop cannot erase (fixture `error_empty_payload.jsonl`); an error nested under
  * `part` or a final finish with reason `error` surfaces no provider error (gaps); and an unsafe or changed id on a quota
  * error line emits the protocol error first, masking QUOTA_EXHAUSTED (gap, fixture `unsafe_id_quota_error.jsonl`).
+ * Twelfth pass (2026-10-16, same terms): only `step_start` checks `part.type`, so a reasoning-typed text reaches the
+ * summary and a text-typed stop finish succeeds (gap, fixture `finish_part_type_text.jsonl`); token counters that
+ * overflow to Infinity or are negative are dropped while -0 and fractions are kept, and a finish with no readable
+ * counter still yields its result; a scalar error payload is JSON text under `unknown`, and a bare string spelling a
+ * mapped type is a message, never a type (gap, fixture `error_string_quota.jsonl`); a type-less error object is clipped
+ * JSON; an empty-string command stays a shell command; and whitespace-only text becomes the whole summary (gap).
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -2925,6 +2931,193 @@ describe("opencode parser residuals, eleventh pass: unreadable finish reasons, n
         ok: false,
         failureCode: "OUTPUT_PROTOCOL_ERROR",
         failureDetail: "protocol: session id is not a safe argument",
+        nativeSessionId: DEFAULT_SESSION_ID,
+        summary: null,
+        unknownEventCount: 0,
+      },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+  });
+});
+
+describe("opencode parser residuals, twelfth pass: unchecked part types, token counter boundaries, scalar error payloads and empty strings (T4.53; synthetic lines; parser unchanged)", () => {
+  const request = (cwd = makeCwd()): CompileRequest => ({
+    runId: "run_opencode_t453_twelfth",
+    objective: "synthetic opencode objective",
+    constraints: [],
+    workspace: { cwd, writable: true },
+    bypassApproved: true,
+  });
+  const parseRaw = (raws: string[]) => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    return { events: raws.flatMap((r) => a.parseEvent(r, state)), state };
+  };
+  const usage = (events: readonly NormalizedEvent[]) => events.filter((e) => e.kind === "usage");
+  const errorLine = (error: unknown) => ({ type: "error", sessionID: SID, error });
+
+  it("pins the gap: only step_start checks part.type; text, tool_use and step_finish lines ignore it", () => {
+    // Contrast: a step_start whose part names another type is unknown.
+    expect(parse([{ type: "step_start", sessionID: SID, part: { type: "text" } }]).events.at(-1)).toEqual({
+      kind: "unknown",
+      rawType: "step_start:text",
+    });
+    const { events, state } = parse([
+      START(SID),
+      { type: "text", sessionID: SID, part: { type: "reasoning", text: "thinking" } },
+      {
+        type: "tool_use",
+        sessionID: SID,
+        part: { type: "text", tool: "read", state: { input: { filePath: "a.ts" } } },
+      },
+      {
+        type: "step_finish",
+        sessionID: SID,
+        part: { id: "prt_t", type: "text", reason: "stop", tokens: { input: 2 } },
+      },
+    ]);
+    expect(state.unknownEvents).toBe(0);
+    expect(events).toEqual([
+      { kind: "session_bound", nativeSessionId: SID },
+      { kind: "message", role: "assistant", text: "thinking" },
+      { kind: "tool_call", tool: "read", name: "read", target: "a.ts" },
+      { kind: "usage", source: "provider_reported", metrics: { input: 2 } },
+      { kind: "result", ok: true },
+    ]);
+    expect(adapter().extractResult(events, EXIT_OK)).toEqual({
+      ok: true,
+      nativeSessionId: SID,
+      unknownEventCount: 0,
+      summary: "thinking",
+    });
+  });
+
+  it("token counter boundaries: overflow to Infinity and negatives are dropped, -0 and fractions kept, partial cache read alone", () => {
+    const finish = (part: string) =>
+      `{"type":"step_finish","sessionID":"${SID}","part":{"id":"prt_b","type":"step-finish","reason":"stop",${part}}}`;
+    const overflow = parseRaw([
+      finish(`"tokens":{"input":1e400,"output":-1,"reasoning":-0,"cache":{"read":0.5}},"cost":-0.01`),
+    ]).events;
+    const [u] = usage(overflow);
+    expect(u).toEqual({ kind: "usage", source: "provider_reported", metrics: { reasoning: -0, cache_read: 0.5 } });
+    // -0 is kept as reported, not normalized to 0 (no sums, no defaults; FR-CAP-01).
+    expect(u?.kind === "usage" && Object.is(u.metrics.reasoning, -0)).toBe(true);
+    expect(overflow.at(-1)).toEqual({ kind: "result", ok: true });
+
+    const largest = parseRaw([finish(`"tokens":{"input":1e308,"cache":{"write":3}},"cost":1e400`)]).events;
+    expect(usage(largest)).toEqual([
+      { kind: "usage", source: "provider_reported", metrics: { input: 1e308, cache_write: 3 } },
+    ]);
+
+    // Every counter unreadable: no usage event, but the stop still yields a result and spends the part id.
+    const { events } = parseRaw([
+      finish(`"tokens":{"input":-5,"output":1e999},"cost":-1`),
+      finish(`"tokens":{"input":4}`),
+    ]);
+    expect(usage(events)).toEqual([]);
+    expect(events.filter((e) => e.kind === "result")).toHaveLength(2);
+  });
+
+  it("scalar error payloads: a number or boolean is JSON text under unknown; a string is a message, never a type (gap)", () => {
+    const cases: [unknown, string][] = [
+      [0, "0"],
+      [42, "42"],
+      [false, "false"],
+      [true, "true"],
+      ["provider.quota", "error: provider.quota"],
+      ["provider.auth", "error: provider.auth"],
+      ["provider.no-route", "error: provider.no-route"],
+    ];
+    for (const [payload, message] of cases) {
+      const label = JSON.stringify(payload);
+      const { events, state } = parse([START(SID), errorLine(payload)]);
+      expect(events.at(-1), label).toEqual({ kind: "provider_error", category: "unknown", message });
+      expect(state.unknownEvents, label).toBe(0);
+      expect(adapter().extractResult(events, EXIT_1), label).toEqual({
+        ok: false,
+        failureCode: "TOOL_FAILURE",
+        failureDetail: `unknown: ${message}`,
+        nativeSessionId: SID,
+        unknownEventCount: 0,
+      });
+    }
+  });
+
+  it("an error object without a type or message is clipped JSON text: 2,000 characters and an ellipsis", () => {
+    const payload = { detail: "d".repeat(3_000) };
+    const [err] = parse([errorLine(payload)]).events.filter((e) => e.kind === "provider_error");
+    expect(err).toEqual({
+      kind: "provider_error",
+      category: "unknown",
+      message: `${JSON.stringify(payload).slice(0, 2_000)}…`,
+    });
+  });
+
+  it("an empty-string command is still a shell command (never dropped), for the shell tool and an unrecognized tool", () => {
+    const { events } = parse([
+      START(SID),
+      TOOL("shell", { command: "" }),
+      TOOL("mcp_runner", { command: "" }),
+      TOOL("read", { command: "", filePath: "" }),
+      FINISH("stop"),
+    ]);
+    expect(events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "shell", name: "shell", command: "" },
+      { kind: "tool_call", tool: "shell", name: "mcp_runner", command: "" },
+      // Read tools ignore `command`; an empty filePath is kept as an empty target.
+      { kind: "tool_call", tool: "read", name: "read", target: "" },
+    ]);
+    const checked = guarded([START(SID), TOOL("shell", { command: "" }), FINISH("stop")]);
+    expect(checked.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "shell", name: "shell" },
+    ]);
+    expect(adapter().extractResult(checked, EXIT_OK)).toEqual({ ok: true, nativeSessionId: SID, unknownEventCount: 0 });
+  });
+
+  it("pins the gap: whitespace-only text is a message and becomes the whole summary", () => {
+    for (const text of [" ", "   ", "\n", "\t\n"]) {
+      const label = JSON.stringify(text);
+      const { events } = parse([START(SID), TEXT(text), FINISH("stop")]);
+      expect(events[1], label).toEqual({ kind: "message", role: "assistant", text });
+      expect(adapter().extractResult(events, EXIT_OK), label).toEqual({
+        ok: true,
+        nativeSessionId: SID,
+        unknownEventCount: 0,
+        summary: text,
+      });
+    }
+    // Joined with an empty text: the empty part emits no message, so nothing is joined in its place.
+    const joined = parse([START(SID), TEXT(" "), TEXT(""), TEXT("b"), FINISH("stop")]).events;
+    expect(adapter().extractResult(joined, EXIT_OK)).toMatchObject({ ok: true, summary: " \nb" });
+  });
+
+  it("fixture finish_part_type_text replays a text-typed stop finish after reasoning-typed text to success (gap)", async () => {
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: replayAdapter("finish_part_type_text"),
+      request: request(),
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toEqual({
+      ok: true,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      unknownEventCount: 0,
+      summary: "SYNTHETIC: thinking",
+    });
+  });
+
+  it("fixture error_string_quota replays a bare-string quota error at exit 1 to TOOL_FAILURE, not QUOTA_EXHAUSTED (gap)", async () => {
+    const report = await runConformanceCase({
+      kind: "task_failure",
+      adapter: replayAdapter("error_string_quota"),
+      request: request(),
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: {
+        ok: false,
+        failureCode: "TOOL_FAILURE",
+        failureDetail: "unknown: error: provider.quota",
         nativeSessionId: DEFAULT_SESSION_ID,
         summary: null,
         unknownEventCount: 0,
