@@ -853,7 +853,9 @@ listed session's worktrees, `switchboard/<session>/` branches and artifact files
 run events stay as the audit record. It refuses to apply unless `retention.days` is set in the config, and while a
 `serve` is running (stop it first; a dry run is always allowed). When `retention.days` is set, `serve` also runs this
 pass at startup and then every `retention.interval`. `doctor` shows the same dry-run summary and the orphan sweep
-(worktree directories or `switchboard/*` branches with no ledger row); orphans are reported, never removed.
+(worktree directories or `switchboard/*` branches with no ledger row). `gc --apply` and the `serve` pass also remove
+orphans, but never on first sight: the first pass marks each one and a later pass removes it once it has been marked
+for `retention.days`. Only `switchboard/` branches and directories under the data directory's `worktrees/` are removed.
 
 **Inner agent.** `inner status` (read-only; it never contacts the backend) shows the state (`off`, `no_backend` or
 `ready`), the backend's origin and locality, and per task the call counts by outcome, the fallback rate and the

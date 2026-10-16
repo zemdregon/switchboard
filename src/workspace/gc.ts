@@ -304,9 +304,9 @@ export interface OrphanReport {
 /**
  * Orphan sweep (LLD §5): worktree directories and `switchboard/*` branches with no matching ledger row. A publish ref
  * whose meta-session exists is not an orphan (it is the deliverable); one whose session is unknown still is. Report
- * only; nothing is removed (T3.12: removal of orphans is not implemented). Symlinks are listed, never followed. A run
- * being prepared at this very moment can appear briefly as an orphan, so treat the report as advice, not as a delete
- * list.
+ * only; removal is {@link collectOrphans}, which marks first and waits out the retention period. Symlinks are listed,
+ * never followed. A run being prepared at this very moment can appear briefly as an orphan, so treat the report as
+ * advice, not as a delete list.
  */
 export async function findOrphans(options: {
   readonly db: Database.Database;
@@ -359,4 +359,250 @@ export async function findOrphans(options: {
     }
   }
   return { worktrees, branches, warnings };
+}
+
+// ---- Orphan collection (T3.12, LLD §5, ADR-0054): mark first, remove only after the retention period. ----
+
+export type OrphanGcStep = "intent" | "remove" | "outcome";
+
+export interface OrphanGcOptions {
+  readonly db: Database.Database;
+  /** Controller data directory; orphan worktree directories are only ever removed under `<dataDir>/worktrees/`. */
+  readonly dataDir: string;
+  /** Retention in days, counted from the orphan's first sighting by a collecting pass (its mark). */
+  readonly days: number;
+  readonly now?: Date;
+  readonly publishPrefix?: string;
+  /** Test seam, as {@link GcOptions.onStep}: a throw simulates a crash after that step for that orphan. */
+  readonly onStep?: (step: OrphanGcStep, target: string) => void | Promise<void>;
+}
+
+export interface OrphanGcResult {
+  readonly cutoff: string;
+  /** Orphans first seen by this pass (their retention clock starts now). */
+  readonly marked: number;
+  /** Orphans marked earlier and still inside the retention period. */
+  readonly waiting: number;
+  readonly removedWorktrees: string[];
+  readonly removedBranches: { readonly repoRoot: string; readonly branch: string }[];
+  readonly warnings: string[];
+  readonly errors: { target: string; step: OrphanGcStep | "unknown"; message: string }[];
+}
+
+interface OrphanKey {
+  readonly kind: "worktree" | "branch";
+  /** `''` for a worktree directory. */
+  readonly repoRoot: string;
+  readonly target: string;
+}
+
+interface OrphanRow {
+  kind: "worktree" | "branch";
+  repo_root: string;
+  target: string;
+  first_seen_at: string;
+  intent_at: string | null;
+  removed_at: string | null;
+}
+
+const orphanKey = (k: OrphanKey): string => `${k.kind}\0${k.repoRoot}\0${k.target}`;
+const rowKey = (r: OrphanRow): OrphanKey => ({ kind: r.kind, repoRoot: r.repo_root, target: r.target });
+
+/**
+ * Remove orphans after the retention period, with the same crash-safe order as session GC. Per pass:
+ *
+ * 1. Mark (one transaction): every orphan {@link findOrphans} reports gets a `gc_orphan` row with its first sighting;
+ *    one that reappears after removal starts a new clock. A mark whose target is no longer an orphan (a ledger row
+ *    appeared, or the operator removed it) and whose removal had not begun is forgotten.
+ * 2. Per orphan whose mark is older than `days` (worktree directories first, then `git worktree prune`, then
+ *    branches): intent (one transaction that re-checks the ledger and sets `intent_at`), then the removal, then the
+ *    outcome (`removed_at`). A row with an intent and no outcome rolls forward on the next pass.
+ *
+ * So nothing is removed on its first sighting, whatever `days` is. Branches outside `switchboard/` are never touched;
+ * worktree removal is refused when `<dataDir>/worktrees` or the session directory is a symlink, and a symlinked orphan
+ * is unlinked, never followed. Read-only callers (`doctor`, `gc` dry run) use {@link findOrphans}, which writes nothing.
+ */
+export async function collectOrphans(options: OrphanGcOptions): Promise<OrphanGcResult> {
+  if (!Number.isFinite(options.days) || options.days < 0) throw new RangeError("days must be a non-negative number");
+  const { db } = options;
+  const now = options.now ?? new Date();
+  const at = now.toISOString();
+  const cutoff = new Date(now.getTime() - options.days * DAY_MS).toISOString();
+  const publishPrefix = options.publishPrefix ?? DEFAULT_PUBLISH_PREFIX;
+  const base = path.join(await realpath(options.dataDir).catch(() => path.resolve(options.dataDir)), "worktrees");
+  const report = await findOrphans({ db, dataDir: options.dataDir, publishPrefix });
+  const warnings = [...report.warnings];
+  const errors: OrphanGcResult["errors"] = [];
+  const found: OrphanKey[] = [
+    ...report.worktrees.map((target) => ({ kind: "worktree" as const, repoRoot: "", target })),
+    ...report.branches.map((b) => ({ kind: "branch" as const, repoRoot: b.repoRoot, target: b.branch })),
+  ];
+  const foundKeys = new Set(found.map(orphanKey));
+
+  // 1. Mark.
+  let marked = 0;
+  let waiting = 0;
+  const due: OrphanKey[] = [];
+  const unfinished: OrphanKey[] = [];
+  db.transaction(() => {
+    const rows = db
+      .prepare("SELECT kind, repo_root, target, first_seen_at, intent_at, removed_at FROM gc_orphan")
+      .all() as OrphanRow[];
+    const byKey = new Map(rows.map((r) => [orphanKey(rowKey(r)), r]));
+    const mark = db.prepare(
+      `INSERT INTO gc_orphan (kind, repo_root, target, first_seen_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT (kind, repo_root, target) DO UPDATE
+         SET first_seen_at = excluded.first_seen_at, intent_at = NULL, removed_at = NULL`,
+    );
+    for (const k of found) {
+      const r = byKey.get(orphanKey(k));
+      if (!r || r.removed_at !== null) {
+        mark.run(k.kind, k.repoRoot, k.target, at);
+        marked++;
+      } else if (r.intent_at !== null || r.first_seen_at < cutoff) due.push(k);
+      else waiting++;
+    }
+    for (const r of rows) {
+      if (r.removed_at !== null || foundKeys.has(orphanKey(rowKey(r)))) continue;
+      if (r.intent_at === null) forgetMark(db, rowKey(r));
+      else unfinished.push(rowKey(r));
+    }
+  }).immediate();
+
+  // A started removal whose target the sweep no longer reports: finished if the target is gone, else forgotten.
+  for (const k of unfinished) {
+    const gone =
+      k.kind === "worktree" ? !(await exists(k.target)) : !(await branchExists(k.repoRoot, k.target).catch(() => true));
+    if (gone) {
+      db.prepare("UPDATE gc_orphan SET removed_at = ? WHERE kind = ? AND repo_root = ? AND target = ?").run(
+        at,
+        k.kind,
+        k.repoRoot,
+        k.target,
+      );
+    } else forgetMark(db, k);
+  }
+
+  // 2. Intent, removal, outcome per due orphan; worktrees before branches so a branch is no longer checked out.
+  const removedWorktrees: string[] = [];
+  const removedBranches: OrphanGcResult["removedBranches"][number][] = [];
+  const stillOrphan = orphanRecheck(db, base, publishPrefix);
+  const collect = async (k: OrphanKey, remove: () => Promise<void>): Promise<boolean> => {
+    let step: OrphanGcStep | "unknown" = "unknown";
+    try {
+      step = "intent";
+      const go = db
+        .transaction(() => {
+          if (!stillOrphan(k)) {
+            forgetMark(db, k);
+            return false;
+          }
+          db.prepare(
+            "UPDATE gc_orphan SET intent_at = COALESCE(intent_at, ?) WHERE kind = ? AND repo_root = ? AND target = ?",
+          ).run(at, k.kind, k.repoRoot, k.target);
+          return true;
+        })
+        .immediate();
+      if (!go) return false;
+      await options.onStep?.("intent", k.target);
+      step = "remove";
+      await remove();
+      await options.onStep?.("remove", k.target);
+      step = "outcome";
+      db.prepare("UPDATE gc_orphan SET removed_at = ? WHERE kind = ? AND repo_root = ? AND target = ?").run(
+        at,
+        k.kind,
+        k.repoRoot,
+        k.target,
+      );
+      await options.onStep?.("outcome", k.target);
+      return true;
+    } catch (err) {
+      errors.push({ target: k.target, step, message: err instanceof Error ? err.message : String(err) });
+      return false;
+    }
+  };
+  for (const k of due.filter((d) => d.kind === "worktree")) {
+    if (await collect(k, () => removeOrphanWorktree(base, k.target))) removedWorktrees.push(k.target);
+  }
+  if (removedWorktrees.length > 0 || due.some((d) => d.kind === "branch")) {
+    for (const repoRoot of knownRepos(db)) {
+      if (await isRepo(repoRoot)) await git(["worktree", "prune"], { cwd: repoRoot }).catch(() => undefined);
+    }
+  }
+  for (const k of due.filter((d) => d.kind === "branch")) {
+    if (await collect(k, () => removeOrphanBranch(k.repoRoot, k.target)))
+      removedBranches.push({ repoRoot: k.repoRoot, branch: k.target });
+  }
+  return { cutoff, marked, waiting, removedWorktrees, removedBranches, warnings, errors };
+}
+
+function forgetMark(db: Database.Database, k: OrphanKey): void {
+  db.prepare("DELETE FROM gc_orphan WHERE kind = ? AND repo_root = ? AND target = ?").run(k.kind, k.repoRoot, k.target);
+}
+
+function knownRepos(db: Database.Database): string[] {
+  return (
+    db.prepare("SELECT DISTINCT repo_root FROM meta_session WHERE repo_root IS NOT NULL").all() as {
+      repo_root: string;
+    }[]
+  ).map((r) => r.repo_root);
+}
+
+/** The ledger half of {@link findOrphans} for one target, run inside the intent transaction. */
+function orphanRecheck(db: Database.Database, base: string, publishPrefix: string): (k: OrphanKey) => boolean {
+  const sessionExists = db.prepare("SELECT 1 AS x FROM meta_session WHERE id = ?");
+  const runExists = db.prepare("SELECT 1 AS x FROM run WHERE id = ? AND meta_session_id = ?");
+  const branchNamed = db.prepare(
+    "SELECT 1 AS x FROM run WHERE branch = ? UNION ALL SELECT 1 FROM workspace_checkpoint WHERE branch = ? LIMIT 1",
+  );
+  return (k) => {
+    if (k.kind === "worktree") {
+      const parts = path.relative(base, k.target).split(path.sep);
+      if (parts.length < 1 || parts.length > 2 || parts.some((p) => p === "" || p === "..")) return false;
+      const [sess, run] = parts as [string, string | undefined];
+      if (!sessionExists.get(sess)) return true;
+      return run !== undefined && !runExists.get(run, sess);
+    }
+    if (!k.target.startsWith("switchboard/")) return false;
+    if (branchNamed.get(k.target, k.target)) return false;
+    return !(k.target.startsWith(publishPrefix) && sessionExists.get(k.target.slice(publishPrefix.length)));
+  };
+}
+
+/**
+ * Remove one orphan directory `<base>/<sess>` or `<base>/<sess>/<name>`. Refused (throws) when `base` or the session
+ * directory is a symlink or not a directory, so nothing outside the data directory is reached through a link; the
+ * orphan itself, if a symlink, is unlinked and its target left alone (`fs.rm` never follows links inside the tree).
+ */
+async function removeOrphanWorktree(base: string, target: string): Promise<void> {
+  const rel = path.relative(base, target);
+  const parts = rel.split(path.sep);
+  if (rel === "" || path.isAbsolute(rel) || parts.length > 2 || parts.some((p) => p === "" || p === "..")) {
+    throw new Error(`refused: ${target} is not a worktree directory under ${base}`);
+  }
+  const notRealDir = async (p: string) => {
+    const st = await lstat(p).catch(() => undefined);
+    return !st || st.isSymbolicLink() || !st.isDirectory();
+  };
+  if (await notRealDir(base)) throw new Error(`refused: ${base} is a symlink or not a directory`);
+  if (parts.length === 2 && (await notRealDir(path.join(base, parts[0] as string)))) {
+    throw new Error(`refused: session directory of ${target} is a symlink or not a directory`);
+  }
+  const st = await lstat(target).catch(() => undefined);
+  if (!st) return;
+  await rm(target, { recursive: !st.isSymbolicLink(), force: true });
+}
+
+async function branchExists(repoRoot: string, branch: string): Promise<boolean> {
+  if (!(await isRepo(repoRoot))) return false;
+  const r = await git(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], { cwd: repoRoot, okCodes: [1] });
+  return r.code === 0;
+}
+
+async function removeOrphanBranch(repoRoot: string, branch: string): Promise<void> {
+  if (!branch.startsWith("switchboard/")) throw new Error(`refused: ${branch} is outside switchboard/`);
+  if (!(await isRepo(repoRoot))) throw new Error(`repository unavailable: ${repoRoot}`);
+  if (!(await branchExists(repoRoot, branch))) return;
+  await git(["branch", "-D", branch], { cwd: repoRoot });
 }
