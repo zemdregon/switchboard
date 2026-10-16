@@ -1,9 +1,10 @@
 /**
- * T4.72 and T4.73 (TDD §4.8): the Muse Code module, manifest, probe, registry entry, compile matrix, parser, result
- * and resume. SYNTHETIC: no `muse`
+ * T4.72, T4.73 and T4.77 (TDD §4.8): the Muse Code module, manifest, probe, registry entry, compile matrix, parser,
+ * result, resume and Git declaration. SYNTHETIC: no `muse`
  * binary was installed or run. Executable paths are placeholders or the node stand-in `fixtures/fake-muse.mjs`, and
  * the version line is the format a third party reported ([Orca]), not a capture.
  */
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +18,7 @@ import type { CliIo } from "../../cli/io.js";
 import { buildRegistry } from "../../cli/serve.js";
 import { validateConfig } from "../../config/index.js";
 import { buildEnv, supervise } from "../../exec/supervisor.js";
+import { GIT_FINALIZE_COMMIT_EVENT, GitPublisher, publishRefFor } from "../../git/index.js";
 import { createIdGenerator } from "../../ids/index.js";
 import { createLedger, openLedger } from "../../ledger/index.js";
 import { RunLifecycle } from "../../lifecycle/index.js";
@@ -26,6 +28,7 @@ import type { PrivilegedScope } from "../../policy/types.js";
 import { WorkspaceManager } from "../../workspace/index.js";
 import { auditInvocation, type BypassContext } from "../audit.js";
 import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
+import { replayLauncher } from "../fixtures/replay.js";
 import { tryLoadManifest } from "../manifest/index.js";
 import { adapterIdForConfigId, configIdForAdapterId, providerEntry } from "../providers.js";
 import { AdapterRegistry } from "../registry.js";
@@ -63,9 +66,11 @@ import {
   AUTH_LOGGED_IN_PREFIX,
   AUTH_LOGGED_OUT_PREFIX,
   AUTH_STATUS_ARGS,
+  GIT_WRITE_CONTROL_DETAIL,
   META_API_KEY_ENV,
   MUSE_LOGIN_COMMAND,
   NO_AUTO_UPDATE_ENV,
+  NON_PRIVILEGED_UNSUPPORTED_DETAIL,
 } from "./protocol.js";
 
 const FAKE_MUSE = fileURLToPath(new URL("./fixtures/fake-muse.mjs", import.meta.url));
@@ -478,14 +483,216 @@ describe("muse probe on synthetic output (T4.72, FR-ADP-02)", () => {
   });
 });
 
-describe("muse fail-closed placeholders (T4.75 to T4.77 are later tasks)", () => {
-  it("declares the fail-closed Git values: none-documented and finalize-only", () => {
-    const a = adapter();
-    expect(a.gitWriteControl).toBe(MUSE_GIT_WRITE_CONTROL);
-    expect(a.gitWriteControl).toMatchObject({ kind: "none-documented", remainingControls: ["FR-GIT-03", "FR-GIT-06"] });
-    expect(a.gitCapabilities).toBe(MUSE_GIT_CAPABILITIES);
-    expect(a.gitCapabilities.commitChannel).toBe("finalize-only");
-    expect(a.transports).toEqual(["subprocess-jsonl"]);
+/**
+ * T4.77 on the Grok T4.27 pattern (TDD §4.8 "Git writes": no per-command deny control is documented). SYNTHETIC: the
+ * replayed run uses the shared replay helper with the Muse dialect and the T4.73 `success_edit` fixture; no `muse` was
+ * run.
+ */
+describe("muse Git declaration (T4.77, FR-GIT-01, FR-GIT-02, FR-GIT-09)", () => {
+  it("declares no Git write control (a sandbox property is not a deny control), leaving FR-GIT-03 and FR-GIT-06", () => {
+    const c = adapter().gitWriteControl;
+    expect(c).toBe(MUSE_GIT_WRITE_CONTROL);
+    expect(c.kind).toBe("none-documented");
+    expect(c.remainingControls).toEqual(["FR-GIT-03", "FR-GIT-06"]);
+    expect(c.detail).toBe(GIT_WRITE_CONTROL_DETAIL);
+    expect(c.detail).toMatch(/not a FR-GIT-01 control/);
+    expect(c.detail).toMatch(/Unverified: T4\.71/);
+    expect(adapter().transports).toEqual(["subprocess-jsonl"]);
+  });
+
+  it("declares finalize-only commit channel with no injected channel (FR-GIT-09, owner decision 36)", () => {
+    const caps = adapter().gitCapabilities;
+    expect(caps).toBe(MUSE_GIT_CAPABILITIES);
+    expect(caps.commitChannel).toBe("finalize-only");
+    expect(caps.detail).toMatch(/FR-GIT-09/);
+    expect(caps.detail).toMatch(/no tool is injected/);
+  });
+
+  it("FR-GIT-01 argv test: no compiled argv, policy flag or env carries git, gh or a Git-write enabling flag", () => {
+    const profile = approved();
+    const initial = adapter().compile(request({ bypassApproved: true }), profile);
+    const resumed = adapter().resumeArgs(
+      { provider: "muse", nativeSessionId: RESUMED_SESSION_ID },
+      request({ bypassApproved: true }),
+      profile,
+    );
+    // `--disable-sandbox` and `--yolo` lift the read-only `.git` ([M-perm]); `-c` could load a commit-capable MCP server.
+    const gitEnabling = ["--disable-sandbox", "--yolo", "--disable-approval", "-c", "--config"];
+    const invocations: [string, Invocation][] = [
+      ["initial", compiled(initial)],
+      ["resumed", compiled(resumed)],
+      ...compiledCells().map((c, i): [string, Invocation] => [`cell ${i}`, c]),
+    ];
+    for (const [name, inv] of invocations) {
+      expect(inv.argv.at(-1), name).toBe("fix the failing test");
+      expect(inv.stdin).toEqual({ kind: "none" });
+      for (const a of inv.argv.slice(1)) {
+        expect(/\bgit\b|\bgh\b/.test(a), `${name} argv has git: ${a}`).toBe(false);
+        expect(gitEnabling.includes(a), `${name} argv has ${a}`).toBe(false);
+      }
+      for (const a of inv.policyFlags) {
+        expect(/\bgit\b|\bgh\b/.test(a), `${name} policyFlags has git: ${a}`).toBe(false);
+      }
+      expect(inv.envAllowlist).toEqual(["PATH", "HOME"]);
+      for (const k of Object.keys(inv.env)) {
+        expect(/GIT|GITHUB|GH|MUSE|META/.test(k), `${name} env: ${k}`).toBe(false);
+      }
+    }
+  });
+
+  it.each([
+    "git commit",
+    "git commit -m x",
+    "git push",
+    "git push origin main",
+    "git branch -f main",
+    "git update-ref refs/heads/x HEAD",
+    "git tag v1",
+    "gh pr create",
+    "git reset --hard",
+    "git merge x",
+    "git rebase main",
+    "git cherry-pick abc",
+    "git stash",
+    "git -C . commit",
+    "git --git-dir=/repo/.git commit",
+    "/usr/bin/git push",
+    "env git commit",
+    "xargs git push",
+  ])("shell allowlist entry %j is Ineligible (PROFILE_UNSUPPORTED, FR-GIT-01) before any other check", (entry) => {
+    const r1 = adapter().compile(request(), { ...resolveTrustProfile("edit-untrusted"), shellAllowlist: [entry] });
+    expect(r1).toMatchObject({ ineligible: true, reason: "PROFILE_UNSUPPORTED" });
+    if (isIneligible(r1)) {
+      expect(r1.detail).toBe(`shell allowlist entries could write Git (FR-GIT-01): ${entry}`);
+    }
+    // On the one cell that otherwise compiles (an approved bypass scope), and ahead of a bypass outside privileged.
+    const r2 = adapter().compile(request({ bypassApproved: true }), { ...approved(), shellAllowlist: [entry] });
+    expect(r2).toMatchObject({ ineligible: true, reason: "PROFILE_UNSUPPORTED" });
+    if (isIneligible(r2)) expect(r2.detail).toContain("FR-GIT-01");
+    const r3 = adapter().compile(request({ bypassApproved: true }), {
+      ...resolveTrustProfile("edit-untrusted"),
+      shellAllowlist: [entry],
+    });
+    expect(r3).toMatchObject({ ineligible: true, detail: expect.stringContaining("FR-GIT-01") });
+  });
+
+  it("read-only commands in a shell allowlist do not trigger the FR-GIT-01 rejection", () => {
+    const r = adapter().compile(request(), {
+      ...resolveTrustProfile("edit-untrusted"),
+      shellAllowlist: ["git status", "git diff", "npm test"],
+    });
+    expect(r).toMatchObject({ ineligible: true, reason: "PROFILE_UNSUPPORTED" });
+    if (isIneligible(r)) {
+      expect(r.detail).not.toContain("FR-GIT-01");
+      expect(r.detail).toContain(NON_PRIVILEGED_UNSUPPORTED_DETAIL);
+    }
+  });
+
+  it("a replayed write run in a finalize-only project gets the controller commit at FINALIZING", async () => {
+    const root = makeDir();
+    const repo = join(root, "repo");
+    const bare = join(root, "remote.git");
+    mkdirSync(repo);
+    const g = (cwd: string, ...args: string[]) =>
+      execFileSync("git", ["-c", "commit.gpgsign=false", ...args], {
+        cwd,
+        env: {
+          PATH: process.env.PATH ?? "",
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_AUTHOR_NAME: "Muse Dev",
+          GIT_AUTHOR_EMAIL: "muse@example.test",
+          GIT_COMMITTER_NAME: "Muse Dev",
+          GIT_COMMITTER_EMAIL: "muse@example.test",
+        },
+        encoding: "utf8",
+      }).trim();
+
+    g(repo, "init", "-q", "-b", "main");
+    writeFileSync(join(repo, "README.md"), "initial\n");
+    g(repo, "add", "-A");
+    g(repo, "commit", "-q", "-m", "init");
+    g(root, "init", "-q", "--bare", "-b", "main", bare);
+    g(repo, "remote", "add", "origin", bare);
+    g(repo, "push", "-q", "origin", "main");
+
+    const dataDir = join(root, "data");
+    mkdirSync(dataDir);
+    const db = openLedger(dataDir);
+    const ids = createIdGenerator();
+    const ledger = createLedger(db, { ids });
+    const artifacts = new ArtifactStore(join(dataDir, "artifacts"));
+    const workspace = new WorkspaceManager({ db, artifacts, dataDir, allowedRoots: [root], ids });
+    const finalizePublisher = new GitPublisher({
+      db,
+      scratchDir: join(dataDir, "git-scratch"),
+      allowedStates: ["FINALIZING"],
+    });
+    // The replay dialect answers `--version` and `exec --help` only; `muse auth status` gets the Assumption logged-in
+    // line (T4.74). The replay writes hello.txt into the run worktree (`--write`), standing in for the agent's edit.
+    const real = createProbeRunner();
+    const probeRunner: ProbeRunner = async (argv, opts) =>
+      argv.slice(-AUTH_STATUS_ARGS.length).join(" ") === AUTH_STATUS_ARGS.join(" ")
+        ? { exitCode: 0, stdout: `${AUTH_LOGGED_IN_PREFIX} (synthetic)\n`, stderr: "", timedOut: false }
+        : real(argv, opts);
+    const fixture = fileURLToPath(new URL("./fixtures/success_edit.jsonl", import.meta.url));
+    const replay = new MuseAdapter({
+      executable: process.execPath,
+      launcherArgs: replayLauncher("muse", fixture, ["--write", "hello.txt"]),
+    });
+    const lifecycle = new RunLifecycle({
+      ledger,
+      workspace,
+      artifacts,
+      adapters: new AdapterRegistry().register(replay),
+      allowedRoots: [root],
+      globalConcurrency: 1,
+      resolveProfile: (name) => resolveTrustProfile(name),
+      probeRunner,
+      finalizePublisher,
+    });
+    lifecycle.start();
+
+    try {
+      const { runId, metaSessionId } = await lifecycle.submit({
+        clientId: "c",
+        objective: "write a file with muse",
+        workspace: repo,
+        trustProfile: "privileged",
+        provider: "muse",
+        project: {
+          id: "test-project",
+          name: "Test Project",
+          environment_kind: "host",
+          context_id: "primary",
+          base_ref: "main",
+          effective_max_profile: "privileged",
+          writable: true,
+          identity: { name: "Muse Dev", email: "muse@example.test" },
+          push: { policy: "branch" },
+          finalize_commit: true,
+        },
+        privileged: {
+          scope: BYPASS_SCOPE,
+          approvedByClientPolicy: true,
+        },
+      });
+
+      const done = await lifecycle.waitForTerminal(runId);
+      expect(done.state, done.failure_detail ?? "").toBe("SUCCEEDED");
+
+      const events = ledger.listRunEvents(runId).map((e) => ({ type: e.type, p: JSON.parse(e.payload_json) }));
+      expect(events.find((e) => e.type === "state_transition" && e.p.to === "FINALIZING")).toBeDefined();
+      const finCommit = events.find((e) => e.type === GIT_FINALIZE_COMMIT_EVENT);
+      expect(finCommit?.p).toMatchObject({ outcome: "committed" });
+
+      const sha = g(repo, "rev-parse", "--verify", "--quiet", publishRefFor(metaSessionId));
+      expect(sha).toMatch(/^[0-9a-f]{40}$/u);
+      expect(g(repo, "show", "--name-only", "--format=", sha)).toContain("hello.txt");
+    } finally {
+      await lifecycle.shutdown();
+      db.close();
+    }
   });
 });
 

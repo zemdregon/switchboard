@@ -2581,6 +2581,14 @@ any other terminal value ends `FAILED`; an unknown kind is counted and never mak
 are `TOOL_FAILURE`; no usage is recorded. Resume compiles `muse exec --session-id <uuid> <prompt>` through the same
 matrix (never `--allow-workspace-switch`). Evidence: ROADMAP T4.73 and `src/adapters/muse/muse.test.ts`.
 
+*As built (T4.77, 2026-10-16; Delegated agent work, not owner-approved; fixtures only, no `muse` was run).* Git
+declaration on the Grok T4.27 pattern: `MUSE_GIT_WRITE_CONTROL` is `none-documented` with `remainingControls`
+`["FR-GIT-03", "FR-GIT-06"]`, because the "Git writes" row above sources no per-command deny control (the read-only
+`.git` is a sandbox property; what a commit attempt does is `Unverified: T4.71`, §4.8.1 item 8);
+`MUSE_GIT_CAPABILITIES` is `finalize-only` (owner decision 36; no per-run MCP tool is injected). The compile rejects a
+shell allowlist entry that could write Git with `PROFILE_UNSUPPORTED` before any other check. The replay dialect is
+`src/adapters/fixtures/replay-dialects/muse.mjs`. Evidence: ROADMAP T4.77 and `src/adapters/muse/muse.test.ts`.
+
 #### 4.8.1 T4.71 operator checklist
 
 *Operator-only, Proposed.* Needs an installed Muse Code CLI. Use a throwaway Git repository and a controller-made
