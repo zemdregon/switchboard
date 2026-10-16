@@ -34,10 +34,13 @@
  * reason enum is the closed list exported by `src/control/needs-attention.ts`.
  *
  * T14.3 (FR-CTL-02, LLD §3.4.3): `get_digest` is appended to the tool list. Proposed (Delegated): every section of a
- * listed project is required in the output; `cursor` is null only when the caller has no event at all; `paused` and
- * `budget.caps` stay in the schema but are not emitted until T14.6 and T14.4 (see `./digest.ts`).
+ * listed project is required in the output; `cursor` is null only when the caller has no event at all; `budget.caps`
+ * stays in the schema but is not emitted until T14.4 (see `./digest.ts`).
  *
  * T14.7 (FR-CTL-04, LLD §3.4.4): `steer_run` is appended to the tool list; its output is the `get_run` envelope.
+ *
+ * T14.6 (FR-CTL-05, LLD §3.4.4): `pause_project` and `resume_project` join the tool list before `steer_run` (which stays last) with the LLD input
+ * and output as written (closed); `get_digest` now requires `paused` on every listed project.
  */
 
 import { FAILURE_CODES } from "../adapters/failure.js";
@@ -61,6 +64,8 @@ export const TOOL_NAMES = [
   "explain_route",
   "list_runs",
   "get_digest",
+  "pause_project",
+  "resume_project",
   "steer_run",
 ] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];
@@ -256,6 +261,20 @@ const ENVELOPE = {
 /** T14.3 (LLD §3.4.1): a `run_event.id`. */
 const DIGEST_CURSOR = { type: "string", pattern: "^evt_[0-9A-HJKMNP-TV-Z]{26}$" } as const;
 
+/** T14.6 (LLD §3.4.4): `pause_project` / `resume_project` input and output, as the LLD writes them. */
+const PAUSE_INPUT = {
+  type: "object",
+  additionalProperties: false,
+  required: ["project_id"],
+  properties: { project_id: PROJECT_REF },
+} as const;
+const PAUSE_STATE = {
+  type: "object",
+  additionalProperties: false,
+  required: ["project_id", "paused"],
+  properties: { project_id: { type: "string" }, paused: { type: "boolean" } },
+} as const;
+
 /** T14.3 (LLD §3.4.3): `get_digest` output. Every section is always present on a listed project (Proposed). */
 const DIGEST = {
   type: "object",
@@ -271,6 +290,7 @@ const DIGEST = {
         additionalProperties: false,
         required: [
           "project_id",
+          "paused",
           "budget",
           "needs_attention",
           "finished",
@@ -502,6 +522,9 @@ const INPUTS = {
     required: ["run_id", "note"],
     properties: { run_id: RUN_ID, note: { type: "string", minLength: 1, maxLength: 4096 } },
   },
+  // T14.6 (LLD §3.4.4): one project this client may use; scoping is the handler's, as the list_runs filter.
+  pause_project: PAUSE_INPUT,
+  resume_project: PAUSE_INPUT,
 } as const;
 
 const PROJECT_INPUTS = {
@@ -956,6 +979,8 @@ const OUTPUTS = {
   }),
   get_digest: withError(DIGEST),
   steer_run: withError(ENVELOPE),
+  pause_project: withError(PAUSE_STATE),
+  resume_project: withError(PAUSE_STATE),
 } as const;
 
 const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
@@ -1014,6 +1039,14 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
     "next boundary (when the agent's current turn ends) by continuing the same native session with the note only; " +
     "the original task is not sent again. Returns the run's envelope; check get_run events steer_delivered or " +
     "steer_undelivered. Steering a finished run returns it unchanged.",
+  pause_project:
+    "Hold admission for one project this client may use: delegate_task and continue_task into it are refused " +
+    "(ELIGIBILITY_NONE, reason PROJECT_PAUSED) until resume_project; runs already admitted finish as they would. " +
+    "Idempotent. Returns the project's own paused flag; the operator's global pause is reported in get_digest only. " +
+    "Another client's project is PERMISSION_BLOCKED.",
+  resume_project:
+    "Lift this client's pause on one project it may use (see pause_project); nothing resumes a pause the operator set " +
+    "for all projects. Idempotent. Returns the project's own paused flag.",
 };
 
 const SEARCH_DESCRIPTIONS: Readonly<Record<SearchToolName, string>> = {

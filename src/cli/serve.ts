@@ -39,7 +39,7 @@
  * after reconciliation, before the lifecycle starts and MCP accepts calls (so no run can race it), and then every
  * `retention.interval` (default 24h). With `retention.days` unset nothing is collected, whatever the default value is.
  * A failing pass is logged and never stops serving; units are crash-safe and a later pass rolls them forward. Each pass
- * then collects orphans (`collectOrphans`, ADR-0053): marked on first sighting, removed once marked for `retention.days`.
+ * then collects orphans (`collectOrphans`, ADR-0054): marked on first sighting, removed once marked for `retention.days`.
  *
  * T3.4: the operator poll also applies `approve`/`deny` records (`applyOperatorRequests`), and startup reconciliation
  * applies those recorded while no daemon ran.
@@ -73,8 +73,10 @@ import {
 import { ArtifactStore, defaultRedactor } from "../artifacts/index.js";
 import { ConfigError, loadConfig, type ResolvedConfig } from "../config/index.js";
 import {
+  ALL_PROJECTS_ID,
   type ApprovalAnnouncement,
   ApprovalLinkPage,
+  applyPauseRequests,
   BudgetEvaluator,
   ConsentLinkStore,
   createConsentApprovalSource,
@@ -106,6 +108,7 @@ import {
   OAuthClientStore,
   OAuthTokenStore,
   PairingCodeStore,
+  type PauseAnnouncement,
   SubjectBindingStore,
   type SwitchboardMcpServer,
   startHttpTransport,
@@ -726,6 +729,23 @@ async function runDaemon(
     if (polling) return;
     polling = true;
     try {
+      // T14.6 (FR-CTL-05, LLD §3.4.4): the CLI's global pause / resume, applied here as `approve` is. Admission reads
+      // the row inside its transaction, so from this poll on no new run is admitted (or admission reopens).
+      for (const p of applyPauseRequests(ledger)) {
+        log.info(p.paused ? "operator pause applied: no project admits new runs" : "operator resume applied", {
+          scope: p.scope,
+          requested_by: p.requestedBy,
+          request_event_id: p.requestEventId,
+        });
+        if (p.paused) {
+          sinks?.emit({
+            projectId: ALL_PROJECTS_ID,
+            eventKind: "project_paused",
+            reasonCode: "global_paused",
+            runId: null,
+          });
+        }
+      }
       for (const a of await applyOperatorRequests(db, ledger, lifecycle)) {
         log.info(a.kind === "decision" ? "operator decision applied" : "operator cancel applied", {
           run_id: a.runId,
@@ -834,6 +854,17 @@ async function runDaemon(
         ? {
             announceApproval: (a: ApprovalAnnouncement) =>
               sinks.emit({ projectId: a.projectId, eventKind: "approval_decided", reasonCode: a.kind, runId: a.runId }),
+            // T14.6 (FR-CTL-05): a client's pause_project reaches the sinks as `project_paused` (resume has no kind).
+            announcePause: (a: PauseAnnouncement) => {
+              if (a.paused) {
+                sinks.emit({
+                  projectId: a.projectId,
+                  eventKind: "project_paused",
+                  reasonCode: "project_paused",
+                  runId: null,
+                });
+              }
+            },
           }
         : {}),
       // T13.5 (FR-MCP-15, Q-78): stdio sees only meta-sessions with no HTTP subject; HTTP sees only its own.

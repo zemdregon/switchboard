@@ -1,4 +1,4 @@
-# ADR-0053: Orphan GC: mark on first sighting in a ledger table, remove after the retention period
+# ADR-0054: Orphan GC: mark on first sighting in a ledger table, remove after the retention period
 
 - Status: Proposed
 - Date: 2026-10-16
@@ -23,7 +23,7 @@ about when the branch appeared; reflogs are optional. A run being prepared can a
 
 ## Decision
 
-1. **A ledger table records the mark.** Migration 18 adds `gc_orphan (kind, repo_root, target, first_seen_at,
+1. **A ledger table records the mark.** Migration 19 adds `gc_orphan (kind, repo_root, target, first_seen_at,
    intent_at, removed_at)`, keyed by `(kind, repo_root, target)`; `kind` is `worktree` or `branch` and `repo_root` is
    `''` for a worktree directory. It is additive; no existing table changes (ADR-0005).
 2. **The retention clock starts at the first sighting by a collecting pass** (`gc --apply` or a `serve` GC pass, both
@@ -48,4 +48,3 @@ about when the branch appeared; reflogs are optional. A run being prepared can a
 - Residual: the ledger re-check and the removal are not one atomic step. A row written between them for the same
   target would need a reused run or session id (ids are unique), so the window is not exploitable in practice; it is
   not covered by a process-level test.
-- Another lane adding migration 18 or ADR-0053 at the same time must renumber on merge.

@@ -1,5 +1,5 @@
 /**
- * Migration 0018 (T3.12; FR-WS-07, NFR-DATA-01, LLD §5, ADR-0053): `gc_orphan`, the mark-first record of the orphan
+ * Migration 0019 (T3.12; FR-WS-07, NFR-DATA-01, LLD §5, ADR-0054): `gc_orphan`, the mark-first record of the orphan
  * sweep. An orphan (a worktree directory or `switchboard/*` branch with no ledger row) has no row of its own to age, so
  * its first sighting by a collecting GC pass is recorded here; it is removed only once that mark is older than
  * `retention.days`. `intent_at` is set in the transaction that re-checks the orphan before removal, `removed_at` after

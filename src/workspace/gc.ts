@@ -2,6 +2,7 @@ import { lstat, readdir, realpath, rm, rmdir } from "node:fs/promises";
 import path from "node:path";
 import type Database from "better-sqlite3";
 import type { ArtifactStore } from "../artifacts/index.js";
+import { type ContainerRuntime, removeRunContainers } from "../environment/index.js";
 import { DEFAULT_PUBLISH_PREFIX } from "../git/publish-ref.js";
 import { createLedger, type Ledger } from "../ledger/index.js";
 import { git } from "./git.js";
@@ -10,7 +11,8 @@ import { git } from "./git.js";
  * Retention GC core (T3.12; FR-WS-07, NFR-DATA-01, BR-12, LLD §5, ADR-0006). Q-18 (Delegated, owner decision 25): the
  * unit is a whole ACTIVE-status meta-session that is idle (no lease), has only terminal runs and whose newest activity
  * is older than `days`. Per unit the order is: one ledger transaction that re-checks idleness, marks the meta-session
- * `ARCHIVED` (admission refuses it from then on, R-42) and appends the intent event; then worktrees,
+ * `ARCHIVED` (admission refuses it from then on, R-42) and appends the intent event; then the runs' containers (T10.3,
+ * FR-PRJ-09: before the worktrees they may mount; a runtime failure stops the unit and keeps them), then worktrees,
  * `switchboard/<sess>/` branches, artifact files; then one ledger transaction (artifact `deleted_at`, outcome event).
  * Every step is idempotent and an `ARCHIVED` session with collection pending is a candidate again, so re-running after
  * a crash at any point rolls forward. `run_event` rows are kept (Q-19, Delegated): the table is append-only by trigger
@@ -20,7 +22,7 @@ import { git } from "./git.js";
  * `switchboard/<sess>/`, artifact files still referenced by a live row of another session.
  */
 
-export type GcStep = "intent" | "worktrees" | "branches" | "artifacts" | "ledger";
+export type GcStep = "intent" | "containers" | "worktrees" | "branches" | "artifacts" | "ledger";
 
 export interface GcOptions {
   readonly db: Database.Database;
@@ -31,6 +33,11 @@ export interface GcOptions {
   readonly days: number;
   readonly now?: Date;
   /**
+   * T10.3 (FR-PRJ-09): the container runtime whose containers labelled with the unit's run ids are removed with its
+   * worktrees. Absent: no container step (no `container` project is configured).
+   */
+  readonly containerRuntime?: ContainerRuntime;
+  /**
    * Test seam: awaited after each completed step of a unit; a throw simulates a crash at that point. The failing unit
    * is reported in `errors` and the pass continues with other units.
    */
@@ -39,6 +46,8 @@ export interface GcOptions {
 
 export interface GcUnitResult {
   readonly sessionId: string;
+  /** Names of the containers removed (T10.3); empty without a container runtime. */
+  readonly containersRemoved: string[];
   readonly worktreesRemoved: number;
   readonly branchesDeleted: string[];
   readonly artifactFilesDeleted: number;
@@ -104,29 +113,37 @@ async function collectUnit(
   if (!marked) return undefined;
   await hook("intent");
 
-  // 2. Worktrees.
+  // 2. Containers of the session's runs (T10.3, FR-PRJ-09), before the worktrees they mount. Throws on a runtime
+  // failure, so the worktrees are kept and the next pass rolls forward.
+  entering("containers");
+  const containersRemoved =
+    o.containerRuntime !== undefined ? await removeRunContainers(o.containerRuntime, targets.runIds) : [];
+  await hook("containers");
+
+  // 3. Worktrees.
   entering("worktrees");
   const worktreesRemoved = await removeWorktrees(o.dataDir, sessionId, c.repo_root, targets.worktreePaths, warnings);
   await hook("worktrees");
 
-  // 3. Branches (only `switchboard/<sess>/`).
+  // 4. Branches (only `switchboard/<sess>/`).
   entering("branches");
   const branchesDeleted = await deleteBranches(c.repo_root, sessionId, targets.branches, warnings);
   await hook("branches");
 
-  // 4. Artifact files not referenced by any other live row.
+  // 5. Artifact files not referenced by any other live row.
   entering("artifacts");
   const plan = ledger.gcArtifactPlan(sessionId);
   let artifactFilesDeleted = 0;
   for (const hash of plan.deletableHashes) if (await o.artifacts.remove(hash)) artifactFilesDeleted++;
   await hook("artifacts");
 
-  // 5. Ledger: deleted_at and the outcome event, atomically (the session was marked ARCHIVED in step 1).
+  // 6. Ledger: deleted_at and the outcome event, atomically (the session was marked ARCHIVED in step 1).
   entering("ledger");
   ledger.completeGc(sessionId, at, {
     runId: c.newest_run_id,
     payload: {
       sessionId,
+      ...(containersRemoved.length > 0 ? { containersRemoved } : {}),
       worktreesRemoved,
       branchesDeleted,
       artifactFilesDeleted,
@@ -137,6 +154,7 @@ async function collectUnit(
 
   return {
     sessionId,
+    containersRemoved,
     worktreesRemoved,
     branchesDeleted,
     artifactFilesDeleted,
@@ -343,7 +361,7 @@ export async function findOrphans(options: {
   return { worktrees, branches, warnings };
 }
 
-// ---- Orphan collection (T3.12, LLD §5, ADR-0053): mark first, remove only after the retention period. ----
+// ---- Orphan collection (T3.12, LLD §5, ADR-0054): mark first, remove only after the retention period. ----
 
 export type OrphanGcStep = "intent" | "remove" | "outcome";
 

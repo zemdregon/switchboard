@@ -75,6 +75,11 @@ else {
       process.exitCode = 1;
       return;
     }
+    if (mode === "slow") {
+      // T14.6: stays RUNNING long enough for a test to pause its project, then finishes on its own.
+      setTimeout(() => emit({ type: "result", ok: true, summary: "done" }), 600);
+      return;
+    }
     emit({ type: "result", ok: true, summary: "done" });
   });
 }

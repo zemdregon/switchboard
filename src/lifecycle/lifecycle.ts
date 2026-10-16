@@ -142,6 +142,7 @@ import {
   type SuccessorRefusal,
   successorRefusal,
 } from "../control/loop-breaker.js";
+import { admissionPause, pauseRefusalDetails, pauseRefusalMessage } from "../control/pause.js";
 import {
   type Environment,
   EnvironmentRefusal,
@@ -257,7 +258,7 @@ import {
   verificationSummary,
 } from "./verification.js";
 
-export type LifecycleErrorCode = "INVALID_REQUEST" | "QUEUE_FULL" | "BUDGET_EXHAUSTED";
+export type LifecycleErrorCode = "INVALID_REQUEST" | "QUEUE_FULL" | "BUDGET_EXHAUSTED" | "PAUSED";
 
 /** Admission or API error. No run row is written when it is thrown from `submit`. */
 const archivedMessage = (id: string): string =>
@@ -271,7 +272,7 @@ export class LifecycleError extends Error {
   constructor(
     readonly code: LifecycleErrorCode,
     message: string,
-    /** T14.4: closed, controller-generated facts about the refusal (`BUDGET_EXHAUSTED`); empty otherwise. */
+    /** T14.4/T14.6: closed, controller-generated facts about the refusal (`BUDGET_EXHAUSTED`, `PAUSED`); empty otherwise. */
     readonly details: Readonly<Record<string, unknown>> = {},
   ) {
     super(message);
@@ -838,6 +839,13 @@ export class RunLifecycle {
       if (refusal !== undefined) {
         this.budgetRefused({ projectId: req.project?.id ?? null, refusal });
         throw new LifecycleError("BUDGET_EXHAUSTED", budgetRefusalMessage(refusal), budgetRefusalDetails(refusal));
+      }
+      // T14.6 (FR-CTL-05, LLD §3.4.4): a paused project, or the operator's global pause, admits nothing. Read inside
+      // the admission transaction so a pause written before it is seen; nothing is written. Runs already admitted are
+      // untouched (they finish), and no run state changes: the hold is on admission only.
+      const paused = admissionPause(this.ledger, req.project?.id);
+      if (paused !== undefined) {
+        throw new LifecycleError("PAUSED", pauseRefusalMessage(paused), pauseRefusalDetails(paused));
       }
       if (initial === "QUEUED" && this.ledger.countRunsInStates(QUEUE_STATES) >= this.maxQueueDepth) {
         throw new LifecycleError("QUEUE_FULL", `queue is full (${this.maxQueueDepth} runs waiting)`);
@@ -2717,6 +2725,11 @@ export class RunLifecycle {
     if (refusal !== undefined) {
       this.budgetRefused({ projectId: failed.project_id, refusal });
       notScheduled("budget_exhausted", budgetRefusalDetails(refusal));
+    }
+    // T14.6 (FR-CTL-05): a successor is a new admission; a paused project (or a global pause) gets none.
+    const paused = admissionPause(this.ledger, failed.project_id ?? undefined);
+    if (paused !== undefined) {
+      notScheduled("paused", { scope: paused.scope });
       return;
     }
     if (breakerAdmission(this.breakerOf(failed.provider), now) === "deny") {
@@ -2776,6 +2789,12 @@ export class RunLifecycle {
       const refused = successorRefusal(this.ledger, failed, this.opts.loopBreaker ?? DEFAULT_LOOP_BREAKER);
       if (refused) {
         record({ outcome: "returned", ...refused });
+        return;
+      }
+      // T14.6 (FR-CTL-05): no failover or wait successor into a paused project (or under a global pause).
+      const paused = admissionPause(this.ledger, failed.project_id ?? undefined);
+      if (paused !== undefined) {
+        record({ outcome: "returned", reason: "paused", scope: paused.scope });
         return;
       }
       const routed = await this.failoverTarget(failed, notes);

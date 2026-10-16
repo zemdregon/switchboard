@@ -56,6 +56,9 @@ export function toToolError(err: unknown): ToolError {
     // T14.4 (FR-CTL-06): an operator budget refusal, the same code as `QUEUE_FULL` (nothing is written, the state may
     // change); `details` names the cap as the digest does and the needs-attention reason `budget_exhausted`.
     if (err.code === "BUDGET_EXHAUSTED") return new ToolError("ELIGIBILITY_NONE", err.message, { ...err.details });
+    // T14.6 (FR-CTL-05): a paused project or a global pause admits nothing; `details.reason` is PROJECT_PAUSED or
+    // GLOBAL_PAUSED (with `project_id` when scoped), as QUEUE_FULL: no taxonomy code names a held admission.
+    if (err.code === "PAUSED") return new ToolError("ELIGIBILITY_NONE", err.message, { ...err.details });
     return new ToolError("INVALID_REQUEST", err.message);
   }
   // COMP-POL refused to resolve the profile (fail closed, NFR-SEC-06); the error names its own taxonomy code.

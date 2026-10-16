@@ -19,6 +19,8 @@ const EXPECTED_TABLES = [
   "adapter_version",
   "approval",
   "artifact",
+  "control_plane_event",
+  "control_plane_state",
   "decision",
   "gc_orphan",
   "git_commit",

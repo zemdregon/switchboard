@@ -1,12 +1,23 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ArtifactStore } from "../artifacts/index.js";
+import { containerName, probeContainerName, SWITCHBOARD_RUN_LABEL } from "../environment/index.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger } from "../ledger/index.js";
+import { fileRuntime, plantContainer } from "../reconcile/fixtures/file-runtime.js";
 import { collectOrphans, findOrphans, type GcStep, type OrphanGcStep, runRetentionGc } from "./gc.js";
 import { WorkspaceManager } from "./index.js";
 
@@ -223,7 +234,7 @@ describe("retention GC (T3.12)", () => {
     expect(existsSync(store.pathFor(shared))).toBe(false);
   });
 
-  it.each(["intent", "worktrees", "branches", "artifacts", "ledger"] as GcStep[])(
+  it.each(["intent", "containers", "worktrees", "branches", "artifacts", "ledger"] as GcStep[])(
     "converges after a crash following the %s step",
     async (crashAfter) => {
       const u = await unit(OLD);
@@ -308,6 +319,77 @@ describe("retention GC (T3.12)", () => {
   });
 });
 
+describe("retention GC of container environments (T10.3, FR-PRJ-09)", () => {
+  const runtimeDir = () => path.join(root, "runtime");
+  const plant = (runId: string) => {
+    plantContainer(runtimeDir(), containerName(runId), { [SWITCHBOARD_RUN_LABEL]: runId, "switchboard.role": "run" });
+    plantContainer(runtimeDir(), probeContainerName(runId), {
+      [SWITCHBOARD_RUN_LABEL]: runId,
+      "switchboard.role": "probe",
+    });
+  };
+  const left = () => readdirSync(runtimeDir()).sort();
+
+  it("removes the containers of a collected session's runs together with its worktrees, before them", async () => {
+    const u = await unit(OLD);
+    const keep = await unit(RECENT);
+    plant(u.run);
+    plant(keep.run);
+    plantContainer(runtimeDir(), "unlabelled-by-switchboard", { other: "x" });
+    const order: string[] = [];
+    const runtime = fileRuntime(runtimeDir(), { onRemove: (n) => order.push(`remove:${n}:${existsSync(u.wt)}`) });
+    const res = await runRetentionGc({ db, artifacts: store, dataDir, days: 30, now: NOW, containerRuntime: runtime });
+    expect(res.errors).toEqual([]);
+    expect(res.collected).toHaveLength(1);
+    expect(res.collected[0]?.containersRemoved).toEqual([containerName(u.run), probeContainerName(u.run)].sort());
+    expect(existsSync(u.wt)).toBe(false);
+    // The worktree still existed when each container was removed: never a container mounting a deleted worktree.
+    expect(order).toEqual([containerName(u.run), probeContainerName(u.run)].sort().map((n) => `remove:${n}:true`));
+    // The recent session's containers, and anything not labelled by Switchboard, are untouched.
+    expect(left()).toEqual(
+      [
+        `${containerName(keep.run)}.json`,
+        `${probeContainerName(keep.run)}.json`,
+        "unlabelled-by-switchboard.json",
+      ].sort(),
+    );
+    const outcome = db.prepare("SELECT payload_json FROM run_event WHERE type = 'gc_outcome'").get() as {
+      payload_json: string;
+    };
+    expect(JSON.parse(outcome.payload_json)).toMatchObject({ containersRemoved: res.collected[0]?.containersRemoved });
+  });
+
+  it("a runtime that cannot list keeps the worktrees and rolls forward on the next pass", async () => {
+    const u = await unit(OLD);
+    plant(u.run);
+    const broken = fileRuntime(runtimeDir(), { listFails: true });
+    const first = await runRetentionGc({ db, artifacts: store, dataDir, days: 30, now: NOW, containerRuntime: broken });
+    expect(first.errors).toMatchObject([{ sessionId: u.sess, step: "containers" }]);
+    expect(existsSync(u.wt)).toBe(true);
+    expect(status(u.sess)).toBe("ARCHIVED");
+    const second = await runRetentionGc({
+      db,
+      artifacts: store,
+      dataDir,
+      days: 30,
+      now: NOW,
+      containerRuntime: fileRuntime(runtimeDir()),
+    });
+    expect(second.errors).toEqual([]);
+    expect(second.collected[0]?.containersRemoved).toHaveLength(2);
+    expect(existsSync(u.wt)).toBe(false);
+    expect(left()).toEqual([]);
+  });
+
+  it("without a container runtime (host-only configuration) the step removes nothing", async () => {
+    const u = await unit(OLD);
+    plant(u.run);
+    const res = await gc();
+    expect(res.collected[0]?.containersRemoved).toEqual([]);
+    expect(left()).toHaveLength(2);
+  });
+});
+
 describe("orphan sweep and publish refs (T9.7 follow-up)", () => {
   it("does not report the publish ref of a known session, but still reports one of an unknown session", async () => {
     const u = await unit(RECENT);
@@ -328,7 +410,7 @@ describe("orphan sweep and publish refs (T9.7 follow-up)", () => {
   });
 });
 
-describe("orphan collection after the retention period (T3.12, LLD §5, ADR-0053)", () => {
+describe("orphan collection after the retention period (T3.12, LLD §5, ADR-0054)", () => {
   const LATER = new Date(NOW.getTime() + 31 * 24 * 60 * 60 * 1000);
   const collect = (now: Date, days = 30, onStep?: (s: OrphanGcStep, target: string) => void) =>
     collectOrphans({ db, dataDir, days, now, ...(onStep ? { onStep } : {}) });
