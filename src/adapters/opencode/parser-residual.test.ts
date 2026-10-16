@@ -42,6 +42,13 @@
  * outcome's detail (gap, fixture `trailing_tool_changed_id.jsonl`) but never another code's; unmapped error types are
  * TOOL_FAILURE and long messages are clipped; stderrTail never changes the code; and a binding's extra fields never
  * reach the invocation. ACP input stays inert.
+ * Tenth pass (2026-10-16, same terms): a first id on a trailing `step_start` or a part-only `sessionID` after an
+ * id-less stop binds there with its vendor (fixture `late_id_trailing_step_start.jsonl`); `sessionId`/`session_id`
+ * never bind even as a late first id; a first id on an unknown trailing type binds then fails unreadable; empty or
+ * unparseable trailing lines stay clean; a case-variant `tool_use` Git write after stop is unknown (the guard never
+ * sees it); two trailing tools keep the trailing-tool detail; `state.status` error/denied spellings never emit
+ * `permission_denied` (fixtures `error_status_trailing_tool.jsonl`, `error_status_git_write.jsonl`) while a Git write
+ * there still reaches the guard; resume argv equals compile plus one `--session <id>` pair and never `-s`/`--continue`.
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -68,7 +75,7 @@ import type {
   ProbeRunner,
   ResolvedProfile,
 } from "../types.js";
-import { OpenCodeAdapter } from "./adapter.js";
+import { OPENCODE_ENV_ALLOWLIST, OpenCodeAdapter } from "./adapter.js";
 import {
   BYPASS_SCOPE,
   DEFAULT_SESSION_ID,
@@ -2338,5 +2345,342 @@ describe("opencode parser residuals, ninth pass: untyped binding, pre-seeded sta
     for (const tail of ["Error: not logged in", "quota exceeded", "429 rate limit", "provider.auth"]) {
       expect(adapter().classifyFailure({ ...base, stderrTail: tail }), tail).toEqual(want);
     }
+  });
+});
+
+describe("opencode parser residuals, tenth pass: late binding after stop, trailing events, resume argv identity and denied-status tools (T4.53; synthetic lines; parser unchanged)", () => {
+  const request = (cwd = makeCwd()): CompileRequest => ({
+    runId: "run_opencode_t453_tenth",
+    objective: "synthetic opencode objective",
+    constraints: [],
+    workspace: { cwd, writable: true },
+    bypassApproved: true,
+  });
+  const noId = <T extends object>(o: T) => ({ ...o, sessionID: undefined });
+  const bound = (events: readonly NormalizedEvent[]) => events.filter((e) => e.kind === "session_bound");
+  const statusTool = (tool: string, input: object, status: string, id: string | undefined = SID) => ({
+    type: "tool_use",
+    ...sid(id),
+    part: { tool, state: { status, input, error: "SYNTHETIC: rejected" } },
+  });
+
+  it("a first id on a trailing step_start binds there with its vendor; the open step still leaves the run a success (gap)", () => {
+    const { events } = parse([
+      START(),
+      TEXT("done"),
+      noId(FINISH("stop", "prt_stop")),
+      { ...START(SID), backing_provider: "late-vendor", model: "late-model" },
+    ]);
+    expect(bound(events)).toEqual([
+      { kind: "session_bound", nativeSessionId: SID, backingProvider: "late-vendor", model: "late-model" },
+    ]);
+    expect(events.findIndex((e) => e.kind === "session_bound")).toBeGreaterThan(
+      events.findIndex((e) => e.kind === "result"),
+    );
+    expect(adapter().extractResult(events, EXIT_OK)).toEqual({
+      ok: true,
+      nativeSessionId: SID,
+      unknownEventCount: 0,
+      summary: "done",
+    });
+  });
+
+  it("a first id reported only as part.sessionID on a trailing text line binds late and joins the summary", () => {
+    const { events } = parse([
+      START(),
+      TEXT("before"),
+      noId(FINISH("stop", "prt_stop")),
+      { type: "text", part: { type: "text", text: "after", sessionID: SID } },
+    ]);
+    expect(bound(events)).toEqual([{ kind: "session_bound", nativeSessionId: SID }]);
+    expect(adapter().extractResult(events, EXIT_OK)).toEqual({
+      ok: true,
+      nativeSessionId: SID,
+      unknownEventCount: 0,
+      summary: "before\nafter",
+    });
+  });
+
+  it("pins the gap: sessionId, session_id or SessionID never bind, even as the first id after an id-less stop", () => {
+    for (const key of ["sessionId", "session_id", "SessionID"]) {
+      const { events, state } = parse([
+        START(),
+        TEXT("done"),
+        noId(FINISH("stop", "prt_stop")),
+        { type: "text", [key]: SID, part: { type: "text", text: "late", [key]: SID } },
+      ]);
+      expect(bound(events), key).toEqual([]);
+      expect(state.nativeSessionId, key).toBeUndefined();
+      expect(adapter().extractResult(events, EXIT_OK), key).toEqual({
+        ok: true,
+        unknownEventCount: 0,
+        summary: "done\nlate",
+      });
+    }
+  });
+
+  it("a first id on an unknown type after the stop binds with its vendor, then the run fails unreadable (not trailing-tool)", () => {
+    const { events } = parse([
+      START(),
+      TEXT("done"),
+      noId(FINISH("stop", "prt_stop")),
+      { type: "session.idle", sessionID: SID, backing_provider: "idle-vendor", model: "Idle" },
+    ]);
+    expect(events.slice(-2)).toEqual([
+      { kind: "session_bound", nativeSessionId: SID, backingProvider: "idle-vendor", model: "Idle" },
+      { kind: "unknown", rawType: "session.idle" },
+    ]);
+    expect(adapter().extractResult(events, EXIT_OK)).toEqual({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "1 unreadable event(s) in the stream",
+      nativeSessionId: SID,
+      unknownEventCount: 1,
+      summary: "done",
+    });
+  });
+
+  it("fixture late_id_trailing_step_start replays a late first id on a trailing step_start to success (gap)", async () => {
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: replayAdapter("late_id_trailing_step_start"),
+      request: request(),
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toEqual({
+      ok: true,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      unknownEventCount: 0,
+      summary: "SYNTHETIC: late-step",
+    });
+    const lines = readFileSync(fixturePath("late_id_trailing_step_start"), "utf8").trim().split("\n").slice(1);
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const events = lines.flatMap((l) => a.parseEvent(l, state));
+    expect(bound(events)).toEqual([
+      {
+        kind: "session_bound",
+        nativeSessionId: DEFAULT_SESSION_ID,
+        backingProvider: "backing-late-step",
+        model: "Late Step Model",
+      },
+    ]);
+  });
+
+  it("empty text, an empty line, unparseable JSON or a BOM after the last stop leave a clean run clean", () => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const events = [START(SID), TEXT("done"), FINISH("stop")].flatMap((l) => a.parseEvent(line(l), state));
+    const trailing = ["", "{not json", "\uFEFF", line(TEXT(""))].flatMap((raw) => a.parseEvent(raw, state));
+    expect(trailing).toEqual([]);
+    expect(state.unknownEvents).toBe(0);
+    expect(a.extractResult([...events, ...trailing], EXIT_OK)).toEqual({
+      ok: true,
+      nativeSessionId: SID,
+      unknownEventCount: 0,
+      summary: "done",
+    });
+  });
+
+  it("a case or spelling variant of tool_use after the stop is unknown: the guard never sees a Git write there", () => {
+    for (const type of ["Tool_use", "TOOL_USE", "tool-use", "toolUse", " tool_use"]) {
+      const late = {
+        type,
+        sessionID: SID,
+        part: { tool: "shell", state: { status: "completed", input: { command: "git push origin main" } } },
+      };
+      const events = guarded([START(SID), TEXT("done"), FINISH("stop"), late]);
+      expect(events.at(-1), type).toEqual({ kind: "unknown", rawType: type });
+      expect(adapter().extractResult(events, EXIT_OK), type).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "1 unreadable event(s) in the stream",
+        nativeSessionId: SID,
+        unknownEventCount: 1,
+      });
+    }
+  });
+
+  it("two trailing tools keep the trailing-tool detail once; a type:permission_denied line is unknown, never a denial", () => {
+    const two = parse([
+      START(SID),
+      TEXT("done"),
+      FINISH("stop"),
+      TOOL("read", { filePath: "a.txt" }),
+      TOOL("read", { filePath: "b.txt" }),
+    ]).events;
+    expect(two.filter((e) => e.kind === "tool_call")).toHaveLength(2);
+    expect(adapter().extractResult(two, EXIT_OK)).toEqual({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the final stop step",
+      nativeSessionId: SID,
+      unknownEventCount: 0,
+      summary: "done",
+    });
+    const named = parse([
+      START(SID),
+      FINISH("stop"),
+      { type: "permission_denied", sessionID: SID, tool: "read", part: { tool: "read" } },
+    ]).events;
+    expect(named.some((e) => e.kind === "permission_denied")).toBe(false);
+    expect(named.at(-1)).toEqual({ kind: "unknown", rawType: "permission_denied" });
+    expect(adapter().extractResult(named, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "1 unreadable event(s) in the stream",
+      unknownEventCount: 1,
+    });
+  });
+
+  it("pins the gap: state.status error/denied spellings never emit permission_denied; a following stop still succeeds", () => {
+    for (const status of ["error", "denied", "rejected", "permission_denied", "failed"]) {
+      const lines = [
+        START(SID),
+        statusTool("read", { filePath: "/tmp/outside.txt" }, status),
+        TEXT("rejected"),
+        FINISH("stop"),
+      ];
+      const { events } = parse(lines);
+      expect(
+        events.some((e) => e.kind === "permission_denied" || e.kind === "sandbox_violation"),
+        status,
+      ).toBe(false);
+      expect(
+        events.find((e) => e.kind === "tool_call"),
+        status,
+      ).toEqual({ kind: "tool_call", tool: "read", name: "read", target: "/tmp/outside.txt" });
+      expect(adapter().extractResult(events, EXIT_OK), status).toEqual({
+        ok: true,
+        nativeSessionId: SID,
+        unknownEventCount: 0,
+        summary: "rejected",
+      });
+    }
+  });
+
+  it("a denied-status shell Git write still reaches the guard: PERMISSION_BLOCKED, whatever state.status reports", () => {
+    for (const status of ["error", "denied", "pending", "running", "completed"]) {
+      const call = statusTool("shell", { command: "git push origin main" }, status);
+      const events = guarded([START(SID), call, FINISH("stop")]);
+      const r = adapter().extractResult(events, EXIT_OK);
+      expect(r, status).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: SID });
+      if (r.ok) throw new Error(status);
+      expect(r.failureDetail, status).toMatch(/^git write attempted: /);
+    }
+  });
+
+  it("a trailing error-status tool is a trailing tool_call, never a denial; a hand-built permission_denied outranks it", () => {
+    const { events } = parse([
+      START(SID),
+      TEXT("done"),
+      FINISH("stop"),
+      statusTool("read", { filePath: "/tmp/outside.txt" }, "error"),
+    ]);
+    expect(events.some((e) => e.kind === "permission_denied")).toBe(false);
+    expect(adapter().extractResult(events, EXIT_OK)).toEqual({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the final stop step",
+      nativeSessionId: SID,
+      unknownEventCount: 0,
+      summary: "done",
+    });
+    const withDenial: NormalizedEvent[] = [...events, { kind: "permission_denied", tool: "read" }];
+    expect(adapter().extractResult(withDenial, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "denied: read",
+      nativeSessionId: SID,
+    });
+  });
+
+  it("fixture error_status_trailing_tool replays a denied-status read after stop to the trailing-tool detail", async () => {
+    const report = await runConformanceCase({
+      kind: "malformed_output",
+      adapter: replayAdapter("error_status_trailing_tool"),
+      request: request(),
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: {
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "tool call after the final stop step",
+        nativeSessionId: DEFAULT_SESSION_ID,
+        summary: "SYNTHETIC: done",
+        unknownEventCount: 0,
+      },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+  });
+
+  it("fixture error_status_git_write replays a denied-status Git write to PERMISSION_BLOCKED through the guard", async () => {
+    const report = await runConformanceCase({
+      kind: "task_failure",
+      adapter: replayAdapter("error_status_git_write"),
+      request: request(),
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      nativeSessionId: DEFAULT_SESSION_ID,
+      unknownEventCount: 0,
+    });
+    expect(report.result?.failureDetail).toMatch(/^git write attempted: /);
+  });
+
+  it("resume argv is compile argv plus one `--session <id>` pair: every other field matches, two ids differ only in the id", () => {
+    const a = adapter();
+    const req = request("/work/tree");
+    const first = a.compile(req, PRIVILEGED_BYPASS_PROFILE);
+    if ("ineligible" in first) throw new Error(first.detail);
+    const resumed = a.resumeArgs({ provider: "opencode", nativeSessionId: SID }, req, PRIVILEGED_BYPASS_PROFILE);
+    if ("ineligible" in resumed) throw new Error(resumed.detail);
+    expect({ ...resumed, argv: first.argv }).toEqual(first);
+    expect(resumed.argv).toEqual([...first.argv.slice(0, -2), "--session", SID, "--", req.objective]);
+    const other = a.resumeArgs({ provider: "opencode", nativeSessionId: OTHER }, req, PRIVILEGED_BYPASS_PROFILE);
+    if ("ineligible" in other) throw new Error(other.detail);
+    expect({ ...other, argv: [] }).toEqual({ ...resumed, argv: [] });
+    expect(other.argv).toEqual(resumed.argv.map((w) => (w === SID ? OTHER : w)));
+    expect(other.argv.filter((w) => w === "--session")).toHaveLength(1);
+    expect(other.argv).not.toContain("-s");
+    expect(other.argv.some((w) => w.startsWith("--session="))).toBe(false);
+    for (const flag of ["--continue", "--fork", "--auto", "--model"]) {
+      expect(other.argv, flag).not.toContain(flag);
+    }
+    other.envAllowlist.push("OPENCODE_CONFIG_CONTENT");
+    expect(OPENCODE_ENV_ALLOWLIST).toEqual(["PATH", "HOME"]);
+    expect(a.resumeArgs({ provider: "opencode", nativeSessionId: SID }, req, PRIVILEGED_BYPASS_PROFILE)).toEqual(
+      resumed,
+    );
+  });
+
+  it("resume and compile refuse the same cells, and a flag-like objective stays one word after `--` on resume", () => {
+    const a = adapter();
+    const cwd = "/work/tree";
+    const flagObj = "--session ses_other --auto --continue --fork";
+    const req = { ...request(cwd), objective: flagObj };
+    const resumed = a.resumeArgs({ provider: "opencode", nativeSessionId: SID }, req, PRIVILEGED_BYPASS_PROFILE);
+    if ("ineligible" in resumed) throw new Error(resumed.detail);
+    expect(resumed.argv.at(-1)).toBe(flagObj);
+    expect(resumed.argv.indexOf("--")).toBe(resumed.argv.length - 2);
+    expect(resumed.argv.slice(0, -2).filter((w) => w === "--session")).toEqual(["--session"]);
+    const modelled = { ...request(cwd), model: "synthetic/model" };
+    const compileModel = a.compile(modelled, PRIVILEGED_BYPASS_PROFILE);
+    const resumeModel = a.resumeArgs(
+      { provider: "opencode", nativeSessionId: SID },
+      modelled,
+      PRIVILEGED_BYPASS_PROFILE,
+    );
+    expect(resumeModel).toEqual(compileModel);
+    expect(resumeModel).toMatchObject({ ineligible: true, reason: "CAPABILITY_MISSING" });
+    const ro = { ...request(cwd), workspace: { cwd, writable: false } };
+    expect(a.resumeArgs({ provider: "opencode", nativeSessionId: SID }, ro, PRIVILEGED_BYPASS_PROFILE)).toEqual(
+      a.compile(ro, PRIVILEGED_BYPASS_PROFILE),
+    );
   });
 });
