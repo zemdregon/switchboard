@@ -7,10 +7,11 @@
  * round after the #475 ninth parser residuals pins compile/argv/stream interactions: objectives that could be misread
  * as flags, an environment the replay refuses, an empty stream at a clean exit, and capture-file encodings.
  */
+import { spawn } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import {
   type ConformanceCase,
   type ConformanceCaseReport,
@@ -725,5 +726,187 @@ describe("antigravity capture-file encodings through the replay (T4.35, stream f
     const report = await runConformanceCase(reencoded((raw) => `\uFEFF${raw}`, "bom"));
     expect(report.ok).toBe(false);
     expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", failureDetail: "exit code 64" });
+  });
+});
+
+describe("antigravity hang, host environment, probe and fixture-metadata interactions (T4.35, synthetic only)", () => {
+  // The round after the #494 tenth parser residuals. Interactions the earlier rounds name but do not run: the kill path
+  // each hang case claims (hang.jsonl's metadata says `ignore_term`; the `--hang` flag overrides it), a whole success
+  // stream that then hangs, API-key variables in the controller's own environment, a compile collapsed to a probe argv
+  // (the replay answers it without `check`), and the fixture metadata keys and placeholders the replay reads.
+  const names = readdirSync(dirname(fixturePath("hang")))
+    .filter((f) => f.endsWith(".jsonl"))
+    .map((f) => f.slice(0, -".jsonl".length))
+    .sort();
+  const linesOf = (name: string) =>
+    readFileSync(fixturePath(name), "utf8")
+      .split("\n")
+      .filter((l) => l.trim() !== "");
+  const metaOf = (name: string) =>
+    (JSON.parse(linesOf(name)[0] ?? "") as { _fixture: Record<string, unknown> & { write?: { path: string } } })
+      ._fixture;
+  const successCase = () => {
+    const c = runnable().find((x) => fixtureOf(x) === "success_edit" && x.kind === "success");
+    if (!c) throw new Error("missing success_edit case");
+    return c;
+  };
+
+  /**
+   * Spawns `c`'s compiled invocation directly, reads its whole hang.jsonl stream, sends SIGTERM and reports whether the
+   * process outlived it. The replay installs its SIGTERM handler right after its last write, so the signal waits a
+   * settle delay after the last line rather than racing the first byte.
+   */
+  const sigterm = async (c: ConformanceCase, events: number) => {
+    const inv = c.adapter.compile(c.request, c.profile);
+    if ("ineligible" in inv) throw new Error("hang case must compile");
+    const [exe = "", ...args] = inv.argv;
+    const child = spawn(exe, args, { cwd: inv.cwd, env: { PATH: process.env.PATH ?? "", ...inv.env } });
+    const exited = new Promise<NodeJS.Signals | null>((resolve) =>
+      child.on("exit", (_code, signal) => resolve(signal)),
+    );
+    let out = "";
+    await new Promise<void>((resolve) =>
+      child.stdout.on("data", (chunk: Buffer) => {
+        out += chunk.toString("utf8");
+        if (out.split("\n").length > events) resolve();
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 200));
+    child.kill("SIGTERM");
+    const early = await Promise.race([exited, new Promise<"alive">((r) => setTimeout(() => r("alive"), 600))]);
+    if (early !== "alive") return { signal: early, aliveAfterTerm: false };
+    child.kill("SIGKILL");
+    return { signal: await exited, aliveAfterTerm: true };
+  };
+
+  it("each hang case's replay takes the kill path its label names, overriding hang.jsonl's `ignore_term` metadata", async () => {
+    expect(metaOf("hang").hang).toBe("ignore_term");
+    const events = linesOf("hang").length - 1;
+    const hangs = runnable().filter((c) => c.kind === "timeout" || c.kind === "cancellation");
+    const seen: [string, { signal: NodeJS.Signals | null; aliveAfterTerm: boolean }][] = [];
+    for (const c of hangs) seen.push([label(c), await sigterm(c, events)]);
+    // The SAME_RESULT reason "only the kill path differs" holds only if the two paths really differ.
+    expect(seen).toEqual(
+      hangs.map((c) => [
+        label(c),
+        label(c).includes("ignores SIGTERM")
+          ? { signal: "SIGKILL", aliveAfterTerm: true }
+          : { signal: "SIGTERM", aliveAfterTerm: false },
+      ]),
+    );
+  }, 30_000);
+
+  it.each([
+    ["honours SIGTERM", false],
+    ["ignores SIGTERM", true],
+  ])("a whole success stream that then hangs (%s) ends an idle timeout, not a success", async (_label, ignoreTerm) => {
+    // The clean result line, its tokens and the write are all in; the provider not exiting still decides the run. Only
+    // `ok` and the code differ from the success case: id, summary, the visible write and the empty process group hold.
+    const adapter = replayAdapter("success_edit", { hang: true, ignoreTerm, timeouts: { idleMs: 400 } });
+    const report = await runConformanceCase({ ...successCase(), adapter });
+    expect(report.ok).toBe(false);
+    expect(report.result).toEqual({
+      ok: false,
+      failureCode: "PROCESS_TIMEOUT",
+      failureDetail: "idle timeout",
+      nativeSessionId: DEFAULT_SESSION_ID,
+      summary: "Added hello.txt.",
+      unknownEventCount: 0,
+    });
+    expect(report.checks.filter((k) => !k.ok).map((k) => k.name)).toEqual([
+      "result.ok matches",
+      "failure code matches",
+    ]);
+  });
+
+  it("API-key variables and a false auto-update flag in the controller's environment do not reach the replay", async () => {
+    // The sweep above edits the adapter-declared fragment; this sets the same names on the controller process. The
+    // supervisor drops the ones not allowlisted and the declared fragment wins, so the success still passes; if any
+    // reached the replay it would exit 64.
+    const c = successCase();
+    const inv = c.adapter.compile(c.request, c.profile);
+    if ("ineligible" in inv) throw new Error("success must compile");
+    const HOST = {
+      GEMINI_API_KEY: "synthetic-not-a-key",
+      GOOGLE_API_KEY: "synthetic-not-a-key",
+      GOOGLE_GEMINI_BASE_URL: "http://synthetic.example",
+      GOOGLE_CLOUD_PROJECT: "synthetic-project",
+      AGY_CLI_DISABLE_AUTO_UPDATE: "false",
+    };
+    expect(Object.keys(HOST).filter((k) => inv.envAllowlist.includes(k))).toEqual([]);
+    for (const [k, v] of Object.entries(HOST)) vi.stubEnv(k, v);
+    try {
+      const report = await runConformanceCase(c);
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+      expect(report.result).toMatchObject({ ok: true, nativeSessionId: DEFAULT_SESSION_ID });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.each(["--version", "--help"])(
+    "every runnable case fails a compile collapsed to the probe argv `%s` (answered before the argv check)",
+    async (probe) => {
+      // The replay answers a probe argv at exit 0 with plain text and never reaches `check`, so this refusal is not an
+      // exit 64: the text is one unparseable line with nothing bound, which no case expects.
+      const passing: string[] = [];
+      for (const c of runnable()) {
+        const report = await runConformanceCase(
+          refusedBy(c, (argv) => [...argv.slice(0, argv.indexOf("--") + 1), probe]),
+        );
+        expect(report.result).toEqual({
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          failureDetail: "unparseable provider output",
+          unknownEventCount: 0,
+        });
+        if (report.ok) passing.push(label(c));
+      }
+      expect(passing).toEqual([]);
+    },
+    60_000,
+  );
+
+  it("each fixture's metadata names only keys the replay reads, and every fixture that does not hang names its exit", () => {
+    // A misspelt key (`exitCode`, `requireresume`) is silently ignored, so a fixture would replay at exit 0 or as a
+    // fresh run without anyone noticing.
+    const READ = new Set(["synthetic", "note", "exit", "write", "hang", "requireResume"]);
+    expect(names.flatMap((n) => Object.keys(metaOf(n)).flatMap((k) => (READ.has(k) ? [] : [`${n}.${k}`])))).toEqual([]);
+    expect(names.filter((n) => !Object.hasOwn(metaOf(n), "exit") && !Object.hasOwn(metaOf(n), "hang"))).toEqual([]);
+    expect(names.filter((n) => Object.hasOwn(metaOf(n), "hang"))).toEqual(["hang"]);
+    expect(names.filter((n) => metaOf(n).requireResume === true)).toEqual([
+      "resume",
+      "resume_failure",
+      "resume_unknown_id",
+    ]);
+  });
+
+  it("only the first line carries `_fixture`, and the session placeholder appears only in resume fixtures", () => {
+    // The replay skips every `_fixture` line, so a later one would vanish from the stream; and `--conversation` is never
+    // compiled (Q-86), so a `{{SESSION_ID}}` placeholder in a fresh-run fixture would replay literally.
+    // resume_unknown_id has none: an unknown id lands in a new conversation (C9 run 5), so its id is fixed.
+    const later = (n: string, text: string) =>
+      linesOf(n)
+        .slice(1)
+        .some((l) => l.includes(text));
+    expect(names.filter((n) => later(n, '"_fixture"'))).toEqual([]);
+    expect(names.filter((n) => later(n, "{{SESSION_ID}}"))).toEqual(["resume", "resume_failure"]);
+  });
+
+  it("a case on a fixture that writes expects that path, unless its replay flag writes another", () => {
+    const writes = runnable()
+      .map((c) => {
+        const inv = c.adapter.compile(c.request, c.profile);
+        const own = "ineligible" in inv ? [] : inv.argv.slice(0, inv.argv.indexOf("--"));
+        const flag = own.includes("--write") ? own[own.indexOf("--write") + 1] : undefined;
+        return [label(c), flag ?? metaOf(fixtureOf(c)).write?.path, c.expect.mutatedPath] as const;
+      })
+      .filter(([, written, expected]) => written !== undefined || expected !== undefined);
+    expect(writes).toEqual([
+      ["success:success_edit", "hello.txt", "hello.txt"],
+      ["partial_mutation:task_failure (exit 1, write)", "partial.txt", "partial.txt"],
+      ["partial_mutation:denied_after_write", "b.txt", "b.txt"],
+      ["partial_mutation:success_edit (exit 1)", "hello.txt", "hello.txt"],
+    ]);
   });
 });
