@@ -62,8 +62,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#558](https://github.com/zemdregon/switchboard/pull/558)), export-time allowlist enforcement (T8.4,
   [#549](https://github.com/zemdregon/switchboard/pull/549)), the operator version canary (T8.5) and a CI test that
   excludes routing after a synthetic binary version bump until `adapters validate` records the version (T8.6) are done
-  on fakes. M8 acceptance closure (T8.7) is `Partial`: the README and roadmap status are done, the design-doc
-  corrections are not. See
+  on fakes. M8 acceptance closure (T8.7) is `Partial`: the README, roadmap status and design-doc corrections are
+  merged; `Done` is not yet recorded. See
   [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and
   [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
 - **Milestone 10 (container environments) is `Partial`.** The environment port, MCP admission and `serve` composition
@@ -507,8 +507,8 @@ preflight cache, and asserts routing excludes the provider until validation reco
 installed in CI.
 
 **Acceptance closure (T8.7).** `Partial`: this section and the M8 status in
-[ROADMAP §6](docs/ROADMAP.md#6-milestones) now match `src/telemetry/` and the version canary on `main`. The
-corrections to FRD, SDD, HLD and TDD text that T8.7 also covers are not done yet.
+[ROADMAP §6](docs/ROADMAP.md#6-milestones) now match `src/telemetry/` and the version canary on `main`, and the
+design-doc corrections merged in [#571](https://github.com/zemdregon/switchboard/pull/571). `Done` is not yet recorded.
 
 Tests on fakes: `src/config/config.test.ts`, `src/telemetry/index.test.ts`, `src/telemetry/spans.test.ts`,
 `src/telemetry/allowlist.test.ts`, `src/telemetry/collector-lifecycle.test.ts`, `src/telemetry/collector.test.ts`,
