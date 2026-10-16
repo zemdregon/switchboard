@@ -104,7 +104,10 @@ export interface ResolvedConfig {
   capacity: CapacitySettings;
   /** Routing settings (M7, T7.1; LLD §17.1), always set, defaulted per key. */
   routing: RoutingSettings;
-  /** Control-plane settings (M14, T14.5; LLD §3.4.6), always set, defaulted per key. */
+  /**
+   * Control-plane settings (M14; LLD §3.4.6), always set, defaulted per key. T14.4: every unset budget cap is
+   * unlimited; T14.5: unset loop-breaker keys take the LLD defaults.
+   */
   controlPlane: ControlPlaneSettings;
   /**
    * Validated `transport.http` (T13.1; FR-MCP-12, ADR-0041). Absent unless the section sets `enabled: true`; absent

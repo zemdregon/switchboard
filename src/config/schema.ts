@@ -37,6 +37,7 @@ import {
   providerGeneration,
 } from "../adapters/providers.js";
 import { MODEL_ID_PATTERN, type ModelConfig } from "../models/registry.js";
+import { type BudgetsConfigInput, budgetCapsSchema } from "./budgets.js";
 import { type HttpTransportConfig, httpTransportSchema } from "./http-transport.js";
 import {
   type InnerAgentConfig,
@@ -135,7 +136,10 @@ export interface SwitchboardConfig {
   capacity?: CapacityConfigInput;
   /** Routing (M7, T7.1; LLD §17.1, ADR-0044). Every key defaults to its LLD value (Assumptions, Q-80). */
   routing?: RoutingConfigInput;
-  /** Control plane (M14; LLD §3.4.6). T14.5 reads `loop_breaker`; every key defaults to its LLD Assumption value. */
+  /**
+   * Control plane (M14; LLD §3.4.6). T14.4 reads `budgets` (an absent cap is unlimited, never a provider limit); T14.5
+   * reads `loop_breaker`, every key defaulting to its LLD Assumption value.
+   */
   control_plane?: ControlPlaneConfigInput;
   /** Notification sinks (M14, T14.9; FR-CTL-10, LLD §3.4.9, ADR-0048). Absent or empty means off: no outbound call. */
   notification_sinks?: NotificationSinkConfig[];
@@ -158,8 +162,9 @@ export interface RoutingConfigInput {
 /** LLD §17.1 bounds of each `routing.weights` value (Assumption, Q-80); the default of 1 lives in `src/routing/score.ts`. */
 export const MAX_ROUTING_WEIGHT = 100;
 
-/** `control_plane` as written in the config file (LLD §3.4.6); only `loop_breaker` so far (T14.5). */
+/** `control_plane` as written in the config file (LLD §3.4.6); `budgets` (T14.4) and `loop_breaker` (T14.5) so far. */
 export interface ControlPlaneConfigInput {
+  budgets?: BudgetsConfigInput;
   loop_breaker?: {
     identical_failure_threshold?: number;
     stall_minutes?: number;
@@ -522,6 +527,19 @@ export const configSchema = {
       type: "object",
       additionalProperties: false,
       properties: {
+        // T14.4 (FR-CTL-06, LLD §3.4.6): operator caps; unset means unlimited. Ranges are in `budgets.ts`.
+        budgets: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            global: budgetCapsSchema,
+            projects: {
+              type: "object",
+              propertyNames: { pattern: PROJECT_ID_PATTERN },
+              additionalProperties: budgetCapsSchema,
+            },
+          },
+        },
         // LLD §3.4.6 lower bounds; the upper bounds are Proposed sanity limits (T14.5, Delegated).
         loop_breaker: {
           type: "object",

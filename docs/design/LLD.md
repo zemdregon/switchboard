@@ -1840,6 +1840,39 @@ On budget refusal at admission, the controller records `budget_refused` on the p
 sets `needs_attention` reason `budget_exhausted` until the window resets or the operator raises the cap. `get_digest`
 reports `budget.exhausted` and per-cap `used`/`limit` with `limit: null` when unset.
 
+**Implemented (T14.4, budgets; Delegated, not owner-approved).** `src/config/budgets.ts` validates and resolves
+`control_plane.budgets` (an absent cap is unset, never a default number; a cap of `0` admits nothing in its scope);
+`src/control/budgets.ts` evaluates the four caps over ledger rows at the lifecycle clock, and `RunLifecycle.submit`
+asks it inside the admission transaction (also before a retry or quota-wait successor row is created, LLD §16.5,
+§16.6). Choices this section leaves open:
+
+- **Derived on read, no migration.** Whether a refusal is active is recomputed from `run` and `usage_observation`
+  rows plus the configuration, so exhaustion clears by itself when the UTC day rolls over, observations age out, a
+  run ends or the operator raises the cap. `control_plane_state.budget_flags_json` (§3.4.7) is therefore not written;
+  `budget_refused` is recorded through the lifecycle's `onBudgetRefused` hook (operator log line and, once per
+  exhausted window and scope, the `budget_exhausted` sink event with `run_id: null`), not as a ledger row, until the
+  T14.6 migration exists.
+- **Scopes.** A project override replaces the global cap for that project's own counting; the global cap still counts
+  every run (all projects and workspace-path runs). Both are enforced, project scope first; a workspace-path run meets
+  the global caps only.
+- **Over a cap.** `runs_per_day` (run rows created since UTC midnight, whatever their state), `concurrent_runs`
+  (non-terminal rows) and `usage_per_window` refuse when `used >= limit`; `wall_clock_per_run` refuses while a
+  non-terminal run in the scope has run longer than the cap since `started_at` (set at LEASED) and clears when it ends.
+  Admission never pre-checks a run's own duration; the provider process timeouts are unchanged.
+- **Reported tokens.** `provider_reported` rows in `now - window_seconds .. now`: `total_tokens` when reported, else
+  every finite numeric metric named `tokens` or ending in `_tokens` (conservative: a subset may count twice, so the
+  cap bites earlier, never later). `controller_estimated` and `inner_agent` rows never count.
+- **Error mapping.** `LifecycleError` `BUDGET_EXHAUSTED` maps to `ELIGIBILITY_NONE` with `details.reason =
+  "BUDGET_EXHAUSTED"`, `details.needs_attention_reason = "budget_exhausted"`, and `scope`, `project_id`, `cap` (as
+  `caps[].key`), `limit`, `used`, `window_ends_at` (the `QUEUE_FULL` precedent, ROADMAP Q-5; no new top-level code).
+  A queued work item (T15.1) refused by a cap is retried, not failed. Messages use operator wording (cap, budget);
+  nothing is phrased as a provider quota or rate limit (ADR-0007).
+- **Read path.** The lifecycle publishes the evaluator it refuses with (`registerBudgets`), and `src/mcp/envelope.ts`
+  reads it through `budgetControlFacts` when the caller passes no `control`, so `get_run` and `list_runs` show
+  `budget_exhausted` on the project's non-terminal runs with no server change. `BudgetEvaluator.status` builds the
+  §3.4.3 `budget` object (`limit: null` when unset); `get_digest` reports it once `src/mcp/server.ts` passes
+  `control: budgetControlFacts(ledger)` and `src/mcp/digest.ts` includes `budget.caps` (slot owning those files).
+
 On the *N*th identical failure in a meta-session, the controller sets `meta_session.parked_loop = true` (Proposed
 column or side table), admits no further successors, and surfaces `parked_loop`. Stall detection uses the injectable
 clock (tests); it never cancels the run.

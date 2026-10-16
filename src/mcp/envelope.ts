@@ -22,10 +22,12 @@
  *
  * T14.2 (FR-CTL-03, LLD §3.4.5): when the caller passes needs-attention options (`get_run`, `list_runs`), the envelope
  * carries `needs_attention`, derived on read by `src/control/needs-attention.ts` from ledger rows only; nothing is stored.
- * T14.5 (FR-CTL-07): unless the caller passes its own `control` facts, `parked_loop` reads the loop breaker's park
- * events (`src/control/loop-attention.ts`).
+ * T14.4 (FR-CTL-06): unless the caller passes its own `control` facts, `budget_exhausted` reads the budget evaluator the
+ * run lifecycle registered for this ledger (`src/control/budgets.ts`), so the flag matches what refuses admission.
+ * T14.5 (FR-CTL-07): likewise `parked_loop` reads the loop breaker's park events (`src/control/loop-attention.ts`).
  */
 
+import { budgetControlFacts } from "../control/budgets.js";
 import { loopBreakerControlFacts } from "../control/loop-attention.js";
 import {
   type ControlPlaneFacts,
@@ -155,7 +157,7 @@ export function buildEnvelope(
       ? {
           needs_attention: needsAttentionOf(ledger, run, {
             ...attention,
-            control: attention.control ?? loopBreakerControlFacts(ledger),
+            control: attention.control ?? loopBreakerControlFacts(ledger, budgetControlFacts(ledger)),
           }),
         }
       : {}),
