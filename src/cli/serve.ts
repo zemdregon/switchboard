@@ -71,7 +71,8 @@ import {
   type VersionGateResult,
 } from "../adapters/index.js";
 import { ArtifactStore, defaultRedactor } from "../artifacts/index.js";
-import { ConfigError, loadConfig, type ResolvedConfig } from "../config/index.js";
+import { CiTriggerPoller, GhCiStatusPort, resolveGithubRemote } from "../ci/index.js";
+import { ConfigError, loadConfig, primaryContext, type ResolvedConfig } from "../config/index.js";
 import {
   ALL_PROJECTS_ID,
   type ApprovalAnnouncement,
@@ -828,7 +829,50 @@ async function runDaemon(
     runProjectWorkQueueTick(ledger, queueAdmission, queueSettings).catch((err) => {
       log.error("project work queue tick failed", { error: message(err) });
     });
-  void runQueueTick();
+  // T15.3 (FR-QUE-03, LLD §18.7 step 2, ADR-0050): CI is polled through the operator's `gh` before the queue dequeue
+  // (step 3), so a fix-up item can be admitted on the same tick. Off unless `ci_trigger.enabled`; no `gh` call otherwise.
+  const ciTrigger = config.ciTrigger;
+  const ciPoller = ciTrigger.enabled
+    ? new CiTriggerPoller(
+        {
+          db,
+          ledger,
+          port: new GhCiStatusPort({
+            binary: ciTrigger.ghBinary,
+            sourceEnv: io.env,
+            useCheckRunsFallback: ciTrigger.useCheckRunsFallback,
+          }),
+          settings: ciTrigger,
+          resolveRemote: async (projectId, remote) => {
+            const project = config.projects.find((p) => p.id === projectId);
+            return project === undefined ? undefined : resolveGithubRemote(primaryContext(project).path, remote);
+          },
+          maxItemsPerProject: queueSettings.maxItemsPerProject,
+        },
+        () => (now ? now() : new Date()).getTime(),
+      )
+    : undefined;
+  const runSchedulerTick = async () => {
+    if (ciPoller !== undefined) {
+      try {
+        const r = await ciPoller.tick();
+        for (const e of r?.errors ?? []) {
+          log.warn("ci trigger poll error", { project_id: e.projectId, publish_ref: e.publishRef, reason: e.reason });
+        }
+        for (const q of r?.enqueued ?? []) {
+          log.info("ci trigger enqueued fix-up work", {
+            project_id: q.projectId,
+            work_item_id: q.workItemId,
+            external_id: q.externalId,
+          });
+        }
+      } catch (err) {
+        log.error("ci trigger poll failed", { error: message(err) });
+      }
+    }
+    await runQueueTick();
+  };
+  void runSchedulerTick();
 
   // T12.4 (FR-RAG-11, LLD §14.5): background index builds. `startServeRag` only queues every project and returns; a
   // build runs on later turns of the event loop and is never awaited by admission. Without an embedding backend it is
@@ -858,7 +902,7 @@ async function runDaemon(
   const timer = setInterval(() => {
     void applyRequests();
     void rag?.applyRequests();
-    void runQueueTick();
+    void runSchedulerTick();
     sweepConsentLinks();
   }, OPERATOR_POLL_MS);
   const gcTimer = config.retentionEnabled

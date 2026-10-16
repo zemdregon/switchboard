@@ -56,8 +56,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   lazy exporter load (T8.1), wrapper-boundary span emission for `controller.delegate` and `provider.spawn` (T8.2), the
   collector integration test with parent links and the forbidden-attribute scan (T8.3), the operator version canary
   (T8.5) and a CI test that excludes routing after a synthetic binary version bump until `adapters validate` records
-  the version (T8.6) are done on fakes. Export-time allowlist enforcement and full M8 acceptance closure (T8.4, T8.7)
-  are not done. See
+  the version (T8.6) are done on fakes. Export-time allowlist enforcement (T8.4, in flight as
+  [PR #549](https://github.com/zemdregon/switchboard/pull/549)) and full M8 acceptance closure (T8.7, after T8.4) are
+  not done. See
   [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and
   [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
 - **Milestone 10 (container environments) is `Partial`.** The environment port, MCP admission and `serve` composition
@@ -106,6 +107,13 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#559](https://github.com/zemdregon/switchboard/pull/559)). ADR-0047 and ADR-0048 remain Proposed. See
   [Control plane (milestone 14)](#control-plane-milestone-14) and
   [ROADMAP §6.13](docs/ROADMAP.md#613-m14-control-plane-tasks).
+- **Milestone 15 (project queue, schedules and CI triggers) is `Partial`.** The durable per-project work queue
+  (T15.1, [#527](https://github.com/zemdregon/switchboard/pull/527)) and the CI-failure trigger (T15.3,
+  [#563](https://github.com/zemdregon/switchboard/pull/563)) are done on fakes. The trigger is off by default
+  (`ci_trigger` in the configuration); `serve` reads CI status through the operator's logged-in `gh` CLI, polls only
+  branches the project pushed, treats the CI text as untrusted and enqueues a work item under the trigger's client
+  ceiling. Switchboard reads no GitHub token. Schedules (T15.2) are not done. See
+  [ROADMAP §6.14](docs/ROADMAP.md#614-m15-project-queue-schedules-and-ci-triggers-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
   client and a macOS CI leg are done; Grok Build, Antigravity, Cursor and OpenCode each have a module, compile matrix
   and parser work on synthetic fixtures. Grok Build has module, compile-matrix, parser (partial: T4.23; every Done-when
@@ -456,9 +464,9 @@ canary. Export-time allowlist drop remains T8.4.
 `collector integration: fake-adapter delegate/finalize path (T8.3)`) runs a fake-adapter delegate/finalize path with
 OTLP pointed at the in-process collector fixture `src/telemetry/fixtures/collector.ts`, then asserts the span count,
 the LLD §7 parent links (`provider.spawn` under `controller.delegate`, one trace per run; `src/telemetry/links.ts`)
-and the absence of every forbidden attribute category from LLD §7. The scan is a positive control: planting a
-forbidden key or value on an exported span fails the test (`src/telemetry/collector.test.ts`). No provider CLI is
-installed in CI.
+and the absence of every forbidden attribute category from LLD §7. The scan has positive controls: planting a
+forbidden category on an exported span fails the lifecycle path (same file), and `src/telemetry/collector.test.ts`
+checks each forbidden key and value class individually. No provider CLI is installed in CI.
 
 **Version canary (T8.5).** Switchboard records each enabled provider's probed CLI version under the data directory
 (`version-canary.json`). A version change marks the adapter `ADAPTER_VERSION_UNVERIFIED` until you run
