@@ -2,6 +2,8 @@
 
 Merged as [PR #460](https://github.com/zemdregon/switchboard/pull/460).
 
+- Roadmap §6.14 cross-links to this note: merged [PR #463](https://github.com/zemdregon/switchboard/pull/463).
+
 - Date: 2026-10-15
 - Status: Research input (Delegated agent work, documentation only; not owner-approved). This note **orders**
   implementation waves and hot files; normative shapes, scheduler steps and trust rules remain
