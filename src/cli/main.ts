@@ -10,6 +10,7 @@ import { ConfigError } from "../config/index.js";
 import { ApprovalRefusedError } from "../lifecycle/approval.js";
 import { LockError } from "../lock/index.js";
 import { renderValidate, runAdaptersValidate } from "./adapters-validate.js";
+import { renderAdaptersVersionCanary, runAdaptersVersionCanary } from "./adapters-version-canary.js";
 import { listAffinity, renderAffinityList, renderAffinityReset, resetAffinity } from "./affinity.js";
 import { renderCapacity, runCapacity } from "./capacity.js";
 import { consentHashPassphrase, consentPair, renderPair, renderPassphraseHash } from "./consent.js";
@@ -94,6 +95,9 @@ Commands:
                       read-only prompt; may use your quota). Never starts a sign-in. On success only, writes the
                       version, date, range and an evidence line into the provider's manifest file in the source
                       checkout for you to review and commit; on any failure writes nothing. Exit 1 on failure
+  adapters version-canary
+                      Compare each enabled provider's installed CLI version to the last recorded value; on change
+                      report ADAPTER_VERSION_UNVERIFIED until adapters validate succeeds (for cron or systemd timers)
   inner status        Show the inner agent: backend, locality, per-task call counts, fallback rates and suspension
                       (read-only; never contacts the backend)
   inner test <task>   Run one task on a built-in synthetic fixture through the configured backend; sends no repository
@@ -235,16 +239,23 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         return report.ok ? 0 : 1;
       }
       case "adapters": {
-        // T4.4 (FR-OPS-02): the only subcommand. No lock or ledger; it writes one manifest file, and only on success.
-        if (sub !== "validate") {
-          throw new UsageError(`unknown adapters subcommand ${JSON.stringify(sub ?? "")}; expected validate`);
+        if (sub === "validate") {
+          const id = rest[0];
+          if (id === undefined || rest.length > 1)
+            throw new UsageError("adapters validate requires exactly one provider");
+          const report = await runAdaptersValidate(io, id, loaderArgv);
+          emit(report, renderValidate(report));
+          return report.ok ? 0 : 1;
         }
-        const id = rest[0];
-        if (id === undefined || rest.length > 1)
-          throw new UsageError("adapters validate requires exactly one provider");
-        const report = await runAdaptersValidate(io, id);
-        emit(report, renderValidate(report));
-        return report.ok ? 0 : 1;
+        if (sub === "version-canary") {
+          if (rest.length > 0) throw new UsageError("adapters version-canary takes no arguments");
+          const report = await runAdaptersVersionCanary(io, loaderArgv);
+          emit(report, renderAdaptersVersionCanary(report));
+          return report.ok ? 0 : 1;
+        }
+        throw new UsageError(
+          `unknown adapters subcommand ${JSON.stringify(sub ?? "")}; expected validate or version-canary`,
+        );
       }
       case "gc": {
         if (sub !== undefined) throw new UsageError("gc takes no positional arguments");

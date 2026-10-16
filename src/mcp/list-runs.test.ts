@@ -111,6 +111,7 @@ describe("list_runs (T14.1, FR-CTL-01)", () => {
       "explain_route",
       "list_runs",
       "get_digest",
+      "steer_run",
       "pause_project",
       "resume_project",
     ]);

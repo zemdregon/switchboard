@@ -82,6 +82,10 @@
  * - `get_digest` (T14.3; FR-CTL-02, FR-TEL-01, LLD §3.4.3) is read-only and scoped as `get_run`: its cursor is a
  *   `run_event.id` of this caller's own runs, and run summaries arrive only as labelled, capped untrusted text
  *   (`./digest.ts` holds the Proposed assembly rules).
+ * - `steer_run` (T14.7; FR-CTL-04, FR-SES-03, BR-7, LLD §3.4.4) is scoped as `get_run` (another client's run is
+ *   unknown, INVALID_REQUEST) and hands the note to the lifecycle, which records `steer_requested` (length and hash
+ *   only) and delivers it by boundary-resume of the same native session (`../lifecycle/steer.ts`). A terminal run is a
+ *   no-op returning its envelope. The note never appears in any tool output.
  * - `pause_project` / `resume_project` (T14.6; FR-CTL-05, LLD §3.4.4) take a project exactly as the `list_runs`
  *   filter does (`checkListProject`: unknown → INVALID_REQUEST, outside the client's list → PERMISSION_BLOCKED, the
  *   client's own dynamic project allowed) and set that project's `control_plane_state` row as `mcp:<client_id>`
@@ -1150,6 +1154,13 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     return envelopeOf(run.id);
   };
 
+  /** T14.7 (FR-CTL-04, LLD §3.4.4): see `../lifecycle/steer.ts`; scoped exactly as `get_run`. */
+  const steerRun = async (a: Args): Promise<Envelope> => {
+    const run = ownRun(a.run_id as string);
+    lifecycle.steer(run.id, a.note as string);
+    return envelopeOf(run.id);
+  };
+
   const getArtifacts = async (a: Args) => {
     const run = ownRun(a.run_id as string);
     const kinds = new Set<string>((a.kinds as string[] | undefined) ?? MCP_ARTIFACT_KINDS);
@@ -1360,6 +1371,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     explain_route: explainRouteTool,
     list_runs: listRuns,
     get_digest: getDigest,
+    steer_run: steerRun,
     pause_project: pauseProject,
     resume_project: resumeProject,
   };

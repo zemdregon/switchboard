@@ -3,5 +3,6 @@ export * from "./lifecycle.js";
 export * from "./request.js";
 export * from "./resume-directory.js";
 export * from "./states.js";
+export * from "./steer.js";
 export * from "./summary-event.js";
 export * from "./verification.js";

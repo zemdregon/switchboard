@@ -62,9 +62,11 @@ import {
   adapterIdForConfigId,
   configIdForAdapterId,
   createProbeRunner,
+  evaluateVersionCanary,
   PreflightCache,
   type ProviderId,
   providerEntries,
+  readVersionCanaryStore,
   type VersionGateResult,
 } from "../adapters/index.js";
 import { ArtifactStore, defaultRedactor } from "../artifacts/index.js";
@@ -72,7 +74,10 @@ import { ConfigError, loadConfig, type ResolvedConfig } from "../config/index.js
 import {
   ALL_PROJECTS_ID,
   type ApprovalAnnouncement,
+  ApprovalLinkPage,
   applyPauseRequests,
+  ConsentLinkStore,
+  createConsentApprovalSource,
   SinkDispatcher,
   sinkOutcomeRecorder,
   transitionNotifier,
@@ -87,6 +92,7 @@ import { createLedger, openLedger, RagLedger } from "../ledger/index.js";
 import { RunLifecycle } from "../lifecycle/index.js";
 import { acquireDataDirLock, type DataDirLock } from "../lock/index.js";
 import {
+  AttemptLimiter,
   AuthorizationServer,
   createSwitchboardServer,
   type HttpTransportListener,
@@ -105,6 +111,7 @@ import { DynamicProjectStore, innerSettingResolver } from "../projects/index.js"
 import { queueSchedulerSettingsFromConfig, runProjectWorkQueueTick } from "../queue/index.js";
 import { reconcile } from "../reconcile/index.js";
 import { pruneRagStores } from "../retrieval/store.js";
+import { createTelemetry } from "../telemetry/index.js";
 import { runRetentionGc, WorkspaceManager } from "../workspace/index.js";
 import { type CliIo, PROBE_ENV_ALLOWLIST } from "./io.js";
 import { applyOperatorRequests } from "./operator.js";
@@ -234,8 +241,9 @@ export function buildRegistry(fake: FakeSwitch, opts: { claudeGitChannel?: boole
   return registry;
 }
 
-/** Version gate: the registry's manifest gate, except the test-only fake when (and only when) the switch is on. */
-function gateFor(registry: AdapterRegistry, fake: FakeSwitch) {
+/** Version gate: manifest gate plus the T8.5 version canary (read-only store), except the test fake when enabled. */
+function gateFor(registry: AdapterRegistry, fake: FakeSwitch, dataDir: string) {
+  const store = readVersionCanaryStore(dataDir);
   return (id: ProviderId, version: string | null, dir?: string): VersionGateResult => {
     if (id === "fake" && fake.enabled) {
       return {
@@ -248,7 +256,8 @@ function gateFor(registry: AdapterRegistry, fake: FakeSwitch) {
         },
       };
     }
-    return registry.gate(id, version, dir);
+    const manifestGate = registry.gate(id, version, dir);
+    return evaluateVersionCanary(manifestGate, id, store).gate;
   };
 }
 
@@ -518,6 +527,7 @@ async function runDaemon(
   // T12.4 / T12.5: set below once background indexing has started; until then (and with no embedding backend) the
   // context-pack port answers `undefined` and a run is compiled without a pack.
   let rag: ServeRag | undefined;
+  const telemetry = createTelemetry(config); // inert until T8.2 submits the first completed span
   // T14.9 (FR-CTL-10, ADR-0048): notification sinks only when the operator configured one; none means no request at all.
   const sinks =
     config.notificationSinks.length === 0
@@ -562,7 +572,11 @@ async function runDaemon(
     ),
     probeRunner: createProbeRunner(PROBE_ENV_ALLOWLIST),
     baseEnv: io.env,
-    eligibility: { gate: gateFor(registry, fake), isEnabled: enablement(config, fake), models: modelRegistry(config) },
+    eligibility: {
+      gate: gateFor(registry, fake, config.dataDir),
+      isEnabled: enablement(config, fake),
+      models: modelRegistry(config),
+    },
     preflightCache: new PreflightCache({ ttlMs: config.preflightTtlMs }),
     gitTools,
     finalizePublisher,
@@ -585,6 +599,47 @@ async function runDaemon(
     },
     ...(now ? { now } : {}),
   });
+
+  // T14.10 (FR-CTL-09, ADR-0047 Decision 3): single-use, expiring consent-page links, only with the HTTP transport. A
+  // sweep on each operator poll issues a link for every decidable approval without a live one and logs its URL, which
+  // is not a credential: opening it still needs the passphrase or a pairing code (FR-MCP-17).
+  const consentLinks = config.httpTransport
+    ? new ConsentLinkStore({
+        issuer: config.httpTransport.issuer,
+        source: createConsentApprovalSource({
+          ledger,
+          clientIds: [...config.mcpClients.keys()],
+          projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
+          applyDecision: (req) => lifecycle.applyApprovalDecision(req),
+          ...(sinks !== undefined
+            ? {
+                announce: (a: ApprovalAnnouncement) =>
+                  sinks.emit({
+                    projectId: a.projectId,
+                    eventKind: "approval_decided",
+                    reasonCode: a.kind,
+                    runId: a.runId,
+                  }),
+              }
+            : {}),
+        }),
+        ...(now ? { now } : {}),
+      })
+    : undefined;
+  const sweepConsentLinks = (): void => {
+    if (!consentLinks) return;
+    try {
+      for (const l of consentLinks.sweep()) {
+        log.info("consent-page approval link issued", {
+          approval_id: l.approvalId,
+          url: l.url,
+          expires_at: l.expiresAt,
+        });
+      }
+    } catch (err) {
+      log.warn("issuing consent-page approval links failed", { error: message(err) });
+    }
+  };
 
   let polling = false;
   const applyRequests = async (): Promise<void> => {
@@ -680,6 +735,7 @@ async function runDaemon(
     void applyRequests();
     void rag?.applyRequests();
     void runQueueTick();
+    sweepConsentLinks();
   }, OPERATOR_POLL_MS);
   const gcTimer = config.retentionEnabled
     ? setInterval(() => void gcPass("interval"), Math.min(config.retention.intervalMs, MAX_TIMER_MS))
@@ -757,6 +813,9 @@ async function runDaemon(
     // verified against the hashed rows in the ledger; a refusal logs its reason code only, never the token.
     const oauthTokens = new OAuthTokenStore(db, now ? { now } : {});
     const oauthClients = new OAuthClientStore(db, now ? { now } : {});
+    // One wrong-passphrase lockout for the OAuth consent page and the approval-link page (T14.10).
+    const passphraseLimiter = new AttemptLimiter();
+    const pairing = new PairingCodeStore(db, now ? { now } : {});
     httpListener = await startHttpTransport(config.httpTransport, {
       tokens: oauthTokens,
       onTokenRejected: (reason) => log.warn("refused an HTTP bearer token", { reason }),
@@ -778,12 +837,29 @@ async function runDaemon(
             authorizationServer: new AuthorizationServer(config.httpTransport, {
               clients: oauthClients,
               tokens: oauthTokens,
-              pairing: new PairingCodeStore(db, now ? { now } : {}),
+              pairing,
+              limiter: passphraseLimiter,
               ...(config.httpTransport.passphraseHash !== undefined
                 ? { passphraseHash: config.httpTransport.passphraseHash }
                 : {}),
               ...(now ? { now } : {}),
               onEvent: (event, fields) => log.info("OAuth authorization event", { event, ...fields }),
+            }),
+          }
+        : {}),
+      // T14.10 (FR-CTL-09, FR-MCP-17): the approval-link page on the same origin, with the same authentication.
+      ...(config.httpTransport && consentLinks
+        ? {
+            approvalLinks: new ApprovalLinkPage({
+              issuer: config.httpTransport.issuer,
+              links: consentLinks,
+              pairing,
+              limiter: passphraseLimiter,
+              ...(config.httpTransport.passphraseHash !== undefined
+                ? { passphraseHash: config.httpTransport.passphraseHash }
+                : {}),
+              ...(now ? { now } : {}),
+              onEvent: (event, fields) => log.info("consent-page approval link event", { event, ...fields }),
             }),
           }
         : {}),
@@ -834,6 +910,7 @@ async function runDaemon(
       log.error("lifecycle shutdown failed", { error: message(err) });
       code = 1;
     }
+    await telemetry.close();
     await sinks?.close(); // aborts deliveries in flight; never throws
     process.stdin.destroy(); // nothing reads stdin any more; do not let it hold the event loop open
     process.off("SIGINT", ignore);

@@ -1,0 +1,100 @@
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { evaluateVersionGate } from "./manifest/gate.js";
+import type { ComplianceManifest } from "./manifest/schema.js";
+import {
+  emptyVersionCanaryStore,
+  evaluateVersionCanary,
+  readVersionCanaryStore,
+  recordAdapterVersion,
+  versionCanaryBaseline,
+  versionCanaryPath,
+} from "./version-canary.js";
+
+const manifest = (validated_cli_version: string, range = ">=2.1.0 <2.2.0"): ComplianceManifest => ({
+  schema_version: 1,
+  provider: "claude",
+  validated_cli_version,
+  validated_on: "2026-10-01",
+  validated_version_range: range,
+  auth_modes_allowed: ["native_cached_subscription"],
+  automation_surface: ["documented_headless"],
+  credential_export_allowed: false,
+  dashboard_scraping_allowed: false,
+  network_protocol_reverse_engineering: false,
+  commercial_multi_user_status: "requires-review",
+  source_revision: "test",
+});
+
+const gateFor = (observed: string, validatedCli: string) =>
+  evaluateVersionGate("claude", manifest(validatedCli), observed);
+
+describe("version canary (T8.5)", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    dirs.length = 0;
+  });
+  const dataDir = () => {
+    const d = mkdtempSync(join(tmpdir(), "sb-vcanary-"));
+    dirs.push(d);
+    return d;
+  };
+
+  it("unchanged version is silent and eligible", () => {
+    const dir = dataDir();
+    recordAdapterVersion(dir, "claude", "2.1.294", () => new Date("2026-10-01T00:00:00Z"));
+    const store = readVersionCanaryStore(dir);
+    const gate = gateFor("2.1.294", "2.1.294");
+    const ev = evaluateVersionCanary(gate, "claude", store);
+    expect(ev.bump).toBe(false);
+    expect(ev.gate.eligible).toBe(true);
+    expect(ev.recordVersion).toBeNull();
+  });
+
+  it("a version bump marks the adapter ADAPTER_VERSION_UNVERIFIED", () => {
+    const store = {
+      schema_version: 1 as const,
+      adapters: { claude: { binary_version: "2.1.294", recorded_at: "2026-10-01T00:00:00Z" } },
+    };
+    const gate = gateFor("2.1.296", "2.1.294");
+    const ev = evaluateVersionCanary(gate, "claude", store);
+    expect(ev.bump).toBe(true);
+    expect(ev.gate.eligible).toBe(false);
+    if (!ev.gate.eligible) {
+      expect(ev.gate.code).toBe("ADAPTER_VERSION_UNVERIFIED");
+      expect(ev.gate.detail).toContain("2.1.296");
+      expect(ev.gate.detail).toContain("2.1.294");
+    }
+    expect(ev.recordVersion).toBeNull();
+  });
+
+  it("uses manifest validated_cli_version as baseline when the store has no row", () => {
+    const store = emptyVersionCanaryStore();
+    const gate = gateFor("2.1.296", "2.1.294");
+    const ev = evaluateVersionCanary(gate, "claude", store);
+    expect(ev.bump).toBe(true);
+    expect(ev.gate.eligible).toBe(false);
+  });
+
+  it("establishes a baseline when manifest gate passes and no baseline exists", () => {
+    const store = emptyVersionCanaryStore();
+    const gate = gateFor("2.1.294", "unverified-on-this-host");
+    expect(versionCanaryBaseline(store, "claude", "unverified-on-this-host")).toBeNull();
+    const ev = evaluateVersionCanary(gate, "claude", store);
+    expect(ev.bump).toBe(false);
+    expect(ev.recordVersion).toBe("2.1.294");
+  });
+
+  it("persists recorded versions under the data directory", () => {
+    const dir = dataDir();
+    recordAdapterVersion(dir, "codex", "0.162.1", () => new Date("2026-10-16T12:00:00Z"));
+    const reread = readVersionCanaryStore(dir);
+    expect(reread.adapters.codex).toEqual({
+      binary_version: "0.162.1",
+      recorded_at: "2026-10-16T12:00:00.000Z",
+    });
+    expect(readFileSync(versionCanaryPath(dir), "utf8")).toContain("0.162.1");
+  });
+});
