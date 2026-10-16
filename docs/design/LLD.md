@@ -1759,6 +1759,16 @@ Multiple reasons may apply; the envelope and digest expose the highest-priority 
 `budget_exhausted`, `parked_loop`, `awaiting_approval`, `stalled`, `failed_after_retry`). Priority is **Proposed** for
 stable UI; T14.2 may adjust with tests.
 
+**Implemented (T14.2, Delegated, not owner-approved).** `src/control/needs-attention.ts` derives the flag on read and
+keeps the order above (`NEEDS_ATTENTION_PRIORITY`); `get_run` and `list_runs` attach it to the envelope, and the digest
+(T14.3) is to call the same `needsAttentionOf`. Choices the table leaves open: `failed_after_retry` matches
+`attempt >= max_successors_per_meta_session`; `budget_exhausted` attaches to the non-terminal runs of a resolved project
+only; until the `control_plane.loop_breaker` keys exist, *T* and the successor cap use the §3.4.6 Assumption defaults
+(30 and 8). `meta_session.parked_loop` and `control_plane_state` are read through a `ControlPlaneFacts` port whose default
+reports neither (missing persistence infers nothing), so T14.4 and T14.5 wire their readers in without changing the
+derivation. An unevaluable stall timestamp does not flag `stalled`; an approval lookup that breaks the
+one-approval-per-meta-session invariant shows `awaiting_approval`.
+
 #### 3.4.6 Budgets and loop breaker (FR-CTL-06, FR-CTL-07)
 
 **Configuration keys** (operator values; never presented as provider limits, ADR-0007). Validated at config load; unset

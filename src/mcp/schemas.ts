@@ -29,10 +29,14 @@
  * T14.1 (FR-CTL-01, LLD §3.4.2): `list_runs` is appended to the tool list; its rows are the `get_run` envelope. Proposed
  * (Delegated): `since`/`until` must be ISO-8601 date-times with a zone (`Z` or an offset); `status` and `status_in` are
  * alternatives (`not` both); `status_in` is non-empty and duplicate-free.
+ *
+ * T14.2 (FR-CTL-03, LLD §3.4.1): the envelope gains optional `needs_attention` (`get_run` and `list_runs` set it); the
+ * reason enum is the closed list exported by `src/control/needs-attention.ts`.
  */
 
 import { FAILURE_CODES } from "../adapters/failure.js";
 import { PROJECT_ID_PATTERN, projectSchema } from "../config/schema.js";
+import { NEEDS_ATTENTION_PRIORITY } from "../control/needs-attention.js";
 import { PRIVILEGED_SCOPE_SCHEMA } from "../policy/scope.js";
 
 /** Bumped on any incompatible change to a published tool schema (Proposed). */
@@ -205,6 +209,23 @@ const ENVELOPE = {
         status: { type: "string", enum: ["PENDING", "APPROVED", "DENIED"] },
         requested_at: { type: "string" },
       },
+    },
+    // T14.2 (FR-CTL-03, LLD §3.4.1): derived on read; `reason` is required when active and absent otherwise.
+    needs_attention: {
+      oneOf: [
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["active", "reason"],
+          properties: { active: { const: true }, reason: { enum: [...NEEDS_ATTENTION_PRIORITY] } },
+        },
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["active"],
+          properties: { active: { const: false } },
+        },
+      ],
     },
     replayed: { type: "boolean" },
     events: {

@@ -19,8 +19,17 @@
  *
  * T3.4: the operator `approve`/`deny` record (`operator_decision_requested`) carries the deciding OS user and the scope
  * hash for the operator CLI; `get_run include_events` drops both fields from that event (Proposed).
+ *
+ * T14.2 (FR-CTL-03, LLD §3.4.5): when the caller passes needs-attention options (`get_run`, `list_runs`), the envelope
+ * carries `needs_attention`, derived on read by `src/control/needs-attention.ts` from ledger rows only; nothing is stored.
  */
 
+import {
+  type ControlPlaneFacts,
+  type NeedsAttention,
+  type NeedsAttentionOptions,
+  needsAttentionOf,
+} from "../control/needs-attention.js";
 import { GIT_REF_SNAPSHOT_EVENT } from "../git/ref-guard.js";
 import type { Ledger, RunRecord } from "../ledger/index.js";
 import {
@@ -61,6 +70,8 @@ export interface Envelope {
   retry_of?: string;
   /** T6.5 (FR-MCP-10): the run that supersedes this one (its retry or failover successor); present only when set. */
   superseded_by?: string;
+  /** T14.2 (FR-CTL-03): derived on read for `get_run` and `list_runs`; `reason` only when `active`. */
+  needs_attention?: NeedsAttention;
   replayed?: boolean;
   events?: { seq: number; ts: string; type: string; payload: unknown }[];
 }
@@ -84,7 +95,12 @@ interface TransitionPayload {
   verification?: unknown;
 }
 
-export function buildEnvelope(ledger: Ledger, run: RunRecord, scrub: (s: string) => string): Envelope {
+export function buildEnvelope(
+  ledger: Ledger,
+  run: RunRecord,
+  scrub: (s: string) => string,
+  attention?: NeedsAttentionOptions & { control?: ControlPlaneFacts },
+): Envelope {
   let adapterVersion: string | null = null;
   let terminal: TransitionPayload | undefined;
   let summaryPayload: unknown;
@@ -132,6 +148,7 @@ export function buildEnvelope(ledger: Ledger, run: RunRecord, scrub: (s: string)
     usage: { reported: reportedUsage(ledger, run.id), estimated: null, capacity_confidence: null },
     ...approvalOf(ledger, run),
     ...retryLinks(ledger, run),
+    ...(attention !== undefined ? { needs_attention: needsAttentionOf(ledger, run, attention) } : {}),
   };
 }
 
