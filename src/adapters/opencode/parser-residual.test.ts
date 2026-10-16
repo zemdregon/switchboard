@@ -49,6 +49,12 @@
  * sees it); two trailing tools keep the trailing-tool detail; `state.status` error/denied spellings never emit
  * `permission_denied` (fixtures `error_status_trailing_tool.jsonl`, `error_status_git_write.jsonl`) while a Git write
  * there still reaches the guard; resume argv equals compile plus one `--session <id>` pair and never `-s`/`--continue`.
+ * Eleventh pass (2026-10-16, same terms): a `step_finish` whose reason is not a string is unknown, records no usage and
+ * leaves its part id unspent for the next finish; non-string `text` or `tool` fields are unknown under their line type
+ * after the id binds; error payload tails (an empty string or object, a non-string or empty type, a non-string message)
+ * stay provider errors that a later stop cannot erase (fixture `error_empty_payload.jsonl`); an error nested under
+ * `part` or a final finish with reason `error` surfaces no provider error (gaps); and an unsafe or changed id on a quota
+ * error line emits the protocol error first, masking QUOTA_EXHAUSTED (gap, fixture `unsafe_id_quota_error.jsonl`).
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -2682,5 +2688,248 @@ describe("opencode parser residuals, tenth pass: late binding after stop, traili
     expect(a.resumeArgs({ provider: "opencode", nativeSessionId: SID }, ro, PRIVILEGED_BYPASS_PROFILE)).toEqual(
       a.compile(ro, PRIVILEGED_BYPASS_PROFILE),
     );
+  });
+});
+
+describe("opencode parser residuals, eleventh pass: unreadable finish reasons, non-string fields, error payload tails and unsafe ids on error lines (T4.53; synthetic lines; parser unchanged)", () => {
+  const request = (cwd = makeCwd()): CompileRequest => ({
+    runId: "run_opencode_t453_eleventh",
+    objective: "synthetic opencode objective",
+    constraints: [],
+    workspace: { cwd, writable: true },
+    bypassApproved: true,
+  });
+  const usage = (events: readonly NormalizedEvent[]) => events.filter((e) => e.kind === "usage");
+  const errorLine = (error: unknown, id: string | undefined = SID) => ({ type: "error", ...sid(id), error });
+
+  it("a step_finish with a non-string or missing reason is unknown, records no usage and leaves its part id unspent", () => {
+    const badParts: unknown[] = [
+      { id: "prt_x", type: "step-finish", reason: 42, tokens: { input: 9 } },
+      { id: "prt_x", type: "step-finish", reason: null, tokens: { input: 9 } },
+      { id: "prt_x", type: "step-finish", reason: ["stop"], tokens: { input: 9 } },
+      { id: "prt_x", type: "step-finish", reason: { stop: true }, tokens: { input: 9 } },
+      { id: "prt_x", type: "step-finish", tokens: { input: 9 } },
+      undefined,
+    ];
+    for (const part of badParts) {
+      const label = JSON.stringify(part) ?? "no part";
+      const { events, state } = parse([
+        START(SID),
+        { type: "step_finish", sessionID: SID, ...(part === undefined ? {} : { part }) },
+        FINISH("stop", "prt_x"),
+      ]);
+      expect(
+        events.filter((e) => e.kind === "unknown"),
+        label,
+      ).toEqual([{ kind: "unknown", rawType: "step_finish" }]);
+      expect(state.unknownEvents, label).toBe(1);
+      expect(usage(events), label).toEqual([
+        { kind: "usage", source: "provider_reported", metrics: { input: 3, output: 1 } },
+      ]);
+      expect(adapter().extractResult(events, EXIT_OK), label).toEqual({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "1 unreadable event(s) in the stream",
+        nativeSessionId: SID,
+        unknownEventCount: 1,
+      });
+    }
+  });
+
+  it("non-string text or tool fields are unknown under their line type; the first id on that line still binds ahead", () => {
+    for (const value of [42, null, true, ["a"], { text: "a" }]) {
+      const label = JSON.stringify(value);
+      const text = parse([{ type: "text", sessionID: SID, part: { type: "text", text: value } }]).events;
+      expect(text, label).toEqual([
+        { kind: "session_bound", nativeSessionId: SID },
+        { kind: "unknown", rawType: "text" },
+      ]);
+      const tool = parse([
+        { type: "tool_use", sessionID: SID, part: { tool: value, state: { input: { command: "git push" } } } },
+      ]).events;
+      expect(tool, label).toEqual([
+        { kind: "session_bound", nativeSessionId: SID },
+        { kind: "unknown", rawType: "tool_use" },
+      ]);
+      // Before the stop, an unreadable tool_use is an unreadable event, not the trailing-tool detail.
+      const run = [...tool, ...parse([TEXT("done"), FINISH("stop")]).events];
+      expect(adapter().extractResult(run, EXIT_OK), label).toEqual({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "1 unreadable event(s) in the stream",
+        nativeSessionId: SID,
+        unknownEventCount: 1,
+        summary: "done",
+      });
+    }
+  });
+
+  it("error payload tails: an empty string, empty object, non-string or empty type and non-string message, then a stop", () => {
+    const cases: [unknown, string, string, string][] = [
+      ["", "unknown", "error: ", "TOOL_FAILURE"],
+      [{}, "unknown", "{}", "TOOL_FAILURE"],
+      [{ type: 42, message: "m" }, "unknown", "error: m", "TOOL_FAILURE"],
+      // Gap: an empty-string type keeps its empty prefix rather than falling back to `error`.
+      [{ type: "", message: "m" }, "unknown", ": m", "TOOL_FAILURE"],
+      [{ type: "provider.quota", message: 42 }, "quota", "provider.quota: ", "QUOTA_EXHAUSTED"],
+      [{ type: "provider.auth" }, "auth", "provider.auth: ", "AUTH_REQUIRED"],
+      [{ type: "provider.no-route", message: ["x"] }, "model_unavailable", "provider.no-route: ", "MODEL_UNAVAILABLE"],
+    ];
+    for (const [payload, category, message, code] of cases) {
+      const label = JSON.stringify(payload);
+      const { events, state } = parse([START(SID), TEXT("partial"), errorLine(payload), FINISH("stop")]);
+      expect(
+        events.filter((e) => e.kind === "provider_error"),
+        label,
+      ).toEqual([{ kind: "provider_error", category, message }]);
+      expect(state.unknownEvents, label).toBe(0);
+      expect(adapter().extractResult(events, EXIT_OK), label).toEqual({
+        ok: false,
+        failureCode: code,
+        failureDetail: `${category}: ${message}`,
+        nativeSessionId: SID,
+        unknownEventCount: 0,
+        summary: "partial",
+      });
+    }
+  });
+
+  it("pins the gap: an error object nested under part (or under another key) is not read; the line is unknown", () => {
+    for (const shape of [
+      { part: { error: { type: "provider.quota", message: "m" } } },
+      { err: { type: "provider.quota", message: "m" } },
+      { message: "provider.quota" },
+    ]) {
+      const label = JSON.stringify(shape);
+      const { events } = parse([START(SID), { type: "error", sessionID: SID, ...shape }]);
+      expect(
+        events.some((e) => e.kind === "provider_error"),
+        label,
+      ).toBe(false);
+      expect(events.at(-1), label).toEqual({ kind: "unknown", rawType: "error" });
+      expect(adapter().extractResult(events, EXIT_1), label).toEqual({
+        ok: false,
+        failureCode: "TOOL_FAILURE",
+        failureDetail: "exit code 1",
+        nativeSessionId: SID,
+        unknownEventCount: 1,
+      });
+    }
+  });
+
+  it("pins the gap: a final step_finish with reason error carries no provider_error, whatever its part.error says", () => {
+    const { events } = parse([
+      START(SID),
+      TEXT("halted"),
+      {
+        type: "step_finish",
+        sessionID: SID,
+        part: {
+          id: "prt_err",
+          type: "step-finish",
+          reason: "error",
+          error: { type: "provider.quota", message: "SYNTHETIC: funds" },
+          tokens: { input: 4 },
+        },
+      },
+    ]);
+    expect(events.some((e) => e.kind === "provider_error" || e.kind === "result")).toBe(false);
+    expect(usage(events)).toEqual([{ kind: "usage", source: "provider_reported", metrics: { input: 4 } }]);
+    const base = { ok: false, nativeSessionId: SID, unknownEventCount: 0, summary: "halted" };
+    expect(adapter().extractResult(events, EXIT_OK)).toEqual({
+      ...base,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "no result event",
+    });
+    expect(adapter().extractResult(events, EXIT_1)).toEqual({
+      ...base,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "exit code 1",
+    });
+  });
+
+  it("pins the gap: an unsafe or changed sessionID on a quota error line emits the protocol error first, masking QUOTA_EXHAUSTED", () => {
+    const cases: [string, string][] = [
+      ["--session=ses_other", "session id is not a safe argument"],
+      ["-s", "session id is not a safe argument"],
+      [OTHER, "session id changed mid-run"],
+    ];
+    for (const [id, message] of cases) {
+      const { events } = parse([START(SID), errorLine({ type: "provider.quota", message: "funds" }, id)]);
+      expect(
+        events.filter((e) => e.kind === "provider_error"),
+        id,
+      ).toEqual([
+        { kind: "provider_error", category: "protocol", message },
+        { kind: "provider_error", category: "quota", message: "provider.quota: funds" },
+      ]);
+      expect(adapter().extractResult(events, EXIT_1), id).toEqual({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: `protocol: ${message}`,
+        nativeSessionId: SID,
+        unknownEventCount: 0,
+      });
+    }
+    // The same quota line with the bound id (or none) keeps QUOTA_EXHAUSTED.
+    for (const id of [SID, undefined]) {
+      const { events } = parse([START(SID), errorLine({ type: "provider.quota", message: "funds" }, id)]);
+      expect(adapter().extractResult(events, EXIT_1), String(id)).toMatchObject({
+        ok: false,
+        failureCode: "QUOTA_EXHAUSTED",
+        failureDetail: "quota: provider.quota: funds",
+      });
+    }
+  });
+
+  it("an unsafe sessionID on a first error line binds nothing: the run fails with its protocol error and no session", () => {
+    const { events, state } = parse([errorLine({ type: "provider.auth", message: "denied" }, "-rf")]);
+    expect(events).toEqual([
+      { kind: "provider_error", category: "protocol", message: "session id is not a safe argument" },
+      { kind: "provider_error", category: "auth", message: "provider.auth: denied" },
+    ]);
+    expect(state.nativeSessionId).toBeUndefined();
+    expect(adapter().extractResult(events, EXIT_1)).toEqual({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: session id is not a safe argument",
+      unknownEventCount: 0,
+    });
+  });
+
+  it("fixture error_empty_payload replays an empty error object before a clean stop to TOOL_FAILURE", async () => {
+    const report = await runConformanceCase({
+      kind: "task_failure",
+      adapter: replayAdapter("error_empty_payload"),
+      request: request(),
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: {
+        ok: false,
+        failureCode: "TOOL_FAILURE",
+        failureDetail: "unknown: {}",
+        nativeSessionId: DEFAULT_SESSION_ID,
+        summary: "SYNTHETIC: partial",
+        unknownEventCount: 0,
+      },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+  });
+
+  it("fixture unsafe_id_quota_error replays an unsafe id on a quota line to OUTPUT_PROTOCOL_ERROR (gap)", async () => {
+    const report = await runConformanceCase({
+      kind: "malformed_output",
+      adapter: replayAdapter("unsafe_id_quota_error"),
+      request: request(),
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: {
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "protocol: session id is not a safe argument",
+        nativeSessionId: DEFAULT_SESSION_ID,
+        summary: null,
+        unknownEventCount: 0,
+      },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
   });
 });
