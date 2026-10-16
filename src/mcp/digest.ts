@@ -22,7 +22,10 @@
  *   envelope; `result.verification_summary` (display-only prose from verification output) is removed too and stays on
  *   `get_run`.
  * - `budget.exhausted` reads the same {@link ControlPlaneFacts} port as `needs_attention` (no budgets exist until
- *   T14.4, so it reports none); `budget.caps` and `paused` are omitted, not invented, until T14.4 and T14.6 persist them.
+ *   T14.4, so it reports none); `budget.caps` is omitted, not invented, until T14.4 persists it.
+ * - `paused` (T14.6, LLD §3.4.4) is `control_plane_state` at read time for every listed project: the project's own
+ *   flag or the operator's global pause (`isAdmissionPaused`), so a global pause shows `paused: true` on every visible
+ *   project. It is not a `needs_attention` reason and no run row carries it.
  * - Pending approvals are `privileged_scope` approvals only (dynamic-project revisions join with T14.8); the
  *   `approval_digest` is LLD §3.4.8's SHA-256 over controller fields only.
  */
@@ -31,6 +34,7 @@ import { createHash } from "node:crypto";
 import { budgetControlFacts } from "../control/budgets.js";
 import { loopBreakerControlFacts } from "../control/loop-attention.js";
 import type { ControlPlaneFacts, NeedsAttentionReason } from "../control/needs-attention.js";
+import { isAdmissionPaused } from "../control/pause.js";
 import type { ApprovalRow, Ledger, RunEventRow, RunRecord } from "../ledger/index.js";
 import { canonicalJson } from "../lifecycle/request.js";
 import { buildEnvelope, type Envelope } from "./envelope.js";
@@ -61,6 +65,8 @@ export interface ApprovalProxyItem {
 
 export interface DigestProject {
   project_id: string;
+  /** T14.6: the project's own pause or the operator's global pause holds admission now. */
+  paused: boolean;
   budget: { exhausted: boolean };
   needs_attention: { run_id: string; reason: NeedsAttentionReason; envelope: Envelope }[];
   finished: Envelope[];
@@ -171,6 +177,7 @@ function assembleProjects(
   for (const id of [...new Set(projectIds)].sort()) {
     byProject.set(id, {
       project_id: id,
+      paused: isAdmissionPaused(ledger, id),
       budget: { exhausted: control.budgetExhausted(id) || control.budgetExhausted("*") },
       needs_attention: [],
       finished: [],

@@ -144,6 +144,7 @@ describe("get_digest (T14.3, FR-CTL-02)", () => {
       projects: [
         {
           project_id: "web",
+          paused: false,
           budget: { exhausted: false },
           needs_attention: [],
           finished: [],

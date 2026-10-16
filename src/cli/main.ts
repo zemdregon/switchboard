@@ -28,6 +28,7 @@ import {
 } from "./inner.js";
 import { type CliIo, JSON_SCHEMA_VERSION, UsageError } from "./io.js";
 import { UnknownRunError } from "./operator.js";
+import { pauseAll, renderPause } from "./pause.js";
 import { renderProject, renderValidation, UnknownProjectError, validateProjects } from "./projects.js";
 import {
   approveProject,
@@ -104,6 +105,10 @@ Commands:
   inner resume <task> Re-enable a task that the quality monitor suspended
   approve <run_id>    Approve the privileged run that requested an approval (review it with runs show first)
   deny <run_id>       Deny the privileged run that requested an approval; the run ends CANCELLED
+  pause               Pause every project: no new run is admitted (queued work waits, running runs finish) until
+                      resume; applied at once when serve is not running, else by the daemon on its next poll.
+                      Operator-only; an MCP client can pause only its own projects (pause_project)
+  resume              Lift the operator pause set by pause (a project paused by an MCP client stays paused)
   consent hash-passphrase
                       Read the HTTP consent-page passphrase from stdin and print its hash for
                       transport.http.passphrase_hash (Switchboard's own; touches no provider sign-in)
@@ -367,6 +372,14 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         if (sub === undefined || rest.length > 0) throw new UsageError(`${cmd} requires exactly one run id`);
         const report = decideRun(io, loaderArgv, sub, cmd === "approve" ? "APPROVED" : "DENIED");
         emit(report, renderDecision(report));
+        return 0;
+      }
+      case "pause":
+      case "resume": {
+        // T14.6 (FR-CTL-05, FR-OPS-01): the operator's global pause; no MCP tool pauses more than its own projects.
+        if (sub !== undefined) throw new UsageError(`${cmd} takes no arguments`);
+        const report = pauseAll(io, loaderArgv, cmd);
+        emit(report, renderPause(report));
         return 0;
       }
       case "consent": {

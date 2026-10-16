@@ -30,11 +30,12 @@ Conventions:
   SQLite's `REPLACE` conflict resolution deletes a colliding row without firing the `BEFORE DELETE` guards below, so
   `INSERT OR REPLACE` could rewrite an append-only row; with it the guard fires and the statement aborts.
 - **Append-only** (enforced by `BEFORE UPDATE/DELETE` triggers that `RAISE(ABORT)`): `run_event`, `decision`,
-`workspace_checkpoint`, `usage_observation`, `route_decision`, and (M11) `inner_call` and (M12) `rag_record` (FR-SES-05,
-FR-RTE-03, FR-CAP-01, FR-INN-15). **Update-once** (pending to decided): `approval`. **Mutable current-state**:
-`meta_session`, `run`, `provider_health`, `adapter_version.validated_*`, (M7) `project_affinity`, (M11)
-`inner_task_state`, (M13) `oauth_token.revoked`/`revoked_at` and `oauth_client.status`/`decided_at`, and
-`artifact.deleted_at` only. Retention GC removes artifact files and worktrees and sets `artifact.deleted_at`; it never
+`workspace_checkpoint`, `usage_observation`, `route_decision`, and (M11) `inner_call`, (M12) `rag_record` and (M14,
+T14.6) `control_plane_event` (FR-SES-05, FR-RTE-03, FR-CAP-01, FR-INN-15, FR-CTL-05). **Update-once** (pending to
+decided): `approval`. **Mutable current-state**: `meta_session`, `run`, `provider_health`,
+`adapter_version.validated_*`, (M7) `project_affinity`, (M11) `inner_task_state`, (M13) `oauth_token.revoked`/
+`revoked_at` and `oauth_client.status`/`decided_at`, (M14, T14.6) `control_plane_state` ([§3.4.7](#347-pause-and-budget-persistence-proposed)),
+and `artifact.deleted_at` only. Retention GC removes artifact files and worktrees and sets `artifact.deleted_at`; it never
 deletes `run_event` rows (Assumption).
 
 ```sql
@@ -1737,7 +1738,10 @@ as `untrusted_text`, never as authoritative instruction text (FR-CTL-02).
   capped at 500 UTF-16 code units with a trailing "…" and no split surrogate pair; `result.verification_summary` is
   removed as well (it stays on `get_run`).
 - `budget.exhausted` reads the same `ControlPlaneFacts` port as §3.4.5 (no budgets exist before T14.4); `budget.caps`
-  and `paused` are omitted, not reported as unset or false, until T14.4 and T14.6 persist them.
+  is omitted, not reported as unset, until T14.4 persists it. `paused` (T14.6) is present on every listed project:
+  `control_plane_state` at read time, the project's own flag or the global one (§3.4.4), so a global pause reads
+  `paused: true` on every visible project. A pause toggle is not a `run_event`: it never advances the cursor and a
+  delta lists only the projects of touched runs, each with its current `paused`.
 - `pending_approvals` lists `privileged_scope` approvals; `approval_digest` is the §3.4.8 SHA-256 over controller
   fields. Dynamic-project and push revisions join with T14.8.
 
@@ -1801,6 +1805,34 @@ admits new runs. Effect on an already-running `serve` daemon: the CLI writes an 
 `run_event` on a synthetic control record (or a dedicated `control_plane_event` table, T14.6 chooses one shape); the
 daemon applies it on its operator poll, same pattern as `approve` (§3.1). A paused project or global pause is visible in
 `get_digest` (`paused: true`).
+
+**Implemented (T14.6, Delegated, not owner-approved).** `src/control/pause.ts` (admission rule, refusal shape, operator
+request and daemon application), `src/ledger/control-plane.ts` (migration 0018 rows, §3.4.7), `src/mcp/server.ts`
+(the two tools), `src/cli/pause.ts` (`switchboard pause` / `resume`). Choices the text above leaves open:
+
+- The operator signal is the dedicated `control_plane_event` table of §3.4.7, not a `run_event` on a synthetic run (a
+  global pause has no run to hang an event on). The CLI appends `operator_pause_requested` / `operator_resume_requested`
+  for scope `'*'` with the OS user; `serve` applies pending ones in its operator poll (and at startup, before admission
+  opens) and appends the paired `operator_pause_applied`; when no daemon holds the data directory the CLI applies the
+  request itself (`applied_by: cli_direct`), as `approve` does. The CLI's `--json` reports `outcome` `applied` or
+  `requested`.
+- The admission rule is `row(project).paused OR row('*').paused`, read inside the admission transaction of `submit`;
+  missing rows mean not paused. A workspace-path run (no project) is held by the global pause only. The refusal is
+  `LifecycleError` `PAUSED`, mapped over MCP to `ELIGIBILITY_NONE` with `details.reason` `PROJECT_PAUSED` (plus
+  `details.project_id`) or `GLOBAL_PAUSED`, as `QUEUE_FULL` (§4 names no held-admission code); a queued work item
+  stays `READY` (§18.4 step 4). Nothing is written for a refused request.
+- Running runs finish: no run state, event or cancel results from a pause. A retry or quota-ladder successor is a new
+  admission and is refused while paused (`retry_not_scheduled` / `quota_ladder` with reason `paused` and the scope);
+  the failed run stays `FAILED` and a new task is started after resume. A continuation into a meta-session with an
+  active run is still `INVALID_REQUEST` (FR-SES-06 is unchanged by pause).
+- Project scoping is the `list_runs` filter rule (§3.4.2): unknown → `INVALID_REQUEST`; a configured project outside
+  the client's list → `PERMISSION_BLOCKED`; the client's own dynamic project is allowed. The row records
+  `mcp:<client_id>` (or the OS user for `'*'`) and the time on every change, including a resume, so it always names
+  who last changed it. Repeated pause or resume is idempotent. The tools' `paused` is the project's own row; the global
+  pause is neither reported nor changed by them (the digest shows it).
+- Sinks (§3.4.9, reuse): `pause_project` emits `project_paused` / `project_paused` for the project; an applied operator
+  pause emits `project_paused` / `global_paused` with `project_id` `'*'`; a resume emits nothing (no event kind names
+  it). `needs_attention` (§3.4.5) is unchanged: pause is not a reason.
 
 #### 3.4.5 Needs-attention derivation (FR-CTL-03)
 
@@ -1920,6 +1952,24 @@ CREATE TABLE control_plane_state (      -- migration T14.6; one row per project_
 
 `meta_session` gains `parked_loop INTEGER NOT NULL DEFAULT 0` (T14.5). `approval.decided_by` accepts
 `mcp_proxy:<client_id>` (T14.8, ADR-0047); no separate `decided_via` column.
+
+**As built (T14.6, Delegated, not owner-approved).** Migration **0018** (`src/ledger/migrations/0018_control_plane_state.ts`)
+creates `control_plane_state` exactly as above and the append-only operator signal table §3.4.4 lets T14.6 choose:
+
+```sql
+CREATE TABLE control_plane_event (     -- migration 0018 (T14.6); append-only (BEFORE UPDATE/DELETE guards as run_event)
+  id            TEXT PRIMARY KEY CHECK (id LIKE 'cpe\_%' ESCAPE '\'),   -- cpe_ + ULID
+  ts            TEXT NOT NULL,
+  type          TEXT NOT NULL CHECK (type IN (
+                  'operator_pause_requested','operator_resume_requested','operator_pause_applied')),
+  scope         TEXT NOT NULL,         -- '*' today; a project id is allowed for a later operator per-project command
+  payload_json  TEXT NOT NULL CHECK (json_valid(payload_json))  -- { requested_by, reason } or { request_event_id, paused, applied_by }
+) STRICT;
+```
+
+T14.5's `parked_loop` stays an event-derived flag (§3.4.6); no column was added. T14.4 reads budgets on read without
+`budget_flags_json`; the column is created, nullable, and unused. The M15 schedule and CI-trigger tables (§18.5, §18.6)
+take the next free migration number after 0018.
 
 #### 3.4.8 Approval proxy tools (FR-CTL-08, ADR-0047)
 
@@ -5650,7 +5700,7 @@ Dequeue is implemented inside COMP-RTE (scheduler tick) calling the same admissi
 ### 18.5 Schedules (FR-QUE-02)
 
 ```sql
-CREATE TABLE project_schedule (            -- migration 0018 (T15.2); enabled default false
+CREATE TABLE project_schedule (            -- next migration after 0018 (T15.2; 0018 is T14.6, §3.4.7); enabled default false
   id              TEXT PRIMARY KEY,        -- sch_*
   project_id      TEXT NOT NULL,
   creator_client_id TEXT NOT NULL,
@@ -5688,7 +5738,7 @@ that COMP-GIT moved on a `git_push` event for a run whose `policy_snapshot_json`
 push succeeded. Other branches are out of scope for FR-QUE-03.
 
 ```sql
-CREATE TABLE project_ci_trigger (          -- migration 0018 (T15.3); per project, off by default
+CREATE TABLE project_ci_trigger (          -- next migration after 0018 (T15.3; 0018 is T14.6, §3.4.7); per project, off by default
   project_id      TEXT PRIMARY KEY,
   enabled         INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
   creator_client_id TEXT NOT NULL,         -- client that enabled the trigger
