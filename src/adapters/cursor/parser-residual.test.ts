@@ -28,6 +28,13 @@
  * `apiKeySource` is checked on `system`/`init` only; a duplicated JSON key resolves to its last value, so it can flip a
  * result or hide a tool call from the guard; a repeated `started` line is reported again; a string `result.error`
  * shadows the entry's permission text; an empty session id is absent to the parser but refused by `resumeArgs`.
+ * Seventh pass (as Grok, OpenCode and Antigravity seventh passes; T4.6, FR-ADP-10): the credential source is checked on
+ * every `init`, so a late same-id `init` after a clean result fails `AUTH_REQUIRED`; `init` and a result-only stream
+ * bind model and backing vendor through the same rules (aliases, empty, prototype names, whitespace, 128-character clip);
+ * long unknown types and tool names clip to 64; a non-object `tool_call` is a counted unknown; usage keeps `-0` and very
+ * large finite counters; resume from a result-only binding compiles as from an `init` binding. Pinned gaps: a refusal on a
+ * `started` line is never reported (fixture `denied_on_started.jsonl` replays to success); clipping counts UTF-16 code
+ * units, so a clipped model, vendor or target can end in half a surrogate pair.
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -1943,5 +1950,211 @@ describe("cursor parser residuals, sixth pass: result-only streams, framing, too
       reason: "CAPABILITY_MISSING",
       detail: "native session id is not a safe single argument",
     });
+  });
+});
+
+describe("cursor parser residuals, seventh pass: refusals on started lines, late credential checks, clip boundaries and backing parity (T4.43, T4.6, FR-ADP-10; synthetic lines; parser unchanged)", () => {
+  const bound = (events: readonly NormalizedEvent[]) => events.filter((e) => e.kind === "session_bound");
+  const REFUSED = (extra: Record<string, unknown>) => ({ shellToolCall: { args: { command: "ls" }, ...extra } });
+  const req: CompileRequest = {
+    runId: "run_cursor_t443_residual_p7",
+    objective: "synthetic cursor objective",
+    constraints: [],
+    workspace: { cwd: "/w", writable: true },
+    bypassApproved: true,
+  };
+
+  it("pins the gap: a refusal on a started line is never reported, while the same refusal on any other subtype is", () => {
+    for (const extra of [
+      { result: { rejected: {} } },
+      { result: { permissionDenied: {} } },
+      { result: { error: "Permission denied by policy" } },
+      { error: "not permitted" },
+    ]) {
+      const label = JSON.stringify(extra);
+      const started = parse([INIT(), TOOL("started", REFUSED(extra)), RESULT()]);
+      expect(
+        started.events.filter((e) => e.kind === "permission_denied"),
+        label,
+      ).toEqual([]);
+      expect(started.a.extractResult(started.events, EXIT_OK), label).toMatchObject({ ok: true });
+      for (const subtype of ["completed", "progress"]) {
+        const other = parse([INIT(), TOOL(subtype, REFUSED(extra)), RESULT()]);
+        expect(other.a.extractResult(other.events, EXIT_OK), `${subtype} ${label}`).toMatchObject({
+          ok: false,
+          failureCode: "PERMISSION_BLOCKED",
+          failureDetail: "denied: shellToolCall",
+        });
+      }
+    }
+    // A completed line that only repeats the started parameters still carries the refusal.
+    const pair = parse([
+      INIT(),
+      TOOL("started", REFUSED({})),
+      TOOL("completed", REFUSED({ result: { rejected: {} } })),
+      RESULT(),
+    ]);
+    expect(pair.events.filter((e) => e.kind === "permission_denied")).toEqual([
+      { kind: "permission_denied", tool: "shellToolCall" },
+    ]);
+  });
+
+  it("fixture denied_on_started replays a refusal carried only on a started line to success at exit 0 (gap)", async () => {
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: replayAdapter("denied_on_started"),
+      request: { ...req, workspace: { cwd: makeCwd(), writable: true } },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toEqual({
+      ok: true,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      unknownEventCount: 0,
+      summary: "The command was refused on start.",
+    });
+  });
+
+  it("the credential source is checked on every init: a late same-id init after a clean result fails AUTH_REQUIRED", () => {
+    const late = parse([INIT(), RESULT(), INIT({ apiKeySource: "env" })]);
+    expect(late.events.slice(-1)).toEqual([
+      {
+        kind: "provider_error",
+        category: "auth",
+        message: "credential source env is not the native login; run `cursor-agent login`",
+      },
+    ]);
+    expect(late.a.extractResult(late.events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "AUTH_REQUIRED",
+      nativeSessionId: SID,
+    });
+    // A late init naming another session and another source reports both, in the order protocol then auth.
+    const both = parse([INIT(), RESULT(), INIT({ session_id: "other-session", apiKeySource: 7 })]);
+    expect(both.events.slice(-2)).toEqual([
+      { kind: "provider_error", category: "protocol", message: "session id changed mid-run" },
+      {
+        kind: "provider_error",
+        category: "auth",
+        message: "credential source (not a string) is not the native login; run `cursor-agent login`",
+      },
+    ]);
+    expect(both.state.nativeSessionId).toBe(SID);
+    // A late init with the native login, or with no apiKeySource key at all, adds nothing.
+    for (const over of [{}, { apiKeySource: undefined }]) {
+      const quiet = parse([INIT(), RESULT(), INIT(over)]);
+      expect(quiet.a.extractResult(quiet.events, EXIT_OK), JSON.stringify(over)).toMatchObject({ ok: true });
+    }
+  });
+
+  it("init and a result-only stream bind model and backing vendor through the same rules (parity)", () => {
+    const long = "v".repeat(129);
+    const cases: [Record<string, unknown>, { model?: string; backingProvider?: string }][] = [
+      [
+        { model: "M", backing_provider: "B" },
+        { model: "M", backingProvider: "B" },
+      ],
+      [
+        { modelId: "M2", backingProvider: "B2" },
+        { model: "M2", backingProvider: "B2" },
+      ],
+      [
+        { model_id: "M3", backing_provider: null, backingProvider: "B3" },
+        { model: "M3", backingProvider: "B3" },
+      ],
+      [{ model: "", backing_provider: "" }, {}],
+      [{ model: "__proto__", backing_provider: "constructor" }, {}],
+      [
+        { model: " ", backing_provider: "\t" },
+        { model: " ", backingProvider: "\t" },
+      ],
+      [{ model: 5, model_id: "M4", backing_provider: 5, backingProvider: "ignored" }, { model: "M4" }],
+      [
+        { model: long, backing_provider: long },
+        { model: `${long.slice(0, 128)}…`, backingProvider: `${long.slice(0, 128)}…` },
+      ],
+    ];
+    for (const [fields, want] of cases) {
+      const label = JSON.stringify(fields);
+      const expected = [{ kind: "session_bound", nativeSessionId: SID, ...want }];
+      expect(bound(parse([INIT({ model: undefined, ...fields }), RESULT()]).events), `init ${label}`).toEqual(expected);
+      expect(bound(parse([RESULT(fields)]).events), `result ${label}`).toEqual(expected);
+    }
+    // The session-id aliases bind alike on both lines.
+    for (const key of ["sessionId", "chat_id", "chatId"]) {
+      const viaInit = parse([INIT({ session_id: undefined, [key]: "alias-id" })]);
+      const viaResult = parse([RESULT({ session_id: undefined, [key]: "alias-id" })]);
+      expect(viaInit.state.nativeSessionId, key).toBe("alias-id");
+      expect(viaResult.state.nativeSessionId, key).toBe("alias-id");
+    }
+  });
+
+  it("pins the gap: clipping counts UTF-16 code units, so a clipped model, backing vendor or target can end in half a surrogate pair", () => {
+    const astral = "😀"; // two UTF-16 code units
+    const value = `${"a".repeat(127)}${astral}`;
+    const [b] = bound(parse([INIT({ model: value, backing_provider: value })]).events);
+    const half = `${"a".repeat(127)}${astral[0]}…`;
+    expect(b).toEqual({ kind: "session_bound", nativeSessionId: SID, model: half, backingProvider: half });
+    // The clipped value ends in a lone high surrogate before the ellipsis.
+    expect(half.charCodeAt(127).toString(16)).toBe("d83d");
+    // Exactly 128 code units (126 + one astral character) is kept whole.
+    const fits = `${"a".repeat(126)}${astral}`;
+    expect(bound(parse([INIT({ model: fits })]).events)[0]).toMatchObject({ model: fits });
+
+    const path = `${"p".repeat(511)}${astral}`;
+    const [read] = parse([TOOL("started", { readToolCall: { args: { path } } })]).events;
+    expect(read).toMatchObject({ kind: "tool_call", tool: "read", target: `${"p".repeat(511)}${astral[0]}…` });
+  });
+
+  it("unknown types and tool names are clipped to 64 characters; a non-object tool_call is an unknown that trips the order check", () => {
+    const longType = `t${"y".repeat(80)}`;
+    const t = parse([line({ type: longType })]);
+    expect(t.events).toEqual([{ kind: "unknown", rawType: `${longType.slice(0, 64)}…` }]);
+    const sys = parse([line({ type: "system", subtype: "s".repeat(80) })]);
+    expect(sys.events).toEqual([{ kind: "unknown", rawType: `system:${"s".repeat(57)}…` }]);
+    const longKey = `k${"x".repeat(80)}`;
+    expect(parse([TOOL("started", { [longKey]: { args: { command: "ls" } } })]).events).toEqual([
+      { kind: "tool_call", tool: "shell", name: `${longKey.slice(0, 64)}…`, command: "ls" },
+    ]);
+
+    for (const call of [["shellToolCall"], "shellToolCall", null, {}]) {
+      const label = JSON.stringify(call);
+      const before = parse([INIT(), TOOL("started", call as Record<string, unknown>), RESULT()]);
+      expect(before.events[1], label).toEqual({ kind: "unknown", rawType: "tool_call:started" });
+      expect(before.a.extractResult(before.events, EXIT_OK), label).toMatchObject({ ok: true, unknownEventCount: 1 });
+      const after = parse([INIT(), RESULT(), TOOL("completed", call as Record<string, unknown>)]);
+      expect(after.a.extractResult(after.events, EXIT_OK), label).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "tool call after the result line",
+      });
+    }
+  });
+
+  it("usage counter edges: negative zero and very large finite counters are kept as given", () => {
+    const { events } = parse([
+      `{"type":"result","subtype":"success","is_error":false,"session_id":"${SID}","usage":{"inputTokens":-0,"outputTokens":1e308,"totalTokens":9007199254740993}}`,
+    ]);
+    const usage = events.find((e) => e.kind === "usage");
+    expect(usage).toEqual({
+      kind: "usage",
+      source: "provider_reported",
+      metrics: { inputTokens: -0, outputTokens: 1e308, totalTokens: 9007199254740992 },
+    });
+    expect(usage?.kind === "usage" && Object.is(usage.metrics.inputTokens, -0)).toBe(true);
+  });
+
+  it("resume of a session bound from a result-only stream compiles exactly as resume of an init-bound one", () => {
+    const fromResult = parse([RESULT({ chatId: "result-only-1", session_id: undefined })]);
+    const fromInit = parse([INIT({ session_id: "result-only-1" }), RESULT({ session_id: "result-only-1" })]);
+    const idOf = (r: ReturnType<typeof parse>) => r.a.extractResult(r.events, EXIT_OK).nativeSessionId;
+    expect(idOf(fromResult)).toBe("result-only-1");
+    expect(idOf(fromInit)).toBe("result-only-1");
+    const a = adapter();
+    const resumed = (id: string | undefined) =>
+      a.resumeArgs({ provider: "cursor", nativeSessionId: id ?? "" }, req, PRIVILEGED_BYPASS_PROFILE);
+    expect(resumed(idOf(fromResult))).toEqual(resumed(idOf(fromInit)));
+    expect(resumed(idOf(fromResult))).toMatchObject({ argv: expect.arrayContaining(["--resume", "result-only-1"]) });
   });
 });
