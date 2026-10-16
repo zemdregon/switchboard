@@ -50,6 +50,8 @@ export interface WorkQueueLedgerSlice {
   findWorkItemByIdempotency(creatorClientId: string, key: string): WorkItemRow | undefined;
   findWorkItemByAdmittedRunId(runId: string): WorkItemRow | undefined;
   listWorkItems(filter: WorkListFilter): WorkItemRow[];
+  /** The item's predecessors (`project_work_dependency`), sorted by id. */
+  listWorkItemPredecessors(workItemId: string): string[];
   cancelWorkItem(workItemId: string, byClientId: string, operator?: boolean): WorkItemRow | undefined;
   claimReadyWorkItem(projectId: string): WorkItemRow | undefined;
   releaseAdmittingToReady(workItemId: string): boolean;
@@ -267,13 +269,22 @@ export function createWorkQueueLedgerSlice(
         .all(...args, filter.limit) as WorkItemRow[];
     },
 
+    listWorkItemPredecessors(workItemId) {
+      return (
+        db
+          .prepare(`SELECT predecessor_id FROM project_work_dependency WHERE successor_id = ? ORDER BY predecessor_id`)
+          .all(workItemId) as { predecessor_id: string }[]
+      ).map((r) => r.predecessor_id);
+    },
+
     cancelWorkItem(workItemId, byClientId, operator = false) {
       return immediate(() => {
         const item = getWorkItemFixed(workItemId);
         if (item === undefined) return undefined;
         if (!operator && item.creator_client_id !== byClientId) return undefined;
         if (item.state === "DONE" || item.state === "CANCELLED" || item.state === "FAILED_ADMISSION") return undefined;
-        if (item.state === "ADMITTED") return undefined;
+        // ADMITTING: the scheduler is admitting it now; cancelling here could leave a run behind a CANCELLED item.
+        if (item.state === "ADMITTED" || item.state === "ADMITTING") return undefined;
         const at = ts();
         return setState(workItemId, "CANCELLED", { terminal_at: at }, "cancelled");
       });

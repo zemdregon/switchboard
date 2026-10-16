@@ -60,6 +60,7 @@ import {
   type SwitchboardMcpServer,
   startHttpTransport,
   TOOL_NAMES,
+  WORK_QUEUE_TOOL_NAMES,
 } from "./index.js";
 
 const GIT_ENV = {
@@ -449,7 +450,7 @@ describe("tool surface (FR-MCP-01, FR-MCP-09)", () => {
     await setup({ adapters: [fakeWriter()] });
     const client = servers[0]?.client as Client;
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES]);
+    expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES, ...WORK_QUEUE_TOOL_NAMES]);
     for (const t of tools) {
       expect(t.inputSchema.type).toBe("object");
       expect((t.inputSchema as Json).additionalProperties).toBe(false);
@@ -999,6 +1000,7 @@ describe("MCP over the HTTP transport (T13.4; FR-MCP-14, Q-77)", () => {
     });
     const http = 2;
     const { tools } = await httpClient(http).listTools();
+    // T15.1: the work-queue tools are not offered over HTTP (a work item records no subject).
     expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES]);
     const up = await call("delegate_task", delegateArgs({ trust_profile: "edit-untrusted" }), http);
     expect(up.body.error).toMatchObject({
@@ -1244,6 +1246,7 @@ describe("MCP over the HTTP transport (T13.4; FR-MCP-14, Q-77)", () => {
     });
     await client.connect(transport as Transport);
     const { tools } = await client.listTools();
+    // T15.1: the work-queue tools are not offered over HTTP (a work item records no subject).
     expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES]);
     servers.push({ mcp: { close: async () => {} } as unknown as SwitchboardMcpServer, client });
     const index = servers.length - 1;

@@ -95,6 +95,17 @@
  *   and nothing over MCP sets or clears it. Admission is what changes: `delegate_task` / `continue_task` into a paused
  *   project is ELIGIBILITY_NONE with `details.reason` PROJECT_PAUSED (GLOBAL_PAUSED under the operator's pause);
  *   runs already admitted finish.
+ * - Project work queue (T15.1; FR-QUE-01, LLD §18.4): `enqueue_work`, `list_work` and `cancel_work` take a project
+ *   exactly as the `list_runs` filter does (`checkListProject`). A work item is visible to the client that created it
+ *   only; another client's item id is unknown (INVALID_REQUEST), like a run. `enqueue_work` runs the request checks of
+ *   `delegate_task` that need no workspace (the ceiling, V5, against the lower of the client's and the project's
+ *   maximum now; V13; V7; V8) and writes the item through the ledger; admission later goes through
+ *   `../queue/admission.ts` under the same client at that time. Delegated: a project's item count at
+ *   `queue.max_items_per_project` is INVALID_REQUEST (LLD §18.1); an MCP idempotency key is stored as `mcp:<key>`, so
+ *   it cannot collide with a schedule's or CI trigger's key, and is replayed only for the same project, request,
+ *   priority and `depends_on`; `depends_on` names this client's own items. `cancel_work` cancels a PENDING or READY
+ *   item and returns any other item unchanged (an admitted item is stopped with `cancel_run`). Delegated, fail closed:
+ *   the tools are not offered over the network transport, since a work item records its client but no HTTP subject.
  */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -140,7 +151,7 @@ import {
   createApprovalProxy,
 } from "../control/approval-proxy.js";
 import { snapshotEnvironment } from "../environment/index.js";
-import type { Ledger, RunRecord, RunState, TrustProfile } from "../ledger/index.js";
+import type { Ledger, RunRecord, RunState, TrustProfile, WorkItemRow, WorkItemState } from "../ledger/index.js";
 import {
   type EligibilityAnswer,
   type EligibilityQuestion,
@@ -160,6 +171,7 @@ import {
   resolveTrustProfile,
 } from "../policy/index.js";
 import type { DynamicProjectStore } from "../projects/index.js";
+import { DEFAULT_QUEUE_MAX_ITEMS_PER_PROJECT } from "../queue/scheduler.js";
 import { deleteRagStore } from "../retrieval/store.js";
 import {
   buildRouteDecision,
@@ -196,6 +208,8 @@ import {
   TOOL_SCHEMA_VERSION,
   type ToolName,
   toolDescriptors,
+  WORK_QUEUE_TOOL_NAMES,
+  type WorkQueueToolName,
   withError,
 } from "./schemas.js";
 import { createScrubber } from "./scrub.js";
@@ -231,6 +245,8 @@ export interface McpServerDeps {
     readonly limits?: Pick<ResolvedConfig["limits"], "perProviderConcurrency">;
     /** T7.2, T7.5: `routing.weights` and `routing.affinity` (LLD §17.1). Absent means the LLD defaults. */
     readonly routing?: Partial<RoutingSettings>;
+    /** T15.1: `queue.max_items_per_project` (LLD §18.1). Absent means the LLD default. */
+    readonly queue?: { readonly maxItemsPerProject?: number };
   };
   /** T9.9 (FR-PRJ-10): dynamic projects. Required when the client has `manage_projects`; absent means none resolve. */
   readonly projectStore?: DynamicProjectStore;
@@ -1158,6 +1174,163 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
   const pauseProject = async (a: Args) => setProjectPaused(a, true);
   const resumeProject = async (a: Args) => setProjectPaused(a, false);
 
+  // ---- T15.1 project work queue (FR-QUE-01, LLD §18.4): see the module comment ------------------------------------
+
+  /** Over HTTP the tools do not exist (fail closed: a work item records no subject). */
+  const workQueueOffered = deps.subject === undefined;
+  const workValidators = compileWorkValidators();
+
+  const ownWorkItem = (id: string): WorkItemRow => {
+    const item = ledger.getWorkItem(id);
+    if (item === undefined || item.creator_client_id !== deps.clientId) {
+      throw invalid(`unknown work item ${id}`, { field: "work_item_id" });
+    }
+    return item;
+  };
+
+  const workView = (item: WorkItemRow, extra: { replayed?: true } = {}) => {
+    let profile: unknown;
+    try {
+      profile = (JSON.parse(item.request_json) as { trust_profile?: unknown }).trust_profile;
+    } catch {
+      profile = undefined;
+    }
+    return {
+      work_item_id: item.id,
+      project_id: item.project_id,
+      state: item.state,
+      priority: item.priority,
+      trust_profile: typeof profile === "string" ? profile : null,
+      source_kind: item.source_kind,
+      depends_on: ledger.listWorkItemPredecessors(item.id),
+      admitted_run_id: item.admitted_run_id,
+      last_error_code: item.last_error_code,
+      created_at: item.created_at,
+      updated_at: item.updated_at,
+      terminal_at: item.terminal_at,
+      ...extra,
+    };
+  };
+
+  /** The lower of this client's and the project's maximum profile, for a project `checkListProject` accepted. */
+  const listProjectCeiling = (projectId: string): TrustProfile => {
+    const project =
+      projectTools?.listForClient().find((e) => e.project.id === projectId)?.project ??
+      (deps.config.projects ?? []).find((p) => p.id === projectId);
+    return project === undefined ? maxTrustProfile : effectiveMaxProfile(maxTrustProfile, project);
+  };
+
+  const enqueueWork = async (a: Args) => {
+    const projectId = a.project_id as string;
+    checkListProject(projectId);
+    const request = a.request as Args;
+    const profile = request.trust_profile as TrustProfile;
+    const effectiveMax = listProjectCeiling(projectId);
+    if (profileRank(profile) > profileRank(effectiveMax)) {
+      // V5 / BR-23 at enqueue; admission checks the ceiling again under the configuration of that time (LLD §18.4).
+      throw new ToolError(
+        "PERMISSION_BLOCKED",
+        `trust profile ${profile} exceeds the maximum ${effectiveMax} this client has in project ${projectId}`,
+        {
+          requested: profile,
+          client_max_profile: maxTrustProfile,
+          project: projectId,
+          effective_max_profile: effectiveMax,
+        },
+      );
+    }
+    const scopeArg = request.privileged_scope;
+    if (profile === "privileged" && scopeArg === undefined) {
+      throw invalid("trust_profile privileged requires privileged_scope", { field: "request.privileged_scope" });
+    }
+    if (profile !== "privileged" && scopeArg !== undefined) {
+      throw invalid(`privileged_scope is allowed only with trust_profile privileged (got ${profile})`, {
+        field: "request.privileged_scope",
+      });
+    }
+    if (scopeArg !== undefined) {
+      const lists = checkScopeLists(scopeArg as never);
+      if (lists) throw invalid(`invalid arguments: ${lists.field} ${lists.message}`, { field: lists.field });
+      const scope = parsePrivilegedScope(scopeArg);
+      if (!scope.ok) throw invalid(`invalid privileged_scope: ${scope.field} ${scope.message}`, { field: scope.field });
+    }
+    const verification = request.verification_commands as string[][];
+    if (verification.length > 0 && profile === "inspect-untrusted") {
+      throw invalid("verification_commands are refused under inspect-untrusted (FRD V7)", {
+        field: "request.verification_commands",
+      });
+    }
+    const verificationProblem = verificationCommandsProblem(verification);
+    if (verificationProblem !== undefined) {
+      throw invalid(verificationProblem, { field: "request.verification_commands" });
+    }
+    checkRouting(request.routing as Routing | undefined);
+
+    const predecessors = [...((a.depends_on as string[] | undefined) ?? [])].sort();
+    for (const id of predecessors) ownWorkItem(id);
+    const frozen = { ...request, project: projectId }; // LLD §18.2 request_json
+    const priority = a.priority as number;
+    const key = a.idempotency_key === undefined ? undefined : `mcp:${a.idempotency_key as string}`;
+    const fingerprint = (p: string, req: unknown, prio: number, preds: string[]) =>
+      requestHash({ project_id: p, request: req, priority: prio, depends_on: preds });
+    const limit = deps.config.queue?.maxItemsPerProject ?? DEFAULT_QUEUE_MAX_ITEMS_PER_PROJECT;
+    return ledger.immediate(() => {
+      if (key !== undefined) {
+        const prior = ledger.findWorkItemByIdempotency(deps.clientId, key);
+        if (prior !== undefined) {
+          const same =
+            fingerprint(
+              prior.project_id,
+              JSON.parse(prior.request_json),
+              prior.priority,
+              ledger.listWorkItemPredecessors(prior.id),
+            ) === fingerprint(projectId, frozen, priority, predecessors);
+          if (!same) throw invalid(IDEMPOTENCY_CONFLICT);
+          return workView(prior, { replayed: true });
+        }
+      }
+      if (ledger.countWorkItemsForProject(projectId) >= limit) {
+        throw invalid(`the work queue of project ${projectId} holds its maximum of ${limit} items`, {
+          field: "project_id",
+          max_items_per_project: limit,
+        });
+      }
+      const item = ledger.enqueueWorkItem({
+        projectId,
+        creatorClientId: deps.clientId,
+        request: frozen,
+        sourceKind: "mcp",
+        idempotencyKey: key ?? null,
+        priority,
+        predecessorIds: predecessors,
+      });
+      return workView(item);
+    });
+  };
+
+  const listWork = async (a: Args) => {
+    if (a.project_id !== undefined) checkListProject(a.project_id as string);
+    const items = ledger.listWorkItems({
+      clientId: deps.clientId,
+      ...(a.project_id !== undefined ? { projectId: a.project_id as string } : {}),
+      ...(a.state_in !== undefined ? { states: a.state_in as WorkItemState[] } : {}),
+      limit: a.limit as number,
+    });
+    return { items: items.map((item) => workView(item)) };
+  };
+
+  const cancelWork = async (a: Args) => {
+    const item = ownWorkItem(a.work_item_id as string);
+    if (item.state !== "PENDING" && item.state !== "READY") return workView(item);
+    return workView(ledger.cancelWorkItem(item.id, deps.clientId) ?? ownWorkItem(item.id));
+  };
+
+  const workHandlers: Record<WorkQueueToolName, (a: Args) => Promise<object>> = {
+    enqueue_work: enqueueWork,
+    list_work: listWork,
+    cancel_work: cancelWork,
+  };
+
   const cancelRun = async (a: Args): Promise<Envelope> => {
     const run = ownRun(a.run_id as string);
     await lifecycle.cancel(run.id, (a.reason as string | undefined) ?? "cancel_run");
@@ -1432,6 +1605,14 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         if (!searchValidator(args)) throw schemaError(searchValidator.errors ?? []);
         return ok(await searchContextTool(args));
       }
+      if ((WORK_QUEUE_TOOL_NAMES as readonly string[]).includes(name) && workQueueOffered) {
+        // T15.1 (FR-QUE-01): over HTTP it is answered exactly like an unknown tool.
+        const tool = name as WorkQueueToolName;
+        const args = structuredClone(rawArgs ?? {}) as Args;
+        const validate = workValidators[tool];
+        if (!validate(args)) throw schemaError(validate.errors ?? []);
+        return ok(await workHandlers[tool](args));
+      }
       if (!(TOOL_NAMES as readonly string[]).includes(name)) {
         throw invalid(`unknown tool ${JSON.stringify(name.slice(0, 64))}`, { tools: [...TOOL_NAMES] });
       }
@@ -1467,6 +1648,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       ...toolDescriptors({
         manageProjects: client.manageProjects === true && projectTools !== undefined,
         searchContext: searchOffered(),
+        workQueue: workQueueOffered,
       }),
       // T14.8: listed only for an approval_proxy client (absent, not refused, for every other client).
       ...(approvalProxy !== undefined
@@ -1557,6 +1739,14 @@ function compileValidators(): Record<ToolName, ValidateFunction> {
   const ajv = new Ajv2020({ allErrors: true, strict: true, useDefaults: true });
   return Object.fromEntries(TOOL_NAMES.map((n) => [n, ajv.compile(inputSchema(n))])) as Record<
     ToolName,
+    ValidateFunction
+  >;
+}
+
+function compileWorkValidators(): Record<WorkQueueToolName, ValidateFunction> {
+  const ajv = new Ajv2020({ allErrors: true, strict: true, useDefaults: true });
+  return Object.fromEntries(WORK_QUEUE_TOOL_NAMES.map((n) => [n, ajv.compile(inputSchema(n))])) as Record<
+    WorkQueueToolName,
     ValidateFunction
   >;
 }

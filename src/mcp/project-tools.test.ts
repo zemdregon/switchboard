@@ -32,7 +32,13 @@ import { RunLifecycle } from "../lifecycle/index.js";
 import { DynamicProjectStore } from "../projects/index.js";
 import { openRagStore, ragStoreDir } from "../retrieval/store.js";
 import { WorkspaceManager } from "../workspace/index.js";
-import { createSwitchboardServer, PROJECT_TOOL_NAMES, type SwitchboardMcpServer, TOOL_NAMES } from "./index.js";
+import {
+  createSwitchboardServer,
+  PROJECT_TOOL_NAMES,
+  type SwitchboardMcpServer,
+  TOOL_NAMES,
+  WORK_QUEUE_TOOL_NAMES,
+} from "./index.js";
 
 const GIT_ENV = {
   PATH: process.env.PATH ?? "",
@@ -295,9 +301,9 @@ describe("tool surface (FR-PRJ-10: only with manage_projects)", () => {
       { id: "mgr", max: "edit-untrusted", manage: true },
     ]);
     const plain = await servers[0]?.client.listTools();
-    expect(plain?.tools.map((t) => t.name)).toEqual([...TOOL_NAMES]);
+    expect(plain?.tools.map((t) => t.name)).toEqual([...TOOL_NAMES, ...WORK_QUEUE_TOOL_NAMES]);
     const mgr = await servers[1]?.client.listTools();
-    expect(mgr?.tools.map((t) => t.name)).toEqual([...TOOL_NAMES, ...PROJECT_TOOL_NAMES]);
+    expect(mgr?.tools.map((t) => t.name)).toEqual([...TOOL_NAMES, ...WORK_QUEUE_TOOL_NAMES, ...PROJECT_TOOL_NAMES]);
     for (const t of mgr?.tools ?? []) expect((t.inputSchema as Json).additionalProperties).toBe(false);
 
     const r = await call("create_project", { project: definition() }, 0);

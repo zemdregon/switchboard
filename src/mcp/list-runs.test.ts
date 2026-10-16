@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ResolvedProject } from "../config/index.js";
 import type { TrustProfile } from "../ledger/index.js";
 import { type Harness, type Json, startHarness } from "../routing/fixtures/harness.js";
-import { inputSchema, outputSchema, TOOL_NAMES } from "./schemas.js";
+import { inputSchema, outputSchema, TOOL_NAMES, WORK_QUEUE_TOOL_NAMES } from "./schemas.js";
 
 const GIT_ENV = {
   PATH: process.env.PATH ?? "",
@@ -98,7 +98,7 @@ const newestFirst = (ids: string[]): string[] =>
 describe("list_runs (T14.1, FR-CTL-01)", () => {
   it("is listed after explain_route with closed schemas; the earlier tools are listed unchanged", async () => {
     const { tools } = await h.client().listTools();
-    expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES]);
+    expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES, ...WORK_QUEUE_TOOL_NAMES]);
     expect(TOOL_NAMES).toEqual([
       "delegate_task",
       "continue_task",

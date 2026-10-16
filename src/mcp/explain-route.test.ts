@@ -6,7 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Harness, type Json, startHarness } from "../routing/fixtures/harness.js";
-import { TOOL_NAMES } from "./index.js";
+import { TOOL_NAMES, WORK_QUEUE_TOOL_NAMES } from "./index.js";
 
 let h: Harness;
 beforeEach(async () => {
@@ -21,7 +21,7 @@ const explain = (runId: string, clientId?: string) => h.call("explain_route", { 
 describe("explain_route (T7.3, FR-MCP-02)", () => {
   it("is listed after the earlier tools with a closed input schema and an output schema", async () => {
     const { tools } = await h.client().listTools();
-    expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES]);
+    expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES, ...WORK_QUEUE_TOOL_NAMES]);
     expect(TOOL_NAMES.slice(0, 9)).toEqual([
       "delegate_task",
       "continue_task",

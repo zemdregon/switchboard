@@ -985,6 +985,7 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice {
   findWorkItemByIdempotency(creatorClientId: string, key: string): WorkItemRow | undefined;
   findWorkItemByAdmittedRunId(runId: string): WorkItemRow | undefined;
   listWorkItems(filter: WorkListFilter): WorkItemRow[];
+  listWorkItemPredecessors(workItemId: string): string[];
   cancelWorkItem(workItemId: string, byClientId: string, operator?: boolean): WorkItemRow | undefined;
   claimReadyWorkItem(projectId: string): WorkItemRow | undefined;
   releaseAdmittingToReady(workItemId: string): boolean;

@@ -28,7 +28,7 @@ import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger, type RunEventRow, type TrustProfile } from "../ledger/index.js";
 import { RunLifecycle, type TransitionNotice } from "../lifecycle/index.js";
 import { WorkspaceManager } from "../workspace/index.js";
-import { inputSchema, outputSchema, TOOL_NAMES } from "./schemas.js";
+import { inputSchema, outputSchema, TOOL_NAMES, WORK_QUEUE_TOOL_NAMES } from "./schemas.js";
 import { createSwitchboardServer } from "./server.js";
 
 // biome-ignore lint/suspicious/noExplicitAny: tool results are untyped JSON checked by the published output schemas
@@ -225,7 +225,7 @@ describe("steer_run (T14.7, FR-CTL-04)", () => {
   it("is listed last with closed schemas; the earlier tools are listed unchanged", async () => {
     s = await setup();
     const { tools } = await s.client().listTools();
-    expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES]);
+    expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES, ...WORK_QUEUE_TOOL_NAMES]);
     expect(TOOL_NAMES.at(-1)).toBe("steer_run");
     const tool = tools.find((t) => t.name === "steer_run");
     expect(tool?.inputSchema).toEqual(inputSchema("steer_run"));
