@@ -35,6 +35,15 @@
  * large finite counters; resume from a result-only binding compiles as from an `init` binding. Pinned gaps: a refusal on a
  * `started` line is never reported (fixture `denied_on_started.jsonl` replays to success); clipping counts UTF-16 code
  * units, so a clipped model, vendor or target can end in half a surrogate pair.
+ * Eighth pass (as the Grok and Antigravity eighth passes; T4.6, FR-ADP-10, FR-SES-03): a started-line refusal of a Git
+ * write still reaches the tool-call guard (fixture `denied_on_started_git.jsonl` replays to `PERMISSION_BLOCKED`); after
+ * the result a started refusal fails on order while a completed refusal fails as a denial; init-first and result-first
+ * streams with the same fields bind the same event once; non-tool lines after the result stay clean, a subtype-less
+ * second result does not; resume argv is compile argv plus `--resume <id>` and the id a failed run keeps resumes as a
+ * clean one. Pinned gaps: a started refusal followed by a clean completed is never reported; an id-less result leaves the
+ * slot open, so a late `init` binds id, model and vendor after the result (fixture `late_init_after_idless_result.jsonl`
+ * replays to success); a case or spelling variant of the `tool_call` type after the result is an unknown the guard never
+ * sees (fixture `trailing_tool_type_variant.jsonl` replays a Git write to success).
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -2156,5 +2165,279 @@ describe("cursor parser residuals, seventh pass: refusals on started lines, late
       a.resumeArgs({ provider: "cursor", nativeSessionId: id ?? "" }, req, PRIVILEGED_BYPASS_PROFILE);
     expect(resumed(idOf(fromResult))).toEqual(resumed(idOf(fromInit)));
     expect(resumed(idOf(fromResult))).toMatchObject({ argv: expect.arrayContaining(["--resume", "result-only-1"]) });
+  });
+});
+
+describe("cursor parser residuals, eighth pass: denied-on-started interactions, late init binding, trailing lines after result and resume argv parity (T4.43, T4.6, FR-ADP-10, FR-SES-03; synthetic lines; parser unchanged)", () => {
+  const bound = (events: readonly NormalizedEvent[]) => events.filter((e) => e.kind === "session_bound");
+  const denials = (events: readonly NormalizedEvent[]) => events.filter((e) => e.kind === "permission_denied");
+  const ctx = { cwd: "/w", bypass: true };
+  const guarded = (lines: (string | object)[]) => {
+    const r = parse(lines);
+    return { ...r, events: r.events.map((e) => guardEvent(e, ctx)) };
+  };
+  const REJECTED = { result: { rejected: {} } };
+  const SHELL = (command: string, extra: Record<string, unknown> = {}) => ({
+    shellToolCall: { args: { command }, ...extra },
+  });
+  const req: CompileRequest = {
+    runId: "run_cursor_t443_residual_p8",
+    objective: "synthetic cursor objective",
+    constraints: [],
+    workspace: { cwd: "/w", writable: true },
+    bypassApproved: true,
+  };
+  const resumed = (id: string, a = adapter()) =>
+    a.resumeArgs({ provider: "cursor", nativeSessionId: id }, req, PRIVILEGED_BYPASS_PROFILE);
+
+  it("pins the gap across a pair: a refusal on started followed by a clean completed for the same call is never reported", () => {
+    const pair = parse([
+      INIT(),
+      TOOL("started", SHELL("rm -rf build", REJECTED)),
+      TOOL("completed", SHELL("rm -rf build")),
+      RESULT(),
+    ]);
+    expect(denials(pair.events)).toEqual([]);
+    // The completed line repeats the started command, so it adds no second tool_call either.
+    expect(pair.events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "shell", name: "shellToolCall", command: "rm -rf build" },
+    ]);
+    expect(pair.a.extractResult(pair.events, EXIT_OK)).toEqual({
+      ok: true,
+      unknownEventCount: 0,
+      nativeSessionId: SID,
+    });
+    // A completed refusal for another call_id is reported once, naming its key; the started refusal still is not.
+    const other = parse([
+      INIT(),
+      TOOL("started", SHELL("rm -rf build", REJECTED), "c1"),
+      TOOL("completed", SHELL("ls", REJECTED), "c2"),
+      RESULT(),
+    ]);
+    expect(denials(other.events)).toEqual([{ kind: "permission_denied", tool: "shellToolCall" }]);
+    expect(other.events.filter((e) => e.kind === "tool_call").map((e) => e.kind === "tool_call" && e.command)).toEqual([
+      "rm -rf build",
+      "ls",
+    ]);
+  });
+
+  it("a refusal on started never hides the command from the guard: a Git write there is PERMISSION_BLOCKED", () => {
+    const r = guarded([INIT(), TOOL("started", SHELL("git push origin main", REJECTED)), RESULT()]);
+    expect(denials(r.events)).toEqual([]);
+    const res = r.a.extractResult(r.events, EXIT_OK);
+    expect(res).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: SID });
+    expect(res.failureDetail).toMatch(/^git write attempted/);
+  });
+
+  it("fixture denied_on_started_git replays a started-line refusal of a Git write to PERMISSION_BLOCKED through the guard", async () => {
+    const report = await runConformanceCase({
+      kind: "task_failure",
+      adapter: replayAdapter("denied_on_started_git"),
+      request: { ...req, workspace: { cwd: makeCwd(), writable: true } },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      nativeSessionId: DEFAULT_SESSION_ID,
+      unknownEventCount: 0,
+    });
+    expect(report.result?.failureDetail).toMatch(/^git write attempted/);
+  });
+
+  it("pins the asymmetry: after the result a started refusal fails on order, while a completed refusal fails as a denial", () => {
+    const r = parse([INIT(), RESULT(), TOOL("started", SHELL("ls", REJECTED))]);
+    expect(denials(r.events)).toEqual([]);
+    expect(r.a.extractResult(r.events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the result line",
+    });
+    // The same refusal on a completed line after the result is reported, and the denial outranks the order check.
+    const done = parse([INIT(), RESULT(), TOOL("completed", SHELL("ls", REJECTED))]);
+    expect(denials(done.events)).toEqual([{ kind: "permission_denied", tool: "shellToolCall" }]);
+    expect(done.a.extractResult(done.events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "denied: shellToolCall",
+    });
+  });
+
+  it("pins the gap: an id-less result leaves the slot open, so a late init binds its id, model and vendor after the result", () => {
+    const r = parse([
+      RESULT({ session_id: undefined }),
+      INIT({ model: "Late Model", backing_provider: "backing-late" }),
+    ]);
+    expect(r.events.map((e) => e.kind)).toEqual(["usage", "result", "session_bound"]);
+    expect(bound(r.events)).toEqual([
+      { kind: "session_bound", nativeSessionId: SID, model: "Late Model", backingProvider: "backing-late" },
+    ]);
+    expect(r.a.extractResult(r.events, EXIT_OK)).toEqual({ ok: true, unknownEventCount: 0, nativeSessionId: SID });
+    // The late init's credential source is still checked after the result.
+    const auth = parse([RESULT({ session_id: undefined }), INIT({ apiKeySource: "env" })]);
+    expect(bound(auth.events)).toHaveLength(1);
+    expect(auth.a.extractResult(auth.events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "AUTH_REQUIRED",
+      nativeSessionId: SID,
+    });
+    // A late init with no usable id binds nothing and loses its vendor; the run is clean but has no session.
+    const idless = parse([RESULT({ session_id: undefined }), INIT({ session_id: undefined, backing_provider: "b" })]);
+    expect(bound(idless.events)).toEqual([]);
+    expect(idless.a.extractResult(idless.events, EXIT_OK)).toEqual({ ok: true, unknownEventCount: 0 });
+  });
+
+  it("fixture late_init_after_idless_result replays a binding after the result to success with the late id (gap)", async () => {
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: replayAdapter("late_init_after_idless_result"),
+      request: { ...req, workspace: { cwd: makeCwd(), writable: true } },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toEqual({
+      ok: true,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      unknownEventCount: 0,
+      summary: "ok",
+    });
+  });
+
+  it("init-first and result-first streams carrying the same fields bind the same session_bound event, once", () => {
+    const fields = { model: "Same Model", backing_provider: "backing-same" };
+    const initFirst = parse([INIT(fields), RESULT(fields)]);
+    const resultFirst = parse([RESULT(fields), INIT(fields)]);
+    expect(bound(initFirst.events)).toEqual(bound(resultFirst.events));
+    expect(bound(initFirst.events)).toEqual([
+      { kind: "session_bound", nativeSessionId: SID, model: "Same Model", backingProvider: "backing-same" },
+    ]);
+    expect(initFirst.a.extractResult(initFirst.events, EXIT_OK)).toEqual(
+      resultFirst.a.extractResult(resultFirst.events, EXIT_OK),
+    );
+    // After a failed result, a late same-id init adds nothing: the failure stands as reported by the result.
+    const failed = parse([RESULT({ subtype: "error", is_error: true }), INIT(fields)]);
+    expect(bound(failed.events)).toHaveLength(1);
+    expect(failed.a.extractResult(failed.events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "result error",
+      nativeSessionId: SID,
+    });
+  });
+
+  it("non-tool lines after the result are counted unknowns (or nothing) and leave a clean turn clean", () => {
+    const trailing: [string, number][] = [
+      [line({ type: "brand_new" }), 1],
+      [line({ type: "system", subtype: "compact" }), 1],
+      [line({ no_type: true }), 1],
+      [line([1, 2]), 1],
+      [line(7), 1],
+      [line("text"), 1],
+      [line(null), 1],
+      [line({ type: "assistant", message: { content: { text: "x" } } }), 1],
+      [line({ type: "assistant", message: { content: "" } }), 0],
+      [line({ type: "thinking" }), 0],
+      [line({ type: "user" }), 0],
+      ["{not json", 0],
+      ["", 0],
+    ];
+    for (const [l, unknown] of trailing) {
+      const r = parse([INIT(), RESULT(), l]);
+      expect(r.state.lines, l).toBe(3);
+      expect(r.a.extractResult(r.events, EXIT_OK), l).toEqual({
+        ok: true,
+        unknownEventCount: unknown,
+        nativeSessionId: SID,
+      });
+    }
+    // A subtype-less result after a clean result is a second result, not a harmless unknown.
+    const again = parse([INIT(), RESULT(), line({ type: "result" })]);
+    expect(again.a.extractResult(again.events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: more than one result line",
+      unknownEventCount: 1,
+    });
+  });
+
+  it("pins the gap: a case or spelling variant of the tool_call type after the result is an unknown the guard never sees", () => {
+    for (const type of ["Tool_Call", "TOOL_CALL", "tool_call ", " tool_call", "toolCall", "tool-call"]) {
+      const r = guarded([
+        INIT(),
+        RESULT(),
+        line({ type, subtype: "started", call_id: "c9", tool_call: SHELL("git push origin main"), session_id: SID }),
+      ]);
+      expect(r.events.at(-1), JSON.stringify(type)).toEqual({ kind: "unknown", rawType: type });
+      expect(r.a.extractResult(r.events, EXIT_OK), JSON.stringify(type)).toEqual({
+        ok: true,
+        unknownEventCount: 1,
+        nativeSessionId: SID,
+      });
+    }
+    // A case variant of the subtype keeps the exact type, so the order check and the guard both fire.
+    const sub = guarded([INIT(), RESULT(), TOOL("Started", SHELL("git push origin main"))]);
+    expect(sub.events.slice(-2).map((e) => e.kind)).toEqual(["unknown", "tool_call"]);
+    const res = sub.a.extractResult(sub.events, EXIT_OK);
+    expect(res).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    expect(res.failureDetail).toMatch(/^git write attempted/);
+  });
+
+  it("fixture trailing_tool_type_variant replays a Tool_Call Git write after the result to success at exit 0 (gap)", async () => {
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: replayAdapter("trailing_tool_type_variant"),
+      request: { ...req, workspace: { cwd: makeCwd(), writable: true } },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toEqual({
+      ok: true,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      unknownEventCount: 1,
+      summary: "Done.",
+    });
+  });
+
+  it("resume argv is compile argv plus `--resume <id>` for every safe id shape, and two resumes differ only in the id", () => {
+    const a = adapter();
+    const first = a.compile(req, PRIVILEGED_BYPASS_PROFILE);
+    if ("ineligible" in first) throw new Error(first.detail);
+    for (const id of [SID, "A", "a:b.c-d_9", `a${"b".repeat(255)}`]) {
+      expect(resumed(id, a), id).toEqual({ ...first, argv: [...first.argv, "--resume", id] });
+    }
+    const x = resumed("session-x", a);
+    const y = resumed("session-y", a);
+    if ("ineligible" in x || "ineligible" in y) throw new Error("resume refused");
+    expect(x.argv.slice(0, -1)).toEqual(y.argv.slice(0, -1));
+    expect({ ...x, argv: [] }).toEqual({ ...y, argv: [] });
+    // Resuming twice never accumulates a second `--resume`, and `--continue` is never emitted.
+    const twice = resumed("session-x", a);
+    if ("ineligible" in twice) throw new Error(twice.detail);
+    expect(twice.argv.filter((v) => v === "--resume")).toHaveLength(1);
+    expect(twice.argv).not.toContain("--continue");
+  });
+
+  it("the id a failed run keeps is resumed exactly as the id of a clean run", () => {
+    const failing: [string, (string | object)[]][] = [
+      ["denied", [INIT(), TOOL("completed", SHELL("ls", REJECTED)), RESULT()]],
+      ["auth", [INIT({ apiKeySource: "env" }), RESULT()]],
+      ["changed id", [INIT(), RESULT({ session_id: "other-session" })]],
+      ["late init changed id", [RESULT(), INIT({ session_id: "other-session" })]],
+      ["failed result", [INIT(), RESULT({ subtype: "error", is_error: true })]],
+      ["late id after id-less result", [RESULT({ session_id: undefined }), INIT()]],
+    ];
+    const clean = parse([INIT(), RESULT()]);
+    const cleanId = clean.a.extractResult(clean.events, EXIT_OK).nativeSessionId;
+    expect(cleanId).toBe(SID);
+    for (const [label, lines] of failing) {
+      const r = parse(lines);
+      const id = r.a.extractResult(r.events, EXIT_OK).nativeSessionId;
+      expect(id, label).toBe(SID);
+      expect(resumed(id ?? ""), label).toEqual(resumed(SID));
+    }
   });
 });
