@@ -1,5 +1,6 @@
 /** Lazy, instance-local OTLP/HTTP transport (T8.1, LLD §7, ADR-0012). No global OTel registration. */
 import type { ResolvedConfig } from "../config/index.js";
+import { resolveLink } from "./links.js";
 
 export interface CompletedSpan {
   readonly name: string;
@@ -12,6 +13,14 @@ export interface CompletedSpan {
    * remains T8.4.
    */
   readonly attributes?: Readonly<Record<string, string | number | boolean>>;
+  /**
+   * T8.3 (LLD §7 span tree): explicit W3C ids (lowercase hex, 32/16/16 characters). When absent, the transport
+   * derives the trace id and the parent link from the `run.id` attribute and the span name (`./links.ts`); a span
+   * with neither is exported as an unrelated root.
+   */
+  readonly traceId?: string;
+  readonly spanId?: string;
+  readonly parentSpanId?: string;
 }
 
 export interface Telemetry {
@@ -64,7 +73,15 @@ async function loadTransport(endpoint: string) {
     import("@opentelemetry/exporter-trace-otlp-http"),
   ]);
   const exporter = new otlp.OTLPTraceExporter({ url: endpoint, timeoutMillis: 1000 });
+  // T8.3: the ids of the span being started are staged by `recordSpan` below (startSpan consumes them synchronously),
+  // so a derived trace id and parent link (LLD §7 tree) survive the SDK's own id generation; otherwise random ids.
+  const random = new sdk.RandomIdGenerator();
+  const staged: { traceId?: string | undefined; spanId?: string | undefined } = {};
   const provider = new sdk.BasicTracerProvider({
+    idGenerator: {
+      generateTraceId: () => staged.traceId ?? random.generateTraceId(),
+      generateSpanId: () => staged.spanId ?? random.generateSpanId(),
+    },
     spanProcessors: [
       new sdk.BatchSpanProcessor(exporter, {
         maxQueueSize: 512,
@@ -77,14 +94,31 @@ async function loadTransport(endpoint: string) {
   const tracer = provider.getTracer("switchboard");
   return {
     recordSpan(span: CompletedSpan) {
-      // ROOT_CONTEXT prevents an ambient caller context from introducing unrelated spans or baggage.
-      tracer
-        .startSpan(
-          span.name,
-          { startTime: span.startTime, ...(span.attributes !== undefined ? { attributes: span.attributes } : {}) },
-          api.ROOT_CONTEXT,
-        )
-        .end(span.endTime);
+      const link = resolveLink(span);
+      // ROOT_CONTEXT prevents an ambient caller context from introducing unrelated spans or baggage; the only parent a
+      // span can have is the LLD §7 one, named by id (T8.3), never an ambient span.
+      const parent =
+        link.parentSpanId === undefined
+          ? api.ROOT_CONTEXT
+          : api.trace.setSpanContext(api.ROOT_CONTEXT, {
+              traceId: link.traceId,
+              spanId: link.parentSpanId,
+              traceFlags: api.TraceFlags.SAMPLED,
+            });
+      staged.traceId = link.traceId;
+      staged.spanId = link.spanId;
+      try {
+        tracer
+          .startSpan(
+            span.name,
+            { startTime: span.startTime, ...(span.attributes !== undefined ? { attributes: span.attributes } : {}) },
+            parent,
+          )
+          .end(span.endTime);
+      } finally {
+        staged.traceId = undefined;
+        staged.spanId = undefined;
+      }
     },
     close: () => provider.shutdown(),
   };

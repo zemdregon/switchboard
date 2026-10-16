@@ -631,8 +631,11 @@ export interface EnvironmentPlacement {
   readonly limits?: EnvironmentRunContext["limits"];
 }
 
+/** The snapshot fields an environment is chosen by (the whole frozen `ProjectSnapshot` at dispatch). */
+export type EnvironmentSnapshot = Pick<ProjectSnapshot, "id" | "environment_kind" | "image_digest">;
+
 export interface EnvironmentResolver {
-  resolve(project: ProjectSnapshot | undefined): EnvironmentPlacement | undefined;
+  resolve(project: EnvironmentSnapshot | undefined): EnvironmentPlacement | undefined;
 }
 
 /**
@@ -1104,6 +1107,18 @@ export class RunLifecycle {
     return this.opts.eligibility !== undefined;
   }
 
+  /**
+   * T10.1 (LLD §11.3): where a run with this frozen project snapshot would execute, by the same rule PREFLIGHT applies
+   * at dispatch. Admission asks it before any side effect, so a `container` project with no container environment
+   * wired is refused there; undefined (or a kind other than the snapshot's) means the run would be refused.
+   */
+  environmentPlacement(project: EnvironmentSnapshot | undefined): EnvironmentPlacement | undefined {
+    return (
+      this.opts.environments?.resolve(project) ??
+      (environmentKindOf({ project }) === "host" ? { environment: hostEnvironment, readOnlyContexts: [] } : undefined)
+    );
+  }
+
   /** FRD V3/V4 (and C3): the canonical workspace path, or `LifecycleError` INVALID_REQUEST. */
   canonicalWorkspace(workspace: string, profile: TrustProfile): Promise<string> {
     return this.checkWorkspace(workspace, profile);
@@ -1468,9 +1483,7 @@ export class RunLifecycle {
     // leased or created. A `container` run with no container environment is refused here, never run on the host.
     const snapshotProject = (JSON.parse(run0.policy_snapshot_json) as { project?: ProjectSnapshot }).project;
     const environmentKind = environmentKindOf({ project: snapshotProject });
-    const placement =
-      this.opts.environments?.resolve(snapshotProject) ??
-      (environmentKind === "host" ? { environment: hostEnvironment, readOnlyContexts: [] } : undefined);
+    const placement = this.environmentPlacement(snapshotProject);
     if (placement === undefined || placement.environment.kind !== environmentKind) {
       return this.fail(
         runId,

@@ -91,4 +91,6 @@ belongs to no run.
 - An orchestrator with `manage_projects` can point agents at any Git repository under the allowed roots, as a
   `workspace_path` request already can; it cannot reach more than its entry allows without the operator. Residual risks
   are in ROADMAP §7.1 (R-53, R-54).
-- Dynamic projects with push cannot push yet (Q-46); container projects still fail at admission until M10.
+- Dynamic projects with push cannot push yet (Q-46). A dynamic `container` project is admitted when `serve` composes
+  container placement for it (T10.1, [PR #554](https://github.com/zemdregon/switchboard/pull/554)); a host-only
+  configuration still refuses at admission with `ENVIRONMENT_NOT_IMPLEMENTED`.

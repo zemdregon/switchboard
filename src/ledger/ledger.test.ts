@@ -22,6 +22,7 @@ const EXPECTED_TABLES = [
   "control_plane_event",
   "control_plane_state",
   "decision",
+  "gc_orphan",
   "git_commit",
   "git_push",
   "http_subject",
@@ -382,15 +383,15 @@ describe("ledger migrations", () => {
     ).toThrow(/FOREIGN KEY/u);
   });
 
-  it("0019 adds project_schedule table on a version 18 database (T15.2, FR-QUE-02, LLD §18.5)", () => {
+  it("0020 adds project_schedule table on a version 19 database (T15.2, FR-QUE-02, LLD §18.5)", () => {
     db = new Database(path.join(dir, LEDGER_FILE_NAME));
     db.pragma("foreign_keys = ON");
     const d = db;
-    const upTo18 = MIGRATIONS.filter((m) => m.version <= 18);
-    expect(migrate(d, undefined, upTo18)).toEqual(upTo18.map((m) => m.version));
+    const upTo19 = MIGRATIONS.filter((m) => m.version <= 19);
+    expect(migrate(d, undefined, upTo19)).toEqual(upTo19.map((m) => m.version));
     const ledger = createLedger(d);
 
-    // Existing work queue item on v18
+    // Existing work queue item on v19
     const item = ledger.enqueueWorkItem({
       projectId: "proj-1",
       creatorClientId: "client-a",
@@ -398,14 +399,14 @@ describe("ledger migrations", () => {
       sourceKind: "mcp",
     });
 
-    // Migrate to 19
+    // Migrate to 20
     expect(
       migrate(
         d,
         undefined,
-        MIGRATIONS.filter((m) => m.version <= 19),
+        MIGRATIONS.filter((m) => m.version <= 20),
       ),
-    ).toEqual([19]);
+    ).toEqual([20]);
 
     // Existing work item preserved
     expect(ledger.getWorkItem(item.id)?.id).toBe(item.id);

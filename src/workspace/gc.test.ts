@@ -18,7 +18,7 @@ import { containerName, probeContainerName, SWITCHBOARD_RUN_LABEL } from "../env
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger } from "../ledger/index.js";
 import { fileRuntime, plantContainer } from "../reconcile/fixtures/file-runtime.js";
-import { findOrphans, type GcStep, runRetentionGc } from "./gc.js";
+import { collectOrphans, findOrphans, type GcStep, type OrphanGcStep, runRetentionGc } from "./gc.js";
 import { WorkspaceManager } from "./index.js";
 
 const GIT_ENV = {
@@ -409,3 +409,207 @@ describe("orphan sweep and publish refs (T9.7 follow-up)", () => {
     expect(o.branches).toEqual([]);
   });
 });
+
+describe("orphan collection after the retention period (T3.12, LLD §5, ADR-0054)", () => {
+  const LATER = new Date(NOW.getTime() + 31 * 24 * 60 * 60 * 1000);
+  const collect = (now: Date, days = 30, onStep?: (s: OrphanGcStep, target: string) => void) =>
+    collectOrphans({ db, dataDir, days, now, ...(onStep ? { onStep } : {}) });
+  const marks = () =>
+    db.prepare("SELECT kind, target, first_seen_at, intent_at, removed_at FROM gc_orphan ORDER BY target").all() as {
+      kind: string;
+      target: string;
+      first_seen_at: string;
+      intent_at: string | null;
+      removed_at: string | null;
+    }[];
+
+  /** A live unit plus an orphan worktree (registered with Git), an orphan session directory and orphan branches. */
+  async function scene() {
+    const live = await unit(RECENT);
+    const base = path.join(realpathSync(dataDir), "worktrees");
+    const ghostWt = path.join(base, live.sess, "run_ghost");
+    g(repo, "worktree", "add", "-q", "-b", `switchboard/${live.sess}/run_ghost`, ghostWt);
+    const ghostSess = path.join(base, "sess_ghost");
+    mkdirSync(path.join(ghostSess, "run_x"), { recursive: true });
+    writeFileSync(path.join(ghostSess, "run_x", "f.txt"), "x\n");
+    const head = g(repo, "rev-parse", "HEAD").trim();
+    g(repo, "update-ref", "refs/heads/switchboard/pub/sess_unknown1", head);
+    g(repo, "branch", "operator/switchboard-lookalike");
+    return { live, ghostWt, ghostSess, ghostBranch: `switchboard/${live.sess}/run_ghost` };
+  }
+
+  it("marks orphans on first sighting and removes nothing, even with days = 0", async () => {
+    const s = await scene();
+    const first = await collect(NOW, 0);
+    expect(first.errors).toEqual([]);
+    expect(first.marked).toBe(4);
+    expect(first.removedWorktrees).toEqual([]);
+    expect(first.removedBranches).toEqual([]);
+    expect(existsSync(s.ghostWt)).toBe(true);
+    expect(existsSync(s.ghostSess)).toBe(true);
+    expect(branches()).toEqual(expect.arrayContaining([s.ghostBranch, "switchboard/pub/sess_unknown1"]));
+    expect(marks().every((m) => m.first_seen_at === NOW.toISOString() && m.intent_at === null)).toBe(true);
+  });
+
+  it("keeps marked orphans inside the retention period and removes them after it; live and outside branches stay", async () => {
+    const s = await scene();
+    await collect(NOW);
+    const waiting = await collect(RECENT_PLUS(10));
+    expect(waiting.waiting).toBe(4);
+    expect(waiting.removedWorktrees).toEqual([]);
+    expect(existsSync(s.ghostWt)).toBe(true);
+
+    const res = await collect(LATER);
+    expect(res.errors).toEqual([]);
+    expect(res.removedWorktrees.sort()).toEqual([s.ghostWt, s.ghostSess].sort());
+    expect(res.removedBranches.map((b) => b.branch).sort()).toEqual(
+      [s.ghostBranch, "switchboard/pub/sess_unknown1"].sort(),
+    );
+    expect(existsSync(s.ghostWt)).toBe(false);
+    expect(existsSync(s.ghostSess)).toBe(false);
+    expect(g(repo, "worktree", "list", "--porcelain")).not.toContain("run_ghost");
+    // The live unit, the operator's branches (including a lookalike outside switchboard/) and checkout are untouched.
+    expect(existsSync(s.live.wt)).toBe(true);
+    expect(branches()).toEqual(
+      expect.arrayContaining(["main", "operator/feature", "operator/switchboard-lookalike", s.live.branch]),
+    );
+    expect(g(repo, "branch", "--show-current").trim()).toBe("main");
+    expect(marks().every((m) => m.intent_at !== null && m.removed_at === LATER.toISOString())).toBe(true);
+    expect((await findOrphans({ db, dataDir })).worktrees).toEqual([]);
+    // Idempotent: nothing left to do.
+    const again = await collect(LATER);
+    expect([again.marked, again.removedWorktrees.length, again.removedBranches.length, again.errors.length]).toEqual([
+      0, 0, 0, 0,
+    ]);
+  });
+
+  it("forgets the mark of a target that gained a ledger row, and never removes it", async () => {
+    const live = await unit(RECENT);
+    const ghost = `switchboard/${live.sess}/run_later`;
+    g(repo, "branch", ghost);
+    await collect(NOW);
+    expect(marks().map((m) => m.target)).toEqual([ghost]);
+    db.prepare("UPDATE run SET branch = ? WHERE id = ?").run(ghost, live.run); // now named by a run row
+    const res = await collect(LATER);
+    expect(res.removedBranches).toEqual([]);
+    expect(branches()).toContain(ghost);
+    expect(marks()).toEqual([]);
+  });
+
+  it("re-checks the ledger in the intent transaction: a row written after the sweep wins", async () => {
+    const live = await unit(RECENT);
+    const ghost = `switchboard/${live.sess}/run_race`;
+    g(repo, "branch", ghost);
+    await collect(NOW);
+    // A run row names the branch after the sweep and mark pass but before the intent transaction: the re-check is
+    // prepared at exactly that point, so the row is written when its statement is prepared.
+    const orig = db.prepare.bind(db);
+    let injected = false;
+    const spy = (sql: string) => {
+      if (!injected && sql.startsWith("SELECT 1 AS x FROM run WHERE branch")) {
+        injected = true;
+        orig("UPDATE run SET branch = ? WHERE id = ?").run(ghost, live.run);
+      }
+      return orig(sql);
+    };
+    (db as unknown as { prepare: typeof spy }).prepare = spy;
+    try {
+      const res = await collect(LATER);
+      expect(res.removedBranches).toEqual([]);
+    } finally {
+      (db as unknown as { prepare: typeof orig }).prepare = orig;
+    }
+    expect(branches()).toContain(ghost);
+  });
+
+  it("refuses to remove through a symlinked session directory and unlinks a symlinked orphan without following it", async () => {
+    const live = await unit(RECENT);
+    const base = path.join(realpathSync(dataDir), "worktrees");
+    const outside = path.join(root, "outside");
+    mkdirSync(path.join(outside, "victim"), { recursive: true });
+    writeFileSync(path.join(outside, "victim", "keep.txt"), "canary\n");
+    // An unknown session directory that is a symlink to outside: the link is the orphan.
+    symlinkSync(outside, path.join(base, "sess_linked"));
+    // A known session whose directory is replaced by a symlink: its entries are listed through the link.
+    rmSync(path.join(base, live.sess), { recursive: true, force: true });
+    g(repo, "worktree", "prune");
+    symlinkSync(outside, path.join(base, live.sess));
+
+    await collect(NOW);
+    const res = await collect(LATER);
+    expect(res.removedWorktrees).toEqual([path.join(base, "sess_linked")]);
+    expect(res.errors.map((e) => [e.target, e.step])).toEqual([[path.join(base, live.sess, "victim"), "remove"]]);
+    expect(res.errors[0]?.message).toMatch(/refused/);
+    expect(existsSync(path.join(outside, "victim", "keep.txt"))).toBe(true);
+    expect(existsSync(path.join(base, "sess_linked"))).toBe(false);
+  });
+
+  it("refuses worktree removal when <dataDir>/worktrees itself is a symlink", async () => {
+    await unit(RECENT);
+    const base = path.join(realpathSync(dataDir), "worktrees");
+    const outside = path.join(root, "outside-wt");
+    mkdirSync(path.join(outside, "sess_far"), { recursive: true });
+    writeFileSync(path.join(outside, "sess_far", "keep.txt"), "canary\n");
+    rmSync(base, { recursive: true, force: true });
+    g(repo, "worktree", "prune");
+    symlinkSync(outside, base);
+    await collect(NOW);
+    const res = await collect(LATER);
+    expect(res.removedWorktrees).toEqual([]);
+    expect(res.errors.length).toBeGreaterThan(0);
+    expect(res.errors.every((e) => /refused/.test(e.message))).toBe(true);
+    expect(existsSync(path.join(outside, "sess_far", "keep.txt"))).toBe(true);
+  });
+
+  it.each(["intent", "remove", "outcome"] as OrphanGcStep[])(
+    "rolls forward after a crash following the %s step",
+    async (crashAfter) => {
+      const s = await scene();
+      await collect(NOW);
+      let thrown = false;
+      const first = await collect(LATER, 30, (step) => {
+        if (step === crashAfter && !thrown) {
+          thrown = true;
+          throw new Error("injected crash");
+        }
+      });
+      // A crash before the ghost worktree is removed can also leave its branch checked out there; that branch fails
+      // too and rolls forward with it.
+      const injected = first.errors.filter((e) => e.message === "injected crash");
+      expect(injected.map((e) => e.step)).toEqual([crashAfter]);
+      const crashed = marks().find((m) => m.target === injected[0]?.target);
+      expect(crashed?.intent_at).not.toBeNull(); // the intent was recorded before anything was removed
+      // The outcome hook runs after the final write, like the session GC "ledger" step.
+      if (crashAfter === "outcome") expect(crashed?.removed_at).not.toBeNull();
+      else expect(crashed?.removed_at).toBeNull();
+
+      const second = await collect(new Date(LATER.getTime() + 60_000));
+      expect(second.errors).toEqual([]);
+      expect(existsSync(s.ghostWt)).toBe(false);
+      expect(existsSync(s.ghostSess)).toBe(false);
+      expect(branches()).not.toContain(s.ghostBranch);
+      expect(branches()).not.toContain("switchboard/pub/sess_unknown1");
+      expect(branches()).toEqual(expect.arrayContaining(["main", "operator/feature", s.live.branch]));
+      expect(marks().every((m) => m.intent_at !== null && m.removed_at !== null)).toBe(true);
+    },
+  );
+
+  it("records the intent before the orphan is removed", async () => {
+    const s = await scene();
+    await collect(NOW);
+    const seen: { target: string; exists: boolean; intent: string | null }[] = [];
+    await collect(LATER, 30, (step, target) => {
+      if (step !== "intent" || target !== s.ghostSess) return;
+      seen.push({
+        target,
+        exists: existsSync(target),
+        intent: marks().find((m) => m.target === target)?.intent_at ?? null,
+      });
+    });
+    expect(seen).toEqual([{ target: s.ghostSess, exists: true, intent: LATER.toISOString() }]);
+  });
+});
+
+function RECENT_PLUS(days: number): Date {
+  return new Date(NOW.getTime() + days * 24 * 60 * 60 * 1000);
+}
