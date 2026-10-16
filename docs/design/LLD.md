@@ -2314,6 +2314,37 @@ contract, a header line or empty output makes the whole table unusable (`unknown
   (`VERIFIED_PROFILE_PLATFORMS` and `SANDBOX_DEPENDENT_PROFILES` in `src/routing/eligibility.ts`, ROADMAP Q-35), so
   no provider run reaches this port on macOS until a profile's macOS cells are verified (T4.12).
 
+### 8.4 Outer sandbox (M3, T3.1)
+
+Decision and limits: [ADR-0051](../adr/0051-outer-sandbox-detection-and-fail-closed-requirement.md) (Proposed,
+Delegated). Code: `src/exec/outer-sandbox.ts`; the gate is passed to `createProfileResolver` (`src/policy/profiles.ts`)
+by `serve`.
+
+Configuration (`SwitchboardConfig.outer_sandbox`, `src/config/schema.ts`):
+
+```json
+"outer_sandbox": { "required_profiles": ["test-sandboxed"] }
+```
+
+`required_profiles` is a list of distinct non-privileged profile names; absent or empty is the default and changes
+nothing. `privileged` is rejected at config load.
+
+Detection (`detectOuterSandbox`, never throws; each probe runs with `PATH` only and a 5 s timeout, killed on expiry):
+
+| Mechanism | Available when | Version |
+| --- | --- | --- |
+| `bubblewrap` | Linux, `bwrap` found on the daemon's `PATH`, and `bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all --die-with-parent -- true` exits 0 | `bubblewrap <v>` from `--version` |
+| `prlimit` | Linux, `prlimit` found on `PATH`, and `prlimit --core=0:0 -- true` exits 0 | `util-linux <v>` from `--version` |
+| `landlock` | Linux and `/sys/kernel/security/lsm` names `landlock` | Always `null`: the ABI needs a system call Node.js does not expose |
+
+Admission (`outerSandboxRefusal`): a run whose profile is listed is refused by the profile resolver with
+`ProfileUnavailableError` (`ELIGIBILITY_NONE`, FRD BR-3) before any row is written. The message carries
+`OUTER_SANDBOX_UNAVAILABLE` (bubblewrap or `prlimit` unavailable, each probe's detail included) or
+`OUTER_SANDBOX_NOT_ENFORCED` (both available; this build wraps no process, ADR-0051 item 4). Detection that did not run
+counts as unavailable. `serve` detects once at startup, only when the list is not empty; `doctor` always reports the
+`outer_sandbox` check (`ok` when nothing is required, `fail` for a missing mechanism, `warn` when only the wrapping is
+missing).
+
 ## 9. Retry/back-off algorithm
 
 Applies only to `RATE_LIMIT_TRANSIENT`, `PROVIDER_OVERLOADED` and pre-mutation `PROCESS_CRASH`, and only when the
