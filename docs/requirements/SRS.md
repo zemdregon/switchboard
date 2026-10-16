@@ -89,7 +89,7 @@ system boundary is owned by the
 | --- | --- | --- | --- | --- | --- |
 | FR-ADP-01 | Every provider integration shall implement the adapter contract in [LLD §2](../design/LLD.md#2-adapter-contract): probe, auth preflight, compile, parse, resume, cancel. | Must | CAP-2, [R2] | T | M1 (contract + fake adapter) |
 | FR-ADP-02 | Adapter preflight shall check, in order: binary present, binary version, automation command, structured-output support, required permission/sandbox flags, auth status, harmless structured-output smoke test. | Must | CAP-2, [R2] compliance section | T | M2 |
-| FR-ADP-03 | An installed binary whose version is outside the adapter's validated range shall put the adapter in `ADAPTER_VERSION_UNVERIFIED` and make it ineligible for routing until the operator validates it. | Must | BO-6, [ADR-0009](../adr/0009-version-gated-adapters.md) | T | M2 |
+| FR-ADP-03 | An installed binary whose version is outside the adapter's validated range shall put the adapter in `ADAPTER_VERSION_UNVERIFIED` and make it ineligible for routing until the operator validates it. *(Note 2026-10-16, T8.5 and T8.6, Delegated; text above unchanged: as built, a version canary also treats any change from the last recorded version (`version-canary.json` under the data directory, or the manifest's `validated_cli_version` when none is recorded) as unverified, in `doctor`, `serve` routing and `switchboard adapters version-canary`; a successful `adapters validate` records the new baseline there, not as an `adapter_version` ledger row. See [FRD WF-9](FRD.md#wf-9-adapter-version-revalidation) and [ROADMAP §6.15](../ROADMAP.md#615-m8-hardening-tasks).)* | Must | BO-6, [ADR-0009](../adr/0009-version-gated-adapters.md) | T | M2 |
 | FR-ADP-04 | Adapters shall consume the provider's native structured output (JSON, JSONL or ACP messages) and shall not infer session IDs, status or usage by pattern-matching free text. | Must | [R2] | T, I | M2 |
 | FR-ADP-05 | Model identities, aliases and context limits shall come from a refreshable model registry (operator config plus provider listing commands where available), not from adapter source code. | Must | [R2] | I, T | M4 |
 | FR-ADP-06 | Claude Code and Codex adapters shall be delivered first. | Must | CAP-2, owner decision 2026-10-12 | T | M2 |
@@ -202,7 +202,7 @@ The five trust profiles and their intended semantics are:
 | ID | Requirement | Priority | Source | Verify | Milestone |
 | --- | --- | --- | --- | --- | --- |
 | FR-TEL-01 | Every run lifecycle step shall append a `run_event` record. | Must | CAP-8 | T | M1 |
-| FR-TEL-02 | The controller shall export OpenTelemetry traces following the span structure in [LLD §7](../design/LLD.md#7-telemetry-spans) to an operator-configured endpoint. | Should | CAP-8, [ADR-0012](../adr/0012-telemetry-at-wrapper-boundary.md) | T | M8 |
+| FR-TEL-02 | The controller shall export OpenTelemetry traces following the span structure in [LLD §7](../design/LLD.md#7-telemetry-spans) to an operator-configured endpoint. *(Note 2026-10-16, T8.1 to T8.4, Delegated; text above unchanged: as built, export is OTLP/HTTP to `telemetry.otlp_endpoint`, loaded lazily and best effort, and only the `controller.delegate` and `provider.spawn` spans are emitted, with LLD §7 parent links and an export-time attribute allowlist; the other LLD §7 spans, including `inner.call`, have no builder yet. See [LLD §7](../design/LLD.md#7-telemetry-spans) and [ROADMAP §6.15](../ROADMAP.md#615-m8-hardening-tasks).)* | Should | CAP-8, [ADR-0012](../adr/0012-telemetry-at-wrapper-boundary.md) | T | M8 |
 | FR-TEL-03 | Raw prompts, credentials, environment variables and full shell output shall not appear in telemetry attributes or logs; large outputs are stored as access-controlled artifacts referenced by ID and hash. | Must | BO-2, NFR-PRIV-01 | T, I | M1 |
 | FR-TEL-04 | A read-only usage dashboard. | Deferred | [R1] constraint allows it | — | Deferred |
 
@@ -479,7 +479,7 @@ FR-QUE-03 reads CI through the operator's logged-in `gh` CLI (owner decision 54)
 | Injected `commit` / `push` tools (per-run MCP channel) | Agent → controller | [LLD §12](../design/LLD.md#12-injected-git-tools-commits-and-publication) |
 | Inner backend (HTTP chat completion, or a one-shot provider CLI run) | Controller → operator-chosen model | [LLD §13](../design/LLD.md#13-inner-agent) |
 | Container runtime (create, start, stop, remove; runtime Proposed in ADR-0013) | Controller → container runtime | [LLD §11](../design/LLD.md#11-projects-contexts-and-environments) |
-| OpenTelemetry OTLP export | Controller → operator endpoint | [LLD §7](../design/LLD.md#7-telemetry-spans) |
+| OpenTelemetry OTLP export (OTLP/HTTP as built) | Controller → operator endpoint | [LLD §7](../design/LLD.md#7-telemetry-spans) |
 | Operator CLI | Operator → controller | [FRD](FRD.md) workflows |
 
 ## 6. Data requirements
