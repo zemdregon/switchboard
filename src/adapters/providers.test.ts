@@ -88,6 +88,7 @@ describe("derived constants equal the pre-T4.1 values", () => {
       "cursor",
       "opencode",
       "kimi",
+      "muse",
       "fake",
     ]);
     expect([...PROVIDER_IDS]).toEqual([
@@ -98,6 +99,7 @@ describe("derived constants equal the pre-T4.1 values", () => {
       "cursor",
       "opencode",
       "kimi-code",
+      "muse-code",
     ]);
     expect(CONFIG_TO_ADAPTER_ID).toEqual({
       "claude-code": "claude",
@@ -107,10 +109,11 @@ describe("derived constants equal the pre-T4.1 values", () => {
       cursor: "cursor",
       opencode: "opencode",
       "kimi-code": "kimi",
+      "muse-code": "muse",
     });
     expect(configIdForAdapterId("fake")).toBeUndefined();
     expect(adapterIdForConfigId("kimi-code")).toBe("kimi");
-    expect(adapterIdForConfigId("muse-code")).toBeUndefined(); // no id without an adapter task (LLD §2)
+    expect(adapterIdForConfigId("muse-code")).toBe("muse"); // added with its adapter task, T4.72 (LLD §2)
   });
 
   it("the config schema rebuilt from the built-in ids is byte-identical", () => {
@@ -127,6 +130,7 @@ describe("derived constants equal the pre-T4.1 values", () => {
       "cursor",
       "opencode",
       "kimi",
+      "muse",
     ]);
     expect(ids(buildRegistry({ enabled: true, scenario: "success" }))).toEqual([
       "claude",
@@ -136,6 +140,7 @@ describe("derived constants equal the pre-T4.1 values", () => {
       "cursor",
       "opencode",
       "kimi",
+      "muse",
       "fake",
     ]);
     expect(ids(defaultAdapters())).toEqual([
@@ -147,6 +152,7 @@ describe("derived constants equal the pre-T4.1 values", () => {
       "cursor",
       "opencode",
       "kimi",
+      "muse",
     ]);
     // The Claude git_channel opt-in still reaches only the Claude adapter.
     const on = buildRegistry({ enabled: false }, { claudeGitChannel: true });
@@ -182,6 +188,7 @@ describe("resumeCwd declarations (T5.7; ADR-0038 item 6.3, TDD §4.10)", () => {
       cursor: "unverified",
       opencode: "unverified",
       kimi: "unverified",
+      muse: "bound",
       fake: "bound",
     });
   });
@@ -317,7 +324,7 @@ describe("scratch adapter registered from a fixture module (T4.1 Done when)", ()
       defaultAdapters()
         .list()
         .map((a) => a.id),
-    ).toEqual(["fake", "claude", "codex", "grok", "antigravity", "cursor", "opencode", "kimi", SCRATCH_ID]);
+    ).toEqual(["fake", "claude", "codex", "grok", "antigravity", "cursor", "opencode", "kimi", "muse", SCRATCH_ID]);
     const scratchOnly = () => {
       const r = buildRegistry({ enabled: false });
       const a = r.get(SCRATCH_ID as ProviderId);
@@ -353,6 +360,7 @@ describe("scratch adapter registered from a fixture module (T4.1 Done when)", ()
       "cursor",
       "opencode",
       "kimi",
+      "muse",
       SCRATCH_ID,
     ]);
     const dataDir = path.join(tmp, "data");
@@ -407,6 +415,7 @@ describe("scratch adapter registered from a fixture module (T4.1 Done when)", ()
         "cursor",
         "opencode",
         "kimi",
+        "muse",
         SCRATCH_ID,
       ]);
       // No compliance manifest: fail closed (ADR-0009), but listed with its declarations.

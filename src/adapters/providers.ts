@@ -31,6 +31,7 @@ import { CursorAdapter } from "./cursor/adapter.js";
 import { FakeAdapter, type FakeScenario } from "./fake/adapter.js";
 import { GrokAdapter } from "./grok/adapter.js";
 import { KimiAdapter } from "./kimi/adapter.js";
+import { MuseAdapter } from "./muse/adapter.js";
 import { OpenCodeAdapter } from "./opencode/adapter.js";
 import type { AcpDeclarations, ProviderAdapter, ResumeCwd } from "./types.js";
 
@@ -98,7 +99,7 @@ export interface ProviderEntry {
  * The built-in table, in the order `serve` registers adapters and config ids are listed. Reserved entries (no
  * `create`) keep the config and adapter ids the code accepted before T4.1; each provider's spike (`T4.n0`) adds its
  * sourced bypass-class flags, and its `T4.n2` task adds `create`. No id is added for a provider without an adapter
- * task (LLD §2 lists `muse`/`muse-code`; they arrive with Muse Code's own module, T4.72).
+ * task (LLD §2 "Provider ids").
  */
 export const BUILTIN_PROVIDERS = [
   {
@@ -240,8 +241,26 @@ export const BUILTIN_PROVIDERS = [
     resumeCwd: "unverified",
     create: (): ProviderAdapter => new KimiAdapter(),
   },
-  // Muse Code (`bound`, [M-ext]: `--allow-workspace-switch` is needed when the workspace differs) gets its entry with
-  // its module (T4.72).
+  {
+    id: "muse",
+    configId: "muse-code",
+    kind: "real",
+    // TDD §4.8 "Bypass-class flags" ([M-perm], [M-ext], confirmed; [M-log] for `--trust-workspace`): `--disable-approval`,
+    // `--disable-sandbox` and `--trust-workspace`; `--yolo` is a shared `BYPASS_FLAGS` entry. The adapter emits only
+    // `--trust-workspace`, and only in an approved bypass run with repository configuration `enabled` (T4.72).
+    bypassFlags: ["--disable-approval", "--disable-sandbox", "--trust-workspace"],
+    // TDD §4.8 (Proposed, ADR-0037): `--approval-mode never` and `--sandbox-network unrestricted` widen a run; the
+    // deprecated alias `enabled` ([M-perm], [M-log]) names no stated target, so it is refused too (deliberate
+    // over-refusal, Delegated). Active since the adapter (T4.72) added `create`.
+    bypassValues: [
+      { flag: "--approval-mode", value: "never" },
+      { flag: "--sandbox-network", value: "unrestricted" },
+      { flag: "--sandbox-network", value: "enabled" },
+    ],
+    // TDD §4.10 ([M-ext]): `--allow-workspace-switch` is needed when the workspace differs, so `bound`.
+    resumeCwd: "bound",
+    create: (): ProviderAdapter => new MuseAdapter(),
+  },
   {
     id: "fake",
     kind: "test",

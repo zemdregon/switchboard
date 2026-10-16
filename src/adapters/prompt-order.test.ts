@@ -20,6 +20,8 @@ import { GrokAdapter } from "./grok/adapter.js";
 import { PRIVILEGED_BYPASS_PROFILE as GROK_PROFILE } from "./grok/fixtures/cases.js";
 import { KimiAdapter } from "./kimi/adapter.js";
 import { PRIVILEGED_BYPASS_PROFILE as KIMI_PROFILE } from "./kimi/fixtures/cases.js";
+import { MuseAdapter } from "./muse/adapter.js";
+import { PRIVILEGED_BYPASS_PROFILE as MUSE_PROFILE } from "./muse/fixtures/cases.js";
 import { OpenCodeAdapter } from "./opencode/adapter.js";
 import { PRIVILEGED_BYPASS_PROFILE as OPENCODE_PROFILE } from "./opencode/fixtures/cases.js";
 import { CONSTRAINTS_HEADING, renderPrompt, TASK_HEADING } from "./prompt.js";
@@ -53,6 +55,7 @@ const SUBJECTS: Record<string, Subject> = {
   cursor: { make: () => new CursorAdapter({ executable: EXE }), profile: CURSOR_PROFILE, bypassApproved: true },
   opencode: { make: () => new OpenCodeAdapter({ executable: EXE }), profile: OPENCODE_PROFILE, bypassApproved: true },
   kimi: { make: () => new KimiAdapter({ executable: EXE }), profile: KIMI_PROFILE, bypassApproved: true },
+  muse: { make: () => new MuseAdapter({ executable: EXE }), profile: MUSE_PROFILE, bypassApproved: true },
   fake: { make: () => new FakeAdapter({ executable: EXE }), profile: EDIT_PROFILE, bypassApproved: false },
 };
 
