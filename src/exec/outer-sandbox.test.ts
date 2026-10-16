@@ -204,6 +204,7 @@ describe("outerSandboxRefusal (T3.1, fail closed)", () => {
 describe("wrapOuterSandboxVerification (T3.11)", () => {
   it("builds the bubblewrap argument array with read-only root, dev, proc, worktree bind, chdir, and unshare", () => {
     const wrapped = wrapOuterSandboxVerification("/usr/bin/bwrap", dir, ["npm", "test"]);
+    const canonical = realpathSync(dir);
     expect(wrapped).toEqual([
       "/usr/bin/bwrap",
       "--ro-bind",
@@ -214,10 +215,10 @@ describe("wrapOuterSandboxVerification (T3.11)", () => {
       "--proc",
       "/proc",
       "--bind",
-      dir,
-      dir,
+      canonical,
+      canonical,
       "--chdir",
-      dir,
+      canonical,
       "--unshare-all",
       "--die-with-parent",
       "--",
