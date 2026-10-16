@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.23 residual, tenth pass). A clean end_turn whose sessionId is `-r` (not a safe argument, so it is never bound and raises a protocol anomaly), then a benign run_terminal_command tool_call after the end line. The tool-call field names are Assumptions (no tool_call shape was recorded live). Pins the gap: the run fails OUTPUT_PROTOCOL_ERROR, but the trailing-tool detail replaces the unsafe-id detail, and no session id is returned.","exit":0}}
+{"type":"text","data":"Listed the files."}
+{"type":"end","stopReason":"end_turn","sessionId":"-r","requestId":"req_synthetic_1","usage":{"input_tokens":8,"output_tokens":2,"total_tokens":10},"num_turns":1}
+{"type":"tool_call","id":"t1","name":"run_terminal_command","input":{"command":"ls"}}
