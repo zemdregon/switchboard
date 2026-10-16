@@ -10,10 +10,12 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { decidePermission } from "../../policy/acp-permission.js";
 import { resolveTrustProfile } from "../../policy/profiles.js";
 import { auditInvocation } from "../audit.js";
 import { type ConformanceCase, runConformanceCase } from "../conformance.js";
 import { privilegedProfile } from "../fixtures/privileged.js";
+import { acpDeclarations } from "../providers.js";
 import { guardEvent } from "../tool-guard.js";
 import type { AcpMessage, CompileRequest, ExitInfo, Invocation, NormalizedEvent, ParseState } from "../types.js";
 import { isIneligible } from "../types.js";
@@ -923,6 +925,274 @@ describe("kimi parser residuals, seventh pass (T4.63, synthetic only)", () => {
         profile: PRIVILEGED_BYPASS_PROFILE,
         request: request(),
         expect: { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", failureDetail: `protocol: ${UNREADABLE}` },
+      },
+    ],
+  ];
+  for (const [name, c] of replays) {
+    it(name, async () => {
+      const report = await runConformanceCase(c);
+      expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    });
+  }
+});
+
+/**
+ * Eighth pass (T4.63, 2026-10-16, Delegated agent work, not owner-approved; synthetic lines and fixtures only, no `kimi`
+ * run). Fail-closed ordering (which evidence names the failure when several are present), records after the hint that
+ * carry nothing, the error-record text fallbacks, resume argv and Ineligibility across the remaining matrix rows, ACP
+ * response shapes that must not read as success, and malformed tails replayed end to end. Limits are pinned as limits,
+ * not controls (Unverified: T4.68).
+ */
+describe("kimi parser residuals, eighth pass (T4.63, synthetic only)", () => {
+  const extract = (events: NormalizedEvent[], exit = EXIT_OK) => adapter().extractResult(events, exit);
+  const binding = { provider: "kimi", nativeSessionId: SID } as const;
+  const metaError = (message: string) => line({ role: "meta", type: "error", message });
+
+  it("the first provider error names the failure: protocol before auth is OUTPUT_PROTOCOL_ERROR, and the reverse", () => {
+    const protocolFirst = parse([
+      line(toolMsg(call("Shell", "{"))),
+      metaError("Authentication required."),
+      line(hint()),
+    ]);
+    expect(extract(protocolFirst.events)).toMatchObject({
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: tool call without a readable name and arguments",
+    });
+    const authFirst = parse([metaError("Authentication required."), line(toolMsg(call("Shell", "{"))), line(hint())]);
+    expect(extract(authFirst.events)).toMatchObject({
+      failureCode: "AUTH_REQUIRED",
+      failureDetail: "auth: Authentication required.",
+    });
+  });
+
+  it("a guard verdict outranks an earlier stream anomaly; a stream anomaly outranks a bad exit code", () => {
+    const ctx = { cwd: "/w", bypass: true };
+    const events = parse([
+      line(toolMsg(call("Shell", "{"))),
+      line(toolMsg(call("Shell", { command: "git push" }, "call_2"))),
+      line(hint()),
+    ]).events.map((e) => guardEvent(e, ctx));
+    expect(extract(events)).toMatchObject({ failureCode: "PERMISSION_BLOCKED" });
+    const anomaly = parse([line(hint()), line(hint())]).events;
+    expect(extract(anomaly, exitWith(1))).toMatchObject({
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: more than one resume hint",
+    });
+    // A rate limit is named only when no provider error is present.
+    expect(extract([{ kind: "rate_limit" }, ...anomaly])).toMatchObject({ failureCode: "OUTPUT_PROTOCOL_ERROR" });
+  });
+
+  it("an exit outcome outranks every stream event: a protocol error under a timeout is PROCESS_TIMEOUT", () => {
+    const { events } = parse([line(hint()), line(hint())]);
+    expect(extract(events, { ...EXIT_OK, outcome: "timeout", timeoutKind: "idle" })).toMatchObject({
+      failureCode: "PROCESS_TIMEOUT",
+      failureDetail: "idle timeout",
+    });
+    expect(extract(events, { ...EXIT_OK, outcome: "protocol_error" })).toMatchObject({
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "unparseable provider output",
+    });
+  });
+
+  it("an assistant record after the hint fails even when it carries no text and no tool call", () => {
+    for (const rec of [
+      { role: "assistant", content: null, tool_calls: [] },
+      { role: "assistant", content: "" },
+      { role: "assistant", content: [{ type: "think", think: "SYNTHETIC" }] },
+    ]) {
+      const { events } = parse([line(hint()), line(rec)]);
+      expect(events.slice(2), JSON.stringify(rec)).toEqual([
+        { kind: "provider_error", category: "protocol", message: "assistant record after the resume hint" },
+      ]);
+      expect(extract(events), JSON.stringify(rec)).toMatchObject({ failureCode: "OUTPUT_PROTOCOL_ERROR" });
+    }
+  });
+
+  it("text before a `tool_calls` that is not a list is kept, then the run fails closed", () => {
+    for (const calls of [{ id: "c" }, "Shell", 7, true]) {
+      const { events } = parse([line({ role: "assistant", content: "Before.", tool_calls: calls }), line(hint())]);
+      expect(events.slice(0, 2), JSON.stringify(calls)).toEqual([
+        { kind: "message", role: "assistant", text: "Before." },
+        { kind: "provider_error", category: "protocol", message: "tool_calls is not a list" },
+      ]);
+      expect(extract(events)).toMatchObject({ failureCode: "OUTPUT_PROTOCOL_ERROR", summary: "Before." });
+    }
+  });
+
+  it("limit, not a control: a role-less, unknown-role or unknown-meta line after the hint is only counted", () => {
+    const { events } = parse([
+      line(hint()),
+      line({ type: "end" }),
+      line({ role: "user", content: "SYNTHETIC" }),
+      line({ role: "meta", type: "usage.update" }),
+    ]);
+    expect(extract(events)).toEqual({ ok: true, unknownEventCount: 3, nativeSessionId: SID });
+  });
+
+  it("an error record reads `message`, else `content`; empty text is kept, and only the exact auth prefix is AUTH_REQUIRED", () => {
+    const one = (o: object) => parse([line({ role: "meta", type: "error", ...o })]).events;
+    expect(one({ message: 42, content: "SYNTHETIC content" })).toEqual([
+      { kind: "provider_error", category: "unknown", message: "SYNTHETIC content" },
+    ]);
+    expect(one({ message: "", content: "SYNTHETIC ignored" })).toEqual([
+      { kind: "provider_error", category: "unknown", message: "" },
+    ]);
+    expect(one({ message: ["Authentication required"] })).toEqual([
+      { kind: "provider_error", category: "unknown", message: "error record without text" },
+    ]);
+    // Limit (Unverified: T4.68): the prefix is case-sensitive, so other spellings are TOOL_FAILURE, still a failure.
+    for (const message of ["authentication required", " Authentication required", "Auth required"]) {
+      expect(extract([...one({ message }), ...parse([line(hint())]).events]), message).toMatchObject({
+        ok: false,
+        failureCode: "TOOL_FAILURE",
+      });
+    }
+    const [long] = one({ message: "e".repeat(3000) });
+    expect(long?.kind === "provider_error" && long.message.length).toBe(2001);
+  });
+
+  it("limit, not a control: the parser cannot tell a resumed run's hint from a new session's (Unverified: T4.68)", () => {
+    // The parse state does not carry the binding resume asked for, so a hint with another id binds that id.
+    const { events, state } = parse([line({ role: "assistant", content: "ok" }), line(hint("session_other"))]);
+    expect(state.nativeSessionId).toBe("session_other");
+    expect(extract(events)).toMatchObject({ ok: true, nativeSessionId: "session_other" });
+  });
+
+  it("resume is Ineligible where compile is for the remaining bypass rows, with the same reason", () => {
+    const rows = [
+      privilegedProfile({ ...BYPASS_SCOPE, shell: { mode: "none" } }),
+      privilegedProfile({ ...BYPASS_SCOPE, shell: { mode: "allowlist", allowlist: [["npm", "test"]] } }),
+      privilegedProfile({ ...BYPASS_SCOPE, network: { mode: "allowlist", hosts: ["registry.example.test"] } }),
+      privilegedProfile({ ...BYPASS_SCOPE, repository_config: { mode: "disabled" } }),
+      privilegedProfile({ ...BYPASS_SCOPE, shell: { mode: "allowlist", allowlist: [["git", "commit"]] } }),
+    ];
+    for (const profile of rows) {
+      const fresh = adapter().compile(request(), profile);
+      expect(isIneligible(fresh), JSON.stringify(profile.privilegedScope?.scope)).toBe(true);
+      expect(adapter().resumeArgs(binding, request(), profile)).toEqual(fresh);
+    }
+  });
+
+  it("a restricted scope allowlist naming Git resumes over ACP, and the permission answer still refuses the call", () => {
+    // Check 0 reads the profile-level `shellAllowlist` only; a privileged scope's own allowlist compiles here.
+    const gitRestricted = privilegedProfile({
+      ...BYPASS_SCOPE,
+      bypass: false,
+      shell: { mode: "allowlist", allowlist: [["git", "commit"]] },
+    });
+    const req = request({ bypassApproved: false });
+    const inv = compiled(adapter().resumeArgs(binding, req, gitRestricted));
+    expect(inv.acp?.session).toEqual({ kind: "resume", nativeSessionId: SID });
+    // The Kimi registry entry declares no `parseExecute`, so an allowlisted `execute` is never allowed (fail closed).
+    const decl = acpDeclarations("kimi");
+    expect(decl).toBeDefined();
+    expect(decl).not.toHaveProperty("parseExecute");
+    const options = [
+      { optionId: "a1", name: "Allow", kind: "allow_once" },
+      { optionId: "r1", name: "Reject", kind: "reject_once" },
+    ];
+    const toolCall = { toolCallId: "t1", kind: "execute", rawInput: { command: ["git", "commit", "-m", "x"] } };
+    const snapshot = { profile: gitRestricted, worktree: req.workspace.cwd, writable: true, readOnlyContexts: [] };
+    expect(decidePermission({ sessionId: SID, toolCall, options }, snapshot, decl)).toMatchObject({
+      answer: "reject_once",
+      optionId: "r1",
+      reason: "kind_not_in_profile",
+    });
+  });
+
+  it("resume never reuses argv state: two resumes and a fresh compile on one adapter stay independent", () => {
+    const a = adapter();
+    const first = compiled(a.resumeArgs(binding, request(), PRIVILEGED_BYPASS_PROFILE));
+    const second = compiled(
+      a.resumeArgs({ provider: "kimi", nativeSessionId: RESUMED_SESSION_ID }, request(), PRIVILEGED_BYPASS_PROFILE),
+    );
+    const fresh = compiled(a.compile(request(), PRIVILEGED_BYPASS_PROFILE));
+    expect(first.argv.slice(-2)).toEqual(["--session", SID]);
+    expect(second.argv.slice(-2)).toEqual(["--session", RESUMED_SESSION_ID]);
+    expect(fresh.argv).not.toContain("--session");
+    expect(first.timeouts).not.toBe(second.timeouts);
+    expect(first.envAllowlist).toEqual(["PATH", "HOME"]);
+    expect(first.env).toEqual({});
+  });
+
+  it("restricted resume puts the id only in the ACP plan, never in argv, with no `mcpServers` and no prompt in argv", () => {
+    const restricted = privilegedProfile({ ...BYPASS_SCOPE, bypass: false });
+    const inv = compiled(adapter().resumeArgs(binding, request({ bypassApproved: false }), restricted));
+    expect(inv.argv).toEqual([EXE, "acp"]);
+    expect(inv.policyFlags).toEqual([]);
+    expect(inv.acp).toMatchObject({
+      session: { kind: "resume", nativeSessionId: SID },
+      mcpServers: [],
+      prompt: "synthetic kimi objective",
+    });
+    expect(inv.acp).not.toHaveProperty("modeId");
+  });
+
+  it("ACP: a response carrying both an error and an end_turn result is an error, never success", () => {
+    const bound: NormalizedEvent = { kind: "session_bound", nativeSessionId: SID };
+    const { events } = parse([
+      { jsonrpc: "2.0", id: 4, error: { code: -32603, message: "Internal error" }, result: { stopReason: "end_turn" } },
+    ]);
+    expect(events).toEqual([{ kind: "provider_error", category: "-32603", message: "Internal error" }]);
+    expect(extract([bound, ...events])).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+  });
+
+  it("ACP: a response without a string stop reason is unknown, so the run has no result", () => {
+    for (const result of [{}, { stopReason: 1 }, { stopReason: null }]) {
+      const { events, state } = parse([{ jsonrpc: "2.0", id: 4, result }]);
+      expect(events, JSON.stringify(result)).toEqual([{ kind: "unknown", rawType: "response" }]);
+      expect(state.unknownEvents).toBe(1);
+      expect(extract(events)).toMatchObject({ failureCode: "OUTPUT_PROTOCOL_ERROR", failureDetail: "no result event" });
+    }
+  });
+
+  it("ACP: an error or a rate limit before end_turn still fails; messages split on messageId and join with a newline", () => {
+    const chunk = (text: string, messageId: string): AcpMessage => ({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: { update: { sessionUpdate: "agent_message_chunk", messageId, content: { type: "text", text } } },
+    });
+    const end: AcpMessage = { jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" } };
+    const split = parse([chunk("one", "m1"), chunk("two", "m2"), end]);
+    expect(extract(split.events)).toMatchObject({ ok: true, summary: "one\ntwo" });
+    const err = parse([{ jsonrpc: "2.0", id: 3, error: { code: -32000, message: "x" } }, end]);
+    expect(extract(err.events)).toMatchObject({ failureCode: "AUTH_REQUIRED" });
+    // `acpRunSucceeded` does not read rate limits; the adapter's own clean rule does.
+    expect(extract([{ kind: "rate_limit" }, ...parse([end]).events], exitWith(143))).toMatchObject({
+      failureCode: "RATE_LIMIT_TRANSIENT",
+    });
+  });
+
+  it("the last result decides the exit rule: an ACP end_turn after a stream-json hint takes the ACP rule", () => {
+    const { events } = parse([line(hint()), { jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" } }]);
+    expect(extract(events, exitWith(143))).toMatchObject({ ok: true, nativeSessionId: SID });
+  });
+
+  const replays: [string, ConformanceCase][] = [
+    [
+      "truncated_tail: a record cut off after a clean hint at exit 0 is OUTPUT_PROTOCOL_ERROR",
+      {
+        kind: "malformed_output",
+        adapter: replayAdapter("truncated_tail"),
+        profile: PRIVILEGED_BYPASS_PROFILE,
+        request: request(),
+        expect: { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", failureDetail: "unparseable provider output" },
+      },
+    ],
+    [
+      "tool_after_hint: tool output after a clean hint at exit 0 is OUTPUT_PROTOCOL_ERROR",
+      {
+        kind: "malformed_output",
+        adapter: replayAdapter("tool_after_hint"),
+        profile: PRIVILEGED_BYPASS_PROFILE,
+        request: request(),
+        expect: {
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          failureDetail: "protocol: tool record after the resume hint",
+          nativeSessionId: DEFAULT_SESSION_ID,
+          summary: "ok",
+        },
       },
     ],
   ];

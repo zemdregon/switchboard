@@ -1,0 +1,5 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.63, eighth pass), in the stream-json record shapes of the scrubbed 2026-10-15 capture (captured_success.jsonl). A clean resume hint, then a final assistant line cut off mid-record (a truncated tail) at exit 0: unparseable framing anywhere ends the run OUTPUT_PROTOCOL_ERROR, even after the hint (fail closed).","exit":0}}
+{"role":"meta","type":"system.version","version":"0.0.1"}
+{"role":"assistant","content":"ok"}
+{"role":"meta","type":"session.resume_hint","session_id":"session_00000000-0000-4000-8000-000000000001","command":"kimi -r session_00000000-0000-4000-8000-000000000001","content":"To resume this session: kimi -r session_00000000-0000-4000-8000-000000000001"}
+{"role":"assistant","content":"SYNTHETIC trunc
