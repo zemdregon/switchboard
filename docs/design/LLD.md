@@ -1759,6 +1759,16 @@ Multiple reasons may apply; the envelope and digest expose the highest-priority 
 `budget_exhausted`, `parked_loop`, `awaiting_approval`, `stalled`, `failed_after_retry`). Priority is **Proposed** for
 stable UI; T14.2 may adjust with tests.
 
+**Implemented (T14.2, Delegated, not owner-approved).** `src/control/needs-attention.ts` derives the flag on read and
+keeps the order above (`NEEDS_ATTENTION_PRIORITY`); `get_run` and `list_runs` attach it to the envelope, and the digest
+(T14.3) is to call the same `needsAttentionOf`. Choices the table leaves open: `failed_after_retry` matches
+`attempt >= max_successors_per_meta_session`; `budget_exhausted` attaches to the non-terminal runs of a resolved project
+only; until the `control_plane.loop_breaker` keys exist, *T* and the successor cap use the §3.4.6 Assumption defaults
+(30 and 8). `meta_session.parked_loop` and `control_plane_state` are read through a `ControlPlaneFacts` port whose default
+reports neither (missing persistence infers nothing), so T14.4 and T14.5 wire their readers in without changing the
+derivation. An unevaluable stall timestamp does not flag `stalled`; an approval lookup that breaks the
+one-approval-per-meta-session invariant shows `awaiting_approval`.
+
 #### 3.4.6 Budgets and loop breaker (FR-CTL-06, FR-CTL-07)
 
 **Configuration keys** (operator values; never presented as provider limits, ADR-0007). Validated at config load; unset
@@ -1857,6 +1867,31 @@ Fail closed: wrong digest, stale id, target client not in `approval_proxy_target
 stdio-only deployments). Delivery is asynchronous, bounded timeout (proposed target: 5 s), HTTPS with verification;
 failures append `sink_delivery_failed` counts to the ledger without payload or URL (NFR-SEC-01). Never blocks admission
 or run execution.
+
+**Implementation (T14.9, `src/control/sinks.ts`, `src/config/notification-sinks.ts`; Delegated, not owner-approved):**
+
+- `url` and `ntfy.server` must be `https://` with no userinfo, query or fragment; plain HTTP is refused at load, also
+  for loopback. `ntfy.topic` matches `^[-_A-Za-z0-9]{1,64}$`. At most 8 sinks with unique `id`s (**Assumption**).
+  `max_per_minute` defaults to 10 and is at most 600 (**Assumption**; a sliding 60 s window per sink). Config errors
+  name the key and never echo a configured value.
+- Reason codes per `event_kind`: `needs_attention` takes a `needs_attention_reason`; `approval_pending` and
+  `approval_decided` an `approval_kind`; `run_terminal` the terminal state (`SUCCEEDED`, `FAILED`, `CANCELLED`);
+  `budget_exhausted` the literal `budget_exhausted`; `project_paused` `project_paused` or `global_paused`. `project_id`
+  is a project id, `-` (a run admitted without a project) or `*` (all projects). An event with any other value, or a
+  `run_id` that is not `run_` + ULID, is dropped, not sent.
+- Link: the origin of `public_url` plus `/runs/<run_id>` or `/digest`; else `switchboard://run/<run_id>` or
+  `switchboard://digest`.
+- Webhook: `POST` to `url`, `Content-Type: application/json`, body exactly `notification_payload`. ntfy: JSON publish
+  ([ntfy publish](https://docs.ntfy.sh/publish/), "Publish as JSON") to the server root with body `{ topic, title:
+  "Switchboard: <event_kind>", message: "project_id=<id> reason_code=<code> run_id=<id|none>", click: <link>, tags:
+  ["switchboard"] }` and `Authorization: Bearer <token>` when `token` is set.
+- Delivery starts on a later event-loop turn than the transition, uses no connection reuse, follows no redirect and
+  times out after 5 s. Outcome codes: `timeout`, `transport_error`, `http_status` (with the status) and
+  `rate_limited`. A failure or drop for an event with a run appends a `sink_delivery_failed` run event `{ sink_id,
+  event_kind, reason_code[, status] }` and logs the same fields; an error's own text is never used.
+- Producers in T14.9: a run reaching a terminal state (`run_terminal`) and an operator approval of a privileged run
+  (FRD T3, `approval_decided` / `privileged_scope`), from the lifecycle's existing transition hook in `serve`. The other
+  kinds are emitted by their own tasks (T14.2, T14.4, T14.6, T14.8) through the same dispatcher.
 
 #### 3.4.10 `tool_profile` (FR-CTL-11)
 

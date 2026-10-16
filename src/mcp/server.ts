@@ -336,6 +336,9 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     return run;
   };
 
+  /** T14.2 (FR-CTL-03): needs-attention is recomputed on every read, at the server clock. */
+  const attentionAt = () => ({ now: (deps.now ?? (() => new Date()))() });
+
   const envelopeOf = (runId: string, extra: Partial<Envelope> = {}): Envelope => ({
     ...buildEnvelope(ledger, ownRun(runId), scrub),
     ...extra,
@@ -1003,7 +1006,10 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
   const getRun = async (a: Args): Promise<Envelope> => {
     const run = ownRun(a.run_id as string);
     const inc = a.include_events as { after_seq: number; limit: number } | undefined;
-    return envelopeOf(run.id, inc ? { events: compactEvents(ledger, run.id, inc.after_seq, inc.limit, scrub) } : {});
+    return {
+      ...buildEnvelope(ledger, run, scrub, attentionAt()),
+      ...(inc ? { events: compactEvents(ledger, run.id, inc.after_seq, inc.limit, scrub) } : {}),
+    };
   };
 
   /** T14.1 (LLD §3.4.2): a project filter must name a project this client may use (see the module comment). */
@@ -1044,8 +1050,9 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     }
     const rows = page.slice(0, limit);
     const tail = rows.at(-1);
+    const attention = attentionAt();
     return {
-      runs: rows.map((run) => buildEnvelope(ledger, run, scrub)),
+      runs: rows.map((run) => buildEnvelope(ledger, run, scrub, attention)),
       next_cursor: page.length > limit && tail !== undefined ? encodeRunCursor(tail) : null,
     };
   };
