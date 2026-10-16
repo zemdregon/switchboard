@@ -15,6 +15,15 @@
  * (`runs show` with its commit row, `get_run` with events, `get_capacity`) stay byte-identical. `expectReplacesRefused`
  * below repeats the pin on exactly those rows, so a caller that ever recorded through another connection (one without
  * the pragma) or into an unguarded table would fail here and nowhere else.
+ *
+ * Post-#462 residual (Delegated): the harness callers had been read through `get_capacity` and `get_run` only; `runs
+ * show` (text and `--json`, through the operator CLI over the same ledger directory) is now in every harness snapshot,
+ * and the one caller-specific row shape no test had produced, the quota failover's call failing under the failed run
+ * (the backend erroring after the request was sent, or answering off schema twice), is driven and pinned: the row
+ * under the failed run with its outcome and summed or unknown counts, the labelled observation the flag then writes
+ * under that run, the `inner_call` event carrying the reason, both REPLACE spellings refused on each, the successor
+ * unmoved. The `get_capacity` provider entries after a quota failover are also compared across harnesses: one with no
+ * classifier hook at all against one labelled under each provider, byte for byte.
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -36,7 +45,7 @@ import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger } from "../ledger/index.js";
 import type { RunLifecycleOptions } from "../lifecycle/lifecycle.js";
 import { buildEnvelope } from "../mcp/envelope.js";
-import { type Harness, startHarness } from "../routing/fixtures/harness.js";
+import { type Harness, type Json, startHarness } from "../routing/fixtures/harness.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import {
   createClassifyRouteFeaturesHook,
@@ -86,10 +95,13 @@ const REWRITTEN = 999_999;
  * relabelled `provider_reported` (the capacity collector's filter), the run's `inner_call` event with a rewritten
  * payload (`runs show`, `get_run`). Every statement must be refused by the table's `append-only` guard: under
  * `recursive_triggers = ON` (Q-96) the delete half of a REPLACE fires the `BEFORE DELETE` trigger. `labelled` is absent
- * without the flag and `event` is absent for a call without a run id, since `recordInnerCall` then wrote neither.
+ * without the flag and `event` is absent for a call without a run id, since `recordInnerCall` then wrote neither. The
+ * rewritten outcome is always one the row does not carry (an accepted call to rejected, any other to accepted), so the
+ * statement is never a no-op rewrite that a reader could not tell from the original.
  */
 function expectReplacesRefused(db: Database.Database, rows: { call: Row; labelled?: Row; event?: Row }): void {
   expect(db.pragma("recursive_triggers", { simple: true })).toBe(1);
+  const flipped = rows.call.outcome === "accepted" ? "rejected_validator" : "accepted";
   for (const spelling of REPLACE_SPELLINGS) {
     expect(() =>
       db
@@ -101,7 +113,7 @@ function expectReplacesRefused(db: Database.Database, rows: { call: Row; labelle
              @latency_ms, @tokens_in, @tokens_out, @input_bytes, @output_bytes, @input_sha256, @run_id,
              @meta_session_id, @created_at)`,
         )
-        .run({ ...rows.call, outcome: "rejected_validator", tokens_in: REWRITTEN, tokens_out: REWRITTEN }),
+        .run({ ...rows.call, outcome: flipped, tokens_in: REWRITTEN, tokens_out: REWRITTEN }),
     ).toThrow(/append-only/u);
     if (rows.labelled !== undefined) {
       expect(() =>
@@ -577,6 +589,46 @@ describe("the MCP admission harness (T11.11 production path) records inner usage
   /** A `get_capacity` body without its clock (the harness runs on the real clock), per provider. */
   const entries = (body: Capacity) => Object.fromEntries(body.providers.map((p) => [p.provider, JSON.stringify(p)]));
 
+  /**
+   * `runs show` (text and `--json`) through the operator CLI over the harness's own ledger directory: the third reader
+   * T11.5 names beside `get_capacity` and `get_run`, and the one the harness tests had not read. The CLI opens its own
+   * connection to the same database file (as `cli-run-isolation.test.ts` does); the config carries only what the loader
+   * requires. Its clock is pinned so two reads of an unchanged run are byte-identical.
+   */
+  const configs = new Map<string, string>();
+  async function show(h: Harness, runId: string): Promise<{ json: string; text: string }> {
+    let configPath = configs.get(h.root);
+    if (configPath === undefined) {
+      configPath = path.join(h.root, "config.json");
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          schema_version: 1,
+          data_dir: path.join(h.root, "data"),
+          allowed_roots: [h.root],
+          mcp_clients: [{ id: "orch", max_trust_profile: "edit-untrusted" }],
+        }),
+      );
+      configs.set(h.root, configPath);
+    }
+    const run = async (args: string[]): Promise<string> => {
+      const out: string[] = [];
+      const err: string[] = [];
+      const io: CliIo = {
+        stdout: { write: (s) => out.push(s) },
+        stderr: { write: (s) => err.push(s) },
+        env: {},
+        adapters: new AdapterRegistry().register(new FakeAdapter({ script: "/nonexistent/fake-cli.mjs" })),
+        now,
+      };
+      expect(await main([...args, "--config", configPath as string], io), err.join("")).toBe(0);
+      return out.join("");
+    };
+    return { json: await run(["runs", "show", runId, "--json"]), text: await run(["runs", "show", runId]) };
+  }
+  /** Both forms of `runs show` for each (untyped) run body, in order. */
+  const shows = (h: Harness, runs: readonly Json[]) => Promise.all(runs.map((run) => show(h, run.run_id as string)));
+
   async function setup(shares: string | null): Promise<{ harness: Harness; backend: FakeBackend }> {
     const backend = createFakeBackend({
       script: [
@@ -698,7 +750,7 @@ describe("the MCP admission harness (T11.11 production path) records inner usage
       // Post-#446: the rows admission and continuation wrote are the two run-less `inner_call` rows and, with the flag,
       // the two run-less labelled observations; no `inner_call` event exists anywhere, since neither call had a run id.
       // Both REPLACE spellings are refused on each, and the readers this caller feeds (`get_capacity`, both runs'
-      // `get_run` with and without events) are byte-identical, as is every row.
+      // `get_run` with and without events, both runs' `runs show` in both forms) are byte-identical, as is every row.
       const state = async () => ({
         calls: h.db.prepare("SELECT * FROM inner_call ORDER BY rowid").all() as Row[],
         usage: h.db.prepare("SELECT * FROM usage_observation ORDER BY rowid").all() as Row[],
@@ -710,6 +762,7 @@ describe("the MCP admission harness (T11.11 production path) records inner usage
             h.ok("get_run", { run_id: run.run_id, include_events: {} }),
           ]),
         ),
+        shows: await shows(h, [first, second]),
       });
       const snapshot = await state();
       expect(snapshot.calls).toHaveLength(2);
@@ -717,6 +770,14 @@ describe("the MCP admission harness (T11.11 production path) records inner usage
       const labelledRows = snapshot.usage.filter((row) => row.source === "inner_agent");
       expect(labelledRows).toHaveLength(shares === null ? 0 : 2);
       expect(JSON.stringify(snapshot)).not.toContain(String(REWRITTEN));
+      // `runs show` on either run: no usage section (its query reads provider-reported rows only, and the scripted CLI
+      // reported none), no `inner_call` event (run-less calls write none) and no token figure, whatever the label.
+      for (const { json, text } of snapshot.shows) {
+        expect(JSON.parse(json)).not.toHaveProperty("usage");
+        expect(JSON.parse(json).events.map((e: { type: string }) => e.type)).not.toContain("inner_call");
+        expect(text).not.toMatch(/inner|token/u);
+        expect(json).not.toMatch(/inner|token/u);
+      }
       for (const [i, call] of snapshot.calls.entries()) {
         expect(call).toMatchObject({ task: "route_features", run_id: null, outcome: "accepted" });
         expectReplacesRefused(h.db, { call, ...(shares === null ? {} : { labelled: labelledRows[i] as Row }) });
@@ -856,8 +917,8 @@ describe("the MCP admission harness (T11.11 production path) records inner usage
       // Post-#446: this is the one `serve`-path classification that wrote all three guarded rows (the `inner_call` row
       // under the failed run, its labelled observation under that run with the flag, and the failed run's `inner_call`
       // event), beside admission's run-less pair. Both REPLACE spellings are refused on each of them, and the readers
-      // this caller feeds (`get_capacity`, both runs' `get_run` with and without events, the ledger's per-run list) are
-      // byte-identical, as is every row.
+      // this caller feeds (`get_capacity`, both runs' `get_run` with and without events, both runs' `runs show` in both
+      // forms, the ledger's per-run list) are byte-identical, as is every row.
       const state = async () => ({
         calls: h.db.prepare("SELECT * FROM inner_call ORDER BY rowid").all() as Row[],
         usage: h.db.prepare("SELECT * FROM usage_observation ORDER BY rowid").all() as Row[],
@@ -870,6 +931,7 @@ describe("the MCP admission harness (T11.11 production path) records inner usage
             h.ok("get_run", { run_id: run.run_id, include_events: {} }),
           ]),
         ),
+        shows: await shows(h, [failed, successor]),
       });
       const snapshot = await state();
       const [admitted, failover] = snapshot.calls;
@@ -880,6 +942,19 @@ describe("the MCP admission harness (T11.11 production path) records inner usage
       expect(labelledRows.map((row) => row.run_id)).toEqual(shares === null ? [] : [null, failed.run_id]);
       expect(failoverEvents).toEqual([expect.objectContaining({ run_id: failed.run_id })]);
       expect(JSON.stringify(snapshot)).not.toContain(String(REWRITTEN));
+      // `runs show` on the failed run: the failover's `inner_call` event is listed in both forms with its provenance and
+      // no token figure, and there is no usage section even when the label is the failed run's own provider (`fake`),
+      // because the query reads provider-reported rows only; the successor shows neither.
+      const [failedShow, successorShow] = snapshot.shows;
+      const failedDoc = JSON.parse(failedShow?.json ?? "{}") as { events: { type: string; payload: unknown }[] };
+      expect(failedDoc).not.toHaveProperty("usage");
+      expect(failedDoc.events.filter((e) => e.type === "inner_call").map((e) => e.payload)).toEqual([
+        expect.objectContaining({ task: "route_features", outcome: "accepted", attempts: 1 }),
+      ]);
+      expect(failedShow?.text).toMatch(/ {2}inner_call {2}\{/u);
+      for (const doc of [failedShow?.json, failedShow?.text]) expect(doc).not.toMatch(/token|inner_agent/u);
+      expect(JSON.parse(successorShow?.json ?? "{}")).not.toHaveProperty("usage");
+      for (const doc of [successorShow?.json, successorShow?.text]) expect(doc).not.toMatch(/inner|token/u);
       expectReplacesRefused(h.db, {
         call: admitted as Row,
         ...(shares === null ? {} : { labelled: labelledRows[0] as Row }),
@@ -892,4 +967,227 @@ describe("the MCP admission harness (T11.11 production path) records inner usage
       expect(await state()).toEqual(snapshot);
     }, 120_000);
   }
+
+  // The failover call failing under the failed run: the one caller-specific row shape no test had produced. The backend
+  // either errors after the request was sent (one attempt, counts unknown, the configured model id) or answers off
+  // schema on the call and on the one re-ask (two attempts, both attempts' reported counts summed, the backend's model
+  // id). Either way the request consumed the shared subscription, so with the flag one labelled row is written under
+  // the failed run with exactly what is known; the heuristic classifies the failover instead and the successor is
+  // unmoved. The label is `fake`, the failed run's own provider, the most adversarial choice for every reader.
+  const FAILURES = [
+    {
+      name: "errors after the request was sent",
+      step: { kind: "error", message: "boom" } as FakeStep,
+      requests: 2,
+      row: { outcome: "fallback_unavailable", reason: "BACKEND_ERROR", attempts: 1, tokens_in: null, tokens_out: null },
+      model: "configured-model",
+      metrics: {},
+    },
+    {
+      name: "answers off schema on the call and the re-ask",
+      step: { kind: "text", text: "not json", usage: { in: 9, out: 5 } } as FakeStep,
+      requests: 3,
+      row: { outcome: "rejected_validator", reason: "NOT_JSON", attempts: 2, tokens_in: 18, tokens_out: 10 },
+      model: "fake-model",
+      metrics: { input_tokens: 18, output_tokens: 10 },
+    },
+  ] as const;
+  for (const failure of FAILURES) {
+    for (const shares of [null, "fake"]) {
+      const label = shares === null ? "no shared subscription" : `shares_subscription_with = ${shares}`;
+      it(`${label}: a failover classification whose backend ${failure.name} writes ${shares === null ? "no observation" : "one labelled row under the failed run with what is known"}; the successor and every reader unmoved`, async () => {
+        const { harness: h, backend } = await setup(shares);
+        backend.setScript([{ kind: "text", text: reply, usage: { in: 4, out: 2 } }, failure.step]);
+        const before = entries((await h.ok("get_capacity", {})) as Capacity);
+
+        const failed = await h.delegate("quota");
+        expect(failed).toMatchObject({ status: "FAILED", failure_code: "QUOTA_EXHAUSTED" });
+        await h.waitFor(() => h.ledger.findSuccessorRun(failed.run_id) !== undefined);
+        const successor = await h.settle(h.ledger.findSuccessorRun(failed.run_id)?.id as string);
+        expect(successor).toMatchObject({ status: "SUCCEEDED", provider: { adapter: "fake-b" } });
+        expect(backend.requests).toHaveLength(failure.requests);
+        // Admission was classified by the backend; the failover fell back to the heuristic, stored as such (Q-82).
+        const [admittedDecision, failoverDecision] = h.decisions();
+        expect(JSON.parse(admittedDecision?.features_json ?? "{}").route_features).toMatchObject({
+          task_kind: { value: "docs", source: "inner" },
+        });
+        expect(JSON.parse(failoverDecision?.features_json ?? "{}").route_features).toMatchObject({
+          classifier: "heuristic.v1",
+          task_kind: { source: "heuristic" },
+        });
+        expect(failoverDecision?.selected_provider).toBe("fake-b");
+
+        const calls = h.db
+          .prepare(
+            `SELECT task, run_id, meta_session_id, outcome, reason, attempts, tokens_in, tokens_out, model_id
+             FROM inner_call ORDER BY created_at, id`,
+          )
+          .all();
+        expect(calls).toEqual([
+          {
+            task: "route_features",
+            run_id: null,
+            meta_session_id: null,
+            outcome: "accepted",
+            reason: null,
+            attempts: 1,
+            tokens_in: 4,
+            tokens_out: 2,
+            model_id: "fake-model",
+          },
+          {
+            task: "route_features",
+            run_id: failed.run_id,
+            meta_session_id: failed.meta_session_id,
+            model_id: failure.model,
+            ...failure.row,
+          },
+        ]);
+        const inner = h.db
+          .prepare(
+            "SELECT run_id, provider, harness, model, metrics_json FROM usage_observation WHERE source = 'inner_agent' ORDER BY rowid",
+          )
+          .all();
+        expect(inner).toEqual(
+          shares === null
+            ? []
+            : [
+                {
+                  run_id: null,
+                  provider: shares,
+                  harness: shares,
+                  model: "fake-model",
+                  metrics_json: JSON.stringify({ input_tokens: 4, output_tokens: 2 }),
+                },
+                {
+                  run_id: failed.run_id,
+                  provider: shares,
+                  harness: shares,
+                  model: failure.model,
+                  metrics_json: JSON.stringify(failure.metrics),
+                },
+              ],
+        );
+        expect(h.db.prepare("SELECT COUNT(*) AS n FROM usage_observation").get()).toEqual({
+          n: shares === null ? 0 : 2,
+        });
+
+        // Readers: neither envelope reports usage; the failed run's events carry the failover's `inner_call` event with
+        // its outcome and reason and no token figure; `get_capacity` counts no observation for the exhausted provider
+        // even when the label names it, and the spare that never ran is byte-identical.
+        for (const run of [failed, successor]) {
+          expect(run.usage).toEqual({ reported: null, estimated: null, capacity_confidence: null });
+        }
+        const failedEvents = (
+          (await h.ok("get_run", { run_id: failed.run_id, include_events: {} })) as {
+            events: { type: string; payload: unknown }[];
+          }
+        ).events;
+        const innerEvents = failedEvents.filter((e) => e.type === "inner_call");
+        expect(innerEvents.map((e) => e.payload)).toEqual([
+          expect.objectContaining({
+            task: "route_features",
+            outcome: failure.row.outcome,
+            reason: failure.row.reason,
+            attempts: failure.row.attempts,
+          }),
+        ]);
+        expect(JSON.stringify(innerEvents)).not.toMatch(/token|input_tokens|boom|not json/u);
+        const afterBody = (await h.ok("get_capacity", {})) as Capacity;
+        for (const p of ["fake", "fake-b"]) {
+          expect(afterBody.providers.find((x) => x.provider === p)?.window.usage_observations).toBe(0);
+        }
+        expect(entries(afterBody).grok).toBe(before.grok);
+        expect(JSON.stringify(afterBody)).not.toMatch(/inner/u);
+
+        // The three rows the failed call wrote (the `inner_call` row, the labelled row with the flag, the event) and
+        // admission's pair refuse both REPLACE spellings, and every reader is byte-identical afterwards.
+        const state = async () => ({
+          calls: h.db.prepare("SELECT * FROM inner_call ORDER BY rowid").all() as Row[],
+          usage: h.db.prepare("SELECT * FROM usage_observation ORDER BY rowid").all() as Row[],
+          events: h.db.prepare("SELECT * FROM run_event ORDER BY run_id, seq").all() as Row[],
+          perRun: [failed, successor].map((run) => h.ledger.listUsageObservationsForRun(run.run_id)),
+          capacity: entries((await h.ok("get_capacity", {})) as Capacity),
+          runs: await Promise.all(
+            [failed, successor].flatMap((run) => [
+              h.ok("get_run", { run_id: run.run_id }),
+              h.ok("get_run", { run_id: run.run_id, include_events: {} }),
+            ]),
+          ),
+          shows: await shows(h, [failed, successor]),
+        });
+        const snapshot = await state();
+        const [admitted, failover] = snapshot.calls;
+        const labelledRows = snapshot.usage.filter((row) => row.source === "inner_agent");
+        const failoverEvents = snapshot.events.filter((e) => e.type === "inner_call");
+        expect(failover).toMatchObject({ run_id: failed.run_id, outcome: failure.row.outcome });
+        expect(failoverEvents).toEqual([expect.objectContaining({ run_id: failed.run_id })]);
+        expect(JSON.stringify(snapshot)).not.toContain(String(REWRITTEN));
+        for (const { json, text } of snapshot.shows) {
+          expect(JSON.parse(json)).not.toHaveProperty("usage");
+          expect(json).not.toMatch(/token|inner_agent|boom|not json/u);
+          expect(text).not.toMatch(/token|inner_agent|boom|not json/u);
+        }
+        expectReplacesRefused(h.db, {
+          call: admitted as Row,
+          ...(shares === null ? {} : { labelled: labelledRows[0] as Row }),
+        });
+        expectReplacesRefused(h.db, {
+          call: failover as Row,
+          ...(shares === null ? {} : { labelled: labelledRows[1] as Row }),
+          event: failoverEvents[0] as Row,
+        });
+        expect(await state()).toEqual(snapshot);
+      }, 120_000);
+    }
+  }
+
+  // T11.5 "byte-identical with and without inner calls", across harnesses rather than before and after: the same quota
+  // failover driven with no classifier hook at all (the lifecycle's heuristic, no inner agent anywhere) and then with
+  // the backend classifying admission and failover under a label naming each provider in turn. The per-provider
+  // `get_capacity` entries (every field but the clock: score, confidence, risk, sources, breaker, window counts) must
+  // be the same bytes, including for the exhausted provider when it is the label and so has one labelled row with
+  // counts under its failed run. The `affinity` block is keyed by the workspace path's hash, which differs per harness,
+  // so it is not compared here; `src/capacity/capacity.test.ts` pins it on one ledger.
+  it("the quota failover's get_capacity provider entries are the same bytes with no inner agent and with one labelled under every provider", async () => {
+    const failover = async (harness: Harness) => {
+      const failed = await harness.delegate("quota");
+      expect(failed).toMatchObject({ status: "FAILED", failure_code: "QUOTA_EXHAUSTED" });
+      await harness.waitFor(() => harness.ledger.findSuccessorRun(failed.run_id) !== undefined);
+      const successor = await harness.settle(harness.ledger.findSuccessorRun(failed.run_id)?.id as string);
+      expect(successor).toMatchObject({ status: "SUCCEEDED", provider: { adapter: "fake-b" } });
+      return {
+        failedId: failed.run_id as string,
+        entries: entries((await harness.ok("get_capacity", {})) as Capacity),
+      };
+    };
+    h = await startHarness();
+    const { entries: baseline } = await failover(h);
+    expect(Object.keys(baseline).sort()).toEqual(["fake", "fake-b", "grok"]);
+    expect(h.db.prepare("SELECT COUNT(*) AS n FROM inner_call").get()).toEqual({ n: 0 });
+    expect(h.db.prepare("SELECT COUNT(*) AS n FROM usage_observation").get()).toEqual({ n: 0 });
+    // The baseline is not a trivial answer: the exhausted provider's window records the failure and the successor's
+    // its run, so a labelled row leaking into the collector would move a non-empty window.
+    expect(JSON.parse(baseline.fake ?? "{}")).toMatchObject({ window: { terminal_runs: 1, quota_exhausted: 1 } });
+    expect(JSON.parse(baseline["fake-b"] ?? "{}")).toMatchObject({ window: { terminal_runs: 1 } });
+    await h.close();
+    h = undefined;
+
+    for (const shares of ["fake", "fake-b", "grok"]) {
+      const { harness, backend } = await setup(shares);
+      const labelled = await failover(harness);
+      expect(labelled.entries).toEqual(baseline);
+      expect(backend.requests).toHaveLength(2);
+      // What the comparison is against: admission's run-less labelled row and the failover's under the failed run,
+      // both naming this label, and no other observation in the ledger.
+      expect(harness.db.prepare("SELECT provider, run_id, source FROM usage_observation ORDER BY rowid").all()).toEqual(
+        [
+          { provider: shares, run_id: null, source: "inner_agent" },
+          { provider: shares, run_id: labelled.failedId, source: "inner_agent" },
+        ],
+      );
+      await harness.close();
+      h = undefined;
+    }
+  }, 180_000);
 });
