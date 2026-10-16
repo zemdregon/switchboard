@@ -96,7 +96,7 @@ const newestFirst = (ids: string[]): string[] =>
   [...ids].sort((a, b) => createdAt(b).localeCompare(createdAt(a)) || b.localeCompare(a));
 
 describe("list_runs (T14.1, FR-CTL-01)", () => {
-  it("is listed last with closed schemas; the earlier tools are listed unchanged", async () => {
+  it("is listed after explain_route with closed schemas; the earlier tools are listed unchanged", async () => {
     const { tools } = await h.client().listTools();
     expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES]);
     expect(TOOL_NAMES).toEqual([
@@ -110,6 +110,7 @@ describe("list_runs (T14.1, FR-CTL-01)", () => {
       "get_capacity",
       "explain_route",
       "list_runs",
+      "get_digest",
     ]);
     for (const t of tools) {
       expect(t.inputSchema).toEqual(inputSchema(t.name as (typeof TOOL_NAMES)[number]));
