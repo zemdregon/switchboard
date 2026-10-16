@@ -25,6 +25,10 @@
  * (`boundedSchema`: strings at most 4096 characters, arrays at most 32 items), so an oversized definition fails V1.
  * `list_projects` entries for dynamic projects carry `source: "dynamic"`, `revision` and `status` (Proposed additions;
  * configured entries are unchanged and have no `source`).
+ *
+ * T14.1 (FR-CTL-01, LLD §3.4.2): `list_runs` is appended to the tool list; its rows are the `get_run` envelope. Proposed
+ * (Delegated): `since`/`until` must be ISO-8601 date-times with a zone (`Z` or an offset); `status` and `status_in` are
+ * alternatives (`not` both); `status_in` is non-empty and duplicate-free.
  */
 
 import { FAILURE_CODES } from "../adapters/failure.js";
@@ -45,6 +49,7 @@ export const TOOL_NAMES = [
   "list_projects",
   "get_capacity",
   "explain_route",
+  "list_runs",
 ] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];
 
@@ -125,6 +130,12 @@ const ROUTING = {
   },
 } as const;
 const NULLABLE_STRING = { type: ["string", "null"] } as const;
+/** T14.1: an ISO-8601 date-time with seconds and a zone; the handler also rejects one that is not a real instant. */
+const ISO_INSTANT = {
+  type: "string",
+  maxLength: 40,
+  pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})$",
+} as const;
 
 const ENVELOPE = {
   type: "object",
@@ -326,6 +337,21 @@ const INPUTS = {
     additionalProperties: false,
     required: ["run_id"],
     properties: { run_id: RUN_ID },
+  },
+  // T14.1 (LLD §3.4.2): every filter optional; scoping is the handler's, exactly as get_run.
+  list_runs: {
+    type: "object",
+    additionalProperties: false,
+    not: { properties: { status: true, status_in: true }, required: ["status", "status_in"] },
+    properties: {
+      project_id: PROJECT_REF,
+      status: STATUS,
+      status_in: { type: "array", items: STATUS, minItems: 1, maxItems: 16, uniqueItems: true },
+      since: ISO_INSTANT,
+      until: ISO_INSTANT,
+      limit: { type: "integer", minimum: 1, maximum: 200, default: 50 },
+      cursor: { type: "string", maxLength: 128 },
+    },
   },
 } as const;
 
@@ -773,6 +799,12 @@ const OUTPUTS = {
   list_projects: withError(PROJECTS),
   get_capacity: withError(CAPACITY),
   explain_route: withError(ROUTE_EXPLANATION),
+  list_runs: withError({
+    type: "object",
+    additionalProperties: false,
+    required: ["runs"],
+    properties: { runs: { type: "array", items: ENVELOPE }, next_cursor: NULLABLE_STRING },
+  }),
 } as const;
 
 const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
@@ -816,6 +848,10 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
     "reasons, the recorded task features, weights and per-candidate scores, the selection rule, the project's " +
     "provider affinity and short deciding factors. No model is asked; decisions recorded before scoring show " +
     "eligibility only.",
+  list_runs:
+    "Runs this client started, newest first, each as the get_run envelope. Optional filters: project_id (a project " +
+    "this client may use), status or status_in, since (inclusive) and until (exclusive) on the creation time. " +
+    "Returns at most limit runs (default 50, at most 200); pass next_cursor back as cursor for the next page.",
 };
 
 const SEARCH_DESCRIPTIONS: Readonly<Record<SearchToolName, string>> = {

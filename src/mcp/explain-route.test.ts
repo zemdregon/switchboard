@@ -19,10 +19,10 @@ afterEach(async () => {
 const explain = (runId: string, clientId?: string) => h.call("explain_route", { run_id: runId }, clientId);
 
 describe("explain_route (T7.3, FR-MCP-02)", () => {
-  it("is listed last with a closed input schema and an output schema; the earlier tools are unchanged", async () => {
+  it("is listed after the earlier tools with a closed input schema and an output schema", async () => {
     const { tools } = await h.client().listTools();
     expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES]);
-    expect(TOOL_NAMES).toEqual([
+    expect(TOOL_NAMES.slice(0, 9)).toEqual([
       "delegate_task",
       "continue_task",
       "get_run",
