@@ -81,10 +81,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   front of it. A test runs the whole path from client registration and PKCE to a tool call. Residual risks are listed
   under [HLD TB-12](docs/design/HLD.md#3-trust-boundaries). See
   [ROADMAP §6.10](docs/ROADMAP.md#610-m13-network-mcp-transport-tasks).
-- **Milestone 14 (control plane) is `Partial`.** T14.0–T14.3, T14.8 and T14.9 are implemented on fakes; digest,
-  `list_runs`, `get_run`, the approval proxy and notification sinks are covered by unit and malicious-fixture tests.
-  The M14 acceptance file (`src/mcp/m14-acceptance.test.ts`) runs scenarios A, F and G today; scenarios B–E stay
-  skipped until budget, loop-breaker, pause and `steer_run` land (T14.4–T14.7). ADR-0047 and ADR-0048 remain
+- **Milestone 14 (control plane) is `Partial`.** T14.0–T14.5, T14.7–T14.9 and T14.11 are implemented on fakes;
+  digest, `list_runs`, `get_run`, budgets, the loop breaker, `steer_run`, the approval proxy and notification sinks are
+  covered by unit and malicious-fixture tests. The M14 acceptance file (`src/mcp/m14-acceptance.test.ts`) runs
+  scenarios A, B, C, E, F and G; scenario D (pause) stays skipped until T14.6 lands. ADR-0047 and ADR-0048 remain
   Proposed. See [Control plane (milestone 14)](#control-plane-milestone-14) and
   [ROADMAP §6.13](docs/ROADMAP.md#613-m14-control-plane-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
@@ -457,7 +457,7 @@ and ADR-0047/0048 acceptance follow owner review of those ADRs.
 
 Fixtures only; no live provider CLI:
 
-- M14 acceptance: `src/mcp/m14-acceptance.test.ts` (scenarios A, F, G; B–E skipped pending T14.4–T14.7).
+- M14 acceptance: `src/mcp/m14-acceptance.test.ts` (scenarios A–C and E–G; D skipped pending T14.6).
 - Approval proxy (T14.8): `test/malicious/approval-proxy.test.ts`.
 - Notification sinks (T14.9): `src/control/sinks.test.ts`.
 - Digest and envelopes: `src/mcp/digest.test.ts`, `src/mcp/list-runs.test.ts`, `src/mcp/needs-attention.test.ts`.
