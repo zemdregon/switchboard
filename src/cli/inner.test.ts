@@ -3,6 +3,7 @@
  * `inner resume <task>`. The backend is the scripted in-process fake (`CliIo.innerBackend`) or a fake HTTP server bound to
  * 127.0.0.1; no provider CLI, no real network host, no credential.
  */
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
@@ -265,6 +266,59 @@ describe("inner test", () => {
       for (const secret of [tmp, dataDir, configPath, process.cwd(), os.homedir(), planted, "mcp_clients", "c1"]) {
         expect(sent, `${task} must not contain ${secret}`).not.toContain(secret);
       }
+    }
+  });
+
+  it("sends no content of a real repository under allowed_roots, on the first request or the re-ask", async () => {
+    // The test above plants paths and an environment value; this one plants repository *content*: a committed file, a
+    // staged diff, a commit message and a branch name, each with a marker the captured prompt must not contain.
+    writeConfig(innerSection({ tasks: allTasks() }));
+    const repo = path.join(tmp, "repos", "proj");
+    mkdirSync(repo);
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-c", "commit.gpgsign=false", ...args], {
+        cwd: repo,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: "t",
+          GIT_AUTHOR_EMAIL: "t@t",
+          GIT_COMMITTER_NAME: "t",
+          GIT_COMMITTER_EMAIL: "t@t",
+        },
+      });
+    const markers = [
+      "REPO_FILE_MARKER_c41d",
+      "REPO_STAGED_MARKER_9e07",
+      "REPO_COMMIT_MARKER_5b2a",
+      "repo-branch-marker-73f1",
+    ];
+    git("init", "-q", "-b", markers[3] as string);
+    writeFileSync(path.join(repo, "a.txt"), `${markers[0]}\n`);
+    git("add", "a.txt");
+    git("commit", "-q", "-m", markers[2] as string);
+    writeFileSync(path.join(repo, "a.txt"), `${markers[1]}\n`);
+    git("add", "a.txt");
+
+    for (const task of INNER_TASKS) {
+      // First reply is off schema, so the pipeline re-asks: both captured requests must carry the fixture only.
+      const backend = createFakeBackend({
+        script: [
+          { kind: "text", text: "not json" },
+          { kind: "text", text: GOOD[task] },
+        ],
+      });
+      const r = await run(["inner", "test", task, "--json"], {
+        innerBackend: backend,
+      });
+      expect(r.code, `${task}: ${r.out}`).toBe(0);
+      expect(backend.requests).toHaveLength(2);
+      for (const req of backend.requests) {
+        expect(req.user.startsWith(INNER_FIXTURES[task].user)).toBe(true);
+        expect(req.system).toBe(INNER_FIXTURES[task].contract.system);
+        const sent = JSON.stringify(req);
+        for (const m of [...markers, repo]) expect(sent, `${task} must not contain ${m}`).not.toContain(m);
+      }
+      for (const m of markers) expect(r.out).not.toContain(m);
     }
   });
 
