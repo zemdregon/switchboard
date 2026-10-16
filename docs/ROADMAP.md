@@ -2112,6 +2112,31 @@ provider (`ELIGIBILITY_NONE`, `CAPABILITY_MISSING: binding is for fake-b`), so t
 default provider and the two spares are the byte-identical pair; that harness limit is outside this lane and is noted,
 not changed. Opened as [PR #482](https://github.com/zemdregon/switchboard/pull/482). T11.5 stays **Done on fakes**;
 the live-backend residual (T11.13) is the only one left.
+*2026-10-16 post-#482 reader residual (Delegated; fakes only, no production code change,
+`src/inner/usage-surfaces.test.ts` only):* the file was re-read on `main` at `f610810` against the T11.5 and T11.14
+rows, FR-INN-15, `src/inner/pipeline.ts` and `src/ledger/repo.ts`. Two edges had no pin at the published readers.
+*Off-schema token shapes*: `src/inner/usage.test.ts` pins `tokenCount` and the rows for a backend that reports a null,
+fractional, negative, non-finite, string or unsafe count, but nothing had read those rows at `get_capacity`,
+`capacity`, `doctor`, `get_run`, `runs show` or `inner status`. Six calls through the real pipeline under a finished
+run of the provider with capacity evidence (a partial `{in, out: null}`; a re-ask whose bogus first counts leave the
+total unknown even though the re-ask reports good ones; a numeric string and `2**53`; `NaN` and `Infinity`; a `usage`
+that is not an object; a negative zero) write partial or empty labelled rows with the flag
+(`{"input_tokens":7777777}`, `{}`, `{}`, `{}`, `{}`, `{"input_tokens":0,"output_tokens":0}`) and none without it;
+every provider reader is byte-identical, the run gains exactly six `inner_call` events with no count on each event
+surface, `inner status` moves by the call counts only, and no distinctive figure appears in any surface or row.
+*Duplicate-id inserts*: #442 and #446 pinned the two REPLACE spellings; `INSERT`, `OR ABORT`, `OR FAIL` and
+`OR ROLLBACK` of the labelled row relabelled `provider_reported` with a huge count, of the `inner_call` row with another
+outcome and counts, and of the `inner_call` run event carrying a token figure (under its own id on a free seq, and
+under a fresh id on the taken `(run_id, seq)`) are refused by the primary key or the index, `OR IGNORE` reports zero
+changes, rows and every reader (the config-derived doctor warning included) are byte-identical, and the same shape
+inserted honestly moves the provider readers and not the inner diagnostics. Each pin was shown to fail under the
+mutation it guards, with the tree restored after each: `tokenCount` coercing with `Math.trunc(Number(v))` fails the two
+off-schema tests and nothing else in the file; a re-ask's good counts restoring an unknown total (`(tokIn ?? 0) +
+inCount`) fails only the two off-schema tests across `src/inner/usage-surfaces.test.ts`, `src/inner/usage.test.ts` and
+`src/inner/usage-channels.test.ts` (67 others pass), so that edge was previously unpinned; `usage_observation.id`
+losing `PRIMARY KEY` in migration 0006 fails the duplicate-id test and the post-#442 REPLACE pin. Opened as
+[PR #491](https://github.com/zemdregon/switchboard/pull/491). T11.5 stays **Done on fakes**; the live-backend residual
+(T11.13) is the only one left.
 
 **T11.8 status (2026-10-13; Delegated): Done on fakes. No live inner backend, provider CLI, pull-request API or network
 host was used.** "Done when", clause by clause: *the draft passes the sanitiser*: a hostile fake backend returning a
