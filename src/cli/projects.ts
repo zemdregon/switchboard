@@ -1,6 +1,6 @@
 /**
- * `switchboard projects list|show|validate` (FR-PRJ-08, T9.1; `host` environments only). All three read the config and
- * the filesystem and nothing else: no ledger, no lock, no provider process, no container (M10). `validate` is the only
+ * `switchboard projects list|show|validate` (FR-PRJ-08, T9.1). All three read the config and the filesystem and
+ * nothing else: no ledger, no lock, no provider process, no run container. `validate` is the only
  * place the filesystem rules run (FR-PRJ-02, FR-POL-10): absolute path, canonical path under an allowed root (the same
  * `realpath` + `isUnderAllowedRoot` check workspaces use, so `..` and symlink escapes land outside), a Git repository
  * whose top level is itself under an allowed root, and a base ref that resolves to a commit.
@@ -8,7 +8,8 @@
  * T10.3 (FR-PRJ-05, FR-PRJ-08, ADR-0020): for a `container` project `validate` also checks environment availability
  * with the container runtime: it answers and is rootless, the pinned image is present locally (never pulled), and the
  * image has no `git` or `gh` on its `PATH`, by the same throwaway probe container creation uses (no network, read-only
- * root, removed). It starts no run. `ENVIRONMENT_NOT_IMPLEMENTED` stays reported while admission refuses container runs.
+ * root, removed). It starts no run. T10.1: `serve` now runs container projects through that backend, so a container
+ * project whose runtime and image pass these checks validates clean (no `ENVIRONMENT_NOT_IMPLEMENTED`).
  */
 import { randomBytes } from "node:crypto";
 import { realpath } from "node:fs/promises";
@@ -304,13 +305,6 @@ export async function checkProject(
   at: string,
 ): Promise<ProjectFailure[]> {
   const out: ProjectFailure[] = [];
-  if (p.environment.kind === "container") {
-    out.push({
-      path: `${at}.environment.kind`,
-      code: "ENVIRONMENT_NOT_IMPLEMENTED",
-      message: CONTAINER_NOT_IMPLEMENTED,
-    });
-  }
   for (const [j, c] of p.contexts.entries()) {
     const cat = `${at}.contexts[${j}]`;
     const fail = (code: string, message: string) => out.push({ path: `${cat}.path`, code, message });

@@ -24,7 +24,7 @@ import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger, type TrustProfile } from "../ledger/index.js";
 import type { ProjectSnapshot } from "../policy/index.js";
 import { WorkspaceManager } from "../workspace/index.js";
-import { type EnvironmentResolver, RunLifecycle } from "./index.js";
+import { type EnvironmentResolver, type EnvironmentSnapshot, RunLifecycle } from "./index.js";
 
 const GIT_ENV = {
   PATH: process.env.PATH ?? "",
@@ -169,7 +169,7 @@ describe("environment port in the lifecycle (T10.1)", () => {
   });
 
   it("a resolver is asked once per run with the frozen snapshot; a host answer keeps the identity environment", async () => {
-    const asked: Array<ProjectSnapshot | undefined> = [];
+    const asked: Array<EnvironmentSnapshot | undefined> = [];
     const container = recordingEnvironment();
     const l = start({
       resolve(project) {

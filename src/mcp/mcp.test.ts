@@ -34,6 +34,13 @@ import {
 import { ArtifactStore } from "../artifacts/index.js";
 import { type HttpTransportSettings, type ResolvedProject, resolveHttpTransport } from "../config/index.js";
 import { buildAndPutHandoffView, DEFAULT_BUNDLE_BOUNDS, INSTRUCTION_MARKER, takeAsOf } from "../continuity/index.js";
+import {
+  type ContainerRunSpec,
+  type ContainerRuntime,
+  createContainerEnvironment,
+  createProjectEnvironmentResolver,
+  type EnvironmentEvent,
+} from "../environment/index.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger, type TrustProfile } from "../ledger/index.js";
 import { RunLifecycle, type RunLifecycleOptions } from "../lifecycle/index.js";
@@ -2045,7 +2052,7 @@ describe("projects (T9.2; FR-PRJ-03, FR-PRJ-04, FR-PRJ-06; FRD V12, BR-23)", () 
     expect(ok.body.status).toBe("SUCCEEDED");
   });
 
-  it("a container project fails with the not-implemented error and nothing written (M10)", async () => {
+  it("a container project with no container environment wired fails before any side effect (T10.1, fail closed)", async () => {
     const container = project({ environment: { kind: "container", imageDigest: `sha256:${"a".repeat(64)}` } });
     await setup({
       adapters: [fakeWriter()],
@@ -2054,8 +2061,134 @@ describe("projects (T9.2; FR-PRJ-03, FR-PRJ-04, FR-PRJ-06; FRD V12, BR-23)", () 
     });
     const r = await call("delegate_task", projectArgs());
     expect(r.body.error).toMatchObject({ code: "TOOL_FAILURE", details: { reason: "ENVIRONMENT_NOT_IMPLEMENTED" } });
-    expect(r.body.error.message).toMatch(/not implemented yet \(M10\)/);
+    expect(r.body.error.message).toMatch(/no container environment is available/);
     expect(runCount()).toBe(0);
+  });
+
+  describe("container projects through MCP admission (T10.1; FR-PRJ-04, FR-PRJ-05, LLD §11.3)", () => {
+    const IMAGE = `sha256:${"c".repeat(64)}`;
+    /** A rootless runtime emulated on the host (no Docker): records each spec and starts the provider argv itself. */
+    function emulatedRuntime(): ContainerRuntime & { specs: ContainerRunSpec[]; removed: string[] } {
+      const specs: ContainerRunSpec[] = [];
+      const removed: string[] = [];
+      return {
+        name: "emulated",
+        specs,
+        removed,
+        clientEnvAllowlist: [],
+        info: () =>
+          Promise.resolve({ available: true, rootless: true, serverVersion: "emulated", clientPath: null, detail: "" }),
+        resolveImage: () => Promise.resolve({ kind: "found", imageId: IMAGE }),
+        scanImageForGitClient: () => Promise.resolve({ completed: true, found: [], detail: "no git or gh" }),
+        runArgv: (spec) => {
+          specs.push(spec);
+          const [exe = "", ...rest] = spec.argv;
+          return [exe === path.basename(process.execPath) ? process.execPath : exe, ...rest];
+        },
+        inspect: () => Promise.resolve(null),
+        remove: (name) => {
+          removed.push(name);
+          return Promise.resolve({ removed: specs.some((x) => x.name === name) });
+        },
+        listByLabel: () => Promise.resolve([]),
+      };
+    }
+    const containerProject = (docs: string, digest = IMAGE): ResolvedProject => {
+      const base = project({ environment: { kind: "container", imageDigest: digest, limits: { memoryMb: 512 } } });
+      const ro = {
+        id: "docs",
+        kind: "repository" as const,
+        path: docs,
+        baseRef: "main",
+        primary: false,
+        writable: false,
+        push: { policy: "none" as const },
+        sign: false,
+        finalizeCommit: false,
+      };
+      return { ...base, contexts: [...base.contexts, ro] };
+    };
+    const wire = (projects: ResolvedProject[], runtime: ContainerRuntime, events: EnvironmentEvent[]) => ({
+      environments: createProjectEnvironmentResolver({
+        container: createContainerEnvironment({ runtime, onEvent: (e) => events.push(e) }),
+        lookup: (id) => projects.find((p) => p.id === id),
+      }),
+    });
+
+    it("delegate_task runs a container project in the container backend: worktree rw, context ro, removed at end", async () => {
+      const docs = realpathSync(mkdtempSync(path.join(root, "docs-")));
+      const projects = [containerProject(docs)];
+      const runtime = emulatedRuntime();
+      const events: EnvironmentEvent[] = [];
+      await setup({
+        adapters: [fakeWriter()],
+        projects,
+        clients: [{ id: "o", max: "edit-untrusted", projects: ["web-app"] }],
+        lifecycle: wire(projects, runtime, events),
+      });
+      const d = await call("delegate_task", projectArgs({ wait_seconds: 20 }));
+      expect(d.isError, JSON.stringify(d.body)).toBe(false);
+      expect(d.body.status, JSON.stringify(d.body)).toBe("SUCCEEDED");
+      // FR-PRJ-04: the kind and the pinned image are frozen in the run's snapshot at admission.
+      expect(JSON.parse(runRow(d.body.run_id).policy_snapshot_json).project).toMatchObject({
+        environment_kind: "container",
+        image_digest: IMAGE,
+      });
+      expect(runtime.specs).toHaveLength(1);
+      const spec = runtime.specs[0] as ContainerRunSpec;
+      // FR-PRJ-05: only the run's worktree (rw) and the declared context (ro); no repository, data directory or home.
+      expect(spec.mounts).toEqual([
+        { source: spec.workdir, target: spec.workdir, readonly: false },
+        { source: docs, target: docs, readonly: true },
+      ]);
+      expect(spec.workdir.startsWith(dataDir)).toBe(true);
+      expect(spec.memoryMb).toBe(512);
+      expect(spec.labels).toMatchObject({ "switchboard.run": d.body.run_id, "switchboard.project": "web-app" });
+      expect(runtime.removed).toContain(spec.name);
+      expect(events.map((e) => e.payload.step)).toEqual(
+        expect.arrayContaining(["image_checked", "prepared", "removed"]),
+      );
+    });
+
+    it("refuses at admission, writing nothing, when the project's container has no placement (unusable context)", async () => {
+      const projects = [containerProject(path.join(root, "no-such-context"))];
+      const runtime = emulatedRuntime();
+      await setup({
+        adapters: [fakeWriter()],
+        projects,
+        clients: [{ id: "o", max: "edit-untrusted", projects: ["web-app"] }],
+        lifecycle: wire(projects, runtime, []),
+      });
+      const r = await call("delegate_task", projectArgs());
+      expect(r.body.error).toMatchObject({ code: "TOOL_FAILURE", details: { reason: "ENVIRONMENT_NOT_IMPLEMENTED" } });
+      expect(runCount()).toBe(0);
+      expect(runtime.specs).toEqual([]);
+    });
+
+    it("a container refusal at dispatch (image with a Git client) fails the run before spawn, never on the host", async () => {
+      const docs = realpathSync(mkdtempSync(path.join(root, "docs-")));
+      const projects = [containerProject(docs)];
+      const runtime = {
+        ...emulatedRuntime(),
+        scanImageForGitClient: () =>
+          Promise.resolve({
+            completed: true,
+            found: [{ name: "git" as const, path: "/usr/bin/git" }],
+            detail: "git at /usr/bin/git",
+          }),
+      };
+      await setup({
+        adapters: [fakeWriter()],
+        projects,
+        clients: [{ id: "o", max: "edit-untrusted", projects: ["web-app"] }],
+        lifecycle: wire(projects, runtime, []),
+      });
+      const d = await call("delegate_task", projectArgs({ wait_seconds: 20 }));
+      expect(d.body.status).toBe("FAILED");
+      expect(d.body.failure_code).toBe("ELIGIBILITY_NONE");
+      expect(runtime.specs).toEqual([]);
+      expect(compiled.length).toBeGreaterThanOrEqual(0);
+    });
   });
 
   it("a base ref that does not resolve is INVALID_REQUEST with nothing written", async () => {

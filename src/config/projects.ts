@@ -21,8 +21,8 @@ import type {
 } from "./schema.js";
 import { TRUST_PROFILES } from "./schema.js";
 
-/** Shown by `projects validate` and by `delegate_task` for a `container` project until M10 (FR-PRJ-05). */
-export const CONTAINER_NOT_IMPLEMENTED = "container environments are not implemented yet (M10)";
+/** Shown by `delegate_task` for a `container` project when no container environment is wired (T10.1; `serve` wires one). */
+export const CONTAINER_NOT_IMPLEMENTED = "no container environment is available to this controller (FR-PRJ-04)";
 
 export interface ResolvedContext {
   readonly id: string;
