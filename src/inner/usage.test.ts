@@ -64,6 +64,8 @@ interface SetupOptions {
   /** Wraps the scripted fake (e.g. to slow `resolveLocality`); receives the fake built from `script`. */
   wrapBackend?: (fake: InnerBackend) => InnerBackend;
   logger?: (e: InnerLogEntry) => void;
+  /** The ledger's clock (every `created_at`, `observed_at` and event `ts`); the default is the wall clock. */
+  now?: () => Date;
 }
 
 function setup(script: readonly FakeStep[], opts: SetupOptions = {}) {
@@ -71,7 +73,7 @@ function setup(script: readonly FakeStep[], opts: SetupOptions = {}) {
   dirs.push(dir);
   const db = openLedger(dir);
   dbs.push(db);
-  const ledger = createLedger(db, { ids: createIdGenerator() });
+  const ledger = createLedger(db, { ids: createIdGenerator(), ...(opts.now !== undefined ? { now: opts.now } : {}) });
   const session = ledger.createMetaSession({ objective: "o" });
   const run = ledger.createRun({
     metaSessionId: session.id,
@@ -592,6 +594,201 @@ describe("the labelled observation and the inner_call row are one transaction (T
     expect(h.runEventCount()).toBe(1);
     expect(h.snapshot()).toBe(before);
     expect(logs.some((l) => l.event === "inner.record_failed")).toBe(false);
+  });
+});
+
+/**
+ * The pin above refuses the observation itself. `recordInnerCall` writes the observation second (after the `inner_call`
+ * row, before the run events and the step 11 suspension state), so the other direction matters too: a write that fails
+ * *after* the observation went in must take the observation back out, or a labelled row would survive for a call the
+ * ledger otherwise knows nothing about. The two later writes that exist only on some calls are the ones exercised: the
+ * `inner_degraded` event of the call that opens the breaker, and the `inner_task_state` write of the call that suspends
+ * its task. Each trigger is narrow (it fires on that one write), so the calls around it show the refusal was the only
+ * cause.
+ */
+describe("a later write in the same transaction takes the labelled observation back with it (T11.5; FR-INN-15, ADR-0005)", () => {
+  const REFUSE_LATER_WRITE = "later-write-refused-3c9a";
+  const recordFailures = (logs: readonly InnerLogEntry[]) => logs.filter((l) => l.event === "inner.record_failed");
+
+  it("a refused inner_degraded event (the failed call that opens the breaker) rolls back its observation and call row; the denied call after it records with no observation", async () => {
+    const logs: InnerLogEntry[] = [];
+    const h = setup([{ kind: "error" }], {
+      shares: "claude-code",
+      breaker: { failure_threshold: 1, open_ms: 60_000 },
+      logger: (e) => logs.push(e),
+    });
+    h.db.exec(
+      `CREATE TRIGGER refuse_degraded BEFORE INSERT ON run_event WHEN NEW.type = 'inner_degraded'
+         BEGIN SELECT RAISE(ABORT, '${REFUSE_LATER_WRITE}'); END;`,
+    );
+    const r = await h.call();
+    // The caller's view is the pipeline's: the fallback, the reason, and no call id because nothing was recorded.
+    expect(r).toMatchObject({ accepted: false, outcome: "fallback_unavailable", reason: "BACKEND_ERROR" });
+    expect(r.call_id).toBeUndefined();
+    expect(h.ledger.listInnerCalls()).toEqual([]);
+    expect(h.usageRows()).toEqual([]);
+    expect(h.runEventCount()).toBe(0);
+    expect(recordFailures(logs)).toEqual([
+      { event: "inner.record_failed", task: "run_title", outcome: "fallback_unavailable" },
+    ]);
+    expect(JSON.stringify(logs)).not.toContain(REFUSE_LATER_WRITE);
+    // The breaker is in-memory state and opened all the same (as built: the ledger does not drive it). The denied call
+    // has no transition, so no degraded event, and records as every denied call does: attempts 0, no observation.
+    expect(h.svc.breakerState).toBe("open");
+    expect(await h.call()).toMatchObject({ outcome: "fallback_unavailable", reason: "CIRCUIT_OPEN" });
+    expect(h.ledger.listInnerCalls().map((c) => [c.reason, c.attempts])).toEqual([["CIRCUIT_OPEN", 0]]);
+    expect(h.usageRows()).toEqual([]);
+    expect(h.runEventCount()).toBe(1);
+    expect(recordFailures(logs)).toHaveLength(1);
+    // Prove the trigger was the only cause: without it, a fresh breaker's opening call writes all four rows together.
+    h.db.exec("DROP TRIGGER refuse_degraded");
+    const fresh = createInnerAgent(h.settings, {
+      backend: createFakeBackend({ script: [{ kind: "error" }] }),
+      ledger: h.ledger,
+      logger: (e) => logs.push(e),
+    });
+    const again = await fresh.call(contract, { user: "objective: tidy", run_id: h.run.id });
+    expect(again).toMatchObject({ outcome: "fallback_unavailable", reason: "BACKEND_ERROR" });
+    expect(again.call_id).toEqual(expect.any(String));
+    expect(h.ledger.listInnerCalls().map((c) => [c.reason, c.attempts])).toEqual([
+      ["CIRCUIT_OPEN", 0],
+      ["BACKEND_ERROR", 1],
+    ]);
+    expect(h.usageRows().map((x) => [x.source, JSON.parse(String(x.metrics_json))])).toEqual([["inner_agent", {}]]);
+    expect(
+      (
+        h.db.prepare("SELECT type FROM run_event WHERE run_id = ? ORDER BY seq").all(h.run.id) as { type: string }[]
+      ).map((e) => e.type),
+    ).toEqual(["inner_call", "inner_call", "inner_degraded"]);
+    expect(recordFailures(logs)).toHaveLength(1);
+  });
+
+  it("a refused inner_task_state write (the rejection that suspends the task) rolls back that call's observation and row; the task stays unsuspended until the same call records", async () => {
+    const logs: InnerLogEntry[] = [];
+    const bad: FakeStep = { kind: "text", text: "bad", usage: { in: 3, out: 1 } };
+    const h = setup([bad], {
+      shares: "claude-code",
+      suspension: { window_calls: 10, min_calls: 2, rejection_threshold: 0.4 },
+      logger: (e) => logs.push(e),
+    });
+    expect(await h.call()).toMatchObject({ outcome: "rejected_validator" }); // 1/1 rejected, below min_calls
+    expect(h.usageRows()).toHaveLength(1);
+    // The suspension write is an upsert; a row never existed, so the INSERT is the write that is refused.
+    h.db.exec(
+      `CREATE TRIGGER refuse_suspend BEFORE INSERT ON inner_task_state
+         BEGIN SELECT RAISE(ABORT, '${REFUSE_LATER_WRITE}'); END;`,
+    );
+    const r = await h.call(); // 2/2 > 0.4: this call would suspend the task in its own transaction
+    expect(r).toMatchObject({ accepted: false, outcome: "rejected_validator", reason: "NOT_JSON" });
+    expect(r.call_id).toBeUndefined();
+    // The re-ask's summed counts (6 in, 2 out) reached the backend and were reported; the row that would have carried
+    // them is gone with the call row and the event, and the first call's row is untouched.
+    expect(h.ledger.listInnerCalls().map((c) => [c.outcome, c.attempts, c.tokens_in, c.tokens_out])).toEqual([
+      ["rejected_validator", 2, 6, 2],
+    ]);
+    expect(h.usageRows().map((x) => [x.source, JSON.parse(String(x.metrics_json))])).toEqual([
+      ["inner_agent", { input_tokens: 6, output_tokens: 2 }],
+    ]);
+    expect(h.runEventCount()).toBe(1);
+    expect(h.svc.isSuspended("run_title")).toBe(false);
+    expect(h.db.prepare("SELECT COUNT(*) AS n FROM inner_task_state").get()).toEqual({ n: 0 });
+    expect(recordFailures(logs)).toEqual([
+      { event: "inner.record_failed", task: "run_title", outcome: "rejected_validator" },
+    ]);
+    expect(logs.some((l) => l.event === "inner.task_suspended")).toBe(false);
+    expect(JSON.stringify(logs)).not.toContain(REFUSE_LATER_WRITE);
+    // Without the trigger the same call records everything at once: its row, its observation, its event, the
+    // suspension state and the suspension event. The window still counts 2/2, because the refused call left no row.
+    h.db.exec("DROP TRIGGER refuse_suspend");
+    const recorded = await h.call();
+    expect(recorded).toMatchObject({ outcome: "rejected_validator" });
+    expect(recorded.call_id).toEqual(expect.any(String));
+    expect(h.svc.isSuspended("run_title")).toBe(true);
+    expect(logs.filter((l) => l.event === "inner.task_suspended")).toHaveLength(1);
+    expect(h.ledger.listInnerCalls().map((c) => [c.outcome, c.attempts])).toEqual([
+      ["rejected_validator", 2],
+      ["rejected_validator", 2],
+    ]);
+    expect(h.usageRows().map((x) => [x.source, x.run_id, JSON.parse(String(x.metrics_json))])).toEqual([
+      ["inner_agent", h.run.id, { input_tokens: 6, output_tokens: 2 }],
+      ["inner_agent", h.run.id, { input_tokens: 6, output_tokens: 2 }],
+    ]);
+    expect(
+      (
+        h.db.prepare("SELECT type FROM run_event WHERE run_id = ? ORDER BY seq").all(h.run.id) as { type: string }[]
+      ).map((e) => e.type),
+    ).toEqual(["inner_call", "inner_call", "inner_task_suspended"]);
+    expect(recordFailures(logs)).toHaveLength(1);
+  });
+});
+
+/**
+ * The labelled row carries no `inner_call_id`; what ties it to its call is the transaction it was written in. So its
+ * shape must be the call row's: the same instant (`observed_at` is the `created_at` the ledger stamped on the call row
+ * and the `ts` of the call's event), the model the row recorded (the backend's reported one, not the configured one),
+ * the ledger's `use` id namespace, and under concurrency the nth observation belonging to the nth *recorded* call, not
+ * the nth started one. A ticking clock makes every instant distinct, so "the same instant" is a real equality.
+ */
+describe("the labelled row is stamped with its call row (T11.5; FR-INN-15, ADR-0005)", () => {
+  it("observed_at equals the call row's created_at and the event's ts; model, id namespace and pairing follow the recorded call under concurrency", async () => {
+    let tick = 0;
+    const now = () => new Date(Date.UTC(2026, 0, 1, 0, 0, tick++));
+    const h = setup(
+      [
+        { kind: "text", text: '{"title":"slow"}', usage: { in: 1, out: 11 }, model_id: "model-slow", delay_ms: 150 },
+        { kind: "text", text: '{"title":"fast"}', usage: { in: 2, out: 22 }, model_id: "model-fast" },
+      ],
+      { shares: "claude-code", maxConcurrency: 2, now },
+    );
+    const [slow, fast] = await Promise.all([h.call(), h.call()]);
+    expect(slow).toMatchObject({ accepted: true, value: { title: "slow" } });
+    expect(fast).toMatchObject({ accepted: true, value: { title: "fast" } });
+    const calls = h.db.prepare("SELECT * FROM inner_call ORDER BY rowid").all() as Record<string, unknown>[];
+    const rows = h.usageRows();
+    const events = h.db.prepare("SELECT * FROM run_event WHERE run_id = ? ORDER BY seq").all(h.run.id) as Record<
+      string,
+      unknown
+    >[];
+    // The fast call finished first and was recorded first, in every table, although it was started second.
+    expect(calls.map((c) => [c.model_id, c.tokens_in, c.tokens_out])).toEqual([
+      ["model-fast", 2, 22],
+      ["model-slow", 1, 11],
+    ]);
+    expect(rows.map((r) => [r.model, JSON.parse(String(r.metrics_json))])).toEqual([
+      ["model-fast", { input_tokens: 2, output_tokens: 22 }],
+      ["model-slow", { input_tokens: 1, output_tokens: 11 }],
+    ]);
+    expect(
+      events.map((e) => [e.type, (JSON.parse(String(e.payload_json)) as { inner_call_id: string }).inner_call_id]),
+    ).toEqual([
+      ["inner_call", calls[0]?.id],
+      ["inner_call", calls[1]?.id],
+    ]);
+    // One instant per transaction, distinct between the two, shared by the three rows of each.
+    expect(calls.map((c) => c.created_at)).toEqual(rows.map((r) => r.observed_at));
+    expect(calls.map((c) => c.created_at)).toEqual(events.map((e) => e.ts));
+    expect(new Set(calls.map((c) => c.created_at)).size).toBe(2);
+    expect(calls.map((c) => c.created_at)).toEqual([...calls.map((c) => c.created_at)].sort());
+    // Ids: the observation is a `use` id (the namespace provider-reported rows use), never the call's `inc` id, and the
+    // call list (ordered by id) agrees with insertion order.
+    expect(rows.map((r) => String(r.id).slice(0, 4))).toEqual(["use_", "use_"]);
+    expect(calls.map((c) => String(c.id).slice(0, 4))).toEqual(["inc_", "inc_"]);
+    expect(h.ledger.listInnerCalls().map((c) => c.id)).toEqual(calls.map((c) => c.id));
+    expect(rows.map((r) => r.id)).not.toContain(calls[0]?.id);
+    // The row's shape, column by column, for the first pair: the label from config, the model from the backend.
+    expect(rows[0]).toEqual({
+      id: rows[0]?.id,
+      run_id: h.run.id,
+      provider: "claude-code",
+      harness: "claude-code",
+      backing_provider: null,
+      model: "model-fast",
+      source: "inner_agent",
+      metrics_json: JSON.stringify({ input_tokens: 2, output_tokens: 22 }),
+      observed_at: calls[0]?.created_at,
+    });
+    expect(h.settings.backend?.model).toBe("cfg-model");
+    expect(JSON.stringify(rows)).not.toContain("cfg-model");
   });
 });
 
