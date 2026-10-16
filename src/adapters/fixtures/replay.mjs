@@ -4,7 +4,7 @@
 // (and, for --mcp-commit, the one MCP definition file named in the provider argv).
 //
 // Usage: replay.mjs --provider ID --fixture FILE.jsonl [--exit-code N] [--write REL_PATH] [--hang] [--ignore-term]
-//                   [--mcp-commit RECORD.json] -- <provider argv>
+//                   [--mcp-commit RECORD.json [--mcp-calls CALLS.json]] -- <provider argv>
 // Lines of FILE.jsonl are written to stdout verbatim, except lines whose JSON has a "_fixture" key (provenance notes
 // and, for Codex, run metadata), which are skipped. Malformed lines are replayed verbatim on purpose. The prompt must
 // arrive on stdin, or in argv for a dialect that defines `prompt`; otherwise the replay exits 65. A provider argv of the
@@ -23,6 +23,8 @@
 // file and directory modes, whether the token variable is in its environment; never the token) to RECORD.json, starts
 // the one stdio server with `${VAR}` references in its `env` expanded from this process's environment, lists its tools
 // and calls `commit` for a file it writes into the cwd. The fixture is replayed afterwards as usual.
+// --mcp-calls (T12.9) names a JSON array of `{ "name", "arguments" }` tool calls made after `commit`, each recorded
+// with its full result text (for example `search_project_context` through the same server).
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -149,6 +151,11 @@ async function mcpCommit(recordPath) {
       arguments: { message: "Add channel.txt", paths: ["channel.txt"] },
     });
     out.calls.push({ name: "commit", isError: res.isError === true, text: res.content?.[0]?.text ?? "" });
+    const extra = opt(own, "--mcp-calls");
+    for (const call of extra ? JSON.parse(readFileSync(extra, "utf8")) : []) {
+      const r = await client.callTool({ name: call.name, arguments: call.arguments });
+      out.calls.push({ name: call.name, isError: r.isError === true, text: r.content?.[0]?.text ?? "" });
+    }
     await client.close();
   } catch (err) {
     out.error = String(err?.message ?? err);

@@ -25,7 +25,7 @@
  */
 import { lstatSync } from "node:fs";
 import path from "node:path";
-import { CHANNEL_MCP_CONFIG_FILE, TOOL_SHIM_MCP_SERVER, TOOL_TOKEN_ENV } from "../git/tool-protocol.js";
+import { CHANNEL_MCP_CONFIG_FILE, TOOL_NAMES, TOOL_SHIM_MCP_SERVER, TOOL_TOKEN_ENV } from "../git/tool-protocol.js";
 import {
   acpDeclarations,
   type BypassValue,
@@ -201,7 +201,10 @@ const ALLOW_FLAGS: readonly string[] = ["--allowedTools", "--allowed-tools"];
 export interface ChannelAuditContext {
   /** Absolute path of the MCP definition the channel service wrote for this run; absent when none was written. */
   readonly mcpConfigPath?: string;
-  /** Tools the channel offers (`commit`, and `push` under policy `branch`). */
+  /**
+   * Tools the channel offers (`commit`, `push` under policy `branch`, `search_project_context` when retrieval is on for
+   * the run's project, T12.9). A name outside `TOOL_NAMES` admits no allow rule.
+   */
   readonly toolNames: readonly string[];
 }
 
@@ -230,8 +233,9 @@ export function strictMcpExempt(ctx: BypassContext | undefined): boolean {
  *   Code leaves an unset `${VAR}` reference as literal text (live check, PR #41), so the controller must always set it;
  * - `--strict-mcp-config` in argv whenever `--mcp-config` is present, unless {@link strictMcpExempt};
  * - an `mcp__` token (argv words split on commas and whitespace) only as a value of `--allowedTools` and only when it
- *   is exactly {@link channelToolRule} of a tool the channel offers; so no wildcard, no server-wide rule, no other
- *   server, and no MCP rule at all without a channel.
+ *   is exactly {@link channelToolRule} of a tool the channel offers and that is one of `TOOL_NAMES` (`commit`, `push`
+ *   and, T12.9 / FR-RAG-13, the read-only `search_project_context`); so no wildcard, no server-wide rule, no other
+ *   server, no other tool name, and no MCP rule at all without a channel.
  * Refused always: the `--mcp-config=<value>` form, inline JSON or any other path, a second occurrence.
  */
 export function auditMcpArgs(
@@ -267,7 +271,9 @@ export function auditMcpArgs(
       problems.push(`${MCP_CONFIG_FLAG} without ${TOOL_TOKEN_ENV} in the provider environment`);
     }
   }
-  const allowed = new Set((channel?.toolNames ?? []).map(channelToolRule));
+  const allowed = new Set(
+    (channel?.toolNames ?? []).filter((t) => (TOOL_NAMES as readonly string[]).includes(t)).map(channelToolRule),
+  );
   for (const list of [inv.argv, inv.policyFlags]) {
     let flag: string | undefined;
     for (const arg of list) {

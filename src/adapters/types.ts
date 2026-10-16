@@ -293,7 +293,8 @@ export interface ShimSpec {
    * socket. A file an adapter asks for through {@link ChannelArgs.files} is written here by the channel service.
    */
   readonly dir: string;
-  readonly toolNames: readonly ("commit" | "push")[];
+  /** T9.6 added `push`, T12.9 the read-only `search_project_context` (FR-RAG-13). */
+  readonly toolNames: readonly ("commit" | "push" | "search_project_context")[];
   /** Environment the shim needs: exactly the token variable (`SWITCHBOARD_TOOL_TOKEN`). */
   readonly env: Readonly<Record<string, string>>;
 }
