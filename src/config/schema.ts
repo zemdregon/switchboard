@@ -125,6 +125,11 @@ export interface SwitchboardConfig {
   capacity?: CapacityConfigInput;
   /** Routing (M7, T7.1; LLD §17.1, ADR-0044). Every key defaults to its LLD value (Assumptions, Q-80). */
   routing?: RoutingConfigInput;
+  /**
+   * Outer sandbox (T3.1; LLD §8.4, ADR-0051). A profile listed in `required_profiles` is refused at admission unless
+   * it can run inside the outer sandbox; absent or empty means nothing changes. `privileged` cannot be listed.
+   */
+  outer_sandbox?: { required_profiles?: Exclude<TrustProfile, "privileged">[] };
 }
 
 /** `routing` as written in the config file (LLD §17.1). */
@@ -513,6 +518,17 @@ export const configSchema = {
       properties: Object.fromEntries(
         TRUST_PROFILES.filter((p) => p !== "privileged").map((p) => [p, profileOverrideSchema]),
       ),
+    },
+    outer_sandbox: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        required_profiles: {
+          type: "array",
+          uniqueItems: true,
+          items: { enum: TRUST_PROFILES.filter((p) => p !== "privileged") },
+        },
+      },
     },
   },
 } as const;

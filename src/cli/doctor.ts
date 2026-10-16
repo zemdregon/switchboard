@@ -13,6 +13,12 @@ import {
 } from "../adapters/index.js";
 import type { CapacityProjection } from "../capacity/index.js";
 import { loadConfig, type ResolvedConfig } from "../config/index.js";
+import {
+  describeOuterSandbox,
+  detectOuterSandbox,
+  type OuterSandboxAvailability,
+  outerSandboxRefusal,
+} from "../exec/outer-sandbox.js";
 import { currentSchemaVersion, LEDGER_FILE_NAME, MIGRATIONS } from "../ledger/index.js";
 import { inspectDataDirLock } from "../lock/index.js";
 import { type AppliedOverride, validateProfileOverrides } from "../policy/index.js";
@@ -128,6 +134,28 @@ function checkInnerSharedSubscription(cfg: ResolvedConfig): DoctorCheck | undefi
     "warn",
     `the inner agent shares the ${shared} subscription: its calls consume ${shared} capacity; each call is recorded as a ` +
       "usage observation labelled inner_agent (not as provider usage, and it does not change capacity_score)",
+  );
+}
+
+/**
+ * T3.1 (ADR-0051, LLD §8.4): outer-sandbox availability, always reported. `ok` when no profile requires it (it is
+ * optional hardening, Q-22); with `outer_sandbox.required_profiles` set, `fail` when a required mechanism is missing
+ * (those runs are refused, OUTER_SANDBOX_UNAVAILABLE) and `warn` otherwise (still refused: this build does not yet wrap
+ * runs, OUTER_SANDBOX_NOT_ENFORCED).
+ */
+function checkOuterSandbox(cfg: ResolvedConfig | undefined, availability: OuterSandboxAvailability): DoctorCheck {
+  const label = "Outer sandbox";
+  const summary = describeOuterSandbox(availability);
+  const required = cfg?.outerSandboxRequiredProfiles ?? [];
+  const first = required[0];
+  if (first === undefined) return check("outer_sandbox", label, "ok", `not required by config; ${summary}`);
+  const refusal = outerSandboxRefusal(first, required, availability);
+  const status: CheckStatus = refusal?.reason === "OUTER_SANDBOX_UNAVAILABLE" ? "fail" : "warn";
+  return check(
+    "outer_sandbox",
+    label,
+    status,
+    `required for ${required.join(", ")}: runs under them are refused (${refusal?.reason}); ${summary}`,
   );
 }
 
@@ -421,6 +449,8 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
       checks.push(check(id, label, "skip", "skipped: config is not valid"));
     }
   }
+
+  checks.push(checkOuterSandbox(cfg, io.outerSandbox ?? (await detectOuterSandbox({ path: io.env.PATH ?? "" }))));
 
   const registry = io.adapters ?? defaultAdapters();
   const adapters = await probeAdapters(registry, cfg);
