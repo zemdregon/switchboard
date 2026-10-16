@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.73); no muse was run. Kind and run_terminal spellings reported ([Orca]) or Assumption (protocol.ts), Unverified: T4.71. An unknown kind supplies no result or session; a later recognised completed terminal does.","exit":0}}
+{"kind":"synthetic_future_record","session_id":"00000000-0000-4000-8000-000000000042","terminal":"completed"}
+{"kind":"run_started","session_id":"00000000-0000-4000-8000-000000000001"}
+{"kind":"run_terminal","terminal":"completed","text":"ok","reason":null}
