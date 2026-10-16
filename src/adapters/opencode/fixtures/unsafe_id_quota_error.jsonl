@@ -1,0 +1,3 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.53 eleventh residual pass). A run bound to a safe id ends on a provider.quota error line (the live-check row 14b shape) whose sessionID could be read as a flag. Pins that the unsafe-id protocol error is emitted first on that line and decides the code: OUTPUT_PROTOCOL_ERROR masks QUOTA_EXHAUSTED (gap). Not a recorded native shape.","exit":1}}
+{"type":"step_start","timestamp":1,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_s1","type":"step-start"}}
+{"type":"error","timestamp":2,"sessionID":"--session=ses_other","error":{"type":"provider.quota","message":"SYNTHETIC: Insufficient account funds"}}
