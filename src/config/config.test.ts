@@ -40,6 +40,50 @@ describe("loadConfig", () => {
     expect(c.dataDir).toBe(path.join(tmp, "data"));
   });
 
+  describe("telemetry (T8.1, FR-TEL-02, NFR-PRIV-01)", () => {
+    it("is disabled when absent, empty or without an endpoint", () => {
+      for (const telemetry of [undefined, {}, { otlp_endpoint: "" }]) {
+        expect(loadConfig({ configPath: write({ ...base(), telemetry }) }).telemetry).toBeUndefined();
+      }
+    });
+
+    it("accepts explicit HTTP and HTTPS collector endpoints", () => {
+      for (const endpoint of ["http://127.0.0.1:4318/v1/traces", "https://collector.example.test/traces"]) {
+        expect(
+          loadConfig({ configPath: write({ ...base(), telemetry: { otlp_endpoint: endpoint } }) }).telemetry,
+        ).toEqual({ otlpEndpoint: endpoint });
+      }
+    });
+
+    it("rejects invalid endpoints at config load without echoing their values", () => {
+      for (const endpoint of [
+        "relative",
+        "ftp://collector.test",
+        "https://",
+        " ",
+        " http://collector.test",
+        "http://secret-canary@[",
+      ]) {
+        const load = () => loadConfig({ configPath: write({ ...base(), telemetry: { otlp_endpoint: endpoint } }) });
+        expect(load).toThrow("$.telemetry.otlp_endpoint: must be an absolute http or https URL");
+        try {
+          load();
+        } catch (error) {
+          expect(String(error)).toBe("ConfigError: $.telemetry.otlp_endpoint: must be an absolute http or https URL");
+        }
+      }
+    });
+
+    it("rejects wrong endpoint types and unknown telemetry keys", () => {
+      expect(() => loadConfig({ configPath: write({ ...base(), telemetry: { otlp_endpoint: 42 } }) })).toThrow(
+        /telemetry.otlp_endpoint/,
+      );
+      expect(() =>
+        loadConfig({ configPath: write({ ...base(), telemetry: { endpoint: "http://collector.test" } }) }),
+      ).toThrow(/telemetry.endpoint: unknown key/);
+    });
+  });
+
   it("rejects an unknown top-level key with its path", () => {
     expect(() => loadConfig({ configPath: write({ ...base(), surprise: 1 }) })).toThrow(/\$\.surprise: unknown key/);
   });

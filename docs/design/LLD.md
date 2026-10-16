@@ -2233,6 +2233,16 @@ or hook payloads. Immediately before OTLP export, the pipeline drops any attribu
 (defence in depth; T8.4). Forbidden categories must not be set even on internal builders; CI asserts both drop behaviour
 and absence of forbidden keys on exported spans (T8.3, T8.4).
 
+**T8.1 transport (2026-10-16, Delegated).** `src/config/load.ts` validates the optional URL without echoing its value
+in errors. `src/telemetry/index.ts` creates an inert, instance-local transport in `serve`; the first completed span
+loads the API, trace SDK and OTLP/HTTP exporter. No global provider is registered and no resource detectors run.
+The explicit endpoint is passed to the exporter. A bounded batch processor queues at most 512 spans, exports batches
+of at most 64 after 100 ms, and bounds each export at 1 second (Delegated best-effort defaults, not measured targets).
+Pending initialization accepts at most 512 spans; failures are dropped without logging exporter error bodies or URLs.
+Shutdown closes only an initialized transport. Wrapper emission and attribute builders remain T8.2; the export-time
+attribute filter remains T8.4. Tests: `src/config/config.test.ts`, `src/telemetry/index.test.ts` and
+`src/cli/serve.test.ts` (startup with OTel imports rejected).
+
 **Collector test harness (T8.3, M8 acceptance).** Shape for the integration test, without requiring a provider CLI:
 
 1. Start an in-process OTLP/HTTP receiver on loopback with an ephemeral port (or equivalent test fixture).
