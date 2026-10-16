@@ -602,9 +602,14 @@ else { emit({ type: "session", session_id: "s-1" }); emit({ type: "result", ok: 
         targetClientId: "root",
         requestedAt: row?.requested_at as string,
       });
+      // Flip the last hex digit so the digest is guaranteed to differ (replacing it with a fixed
+      // "0" collided whenever the real digest already ended in "0").
+      const lastHex = good.slice(-1);
+      const wrongDigest = `${good.slice(0, -1)}${lastHex === "0" ? "1" : "0"}`;
+      expect(wrongDigest).not.toBe(good);
       const bad = await call("bot", "decide_approval", {
         approval_id: row?.id,
-        approval_digest: `${good.slice(0, -1)}0`,
+        approval_digest: wrongDigest,
         decision: "approve",
       });
       expect(bad.isError).toBe(true);
