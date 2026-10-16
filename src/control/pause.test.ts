@@ -191,7 +191,13 @@ describe("control_plane_state persistence (T14.6, LLD §3.4.7, migration 0018)",
       d.pragma("foreign_keys = ON");
       const upTo17 = MIGRATIONS.filter((m) => m.version <= 17);
       expect(migrate(d, undefined, upTo17)).toEqual(upTo17.map((m) => m.version));
-      expect(migrate(d, undefined, MIGRATIONS)).toEqual([18]);
+      expect(
+        migrate(
+          d,
+          undefined,
+          MIGRATIONS.filter((m) => m.version <= 18),
+        ),
+      ).toEqual([18]);
       expect(() => d.prepare("INSERT INTO control_plane_state (project_id, paused) VALUES ('p', 2)").run()).toThrow(
         /CHECK/u,
       );

@@ -119,6 +119,7 @@ import { DynamicProjectStore, innerSettingResolver } from "../projects/index.js"
 import { queueSchedulerSettingsFromConfig, runProjectWorkQueueTick } from "../queue/index.js";
 import { reconcile } from "../reconcile/index.js";
 import { pruneRagStores } from "../retrieval/store.js";
+import { fireDueSchedules } from "../schedule/index.js";
 import { createTelemetry } from "../telemetry/index.js";
 import { runRetentionGc, WorkspaceManager } from "../workspace/index.js";
 import { type CliIo, PROBE_ENV_ALLOWLIST } from "./io.js";
@@ -768,11 +769,17 @@ async function runDaemon(
     },
     projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
   };
-  const runQueueTick = () =>
-    runProjectWorkQueueTick(ledger, queueAdmission, queueSettings).catch((err) => {
+  const runSchedulerTick = () => {
+    try {
+      fireDueSchedules(ledger, { ...(now ? { nowUtc: new Date(now()) } : {}) });
+    } catch (err) {
+      log.error("schedule fire tick failed", { error: message(err) });
+    }
+    return runProjectWorkQueueTick(ledger, queueAdmission, queueSettings).catch((err) => {
       log.error("project work queue tick failed", { error: message(err) });
     });
-  void runQueueTick();
+  };
+  void runSchedulerTick();
 
   // T12.4 (FR-RAG-11, LLD §14.5): background index builds. `startServeRag` only queues every project and returns; a
   // build runs on later turns of the event loop and is never awaited by admission. Without an embedding backend it is
@@ -802,7 +809,7 @@ async function runDaemon(
   const timer = setInterval(() => {
     void applyRequests();
     void rag?.applyRequests();
-    void runQueueTick();
+    void runSchedulerTick();
     sweepConsentLinks();
   }, OPERATOR_POLL_MS);
   const gcTimer = config.retentionEnabled

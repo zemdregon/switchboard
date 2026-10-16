@@ -35,6 +35,7 @@ const EXPECTED_TABLES = [
   "project_event",
   "project_revision",
   "project_revision_decision",
+  "project_schedule",
   "project_work_dependency",
   "project_work_event",
   "project_work_item",
@@ -379,6 +380,111 @@ describe("ledger migrations", () => {
         .prepare("INSERT INTO project_work_dependency (successor_id, predecessor_id) VALUES ('que_missing','que_x')")
         .run(),
     ).toThrow(/FOREIGN KEY/u);
+  });
+
+  it("0019 adds project_schedule table on a version 18 database (T15.2, FR-QUE-02, LLD §18.5)", () => {
+    db = new Database(path.join(dir, LEDGER_FILE_NAME));
+    db.pragma("foreign_keys = ON");
+    const d = db;
+    const upTo18 = MIGRATIONS.filter((m) => m.version <= 18);
+    expect(migrate(d, undefined, upTo18)).toEqual(upTo18.map((m) => m.version));
+    const ledger = createLedger(d);
+
+    // Existing work queue item on v18
+    const item = ledger.enqueueWorkItem({
+      projectId: "proj-1",
+      creatorClientId: "client-a",
+      request: { objective: "task 1", trust_profile: "inspect-untrusted", project: "proj-1" },
+      sourceKind: "mcp",
+    });
+
+    // Migrate to 19
+    expect(
+      migrate(
+        d,
+        undefined,
+        MIGRATIONS.filter((m) => m.version <= 19),
+      ),
+    ).toEqual([19]);
+
+    // Existing work item preserved
+    expect(ledger.getWorkItem(item.id)?.id).toBe(item.id);
+
+    // Table constraints on project_schedule
+    expect(() =>
+      d
+        .prepare(
+          `INSERT INTO project_schedule (id, project_id, creator_client_id, cron_expr, enabled, template_json, created_at, approval_state)
+           VALUES ('sch_bad','p','c','* * * * *',2,'{}','2026-10-16T11:00:00Z','APPROVED')`,
+        )
+        .run(),
+    ).toThrow(/CHECK/u);
+
+    expect(() =>
+      d
+        .prepare(
+          `INSERT INTO project_schedule (id, project_id, creator_client_id, cron_expr, enabled, template_json, created_at, approval_state)
+           VALUES ('sch_bad2','p','c','* * * * *',0,'{}','2026-10-16T11:00:00Z','INVALID_STATE')`,
+        )
+        .run(),
+    ).toThrow(/CHECK/u);
+
+    // Helper functions: createSchedule off by default
+    const sch = ledger.createSchedule({
+      projectId: "proj-1",
+      creatorClientId: "client-a",
+      cronExpr: "0 * * * *",
+      template: { objective: "hourly cleanup" },
+    });
+    expect(sch.enabled).toBe(0); // Off by default (FR-QUE-02)
+    expect(sch.approval_state).toBe("APPROVED");
+    expect(sch.cron_expr).toBe("0 * * * *");
+    expect(ledger.getSchedule(sch.id)?.id).toBe(sch.id);
+
+    // enableSchedule and disableSchedule
+    const enabled = ledger.enableSchedule(sch.id);
+    expect(enabled?.enabled).toBe(1);
+    expect(enabled?.disabled_at).toBeNull();
+
+    const disabled = ledger.disableSchedule(sch.id);
+    expect(disabled?.enabled).toBe(0);
+    expect(disabled?.disabled_at).not.toBeNull();
+
+    // PENDING_APPROVAL schedule cannot be enabled until approved
+    const pending = ledger.createSchedule({
+      projectId: "proj-1",
+      creatorClientId: "chat-bot",
+      cronExpr: "*/5 * * * *",
+      template: { objective: "widened task" },
+      approvalState: "PENDING_APPROVAL",
+    });
+    expect(pending.enabled).toBe(0);
+    expect(pending.approval_state).toBe("PENDING_APPROVAL");
+    expect(() => ledger.enableSchedule(pending.id)).toThrow(
+      /cannot enable schedule in approval_state PENDING_APPROVAL/u,
+    );
+
+    // approveSchedule
+    const approved = ledger.approveSchedule(pending.id);
+    expect(approved?.approval_state).toBe("APPROVED");
+    expect(approved?.enabled).toBe(0); // Remains off by default
+    expect(ledger.enableSchedule(pending.id)?.enabled).toBe(1);
+
+    // denySchedule
+    const denied = ledger.denySchedule(pending.id);
+    expect(denied?.approval_state).toBe("REJECTED");
+    expect(denied?.enabled).toBe(0);
+    expect(() => ledger.enableSchedule(pending.id)).toThrow(/cannot enable schedule in approval_state REJECTED/u);
+
+    // Invalid cron rejected
+    expect(() =>
+      ledger.createSchedule({
+        projectId: "proj-1",
+        creatorClientId: "c",
+        cronExpr: "invalid cron expr",
+        template: {},
+      }),
+    ).toThrow();
   });
 
   it("git_commit and git_push are append-only and enforce their foreign keys and checks (LLD §1)", () => {
