@@ -1,12 +1,13 @@
 /**
  * M14 acceptance on fake adapters through the MCP server (T14.13; ROADMAP §6 M14 row, FR-CTL-01–11, CAP-15).
  * Maps spike scenarios A–G in [m14-acceptance-test-plan-spike](../docs/research/m14-acceptance-test-plan-spike-2026-10-15.md).
- * Scenarios B–E stay skipped until T14.4–T14.7 land (in-flight on other lanes). F and G add thin MCP legs here;
+ * B (T14.5), C (T14.4) and E (T14.7) run here; D stays skipped until T14.6 (#539) lands. F and G add thin MCP legs;
  * full T14.8 and T14.9 coverage lives in `test/malicious/approval-proxy.test.ts` and `src/control/sinks.test.ts`.
  * No provider CLI is installed or called.
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -14,9 +15,11 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeAdapter } from "../adapters/fake/adapter.js";
+import { firstFake, type StatefulFake } from "../adapters/fixtures/continuity-fakes.js";
 import { AdapterRegistry, type ResolvedProfile } from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
 import { type ResolvedMcpClient, type ResolvedProject, resolveNotificationSinks } from "../config/index.js";
+import { BudgetEvaluator } from "../control/budgets.js";
 import {
   approvalDigest,
   buildNotificationPayload,
@@ -24,10 +27,11 @@ import {
   SinkDispatcher,
   transitionNotifier,
 } from "../control/index.js";
+import { LOOP_PARKED_EVENT } from "../control/loop-breaker.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger, type RunState, type TrustProfile } from "../ledger/index.js";
 import { RunLifecycle } from "../lifecycle/index.js";
-import { type Harness, type Json, startHarness } from "../routing/fixtures/harness.js";
+import { type Harness, type HarnessOptions, type Json, startHarness } from "../routing/fixtures/harness.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import { UNTRUSTED_TEXT_MAX } from "./digest.js";
 import { createSwitchboardServer, type SwitchboardMcpServer } from "./index.js";
@@ -83,40 +87,47 @@ const profileFor = (name: TrustProfile): ResolvedProfile => ({
   bypassApproved: false,
 });
 
-// ---- scenario A: digest across two projects -------------------------------------------------------------------------
+// ---- shared two-project harness (scenarios A to C) -------------------------------------------------------------------
 
-let digestHarness: Harness;
+let harness: Harness;
 let projectRoot: string;
 
-beforeEach(async () => {
-  projectRoot = realpathSync(mkdtempSync(path.join(tmpdir(), "sb-m14-a-")));
-  const projA = gitRepo(path.join(projectRoot, "proj-a"));
-  const projB = gitRepo(path.join(projectRoot, "proj-b"));
-  const edit: TrustProfile = "edit-untrusted";
-  digestHarness = await startHarness({
-    allowedRoots: [projectRoot],
-    config: {
-      projects: [project("proj-a", projA), project("proj-b", projB)],
-      mcpClients: new Map([
-        ["orch", { id: "orch", maxTrustProfile: edit, projects: ["proj-a"] }],
-        ["other", { id: "other", maxTrustProfile: edit, projects: ["proj-a", "proj-b"] }],
-      ]),
-    },
+/**
+ * Registers hooks that start the routing harness over projects `proj-a` and `proj-b` (`orch` sees `proj-a`, `other`
+ * sees both) for the enclosing `describe`. `lifecycle` adds `RunLifecycle` options (T14.4 budgets, T14.5 loop breaker).
+ */
+function useTwoProjectHarness(opts: Pick<HarnessOptions, "lifecycle" | "maxAttempts"> = {}): void {
+  beforeEach(async () => {
+    projectRoot = realpathSync(mkdtempSync(path.join(tmpdir(), "sb-m14-a-")));
+    const projA = gitRepo(path.join(projectRoot, "proj-a"));
+    const projB = gitRepo(path.join(projectRoot, "proj-b"));
+    const edit: TrustProfile = "edit-untrusted";
+    harness = await startHarness({
+      allowedRoots: [projectRoot],
+      config: {
+        projects: [project("proj-a", projA), project("proj-b", projB)],
+        mcpClients: new Map([
+          ["orch", { id: "orch", maxTrustProfile: edit, projects: ["proj-a"] }],
+          ["other", { id: "other", maxTrustProfile: edit, projects: ["proj-a", "proj-b"] }],
+        ]),
+      },
+      ...opts,
+    });
   });
-});
 
-afterEach(async () => {
-  await digestHarness.close();
-  rmSync(projectRoot, { recursive: true, force: true });
-});
+  afterEach(async () => {
+    await harness.close();
+    rmSync(projectRoot, { recursive: true, force: true });
+  });
+}
 
-const digest = (args: Json = {}, clientId?: string) => digestHarness.ok("get_digest", args, clientId);
+const digest = (args: Json = {}, clientId?: string) => harness.ok("get_digest", args, clientId);
 const section = (d: Json, projectId: string): Json => d.projects.find((p: Json) => p.project_id === projectId);
 const ids = (rows: Json[]): string[] => rows.map((r) => r.run_id);
 
 function planted(projectId: string, state: RunState, summary?: string, clientId = "orch", attempt = 1): string {
-  const session = digestHarness.ledger.createMetaSession({ objective: "o", projectId });
-  const run = digestHarness.ledger.createRun({
+  const session = harness.ledger.createMetaSession({ objective: "o", projectId });
+  const run = harness.ledger.createRun({
     metaSessionId: session.id,
     state: state === "SUCCEEDED" || state === "FAILED" ? "RUNNING" : state,
     trustProfile: "edit-untrusted",
@@ -128,7 +139,7 @@ function planted(projectId: string, state: RunState, summary?: string, clientId 
     attempt,
   });
   if (state === "SUCCEEDED") {
-    digestHarness.ledger.casRunState({
+    harness.ledger.casRunState({
       runId: run.id,
       from: "RUNNING",
       to: "SUCCEEDED",
@@ -137,7 +148,7 @@ function planted(projectId: string, state: RunState, summary?: string, clientId 
     });
   }
   if (state === "FAILED") {
-    digestHarness.ledger.casRunState({
+    harness.ledger.casRunState({
       runId: run.id,
       from: "RUNNING",
       to: "FAILED",
@@ -150,23 +161,25 @@ function planted(projectId: string, state: RunState, summary?: string, clientId 
 }
 
 const inProject = async (projectId: string, clientId = "orch"): Promise<string> => {
-  const r = await digestHarness.ok(
+  const r = await harness.ok(
     "delegate_task",
     { objective: "Fix the parser crash", project: projectId, trust_profile: "edit-untrusted" },
     clientId,
   );
-  await digestHarness.lifecycle.waitForTerminal(r.run_id);
+  await harness.lifecycle.waitForTerminal(r.run_id);
   return r.run_id;
 };
 
 describe("M14 acceptance (T14.13)", () => {
   describe("scenario A: digest two projects and cursor (M14 row clause A; T14.1–T14.3)", () => {
+    useTwoProjectHarness();
+
     it("snapshot shows both projects with needs-attention, finished, failed, pending approvals and cursor delta", async () => {
       const client = "other";
       const finishedA = await inProject("proj-a", client);
       const failedA = planted("proj-a", "FAILED", undefined, client);
       const waiting = planted("proj-a", "AWAITING_APPROVAL", undefined, client);
-      const approval = digestHarness.ledger.createApproval({
+      const approval = harness.ledger.createApproval({
         runId: waiting,
         scopeJson: "{}",
         scopeHash: "b".repeat(64),
@@ -216,7 +229,7 @@ describe("M14 acceptance (T14.13)", () => {
       expect(snap.untrusted_summaries).toHaveLength(1);
       expect(snap.untrusted_summaries[0].content.text.length).toBeLessThanOrEqual(UNTRUSTED_TEXT_MAX);
       expect(JSON.stringify(snap).split("CANARY_SECRET_m14accept")).toHaveLength(2);
-      expect((await digestHarness.ok("get_run", { run_id: runId })).result.summary).toMatch(/^IGNORE ALL PREVIOUS/);
+      expect((await harness.ok("get_run", { run_id: runId })).result.summary).toMatch(/^IGNORE ALL PREVIOUS/);
     });
 
     it("client B does not see another client's exclusive project in digest", async () => {
@@ -231,19 +244,223 @@ describe("M14 acceptance (T14.13)", () => {
   });
 
   describe("scenario B: loop breaker park and flag (M14 row clause B; T14.5)", () => {
-    it.skip("parks the meta-session after N identical failures (T14.5 not merged on this branch)", () => {});
+    const LOOP = { identicalFailureThreshold: 3, stallMinutes: 30, maxSuccessorsPerMetaSession: 8 };
+    useTwoProjectHarness({ maxAttempts: 10, lifecycle: { loopBreaker: LOOP } });
+
+    it("parks the meta-session after N identical failures, flags it on get_run and get_digest and admits no successor", async () => {
+      const first = await harness.ok("delegate_task", {
+        objective: "overload",
+        project: "proj-a",
+        trust_profile: "edit-untrusted",
+      });
+      const session = first.meta_session_id as string;
+      const runs = () => harness.ledger.listRunsForMetaSession(session);
+      const parkOf = (runId: string) =>
+        harness.ledger.listRunEvents(runId).find((e) => e.type === LOOP_PARKED_EVENT)?.payload_json;
+      await harness.waitFor(
+        () =>
+          runs().length === 3 && runs().every((r) => r.state === "FAILED") && parkOf(runs()[2]?.id ?? "") !== undefined,
+      );
+      // max_attempts 10 would retry further; the third identical failure parks the chain instead.
+      expect(runs().map((r) => [r.state, r.failure_code, r.attempt])).toEqual([
+        ["FAILED", "PROVIDER_OVERLOADED", 1],
+        ["FAILED", "PROVIDER_OVERLOADED", 2],
+        ["FAILED", "PROVIDER_OVERLOADED", 3],
+      ]);
+      const newest = runs()[2]?.id as string;
+      expect(JSON.parse(parkOf(newest) as string)).toEqual({
+        meta_session_id: session,
+        threshold: 3,
+        fingerprint: "code:PROVIDER_OVERLOADED",
+        run_ids: runs().map((r) => r.id),
+      });
+
+      // Flagged: get_run and get_digest give the newest run the same parked_loop reason.
+      expect((await harness.ok("get_run", { run_id: newest })).needs_attention).toEqual({
+        active: true,
+        reason: "parked_loop",
+      });
+      const flagged = section(await digest(), "proj-a").needs_attention.filter((n: Json) => n.run_id === newest);
+      expect(flagged.map((n: Json) => n.reason)).toEqual(["parked_loop"]);
+
+      // No successor: a continuation into the parked meta-session is refused and writes no run row.
+      const cont = await harness.call("continue_task", { meta_session_id: session, instruction: "Try again" });
+      expect(cont.isError).toBe(true);
+      expect(cont.body.error.code).toBe("INVALID_REQUEST");
+      expect(cont.body.error.message).toMatch(/parked by the loop breaker/);
+      expect(runs()).toHaveLength(3);
+    });
   });
 
   describe("scenario C: budget cap refusal (M14 row clause C; T14.4)", () => {
-    it.skip("refuses admission when a budget cap is exhausted (T14.4 not merged on this branch)", () => {});
+    // Project `proj-a` may admit one run per UTC day; `proj-b` and the global scope are uncapped.
+    useTwoProjectHarness({
+      lifecycle: ({ ledger }) => ({
+        budgets: new BudgetEvaluator({
+          ledger,
+          settings: { global: {}, projects: new Map([["proj-a", { runsPerDay: 1 }]]) },
+        }),
+      }),
+    });
+    const runCount = (): number => (harness.db.prepare("SELECT COUNT(*) AS n FROM run").get() as { n: number }).n;
+
+    it("refuses admission over the cap with the budget_exhausted reason and flags only that project in the digest", async () => {
+      await inProject("proj-a", "other");
+      const before = runCount();
+      const refused = await harness.call(
+        "delegate_task",
+        { objective: "Fix the parser crash", project: "proj-a", trust_profile: "edit-untrusted" },
+        "other",
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.body.error, JSON.stringify(refused.body)).toMatchObject({
+        code: "ELIGIBILITY_NONE",
+        details: {
+          reason: "BUDGET_EXHAUSTED",
+          needs_attention_reason: "budget_exhausted",
+          scope: "project",
+          project_id: "proj-a",
+          cap: "runs_per_day",
+          limit: 1,
+          used: 1,
+        },
+      });
+      expect(refused.body.error.message).toMatch(/^operator budget cap runs_per_day reached for project proj-a/);
+      expect(runCount()).toBe(before);
+
+      const snapshot = await digest({}, "other");
+      expect(section(snapshot, "proj-a").budget).toEqual({ exhausted: true });
+      expect(section(snapshot, "proj-b").budget).toEqual({ exhausted: false });
+      // The cap is the project's own: proj-b still admits and finishes.
+      const b = await inProject("proj-b", "other");
+      expect((await harness.ok("get_run", { run_id: b }, "other")).status).toBe("SUCCEEDED");
+    });
   });
 
   describe("scenario D: pause holds admission (M14 row clause D; T14.6)", () => {
+    // Skipped until T14.6 (pause_project/resume_project, PR #539) merges.
     it.skip("holds admission while paused and finishes running work (T14.6 not merged on this branch)", () => {});
   });
 
   describe("scenario E: steer same native session (M14 row clause E; T14.7)", () => {
-    it.skip("continues the same native session after steer_run (T14.7 not merged on this branch)", () => {});
+    const OBJECTIVE = "Fix the parser crash";
+    const NOTE = "Also keep the public API unchanged.";
+    let root: string;
+    let repo: string;
+    let db: Database.Database;
+    let ledger: Ledger;
+    let lifecycle: RunLifecycle;
+    let fake: StatefulFake;
+    let mcp: SwitchboardMcpServer;
+    let client: Client;
+
+    beforeEach(async () => {
+      root = realpathSync(mkdtempSync(path.join(tmpdir(), "sb-m14-e-")));
+      repo = gitRepo(path.join(root, "repo"));
+      const dataDir = path.join(root, "data");
+      const home = path.join(root, "home");
+      mkdirSync(dataDir);
+      mkdirSync(home);
+      db = openLedger(dataDir);
+      ledger = createLedger(db, { ids: createIdGenerator() });
+      const artifacts = new ArtifactStore(path.join(dataDir, "artifacts"));
+      const workspace = new WorkspaceManager({
+        db,
+        artifacts,
+        dataDir,
+        allowedRoots: [root],
+        ids: createIdGenerator(),
+      });
+      // The bundled fake CLI keeps its native session and every prompt it received under `home`.
+      fake = firstFake({ home, timeouts: { wallClockMs: 60_000, idleMs: 30_000, killGraceMs: 300 } });
+      const registry = new AdapterRegistry().register(fake);
+      lifecycle = new RunLifecycle({
+        ledger,
+        workspace,
+        artifacts,
+        adapters: registry,
+        allowedRoots: [root],
+        globalConcurrency: 2,
+        perProviderConcurrency: 1,
+        resolveProfile: profileFor,
+        eligibility: {
+          platform: "linux",
+          gate: (id, version) => ({
+            eligible: true,
+            evidence: { provider: id, observedVersion: version, validatedRange: "test", validatedCliVersion: "test" },
+          }),
+        },
+      });
+      const edit: TrustProfile = "edit-untrusted";
+      mcp = createSwitchboardServer({
+        lifecycle,
+        ledger,
+        artifacts,
+        registry,
+        config: { allowedRoots: [root], mcpClients: new Map([["orch", { id: "orch", maxTrustProfile: edit }]]) },
+        clientId: "orch",
+      });
+      client = new Client({ name: "orch", version: "0.0.0" });
+      const [ct, st] = InMemoryTransport.createLinkedPair();
+      await mcp.server.connect(st);
+      await client.connect(ct);
+      await client.listTools(); // caches output schemas: every result is checked against them
+    });
+
+    afterEach(async () => {
+      await client.close();
+      await mcp.close();
+      await lifecycle.shutdown();
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    const ok = async (name: string, args: Json): Promise<Json> => {
+      const res = await client.callTool({ name, arguments: args });
+      const body = JSON.parse((res.content as { text: string }[])[0]?.text ?? "{}") as Json;
+      expect(res.isError === true, JSON.stringify(body)).toBe(false);
+      return body;
+    };
+
+    it("continues the same native session with only the note after steer_run, and records the note as a controller event", async () => {
+      // Not started yet: the run is QUEUED, so the steer lands before the first turn and is delivered at its boundary.
+      const r = await ok("delegate_task", {
+        objective: OBJECTIVE,
+        workspace_path: repo,
+        trust_profile: "edit-untrusted",
+      });
+      expect(r.status).toBe("QUEUED");
+      const steered = await ok("steer_run", { run_id: r.run_id, note: NOTE });
+      expect(steered.run_id).toBe(r.run_id);
+      lifecycle.start();
+      expect((await lifecycle.waitForTerminal(r.run_id)).state).toBe("SUCCEEDED");
+
+      // What the fake CLI received: one native session, the objective once (no replay), then the note.
+      const log = fake.reports.at(-1)?.prompt_log as string;
+      const prompts = readFileSync(log, "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l) as { session_id: string; prompt: string });
+      expect(prompts).toEqual([
+        { session_id: "fake-session-1", prompt: OBJECTIVE },
+        { session_id: "fake-session-1", prompt: NOTE },
+      ]);
+
+      // The note is a controller event (length and hash only, never the text); its delivery is recorded.
+      const events = ledger.listRunEvents(r.run_id);
+      const payloads = (type: string) =>
+        events.filter((e) => e.type === type).map((e) => JSON.parse(e.payload_json ?? "{}") as Json);
+      expect(payloads("steer_requested")).toEqual([
+        {
+          note_chars: NOTE.length,
+          note_sha256: createHash("sha256").update(NOTE).digest("hex"),
+          delivery: "boundary_resume",
+        },
+      ]);
+      expect(payloads("steer_delivered")).toEqual([{ delivery: "boundary_resume", notes: 1 }]);
+      for (const e of events) expect(e.payload_json ?? "").not.toContain(NOTE);
+      expect((await ok("get_run", { run_id: r.run_id })).status).toBe("SUCCEEDED");
+    });
   });
 
   describe("scenario F: approval proxy and negative list (M14 row clause F; T14.8)", () => {
