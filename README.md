@@ -50,6 +50,12 @@ Pre-release. The package is private and is not published to any registry; you bu
   of this is tested on fake providers. The cache-friendly prompt order is built (ROADMAP T7.9, Could; no cache
   benefit is claimed). Real-provider model flags wait for adapter work. See
   [Routing and affinity](#routing-and-affinity) and [ROADMAP §6.12](docs/ROADMAP.md#612-m7-routing-tasks).
+- **Milestone 8 (hardening) is `Partial`.** Optional OTLP trace export (`telemetry.otlp_endpoint`, off by default) and
+  lazy exporter load (T8.1), the operator version canary (T8.5) and a CI test that excludes routing after a synthetic
+  binary version bump until `adapters validate` records the version (T8.6) are done on fakes. Wrapper span emission,
+  the collector integration test and full M8 acceptance closure (T8.2–T8.4, T8.7) are not done. See
+  [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and
+  [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
 - **Milestone 11 (inner agent) is `Partial`.** T11.1 to T11.12 are done on fakes: an optional HTTP backend, privacy
   gates, `doctor` and `inner` reporting, commit-message drafting, handoff condensation (T11.10, a service function) and
   record-only routing classification (T11.11). Two tasks are wired into production `serve` run paths: the commit-message
@@ -284,6 +290,7 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `projects` | no | List of `{ "id", "name", "environment"?, "contexts": [...] , "max_trust_profile"?, "allowed_providers"? }`. `id` matches `^[a-z][a-z0-9-]{1,40}$` and is unique. `environment` is `{ "kind": "host" }` (default) or a `container` shape that `projects validate` rejects until M10. Each context is `{ "id", "kind": "repository", "path", "base_ref", "primary"?, "writable"?, "push"?, "identity"?, "sign"?, "finalize_commit"? }` with an absolute `path` under an allowed root; exactly one context is primary. Unknown keys and context kinds stop startup. `push.remote` must be the name of a remote in the repository (not a URL), and `push.branch_prefix` a branch-name prefix such as `"switchboard/"`. `max_trust_profile` and `allowed_providers` apply to `delegate_task` with a `project`: the effective trust ceiling is the lower of the client's and the project's, and routing is limited to the listed providers (a request naming another provider with `require_provider` fails `PERMISSION_BLOCKED`); `sign` (default `false`; needs `identity`, primary writable context only) makes the controller sign each published commit with the operator's own global Git signing configuration; a signing failure, a repository whose own configuration sets `gpg.*` or `user.signingkey`, or a run whose agent could reach the key (the `push` rule) returns `SIGNING_FAILED` and commits nothing; `projects validate` makes a test signature. Only GnuPG has been tried, with a throwaway key; SSH, X.509, passphrase-protected and hardware keys are untested. `finalize_commit` (default `false`; needs `identity`, primary writable context only) turns on finalize-only commits, described below. Full shape: LLD section 11.1. |
 | `routing` | no | `{ "weights"?: { "success", "latency", "capacity", "security", "handoff", "cost" }, "affinity"?: { "enabled", "low_water_mark", "min_confidence", "idle_ttl" } }`. Each weight 0 to 100, default 1; all 0 means configured order. `affinity.enabled` defaults to `true`; `low_water_mark` and `min_confidence` (0 to 1) are set together or both left `null` (the default, which leaves the estimate trigger off); `idle_ttl` accepts only `null` (no expiry). Unknown keys stop startup. See [Routing and affinity](#routing-and-affinity) and LLD section 17.1. |
 | `timeouts.preflight_ttl_seconds` | no | Integer 0 to 3600. How long a successful adapter preflight is cached (default 60); 0 disables the cache. |
+| `telemetry.otlp_endpoint` | no | `http` or `https` URL for OTLP/HTTP trace export. When omitted or empty, Switchboard does not load OpenTelemetry at startup and makes no outbound telemetry connection. See [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and [LLD §7](docs/design/LLD.md#7-telemetry-spans). |
 | `git.sanitize_patterns` | no | Up to 16 extra regular-expression sources (200 characters each, restricted subset in `src/git/safe-pattern.ts`). A commit-message line that matches one is removed, in addition to the built-in attribution rules. |
 | `inner_agent` | no | The optional inner agent (ADR-0016): a cheap or self-hosted model for small tasks. Off unless you write the section and set `enabled: true`; there is no default backend, model or task, and no key, token or header field (a hosted service goes through a gateway you run). Shape: `{ "enabled", "backend": { "kind": "http", "base_url", "model", "timeout_ms"?, "max_concurrency"?, "allow_remote"?, "shares_subscription_with"? }, "tasks": { "<task>": { "enabled", ... } }, "breaker"?, "suspension"? }`; `base_url` may not carry userinfo or a query, and `shares_subscription_with` must be one of the provider config ids listed below this table (`claude-code`, `codex`, ...) or `null`: any other string stops startup, so `doctor` fails its config check naming the key and `inner test` exits 1 before sending anything. Full shape: LLD section 13.1. Inspect it with `doctor` and `inner status`. |
 | `rag` | no | The optional retrieval index (ADR-0031): off unless you configure an `embedding` backend. No credential fields; `mode` defaults to `auto` (on only when a backend exists and the project allows). Projects and contexts may narrow caps and exclusions; `use_global` and `contribute_to_global` default to false and cannot be set on dynamic projects. Full shape: [LLD §14.1](docs/design/LLD.md#141-configuration-shape) and [Retrieval index](#retrieval-index-milestone-12). |
@@ -414,6 +421,35 @@ under `<data_dir>/rag/`; deleting a project removes its store.
 Tests on fakes and fixtures (no live embedding in CI): `src/config/rag.test.ts`, `src/retrieval/*.test.ts`,
 `src/lifecycle/context-pack.test.ts`, `src/mcp/search-context.test.ts`, `src/cli/rag-index.test.ts`. Task-level
 evidence is in [ROADMAP §6.7](docs/ROADMAP.md#67-m12-retrieval-index-tasks).
+
+## Telemetry and adapter versioning (milestone 8)
+
+Milestone 8 hardens telemetry export and adapter version change detection. It is **`Partial`**: configuration, a lazy OTLP
+exporter shell, the version canary and the CI version-bump test are in place on fakes; full wrapper spans and the
+collector integration test are not.
+
+**Trace export (T8.0, T8.1).** Set `telemetry.otlp_endpoint` to an `http` or `https` URL when you want OTLP/HTTP traces.
+When the key is absent or empty, `serve` behaves as before M8: no OpenTelemetry packages load at startup and nothing
+listens for telemetry. Invalid URLs are rejected at config load without echoing the value. Spans are intended to carry
+only allowlisted attributes from controller-observed facts (prompts, commands and credentials never belong on spans);
+see [LLD §7](docs/design/LLD.md#7-telemetry-spans) and [ADR-0012](docs/adr/0012-telemetry-at-wrapper-boundary.md).
+Emitting `controller.delegate`, `provider.spawn` and related spans at the wrapper boundary (T8.2) and proving export
+through a test collector without forbidden keys (T8.3) are not built yet.
+
+**Version canary (T8.5).** Switchboard records each enabled provider's probed CLI version under the data directory
+(`version-canary.json`). A version change marks the adapter `ADAPTER_VERSION_UNVERIFIED` until you run
+`switchboard adapters validate <provider>` successfully; routing and `doctor` apply the same rule. On the operator host,
+schedule `switchboard adapters version-canary` (cron, systemd timer or equivalent); CI uses injected versions only.
+Details: [docs/operations/version-canary.md](docs/operations/version-canary.md).
+
+**CI version-bump test (T8.6).** `src/adapters/version-bump-preflight.test.ts` (suite
+`version bump through preflight cache invalidation (T8.6)`) simulates a binary identity change, invalidates the
+preflight cache, and asserts routing excludes the provider until validation records the new version. No provider CLI is
+installed in CI.
+
+Tests on fakes: `src/config/config.test.ts`, `src/telemetry/index.test.ts`, `src/adapters/version-canary.test.ts`,
+`src/adapters/version-bump-preflight.test.ts`. Per-task evidence is in
+[ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
 
 ## Control plane (milestone 14)
 
@@ -667,6 +703,7 @@ switchboard projects show <id>
 switchboard projects validate [<id>]
 switchboard projects approve <id> [--revision <n>] [--reject]
 switchboard adapters validate <provider>
+switchboard adapters version-canary
 switchboard inner status
 switchboard inner test <task>
 switchboard inner resume <task>
