@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.43 residual, tenth pass). An id-less success result is followed by an invented session.idle line that carries session_id, model and backing_provider. The parser reads a session id only on system/init and result ([LIVE] 5a, 5b), so the trailing unknown never binds; the run succeeds with no native session. Assumption: no capture shows a session id on an unknown type after result.","exit":0}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"SYNTHETIC: done"}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{"inputTokens":4,"outputTokens":1}}
+{"type":"session.idle","session_id":"synthetic-cursor-session-0001","backing_provider":"late-idle","model":"Idle Model"}

@@ -1,0 +1,5 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.43 residual, tenth pass). A completed shell tool_call carries result.Rejected (capital R) rather than the recorded result.rejected ([LIVE] 7a). Object.hasOwn is exact, so the case variant is never a permission_denied event and the run succeeds at exit 0. Assumption: no capture shows a capitalised refusal key.","exit":0}}
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work/tree","session_id":"synthetic-cursor-session-0001","model":"Synthetic Model 1","permissionMode":"default"}
+{"type":"tool_call","subtype":"completed","call_id":"call-1","tool_call":{"shellToolCall":{"args":{"command":"ls"},"result":{"Rejected":{"reason":"not allowed"}}}},"session_id":"synthetic-cursor-session-0001"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"The listing ran."}]},"session_id":"synthetic-cursor-session-0001"}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"result":"ok","session_id":"synthetic-cursor-session-0001","usage":{"inputTokens":7,"outputTokens":3}}
