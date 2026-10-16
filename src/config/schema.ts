@@ -25,6 +25,9 @@
  * tools are absent). `approval_proxy_targets` (default: the client itself) lists the client ids whose approvals it may
  * decide; `load.ts` refuses it without `approval_proxy: true` and refuses an id that is not a configured client.
  *
+ * `mcp_clients[].tool_profile` (T14.11; FR-CTL-11, LLD §3.4.10): `orchestrator` (default, today's tool set) or `console`
+ * (the closed console set; `src/mcp/tool-profile.ts`). `load.ts` refuses `console` with `manage_projects: true`.
+ *
  * `providers.claude-code.git_channel` (T9.4b; ADR-0029 item 7, owner decision 36; key and default Delegated): the
  * operator opt-in that lets the Claude Code adapter receive the injected tool channel through a controller-written
  * `--mcp-config` file. Default false (argv unchanged, `commitChannel: "none"`). Accepted only under `claude-code`.
@@ -81,6 +84,11 @@ export const PRIVILEGED_APPROVAL_MODES = ["required", "not_required"] as const;
 export type PrivilegedApprovalMode = (typeof PRIVILEGED_APPROVAL_MODES)[number];
 export const DEFAULT_PRIVILEGED_APPROVAL: PrivilegedApprovalMode = "required";
 
+/** `mcp_clients[].tool_profile` values (FR-CTL-11, LLD §3.4.10). `orchestrator` (today's full set) is the default. */
+export const TOOL_PROFILES = ["orchestrator", "console"] as const;
+export type ToolProfile = (typeof TOOL_PROFILES)[number];
+export const DEFAULT_TOOL_PROFILE: ToolProfile = "orchestrator";
+
 export interface SwitchboardConfig {
   schema_version: 1;
   data_dir?: string;
@@ -99,6 +107,8 @@ export interface SwitchboardConfig {
     approval_proxy?: boolean;
     /** T14.8: client ids whose pending approvals this proxy may decide. Default: the client itself. */
     approval_proxy_targets?: string[];
+    /** T14.11 (FR-CTL-11): `orchestrator` (default) or `console`. */
+    tool_profile?: ToolProfile;
   }[];
   limits?: { global_concurrency?: number; per_provider_concurrency?: number };
   providers?: Partial<
@@ -442,6 +452,7 @@ export const configSchema = {
             minItems: 1,
             items: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,63}$" },
           },
+          tool_profile: { enum: [...TOOL_PROFILES] },
         },
       },
     },

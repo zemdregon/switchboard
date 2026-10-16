@@ -195,6 +195,7 @@ import {
   searchEnabledFor,
   searchProjectContext,
 } from "./search-context.js";
+import { applyToolProfile, profileOffers } from "./tool-profile.js";
 
 export const SERVER_NAME = "switchboard";
 /** Proposed: tracks package.json `version`. */
@@ -1355,6 +1356,15 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
 
   const callTool = async (name: string, rawArgs: unknown): Promise<CallToolResult> => {
     try {
+      if (!profileOffers(client.toolProfile, name)) {
+        // T14.11 (FR-CTL-11): a tool outside the client's profile is answered exactly like an unknown tool.
+        if ((PROJECT_TOOL_NAMES as readonly string[]).includes(name)) {
+          projectTools?.recordNotOffered(name as ProjectToolName, rawArgs);
+        }
+        throw invalid(`unknown tool ${JSON.stringify(name.slice(0, 64))}`, {
+          tools: TOOL_NAMES.filter((n) => profileOffers(client.toolProfile, n)),
+        });
+      }
       if ((PROJECT_TOOL_NAMES as readonly string[]).includes(name)) {
         // T9.9 (FR-PRJ-10): offered only with manage_projects; otherwise answered exactly like an unknown tool, but recorded.
         if (client.manageProjects === true && projectTools !== undefined) {
@@ -1411,7 +1421,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
   );
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
+    // T14.11 (FR-CTL-11): a console client sees only the console set; an orchestrator list is unchanged.
+    tools: applyToolProfile(client.toolProfile, [
       ...toolDescriptors({
         manageProjects: client.manageProjects === true && projectTools !== undefined,
         searchContext: searchOffered(),
@@ -1420,7 +1431,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       ...(approvalProxy !== undefined
         ? approvalProxyToolDescriptors().map((d) => ({ ...d, outputSchema: withError(d.outputSchema) }))
         : []),
-    ],
+    ]),
   }));
   server.setRequestHandler(CallToolRequestSchema, async (req) => callTool(req.params.name, req.params.arguments));
 
