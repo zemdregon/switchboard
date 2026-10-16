@@ -80,8 +80,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   roadmap row was reconciled to the 2026-10-16 status contract in
   [#569](https://github.com/zemdregon/switchboard/pull/569), citing `src/config/config.test.ts`,
   `src/inner/inner.test.ts`, `src/inner/import-boundary.test.ts`, `src/inner/port.ts`, `src/inner/fake-backend.ts` and
-  `src/ledger/migrations/0005_inner_call.ts`. T11.13 (the `cli` backend) is Planned and no live backend has been
-  exercised. Two tasks are wired into production `serve` run paths: the commit-message
+  `src/ledger/migrations/0005_inner_call.ts` (milestone row and README reconcile
+  [#574](https://github.com/zemdregon/switchboard/pull/574)). T11.13 (the `cli` backend) is Planned and no live backend
+  has been exercised. Two tasks are wired into production `serve` run paths: the commit-message
   task (the optional `message` on the `commit` tool) and routing classification (`serve` admission, continuation and
   quota failover, with heuristic fallback when inner is off or unavailable). Handoff condensation, PR drafting,
   verification-summary, run-title and a live backend are not. T11.5 usage-surface pins merged
