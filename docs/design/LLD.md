@@ -2866,6 +2866,28 @@ section was silent or the build differs:
   no-Git-client check is T10.3. Tests: `src/environment/container.test.ts`, `src/environment/docker-runtime.test.ts`,
   `src/lifecycle/environment.test.ts`, opt-in `src/environment/container-docker.test.ts`.
 
+*As built (2026-10-16, T10.2, Delegated; text above unchanged).* `environment` events and the startup sweep:
+
+- **Ledger write.** `environmentEventSink(ledger)` (`src/environment/ledger-events.ts`) is the `onEvent` callback the
+  controller composes: each event is appended as a `run_event` of type `environment` with the payload as emitted
+  (`detail` truncated to 500 characters). An event of a run the ledger does not know, or a failed write, goes to a log
+  line; the sink never throws. The port itself stays ledger-free.
+- **Startup sweep.** `reconcile` takes `environments` and, before any run is examined, calls each one's
+  `sweepOrphans(new Set(), { owns })`: nothing is live at startup (the data-directory lock is held and nothing has
+  been started), so every labelled run or probe container of a run this ledger knows is an orphan. `owns` (a new
+  optional argument, `SweepOptions`) leaves a container of a run the ledger does not know alone: it belongs to another
+  controller on the same runtime. A listing failure fails reconciliation and so `serve` (fail closed: an orphan could
+  still write the worktree). Each non-terminal `container` run gets a `reconciliation` event `environment_sweep`
+  (`swept`, `containers_removed`) after its process group is handled and before its worktree is assessed (FR-PRJ-07,
+  FR-EXE-06); with no container environment configured it records `swept: false`.
+- **`serve`.** `orphanSweepEnvironments` composes the Docker-backed container environment with the ledger sink only
+  when a configured project is `container`; a runtime whose `info` is unavailable is skipped with a warning
+  (Assumption: a rootless daemon that does not answer runs no container).
+- **Not built in T10.2:** the lifecycle's own container environment is still not composed by `serve` (T10.1 gap 1);
+  when it is, it takes the same sink. Tests: `src/reconcile/reconcile.test.ts` ("T10.2: startup orphan sweep and
+  environment run events"), `src/environment/ledger-events.test.ts`, `src/environment/container.test.ts`,
+  `src/cli/serve-orphan-sweep.test.ts`.
+
 ## 12. Injected Git tools, commits and publication
 
 Implements FR-GIT-01..09 and [ADR-0014](../adr/0014-tool-only-commits-and-publication.md). **Proposed** mechanisms; zemdregon

@@ -32,12 +32,21 @@
  *   that no longer applies is marked rejected. An AWAITING_APPROVAL run with no decision is kept as is: there is no
  *   expiry and no automatic approval (FRD WF-7, owner decision 17).
  *
+ * T10.2 (FR-PRJ-07, LLD §11.3): before any run is examined, each configured environment's `sweepOrphans` removes the
+ * containers a previous controller left. Nothing is live at startup (this controller holds the data-directory lock and
+ * has started nothing), so every labelled container of a run this ledger knows is an orphan; a container of a run the
+ * ledger does not know belongs to another controller on the same runtime and is left alone (Delegated). Removals are
+ * `environment` run events written by the environment's `onEvent` sink; each non-terminal `container` run also gets a
+ * `reconciliation` event `environment_sweep` before its worktree is assessed. A sweep that cannot list the runtime's
+ * containers fails reconciliation (fail closed: an orphan could still be writing the worktree).
+ *
  * Idempotent (LLD §10): every step is conditional on the current state; a second pass over a reconciled ledger writes
  * nothing. A crash during reconciliation leaves the last committed step, which the next pass continues from.
  */
 import { stat } from "node:fs/promises";
 import type Database from "better-sqlite3";
 import { listPendingCancels, listPendingDecisions, OPERATOR_CANCEL_APPLIED, rejectDecision } from "../cli/operator.js";
+import { containerName, type Environment, environmentKindOf, probeContainerName } from "../environment/index.js";
 import { RefGuard } from "../git/ref-guard.js";
 import type { Ledger, RunFieldPatch, RunRecord, RunState } from "../ledger/index.js";
 import { applyApprovalDecision, denyApprovalOnCancel } from "../lifecycle/approval.js";
@@ -62,6 +71,11 @@ export interface ReconcileOptions {
   readonly now?: () => Date;
   /** T9.5 ref check before the evidence checkpoint (FR-GIT-03, BR-27); defaults to a guard over `ledger`. */
   readonly refGuard?: RefGuard;
+  /**
+   * T10.2 (FR-PRJ-07): environments whose orphaned containers are swept before any worktree is assessed. Their
+   * `onEvent` should be `environmentEventSink` over `ledger`, so removals are recorded as `environment` run events.
+   */
+  readonly environments?: readonly Environment[];
 }
 
 export interface ReconcileAction {
@@ -86,6 +100,8 @@ export interface ReconcileReport {
   readonly cancelsApplied: readonly string[];
   /** Operator `approve`/`deny` request event ids applied (T3.4). */
   readonly decisionsApplied: readonly string[];
+  /** Container names removed by the startup orphan sweep (T10.2). */
+  readonly containersRemoved: readonly string[];
 }
 
 type Pending =
@@ -106,6 +122,7 @@ class Reconciler {
   private readonly cancelsApplied: string[] = [];
   private readonly decisionsApplied: string[] = [];
   private readonly refGuard: RefGuard;
+  private readonly containersRemoved: string[] = [];
 
   constructor(private readonly opts: ReconcileOptions) {
     this.ledger = opts.ledger;
@@ -116,6 +133,7 @@ class Reconciler {
     const runs = RUN_STATES.filter((s) => !TERMINAL_STATES.has(s))
       .flatMap((s) => this.ledger.listRunsInState(s))
       .sort((a, b) => (a.created_at === b.created_at ? cmp(a.id, b.id) : cmp(a.created_at, b.created_at)));
+    await this.sweepContainers();
     for (const run of runs) await this.reconcileRun(run);
     const leasesReleased = this.sweepLeases();
     return {
@@ -125,7 +143,21 @@ class Reconciler {
       leasesReleased,
       cancelsApplied: this.cancelsApplied,
       decisionsApplied: this.decisionsApplied,
+      containersRemoved: this.containersRemoved,
     };
+  }
+
+  /** FR-PRJ-07: containers left by a previous controller, removed before any worktree is assessed. */
+  private async sweepContainers(): Promise<void> {
+    const owns = (runId: string): boolean => this.ledger.getRunRecord(runId) !== undefined;
+    for (const env of this.opts.environments ?? []) {
+      try {
+        const { removed } = await env.sweepOrphans(new Set(), { owns });
+        this.containersRemoved.push(...removed);
+      } catch (err) {
+        throw new Error(`${env.kind} environment orphan sweep failed: ${errorText(err)}`);
+      }
+    }
   }
 
   private async reconcileRun(run0: RunRecord): Promise<void> {
@@ -158,6 +190,7 @@ class Reconciler {
 
     // FR-EXE-06: a still-live provider group is terminated before the worktree is assessed.
     const orphan = await this.handleOrphan(run0);
+    this.recordEnvironmentSweep(run0);
     const run = this.current(run0.id);
 
     switch (run.state) {
@@ -247,6 +280,26 @@ class Reconciler {
       this.event(run.id, { step: "orphan_not_signalled", pgid: status.pgid, reason: status.kind });
     }
     return status;
+  }
+
+  /** The sweep's outcome for a `container` run, recorded before its worktree is assessed (FR-PRJ-07). */
+  private recordEnvironmentSweep(run: RunRecord): void {
+    let kind: string;
+    try {
+      kind = environmentKindOf(JSON.parse(run.policy_snapshot_json) as Parameters<typeof environmentKindOf>[0]);
+    } catch {
+      return; // an unreadable snapshot was never admitted to a container (the lifecycle reads the same field)
+    }
+    if (kind !== "container") return;
+    const swept = (this.opts.environments ?? []).some((e) => e.kind === "container");
+    const names = new Set([containerName(run.id), probeContainerName(run.id)]);
+    this.event(run.id, {
+      step: "environment_sweep",
+      environment_kind: kind,
+      swept,
+      containers_removed: this.containersRemoved.filter((n) => names.has(n)),
+      ...(swept ? {} : { detail: "no container environment was configured for the startup sweep" }),
+    });
   }
 
   /** FINALIZING (or LEASED with a worktree) → terminal; mirrors RunLifecycle.finalize. */

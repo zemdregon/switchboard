@@ -8,10 +8,13 @@ import path from "node:path";
 import { FakeAdapter, type FakeScenario } from "../../adapters/fake/adapter.js";
 import { AdapterRegistry, type ResolvedProfile } from "../../adapters/index.js";
 import { ArtifactStore } from "../../artifacts/index.js";
+import { createContainerEnvironment, environmentEventSink } from "../../environment/index.js";
 import { createIdGenerator } from "../../ids/index.js";
 import { createLedger, openLedger, type TrustProfile } from "../../ledger/index.js";
 import { RunLifecycle } from "../../lifecycle/index.js";
+import type { ProjectSnapshot } from "../../policy/index.js";
 import { WorkspaceManager } from "../../workspace/index.js";
+import { fileRuntime } from "./file-runtime.js";
 
 interface ChildConfig {
   dataDir: string;
@@ -26,6 +29,8 @@ interface ChildConfig {
   objective?: string;
   /** T3.10: verification commands of the run (argv arrays). */
   verificationCommands?: string[][];
+  /** T10.2: run under a `container` project over the file-backed runtime whose state lives in this directory. */
+  containerStateDir?: string;
 }
 
 const cfg = JSON.parse(process.argv[2] ?? "{}") as ChildConfig;
@@ -48,6 +53,26 @@ const adapter = new FakeAdapter({
   timeouts: { wallClockMs: 120_000, idleMs: 120_000, killGraceMs: 300 },
 });
 
+const containerProject: ProjectSnapshot | undefined =
+  cfg.containerStateDir === undefined
+    ? undefined
+    : {
+        id: "web",
+        name: "Web",
+        environment_kind: "container",
+        image_digest: `sha256:${"a".repeat(64)}`,
+        context_id: "main",
+        base_ref: "main",
+        effective_max_profile: "trusted-development",
+      };
+const containerEnvironment =
+  cfg.containerStateDir === undefined
+    ? undefined
+    : createContainerEnvironment({
+        runtime: fileRuntime(cfg.containerStateDir),
+        onEvent: environmentEventSink(ledger),
+      });
+
 let privilegedRunId: string | undefined;
 const lifecycle = new RunLifecycle({
   ledger,
@@ -57,6 +82,9 @@ const lifecycle = new RunLifecycle({
   allowedRoots: [cfg.root],
   globalConcurrency: 2,
   resolveProfile: profileFor,
+  ...(containerEnvironment !== undefined
+    ? { environments: { resolve: () => ({ environment: containerEnvironment, readOnlyContexts: [] }) } }
+    : {}),
   onTransition: (n) => {
     if (n.to !== "RUNNING") return;
     const run = ledger.getRunRecord(n.runId);
@@ -85,6 +113,7 @@ const submitted = await lifecycle.submit({
   trustProfile: "edit-untrusted",
   provider: "fake",
   ...(cfg.verificationCommands ? { verificationCommands: cfg.verificationCommands } : {}),
+  ...(containerProject !== undefined ? { project: containerProject } : {}),
 });
 process.stderr.write(`submitted ${submitted.runId}\n`);
 lifecycle.start();
