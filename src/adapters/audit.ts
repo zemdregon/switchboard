@@ -12,6 +12,12 @@
  * refuses the flag; with no context at all every flag is refused (the M1/M2 behaviour). The audit is independent of the adapter's own compile
  * gate, so a compile bug cannot by itself put a bypass flag on a spawned argv.
  *
+ * Provider-scoped flags (ADR-0049 item 1, Q-95, T4.62; `providerScopedBypassFlags` in the registry) are flags that are
+ * bypass-class in one CLI and ordinary in another (Kimi Code's `-p`/`--prompt`; Claude Code's `-p`). They are checked
+ * only when the caller names the provider the argv was compiled for: that entry's list for a registered id, every
+ * entry's list for an id the registry does not know (fail closed). The pre-spawn check (`startAdapterRun`) always
+ * names `adapter.id`; a call without a provider (tests, the inner CLI backend) checks the provider-agnostic lists only.
+ *
  * The second half of this module (T9.4b, ADR-0029 item 6) audits `--mcp-config` and MCP allow rules: only the
  * controller-written channel definition, in one exact shape, and only in an approved bypass run (ADR-0033, owner
  * decision 41), is admitted (see {@link auditMcpArgs}). The third half checks that a Claude Code argv keeps
@@ -26,6 +32,7 @@ import {
   declaredBypassFlags,
   declaredBypassShortFlags,
   declaredBypassValues,
+  scopedBypassFlags,
 } from "./providers.js";
 import type { Invocation, ResolvedProfile } from "./types.js";
 
@@ -94,6 +101,18 @@ function clusterHits(arg: string, short: readonly string[]): string[] {
   return short.filter((f) => letters.includes(f.slice(1)));
 }
 
+/**
+ * The provider-scoped flags `arg` carries: `flag` or `flag=value`; for a short `-x`, also `x` among the letters and
+ * digits that open a single-dash word (`-xvalue`, `-yx`, `-x=1`), since a joined value or a cluster may follow it.
+ */
+function scopedHits(arg: string, scoped: readonly string[]): string[] {
+  const letters = /^-([A-Za-z0-9]+)/u.exec(arg)?.[1];
+  return scoped.filter((f) => {
+    if (arg === f || arg.startsWith(`${f}=`)) return true;
+    return /^-[A-Za-z0-9]$/u.test(f) && letters?.includes(f.slice(1)) === true;
+  });
+}
+
 /** `<flag> <value>` (this word and the next) or `<flag>=<value>`, value compared case-insensitively. */
 function valueHits(list: readonly string[], i: number, values: readonly BypassValue[]): string[] {
   const arg = list[i] as string;
@@ -109,14 +128,17 @@ function valueHits(list: readonly string[], i: number, values: readonly BypassVa
 
 /**
  * Every bypass-class hit in argv or policyFlags, whatever the context: a flag of {@link bypassClassFlags} as before
- * (bare or `flag=value`); otherwise a short spelling inside a cluster; and a declared flag value (ADR-0037), reported
- * as `<flag> <value>`. Value pairs are read within one list (argv, then policyFlags), never across the two.
+ * (bare or `flag=value`); otherwise a short spelling inside a cluster; a declared flag value (ADR-0037), reported
+ * as `<flag> <value>`; and, when `provider` (the adapter id the argv was compiled for) is given, the provider-scoped
+ * flags of `scopedBypassFlags(provider)` (T4.62). Value pairs are read within one list (argv, then policyFlags), never
+ * across the two.
  */
-export function findBypassFlags(inv: Pick<Invocation, "argv" | "policyFlags">): string[] {
+export function findBypassFlags(inv: Pick<Invocation, "argv" | "policyFlags">, provider?: string): string[] {
   const found = new Set<string>();
   const flags = bypassClassFlags();
   const short = bypassClassShortFlags();
   const values = bypassClassValues();
+  const scoped = provider !== undefined ? scopedBypassFlags(provider) : [];
   for (const list of [inv.argv, inv.policyFlags]) {
     for (let i = 0; i < list.length; i += 1) {
       const arg = list[i] as string;
@@ -124,6 +146,7 @@ export function findBypassFlags(inv: Pick<Invocation, "argv" | "policyFlags">): 
       if (hit) found.add(hit);
       else for (const s of clusterHits(arg, short)) found.add(s);
       for (const v of valueHits(list, i, values)) found.add(v);
+      for (const s of scopedHits(arg, scoped)) found.add(s);
     }
   }
   return [...found];
@@ -132,10 +155,14 @@ export function findBypassFlags(inv: Pick<Invocation, "argv" | "policyFlags">): 
 /**
  * The bypass flags in argv or policyFlags that `ctx` does not admit: every one found unless {@link bypassPermitted}.
  * Without a context this is every bypass flag present, so `auditInvocation(inv)` is empty exactly when the argv has
- * none.
+ * none. `provider` adds the provider-scoped flags, as in {@link findBypassFlags}.
  */
-export function auditInvocation(inv: Pick<Invocation, "argv" | "policyFlags">, ctx?: BypassContext): string[] {
-  return bypassPermitted(ctx) ? [] : findBypassFlags(inv);
+export function auditInvocation(
+  inv: Pick<Invocation, "argv" | "policyFlags">,
+  ctx?: BypassContext,
+  provider?: string,
+): string[] {
+  return bypassPermitted(ctx) ? [] : findBypassFlags(inv, provider);
 }
 
 export class BypassFlagError extends Error {
@@ -145,9 +172,16 @@ export class BypassFlagError extends Error {
   }
 }
 
-/** Throws {@link BypassFlagError} when the audit refuses any flag (used before every spawn). */
-export function assertBypassAudit(inv: Pick<Invocation, "argv" | "policyFlags">, ctx?: BypassContext): void {
-  const refused = auditInvocation(inv, ctx);
+/**
+ * Throws {@link BypassFlagError} when the audit refuses any flag (used before every spawn, with `provider` the adapter
+ * id, so the provider-scoped flags apply).
+ */
+export function assertBypassAudit(
+  inv: Pick<Invocation, "argv" | "policyFlags">,
+  ctx?: BypassContext,
+  provider?: string,
+): void {
+  const refused = auditInvocation(inv, ctx, provider);
   if (refused.length > 0) throw new BypassFlagError(refused);
 }
 

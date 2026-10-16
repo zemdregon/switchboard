@@ -63,6 +63,18 @@ sandbox, per-run permission-rule flag or per-run MCP flag exists for `-p`.
   approved scope is refused before spawn.
 - Cells needing a model call (stream-json shapes, exit codes, permission round trip) remain `Unverified: T4.68`.
 
+## Implementation (as built, T4.62, 2026-10-16, Delegated)
+
+Item 1's `-p` and `--prompt` are declared in the Kimi Code entry as `providerScopedBypassFlags`, not `bypassFlags`
+(Q-95): `bypassFlags` feed the audit shared by every provider (ADR-0035), where they would refuse Claude Code's `-p` and
+Antigravity's `--prompt` in their own runs. The argv audit (`src/adapters/audit.ts`) applies a provider-scoped list only
+to argv compiled for its owner (the pre-spawn check in `src/adapters/run.ts` names `adapter.id`), and every entry's list
+to argv whose adapter id is not in the table (fail closed). It refuses `-p`, `--prompt`, their `=value` forms and `-p`
+among the letters opening a single-dash word (`-px`, `-yp`) in a Kimi argv except in the approved bypass run, whose
+compile emits `--prompt=<prompt>`; Claude Code's and Antigravity's argv are audited exactly as before. `--yolo`, `-y`,
+`--auto` and `--plan` stay shared declarations. Tests: `src/adapters/bypass-forms.test.ts` ("provider-scoped bypass
+flags") and `src/adapters/kimi/kimi.test.ts` ("kimi -p/--prompt in the argv audit").
+
 ## Revisit when
 
 - T4.68 observes the permission round trip, the `-p` exit codes or the `stream-json` records.

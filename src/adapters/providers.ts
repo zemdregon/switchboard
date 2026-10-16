@@ -8,7 +8,9 @@
  * - the adapters `serve` registers (`buildRegistry`) and `doctor` probes (`defaultAdapters`, with its labels);
  * - the bypass-class flags the argv audit refuses on top of the shared `BYPASS_FLAGS` ({@link declaredBypassFlags}),
  *   and the short spellings and flag values it refuses ({@link declaredBypassShortFlags},
- *   {@link declaredBypassValues}; ADR-0037), the latter two only from entries that have an adapter (`create`).
+ *   {@link declaredBypassValues}; ADR-0037), the latter two only from entries that have an adapter (`create`);
+ * - the provider-scoped bypass-class flags the argv audit refuses only in the owning provider's argv, or in every argv
+ *   whose provider the audit does not know ({@link scopedBypassFlags}; ADR-0049 item 1, Q-95, T4.62).
  *
  * Adding an adapter: its module, manifest and fixtures, plus one entry here. Per-adapter modules are not re-exported
  * from `./index.ts`; Claude Code and Codex stay exported there for the code that already imports them.
@@ -78,6 +80,15 @@ export interface ProviderEntry {
   readonly bypassShortFlags?: readonly string[];
   /** Bypass-class flag values (ADR-0037); counted only while the entry has `create`, as `bypassShortFlags`. */
   readonly bypassValues?: readonly BypassValue[];
+  /**
+   * Bypass-class flags that are ordinary flags in another provider's CLI (ADR-0049 item 1, Q-95, T4.62): Kimi Code's
+   * `-p`/`--prompt` is Never Ask, while Claude Code's `-p` and Antigravity's `--prompt` are their prompt flags. The
+   * argv audit refuses each one only in argv compiled for this entry's id, and in argv whose provider id it does not
+   * know (every entry's scoped list then applies; fail closed), outside the approved bypass case, as a bare flag, as
+   * `flag=value` and, for a short `-x`, anywhere in the letters that open a single-dash word (`-xvalue`, `-yx`;
+   * deliberate over-refusal). The shared list and the other declarations still apply to every argv; this only adds.
+   */
+  readonly providerScopedBypassFlags?: readonly string[];
   /**
    * ACP facts (ADR-0036 items 9 and 10; LLD §2 `AcpDeclarations`): bypass-class mode ids and config option values,
    * refused in an `acp` plan outside the approved bypass case, and optional parsers that only narrow permission answers.
@@ -222,12 +233,13 @@ export const BUILTIN_PROVIDERS = [
     kind: "real",
     // ADR-0049 item 1 and TDD §4.7 ([K1]; `--help` of 2.1.1 in the T4.61 live check lists each): `--auto` (Never Ask)
     // and `--plan` (which `-p` rejects anyway); `--yolo` is a shared `BYPASS_FLAGS` entry and `-y` its short spelling.
-    // `-p`/`--prompt` (Never Ask, bypass-class per ADR-0049) are NOT declared: this audit is shared by every provider,
-    // and Claude Code's `-p` and Antigravity's `--prompt` are ordinary flags in their runs, so a declaration here would
-    // refuse them (open question in ROADMAP T4.62). The Kimi compile gate alone emits `--prompt`, and only in an
-    // approved bypass run. Active since the adapter (T4.62) added `create`.
+    // Active since the adapter (T4.62) added `create`.
     bypassFlags: ["--auto", "--plan"],
     bypassShortFlags: ["-y"],
+    // ADR-0049 item 1 (same source): `-p`/`--prompt` is always Never Ask, so bypass-class, but Claude Code's `-p` and
+    // Antigravity's `--prompt` are ordinary flags in their runs; so they are refused only in Kimi argv (and in argv of
+    // an unknown provider), outside the approved bypass run whose compile emits `--prompt=<prompt>` (Q-95, T4.62).
+    providerScopedBypassFlags: ["-p", "--prompt"],
     // ADR-0049 item 2 (modes observed in `session/new`, T4.61 row 9): `auto` and `yolo` as a mode id or as the value of
     // the `mode` config option are refused in an ACP plan outside the approved bypass case.
     acp: {
@@ -375,6 +387,16 @@ function entryProblems(entry: ProviderEntry, others: readonly ProviderEntry[]): 
     if (!Array.isArray(entry.bypassValues)) problems.push("bypassValues must be an array");
     else for (const v of entry.bypassValues as unknown[]) problems.push(...valueProblems(v));
   }
+  if (entry.providerScopedBypassFlags !== undefined) {
+    if (!Array.isArray(entry.providerScopedBypassFlags)) problems.push("providerScopedBypassFlags must be an array");
+    else {
+      for (const f of entry.providerScopedBypassFlags) {
+        if (typeof f !== "string" || !FLAG_PATTERN.test(f)) {
+          problems.push(`malformed provider-scoped bypass flag ${JSON.stringify(f)}`);
+        }
+      }
+    }
+  }
   if (entry.acp !== undefined) problems.push(...acpProblems(entry.acp));
   if (entry.resumeCwd !== undefined && !["bound", "independent", "unverified"].includes(entry.resumeCwd)) {
     problems.push(`malformed resumeCwd ${JSON.stringify(entry.resumeCwd)}`);
@@ -405,6 +427,7 @@ export class ProviderRegistrationError extends Error {
     seen.push(e);
     Object.freeze(e.bypassFlags);
     if (e.bypassShortFlags !== undefined) Object.freeze(e.bypassShortFlags);
+    if (e.providerScopedBypassFlags !== undefined) Object.freeze(e.providerScopedBypassFlags);
     if (e.bypassValues !== undefined) {
       for (const v of e.bypassValues) Object.freeze(v);
       Object.freeze(e.bypassValues);
@@ -436,6 +459,9 @@ export function registerProvider(entry: ProviderEntry): () => void {
     ...entry,
     bypassFlags: Object.freeze([...entry.bypassFlags]),
     ...(entry.bypassShortFlags !== undefined ? { bypassShortFlags: Object.freeze([...entry.bypassShortFlags]) } : {}),
+    ...(entry.providerScopedBypassFlags !== undefined
+      ? { providerScopedBypassFlags: Object.freeze([...entry.providerScopedBypassFlags]) }
+      : {}),
     ...(entry.bypassValues !== undefined
       ? { bypassValues: Object.freeze(entry.bypassValues.map((v) => Object.freeze({ flag: v.flag, value: v.value }))) }
       : {}),
@@ -514,4 +540,15 @@ export function declaredBypassValues(): BypassValue[] {
     }
   }
   return [...out.values()];
+}
+
+/**
+ * The provider-scoped bypass-class flags (ADR-0049 item 1, Q-95, T4.62) that apply to argv compiled for adapter id
+ * `id`: that entry's own list when `id` names an entry, otherwise every entry's list, deduplicated (fail closed: an
+ * argv whose provider is unknown is checked against all of them).
+ */
+export function scopedBypassFlags(id: string): string[] {
+  const own = providerEntry(id);
+  const from = own !== undefined ? [own] : providerEntries();
+  return [...new Set(from.flatMap((e) => e.providerScopedBypassFlags ?? []))];
 }

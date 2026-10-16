@@ -7,10 +7,13 @@
  * 2. No over-match beyond the documented forms; the existing flag matching is unchanged.
  * 3. Declarations of entries without an adapter (`create`) have no effect; the built-in declarations are as sourced.
  * 4. Registration refuses malformed short flags and values and stays additive; built-in declarations are frozen.
+ * 5. Provider-scoped flags (T4.62, ADR-0049 item 1): Kimi Code's `-p`/`--prompt` refused only in Kimi argv and in argv
+ *    of an unknown provider; Claude Code's `-p` and Antigravity's `--prompt` stay accepted.
  * No provider CLI is run: the scratch entry is synthetic and the fake adapter's argv is used.
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveTrustProfile } from "../policy/profiles.js";
+import { AntigravityAdapter } from "./antigravity/adapter.js";
 import {
   assertBypassAudit,
   auditInvocation,
@@ -21,6 +24,7 @@ import {
   bypassClassValues,
   findBypassFlags,
 } from "./audit.js";
+import { ClaudeAdapter } from "./claude/adapter.js";
 import { FakeAdapter } from "./fake/adapter.js";
 import { FAKE_PROFILE } from "./fake/cases.js";
 import { LOOSE_SCOPE, privilegedProfile } from "./fixtures/privileged.js";
@@ -30,6 +34,7 @@ import {
   SCRATCH_ID,
   SCRATCH_PROVIDER,
 } from "./fixtures/scratch-provider.js";
+import { KimiAdapter } from "./kimi/adapter.js";
 import {
   BUILTIN_PROVIDERS,
   declaredBypassShortFlags,
@@ -39,6 +44,7 @@ import {
   providerEntries,
   providerGeneration,
   registerProvider,
+  scopedBypassFlags,
 } from "./providers.js";
 import { startAdapterRun } from "./run.js";
 import type { Invocation, ResolvedProfile } from "./types.js";
@@ -354,5 +360,137 @@ describe("registration of short flags and values: validated and additive only", 
     });
     expect(bypassClassShortFlags()).toEqual(before.short);
     expect(bypassClassValues()).toEqual(before.values);
+  });
+});
+
+describe("provider-scoped bypass flags (T4.62, ADR-0049 item 1, Q-95)", () => {
+  const KIMI_EXE = "/opt/synthetic/kimi";
+  const kimiArgv = (...words: string[]): Pick<Invocation, "argv" | "policyFlags"> => ({
+    argv: [KIMI_EXE, ...words],
+    policyFlags: [],
+  });
+  // Kimi Code's one bypass cell: the loosest scope with repository configuration `enabled` and `bypass`.
+  const BYPASS_SCOPE = { ...LOOSE_SCOPE, repository_config: { mode: "enabled" }, bypass: true } as const;
+  const bypassProfile: ResolvedProfile = { ...privilegedProfile(BYPASS_SCOPE), bypassApproved: true };
+  const approved: BypassContext = { profile: bypassProfile, bypassApproved: true };
+  /** Every context except the approved bypass cell (ADR-0017): none, unapproved, approved without `bypass`, others. */
+  const refusing: Array<[string, BypassContext | undefined]> = [
+    ["no context", undefined],
+    ["privileged bypass scope, not approved", { profile: privilegedProfile(BYPASS_SCOPE), bypassApproved: false }],
+    ["privileged without bypass, approved", { profile: privilegedProfile(LOOSE_SCOPE), bypassApproved: true }],
+    ["trusted-development, approved", { profile: resolveTrustProfile("trusted-development"), bypassApproved: true }],
+  ];
+  const KIMI_FORMS: Array<[string, ReturnType<typeof kimiArgv>, string[]]> = [
+    ["-p <prompt>", kimiArgv("-p", "x"), ["-p"]],
+    ["-p=<prompt>", kimiArgv("-p=x"), ["-p"]],
+    ["-p joined to its value", kimiArgv("-px y"), ["-p"]],
+    ["-p in a cluster after -y", kimiArgv("-yp", "x"), ["-y", "-p"]],
+    ["--prompt <prompt>", kimiArgv("--prompt", "x"), ["--prompt"]],
+    ["--prompt=<prompt> (the compiled form)", kimiArgv("--prompt=x"), ["--prompt"]],
+    ["--prompt in policyFlags", { argv: [KIMI_EXE], policyFlags: ["--prompt"] }, ["--prompt"]],
+  ];
+
+  it.each(KIMI_FORMS)("Kimi argv with %s is refused outside the approved bypass cell", (_n, inv, hits) => {
+    for (const [label, ctx] of refusing) {
+      expect(auditInvocation(inv, ctx, "kimi"), label).toEqual(hits);
+      expect(() => assertBypassAudit(inv, ctx, "kimi"), label).toThrow(BypassFlagError);
+    }
+    expect(auditInvocation(inv, approved, "kimi")).toEqual([]);
+    expect(() => assertBypassAudit(inv, approved, "kimi")).not.toThrow();
+  });
+
+  it("does not over-match other Kimi words", () => {
+    for (const words of [["--prompts"], ["--promptx=1"], ["--plan-x"], ["--output-format", "stream-json"], ["x-p"]]) {
+      expect(findBypassFlags(kimiArgv(...words), "kimi"), words.join(" ")).toEqual([]);
+    }
+  });
+
+  it("Claude Code's -p and Antigravity's --prompt stay accepted in their own argv, unchanged", () => {
+    const claudeArgv = { argv: ["/opt/synthetic/claude", "-p", "--output-format", "stream-json"], policyFlags: [] };
+    const agyArgv = { argv: ["/opt/synthetic/agy", "--prompt=fix it", "--output-format", "json"], policyFlags: [] };
+    for (const [label, ctx] of refusing) {
+      expect(auditInvocation(claudeArgv, ctx, "claude"), label).toEqual([]);
+      expect(auditInvocation(agyArgv, ctx, "antigravity"), label).toEqual([]);
+      // Without a provider the provider-agnostic lists only apply (the pre-T4.62 behaviour).
+      expect(auditInvocation(claudeArgv, ctx), label).toEqual([]);
+      expect(auditInvocation(agyArgv, ctx), label).toEqual([]);
+    }
+    // The real compiles: Claude Code under every non-privileged profile, Antigravity in its approved bypass cell.
+    const claude = new ClaudeAdapter({ binaryPath: "/opt/synthetic/claude" });
+    for (const name of ["inspect-untrusted", "edit-untrusted", "test-sandboxed", "trusted-development"] as const) {
+      const inv = claude.compile(request, resolveTrustProfile(name));
+      if ("ineligible" in inv) continue;
+      expect(inv.argv, name).toContain("-p");
+      expect(auditInvocation(inv, undefined, "claude"), name).toEqual([]);
+    }
+    const agy = new AntigravityAdapter({ executable: "/opt/synthetic/agy" });
+    const agyInv = agy.compile({ ...request, bypassApproved: true }, bypassProfile);
+    if ("ineligible" in agyInv) throw new Error(agyInv.detail);
+    expect(agyInv.argv.some((a) => a.startsWith("--prompt="))).toBe(true);
+    // Its bypass compile also carries the shared `--dangerously-skip-permissions`: the result is the pre-T4.62 one.
+    for (const [label, ctx] of refusing) {
+      expect(auditInvocation(agyInv, ctx, "antigravity"), label).toEqual(auditInvocation(agyInv, ctx));
+      expect(auditInvocation(agyInv, ctx, "antigravity"), label).not.toContain("--prompt");
+    }
+    expect(auditInvocation(agyInv, approved, "antigravity")).toEqual([]);
+    expect(bypassClassFlags()).not.toContain("-p");
+    expect(bypassClassFlags()).not.toContain("--prompt");
+  });
+
+  it("an argv whose provider is unknown is checked against the shared list and every provider-scoped list", () => {
+    register({
+      id: "scoped-zeta",
+      configId: "scoped-zeta-cli",
+      kind: "real",
+      bypassFlags: [],
+      providerScopedBypassFlags: ["--zap", "-z"],
+    });
+    expect(scopedBypassFlags("nonesuch")).toEqual(["-p", "--prompt", "--zap", "-z"]);
+    expect(scopedBypassFlags("kimi")).toEqual(["-p", "--prompt"]);
+    expect(scopedBypassFlags("claude")).toEqual([]);
+    const inv = kimiArgv("--yolo", "-f", "--sandbox", "disabled", "-p", "x", "--prompt=y", "--zap", "-zq");
+    expect(auditInvocation(inv, undefined, "nonesuch")).toEqual([
+      "--yolo",
+      "-f",
+      "--sandbox disabled",
+      "-p",
+      "--prompt",
+      "--zap",
+      "-z",
+    ]);
+    expect(auditInvocation(inv, approved, "nonesuch")).toEqual([]);
+    // A known provider sees only its own scoped list on top of the provider-agnostic ones.
+    expect(auditInvocation(inv, undefined, "kimi")).toEqual(["--yolo", "-f", "--sandbox disabled", "-p", "--prompt"]);
+    expect(auditInvocation(inv, undefined, "claude")).toEqual(["--yolo", "-f", "--sandbox disabled"]);
+  });
+
+  it("the spawn path names the adapter: a Kimi bypass-cell argv is refused before spawn without the approval", () => {
+    const kimi = new KimiAdapter({ executable: KIMI_EXE });
+    const inv = kimi.compile(request, bypassProfile) as Invocation;
+    expect(inv.argv).toContain("--prompt=x");
+    // The compile gate is bypassed: the approved compile is spawned under each refusing context.
+    for (const [label, ctx] of refusing) {
+      const opts = ctx !== undefined ? { profile: ctx.profile, bypassApproved: ctx.bypassApproved } : {};
+      expect(() => startAdapterRun(kimi, inv, opts), label).toThrow(BypassFlagError);
+    }
+  });
+
+  it("registration validates and freezes provider-scoped flags", () => {
+    for (const bad of [["-p=x"], ["p"], ["--a b"], [""]]) {
+      expect(() =>
+        registerProvider({
+          id: "scoped-bad",
+          configId: "scoped-bad-cli",
+          kind: "real",
+          bypassFlags: [],
+          providerScopedBypassFlags: bad,
+        }),
+      ).toThrow(ProviderRegistrationError);
+    }
+    const kimiEntry = (BUILTIN_PROVIDERS as readonly ProviderEntry[]).find((e) => e.id === "kimi");
+    expect(kimiEntry?.providerScopedBypassFlags).toEqual(["-p", "--prompt"]);
+    expect(Object.isFrozen(kimiEntry?.providerScopedBypassFlags)).toBe(true);
+    const scoped = (BUILTIN_PROVIDERS as readonly ProviderEntry[]).filter((e) => e.providerScopedBypassFlags);
+    expect(scoped.map((e) => e.id)).toEqual(["kimi"]);
   });
 });
