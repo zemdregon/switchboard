@@ -1554,3 +1554,104 @@ describe("antigravity parser residuals, eighth pass: divergent duplicate keys, t
     },
   );
 });
+
+/** Ninth pass: synthetic permutations only; no new capture, parser unchanged (Delegated, 2026-10-16). */
+describe("antigravity parser residuals, ninth pass: soft-denial ordering, envelope keys and resume id parity (T4.33)", () => {
+  const observations = (events: readonly NormalizedEvent[]) =>
+    usageObservationsFromEvents(events, { runId: "run_antigravity_t433_ninth_usage", provider: "antigravity" });
+  const tool = (index: number, state: string) =>
+    STEP({
+      step_index: index,
+      state,
+      step_type: "tool",
+      tool_info: { name: "run_command", parameters: { command: "pwd" } },
+    });
+
+  it.each(["ACTIVE", "DONE", "ERROR"])(
+    "a %s update after a soft-denied result keeps the denial for repeated and fresh steps",
+    (state) => {
+      for (const index of [1, 2]) {
+        const r = run([
+          INIT(),
+          tool(1, "ACTIVE"),
+          RESULT({ denied_actions: [{ display_name: "Run" }] }),
+          tool(index, state),
+        ]);
+        // Step state is not a permission verdict. Repeats deduplicate; fresh steps still emit their calls.
+        expect(r.events.filter((e) => e.kind === "tool_call")).toHaveLength(index);
+        expect(r.events.filter((e) => e.kind === "result")).toEqual([{ kind: "result", ok: true }]);
+        expect(r.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", failureDetail: "denied: Run" });
+        expect(observations(r.events)).toEqual([expect.objectContaining({ metrics: USAGE })]);
+      }
+    },
+  );
+
+  it("pins the gap: duplicate result envelope keys discard the first envelope's denial and conflicting usage", () => {
+    const bad = JSON.stringify({
+      conversation_id: OTHER,
+      status: "ERROR",
+      denied_actions: [{ action: "edit_file" }],
+      usage: { total_tokens: 0 },
+    });
+    const good = JSON.stringify({ conversation_id: CID, status: "SUCCESS", response: "ok", usage: USAGE });
+    const r = run([INIT(), `{"event":"result","result":${bad},"result":${good}}`]);
+    expect(r.events.filter((e) => e.kind === "permission_denied" || e.kind === "provider_error")).toEqual([]);
+    expect(r.events.filter((e) => e.kind === "result")).toEqual([{ kind: "result", ok: true }]);
+    expect(r.result).toMatchObject({ ok: true, nativeSessionId: CID });
+    expect(observations(r.events)).toEqual([expect.objectContaining({ metrics: USAGE })]);
+    const reversed = run([INIT(), `{"event":"result","result":${good},"result":${bad}}`]);
+    expect(reversed.events.filter((e) => e.kind === "result")).toHaveLength(1);
+    expect(reversed.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: CID });
+    expect(observations(reversed.events)).toEqual([expect.objectContaining({ metrics: { total_tokens: 0 } })]);
+  });
+
+  it.each([
+    ['0,"total_tokens":24', true, { total_tokens: 24 }],
+    ['24,"total_tokens":0', false, { total_tokens: 0 }],
+    ['24,"total_tokens":null', false, undefined],
+  ] as const)("duplicate total_tokens %s uses the last scalar for verdict and ledger", (value, ok, metrics) => {
+    const line = `{"event":"result","result":{"conversation_id":"${CID}","status":"SUCCESS","usage":{"total_tokens":${value}}}}`;
+    const r = run([INIT(), line]);
+    expect(r.result.ok).toBe(ok);
+    expect(observations(r.events)).toEqual(metrics === undefined ? [] : [expect.objectContaining({ metrics })]);
+    if (!ok)
+      expect(r.result).toMatchObject({ failureCode: "TOOL_FAILURE", failureDetail: "SUCCESS with no reported tokens" });
+  });
+
+  it.each([CID, "a".repeat(256), "a".repeat(257), "_leading", "-option", "id with space", ""])(
+    "init and result-only id %j have parser parity and the same Q-86 resume refusal",
+    (id) => {
+      const fromInit = run([INIT({ conversation_id: id }), RESULT({ conversation_id: id })]);
+      const fromResult = run([RESULT({ conversation_id: id })]);
+      expect(fromInit.result).toEqual(fromResult.result);
+      if (id === "") {
+        expect(fromResult.result).toEqual({ ok: true, unknownEventCount: 0, summary: "ok" });
+      } else if (id === CID || id.length === 256) {
+        expect(fromResult.result).toMatchObject({ ok: true, nativeSessionId: id });
+      } else {
+        expect(fromResult.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+        expect(fromResult.result.nativeSessionId).toBeUndefined();
+      }
+      expect(fromInit.events.filter((e) => e.kind === "session_bound")).toEqual(
+        fromResult.events.filter((e) => e.kind === "session_bound"),
+      );
+      const req: CompileRequest = {
+        runId: "run_01M4WBZSXSCWYKTKJN77A7MFJQ",
+        objective: "synthetic resume parity",
+        constraints: [],
+        workspace: { cwd: "/work/tree", writable: true },
+        bypassApproved: true,
+      };
+      const a = adapter();
+      const refusal = a.resumeArgs({ provider: "antigravity", nativeSessionId: id }, req, PRIVILEGED_BYPASS_PROFILE);
+      expect(refusal).toEqual(
+        a.resumeArgs({ provider: "antigravity", nativeSessionId: CID }, req, PRIVILEGED_BYPASS_PROFILE),
+      );
+      expect(refusal).toMatchObject({
+        ineligible: true,
+        reason: "CAPABILITY_MISSING",
+        detail: expect.stringContaining("(Q-86)"),
+      });
+    },
+  );
+});
