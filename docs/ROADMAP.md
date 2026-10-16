@@ -2217,6 +2217,43 @@ the two `pipeline.test.ts` breaker pins; `rejected_sanitiser` dropped from the q
 outcomes only fails fifteen tests, the four new ones among them. Opened as
 [PR #509](https://github.com/zemdregon/switchboard/pull/509). T11.5 stays **Done on fakes**; the live-backend residual
 (T11.13) is the only one left.
+*2026-10-16 post-#509 surface residual (Delegated; fakes only, no production code change,
+`src/inner/usage-surfaces.test.ts` only):* the file was re-read on `main` at `da1bfc7` against the T11.5 and T11.14
+rows, FR-INN-15, `src/inner/pipeline.ts`, `src/inner/breaker.ts`, `src/cli/inner.ts`, `src/cli/capacity.ts` and
+`get_capacity` in `src/mcp/server.ts`. Three edges had their rows pinned (#501, #509) or their state pinned
+(`src/cli/inner.test.ts`, rows seeded straight into the ledger) and nothing about what the published surfaces show under
+the flag; none repeats a #501 channel or a #509 pipeline pin. *Suspension through the published commands*: with the
+smallest window the config allows (two calls, both needed, more than half rejected), two rejected `inner test` runs each
+reach the backend twice and write a `rejected_validator` / `NOT_JSON` row at `attempts` 2 with the summed counts and a
+labelled row under `claude-code` with no run (so no `inner_task_suspended` event exists anywhere), the second suspending
+the task; the suspended `inner test` is `fallback_suspended` / `TASK_SUSPENDED` at `attempts` 0 with no request and no
+observation; `inner resume` writes neither a call row nor an observation and restarts the window; the next `inner test`
+charges again. Throughout, `get_capacity` (unfiltered and filtered), `capacity` (both forms), `runs show` (both forms),
+`get_run` (both forms), the doctor `checks` list with its config-derived warning and the doctor capacity block are
+byte-identical; `doctor` and `inner status` move by the task's state and counts only; observations equal rows at
+`attempts >= 1`; and no distinctive count reaches any surface. The writing commands run on a ticking clock because the
+window counts calls strictly after `resumed_at` (as built in the ledger and the status reader alike), while the readers
+keep the fixed one. *The breaker's whole cycle at the event surfaces*: on an injected breaker clock under the run with
+capacity evidence, over the in-memory transport and a Streamable HTTP session (with a second session opened after the
+calls), two transport failures open the circuit, the third call is denied `CIRCUIT_OPEN` at `attempts` 0, the first
+probe fails and re-opens it, the second probe recovers and a closed call follows: with the flag, five labelled rows
+(`{}` for the three failures, the counts for the two accepted calls, none for the denial) and none without it; the run
+gains exactly eight events on `get_run`, `runs show --json` and the human `runs show` (a call event per call, the
+`degraded` transition after the second and the `recovered` one after the fifth; the failed probe writes no transition);
+the two `inner_degraded` payloads carry the state, the reason code and the circuit state and never the backend's message
+or a count (the recovery's reason is the empty string, as built); every envelope and provider reader is byte-identical
+and `inner status` moves by the counts only. *A labelled provider no adapter registers*: the flag names `claude-code`, a
+configured id, but the registry holds the fake adapter only; `get_capacity` filtered to it is refused `INVALID_REQUEST`
+and `capacity --provider claude-code --json` is a `USAGE` document at exit 2 naming the registered ids, the unfiltered
+projection and the doctor capacity block list the fake provider only, and all of it is the same bytes before and after
+an accepted `inner test` wrote its labelled row with a huge count under `claude-code` (the capacity surfaces enumerate
+the registry, never the rows). Each pin was shown to fail under the drift it guards, with the tree restored after each
+(91 tests across the three usage files): the `recovered` transition never recorded fails the four breaker tests and
+the #509 half-open probe pin; the suspension check skipped before the request fails the new suspension test, the
+`src/inner/usage.test.ts` suspension row pin and the #509 `rejected_sanitiser` pin; `get_capacity` letting an
+unregistered provider through fails only the new refusal test. Opened as
+[PR #518](https://github.com/zemdregon/switchboard/pull/518). T11.5 stays **Done on fakes**; the live-backend
+residual (T11.13) is the only one left.
 
 **T11.8 status (2026-10-13; Delegated): Done on fakes. No live inner backend, provider CLI, pull-request API or network
 host was used.** "Done when", clause by clause: *the draft passes the sanitiser*: a hostile fake backend returning a
