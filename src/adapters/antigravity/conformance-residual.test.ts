@@ -8,7 +8,7 @@
  * as flags, an environment the replay refuses, an empty stream at a clean exit, and capture-file encodings.
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -909,4 +909,162 @@ describe("antigravity hang, host environment, probe and fixture-metadata interac
       ["partial_mutation:success_edit (exit 1)", "hello.txt", "hello.txt"],
     ]);
   });
+});
+
+describe("antigravity replay provenance, blank-line framing, exit source and fixture path (T4.35, synthetic only)", () => {
+  // The round after the #500 tenth conformance residuals. The replay reads its run metadata from the first line only
+  // and skips blank lines, the `--exit-code` and `--write` flags replace the metadata's exit and write, and the fixture
+  // path is read only after the argv check. Earlier rounds pin the metadata keys statically and one BOM; these run the
+  // provenance variants, interior blank lines, each flag over its metadata twin and a fixture path that does not exist.
+  const dir = makeCwd();
+  const metaOf = (name: string) =>
+    (JSON.parse(readFileSync(fixturePath(name), "utf8").split("\n")[0] ?? "") as { _fixture: Record<string, unknown> })
+      ._fixture;
+  const find = (fixture: string, kind?: string) => {
+    const c = runnable().find((x) => fixtureOf(x) === fixture && (kind === undefined || x.kind === kind));
+    if (!c) throw new Error(`missing ${fixture} case`);
+    return c;
+  };
+  /** `c` replaying `path` in place of its own fixture. */
+  const pointedAt = (c: ConformanceCase, path: string): ConformanceCase =>
+    refusedBy(c, (argv) => argv.map((w, i) => (argv[i - 1] === "--fixture" ? path : w)));
+  /** `c` replaying a copy of its fixture whose lines are rewritten by `edit` (the metadata line is `lines[0]`). */
+  const rewritten = (c: ConformanceCase, tag: string, edit: (lines: string[]) => string[]): ConformanceCase => {
+    const copy = join(dir, `${tag}-${fixtureOf(c)}.jsonl`);
+    const lines = readFileSync(fixturePath(fixtureOf(c)), "utf8")
+      .split("\n")
+      .filter((l) => l !== "");
+    writeFileSync(copy, `${edit(lines).join("\n")}\n`);
+    return pointedAt(c, copy);
+  };
+  const withMeta = (meta: unknown) => (lines: string[]) => [JSON.stringify({ _fixture: meta }), ...lines.slice(1)];
+  const META = metaOf("success_edit");
+
+  it("positive control: the success case replays its own copied fixture unchanged", async () => {
+    const report = await runConformanceCase(rewritten(find("success_edit", "success"), "same", (lines) => lines));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+  });
+
+  it.each([
+    ["the metadata line removed", (lines: string[]) => lines.slice(1)],
+    ["`synthetic: false`", withMeta({ ...META, synthetic: false })],
+    ["`synthetic` as the string `true`", withMeta({ ...META, synthetic: "true" })],
+    ["`_fixture` as a string", withMeta("SYNTHETIC: a note, not an object")],
+    ["`_fixture` as null", withMeta(null)],
+    ["`_fixture` as an array", withMeta([META])],
+    ["a blank line before the metadata line", (lines: string[]) => ["", ...lines]],
+    [
+      "the metadata line after the first event",
+      (lines: string[]) => [lines[1] ?? "", lines[0] ?? "", ...lines.slice(2)],
+    ],
+  ])("a capture with %s is refused (exit 64) and writes nothing", async (_label, edit) => {
+    const c = find("success_edit", "success");
+    const report = await runConformanceCase(rewritten(c, "prov", edit));
+    expect(report.ok).toBe(false);
+    expect(report.result).toEqual({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "exit code 64",
+      unknownEventCount: 0,
+    });
+    expect(existsSync(join(c.request.workspace.cwd, "hello.txt"))).toBe(false);
+  });
+
+  it.each([
+    ["spaces", "   "],
+    ["a tab", "\t"],
+    ["a lone carriage return", "\r"],
+  ])("blank and %s-only lines between events are skipped, so the success replays unchanged", async (_label, filler) => {
+    const report = await runConformanceCase(
+      rewritten(find("success_edit", "success"), "blank", (lines) => [
+        lines[0] ?? "",
+        ...lines.slice(1).flatMap((l) => ["", filler, l]),
+        filler,
+      ]),
+    );
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toEqual({
+      ok: true,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      summary: "Added hello.txt.",
+      unknownEventCount: 0,
+    });
+  });
+
+  it("each case's exit comes from `--exit-code`, else the metadata, and every `exit code N` detail names that exit", () => {
+    const exits = runnable()
+      .filter((c) => c.kind !== "timeout" && c.kind !== "cancellation")
+      .map((c) => {
+        const inv = c.adapter.compile(c.request, c.profile);
+        const own = "ineligible" in inv ? [] : inv.argv.slice(0, inv.argv.indexOf("--"));
+        const flag = own.includes("--exit-code") ? Number(own[own.indexOf("--exit-code") + 1]) : undefined;
+        return [label(c), flag ?? Number(metaOf(fixtureOf(c)).exit ?? 0), c.expect.failureDetail] as const;
+      });
+    const named = exits.filter(([, , d]) => d !== undefined && /^exit code \d+$/.test(d));
+    expect(named.map(([n, e, d]) => [n, d === `exit code ${e}`])).toEqual([
+      ["task_failure:rate_limit", true],
+      ["task_failure:agy_error_exit3", true],
+      ["partial_mutation:success_edit (exit 1)", true],
+    ]);
+    // Every other nonzero exit is decided by the stream first: an envelope's error or a SUCCESS status at exit 1.
+    expect(exits.filter(([, e, d]) => e !== 0 && !/^exit code \d+$/.test(d ?? "")).map(([n, e]) => [n, e])).toEqual([
+      ["task_failure:model_unavailable", 1],
+      ["task_failure:rate_limit_unrecorded", 1],
+      ["auth_missing:auth_missing", 1],
+      ["partial_mutation:task_failure (exit 1, write)", 1],
+    ]);
+  });
+
+  it.each([
+    ["rate_limit", "task_failure", "OUTPUT_PROTOCOL_ERROR", "no result event", null],
+    ["agy_error_exit3", "task_failure", "OUTPUT_PROTOCOL_ERROR", "no result event", DEFAULT_SESSION_ID],
+  ])(
+    "`--exit-code 0` over %s's metadata exit fails its case: the stream alone decides (%s)",
+    async (fixture, kind, code, detail, id) => {
+      const c = find(fixture, kind);
+      const report = await runConformanceCase({
+        ...c,
+        adapter: replayAdapter(fixture, { exitCode: 0 }),
+      });
+      expect(report.ok).toBe(false);
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: code,
+        failureDetail: detail,
+      });
+      expect(report.result?.nativeSessionId).toBe(id ?? undefined);
+    },
+  );
+
+  it("`--write` replaces the metadata write rather than adding to it, so the success case's mutation check fails", async () => {
+    expect(META.write).toMatchObject({ path: "hello.txt" });
+    const c = find("success_edit", "success");
+    const report = await runConformanceCase({
+      ...c,
+      adapter: replayAdapter("success_edit", { write: "other.txt" }),
+    });
+    expect(existsSync(join(c.request.workspace.cwd, "other.txt"))).toBe(true);
+    expect(existsSync(join(c.request.workspace.cwd, "hello.txt"))).toBe(false);
+    expect(report.checks.filter((k) => !k.ok).map((k) => k.name)).toEqual(["workspace mutation visible"]);
+  });
+
+  it("pins the gap: a fixture path that does not exist crashes the replay at exit 1, which only rate_limit cannot tell", async () => {
+    // The replay reads the fixture after the argv check, so a wrong path is a Node crash (exit 1, nothing on stdout).
+    // rate_limit expects exactly that result; the fixture inventory above closes the gap by requiring each case's
+    // fixture to exist on disk.
+    const missing = join(dir, "does-not-exist.jsonl");
+    const passing: string[] = [];
+    for (const c of runnable()) {
+      const report = await runConformanceCase(pointedAt(c, missing));
+      expect(report.result).toMatchObject({
+        ok: false,
+        failureCode: "TOOL_FAILURE",
+        failureDetail: "exit code 1",
+      });
+      if (report.ok) passing.push(label(c));
+    }
+    expect(passing).toEqual(["task_failure:rate_limit"]);
+    const asDir = await runConformanceCase(pointedAt(find("rate_limit"), dir));
+    expect(asDir.ok).toBe(true);
+  }, 60_000);
 });

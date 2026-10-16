@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.53 twelfth residual pass). The final step_finish carries reason stop but a part.type of text, and the assistant text line carries a part.type of reasoning. Pins that only step_start validates part.type: the finish still ends the run as a success and the reasoning-typed text reaches the summary (gap). Not a recorded native shape.","exit":0}}
+{"type":"step_start","timestamp":1,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_s1","type":"step-start"}}
+{"type":"text","timestamp":2,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_r1","type":"reasoning","text":"SYNTHETIC: thinking"}}
+{"type":"step_finish","timestamp":3,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_f1","type":"text","reason":"stop","tokens":{"input":7,"output":2}}}
