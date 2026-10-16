@@ -90,6 +90,7 @@ import {
   GIT_WRITE_SUBCOMMANDS,
   gitWriteRisks,
 } from "../git-write.js";
+import { renderPrompt } from "../prompt.js";
 import type {
   AcpMessage,
   AuthResult,
@@ -783,7 +784,8 @@ export class ClaudeAdapter implements ProviderAdapter {
       cwd: request.workspace.cwd,
       // Prompt on stdin, not argv, so objective text can never be parsed as a flag. Assumption: `claude -p` reads the
       // prompt from stdin when none is given positionally ([HELP] describes -p as "useful for pipes").
-      stdin: { kind: "text", value: promptText(request) },
+      // FR-RTE-09 (T7.9): constraints first, task text last (`../prompt.ts`).
+      stdin: { kind: "text", value: renderPrompt(request) },
       outputFormat: "jsonl",
       timeouts: { ...this.#timeouts },
       policyFlags,
@@ -831,9 +833,4 @@ export class ClaudeAdapter implements ProviderAdapter {
   classifyFailure(evidence: FailureEvidence): FailureClassification {
     return classifyCommon(evidence);
   }
-}
-
-function promptText(request: CompileRequest): string {
-  if (request.constraints.length === 0) return request.objective;
-  return `${request.objective}\n\nConstraints:\n${request.constraints.map((c) => `- ${c}`).join("\n")}\n`;
 }
