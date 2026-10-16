@@ -460,11 +460,12 @@ describe("cli inner backend (T11.13; FR-INN-04, FR-ADP-03, FR-ADP-08)", () => {
     expect(record.argv).not.toContain("--auto");
     expect(record.argv).not.toContain("--standalone");
     expect(record.dirEntries).toEqual([]);
-    expect(Object.keys(record.env).sort()).toEqual([
-      "OPENCODE_DISABLE_AUTOUPDATE",
-      "OPENCODE_DISABLE_CLAUDE_CODE",
-      "OPENCODE_PERMISSION",
-    ]);
+    // macOS adds `__CF_USER_TEXT_ENCODING` to every process it starts (T4.10); it is not the controller's.
+    expect(
+      Object.keys(record.env)
+        .filter((k) => k !== "__CF_USER_TEXT_ENCODING")
+        .sort(),
+    ).toEqual(["OPENCODE_DISABLE_AUTOUPDATE", "OPENCODE_DISABLE_CLAUDE_CODE", "OPENCODE_PERMISSION"]);
     expect(record.env.OPENCODE_PERMISSION).toBe(DENY_ALL);
     expect(record.env.OPENCODE_DISABLE_AUTOUPDATE).toBe("1");
     expect(record.env.OPENCODE_DISABLE_CLAUDE_CODE).toBe("1");
