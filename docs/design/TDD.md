@@ -247,6 +247,8 @@ startup reconciliation applies them. Run state transitions use an optimistic ver
 | Inner agent (M11) | Scripted fake backend as a local HTTP server, hostile-output fixtures, planted-secret prompt capture, import-boundary test; details in [§3.12](#312-inner-agent) (as built: an in-process scripted fake plus a loopback fake HTTP server; the §3.12 as-built note maps each item to its test file) | No | FR-INN-01..17 |
 | Affinity replay (M7) | Table-driven and property tests over stored `route_decision` rows and a scripted fake adapter set: for any sequence of runs in a project, the provider and model change only when the decision carries an `affinity_switch_reason` from the closed list; a better score, lower cost or lower load never moves a project; no return after recovery; `require_provider`, `affinity reset`, `QUOTA_EXHAUSTED`, breaker open and exhausted retry each produce exactly their reason. Details in [§3.13.3](#3133-testing-affinity-and-retrieval) | No | FR-RTE-06..09, FR-CAP-08 |
 | Retrieval index (M12) | Deterministic fake embedding backend, hostile-content fixtures, planted-secret scan, isolation and import-boundary tests; details in [§3.13](#313-retrieval-index) | No | FR-RAG-01..14 |
+| Telemetry export (M8) | Fake-adapter runs through `RunLifecycle` into an in-process loopback OTLP/HTTP collector fixture (`src/telemetry/fixtures/collector.ts`): span names, derived parent links, exact-key allowlist, forbidden-category scan of attributes and raw OTLP bodies with planted canaries and positive controls; lazy load and no startup import of OTel ([LLD §7](LLD.md#7-telemetry-spans)) | No | FR-TEL-02, FR-TEL-03, NFR-SEC-01, NFR-PRIV-01 |
+| Version bump (M8) | Injected version strings through the preflight cache's binary-identity invalidation, the manifest gate and the version-canary store; routing excludes the provider until validation records the version (`src/adapters/version-canary.test.ts`, `src/adapters/version-bump-preflight.test.ts`) | No | FR-ADP-03, NFR-PERF-02 |
 | Docs check | `scripts/check-docs.mjs` must pass on every change (links, anchors, ID references) | No | NFR-MAINT-02 |
 
 **Shared suite plumbing (T4.3).** A provider supplies cases and small data files; the shared code is not edited.
@@ -387,7 +389,11 @@ Jobs (1) to (5) also run on a macOS runner (T4.10, NFR-PORT-02), as a separate j
 T4.10](../ROADMAP.md#68-m4-adapter-expansion-tasks). The fault-injection job needs process-kill privileges only, no
 root. A scheduled job for version canaries is M8 ([ADR-0009](../adr/0009-version-gated-adapters.md)); it needs
 installed provider CLIs and logins and therefore cannot run on hosted runners without operator-managed credentials,
-which the project must not hold, so canaries run on the operator's machine (Assumption).
+which the project must not hold, so canaries run on the operator's machine (Assumption). As built (T8.5, T8.6,
+2026-10-16, Delegated): the operator schedules `switchboard adapters version-canary` (cron or systemd shapes in
+[docs/operations/version-canary.md](../operations/version-canary.md); no operator dry run is recorded yet), and CI runs
+only the synthetic version-bump test (`src/adapters/version-bump-preflight.test.ts`) with injected version strings and
+no provider CLI.
 
 ### 3.9 Versioning
 
@@ -917,8 +923,8 @@ been used anywhere in the suite.
   `src/inner/run-title.test.ts`; oversized, invalid JSON, wrong types, extra keys and non-UTF-8 output in
   `src/inner/pipeline.test.ts`.
 - *Secret-planted test*: `src/inner/pipeline.test.ts`, `src/inner/http-backend.test.ts` and each task test above; the
-  scan covers the captured request, `inner_call` rows, run events and captured log lines. There are no spans to scan
-  (below).
+  scan covers the captured request, `inner_call` rows, run events and captured log lines. There are no `inner.call`
+  spans to scan (below).
 - *Import-boundary test*: `src/inner/import-boundary.test.ts`, deliberately not transitive (the file states the gap). The
   "second test" exists as the byte-identical-records assertions in `src/inner/log-summary.test.ts` and
   `src/inner/handoff-condense.test.ts` and the unchanged-commit assertions in `src/git/commit-message.test.ts`.
@@ -944,8 +950,9 @@ been used anywhere in the suite.
 - *Threading*: the `commit` wait is as described. The production routing hook is awaited during MCP admission and
   continuation (and quota failover), not only at dispatch after the acknowledgement (ROADMAP T11.11 residual).
 - *Observability*: the `inner_call`, `inner_degraded` and `inner_task_suspended` run events are built
-  (`src/inner/pipeline.test.ts`, `src/inner/suspension.test.ts`). The `inner.call` **span is not built**: no span
-  exporter exists in the tree; the pipeline writes one body-free structured log line named `inner.call` instead
+  (`src/inner/pipeline.test.ts`, `src/inner/suspension.test.ts`). The `inner.call` **span is not built**: the M8 OTLP
+  transport and key filter exist (T8.1, T8.4), but the pipeline records no span; it writes one body-free structured log
+  line named `inner.call` instead
   ([LLD §13.8](LLD.md#138-telemetry-and-events) as-built note; its contract, one line per outcome with a fixed scalar
   key set, no token count, model id or body, and `call_id` null without a ledger, is pinned by
   `src/inner/log-line.test.ts`). Which tasks production code reaches is pinned statically by
@@ -2661,7 +2668,7 @@ approach only.
 | M5 Continuity | Native resume per adapter via `resumeArgs`; handoff bundle builder from ledger rows and Git evidence only (FR-SES-04), regenerable from events and decisions (FR-SES-05). |
 | M6 Capacity | Usage observation writers; estimator (rolling windows over `usage_observation` and `run`); per-provider breakers persisted in `provider_health`; retry scheduler using [LLD §9](LLD.md#9-retryback-off-algorithm); queue with `WAITING_CAPACITY` timers; `get_capacity`. Cache read and creation token counts and per-project kept/switched counts (FR-CAP-08) where adapters report them. |
 | M7 Routing | Feature extraction and heuristic classifier; static weighted scoring; persist `route_decision` rows; `explain_route` reads them. Scores deterministic for a given stored input (FR-RTE-03). Provider and model affinity: `project_affinity` table, the selection step before scoring, the `affinity_switch_reason` field, `affinity reset`, the cache-friendly prompt assembly order, and the replay property test ([§3.13.3](#3133-testing-affinity-and-retrieval), [LLD §3.2](LLD.md#32-provider-and-model-affinity-m7)). |
-| M8 Hardening | OTel exporter driven from `run_event`/spans; version canaries (`adapters validate` ships in M4); |
+| M8 Hardening | OTel exporter fed by wrapper-boundary span builders in the run lifecycle, not by replaying `run_event` rows (as built, [LLD §7](LLD.md#7-telemetry-spans)); version canaries (`adapters validate` ships in M4; the canary store and operator command in T8.5). |
 | M9 Projects and controlled commits | Project and context schema in the config loader; `COMP-PRJ` resolution and ceilings; `project_id` columns and the `git_commit` table; per-adapter Git-write denial and channel-support declarations; the shim subcommand and per-run socket; `COMP-GIT` (commit, sanitiser, publish ref, ref snapshots, push with policy); `projects` CLI; fake-adapter fixtures for every attempt in §3.6. Starts with a spike that settles §3.10's open mechanisms (per-run Git config, plumbing commands, socket access under sandboxes). |
 | M10 Container environments | After M9 (Q-6 settled by delegation, Proposed): runtime port, mounts, limits, labels and orphan sweep, container leg of the malicious-fixture suite, answer to the provider-login question ([§3.11](#311-container-environments)). |
 | M11 Inner agent | Spike T11.0 first (OpenCode one-shot tool-free controls, or record `Ineligible`). Then in order: config schema, backend port, scripted fake backend, `inner_call` and `inner_task_state` tables and the import-boundary test (T11.1); the pipeline with redaction, budget, breaker, re-ask and fallback (T11.2); `http` backend, locality and privacy gates (T11.3); the commit-message task through the existing sanitiser (T11.4); accounting (T11.5); suspension (T11.6); `doctor`, `inner status`, `inner test` (T11.7); then PR draft, log summary, handoff condensation, route features and run title as their milestones allow (T11.8 to T11.12), and the `cli` kind last (T11.13). Every task ships with its fallback and hostile-fixture tests in the same change ([§3.12](#312-inner-agent), [LLD §13](LLD.md#13-inner-agent)). |

@@ -272,6 +272,27 @@ Not built, so no row claims it: the `cli` backend kind (T11.0, T11.13; FR-INN-04
 `scripts/live-smoke.mjs`, and a run path, hook or `inner` command that calls the T11.8, T11.9, T11.10 or T11.12
 service functions. FR-INN-18 is deferred by the SRS.
 
+### 4.4 COMP-TEL and version-canary implementation evidence (M8, T8.1–T8.6)
+
+Task status and evidence: [ROADMAP §6.15](../ROADMAP.md#615-m8-hardening-tasks). Span contract, allowlist, parent
+links and collector harness: [LLD §7](LLD.md#7-telemetry-spans); data flow: [HLD §6.3](HLD.md#63-telemetry-flow);
+testing layers: [TDD §3.6](TDD.md#36-testing-strategy). The table below is SDD traceability only (written 2026-10-16,
+T8.7 design-doc slice, Delegated). Every test runs on the fake adapter, injected version strings or an in-process
+loopback collector; no provider CLI or external collector is used.
+
+| Task | Requirements (primary) | Code | Tests |
+| --- | --- | --- | --- |
+| T8.1 config and lazy OTLP transport | FR-TEL-02, NFR-PRIV-01 | `src/config/load.ts`, `src/telemetry/index.ts` | `src/config/config.test.ts`, `src/telemetry/index.test.ts`, `src/cli/serve.test.ts` |
+| T8.2 wrapper-boundary span builders | FR-TEL-02, FR-TEL-03, ADR-0012 | `src/telemetry/spans.ts`, `src/lifecycle/lifecycle.ts` | `src/telemetry/spans.test.ts` |
+| T8.3 parent links and collector test | FR-TEL-02, FR-TEL-03, NFR-SEC-01 | `src/telemetry/links.ts`, `src/telemetry/fixtures/collector.ts` | `src/telemetry/collector-lifecycle.test.ts`, `src/telemetry/collector.test.ts` |
+| T8.4 export-time key filter | FR-TEL-03 | `src/telemetry/allowlist.ts` | `src/telemetry/allowlist.test.ts` |
+| T8.5 version canary (operator-scheduled) | FR-ADP-03, FR-OPS-02, NFR-PERF-02 | `src/adapters/version-canary.ts`, `src/cli/adapters-version-canary.ts`, `src/cli/doctor.ts`, `src/cli/serve.ts` (read-only on routing), `src/cli/adapters-validate.ts` (records the baseline) | `src/adapters/version-canary.test.ts` |
+| T8.6 version-bump test | FR-ADP-03, NFR-PERF-02 | (test only) | `src/adapters/version-bump-preflight.test.ts` |
+
+Not built, so no row claims it: spans other than `controller.delegate` and `provider.spawn` (the remaining LLD §7 rows,
+including `inner.call`), value inspection at export time (the forbidden-category scan is a test oracle only), and an
+operator dry run of the scheduled canary on a real CLI upgrade (T8.5 operator-only proof).
+
 ## 5. Requirements to design traceability
 
 Every `FR-*` and `NFR-*` ID in the [SRS](../requirements/SRS.md) has one row. Priority and milestone remain in the SRS;
@@ -307,7 +328,7 @@ synthetic fixtures (Grok Build, Antigravity, Cursor, OpenCode; each task stays `
 | FR-MCP-17 | COMP-MCP, COMP-LED, COMP-OPS | Authorization endpoint with the operator consent page; token endpoint issuing hashed opaque tokens with rotation; pairing codes hashed in the ledger and created by the operator CLI | [ADR-0041](../adr/0041-http-transport-with-oauth-2-1.md) | [LLD §3.3](LLD.md#33-network-mcp-transport-m13) |
 | FR-ADP-01 | COMP-ADP | Ports-and-adapters: one adapter port, per-provider implementations behind a registry | [ADR-0009](../adr/0009-version-gated-adapters.md) | [LLD §2](LLD.md#2-adapter-contract) |
 | FR-ADP-02 | COMP-ADP, COMP-EXE | Ordered preflight pipeline with cached result per adapter | [ADR-0009](../adr/0009-version-gated-adapters.md) | [LLD §2](LLD.md#2-adapter-contract) |
-| FR-ADP-03 | COMP-ADP, COMP-RTE, COMP-OPS | Adapter state machine with ADAPTER_VERSION_UNVERIFIED; eligibility filter reads it; operator acceptance via adapters validate | [ADR-0009](../adr/0009-version-gated-adapters.md) | [LLD §2](LLD.md#2-adapter-contract), [LLD §1](LLD.md#1-data-model) |
+| FR-ADP-03 | COMP-ADP, COMP-RTE, COMP-OPS | Adapter state machine with ADAPTER_VERSION_UNVERIFIED; eligibility filter reads it; operator acceptance via adapters validate; operator-scheduled version canary (T8.5, [§4.4](#44-comp-tel-and-version-canary-implementation-evidence-m8-t81t86)) | [ADR-0009](../adr/0009-version-gated-adapters.md) | [LLD §2](LLD.md#2-adapter-contract), [LLD §1](LLD.md#1-data-model) |
 | FR-ADP-04 | COMP-ADP | Parsers consume native JSON/JSONL/ACP messages only; no free-text inference of ids, status or usage | [ADR-0002](../adr/0002-mcp-upstream-acp-downstream.md) | [LLD §2](LLD.md#2-adapter-contract), M4 parser evidence [§4.2](SDD.md#42-comp-adp-m4-parser-implementation-evidence-partial) |
 | FR-ADP-05 | COMP-ADP | Refreshable model registry (operator config plus provider listing commands), outside adapter source | — | [TDD §4](TDD.md#4-provider-adapter-strategy), [LLD §2](LLD.md#2-adapter-contract) |
 | FR-ADP-06 | COMP-ADP | Claude Code adapter is the first real adapter behind the port | [ADR-0009](../adr/0009-version-gated-adapters.md) | [TDD §4](TDD.md#4-provider-adapter-strategy) |
@@ -370,7 +391,7 @@ synthetic fixtures (Grok Build, Antigravity, Cursor, OpenCode; each task stays `
 | FR-EXE-07 | COMP-EXE, COMP-ADP | Environment built from explicit allowlist plus adapter-declared variables | — | [LLD §2](LLD.md#2-adapter-contract) |
 | FR-EXE-08 | COMP-EXE, COMP-WS, COMP-POL | Verification commands run in the run worktree under the run policy snapshot, results recorded | [ADR-0004](../adr/0004-trust-profiles-no-bypass-flags.md) | [LLD §3](LLD.md#3-mcp-tool-contracts), [LLD §5](LLD.md#5-workspace-and-lease-algorithm), [LLD §8.1](LLD.md#81-verification-stage-m3-t310) |
 | FR-TEL-01 | COMP-TEL, COMP-LED | Every lifecycle step appends a run_event in the same transaction as the state change | [ADR-0005](../adr/0005-sqlite-ledger.md), [ADR-0012](../adr/0012-telemetry-at-wrapper-boundary.md) | [LLD §1](LLD.md#1-data-model), [LLD §7](LLD.md#7-telemetry-spans) |
-| FR-TEL-02 | COMP-TEL | Span emitter and optional OTLP export via `telemetry.otlp_endpoint` (absent by default, lazy load) | [ADR-0012](../adr/0012-telemetry-at-wrapper-boundary.md) | [LLD §7](LLD.md#7-telemetry-spans), [TDD §3.1](TDD.md#31-configuration) |
+| FR-TEL-02 | COMP-TEL | Span emitter and optional OTLP export via `telemetry.otlp_endpoint` (absent by default, lazy load); as built, `controller.delegate` and `provider.spawn` only ([§4.4](#44-comp-tel-and-version-canary-implementation-evidence-m8-t81t86)) | [ADR-0012](../adr/0012-telemetry-at-wrapper-boundary.md) | [LLD §7](LLD.md#7-telemetry-spans), [TDD §3.1](TDD.md#31-configuration) |
 | FR-TEL-03 | COMP-TEL | Redaction layer; large outputs stored as artifacts and referenced by id and hash | [ADR-0012](../adr/0012-telemetry-at-wrapper-boundary.md) | [LLD §7](LLD.md#7-telemetry-spans), [LLD §1](LLD.md#1-data-model) |
 | FR-TEL-04 | COMP-TEL | Deferred; ledger queries are structured so a read-only view could be added later | — | [LLD §1](LLD.md#1-data-model) |
 | FR-OPS-01 | COMP-OPS | serve, doctor, runs list/show as thin clients over the same component APIs | [ADR-0002](../adr/0002-mcp-upstream-acp-downstream.md) | [LLD §3](LLD.md#3-mcp-tool-contracts), [TDD §2](TDD.md#2-technology-choices) |
