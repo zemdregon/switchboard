@@ -62,8 +62,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#558](https://github.com/zemdregon/switchboard/pull/558)), export-time allowlist enforcement (T8.4,
   [#549](https://github.com/zemdregon/switchboard/pull/549)), the operator version canary (T8.5) and a CI test that
   excludes routing after a synthetic binary version bump until `adapters validate` records the version (T8.6) are done
-  on fakes. M8 acceptance closure (T8.7) is `Partial`: the README, roadmap status and design-doc corrections are
-  merged; `Done` is not yet recorded. See
+  on fakes. M8 acceptance closure (T8.7) is `Done`; M8 stays `Partial` until the operator records a dry run of the
+  scheduled version canary on a real CLI upgrade. See
   [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and
   [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
 - **Milestone 10 (container environments) is `Partial`.** The environment port, MCP admission and `serve` composition
@@ -463,7 +463,7 @@ Milestone 8 hardens telemetry export and adapter version change detection. It is
 exporter, wrapper-boundary spans (T8.2), the collector integration test (T8.3,
 [#552](https://github.com/zemdregon/switchboard/pull/552)), the export-time allowlist drop (T8.4,
 [#549](https://github.com/zemdregon/switchboard/pull/549)), the version canary and the CI version-bump test are in
-place on fakes; acceptance closure (T8.7) is `Partial` (see below).
+place on fakes; acceptance closure (T8.7) is `Done` (see below).
 [#558](https://github.com/zemdregon/switchboard/pull/558) reconciled this section and the M8 milestone row after T8.3
 landed.
 
@@ -507,9 +507,11 @@ Details: [docs/operations/version-canary.md](docs/operations/version-canary.md).
 preflight cache, and asserts routing excludes the provider until validation records the new version. No provider CLI is
 installed in CI.
 
-**Acceptance closure (T8.7).** `Partial`: this section and the M8 status in
-[ROADMAP §6](docs/ROADMAP.md#6-milestones) now match `src/telemetry/` and the version canary on `main`, and the
-design-doc corrections merged in [#571](https://github.com/zemdregon/switchboard/pull/571). `Done` is not yet recorded.
+**Acceptance closure (T8.7).** `Done`: this section and the M8 status in
+[ROADMAP §6](docs/ROADMAP.md#6-milestones) match `src/telemetry/` and the version canary on `main`, with design-doc
+corrections in [#571](https://github.com/zemdregon/switchboard/pull/571) and requirements alignment in
+[#575](https://github.com/zemdregon/switchboard/pull/575). M8 itself stays `Partial` until the operator records a dry
+run of the scheduled canary on a real CLI upgrade (T8.5).
 
 Tests on fakes: `src/config/config.test.ts`, `src/telemetry/index.test.ts`, `src/telemetry/spans.test.ts`,
 `src/telemetry/allowlist.test.ts`, `src/telemetry/collector-lifecycle.test.ts`, `src/telemetry/collector.test.ts`,
