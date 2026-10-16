@@ -128,7 +128,8 @@ export function startAdapterRun(adapter: ProviderAdapter, inv: Invocation, opts:
   }
   const ctx =
     opts.profile !== undefined ? { profile: opts.profile, bypassApproved: opts.bypassApproved === true } : undefined;
-  assertBypassAudit(inv, ctx);
+  // T4.62 (ADR-0049 item 1): the adapter id adds that provider's scoped bypass-class flags (Kimi Code's `-p`/`--prompt`).
+  assertBypassAudit(inv, ctx, adapter.id);
   // T4.8 (ADR-0036 items 7.3 and 10): the ACP plan is audited like argv; an `acp` plan elsewhere is refused too.
   assertAcpPlanAudit(inv, adapter.id, ctx);
   // T9.4b (ADR-0029 item 6): `--mcp-config` only in the controller's one channel shape; no other MCP rule.
