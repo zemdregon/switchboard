@@ -94,11 +94,13 @@ container must keep those two properties.
 ## Consequences
 
 - Host runs are unchanged: with no resolver, or a resolver answering `host`, the identity environment is used.
-- No container run can yet be started through MCP: admission (`src/mcp/server.ts`) still refuses container projects
-  (`ENVIRONMENT_NOT_IMPLEMENTED`) and `serve` does not yet compose the resolver from the configuration and the Docker
-  backend; both are owned by other lanes at the time of writing and are listed as T10.1 gaps in the roadmap.
-- The injected Git tool channel (socket and shim on the host) is not reachable from inside a container; a container
-  run of an adapter with an `injected` channel needs a decision (not offered, or a mounted channel) before T10.3.
+- MCP and work-queue admission admit a `container` project when `serve` composes `runEnvironments` (a configured
+  `container` project); otherwise admission refuses with `ENVIRONMENT_NOT_IMPLEMENTED` before any side effect
+  ([PR #554](https://github.com/zemdregon/switchboard/pull/554), `src/mcp/server.ts`, `src/queue/admission.ts`,
+  `src/cli/serve.ts`). Live provider CLIs inside the image are still on the operator's T10.0 checklist.
+- The injected Git tool channel (socket and shim on the host) is not reachable from inside a container; malicious-fixture
+  coverage for Git-write attempts under bypass uses the host controller and an image without a Git client (T10.3). A
+  mounted channel or an alternate commit path for in-container adapters remains an open design point.
 - The provider's probe and auth preflight run against the host binary; inside the image the executable is resolved
   by name on the image's `PATH`. Whether each provider starts and authenticates there is the operator's T10.0 check.
 - Tests: `src/environment/container.test.ts`, `src/environment/docker-runtime.test.ts`,
