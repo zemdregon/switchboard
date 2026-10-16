@@ -2096,9 +2096,37 @@ export is derived. Redaction is by construction: spans are built from an allowli
 `artifact.id`, `artifact.sha256`, `artifact.size_bytes`, and (M11) the `inner.*` attributes listed in §13.8.
 **Forbidden (FR-TEL-03, NFR-SEC-01):** prompt or objective text, constraints text, shell command lines and tool
 arguments, file contents and diffs, stdout/stderr text, environment variable names or values beyond a count,
-credential-like values, absolute home paths (use run-relative paths), provider reasoning text (NFR-PRIV-02). Large
-payloads are artifacts referenced by ID and hash. The exporter drops any attribute not on the allowlist and a test
-asserts it.
+credential-like values (including OAuth access or refresh tokens, API keys and webhook or sink URLs), absolute home
+paths (use run-relative paths), provider reasoning text (NFR-PRIV-02), MCP request or response bodies, and inner-agent
+prompt or response text. Large payloads are artifacts referenced by ID and hash only, never inlined on spans.
+
+**Configuration (FR-TEL-02, NFR-PRIV-01).** One optional key, documented in [TDD §3.1](TDD.md#31-configuration):
+
+| Key | Default | Behaviour |
+| --- | --- | --- |
+| `telemetry.otlp_endpoint` | absent (no export) | When omitted or empty, Switchboard does not load `@opentelemetry/api` or an OTLP exporter at startup, opens no telemetry listener, and makes no outbound OTLP connection (NFR-PRIV-01). When set, it must be an `http` or `https` URL validated at config load (T8.1); traces export to that endpoint only. |
+
+**Lazy load and export pipeline (T8.1, ADR-0012).** OTel packages are imported only after a non-empty
+`telemetry.otlp_endpoint` is loaded, on first span export, not at module top level, so configs without telemetry match
+pre-M8 startup and test runs that omit the key. Span attributes are built only from controller-observed facts (ledger
+events, spawn metadata, routing decisions, artifact IDs and hashes), never from provider global config, transcript files
+or hook payloads. Immediately before OTLP export, the pipeline drops any attribute whose key is not on the allowlist
+(defence in depth; T8.4). Forbidden categories must not be set even on internal builders; CI asserts both drop behaviour
+and absence of forbidden keys on exported spans (T8.3, T8.4).
+
+**Collector test harness (T8.3, M8 acceptance).** Shape for the integration test, without requiring a provider CLI:
+
+1. Start an in-process OTLP/HTTP receiver on loopback with an ephemeral port (or equivalent test fixture).
+2. Load config with `telemetry.otlp_endpoint` set to that URL; run one `delegate_task` through finalize on the fake
+   adapter.
+3. Read recorded spans from the fixture and assert: expected span names and parent links from the table above; every
+   attribute key is on the allowlist; no forbidden category appears (including a planted objective string in the delegate
+   request); secret-pattern scans over exported attributes match NFR-SEC-01 expectations for fixtures.
+
+**Traceability (T8.0, 2026-10-16, Delegated).** The forbidden list above implements FR-TEL-03 and NFR-SEC-01 for
+telemetry. [HLD TB-6](HLD.md#3-trust-boundaries) and [SDD §5](SDD.md#5-requirements-to-design-traceability) rows for
+FR-TEL-02, FR-TEL-03, NFR-SEC-01 and NFR-PRIV-01 point here; no separate requirement definitions are added in those
+documents.
 
 ## 8. Run supervisor details
 
