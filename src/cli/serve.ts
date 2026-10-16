@@ -510,6 +510,8 @@ async function runDaemon(
     breaker: config.capacity.breaker,
     // T6.5: automatic retry parameters and the reset wait bound (`capacity.retry`, `capacity.queue_horizon_seconds`).
     retry: { ...config.capacity.retry, queueHorizonSeconds: config.capacity.queueHorizonSeconds },
+    // T14.5: loop breaker N, T and successor cap (`control_plane.loop_breaker`, LLD §3.4.6).
+    loopBreaker: config.controlPlane.loopBreaker,
     // T6.6: bundle bounds for a quota failover handoff (`continuity.*`, LLD §15.4).
     continuityBounds: config.continuity,
     // T7.2: stage-2 settings for the quota failover's choice (`routing.weights`, the capacity window; LLD §17.3).
