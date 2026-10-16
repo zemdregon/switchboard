@@ -3,7 +3,9 @@
  * and parser unchanged). The suite in antigravity.test.ts shows each case passes; these tests show each case can fail:
  * a compile the replay refuses (exit 64 for the argv, exit 65 for an empty prompt) writes nothing to stdout and must
  * not satisfy any case's expectation. Later passes pin that every in-run failure detail family is reached by a case,
- * which cases fail when their stream is reordered, and that every one-word slip in the compiled argv exits 64.
+ * which cases fail when their stream is reordered, and that every one-word slip in the compiled argv exits 64. The
+ * round after the #475 ninth parser residuals pins compile/argv/stream interactions: objectives that could be misread
+ * as flags, an environment the replay refuses, an empty stream at a clean exit, and capture-file encodings.
  */
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -532,4 +534,196 @@ describe("the antigravity replay dialect refuses every one-word slip in the comp
       }
     },
   );
+});
+
+describe("the compiled run survives objectives the argv could misread (T4.35, compile/argv, synthetic only)", () => {
+  // The one Assumption on the prompt word (protocol.ts): `--prompt=<prompt>` is accepted and the value is never read
+  // as flags. The compile matrix pins the argv shape for one leading-dash objective; these pins run hostile objectives
+  // end to end and hold the prompt word verbatim, so a compile that shelled out (splitting the value into words) or
+  // truncated it would fail here. None of these shapes is duplicated in parser-residual.test.ts: they are compile
+  // outputs, not stream shapes.
+  const success = () => {
+    const c = runnable().find((x) => fixtureOf(x) === "success_edit" && x.kind === "success");
+    if (!c) throw new Error("missing success_edit case");
+    return c;
+  };
+  const HOSTILE: [string, string][] = [
+    ["the bypass flag itself", "--dangerously-skip-permissions"],
+    ["a string flag name", "--output-format"],
+    ["a whole fake flag pair", "--prompt=--output-format json"],
+    ["the flag-parsing terminator", "--"],
+    ["a leading equals sign", "=value"],
+    ["an embedded newline", "first line\nsecond line"],
+    ["shell metacharacters", "$(touch /tmp/x) ; | & `rm -rf`"],
+    ["a tab and non-ASCII text", "r\u0009viser les fichiers \u65e5\u672c\u8a9e"],
+    ["4,096 characters", "x".repeat(4096)],
+  ];
+
+  it.each(HOSTILE)(
+    "an objective with %s stays one `--prompt=` word and replays the success",
+    async (_label, objective) => {
+      const base = success();
+      const c = { ...base, request: { ...base.request, objective } };
+      const inv = c.adapter.compile(c.request, c.profile);
+      if ("ineligible" in inv) throw new Error("hostile objective must compile");
+      expect(inv.argv.slice(inv.argv.indexOf("--") + 1)).toEqual([
+        `--prompt=${objective}`,
+        "--output-format",
+        "stream-json",
+        SKIP_PERMISSIONS_FLAG,
+      ]);
+      const report = await runConformanceCase(c);
+      expect(report.ok).toBe(true);
+      expect(report.result).toEqual({
+        ok: true,
+        nativeSessionId: DEFAULT_SESSION_ID,
+        summary: "Added hello.txt.",
+        unknownEventCount: 0,
+      });
+    },
+  );
+
+  it("a compile that splits the objective into words fails, so the pins have teeth", async () => {
+    const base = success();
+    const c = refusedBy(
+      { ...base, request: { ...base.request, objective: "--sandbox fix the failing test" } },
+      (argv) =>
+        argv.flatMap((w) => {
+          if (!w.startsWith("--prompt=")) return [w];
+          const [head = "", ...rest] = w.slice("--prompt=".length).split(" ");
+          return [`--prompt=${head}`, ...rest];
+        }),
+    );
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(false);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", failureDetail: "exit code 64" });
+  });
+});
+
+describe("every antigravity conformance case fails a compile whose environment the replay refuses (T4.35)", () => {
+  // The refusal table in antigravity.test.ts pins each wrong environment against the success case only; this sweep
+  // pins that no runnable case can pass one either: every case names a detail the replay's exit 64 does not produce.
+  // `env` is the adapter-declared fragment (supervisor: extraEnv always reaches the child and is allowlist-exempt).
+  const withEnv = (
+    c: ConformanceCase,
+    edit: (env: Record<string, string>) => Record<string, string>,
+  ): ConformanceCase => {
+    const a = c.adapter as AntigravityAdapter;
+    const adapter = new Proxy(a, {
+      get(target, key) {
+        if (key === "compile") {
+          return (...args: Parameters<AntigravityAdapter["compile"]>) => {
+            const inv = target.compile(...args);
+            return "ineligible" in inv ? inv : ({ ...inv, env: edit(inv.env) } satisfies Invocation);
+          };
+        }
+        const v: unknown = Reflect.get(target, key, target);
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    });
+    return { ...c, adapter };
+  };
+  const EDITS: [string, (env: Record<string, string>) => Record<string, string>][] = [
+    ["the auto-update variable missing", () => ({})],
+    ["the auto-update variable set to a value other than `true`", () => ({ AGY_CLI_DISABLE_AUTO_UPDATE: "false" })],
+    [
+      "GEMINI_API_KEY in the adapter-declared environment",
+      (env) => ({ ...env, GEMINI_API_KEY: "synthetic-not-a-key" }),
+    ],
+  ];
+
+  it.each(EDITS)("every runnable case fails when the compiled environment has %s", async (_label, edit) => {
+    const passing: string[] = [];
+    for (const c of runnable()) {
+      const report = await runConformanceCase(withEnv(c, edit));
+      expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", failureDetail: "exit code 64" });
+      if (report.ok) passing.push(label(c));
+    }
+    expect(passing).toEqual([]);
+  });
+});
+
+describe("antigravity empty stream at a clean exit (T4.35, stream/exit interaction, synthetic only)", () => {
+  // rate_limit.jsonl pins an empty stream at exit 1 (the exit code decides); empty_exit0.jsonl is the exit-0 twin: a
+  // clean expected exit alone is not a success, and with zero output lines nothing binds and no usage is recorded.
+  // Before this pass no runnable case ended a compiled run from zero stdout lines (`no_result` keeps its init, step
+  // and unknown events; `unknown_events` keeps five).
+  it("lists exactly one case on empty_exit0, with the expectation", () => {
+    const listed = antigravityConformanceCases(makeCwd).filter((c) => {
+      const inv = c.adapter.compile(c.request, c.profile);
+      return !("ineligible" in inv) && inv.argv.includes(fixturePath("empty_exit0"));
+    });
+    expect(listed.map((c) => [c.kind, c.expect])).toEqual([
+      [
+        "malformed_output",
+        {
+          ok: false,
+          failureCode: "OUTPUT_PROTOCOL_ERROR",
+          failureDetail: "no result event",
+          nativeSessionId: null,
+          summary: null,
+          unknownEventCount: 0,
+        },
+      ],
+    ]);
+  });
+
+  it("a provider that prints nothing and exits 0 ends `no result event` with nothing bound and no usage", async () => {
+    const c = runnable().find((x) => fixtureOf(x) === "empty_exit0");
+    if (!c) throw new Error("missing empty_exit0 case");
+    const report = await runConformanceCase(c);
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toEqual({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "no result event",
+      unknownEventCount: 0,
+    });
+  });
+});
+
+describe("antigravity capture-file encodings through the replay (T4.35, stream framing, synthetic only)", () => {
+  // The parser pins trailing-CR tolerance at unit level (parser-residual.test.ts); these pins carry the bytes from
+  // the capture file to the wire. A scrubbed capture pasted on another platform can arrive CRLF-encoded or with no
+  // trailing newline on the last line; both must replay the success. A UTF-8 BOM makes the provenance line
+  // unparseable, and the replay refuses the run (exit 64), so a provenance-unreadable capture cannot pass the suite:
+  // if the replay replayed it past the metadata check, the failure would be an in-stream detail, not `exit code 64`.
+  const dir = makeCwd();
+  const reencoded = (edit: (raw: string) => string, tag: string): ConformanceCase => {
+    const c = runnable().find((x) => fixtureOf(x) === "success_edit" && x.kind === "success");
+    if (!c) throw new Error("missing success_edit case");
+    const copy = join(dir, `${tag}-success_edit.jsonl`);
+    const a = c.adapter as AntigravityAdapter;
+    const adapter = new Proxy(a, {
+      get(target, key) {
+        if (key === "compile") {
+          return (...args: Parameters<AntigravityAdapter["compile"]>) => {
+            const inv = target.compile(...args);
+            if ("ineligible" in inv) return inv;
+            const at = inv.argv.indexOf("--fixture") + 1;
+            writeFileSync(copy, edit(readFileSync(inv.argv[at] ?? "", "utf8")));
+            return { ...inv, argv: inv.argv.map((w, i) => (i === at ? copy : w)) } satisfies Invocation;
+          };
+        }
+        const v: unknown = Reflect.get(target, key, target);
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    });
+    return { ...c, adapter };
+  };
+
+  it.each([
+    ["CRLF line endings", (raw: string) => raw.replace(/\n/g, "\r\n")],
+    ["no trailing newline on the last line", (raw: string) => raw.replace(/\n$/, "")],
+  ])("a capture with %s replays the success", async (_label, edit) => {
+    const report = await runConformanceCase(reencoded(edit, "enc"));
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({ ok: true, nativeSessionId: DEFAULT_SESSION_ID });
+  });
+
+  it("a capture with a UTF-8 BOM is refused (exit 64), not replayed past its provenance line", async () => {
+    const report = await runConformanceCase(reencoded((raw) => `\uFEFF${raw}`, "bom"));
+    expect(report.ok).toBe(false);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", failureDetail: "exit code 64" });
+  });
 });

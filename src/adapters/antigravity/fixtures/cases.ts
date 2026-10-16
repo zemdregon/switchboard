@@ -95,7 +95,8 @@ export function replayAdapter(fixture: string, o: ReplayOptions = {}): Antigravi
  * stderr only: TOOL_FAILURE), in-stream sandbox-violation text in an `ERROR` envelope at exit 0 (TOOL_FAILURE, never
  * SANDBOX_VIOLATION: the parser emits no sandbox category) and
  * a `SUCCESS` envelope whose usage keys were not recorded (TOOL_FAILURE, Q-86), an object `error` beside a `SUCCESS`
- * status with tokens and an invented status with tokens and no error (each TOOL_FAILURE), and a cancellation of a process that
+ * status with tokens and an invented status with tokens and no error (each TOOL_FAILURE), an empty stream at exit 0
+ * (OUTPUT_PROTOCOL_ERROR `no result event`: a clean exit alone is not a success; the exit-1 twin is `rate_limit`), and a cancellation of a process that
  * honours SIGTERM as well as one that ignores it, and an idle timeout on both paths beside a wall-clock timeout (each
  * names its timeout kind). The whole-stream order shapes (an unknown line before the result,
  * a late auth envelope after a clean result and an unparseable line after it) are cases too. A case whose code,
@@ -453,6 +454,20 @@ export function antigravityConformanceCases(makeCwd: () => string): ConformanceC
         failureCode: "OUTPUT_PROTOCOL_ERROR",
         failureDetail: "no result event",
         nativeSessionId: DEFAULT_SESSION_ID,
+        summary: null,
+        unknownEventCount: 0,
+      },
+    },
+    {
+      ...base,
+      kind: "malformed_output",
+      adapter: replayAdapter("empty_exit0"),
+      request: request(),
+      expect: {
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "no result event",
+        nativeSessionId: null,
         summary: null,
         unknownEventCount: 0,
       },

@@ -1,0 +1,1 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.35). No recorded run printed zero lines, so no native shape exists: a provider that exits 0 with an empty stream is not a success, it is `no result event` (OUTPUT_PROTOCOL_ERROR). The exit-1 twin is rate_limit.jsonl.","exit":0}}
