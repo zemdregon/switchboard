@@ -1517,10 +1517,10 @@ and `push` tools that container runs also need), then M10. Q-38 (bring M10 forwa
 owner decision 17 (durable meta-session approval) and the Delegated machine-readable `privileged_scope` (§4.4, Q-28).*
 The documentation-only tasks T3.14, T3.15 and T3.16 are done; T3.8 is `Partial` (controller Git driver hardening
 landed on `m3-wave-a`). *Update 2026-10-16 (T3.13):* every row below now carries its own status and evidence; the
-remaining work is T3.9 (operator live leg), T3.8b (zemdregon's review) and the open items of the Partial rows
-T3.8 and T3.12 (T3.4 became Done on 2026-10-16). *Update 2026-10-13:* the sentence above is out of date. Code on `main` also has T3.2, T3.3,
-T3.4, T3.5 to T3.7 (compile matrices), T3.10 (verification), T3.12, T3.17, T3.18, T3.20 and T3.21; see the M3 row in
-§6. The "Facts the
+remaining work is T3.9 (operator live leg), T3.8b (zemdregon's review) and the open items of the Partial rows T3.8 and
+T3.12 (T3.4 became Done on 2026-10-16). *Update 2026-10-13:* the sentence above is out of date. Code on `main` also has
+T3.2, T3.3, T3.4, T3.5 to T3.7 (compile matrices), T3.10 (verification), T3.12, T3.17, T3.18, T3.20 and T3.21; see the
+M3 row in §6. The "Facts the
 breakdown relies on" paragraph below is a dated snapshot of 2026-10-12: `approve` and `deny` now exist (T3.4), and the
 config schema now has `profiles` and `retention` keys.
 Claims about the code below were checked against branch `m2-git-write-deny` (PR #12, unmerged), on which M3 builds for
