@@ -2089,7 +2089,7 @@ carry the figure; the human `doctor` line prints the verdict, not the counts) an
 equality is not vacuous. Both pins fail with the pragma line removed from `src/ledger/db.ts` (with the pragma read
 neutralised too, the REPLACE then goes through). `src/inner/usage-channels.test.ts` is unchanged: the commit-tool and
 admission paths write through the same `recordInnerCall`, and the guard is on the table, not the path. T11.5 stays
-**Done on fakes**; the live-backend residual (T11.13) is the only one left. Opened as
+**Done on fakes**; the live-backend residual (T11.13) is the only one left. Merged as
 [PR #446](https://github.com/zemdregon/switchboard/pull/446).
 *2026-10-15 post-#446 channel pass (Delegated; fakes only, no production code change, `src/inner/usage-channels.test.ts`
 only):* the T11.5 and T11.14 rows, FR-INN-15, ADR-0007 and the three usage test files were re-read on `main` after #446
@@ -2162,7 +2162,7 @@ treating a resolver throw as `inherit` fails both project-gate tests; `attempts 
 fails the labelled project-gate test. A project-scoped continuation cannot be compiled on the harness's second fake
 provider (`ELIGIBILITY_NONE`, `CAPABILITY_MISSING: binding is for fake-b`), so the project-gate runs land on the
 default provider and the two spares are the byte-identical pair; that harness limit is outside this lane and is noted,
-not changed. Opened as [PR #482](https://github.com/zemdregon/switchboard/pull/482). T11.5 stays **Done on fakes**;
+not changed. Merged as [PR #482](https://github.com/zemdregon/switchboard/pull/482). T11.5 stays **Done on fakes**;
 the live-backend residual (T11.13) is the only one left.
 *2026-10-16 post-#482 reader residual (Delegated; fakes only, no production code change,
 `src/inner/usage-surfaces.test.ts` only):* the file was re-read on `main` at `f610810` against the T11.5 and T11.14
@@ -2186,7 +2186,7 @@ mutation it guards, with the tree restored after each: `tokenCount` coercing wit
 off-schema tests and nothing else in the file; a re-ask's good counts restoring an unknown total (`(tokIn ?? 0) +
 inCount`) fails only the two off-schema tests across `src/inner/usage-surfaces.test.ts`, `src/inner/usage.test.ts` and
 `src/inner/usage-channels.test.ts` (67 others pass), so that edge was previously unpinned; `usage_observation.id`
-losing `PRIMARY KEY` in migration 0006 fails the duplicate-id test and the post-#442 REPLACE pin. Opened as
+losing `PRIMARY KEY` in migration 0006 fails the duplicate-id test and the post-#442 REPLACE pin. Merged as
 [PR #491](https://github.com/zemdregon/switchboard/pull/491). T11.5 stays **Done on fakes**; the live-backend residual
 (T11.13) is the only one left.
 *2026-10-16 post-#491 transaction residual (Delegated; fakes only, no production code change, `src/inner/usage.test.ts`
@@ -2203,7 +2203,7 @@ concurrent calls, `observed_at` is the call row's `created_at` and the `inner_ca
 backend-reported one and never the configured one, the id is in the `use` namespace, and the nth observation pairs with
 the nth recorded call, not the nth started one. Each pin fails under the drift it guards and nothing else across the
 three usage test files and `src/inner/suspension.test.ts`, with the tree restored after each: swallowing a failed extra
-event insert, swallowing a failed `suspendInnerTask`, and stamping `observed_at` with a second clock read. Opened as
+event insert, swallowing a failed `suspendInnerTask`, and stamping `observed_at` with a second clock read. Merged as
 [PR #496](https://github.com/zemdregon/switchboard/pull/496). T11.5 stays **Done on fakes**; the live-backend residual
 (T11.13) is the only one left.
 *2026-10-16 post-#496 breaker residual (Delegated; fakes only, no production code change,
@@ -2229,7 +2229,7 @@ are refused on every row written. Each pin was shown to fail under the drift it 
 each (86 tests across the three usage files and `src/inner/suspension.test.ts`): `recordInnerCall` dropping the extra
 events fails the two channel tests and the #496 rollback pin; the breaker checked before the locality lookup and the
 redaction fails the four new tests and nothing else, so that ordering was previously unpinned; a transport failure not
-counted by the breaker fails the four new tests and the two contract-layer breaker pins. Opened as
+counted by the breaker fails the four new tests and the two contract-layer breaker pins. Merged as
 [PR #501](https://github.com/zemdregon/switchboard/pull/501). T11.5 stays **Done on fakes**; the live-backend residual
 (T11.13) is the only one left.
 *2026-10-16 post-#501 pipeline residual (Delegated; fakes only, no production code change, `src/inner/usage.test.ts`
@@ -2266,7 +2266,7 @@ erroring-re-ask pin and the #317 timed-out-re-ask pin; `PERSIST_FAILED` recorded
 does `PIPELINE_ERROR` at `attempts` 0; a failed probe reporting a second `degraded` transition fails the probe pin and
 the two `pipeline.test.ts` breaker pins; `rejected_sanitiser` dropped from the quality outcomes fails only its pin;
 `event_payload` computed outside the ledger write fails only the as-built pin; and the observation written for quality
-outcomes only fails fifteen tests, the four new ones among them. Opened as
+outcomes only fails fifteen tests, the four new ones among them. Merged as
 [PR #509](https://github.com/zemdregon/switchboard/pull/509). T11.5 stays **Done on fakes**; the live-backend residual
 (T11.13) is the only one left.
 *2026-10-16 post-#509 surface residual (Delegated; fakes only, no production code change,
@@ -2303,7 +2303,7 @@ the registry, never the rows). Each pin was shown to fail under the drift it gua
 (91 tests across the three usage files): the `recovered` transition never recorded fails the four breaker tests and
 the #509 half-open probe pin; the suspension check skipped before the request fails the new suspension test, the
 `src/inner/usage.test.ts` suspension row pin and the #509 `rejected_sanitiser` pin; `get_capacity` letting an
-unregistered provider through fails only the new refusal test. Opened as
+unregistered provider through fails only the new refusal test. Merged as
 [PR #518](https://github.com/zemdregon/switchboard/pull/518). T11.5 stays **Done on fakes**; the live-backend
 residual (T11.13) is the only one left.
 
