@@ -17,6 +17,7 @@ import {
   type ResolvedConfig,
   type ResolvedProject,
 } from "../config/index.js";
+import { snapshotEnvironment } from "../environment/index.js";
 import type { Ledger, TrustProfile } from "../ledger/index.js";
 import {
   type EligibilityAnswer,
@@ -166,7 +167,11 @@ export async function admitWorkItemRequest(
     if (dynamic === undefined && !(client.projects ?? []).includes(project.id)) {
       throw new ToolError("PERMISSION_BLOCKED", `project not in client list`, { project: project.id });
     }
-    if (project.environment.kind === "container") {
+    const environment = snapshotEnvironment(project);
+    if (
+      environment.environment_kind === "container" &&
+      lifecycle.environmentPlacement({ id: project.id, ...environment })?.environment.kind !== "container"
+    ) {
       throw new ToolError("TOOL_FAILURE", CONTAINER_NOT_IMPLEMENTED, {
         project: project.id,
         reason: "ENVIRONMENT_NOT_IMPLEMENTED",
@@ -184,7 +189,7 @@ export async function admitWorkItemRequest(
       snapshot: {
         id: project.id,
         name: project.name,
-        environment_kind: project.environment.kind,
+        ...environment,
         context_id: context.id,
         base_ref: context.baseRef,
         effective_max_profile: effectiveMax,

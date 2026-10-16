@@ -59,8 +59,10 @@
  * - Projects (T9.2; FR-PRJ-03, FR-PRJ-06; FRD V12, BR-23; ADR-0024). `delegate_task` takes exactly one of `workspace_path`
  *   and `project` (the schema's `oneOf`, INVALID_REQUEST). With a project: an unknown id is INVALID_REQUEST; an id the
  *   client's `projects` list lacks is PERMISSION_BLOCKED (an absent list means no project, Delegated fail-closed
- *   reading; workspace_path requests are unaffected); a `container` project fails TOOL_FAILURE with
- *   `details.reason = ENVIRONMENT_NOT_IMPLEMENTED` before any side effect (M10, Proposed code: LLD §3 names no other).
+ *   reading; workspace_path requests are unaffected); a `container` project is admitted only when the
+ *   lifecycle has a container placement for it (T10.1: `serve` wires the `container` backend when a configured project
+ *   is `container`; the image pinned in the project is frozen into the snapshot); otherwise it fails TOOL_FAILURE with
+ *   `details.reason = ENVIRONMENT_NOT_IMPLEMENTED` before any side effect (Proposed code: LLD §3 names no other).
  *   The workspace is the primary context's path, canonicalised and root-checked at every request (LLD §11.2 step 5), and
  *   its `base_ref` must resolve to a commit. The effective ceiling is the lower of the client's and the project's
  *   (V5 with both limits named in the error details). A project's `allowed_providers` narrows the candidate set; naming a
@@ -137,6 +139,7 @@ import {
   approvalProxyToolDescriptors,
   createApprovalProxy,
 } from "../control/approval-proxy.js";
+import { snapshotEnvironment } from "../environment/index.js";
 import type { Ledger, RunRecord, RunState, TrustProfile } from "../ledger/index.js";
 import {
   type EligibilityAnswer,
@@ -453,7 +456,13 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         project: project.id,
       });
     }
-    if (project.environment.kind === "container") {
+    const environment = snapshotEnvironment(project);
+    // T10.1 (LLD §11.3): a container project needs the lifecycle's container environment for this project now
+    // (wired by `serve`); without it the run is refused here, before any side effect, never run on the host.
+    if (
+      environment.environment_kind === "container" &&
+      lifecycle.environmentPlacement({ id: project.id, ...environment })?.environment.kind !== "container"
+    ) {
       throw new ToolError("TOOL_FAILURE", `project ${project.id}: ${CONTAINER_NOT_IMPLEMENTED}`, {
         project: project.id,
         reason: "ENVIRONMENT_NOT_IMPLEMENTED",
@@ -477,7 +486,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       snapshot: {
         id: project.id,
         name: project.name,
-        environment_kind: project.environment.kind,
+        ...environment,
         context_id: context.id,
         base_ref: context.baseRef,
         effective_max_profile: effectiveMax,
