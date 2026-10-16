@@ -1,0 +1,3 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.23 residual, thirteenth pass). Assistant text, then a clean end_turn line wrapped in a JSON array. A top-level value that is not an object is an unknown line (rawType none), never a result or a binding, so the run fails OUTPUT_PROTOCOL_ERROR with no result event at exit 0.","exit":0}}
+{"type":"text","data":"Listed the files."}
+[{"type":"end","stopReason":"end_turn","sessionId":"00000000-0000-4000-8000-000000000001","usage":{"input_tokens":8,"output_tokens":2,"total_tokens":10},"num_turns":1}]
