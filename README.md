@@ -97,8 +97,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#569](https://github.com/zemdregon/switchboard/pull/569), citing `src/config/config.test.ts`,
   `src/inner/inner.test.ts`, `src/inner/import-boundary.test.ts`, `src/inner/port.ts`, `src/inner/fake-backend.ts` and
   `src/ledger/migrations/0005_inner_call.ts` (milestone row and README reconcile
-  [#574](https://github.com/zemdregon/switchboard/pull/574)). T11.13 (the `cli` backend) is Planned and no live backend
-  has been exercised. Two tasks are wired into production `serve` run paths: the commit-message
+  [#574](https://github.com/zemdregon/switchboard/pull/574)). T11.13 (the `cli` backend) is Partial on fakes
+  ([#581](https://github.com/zemdregon/switchboard/pull/581); the shipped `cli` kind stays `Ineligible`) and no live
+  backend has been exercised. Two tasks are wired into production `serve` run paths: the commit-message
   task (the optional `message` on the `commit` tool) and routing classification (`serve` admission, continuation and
   quota failover, with heuristic fallback when inner is off or unavailable). Handoff condensation, PR drafting,
   verification-summary, run-title and a live backend are not. T11.5 usage-surface pins merged
@@ -963,7 +964,7 @@ and the T11.14 roadmap row together:
 | Routing classification (T11.11) | **Production `serve` run path**: admission (`delegate_task`), continuation (`continue_task`) and quota failover, through `RunLifecycleOptions.classifyRouteFeatures` (`src/cli/serve.ts` is its only caller). Record-only: features are stored with source, model and template version and never change eligibility or `require_provider` (Q-82); when the inner agent is off, the task is disabled, a project is `off` or the backend is unavailable, dispatch records the heuristic classifier. | `src/mcp/inner-route-features.test.ts`, `src/inner/usage-channels.test.ts`, `src/cli/serve.test.ts`. |
 | PR draft (T11.8), verification summary (T11.9), run title (T11.12), handoff condensation (T11.10) | **Service functions only**: modules under `src/inner/` with no caller outside it. Neither `serve` nor any `inner` command calls them on a run path, and the `inner test` fixtures import none of them. | `src/inner/pr-draft.test.ts` (merged [#598](https://github.com/zemdregon/switchboard/pull/598)), `src/inner/log-summary.test.ts` ([#594](https://github.com/zemdregon/switchboard/pull/594)), `src/inner/run-title.test.ts`, `src/inner/handoff-condense.test.ts`. |
 | `inner status`, `inner test <task>`, `inner resume <task>` | **CLI only**, never on a run path. `inner test` sends the built-in synthetic fixture through the real pipeline and nothing from any repository; with a populated run ledger and no shared-subscription declaration the three commands leave every non-inner table unchanged and link no inner call to a run. With `shares_subscription_with`, a backend request also records labelled usage with no run link. | `src/inner/cli-run-isolation.test.ts`, `src/cli/inner.test.ts` ([#591](https://github.com/zemdregon/switchboard/pull/591)), `src/inner/cli-doctor-surfaces.test.ts`. |
-| A live backend | **Not exercised.** Every test uses a scripted in-process fake or a loopback fake HTTP server; `npm run test:live` has no inner-agent leg; the `cli` backend kind (T11.13, OpenCode) is Planned and is reported `Ineligible` by `doctor` and never started. Nothing above is a claim about a real model. | `src/cli/inner.test.ts`. |
+| A live backend | **Not exercised.** Every test uses a scripted in-process fake or a loopback fake HTTP server; `npm run test:live` has no inner-agent leg; the `cli` backend kind (T11.13, OpenCode) is Partial on fakes ([#581](https://github.com/zemdregon/switchboard/pull/581)) and the shipped kind is reported `Ineligible` by `doctor` and never started. Nothing above is a claim about a real model. | `src/cli/inner.test.ts`. |
 
 Merged fake-backend evidence for usage accounting
 ([PR #334](https://github.com/zemdregon/switchboard/pull/334),
