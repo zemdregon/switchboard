@@ -151,6 +151,18 @@ export class DynamicProjectStore {
     return derive(revs, decisions);
   }
 
+  /** One stored revision row by its id (`prv_…`), or undefined. Reads only (T14.8 approval proxy). */
+  revisionRow(id: string): ProjectRevisionRow | undefined {
+    return this.db.prepare("SELECT * FROM project_revision WHERE id = ?").get(id) as ProjectRevisionRow | undefined;
+  }
+
+  /** One stored revision row by project and revision number, or undefined. Reads only (T14.8 approval proxy). */
+  revisionRowOf(projectId: string, revision: number): ProjectRevisionRow | undefined {
+    return this.db
+      .prepare("SELECT * FROM project_revision WHERE project_id = ? AND revision = ?")
+      .get(projectId, revision) as ProjectRevisionRow | undefined;
+  }
+
   /** Every dynamic project (optionally of one creating client), ordered by project id. */
   list(clientId?: string): DynamicProjectState[] {
     const ids = (

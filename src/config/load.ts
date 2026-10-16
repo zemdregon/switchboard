@@ -139,6 +139,16 @@ export interface ResolvedMcpClient {
    * always sets it (default `none`); a hand-built entry without it is read as `none` (fail closed).
    */
   readonly maxPushPolicy?: "none" | "branch";
+  /**
+   * `approval_proxy` (FR-CTL-08, T14.8, ADR-0047): offers `list_pending_approvals` and `decide_approval`. `loadConfig`
+   * always sets it (default false); a hand-built entry without it is read as false (fail closed).
+   */
+  readonly approvalProxy?: boolean;
+  /**
+   * `approval_proxy_targets` (T14.8): client ids whose pending approvals this proxy may decide. `loadConfig` always sets
+   * it with `approvalProxy` (default: the client itself); a hand-built proxy entry without it targets only itself.
+   */
+  readonly approvalProxyTargets?: readonly string[];
 }
 
 const INTERVAL_UNIT_MS = { m: 60_000, h: 3_600_000, d: 86_400_000 } as const;
@@ -303,6 +313,24 @@ export function loadConfig(
           `(client ${JSON.stringify(c.id)}); remove it or set manage_projects`,
       );
     }
+    // T14.8 (Delegated, fail closed): approval targets mean nothing without approval_proxy.
+    if (c.approval_proxy_targets !== undefined && c.approval_proxy !== true) {
+      throw new ConfigError(
+        `Invalid config: $.mcp_clients[${i}].approval_proxy_targets: applies only to a client with approval_proxy: ` +
+          `true (client ${JSON.stringify(c.id)}); remove it or set approval_proxy`,
+      );
+    }
+  }
+  // T14.8 (NFR-SEC-06): an approval target must be a configured client; an unknown id aborts startup.
+  for (const [i, c] of cfg.mcp_clients.entries()) {
+    for (const [j, id] of (c.approval_proxy_targets ?? []).entries()) {
+      if (!ids.has(id)) {
+        throw new ConfigError(
+          `Invalid config: $.mcp_clients[${i}].approval_proxy_targets[${j}]: unknown client id ${JSON.stringify(id)} ` +
+            `(client ${JSON.stringify(c.id)}); add it to mcp_clients or remove it`,
+        );
+      }
+    }
   }
 
   // FR-PRJ-06 (T9.2): a client's project list may only name configured projects (NFR-SEC-06: unknown id aborts startup).
@@ -409,6 +437,8 @@ export function loadConfig(
           projects: [...(c.projects ?? [])],
           manageProjects: c.manage_projects === true,
           maxPushPolicy: c.max_push_policy ?? "none",
+          approvalProxy: c.approval_proxy === true,
+          ...(c.approval_proxy === true ? { approvalProxyTargets: [...(c.approval_proxy_targets ?? [c.id])] } : {}),
         },
       ]),
     ),

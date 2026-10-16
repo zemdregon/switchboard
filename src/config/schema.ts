@@ -20,6 +20,11 @@
  * projects (default false: the tools are absent). `max_push_policy` (default `none`) is the widest push policy a dynamic
  * project of this client may declare; `load.ts` refuses it without `manage_projects: true`.
  *
+ * `mcp_clients[].approval_proxy` and `mcp_clients[].approval_proxy_targets` (T14.8; FR-CTL-08, ADR-0047, LLD §3.4.8,
+ * TDD §3.1): `approval_proxy: true` offers the client `list_pending_approvals` and `decide_approval` (default false: the
+ * tools are absent). `approval_proxy_targets` (default: the client itself) lists the client ids whose approvals it may
+ * decide; `load.ts` refuses it without `approval_proxy: true` and refuses an id that is not a configured client.
+ *
  * `providers.claude-code.git_channel` (T9.4b; ADR-0029 item 7, owner decision 36; key and default Delegated): the
  * operator opt-in that lets the Claude Code adapter receive the injected tool channel through a controller-written
  * `--mcp-config` file. Default false (argv unchanged, `commitChannel: "none"`). Accepted only under `claude-code`.
@@ -89,6 +94,10 @@ export interface SwitchboardConfig {
     manage_projects?: boolean;
     /** T9.9 (FR-PRJ-10): the widest push policy a dynamic project of this client may declare. Default `none`. */
     max_push_policy?: (typeof PUSH_POLICIES)[number];
+    /** T14.8 (FR-CTL-08, ADR-0047): offers list_pending_approvals and decide_approval. Default false. */
+    approval_proxy?: boolean;
+    /** T14.8: client ids whose pending approvals this proxy may decide. Default: the client itself. */
+    approval_proxy_targets?: string[];
   }[];
   limits?: { global_concurrency?: number; per_provider_concurrency?: number };
   providers?: Partial<
@@ -408,6 +417,13 @@ export const configSchema = {
           projects: { type: "array", uniqueItems: true, items: { type: "string", pattern: PROJECT_ID_PATTERN } },
           manage_projects: { type: "boolean" },
           max_push_policy: { enum: [...PUSH_POLICIES] },
+          approval_proxy: { type: "boolean" },
+          approval_proxy_targets: {
+            type: "array",
+            uniqueItems: true,
+            minItems: 1,
+            items: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,63}$" },
+          },
         },
       },
     },
