@@ -459,9 +459,9 @@ allowlist, and any non-scalar value (`src/telemetry/allowlist.ts`, tested in `sr
 `collector integration: fake-adapter delegate/finalize path (T8.3)`) runs a fake-adapter delegate/finalize path with
 OTLP pointed at the in-process collector fixture `src/telemetry/fixtures/collector.ts`, then asserts the span count,
 the LLD §7 parent links (`provider.spawn` under `controller.delegate`, one trace per run; `src/telemetry/links.ts`)
-and the absence of every forbidden attribute category from LLD §7. The scan is a positive control: planting a
-forbidden key or value on an exported span fails the test (`src/telemetry/collector.test.ts`). No provider CLI is
-installed in CI.
+and the absence of every forbidden attribute category from LLD §7. The scan has positive controls: planting a
+forbidden category on an exported span fails the lifecycle path (same file), and `src/telemetry/collector.test.ts`
+checks each forbidden key and value class individually. No provider CLI is installed in CI.
 
 **Version canary (T8.5).** Switchboard records each enabled provider's probed CLI version under the data directory
 (`version-canary.json`). A version change marks the adapter `ADAPTER_VERSION_UNVERIFIED` until you run

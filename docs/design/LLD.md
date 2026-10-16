@@ -5832,6 +5832,36 @@ sets `GH_TOKEN` or `GITHUB_TOKEN` for these calls ([ADR-0050](../adr/0050-ci-sta
 
 **Tests (T15.3).** Inject `CiStatusPort` returning synthetic conclusions; never call real `gh` in CI.
 
+**As built (T15.3, 2026-10-16, Delegated agent work, not owner-approved).** `src/ci/`: `port.ts` (`CiStatusPort`,
+`CiStatusError` reasons `AUTH_REQUIRED`, `GH_FAILED`, `GH_MISSING`, `PARSE_FAILED`, `TIMEOUT`), `gh-argv.ts` (the closed
+argv templates G1 `run list`, G2 `run view`, G3 `api …/check-runs` with a fixed `--jq`, an exact-match audit every builder
+runs, the closed JSON field allowlists and the `gh` environment allowlist, which never carries `GH_TOKEN`, `GITHUB_TOKEN`,
+`GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `GH_HOST` or `GH_REPO`), `gh-port.ts` (`GhCiStatusPort`: `execFile`
+without a shell, stderr dropped, `gh` exit code 4 read as `AUTH_REQUIRED` per `gh help exit-codes`), `published-refs.ts`
+(the published-ref allowlist from `ACCEPTED` `git_push` rows of the project, tip = latest accepted pushed SHA; `owner/repo`
+from a read-only `git config --get remote.<name>.url`, github.com only), `untrusted.ts` and `trigger.ts`
+(`pollCiTriggers`, `CiTriggerPoller`), wired as scheduler step 2 in `src/cli/serve.ts` before the T15.1 dequeue. Three
+Delegated deviations from the Proposed design above, each to avoid a migration while T15.2 owns the next number:
+
+1. **No `project_ci_trigger` table.** The per-project trigger is operator configuration, `ci_trigger.projects[]`
+   (`project`, `client`, `enabled`, `template` with `objective`, `trust_profile` other than `privileged`, `constraints`;
+   `src/config/ci-trigger.ts`); `load.ts` refuses an unknown client, an unknown project or a client that does not list the
+   project. The `client` is the `creator_client_id`. A chat client cannot enable a trigger in v1.
+2. **No `ci_trigger_event` table.** Dedup is the work item itself: `source_kind = 'ci_trigger'`, `source_id =
+   ci:<external_id>`, idempotency key `ci_trigger:<project_id>:<external_id>`, checked per `(project_id, source_id)` and
+   written in the one enqueue transaction, so a crash leaves no half-written event to reconcile.
+3. **`untrusted_summary` is not stored on its own.** An operator-forwarded summary (injected source; no operator ingress
+   CLI in v1) is NFC-normalised, stripped of control characters, redacted with the artifact redactor, capped at 500
+   characters, and reaches storage only inside the objective, as a block labelled `untrusted_external_text`, when the
+   template holds `{{ci_untrusted_summary}}`. Templates may also use the controller facts `{{ci_publish_ref}}`,
+   `{{ci_head_sha}}`, `{{ci_conclusion}}` and `{{ci_external_id}}`; substitution is one pass.
+
+G2 confirms the G1 run's terminal conclusion; G1's run must be on the asked branch (else `PARSE_FAILED`) and on the
+published tip SHA (else nothing applies). The G3 jq filter emits one object per completed check run (REST field `id`)
+because `--paginate` applies `--jq` per page; the latest by `completed_at` is chosen in code. Poll errors are reason codes
+on `CiTriggerPoller.lastErrors` and in the `serve` log; a `doctor` check is not built. Tests: `src/ci/ci-trigger.test.ts`
+(matrix C1–C18 on a fake port, a fake `gh` runner and a fake `gh` script).
+
 ### 18.7 Scheduler integration (COMP-RTE)
 
 One **Proposed** scheduler loop in `serve` (after retrieval build, before or after admission dequeue):
