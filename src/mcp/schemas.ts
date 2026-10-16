@@ -41,6 +41,11 @@
  *
  * T14.6 (FR-CTL-05, LLD §3.4.4): `pause_project` and `resume_project` join the tool list before `steer_run` (which stays last) with the LLD input
  * and output as written (closed); `get_digest` now requires `paused` on every listed project.
+ *
+ * T15.1 (FR-QUE-01, LLD §18.4): `enqueue_work`, `list_work` and `cancel_work` (`WORK_QUEUE_TOOL_NAMES`) follow
+ * `TOOL_NAMES` on a stdio session, before any gated tool. Proposed (Delegated): `enqueue_work.request` is the closed delegate_task subset that
+ * LLD §18.2 freezes in `request_json`; `depends_on` at most 32 ids; a listed item shows `trust_profile` but not the
+ * objective or the rest of the frozen request.
  */
 
 import { FAILURE_CODES } from "../adapters/failure.js";
@@ -80,6 +85,13 @@ export type ProjectToolName = (typeof PROJECT_TOOL_NAMES)[number];
  */
 export const SEARCH_TOOL_NAMES = ["search_project_context"] as const;
 export type SearchToolName = (typeof SEARCH_TOOL_NAMES)[number];
+
+/**
+ * T15.1 (FR-QUE-01, LLD §18.4): the project work queue. Listed right after `TOOL_NAMES` on a stdio session; not offered
+ * over the network transport (see `./server.ts`).
+ */
+export const WORK_QUEUE_TOOL_NAMES = ["enqueue_work", "list_work", "cancel_work"] as const;
+export type WorkQueueToolName = (typeof WORK_QUEUE_TOOL_NAMES)[number];
 
 /** Delegated bounds for an MCP-supplied project definition (the configuration schema itself has none). */
 export const MAX_DEFINITION_STRING = 4096;
@@ -527,6 +539,59 @@ const INPUTS = {
   resume_project: PAUSE_INPUT,
 } as const;
 
+/** T15.1 (LLD §18.2): the work-item id, `que_` plus 26 Crockford base32 characters. */
+const WORK_ITEM_ID = { type: "string", pattern: "^que_[0-9A-HJKMNP-TV-Z]{26}$" } as const;
+const WORK_STATE = {
+  type: "string",
+  enum: ["PENDING", "READY", "ADMITTING", "ADMITTED", "DONE", "CANCELLED", "FAILED_ADMISSION"],
+} as const;
+const DELEGATE = INPUTS.delegate_task.properties;
+const WORK_INPUTS = {
+  // LLD §18.2 `request_json`: the delegate_task input without workspace_path, project (the item's project_id),
+  // wait_seconds and idempotency_key; frozen at enqueue.
+  enqueue_work: {
+    type: "object",
+    additionalProperties: false,
+    required: ["project_id", "request"],
+    properties: {
+      project_id: PROJECT_REF,
+      request: {
+        type: "object",
+        additionalProperties: false,
+        required: ["objective", "trust_profile"],
+        properties: {
+          objective: DELEGATE.objective,
+          trust_profile: DELEGATE.trust_profile,
+          constraints: DELEGATE.constraints,
+          verification_commands: DELEGATE.verification_commands,
+          routing: DELEGATE.routing,
+          priority: DELEGATE.priority,
+          privileged_scope: DELEGATE.privileged_scope,
+        },
+      },
+      // LLD §18.3: queue priority, independent of request.priority.
+      priority: { type: "integer", minimum: -1000, maximum: 1000, default: 0 },
+      depends_on: { type: "array", maxItems: 32, uniqueItems: true, items: WORK_ITEM_ID },
+      idempotency_key: { type: "string", minLength: 8, maxLength: 128 },
+    },
+  },
+  list_work: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      project_id: PROJECT_REF,
+      state_in: { type: "array", items: WORK_STATE, minItems: 1, maxItems: 7, uniqueItems: true },
+      limit: { type: "integer", minimum: 1, maximum: 200, default: 50 },
+    },
+  },
+  cancel_work: {
+    type: "object",
+    additionalProperties: false,
+    required: ["work_item_id"],
+    properties: { work_item_id: WORK_ITEM_ID },
+  },
+} as const;
+
 const PROJECT_INPUTS = {
   create_project: {
     type: "object",
@@ -958,6 +1023,68 @@ const SEARCH_RESULT = {
     },
   },
 } as const;
+/** T15.1 (LLD §18.2): one work item as MCP shows it; the frozen request and the event history are not returned. */
+const WORK_ITEM = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "work_item_id",
+    "project_id",
+    "state",
+    "priority",
+    "trust_profile",
+    "source_kind",
+    "depends_on",
+    "admitted_run_id",
+    "last_error_code",
+    "created_at",
+    "updated_at",
+    "terminal_at",
+  ],
+  properties: {
+    work_item_id: { type: "string" },
+    project_id: { type: "string" },
+    state: WORK_STATE,
+    priority: { type: "integer" },
+    trust_profile: NULLABLE_STRING,
+    source_kind: { type: "string", enum: ["mcp", "schedule", "ci_trigger"] },
+    depends_on: { type: "array", items: { type: "string" } },
+    admitted_run_id: NULLABLE_STRING,
+    last_error_code: NULLABLE_STRING,
+    created_at: { type: "string" },
+    updated_at: { type: "string" },
+    terminal_at: NULLABLE_STRING,
+    replayed: { type: "boolean" },
+  },
+} as const;
+const WORK_OUTPUTS = {
+  enqueue_work: withError(WORK_ITEM),
+  list_work: withError({
+    type: "object",
+    additionalProperties: false,
+    required: ["items"],
+    properties: { items: { type: "array", items: WORK_ITEM } },
+  }),
+  cancel_work: withError(WORK_ITEM),
+} as const;
+
+const WORK_DESCRIPTIONS: Readonly<Record<WorkQueueToolName, string>> = {
+  enqueue_work:
+    "Queue a delegate_task request (request: the delegate_task fields without workspace_path, project, wait_seconds " +
+    "and idempotency_key) on one project this client may use (see list_projects). The controller admits it later as " +
+    "this client, under this client's and the project's trust ceiling at that time; a refusal there ends the item " +
+    "FAILED_ADMISSION. priority (-1000 to 1000, larger first) orders this project's ready items; depends_on names " +
+    "this client's items that must be DONE first. Returns the item; reusing idempotency_key with the same arguments " +
+    "returns the earlier item.",
+  list_work:
+    "Work items this client queued, highest priority first, then oldest. Optional filters: project_id (a project " +
+    "this client may use) and state_in. ADMITTED and DONE items name their run (see get_run). At most limit items " +
+    "(default 50, at most 200).",
+  cancel_work:
+    "Cancel a PENDING or READY work item this client queued. Any other state is returned unchanged: an admitted item " +
+    "is stopped with cancel_run on its run. Another client's item is unknown.",
+};
+
 const SEARCH_INPUTS = { search_project_context: SEARCH_INPUT } as const;
 const SEARCH_OUTPUTS = { search_project_context: withError(SEARCH_RESULT) } as const;
 
@@ -1073,7 +1200,7 @@ const PROJECT_DESCRIPTIONS: Readonly<Record<ProjectToolName, string>> = {
 };
 
 export interface ToolDescriptor {
-  name: ToolName | ProjectToolName | SearchToolName;
+  name: ToolName | ProjectToolName | SearchToolName | WorkQueueToolName;
   description: string;
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
@@ -1082,15 +1209,27 @@ export interface ToolDescriptor {
 /**
  * `tools/list` payload. Returns fresh copies so callers cannot mutate the published documents. The project-management
  * tools are included only with `manageProjects` (T9.9, FR-PRJ-10), `search_project_context` only with `searchContext`
- * (T12.6, FR-RAG-06).
+ * (T12.6, FR-RAG-06), the work-queue tools only with `workQueue` (T15.1).
  */
-export function toolDescriptors(opts: { manageProjects?: boolean; searchContext?: boolean } = {}): ToolDescriptor[] {
+export function toolDescriptors(
+  opts: { manageProjects?: boolean; searchContext?: boolean; workQueue?: boolean } = {},
+): ToolDescriptor[] {
   const base: ToolDescriptor[] = TOOL_NAMES.map((name) => ({
     name,
     description: DESCRIPTIONS[name],
     inputSchema: structuredClone(INPUTS[name]) as Record<string, unknown>,
     outputSchema: structuredClone(OUTPUTS[name]) as Record<string, unknown>,
   }));
+  if (opts.workQueue === true) {
+    base.push(
+      ...WORK_QUEUE_TOOL_NAMES.map((name) => ({
+        name,
+        description: WORK_DESCRIPTIONS[name],
+        inputSchema: structuredClone(WORK_INPUTS[name]) as Record<string, unknown>,
+        outputSchema: structuredClone(WORK_OUTPUTS[name]) as Record<string, unknown>,
+      })),
+    );
+  }
   if (opts.searchContext === true) {
     base.push(
       ...SEARCH_TOOL_NAMES.map((name) => ({
@@ -1113,20 +1252,28 @@ export function toolDescriptors(opts: { manageProjects?: boolean; searchContext?
   ];
 }
 
-export function inputSchema(name: ToolName | ProjectToolName | SearchToolName): Record<string, unknown> {
+export function inputSchema(
+  name: ToolName | ProjectToolName | SearchToolName | WorkQueueToolName,
+): Record<string, unknown> {
   const doc = (PROJECT_TOOL_NAMES as readonly string[]).includes(name)
     ? PROJECT_INPUTS[name as ProjectToolName]
     : (SEARCH_TOOL_NAMES as readonly string[]).includes(name)
       ? SEARCH_INPUTS[name as SearchToolName]
-      : INPUTS[name as ToolName];
+      : (WORK_QUEUE_TOOL_NAMES as readonly string[]).includes(name)
+        ? WORK_INPUTS[name as WorkQueueToolName]
+        : INPUTS[name as ToolName];
   return structuredClone(doc) as Record<string, unknown>;
 }
 
-export function outputSchema(name: ToolName | ProjectToolName | SearchToolName): Record<string, unknown> {
+export function outputSchema(
+  name: ToolName | ProjectToolName | SearchToolName | WorkQueueToolName,
+): Record<string, unknown> {
   const doc = (PROJECT_TOOL_NAMES as readonly string[]).includes(name)
     ? PROJECT_OUTPUTS[name as ProjectToolName]
     : (SEARCH_TOOL_NAMES as readonly string[]).includes(name)
       ? SEARCH_OUTPUTS[name as SearchToolName]
-      : OUTPUTS[name as ToolName];
+      : (WORK_QUEUE_TOOL_NAMES as readonly string[]).includes(name)
+        ? WORK_OUTPUTS[name as WorkQueueToolName]
+        : OUTPUTS[name as ToolName];
   return structuredClone(doc) as Record<string, unknown>;
 }

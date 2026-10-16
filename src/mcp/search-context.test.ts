@@ -37,7 +37,7 @@ import { buildProjectIndex } from "../retrieval/build.js";
 import type { EmbeddingBackend } from "../retrieval/embedding.js";
 import { createFakeEmbedder, FAKE_EMBEDDING_MODEL, type FakeEmbedder } from "../retrieval/fake-embedder.js";
 import { ragStoreDir } from "../retrieval/store.js";
-import { TOOL_NAMES } from "./schemas.js";
+import { TOOL_NAMES, WORK_QUEUE_TOOL_NAMES } from "./schemas.js";
 import {
   MAX_RESULT_TEXT_BYTES,
   MAX_SEARCH_TEXT_BYTES,
@@ -382,16 +382,16 @@ describe("search_project_context on the MCP server (T12.6, FR-RAG-06)", () => {
     const projects = [project("demo", repo), project("quiet", repo, { mode: "off" })];
     const clients = { orch: ["demo"], quietonly: ["quiet"], none: undefined };
     const withSearch = await connect({ clientId: "orch", projects, clients, search: deps() });
-    expect(withSearch.names).toEqual([...TOOL_NAMES, "search_project_context"]);
+    expect(withSearch.names).toEqual([...TOOL_NAMES, ...WORK_QUEUE_TOOL_NAMES, "search_project_context"]);
     for (const clientId of ["quietonly", "none"]) {
       const s = await connect({ clientId, projects, clients, search: deps() });
-      expect(s.names).toEqual([...TOOL_NAMES]);
+      expect(s.names).toEqual([...TOOL_NAMES, ...WORK_QUEUE_TOOL_NAMES]);
       const r = await s.call({ project: "quiet", query: "x" });
       expect(r.isError).toBe(true);
       expect(r.body.error.message).toMatch(/unknown tool/u);
     }
     const noBackend = await connect({ clientId: "orch", projects, clients });
-    expect(noBackend.names).toEqual([...TOOL_NAMES]);
+    expect(noBackend.names).toEqual([...TOOL_NAMES, ...WORK_QUEUE_TOOL_NAMES]);
   });
 
   it("searches only the client's projects: another project is refused exactly like an unknown one", async () => {

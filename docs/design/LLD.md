@@ -5771,9 +5771,28 @@ Dequeue is implemented inside COMP-RTE (scheduler tick) calling the same admissi
 5. **Privileged.** `privileged` items follow WF-7: `AWAITING_APPROVAL` on the admitted run is allowed; the work item is
    `ADMITTED` when the run row exists, and becomes `DONE` only when that run succeeds.
 
-**Proposed MCP tools (T15.1).** `enqueue_work`, `cancel_work`, `list_work` with the same project scoping as
-`list_runs` (§3.4.2). Shapes mirror the table fields; only the creator may cancel unless the operator uses CLI
-`switchboard queue cancel` (FR-OPS-01, T15.1).
+**MCP tools (T15.1).** `enqueue_work`, `list_work` and `cancel_work`, scoped as `list_runs` (§3.4.2): a `project_id`
+must name a project the client may use (unknown → `INVALID_REQUEST`, outside its `projects` list → `PERMISSION_BLOCKED`,
+its own dynamic project allowed), and an item is visible only to its `creator_client_id` (another client's `que_*` id
+is unknown, `INVALID_REQUEST`). Only the creator may cancel over MCP; the operator uses CLI `switchboard queue cancel`
+(FR-OPS-01). Closed schemas live in `src/mcp/schemas.ts`. **Delegated** details:
+
+- `enqueue_work { project_id, request, priority?, depends_on?, idempotency_key? }`. `request` is the closed
+  `delegate_task` subset frozen in `request_json` (§18.2): `objective`, `trust_profile`, `constraints`,
+  `verification_commands`, `routing`, `priority`, `privileged_scope`. At enqueue the server applies the `delegate_task`
+  checks that need no workspace: the ceiling against the lower of the client's and the project's maximum (V5,
+  `PERMISSION_BLOCKED`), V13, V7 and V8. Admission re-checks under the configuration of that time (§18.4 step 2).
+  `depends_on` (at most 32) names the caller's own items. A project already holding `queue.max_items_per_project` rows
+  is `INVALID_REQUEST`. The key is stored as `mcp:<key>` so it cannot collide with schedule or CI keys, and is replayed
+  (`replayed: true`) only for the same project, request, priority and `depends_on`.
+- `list_work { project_id?, state_in?, limit? }` returns the caller's items ordered as §18.3, at most `limit` (default
+  50, at most 200). An item shows `work_item_id`, `project_id`, `state`, `priority`, `trust_profile`, `source_kind`,
+  `depends_on`, `admitted_run_id`, `last_error_code` and timestamps, never the objective or the rest of `request_json`.
+- `cancel_work { work_item_id }` moves a `PENDING` or `READY` item to `CANCELLED` and returns any other item unchanged.
+  `ADMITTING` is not cancelled, so a run never sits behind a `CANCELLED` item; an admitted item is stopped with
+  `cancel_run`.
+- Fail closed: the three tools are listed only on stdio sessions, right after the base tools. They are not offered
+  over the network transport (FR-MCP-15), because a work item records its client but no HTTP subject.
 
 ### 18.5 Schedules (FR-QUE-02)
 

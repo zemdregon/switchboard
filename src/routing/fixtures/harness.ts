@@ -137,6 +137,8 @@ export interface Harness {
   db: Database.Database;
   ledger: Ledger;
   lifecycle: RunLifecycle;
+  /** T15.1: the adapter registry the servers route over (for a queue admission tick in tests). */
+  registry: AdapterRegistry;
   /** Raw tool call through the SDK client of `clientId` (default `orch`). */
   call(name: string, args: Json, clientId?: string): Promise<{ isError: boolean; body: Json }>;
   /** Tool call that must succeed. */
@@ -266,6 +268,7 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
     db,
     ledger,
     lifecycle,
+    registry,
     call,
     ok,
     settle,

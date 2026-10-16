@@ -20,7 +20,7 @@ import { createIdGenerator } from "../ids/index.js";
 import { createLedger, LEDGER_FILE_NAME, type Ledger, openLedger, type TrustProfile } from "../ledger/index.js";
 import { RunLifecycle } from "../lifecycle/index.js";
 import { WorkspaceManager } from "../workspace/index.js";
-import { createSwitchboardServer, type SwitchboardMcpServer, TOOL_NAMES } from "./index.js";
+import { createSwitchboardServer, type SwitchboardMcpServer, TOOL_NAMES, WORK_QUEUE_TOOL_NAMES } from "./index.js";
 
 const NOW = new Date("2026-10-14T12:00:00.000Z");
 const now = () => NOW;
@@ -208,7 +208,7 @@ describe("get_capacity on the MCP server (T6.3; FR-MCP-02, LLD §16.3)", () => {
   it("is listed with a closed input schema and an output schema; the earlier tools are unchanged", async () => {
     const client = await connect();
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES]);
+    expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES, ...WORK_QUEUE_TOOL_NAMES]);
     expect(TOOL_NAMES.slice(0, 7)).toEqual([
       "delegate_task",
       "continue_task",

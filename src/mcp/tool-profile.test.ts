@@ -8,7 +8,14 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { approvalProxyToolDescriptors } from "../control/approval-proxy.js";
 import type { TrustProfile } from "../ledger/index.js";
 import { type Harness, startHarness } from "../routing/fixtures/harness.js";
-import { inputSchema, outputSchema, TOOL_NAMES, type ToolName, toolDescriptors } from "./schemas.js";
+import {
+  inputSchema,
+  outputSchema,
+  TOOL_NAMES,
+  type ToolName,
+  toolDescriptors,
+  WORK_QUEUE_TOOL_NAMES,
+} from "./schemas.js";
 import { applyToolProfile, CONSOLE_TOOL_NAMES, profileOffers } from "./tool-profile.js";
 
 const edit: TrustProfile = "edit-untrusted";
@@ -113,13 +120,13 @@ describe("tool_profile console (T14.11, FR-CTL-11)", () => {
 
 describe("tool_profile orchestrator (T14.11, FR-CTL-11)", () => {
   it("is unchanged: the default and the explicit orchestrator list today's full set with the same schemas", async () => {
-    const expected = JSON.parse(JSON.stringify(toolDescriptors())) as unknown;
+    const expected = JSON.parse(JSON.stringify(toolDescriptors({ workQueue: true }))) as unknown;
     const check = async (label: string, x: Harness) => {
       const { tools } = await x.client("orch").listTools();
       expect(
         tools.map((t) => t.name),
         label,
-      ).toEqual([...TOOL_NAMES]);
+      ).toEqual([...TOOL_NAMES, ...WORK_QUEUE_TOOL_NAMES]);
       expect(JSON.parse(JSON.stringify(tools)), label).toEqual(expected);
       expect(await x.call("get_capacity", {}, "orch"), label).toMatchObject({ isError: false });
     };
