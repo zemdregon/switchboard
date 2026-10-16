@@ -51,6 +51,19 @@ import {
   renderRunList,
   showRun,
 } from "./runs.js";
+import {
+  approveSchedule,
+  createSchedule,
+  denySchedule,
+  disableSchedule,
+  enableSchedule,
+  listSchedules,
+  renderScheduleDetail,
+  renderScheduleList,
+  renderScheduleMutation,
+  showSchedule,
+  UnknownScheduleError,
+} from "./schedule.js";
 import { serve } from "./serve.js";
 
 export const HELP = `Usage: switchboard <command> [options]
@@ -113,6 +126,20 @@ Commands:
                       Read the HTTP consent-page passphrase from stdin and print its hash for
                       transport.http.passphrase_hash (Switchboard's own; touches no provider sign-in)
   consent pair        Print a one-time pairing code for the HTTP consent page (valid once, for 10 minutes)
+  schedule list [--project <id>]
+                      List schedules (read-only, no lock)
+  schedule show <sch_id>
+                      Show one schedule including cron expression, template and next fire time
+  schedule enable <sch_id>
+                      Enable a schedule for future cron firing (requires APPROVED status)
+  schedule disable <sch_id>
+                      Disable a schedule and stop future fires
+  schedule approve <sch_id>
+                      Approve a widening schedule created by a chat client
+  schedule deny <sch_id>
+                      Reject a widening schedule
+  schedule create <cron> <project> <template_json>
+                      Create a new schedule (off by default)
 
 Options:
   --json              Machine-readable output (not for serve)
@@ -127,6 +154,7 @@ const OPTIONS = {
   json: { type: "boolean" },
   config: { type: "string" },
   client: { type: "string" },
+  project: { type: "string" },
   apply: { type: "boolean" },
   "dry-run": { type: "boolean" },
   state: { type: "string" },
@@ -399,6 +427,80 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
           `unknown consent subcommand ${JSON.stringify(sub ?? "")}; expected hash-passphrase or pair`,
         );
       }
+      case "schedule": {
+        // T15.2 (FR-QUE-02, FR-OPS-01): schedules list, show, enable, disable, approve, deny, create.
+        if (sub === "list") {
+          if (rest.length > 0) throw new UsageError("schedule list takes no positional arguments");
+          const report = listSchedules(io, loaderArgv, {
+            ...(values.project !== undefined ? { projectId: values.project } : {}),
+          });
+          emit(report, renderScheduleList(report));
+          return 0;
+        }
+        if (sub === "show") {
+          const id = rest[0];
+          if (id === undefined || rest.length > 1)
+            throw new UsageError("schedule show requires exactly one schedule id");
+          const report = showSchedule(io, loaderArgv, id);
+          emit(report, renderScheduleDetail(report));
+          return 0;
+        }
+        if (sub === "enable") {
+          const id = rest[0];
+          if (id === undefined || rest.length > 1)
+            throw new UsageError("schedule enable requires exactly one schedule id");
+          const report = enableSchedule(io, loaderArgv, id);
+          emit(report, renderScheduleMutation(report));
+          return 0;
+        }
+        if (sub === "disable") {
+          const id = rest[0];
+          if (id === undefined || rest.length > 1)
+            throw new UsageError("schedule disable requires exactly one schedule id");
+          const report = disableSchedule(io, loaderArgv, id);
+          emit(report, renderScheduleMutation(report));
+          return 0;
+        }
+        if (sub === "approve") {
+          const id = rest[0];
+          if (id === undefined || rest.length > 1)
+            throw new UsageError("schedule approve requires exactly one schedule id");
+          const report = approveSchedule(io, loaderArgv, id);
+          emit(report, renderScheduleMutation(report));
+          return 0;
+        }
+        if (sub === "deny") {
+          const id = rest[0];
+          if (id === undefined || rest.length > 1)
+            throw new UsageError("schedule deny requires exactly one schedule id");
+          const report = denySchedule(io, loaderArgv, id);
+          emit(report, renderScheduleMutation(report));
+          return 0;
+        }
+        if (sub === "create") {
+          if (rest.length < 3) throw new UsageError("schedule create requires <cron> <project> <template_json>");
+          const cronExpr = rest[0] ?? "";
+          const projectId = rest[1] ?? "";
+          const rawTemplate = rest.slice(2).join(" ");
+          let template: unknown;
+          try {
+            template = JSON.parse(rawTemplate);
+          } catch (err) {
+            throw new UsageError(`invalid template JSON: ${String(err)}`);
+          }
+          const report = createSchedule(io, loaderArgv, {
+            projectId,
+            cronExpr,
+            template,
+            enabled: values.apply === true,
+          });
+          emit(report, renderScheduleMutation(report));
+          return 0;
+        }
+        throw new UsageError(
+          `unknown schedule subcommand ${JSON.stringify(sub ?? "")}; expected list, show, enable, disable, approve, deny or create`,
+        );
+      }
       default:
         throw new UsageError(`unknown command ${JSON.stringify(cmd)}`);
     }
@@ -411,7 +513,7 @@ function fail(err: unknown, io: CliIo, json: boolean): number {
   const usage = err instanceof UsageError || isParseArgsError(err);
   const code = usage
     ? "USAGE"
-    : err instanceof UnknownRunError || err instanceof UnknownProjectError
+    : err instanceof UnknownRunError || err instanceof UnknownProjectError || err instanceof UnknownScheduleError
       ? "NOT_FOUND"
       : err instanceof ApprovalRefusedError
         ? "REFUSED"

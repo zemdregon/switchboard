@@ -414,9 +414,9 @@ modules from nowhere outside `src/inner/`, and not imported by the `inner test` 
 
 **Gaps (M11 stays `Partial`).** The `cli` backend kind is reported `Ineligible` and never started (T11.0, T11.13); the
 `inner.call` span of [LLD §7](LLD.md#7-telemetry-spans) and [LLD §13.8](LLD.md#138-telemetry-and-events) is not
-emitted (no span exporter exists in the tree; the pipeline writes a structured log line of the same name without
-bodies); the Unix-socket form of `base_url` is not built; no opt-in live inner run exists (TDD §3.12 as-built note);
-and the four callers above are not on a run path.
+emitted (the M8 OTLP transport and export-time key filter exist, but the inner pipeline builds no span; it writes a
+structured log line of the same name without bodies); the Unix-socket form of `base_url` is not built; no opt-in
+live inner run exists (TDD §3.12 as-built note); and the four callers above are not on a run path.
 
 ## 3. Trust boundaries
 
@@ -430,7 +430,7 @@ performed.
 | TB-3 | Provider process → credential store | Same-user agent shell reads plaintext tokens or keyring; controller mishandles tokens | Controller never reads or copies credentials; auth state only via provider status or harmless call; untrusted profiles disable arbitrary shell on adapters that cannot confine commands from the credential store; no credential values in DB, logs, telemetry, MCP output | FR-AUTH-01, 02, FR-POL-06, NFR-SEC-01, FR-TEL-03, [ADR-0003](../adr/0003-no-credential-handling.md) |
 | TB-4 | Agent-executed commands → host and network | Writes outside workspace, network exfiltration, destructive commands | Profile compiled into native permission rules and native sandbox controls as separate dimensions; worktree per write-capable run; network off for untrusted profiles; denial ends run instead of hanging; Git write operations denied by profile (FR-GIT-01); operator branch untouched | FR-POL-01, 02, 05, FR-WS-01, 05, FR-GIT-01, NFR-SEC-03, [ADR-0004](../adr/0004-trust-profiles-no-bypass-flags.md), [ADR-0006](../adr/0006-worktree-checkpoints-no-blind-replay.md) |
 | TB-5 | Repository content → agent (untrusted input) | Prompt injection in files; repo hooks, MCP definitions, `CLAUDE.md`/`AGENTS.md` instructions | Repo-supplied agent config not loaded under untrusted and `test-sandboxed` profiles (native switches: Claude Code's `--safe-mode`, `--restricted` and `--strict-mcp-config`; `--bare` is not usable because it disables the login the adapter relies on, [ADR-0015](../adr/0015-claude-untrusted-isolation-flags.md)); malicious-fixture suite; handoff tells next agent to inspect repo rather than trusting prior text | FR-POL-04, NFR-SEC-03, FR-SES-04 |
-| TB-6 | Controller → telemetry endpoint | Leakage of prompts, env, output, credentials | Attribute allowlist and drop-before-export; large output kept as local artifacts by ID and hash; OTLP export only when `telemetry.otlp_endpoint` is set (lazy OTel load, no listener) | FR-TEL-02, FR-TEL-03, NFR-SEC-01, NFR-PRIV-01, [ADR-0012](../adr/0012-telemetry-at-wrapper-boundary.md), [LLD §7](LLD.md#7-telemetry-spans) |
+| TB-6 | Controller → telemetry endpoint | Leakage of prompts, env, output, credentials | Attribute allowlist and drop-before-export (as built: typed builders plus an exact-key, scalar-value filter before queuing, T8.2 and T8.4; the forbidden-category scan is a CI test oracle over exported spans, not an export-time value check, T8.3); large output kept as local artifacts by ID and hash; OTLP export only when `telemetry.otlp_endpoint` is set (lazy OTel load, no listener); trace and span ids derived one-way from the run id carry nothing else | FR-TEL-02, FR-TEL-03, NFR-SEC-01, NFR-PRIV-01, [ADR-0012](../adr/0012-telemetry-at-wrapper-boundary.md), [LLD §7](LLD.md#7-telemetry-spans) |
 | TB-7 | Agent → injected tool channel and Git state | An injected-prompt agent commits or pushes on its own, forges tool calls, abuses `commit` to write attribution or sensitive paths, or reaches push credentials from a same-user shell | Git writes denied in the compiled profile (in a `container` environment, no Git client in the image and no Git directory mounted); per-run channel with a capability token, served from the controller outside the agent's process tree; sanitiser and path checks on every call; ref snapshots before and after the run; push default `none`, publish ref only, never forced; credentials never in the agent's environment and push withheld where the agent could read them (BR-31) | FR-GIT-01..06, FR-EXE-07, FR-POL-06, [ADR-0014](../adr/0014-tool-only-commits-and-publication.md), [ADR-0026](../adr/0026-per-run-tool-channel-socket-and-token.md) (channel as built, T9.4) |
 | TB-8 | Controller → container runtime and container → host | A container with too many mounts or a runtime socket becomes a host escape; orphaned containers outlive the controller; provider logins get copied in | Mount only the run worktree and declared read-only contexts; never the home directory, data directory, push credentials or runtime socket; limits and network policy per run; removal at run end and at startup reconciliation; no controller copying of credentials (FR-AUTH-01) | FR-PRJ-05, 07, FR-AUTH-01, [ADR-0013](../adr/0013-projects-environments-and-contexts.md) |
 | TB-9 | Orchestrator (MCP client) → project definitions | A compromised or prompt-injected orchestrator creates a project that mounts or targets paths, providers, ceilings, push rights or containers beyond its own; or edits operator projects | `manage_projects` off by default; dynamic projects only, never configured ones; repository paths under allowed roots; ceiling, providers and push policy no wider than the client's entry; `container`, any push and any widening wait for operator approval on the CLI; creator-only visibility; every call recorded | FR-PRJ-10, FR-POL-10, FR-MCP-06, [ADR-0013](../adr/0013-projects-environments-and-contexts.md) |
@@ -603,6 +603,15 @@ flowchart LR
 All signals come from the wrapper boundary; no provider hooks are installed into global config
 ([ADR-0012](../adr/0012-telemetry-at-wrapper-boundary.md), FR-POL-08). Span structure: [LLD
 §7](LLD.md#7-telemetry-spans).
+
+*As built (M8, T8.1 to T8.4, 2026-10-16, Delegated).* OTLP spans are not derived from `run_event` rows: `RunLifecycle`
+builds them from the facts it observes at admission, at the spawn callback, at process exit and at the terminal
+transition (`src/telemetry/spans.ts`), so only `controller.delegate` and `provider.spawn` are emitted today. Every span
+passes the exact-key filter (`src/telemetry/allowlist.ts`) before it is queued; parent links are derived one-way from
+the run id (`src/telemetry/links.ts`); the transport in `src/telemetry/index.ts` loads OTel lazily on the first span when
+`telemetry.otlp_endpoint` is set and drops spans silently on any failure, so export never blocks or fails a run. Details
+and tests: [LLD §7](LLD.md#7-telemetry-spans); evidence table: [SDD
+§4.4](SDD.md#44-comp-tel-and-version-canary-implementation-evidence-m8-t81t86).
 
 ### 6.4 Commit and publish through the injected tools (WF-11, WF-12)
 

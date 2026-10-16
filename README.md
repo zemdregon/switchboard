@@ -20,7 +20,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   Claude Code 2.1.294 **14 HELD, 0 FAILED, 2 NOT_CHECKED** (C-12, C-G2); Codex 0.162.0 after `adapters validate codex`
   **10 HELD, 0 FAILED, 3 NOT_CHECKED** (X-4, X-9, X-G1). Earlier checks on another host are in
   [`docs/research/live-checks-2026-10-13.md`](docs/research/live-checks-2026-10-13.md). `Done` waits on those residual
-  operator cells and on `doctor` with a provider installed. See
+  operator cells and on `doctor` with a provider installed. The §6.2 "Blocks Done" narrative matches the 2026-10-14 live
+  smoke on main ([PR #570](https://github.com/zemdregon/switchboard/pull/570)). See
   [ROADMAP §6.2](docs/ROADMAP.md#62-m2-claude-code-adapter-and-mcp-slice-tasks).
 - **Milestone 3 (isolation) is `Partial`.** Trust profiles and overrides, approvals (`approve`, `deny`), privileged
   runs, verification commands (optionally confined in bubblewrap), outer-sandbox detection and retention (`gc`) are
@@ -74,7 +75,13 @@ Pre-release. The package is private and is not published to any registry; you bu
   [ROADMAP §6.4](docs/ROADMAP.md#64-m10-container-environments-tasks).
 - **Milestone 11 (inner agent) is `Partial`.** T11.1 to T11.12 are done on fakes: an optional HTTP backend, privacy
   gates, `doctor` and `inner` reporting, commit-message drafting, handoff condensation (T11.10, a service function) and
-  record-only routing classification (T11.11). Two tasks are wired into production `serve` run paths: the commit-message
+  record-only routing classification (T11.11). T11.1 (the `inner_agent` config schema, the backend port, the scripted
+  fake backend, the `inner_call` table, the disabled-by-default path and the import-boundary test) is `Done`; its
+  roadmap row was reconciled to the 2026-10-16 status contract in
+  [#569](https://github.com/zemdregon/switchboard/pull/569), citing `src/config/config.test.ts`,
+  `src/inner/inner.test.ts`, `src/inner/import-boundary.test.ts`, `src/inner/port.ts`, `src/inner/fake-backend.ts` and
+  `src/ledger/migrations/0005_inner_call.ts`. T11.13 (the `cli` backend) is Planned and no live backend has been
+  exercised. Two tasks are wired into production `serve` run paths: the commit-message
   task (the optional `message` on the `commit` tool) and routing classification (`serve` admission, continuation and
   quota failover, with heuristic fallback when inner is off or unavailable). Handoff condensation, PR drafting,
   verification-summary, run-title and a live backend are not. T11.5 usage-surface pins merged
@@ -116,7 +123,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#563](https://github.com/zemdregon/switchboard/pull/563)) are done on fakes. The trigger is off by default
   (`ci_trigger` in the configuration); `serve` reads CI status through the operator's logged-in `gh` CLI, polls only
   branches the project pushed, treats the CI text as untrusted and enqueues a work item under the trigger's client
-  ceiling. Switchboard reads no GitHub token. Schedules (T15.2) are not done. See
+  ceiling. Switchboard reads no GitHub token. Schedules (T15.2, [#561](https://github.com/zemdregon/switchboard/pull/561))
+  are done on fakes: off by default, UTC cron, fired by `serve` before the CI poll, and listed or disabled with
+  `switchboard schedule`. See
   [ROADMAP §6.14](docs/ROADMAP.md#614-m15-project-queue-schedules-and-ci-triggers-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
   client and a macOS CI leg are done; Grok Build, Antigravity, Cursor and OpenCode each have a module, compile matrix

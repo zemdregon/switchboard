@@ -2386,7 +2386,7 @@ export is derived. Redaction is by construction: spans are built from an allowli
 | `workspace.diff` | `controller.delegate` | mutation detection + post checkpoint |
 | `verification.tests` | `controller.delegate` | M3 |
 | `run.finalize` | `controller.delegate` | terminal transition |
-| `inner.call` | `controller.delegate` when the call belongs to a run, else root | M11; one per inner-agent call, attributes in [§13.8](#138-telemetry-and-events); never on a run's critical path beyond the per-call bound. **Not built as of 2026-10-15**: no span exporter exists; the pipeline writes a body-free log line of this name instead (§13.8 as-built note) |
+| `inner.call` | `controller.delegate` when the call belongs to a run, else root | M11; one per inner-agent call, attributes in [§13.8](#138-telemetry-and-events); never on a run's critical path beyond the per-call bound. **Not emitted as of 2026-10-16**: the OTLP transport (T8.1) and the export-time filter (T8.4, which already admits the `inner.*` keys) exist, but the inner pipeline builds no span; it writes a body-free log line of this name instead (§13.8 as-built note) |
 
 **Allowed attributes:** `run.id`, `session.id`, `provider`, `adapter.version`, `model`, `trust_profile`, `run.state`,
 `failure.code`, `retry.attempt`, `transport`, durations (`duration_ms`), `exit.code`, `exit.signal`, tool kind
@@ -2436,8 +2436,10 @@ Builders accept only typed controller-observed facts, so prompt, constraints, co
 stdout/stderr text have no path onto a span by construction (FR-TEL-03, ADR-0012); no provider transcript or global
 hook config is read. `RunLifecycle` takes an optional `Telemetry` (unset = no emission, fire-and-forget when set);
 `serve` passes the T8.1 instance. A run whose process never spawned (spawn error) exports no `provider.spawn` span;
-a run admitted before telemetry existed exports nothing. Spans currently export as roots; parent links and the
-forbidden-key collector assertions are T8.3, and the export-time allowlist drop filter is T8.4 (below). Tests:
+a run admitted before telemetry existed exports nothing. At T8.2 merge the spans exported as roots; parent links and
+the forbidden-key collector assertions came with T8.3, and the export-time allowlist drop filter with T8.4 (both
+below). These two spans are the only ones emitted today; the other rows of the table above (and `inner.call`) have no
+builder yet. Tests:
 `src/telemetry/spans.test.ts` (fake-adapter run through the lifecycle into an in-process OTLP collector, a planted
 objective canary asserted absent from every attribute and raw OTLP body, and builder/tracker unit tests).
 
@@ -2452,6 +2454,22 @@ builders remain responsible for never setting forbidden categories (T8.2), and T
 `src/telemetry/allowlist.test.ts`, including a check that the key set equals the backticked keys in this section and
 §13.8.
 
+**T8.3 parent links (2026-10-16, Delegated agent work, not owner-approved).** Spans reach the transport as completed,
+fire-and-forget records, and a child (`provider.spawn`) usually completes before its parent (`controller.delegate`),
+so the parent link cannot be read from a live parent span. `src/telemetry/links.ts` therefore encodes the table above
+as a static parent-name map (`SPAN_PARENTS`) and derives ids from the run id: the trace id of every span of a run is the
+first 16 bytes of a SHA-256 over a fixed label and the `run.id` value, and the span id of a once-per-run span that can
+be a parent (`controller.delegate`, `provider.spawn`) is the first 8 bytes of a SHA-256 over another label, the run id
+and the span name. A child names its parent's derived id without the parent having been exported; a span that can occur
+more than once per run gets a random span id; an all-zero id is replaced with a valid one. The derivation is one-way
+and takes nothing beyond the run id (no prompt, path or environment value). Resolution order in
+`createTelemetry().recordSpan`: explicit valid hex `traceId`/`spanId` (and optional `parentSpanId`) on the
+`CompletedSpan` win; otherwise the (already filtered) `run.id` attribute selects the run's trace; otherwise the span is
+an unrelated root with random ids (the shape `inner.call` outside a run will take). A name not in the map is a root of
+its run's trace. The transport stages the derived ids into the SDK id generator for the duration of one synchronous
+`startSpan` and starts every span from `ROOT_CONTEXT`, so an ambient caller context can never become a parent and no
+global OTel provider or propagator is registered. Tests: `src/telemetry/collector.test.ts` (describe `span links`).
+
 **Collector test harness (T8.3, M8 acceptance).** Shape for the integration test, without requiring a provider CLI:
 
 1. Start an in-process OTLP/HTTP receiver on loopback with an ephemeral port (or equivalent test fixture).
@@ -2460,6 +2478,17 @@ builders remain responsible for never setting forbidden categories (T8.2), and T
 3. Read recorded spans from the fixture and assert: expected span names and parent links from the table above; every
    attribute key is on the allowlist; no forbidden category appears (including a planted objective string in the delegate
    request); secret-pattern scans over exported attributes match NFR-SEC-01 expectations for fixtures.
+
+*As built (T8.3, 2026-10-16, Delegated).* The fixture is `src/telemetry/fixtures/collector.ts`: an in-process OTLP/HTTP
+receiver on `127.0.0.1` with an ephemeral port that keeps raw request bodies, a span decoder, a forbidden-category scan
+over keys and values (`findForbiddenAttributes`) and a tree check against `SPAN_PARENTS` (`parentLinkViolations`).
+`src/telemetry/collector-lifecycle.test.ts` runs one delegate/finalize path on the fake adapter through `RunLifecycle`
+for a successful and a failed run and asserts exactly two spans, `provider.spawn` under `controller.delegate` in one
+trace per run, every key allowlisted, `failure.code` on the delegation span only, and planted objective, constraint,
+environment and workspace-path canaries absent from every attribute and every raw OTLP body; a positive control plants
+a forbidden category and expects the scan to fail. `src/telemetry/collector.test.ts` adds unit positive controls for
+each forbidden key and value pattern. The scan is a test oracle, not an export-time control: at export only the T8.4
+key filter applies, and no value is inspected.
 
 **Traceability (T8.0, 2026-10-16, Delegated).** The forbidden list above implements FR-TEL-03 and NFR-SEC-01 for
 telemetry. [HLD TB-6](HLD.md#3-trust-boundaries) and [SDD §5](SDD.md#5-requirements-to-design-traceability) rows for
@@ -4148,9 +4177,11 @@ reported or configured), `inner.outcome`, `inner.reason` (short code), `inner.at
 log excerpts, objective text, any message text, the backend URL's userinfo. The exporter drops every attribute not on this
 list, and a test asserts it.
 
-*As built (2026-10-15, T11.14, Delegated):* the span is **not emitted**. No span exporter exists in the tree, so neither
-the span nor the attribute-drop test is built, and the paragraph above stays the design. The pipeline writes one
-structured log line named `inner.call` for every pipeline outcome, with or without a ledger (`src/inner/pipeline.ts`),
+*As built (2026-10-15, T11.14, Delegated; corrected 2026-10-16 by T8.7):* the span is **not emitted**. The M8 OTLP
+transport and the export-time key filter now exist ([§7](#7-telemetry-spans), T8.1 and T8.4; the filter's key set
+already includes the `inner.*` keys above, `src/telemetry/allowlist.test.ts`), but the inner pipeline builds and
+records no span, so no `inner.call` span reaches the exporter and the paragraph above stays the design. The pipeline
+writes one structured log line named `inner.call` for every pipeline outcome, with or without a ledger (`src/inner/pipeline.ts`),
 carrying `task`, `outcome`, `reason`,
 `attempts`, `latency_ms`, `input_bytes`, `output_bytes`, `locality`, `breaker_state` and `call_id`, never a body or a
 token count (captured logs are asserted free of prompt, response, secret and credential text in

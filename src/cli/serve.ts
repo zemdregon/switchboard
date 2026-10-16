@@ -122,6 +122,7 @@ import { DynamicProjectStore, innerSettingResolver, toResolved } from "../projec
 import { queueSchedulerSettingsFromConfig, runProjectWorkQueueTick } from "../queue/index.js";
 import { reconcile } from "../reconcile/index.js";
 import { pruneRagStores } from "../retrieval/store.js";
+import { fireDueSchedules } from "../schedule/index.js";
 import { createTelemetry } from "../telemetry/index.js";
 import { collectOrphans, runRetentionGc, WorkspaceManager } from "../workspace/index.js";
 import { type CliIo, PROBE_ENV_ALLOWLIST } from "./io.js";
@@ -853,6 +854,12 @@ async function runDaemon(
       )
     : undefined;
   const runSchedulerTick = async () => {
+    // T15.2 (FR-QUE-02, LLD §18.7 step 1): due schedules enqueue before the CI poll and the queue dequeue.
+    try {
+      fireDueSchedules(ledger, { ...(now ? { nowUtc: new Date(now()) } : {}) });
+    } catch (err) {
+      log.error("schedule fire tick failed", { error: message(err) });
+    }
     if (ciPoller !== undefined) {
       try {
         const r = await ciPoller.tick();
