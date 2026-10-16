@@ -5,9 +5,9 @@
  * Git repository. The fake CLI writes one file named after its objective and then waits for a per-run gate file, so
  * both runs are provably RUNNING at the same time.
  *
- * Not covered here, and not testable before M10: that a `container` run mounts only its own worktree (FR-PRJ-05).
- * Container environments are not built; a `container` project fails `projects validate` and admission today
- * (`ENVIRONMENT_NOT_IMPLEMENTED`, tested in `src/cli/projects.test.ts` and the MCP server tests).
+ * Not covered here: that a `container` run mounts only its own worktree (FR-PRJ-05). That is tested by the container
+ * backend (`src/environment/container.test.ts`, the opt-in Docker leg) and through MCP admission (T10.1,
+ * `src/mcp/mcp.test.ts` "container projects through MCP admission").
  *
  * FR-WS-09 (removal of a concurrent run's worktree on merge or abandon) is Proposed and not accepted by the owner; its
  * merge trigger is open question Q-55. Its tests below are skipped placeholders until the owner accepts it; until then

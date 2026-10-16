@@ -29,8 +29,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   commits, ref snapshots, push, dynamic projects, signing and concurrent-run worktrees are implemented and tested for
   `host` environments on a fake provider with real Git in temporary repositories. It is not `Done`: nothing has run
   against a live provider through Switchboard's own tool channel, signing was tried only with a throwaway GnuPG key,
-  pushing from dynamic projects is not wired, and container environments need milestone 10. The exceptions are listed
-  in [ROADMAP §6.3](docs/ROADMAP.md#63-m9-projects-and-controlled-commits-tasks) (task T9.8).
+  pushing from dynamic projects is not wired, and the `container` clauses of milestone 9 stay **Partial** until milestone
+  10 closes admission (see milestone 10 below). The exceptions are listed in
+  [ROADMAP §6.3](docs/ROADMAP.md#63-m9-projects-and-controlled-commits-tasks) (task T9.8).
 - **Milestone 5 (continuity) is `Partial`.** `continue_task` resumes the provider's native session or hands off to
   another provider from a bundle built from Switchboard's own records, and `get_artifacts` and `runs show` show the
   handoff. It is tested on two fake providers, including a check that the controller opens no provider state directory.
@@ -50,12 +51,19 @@ Pre-release. The package is private and is not published to any registry; you bu
   of this is tested on fake providers. The cache-friendly prompt order is built (ROADMAP T7.9, Could; no cache
   benefit is claimed). Real-provider model flags wait for adapter work. See
   [Routing and affinity](#routing-and-affinity) and [ROADMAP §6.12](docs/ROADMAP.md#612-m7-routing-tasks).
-- **Milestone 8 (hardening) is `Partial`.** Optional OTLP trace export (`telemetry.otlp_endpoint`, off by default) and
-  lazy exporter load (T8.1), the operator version canary (T8.5) and a CI test that excludes routing after a synthetic
-  binary version bump until `adapters validate` records the version (T8.6) are done on fakes. Wrapper span emission,
-  the collector integration test and full M8 acceptance closure (T8.2–T8.4, T8.7) are not done. See
+- **Milestone 8 (hardening) is `Partial`.** Optional OTLP trace export (`telemetry.otlp_endpoint`, off by default),
+  lazy exporter load (T8.1), wrapper-boundary span emission for `controller.delegate` and `provider.spawn` (T8.2), the
+  operator version canary (T8.5) and a CI test that excludes routing after a synthetic binary version bump until
+  `adapters validate` records the version (T8.6) are done on fakes. The collector integration test, export-time
+  allowlist enforcement and full M8 acceptance closure (T8.3, T8.4, T8.7) are not done. See
   [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and
   [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
+- **Milestone 10 (container environments) is `Partial`.** The environment port, orphan sweep, malicious-fixture
+  container leg, `projects validate` container checks and retention GC for containers are implemented and tested on
+  fakes (and emulated runtime in CI). It is not `Done`: `delegate_task` with a `container` project is still refused at
+  admission (`ENVIRONMENT_NOT_IMPLEMENTED`), and operator live checks for in-volume provider login remain open (T10.0).
+  See [Container environments (milestone 10)](#container-environments-milestone-10) and
+  [ROADMAP §6.4](docs/ROADMAP.md#64-m10-container-environments-tasks).
 - **Milestone 11 (inner agent) is `Partial`.** T11.1 to T11.12 are done on fakes: an optional HTTP backend, privacy
   gates, `doctor` and `inner` reporting, commit-message drafting, handoff condensation (T11.10, a service function) and
   record-only routing classification (T11.11). Two tasks are wired into production `serve` run paths: the commit-message
@@ -87,11 +95,12 @@ Pre-release. The package is private and is not published to any registry; you bu
   front of it. A test runs the whole path from client registration and PKCE to a tool call. Residual risks are listed
   under [HLD TB-12](docs/design/HLD.md#3-trust-boundaries). See
   [ROADMAP §6.10](docs/ROADMAP.md#610-m13-network-mcp-transport-tasks).
-- **Milestone 14 (control plane) is `Partial`.** T14.0–T14.5, T14.7–T14.9 and T14.11 are implemented on fakes;
-  digest, `list_runs`, `get_run`, budgets, the loop breaker, `steer_run`, the approval proxy and notification sinks are
-  covered by unit and malicious-fixture tests. The M14 acceptance file (`src/mcp/m14-acceptance.test.ts`) runs
-  scenarios A, B, C, E, F and G; scenario D (pause) stays skipped until T14.6 lands. ADR-0047 and ADR-0048 remain
-  Proposed. See [Control plane (milestone 14)](#control-plane-milestone-14) and
+- **Milestone 14 (control plane) is `Partial`.** T14.0–T14.11 are implemented on fakes, including pause
+  ([#539](https://github.com/zemdregon/switchboard/pull/539)); digest, `list_runs`, `get_run`, budgets, the loop
+  breaker, `steer_run`, pause/resume, the approval proxy and notification sinks are covered by unit and
+  malicious-fixture tests. The M14 acceptance file (`src/mcp/m14-acceptance.test.ts`) runs scenarios A, B, C, E, F and
+  G; scenario D (pause) is still an `it.skip` placeholder while `src/mcp/pause.test.ts` exercises T14.6. ADR-0047 and
+  ADR-0048 remain Proposed. See [Control plane (milestone 14)](#control-plane-milestone-14) and
   [ROADMAP §6.13](docs/ROADMAP.md#613-m14-control-plane-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
   client and a macOS CI leg are done; Grok Build, Antigravity, Cursor and OpenCode each have a module, compile matrix
@@ -425,16 +434,19 @@ evidence is in [ROADMAP §6.7](docs/ROADMAP.md#67-m12-retrieval-index-tasks).
 ## Telemetry and adapter versioning (milestone 8)
 
 Milestone 8 hardens telemetry export and adapter version change detection. It is **`Partial`**: configuration, a lazy OTLP
-exporter shell, the version canary and the CI version-bump test are in place on fakes; full wrapper spans and the
-collector integration test are not.
+exporter, wrapper-boundary spans (T8.2), the version canary and the CI version-bump test are in place on fakes; the
+collector integration test (T8.3), export-time allowlist drop (T8.4) and acceptance closure (T8.7) are not.
 
 **Trace export (T8.0, T8.1).** Set `telemetry.otlp_endpoint` to an `http` or `https` URL when you want OTLP/HTTP traces.
 When the key is absent or empty, `serve` behaves as before M8: no OpenTelemetry packages load at startup and nothing
 listens for telemetry. Invalid URLs are rejected at config load without echoing the value. Spans are intended to carry
 only allowlisted attributes from controller-observed facts (prompts, commands and credentials never belong on spans);
 see [LLD §7](docs/design/LLD.md#7-telemetry-spans) and [ADR-0012](docs/adr/0012-telemetry-at-wrapper-boundary.md).
-Emitting `controller.delegate`, `provider.spawn` and related spans at the wrapper boundary (T8.2) and proving export
-through a test collector without forbidden keys (T8.3) are not built yet.
+
+**Wrapper spans (T8.2).** With an endpoint configured, `serve` emits `controller.delegate` and `provider.spawn` from
+controller-observed facts only (lifecycle and spawn callbacks). `src/telemetry/spans.test.ts` runs a fake-adapter
+delegate path through an in-process collector and asserts allowlisted attributes plus absence of a planted prompt
+canary. Parent-link and forbidden-key assertions remain T8.3; export-time allowlist drop remains T8.4.
 
 **Version canary (T8.5).** Switchboard records each enabled provider's probed CLI version under the data directory
 (`version-canary.json`). A version change marks the adapter `ADAPTER_VERSION_UNVERIFIED` until you run
@@ -447,42 +459,64 @@ Details: [docs/operations/version-canary.md](docs/operations/version-canary.md).
 preflight cache, and asserts routing excludes the provider until validation records the new version. No provider CLI is
 installed in CI.
 
-Tests on fakes: `src/config/config.test.ts`, `src/telemetry/index.test.ts`, `src/adapters/version-canary.test.ts`,
-`src/adapters/version-bump-preflight.test.ts`. Per-task evidence is in
+Tests on fakes: `src/config/config.test.ts`, `src/telemetry/index.test.ts`, `src/telemetry/spans.test.ts`,
+`src/adapters/version-canary.test.ts`, `src/adapters/version-bump-preflight.test.ts`. Per-task evidence is in
 [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
+
+## Container environments (milestone 10)
+
+A `container` project runs the provider inside a rootless Docker container that mounts only the run worktree (writable)
+and declared read-only contexts, applies limits and network policy, and is torn down when the run ends. The image must
+have no `git` or `gh` on its `PATH` ([ADR-0020](docs/adr/0020-container-image-without-git-client.md)). On `main` today
+the port and security legs are tested; MCP admission for `container` projects is not wired yet (ROADMAP T10.1 gap 1).
+
+### Status and tests
+
+Fixtures and emulated runtime in CI; opt-in Docker when `SWITCHBOARD_CONTAINER_TESTS=1` and a rootless daemon plus a
+local base image are available:
+
+- Malicious-fixture container leg (T10.3): `test/malicious/container-leg.test.ts`; opt-in Docker:
+  `test/malicious/container-docker-leg.test.ts`.
+- `projects validate` container checks (T10.3): `src/cli/projects.test.ts` (`container environment checks (T10.3 ...)`).
+- Retention GC of containers (T10.3, FR-PRJ-09): `src/workspace/gc.test.ts` (`retention GC of container environments
+  (T10.3, FR-PRJ-09)`).
+- Orphan sweep and `environment` run events (T10.2): `src/reconcile/reconcile.test.ts`, `src/cli/serve-orphan-sweep.test.ts`.
+- Mounts, limits and teardown (T10.1): `src/environment/container.test.ts`; opt-in Docker: `src/environment/container-docker.test.ts`.
+
+Per-task evidence is in [ROADMAP §6.4](docs/ROADMAP.md#64-m10-container-environments-tasks).
 
 ## Control plane (milestone 14)
 
-One orchestrator client can poll `get_digest`, list runs and (when implemented) steer or pause work. A separate
+One orchestrator client can poll `get_digest`, list runs, steer runs and pause or resume projects. A separate
 `approval_proxy` client and `notification_sinks` are operator-configured; they are off unless you set them in config.
 
 ### Configuration
 
 Control-plane knobs live in `config.json` (no duplicate schema here):
 
-- `mcp_clients[]`: per client, `tool_profile` (`orchestrator` default or `console` when T14.11 lands),
-  `approval_proxy` and `approval_proxy_targets` for the proxy client (ADR-0047).
-- `control_plane.budgets` and `control_plane.loop_breaker` (T14.4–T14.5; not enforced until those tasks merge).
+- `mcp_clients[]`: per client, `tool_profile` (`orchestrator` default or `console`), `approval_proxy` and
+  `approval_proxy_targets` for the proxy client (ADR-0047).
+- `control_plane.budgets` and `control_plane.loop_breaker` (T14.4–T14.5).
 - `notification_sinks[]`: webhook and ntfy kinds, filters and rate limits (ADR-0048); off by default.
 
 See [TDD §3.1](docs/design/TDD.md#31-configuration) and [LLD §3.4](docs/design/LLD.md#34-control-plane-m14-proposed-t140).
 
 ### MCP tools
 
-| Surface | Orchestrator (default) | `console` profile (T14.11) | `approval_proxy` client |
+| Surface | Orchestrator (default) | `console` profile | `approval_proxy` client |
 | --- | --- | --- | --- |
-| `get_digest`, `list_runs`, `get_run` | yes | planned: yes | yes (read) |
-| `delegate_task`, `cancel_run`, … | yes | planned: subset | no extra |
+| `get_digest`, `list_runs`, `get_run` | yes | yes | yes (read) |
+| `delegate_task`, `cancel_run`, … | yes | subset (`delegate_task` only) | no extra |
 | `list_pending_approvals`, `decide_approval` | no | no | yes |
-| `pause_project`, `resume_project`, `steer_run` | planned (T14.6–T14.7) | planned | planned |
+| `pause_project`, `resume_project`, `steer_run` | yes | yes | no |
 
 Tool outputs use closed controller fields only (no transcripts). Pending approvals expose an `approval_digest`, not
 scope bodies.
 
 ### Operator commands
 
-Global pause and resume CLI commands are specified in LLD §3.4; budget and loop-breaker defaults are configuration-only
-until T14.4–T14.5 merge. Sinks stay off unless `notification_sinks` is set.
+Global pause and resume use `switchboard pause` and `switchboard resume` (applied directly or queued for a running
+`serve`). Sinks stay off unless `notification_sinks` is set.
 
 ### `doctor`
 
@@ -493,14 +527,15 @@ and ADR-0047/0048 acceptance follow owner review of those ADRs.
 
 Fixtures only; no live provider CLI:
 
-- M14 acceptance: `src/mcp/m14-acceptance.test.ts` (scenarios A–C and E–G; D skipped pending T14.6).
+- M14 acceptance: `src/mcp/m14-acceptance.test.ts` (scenarios A–C and E–G; D is an `it.skip` placeholder).
+- Pause (T14.6): `src/mcp/pause.test.ts`, `src/control/pause.test.ts`, `src/cli/pause.test.ts`.
 - Approval proxy (T14.8): `test/malicious/approval-proxy.test.ts`.
 - Notification sinks (T14.9): `src/control/sinks.test.ts`.
 - Digest and envelopes: `src/mcp/digest.test.ts`, `src/mcp/list-runs.test.ts`, `src/mcp/needs-attention.test.ts`.
 
 ### Known limitations
 
-- Consent-page approval links (T14.10) and the `console` tool profile (T14.11) are not complete on `main`.
+- M14 acceptance scenario D (pause) is not wired in `m14-acceptance.test.ts` yet; T14.6 is covered in `pause.test.ts`.
 - The Grok bot is the intended first console client (owner decisions 53/55); ADR-0047 and ADR-0048 are still Proposed.
 
 ## Run as an MCP server
@@ -1960,11 +1995,13 @@ Code an approved bypass run drops `--restricted`, which refuses bypass, and keep
 check on 2026-10-13 (six commit and ref spellings, directly and through `serve` with an approved scope; checks 14 and
 16 in [the live checks](docs/research/live-checks-2026-10-13.md)), but the operator's malicious-fixture leg (T3.9) has
 not run, so this rests on one check of one version (ROADMAP R-38). That gap concerns agents running on your host.
-Container environments, planned
-for milestone 10 and not available yet, are meant to close it: their image has no Git client, they mount neither the
-repository's Git directory nor any credentials, and Switchboard makes commits and pushes on the host through its own
-tools (ROADMAP owner decision 24). Host-run agents remain supported. Claude Code compiles a privileged scope only with
-the network `on`: it has no network control for commands, so a scope asking for network `off` is refused. Codex does
+Container environments (milestone 10, **`Partial` on `main`**) are meant to close it: their image has no Git client,
+they mount neither the repository's Git directory nor any credentials, and Switchboard makes commits and pushes on the
+host through its own tools (ROADMAP owner decision 24). The malicious-fixture container leg and validate/GC checks are
+in CI; MCP admission for a `container` project is not wired yet. See
+[Container environments (milestone 10)](#container-environments-milestone-10). Host-run agents remain supported.
+Claude Code compiles a privileged scope only with the network `on`: it has no network control for commands, so a scope
+asking for network `off` is refused. Codex does
 not run `bypass: true` scopes yet (its bypass option is not documented in the sources the adapter relies on), and
 neither provider compiles every scope: `list_capabilities` shows whether a provider compiles `privileged` at all, and a
 scope it cannot express fails `ELIGIBILITY_NONE`. Approvals never expire: once approved, later `continue_task` runs of

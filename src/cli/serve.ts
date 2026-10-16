@@ -88,6 +88,7 @@ import {
   type ContainerRuntime,
   createContainerEnvironment,
   createDockerRuntime,
+  createProjectEnvironmentResolver,
   type Environment,
   environmentEventSink,
 } from "../environment/index.js";
@@ -98,7 +99,7 @@ import { GitPusher, pushContextResolver } from "../git/push.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createClassifyRouteFeaturesHook, createConfiguredInnerAgent, PROMPT_PROVIDER_NAMES } from "../inner/index.js";
 import { createLedger, openLedger, RagLedger } from "../ledger/index.js";
-import { RunLifecycle } from "../lifecycle/index.js";
+import { type EnvironmentResolver, RunLifecycle } from "../lifecycle/index.js";
 import { acquireDataDirLock, type DataDirLock } from "../lock/index.js";
 import {
   AttemptLimiter,
@@ -116,7 +117,7 @@ import {
 } from "../mcp/index.js";
 import { type ModelConfig, ModelRegistry } from "../models/index.js";
 import { createProfileResolver } from "../policy/index.js";
-import { DynamicProjectStore, innerSettingResolver } from "../projects/index.js";
+import { DynamicProjectStore, innerSettingResolver, toResolved } from "../projects/index.js";
 import { queueSchedulerSettingsFromConfig, runProjectWorkQueueTick } from "../queue/index.js";
 import { reconcile } from "../reconcile/index.js";
 import { pruneRagStores } from "../retrieval/store.js";
@@ -353,6 +354,36 @@ export async function orphanSweepEnvironments(
   return [createContainerEnvironment({ runtime, onEvent })];
 }
 
+/**
+ * T10.1 (FR-PRJ-04, FR-PRJ-05, LLD §11.3): the lifecycle's environment resolver. Only when a configured project is
+ * `container` (Delegated: a host-only configuration composes nothing, so a dynamic `container` project there stays
+ * refused at admission); then the `container` backend over the rootless Docker driver, whose `environment` events land
+ * in the ledger (T10.2). The runtime is not asked anything here: each run's `prepare` checks it (rootless, image
+ * present and Git-free) and refuses the run when it does not answer. `host` stays the identity. A project resolves to
+ * its configured definition, else a dynamic project's revision in force (as admission does).
+ */
+export function runEnvironments(
+  config: Pick<ResolvedConfig, "projects">,
+  store: Pick<DynamicProjectStore, "state">,
+  ledger: ReturnType<typeof createLedger>,
+  log: Logger,
+  makeRuntime: () => ContainerRuntime = createDockerRuntime,
+): EnvironmentResolver | undefined {
+  if (!config.projects.some((p) => p.environment.kind === "container")) return undefined;
+  const onEvent = environmentEventSink(ledger, (event, why) =>
+    log.warn("environment event not recorded", { step: event.payload.step, container: event.payload.container, why }),
+  );
+  return createProjectEnvironmentResolver({
+    container: createContainerEnvironment({ runtime: makeRuntime(), onEvent }),
+    lookup: (id) => {
+      const configured = config.projects.find((p) => p.id === id);
+      if (configured !== undefined) return configured;
+      const dynamic = store.state(id)?.inForce?.definition;
+      return dynamic !== undefined ? toResolved(dynamic) : undefined;
+    },
+  });
+}
+
 async function runDaemon(
   io: CliIo,
   log: Logger,
@@ -579,7 +610,7 @@ async function runDaemon(
   // T12.4 / T12.5: set below once background indexing has started; until then (and with no embedding backend) the
   // context-pack port answers `undefined` and a run is compiled without a pack.
   let rag: ServeRag | undefined;
-  const telemetry = createTelemetry(config); // inert until T8.2 submits the first completed span
+  const telemetry = createTelemetry(config); // inert without `telemetry.otlp_endpoint`; spans arrive from T8.2 emission
   // T14.9 (FR-CTL-10, ADR-0048): notification sinks only when the operator configured one; none means no request at all.
   const sinks =
     config.notificationSinks.length === 0
@@ -620,11 +651,20 @@ async function runDaemon(
       runId: null,
     });
   };
+  // T10.1: container projects run through the `container` backend; `host` is unchanged.
+  const environments = runEnvironments(
+    config,
+    new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
+    ledger,
+    log,
+  );
   const lifecycle = new RunLifecycle({
     ledger,
     workspace,
     artifacts,
     adapters: registry,
+    // T8.2 (FR-TEL-02, LLD §7): wrapper-boundary span export; inert when no OTLP endpoint is configured.
+    telemetry,
     allowedRoots: config.allowedRoots,
     globalConcurrency: config.limits.globalConcurrency,
     perProviderConcurrency: config.limits.perProviderConcurrency,
@@ -680,6 +720,7 @@ async function runDaemon(
     },
     budgets,
     onBudgetRefused,
+    ...(environments !== undefined ? { environments } : {}),
     ...(now ? { now } : {}),
   });
 

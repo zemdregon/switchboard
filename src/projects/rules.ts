@@ -239,17 +239,15 @@ export function approvalReasons(
  * The T9.1 filesystem rules for every context (absolute path; `realpath` under an allowed root, so `..` and symlink
  * escapes are refused; a Git repository whose top level is under an allowed root; `base_ref` resolves to a commit), plus
  * **Delegated**: no context inside the controller's data directory (worktrees, ledger). Only the reason code and the
- * field are reported, never a resolved path. The `container` "not implemented" failure is not a definition error here:
- * a `container` revision waits for approval and fails at admission until M10.
+ * field are reported, never a resolved path. A `container` revision waits for approval; once in force it is admitted
+ * only where `serve` wired a container environment (T10.1), and refused at admission otherwise.
  */
 export async function checkFilesystem(
   def: ProjectConfig,
   allowedRoots: readonly string[],
   dataDir: string | undefined,
 ): Promise<void> {
-  const failures = (await checkProject({ allowedRoots: [...allowedRoots] }, toResolved(def), "$.project")).filter(
-    (f) => f.code !== "ENVIRONMENT_NOT_IMPLEMENTED",
-  );
+  const failures = await checkProject({ allowedRoots: [...allowedRoots] }, toResolved(def), "$.project");
   const first = failures[0];
   if (first !== undefined) {
     throw new ProjectRuleError(

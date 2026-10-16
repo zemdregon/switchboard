@@ -280,19 +280,14 @@ describe("projects validate (T9.1, FR-PRJ-01, 02, 04)", () => {
     expect(report.projects[3]?.failures[0]?.path).toBe("$.projects[3].contexts[0].base_ref");
   });
 
-  it("fails a container project with the M10 message but still lists and loads it", async () => {
+  it("a container project whose runtime and image pass validates clean: no ENVIRONMENT_NOT_IMPLEMENTED (T10.1)", async () => {
     const digest = `sha256:${"a".repeat(64)}`;
     writeConfig([project({ environment: { kind: "container", image_digest: digest } })]);
     const { code, report } = await validateJson();
-    expect(code).toBe(1);
-    expect(report.projects[0]?.failures[0]).toEqual({
-      path: "$.projects[0].environment.kind",
-      code: "ENVIRONMENT_NOT_IMPLEMENTED",
-      message: "container environments are not implemented yet (M10)",
-    });
-    expect(report.projects[0]?.failures).toHaveLength(1); // the environment checks pass with the scripted runtime
+    expect(code).toBe(0);
+    expect(report.projects[0]).toEqual({ id: "web-app", ok: true, failures: [] });
     expect((await run(["projects", "list"])).code).toBe(0);
-    expect((await run(["projects", "validate"])).out).toContain("container environments are not implemented yet (M10)");
+    expect((await run(["projects", "validate"])).out).not.toContain("ENVIRONMENT_NOT_IMPLEMENTED");
   });
 
   describe("container environment checks (T10.3, FR-PRJ-05, FR-PRJ-08, ADR-0020)", () => {
@@ -301,7 +296,7 @@ describe("projects validate (T9.1, FR-PRJ-01, 02, 04)", () => {
       writeConfig([project({ environment: { kind: "container", image_digest: digest } })]);
       const { code, report } = await validateJson();
       expect(code).toBe(1);
-      return (report.projects[0]?.failures ?? []).filter((f) => f.code !== "ENVIRONMENT_NOT_IMPLEMENTED");
+      return report.projects[0]?.failures ?? [];
     };
 
     it("an image with git or gh on its PATH fails the no-Git-client check, through the probe, which is removed", async () => {

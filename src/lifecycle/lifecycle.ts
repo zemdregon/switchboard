@@ -206,6 +206,8 @@ import {
   reasonCodeForIneligible,
   requirementsFor,
 } from "../routing/index.js";
+import type { Telemetry } from "../telemetry/index.js";
+import { type DelegateSpanFacts, SpanTracker } from "../telemetry/spans.js";
 import { usageObservationsFromEvents } from "../usage/index.js";
 import { gitText } from "../workspace/git.js";
 import { type PreparedWorkspace, ResumeDirectoryUnavailableError, type WorkspaceManager } from "../workspace/index.js";
@@ -520,6 +522,11 @@ export interface RunLifecycleOptions {
   readonly leaseTtlMs?: number;
   /** Observer for every committed transition (tests, telemetry). Must not throw. */
   readonly onTransition?: (notice: TransitionNotice) => void;
+  /**
+   * T8.2 (FR-TEL-02, LLD §7, ADR-0012): completed-span sink for wrapper-boundary span export. Unset (or an endpoint
+   * absent from the config) means no span emission; either way emission is fire-and-forget and never fails a run.
+   */
+  readonly telemetry?: Telemetry;
   /** Injectable clock for `started_at` / `finished_at`. */
   readonly now?: () => Date;
   /**
@@ -624,8 +631,11 @@ export interface EnvironmentPlacement {
   readonly limits?: EnvironmentRunContext["limits"];
 }
 
+/** The snapshot fields an environment is chosen by (the whole frozen `ProjectSnapshot` at dispatch). */
+export type EnvironmentSnapshot = Pick<ProjectSnapshot, "id" | "environment_kind" | "image_digest">;
+
 export interface EnvironmentResolver {
-  resolve(project: ProjectSnapshot | undefined): EnvironmentPlacement | undefined;
+  resolve(project: EnvironmentSnapshot | undefined): EnvironmentPlacement | undefined;
 }
 
 /**
@@ -744,6 +754,8 @@ export class RunLifecycle {
   /** T6.4: one timer for the earliest moment a held run may become dispatchable (breaker cool-down). */
   private wakeTimer: ReturnType<typeof setTimeout> | undefined;
   private wakeAt: number | undefined;
+  /** T8.2: wrapper-boundary span tracker; inert when no telemetry sink is configured. */
+  private readonly spans: SpanTracker;
 
   constructor(private readonly opts: RunLifecycleOptions) {
     if (!Number.isInteger(opts.globalConcurrency) || opts.globalConcurrency < 1) {
@@ -753,6 +765,7 @@ export class RunLifecycle {
     this.runner = opts.probeRunner ?? createProbeRunner();
     this.maxQueueDepth = opts.maxQueueDepth ?? DEFAULT_MAX_QUEUE_DEPTH;
     this.refGuard = opts.refGuard ?? new RefGuard({ ledger: opts.ledger });
+    this.spans = new SpanTracker(opts.telemetry);
     if (opts.budgets !== undefined) registerBudgets(opts.ledger, opts.budgets);
   }
 
@@ -805,6 +818,8 @@ export class RunLifecycle {
       req.requestHash ?? requestHash(priv?.kind === "request" ? { ...stored, privileged_scope: priv.scope } : stored);
     const initial: RunState = priv?.kind === "request" && !priv.clientPolicy ? "AWAITING_APPROVAL" : "QUEUED";
     const profile = priv === undefined ? this.opts.resolveProfile(req.trustProfile) : undefined;
+    // T8.2: the delegation span covers admission-to-terminal for one accepted request; a replay reuses the prior run.
+    const admittedAt = this.now().getTime();
 
     const result = this.ledger.immediate((): SubmitResult => {
       // T5.5: a handoff run's request names its view, whose id is allocated here so both rows share this transaction.
@@ -984,7 +999,10 @@ export class RunLifecycle {
       }
       return { runId: run.id, metaSessionId, state: initial, replayed: false };
     });
-    if (!result.replayed) queueMicrotask(() => this.pump());
+    if (!result.replayed) {
+      this.spans.delegateStarted(result.runId, admittedAt);
+      queueMicrotask(() => this.pump());
+    }
     return result;
   }
 
@@ -1087,6 +1105,18 @@ export class RunLifecycle {
   /** True when PREFLIGHT gates on the shared eligibility filter (`eligibility` option set). */
   get gatesEligibility(): boolean {
     return this.opts.eligibility !== undefined;
+  }
+
+  /**
+   * T10.1 (LLD §11.3): where a run with this frozen project snapshot would execute, by the same rule PREFLIGHT applies
+   * at dispatch. Admission asks it before any side effect, so a `container` project with no container environment
+   * wired is refused there; undefined (or a kind other than the snapshot's) means the run would be refused.
+   */
+  environmentPlacement(project: EnvironmentSnapshot | undefined): EnvironmentPlacement | undefined {
+    return (
+      this.opts.environments?.resolve(project) ??
+      (environmentKindOf({ project }) === "host" ? { environment: hostEnvironment, readOnlyContexts: [] } : undefined)
+    );
   }
 
   /** FRD V3/V4 (and C3): the canonical workspace path, or `LifecycleError` INVALID_REQUEST. */
@@ -1453,9 +1483,7 @@ export class RunLifecycle {
     // leased or created. A `container` run with no container environment is refused here, never run on the host.
     const snapshotProject = (JSON.parse(run0.policy_snapshot_json) as { project?: ProjectSnapshot }).project;
     const environmentKind = environmentKindOf({ project: snapshotProject });
-    const placement =
-      this.opts.environments?.resolve(snapshotProject) ??
-      (environmentKind === "host" ? { environment: hostEnvironment, readOnlyContexts: [] } : undefined);
+    const placement = this.environmentPlacement(snapshotProject);
     if (placement === undefined || placement.environment.kind !== environmentKind) {
       return this.fail(
         runId,
@@ -1737,6 +1765,8 @@ export class RunLifecycle {
 
     // RUNNING (T9): pid/pgid persisted in the same transaction, before any output is read (LLD §8).
     let spawned = false;
+    // T8.2: the provider.spawn span covers the observed process lifetime (onSpawn to process exit).
+    let spawnStartedAt: number | undefined;
     let out: AdapterRunOutcome;
     const onEvent = (ev: NormalizedEvent): void => {
       if (ev.kind === "session_bound") {
@@ -1781,6 +1811,8 @@ export class RunLifecycle {
               { pid, pgid },
             );
             spawned = true;
+            spawnStartedAt = this.now().getTime();
+            this.spans.spawnStarted(runId, spawnStartedAt);
           },
         });
       } catch (err) {
@@ -1804,7 +1836,29 @@ export class RunLifecycle {
         throw err;
       }
       exec.handle = agent;
-      out = await agent.done;
+      try {
+        out = await agent.done;
+      } catch (err) {
+        // T8.2: the process outcome was never observed; drop the span start instead of inventing exit facts.
+        this.spans.discardSpawn(runId);
+        throw err;
+      }
+      if (spawnStartedAt !== undefined) {
+        // T8.2: complete provider.spawn from the observed exit; a spawn error never reached onSpawn, so no span starts.
+        this.spans.spawnFinished(runId, this.now().getTime(), {
+          runId,
+          sessionId: run0.meta_session_id,
+          provider: req.provider,
+          trustProfile: run0.trust_profile,
+          adapterVersion: binaryVersion ?? undefined,
+          ...(req.model !== undefined ? { model: req.model } : {}),
+          transport: inv.transport,
+          attempt: run0.attempt,
+          exitCode: out.exit.exitCode,
+          exitSignal: out.exit.signal,
+        });
+        spawnStartedAt = undefined;
+      }
       // T14.7 (FR-CTL-04, FR-SES-03, BR-7; LLD §3.4.4): the turn's end is the boundary. While steer notes are queued
       // and the turn succeeded with a native session, resume that same session in this run with only the notes as the
       // prompt (never the objective again: no replay). Each earlier turn's streams are kept as artifacts of the run.
@@ -1835,6 +1889,8 @@ export class RunLifecycle {
           this.opts.workspace.extendLease(runId, 2 * turnInv.timeouts.wallClockMs + turnInv.timeouts.killGraceMs);
         }
         let turn: AdapterRun;
+        // T8.2: a steer turn is a second observed process of the same run, so it gets its own provider.spawn span.
+        let turnStartAt: number | undefined;
         try {
           turn = startAdapterRun(adapter, turnInv, {
             ...runOptions(turnInv),
@@ -1844,6 +1900,8 @@ export class RunLifecycle {
                 { pid, pgid, proc_start_ticks: procStartTicks(pid) },
                 { type: "steer_turn_spawned", payload: { pid, pgid } },
               );
+              turnStartAt = this.now().getTime();
+              this.spans.spawnStarted(runId, turnStartAt);
             },
           });
         } catch (err) {
@@ -1861,7 +1919,28 @@ export class RunLifecycle {
         // A cancel that arrived while the turn was being prepared stops it at once.
         if (exec.cancelRequested) void turn.cancel();
         const earlier = out;
-        out = await turn.done;
+        try {
+          out = await turn.done;
+        } catch (err) {
+          // T8.2: as for the first turn, no exit facts were observed; drop the span start.
+          this.spans.discardSpawn(runId);
+          throw err;
+        }
+        if (turnStartAt !== undefined) {
+          this.spans.spawnFinished(runId, this.now().getTime(), {
+            runId,
+            sessionId: run0.meta_session_id,
+            provider: req.provider,
+            trustProfile: run0.trust_profile,
+            adapterVersion: binaryVersion ?? undefined,
+            ...(req.model !== undefined ? { model: req.model } : {}),
+            transport: turnInv.transport,
+            attempt: run0.attempt,
+            exitCode: out.exit.exitCode,
+            exitSignal: out.exit.signal,
+          });
+          turnStartAt = undefined;
+        }
         await this.storeStreams(runId, run0.meta_session_id, earlier);
       }
       this.steerInbox.close(runId); // a refused resume also ends steering: later notes are undelivered at once
@@ -2535,7 +2614,10 @@ export class RunLifecycle {
       },
     });
     if (!moved) return undefined;
-    if (isTerminal(to)) this.recordBreakerOutcome(moved);
+    if (isTerminal(to)) {
+      this.recordBreakerOutcome(moved);
+      this.endDelegateSpan(moved);
+    }
     if (to === "SUCCEEDED") {
       this.recordAffinity(moved);
       const workItem = this.ledger.findWorkItemByAdmittedRunId(moved.id);
@@ -2544,6 +2626,31 @@ export class RunLifecycle {
     this.opts.onTransition?.({ runId: run.id, from: run.state, to, rule: rule.id });
     if (isTerminal(to)) queueMicrotask(() => this.settle(run.id));
     return moved;
+  }
+
+  /**
+   * T8.2 (FR-TEL-02, LLD §7, ADR-0012): complete the run's `controller.delegate` span from the terminal row.
+   * Only controller-observed facts are used; the stored request is parsed for the pinned model alone and the
+   * objective/constraints never reach the span builders.
+   */
+  private endDelegateSpan(run: RunRecord): void {
+    let model: string | undefined;
+    try {
+      model = (JSON.parse(run.request_json) as StoredRequest).model;
+    } catch {
+      // A span is best effort: a request that cannot be parsed exports without the model attribute.
+    }
+    const facts: DelegateSpanFacts = {
+      runId: run.id,
+      sessionId: run.meta_session_id,
+      provider: run.provider,
+      trustProfile: run.trust_profile,
+      ...(model !== undefined ? { model } : {}),
+      attempt: run.attempt,
+      terminalState: run.state,
+      failureCode: run.failure_code,
+    };
+    this.spans.delegateFinished(run.id, this.now().getTime(), facts);
   }
 
   // ---- per-provider breaker (T6.4; FR-CAP-04, LLD §16.4) ------------------------------------------------------
