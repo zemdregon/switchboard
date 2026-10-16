@@ -2137,6 +2137,23 @@ inCount`) fails only the two off-schema tests across `src/inner/usage-surfaces.t
 losing `PRIMARY KEY` in migration 0006 fails the duplicate-id test and the post-#442 REPLACE pin. Opened as
 [PR #491](https://github.com/zemdregon/switchboard/pull/491). T11.5 stays **Done on fakes**; the live-backend residual
 (T11.13) is the only one left.
+*2026-10-16 post-#491 transaction residual (Delegated; fakes only, no production code change, `src/inner/usage.test.ts`
+only):* the file was re-read on `main` at `e9f51d7` against the T11.5 and T11.14 rows, FR-INN-15, `src/inner/pipeline.ts`
+and `recordInnerCall` in `src/ledger/repo.ts`. Two edges had no pin at the pipeline or ledger layer. *Later-write
+rollback*: the existing transaction pin refuses the observation itself, but `recordInnerCall` writes the observation
+before the run events and the step 11 suspension state, so a write that fails after it had never been shown to take the
+observation back out. Two tests refuse the `inner_degraded` event of the call that opens the breaker and the
+`inner_task_state` write of the rejection that suspends the task: the observation, the call row and the event roll back
+together, the caller still gets the fallback with no call id, `inner.record_failed` is logged without the database's
+message, the denied call after the breaker opened (in-memory state, as built) records with no observation, and the same
+call records all of its rows once the trigger is gone. *Labelled-row stamping*: under a ticking ledger clock and two
+concurrent calls, `observed_at` is the call row's `created_at` and the `inner_call` event's `ts`, the model is the
+backend-reported one and never the configured one, the id is in the `use` namespace, and the nth observation pairs with
+the nth recorded call, not the nth started one. Each pin fails under the drift it guards and nothing else across the
+three usage test files and `src/inner/suspension.test.ts`, with the tree restored after each: swallowing a failed extra
+event insert, swallowing a failed `suspendInnerTask`, and stamping `observed_at` with a second clock read. Opened as
+[PR #496](https://github.com/zemdregon/switchboard/pull/496). T11.5 stays **Done on fakes**; the live-backend residual
+(T11.13) is the only one left.
 
 **T11.8 status (2026-10-13; Delegated): Done on fakes. No live inner backend, provider CLI, pull-request API or network
 host was used.** "Done when", clause by clause: *the draft passes the sanitiser*: a hostile fake backend returning a
