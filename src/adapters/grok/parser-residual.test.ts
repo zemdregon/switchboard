@@ -24,16 +24,23 @@
  * never amended, a resumed run carrying both (replayed end to end); after #458, a call opened `shell` by its command
  * stays `shell`, a target-only call under another tool name is a `read` (pinned gap), a `read` renamed
  * `run_terminal_command` with the same target is deduplicated (pinned gap), and the transient command is stripped.
+ * Eighth pass: target-field guard interactions (an earlier target key shadows a Git write in a later one, replayed end
+ * to end, and an empty command hides a shell target from the guard: pinned gaps; a deduplicated rename never marks the
+ * call `shell`: pinned gap), tool and unknown lines after `end` (a stopReason-less `end` after a good one is a plain
+ * unknown: pinned gap, replayed end to end), and resume argv parity (a `-r` inside the prompt, a non-writable
+ * workspace, and a failed run's bound id).
  */
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { runConformanceCase } from "../conformance.js";
+import { privilegedProfile } from "../fixtures/privileged.js";
 import { guardEvent } from "../tool-guard.js";
 import type { ParseState } from "../types.js";
 import { GROK_BYPASS_NOT_APPROVED, GrokAdapter } from "./adapter.js";
 import {
+  BYPASS_SCOPE,
   DEFAULT_SESSION_ID,
   fixturePath,
   PRIVILEGED_BYPASS_PROFILE,
@@ -1128,5 +1135,232 @@ describe("grok parser residuals, seventh pass: backingProvider and model parity,
     // An empty-string target on a shell call is an empty command: kept, never a violation.
     const [empty] = guarded([line({ type: "tool_call", name: "run_terminal_command", input: { path: "" } })]);
     expect(empty).toEqual({ kind: "tool_call", tool: "shell", name: "run_terminal_command", target: "" });
+  });
+});
+
+describe("grok parser residuals, eighth pass: target-field guard interactions, trailing unknowns and resume argv parity (T4.23, synthetic lines; parser unchanged)", () => {
+  const ctx = { cwd: "/w", bypass: true };
+  const guarded = (lines: (string | object)[]) => parse(lines).events.map((e) => guardEvent(e, ctx));
+  const approved = { ...PRIVILEGED_BYPASS_PROFILE, bypassApproved: true };
+  const req = {
+    runId: "run_grok_t423_residual",
+    objective: "synthetic grok objective",
+    constraints: [],
+    workspace: { cwd: "/w", writable: true },
+    bypassApproved: true,
+  };
+  const GIT_WRITE = "git push origin main";
+
+  it("pins the gap: an earlier target key shadows a Git write in a later one, so the guard sees only the first", () => {
+    // Target precedence is input.path > filePath > file_path > AbsolutePath > input.target > the same keys top-level.
+    for (const call of [
+      { input: { path: "ls" }, target: GIT_WRITE },
+      { input: { path: "ls", target: GIT_WRITE } },
+      { input: { filePath: "ls" }, path: GIT_WRITE },
+    ]) {
+      const lines = [line({ type: "tool_call", name: "run_terminal_command", ...call }), line(END)];
+      const label = JSON.stringify(call);
+      expect(parse(lines).events[0], label).toEqual({
+        kind: "tool_call",
+        tool: "shell",
+        name: "run_terminal_command",
+        command: "ls",
+        target: "ls",
+      });
+      expect(adapter().extractResult(guarded(lines), EXIT_OK), label).toEqual({
+        ok: true,
+        unknownEventCount: 0,
+        nativeSessionId: SID,
+      });
+    }
+    // Positive controls: a non-string earlier key falls through, and an object `input` with no target key does not
+    // hide the top-level one, so the Git write reaches the guard.
+    for (const call of [
+      { input: { path: 7, filePath: GIT_WRITE } },
+      { input: { description: "x" }, target: GIT_WRITE },
+    ]) {
+      const lines = [line({ type: "tool_call", name: "run_terminal_command", ...call }), line(END)];
+      expect(adapter().extractResult(guarded(lines), EXIT_OK), JSON.stringify(call)).toMatchObject({
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+      });
+    }
+  });
+
+  it("fixture shadowed_target replays a Git write behind input.path to end_turn success (gap)", async () => {
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: replayAdapter("shadowed_target"),
+      request: { ...req, workspace: { cwd: makeCwd(), writable: true } },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: true, unknownEventCount: 0, summary: "Listed the files." });
+  });
+
+  it("pins the gap: an empty command is the command, so a shell target beside it never reaches the guard", () => {
+    const lines = [
+      line({ type: "tool_call", name: "run_terminal_command", input: { command: "", path: GIT_WRITE } }),
+      line(END),
+    ];
+    // The target is dropped beside any command (sixth pass), and the empty command is what the guard reads.
+    expect(parse(lines).events[0]).toEqual({
+      kind: "tool_call",
+      tool: "shell",
+      name: "run_terminal_command",
+      command: "",
+    });
+    expect(adapter().extractResult(guarded(lines), EXIT_OK)).toMatchObject({ ok: true });
+    // Positive control: a non-string command is no command, so the target is the guard command and is blocked.
+    const typed = [
+      line({ type: "tool_call", name: "run_terminal_command", input: { command: 0, path: GIT_WRITE } }),
+      line(END),
+    ];
+    expect(adapter().extractResult(guarded(typed), EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+  });
+
+  it("pins the gap: a deduplicated rename to run_terminal_command never marks the call `shell`, so a later target is a `read`", () => {
+    const read = line({ type: "tool_call", id: "r1", tool: "read_file", input: { path: "notes.txt" } });
+    const later = line({ type: "tool_call_update", id: "r1", input: { path: GIT_WRITE } });
+    // The rename repeats the reported target, so it returns before the call is marked `shell` (seventh pass).
+    const rename = line({
+      type: "tool_call_update",
+      id: "r1",
+      name: "run_terminal_command",
+      input: { path: "notes.txt" },
+    });
+    const lines = [read, rename, later, line(END)];
+    expect(parse(lines).events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "read", name: "read_file", target: "notes.txt" },
+      { kind: "tool_call", tool: "read", name: "run_terminal_command", target: GIT_WRITE },
+    ]);
+    expect(adapter().extractResult(guarded(lines), EXIT_OK)).toMatchObject({ ok: true });
+    // Positive control: a rename with a new target is reported as `shell`, which marks the call, so the same nameless
+    // update is then guarded as a command.
+    const marking = line({ type: "tool_call_update", id: "r1", name: "run_terminal_command", input: { path: "ls" } });
+    const marked = [read, marking, later, line(END)];
+    expect(
+      parse(marked)
+        .events.filter((e) => e.kind === "tool_call")
+        .at(-1),
+    ).toMatchObject({ tool: "shell", command: GIT_WRITE });
+    expect(adapter().extractResult(guarded(marked), EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+    });
+  });
+
+  it("a target-only call after `end` trips the order check as a `read`; as a guarded shell call the guard verdict outranks it", () => {
+    const readAfter = parse([line(END), line({ type: "tool_call", tool: "read_file", input: { path: "/w/a" } })]);
+    expect(adapter().extractResult(readAfter.events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "tool call after the end line",
+    });
+    const shellAfter = [
+      line(END),
+      line({ type: "tool_call", name: "run_terminal_command", input: { path: GIT_WRITE } }),
+    ];
+    const blocked = adapter().extractResult(guarded(shellAfter), EXIT_OK);
+    expect(blocked).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: SID });
+    // The order-check detail is used only under OUTPUT_PROTOCOL_ERROR, so the guard's own detail stands.
+    expect(blocked.ok === false && blocked.failureDetail).not.toBe("tool call after the end line");
+  });
+
+  it("pins the gap: unreadable lines after `end`, a stopReason-less `end` included, are plain unknowns and the run succeeds", () => {
+    const trailing = [
+      line({ type: "synthetic_future_event", data: "x" }),
+      line({ type: "text" }),
+      "[]",
+      line({ type: "end", stopReason: null, sessionId: "other-session", usage: { input_tokens: 500 } }),
+    ];
+    const silent = [
+      line({ type: "thought", data: "t" }),
+      line({ type: "usage", signature: "s" }),
+      line({ type: "available_commands" }),
+    ];
+    const { events, state } = parse([line(END), ...trailing, ...silent]);
+    expect(events.slice(3)).toEqual([
+      { kind: "unknown", rawType: "synthetic_future_event" },
+      { kind: "unknown", rawType: "text" },
+      { kind: "unknown", rawType: "none" },
+      { kind: "unknown", rawType: "end" },
+    ]);
+    // The stopReason-less `end` takes no end slot, so its id neither binds nor raises "session id changed mid-run".
+    expect(state).toEqual({ lines: 1 + trailing.length + silent.length, unknownEvents: 4, nativeSessionId: SID });
+    expect(adapter().extractResult(events, EXIT_OK)).toEqual({ ok: true, unknownEventCount: 4, nativeSessionId: SID });
+    // Contrast: the same line with a string stopReason is a second `end`, so the run fails closed.
+    const counted = parse([line(END), line({ type: "end", stopReason: "end_turn", sessionId: "other-session" })]);
+    expect(adapter().extractResult(counted.events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      nativeSessionId: SID,
+    });
+  });
+
+  it("fixture trailing_unknowns_after_end replays four unknowns after end_turn at exit 0 to success (gap)", async () => {
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: replayAdapter("trailing_unknowns_after_end"),
+      request: { ...req, workspace: { cwd: makeCwd(), writable: true } },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: true, unknownEventCount: 4, summary: "Done." });
+  });
+
+  it("resume appends exactly one `-r <id>` pair: a `-r` inside the prompt stays in the one `--single=` word", () => {
+    const a = adapter();
+    for (const objective of ["-r other-session", "fix it -r other-session", "--single=x -r y"]) {
+      const request = { ...req, objective };
+      const first = a.compile(request, approved);
+      const resumed = a.resumeArgs({ provider: "grok", nativeSessionId: SID }, request, approved);
+      if ("ineligible" in first || "ineligible" in resumed) throw new Error("expected both to compile");
+      expect(
+        first.argv.filter((w) => w.startsWith("--single")),
+        objective,
+      ).toEqual([`--single=${objective}`]);
+      expect(resumed.argv, objective).toEqual([...first.argv, "-r", SID]);
+      expect(
+        resumed.argv.filter((w) => w === "-r"),
+        objective,
+      ).toEqual(["-r"]);
+      expect(resumed.policyFlags, objective).toEqual(first.policyFlags);
+    }
+  });
+
+  it("resume follows the request's writable flag exactly as compile: read-only sandbox, or the same refusal", () => {
+    const a = adapter();
+    const binding = { provider: "grok" as const, nativeSessionId: SID };
+    const readOnlyReq = { ...req, workspace: { cwd: "/w", writable: false } };
+    const first = a.compile(readOnlyReq, approved);
+    if ("ineligible" in first) throw new Error(first.detail);
+    expect(first.policyFlags).toEqual(["--sandbox", "read-only", "--disable-web-search", "--always-approve"]);
+    expect(a.resumeArgs(binding, readOnlyReq, approved)).toEqual({ ...first, argv: [...first.argv, "-r", SID] });
+    // With network on, a non-writable workspace is refused on both paths with the same detail.
+    const networkOn = { ...privilegedProfile({ ...BYPASS_SCOPE, network: { mode: "on" } }), bypassApproved: true };
+    const refused = a.compile(readOnlyReq, networkOn);
+    expect(refused).toMatchObject({ ineligible: true, reason: "CAPABILITY_MISSING" });
+    expect(a.resumeArgs(binding, readOnlyReq, networkOn)).toEqual(refused);
+    // The same scope on a writable workspace compiles, so the refusal is the request's flag alone.
+    expect(a.compile(req, networkOn)).toMatchObject({ policyFlags: ["--sandbox", "workspace", "--always-approve"] });
+  });
+
+  it("a failed run still returns its first bound id, and resumeArgs compiles it (the adapter does not judge resumability)", () => {
+    const { events, state } = parse([line(END), line({ ...END, sessionId: "other-session" })]);
+    const result = adapter().extractResult(events, EXIT_OK);
+    expect(result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR", nativeSessionId: SID });
+    expect(state.nativeSessionId).toBe(SID);
+    const resumed = adapter().resumeArgs({ provider: "grok", nativeSessionId: SID }, req, approved);
+    if ("ineligible" in resumed) throw new Error(resumed.detail);
+    expect(resumed.argv.slice(-2)).toEqual(["-r", SID]);
+    // A run whose only `end` id was unsafe returns no id, so there is nothing to resume from it.
+    const unsafe = parse([line({ ...END, sessionId: "-r" })]).events;
+    expect(adapter().extractResult(unsafe, EXIT_OK)).not.toHaveProperty("nativeSessionId");
   });
 });
