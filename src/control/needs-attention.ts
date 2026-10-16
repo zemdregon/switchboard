@@ -1,0 +1,148 @@
+/**
+ * Derived `needs_attention` flag (T14.2; FR-CTL-03, LLD §3.4.1 and §3.4.5). Computed on read from ledger facts only: it
+ * is never written to SQLite, adds no migration and is not a run state (FRD §4 is unchanged). `get_run` and `list_runs`
+ * attach it to the envelope (`src/mcp/envelope.ts`); the digest (T14.3) reuses {@link needsAttentionOf} so a run listed
+ * there carries the same reason as its `get_run` envelope.
+ *
+ * The split is deliberate: {@link deriveNeedsAttention} is pure over {@link NeedsAttentionFacts}, and
+ * {@link readNeedsAttentionFacts} is the only part that reads the ledger.
+ *
+ * Proposed (Delegated, T14.2):
+ * - Priority when several reasons match is the LLD §3.4.5 proposed order, {@link NEEDS_ATTENTION_PRIORITY}.
+ * - **T** (stall minutes) and the successor cap default to the LLD §3.4.6 Assumption values (30 and 8) until the
+ *   `control_plane.loop_breaker` configuration keys exist; callers may pass other values.
+ * - `failed_after_retry` matches `attempt >= cap` (the LLD says "equals"; a run past the cap is no less exhausted).
+ * - `budget_exhausted` attaches to the non-terminal runs of a resolved project (a run with no `project_id` never shows
+ *   it), so a terminal run never carries it.
+ * - `meta_session.parked_loop` (T14.5) and `control_plane_state.budget_flags_json` (T14.4/T14.6) do not exist yet. They
+ *   are read through {@link ControlPlaneFacts}; the default {@link NO_CONTROL_PLANE_FACTS} reports neither, which is the
+ *   fail-closed default of the derivation spike (missing persistence infers nothing).
+ * - A stall clock that cannot be evaluated (an unparseable timestamp) does not flag `stalled`.
+ * - An approval lookup that hits the one-approval-per-meta-session invariant (it throws) shows `awaiting_approval`: an
+ *   operator has to look at that meta-session.
+ */
+
+import type { Ledger, RunRecord, RunState } from "../ledger/index.js";
+import { isTerminal } from "../lifecycle/index.js";
+
+/** The closed reason list (FR-CTL-03, LLD §3.4.1), highest priority first (LLD §3.4.5, Proposed order). */
+export const NEEDS_ATTENTION_PRIORITY = [
+  "budget_exhausted",
+  "parked_loop",
+  "awaiting_approval",
+  "stalled",
+  "failed_after_retry",
+] as const;
+
+export type NeedsAttentionReason = (typeof NEEDS_ATTENTION_PRIORITY)[number];
+
+/** LLD §3.4.1 shape: `reason` is present exactly when `active` is true. */
+export type NeedsAttention = { active: true; reason: NeedsAttentionReason } | { active: false };
+
+/** LLD §3.4.6 Assumption default for **T** (`control_plane.loop_breaker.stall_minutes`). */
+export const DEFAULT_STALL_MINUTES = 30;
+/** LLD §3.4.6 Assumption default for `control_plane.loop_breaker.max_successors_per_meta_session`. */
+export const DEFAULT_MAX_SUCCESSORS_PER_META_SESSION = 8;
+
+/** States the LLD §3.4.5 stall rule covers, literally. */
+const STALL_STATES: ReadonlySet<RunState> = new Set(["RUNNING", "LEASED"]);
+
+/** Ledger facts about one run that the derivation reads. Everything here comes from ledger rows. */
+export interface NeedsAttentionFacts {
+  state: RunState;
+  attempt: number;
+  /** `ts` of the newest `run_event` of the run, or its `created_at` when it has none. */
+  lastActivityAt: string;
+  /** A `PENDING` approval exists for a run of this meta-session the caller may see. */
+  pendingApproval: boolean;
+  /** `meta_session.parked_loop` is set (T14.5). */
+  metaSessionParked: boolean;
+  /** The run is the newest of its meta-session (by `created_at`, then `id`). */
+  newestInMetaSession: boolean;
+  /** An admission budget refusal is active for the run's project or globally (T14.4). */
+  budgetExhausted: boolean;
+}
+
+export interface NeedsAttentionOptions {
+  now: Date;
+  stallMinutes?: number;
+  maxSuccessorsPerMetaSession?: number;
+}
+
+/** Every reason whose rule matches, in priority order. */
+export function matchingReasons(f: NeedsAttentionFacts, o: NeedsAttentionOptions): NeedsAttentionReason[] {
+  const terminal = isTerminal(f.state);
+  const matches: Record<NeedsAttentionReason, boolean> = {
+    budget_exhausted: f.budgetExhausted && !terminal,
+    parked_loop: f.metaSessionParked && f.newestInMetaSession,
+    awaiting_approval: f.state === "AWAITING_APPROVAL" || f.pendingApproval,
+    stalled: STALL_STATES.has(f.state) && isStale(f.lastActivityAt, o),
+    failed_after_retry:
+      f.state === "FAILED" &&
+      (f.attempt >= (o.maxSuccessorsPerMetaSession ?? DEFAULT_MAX_SUCCESSORS_PER_META_SESSION) || f.metaSessionParked),
+  };
+  return NEEDS_ATTENTION_PRIORITY.filter((r) => matches[r]);
+}
+
+/** The highest-priority matching reason, or `{ active: false }` when none matches. */
+export function deriveNeedsAttention(f: NeedsAttentionFacts, o: NeedsAttentionOptions): NeedsAttention {
+  const [reason] = matchingReasons(f, o);
+  return reason === undefined ? { active: false } : { active: true, reason };
+}
+
+function isStale(lastActivityAt: string, o: NeedsAttentionOptions): boolean {
+  const last = Date.parse(lastActivityAt);
+  const now = o.now.getTime();
+  if (!Number.isFinite(last) || !Number.isFinite(now)) return false; // fail closed: no evaluable clock, no flag
+  return now - last >= (o.stallMinutes ?? DEFAULT_STALL_MINUTES) * 60_000;
+}
+
+/** Control-plane persistence that later tasks add (LLD §3.4.7). Absent persistence reports nothing. */
+export interface ControlPlaneFacts {
+  /** `meta_session.parked_loop` (T14.5). */
+  metaSessionParked(metaSessionId: string): boolean;
+  /** An active refusal in `control_plane_state.budget_flags_json` for this project id, or `'*'` for global (T14.4). */
+  budgetExhausted(projectId: string): boolean;
+}
+
+export const NO_CONTROL_PLANE_FACTS: ControlPlaneFacts = {
+  metaSessionParked: () => false,
+  budgetExhausted: () => false,
+};
+
+/** Gather {@link NeedsAttentionFacts} for one run from the ledger. Read-only. */
+export function readNeedsAttentionFacts(
+  ledger: Ledger,
+  run: RunRecord,
+  control: ControlPlaneFacts = NO_CONTROL_PLANE_FACTS,
+): NeedsAttentionFacts {
+  const newest = ledger.listRunsForMetaSession(run.meta_session_id).at(-1);
+  return {
+    state: run.state,
+    attempt: run.attempt,
+    lastActivityAt: ledger.listRunEvents(run.id).at(-1)?.ts ?? run.created_at,
+    pendingApproval: pendingApproval(ledger, run),
+    metaSessionParked: control.metaSessionParked(run.meta_session_id),
+    newestInMetaSession: newest?.id === run.id,
+    budgetExhausted:
+      run.project_id !== null && (control.budgetExhausted(run.project_id) || control.budgetExhausted("*")),
+  };
+}
+
+/** The envelope's `needs_attention` for one run, recomputed from current ledger rows. */
+export function needsAttentionOf(
+  ledger: Ledger,
+  run: RunRecord,
+  options: NeedsAttentionOptions & { control?: ControlPlaneFacts },
+): NeedsAttention {
+  return deriveNeedsAttention(readNeedsAttentionFacts(ledger, run, options.control), options);
+}
+
+/** Caller scope as `get_run`: the meta-session's approval joined on this run's client (LLD §3.1 lookup). */
+function pendingApproval(ledger: Ledger, run: RunRecord): boolean {
+  try {
+    return ledger.findApprovalForMetaSession(run.meta_session_id, run.client_id)?.status === "PENDING";
+  } catch {
+    return true; // invariant violation (more than one approval row): surface it rather than hide it
+  }
+}
