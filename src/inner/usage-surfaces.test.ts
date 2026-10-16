@@ -301,7 +301,7 @@ async function readerSurfaces(client: Client, runId: string, extra: Partial<CliI
   };
 }
 
-function innerAgent(shares: string | null) {
+function innerAgent(shares: string | null, script: readonly FakeStep[] = SCRIPT) {
   const settings = resolveInnerAgent({
     enabled: true,
     backend: {
@@ -312,7 +312,14 @@ function innerAgent(shares: string | null) {
     },
     tasks: { run_title: { enabled: true } },
   });
-  return createInnerAgent(settings, { backend: createFakeBackend({ script: SCRIPT }), ledger });
+  return createInnerAgent(settings, { backend: createFakeBackend({ script }), ledger });
+}
+
+/** The human `runs show` split into [everything but its event lines (`  seq  ts  type  payload`); the event lines]. */
+function splitEventLines(text: string): [string, string[]] {
+  const isEvent = (line: string) => /^ {2} *\d+ {2}\S+ {2}\S+ {2}/u.test(line);
+  const lines = text.split("\n");
+  return [lines.filter((l) => !isEvent(l)).join("\n"), lines.filter(isEvent)];
 }
 
 describe("get_capacity, switchboard capacity, doctor and runs show with and without inner calls (T11.5; FR-INN-15, BR-41)", () => {
@@ -1157,5 +1164,247 @@ describe("the flag must name a configured provider: doctor and inner test when i
     expect(backend.requests).toHaveLength(0);
     expect(ledger.listInnerCalls()).toEqual([]);
     expect(db.prepare("SELECT COUNT(*) AS n FROM usage_observation").get()).toEqual({ n: 0 });
+  });
+});
+
+describe("off-schema token shapes reach the labelled row as partial or unknown and move no reader (T11.5 residual; FR-INN-15)", () => {
+  // `usage.test.ts` pins `tokenCount` and the rows for a backend that reports a null, fractional, negative, non-finite,
+  // string or unsafe count; nothing had read what those rows look like at the published surfaces. Distinctive figures,
+  // so a reader that estimated, coerced or surfaced one of them is caught by a substring check over every surface.
+  const PARTIAL_IN = 7_777_777;
+  const STRING_IN = "6666666";
+  const UNSAFE_OUT = 2 ** 53;
+  const script: readonly FakeStep[] = [
+    // call 1: output unknown, input reported: a partial row
+    { kind: "text", text: '{"title":"Fix login"}', usage: { in: PARTIAL_IN, out: null } },
+    // call 2: a re-ask after an off-schema first answer whose counts were bogus; the re-ask's good counts cannot
+    // restore a total that is already unknown (null + anything is unknown)
+    { kind: "text", text: "not json", usage: { in: 1.5, out: -1 } },
+    { kind: "text", text: '{"title":"Fix login"}', usage: { in: 3, out: 1 } },
+    // call 3: a backend that does not honour the port's number type (a numeric string, an unsafe integer)
+    { kind: "text", text: '{"title":"Fix login"}', usage: { in: STRING_IN as unknown as number, out: UNSAFE_OUT } },
+    // call 4: non-finite
+    { kind: "text", text: '{"title":"Fix login"}', usage: { in: Number.NaN, out: Number.POSITIVE_INFINITY } },
+    // call 5: `usage` that is not an object at all
+    { kind: "text", text: '{"title":"Fix login"}', usage: "unshaped-report" as unknown as { in: number; out: number } },
+    // call 6: a negative zero is zero (a safe integer, not negative), so it is a reported count, not unknown
+    { kind: "text", text: '{"title":"Fix login"}', usage: { in: 0, out: -0 } },
+  ];
+  for (const shares of [null, PROVIDER]) {
+    const label = shares === null ? "no shared subscription" : `shares_subscription_with = ${shares}`;
+    it(`${label}: six calls with off-schema counts write ${shares === null ? "no observation" : "partial or empty labelled rows"} and every reader is byte-identical`, async () => {
+      const runId = finishedRun();
+      const client = await connect();
+      // The on-disk config declares no inner agent, so `doctor` is a function of config, probes and the ledger's
+      // provider tables and is compared whole. `inner status` reads `inner_call` from the ledger whatever the config
+      // says, so its two forms are the one reader expected to move, by the call counts and nothing else.
+      const surfaces = async () => {
+        const { innerStatusJson, innerStatus, ...s } = await readerSurfaces(client, runId, {});
+        const [show, showEvents] = splitEvents(s.show);
+        const [getRunEvents, toolEvents] = splitEvents(s.getRunEvents);
+        const [showText, showTextEvents] = splitEventLines(s.showText);
+        return {
+          stable: { ...s, show, showText, getRunEvents },
+          events: { show: showEvents, tool: toolEvents, showText: showTextEvents },
+          inner: { json: innerStatusJson, text: innerStatus },
+        };
+      };
+      type InnerStatus = {
+        inner_agent: { tasks: { task: string; total_calls: number; calls: { accepted: number } }[] };
+      };
+      const runTitle = (json: string) =>
+        (JSON.parse(json) as InnerStatus).inner_agent.tasks.find((t) => t.task === "run_title");
+      const before = await surfaces();
+      expect(before.events.show).toEqual([]);
+      expect(before.events.tool).toEqual([]);
+      expect(before.events.showText).toEqual([]);
+      expect((JSON.parse(before.stable.show) as { usage: unknown[] }).usage).toHaveLength(1);
+      expect(before.stable.showText).toMatch(/usage\.input_tokens/u);
+      expect(runTitle(before.inner.json)).toMatchObject({ total_calls: 0 });
+
+      const svc = innerAgent(shares, script);
+      const results = [];
+      for (let i = 0; i < 6; i++) results.push(await svc.call(contract, { user: "objective: tidy", run_id: runId }));
+      expect(results.map((r) => r.outcome)).toEqual(Array(6).fill("accepted"));
+      expect(ledger.listInnerCalls().map((c) => [c.attempts, c.tokens_in, c.tokens_out])).toEqual([
+        [1, PARTIAL_IN, null],
+        [2, null, null],
+        [1, null, null],
+        [1, null, null],
+        [1, null, null],
+        [1, 0, 0],
+      ]);
+      const labelled = db
+        .prepare(
+          "SELECT run_id, provider, model, metrics_json FROM usage_observation WHERE source = 'inner_agent' ORDER BY rowid",
+        )
+        .all();
+      expect(labelled).toEqual(
+        shares === null
+          ? []
+          : [{ input_tokens: PARTIAL_IN }, {}, {}, {}, {}, { input_tokens: 0, output_tokens: 0 }].map((metrics) => ({
+              run_id: runId,
+              provider: PROVIDER,
+              model: "fake-model",
+              metrics_json: JSON.stringify(metrics),
+            })),
+      );
+      // Only the figures the backend reported as non-negative safe integers are stored anywhere: the string, the
+      // unsafe, the non-finite and the non-object ones are in no row of either table (the fraction and the negative
+      // are too short to check by substring; the null counts above cover them).
+      const allRows = JSON.stringify({
+        usage: db.prepare("SELECT * FROM usage_observation").all(),
+        calls: db.prepare("SELECT * FROM inner_call").all(),
+      });
+      for (const figure of [STRING_IN, String(UNSAFE_OUT), "NaN", "Infinity", "unshaped-report"]) {
+        expect(allRows).not.toContain(figure);
+      }
+
+      const after = await surfaces();
+      expect(after.stable).toEqual(before.stable);
+      // The run gained exactly six `inner_call` events on each event surface, none carrying a count.
+      expect(after.events.show.map((e) => e.type)).toEqual(Array(6).fill("inner_call"));
+      expect(after.events.tool.map((e) => e.type)).toEqual(Array(6).fill("inner_call"));
+      expect(after.events.showText.map((l) => l.match(/ {2}(\S+) {2}\{/u)?.[1])).toEqual(Array(6).fill("inner_call"));
+      expect(JSON.stringify(after.events)).not.toMatch(/token|usage/u);
+      // The inner diagnostics count the six accepted calls and report no count of either kind, so a backend's
+      // off-schema figure cannot reach an operator through them either.
+      expect(runTitle(after.inner.json)).toMatchObject({ total_calls: 6, calls: { accepted: 6 } });
+      expect(after.inner.text).toMatch(/^run_title +no +active +6 +6 /mu);
+      expect(JSON.stringify(after.inner)).not.toMatch(/token/u);
+      for (const figure of [String(PARTIAL_IN), STRING_IN, String(UNSAFE_OUT), "unshaped-report"]) {
+        expect(JSON.stringify(after)).not.toContain(figure);
+      }
+    });
+  }
+});
+
+describe("a duplicate-id insert in every non-REPLACE conflict spelling is refused or ignored, on the labelled row, the inner_call row and its run event, before any reader sees it (T11.5 residual; FR-INN-15, ADR-0005)", () => {
+  it("INSERT, OR ABORT, OR FAIL and OR ROLLBACK raise the UNIQUE constraint; OR IGNORE writes nothing; rows and every reader are byte-identical", async () => {
+    // #442 and #446 pinned the two REPLACE spellings (the BEFORE DELETE guard, Q-96). The other four conflict
+    // resolutions never reach a trigger: a duplicate id is refused by the primary key (or, for OR IGNORE, dropped
+    // without a write). The rewrite tried on each row is the one that would matter most to the readers: the labelled
+    // row relabelled `provider_reported` with a huge count under the run with capacity evidence, the call row with
+    // another outcome and huge counts, and the run event carrying a token figure. The event is also tried under a new
+    // id on the taken (run_id, seq), which its UNIQUE constraint refuses, and under its own id on a free seq.
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schema_version: 1,
+        data_dir: dataDir,
+        allowed_roots: [path.join(root, "repos")],
+        mcp_clients: [{ id: "c1", max_trust_profile: "edit-untrusted" }],
+        limits: { per_provider_concurrency: 2 },
+        capacity: { window_seconds: 7200, confidence_runs: 4 },
+        inner_agent: {
+          enabled: true,
+          backend: {
+            kind: "http",
+            base_url: "http://127.0.0.1:1",
+            model: "cfg-model",
+            shares_subscription_with: "claude-code",
+          },
+          tasks: { run_title: { enabled: true } },
+        },
+      }),
+    );
+    const runId = finishedRun();
+    const client = await connect();
+    // The doctor probe's backend (its canary writes no row); the call under the run goes through the pipeline so that
+    // the run event exists, labelled under the provider with capacity evidence.
+    const extra = {
+      innerBackend: createFakeBackend({
+        script: [{ kind: "text", text: '{"title":"Fix greeting typo"}', usage: { in: 11, out: 5 } }],
+      }),
+    };
+    const svc = innerAgent(PROVIDER, [{ kind: "text", text: '{"title":"Fix login"}', usage: { in: 11, out: 5 } }]);
+    expect(await svc.call(contract, { user: "objective: tidy", run_id: runId })).toMatchObject({ accepted: true });
+    const rows = () => ({
+      usage: db.prepare("SELECT * FROM usage_observation ORDER BY rowid").all() as Record<string, unknown>[],
+      calls: db.prepare("SELECT * FROM inner_call ORDER BY rowid").all() as Record<string, unknown>[],
+      events: db.prepare("SELECT * FROM run_event ORDER BY rowid").all() as Record<string, unknown>[],
+    });
+    const before = { rows: rows(), surfaces: await readerSurfaces(client, runId, extra) };
+    const labelled = before.rows.usage.find((r) => r.source === "inner_agent");
+    const [call] = before.rows.calls;
+    const event = before.rows.events.find((r) => r.type === "inner_call");
+    expect(labelled).toMatchObject({ provider: PROVIDER, run_id: runId, source: "inner_agent" });
+    expect(call).toMatchObject({ task: "run_title", outcome: "accepted", tokens_in: 11, tokens_out: 5, run_id: runId });
+    expect(event).toMatchObject({ run_id: runId, type: "inner_call" });
+    expect(before.rows.usage).toHaveLength(2);
+    expect(before.rows.events).toHaveLength(1);
+    type Capacity = { providers: { window: { terminal_runs: number; usage_observations: number } }[] };
+    expect((JSON.parse(before.surfaces.tool) as Capacity).providers[0]?.window).toMatchObject({
+      terminal_runs: 1,
+      usage_observations: 1,
+    });
+    expect((JSON.parse(before.surfaces.doctorJson) as { checks: { id: string }[] }).checks.map((c) => c.id)).toContain(
+      "inner_shared_subscription",
+    );
+
+    const PLANTED = 987_654_321;
+    const insert = (spelling: string, table: string, row: Record<string, unknown>) => {
+      const cols = Object.keys(row);
+      return db
+        .prepare(`${spelling} ${table} (${cols.join(", ")}) VALUES (${cols.map((c) => `@${c}`).join(", ")})`)
+        .run(row);
+    };
+    const attempts: [string, Record<string, unknown>, RegExp][] = [
+      [
+        "usage_observation",
+        { ...labelled, source: "provider_reported", metrics_json: JSON.stringify({ input_tokens: PLANTED }) },
+        /UNIQUE constraint failed: usage_observation\.id/u,
+      ],
+      [
+        "inner_call",
+        { ...call, outcome: "rejected_validator", tokens_in: PLANTED, tokens_out: PLANTED },
+        /UNIQUE constraint failed: inner_call\.id/u,
+      ],
+      // SQLite checks the (run_id, seq) index before the primary key, so the same id is tried on a free seq to reach
+      // the key, and a fresh id on the taken seq to reach the index.
+      [
+        "run_event",
+        { ...event, seq: 2, payload_json: JSON.stringify({ tokens: PLANTED }) },
+        /UNIQUE constraint failed: run_event\.id/u,
+      ],
+      [
+        "run_event",
+        { ...event, id: "evt_duplicate_seq", payload_json: JSON.stringify({ tokens: PLANTED }) },
+        /UNIQUE constraint failed: run_event\.run_id, run_event\.seq/u,
+      ],
+    ];
+    for (const [table, row, refusal] of attempts) {
+      for (const spelling of [
+        "INSERT INTO",
+        "INSERT OR ABORT INTO",
+        "INSERT OR FAIL INTO",
+        "INSERT OR ROLLBACK INTO",
+      ]) {
+        expect(() => insert(spelling, table, row), `${spelling} ${table}`).toThrow(refusal);
+      }
+      expect(insert("INSERT OR IGNORE INTO", table, row).changes, `OR IGNORE ${table}`).toBe(0);
+    }
+    expect(rows()).toEqual(before.rows);
+    expect(await readerSurfaces(client, runId, extra)).toEqual(before.surfaces);
+    expect(JSON.stringify(before.surfaces)).not.toContain(String(PLANTED));
+
+    // Not vacuous: the relabelled shape under a fresh id through the lifecycle's own writer moves the provider readers
+    // and none of the inner diagnostics.
+    ledger.insertUsageObservation({
+      runId,
+      provider: PROVIDER,
+      harness: PROVIDER,
+      source: "provider_reported",
+      metrics: { input_tokens: PLANTED },
+    });
+    const after = await readerSurfaces(client, runId, extra);
+    expect((JSON.parse(after.tool) as Capacity).providers[0]?.window).toMatchObject({
+      terminal_runs: 1,
+      usage_observations: 2,
+    });
+    expect(after.tool).not.toBe(before.surfaces.tool);
+    expect(after.getRun).toContain(String(PLANTED));
+    expect(after.innerStatusJson).toBe(before.surfaces.innerStatusJson);
+    expect(after.innerStatus).toBe(before.surfaces.innerStatus);
   });
 });
