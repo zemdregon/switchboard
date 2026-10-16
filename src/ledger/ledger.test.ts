@@ -33,6 +33,9 @@ const EXPECTED_TABLES = [
   "project_event",
   "project_revision",
   "project_revision_decision",
+  "project_work_dependency",
+  "project_work_event",
+  "project_work_item",
   "provider_binding",
   "provider_health",
   "rag_record",
@@ -316,6 +319,64 @@ describe("ledger migrations", () => {
       1,
     );
     expect(() => d.prepare("DELETE FROM artifact WHERE id = ?").run(art)).toThrow(/FOREIGN KEY/u);
+  });
+
+  it("0017 adds project work queue tables on a version 16 database (T15.1, FR-QUE-01)", () => {
+    db = new Database(path.join(dir, LEDGER_FILE_NAME));
+    db.pragma("foreign_keys = ON");
+    const d = db;
+    const upTo15 = MIGRATIONS.filter((m) => m.version < 16);
+    expect(migrate(d, undefined, upTo15)).toEqual(upTo15.map((m) => m.version));
+    const { ledger, run } = seed(d);
+    expect(
+      migrate(
+        d,
+        undefined,
+        MIGRATIONS.filter((m) => m.version <= 17),
+      ),
+    ).toEqual([16, 17]);
+    expect(ledger.getRun(run.id)?.id).toBe(run.id);
+    expect(() =>
+      d
+        .prepare(
+          `INSERT INTO project_work_item (id, project_id, creator_client_id, state, priority, request_json, source_kind,
+            created_at, updated_at) VALUES ('que_x','p','c','NOT_A_STATE',0,'{}','mcp','t','t')`,
+        )
+        .run(),
+    ).toThrow(/CHECK/u);
+    const item = ledger.enqueueWorkItem({
+      projectId: "p",
+      creatorClientId: "c",
+      request: { objective: "x", trust_profile: "edit-untrusted", project: "p" },
+      sourceKind: "mcp",
+      idempotencyKey: "k1",
+      idempotentReturnExisting: true,
+    });
+    expect(
+      ledger.enqueueWorkItem({
+        projectId: "p",
+        creatorClientId: "c",
+        request: { objective: "x", trust_profile: "edit-untrusted", project: "p" },
+        sourceKind: "mcp",
+        idempotencyKey: "k1",
+        idempotentReturnExisting: true,
+      }).id,
+    ).toBe(item.id);
+    expect(() =>
+      ledger.enqueueWorkItem({
+        projectId: "p",
+        creatorClientId: "other",
+        request: {},
+        sourceKind: "mcp",
+        idempotencyKey: "k1",
+        idempotentReturnExisting: true,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      d
+        .prepare("INSERT INTO project_work_dependency (successor_id, predecessor_id) VALUES ('que_missing','que_x')")
+        .run(),
+    ).toThrow(/FOREIGN KEY/u);
   });
 
   it("git_commit and git_push are append-only and enforce their foreign keys and checks (LLD §1)", () => {

@@ -69,6 +69,7 @@ import {
 } from "../adapters/index.js";
 import { ArtifactStore, defaultRedactor } from "../artifacts/index.js";
 import { ConfigError, loadConfig, type ResolvedConfig } from "../config/index.js";
+import { SinkDispatcher, sinkOutcomeRecorder, transitionNotifier } from "../control/index.js";
 import { detectOuterSandbox, type OuterSandboxAvailability, outerSandboxRefusal } from "../exec/outer-sandbox.js";
 import { GitToolService } from "../git/channel.js";
 import { GitPublisher } from "../git/commit.js";
@@ -93,6 +94,7 @@ import {
 import { type ModelConfig, ModelRegistry } from "../models/index.js";
 import { createProfileResolver } from "../policy/index.js";
 import { DynamicProjectStore, innerSettingResolver } from "../projects/index.js";
+import { queueSchedulerSettingsFromConfig, runProjectWorkQueueTick } from "../queue/index.js";
 import { reconcile } from "../reconcile/index.js";
 import { pruneRagStores } from "../retrieval/store.js";
 import { runRetentionGc, WorkspaceManager } from "../workspace/index.js";
@@ -338,6 +340,10 @@ async function runDaemon(
       cancels_applied: report.cancelsApplied.length,
       decisions_applied: report.decisionsApplied.length,
     });
+    const admittingReset = ledger.reconcileAdmittingWorkItems();
+    if (admittingReset > 0) {
+      log.info("project work queue: reset ADMITTING items to READY", { count: admittingReset });
+    }
   } catch (err) {
     log.error("refusing to serve: startup reconciliation failed", { error: message(err) });
     return 1;
@@ -496,6 +502,17 @@ async function runDaemon(
   // T12.4 / T12.5: set below once background indexing has started; until then (and with no embedding backend) the
   // context-pack port answers `undefined` and a run is compiled without a pack.
   let rag: ServeRag | undefined;
+  // T14.9 (FR-CTL-10, ADR-0048): notification sinks only when the operator configured one; none means no request at all.
+  const sinks =
+    config.notificationSinks.length === 0
+      ? undefined
+      : new SinkDispatcher({
+          sinks: config.notificationSinks,
+          ...(config.httpTransport !== undefined ? { linkBase: config.httpTransport.resource } : {}),
+          onOutcome: sinkOutcomeRecorder({ log, appendRunEvent: (e) => ledger.appendRunEvent(e) }),
+        });
+  if (sinks) log.info("notification sinks configured", { sinks: sinks.sinkIds });
+  const notifySinks = sinks ? transitionNotifier(sinks, (runId) => ledger.getRunRecord(runId)?.project_id) : undefined;
   const lifecycle = new RunLifecycle({
     ledger,
     workspace,
@@ -542,7 +559,10 @@ async function runDaemon(
     // project/context privacy resolver. Heuristic fallback when the agent is off, the task is disabled,
     // a privacy gate denies, or the call fails. Never ranks; lifecycle never imports the service.
     classifyRouteFeatures: createClassifyRouteFeaturesHook(innerAgent, innerSettingFor),
-    onTransition: (n) => log.info("run transition", { run_id: n.runId, from: n.from, to: n.to, rule: n.rule }),
+    onTransition: (n) => {
+      log.info("run transition", { run_id: n.runId, from: n.from, to: n.to, rule: n.rule });
+      notifySinks?.(n);
+    },
     ...(now ? { now } : {}),
   });
 
@@ -568,6 +588,31 @@ async function runDaemon(
   // Queued runs with a pending cancel are cancelled before dispatch can pick them up.
   await applyRequests();
   lifecycle.start();
+
+  const queueSettings = queueSchedulerSettingsFromConfig(
+    config as { queue?: { maxItemsPerProject?: number; dequeueBatch?: number } },
+  );
+  const queueAdmission = {
+    lifecycle,
+    ledger,
+    registry,
+    config: {
+      allowedRoots: config.allowedRoots,
+      mcpClients: config.mcpClients,
+      projects: config.projects,
+      dataDir: config.dataDir,
+      providers: config.providers,
+      capacity: config.capacity,
+      limits: config.limits,
+      routing: config.routing,
+    },
+    projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
+  };
+  const runQueueTick = () =>
+    runProjectWorkQueueTick(ledger, queueAdmission, queueSettings).catch((err) => {
+      log.error("project work queue tick failed", { error: message(err) });
+    });
+  void runQueueTick();
 
   // T12.4 (FR-RAG-11, LLD §14.5): background index builds. `startServeRag` only queues every project and returns; a
   // build runs on later turns of the event loop and is never awaited by admission. Without an embedding backend it is
@@ -597,6 +642,7 @@ async function runDaemon(
   const timer = setInterval(() => {
     void applyRequests();
     void rag?.applyRequests();
+    void runQueueTick();
   }, OPERATOR_POLL_MS);
   const gcTimer = config.retentionEnabled
     ? setInterval(() => void gcPass("interval"), Math.min(config.retention.intervalMs, MAX_TIMER_MS))
@@ -733,6 +779,7 @@ async function runDaemon(
       log.error("lifecycle shutdown failed", { error: message(err) });
       code = 1;
     }
+    await sinks?.close(); // aborts deliveries in flight; never throws
     process.stdin.destroy(); // nothing reads stdin any more; do not let it hold the event loop open
     process.off("SIGINT", ignore);
     process.off("SIGTERM", ignore);

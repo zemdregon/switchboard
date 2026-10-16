@@ -1708,6 +1708,29 @@ is scoped to projects the caller may use; other clients' runs never appear.
 **Agent text.** Any `result.summary` (or other agent-written field included later) is copied into `untrusted_summaries`
 as `untrusted_text`, never as authoritative instruction text (FR-CTL-02).
 
+**Implemented (T14.3, Delegated, not owner-approved).** `src/mcp/digest.ts` assembles the digest read-only and
+`src/mcp/server.ts` scopes it as `get_run`. Choices this section leaves open:
+
+- The scan reads only the events of the caller's own visible runs (ledger read helpers `getRunEvent` and
+  `listRunEventsForClient`, no migration), so the cursor never names or advances over another client's event. A
+  `since_cursor` that is not the id of such an event is `INVALID_REQUEST` (`details.field = "since_cursor"`):
+  `run_event` has no delete, so there is no garbage-collected cursor to treat as absent.
+- Delta: a run touched by the scan is listed in `needs_attention` when its flag (§3.4.5, the same `needsAttentionOf`)
+  is active at read time, in `finished` / `failed` when the scan holds its `state_transition` to `SUCCEEDED` /
+  `FAILED`, and its meta-session's `PENDING` approval in `pending_approvals`; only the projects of touched runs are
+  listed. With nothing new, `projects` is empty and `cursor` equals `since_cursor`.
+- Snapshot (no `since_cursor`): every project the caller may use plus the projects of its runs, with all current flags
+  and approvals and the newest 50 finished and failed runs per project. The output `cursor` is the caller's newest
+  event, or `null` when it has none (amendment to the output schema above, which cannot name "no event").
+- Every section of a listed project is present. Runs without a project (workspace-path runs) are not in the digest.
+- Agent text: `result.summary` is removed from digest envelopes and appears once per run in `untrusted_summaries`,
+  capped at 500 UTF-16 code units with a trailing "…" and no split surrogate pair; `result.verification_summary` is
+  removed as well (it stays on `get_run`).
+- `budget.exhausted` reads the same `ControlPlaneFacts` port as §3.4.5 (no budgets exist before T14.4); `budget.caps`
+  and `paused` are omitted, not reported as unset or false, until T14.4 and T14.6 persist them.
+- `pending_approvals` lists `privileged_scope` approvals; `approval_digest` is the §3.4.8 SHA-256 over controller
+  fields. Dynamic-project and push revisions join with T14.8.
+
 #### 3.4.4 `steer_run`, pause and resume (FR-CTL-04, FR-CTL-05)
 
 **`steer_run`**
@@ -1809,9 +1832,10 @@ Choices the text above leaves open:
   retry records `retry_not_scheduled` with reason `successor_cap` or `meta_session_parked`; the quota ladder records
   `outcome: returned` with the same reason. A new run into a parked meta-session is refused at admission with
   `INVALID_REQUEST` and writes nothing.
-- Stall evaluation (`findStalledRuns`) is read-only; it never cancels, signals or transitions the run. The envelope reads
-  the park events by default; `get_run`/`list_runs` still pass only `now`, so *T* and the cap on that path are the
-  Assumption defaults until `src/mcp/server.ts` passes `loopBreakerAttention(…, config.controlPlane.loopBreaker)`.
+- Stall evaluation (`findStalledRuns`) is read-only; it never cancels, signals or transitions the run. The envelope and
+  the digest read the park events by default; `get_run`/`list_runs` still pass only `now`, so *T* and the cap on that
+  path are the Assumption defaults until `src/mcp/server.ts` passes
+  `loopBreakerAttention(…, config.controlPlane.loopBreaker)`.
 
 #### 3.4.7 Pause and budget persistence (Proposed)
 
@@ -1885,6 +1909,31 @@ Fail closed: wrong digest, stale id, target client not in `approval_proxy_target
 stdio-only deployments). Delivery is asynchronous, bounded timeout (proposed target: 5 s), HTTPS with verification;
 failures append `sink_delivery_failed` counts to the ledger without payload or URL (NFR-SEC-01). Never blocks admission
 or run execution.
+
+**Implementation (T14.9, `src/control/sinks.ts`, `src/config/notification-sinks.ts`; Delegated, not owner-approved):**
+
+- `url` and `ntfy.server` must be `https://` with no userinfo, query or fragment; plain HTTP is refused at load, also
+  for loopback. `ntfy.topic` matches `^[-_A-Za-z0-9]{1,64}$`. At most 8 sinks with unique `id`s (**Assumption**).
+  `max_per_minute` defaults to 10 and is at most 600 (**Assumption**; a sliding 60 s window per sink). Config errors
+  name the key and never echo a configured value.
+- Reason codes per `event_kind`: `needs_attention` takes a `needs_attention_reason`; `approval_pending` and
+  `approval_decided` an `approval_kind`; `run_terminal` the terminal state (`SUCCEEDED`, `FAILED`, `CANCELLED`);
+  `budget_exhausted` the literal `budget_exhausted`; `project_paused` `project_paused` or `global_paused`. `project_id`
+  is a project id, `-` (a run admitted without a project) or `*` (all projects). An event with any other value, or a
+  `run_id` that is not `run_` + ULID, is dropped, not sent.
+- Link: the origin of `public_url` plus `/runs/<run_id>` or `/digest`; else `switchboard://run/<run_id>` or
+  `switchboard://digest`.
+- Webhook: `POST` to `url`, `Content-Type: application/json`, body exactly `notification_payload`. ntfy: JSON publish
+  ([ntfy publish](https://docs.ntfy.sh/publish/), "Publish as JSON") to the server root with body `{ topic, title:
+  "Switchboard: <event_kind>", message: "project_id=<id> reason_code=<code> run_id=<id|none>", click: <link>, tags:
+  ["switchboard"] }` and `Authorization: Bearer <token>` when `token` is set.
+- Delivery starts on a later event-loop turn than the transition, uses no connection reuse, follows no redirect and
+  times out after 5 s. Outcome codes: `timeout`, `transport_error`, `http_status` (with the status) and
+  `rate_limited`. A failure or drop for an event with a run appends a `sink_delivery_failed` run event `{ sink_id,
+  event_kind, reason_code[, status] }` and logs the same fields; an error's own text is never used.
+- Producers in T14.9: a run reaching a terminal state (`run_terminal`) and an operator approval of a privileged run
+  (FRD T3, `approval_decided` / `privileged_scope`), from the lifecycle's existing transition hook in `serve`. The other
+  kinds are emitted by their own tasks (T14.2, T14.4, T14.6, T14.8) through the same dispatcher.
 
 #### 3.4.10 `tool_profile` (FR-CTL-11)
 
@@ -2638,6 +2687,36 @@ FR-PRJ-05 allows, refuse an image with a Git client (`git` or `gh` on the contai
 container `switchboard.run` and `switchboard.project`, and record `environment` run events. All Git operations for a
 container run stay in the controller on the host.
 Container details: [TDD §3.11](TDD.md#311-container-environments).
+
+*As built (2026-10-16, T10.1, Delegated; [ADR-0052](../adr/0052-container-environment-docker-backend.md); text above
+unchanged).* Code: `src/environment/types.ts` (the port: `prepare` returns `{ invocation, container? }`, `teardown`
+takes the run id, `sweepOrphans` as above), `src/environment/host.ts` (identity), `src/environment/container.ts` (the
+`container` implementation over the runtime port `src/environment/runtime.ts`), `src/environment/docker-runtime.ts`
+(rootless Docker CLI driver), `src/environment/select.ts` (`environmentKindOf`, `snapshotEnvironment`). Where this
+section was silent or the build differs:
+
+- **`prepare` does not create the container.** It checks the runtime (rootless only), resolves `image_digest` among
+  local images (never pulls), runs the ADR-0020 `PATH` scan in a labelled probe container, and returns the invocation
+  wrapped as `docker run --rm --name switchboard-run-<run> ... <image id> <executable> <provider arguments>`. The
+  container is created at spawn, by the supervisor, so the pre-spawn audits (T3.17, T9.4b, ADR-0033) see the
+  provider's arguments unchanged. `teardown` force-removes the run and probe containers by name; `--rm` covers the
+  normal exit. The executable is argv[0]'s basename, resolved by the image's `PATH`.
+- **Lifecycle seam.** `RunLifecycleOptions.environments` (`EnvironmentResolver.resolve(projectSnapshot)` returning
+  the environment plus the project's read-only context paths and limits, which the snapshot does not carry). The kind
+  is decided from `project.environment_kind` before any lease or worktree; a `container` run with no container
+  environment, or a resolver answering the wrong kind, fails `ELIGIBILITY_NONE` (`ENVIRONMENT_UNAVAILABLE`). `prepare`
+  runs after the Git tool channel and immediately before the audits and spawn; its refusal fails the run
+  `ELIGIBILITY_NONE` with the `EnvironmentRefusal` reason in the transition event; `teardown` runs in the same
+  `finally` as the channel close.
+- **Snapshot.** `ProjectSnapshot.image_digest` (FR-PRJ-04), frozen at admission for `container`; `snapshotEnvironment`
+  is the helper for the admission path.
+- **Events** go to the environment's `onEvent` callback (`image_checked`, `prepared`, `refused`, `removed`,
+  `remove_failed`, `orphan_removed`); the ledger write and the startup sweep call are T10.2.
+- **Not built in T10.1:** admission still refuses container projects (`src/mcp/server.ts`,
+  `ENVIRONMENT_NOT_IMPLEMENTED`) and `serve` does not compose the resolver yet, so no container run is reachable
+  through MCP; the injected tool channel is not reachable from inside a container; `projects validate`'s
+  no-Git-client check is T10.3. Tests: `src/environment/container.test.ts`, `src/environment/docker-runtime.test.ts`,
+  `src/lifecycle/environment.test.ts`, opt-in `src/environment/container-docker.test.ts`.
 
 ## 12. Injected Git tools, commits and publication
 

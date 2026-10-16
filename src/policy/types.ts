@@ -89,6 +89,12 @@ export interface ProjectSnapshot {
   readonly id: string;
   readonly name: string;
   readonly environment_kind: "host" | "container";
+  /**
+   * T10.1 (FR-PRJ-04): the image digest the project pinned, frozen at admission for a `container` run so a later
+   * configuration edit cannot change which image a run uses. Absent for `host` (and on snapshots written before T10.1).
+   * The container environment refuses a `container` run whose snapshot lacks it (`CONTAINER_IMAGE_NOT_PINNED`).
+   */
+  readonly image_digest?: string;
   /** The primary repository context whose worktree is the agent's working directory. */
   readonly context_id: string;
   readonly base_ref: string;

@@ -39,6 +39,7 @@ import {
   PROJECT_INNER_SETTINGS,
   type ProjectInnerSetting,
 } from "./inner-agent.js";
+import { type NotificationSinkConfig, notificationSinksSchema } from "./notification-sinks.js";
 import {
   type ContextRagConfig,
   contextRagSchema,
@@ -127,6 +128,8 @@ export interface SwitchboardConfig {
   routing?: RoutingConfigInput;
   /** Control plane (M14; LLD §3.4.6). T14.5 reads `loop_breaker`; every key defaults to its LLD Assumption value. */
   control_plane?: ControlPlaneConfigInput;
+  /** Notification sinks (M14, T14.9; FR-CTL-10, LLD §3.4.9, ADR-0048). Absent or empty means off: no outbound call. */
+  notification_sinks?: NotificationSinkConfig[];
   /**
    * Outer sandbox (T3.1; LLD §8.4, ADR-0051). A profile listed in `required_profiles` is refused at admission unless
    * it can run inside the outer sandbox; absent or empty means nothing changes. `privileged` cannot be listed.
@@ -539,6 +542,7 @@ export const configSchema = {
         },
       },
     },
+    notification_sinks: notificationSinksSchema,
     profiles: {
       type: "object",
       additionalProperties: false,

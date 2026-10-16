@@ -16,6 +16,7 @@ import { resolveControlPlane } from "../config/index.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger, type RunRecord, type TrustProfile } from "../ledger/index.js";
 import { RunLifecycle, type RunLifecycleOptions } from "../lifecycle/index.js";
+import { assembleDigest } from "../mcp/digest.js";
 import { buildEnvelope } from "../mcp/envelope.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import { findStalledRuns, loopBreakerAttention } from "./loop-attention.js";
@@ -351,6 +352,46 @@ describe("successor cap (T14.5, FR-CTL-07, FR-MCP-10)", () => {
 });
 
 describe("loop breaker units (T14.5)", () => {
+  it("get_digest lists the parked meta-session's newest run with the same reason as get_run", () => {
+    const sess = ledger.createMetaSession({ objective: "x", constraints: [], projectId: "p" });
+    const runs = [1, 2, 3].map(() => {
+      const run = ledger.createRun({
+        metaSessionId: sess.id,
+        state: "QUEUED",
+        trustProfile: "edit-untrusted",
+        policySnapshot: {},
+        projectId: "p",
+        request: { objective: "x" },
+        requestHash: "h",
+        clientId: "c",
+        provider: "fake",
+        priority: 1,
+      });
+      db.prepare("UPDATE run SET state = 'FAILED', failure_code = 'TEST_FAILURE' WHERE id = ?").run(run.id);
+      clockMs += 1000;
+      return ledger.getRunRecord(run.id) as RunRecord;
+    });
+    const newest = runs[2] as RunRecord;
+    expect(recordLoopPark(ledger, newest)).toMatchObject({ fingerprint: "code:TEST_FAILURE" });
+    const digest = assembleDigest(
+      ledger,
+      { clientId: "c", visible: () => true, projectIds: ["p"] },
+      undefined,
+      (x) => x,
+      {
+        now: clock(),
+      },
+    );
+    const entry = digest.projects
+      .find((x) => x.project_id === "p")
+      ?.needs_attention.find((x) => x.run_id === newest.id);
+    expect(entry?.reason).toBe("parked_loop");
+    expect(buildEnvelope(ledger, newest, (x) => x, { now: clock() }).needs_attention).toEqual({
+      active: true,
+      reason: entry?.reason,
+    });
+  });
+
   it("resolves control_plane.loop_breaker with the LLD §3.4.6 Assumption defaults, shared with T14.2", () => {
     expect(resolveControlPlane(undefined).loopBreaker).toEqual({
       identicalFailureThreshold: 3,

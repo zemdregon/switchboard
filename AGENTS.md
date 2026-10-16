@@ -78,7 +78,7 @@ state machine or schema.
 | `docs/adr/` | Architecture decision records and their index. |
 | `docs/research/` | Research inputs. Historical record; do not rewrite their findings. |
 | `package.json`, `package-lock.json` | Package metadata, scripts and pinned dependencies (`npm ci` installs them). |
-| `src/` | Application code: config, ledger, lifecycle, adapters (`claude`, `codex`, `fake`), MCP server, CLI, policy, Git, inner-agent port and fake backend (`inner`), capacity estimator (`capacity`), derived control-plane flags (`control`). |
+| `src/` | Application code: config, ledger, lifecycle, adapters (`claude`, `codex`, `fake`), MCP server, CLI, policy, Git, inner-agent port and fake backend (`inner`), capacity estimator (`capacity`), derived control-plane flags and notification sinks (`control`), environment port with the `host` identity and the `container` backend over a rootless Docker driver (`environment`). |
 | `test/` | Cross-cutting tests: live smoke test (opt-in) and the malicious-fixture suite. |
 | `scripts/check-docs.mjs` | Documentation consistency checker (Node.js, no dependencies). |
 | `scripts/copy-build-assets.mjs`, `scripts/bench-perf.mjs`, `scripts/live-smoke.mjs` | Build asset copy, the performance benchmark and the opt-in live smoke test. Live provider plug-ins: `scripts/live/providers/`. |
