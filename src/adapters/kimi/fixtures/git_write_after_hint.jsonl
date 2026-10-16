@@ -1,0 +1,5 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.63, twelfth pass), in the stream-json record shapes of the scrubbed 2026-10-15 capture (captured_success.jsonl); the tool_calls item shape is an Assumption (T4.68). A clean resume hint, then an assistant record carrying a Git-writing shell call: the late record is a protocol error, but the call is still emitted, so the ADR-0039 guard ends the run PERMISSION_BLOCKED (a guard verdict outranks the late-record anomaly).","exit":0}}
+{"role":"meta","type":"system.version","version":"0.0.1"}
+{"role":"assistant","content":"ok"}
+{"role":"meta","type":"session.resume_hint","session_id":"session_00000000-0000-4000-8000-000000000001","command":"kimi -r session_00000000-0000-4000-8000-000000000001","content":"To resume this session: kimi -r session_00000000-0000-4000-8000-000000000001"}
+{"role":"assistant","content":null,"tool_calls":[{"id":"call_9","type":"function","function":{"name":"Shell","arguments":"{\"command\":\"git push\"}"}}]}
