@@ -61,6 +61,13 @@
  * counter still yields its result; a scalar error payload is JSON text under `unknown`, and a bare string spelling a
  * mapped type is a message, never a type (gap, fixture `error_string_quota.jsonl`); a type-less error object is clipped
  * JSON; an empty-string command stays a shell command; and whitespace-only text becomes the whole summary (gap).
+ * Thirteenth pass (2026-10-16, same terms): the tool-name lookup is case-sensitive, so `Read`/`Write`/`EDIT` are `other`
+ * tools whose target is dropped while `Shell`/`BASH` with a command still reach the guard (gap, fixture
+ * `tool_name_case_variant.jsonl`); a non-object `part` (array, string, number, boolean, null) is unknown under its line
+ * type and a part-only id inside it never binds; unknown raw types are clipped to 64 characters, so a long type
+ * beginning `tool_use` after the stop is an unreadable event, not a trailing tool; mapped error types match exactly
+ * (padding or a suffix is TOOL_FAILURE); and a message clipped at 2,000 characters carries its ellipsis into the
+ * summary while the clipped tail never reaches it (gap).
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -3124,5 +3131,172 @@ describe("opencode parser residuals, twelfth pass: unchecked part types, token c
       },
     });
     expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+  });
+});
+
+describe("opencode parser residuals, thirteenth pass: tool-name case, non-object parts, raw type clipping, near-miss error types and clipped summaries (T4.53; synthetic lines; parser unchanged)", () => {
+  const request = (cwd = makeCwd()): CompileRequest => ({
+    runId: "run_opencode_t453_thirteenth",
+    objective: "synthetic opencode objective",
+    constraints: [],
+    workspace: { cwd, writable: true },
+    bypassApproved: true,
+  });
+  const UNREADABLE_ONE = {
+    ok: false,
+    failureCode: "OUTPUT_PROTOCOL_ERROR",
+    failureDetail: "1 unreadable event(s) in the stream",
+    nativeSessionId: SID,
+    unknownEventCount: 1,
+  } as const;
+
+  it("pins the gap: tool names match case-sensitively; Read/Write/EDIT drop their target, Shell/BASH keep a command", () => {
+    const { events, state } = parse([
+      START(SID),
+      TOOL("Shell", { command: "ls" }),
+      TOOL("BASH", { command: "ls" }),
+      TOOL("Bash", {}),
+      TOOL("Read", { filePath: "a.ts" }),
+      TOOL("Write", { filePath: "a.ts" }),
+      TOOL("EDIT", { path: "a.ts" }),
+      // A case variant of a file tool that carries a command falls back to shell, not read.
+      TOOL("Read", { filePath: "a.ts", command: "cat a.ts" }),
+      FINISH("stop"),
+    ]);
+    expect(state.unknownEvents).toBe(0);
+    expect(events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "shell", name: "Shell", command: "ls" },
+      { kind: "tool_call", tool: "shell", name: "BASH", command: "ls" },
+      { kind: "tool_call", tool: "other", name: "Bash" },
+      { kind: "tool_call", tool: "other", name: "Read" },
+      { kind: "tool_call", tool: "other", name: "Write" },
+      { kind: "tool_call", tool: "other", name: "EDIT" },
+      { kind: "tool_call", tool: "shell", name: "Read", command: "cat a.ts" },
+    ]);
+    expect(adapter().extractResult(events, EXIT_OK)).toEqual({ ok: true, nativeSessionId: SID, unknownEventCount: 0 });
+    // The command fallback is what keeps an upper-case shell tool under the guard (ADR-0039).
+    const checked = guarded([START(SID), TOOL("BASH", { command: "git push origin main" }), FINISH("stop")]);
+    expect(adapter().extractResult(checked, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: expect.stringMatching(/^git write attempted: /),
+    });
+  });
+
+  it("a non-object part is unknown under each known line type; a part-only sessionID inside it never binds", () => {
+    const shapes: unknown[] = [[], [{ reason: "stop", text: "a", tool: "shell" }], "step-start", 42, true, null];
+    for (const part of shapes) {
+      for (const type of ["step_start", "text", "tool_use", "step_finish"]) {
+        const label = `${type} ${JSON.stringify(part)}`;
+        const { events, state } = parse([{ type, sessionID: SID, part }]);
+        expect(events, label).toEqual([
+          { kind: "session_bound", nativeSessionId: SID },
+          { kind: "unknown", rawType: type },
+        ]);
+        expect(state.unknownEvents, label).toBe(1);
+        const run = parse([START(SID), { type, sessionID: SID, part }, TEXT("ok"), FINISH("stop")]).events;
+        expect(adapter().extractResult(run, EXIT_OK), label).toEqual({ ...UNREADABLE_ONE, summary: "ok" });
+      }
+    }
+    // An id carried only inside an array part is not read: nothing binds, even on the first line.
+    const { events, state } = parse([{ type: "text", part: [{ sessionID: SID, text: "a" }] }]);
+    expect(events).toEqual([{ kind: "unknown", rawType: "text" }]);
+    expect(state.nativeSessionId).toBeUndefined();
+  });
+
+  it("unknown raw types are clipped to 64 characters, so a long type beginning tool_use after stop is not a trailing tool", () => {
+    const exact = "x".repeat(64);
+    const { events, state } = parse([
+      { type: "x".repeat(100), sessionID: SID },
+      { type: exact, sessionID: SID },
+      { type: "step_start", sessionID: SID, part: { type: "y".repeat(100) } },
+    ]);
+    expect(events).toEqual([
+      { kind: "session_bound", nativeSessionId: SID },
+      { kind: "unknown", rawType: `${"x".repeat(64)}…` },
+      { kind: "unknown", rawType: exact },
+      { kind: "unknown", rawType: `step_start:${"y".repeat(53)}…` },
+    ]);
+    expect(state.unknownEvents).toBe(3);
+
+    const trailing = parse([START(SID), TEXT("done"), FINISH("stop"), { type: `tool_use${"z".repeat(80)}` }]).events;
+    expect(trailing.at(-1)).toEqual({ kind: "unknown", rawType: `tool_use${"z".repeat(56)}…` });
+    expect(adapter().extractResult(trailing, EXIT_OK)).toEqual({ ...UNREADABLE_ONE, summary: "done" });
+  });
+
+  it("mapped error types match exactly: padding, a newline or a dotted suffix is TOOL_FAILURE with the type kept verbatim", () => {
+    const types = [
+      " provider.quota",
+      "provider.quota ",
+      "provider.quota\n",
+      "provider.quota.exceeded",
+      "provider.auth.expired",
+      "provider.no-route/",
+      "quota",
+      "auth",
+    ];
+    for (const type of types) {
+      const label = JSON.stringify(type);
+      const { events } = parse([START(SID), ERROR(type)]);
+      expect(events.at(-1), label).toEqual({
+        kind: "provider_error",
+        category: "unknown",
+        message: `${type}: synthetic`,
+      });
+      expect(adapter().extractResult(events, EXIT_1), label).toEqual({
+        ok: false,
+        failureCode: "TOOL_FAILURE",
+        failureDetail: `unknown: ${type}: synthetic`,
+        nativeSessionId: SID,
+        unknownEventCount: 0,
+      });
+    }
+  });
+
+  it("pins the gap: a message clipped at 2,000 characters carries its ellipsis into the summary and loses its tail", () => {
+    const exact = "a".repeat(2_000);
+    const atLimit = parse([START(SID), TEXT(exact), FINISH("stop")]).events;
+    expect(atLimit[1]).toEqual({ kind: "message", role: "assistant", text: exact });
+    expect(adapter().extractResult(atLimit, EXIT_OK)).toMatchObject({ ok: true, summary: exact });
+
+    const over = parse([START(SID), TEXT(`${exact}TAIL`), FINISH("stop")]).events;
+    expect(over[1]).toEqual({ kind: "message", role: "assistant", text: `${exact}…` });
+    const res = adapter().extractResult(over, EXIT_OK);
+    expect(res).toMatchObject({ ok: true, summary: `${"a".repeat(1_999)}…` });
+    expect(res.ok && res.summary?.includes("TAIL")).toBe(false);
+
+    // Across messages the clipped one's ellipsis stays in the joined text ahead of the later message.
+    const joined = parse([START(SID), TEXT("x".repeat(3_000)), TEXT("tail"), FINISH("stop")]).events;
+    expect(adapter().extractResult(joined, EXIT_OK)).toMatchObject({
+      ok: true,
+      summary: `${"x".repeat(1_994)}…\ntail`,
+    });
+  });
+
+  it("fixture tool_name_case_variant replays Write and Shell case variants to success, the Write target dropped (gap)", async () => {
+    const raws = readFileSync(fixturePath("tool_name_case_variant"), "utf8")
+      .split("\n")
+      .filter((l) => l !== "" && !l.startsWith('{"_fixture"'));
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const events = raws.flatMap((r) => a.parseEvent(r, state));
+    expect(events.filter((e) => e.kind === "tool_call")).toEqual([
+      { kind: "tool_call", tool: "other", name: "Write" },
+      { kind: "tool_call", tool: "shell", name: "Shell", command: "printf synthetic" },
+    ]);
+    const report = await runConformanceCase({
+      kind: "success",
+      adapter: replayAdapter("tool_name_case_variant"),
+      request: request(),
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: true, nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toEqual({
+      ok: true,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      unknownEventCount: 0,
+      summary: "SYNTHETIC: done",
+    });
   });
 });
