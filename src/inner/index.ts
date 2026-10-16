@@ -8,6 +8,7 @@
  * one does. Callers receive the service by injection and always have a deterministic fallback.
  */
 import type { InnerTaskStateRow } from "../ledger/repo.js";
+import { type CliBackendOptions, cliBackendAttachable, createCliBackend } from "./cli-backend.js";
 import type { InnerAgentSettings, InnerTask } from "./config.js";
 import { createHttpBackend } from "./http-backend.js";
 import {
@@ -21,6 +22,7 @@ import {
 import type { InnerBackend } from "./port.js";
 
 export * from "./breaker.js";
+export * from "./cli-backend.js";
 export * from "./commit-message.js";
 export * from "./config.js";
 export * from "./fake-backend.js";
@@ -54,8 +56,9 @@ export const PROMPT_PROVIDER_NAMES: readonly string[] = [
 
 /**
  * - `off`: no `inner_agent` section, or `enabled: false` (FR-INN-01). Every task uses its fallback.
- * - `no_backend`: enabled, but no backend object was supplied (the `http` backend arrives with T11.3, the `cli` kind with
- *   T11.13). Every task uses its fallback.
+ * - `no_backend`: enabled, but no backend object was attached. `http` attaches when `base_url` is set (T11.3). `cli`
+ *   attaches only when the OpenCode version is inside the manifest range and the tool-free argv is verified (T11.13);
+ *   the shipped verification is null, so a configured `cli` backend stays here and every task uses its fallback.
  * - `ready`: enabled with a backend.
  */
 export type InnerAgentState = "off" | "no_backend" | "ready";
@@ -93,6 +96,11 @@ export interface InnerAgentService {
 
 /** Optional collaborators of the pipeline (everything in {@link PipelineDeps} except settings and backend). */
 export type InnerAgentDeps = Partial<Omit<PipelineDeps, "settings">>;
+
+/** Pipeline deps plus the `cli` gate's test seams. `cli` is not forwarded to the pipeline. */
+export interface ConfiguredInnerAgentDeps extends InnerAgentDeps {
+  readonly cli?: CliBackendOptions;
+}
 
 export function createInnerAgent(
   settings: InnerAgentSettings | undefined,
@@ -145,14 +153,27 @@ export function createInnerAgent(
 }
 
 /**
- * Build the service from resolved settings, constructing the `http` backend the configuration names (T11.3). The `cli`
- * kind has no implementation yet (T11.13), so it stays `no_backend`. A test or tool may still hand in its own backend.
+ * Build the service from resolved settings (T11.3, T11.13). `http` is constructed when `base_url` is set. `cli` is
+ * attached only when {@link cliBackendAttachable} is true (manifest range and a verified tool-free argv). The shipped
+ * OpenCode manifest admits no version and no tool-free argv is verified, so a configured `cli` backend stays
+ * `no_backend` and no process is started. A test or tool may still hand in its own backend, which wins over both.
  */
 export function createConfiguredInnerAgent(
   settings: InnerAgentSettings | undefined,
-  deps: InnerAgentDeps = {},
+  deps: ConfiguredInnerAgentDeps = {},
 ): InnerAgentService {
+  const { cli: cliOptions, ...rest } = deps;
   const b = settings?.enabled === true ? settings.backend : undefined;
-  const backend = deps.backend ?? (b?.kind === "http" && b.baseUrl !== undefined ? createHttpBackend(b) : undefined);
-  return createInnerAgent(settings, { ...deps, ...(backend !== undefined ? { backend } : {}) });
+  let backend = rest.backend;
+  if (backend === undefined && b?.kind === "http" && b.baseUrl !== undefined) {
+    backend = createHttpBackend(b);
+  } else if (
+    backend === undefined &&
+    b?.kind === "cli" &&
+    b.provider === "opencode" &&
+    cliBackendAttachable(cliOptions)
+  ) {
+    backend = createCliBackend(b, cliOptions);
+  }
+  return createInnerAgent(settings, { ...rest, ...(backend !== undefined ? { backend } : {}) });
 }
