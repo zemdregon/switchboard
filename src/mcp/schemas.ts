@@ -382,7 +382,7 @@ const ERROR = {
 } as const;
 
 /** MCP requires `type: "object"` at the root of an output schema; `anyOf` admits the success shape or the error. */
-const withError = (success: object) => ({ type: "object", anyOf: [success, ERROR] }) as const;
+export const withError = (success: object) => ({ type: "object", anyOf: [success, ERROR] }) as const;
 
 const INPUTS = {
   delegate_task: {

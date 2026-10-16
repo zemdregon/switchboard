@@ -17,7 +17,14 @@
  *   stored only in the `test_report` artifact, redacted by the artifact store's redactor before it is embedded in JSON
  *   and again when stored; run events and the envelope get exit codes and outcomes only.
  */
-import { DEFAULT_KILL_GRACE_MS, type SupervisedRun, supervise } from "../exec/index.js";
+import {
+  DEFAULT_KILL_GRACE_MS,
+  findOnPath,
+  type OuterSandboxAvailability,
+  type SupervisedRun,
+  supervise,
+  wrapOuterSandboxVerification,
+} from "../exec/index.js";
 import { SIGNING_AGENT_VARIABLES } from "../git/sign.js";
 
 /** Proposed (Delegated): per-stream capture bound for one verification command (LLD §8.1). */
@@ -55,6 +62,8 @@ export interface VerificationResult {
   readonly commands: readonly VerificationCommandResult[];
   /** True when any command hit a controller-side error (the lifecycle then fails the run TOOL_FAILURE). */
   readonly internalError: boolean;
+  /** True when verification ran inside the outer sandbox (T3.11). */
+  readonly confined?: boolean | undefined;
 }
 
 export interface VerificationOptions {
@@ -71,6 +80,15 @@ export interface VerificationOptions {
   readonly onSpawn?: (index: number, info: { pid: number; pgid: number }) => void;
   /** Called after each command that ran (or failed to start). */
   readonly onCommandDone?: (result: VerificationCommandResult) => void;
+  /**
+   * T3.11 (FR-EXE-08, FR-POL-06, decision 11): optional confined verification in the outer sandbox from T3.1.
+   * When true, verification commands run inside bubblewrap with the worktree writable and the rest read-only.
+   */
+  readonly confined?: boolean | undefined;
+  /** Outer sandbox availability; if omitted and confined is true, looked up on PATH. */
+  readonly outerSandbox?: OuterSandboxAvailability | undefined;
+  /** Optional sandbox wrapper transform (for tests or custom wrapping). */
+  readonly wrapSandbox?: ((argv: readonly string[], cwd: string) => readonly string[]) | undefined;
 }
 
 export interface VerificationRun {
@@ -119,6 +137,19 @@ export function startVerification(opts: VerificationOptions): VerificationRun {
   let cancelled = false;
   let current: SupervisedRun | undefined;
   const deadline = Date.now() + opts.wallClockMs;
+  const isConfined = opts.confined === true;
+
+  let bwrapPath: string | null = null;
+  let bwrapAvailable = true;
+  if (isConfined && !opts.wrapSandbox) {
+    if (opts.outerSandbox !== undefined) {
+      bwrapAvailable = opts.outerSandbox.mechanisms.bubblewrap.available;
+      bwrapPath = opts.outerSandbox.mechanisms.bubblewrap.path;
+    } else {
+      bwrapPath = findOnPath("bwrap", process.env.PATH);
+      bwrapAvailable = bwrapPath !== null;
+    }
+  }
 
   const done = (async (): Promise<VerificationResult> => {
     const results: VerificationCommandResult[] = [];
@@ -147,6 +178,16 @@ export function startVerification(opts: VerificationOptions): VerificationRun {
         results.push(skipped("not_run"));
         continue;
       }
+      if (isConfined && !opts.wrapSandbox && (!bwrapAvailable || !bwrapPath)) {
+        stop = "failed";
+        const failureResult: VerificationCommandResult = {
+          ...skipped("error"),
+          stderr: Buffer.from("outer sandbox required for verification but bubblewrap is unavailable\n"),
+        };
+        results.push(failureResult);
+        opts.onCommandDone?.(failureResult);
+        continue;
+      }
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
         stop = "failed";
@@ -156,8 +197,14 @@ export function startVerification(opts: VerificationOptions): VerificationRun {
         continue;
       }
       const started = Date.now();
+      const bwrapExec = bwrapPath ?? "bwrap";
+      const spawnArgv = isConfined
+        ? opts.wrapSandbox
+          ? opts.wrapSandbox(argv, opts.cwd)
+          : wrapOuterSandboxVerification(bwrapExec, opts.cwd, argv)
+        : argv;
       current = supervise({
-        argv,
+        argv: spawnArgv,
         cwd: opts.cwd,
         envAllowlist: opts.envAllowlist,
         ...(opts.baseEnv ? { baseEnv: opts.baseEnv } : {}),
@@ -208,7 +255,12 @@ export function startVerification(opts: VerificationOptions): VerificationRun {
       if (outcome === "cancelled") stop = "cancelled";
       else if (outcome !== "passed") stop = "failed";
     }
-    return { outcome: stop ?? (cancelled ? "cancelled" : "passed"), commands: results, internalError };
+    return {
+      outcome: stop ?? (cancelled ? "cancelled" : "passed"),
+      commands: results,
+      internalError,
+      ...(isConfined ? { confined: true } : {}),
+    };
   })();
 
   return {
@@ -242,6 +294,7 @@ export function verificationReport(result: VerificationResult, redact: (b: Buffe
     JSON.stringify({
       v: 1,
       outcome: result.outcome,
+      ...(result.confined !== undefined ? { confined: result.confined } : {}),
       commands: result.commands.map((c) => ({
         index: c.index,
         argv: c.argv.map((a) => text(Buffer.from(a, "utf8"))),

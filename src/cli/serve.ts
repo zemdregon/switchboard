@@ -69,7 +69,12 @@ import {
 } from "../adapters/index.js";
 import { ArtifactStore, defaultRedactor } from "../artifacts/index.js";
 import { ConfigError, loadConfig, type ResolvedConfig } from "../config/index.js";
-import { SinkDispatcher, sinkOutcomeRecorder, transitionNotifier } from "../control/index.js";
+import {
+  type ApprovalAnnouncement,
+  SinkDispatcher,
+  sinkOutcomeRecorder,
+  transitionNotifier,
+} from "../control/index.js";
 import { detectOuterSandbox, type OuterSandboxAvailability, outerSandboxRefusal } from "../exec/outer-sandbox.js";
 import { GitToolService } from "../git/channel.js";
 import { GitPublisher } from "../git/commit.js";
@@ -487,16 +492,24 @@ async function runDaemon(
   }
   let outerSandbox: OuterSandboxAvailability | undefined;
   const outerSandboxRequired = config.outerSandboxRequiredProfiles;
-  if (outerSandboxRequired.length > 0) {
+  const confinedVerification = config.confinedVerification;
+  if (outerSandboxRequired.length > 0 || confinedVerification) {
     outerSandbox = await detectOuterSandbox({ path: io.env.PATH ?? "" });
     const m = outerSandbox.mechanisms;
-    log.warn("outer_sandbox.required_profiles is set: runs under these profiles are refused at admission", {
-      adr: "ADR-0051",
-      profiles: outerSandboxRequired,
-      bubblewrap: m.bubblewrap.available,
-      prlimit: m.prlimit.available,
-      landlock: m.landlock.available,
-    });
+    if (outerSandboxRequired.length > 0) {
+      log.warn("outer_sandbox.required_profiles is set: runs under these profiles are refused at admission", {
+        adr: "ADR-0051",
+        profiles: outerSandboxRequired,
+        bubblewrap: m.bubblewrap.available,
+        prlimit: m.prlimit.available,
+        landlock: m.landlock.available,
+      });
+    }
+    if (confinedVerification) {
+      log.info("confined verification is enabled (T3.11): verification commands run in the outer sandbox", {
+        bubblewrap: m.bubblewrap.available,
+      });
+    }
   }
   const registry = buildRegistry(fake, { claudeGitChannel: config.claudeCodeGitChannel });
   // T12.4 / T12.5: set below once background indexing has started; until then (and with no embedding backend) the
@@ -527,6 +540,8 @@ async function runDaemon(
     breaker: config.capacity.breaker,
     // T6.5: automatic retry parameters and the reset wait bound (`capacity.retry`, `capacity.queue_horizon_seconds`).
     retry: { ...config.capacity.retry, queueHorizonSeconds: config.capacity.queueHorizonSeconds },
+    // T14.5: loop breaker N, T and successor cap (`control_plane.loop_breaker`, LLD §3.4.6).
+    loopBreaker: config.controlPlane.loopBreaker,
     // T6.6: bundle bounds for a quota failover handoff (`continuity.*`, LLD §15.4).
     continuityBounds: config.continuity,
     // T7.2: stage-2 settings for the quota failover's choice (`routing.weights`, the capacity window; LLD §17.3).
@@ -548,6 +563,10 @@ async function runDaemon(
     preflightCache: new PreflightCache({ ttlMs: config.preflightTtlMs }),
     gitTools,
     finalizePublisher,
+    // T3.11 (FR-EXE-08, FR-POL-06, decision 11): confined verification in the outer sandbox.
+    confinedVerification,
+    outerSandboxRequiredProfiles: outerSandboxRequired,
+    ...(outerSandbox ? { outerSandbox } : {}),
     // T12.5 (FR-RAG-05, FR-RAG-08): retrieval at dispatch; no pack when retrieval is inert or fails.
     contextPack: {
       timeoutMs: config.rag.retrieval.admissionTimeoutMs,
@@ -671,6 +690,13 @@ async function runDaemon(
       },
       ...(now ? { now } : {}),
       projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
+      // T14.8 (FR-CTL-08, ADR-0047 2f): proxied decisions the transition hook does not announce reach the same sinks.
+      ...(sinks !== undefined
+        ? {
+            announceApproval: (a: ApprovalAnnouncement) =>
+              sinks.emit({ projectId: a.projectId, eventKind: "approval_decided", reasonCode: a.kind, runId: a.runId }),
+          }
+        : {}),
       // T13.5 (FR-MCP-15, Q-78): stdio sees only meta-sessions with no HTTP subject; HTTP sees only its own.
       subjectBindings: new SubjectBindingStore(db, now ? { now } : {}),
       // T12.6 (FR-RAG-06): read-only search over a project's store; absent without an embedding backend (FR-RAG-04).

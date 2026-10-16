@@ -28,11 +28,8 @@
  */
 
 import { createHash } from "node:crypto";
-import {
-  type ControlPlaneFacts,
-  type NeedsAttentionReason,
-  NO_CONTROL_PLANE_FACTS,
-} from "../control/needs-attention.js";
+import { loopBreakerControlFacts } from "../control/loop-attention.js";
+import type { ControlPlaneFacts, NeedsAttentionReason } from "../control/needs-attention.js";
 import type { ApprovalRow, Ledger, RunEventRow, RunRecord } from "../ledger/index.js";
 import { canonicalJson } from "../lifecycle/request.js";
 import { buildEnvelope, type Envelope } from "./envelope.js";
@@ -97,7 +94,8 @@ export function assembleDigest(
   scrub: (s: string) => string,
   options: DigestOptions,
 ): Digest {
-  const control = options.control ?? NO_CONTROL_PLANE_FACTS;
+  // T14.5: the same default facts as `get_run` (park events), so a digest entry carries the envelope's reason.
+  const control = options.control ?? loopBreakerControlFacts(ledger);
   const visibleRuns = new Map<string, RunRecord | null>();
   const visibleRun = (runId: string): RunRecord | undefined => {
     if (!visibleRuns.has(runId)) {

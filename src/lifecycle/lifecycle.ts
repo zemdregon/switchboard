@@ -128,6 +128,14 @@ import {
   takeAsOf,
 } from "../continuity/index.js";
 import {
+  DEFAULT_LOOP_BREAKER,
+  type LoopBreakerSettings,
+  parkedRefusal,
+  recordLoopPark,
+  type SuccessorRefusal,
+  successorRefusal,
+} from "../control/loop-breaker.js";
+import {
   type Environment,
   EnvironmentRefusal,
   type RunContext as EnvironmentRunContext,
@@ -135,6 +143,7 @@ import {
   hostEnvironment,
   type ReadOnlyContextMount,
 } from "../environment/index.js";
+import type { OuterSandboxAvailability } from "../exec/outer-sandbox.js";
 import { procStartTicks } from "../exec/proc-info.js";
 import { ChannelOpenError, type GitToolService, type OpenChannel } from "../git/channel.js";
 import type { GitPublisher } from "../git/commit.js";
@@ -246,6 +255,9 @@ export type LifecycleErrorCode = "INVALID_REQUEST" | "QUEUE_FULL";
 /** Admission or API error. No run row is written when it is thrown from `submit`. */
 const archivedMessage = (id: string): string =>
   `meta-session ${id} is archived (collected or being collected by retention GC); start a new task instead`;
+
+const parkedMessage = (id: string, parked: SuccessorRefusal): string =>
+  `meta-session ${id} is parked by the loop breaker (${parked.reason === "meta_session_parked" ? `${parked.threshold} identical failures, ${parked.fingerprint}` : parked.reason}); start a new task instead`;
 
 export class LifecycleError extends Error {
   override readonly name = "LifecycleError";
@@ -536,6 +548,11 @@ export interface RunLifecycleOptions {
   readonly retry?: { maxAttempts: number; baseMs: number; capMs: number; queueHorizonSeconds?: number };
   /** T6.5: random source in [0, 1) for the backoff jitter; injectable for tests. */
   readonly random?: () => number;
+  /**
+   * T14.5 (FR-CTL-07, LLD §3.4.6): `control_plane.loop_breaker` (**N**, **T**, successor cap). Unset means the LLD
+   * Assumption defaults. The loop breaker cannot be turned off.
+   */
+  readonly loopBreaker?: LoopBreakerSettings;
   /** T6.6: handoff bundle bounds for a quota failover (`continuity.*`, LLD §15.4). Unset means the LLD defaults. */
   readonly continuityBounds?: BundleBounds;
   /**
@@ -563,6 +580,15 @@ export interface RunLifecycleOptions {
    * the host). `prepare` runs just before spawn, after the pre-spawn refusals; `teardown` runs on every path after it.
    */
   readonly environments?: EnvironmentResolver;
+  /**
+   * T3.11 (FR-EXE-08, FR-POL-06, decision 11): optional confined verification in the outer sandbox from T3.1.
+   * When true, verification commands run inside bubblewrap with the worktree writable and the rest read-only.
+   */
+  readonly confinedVerification?: boolean | undefined;
+  /** Profiles whose verification commands must run inside the outer sandbox. */
+  readonly outerSandboxRequiredProfiles?: readonly string[] | undefined;
+  /** Outer sandbox availability detection result. */
+  readonly outerSandbox?: OuterSandboxAvailability | undefined;
 }
 
 /** T10.1: where a run is placed (LLD §11.3). `serve` composes it from the configuration and the container backend. */
@@ -804,6 +830,11 @@ export class RunLifecycle {
         const active = sessionRuns.find((r) => !isTerminal(r.state));
         if (active) {
           throw new LifecycleError("INVALID_REQUEST", `meta-session ${metaSessionId} has an active run ${active.id}`);
+        }
+        // T14.5 (FR-CTL-07): a meta-session parked by the loop breaker admits no further run; start a new task instead.
+        const parked = parkedRefusal(this.ledger, metaSessionId);
+        if (parked) {
+          throw new LifecycleError("INVALID_REQUEST", parkedMessage(metaSessionId, parked));
         }
         // T5.6 (Delegated, fail closed): the bundle was built outside this transaction, so it must still describe the
         // session as it is now: the same runs and the same base and head. Otherwise a run admitted and finished in
@@ -1827,7 +1858,7 @@ export class RunLifecycle {
     if (pending.kind === "success" && commands.length > 0) {
       // T11 (FR-EXE-08): the agent exited successfully and verification was supplied.
       this.move(this.current(runId), "VERIFYING", exitFields, { ...exitPayload, commands: commands.length }, "T11");
-      verification = await this.verify(exec, runId, meta, ws, inv, commands);
+      verification = await this.verify(exec, runId, meta, ws, inv, commands, run0.trust_profile);
       pending = verification.pending;
       const verified = verification;
       // T14: pending success, `TEST_FAILURE` (BR-16) or cancelled; the per-command summary is in the event.
@@ -1887,6 +1918,7 @@ export class RunLifecycle {
     ws: PreparedWorkspace,
     inv: { envAllowlist: readonly string[]; timeouts: { wallClockMs: number; killGraceMs: number } },
     commands: readonly (readonly string[])[],
+    profile?: TrustProfile,
   ): Promise<VerificationOutcomeRecord> {
     if (ws.mode !== "worktree") {
       // Admission refuses verification under inspect-untrusted, the only profile without a worktree (fail closed).
@@ -1896,6 +1928,11 @@ export class RunLifecycle {
     const { wallClockMs, killGraceMs } = inv.timeouts;
     // The stage may take up to one more wall clock: keep the lease ahead of it (as at LEASED).
     this.opts.workspace.extendLease(runId, 2 * wallClockMs + (commands.length + 1) * killGraceMs);
+    const confined =
+      this.opts.confinedVerification ??
+      (this.opts.outerSandboxRequiredProfiles !== undefined &&
+        profile !== undefined &&
+        this.opts.outerSandboxRequiredProfiles.includes(profile as string));
     const stage = startVerification({
       commands,
       cwd: ws.worktreePath,
@@ -1903,6 +1940,8 @@ export class RunLifecycle {
       ...(this.opts.baseEnv ? { baseEnv: this.opts.baseEnv } : {}),
       wallClockMs,
       killGraceMs,
+      confined,
+      ...(this.opts.outerSandbox ? { outerSandbox: this.opts.outerSandbox } : {}),
       onSpawn: (index, { pid, pgid }) => {
         // LLD §8: pid, pgid and start ticks persisted before any output is read, so a restart can kill an orphan.
         this.ledger.updateRunFields(
@@ -2164,6 +2203,8 @@ export class RunLifecycle {
           { failure_code: outcome.code, failure_detail: outcome.detail, finished_at: finished },
           payload,
         );
+        // T14.5 (FR-CTL-07): the Nth identical failure parks the meta-session, before any successor is considered.
+        recordLoopPark(this.ledger, failed, this.opts.loopBreaker ?? DEFAULT_LOOP_BREAKER);
         // T6.5 (FRD T16, BR-6, BR-7): after the breaker step of the same transition, in the same transaction.
         this.scheduleRetry(failed, outcome.code, retryEligible);
       }
@@ -2632,6 +2673,13 @@ export class RunLifecycle {
       notScheduled("attempts_exhausted", { attempt: failed.attempt, max_attempts: settings.maxAttempts });
       return;
     }
+    // T14.5 (FR-CTL-07): a parked meta-session or a full successor cap admits no successor.
+    const refused = successorRefusal(this.ledger, failed, this.opts.loopBreaker ?? DEFAULT_LOOP_BREAKER);
+    if (refused) {
+      const { reason, ...extra } = refused;
+      notScheduled(reason, extra);
+      return;
+    }
     if (breakerAdmission(this.breakerOf(failed.provider), now) === "deny") {
       notScheduled("breaker_open");
       return;
@@ -2683,6 +2731,12 @@ export class RunLifecycle {
       const settings = this.opts.retry ?? DEFAULT_RETRY;
       if (failed.attempt >= settings.maxAttempts) {
         record({ outcome: "returned", reason: "attempts_exhausted" });
+        return;
+      }
+      // T14.5 (FR-CTL-07): failover and wait successors count toward the same cap and stop at a park.
+      const refused = successorRefusal(this.ledger, failed, this.opts.loopBreaker ?? DEFAULT_LOOP_BREAKER);
+      if (refused) {
+        record({ outcome: "returned", ...refused });
         return;
       }
       const routed = await this.failoverTarget(failed, notes);

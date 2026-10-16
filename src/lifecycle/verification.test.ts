@@ -28,12 +28,12 @@ import {
   type ResolvedProfile,
 } from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
-import { groupAlive } from "../exec/index.js";
+import { detectOuterSandbox, findOnPath, groupAlive, type OuterSandboxAvailability } from "../exec/index.js";
 import { GIT_POLICY_VIOLATION_EVENT, type ViolationEntry } from "../git/index.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger, type TrustProfile } from "../ledger/index.js";
 import { WorkspaceManager } from "../workspace/index.js";
-import { LifecycleError, RunLifecycle, VERIFICATION_OUTPUT_CAP_BYTES } from "./index.js";
+import { LifecycleError, RunLifecycle, startVerification, VERIFICATION_OUTPUT_CAP_BYTES } from "./index.js";
 
 const GIT_ENV = {
   PATH: process.env.PATH ?? "",
@@ -86,7 +86,14 @@ let artifacts: ArtifactStore;
 let lifecycle: RunLifecycle | undefined;
 
 function makeLifecycle(
-  opts: { adapter?: FakeAdapter; fake?: FakeAdapterOptions; baseEnv?: Record<string, string> } = {},
+  opts: {
+    adapter?: FakeAdapter;
+    fake?: FakeAdapterOptions;
+    baseEnv?: Record<string, string>;
+    confinedVerification?: boolean;
+    outerSandboxRequiredProfiles?: readonly string[];
+    outerSandbox?: OuterSandboxAvailability | undefined;
+  } = {},
 ): RunLifecycle {
   const ids = createIdGenerator();
   const workspace = new WorkspaceManager({ db, artifacts, dataDir, allowedRoots: [root], ids });
@@ -100,6 +107,9 @@ function makeLifecycle(
     globalConcurrency: 2,
     resolveProfile: profileFor,
     ...(opts.baseEnv ? { baseEnv: opts.baseEnv } : {}),
+    ...(opts.confinedVerification !== undefined ? { confinedVerification: opts.confinedVerification } : {}),
+    ...(opts.outerSandboxRequiredProfiles ? { outerSandboxRequiredProfiles: opts.outerSandboxRequiredProfiles } : {}),
+    ...(opts.outerSandbox ? { outerSandbox: opts.outerSandbox } : {}),
   });
   lc.start();
   lifecycle = lc;
@@ -141,7 +151,9 @@ interface ReportCommand {
   stderr: string;
   stdout_truncated: boolean;
 }
-async function report(runId: string): Promise<{ v: number; outcome: string; commands: ReportCommand[] }> {
+async function report(
+  runId: string,
+): Promise<{ v: number; outcome: string; commands: ReportCommand[]; confined?: boolean }> {
   const rows = ledger.listArtifactsForRun(runId).filter((a) => a.kind === "test_report");
   expect(rows).toHaveLength(1);
   const row = rows[0] as { sha256: string; media_type: string };
@@ -418,4 +430,123 @@ describe("verification admission (FRD V7, decision 11)", () => {
     expect((await lc.waitForTerminal(runId)).state).toBe("SUCCEEDED");
     expect(transitions(runId)).not.toContain("VERIFYING:T11");
   }, 60_000);
+});
+
+describe("confined verification (T3.11, FR-EXE-08, FR-POL-06, decision 11)", () => {
+  it("unconfigured behaviour unchanged: without confined verification, commands run unconfined", async () => {
+    const outsideFile = path.join(root, "unconfined-escape.txt");
+    const lc = makeLifecycle();
+    const { runId } = await submit(lc, [
+      [NODE, "-e", `require('node:fs').writeFileSync(${JSON.stringify(outsideFile)}, 'hello')`],
+    ]);
+    const done = await lc.waitForTerminal(runId);
+    expect(done.state).toBe("SUCCEEDED");
+    expect(existsSync(outsideFile)).toBe(true);
+  }, 60_000);
+
+  it("fail closed: if confined verification is requested but bubblewrap is unavailable, commands fail closed without running unconfined", async () => {
+    const outsideFile = path.join(root, "fail-closed-escape.txt");
+    const unavailableSandbox: OuterSandboxAvailability = {
+      platform: "linux",
+      mechanisms: {
+        bubblewrap: {
+          mechanism: "bubblewrap",
+          available: false,
+          path: null,
+          version: null,
+          detail: "bwrap not on PATH",
+        },
+        prlimit: { mechanism: "prlimit", available: false, path: null, version: null, detail: "prlimit not on PATH" },
+        landlock: {
+          mechanism: "landlock",
+          available: false,
+          path: null,
+          version: null,
+          detail: "landlock unavailable",
+        },
+      },
+    };
+    const lc = makeLifecycle({ confinedVerification: true, outerSandbox: unavailableSandbox });
+    const { runId } = await submit(lc, [
+      [NODE, "-e", `require('node:fs').writeFileSync(${JSON.stringify(outsideFile)}, 'fail-closed')`],
+    ]);
+    const done = await lc.waitForTerminal(runId);
+    expect(done.state).toBe("FAILED");
+    expect(done.failure_code).toBe("TEST_FAILURE");
+    expect(done.failure_detail).toContain("command 0 error");
+    expect(existsSync(outsideFile)).toBe(false);
+
+    const rep = await report(runId);
+    expect(rep.commands[0]?.outcome).toBe("error");
+    expect(rep.commands[0]?.stderr).toContain("outer sandbox required for verification but bubblewrap is unavailable");
+  }, 60_000);
+
+  it("unit: startVerification uses wrapSandbox transform when provided", async () => {
+    const wrappedCalls: string[][] = [];
+    const v = startVerification({
+      commands: [["echo", "hi"]],
+      cwd: root,
+      envAllowlist: ["PATH"],
+      wallClockMs: 10_000,
+      confined: true,
+      wrapSandbox: (argv, cwd) => {
+        wrappedCalls.push([...argv, cwd]);
+        return [NODE, "-e", "process.exit(0)"];
+      },
+    });
+    const res = await v.done;
+    expect(res.outcome).toBe("passed");
+    expect(res.confined).toBe(true);
+    expect(wrappedCalls).toEqual([["echo", "hi", root]]);
+  });
+
+  const hasBwrap = findOnPath("bwrap", process.env.PATH) !== null;
+
+  describe.skipIf(!hasBwrap)("on this host (bubblewrap on PATH)", () => {
+    it("runs verification inside bubblewrap: writes inside worktree pass, writes outside worktree are refused", async () => {
+      const bwrapProbe = await detectOuterSandbox().catch(() => undefined);
+      if (bwrapProbe?.mechanisms.bubblewrap.available !== true) return;
+      const outsideFile = path.join(root, "confined-escape-refused.txt");
+      const lc = makeLifecycle({ confinedVerification: true, outerSandbox: bwrapProbe });
+      const { runId } = await submit(lc, [
+        [NODE, "-e", "require('node:fs').writeFileSync('inside.txt', 'inside-ok')"],
+        [NODE, "-e", `require('node:fs').writeFileSync(${JSON.stringify(outsideFile)}, 'escape-blocked')`],
+      ]);
+      const done = await lc.waitForTerminal(runId);
+      expect(done.state).toBe("FAILED");
+      expect(done.failure_code).toBe("TEST_FAILURE");
+      // The outside file was refused by the kernel (EROFS) and never created on the host:
+      expect(existsSync(outsideFile)).toBe(false);
+
+      const wt = worktreeOf(runId);
+      expect(existsSync(path.join(wt, "inside.txt"))).toBe(true);
+
+      const rep = await report(runId);
+      expect(rep.confined).toBe(true);
+      expect(rep.commands.map((c) => c.outcome)).toEqual(["passed", "failed"]);
+      expect(rep.commands[1]?.stderr).toMatch(/read-only file system|EROFS/i);
+    }, 60_000);
+
+    it("confined verification with outerSandboxRequiredProfiles matching trustProfile", async () => {
+      const bwrapProbe = await detectOuterSandbox().catch(() => undefined);
+      if (bwrapProbe?.mechanisms.bubblewrap.available !== true) return;
+      const outsideFile = path.join(root, "profile-confined-escape.txt");
+      const lc = makeLifecycle({
+        outerSandboxRequiredProfiles: ["edit-untrusted"],
+        outerSandbox: bwrapProbe,
+      });
+      const { runId } = await submit(
+        lc,
+        [[NODE, "-e", `require('node:fs').writeFileSync(${JSON.stringify(outsideFile)}, 'profile-escape')`]],
+        "edit-untrusted",
+      );
+      const done = await lc.waitForTerminal(runId);
+      expect(done.state).toBe("FAILED");
+      expect(done.failure_code).toBe("TEST_FAILURE");
+      expect(existsSync(outsideFile)).toBe(false);
+      const rep = await report(runId);
+      expect(rep.confined).toBe(true);
+      expect(rep.commands[0]?.outcome).toBe("failed");
+    }, 60_000);
+  });
 });

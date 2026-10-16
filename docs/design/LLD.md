@@ -1844,6 +1844,25 @@ On the *N*th identical failure in a meta-session, the controller sets `meta_sess
 column or side table), admits no further successors, and surfaces `parked_loop`. Stall detection uses the injectable
 clock (tests); it never cancels the run.
 
+**Implemented (T14.5, Delegated, not owner-approved).** `src/control/loop-breaker.ts` holds the write side and
+`src/control/loop-attention.ts` the read side; `control_plane.loop_breaker` is resolved by `src/config/control-plane.ts`.
+Choices the text above leaves open:
+
+- The `parked_loop` flag is an append-only `loop_breaker_parked` `run_event` on the *N*th failing run, written in the
+  transaction of its `FAILED` transition (payload: `meta_session_id`, `threshold`, `fingerprint`, `run_ids`). No
+  migration; the §3.4.7 column, when T14.6 adds it, can be backfilled from these events. No automatic unpark.
+- A failure's fingerprints are `code:<failure_code>` and, when a verification command did not pass,
+  `verification:<16 hex of SHA-256 over that command's argv from request_json>`; any fingerprint reaching *N* parks.
+- The cap counts `attempt` (1 on the first run): a §16.5 retry, §16.6 wait or §16.6 failover successor is refused when
+  its `attempt` would exceed `max_successors_per_meta_session`, consistent with `failed_after_retry` (§3.4.5). A refused
+  retry records `retry_not_scheduled` with reason `successor_cap` or `meta_session_parked`; the quota ladder records
+  `outcome: returned` with the same reason. A new run into a parked meta-session is refused at admission with
+  `INVALID_REQUEST` and writes nothing.
+- Stall evaluation (`findStalledRuns`) is read-only; it never cancels, signals or transitions the run. The envelope and
+  the digest read the park events by default; `get_run`/`list_runs` still pass only `now`, so *T* and the cap on that
+  path are the Assumption defaults until `src/mcp/server.ts` passes
+  `loopBreakerAttention(…, config.controlPlane.loopBreaker)`.
+
 #### 3.4.7 Pause and budget persistence (Proposed)
 
 ```sql
@@ -1897,6 +1916,34 @@ Fail closed: wrong digest, stale id, target client not in `approval_proxy_target
 (§3.4.9). Clients without `approval_proxy` do not see these tools (absent from `tools/list`, not error at list time).
 
 *Amends §3.1 **Approve**:* except for `approval_proxy` clients using §3.4.8, no MCP tool approves.
+
+**Implementation (T14.8, `src/control/approval-proxy.ts`, wired in `src/mcp/server.ts` and `src/cli/serve.ts`;
+Delegated, not owner-approved):**
+
+- Configuration: `approval_proxy` is a boolean (default false); `approval_proxy_targets` is a non-empty list of unique
+  configured client ids and is refused at load without `approval_proxy: true` or when it names an unknown client.
+  Without it a proxy targets only itself. `tool_profile` is not consulted.
+- Kinds: `privileged_scope` lists a `PENDING` row whose run is AWAITING_APPROVAL and passes every §3.1 hash check
+  (`approval_id` is the `apv_` row id). A dynamic project revision lists while it is the latest, `PENDING_APPROVAL` and
+  undecided (`approval_id` is the `prv_` revision row id); it is `push_revision` when its approval reasons include
+  `push_policy`, `commit_identity` or `commit_signing`, else `dynamic_project`. `requested_at` is the row's
+  `requested_at` or the revision's `created_at`; `target_client_id` is the run's client or the revision's creator.
+- `revision_hash` (ADR-0030 stores none): hex SHA-256 over `canonicalJson({ v: 1, project_id, revision, client_id,
+  definition_json, approval_reasons_json, created_at })` of the revision row.
+- `scope_summary` uses closed vocabularies and counts only (for example "shell allowlist of 1 command(s)"); it never
+  repeats an argv, host, path, objective, project name or other request or agent text.
+- Every failed check (unknown or non-pending id, not a listed target, digest missing, malformed or different) returns
+  the same `INVALID_REQUEST` message and writes nothing; the digest is compared in constant time inside the decision's
+  `BEGIN IMMEDIATE` transaction. A client without the flag gets the unknown-tool answer.
+- Recording: a privileged decision appends `operator_decision_requested` (`requested_by = "mcp_proxy:<client_id>"`) and
+  applies it through the lifecycle's `applyApprovalDecision` in the same transaction, so `decided_by`,
+  `approval_decided` and the T3/T19 transition are those of the CLI path. A revision decision goes through the project
+  store's `decide` with `decided_by` (and the `project_event` `operator`) `mcp_proxy:<client_id>`. A proxied approve of
+  a scope with `bypass: true` is an `APPROVED` row like any other for the §3.1 **Bypass** check, which still requires
+  every hash to match (ADR-0047 Decision 1 and 2g; ADR-0017 item 5's "operator CLI" wording is not edited here).
+- Sinks (§3.4.9, read-only reuse): a privileged approve is announced by the existing transition hook (T3,
+  `approval_decided` / `privileged_scope`); a privileged deny and every revision decision are announced with
+  `approval_decided` and the `approval_kind` as reason code (`run_id` null for a revision) through the same dispatcher.
 
 #### 3.4.9 Notification sinks (FR-CTL-10, ADR-0048)
 
@@ -2317,6 +2364,12 @@ T11, T14) in `src/lifecycle/verification.ts`, driven by `src/lifecycle/lifecycle
   `git commit` on the run branch, a new tag) is recorded as `git_policy_violation` and controller-owned refs are put
   back before the checkpoint, exactly as for the agent. Prevention is not possible: the commands are arbitrary code on
   the host. A push to a remote cannot be seen (ROADMAP R-61).
+- **Confinement (T3.11, FR-EXE-08, FR-POL-06, decision 11).** Optional hardening: when `confinedVerification` is
+  configured (or opted in via `SWITCHBOARD_CONFINED_VERIFICATION`), verification commands run wrapped in the outer sandbox
+  (`bubblewrap`, §8.4) with the worktree writable and the rest of the host filesystem read-only, all namespaces unshared
+  (including network) and `--die-with-parent`. Writes outside the worktree are refused by the kernel with `EROFS`
+  (read-only file system). If confined verification is requested but bubblewrap is unavailable, verification commands fail
+  closed (`TEST_FAILURE`) without running unconfined.
 - **Restart (WF-8).** A VERIFYING run found at startup has its recorded command group killed and ends FAILED
   `PROCESS_CRASH` (cause `controller_restart`) through T14 and T16; the commands are never run again. A recorded
   operator cancel ends it CANCELLED instead.
@@ -2469,7 +2522,8 @@ Admission (`outerSandboxRefusal`): a run whose profile is listed is refused by t
 `OUTER_SANDBOX_NOT_ENFORCED` (both available; this build wraps no process, ADR-0051 item 4). Detection that did not run
 counts as unavailable. `serve` detects once at startup, only when the list is not empty; `doctor` always reports the
 `outer_sandbox` check (`ok` when nothing is required, `fail` for a missing mechanism, `warn` when only the wrapping is
-missing).
+missing). Wrapping verification commands is implemented by T3.11 (`wrapOuterSandboxVerification`, §8.1); wrapping the
+provider process itself remains follow-up work.
 
 ## 9. Retry/back-off algorithm
 

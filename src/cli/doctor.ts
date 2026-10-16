@@ -148,7 +148,20 @@ function checkOuterSandbox(cfg: ResolvedConfig | undefined, availability: OuterS
   const summary = describeOuterSandbox(availability);
   const required = cfg?.outerSandboxRequiredProfiles ?? [];
   const first = required[0];
-  if (first === undefined) return check("outer_sandbox", label, "ok", `not required by config; ${summary}`);
+  if (first === undefined) {
+    if (cfg?.confinedVerification) {
+      const bwrapOk = availability.mechanisms.bubblewrap.available;
+      return check(
+        "outer_sandbox",
+        label,
+        bwrapOk ? "ok" : "fail",
+        bwrapOk
+          ? `confined verification enabled (T3.11); ${summary}`
+          : `confined verification enabled but bubblewrap unavailable; ${summary}`,
+      );
+    }
+    return check("outer_sandbox", label, "ok", `not required by config; ${summary}`);
+  }
   const refusal = outerSandboxRefusal(first, required, availability);
   const status: CheckStatus = refusal?.reason === "OUTER_SANDBOX_UNAVAILABLE" ? "fail" : "warn";
   return check(
