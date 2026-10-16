@@ -371,4 +371,21 @@ describe("ref snapshots and Git policy violations, end to end with the fake adap
     expect(done.state).toBe("SUCCEEDED");
     expect(violationsOf(runId).map((x) => x.scope)).toEqual(["run_branch"]);
   });
+
+  it("T10.3 (ADR-0053): a .git link pointed at the repository is restored first; the operator's HEAD and index are untouched", async () => {
+    const indexBefore = g(repo, "ls-files", "-s");
+    const { runId, done, branch } = await runPlan([
+      { op: "write", path: "evil.txt", content: "evil\n" },
+      { op: "write", path: ".git", content: `gitdir: ${path.join(repo, ".git")}\n` },
+    ]);
+    expect(done.state).toBe("SUCCEEDED");
+    // Before ADR-0053 the worktree HEAD "restore" ran through the link and switched the operator's HEAD to the run
+    // branch, and the checkpoint staged evil.txt in the operator's index.
+    expect(violationsOf(runId).map((x) => [x.scope, x.kind])).toEqual([["worktree_link", "link_changed"]]);
+    expect(g(repo, "symbolic-ref", "HEAD")).toBe("refs/heads/main");
+    expect(g(repo, "ls-files", "-s")).toBe(indexBefore);
+    expect(g(repo, "status", "--porcelain")).toBe("");
+    expect(g(repo, "show", `${postCommit(runId)}:evil.txt`)).toBe("evil");
+    expect(refSha(repo, `${branch}^`)).toBe(preCommit(runId));
+  });
 });

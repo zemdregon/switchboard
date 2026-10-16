@@ -30,7 +30,7 @@ import { ArtifactStore } from "../../src/artifacts/index.js";
 import { createContainerEnvironment, createDockerRuntime, SWITCHBOARD_RUN_LABEL } from "../../src/environment/index.js";
 import { GIT_POLICY_VIOLATION_EVENT, type ViolationEntry } from "../../src/git/index.js";
 import { createIdGenerator } from "../../src/ids/index.js";
-import { createLedger, type Ledger, openLedger } from "../../src/ledger/index.js";
+import { createLedger, LEDGER_FILE_NAME, type Ledger, openLedger } from "../../src/ledger/index.js";
 import { RunLifecycle } from "../../src/lifecycle/index.js";
 import type { ProjectSnapshot } from "../../src/policy/index.js";
 import { WorkspaceManager } from "../../src/workspace/index.js";
@@ -77,7 +77,7 @@ const BYPASS_SCOPE = {
  */
 const AGENT = String.raw`
 const fs = require("node:fs"); const path = require("node:path"); const cp = require("node:child_process");
-const [fakeHome, codexAuth, claudeCreds, outsideDir, dataDir, contextDir, commitSha] = process.argv.slice(1);
+const [fakeHome, codexAuth, claudeCreds, outsideDir, dataDir, contextDir, commitSha, ledgerFile] = process.argv.slice(1);
 const out = (o) => process.stdout.write(JSON.stringify({ type: "message", text: JSON.stringify(o) }) + "\n");
 const tryRun = (cmd) => { const r = cp.spawnSync(cmd, ["--version"]); return r.error ? r.error.code : "ran:" + r.status; };
 const tryRead = (p) => { try { return "read:" + fs.readFileSync(p, "utf8"); } catch (e) { return e.code; } };
@@ -102,7 +102,9 @@ for (const [name, rel, content] of [
 out({ probe: "read_codex_auth", r: tryRead(codexAuth) });
 out({ probe: "read_claude_credentials", r: tryRead(claudeCreds) });
 out({ probe: "list_fake_home", r: fs.existsSync(fakeHome) });
-out({ probe: "read_ledger", r: fs.existsSync(path.join(dataDir, "ledger.sqlite")) || fs.existsSync(dataDir) });
+out({ probe: "read_ledger", r: tryRead(path.join(dataDir, ledgerFile)) });
+const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => e.isDirectory() && !fs.existsSync(path.join(d, e.name, ".git")) ? walk(path.join(d, e.name)).map((x) => e.name + "/" + x) : [e.name]);
+out({ probe: "data_dir_listing", r: walk(dataDir) });
 out({ probe: "write_context", r: tryWrite(path.join(contextDir, "agent.txt"), "x") });
 out({ probe: "write_outside", r: tryWrite(path.join(outsideDir, "agent.txt"), "x") });
 out({ probe: "runtime_socket", r: ["/var/run/docker.sock", "/run/docker.sock", "/run/user/1001/docker.sock", "/run/user/1000/docker.sock"].filter((p) => fs.existsSync(p)) });
@@ -173,6 +175,7 @@ describe.skipIf(!ready)(
         fx.dataDir,
         docs,
         fx.baseCommit,
+        LEDGER_FILE_NAME,
       ]);
       const ids = createIdGenerator();
       const artifacts = new ArtifactStore(path.join(fx.dataDir, "artifacts"));
@@ -244,7 +247,10 @@ describe.skipIf(!ready)(
       expect(seen.read_codex_auth).toBe("ENOENT");
       expect(seen.read_claude_credentials).toBe("ENOENT");
       expect(seen.list_fake_home).toBe(false);
-      expect(seen.read_ledger).toBe(false);
+      expect(seen.read_ledger).toBe("ENOENT");
+      // Only the path down to the mounted worktree exists under the data directory: no ledger, artifacts or lock.
+      const worktreeRel = path.relative(fx.dataDir, ledger.getRunRecord(runId)?.worktree_path as string);
+      expect(seen.data_dir_listing).toEqual([worktreeRel]);
       expect(seen.write_context).toBe("EROFS");
       expect(seen.runtime_socket).toEqual([]);
       expect(seen.docker_host).toBeNull();

@@ -21,12 +21,14 @@ check reads the worktree `HEAD` and may point it back with `symbolic-ref`, the p
 
 The T10.3 container leg of the malicious-fixture suite checked what happens when the agent points the link at the
 operator repository's Git directory (`gitdir: <repository>/.git`). That is a path the agent can read from the link
-itself. Before this decision the controller followed it. On `main` before this change, the probe recorded in the
-T10.3 pull request showed the result: the controller's own checkpoint committed the worktree's content onto the
-operator's checked-out branch and rewrote the operator's index. The agent wrote one file inside its worktree; the
-controller made the Git write. ADR-0027's ref check runs before the checkpoint and could not see it, and it reads the
-worktree `HEAD` through the same link. A `.git` directory the agent made instead would have the checkpoint record the
-agent's own history.
+itself. Before this decision the controller followed it. A probe on `main` before this change (fake adapter, host
+environment, recorded in the T10.3 pull request; **Observed** 2026-10-16) had the agent write one file and rewrite the
+link. ADR-0027's ref check read the worktree `HEAD` through the link, found the operator's `refs/heads/main`, and
+"restored" it with `symbolic-ref`. That switched the **operator's checkout `HEAD`** from `main` to the run branch. The
+checkpoint's `add -A` and `commit` then ran through the **operator's index**, which was left holding the agent's file.
+The run branch got the checkpoint, so the agent's write still landed as content, but the controller had changed the
+operator's checkout (FR-WS-05). A `.git` directory the agent made instead would have the checkpoint record the agent's
+own history.
 
 ## Decision
 
@@ -48,7 +50,7 @@ agent's own history.
 
 ## Consequences
 
-- An approved bypass agent in a container cannot make the controller write the operator's refs, `HEAD` or index by
+- An approved bypass agent in a container cannot make the controller change the operator's refs, `HEAD` or index by
   redirecting the link. The container leg (`test/malicious/container-leg.test.ts`, and the opt-in
   `test/malicious/container-docker-leg.test.ts` on rootless Docker) shows every ref unchanged except the run branch,
   which only the controller's checkpoint moves.
