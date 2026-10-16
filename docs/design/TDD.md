@@ -587,6 +587,34 @@ for it until a binary is installed and T3.9 or a follow-up live check runs.
 | Deny-rule syntax for Git writes | Help example only: `"Bash(git *) Edit"` (`--disallowedTools`); matching semantics Assumption | None documented in [R2] |
 | Provider commit or attribution setting | None in help except `--bare` ("skip ... attribution"), unusable (ADR-0015); the FR-GIT-04 sanitiser stays necessary | None in [R2] |
 
+*Update 2026-10-16 (T9.0 reconciliation; Delegated, not owner-approved; documentation only, no provider was run).* The
+table above is the 2026-10-13 reading of the help text and [R2]; the operator-machine live checks that followed answer
+each cell, and "Codex is not installed" above describes the 2026-10-13 development host only (the operator's machine
+had codex-cli 0.162.1 on 2026-10-13 and 0.162.0, validated by `adapters validate`, on 2026-10-14). Sources:
+[live-checks-2026-10-13.md](../research/live-checks-2026-10-13.md) checks 6 to 14,
+[live-checks-2026-10-14-channel.md](../research/live-checks-2026-10-14-channel.md) rows 1 to 6 and
+[live-checks-2026-10-14-claude-codex.md](../research/live-checks-2026-10-14-claude-codex.md) rows 10 and 11.
+
+- *Claude Code (2.1.296 on 2026-10-13; 2.1.294 through Switchboard's own shim on 2026-10-14).* The definition needs the
+  `mcpServers` wrapper; exact-name `mcp__<server>__<tool>` rules (also the wildcard and the server name) let the tool
+  run under `dontAsk` and a call with no rule is denied; `${VAR}` expands and an unset variable stays literal;
+  `--strict-mcp-config` and `--restricted` keep the server; `--safe-mode` stops any `--mcp-config` server, so the
+  channel exists only without `--safe-mode`, which is an approved bypass run ([ADR-0033](../adr/0033-claude-channel-bypass-only-without-safe-mode.md)).
+  Through Switchboard the shim connected, served `commit` headless and committed over the controller's socket, so
+  socket reach is answered; the 99 deny rules held for six Git-write spellings under `dontAsk` and under bypass, and
+  with the shim present; the matcher does not normalise global options (ROADMAP R-43), which the layer 1 row above
+  recorded as an Assumption and is now observed. No commit or attribution setting; the model added a `Co-Authored-By`
+  trailer that the FR-GIT-04 sanitiser removed.
+- *Codex (0.162.1).* A per-run definition is `-c mcp_servers.<name>.command/args/env` with `--ignore-user-config`
+  (check 11; the server ran outside the sandbox with 7 environment keys); an MCP tool call under the non-interactive
+  policy fails with "requires approval" until `mcp_servers.<n>.tools.<t>.approval_mode="approve"` or
+  `default_tools_approval_mode="approve"` (check 13); the sandbox blocks Unix-socket connects under `workspace-write`
+  and `read-only` (check 12e), so the socket shim of the **Injected channel** paragraph cannot work for Codex and the
+  adapter keeps `commitChannel: "none"` with the finalize-only route (FR-GIT-09, ROADMAP Q-43); `git commit` is refused
+  on Git metadata (check 12f, X-G1); no deny rule and no commit or attribution setting exist beyond the sandbox. A stdio
+  `mcp_servers` injection started outside the sandbox is the lead for any future Codex channel (that note's
+  recommendation 4), not adopted.
+
 *Socket path length (observed).* A UNIX socket path is limited by the kernel (`UNIX_PATH_MAX` is 108 in
 `/usr/include/linux/un.h`); on this host Python's `bind` failed with "AF_UNIX path too long" at 167 bytes and
 `gpg-agent` would not start with a `GNUPGHOME` under the long scratchpad path, but started under `/tmp`. Node 22.22.0
