@@ -173,7 +173,7 @@ describe("matching is limited to the declared forms; existing matching unchanged
 });
 
 describe("declarations count only once the entry has an adapter (create)", () => {
-  it("with no registration, the Claude Code, Grok Build, Cursor and Kimi Code declarations are active", () => {
+  it("with no registration, the Claude Code, Grok Build, Cursor, Kimi Code and Muse Code declarations are active", () => {
     // Cursor's short flags (T4.42) and Kimi Code's `-y` (T4.62).
     const CURSOR_SHORT = ["-f", "-w", "-H", "-e", "-y"];
     expect(declaredBypassShortFlags()).toEqual(CURSOR_SHORT);
@@ -184,9 +184,12 @@ describe("declarations count only once the entry has an adapter (create)", () =>
       { flag: "--allowed-tools", value: "*" },
       { flag: "--allowed-tools", value: "**" },
       { flag: "--sandbox", value: "disabled" },
+      { flag: "--approval-mode", value: "never" },
+      { flag: "--sandbox-network", value: "unrestricted" },
+      { flag: "--sandbox-network", value: "enabled" },
     ];
     // Claude Code's `--permission-mode bypassPermissions` and Grok Build's (declared since T4.22) are one value;
-    // Cursor's `--sandbox disabled` is active since T4.42.
+    // Cursor's `--sandbox disabled` is active since T4.42, Muse Code's three values since T4.72.
     expect(declaredBypassValues()).toEqual(ACTIVE_VALUES);
     expect(bypassClassShortFlags()).toEqual(CURSOR_SHORT);
     expect(bypassClassValues()).toEqual(ACTIVE_VALUES);
@@ -223,6 +226,14 @@ describe("declarations count only once the entry has an adapter (create)", () =>
       cursor: { short: ["-f", "-w", "-H", "-e"], values: [{ flag: "--sandbox", value: "disabled" }] },
       opencode: { short: [], values: [] },
       kimi: { short: ["-y"], values: [] },
+      muse: {
+        short: [],
+        values: [
+          { flag: "--approval-mode", value: "never" },
+          { flag: "--sandbox-network", value: "unrestricted" },
+          { flag: "--sandbox-network", value: "enabled" },
+        ],
+      },
       fake: { short: [], values: [] },
     });
   });

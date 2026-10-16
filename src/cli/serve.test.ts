@@ -455,6 +455,7 @@ registerHooks({ resolve(specifier, context, next) {
       "cursor",
       "opencode",
       "kimi",
+      "muse",
       "fake",
     ]);
     expect(msgs.at(-1)).toBe("stopped");

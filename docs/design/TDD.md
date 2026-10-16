@@ -2457,6 +2457,22 @@ a second window; later parts were not read); **[M-ov]** <https://dev.meta.ai/doc
 | Bypass-class flags | **Confirmed**: `--yolo` (disable approval and the sandbox and trust the workspace), `--disable-approval` (keep the sandbox), `--disable-sandbox` (keep approval; also removes workspace confinement of the file tools) [M-perm], [M-ext]. `--trust-workspace` is in the changelog [M-log], not the permissions page. All four stay in the argv audit list (ADR-0004, FR-POL-03) outside an approved `privileged` scope. `--yolo` placement after `exec` is **reported** [Orca]. `--approval-mode never` and `--sandbox-network unrestricted` are not bypass flags by name but widen a run; the audit treats them as forbidden for non-`privileged` profiles (Proposed). *Update 2026-10-13 ([ADR-0037](../adr/0037-argv-audit-short-flags-and-bypass-values.md)):* the audit can now refuse them as declared values (both `--flag value` and `--flag=value`); they are declared when T4.72 adds the Muse Code entry |
 | Capacity | **Corrected**: billing is usage-based on input and output tokens with a Usage dashboard [M-auth]; no CLI or stream usage report, limit or reset time is documented [M-ov]. Per-run token fields in `--json` records: `Unverified: T4.71` (FR-CAP-01 records only what is reported) |
 
+*As built (T4.72, 2026-10-16; Delegated agent work, not owner-approved; fixtures only, no `muse` was run).* Module
+`src/adapters/muse/` (every spelling in `protocol.ts` with its source tag above), manifest
+`src/adapters/manifests/muse.json` (range `<0.0.0`, so `ADAPTER_VERSION_UNVERIFIED` until T4.78) and the `muse`/`muse-code`
+registry entry. The four non-`privileged` profiles and `privileged` without `bypass` are `Ineligible`
+(`PROFILE_UNSUPPORTED`) until T4.71; an approved bypass scope (owner decision 46) compiles `muse exec --json -w off
+--approval-mode on-request --sandbox-network restricted|unrestricted --trust-workspace <prompt>` for worktree files, shell
+`broad`, network `off` or `on` and repository configuration `enabled`; other scopes, a requested model and an objective
+that is empty or starts with `-` (no end-of-options marker is sourced) are `CAPABILITY_MISSING`. Approvals and the
+sandbox stay on; `--yolo`, `--disable-approval`, `--disable-sandbox` and `--approval-mode never` are never emitted. The
+child environment is `PATH` and `HOME` only: `META_API_KEY` never reaches it, and `MUSE_NO_AUTO_UPDATE=1` is not set
+(reported only, confirmed by neither T4.70 nor T4.71). Registry declarations: `--disable-approval`, `--disable-sandbox`,
+`--trust-workspace`, and the values `--approval-mode never`, `--sandbox-network unrestricted` and `enabled`. Interaction
+found: the argv audit is shared, so Cursor's declared short flag `-w` refuses `-w off` outside an approved bypass run;
+a future non-bypass Muse Code cell needs that resolved first (open question in ROADMAP T4.72). Parser, resume, auth
+preflight, conformance, malicious leg and the Git declaration are T4.73 to T4.77 (fail-closed placeholders until then).
+
 #### 4.8.1 T4.71 operator checklist
 
 *Operator-only, Proposed.* Needs an installed Muse Code CLI. Use a throwaway Git repository and a controller-made
