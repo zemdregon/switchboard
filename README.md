@@ -74,8 +74,12 @@ Pre-release. The package is private and is not published to any registry; you bu
   See [Container environments (milestone 10)](#container-environments-milestone-10) and
   [ROADMAP §6.4](docs/ROADMAP.md#64-m10-container-environments-tasks).
 - **Milestone 11 (inner agent) is `Partial`.** T11.1 to T11.12 are done on fakes: an optional HTTP backend, privacy
-  gates, `doctor` and `inner` reporting, commit-message drafting, handoff condensation (T11.10, a service function) and
-  record-only routing classification (T11.11). T11.1 (the `inner_agent` config schema, the backend port, the scripted
+  gates, quality monitoring with automatic suspension (T11.6), `doctor` and `inner` reporting, commit-message drafting,
+  handoff condensation (T11.10, a service function) and record-only routing classification (T11.11). The T11.6 roadmap
+  row carries its `Done on fakes` status since [#586](https://github.com/zemdregon/switchboard/pull/586), which also
+  added `src/inner/suspension.test.ts`: on a scripted fake backend, every call after a suspension falls back without
+  reaching a now-good backend, and the first call after the task is re-enabled is accepted from it. T11.1 (the
+  `inner_agent` config schema, the backend port, the scripted
   fake backend, the `inner_call` table, the disabled-by-default path and the import-boundary test) is `Done`; its
   roadmap row was reconciled to the 2026-10-16 status contract in
   [#569](https://github.com/zemdregon/switchboard/pull/569), citing `src/config/config.test.ts`,
@@ -915,7 +919,10 @@ rejection rate over the quality window; add `--json` for the same data. `inner t
 fixture through the real pipeline (the same privacy gates, redaction, validation and `inner_call` record) and prints
 the outcome, never the prompt or the reply; it sends no repository data, and it exits 1 when the result would fall back,
 or when nothing was sent because the agent or the task is off. A task whose rejection rate exceeds the configured
-threshold is suspended and falls back until you run `inner resume <task>` (quality counting then restarts). Neither
+threshold is suspended and falls back until you run `inner resume <task>` (quality counting then restarts). That
+T11.6 behaviour is pinned on a scripted fake backend in `src/inner/suspension.test.ts` (merged
+[PR #586](https://github.com/zemdregon/switchboard/pull/586)): the suspension survives a restart, applies per task,
+keeps falling back with a good backend until re-enabled, and the re-enable is recorded and restarts the window. Neither
 command prints a base URL's userinfo, a header, a key or any prompt or response text.
 
 Which tasks run today (2026-10-15): two tasks are wired into production `serve` run paths — the commit-message task
@@ -947,7 +954,9 @@ the projection is unchanged whether the shared subscription names the provider u
 and so is the provider-reported cache block of `switchboard capacity` (T6.7) even when a labelled or planted
 `inner_agent` row carries the cache key names it reads
 (`src/capacity/capacity.test.ts`). Merged [#362](https://github.com/zemdregon/switchboard/pull/362) additionally pins
-T11.5 surfaces on fakes: a suspended task (T11.6) and a project set to `off` deny without a request and write no
+T11.5 surfaces on fakes: a suspended task (T11.6; the suspension gate itself is pinned in
+`src/inner/suspension.test.ts`, merged [#586](https://github.com/zemdregon/switchboard/pull/586)) and a project set
+to `off` deny without a request and write no
 observation; a re-ask that hits the deadline keeps the first attempt's token counts; the shared-subscription label
 follows `shares_subscription_with` (not the run's provider); `doctor` asserts the full `inner_shared_subscription`
 check in human and `--json` output before and after `inner test`; with `enabled: false` and the flag set, `inner test`
