@@ -1655,3 +1655,166 @@ describe("antigravity parser residuals, ninth pass: soft-denial ordering, envelo
     },
   );
 });
+
+/**
+ * Tenth pass (2026-10-16, Delegated, not owner-approved): Q-86 numeric edges, non-array `denied_actions` beside a
+ * `SUCCESS` envelope, which result owns the `provider_reported` row, a flag-shaped objective beside the resume refusal
+ * and lines after the result that the parser cannot read. Synthetic lines only; no new capture, parser unchanged.
+ */
+describe("antigravity parser residuals, tenth pass: Q-86 numeric edges, denial shapes, usage ownership and trailing unknowns (T4.33)", () => {
+  const observations = (events: readonly NormalizedEvent[]) =>
+    usageObservationsFromEvents(events, { runId: "run_antigravity_t433_tenth_usage", provider: "antigravity" });
+  const raw = (usage: string) =>
+    `{"event":"result","result":{"conversation_id":"${CID}","status":"SUCCESS","response":"ok","usage":${usage}}}`;
+
+  it.each([
+    ["1e309", false, { input_tokens: 20 }],
+    ["-0", false, { input_tokens: 20, total_tokens: -0 }],
+    ["5e-324", true, { input_tokens: 20, total_tokens: 5e-324 }],
+  ] as const)("total_tokens %s: Q-86 verdict and ledger row", (total, ok, metrics) => {
+    const r = run([INIT(), raw(`{"input_tokens":20,"total_tokens":${total}}`)]);
+    // An overflowing total parses to Infinity and is dropped; -0 passes `v >= 0`, so the row keeps -0, not 0.
+    expect(observations(r.events)).toEqual([expect.objectContaining({ source: "provider_reported", metrics })]);
+    expect(r.result.ok).toBe(ok);
+    if (!ok)
+      expect(r.result).toMatchObject({ failureCode: "TOOL_FAILURE", failureDetail: "SUCCESS with no reported tokens" });
+    // Gap: any positive total passes Q-86, even one far below a single token.
+  });
+
+  it.each([[{}], [false], [0], [""], ["edit_file"], [[null]], [[42]]])(
+    "denied_actions %j beside SUCCESS with tokens is one unnamed denial, never ignored",
+    (denied) => {
+      const r = run([INIT(), RESULT({ denied_actions: denied })]);
+      expect(r.events.filter((e) => e.kind === "permission_denied")).toEqual([
+        { kind: "permission_denied", tool: "unknown" },
+      ]);
+      expect(r.events.filter((e) => e.kind === "result")).toEqual([{ kind: "result", ok: true }]);
+      // Gap: a bare string is not read as the action name.
+      expect(r.result).toMatchObject({
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+        failureDetail: "denied: unknown",
+      });
+      expect(observations(r.events)).toEqual([expect.objectContaining({ metrics: USAGE })]);
+    },
+  );
+
+  it("an empty denied_actions array or null is no denial, so the SUCCESS envelope with tokens is a success", () => {
+    for (const denied of [[], null]) {
+      expect(run([INIT(), RESULT({ denied_actions: denied })]).result).toEqual({
+        ok: true,
+        unknownEventCount: 0,
+        nativeSessionId: CID,
+        summary: "ok",
+      });
+    }
+  });
+
+  it("a denial outranks an auth error, a zero total and a non-SUCCESS status in the failure code", () => {
+    const r = run([
+      INIT(),
+      RESULT({
+        status: "ERROR",
+        error: "authentication failed: synthetic",
+        usage: { total_tokens: 0 },
+        denied_actions: [{ action: "run_command" }],
+      }),
+    ]);
+    expect(r.events.filter((e) => e.kind === "result")).toEqual([{ kind: "result", ok: false, summary: "ERROR" }]);
+    expect(r.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "denied: run_command",
+    });
+    const noDenial = run([INIT(), RESULT({ status: "ERROR", error: "authentication failed: synthetic" })]);
+    expect(noDenial.result).toMatchObject({ ok: false, failureCode: "AUTH_REQUIRED" });
+  });
+
+  it("pins the gap: only the first result may record usage, so a second result's usage after a usage-less first is lost", () => {
+    const first = j({ event: "result", result: { conversation_id: CID, status: "SUCCESS", response: "a" } });
+    const r = run([INIT(), first, RESULT()]);
+    expect(observations(r.events)).toEqual([]);
+    expect(r.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: more than one result line",
+    });
+  });
+
+  it("a usage object with only unrecorded or negative counters records no row and fails Q-86", () => {
+    const r = run([INIT(), raw('{"cost_usd":0.01,"total_tokens":-24,"output_tokens":-1,"cache_read_tokens":2}')]);
+    expect(observations(r.events)).toEqual([expect.objectContaining({ metrics: { cache_read_tokens: 2 } })]);
+    expect(r.result).toMatchObject({ ok: false, failureDetail: "SUCCESS with no reported tokens" });
+    const none = run([INIT(), raw('{"cost_usd":0.01,"total_tokens":"24"}')]);
+    expect(none.events.some((e) => e.kind === "usage")).toBe(false);
+    expect(none.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+  });
+
+  it("a flag-shaped objective stays inside the one --prompt= word; no resume flag is compiled and resume stays refused", () => {
+    const req: CompileRequest = {
+      runId: "run_01M4WBZSXSCWYKTKJN77A7MFJQ",
+      objective: `--conversation ${CID} --continue`,
+      constraints: [],
+      workspace: { cwd: "/work/tree", writable: true },
+      bypassApproved: true,
+    };
+    const a = adapter();
+    const compiled = a.compile(req, PRIVILEGED_BYPASS_PROFILE);
+    expect(isIneligible(compiled)).toBe(false);
+    if (isIneligible(compiled)) return;
+    expect(compiled.argv.filter((w) => w.startsWith("--prompt"))).toEqual([`--prompt=${req.objective}`]);
+    expect(compiled.argv.filter((w) => ["--conversation", "--continue", "-c", CID].includes(w))).toEqual([]);
+    const refusal = a.resumeArgs({ provider: "antigravity", nativeSessionId: CID }, req, PRIVILEGED_BYPASS_PROFILE);
+    expect(refusal).toEqual(
+      a.resumeArgs(
+        { provider: "antigravity", nativeSessionId: CID },
+        { ...req, objective: "plain" },
+        PRIVILEGED_BYPASS_PROFILE,
+      ),
+    );
+    expect(refusal).toMatchObject({ ineligible: true, reason: "CAPABILITY_MISSING" });
+  });
+
+  it("trailing unreadable lines after a good result are counted as unknown and do not flip the verdict", () => {
+    const trailing = [
+      j({ event: "telemetry", conversation_id: OTHER }),
+      j({ event: "step_update", conversation_id: CID, step_type: "tool" }),
+      j({ event: "init", conversation_id: OTHER }),
+      j({ conversation_id: OTHER }),
+    ];
+    const r = run([INIT(), RESULT(), ...trailing]);
+    expect(r.state).toMatchObject({ lines: 6, unknownEvents: 4 });
+    expect(r.events.slice(-4)).toEqual([
+      { kind: "unknown", rawType: "telemetry" },
+      { kind: "unknown", rawType: "step_update" },
+      { kind: "unknown", rawType: "init" },
+      { kind: "unknown", rawType: "none" },
+    ]);
+    // An unknown line's forged id binds nothing and is not a changed id.
+    expect(r.result).toEqual({ ok: true, unknownEventCount: 4, nativeSessionId: CID, summary: "ok" });
+  });
+
+  it("pins the gap: a trailing status-less result carrying an error or a denial is unknown, not a second result", () => {
+    const line = j({
+      event: "result",
+      result: { conversation_id: OTHER, error: "authentication failed", denied_actions: [{ action: "edit_file" }] },
+    });
+    const r = run([INIT(), RESULT(), line]);
+    expect(r.events.at(-1)).toEqual({ kind: "unknown", rawType: "result" });
+    expect(r.events.some((e) => e.kind === "provider_error" || e.kind === "permission_denied")).toBe(false);
+    expect(r.result).toMatchObject({ ok: true, unknownEventCount: 1 });
+    // Control: with a status the same line is a second result and the run fails closed.
+    const withStatus = j({ event: "result", result: { conversation_id: CID, status: "SUCCESS", usage: USAGE } });
+    expect(run([INIT(), RESULT(), withStatus]).result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+    });
+  });
+
+  it("pins the gap: a trailing unknown event that names a Git write is never a tool_call, so the guard does not see it", () => {
+    const r = run([INIT(), RESULT(), j({ event: "tool_call", conversation_id: CID, command: "git push origin main" })]);
+    const guarded = r.events.map((e) => guardEvent(e, { cwd: "/work/tree", home: "/home/synthetic", bypass: true }));
+    expect(guarded.filter((e) => e.kind === "tool_call")).toEqual([]);
+    expect(adapter().extractResult(guarded, EXIT0)).toMatchObject({ ok: true, unknownEventCount: 1 });
+  });
+});
