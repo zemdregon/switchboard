@@ -62,7 +62,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#558](https://github.com/zemdregon/switchboard/pull/558)), export-time allowlist enforcement (T8.4,
   [#549](https://github.com/zemdregon/switchboard/pull/549)), the operator version canary (T8.5) and a CI test that
   excludes routing after a synthetic binary version bump until `adapters validate` records the version (T8.6) are done
-  on fakes. Full M8 acceptance closure (T8.7, after T8.4) is not done. See
+  on fakes. M8 acceptance closure (T8.7) is `Partial`: the README, roadmap status and design-doc corrections are
+  merged; `Done` is not yet recorded. See
   [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and
   [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
 - **Milestone 10 (container environments) is `Partial`.** The environment port, MCP admission and `serve` composition
@@ -461,7 +462,7 @@ Milestone 8 hardens telemetry export and adapter version change detection. It is
 exporter, wrapper-boundary spans (T8.2), the collector integration test (T8.3,
 [#552](https://github.com/zemdregon/switchboard/pull/552)), the export-time allowlist drop (T8.4,
 [#549](https://github.com/zemdregon/switchboard/pull/549)), the version canary and the CI version-bump test are in
-place on fakes; acceptance closure (T8.7) is not.
+place on fakes; acceptance closure (T8.7) is `Partial` (see below).
 [#558](https://github.com/zemdregon/switchboard/pull/558) reconciled this section and the M8 milestone row after T8.3
 landed.
 
@@ -477,7 +478,10 @@ delegate path through an in-process collector and asserts allowlisted attributes
 canary.
 
 **Allowlist drop (T8.4).** Before export, Switchboard drops any span attribute whose key is not on the LLD §7
-allowlist, and any non-scalar value (`src/telemetry/allowlist.ts`, tested in `src/telemetry/allowlist.test.ts`).
+allowlist, and any non-scalar or non-finite value (`src/telemetry/allowlist.ts`, applied in `recordSpan` of
+`src/telemetry/index.ts`). Dropped values are not logged, since a dropped value may itself be forbidden text, and an
+attribute set that throws while being read is dropped whole. `src/telemetry/allowlist.test.ts` plants a disallowed key
+on an internal span builder and asserts it never reaches the exporter, and checks that the key set matches LLD §7.
 
 **Collector integration test (T8.3).** `src/telemetry/collector-lifecycle.test.ts` (suite
 `collector integration: fake-adapter delegate/finalize path (T8.3)`) runs a fake-adapter delegate/finalize path with
@@ -502,9 +506,13 @@ Details: [docs/operations/version-canary.md](docs/operations/version-canary.md).
 preflight cache, and asserts routing excludes the provider until validation records the new version. No provider CLI is
 installed in CI.
 
+**Acceptance closure (T8.7).** `Partial`: this section and the M8 status in
+[ROADMAP §6](docs/ROADMAP.md#6-milestones) now match `src/telemetry/` and the version canary on `main`, and the
+design-doc corrections merged in [#571](https://github.com/zemdregon/switchboard/pull/571). `Done` is not yet recorded.
+
 Tests on fakes: `src/config/config.test.ts`, `src/telemetry/index.test.ts`, `src/telemetry/spans.test.ts`,
-`src/telemetry/collector-lifecycle.test.ts`, `src/telemetry/collector.test.ts`, `src/adapters/version-canary.test.ts`,
-`src/adapters/version-bump-preflight.test.ts`. Per-task evidence is in
+`src/telemetry/allowlist.test.ts`, `src/telemetry/collector-lifecycle.test.ts`, `src/telemetry/collector.test.ts`,
+`src/adapters/version-canary.test.ts`, `src/adapters/version-bump-preflight.test.ts`. Per-task evidence is in
 [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
 
 ## Container environments (milestone 10)
