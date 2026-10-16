@@ -2110,8 +2110,8 @@ treating a resolver throw as `inherit` fails both project-gate tests; `attempts 
 fails the labelled project-gate test. A project-scoped continuation cannot be compiled on the harness's second fake
 provider (`ELIGIBILITY_NONE`, `CAPABILITY_MISSING: binding is for fake-b`), so the project-gate runs land on the
 default provider and the two spares are the byte-identical pair; that harness limit is outside this lane and is noted,
-not changed. Opened as [PR #482](https://github.com/zemdregon/switchboard/pull/482). T11.5 stays **Done on fakes**; the live-backend residual (T11.13) is the
-only one left.
+not changed. Opened as [PR #482](https://github.com/zemdregon/switchboard/pull/482). T11.5 stays **Done on fakes**;
+the live-backend residual (T11.13) is the only one left.
 
 **T11.8 status (2026-10-13; Delegated): Done on fakes. No live inner backend, provider CLI, pull-request API or network
 host was used.** "Done when", clause by clause: *the draft passes the sanitiser*: a hostile fake backend returning a
