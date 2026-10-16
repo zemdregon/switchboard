@@ -6,6 +6,12 @@ export interface CompletedSpan {
   /** Unix milliseconds observed at the wrapper boundary. */
   readonly startTime: number;
   readonly endTime: number;
+  /**
+   * Attribute values built by the wrapper-boundary builders (T8.2, `src/telemetry/spans.ts`) from controller-observed
+   * facts only. Builders set allowlisted keys by construction (LLD §7); the export-time drop filter for any other key
+   * remains T8.4.
+   */
+  readonly attributes?: Readonly<Record<string, string | number | boolean>>;
 }
 
 export interface Telemetry {
@@ -72,7 +78,13 @@ async function loadTransport(endpoint: string) {
   return {
     recordSpan(span: CompletedSpan) {
       // ROOT_CONTEXT prevents an ambient caller context from introducing unrelated spans or baggage.
-      tracer.startSpan(span.name, { startTime: span.startTime }, api.ROOT_CONTEXT).end(span.endTime);
+      tracer
+        .startSpan(
+          span.name,
+          { startTime: span.startTime, ...(span.attributes !== undefined ? { attributes: span.attributes } : {}) },
+          api.ROOT_CONTEXT,
+        )
+        .end(span.endTime);
     },
     close: () => provider.shutdown(),
   };
