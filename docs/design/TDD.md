@@ -874,7 +874,8 @@ above is unchanged and the Proposed items stay Proposed).* What `src/environment
   replaceable seam.
 - *Image*: resolved by `image_digest` among local images only (never pulled); the no-Git-client check runs as a
   `PATH` scan in a throwaway probe container before any run (ADR-0020); a scan that cannot complete also refuses.
-  `projects validate` does not run the check yet (T10.3).
+  `projects validate` runs the same checks for each `container` project (T10.3, `checkContainerEnvironment` in
+  `src/cli/projects.ts`).
 - *Mounts*: exactly the worktree (rw) and the declared read-only contexts (ro), each at its own host path, so `cwd`
   and argument paths stay valid; nothing else. No login volume yet (its mount point per provider waits for the
   operator's T10.0 result).
@@ -887,11 +888,13 @@ above is unchanged and the Proposed items stay Proposed).* What `src/environment
 - *Cleanup*: labels `switchboard.run`, `switchboard.project`, `switchboard.role`; `--rm` plus `teardown` (force
   remove by name on every terminal path); `sweepOrphans` is called by startup reconciliation before any worktree is
   assessed, and its removals are `environment` run events (T10.2, [LLD §11.3](LLD.md#113-environment-port)).
-- *Not reachable yet*: admission still refuses container projects and `serve` does not compose the environment
-  resolver (T10.1 gaps in [ROADMAP §6.4](../ROADMAP.md#64-m10-container-environments-tasks)); the injected Git tool
-  channel is host-side only. Tests: `src/environment/*.test.ts` (fakes) and the opt-in Docker leg
-  `src/environment/container-docker.test.ts` (`SWITCHBOARD_CONTAINER_TESTS=1`; skipped without a rootless daemon
-  and a local base image).
+- *Admission and `serve` (2026-10-16, T10.1, #554)*: when a configured project is `container`, `serve` composes
+  `runEnvironments` and MCP/work-queue admission admit that project; a host-only configuration composes nothing and
+  admission still fails `ENVIRONMENT_NOT_IMPLEMENTED` before any side effect ([ROADMAP §6.4](../ROADMAP.md#64-m10-container-environments-tasks)).
+  The injected Git tool channel remains host-side only (not mounted into the container). Tests:
+  `src/environment/*.test.ts` (fakes), `src/mcp/mcp.test.ts` and `src/cli/projects.test.ts` (admission and validate),
+  and the opt-in Docker leg `src/environment/container-docker.test.ts` (`SWITCHBOARD_CONTAINER_TESTS=1`; skipped
+  without a rootless daemon and a local base image).
 
 ### 3.12 Inner agent
 

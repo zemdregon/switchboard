@@ -1,7 +1,7 @@
 /**
  * M14 acceptance on fake adapters through the MCP server (T14.13; ROADMAP §6 M14 row, FR-CTL-01–11, CAP-15).
  * Maps spike scenarios A–G in [m14-acceptance-test-plan-spike](../docs/research/m14-acceptance-test-plan-spike-2026-10-15.md).
- * B (T14.5), C (T14.4) and E (T14.7) run here; D stays skipped until T14.6 (#539) lands. F and G add thin MCP legs;
+ * B (T14.5), C (T14.4), D (T14.6) and E (T14.7) run here. F and G add thin MCP legs;
  * full T14.8 and T14.9 coverage lives in `test/malicious/approval-proxy.test.ts` and `src/control/sinks.test.ts`.
  * No provider CLI is installed or called.
  */
@@ -87,7 +87,7 @@ const profileFor = (name: TrustProfile): ResolvedProfile => ({
   bypassApproved: false,
 });
 
-// ---- shared two-project harness (scenarios A to C) -------------------------------------------------------------------
+// ---- shared two-project harness (scenarios A to D) -------------------------------------------------------------------
 
 let harness: Harness;
 let projectRoot: string;
@@ -338,8 +338,57 @@ describe("M14 acceptance (T14.13)", () => {
   });
 
   describe("scenario D: pause holds admission (M14 row clause D; T14.6)", () => {
-    // Skipped until T14.6 (pause_project/resume_project, PR #539) merges.
-    it.skip("holds admission while paused and finishes running work (T14.6 not merged on this branch)", () => {});
+    useTwoProjectHarness();
+    const runCount = (): number => (harness.db.prepare("SELECT COUNT(*) AS n FROM run").get() as { n: number }).n;
+    const delegate = (projectId: string, objective = "Fix the parser crash") =>
+      harness.call("delegate_task", { objective, project: projectId, trust_profile: "edit-untrusted" }, "other");
+
+    it("holds admission while paused, lets the running run finish without a cancel, and admits again after resume_project", async () => {
+      // Step 1: a long-running fake run (`slow` stays RUNNING for a while, then succeeds on its own).
+      const slow = await delegate("proj-a", "slow");
+      expect(slow.isError, JSON.stringify(slow.body)).toBe(false);
+      await harness.waitFor(() => harness.ledger.getRunRecord(slow.body.run_id)?.state === "RUNNING");
+
+      // Step 2: pause proj-a; the flag is persisted and the digest shows it for proj-a only.
+      expect(await harness.ok("pause_project", { project_id: "proj-a" }, "other")).toEqual({
+        project_id: "proj-a",
+        paused: true,
+      });
+      expect(harness.ledger.getControlPlaneState("proj-a")).toMatchObject({ paused: 1, paused_by: "mcp:other" });
+      const pausedSnap = await digest({}, "other");
+      expect(section(pausedSnap, "proj-a").paused).toBe(true);
+      expect(section(pausedSnap, "proj-b").paused).toBe(false);
+
+      // Step 3: a new delegation on proj-a is held: refused with PROJECT_PAUSED and no run row written.
+      const before = runCount();
+      const held = await delegate("proj-a");
+      expect(held.isError).toBe(true);
+      expect(held.body.error).toMatchObject({
+        code: "ELIGIBILITY_NONE",
+        details: { reason: "PROJECT_PAUSED", project_id: "proj-a" },
+      });
+      expect(runCount()).toBe(before);
+      // The pause is the project's own: proj-b still admits and finishes.
+      const b = await inProject("proj-b", "other");
+      expect((await harness.ok("get_run", { run_id: b }, "other")).status).toBe("SUCCEEDED");
+
+      // Step 4: the run admitted before the pause finishes on its own, with no cancel and no attention reason.
+      await harness.lifecycle.waitForTerminal(slow.body.run_id);
+      const done = await harness.ok("get_run", { run_id: slow.body.run_id }, "other");
+      expect(done.status).toBe("SUCCEEDED");
+      expect(done.needs_attention).toEqual({ active: false });
+      expect(harness.ledger.listRunsForMetaSession(slow.body.meta_session_id)).toHaveLength(1);
+      expect((await delegate("proj-a")).body.error.details).toEqual({ reason: "PROJECT_PAUSED", project_id: "proj-a" });
+
+      // Step 5: resume_project restores admission and clears the digest flag.
+      expect(await harness.ok("resume_project", { project_id: "proj-a" }, "other")).toEqual({
+        project_id: "proj-a",
+        paused: false,
+      });
+      expect(section(await digest({}, "other"), "proj-a").paused).toBe(false);
+      const next = await inProject("proj-a", "other");
+      expect((await harness.ok("get_run", { run_id: next }, "other")).status).toBe("SUCCEEDED");
+    });
   });
 
   describe("scenario E: steer same native session (M14 row clause E; T14.7)", () => {

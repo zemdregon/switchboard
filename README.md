@@ -100,9 +100,10 @@ Pre-release. The package is private and is not published to any registry; you bu
 - **Milestone 14 (control plane) is `Partial`.** T14.0–T14.11 are implemented on fakes, including pause
   ([#539](https://github.com/zemdregon/switchboard/pull/539)); digest, `list_runs`, `get_run`, budgets, the loop
   breaker, `steer_run`, pause/resume, the approval proxy and notification sinks are covered by unit and
-  malicious-fixture tests. The M14 acceptance file (`src/mcp/m14-acceptance.test.ts`) runs scenarios A, B, C, E, F and
-  G; scenario D (pause) is still an `it.skip` placeholder while `src/mcp/pause.test.ts` exercises T14.6. ADR-0047 and
-  ADR-0048 remain Proposed. See [Control plane (milestone 14)](#control-plane-milestone-14) and
+  malicious-fixture tests. The M14 acceptance file (`src/mcp/m14-acceptance.test.ts`) runs scenarios A to G, including
+  D (pause holds admission while running work finishes,
+  [#559](https://github.com/zemdregon/switchboard/pull/559)). ADR-0047 and ADR-0048 remain Proposed. See
+  [Control plane (milestone 14)](#control-plane-milestone-14) and
   [ROADMAP §6.13](docs/ROADMAP.md#613-m14-control-plane-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
   client and a macOS CI leg are done; Grok Build, Antigravity, Cursor and OpenCode each have a module, compile matrix
@@ -532,7 +533,7 @@ and ADR-0047/0048 acceptance follow owner review of those ADRs.
 
 Fixtures only; no live provider CLI:
 
-- M14 acceptance: `src/mcp/m14-acceptance.test.ts` (scenarios A–C and E–G; D is an `it.skip` placeholder).
+- M14 acceptance: `src/mcp/m14-acceptance.test.ts` (scenarios A–G).
 - Pause (T14.6): `src/mcp/pause.test.ts`, `src/control/pause.test.ts`, `src/cli/pause.test.ts`.
 - Approval proxy (T14.8): `test/malicious/approval-proxy.test.ts`.
 - Notification sinks (T14.9): `src/control/sinks.test.ts`.
@@ -540,7 +541,6 @@ Fixtures only; no live provider CLI:
 
 ### Known limitations
 
-- M14 acceptance scenario D (pause) is not wired in `m14-acceptance.test.ts` yet; T14.6 is covered in `pause.test.ts`.
 - The Grok bot is the intended first console client (owner decisions 53/55); ADR-0047 and ADR-0048 are still Proposed.
 
 ## Run as an MCP server
