@@ -1,6 +1,15 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -11,6 +20,15 @@ import { FakeAdapter } from "../adapters/fake/adapter.js";
 import { AdapterRegistry, type ResolvedProfile } from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
 import { OPERATOR_CANCEL_APPLIED, requestCancel, requestDecision } from "../cli/operator.js";
+import {
+  containerName,
+  createContainerEnvironment,
+  environmentEventSink,
+  probeContainerName,
+  SWITCHBOARD_PROJECT_LABEL,
+  SWITCHBOARD_ROLE_LABEL,
+  SWITCHBOARD_RUN_LABEL,
+} from "../environment/index.js";
 import { groupAlive } from "../exec/index.js";
 import { createIdGenerator } from "../ids/index.js";
 import {
@@ -23,6 +41,7 @@ import {
 } from "../ledger/index.js";
 import { procStartTicks, RunLifecycle, SLOT_STATES, TERMINAL_STATES } from "../lifecycle/index.js";
 import { WorkspaceManager } from "../workspace/index.js";
+import { fileRuntime, plantContainer } from "./fixtures/file-runtime.js";
 import { reconcile } from "./index.js";
 
 const FIXTURES = fileURLToPath(new URL("./fixtures/", import.meta.url));
@@ -178,12 +197,15 @@ const until = async (cond: () => boolean, ms = 10_000) => {
 };
 
 /** A synthetic run walked through the FRD edges to `state` (worktree prepared from LEASED on). */
-async function inFlight(state: RunState, opts: { pid?: number; ticks?: number | null } = {}): Promise<RunRecord> {
+async function inFlight(
+  state: RunState,
+  opts: { pid?: number; ticks?: number | null; snapshot?: Record<string, unknown> } = {},
+): Promise<RunRecord> {
   const sess = ledger.createMetaSession({ objective: "synthetic" });
   const created = ledger.createRun({
     metaSessionId: sess.id,
     trustProfile: "edit-untrusted",
-    policySnapshot: profileFor("edit-untrusted"),
+    policySnapshot: { ...profileFor("edit-untrusted"), ...opts.snapshot },
     request: {
       objective: "synthetic",
       workspace: repo,
@@ -756,5 +778,174 @@ describe("privileged approvals across restarts (T3.4, FRD WF-7, WF-8; owner deci
     // The operator's deny decided the row; the later cancel found nothing PENDING to close.
     expect(ledger.getApprovalForRun(r.runId)).toMatchObject({ status: "DENIED", decided_by: "op" });
     expectConsistentLedger();
+  });
+});
+
+describe("T10.2: startup orphan sweep and environment run events (FR-PRJ-07, FR-EXE-06)", () => {
+  const CONTAINER_SNAPSHOT = {
+    project: {
+      id: "web",
+      name: "Web",
+      environment_kind: "container",
+      image_digest: `sha256:${"a".repeat(64)}`,
+      context_id: "main",
+      base_ref: "main",
+      effective_max_profile: "trusted-development",
+    },
+  };
+  const stateDir = () => path.join(root, "containers");
+  const labels = (runId: string, role = "run") => ({
+    [SWITCHBOARD_RUN_LABEL]: runId,
+    [SWITCHBOARD_PROJECT_LABEL]: "web",
+    [SWITCHBOARD_ROLE_LABEL]: role,
+  });
+  /** The restarted controller's reconciliation with the container environment composed as `serve` does. */
+  const reconcileWithContainers = (opts: Parameters<typeof fileRuntime>[1] = {}) =>
+    reconcile({
+      db,
+      ledger,
+      workspace,
+      killGraceMs: 300,
+      environments: [
+        createContainerEnvironment({ runtime: fileRuntime(stateDir(), opts), onEvent: environmentEventSink(ledger) }),
+      ],
+    });
+  const left = () => (existsSync(stateDir()) ? readdirSync(stateDir()).sort() : []);
+  const typesOf = (runId: string) =>
+    events(runId).map((e) => (e.type === "reconciliation" ? `reconciliation:${e.p.step}` : e.type));
+
+  it("SIGKILL mid-run: the container left behind is removed and recorded before the worktree is assessed; a second restart writes nothing", async () => {
+    const script = path.join(root, "write-then-hang.mjs");
+    writeFileSync(script, WRITE_THEN_HANG_CLI);
+    db.close();
+    const { child, running } = await startChildController({ script, containerStateDir: stateDir() });
+    openController();
+    const wt = run(running.runId).worktree_path as string;
+    await until(() => existsSync(path.join(wt, "partial.txt")));
+    db.close();
+    await sigkill(child);
+    expect(left()).toEqual([`${containerName(running.runId)}.json`]); // teardown never ran
+
+    openController();
+    const prepared = events(running.runId).find((e) => e.type === "environment" && e.p.step === "prepared");
+    expect(prepared?.p).toMatchObject({ kind: "container", container: containerName(running.runId), network: "none" });
+
+    const report = await reconcileWithContainers();
+    expect(report.containersRemoved).toEqual([containerName(running.runId)]);
+    expect(left()).toEqual([]);
+    expect(report.terminated).toEqual([running.pgid]); // FR-EXE-06: the client process group is still terminated
+    expect(groupAlive(running.pgid)).toBe(false);
+
+    const after = run(running.runId);
+    expect(after.state).toBe("FAILED");
+    expect(after.failure_code).toBe("PROCESS_CRASH");
+    const order = typesOf(running.runId);
+    const removedAt = events(running.runId).findIndex((e) => e.type === "environment" && e.p.step === "orphan_removed");
+    expect(removedAt).toBeGreaterThan(-1);
+    expect(events(running.runId)[removedAt]?.p).toMatchObject({
+      kind: "container",
+      container: containerName(running.runId),
+      run_id: running.runId,
+    });
+    expect(
+      events(running.runId).find((e) => e.type === "reconciliation" && e.p.step === "environment_sweep")?.p,
+    ).toEqual({
+      step: "environment_sweep",
+      environment_kind: "container",
+      swept: true,
+      containers_removed: [containerName(running.runId)],
+      cause: "controller_restart",
+    });
+    expect(removedAt).toBeLessThan(order.indexOf("reconciliation:environment_sweep"));
+    expect(order.indexOf("reconciliation:environment_sweep")).toBeLessThan(order.indexOf("workspace_assessment"));
+    // The provider's half-written file is evidence, as for a host run.
+    const post = ledger.getRunCheckpointCommit(running.runId, "post") as string;
+    expect(g(repo, "show", `${post}:partial.txt`)).toBe("half-written");
+    expectConsistentLedger();
+
+    // Controller restart again: nothing left to sweep, nothing written (idempotent, LLD §10).
+    const n = eventCount();
+    const again = await reconcileWithContainers();
+    expect(again.containersRemoved).toEqual([]);
+    expect(again.actions).toEqual([]);
+    expect(eventCount()).toBe(n);
+  }, 60_000);
+
+  it("restart: removal happens before any worktree is assessed, covers probes and terminal runs, and leaves another controller's containers alone", async () => {
+    const active = await inFlight("RUNNING", { snapshot: CONTAINER_SNAPSHOT });
+    const done = await inFlight("FINALIZING", { snapshot: CONTAINER_SNAPSHOT });
+    await reconcileWithContainers(); // `done` ends SUCCEEDED; its container (teardown failed) is planted below
+    expect(run(done.id).state).toBe("SUCCEEDED");
+    plantContainer(stateDir(), containerName(active.id), labels(active.id));
+    plantContainer(stateDir(), probeContainerName(active.id), labels(active.id, "probe"));
+    plantContainer(stateDir(), containerName(done.id), labels(done.id));
+    plantContainer(stateDir(), containerName("01FOREIGNRUN"), labels("01FOREIGNRUN"));
+    // `active` was already reconciled with the first pass; walk a fresh in-flight run for the ordering check.
+    const fresh = await inFlight("RUNNING", { snapshot: CONTAINER_SNAPSHOT });
+    plantContainer(stateDir(), containerName(fresh.id), labels(fresh.id));
+
+    const assessedAtRemoval: boolean[] = [];
+    const report = await reconcileWithContainers({
+      onRemove: () =>
+        assessedAtRemoval.push(ledger.listRunEvents(fresh.id).some((e) => e.type === "workspace_assessment")),
+    });
+    expect(assessedAtRemoval.length).toBeGreaterThan(0);
+    expect(assessedAtRemoval.every((x) => !x)).toBe(true);
+    expect([...report.containersRemoved].sort()).toEqual(
+      [containerName(active.id), probeContainerName(active.id), containerName(done.id), containerName(fresh.id)].sort(),
+    );
+    expect(left()).toEqual([`${containerName("01FOREIGNRUN")}.json`]); // unknown to this ledger: not ours
+    for (const id of [active.id, done.id, fresh.id]) {
+      expect(events(id).some((e) => e.type === "environment" && e.p.step === "orphan_removed")).toBe(true);
+    }
+    expect(run(fresh.id).state).toBe("FAILED");
+    expectConsistentLedger();
+  });
+
+  it("container gone before worktree assessment: the sweep records nothing removed and the run is assessed as a crash", async () => {
+    const r = await inFlight("RUNNING", { snapshot: CONTAINER_SNAPSHOT });
+    writeFileSync(path.join(r.worktree_path as string, "agent.txt"), "edit\n");
+    const report = await reconcileWithContainers();
+    expect(report.containersRemoved).toEqual([]);
+    const after = run(r.id);
+    expect(after.state).toBe("FAILED");
+    expect(after.failure_code).toBe("PROCESS_CRASH"); // not TOOL_FAILURE: the worktree is still there and assessed
+    const sweep = events(r.id).find((e) => e.type === "reconciliation" && e.p.step === "environment_sweep");
+    expect(sweep?.p).toMatchObject({ swept: true, containers_removed: [] });
+    expect(events(r.id).find((e) => e.type === "workspace_assessment")?.p).toMatchObject({ mutated: true });
+    expect(events(r.id).some((e) => e.type === "environment")).toBe(false);
+    expectConsistentLedger();
+  });
+
+  it("a container listed but gone by the time it is removed is not recorded as removed", async () => {
+    const r = await inFlight("RUNNING", { snapshot: CONTAINER_SNAPSHOT });
+    plantContainer(stateDir(), containerName(r.id), labels(r.id));
+    const report = await reconcileWithContainers({
+      onRemove: (name) => rmSync(path.join(stateDir(), `${name}.json`), { force: true }), // exits on its own
+    });
+    expect(report.containersRemoved).toEqual([]);
+    expect(events(r.id).some((e) => e.type === "environment")).toBe(false);
+    expect(run(r.id).state).toBe("FAILED");
+  });
+
+  it("fails closed when the runtime cannot list its containers: no run is touched", async () => {
+    const r = await inFlight("RUNNING", { snapshot: CONTAINER_SNAPSHOT });
+    const n = eventCount();
+    await expect(reconcileWithContainers({ listFails: true })).rejects.toThrow(
+      /container environment orphan sweep failed: file runtime: cannot list containers/,
+    );
+    expect(run(r.id).state).toBe("RUNNING");
+    expect(eventCount()).toBe(n);
+  });
+
+  it("a container run reconciled with no container environment configured records that no sweep ran", async () => {
+    const r = await inFlight("RUNNING", { snapshot: CONTAINER_SNAPSHOT });
+    const host = await inFlight("RUNNING");
+    await runReconcile();
+    expect(events(r.id).find((e) => e.type === "reconciliation" && e.p.step === "environment_sweep")?.p).toMatchObject({
+      swept: false,
+      containers_removed: [],
+    });
+    expect(events(host.id).some((e) => e.p.step === "environment_sweep")).toBe(false);
   });
 });

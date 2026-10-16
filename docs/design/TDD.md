@@ -885,7 +885,8 @@ above is unchanged and the Proposed items stay Proposed).* What `src/environment
 - *Limits*: `--cpus`, `--memory` (+ equal `--memory-swap`), `--pids-limit` 512 (Assumption). **`disk_mb` is not
   enforced** by this backend and is recorded as such, never claimed.
 - *Cleanup*: labels `switchboard.run`, `switchboard.project`, `switchboard.role`; `--rm` plus `teardown` (force
-  remove by name on every terminal path); `sweepOrphans` implemented, its startup call is T10.2.
+  remove by name on every terminal path); `sweepOrphans` is called by startup reconciliation before any worktree is
+  assessed, and its removals are `environment` run events (T10.2, [LLD §11.3](LLD.md#113-environment-port)).
 - *Not reachable yet*: admission still refuses container projects and `serve` does not compose the environment
   resolver (T10.1 gaps in [ROADMAP §6.4](../ROADMAP.md#64-m10-container-environments-tasks)); the injected Git tool
   channel is host-side only. Tests: `src/environment/*.test.ts` (fakes) and the opt-in Docker leg

@@ -78,6 +78,13 @@ import {
   sinkOutcomeRecorder,
   transitionNotifier,
 } from "../control/index.js";
+import {
+  type ContainerRuntime,
+  createContainerEnvironment,
+  createDockerRuntime,
+  type Environment,
+  environmentEventSink,
+} from "../environment/index.js";
 import { detectOuterSandbox, type OuterSandboxAvailability, outerSandboxRefusal } from "../exec/outer-sandbox.js";
 import { GitToolService } from "../git/channel.js";
 import { GitPublisher } from "../git/commit.js";
@@ -312,6 +319,31 @@ export async function serve(io0: CliIo, opts: ServeOptions): Promise<number> {
   }
 }
 
+/**
+ * T10.2 (FR-PRJ-07): the environments startup reconciliation sweeps for containers a previous controller left. Only
+ * when a configured project is `container`; a runtime that does not answer is skipped with a warning, because its
+ * containers are not running either (Assumption, Delegated: a rootless daemon that is down runs no container). The
+ * provider-side client process of a container run is still a process group that FR-EXE-06 terminates.
+ */
+export async function orphanSweepEnvironments(
+  config: Pick<ResolvedConfig, "projects">,
+  ledger: ReturnType<typeof createLedger>,
+  log: Logger,
+  makeRuntime: () => ContainerRuntime = createDockerRuntime,
+): Promise<Environment[]> {
+  if (!config.projects.some((p) => p.environment.kind === "container")) return [];
+  const runtime = makeRuntime();
+  const info = await runtime.info();
+  if (!info.available) {
+    log.warn("container orphan sweep skipped: no container runtime answered", { detail: info.detail });
+    return [];
+  }
+  const onEvent = environmentEventSink(ledger, (event, why) =>
+    log.warn("environment event not recorded", { step: event.payload.step, container: event.payload.container, why }),
+  );
+  return [createContainerEnvironment({ runtime, onEvent })];
+}
+
 async function runDaemon(
   io: CliIo,
   log: Logger,
@@ -341,7 +373,8 @@ async function runDaemon(
 
   // FR-EXE-06: reconciliation completes before the lifecycle dispatches anything and before MCP accepts calls.
   try {
-    const report = await reconcile({ db, ledger, workspace, ...(now ? { now } : {}) });
+    const environments = await orphanSweepEnvironments(config, ledger, log);
+    const report = await reconcile({ db, ledger, workspace, environments, ...(now ? { now } : {}) });
     log.info("startup reconciliation finished", {
       examined: report.examined,
       changed: report.actions.length,
@@ -349,6 +382,7 @@ async function runDaemon(
       leases_released: report.leasesReleased.length,
       cancels_applied: report.cancelsApplied.length,
       decisions_applied: report.decisionsApplied.length,
+      containers_removed: report.containersRemoved.length,
     });
     const admittingReset = ledger.reconcileAdmittingWorkItems();
     if (admittingReset > 0) {
