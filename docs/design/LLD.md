@@ -2389,9 +2389,12 @@ export is derived. Redaction is by construction: spans are built from an allowli
 | `inner.call` | `controller.delegate` when the call belongs to a run, else root | M11; one per inner-agent call, attributes in [§13.8](#138-telemetry-and-events); never on a run's critical path beyond the per-call bound. **Not built as of 2026-10-15**: no span exporter exists; the pipeline writes a body-free log line of this name instead (§13.8 as-built note) |
 
 **Allowed attributes:** `run.id`, `session.id`, `provider`, `adapter.version`, `model`, `trust_profile`, `run.state`,
-`failure.code`, `retry.attempt`, `transport`, durations, `exit.code`, `exit.signal`, tool kind
-(`read|edit|shell|other`), counts (changed files, events), token/usage numbers as reported, `route.eligible_count`,
-`artifact.id`, `artifact.sha256`, `artifact.size_bytes`, and (M11) the `inner.*` attributes listed in §13.8.
+`failure.code`, `retry.attempt`, `transport`, durations (`duration_ms`), `exit.code`, `exit.signal`, tool kind
+(`tool.kind`, one of `read|edit|shell|other`), counts (`changed_files.count`, `events.count`), token/usage numbers as
+reported (`usage.input_tokens`, `usage.output_tokens`, `usage.cache_read_tokens`, `usage.cache_write_tokens`),
+`route.eligible_count`, `artifact.id`, `artifact.sha256`, `artifact.size_bytes`, and (M11) the `inner.*` attributes
+listed in §13.8. The concrete key names for the prose categories (durations, tool kind, counts, usage) were pinned by
+T8.4 (2026-10-16, Delegated); this list is the exact exported key set.
 **Forbidden (FR-TEL-03, NFR-SEC-01):** prompt or objective text, constraints text, shell command lines and tool
 arguments, file contents and diffs, stdout/stderr text, environment variable names or values beyond a count,
 credential-like values (including OAuth access or refresh tokens, API keys and webhook or sink URLs), absolute home
@@ -2419,7 +2422,7 @@ The explicit endpoint is passed to the exporter. A bounded batch processor queue
 of at most 64 after 100 ms, and bounds each export at 1 second (Delegated best-effort defaults, not measured targets).
 Pending initialization accepts at most 512 spans; failures are dropped without logging exporter error bodies or URLs.
 Shutdown closes only an initialized transport. Wrapper emission and attribute builders remain T8.2; the export-time
-attribute filter remains T8.4. Tests: `src/config/config.test.ts`, `src/telemetry/index.test.ts` and
+attribute filter is T8.4 (below). Tests: `src/config/config.test.ts`, `src/telemetry/index.test.ts` and
 `src/cli/serve.test.ts` (startup with OTel imports rejected).
 
 **T8.2 wrapper emission (2026-10-16, Delegated agent work, not owner-approved).** `src/telemetry/spans.ts` holds the
@@ -2434,9 +2437,20 @@ stdout/stderr text have no path onto a span by construction (FR-TEL-03, ADR-0012
 hook config is read. `RunLifecycle` takes an optional `Telemetry` (unset = no emission, fire-and-forget when set);
 `serve` passes the T8.1 instance. A run whose process never spawned (spawn error) exports no `provider.spawn` span;
 a run admitted before telemetry existed exports nothing. Spans currently export as roots; parent links and the
-forbidden-key collector assertions are T8.3, and the export-time allowlist drop filter is T8.4. Tests:
+forbidden-key collector assertions are T8.3, and the export-time allowlist drop filter is T8.4 (below). Tests:
 `src/telemetry/spans.test.ts` (fake-adapter run through the lifecycle into an in-process OTLP collector, a planted
 objective canary asserted absent from every attribute and raw OTLP body, and builder/tracker unit tests).
+
+**T8.4 export-time drop filter (2026-10-16, Delegated).** `src/telemetry/allowlist.ts` holds the exact key set above
+(`ALLOWED_SPAN_ATTRIBUTE_KEYS`, including the §13.8 `inner.*` keys). `createTelemetry().recordSpan` filters every span's
+attributes before it is queued for the transport, so a disallowed key never reaches the OTLP exporter. The match is
+exact and case-sensitive (no prefix or wildcard matching). Values must be strings, booleans or finite numbers; arrays,
+objects, `null` and non-finite numbers are dropped even on an allowlisted key. Drops are silent (no log line, because a
+dropped value may itself be forbidden text), and an attribute object whose read throws is dropped whole (fail closed).
+The span itself, its name and its timestamps still export. The filter does not inspect values for forbidden content;
+builders remain responsible for never setting forbidden categories (T8.2), and T8.3 scans exported spans. Tests:
+`src/telemetry/allowlist.test.ts`, including a check that the key set equals the backticked keys in this section and
+§13.8.
 
 **Collector test harness (T8.3, M8 acceptance).** Shape for the integration test, without requiring a provider CLI:
 
