@@ -460,7 +460,10 @@ delegate path through an in-process collector and asserts allowlisted attributes
 canary.
 
 **Allowlist drop (T8.4).** Before export, Switchboard drops any span attribute whose key is not on the LLD §7
-allowlist, and any non-scalar value (`src/telemetry/allowlist.ts`, tested in `src/telemetry/allowlist.test.ts`).
+allowlist, and any non-scalar or non-finite value (`src/telemetry/allowlist.ts`, applied in `recordSpan` of
+`src/telemetry/index.ts`). Dropped values are not logged, since a dropped value may itself be forbidden text, and an
+attribute set that throws while being read is dropped whole. `src/telemetry/allowlist.test.ts` plants a disallowed key
+on an internal span builder and asserts it never reaches the exporter, and checks that the key set matches LLD §7.
 
 **Collector integration test (T8.3).** `src/telemetry/collector-lifecycle.test.ts` (suite
 `collector integration: fake-adapter delegate/finalize path (T8.3)`) runs a fake-adapter delegate/finalize path with
@@ -481,9 +484,13 @@ Details: [docs/operations/version-canary.md](docs/operations/version-canary.md).
 preflight cache, and asserts routing excludes the provider until validation records the new version. No provider CLI is
 installed in CI.
 
+**Acceptance closure (T8.7).** `Partial`: this section and the M8 status in
+[ROADMAP §6](docs/ROADMAP.md#6-milestones) now match `src/telemetry/` and the version canary on `main`. The
+corrections to FRD, SDD, HLD and TDD text that T8.7 also covers are not done yet.
+
 Tests on fakes: `src/config/config.test.ts`, `src/telemetry/index.test.ts`, `src/telemetry/spans.test.ts`,
-`src/telemetry/collector-lifecycle.test.ts`, `src/telemetry/collector.test.ts`, `src/adapters/version-canary.test.ts`,
-`src/adapters/version-bump-preflight.test.ts`. Per-task evidence is in
+`src/telemetry/allowlist.test.ts`, `src/telemetry/collector-lifecycle.test.ts`, `src/telemetry/collector.test.ts`,
+`src/adapters/version-canary.test.ts`, `src/adapters/version-bump-preflight.test.ts`. Per-task evidence is in
 [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
 
 ## Container environments (milestone 10)
