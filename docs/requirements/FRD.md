@@ -42,7 +42,7 @@ planning and are marked "(planning)". Actors are defined in §2.
 | Read run status, artifacts, route explanation, capacity | Yes (`runs list/show`) | Yes (`get_run`, `get_artifacts`, `explain_route`, `get_capacity`) | n/a | FR-MCP-01/02, FR-OPS-01 |
 | List capabilities | Yes (`doctor`) | Yes (`list_capabilities`) | n/a | FR-MCP-01, FR-OPS-01 |
 | Run preflight for all adapters | Yes (`doctor`) | Indirectly (cached preflight at route time) | Yes | FR-OPS-01, FR-ADP-02 |
-| Accept a new provider CLI version | Yes (`adapters validate`) | No | Records `adapter_version` | FR-OPS-02, FR-ADP-03 |
+| Accept a new provider CLI version | Yes (`adapters validate`) | No | Records `adapter_version` (as built: the reviewed manifest and `version-canary.json`, no ledger row; [WF-9](#wf-9-adapter-version-revalidation)) | FR-OPS-02, FR-ADP-03 |
 | Change policy, allowed roots, client max profile, weights | Yes (config) | No | Snapshots config into each run | FR-POL-01, FR-POL-10 |
 | Log in to a provider | Yes, natively, outside Switchboard | No | Never | FR-AUTH-01, FR-OPS-03 |
 | Touch the operator's checked-out branch | Yes (by hand) | No | Never | FR-WS-05 |
@@ -589,6 +589,10 @@ sequenceDiagram
 - **Failure paths:** states other than READY, with reason. At run time they surface as BR-3 codes.
 - **Postconditions:** adapter states persisted (`adapter_version`, `provider_health`); no provider config modified
   (FR-POL-08).
+- **As built (2026-10-16, Delegated):** preflight results are cached in process only (`src/adapters/preflight-cache.ts`,
+  BR-20); `doctor` records a stable probed version in `version-canary.json` under the data directory (WF-9 as-built
+  note). No preflight writes an `adapter_version` ledger row, and `provider_health` is written only by the M6 circuit
+  breaker, so the persistence named above is a gap against this postcondition, not a design change.
 
 ### WF-7 Privileged approval
 
