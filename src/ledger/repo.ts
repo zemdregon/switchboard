@@ -3,6 +3,12 @@ import { approvalCausePrefix, type DecisionInput, renderDecisionSummary } from "
 import { deriveOpenWork, type OpenWorkRun } from "../continuity/open-work.js";
 import { defaultIds, type IdGenerator } from "../ids/index.js";
 import { DecisionRefusedError } from "./errors.js";
+import {
+  createWorkQueueLedgerSlice,
+  type EnqueueWorkItemInput,
+  type WorkItemRow,
+  type WorkListFilter,
+} from "./work-queue.js";
 
 /**
  * Minimal typed repository helpers (Proposed shape). They cover what T1.3 tests and the T1.5/T1.8 callers need first;
@@ -938,7 +944,27 @@ export interface Ledger {
    * not suspended (nothing is changed or recorded). Writes no run event (LLD §13.8).
    */
   resumeInnerTask(task: string): InnerTaskStateRow | undefined;
+
+  // ---- T15.1 additions (project work queue, FR-QUE-01, LLD §18) -----------------------------------------------
+  enqueueWorkItem(input: EnqueueWorkItemInput): WorkItemRow;
+  getWorkItem(id: string): WorkItemRow | undefined;
+  findWorkItemByIdempotency(creatorClientId: string, key: string): WorkItemRow | undefined;
+  findWorkItemByAdmittedRunId(runId: string): WorkItemRow | undefined;
+  listWorkItems(filter: WorkListFilter): WorkItemRow[];
+  cancelWorkItem(workItemId: string, byClientId: string, operator?: boolean): WorkItemRow | undefined;
+  claimReadyWorkItem(projectId: string): WorkItemRow | undefined;
+  releaseAdmittingToReady(workItemId: string): boolean;
+  completeWorkAdmission(
+    workItemId: string,
+    outcome: { kind: "admitted"; runId: string } | { kind: "retry" } | { kind: "failed"; code: string },
+  ): WorkItemRow | undefined;
+  markWorkItemDone(workItemId: string): WorkItemRow | undefined;
+  reconcileAdmittingWorkItems(): number;
+  countWorkItemsForProject(projectId: string): number;
+  listDistinctProjectIdsWithReadyWork(): string[];
 }
+
+export type { EnqueueWorkItemInput, WorkItemRow, WorkItemState, WorkListFilter } from "./work-queue.js";
 
 export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledger {
   const ids = deps.ids ?? defaultIds;
@@ -2076,5 +2102,7 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
           : db.prepare(`SELECT ${cols} FROM inner_call ORDER BY id`).all()
       ) as InnerCallRow[];
     },
+
+    ...createWorkQueueLedgerSlice(db, { ids, ts, immediate }),
   };
 }

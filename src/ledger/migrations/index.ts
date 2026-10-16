@@ -14,6 +14,7 @@ import { sql as sql0013 } from "./0013_http_subject.js";
 import { sql as sql0014 } from "./0014_project_affinity.js";
 import { sql as sql0015 } from "./0015_rag_record.js";
 import { sql as sql0016 } from "./0016_handoff_condense_artifact.js";
+import { sql as sql0017 } from "./0017_project_work_queue.js";
 
 export interface Migration {
   readonly version: number;
@@ -41,4 +42,5 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 14, name: "project_affinity", sql: sql0014 },
   { version: 15, name: "rag_record", sql: sql0015 },
   { version: 16, name: "handoff_condense_artifact", sql: sql0016, foreignKeysOff: true },
+  { version: 17, name: "project_work_queue", sql: sql0017 },
 ];

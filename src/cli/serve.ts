@@ -93,6 +93,7 @@ import {
 import { type ModelConfig, ModelRegistry } from "../models/index.js";
 import { createProfileResolver } from "../policy/index.js";
 import { DynamicProjectStore, innerSettingResolver } from "../projects/index.js";
+import { queueSchedulerSettingsFromConfig, runProjectWorkQueueTick } from "../queue/index.js";
 import { reconcile } from "../reconcile/index.js";
 import { pruneRagStores } from "../retrieval/store.js";
 import { runRetentionGc, WorkspaceManager } from "../workspace/index.js";
@@ -338,6 +339,10 @@ async function runDaemon(
       cancels_applied: report.cancelsApplied.length,
       decisions_applied: report.decisionsApplied.length,
     });
+    const admittingReset = ledger.reconcileAdmittingWorkItems();
+    if (admittingReset > 0) {
+      log.info("project work queue: reset ADMITTING items to READY", { count: admittingReset });
+    }
   } catch (err) {
     log.error("refusing to serve: startup reconciliation failed", { error: message(err) });
     return 1;
@@ -567,6 +572,31 @@ async function runDaemon(
   await applyRequests();
   lifecycle.start();
 
+  const queueSettings = queueSchedulerSettingsFromConfig(
+    config as { queue?: { maxItemsPerProject?: number; dequeueBatch?: number } },
+  );
+  const queueAdmission = {
+    lifecycle,
+    ledger,
+    registry,
+    config: {
+      allowedRoots: config.allowedRoots,
+      mcpClients: config.mcpClients,
+      projects: config.projects,
+      dataDir: config.dataDir,
+      providers: config.providers,
+      capacity: config.capacity,
+      limits: config.limits,
+      routing: config.routing,
+    },
+    projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
+  };
+  const runQueueTick = () =>
+    runProjectWorkQueueTick(ledger, queueAdmission, queueSettings).catch((err) => {
+      log.error("project work queue tick failed", { error: message(err) });
+    });
+  void runQueueTick();
+
   // T12.4 (FR-RAG-11, LLD §14.5): background index builds. `startServeRag` only queues every project and returns; a
   // build runs on later turns of the event loop and is never awaited by admission. Without an embedding backend it is
   // undefined and nothing changes (FR-RAG-04). Pending `index rebuild|clear` requests are applied with the operator poll.
@@ -595,6 +625,7 @@ async function runDaemon(
   const timer = setInterval(() => {
     void applyRequests();
     void rag?.applyRequests();
+    void runQueueTick();
   }, OPERATOR_POLL_MS);
   const gcTimer = config.retentionEnabled
     ? setInterval(() => void gcPass("interval"), Math.min(config.retention.intervalMs, MAX_TIMER_MS))

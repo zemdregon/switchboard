@@ -2227,7 +2227,11 @@ export class RunLifecycle {
     });
     if (!moved) return undefined;
     if (isTerminal(to)) this.recordBreakerOutcome(moved);
-    if (to === "SUCCEEDED") this.recordAffinity(moved);
+    if (to === "SUCCEEDED") {
+      this.recordAffinity(moved);
+      const workItem = this.ledger.findWorkItemByAdmittedRunId(moved.id);
+      if (workItem !== undefined) this.ledger.markWorkItemDone(workItem.id);
+    }
     this.opts.onTransition?.({ runId: run.id, from: run.state, to, rule: rule.id });
     if (isTerminal(to)) queueMicrotask(() => this.settle(run.id));
     return moved;
