@@ -26,6 +26,9 @@ import {
   PUSH_DESCRIPTION,
   PUSH_INPUT_SCHEMA,
   parseToolList,
+  SEARCH_DESCRIPTION,
+  SEARCH_INPUT_SCHEMA,
+  SEARCH_TOOL,
   TOOL_TOKEN_ENV,
   type ToolName,
   type ToolResponse,
@@ -46,7 +49,7 @@ export interface ShimConfig {
   readonly messageOptional?: boolean;
 }
 
-const USAGE = `usage: switchboard tool-shim --socket <path> [--tools commit[,push]] [${MESSAGE_OPTIONAL_FLAG}]`;
+const USAGE = `usage: switchboard tool-shim --socket <path> [--tools commit[,push][,${SEARCH_TOOL}]] [${MESSAGE_OPTIONAL_FLAG}]`;
 
 /**
  * Parse `--socket <path> [--tools <list>]` and read (then remove) the token from the environment. Throws a plain
@@ -123,24 +126,24 @@ function toResult(r: ToolResponse): CallToolResult {
   return { isError: true, content: [{ type: "text", text: JSON.stringify(r.error) }] };
 }
 
+/** The description and input schema the shim lists for one tool. */
+function toolListing(name: ToolName, messageOptional: boolean): { description: string; inputSchema: object } {
+  if (name === "push") return { description: PUSH_DESCRIPTION, inputSchema: PUSH_INPUT_SCHEMA };
+  // T12.9 (FR-RAG-13): read-only; the controller searches the run's own project only.
+  if (name === SEARCH_TOOL) return { description: SEARCH_DESCRIPTION, inputSchema: SEARCH_INPUT_SCHEMA };
+  return messageOptional
+    ? { description: COMMIT_DESCRIPTION_MESSAGE_OPTIONAL, inputSchema: COMMIT_INPUT_SCHEMA_MESSAGE_OPTIONAL }
+    : { description: COMMIT_DESCRIPTION, inputSchema: COMMIT_INPUT_SCHEMA };
+}
+
 /** Build the stdio MCP server; exported for tests. */
 export function createShimServer(cfg: ShimConfig): Server {
   const server = new Server({ name: "switchboard-git-tools", version: "1.0.0" }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: (cfg.tools ?? ["commit"]).map((name) => ({
-      name,
-      description:
-        name === "push"
-          ? PUSH_DESCRIPTION
-          : cfg.messageOptional === true
-            ? COMMIT_DESCRIPTION_MESSAGE_OPTIONAL
-            : COMMIT_DESCRIPTION,
-      inputSchema: (name === "push"
-        ? PUSH_INPUT_SCHEMA
-        : cfg.messageOptional === true
-          ? COMMIT_INPUT_SCHEMA_MESSAGE_OPTIONAL
-          : COMMIT_INPUT_SCHEMA) as unknown as { type: "object" },
-    })),
+    tools: (cfg.tools ?? ["commit"]).map((name) => {
+      const { description, inputSchema } = toolListing(name, cfg.messageOptional === true);
+      return { name, description, inputSchema: inputSchema as unknown as { type: "object" } };
+    }),
   }));
   server.setRequestHandler(CallToolRequestSchema, async (req) =>
     toResult(await forward(cfg, req.params.name, req.params.arguments)),

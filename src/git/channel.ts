@@ -9,9 +9,10 @@
  *   1. framing: one line, at most {@link MAX_REQUEST_BYTES}, within the read timeout;
  *   2. rate limit per channel (every request counts, refused ones too), then a JSON object of the exact shape;
  *   3. channel still open; token equal to this run's (SHA-256 digests compared with `timingSafeEqual`);
- *   4. tool offered on this channel (`commit` always; `push` only when the run was offered it at open, T9.6);
+ *   4. tool offered on this channel (`commit` always; `push` only when the run was offered it at open, T9.6;
+ *      `search_project_context` only when retrieval was on for the run's project at open, T12.9);
  *   5. arguments: `commit` takes exactly `message` (1..8192 characters) and optional `paths` (1..256 strings of at
- *      most 4096); `push` takes none (an empty object);
+ *      most 4096); `push` takes none (an empty object); `search_project_context` takes `query`, `limit`, `scope`;
  *   6. run exists, is RUNNING, and still has the meta-session and worktree the token was bound to;
  *   7. `commit`: the commit library re-checks state and lease, refuses paths outside the worktree
  *      (`PATH_OUTSIDE_WORKTREE`, `PATH_REFUSED`), sanitises the message and writes provenance (FR-GIT-04, FR-GIT-07);
@@ -31,6 +32,15 @@
  * denies the draft in the inner pipeline's privacy gate, LLD §13.5). Without that, nothing here changes: the schema,
  * the argument check and the library call are exactly as before. The service never sees the agent's message, and the
  * library sanitises whatever it returns before Git sees it.
+ *
+ * Project search (T12.9; FR-RAG-13, LLD §14.7, ADR-0026): with a {@link ChannelSearchPort} that reports retrieval on for
+ * the run's project when the channel opens, the channel also offers the read-only `search_project_context` tool. Its
+ * calls pass steps 1 to 4 and 6 like any other; step 5 takes exactly `query` (1..{@link MAX_QUERY_LENGTH} characters)
+ * and optional `limit` (1..{@link MAX_SEARCH_LIMIT}) and `scope`, so a call naming a `project`, a `path` or anything
+ * else is `INVALID_ARGUMENTS`; step 7 hands the port the project id bound at open, never one from the request. The port
+ * is the T12.6 handler wired in `serve`: this module does not import the retrieval service (FR-RAG-07 import
+ * boundary), and the snippets it relays are untrusted data that reach no decision here. Without a port, or with
+ * retrieval off for the project, the tool list, the shim argv and the channel file are exactly as before.
  *
  * Channel files (T9.4b, ADR-0029): `OpenChannel.writeFile` writes one of `CHANNEL_FILE_NAMES` (the Claude Code
  * `--mcp-config` definition) into the same private directory, `0600`, exclusive create, no link following; it never
@@ -61,14 +71,17 @@ import {
   isTokenShaped,
   MAX_COMMIT_PATH_CHARS,
   MAX_COMMIT_PATHS,
+  MAX_QUERY_LENGTH,
   MAX_REQUEST_BYTES,
+  MAX_RESPONSE_BYTES,
+  MAX_SEARCH_LIMIT,
   MAX_SOCKET_PATH_BYTES,
   MAX_TOOL_MESSAGE_CHARS,
   MESSAGE_OPTIONAL_FLAG,
   PROTOCOL_VERSION,
+  SEARCH_TOOL,
   TOKEN_PREFIX,
   TOKEN_RANDOM_BYTES,
-  TOOL_NAMES,
   TOOL_TOKEN_ENV,
   type ToolName,
   type ToolResponse,
@@ -105,6 +118,33 @@ export const DEFAULT_CHANNEL_LIMITS: ChannelLimits = {
   maxPushesPerChannel: 10,
 };
 
+/** T12.9: what the channel passes to {@link ChannelSearchPort.search}; `projectId` is the one bound at open. */
+export interface ChannelSearchInput {
+  readonly runId: string;
+  readonly projectId: string;
+  readonly query: string;
+  readonly limit?: number;
+  readonly scope?: "project" | "global" | "both";
+}
+
+/**
+ * T12.9 (FR-RAG-13): the T12.6 `search_project_context` handler as the channel sees it, structurally typed so that
+ * `COMP-GIT` never imports the retrieval service (FR-RAG-07). Wired in `serve` (`src/mcp/channel-search.ts`).
+ */
+export interface ChannelSearchPort {
+  /** Whether retrieval is on for the project (asked once at open; the tool is offered only then). A throw is false. */
+  offeredFor(projectId: string): boolean;
+  /**
+   * Search the project. `ok: true` carries the T12.6 result as is (`status`, `reason`, `results`, ...), including
+   * `unavailable` with `NOT_BUILT` when the project has no index; a refusal names a code the channel returns.
+   */
+  search(
+    input: ChannelSearchInput,
+  ): Promise<
+    { readonly ok: true; readonly result: Record<string, unknown> } | { readonly ok: false; readonly code: string }
+  >;
+}
+
 export interface GitToolServiceOptions {
   readonly db: Database.Database;
   /** Controller data directory; sockets go under `<dataDir>/runs/<run_id>/` when the path is short enough. */
@@ -132,6 +172,11 @@ export interface GitToolServiceOptions {
    * configuration at channel open and again at every call. Absent: `inherit`. A throw is read as `off` (fail closed).
    */
   readonly innerSettingFor?: (projectId: string, contextId: string) => ProjectInnerSetting;
+  /**
+   * T12.9 (FR-RAG-13): read-only project search. Absent: no channel offers `search_project_context`, and everything
+   * here is exactly as before.
+   */
+  readonly search?: ChannelSearchPort;
 }
 
 /** Facts bound to the token when the channel opens, frozen at admission (policy snapshot) or at LEASED. */
@@ -212,6 +257,7 @@ interface ChannelState {
   calls: number;
   commits: number;
   pushes: number;
+  searches: number;
   refused: number;
   refusalsSuppressed: number;
 }
@@ -231,6 +277,9 @@ const AGENT_MESSAGE_CODES: ReadonlySet<string> = new Set([
   // T9.10: the message names only a fixed reason code (never Git's or the signing program's output).
   "SIGNING_FAILED",
 ]);
+
+/** T12.9: refusal codes a {@link ChannelSearchPort} may return; anything else is reported as `INTERNAL_ERROR`. */
+const SEARCH_REFUSAL_CODES: ReadonlySet<string> = new Set(["INVALID_ARGUMENTS", "PROJECT_UNAVAILABLE"]);
 
 const GENERIC_MESSAGES: Readonly<Record<string, string>> = {
   MALFORMED_REQUEST: "the request is not a valid tool call",
@@ -252,6 +301,7 @@ const GENERIC_MESSAGES: Readonly<Record<string, string>> = {
   GIT_FAILED: "the commit failed in the controller",
   SIGNING_FAILED: "the commit could not be signed; nothing was committed",
   MESSAGE_REQUIRED: "no commit message was given and none could be drafted; call commit again with a message",
+  PROJECT_UNAVAILABLE: "the run's project is no longer available for search",
   INTERNAL_ERROR: "the controller could not complete the call",
 };
 
@@ -300,6 +350,8 @@ export class GitToolService {
     const mode = commitMessageMode(this.options.innerAgent);
     const messageMode =
       mode !== undefined && this.innerSetting(input.projectId, input.contextId) !== "off" ? mode : undefined;
+    // T12.9: decided once per channel, like the commit-message mode; a throwing port offers nothing (fail closed).
+    const offerSearch = this.searchOffered(input.projectId);
     const { dir, fallback } = await this.socketDir(input.runId);
     const socketPath = path.join(dir, SOCKET_FILE_NAME);
     const token = `${TOKEN_PREFIX}${randomBytes(TOKEN_RANDOM_BYTES).toString("base64url")}`;
@@ -310,7 +362,11 @@ export class GitToolService {
     const state: ChannelState = {
       input,
       tokenDigest: digest(token),
-      tools: input.offerPush === true && this.options.pusher !== undefined ? TOOL_NAMES : ["commit"],
+      tools: [
+        "commit",
+        ...(input.offerPush === true && this.options.pusher !== undefined ? (["push"] as const) : []),
+        ...(offerSearch ? [SEARCH_TOOL] : []),
+      ],
       dir,
       socketPath,
       fallback,
@@ -326,6 +382,7 @@ export class GitToolService {
       calls: 0,
       commits: 0,
       pushes: 0,
+      searches: 0,
       refused: 0,
       refusalsSuppressed: 0,
     };
@@ -379,6 +436,17 @@ export class GitToolService {
       writeFile: (name, contents) => this.writeChannelFile(state, name, contents),
       close: () => this.close(input.runId),
     };
+  }
+
+  /** {@link ChannelSearchPort.offeredFor}, failing closed to false. */
+  private searchOffered(projectId: string): boolean {
+    const port = this.options.search;
+    if (port === undefined) return false;
+    try {
+      return port.offeredFor(projectId) === true;
+    } catch {
+      return false;
+    }
   }
 
   /** {@link GitToolServiceOptions.innerSettingFor}, failing closed to `off`. */
@@ -607,6 +675,11 @@ export class GitToolService {
       if (Object.keys(req.arguments).length !== 0) return this.refuse(state, "INVALID_ARGUMENTS", tool);
       return this.dispatchPush(state);
     }
+    if (tool === SEARCH_TOOL) {
+      const search = parseSearchArguments(req.arguments);
+      if ("code" in search) return this.refuse(state, search.code, tool);
+      return this.dispatchSearch(state, search);
+    }
     const args = parseCommitArguments(req.arguments, state.messageMode !== undefined);
     if ("code" in args) return this.refuse(state, args.code, tool);
     // 6. run state and binding.
@@ -712,6 +785,32 @@ export class GitToolService {
     }
   }
 
+  /**
+   * `search_project_context` (T12.9, FR-RAG-13): steps 6 and 7 for a search. The project is the one bound at open; the
+   * answer is the T12.6 result, with trailing results dropped (and `truncated` set) if the line would exceed
+   * {@link MAX_RESPONSE_BYTES}. Nothing about the query or the results is recorded here (the port records counts).
+   */
+  private async dispatchSearch(
+    state: ChannelState,
+    args: Omit<ChannelSearchInput, "runId" | "projectId">,
+  ): Promise<ToolResponse> {
+    const port = this.options.search;
+    if (!port) return this.refuse(state, "UNKNOWN_TOOL", SEARCH_TOOL);
+    const bound = this.checkRun(state, SEARCH_TOOL);
+    if ("error" in bound) return bound.error;
+    let outcome: Awaited<ReturnType<ChannelSearchPort["search"]>>;
+    try {
+      outcome = await port.search({ ...args, runId: state.input.runId, projectId: state.input.projectId });
+    } catch {
+      return this.refuse(state, "INTERNAL_ERROR", SEARCH_TOOL);
+    }
+    if (!outcome.ok) {
+      return this.refuse(state, SEARCH_REFUSAL_CODES.has(outcome.code) ? outcome.code : "INTERNAL_ERROR", SEARCH_TOOL);
+    }
+    state.searches += 1;
+    return { ok: true, result: fitResponse(outcome.result) };
+  }
+
   /** Record the refusal (bounded) and build the answer. Never includes the token or request content. */
   private refuse(
     state: ChannelState,
@@ -762,6 +861,7 @@ export class GitToolService {
           calls: state.calls,
           commits: state.commits,
           pushes: state.pushes,
+          ...(state.searches > 0 ? { searches: state.searches } : {}),
           refused: state.refused,
           ...(state.refusalsSuppressed > 0 ? { refusals_not_recorded: state.refusalsSuppressed } : {}),
           removed: !(await exists(state.dir)),
@@ -822,6 +922,50 @@ function parseCommitArguments(
     }
   }
   return { ...msg, paths: paths as string[] };
+}
+
+/** T12.9: exactly `query` and optional `limit` and `scope` (LLD §14.7 without `project`; `SEARCH_INPUT_SCHEMA`). */
+function parseSearchArguments(
+  args: Record<string, unknown>,
+): Omit<ChannelSearchInput, "runId" | "projectId"> | { code: "INVALID_ARGUMENTS" } {
+  for (const k of Object.keys(args))
+    if (k !== "query" && k !== "limit" && k !== "scope") return { code: "INVALID_ARGUMENTS" };
+  const { query, limit, scope } = args;
+  if (typeof query !== "string" || query.length === 0 || query.length > MAX_QUERY_LENGTH) {
+    return { code: "INVALID_ARGUMENTS" };
+  }
+  if (
+    limit !== undefined &&
+    (!Number.isInteger(limit) || (limit as number) < 1 || (limit as number) > MAX_SEARCH_LIMIT)
+  ) {
+    return { code: "INVALID_ARGUMENTS" };
+  }
+  if (scope !== undefined && scope !== "project" && scope !== "global" && scope !== "both") {
+    return { code: "INVALID_ARGUMENTS" };
+  }
+  return {
+    query,
+    ...(limit !== undefined ? { limit: limit as number } : {}),
+    ...(scope !== undefined ? { scope } : {}),
+  };
+}
+
+/**
+ * T12.9: the search result, with trailing `results` dropped and `truncated: true` set until the whole response line
+ * fits {@link MAX_RESPONSE_BYTES} (the shim refuses a longer one). T12.6 already bounds the text, so this only bites on
+ * text that JSON escaping grows a lot.
+ */
+function fitResponse(result: Record<string, unknown>): Record<string, unknown> {
+  const size = (r: Record<string, unknown>) =>
+    Buffer.byteLength(`${JSON.stringify({ ok: true, result: r })}\n`, "utf8");
+  if (size(result) <= MAX_RESPONSE_BYTES) return result;
+  const results = Array.isArray(result.results) ? [...result.results] : [];
+  let out: Record<string, unknown> = { ...result, truncated: true, results };
+  while (results.length > 0 && size(out) > MAX_RESPONSE_BYTES) {
+    results.pop();
+    out = { ...out, results: [...results] };
+  }
+  return out;
 }
 
 /** The directory must be a real directory (not a link), owned by this user, with no group or other access. */

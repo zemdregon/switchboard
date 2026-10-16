@@ -473,6 +473,61 @@ describe("audit: everything but the one channel shape is refused (ADR-0029 item 
   });
 });
 
+describe("audit: the read-only search tool (T12.9, FR-RAG-13): one more exact name, nothing else", () => {
+  const dir = "/data/runs/run_x";
+  const file = `${dir}/${CHANNEL_MCP_CONFIG_FILE}`;
+  const withSearch: ChannelAuditContext = { mcpConfigPath: file, toolNames: ["commit", "search_project_context"] };
+  const commitOnly: ChannelAuditContext = { mcpConfigPath: file, toolNames: ["commit"] };
+  const base = compiled(off, EDIT_UNTRUSTED);
+  const inv = (rules: string[]) => ({
+    argv: [...base.argv, "--mcp-config", file, "--allowedTools", ...rules],
+    policyFlags: base.policyFlags,
+    env: TOKEN_ENV,
+  });
+  const SEARCH_RULE = "mcp__switchboard-git__search_project_context";
+
+  it("the fragment names the search tool by its exact rule when the channel offers it", () => {
+    const extra = channelArgs(shimFor(privateDir(), ["commit", "search_project_context"]));
+    const rules = extra.argv.slice(extra.argv.indexOf("--allowedTools") + 1);
+    expect(rules).toEqual(["mcp__switchboard-git__commit", SEARCH_RULE]);
+    expect(channelToolRule("search_project_context")).toBe(SEARCH_RULE);
+    expect(auditMcpArgs(inv(rules), withSearch, BYPASS_CTX)).toEqual([]);
+    expect(
+      auditMcpArgs(inv(rules), { ...withSearch, toolNames: ["commit", "push", "search_project_context"] }, BYPASS_CTX),
+    ).toEqual([]);
+  });
+
+  const refused: Array<[string, string[], ChannelAuditContext]> = [
+    ["the search rule when the channel does not offer it", ["mcp__switchboard-git__commit", SEARCH_RULE], commitOnly],
+    ["a search wildcard", ["mcp__switchboard-git__commit", "mcp__switchboard-git__search*"], withSearch],
+    ["a server wildcard next to the search rule", [SEARCH_RULE, "mcp__switchboard-git__*"], withSearch],
+    [
+      "a foreign tool name on the channel server",
+      [SEARCH_RULE, "mcp__switchboard-git__search_global_context"],
+      withSearch,
+    ],
+    ["the search tool on a second server", ["mcp__switchboard-search__search_project_context"], withSearch],
+    ["the MCP tool's other server", ["mcp__switchboard__search_project_context"], withSearch],
+    [
+      "a channel context that lists a name outside TOOL_NAMES",
+      ["mcp__switchboard-git__read_file"],
+      { mcpConfigPath: file, toolNames: ["commit", "read_file"] },
+    ],
+    ["a comma-joined wildcard", [`${SEARCH_RULE},mcp__switchboard-git__*`], withSearch],
+  ];
+  for (const [label, rules, ctx] of refused) {
+    it(`refuses ${label}`, () => {
+      expect(auditMcpArgs(inv(rules), ctx, BYPASS_CTX).length, label).toBeGreaterThan(0);
+      expect(() => assertMcpAudit(inv(rules), ctx, BYPASS_CTX), label).toThrow(McpConfigAuditError);
+    });
+  }
+
+  it("the Claude fragment refuses a shim offering a tool outside TOOL_NAMES", () => {
+    const shim = shimFor(privateDir(), ["commit", "search_everything" as "search_project_context"]);
+    expect("ineligible" in claudeChannelArgs(shim, approvedReq, BYPASS)).toBe(true);
+  });
+});
+
 describe("audit: the definition file itself (defence in depth)", () => {
   it("passes a 0600 file in a 0700 directory, refuses missing, open-mode, linked or group-readable ones", () => {
     const dir = privateDir();

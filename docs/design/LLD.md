@@ -4537,6 +4537,30 @@ path outside the project's contexts is returned; the tool never reads another pr
 `status: "unavailable"` with a reason code, not a tool error (FR-RAG-08). Text in `results` is untrusted data: the tool
 description says so, and a client must treat it as such. The call is recorded as a `rag_retrieval` row (§14.10).
 
+*As built (T12.9, 2026-10-16, Delegated, not owner-approved; fakes only):* the agent-callable form is the T12.6 handler
+(`searchProjectContext`) behind the per-run tool channel (§12.2,
+[ADR-0026](../adr/0026-per-run-tool-channel-socket-and-token.md)).
+`serve` hands the `COMP-GIT` channel service a structurally typed `ChannelSearchPort` (`src/mcp/channel-search.ts`), so
+`src/git/` never imports `src/retrieval/` (FR-RAG-07 import-boundary test unchanged). When a channel opens, the tool
+`search_project_context` is added to its tools only if the port reports retrieval on for the run's project; the shim then
+lists it (`--tools commit[,push],search_project_context`) and an adapter that passes tools by exact name allows it as
+`mcp__switchboard-git__search_project_context`. Today only Claude Code injects a channel, behind the unsupported
+opt-in `providers.claude-code.git_channel` and only in an approved `privileged` bypass run
+([ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md),
+[ADR-0033](../adr/0033-claude-channel-bypass-only-without-safe-mode.md)); the fake test adapter also injects one. The
+channel form has no `project` argument: its input
+is exactly `query` (1..2000 characters), optional `limit` (1..32) and `scope`; any other key, including `project` or a
+path, is `INVALID_ARGUMENTS` before the handler runs, and the handler always gets the project id bound when the channel
+opened. Token, rate limit, run state and binding checks are those of `commit`. Bounds, scope rules
+(`GLOBAL_NOT_AVAILABLE`), freshness and `unavailable` with `NOT_BUILT` for a project without an index are the T12.6
+ones; `MAX_SEARCH_LIMIT`, `MAX_RESULT_TEXT_BYTES`, `MAX_SEARCH_TEXT_BYTES` and `MAX_QUERY_LENGTH` are defined once in
+`src/git/tool-protocol.ts` and re-exported by `src/mcp/search-context.ts`. Delegated differences: a `scope` the
+project may not use is `INVALID_ARGUMENTS`; a project no longer configured is `PROJECT_UNAVAILABLE`; the `rag_record`
+row carries the run id; the shim's response bound rose from 64 KiB to 512 KiB and the controller drops trailing results
+(setting `truncated`) if the line would still exceed it; `git_channel_closed` counts `searches`. With retrieval off for
+the project, no port, or no channel, the tool list, shim argv and channel definition are unchanged. The argv audit
+admits the extra allow rule only when the channel offers the tool and the name is one of the protocol's `TOOL_NAMES`.
+
 ### 14.8 Freshness and fallback
 
 Per FR-RAG-08:
