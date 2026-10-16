@@ -4,4 +4,5 @@ export * from "./main.js";
 export * from "./operator.js";
 export * from "./pause.js";
 export * from "./runs.js";
+export * from "./schedule.js";
 export * from "./serve.js";

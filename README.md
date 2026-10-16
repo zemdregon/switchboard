@@ -122,7 +122,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#563](https://github.com/zemdregon/switchboard/pull/563)) are done on fakes. The trigger is off by default
   (`ci_trigger` in the configuration); `serve` reads CI status through the operator's logged-in `gh` CLI, polls only
   branches the project pushed, treats the CI text as untrusted and enqueues a work item under the trigger's client
-  ceiling. Switchboard reads no GitHub token. Schedules (T15.2) are not done. See
+  ceiling. Switchboard reads no GitHub token. Schedules (T15.2, [#561](https://github.com/zemdregon/switchboard/pull/561))
+  are done on fakes: off by default, UTC cron, fired by `serve` before the CI poll, and listed or disabled with
+  `switchboard schedule`. See
   [ROADMAP §6.14](docs/ROADMAP.md#614-m15-project-queue-schedules-and-ci-triggers-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
   client and a macOS CI leg are done; Grok Build, Antigravity, Cursor and OpenCode each have a module, compile matrix

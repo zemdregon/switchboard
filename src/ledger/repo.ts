@@ -4,6 +4,7 @@ import { deriveOpenWork, type OpenWorkRun } from "../continuity/open-work.js";
 import { defaultIds, type IdGenerator } from "../ids/index.js";
 import { type ControlPlaneLedgerSlice, createControlPlaneLedgerSlice } from "./control-plane.js";
 import { DecisionRefusedError } from "./errors.js";
+import { createScheduleLedgerSlice, type ScheduleLedgerSlice } from "./schedule.js";
 import {
   createWorkQueueLedgerSlice,
   type EnqueueWorkItemInput,
@@ -708,7 +709,7 @@ export interface InnerTaskStateRow {
   version: number;
 }
 
-export interface Ledger extends ControlPlaneLedgerSlice {
+export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice {
   createMetaSession(input: NewMetaSession): MetaSessionRow;
   getMetaSession(id: string): MetaSessionRow | undefined;
   createRun(input: NewRun): RunRow;
@@ -1007,6 +1008,13 @@ export {
   OPERATOR_RESUME_REQUESTED,
   type PendingPauseRequest,
 } from "./control-plane.js";
+export type {
+  CreateScheduleInput,
+  ScheduleApprovalState,
+  ScheduleLedgerSlice,
+  ScheduleListFilter,
+  ScheduleRow,
+} from "./schedule.js";
 export type { EnqueueWorkItemInput, WorkItemRow, WorkItemState, WorkListFilter } from "./work-queue.js";
 
 export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledger {
@@ -2191,5 +2199,7 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
     ...createWorkQueueLedgerSlice(db, { ids, ts, immediate }),
     // T14.6 (FR-CTL-05): pause rows and operator pause signals (migration 0018).
     ...createControlPlaneLedgerSlice(db, { ids, ts, immediate }),
+    // T15.2 (FR-QUE-02): schedules (migration 0019).
+    ...createScheduleLedgerSlice(db, { ids, ts, immediate }),
   };
 }
