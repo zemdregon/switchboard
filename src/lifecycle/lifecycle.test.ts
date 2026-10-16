@@ -16,6 +16,8 @@ import {
   type ResolvedProfile,
 } from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
+import type { CliIo } from "../cli/io.js";
+import { main } from "../cli/main.js";
 import { groupAlive } from "../exec/index.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger, type RunState, type TrustProfile } from "../ledger/index.js";
@@ -141,7 +143,8 @@ class ScenarioAdapter implements ProviderAdapter {
   }
   parseEvent: ProviderAdapter["parseEvent"] = (i, s) => this.base.parseEvent(i, s);
   extractResult: ProviderAdapter["extractResult"] = (e, x) => this.base.extractResult(e, x);
-  resumeArgs: ProviderAdapter["resumeArgs"] = (b, r, p) => this.base.resumeArgs(b, r, p);
+  resumeArgs: ProviderAdapter["resumeArgs"] = (b, r, p) =>
+    this.base.resumeArgs(b, r, p.name === "privileged" && this.privilegedAs ? profileFor(this.privilegedAs) : p);
   classifyFailure: ProviderAdapter["classifyFailure"] = (e) => this.base.classifyFailure(e);
 }
 
@@ -686,6 +689,89 @@ describe("admission", () => {
       // A second decision is refused and changes nothing.
       expect(() => decide(r.runId, "DENIED")).toThrow(ApprovalRefusedError);
       expect(ledger.getApprovalForRun(r.runId)?.status).toBe("APPROVED");
+    });
+
+    it("operator `approve` (CLI, no daemon, under the data-directory lock) -> QUEUED -> SUCCEEDED; a continuation runs without a second approve", async () => {
+      adapter.privilegedAs = "edit-untrusted";
+      const configPath = path.join(root, "config.json");
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          schema_version: 1,
+          data_dir: dataDir,
+          allowed_roots: [root],
+          mcp_clients: [{ id: "client-a", max_trust_profile: "privileged" }],
+        }),
+      );
+      const operator = async (cmd: "approve" | "deny", runId: string) => {
+        const out: string[] = [];
+        const io: CliIo = { stdout: { write: (c) => out.push(c) }, stderr: { write: () => {} }, env: {}, user: "op" };
+        const code = await main([cmd, runId, "--config", configPath, "--json"], io);
+        return { code, body: out.length > 0 ? (JSON.parse(out.join("")) as Record<string, unknown>) : {} };
+      };
+
+      const r = await submit("writer", { trustProfile: "privileged", privileged: { scope: SCOPE } });
+      expect(r.state).toBe("AWAITING_APPROVAL");
+      const pending = ledger.getApprovalForRun(r.runId);
+      expect(pending).toMatchObject({ run_id: r.runId, status: "PENDING" });
+      expect(compiles).toBe(0);
+
+      // No daemon holds the lock: the CLI takes it and applies the decision to the requesting run's PENDING row (WF-7).
+      const ap = await operator("approve", r.runId);
+      expect(ap.code, JSON.stringify(ap.body)).toBe(0);
+      expect(ap.body).toMatchObject({
+        run_id: r.runId,
+        outcome: "approved",
+        state: "QUEUED",
+        daemon_running: false,
+        approval_id: pending?.id,
+        decided_by: "op",
+        scope_hash: pending?.scope_hash,
+      });
+      expect(ledger.getRunRecord(r.runId)?.state).toBe("QUEUED");
+      expect(ledger.getApprovalForRun(r.runId)).toMatchObject({ status: "APPROVED", decided_by: "op" });
+
+      // The QUEUED run is dispatched and runs to completion on the fake adapter.
+      lifecycle.start();
+      const done = await lifecycle.waitForTerminal(r.runId);
+      expect(done.state, done.failure_detail ?? "").toBe("SUCCEEDED");
+      expect(done.pid).not.toBeNull(); // a provider process was spawned
+      expect(done.worktree_path).not.toBeNull();
+      expect(existsSync(path.join(repo, "feature.txt"))).toBe(false); // the write stayed in the worktree
+      expect(adapter.compiledProfiles).toHaveLength(1);
+      expect(adapter.compiledProfiles[0]).toMatchObject({ name: "privileged", bypassApproved: true });
+      expect(events(r.runId).find((e) => e.type === "privileged_dispatch")?.p).toEqual({
+        approval_id: pending?.id,
+        bypass_approved: true,
+      });
+      expect(JSON.parse(done.policy_snapshot_json).bypassApproved).toBe(false); // computed at dispatch, never stored
+
+      // A continuation of the approved meta-session is QUEUED at admission (FRD C7) and runs; no new row, no approve.
+      const cont = await submit("success", {
+        trustProfile: "privileged",
+        metaSessionId: r.metaSessionId,
+        privileged: { approvalId: pending?.id },
+      });
+      expect(cont.state).toBe("QUEUED");
+      expect(ledger.getApprovalForRun(cont.runId)).toBeUndefined();
+      const contDone = await lifecycle.waitForTerminal(cont.runId);
+      expect(contDone.state, contDone.failure_detail ?? "").toBe("SUCCEEDED");
+      expect(rules(cont.runId)).not.toContain("T3"); // never waited for approval
+      expect(adapter.compiledProfiles.at(-1)).toMatchObject({ name: "privileged", bypassApproved: true });
+      expect(events(cont.runId).find((e) => e.type === "privileged_dispatch")?.p).toEqual({
+        approval_id: pending?.id,
+        bypass_approved: true,
+      });
+      expect(ledger.listApprovals()).toHaveLength(1);
+      // approve acts only on the requesting run: on the continuation it is refused and changes nothing.
+      expect((await operator("approve", cont.runId)).code).toBe(1);
+      expect((await operator("approve", r.runId)).code).toBe(1); // already decided
+      expect(ledger.getApprovalForRun(r.runId)).toMatchObject({ status: "APPROVED", decided_by: "op" });
+
+      // An identical scope in a new meta-session is not covered: it waits for its own approve.
+      const fresh = await submit("success", { trustProfile: "privileged", privileged: { scope: SCOPE } });
+      expect(fresh.state).toBe("AWAITING_APPROVAL");
+      expect(ledger.getApprovalForRun(fresh.runId)?.status).toBe("PENDING");
     });
 
     it("deny ends the run CANCELLED (T19) with a DENIED row; no worktree, no process", async () => {
