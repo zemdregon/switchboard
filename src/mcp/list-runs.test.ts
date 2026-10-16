@@ -111,6 +111,8 @@ describe("list_runs (T14.1, FR-CTL-01)", () => {
       "explain_route",
       "list_runs",
       "get_digest",
+      "pause_project",
+      "resume_project",
     ]);
     for (const t of tools) {
       expect(t.inputSchema).toEqual(inputSchema(t.name as (typeof TOOL_NAMES)[number]));

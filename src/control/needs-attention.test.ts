@@ -73,12 +73,12 @@ function run(metaSessionId: string, state: RunState, extra: { attempt?: number; 
 
 const record = (id: string): RunRecord => ledger.getRunRecord(id) as RunRecord;
 
-/** Plants the LLD §3.4.7 persistence (T14.5 column, T14.4/T14.6 table) and reads it as T14.4/T14.5 will. */
+/**
+ * Plants the LLD §3.4.7 persistence (T14.5 column) and reads it as T14.4/T14.5 will. `control_plane_state` itself
+ * exists since migration 0018 (T14.6); the test only writes `budget_flags_json` rows into it.
+ */
 function plantControlPlane(): ControlPlaneFacts {
   db.exec("ALTER TABLE meta_session ADD COLUMN parked_loop INTEGER NOT NULL DEFAULT 0");
-  db.exec(`CREATE TABLE control_plane_state (
-    project_id TEXT PRIMARY KEY, paused INTEGER NOT NULL CHECK (paused IN (0,1)), paused_by TEXT, paused_at TEXT,
-    budget_flags_json TEXT CHECK (budget_flags_json IS NULL OR json_valid(budget_flags_json))) STRICT`);
   return {
     metaSessionParked: (id) =>
       (db.prepare("SELECT parked_loop FROM meta_session WHERE id = ?").get(id) as { parked_loop: number })
