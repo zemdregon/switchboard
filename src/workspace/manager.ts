@@ -6,6 +6,7 @@ import { isUnderAllowedRoot } from "../config/index.js";
 import { defaultIds, type IdGenerator } from "../ids/index.js";
 import type { TrustProfile } from "../ledger/index.js";
 import { git, gitText, MIN_GIT_VERSION, parseGitVersion, versionAtLeast } from "./git.js";
+import { ensureWorktreeGitLink } from "./git-link.js";
 import { findNestedRepositories, nestedPathspecArgs } from "./nested.js";
 
 /**
@@ -147,6 +148,8 @@ export interface RollbackResult {
 
 interface RunWorkspace {
   readonly metaSessionId: string;
+  /** The meta-session's repository root; null for a row written before it was recorded. */
+  readonly repoRoot: string | null;
   readonly worktreePath: string;
   readonly branch: string;
   readonly preCommit: string;
@@ -335,6 +338,7 @@ export class WorkspaceManager {
     let nestedRepositories: readonly string[] = [];
     try {
       await stat(ws.worktreePath);
+      await this.ensureGitLink(ws);
       const nested = await findNestedRepositories(ws.worktreePath);
       nestedRepositories = nested.paths;
       const scope = nestedPathspecArgs(nested);
@@ -363,6 +367,7 @@ export class WorkspaceManager {
    */
   async finalize(runId: string, options: { advanceHead?: boolean } = {}): Promise<FinalizeResult> {
     const ws = this.runWorkspace(runId);
+    await this.ensureGitLink(ws);
     const nested = await findNestedRepositories(ws.worktreePath);
     const scope = nestedPathspecArgs(nested);
     await git(["add", "-A", ...scope], { cwd: ws.worktreePath });
@@ -411,6 +416,7 @@ export class WorkspaceManager {
    */
   async rollback(runId: string): Promise<RollbackResult> {
     const ws = this.runWorkspace(runId);
+    await this.ensureGitLink(ws);
     const scope = nestedPathspecArgs(await findNestedRepositories(ws.worktreePath));
     await git(["add", "-A", ...scope], { cwd: ws.worktreePath });
     const diff = await git(["diff", "--cached", "--binary", "--no-ext-diff", "--no-color", ws.preCommit, ...scope], {
@@ -603,6 +609,14 @@ export class WorkspaceManager {
     return id;
   }
 
+  /**
+   * T10.3 (defence in depth behind the ref guard, which records the violation): controller Git in the worktree runs only
+   * through the worktree's own `.git` link to this repository, never one the agent rewrote (`./git-link.ts`).
+   */
+  private async ensureGitLink(ws: RunWorkspace): Promise<void> {
+    if (ws.repoRoot !== null) await ensureWorktreeGitLink(ws.repoRoot, ws.worktreePath);
+  }
+
   private runWorkspace(runId: string): RunWorkspace {
     assertId(runId);
     const run = this.db.prepare("SELECT meta_session_id, worktree_path, branch FROM run WHERE id = ?").get(runId) as
@@ -613,8 +627,12 @@ export class WorkspaceManager {
       .prepare("SELECT commit_sha FROM workspace_checkpoint WHERE run_id = ? AND kind = 'pre'")
       .get(runId) as { commit_sha: string } | undefined;
     if (!pre) throw new WorkspaceError("NOT_FOUND", `run ${runId} has no pre checkpoint`);
+    const sess = this.db.prepare("SELECT repo_root FROM meta_session WHERE id = ?").get(run.meta_session_id) as
+      | { repo_root: string | null }
+      | undefined;
     return {
       metaSessionId: run.meta_session_id,
+      repoRoot: sess?.repo_root ?? null,
       worktreePath: run.worktree_path,
       branch: run.branch,
       preCommit: pre.commit_sha,

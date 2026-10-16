@@ -6,12 +6,17 @@
  * - `--apply` collects, and only when the config sets `retention.days` (`retentionEnabled`); the 30 day default is a
  *   value, not a switch. It refuses (LockError) while a `serve` daemon holds the data-directory lock, and holds the
  *   lock itself while it runs, so no daemon can start mid-collection (ADR-0005).
+ * - T10.3 (FR-PRJ-09): when a configured project is `container`, `--apply` also removes the containers of each collected
+ *   meta-session's runs, before its worktrees. A runtime that does not answer is skipped with `container_runtime`
+ *   saying so (its containers are swept at the next `serve` start, T10.2); a runtime that answers but fails to remove
+ *   stops that unit, keeping its worktrees for the next pass.
  */
 import { existsSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { ArtifactStore } from "../artifacts/index.js";
 import { ConfigError, loadConfig, type ResolvedConfig } from "../config/index.js";
+import { type ContainerRuntime, createDockerRuntime } from "../environment/index.js";
 import { LEDGER_FILE_NAME, openLedger } from "../ledger/index.js";
 import { acquireDataDirLock } from "../lock/index.js";
 import { findOrphans, type GcPlan, type GcResult, planRetentionGc, runRetentionGc } from "../workspace/index.js";
@@ -34,6 +39,7 @@ export interface GcReport {
   /** Apply only. */
   readonly collected?: {
     session_id: string;
+    containers_removed: string[];
     worktrees_removed: number;
     branches_deleted: string[];
     artifact_files_deleted: number;
@@ -41,6 +47,8 @@ export interface GcReport {
     warnings: string[];
   }[];
   readonly errors?: { session_id: string; step: string; message: string }[];
+  /** Apply only, when a `container` project is configured but no runtime answered: containers were not removed. */
+  readonly container_runtime?: string;
   readonly orphans: { worktrees: string[]; branches: { repo_root: string; branch: string }[] };
 }
 
@@ -55,7 +63,7 @@ const toUnits = (plan: GcPlan): GcReport["units"] =>
 export async function runGcCommand(
   io: CliIo,
   argv: readonly string[],
-  opts: { readonly apply: boolean },
+  opts: { readonly apply: boolean; readonly makeRuntime?: () => ContainerRuntime },
 ): Promise<GcReport> {
   const config: ResolvedConfig = loadConfig({
     argv,
@@ -98,8 +106,17 @@ export async function runGcCommand(
   try {
     const db = openLedger(config.dataDir);
     try {
+      let containerRuntime: ContainerRuntime | undefined;
+      let runtimeSkipped: string | undefined;
+      if (config.projects.some((p) => p.environment.kind === "container")) {
+        const runtime = (opts.makeRuntime ?? createDockerRuntime)();
+        const info = await runtime.info();
+        if (info.available) containerRuntime = runtime;
+        else runtimeSkipped = `skipped, no container runtime answered: ${info.detail}`;
+      }
       const plan = planRetentionGc({ db, days, now });
       const result: GcResult = await runRetentionGc({
+        ...(containerRuntime !== undefined ? { containerRuntime } : {}),
         db,
         artifacts: new ArtifactStore(path.join(config.dataDir, "artifacts")),
         dataDir: config.dataDir,
@@ -116,6 +133,7 @@ export async function runGcCommand(
         units: toUnits(plan),
         collected: result.collected.map((c) => ({
           session_id: c.sessionId,
+          containers_removed: c.containersRemoved,
           worktrees_removed: c.worktreesRemoved,
           branches_deleted: c.branchesDeleted,
           artifact_files_deleted: c.artifactFilesDeleted,
@@ -123,6 +141,7 @@ export async function runGcCommand(
           warnings: c.warnings,
         })),
         errors: result.errors.map((e) => ({ session_id: e.sessionId, step: e.step, message: e.message })),
+        ...(runtimeSkipped !== undefined ? { container_runtime: runtimeSkipped } : {}),
         orphans: orphanView(orphans),
       };
     } finally {
@@ -171,10 +190,11 @@ export function renderGc(r: GcReport): string {
   }
   for (const c of r.collected ?? []) {
     lines.push(
-      `  collected ${c.session_id}: ${c.worktrees_removed} worktree(s), ${c.branches_deleted.length} branch(es), ${c.artifact_files_deleted} artifact file(s) removed, ${c.artifact_files_kept} kept`,
+      `  collected ${c.session_id}: ${c.containers_removed.length ? `${c.containers_removed.length} container(s), ` : ""}${c.worktrees_removed} worktree(s), ${c.branches_deleted.length} branch(es), ${c.artifact_files_deleted} artifact file(s) removed, ${c.artifact_files_kept} kept`,
     );
     for (const w of c.warnings) lines.push(`    warning: ${w}`);
   }
+  if (r.container_runtime !== undefined) lines.push(`  containers: ${r.container_runtime}`);
   for (const e of r.errors ?? [])
     lines.push(`  ERROR ${e.session_id} at ${e.step}: ${e.message} (re-run to roll forward)`);
   const n = r.orphans.worktrees.length + r.orphans.branches.length;

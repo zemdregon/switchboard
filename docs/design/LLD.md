@@ -2901,6 +2901,29 @@ section was silent or the build differs:
   environment run events"), `src/environment/ledger-events.test.ts`, `src/environment/container.test.ts`,
   `src/cli/serve-orphan-sweep.test.ts`.
 
+*As built (2026-10-16, T10.3, Delegated; text above unchanged).* Validation, retention and the container leg of the
+malicious-fixture suite:
+
+- **`projects validate`** (FR-PRJ-08, FR-PRJ-05, ADR-0020): for a `container` project, `checkContainerEnvironment`
+  (`src/cli/projects.ts`) runs the checks `prepare` runs, in the same order, without starting a run: the runtime
+  answers and is rootless (`CONTAINER_RUNTIME_UNAVAILABLE`), the image digest is pinned, present locally and
+  unambiguous (`CONTAINER_IMAGE_NOT_PINNED`, `_NOT_PRESENT`, `_AMBIGUOUS`; never pulled), and the no-Git-client scan
+  completes with no `git` or `gh` on the image's `PATH` (`CONTAINER_IMAGE_CHECK_FAILED`,
+  `CONTAINER_IMAGE_HAS_GIT_CLIENT`). The scan is the same throwaway probe container (`switchboard-probe-validate-<hex>`,
+  no network, read-only root, `--rm`, and removed by name afterwards). `ENVIRONMENT_NOT_IMPLEMENTED` is still reported
+  while admission refuses container runs (T10.1 gap 1).
+- **Retention** (FR-PRJ-09): `runRetentionGc` takes an optional `containerRuntime`; its new `containers` step, after
+  the intent and before the worktrees, force-removes every run and probe container labelled with one of the unit's run
+  ids (`removeRunContainers`, `src/environment/container.ts`; `GcSessionTargets.runIds`). A listing or removal failure
+  stops the unit before its worktrees are touched, and the next pass rolls forward. `gc --apply` composes the Docker
+  runtime when a configured project is `container`; when no runtime answers, it reports `container_runtime` and
+  collects the rest (`serve`'s startup sweep removes those containers later, T10.2). No volume is removed, because
+  this backend creates none (no login volume is mounted yet, T10.1 gap 4).
+- **Malicious-fixture container leg** (NFR-SEC-03, FR-GIT-01, FR-GIT-03): `test/malicious/container-leg.test.ts`
+  (CI, an emulated rootless runtime) and `test/malicious/container-docker-leg.test.ts` (opt-in, rootless Docker) run
+  an approved `privileged` scope with `bypass: true` under a `container` project; the worktree `.git` link check of
+  §12.5 is the control the suite found missing.
+
 ## 12. Injected Git tools, commits and publication
 
 Implements FR-GIT-01..09 and [ADR-0014](../adr/0014-tool-only-commits-and-publication.md). **Proposed** mechanisms; zemdregon
@@ -3394,16 +3417,23 @@ silent:
   therefore runs each run's check, mutation assessment and checkpoint as one critical section per repository root
   (in-process queue in `src/lifecycle/lifecycle.ts`; one `serve` per data directory holds the lock). Regression test:
   `src/lifecycle/concurrent-worktrees.test.ts`.
-- **Handling.** One `git_policy_violation` event (`v`, `violation_count`, `truncated`, `digest_before`,
-  `digest_after`, at most 200 `violations` of `{scope, kind, ref, old, new, action, restore_to?, foreign_commits?
-  (at most 50), foreign_commit_count?, detail?}`) is appended before any change; scopes `run_branch`, `worktree_head`,
-  `publish_ref`, `repo_head`, `switchboard`, `other`, `unlisted`, `guard`; kinds `created`, `moved`, `deleted`,
-  `head_changed`, `unlisted_refs_changed`, `snapshot_missing`, `check_failed`. Then the controller restores, each with
-  a compare-and-swap, only the worktree `HEAD` (`symbolic-ref`), the run branch (`update-ref` to `pre`) and the publish
-  ref (newest `git_commit` row with a valid chain, else the LEASED value, else deleted); everything else is reported
-  only. A `git_ref_check` event (`clean`, `violation` with per-ref restore results, `failed`, `skipped`) closes the
-  check; a run with one is not checked again. The run's outcome is unchanged; the terminal transition payload gains
-  `git_policy_violation: true` and `runs show` prints `git policy: VIOLATION (n ...)` and `--json` `run.git_policy_violations`.
+- **Handling.** One `git_policy_violation` event (`v`, `violation_count`, `truncated`, `digest_before`, `digest_after`,
+  at most 200 `violations` of `{scope, kind, ref, old, new, action, restore_to?, foreign_commits? (at most 50),
+  foreign_commit_count?, detail?}`) is appended before any change; scopes `run_branch`, `worktree_head`, `publish_ref`,
+  `repo_head`, `switchboard`, `other`, `unlisted`, `worktree_link`, `guard`; kinds `created`, `moved`, `deleted`,
+  `head_changed`, `unlisted_refs_changed`, `snapshot_missing`, `link_changed`, `check_failed`. Then the controller
+  restores, each with a compare-and-swap, only the worktree `HEAD` (`symbolic-ref`), the run branch (`update-ref` to
+  `pre`) and the publish ref (newest `git_commit` row with a valid chain, else the LEASED value, else deleted);
+  everything else is reported only. A `git_ref_check` event (`clean`, `violation` with per-ref restore results,
+  `failed`, `skipped`) closes the check; a run with one is not checked again. The run's outcome is unchanged; the
+  terminal transition payload gains `git_policy_violation: true` and `runs show` prints `git policy: VIOLATION (n ...)`
+  and `--json` `run.git_policy_violations`.
+- **Worktree `.git` link (T10.3, [ADR-0053](../adr/0053-worktree-git-link-restore.md)).** Checked before anything is
+  read through the worktree: the link must name the repository's `worktrees/<name>` entry whose recorded `gitdir` is
+  this worktree (derived on the host, `src/workspace/git-link.ts`). Anything else is a `worktree_link` /
+  `link_changed` violation with action `restore`, appended in its own `git_policy_violation` event before the expected
+  file is written back; the `git_ref_check` event lists `{scope: "worktree_link", ok}` among its restores.
+  `WorkspaceManager.assessMutation`, `finalize` and `rollback` restore it too (unrecorded, defence in depth).
 - **Fail closed.** A check that cannot complete is a `check_failed` violation; a run that reached RUNNING without a
   snapshot is `snapshot_missing` and its own refs are still checked against the ledger.
 - **Not covered.** Per-worktree refs (`refs/worktree/`, `refs/bisect/`), objects written without a ref, and a push that
