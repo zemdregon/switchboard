@@ -360,6 +360,42 @@ async function runningRun(c: Client): Promise<{ runId: string; pgid: number }> {
 const describeLinuxVerified = process.platform === "darwin" ? describe.skip : describe;
 
 describeLinuxVerified("serve over stdio (process level)", () => {
+  it.each([undefined, "http://127.0.0.1:1/v1/traces"])(
+    "serves MCP without loading any OTel dependency at startup (endpoint: %s)",
+    async (endpoint) => {
+      const config = JSON.parse(readFileSync(configPath, "utf8"));
+      if (endpoint) config.telemetry = { otlp_endpoint: endpoint };
+      writeFileSync(configPath, JSON.stringify(config));
+      const guard = path.join(root, "reject-otel.mjs");
+      const marker = path.join(root, "otel-import-attempted");
+      writeFileSync(
+        guard,
+        `import { registerHooks } from "node:module";
+import { appendFileSync } from "node:fs";
+registerHooks({ resolve(specifier, context, next) {
+  if (specifier.startsWith("@opentelemetry/")) {
+    appendFileSync(${JSON.stringify(marker)}, specifier);
+    throw new Error("OTel unavailable at startup");
+  }
+  return next(specifier, context);
+} });`,
+      );
+      const c = await connect(undefined, { env: { NODE_OPTIONS: `--import=${guard}` } });
+      expect((await c.client.listTools()).tools.length).toBeGreaterThan(0);
+      expect(c.stderr()).not.toContain("OTel unavailable");
+      expect(existsSync(marker)).toBe(false);
+      await c.client.close();
+      expect(existsSync(marker)).toBe(false);
+      // Negative control: even a caught import failure must leave evidence, proving the guard is active.
+      execFileSync(
+        process.execPath,
+        ["--import", guard, "--input-type=module", "--eval", 'await import("@opentelemetry/api").catch(() => {});'],
+        { env: childEnv() },
+      );
+      expect(readFileSync(marker, "utf8")).toBe("@opentelemetry/api");
+    },
+  );
+
   it("writes only MCP framing to stdout, logs JSON lines to stderr and exits cleanly when stdin closes", async () => {
     const child = spawn(process.execPath, serveArgs(), { env: childEnv(), stdio: ["pipe", "pipe", "pipe"] });
     cleanup.push(() => void child.kill("SIGKILL"));

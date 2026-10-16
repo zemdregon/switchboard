@@ -118,6 +118,8 @@ export interface ResolvedConfig {
    * outbound notification is made. Holds operator destinations and tokens: never log or serialise it (FR-TEL-03).
    */
   notificationSinks: NotificationSinkSettings[];
+  /** Validated OTLP/HTTP endpoint (LLD §7); absent means no export or dependency load. */
+  telemetry?: { otlpEndpoint: string };
 }
 
 export interface ResolvedMcpClient {
@@ -432,6 +434,17 @@ export function loadConfig(
   if (capacityErrors.length > 0) {
     throw new ConfigError(`Invalid config:\n${capacityErrors.map((l) => `  ${l}`).join("\n")}`);
   }
+  const otlpEndpoint = cfg.telemetry?.otlp_endpoint;
+  if (otlpEndpoint) {
+    let valid = false;
+    try {
+      const url = new URL(otlpEndpoint);
+      valid = ["http:", "https:"].includes(url.protocol) && url.hostname !== "" && otlpEndpoint === otlpEndpoint.trim();
+    } catch {
+      // Never include the endpoint (it may contain credentials) in a config error.
+    }
+    if (!valid) throw new ConfigError("$.telemetry.otlp_endpoint: must be an absolute http or https URL");
+  }
   const sinkErrors = checkNotificationSinks(cfg.notification_sinks);
   if (sinkErrors.length > 0) {
     throw new ConfigError(`Invalid config:\n${sinkErrors.map((l) => `  ${l}`).join("\n")}`);
@@ -481,6 +494,7 @@ export function loadConfig(
     routing: resolveRouting(cfg.routing),
     controlPlane: resolveControlPlane(cfg.control_plane),
     notificationSinks: resolveNotificationSinks(cfg.notification_sinks),
+    ...(otlpEndpoint ? { telemetry: { otlpEndpoint } } : {}),
     claudeCodeGitChannel: cfg.providers?.["claude-code"]?.git_channel === true,
     profileOverrides,
     outerSandboxRequiredProfiles: [...(cfg.outer_sandbox?.required_profiles ?? [])],
