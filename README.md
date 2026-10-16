@@ -51,10 +51,11 @@ Pre-release. The package is private and is not published to any registry; you bu
   of this is tested on fake providers. The cache-friendly prompt order is built (ROADMAP T7.9, Could; no cache
   benefit is claimed). Real-provider model flags wait for adapter work. See
   [Routing and affinity](#routing-and-affinity) and [ROADMAP §6.12](docs/ROADMAP.md#612-m7-routing-tasks).
-- **Milestone 8 (hardening) is `Partial`.** Optional OTLP trace export (`telemetry.otlp_endpoint`, off by default) and
-  lazy exporter load (T8.1), the operator version canary (T8.5) and a CI test that excludes routing after a synthetic
-  binary version bump until `adapters validate` records the version (T8.6) are done on fakes. Wrapper span emission,
-  the collector integration test and full M8 acceptance closure (T8.2–T8.4, T8.7) are not done. See
+- **Milestone 8 (hardening) is `Partial`.** Optional OTLP trace export (`telemetry.otlp_endpoint`, off by default),
+  lazy exporter load (T8.1), wrapper-boundary span emission for `controller.delegate` and `provider.spawn` (T8.2), the
+  operator version canary (T8.5) and a CI test that excludes routing after a synthetic binary version bump until
+  `adapters validate` records the version (T8.6) are done on fakes. The collector integration test, export-time
+  allowlist enforcement and full M8 acceptance closure (T8.3, T8.4, T8.7) are not done. See
   [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and
   [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
 - **Milestone 10 (container environments) is `Partial`.** The environment port, orphan sweep, malicious-fixture
@@ -432,16 +433,19 @@ evidence is in [ROADMAP §6.7](docs/ROADMAP.md#67-m12-retrieval-index-tasks).
 ## Telemetry and adapter versioning (milestone 8)
 
 Milestone 8 hardens telemetry export and adapter version change detection. It is **`Partial`**: configuration, a lazy OTLP
-exporter shell, the version canary and the CI version-bump test are in place on fakes; full wrapper spans and the
-collector integration test are not.
+exporter, wrapper-boundary spans (T8.2), the version canary and the CI version-bump test are in place on fakes; the
+collector integration test (T8.3), export-time allowlist drop (T8.4) and acceptance closure (T8.7) are not.
 
 **Trace export (T8.0, T8.1).** Set `telemetry.otlp_endpoint` to an `http` or `https` URL when you want OTLP/HTTP traces.
 When the key is absent or empty, `serve` behaves as before M8: no OpenTelemetry packages load at startup and nothing
 listens for telemetry. Invalid URLs are rejected at config load without echoing the value. Spans are intended to carry
 only allowlisted attributes from controller-observed facts (prompts, commands and credentials never belong on spans);
 see [LLD §7](docs/design/LLD.md#7-telemetry-spans) and [ADR-0012](docs/adr/0012-telemetry-at-wrapper-boundary.md).
-Emitting `controller.delegate`, `provider.spawn` and related spans at the wrapper boundary (T8.2) and proving export
-through a test collector without forbidden keys (T8.3) are not built yet.
+
+**Wrapper spans (T8.2).** With an endpoint configured, `serve` emits `controller.delegate` and `provider.spawn` from
+controller-observed facts only (lifecycle and spawn callbacks). `src/telemetry/spans.test.ts` runs a fake-adapter
+delegate path through an in-process collector and asserts allowlisted attributes plus absence of a planted prompt
+canary. Parent-link and forbidden-key assertions remain T8.3; export-time allowlist drop remains T8.4.
 
 **Version canary (T8.5).** Switchboard records each enabled provider's probed CLI version under the data directory
 (`version-canary.json`). A version change marks the adapter `ADAPTER_VERSION_UNVERIFIED` until you run
@@ -454,8 +458,8 @@ Details: [docs/operations/version-canary.md](docs/operations/version-canary.md).
 preflight cache, and asserts routing excludes the provider until validation records the new version. No provider CLI is
 installed in CI.
 
-Tests on fakes: `src/config/config.test.ts`, `src/telemetry/index.test.ts`, `src/adapters/version-canary.test.ts`,
-`src/adapters/version-bump-preflight.test.ts`. Per-task evidence is in
+Tests on fakes: `src/config/config.test.ts`, `src/telemetry/index.test.ts`, `src/telemetry/spans.test.ts`,
+`src/adapters/version-canary.test.ts`, `src/adapters/version-bump-preflight.test.ts`. Per-task evidence is in
 [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
 
 ## Container environments (milestone 10)
