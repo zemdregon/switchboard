@@ -5,9 +5,9 @@
  * `CLI_TOOL_FREE_VERIFICATION` stays null, so production does not attach this backend.
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { execPath } from "node:process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { auditInvocation } from "../adapters/audit.js";
@@ -441,6 +441,10 @@ describe("cli inner backend (T11.13; FR-INN-04, FR-ADP-03, FR-ADP-08)", () => {
     expect(result).toEqual({ text: "SYNTHETIC_OK", model_id: MODEL, usage: { in: 11, out: 4 } });
     expect(record.argv[0]).toBe(execPath);
     expect(record.argv[1]).toBe(script);
+    // The child's cwd is the realpath (macOS tmpdir is a /var -> /private/var symlink); argv keeps the unresolved path.
+    const dirArg = record.argv[record.argv.indexOf("--dir") + 1] ?? "";
+    expect(dirArg.startsWith(join(tmpdir(), "sb-inner-cli-"))).toBe(true);
+    expect(record.cwd).toBe(join(realpathSync(tmpdir()), basename(dirArg)));
     expect(record.argv.slice(2)).toEqual([
       "run",
       "--format",
@@ -449,14 +453,13 @@ describe("cli inner backend (T11.13; FR-INN-04, FR-ADP-03, FR-ADP-08)", () => {
       "--model",
       MODEL,
       "--dir",
-      record.cwd,
+      dirArg,
       "--",
       PROMPT,
     ]);
     expect(record.argv).not.toContain("--auto");
     expect(record.argv).not.toContain("--standalone");
     expect(record.dirEntries).toEqual([]);
-    expect(record.cwd.includes(`${join(tmpdir(), "sb-inner-cli-")}`)).toBe(true);
     expect(Object.keys(record.env).sort()).toEqual([
       "OPENCODE_DISABLE_AUTOUPDATE",
       "OPENCODE_DISABLE_CLAUDE_CODE",
