@@ -487,16 +487,24 @@ async function runDaemon(
   }
   let outerSandbox: OuterSandboxAvailability | undefined;
   const outerSandboxRequired = config.outerSandboxRequiredProfiles;
-  if (outerSandboxRequired.length > 0) {
+  const confinedVerification = config.confinedVerification;
+  if (outerSandboxRequired.length > 0 || confinedVerification) {
     outerSandbox = await detectOuterSandbox({ path: io.env.PATH ?? "" });
     const m = outerSandbox.mechanisms;
-    log.warn("outer_sandbox.required_profiles is set: runs under these profiles are refused at admission", {
-      adr: "ADR-0051",
-      profiles: outerSandboxRequired,
-      bubblewrap: m.bubblewrap.available,
-      prlimit: m.prlimit.available,
-      landlock: m.landlock.available,
-    });
+    if (outerSandboxRequired.length > 0) {
+      log.warn("outer_sandbox.required_profiles is set: runs under these profiles are refused at admission", {
+        adr: "ADR-0051",
+        profiles: outerSandboxRequired,
+        bubblewrap: m.bubblewrap.available,
+        prlimit: m.prlimit.available,
+        landlock: m.landlock.available,
+      });
+    }
+    if (confinedVerification) {
+      log.info("confined verification is enabled (T3.11): verification commands run in the outer sandbox", {
+        bubblewrap: m.bubblewrap.available,
+      });
+    }
   }
   const registry = buildRegistry(fake, { claudeGitChannel: config.claudeCodeGitChannel });
   // T12.4 / T12.5: set below once background indexing has started; until then (and with no embedding backend) the
@@ -548,6 +556,10 @@ async function runDaemon(
     preflightCache: new PreflightCache({ ttlMs: config.preflightTtlMs }),
     gitTools,
     finalizePublisher,
+    // T3.11 (FR-EXE-08, FR-POL-06, decision 11): confined verification in the outer sandbox.
+    confinedVerification,
+    outerSandboxRequiredProfiles: outerSandboxRequired,
+    ...(outerSandbox ? { outerSandbox } : {}),
     // T12.5 (FR-RAG-05, FR-RAG-08): retrieval at dispatch; no pack when retrieval is inert or fails.
     contextPack: {
       timeoutMs: config.rag.retrieval.admissionTimeoutMs,

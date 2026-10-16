@@ -3,7 +3,7 @@
  * `outer_sandbox.required_profiles` names is refused (ELIGIBILITY_NONE) whatever detection finds. The real-host probe
  * test is skipped when `bwrap` is not on PATH. The process-level refusal through `serve` is in src/cli/serve.test.ts.
  */
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -18,6 +18,7 @@ import {
   type OuterSandboxMechanismStatus,
   outerSandboxRefusal,
   PRLIMIT_PROBE_ARGS,
+  wrapOuterSandboxVerification,
 } from "./outer-sandbox.js";
 
 const LSM_WITH = "lockdown,capability,landlock,yama,apparmor";
@@ -197,5 +198,47 @@ describe("outerSandboxRefusal (T3.1, fail closed)", () => {
     expect(tool.code).toBe("ELIGIBILITY_NONE");
     expect(tool.message).toContain("OUTER_SANDBOX_UNAVAILABLE");
     expect(tool.details).toEqual({ trust_profile: "edit-untrusted" });
+  });
+});
+
+describe("wrapOuterSandboxVerification (T3.11)", () => {
+  it("builds the bubblewrap argument array with read-only root, dev, proc, worktree bind, chdir, and unshare", () => {
+    const wrapped = wrapOuterSandboxVerification("/usr/bin/bwrap", dir, ["npm", "test"]);
+    const canonical = realpathSync(dir);
+    expect(wrapped).toEqual([
+      "/usr/bin/bwrap",
+      "--ro-bind",
+      "/",
+      "/",
+      "--dev",
+      "/dev",
+      "--proc",
+      "/proc",
+      "--bind",
+      canonical,
+      canonical,
+      "--chdir",
+      canonical,
+      "--unshare-all",
+      "--die-with-parent",
+      "--",
+      "npm",
+      "test",
+    ]);
+  });
+
+  it("resolves symlinked worktree directories to their canonical path for binding and chdir", () => {
+    const symlinkPath = path.join(dir, "symlink-wt");
+    const targetDir = path.join(dir, "real-wt");
+    chmodSync(dir, 0o777);
+    mkdirSync(targetDir);
+    symlinkSync(targetDir, symlinkPath);
+
+    const wrapped = wrapOuterSandboxVerification("/usr/bin/bwrap", symlinkPath, ["node", "-v"]);
+    const canonical = realpathSync(targetDir);
+    expect(wrapped[9]).toBe(canonical);
+    expect(wrapped[10]).toBe(canonical);
+    expect(wrapped[12]).toBe(canonical);
+    expect(wrapped.slice(-3)).toEqual(["--", "node", "-v"]);
   });
 });
