@@ -54,9 +54,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   [Routing and affinity](#routing-and-affinity) and [ROADMAP §6.12](docs/ROADMAP.md#612-m7-routing-tasks).
 - **Milestone 8 (hardening) is `Partial`.** Optional OTLP trace export (`telemetry.otlp_endpoint`, off by default),
   lazy exporter load (T8.1), wrapper-boundary span emission for `controller.delegate` and `provider.spawn` (T8.2), the
-  operator version canary (T8.5) and a CI test that excludes routing after a synthetic binary version bump until
-  `adapters validate` records the version (T8.6) are done on fakes. The collector integration test, export-time
-  allowlist enforcement and full M8 acceptance closure (T8.3, T8.4, T8.7) are not done. See
+  collector integration test with parent links and the forbidden-attribute scan (T8.3), the operator version canary
+  (T8.5) and a CI test that excludes routing after a synthetic binary version bump until `adapters validate` records
+  the version (T8.6) are done on fakes. Export-time allowlist enforcement and full M8 acceptance closure (T8.4, T8.7)
+  are not done. See
   [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and
   [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
 - **Milestone 10 (container environments) is `Partial`.** The environment port, MCP admission and `serve` composition
@@ -101,7 +102,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   ([#539](https://github.com/zemdregon/switchboard/pull/539)); digest, `list_runs`, `get_run`, budgets, the loop
   breaker, `steer_run`, pause/resume, the approval proxy and notification sinks are covered by unit and
   malicious-fixture tests. The M14 acceptance file (`src/mcp/m14-acceptance.test.ts`) runs scenarios A to G, including
-  D (pause holds admission while running work finishes). ADR-0047 and ADR-0048 remain Proposed. See
+  D (pause holds admission while running work finishes,
+  [#559](https://github.com/zemdregon/switchboard/pull/559)). ADR-0047 and ADR-0048 remain Proposed. See
   [Control plane (milestone 14)](#control-plane-milestone-14) and
   [ROADMAP §6.13](docs/ROADMAP.md#613-m14-control-plane-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
@@ -436,8 +438,8 @@ evidence is in [ROADMAP §6.7](docs/ROADMAP.md#67-m12-retrieval-index-tasks).
 ## Telemetry and adapter versioning (milestone 8)
 
 Milestone 8 hardens telemetry export and adapter version change detection. It is **`Partial`**: configuration, a lazy OTLP
-exporter, wrapper-boundary spans (T8.2), the version canary and the CI version-bump test are in place on fakes; the
-collector integration test (T8.3), export-time allowlist drop (T8.4) and acceptance closure (T8.7) are not.
+exporter, wrapper-boundary spans (T8.2), the collector integration test (T8.3), the version canary and the CI
+version-bump test are in place on fakes; the export-time allowlist drop (T8.4) and acceptance closure (T8.7) are not.
 
 **Trace export (T8.0, T8.1).** Set `telemetry.otlp_endpoint` to an `http` or `https` URL when you want OTLP/HTTP traces.
 When the key is absent or empty, `serve` behaves as before M8: no OpenTelemetry packages load at startup and nothing
@@ -448,7 +450,15 @@ see [LLD §7](docs/design/LLD.md#7-telemetry-spans) and [ADR-0012](docs/adr/0012
 **Wrapper spans (T8.2).** With an endpoint configured, `serve` emits `controller.delegate` and `provider.spawn` from
 controller-observed facts only (lifecycle and spawn callbacks). `src/telemetry/spans.test.ts` runs a fake-adapter
 delegate path through an in-process collector and asserts allowlisted attributes plus absence of a planted prompt
-canary. Parent-link and forbidden-key assertions remain T8.3; export-time allowlist drop remains T8.4.
+canary. Export-time allowlist drop remains T8.4.
+
+**Collector integration test (T8.3).** `src/telemetry/collector-lifecycle.test.ts` (suite
+`collector integration: fake-adapter delegate/finalize path (T8.3)`) runs a fake-adapter delegate/finalize path with
+OTLP pointed at the in-process collector fixture `src/telemetry/fixtures/collector.ts`, then asserts the span count,
+the LLD §7 parent links (`provider.spawn` under `controller.delegate`, one trace per run; `src/telemetry/links.ts`)
+and the absence of every forbidden attribute category from LLD §7. The scan is a positive control: planting a
+forbidden key or value on an exported span fails the test (`src/telemetry/collector.test.ts`). No provider CLI is
+installed in CI.
 
 **Version canary (T8.5).** Switchboard records each enabled provider's probed CLI version under the data directory
 (`version-canary.json`). A version change marks the adapter `ADAPTER_VERSION_UNVERIFIED` until you run
@@ -462,7 +472,8 @@ preflight cache, and asserts routing excludes the provider until validation reco
 installed in CI.
 
 Tests on fakes: `src/config/config.test.ts`, `src/telemetry/index.test.ts`, `src/telemetry/spans.test.ts`,
-`src/adapters/version-canary.test.ts`, `src/adapters/version-bump-preflight.test.ts`. Per-task evidence is in
+`src/telemetry/collector-lifecycle.test.ts`, `src/telemetry/collector.test.ts`, `src/adapters/version-canary.test.ts`,
+`src/adapters/version-bump-preflight.test.ts`. Per-task evidence is in
 [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
 
 ## Container environments (milestone 10)
