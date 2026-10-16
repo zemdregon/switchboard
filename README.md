@@ -101,7 +101,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   ([#539](https://github.com/zemdregon/switchboard/pull/539)); digest, `list_runs`, `get_run`, budgets, the loop
   breaker, `steer_run`, pause/resume, the approval proxy and notification sinks are covered by unit and
   malicious-fixture tests. The M14 acceptance file (`src/mcp/m14-acceptance.test.ts`) runs scenarios A to G, including
-  D (pause holds admission while running work finishes). ADR-0047 and ADR-0048 remain Proposed. See
+  D (pause holds admission while running work finishes,
+  [#559](https://github.com/zemdregon/switchboard/pull/559)). ADR-0047 and ADR-0048 remain Proposed. See
   [Control plane (milestone 14)](#control-plane-milestone-14) and
   [ROADMAP §6.13](docs/ROADMAP.md#613-m14-control-plane-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
