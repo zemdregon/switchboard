@@ -1975,6 +1975,44 @@ or run execution.
 Approval-proxy tools are added to the list only when `approval_proxy` is true, regardless of profile. `console` is the
 first target for the Grok bot (owner decision 55); orchestrator profile stays for primary coding agents.
 
+#### 3.4.11 Consent-page approval link (FR-CTL-09, ADR-0047)
+
+A secondary way to decide one pending approval (ADR-0047 Decision 3), after the CLI (§3.1) and the approval proxy
+(§3.4.8): a single-use, expiring link to the M13 consent page (§3.3). Available only when the HTTP transport is
+configured. Research input: [consent-page approval link spike](../research/consent-page-approval-link-spike-2026-10-15.md).
+
+**Implementation (T14.10, `src/control/consent-link.ts`, `src/control/consent-link-page.ts`, routed in
+`src/mcp/http.ts`, wired in `src/cli/serve.ts`; Delegated, not owner-approved):**
+
+- Link: `<issuer origin>/approval/<handle>`, where the handle is `sbal_` plus 32 random bytes in base64url. Nothing
+  else: no query, no OAuth token, no authorization code, no `approval_digest`, no passphrase, no pairing code, no
+  approval or run id and no scope text. The handle is not a credential; it only selects which approval an
+  authenticated operator is shown.
+- Handles are held in memory by the one `serve` process that owns the listener, as SHA-256 hashes (as the T13.8
+  authorization codes); no ledger table is added and a restart drops every link (fail closed). Lifetime 30 minutes
+  (**Assumption**), at most 256 live links (**Assumption**).
+- Issuance: on each operator poll `serve` issues a link for every decidable approval that has no live one and logs
+  `approval_id`, the URL and its expiry. Decidable means listed by §3.4.8's rules for a proxy that targets every
+  configured client (read-only reuse), so the kinds, `scope_summary` and `approval_digest` are those of §3.4.8. A
+  pending approval whose link expired gets a new handle; the old one stays dead.
+- A link dies at its first decision (whatever the outcome), at expiry, and as soon as its approval is decided another
+  way, stops being decidable or changes: the digest stored at issue is compared with a fresh one on every use.
+- Page flow (FR-MCP-17; no login session, Q-76): `GET` shows one fixed sign-in form, identical for a live, spent,
+  expired, unknown or malformed handle, with no approval field. A `POST` with the operator passphrase or a one-time
+  pairing code is required before the link is looked up; a dead link then gets a fixed 410 page, a live one the closed
+  §3.4.8 item fields (without the digest) and Approve / Deny. The decision `POST` spends the link.
+- CSRF and headers as §3.3's consent page: a single-use server-side visit id and CSRF token per step, the token also in
+  a `__Host-sb_approval` cookie (`Secure`, `HttpOnly`, `SameSite=Strict`), no foreign `Origin` and no cross-site
+  `Sec-Fetch-Site`; each visit is bound to its handle's hash, so a form for one link cannot decide another. The
+  transport admits a same-origin `Origin` under `/approval/` only when the page is mounted.
+- Attempt limits: wrong passphrases count against the same lockout as the OAuth consent page (one `AttemptLimiter`
+  shared by `serve`); wrong pairing codes are throttled as there.
+- Recording: as §3.4.8, with `requested_by` / `decided_by` `consent_page`; the digest is re-checked inside the
+  decision's `BEGIN IMMEDIATE` transaction and any mismatch writes nothing. Sinks (§3.4.9) are told as for the proxy: a
+  privileged approve by the transition hook, a privileged deny and every revision decision as `approval_decided`.
+- Audit: page events carry event names, reason codes, methods and (after sign-in only) approval ids; never a handle,
+  URL, passphrase or pairing code.
+
 ## 4. Failure taxonomy
 
 `failure_code` on a `FAILED` run holds exactly one of these codes. `ELIGIBILITY_NONE` and `INVALID_REQUEST` were **added
