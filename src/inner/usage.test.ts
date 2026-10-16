@@ -58,7 +58,7 @@ interface SetupOptions {
   timeoutMs?: number;
   maxConcurrency?: number;
   /** Extra task rows beside the always-enabled `run_title`. */
-  tasks?: Record<string, { enabled: boolean; timeout_ms?: number }>;
+  tasks?: Record<string, { enabled: boolean; timeout_ms?: number; allow_source_content?: boolean }>;
   breaker?: { failure_threshold: number; open_ms: number };
   suspension?: { window_calls: number; min_calls: number; rejection_threshold: number };
   /** Wraps the scripted fake (e.g. to slow `resolveLocality`); receives the fake built from `script`. */
@@ -66,6 +66,8 @@ interface SetupOptions {
   logger?: (e: InnerLogEntry) => void;
   /** The ledger's clock (every `created_at`, `observed_at` and event `ts`); the default is the wall clock. */
   now?: () => Date;
+  /** The breaker's clock in ms (the pipeline's `now`); the default is the wall clock. */
+  breakerNow?: () => number;
 }
 
 function setup(script: readonly FakeStep[], opts: SetupOptions = {}) {
@@ -105,6 +107,7 @@ function setup(script: readonly FakeStep[], opts: SetupOptions = {}) {
     backend,
     ledger,
     ...(opts.logger !== undefined ? { logger: opts.logger } : {}),
+    ...(opts.breakerNow !== undefined ? { now: opts.breakerNow } : {}),
   });
   const call = () => svc.call(contract, { user: "objective: tidy", run_id: run.id });
   const usageRows = () =>
@@ -118,7 +121,7 @@ function setup(script: readonly FakeStep[], opts: SetupOptions = {}) {
       health: db.prepare("SELECT * FROM provider_health ORDER BY provider").all(),
       forRun: ledger.listUsageObservationsForRun(run.id),
     });
-  return { db, ledger, run, settings, backend, svc, call, snapshot, usageRows, runEventCount };
+  return { db, ledger, run, settings, backend, fake, svc, call, snapshot, usageRows, runEventCount };
 }
 
 /**
@@ -1182,5 +1185,511 @@ describe("recordInnerCall under the flag is the only writer of inner_agent rows 
     expect(record).toBeLessThan(labelled as number);
     expect(repo.slice(general, record)).not.toContain("'inner_agent'");
     expect(repo.slice(labelled, (labelled as number) + 400)).toContain("'inner_agent'");
+  });
+});
+
+/**
+ * Post-#501 pipeline residual. The channel pins (#482, #501) drove `PROJECT_OFF`, `REMOTE_NOT_ALLOWED` and
+ * `CIRCUIT_OPEN` at the production callers; the two remaining rows of the LLD §13.5 gate table, `PROJECT_LOCAL_ONLY`
+ * and `SOURCE_CONTENT_NOT_ALLOWED`, had their outcome pinned (`pipeline.test.ts`, the task tests) but never what they
+ * write under the flag. A gate row is the one `inner_call` row written *after* the locality lookup and *before* the
+ * redaction, so its shape is fixed: the resolved locality, nothing counted, nothing sent, no observation.
+ */
+describe("gate rows after the locality lookup (LLD §13.5 rows 3 and 5; T11.5, FR-INN-15)", () => {
+  const EMPTY_SHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+  const countLookups = (counter: { n: number }) => (fake: InnerBackend) => ({
+    ...fake,
+    resolveLocality: (signal: AbortSignal) => {
+      counter.n++;
+      return fake.resolveLocality(signal);
+    },
+  });
+  const gateShape = (c: Record<string, unknown>) => [
+    c.outcome,
+    c.reason,
+    c.locality,
+    c.attempts,
+    c.latency_ms,
+    c.input_bytes,
+    c.output_bytes,
+    c.input_sha256,
+    c.tokens_in,
+    c.tokens_out,
+    c.model_id,
+  ];
+
+  it("PROJECT_LOCAL_ONLY is one lookup and a row at the resolved locality with no observation; PROJECT_OFF makes no lookup; local_only on a local backend charges", async () => {
+    const lookups = { n: 0 };
+    const h = setup([GOOD], {
+      shares: "claude-code",
+      allowRemote: true,
+      locality: "remote",
+      wrapBackend: countLookups(lookups),
+    });
+    const at = (project_setting: "off" | "local_only" | "inherit") =>
+      h.svc.call(contract, { user: "objective: tidy", run_id: h.run.id, project_setting });
+    expect(await at("off")).toMatchObject({ outcome: "fallback_disabled", reason: "PROJECT_OFF" });
+    expect(lookups.n).toBe(0); // step 1: not even a name lookup for an `off` project
+    expect(await at("local_only")).toMatchObject({ outcome: "fallback_disabled", reason: "PROJECT_LOCAL_ONLY" });
+    expect(lookups.n).toBe(1); // the gate needs the locality, so this row is written after the lookup
+    expect(h.fake.requests).toHaveLength(0);
+    const calls = h.db.prepare("SELECT * FROM inner_call ORDER BY rowid").all() as Record<string, unknown>[];
+    // `PROJECT_OFF` carries the pipeline's initial `remote` (no lookup); `PROJECT_LOCAL_ONLY` the resolved one. Both
+    // rows are otherwise the shape of a call that sent nothing: empty hash, zero bytes, counts unknown, configured model.
+    expect(calls.map(gateShape)).toEqual([
+      ["fallback_disabled", "PROJECT_OFF", "remote", 0, 0, 0, 0, EMPTY_SHA, null, null, "cfg-model"],
+      ["fallback_disabled", "PROJECT_LOCAL_ONLY", "remote", 0, 0, 0, 0, EMPTY_SHA, null, null, "cfg-model"],
+    ]);
+    expect(h.usageRows()).toEqual([]);
+    const events = h.db
+      .prepare("SELECT type, payload_json FROM run_event WHERE run_id = ? ORDER BY seq")
+      .all(h.run.id) as { type: string; payload_json: string }[];
+    expect(events.map((e) => [e.type, JSON.parse(e.payload_json).reason, JSON.parse(e.payload_json).attempts])).toEqual(
+      [
+        ["inner_call", "PROJECT_OFF", 0],
+        ["inner_call", "PROJECT_LOCAL_ONLY", 0],
+      ],
+    );
+    // The setting, not the flag, was the cause: the same `local_only` project on a local backend is an ordinary call.
+    h.fake.locality = "local";
+    expect(await at("local_only")).toMatchObject({ accepted: true });
+    expect(lookups.n).toBe(2);
+    expect(h.fake.requests).toHaveLength(1);
+    expect(h.ledger.listInnerCalls().map((c) => [c.reason, c.locality, c.attempts])).toEqual([
+      ["PROJECT_OFF", "remote", 0],
+      ["PROJECT_LOCAL_ONLY", "remote", 0],
+      [null, "local", 1],
+    ]);
+    expect(h.usageRows().map((r) => [r.source, r.run_id, JSON.parse(String(r.metrics_json))])).toEqual([
+      ["inner_agent", h.run.id, { input_tokens: 10, output_tokens: 4 }],
+    ]);
+  });
+
+  it("SOURCE_CONTENT_NOT_ALLOWED keys on the contract's flag: the source-content task is a gate row with no observation, run_title on the same remote backend charges, and the opt-in lets the task charge at locality remote", async () => {
+    const h = setup([GOOD, GOOD], {
+      shares: "claude-code",
+      allowRemote: true,
+      locality: "remote",
+      tasks: { log_summary: { enabled: true } }, // `allow_source_content` defaults to false
+    });
+    const sourceContract: InnerTaskContract<{ title: string }, { title: string }> = {
+      ...contract,
+      task: "log_summary",
+      sends_source_content: true,
+    };
+    const user = "objective: tidy\n+++ b/example.ts\n+x";
+    expect(await h.svc.call(sourceContract, { user, run_id: h.run.id })).toMatchObject({
+      outcome: "fallback_disabled",
+      reason: "SOURCE_CONTENT_NOT_ALLOWED",
+    });
+    expect(h.fake.requests).toHaveLength(0);
+    expect(await h.svc.call(contract, { user, run_id: h.run.id })).toMatchObject({ accepted: true });
+    expect(h.fake.requests).toHaveLength(1);
+    const calls = h.db.prepare("SELECT * FROM inner_call ORDER BY rowid").all() as Record<string, unknown>[];
+    expect(calls.map((c) => [c.task, ...gateShape(c)])).toEqual([
+      [
+        "log_summary",
+        "fallback_disabled",
+        "SOURCE_CONTENT_NOT_ALLOWED",
+        "remote",
+        0,
+        0,
+        0,
+        0,
+        EMPTY_SHA,
+        null,
+        null,
+        "cfg-model",
+      ],
+      [
+        "run_title",
+        "accepted",
+        null,
+        "remote",
+        1,
+        expect.any(Number),
+        Buffer.byteLength(user),
+        21,
+        expect.any(String),
+        10,
+        4,
+        "fake-model",
+      ],
+    ]);
+    expect(calls[1]?.input_sha256).not.toBe(EMPTY_SHA);
+    expect(h.usageRows().map((r) => [r.source, r.model, JSON.parse(String(r.metrics_json))])).toEqual([
+      ["inner_agent", "fake-model", { input_tokens: 10, output_tokens: 4 }],
+    ]);
+    // With the per-task opt-in the same contract passes row 6 of the table and charges like any remote call.
+    const optedIn = createInnerAgent(
+      resolveInnerAgent({
+        enabled: true,
+        backend: {
+          kind: "http",
+          base_url: "http://127.0.0.1:1",
+          model: "cfg-model",
+          shares_subscription_with: "claude-code",
+          allow_remote: true,
+        },
+        tasks: { log_summary: { enabled: true, allow_source_content: true } },
+      }),
+      { backend: h.fake, ledger: h.ledger },
+    );
+    expect(await optedIn.call(sourceContract, { user, run_id: h.run.id })).toMatchObject({ accepted: true });
+    expect(h.fake.requests).toHaveLength(2);
+    expect(h.ledger.listInnerCalls().map((c) => [c.task, c.reason, c.locality, c.attempts, c.tokens_in])).toEqual([
+      ["log_summary", "SOURCE_CONTENT_NOT_ALLOWED", "remote", 0, null],
+      ["run_title", null, "remote", 1, 10],
+      ["log_summary", null, "remote", 1, 10],
+    ]);
+    expect(h.usageRows()).toHaveLength(2);
+    expect(h.db.prepare("SELECT COUNT(*) AS n FROM provider_health").get()).toEqual({ n: 0 });
+  });
+
+  it("a locality lookup that fails is remote (fail closed): with allow_remote the call charges at locality remote, without it the gate row writes nothing; the lookup's message reaches no row, event or log", async () => {
+    const MESSAGE = "dns-failure-5b1c";
+    const failingLookup = (fake: InnerBackend): InnerBackend => ({
+      ...fake,
+      resolveLocality: async () => {
+        throw new Error(MESSAGE);
+      },
+    });
+    const logs: InnerLogEntry[] = [];
+    const allowed = setup([GOOD], {
+      shares: "claude-code",
+      allowRemote: true,
+      locality: "local", // what the fake would have said: the failed lookup must not fall back to it
+      wrapBackend: failingLookup,
+      logger: (e) => logs.push(e),
+    });
+    expect(await allowed.call()).toMatchObject({ accepted: true });
+    expect(allowed.ledger.listInnerCalls().map((c) => [c.locality, c.attempts, c.tokens_in, c.tokens_out])).toEqual([
+      ["remote", 1, 10, 4],
+    ]);
+    expect(allowed.usageRows().map((r) => [r.source, JSON.parse(String(r.metrics_json))])).toEqual([
+      ["inner_agent", { input_tokens: 10, output_tokens: 4 }],
+    ]);
+    const denied = setup([GOOD], {
+      shares: "claude-code",
+      allowRemote: false,
+      locality: "local",
+      wrapBackend: failingLookup,
+      logger: (e) => logs.push(e),
+    });
+    expect(await denied.call()).toMatchObject({ outcome: "fallback_disabled", reason: "REMOTE_NOT_ALLOWED" });
+    expect(denied.fake.requests).toHaveLength(0);
+    expect(denied.ledger.listInnerCalls().map((c) => [c.locality, c.attempts, c.reason])).toEqual([
+      ["remote", 0, "REMOTE_NOT_ALLOWED"],
+    ]);
+    expect(denied.usageRows()).toEqual([]);
+    for (const h of [allowed, denied]) {
+      expect(JSON.stringify(h.db.prepare("SELECT * FROM inner_call").all())).not.toContain(MESSAGE);
+      expect(JSON.stringify(h.db.prepare("SELECT * FROM run_event").all())).not.toContain(MESSAGE);
+    }
+    expect(JSON.stringify(logs)).not.toContain(MESSAGE);
+  });
+});
+
+/**
+ * Re-ask aggregation beyond the summed counts. The sum (#317), the first attempt's counts surviving a timed-out re-ask
+ * and a bogus first count making the total unknown (#491) are pinned; what the row and the labelled observation carry
+ * when the re-ask *errors*, which model id a two-attempt call records, and which attempt's `output_bytes` is kept were
+ * not. The last is an as-built choice: `tokens_*` are summed across attempts, `output_bytes` is the last attempt's.
+ */
+describe("re-ask aggregation: the erroring re-ask, the model id across attempts and output_bytes (T11.5; FR-INN-15)", () => {
+  it("a re-ask whose request errors keeps the first attempt's counts and model under attempts 2, counts as the transport failure that opens the breaker, and the denial after it writes no observation", async () => {
+    const h = setup([{ kind: "text", text: "bad", usage: { in: 7, out: 2 }, model_id: "model-a" }, { kind: "error" }], {
+      shares: "claude-code",
+      breaker: { failure_threshold: 1, open_ms: 60_000 },
+    });
+    expect(await h.call()).toMatchObject({ accepted: false, outcome: "fallback_unavailable", reason: "BACKEND_ERROR" });
+    expect(h.fake.requests).toHaveLength(2);
+    expect(h.svc.breakerState).toBe("open");
+    expect(
+      h.ledger
+        .listInnerCalls()
+        .map((c) => [c.outcome, c.attempts, c.tokens_in, c.tokens_out, c.model_id, c.output_bytes]),
+    ).toEqual([["fallback_unavailable", 2, 7, 2, "model-a", 3]]);
+    expect(h.usageRows().map((r) => [r.source, r.model, JSON.parse(String(r.metrics_json))])).toEqual([
+      ["inner_agent", "model-a", { input_tokens: 7, output_tokens: 2 }],
+    ]);
+    const events = h.db
+      .prepare("SELECT type, payload_json FROM run_event WHERE run_id = ? ORDER BY seq")
+      .all(h.run.id) as { type: string; payload_json: string }[];
+    expect(events.map((e) => e.type)).toEqual(["inner_call", "inner_degraded"]);
+    expect(JSON.parse(events[1]?.payload_json ?? "")).toEqual({
+      state: "degraded",
+      reason: "BACKEND_ERROR",
+      breaker_state: "open",
+      backend_kind: "http",
+    });
+    expect(JSON.stringify(events)).not.toMatch(/tokens|fake backend error/u);
+    expect(await h.call()).toMatchObject({ outcome: "fallback_unavailable", reason: "CIRCUIT_OPEN" });
+    expect(h.ledger.listInnerCalls().map((c) => [c.reason, c.attempts])).toEqual([
+      ["BACKEND_ERROR", 2],
+      ["CIRCUIT_OPEN", 0],
+    ]);
+    expect(h.usageRows()).toHaveLength(1);
+  });
+
+  it("the recorded model is the last attempt that reported one, else the configured id; output_bytes is the last attempt's, tokens the sum", async () => {
+    const big = JSON.stringify({ title: "x".repeat(400) }); // over run_title's 320-byte cap: too_long, re-asked
+    const h = setup(
+      [
+        // call 1: the re-ask reports no model id, so the first attempt's stands
+        { kind: "text", text: "bad", usage: { in: 1, out: 1 }, model_id: "model-a" },
+        { kind: "text", text: '{"title":"Fix login"}', usage: { in: 2, out: 2 }, model_id: "" },
+        // call 2: the re-ask reports another model: the last report stands
+        { kind: "text", text: "bad", usage: { in: 1, out: 1 }, model_id: "model-a" },
+        { kind: "text", text: '{"title":"Fix login"}', usage: { in: 2, out: 2 }, model_id: "model-b" },
+        // call 3: one attempt reporting no model id: the configured one
+        { kind: "text", text: '{"title":"Fix login"}', usage: { in: 1, out: 1 }, model_id: "" },
+        // call 4: an oversized first answer, then a good one: bytes are the re-ask's, counts the sum
+        { kind: "text", text: big, usage: { in: 5, out: 5 } },
+        { kind: "text", text: '{"title":"Fix login"}', usage: { in: 2, out: 2 } },
+        // call 5: rejected twice, the second answer shorter than the first
+        { kind: "text", text: big, usage: { in: 5, out: 5 } },
+        { kind: "text", text: "bad", usage: { in: 1, out: 1 } },
+      ],
+      { shares: "claude-code" },
+    );
+    for (let i = 0; i < 5; i++) await h.call();
+    expect(
+      h.ledger
+        .listInnerCalls()
+        .map((c) => [c.outcome, c.reason, c.attempts, c.model_id, c.tokens_in, c.tokens_out, c.output_bytes]),
+    ).toEqual([
+      ["accepted", null, 2, "model-a", 3, 3, 21],
+      ["accepted", null, 2, "model-b", 3, 3, 21],
+      ["accepted", null, 1, "cfg-model", 1, 1, 21],
+      ["accepted", null, 2, "fake-model", 7, 7, 21],
+      ["rejected_validator", "NOT_JSON", 2, "fake-model", 6, 6, 3],
+    ]);
+    expect(h.usageRows().map((r) => [r.model, JSON.parse(String(r.metrics_json))])).toEqual([
+      ["model-a", { input_tokens: 3, output_tokens: 3 }],
+      ["model-b", { input_tokens: 3, output_tokens: 3 }],
+      ["cfg-model", { input_tokens: 1, output_tokens: 1 }],
+      ["fake-model", { input_tokens: 7, output_tokens: 7 }],
+      ["fake-model", { input_tokens: 6, output_tokens: 6 }],
+    ]);
+    expect(Buffer.byteLength(big)).toBeGreaterThan(320);
+    expect(JSON.stringify(h.db.prepare("SELECT * FROM inner_call").all())).not.toContain(
+      String(Buffer.byteLength(big)),
+    );
+  });
+});
+
+/**
+ * Failures *after* the request. Every pin so far charged on `attempts >= 1` for transport outcomes and the validator;
+ * the three outcomes the contract layer produces after a request was answered (`rejected_sanitiser`, `PERSIST_FAILED`
+ * and a `PIPELINE_ERROR` thrown by a contract hook) had their outcome pinned in the task tests and nothing about their
+ * accounting. The subscription was consumed whether or not the value was usable, so each writes one labelled row with
+ * the reported counts; only the quality outcome counts in the suspension window; none moves the breaker.
+ */
+describe("post-request contract failures still charge the subscription (T11.5; FR-INN-15)", () => {
+  it("rejected_sanitiser: counts and the labelled row like a validator rejection, and it is a quality outcome that can suspend the task", async () => {
+    const h = setup([GOOD], {
+      shares: "claude-code",
+      suspension: { window_calls: 10, min_calls: 2, rejection_threshold: 0.4 },
+      breaker: { failure_threshold: 1, open_ms: 60_000 },
+    });
+    const sanitising: InnerTaskContract<{ title: string }, { title: string }> = { ...contract, sanitise: () => null };
+    const at = () => h.svc.call(sanitising, { user: "objective: tidy", run_id: h.run.id });
+    expect(await at()).toMatchObject({
+      accepted: false,
+      outcome: "rejected_sanitiser",
+      reason: "EMPTY_AFTER_SANITISER",
+    });
+    expect(h.svc.isSuspended("run_title")).toBe(false);
+    expect(await at()).toMatchObject({ outcome: "rejected_sanitiser" }); // 2/2 > 0.4: suspends
+    expect(h.svc.isSuspended("run_title")).toBe(true);
+    expect(h.svc.breakerState).toBe("closed");
+    expect(await at()).toMatchObject({ outcome: "fallback_suspended", reason: "TASK_SUSPENDED" });
+    expect(h.fake.requests).toHaveLength(2);
+    expect(
+      h.ledger.listInnerCalls().map((c) => [c.outcome, c.attempts, c.tokens_in, c.tokens_out, c.output_bytes]),
+    ).toEqual([
+      ["rejected_sanitiser", 1, 10, 4, 21],
+      ["rejected_sanitiser", 1, 10, 4, 21],
+      ["fallback_suspended", 0, null, null, 0],
+    ]);
+    expect(h.usageRows().map((r) => [r.source, r.run_id, JSON.parse(String(r.metrics_json))])).toEqual([
+      ["inner_agent", h.run.id, { input_tokens: 10, output_tokens: 4 }],
+      ["inner_agent", h.run.id, { input_tokens: 10, output_tokens: 4 }],
+    ]);
+    expect(
+      (
+        h.db.prepare("SELECT type FROM run_event WHERE run_id = ? ORDER BY seq").all(h.run.id) as { type: string }[]
+      ).map((e) => e.type),
+    ).toEqual(["inner_call", "inner_call", "inner_task_suspended", "inner_call"]);
+  });
+
+  it("PERSIST_FAILED (a null or throwing persist): the value is withheld, the row charges at attempts 1 with the counts and no artifact, the window and the breaker are unmoved", async () => {
+    const MESSAGE = "store-failure-9d4e";
+    const logs: InnerLogEntry[] = [];
+    const h = setup([GOOD], {
+      shares: "claude-code",
+      suspension: { window_calls: 10, min_calls: 2, rejection_threshold: 0.4 },
+      breaker: { failure_threshold: 1, open_ms: 60_000 },
+      logger: (e) => logs.push(e),
+    });
+    const persisting = (
+      persist: () => Promise<string | null>,
+    ): InnerTaskContract<{ title: string }, { title: string }> => ({
+      ...contract,
+      persist,
+    });
+    const nulled = await h.svc.call(
+      persisting(async () => null),
+      { user: "objective: tidy", run_id: h.run.id },
+    );
+    const thrown = await h.svc.call(
+      persisting(async () => {
+        throw new Error(MESSAGE);
+      }),
+      { user: "objective: tidy", run_id: h.run.id },
+    );
+    for (const r of [nulled, thrown]) {
+      expect(r).toMatchObject({ accepted: false, outcome: "fallback_unavailable", reason: "PERSIST_FAILED" });
+      expect(r.call_id).toEqual(expect.any(String));
+      expect(JSON.stringify(r)).not.toContain("Fix login"); // the fallback, never the unstored value
+    }
+    expect(h.fake.requests).toHaveLength(2);
+    expect(h.svc.breakerState).toBe("closed");
+    expect(h.svc.isSuspended("run_title")).toBe(false); // not a quality outcome: 0/2 rejected
+    expect(h.ledger.listInnerCalls().map((c) => [c.outcome, c.reason, c.attempts, c.tokens_in, c.tokens_out])).toEqual([
+      ["fallback_unavailable", "PERSIST_FAILED", 1, 10, 4],
+      ["fallback_unavailable", "PERSIST_FAILED", 1, 10, 4],
+    ]);
+    expect(h.usageRows().map((r) => [r.source, JSON.parse(String(r.metrics_json))])).toEqual([
+      ["inner_agent", { input_tokens: 10, output_tokens: 4 }],
+      ["inner_agent", { input_tokens: 10, output_tokens: 4 }],
+    ]);
+    const events = h.db
+      .prepare("SELECT type, artifact_id, payload_json FROM run_event WHERE run_id = ? ORDER BY seq")
+      .all(h.run.id) as { type: string; artifact_id: string | null; payload_json: string }[];
+    expect(events.map((e) => [e.type, e.artifact_id, JSON.parse(e.payload_json).reason])).toEqual([
+      ["inner_call", null, "PERSIST_FAILED"],
+      ["inner_call", null, "PERSIST_FAILED"],
+    ]);
+    expect(JSON.stringify(events)).not.toContain("Fix login");
+    expect(JSON.stringify([events, logs, h.ledger.listInnerCalls()])).not.toContain(MESSAGE);
+  });
+
+  it("a contract hook that throws after the answer (accept, validate) is PIPELINE_ERROR at attempts 1 with the counts and one labelled row; a throwing event_payload loses the record (as built) but never the value", async () => {
+    const MESSAGE = "hook-failure-2a7c";
+    const logs: InnerLogEntry[] = [];
+    const h = setup([GOOD], { shares: "claude-code", logger: (e) => logs.push(e) });
+    const boom = () => {
+      throw new Error(MESSAGE);
+    };
+    const user = { user: "objective: tidy", run_id: h.run.id };
+    expect(await h.svc.call({ ...contract, accept: boom }, user)).toMatchObject({
+      accepted: false,
+      outcome: "fallback_unavailable",
+      reason: "PIPELINE_ERROR",
+    });
+    expect(await h.svc.call({ ...contract, validate: boom }, user)).toMatchObject({
+      accepted: false,
+      outcome: "fallback_unavailable",
+      reason: "PIPELINE_ERROR",
+    });
+    expect(h.fake.requests).toHaveLength(2);
+    expect(h.svc.breakerState).toBe("closed"); // a hook failure is not a transport failure
+    expect(
+      h.ledger.listInnerCalls().map((c) => [c.reason, c.attempts, c.tokens_in, c.tokens_out, c.output_bytes]),
+    ).toEqual([
+      ["PIPELINE_ERROR", 1, 10, 4, 21],
+      ["PIPELINE_ERROR", 1, 10, 4, 21],
+    ]);
+    expect(h.usageRows().map((r) => [r.source, JSON.parse(String(r.metrics_json))])).toEqual([
+      ["inner_agent", { input_tokens: 10, output_tokens: 4 }],
+      ["inner_agent", { input_tokens: 10, output_tokens: 4 }],
+    ]);
+    expect(logs.filter((l) => l.event === "inner.pipeline_exception")).toHaveLength(2);
+    // As built, `event_payload` runs inside the ledger write (`finish`), so a throw there is a record failure: the
+    // subscription was consumed and the caller gets the accepted value, but no row, observation or event says so.
+    // `event_payload` is controller code over a schema-validated value (`run_title`), never backend input; the pin
+    // records the behaviour so a change to it is deliberate.
+    const r = await h.svc.call({ ...contract, event_payload: boom }, user);
+    expect(r).toMatchObject({ accepted: true, value: { title: "Fix login" } });
+    expect(r.call_id).toBeUndefined();
+    expect(h.fake.requests).toHaveLength(3);
+    expect(h.ledger.listInnerCalls()).toHaveLength(2);
+    expect(h.usageRows()).toHaveLength(2);
+    expect(h.runEventCount()).toBe(2);
+    expect(logs.filter((l) => l.event === "inner.record_failed")).toEqual([
+      { event: "inner.record_failed", task: "run_title", outcome: "accepted" },
+    ]);
+    expect(logs.filter((l) => l.event === "inner.pipeline_exception")).toHaveLength(2);
+    expect(
+      JSON.stringify([logs, h.ledger.listInnerCalls(), h.db.prepare("SELECT * FROM run_event").all()]),
+    ).not.toContain(MESSAGE);
+  });
+});
+
+/**
+ * The half-open probe (LLD §13.4 step 6). The breaker pins charge the calls that open the circuit and deny while it is
+ * open; the probe that is let through once `open_ms` has passed is a request like any other and had no accounting pin:
+ * a failed probe re-opens the circuit with a row and a labelled row with unknown counts and no second `inner_degraded`
+ * event (still degraded, one transition per change), a successful probe charges with its counts and writes the
+ * `recovered` transition with no count, and the call denied beside the probe writes a row with no observation.
+ */
+describe("the half-open probe is charged like any request (T11.5; FR-INN-15, LLD §13.4 step 6)", () => {
+  it("failed probe: one labelled row with unknown counts and no new transition; successful probe: counts and the recovered event; the call denied beside it: no observation", async () => {
+    const clock = { t: 1_000_000 };
+    const h = setup([{ kind: "error" }], {
+      shares: "claude-code",
+      breaker: { failure_threshold: 1, open_ms: 1000 },
+      maxConcurrency: 2,
+      breakerNow: () => clock.t,
+    });
+    expect(await h.call()).toMatchObject({ reason: "BACKEND_ERROR" }); // opens
+    expect(h.svc.breakerState).toBe("open");
+    clock.t += 1000;
+    expect(await h.call()).toMatchObject({ reason: "BACKEND_ERROR" }); // the probe fails: open again, timer restarted
+    expect(h.svc.breakerState).toBe("open");
+    expect(await h.call()).toMatchObject({ reason: "CIRCUIT_OPEN" }); // the restarted timer has not run out
+    clock.t += 1000;
+    h.fake.setScript([{ kind: "text", text: '{"title":"probe"}', usage: { in: 3, out: 1 }, delay_ms: 150 }]);
+    const [a, b] = await Promise.all([h.call(), h.call()]);
+    const probe = [a, b].find((r) => r.accepted);
+    const denied = [a, b].find((r) => !r.accepted);
+    expect(probe).toMatchObject({ accepted: true, value: { title: "probe" } });
+    expect(denied).toMatchObject({ outcome: "fallback_unavailable", reason: "CIRCUIT_OPEN" });
+    expect(h.svc.breakerState).toBe("closed");
+    expect(h.fake.requests).toHaveLength(3); // open, failed probe, successful probe
+    const calls = h.ledger.listInnerCalls().map((c) => [c.reason, c.attempts, c.tokens_in, c.tokens_out] as const);
+    // The denied call records before the probe (it was decided at once; the probe waited on the fake's delay).
+    expect(calls).toEqual([
+      ["BACKEND_ERROR", 1, null, null],
+      ["BACKEND_ERROR", 1, null, null],
+      ["CIRCUIT_OPEN", 0, null, null],
+      ["CIRCUIT_OPEN", 0, null, null],
+      [null, 1, 3, 1],
+    ]);
+    expect(h.usageRows().map((r) => [r.source, JSON.parse(String(r.metrics_json))])).toEqual([
+      ["inner_agent", {}],
+      ["inner_agent", {}],
+      ["inner_agent", { input_tokens: 3, output_tokens: 1 }],
+    ]);
+    expect(h.usageRows()).toHaveLength(calls.filter((c) => c[1] >= 1).length);
+    const events = h.db
+      .prepare("SELECT type, payload_json FROM run_event WHERE run_id = ? ORDER BY seq")
+      .all(h.run.id) as { type: string; payload_json: string }[];
+    expect(events.map((e) => e.type)).toEqual([
+      "inner_call",
+      "inner_degraded",
+      "inner_call", // the failed probe: still degraded, no second transition
+      "inner_call",
+      "inner_call",
+      "inner_call",
+      "inner_degraded",
+    ]);
+    expect(events.filter((e) => e.type === "inner_degraded").map((e) => JSON.parse(e.payload_json))).toEqual([
+      { state: "degraded", reason: "BACKEND_ERROR", breaker_state: "open", backend_kind: "http" },
+      { state: "recovered", reason: "", breaker_state: "closed", backend_kind: "http" },
+    ]);
+    expect(JSON.stringify(events)).not.toMatch(/tokens|fake backend error/u);
   });
 });
