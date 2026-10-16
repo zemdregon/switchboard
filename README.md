@@ -2117,6 +2117,11 @@ you control. `approve` and `deny` keep working for clients left at `"required"`.
   backend. Chunk text and MCP search results are untrusted reference data; they never reach profile compilation,
   eligibility, approvals, routing, commit or push logic, and a retrieval failure never fails a run. Ledger rows for
   index and search hold counts, ids and hashes only.
+- **Run artifacts on disk.** Diffs, verification output and other admitted-run payloads are content-addressed under
+  `<data_dir>/artifacts/` as mode `0600` with `0700` shard directories, with secret patterns redacted before write.
+  `ArtifactStore` creates and `chmod`s each directory level so a restrictive process umask cannot leave a non-traversable
+  tree that makes the next `put` fail ([PR #616](https://github.com/zemdregon/switchboard/pull/616);
+  `src/artifacts/artifacts.test.ts`, "succeeds and creates traversable directories under a hostile umask").
 - **Fail closed.** An invalid config, an unknown client id, an unverified CLI version or an unavailable profile refuses
   to run rather than weakening anything.
 
