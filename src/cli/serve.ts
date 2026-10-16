@@ -562,7 +562,7 @@ async function runDaemon(
   // T12.4 / T12.5: set below once background indexing has started; until then (and with no embedding backend) the
   // context-pack port answers `undefined` and a run is compiled without a pack.
   let rag: ServeRag | undefined;
-  const telemetry = createTelemetry(config); // inert until T8.2 submits the first completed span
+  const telemetry = createTelemetry(config); // inert without `telemetry.otlp_endpoint`; spans arrive from T8.2 emission
   // T14.9 (FR-CTL-10, ADR-0048): notification sinks only when the operator configured one; none means no request at all.
   const sinks =
     config.notificationSinks.length === 0
@@ -608,6 +608,8 @@ async function runDaemon(
     workspace,
     artifacts,
     adapters: registry,
+    // T8.2 (FR-TEL-02, LLD §7): wrapper-boundary span export; inert when no OTLP endpoint is configured.
+    telemetry,
     allowedRoots: config.allowedRoots,
     globalConcurrency: config.limits.globalConcurrency,
     perProviderConcurrency: config.limits.perProviderConcurrency,

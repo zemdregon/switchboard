@@ -29,8 +29,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   commits, ref snapshots, push, dynamic projects, signing and concurrent-run worktrees are implemented and tested for
   `host` environments on a fake provider with real Git in temporary repositories. It is not `Done`: nothing has run
   against a live provider through Switchboard's own tool channel, signing was tried only with a throwaway GnuPG key,
-  pushing from dynamic projects is not wired, and container environments need milestone 10. The exceptions are listed
-  in [ROADMAP §6.3](docs/ROADMAP.md#63-m9-projects-and-controlled-commits-tasks) (task T9.8).
+  pushing from dynamic projects is not wired, and the `container` clauses of milestone 9 stay **Partial** until milestone
+  10 closes admission (see milestone 10 below). The exceptions are listed in
+  [ROADMAP §6.3](docs/ROADMAP.md#63-m9-projects-and-controlled-commits-tasks) (task T9.8).
 - **Milestone 5 (continuity) is `Partial`.** `continue_task` resumes the provider's native session or hands off to
   another provider from a bundle built from Switchboard's own records, and `get_artifacts` and `runs show` show the
   handoff. It is tested on two fake providers, including a check that the controller opens no provider state directory.
@@ -57,6 +58,12 @@ Pre-release. The package is private and is not published to any registry; you bu
   integration test and full M8 acceptance closure (T8.2, T8.3, T8.7) are not done. See
   [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and
   [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
+- **Milestone 10 (container environments) is `Partial`.** The environment port, orphan sweep, malicious-fixture
+  container leg, `projects validate` container checks and retention GC for containers are implemented and tested on
+  fakes (and emulated runtime in CI). It is not `Done`: `delegate_task` with a `container` project is still refused at
+  admission (`ENVIRONMENT_NOT_IMPLEMENTED`), and operator live checks for in-volume provider login remain open (T10.0).
+  See [Container environments (milestone 10)](#container-environments-milestone-10) and
+  [ROADMAP §6.4](docs/ROADMAP.md#64-m10-container-environments-tasks).
 - **Milestone 11 (inner agent) is `Partial`.** T11.1 to T11.12 are done on fakes: an optional HTTP backend, privacy
   gates, `doctor` and `inner` reporting, commit-message drafting, handoff condensation (T11.10, a service function) and
   record-only routing classification (T11.11). Two tasks are wired into production `serve` run paths: the commit-message
@@ -452,6 +459,28 @@ installed in CI.
 Tests on fakes: `src/config/config.test.ts`, `src/telemetry/index.test.ts`, `src/adapters/version-canary.test.ts`,
 `src/adapters/version-bump-preflight.test.ts`. Per-task evidence is in
 [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
+
+## Container environments (milestone 10)
+
+A `container` project runs the provider inside a rootless Docker container that mounts only the run worktree (writable)
+and declared read-only contexts, applies limits and network policy, and is torn down when the run ends. The image must
+have no `git` or `gh` on its `PATH` ([ADR-0020](docs/adr/0020-container-image-without-git-client.md)). On `main` today
+the port and security legs are tested; MCP admission for `container` projects is not wired yet (ROADMAP T10.1 gap 1).
+
+### Status and tests
+
+Fixtures and emulated runtime in CI; opt-in Docker when `SWITCHBOARD_CONTAINER_TESTS=1` and a rootless daemon plus a
+local base image are available:
+
+- Malicious-fixture container leg (T10.3): `test/malicious/container-leg.test.ts`; opt-in Docker:
+  `test/malicious/container-docker-leg.test.ts`.
+- `projects validate` container checks (T10.3): `src/cli/projects.test.ts` (`container environment checks (T10.3 ...)`).
+- Retention GC of containers (T10.3, FR-PRJ-09): `src/workspace/gc.test.ts` (`retention GC of container environments
+  (T10.3, FR-PRJ-09)`).
+- Orphan sweep and `environment` run events (T10.2): `src/reconcile/reconcile.test.ts`, `src/cli/serve-orphan-sweep.test.ts`.
+- Mounts, limits and teardown (T10.1): `src/environment/container.test.ts`; opt-in Docker: `src/environment/container-docker.test.ts`.
+
+Per-task evidence is in [ROADMAP §6.4](docs/ROADMAP.md#64-m10-container-environments-tasks).
 
 ## Control plane (milestone 14)
 
@@ -1960,11 +1989,13 @@ Code an approved bypass run drops `--restricted`, which refuses bypass, and keep
 check on 2026-10-13 (six commit and ref spellings, directly and through `serve` with an approved scope; checks 14 and
 16 in [the live checks](docs/research/live-checks-2026-10-13.md)), but the operator's malicious-fixture leg (T3.9) has
 not run, so this rests on one check of one version (ROADMAP R-38). That gap concerns agents running on your host.
-Container environments, planned
-for milestone 10 and not available yet, are meant to close it: their image has no Git client, they mount neither the
-repository's Git directory nor any credentials, and Switchboard makes commits and pushes on the host through its own
-tools (ROADMAP owner decision 24). Host-run agents remain supported. Claude Code compiles a privileged scope only with
-the network `on`: it has no network control for commands, so a scope asking for network `off` is refused. Codex does
+Container environments (milestone 10, **`Partial` on `main`**) are meant to close it: their image has no Git client,
+they mount neither the repository's Git directory nor any credentials, and Switchboard makes commits and pushes on the
+host through its own tools (ROADMAP owner decision 24). The malicious-fixture container leg and validate/GC checks are
+in CI; MCP admission for a `container` project is not wired yet. See
+[Container environments (milestone 10)](#container-environments-milestone-10). Host-run agents remain supported.
+Claude Code compiles a privileged scope only with the network `on`: it has no network control for commands, so a scope
+asking for network `off` is refused. Codex does
 not run `bypass: true` scopes yet (its bypass option is not documented in the sources the adapter relies on), and
 neither provider compiles every scope: `list_capabilities` shows whether a provider compiles `privileged` at all, and a
 scope it cannot express fails `ELIGIBILITY_NONE`. Approvals never expire: once approved, later `continue_task` runs of

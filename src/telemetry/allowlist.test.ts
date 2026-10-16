@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ALLOWED_SPAN_ATTRIBUTE_KEYS, allowlistedAttributes } from "./allowlist.js";
 import { type CompletedSpan, createTelemetry } from "./index.js";
+import { delegateSpan, spawnSpan } from "./spans.js";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -94,6 +95,25 @@ describe("span attribute allowlist (T8.4)", () => {
     ]);
     expect(documented.size).toBeGreaterThan(20);
     expect([...ALLOWED_SPAN_ATTRIBUTE_KEYS].sort()).toEqual([...documented].sort());
+  });
+
+  it("every key the T8.2 builders can emit is allowlisted, so the filter never drops a legitimate attribute", () => {
+    const common = { runId: "run_1", sessionId: "ses_1", trustProfile: "read_only", model: "m", attempt: 2 };
+    const spans = [
+      delegateSpan(0, 1, { ...common, provider: "fake", terminalState: "FAILED", failureCode: "PROCESS_CRASH" }),
+      spawnSpan(0, 1, {
+        ...common,
+        provider: "fake",
+        adapterVersion: "1.0.0",
+        transport: "subprocess-jsonl",
+        exitCode: 1,
+        exitSignal: "SIGTERM",
+      }),
+    ];
+    for (const span of spans) {
+      expect(Object.keys(span.attributes ?? {}).length).toBeGreaterThan(5);
+      expect(allowlistedAttributes(span.attributes)).toEqual(span.attributes);
+    }
   });
 
   it("a disallowed key planted on an internal span builder never reaches the exporter", async () => {
