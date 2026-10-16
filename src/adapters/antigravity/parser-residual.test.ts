@@ -2023,3 +2023,260 @@ describe("antigravity parser residuals, eleventh pass: envelope shapes, non-stri
     }
   });
 });
+
+/**
+ * Twelfth pass (2026-10-16, Delegated, not owner-approved): unreadable `step_update` lines that name a Git write, the
+ * never-read `state` field, a non-object `tool_info` and the root parameter containers, failure ranking by event order
+ * inside one envelope, `init` lines after the result, status against exit code, and a whitespace-only response.
+ * Synthetic lines only, no new fixture (the T4.35 fixture inventory in `conformance-residual.test.ts` lists every file),
+ * parser unchanged. None of these shapes was recorded ([LIVE] C4, C7), so the gaps pin behaviour, not a native contract.
+ */
+describe("antigravity parser residuals, twelfth pass: unreadable steps, root containers, in-envelope ranking and post-result init (T4.33)", () => {
+  const rows = (events: readonly NormalizedEvent[]) =>
+    usageObservationsFromEvents(events, { runId: "run_antigravity_t433_twelfth_usage", provider: "antigravity" });
+  const guarded = (lines: string[], exit: ExitInfo = EXIT0) => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    const raw = lines.flatMap((l) => a.parseEvent(l, state));
+    const events = raw.map((e) => guardEvent(e, { cwd: "/work/tree", home: "/home/synthetic", bypass: true }));
+    return { raw, events, result: a.extractResult(events, exit) };
+  };
+  const PUSH = { name: "run_command", parameters: { command: "git push origin main" } };
+  const PUSH_DETAIL = "git write attempted: `git push` can create commits, change refs or push";
+  const calls = (events: readonly NormalizedEvent[]) => events.filter((e) => e.kind === "tool_call");
+
+  it.each([
+    ["a string step_index", { step_index: "2", step_type: "tool" }],
+    ["a null step_index", { step_index: null, step_type: "tool" }],
+    ["a boolean step_index", { step_index: true, step_type: "tool" }],
+    ["an array step_index", { step_index: [2], step_type: "tool" }],
+    ["no step_index", { step_type: "tool" }],
+    ["a numeric step_type", { step_index: 2, step_type: 7 }],
+    ["a null step_type", { step_index: 2, step_type: null }],
+    ["an array step_type", { step_index: 2, step_type: ["tool"] }],
+    ["no step_type", { step_index: 2 }],
+  ] as const)("pins the gap: a step with %s naming a Git write is one counted unknown the guard never sees", (_, o) => {
+    const line = STEP({ ...o, tool_info: PUSH });
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    expect(a.parseEvent(line, state)).toEqual([{ kind: "unknown", rawType: "step_update" }]);
+    expect(state).toEqual({ lines: 1, unknownEvents: 1 });
+    // No tool_call reaches the guard, so the run that pushed still succeeds.
+    const r = guarded([INIT(), line, RESULT()]);
+    expect(calls(r.events)).toEqual([]);
+    expect(r.result).toEqual({ ok: true, unknownEventCount: 1, nativeSessionId: CID, summary: "ok" });
+    // The same step with a numeric index and a string type is read and blocked.
+    const read = guarded([INIT(), STEP({ step_index: 2, step_type: "tool", tool_info: PUSH }), RESULT()]);
+    expect(read.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", failureDetail: PUSH_DETAIL });
+  });
+
+  it.each([[42], [null], ["PENDING"], [""], [{ value: "DONE" }], [undefined]])(
+    "pins the gap: state %j is never read, so a tool step in it is still a tool_call the guard blocks",
+    (s) => {
+      const line = j({
+        event: "step_update",
+        conversation_id: CID,
+        state: s,
+        step_index: 4,
+        step_type: "tool",
+        tool_info: PUSH,
+      });
+      const r = guarded([INIT(), line, RESULT()]);
+      expect(calls(r.raw)).toEqual([
+        { kind: "tool_call", tool: "shell", name: "run_command", command: "git push origin main" },
+      ]);
+      expect(r.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", failureDetail: PUSH_DETAIL });
+    },
+  );
+
+  it.each([[["run_command"]], ["git push origin main"], [42], [null], [true]])(
+    "a non-object tool_info %j is skipped: the name falls back to tool_name and a root container still reaches the guard",
+    (info) => {
+      const withRoot = guarded([
+        INIT(),
+        STEP({
+          step_index: 5,
+          step_type: "tool",
+          tool_info: info,
+          tool_name: "run_command",
+          parameters: { command: "git push origin main" },
+        }),
+        RESULT(),
+      ]);
+      expect(calls(withRoot.raw)).toEqual([
+        { kind: "tool_call", tool: "shell", name: "run_command", command: "git push origin main" },
+      ]);
+      expect(withRoot.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+      // Gap: a bare string tool_info is never read as a name or a command, so alone it is an unnamed bare call.
+      const alone = guarded([INIT(), STEP({ step_index: 5, step_type: "tool", tool_info: info }), RESULT()]);
+      expect(calls(alone.raw)).toEqual([{ kind: "tool_call", tool: "other", name: "unknown" }]);
+      expect(alone.result).toEqual({ ok: true, unknownEventCount: 0, nativeSessionId: CID, summary: "ok" });
+    },
+  );
+
+  it.each(["parameters", "args", "input"])(
+    "the root %s container alone carries a CommandLine command or an AbsolutePath / file_path target",
+    (key) => {
+      const cmd = guarded([
+        INIT(),
+        STEP({ step_index: 6, step_type: "tool", tool_name: "run_command", [key]: { CommandLine: "git tag v1" } }),
+        RESULT(),
+      ]);
+      expect(calls(cmd.raw)).toEqual([
+        { kind: "tool_call", tool: "shell", name: "run_command", command: "git tag v1" },
+      ]);
+      expect(cmd.result).toMatchObject({
+        ok: false,
+        failureCode: "PERMISSION_BLOCKED",
+        failureDetail: "git write attempted: `git tag` can create commits, change refs or push",
+      });
+      const paths = guarded([
+        INIT(),
+        STEP({
+          step_index: 7,
+          step_type: "tool",
+          tool_name: "write_to_file",
+          [key]: { AbsolutePath: "/work/tree/a.ts", file_path: "b.ts" },
+        }),
+        RESULT(),
+      ]);
+      // Keys are read in TARGET_KEYS order (path, file_path, AbsolutePath), not in the line's key order.
+      expect(calls(paths.raw)).toEqual([
+        { kind: "tool_call", tool: "other", name: "write_to_file", target: "b.ts" },
+        { kind: "tool_call", tool: "other", name: "write_to_file", target: "/work/tree/a.ts" },
+      ]);
+      expect(paths.result).toMatchObject({ ok: true });
+    },
+  );
+
+  it("containers are read in order tool_info.{parameters,args,input} then root {parameters,args,input}, deduplicated", () => {
+    const r = guarded([
+      INIT(),
+      STEP({
+        step_index: 8,
+        step_type: "tool",
+        tool_info: { name: "run_command", input: { command: "ls" }, parameters: { command: "pwd" } },
+        input: { command: "git commit -m x" },
+        args: { command: "pwd" },
+        parameters: { command: "ls" },
+      }),
+      RESULT(),
+    ]);
+    expect(calls(r.raw).map((e) => e.kind === "tool_call" && e.command)).toEqual(["pwd", "ls", "git commit -m x"]);
+    expect(r.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "git write attempted: `git commit` can create commits, change refs or push",
+    });
+  });
+
+  it("pins the gap: inside one envelope the id's protocol error comes first, so it outranks an auth or model error", () => {
+    const unsafe = run([RESULT({ conversation_id: "-c", error: "authentication failed" })]);
+    expect(unsafe.events.map((e) => e.kind)).toEqual([
+      "provider_error",
+      "usage",
+      "provider_error",
+      "message",
+      "result",
+    ]);
+    expect(unsafe.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: conversation id is not a safe token",
+    });
+    const changed = run([INIT(), RESULT({ conversation_id: OTHER, error: "invalid model selection (synthetic)" })]);
+    expect(changed.result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: conversation id changed mid-run",
+      nativeSessionId: CID,
+    });
+    // A denial in the same envelope outranks both provider errors, whatever their order.
+    const denied = run([
+      RESULT({ conversation_id: "-c", error: "authentication failed", denied_actions: [{ action: "run_command" }] }),
+    ]);
+    expect(denied.events.map((e) => e.kind)).toEqual([
+      "provider_error",
+      "usage",
+      "permission_denied",
+      "provider_error",
+      "message",
+      "result",
+    ]);
+    expect(denied.result).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "denied: run_command",
+    });
+    // The usage is still the run's one provider_reported row.
+    expect(rows(denied.events)).toEqual([expect.objectContaining({ source: "provider_reported", metrics: USAGE })]);
+  });
+
+  it("an init after the result is still compared: another or an unsafe id fails the run, the bound or an empty one does not", () => {
+    const postResult = (init: string) => run([INIT(), RESULT(), init]);
+    const initWith = (id: string) => j({ event: "init", conversation_id: id, init: { cwd: "/work/tree" } });
+    expect(postResult(initWith(OTHER)).result).toEqual({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: conversation id changed mid-run",
+      unknownEventCount: 0,
+      nativeSessionId: CID,
+      summary: "ok",
+    });
+    expect(postResult(initWith("id with space")).result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: conversation id is not a safe token",
+      nativeSessionId: CID,
+    });
+    for (const id of [CID, ""]) {
+      const r = postResult(initWith(id));
+      expect(
+        r.events.filter((e) => e.kind === "session_bound"),
+        id,
+      ).toHaveLength(1);
+      expect(r.result, id).toEqual({ ok: true, unknownEventCount: 0, nativeSessionId: CID, summary: "ok" });
+    }
+    // Gap: a post-result init is not a trailing tool and is not a second result, so only the id comparison catches it.
+    expect(rows(postResult(initWith(OTHER)).events)).toHaveLength(1);
+  });
+
+  it("a failed status outranks an unexpected exit code; only a clean envelope leaves the exit code as the detail", () => {
+    const at = (lines: string[], exitCode: number) =>
+      adapter().extractResult(run(lines).events, { ...EXIT0, exitCode });
+    expect(at([INIT(), RESULT({ status: "ERROR" })], 3)).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "ERROR",
+    });
+    expect(at([INIT(), RESULT({ usage: { input_tokens: 20 } })], 1)).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "SUCCESS with no reported tokens",
+    });
+    expect(at([INIT(), RESULT()], 1)).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: "exit code 1",
+    });
+    // A recognised error outranks both the status and the exit code.
+    expect(at([INIT(), RESULT({ status: "ERROR", error: "authentication failed" })], 1)).toMatchObject({
+      ok: false,
+      failureCode: "AUTH_REQUIRED",
+      failureDetail: "auth: authentication failed",
+    });
+    // No result at a failing exit is the exit code, not `no result event`.
+    expect(at([INIT()], 2)).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", failureDetail: "exit code 2" });
+  });
+
+  it.each([" ", "\n", "\t "])(
+    "pins the gap: a whitespace-only response %j is kept untrimmed as the message and summary",
+    (response) => {
+      const r = run([INIT(), RESULT({ response })]);
+      expect(r.events.filter((e) => e.kind === "message")).toEqual([
+        { kind: "message", role: "assistant", text: response },
+      ]);
+      expect(r.result).toEqual({ ok: true, unknownEventCount: 0, nativeSessionId: CID, summary: response });
+    },
+  );
+});
