@@ -39,7 +39,7 @@
  *
  * T14.7 (FR-CTL-04, LLD §3.4.4): `steer_run` is appended to the tool list; its output is the `get_run` envelope.
  *
- * T14.6 (FR-CTL-05, LLD §3.4.4): `pause_project` and `resume_project` are appended to the tool list with the LLD input
+ * T14.6 (FR-CTL-05, LLD §3.4.4): `pause_project` and `resume_project` join the tool list before `steer_run` (which stays last) with the LLD input
  * and output as written (closed); `get_digest` now requires `paused` on every listed project.
  */
 
@@ -64,9 +64,9 @@ export const TOOL_NAMES = [
   "explain_route",
   "list_runs",
   "get_digest",
-  "steer_run",
   "pause_project",
   "resume_project",
+  "steer_run",
 ] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];
 

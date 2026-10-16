@@ -88,7 +88,7 @@ const section = (d: Json, id: string): Json => d.projects.find((p: Json) => p.pr
 const status = async (runId: string, clientId = "orch") => (await h.ok("get_run", { run_id: runId }, clientId)).status;
 
 describe("pause_project / resume_project (T14.6, FR-CTL-05)", () => {
-  it("both tools are listed last with the LLD input and output, closed; the earlier tools are unchanged", async () => {
+  it("both tools are listed with the LLD input and output, closed; the earlier tools are unchanged", async () => {
     const { tools } = await h.client().listTools();
     const names = tools.map((t) => t.name);
     expect(names.slice(0, TOOL_NAMES.length)).toEqual([...TOOL_NAMES]);
