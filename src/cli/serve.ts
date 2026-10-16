@@ -62,9 +62,11 @@ import {
   adapterIdForConfigId,
   configIdForAdapterId,
   createProbeRunner,
+  evaluateVersionCanary,
   PreflightCache,
   type ProviderId,
   providerEntries,
+  readVersionCanaryStore,
   type VersionGateResult,
 } from "../adapters/index.js";
 import { ArtifactStore, defaultRedactor } from "../artifacts/index.js";
@@ -236,8 +238,9 @@ export function buildRegistry(fake: FakeSwitch, opts: { claudeGitChannel?: boole
   return registry;
 }
 
-/** Version gate: the registry's manifest gate, except the test-only fake when (and only when) the switch is on. */
-function gateFor(registry: AdapterRegistry, fake: FakeSwitch) {
+/** Version gate: manifest gate plus the T8.5 version canary (read-only store), except the test fake when enabled. */
+function gateFor(registry: AdapterRegistry, fake: FakeSwitch, dataDir: string) {
+  const store = readVersionCanaryStore(dataDir);
   return (id: ProviderId, version: string | null, dir?: string): VersionGateResult => {
     if (id === "fake" && fake.enabled) {
       return {
@@ -250,7 +253,8 @@ function gateFor(registry: AdapterRegistry, fake: FakeSwitch) {
         },
       };
     }
-    return registry.gate(id, version, dir);
+    const manifestGate = registry.gate(id, version, dir);
+    return evaluateVersionCanary(manifestGate, id, store).gate;
   };
 }
 
@@ -565,7 +569,11 @@ async function runDaemon(
     ),
     probeRunner: createProbeRunner(PROBE_ENV_ALLOWLIST),
     baseEnv: io.env,
-    eligibility: { gate: gateFor(registry, fake), isEnabled: enablement(config, fake), models: modelRegistry(config) },
+    eligibility: {
+      gate: gateFor(registry, fake, config.dataDir),
+      isEnabled: enablement(config, fake),
+      models: modelRegistry(config),
+    },
     preflightCache: new PreflightCache({ ttlMs: config.preflightTtlMs }),
     gitTools,
     finalizePublisher,
