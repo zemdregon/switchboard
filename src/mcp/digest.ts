@@ -31,6 +31,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { budgetControlFacts } from "../control/budgets.js";
 import { loopBreakerControlFacts } from "../control/loop-attention.js";
 import type { ControlPlaneFacts, NeedsAttentionReason } from "../control/needs-attention.js";
 import { isAdmissionPaused } from "../control/pause.js";
@@ -100,8 +101,8 @@ export function assembleDigest(
   scrub: (s: string) => string,
   options: DigestOptions,
 ): Digest {
-  // T14.5: the same default facts as `get_run` (park events), so a digest entry carries the envelope's reason.
-  const control = options.control ?? loopBreakerControlFacts(ledger);
+  // T14.4/T14.5: the same default facts as `get_run` (budgets, park events), so a digest entry carries its reason.
+  const control = options.control ?? loopBreakerControlFacts(ledger, budgetControlFacts(ledger));
   const visibleRuns = new Map<string, RunRecord | null>();
   const visibleRun = (runId: string): RunRecord | undefined => {
     if (!visibleRuns.has(runId)) {

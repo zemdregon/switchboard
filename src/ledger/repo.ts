@@ -312,6 +312,13 @@ export interface ProviderUsageRow {
   observed_at: string;
 }
 
+/** T14.4 (FR-CTL-06): a non-terminal run's wall clock, for the `wall_clock_per_run` budget. */
+export interface OpenRunClockRow {
+  id: string;
+  state: RunState;
+  started_at: string | null;
+}
+
 /** T6.7 (FR-CAP-08): a run that started a provider process, as the switch counter sees it. */
 export interface StartedRunRow {
   id: string;
@@ -799,6 +806,18 @@ export interface Ledger extends ControlPlaneLedgerSlice {
   listRateLimitSignalsSince(provider: string, sinceIso: string): RateLimitSignalRow[];
   /** `provider_reported` usage rows of `provider` observed at or after `sinceIso`, oldest first (never `inner_agent`). */
   listProviderReportedUsageSince(provider: string, sinceIso: string): ProviderUsageRow[];
+  /**
+   * T14.4 (FR-CTL-06): run rows created at or after `sinceIso` (every admission that wrote a row, whatever its state);
+   * only the runs of `projectId` when it is given.
+   */
+  countRunsCreatedSince(sinceIso: string, projectId?: string): number;
+  /** T14.4: non-terminal runs with their `started_at` (set at LEASED); only the runs of `projectId` when given. */
+  listOpenRunClocks(projectId?: string): OpenRunClockRow[];
+  /**
+   * T14.4: `provider_reported` usage rows observed at or after `sinceIso` across providers, oldest first; only the rows
+   * of `projectId`'s runs when it is given (never `inner_agent` or `controller_estimated`).
+   */
+  listReportedUsageSince(sinceIso: string, projectId?: string): ProviderUsageRow[];
   /**
    * T6.7 (FR-CAP-08): runs created at or after `sinceIso` that started a provider process, oldest first; only the runs
    * of `clientId` when it is given.
@@ -1449,6 +1468,30 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
            ORDER BY observed_at, id`,
         )
         .all(provider, sinceIso) as ProviderUsageRow[];
+    },
+
+    countRunsCreatedSince(sinceIso, projectId) {
+      const sql = `SELECT COUNT(*) AS n FROM run WHERE created_at >= ?${projectId === undefined ? "" : " AND project_id = ?"}`;
+      const args: unknown[] = projectId === undefined ? [sinceIso] : [sinceIso, projectId];
+      return (db.prepare(sql).get(...args) as { n: number }).n;
+    },
+
+    listOpenRunClocks(projectId) {
+      const sql = `SELECT id, state, started_at FROM run
+           WHERE state NOT IN ('SUCCEEDED','FAILED','CANCELLED')${projectId === undefined ? "" : " AND project_id = ?"}
+           ORDER BY created_at, id`;
+      return (projectId === undefined ? db.prepare(sql).all() : db.prepare(sql).all(projectId)) as OpenRunClockRow[];
+    },
+
+    listReportedUsageSince(sinceIso, projectId) {
+      const sql =
+        projectId === undefined
+          ? `SELECT metrics_json, observed_at FROM usage_observation
+             WHERE source = 'provider_reported' AND observed_at >= ? ORDER BY observed_at, id`
+          : `SELECT u.metrics_json, u.observed_at FROM usage_observation u JOIN run r ON r.id = u.run_id
+             WHERE u.source = 'provider_reported' AND u.observed_at >= ? AND r.project_id = ? ORDER BY u.observed_at, u.id`;
+      const args: unknown[] = projectId === undefined ? [sinceIso] : [sinceIso, projectId];
+      return db.prepare(sql).all(...args) as ProviderUsageRow[];
     },
 
     getProviderHealth(provider) {

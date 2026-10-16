@@ -31,6 +31,7 @@ import {
   type EnvironmentRefusalReason,
   type PreparedInvocation,
   type RunContext,
+  type SweepOptions,
 } from "./types.js";
 
 export const SWITCHBOARD_RUN_LABEL = "switchboard.run";
@@ -150,7 +151,7 @@ export function mountPlan(run: RunContext): ContainerMount[] | { readonly invali
 
 export interface ContainerEnvironmentOptions {
   readonly runtime: ContainerRuntime;
-  /** Receives `environment` events (FR-PRJ-07); persisting them is T10.2. Must not throw. */
+  /** Receives `environment` events (FR-PRJ-07); `environmentEventSink` writes them to the ledger (T10.2). Must not throw. */
   readonly onEvent?: (event: EnvironmentEvent) => void;
   readonly pidsLimit?: number;
 }
@@ -314,11 +315,17 @@ export function createContainerEnvironment(opts: ContainerEnvironmentOptions): E
     }
   };
 
-  const sweepOrphans = async (knownRunIds: ReadonlySet<string>): Promise<{ removed: string[] }> => {
+  // T10.2 (FR-PRJ-07): run and probe containers both carry the run label. A listing failure throws: the caller cannot
+  // know that no orphan is left, so startup reconciliation fails closed.
+  const sweepOrphans = async (
+    knownRunIds: ReadonlySet<string>,
+    sweep: SweepOptions = {},
+  ): Promise<{ removed: string[] }> => {
     const removed: string[] = [];
     for (const c of await runtime.listByLabel(SWITCHBOARD_RUN_LABEL)) {
       const runId = c.labels[SWITCHBOARD_RUN_LABEL];
       if (runId === undefined || knownRunIds.has(runId)) continue;
+      if (sweep.owns !== undefined && !sweep.owns(runId)) continue;
       try {
         const r = await runtime.remove(c.name);
         if (r.removed) {

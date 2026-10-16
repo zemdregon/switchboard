@@ -97,6 +97,8 @@ const eligibilityError = ({ decision }: EligibilityAnswer): ToolError => {
 function mapError(err: unknown): AdmitWorkOutcome {
   if (err instanceof LifecycleError) {
     if (err.code === "QUEUE_FULL") return { kind: "retry" };
+    // T14.4 (FR-CTL-06): an operator budget refusal holds the item in the queue; it is tried again when the cap resets.
+    if (err.code === "BUDGET_EXHAUSTED") return { kind: "retry" };
     // T14.6 (FR-CTL-05, LLD §18.4 step 4): a pause holds the item in the queue; it is tried again after resume.
     if (err.code === "PAUSED") return { kind: "retry" };
     return { kind: "failed", code: err.code };

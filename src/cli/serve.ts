@@ -76,12 +76,20 @@ import {
   type ApprovalAnnouncement,
   ApprovalLinkPage,
   applyPauseRequests,
+  BudgetEvaluator,
   ConsentLinkStore,
   createConsentApprovalSource,
   SinkDispatcher,
   sinkOutcomeRecorder,
   transitionNotifier,
 } from "../control/index.js";
+import {
+  type ContainerRuntime,
+  createContainerEnvironment,
+  createDockerRuntime,
+  type Environment,
+  environmentEventSink,
+} from "../environment/index.js";
 import { detectOuterSandbox, type OuterSandboxAvailability, outerSandboxRefusal } from "../exec/outer-sandbox.js";
 import { GitToolService } from "../git/channel.js";
 import { GitPublisher } from "../git/commit.js";
@@ -319,6 +327,31 @@ export async function serve(io0: CliIo, opts: ServeOptions): Promise<number> {
   }
 }
 
+/**
+ * T10.2 (FR-PRJ-07): the environments startup reconciliation sweeps for containers a previous controller left. Only
+ * when a configured project is `container`; a runtime that does not answer is skipped with a warning, because its
+ * containers are not running either (Assumption, Delegated: a rootless daemon that is down runs no container). The
+ * provider-side client process of a container run is still a process group that FR-EXE-06 terminates.
+ */
+export async function orphanSweepEnvironments(
+  config: Pick<ResolvedConfig, "projects">,
+  ledger: ReturnType<typeof createLedger>,
+  log: Logger,
+  makeRuntime: () => ContainerRuntime = createDockerRuntime,
+): Promise<Environment[]> {
+  if (!config.projects.some((p) => p.environment.kind === "container")) return [];
+  const runtime = makeRuntime();
+  const info = await runtime.info();
+  if (!info.available) {
+    log.warn("container orphan sweep skipped: no container runtime answered", { detail: info.detail });
+    return [];
+  }
+  const onEvent = environmentEventSink(ledger, (event, why) =>
+    log.warn("environment event not recorded", { step: event.payload.step, container: event.payload.container, why }),
+  );
+  return [createContainerEnvironment({ runtime, onEvent })];
+}
+
 async function runDaemon(
   io: CliIo,
   log: Logger,
@@ -348,7 +381,8 @@ async function runDaemon(
 
   // FR-EXE-06: reconciliation completes before the lifecycle dispatches anything and before MCP accepts calls.
   try {
-    const report = await reconcile({ db, ledger, workspace, ...(now ? { now } : {}) });
+    const environments = await orphanSweepEnvironments(config, ledger, log);
+    const report = await reconcile({ db, ledger, workspace, environments, ...(now ? { now } : {}) });
     log.info("startup reconciliation finished", {
       examined: report.examined,
       changed: report.actions.length,
@@ -356,6 +390,7 @@ async function runDaemon(
       leases_released: report.leasesReleased.length,
       cancels_applied: report.cancelsApplied.length,
       decisions_applied: report.decisionsApplied.length,
+      containers_removed: report.containersRemoved.length,
     });
     const admittingReset = ledger.reconcileAdmittingWorkItems();
     if (admittingReset > 0) {
@@ -539,6 +574,35 @@ async function runDaemon(
         });
   if (sinks) log.info("notification sinks configured", { sinks: sinks.sinkIds });
   const notifySinks = sinks ? transitionNotifier(sinks, (runId) => ledger.getRunRecord(runId)?.project_id) : undefined;
+  // T14.4 (FR-CTL-06, LLD §3.4.6): operator budget caps (`control_plane.budgets`); with none configured, admission
+  // never queries the ledger for them. A refusal is logged with the cap (operator values only) and, once per
+  // exhausted window and scope, sent to the sinks as `budget_exhausted` (no run id: nothing was written).
+  const budgets = new BudgetEvaluator({ ledger, settings: config.controlPlane.budgets, ...(now ? { now } : {}) });
+  if (budgets.configured) log.info("operator budget caps configured", { source: "control_plane.budgets" });
+  const notifiedExhaustion = new Map<string, string>();
+  const onBudgetRefused: NonNullable<ConstructorParameters<typeof RunLifecycle>[0]["onBudgetRefused"]> = ({
+    projectId,
+    refusal,
+  }) => {
+    log.warn("admission refused by operator budget cap", {
+      project_id: projectId ?? "-",
+      scope: refusal.scope,
+      cap: refusal.cap,
+      limit: refusal.limit,
+      used: refusal.used,
+      window_ends_at: refusal.window_ends_at,
+    });
+    if (!sinks) return;
+    const key = `${refusal.cap}|${refusal.window_ends_at ?? ""}`;
+    if (notifiedExhaustion.get(refusal.project_id) === key) return;
+    notifiedExhaustion.set(refusal.project_id, key);
+    sinks.emit({
+      projectId: refusal.project_id,
+      eventKind: "budget_exhausted",
+      reasonCode: "budget_exhausted",
+      runId: null,
+    });
+  };
   const lifecycle = new RunLifecycle({
     ledger,
     workspace,
@@ -597,6 +661,8 @@ async function runDaemon(
       log.info("run transition", { run_id: n.runId, from: n.from, to: n.to, rule: n.rule });
       notifySinks?.(n);
     },
+    budgets,
+    onBudgetRefused,
     ...(now ? { now } : {}),
   });
 
