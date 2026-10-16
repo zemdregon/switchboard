@@ -1,0 +1,6 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.53 thirteenth residual pass). Tool names are case variants of the mapped names: Write with a filePath and Shell with a command. Pins that the TOOL_KINDS lookup is case-sensitive: Write is an other tool whose target is dropped (gap), while Shell still reaches the tool-call guard through the command fallback; the run ends a success. Not a recorded native shape.","exit":0}}
+{"type":"step_start","timestamp":1,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_s1","type":"step-start"}}
+{"type":"tool_use","timestamp":2,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_t1","type":"tool","tool":"Write","state":{"status":"completed","input":{"filePath":"hello.txt","content":"SYNTHETIC"}}}}
+{"type":"tool_use","timestamp":3,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_t2","type":"tool","tool":"Shell","state":{"status":"completed","input":{"command":"printf synthetic"}}}}
+{"type":"text","timestamp":4,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_x1","type":"text","text":"SYNTHETIC: done"}}
+{"type":"step_finish","timestamp":5,"sessionID":"ses_SYNTHETIC0000000000000001","part":{"id":"prt_f1","type":"step-finish","reason":"stop","tokens":{"input":5,"output":2}}}
