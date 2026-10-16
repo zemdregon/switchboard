@@ -29,8 +29,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   commits, ref snapshots, push, dynamic projects, signing and concurrent-run worktrees are implemented and tested for
   `host` environments on a fake provider with real Git in temporary repositories. It is not `Done`: nothing has run
   against a live provider through Switchboard's own tool channel, signing was tried only with a throwaway GnuPG key,
-  pushing from dynamic projects is not wired, and the `container` clauses of milestone 9 stay **Partial** until milestone
-  10 closes admission (see milestone 10 below). The exceptions are listed in
+  pushing from dynamic projects is not wired, and the `container` clauses stay **Partial** until milestone 10 is `Done`
+  (mounting and MCP admission are on fakes; T10.0 live and opt-in Docker remain open — see milestone 10 below). The
+  exceptions are listed in
   [ROADMAP §6.3](docs/ROADMAP.md#63-m9-projects-and-controlled-commits-tasks) (task T9.8).
 - **Milestone 5 (continuity) is `Partial`.** `continue_task` resumes the provider's native session or hands off to
   another provider from a bundle built from Switchboard's own records, and `get_artifacts` and `runs show` show the
@@ -58,10 +59,11 @@ Pre-release. The package is private and is not published to any registry; you bu
   allowlist enforcement and full M8 acceptance closure (T8.3, T8.4, T8.7) are not done. See
   [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and
   [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
-- **Milestone 10 (container environments) is `Partial`.** The environment port, orphan sweep, malicious-fixture
-  container leg, `projects validate` container checks and retention GC for containers are implemented and tested on
-  fakes (and emulated runtime in CI). It is not `Done`: `delegate_task` with a `container` project is still refused at
-  admission (`ENVIRONMENT_NOT_IMPLEMENTED`), and operator live checks for in-volume provider login remain open (T10.0).
+- **Milestone 10 (container environments) is `Partial`.** The environment port, MCP admission and `serve` composition
+  for `container` projects ([PR #554](https://github.com/zemdregon/switchboard/pull/554)), orphan sweep,
+  malicious-fixture container leg, `projects validate` container checks and retention GC are implemented and tested on
+  fakes (and emulated runtime in CI). It is not `Done`: operator live checks for in-volume provider login (T10.0), the
+  opt-in Docker mount legs (`SWITCHBOARD_CONTAINER_TESTS=1`), and no live end-to-end run through a real provider CLI.
   See [Container environments (milestone 10)](#container-environments-milestone-10) and
   [ROADMAP §6.4](docs/ROADMAP.md#64-m10-container-environments-tasks).
 - **Milestone 11 (inner agent) is `Partial`.** T11.1 to T11.12 are done on fakes: an optional HTTP backend, privacy
@@ -296,7 +298,7 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `providers.<id>.weight` | no | Number from 0 to 1. Accepted by the schema. |
 | `providers.claude-code.git_channel` | no | Boolean, default `false`. **Unsupported, for testing only:** gives Claude Code the injected `commit` (and `push`) tool through a Switchboard-written `--mcp-config` file in the run's private directory, **only in an approved `privileged` run whose scope sets `bypass`**. Such a run then omits `--safe-mode` (it stops the tool server from starting), so the repository's `CLAUDE.md` and hooks load in it. Every other run is unaffected and can use `finalize_commit`. It has not been run end to end with the real `claude` (ROADMAP T9.4b); `serve` logs a warning when it is on. Only `claude-code` accepts the key. |
 | `retention.days`, `retention.interval` | no | How long idle meta-sessions are kept (integer days, default 30) and how often `serve` runs the clean-up pass (`30m`, `12h`, `7d`; default `24h`). **Nothing is deleted unless you set `retention.days`**; the default only applies once you do (or to `gc` dry runs). |
-| `projects` | no | List of `{ "id", "name", "environment"?, "contexts": [...] , "max_trust_profile"?, "allowed_providers"? }`. `id` matches `^[a-z][a-z0-9-]{1,40}$` and is unique. `environment` is `{ "kind": "host" }` (default) or a `container` shape that `projects validate` rejects until M10. Each context is `{ "id", "kind": "repository", "path", "base_ref", "primary"?, "writable"?, "push"?, "identity"?, "sign"?, "finalize_commit"? }` with an absolute `path` under an allowed root; exactly one context is primary. Unknown keys and context kinds stop startup. `push.remote` must be the name of a remote in the repository (not a URL), and `push.branch_prefix` a branch-name prefix such as `"switchboard/"`. `max_trust_profile` and `allowed_providers` apply to `delegate_task` with a `project`: the effective trust ceiling is the lower of the client's and the project's, and routing is limited to the listed providers (a request naming another provider with `require_provider` fails `PERMISSION_BLOCKED`); `sign` (default `false`; needs `identity`, primary writable context only) makes the controller sign each published commit with the operator's own global Git signing configuration; a signing failure, a repository whose own configuration sets `gpg.*` or `user.signingkey`, or a run whose agent could reach the key (the `push` rule) returns `SIGNING_FAILED` and commits nothing; `projects validate` makes a test signature. Only GnuPG has been tried, with a throwaway key; SSH, X.509, passphrase-protected and hardware keys are untested. `finalize_commit` (default `false`; needs `identity`, primary writable context only) turns on finalize-only commits, described below. Full shape: LLD section 11.1. |
+| `projects` | no | List of `{ "id", "name", "environment"?, "contexts": [...] , "max_trust_profile"?, "allowed_providers"? }`. `id` matches `^[a-z][a-z0-9-]{1,40}$` and is unique. `environment` is `{ "kind": "host" }` (default) or a `container` shape; `projects validate` checks runtime, image and the no-Git-client probe for `container` projects when configured (see [Container environments](#container-environments-milestone-10)). Each context is `{ "id", "kind": "repository", "path", "base_ref", "primary"?, "writable"?, "push"?, "identity"?, "sign"?, "finalize_commit"? }` with an absolute `path` under an allowed root; exactly one context is primary. Unknown keys and context kinds stop startup. `push.remote` must be the name of a remote in the repository (not a URL), and `push.branch_prefix` a branch-name prefix such as `"switchboard/"`. `max_trust_profile` and `allowed_providers` apply to `delegate_task` with a `project`: the effective trust ceiling is the lower of the client's and the project's, and routing is limited to the listed providers (a request naming another provider with `require_provider` fails `PERMISSION_BLOCKED`); `sign` (default `false`; needs `identity`, primary writable context only) makes the controller sign each published commit with the operator's own global Git signing configuration; a signing failure, a repository whose own configuration sets `gpg.*` or `user.signingkey`, or a run whose agent could reach the key (the `push` rule) returns `SIGNING_FAILED` and commits nothing; `projects validate` makes a test signature. Only GnuPG has been tried, with a throwaway key; SSH, X.509, passphrase-protected and hardware keys are untested. `finalize_commit` (default `false`; needs `identity`, primary writable context only) turns on finalize-only commits, described below. Full shape: LLD section 11.1. |
 | `routing` | no | `{ "weights"?: { "success", "latency", "capacity", "security", "handoff", "cost" }, "affinity"?: { "enabled", "low_water_mark", "min_confidence", "idle_ttl" } }`. Each weight 0 to 100, default 1; all 0 means configured order. `affinity.enabled` defaults to `true`; `low_water_mark` and `min_confidence` (0 to 1) are set together or both left `null` (the default, which leaves the estimate trigger off); `idle_ttl` accepts only `null` (no expiry). Unknown keys stop startup. See [Routing and affinity](#routing-and-affinity) and LLD section 17.1. |
 | `timeouts.preflight_ttl_seconds` | no | Integer 0 to 3600. How long a successful adapter preflight is cached (default 60); 0 disables the cache. |
 | `telemetry.otlp_endpoint` | no | `http` or `https` URL for OTLP/HTTP trace export. When omitted or empty, Switchboard does not load OpenTelemetry at startup and makes no outbound telemetry connection. See [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and [LLD §7](docs/design/LLD.md#7-telemetry-spans). |
@@ -468,7 +470,8 @@ Tests on fakes: `src/config/config.test.ts`, `src/telemetry/index.test.ts`, `src
 A `container` project runs the provider inside a rootless Docker container that mounts only the run worktree (writable)
 and declared read-only contexts, applies limits and network policy, and is torn down when the run ends. The image must
 have no `git` or `gh` on its `PATH` ([ADR-0020](docs/adr/0020-container-image-without-git-client.md)). On `main` today
-the port and security legs are tested; MCP admission for `container` projects is not wired yet (ROADMAP T10.1 gap 1).
+the port, security legs and MCP admission are tested on fakes ([PR #554](https://github.com/zemdregon/switchboard/pull/554));
+operator live login (T10.0) and opt-in Docker legs remain open.
 
 ### Status and tests
 
@@ -482,6 +485,8 @@ local base image are available:
   (T10.3, FR-PRJ-09)`).
 - Orphan sweep and `environment` run events (T10.2): `src/reconcile/reconcile.test.ts`, `src/cli/serve-orphan-sweep.test.ts`.
 - Mounts, limits and teardown (T10.1): `src/environment/container.test.ts`; opt-in Docker: `src/environment/container-docker.test.ts`.
+- MCP admission and `serve` composition (T10.1): `src/mcp/mcp.test.ts` (`container projects through MCP admission
+  (T10.1; ...)`), `src/cli/serve-environments.test.ts`, `src/environment/resolver.test.ts`.
 
 Per-task evidence is in [ROADMAP §6.4](docs/ROADMAP.md#64-m10-container-environments-tasks).
 
@@ -814,10 +819,10 @@ the same apart from those two size limits.
 `projects list|show|validate` read the `projects` section of the config (see below) and the filesystem only: no
 ledger, no lock, no provider process. `validate` checks every project (or the one named): the config rules, that each repository
 path is absolute, resolves under an allowed root (so `..` and symlink escapes fail) and is a Git repository, and that
-`base_ref` exists. It prints each failure with its config path and exits 1 if any check fails. Only `host` environments
-work in this stage: a `container` project is listed but fails `validate` with "container environments are not
-implemented yet (M10)". `delegate_task` with `project` runs in the project's primary repository context, starting
-from its `base_ref`; a `container` project is refused before anything is written. A meta-session stays in the project it
+`base_ref` exists. It prints each failure with its config path and exits 1 if any check fails. A `container` project is
+also checked for a rootless runtime, a present image and no `git`/`gh` on the image `PATH` (milestone 10). `delegate_task`
+with `project` runs in the project's primary repository context, starting from its `base_ref`; a `container` project
+without composed placement is refused before anything is written. A meta-session stays in the project it
 was created in, and runs and meta-sessions record the project in the ledger (schema version 2).
 `projects list|show` also show dynamic projects from the ledger (read-only), with `source` `config` or `dynamic`, the
 client that created them, the latest revision and its state, the revision in force and what a pending revision needs
@@ -839,7 +844,8 @@ until you approve it; until then the previous revision stays in force. Review it
 then run `switchboard projects approve <id>` (add `--revision <n>` once the project has more than one revision, and
 `--reject` to refuse it). There is no way to approve over MCP. `approve` works while `serve` runs. Deleting a project
 is refused while one of its runs is still going; its history stays. Not yet: pushing from a dynamic project (a push is
-refused even after approval) and container environments (milestone 10).
+refused even after approval). Approved `container` dynamic projects can run when `serve` composes placement (milestone 10,
+[PR #554](https://github.com/zemdregon/switchboard/pull/554)); operator live login (T10.0) is still open.
 
 `gc` is the retention clean-up. By default it is a dry run: it lists the idle meta-sessions older than
 `retention.days` (all their runs finished, no lease) and any orphans, and changes nothing. `gc --apply` removes each
@@ -1996,7 +2002,8 @@ not run, so this rests on one check of one version (ROADMAP R-38). That gap conc
 Container environments (milestone 10, **`Partial` on `main`**) are meant to close it: their image has no Git client,
 they mount neither the repository's Git directory nor any credentials, and Switchboard makes commits and pushes on the
 host through its own tools (ROADMAP owner decision 24). The malicious-fixture container leg and validate/GC checks are
-in CI; MCP admission for a `container` project is not wired yet. See
+in CI; MCP admission for a `container` project is wired on fakes
+([PR #554](https://github.com/zemdregon/switchboard/pull/554)). See
 [Container environments (milestone 10)](#container-environments-milestone-10). Host-run agents remain supported.
 Claude Code compiles a privileged scope only with the network `on`: it has no network control for commands, so a scope
 asking for network `off` is refused. Codex does
