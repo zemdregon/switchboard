@@ -7,7 +7,7 @@
 
 import { effectiveMaxProfile, type ResolvedMcpClient, type ResolvedProject } from "../config/index.js";
 import type { ScheduleApprovalState, TrustProfile } from "../ledger/index.js";
-import { profileRank } from "../routing/eligibility.js";
+import { profileRank, TRUST_PROFILE_ORDER } from "../routing/eligibility.js";
 
 /**
  * Check if the schedule template would widen the reach of the creating client beyond what it can do in one call.
@@ -20,7 +20,14 @@ export function isScheduleWidening(
   if (creatorClient === undefined) return false;
 
   const rawProfile = template.trust_profile;
-  const requestedProfile = typeof rawProfile === "string" ? (rawProfile as TrustProfile) : "inspect-untrusted";
+  if (
+    rawProfile !== undefined &&
+    (typeof rawProfile !== "string" || !TRUST_PROFILE_ORDER.includes(rawProfile as TrustProfile))
+  ) {
+    // Fail closed: an unknown or non-string profile has rank -1 and would otherwise pass every ceiling check.
+    return true;
+  }
+  const requestedProfile = (rawProfile as TrustProfile | undefined) ?? "inspect-untrusted";
 
   // Check client ceiling
   if (profileRank(requestedProfile) > profileRank(creatorClient.maxTrustProfile)) {

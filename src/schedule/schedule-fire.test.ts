@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeAdapter } from "../adapters/fake/adapter.js";
 import { AdapterRegistry, type ResolvedProfile } from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
@@ -13,8 +13,8 @@ import { RunLifecycle } from "../lifecycle/index.js";
 import type { AdmitWorkDeps } from "../queue/admission.js";
 import { runProjectWorkQueueTick } from "../queue/scheduler.js";
 import { WorkspaceManager } from "../workspace/index.js";
-import { fireDueSchedules } from "./fire.js";
-import { determineScheduleApprovalState } from "./widening.js";
+import { fireDueSchedules, ScheduleFireError } from "./fire.js";
+import { determineScheduleApprovalState, isScheduleWidening } from "./widening.js";
 
 const GIT_ENV = {
   PATH: process.env.PATH ?? "",
@@ -521,5 +521,74 @@ describe("Schedule firing and injected-clock matrix (T15.2, FR-QUE-02, LLD §18.
       isPaused: () => false,
     });
     expect(resUnpaused.firedCount).toBe(1);
+  });
+
+  it("S5 (in the fire path): a crash after the item INSERT and before last_fire_at rolls back, spares other schedules and refires once", () => {
+    const ledger = createLedger(db);
+    const failing = ledger.createSchedule({
+      projectId: "proj-1",
+      creatorClientId: "client-a",
+      cronExpr: "* * * * *",
+      template: { objective: "first", trust_profile: "inspect-untrusted", project: "proj-1" },
+      enabled: true,
+    });
+    const healthy = ledger.createSchedule({
+      projectId: "proj-1",
+      creatorClientId: "client-b",
+      cronExpr: "* * * * *",
+      template: { objective: "second", trust_profile: "inspect-untrusted", project: "proj-1" },
+      enabled: true,
+    });
+
+    const realUpdate = ledger.updateScheduleLastFire.bind(ledger);
+    const spy = vi.spyOn(ledger, "updateScheduleLastFire").mockImplementation((id, at) => {
+      if (id === failing.id) throw new Error("simulated crash before last_fire_at");
+      return realUpdate(id, at);
+    });
+
+    const now = new Date("2026-10-16T11:00:00.000Z");
+    let thrown: unknown;
+    try {
+      fireDueSchedules(ledger, { nowUtc: now });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(ScheduleFireError);
+    const fireError = thrown as ScheduleFireError;
+    expect(fireError.failures.map((f) => f.scheduleId)).toEqual([failing.id]);
+    expect(fireError.message).toMatch(/simulated crash before last_fire_at/u);
+    expect(fireError.result).toMatchObject({ dueCount: 2, firedCount: 1, skippedCount: 1 });
+
+    // The failing schedule's item INSERT was rolled back with its transaction; the other schedule still fired.
+    expect(ledger.getSchedule(failing.id)?.last_fire_at).toBeNull();
+    expect(ledger.listWorkItems({ clientId: "client-a", limit: 10 })).toHaveLength(0);
+    expect(ledger.listWorkItems({ clientId: "client-b", limit: 10 })).toHaveLength(1);
+
+    // After the "restart" (fault gone) the same minute fires the failed schedule exactly once and the healthy one not again.
+    spy.mockRestore();
+    const retry = fireDueSchedules(ledger, { nowUtc: new Date("2026-10-16T11:00:30.000Z") });
+    expect(retry.firedCount).toBe(1);
+    expect(fireDueSchedules(ledger, { nowUtc: new Date("2026-10-16T11:00:45.000Z") }).firedCount).toBe(0);
+    expect(ledger.listWorkItems({ clientId: "client-a", limit: 10 })).toHaveLength(1);
+    expect(ledger.listWorkItems({ clientId: "client-b", limit: 10 })).toHaveLength(1);
+    expect(ledger.getSchedule(healthy.id)?.last_fire_at).toBe("2026-10-16T11:00:00.000Z");
+  });
+
+  it("widening fails closed: an unknown or non-string trust_profile from a chat client waits for approval", () => {
+    const chatClient: ResolvedMcpClient = {
+      id: "chat-agent",
+      maxTrustProfile: "privileged",
+      privilegedApproval: "not_required",
+    };
+    expect(determineScheduleApprovalState({ objective: "x", trust_profile: "root" }, chatClient)).toBe(
+      "PENDING_APPROVAL",
+    );
+    expect(determineScheduleApprovalState({ objective: "x", trust_profile: 4 }, chatClient)).toBe("PENDING_APPROVAL");
+    expect(determineScheduleApprovalState({ objective: "x", trust_profile: null }, chatClient)).toBe(
+      "PENDING_APPROVAL",
+    );
+    // Known profiles within the ceiling, and an absent profile (defaults to inspect-untrusted), are not widening.
+    expect(isScheduleWidening({ objective: "x" }, chatClient)).toBe(false);
+    expect(isScheduleWidening({ objective: "x", trust_profile: "edit-untrusted" }, chatClient)).toBe(false);
   });
 });

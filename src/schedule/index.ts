@@ -7,5 +7,5 @@ export {
   type ParsedCron,
   validateCronExpr,
 } from "./cron.js";
-export { fireDueSchedules, type ScheduleFireOptions, type ScheduleFireResult } from "./fire.js";
+export { fireDueSchedules, ScheduleFireError, type ScheduleFireOptions, type ScheduleFireResult } from "./fire.js";
 export { determineScheduleApprovalState, isScheduleWidening } from "./widening.js";
