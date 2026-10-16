@@ -5,7 +5,7 @@
  * from provider transcripts, stdout/stderr text or provider global hook config. The builders accept only the typed
  * facts below and set only LLD §7 allowlisted keys, so a forbidden category (prompt text, constraints, command lines,
  * file contents, environment values) has no path onto a span attribute by construction. The export-time drop filter
- * for any other key remains T8.4; span parent links land with the collector test in T8.3.
+ * for any other key is T8.4 (`./allowlist.ts`); span parent links land with the collector test in T8.3.
  */
 import type { CompletedSpan, Telemetry } from "./index.js";
 

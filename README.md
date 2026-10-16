@@ -54,11 +54,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   [Routing and affinity](#routing-and-affinity) and [ROADMAP §6.12](docs/ROADMAP.md#612-m7-routing-tasks).
 - **Milestone 8 (hardening) is `Partial`.** Optional OTLP trace export (`telemetry.otlp_endpoint`, off by default),
   lazy exporter load (T8.1), wrapper-boundary span emission for `controller.delegate` and `provider.spawn` (T8.2), the
-  collector integration test with parent links and the forbidden-attribute scan (T8.3), the operator version canary
-  (T8.5) and a CI test that excludes routing after a synthetic binary version bump until `adapters validate` records
-  the version (T8.6) are done on fakes. Export-time allowlist enforcement (T8.4, in flight as
-  [PR #549](https://github.com/zemdregon/switchboard/pull/549)) and full M8 acceptance closure (T8.7, after T8.4) are
-  not done. See
+  collector integration test with parent links and the forbidden-attribute scan (T8.3), export-time allowlist
+  enforcement (T8.4), the operator version canary (T8.5) and a CI test that excludes routing after a synthetic binary
+  version bump until `adapters validate` records the version (T8.6) are done on fakes. Full M8 acceptance closure
+  (T8.7) is not done. See
   [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and
   [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
 - **Milestone 10 (container environments) is `Partial`.** The environment port, MCP admission and `serve` composition
@@ -446,8 +445,8 @@ evidence is in [ROADMAP §6.7](docs/ROADMAP.md#67-m12-retrieval-index-tasks).
 ## Telemetry and adapter versioning (milestone 8)
 
 Milestone 8 hardens telemetry export and adapter version change detection. It is **`Partial`**: configuration, a lazy OTLP
-exporter, wrapper-boundary spans (T8.2), the collector integration test (T8.3), the version canary and the CI
-version-bump test are in place on fakes; the export-time allowlist drop (T8.4) and acceptance closure (T8.7) are not.
+exporter, wrapper-boundary spans (T8.2), the collector integration test (T8.3), the export-time allowlist drop (T8.4),
+the version canary and the CI version-bump test are in place on fakes; acceptance closure (T8.7) is not.
 
 **Trace export (T8.0, T8.1).** Set `telemetry.otlp_endpoint` to an `http` or `https` URL when you want OTLP/HTTP traces.
 When the key is absent or empty, `serve` behaves as before M8: no OpenTelemetry packages load at startup and nothing
@@ -458,7 +457,10 @@ see [LLD §7](docs/design/LLD.md#7-telemetry-spans) and [ADR-0012](docs/adr/0012
 **Wrapper spans (T8.2).** With an endpoint configured, `serve` emits `controller.delegate` and `provider.spawn` from
 controller-observed facts only (lifecycle and spawn callbacks). `src/telemetry/spans.test.ts` runs a fake-adapter
 delegate path through an in-process collector and asserts allowlisted attributes plus absence of a planted prompt
-canary. Export-time allowlist drop remains T8.4.
+canary.
+
+**Allowlist drop (T8.4).** Before export, Switchboard drops any span attribute whose key is not on the LLD §7
+allowlist, and any non-scalar value (`src/telemetry/allowlist.ts`, tested in `src/telemetry/allowlist.test.ts`).
 
 **Collector integration test (T8.3).** `src/telemetry/collector-lifecycle.test.ts` (suite
 `collector integration: fake-adapter delegate/finalize path (T8.3)`) runs a fake-adapter delegate/finalize path with

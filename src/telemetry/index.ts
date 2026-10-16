@@ -1,5 +1,6 @@
 /** Lazy, instance-local OTLP/HTTP transport (T8.1, LLD §7, ADR-0012). No global OTel registration. */
 import type { ResolvedConfig } from "../config/index.js";
+import { allowlistedAttributes, type SpanAttributes } from "./allowlist.js";
 import { resolveLink } from "./links.js";
 
 export interface CompletedSpan {
@@ -9,10 +10,10 @@ export interface CompletedSpan {
   readonly endTime: number;
   /**
    * Attribute values built by the wrapper-boundary builders (T8.2, `src/telemetry/spans.ts`) from controller-observed
-   * facts only. Builders set allowlisted keys by construction (LLD §7); the export-time drop filter for any other key
-   * remains T8.4.
+   * facts only. Builders set allowlisted keys by construction (LLD §7); keys not on the allowlist are dropped before
+   * export (T8.4, `./allowlist.ts`).
    */
-  readonly attributes?: Readonly<Record<string, string | number | boolean>>;
+  readonly attributes?: SpanAttributes;
   /**
    * T8.3 (LLD §7 span tree): explicit W3C ids (lowercase hex, 32/16/16 characters). When absent, the transport
    * derives the trace id and the parent link from the `run.id` attribute and the span name (`./links.ts`); a span
@@ -39,11 +40,15 @@ export function createTelemetry(config: Pick<ResolvedConfig, "telemetry">): Tele
   return {
     recordSpan(span) {
       if (!endpoint || closed || pending >= 512) return;
+      // Filter before queuing so a disallowed key never reaches the transport (T8.4, defence in depth).
+      const { attributes: raw, ...rest } = span;
+      const attributes = allowlistedAttributes(raw);
+      const exported: CompletedSpan = attributes !== undefined ? { ...rest, attributes } : rest;
       pending++;
       loading ??= loadTransport(endpoint);
       void loading
         .then((transport) => {
-          if (!closed) transport.recordSpan(span);
+          if (!closed) transport.recordSpan(exported);
         })
         .catch(() => {
           // No error body or endpoint is logged; transport failure must not fail a run.
