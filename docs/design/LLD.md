@@ -1891,6 +1891,31 @@ stdio-only deployments). Delivery is asynchronous, bounded timeout (proposed tar
 failures append `sink_delivery_failed` counts to the ledger without payload or URL (NFR-SEC-01). Never blocks admission
 or run execution.
 
+**Implementation (T14.9, `src/control/sinks.ts`, `src/config/notification-sinks.ts`; Delegated, not owner-approved):**
+
+- `url` and `ntfy.server` must be `https://` with no userinfo, query or fragment; plain HTTP is refused at load, also
+  for loopback. `ntfy.topic` matches `^[-_A-Za-z0-9]{1,64}$`. At most 8 sinks with unique `id`s (**Assumption**).
+  `max_per_minute` defaults to 10 and is at most 600 (**Assumption**; a sliding 60 s window per sink). Config errors
+  name the key and never echo a configured value.
+- Reason codes per `event_kind`: `needs_attention` takes a `needs_attention_reason`; `approval_pending` and
+  `approval_decided` an `approval_kind`; `run_terminal` the terminal state (`SUCCEEDED`, `FAILED`, `CANCELLED`);
+  `budget_exhausted` the literal `budget_exhausted`; `project_paused` `project_paused` or `global_paused`. `project_id`
+  is a project id, `-` (a run admitted without a project) or `*` (all projects). An event with any other value, or a
+  `run_id` that is not `run_` + ULID, is dropped, not sent.
+- Link: the origin of `public_url` plus `/runs/<run_id>` or `/digest`; else `switchboard://run/<run_id>` or
+  `switchboard://digest`.
+- Webhook: `POST` to `url`, `Content-Type: application/json`, body exactly `notification_payload`. ntfy: JSON publish
+  ([ntfy publish](https://docs.ntfy.sh/publish/), "Publish as JSON") to the server root with body `{ topic, title:
+  "Switchboard: <event_kind>", message: "project_id=<id> reason_code=<code> run_id=<id|none>", click: <link>, tags:
+  ["switchboard"] }` and `Authorization: Bearer <token>` when `token` is set.
+- Delivery starts on a later event-loop turn than the transition, uses no connection reuse, follows no redirect and
+  times out after 5 s. Outcome codes: `timeout`, `transport_error`, `http_status` (with the status) and
+  `rate_limited`. A failure or drop for an event with a run appends a `sink_delivery_failed` run event `{ sink_id,
+  event_kind, reason_code[, status] }` and logs the same fields; an error's own text is never used.
+- Producers in T14.9: a run reaching a terminal state (`run_terminal`) and an operator approval of a privileged run
+  (FRD T3, `approval_decided` / `privileged_scope`), from the lifecycle's existing transition hook in `serve`. The other
+  kinds are emitted by their own tasks (T14.2, T14.4, T14.6, T14.8) through the same dispatcher.
+
 #### 3.4.10 `tool_profile` (FR-CTL-11)
 
 `mcp_clients[].tool_profile`: `orchestrator` (default) or `console`. `tools/list` returns:

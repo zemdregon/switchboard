@@ -12,6 +12,11 @@ import { type CapacitySettings, checkCapacity, resolveCapacity } from "./capacit
 import { ConfigError } from "./errors.js";
 import { checkHttpTransport, type HttpTransportSettings, resolveHttpTransport } from "./http-transport.js";
 import { checkInnerAgent, type InnerAgentSettings, resolveInnerAgent } from "./inner-agent.js";
+import {
+  checkNotificationSinks,
+  type NotificationSinkSettings,
+  resolveNotificationSinks,
+} from "./notification-sinks.js";
 import { checkProjects, type ResolvedProject, resolveProjects } from "./projects.js";
 import { checkRag, type RagSettings, resolveRag } from "./rag.js";
 import { checkRouting, type RoutingSettings, resolveRouting } from "./routing.js";
@@ -98,6 +103,11 @@ export interface ResolvedConfig {
    * means `serve` opens no listener.
    */
   httpTransport?: HttpTransportSettings;
+  /**
+   * Validated `notification_sinks[]` (T14.9; FR-CTL-10, LLD §3.4.9, ADR-0048), always set; empty means off and no
+   * outbound notification is made. Holds operator destinations and tokens: never log or serialise it (FR-TEL-03).
+   */
+  notificationSinks: NotificationSinkSettings[];
 }
 
 export interface ResolvedMcpClient {
@@ -369,6 +379,10 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
   if (capacityErrors.length > 0) {
     throw new ConfigError(`Invalid config:\n${capacityErrors.map((l) => `  ${l}`).join("\n")}`);
   }
+  const sinkErrors = checkNotificationSinks(cfg.notification_sinks);
+  if (sinkErrors.length > 0) {
+    throw new ConfigError(`Invalid config:\n${sinkErrors.map((l) => `  ${l}`).join("\n")}`);
+  }
 
   return {
     configPath,
@@ -409,6 +423,7 @@ export function loadConfig(opts: ResolveEnv & { configPath?: string } = {}): Res
     capacity: resolveCapacity(cfg.capacity),
     rag: resolveRag(cfg.rag),
     routing: resolveRouting(cfg.routing),
+    notificationSinks: resolveNotificationSinks(cfg.notification_sinks),
     claudeCodeGitChannel: cfg.providers?.["claude-code"]?.git_channel === true,
     profileOverrides,
     outerSandboxRequiredProfiles: [...(cfg.outer_sandbox?.required_profiles ?? [])],
