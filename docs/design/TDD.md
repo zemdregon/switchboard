@@ -949,7 +949,8 @@ been used anywhere in the suite.
   `serve`; the PR-draft, verification-summary, run-title and handoff-condensation modules have no caller outside
   `src/inner/`, and the `inner test` fixtures do not import them). `doctor`, `inner status` and `inner test` are as
   described, and `inner resume <task>` is built too (FR-INN-17; `src/cli/inner.test.ts`).
-- *OpenCode `cli` kind*: unchanged; the T11.0 spike has not run.
+- *OpenCode `cli` kind*: documentation spike [§4.6.6](#466-t110-documentation-spike-2026-10-16) (2026-10-16); still
+  `Ineligible` in code until operator T11.0 live checks; unchanged in `src/cli/inner.test.ts`.
 
 - **Technology (Proposed).** The `http` kind uses the Node built-in `fetch`/HTTP client (and `node:net`/`node:http`
   for a Unix socket); no new dependency and no vendor SDK, so the controller does not pick a provider or carry a provider's
@@ -2150,7 +2151,7 @@ Each matrix cell is one of: **Could compile** (a documented control exists; what
 | Sandbox controls | **None documented**: no sandbox page exists on the documentation site (HTTP 404 for `/docs/sandbox/`), [R2] names none, and the only sandbox mention found is a third-party plugin on the ecosystem page. Permission rules are tool-level checks, not OS confinement, so profiles needing confinement are `Ineligible: CAPABILITY_MISSING`; only shell-less profiles qualify |
 | Repository config | Merged, not replaced; later sources win only on conflicting keys: remote `.well-known`, global, `OPENCODE_CONFIG`, **project `opencode.json`**, `.opencode` directories, **`OPENCODE_CONFIG_CONTENT`**, managed files, MDM [D-cfg]. So inline config cannot remove what a repository adds (`mcp`, `plugin`, `instructions`, agents). `CLAUDE.md` is read as a fallback when there is no `AGENTS.md`, switchable off with `OPENCODE_DISABLE_CLAUDE_CODE` [D-rules, D-cli]; `--pure` "run without external plugins" [D-cli]. A documented way to ignore project config: none found; Unverified: T4.51 |
 | Known risks | Multiple backing providers: record harness and backing provider/model (FR-ADP-10), not counting two paths to one quota pool as independent capacity. v1 and v2 documentation differ (`auth list --format json`, `run --standalone`, `auth switch` appear only in [D-v2]), so the version gate (ADR-0009) must pin the major version; the manifest range admits no version until T4.58. `autoupdate` is on by default [D-cfg]: `OPENCODE_DISABLE_AUTOUPDATE` exists [D-cli]. Snapshots "use an internal git repository" and are on by default [D-cfg]: whether it touches the worktree's Git directory: Unverified: T4.51 |
-| Inner-agent `cli` kind (M11, Proposed) | T11.0 candidate, **not yet verified**: a one-shot `opencode run --format json --model <provider/model> --dir <empty directory>` with every permission `deny`, `--pure`, `OPENCODE_DISABLE_CLAUDE_CODE`, `OPENCODE_DISABLE_AUTOUPDATE`, no `--auto` [D-cli, D-perm]. No documented flag removes tools from the model's list, and whether a deny-all permission set stops tool calls or only refuses them, and whether global config and `AGENTS.md` still load, are Unverified: T4.51 (checklist items 4 and 12). `cli` stays `Ineligible` until it is recorded for an installed version ([§3.12](#312-inner-agent), FR-INN-04, Q-26) |
+| Inner-agent `cli` kind (M11, Proposed) | T11.0 documentation spike recorded in [§4.6.6](#466-t110-documentation-spike-2026-10-16) (2026-10-16): from docs only, a tool-free one-shot is **not** shown; operator items 4 and 12 remain **Unverified: operator (T11.0 live)**. Proposed argv from T4.50: `opencode run --format json --model <provider/model> --dir <empty directory>` with every permission `deny`, `--pure`, `OPENCODE_DISABLE_CLAUDE_CODE`, `OPENCODE_DISABLE_AUTOUPDATE`, no `--auto` [D-cli, D-perm] (v2 may lack `--pure`/`--dir`, see [§4.6.4](#464-note-2026-10-14-contradictions-found-by-the-t451-live-checks-delegated-cells-above-not-edited)). `cli` stays **`Ineligible`** ([§3.12](#312-inner-agent), FR-INN-04, Q-26) until an installed version passes the checklist |
 | Git writes and injected tools (M4, M9) | Rules are `bash` patterns with wildcards, "last matching rule wins", for example `"git commit *": "deny"` and `"git push *": "deny"` [D-perm]. Pattern completeness is not shown (other `git` spellings, `git -C`, shell wrappers, writes through other tools): `gitWriteControl` `none-documented` until T4.51 shows denial holds, then `provider-deny-rules` (Proposed, fail closed). `commitChannel` `finalize-only`. A per-run MCP server is a config entry (`mcp`, `type` `local` with a `command` array, or `remote`) [D-mcp] that can be sent inline; no `--approve-mcps`-style flag is named, but whether injected MCP tools need an `allow` rule and whether that works headless: Unverified: T4.51 (R-18, R-50). `--fork` and session export are not used. No sandbox, so only shell-less profiles qualify for push |
 
 **Transport decision (T4.50, Proposed).** `opencode run --format json` as an ephemeral subprocess, the same JSONL path
@@ -2286,6 +2287,63 @@ work, not owner-approved; synthetic `--format json` lines only; no `opencode` in
 
 **Out of scope (stay `Partial`).** Recorded permission-denial and rate-limit event shapes; `tool_use` input key names;
 T4.6 backing-vendor fixture.
+
+#### 4.6.6 T11.0 documentation spike (2026-10-16)
+
+*Delegated agent work, not owner-approved; documentation only ([T4.50](#46-opencode-m4), FR-INN-04, Q-26). No `opencode`
+or other provider CLI was run in this spike.*
+
+**Purpose.** Separate what is **verified from documentation** (the T4.50 matrix in [§4.6](#46-opencode-m4), [R2] OpenCode
+citations, OpenCode docs tagged [D-cli], [D-perm], [D-cfg], [D-rules] as retrieved 2026-10-13) from what remains
+**Unverified: operator (T11.0 live)** for FR-INN-04's scenario: one-shot `opencode run` with an operator-chosen model, an
+**empty working directory**, **no repository config** (`opencode.json`, `.opencode`, `AGENTS.md` in the cwd), and
+controls that are supposed to offer **no tools**.
+
+**Documentation verdict (fail closed).** Documentation does **not** prove that a tool-free one-shot is achievable: there
+is no documented flag that removes tools from the model's list [D-perm]; permissions are tool-level allow/deny/ask, and
+defaults are permissive [D-perm]. A documented way to ignore all merged repository and global config in an empty cwd is
+**not** found [D-cfg]. The inner-agent `cli` kind therefore stays **`Ineligible`** until operator evidence is recorded
+([§3.12](#312-inner-agent), Q-26). Prior T4.51 captures ([§4.6.4](#464-note-2026-10-14-contradictions-found-by-the-t451-live-checks-delegated-cells-above-not-edited),
+[live-checks-2026-10-14-opencode.md](../research/live-checks-2026-10-14-opencode.md)) are historical research only; they
+do not satisfy T11.0 Done-when (which needs the result on an **installed** OpenCode for the empty-directory case).
+
+**Verified from documentation (believed flags and env for the proposed one-shot).**
+
+| Control | Source | Notes |
+| --- | --- | --- |
+| `opencode run` with `--format json` | [D-cli], [D-v2], [R2 L78] | NDJSON event stream; shapes in [T-ev] only until T4.51 |
+| `--model`/`-m` as `provider/model` | [D-cli] | Operator-chosen; no default in Switchboard |
+| `--pure` ("run without external plugins") | [D-cli] | **v1 documentation**; absent on `opencode v2.0.23` per [§4.6.4](#464-note-2026-10-14-contradictions-found-by-the-t451-live-checks-delegated-cells-above-not-edited) |
+| `--dir <path>` (empty directory as cwd) | [D-cli] (T4.50 inner-agent row) | **v1 documentation**; not in v2.0.23 `run --help` per §4.6.4; cwd is process cwd on v2 |
+| `OPENCODE_PERMISSION` or `OPENCODE_CONFIG_CONTENT` with every key `allow` or `deny`, never `ask` | [D-cli], [D-perm] | Proposed compile target; whether deny-all applies on an installed version: **Unverified: operator (T11.0 live)** |
+| `OPENCODE_DISABLE_CLAUDE_CODE=1` | [D-cli], [D-rules] | Turns off `CLAUDE.md` fallback when no `AGENTS.md` |
+| `OPENCODE_DISABLE_AUTOUPDATE=1` | [D-cli], [D-cfg] | `autoupdate` defaults on |
+| `OPENCODE_DISABLE_MODELS_FETCH` | [D-cli] | Optional; effect on run not documented here |
+| Do not emit `--auto` | [D-cli], FR-POL-03, [§4.6.1](#461-opencode-native-controls-per-profile-and-platform-t450) | Bypass-class |
+| v2-only (from §4.6.4, not re-run here) | [§4.6.4](#464-note-2026-10-14-contradictions-found-by-the-t451-live-checks-delegated-cells-above-not-edited) | `--standalone`, `--server <url>` instead of isolated scratch-`HOME` without a shared background service |
+
+**Unverified: operator (T11.0 live)** — must be recorded with OpenCode version and date before `cli` can leave
+`Ineligible` or T11.0 can become Done:
+
+- Whether a **deny-all** permission set (`{"*":"deny"}` or equivalent) prevents the model from **listing or invoking**
+  tools, or only refuses individual calls (checklist items 4 and 12).
+- Whether **global config**, managed files, or instruction files (`AGENTS.md`, `CLAUDE.md`) still load when the process
+  starts in an **empty directory** with **scratch `HOME`** and no project `opencode.json` (checklist item 4).
+- Whether **run events** name the **provider and model actually used** (checklist item 4).
+- Whether the **v1-documented** flags `--pure` and `--dir` exist and behave as needed on the installed major version, or
+  what v2 substitutes (`--standalone`, cwd) achieve the same isolation (checklist item 12).
+- Whether a one-shot can run **tool-free** when the prompt later asks for a tool-requiring task (checklist item 12).
+
+**Operator checklist (T4.51) — items required for T11.0 Done-when** (copied from [§4.6.3](#463-operator-checklist-t451);
+operator-only; scrub captures per that section):
+
+| # | Command (run in the disposable repository) | Capture, scrubbed | Maps to |
+| --- | --- | --- | --- |
+| 4 | `opencode run --format json --model <provider/model> "Reply with the single word ok"` with all permissions `deny` via `OPENCODE_PERMISSION='{"*":"deny"}'` | The full JSONL stream, exit code, stderr | Event shapes, success rule, T11.0 (does a deny-all run still list tools; do global config and `AGENTS.md` load: run once from an empty directory with `HOME` set to a scratch directory, once from the repository); whether run events name the provider and model used |
+| 12 | T11.0: from an empty directory, `opencode run --format json --pure --dir <empty> --model <provider/model>` with every permission `deny` and `OPENCODE_DISABLE_CLAUDE_CODE=1`, asking for a one-sentence answer and then for a tool-requiring task | Whether any tool call is attempted and refused; stream; exit code | T11.0 result; `cli` kind `Ineligible` or eligible with the verified flags (T11.13) |
+
+Item 12 uses the v1 flag spellings from T4.50; if `--pure` or `--dir` are absent on the installed CLI, record the exact
+argv that was used instead (for example `--standalone` and process cwd per §4.6.4) in the dated research note.
 
 ### 4.7 Kimi Code (M4, blocked by B-1)
 
