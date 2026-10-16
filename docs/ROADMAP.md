@@ -2154,6 +2154,32 @@ three usage test files and `src/inner/suspension.test.ts`, with the tree restore
 event insert, swallowing a failed `suspendInnerTask`, and stamping `observed_at` with a second clock read. Opened as
 [PR #496](https://github.com/zemdregon/switchboard/pull/496). T11.5 stays **Done on fakes**; the live-backend residual
 (T11.13) is the only one left.
+*2026-10-16 post-#496 breaker residual (Delegated; fakes only, no production code change,
+`src/inner/usage-channels.test.ts` only):* the file was re-read on `main` at `0364ed8` against the T11.5 and T11.14 rows,
+FR-INN-15, `src/inner/pipeline.ts`, `src/inner/breaker.ts`, `recordInnerCall` in `src/ledger/repo.ts` and the inner-agent
+wiring in `src/cli/serve.ts`. The breaker (T11.2, LLD §13.4 step 6) was pinned on the injected contract only
+(`src/inner/usage.test.ts`), never at a production caller, and nothing had pinned that `serve` builds one service for the
+commit channel and the routing hook, so the circuit one caller opens is the one the other is denied by. *Commit channel*:
+two drafts whose backend errors open the circuit over the socket each write a `BACKEND_ERROR` row at `attempts` 1 (with
+the flag, a labelled row with `{}` each), the second writes the run's one `inner_degraded` event in the same transaction
+with the reason code and the breaker state and never the backend's message or a count; the third draft and a
+classification through the production hook on the same service are denied `CIRCUIT_OPEN` at `attempts` 0 after the
+locality lookup and the redaction (`locality` local, `input_bytes` counted, `latency_ms` 0), with no request, no
+observation even with the flag and no second transition event; the agent's own message still commits; every provider
+surface is byte-identical and `runs show` gains the inner events, a `git_tool_denied` per undrafted commit, the intent
+and the commit, none with a token figure. *Admission harness*: the circuit opens on a run-less admission, so the
+`inner_degraded` event has no run to be written under and exists nowhere in any run's event list or `runs show`; the
+quota failover under the open circuit is denied run-less at admission and under the failed run with a `CIRCUIT_OPEN` row
+at `attempts` 0 and an `inner_call` event carrying that reason and no count, no observation for either denial even when
+the label is the failed run's own provider; the heuristic classifies all four decisions, the successor is unmoved, the
+exhausted provider's window counts provider-reported rows only and the spare is byte-identical; both REPLACE spellings
+are refused on every row written. Each pin was shown to fail under the drift it guards, with the tree restored after
+each (86 tests across the three usage files and `src/inner/suspension.test.ts`): `recordInnerCall` dropping the extra
+events fails the two channel tests and the #496 rollback pin; the breaker checked before the locality lookup and the
+redaction fails the four new tests and nothing else, so that ordering was previously unpinned; a transport failure not
+counted by the breaker fails the four new tests and the two contract-layer breaker pins. Opened as
+[PR #501](https://github.com/zemdregon/switchboard/pull/501). T11.5 stays **Done on fakes**; the live-backend residual
+(T11.13) is the only one left.
 
 **T11.8 status (2026-10-13; Delegated): Done on fakes. No live inner backend, provider CLI, pull-request API or network
 host was used.** "Done when", clause by clause: *the draft passes the sanitiser*: a hostile fake backend returning a
