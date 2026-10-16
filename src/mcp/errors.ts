@@ -53,6 +53,9 @@ export function toToolError(err: unknown): ToolError {
   if (err instanceof HandoffBundleError) return new ToolError(err.code, err.message, { reason: err.details.reason });
   if (err instanceof LifecycleError) {
     if (err.code === "QUEUE_FULL") return new ToolError("ELIGIBILITY_NONE", err.message, { reason: "QUEUE_FULL" });
+    // T14.6 (FR-CTL-05): a paused project or a global pause admits nothing; `details.reason` is PROJECT_PAUSED or
+    // GLOBAL_PAUSED (with `project_id` when scoped), as QUEUE_FULL: no taxonomy code names a held admission.
+    if (err.code === "PAUSED") return new ToolError("ELIGIBILITY_NONE", err.message, { ...err.details });
     return new ToolError("INVALID_REQUEST", err.message);
   }
   // COMP-POL refused to resolve the profile (fail closed, NFR-SEC-06); the error names its own taxonomy code.

@@ -70,7 +70,9 @@ import {
 import { ArtifactStore, defaultRedactor } from "../artifacts/index.js";
 import { ConfigError, loadConfig, type ResolvedConfig } from "../config/index.js";
 import {
+  ALL_PROJECTS_ID,
   type ApprovalAnnouncement,
+  applyPauseRequests,
   SinkDispatcher,
   sinkOutcomeRecorder,
   transitionNotifier,
@@ -91,6 +93,7 @@ import {
   OAuthClientStore,
   OAuthTokenStore,
   PairingCodeStore,
+  type PauseAnnouncement,
   SubjectBindingStore,
   type SwitchboardMcpServer,
   startHttpTransport,
@@ -588,6 +591,23 @@ async function runDaemon(
     if (polling) return;
     polling = true;
     try {
+      // T14.6 (FR-CTL-05, LLD §3.4.4): the CLI's global pause / resume, applied here as `approve` is. Admission reads
+      // the row inside its transaction, so from this poll on no new run is admitted (or admission reopens).
+      for (const p of applyPauseRequests(ledger)) {
+        log.info(p.paused ? "operator pause applied: no project admits new runs" : "operator resume applied", {
+          scope: p.scope,
+          requested_by: p.requestedBy,
+          request_event_id: p.requestEventId,
+        });
+        if (p.paused) {
+          sinks?.emit({
+            projectId: ALL_PROJECTS_ID,
+            eventKind: "project_paused",
+            reasonCode: "global_paused",
+            runId: null,
+          });
+        }
+      }
       for (const a of await applyOperatorRequests(db, ledger, lifecycle)) {
         log.info(a.kind === "decision" ? "operator decision applied" : "operator cancel applied", {
           run_id: a.runId,
@@ -695,6 +715,17 @@ async function runDaemon(
         ? {
             announceApproval: (a: ApprovalAnnouncement) =>
               sinks.emit({ projectId: a.projectId, eventKind: "approval_decided", reasonCode: a.kind, runId: a.runId }),
+            // T14.6 (FR-CTL-05): a client's pause_project reaches the sinks as `project_paused` (resume has no kind).
+            announcePause: (a: PauseAnnouncement) => {
+              if (a.paused) {
+                sinks.emit({
+                  projectId: a.projectId,
+                  eventKind: "project_paused",
+                  reasonCode: "project_paused",
+                  runId: null,
+                });
+              }
+            },
           }
         : {}),
       // T13.5 (FR-MCP-15, Q-78): stdio sees only meta-sessions with no HTTP subject; HTTP sees only its own.

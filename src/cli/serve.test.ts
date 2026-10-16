@@ -759,6 +759,43 @@ describeLinuxVerified("serve over stdio (process level)", () => {
     expect(groupAlive(pgid)).toBe(false);
   }, 60_000);
 
+  it("T14.6: an operator `pause` written while the daemon runs is applied on its poll; admission refuses GLOBAL_PAUSED until `resume`", async () => {
+    const c = await connect();
+    const first = await delegate(c.client);
+    expect(first.isError, JSON.stringify(first.body)).toBe(false);
+    expect((await pollStatus(c.client, first.body.run_id, TERMINAL)).status).toBe("SUCCEEDED");
+    const io = (out: string[]): CliIo => ({
+      stdout: { write: (s) => out.push(s) },
+      stderr: { write: () => {} },
+      env: {},
+      user: "op",
+    });
+    const paused: string[] = [];
+    expect(await main(["pause", "--config", configPath, "--json"], io(paused))).toBe(0);
+    expect(JSON.parse(paused.join("")) as Json).toMatchObject({ outcome: "requested", daemon_running: true });
+    // Applied on the next operator poll (OPERATOR_POLL_MS): wait for the refusal rather than a fixed delay.
+    const end = Date.now() + 10_000;
+    let refused = await delegate(c.client);
+    while (!refused.isError && Date.now() < end) {
+      await pollStatus(c.client, refused.body.run_id, TERMINAL);
+      refused = await delegate(c.client);
+    }
+    expect(refused.isError).toBe(true);
+    expect(refused.body.error).toMatchObject({ code: "ELIGIBILITY_NONE", details: { reason: "GLOBAL_PAUSED" } });
+    expect(c.stderr()).toContain("operator pause applied");
+    const resumed: string[] = [];
+    expect(await main(["resume", "--config", configPath, "--json"], io(resumed))).toBe(0);
+    expect(JSON.parse(resumed.join("")) as Json).toMatchObject({ outcome: "requested", daemon_running: true });
+    const again = Date.now() + 10_000;
+    let admitted = await delegate(c.client);
+    while (admitted.isError && Date.now() < again) {
+      await new Promise((r) => setTimeout(r, 100));
+      admitted = await delegate(c.client);
+    }
+    expect(admitted.isError, JSON.stringify(admitted.body)).toBe(false);
+    expect((await pollStatus(c.client, admitted.body.run_id, TERMINAL)).status).toBe("SUCCEEDED");
+  }, 60_000);
+
   it("shuts down gracefully on SIGTERM: in-flight runs end CANCELLED, the lock is released, no orphans", async () => {
     const c = await connect("hang");
     const { runId, pgid } = await runningRun(c.client);

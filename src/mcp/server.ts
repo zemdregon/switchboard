@@ -82,6 +82,13 @@
  * - `get_digest` (T14.3; FR-CTL-02, FR-TEL-01, LLD §3.4.3) is read-only and scoped as `get_run`: its cursor is a
  *   `run_event.id` of this caller's own runs, and run summaries arrive only as labelled, capped untrusted text
  *   (`./digest.ts` holds the Proposed assembly rules).
+ * - `pause_project` / `resume_project` (T14.6; FR-CTL-05, LLD §3.4.4) take a project exactly as the `list_runs`
+ *   filter does (`checkListProject`: unknown → INVALID_REQUEST, outside the client's list → PERMISSION_BLOCKED, the
+ *   client's own dynamic project allowed) and set that project's `control_plane_state` row as `mcp:<client_id>`
+ *   (`src/control/pause.ts`). The result is the project's own flag; the operator's global pause is not a project flag
+ *   and nothing over MCP sets or clears it. Admission is what changes: `delegate_task` / `continue_task` into a paused
+ *   project is ELIGIBILITY_NONE with `details.reason` PROJECT_PAUSED (GLOBAL_PAUSED under the operator's pause);
+ *   runs already admitted finish.
  */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -242,6 +249,18 @@ export interface McpServerDeps {
    * lifecycle's transition hook does not (see `src/control/approval-proxy.ts`). Absent means no sink is configured.
    */
   readonly announceApproval?: (a: ApprovalAnnouncement) => void;
+  /**
+   * T14.6 (FR-CTL-05): announces a `pause_project` / `resume_project` change to the notification sinks (`project_paused`,
+   * off the tool's write path). Absent means no sink is configured.
+   */
+  readonly announcePause?: (a: PauseAnnouncement) => void;
+}
+
+/** T14.6: what {@link McpServerDeps.announcePause} receives after the project row was written. */
+export interface PauseAnnouncement {
+  readonly projectId: string;
+  readonly paused: boolean;
+  readonly clientId: string;
 }
 
 export interface SwitchboardMcpServer {
@@ -1114,6 +1133,17 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       attentionAt(),
     );
 
+  /** T14.6 (FR-CTL-05, LLD §3.4.4): see the module comment; the row is written as `mcp:<client_id>`. */
+  const setProjectPaused = async (a: Args, paused: boolean) => {
+    const projectId = a.project_id as string;
+    checkListProject(projectId);
+    const row = ledger.setPaused({ projectId, paused, by: `mcp:${deps.clientId}` });
+    deps.announcePause?.({ projectId, paused, clientId: deps.clientId });
+    return { project_id: projectId, paused: row.paused === 1 };
+  };
+  const pauseProject = async (a: Args) => setProjectPaused(a, true);
+  const resumeProject = async (a: Args) => setProjectPaused(a, false);
+
   const cancelRun = async (a: Args): Promise<Envelope> => {
     const run = ownRun(a.run_id as string);
     await lifecycle.cancel(run.id, (a.reason as string | undefined) ?? "cancel_run");
@@ -1330,6 +1360,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     explain_route: explainRouteTool,
     list_runs: listRuns,
     get_digest: getDigest,
+    pause_project: pauseProject,
+    resume_project: resumeProject,
   };
 
   const ok = (value: object): CallToolResult => ({

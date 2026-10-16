@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { approvalCausePrefix, type DecisionInput, renderDecisionSummary } from "../continuity/decisions.js";
 import { deriveOpenWork, type OpenWorkRun } from "../continuity/open-work.js";
 import { defaultIds, type IdGenerator } from "../ids/index.js";
+import { type ControlPlaneLedgerSlice, createControlPlaneLedgerSlice } from "./control-plane.js";
 import { DecisionRefusedError } from "./errors.js";
 import {
   createWorkQueueLedgerSlice,
@@ -698,7 +699,7 @@ export interface InnerTaskStateRow {
   version: number;
 }
 
-export interface Ledger {
+export interface Ledger extends ControlPlaneLedgerSlice {
   createMetaSession(input: NewMetaSession): MetaSessionRow;
   getMetaSession(id: string): MetaSessionRow | undefined;
   createRun(input: NewRun): RunRow;
@@ -975,6 +976,16 @@ export interface Ledger {
   listDistinctProjectIdsWithReadyWork(): string[];
 }
 
+export {
+  type ControlPlaneEventRow,
+  type ControlPlaneEventType,
+  type ControlPlaneStateRow,
+  GLOBAL_PAUSE_SCOPE,
+  OPERATOR_PAUSE_APPLIED,
+  OPERATOR_PAUSE_REQUESTED,
+  OPERATOR_RESUME_REQUESTED,
+  type PendingPauseRequest,
+} from "./control-plane.js";
 export type { EnqueueWorkItemInput, WorkItemRow, WorkItemState, WorkListFilter } from "./work-queue.js";
 
 export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledger {
@@ -2132,5 +2143,7 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
     },
 
     ...createWorkQueueLedgerSlice(db, { ids, ts, immediate }),
+    // T14.6 (FR-CTL-05): pause rows and operator pause signals (migration 0018).
+    ...createControlPlaneLedgerSlice(db, { ids, ts, immediate }),
   };
 }
