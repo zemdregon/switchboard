@@ -3778,7 +3778,9 @@ output the same way whether or not the backend honoured the schema.
   (FR-INN-04, FR-ADP-08). **Proposed; flags unverified (Q-26, T11.0).** The run uses an empty temporary directory, a
   minimal environment (FR-EXE-07), no repository config, and only argv that passes the adapter argv audit (no bypass flag;
   [AGENTS.md](../../AGENTS.md)). The way the prompt is delivered (argv, stdin or file) and the output read are fixed by
-  the T11.0 spike, not guessed here.
+  the T11.0 spike, not guessed here. *2026-10-17:* T11.0 found no such control on `opencode v2.0.23` (`--pure` and
+  `--dir` absent; a deny-all permission set did not stop a `shell` call;
+  [TDD §4.6.7](TDD.md#467-t110-live-result-2026-10-17)), so the kind stays `Ineligible` there.
 
 **Ineligible rule (cli).** The `cli` backend is `eligible` only if (a) the installed version is inside a compliance
 manifest range (FR-ADP-03) and (b) the documented controls that offer the model no tools, no file and no shell access have
