@@ -1402,7 +1402,8 @@ T7.17 (T6.8, T6.13, T6.14, T7.13 and T7.14 Done, the rest Planned).
   configuration, `usage_observation`, `run` and an injected clock, with no table. The request-field validation
   (T7.14, `Done` 2026-10-17) lives in `src/mcp/schemas.ts` (closed `DELEGATE_ROUTING`), `src/mcp/server.ts`
   (`checkRouting`) and `src/queue/admission.ts` (the queued request carries the fields to admission); group expansion
-  and the `pacing` term (T7.15, Planned) will live in `src/routing/`; the T7.13 configuration resolution lives in `src/config/routing.ts`. The hold
+  and the `pacing` term (T7.15, Planned) will live in `src/routing/`;
+  the T7.13 configuration resolution lives in `src/config/routing.ts`. The hold
   reuses the breaker's single wake timer in the lifecycle. Adapters change only in
   T6.15, to map a structured limit signal or declare a sourced usage key.
 - **Fake adapters, injected clock.** Every test drives scripted fake providers placed in operator-declared subscriptions
