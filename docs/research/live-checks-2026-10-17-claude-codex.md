@@ -107,3 +107,28 @@ removed afterwards.
 `git` was not on `PATH` in the image. So these five CLIs start and report their own logged-out state with no Git
 client and no network. A login inside the volume, and a real task inside the container, were not attempted. Those
 need the operator (T10.0 stays `Partial`).
+
+## 5. `adapters validate` for the M4 adapters (T4.28, T4.38, T4.48, T4.68)
+
+Same channel, same day. No model call was made, because each run stopped before the smoke step. Nothing was written.
+
+| Adapter (CLI version) | manifest | probe | auth | conformance | Stops at |
+| --- | --- | --- | --- | --- | --- |
+| Grok Build (1.0.50) | ok | ok | OK | **FAIL** `compiles` | conformance |
+| Antigravity (1.4.0) | ok | **FAIL** `output_format`, `flags (--output-format)` | not run | not run | probe |
+| Cursor CLI (2026.10.16-e3cb207) | ok | ok | OK | **FAIL** `compiles` | conformance |
+| OpenCode (v2.0.23) | ok | ok | OK | **FAIL** `compiles` | conformance |
+| Kimi Code (2.1.1) | ok | ok | **UNKNOWN** (fail closed): "Kimi Code ACP auth probe was inconclusive (session/new missing, exit 0)" | not run | auth |
+
+What this shows:
+
+- **`compiles`.** `adapters validate` compiles its smoke task under `inspect-untrusted`. Grok Build, Cursor, OpenCode,
+  Antigravity and Kimi Code are `Ineligible` for every non-privileged profile by design, so the command **cannot pass
+  for a bypass-only adapter as built**. Validating them needs a validate path under an approved `privileged` bypass
+  scope, or an owner decision. Their live smoke legs need the same: `scripts/live/providers/` has plug-ins only for
+  `claude` and `codex`.
+- **Antigravity 1.4.0** no longer lists `--output-format` in `--help` (1.3.4 did, 2026-10-14).
+- **Kimi Code.** The first live run of Switchboard's ACP auth preflight did not get a `session/new` reply (exit 0). The
+  2026-10-15 rows 8 to 10 got a reply in a direct ACP exchange. Cause not investigated.
+- **Grok Build.** `doctor` reported auth `AUTH_REQUIRED` at 03:30Z and `adapters validate grok` reported `OK` at 03:34Z.
+  The `grok models` first-line keying may be unstable.
