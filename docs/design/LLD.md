@@ -5901,7 +5901,9 @@ no `openAt`: the hold that acts on `deferred_until` is T6.8 (`Done` 2026-10-17; 
 defers only in mode `gate`,
 with a known reset, a non-null used value and elapsed fraction, confidence at or above `min_confidence`, and used at or
 above `min(T, T × elapsed + B)`, using those published figures. Its gate-open time is the earlier of `reset_at` and
-`window_start + length_seconds × (used − B) / T`, rounded to the millisecond. `deferred_until` is the latest of those
+`window_start + length_seconds × (used − B) / T`, rounded to the millisecond — except at `used ≥ T`, where the capped
+defer line never catches up, so the gate opens at the reset (T6.16, `gateOpenMs` in `src/capacity/projection.ts`).
+`deferred_until` is the latest of those
 times, else null. Mode `score` or `off` is `inactive` and never defers; a rolling window, an unknown source and an
 estimate below `min_confidence` never defer. `doctor` prints one line per subscription from the binding window (the
 smallest non-null allowance, else the first): pace, `deferred_until` and the source, with
