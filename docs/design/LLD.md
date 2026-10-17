@@ -6518,6 +6518,14 @@ A version's state is derived from its newest `approved`/`revoked` event (`draft`
 newest `retired`/`unretired` event. A retired name resolves to nothing for new runs; runs already admitted keep their
 pinned version.
 
+*Implementation (T16.1, 2026-10-17, Delegated, not owner-approved):* `src/skills/` and migration 0021. Append-only is
+enforced by `BEFORE UPDATE` and `BEFORE DELETE` triggers on `skill_version` and `skill_event`, as for `run_event`;
+`run_skill` is not append-only because T16.6 fills in its delivery and removal columns. `size_bytes` is the byte length
+of the stored canonical file (front matter plus body), the bytes `sha256` covers. `skills.max_names` counts names that
+are not retired. LLD §19.1 cites `git.sanitize_patterns` "secret classes", but that key has no classes; every
+configured pattern is treated as a secret pattern at `add` (fail closed), and the description is also checked for
+markers.
+
 ### 19.3 Configuration (FR-SKL-03, FR-SKL-04, FR-SKL-08)
 
 | Key | Meaning |

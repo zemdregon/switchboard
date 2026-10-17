@@ -432,7 +432,9 @@ Owner decision 58 (2026-10-17, [ROADMAP §4.2](../ROADMAP.md#42-owner-decisions)
 and that each provider receives in its native way, with a prompt prefix as fallback, without leaking into the
 repository. Everything below is **Proposed** and **Delegated** (mechanism in
 [ADR-0056](../adr/0056-switchboard-controlled-skills.md), contract in [LLD
-§19](../design/LLD.md#19-switchboard-controlled-skills-m16-proposed)); every limit is an Assumption.
+§19](../design/LLD.md#19-switchboard-controlled-skills-m16-proposed)), except the FR-SKL-01, FR-SKL-02 and FR-SKL-10
+store aspects that T16.1 built (validator, canonicaliser, content store, migration `0021`, state derivation;
+`src/skills/`); every limit is an Assumption.
 
 | ID | Requirement | Priority | Source | Verify | Milestone |
 | --- | --- | --- | --- | --- | --- |
@@ -521,7 +523,8 @@ repository. Everything below is **Proposed** and **Delegated** (mechanism in
 
 Persistent entities (schema owned by [LLD §1](../design/LLD.md#1-data-model)): `meta_session`, `provider_binding`,
 `run`, `run_event`, `decision`, `artifact`, `workspace_checkpoint`, `usage_observation`, `provider_health`,
-`route_decision`, `adapter_version`, `approval`, plus (M16, Proposed) `skill_version`, `skill_event` and
+`route_decision`, `adapter_version`, `approval`, plus (M16; tables built by T16.1, migration `0021`)
+`skill_version`, `skill_event` and
 `run_skill` (FR-SKL-01, FR-SKL-07, FR-SKL-10; skill content is a file addressed by SHA-256 under the data
 directory), plus (M11) `inner_call` (FR-INN-15) and (M9) `git_commit`
 (provenance, FR-GIT-07) and `project_revision`

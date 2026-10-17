@@ -47,7 +47,10 @@ const EXPECTED_TABLES = [
   "route_decision",
   "run",
   "run_event",
+  "run_skill",
   "schema_migrations",
+  "skill_event",
+  "skill_version",
   "usage_observation",
   "workspace_checkpoint",
 ];

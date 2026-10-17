@@ -1417,12 +1417,15 @@ T7.17 (T6.13 and T7.13 Done, the rest Planned).
 
 ### 3.16 Switchboard-controlled skills (Proposed)
 
-*Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); not built).
+*Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); partly built: T16.1
+implemented the store module below, Delegated, not owner-approved; the renderer, writer, exclusions, CLI and
+import-boundary test are still Proposed).
 Delegated, not owner-approved beyond the direction.* Contract: [LLD §19](LLD.md#19-switchboard-controlled-skills-m16-proposed).
 Tasks: ROADMAP T16.0 to T16.12.
 
-- **Where it lives.** A store module `src/skills/` (Proposed): format validator, canonicaliser, content store, ledger
-  helpers and the pure resolver. The prompt-prefix renderer extends `src/adapters/prompt.ts`. The native writer and
+- **Where it lives.** A store module `src/skills/` (implemented by T16.1: format validator, canonicaliser, content
+  store, ledger helpers, pure state derivation and `add`; migration `0021`). The prompt-prefix renderer extends
+  `src/adapters/prompt.ts`. The native writer and
   cleaner live in the workspace manager beside checkpoints, because they share the base-checkpoint and path rules.
   Exclusions are added to the commit tool, checkpoint and artifact code in `src/git/` and `src/workspace/`. The CLI group
   is `src/cli/skills.ts`. Nothing under `src/policy/`, `src/routing/` or `src/capacity/` imports `src/skills/`
