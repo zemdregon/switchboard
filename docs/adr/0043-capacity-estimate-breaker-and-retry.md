@@ -71,7 +71,9 @@ event types), writes a table that nothing wrote before, and changes the run life
    The orchestrator gets the code and the reset time and decides. A `privileged` run never fails over to another
    provider while Q-61 is open.
 8. **No rate gate without a source** (FR-CAP-07). No configuration key is added until T6.0's table names an enforceable
-   limit.
+   limit. *(Amended 2026-10-17 by [ADR-0055](0055-model-groups-and-usage-pacing.md): the gate's source is now observed
+   usage and operator-declared budgets, realised as the FR-CAP-10 pacing gate; a token bucket at a published rate still
+   applies only where a limit is published.)*
 9. **No migration.** Every column used already exists (migration 0001). The new run event types are bounded and carry no
    provider text.
 

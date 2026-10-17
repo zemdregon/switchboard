@@ -5448,8 +5448,9 @@ read for it (Assumption). A queued run is not failed by it.
 
 ### 16.7 Rate gate (FR-CAP-07)
 
-No gate exists. The T6.0 inventory finds no published enforceable limit for the logins in use. A gate is added only for
-a provider whose limit a source names (T6.8), with its own configuration key and source citation.
+No gate exists. The T6.0 inventory finds no published enforceable limit for the logins in use. A token-bucket gate at a
+published rate is added only for a provider whose limit a source names, with its own configuration key and source
+citation; T6.8 no longer builds that gate (see the 2026-10-17 note below).
 
 *Note 2026-10-17 (owner decision 57, [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md)).* T6.8 is reopened as
 the pacing gate of [§16.9](#169-usage-windows-and-pacing-fr-cap-09-fr-cap-10), whose source is observed usage and

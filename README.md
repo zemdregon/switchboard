@@ -45,9 +45,10 @@ Pre-release. The package is private and is not published to any registry; you bu
 - **Milestone 6 (capacity and resilience) is `Partial`.** `get_capacity` and `switchboard capacity` show per-provider
   estimates with their sources, a circuit breaker holds a failing provider back, retryable failures are retried
   automatically as linked successor runs, and quota exhaustion fails over to another provider or returns. All of this
-  is tested on fake providers. It is not `Done`: what Claude Code and Codex print on a real rate limit or quota stop has
-  not been captured (operator task T6.11), and no provider is known to publish an enforceable rate limit, so there is no
-  rate gate. See [ROADMAP §6.11](docs/ROADMAP.md#611-m6-capacity-and-resilience-tasks).
+  is tested on fake providers. It is not `Done`: what providers print on a real rate limit, overload, quota stop or
+  usage report has not been captured for every provider (operator task T6.11), and no provider is known to publish an
+  enforceable rate limit, so there is no token-bucket gate; the planned pacing gate paces usage per subscription window
+  from observed usage instead (ROADMAP T6.8, Planned; not built). See [ROADMAP §6.11](docs/ROADMAP.md#611-m6-capacity-and-resilience-tasks).
 - **Milestone 7 (routing) is `Partial`.** Eligible providers are scored from Switchboard's own records, every route
   decision is stored and replays exactly, `explain_route` shows why a run went where it did, a project stays on its
   provider until a listed reason moves it (`switchboard affinity list|reset`), and `minimum_capability` is enforced
