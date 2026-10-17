@@ -1854,8 +1854,8 @@ the schema is chosen at channel open and the project setting is resolved again p
 `off`; the draft is requested once per call; the prompt scrub adds a fixed list of product names to the configured
 provider ids; the diff-aware truncation and the raw-diff pre-cap. **Not covered:** suspension of the task after a high
 rejection rate (T11.6), the `inner.call` telemetry span (no exporter yet, as in T11.2), a live backend, and the
-real provider tool channels (only the fake adapter declares `injected`; Claude Code only for an approved bypass run,
-unverified live).
+real provider tool channels (only the fake adapter declares `injected`; Claude Code only for an approved bypass run
+with the opt-in, supported, bypass-only since owner decision 56 (2026-10-16)).
 
 **T11.5 status (2026-10-13, updated 2026-10-15; Delegated): Done on fakes. No live inner backend, provider CLI or network
 was used.** Delivered: (1) *`inner_call` records only*: no code path outside
