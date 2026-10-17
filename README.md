@@ -339,6 +339,7 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `data_dir` | no | Where the ledger, artifacts and worktrees live. Default `$XDG_DATA_HOME/switchboard` (`~/.local/share/switchboard`). |
 | `limits.global_concurrency` | no | Integer 1 to 64. Default 4. |
 | `limits.per_provider_concurrency` | no | Integer 1 to 64. Default 1. |
+| `limits.min_free_disk_mb` | no | Integer, whole megabytes; **off when absent** (nothing probes the disk and nothing changes). When set, `serve` checks the free space of the data directory and its `worktrees` root before dispatching: under the floor every queued run waits in `QUEUED` with a `disk_hold` event (it is never failed or refused; `delegate_task` still accepts), the free space is re-probed every 30 seconds, and an early clean-up sweep runs, which collects idle meta-sessions older than `retention.days` **only if you set `retention.days`** (the same switch as above) and never a worktree whose run holds a write lease. `doctor` adds a `Free disk` line with the free space and the floor. See [ROADMAP T3.23](docs/ROADMAP.md#65-m3-isolation-tasks). |
 | `providers.<id>.enabled` | no | Boolean. A provider you do not list is enabled. |
 | `providers.<id>.weight` | no | Number from 0 to 1. Accepted by the schema. |
 | `providers.claude-code.git_channel` | no | Boolean, default `false`. **Supported, bypass-only** (owner decision 2026-10-16, ADR-0033): gives Claude Code the injected `commit` (and `push`) tool through a Switchboard-written `--mcp-config` file in the run's private directory, **only in an approved `privileged` run whose scope sets `bypass`**. Such a run then omits `--safe-mode` (it stops the tool server from starting), so the repository's `CLAUDE.md` and hooks load in it. Every other run is unaffected and can use `finalize_commit`. With `rag.embedding` set and retrieval on for the project, the same run also gets the read-only `search_project_context` tool for its own project (ROADMAP T12.9). Git-write denial still applies in that run (ROADMAP T9.4b); `serve` logs a warning when it is on. Only `claude-code` accepts the key. |
@@ -369,7 +370,8 @@ switchboard doctor --config /path/to/config.json
 ```
 
 `doctor` checks Node, Git, the config, the data directory, the ledger and the data-directory lock, reports what
-retention would collect and any orphans (read-only), then probes each
+retention would collect and any orphans (read-only), reports free disk space against `limits.min_free_disk_mb` when
+that key is set (`[warn]` under the floor: `serve` holds new runs; never `[FAIL]`), then probes each
 adapter (Claude Code, Codex and a fake test adapter that is not a real provider). It exits 0 when no check failed and 1
 otherwise. Markers:
 

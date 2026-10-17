@@ -2317,6 +2317,26 @@ meta-session `ARCHIVED` and appends the intent event, and admission refuses an `
 of the `serve` interval timer itself (each pass runs the same function as the tested startup pass); a process-level
 `SIGKILL` mid-GC test (in-process crash injection after every step, for sessions and orphans, covers the order).
 
+*Free-disk floor (T3.23, FR-WS-11, BR-51; Delegated under owner decision 25, not owner-approved).* `limits.min_free_disk_mb`
+is off when absent: no probe, no new event, `limits` resolved as before. When set, the disk-probe port
+(`src/workspace/disk.ts`: `DiskProbe.freeBytes(path)`, synchronous; production `statfsDiskProbe` reads `bavail × bsize`)
+is asked by `pump()` once per dispatch pass while runs are queued, for the data directory and its `worktrees` root
+(`assessDiskFloor`: the lowest readable value counts; a path the probe cannot read is skipped, and when none can be read
+the floor is not assessable and nothing is held). Under the floor every `QUEUED` run stays `QUEUED` and gets one
+`disk_hold` run event per hold episode (`reason: FREE_DISK_BELOW_FLOOR`, `free_bytes`, `min_free_bytes`, `path`);
+admission (`submit`, `delegate_task`) is unchanged and no run is ever failed or refused by the floor. The wake timer
+re-probes every `DEFAULT_DISK_RECHECK_MS` (30 s, Assumption), and the early sweep (`runEarlySweep`, `src/workspace/gc.ts`)
+starts at most once per period and once at a time; its end re-probes at once. The sweep is an **ordered reclaimer
+list** (`earlySweepReclaimers`): the dependency-seed reclaimer for idle worktrees (FR-WS-10) comes first and is
+registered by T9.13 (`seeds`; the list has none until then), then `meta_sessions`, which is `runRetentionGc` with the
+`stopWhen` seam bound to the floor (oldest idle meta-session first, stop once free space is back above the floor) and
+runs only when `retention.days` is set, the one switch for every collection. Every reclaimer receives
+`ReclaimContext.leasedWorktrees` (worktree paths of the runs holding `meta_session.lease_run_id`) and must never touch
+one; the retention reclaimer cannot, because its candidate query and `beginGc` both require no lease. `serve` runs the
+sweep behind the same in-flight slot as the retention pass (never two collecting passes at once). `doctor` adds a
+`Free disk` check only when the key is set: `[ok]` with the free space and the floor, `[warn]` under it (naming the
+hold and whether the sweep collects), `[warn]` when no path can be probed; never `[FAIL]`.
+
 **Crash safety.** Order is intent row (with the `ARCHIVED` mark, one transaction), then Git action, then outcome
 row. On startup reconciliation (WF-8) a run in
 `LEASED`/`RUNNING` with a worktree but no outcome is assessed by the mutation check; a lease row is cleared only after

@@ -52,7 +52,11 @@ export interface ResolvedConfig {
   /** Canonical allowed workspace roots (FR-POL-10). */
   allowedRoots: string[];
   mcpClients: ReadonlyMap<string, ResolvedMcpClient>;
-  limits: { globalConcurrency: number; perProviderConcurrency: number };
+  /**
+   * `minFreeDiskMb` (T3.23, FR-WS-11) is present only when the config sets `limits.min_free_disk_mb`: the floor is off
+   * by default and an unset key leaves `limits` exactly as before.
+   */
+  limits: { globalConcurrency: number; perProviderConcurrency: number; minFreeDiskMb?: number };
   /** Keyed by config provider id. `concurrency` is the T6.9 per-provider slot limit, absent when not set. */
   providers: ReadonlyMap<string, { enabled: boolean; weight: number | undefined; concurrency?: number }>;
   /** `providers.<id>.models` blocks (T4.5, FR-ADP-05, LLD §2.1), keyed by config provider id; only providers that set one. */
@@ -491,6 +495,7 @@ export function loadConfig(
     limits: {
       globalConcurrency: cfg.limits?.global_concurrency ?? DEFAULT_GLOBAL_CONCURRENCY,
       perProviderConcurrency: cfg.limits?.per_provider_concurrency ?? DEFAULT_PER_PROVIDER_CONCURRENCY,
+      ...(cfg.limits?.min_free_disk_mb !== undefined ? { minFreeDiskMb: cfg.limits.min_free_disk_mb } : {}),
     },
     retention: {
       days: cfg.retention?.days ?? DEFAULT_RETENTION_DAYS,
