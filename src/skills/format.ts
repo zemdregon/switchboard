@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { DEFAULT_SECRET_PATTERNS, PREFIXED_PATTERNS } from "../artifacts/redact.js";
 import { compileOperatorPattern, PATTERN_WINDOW } from "../git/safe-pattern.js";
+import { DEFAULT_MAX_BODY_BYTES } from "./limits.js";
 
 /**
  * Skill source format, validator and canonicaliser (T16.1; FR-SKL-01, FR-SKL-02, FR-SKL-10; LLD §19.1, ADR-0056 items 1
@@ -8,9 +9,6 @@ import { compileOperatorPattern, PATTERN_WINDOW } from "../git/safe-pattern.js";
  * field, never the body text and never a matched secret (FR-SKL-10).
  */
 
-/** LLD §19.1 / §19.3 defaults (Assumptions) until T16.3 adds `skills.max_body_bytes` and `skills.max_names`. */
-export const DEFAULT_MAX_BODY_BYTES = 32_768;
-export const DEFAULT_MAX_NAMES = 64;
 export const MAX_DESCRIPTION_CHARS = 280;
 
 export const SKILL_NAME = /^[a-z][a-z0-9-]{1,47}$/u;
@@ -52,7 +50,7 @@ export interface CanonicalSkill {
 export interface ValidateSkillOptions {
   /** The CLI `<name>` argument; the front matter `name` must equal it. */
   readonly expectedName?: string;
-  /** `skills.max_body_bytes` (default {@link DEFAULT_MAX_BODY_BYTES}). */
+  /** `skills.max_body_bytes` from the resolved config (default {@link DEFAULT_MAX_BODY_BYTES}). */
   readonly maxBodyBytes?: number;
   /**
    * `git.sanitize_patterns` sources. LLD §19.1 refuses their "secret classes"; the configuration has no such class, so

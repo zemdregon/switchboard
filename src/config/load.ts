@@ -8,6 +8,12 @@ import { validateOperatorPatterns } from "../git/safe-pattern.js";
 import type { ModelConfig } from "../models/registry.js";
 import { ProfileOverrideError, validateProfileOverrides } from "../policy/profiles.js";
 import type { ProfileOverride, ProfileOverrides } from "../policy/types.js";
+import {
+  DEFAULT_MAX_BODY_BYTES,
+  DEFAULT_MAX_NAMES,
+  DEFAULT_MAX_PER_RUN,
+  DEFAULT_MAX_RUN_BYTES,
+} from "../skills/limits.js";
 import { type CapacitySettings, checkCapacity, resolveCapacity } from "./capacity.js";
 import { type CiTriggerSettings, checkCiTrigger, resolveCiTrigger } from "./ci-trigger.js";
 import { type ControlPlaneSettings, resolveControlPlane } from "./control-plane.js";
@@ -19,7 +25,13 @@ import {
   type NotificationSinkSettings,
   resolveNotificationSinks,
 } from "./notification-sinks.js";
-import { checkProjects, type ResolvedProject, resolveProjects } from "./projects.js";
+import {
+  checkProjects,
+  type ResolvedProject,
+  type ResolvedSkillAssignment,
+  resolveProjects,
+  resolveSkillAssignment,
+} from "./projects.js";
 import { checkRag, type RagSettings, resolveRag } from "./rag.js";
 import { checkRouting, type RoutingSettings, resolveRouting } from "./routing.js";
 import {
@@ -31,8 +43,10 @@ import {
   DEFAULT_PRIVILEGED_APPROVAL,
   DEFAULT_RETENTION_DAYS,
   DEFAULT_RETENTION_INTERVAL,
+  DEFAULT_SKILL_DELIVERY,
   DEFAULT_TOOL_PROFILE,
   type PrivilegedApprovalMode,
+  type SkillDelivery,
   type SwitchboardConfig,
   type ToolProfile,
   type TrustProfile,
@@ -169,6 +183,26 @@ export interface ResolvedConfig {
   ciTrigger: CiTriggerSettings;
   /** Validated OTLP/HTTP endpoint (LLD §7); absent means no export or dependency load. */
   telemetry?: { otlpEndpoint: string };
+  /**
+   * Switchboard-controlled skills (T16.3; FR-SKL-03, FR-SKL-04, FR-SKL-08, LLD §19.3). Always set. An absent section
+   * resolves to `enabled: false` and the LLD defaults, and no other field of this object changes because of it.
+   * Admission (T16.4) is what reads `enabled`; this loader does not.
+   */
+  skills: ResolvedSkills;
+}
+
+/**
+ * Resolved `skills` (LLD §19.3). Limits are the configured values or the LLD defaults. `allowDraftInTrusted` is the
+ * Q-105 Delegated default (`false`) when the key is absent.
+ */
+export interface ResolvedSkills extends ResolvedSkillAssignment {
+  readonly enabled: boolean;
+  readonly delivery: SkillDelivery;
+  readonly allowDraftInTrusted: boolean;
+  readonly maxBodyBytes: number;
+  readonly maxPerRun: number;
+  readonly maxRunBytes: number;
+  readonly maxNames: number;
 }
 
 export interface ResolvedMcpClient {
@@ -210,6 +244,11 @@ export interface ResolvedMcpClient {
    * (default `orchestrator`); a hand-built entry without it is read as `orchestrator`, today's set.
    */
   readonly toolProfile?: ToolProfile;
+  /**
+   * `skills` (FR-SKL-08, T16.3, LLD §19.3): bare names this client may see and inject. Absent means every approved
+   * name. Present, including empty, is the allow-list. `loadConfig` sets it only when the config sets the key.
+   */
+  readonly skills?: readonly string[];
 }
 
 const INTERVAL_UNIT_MS = { m: 60_000, h: 3_600_000, d: 86_400_000 } as const;
@@ -219,6 +258,31 @@ export function parseRetentionInterval(text: string): number {
   const m = /^([1-9][0-9]*)([mhd])$/.exec(text);
   if (!m) throw new ConfigError(`Invalid config:\n  $.retention.interval: must look like 30m, 12h or 7d`);
   return Number(m[1]) * INTERVAL_UNIT_MS[m[2] as "m" | "h" | "d"];
+}
+
+/**
+ * Resolve `skills` (T16.3, LLD §19.3). An absent section is `enabled: false` and the Assumption defaults. A run total
+ * smaller than one body is refused: the LLD gives no range, and this cross-check is Delegated.
+ */
+export function resolveSkills(cfg: SwitchboardConfig): ResolvedSkills {
+  const maxBodyBytes = cfg.skills?.max_body_bytes ?? DEFAULT_MAX_BODY_BYTES;
+  const maxRunBytes = cfg.skills?.max_run_bytes ?? DEFAULT_MAX_RUN_BYTES;
+  if (maxRunBytes < maxBodyBytes) {
+    throw new ConfigError(
+      "Invalid config:\n  $.skills.max_run_bytes: must be >= skills.max_body_bytes " +
+        `(${maxBodyBytes}); a single skill body cannot exceed the run total`,
+    );
+  }
+  return {
+    ...resolveSkillAssignment(cfg.skills),
+    enabled: cfg.skills?.enabled === true,
+    delivery: cfg.skills?.delivery ?? DEFAULT_SKILL_DELIVERY,
+    allowDraftInTrusted: cfg.skills?.allow_draft_in_trusted === true,
+    maxBodyBytes,
+    maxPerRun: cfg.skills?.max_per_run ?? DEFAULT_MAX_PER_RUN,
+    maxRunBytes,
+    maxNames: cfg.skills?.max_names ?? DEFAULT_MAX_NAMES,
+  };
 }
 
 function toOverrides(cfg: SwitchboardConfig): ProfileOverrides {
@@ -528,6 +592,7 @@ export function loadConfig(
           approvalProxy: c.approval_proxy === true,
           ...(c.approval_proxy === true ? { approvalProxyTargets: [...(c.approval_proxy_targets ?? [c.id])] } : {}),
           toolProfile: c.tool_profile ?? DEFAULT_TOOL_PROFILE,
+          ...(c.skills !== undefined ? { skills: [...c.skills] } : {}),
         },
       ]),
     ),
@@ -584,6 +649,7 @@ export function loadConfig(
         p.models !== undefined ? [[id, p.models] as const] : [],
       ),
     ),
+    skills: resolveSkills(cfg),
   };
 }
 

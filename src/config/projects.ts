@@ -17,6 +17,7 @@ import type {
   EnvironmentKind,
   ProjectConfig,
   ProviderId,
+  SkillAssignmentConfig,
   SwitchboardConfig,
   TrustProfile,
 } from "./schema.js";
@@ -94,6 +95,24 @@ export interface ResolvedProject {
   readonly contexts: readonly ResolvedContext[];
   /** T9.13 (FR-WS-10, LLD §5.1): present only when the project declares `dependency_seeds`; declaration order. */
   readonly dependencySeeds?: readonly SeedSpec[];
+  /**
+   * T16.3 (FR-SKL-03, LLD §19.3): present only when the project sets `skills`. Absent means this project adds no
+   * default names. Lists are copies in configuration order.
+   */
+  readonly skills?: ResolvedSkillAssignment;
+}
+
+/** Global or per-project skill name lists (LLD §19.3), with defaults filled in as empty. */
+export interface ResolvedSkillAssignment {
+  readonly defaults: readonly string[];
+  readonly roles: Readonly<Record<string, readonly string[]>>;
+}
+
+/** Copy `skills.defaults` / `skills.roles` (or `projects[].skills`) in configuration order. An absent section is empty. */
+export function resolveSkillAssignment(lists: SkillAssignmentConfig | undefined): ResolvedSkillAssignment {
+  const roles: Record<string, readonly string[]> = {};
+  for (const [role, names] of Object.entries(lists?.roles ?? {})) roles[role] = [...names];
+  return { defaults: [...(lists?.defaults ?? [])], roles };
 }
 
 /** Structural violations as `<json path>: <message>` lines, in the loader's format. */
@@ -263,6 +282,7 @@ export function resolveProjects(cfg: SwitchboardConfig): ResolvedProject[] {
             })),
           }
         : {}),
+      ...(p.skills !== undefined ? { skills: resolveSkillAssignment(p.skills) } : {}),
     };
   });
 }
