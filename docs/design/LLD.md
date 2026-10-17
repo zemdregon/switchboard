@@ -704,9 +704,12 @@ line records no second `usage` row, [#227](https://github.com/zemdregon/switchbo
 step never binds the session. Invalid model and failed login map to `MODEL_UNAVAILABLE` and `AUTH_REQUIRED`; malformed
 and unknown lines become `unknown` events. `extractResult` precedence: cancel and timeout over a denial, denial over
 envelope error and non-zero exit, ADR-0039 guard over all ([#227](https://github.com/zemdregon/switchboard/pull/227)).
-Resume is not compiled: `resumeArgs` is always `Ineligible` and `--conversation` never appears in argv (Q-86). Shapes
-that stayed on stderr in the live check (for example `AGY_ERROR`) are outside `FailureEvidence` here, so those runs end
-`TOOL_FAILURE` until a capture shows them on the stdout stream the supervisor parses.
+Resume is not compiled: `resumeArgs` is always `Ineligible` and `--conversation` never appears in argv (Q-86).
+The stderr-only `AGY_ERROR` line has since been captured for real (seven quota stops at exit 3, T6.11
+[limit captures](../research/limit-captures-2026-10-17.md)) and mapped in `classifyFailure` from the stderr tail
+(T6.15, [ROADMAP T6.15](../ROADMAP.md#611-m6-capacity-and-resilience-tasks)): the `extractResult` path still ends
+`TOOL_FAILURE` because the adapter contract gives it the events and the exit only (§2), not the tail the supervisor
+captures (pinned in `src/adapters/antigravity/limit-signals.test.ts`).
 
 - **Tests:** `src/adapters/antigravity/antigravity.test.ts` (`antigravity parser and result (T4.33)`,
   `antigravity parser hardening (T4.33, synthetic shapes)`).
