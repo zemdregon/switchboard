@@ -176,6 +176,25 @@ describe("closed payload (ADR-0048 item 3)", () => {
       "ci_fix_stuck",
     ]);
     expect(SINK_REASON_CODES.approval_decided).toEqual(["privileged_scope", "dynamic_project", "push_revision"]);
+    expect(SINK_REASON_CODES.queue_low).toEqual(["queue_low"]);
+  });
+
+  it("builds queue_low payload with run_id: null and closed reason queue_low (T15.4, FR-QUE-04)", () => {
+    const event: SinkEvent = {
+      projectId: "acme-api",
+      eventKind: "queue_low",
+      reasonCode: "queue_low",
+      runId: null,
+    };
+    const p = buildNotificationPayload(event, undefined);
+    expect(p).toEqual({
+      project_id: "acme-api",
+      event_kind: "queue_low",
+      reason_code: "queue_low",
+      run_id: null,
+      link: "switchboard://digest",
+    });
+    expect(Object.keys(p ?? {}).sort()).toEqual(PAYLOAD_KEYS);
   });
 
   it.each([

@@ -148,6 +148,12 @@ Pre-release. The package is private and is not published to any registry; you bu
   ceiling. Switchboard reads no GitHub token. Consecutive fix-up items per published ref are capped (T15.5:
   `ci_trigger.max_consecutive_fixes`, Assumption default 2): further failures are recorded without a work item and the
   project is flagged needs-attention (`ci_fix_stuck`) until CI passes or the operator resets the counter.
+  A project may set a queue low-water mark (T15.4: `projects.<id>.queue.low_water`, off by default): when the
+  admissible count (`READY` items, or `PENDING` items whose dependencies can still be met) drops below the mark, one
+  `queue_low` sink event fires, re-armed only when the count rises back to the mark. The detector is covered on fakes
+  (unit tests in `src/queue/low-water.test.ts`; end to end through the sink dispatcher with a capturing sink in
+  `src/mcp/work-queue.test.ts`); `serve` does not attach it yet,
+  so a production run emits no `queue_low`.
   Schedules (T15.2, [#561](https://github.com/zemdregon/switchboard/pull/561))
   are done on fakes: off by default, UTC cron, fired by `serve` before the CI poll, and listed or disabled with
   `switchboard schedule`. See

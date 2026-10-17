@@ -55,6 +55,7 @@ export const SINK_REASON_CODES: { readonly [K in SinkEventKind]: readonly string
   approval_decided: APPROVAL_KINDS,
   budget_exhausted: ["budget_exhausted"],
   project_paused: ["project_paused", "global_paused"],
+  queue_low: ["queue_low"],
 };
 
 /** LLD §3.4.1 `notification_payload`: exactly these five fields. */

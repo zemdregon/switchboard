@@ -63,6 +63,15 @@ export interface WorkQueueLedgerSlice {
   reconcileAdmittingWorkItems(): number;
   countWorkItemsForProject(projectId: string): number;
   listDistinctProjectIdsWithReadyWork(): string[];
+  /**
+   * T15.4 (FR-QUE-04, LLD §18.8): count of admissible work items for a project (items in READY, or PENDING whose
+   * dependencies can still be met).
+   */
+  countAdmissibleWorkItems(projectId: string): number;
+  /**
+   * T15.4: registers an optional callback notified whenever work items in a project change state.
+   */
+  setQueueChangeListener(listener?: (projectId: string) => void): void;
 }
 
 const ITEM_COLS = `id, project_id, creator_client_id, state, priority, request_json, source_kind, source_id,
@@ -77,6 +86,15 @@ export function createWorkQueueLedgerSlice(
   deps: { ids: IdGenerator; ts: () => string; immediate: <T>(fn: () => T) => T },
 ): WorkQueueLedgerSlice {
   const { ids, ts, immediate } = deps;
+
+  let queueChangeListener: ((projectId: string) => void) | undefined;
+  const notifyQueueChange = (projectId: string) => {
+    try {
+      queueChangeListener?.(projectId);
+    } catch {
+      // Best effort: a listener problem must never affect ledger operations
+    }
+  };
 
   const getWorkItemFixed = (id: string): WorkItemRow | undefined => {
     const row = db.prepare(`SELECT ${ITEM_COLS} FROM project_work_item WHERE id = ?`).get(id) as
@@ -245,6 +263,7 @@ export function createWorkQueueLedgerSlice(
         }
         appendEvent(id, "enqueued", { state: initialState }, at);
         if (initialState === "READY") appendEvent(id, "ready", undefined, at);
+        notifyQueueChange(input.projectId);
         return getWorkItemFixed(id) as WorkItemRow;
       });
     },
@@ -286,7 +305,9 @@ export function createWorkQueueLedgerSlice(
         // ADMITTING: the scheduler is admitting it now; cancelling here could leave a run behind a CANCELLED item.
         if (item.state === "ADMITTED" || item.state === "ADMITTING") return undefined;
         const at = ts();
-        return setState(workItemId, "CANCELLED", { terminal_at: at }, "cancelled");
+        const res = setState(workItemId, "CANCELLED", { terminal_at: at }, "cancelled");
+        if (res !== undefined) notifyQueueChange(item.project_id);
+        return res;
       });
     },
 
@@ -305,6 +326,7 @@ export function createWorkQueueLedgerSlice(
           .prepare(`UPDATE project_work_item SET state = 'ADMITTING', updated_at = ? WHERE id = ? AND state = 'READY'`)
           .run(at, row.id).changes;
         if (n === 0) return undefined;
+        notifyQueueChange(projectId);
         return getWorkItemFixed(row.id);
       });
     },
@@ -314,6 +336,7 @@ export function createWorkQueueLedgerSlice(
         const item = getWorkItemFixed(workItemId);
         if (item === undefined || item.state !== "ADMITTING") return false;
         setState(workItemId, "READY", {}, "ready", { retry: true });
+        notifyQueueChange(item.project_id);
         return true;
       });
     },
@@ -324,21 +347,25 @@ export function createWorkQueueLedgerSlice(
         if (item === undefined || item.state !== "ADMITTING") return undefined;
         if (outcome.kind === "retry") {
           setState(workItemId, "READY", {}, "ready", { admission_retry: true });
+          notifyQueueChange(item.project_id);
           return getWorkItemFixed(workItemId);
         }
         if (outcome.kind === "failed") {
           const at = ts();
-          return setState(
+          const res = setState(
             workItemId,
             "FAILED_ADMISSION",
             { last_error_code: outcome.code, terminal_at: at },
             "admission_failed",
             { code: outcome.code },
           );
+          notifyQueueChange(item.project_id);
+          return res;
         }
         const admitted = setState(workItemId, "ADMITTED", { admitted_run_id: outcome.runId }, "admitted", {
           run_id: outcome.runId,
         });
+        notifyQueueChange(item.project_id);
         return admitted;
       });
     },
@@ -349,7 +376,10 @@ export function createWorkQueueLedgerSlice(
         if (item === undefined || item.state !== "ADMITTED") return undefined;
         const at = ts();
         const done = setState(workItemId, "DONE", { terminal_at: at }, "done");
-        if (done !== undefined) unblockDependents(done.id);
+        if (done !== undefined) {
+          unblockDependents(done.id);
+          notifyQueueChange(item.project_id);
+        }
         return done;
       });
     },
@@ -360,10 +390,95 @@ export function createWorkQueueLedgerSlice(
           .prepare(`SELECT id FROM project_work_item WHERE state = 'ADMITTING' AND admitted_run_id IS NULL`)
           .all() as { id: string }[];
         let n = 0;
+        const pids = new Set<string>();
         for (const { id } of rows) {
-          if (setState(id, "READY", {}, "ready", { reconcile: true }) !== undefined) n++;
+          const item = getWorkItemFixed(id);
+          if (setState(id, "READY", {}, "ready", { reconcile: true }) !== undefined) {
+            n++;
+            if (item) pids.add(item.project_id);
+          }
         }
+        for (const pid of pids) notifyQueueChange(pid);
         return n;
+      });
+    },
+
+    setQueueChangeListener(listener) {
+      queueChangeListener = listener;
+    },
+
+    countAdmissibleWorkItems(projectId) {
+      return immediate(() => {
+        const items = db
+          .prepare(
+            `SELECT ${ITEM_COLS} FROM project_work_item
+             WHERE project_id = ? AND state IN ('READY', 'PENDING')`,
+          )
+          .all(projectId) as WorkItemRow[];
+        if (items.length === 0) return 0;
+
+        const canSucceedMemo = new Map<string, boolean>();
+
+        const canItemSucceed = (id: string, visited: Set<string>): boolean => {
+          const cached = canSucceedMemo.get(id);
+          if (cached !== undefined) return cached;
+          if (visited.has(id)) return false;
+          visited.add(id);
+
+          const item = getWorkItemFixed(id);
+          if (item === undefined) {
+            canSucceedMemo.set(id, false);
+            return false;
+          }
+          if (
+            item.state === "DONE" ||
+            item.state === "READY" ||
+            item.state === "ADMITTING" ||
+            item.state === "ADMITTED"
+          ) {
+            canSucceedMemo.set(id, true);
+            return true;
+          }
+          if (item.state === "CANCELLED" || item.state === "FAILED_ADMISSION") {
+            canSucceedMemo.set(id, false);
+            return false;
+          }
+          if (item.state === "PENDING") {
+            const preds = db
+              .prepare(`SELECT predecessor_id FROM project_work_dependency WHERE successor_id = ?`)
+              .all(id) as { predecessor_id: string }[];
+            for (const { predecessor_id } of preds) {
+              if (!canItemSucceed(predecessor_id, visited)) {
+                canSucceedMemo.set(id, false);
+                return false;
+              }
+            }
+            canSucceedMemo.set(id, true);
+            return true;
+          }
+          canSucceedMemo.set(id, false);
+          return false;
+        };
+
+        let count = 0;
+        for (const item of items) {
+          if (item.state === "READY") {
+            count++;
+          } else if (item.state === "PENDING") {
+            const preds = db
+              .prepare(`SELECT predecessor_id FROM project_work_dependency WHERE successor_id = ?`)
+              .all(item.id) as { predecessor_id: string }[];
+            let met = true;
+            for (const { predecessor_id } of preds) {
+              if (!canItemSucceed(predecessor_id, new Set<string>([item.id]))) {
+                met = false;
+                break;
+              }
+            }
+            if (met) count++;
+          }
+        }
+        return count;
       });
     },
   };

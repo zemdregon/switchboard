@@ -1649,7 +1649,7 @@ Extend `$defs` in §3.0:
       "scope_summary": { "type": "string", "maxLength": 512 },   // controller-generated only
       "requested_at": { "type": "string" } } },
   "sink_event_kind": { "enum": [
-      "run_terminal","needs_attention","approval_pending","approval_decided","budget_exhausted","project_paused" ] },
+      "run_terminal","needs_attention","approval_pending","approval_decided","budget_exhausted","project_paused","queue_low" ] },
   "notification_payload": { "type": "object", "required": [
       "project_id","event_kind","reason_code","run_id","link" ], "properties": {
       "project_id": { "type": "string" },
@@ -2089,7 +2089,8 @@ or run execution.
   Config errors name the key and never echo a configured value.
 - Reason codes per `event_kind`: `needs_attention` takes a `needs_attention_reason`; `approval_pending` and
   `approval_decided` an `approval_kind`; `run_terminal` the terminal state (`SUCCEEDED`, `FAILED`, `CANCELLED`);
-  `budget_exhausted` the literal `budget_exhausted`; `project_paused` `project_paused` or `global_paused`. `project_id`
+  `budget_exhausted` the literal `budget_exhausted`; `project_paused` `project_paused` or `global_paused`;
+  `queue_low` the literal `queue_low` (T15.4, FR-QUE-04; `run_id` null). `project_id`
   is a project id, `-` (a run admitted without a project) or `*` (all projects). An event with any other value, or a
   `run_id` that is not `run_` + ULID, is dropped, not sent.
 - Link: the origin of `public_url` plus `/runs/<run_id>` or `/digest`; else `switchboard://run/<run_id>` or
@@ -6226,7 +6227,7 @@ T7.12 pinning. The envelope's `provider.model` reports what the native session r
 Design gate for FR-QUE-01 to 05, [ADR-0050](../adr/0050-ci-status-via-operator-gh-cli.md) (Proposed). Owner decisions 51
 and 54. Everything here is **Proposed** and **Delegated** unless an SRS ID or a Proposed ADR fixes it. Implementation
 tasks: T15.1 (queue table and admission), T15.2 (schedules), T15.3 (CI trigger with a fake `CiStatusPort` in tests),
-T15.5 (CI-fix cap, Done).
+T15.4 (queue low-water event, Done), T15.5 (CI-fix cap, Done).
 
 This section is **not** the FR-CAP-04 bounded **run-admission** queue (COMP-RTE ingress while a run is `QUEUED`). M15
 adds a durable **project work queue**: pending objectives that become `delegate_task` admissions under the **creating**
@@ -6511,6 +6512,30 @@ One **Proposed** scheduler loop in `serve` (after retrieval build, before or aft
 
 The loop respects project pause and holds when FR-CAP-04 admission queue is full. It does not run inside an MCP tool
 handler.
+
+### 18.8 Queue low-water event (FR-QUE-04, T15.4)
+
+A project may configure a low-water mark for its work queue (`projects.<id>.queue.low_water`, integer ≥ 1; off by
+default). The admissible count is the number of work items of that project in state `READY`, or in `PENDING` whose
+dependencies can still be met (none of their transitive predecessors in `project_work_dependency` is in `CANCELLED`
+or `FAILED_ADMISSION`).
+
+**Hysteresis and re-arming.**
+
+- When the admissible count drops below the configured mark, the controller emits exactly one `queue_low` sink event
+  (FR-CTL-10, [ADR-0048](../adr/0048-notification-sinks.md)).
+- The detector is re-armed only when the admissible count rises to or above the mark again.
+- An unset mark emits nothing.
+
+**Closed payload.** The event payload keeps the closed shape of ADR-0048:
+`{ project_id, event_kind: "queue_low", reason_code: "queue_low", run_id: null, link }`.
+
+**As built (T15.4, Delegated, not owner-approved).** The detector attaches to the ledger through `attachQueueLowWater`
+(`setQueueChangeListener` in `src/ledger/work-queue.ts`); emission is demonstrated in tests directly with a capturing
+emit (`src/queue/low-water.test.ts`) and through the sink dispatcher with a capturing sink
+(`src/mcp/work-queue.test.ts`). Neither `serve` nor
+the MCP server attaches the tracker, so a production run currently emits no `queue_low` event (not in the T15.4
+Done-when).
 
 ## 19. Switchboard-controlled skills (M16, Proposed)
 
