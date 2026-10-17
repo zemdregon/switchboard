@@ -387,7 +387,41 @@ export interface SubmitRequest {
    * `compile`. Absent: the adapter default.
    */
   readonly model?: string;
+  /**
+   * T16.4 (FR-SKL-03, FR-SKL-04, LLD §19.5): present exactly when `skills.enabled` is true. Steps 1 to 5 run in the
+   * admission transaction after the meta-session checks and before the `run` row; step 6 writes one `run_skill` row
+   * per entry and the `skill_resolved` event with the run. A refusal throws (`SkillAdmissionError`) and writes nothing.
+   * The request fields, when given, are stored in `request_json` and so are part of the default `request_hash`.
+   */
+  readonly skills?: SkillAdmissionPort;
 }
+
+/**
+ * T16.4: the skill admission port, built by `skillAdmissionPort` in `src/skills/admission.ts` on the ledger's own
+ * database handle. Structurally typed so that this module does not import `src/skills/`: the lifecycle is reachable
+ * from `src/capacity/` and `src/routing/`, which must not reach skills (LLD §19.5, `src/skills/import-boundary.test.ts`).
+ */
+export interface SkillAdmissionPort {
+  /** The request's fields; each present only when given. */
+  readonly fields: {
+    readonly skills?: readonly string[];
+    readonly role?: string;
+    readonly skill_defaults?: "apply" | "omit";
+  };
+  /** LLD §19.5 steps 1 to 5 inside the admission transaction; throws to refuse. `previousRunId`: a continuation's. */
+  resolve(ctx: { readonly profile: TrustProfile; readonly previousRunId?: string }): PinnedSkills;
+}
+
+/** What {@link SkillAdmissionPort.resolve} pinned; `event` is undefined for an empty set (no rows, no event). */
+export interface PinnedSkills {
+  /** The LLD §19.11 `skill_resolved` payload (names, versions, hashes, sources, skipped defaults; never text). */
+  readonly event?: object;
+  /** Step 6: insert the `run_skill` rows for `runId`. */
+  write(runId: string): void;
+}
+
+/** LLD §19.11. */
+const SKILL_RESOLVED_EVENT = "skill_resolved";
 
 /** T5.5: what a handoff submission carries (see {@link SubmitRequest.handoff}). */
 export interface HandoffSubmission {
@@ -502,6 +536,10 @@ interface StoredRequest {
   admission_redactions?: number;
   /** T7.12: the pinned model (see {@link SubmitRequest.model}); present only when pinned. */
   model?: string;
+  /** T16.4 (LLD §19.4): the request's skill fields, each present only when given. */
+  skills?: string[];
+  role?: string;
+  skill_defaults?: "apply" | "omit";
 }
 
 export interface TransitionNotice {
@@ -925,6 +963,7 @@ export class RunLifecycle {
         throw new LifecycleError("QUEUE_FULL", `queue is full (${this.maxQueueDepth} runs waiting)`);
       }
       let metaSessionId = req.metaSessionId;
+      let previousRunId: string | undefined;
       if (metaSessionId !== undefined) {
         // R-42: authoritative check inside the admission transaction; retention GC marks ARCHIVED in its own one.
         const known = this.ledger.getMetaSession(metaSessionId);
@@ -941,6 +980,7 @@ export class RunLifecycle {
           );
         }
         const sessionRuns = this.ledger.listRunsForMetaSession(metaSessionId);
+        previousRunId = sessionRuns.at(-1)?.id;
         const active = sessionRuns.find((r) => !isTerminal(r.state));
         if (active) {
           throw new LifecycleError("INVALID_REQUEST", `meta-session ${metaSessionId} has an active run ${active.id}`);
@@ -964,6 +1004,11 @@ export class RunLifecycle {
         }).id;
       }
       const privileged = priv === undefined ? undefined : this.bindPrivileged(priv, req.clientId, metaSessionId);
+      // T16.4 (LLD §19.5 steps 1 to 5): after the profile and ceiling checks, before the run row; a refusal rolls back.
+      const pinnedSkills = req.skills?.resolve({
+        profile: req.trustProfile,
+        ...(previousRunId !== undefined ? { previousRunId } : {}),
+      });
       const run = this.ledger.createRun({
         metaSessionId,
         state: initial,
@@ -1055,6 +1100,11 @@ export class RunLifecycle {
           type: APPROVAL_DECIDED_EVENT,
           payload: { approval_id: privileged.approvalId, status: "APPROVED", reason: "client_policy" },
         });
+      }
+      // T16.4 (LLD §19.5 step 6, §19.11): the pinned set and its event, in this transaction. Nothing for an empty set.
+      if (pinnedSkills?.event !== undefined) {
+        pinnedSkills.write(run.id);
+        this.ledger.appendRunEvent({ runId: run.id, type: SKILL_RESOLVED_EVENT, payload: pinnedSkills.event });
       }
       return { runId: run.id, metaSessionId, state: initial, replayed: false };
     });
@@ -1397,6 +1447,9 @@ export class RunLifecycle {
       ...(verification.length > 0 ? { verification_commands: verification } : {}),
       ...(redactions > 0 ? { admission_redactions: redactions } : {}),
       ...(req.model !== undefined ? { model: req.model } : {}),
+      ...(req.skills?.fields.skills !== undefined ? { skills: [...req.skills.fields.skills] } : {}),
+      ...(req.skills?.fields.role !== undefined ? { role: req.skills.fields.role } : {}),
+      ...(req.skills?.fields.skill_defaults !== undefined ? { skill_defaults: req.skills.fields.skill_defaults } : {}),
     };
   }
 
