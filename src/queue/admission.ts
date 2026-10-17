@@ -40,13 +40,17 @@ import type { DynamicProjectStore } from "../projects/index.js";
 import {
   buildRouteDecision,
   collectAffinityFacts,
+  collectPacingInputs,
   collectScoreInputs,
   DEFAULT_AFFINITY,
   DEFAULT_WEIGHTS,
+  type GroupEligibility,
+  groupStage1,
   planModelPin,
   profileRank,
   type RouteDecisionResult,
   type RouteFeatures,
+  requestedMembers,
   withModelPin,
 } from "../routing/index.js";
 import { gitText } from "../workspace/git.js";
@@ -239,9 +243,22 @@ export async function admitWorkItemRequest(
       features: RouteFeatures;
       project?: { id: string; excluded: readonly ProviderId[]; revision?: number };
       affinity: { projectId: string | null; workspace: string; applies: boolean; requiredProvider: string | null };
+      /** T7.15 (LLD §17.7): a group or explicit-model request; candidates are its members. */
+      group?: GroupEligibility & { name: string | null; requestedModel: string | null };
     },
   ): RouteDecisionResult & { provider: ProviderId } => {
-    const eligible = admissible(answer, opts.privileged);
+    const group = opts.group;
+    if (group !== undefined) return routeWith({ input: group.input, decision: group.decision }, group.admissible, opts);
+    return routeWith(answer, admissible(answer, opts.privileged), opts);
+  };
+
+  const routeWith = (
+    answer: EligibilityAnswer,
+    eligible: string[],
+    opts: Parameters<typeof route>[1],
+  ): RouteDecisionResult & { provider: ProviderId } => {
+    const group = opts.group;
+    const providers = [...new Set(eligible.map((c) => group?.members.find((m) => m.key === c)?.provider ?? c))];
     const settings = {
       weights: deps.config.routing?.weights ?? DEFAULT_WEIGHTS,
       windowSeconds: deps.config.capacity?.windowSeconds ?? DEFAULT_CAPACITY_WINDOW_SECONDS,
@@ -250,12 +267,18 @@ export async function admitWorkItemRequest(
       ...(deps.config.limits !== undefined ? { limits: deps.config.limits } : {}),
     };
     const now = new Date();
-    const scoreInputs = collectScoreInputs(ledger, eligible, settings, now, null);
+    const scoreInputs = collectScoreInputs(ledger, providers, settings, now, null);
     const affinity = collectAffinityFacts(
       ledger,
       { ...opts.affinity, admissible: eligible, decision: answer.decision, scoreInputs },
       deps.config.routing?.affinity ?? DEFAULT_AFFINITY,
     );
+    // T7.15 (LLD §16.9, §17.7): the `pacing` term, only when a candidate's provider is in a configured subscription.
+    const sub = deps.config.capacity;
+    const pacing =
+      sub?.subscriptions !== undefined && sub.pacing !== undefined
+        ? collectPacingInputs(ledger, { subscriptions: sub.subscriptions, pacing: sub.pacing }, providers, now)
+        : undefined;
     const result = buildRouteDecision({
       input: answer.input,
       decision: answer.decision,
@@ -266,6 +289,10 @@ export async function admitWorkItemRequest(
       scoreInputs,
       weights: settings.weights,
       ...(opts.project !== undefined ? { project: opts.project } : {}),
+      ...(group !== undefined
+        ? { group: { name: group.name, requestedModel: group.requestedModel, members: group.members } }
+        : {}),
+      ...(pacing !== undefined ? { pacing } : {}),
     });
     if (result.provider === null) throw eligibilityError(answer);
     return { ...result, provider: result.provider as ProviderId };
@@ -377,18 +404,19 @@ export async function admitWorkItemRequest(
         }
       }
     }
-    if (routing.model !== undefined && routing.provider_preference === undefined && routing.require_provider !== true) {
-      const targetModel = routing.model;
-      const enabledProviders = registry
+    /** FRD V14: the enabled providers whose restricted registry resolves `model`. */
+    const resolvingProviders = (model: string): string[] =>
+      registry
         .list()
         .map((a) => a.id)
-        .filter((id) => deps.config.providers?.get(id)?.enabled !== false);
-      const resolving = enabledProviders.filter((p) => {
-        if (!models?.restricted(p)) return false;
-        const res = models.resolve(p, targetModel);
-        return res.ok && res.source !== "unrestricted";
-      });
-      if (resolving.length !== 1) {
+        .filter((id) => deps.config.providers?.get(id)?.enabled !== false)
+        .filter((p) => {
+          if (!models?.restricted(p)) return false;
+          const res = models.resolve(p, model);
+          return res.ok && res.source !== "unrestricted";
+        });
+    if (routing.model !== undefined && routing.provider_preference === undefined && routing.require_provider !== true) {
+      if (resolvingProviders(routing.model).length !== 1) {
         throw invalid("name a provider for this model", { field: "routing.model" });
       }
     }
@@ -409,19 +437,49 @@ export async function admitWorkItemRequest(
     const privileged = scope?.ok === true;
     const minimumCapability = routing.minimum_capability;
     const narrowed = projectCandidates(resolved, required);
-    const answer = await lifecycle.checkEligibility({
-      candidates: narrowed.candidates,
-      ...(required !== undefined ? { requiredProvider: required } : {}),
+    const question = {
       trustProfile: profile,
       clientMaxProfile: resolved.effectiveMax,
       cwd: workspace,
       ...(minimumCapability !== undefined ? { minimumCapability } : {}),
+    };
+    // T7.15 (LLD §17.7): with a group or an explicit model, each member is a stage-1 candidate.
+    const named = requestedMembers(routing, modelGroups, narrowed.candidates, (m) => {
+      const r = resolvingProviders(m);
+      return r.length === 1 ? r[0] : undefined;
     });
-    if (answer.decision.outcome.kind !== "eligible" && admissible(answer, privileged).length === 0) {
-      throw eligibilityError(answer);
+    if (named !== undefined && named.members.length === 0) {
+      throw new ToolError("ELIGIBILITY_NONE", "no member of the requested group or model has an allowed provider", {
+        reason: "GROUP_MEMBERS",
+      });
     }
-    if (required !== undefined && !admissible(answer, privileged).includes(required)) throw eligibilityError(answer);
+    const group =
+      named === undefined
+        ? undefined
+        : {
+            ...(await groupStage1(named.members, required ?? null, privileged, (provider, model) =>
+              lifecycle.checkEligibility({
+                ...question,
+                candidates: [provider as ProviderId],
+                requiredProvider: provider as ProviderId,
+                model,
+              }),
+            )),
+            name: named.name,
+            requestedModel: named.requestedModel,
+          };
+    const answer =
+      group ??
+      (await lifecycle.checkEligibility({
+        candidates: narrowed.candidates,
+        ...(required !== undefined ? { requiredProvider: required } : {}),
+        ...question,
+      }));
+    const admitted = group?.admissible ?? admissible(answer, privileged);
+    if (answer.decision.outcome.kind !== "eligible" && admitted.length === 0) throw eligibilityError(answer);
+    if (group === undefined && required !== undefined && !admitted.includes(required)) throw eligibilityError(answer);
     const routed0 = route(answer, {
+      ...(group !== undefined ? { group } : {}),
       preference: routing.provider_preference,
       privileged,
       features: await lifecycle.routeFeatures(
@@ -446,13 +504,17 @@ export async function admitWorkItemRequest(
       },
     });
     const capModel = answer.input.facts.find((f) => f.provider === routed0.provider)?.model;
-    const { routed, model } = await pinModel(
-      routed0,
-      { trustProfile: profile, clientMaxProfile: resolved.effectiveMax, cwd: workspace },
-      privileged,
-      minimumCapability,
-      capModel,
-    );
+    // T7.15 (LLD §17.7 Run fields): a chosen member runs with its resolved model; no remembered-model pin applies.
+    const { routed, model } =
+      routed0.member !== null
+        ? { routed: routed0, model: routed0.member.model }
+        : await pinModel(
+            routed0,
+            { trustProfile: profile, clientMaxProfile: resolved.effectiveMax, cwd: workspace },
+            privileged,
+            minimumCapability,
+            capModel,
+          );
 
     const submitted = await lifecycle.submit({
       clientId: creatorClientId,

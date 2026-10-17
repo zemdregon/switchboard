@@ -21,6 +21,16 @@ export interface AffinityRecord {
   /** False for a continuation (FR-SES-03 governs) or when affinity is disabled: the row is not moved by this run. */
   applies: boolean;
   excluded_from_score: string | null;
+  /**
+   * T7.15 (LLD §17.7): `pacing_gate` when the reason is `capacity_exhausted` because the pacing gate deferred the affine
+   * candidate while an undeferred one remained. Absent otherwise.
+   */
+  detail?: "pacing_gate";
+  /**
+   * T7.15: on a group or explicit-model decision, the affine `<provider>/<model>` candidate among the members, or null
+   * when the request names no member with the row's provider and model. Absent on a provider decision.
+   */
+  member?: string | null;
   /** T7.12 (FR-RTE-08, Q-90): present on a held decision only; whether the remembered model was pinned, and why not. */
   model_pin?: ModelPinRecord;
 }
@@ -82,28 +92,71 @@ export interface AffinityFacts {
   thresholds: { lowWaterMark: number | null; minConfidence: number | null };
   /** A reason the caller already knows (the quota failover successor: `capacity_exhausted`). */
   forcedReason?: AffinitySwitchReason;
+  /**
+   * T7.15 (LLD §17.7): the members of a group or explicit-model request. With members, candidates (`admissible`,
+   * `excluded`) are member keys, and the affine candidate is the member with the row's provider and model (its
+   * configured or resolved id); none is `user_request`. Absent: candidates are providers.
+   */
+  members?: readonly AffinityMember[];
+  /** T7.15 (LLD §16.9): admissible candidates whose subscription the pacing gate defers. Absent: none. */
+  deferred?: readonly string[];
+}
+
+/** A group member as the affinity step sees it. */
+export interface AffinityMember {
+  key: string;
+  provider: string;
+  /** The id the model registry resolved it to (the configured id when unrestricted or not resolved). */
+  model: string;
+  /** The model id as configured or requested. */
+  configured: string;
 }
 
 export interface AffinityPlan {
   reason: AffinitySwitchReason | null;
   /** The provider affinity holds, for the selection step; null when there is none or a reason applies. */
   affinityProvider: string | null;
-  /** The affine provider left out of the score (LLD §17.6), or null. */
+  /** The affine provider left out of the score (LLD §17.6), or null. With members, candidate ids (member keys). */
   excludeFromScore: string | null;
+  /** T7.15: `pacing_gate` when the pacing gate gave the `capacity_exhausted` reason. */
+  detail?: "pacing_gate";
+}
+
+/** T7.15: the affine candidate id: the row's provider, or with members the member with the row's provider and model. */
+export function affineCandidate(f: Pick<AffinityFacts, "row" | "members">): string | null {
+  const row = f.row;
+  if (row === undefined) return null;
+  if (f.members === undefined) return row.provider;
+  if (row.model === null) return null;
+  const m = f.members.find((x) => x.provider === row.provider && (x.model === row.model || x.configured === row.model));
+  return m?.key ?? null;
 }
 
 /** LLD §3.2 step 3 and §17.6: the first matching reason, in the documented order, or null. */
 export function affinityReason(f: AffinityFacts): AffinitySwitchReason | null {
-  if (f.forcedReason !== undefined) return f.forcedReason;
+  return reasonOf(f).reason;
+}
+
+function reasonOf(f: AffinityFacts): { reason: AffinitySwitchReason | null; detail?: "pacing_gate" } {
+  if (f.forcedReason !== undefined) return { reason: f.forcedReason };
   const row = f.row;
-  if (row === undefined) return null;
-  if (f.requiredProvider !== null && f.requiredProvider !== row.provider) return "user_request";
-  if (row.reset_requested_at !== null) return "user_request";
-  if (!f.admissible.includes(row.provider)) {
-    const codes = f.excluded.find((e) => e.provider === row.provider)?.codes ?? [];
-    return codes.includes("QUOTA_EXHAUSTED_KNOWN") ? "capacity_exhausted" : "ineligible";
+  if (row === undefined) return { reason: null };
+  if (f.requiredProvider !== null && f.requiredProvider !== row.provider) return { reason: "user_request" };
+  if (row.reset_requested_at !== null) return { reason: "user_request" };
+  // LLD §17.7: a group (or explicit model) without the affine pair is the caller's own choice.
+  const affine = affineCandidate(f);
+  if (affine === null) return { reason: "user_request" };
+  if (!f.admissible.includes(affine)) {
+    const codes = f.excluded.find((e) => e.provider === affine)?.codes ?? [];
+    return { reason: codes.includes("QUOTA_EXHAUSTED_KNOWN") ? "capacity_exhausted" : "ineligible" };
   }
-  if (f.latestOnAffine?.failureCode === "QUOTA_EXHAUSTED") return "capacity_exhausted";
+  // LLD §17.7: the pacing gate defers the affine candidate while an undeferred one remains. When every candidate is
+  // deferred, affinity holds and the run waits for the affine candidate's gate (§16.9).
+  const deferred = f.deferred ?? [];
+  if (deferred.includes(affine) && f.admissible.some((c) => !deferred.includes(c))) {
+    return { reason: "capacity_exhausted", detail: "pacing_gate" };
+  }
+  if (f.latestOnAffine?.failureCode === "QUOTA_EXHAUSTED") return { reason: "capacity_exhausted" };
   const { lowWaterMark, minConfidence } = f.thresholds;
   const e = f.estimate;
   if (
@@ -114,20 +167,20 @@ export function affinityReason(f: AffinityFacts): AffinitySwitchReason | null {
     e.confidence >= minConfidence &&
     e.capacityScore <= lowWaterMark
   ) {
-    return "capacity_exhausted";
+    return { reason: "capacity_exhausted" };
   }
-  if (f.latestOnAffine?.retryExhausted === true) return "failed_after_retry";
-  return null;
+  if (f.latestOnAffine?.retryExhausted === true) return { reason: "failed_after_retry" };
+  return { reason: null };
 }
 
 export function planAffinity(f: AffinityFacts): AffinityPlan {
   if (!f.enabled || !f.applies) return { reason: null, affinityProvider: null, excludeFromScore: null };
-  const reason = affinityReason(f);
-  const row = f.row;
-  if (row === undefined) return { reason, affinityProvider: null, excludeFromScore: null };
-  if (reason === null) return { reason, affinityProvider: row.provider, excludeFromScore: null };
-  const exclude = reason === "capacity_exhausted" || reason === "failed_after_retry" ? row.provider : null;
-  return { reason, affinityProvider: null, excludeFromScore: exclude };
+  const { reason, detail } = reasonOf(f);
+  const affine = affineCandidate(f);
+  if (f.row === undefined) return { reason, affinityProvider: null, excludeFromScore: null };
+  if (reason === null) return { reason, affinityProvider: affine, excludeFromScore: null };
+  const exclude = reason === "capacity_exhausted" || reason === "failed_after_retry" ? affine : null;
+  return { reason, affinityProvider: null, excludeFromScore: exclude, ...(detail !== undefined ? { detail } : {}) };
 }
 
 /** The record stored with the decision, once the selection is known. */
@@ -148,5 +201,7 @@ export function affinityRecord(
     scored,
     applies: active,
     excluded_from_score: active ? plan.excludeFromScore : null,
+    ...(active && plan.detail !== undefined ? { detail: plan.detail } : {}),
+    ...(f.members !== undefined ? { member: f.enabled ? affineCandidate(f) : null } : {}),
   };
 }
