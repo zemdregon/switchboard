@@ -13,9 +13,13 @@ import {
   DEFAULT_CAPACITY_CONFIDENCE_RUNS,
   DEFAULT_CAPACITY_WINDOW_SECONDS,
   effectiveMaxProfile,
+  type ModelGroupsConfigInput,
   primaryContext,
   type ResolvedConfig,
+  type ResolvedModelGroups,
   type ResolvedProject,
+  readModelGroupsFromConfigPath,
+  resolveModelGroups,
 } from "../config/index.js";
 import { snapshotEnvironment } from "../environment/index.js";
 import type { Ledger, TrustProfile } from "../ledger/index.js";
@@ -30,7 +34,7 @@ import {
 } from "../lifecycle/index.js";
 import { invalid, ToolError } from "../mcp/errors.js";
 import { createProjectTools } from "../mcp/project-tools.js";
-import type { ModelCapability } from "../models/registry.js";
+import type { ModelCapability, ModelRegistry } from "../models/registry.js";
 import { type ProjectSnapshot, parsePrivilegedScope } from "../policy/index.js";
 import type { DynamicProjectStore } from "../projects/index.js";
 import {
@@ -59,9 +63,14 @@ export interface AdmitWorkDeps {
   config: Pick<
     ResolvedConfig,
     "allowedRoots" | "mcpClients" | "projects" | "dataDir" | "providers" | "capacity" | "limits" | "routing"
-  >;
+  > & {
+    modelGroups?: ResolvedModelGroups;
+    model_groups?: ModelGroupsConfigInput;
+    configPath?: string;
+  };
   projectStore?: DynamicProjectStore;
   candidateOrder?: readonly ProviderId[];
+  models?: ModelRegistry;
 }
 
 interface ProjectResolution {
@@ -338,7 +347,51 @@ export async function admitWorkItemRequest(
       require_provider?: boolean;
       provider_preference?: ProviderId;
       minimum_capability?: ModelCapability;
+      model_group?: string;
+      model?: string;
     };
+
+    // T7.14 (FR-RTE-11, LLD §17.7, FRD V14, BR-49)
+    const modelGroups: ResolvedModelGroups =
+      deps.config.modelGroups ??
+      resolveModelGroups(deps.config.model_groups) ??
+      (deps.config.configPath ? readModelGroupsFromConfigPath(deps.config.configPath) : {});
+    // biome-ignore lint/suspicious/noExplicitAny: lifecycle options hold eligibility deps
+    const models = deps.models ?? (deps.lifecycle as any).opts?.eligibility?.models;
+
+    if (routing.model_group !== undefined && routing.model !== undefined) {
+      throw invalid("give at most one of routing.model_group and routing.model", { field: "routing" });
+    }
+    if (routing.model_group !== undefined) {
+      const group = modelGroups[routing.model_group];
+      if (group === undefined) {
+        throw invalid(`unknown model_group ${routing.model_group}`, { field: "routing.model_group" });
+      }
+      const named = routing.provider_preference;
+      if (named !== undefined) {
+        const remaining = group.members.filter((m) => m.provider === named);
+        if (remaining.length === 0) {
+          throw invalid(`model_group ${routing.model_group} has no members for provider ${named}`, {
+            field: "routing.model_group",
+          });
+        }
+      }
+    }
+    if (routing.model !== undefined && routing.provider_preference === undefined && routing.require_provider !== true) {
+      const targetModel = routing.model;
+      const enabledProviders = registry
+        .list()
+        .map((a) => a.id)
+        .filter((id) => deps.config.providers?.get(id)?.enabled !== false);
+      const resolving = enabledProviders.filter((p) => {
+        if (!models?.restricted(p)) return false;
+        const res = models.resolve(p, targetModel);
+        return res.ok && res.source !== "unrestricted";
+      });
+      if (resolving.length !== 1) {
+        throw invalid("name a provider for this model", { field: "routing.model" });
+      }
+    }
     const canonical = {
       tool: "delegate_task",
       objective: request.objective,

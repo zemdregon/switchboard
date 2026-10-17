@@ -137,12 +137,16 @@ import {
   DEFAULT_CAPACITY_CONFIDENCE_RUNS,
   DEFAULT_CAPACITY_WINDOW_SECONDS,
   effectiveMaxProfile,
+  type ModelGroupsConfigInput,
   primaryContext,
   projectsForClient,
   type ResolvedConfig,
+  type ResolvedModelGroups,
   type ResolvedProject,
   type ResolvedSkills,
   type RoutingSettings,
+  readModelGroupsFromConfigPath,
+  resolveModelGroups,
 } from "../config/index.js";
 import {
   type BundleBounds,
@@ -173,7 +177,7 @@ import {
   requestHash,
   verificationCommandsProblem,
 } from "../lifecycle/index.js";
-import type { ModelCapability } from "../models/registry.js";
+import type { ModelCapability, ModelRegistry } from "../models/registry.js";
 import {
   checkScopeLists,
   type PrivilegedScope,
@@ -266,7 +270,13 @@ export interface McpServerDeps {
     readonly routing?: Partial<RoutingSettings>;
     /** T15.1: `queue.max_items_per_project` (LLD §18.1). Absent means the LLD default. */
     readonly queue?: { readonly maxItemsPerProject?: number };
+    /** T7.14 (FR-RTE-10, FR-RTE-11, LLD §17.7): configured model groups. */
+    readonly modelGroups?: ResolvedModelGroups;
+    readonly model_groups?: ModelGroupsConfigInput;
+    readonly configPath?: string;
   };
+  /** T7.8, T7.14: model registry for minimum capability and model resolution. */
+  readonly models?: ModelRegistry;
   /** T9.9 (FR-PRJ-10): dynamic projects. Required when the client has `manage_projects`; absent means none resolve. */
   readonly projectStore?: DynamicProjectStore;
   /**
@@ -340,7 +350,13 @@ interface ProjectResolution {
   /** T9.9: the in-force revision of a dynamic project; absent for a configured one. */
   readonly revision?: number;
 }
-type Routing = { provider_preference?: string; require_provider?: boolean; minimum_capability?: ModelCapability };
+type Routing = {
+  provider_preference?: string;
+  require_provider?: boolean;
+  minimum_capability?: ModelCapability;
+  model_group?: string;
+  model?: string;
+};
 
 /** The lifecycle's V10 message (`findIdempotentRun`), reused so another subject's key is indistinguishable. */
 const IDEMPOTENCY_CONFLICT = "idempotency key reused with different parameters";
@@ -365,6 +381,14 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
   const { lifecycle, ledger } = deps;
   const scrub = createScrubber(deps.config.allowedRoots);
   const validators = compileValidators();
+
+  // T7.14: resolved model groups and model registry for routing validation.
+  const modelGroups: ResolvedModelGroups =
+    deps.config.modelGroups ??
+    resolveModelGroups(deps.config.model_groups) ??
+    (deps.config.configPath ? readModelGroupsFromConfigPath(deps.config.configPath) : {});
+  // biome-ignore lint/suspicious/noExplicitAny: lifecycle options hold eligibility deps
+  const models: ModelRegistry | undefined = deps.models ?? (deps.lifecycle as any).opts?.eligibility?.models;
 
   // T9.9: dynamic projects. A client with manage_projects and no store would silently lose its tools: refuse instead.
   if (client.manageProjects === true && deps.projectStore === undefined) {
@@ -579,9 +603,21 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     return { candidates: kept, excluded: all.filter((id) => !set.has(id)) };
   };
 
-  /** FRD V8: provider names must be registered; `require_provider` needs a named provider. */
-  const checkRouting = (routing: Routing | undefined): void => {
+  /**
+   * FRD V8 / V14 / FR-RTE-11 (LLD §17.7): provider names must be registered; require_provider needs a named provider;
+   * model_group and model are mutually exclusive; model_group must be configured and keep at least one member when
+   * narrowed by a provider; an explicit model without a provider must resolve in exactly one enabled provider's registry;
+   * continue_task accepts neither (Q-99).
+   */
+  const checkRouting = (routing: Routing | undefined, isContinue = false): void => {
     if (!routing) return;
+    if (isContinue) {
+      if (routing.model_group !== undefined || routing.model !== undefined) {
+        throw invalid("continue_task accepts neither routing.model_group nor routing.model (Q-99)", {
+          field: "routing",
+        });
+      }
+    }
     const named = routing.provider_preference;
     if (named !== undefined && !deps.registry.has(named as ProviderId)) {
       throw invalid(`unknown provider ${named}`, { field: "routing.provider_preference" });
@@ -593,6 +629,40 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       throw invalid(`unknown minimum_capability ${routing.minimum_capability}`, {
         field: "routing.minimum_capability",
       });
+    }
+
+    // T7.14 (FR-RTE-11, LLD §17.7, FRD V14, BR-49)
+    if (routing.model_group !== undefined && routing.model !== undefined) {
+      throw invalid("give at most one of routing.model_group and routing.model", { field: "routing" });
+    }
+    if (routing.model_group !== undefined) {
+      const group = modelGroups[routing.model_group];
+      if (group === undefined) {
+        throw invalid(`unknown model_group ${routing.model_group}`, { field: "routing.model_group" });
+      }
+      if (named !== undefined) {
+        const remaining = group.members.filter((m) => m.provider === named);
+        if (remaining.length === 0) {
+          throw invalid(`model_group ${routing.model_group} has no members for provider ${named}`, {
+            field: "routing.model_group",
+          });
+        }
+      }
+    }
+    if (routing.model !== undefined && named === undefined && routing.require_provider !== true) {
+      const targetModel = routing.model;
+      const enabledProviders = deps.registry
+        .list()
+        .map((a) => a.id)
+        .filter((id) => deps.config.providers?.get(id)?.enabled !== false);
+      const resolving = enabledProviders.filter((p) => {
+        if (!models?.restricted(p)) return false;
+        const res = models.resolve(p, targetModel);
+        return res.ok && res.source !== "unrestricted";
+      });
+      if (resolving.length !== 1) {
+        throw invalid("name a provider for this model", { field: "routing.model" });
+      }
     }
   };
 
@@ -946,7 +1016,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     }
 
     const routing = a.routing as Routing | undefined;
-    checkRouting(routing); // C5 (as V8)
+    checkRouting(routing, true); // C5 (as V8), Q-99
     const approvedScope = approval ? parsePrivilegedScope(approval.scope) : undefined;
     if (approvedScope && !approvedScope.ok) throw invalid(`meta-session ${sessionId} approval holds an invalid scope`);
     const privileged = approval !== undefined;
