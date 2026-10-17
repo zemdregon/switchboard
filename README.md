@@ -156,8 +156,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   files (`<data>/skills/<sha256>.md`) with append-only ledger rows (migration `0021`, `src/skills/`). The
   configuration is built (T16.3, Delegated, not owner-approved): `skills.*`, `projects[].skills` and
   `mcp_clients[].skills` in the schema and loader (`src/config/`, `src/skills/limits.ts`,
-  `src/skills/configured.ts`), off by default. Operator CLI,
-  admission, delivery and the MCP tools are still `Planned`. Design:
+  `src/skills/configured.ts`), off by default. The operator CLI is built (T16.2, Delegated, not
+  owner-approved): `switchboard skills list|show|add|approve|revoke|retire|unretire|diff`, the `doctor`
+  skills line and skills in `runs show` (`src/cli/skills.ts`, `src/skills/read.ts`, `src/skills/diff.ts`).
+  Admission, delivery and the MCP tools are still `Planned`. Design:
   [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
   [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
@@ -268,7 +270,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks).
 
 What works today: `doctor`, `runs list|show|cancel`, `approve`, `deny`, `gc`, `capacity`, `affinity list|reset`,
-`index status|rebuild|clear`, `projects list|show|validate|approve`, `git push`, `inner status|test|resume`, and
+`index status|rebuild|clear`, `projects list|show|validate|approve`, `git push`, `inner status|test|resume`,
+`skills list|show|add|approve|revoke|retire|unretire|diff`, and
 `serve` exposing nine MCP tools over stdio (ten when retrieval is on for at least one of the client's projects,
 thirteen with `manage_projects`). The five trust
 profile names exist; which of them a provider can run is listed in [Trust profiles](#trust-profiles) and by
