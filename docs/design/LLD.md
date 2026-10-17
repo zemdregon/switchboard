@@ -6309,6 +6309,8 @@ collide with the client's direct `delegate_task` keys.
 | `CANCELLED` | Operator or creator cancelled before or instead of admission. |
 | `FAILED_ADMISSION` | Admission refused (ceiling, pause, `QUEUE_FULL`, and so on); not retried automatically unless the operator requeues. |
 
+When the admitted run ends `FAILED` or `CANCELLED`, the item stays `ADMITTED` with `terminal_at` set in the same
+transaction (**Delegated**, `closeWorkItemForRun` in `src/ledger/work-queue.ts`), so it never satisfies a dependency.
 A crash after `ADMITTING` leaves the item `ADMITTING`; startup reconciliation (same pass as FR-EXE-06) resets it to
 `READY` when no `admitted_run_id` is set.
 
@@ -6325,8 +6327,8 @@ then `id` ascending. Priority is an integer in `[-1000, 1000]` (default `0`). It
 are rejected at enqueue with `INVALID_REQUEST`. A predecessor in `CANCELLED` or `FAILED_ADMISSION` blocks the successor
 until the operator removes the edge or cancels the successor (**Proposed** fail-closed behaviour). When the last blocking
 predecessor becomes `DONE`, the successor moves `PENDING` → `READY` in the same transaction as the predecessor's
-terminal event. Enqueue applies the same blocking rule up front: an item whose predecessors are all already `DONE` or
-`CANCELLED` starts `READY`; otherwise it starts `PENDING` (`src/ledger/work-queue.ts`, T15.1 fix
+terminal event. Enqueue applies the same blocking rule up front: an item whose predecessors are all already `DONE`
+starts `READY`; otherwise it starts `PENDING` (`src/ledger/work-queue.ts`, T15.1 fix
 [#660](https://github.com/zemdregon/switchboard/pull/660)).
 
 **Fairness with FR-CAP-04.** Dequeue still passes through the existing run lifecycle admission path; a full global or
