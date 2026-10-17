@@ -2304,6 +2304,44 @@ no bypass flag, prints no prompt or transcript, and records statuses, bindings (
 bundle hash. A provider that is not installed or not logged in makes its checks `NOT_CHECKED`. It has not been run
 against real providers yet (ROADMAP T5.12 is the operator task).
 
+### Live-test budget guard
+
+Both live scripts accept an operator budget file kept outside the repository (T8.9, NFR-MAINT-05). Point
+`SWITCHBOARD_LIVE_BUDGET_FILE` at it (an absolute path) and name the run's purpose in `SWITCHBOARD_LIVE_PURPOSE`:
+
+```sh
+SWITCHBOARD_LIVE_BUDGET_FILE=$HOME/.config/switchboard-live/budget.json SWITCHBOARD_LIVE_PURPOSE=pre-check \
+  SWITCHBOARD_LIVE_TESTS=1 SWITCHBOARD_LIVE_PROVIDER=claude npm run test:live
+```
+
+The file is JSON (every key is required except `audit_log`; unknown keys are errors; the values are an example):
+
+```json
+{
+  "schema_version": 1,
+  "window_hours": 24,
+  "global_max_runs": 4,
+  "min_gap_seconds": 900,
+  "purposes": ["pre-check", "final-verify"],
+  "providers": { "claude": { "max_runs": 2, "model": "<model id>" }, "codex": { "max_runs": 2, "model": "<model id>" } },
+  "audit_log": "/absolute/path/outside/the/repository/live-runs.jsonl"
+}
+```
+
+Before any provider process starts, the script refuses the run and exits **75** when the purpose is not on `purposes`, a
+provider is not listed, the previous admitted run started less than `min_gap_seconds` ago, or the run would take a
+provider past its `max_runs` or all providers past `global_max_runs` within the last `window_hours`. A provider run is
+one task on one provider: the smoke test is one, each direction of the live pair is one on each of its two providers. A
+missing, unreadable or malformed file, a relative path, or a file or audit log inside the repository is refused the same
+way. An admitted run uses the file's model for each provider (it replaces `SWITCHBOARD_LIVE_MODEL`, which the smoke test
+otherwise passes as asked): the throwaway `serve` config lists only that model and the run asks for
+`minimum_capability: "low"`, so no new flag is passed. Every run appends JSON lines to `audit_log` (default: the budget
+file's path plus `.jsonl`): `start` and `finish` (with the exit code) for an admitted run, `denied` (with the reason) for
+a refused one. Only `start` records count. Records hold the script, a run id, the purpose, provider ids, run counts and
+models; never a prompt, output, account or credential. Without `SWITCHBOARD_LIVE_BUDGET_FILE` the scripts behave as
+before and print one warning on stderr. CI never sets the variable (`test/live-budget.test.ts`). The format and the
+checks are in [TDD §3.6](docs/design/TDD.md#36-testing-strategy).
+
 ## Troubleshooting
 
 | Code or message | Where you see it | Meaning and what to do |

@@ -10,6 +10,9 @@
  *   SWITCHBOARD_LIVE_PROVIDER    a provider plug-in id: claude | codex | any other scripts/live/providers/<id>.mjs (required when enabled)
  *   SWITCHBOARD_LIVE_TIMEOUT_MS  how long to wait for the run (default 600000)
  *   SWITCHBOARD_LIVE_KEEP=1      keep the temp directory (ledger, artifacts, serve log) for inspection
+ *   SWITCHBOARD_LIVE_MODEL       ask for this model (the budget file's model replaces it when the file is set)
+ *   SWITCHBOARD_LIVE_BUDGET_FILE, SWITCHBOARD_LIVE_PURPOSE  the live-test budget guard (T8.9; scripts/live/budget.mjs):
+ *                                caps, minimum gap, purpose allowlist and model per provider; exit 75 on refusal
  *
  * Safety: the script never reads, copies or prints credential files, tokens or keys. It runs the provider's own status
  * command and prints only its exit code, whether the output parsed, and the NAMES of its top-level JSON keys (never
@@ -31,6 +34,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { admitLiveRun, EXIT_REFUSED, modelHandoff, withBudgetModel } from "./live/budget.mjs";
 
 // Provider plug-ins (T4.3): one scripts/live/providers/<id>.mjs per provider; the contract is in those files.
 const PLUGIN_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "live", "providers");
@@ -38,17 +42,19 @@ const PROVIDERS = readdirSync(PLUGIN_DIR)
   .filter((f) => f.endsWith(".mjs"))
   .map((f) => f.slice(0, -".mjs".length))
   .sort();
+// Fixture plug-ins (`fake`, T8.9) are selectable but not advertised, so the messages read as before.
+const LISTED = PROVIDERS.filter((id) => !id.startsWith("fake"));
 
 if (process.env.SWITCHBOARD_LIVE_TESTS !== "1") {
   process.stdout.write(
-    `live-smoke: SKIPPED (opt-in). Set SWITCHBOARD_LIVE_TESTS=1 and SWITCHBOARD_LIVE_PROVIDER=${PROVIDERS.join("|")} to run it.\n`,
+    `live-smoke: SKIPPED (opt-in). Set SWITCHBOARD_LIVE_TESTS=1 and SWITCHBOARD_LIVE_PROVIDER=${LISTED.join("|")} to run it.\n`,
   );
   process.exit(0);
 }
 
 const provider = process.env.SWITCHBOARD_LIVE_PROVIDER ?? "";
 if (!PROVIDERS.includes(provider)) {
-  process.stderr.write(`live-smoke: SWITCHBOARD_LIVE_PROVIDER must be one of ${PROVIDERS.join(", ")}\n`);
+  process.stderr.write(`live-smoke: SWITCHBOARD_LIVE_PROVIDER must be one of ${LISTED.join(", ")}\n`);
   process.exit(2);
 }
 const plugin = (await import(pathToFileURL(path.join(PLUGIN_DIR, `${provider}.mjs`)).href)).default;
@@ -56,6 +62,25 @@ const timeoutMs = Number(process.env.SWITCHBOARD_LIVE_TIMEOUT_MS ?? 600_000);
 const keep = process.env.SWITCHBOARD_LIVE_KEEP === "1";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// T8.9 (NFR-MAINT-05): the live-test budget guard runs before dist/ is loaded and before any provider process.
+const budget = admitLiveRun({ script: "live-smoke", runs: { [provider]: 1 }, repoRoot: ROOT });
+if (budget.configured && !budget.allowed) {
+  process.stderr.write(`live-smoke: REFUSED by the live-test budget: ${budget.reason}\n`);
+  process.exit(EXIT_REFUSED);
+}
+const model = budget.configured ? budget.models[provider] : process.env.SWITCHBOARD_LIVE_MODEL || undefined;
+if (budget.configured) process.stderr.write(`live-smoke: admitted by the live-test budget; model ${model}\n`);
+const handoff = modelHandoff(model);
+const smokeRequest = withBudgetModel(
+  { runId: "run_smoke", objective: "x", constraints: [], workspace: { cwd: ROOT, writable: true } },
+  model,
+);
+if (plugin.fixture === true) {
+  // A fixture plug-in stops here: it receives the compile request the flow below audits, and nothing is spawned.
+  plugin.createAdapter(undefined).compile(smokeRequest, undefined);
+  process.stdout.write(`live-smoke: fixture plug-in ${provider} stopped after the budget guard\n`);
+  process.exit(0);
+}
 const DIST = path.join(ROOT, "dist");
 const BIN = path.join(DIST, "cli", "bin.js");
 if (!existsSync(BIN)) {
@@ -106,10 +131,7 @@ record(
 await plugin.authChecks({ record, held, probe, binaryOk, runner, adapter, out, group: GROUP });
 
 // Flags the daemon will pass (from the same compile the daemon runs), audited for bypass flags.
-const compiled = adapter.compile(
-  { runId: "run_smoke", objective: "x", constraints: [], workspace: { cwd: ROOT, writable: true } },
-  resolveProfile("edit-untrusted"),
-);
+const compiled = adapter.compile(smokeRequest, resolveProfile("edit-untrusted"));
 if (adapters.isIneligible(compiled)) out(`compile (edit-untrusted): ineligible ${compiled.reason}: ${compiled.detail}`);
 else {
   out(`compile (edit-untrusted) policy flags: ${compiled.policyFlags.join(" ")}`);
@@ -153,6 +175,7 @@ writeFileSync(
       data_dir: dataDir,
       allowed_roots: [tmp],
       mcp_clients: [{ id: "live-smoke", max_trust_profile: "edit-untrusted" }],
+      ...(handoff.provider ? { providers: { [provider]: handoff.provider } } : {}),
     },
     null,
     2,
@@ -193,7 +216,7 @@ const delegated = await call("delegate_task", {
   objective,
   workspace_path: repo,
   trust_profile: "edit-untrusted",
-  routing: { provider_preference: provider, require_provider: true },
+  routing: { provider_preference: provider, require_provider: true, ...handoff.routing },
   idempotency_key: `live-smoke-${Date.now()}`,
 });
 let final = delegated.body;
