@@ -2768,13 +2768,15 @@ checklist it automates:
 
 ### 4.10 Native-resume inventory (T5.0)
 
-*Documentation only, Delegated agent work (not owner-approved), 2026-10-14; the Claude Code cells were observed live on 2026-10-17 (T5.12, 2.1.294).* Apart from the cells that name a CLI version and a dated note under `docs/research/`, nothing below was run: no other provider CLI was
-invoked and no network was used. Each cell is either **sourced** (a tag in the right-hand column, a TDD §4 subsection, or
-a line of a research document, with the CLI version where a source records one) or reads exactly `Unverified: <task>`,
-naming the operator checklist item that will verify it. Task T5.12 is the Claude Code and Codex operator task
-([ROADMAP §6.9](../ROADMAP.md#69-m5-continuity-tasks)); the other ids are the M4 operator tasks. This table
-exists because each continuation runs in a new worktree path (ROADMAP §6.9 facts; the FRD WF-2 working-directory
-Assumption), so "is a native session tied to the directory it was created in" decides T5.1 question (6) and T5.7.
+*Documentation only, Delegated agent work (not owner-approved), 2026-10-14; the Claude Code cells were observed live on
+2026-10-17 (T5.12, 2.1.294).* Apart from the cells that name a CLI version and a dated note under `docs/research/`,
+nothing below was run: no other provider CLI was invoked and no network was used. Each cell is either **sourced** (a tag
+in the right-hand column, a TDD §4 subsection, or a line of a research document, with the CLI version where a source
+records one) or reads exactly `Unverified: <task>`, naming the operator checklist item that will verify it. Task T5.12
+is the Claude Code and Codex operator task ([ROADMAP §6.9](../ROADMAP.md#69-m5-continuity-tasks)); the other ids are the
+M4 operator tasks. This table exists because each continuation runs in a new worktree path (ROADMAP §6.9 facts; the FRD
+WF-2 working-directory Assumption), so "is a native session tied to the directory it was created in" decides T5.1
+question (6) and T5.7.
 
 | Provider | Resume form (how the native id is passed) | Tied to the working directory | Sandbox flags on resume | Permission flags on resume | Sources |
 | --- | --- | --- | --- | --- | --- |

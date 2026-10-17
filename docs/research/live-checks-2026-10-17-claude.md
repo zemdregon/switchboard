@@ -48,7 +48,6 @@ After all cells the throwaway repository had only `refs/heads/main` and `refs/he
 | Unknown id (FRD WF-2, `classifyFailure`) | exit 1; `result` `error_during_execution` with the error text `No conversation found with session ID: <id>`; no `init` |
 
 Codex (the other half of T5.12) and the T5.11 live pair were **not run**. The first Codex call of the day hit a provider
-quota stop whose stated reset is 2026-10-22 06:19
-(`live-checks-2026-10-17-claude-codex.md` §3 in
-[PR #635](https://github.com/zemdregon/switchboard/pull/635); not a link: the file is not on this branch), and the channel's limit marker
-then refused every Codex check.
+quota stop whose stated reset is 2026-10-22 06:19 (`live-checks-2026-10-17-claude-codex.md` §3 in
+[PR #635](https://github.com/zemdregon/switchboard/pull/635); not a link: the file is not on this branch), and the
+channel's limit marker then refused every Codex check.
