@@ -6325,7 +6325,7 @@ then `id` ascending. Priority is an integer in `[-1000, 1000]` (default `0`). It
 
 **Dependencies.** Edges are directed: `predecessor_id` must reach `DONE` before `successor_id` leaves `PENDING`. Cycles
 are rejected at enqueue with `INVALID_REQUEST`. A predecessor in `CANCELLED` or `FAILED_ADMISSION` blocks the successor
-until the operator removes the edge or cancels the successor (**Proposed** fail-closed behaviour). When the last blocking
+until the operator removes the edge or cancels the successor (fail closed; **Delegated**, `isBlockingPredecessor` in `src/ledger/work-queue.ts`). When the last blocking
 predecessor becomes `DONE`, the successor moves `PENDING` → `READY` in the same transaction as the predecessor's
 terminal event. Enqueue applies the same blocking rule up front: an item whose predecessors are all already `DONE`
 starts `READY`; otherwise it starts `PENDING` (`src/ledger/work-queue.ts`, T15.1 fix
@@ -6525,7 +6525,7 @@ handler.
 A project may configure a low-water mark for its work queue (`projects.<id>.queue.low_water`, integer ≥ 1; off by
 default). The admissible count is the number of work items of that project in state `READY`, or in `PENDING` whose
 dependencies can still be met (none of their transitive predecessors in `project_work_dependency` is in `CANCELLED`
-or `FAILED_ADMISSION`).
+or `FAILED_ADMISSION`, or is an `ADMITTED` item whose run already ended `FAILED` or `CANCELLED` and so never becomes `DONE`).
 
 **Hysteresis and re-arming.**
 

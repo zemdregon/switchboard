@@ -132,3 +132,9 @@ block, the 2026-10-14 live checks and owner decision 56, all cited directly).
   `CANCELLED`-unblocks semantics; it neither introduces nor worsens the divergence. Left unchanged: adopting the
   Proposed fail-closed behaviour for `CANCELLED` is the LLD owner's call. It does not block PR #660 (the fix's own
   evidence is the `src/queue/work-queue.test.ts` T15.1 tests, cited in LLD §18.3).
+
+  **Resolved 2026-10-17 by PR #665** (`sb/2026-10-17-fix-stuck-running`): `isBlockingPredecessor` now blocks on every
+  predecessor outside `DONE` (only `DONE` satisfies an edge), `closeWorkItemForRun` in `src/ledger/work-queue.ts`
+  (called from `casRunState` in `src/ledger/repo.ts`) stamps `terminal_at` on an `ADMITTED` item whose run ends
+  `FAILED`/`CANCELLED`, and LLD §18.2–18.3/§18.8 plus the ROADMAP T15.1 row describe the new behaviour. Code and
+  documents agree; no owner decision remains open on this item.
