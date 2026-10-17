@@ -17,6 +17,10 @@
  * `error` string on assistant/result events naming the category, and `rate_limit_event` (with `rate_limit_info`).
  * The exact category strings in CLAUDE_ERROR_CATEGORIES and the tool names in TOOL_KINDS are also Assumptions.
  * Anything unrecognized becomes an `unknown` event (counted, never trusted).
+ *
+ * T6.11 (docs/research/limit-captures-2026-10-17.md): the only real limit captured was in text mode ("You've hit your
+ * weekly limit · resets 12pm (UTC)", exit 1; a reset hour with no date). The `rejected` `rate_limit_event` shape above
+ * is still an Assumption from a synthetic fixture.
  */
 import type { NormalizedEvent, ParseState } from "../types.js";
 

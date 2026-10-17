@@ -70,6 +70,10 @@ not from Claude Code or Codex.
 
 ## 3. Limit and usage signals (T6.11, one row per provider)
 
+*Corrected later the same day:* [limit captures 2026-10-17](limit-captures-2026-10-17.md#corrections) found real
+limit output for Claude Code (2026-10-15), Cursor CLI and Kimi Code in the operator logs. The rows below are kept as
+first written.
+
 Sources, as ROADMAP T6.11 allows: (a) this day's channel runs; (b) the operator logs already on the host (worker,
 merge-steward and doc-alignment-gate logs under `~/operator-runs/`). No limit was provoked. Only key names, event types,
 exit codes and the provider's own limit wording are recorded.

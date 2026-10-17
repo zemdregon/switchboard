@@ -132,6 +132,9 @@ export const STATUS_DECLINED = "declined";
  * no Codex error categories. Classification reads only this structured field, never the free-text message
  * (FR-ADP-04); an error without a recognised code maps to category `unknown` -> TOOL_FAILURE, never success.
  * Values map onto the shared `provider_error.category` vocabulary in failure.ts.
+ * T6.11 (docs/research/limit-captures-2026-10-17.md): a real 0.162.0 quota stop ("You’ve hit your usage limit … try
+ * again at <date> <time>") classified `unknown`, so it carried none of these codes; `usage_limit_exceeded` is
+ * unconfirmed.
  */
 export const ERROR_CODE_CATEGORIES: Readonly<Record<string, string>> = {
   unauthorized: "auth",
