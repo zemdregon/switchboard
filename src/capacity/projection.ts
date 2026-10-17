@@ -234,7 +234,8 @@ export function gateOpenMs(w: UsageWindowFigures, pacing: PacingSettings): numbe
   const startMs = Date.parse(w.window_start.at);
   const resetMs = Date.parse(w.reset_at.at);
   if (!Number.isFinite(startMs) || !Number.isFinite(resetMs)) return null;
-  const formula = startMs + w.length_seconds * 1000 * ((used - B) / T);
+  // T6.16: at `used ≥ T` the capped line `min(T, T × elapsed + B)` never catches up, so the gate opens at the reset.
+  const formula = used >= T ? resetMs : startMs + w.length_seconds * 1000 * ((used - B) / T);
   const open = Math.round(Math.min(resetMs, formula));
   return Number.isFinite(open) ? open : null;
 }
