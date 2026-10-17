@@ -2,6 +2,7 @@
  * T15.1 (FR-QUE-01, LLD §18.4): admit a queued `request_json` through the same pipeline as MCP `delegate_task`, under
  * `creator_client_id`. Shared by the scheduler; MCP `server.ts` may adopt this module in a later lane.
  */
+import type Database from "better-sqlite3";
 import {
   type AdapterRegistry,
   acceptsReportedModel,
@@ -49,6 +50,13 @@ import {
   type RouteFeatures,
   withModelPin,
 } from "../routing/index.js";
+import {
+  hasSkillFields,
+  SkillAdmissionError,
+  type SkillAdmissionSettings,
+  skillAdmissionPort,
+  skillRequestFields,
+} from "../skills/admission.js";
 import { gitText } from "../workspace/git.js";
 
 export type AdmitWorkOutcome =
@@ -71,6 +79,11 @@ export interface AdmitWorkDeps {
   projectStore?: DynamicProjectStore;
   candidateOrder?: readonly ProviderId[];
   models?: ModelRegistry;
+  /**
+   * T16.4 (FR-SKL-03, LLD §19.4): the skill store (the ledger's own handle) and the resolved `skills` settings. Absent,
+   * or `enabled` false, means a queued request with `skills`, `role` or `skill_defaults` fails `INVALID_REQUEST`.
+   */
+  skills?: { db: Database.Database; settings: SkillAdmissionSettings & { readonly enabled: boolean } };
 }
 
 interface ProjectResolution {
@@ -105,6 +118,8 @@ const eligibilityError = ({ decision }: EligibilityAnswer): ToolError => {
 };
 
 function mapError(err: unknown): AdmitWorkOutcome {
+  // T16.4 (LLD §19.5): a skill refusal fails the item with its code, as the same request fails delegate_task.
+  if (err instanceof SkillAdmissionError) return { kind: "failed", code: err.code };
   if (err instanceof LifecycleError) {
     if (err.code === "QUEUE_FULL") return { kind: "retry" };
     // T14.4 (FR-CTL-06): an operator budget refusal holds the item in the queue; it is tried again when the cap resets.
@@ -392,6 +407,12 @@ export async function admitWorkItemRequest(
         throw invalid("name a provider for this model", { field: "routing.model" });
       }
     }
+    // T16.4 (LLD §19.4): the queued fields resolve here, at the item's own admission, never at enqueue.
+    const skillFields = skillRequestFields(request);
+    const skillsOn = deps.skills?.settings.enabled === true;
+    if (hasSkillFields(skillFields) && !skillsOn) {
+      throw invalid("skills, role and skill_defaults need skills.enabled", { reason: "SKILLS_DISABLED" });
+    }
     const canonical = {
       tool: "delegate_task",
       objective: request.objective,
@@ -403,6 +424,7 @@ export async function admitWorkItemRequest(
       routing,
       priority: request.priority,
       ...(scope?.ok ? { privileged_scope: scope.scope } : {}),
+      ...skillFields,
     };
     const hash = requestHash(canonical);
     const required = routing.require_provider === true ? (routing.provider_preference as ProviderId) : undefined;
@@ -467,6 +489,17 @@ export async function admitWorkItemRequest(
       ...(model !== undefined ? { model } : {}),
       project: resolved.snapshot,
       idempotencyKey,
+      ...(skillsOn && deps.skills !== undefined
+        ? {
+            skills: skillAdmissionPort({
+              db: deps.skills.db,
+              settings: deps.skills.settings,
+              ...(resolved.project.skills !== undefined ? { project: resolved.project.skills } : {}),
+              ...(client.skills !== undefined ? { clientSkills: client.skills } : {}),
+              fields: skillFields,
+            }),
+          }
+        : {}),
       ...(verification.length > 0 ? { verificationCommands: verification } : {}),
       ...(scope?.ok
         ? {

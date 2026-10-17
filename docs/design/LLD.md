@@ -6717,6 +6717,19 @@ Inside the admission transaction, after profile and ceiling checks and before th
 Skills are resolved once per run. They are not read by eligibility, scoring, affinity, the profile compiler, approval
 or any other policy component (import-boundary test, as for `src/retrieval/**`).
 
+*Implementation (T16.4, 2026-10-17, Delegated, not owner-approved):* `src/skills/admission.ts`. Steps 2 to 4 are the
+T16.9 `resolveSkills`; `resolveRunSkills` adds steps 1 and 5 and is pure. The lifecycle calls it through a structurally
+typed `SkillAdmissionPort` (it does not import `src/skills/`, because `src/capacity/` reaches the lifecycle), after the
+meta-session and privileged checks and before the `run` row; a refusal rolls the transaction back. Delegated readings:
+`skill_defaults` has no schema `default`, so an absent field stays absent for step 1 and means `apply`; the fields are
+stored in `request_json` when given and are part of `request_hash`. A step 1 entry that fails the re-check (or whose
+stored hash changed) is skipped with an event, not refused, as it was not requested by this request. The byte cap sums
+`skill_version.size_bytes` (front matter and body, so at least the body). `run_skill.delivery` is NOT NULL, so
+admission writes `prompt_prefix` with `delivered_at` NULL; `get_run` returns `skills` entries
+`{name, version, sha256, source, delivery}` with `delivery` null until dispatch sets `delivered_at`. A run with no
+entry and no skipped default gets no `skill_resolved` event. The import-boundary test exempts `src/skills/limits.ts`,
+the constants-only leaf `src/config/` imports (T16.3).
+
 ### 19.6 Delivery at dispatch (FR-SKL-05)
 
 The adapter contract (§2) gains one declaration per compiled cell, `skillDelivery(cell): "prompt_prefix" |
