@@ -11,8 +11,12 @@
 /** Fixed term order: sums are computed in this order so replays are bit-identical. */
 export const SCORE_TERMS = ["success", "latency", "capacity", "security", "handoff", "cost"] as const;
 export type ScoreTerm = (typeof SCORE_TERMS)[number];
-export type Weights = Record<ScoreTerm, number>;
-export type Terms = Record<ScoreTerm, number>;
+/**
+ * The six weights, plus the seventh `pacing` weight (T7.15, LLD §17.7) when the decision carries the term. The `pacing`
+ * term is summed after the six, in that fixed order.
+ */
+export type Weights = Record<ScoreTerm, number> & { pacing?: number };
+export type Terms = Record<ScoreTerm, number> & { pacing?: number };
 
 /** LLD §17.1 default (Assumption, Q-80): every term weighs the same. */
 export const DEFAULT_WEIGHTS: Readonly<Weights> = Object.freeze({
@@ -58,17 +62,27 @@ export interface ScoredCandidate {
   terms: Terms;
 }
 
-/** Terms and score for each provider in `providers`, in that order. */
+/**
+ * Terms and score for each candidate in `candidates`, in that order. A candidate is a provider, or with a model group a
+ * member keyed `<provider>/<model>` (T7.15): `providerOf` maps it to the provider whose ledger facts and `pacing` term
+ * it takes (absent: the candidate is the provider). `pacing` holds the `pacing` term per provider (LLD §17.7); absent,
+ * the term is left out of both sums, so the six-term score is computed exactly as before.
+ */
 export function scoreCandidates(
-  providers: readonly string[],
+  candidates: readonly string[],
   inputs: Readonly<Record<string, ScoreInputs>>,
   weights: Readonly<Weights>,
+  providerOf?: Readonly<Record<string, string>>,
+  pacing?: Readonly<Record<string, number>>,
 ): ScoredCandidate[] {
-  const of = (p: string): ScoreInputs => inputs[p] ?? EMPTY_INPUTS;
-  const medians = providers.map((p) => of(p).median_ms).filter((m): m is number => m !== null);
+  const prov = (c: string): string => providerOf?.[c] ?? c;
+  const of = (c: string): ScoreInputs => inputs[prov(c)] ?? EMPTY_INPUTS;
+  const medians = candidates.map((c) => of(c).median_ms).filter((m): m is number => m !== null);
   const fastest = medians.length > 0 ? Math.min(...medians) : null;
-  const totalWeight = SCORE_TERMS.reduce((sum, t) => sum + weights[t], 0);
-  return providers.map((provider) => {
+  const pacingWeight = pacing !== undefined ? (weights.pacing ?? 0) : 0;
+  const sixWeight = SCORE_TERMS.reduce((sum, t) => sum + weights[t], 0);
+  const totalWeight = pacing !== undefined ? sixWeight + pacingWeight : sixWeight;
+  return candidates.map((provider) => {
     const i = of(provider);
     const terms: Terms = {
       success: (i.healthy + 1) / (i.healthy + i.counted + 2),
@@ -78,7 +92,11 @@ export function scoreCandidates(
       handoff: i.session_bound ? 1 : 0,
       cost: NEUTRAL,
     };
-    const weighted = SCORE_TERMS.reduce((sum, t) => sum + weights[t] * terms[t], 0);
+    let weighted = SCORE_TERMS.reduce((sum, t) => sum + weights[t] * terms[t], 0);
+    if (pacing !== undefined) {
+      terms.pacing = pacing[prov(provider)] ?? 0;
+      weighted += pacingWeight * terms.pacing;
+    }
     return { provider, score: totalWeight === 0 ? 0 : weighted / totalWeight, terms };
   });
 }
@@ -102,6 +120,13 @@ export interface SelectionInput {
   excludeFromScore: string | null;
   scoreInputs: Readonly<Record<string, ScoreInputs>>;
   weights: Readonly<Weights>;
+  /**
+   * T7.15: candidate id to provider for group members (`<provider>/<model>`). `requiredProvider` and `preference` name
+   * providers and select among their members (highest score, then member order). Absent: candidates are providers.
+   */
+  providerOf?: Readonly<Record<string, string>>;
+  /** T7.15: the `pacing` term per provider (LLD §17.7); absent, the six-term score. */
+  pacing?: Readonly<Record<string, number>>;
 }
 
 export interface Selection {
@@ -112,7 +137,7 @@ export interface Selection {
   scored: ScoredCandidate[];
 }
 
-/** LLD §17.3 selection; first match wins. */
+/** LLD §17.3 selection (and §17.7 with members); first match wins. */
 export function selectRoute(input: SelectionInput): Selection {
   const eligibleSet = new Set(input.eligible);
   const ordered = [
@@ -120,26 +145,61 @@ export function selectRoute(input: SelectionInput): Selection {
     // Admissible providers missing from the order (never expected) keep a stable place at the end.
     ...[...eligibleSet].filter((p) => !input.candidateOrder.includes(p)).sort(),
   ];
-  const scored = scoreCandidates(ordered, input.scoreInputs, input.weights);
+  const scored = scoreCandidates(ordered, input.scoreInputs, input.weights, input.providerOf, input.pacing);
   const pick = (provider: string | null, basis: SelectionBasis | null): Selection => ({ provider, basis, scored });
   if (ordered.length === 0) return pick(null, null);
-  if (input.requiredProvider !== null) {
-    return eligibleSet.has(input.requiredProvider)
-      ? pick(input.requiredProvider, "required_provider")
-      : pick(null, null);
-  }
-  if (input.affinityProvider !== null && eligibleSet.has(input.affinityProvider)) {
-    return pick(input.affinityProvider, "affinity");
-  }
-  if (input.preference !== null && eligibleSet.has(input.preference)) {
-    return pick(input.preference, "provider_preference");
+  const best = (pool: readonly ScoredCandidate[]) =>
+    pool
+      .map((c, index) => ({ c, index }))
+      .sort((a, b) => b.c.score - a.c.score || a.index - b.index)
+      .map((x) => x.c);
+  const providerOf = input.providerOf;
+  if (providerOf !== undefined) {
+    // LLD §17.7: `require_provider` and `provider_preference` name a provider; selection is among its members. A held
+    // affine member among them stays the choice, so the model does not move without a reason.
+    const membersOf = (p: string) => scored.filter((c) => providerOf[c.provider] === p);
+    const within = (p: string, basis: SelectionBasis): Selection | undefined => {
+      const pool = membersOf(p);
+      if (pool.length === 0) return undefined;
+      const affine = pool.find((c) => c.provider === input.affinityProvider);
+      return pick((affine ?? (best(pool)[0] as ScoredCandidate)).provider, basis);
+    };
+    if (input.requiredProvider !== null) return within(input.requiredProvider, "required_provider") ?? pick(null, null);
+    if (input.affinityProvider !== null && eligibleSet.has(input.affinityProvider)) {
+      return pick(input.affinityProvider, "affinity");
+    }
+    if (input.preference !== null) {
+      const chosen = within(input.preference, "provider_preference");
+      if (chosen !== undefined) return chosen;
+    }
+  } else {
+    if (input.requiredProvider !== null) {
+      return eligibleSet.has(input.requiredProvider)
+        ? pick(input.requiredProvider, "required_provider")
+        : pick(null, null);
+    }
+    if (input.affinityProvider !== null && eligibleSet.has(input.affinityProvider)) {
+      return pick(input.affinityProvider, "affinity");
+    }
+    if (input.preference !== null && eligibleSet.has(input.preference)) {
+      return pick(input.preference, "provider_preference");
+    }
   }
   const pool = scored.filter((c) => c.provider !== input.excludeFromScore);
-  const ranked = (pool.length > 0 ? pool : scored)
-    .map((c, index) => ({ c, index }))
-    .sort((a, b) => b.c.score - a.c.score || a.index - b.index);
-  const best = ranked[0] as { c: ScoredCandidate };
+  const ranked = best(pool.length > 0 ? pool : scored);
+  const top = ranked[0] as ScoredCandidate;
   const second = ranked[1];
-  const tied = second === undefined || second.c.score === best.c.score;
-  return pick(best.c.provider, tied ? "configured_order" : "score");
+  const tied = second === undefined || second.score === top.score;
+  return pick(top.provider, tied ? "configured_order" : "score");
+}
+
+/**
+ * LLD §16.9 and §17.7: the `pacing` term of one candidate from its subscription's stored inputs. Mode `off`: 0.5 for
+ * every candidate (neutral). No subscription, or no known allowance: 0. Otherwise `clamp(allowance / (2T), 0, 1)` for
+ * the binding window.
+ */
+export function pacingTerm(mode: string, sub: { T: number; allowance: number | null } | null | undefined): number {
+  if (mode === "off") return NEUTRAL;
+  if (sub === null || sub === undefined || sub.allowance === null || !(sub.T > 0)) return 0;
+  return clamp01(sub.allowance / (2 * sub.T));
 }
