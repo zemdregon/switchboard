@@ -1039,10 +1039,11 @@ been used anywhere in the suite.
   events with no bodies ([LLD §13.8](LLD.md#138-telemetry-and-events)); `doctor` shows reachable, locality, canary result,
   enabled tasks and degraded or suspended state; `inner status` prints per-task outcome counts and fallback rates from
   `inner_call`; `inner test <task>` runs the fixture (FR-INN-17). Logs follow §3.3: sizes and hashes, never text.
-- **OpenCode `cli` kind (Proposed, flags unverified).** [R2] lists `opencode run`; it does not show that a one-shot,
+- **OpenCode `cli` kind (Proposed).** [R2] lists `opencode run`; it does not show that a one-shot,
   tool-free completion with an operator-chosen model, an empty working directory and no repository config is possible
-  (Q-26). No flag is stated here. Until the T11.0 spike shows the controls that apply for the installed version and writes
-  them, with version and date, into [§4.6](#46-opencode-m4), the kind is `Ineligible` (reported by `doctor`, never
+  (Q-26). No flag is stated here. T11.0 reported on the installed version on 2026-10-17 (`opencode v2.0.23`): no
+  tool-free one-shot exists there, written with version and date into [§4.6.7](#467-t110-live-result-2026-10-17), so
+  the kind stays `Ineligible` (reported by `doctor`, never
   run), and the adapter's argv audit applies (no bypass flag). The `http` kind alone satisfies FR-INN-03.
 
 ### 3.13 Retrieval index
@@ -2495,6 +2496,10 @@ operator-only; scrub captures per that section):
 
 Item 12 uses the v1 flag spellings from T4.50; if `--pure` or `--dir` are absent on the installed CLI, record the exact
 argv that was used instead (for example `--standalone` and process cwd per §4.6.4) in the dated research note.
+
+*2026-10-17 (Delegated):* the checklist above is now answered for `opencode v2.0.23` in
+[§4.6.7](#467-t110-live-result-2026-10-17), and T11.0 is **Done** with the `cli` kind staying **`Ineligible`**.
+This section stays the 2026-10-16 documentation record; §4.6.7 owns the live result.
 
 #### 4.6.7 T11.0 live result (2026-10-17)
 
