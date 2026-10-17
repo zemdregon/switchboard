@@ -149,8 +149,47 @@ export function mountPlan(run: RunContext): ContainerMount[] | { readonly invali
   return mounts;
 }
 
+/**
+ * T9.13 (FR-WS-10, LLD §5.1, ADR-0057 item 5): the dependency-seed entries of a run, each added as one read-only bind
+ * mount at the seeded directory inside the worktree mount, after it (the runtime applies nested mounts in order). The
+ * source must be a direct child of `seedRoot` (one store entry, never the data directory or another path under it) and
+ * the target strictly inside the worktree; anything else refuses the run like any other invalid mount.
+ */
+export function seedMountPlan(
+  run: Pick<RunContext, "worktreePath">,
+  seeds: readonly { readonly source: string; readonly target: string }[],
+  seedRoot: string | undefined,
+): ContainerMount[] | { readonly invalid: string } {
+  const out: ContainerMount[] = [];
+  for (const m of seeds) {
+    for (const p of [m.source, m.target]) {
+      if (!path.isAbsolute(p) || path.normalize(p) !== p || p.endsWith(path.sep)) {
+        return { invalid: "seed mount path is not absolute and normalised" };
+      }
+      if (/[,\n\r]/.test(p)) return { invalid: "seed mount path contains a character the runtime cannot carry" };
+    }
+    if (seedRoot === undefined || path.dirname(m.source) !== seedRoot) {
+      return { invalid: "seed mount source is not a seed store entry" };
+    }
+    if (!m.target.startsWith(`${run.worktreePath}${path.sep}`)) {
+      return { invalid: "seed mount target is not inside the worktree" };
+    }
+    if (out.some((o) => o.target === m.target)) return { invalid: "two seed mounts share a target" };
+    out.push({ source: m.source, target: m.target, readonly: true });
+  }
+  return out;
+}
+
 export interface ContainerEnvironmentOptions {
   readonly runtime: ContainerRuntime;
+  /**
+   * T9.13 (FR-WS-10): the read-only seed mounts recorded for a run (`SeedStore.containerMounts`) and the store
+   * directory they must come from. Absent (no project declares a seed): the mount set is exactly as before.
+   */
+  readonly seeds?: {
+    readonly root: string;
+    readonly mounts: (runId: string) => readonly { readonly source: string; readonly target: string }[];
+  };
   /** Receives `environment` events (FR-PRJ-07); `environmentEventSink` writes them to the ledger (T10.2). Must not throw. */
   readonly onEvent?: (event: EnvironmentEvent) => void;
   readonly pidsLimit?: number;
@@ -191,8 +230,14 @@ export function createContainerEnvironment(opts: ContainerEnvironmentOptions): E
     }
     const network = containerNetworkFor(run.profile);
     if ("refused" in network) return refuse(runId, "CONTAINER_NETWORK_UNENFORCEABLE", network.refused);
-    const mounts = mountPlan(run);
-    if ("invalid" in mounts) return refuse(runId, "CONTAINER_MOUNT_PATH_INVALID", mounts.invalid);
+    const planned = mountPlan(run);
+    if ("invalid" in planned) return refuse(runId, "CONTAINER_MOUNT_PATH_INVALID", planned.invalid);
+    let mounts = planned;
+    if (opts.seeds !== undefined) {
+      const seeded = seedMountPlan(run, opts.seeds.mounts(runId), opts.seeds.root);
+      if ("invalid" in seeded) return refuse(runId, "CONTAINER_MOUNT_PATH_INVALID", seeded.invalid);
+      mounts = [...planned, ...seeded];
+    }
 
     const labels = { [SWITCHBOARD_RUN_LABEL]: runId, [SWITCHBOARD_PROJECT_LABEL]: run.projectId };
     let imageId: string;

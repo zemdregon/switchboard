@@ -51,3 +51,21 @@ export {
   WorkspaceManager,
   type WorkspaceManagerOptions,
 } from "./manager.js";
+export {
+  createSeedStore,
+  DEFAULT_SEED_ENTRIES_PER_SEED,
+  DEFAULT_SEED_STORE_MB,
+  hostSeedEnvironment,
+  SEED_APPLIED_EVENT,
+  SEED_FAILED_EVENT,
+  type SeedCommandFactory,
+  type SeedEnvironment,
+  type SeedFailureReason,
+  type SeedMount,
+  type SeedOutcome,
+  type SeedSpec,
+  type SeedStore,
+  seedKey,
+  seedReclaimer,
+  seedWorktree,
+} from "./seeds.js";

@@ -328,7 +328,7 @@ describe("append-only skill_version and skill_event (migration 0021 triggers)", 
 describe("migration 0021", () => {
   it("applies on a fresh ledger", () => {
     const d = ledger();
-    expect(currentSchemaVersion(d)).toBe(21);
+    expect(currentSchemaVersion(d)).toBeGreaterThanOrEqual(21); // later migrations (0022, T9.13) may follow
     const names = (
       d.prepare("SELECT name FROM sqlite_master WHERE type IN ('table','trigger')").all() as {
         name: string;
@@ -364,7 +364,13 @@ describe("migration 0021", () => {
       requestHash: "h",
       clientId: "c",
     });
-    expect(migrate(d)).toEqual([21]);
+    expect(
+      migrate(
+        d,
+        undefined,
+        MIGRATIONS.filter((m) => m.version <= 21),
+      ),
+    ).toEqual([21]);
     expect(l.getRun(run.id)?.id).toBe(run.id);
     const insertRunSkill = (runId: string, source: string, delivery: string) =>
       d

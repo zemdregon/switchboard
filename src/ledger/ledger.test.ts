@@ -22,6 +22,8 @@ const EXPECTED_TABLES = [
   "control_plane_event",
   "control_plane_state",
   "decision",
+  "dependency_seed",
+  "dependency_seed_use",
   "gc_orphan",
   "git_commit",
   "git_push",
@@ -93,6 +95,54 @@ function seed(d: Database.Database) {
 }
 
 describe("ledger migrations", () => {
+  it("0022 keeps every artifact row, adds the seed_log kind and the dependency seed tables (T9.13)", () => {
+    const d = new Database(path.join(dir, "m22.sqlite"));
+    try {
+      migrate(
+        d,
+        undefined,
+        MIGRATIONS.filter((m) => m.version <= 21),
+      );
+      const { ledger, session, run } = seed(d);
+      ledger.insertArtifact({
+        runId: run.id,
+        metaSessionId: session.id,
+        kind: "diff",
+        sha256: "a".repeat(64),
+        sizeBytes: 1,
+        mediaType: "text/x-diff",
+      });
+      expect(migrate(d, undefined, MIGRATIONS)).toEqual([22]);
+      expect(d.prepare("SELECT kind FROM artifact").all()).toEqual([{ kind: "diff" }]);
+      ledger.insertArtifact({
+        runId: run.id,
+        metaSessionId: session.id,
+        kind: "seed_log",
+        sha256: "b".repeat(64),
+        sizeBytes: 1,
+        mediaType: "application/json",
+      });
+      expect(() =>
+        d
+          .prepare(
+            `INSERT INTO dependency_seed_use (run_id, seed_key, worktree_path, directory, method, populated_at)
+             VALUES (?, 'k', '/w', 'node_modules', 'hardlink', 'x')`,
+          )
+          .run(run.id),
+      ).toThrow(/CHECK/u);
+      expect(() =>
+        d
+          .prepare(
+            `INSERT INTO dependency_seed (seed_key, project_id, seed_id, lockfile_sha256, profile, environment, state,
+               created_at) VALUES (?, 'p', 's', 'l', 'edit-untrusted', '{}', 'ready', 'x')`,
+          )
+          .run("short"),
+      ).toThrow(/CHECK/u);
+    } finally {
+      d.close();
+    }
+  });
+
   it("creates all tables from an empty database and records the version", () => {
     db = openLedger(dir);
     expect(tables(db)).toEqual(EXPECTED_TABLES);
