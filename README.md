@@ -47,8 +47,9 @@ Pre-release. The package is private and is not published to any registry; you bu
 - **Milestone 6 (capacity and resilience) is `Partial`.** `get_capacity` and `switchboard capacity` show per-provider
   estimates with their sources, a circuit breaker holds a failing provider back, retryable failures are retried
   automatically as linked successor runs, and quota exhaustion fails over to another provider or returns. All of this
-  is tested on fake providers. It is not `Done`: what providers print on a real rate limit, overload, quota stop or
-  usage report has not been captured for every provider (operator task T6.11), and no provider is known to publish an
+  is tested on fake providers. It is not `Done`: real limit output is captured in text mode for five
+  providers with the remaining cells `NOT_CHECKED` (operator task T6.11, `Done` 2026-10-17;
+  [limit captures](docs/research/limit-captures-2026-10-17.md)), and no provider is known to publish an
   enforceable rate limit, so there is no token-bucket gate; the planned pacing gate paces usage per subscription window
   from observed usage instead (ROADMAP T6.8, Planned; not built). See [ROADMAP §6.11](docs/ROADMAP.md#611-m6-capacity-and-resilience-tasks).
 - **Milestone 7 (routing) is `Partial`.** Eligible providers are scored from Switchboard's own records, every route
@@ -2257,8 +2258,10 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   today, T7.12, `src/routing/model-pin.test.ts`); undeclared adapters keep their default model. No cache benefit from
   keeping a project on one provider is claimed (T7.9).
 - Capacity figures are controller estimates. No provider is known to report remaining quota, and the rate-limit and
-  quota output shapes of Claude Code and Codex come from synthetic fixtures until the operator captures them (ROADMAP
-  T6.11). There is no rate gate yet. No provider publishes an enforceable limit for the logins used, so the planned gate
+  quota output shapes of Claude Code and Codex come from synthetic fixtures; the operator has captured their
+  text-mode limit output but the `stream-json` shapes are still `NOT_CHECKED` (ROADMAP
+  T6.11, `Done` 2026-10-17; [limit captures](docs/research/limit-captures-2026-10-17.md)). There is no rate gate yet.
+  No provider publishes an enforceable limit for the logins used, so the planned gate
   paces usage per subscription window from observed usage instead (ROADMAP T6.8, Planned; not built).
 - Retrieval is tested with a deterministic in-process fake embedder and scripted HTTP fixtures; no live embedding model
   runs in CI. `search_project_context` with `scope: "global"` or `"both"` does not read the global store yet (admission
