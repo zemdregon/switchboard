@@ -976,11 +976,11 @@ it never holds a DB transaction and returns the current non-terminal envelope on
 published schema (`src/mcp/schemas.ts`) has no key, so a key is rejected as an unknown property (`INVALID_REQUEST`).
 Adding it back needs an SRS change first.
 
-*Proposed (2026-10-17, owner decision 58, FR-SKL-03; not built):* `delegate_task`, `continue_task` and `enqueue_work`
-gain the optional `skills`, `role` and `skill_defaults` fields. The contract is
-[§19](#19-switchboard-controlled-skills-m16-proposed); until T16.4 lands the published schemas refuse these fields as
-unknown properties. The `orchestrator` tool profile's `list_skills` and `get_skill` are built (T16.9, Delegated, not
-owner-approved; [§19.9](#199-mcp-tools-fr-skl-08)).
+*Built (T16.4, 2026-10-17, Delegated agent work, not owner-approved; owner decision 58, FR-SKL-03):*
+`delegate_task`, `continue_task` and `enqueue_work` gain the optional `skills`, `role` and `skill_defaults` fields. The
+contract is [§19](#19-switchboard-controlled-skills-m16-proposed); the published schemas accept these fields
+(`skills`, `role` and `skill_defaults` in `src/mcp/schemas.ts`). The `orchestrator` tool profile's `list_skills` and
+`get_skill` are built (T16.9, Delegated, not owner-approved; [§19.9](#199-mcp-tools-fr-skl-08)).
 
 Fails `INVALID_REQUEST` if the session has a non-terminal run holding the lease.
 
@@ -6593,8 +6593,8 @@ Done-when).
 
 *Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); partly built: the
 store, migration `0021` and state derivation (T16.1), the configuration keys and loader (T16.3), the operator CLI
-(T16.2) and the MCP tools with the §19.5 steps 2 to 4 resolver (T16.9), all Delegated, not owner-approved; admission
-and delivery Proposed).
+(T16.2), the MCP tools with the §19.5 steps 2 to 4 resolver (T16.9), admission (T16.4) and prompt-prefix delivery
+(T16.5), all Delegated, not owner-approved; native delivery (T16.6 and later) Proposed).
 Delegated mechanism, not owner-approved beyond the direction. The four limit defaults are Assumptions and their ranges
 are Delegated ([§19.3](#193-configuration-fr-skl-03-fr-skl-04-fr-skl-08)).* Requirements: FR-SKL-01 to
 FR-SKL-10. Business rules: [FRD](../requirements/FRD.md#3-business-rules) BR-52 to BR-56, V15, C8, WF-16. Tasks:

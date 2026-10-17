@@ -781,7 +781,7 @@ delivery table, MCP tools `list_skills` and `get_skill`, an operator CLI, config
     [TDD §3.16](design/TDD.md#316-switchboard-controlled-skills-proposed); requirements FR-SKL-01 to FR-SKL-10; new
     milestone M16 with tasks T16.0 to T16.12, the design (T16.0, Done), the skill store (T16.1, Done), the
     operator CLI (T16.2, Done), the configuration (T16.3, Done), the MCP tools (T16.9, Done) and the admission
-    (T16.4, Done) landed and the rest `Planned`. Read narrowly where the direction
+    (T16.4, Done) and the prompt-prefix delivery (T16.5, Done) landed and the rest `Planned`. Read narrowly where the direction
     meets an existing control: "the provider's native way" is used only where the compiled cell *already* loads that
     location and a live check confirmed it (T16.8); on 2026-10-17 that is no cell, so every run uses the prompt prefix
     until then. Delivery never removes `--safe-mode` or `--ignore-rules`, never adds a trust flag and never writes into
