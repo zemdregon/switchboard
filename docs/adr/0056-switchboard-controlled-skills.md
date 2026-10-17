@@ -1,8 +1,8 @@
 # ADR-0056: Switchboard-controlled skills: operator instruction packs injected per run
 
-- Status: Proposed (T16.1 implemented the skill store, migration 0021 and state derivation, 2026-10-17, Delegated,
-  not owner-approved; the CLI, configuration, admission, delivery, continuity and MCP tools are not implemented; every
-  limit and default is an Assumption)
+- Status: Proposed (T16.1 implemented the skill store, migration 0021 and state derivation, and T16.3 the
+  configuration keys and loader, 2026-10-17, Delegated, not owner-approved; the CLI, admission, delivery, continuity
+  and MCP tools are not implemented; the four limit defaults are Assumptions and their ranges are Delegated)
 - Date: 2026-10-17
 - Decided by: zemdregon (the product direction, [owner decision 58](../ROADMAP.md#42-owner-decisions), 2026-10-17:
   operator-defined named skills stored and versioned by Switchboard, injected into a run by name from the request,
