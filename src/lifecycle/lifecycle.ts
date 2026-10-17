@@ -103,6 +103,12 @@ import {
   CLOSED_BREAKER,
 } from "../capacity/breaker.js";
 import {
+  PACING_HOLD_EVENT,
+  type PacingDeferral,
+  type PacingGateSettings,
+  pacingDeferrals,
+} from "../capacity/pacing-gate.js";
+import {
   DEFAULT_BREAKER_FAILURE_THRESHOLD,
   DEFAULT_BREAKER_OPEN_SECONDS,
   DEFAULT_RETRY_BASE_MS,
@@ -643,6 +649,14 @@ export interface RunLifecycleOptions {
    * (`submit`) is unaffected: the floor never fails or refuses a run.
    */
   readonly diskFloor?: DiskFloorGate;
+  /**
+   * T6.8 (FR-CAP-10, BR-51, LLD §16.9): `capacity.subscriptions` and `capacity.pacing`, passed only when the file sets
+   * them. Unset: no pacing figure is read and admission and dispatch are unchanged. Set with mode `gate`: eligibility
+   * answers carry each candidate's deferral (`PACING_DEFERRED` at selection), and `pump()` holds a queued run whose
+   * subscription is deferred in `QUEUED` with one `pacing_hold` event per gate-open time, arming the wake timer for it.
+   * Never a refusal, a failure, a new run, a probe or a provider call.
+   */
+  readonly pacing?: PacingGateSettings;
 }
 
 /** T3.23: the lifecycle's view of the free-disk floor; `serve` composes it from the config and `src/workspace/gc.ts`. */
@@ -787,7 +801,7 @@ export class RunLifecycle {
    * `git_policy_violation` (Delegated; LLD §5).
    */
   private readonly repoFinalizeQueue = new Map<string, Promise<void>>();
-  /** T6.4: one timer for the earliest moment a held run may become dispatchable (breaker cool-down). */
+  /** T6.4: one timer for the earliest moment a held run may become dispatchable (breaker cool-down, T6.8 gate-open). */
   private wakeTimer: ReturnType<typeof setTimeout> | undefined;
   private wakeAt: number | undefined;
   /** T3.23: runs that already carry a `disk_hold` event in the current hold episode (cleared when the floor is met). */
@@ -795,6 +809,8 @@ export class RunLifecycle {
   /** T3.23: the early sweep in flight, and when the last one started (at most one per `recheckMs`). */
   private diskSweep: Promise<void> | undefined;
   private diskSweepAt: number | undefined;
+  /** T6.8: the gate-open time each held run's latest `pacing_hold` event names (the ledger is read on first sight). */
+  private readonly pacingHeld = new Map<string, string>();
   /** T8.2: wrapper-boundary span tracker; inert when no telemetry sink is configured. */
   private readonly spans: SpanTracker;
 
@@ -1245,6 +1261,14 @@ export class RunLifecycle {
         const reset = this.knownQuotaReset(f.provider, now);
         if (reset !== undefined) f.quotaExhaustedUntil = new Date(reset).toISOString();
       }
+      // T6.8 (LLD §16.9): the pacing gate's deferral per candidate; applied after stage 1, never a stage-1 reason.
+      if (this.opts.pacing !== undefined) {
+        const deferrals = pacingDeferrals(this.ledger, this.opts.pacing, now);
+        for (const f of input.facts) {
+          const d = deferrals.get(f.provider);
+          if (d !== undefined) f.pacingDeferred = d;
+        }
+      }
     }
     return { input, decision: filterEligible(input) };
   }
@@ -1466,6 +1490,15 @@ export class RunLifecycle {
           }
           this.diskHeld.clear();
         }
+        // T6.8 (LLD §16.9): read once per pass, only when pacing is configured and a run is queued.
+        const deferrals =
+          queued.length > 0 && this.opts.pacing !== undefined
+            ? pacingDeferrals(this.ledger, this.opts.pacing, now)
+            : undefined;
+        if (this.pacingHeld.size > 0) {
+          const ids = new Set(queued.map((r) => r.id));
+          for (const id of this.pacingHeld.keys()) if (!ids.has(id)) this.pacingHeld.delete(id);
+        }
         for (const run of queued) {
           const limit =
             run.provider === null
@@ -1474,6 +1507,7 @@ export class RunLifecycle {
           if (limit !== undefined && run.provider !== null) {
             if (this.ledger.countRunsInStates(SLOT_STATES, run.provider) >= limit) continue;
           }
+          if (run.provider !== null && !this.pacingLetsThrough(run, deferrals)) continue;
           if (run.provider !== null && !this.breakerLetsThrough(run, now)) continue;
           return this.move(run, "PREFLIGHT", {}, { slot: "reserved" });
         }
@@ -1486,6 +1520,34 @@ export class RunLifecycle {
       if (!picked) return;
       this.launch(picked.id);
     }
+  }
+
+  /**
+   * T6.8 (LLD §16.9, FRD T4 guard): a run whose subscription the pacing gate defers waits in `QUEUED` until the
+   * gate-open time, for which the wake timer is armed. One `pacing_hold` event per run and gate-open time, also across a
+   * restart (the run's latest event is read once). Checked before the breaker, so a held run never becomes its probe.
+   */
+  private pacingLetsThrough(run: RunRecord, deferrals: ReadonlyMap<string, PacingDeferral> | undefined): boolean {
+    const d = deferrals?.get(run.provider as string);
+    if (d === undefined) return true;
+    let recorded = this.pacingHeld.get(run.id);
+    if (recorded === undefined) {
+      const last = this.ledger
+        .listRunEvents(run.id)
+        .filter((e) => e.type === PACING_HOLD_EVENT)
+        .at(-1);
+      if (last !== undefined) recorded = (JSON.parse(last.payload_json) as { until?: string }).until;
+    }
+    if (recorded !== d.until) {
+      this.ledger.appendRunEvent({
+        runId: run.id,
+        type: PACING_HOLD_EVENT,
+        payload: { subscription: d.subscription, window: d.window, until: d.until, source: d.source },
+      });
+    }
+    this.pacingHeld.set(run.id, d.until);
+    this.scheduleWake(Date.parse(d.until));
+    return false;
   }
 
   /** T3.23: one `disk_hold` event per run per hold episode, inside the dispatch transaction. */

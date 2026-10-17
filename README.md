@@ -50,11 +50,12 @@ Pre-release. The package is private and is not published to any registry; you bu
   is tested on fake providers. It is not `Done`: real limit output is captured in text mode for five
   providers with the remaining cells `NOT_CHECKED` (operator task T6.11, `Done` 2026-10-17;
   [limit captures](docs/research/limit-captures-2026-10-17.md)), and no provider is known to publish an
-  enforceable rate limit, so there is no token-bucket gate; the planned pacing gate paces usage per subscription window
-  from observed usage instead (ROADMAP T6.8, Planned; not built). The subscription/pacing configuration keys and the
+  enforceable rate limit, so there is no token-bucket gate; the pacing gate paces usage per subscription window
+  from observed usage instead (ROADMAP T6.8, `Done` 2026-10-17). The subscription/pacing configuration keys and the
   per-window figure computation exist (ROADMAP T6.13, `Done` 2026-10-17), and capacity output shows one `pacing` entry
   per subscription with each window's figures and source, `deferred_until` and the gate verdict (ROADMAP T6.14, `Done`
-  2026-10-17); the verdict is shown only, the hold is T6.8 and is not applied. See [ROADMAP §6.11](docs/ROADMAP.md#611-m6-capacity-and-resilience-tasks).
+  2026-10-17); a deferred candidate is left out when an undeferred eligible one remains, otherwise the run waits in
+  `QUEUED` with a `pacing_hold` event until the gate-open time. See [ROADMAP §6.11](docs/ROADMAP.md#611-m6-capacity-and-resilience-tasks).
 - **Milestone 7 (routing) is `Partial`.** Eligible providers are scored from Switchboard's own records, every route
   decision is stored and replays exactly, `explain_route` shows why a run went where it did, a project stays on its
   provider until a listed reason moves it (`switchboard affinity list|reset`), and `minimum_capability` is enforced
@@ -693,7 +694,7 @@ Only one `serve` can hold a data directory at a time.
 | `cancel_run` | Requests cancellation of a run (asynchronous; poll `get_run`). |
 | `get_artifacts` | Lists a run's artifacts (diff, changed files, test report, ...) with hashes; small ones inline. |
 | `list_capabilities` | Lists providers with adapter status, version, validated range, auth state and supported trust profiles. |
-| `get_capacity` | Per-provider capacity: controller estimates (`capacity_score`, `confidence`, `throttle_risk`) with their sources, free slots, the circuit breaker, and `reset_at` or `explicit_remaining` only when the provider itself reported them; reported cache token counts where a source names the keys; per-project counts of runs that kept or switched provider and model. When subscriptions are configured, a `pacing` block lists one entry per subscription with each window's figures and source, `deferred_until` and the gate verdict (shown only; the hold is not applied). Read-only; it never calls a provider. |
+| `get_capacity` | Per-provider capacity: controller estimates (`capacity_score`, `confidence`, `throttle_risk`) with their sources, free slots, the circuit breaker, and `reset_at` or `explicit_remaining` only when the provider itself reported them; reported cache token counts where a source names the keys; per-project counts of runs that kept or switched provider and model. When subscriptions are configured, a `pacing` block lists one entry per subscription with each window's figures and source, `deferred_until` and the gate verdict; a deferred candidate is left out when an undeferred eligible one remains, otherwise the run waits in `QUEUED` until the gate-open time. Read-only; it never calls a provider. |
 | `explain_route` | Why a run went to its provider, from Switchboard's stored route decision: candidates with eligibility reasons, the recorded task features, weights and per-candidate scores, the selection rule and short deciding factors. Price, model quality and sandbox strength are not sourced, so those terms are equal for every provider. Read-only; no model is asked. |
 | `list_projects` | Lists the configured projects this client may use (id, name, environment kind, contexts, trust ceiling, allowed providers), plus its own dynamic projects marked `source: "dynamic"` with their revision and status. Read-only; returns no filesystem paths. |
 | `search_project_context` | Read-only semantic search over a project's indexed contexts (and optionally the global index once the tool is wired for `global`/`both`). Listed only when `rag.embedding` is set and this client has at least one project with retrieval on. See [Retrieval index](#retrieval-index-milestone-12). |
@@ -771,9 +772,11 @@ Switchboard's own records when you ask:
 - **Pacing (subscriptions).** When `capacity.subscriptions` are configured, the same projection carries one `pacing`
   entry per subscription: each window's used share, reset and time left with its source (`provider_reported`,
   `operator_declared`, `controller_estimated` or `unknown`), `deferred_until` and the gate verdict (`deferred`,
-  `clear` or `inactive`). The verdict is shown only: nothing holds or refuses a run (the pacing gate is ROADMAP T6.8,
-  Planned). The wording rule applies: no "remaining" without `provider_reported`, no plan percentage, and every
-  `controller_estimated` line reads "estimate, Switchboard-observed only". `doctor` prints one pacing line per
+  `clear` or `inactive`). A deferred candidate is left out when an undeferred eligible one remains; otherwise the run
+  waits in `QUEUED` with a `pacing_hold` event until the gate-open time (the pacing gate, ROADMAP T6.8, `Done`
+  2026-10-17). Pacing never refuses a request or fails a run. The wording rule applies: no "remaining" without
+  `provider_reported`, no plan percentage, and every `controller_estimated` line reads "estimate, Switchboard-observed
+  only". `doctor` prints one pacing line per
   subscription. With no subscriptions configured the block is omitted and the output is unchanged.
 
 ### Routing and affinity
@@ -2323,9 +2326,9 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 - Capacity figures are controller estimates. No provider is known to report remaining quota, and the rate-limit and
   quota output shapes of Claude Code and Codex come from synthetic fixtures; the operator has captured their
   text-mode limit output but the `stream-json` shapes are still `NOT_CHECKED` (ROADMAP
-  T6.11, `Done` 2026-10-17; [limit captures](docs/research/limit-captures-2026-10-17.md)). There is no rate gate yet.
-  No provider publishes an enforceable limit for the logins used, so the planned gate
-  paces usage per subscription window from observed usage instead (ROADMAP T6.8, Planned; not built).
+  T6.11, `Done` 2026-10-17; [limit captures](docs/research/limit-captures-2026-10-17.md)). There is no token-bucket
+  rate gate: no provider publishes an enforceable limit for the logins used, so the pacing gate
+  paces usage per subscription window from observed usage instead (ROADMAP T6.8, `Done` 2026-10-17).
 - Retrieval is tested with a deterministic in-process fake embedder and scripted HTTP fixtures; no live embedding model
   runs in CI. `search_project_context` with `scope: "global"` or `"both"` does not read the global store yet (admission
   merge with `use_global` does).

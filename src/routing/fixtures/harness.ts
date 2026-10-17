@@ -162,6 +162,8 @@ export interface HarnessOptions {
   config?: Record<string, unknown>;
   /** T7.8: model registry for minimum_capability tests. */
   models?: ModelRegistry;
+  /** T6.8: one injected clock for the ledger, the lifecycle and the MCP servers. Absent: the system clock. */
+  now?: () => Date;
 }
 
 export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> {
@@ -182,7 +184,7 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
   writeFileSync(script, CLI);
   const unregister = registerProvider(secondFakeProvider(path.join(root, "home")));
   const db = openLedger(dataDir);
-  const ledger = createLedger(db, { ids: createIdGenerator() });
+  const ledger = createLedger(db, { ids: createIdGenerator(), ...(opts.now !== undefined ? { now: opts.now } : {}) });
   const artifacts = new ArtifactStore(path.join(dataDir, "artifacts"));
   const allowedRoots = [
     root,
@@ -203,6 +205,7 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
     globalConcurrency: 4,
     perProviderConcurrency: 1,
     resolveProfile: profileFor,
+    ...(opts.now !== undefined ? { now: opts.now } : {}),
     breaker: { failureThreshold: 10, openSeconds: 300 },
     retry: { maxAttempts: opts.maxAttempts ?? 2, baseMs: 20, capMs: 100, queueHorizonSeconds: 0 },
     eligibility: {
@@ -235,6 +238,7 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
         ...(opts.config ?? {}),
       },
       clientId,
+      ...(opts.now !== undefined ? { now: opts.now } : {}),
     });
     const client = new Client({ name: clientId, version: "0.0.0" });
     const [c, s] = InMemoryTransport.createLinkedPair();
