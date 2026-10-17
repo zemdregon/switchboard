@@ -6543,8 +6543,9 @@ Done-when).
 ## 19. Switchboard-controlled skills (M16, Proposed)
 
 *Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); partly built: the
-store, migration `0021` and state derivation (T16.1), the configuration keys and loader (T16.3) and the MCP tools with
-the §19.5 steps 2 to 4 resolver (T16.9), all Delegated, not owner-approved; admission, delivery and CLI Proposed).
+store, migration `0021` and state derivation (T16.1), the configuration keys and loader (T16.3), the operator CLI
+(T16.2) and the MCP tools with the §19.5 steps 2 to 4 resolver (T16.9), all Delegated, not owner-approved; admission
+and delivery Proposed).
 Delegated mechanism, not owner-approved beyond the direction. The four limit defaults are Assumptions and their ranges
 are Delegated ([§19.3](#193-configuration-fr-skl-03-fr-skl-04-fr-skl-08)).* Requirements: FR-SKL-01 to
 FR-SKL-10. Business rules: [FRD](../requirements/FRD.md#3-business-rules) BR-52 to BR-56, V15, C8, WF-16. Tasks:
