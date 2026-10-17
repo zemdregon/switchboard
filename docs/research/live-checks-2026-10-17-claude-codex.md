@@ -1,4 +1,4 @@
-# Live checks on the operator's machine, 2026-10-17: `doctor` with Claude Code and Codex, and a Codex quota stop
+# Live checks on Ampere, 2026-10-17: `doctor` with Claude Code and Codex, limit signals, container login state
 
 Status: research input (historical record once written). Run by an agent (Claude Opus 5.5, Delegated) on the
 operator's Ampere server, with the real, logged-in provider CLIs. Everything here was **observed** on this host on
@@ -68,18 +68,23 @@ not from Claude Code or Codex.
 | `switchboard adapters validate claude` (one call) | **OK**: manifest, probe, auth, 8 static checks, smoke ("a successful structured result was parsed"), write. Same version, so the manifest diff is only `validated_on` and one evidence line; it is not committed here |
 | `SWITCHBOARD_LIVE_TESTS=1 SWITCHBOARD_LIVE_PROVIDER=claude npm run test:live` | **14 HELD, 0 FAILED, 2 NOT_CHECKED** (C-12, C-G2), E2E `SUCCEEDED`, `SMOKE.md` on the result branch, G-1 held. Native types `system/init`, `assistant` x2, `rate_limit_event`, `user`, `result/success`; 0 unrecognised. Same counts as 2026-10-14 |
 
-## 3. Codex: a quota stop in normal use (T6.11)
+## 3. Limit and usage signals (T6.11, one row per provider)
 
-The first Codex model call of the day, `switchboard adapters validate codex` (one smoke call, `-m gpt-6-luna`, low
-effort), was refused by the provider:
+Sources, as ROADMAP T6.11 allows: (a) this day's channel runs; (b) the operator logs already on the host (worker,
+merge-steward and doc-alignment-gate logs under `~/operator-runs/`). No limit was provoked. Only key names, event types,
+exit codes and the provider's own limit wording are recorded.
 
-| Item | Observed |
-| --- | --- |
-| Switchboard result | `[FAIL] smoke: structured-output smoke test failed: TOOL_FAILURE (unknown: You’ve hit your usage limit. … try again at Oct 22nd, 2026 6:19 AM.)`; nothing written; exit 1 |
-| What it is | A quota stop with a stated reset time (about five days ahead), not a transient rate limit. It was not provoked; it was the first Codex call |
-| Classification | The Codex adapter mapped it to `TOOL_FAILURE` with category `unknown`. So it is not recognised as a quota or rate-limit signal (FR-CAP-01, 02) |
-| Native event type, exit code, remaining-quota fields | **Not captured**: the validate smoke step does not keep the stream, and no further Codex call was made (the limit marker held the channel) |
+| Provider | What occurred | Event type / shape | Exit code | Reset or retry field | Used or remaining figure | Structured? | Verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Claude Code 2.1.294 | No rate limit, overload or quota stop. Every successful run had one non-rejected `rate_limit_event` (types only recorded). The `result` `usage` key names of a 2026-10-17 run: `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `output_tokens`, `output_tokens_details`, `server_tool_use`, `service_tier`, `cache_creation`, `inference_geo`, `iterations`, `speed`, `fallback_credit` | n/a | n/a | not seen | not seen | `usage` yes | usage keys **PASS**; `rate_limit_event` fields, rate limit, overload, quota **NOT_CHECKED** |
+| Codex 0.162.0 | **Quota stop** on the first call of the day (`adapters validate codex` smoke, `-m gpt-6-luna`): "You’ve hit your usage limit. … try again at Oct 22nd, 2026 6:19 AM." | not captured (the validate smoke keeps no stream) | not captured (validate exit 1) | free text only ("try again at <date>") | none in the message | unknown | **FAIL** for classification: the adapter mapped it to `TOOL_FAILURE`, category `unknown`, not a quota code. Event type and exit code **NOT_CHECKED** |
+| Antigravity (`agy`, version not in those logs) | **Quota stop**, 7 occurrences in worker logs of 2026-10-15 and 2026-10-16 (`w345`, `w350`, `w360`, `w362`, `w375`, `w385`, `w571`), all under `--output-format text` | stderr line `error: Individual quota reached. … Resets in <h>h<m>m<s>s.` and one `AGY_ERROR: {…}` JSON line with keys `short_error`, `status` (`RESOURCE_EXHAUSTED`), `error_code` (`429`), `code_kind` (`http`), `retryable` (`true`), `error_id` | **3** | free text inside `short_error` ("Resets in …"); no reset key | none | status and code yes; reset no | **PASS** (captured); `--output-format json`/stream shape **NOT_CHECKED** |
+| Grok Build, Cursor CLI, OpenCode, Kimi Code | No real occurrence found: every match in the logs was synthetic test text (for example `SYNTHETIC: too many requests`) | | | | | | **NOT_CHECKED** |
+| Muse Code | Skipped (owner deferral) | | | | | | **NOT_CHECKED** |
 
+Candidate keys for T6.15: Antigravity `AGY_ERROR.status` and `error_code` (taxonomy mapping; the reset is free text, so
+it stays unmapped under Q-100); Claude Code cache keys `cache_creation_input_tokens` and `cache_read_input_tokens`. For
+Codex there is nothing to map until the stream shape of a quota stop is captured. Its stated reset is 2026-10-22 06:19.
 Every other Codex check planned for 2026-10-17 (live smoke, T5.12 resume cells, the T5.11 pair) was refused by the
 channel's limit marker and not attempted.
 

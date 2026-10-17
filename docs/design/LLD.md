@@ -907,7 +907,10 @@ returns immediately unless `wait_seconds` is given ([ADR-0002](../adr/0002-mcp-u
   "routing": { "type": "object", "properties": {
       "provider_preference": { "type": "string" },
       "require_provider": { "type": "boolean", "default": false },
-      "minimum_capability": { "enum": ["low","medium","high"] } } },
+      "minimum_capability": { "enum": ["low","medium","high"] },
+      // Proposed (T7.14, §17.7, ADR-0055; not built): delegate_task and enqueue_work only, mutually exclusive
+      "model_group": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,31}$" },
+      "model": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$" } } },
   "status": { "enum": ["AWAITING_APPROVAL","QUEUED","WAITING_CAPACITY","PREFLIGHT","LEASED","RUNNING",
                        "VERIFYING","FINALIZING","SUCCEEDED","FAILED","CANCELLED"] },
   "envelope": { "type": "object", "required": ["run_id","meta_session_id","status"], "properties": {
@@ -5445,8 +5448,14 @@ read for it (Assumption). A queued run is not failed by it.
 
 ### 16.7 Rate gate (FR-CAP-07)
 
-No gate exists. The T6.0 inventory finds no published enforceable limit for the logins in use. A gate is added only for
-a provider whose limit a source names (T6.8), with its own configuration key and source citation.
+No gate exists. The T6.0 inventory finds no published enforceable limit for the logins in use. A token-bucket gate at a
+published rate is added only for a provider whose limit a source names, with its own configuration key and source
+citation; T6.8 no longer builds that gate (see the 2026-10-17 note below).
+
+*Note 2026-10-17 (owner decision 57, [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md)).* T6.8 is reopened as
+the pacing gate of [§16.9](#169-usage-windows-and-pacing-fr-cap-09-fr-cap-10), whose source is observed usage and
+operator-declared budgets, not a published limit. No token bucket at a published rate is specified, because none is
+published.
 
 ### 16.8 Cache observations and switch counts (FR-CAP-08, T6.7)
 
@@ -5470,6 +5479,98 @@ sorted by key, at most 100 with `truncated`; the bound is an Assumption). It cou
 process and were created in the window. `get_capacity` counts only the calling MCP client's own runs, so another
 client's project ids are never shown (Delegated, least privilege). The operator's `switchboard capacity` and `doctor` see
 every project. `doctor` prints one summary line, and `switchboard capacity` one line per project.
+
+### 16.9 Usage windows and pacing (FR-CAP-09, FR-CAP-10)
+
+**Proposed** (2026-10-17, owner decision 57, Delegated mechanism; not built). Design for T6.13, T6.14 and T6.8 under
+[ADR-0055](../adr/0055-model-groups-and-usage-pacing.md). Every default is an **Assumption** (Q-98). No migration:
+pacing is computed on read from configuration, `usage_observation`, `run`, `run_event` and the clock, like the estimate
+(§16.2). Nothing here names a provider's window, budget or reset: each comes from the provider (a declared key) or from
+the operator.
+
+**Configuration** (strict keys, NFR-SEC-06):
+
+```jsonc
+{ "capacity": {
+    "subscriptions": {
+      "<name>": {                                   // ^[a-z][a-z0-9_-]{0,31}$; operator's own label
+        "providers": ["<config provider id>"],      // 1..16; a provider is in at most one subscription
+        "windows": [ {
+          "id": "<window id>",                      // ^[a-z0-9_-]{1,32}$, unique in the subscription
+          "length_seconds": 0,                       // 60..2678400; operator-declared
+          "reset": { "kind": "provider_reported" }   // or { "kind": "fixed", "anchor": "<ISO instant>" } or { "kind": "rolling" }
+          , "budget": { "unit": "runs", "value": 0 } // optional; unit runs | reported_tokens | reported_cost_usd; value > 0
+        } ]                                          // 1..4 windows
+      } },
+    "pacing": {
+      "mode": "gate",            // gate | score | off
+      "target_fraction": 0.95,   // 0.5..1; T in ADR-0055 item 7 (Q-98)
+      "burst_fraction": 0.10,    // 0..0.5; B in ADR-0055 item 8 (Q-98)
+      "min_confidence": 0.5      // 0..1; an estimate below it gives the score term only (Q-98)
+    } } }
+```
+
+A `fixed` window resets at `anchor + k × length_seconds`. A `provider_reported` window takes its reset from the latest
+declared reset key (below) that is still in the future, and without one its reset is `unknown`. A `rolling` window has
+no reset: its used share is taken over the last `length_seconds`. Without a `budget`, a window has no estimate.
+
+**Declared keys** (`USAGE_KEYS` in the capacity module, empty and frozen until a task wires a sourced key, as
+`REMAINING_KEYS` in §16.2). An entry names a provider, the `usage_observation.metrics_json` key or `rate_limit` event
+field, and what it carries (`used_fraction`, `remaining_fraction` or `reset_at`), with the source document. Candidates
+named by T6.0, none wired: Antigravity's `/usage` `remaining_fraction` and `reset_time` per bucket (a separate call,
+Q-101), and Claude Code's `rate_limit_event` `resetsAt` (a synthetic fixture shape, T6.11).
+
+**Per window, at time `now`** (pure function, injected clock):
+
+| Figure | Rule | `source` |
+| --- | --- | --- |
+| `reset_at` | `fixed`: next anchor step after `now`; `provider_reported`: latest declared reset in the future; `rolling`: `null` | `operator_declared`, `provider_reported` or `null` |
+| `window_start` | `reset_at - length_seconds`; `rolling`: `now - length_seconds` | as `reset_at`, else `controller` |
+| `used_fraction` | the latest declared `used_fraction` (or `1 - remaining_fraction`) observed after `window_start`; else, with a `budget`, `observed / budget.value` where `observed` counts runs that started a provider process (`runs`), or sums the provider-reported token keys the capacity module maps (`reported_tokens`) or the reported cost (`reported_cost_usd`) over the subscription's providers since `window_start`, capped at 1; else `null` | `provider_reported`, `controller_estimated` or `unknown` |
+| `confidence` | 1 for `provider_reported` with a reported or `fixed` reset; for `controller_estimated`, 0.8 with a `fixed` or reported reset and 0.5 for `rolling` (Assumptions, Q-98); 0 for `unknown` | — |
+| `elapsed_fraction` | `1 - (reset_at - now) / length_seconds`, clamped to [0, 1]; `rolling`: 1 | — |
+| `allowance` | `(T - used) / max(1 - elapsed, 0.01)`; `rolling`: `T - used`; `null` when `used` is `null` | — |
+| `pace` | `unknown` when `allowance` is `null`; `ahead` when `used > T × elapsed + B`; `behind` when `used < T × elapsed - B`; else `on_pace` | — |
+
+An estimate never reads `inner_agent` or `controller_estimated` usage rows (BR-41). It is labelled `"lower_bound":
+true` with the note "Switchboard-observed usage only; use of this subscription outside Switchboard is not seen".
+
+**Per subscription:** the binding window is the one with the smallest non-null `allowance`. The `pacing` score term of
+§17.7 is `clamp(allowance / (2T), 0, 1)` for the binding window, and 0 when every window is `unknown`.
+
+**Gate** (`mode: gate`). A window *defers* when `reset_at` is not `null`, `used_fraction` is not `null`, `confidence ≥
+min_confidence` and `used ≥ min(T, T × elapsed + B)`. Its gate-open time is the earlier of `reset_at` and the instant at
+which `T × elapsed + B = used`, that is `window_start + length_seconds × (used - B) / T`. A subscription is deferred
+while any window defers, until the latest gate-open time among those windows. The gate holds that value fixed until a
+new observation arrives; usage that Switchboard dispatches in the meantime only moves it later.
+
+- **Admission** (after stage 1, before selection, §17.3): a candidate whose subscription is deferred gets the
+  per-candidate verdict `PACING_DEFERRED` (with `until`) and is left out of selection when an undeferred eligible
+  candidate remains. It is not a stage-1 reason, so it never produces `ELIGIBILITY_NONE` or a BR-3 code.
+- **All deferred:** affinity holds if the affine candidate is among them (§17.7); otherwise the candidate whose gate
+  opens first is chosen, ties broken by the §17.3 selection rule. The run is admitted to it, and the decision records
+  `pacing.hold_until`, that candidate's gate-open time. `pump()` leaves the run in `QUEUED` until that time, as for an
+  open breaker (FRD T4 guard), and appends one `pacing_hold` event (`subscription`, `window`, `until`, `source`). The
+  lifecycle's single wake timer (§16.4) also arms for the earliest `pacing_hold` time. At dispatch, a run whose
+  subscription is no longer deferred goes ahead.
+- **Never:** a refusal, a failure, a new run, a probe or any call to a provider made in order to use a subscription.
+  `require_provider` keeps its meaning: the run waits for its own subscription's gate. A `privileged` run waits the same
+  way, under its approval as is.
+
+**Surfaces.** The §16.3 projection gains a top-level `pacing` array, one entry per subscription:
+
+```jsonc
+{ "subscription": "<name>", "providers": ["<id>"], "mode": "gate", "deferred_until": null,
+  "windows": [ { "id": "<window id>", "length_seconds": 0,
+                 "reset_at": { "at": "<ISO>", "source": "operator_declared" } | null,
+                 "used_fraction": { "value": 0.42, "source": "controller_estimated", "confidence": 0.8,
+                                    "lower_bound": true, "basis": "runs" } | null,
+                 "elapsed_fraction": 0.4, "allowance": 1.32, "pace": "on_pace", "defers": false } ] }
+```
+
+The FR-CAP-03 wording rule applies: "remaining" only next to `provider_reported`; an estimate is never shown as a
+percentage of a plan, and the text view prints "used (estimate, Switchboard-observed only)" for `controller_estimated`.
+`doctor` prints one pacing line per subscription: `pace`, `deferred_until` and the source.
 
 ## 17. Routing (M7)
 
@@ -5672,6 +5773,85 @@ helper, the quota failover's forced `capacity_exhausted`, and `recordAffinity` a
   by a run that succeeds; until then every decision for the project reads it as `user_request`.
 - With affinity disabled the `affinity` object is still recorded (`enabled: false`, `applies: false`), so `explain_route`
   and replay see the same shape.
+
+### 17.7 Model groups (FR-RTE-10, FR-RTE-11)
+
+**Proposed** (2026-10-17, owner decision 57, Delegated mechanism; not built). Design for T7.13 to T7.15 under
+[ADR-0055](../adr/0055-model-groups-and-usage-pacing.md). Defaults are **Assumptions** (Q-98, Q-99).
+
+**Configuration** (strict keys, NFR-SEC-06). Placeholders only: neither this document nor code names a model.
+
+```jsonc
+{ "model_groups": {
+    "<name>": {                                     // ^[a-z][a-z0-9_-]{0,31}$, at most 32 groups
+      "members": [                                  // 1..32, ordered; order is the last tie-break
+        { "provider": "<config provider id>", "model": "<model id or alias>" }
+      ] } },
+  "routing": { "weights": { "pacing": 1 } } }      // seventh weight, 0..100, default 1 (Q-80)
+```
+
+Startup refuses an unknown provider id, a duplicate `{ provider, model }` pair, an empty `members` list and a malformed
+name or model. Whether the model resolves is checked at routing time, not at startup, because the registry's listing
+changes with each probe (§2.1).
+
+**Request** (`routing.model_group`, `routing.model`; §3.0). Validation, before any side effect (FRD V14):
+
+1. Both present: `INVALID_REQUEST`. An unknown group: `INVALID_REQUEST` (the message names the field, not the
+   configured groups).
+2. `model` without `provider_preference` or `require_provider`: it must resolve in exactly one enabled provider's
+   registry (an alias or a configured or listed id; §2.1). None, several, or an unrestricted registry (which would
+   accept anything) give `INVALID_REQUEST` with "name a provider for this model".
+3. `model_group` with `provider_preference` or `require_provider`: the members are narrowed to that provider. If none
+   remains, the result is `INVALID_REQUEST`.
+4. `continue_task` takes neither field. Continuations stay governed by FR-SES-03 and BR-18 (Q-99).
+
+**Candidates.** Without either field, candidates are providers, as in §17.3. With a group, a candidate is a member,
+keyed `<provider>/<model>`. Stage 1 per member: (a) the provider's stage-1 reasons, unchanged; (b) registry resolution
+of the model (`CAPABILITY_MISSING` when restricted and unknown); (c) the `minimum_capability` floor against the resolved
+model (T7.8); (d) the adapter's compile check with that model (an adapter that accepts no model, such as Codex today,
+gives `CAPABILITY_MISSING`). An explicit `model` makes one candidate per named provider, checked the same way.
+
+**Score.** Each eligible member gets its provider's six terms (§17.3), because the ledger facts are per provider, plus
+`pacing` from its provider's subscription (§16.9; 0 when it has none or every window is unknown). With
+`capacity.pacing.mode: off` the term is 0.5 for every candidate (neutral, as `security` and `cost`), so it cannot decide
+a route. Selection, first match wins: `require_provider` (its members only); affinity (below); `provider_preference`
+(its members, then score among them); the highest score; member order in the group. A candidate whose subscription is
+deferred is handled by the §16.9 admission rule before selection.
+
+The `pacing` term also applies to requests without a group (candidates are then providers). It is included only when
+at least one candidate's provider is in a configured subscription; otherwise it is left out of both sums, so the
+version 2 score, the M7 tests and every existing decision are unchanged until the operator declares a subscription.
+
+**Affinity** (§3.2 and §17.6 unchanged otherwise). Affinity applies to group requests:
+
+- The affine `<provider>/<model>` is an eligible, undeferred member: affinity holds and the member is chosen, unscored.
+- The affine provider is a member but only with another model, or is not a member: `user_request`. The request named a
+  group that excludes the affine pair, so the scored selection decides and the row moves on success.
+- The affine member is deferred by the pacing gate and an undeferred eligible member remains: `capacity_exhausted`,
+  with `detail: "pacing_gate"`, and the affine member is left out of the score. When every eligible member is
+  deferred, affinity holds and the run waits for the affine member's gate (§16.9).
+- The affine member is ineligible: `ineligible`, as today.
+- An explicit `model` different from the row's model is `user_request` (FR-RTE-07 already lists it).
+
+**Decision record, version 3** (`features_json.schema_version: 3`, §17.4 otherwise unchanged). It adds:
+
+```jsonc
+{ "model_group": "<name>" | null, "requested_model": "<id>" | null,
+  "members": [ { "key": "<provider>/<model>", "provider": "...", "model": "<resolved id>", "order": 0 } ],
+  "pacing_inputs": { "<subscription>": { "mode": "gate", "T": 0.95, "B": 0.1, "binding_window": "<id>",
+                     "used": 0.42, "used_source": "controller_estimated", "confidence": 0.8,
+                     "elapsed": 0.4, "allowance": 1.32, "defers": false, "until": null } },
+  "candidate_subscription": { "<provider>": "<subscription>" | null } }
+```
+
+`candidates_json` entries gain `model` and `pacing_verdict` (`null` or `PACING_DEFERRED` with `until`). `score_inputs`
+stays keyed by provider. Replay recomputes the `pacing` term from `pacing_inputs`, never from the ledger or the clock,
+and compares as in §17.4; version 1 and 2 rows replay as before. `explain_route` adds `model_group`, the chosen member,
+each excluded member's first code, and the pacing factor (for example "pacing: codex ahead of pace until 14:00Z") from a
+fixed template.
+
+**Run fields.** The chosen member's resolved model goes into `request_json.model` and `CompileRequest.model`, as for
+T7.12 pinning. The envelope's `provider.model` reports what the native session reported, as today.
 
 ## 18. Project queue, schedules and CI triggers (M15, Proposed, T15.0)
 
