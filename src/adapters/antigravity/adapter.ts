@@ -26,6 +26,7 @@
  *   exit-3 run (the 2026-10-17 T6.11 capture) and maps `status` `RESOURCE_EXHAUSTED` to `QUOTA_EXHAUSTED`; it reaches
  *   the mapping only through `FailureEvidence.stderrTail`, which `extractResult` cannot supply (see there).
  */
+
 import {
   DEFAULT_IDLE_MS,
   DEFAULT_KILL_GRACE_MS,
@@ -36,6 +37,7 @@ import { resolveOnPath } from "../codex/adapter.js";
 import { classifyCommon, PROVIDER_ERROR_CATEGORY_CODES } from "../failure.js";
 import { gitWriteRisks } from "../git-write.js";
 import { parseVersion } from "../manifest/index.js";
+import { renderObjective } from "../prompt.js";
 import type {
   AcpMessage,
   AuthResult,
@@ -373,7 +375,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       argv: [
         this.#exe,
         ...this.#launcher,
-        `${PROMPT_FLAG}=${request.objective}`,
+        `${PROMPT_FLAG}=${renderObjective(request)}`,
         OUTPUT_FORMAT_FLAG,
         OUTPUT_STREAM_JSON,
         ...policyFlags,

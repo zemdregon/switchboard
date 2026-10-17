@@ -171,7 +171,11 @@ Pre-release. The package is private and is not published to any registry; you bu
   `src/skills/resolve.ts`). Admission is built (T16.4, Delegated, not owner-approved): `skills`, `role` and
   `skill_defaults` on `delegate_task`, `continue_task` and `enqueue_work`, ordered resolution with gates and caps in
   the admission transaction (`src/skills/admission.ts`), `run_skill` rows, the `skill_resolved` event and skill
-  metadata in `get_run`. Delivery is still `Planned`. Design:
+  metadata in `get_run`. Prompt-prefix delivery is built (T16.5, Delegated, not
+ owner-approved): the labelled block (`renderSkillBlock` in `src/adapters/prompt.ts`) travels in the prompt text before
+ constraints and the task, and after the fixed preamble in a handoff prompt; every adapter cell delivers
+ `prompt_prefix`; dispatch records `run_skill.delivery` and `delivered_at` with one `skill_delivered` event, and a run
+ whose pinned skill cannot be read fails closed before spawn. Native delivery is still `Planned`. Design:
   [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
   [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP

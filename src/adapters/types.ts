@@ -5,6 +5,7 @@
  */
 import type { PrivilegedScopeBinding } from "../policy/types.js";
 import type { FailureCode } from "./failure.js";
+import type { PromptSkill } from "./prompt.js";
 import type { BuiltinProviderId } from "./providers.js";
 
 /** Adapter ids, derived from the provider registry table `BUILTIN_PROVIDERS` (`./providers.ts`, T4.1, LLD §2). */
@@ -85,6 +86,36 @@ export interface CompileRequest {
    * `bypass: true` and no approval is `Ineligible`, and an approval on any other profile is `Ineligible`.
    */
   bypassApproved?: boolean;
+  /**
+   * T16.5 (FR-SKL-05, LLD §19.6 step 3, §19.7): the run's `prompt_prefix` skill entries in resolved order, read by the
+   * lifecycle at dispatch. Absent or empty: the prompt is unchanged. An adapter renders them through `./prompt.ts`
+   * into the text that carries the prompt and nowhere else; they never change the argv flags, the environment or the
+   * policy flags. Never set for a handoff run (the handoff renderer places the block itself).
+   */
+  skills?: readonly PromptSkill[];
+}
+
+/**
+ * T16.5 (LLD §19.6, ADR-0056 items 6 and 7, TDD §3.16.1): how a compiled cell delivers the run's skills. Every adapter
+ * and cell is `prompt_prefix` on 2026-10-17; T16.6 widens this with `{ native: NativeSkillLocation }` and T16.7 adds the
+ * per-adapter declarations and their conformance check.
+ */
+export type SkillDelivery = "prompt_prefix";
+
+/** The default for every adapter and cell (LLD §19.6). */
+export const DEFAULT_SKILL_DELIVERY: SkillDelivery = "prompt_prefix";
+
+/**
+ * The cell's declared delivery: {@link ProviderAdapter.skillDelivery} when the adapter declares it, else the default.
+ * Anything other than a known mode is read as `prompt_prefix` (fail closed: nothing is written to the worktree).
+ */
+export function skillDeliveryOf(
+  adapter: Pick<ProviderAdapter, "skillDelivery">,
+  request: CompileRequest,
+  profile: ResolvedProfile,
+): SkillDelivery {
+  const declared = adapter.skillDelivery?.(request, profile);
+  return declared === "prompt_prefix" ? declared : DEFAULT_SKILL_DELIVERY;
 }
 
 export interface ResolvedProfile {
@@ -397,6 +428,8 @@ export interface ProviderAdapter {
   readonly gitCapabilities: GitCapabilities;
   /** T7.12 declaration ({@link ReportedModelFlag}); absent means `not_accepted`. */
   readonly reportedModelFlag?: ReportedModelFlag;
+  /** T16.5 declaration ({@link SkillDelivery}), pure, per compiled cell; absent means `prompt_prefix` for every cell. */
+  skillDelivery?(request: CompileRequest, profile: ResolvedProfile): SkillDelivery;
 
   /** FR-ADP-02 steps 1-5: binary, version, command, output formats, required flags. No auth, no model call. */
   probe(runner: ProbeRunner): Promise<ProbeResult>;

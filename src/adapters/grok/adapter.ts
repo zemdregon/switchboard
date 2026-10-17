@@ -20,6 +20,7 @@
  *   `grok models` (T4.24). The manifest range admits no version, so none of this
  *   runs before `adapters validate` passes a version.
  */
+
 import {
   DEFAULT_IDLE_MS,
   DEFAULT_KILL_GRACE_MS,
@@ -30,6 +31,7 @@ import { resolveOnPath } from "../codex/adapter.js";
 import { classifyCommon, PROVIDER_ERROR_CATEGORY_CODES } from "../failure.js";
 import { gitWriteRisks } from "../git-write.js";
 import { parseVersion } from "../manifest/index.js";
+import { renderObjective } from "../prompt.js";
 import type {
   AcpMessage,
   AuthResult,
@@ -355,7 +357,7 @@ export class GrokAdapter implements ProviderAdapter {
         this.#exe,
         ...this.#launcher,
         NO_AUTO_UPDATE_FLAG,
-        `${SINGLE_FLAG}=${request.objective}`,
+        `${SINGLE_FLAG}=${renderObjective(request)}`,
         OUTPUT_FORMAT_FLAG,
         OUTPUT_STREAMING_JSON,
         ...policyFlags,

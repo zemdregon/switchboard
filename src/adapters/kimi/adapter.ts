@@ -41,6 +41,7 @@ import { resolveOnPath } from "../codex/adapter.js";
 import { classifyCommon, PROVIDER_ERROR_CATEGORY_CODES } from "../failure.js";
 import { gitWriteRisks } from "../git-write.js";
 import { parseVersion } from "../manifest/index.js";
+import { renderObjective } from "../prompt.js";
 import type {
   AcpMessage,
   AuthResult,
@@ -461,7 +462,7 @@ export class KimiAdapter implements ProviderAdapter {
         exe,
         ...this.#launcher,
         ...(request.model !== undefined ? [`${MODEL_FLAG}=${request.model}`] : []),
-        `${PROMPT_FLAG}=${request.objective}`,
+        `${PROMPT_FLAG}=${renderObjective(request)}`,
         OUTPUT_FORMAT_FLAG,
         OUTPUT_STREAM_JSON,
         ...(resumeId !== undefined ? [SESSION_FLAG, resumeId] : []),
@@ -495,7 +496,7 @@ export class KimiAdapter implements ProviderAdapter {
       maxLineBytes: DEFAULT_MAX_LINE_BYTES,
       acp: {
         protocolVersion: 1,
-        prompt: request.objective,
+        prompt: renderObjective(request),
         session: resumeId === undefined ? { kind: "new" } : { kind: "resume", nativeSessionId: resumeId },
         mcpServers: [],
         // `default` is the session's starting mode ([LIVE] 9), so it is not sent.

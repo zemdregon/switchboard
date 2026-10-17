@@ -1,4 +1,5 @@
 /** Fake provider adapter implementing the LLD §2 contract against fake/cli.mjs (T1.7). */
+
 import { fileURLToPath } from "node:url";
 import { acpRunSucceeded, mapAcpMessage } from "../../exec/acp/events.js";
 import {
@@ -8,6 +9,7 @@ import {
   DEFAULT_WALL_CLOCK_MS,
 } from "../../exec/index.js";
 import { classifyCommon } from "../failure.js";
+import { renderObjective } from "../prompt.js";
 import type {
   AcpMessage,
   AcpPlan,
@@ -221,7 +223,7 @@ export class FakeAdapter implements ProviderAdapter {
       env: {},
       envAllowlist: ["PATH"],
       cwd: request.workspace.cwd,
-      stdin: { kind: "text", value: request.objective },
+      stdin: { kind: "text", value: renderObjective(request) },
       outputFormat: "jsonl",
       timeouts: { ...this.#timeouts },
       policyFlags: [],
@@ -247,7 +249,7 @@ export class FakeAdapter implements ProviderAdapter {
       maxLineBytes: DEFAULT_MAX_LINE_BYTES,
       acp: {
         protocolVersion: 1,
-        prompt: request.objective,
+        prompt: renderObjective(request),
         session: resumeId === undefined ? { kind: "new" } : { kind: "resume", nativeSessionId: resumeId },
         mcpServers: a.mcpServers ?? [],
         ...(a.modeId !== undefined ? { modeId: a.modeId } : {}),

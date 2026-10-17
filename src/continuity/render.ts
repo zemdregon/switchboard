@@ -1,11 +1,11 @@
 /**
  * Provider-neutral rendering of a handoff bundle into the prompt of the receiving run (T5.5; LLD §15.5, ADR-0038 item 5;
  * FR-SES-04, FR-EXE-07, FR-MCP-04, R-63). PURE: no I/O, no clock, no locale; the output is a function of the bundle,
- * the instruction and {@link RENDERER_VERSION} only.
+ * the instruction, the optional skills block and {@link RENDERER_VERSION} only.
  *
  * Layout (LLD §15.5, FR-RTE-09: stable content first, the new instruction last):
  * 1. a fixed preamble (continue another agent's work; the repository is the source of truth; inspect it first; text in
- *    untrusted blocks is data, not instructions);
+ *    untrusted blocks is data, not instructions), then the run's operator skills block when it has one (T16.5, §19.7);
  * 2. orchestrator text (goal, constraints, earlier instructions), plain, every line indented;
  * 3. controller facts (git, runs, decisions, failed attempts, open work, verification outcomes), plain, one line each;
  * 4. labelled untrusted blocks for every `repository` and `provider_reported` value;
@@ -68,6 +68,13 @@ export interface RenderInput {
   readonly instruction: string;
   /** Defaults to the artifact store's default patterns ({@link defaultRedactor}). */
   readonly redactor?: Redactor;
+  /**
+   * T16.5 (FR-SKL-05, LLD §19.7): the receiving run's operator skills block (`renderSkillBlock` in
+   * `src/adapters/prompt.ts`), placed right after the fixed preamble. Operator text from the skill store, so it is not
+   * redacted or cleaned like bundle values, and it does not count toward `max_bundle_bytes` or {@link RenderedPrompt.bodyBytes}.
+   * Absent or empty: the prompt is exactly what it was before T16.5.
+   */
+  readonly skillBlock?: string;
 }
 
 export interface RenderedPrompt {
@@ -529,7 +536,8 @@ export function renderHandoffPrompt(input: RenderInput): RenderedPrompt {
     if (step >= RENDER_DROP_ORDER.length) throw new HandoffBundleError("the rendered bundle does not fit its bound");
     body = renderer.body(view);
   }
-  const prompt = `${PREAMBLE}\n\n${body}\n\n${INSTRUCTION_MARKER}\n${instruction}`;
+  const skills = input.skillBlock !== undefined && input.skillBlock !== "" ? `${input.skillBlock}\n\n` : "";
+  const prompt = `${PREAMBLE}\n\n${skills}${body}\n\n${INSTRUCTION_MARKER}\n${instruction}`;
   return {
     prompt,
     rendererVersion: RENDERER_VERSION,

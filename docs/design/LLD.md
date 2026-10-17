@@ -976,11 +976,11 @@ it never holds a DB transaction and returns the current non-terminal envelope on
 published schema (`src/mcp/schemas.ts`) has no key, so a key is rejected as an unknown property (`INVALID_REQUEST`).
 Adding it back needs an SRS change first.
 
-*Proposed (2026-10-17, owner decision 58, FR-SKL-03; not built):* `delegate_task`, `continue_task` and `enqueue_work`
-gain the optional `skills`, `role` and `skill_defaults` fields. The contract is
-[§19](#19-switchboard-controlled-skills-m16-proposed); until T16.4 lands the published schemas refuse these fields as
-unknown properties. The `orchestrator` tool profile's `list_skills` and `get_skill` are built (T16.9, Delegated, not
-owner-approved; [§19.9](#199-mcp-tools-fr-skl-08)).
+*Built (T16.4, 2026-10-17, Delegated agent work, not owner-approved; owner decision 58, FR-SKL-03):*
+`delegate_task`, `continue_task` and `enqueue_work` gain the optional `skills`, `role` and `skill_defaults` fields. The
+contract is [§19](#19-switchboard-controlled-skills-m16-proposed); the published schemas accept these fields
+(`skills`, `role` and `skill_defaults` in `src/mcp/schemas.ts`). The `orchestrator` tool profile's `list_skills` and
+`get_skill` are built (T16.9, Delegated, not owner-approved; [§19.9](#199-mcp-tools-fr-skl-08)).
 
 Fails `INVALID_REQUEST` if the session has a non-terminal run holding the lease.
 
@@ -6603,8 +6603,8 @@ Done-when).
 
 *Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); partly built: the
 store, migration `0021` and state derivation (T16.1), the configuration keys and loader (T16.3), the operator CLI
-(T16.2) and the MCP tools with the §19.5 steps 2 to 4 resolver (T16.9), all Delegated, not owner-approved; admission
-and delivery Proposed).
+(T16.2), the MCP tools with the §19.5 steps 2 to 4 resolver (T16.9), admission (T16.4) and prompt-prefix delivery
+(T16.5), all Delegated, not owner-approved; native delivery (T16.6 and later) Proposed).
 Delegated mechanism, not owner-approved beyond the direction. The four limit defaults are Assumptions and their ranges
 are Delegated ([§19.3](#193-configuration-fr-skl-03-fr-skl-04-fr-skl-08)).* Requirements: FR-SKL-01 to
 FR-SKL-10. Business rules: [FRD](../requirements/FRD.md#3-business-rules) BR-52 to BR-56, V15, C8, WF-16. Tasks:
@@ -6829,6 +6829,22 @@ it is in the stable prefix (FR-RTE-09); a run with no prefix entries renders exa
 Entries keep their resolved order. The block is not part of `objective`, is not stored as prompt text, is not
 redacted by ADR-0042 (bodies were scanned at `add`) and does not count toward the objective's `maxLength`. A handoff
 prompt (§15) places the block after its fixed preamble in the same way.
+
+Implementation notes (T16.5, Delegated, not owner-approved):
+
+- `renderPrompt` renders the block for the adapter that renders constraints (Claude Code); `renderObjective` puts it
+  before the objective for the adapters that send the objective verbatim. The lifecycle reads the run's entries at
+  dispatch through a structurally typed `SkillDeliveryPort` (`skillDeliveryPort` in `src/cli/serve.ts`), records
+  `run_skill.delivery` and `delivered_at` and emits `skill_delivered` before spawn.
+- "Argv byte-identical" (§19.6) reads as: every argv word except the one that carries the prompt. Grok Build,
+  Antigravity, Kimi Code `-p`, Muse Code and OpenCode carry the prompt in one argv word, so that word gains the block;
+  the flags, the environment, its allowlist and the policy flags are byte-identical (`src/adapters/skill-prefix.test.ts`).
+- A run whose pinned skill cannot be read (missing or hash-mismatched store file) fails before spawn with
+  `TOOL_FAILURE` and `reason` `SKILL_DELIVERY_UNAVAILABLE` (fail closed). `serve` always wires the store; a composition
+  without it runs a run with pinned entries without the block and records each entry in `skill_delivered` as
+  `delivery: "skipped"`, `fallback_reason: "store_unavailable"` (never silently; its `run_skill` rows stay undelivered).
+- `skillDelivery(cell)` is declared in the adapter contract as an optional method returning `prompt_prefix`
+  (`skillDeliveryOf`, default for every adapter and cell); T16.6 widens it with `native`.
 
 ### 19.8 Exclusion and cleanup (FR-SKL-06)
 
