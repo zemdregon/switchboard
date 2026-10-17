@@ -20,6 +20,7 @@ import { sql as sql0019 } from "./0019_gc_orphan.js";
 import { sql as sql0020 } from "./0020_project_schedule.js";
 import { sql as sql0021 } from "./0021_skill_store.js";
 import { sql as sql0022 } from "./0022_dependency_seed.js";
+import { sql as sql0023 } from "./0023_ci_fix_cap.js";
 
 export interface Migration {
   readonly version: number;
@@ -53,4 +54,5 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 20, name: "project_schedule", sql: sql0020 },
   { version: 21, name: "skill_store", sql: sql0021 },
   { version: 22, name: "dependency_seed", sql: sql0022, foreignKeysOff: true },
+  { version: 23, name: "ci_fix_cap", sql: sql0023 },
 ];

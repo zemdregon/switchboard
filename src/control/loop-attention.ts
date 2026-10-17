@@ -23,6 +23,7 @@ export function loopBreakerControlFacts(
   return {
     metaSessionParked: (id) => isMetaSessionParked(ledger, id) || base.metaSessionParked(id),
     budgetExhausted: (id) => base.budgetExhausted(id),
+    ciFixStuck: (id) => base.ciFixStuck?.(id) ?? false,
   };
 }
 

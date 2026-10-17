@@ -13,9 +13,11 @@ import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger, type RunRecord, type RunState } from "../ledger/index.js";
 import {
   type ControlPlaneFacts,
+  ciFixControlFacts,
   DEFAULT_MAX_SUCCESSORS_PER_META_SESSION,
   DEFAULT_STALL_MINUTES,
   deriveNeedsAttention,
+  isCiFixStuck,
   matchingReasons,
   NEEDS_ATTENTION_PRIORITY,
   type NeedsAttentionFacts,
@@ -192,6 +194,28 @@ describe("needs_attention derives each of the five reasons from ledger rows (T14
     // No project resolution, no budget reason (fail closed).
     expect(attention(workspaceRun, control)).toEqual({ active: false });
   });
+
+  it("ci_fix_stuck: active stuck state flags runs of the project", () => {
+    const s = session();
+    const queued = run(s, "QUEUED");
+    const done = run(s, "SUCCEEDED");
+    const workspaceRun = run(session(null), "QUEUED", { projectId: null });
+    const otherProject = run(session("api"), "QUEUED", { projectId: "api" });
+
+    // Plant stuck ref in ci_trigger_ref_state
+    db.prepare(
+      `INSERT INTO ci_trigger_ref_state (project_id, publish_ref, consecutive_fixes, stuck, updated_at)
+       VALUES ('web', 'refs/heads/feature', 2, 1, '2026-10-17T00:00:00Z')`,
+    ).run();
+
+    const control = ciFixControlFacts(db);
+    expect(isCiFixStuck(db, "web")).toBe(true);
+    expect(isCiFixStuck(db, "api")).toBe(false);
+    expect(attention(queued, control)).toEqual({ active: true, reason: "ci_fix_stuck" });
+    expect(attention(done, control)).toEqual({ active: true, reason: "ci_fix_stuck" });
+    expect(attention(otherProject, control)).toEqual({ active: false });
+    expect(attention(workspaceRun, control)).toEqual({ active: false });
+  });
 });
 
 describe("needs_attention: no flag, priority and fail-closed defaults", () => {
@@ -221,22 +245,41 @@ describe("needs_attention: no flag, priority and fail-closed defaults", () => {
       metaSessionParked: true,
       newestInMetaSession: true,
       budgetExhausted: true,
+      ciFixStuck: true,
     };
     const later = { now: new Date(T0 + 60 * 60_000) };
     expect(NEEDS_ATTENTION_PRIORITY).toEqual([
       "budget_exhausted",
       "parked_loop",
+      "ci_fix_stuck",
       "awaiting_approval",
       "stalled",
       "failed_after_retry",
     ]);
-    expect(matchingReasons(all, later)).toEqual(["budget_exhausted", "parked_loop", "awaiting_approval", "stalled"]);
+    expect(matchingReasons(all, later)).toEqual([
+      "budget_exhausted",
+      "parked_loop",
+      "ci_fix_stuck",
+      "awaiting_approval",
+      "stalled",
+    ]);
     expect(deriveNeedsAttention(all, later)).toEqual({ active: true, reason: "budget_exhausted" });
     expect(deriveNeedsAttention({ ...all, budgetExhausted: false }, later)).toMatchObject({ reason: "parked_loop" });
     expect(deriveNeedsAttention({ ...all, budgetExhausted: false, metaSessionParked: false }, later)).toMatchObject({
+      reason: "ci_fix_stuck",
+    });
+    expect(
+      deriveNeedsAttention({ ...all, budgetExhausted: false, metaSessionParked: false, ciFixStuck: false }, later),
+    ).toMatchObject({
       reason: "awaiting_approval",
     });
-    const failed = { ...all, state: "FAILED" as const, budgetExhausted: false, newestInMetaSession: false };
+    const failed = {
+      ...all,
+      state: "FAILED" as const,
+      budgetExhausted: false,
+      newestInMetaSession: false,
+      ciFixStuck: false,
+    };
     expect(matchingReasons({ ...failed, pendingApproval: false }, later)).toEqual(["failed_after_retry"]);
   });
 
@@ -249,6 +292,7 @@ describe("needs_attention: no flag, priority and fail-closed defaults", () => {
       metaSessionParked: false,
       newestInMetaSession: true,
       budgetExhausted: false,
+      ciFixStuck: false,
     };
     expect(deriveNeedsAttention(facts, { now: new Date(T0) })).toEqual({ active: false });
     expect(
