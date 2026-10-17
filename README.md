@@ -873,11 +873,11 @@ member order is used only as the last tie-break.
   provider out and the model must resolve in exactly one enabled provider's registry.
 
 Refused with `INVALID_REQUEST` before anything runs: both fields, an unknown group, a group with no member for the named
-provider, and a model that resolves in no provider's registry, in several, or only unrestrictedly (the message says "name a provider for
-this model"). `continue_task` accepts neither field; a continuation follows its meta-session. Affinity still applies:
-a project whose provider and model are an eligible member keeps them; a group that does not contain them moves the
-project with `user_request`. `explain_route` names the group, the chosen member, each excluded member's code and one
-pacing line per subscribed provider.
+provider, and a model that resolves in no provider's registry, in several, or only unrestrictedly (the message says
+"name a provider for this model"). `continue_task` accepts neither field; a continuation follows its meta-session.
+Affinity still applies: a project whose provider and model are an eligible member keeps them; a group that does not
+contain them moves the project with `user_request`. `explain_route` names the group, the chosen member, each excluded
+member's code and one pacing line per subscribed provider.
 
 **What pacing shows.** `capacity.subscriptions` describes your own subscriptions: which providers share one, each
 window's length and reset (`fixed`, `rolling` or `provider_reported`) and an optional budget (`runs`,
