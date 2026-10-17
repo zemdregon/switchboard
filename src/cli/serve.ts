@@ -1167,6 +1167,9 @@ async function runDaemon(
       subjectBindings: new SubjectBindingStore(db, now ? { now } : {}),
       // T12.6 (FR-RAG-06): read-only search over a project's store; absent without an embedding backend (FR-RAG-04).
       ...(searchContext !== undefined ? { searchContext } : {}),
+      // T16.9 (FR-SKL-08, LLD §19.9): the skill store under `<data_dir>/skills/`, read-only; absent unless
+      // `skills.enabled`, so a disabled installation offers no skill tools.
+      ...(config.skills.enabled ? { skills: { db, dataDir: config.dataDir, settings: config.skills } } : {}),
     };
     mcp = await startStdioServer({ ...mcpDeps, clientId });
     mcp.server.onclose = () => resolveStop("mcp transport closed");
