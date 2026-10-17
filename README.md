@@ -143,7 +143,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#563](https://github.com/zemdregon/switchboard/pull/563)) are done on fakes. The trigger is off by default
   (`ci_trigger` in the configuration); `serve` reads CI status through the operator's logged-in `gh` CLI, polls only
   branches the project pushed, treats the CI text as untrusted and enqueues a work item under the trigger's client
-  ceiling. Switchboard reads no GitHub token. Schedules (T15.2, [#561](https://github.com/zemdregon/switchboard/pull/561))
+  ceiling. Switchboard reads no GitHub token. Consecutive fix-up items per published ref are capped (T15.5:
+  `ci_trigger.max_consecutive_fixes`, Assumption default 2): further failures are recorded without a work item and the
+  project is flagged needs-attention (`ci_fix_stuck`) until CI passes or the operator resets the counter.
+  Schedules (T15.2, [#561](https://github.com/zemdregon/switchboard/pull/561))
   are done on fakes: off by default, UTC cron, fired by `serve` before the CI poll, and listed or disabled with
   `switchboard schedule`. See
   [ROADMAP §6.14](docs/ROADMAP.md#614-m15-project-queue-schedules-and-ci-triggers-tasks).
