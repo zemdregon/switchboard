@@ -12,14 +12,16 @@ import { FakeAdapter } from "../adapters/fake/adapter.js";
 import type { ResolvedProfile } from "../adapters/index.js";
 import { AdapterRegistry } from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
+import { DEFAULT_MAX_CONSECUTIVE_FIXES } from "../config/ci-trigger.js";
 import {
   type CiTriggerProjectSettings,
   type CiTriggerSettings,
   loadConfig,
   type ResolvedProject,
 } from "../config/index.js";
+import { needsAttentionOf } from "../control/needs-attention.js";
 import { createIdGenerator } from "../ids/index.js";
-import { createLedger, type Ledger, openLedger, type TrustProfile } from "../ledger/index.js";
+import { createLedger, type Ledger, openLedger, type RunRecord, type TrustProfile } from "../ledger/index.js";
 import { RunLifecycle } from "../lifecycle/index.js";
 import type { AdmitWorkDeps } from "../queue/admission.js";
 import { runProjectWorkQueueTick } from "../queue/scheduler.js";
@@ -44,7 +46,15 @@ import {
   type CiStatusQuery,
 } from "./port.js";
 import { listPublishedRefs, parseGithubRemote } from "./published-refs.js";
-import { type CiTriggerDeps, CiTriggerPoller, pollCiTriggers } from "./trigger.js";
+import {
+  type CiTriggerDeps,
+  CiTriggerPoller,
+  ciFixControlFacts,
+  getCiTriggerRefState,
+  isCiFixStuck,
+  pollCiTriggers,
+  resetCiFixCounter,
+} from "./trigger.js";
 import { UNTRUSTED_SUMMARY_MAX, untrustedExternalText } from "./untrusted.js";
 
 const SHA_A = "a".repeat(40);
@@ -82,6 +92,7 @@ const trigger = (over: Partial<CiTriggerProjectSettings> = {}): CiTriggerProject
   projectId: "app",
   creatorClientId: "orch",
   enabled: true,
+  maxConsecutiveFixes: 2,
   template: {
     objective: "Fix CI on {{ci_publish_ref}} ({{ci_conclusion}})",
     trustProfile: "edit-untrusted",
@@ -95,6 +106,7 @@ const settings = (over: Partial<CiTriggerSettings> = {}): CiTriggerSettings => (
   pollIntervalSeconds: 120,
   ghBinary: "gh",
   useCheckRunsFallback: false,
+  maxConsecutiveFixes: 2,
   projects: [trigger()],
   ...over,
 });
@@ -131,6 +143,8 @@ function recordPush(
   opts: { project?: string; ref?: string; sha?: string; outcome?: string; remote?: string } = {},
 ): void {
   pushSeq++;
+  const mm = String(Math.floor(pushSeq / 60) % 60).padStart(2, "0");
+  const ss = String(pushSeq % 60).padStart(2, "0");
   f.db
     .prepare(
       `INSERT INTO git_push (id, run_id, project_id, context_id, remote, ref, head_sha, outcome, detail, requested_by,
@@ -143,7 +157,7 @@ function recordPush(
       opts.ref ?? REF,
       opts.sha ?? SHA_A,
       opts.outcome ?? "ACCEPTED",
-      `2026-10-16T00:00:${String(pushSeq % 60).padStart(2, "0")}.000Z`,
+      `2026-10-16T00:${mm}:${ss}.000Z`,
     );
 }
 
@@ -923,6 +937,7 @@ describe("ci_trigger configuration (T15.3)", () => {
       pollIntervalSeconds: 120,
       ghBinary: "gh",
       useCheckRunsFallback: false,
+      maxConsecutiveFixes: 2,
       projects: [],
     });
   });
@@ -931,6 +946,7 @@ describe("ci_trigger configuration (T15.3)", () => {
     const cfg = load({
       enabled: true,
       poll_interval_seconds: 300,
+      max_consecutive_fixes: 4,
       projects: [
         {
           project: "app",
@@ -942,11 +958,13 @@ describe("ci_trigger configuration (T15.3)", () => {
     expect(cfg.ciTrigger).toMatchObject({
       enabled: true,
       pollIntervalSeconds: 300,
+      maxConsecutiveFixes: 4,
       projects: [
         {
           projectId: "app",
           creatorClientId: "orch",
           enabled: true,
+          maxConsecutiveFixes: 4,
           template: { trustProfile: "edit-untrusted", constraints: [] },
         },
       ],
@@ -978,5 +996,178 @@ describe("ci_trigger configuration (T15.3)", () => {
     [{ gh_binary: "gh; rm -rf /" }, /gh_binary/u],
   ])("refuses an invalid section %#", (section, message) => {
     expect(() => load(section)).toThrow(message);
+  });
+});
+
+describe("CI-fix cap per FR-QUE-05 and ADR-0050 (T15.5)", () => {
+  let f: Fixture;
+  afterEach(() => f?.close());
+
+  it("Tests with an injected CiStatusPort returning failure on three successive heads: two items are enqueued and the third is recorded only; needs-attention shows ci_fix_stuck; a passing conclusion resets the counter; an operator reset re-enables it; no real gh runs", async () => {
+    f = openFixture();
+    const port = new FakeCiStatusPort();
+    const SHA_1 = "1".repeat(40);
+    const SHA_2 = "2".repeat(40);
+    const SHA_3 = "3".repeat(40);
+    const SHA_4 = "4".repeat(40);
+    const SHA_5 = "5".repeat(40);
+    const SHA_6 = "6".repeat(40);
+
+    const metaSessionId = f.ledger.createMetaSession({ objective: "Fix CI", projectId: "app" }).id;
+    const runRow = f.ledger.createRun({
+      metaSessionId,
+      state: "RUNNING",
+      trustProfile: "edit-untrusted",
+      policySnapshot: {},
+      request: {},
+      requestHash: "h",
+      clientId: "orch",
+      projectId: "app",
+    });
+    const run = f.ledger.getRunRecord(runRow.id) as RunRecord;
+
+    // 1st successive head: failure
+    recordPush(f, { sha: SHA_1 });
+    port.set(REF, obs("20001", "failure", REF, SHA_1));
+    const r1 = await pollCiTriggers(deps(f, port));
+    expect(r1.enqueued).toHaveLength(1);
+    expect(r1.recordedOnly).toEqual([]);
+    expect(isCiFixStuck(f.db, "app")).toBe(false);
+    expect(needsAttentionOf(f.ledger, run, { now: new Date(), control: ciFixControlFacts(f.db) })).toEqual({
+      active: false,
+    });
+    expect(getCiTriggerRefState(f.db, "app", REF)).toMatchObject({
+      consecutiveFixes: 1,
+      stuck: false,
+      lastExternalId: "20001",
+      lastConclusion: "failure",
+    });
+
+    // 2nd successive head: failure
+    recordPush(f, { sha: SHA_2 });
+    port.set(REF, obs("20002", "failure", REF, SHA_2));
+    const r2 = await pollCiTriggers(deps(f, port));
+    expect(r2.enqueued).toHaveLength(1);
+    expect(r2.recordedOnly).toEqual([]);
+    expect(isCiFixStuck(f.db, "app")).toBe(false);
+    expect(needsAttentionOf(f.ledger, run, { now: new Date(), control: ciFixControlFacts(f.db) })).toEqual({
+      active: false,
+    });
+    expect(getCiTriggerRefState(f.db, "app", REF)).toMatchObject({
+      consecutiveFixes: 2,
+      stuck: false,
+      lastExternalId: "20002",
+      lastConclusion: "failure",
+    });
+
+    // 3rd successive head: failure -> capped! 3rd is recorded only
+    recordPush(f, { sha: SHA_3 });
+    port.set(REF, obs("20003", "failure", REF, SHA_3));
+    const r3 = await pollCiTriggers(deps(f, port));
+    expect(r3.enqueued).toHaveLength(0);
+    expect(r3.recordedOnly).toEqual([{ projectId: "app", publishRef: REF, externalId: "20003" }]);
+    expect(isCiFixStuck(f.db, "app")).toBe(true);
+    expect(needsAttentionOf(f.ledger, run, { now: new Date(), control: ciFixControlFacts(f.db) })).toEqual({
+      active: true,
+      reason: "ci_fix_stuck",
+    });
+    expect(getCiTriggerRefState(f.db, "app", REF)).toMatchObject({
+      consecutiveFixes: 2,
+      stuck: true,
+      lastExternalId: "20003",
+      lastConclusion: "failure",
+    });
+
+    // Verify ci_trigger_event records all 3 events, and only the 3rd has work_item_id = null
+    const events = f.db
+      .prepare("SELECT external_id, work_item_id FROM ci_trigger_event WHERE project_id = ? ORDER BY observed_at, id")
+      .all("app") as { external_id: string; work_item_id: string | null }[];
+    expect(events).toHaveLength(3);
+    expect(events[0]).toMatchObject({ external_id: "20001", work_item_id: r1.enqueued[0]?.workItemId });
+    expect(events[1]).toMatchObject({ external_id: "20002", work_item_id: r2.enqueued[0]?.workItemId });
+    expect(events[2]).toMatchObject({ external_id: "20003", work_item_id: null });
+
+    // A passing conclusion resets the counter
+    recordPush(f, { sha: SHA_4 });
+    port.set(REF, obs("20004", "success", REF, SHA_4));
+    const r4 = await pollCiTriggers(deps(f, port));
+    expect(r4.enqueued).toHaveLength(0);
+    expect(r4.recordedOnly).toEqual([]);
+    expect(isCiFixStuck(f.db, "app")).toBe(false);
+    expect(needsAttentionOf(f.ledger, run, { now: new Date(), control: ciFixControlFacts(f.db) })).toEqual({
+      active: false,
+    });
+    expect(getCiTriggerRefState(f.db, "app", REF)).toMatchObject({
+      consecutiveFixes: 0,
+      stuck: false,
+    });
+
+    // Re-enqueues after reset
+    recordPush(f, { sha: SHA_5 });
+    port.set(REF, obs("20005", "failure", REF, SHA_5));
+    const r5 = await pollCiTriggers(deps(f, port));
+    expect(r5.enqueued).toHaveLength(1);
+    expect(r5.recordedOnly).toEqual([]);
+    expect(getCiTriggerRefState(f.db, "app", REF)).toMatchObject({
+      consecutiveFixes: 1,
+      stuck: false,
+    });
+
+    // Now push another failure so counter reaches cap (2), then a 3rd failure to get stuck again
+    const SHA_5B = "5b".repeat(20);
+    recordPush(f, { sha: SHA_5B });
+    port.set(REF, obs("20006", "failure", REF, SHA_5B));
+    await pollCiTriggers(deps(f, port));
+    expect(getCiTriggerRefState(f.db, "app", REF)?.consecutiveFixes).toBe(2);
+
+    const SHA_5C = "5c".repeat(20);
+    recordPush(f, { sha: SHA_5C });
+    port.set(REF, obs("20007", "failure", REF, SHA_5C));
+    const r5c = await pollCiTriggers(deps(f, port));
+    expect(r5c.enqueued).toHaveLength(0);
+    expect(r5c.recordedOnly).toHaveLength(1);
+    expect(isCiFixStuck(f.db, "app")).toBe(true);
+
+    // An operator reset re-enables it
+    resetCiFixCounter(f.db, { projectId: "app", publishRef: REF });
+    expect(isCiFixStuck(f.db, "app")).toBe(false);
+    expect(getCiTriggerRefState(f.db, "app", REF)).toMatchObject({
+      consecutiveFixes: 0,
+      stuck: false,
+    });
+
+    // Subsequent failure on a new head enqueues
+    recordPush(f, { sha: SHA_6 });
+    port.set(REF, obs("20008", "failure", REF, SHA_6));
+    const r6 = await pollCiTriggers(deps(f, port));
+    expect(r6.enqueued).toHaveLength(1);
+    expect(r6.recordedOnly).toEqual([]);
+    expect(getCiTriggerRefState(f.db, "app", REF)).toMatchObject({
+      consecutiveFixes: 1,
+      stuck: false,
+    });
+  });
+
+  it("unconfigured max_consecutive_fixes defaults to 2 and behavior without ci_trigger is byte-identical", async () => {
+    expect(DEFAULT_MAX_CONSECUTIVE_FIXES).toBe(2);
+    f = openFixture();
+    const disabledDeps = deps(f, new FakeCiStatusPort(), {
+      settings: {
+        enabled: false,
+        pollIntervalSeconds: 120,
+        ghBinary: "gh",
+        useCheckRunsFallback: false,
+        maxConsecutiveFixes: DEFAULT_MAX_CONSECUTIVE_FIXES,
+        projects: [],
+      },
+    });
+    expect(await pollCiTriggers(disabledDeps)).toEqual({
+      polled: 0,
+      enqueued: [],
+      recordedOnly: [],
+      duplicates: 0,
+      errors: [],
+    });
+    expect(isCiFixStuck(f.db, "app")).toBe(false);
   });
 });

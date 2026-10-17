@@ -733,6 +733,7 @@ const ciTriggerSchema = {
     poll_interval_seconds: { type: "integer", minimum: 0, maximum: 86400 },
     gh_binary: { type: "string", minLength: 1, maxLength: 4096, pattern: "^[^\\s;|&$`<>]+$" },
     use_check_runs_fallback: { type: "boolean" },
+    max_consecutive_fixes: { type: "integer", minimum: 1 },
     projects: {
       type: "array",
       maxItems: 256,
@@ -744,6 +745,7 @@ const ciTriggerSchema = {
           project: { type: "string", pattern: PROJECT_ID_PATTERN },
           client: { type: "string", minLength: 1 },
           enabled: { type: "boolean" },
+          max_consecutive_fixes: { type: "integer", minimum: 1 },
           template: {
             type: "object",
             additionalProperties: false,

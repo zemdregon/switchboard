@@ -1628,7 +1628,7 @@ Extend `$defs` in §3.0:
 ```jsonc
 { "$defs": {
   "needs_attention_reason": { "enum": [
-      "awaiting_approval", "parked_loop", "failed_after_retry", "stalled", "budget_exhausted" ] },
+      "awaiting_approval", "parked_loop", "ci_fix_stuck", "failed_after_retry", "stalled", "budget_exhausted" ] },
   "needs_attention": { "type": "object", "required": ["active"], "properties": {
       "active": { "type": "boolean" },
       "reason": { "$ref": "#/$defs/needs_attention_reason" } } },  // required when active is true
@@ -1856,19 +1856,20 @@ request and daemon application), `src/ledger/control-plane.ts` (migration 0018 r
 
 #### 3.4.5 Needs-attention derivation (FR-CTL-03)
 
-Closed reason list (exactly these five values):
+Closed reason list (FR-CTL-03, LLD §3.4.1; six values):
 
 | Reason | Derived when (ledger facts only) |
 | --- | --- |
 | `awaiting_approval` | Run `status` is `AWAITING_APPROVAL`, or a `PENDING` approval row exists for a run of this meta-session the caller may see |
 | `parked_loop` | Meta-session flag `parked_loop` is set (§3.4.6); the newest run shows this reason |
+| `ci_fix_stuck` | Consecutive CI fix-ups reached cap (`ci_trigger.max_consecutive_fixes`) on a published ref for this project (FR-QUE-05; T15.5) |
 | `failed_after_retry` | Run `FAILED` and `attempt` equals `control_plane.loop_breaker.max_successors_per_meta_session` or the meta-session is parked |
 | `stalled` | Run non-terminal, `RUNNING` or `LEASED`, and no `run_event` for this run in the last *T* minutes (§3.4.6); run is **not** cancelled |
 | `budget_exhausted` | Project (or global) budget refusal is active for admission (§3.4.6) |
 
-Multiple reasons may apply; the envelope and digest expose the highest-priority reason only (proposed order:
-`budget_exhausted`, `parked_loop`, `awaiting_approval`, `stalled`, `failed_after_retry`). Priority is **Proposed** for
-stable UI; T14.2 may adjust with tests.
+Multiple reasons may apply; the envelope and digest expose the highest-priority reason only (order:
+`budget_exhausted`, `parked_loop`, `ci_fix_stuck`, `awaiting_approval`, `stalled`, `failed_after_retry`).
+Priority is **Proposed** for stable UI; T14.2 may adjust with tests.
 
 **Implemented (T14.2, Delegated, not owner-approved).** `src/control/needs-attention.ts` derives the flag on read and
 keeps the order above (`NEEDS_ATTENTION_PRIORITY`); `get_run` and `list_runs` attach it to the envelope, and the digest
@@ -6172,9 +6173,10 @@ T7.12 pinning. The envelope's `provider.model` reports what the native session r
 
 ## 18. Project queue, schedules and CI triggers (M15, Proposed, T15.0)
 
-Design gate for FR-QUE-01 to 03, [ADR-0050](../adr/0050-ci-status-via-operator-gh-cli.md) (Proposed). Owner decisions 51
+Design gate for FR-QUE-01 to 05, [ADR-0050](../adr/0050-ci-status-via-operator-gh-cli.md) (Proposed). Owner decisions 51
 and 54. Everything here is **Proposed** and **Delegated** unless an SRS ID or a Proposed ADR fixes it. Implementation
-tasks: T15.1 (queue table and admission), T15.2 (schedules), T15.3 (CI trigger with a fake `CiStatusPort` in tests).
+tasks: T15.1 (queue table and admission), T15.2 (schedules), T15.3 (CI trigger with a fake `CiStatusPort` in tests),
+T15.5 (CI-fix cap, Done).
 
 This section is **not** the FR-CAP-04 bounded **run-admission** queue (COMP-RTE ingress while a run is `QUEUED`). M15
 adds a durable **project work queue**: pending objectives that become `delegate_task` admissions under the **creating**
@@ -6190,10 +6192,12 @@ client's identity and ceiling.
   "ci_trigger": {
     "enabled": false,                      // master default off (FR-QUE-03 scope is per project below)
     "poll_interval_seconds": 120,          // proposed target; 0 means disabled at operator level
-    "gh_binary": "gh" } }                   // resolved on PATH at serve startup; missing -> doctor warning
+    "gh_binary": "gh",                     // resolved on PATH at serve startup; missing -> doctor warning
+    "max_consecutive_fixes": 2 } }         // T15.5 (FR-QUE-05) cap per publish ref; overridable per project
 ```
 
-Per-project CI trigger settings live in ledger rows (§18.6), not in the static project config file, so dynamic projects
+Per-project CI trigger settings live in `ci_trigger.projects[]` in the operator configuration (`src/config/ci-trigger.ts`;
+T15.3 as-built, superseding the ledger-row design in §18.6 below), not in the static project config file, so dynamic projects
 can enable them without widening filesystem paths.
 
 ### 18.2 Queue work item record (FR-QUE-01)
@@ -6416,12 +6420,16 @@ from a read-only `git config --get remote.<name>.url`, github.com only), `untrus
 Delegated deviations from the Proposed design above, each to avoid a migration while T15.2 owns the next number:
 
 1. **No `project_ci_trigger` table.** The per-project trigger is operator configuration, `ci_trigger.projects[]`
-   (`project`, `client`, `enabled`, `template` with `objective`, `trust_profile` other than `privileged`, `constraints`;
-   `src/config/ci-trigger.ts`); `load.ts` refuses an unknown client, an unknown project or a client that does not list the
-   project. The `client` is the `creator_client_id`. A chat client cannot enable a trigger in v1.
-2. **No `ci_trigger_event` table.** Dedup is the work item itself: `source_kind = 'ci_trigger'`, `source_id =
-   ci:<external_id>`, idempotency key `ci_trigger:<project_id>:<external_id>`, checked per `(project_id, source_id)` and
-   written in the one enqueue transaction, so a crash leaves no half-written event to reconcile.
+   (`project`, `client`, `enabled`, `max_consecutive_fixes`, `template` with `objective`, `trust_profile` other than
+   `privileged`, `constraints`; `src/config/ci-trigger.ts`); `load.ts` refuses an unknown client, an unknown project
+   or a client that does not list the project. The `client` is the `creator_client_id`. A chat client cannot enable
+   a trigger in v1. T15.5 adds an optional top-level and per-project `max_consecutive_fixes` (Assumption default 2;
+   `DEFAULT_MAX_CONSECUTIVE_FIXES`).
+2. **No `ci_trigger_event` table (T15.3 as-built; superseded by T15.5 below).** At T15.3, dedup was the work item
+   itself: `source_kind = 'ci_trigger'`, `source_id = ci:<external_id>`, idempotency key
+   `ci_trigger:<project_id>:<external_id>`, checked per `(project_id, source_id)` and written in the one enqueue
+   transaction, so a crash leaves no half-written event to reconcile. T15.5 (migration **0023**) adds the
+   `ci_trigger_event` table for observations and audit alongside the work-item dedup, which is kept.
 3. **`untrusted_summary` is not stored on its own.** An operator-forwarded summary (injected source; no operator ingress
    CLI in v1) is NFC-normalised, stripped of control characters, redacted with the artifact redactor, capped at 500
    characters, and reaches storage only inside the objective, as a block labelled `untrusted_external_text`, when the
@@ -6433,6 +6441,15 @@ published tip SHA (else nothing applies). The G3 jq filter emits one object per 
 because `--paginate` applies `--jq` per page; the latest by `completed_at` is chosen in code. Poll errors are reason codes
 on `CiTriggerPoller.lastErrors` and in the `serve` log; a `doctor` check is not built. Tests: `src/ci/ci-trigger.test.ts`
 (matrix C1–C18 on a fake port, a fake `gh` runner and a fake `gh` script).
+
+**CI-fix cap (T15.5, FR-QUE-05; Delegated, not owner-approved).** Consecutive fix-up work items for a published ref are
+capped by `ci_trigger.max_consecutive_fixes` (Assumption default 2). Forward ledger migration **0023**
+(`src/ledger/migrations/0023_ci_fix_cap.ts`) adds `ci_trigger_event` (ids `cte_*`; `id`, `project_id`, `publish_ref`, `external_id`,
+`conclusion`, `untrusted_summary`, `observed_at`, `work_item_id`) and `ci_trigger_ref_state` (`project_id`, `publish_ref`,
+`consecutive_fixes`, `stuck`, `last_external_id`, `last_conclusion`, `reset_at`, `updated_at`). When `consecutive_fixes`
+reaches the cap, further failures on that ref are recorded in `ci_trigger_event` with `work_item_id = NULL` without enqueuing
+work, and `ci_trigger_ref_state.stuck` is set to 1, raising the `ci_fix_stuck` needs-attention flag (FR-CTL-03; §3.4.5).
+A passing conclusion or an operator reset (`resetCiFixCounter`) resets `consecutive_fixes` and `stuck` to 0.
 
 ### 18.7 Scheduler integration (COMP-RTE)
 
