@@ -244,9 +244,16 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#459](https://github.com/zemdregon/switchboard/pull/459)) and a Git declaration (T4.67,
   [#464](https://github.com/zemdregon/switchboard/pull/464)), all on synthetic fixtures (README
   [Kimi Code CLI](#kimi-code-cli-milestone-4), ROADMAP T4.62 to T4.69); live smoke, live malicious leg and
-  `adapters validate` remain operator work (T4.68). Other M4 providers are
-  still catching up on those
-  legs. Manifests still admit no version until `switchboard adapters validate` passes a real CLI (operator tasks).
+  `adapters validate` remain operator work (T4.68). Manifests still admit no version until
+  `switchboard adapters validate` passes a real CLI (operator tasks). M4 stays `Partial` (T4.90 closure, 2026-10-17,
+  Delegated). Open items, by blocker: operator live legs (T4.12 on a Mac, T4.28, T4.38, T4.48, T4.58, T4.68; the
+  2026-10-17 live runs found that `adapters validate` compiles under `inspect-untrusted`, which Grok Build, Cursor
+  and OpenCode cannot run by design, so as built it cannot pass for them); rows waiting on uncaptured live shapes
+  (T4.23, T4.26, T4.33, T4.35, T4.36, T4.43, T4.51, T4.53, T4.56, T4.63, T4.64, T4.66); README rows final after their
+  live legs
+  (T4.29, T4.39, T4.49, T4.59, T4.69); Muse Code (Should: T4.71 and T4.78 need Meta access, Q-27; T4.73 is partial
+  until the T4.71 capture; T4.76 is blocked because the adapter has no denial or tool-call record to end a hostile
+  stream `PERMISSION_BLOCKED`; T4.79 is final after T4.78).
   Outside an approved `privileged` bypass scope every profile is ineligible for the new providers, except that Kimi
   Code also compiles a `privileged` scope without `bypass` through `kimi acp` (ADR-0049). See
   [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks).

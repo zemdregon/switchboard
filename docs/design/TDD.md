@@ -1477,6 +1477,12 @@ ineligible for it, never downgraded). Bypass flags (`--dangerously-skip-permissi
 `--always-approve`, `--approve-mcps`, `--full-auto`) are never emitted outside an approved `privileged` run (FR-POL-03).
 Version ranges come from compliance manifests, not this table (FR-ADP-03, FR-POL-07).
 
+*M4 closure note (T4.90, 2026-10-17, Delegated, not owner-approved):* the first sentence above no longer holds for
+the M4 subsections. §4.3 to §4.8 also cite their spike notes (for example the Kimi Code `K` and Muse Code source
+tags) and dated live-check notes under `docs/research/` (T4.21, T4.31, T4.41, T4.51, T4.61, T4.68); a cell marked
+observed cites that note, not [R2]. The §4.7 heading keeps "blocked by B-1" as a stable link anchor; B-1 cleared on
+2026-10-15 (Delegated, [ADR-0049](../adr/0049-kimi-code-transport-and-bypass-class.md)).
+
 ### 4.1 Claude Code (M2)
 
 | Aspect | Detail |
