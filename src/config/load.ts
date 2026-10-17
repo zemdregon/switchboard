@@ -43,6 +43,32 @@ export { ConfigError } from "./errors.js";
 /** Defaults: NFR-PERF-03 (4 global, 1 per provider; proposed targets). */
 export const DEFAULT_GLOBAL_CONCURRENCY = 4;
 export const DEFAULT_PER_PROVIDER_CONCURRENCY = 1;
+/** Assumption (Delegated, T3.22): `limits.verification_slots` when another `limits.verification_*` key is set. */
+export const DEFAULT_VERIFICATION_SLOTS = 2;
+/** Assumption (Delegated, T3.22): `limits.verification_nice` when another `limits.verification_*` key is set. */
+export const DEFAULT_VERIFICATION_NICE = 10;
+
+/** T3.22 (FR-EXE-09): the resolved verification limiter (the lifecycle's `VerificationLimits`). */
+export interface ResolvedVerificationLimits {
+  slots: number;
+  nice: number;
+  env: Record<string, string>;
+}
+
+/** T3.22: `limits.verification_*` → the lifecycle's limiter, or nothing when no such key is set. */
+function resolveVerificationLimits(limits: SwitchboardConfig["limits"]): {
+  verificationLimits?: ResolvedVerificationLimits;
+} {
+  const { verification_slots: slots, verification_nice: nice, verification_env: env } = limits ?? {};
+  if (slots === undefined && nice === undefined && env === undefined) return {};
+  return {
+    verificationLimits: {
+      slots: slots ?? DEFAULT_VERIFICATION_SLOTS,
+      nice: nice ?? DEFAULT_VERIFICATION_NICE,
+      env: { ...env },
+    },
+  };
+}
 
 export interface ResolvedConfig {
   /** Absolute path of the config file that was loaded. */
@@ -53,6 +79,11 @@ export interface ResolvedConfig {
   allowedRoots: string[];
   mcpClients: ReadonlyMap<string, ResolvedMcpClient>;
   limits: { globalConcurrency: number; perProviderConcurrency: number };
+  /**
+   * T3.22 (FR-EXE-09, LLD §8.1): the verification limiter; undefined unless the config sets a `limits.verification_*`
+   * key, so an unconfigured controller verifies exactly as before. Unset keys take the Assumption defaults.
+   */
+  verificationLimits?: ResolvedVerificationLimits;
   /** Keyed by config provider id. `concurrency` is the T6.9 per-provider slot limit, absent when not set. */
   providers: ReadonlyMap<string, { enabled: boolean; weight: number | undefined; concurrency?: number }>;
   /** `providers.<id>.models` blocks (T4.5, FR-ADP-05, LLD §2.1), keyed by config provider id; only providers that set one. */
@@ -492,6 +523,7 @@ export function loadConfig(
       globalConcurrency: cfg.limits?.global_concurrency ?? DEFAULT_GLOBAL_CONCURRENCY,
       perProviderConcurrency: cfg.limits?.per_provider_concurrency ?? DEFAULT_PER_PROVIDER_CONCURRENCY,
     },
+    ...resolveVerificationLimits(cfg.limits),
     retention: {
       days: cfg.retention?.days ?? DEFAULT_RETENTION_DAYS,
       intervalMs: parseRetentionInterval(cfg.retention?.interval ?? DEFAULT_RETENTION_INTERVAL),

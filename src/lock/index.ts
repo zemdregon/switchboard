@@ -106,3 +106,14 @@ export function inspectDataDirLock(dataDir: string): LockStatus {
   if (pid !== undefined && pidAlive(pid)) return { state: "held", pid, lockPath };
   return { state: "stale", pid, lockPath };
 }
+
+export {
+  type AcquireSlotOptions,
+  acquireSlot,
+  SLOT_POLL_MS,
+  type SlotLease,
+  SlotLockError,
+  type SlotLockOptions,
+  slotAddress,
+  tryAcquireSlot,
+} from "./slots.js";

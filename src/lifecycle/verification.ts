@@ -16,7 +16,12 @@
  * - **Output.** Each stream is captured up to {@link VERIFICATION_OUTPUT_CAP_BYTES} and truncated with a marker. It is
  *   stored only in the `test_report` artifact, redacted by the artifact store's redactor before it is embedded in JSON
  *   and again when stored; run events and the envelope get exit codes and outcomes only.
+ * - **Slots (T3.22, FR-EXE-09).** Only when {@link VerificationOptions.limits} is set: the stage first takes one
+ *   host-wide verification slot (`src/lock/slots.ts`) and holds it until its last command ends. The wait is part of the
+ *   stage's wall clock; a wait that outlasts it ends the stage `timeout` with every command `not_run`. The commands run
+ *   at the configured lower priority and get the configured parallelism variables through the allowlist.
  */
+import { getPriority, setPriority } from "node:os";
 import {
   DEFAULT_KILL_GRACE_MS,
   findOnPath,
@@ -26,6 +31,7 @@ import {
   wrapOuterSandboxVerification,
 } from "../exec/index.js";
 import { SIGNING_AGENT_VARIABLES } from "../git/sign.js";
+import { acquireSlot, type SlotLease, type SlotLockOptions } from "../lock/index.js";
 
 /** Proposed (Delegated): per-stream capture bound for one verification command (LLD §8.1). */
 export const VERIFICATION_OUTPUT_CAP_BYTES = 1024 * 1024;
@@ -38,9 +44,27 @@ export const MAX_VERIFICATION_ARG_LENGTH = 4096;
 export const VERIFICATION_COMMAND_EVENT = "verification_command";
 /** `run_event` type: the command whose process group is now recorded on the run (index and pid only). */
 export const VERIFICATION_STARTED_EVENT = "verification_command_started";
+/** `run_event` type (T3.22, FR-EXE-09): the run found every verification slot held and is waiting in VERIFYING. */
+export const VERIFICATION_WAIT_EVENT = "verification_wait";
+
+/**
+ * T3.22 (FR-EXE-09): the host-wide verification limiter. Absent (no `limits.verification_*` key) means no slot, no
+ * priority change and no extra variable: the stage is exactly the T3.10 one.
+ */
+export interface VerificationLimits {
+  /** Slots shared by the verification stages of every run of this operator account on the host. */
+  readonly slots: number;
+  /** Added to the controller's niceness for each command (like `nice -n`), capped at 19; 0 leaves it unchanged. */
+  readonly nice: number;
+  /** Operator-declared parallelism variables (for example `VITEST_MAX_WORKERS`), added to the allowlist with values. */
+  readonly env: Readonly<Record<string, string>>;
+  /** Lock placement (tests); default the host-wide `default` scope. */
+  readonly lock?: Omit<SlotLockOptions, "slots"> | undefined;
+}
 
 export type VerificationCommandOutcome = "passed" | "failed" | "timeout" | "cancelled" | "error" | "not_run";
-export type VerificationOutcome = "passed" | "failed" | "cancelled";
+/** `timeout` (T3.22): the wait for a verification slot outlasted the run's wall clock; no command ran. */
+export type VerificationOutcome = "passed" | "failed" | "cancelled" | "timeout";
 
 export interface VerificationCommandResult {
   readonly index: number;
@@ -89,6 +113,10 @@ export interface VerificationOptions {
   readonly outerSandbox?: OuterSandboxAvailability | undefined;
   /** Optional sandbox wrapper transform (for tests or custom wrapping). */
   readonly wrapSandbox?: ((argv: readonly string[], cwd: string) => readonly string[]) | undefined;
+  /** T3.22 (FR-EXE-09): the verification limiter; absent means none. */
+  readonly limits?: VerificationLimits | undefined;
+  /** T3.22: called once when the stage starts waiting for a slot (record `verification_wait`). */
+  readonly onSlotWait?: ((info: { slots: number }) => void) | undefined;
 }
 
 export interface VerificationRun {
@@ -151,109 +179,154 @@ export function startVerification(opts: VerificationOptions): VerificationRun {
     }
   }
 
+  const limits = opts.limits;
+  const envAllowlist = limits
+    ? verificationEnvAllowlist([...opts.envAllowlist, ...Object.keys(limits.env)])
+    : opts.envAllowlist;
+  const baseEnv = limits ? { ...(opts.baseEnv ?? process.env), ...limits.env } : opts.baseEnv;
+  const lower = (pid: number): void => {
+    if (!limits || limits.nice <= 0) return;
+    try {
+      setPriority(pid, Math.min(19, getPriority() + limits.nice));
+    } catch {
+      // Best effort: the command may already have exited; a priority is not a security control.
+    }
+  };
+
   const done = (async (): Promise<VerificationResult> => {
     const results: VerificationCommandResult[] = [];
     let stop: VerificationOutcome | undefined;
     let internalError = false;
-    for (const [index, argv] of opts.commands.entries()) {
-      const skipped = (outcome: VerificationCommandOutcome): VerificationCommandResult => ({
-        index,
-        argv,
-        outcome,
-        exitCode: null,
-        signal: null,
-        durationMs: 0,
-        stdout: Buffer.alloc(0),
-        stderr: Buffer.alloc(0),
-        stdoutTruncated: false,
-        stderrTruncated: false,
-        internalError: false,
-      });
-      if (stop !== undefined) {
-        results.push(skipped("not_run"));
-        continue;
+    let slot: SlotLease | undefined;
+    if (limits && opts.commands.length > 0) {
+      let got: SlotLease | "timeout" | "cancelled";
+      try {
+        got = await acquireSlot({
+          ...limits.lock,
+          slots: limits.slots,
+          deadline,
+          cancelled: () => cancelled,
+          onWait: () => opts.onSlotWait?.({ slots: limits.slots }),
+        });
+      } catch {
+        // A slot that cannot be set up is a controller-side problem (TOOL_FAILURE), never a run without a slot.
+        got = "timeout";
+        internalError = true;
       }
-      if (cancelled) {
-        stop = "cancelled";
-        results.push(skipped("not_run"));
-        continue;
-      }
-      if (isConfined && !opts.wrapSandbox && (!bwrapAvailable || !bwrapPath)) {
-        stop = "failed";
-        const failureResult: VerificationCommandResult = {
-          ...skipped("error"),
-          stderr: Buffer.from("outer sandbox required for verification but bubblewrap is unavailable\n"),
+      if (typeof got === "string") {
+        stop = internalError ? "failed" : got;
+      } else slot = got;
+    }
+    try {
+      for (const [index, argv] of opts.commands.entries()) {
+        const skipped = (outcome: VerificationCommandOutcome): VerificationCommandResult => ({
+          index,
+          argv,
+          outcome,
+          exitCode: null,
+          signal: null,
+          durationMs: 0,
+          stdout: Buffer.alloc(0),
+          stderr: Buffer.alloc(0),
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          internalError: false,
+        });
+        if (stop !== undefined) {
+          results.push(skipped("not_run"));
+          continue;
+        }
+        if (cancelled) {
+          stop = "cancelled";
+          results.push(skipped("not_run"));
+          continue;
+        }
+        if (isConfined && !opts.wrapSandbox && (!bwrapAvailable || !bwrapPath)) {
+          stop = "failed";
+          const failureResult: VerificationCommandResult = {
+            ...skipped("error"),
+            stderr: Buffer.from("outer sandbox required for verification but bubblewrap is unavailable\n"),
+          };
+          results.push(failureResult);
+          opts.onCommandDone?.(failureResult);
+          continue;
+        }
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          stop = "failed";
+          const r = skipped("timeout");
+          results.push(r);
+          opts.onCommandDone?.(r);
+          continue;
+        }
+        const started = Date.now();
+        const bwrapExec = bwrapPath ?? "bwrap";
+        const spawnArgv = isConfined
+          ? opts.wrapSandbox
+            ? opts.wrapSandbox(argv, opts.cwd)
+            : wrapOuterSandboxVerification(bwrapExec, opts.cwd, argv)
+          : argv;
+        current = supervise({
+          argv: spawnArgv,
+          cwd: opts.cwd,
+          envAllowlist,
+          ...(baseEnv ? { baseEnv } : {}),
+          wallClockMs: remaining,
+          idleMs: remaining + 1, // no idle timeout: only the wall clock bounds a command
+          killGraceMs: opts.killGraceMs ?? DEFAULT_KILL_GRACE_MS,
+          maxCaptureBytes: cap,
+          ...(opts.onSpawn || limits
+            ? {
+                onSpawn: (info: { pid: number; pgid: number }) => {
+                  lower(info.pid);
+                  opts.onSpawn?.(index, info);
+                },
+              }
+            : {}),
+        });
+        // A cancel that raced the spawn must still stop this command.
+        if (cancelled) void current.cancel();
+        const r = await current.result;
+        current = undefined;
+        let outcome: VerificationCommandOutcome;
+        switch (r.outcome) {
+          case "exited":
+            outcome = r.exitCode === 0 ? "passed" : "failed";
+            break;
+          case "timeout":
+            outcome = "timeout";
+            break;
+          case "cancelled":
+            outcome = "cancelled";
+            break;
+          case "crashed":
+            outcome = "failed";
+            break;
+          default:
+            outcome = "error"; // spawn_error, internal_error (protocol_error cannot happen: stdout is not parsed)
+        }
+        const isInternal = r.outcome === "internal_error";
+        internalError ||= isInternal;
+        const result: VerificationCommandResult = {
+          index,
+          argv,
+          outcome,
+          exitCode: r.exitCode,
+          signal: r.signal,
+          durationMs: Date.now() - started,
+          stdout: r.stdoutTruncated ? Buffer.concat([r.stdout, marker(cap)]) : r.stdout,
+          stderr: r.stderrTruncated ? Buffer.concat([r.stderr, marker(cap)]) : r.stderr,
+          stdoutTruncated: r.stdoutTruncated,
+          stderrTruncated: r.stderrTruncated,
+          internalError: isInternal,
         };
-        results.push(failureResult);
-        opts.onCommandDone?.(failureResult);
-        continue;
+        results.push(result);
+        opts.onCommandDone?.(result);
+        if (outcome === "cancelled") stop = "cancelled";
+        else if (outcome !== "passed") stop = "failed";
       }
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) {
-        stop = "failed";
-        const r = skipped("timeout");
-        results.push(r);
-        opts.onCommandDone?.(r);
-        continue;
-      }
-      const started = Date.now();
-      const bwrapExec = bwrapPath ?? "bwrap";
-      const spawnArgv = isConfined
-        ? opts.wrapSandbox
-          ? opts.wrapSandbox(argv, opts.cwd)
-          : wrapOuterSandboxVerification(bwrapExec, opts.cwd, argv)
-        : argv;
-      current = supervise({
-        argv: spawnArgv,
-        cwd: opts.cwd,
-        envAllowlist: opts.envAllowlist,
-        ...(opts.baseEnv ? { baseEnv: opts.baseEnv } : {}),
-        wallClockMs: remaining,
-        idleMs: remaining + 1, // no idle timeout: only the wall clock bounds a command
-        killGraceMs: opts.killGraceMs ?? DEFAULT_KILL_GRACE_MS,
-        maxCaptureBytes: cap,
-        ...(opts.onSpawn ? { onSpawn: (info: { pid: number; pgid: number }) => opts.onSpawn?.(index, info) } : {}),
-      });
-      // A cancel that raced the spawn must still stop this command.
-      if (cancelled) void current.cancel();
-      const r = await current.result;
-      current = undefined;
-      let outcome: VerificationCommandOutcome;
-      switch (r.outcome) {
-        case "exited":
-          outcome = r.exitCode === 0 ? "passed" : "failed";
-          break;
-        case "timeout":
-          outcome = "timeout";
-          break;
-        case "cancelled":
-          outcome = "cancelled";
-          break;
-        case "crashed":
-          outcome = "failed";
-          break;
-        default:
-          outcome = "error"; // spawn_error, internal_error (protocol_error cannot happen: stdout is not parsed)
-      }
-      const isInternal = r.outcome === "internal_error";
-      internalError ||= isInternal;
-      const result: VerificationCommandResult = {
-        index,
-        argv,
-        outcome,
-        exitCode: r.exitCode,
-        signal: r.signal,
-        durationMs: Date.now() - started,
-        stdout: r.stdoutTruncated ? Buffer.concat([r.stdout, marker(cap)]) : r.stdout,
-        stderr: r.stderrTruncated ? Buffer.concat([r.stderr, marker(cap)]) : r.stderr,
-        stdoutTruncated: r.stdoutTruncated,
-        stderrTruncated: r.stderrTruncated,
-        internalError: isInternal,
-      };
-      results.push(result);
-      opts.onCommandDone?.(result);
-      if (outcome === "cancelled") stop = "cancelled";
-      else if (outcome !== "passed") stop = "failed";
+    } finally {
+      await slot?.release();
     }
     return {
       outcome: stop ?? (cancelled ? "cancelled" : "passed"),

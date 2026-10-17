@@ -2600,6 +2600,33 @@ T11, T14) in `src/lifecycle/verification.ts`, driven by `src/lifecycle/lifecycle
   `PROCESS_CRASH` (cause `controller_restart`) through T14 and T16; the commands are never run again. A recorded
   operator cancel ends it CANCELLED instead.
 - **Workspace.** Files the commands write are part of the post-run checkpoint, like the agent's edits (§5).
+- **Verification slots (T3.22, FR-EXE-09).** *As built 2026-10-17 (Delegated agent work, not owner-approved; every
+  choice below is Proposed).* Off unless the configuration sets a `limits.verification_*` key, so an unconfigured
+  controller verifies exactly as described above. Keys: `verification_slots` (1 to 64, Assumption default 2),
+  `verification_nice` (0 to 19, Assumption default 10) and `verification_env` (at most 16 upper-case names with string
+  values of at most 256 characters; `PATH`, `HOME`, `GIT_*`, `LD_*`, `DYLD_*`, `NODE_OPTIONS` and the signing and agent
+  variables are refused). The defaults apply only once any of the three keys is set.
+  - *Slot.* Before its first command the stage takes one slot and holds it until its last command ends
+    (`src/lock/slots.ts`). A slot is a Unix-domain socket the controller listens on: on Linux an abstract-namespace
+    name (`switchboard-<uid>-verification-default-<i>`), elsewhere a socket file in a `0700` directory
+    `<tmpdir>/switchboard-<uid>/verification-slots` (refused if another user owns it or others can write it). Binding is
+    atomic and the kernel closes the socket when the holder dies, `SIGKILL` included; no ledger row is involved. Slots
+    are shared by every controller of the same operator account on the host; the uid in the name keeps another account
+    from occupying them. A verification command that outlives a crashed controller no longer holds a slot;
+    reconciliation kills it at the next start as above. On non-Linux hosts two waiters clearing the same stale socket
+    file at once can, rarely, both bind; the cost is one extra concurrent command.
+  - *Wait.* When every slot is held the run stays VERIFYING, appends one `verification_wait` event `{slots}` and retries
+    every 100 ms (no FIFO order). The wait is inside the stage's wall clock; a wait that outlasts it ends the stage
+    with `outcome: "timeout"` in the `test_report`, every command `not_run`, and the run FAILED `PROCESS_TIMEOUT` through
+    T14 and T16. A cancel while waiting ends the run CANCELLED without running a command. A slot that cannot be set up
+    (for example an unsafe socket directory) is a controller-side error: `TOOL_FAILURE`, nothing run.
+  - *Priority and variables.* Each command's process is reniced by `verification_nice` relative to the controller's
+    niceness (capped at 19) right after spawn, before any output is read; descendants inherit it. This is best effort
+    (a command that exits first is not an error) and is not a security control. `verification_env` names are added to
+    the command's allowlist (FR-EXE-07) with their configured values, which override the controller's environment;
+    they are never given to the provider process. Agent-run test commands take no slot (Q-104, Delegated default).
+  - *Evidence.* `src/lock/slots.test.ts`, `src/config/verification-limits.test.ts` and the "verification slots (T3.22)"
+    tests in `src/lifecycle/verification.test.ts`.
 
 ### 8.2 ACP stdio transport (M4, Proposed, T4.7)
 

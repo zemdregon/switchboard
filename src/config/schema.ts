@@ -111,7 +111,16 @@ export interface SwitchboardConfig {
     /** T14.11 (FR-CTL-11): `orchestrator` (default) or `console`. */
     tool_profile?: ToolProfile;
   }[];
-  limits?: { global_concurrency?: number; per_provider_concurrency?: number };
+  limits?: {
+    global_concurrency?: number;
+    per_provider_concurrency?: number;
+    /** T3.22 (FR-EXE-09): host-wide verification slots. Any `verification_*` key turns the limiter on. */
+    verification_slots?: number;
+    /** T3.22: niceness added to verification commands; 0 leaves their priority unchanged. */
+    verification_nice?: number;
+    /** T3.22: parallelism variables (for example `VITEST_MAX_WORKERS`) given to verification commands only. */
+    verification_env?: Record<string, string>;
+  };
   providers?: Partial<
     Record<
       ProviderId,
@@ -502,6 +511,19 @@ export const configSchema = {
       properties: {
         global_concurrency: { type: "integer", minimum: 1, maximum: 64 },
         per_provider_concurrency: { type: "integer", minimum: 1, maximum: 64 },
+        // T3.22 (FR-EXE-09, LLD §8.1). Bounds are Proposed sanity limits (Delegated).
+        verification_slots: { type: "integer", minimum: 1, maximum: 64 },
+        verification_nice: { type: "integer", minimum: 0, maximum: 19 },
+        verification_env: {
+          type: "object",
+          maxProperties: 16,
+          // Upper-case names only; never Git, loader, signing/agent or the allowlist's own PATH/HOME (defence in depth).
+          propertyNames: {
+            pattern: "^[A-Z][A-Z0-9_]{0,63}$",
+            not: { pattern: "^(GIT_|LD_|DYLD_|PATH$|HOME$|GNUPGHOME$|GPG_AGENT_INFO$|SSH_AUTH_SOCK$|NODE_OPTIONS$)" },
+          },
+          additionalProperties: { type: "string", maxLength: 256, pattern: "^[^\\u0000]*$" },
+        },
       },
     },
     providers: {
