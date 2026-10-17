@@ -109,3 +109,14 @@ block, the 2026-10-14 live checks and owner decision 56, all cited directly).
   the SDD puts FR-CTL-12, webhook sink authorization, under COMP-OPS, not COMP-MCP), and the HLD rows are loose
   summaries rather than the traceability owner (the SDD covers every one of these IDs, and
   `node scripts/check-docs.mjs` passes). It does not block PR #641.
+
+## 10. M7 wave-B planning notes vs Done rows (pre-existing, not from PR #645)
+
+- The §6.12 sequencing notes still say "T7.8 is blocked on T7.12 (its row)", that T7.9 and T7.12 "wait for
+  `src/adapters/**`", and (in §6.12.1) that "T7.9 and T7.12 wait for `src/adapters/**` (T7.12: Q-90)".
+- The T7.8, T7.9 and T7.12 rows themselves all record `Done`/`Done on fakes` (2026-10-14 and 2026-10-16), and the M7
+  milestone row agrees.
+- Both wordings are present on `origin/main`, so the contradiction predates PR #645 (which only flips T7.13 to Done
+  and does not touch the wave notes). Left unchanged: the notes are planning history, and reconciling them means
+  restating other tasks' sequencing, which is the roadmap owner's call. It does not block PR #645 (T7.13's own
+  evidence is the T7.13 status block, cited directly).
