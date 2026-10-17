@@ -8,8 +8,20 @@ import type { CliIo } from "../cli/io.js";
 import { ModelRegistry } from "../models/registry.js";
 import { SCORE_TERMS } from "../routing/score.js";
 import { loadConfig } from "./load.js";
-import { DEFAULT_PACING_WEIGHT, readModelGroupsFromConfigPath, resolveModelGroups, resolveRouting } from "./routing.js";
-import { MAX_GROUP_MEMBERS, MAX_MODEL_GROUPS, MODEL_GROUP_NAME_PATTERN } from "./schema.js";
+import {
+  DEFAULT_PACING_WEIGHT,
+  groupMembersFor,
+  modelGroupsOf,
+  readModelGroupsFromConfigPath,
+  resolveModelGroups,
+  resolveRouting,
+} from "./routing.js";
+import {
+  MAX_GROUP_MEMBERS,
+  MAX_MODEL_GROUPS,
+  MODEL_GROUP_NAME_PATTERN,
+  type ModelGroupsConfigInput,
+} from "./schema.js";
 
 // T7.13 (FR-RTE-10, ADR-0055, LLD §17.7): Model groups configuration and usage pacing weight.
 
@@ -555,5 +567,38 @@ describe("source scan test: no group, tier or model name in source, defaults or 
       }
     }
     expect(allViolations).toEqual([]);
+  });
+});
+
+// T7.14 fix: one resolution path for the MCP server and queue admission, and config-to-adapter id mapping.
+describe("modelGroupsOf and groupMembersFor (T7.14; FR-RTE-11, LLD §17.7)", () => {
+  const raw: ModelGroupsConfigInput = { cheap: { members: [{ provider: "claude-code", model: "haiku-x" }] } };
+
+  it("takes each fallback only when the one before it is absent, reaching the config path", () => {
+    const { configPath, cleanup } = makeTempConfig({ model_groups: raw });
+    try {
+      expect(modelGroupsOf({ modelGroups: {}, model_groups: raw, configPath })).toEqual({});
+      expect(modelGroupsOf({ model_groups: raw })).toEqual(resolveModelGroups(raw));
+      expect(modelGroupsOf({ configPath })).toEqual(resolveModelGroups(raw));
+      expect(modelGroupsOf({})).toEqual({});
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("loadConfig resolves model_groups once into ResolvedConfig.modelGroups", () => {
+    const { configPath, cleanup } = makeTempConfig({ model_groups: raw });
+    try {
+      expect(loadConfig({ configPath }).modelGroups).toEqual(resolveModelGroups(raw));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("matches members on adapter ids: claude-code is adapter claude; an unmapped id compares as is", () => {
+    const group = { members: [...(resolveModelGroups(raw).cheap?.members ?? []), { provider: "fake", model: "f" }] };
+    expect(groupMembersFor(group, "claude")).toEqual([{ provider: "claude-code", model: "haiku-x" }]);
+    expect(groupMembersFor(group, "fake")).toEqual([{ provider: "fake", model: "f" }]);
+    expect(groupMembersFor(group, "codex")).toEqual([]);
   });
 });

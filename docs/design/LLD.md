@@ -6145,11 +6145,14 @@ helper, the quota failover's forced `capacity_exhausted`, and `recordAffinity` a
 **Proposed** (2026-10-17, owner decision 57, Delegated mechanism) under
 [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md). Defaults are **Assumptions** (Q-98, Q-99).
 *As built (T7.13 and T7.14, Done 2026-10-17, `src/config/model-groups.test.ts`,
-`src/mcp/routing-request-fields.test.ts`):* the **Configuration** subsection below (`model_groups` schema, startup
+`src/mcp/routing-request-fields.test.ts`, `src/cli/serve-model-groups.test.ts`):* the **Configuration** subsection
+below (`model_groups` schema, startup
 refusals, routing-time resolution, the seventh weight `routing.weights.pacing`), the `doctor` listing of each group
 with each member's resolution (resolved id, alias, or the stage-1 code it would get; `src/cli/doctor.ts`, informational,
 present only when groups are configured), and the **Request** subsection below (`delegate_task` and `enqueue_work`
-closed schemas, refusals, mutual exclusion, and request carry to admission). The **Candidates**, **Score** (`pacing`
+closed schemas, refusals, mutual exclusion, request carry to admission, and `serve` passing the resolved group
+table to both validators through the one `modelGroupsOf` path with adapter-id narrowing via `groupMembersFor`;
+`src/cli/serve.ts`, `src/config/load.ts`, `src/config/routing.ts`). The **Candidates**, **Score** (`pacing`
 term), **Affinity**, **Decision record, version 3** and **Run fields** subsections below are built by T7.15 (Done
 2026-10-17, Delegated; see "As built (T7.15)" at the end of this section). Design for T7.13 to T7.15.
 
@@ -6166,7 +6169,10 @@ term), **Affinity**, **Decision record, version 3** and **Run fields** subsectio
 
 Startup refuses an unknown provider id, a duplicate `{ provider, model }` pair, an empty `members` list and a malformed
 name or model. Whether the model resolves is checked at routing time, not at startup, because the registry's listing
-changes with each probe (§2.1).
+changes with each probe (§2.1). `loadConfig` resolves `model_groups` once into `ResolvedConfig.modelGroups`
+(`src/config/load.ts`); `serve` passes that table to the MCP server and to queue admission (`src/cli/serve.ts`), and
+both validate through `modelGroupsOf` (`src/config/routing.ts`): the resolved table when present, else the raw
+`model_groups`, else the file at `configPath`, else none.
 
 **Request** (`routing.model_group`, `routing.model`; §3.0). Validation, before any side effect (FRD V14):
 
@@ -6175,7 +6181,9 @@ changes with each probe (§2.1).
 2. `model` without `provider_preference` or `require_provider`: it must resolve in exactly one enabled provider's
    registry (an alias or a configured or listed id; §2.1). None, several, or an unrestricted registry (which would
    accept anything) give `INVALID_REQUEST` with "name a provider for this model".
-3. `model_group` with `provider_preference`: the members are narrowed to that provider. If none
+3. `model_group` with `provider_preference`: the members are narrowed to that provider. Members name config provider
+   ids (`claude-code`) while `provider_preference` names adapter ids (`claude`), so each member is mapped to its
+   adapter id first (`groupMembersFor` in `src/config/routing.ts`; an id with no mapping compares as is). If none
    remains, the result is `INVALID_REQUEST`. `require_provider` alone names no provider, so it narrows nothing.
 4. `continue_task` takes neither field. Continuations stay governed by FR-SES-03 and BR-18 (Q-99).
 

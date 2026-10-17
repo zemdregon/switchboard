@@ -1027,6 +1027,8 @@ async function runDaemon(
       capacity: config.capacity,
       limits: config.limits,
       routing: config.routing,
+      // T7.14 (FR-RTE-11, LLD §17.7): the same group table the MCP server checks at enqueue.
+      modelGroups: config.modelGroups,
     },
     projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
     // T16.4 (LLD §19.4): a queued item resolves its skills at its own admission, on the ledger handle.
@@ -1144,6 +1146,8 @@ async function runDaemon(
         limits: config.limits,
         // T7.2: stage-2 score weights (`routing.weights`, LLD §17.1).
         routing: config.routing,
+        // T7.14 (FR-RTE-11, LLD §17.7): configured model groups for `routing.model_group`.
+        modelGroups: config.modelGroups,
       },
       ...(now ? { now } : {}),
       projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),

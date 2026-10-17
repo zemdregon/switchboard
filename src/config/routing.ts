@@ -4,6 +4,7 @@
  * resolves defaults. Every default is an Assumption with no source behind it (Q-80, Q-81).
  */
 import { readFileSync } from "node:fs";
+import { adapterIdForConfigId } from "../adapters/providers.js";
 import { DEFAULT_WEIGHTS, SCORE_TERMS, type Weights } from "../routing/score.js";
 import type { ModelGroupsConfigInput, RoutingConfigInput, SwitchboardConfig } from "./schema.js";
 
@@ -91,4 +92,27 @@ export function readModelGroupsFromConfigPath(configPath: string): ResolvedModel
   } catch {
     return {};
   }
+}
+
+/**
+ * The model group table a consumer resolves (T7.14): `modelGroups` if given, else raw `model_groups` if given, else the
+ * file at `configPath`, else none. Each step is taken only when the one before it is absent.
+ */
+export function modelGroupsOf(config: {
+  readonly modelGroups?: ResolvedModelGroups;
+  readonly model_groups?: ModelGroupsConfigInput;
+  readonly configPath?: string;
+}): ResolvedModelGroups {
+  if (config.modelGroups !== undefined) return config.modelGroups;
+  if (config.model_groups !== undefined) return resolveModelGroups(config.model_groups);
+  return config.configPath !== undefined ? readModelGroupsFromConfigPath(config.configPath) : {};
+}
+
+/**
+ * Members of `group` on adapter id `provider` (FR-RTE-11). Members name config provider ids (`claude-code`) while
+ * `routing.provider_preference` names adapter ids (`claude`), so each member is mapped first; an id with no config
+ * mapping (the test-only fake) is compared as is.
+ */
+export function groupMembersFor(group: ResolvedModelGroup, provider: string): ResolvedModelGroupMember[] {
+  return group.members.filter((m) => (adapterIdForConfigId(m.provider) ?? m.provider) === provider);
 }

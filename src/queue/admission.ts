@@ -14,13 +14,13 @@ import {
   DEFAULT_CAPACITY_CONFIDENCE_RUNS,
   DEFAULT_CAPACITY_WINDOW_SECONDS,
   effectiveMaxProfile,
+  groupMembersFor,
   type ModelGroupsConfigInput,
+  modelGroupsOf,
   primaryContext,
   type ResolvedConfig,
   type ResolvedModelGroups,
   type ResolvedProject,
-  readModelGroupsFromConfigPath,
-  resolveModelGroups,
 } from "../config/index.js";
 import { snapshotEnvironment } from "../environment/index.js";
 import type { Ledger, TrustProfile } from "../ledger/index.js";
@@ -394,10 +394,7 @@ export async function admitWorkItemRequest(
     };
 
     // T7.14 (FR-RTE-11, LLD §17.7, FRD V14, BR-49)
-    const modelGroups: ResolvedModelGroups =
-      deps.config.modelGroups ??
-      resolveModelGroups(deps.config.model_groups) ??
-      (deps.config.configPath ? readModelGroupsFromConfigPath(deps.config.configPath) : {});
+    const modelGroups: ResolvedModelGroups = modelGroupsOf(deps.config);
     // biome-ignore lint/suspicious/noExplicitAny: lifecycle options hold eligibility deps
     const models = deps.models ?? (deps.lifecycle as any).opts?.eligibility?.models;
 
@@ -411,7 +408,7 @@ export async function admitWorkItemRequest(
       }
       const named = routing.provider_preference;
       if (named !== undefined) {
-        const remaining = group.members.filter((m) => m.provider === named);
+        const remaining = groupMembersFor(group, named);
         if (remaining.length === 0) {
           throw invalid(`model_group ${routing.model_group} has no members for provider ${named}`, {
             field: "routing.model_group",

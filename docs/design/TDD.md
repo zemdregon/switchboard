@@ -1404,7 +1404,10 @@ T7.17 (T6.8, T6.13, T6.14, T7.13, T7.14, T7.15 and T7.16 Done, the rest Planned)
   read from
   configuration, `usage_observation`, `run` and an injected clock, with no table. The request-field validation
   (T7.14, `Done` 2026-10-17) lives in `src/mcp/schemas.ts` (closed `DELEGATE_ROUTING`), `src/mcp/server.ts`
-  (`checkRouting`) and `src/queue/admission.ts` (the queued request carries the fields to admission); group expansion
+  (`checkRouting`) and `src/queue/admission.ts` (the queued request carries the fields to admission); `loadConfig`
+  resolves `model_groups` once into `ResolvedConfig.modelGroups` (`src/config/load.ts`), `serve` passes that table
+  to both validators (`src/cli/serve.ts`), and both resolve it through the one `modelGroupsOf` path with adapter-id
+  narrowing via `groupMembersFor` (`src/config/routing.ts`); group expansion
   and the `pacing` term (T7.15, `Done` 2026-10-17) live in `src/routing/` (`groups.ts` member
   expansion, `score.ts`, `affinity.ts`, `decision.ts` version 3 record and replay, `explain.ts`);
   the T7.13 configuration resolution lives in `src/config/routing.ts`. The hold

@@ -137,7 +137,9 @@ import {
   DEFAULT_CAPACITY_CONFIDENCE_RUNS,
   DEFAULT_CAPACITY_WINDOW_SECONDS,
   effectiveMaxProfile,
+  groupMembersFor,
   type ModelGroupsConfigInput,
+  modelGroupsOf,
   primaryContext,
   projectsForClient,
   type ResolvedConfig,
@@ -145,8 +147,6 @@ import {
   type ResolvedProject,
   type ResolvedSkills,
   type RoutingSettings,
-  readModelGroupsFromConfigPath,
-  resolveModelGroups,
 } from "../config/index.js";
 import {
   type BundleBounds,
@@ -419,10 +419,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       : undefined;
 
   // T7.14: resolved model groups and model registry for routing validation.
-  const modelGroups: ResolvedModelGroups =
-    deps.config.modelGroups ??
-    resolveModelGroups(deps.config.model_groups) ??
-    (deps.config.configPath ? readModelGroupsFromConfigPath(deps.config.configPath) : {});
+  const modelGroups: ResolvedModelGroups = modelGroupsOf(deps.config);
   // biome-ignore lint/suspicious/noExplicitAny: lifecycle options hold eligibility deps
   const models: ModelRegistry | undefined = deps.models ?? (deps.lifecycle as any).opts?.eligibility?.models;
 
@@ -677,7 +674,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         throw invalid(`unknown model_group ${routing.model_group}`, { field: "routing.model_group" });
       }
       if (named !== undefined) {
-        const remaining = group.members.filter((m) => m.provider === named);
+        const remaining = groupMembersFor(group, named);
         if (remaining.length === 0) {
           throw invalid(`model_group ${routing.model_group} has no members for provider ${named}`, {
             field: "routing.model_group",
