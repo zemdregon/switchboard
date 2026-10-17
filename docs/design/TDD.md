@@ -2589,6 +2589,15 @@ declaration on the Grok T4.27 pattern: `MUSE_GIT_WRITE_CONTROL` is `none-documen
 shell allowlist entry that could write Git with `PROFILE_UNSUPPORTED` before any other check. The replay dialect is
 `src/adapters/fixtures/replay-dialects/muse.mjs`. Evidence: ROADMAP T4.77 and `src/adapters/muse/muse.test.ts`.
 
+*As built (T4.75, 2026-10-17; Delegated agent work, not owner-approved; fixtures only, no `muse` was run).* The
+conformance suite is `museConformanceCases` in `src/adapters/muse/fixtures/cases.ts`, replayed through the shared
+dialect `src/adapters/fixtures/replay-dialects/muse.mjs`, which refuses any argv other than the compiled one. Its cases
+cover every required FR-ADP-11 kind (`success`, `task_failure`, `resume`, `auth_missing`, `malformed_output`,
+`cancellation`, `timeout`, `partial_mutation`). `auth_missing` ends `TOOL_FAILURE`, not `AUTH_REQUIRED`: no logged-out
+`muse exec --json` record is sourced (§4.8.1 item 3), and the adapter does not narrow a failure from text; the
+`AUTH_REQUIRED` naming `muse login` comes from the preflight. No permission, sandbox or rate-limit case exists, because
+no such record is sourced. Evidence: ROADMAP T4.75 and `src/adapters/muse/muse.test.ts` ("muse conformance suite").
+
 #### 4.8.1 T4.71 operator checklist
 
 *Operator-only, Proposed.* Needs an installed Muse Code CLI. Use a throwaway Git repository and a controller-made

@@ -5120,8 +5120,8 @@ provider's M4 operator item, for the validated version range), a resume uses a f
 (`src/adapters/types.ts`); the lifecycle treats every value but `independent`, including a missing one, as `bound`
 (`resumeMayChangeDirectory`). Claude Code and Codex declare `unverified`, the fake `bound` by default (an option makes
 the test variants). The provider table (`src/adapters/providers.ts`) also names TDD §4.10's value for every provider,
-reserved ones included (Antigravity `bound`; Grok Build, Cursor, OpenCode, Kimi Code `unverified`; Muse Code has no
-entry until T4.72), and a registry test requires each adapter to declare its entry's value. The origin lookup and the
+reserved ones included (Antigravity `bound`; Grok Build, Cursor, OpenCode, Kimi Code `unverified`; Muse Code `bound`,
+T4.72), and a registry test requires each adapter to declare its entry's value. The origin lookup and the
 plan are `src/lifecycle/resume-directory.ts`; the directory checks are `WorkspaceManager.inspectResumeDirectory` and
 `prepare({ resumeIn })` (`src/workspace/manager.ts`), which re-checks and then runs `git switch --no-guess -c` in the
 origin, or `git worktree add` at the same path when it is gone, inside the per-repository worktree serialisation.
