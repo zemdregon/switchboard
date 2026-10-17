@@ -16,8 +16,8 @@ decision from the owner of the affected document, or that rest on history this p
   2026-10-12).
 - [PRD §1](requirements/PRD.md) says "up to eight AI coding CLIs" and [SRS §2](requirements/SRS.md) lists eight,
   including Muse Code (added by owner decision 16, 2026-10-13, as a `Should`, FR-ADP-12).
-- The code registers **seven** real config providers (`BUILTIN_PROVIDERS` in `src/adapters/providers.ts`); Muse Code is
-  a reserved id with no adapter module yet (T4.72).
+- The code registers **eight** real config providers (`BUILTIN_PROVIDERS` in `src/adapters/providers.ts`, 2026-10-17),
+  including `muse`/`muse-code` (T4.72, Delegated). The code now matches PRD and SRS; only BRD still says seven.
 
 This is a document-set inconsistency, not a code conflict. It is left as-is because choosing "seven" or "eight" is an
 owner wording decision (the original seven are Must; Muse Code is a Should addition). No code changed.
@@ -46,12 +46,11 @@ SRS owner's call, and the roadmap already records the finalize-only decision (ow
 The "developed on"/"developed against" figures are historical dev-host claims that this pass cannot verify against the
 original machine, so they were left in place. They are not a statement about the code.
 
-## 4. LLD §2 `ProviderId` listing includes `muse`
+## 4. LLD §2 `ProviderId` listing includes `muse` (resolved 2026-10-17)
 
-[LLD §2](design/LLD.md) shows `export type ProviderId = 'claude' | 'codex' | ... | 'muse' | 'fake'`, but the code's
-`ProviderId` (`src/adapters/types.ts`) is `BuiltinProviderId`, derived from the registry table, which has no `muse`
-entry. The LLD's own provider table marks `muse-code`/`muse` as "Not yet: added with its adapter module (T4.72)", so the
-code block is an anticipated target shape. Left as-is; it becomes accurate when T4.72 lands.
+Resolved by T4.72: the registry (`src/adapters/providers.ts`) now has a `muse` entry, so `BuiltinProviderId` includes
+`muse` and the [LLD §2](design/LLD.md) listing matches the code. Recorded here only; no document was changed for it in
+this pass.
 
 ## 5. HLD §5 data-directory layout banner
 

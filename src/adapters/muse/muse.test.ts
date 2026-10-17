@@ -1,6 +1,6 @@
 /**
- * T4.72, T4.73 and T4.77 (TDD §4.8): the Muse Code module, manifest, probe, registry entry, compile matrix, parser,
- * result, resume and Git declaration. SYNTHETIC: no `muse`
+ * T4.72 to T4.75 and T4.77 (TDD §4.8): the Muse Code module, manifest, probe, registry entry, compile matrix, parser,
+ * result, resume, auth preflight, conformance suite and Git declaration. SYNTHETIC: no `muse`
  * binary was installed or run. Executable paths are placeholders or the node stand-in `fixtures/fake-muse.mjs`, and
  * the version line is the format a third party reported ([Orca]), not a capture.
  */
@@ -27,6 +27,7 @@ import { resolveTrustProfile } from "../../policy/profiles.js";
 import type { PrivilegedScope } from "../../policy/types.js";
 import { WorkspaceManager } from "../../workspace/index.js";
 import { auditInvocation, type BypassContext } from "../audit.js";
+import { type ConformanceCase, missingRequiredKinds, runConformanceCase, runConformanceSuite } from "../conformance.js";
 import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
 import { replayLauncher } from "../fixtures/replay.js";
 import { tryLoadManifest } from "../manifest/index.js";
@@ -40,6 +41,7 @@ import type {
   ParseState,
   ProbeOutput,
   ProbeRunner,
+  ProviderAdapter,
   ResolvedProfile,
   TrustProfile,
 } from "../types.js";
@@ -54,13 +56,16 @@ import {
   MuseAdapter,
 } from "./adapter.js";
 import {
+  AUTH_MISSING_DETAIL,
   BYPASS_SCOPE,
   DEFAULT_SESSION_ID,
+  museConformanceCases,
   PRIVILEGED_BYPASS_PROFILE,
   RESUMED_SESSION_ID,
   readFixture,
   SYNTHETIC_EXEC_HELP_STDOUT,
   SYNTHETIC_VERSION_STDOUT,
+  TASK_FAILURE_DETAIL,
 } from "./fixtures/cases.js";
 import {
   AUTH_LOGGED_IN_PREFIX,
@@ -71,6 +76,7 @@ import {
   MUSE_LOGIN_COMMAND,
   NO_AUTO_UPDATE_ENV,
   NON_PRIVILEGED_UNSUPPORTED_DETAIL,
+  SESSION_ID_FLAG,
 } from "./protocol.js";
 
 const FAKE_MUSE = fileURLToPath(new URL("./fixtures/fake-muse.mjs", import.meta.url));
@@ -1117,4 +1123,151 @@ describe("muse through the registry: config validation, doctor and list_capabili
       db.close();
     }
   });
+});
+
+/**
+ * T4.75 (FR-ADP-11): the shared conformance suite over SYNTHETIC recorded fixtures (`./fixtures/*.jsonl`, in the
+ * reported or Assumption shapes of protocol.ts), replayed by `replay.mjs --provider muse` in place of the binary, so it
+ * passes with no `muse` installed. The prompt reaches the replay as the last argv word; stdin is unused.
+ */
+describe("muse conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.75)", () => {
+  const caseOf = (kind: ConformanceCase["kind"]): ConformanceCase => {
+    const c = museConformanceCases(makeDir).find((x) => x.kind === kind);
+    if (!c) throw new Error(`missing ${kind} case`);
+    return c;
+  };
+  /** `a` with its compiled argv rewritten by `edit`, to show the replay refuses a wrong compile. */
+  const brokenBy = (a: ProviderAdapter, edit: (argv: string[]) => string[]): ProviderAdapter =>
+    new Proxy(a, {
+      get(target, key) {
+        if (key === "compile") {
+          return (r: CompileRequest, p: ResolvedProfile) => {
+            const inv = target.compile(r, p);
+            return isIneligible(inv) ? inv : { ...inv, argv: edit(inv.argv), policyFlags: [] };
+          };
+        }
+        const v: unknown = Reflect.get(target, key, target);
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    });
+  /** Inserts `words` before the prompt (the last argv word). */
+  const beforePrompt =
+    (...words: string[]) =>
+    (argv: string[]) => [...argv.slice(0, -1), ...words, ...argv.slice(-1)];
+  const withoutPair = (flag: string) => (argv: string[]) => argv.filter((w, i) => w !== flag && argv[i - 1] !== flag);
+  const replace = (flag: string, value: string) => (argv: string[]) =>
+    argv.map((w, i) => (argv[i - 1] === flag ? value : w));
+
+  it("covers every FR-ADP-11 kind and passes the full suite", async () => {
+    const cases = museConformanceCases(makeDir);
+    expect(missingRequiredKinds(cases)).toEqual([]);
+    expect(cases.map((c) => c.kind)).toEqual(expect.arrayContaining(["timeout", "partial_mutation"]));
+    const report = await runConformanceSuite(cases);
+    const failing = report.cases.flatMap((c) =>
+      c.checks.filter((k) => !k.ok).map((k) => `${c.kind}: ${k.name} ${k.detail ?? ""}`),
+    );
+    expect(failing).toEqual([]);
+    expect(report.ok).toBe(true);
+  });
+
+  it("success with edit: session from run_started, deltas joined as the summary, no unknown records", async () => {
+    const c = caseOf("success");
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({
+      ok: true,
+      nativeSessionId: DEFAULT_SESSION_ID,
+      summary: "Added hello.txt.",
+      unknownEventCount: 0,
+    });
+    expect(readFileSync(join(c.request.workspace.cwd, "hello.txt"), "utf8")).toContain("synthetic");
+  });
+
+  it("resumed run passes `--session-id <uuid>` before the prompt and preserves the native session id", async () => {
+    const c = caseOf("resume");
+    const inv = compiled(
+      c.adapter.resumeArgs(c.binding ?? { provider: "muse", nativeSessionId: "" }, c.request, c.profile),
+    );
+    expect(inv.argv.slice(-3)).toEqual([SESSION_ID_FLAG, RESUMED_SESSION_ID, c.request.objective]);
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({ ok: true, nativeSessionId: RESUMED_SESSION_ID });
+    // The resume fixture requires the resume flag: replayed from a fresh compile, the replay refuses it.
+    const { binding, ...unbound } = c;
+    expect(binding).toBeDefined();
+    const fresh = await runConformanceCase(unbound);
+    expect(fresh.ok).toBe(false);
+    expect(fresh.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", failureDetail: "exit code 64" });
+  });
+
+  it("a failed terminal at exit 1 is TOOL_FAILURE with the terminal reason and keeps the session id", async () => {
+    const report = await runConformanceCase(caseOf("task_failure"));
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({
+      ok: false,
+      failureCode: "TOOL_FAILURE",
+      failureDetail: TASK_FAILURE_DETAIL,
+      nativeSessionId: DEFAULT_SESSION_ID,
+    });
+  });
+
+  it("a missing login is AUTH_REQUIRED naming `muse login` at the preflight; a logged-out run fails closed, never success", async () => {
+    const c = caseOf("auth_missing");
+    // T4.74 Assumption reply; the probe runner stands in for the replay, which answers only --version and exec --help.
+    const seen: string[][] = [];
+    const auth = await c.adapter.authPreflight(async (argv) => {
+      seen.push([...argv]);
+      return { exitCode: 0, stdout: `${AUTH_LOGGED_OUT_PREFIX}. (synthetic)\n`, stderr: "", timedOut: false };
+    });
+    expect(auth).toEqual({ state: "AUTH_REQUIRED", loginCommand: MUSE_LOGIN_COMMAND });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.slice(-AUTH_STATUS_ARGS.length)).toEqual([...AUTH_STATUS_ARGS]);
+    // In-run: no logged-out record is sourced (TDD §4.8.1 item 3), so exit 1 with no records is TOOL_FAILURE, no session.
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE", failureDetail: AUTH_MISSING_DETAIL });
+    expect(report.result?.nativeSessionId).toBeUndefined();
+    // The expectation tells this run apart from a compile the replay refused (exit 64, also no output).
+    const refused = await runConformanceCase({ ...c, adapter: brokenBy(c.adapter, withoutPair("-w")) });
+    expect(refused.ok).toBe(false);
+    expect(refused.result?.failureDetail).toBe("exit code 64");
+  });
+
+  it("a line that is not JSON between valid records is OUTPUT_PROTOCOL_ERROR, even with a completed terminal", async () => {
+    const report = await runConformanceCase(caseOf("malformed_output"));
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+  });
+
+  it("partial mutation leaves the file in the cwd", async () => {
+    const c = caseOf("partial_mutation");
+    const report = await runConformanceCase(c);
+    expect(report.ok).toBe(true);
+    expect(readFileSync(join(c.request.workspace.cwd, "partial.txt"), "utf8")).toContain("synthetic");
+  });
+
+  it.each([
+    ["-w off removed", withoutPair("-w")],
+    ["--json removed", (argv: string[]) => argv.filter((w) => w !== "--json")],
+    ["--approval-mode never", replace("--approval-mode", "never")],
+    ["--sandbox-network enabled", replace("--sandbox-network", "enabled")],
+    ["--sandbox-network removed", withoutPair("--sandbox-network")],
+    ["--yolo added", beforePrompt("--yolo")],
+    ["--disable-approval added", beforePrompt("--disable-approval")],
+    ["--disable-sandbox added", beforePrompt("--disable-sandbox")],
+    ["--prompt-file added", beforePrompt("--prompt-file", "/tmp/p")],
+    ["--allow-workspace-switch added", beforePrompt("--allow-workspace-switch")],
+    ["-c added", beforePrompt("-c", "approval_mode=never")],
+    ["--yolo appended after the prompt", (argv: string[]) => [...argv, "--yolo"]],
+    ["the prompt removed", (argv: string[]) => argv.slice(0, -1)],
+  ])(
+    "the replay refuses an argv Muse Code would not be given (%s), so a wrong compile cannot pass",
+    async (_n, edit) => {
+      const c = caseOf("success");
+      const report = await runConformanceCase({ ...c, adapter: brokenBy(c.adapter, edit) });
+      expect(report.ok).toBe(false);
+      expect(report.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
+      expect(report.result?.failureDetail).toMatch(/^exit code 6[45]$/);
+    },
+  );
 });
