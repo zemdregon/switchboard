@@ -817,8 +817,10 @@ behind the operator opt-in `providers.claude-code.git_channel`; supported, bypas
   and an identical argv; the audit refuses `--mcp-config` outside an approved bypass run or without the token variable,
   and a Claude argv without `--safe-mode` outside the approved bypass cases; the lifecycle replay runs an approved
   bypass run and records a child environment of only `PATH`, `HOME` and the token, and an `edit-untrusted` run with the
-  opt-in on and the project's `finalize_commit` gets its commit through finalize-only. Still unproven end to end through
-  Switchboard with the real `claude` (shim start, socket reach, Git deny rules with the server present).
+  opt-in on and the project's `finalize_commit` gets its commit through finalize-only. At that point still unproven end
+  to end through Switchboard with the real `claude` (shim start, socket reach, Git deny rules with the server present);
+  the 2026-10-14 operator run answered these (ROADMAP §6.3 T9.4b), and owner decision 56 (2026-10-16) marked the channel
+  supported, bypass-only.
 
 **External reference (T3 Code, MIT, studied not copied; note 2026-10-13, Delegated, not owner-approved).** zemdregon's
 pointer (owner decision 36): T3 Code "has orchestrator injection for nearly all of the CLI tools we are targeting". A

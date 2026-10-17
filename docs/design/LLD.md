@@ -3197,7 +3197,7 @@ whatever the shell (§12.7 BR-31 note) and `git_channel_opened` carries `credent
 provider's Git-write denial and every other check are unchanged.
 
 *As built (2026-10-13, Delegated, T9.4b, [ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md);
-UNSUPPORTED and unverified live).* Claude Code declares `injected` only with the operator opt-in
+supported, bypass-only since owner decision 56 (2026-10-16)).* Claude Code declares `injected` only with the operator opt-in
 `providers.claude-code.git_channel: true` (§11.1 note); without it, `none` and an unchanged argv as above. Code:
 `claudeChannelArgs` and `CLAUDE_GIT_CHANNEL_CAPABILITIES` in `src/adapters/claude/adapter.ts`, `auditMcpArgs` and
 `assertMcpAudit` in `src/adapters/audit.ts`, `OpenChannel.writeFile` in `src/git/channel.ts`. Choices:
@@ -3238,7 +3238,7 @@ UNSUPPORTED and unverified live).* Claude Code declares `injected` only with the
   tool (fail closed), never with more permission.
 
 *Note 2026-10-13 (owner decision 41, [ADR-0033](../adr/0033-claude-channel-bypass-only-without-safe-mode.md); mechanism
-Delegated; still UNSUPPORTED).* An operator-machine live check (`docs/research/live-checks-2026-10-13.md`, PR #41; a
+Delegated; UNSUPPORTED at that point — supported, bypass-only since owner decision 56 (2026-10-16)).* An operator-machine live check (`docs/research/live-checks-2026-10-13.md`, PR #41; a
 hand-made server, not the shim) confirmed the `mcpServers` shape, `${VAR}` expansion (an unset variable stays literal),
 environment inheritance and exact-name rules under `dontAsk`, and found that `--safe-mode` stops the server from
 starting. So, superseding the "unchanged `--safe-mode`" bullet above for Claude:
