@@ -88,6 +88,7 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | `capacity.window_seconds`, `capacity.confidence_runs`, `capacity.queue_horizon_seconds`, `capacity.breaker.{failure_threshold, open_seconds}`, `capacity.retry.{max_attempts, base_ms, cap_ms}`, `providers.<id>.concurrency` | Estimator window and confidence scale, the BR-9 wait for a known reset (default 0: never wait), breaker thresholds, retry backoff, per-provider slot limit; defaults are Assumptions (Q-69 to Q-72). Shape and ranges in [LLD §16.1](LLD.md#161-configuration) (T6.1; the earlier placeholder name was `capacity.queue_horizon`) | FR-CAP-02, 04 to 06, NFR-PERF-03 |
 | `model_groups.<name>.members[{provider, model}]`, `routing.weights.pacing` | Operator-named groups of models across providers and the seventh score weight (0 to 100, default 1); **Proposed, not built** (T7.13, owner decision 57). Names and members are configuration only. Shape in [LLD §17.7](LLD.md#177-model-groups-fr-rte-10-fr-rte-11) | FR-RTE-10, 11 |
 | `capacity.subscriptions.<name>.{providers, windows[{id, length_seconds, reset, budget}]}`, `capacity.pacing.{mode, target_fraction, burst_fraction, min_confidence}` | Subscription windows (reset `provider_reported`, `fixed` or `rolling`; optional operator-declared budget) and the pacing gate (default `gate`, 0.95, 0.10, 0.5; Assumptions, Q-98); **Proposed, not built** (T6.13, T6.8). No window, reset or budget is ever supplied by Switchboard. Shape in [LLD §16.9](LLD.md#169-usage-windows-and-pacing-fr-cap-09-fr-cap-10) | FR-CAP-09, 10 |
+| `skills.enabled`, `skills.defaults[]`, `skills.roles.<role>[]`, `skills.delivery`, `skills.allow_draft_in_trusted`, `skills.max_body_bytes`, `skills.max_per_run`, `skills.max_run_bytes`, `skills.max_names`, `projects[].skills.{defaults, roles}`, `mcp_clients[].skills` | Switchboard-controlled skills: off by default; global, per-role and per-project default skill names, delivery mode, the draft switch, limits and per-client visibility; **Proposed, not built** (T16.3, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md), [LLD §19.3](LLD.md#193-configuration-fr-skl-03-fr-skl-04-fr-skl-08)) | FR-SKL-03, FR-SKL-04, FR-SKL-08 |
 | `telemetry.otlp_endpoint` | Optional export target | FR-TEL-02, NFR-PRIV-01 |
 | `log.level` | Logging threshold | §3.3 |
 | `inner_agent.enabled`, `inner_agent.backend{kind, base_url or provider, model, timeout_ms, max_concurrency, allow_remote, shares_subscription_with}` | Optional inner agent: one backend, no default backend or model, no credential field (Proposed shape; [LLD §13.1](LLD.md#131-configuration-shape)) | FR-INN-01, 03, 04, 15, 16 |
@@ -1378,6 +1379,59 @@ T7.17.
   note. T6.15 turns them into synthetic fixtures, labelled as such, one per provider.
 - **Known risks.** Estimates see only Switchboard's own usage (R-67). A member whose adapter accepts no model is never
   chosen (R-68).
+
+### 3.16 Switchboard-controlled skills (Proposed)
+
+*Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); not built).
+Delegated, not owner-approved beyond the direction.* Contract: [LLD §19](LLD.md#19-switchboard-controlled-skills-m16-proposed).
+Tasks: ROADMAP T16.0 to T16.12.
+
+- **Where it lives.** A store module `src/skills/` (Proposed): format validator, canonicaliser, content store, ledger
+  helpers and the pure resolver. The prompt-prefix renderer extends `src/adapters/prompt.ts`. The native writer and
+  cleaner live in the workspace manager beside checkpoints, because they share the base-checkpoint and path rules.
+  Exclusions are added to the commit tool, checkpoint and artifact code in `src/git/` and `src/workspace/`. The CLI group
+  is `src/cli/skills.ts`. Nothing under `src/policy/`, `src/routing/` or `src/capacity/` imports `src/skills/`
+  (import-boundary test).
+- **Configuration keys.** `skills.enabled` (default `false`), `skills.defaults[]`, `skills.roles.<role>[]`,
+  `skills.delivery` (`native_preferred` or `prefix_only`), `skills.allow_draft_in_trusted` (default `false`), the four
+  limits, `projects[].skills.{defaults, roles}` and `mcp_clients[].skills` ([LLD
+  §19.3](LLD.md#193-configuration-fr-skl-03-fr-skl-04-fr-skl-08)). Unknown keys abort startup as for every section.
+
+#### 3.16.1 Per-provider delivery table
+
+The rule (ADR-0056 items 5, 6 and 8): a cell may deliver natively only where the compiled cell *already* loads that
+location with no change to the argv or environment, and only after an operator live check (T16.8) shows a file there
+reaches the model. Every cell is `prompt_prefix` until then. "Candidate native location" is where a native file would go
+once verified; it is always a fresh `switchboard-` path inside the worktree, never a tracked file, never `HOME`.
+
+| Provider | Cells today (non-bypass / approved bypass) | What the cell loads from the worktree | Candidate native location | Delivery on 2026-10-17 | Why |
+| --- | --- | --- | --- | --- | --- |
+| Claude Code | All profiles; non-bypass cells run `--safe-mode` ([§4.1](#41-claude-code-m2)) | Nothing under `--safe-mode` (`CLAUDE.md`, skills, plugins disabled); with `repository_config` `approved`/`enabled` in an approved bypass run or the tool channel, `CLAUDE.md` loads (live check 15); project skills presumably load too (Unverified) | `.claude/skills/switchboard-<name>/SKILL.md` (Unverified: skill file format and discovery not in a repository source) | `prompt_prefix` | Native only in bypass cells that already omit `--safe-mode`; needs T16.8 |
+| Codex | All non-bypass profiles; bypass `Ineligible` ([§4.2](#42-codex-m2)) | `--ignore-rules` (Assumption: suppresses repository `AGENTS.md`) | none | `prompt_prefix` | No cell loads repository instructions; native would need dropping `--ignore-rules` (forbidden by ADR-0056 item 5) |
+| Grok Build | Approved bypass with `repository_config: enabled` only ([§4.3](#43-grok-build-m4)) | `AGENTS.md`/`CLAUDE.md` in full; compatibility scanners for `.claude` and `.cursor` skills and rules | `.claude/skills/switchboard-<name>/SKILL.md` through the scanner (Unverified) | `prompt_prefix` | Loading of these files "was not tested"; editing `AGENTS.md` is forbidden; needs T16.8 |
+| Antigravity | Approved bypass only ([§4.4](#44-antigravity-agy-m4)) | `GEMINI.md`, `AGENTS.md`, `.agents/*` (live) | none verified (`.agents` skills directory is a third-party report) | `prompt_prefix` | The only documented locations are tracked instruction files or config the ADR-0039 guard refuses in `disabled` cells |
+| Cursor | Approved bypass only, `--trust` ([§4.5](#45-cursor-cli-m4)) | `AGENTS.md`, `CLAUDE.md`, `.cursor/rules` (live: `AGENTS.md` and `.cursor/rules` reach the model) | `.cursor/rules/switchboard-<name>.mdc` (Unverified: rule file front matter) | `prompt_prefix` | Strongest candidate; the rule file format needs T16.8 |
+| OpenCode | Approved bypass with `enabled` only ([§4.6](#46-opencode-m4)) | `AGENTS.md`; `CLAUDE.md` fallback; `opencode.json` `instructions` | none | `prompt_prefix` | Native would mean editing `AGENTS.md` or writing `opencode.json` (repository config); both are forbidden |
+| Kimi Code | Approved bypass (`-p`) and restricted ACP cells ([§4.7](#47-kimi-code-m4-blocked-by-b-1)) | `.kimi-code/*` agent files once trusted; `AGENTS.md` unknown | `--skills-dir <data_dir>/runs/<run_id>/skills` outside the worktree (Q-108) | `prompt_prefix` | `--skills-dir` is never emitted today; using it changes the argv and needs ADR-0035/0037 registry work and a live check |
+| Muse Code | Approved bypass with `enabled` (`--trust-workspace`) ([§4.8](#48-muse-code-m4)) | `AGENTS.md` (first found), `.agents/skills`, `.codex/skills`, `.claude/skills` in a trusted workspace | `.agents/skills/switchboard-<name>/SKILL.md` (Unverified) | `prompt_prefix` | Workspace skills load only in the trusted cell; needs T16.8 |
+| Fake | Every cell | Test-declared | `.fake/skills/switchboard-<name>.md` | `native` in tests only | Exercises the native path, exclusions and cleanup in CI (T16.6) |
+
+User-level locations (`~/.claude/skills`, `~/.agents/skills`, `$XDG_CONFIG_HOME/muse/skills`, `~/.cursor`) are never
+used, even though several providers load them in every cell: they are shared by all runs and by the operator.
+
+#### 3.16.2 Testing
+
+All on fakes; no provider CLI, no login. Asserted properties: (1) with `skills.enabled` false, or with no skills
+resolved, prompts, argv, environment, ledger rows and artifacts are byte-identical to `main`; (2) with skills, argv and
+environment are still byte-identical (only the prompt or the worktree differs); (3) a run under an untrusted profile
+never receives a draft or `repository_path` version, over generated requests; (4) no commit, checkpoint, diff, patch,
+handoff diff or `changed_files` includes a recorded native path, including after the fake agent edits, renames or
+`git add`s it; (5) after every terminal state, a restart in each non-terminal state, and a GC pass, no recorded path
+exists (fault injection on unlink sets `removal = 'failed'` and needs-attention); (6) no event, span, log, artifact or
+sink capture contains a planted canary string from a skill body; (7) `add` refuses each fixture in the LLD §19.1
+refusal table; (8) the resolver is deterministic: same config, store and request give the same ordered set. The
+malicious-fixture leg (T16.11) adds a repository with its own `.claude/skills`, `.cursor/rules`, `AGENTS.md` and a
+pre-existing `switchboard-` path.
 
 ## 4. Provider adapter strategy
 
