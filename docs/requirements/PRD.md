@@ -325,9 +325,9 @@ involved.
 #### UJ-12 Orchestrator asks for a model group; usage is paced across subscriptions
 
 *Proposed (2026-10-17, owner decision 57, [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md); partly built on
-fakes: T7.13 to T7.16 `Done` 2026-10-17, including the model-group acceptance test
-(`src/mcp/m7-group-acceptance.test.ts`) and the pacing acceptance test T6.16
-(`src/mcp/m6-pacing-acceptance.test.ts`), `Done` 2026-10-17; the README pass T7.17 is not built).*
+fakes: T7.13 to T7.17 `Done` 2026-10-17, including the model-group acceptance test
+(`src/mcp/m7-group-acceptance.test.ts`), the pacing acceptance test T6.16
+(`src/mcp/m6-pacing-acceptance.test.ts`) and the README pass T7.17, all `Done` 2026-10-17).*
 
 - Actor: Orchestrator; the operator configures groups and subscription windows.
 - Trigger: the orchestrator delegates a task with `routing.model_group` set to a configured group, or with one explicit
