@@ -594,6 +594,11 @@ describe("verification slots (T3.22, FR-EXE-09, LLD §8.1)", () => {
     return max;
   };
   const waits = (runId: string) => events(runId).filter((e) => e.type === VERIFICATION_WAIT_EVENT);
+  /** The command's variable names, without the one macOS adds to every process (T4.10). */
+  const envNames = (env: Record<string, string>) =>
+    Object.keys(env)
+      .filter((k) => k !== "__CF_USER_TEXT_ENCODING")
+      .sort();
   const holders: ChildProcess[] = [];
   afterEach(() => {
     for (const c of holders.splice(0)) c.kill("SIGKILL");
@@ -706,7 +711,7 @@ describe("verification slots (T3.22, FR-EXE-09, LLD §8.1)", () => {
     const got = JSON.parse(readFileSync(out, "utf8")) as { p: number; env: Record<string, string> };
     expect(got.p).toBe(Math.min(19, getPriority() + 5));
     expect(got.env.VITEST_MAX_WORKERS).toBe("1"); // the declared value, not the controller's
-    expect(Object.keys(got.env).sort()).toEqual(["PATH", "VITEST_MAX_WORKERS"]);
+    expect(envNames(got.env)).toEqual(["PATH", "VITEST_MAX_WORKERS"]);
     expect(waits(runId)).toEqual([]); // a free slot is taken without any record
   }, 60_000);
 
@@ -723,7 +728,7 @@ describe("verification slots (T3.22, FR-EXE-09, LLD §8.1)", () => {
     expect((await lc.waitForTerminal(runId)).state).toBe("SUCCEEDED");
     const got = JSON.parse(readFileSync(out, "utf8")) as { p: number; env: Record<string, string> };
     expect(got.p).toBe(getPriority());
-    expect(Object.keys(got.env)).toEqual(["PATH"]);
+    expect(envNames(got.env)).toEqual(["PATH"]);
     const types = events(runId).map((e) => e.type);
     expect(types).not.toContain(VERIFICATION_WAIT_EVENT);
     expect(types.filter((t) => t.startsWith("verification"))).toEqual([
