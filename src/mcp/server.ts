@@ -106,12 +106,22 @@
  *   priority and `depends_on`; `depends_on` names this client's own items. `cancel_work` cancels a PENDING or READY
  *   item and returns any other item unchanged (an admitted item is stopped with `cancel_run`). Delegated, fail closed:
  *   the tools are not offered over the network transport, since a work item records its client but no HTTP subject.
+ * - Skill tools (T16.9; FR-SKL-08, FR-CTL-11, LLD §19.9, ADR-0056 item 12): `list_skills` and `get_skill` exist only
+ *   when the skill store is wired (`deps.skills`) and `skills.enabled` is true, and only for an `orchestrator` client
+ *   (they are outside the console set). Both read the T16.1 store and write nothing. Visibility is
+ *   `mcp_clients[].skills`; a version is shown when LLD §19.5 step 4 would let this client inject it. `defaults` is
+ *   `resolveSkills` (`../skills/resolve.ts`, the steps 2 to 4 resolver admission reuses) without request names.
+ *   Delegated: `trust_profile` defaults to the client's maximum, or its ceiling in `project`; one above that is
+ *   PERMISSION_BLOCKED as in `delegate_task`; a project this client may not use is reported like an unknown one (as
+ *   `search_project_context`); every `get_skill` miss (unknown, retired, invisible, version not injectable) is the same
+ *   INVALID_REQUEST, which never names the skill; a stored file that fails its hash is TOOL_FAILURE.
  */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, type CallToolResult, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { ErrorObject, ValidateFunction } from "ajv";
 import { Ajv2020 } from "ajv/dist/2020.js";
+import type Database from "better-sqlite3";
 import {
   type AdapterRegistry,
   acceptsReportedModel,
@@ -131,6 +141,7 @@ import {
   projectsForClient,
   type ResolvedConfig,
   type ResolvedProject,
+  type ResolvedSkills,
   type RoutingSettings,
 } from "../config/index.js";
 import {
@@ -191,6 +202,17 @@ import {
   TRUST_PROFILE_ORDER,
   withModelPin,
 } from "../routing/index.js";
+import {
+  canonicalBody,
+  getSkillVersion,
+  listSkillNames,
+  newestInjectableVersion,
+  readSkillContent,
+  resolveSkills,
+  type SkillGate,
+  storeCatalog,
+  versionInjectable,
+} from "../skills/index.js";
 import { gitText } from "../workspace/git.js";
 import { assembleDigest } from "./digest.js";
 import { buildEnvelope, compactEvents, type Envelope } from "./envelope.js";
@@ -204,6 +226,8 @@ import {
   type ProjectToolName,
   SCHEMA_DIALECT,
   SEARCH_TOOL_NAMES,
+  SKILL_TOOL_NAMES,
+  type SkillToolName,
   TOOL_NAMES,
   TOOL_SCHEMA_VERSION,
   type ToolName,
@@ -213,12 +237,7 @@ import {
   withError,
 } from "./schemas.js";
 import { createScrubber } from "./scrub.js";
-import {
-  type SearchContextDeps,
-  type SearchProject,
-  searchEnabledFor,
-  searchProjectContext,
-} from "./search-context.js";
+import { type SearchContextDeps, searchEnabledFor, searchProjectContext } from "./search-context.js";
 import { applyToolProfile, profileOffers } from "./tool-profile.js";
 
 export const SERVER_NAME = "switchboard";
@@ -255,6 +274,12 @@ export interface McpServerDeps {
    * listed; present, it is listed only while retrieval is on for at least one project this client may use.
    */
   readonly searchContext?: SearchContextDeps;
+  /**
+   * T16.9 (FR-SKL-08): the skill store (`skill_version`, `skill_event` and `<data_dir>/skills/`) and the resolved
+   * `skills` settings. Absent, or present with `settings.enabled` false, means `list_skills` and `get_skill` do not
+   * exist for this server.
+   */
+  readonly skills?: SkillToolDeps;
   /** Configured MCP client this session is bound to (`serve --client <id>`). */
   readonly clientId: string;
   /**
@@ -278,6 +303,13 @@ export interface McpServerDeps {
    * off the tool's write path). Absent means no sink is configured.
    */
   readonly announcePause?: (a: PauseAnnouncement) => void;
+}
+
+/** T16.9: what the skill tools read. Nothing here is written. */
+export interface SkillToolDeps {
+  readonly db: Database.Database;
+  readonly dataDir: string;
+  readonly settings: ResolvedSkills;
 }
 
 /** T14.6: what {@link McpServerDeps.announcePause} receives after the project row was written. */
@@ -1516,9 +1548,9 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
   );
   /**
    * A project this client may not use is reported exactly like an unknown one (LLD §14.7), so the tool is no existence
-   * oracle: another client's dynamic project, a configured project missing from `projects`, a deleted or pending one.
+   * oracle (T16.9: `list_skills` takes its `project` the same way): another client's dynamic project, a configured project missing from `projects`, a deleted or pending one.
    */
-  const searchTarget = async (projectId: string): Promise<SearchProject> => {
+  const searchTarget = async (projectId: string): Promise<ResolvedProject> => {
     const unknown = () => invalid(`unknown project ${JSON.stringify(projectId)}`, { field: "project" });
     const configured = (deps.config.projects ?? []).find((p) => p.id === projectId);
     if (configured !== undefined) {
@@ -1542,6 +1574,99 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       ...(a.limit !== undefined ? { limit: a.limit as number } : {}),
       scope: a.scope as "project" | "global" | "both",
     });
+  };
+
+  /** T16.9 (FR-SKL-08): offered only while the store is wired and `skills.enabled` is true. */
+  const skillsOffered = deps.skills?.settings.enabled === true;
+  const skillValidators = compileSkillValidators();
+  const skillGate = (profile: TrustProfile): SkillGate => ({
+    profile,
+    allowDraftInTrusted: deps.skills?.settings.allowDraftInTrusted === true,
+    ...(client.skills !== undefined ? { clientSkills: client.skills } : {}),
+  });
+  /** Every get_skill miss: no name, no reason, so the answer is no existence oracle (LLD §19.9). */
+  const unknownSkill = () => invalid("unknown skill", { field: "name" });
+  const listSkills = async (a: Args) => {
+    const sk = deps.skills as SkillToolDeps;
+    const project = a.project === undefined ? undefined : await searchTarget(a.project as string);
+    const ceiling = project === undefined ? maxTrustProfile : effectiveMaxProfile(maxTrustProfile, project);
+    const profile = (a.trust_profile as TrustProfile | undefined) ?? ceiling;
+    if (profileRank(profile) > profileRank(ceiling)) {
+      throw new ToolError(
+        "PERMISSION_BLOCKED",
+        project === undefined
+          ? `trust profile ${profile} exceeds this client's maximum ${maxTrustProfile}`
+          : `trust profile ${profile} exceeds the maximum ${ceiling} this client has in project ${project.id}`,
+      );
+    }
+    const gate = skillGate(profile);
+    const catalog = storeCatalog(sk.db);
+    const skills: object[] = [];
+    for (const name of listSkillNames(sk.db)) {
+      const entry = catalog(name);
+      const v = entry === undefined ? undefined : newestInjectableVersion(entry, gate);
+      if (v === undefined) continue;
+      const row = getSkillVersion(sk.db, name, v.version);
+      if (row === undefined) continue;
+      skills.push({
+        name,
+        description: row.description,
+        version: v.version,
+        sha256: row.sha256,
+        size_bytes: row.size_bytes,
+        approved: v.state === "approved",
+        origin: row.origin,
+        applies_to_providers: row.applies_to === null ? null : (JSON.parse(row.applies_to) as string[]),
+      });
+    }
+    if (project === undefined) return { skills };
+    const resolution = resolveSkills(
+      {
+        ...gate,
+        global: sk.settings,
+        ...(project.skills !== undefined ? { project: project.skills } : {}),
+        ...(a.role !== undefined ? { role: a.role as string } : {}),
+      },
+      catalog,
+    );
+    return {
+      skills,
+      defaults: resolution.entries.map((e) => ({ name: e.name, version: e.version, source: e.source })),
+    };
+  };
+  const getSkill = async (a: Args) => {
+    const sk = deps.skills as SkillToolDeps;
+    const name = a.name as string;
+    const entry = storeCatalog(sk.db)(name);
+    if (entry === undefined) throw unknownSkill();
+    const gate = skillGate(maxTrustProfile);
+    const v =
+      a.version === undefined
+        ? newestInjectableVersion(entry, gate)
+        : entry.versions.find((x) => x.version === a.version);
+    if (v === undefined || !versionInjectable(entry, v, gate)) throw unknownSkill();
+    const row = getSkillVersion(sk.db, name, v.version);
+    if (row === undefined) throw unknownSkill();
+    let text: string;
+    try {
+      text = readSkillContent(sk.dataDir, row.sha256);
+    } catch {
+      throw new ToolError("TOOL_FAILURE", "stored skill text is missing or does not match its hash", {
+        reason: "SKILL_CONTENT_UNAVAILABLE",
+      });
+    }
+    return {
+      name,
+      version: v.version,
+      sha256: row.sha256,
+      description: row.description,
+      approved: v.state === "approved",
+      body: canonicalBody(text),
+    };
+  };
+  const skillHandlers: Record<SkillToolName, (a: Args) => Promise<object>> = {
+    list_skills: listSkills,
+    get_skill: getSkill,
   };
 
   const handlers: Record<ToolName, (a: Args) => Promise<object>> = {
@@ -1607,6 +1732,14 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         if (!searchValidator(args)) throw schemaError(searchValidator.errors ?? []);
         return ok(await searchContextTool(args));
       }
+      if ((SKILL_TOOL_NAMES as readonly string[]).includes(name) && skillsOffered) {
+        // T16.9 (FR-SKL-08): read-only; when not offered it is answered exactly like an unknown tool.
+        const tool = name as SkillToolName;
+        const args = structuredClone(rawArgs ?? {}) as Args;
+        const validate = skillValidators[tool];
+        if (!validate(args)) throw schemaError(validate.errors ?? []);
+        return ok(await skillHandlers[tool](args));
+      }
       if ((WORK_QUEUE_TOOL_NAMES as readonly string[]).includes(name) && workQueueOffered) {
         // T15.1 (FR-QUE-01): over HTTP it is answered exactly like an unknown tool.
         const tool = name as WorkQueueToolName;
@@ -1651,6 +1784,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         manageProjects: client.manageProjects === true && projectTools !== undefined,
         searchContext: searchOffered(),
         workQueue: workQueueOffered,
+        skills: skillsOffered,
       }),
       // T14.8: listed only for an approval_proxy client (absent, not refused, for every other client).
       ...(approvalProxy !== undefined
@@ -1741,6 +1875,14 @@ function compileValidators(): Record<ToolName, ValidateFunction> {
   const ajv = new Ajv2020({ allErrors: true, strict: true, useDefaults: true });
   return Object.fromEntries(TOOL_NAMES.map((n) => [n, ajv.compile(inputSchema(n))])) as Record<
     ToolName,
+    ValidateFunction
+  >;
+}
+
+function compileSkillValidators(): Record<SkillToolName, ValidateFunction> {
+  const ajv = new Ajv2020({ allErrors: true, strict: true, useDefaults: true });
+  return Object.fromEntries(SKILL_TOOL_NAMES.map((n) => [n, ajv.compile(inputSchema(n))])) as Record<
+    SkillToolName,
     ValidateFunction
   >;
 }

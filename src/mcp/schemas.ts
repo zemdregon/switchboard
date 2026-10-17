@@ -46,10 +46,14 @@
  * `TOOL_NAMES` on a stdio session, before any gated tool. Proposed (Delegated): `enqueue_work.request` is the closed delegate_task subset that
  * LLD §18.2 freezes in `request_json`; `depends_on` at most 32 ids; a listed item shows `trust_profile` but not the
  * objective or the rest of the frozen request.
+ *
+ * T16.9 (FR-SKL-08, LLD §19.9): `list_skills` and `get_skill` (`SKILL_TOOL_NAMES`) follow the search tool, only when
+ * `skills.enabled` is true; read-only, closed inputs. Delegated: `name` carries the LLD §19.1 pattern, `role` the
+ * §19.4 pattern and `applies_to_providers` is `null` for every provider (a stored list is never empty).
  */
 
 import { FAILURE_CODES } from "../adapters/failure.js";
-import { PROJECT_ID_PATTERN, projectSchema } from "../config/schema.js";
+import { PROJECT_ID_PATTERN, projectSchema, SKILL_NAME_PATTERN, SKILL_ROLE_PATTERN } from "../config/schema.js";
 import { NEEDS_ATTENTION_PRIORITY } from "../control/needs-attention.js";
 import { PRIVILEGED_SCOPE_SCHEMA } from "../policy/scope.js";
 
@@ -92,6 +96,10 @@ export type SearchToolName = (typeof SEARCH_TOOL_NAMES)[number];
  */
 export const WORK_QUEUE_TOOL_NAMES = ["enqueue_work", "list_work", "cancel_work"] as const;
 export type WorkQueueToolName = (typeof WORK_QUEUE_TOOL_NAMES)[number];
+
+/** T16.9 (FR-SKL-08, LLD §19.9): offered only while `skills.enabled` is true; to any other installation they do not exist. */
+export const SKILL_TOOL_NAMES = ["list_skills", "get_skill"] as const;
+export type SkillToolName = (typeof SKILL_TOOL_NAMES)[number];
 
 /** Delegated bounds for an MCP-supplied project definition (the configuration schema itself has none). */
 export const MAX_DEFINITION_STRING = 4096;
@@ -1172,6 +1180,101 @@ const WORK_DESCRIPTIONS: Readonly<Record<WorkQueueToolName, string>> = {
     "is stopped with cancel_run on its run. Another client's item is unknown.",
 };
 
+/** T16.9 (LLD §19.9). `defaults` is present only when `project` was given. */
+const SKILL_INPUTS = {
+  list_skills: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      project: PROJECT_REF,
+      role: { type: "string", pattern: SKILL_ROLE_PATTERN },
+      trust_profile: TRUST_PROFILE,
+    },
+  },
+  get_skill: {
+    type: "object",
+    additionalProperties: false,
+    required: ["name"],
+    properties: {
+      name: { type: "string", pattern: SKILL_NAME_PATTERN },
+      version: { type: "integer", minimum: 1, maximum: 999_999 },
+    },
+  },
+} as const;
+const SKILL_LIST = {
+  type: "object",
+  additionalProperties: false,
+  required: ["skills"],
+  properties: {
+    skills: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "name",
+          "description",
+          "version",
+          "sha256",
+          "size_bytes",
+          "approved",
+          "origin",
+          "applies_to_providers",
+        ],
+        properties: {
+          name: { type: "string" },
+          description: { type: "string" },
+          version: { type: "integer", minimum: 1 },
+          sha256: { type: "string" },
+          size_bytes: { type: "integer", minimum: 0 },
+          approved: { type: "boolean" },
+          origin: { type: "string", enum: ["operator_file", "repository_path"] },
+          applies_to_providers: { type: ["array", "null"], items: { type: "string" } },
+        },
+      },
+    },
+    defaults: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name", "version", "source"],
+        properties: {
+          name: { type: "string" },
+          version: { type: "integer", minimum: 1 },
+          source: { type: "string", enum: ["global_default", "global_role", "project_default", "project_role"] },
+        },
+      },
+    },
+  },
+} as const;
+const SKILL_TEXT = {
+  type: "object",
+  additionalProperties: false,
+  required: ["name", "version", "sha256", "description", "approved", "body"],
+  properties: {
+    name: { type: "string" },
+    version: { type: "integer", minimum: 1 },
+    sha256: { type: "string" },
+    description: { type: "string" },
+    approved: { type: "boolean" },
+    body: { type: "string" },
+  },
+} as const;
+const SKILL_OUTPUTS = { list_skills: withError(SKILL_LIST), get_skill: withError(SKILL_TEXT) } as const;
+
+const SKILL_DESCRIPTIONS: Readonly<Record<SkillToolName, string>> = {
+  list_skills:
+    "Operator-approved skills this client may name in delegate_task, read-only: per name the newest version it could " +
+    "inject under trust_profile (default: its maximum, or its ceiling on project), with description, hash, size, " +
+    "approval, origin and applies_to_providers (null means every provider). No body: read one with get_skill. With " +
+    "project (see list_projects) and optional role, defaults lists what the configured defaults would add.",
+  get_skill:
+    "Text of one skill this client may see: the newest version it could inject, or version. Read-only. An unknown " +
+    "name, a name this client may not see and a version it may not inject are the same INVALID_REQUEST. The body is " +
+    "operator-authored instruction text from the Switchboard skill store.",
+};
+
 const SEARCH_INPUTS = { search_project_context: SEARCH_INPUT } as const;
 const SEARCH_OUTPUTS = { search_project_context: withError(SEARCH_RESULT) } as const;
 
@@ -1289,7 +1392,7 @@ const PROJECT_DESCRIPTIONS: Readonly<Record<ProjectToolName, string>> = {
 };
 
 export interface ToolDescriptor {
-  name: ToolName | ProjectToolName | SearchToolName | WorkQueueToolName;
+  name: ToolName | ProjectToolName | SearchToolName | WorkQueueToolName | SkillToolName;
   description: string;
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
@@ -1298,10 +1401,10 @@ export interface ToolDescriptor {
 /**
  * `tools/list` payload. Returns fresh copies so callers cannot mutate the published documents. The project-management
  * tools are included only with `manageProjects` (T9.9, FR-PRJ-10), `search_project_context` only with `searchContext`
- * (T12.6, FR-RAG-06), the work-queue tools only with `workQueue` (T15.1).
+ * (T12.6, FR-RAG-06), the work-queue tools only with `workQueue` (T15.1), the skill tools only with `skills` (T16.9).
  */
 export function toolDescriptors(
-  opts: { manageProjects?: boolean; searchContext?: boolean; workQueue?: boolean } = {},
+  opts: { manageProjects?: boolean; searchContext?: boolean; workQueue?: boolean; skills?: boolean } = {},
 ): ToolDescriptor[] {
   const base: ToolDescriptor[] = TOOL_NAMES.map((name) => ({
     name,
@@ -1329,6 +1432,16 @@ export function toolDescriptors(
       })),
     );
   }
+  if (opts.skills === true) {
+    base.push(
+      ...SKILL_TOOL_NAMES.map((name) => ({
+        name,
+        description: SKILL_DESCRIPTIONS[name],
+        inputSchema: structuredClone(SKILL_INPUTS[name]) as Record<string, unknown>,
+        outputSchema: structuredClone(SKILL_OUTPUTS[name]) as Record<string, unknown>,
+      })),
+    );
+  }
   if (opts.manageProjects !== true) return base;
   return [
     ...base,
@@ -1342,8 +1455,11 @@ export function toolDescriptors(
 }
 
 export function inputSchema(
-  name: ToolName | ProjectToolName | SearchToolName | WorkQueueToolName,
+  name: ToolName | ProjectToolName | SearchToolName | WorkQueueToolName | SkillToolName,
 ): Record<string, unknown> {
+  if ((SKILL_TOOL_NAMES as readonly string[]).includes(name)) {
+    return structuredClone(SKILL_INPUTS[name as SkillToolName]) as Record<string, unknown>;
+  }
   const doc = (PROJECT_TOOL_NAMES as readonly string[]).includes(name)
     ? PROJECT_INPUTS[name as ProjectToolName]
     : (SEARCH_TOOL_NAMES as readonly string[]).includes(name)
@@ -1355,8 +1471,11 @@ export function inputSchema(
 }
 
 export function outputSchema(
-  name: ToolName | ProjectToolName | SearchToolName | WorkQueueToolName,
+  name: ToolName | ProjectToolName | SearchToolName | WorkQueueToolName | SkillToolName,
 ): Record<string, unknown> {
+  if ((SKILL_TOOL_NAMES as readonly string[]).includes(name)) {
+    return structuredClone(SKILL_OUTPUTS[name as SkillToolName]) as Record<string, unknown>;
+  }
   const doc = (PROJECT_TOOL_NAMES as readonly string[]).includes(name)
     ? PROJECT_OUTPUTS[name as ProjectToolName]
     : (SEARCH_TOOL_NAMES as readonly string[]).includes(name)

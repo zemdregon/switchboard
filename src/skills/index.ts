@@ -5,5 +5,6 @@ export * from "./format.js";
 export * from "./ledger.js";
 export * from "./limits.js";
 export * from "./read.js";
+export * from "./resolve.js";
 export * from "./state.js";
 export * from "./store.js";

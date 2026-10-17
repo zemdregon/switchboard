@@ -6542,8 +6542,8 @@ Done-when).
 ## 19. Switchboard-controlled skills (M16, Proposed)
 
 *Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); partly built: the
-store, migration `0021` and state derivation (T16.1) and the configuration keys and loader (T16.3), both Delegated,
-not owner-approved; admission, delivery, CLI and MCP tools Proposed).
+store, migration `0021` and state derivation (T16.1), the configuration keys and loader (T16.3) and the MCP tools with
+the §19.5 steps 2 to 4 resolver (T16.9), all Delegated, not owner-approved; admission, delivery and CLI Proposed).
 Delegated mechanism, not owner-approved beyond the direction. The four limit defaults are Assumptions and their ranges
 are Delegated ([§19.3](#193-configuration-fr-skl-03-fr-skl-04-fr-skl-08)).* Requirements: FR-SKL-01 to
 FR-SKL-10. Business rules: [FRD](../requirements/FRD.md#3-business-rules) BR-52 to BR-56, V15, C8, WF-16. Tasks:
@@ -6795,6 +6795,23 @@ client could inject under `trust_profile` (default: the client's maximum). `defa
 would add for `project` and `role`. `get_skill` returns a visible version's text; an invisible or unknown name is
 `INVALID_REQUEST` with no hint that it exists. Neither tool writes a ledger row other than the existing tool-call
 record.
+
+*Implementation (T16.9, 2026-10-17, Delegated, not owner-approved):* `src/mcp/schemas.ts` (`SKILL_TOOL_NAMES`, listed
+after `search_project_context`), handlers in `src/mcp/server.ts` behind the `skills` server dependency (store handle,
+data directory, resolved `skills` settings), and the pure resolver `resolveSkills` in `src/skills/resolve.ts` for
+§19.5 steps 2 to 4, which `defaults` uses and admission (T16.4) is to reuse; it writes nothing. The tools are outside
+the `console` set (FR-CTL-11), so `src/mcp/tool-profile.ts` is unchanged. The MCP server records no tool call in the
+ledger today, so "the existing tool-call record" is none: a test compares every table before and after. Delegated
+readings: a `revoked` version is never usable (also where a draft would be); "the newest version the client could
+inject" may be older than the newest approved one when that one fails a gate (it is the newest that passes step 4
+on its own, so the client can pin it); `trust_profile` defaults to the client's maximum, or its ceiling in `project`,
+and a higher one is `PERMISSION_BLOCKED` as in `delegate_task`; a `project` the client may not use is reported like an
+unknown one, as `search_project_context` does; every `get_skill` miss (unknown, retired, invisible, version not
+injectable) is one `INVALID_REQUEST` that never names the skill; `applies_to_providers` is `null` for every provider;
+a duplicated name takes its position from the first occurrence and its version and source from the first `@n`, and is
+a requested name if any occurrence is; a stored file that fails its hash is `TOOL_FAILURE` with `details.reason =
+"SKILL_CONTENT_UNAVAILABLE"`. `switchboard serve` does not pass the `skills` dependency yet (`src/cli/**` was outside
+T16.9), so a running installation offers the tools only once the serve wiring lands.
 
 ### 19.10 Operator CLI (FR-SKL-09)
 
