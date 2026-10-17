@@ -1087,6 +1087,70 @@ describe("doctor inner-agent shared subscription (T11.5, FR-INN-15)", () => {
   });
 });
 
+describe("doctor notification sinks (T14.14; FR-CTL-10, FR-CTL-12)", () => {
+  const fakeOnly = () => new AdapterRegistry().register(new FakeAdapter());
+  const CANARY = "sec-canary-sink-auth-4f9e1b";
+  const writeSinks = (sinks?: unknown) =>
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schema_version: 1,
+        data_dir: dataDir,
+        allowed_roots: [path.join(tmp, "repos")],
+        mcp_clients: [{ id: "ops", max_trust_profile: "privileged" }],
+        ...(sinks !== undefined ? { notification_sinks: sinks } : {}),
+      }),
+    );
+
+  it("is absent when notification_sinks is not configured (byte-identical to main)", async () => {
+    writeSinks(undefined);
+    const j = JSON.parse((await run(["doctor", "--json", ...cfg()], { adapters: fakeOnly() })).out);
+    expect(j.checks.map((x: { id: string }) => x.id)).not.toContain("notification_sinks");
+    const text = (await run(["doctor", ...cfg()], { adapters: fakeOnly() })).out;
+    expect(text).not.toContain("Notification sinks:");
+  });
+
+  it("reports set when webhook authorization is configured; canary never appears in JSON or text", async () => {
+    writeSinks([
+      { id: "hook-auth", kind: "webhook", url: "https://hook.example.test/sink", authorization: `Bearer ${CANARY}` },
+    ]);
+    const res = await run(["doctor", "--json", ...cfg()], { adapters: fakeOnly() });
+    const j = JSON.parse(res.out);
+    const c = j.checks.find((x: { id: string }) => x.id === "notification_sinks");
+    expect(c.status).toBe("ok");
+    expect(c.detail).toBe("hook-auth (webhook, authorization: set)");
+    expect(res.out).not.toContain(CANARY);
+
+    const text = (await run(["doctor", ...cfg()], { adapters: fakeOnly() })).out;
+    expect(text).toMatch(/\[ok\]\s+Notification sinks: hook-auth \(webhook, authorization: set\)/);
+    expect(text).not.toContain(CANARY);
+  });
+
+  it("reports unset when webhook authorization is omitted", async () => {
+    writeSinks([{ id: "hook-noauth", kind: "webhook", url: "https://hook.example.test/sink" }]);
+    const res = await run(["doctor", "--json", ...cfg()], { adapters: fakeOnly() });
+    const j = JSON.parse(res.out);
+    const c = j.checks.find((x: { id: string }) => x.id === "notification_sinks");
+    expect(c.status).toBe("ok");
+    expect(c.detail).toBe("hook-noauth (webhook, authorization: unset)");
+    const text = (await run(["doctor", ...cfg()], { adapters: fakeOnly() })).out;
+    expect(text).toMatch(/\[ok\]\s+Notification sinks: hook-noauth \(webhook, authorization: unset\)/);
+  });
+
+  it("reports both kinds with set and unset states", async () => {
+    writeSinks([
+      { id: "hook", kind: "webhook", url: "https://hook.example.test/sink", authorization: "Basic secret" },
+      { id: "ntfy-a", kind: "ntfy", ntfy: { server: "https://ntfy.example.test", topic: "t", token: "tok" } },
+      { id: "ntfy-b", kind: "ntfy", ntfy: { server: "https://ntfy.example.test", topic: "t" } },
+    ]);
+    const res = await run(["doctor", "--json", ...cfg()], { adapters: fakeOnly() });
+    const j = JSON.parse(res.out);
+    const c = j.checks.find((x: { id: string }) => x.id === "notification_sinks");
+    expect(c.status).toBe("ok");
+    expect(c.detail).toBe("hook (webhook, authorization: set); ntfy-a (ntfy, token: set); ntfy-b (ntfy, token: unset)");
+  });
+});
+
 describe("doctor outer sandbox (T3.1, ADR-0051)", () => {
   const fakeOnly = () => new AdapterRegistry().register(new FakeAdapter());
   const mech = (mechanism: OuterSandboxMechanism, available: boolean) => ({

@@ -2067,6 +2067,7 @@ Delegated, not owner-approved):**
 | `id` | string | Operator-chosen label |
 | `kind` | `webhook` \| `ntfy` | Delivery mechanism |
 | `url` | string (https) | Webhook URL (operator may point this at the Grok bot's deployment-generated webhook; no Grok-specific code) |
+| `authorization` | string (optional) | Webhook authorization header value (FR-CTL-12, T14.14); sent as `Authorization: <authorization>`, never logged or echoed |
 | `ntfy` | object | For `kind: ntfy`: `{ "server", "topic", "token"?: string }`; publish uses ntfy's documented HTTP publish API ([ntfy publish](https://docs.ntfy.sh/publish/), cited here per owner decision 53) |
 | `events` | array of `sink_event_kind` | Filter; default all kinds |
 | `max_per_minute` | integer ≥ 1 | Rate limit; excess dropped and counted |
@@ -2077,12 +2078,14 @@ stdio-only deployments). Delivery is asynchronous, bounded timeout (proposed tar
 failures append `sink_delivery_failed` counts to the ledger without payload or URL (NFR-SEC-01). Never blocks admission
 or run execution.
 
-**Implementation (T14.9, `src/control/sinks.ts`, `src/config/notification-sinks.ts`; Delegated, not owner-approved):**
+**Implementation (T14.9, T14.14, `src/control/sinks.ts`, `src/config/notification-sinks.ts`; Delegated, not owner-approved):**
 
 - `url` and `ntfy.server` must be `https://` with no userinfo, query or fragment; plain HTTP is refused at load, also
-  for loopback. `ntfy.topic` matches `^[-_A-Za-z0-9]{1,64}$`. At most 8 sinks with unique `id`s (**Assumption**).
-  `max_per_minute` defaults to 10 and is at most 600 (**Assumption**; a sliding 60 s window per sink). Config errors
-  name the key and never echo a configured value.
+  for loopback. Optional `authorization` on `kind: webhook` sinks is sent as the `Authorization` header and stored like
+  the `ntfy` `token` (FR-CTL-12, T14.14); `doctor` shows `set` or `unset` and the value is never logged, written to the
+  ledger or returned by MCP tools. `ntfy.topic` matches `^[-_A-Za-z0-9]{1,64}$`. At most 8 sinks with unique `id`s
+  (**Assumption**). `max_per_minute` defaults to 10 and is at most 600 (**Assumption**; a sliding 60 s window per sink).
+  Config errors name the key and never echo a configured value.
 - Reason codes per `event_kind`: `needs_attention` takes a `needs_attention_reason`; `approval_pending` and
   `approval_decided` an `approval_kind`; `run_terminal` the terminal state (`SUCCEEDED`, `FAILED`, `CANCELLED`);
   `budget_exhausted` the literal `budget_exhausted`; `project_paused` `project_paused` or `global_paused`. `project_id`
@@ -2090,7 +2093,8 @@ or run execution.
   `run_id` that is not `run_` + ULID, is dropped, not sent.
 - Link: the origin of `public_url` plus `/runs/<run_id>` or `/digest`; else `switchboard://run/<run_id>` or
   `switchboard://digest`.
-- Webhook: `POST` to `url`, `Content-Type: application/json`, body exactly `notification_payload`. ntfy: JSON publish
+- Webhook: `POST` to `url`, `Content-Type: application/json`, body exactly `notification_payload`, with
+  `Authorization: <authorization>` when `authorization` is configured (FR-CTL-12, T14.14). ntfy: JSON publish
   ([ntfy publish](https://docs.ntfy.sh/publish/), "Publish as JSON") to the server root with body `{ topic, title:
   "Switchboard: <event_kind>", message: "project_id=<id> reason_code=<code> run_id=<id|none>", click: <link>, tags:
   ["switchboard"] }` and `Authorization: Bearer <token>` when `token` is set.

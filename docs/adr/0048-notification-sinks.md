@@ -7,7 +7,7 @@
   answering discovery question 4: "Grok Bot"). Owner decision 53 (2026-10-15) settles that the Grok bot generates its
   own webhook at deployment, so the generic webhook is pointed at it with no Grok-specific code, and adds ntfy. The
   realisation below is Delegated and not owner-approved.
-- Related: FR-CTL-10, FR-CTL-08, NFR-PRIV-01, NFR-SEC-01, FR-TEL-03, FR-INN-16, [ADR-0003](0003-no-credential-handling.md),
+- Related: FR-CTL-10, FR-CTL-12, FR-CTL-08, NFR-PRIV-01, NFR-SEC-01, FR-TEL-03, FR-INN-16, [ADR-0003](0003-no-credential-handling.md),
   [ADR-0041](0041-http-transport-with-oauth-2-1.md), [ADR-0047](0047-approval-proxy-over-mcp.md), R-66,
   owner decisions 52, 53 and 55.
 
@@ -41,9 +41,9 @@ built, and the discovery note recommended this one for the same reason.
    digest and no passphrase; opening it requires the operator's normal authentication (FR-MCP-17 or the CLI).
 6. **Delivery never affects a run.** A sink call is best effort, runs outside the admission and execution path, and has
    a bounded timeout. A failure is recorded as a count and a reason code in the ledger, never with the payload.
-7. **Transport.** HTTPS only, with certificate verification on. A webhook URL, ntfy topic or ntfy access token is
-   operator configuration; it is redacted from logs and telemetry (NFR-SEC-01, FR-TEL-03). The controller holds no provider
-   credential (ADR-0003).
+7. **Transport.** HTTPS only, with certificate verification on. A webhook URL, optional webhook authorization
+   (FR-CTL-12), ntfy topic or ntfy access token is operator configuration; it is redacted from logs and telemetry
+   (NFR-SEC-01, FR-TEL-03). The controller holds no provider credential (ADR-0003).
 
 ## Consequences
 

@@ -13,15 +13,17 @@
  *
  * Delivery never affects a run (ADR-0048 item 6): {@link SinkDispatcher.emit} is synchronous, never throws and never
  * awaits; each delivery starts on a later turn of the event loop, has a bounded timeout (5 s, LLD §3.4.9's proposed
- * target) and reports a fixed outcome code to `onOutcome`. Outcomes never carry a URL, topic, token, payload or an
- * error's own text (a TLS or DNS error names the host), so a caller can log or record them as they are (FR-TEL-03).
+ * target) and reports a fixed outcome code to `onOutcome`. Outcomes never carry a URL, topic, token, authorization,
+ * payload or an error's own text (a TLS or DNS error names the host), so a caller can log or record them as they are
+ * (FR-TEL-03).
  * Events over a sink's `max_per_minute` in a sliding 60 s window are dropped and reported as `rate_limited`, never
  * queued.
  *
- * Delegated (T14.9, recorded in LLD §3.4.9): `run_terminal` carries the terminal state as its reason code; a run
- * admitted without a project carries `project_id` `-`; the webhook body is exactly the payload as JSON; the ntfy sink
- * uses ntfy's JSON publish (POST to the server root with `topic` in the body; ntfy publish docs, "Publish as JSON"),
- * with a fixed title and a message templated from the same closed fields.
+ * Delegated (T14.9, T14.14, recorded in LLD §3.4.9): `run_terminal` carries the terminal state as its reason code; a run
+ * admitted without a project carries `project_id` `-`; the webhook body is exactly the payload as JSON (carrying an
+ * Authorization header when configured, FR-CTL-12); the ntfy sink uses ntfy's JSON publish (POST to the server root
+ * with `topic` in the body; ntfy publish docs, "Publish as JSON"), with a fixed title and a message templated from the
+ * same closed fields.
  */
 import https from "node:https";
 import type { NotificationSinkSettings, SinkEventKind } from "../config/notification-sinks.js";
@@ -117,7 +119,14 @@ export function sinkRequestFor(
   payload: NotificationPayload,
 ): Omit<SinkRequest, "signal"> {
   if (sink.kind === "webhook") {
-    return { url: sink.url, headers: { "content-type": "application/json" }, body: JSON.stringify(payload) };
+    return {
+      url: sink.url,
+      headers: {
+        "content-type": "application/json",
+        ...(sink.authorization !== undefined ? { authorization: sink.authorization } : {}),
+      },
+      body: JSON.stringify(payload),
+    };
   }
   const body = {
     topic: sink.topic,

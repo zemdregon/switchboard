@@ -1,13 +1,15 @@
 /**
- * `notification_sinks[]` configuration (T14.9; FR-CTL-10, LLD §3.4.9, ADR-0048 items 1, 2, 4 and 7).
+ * `notification_sinks[]` configuration (T14.9, T14.14; FR-CTL-10, FR-CTL-12, LLD §3.4.9, ADR-0048 items 1, 2, 4 and 7).
  *
  * Off when absent or empty: no sink is resolved and no outbound notification is ever made. The schema is strict (an
- * unknown key aborts startup, NFR-SEC-06). A webhook URL, ntfy server, topic and token are operator configuration that
- * may grant write access to the destination, so every message here names the key and never echoes a value (FR-TEL-03).
+ * unknown key aborts startup, NFR-SEC-06). A webhook URL, webhook authorization, ntfy server, topic and token are
+ * operator configuration that may grant write access to the destination, so every message here names the key and never
+ * echoes a value (FR-TEL-03).
  *
  * Delegated (T14.9, fail closed; key names are LLD §3.4.9's):
  * - `url` (webhook) and `ntfy.server` must be `https://` with no userinfo, query or fragment (ADR-0048 item 7: HTTPS
  *   only, certificate verification on). Plain HTTP is refused even for loopback.
+ * - `authorization` (webhook, FR-CTL-12), when set, is sent as the `Authorization` header to the webhook destination.
  * - `ntfy.topic` follows ntfy's topic name rule (`[-_A-Za-z0-9]{1,64}`, ntfy publish docs); `ntfy.token`, when set, is
  *   sent as `Authorization: Bearer` to the ntfy server only.
  * - `events` defaults to every `sink_event_kind`; at least one, no repeats.
@@ -41,6 +43,7 @@ export interface NotificationSinkConfig {
   id: string;
   kind: SinkKind;
   url?: string;
+  authorization?: string;
   ntfy?: { server: string; topic: string; token?: string };
   events?: SinkEventKind[];
   max_per_minute?: number;
@@ -57,6 +60,7 @@ export const notificationSinksSchema = {
       id: { type: "string", pattern: SINK_ID_PATTERN },
       kind: { enum: [...SINK_KINDS] },
       url: { type: "string", minLength: 1, maxLength: 2048 },
+      authorization: { type: "string", minLength: 1, maxLength: 512 },
       ntfy: {
         type: "object",
         additionalProperties: false,
@@ -78,6 +82,8 @@ export interface NotificationSinkSettings {
   readonly id: string;
   readonly kind: SinkKind;
   readonly url: string;
+  /** `webhook` only, when configured (FR-CTL-12). */
+  readonly authorization?: string;
   /** `ntfy` only. */
   readonly topic?: string;
   /** `ntfy` only, when configured. */
@@ -117,6 +123,7 @@ export function checkNotificationSinks(sinks: readonly NotificationSinkConfig[] 
       if (s.ntfy === undefined) errs.push(`${at}.ntfy: required for kind ntfy`);
       else for (const p of httpsProblems(s.ntfy.server)) errs.push(`${at}.ntfy.server: ${p}`);
       if (s.url !== undefined) errs.push(`${at}.url: only for kind webhook`);
+      if (s.authorization !== undefined) errs.push(`${at}.authorization: only for kind webhook`);
     }
   }
   return errs;
@@ -133,7 +140,13 @@ export function resolveNotificationSinks(
       events: new Set(s.events ?? SINK_EVENT_KINDS),
       maxPerMinute: s.max_per_minute ?? DEFAULT_SINK_MAX_PER_MINUTE,
     };
-    if (s.kind === "webhook") return { ...common, url: new URL(s.url as string).href };
+    if (s.kind === "webhook") {
+      return {
+        ...common,
+        url: new URL(s.url as string).href,
+        ...(s.authorization !== undefined ? { authorization: s.authorization } : {}),
+      };
+    }
     const n = s.ntfy as NonNullable<NotificationSinkConfig["ntfy"]>;
     // JSON publish goes to the server's root (ntfy publish docs, "Publish as JSON"); a sub-path install keeps its path.
     const server = new URL(n.server);

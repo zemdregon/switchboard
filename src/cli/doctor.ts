@@ -182,6 +182,24 @@ function checkInnerSharedSubscription(cfg: ResolvedConfig): DoctorCheck | undefi
 }
 
 /**
+ * Lists configured notification sinks (T14.14; FR-CTL-10, FR-CTL-12). Absent when none are configured, so the check
+ * list is unchanged for the default configuration. For each sink, reports its id, kind and whether authorization
+ * (or ntfy token) is set or unset, never echoing the value.
+ */
+function checkNotificationSinksDoctor(cfg: ResolvedConfig): DoctorCheck | undefined {
+  if (cfg.notificationSinks.length === 0) return undefined;
+  const parts = cfg.notificationSinks.map((s) => {
+    if (s.kind === "webhook") {
+      const auth = s.authorization !== undefined ? "set" : "unset";
+      return `${s.id} (webhook, authorization: ${auth})`;
+    }
+    const auth = s.token !== undefined ? "set" : "unset";
+    return `${s.id} (ntfy, token: ${auth})`;
+  });
+  return check("notification_sinks", "Notification sinks", "ok", parts.join("; "));
+}
+
+/**
  * T3.1 (ADR-0051, LLD §8.4): outer-sandbox availability, always reported. `ok` when no profile requires it (it is
  * optional hardening, Q-22); with `outer_sandbox.required_profiles` set, `fail` when a required mechanism is missing
  * (those runs are refused, OUTER_SANDBOX_UNAVAILABLE) and `warn` otherwise (still refused: this build does not yet wrap
@@ -549,6 +567,8 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
     if (approval) checks.push(approval);
     const innerShared = checkInnerSharedSubscription(cfg);
     if (innerShared) checks.push(innerShared);
+    const sinks = checkNotificationSinksDoctor(cfg);
+    if (sinks) checks.push(sinks);
   } catch (err) {
     checks.push(check("config", "Config", "fail", (err as Error).message));
   }
