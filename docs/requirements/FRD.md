@@ -809,7 +809,7 @@ sequenceDiagram
 *Proposed (2026-10-17, owner decision 57, [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md); the mechanism is
 built on fakes (T6.8, T6.13, T6.14, T7.13, T7.14, T7.15, the model-group acceptance T7.16,
 `src/mcp/m7-group-acceptance.test.ts`, and the pacing acceptance leg T6.16, `Done` 2026-10-17), and the README pass
-T7.17 is not built).*
+T7.17 is `Done` 2026-10-17 (README "Model groups and pacing")).*
 
 - **Actors:** Orchestrator, COMP-MCP, COMP-RTE, COMP-EXE, COMP-LED.
 - **Preconditions:** the operator configured `model_groups` and, for pacing, `capacity.subscriptions` with windows.
