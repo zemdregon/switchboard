@@ -1,6 +1,8 @@
 # ADR-0043: Capacity estimate computed on read, per-provider breaker in `provider_health`, retries as linked successor runs
 
-- Status: Proposed
+- Status: Proposed; item 8 (no rate gate without a source) amended by
+  [ADR-0055](0055-model-groups-and-usage-pacing.md) (2026-10-17): the gate source is observed usage, not a published
+  limit
 - Date: 2026-10-14
 - Decided by: Delegated (agent, 2026-10-14, ROADMAP T6.1), under [owner decision 25](../ROADMAP.md#42-owner-decisions)
   for everything outside bypass mode. Not a zemdregon quote and not owner-approved. Nothing here changes what a bypass

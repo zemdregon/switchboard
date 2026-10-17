@@ -2253,8 +2253,8 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   keeping a project on one provider is claimed (T7.9).
 - Capacity figures are controller estimates. No provider is known to report remaining quota, and the rate-limit and
   quota output shapes of Claude Code and Codex come from synthetic fixtures until the operator captures them (ROADMAP
-  T6.11). There is no rate gate, because no provider publishes an enforceable limit for the logins used (T6.8,
-  Deferred).
+  T6.11). There is no rate gate yet. No provider publishes an enforceable limit for the logins used, so the planned gate
+  paces usage per subscription window from observed usage instead (ROADMAP T6.8, Planned; not built).
 - Retrieval is tested with a deterministic in-process fake embedder and scripted HTTP fixtures; no live embedding model
   runs in CI. `search_project_context` with `scope: "global"` or `"both"` does not read the global store yet (admission
   merge with `use_global` does).
