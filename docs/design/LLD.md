@@ -3238,7 +3238,8 @@ supported, bypass-only since owner decision 56 (2026-10-16)).* Claude Code decla
   tool (fail closed), never with more permission.
 
 *Note 2026-10-13 (owner decision 41, [ADR-0033](../adr/0033-claude-channel-bypass-only-without-safe-mode.md); mechanism
-Delegated; UNSUPPORTED at that point — supported, bypass-only since owner decision 56 (2026-10-16)).* An operator-machine live check (`docs/research/live-checks-2026-10-13.md`, PR #41; a
+Delegated; UNSUPPORTED at that point — supported, bypass-only since owner decision 56 (2026-10-16)).* An operator-machine
+live check (`docs/research/live-checks-2026-10-13.md`, PR #41; a
 hand-made server, not the shim) confirmed the `mcpServers` shape, `${VAR}` expansion (an unset variable stays literal),
 environment inheritance and exact-name rules under `dontAsk`, and found that `--safe-mode` stops the server from
 starting. So, superseding the "unchanged `--safe-mode`" bullet above for Claude:
