@@ -807,8 +807,8 @@ sequenceDiagram
 ### WF-15 Delegate to a model group under usage pacing
 
 *Proposed (2026-10-17, owner decision 57, [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md); the mechanism is
-built on fakes (T6.8, T6.13, T6.14, T7.13, T7.14 and T7.15, `Done` 2026-10-17), and the end-to-end acceptance legs
-T6.16 and T7.16 are not built).*
+built on fakes (T6.8, T6.13, T6.14, T7.13, T7.14 and T7.15, `Done` 2026-10-17), the pacing acceptance leg T6.16 is built
+(`Done` 2026-10-17) and the routing acceptance leg T7.16 is not built).*
 
 - **Actors:** Orchestrator, COMP-MCP, COMP-RTE, COMP-EXE, COMP-LED.
 - **Preconditions:** the operator configured `model_groups` and, for pacing, `capacity.subscriptions` with windows.
