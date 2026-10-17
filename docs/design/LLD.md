@@ -5631,13 +5631,13 @@ is configured, so an unconfigured projection stays byte-identical. `doctor` prin
 The gate verdict is shown; the projection holds nothing. The hold is T6.8 (§16.9), applied at admission and in
 `pump()`.
 
-*As built (T6.3, 2026-10-14, Delegated):* `get_capacity` is the eighth tool, after `list_projects`; its input reuses
-the provider-id pattern of `delegate_task` and the handler refuses an id that is not registered. The listed providers are
+*As built (T6.3, 2026-10-14, Delegated):* `get_capacity` is the eighth tool, after `list_projects`; its input reuses the
+provider-id pattern of `delegate_task` and the handler refuses an id that is not registered. The listed providers are
 every registered provider, in candidate order first (fixed 2026-10-17: the `provider` filter accepts any registered id,
-including `fake`, even when `candidateOrder` omits it). `switchboard capacity` and `doctor` list the adapters `doctor` probes. `capacity
---json` adds `schema_version` as every CLI `--json` does. With no ledger file, the CLI computes over an empty in-memory
-ledger and creates nothing. The `doctor` JSON gains a `capacity` key, and its text gains one line per adapter. The
-section never changes `ok`, and an unreadable ledger leaves it out.
+including `fake`, even when `candidateOrder` omits it). `switchboard capacity` and `doctor` list the adapters `doctor`
+probes. `capacity --json` adds `schema_version` as every CLI `--json` does. With no ledger file, the CLI computes over
+an empty in-memory ledger and creates nothing. The `doctor` JSON gains a `capacity` key, and its text gains one line per
+adapter. The section never changes `ok`, and an unreadable ledger leaves it out.
 
 ### 16.4 Per-provider circuit breaker
 
