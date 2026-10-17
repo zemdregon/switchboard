@@ -4,7 +4,8 @@ Switchboard records each enabled provider's installed CLI version under the data
 A scheduled check compares the probed version to the last recorded value (or to the manifest's `validated_cli_version`
 when no row exists yet). The comparison is by parsed version (`sameVersion` in `src/adapters/version-canary.ts`): a
 raw probe line such as `codex-cli 0.162.0` matches a bare `validated_cli_version` of `0.162.0`, and only a change in
-the parsed `x.y.z`, prerelease flag or build metadata counts as a bump. When the version changes, the adapter is
+the parsed `x.y.z`, prerelease flag and build metadata counts as a bump; when either side does not parse, the raw
+strings must match exactly. When the version changes, the adapter is
 treated as `ADAPTER_VERSION_UNVERIFIED` until you run
 `switchboard adapters validate <provider>` successfully. The controller does not auto-validate or route the new version.
 
