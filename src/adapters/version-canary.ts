@@ -11,6 +11,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { VersionGateResult } from "./manifest/gate.js";
+import { parseVersion } from "./manifest/semver.js";
 
 export const VERSION_CANARY_FILENAME = "version-canary.json";
 
@@ -88,6 +89,26 @@ export function versionCanaryBaseline(
 }
 
 /**
+ * Whether two version strings name the same release. The probe reports the CLI's raw version line (Codex prints
+ * `codex-cli 0.162.0`) while a manifest's `validated_cli_version` is the bare `0.162.0`, so the strings are compared by
+ * their parsed `x.y.z`, prerelease flag and build metadata (Cursor's commit hash); when either side does not parse, by
+ * exact string.
+ */
+export function sameVersion(a: string, b: string): boolean {
+  if (a === b) return true;
+  const va = parseVersion(a);
+  const vb = parseVersion(b);
+  if (va === null || vb === null) return false;
+  return (
+    va.major === vb.major &&
+    va.minor === vb.minor &&
+    va.patch === vb.patch &&
+    va.prerelease === vb.prerelease &&
+    va.build === vb.build
+  );
+}
+
+/**
  * Applies the version canary on top of a manifest version gate. Read-only with respect to the store; use
  * `recordAdapterVersion` when `recordVersion` is set.
  */
@@ -104,7 +125,7 @@ export function evaluateVersionCanary(
   if (baseline === null) {
     return { gate, bump: false, recordVersion: observed };
   }
-  if (observed === baseline) {
+  if (sameVersion(observed, baseline)) {
     const haveRow = store.adapters[adapterId] !== undefined;
     return { gate, bump: false, recordVersion: haveRow ? null : observed };
   }
