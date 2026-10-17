@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { FakeAdapter } from "../adapters/fake/adapter.js";
+import { FakeAdapter, type FakeScenario } from "../adapters/fake/adapter.js";
 import type { ResolvedProfile } from "../adapters/index.js";
 import { AdapterRegistry } from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
@@ -73,7 +73,12 @@ interface QueueFixture {
 }
 
 async function startQueueFixture(
-  opts: { clients?: QueueFixture["mcpClients"]; projects?: ResolvedProject[]; projectStore?: DynamicProjectStore } = {},
+  opts: {
+    clients?: QueueFixture["mcpClients"];
+    projects?: ResolvedProject[];
+    projectStore?: DynamicProjectStore;
+    scenario?: FakeScenario;
+  } = {},
 ): Promise<QueueFixture> {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "sb-queue-")));
   const repo = path.join(root, "repo");
@@ -94,7 +99,7 @@ async function startQueueFixture(
     allowedRoots: [root],
     ids: createIdGenerator(),
   });
-  const registry = new AdapterRegistry().register(new FakeAdapter({ scenario: "success" }));
+  const registry = new AdapterRegistry().register(new FakeAdapter({ scenario: opts.scenario ?? "success" }));
   const lifecycle = new RunLifecycle({
     ledger,
     workspace,
@@ -324,5 +329,82 @@ describe("project work queue (T15.1)", () => {
       predecessorIds: [b.id],
     });
     expect(c.state).toBe("PENDING");
+  });
+
+  const inspectRequest = {
+    objective: "ok",
+    trust_profile: "inspect-untrusted",
+    project: "app",
+    constraints: [],
+    routing: {},
+  };
+
+  async function admitOne(): Promise<{ itemId: string; runId: string; successorId: string }> {
+    const item = f.ledger.enqueueWorkItem({
+      projectId: "app",
+      creatorClientId: "orch",
+      request: inspectRequest,
+      sourceKind: "mcp",
+    });
+    const successor = f.ledger.enqueueWorkItem({
+      projectId: "app",
+      creatorClientId: "orch",
+      request: { objective: "after" },
+      sourceKind: "mcp",
+      predecessorIds: [item.id],
+    });
+    const r = await runProjectWorkQueueTick(f.ledger, admissionDeps(f), { maxItemsPerProject: 500, dequeueBatch: 1 });
+    expect(r.admitted).toBe(1);
+    const runId = f.ledger.getWorkItem(item.id)?.admitted_run_id;
+    if (runId === undefined || runId === null) throw new Error("expected admitted run");
+    return { itemId: item.id, runId, successorId: successor.id };
+  }
+
+  it("closes an ADMITTED item with terminal_at when its run ends FAILED (LLD §18.2)", async () => {
+    f = await startQueueFixture({ scenario: "task_failure" });
+    const { itemId, runId, successorId } = await admitOne();
+    expect((await f.lifecycle.waitForTerminal(runId)).state).toBe("FAILED");
+    const item = f.ledger.getWorkItem(itemId);
+    expect(item?.state).toBe("ADMITTED");
+    expect(item?.terminal_at).not.toBeNull();
+    // The predecessor never reaches DONE, so its successor stays PENDING and is not admissible (§18.3, §18.8).
+    expect(f.ledger.getWorkItem(successorId)?.state).toBe("PENDING");
+    expect(f.ledger.countAdmissibleWorkItems("app")).toBe(0);
+  });
+
+  it("closes an ADMITTED item with terminal_at when its run is CANCELLED (LLD §18.2)", async () => {
+    f = await startQueueFixture({ scenario: "hang" });
+    const { itemId, runId, successorId } = await admitOne();
+    await f.lifecycle.cancel(runId);
+    expect((await f.lifecycle.waitForTerminal(runId)).state).toBe("CANCELLED");
+    const item = f.ledger.getWorkItem(itemId);
+    expect(item?.state).toBe("ADMITTED");
+    expect(item?.terminal_at).not.toBeNull();
+    expect(f.ledger.getWorkItem(successorId)?.state).toBe("PENDING");
+    expect(f.ledger.countAdmissibleWorkItems("app")).toBe(0);
+  });
+
+  it("treats a CANCELLED predecessor as blocking in promotion, enqueue and the admissible count (LLD §18.3, §18.8)", async () => {
+    f = await startQueueFixture();
+    const enqueue = (objective: string, predecessorIds: string[] = []) =>
+      f.ledger.enqueueWorkItem({
+        projectId: "app",
+        creatorClientId: "orch",
+        request: { objective },
+        sourceKind: "mcp",
+        predecessorIds,
+      });
+    const cancelled = enqueue("cancelled");
+    const a = enqueue("a");
+    expect(f.ledger.cancelWorkItem(cancelled.id, "orch")?.state).toBe("CANCELLED");
+    const b = enqueue("b", [a.id, cancelled.id]);
+    expect(b.state).toBe("PENDING");
+    // Enqueue applies the same rule: a CANCELLED predecessor alone does not make a successor READY.
+    expect(enqueue("c", [cancelled.id]).state).toBe("PENDING");
+    expect(f.ledger.claimReadyWorkItem("app")?.id).toBe(a.id);
+    f.ledger.completeWorkAdmission(a.id, { kind: "admitted", runId: "run_01JH0000000000000000000002" });
+    expect(f.ledger.markWorkItemDone(a.id)?.state).toBe("DONE");
+    expect(f.ledger.getWorkItem(b.id)?.state).toBe("PENDING");
+    expect(f.ledger.countAdmissibleWorkItems("app")).toBe(0);
   });
 });

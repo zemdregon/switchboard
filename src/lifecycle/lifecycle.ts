@@ -2796,11 +2796,8 @@ export class RunLifecycle {
       this.recordBreakerOutcome(moved);
       this.endDelegateSpan(moved);
     }
-    if (to === "SUCCEEDED") {
-      this.recordAffinity(moved);
-      const workItem = this.ledger.findWorkItemByAdmittedRunId(moved.id);
-      if (workItem !== undefined) this.ledger.markWorkItemDone(workItem.id);
-    }
+    // The admitting queue item is closed by casRunState itself (LLD §18.2), on every terminal path.
+    if (to === "SUCCEEDED") this.recordAffinity(moved);
     this.opts.onTransition?.({ runId: run.id, from: run.state, to, rule: rule.id });
     if (isTerminal(to)) queueMicrotask(() => this.settle(run.id));
     return moved;
