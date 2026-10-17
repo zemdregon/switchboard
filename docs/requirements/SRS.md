@@ -436,9 +436,11 @@ repository. Everything below is **Proposed** and **Delegated** (mechanism in
 store aspects that T16.1 built (validator, canonicaliser, content store, migration `0021`, state derivation;
 `src/skills/`), the FR-SKL-03, FR-SKL-04 and FR-SKL-08 configuration aspects that T16.3 built (`skills.*`,
 `projects[].skills`, `mcp_clients[].skills` in the schema and loader; `src/config/`, `src/skills/limits.ts`,
-`src/skills/configured.ts`), and the FR-SKL-09 operator CLI that T16.2 built (`src/cli/skills.ts`, read helpers
-`src/skills/read.ts` and `src/skills/diff.ts`; the `doctor` skills line; skills in `runs show`); the four limit
-defaults stay Assumptions and their ranges are Delegated (LLD §19.3).
+`src/skills/configured.ts`), the FR-SKL-09 operator CLI that T16.2 built (`src/cli/skills.ts`, read helpers
+`src/skills/read.ts` and `src/skills/diff.ts`; the `doctor` skills line; skills in `runs show`), and the
+FR-SKL-08 MCP-tools aspect that T16.9 built (read-only `list_skills` and `get_skill` in `src/mcp/`, the §19.5
+steps 2 to 4 resolver in `src/skills/resolve.ts`); the four limit defaults stay Assumptions and their ranges are
+Delegated (LLD §19.3).
 
 | ID | Requirement | Priority | Source | Verify | Milestone |
 | --- | --- | --- | --- | --- | --- |
