@@ -145,6 +145,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   are done on fakes: off by default, UTC cron, fired by `serve` before the CI poll, and listed or disabled with
   `switchboard schedule`. See
   [ROADMAP §6.14](docs/ROADMAP.md#614-m15-project-queue-schedules-and-ci-triggers-tasks).
+- **Milestone 16 (Switchboard-controlled skills) is `Planned`; nothing is built.** Operator-defined, versioned skills
+  injected into runs by name, delivered as a labelled prompt prefix (or natively once a live check verifies a
+  provider's location), never committed. Design only: [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
+  [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
   client and a macOS CI leg are done; Grok Build, Antigravity, Cursor and OpenCode each have a module, compile matrix
   and parser work on synthetic fixtures. Grok Build has module, compile-matrix, parser (partial: T4.23; every Done-when
