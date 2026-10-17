@@ -335,6 +335,9 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `data_dir` | no | Where the ledger, artifacts and worktrees live. Default `$XDG_DATA_HOME/switchboard` (`~/.local/share/switchboard`). |
 | `limits.global_concurrency` | no | Integer 1 to 64. Default 4. |
 | `limits.per_provider_concurrency` | no | Integer 1 to 64. Default 1. |
+| `limits.verification_slots` | no | Integer 1 to 64. How many verification commands may run at once across every run on this host (ROADMAP T3.22, FR-EXE-09). Off unless you set a `limits.verification_*` key; then unset keys take the defaults (slots 2, nice 10, no extra variables). |
+| `limits.verification_nice` | no | Integer 0 to 19. Niceness added to each verification command (default 10); 0 leaves their priority unchanged. Same off-unless-set rule as `limits.verification_slots`. |
+| `limits.verification_env` | no | Up to 16 upper-case variable names with string values (at most 256 characters each), for example `VITEST_MAX_WORKERS`. Given to verification commands only, through the environment allowlist; `PATH`, `HOME`, `GIT_*`, `LD_*`, `DYLD_*`, `NODE_OPTIONS` and signing/agent variables are refused. Same off-unless-set rule as `limits.verification_slots`. |
 | `providers.<id>.enabled` | no | Boolean. A provider you do not list is enabled. |
 | `providers.<id>.weight` | no | Number from 0 to 1. Accepted by the schema. |
 | `providers.claude-code.git_channel` | no | Boolean, default `false`. **Supported, bypass-only** (owner decision 2026-10-16, ADR-0033): gives Claude Code the injected `commit` (and `push`) tool through a Switchboard-written `--mcp-config` file in the run's private directory, **only in an approved `privileged` run whose scope sets `bypass`**. Such a run then omits `--safe-mode` (it stops the tool server from starting), so the repository's `CLAUDE.md` and hooks load in it. Every other run is unaffected and can use `finalize_commit`. With `rag.embedding` set and retrieval on for the project, the same run also gets the read-only `search_project_context` tool for its own project (ROADMAP T12.9). Git-write denial still applies in that run (ROADMAP T9.4b); `serve` logs a warning when it is on. Only `claude-code` accepts the key. |
@@ -2058,6 +2061,13 @@ environment (there is no config key yet) and the commands run inside bubblewrap 
 the rest of the host is read-only and every namespace, network included, is unshared. Without a working `bwrap` the
 commands do not run and the run ends `TEST_FAILURE`; they never fall back to running unconfined. `doctor` reports
 whether bubblewrap is usable. Confinement does not hide files your user can read (ROADMAP T3.11, ADR-0051).
+
+**Verification slots.** Set any `limits.verification_*` key (ROADMAP T3.22, FR-EXE-09) and the verification commands of
+every run on this host share that many slots (default 2): a run with no free slot waits in `VERIFYING` (recorded as a
+`verification_wait` run event) inside its wall-clock limit, runs its commands at the lower `limits.verification_nice`
+priority (default 10), and passes `limits.verification_env` variables through the allowlist. With no such key set,
+verification behaves exactly as above. Detail:
+[LLD §8.1](docs/design/LLD.md#81-verification-stage-m3-t310).
 
 **Codex and the shell.** Codex has no command allowlist that Switchboard can set, so under both untrusted profiles the
 Codex agent can run shell commands inside Codex's own sandbox. Whether that sandbox keeps those commands away from
