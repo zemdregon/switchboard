@@ -18,6 +18,7 @@ import { sql as sql0017 } from "./0017_project_work_queue.js";
 import { sql as sql0018 } from "./0018_control_plane_state.js";
 import { sql as sql0019 } from "./0019_gc_orphan.js";
 import { sql as sql0020 } from "./0020_project_schedule.js";
+import { sql as sql0021 } from "./0021_skill_store.js";
 
 export interface Migration {
   readonly version: number;
@@ -49,4 +50,5 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 18, name: "control_plane_state", sql: sql0018 },
   { version: 19, name: "gc_orphan", sql: sql0019 },
   { version: 20, name: "project_schedule", sql: sql0020 },
+  { version: 21, name: "skill_store", sql: sql0021 },
 ];
