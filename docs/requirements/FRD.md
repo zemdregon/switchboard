@@ -828,8 +828,9 @@ sequenceDiagram
 ### WF-16 Run with Switchboard-controlled skills
 
 *Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); the workflow as a
-whole is not built, but its store step is: T16.1 implemented validation, canonicalisation, content storage, migration
-0021 and state derivation in `src/skills/`).*
+whole is not built, but its store step is (T16.1: validation, canonicalisation, content storage, migration
+0021 and state derivation in `src/skills/`) and its configuration step is (T16.3: `skills.*`, `projects[].skills`
+and `mcp_clients[].skills` in the schema and loader).*
 
 - **Actors:** Operator, Orchestrator, COMP-OPS, COMP-MCP, COMP-SKL, COMP-WS, COMP-GIT, COMP-EXE, COMP-LED.
 - **Preconditions:** `skills.enabled`; the operator added and approved the skills (`switchboard skills add`, `approve`)

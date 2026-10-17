@@ -6464,8 +6464,11 @@ handler.
 
 ## 19. Switchboard-controlled skills (M16, Proposed)
 
-*Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); not built).
-Delegated mechanism, not owner-approved beyond the direction. Every limit is an Assumption.* Requirements: FR-SKL-01 to
+*Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); partly built: the
+store, migration `0021` and state derivation (T16.1) and the configuration keys and loader (T16.3), both Delegated,
+not owner-approved; admission, delivery, CLI and MCP tools Proposed).
+Delegated mechanism, not owner-approved beyond the direction. The four limit defaults are Assumptions and their ranges
+are Delegated ([§19.3](#193-configuration-fr-skl-03-fr-skl-04-fr-skl-08)).* Requirements: FR-SKL-01 to
 FR-SKL-10. Business rules: [FRD](../requirements/FRD.md#3-business-rules) BR-52 to BR-56, V15, C8, WF-16. Tasks:
 ROADMAP T16.0 to T16.12. Per-provider delivery: [TDD §3.16](TDD.md#316-switchboard-controlled-skills-proposed).
 
@@ -6574,14 +6577,21 @@ markers.
 | `skills.roles.<role>[]` | Names applied when the request's `role` is `<role>`; `<role>` matches `^[a-z][a-z0-9_-]{0,31}$` |
 | `skills.delivery` | `native_preferred` (default) or `prefix_only` |
 | `skills.allow_draft_in_trusted` | Boolean, default `false` (Q-105) |
-| `skills.max_body_bytes`, `skills.max_per_run`, `skills.max_run_bytes`, `skills.max_names` | Defaults 32768, 8, 65536, 64 (Assumptions) |
-| `projects[].skills.defaults[]`, `projects[].skills.roles.<role>[]` | Project-level defaults, applied after the global ones |
-| `mcp_clients[].skills` | Optional array of names the client may see and inject; absent means every approved name |
+| `skills.max_body_bytes`, `skills.max_per_run`, `skills.max_run_bytes`, `skills.max_names` | Defaults 32768, 8, 65536, 64 (Assumptions). Ranges (Delegated, T16.3, 2026-10-17, not owner-approved): integers 1 to 1048576, 1 to 64, 1 to 16777216 and 1 to 4096. Resolved `max_run_bytes` must be at least resolved `max_body_bytes`. A role map has at most 128 roles; each name list has at most 4096 entries |
+| `projects[].skills.defaults[]`, `projects[].skills.roles.<role>[]` | Project-level defaults, applied after the global ones. Same name and role patterns, and the same list and role-map caps, as the global keys |
+| `mcp_clients[].skills` | Optional array of bare names (no `@n`; Delegated reading of "array of names", T16.3) the client may see and inject; absent means every approved name; an empty array is an allow-list of nothing |
 
-Names in configuration are checked at `serve` start and by `doctor`: an unknown or unapproved name is a warning, not a
+Names in configuration are schema-checked at `serve` start (unknown keys and name patterns abort startup) and
+store-checked by `doctor` (T16.2): an unknown or unapproved name is a warning, not a
 startup failure (the CLI adds skills after the config exists). At admission an unresolvable configured default is
 skipped with a `skill_resolved` event (`skipped = "unresolved_default"`); an unresolvable *requested* name is an error
 (§19.5).
+
+*Ranges (T16.3, 2026-10-17, Delegated, not owner-approved).* The four limits are integers in the ranges in the table
+above, and resolved `max_run_bytes` must be at least resolved `max_body_bytes` (one body cannot exceed the run total).
+T16.3 does not warn at startup. `unresolvedConfiguredSkills` (`src/skills/configured.ts`) lists configured names that
+do not resolve, for the T16.2 `doctor` line, and is not called while loading config. `skills.allow_draft_in_trusted`
+stays the Q-105 Delegated default `false`.
 
 ### 19.4 Request fields (FR-SKL-03)
 

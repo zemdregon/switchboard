@@ -152,8 +152,11 @@ Pre-release. The package is private and is not published to any registry; you bu
   [ROADMAP §6.14](docs/ROADMAP.md#614-m15-project-queue-schedules-and-ci-triggers-tasks).
 - **Milestone 16 (Switchboard-controlled skills) is `Partial`.** The skill store is built (T16.1, Delegated, not
   owner-approved): operator-defined, versioned skills validated, canonicalised and kept as immutable content-addressed
-  files (`<data>/skills/<sha256>.md`) with append-only ledger rows (migration `0021`, `src/skills/`). Operator CLI,
-  configuration, admission, delivery and the MCP tools are still `Planned`. Design:
+  files (`<data>/skills/<sha256>.md`) with append-only ledger rows (migration `0021`, `src/skills/`). The
+  configuration is built (T16.3, Delegated, not owner-approved): `skills.*`, `projects[].skills` and
+  `mcp_clients[].skills` in the schema and loader (`src/config/`, `src/skills/limits.ts`,
+  `src/skills/configured.ts`), off by default. Operator CLI,
+  admission, delivery and the MCP tools are still `Planned`. Design:
   [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
   [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP

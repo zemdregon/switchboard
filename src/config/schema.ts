@@ -32,6 +32,13 @@
  * operator opt-in that lets the Claude Code adapter receive the injected tool channel through a controller-written
  * `--mcp-config` file. Default false (argv unchanged, `commitChannel: "none"`). Accepted only under `claude-code`.
  * Supported for approved privileged bypass runs only (owner decision 2026-10-16, ADR-0033).
+ *
+ * `skills`, `projects[].skills` and `mcp_clients[].skills` (T16.3; FR-SKL-03, FR-SKL-04, FR-SKL-08, LLD §19.3): off
+ * unless `skills.enabled` is true. An absent section is the same as `enabled: false` and changes nothing else.
+ * `skills.allow_draft_in_trusted` defaults to false (Q-105, Delegated). Limit ranges are Delegated (LLD §19.3 names
+ * defaults only) and live in `src/skills/limits.ts`. A name that does not resolve is not a startup failure.
+ * `projects[].skills` is on the configuration-file project only: a dynamic project definition (`projectSchema`) has
+ * no `skills` key, the same split as `dependency_seeds` (Delegated).
  */
 import {
   BUILTIN_CONFIG_PROVIDER_IDS,
@@ -40,6 +47,17 @@ import {
   providerGeneration,
 } from "../adapters/providers.js";
 import { MODEL_ID_PATTERN, type ModelConfig } from "../models/registry.js";
+import {
+  MAX_MAX_BODY_BYTES,
+  MAX_MAX_NAMES,
+  MAX_MAX_PER_RUN,
+  MAX_MAX_RUN_BYTES,
+  MAX_SKILL_ROLES,
+  MIN_MAX_BODY_BYTES,
+  MIN_MAX_NAMES,
+  MIN_MAX_PER_RUN,
+  MIN_MAX_RUN_BYTES,
+} from "../skills/limits.js";
 import { type BudgetsConfigInput, budgetCapsSchema } from "./budgets.js";
 import type { CiTriggerConfigInput } from "./ci-trigger.js";
 import { type HttpTransportConfig, httpTransportSchema } from "./http-transport.js";
@@ -110,6 +128,11 @@ export interface SwitchboardConfig {
     approval_proxy_targets?: string[];
     /** T14.11 (FR-CTL-11): `orchestrator` (default) or `console`. */
     tool_profile?: ToolProfile;
+    /**
+     * T16.3 (FR-SKL-08, LLD §19.3): bare skill names this client may see and inject. Absent means every approved name.
+     * An empty list means none. Pins (`name@n`) are not visibility keys.
+     */
+    skills?: string[];
   }[];
   limits?: {
     global_concurrency?: number;
@@ -186,6 +209,11 @@ export interface SwitchboardConfig {
    * Ordered lists of `{ provider, model }` pairs under operator-named groups.
    */
   model_groups?: ModelGroupsConfigInput;
+  /**
+   * Switchboard-controlled skills (M16, T16.3; FR-SKL-03, FR-SKL-04, FR-SKL-08, LLD §19.3). Absent means
+   * `enabled: false` and every other key at its default. With `enabled` false or absent, nothing else changes.
+   */
+  skills?: SkillsConfig;
 }
 
 /** `routing` as written in the config file (LLD §17.1). */
@@ -293,6 +321,36 @@ export const CONTEXT_ID_PATTERN = "^[a-z][a-z0-9-]{0,40}$";
 /** Assumption: an OCI-style digest, as in the LLD §11.1 example (`sha256:...`). */
 export const IMAGE_DIGEST_PATTERN = "^sha256:[0-9a-f]{64}$";
 
+/** LLD §19.1 skill name. `mcp_clients[].skills` entries are bare names (Delegated: visibility is by name, not pin). */
+export const SKILL_NAME_PATTERN = "^[a-z][a-z0-9-]{1,47}$";
+/** LLD §19.4: `name` or `name@n` (version 1 to 999999). Used by `skills.defaults` and `skills.roles`. */
+export const SKILL_REF_PATTERN = "^[a-z][a-z0-9-]{1,47}(@[1-9][0-9]{0,5})?$";
+/** LLD §19.3 role key. */
+export const SKILL_ROLE_PATTERN = "^[a-z][a-z0-9_-]{0,31}$";
+
+export const SKILL_DELIVERIES = ["native_preferred", "prefix_only"] as const;
+export type SkillDelivery = (typeof SKILL_DELIVERIES)[number];
+/** LLD §19.3. `prefix_only` forces the prompt prefix even when a cell could deliver natively (T16.6). */
+export const DEFAULT_SKILL_DELIVERY: SkillDelivery = "native_preferred";
+
+/** `skills.defaults` / `skills.roles` and the same pair under `projects[].skills` (LLD §19.3). */
+export interface SkillAssignmentConfig {
+  defaults?: string[];
+  roles?: Record<string, string[]>;
+}
+
+/** `skills` as written in the config file (LLD §19.3). Every key is optional; the loader applies the defaults. */
+export interface SkillsConfig extends SkillAssignmentConfig {
+  enabled?: boolean;
+  delivery?: SkillDelivery;
+  /** Q-105 Delegated default: false. The loader treats an absent key as false. */
+  allow_draft_in_trusted?: boolean;
+  max_body_bytes?: number;
+  max_per_run?: number;
+  max_run_bytes?: number;
+  max_names?: number;
+}
+
 export interface EnvironmentConfig {
   kind: EnvironmentKind;
   /** `container` only (M10; shape only in M9). */
@@ -339,6 +397,11 @@ export interface ProjectConfig {
    * seed store. Configuration only: a dynamic project definition (FR-PRJ-10) cannot carry the key (Delegated).
    */
   dependency_seeds?: DependencySeedConfig[];
+  /**
+   * T16.3 (FR-SKL-03, LLD §19.3): project default skill names, applied after the global ones. Configuration file only
+   * (not a dynamic project definition). Absent means this project adds no defaults.
+   */
+  skills?: SkillAssignmentConfig;
 }
 
 /** One `projects[].dependency_seeds[]` entry (LLD §5.1). Paths are relative to the primary context. */
@@ -566,10 +629,97 @@ const dependencySeedsSchema = {
   },
 } as const;
 
-/** A `projects[]` entry of the configuration file: {@link projectSchema} plus `dependency_seeds` (T9.13). */
+/** One `name` or `name@n` list (LLD §19.3). A fresh object each call: Ajv rejects one schema object compiled twice. */
+function skillRefListSchema(): {
+  type: "array";
+  uniqueItems: true;
+  maxItems: number;
+  items: { type: "string"; pattern: string };
+} {
+  return {
+    type: "array",
+    uniqueItems: true,
+    maxItems: MAX_MAX_NAMES,
+    items: { type: "string", pattern: SKILL_REF_PATTERN },
+  };
+}
+
+/** `skills.roles.<role>[]` and `projects[].skills.roles.<role>[]`. An unknown key is a role name that fails the pattern. */
+function skillRolesSchema(): {
+  type: "object";
+  maxProperties: number;
+  propertyNames: { pattern: string };
+  additionalProperties: ReturnType<typeof skillRefListSchema>;
+} {
+  return {
+    type: "object",
+    maxProperties: MAX_SKILL_ROLES,
+    propertyNames: { pattern: SKILL_ROLE_PATTERN },
+    additionalProperties: skillRefListSchema(),
+  };
+}
+
+/** `projects[].skills` (configuration file only). Unknown keys abort startup. */
+function projectSkillsSchema(): {
+  type: "object";
+  additionalProperties: false;
+  properties: { defaults: ReturnType<typeof skillRefListSchema>; roles: ReturnType<typeof skillRolesSchema> };
+} {
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      defaults: skillRefListSchema(),
+      roles: skillRolesSchema(),
+    },
+  };
+}
+
+/**
+ * `skills` (T16.3, LLD §19.3). Strict: an unknown key aborts startup. Limit bounds are the Delegated ranges in
+ * `src/skills/limits.ts`. Defaults are applied by the loader, not by the schema, so an absent key stays absent here.
+ */
+function skillsSectionSchema(): {
+  type: "object";
+  additionalProperties: false;
+  properties: Record<string, unknown>;
+} {
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      enabled: { type: "boolean" },
+      defaults: skillRefListSchema(),
+      roles: skillRolesSchema(),
+      delivery: { enum: [...SKILL_DELIVERIES] },
+      allow_draft_in_trusted: { type: "boolean" },
+      max_body_bytes: { type: "integer", minimum: MIN_MAX_BODY_BYTES, maximum: MAX_MAX_BODY_BYTES },
+      max_per_run: { type: "integer", minimum: MIN_MAX_PER_RUN, maximum: MAX_MAX_PER_RUN },
+      max_run_bytes: { type: "integer", minimum: MIN_MAX_RUN_BYTES, maximum: MAX_MAX_RUN_BYTES },
+      max_names: { type: "integer", minimum: MIN_MAX_NAMES, maximum: MAX_MAX_NAMES },
+    },
+  };
+}
+
+/** `mcp_clients[].skills`: bare names. Absent (the property omitted) means every approved name. */
+function clientSkillListSchema(): {
+  type: "array";
+  uniqueItems: true;
+  maxItems: number;
+  items: { type: "string"; pattern: string };
+} {
+  return {
+    type: "array",
+    uniqueItems: true,
+    maxItems: MAX_MAX_NAMES,
+    items: { type: "string", pattern: SKILL_NAME_PATTERN },
+  };
+}
+
+/** A `projects[]` entry of the configuration file: {@link projectSchema} plus `dependency_seeds` (T9.13) and `skills` (T16.3). */
 const configProjectSchema = {
   ...projectSchema,
-  properties: { ...projectSchema.properties, dependency_seeds: dependencySeedsSchema },
+  properties: { ...projectSchema.properties, dependency_seeds: dependencySeedsSchema, skills: projectSkillsSchema() },
 } as const;
 
 /** Defaults (Proposed): 30 days (NFR-DATA-01), GC pass every 24 hours. */
@@ -647,6 +797,7 @@ export const configSchema = {
             items: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,63}$" },
           },
           tool_profile: { enum: [...TOOL_PROFILES] },
+          skills: clientSkillListSchema(),
         },
       },
     },
@@ -868,6 +1019,7 @@ export const configSchema = {
       },
     },
     model_groups: modelGroupsSchemaFor(PROVIDER_IDS),
+    skills: skillsSectionSchema(),
     notification_sinks: notificationSinksSchema,
     ci_trigger: ciTriggerSchema,
     telemetry: {
