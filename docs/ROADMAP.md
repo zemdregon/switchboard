@@ -779,7 +779,7 @@ delivery table, MCP tools `list_skills` and `get_skill`, an operator CLI, config
     [LLD §19](design/LLD.md#19-switchboard-controlled-skills-m16-proposed) and
     [TDD §3.16](design/TDD.md#316-switchboard-controlled-skills-proposed); requirements FR-SKL-01 to FR-SKL-10; new
     milestone M16 with tasks T16.0 to T16.12, the design (T16.0, Done), the skill store (T16.1, Done), the
-    configuration (T16.3, Done) and the MCP tools (T16.9, Done) landed
+    operator CLI (T16.2, Done), the configuration (T16.3, Done) and the MCP tools (T16.9, Done) landed
     and the rest `Planned`. Read narrowly where the direction
     meets an existing control: "the provider's native way" is used only where the compiled cell *already* loads that
     location and a live check confirmed it (T16.8); on 2026-10-17 that is no cell, so every run uses the prompt prefix

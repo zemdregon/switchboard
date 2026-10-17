@@ -6783,7 +6783,7 @@ Offered when `skills.enabled` is true, to clients whose `tool_profile` is `orche
 { "input": { "type": "object", "properties": {
     "project": { "type": "string" }, "role": { "type": "string" }, "trust_profile": { "$ref": "#/$defs/trust_profile" } } },
   "output": { "skills": [ { "name": "", "description": "", "version": 3, "sha256": "", "size_bytes": 0,
-                            "approved": true, "origin": "operator_file", "applies_to_providers": [] } ],
+                            "approved": true, "origin": "operator_file", "applies_to_providers": null } ],
               "defaults": [ { "name": "", "version": 3, "source": "project_role" } ] } }   // only when project given
 
 // get_skill
