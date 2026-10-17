@@ -1355,12 +1355,14 @@ not on `origin/main`).
 
 ### 3.15 Model groups and usage pacing (Proposed)
 
-*Proposed (2026-10-17, owner decision 57, [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md); not built).*
+*Proposed (2026-10-17, owner decision 57, [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md); partly built:
+the usage-window model T6.13 is `Done` 2026-10-17, the rest not built).*
 Contracts: [LLD §16.9](LLD.md#169-usage-windows-and-pacing-fr-cap-09-fr-cap-10) and
 [LLD §17.7](LLD.md#177-model-groups-fr-rte-10-fr-rte-11). Tasks: ROADMAP T6.8, T6.11, T6.13 to T6.16 and T7.13 to
 T7.17.
 
-- **Where it lives.** Pacing is a pure module beside the estimator in `src/capacity/` (Proposed), computed on read from
+- **Where it lives.** Pacing is a pure module beside the estimator in `src/capacity/` (built T6.13:
+  `src/capacity/usage-window.ts`; no consumer wired yet: T6.14, T6.8, T7.15), computed on read from
   configuration, `usage_observation`, `run` and an injected clock, with no table. Group expansion and the `pacing` term
   live in `src/routing/`. The hold reuses the breaker's single wake timer in the lifecycle. Adapters change only in
   T6.15, to map a structured limit signal or declare a sourced usage key.
@@ -2865,7 +2867,7 @@ approach only.
 | M3 Isolation | Remaining profiles and per-adapter capability matrix; malicious fixture suite; approval flow (`approval` table, `approve` CLI); verification commands run via argv (no shell) in the worktree; retention/GC job; evaluate outer sandbox (§3.4) and decide by ADR. |
 | M4 Adapters | macOS CI leg (NFR-PORT-02); one adapter module + manifest + fixtures + registry entry each (NFR-MAINT-01); ACP stdio client in the supervisor; model registry combining operator config and listing commands where available. Task breakdown: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (Proposed). |
 | M5 Continuity | Native resume per adapter via `resumeArgs`; handoff bundle builder from ledger rows and Git evidence only (FR-SES-04), regenerable from events and decisions (FR-SES-05). |
-| M6 Capacity | Usage observation writers; estimator (rolling windows over `usage_observation` and `run`); per-provider breakers persisted in `provider_health`; retry scheduler using [LLD §9](LLD.md#9-retryback-off-algorithm); queue with `WAITING_CAPACITY` timers; `get_capacity`. Cache read and creation token counts and per-project kept/switched counts (FR-CAP-08) where adapters report them. Owner decision 57 (Proposed): subscription windows and pacing computed on read like the estimate, the pacing gate as a `QUEUED` hold on the breaker's wake timer, limit capture for every provider ([§3.15](#315-model-groups-and-usage-pacing-proposed)). |
+| M6 Capacity | Usage observation writers; estimator (rolling windows over `usage_observation` and `run`); per-provider breakers persisted in `provider_health`; retry scheduler using [LLD §9](LLD.md#9-retryback-off-algorithm); queue with `WAITING_CAPACITY` timers; `get_capacity`. Cache read and creation token counts and per-project kept/switched counts (FR-CAP-08) where adapters report them. Owner decision 57 (Proposed; the subscription-window model is built, T6.13 `Done` 2026-10-17): subscription windows and pacing computed on read like the estimate, the pacing gate as a `QUEUED` hold on the breaker's wake timer, limit capture for every provider ([§3.15](#315-model-groups-and-usage-pacing-proposed)). |
 | M7 Routing | Feature extraction and heuristic classifier; static weighted scoring; persist `route_decision` rows; `explain_route` reads them. Scores deterministic for a given stored input (FR-RTE-03). Provider and model affinity: `project_affinity` table, the selection step before scoring, the `affinity_switch_reason` field, `affinity reset`, the cache-friendly prompt assembly order, and the replay property test ([§3.13.3](#3133-testing-affinity-and-retrieval), [LLD §3.2](LLD.md#32-provider-and-model-affinity-m7)). Owner decision 57 (Proposed): model groups expanded into member candidates, a seventh `pacing` term, version 3 decisions ([§3.15](#315-model-groups-and-usage-pacing-proposed)). |
 | M8 Hardening | OTel exporter fed by wrapper-boundary span builders in the run lifecycle, not by replaying `run_event` rows (as built, [LLD §7](LLD.md#7-telemetry-spans)); version canaries (`adapters validate` ships in M4; the canary store and operator command in T8.5). |
 | M9 Projects and controlled commits | Project and context schema in the config loader; `COMP-PRJ` resolution and ceilings; `project_id` columns and the `git_commit` table; per-adapter Git-write denial and channel-support declarations; the shim subcommand and per-run socket; `COMP-GIT` (commit, sanitiser, publish ref, ref snapshots, push with policy); `projects` CLI; fake-adapter fixtures for every attempt in §3.6. Starts with a spike that settles §3.10's open mechanisms (per-run Git config, plumbing commands, socket access under sandboxes). |
