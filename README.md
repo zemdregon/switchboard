@@ -147,9 +147,11 @@ Pre-release. The package is private and is not published to any registry; you bu
   are done on fakes: off by default, UTC cron, fired by `serve` before the CI poll, and listed or disabled with
   `switchboard schedule`. See
   [ROADMAP §6.14](docs/ROADMAP.md#614-m15-project-queue-schedules-and-ci-triggers-tasks).
-- **Milestone 16 (Switchboard-controlled skills) is `Planned`; nothing is built.** Operator-defined, versioned skills
-  injected into runs by name, delivered as a labelled prompt prefix (or natively once a live check verifies a
-  provider's location), never committed. Design only: [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
+- **Milestone 16 (Switchboard-controlled skills) is `Partial`.** The skill store is built (T16.1, Delegated, not
+  owner-approved): operator-defined, versioned skills validated, canonicalised and kept as immutable content-addressed
+  files (`<data>/skills/<sha256>.md`) with append-only ledger rows (migration `0021`, `src/skills/`). Operator CLI,
+  configuration, admission, delivery and the MCP tools are still `Planned`. Design:
+  [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
   [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
   client and a macOS CI leg are done; Grok Build, Antigravity, Cursor and OpenCode each have a module, compile matrix
