@@ -55,6 +55,7 @@ describe("notification_sinks config (T14.9)", () => {
       },
     ]).notificationSinks;
     expect(w).toMatchObject({ id: "grok-bot", kind: "webhook", url: `https://hooks.example.test/${CANARY}` });
+    expect(w?.authorization).toBeUndefined();
     expect(w?.maxPerMinute).toBe(DEFAULT_SINK_MAX_PER_MINUTE);
     expect([...(w?.events ?? [])]).toEqual([...SINK_EVENT_KINDS]);
     expect(n).toMatchObject({
@@ -66,6 +67,23 @@ describe("notification_sinks config (T14.9)", () => {
       maxPerMinute: 3,
     });
     expect([...(n?.events ?? [])]).toEqual(["run_terminal", "needs_attention"]);
+  });
+
+  it("resolves a webhook sink with an authorization header value (FR-CTL-12)", () => {
+    const [w] = load([
+      {
+        id: "secure-hook",
+        kind: "webhook",
+        url: "https://hooks.example.test/secure",
+        authorization: `Bearer ${CANARY}`,
+      },
+    ]).notificationSinks;
+    expect(w).toMatchObject({
+      id: "secure-hook",
+      kind: "webhook",
+      url: "https://hooks.example.test/secure",
+      authorization: `Bearer ${CANARY}`,
+    });
   });
 
   it.each([
@@ -96,6 +114,19 @@ describe("notification_sinks config (T14.9)", () => {
     expect(msg).not.toContain(CANARY);
   });
 
+  it("refuses an ntfy sink with authorization without echoing it", () => {
+    const msg = errorOf([
+      {
+        id: "n",
+        kind: "ntfy",
+        ntfy: { server: "https://ntfy.example.test", topic: "t", token: "tok" },
+        authorization: CANARY,
+      },
+    ]);
+    expect(msg).toMatch(/\$\.notification_sinks\[0\]\.authorization: only for kind webhook/);
+    expect(msg).not.toContain(CANARY);
+  });
+
   it.each([
     [[{ id: "w", kind: "webhook" }], /\[0\]\.url: required for kind webhook/],
     [[{ id: "n", kind: "ntfy" }], /\[0\]\.ntfy: required for kind ntfy/],
@@ -106,6 +137,25 @@ describe("notification_sinks config (T14.9)", () => {
     [
       [{ id: "n", kind: "ntfy", url: "https://a.test/x", ntfy: { server: "https://b.test", topic: "t" } }],
       /\[0\]\.url: only for kind webhook/,
+    ],
+    [
+      [
+        {
+          id: "n",
+          kind: "ntfy",
+          ntfy: { server: "https://a.test", topic: "t" },
+          authorization: "Bearer secret",
+        },
+      ],
+      /\[0\]\.authorization: only for kind webhook/,
+    ],
+    [
+      [{ id: "w", kind: "webhook", url: "https://a.test/x", authorization: "" }],
+      /\[0\]\.authorization: must NOT have fewer than 1 characters/,
+    ],
+    [
+      [{ id: "w", kind: "webhook", url: "https://a.test/x", authorization: "a".repeat(513) }],
+      /\[0\]\.authorization: must NOT have more than 512 characters/,
     ],
     [
       [
