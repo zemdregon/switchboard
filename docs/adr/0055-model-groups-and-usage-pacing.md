@@ -1,8 +1,8 @@
 # ADR-0055: Operator-configured model groups and usage pacing per subscription window
 
 - Status: Proposed (partly built: the usage-window model T6.13, the pacing projection T6.14, the limit-signal
-  mapping T6.15 and the model-groups configuration T7.13 are Done 2026-10-17; the request fields, group-aware
-  selection and pacing gate are not built; every default is an Assumption)
+  mapping T6.15, the model-groups configuration T7.13 and the pacing gate T6.8 are Done 2026-10-17; the request
+  fields and group-aware selection are not built; every default is an Assumption)
 - Date: 2026-10-17
 - Decided by: zemdregon (the product direction, [owner decision 57](../ROADMAP.md#42-owner-decisions), 2026-10-16:
   model groups across providers, pacing usage so that every subscription is used fully by the time its window resets,
@@ -40,8 +40,10 @@ On `main` (checked 2026-10-17 at `d405a60`):
   groups models across providers.
 - The capacity estimate (LLD §16.2) knows a rolling window of controller facts and a provider-reported `reset_at`. It has
   no notion of a subscription window, the share of it already used, or the time left in it.
-- T6.8 (a token-bucket rate gate, FR-CAP-07) is `Deferred`, because no source publishes an enforceable rate limit for
-  the logins in use (T6.0). The only provider-reported remaining figure in any source is Antigravity's separate `/usage`
+- T6.8 (originally a token-bucket rate gate, FR-CAP-07) was `Deferred`, because no source publishes an enforceable
+  rate limit for
+  the logins in use (T6.0); owner decision 57 reopens it as the pacing gate (item 8 below), `Done` 2026-10-17. The only
+  provider-reported remaining figure in any source is Antigravity's separate `/usage`
   call (`remaining_fraction` and `reset_time` per window), which Switchboard does not call: a probe outside a run is a
   new question (Q-101).
 - T6.11 captures limit output only for Claude Code and Codex. The operator host already records limit text for other

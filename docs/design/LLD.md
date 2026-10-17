@@ -5626,7 +5626,8 @@ and `confidence`, labelled "estimate".
 
 T6.14 adds an optional top-level `pacing` array, one entry per subscription (§16.9). It is omitted when no subscription
 is configured, so an unconfigured projection stays byte-identical. `doctor` prints one pacing line per subscription.
-The gate verdict is shown; the hold is T6.8 and is not applied here.
+The gate verdict is shown; the projection holds nothing. The hold is T6.8 (§16.9), applied at admission and in
+`pump()`.
 
 *As built (T6.3, 2026-10-14, Delegated):* `get_capacity` is the eighth tool, after `list_projects`; its input reuses
 the provider-id pattern of `delegate_task` and the handler refuses an id that is not registered. The listed providers are
@@ -5769,9 +5770,9 @@ every project. `doctor` prints one summary line, and `switchboard capacity` one 
 
 ### 16.9 Usage windows and pacing (FR-CAP-09, FR-CAP-10)
 
-**Proposed** (2026-10-17, owner decision 57, Delegated mechanism; T6.13 and T6.14 built 2026-10-17, the gate
-T6.8 not built).
-Design for T6.13 (built; see "As built (T6.13)" below), T6.14 (built; see "As built (T6.14)" below) and T6.8 under
+**Proposed** (2026-10-17, owner decision 57, Delegated mechanism; T6.13, T6.14 and the gate T6.8 built 2026-10-17).
+Design for T6.13 (built; see "As built (T6.13)" below), T6.14 (built; see "As built (T6.14)" below) and T6.8 (built;
+see "As built (T6.8)" below) under
 [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md). Every default is an **Assumption** (Q-98). No migration:
 pacing is computed on read from configuration, `usage_observation`, `run`, `run_event` and the clock, like the estimate
 (§16.2). Nothing here names a provider's window, budget or reset: each comes from the provider (a declared key) or from
@@ -5893,7 +5894,8 @@ and `source`.
 `usageWindows` returns nothing, so an unconfigured projection stays byte-identical. Each entry has `subscription`,
 `providers` (config ids), `mode`, `deferred_until`, `verdict` (`deferred`, `clear` or `inactive`) and `windows`. Each
 window is the T6.13 figures, including `window_start`, plus `defers`. `used_fraction` stays the T6.13 object. There is
-no `openAt`: the hold that acts on `deferred_until` is T6.8 and is not applied. A window defers only in mode `gate`,
+no `openAt`: the hold that acts on `deferred_until` is T6.8 (`Done` 2026-10-17; see "As built (T6.8)" below). A window
+defers only in mode `gate`,
 with a known reset, a non-null used value and elapsed fraction, confidence at or above `min_confidence`, and used at or
 above `min(T, T × elapsed + B)`, using those published figures. Its gate-open time is the earlier of `reset_at` and
 `window_start + length_seconds × (used − B) / T`, rounded to the millisecond. `deferred_until` is the latest of those
@@ -5906,6 +5908,29 @@ phrase on every `controller_estimated` pacing line, and does not print "remainin
 block as an optional property; other tool schemas are unchanged. `src/mcp/server.ts` passes `subscriptions` and `pacing`
 through to the projection so the tool and the CLI read one object. Q-98 defaults stay the Delegated ones already in
 the configuration (`gate`, T 0.95, B 0.10, `min_confidence` 0.5).
+
+*As built (T6.8, 2026-10-17, Delegated):* `src/capacity/pacing-gate.ts` turns the T6.14 figures into deferrals:
+`pacingDeferrals` reads the same `pacingViews` and `gateOpenMs` the projection publishes, so `get_capacity` and the gate
+never disagree, and returns per adapter provider id the subscription, the window whose gate opens last, that time
+(`until`) and the window's used-share source. A gate-open time not after `now` is not a deferral: at that instant the
+pace line has caught up, so the run goes ahead. `serve` passes `capacity.subscriptions` and `capacity.pacing` to the
+lifecycle only when the file sets them; without them no pacing figure is read. `RunLifecycle.checkEligibility` sets
+`pacingDeferred` on each candidate's facts, which `filterEligible` ignores (not a stage-1 reason). `pacingAdmission` in
+`src/routing/eligibility.ts` applies the admission rule inside `buildRouteDecision`: undefined when no admissible
+candidate is deferred, so such a decision is built exactly as before; with `require_provider` nothing is narrowed and
+the run waits for its own gate; otherwise the deferred candidates are left out while an undeferred one remains, and
+when all are deferred a held affine provider stays the choice, else the candidates whose gate opens first remain and
+the §17.3 rule breaks the tie. The decision stores the narrowed set as `features_json.admissible`, so version 2
+replay recomputes the same selection from the row alone (decision versioning is T7.15). Each deferred candidate's
+`candidates_json` entry gains `pacing` (`verdict: "PACING_DEFERRED"`, `until`, `subscription`, `window`, `source`), and
+`reasons_json.pacing` lists them with `hold_until` (null when an undeferred candidate was chosen). `pump()` reads the
+deferrals once per dispatch pass while runs are queued, before the breaker check (a held run never becomes the
+breaker's probe): a queued run whose provider is deferred stays in `QUEUED`, one `pacing_hold` event (`subscription`,
+`window`, `until`, `source`) is appended per run and gate-open time, also across a restart (the run's latest
+`pacing_hold` is read on first sight), and the single wake timer arms for `until`. This holds every routed run,
+including `privileged` and `require_provider` runs and runs admitted to an undeferred provider whose subscription
+became deferred before dispatch. Nothing creates a run, a probe or a provider call. Tests:
+`src/lifecycle/pacing-gate.test.ts`, `src/routing/pacing-admission.test.ts`.
 
 ## 17. Routing (M7)
 

@@ -18,6 +18,7 @@
 import type { FailureCode } from "../adapters/failure.js";
 import type { VersionGateResult } from "../adapters/manifest/index.js";
 import type { AuthResult, Ineligible, ProviderId, TrustProfile } from "../adapters/types.js";
+import { PACING_DEFERRED, type PacingDeferral } from "../capacity/pacing-gate.js";
 import type { ModelCapability } from "../models/registry.js";
 
 /** Ascending privilege order (SRS FR-POL-01 table order; matches `TRUST_PROFILES` in config). */
@@ -159,6 +160,11 @@ export interface ProviderFacts {
   quotaExhaustedUntil?: string;
   /** T7.8: model that satisfied capability check or compile check. */
   model?: string;
+  /**
+   * T6.8 (FR-CAP-10, LLD §16.9): set while the provider's subscription is deferred by the pacing gate. Not a stage-1
+   * fact: `filterEligible` ignores it, and {@link pacingAdmission} applies it after stage 1, before selection.
+   */
+  pacingDeferred?: PacingDeferral;
 }
 
 export interface CapabilityRequirements {
@@ -397,6 +403,57 @@ export function filterEligible(input: EligibilityInput): EligibilityDecision {
 
 function dedupe<T>(xs: readonly T[]): T[] {
   return [...new Set(xs)];
+}
+
+/** One admissible candidate the pacing gate defers, as recorded in the decision (LLD §16.9). */
+export interface PacingDeferredCandidate extends PacingDeferral {
+  provider: string;
+  verdict: typeof PACING_DEFERRED;
+}
+
+export interface PacingAdmission {
+  /** The providers selection may pick after the rule. */
+  pool: string[];
+  /** Every admissible candidate whose subscription is deferred, in admissible order. */
+  deferred: PacingDeferredCandidate[];
+  /** Set when the run is admitted to a deferred candidate: that candidate's gate-open time (`pump()` holds until it). */
+  holdUntil: string | null;
+}
+
+/**
+ * LLD §16.9 admission rule (T6.8, FR-CAP-10, BR-51), after stage 1 and before selection. Undefined when no admissible
+ * candidate is deferred, so the decision is built exactly as without pacing. Otherwise:
+ *
+ * - `require_provider`: nothing is narrowed; the run is admitted to its provider and waits for that provider's gate;
+ * - an undeferred candidate remains: every deferred one is left out of selection (`PACING_DEFERRED`);
+ * - every candidate deferred: the held affine provider stays the choice (LLD §17.7), else the candidates whose gate opens
+ *   first remain and the §17.3 rule breaks the tie; the run is admitted with `holdUntil`.
+ *
+ * Never a refusal: the pool is never empty when `admissible` is not.
+ */
+export function pacingAdmission(
+  input: EligibilityInput,
+  admissible: readonly string[],
+  affinityProvider: string | null,
+): PacingAdmission | undefined {
+  const of = new Map<string, PacingDeferral>();
+  for (const f of input.facts) if (f.pacingDeferred !== undefined) of.set(f.provider, f.pacingDeferred);
+  const deferred: PacingDeferredCandidate[] = [];
+  for (const provider of admissible) {
+    const d = of.get(provider);
+    if (d !== undefined) deferred.push({ provider, verdict: PACING_DEFERRED, ...d });
+  }
+  if (deferred.length === 0) return undefined;
+  const until = (p: string) => of.get(p)?.until ?? null;
+  const required = input.requiredProvider ?? null;
+  if (required !== null) return { pool: [...admissible], deferred, holdUntil: until(required) };
+  const undeferred = admissible.filter((p) => !of.has(p));
+  if (undeferred.length > 0) return { pool: undeferred, deferred, holdUntil: null };
+  if (affinityProvider !== null && of.has(affinityProvider)) {
+    return { pool: [...admissible], deferred, holdUntil: until(affinityProvider) };
+  }
+  const first = deferred.map((d) => d.until).reduce((min, u) => (Date.parse(u) < Date.parse(min) ? u : min));
+  return { pool: deferred.filter((d) => d.until === first).map((d) => d.provider), deferred, holdUntil: first };
 }
 
 /**
