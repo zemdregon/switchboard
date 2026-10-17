@@ -285,6 +285,27 @@ describe("timeouts.preflight_ttl_seconds (T3.21)", () => {
   });
 });
 
+describe("limits.min_free_disk_mb (T3.23, FR-WS-11)", () => {
+  it("is off by default: an unset key leaves `limits` exactly as before (byte-identical to main)", () => {
+    const c = loadConfig({ configPath: write(base()) });
+    expect(c.limits).toStrictEqual({ globalConcurrency: 4, perProviderConcurrency: 1 });
+    expect("minFreeDiskMb" in c.limits).toBe(false);
+    const other = loadConfig({ configPath: write({ ...base(), limits: { global_concurrency: 2 } }) });
+    expect(other.limits).toStrictEqual({ globalConcurrency: 2, perProviderConcurrency: 1 });
+  });
+
+  it("resolves a whole-megabyte floor and rejects zero, negative, fractional and non-integer values", () => {
+    const c = loadConfig({ configPath: write({ ...base(), limits: { min_free_disk_mb: 2048 } }) });
+    expect(c.limits).toStrictEqual({ globalConcurrency: 4, perProviderConcurrency: 1, minFreeDiskMb: 2048 });
+    expect(() => loadConfig({ configPath: write({ ...base(), limits: { min_free_disk_mb: 0 } }) })).toThrow(
+      /\$\.limits\.min_free_disk_mb: must be >= 1/,
+    );
+    for (const min_free_disk_mb of [-1, 1.5, "100", true, null]) {
+      expect(() => loadConfig({ configPath: write({ ...base(), limits: { min_free_disk_mb } }) })).toThrow(ConfigError);
+    }
+  });
+});
+
 describe("providers.claude-code.git_channel (T9.4b, ADR-0029 item 7)", () => {
   it("defaults to off, is true only when set to true, and is refused on other providers or as a non-boolean", () => {
     expect(loadConfig({ configPath: write(base()) }).claudeCodeGitChannel).toBe(false);

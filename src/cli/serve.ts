@@ -126,7 +126,17 @@ import { reconcile } from "../reconcile/index.js";
 import { pruneRagStores } from "../retrieval/store.js";
 import { fireDueSchedules } from "../schedule/index.js";
 import { createTelemetry } from "../telemetry/index.js";
-import { collectOrphans, runRetentionGc, WorkspaceManager } from "../workspace/index.js";
+import {
+  collectOrphans,
+  type DiskFloor,
+  diskFloorPaths,
+  earlySweepReclaimers,
+  MB,
+  runEarlySweep,
+  runRetentionGc,
+  statfsDiskProbe,
+  WorkspaceManager,
+} from "../workspace/index.js";
 import { type CliIo, PROBE_ENV_ALLOWLIST } from "./io.js";
 import { applyOperatorRequests } from "./operator.js";
 import { ragBackendFor, type ServeRag, startServeRag } from "./rag-index.js";
@@ -547,56 +557,111 @@ async function runDaemon(
     return 1;
   }
 
-  // T3.12: retention GC, only when the operator set retention.days. Housekeeping: a failure never blocks serving.
+  // One collecting pass at a time (T3.12 retention, T3.23 early sweep): a pass asked for while another runs is skipped.
   let gcInFlight: Promise<void> | undefined;
-  const gcPass = async (when: "startup" | "interval"): Promise<void> => {
-    if (!config.retentionEnabled || gcInFlight) return;
+  const withGcSlot = async (fn: () => Promise<void>): Promise<void> => {
+    if (gcInFlight) return;
     let done: () => void = () => {};
     gcInFlight = new Promise<void>((r) => {
       done = r;
     });
     try {
-      const r = await runRetentionGc({
-        db,
-        artifacts,
-        dataDir: config.dataDir,
-        days: config.retention.days,
-        ...(now ? { now: now() } : {}),
-      });
-      log.info("retention gc finished", {
-        when,
-        cutoff: r.cutoff,
-        collected: r.collected.map((c) => c.sessionId),
-        errors: r.errors.length,
-      });
-      for (const e of r.errors)
-        log.warn("retention gc unit failed", { session_id: e.sessionId, step: e.step, error: e.message });
-      for (const c of r.collected)
-        for (const w of c.warnings) log.warn("retention gc warning", { session_id: c.sessionId, warning: w });
-      const o = await collectOrphans({
-        db,
-        dataDir: config.dataDir,
-        days: config.retention.days,
-        ...(now ? { now: now() } : {}),
-      });
-      log.info("orphan gc finished", {
-        when,
-        marked: o.marked,
-        waiting: o.waiting,
-        worktrees_removed: o.removedWorktrees.length,
-        branches_removed: o.removedBranches.length,
-        errors: o.errors.length,
-      });
-      for (const e of o.errors) log.warn("orphan gc failed", { target: e.target, step: e.step, error: e.message });
-      for (const w of o.warnings) log.warn("orphan gc warning", { warning: w });
-    } catch (err) {
-      log.error("retention gc failed", { when, error: message(err) });
+      await fn();
     } finally {
       gcInFlight = undefined;
       done();
     }
   };
+  // T3.12: retention GC, only when the operator set retention.days. Housekeeping: a failure never blocks serving.
+  const gcPass = async (when: "startup" | "interval"): Promise<void> => {
+    if (!config.retentionEnabled) return;
+    await withGcSlot(async () => {
+      try {
+        const r = await runRetentionGc({
+          db,
+          artifacts,
+          dataDir: config.dataDir,
+          days: config.retention.days,
+          ...(now ? { now: now() } : {}),
+        });
+        log.info("retention gc finished", {
+          when,
+          cutoff: r.cutoff,
+          collected: r.collected.map((c) => c.sessionId),
+          errors: r.errors.length,
+        });
+        for (const e of r.errors)
+          log.warn("retention gc unit failed", { session_id: e.sessionId, step: e.step, error: e.message });
+        for (const c of r.collected)
+          for (const w of c.warnings) log.warn("retention gc warning", { session_id: c.sessionId, warning: w });
+        const o = await collectOrphans({
+          db,
+          dataDir: config.dataDir,
+          days: config.retention.days,
+          ...(now ? { now: now() } : {}),
+        });
+        log.info("orphan gc finished", {
+          when,
+          marked: o.marked,
+          waiting: o.waiting,
+          worktrees_removed: o.removedWorktrees.length,
+          branches_removed: o.removedBranches.length,
+          errors: o.errors.length,
+        });
+        for (const e of o.errors) log.warn("orphan gc failed", { target: e.target, step: e.step, error: e.message });
+        for (const w of o.warnings) log.warn("orphan gc warning", { warning: w });
+      } catch (err) {
+        log.error("retention gc failed", { when, error: message(err) });
+      }
+    });
+  };
   await gcPass("startup");
+
+  // T3.23 (FR-WS-11, BR-51): the free-disk floor, off unless `limits.min_free_disk_mb` is set. The lifecycle holds
+  // queued runs under it (`disk_hold`) and asks for this early sweep, which takes the same GC slot as the retention
+  // pass. Reclaimers in order: dependency seeds (none until T9.13 registers its reclaimer), then meta-sessions idle
+  // longer than `retention.days`, only when `retention.days` is set (the one switch for every collection, T3.12).
+  const floorMb = config.limits.minFreeDiskMb;
+  const diskFloorBase: DiskFloor | undefined =
+    floorMb === undefined
+      ? undefined
+      : { minFreeBytes: floorMb * MB, paths: diskFloorPaths(config.dataDir), probe: statfsDiskProbe };
+  const diskSweep = async (floor: DiskFloor): Promise<void> => {
+    await withGcSlot(async () => {
+      try {
+        const r = await runEarlySweep({
+          db,
+          floor,
+          reclaimers: earlySweepReclaimers({
+            gc: { db, artifacts, dataDir: config.dataDir, days: config.retention.days },
+            enabled: config.retentionEnabled,
+          }),
+          ...(now ? { now: now() } : {}),
+        });
+        log.info("early disk sweep finished", {
+          satisfied: r.satisfied,
+          free_mb_before: r.before.freeBytes === null ? null : Math.floor(r.before.freeBytes / MB),
+          free_mb_after: r.after.freeBytes === null ? null : Math.floor(r.after.freeBytes / MB),
+          min_free_mb: floorMb,
+          leased_worktrees: r.leasedWorktrees.length,
+          steps: r.steps.map((s) =>
+            "error" in s.outcome
+              ? { name: s.name, error: s.outcome.error }
+              : { name: s.name, reclaimed: s.outcome.reclaimed, notes: s.outcome.notes },
+          ),
+        });
+      } catch (err) {
+        log.error("early disk sweep failed", { error: message(err) });
+      }
+    });
+  };
+  if (diskFloorBase !== undefined) {
+    log.info("free-disk floor on: new runs are held in QUEUED while free space is under it", {
+      min_free_mb: floorMb,
+      paths: diskFloorBase.paths,
+      early_sweep_collects_meta_sessions: config.retentionEnabled,
+    });
+  }
 
   if (fake.enabled) {
     log.warn("TEST-ONLY fake adapter enabled; it is not a real provider", {
@@ -699,6 +764,22 @@ async function runDaemon(
     perProviderLimits: providerLimits(config),
     // T6.4: per-provider breaker thresholds (`capacity.breaker`, LLD §16.4).
     breaker: config.capacity.breaker,
+    // T3.23 (FR-WS-11): the free-disk floor and its early sweep; absent when `limits.min_free_disk_mb` is not set.
+    ...(diskFloorBase !== undefined
+      ? {
+          diskFloor: {
+            ...diskFloorBase,
+            sweep: async (status) => {
+              log.warn("free disk is under the floor: queued runs are held (disk_hold) and the early sweep runs", {
+                free_mb: status.freeBytes === null ? null : Math.floor(status.freeBytes / MB),
+                min_free_mb: floorMb,
+                path: status.path,
+              });
+              await diskSweep(diskFloorBase);
+            },
+          },
+        }
+      : {}),
     // T6.5: automatic retry parameters and the reset wait bound (`capacity.retry`, `capacity.queue_horizon_seconds`).
     retry: { ...config.capacity.retry, queueHorizonSeconds: config.capacity.queueHorizonSeconds },
     // T14.5: loop breaker N, T and successor cap (`control_plane.loop_breaker`, LLD §3.4.6).
