@@ -1437,11 +1437,12 @@ Tasks: ROADMAP T16.0 to T16.12.
   `skills.delivery` (`native_preferred` or `prefix_only`), `skills.allow_draft_in_trusted` (default `false`), the four
   limits, `projects[].skills.{defaults, roles}` and `mcp_clients[].skills` ([LLD
   §19.3](LLD.md#193-configuration-fr-skl-03-fr-skl-04-fr-skl-08)). Unknown keys abort startup as for every section.
-  *As built (T16.3, 2026-10-17, Delegated, not owner-approved):* the config `resolveSkills` in `src/config/load.ts` fills the
-  defaults (distinct from the §19.5 steps 2 to 4 `resolveSkills` in `src/skills/resolve.ts` built by T16.9). Delegated ranges, and the rule that `max_run_bytes` is at least `max_body_bytes`, are in [LLD
-  §19.3](LLD.md#193-configuration-fr-skl-03-fr-skl-04-fr-skl-08). `unresolvedConfiguredSkills`
-  (`src/skills/configured.ts`) lists configured names that do not resolve, for the T16.2 `doctor` line; it is not
-  called at startup. With `skills.enabled` false or absent, recorded prompts, argv and ledger rows stay unchanged.
+  *As built (T16.3, 2026-10-17, Delegated, not owner-approved):* the config `resolveSkills` in `src/config/load.ts`
+  fills the defaults (distinct from the §19.5 steps 2 to 4 `resolveSkills` in `src/skills/resolve.ts` built by T16.9).
+  Delegated ranges, and the rule that `max_run_bytes` is at least `max_body_bytes`, are in
+  [LLD §19.3](LLD.md#193-configuration-fr-skl-03-fr-skl-04-fr-skl-08). `unresolvedConfiguredSkills`
+  (`src/skills/configured.ts`) lists configured names that do not resolve, for the T16.2 `doctor` line; it is not called
+  at startup. With `skills.enabled` false or absent, recorded prompts, argv and ledger rows stay unchanged.
 
 #### 3.16.1 Per-provider delivery table
 

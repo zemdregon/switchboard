@@ -977,9 +977,10 @@ published schema (`src/mcp/schemas.ts`) has no key, so a key is rejected as an u
 Adding it back needs an SRS change first.
 
 *Proposed (2026-10-17, owner decision 58, FR-SKL-03; not built):* `delegate_task`, `continue_task` and `enqueue_work`
-gain the optional `skills`, `role` and `skill_defaults` fields. The contract is [§19](#19-switchboard-controlled-skills-m16-proposed); until T16.4 lands the published
-schemas refuse these fields as unknown properties. The `orchestrator` tool profile's `list_skills`
-and `get_skill` are built (T16.9, Delegated, not owner-approved; [§19.9](#199-mcp-tools-fr-skl-08)).
+gain the optional `skills`, `role` and `skill_defaults` fields. The contract is
+[§19](#19-switchboard-controlled-skills-m16-proposed); until T16.4 lands the published schemas refuse these fields as
+unknown properties. The `orchestrator` tool profile's `list_skills` and `get_skill` are built (T16.9, Delegated, not
+owner-approved; [§19.9](#199-mcp-tools-fr-skl-08)).
 
 Fails `INVALID_REQUEST` if the session has a non-terminal run holding the lease.
 
