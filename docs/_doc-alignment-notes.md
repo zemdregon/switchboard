@@ -64,3 +64,12 @@ whether worktrees could live beside the source repository) is a design question 
 [ROADMAP §6](ROADMAP.md#6-milestones) now records M4 as `Partial` (T4.1 and T4.7 merged). The one-line "Current
 milestone" summary at the top of the roadmap still narrates M0 to M3, M9, M10, M11 and M12 without restating M4; that
 field is a summary, not the status table, so it was left unchanged.
+
+## 7. M2 row "453 tests locally" figure (pre-existing, not from PR #635)
+
+The M2 row in [ROADMAP §6](ROADMAP.md#6-milestones) says "453 tests locally" (dating to the FR-GIT-01 argv commit;
+PR #635 did not touch the figure). `npx vitest list` on this branch collects 3,499 test cases across 194 files, so
+453 is not the suite total; it may be an M2-scope count from that earlier date, but its scope is not stated and the
+passing total cannot be verified without running the full suite. Left unchanged: fixing it needs either a scoped
+re-count with a stated scope or a full test run, both outside a docs-only alignment pass. It does not block PR #635
+(T2.8's own evidence is the live `doctor` note and the `sameVersion` tests, which the T2.8 row cites directly).

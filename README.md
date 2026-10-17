@@ -20,8 +20,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   Claude Code 2.1.294 **14 HELD, 0 FAILED, 2 NOT_CHECKED** (C-12, C-G2); Codex 0.162.0 after `adapters validate codex`
   **10 HELD, 0 FAILED, 3 NOT_CHECKED** (X-4, X-9, X-G1). Earlier checks on another host are in
   [`docs/research/live-checks-2026-10-13.md`](docs/research/live-checks-2026-10-13.md). `Done` waits on those residual
-  operator cells and on `doctor` with a provider installed. The §6.2 "Blocks Done" narrative matches the 2026-10-14 live
-  smoke on main ([PR #570](https://github.com/zemdregon/switchboard/pull/570)). See
+  operator cells; `doctor` with both providers installed and logged in passed on 2026-10-17
+  ([`docs/research/live-checks-2026-10-17-claude-codex.md`](docs/research/live-checks-2026-10-17-claude-codex.md)). The
+  §6.2 "Blocks Done" narrative matches the 2026-10-14 live smoke on main
+  ([PR #570](https://github.com/zemdregon/switchboard/pull/570)). See
   [ROADMAP §6.2](docs/ROADMAP.md#62-m2-claude-code-adapter-and-mcp-slice-tasks).
 - **Milestone 3 (isolation) is `Partial`.** Trust profiles and overrides, approvals (`approve`, `deny`), privileged
   runs, verification commands (optionally confined in bubblewrap), outer-sandbox detection and retention (`gc`) are
@@ -93,7 +95,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#569](https://github.com/zemdregon/switchboard/pull/569), citing `src/config/config.test.ts`,
   `src/inner/inner.test.ts`, `src/inner/import-boundary.test.ts`, `src/inner/port.ts`, `src/inner/fake-backend.ts` and
   `src/ledger/migrations/0005_inner_call.ts` (milestone row and README reconcile
-  [#574](https://github.com/zemdregon/switchboard/pull/574)). T11.13 (the `cli` backend) is Planned and no live backend
+  [#574](https://github.com/zemdregon/switchboard/pull/574)). T11.13 (the `cli` backend) is `Partial` (fakes only; the
+  installed `opencode v2.0.23` offers no tool-free one-shot, so the kind stays `Ineligible`:
+  [TDD §4.6.7](docs/design/TDD.md#467-t110-live-result-2026-10-17)) and no live backend
   has been exercised. Two tasks are wired into production `serve` run paths: the commit-message
   task (the optional `message` on the `commit` tool) and routing classification (`serve` admission, continuation and
   quota failover, with heuristic fallback when inner is off or unavailable). Handoff condensation, PR drafting,
@@ -2261,7 +2265,9 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   merge with `use_global` does).
 - The inner agent (milestone 11) is tested on a scripted in-process fake backend and a loopback fake HTTP server only.
   No live inner backend has been exercised, and `npm run test:live` has no inner-agent leg. The `cli` backend kind is
-  reported `Ineligible` by `doctor` and never started (`src/cli/inner.test.ts`; ROADMAP T11.0, T11.13). The PR-draft,
+  reported `Ineligible` by `doctor` and never started (`src/cli/inner.test.ts`; ROADMAP T11.0, T11.13). T11.0 ran the
+  installed `opencode v2.0.23` live on 2026-10-17 and found no tool-free one-shot
+  ([TDD §4.6.7](docs/design/TDD.md#467-t110-live-result-2026-10-17)), so the kind stays `Ineligible`. The PR-draft,
   verification-summary, handoff-condensation and run-title tasks are service functions that no run path, hook or
   `inner` command calls yet. The `inner.call` telemetry span of
   [LLD §13.8](docs/design/LLD.md#138-telemetry-and-events) is not emitted (no span exporter exists); the pipeline

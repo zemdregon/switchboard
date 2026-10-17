@@ -9,6 +9,7 @@ import {
   evaluateVersionCanary,
   readVersionCanaryStore,
   recordAdapterVersion,
+  sameVersion,
   versionCanaryBaseline,
   versionCanaryPath,
 } from "./version-canary.js";
@@ -76,6 +77,35 @@ describe("version canary (T8.5)", () => {
     const ev = evaluateVersionCanary(gate, "claude", store);
     expect(ev.bump).toBe(true);
     expect(ev.gate.eligible).toBe(false);
+  });
+
+  it("a raw version line matches the manifest's bare validated_cli_version (codex-cli prefix, T2.8)", () => {
+    // Codex's probe reports `codex-cli 0.162.0`; codex.json records `0.162.0`. With no store row (a fresh data
+    // directory) this must not count as a bump (live doctor on Ampere, 2026-10-17).
+    const store = emptyVersionCanaryStore();
+    const gate = evaluateVersionGate("claude", manifest("0.162.0", ">=0.162.0 <0.163.0"), "codex-cli 0.162.0");
+    expect(gate.eligible).toBe(true);
+    const ev = evaluateVersionCanary(gate, "claude", store);
+    expect(ev.bump).toBe(false);
+    expect(ev.gate.eligible).toBe(true);
+    expect(ev.recordVersion).toBe("codex-cli 0.162.0");
+    const bumped = evaluateVersionCanary(
+      evaluateVersionGate("claude", manifest("0.162.0", ">=0.162.0 <0.163.0"), "codex-cli 0.162.1"),
+      "claude",
+      store,
+    );
+    expect(bumped.bump).toBe(true);
+    expect(bumped.gate.eligible).toBe(false);
+  });
+
+  it("sameVersion compares parsed versions and falls back to exact strings", () => {
+    expect(sameVersion("codex-cli 0.162.0", "0.162.0")).toBe(true);
+    expect(sameVersion("2.1.294 (Claude Code)", "2.1.294")).toBe(true);
+    expect(sameVersion("codex-cli 0.162.1", "0.162.0")).toBe(false);
+    expect(sameVersion("2026.10.12-d47ca18", "2026.10.12-e3cb207")).toBe(false);
+    expect(sameVersion("1.0.0-beta.1", "1.0.0")).toBe(false);
+    expect(sameVersion("no version here", "no version here")).toBe(true);
+    expect(sameVersion("no version", "0.1.0")).toBe(false);
   });
 
   it("establishes a baseline when manifest gate passes and no baseline exists", () => {

@@ -990,8 +990,9 @@ been used anywhere in the suite.
   `serve`; the PR-draft, verification-summary, run-title and handoff-condensation modules have no caller outside
   `src/inner/`, and the `inner test` fixtures do not import them). `doctor`, `inner status` and `inner test` are as
   described, and `inner resume <task>` is built too (FR-INN-17; `src/cli/inner.test.ts`).
-- *OpenCode `cli` kind*: documentation spike [§4.6.6](#466-t110-documentation-spike-2026-10-16) (2026-10-16); still
-  `Ineligible` in code until operator T11.0 live checks; unchanged in `src/cli/inner.test.ts`.
+- *OpenCode `cli` kind*: documentation spike [§4.6.6](#466-t110-documentation-spike-2026-10-16) (2026-10-16) and the
+  live result [§4.6.7](#467-t110-live-result-2026-10-17) (2026-10-17: no tool-free one-shot on v2.0.23); `Ineligible`
+  in code; unchanged in `src/cli/inner.test.ts`.
 
 - **Technology (Proposed).** The `http` kind uses the Node built-in `fetch`/HTTP client (and `node:net`/`node:http`
   for a Unix socket); no new dependency and no vendor SDK, so the controller does not pick a provider or carry a provider's
@@ -1038,10 +1039,11 @@ been used anywhere in the suite.
   events with no bodies ([LLD §13.8](LLD.md#138-telemetry-and-events)); `doctor` shows reachable, locality, canary result,
   enabled tasks and degraded or suspended state; `inner status` prints per-task outcome counts and fallback rates from
   `inner_call`; `inner test <task>` runs the fixture (FR-INN-17). Logs follow §3.3: sizes and hashes, never text.
-- **OpenCode `cli` kind (Proposed, flags unverified).** [R2] lists `opencode run`; it does not show that a one-shot,
+- **OpenCode `cli` kind (Proposed).** [R2] lists `opencode run`; it does not show that a one-shot,
   tool-free completion with an operator-chosen model, an empty working directory and no repository config is possible
-  (Q-26). No flag is stated here. Until the T11.0 spike shows the controls that apply for the installed version and writes
-  them, with version and date, into [§4.6](#46-opencode-m4), the kind is `Ineligible` (reported by `doctor`, never
+  (Q-26). No flag is stated here. T11.0 reported on the installed version on 2026-10-17 (`opencode v2.0.23`): no
+  tool-free one-shot exists there, written with version and date into [§4.6.7](#467-t110-live-result-2026-10-17), so
+  the kind stays `Ineligible` (reported by `doctor`, never
   run), and the adapter's argv audit applies (no bypass flag). The `http` kind alone satisfies FR-INN-03.
 
 ### 3.13 Retrieval index
@@ -1389,7 +1391,7 @@ Version ranges come from compliance manifests, not this table (FR-ADP-03, FR-POL
 | --- | --- |
 | Automation surface | `claude -p` ([R2]) |
 | Structured output | `--output-format json` or `stream-json`; partial deltas with `--verbose --include-partial-messages`; final result carries `session_id` |
-| Resume | `--resume <session>` and `--continue`; read `session_id` from structured output, never regex (FR-ADP-04) |
+| Resume | `--resume <session>` and `--continue`; read `session_id` from structured output, never regex (FR-ADP-04); the live T5.12 resume findings for 2.1.294 are in [§4.10](#410-native-resume-inventory-t50) |
 | Auth preflight | `claude auth status` returns structured JSON and exit codes; on failure return `AUTH_REQUIRED` naming the native login (FR-AUTH-02) |
 | Trust profile compilation (Proposed) | Untrusted profiles: `--safe-mode --restricted --strict-mcp-config` (disable `CLAUDE.md`, skills, plugins, hooks and MCP servers, ignore settings files and confine file tools to the working directory; FR-POL-04), fail-closed `dontAsk` with `--permission-prompts none`, explicit `--tools`/`--allowedTools` rules; never `--allowedTools "*"` (skipped by Claude). **Not `--bare`:** the installed help says it makes auth strictly API-key based, which [ADR-0003](../adr/0003-no-credential-handling.md) and the Claude manifest forbid ([ADR-0015](../adr/0015-claude-untrusted-isolation-flags.md)). Verified against `claude --help` 2.1.296 text only; tool names beyond `Read`, `Edit` and `Bash(...)` rule syntax are Assumptions |
 | Sandbox controls | None documented in [R2], and none in the installed help (T3.0, [§4.1.1](#411-claude-code-native-controls-per-profile-and-platform-t30)); `--safe-mode`/`--restricted` are not a sandbox and Bash/read/edit remain. Credential confinement unproven, so `inspect-untrusted` and `edit-untrusted` compile with no arbitrary shell (only `edit-untrusted`'s narrow allowlist), and `test-sandboxed` is ineligible for Claude until confinement is shown (FR-POL-06; M3 evaluation) |
@@ -1464,7 +1466,7 @@ R-41). Every remaining `Unknown: live check in T3.9` cell is still unknown ([ROA
 | --- | --- |
 | Automation surface | `codex exec` |
 | Structured output | `--json` emits JSONL (thread, turn, item, error and token-usage events) |
-| Resume | `codex exec resume <SESSION_ID>` or `--last` (prefer explicit ID) |
+| Resume | `codex exec resume <SESSION_ID>` or `--last` (prefer explicit ID); the T5.12 live checks (cells 1 to 5) are `NOT_CHECKED`, blocked by a provider quota stop (see [ROADMAP §6.9](../ROADMAP.md#69-m5-continuity-tasks) T5.12 and [§4.10](#410-native-resume-inventory-t50)) |
 | Auth preflight | Saved ChatGPT or API-key auth is reused. [R2] states no status command; `codex login status` was observed on codex-cli 0.162.1 (`docs/research/live-checks-2026-10-13.md` (PR #41), not a link: the file is not on this branch): exit 0 logged in, exit 1 not logged in, output format undocumented. The adapter keys on the exit code only; any other exit code, a timeout or a spawn failure is `UNKNOWN` (fail closed). `~/.codex/auth.json` is sensitive and never read |
 | Trust profile compilation (Proposed) | `--sandbox workspace-write` or stricter, plus `--ignore-user-config` and `--ignore-rules` for full harness control. Read-only sandbox value spelling: to be verified in M4 |
 | Sandbox controls | Native: Seatbelt (macOS), bubblewrap (Linux/WSL2); explicit `--sandbox`. Per profile and platform: [§4.2.1](#421-codex-native-controls-per-profile-and-platform-t30) |
@@ -2288,7 +2290,7 @@ Each matrix cell is one of: **Could compile** (a documented control exists; what
 | Sandbox controls | **None documented**: no sandbox page exists on the documentation site (HTTP 404 for `/docs/sandbox/`), [R2] names none, and the only sandbox mention found is a third-party plugin on the ecosystem page. Permission rules are tool-level checks, not OS confinement, so profiles needing confinement are `Ineligible: CAPABILITY_MISSING`; only shell-less profiles qualify |
 | Repository config | Merged, not replaced; later sources win only on conflicting keys: remote `.well-known`, global, `OPENCODE_CONFIG`, **project `opencode.json`**, `.opencode` directories, **`OPENCODE_CONFIG_CONTENT`**, managed files, MDM [D-cfg]. So inline config cannot remove what a repository adds (`mcp`, `plugin`, `instructions`, agents). `CLAUDE.md` is read as a fallback when there is no `AGENTS.md`, switchable off with `OPENCODE_DISABLE_CLAUDE_CODE` [D-rules, D-cli]; `--pure` "run without external plugins" [D-cli]. **Observed** (row 10): `AGENTS.md` loads; `CLAUDE.md` alone was not followed; repo `opencode.json` `mcp` merges in (`opencode mcp list`, row 10c). `--pure` does not exist (row 1). Ignore-all-project-config: Unverified: T4.51 |
 | Known risks | Multiple backing providers: record harness and backing provider/model (FR-ADP-10), not counting two paths to one quota pool as independent capacity. v1 and v2 documentation differ (`auth list --format json`, `run --standalone`, `auth switch` appear only in [D-v2]), so the version gate (ADR-0009) must pin the major version; the manifest range admits no version until T4.58. `autoupdate` is on by default [D-cfg]: `OPENCODE_DISABLE_AUTOUPDATE` exists [D-cli]. Snapshots "use an internal git repository" and are on by default [D-cfg]: whether it touches the worktree's Git directory: repo `.git` hash unchanged across a run (row 11); snapshot store not examined |
-| Inner-agent `cli` kind (M11, Proposed) | T11.0 documentation spike recorded in [§4.6.6](#466-t110-documentation-spike-2026-10-16) (2026-10-16): from docs only, a tool-free one-shot is **not** shown; operator items 4 and 12 remain **Unverified: operator (T11.0 live)**. Proposed argv from T4.50: `opencode run --format json --model <provider/model> --dir <empty directory>` with every permission `deny`, `--pure`, `OPENCODE_DISABLE_CLAUDE_CODE`, `OPENCODE_DISABLE_AUTOUPDATE`, no `--auto` [D-cli, D-perm] (v2 may lack `--pure`/`--dir`, see [§4.6.4](#464-note-2026-10-14-contradictions-found-by-the-t451-live-checks-delegated-cells-above-not-edited)). `cli` stays **`Ineligible`** ([§3.12](#312-inner-agent), FR-INN-04, Q-26) until an installed version passes the checklist |
+| Inner-agent `cli` kind (M11, Proposed) | T11.0 documentation spike recorded in [§4.6.6](#466-t110-documentation-spike-2026-10-16) (2026-10-16): from docs only, a tool-free one-shot is **not** shown. Live result [§4.6.7](#467-t110-live-result-2026-10-17) (2026-10-17, v2.0.23): `--pure` and `--dir` absent, and a deny-all `OPENCODE_PERMISSION` did not stop a `shell` tool call, so items 4 and 12 are answered "no". Proposed argv from T4.50: `opencode run --format json --model <provider/model> --dir <empty directory>` with every permission `deny`, `--pure`, `OPENCODE_DISABLE_CLAUDE_CODE`, `OPENCODE_DISABLE_AUTOUPDATE`, no `--auto` [D-cli, D-perm] (v2 may lack `--pure`/`--dir`, see [§4.6.4](#464-note-2026-10-14-contradictions-found-by-the-t451-live-checks-delegated-cells-above-not-edited)). `cli` stays **`Ineligible`** ([§3.12](#312-inner-agent), FR-INN-04, Q-26) until an installed version passes the checklist |
 | Git writes and injected tools (M4, M9) | Rules are `bash` patterns with wildcards, "last matching rule wins", for example `"git commit *": "deny"` and `"git push *": "deny"` [D-perm]. Pattern completeness is not shown (other `git` spellings, `git -C`, shell wrappers, writes through other tools): `gitWriteControl` `none-documented` until T4.51 shows denial holds, then `provider-deny-rules` (Proposed, fail closed). `commitChannel` `finalize-only`. A per-run MCP server is a config entry (`mcp`, `type` `local` with a `command` array, or `remote`) [D-mcp] that can be sent inline; no `--approve-mcps`-style flag is named, but whether injected MCP tools need an `allow` rule and whether that works headless: **not run** (row 9; repo MCP listing observed row 10c) (R-18, R-50). `--fork` and session export are not used. No sandbox, so only shell-less profiles qualify for push |
 
 **Transport decision (T4.50, Proposed).** `opencode run --format json` as an ephemeral subprocess, the same JSONL path
@@ -2494,6 +2496,28 @@ operator-only; scrub captures per that section):
 
 Item 12 uses the v1 flag spellings from T4.50; if `--pure` or `--dir` are absent on the installed CLI, record the exact
 argv that was used instead (for example `--standalone` and process cwd per §4.6.4) in the dated research note.
+
+*2026-10-17 (Delegated):* the checklist above is now answered for `opencode v2.0.23` in
+[§4.6.7](#467-t110-live-result-2026-10-17), and T11.0 is **Done** with the `cli` kind staying **`Ineligible`**.
+This section stays the 2026-10-16 documentation record; §4.6.7 owns the live result.
+
+#### 4.6.7 T11.0 live result (2026-10-17)
+
+*Delegated agent work, not owner-approved; observed on the operator's Ampere host through the operator's live check
+channel ([live-checks-2026-10-17-opencode.md](../research/live-checks-2026-10-17-opencode.md) §1).*
+
+| Item | Result on `opencode v2.0.23` |
+| --- | --- |
+| `--pure`, `--dir` (checklist item 12, v1 spellings) | **Absent** from `opencode run --help` |
+| Any flag that removes tools | **None** listed. `run` flags: `--standalone`, `--server`, `--continue`, `--session`, `--fork`, `--model`, `--agent`, `--format`, `--file`, `--title`, `--thinking`, `--auto` |
+| Argv used instead | `opencode run --format json -m <provider/model> -- <prompt>`, from an empty, non-Git cwd, with `XDG_CONFIG_HOME` an empty directory, `OPENCODE_PERMISSION='{"*":"deny"}'`, `OPENCODE_DISABLE_CLAUDE_CODE=1`, `OPENCODE_DISABLE_AUTOUPDATE=1` (real `HOME` for the native login) |
+| One-sentence answer | exit 0; one `text` record; no tool use |
+| Tool-requiring task | exit 0; **`tool_use` `shell`, state `completed`**: the deny-all permission set did not stop the tool (items 4 and 12) |
+| Run events name provider and model | No (`providerID`/`modelID` absent) |
+
+**Verdict: a tool-free one-shot is not available on v2.0.23.** The `cli` kind stays **`Ineligible`** ([§3.12](#312-inner-agent),
+FR-INN-04, Q-26) and `CLI_TOOL_FREE_VERIFICATION` stays `null`. A later OpenCode version needs this check run again
+before T11.13 can attach a backend.
 
 ### 4.7 Kimi Code (M4, blocked by B-1)
 
@@ -2768,17 +2792,19 @@ checklist it automates:
 
 ### 4.10 Native-resume inventory (T5.0)
 
-*Documentation only, Delegated agent work (not owner-approved), 2026-10-14.* Nothing below was run: no provider CLI was
-invoked and no network was used. Each cell is either **sourced** (a tag in the right-hand column, a TDD §4 subsection, or
-a line of a research document, with the CLI version where a source records one) or reads exactly `Unverified: <task>`,
-naming the operator checklist item that will verify it. Task T5.12 is the Claude Code and Codex operator task
-([ROADMAP §6.9](../ROADMAP.md#69-m5-continuity-tasks)); the other ids are the M4 operator tasks. This table
-exists because each continuation runs in a new worktree path (ROADMAP §6.9 facts; the FRD WF-2 working-directory
-Assumption), so "is a native session tied to the directory it was created in" decides T5.1 question (6) and T5.7.
+*Documentation only, Delegated agent work (not owner-approved), 2026-10-14; the Claude Code cells were observed live on
+2026-10-17 (T5.12, 2.1.294).* Apart from the cells that name a CLI version and a dated note under `docs/research/`,
+nothing below was run: no other provider CLI was invoked and no network was used. Each cell is either **sourced** (a tag
+in the right-hand column, a TDD §4 subsection, or a line of a research document, with the CLI version where a source
+records one) or reads exactly `Unverified: <task>`, naming the operator checklist item that will verify it. Task T5.12
+is the Claude Code and Codex operator task ([ROADMAP §6.9](../ROADMAP.md#69-m5-continuity-tasks)); the other ids are the
+M4 operator tasks. This table exists because each continuation runs in a new worktree path (ROADMAP §6.9 facts; the FRD
+WF-2 working-directory Assumption), so "is a native session tied to the directory it was created in" decides T5.1
+question (6) and T5.7.
 
 | Provider | Resume form (how the native id is passed) | Tied to the working directory | Sandbox flags on resume | Permission flags on resume | Sources |
 | --- | --- | --- | --- | --- | --- |
-| Claude Code | `--resume <session>`; `--continue` also exists; the id is `session_id` from structured output ([§4.1](#41-claude-code-m2) Resume row; [R2] L72, L90) | Unverified: T5.12 | Unverified: T5.12 | Unverified: T5.12 | [§4.1](#41-claude-code-m2); [R2] L72, L90 (research of 2026-10-12, which records no CLI version); `--help` of 2.1.296 is recorded in [§4.1.1](#411-claude-code-native-controls-per-profile-and-platform-t30) and names no resume text |
+| Claude Code | `--resume <session>`; `--continue` also exists; the id is `session_id` from structured output ([§4.1](#41-claude-code-m2) Resume row; [R2] L72, L90); same id returned on resume (T5.12 cell 1, 2.1.294) | **No** (2.1.294: found from a second worktree and from an unrelated empty directory, T5.12 cell 2) | Not applicable (no sandbox flag in the Claude argv, [§4.1](#41-claude-code-m2)) | **Not kept** (2.1.294: each invocation's flags apply; omitting them gives `default` mode, T5.12 cells 3 and 4), so re-send on every resume | [§4.1](#41-claude-code-m2); [R2] L72, L90 (research of 2026-10-12, which records no CLI version); `--help` of 2.1.296 is recorded in [§4.1.1](#411-claude-code-native-controls-per-profile-and-platform-t30) and names no resume text; live 2026-10-17 [live-checks-2026-10-17-claude.md](../research/live-checks-2026-10-17-claude.md) (unknown id: exit 1, `error_during_execution`, "No conversation found with session ID: …") |
 | Codex | `codex exec resume <SESSION_ID>` or `--last`; an explicit id is preferred ([§4.2](#42-codex-m2) Resume row; [R2] L75) | Unverified: T5.12 | Unverified: T5.12 | Unverified: T5.12 | [§4.2](#42-codex-m2); [R2] L75 (no CLI version recorded for the resume form; codex-cli 0.162.1 was observed only for `codex login status`) |
 | Grok Build | `-r, --resume [<ID>]`; `-c, --continue` is the most recent session for the directory; `-s, --session-id <UUID>` names a new session and does not resume (the adapter plans `-r <id>` from `.sessionId`, never `-c` or `-s`) [CLI], [SESS], [R2 L287]; [HL] contradicts on `-s` | Unverified: T4.21 | Preserved on resume (changelog entry 0.2.56) [CL] | Unverified: T4.21 | [§4.3.1](#431-grok-build-native-controls-per-profile-and-platform-t420) Resume and Resume contradiction rows and its source table ([CLI] last updated 2026-07-21, [HL] 2026-06-10, [SESS] undated, [CL] "Grok Build 1.0.52", 2026-10-11; all retrieved 2026-10-13; no binary version validated) |
 | Antigravity | `--conversation <id>` (explicit; preferred) or `-c, --continue`; the id is `conversation_id` in the `json` envelope [H, RS] | Histories are scoped to the working directory; `--continue` resolves the workspace through a local cache keyed by it [RS] | Unverified: T4.31 | Unverified: T4.31 | [§4.4](#44-antigravity-agy-m4) Resume row and its source list ([H], [RS]; retrieved 2026-10-13; no `agy` version validated) |
@@ -2812,7 +2838,7 @@ the resume statement only and T4.61 item 17 checks both.
 
 | Provider | Cells | Checklist item |
 | --- | --- | --- |
-| Claude Code, Codex | cwd, sandbox, permission | T5.12, checks 1 to 4 ([ROADMAP §6.9](../ROADMAP.md#69-m5-continuity-tasks)) |
+| Codex | cwd, sandbox, permission | T5.12, checks 1 to 4 ([ROADMAP §6.9](../ROADMAP.md#69-m5-continuity-tasks)); the Claude Code cells were recorded 2026-10-17 (T5.12 Partial) |
 | Grok Build | cwd, permission | [§4.3.2](#432-t421-operator-checklist-grok-build) step 14 |
 | Antigravity | sandbox, permission (and the cross-directory case of the cwd cell) | [§4.4.3](#443-t431-operator-checklist-antigravity) C18 (and C9) |
 | Cursor | cwd, sandbox, permission | [§4.5.3](#453-t441-operator-checklist) item 16 |
