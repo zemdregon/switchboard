@@ -5894,7 +5894,8 @@ and `source`.
 `usageWindows` returns nothing, so an unconfigured projection stays byte-identical. Each entry has `subscription`,
 `providers` (config ids), `mode`, `deferred_until`, `verdict` (`deferred`, `clear` or `inactive`) and `windows`. Each
 window is the T6.13 figures, including `window_start`, plus `defers`. `used_fraction` stays the T6.13 object. There is
-no `openAt`: the hold that acts on `deferred_until` is T6.8 and is not applied. A window defers only in mode `gate`,
+no `openAt`: the hold that acts on `deferred_until` is T6.8 (`Done` 2026-10-17; see "As built (T6.8)" below). A window
+defers only in mode `gate`,
 with a known reset, a non-null used value and elapsed fraction, confidence at or above `min_confidence`, and used at or
 above `min(T, T × elapsed + B)`, using those published figures. Its gate-open time is the earlier of `reset_at` and
 `window_start + length_seconds × (used − B) / T`, rounded to the millisecond. `deferred_until` is the latest of those
