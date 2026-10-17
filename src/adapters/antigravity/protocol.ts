@@ -106,6 +106,30 @@ export const STATUS_SUCCESS = "SUCCESS";
 export const ERROR_MODEL_PREFIX = "invalid model selection";
 export const ERROR_AUTH_PREFIX = "authentication failed";
 
+/**
+ * Structured error line on stderr when a turn ends on an agent or model API failure (TDD §4.4 "Exit codes", [CL v1.2.6,
+ * v1.2.10]: exit 3 with `AGY_ERROR: {...}`). Captured for real on 2026-10-17 (T6.11, `docs/research/limit-captures-2026-10-17.md`,
+ * Antigravity row; text mode, seven quota stops from normal use): one stderr line `AGY_ERROR: ` followed by a JSON
+ * object with the keys `short_error`, `status` (`RESOURCE_EXHAUSTED`), `error_code` (`429`), `code_kind` (`http`),
+ * `retryable` (`true`) and `error_id`. T6.15 maps it from the structured fields only (FR-ADP-04, FR-CAP-11):
+ * `short_error` (free text, where the "Resets in <h>h<m>m<s>s" duration lives) and `error_id` are never read, so no
+ * `reset_at` is sourced (Q-100 Delegated default). The `stream-json` shape of a quota stop is NOT_CHECKED; that the
+ * line is the same on stderr in that mode is an **Assumption** (fail closed: without the line, exit 3 stays
+ * `TOOL_FAILURE`).
+ */
+export const AGY_ERROR_PREFIX = "AGY_ERROR: ";
+export const AGY_ERROR_EXIT = 3;
+/**
+ * `AGY_ERROR.status` -> normalized `provider_error` category (T6.15, Delegated). `RESOURCE_EXHAUSTED` was a subscription
+ * quota stop in every capture ("Individual quota reached. Please upgrade your subscription", resets from 21 s to
+ * 121 h), so it is `quota` (`QUOTA_EXHAUSTED`: fail over or return, never an automatic retry against an exhausted
+ * subscription, FR-CAP-06), not `rate_limit`; `retryable: true` and `error_code: 429` were present every time and do
+ * not tell the two apart, so they are reported in the detail only. Any other status is unmapped (`TOOL_FAILURE`).
+ */
+export const AGY_ERROR_STATUS_CATEGORIES: Readonly<Record<string, string>> = Object.freeze({
+  RESOURCE_EXHAUSTED: "quota",
+});
+
 /** `usage` keys of the envelope ([H]; [LIVE] C4). `total_tokens` > 0 is part of the success rule (Q-86). */
 export const USAGE_KEYS: readonly string[] = [
   "input_tokens",

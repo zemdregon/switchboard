@@ -163,6 +163,8 @@ describe("antigravity fixture inventory (T4.35, FR-ADP-11)", () => {
       "pins the T4.33 binding gap (an unsafe init id leaves the binding to the result) in parser-residual.test.ts",
     usage_unreconciled:
       "replays to a success: fractional and unreconciled counters are recorded as reported (T4.33 gap, pinned)",
+    agy_error_quota:
+      "replays to TOOL_FAILURE `exit code 3` like agy_error_exit3 (extractResult gets no stderr); the T6.15 mapping of its stderr AGY_ERROR line is shown in limit-signals.test.ts from the run's stderr tail",
     resume_failure: "needs `--conversation <id>`, which is not compiled while resumeArgs is Ineligible (Q-86)",
     resume_unknown_id: "needs `--conversation <id>`, which is not compiled while resumeArgs is Ineligible (Q-86)",
   };
@@ -870,7 +872,8 @@ describe("antigravity hang, host environment, probe and fixture-metadata interac
   it("each fixture's metadata names only keys the replay reads, and every fixture that does not hang names its exit", () => {
     // A misspelt key (`exitCode`, `requireresume`) is silently ignored, so a fixture would replay at exit 0 or as a
     // fresh run without anyone noticing.
-    const READ = new Set(["synthetic", "note", "exit", "write", "hang", "requireResume"]);
+    // `stderr` (T6.15): lines the replay writes to its stderr (agy_error_quota's AGY_ERROR line).
+    const READ = new Set(["synthetic", "note", "exit", "write", "hang", "requireResume", "stderr"]);
     expect(names.flatMap((n) => Object.keys(metaOf(n)).flatMap((k) => (READ.has(k) ? [] : [`${n}.${k}`])))).toEqual([]);
     expect(names.filter((n) => !Object.hasOwn(metaOf(n), "exit") && !Object.hasOwn(metaOf(n), "hang"))).toEqual([]);
     expect(names.filter((n) => Object.hasOwn(metaOf(n), "hang"))).toEqual(["hang"]);

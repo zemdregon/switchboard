@@ -2007,20 +2007,31 @@ describe("antigravity parser residuals, eleventh pass: envelope shapes, non-stri
     });
   });
 
-  it("pins the gap: classifyFailure never reads the stderr tail, so an auth or rate-limit tail changes nothing", () => {
+  it("classifyFailure reads the stderr tail only for a structured AGY_ERROR line at exit 3 (T6.15); free text changes nothing", () => {
     const events = run([INIT(), RESULT({ status: "ERROR" })]).events;
-    const classify = (stderrTail: string) =>
-      adapter().classifyFailure({ events, exit: EXIT0, stderrTail, timedOut: false, cancelled: false });
+    const classify = (stderrTail: string, exit = EXIT0) =>
+      adapter().classifyFailure({ events, exit, stderrTail, timedOut: false, cancelled: false });
     const plain = classify("");
     expect(plain).toEqual({ code: "TOOL_FAILURE", detail: "ERROR" });
+    const EXIT3 = { ...EXIT0, exitCode: 3 };
     for (const tail of [
       "Error: Please sign in to view available models.",
       "authentication failed",
       "429 Too Many Requests: rate limit exceeded",
       "AGY_ERROR exit 3",
+      "error: Individual quota reached. Resets in 2h0m56s.",
     ]) {
       expect(classify(tail), tail).toEqual(plain);
+      expect(classify(tail, EXIT3), tail).toEqual(plain);
     }
+    // The one structured shape (the 2026-10-17 T6.11 capture) maps at exit 3 and only there; limit-signals.test.ts has
+    // the full rules.
+    const structured = 'AGY_ERROR: {"status":"RESOURCE_EXHAUSTED","error_code":429,"retryable":true}';
+    expect(classify(structured)).toEqual(plain);
+    expect(classify(structured, EXIT3)).toEqual({
+      code: "QUOTA_EXHAUSTED",
+      detail: "quota: AGY_ERROR status RESOURCE_EXHAUSTED, error_code 429, retryable true",
+    });
   });
 });
 

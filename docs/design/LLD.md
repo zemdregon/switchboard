@@ -5552,6 +5552,16 @@ field, and what it carries (`used_fraction`, `remaining_fraction` or `reset_at`)
 named by T6.0, none wired: Antigravity's `/usage` `remaining_fraction` and `reset_time` per bucket (a separate call,
 Q-101), and Claude Code's `rate_limit_event` `resetsAt` (a synthetic fixture shape, T6.11).
 
+*As built (T6.15, 2026-10-17, Delegated):* still none wired. The T6.11 captures
+([limit captures 2026-10-17](../research/limit-captures-2026-10-17.md)) hold one structured limit signal that was not
+already mapped, Antigravity's stderr line `AGY_ERROR: {...}` at exit 3. Its `status` `RESOURCE_EXHAUSTED` maps to
+`QUOTA_EXHAUSTED` in the adapter's `classifyFailure` from the stderr tail (`src/adapters/antigravity/protocol.ts`,
+`AGY_ERROR_STATUS_CATEGORIES`; the structured fields only, FR-ADP-04), and its reset is free text inside `short_error`,
+so no reset key is declared (Q-100). Every other captured limit was free text. `USAGE_KEYS` stays empty and frozen until
+a capture shows a structured used or remaining fraction or reset time. The adapter contract gives `extractResult` no
+stderr (§2), so the mapping is reached only by a caller that passes the tail `startAdapterRun` captures; the lifecycle
+does not yet (pinned in `src/adapters/antigravity/limit-signals.test.ts`).
+
 **Per window, at time `now`** (pure function, injected clock):
 
 | Figure | Rule | `source` |

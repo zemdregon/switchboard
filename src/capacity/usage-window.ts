@@ -35,8 +35,13 @@ export interface UsageKeyDeclaration {
 }
 
 /**
- * Declared usage keys per adapter provider id. Empty on purpose: no key is wired yet (candidates are listed in LLD §16.9
- * and mapped by T6.15 with a source citation).
+ * Declared usage keys per adapter provider id. Empty on purpose: no key is wired. T6.15 (2026-10-17) read the T6.11
+ * captures (`docs/research/limit-captures-2026-10-17.md`) for a structured used or remaining fraction or reset time
+ * and found none: the one structured limit signal, Antigravity's `AGY_ERROR` line, carries its reset only as free
+ * text in `short_error` ("Resets in <h>h<m>m<s>s"), which Q-100's Delegated default leaves unmapped; every other
+ * provider's limit was free text. The remaining candidates (LLD §16.9: Antigravity's separate `/usage` call, Q-101;
+ * Claude Code's `rate_limit_event` `resetsAt`, a synthetic shape) wait for a capture. An entry is added here only
+ * with the capture note that shows the key.
  */
 export const USAGE_KEYS: Readonly<Record<string, readonly UsageKeyDeclaration[]>> = Object.freeze({});
 
