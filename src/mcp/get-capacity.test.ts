@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeAdapter } from "../adapters/fake/adapter.js";
@@ -16,11 +17,19 @@ import { ArtifactStore } from "../artifacts/index.js";
 import { CAPACITY_NOTE } from "../capacity/index.js";
 import { main } from "../cli/index.js";
 import type { CliIo } from "../cli/io.js";
+import { type CapacitySettings, loadConfig } from "../config/index.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, LEDGER_FILE_NAME, type Ledger, openLedger, type TrustProfile } from "../ledger/index.js";
 import { RunLifecycle } from "../lifecycle/index.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import { createSwitchboardServer, type SwitchboardMcpServer, TOOL_NAMES, WORK_QUEUE_TOOL_NAMES } from "./index.js";
+import {
+  inputSchema,
+  outputSchema,
+  PROJECT_TOOL_NAMES,
+  SEARCH_TOOL_NAMES,
+  WORK_QUEUE_TOOL_NAMES as WORK_NAMES,
+} from "./schemas.js";
 
 const NOW = new Date("2026-10-14T12:00:00.000Z");
 const now = () => NOW;
@@ -105,7 +114,9 @@ function finished(state: "SUCCEEDED" | "FAILED", code: string | null = null, fin
   return r.id;
 }
 
-async function connect(): Promise<Client> {
+async function connect(
+  capacity?: Pick<CapacitySettings, "windowSeconds" | "confidenceRuns" | "subscriptions" | "pacing">,
+): Promise<Client> {
   if (!db) openData();
   const reg = registry();
   const artifacts = new ArtifactStore(path.join(dataDir, "artifacts"));
@@ -140,7 +151,7 @@ async function connect(): Promise<Client> {
     config: {
       allowedRoots: [root],
       mcpClients: new Map([["c1", { id: "c1", maxTrustProfile: "edit-untrusted" as TrustProfile }]]),
-      capacity: { windowSeconds: 7200, confidenceRuns: 4 },
+      capacity: capacity ?? { windowSeconds: 7200, confidenceRuns: 4 },
       limits: { perProviderConcurrency: 2 },
     },
     clientId: "c1",
@@ -177,10 +188,24 @@ async function cli(args: string[], extra: Partial<CliIo> = {}) {
   return { code, out: out.join(""), err: err.join("") };
 }
 
-/** FR-CAP-03 wording rule (LLD §16.3) over a text surface. */
+/** A pacing line: the doctor summary, a window line, or a subscription header (T6.14). */
+function isPacingLine(line: string): boolean {
+  return (
+    /^\s+pacing\b/.test(line) || /\bdefers (yes|no)\b/.test(line) || /\bverdict (deferred|clear|inactive)\b/.test(line)
+  );
+}
+
+/**
+ * FR-CAP-03 wording rule (LLD §16.3, §16.9) over a text surface. Pacing lines also refuse a plan percentage, and every
+ * `controller_estimated` pacing line carries the estimate wording. The older `estimate (controller_estimated): score`
+ * line is not a pacing line and is not asked for that phrase.
+ */
 function expectHonestText(text: string): void {
   for (const line of text.split("\n")) {
     if (/remaining/i.test(line)) expect(line).toMatch(/provider-reported|provider_reported/);
+    if (!isPacingLine(line)) continue;
+    expect(line).not.toMatch(/%|\bplan\b/i);
+    if (/\bcontroller_estimated\b/.test(line)) expect(line).toContain("estimate, Switchboard-observed only");
   }
   expect(text).not.toMatch(/quota left|available quota|%/i);
 }
@@ -333,5 +358,186 @@ describe("one projection for get_capacity, switchboard capacity and doctor (T6.3
     expect(text.out).toContain("Capacity (controller estimates, not provider quota");
     expect(text.out).toMatch(/fake: breaker CLOSED, throttle risk high, estimate confidence 0\.25/);
     expectHonestText(text.out);
+  });
+});
+
+const PACING_OPEN = "2026-10-14T17:41:03.158Z";
+
+function pacingConfig(): void {
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      schema_version: 1,
+      data_dir: dataDir,
+      allowed_roots: [path.join(root, "repos")],
+      mcp_clients: [{ id: "c1", max_trust_profile: "edit-untrusted" }],
+      limits: { per_provider_concurrency: 2 },
+      capacity: {
+        window_seconds: 7200,
+        confidence_runs: 4,
+        pacing: { mode: "gate", target_fraction: 0.95, burst_fraction: 0.1, min_confidence: 0.5 },
+        subscriptions: {
+          alpha: {
+            providers: ["claude-code"],
+            windows: [
+              {
+                id: "day",
+                length_seconds: 86400,
+                reset: { kind: "fixed", anchor: "2026-10-14T00:00:00Z" },
+                budget: { unit: "runs", value: 10 },
+              },
+            ],
+          },
+          beta: {
+            providers: ["codex"],
+            windows: [
+              {
+                id: "day",
+                length_seconds: 86400,
+                reset: { kind: "fixed", anchor: "2026-10-14T00:00:00Z" },
+                budget: { unit: "runs", value: 10 },
+              },
+            ],
+          },
+        },
+      },
+    }),
+  );
+}
+
+/** A finished run whose `provider` is the adapter id (`claude`, `codex`), not the config id. */
+function finishedAs(provider: string, startedAt: string, finishedAt = startedAt): void {
+  const ms = ledger.createMetaSession({ objective: "o" });
+  const r = ledger.createRun({
+    metaSessionId: ms.id,
+    trustProfile: "inspect-untrusted",
+    policySnapshot: {},
+    request: {},
+    requestHash: "h",
+    clientId: "c1",
+    provider,
+  });
+  db?.prepare("UPDATE run SET state = ?, failure_code = ?, started_at = ?, finished_at = ? WHERE id = ?").run(
+    "SUCCEEDED",
+    null,
+    startedAt,
+    finishedAt,
+    r.id,
+  );
+}
+
+function seedPacingLedger(): void {
+  openData();
+  for (let i = 0; i < 8; i++) finishedAs("claude", "2026-10-14T06:00:00.000Z");
+  // created_at is the ledger clock (inside the window). started_at is before window_start, so it must not count.
+  finishedAs("claude", "2026-10-13T23:00:00.000Z", "2026-10-14T01:00:00.000Z");
+  pacingConfig();
+}
+
+describe("pacing block on get_capacity, capacity and doctor (T6.14, LLD §16.9)", () => {
+  it("get_capacity and capacity --json agree on the pacing block and the output schema is published", async () => {
+    openData();
+    const plain = await connect();
+    const plainBody = (await capacityTool(plain)).body;
+    expect(plainBody).not.toHaveProperty("pacing");
+
+    for (let i = 0; i < 8; i++) finishedAs("claude", "2026-10-14T06:00:00.000Z");
+    finishedAs("claude", "2026-10-13T23:00:00.000Z", "2026-10-14T01:00:00.000Z");
+    pacingConfig();
+    const client = await connect(loadConfig({ configPath }).capacity);
+    const tool = (await capacityTool(client)).body;
+    const json = await cli(["capacity", "--json"]);
+    expect(json.code).toBe(0);
+    const { schema_version, ...projection } = JSON.parse(json.out) as Json;
+    expect(schema_version).toBe(1);
+    expect(projection).toEqual(tool);
+    expectHonestJson(projection);
+
+    const alpha = tool.pacing[0];
+    const beta = tool.pacing[1];
+    expect(tool.pacing).toHaveLength(2);
+    expect(alpha.subscription).toBe("alpha");
+    expect(alpha.providers).toEqual(["claude-code"]);
+    expect(alpha.mode).toBe("gate");
+    expect(alpha.verdict).toBe("deferred");
+    expect(alpha.deferred_until).toBe(PACING_OPEN);
+    expect(alpha.windows[0]).toMatchObject({
+      id: "day",
+      used_fraction: { value: 0.8, source: "controller_estimated", confidence: 0.8 },
+      elapsed_fraction: 0.5,
+      pace: "ahead",
+      defers: true,
+    });
+    expect(beta.subscription).toBe("beta");
+    expect(beta.providers).toEqual(["codex"]);
+    expect(beta.verdict).toBe("clear");
+    expect(beta.deferred_until).toBeNull();
+    expect(beta.windows[0].used_fraction.value).toBe(0);
+    expect(beta.windows[0].defers).toBe(false);
+
+    const one = JSON.parse((await cli(["capacity", "--json", "--provider", "fake"])).out) as Json;
+    expect(one.providers).toEqual(tool.providers);
+    expect(one.pacing).toEqual(tool.pacing);
+
+    const success = (outputSchema("get_capacity") as { anyOf: Json[] }).anyOf[0] as Json;
+    expect(success.required).toEqual(["as_of", "window_seconds", "note", "providers", "affinity"]);
+    expect(success.required).not.toContain("pacing");
+    expect(success.properties.pacing).toBeDefined();
+    const validate = new Ajv2020({ allErrors: true, strict: true }).compile(success);
+    expect(validate(tool), JSON.stringify(validate.errors)).toBe(true);
+    expect(validate(plainBody), JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  it("the wording test extends to pacing", async () => {
+    seedPacingLedger();
+    const text = await cli(["capacity"]);
+    expect(text.code).toBe(0);
+    expectHonestText(text.out);
+    const lines = text.out.split("\n");
+    const estimated = lines.filter((l) => isPacingLine(l) && l.includes("controller_estimated"));
+    expect(estimated.length).toBeGreaterThan(0);
+    for (const line of estimated) expect(line).toContain("estimate, Switchboard-observed only");
+    const score = lines.find((l) => l.includes("estimate (controller_estimated):"));
+    expect(score).toBeDefined();
+    expect(score).not.toContain("Switchboard-observed only");
+    expect(text.out).not.toMatch(/\bplan\b/);
+
+    expectHonestText("    day: used 0.4, source provider_reported, defers no\n");
+    expect(() => expectHonestText("    day: remaining 10, source controller_estimated, defers no\n")).toThrow();
+    expect(() =>
+      expectHonestText("       pacing alpha: pace ahead, deferred_until none, source controller_estimated\n"),
+    ).toThrow();
+    expect(() => expectHonestText("  alpha (verdict clear) plan share\n")).toThrow();
+  });
+
+  it("doctor prints one pacing line per subscription", async () => {
+    seedPacingLedger();
+    db?.close();
+    db = undefined;
+    const report = JSON.parse((await cli(["doctor", "--json"])).out) as Json;
+    const tool = JSON.parse((await cli(["capacity", "--json"])).out) as Json;
+    expect(report.capacity.pacing).toEqual(tool.pacing);
+    const text = await cli(["doctor"]);
+    const lines = text.out.split("\n").filter((l) => /^\s+pacing\b/.test(l));
+    expect(lines).toEqual([
+      "       pacing alpha: pace ahead, deferred_until " +
+        `${PACING_OPEN}, source controller_estimated (estimate, Switchboard-observed only)`,
+      "       pacing beta: pace behind, deferred_until none, " +
+        "source controller_estimated (estimate, Switchboard-observed only)",
+    ]);
+    expectHonestText(text.out);
+  });
+
+  it("existing tool schemas are unchanged apart from the additive pacing block", () => {
+    const names = [...TOOL_NAMES, ...PROJECT_TOOL_NAMES, ...SEARCH_TOOL_NAMES, ...WORK_NAMES];
+    for (const name of names) {
+      if (name === "get_capacity") continue;
+      const encoded = JSON.stringify(outputSchema(name));
+      expect(encoded).not.toContain("deferred_until");
+      expect(encoded).not.toContain('"pacing"');
+    }
+    expect(Object.keys((inputSchema("get_capacity").properties ?? {}) as object)).toEqual(["provider"]);
+    const success = (outputSchema("get_capacity") as { anyOf: { required?: string[] }[] }).anyOf[0];
+    expect(success?.required).not.toContain("pacing");
   });
 });

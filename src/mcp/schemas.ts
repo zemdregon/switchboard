@@ -820,6 +820,93 @@ const CAPACITY = {
         },
       },
     },
+    // T6.14 (LLD §16.9): optional. Omitted from the object when no subscription is configured, so it is not required.
+    pacing: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["subscription", "providers", "mode", "deferred_until", "verdict", "windows"],
+        properties: {
+          subscription: { type: "string" },
+          providers: { type: "array", items: { type: "string" } },
+          mode: { type: "string", enum: ["gate", "score", "off"] },
+          deferred_until: { type: ["string", "null"] },
+          verdict: { type: "string", enum: ["deferred", "clear", "inactive"] },
+          windows: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: [
+                "id",
+                "length_seconds",
+                "reset_at",
+                "window_start",
+                "used_fraction",
+                "elapsed_fraction",
+                "allowance",
+                "pace",
+                "defers",
+              ],
+              properties: {
+                id: { type: "string" },
+                length_seconds: { type: "integer", minimum: 0 },
+                reset_at: {
+                  anyOf: [
+                    { type: "null" },
+                    {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["at", "source"],
+                      properties: {
+                        at: { type: "string" },
+                        source: { type: "string", enum: ["provider_reported", "operator_declared"] },
+                      },
+                    },
+                  ],
+                },
+                window_start: {
+                  anyOf: [
+                    { type: "null" },
+                    {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["at", "source"],
+                      properties: {
+                        at: { type: "string" },
+                        source: { type: "string", enum: ["provider_reported", "operator_declared", "controller"] },
+                      },
+                    },
+                  ],
+                },
+                used_fraction: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["value", "source", "confidence"],
+                  properties: {
+                    value: { type: ["number", "null"] },
+                    source: {
+                      type: "string",
+                      enum: ["provider_reported", "controller_estimated", "unknown"],
+                    },
+                    confidence: { type: "number", minimum: 0, maximum: 1 },
+                    lower_bound: { const: true },
+                    basis: { type: "string", enum: ["runs", "reported_tokens", "reported_cost_usd"] },
+                    note: { type: "string" },
+                    key: { type: "string" },
+                  },
+                },
+                elapsed_fraction: { type: ["number", "null"] },
+                allowance: { type: ["number", "null"] },
+                pace: { type: "string", enum: ["unknown", "behind", "on_pace", "ahead"] },
+                defers: { type: "boolean" },
+              },
+            },
+          },
+        },
+      },
+    },
   },
 } as const;
 
@@ -1145,7 +1232,9 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
     "Per-provider capacity, read-only. capacity_score, confidence and throttle_risk are controller estimates from " +
     "recent run outcomes, rate-limit signals, the circuit breaker and free slots, never provider-authoritative quota; " +
     "with no recent evidence they read unknown (score null, confidence 0). explicit_remaining and reset_at are set " +
-    "only when the provider itself reported them. Optional provider narrows the answer to one provider.",
+    "only when the provider itself reported them. Optional provider narrows the answer to one provider. When " +
+    "subscriptions are configured, pacing lists one entry per subscription with each window's figures, " +
+    "deferred_until and the gate verdict; that hold is not applied here.",
   explain_route:
     "Why a run went to its provider, read-only, from Switchboard's stored route decision: candidates with eligibility " +
     "reasons, the recorded task features, weights and per-candidate scores, the selection rule, the project's " +

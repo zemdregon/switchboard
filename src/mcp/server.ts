@@ -239,8 +239,8 @@ export interface McpServerDeps {
     readonly providers?: ResolvedConfig["providers"];
     /** T5.6: handoff bundle bounds (`continuity.*`, LLD §15.4). Absent means the LLD defaults. */
     readonly continuity?: BundleBounds;
-    /** T6.3: estimator settings (`capacity.*`, LLD §16.1). Absent means the LLD defaults. */
-    readonly capacity?: Pick<CapacitySettings, "windowSeconds" | "confidenceRuns">;
+    /** T6.3: estimator settings (`capacity.*`, LLD §16.1). Absent means the LLD defaults. T6.14: subscriptions too. */
+    readonly capacity?: Pick<CapacitySettings, "windowSeconds" | "confidenceRuns" | "subscriptions" | "pacing">;
     /** T6.3: slot limits shown by `get_capacity`. Absent means the NFR-PERF-03 default of one per provider. */
     readonly limits?: Pick<ResolvedConfig["limits"], "perProviderConcurrency">;
     /** T7.2, T7.5: `routing.weights` and `routing.affinity` (LLD §17.1). Absent means the LLD defaults. */
@@ -1401,9 +1401,11 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     if (named !== undefined && !ids.includes(named)) {
       throw invalid(`unknown provider ${JSON.stringify(named)}`, { providers: ids });
     }
-    const settings = {
-      windowSeconds: deps.config.capacity?.windowSeconds ?? DEFAULT_CAPACITY_WINDOW_SECONDS,
-      confidenceRuns: deps.config.capacity?.confidenceRuns ?? DEFAULT_CAPACITY_CONFIDENCE_RUNS,
+    // T6.14: pass the capacity object through. Rebuilding a two-field settings object here would drop subscriptions,
+    // and get_capacity would disagree with `capacity --json`.
+    const settings = deps.config.capacity ?? {
+      windowSeconds: DEFAULT_CAPACITY_WINDOW_SECONDS,
+      confidenceRuns: DEFAULT_CAPACITY_CONFIDENCE_RUNS,
     };
     const providers = capacityProviders(named === undefined ? ids : [named], {
       ...(deps.config.providers !== undefined ? { providers: deps.config.providers } : {}),
