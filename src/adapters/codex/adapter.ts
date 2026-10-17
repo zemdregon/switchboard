@@ -10,6 +10,7 @@
  * option" (L126), and documents neither what they disable nor a dangerous sandbox mode, which is not precise enough to
  * emit (AGENTS.md: no flag from memory). Verify live (T3.9) before any Codex bypass compiles.
  */
+
 import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 import {
@@ -21,6 +22,7 @@ import {
 import { classifyCommon } from "../failure.js";
 import { gitWriteRisks } from "../git-write.js";
 import { parseVersion } from "../manifest/index.js";
+import { renderObjective } from "../prompt.js";
 import type {
   AcpMessage,
   AuthResult,
@@ -382,7 +384,7 @@ export class CodexAdapter implements ProviderAdapter {
       env: {},
       envAllowlist: [...CODEX_ENV_ALLOWLIST],
       cwd: request.workspace.cwd,
-      stdin: { kind: "text", value: request.objective },
+      stdin: { kind: "text", value: renderObjective(request) },
       outputFormat: "jsonl",
       timeouts: { ...this.#timeouts },
       policyFlags,

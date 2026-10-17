@@ -21,6 +21,7 @@
  *   (T4.54) reads the connection types of `auth list --format json --standalone`. The manifest range admits no version, so none of this runs before `adapters validate`
  *   passes a version.
  */
+
 import {
   DEFAULT_IDLE_MS,
   DEFAULT_KILL_GRACE_MS,
@@ -31,6 +32,7 @@ import { resolveOnPath } from "../codex/adapter.js";
 import { classifyCommon, PROVIDER_ERROR_CATEGORY_CODES } from "../failure.js";
 import { gitWriteRisks } from "../git-write.js";
 import { parseVersion } from "../manifest/index.js";
+import { renderObjective } from "../prompt.js";
 import type {
   AcpMessage,
   AuthResult,
@@ -358,7 +360,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
         ...policyFlags,
         ...tail,
         END_OF_OPTIONS,
-        request.objective,
+        renderObjective(request),
       ],
       env: { [DISABLE_AUTOUPDATE_ENV]: "1" },
       envAllowlist: [...OPENCODE_ENV_ALLOWLIST],

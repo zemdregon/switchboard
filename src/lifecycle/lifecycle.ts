@@ -91,8 +91,10 @@ import {
   type ProviderAdapter,
   type ProviderId,
   type ResolvedProfile,
+  skillDeliveryOf,
   startAdapterRun,
 } from "../adapters/index.js";
+import { type PromptSkill, renderSkillBlock } from "../adapters/prompt.js";
 import { type ArtifactStore, defaultRedactor, REDACTION_MARKER } from "../artifacts/index.js";
 import {
   applyBreakerOutcome,
@@ -422,6 +424,10 @@ export interface PinnedSkills {
 
 /** LLD §19.11. */
 const SKILL_RESOLVED_EVENT = "skill_resolved";
+/** LLD §19.11 (T16.5): one per run with skills, at dispatch, before spawn. */
+export const SKILL_DELIVERED_EVENT = "skill_delivered";
+/** Transition `reason` (Delegated, T16.5): a pinned skill's stored file is missing or fails its hash at dispatch. */
+export const SKILL_DELIVERY_UNAVAILABLE = "SKILL_DELIVERY_UNAVAILABLE";
 
 /** T5.5: what a handoff submission carries (see {@link SubmitRequest.handoff}). */
 export interface HandoffSubmission {
@@ -695,6 +701,24 @@ export interface RunLifecycleOptions {
    * Never a refusal, a failure, a new run, a probe or a provider call.
    */
   readonly pacing?: PacingGateSettings;
+  /**
+   * T16.5 (FR-SKL-05, LLD §19.6 steps 1, 3 and 4): reads a run's pinned skills at dispatch and records their delivery.
+   * `serve` builds it over the ledger handle and `<data_dir>/skills/` (`skillDeliveryPort` in `src/cli/serve.ts`).
+   * Absent (a composition without the store; `serve` always wires it): a run whose `skill_resolved` event pinned
+   * entries runs without them and records that in `skill_delivered` (`skipped`, `store_unavailable`), never silently.
+   */
+  readonly skillDelivery?: SkillDeliveryPort;
+}
+
+/**
+ * T16.5: the lifecycle's view of the skill store at dispatch. Structurally typed so that this module does not import
+ * `src/skills/` (the T16.4 import boundary, `src/skills/import-boundary.test.ts`).
+ */
+export interface SkillDeliveryPort {
+  /** The run's `run_skill` entries in position order with their canonical bodies; throws if a stored file is missing or fails its hash. */
+  load(runId: string): readonly PromptSkill[];
+  /** Records `delivery` and `delivered_at` = `at` on every `run_skill` row of the run. */
+  record(runId: string, delivery: "prompt_prefix", at: string): void;
 }
 
 /** T3.23: the lifecycle's view of the free-disk floor; `serve` composes it from the config and `src/workspace/gc.ts`. */
@@ -1713,12 +1737,24 @@ export class RunLifecycle {
       );
     }
     const environment = placement.environment;
+    // T16.5 (LLD §19.6, §19.7): the pinned skills, read before the handoff render so a handoff places the block after
+    // its preamble. A wired store that cannot produce a pinned version fails the run here, before anything is leased
+    // (fail closed: it never runs with other text than it was admitted with).
+    let skills: readonly PromptSkill[] = [];
+    try {
+      if (this.opts.skillDelivery !== undefined) skills = this.opts.skillDelivery.load(runId);
+      else this.recordUndeliveredSkills(runId);
+    } catch {
+      return this.fail(runId, "TOOL_FAILURE", "the run's pinned skills could not be read from the skill store", {
+        reason: SKILL_DELIVERY_UNAVAILABLE,
+      });
+    }
     // T5.5 (LLD §15.5): a handoff run's prompt is rendered from its stored view before anything is probed, leased or
     // spawned; a view that cannot be read, verified or rendered fails the run here (fail closed).
     let handoffPrompt: { prompt: string; ref: { bundleArtifactId: string; bundleSha256: string } } | undefined;
     if (req.handoff !== undefined) {
       try {
-        handoffPrompt = await this.renderHandoff(runId, req.objective, req.handoff);
+        handoffPrompt = await this.renderHandoff(runId, req.objective, req.handoff, renderSkillBlock(skills));
       } catch {
         return this.fail(runId, "TOOL_FAILURE", "the handoff view could not be read or rendered", {
           reason: HANDOFF_BUNDLE_UNAVAILABLE,
@@ -1807,6 +1843,9 @@ export class RunLifecycle {
       ...(handoffPrompt ? { handoff: handoffPrompt.ref } : {}),
       // T7.12 (FR-RTE-08): the model routing pinned at admission and preflight re-checked; absent = adapter default.
       ...(req.model !== undefined ? { model: req.model } : {}),
+      // T16.5 (LLD §19.7): rendered by the adapter before `Constraints:` and the task text; never part of `objective`.
+      // A handoff run already carries the block in its rendered prompt.
+      ...(skills.length > 0 && !handoffPrompt ? { skills } : {}),
     };
     let inv =
       req.resume_native_session_id !== undefined
@@ -1851,6 +1890,7 @@ export class RunLifecycle {
     if (ws.mode === "worktree") {
       this.opts.workspace.extendLease(runId, 2 * inv.timeouts.wallClockMs + inv.timeouts.killGraceMs);
     }
+    if (skills.length > 0) this.recordSkillDelivery(runId, skillDeliveryOf(adapter, compileReq, profile), skills);
 
     // T9.4 (FR-GIT-02): the injected tool channel, opened just before spawn and closed as soon as the process exits.
     const nativeIds: string[] = req.resume_native_session_id !== undefined ? [req.resume_native_session_id] : [];
@@ -2699,6 +2739,7 @@ export class RunLifecycle {
     runId: string,
     instruction: string,
     h: StoredHandoff,
+    skillBlock: string,
   ): Promise<{ prompt: string; ref: { bundleArtifactId: string; bundleSha256: string } }> {
     const row = this.ledger.getArtifact(h.bundle_artifact_id);
     if (
@@ -2712,8 +2753,48 @@ export class RunLifecycle {
     }
     const bundle = parseHandoffBundle(await this.opts.artifacts.get(row.sha256));
     if (requestHash(bundle.as_of) !== h.as_of_sha256) throw new HandoffBundleError("the view's as_of does not match");
-    const { prompt } = renderHandoffPrompt({ bundle, instruction });
+    const { prompt } = renderHandoffPrompt({ bundle, instruction, ...(skillBlock !== "" ? { skillBlock } : {}) });
     return { prompt, ref: { bundleArtifactId: row.id, bundleSha256: row.sha256 } };
+  }
+
+  /**
+   * T16.5 (Delegated): without a wired store, a run whose `skill_resolved` event pinned entries runs without them, and
+   * one `skill_delivered` event says so (`skipped`, `store_unavailable`); its `run_skill` rows stay undelivered.
+   */
+  private recordUndeliveredSkills(runId: string): void {
+    const resolved = this.ledger.listRunEvents(runId).find((e) => e.type === SKILL_RESOLVED_EVENT);
+    if (resolved === undefined) return;
+    const entries = (JSON.parse(resolved.payload_json) as { entries?: { name: string; version: number }[] }).entries;
+    if (!Array.isArray(entries) || entries.length === 0) return;
+    this.ledger.appendRunEvent({
+      runId,
+      type: SKILL_DELIVERED_EVENT,
+      payload: {
+        entries: entries.map((e) => ({
+          name: e.name,
+          version: e.version,
+          delivery: "skipped",
+          fallback_reason: "store_unavailable",
+        })),
+      },
+    });
+  }
+
+  /**
+   * T16.5 (LLD §19.6 steps 1 and 4, §19.11): every entry is delivered as `prompt_prefix` (the only mode before T16.6),
+   * recorded on its `run_skill` row with one `skill_delivered` event (names and versions; never a body), in one
+   * transaction, before spawn.
+   */
+  private recordSkillDelivery(runId: string, delivery: "prompt_prefix", skills: readonly PromptSkill[]): void {
+    const port = this.opts.skillDelivery;
+    this.ledger.immediate(() => {
+      port?.record(runId, delivery, this.nowIso());
+      this.ledger.appendRunEvent({
+        runId,
+        type: SKILL_DELIVERED_EVENT,
+        payload: { entries: skills.map((s) => ({ name: s.name, version: s.version, delivery })) },
+      });
+    });
   }
 
   // ---- terminal helpers -----------------------------------------------------------------------------------------

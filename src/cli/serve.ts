@@ -101,7 +101,7 @@ import { GitPusher, pushContextResolver } from "../git/push.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createClassifyRouteFeaturesHook, createConfiguredInnerAgent, PROMPT_PROVIDER_NAMES } from "../inner/index.js";
 import { createLedger, openLedger, RagLedger } from "../ledger/index.js";
-import { type EnvironmentResolver, RunLifecycle } from "../lifecycle/index.js";
+import { type EnvironmentResolver, RunLifecycle, type SkillDeliveryPort } from "../lifecycle/index.js";
 import { acquireDataDirLock, type DataDirLock } from "../lock/index.js";
 import { createChannelSearchPort, searchProjectResolver } from "../mcp/channel-search.js";
 import {
@@ -126,6 +126,7 @@ import { queueSchedulerSettingsFromConfig, runProjectWorkQueueTick } from "../qu
 import { reconcile } from "../reconcile/index.js";
 import { pruneRagStores } from "../retrieval/store.js";
 import { fireDueSchedules } from "../schedule/index.js";
+import { canonicalBody, listRunSkills, readSkillContent } from "../skills/index.js";
 import { createTelemetry } from "../telemetry/index.js";
 import {
   collectOrphans,
@@ -847,6 +848,9 @@ async function runDaemon(
     workspace,
     artifacts,
     adapters: registry,
+    // T16.5 (LLD §19.6): wired whatever `skills.enabled` says, so a run admitted with skills before the operator turned
+    // them off still gets exactly the versions it was admitted with; a run without `run_skill` rows reads nothing.
+    skillDelivery: skillDeliveryPort(db, config.dataDir),
     // T8.2 (FR-TEL-02, LLD §7): wrapper-boundary span export; inert when no OTLP endpoint is configured.
     telemetry,
     allowedRoots: config.allowedRoots,
@@ -1301,4 +1305,24 @@ export function providerLimits(config: Pick<ResolvedConfig, "providers">): Reado
     if (adapterId !== undefined && entry.concurrency !== undefined) limits.set(adapterId, entry.concurrency);
   }
   return limits;
+}
+
+/**
+ * T16.5 (FR-SKL-05, LLD §19.6, §19.7): the lifecycle's skill port over the ledger handle and the content store. `load`
+ * reads each pinned version's stored file (hash-verified by `readSkillContent`) and returns its canonical body; `record`
+ * fills `run_skill.delivery` and `delivered_at`, which admission left for dispatch (`src/skills/admission.ts`).
+ */
+export function skillDeliveryPort(db: ReturnType<typeof openLedger>, dataDir: string): SkillDeliveryPort {
+  return {
+    load: (runId) =>
+      listRunSkills(db, runId).map((r) => ({
+        name: r.name,
+        version: r.version,
+        sha256: r.sha256,
+        body: canonicalBody(readSkillContent(dataDir, r.sha256)),
+      })),
+    record: (runId, delivery, at) => {
+      db.prepare("UPDATE run_skill SET delivery = ?, delivered_at = ? WHERE run_id = ?").run(delivery, at, runId);
+    },
+  };
 }

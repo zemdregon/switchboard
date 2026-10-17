@@ -25,6 +25,7 @@
  * conformance (T4.75), malicious leg (T4.76) and the Git declaration (T4.77) are later tasks; until then the auth state
  * is `UNKNOWN`.
  */
+
 import {
   DEFAULT_IDLE_MS,
   DEFAULT_KILL_GRACE_MS,
@@ -35,6 +36,7 @@ import { resolveOnPath } from "../codex/adapter.js";
 import { classifyCommon, PROVIDER_ERROR_CATEGORY_CODES } from "../failure.js";
 import { gitWriteRisks } from "../git-write.js";
 import { parseVersion } from "../manifest/index.js";
+import { renderObjective } from "../prompt.js";
 import type {
   AcpMessage,
   AuthResult,
@@ -351,7 +353,15 @@ export class MuseAdapter implements ProviderAdapter {
     return {
       transport: "subprocess-jsonl",
       // The prompt is the last argv word (inline prompt, [M-ext]); it is visible in the process list.
-      argv: [this.#exe, ...this.#launcher, EXEC_SUBCOMMAND, JSON_FLAG, ...policyFlags, ...resume, request.objective],
+      argv: [
+        this.#exe,
+        ...this.#launcher,
+        EXEC_SUBCOMMAND,
+        JSON_FLAG,
+        ...policyFlags,
+        ...resume,
+        renderObjective(request),
+      ],
       env: {},
       envAllowlist: [...MUSE_ENV_ALLOWLIST],
       cwd: request.workspace.cwd,

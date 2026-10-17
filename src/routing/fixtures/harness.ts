@@ -93,6 +93,8 @@ export const pinning = new Set<string>();
 export const refusesModel = new Set<string>();
 /** T7.12: every run compile (not the eligibility `route-check`), with the model it was given. */
 export const compiled: { provider: string; runId: string; model: string | undefined }[] = [];
+/** T16.5: the stdin prompt of each run compile, by run id (the last compile of a run wins). */
+export const compiledPrompts = new Map<string, string | undefined>();
 
 function scripted(id: string, script: string, spare = false): ProviderAdapter {
   const base = new FakeAdapter({ script, timeouts: PATIENT });
@@ -114,7 +116,10 @@ function scripted(id: string, script: string, spare = false): ProviderAdapter {
       }
       const inv = base.compile(req, p);
       if ("ineligible" in inv) return inv;
-      if (req.runId !== "route-check") compiled.push({ provider: id, runId: req.runId, model: req.model });
+      if (req.runId !== "route-check") {
+        compiled.push({ provider: id, runId: req.runId, model: req.model });
+        compiledPrompts.set(req.runId, inv.stdin?.kind === "text" ? inv.stdin.value : undefined);
+      }
       // Each provider's native session reports its own placeholder model (`<id>-model`), as a real CLI reports one; a
       // compiled model is reported as the session's model (T7.12).
       const model = req.model ?? `${id}-model`;
@@ -156,8 +161,13 @@ export interface Harness {
 export interface HarnessOptions {
   allowedRoots?: readonly string[];
   maxAttempts?: number;
-  /** Extra `RunLifecycle` options (for example `routing`); a function receives the harness ledger (T14.4 budgets). */
-  lifecycle?: Record<string, unknown> | ((deps: { ledger: Ledger }) => Record<string, unknown>);
+  /**
+   * Extra `RunLifecycle` options (for example `routing`); a function receives the harness ledger (T14.4 budgets), its
+   * database handle and data directory (T16.5: the skill delivery port).
+   */
+  lifecycle?:
+    | Record<string, unknown>
+    | ((deps: { ledger: Ledger; db: Database.Database; dataDir: string }) => Record<string, unknown>);
   /** Extra MCP server config (for example `routing`). */
   config?: Record<string, unknown>;
   /** Extra MCP server deps, given the harness ledger handle and data directory (T16.9: the skill store). */
@@ -173,6 +183,7 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
   pinning.clear();
   refusesModel.clear();
   compiled.length = 0;
+  compiledPrompts.clear();
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "sb-route-")));
   const repo = path.join(root, "repo");
   mkdirSync(repo);
@@ -218,7 +229,7 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
       }),
       ...(opts.models !== undefined ? { models: opts.models } : {}),
     },
-    ...(typeof opts.lifecycle === "function" ? opts.lifecycle({ ledger }) : (opts.lifecycle ?? {})),
+    ...(typeof opts.lifecycle === "function" ? opts.lifecycle({ ledger, db, dataDir }) : (opts.lifecycle ?? {})),
   });
   lifecycle.start();
   const mcpClients = new Map([

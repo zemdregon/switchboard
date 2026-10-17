@@ -6819,6 +6819,22 @@ Entries keep their resolved order. The block is not part of `objective`, is not 
 redacted by ADR-0042 (bodies were scanned at `add`) and does not count toward the objective's `maxLength`. A handoff
 prompt (§15) places the block after its fixed preamble in the same way.
 
+Implementation notes (T16.5, Delegated, not owner-approved):
+
+- `renderPrompt` renders the block for the adapter that renders constraints (Claude Code); `renderObjective` puts it
+  before the objective for the adapters that send the objective verbatim. The lifecycle reads the run's entries at
+  dispatch through a structurally typed `SkillDeliveryPort` (`skillDeliveryPort` in `src/cli/serve.ts`), records
+  `run_skill.delivery` and `delivered_at` and emits `skill_delivered` before spawn.
+- "Argv byte-identical" (§19.6) reads as: every argv word except the one that carries the prompt. Grok Build,
+  Antigravity, Kimi Code `-p`, Muse Code and OpenCode carry the prompt in one argv word, so that word gains the block;
+  the flags, the environment, its allowlist and the policy flags are byte-identical (`src/adapters/skill-prefix.test.ts`).
+- A run whose pinned skill cannot be read (missing or hash-mismatched store file) fails before spawn with
+  `TOOL_FAILURE` and `reason` `SKILL_DELIVERY_UNAVAILABLE` (fail closed). `serve` always wires the store; a composition
+  without it runs a run with pinned entries without the block and records each entry in `skill_delivered` as
+  `delivery: "skipped"`, `fallback_reason: "store_unavailable"` (never silently; its `run_skill` rows stay undelivered).
+- `skillDelivery(cell)` is declared in the adapter contract as an optional method returning `prompt_prefix`
+  (`skillDeliveryOf`, default for every adapter and cell); T16.6 widens it with `native`.
+
 ### 19.8 Exclusion and cleanup (FR-SKL-06)
 
 While a run has `run_skill` rows with `delivery = 'native'` and no `removal = 'verified'`:
