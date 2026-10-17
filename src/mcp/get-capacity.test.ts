@@ -12,7 +12,7 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeAdapter } from "../adapters/fake/adapter.js";
-import { AdapterRegistry, type ResolvedProfile } from "../adapters/index.js";
+import { AdapterRegistry, type ProviderId, type ResolvedProfile } from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
 import { CAPACITY_NOTE } from "../capacity/index.js";
 import { main } from "../cli/index.js";
@@ -116,6 +116,7 @@ function finished(state: "SUCCEEDED" | "FAILED", code: string | null = null, fin
 
 async function connect(
   capacity?: Pick<CapacitySettings, "windowSeconds" | "confidenceRuns" | "subscriptions" | "pacing">,
+  opts?: { candidateOrder?: readonly ProviderId[] },
 ): Promise<Client> {
   if (!db) openData();
   const reg = registry();
@@ -148,6 +149,7 @@ async function connect(
     ledger,
     artifacts,
     registry: reg,
+    ...(opts?.candidateOrder !== undefined ? { candidateOrder: opts.candidateOrder } : {}),
     config: {
       allowedRoots: [root],
       mcpClients: new Map([["c1", { id: "c1", maxTrustProfile: "edit-untrusted" as TrustProfile }]]),
@@ -281,6 +283,25 @@ describe("get_capacity on the MCP server (T6.3; FR-MCP-02, LLD §16.3)", () => {
     const extra = await capacityTool(client, { provider: "fake", window: 5 });
     expect(extra.body.error.code).toBe("INVALID_REQUEST");
     expect((await capacityTool(client, { provider: "fake" })).body.providers).toHaveLength(1);
+  });
+
+  it("provider filter accepts every registered provider in candidate order, including fake", async () => {
+    // When candidateOrder does not contain fake, every registered provider is still included in get_capacity
+    const client = await connect(undefined, { candidateOrder: [] });
+    const unfiltered = await capacityTool(client);
+    expect(unfiltered.isError).toBe(false);
+    expect(unfiltered.body.providers.map((p: Json) => p.provider)).toContain("fake");
+
+    const filtered = await capacityTool(client, { provider: "fake" });
+    expect(filtered.isError).toBe(false);
+    expect(filtered.body.providers).toHaveLength(1);
+    expect(filtered.body.providers[0].provider).toBe("fake");
+    expect(filtered.body.providers[0]).toEqual(unfiltered.body.providers.find((p: Json) => p.provider === "fake"));
+
+    const unknown = await capacityTool(client, { provider: "nope" });
+    expect(unknown.isError).toBe(true);
+    expect(unknown.body.error.code).toBe("INVALID_REQUEST");
+    expect(unknown.body.error.message).toMatch(/unknown provider/);
   });
 });
 
