@@ -990,8 +990,9 @@ been used anywhere in the suite.
   `serve`; the PR-draft, verification-summary, run-title and handoff-condensation modules have no caller outside
   `src/inner/`, and the `inner test` fixtures do not import them). `doctor`, `inner status` and `inner test` are as
   described, and `inner resume <task>` is built too (FR-INN-17; `src/cli/inner.test.ts`).
-- *OpenCode `cli` kind*: documentation spike [§4.6.6](#466-t110-documentation-spike-2026-10-16) (2026-10-16); still
-  `Ineligible` in code until operator T11.0 live checks; unchanged in `src/cli/inner.test.ts`.
+- *OpenCode `cli` kind*: documentation spike [§4.6.6](#466-t110-documentation-spike-2026-10-16) (2026-10-16) and the
+  live result [§4.6.7](#467-t110-live-result-2026-10-17) (2026-10-17: no tool-free one-shot on v2.0.23); `Ineligible`
+  in code; unchanged in `src/cli/inner.test.ts`.
 
 - **Technology (Proposed).** The `http` kind uses the Node built-in `fetch`/HTTP client (and `node:net`/`node:http`
   for a Unix socket); no new dependency and no vendor SDK, so the controller does not pick a provider or carry a provider's
@@ -2288,7 +2289,7 @@ Each matrix cell is one of: **Could compile** (a documented control exists; what
 | Sandbox controls | **None documented**: no sandbox page exists on the documentation site (HTTP 404 for `/docs/sandbox/`), [R2] names none, and the only sandbox mention found is a third-party plugin on the ecosystem page. Permission rules are tool-level checks, not OS confinement, so profiles needing confinement are `Ineligible: CAPABILITY_MISSING`; only shell-less profiles qualify |
 | Repository config | Merged, not replaced; later sources win only on conflicting keys: remote `.well-known`, global, `OPENCODE_CONFIG`, **project `opencode.json`**, `.opencode` directories, **`OPENCODE_CONFIG_CONTENT`**, managed files, MDM [D-cfg]. So inline config cannot remove what a repository adds (`mcp`, `plugin`, `instructions`, agents). `CLAUDE.md` is read as a fallback when there is no `AGENTS.md`, switchable off with `OPENCODE_DISABLE_CLAUDE_CODE` [D-rules, D-cli]; `--pure` "run without external plugins" [D-cli]. **Observed** (row 10): `AGENTS.md` loads; `CLAUDE.md` alone was not followed; repo `opencode.json` `mcp` merges in (`opencode mcp list`, row 10c). `--pure` does not exist (row 1). Ignore-all-project-config: Unverified: T4.51 |
 | Known risks | Multiple backing providers: record harness and backing provider/model (FR-ADP-10), not counting two paths to one quota pool as independent capacity. v1 and v2 documentation differ (`auth list --format json`, `run --standalone`, `auth switch` appear only in [D-v2]), so the version gate (ADR-0009) must pin the major version; the manifest range admits no version until T4.58. `autoupdate` is on by default [D-cfg]: `OPENCODE_DISABLE_AUTOUPDATE` exists [D-cli]. Snapshots "use an internal git repository" and are on by default [D-cfg]: whether it touches the worktree's Git directory: repo `.git` hash unchanged across a run (row 11); snapshot store not examined |
-| Inner-agent `cli` kind (M11, Proposed) | T11.0 documentation spike recorded in [§4.6.6](#466-t110-documentation-spike-2026-10-16) (2026-10-16): from docs only, a tool-free one-shot is **not** shown; operator items 4 and 12 remain **Unverified: operator (T11.0 live)**. Proposed argv from T4.50: `opencode run --format json --model <provider/model> --dir <empty directory>` with every permission `deny`, `--pure`, `OPENCODE_DISABLE_CLAUDE_CODE`, `OPENCODE_DISABLE_AUTOUPDATE`, no `--auto` [D-cli, D-perm] (v2 may lack `--pure`/`--dir`, see [§4.6.4](#464-note-2026-10-14-contradictions-found-by-the-t451-live-checks-delegated-cells-above-not-edited)). `cli` stays **`Ineligible`** ([§3.12](#312-inner-agent), FR-INN-04, Q-26) until an installed version passes the checklist |
+| Inner-agent `cli` kind (M11, Proposed) | T11.0 documentation spike recorded in [§4.6.6](#466-t110-documentation-spike-2026-10-16) (2026-10-16): from docs only, a tool-free one-shot is **not** shown. Live result [§4.6.7](#467-t110-live-result-2026-10-17) (2026-10-17, v2.0.23): `--pure` and `--dir` absent, and a deny-all `OPENCODE_PERMISSION` did not stop a `shell` tool call, so items 4 and 12 are answered "no". Proposed argv from T4.50: `opencode run --format json --model <provider/model> --dir <empty directory>` with every permission `deny`, `--pure`, `OPENCODE_DISABLE_CLAUDE_CODE`, `OPENCODE_DISABLE_AUTOUPDATE`, no `--auto` [D-cli, D-perm] (v2 may lack `--pure`/`--dir`, see [§4.6.4](#464-note-2026-10-14-contradictions-found-by-the-t451-live-checks-delegated-cells-above-not-edited)). `cli` stays **`Ineligible`** ([§3.12](#312-inner-agent), FR-INN-04, Q-26) until an installed version passes the checklist |
 | Git writes and injected tools (M4, M9) | Rules are `bash` patterns with wildcards, "last matching rule wins", for example `"git commit *": "deny"` and `"git push *": "deny"` [D-perm]. Pattern completeness is not shown (other `git` spellings, `git -C`, shell wrappers, writes through other tools): `gitWriteControl` `none-documented` until T4.51 shows denial holds, then `provider-deny-rules` (Proposed, fail closed). `commitChannel` `finalize-only`. A per-run MCP server is a config entry (`mcp`, `type` `local` with a `command` array, or `remote`) [D-mcp] that can be sent inline; no `--approve-mcps`-style flag is named, but whether injected MCP tools need an `allow` rule and whether that works headless: **not run** (row 9; repo MCP listing observed row 10c) (R-18, R-50). `--fork` and session export are not used. No sandbox, so only shell-less profiles qualify for push |
 
 **Transport decision (T4.50, Proposed).** `opencode run --format json` as an ephemeral subprocess, the same JSONL path
@@ -2494,6 +2495,24 @@ operator-only; scrub captures per that section):
 
 Item 12 uses the v1 flag spellings from T4.50; if `--pure` or `--dir` are absent on the installed CLI, record the exact
 argv that was used instead (for example `--standalone` and process cwd per §4.6.4) in the dated research note.
+
+#### 4.6.7 T11.0 live result (2026-10-17)
+
+*Delegated agent work, not owner-approved; observed on the operator's Ampere host through the operator's live check
+channel ([live-checks-2026-10-17-opencode.md](../research/live-checks-2026-10-17-opencode.md) §1).*
+
+| Item | Result on `opencode v2.0.23` |
+| --- | --- |
+| `--pure`, `--dir` (checklist item 12, v1 spellings) | **Absent** from `opencode run --help` |
+| Any flag that removes tools | **None** listed. `run` flags: `--standalone`, `--server`, `--continue`, `--session`, `--fork`, `--model`, `--agent`, `--format`, `--file`, `--title`, `--thinking`, `--auto` |
+| Argv used instead | `opencode run --format json -m <provider/model> -- <prompt>`, from an empty, non-Git cwd, with `XDG_CONFIG_HOME` an empty directory, `OPENCODE_PERMISSION='{"*":"deny"}'`, `OPENCODE_DISABLE_CLAUDE_CODE=1`, `OPENCODE_DISABLE_AUTOUPDATE=1` (real `HOME` for the native login) |
+| One-sentence answer | exit 0; one `text` record; no tool use |
+| Tool-requiring task | exit 0; **`tool_use` `shell`, state `completed`**: the deny-all permission set did not stop the tool (items 4 and 12) |
+| Run events name provider and model | No (`providerID`/`modelID` absent) |
+
+**Verdict: a tool-free one-shot is not available on v2.0.23.** The `cli` kind stays **`Ineligible`** ([§3.12](#312-inner-agent),
+FR-INN-04, Q-26) and `CLI_TOOL_FREE_VERIFICATION` stays `null`. A later OpenCode version needs this check run again
+before T11.13 can attach a backend.
 
 ### 4.7 Kimi Code (M4, blocked by B-1)
 
