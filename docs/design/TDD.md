@@ -1389,7 +1389,7 @@ Version ranges come from compliance manifests, not this table (FR-ADP-03, FR-POL
 | --- | --- |
 | Automation surface | `claude -p` ([R2]) |
 | Structured output | `--output-format json` or `stream-json`; partial deltas with `--verbose --include-partial-messages`; final result carries `session_id` |
-| Resume | `--resume <session>` and `--continue`; read `session_id` from structured output, never regex (FR-ADP-04) |
+| Resume | `--resume <session>` and `--continue`; read `session_id` from structured output, never regex (FR-ADP-04); the live T5.12 resume findings for 2.1.294 are in [§4.10](#410-native-resume-inventory-t50) |
 | Auth preflight | `claude auth status` returns structured JSON and exit codes; on failure return `AUTH_REQUIRED` naming the native login (FR-AUTH-02) |
 | Trust profile compilation (Proposed) | Untrusted profiles: `--safe-mode --restricted --strict-mcp-config` (disable `CLAUDE.md`, skills, plugins, hooks and MCP servers, ignore settings files and confine file tools to the working directory; FR-POL-04), fail-closed `dontAsk` with `--permission-prompts none`, explicit `--tools`/`--allowedTools` rules; never `--allowedTools "*"` (skipped by Claude). **Not `--bare`:** the installed help says it makes auth strictly API-key based, which [ADR-0003](../adr/0003-no-credential-handling.md) and the Claude manifest forbid ([ADR-0015](../adr/0015-claude-untrusted-isolation-flags.md)). Verified against `claude --help` 2.1.296 text only; tool names beyond `Read`, `Edit` and `Bash(...)` rule syntax are Assumptions |
 | Sandbox controls | None documented in [R2], and none in the installed help (T3.0, [§4.1.1](#411-claude-code-native-controls-per-profile-and-platform-t30)); `--safe-mode`/`--restricted` are not a sandbox and Bash/read/edit remain. Credential confinement unproven, so `inspect-untrusted` and `edit-untrusted` compile with no arbitrary shell (only `edit-untrusted`'s narrow allowlist), and `test-sandboxed` is ineligible for Claude until confinement is shown (FR-POL-06; M3 evaluation) |
@@ -2768,7 +2768,7 @@ checklist it automates:
 
 ### 4.10 Native-resume inventory (T5.0)
 
-*Documentation only, Delegated agent work (not owner-approved), 2026-10-14.* Nothing below was run: no provider CLI was
+*Documentation only, Delegated agent work (not owner-approved), 2026-10-14; the Claude Code cells were observed live on 2026-10-17 (T5.12, 2.1.294).* Apart from the cells that name a CLI version and a dated note under `docs/research/`, nothing below was run: no other provider CLI was
 invoked and no network was used. Each cell is either **sourced** (a tag in the right-hand column, a TDD §4 subsection, or
 a line of a research document, with the CLI version where a source records one) or reads exactly `Unverified: <task>`,
 naming the operator checklist item that will verify it. Task T5.12 is the Claude Code and Codex operator task
@@ -2812,7 +2812,7 @@ the resume statement only and T4.61 item 17 checks both.
 
 | Provider | Cells | Checklist item |
 | --- | --- | --- |
-| Claude Code, Codex | cwd, sandbox, permission | T5.12, checks 1 to 4 ([ROADMAP §6.9](../ROADMAP.md#69-m5-continuity-tasks)) |
+| Codex | cwd, sandbox, permission | T5.12, checks 1 to 4 ([ROADMAP §6.9](../ROADMAP.md#69-m5-continuity-tasks)); the Claude Code cells were recorded 2026-10-17 (T5.12 Partial) |
 | Grok Build | cwd, permission | [§4.3.2](#432-t421-operator-checklist-grok-build) step 14 |
 | Antigravity | sandbox, permission (and the cross-directory case of the cwd cell) | [§4.4.3](#443-t431-operator-checklist-antigravity) C18 (and C9) |
 | Cursor | cwd, sandbox, permission | [§4.5.3](#453-t441-operator-checklist) item 16 |
