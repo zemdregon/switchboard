@@ -131,6 +131,7 @@ describe("doctor", () => {
       "lock",
       "gc",
       "orphans",
+      "skills",
       "outer_sandbox",
     ]);
     for (const c of j.checks) expect(Object.keys(c).sort()).toEqual(["detail", "id", "label", "status"]);
@@ -255,6 +256,7 @@ describe("doctor", () => {
         "gc",
         "orphans",
         "disk",
+        "skills",
         "outer_sandbox",
       ]);
       const disk = j.checks.find((c: { id: string }) => c.id === "disk");

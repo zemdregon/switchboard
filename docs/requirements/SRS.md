@@ -434,9 +434,11 @@ repository. Everything below is **Proposed** and **Delegated** (mechanism in
 [ADR-0056](../adr/0056-switchboard-controlled-skills.md), contract in [LLD
 §19](../design/LLD.md#19-switchboard-controlled-skills-m16-proposed)), except the FR-SKL-01, FR-SKL-02 and FR-SKL-10
 store aspects that T16.1 built (validator, canonicaliser, content store, migration `0021`, state derivation;
-`src/skills/`) and the FR-SKL-03, FR-SKL-04 and FR-SKL-08 configuration aspects that T16.3 built (`skills.*`,
+`src/skills/`), the FR-SKL-03, FR-SKL-04 and FR-SKL-08 configuration aspects that T16.3 built (`skills.*`,
 `projects[].skills`, `mcp_clients[].skills` in the schema and loader; `src/config/`, `src/skills/limits.ts`,
-`src/skills/configured.ts`); the four limit defaults stay Assumptions and their ranges are Delegated (LLD §19.3).
+`src/skills/configured.ts`), and the FR-SKL-09 operator CLI that T16.2 built (`src/cli/skills.ts`, read helpers
+`src/skills/read.ts` and `src/skills/diff.ts`; the `doctor` skills line; skills in `runs show`); the four limit
+defaults stay Assumptions and their ranges are Delegated (LLD §19.3).
 
 | ID | Requirement | Priority | Source | Verify | Milestone |
 | --- | --- | --- | --- | --- | --- |
@@ -448,7 +450,7 @@ store aspects that T16.1 built (validator, canonicaliser, content store, migrati
 | FR-SKL-06 | Native skill files shall be excluded from injected commits, checkpoints, diff and patch artifacts and handoff diffs; publication shall be refused while one exists; and they shall be removed and the removal verified before verification commands run, at every terminal state, at startup reconciliation and by retention GC. A failed removal shall flag the run for attention. | Should | CAP-17, CAP-11, FR-GIT-02 | T | M16 |
 | FR-SKL-07 | Every run shall record, in the ledger, each resolved skill's name, version, hash, resolution source and delivery mode, and for native delivery the path and the removal outcome; `get_run` and `runs show` shall show them without the skill text. | Should | CAP-17, CAP-8 | T | M16 |
 | FR-SKL-08 | The MCP server shall offer `list_skills` and `get_skill` (read-only) to orchestrator-profile clients when skills are enabled, limited per client by an optional allowlist of skill names; no MCP tool shall create, edit or approve a skill. | Should | CAP-17, CAP-1 | T | M16 |
-| FR-SKL-09 | The operator CLI shall list, show, add, approve, revoke, retire and diff skills, writing only operator records and skill content; `doctor` shall report skill state and unresolvable configured names. | Should | CAP-17, CAP-9 | T | M16 |
+| FR-SKL-09 | The operator CLI shall list, show, add, approve, revoke, retire, unretire and diff skills, writing only operator records and skill content; `doctor` shall report skill state and unresolvable configured names. | Should | CAP-17, CAP-9 | T | M16 |
 | FR-SKL-10 | Every skill change shall be an append-only operator audit record, and every resolution, delivery, removal, tampering and failed removal a run event. No event, span, log, artifact or notification shall contain skill text. | Should | CAP-17, CAP-8, NFR-PRIV-01 | T | M16 |
 
 ## 4. Nonfunctional requirements

@@ -14,6 +14,7 @@ import { parseHandoffBundle } from "../continuity/index.js";
 import { createLedger, type GitCommitRow, LEDGER_FILE_NAME, openLedger, type RunEventRow } from "../ledger/index.js";
 import type { OperatorDecision } from "../lifecycle/approval.js";
 import { acquireDataDirLock, inspectDataDirLock, LockError } from "../lock/index.js";
+import { listRunSkills, type RunSkillView } from "../skills/index.js";
 import { type CliIo, JSON_SCHEMA_VERSION, UsageError } from "./io.js";
 import { listPendingCancels, requestCancel, requestDecision, UnknownRunError } from "./operator.js";
 
@@ -205,7 +206,9 @@ export function showRun(
   io: CliIo,
   argv: readonly string[],
   runId: string,
-): { run: RunDetail; events: RunEventView[]; approval?: ApprovalView; usage?: UsageView[] } | undefined {
+):
+  | { run: RunDetail; events: RunEventView[]; approval?: ApprovalView; usage?: UsageView[]; skills?: RunSkillView[] }
+  | undefined {
   const db = openReadOnly(dataDirFor(io, argv));
   if (!db) return undefined;
   try {
@@ -227,6 +230,8 @@ export function showRun(
     ).map((e) => ({ seq: e.seq, ts: e.ts, type: e.type, payload: JSON.parse(e.payload_json) as unknown }));
     const approval = row.trust_profile === "privileged" ? approvalView(db, runId) : undefined;
     const usage = usageViews(db, runId);
+    // T16.2 (LLD §19.10): the run's skills from `run_skill`; absent when it has none, so other runs show as before.
+    const skills = listRunSkills(db, runId);
     return {
       run: {
         ...row,
@@ -240,6 +245,7 @@ export function showRun(
       events,
       ...(approval ? { approval } : {}),
       ...(usage.length > 0 ? { usage } : {}),
+      ...(skills.length > 0 ? { skills } : {}),
     };
   } finally {
     db.close();
@@ -616,6 +622,7 @@ export function renderRun(d: {
   events: RunEventView[];
   approval?: ApprovalView;
   usage?: UsageView[];
+  skills?: RunSkillView[];
 }): string {
   const r = d.run;
   const lines = [
@@ -686,6 +693,14 @@ export function renderRun(d: {
     for (const u of d.usage) {
       lines.push(
         `  harness ${u.harness}  backing provider ${u.backing_provider ?? "-"}  model ${u.model ?? "-"}  ${u.observed_at}  ${JSON.stringify(u.metrics)}`,
+      );
+    }
+  }
+  if (d.skills && d.skills.length > 0) {
+    lines.push("", "Skills (FR-SKL-09):");
+    for (const k of d.skills) {
+      lines.push(
+        `  ${k.name}@${k.version}  ${k.sha256.slice(0, 12)}  ${k.delivery}${k.native_path ? ` ${k.native_path}` : ""}  removal ${k.removal ?? "-"}`,
       );
     }
   }
