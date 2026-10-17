@@ -6505,6 +6505,12 @@ or `FAILED_ADMISSION`).
 **Closed payload.** The event payload keeps the closed shape of ADR-0048:
 `{ project_id, event_kind: "queue_low", reason_code: "queue_low", run_id: null, link }`.
 
+**As built (T15.4, Delegated, not owner-approved).** The detector attaches to the ledger through `attachQueueLowWater`
+(`setQueueChangeListener` in `src/ledger/work-queue.ts`); emission is demonstrated in tests through the sink
+dispatcher with a capturing sink (`src/queue/low-water.test.ts`, `src/mcp/work-queue.test.ts`). Neither `serve` nor
+the MCP server attaches the tracker, so a production run currently emits no `queue_low` event (not in the T15.4
+Done-when).
+
 ## 19. Switchboard-controlled skills (M16, Proposed)
 
 *Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); partly built: the
