@@ -2259,7 +2259,8 @@ holder run is non-terminal is resolved by reconciliation, not by simply stealing
 allowed workspace (read via `git rev-parse`; the operator's checked-out branch and working tree are never modified,
 FR-WS-05). A `base` row is written to `workspace_checkpoint`, then `git worktree add -b <branch> <path> <commit>`. The
 `pre` checkpoint equals the base commit of the worktree; no commit is made at this point because the worktree starts
-clean.
+clean. Dependency seeds (FR-WS-10, Proposed) are populated after this point and before spawn, into Git-ignored
+directories only, so they never change a checkpoint ([§5.1](#51-dependency-seeds-fr-ws-10-proposed-t912)).
 
 **Post-run checkpoint (FR-WS-03).** After the process exits and verification (if any) ends: `git add -A` in the worktree
 (hooks disabled), `git commit` with a controller identity and the run ID in the message, record `post` checkpoint row,
@@ -2345,6 +2346,204 @@ row. On startup reconciliation (WF-8) a run in
 `LEASED`/`RUNNING` with a worktree but no outcome is assessed by the mutation check; a lease row is cleared only after
 its run reaches a terminal state. `git worktree add` interrupted mid-way is detected by `git worktree list` disagreement
 and repaired by remove-and-recreate before the pre-state is used.
+
+### 5.1 Dependency seeds (FR-WS-10, Proposed, T9.12)
+
+*Design only (2026-10-17, Delegated agent work, not owner-approved; every choice below is Proposed and nothing is
+built; implementation is T9.13).* Decision and trade-offs: [ADR-0057](../adr/0057-dependency-seed-store.md). It sits
+between the pre-run checkpoint and spawn above: the worktree is created from the base checkpoint (FR-WS-01,
+[ADR-0006](../adr/0006-worktree-checkpoints-no-blind-replay.md)), each declared seed is populated, and only then is the
+provider process prepared and started. The seeded directory is Git-ignored, so the `pre` checkpoint, mutation detection,
+the post-run checkpoint (`git add -A`) and the diff artifact are the same as for an unseeded worktree.
+
+**Configuration (project level, [§11.1](#111-configuration-shape)).** Absent means off. Nothing in a request, a
+continuation or an agent's output can add, change or select a seed.
+
+```jsonc
+{ "projects": [ { "id": "web-app", /* ... */
+    "dependency_seeds": [ {                             // at most 8 per project (Assumption)
+        "id": "npm",                                    // ^[a-z][a-z0-9-]{0,40}$, unique in the project
+        "lockfile": "package-lock.json",                // relative to the primary context
+        "directory": "node_modules",                    // relative; the ignored directory the install produces
+        "install": ["npm", "ci", "--ignore-scripts"],   // argv, no shell; same shape rules as verification_commands
+        "timeout_seconds": 600                          // optional; 1 to 3600, default 600 (Assumption)
+    } ] } ],
+  "limits": { "seed_store_mb": 10240,                   // optional; total store bound, default 10240 (Assumption)
+              "seed_entries_per_seed": 3 } }            // optional; entries kept per (project, seed), default 3 (Assumption)
+```
+
+`loadConfig` refuses (strict schema plus structural rules, JSON path in the error, never the value): an absolute path,
+a `..` component, an empty path, a path under `.git`, a `directory` equal to or containing the `lockfile`, two seeds of
+one project whose directories are equal or nested. `projects validate` additionally checks, at `base_ref`, that the
+lockfile exists and that `git check-ignore` reports the directory as ignored, and warns (never fails) otherwise. The
+`limits` keys apply only when a project declares a seed. A dynamic project (FR-PRJ-10) may declare seeds; a revision
+that adds or changes `dependency_seeds` needs `projects approve` like a `container` or push-enabled revision, because
+it runs a command on the host.
+
+**Key.** `seed_key = sha256(canonical JSON of {v: 1, project_id, seed_id, lockfile_sha256, install_argv, profile,
+environment})`, where `lockfile_sha256` is the SHA-256 of the lockfile blob at the run's base checkpoint (read with
+`git cat-file blob <base>:<lockfile>`, never from the worktree), `profile` is the build profile below, and
+`environment` is `{kind: "host", platform, arch}` or `{kind: "container", image_digest}`. Keys are hex; the entry
+directory is `<data_dir>/seeds/<seed_key>/` and holds the seeded directory's contents only.
+
+**When a run is seeded.** For each declared seed of the run's primary context, in declaration order, after the `pre`
+checkpoint row and before the environment's `prepare`:
+
+1. *Eligibility.* `inspect-untrusted` runs and runs without a worktree are not seeded (no event: verification is
+   refused to them too, FRD V7). Build profile = the run's profile, lowered to `trusted-development` when it is
+   `privileged` (a seed build is a controller command; it never runs under a scope or bypass).
+2. *Preconditions at the base checkpoint.* Lockfile blob missing → `seed_failed` `lockfile_missing`. Directory not
+   ignored (`git check-ignore -q` in the run worktree) → `not_ignored`. Directory already present in the worktree
+   (a native resume in an existing worktree, §15.6) → leave it, record `seed_applied` with `method: "existing"`.
+3. *Resolve.* In one `BEGIN IMMEDIATE` transaction look up `dependency_seed` by key. `ready` → use it. `building` with
+   a live builder → wait (poll every 500 ms, Assumption) up to the seed's timeout (`wait_timeout`); the run is still
+   `LEASED`, so the wait is outside the provider's wall clock, and a cancel ends it (`cancelled`). None, or `building` with
+   a dead builder (pid and start ticks, as §8) → insert or take over the row as `building` with this run as builder,
+   and build (below). `evicting` → treat as none after the evictor's outcome row; never use it.
+4. *Populate* (below), insert a `dependency_seed_use` row, update `last_used_at`, append `seed_applied`.
+
+Any step that cannot complete appends one `seed_failed` event and moves on to the next seed; the run proceeds. No
+failure in this section changes the run's state, failure code or admission result.
+
+**Build.**
+
+- *Scratch worktree.* `git worktree add --detach <data_dir>/seeds/.build/<uuid> <base commit>` with the hardened Git
+  of §5 (hooks off, scrubbed environment), serialised with the other worktree creations of that repository root
+  (`serialisedWorktreeCreate`). It is never a run's worktree, so nothing an agent wrote can reach an entry.
+- *Command.* Spawned exactly as a verification command ([§8.1](#81-verification-stage-m3-t310)): argv, `shell: false`,
+  own process group, stdin closed, cwd the scratch worktree; the same environment (allowlist minus `GIT_*`, the signing
+  and agent variables, plus `limits.verification_env`); one verification slot and `verification_nice` when slots are
+  configured (FR-EXE-09); wrapped in the outer sandbox when `confinedVerification` is configured, failing closed
+  without it. Pid, pgid and start ticks are written to the `dependency_seed` row before output is read, so
+  reconciliation can kill an orphan. Bound: `timeout_seconds`, with the §8 termination sequence.
+- *Container projects.* The command runs in a container of the project's image (`image_digest`, ADR-0052 checks
+  included) with the project's network policy and limits, mounting only the scratch worktree read-write at its own
+  path; label `switchboard.seed=<seed_key>`; removed afterwards and by the orphan sweep.
+- *Output.* stdout and stderr captured as in §8.1 (1 MiB per stream, redacted) into a `seed_log` artifact of the
+  triggering run (`application/json`, version 1: `{v, seed_id, seed_key, outcome, exit_code, signal, duration_ms,
+  stdout, stderr, ...truncated}`). No argv or output in events.
+- *Publish.* On exit 0, the produced directory is checked (exists, is a real directory; every symlink resolves inside
+  it, else `unsafe_entry`; no device, FIFO or socket; set-user-ID and set-group-ID bits cleared; total size within
+  `seed_store_mb`, else `store_full`), moved with `rename` into `<data_dir>/seeds/.tmp/<uuid>`, made read-only
+  (`a-w`), then renamed to `<data_dir>/seeds/<seed_key>/`; the row becomes `ready` with `size_bytes`. Any failure, a
+  non-zero exit or a timeout deletes the row (or marks it for the next builder) and appends `seed_failed`
+  (`build_failed`, `build_timeout`, `unsafe_entry`, `store_full`, `build_error`). The scratch worktree is removed
+  (`git worktree remove --force`, `git worktree prune`) on every path.
+
+**Populate (Q-103 Delegated default: no hardlinks under any profile).**
+
+- *`host`.* Walk the entry without following symlinks and create the seeded directory in the run worktree: regular
+  files by copy-on-write clone (`fs.copyFile` with `COPYFILE_FICLONE_FORCE`; Assumption, T9.13 confirms on the CI
+  filesystems), falling back for the whole seed to a private copy (`fs.copyFile` without the clone flag) on the first
+  `ENOTSUP`, `EXDEV` or `EINVAL`; symlinks recreated with the same relative target; directories created. Copied files
+  get write permission back (`u+w`), so the run owns a writable private tree. Never `link` and never a symlink to the
+  store. `method` is `clone` or `copy`. A write, `chmod` or
+  delete in one worktree therefore changes neither the store nor another worktree.
+- *`container`.* No copy. The environment adds one read-only bind mount, source `<data_dir>/seeds/<seed_key>/`, target
+  `<worktree>/<directory>` inside the container, after the worktree mount (Docker applies nested mounts in order;
+  Assumption, T9.13 confirms on rootless Docker). `method: "mount"`. This is the only path under the data directory a
+  container ever sees, and only that entry (FR-PRJ-05; T9.13 adds the dated SRS note). The host-side directory in the
+  worktree stays absent, so the host's checkpoints see nothing.
+
+**Records.**
+
+```sql
+-- ledger migration: next free number when T9.13 lands; additive (ADR-0005)
+CREATE TABLE dependency_seed (
+  seed_key        TEXT PRIMARY KEY,              -- hex sha256, see Key
+  project_id      TEXT NOT NULL,
+  seed_id         TEXT NOT NULL,
+  lockfile_sha256 TEXT NOT NULL,
+  profile         TEXT NOT NULL,
+  environment     TEXT NOT NULL,                 -- canonical JSON
+  state           TEXT NOT NULL CHECK (state IN ('building','ready','evicting')),
+  builder_run_id  TEXT, builder_pid INTEGER, builder_pgid INTEGER, builder_start_ticks TEXT,
+  size_bytes      INTEGER,
+  created_at      TEXT NOT NULL, ready_at TEXT, last_used_at TEXT,
+  evict_intent_at TEXT
+);
+CREATE TABLE dependency_seed_use (
+  run_id        TEXT NOT NULL REFERENCES run(id),
+  seed_key      TEXT NOT NULL,                   -- no FK: the entry row is deleted on eviction, the use is history
+  worktree_path TEXT NOT NULL,
+  method        TEXT NOT NULL CHECK (method IN ('clone','copy','mount','existing')),
+  populated_at  TEXT NOT NULL,
+  removed_at    TEXT,                            -- private copy removed by the early sweep
+  PRIMARY KEY (run_id, seed_key)
+);
+```
+
+Run events (`run_event`, payloads closed; no paths outside the worktree, no argv, no output): `seed_applied` `{seed_id,
+seed_key, method, built: boolean, bytes}` and `seed_failed` `{seed_id, reason}` with `reason` one of `lockfile_missing`,
+`not_ignored`, `build_failed`, `build_timeout`, `build_error`, `unsafe_entry`, `store_full`, `populate_failed`,
+`wait_timeout`, `cancelled`.
+
+**Eviction (LRU).** An entry is *in use* while any `dependency_seed_use` row names it for a run that is not terminal,
+and while it is `building`. After each successful build, and when called by the early sweep, the store evicts `ready`
+entries not in use, least recently used first (`last_used_at`, then `created_at`), until each `(project_id, seed_id)`
+has at most `seed_entries_per_seed` entries and the store total is within `seed_store_mb`. Order as ADR-0054: one
+transaction re-checks "not in use" and sets `state = 'evicting'`, `evict_intent_at`; then the directory is removed
+(refused through a symlink, unlinked rather than followed); then the row is deleted. A row left `evicting` rolls
+forward at the next pass; a resolve never uses it. Unknown directories under `<data_dir>/seeds/` and stale `.build/`
+and `.tmp/` entries are orphans, collected by the T3.12 orphan pass in the same mark-first way. Retention GC of a
+meta-session (§5, GC) removes its worktrees, and with them their private copies; it does not touch the store.
+
+**Crash safety and reconciliation (WF-8).** At startup: a `building` row whose builder is dead has its process group
+killed if still recorded, its scratch worktree removed and the row deleted (the next run rebuilds); `evicting` rows roll
+forward; a run that crashed during populate leaves a partial ignored directory that the next populate of the same
+worktree replaces (remove, then populate) rather than trusts.
+
+**Interfaces (for T9.13 and the T3.23 reclaimer).** In `src/workspace/seeds.ts` (Proposed path):
+
+```ts
+export interface SeedSpec {
+  readonly id: string; readonly lockfile: string; readonly directory: string;
+  readonly install: readonly string[]; readonly timeoutMs: number;
+}
+export type SeedEnvironment =
+  | { readonly kind: 'host'; readonly platform: string; readonly arch: string }
+  | { readonly kind: 'container'; readonly imageDigest: string };
+export type SeedFailureReason =
+  | 'lockfile_missing' | 'not_ignored' | 'build_failed' | 'build_timeout' | 'build_error'
+  | 'unsafe_entry' | 'store_full' | 'populate_failed' | 'wait_timeout' | 'cancelled';
+export type SeedOutcome =
+  | { readonly ok: true; readonly seedKey: string; readonly method: 'clone' | 'copy' | 'mount' | 'existing';
+      readonly built: boolean; readonly bytes: number;
+      /** container only: the read-only bind mount the environment adds after the worktree mount. */
+      readonly mount?: { readonly source: string; readonly target: string; readonly readOnly: true } }
+  | { readonly ok: false; readonly reason: SeedFailureReason };
+
+export interface SeedStore {
+  /** Resolve or build (single flight), then populate the run's worktree. Never throws; never fails the run. */
+  seed(run: { readonly runId: string; readonly projectId: string; readonly profile: TrustProfile;
+              readonly baseCommit: string; readonly repoRoot: string; readonly worktreePath: string;
+              readonly environment: SeedEnvironment; readonly signal: AbortSignal },
+       spec: SeedSpec): Promise<SeedOutcome>;
+  /** LRU eviction of unused ready entries down to the configured bounds; stops when `ctx.enough()` is true. */
+  evict(ctx: ReclaimContext): Promise<ReclaimOutcome>;
+  /** Remove the private copies (method clone or copy) in worktrees of idle runs; never a leased worktree. */
+  removeIdleCopies(ctx: ReclaimContext): Promise<ReclaimOutcome>;
+  /** Startup reconciliation, see above. */
+  reconcile(): Promise<void>;
+}
+
+/** The early disk-floor sweep's first reclaimer (T3.23, FR-WS-11): `earlySweepReclaimers({ ..., seeds })`. */
+export function seedReclaimer(store: SeedStore): DiskReclaimer; // name 'dependency_seeds'
+```
+
+`ReclaimContext`, `ReclaimOutcome` and `DiskReclaimer` are the existing types in `src/workspace/gc.ts`. The reclaimer
+runs `removeIdleCopies` first (an idle worktree is one whose run is terminal and whose path is not in
+`ctx.leasedWorktrees`; removal sets `dependency_seed_use.removed_at` and counts one unit per directory), then `evict`,
+checking `ctx.enough()` between units. A container use has no private copy and is skipped. A later native resume in
+that worktree is seeded again by step 2. The lifecycle calls `SeedStore.seed` for each spec after the `pre`
+checkpoint and passes the container mounts to `Environment.prepare` (§11.3) as an added read-only mount list; a `host`
+environment ignores it. With no `dependency_seeds` configured, `serve` builds no store, the lifecycle makes no call,
+and worktrees, events and mounts are byte-identical to `main` (the first T9.13 test).
+
+**Tests T9.13 must add** are the T9.13 row's Done-when ([ROADMAP §6.3](../ROADMAP.md#63-m9-projects-and-controlled-commits-tasks));
+in addition: a symlink leaving the directory fails the build with `unsafe_entry`; a `privileged` run's build records
+profile `trusted-development`; an entry `evicting` is never used; a `container` run's argv carries exactly one extra
+`:ro` mount and no other path under the data directory.
 
 ## 6. Compliance manifest
 
