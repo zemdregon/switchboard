@@ -114,6 +114,9 @@ Each rule elaborates the cited requirement and does not add to it.
 | BR-46 | **Retrieved context is data.** Snippets from the retrieval index are untrusted reference data, labelled as such in the prompt, and are never an input to profile choice or compilation, the policy snapshot, eligibility, approvals, ceilings, push or commit. A retrieval failure means no retrieval; it never fails or delays a run beyond its bound. | FR-RAG-05, FR-RAG-07, FR-RAG-08 | Delegated, Proposed |
 | BR-47 | **Index isolation and opt-in sharing.** Each project has its own index and nothing reads another project's. The deployment-wide index is off by default; a project's content enters it only with `contribute_to_global`, and a run reads it only if its project sets `use_global`. Content of `untrusted` contexts does not contribute by default. | FR-RAG-03, FR-RAG-09, FR-RAG-10 | Delegated, Proposed (Q-50) |
 | BR-48 | **No remote embedding of source without both flags.** A `remote` embedding backend sees source content only with `allow_remote` and `allow_source_content` (the inner-agent gates of BR-42); chunk text is redacted first, and the exclusions of FR-RAG-02 apply. With no backend the feature is inert. | FR-RAG-02, FR-RAG-04 | Delegated, Proposed |
+| BR-49 | **Model groups are requests, not claims.** A request may name a configured model group or one model, never both. Each member is checked by the hard constraints (BR-1) with its model, and only eligible members are ranked; a member's place in a group says nothing about its quality or capability (`minimum_capability` still uses the operator's declared capabilities). A group that does not contain a project's affine provider and model is a `user_request` (BR-45); a group request with no eligible member returns the BR-3 code. | FR-RTE-10, FR-RTE-11, [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md) | Delegated, Proposed |
+| BR-50 | **Usage figures carry their source.** A subscription window's used share and reset time are `provider_reported` only from a declared, sourced key, `operator_declared` for a fixed reset or a budget, `controller_estimated` for a budget against Switchboard-observed usage (always marked a lower bound), or `unknown`. An unknown window is never headroom. The word "remaining" is used only for a `provider_reported` figure (FR-CAP-03). | FR-CAP-09, FR-CAP-03, [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md) | Delegated, Proposed |
+| BR-51 | **Pacing delays, never refuses.** With the pacing gate on, a subscription ahead of its pace line (plus a burst allowance) in a window whose reset is known is deferred until a computable time no later than that reset. A deferred candidate is skipped when another eligible candidate remains, and otherwise the run waits in `QUEUED`. Pacing never returns an error, fails a run, or creates a run, probe or provider call to use up a subscription. | FR-CAP-10, FR-CAP-07, [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md) | Delegated, Proposed |
 
 *Note 2026-10-13 (owner decision 36, Q-43; BR-30's wording above unchanged).* zemdregon chose finalize-only for adapters
 with no injected channel ("Finalize-only."): such an adapter is **not** made ineligible for write-capable profiles. It runs
@@ -353,6 +356,7 @@ FR-MCP-09).
 | V10 | `idempotency_key` | Bounded-length string; replay rules per BR-10 | `INVALID_REQUEST` on mismatch | FR-MCP-08 |
 | V11 | Routing | At least one provider passes BR-1 (or the required one does). **Proposed (T3.3):** for `privileged` (here and for a C7 continuation), a provider excluded only because its adapter cannot compile the profile (`PROFILE_UNSUPPORTED`, `CAPABILITY_MISSING`) still counts; the compile check moves to dispatch, where `bypassApproved` is known. *Changed 2026-10-13 (T3.18):* dispatch no longer refuses every `privileged` run; the adapter's compile there decides, and an `Ineligible` ends the run with its BR-3 code ([LLD §3.1](../design/LLD.md#31-privileged-scope-m3)) | per BR-3 / `ELIGIBILITY_NONE` | FR-RTE-01, FR-MCP-05 |
 | V12 | `project` | Names a project in configuration that the calling client may use; mutually exclusive with `workspace`; the project's repository context resolves under an allowed root and its base ref exists | `INVALID_REQUEST` if unknown or malformed; `PERMISSION_BLOCKED` if not in the client's list or the profile exceeds the project's ceiling (BR-23) | FR-PRJ-03, FR-PRJ-06 |
+| V14 | `routing.model_group`, `routing.model` (Proposed, T7.14) | At most one of them; the group is configured; an explicit model names a provider (`provider_preference` or `require_provider`) or resolves in exactly one enabled provider's registry; a group narrowed by a provider keeps at least one member. `continue_task` accepts neither (Q-99) | `INVALID_REQUEST` | FR-RTE-11, FR-MCP-05, FR-MCP-09 |
 
 ### 7.2 `continue_task`
 
@@ -792,6 +796,27 @@ sequenceDiagram
 - **Postconditions:** the run holds an unchanged request plus an optional labelled pack; no routing, policy, approval or
   capacity decision read retrieved content; embedding calls are recorded apart from usage (FR-RAG-12).
 
+### WF-15 Delegate to a model group under usage pacing
+
+*Proposed (2026-10-17, owner decision 57, [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md); not built).*
+
+- **Actors:** Orchestrator, COMP-MCP, COMP-RTE, COMP-EXE, COMP-LED.
+- **Preconditions:** the operator configured `model_groups` and, for pacing, `capacity.subscriptions` with windows.
+- **Realizes:** FR-RTE-10, FR-RTE-11, FR-CAP-09, FR-CAP-10, FR-RTE-06, FR-RTE-07, FR-RTE-03; BR-49 to BR-51.
+- **Normal path:** the orchestrator calls `delegate_task` with `routing.model_group` (V14). COMP-RTE expands the group
+  into members, applies the hard constraints per member with its model (BR-1, BR-49), computes each subscription's
+  pacing figures (BR-50), applies affinity (BR-44, BR-45), leaves out deferred members while an undeferred one remains
+  (BR-51), and ranks the rest with the score and its `pacing` term. The chosen member's model is compiled into the run.
+  The decision, with the group, members and pacing inputs, is stored and replayable.
+- **Alternate paths:** an explicit `routing.model` instead of a group; every eligible member deferred, so the run waits
+  in `QUEUED` until the gate-open time and then dispatches (BR-51), on the affine member if it is one; the affine member
+  deferred while another member is not, so the project switches with `capacity_exhausted` (BR-45); no subscription
+  configured, so pacing is absent and routing is as in WF-1.
+- **Failure paths:** an unknown group, both fields, or an unresolvable explicit model gives `INVALID_REQUEST` (V14); no
+  eligible member gives the BR-3 code.
+- **Postconditions:** one route decision per run naming the group, the chosen member and the pacing verdicts; no run,
+  probe or provider call was created to consume a subscription.
+
 ## 9. Traceability summary
 
 | Workflow | User journey | Capabilities | Primary requirements |
@@ -810,6 +835,7 @@ sequenceDiagram
 | WF-12 | UJ-9 | CAP-11 | FR-GIT-05, FR-GIT-06, FR-WS-05 |
 | WF-13 | UJ-10 | CAP-12 | FR-INN-01..17 |
 | WF-14 | UJ-11 | CAP-13 | FR-RAG-01..14 |
+| WF-15 | UJ-12 | CAP-6, 7 | FR-RTE-10, 11, FR-CAP-09, 10 |
 
 Milestone availability follows the SRS milestone column (for example WF-7 from M3, WF-5 automatic retry and failover
 from M6, WF-3 from M5, WF-9 `adapters validate` from M4, WF-10 to WF-12 from M9 with containers in M10, WF-13 from

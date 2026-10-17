@@ -86,6 +86,8 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | `providers.claude-code.git_channel` | Boolean, default `false`; `claude-code` only. Operator opt-in for the Claude Code tool channel through a controller-written `--mcp-config` file; implemented (T9.4b, [ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md)) and **UNSUPPORTED** until the ADR-0029 live checks pass ([LLD §11.1](LLD.md#111-configuration-shape), §12.2); only approved bypass runs get the channel, without `--safe-mode` ([ADR-0033](../adr/0033-claude-channel-bypass-only-without-safe-mode.md)) | FR-GIT-02, FR-POL-08 |
 | `routing.weights.{success, latency, capacity, security, handoff, cost}`, `routing.affinity.{enabled, low_water_mark, min_confidence, idle_ttl}` | Static score weights (each 0 to 100, default 1) and the affinity keys (thresholds default `null`, `idle_ttl` only `null`); defaults are Assumptions (Q-80, Q-81). Shape in [LLD §17.1](LLD.md#171-configuration) (T7.0; the earlier placeholder `routing.minimum_capability_defaults` is not specified, T7.8 owns `minimum_capability`) | FR-RTE-02, 06, 07 |
 | `capacity.window_seconds`, `capacity.confidence_runs`, `capacity.queue_horizon_seconds`, `capacity.breaker.{failure_threshold, open_seconds}`, `capacity.retry.{max_attempts, base_ms, cap_ms}`, `providers.<id>.concurrency` | Estimator window and confidence scale, the BR-9 wait for a known reset (default 0: never wait), breaker thresholds, retry backoff, per-provider slot limit; defaults are Assumptions (Q-69 to Q-72). Shape and ranges in [LLD §16.1](LLD.md#161-configuration) (T6.1; the earlier placeholder name was `capacity.queue_horizon`) | FR-CAP-02, 04 to 06, NFR-PERF-03 |
+| `model_groups.<name>.members[{provider, model}]`, `routing.weights.pacing` | Operator-named groups of models across providers and the seventh score weight (0 to 100, default 1); **Proposed, not built** (T7.13, owner decision 57). Names and members are configuration only. Shape in [LLD §17.7](LLD.md#177-model-groups-fr-rte-10-fr-rte-11) | FR-RTE-10, 11 |
+| `capacity.subscriptions.<name>.{providers, windows[{id, length_seconds, reset, budget}]}`, `capacity.pacing.{mode, target_fraction, burst_fraction, min_confidence}` | Subscription windows (reset `provider_reported`, `fixed` or `rolling`; optional operator-declared budget) and the pacing gate (default `gate`, 0.95, 0.10, 0.5; Assumptions, Q-98); **Proposed, not built** (T6.13, T6.8). No window, reset or budget is ever supplied by Switchboard. Shape in [LLD §16.9](LLD.md#169-usage-windows-and-pacing-fr-cap-09-fr-cap-10) | FR-CAP-09, 10 |
 | `telemetry.otlp_endpoint` | Optional export target | FR-TEL-02, NFR-PRIV-01 |
 | `log.level` | Logging threshold | §3.3 |
 | `inner_agent.enabled`, `inner_agent.backend{kind, base_url or provider, model, timeout_ms, max_concurrency, allow_remote, shares_subscription_with}` | Optional inner agent: one backend, no default backend or model, no credential field (Proposed shape; [LLD §13.1](LLD.md#131-configuration-shape)) | FR-INN-01, 03, 04, 15, 16 |
@@ -1345,6 +1347,32 @@ not on `origin/main`).
   unlisted `Origin`, a session reused by another subject, a privileged scope claim. No live identity provider is needed
   for the suite; token fixtures are generated locally and no test calls a real authorization server.
 - **Secrets.** Tests scan HTTP responses and logs for token and code patterns, as NFR-SEC-01 does for provider output.
+
+### 3.15 Model groups and usage pacing (Proposed)
+
+*Proposed (2026-10-17, owner decision 57, [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md); not built).*
+Contracts: [LLD §16.9](LLD.md#169-usage-windows-and-pacing-fr-cap-09-fr-cap-10) and
+[LLD §17.7](LLD.md#177-model-groups-fr-rte-10-fr-rte-11). Tasks: ROADMAP T6.8, T6.11, T6.13 to T6.16 and T7.13 to
+T7.17.
+
+- **Where it lives.** Pacing is a pure module beside the estimator in `src/capacity/` (Proposed), computed on read from
+  configuration, `usage_observation`, `run` and an injected clock, with no table. Group expansion and the `pacing` term
+  live in `src/routing/`. The hold reuses the breaker's single wake timer in the lifecycle. Adapters change only in
+  T6.15, to map a structured limit signal or declare a sourced usage key.
+- **Fake adapters, injected clock.** Every test drives scripted fake providers placed in operator-declared subscriptions
+  with `fixed` windows and budgets, and steps an injected clock across a window. No test uses a real model name; group
+  members are placeholders. Asserted properties: (1) with no subscription and no group, decisions, scores and outcomes
+  are byte-identical to `main`; (2) a version 3 decision replays exactly from its row, with no ledger or clock read; (3)
+  over generated sequences, a project's provider or model changes only with a reason from the closed list, and a
+  pacing score alone never moves it (the T7.6 property extended); (4) a held run never dispatches before its
+  gate-open time and always by the window's reset; (5) no figure is labelled `provider_reported` unless its key is
+  declared (property test, as for `REMAINING_KEYS`); (6) no test path creates a run, probe or provider call that was
+  not submitted.
+- **Limit capture (T6.11).** Operator-only and never in CI. Captures come from the budgeted live-run channel and from
+  existing operator logs, and enter the repository only as key names, event types and exit codes in a dated research
+  note. T6.15 turns them into synthetic fixtures, labelled as such, one per provider.
+- **Known risks.** Estimates see only Switchboard's own usage (R-67). A member whose adapter accepts no model is never
+  chosen (R-68).
 
 ## 4. Provider adapter strategy
 
@@ -2808,8 +2836,8 @@ approach only.
 | M3 Isolation | Remaining profiles and per-adapter capability matrix; malicious fixture suite; approval flow (`approval` table, `approve` CLI); verification commands run via argv (no shell) in the worktree; retention/GC job; evaluate outer sandbox (§3.4) and decide by ADR. |
 | M4 Adapters | macOS CI leg (NFR-PORT-02); one adapter module + manifest + fixtures + registry entry each (NFR-MAINT-01); ACP stdio client in the supervisor; model registry combining operator config and listing commands where available. Task breakdown: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (Proposed). |
 | M5 Continuity | Native resume per adapter via `resumeArgs`; handoff bundle builder from ledger rows and Git evidence only (FR-SES-04), regenerable from events and decisions (FR-SES-05). |
-| M6 Capacity | Usage observation writers; estimator (rolling windows over `usage_observation` and `run`); per-provider breakers persisted in `provider_health`; retry scheduler using [LLD §9](LLD.md#9-retryback-off-algorithm); queue with `WAITING_CAPACITY` timers; `get_capacity`. Cache read and creation token counts and per-project kept/switched counts (FR-CAP-08) where adapters report them. |
-| M7 Routing | Feature extraction and heuristic classifier; static weighted scoring; persist `route_decision` rows; `explain_route` reads them. Scores deterministic for a given stored input (FR-RTE-03). Provider and model affinity: `project_affinity` table, the selection step before scoring, the `affinity_switch_reason` field, `affinity reset`, the cache-friendly prompt assembly order, and the replay property test ([§3.13.3](#3133-testing-affinity-and-retrieval), [LLD §3.2](LLD.md#32-provider-and-model-affinity-m7)). |
+| M6 Capacity | Usage observation writers; estimator (rolling windows over `usage_observation` and `run`); per-provider breakers persisted in `provider_health`; retry scheduler using [LLD §9](LLD.md#9-retryback-off-algorithm); queue with `WAITING_CAPACITY` timers; `get_capacity`. Cache read and creation token counts and per-project kept/switched counts (FR-CAP-08) where adapters report them. Owner decision 57 (Proposed): subscription windows and pacing computed on read like the estimate, the pacing gate as a `QUEUED` hold on the breaker's wake timer, limit capture for every provider ([§3.15](#315-model-groups-and-usage-pacing-proposed)). |
+| M7 Routing | Feature extraction and heuristic classifier; static weighted scoring; persist `route_decision` rows; `explain_route` reads them. Scores deterministic for a given stored input (FR-RTE-03). Provider and model affinity: `project_affinity` table, the selection step before scoring, the `affinity_switch_reason` field, `affinity reset`, the cache-friendly prompt assembly order, and the replay property test ([§3.13.3](#3133-testing-affinity-and-retrieval), [LLD §3.2](LLD.md#32-provider-and-model-affinity-m7)). Owner decision 57 (Proposed): model groups expanded into member candidates, a seventh `pacing` term, version 3 decisions ([§3.15](#315-model-groups-and-usage-pacing-proposed)). |
 | M8 Hardening | OTel exporter fed by wrapper-boundary span builders in the run lifecycle, not by replaying `run_event` rows (as built, [LLD §7](LLD.md#7-telemetry-spans)); version canaries (`adapters validate` ships in M4; the canary store and operator command in T8.5). |
 | M9 Projects and controlled commits | Project and context schema in the config loader; `COMP-PRJ` resolution and ceilings; `project_id` columns and the `git_commit` table; per-adapter Git-write denial and channel-support declarations; the shim subcommand and per-run socket; `COMP-GIT` (commit, sanitiser, publish ref, ref snapshots, push with policy); `projects` CLI; fake-adapter fixtures for every attempt in §3.6. Starts with a spike that settles §3.10's open mechanisms (per-run Git config, plumbing commands, socket access under sandboxes). |
 | M10 Container environments | After M9 (Q-6 settled by delegation, Proposed): runtime port, mounts, limits, labels and orphan sweep, container leg of the malicious-fixture suite, answer to the provider-login question ([§3.11](#311-container-environments)). |
