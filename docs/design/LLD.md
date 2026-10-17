@@ -5624,6 +5624,10 @@ per provider, headed by the `note`. **Wording rule (FR-CAP-03):** on every surfa
 quota" or a percentage of an estimate. `doctor` prints one `capacity` line per provider: breaker state, `throttle_risk`
 and `confidence`, labelled "estimate".
 
+T6.14 adds an optional top-level `pacing` array, one entry per subscription (§16.9). It is omitted when no subscription
+is configured, so an unconfigured projection stays byte-identical. `doctor` prints one pacing line per subscription.
+The gate verdict is shown; the hold is T6.8 and is not applied here.
+
 *As built (T6.3, 2026-10-14, Delegated):* `get_capacity` is the eighth tool, after `list_projects`; its input reuses
 the provider-id pattern of `delegate_task` and the handler refuses an id that is not registered. The listed providers are
 the server's routing candidates. `switchboard capacity` and `doctor` list the adapters `doctor` probes. `capacity
@@ -5765,8 +5769,9 @@ every project. `doctor` prints one summary line, and `switchboard capacity` one 
 
 ### 16.9 Usage windows and pacing (FR-CAP-09, FR-CAP-10)
 
-**Proposed** (2026-10-17, owner decision 57, Delegated mechanism; T6.13 built 2026-10-17, rest not built).
-Design for T6.13 (built; see "As built (T6.13)" below), T6.14 and T6.8 under
+**Proposed** (2026-10-17, owner decision 57, Delegated mechanism; T6.13 and T6.14 built 2026-10-17, the gate
+T6.8 not built).
+Design for T6.13 (built; see "As built (T6.13)" below), T6.14 (built; see "As built (T6.14)" below) and T6.8 under
 [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md). Every default is an **Assumption** (Q-98). No migration:
 pacing is computed on read from configuration, `usage_observation`, `run`, `run_event` and the clock, like the estimate
 (§16.2). Nothing here names a provider's window, budget or reset: each comes from the provider (a declared key) or from
@@ -5866,8 +5871,9 @@ The FR-CAP-03 wording rule applies: "remaining" only next to `provider_reported`
 percentage of a plan, and the text view prints "used (estimate, Switchboard-observed only)" for `controller_estimated`.
 `doctor` prints one pacing line per subscription: `pace`, `deferred_until` and the source.
 
-*As built (T6.13, 2026-10-17, Delegated):* the configuration keys and the per-window figures; nothing consumes them yet
-(the `pacing` block is T6.14, the gate T6.8, the score term T7.15). `capacity.subscriptions` and `capacity.pacing` are
+*As built (T6.13, 2026-10-17, Delegated):* the configuration keys and the per-window figures. The projection block that
+reads them is T6.14 (below); the gate that holds runs is T6.8 and the score term is T7.15. `capacity.subscriptions`
+and `capacity.pacing` are
 strict in `src/config/schema.ts`; `src/config/capacity.ts` refuses a provider id that is not configured, a provider in
 two subscriptions, a window id repeated in a subscription, a `fixed` reset without an ISO instant with an offset as
 `anchor`, and an `anchor` on any other reset. Subscriptions resolve in name order with the adapter id of each provider,
@@ -5881,6 +5887,25 @@ configured. Points this section left open, each an Assumption: an unknown figure
 `reported_cost_usd` sums the first of `total_cost_usd` (Claude Code) and `cost_usd` (OpenCode) in each row; figures are
 rounded to six decimals. `USAGE_KEYS` entries name `origin` (`usage_observation` or `rate_limit`), `key`, `carries`
 and `source`.
+
+*As built (T6.14, 2026-10-17, Delegated):* the optional top-level `pacing` array on the one projection behind
+`get_capacity`, `switchboard capacity` (text and `--json`) and `doctor`. It is omitted — not sent as `[]` — when
+`usageWindows` returns nothing, so an unconfigured projection stays byte-identical. Each entry has `subscription`,
+`providers` (config ids), `mode`, `deferred_until`, `verdict` (`deferred`, `clear` or `inactive`) and `windows`. Each
+window is the T6.13 figures, including `window_start`, plus `defers`. `used_fraction` stays the T6.13 object. There is
+no `openAt`: the hold that acts on `deferred_until` is T6.8 and is not applied. A window defers only in mode `gate`,
+with a known reset, a non-null used value and elapsed fraction, confidence at or above `min_confidence`, and used at or
+above `min(T, T × elapsed + B)`, using those published figures. Its gate-open time is the earlier of `reset_at` and
+`window_start + length_seconds × (used − B) / T`, rounded to the millisecond. `deferred_until` is the latest of those
+times, else null. Mode `score` or `off` is `inactive` and never defers; a rolling window, an unknown source and an
+estimate below `min_confidence` never defer. `doctor` prints one line per subscription from the binding window (the
+smallest non-null allowance, else the first): pace, `deferred_until` and the source, with
+"estimate, Switchboard-observed only" when that source is `controller_estimated`. The text view prints the same
+phrase on every `controller_estimated` pacing line, and does not print "remaining" there or a plan percentage. The
+`get_capacity` output schema publishes the
+block as an optional property; other tool schemas are unchanged. `src/mcp/server.ts` passes `subscriptions` and `pacing`
+through to the projection so the tool and the CLI read one object. Q-98 defaults stay the Delegated ones already in
+the configuration (`gate`, T 0.95, B 0.10, `min_confidence` 0.5).
 
 ## 17. Routing (M7)
 

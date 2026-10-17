@@ -47,7 +47,7 @@ import {
   planRetentionGc,
   statfsDiskProbe,
 } from "../workspace/index.js";
-import { projectCapacity } from "./capacity.js";
+import { pacingDoctorLine, projectCapacity } from "./capacity.js";
 import { type InnerDoctorSection, innerDoctorSection, renderInnerDoctor } from "./inner.js";
 import { type CliIo, JSON_SCHEMA_VERSION, PROBE_ENV_ALLOWLIST } from "./io.js";
 import { type RagDoctorSection, ragDoctorSection, renderRagDoctor } from "./rag-index.js";
@@ -779,6 +779,10 @@ export function renderDoctor(r: DoctorReport): string {
         `       ${c.provider}: breaker ${c.breaker.state}, throttle risk ${c.throttle_risk}, ` +
           `estimate confidence ${c.confidence.toFixed(2)}`,
       );
+    }
+    // T6.14 (LLD §16.9): one line per subscription from the same projection. Absent when nothing is configured.
+    if (r.capacity.pacing !== undefined) {
+      for (const sub of r.capacity.pacing) lines.push(pacingDoctorLine(sub));
     }
     // T6.7 (FR-CAP-08): per-project kept versus switched counts, summed; details in `switchboard capacity`.
     const kept = r.capacity.affinity.projects.reduce((n, pr) => n + pr.kept, 0);
