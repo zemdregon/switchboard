@@ -50,11 +50,21 @@
  * T16.9 (FR-SKL-08, LLD §19.9): `list_skills` and `get_skill` (`SKILL_TOOL_NAMES`) follow the search tool, only when
  * `skills.enabled` is true; read-only, closed inputs. Delegated: `name` carries the LLD §19.1 pattern, `role` the
  * §19.4 pattern and `applies_to_providers` is `null` for every provider (a stored list is never empty).
+ *
+ * T7.14 (FR-RTE-11, LLD §3.0, §17.7): `delegate_task` and `enqueue_work` routing block gains optional `model_group`
+ * and `model`; `continue_task` takes neither (Q-99); closed schemas.
  */
 
 import { FAILURE_CODES } from "../adapters/failure.js";
-import { PROJECT_ID_PATTERN, projectSchema, SKILL_NAME_PATTERN, SKILL_ROLE_PATTERN } from "../config/schema.js";
+import {
+  MODEL_GROUP_NAME_PATTERN,
+  PROJECT_ID_PATTERN,
+  projectSchema,
+  SKILL_NAME_PATTERN,
+  SKILL_ROLE_PATTERN,
+} from "../config/schema.js";
 import { NEEDS_ATTENTION_PRIORITY } from "../control/needs-attention.js";
+import { MODEL_ID_PATTERN } from "../models/registry.js";
 import { PRIVILEGED_SCOPE_SCHEMA } from "../policy/scope.js";
 
 /** Bumped on any incompatible change to a published tool schema (Proposed). */
@@ -164,6 +174,23 @@ const ROUTING = {
     provider_preference: PROVIDER,
     require_provider: { type: "boolean", default: false },
     minimum_capability: { type: "string", enum: ["low", "medium", "high"] },
+  },
+} as const;
+const MODEL_GROUP = { type: "string", pattern: MODEL_GROUP_NAME_PATTERN } as const;
+const MODEL = { type: "string", pattern: MODEL_ID_PATTERN } as const;
+/**
+ * T7.14 (FR-RTE-11, LLD §3.0, §17.7, ADR-0055): `delegate_task` and `enqueue_work` routing block.
+ * Closed; gains optional `model_group` and `model`. Mutual exclusion is enforced by the handlers (FRD V14).
+ */
+const DELEGATE_ROUTING = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    provider_preference: PROVIDER,
+    require_provider: { type: "boolean", default: false },
+    minimum_capability: { type: "string", enum: ["low", "medium", "high"] },
+    model_group: MODEL_GROUP,
+    model: MODEL,
   },
 } as const;
 const NULLABLE_STRING = { type: ["string", "null"] } as const;
@@ -447,7 +474,7 @@ const INPUTS = {
         items: { type: "array", minItems: 1, maxItems: 64, items: { type: "string", maxLength: 4096 } },
         default: [],
       },
-      routing: ROUTING,
+      routing: DELEGATE_ROUTING,
       priority: { type: "string", enum: ["interactive", "normal", "batch"], default: "normal" },
       wait_seconds: WAIT_SECONDS,
       idempotency_key: { type: "string", minLength: 8, maxLength: 128 },

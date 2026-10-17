@@ -911,7 +911,7 @@ returns immediately unless `wait_seconds` is given ([ADR-0002](../adr/0002-mcp-u
       "provider_preference": { "type": "string" },
       "require_provider": { "type": "boolean", "default": false },
       "minimum_capability": { "enum": ["low","medium","high"] },
-      // Proposed (T7.14, §17.7, ADR-0055; not built): delegate_task and enqueue_work only, mutually exclusive
+      // Built (T7.14, §17.7, ADR-0055): delegate_task and enqueue_work only, mutually exclusive
       "model_group": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,31}$" },
       "model": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$" } } },
   "status": { "enum": ["AWAITING_APPROVAL","QUEUED","WAITING_CAPACITY","PREFLIGHT","LEASED","RUNNING",
@@ -6142,12 +6142,14 @@ helper, the quota failover's forced `capacity_exhausted`, and `recordAffinity` a
 
 **Proposed** (2026-10-17, owner decision 57, Delegated mechanism) under
 [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md). Defaults are **Assumptions** (Q-98, Q-99).
-*As built (T7.13, Done 2026-10-17, `src/config/model-groups.test.ts`):* the **Configuration** subsection below
-(`model_groups` schema, startup refusals, routing-time resolution, the seventh weight `routing.weights.pacing`) and
-the `doctor` listing of each group with each member's resolution (resolved id, alias, or the stage-1 code it would
-get; `src/cli/doctor.ts`, informational, present only when groups are configured). The **Request**, **Candidates**,
-**Score** (`pacing` term), **Affinity**, **Decision record, version 3** and **Run fields** subsections below remain
-Proposed (T7.14, T7.15; not built). Design for T7.13 to T7.15.
+*As built (T7.13 and T7.14, Done 2026-10-17, `src/config/model-groups.test.ts`,
+`src/mcp/routing-request-fields.test.ts`):* the **Configuration** subsection below (`model_groups` schema, startup
+refusals, routing-time resolution, the seventh weight `routing.weights.pacing`), the `doctor` listing of each group
+with each member's resolution (resolved id, alias, or the stage-1 code it would get; `src/cli/doctor.ts`, informational,
+present only when groups are configured), and the **Request** subsection below (`delegate_task` and `enqueue_work`
+closed schemas, refusals, mutual exclusion, and request carry to admission). The **Candidates**, **Score** (`pacing`
+term), **Affinity**, **Decision record, version 3** and **Run fields** subsections below remain Proposed (T7.15; not
+built). Design for T7.13 to T7.15.
 
 **Configuration** (strict keys, NFR-SEC-06). Placeholders only: neither this document nor code names a model.
 
@@ -6171,8 +6173,8 @@ changes with each probe (§2.1).
 2. `model` without `provider_preference` or `require_provider`: it must resolve in exactly one enabled provider's
    registry (an alias or a configured or listed id; §2.1). None, several, or an unrestricted registry (which would
    accept anything) give `INVALID_REQUEST` with "name a provider for this model".
-3. `model_group` with `provider_preference` or `require_provider`: the members are narrowed to that provider. If none
-   remains, the result is `INVALID_REQUEST`.
+3. `model_group` with `provider_preference`: the members are narrowed to that provider. If none
+   remains, the result is `INVALID_REQUEST`. `require_provider` alone names no provider, so it narrows nothing.
 4. `continue_task` takes neither field. Continuations stay governed by FR-SES-03 and BR-18 (Q-99).
 
 **Candidates.** Without either field, candidates are providers, as in §17.3. With a group, a candidate is a member,
