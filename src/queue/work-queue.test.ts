@@ -277,4 +277,52 @@ describe("project work queue (T15.1)", () => {
     expect(f.ledger.getWorkItem(item.id)?.state).toBe("READY");
     expect(f.db.prepare("SELECT COUNT(*) AS n FROM run").get()).toEqual({ n: 0 });
   });
+
+  it("starts a dependent READY when its predecessor is already DONE", async () => {
+    f = await startQueueFixture();
+    const a = f.ledger.enqueueWorkItem({
+      projectId: "app",
+      creatorClientId: "orch",
+      request: { objective: "a" },
+      sourceKind: "mcp",
+    });
+    f.ledger.claimReadyWorkItem("app");
+    f.ledger.completeWorkAdmission(a.id, { kind: "admitted", runId: "run_01JH0000000000000000000001" });
+    expect(f.ledger.markWorkItemDone(a.id)?.state).toBe("DONE");
+    const b = f.ledger.enqueueWorkItem({
+      projectId: "app",
+      creatorClientId: "orch",
+      request: { objective: "b" },
+      sourceKind: "mcp",
+      predecessorIds: [a.id],
+    });
+    expect(b.state).toBe("READY");
+    expect(f.ledger.listDistinctProjectIdsWithReadyWork()).toEqual(["app"]);
+  });
+
+  it("keeps a dependent PENDING while a predecessor is unfinished", async () => {
+    f = await startQueueFixture();
+    const a = f.ledger.enqueueWorkItem({
+      projectId: "app",
+      creatorClientId: "orch",
+      request: { objective: "a" },
+      sourceKind: "mcp",
+    });
+    const b = f.ledger.enqueueWorkItem({
+      projectId: "app",
+      creatorClientId: "orch",
+      request: { objective: "b" },
+      sourceKind: "mcp",
+      predecessorIds: [a.id],
+    });
+    expect(b.state).toBe("PENDING");
+    const c = f.ledger.enqueueWorkItem({
+      projectId: "app",
+      creatorClientId: "orch",
+      request: { objective: "c" },
+      sourceKind: "mcp",
+      predecessorIds: [b.id],
+    });
+    expect(c.state).toBe("PENDING");
+  });
 });
