@@ -409,6 +409,8 @@ function dedupe<T>(xs: readonly T[]): T[] {
 export interface PacingDeferredCandidate extends PacingDeferral {
   provider: string;
   verdict: typeof PACING_DEFERRED;
+  /** T7.15: the member key (`<provider>/<model>`) when candidates are group members; absent otherwise. */
+  candidate?: string;
 }
 
 export interface PacingAdmission {
@@ -430,30 +432,54 @@ export interface PacingAdmission {
  *   first remain and the §17.3 rule breaks the tie; the run is admitted with `holdUntil`.
  *
  * Never a refusal: the pool is never empty when `admissible` is not.
+ *
+ * T7.15: with `providerOf` the candidates are group members (`<provider>/<model>`); a member takes its provider's
+ * deferral, and `pool` lists member keys.
  */
 export function pacingAdmission(
   input: EligibilityInput,
   admissible: readonly string[],
   affinityProvider: string | null,
+  providerOf?: Readonly<Record<string, string>>,
 ): PacingAdmission | undefined {
-  const of = new Map<string, PacingDeferral>();
-  for (const f of input.facts) if (f.pacingDeferred !== undefined) of.set(f.provider, f.pacingDeferred);
+  const byProvider = new Map<string, PacingDeferral>();
+  for (const f of input.facts) if (f.pacingDeferred !== undefined) byProvider.set(f.provider, f.pacingDeferred);
+  const prov = (c: string) => providerOf?.[c] ?? c;
+  const of = (c: string) => byProvider.get(prov(c));
   const deferred: PacingDeferredCandidate[] = [];
-  for (const provider of admissible) {
-    const d = of.get(provider);
-    if (d !== undefined) deferred.push({ provider, verdict: PACING_DEFERRED, ...d });
+  const deferredIds: string[] = [];
+  for (const c of admissible) {
+    const d = of(c);
+    if (d === undefined) continue;
+    deferredIds.push(c);
+    deferred.push({
+      provider: prov(c),
+      verdict: PACING_DEFERRED,
+      ...d,
+      ...(providerOf !== undefined ? { candidate: c } : {}),
+    });
   }
   if (deferred.length === 0) return undefined;
-  const until = (p: string) => of.get(p)?.until ?? null;
+  const until = (c: string) => of(c)?.until ?? null;
   const required = input.requiredProvider ?? null;
-  if (required !== null) return { pool: [...admissible], deferred, holdUntil: until(required) };
-  const undeferred = admissible.filter((p) => !of.has(p));
+  if (required !== null) return { pool: [...admissible], deferred, holdUntil: byProvider.get(required)?.until ?? null };
+  const undeferred = admissible.filter((c) => of(c) === undefined);
   if (undeferred.length > 0) return { pool: undeferred, deferred, holdUntil: null };
-  if (affinityProvider !== null && of.has(affinityProvider)) {
+  if (affinityProvider !== null && of(affinityProvider) !== undefined) {
     return { pool: [...admissible], deferred, holdUntil: until(affinityProvider) };
   }
   const first = deferred.map((d) => d.until).reduce((min, u) => (Date.parse(u) < Date.parse(min) ? u : min));
-  return { pool: deferred.filter((d) => d.until === first).map((d) => d.provider), deferred, holdUntil: first };
+  return { pool: deferredIds.filter((c) => until(c) === first), deferred, holdUntil: first };
+}
+
+/** T7.15: the admissible candidates the pacing gate defers (member keys with `providerOf`), in admissible order. */
+export function pacingDeferredCandidates(
+  input: EligibilityInput,
+  admissible: readonly string[],
+  providerOf?: Readonly<Record<string, string>>,
+): string[] {
+  const deferred = new Set(input.facts.filter((f) => f.pacingDeferred !== undefined).map((f) => f.provider as string));
+  return admissible.filter((c) => deferred.has(providerOf?.[c] ?? c));
 }
 
 /**

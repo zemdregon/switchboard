@@ -8,6 +8,11 @@
  * reason from the closed list; a better score, lower cost or lower load never moves it; LLD §3.2's invariants hold;
  * every decision replays exactly.
  *
+ * Part 1b (T7.15, LLD §17.7, §16.9): the same simulation with model groups and explicit models (candidates are members
+ * `<provider>/<model>`), random member refusals, pacing-gate deferrals and `pacing` terms in every mode. A project's
+ * provider or model changes only with a listed reason; a better score, pacing term included, never moves it; every
+ * version 3 decision replays exactly.
+ *
  * Part 2, persisted: a seeded scripted session through the MCP server on fake adapters, then a replay of the stored
  * route decisions in order, with the same properties, and with several eligible providers and equal capacity no project
  * is spread across providers.
@@ -15,9 +20,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { AffinitySwitchReason } from "../ledger/index.js";
 import type { AffinityFacts, AffinityRecord } from "./affinity.js";
-import { buildRouteDecision, replayRouteDecision } from "./decision.js";
+import { buildRouteDecision, type RoutePacingInputs, replayRouteDecision } from "./decision.js";
 import type { EligibilityDecision, EligibilityInput } from "./eligibility.js";
 import { down, type Harness, type Json, startHarness } from "./fixtures/harness.js";
+import { groupEligibility, type MemberPass } from "./groups.js";
 import { SCORE_TERMS, type ScoreInputs, type Weights } from "./score.js";
 
 const REASONS: readonly AffinitySwitchReason[] = [
@@ -191,6 +197,206 @@ describe("affinity property over generated runs (T7.6, part 1)", () => {
     // The generator exercised what it claims to.
     expect(decisions).toBeGreaterThan(2000);
     expect(switches).toBeGreaterThan(50);
+    expect(heldAgainstBetterScore).toBeGreaterThan(100);
+  });
+});
+
+const MODELS = ["a", "b"] as const;
+const UNTILS = ["2026-10-17T01:00:00.000Z", "2026-10-17T02:00:00.000Z", "2026-10-17T03:00:00.000Z"];
+
+/** One member's stage-1 pass, as `checkEligibility` returns it with the provider required and the model requested. */
+function memberPass(provider: string, model: string, order: number, ok: boolean, until: string | null): MemberPass {
+  const reason = { code: "CAPABILITY_MISSING" as const, detail: "simulated", evidence: {} };
+  const p = provider as EligibilityInput["candidates"][number];
+  return {
+    member: { provider, model, order },
+    input: {
+      candidates: [p],
+      requiredProvider: p,
+      trustProfile: "edit-untrusted",
+      clientMaxProfile: "edit-untrusted",
+      requirements: { network: "off", writable: true, model },
+      platform: "linux",
+      facts: [
+        {
+          provider: p,
+          registered: true,
+          enabled: true,
+          ...(ok ? { model } : {}),
+          ...(until !== null
+            ? { pacingDeferred: { subscription: "s", window: "w", until, source: "controller_estimated" as const } }
+            : {}),
+        },
+      ],
+    },
+    decision: ok
+      ? { eligible: [p], excluded: [], outcome: { kind: "eligible", providers: [p] } }
+      : {
+          eligible: [],
+          excluded: [{ provider: p, primary: reason, reasons: [reason], failureCode: "ELIGIBILITY_NONE" }],
+          outcome: { kind: "required_provider_ineligible", provider: p, failureCode: "ELIGIBILITY_NONE", message: "x" },
+        },
+  };
+}
+
+describe("affinity property with model groups and pacing (T7.6 extended by T7.15, part 1b)", () => {
+  it("changes a project's provider or model only with a listed reason, never for score, cost, load or pacing", () => {
+    const r = rng(20261017);
+    let decisions = 0;
+    let switches = 0;
+    let pacingGate = 0;
+    let heldAgainstBetterScore = 0;
+    for (let project = 0; project < 120; project++) {
+      let row: SimRow | undefined;
+      let latest: AffinityFacts["latestOnAffine"] = null;
+      for (let step = 0; step < 25; step++) {
+        // Members: a random group over every provider/model pair, or one explicit model.
+        const all = PROVIDERS.flatMap((p) => MODELS.map((m) => ({ provider: p, model: m })));
+        const explicit = r() < 0.25;
+        let members = explicit ? [pick(r, all)] : all.filter(() => r() < 0.5).sort(() => r() - 0.5);
+        if (members.length === 0) members = [pick(r, all)];
+        const memberProviders = [...new Set(members.map((m) => m.provider))];
+        const required = r() < 0.1 ? pick(r, memberProviders) : null;
+        const preference = required ?? (r() < 0.3 ? pick(r, memberProviders) : null);
+        if (preference !== null) members = members.filter((m) => m.provider === preference); // LLD §17.7 Request 3
+        const deferredUntil = new Map(PROVIDERS.map((p) => [p, r() < 0.25 ? pick(r, UNTILS) : null]));
+        const ge = groupEligibility(
+          members.map((m, i) => memberPass(m.provider, m.model, i, r() < 0.8, deferredUntil.get(m.provider) ?? null)),
+          required,
+          false,
+        );
+        if (ge.admissible.length === 0) continue; // refused before any decision (BR-2, BR-3)
+        const inputs: Record<string, ScoreInputs> = Object.fromEntries(
+          PROVIDERS.map((p) => [
+            p,
+            {
+              healthy: Math.floor(r() * 30),
+              counted: Math.floor(r() * 5),
+              median_ms: r() < 0.2 ? null : 1000 + Math.floor(r() * 300_000),
+              capacity_score: r() < 0.3 ? null : r(),
+              capacity_confidence: r(),
+              session_bound: true,
+            },
+          ]),
+        );
+        const weights = {
+          ...(Object.fromEntries(SCORE_TERMS.map((t) => [t, Math.floor(r() * 101)])) as Weights),
+          pacing: Math.floor(r() * 101),
+        };
+        const mode = pick(r, ["gate", "score", "off"] as const);
+        const sub = () => {
+          const allowance = r() < 0.2 ? null : r() * 3;
+          return {
+            mode,
+            T: 0.95,
+            B: 0.1,
+            binding_window: "w",
+            used: allowance === null ? null : r(),
+            used_source: allowance === null ? "unknown" : "controller_estimated",
+            confidence: allowance === null ? 0 : 0.8,
+            elapsed: allowance === null ? null : r(),
+            allowance,
+            defers: false,
+            until: null,
+          };
+        };
+        const pacing: RoutePacingInputs | undefined =
+          r() < 0.2
+            ? undefined
+            : {
+                mode,
+                subscriptions: { s1: sub(), s2: sub() },
+                candidateSubscription: Object.fromEntries(
+                  memberProviders.map((p) => [p, p === "p1" || p === "p2" ? "s1" : p === "p3" ? "s2" : null]),
+                ),
+              };
+        const thresholds =
+          r() < 0.5 ? { lowWaterMark: null, minConfidence: null } : { lowWaterMark: 0.2, minConfidence: 0.5 };
+        if (row !== undefined && r() < 0.05) row = { ...row, reset_requested_at: "now" };
+        const affinity: AffinityFacts = {
+          enabled: true,
+          applies: true,
+          projectKey: `proj-${project}`,
+          row,
+          requiredProvider: required,
+          admissible: ge.admissible,
+          excluded: ge.decision.excluded.map((e) => ({ provider: e.provider, codes: e.reasons.map((x) => x.code) })),
+          latestOnAffine: latest,
+          estimate:
+            row !== undefined && inputs[row.provider] !== undefined
+              ? {
+                  capacityScore: (inputs[row.provider] as ScoreInputs).capacity_score,
+                  confidence: (inputs[row.provider] as ScoreInputs).capacity_confidence,
+                }
+              : null,
+          thresholds,
+        };
+        const result = buildRouteDecision({
+          input: ge.input,
+          decision: ge.decision,
+          admissible: ge.admissible,
+          preference,
+          features: null,
+          scoreInputs: inputs,
+          weights,
+          affinity,
+          group: {
+            name: explicit ? null : "g",
+            requestedModel: explicit ? (members[0]?.model ?? null) : null,
+            members: ge.members,
+          },
+          ...(pacing !== undefined ? { pacing } : {}),
+        });
+        decisions++;
+        const rec = result.affinity as AffinityRecord;
+        expect(JSON.parse(result.record.reasons_json).affinity).toEqual(rec);
+        expect(replayRouteDecision({ ...result.record, weights_json: result.record.weights_json ?? null })).toEqual({
+          schemaVersion: 3,
+          ok: true,
+          differences: [],
+        });
+        const chosen = result.member;
+        expect(chosen).not.toBeNull();
+        if (rec.held) {
+          expect(rec.affinity_switch_reason).toBeNull();
+          expect(rec.scored).toBe(false);
+        }
+        if (rec.affinity_switch_reason !== null) expect(REASONS).toContain(rec.affinity_switch_reason);
+        if (rec.detail !== undefined) {
+          expect(rec.detail).toBe("pacing_gate");
+          expect(rec.affinity_switch_reason).toBe("capacity_exhausted");
+          pacingGate++;
+        }
+        // A provider or model different from the row's implies a listed reason (LLD §17.6 invariant, §17.7).
+        if (row !== undefined && (result.provider !== row.provider || chosen?.model !== row.model)) {
+          expect(rec.affinity_switch_reason, `step ${step}`).not.toBeNull();
+          switches++;
+        }
+        // Score (pacing term included), cost and load are never reasons: with no reason the affine member wins.
+        if (row !== undefined && rec.affinity_switch_reason === null) {
+          expect(result.provider).toBe(row.provider);
+          expect(chosen?.model).toBe(row.model);
+          const scored = JSON.parse(result.record.candidates_json) as { member: string; score: number | null }[];
+          const mine = scored.find((c) => c.member === chosen?.key)?.score ?? 0;
+          if (scored.some((c) => (c.score ?? -1) > mine)) heldAgainstBetterScore++;
+        }
+        const outcome = pick(r, ["ok", "ok", "ok", "quota", "retry_exhausted", "other_failure"] as const);
+        if (outcome === "ok") {
+          if (rec.applies) {
+            row = { provider: result.provider as string, model: chosen?.model ?? null, reset_requested_at: null };
+          }
+          latest = null;
+        } else if (result.provider === row?.provider) {
+          latest = {
+            failureCode: outcome === "quota" ? "QUOTA_EXHAUSTED" : "PROVIDER_OVERLOADED",
+            retryExhausted: outcome === "retry_exhausted",
+          };
+        }
+      }
+    }
+    expect(decisions).toBeGreaterThan(2000);
+    expect(switches).toBeGreaterThan(50);
+    expect(pacingGate).toBeGreaterThan(10);
     expect(heldAgainstBetterScore).toBeGreaterThan(100);
   });
 });

@@ -191,17 +191,21 @@ import { deleteRagStore } from "../retrieval/store.js";
 import {
   buildRouteDecision,
   collectAffinityFacts,
+  collectPacingInputs,
   collectScoreInputs,
   compileCheck,
   DEFAULT_AFFINITY,
   DEFAULT_WEIGHTS,
   type EligibilityReasonCode,
   explainRoute,
+  type GroupEligibility,
+  groupStage1,
   planModelPin,
   profilePlatformSupported,
   profileRank,
   type RouteDecisionResult,
   type RouteFeatures,
+  requestedMembers,
   requirementsFor,
   TRUST_PROFILE_ORDER,
   withModelPin,
@@ -650,21 +654,23 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       }
     }
     if (routing.model !== undefined && named === undefined && routing.require_provider !== true) {
-      const targetModel = routing.model;
-      const enabledProviders = deps.registry
-        .list()
-        .map((a) => a.id)
-        .filter((id) => deps.config.providers?.get(id)?.enabled !== false);
-      const resolving = enabledProviders.filter((p) => {
-        if (!models?.restricted(p)) return false;
-        const res = models.resolve(p, targetModel);
-        return res.ok && res.source !== "unrestricted";
-      });
-      if (resolving.length !== 1) {
+      if (resolvingProviders(routing.model).length !== 1) {
         throw invalid("name a provider for this model", { field: "routing.model" });
       }
     }
   };
+
+  /** FRD V14: the enabled providers whose restricted registry resolves `model` (an alias or a configured or listed id). */
+  const resolvingProviders = (model: string): string[] =>
+    deps.registry
+      .list()
+      .map((a) => a.id)
+      .filter((id) => deps.config.providers?.get(id)?.enabled !== false)
+      .filter((p) => {
+        if (!models?.restricted(p)) return false;
+        const res = models.resolve(p, model);
+        return res.ok && res.source !== "unrestricted";
+      });
 
   /** FRD V11 / BR-2 / BR-3: map an exclusion to one taxonomy code with per-provider reasons. */
   const eligibilityError = ({ decision }: EligibilityAnswer): ToolError => {
@@ -710,7 +716,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
    * No admissible provider is the BR-3 error, as before.
    */
   const route = (
-    answer: EligibilityAnswer,
+    given: EligibilityAnswer,
     opts: {
       preference: string | undefined;
       privileged: boolean;
@@ -722,9 +728,14 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       continuation?: { mode: "resume" | "handoff"; reason: string; from_provider: string; problem?: string };
       /** T7.5 (LLD §3.2, §17.6): the project and whether affinity applies (false for a continuation). */
       affinity: { projectId: string | null; workspace: string; applies: boolean; requiredProvider: string | null };
+      /** T7.15 (LLD §17.7): a group or explicit-model request; candidates are its members. */
+      group?: GroupEligibility & { name: string | null; requestedModel: string | null };
     },
   ): RouteDecisionResult & { provider: ProviderId } => {
-    const eligible = admissible(answer, opts.privileged);
+    const group = opts.group;
+    const answer = group !== undefined ? { input: group.input, decision: group.decision } : given;
+    const eligible: string[] = group !== undefined ? group.admissible : admissible(answer, opts.privileged);
+    const providers = [...new Set(eligible.map((c) => group?.members.find((m) => m.key === c)?.provider ?? c))];
     const suffix =
       opts.privileged && !answer.decision.eligible.length ? "; privileged compile deferred to dispatch" : "";
     const settings = {
@@ -735,12 +746,18 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       ...(deps.config.limits !== undefined ? { limits: deps.config.limits } : {}),
     };
     const now = (deps.now ?? (() => new Date()))();
-    const scoreInputs = collectScoreInputs(ledger, eligible, settings, now, opts.sessionProvider);
+    const scoreInputs = collectScoreInputs(ledger, providers, settings, now, opts.sessionProvider);
     const affinity = collectAffinityFacts(
       ledger,
       { ...opts.affinity, admissible: eligible, decision: answer.decision, scoreInputs },
       deps.config.routing?.affinity ?? DEFAULT_AFFINITY,
     );
+    // T7.15 (LLD §16.9, §17.7): the `pacing` term, only when a candidate's provider is in a configured subscription.
+    const sub = deps.config.capacity;
+    const pacing =
+      sub?.subscriptions !== undefined && sub.pacing !== undefined
+        ? collectPacingInputs(ledger, { subscriptions: sub.subscriptions, pacing: sub.pacing }, providers, now)
+        : undefined;
     const result = buildRouteDecision({
       input: answer.input,
       decision: answer.decision,
@@ -754,6 +771,10 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       ...(opts.basis !== undefined ? { basis: opts.basis } : {}),
       ...(opts.project !== undefined ? { project: opts.project } : {}),
       ...(opts.continuation !== undefined ? { continuation: opts.continuation } : {}),
+      ...(group !== undefined
+        ? { group: { name: group.name, requestedModel: group.requestedModel, members: group.members } }
+        : {}),
+      ...(pacing !== undefined ? { pacing } : {}),
     });
     if (result.provider === null) throw eligibilityError(answer);
     return { ...result, provider: result.provider as ProviderId };
@@ -818,6 +839,40 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       return keep({ model: null, outcome: "model_refused", refused_code: code });
     }
     return keep({ model: plan.candidate, outcome: "pinned" });
+  };
+
+  /**
+   * T7.15 (LLD §17.7 Candidates): for a group or explicit-model request, one stage-1 pass per member (its provider
+   * required, its model requested: provider reasons, registry resolution, `minimum_capability`, compile with the model),
+   * assembled into a member-level answer. Undefined for a request with neither field. No member left after the project
+   * narrowing is `ELIGIBILITY_NONE`, as an empty project candidate set.
+   */
+  const groupCandidates = async (
+    routing: Routing | undefined,
+    candidates: readonly ProviderId[],
+    required: ProviderId | undefined,
+    privileged: boolean,
+    question: Omit<EligibilityQuestion, "candidates" | "requiredProvider" | "model">,
+  ): Promise<(GroupEligibility & { name: string | null; requestedModel: string | null }) | undefined> => {
+    const named = requestedMembers(routing, modelGroups, candidates, (m) => {
+      const r = resolvingProviders(m);
+      return r.length === 1 ? r[0] : undefined;
+    });
+    if (named === undefined) return undefined;
+    if (named.members.length === 0) {
+      throw new ToolError("ELIGIBILITY_NONE", "no member of the requested group or model has an allowed provider", {
+        reason: "GROUP_MEMBERS",
+      });
+    }
+    const stage1 = await groupStage1(named.members, required ?? null, privileged, (provider, model) =>
+      lifecycle.checkEligibility({
+        ...question,
+        candidates: [provider as ProviderId],
+        requiredProvider: provider as ProviderId,
+        model,
+      }),
+    );
+    return { ...stage1, name: named.name, requestedModel: named.requestedModel };
   };
 
   const waitBounded = async (runId: string, seconds: number | undefined): Promise<void> => {
@@ -893,20 +948,27 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     const privileged = scope?.ok === true;
     const minimumCapability = routing?.minimum_capability;
     const narrowed = projectCandidates(resolved, required); // BR-23: before eligibility, so nothing is probed for them
-    const answer = await lifecycle.checkEligibility({
-      candidates: narrowed.candidates,
-      ...(required !== undefined ? { requiredProvider: required } : {}),
+    const question = {
       trustProfile: profile,
       clientMaxProfile: resolved?.effectiveMax ?? maxTrustProfile,
       cwd: workspace,
       ...(scope?.ok ? { profile: eligibilityProfile(scope.scope) } : {}),
       ...(minimumCapability !== undefined ? { minimumCapability } : {}),
-    }); // V11
-    if (answer.decision.outcome.kind !== "eligible" && admissible(answer, privileged).length === 0) {
-      throw eligibilityError(answer);
-    }
-    if (required !== undefined && !admissible(answer, privileged).includes(required)) throw eligibilityError(answer);
+    };
+    // T7.15 (LLD §17.7): with a group or an explicit model, each member is a stage-1 candidate.
+    const group = await groupCandidates(routing, narrowed.candidates, required, privileged, question);
+    const answer =
+      group ??
+      (await lifecycle.checkEligibility({
+        candidates: narrowed.candidates,
+        ...(required !== undefined ? { requiredProvider: required } : {}),
+        ...question,
+      })); // V11
+    const admitted = group?.admissible ?? admissible(answer, privileged);
+    if (answer.decision.outcome.kind !== "eligible" && admitted.length === 0) throw eligibilityError(answer);
+    if (group === undefined && required !== undefined && !admitted.includes(required)) throw eligibilityError(answer);
     const routed0 = route(answer, {
+      ...(group !== undefined ? { group } : {}),
       preference: routing?.provider_preference,
       privileged,
       features: await lifecycle.routeFeatures(
@@ -936,17 +998,21 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         : {}),
     });
     const capModel = answer.input.facts.find((f) => f.provider === routed0.provider)?.model;
-    const { routed, model } = await pinModel(
-      routed0,
-      {
-        trustProfile: profile,
-        clientMaxProfile: resolved?.effectiveMax ?? maxTrustProfile,
-        cwd: workspace,
-      },
-      privileged,
-      minimumCapability,
-      capModel,
-    );
+    // T7.15 (LLD §17.7 Run fields): a chosen member runs with its resolved model; no remembered-model pin applies.
+    const { routed, model } =
+      routed0.member !== null
+        ? { routed: routed0, model: routed0.member.model }
+        : await pinModel(
+            routed0,
+            {
+              trustProfile: profile,
+              clientMaxProfile: resolved?.effectiveMax ?? maxTrustProfile,
+              cwd: workspace,
+            },
+            privileged,
+            minimumCapability,
+            capModel,
+          );
     const provider = routed.provider;
 
     const submitted = await lifecycle.submit({
