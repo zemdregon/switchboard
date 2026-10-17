@@ -42,6 +42,7 @@ export const NEEDS_ATTENTION_REASONS = [
   "failed_after_retry",
   "stalled",
   "budget_exhausted",
+  "ci_fix_stuck",
 ] as const;
 /** ADR-0047 / LLD §3.4.1 `approval_kind`. */
 export const APPROVAL_KINDS = ["privileged_scope", "dynamic_project", "push_revision"] as const;

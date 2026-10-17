@@ -1,14 +1,7 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import type Database from "better-sqlite3";
-import {
-  type CanonicalSkill,
-  DEFAULT_MAX_BODY_BYTES,
-  DEFAULT_MAX_NAMES,
-  refusal,
-  type SkillRefusal,
-  validateSkillSource,
-} from "./format.js";
+import { type CanonicalSkill, refusal, type SkillRefusal, validateSkillSource } from "./format.js";
 import {
   checkNote,
   countActiveSkillNames,
@@ -16,6 +9,7 @@ import {
   SKILL_ACTOR_OPERATOR_CLI,
   type SkillOrigin,
 } from "./ledger.js";
+import { DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_NAMES, type SkillStoreLimits } from "./limits.js";
 import { discardUnreferenced, writeSkillContent } from "./store.js";
 
 /**
@@ -45,9 +39,9 @@ export interface AddSkillOptions {
    * CLI (T16.2) can pass them from the loaded configuration.
    */
   readonly repositoryRoots: readonly string[];
-  /** `skills.max_body_bytes` (default 32768) until T16.3 adds the key. */
+  /** `skills.max_body_bytes` (LLD §19.3 default {@link DEFAULT_MAX_BODY_BYTES}). From {@link addSkillOptionsFromLimits}. */
   readonly maxBodyBytes?: number;
-  /** `skills.max_names` (default 64) until T16.3 adds the key. */
+  /** `skills.max_names` (LLD §19.3 default {@link DEFAULT_MAX_NAMES}). From {@link addSkillOptionsFromLimits}. */
   readonly maxNames?: number;
   /** `git.sanitize_patterns`, treated as secret classes (see `ValidateSkillOptions`). */
   readonly sanitizePatterns?: readonly string[];
@@ -79,6 +73,18 @@ export interface SkillRefused {
 }
 
 export type AddSkillResult = SkillAdded | SkillUnchanged | SkillRefused;
+
+/**
+ * Wire the resolved skills keys onto the store options (T16.3). `maxBodyBytes` and `maxNames` are
+ * `skills.max_body_bytes` and `skills.max_names`; the other options (repository roots, sanitiser patterns) stay the
+ * caller's. Omitting this helper leaves the LLD defaults in force.
+ */
+export function addSkillOptionsFromLimits(
+  limits: SkillStoreLimits,
+  rest: Omit<AddSkillOptions, "maxBodyBytes" | "maxNames">,
+): AddSkillOptions {
+  return { ...rest, maxBodyBytes: limits.maxBodyBytes, maxNames: limits.maxNames };
+}
 
 function refused(r: SkillRefusal): SkillRefused {
   return { kind: "refused", reason: r.reason, message: r.message };

@@ -144,14 +144,20 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#563](https://github.com/zemdregon/switchboard/pull/563)) are done on fakes. The trigger is off by default
   (`ci_trigger` in the configuration); `serve` reads CI status through the operator's logged-in `gh` CLI, polls only
   branches the project pushed, treats the CI text as untrusted and enqueues a work item under the trigger's client
-  ceiling. Switchboard reads no GitHub token. Schedules (T15.2, [#561](https://github.com/zemdregon/switchboard/pull/561))
+  ceiling. Switchboard reads no GitHub token. Consecutive fix-up items per published ref are capped (T15.5:
+  `ci_trigger.max_consecutive_fixes`, Assumption default 2): further failures are recorded without a work item and the
+  project is flagged needs-attention (`ci_fix_stuck`) until CI passes or the operator resets the counter.
+  Schedules (T15.2, [#561](https://github.com/zemdregon/switchboard/pull/561))
   are done on fakes: off by default, UTC cron, fired by `serve` before the CI poll, and listed or disabled with
   `switchboard schedule`. See
   [ROADMAP §6.14](docs/ROADMAP.md#614-m15-project-queue-schedules-and-ci-triggers-tasks).
 - **Milestone 16 (Switchboard-controlled skills) is `Partial`.** The skill store is built (T16.1, Delegated, not
   owner-approved): operator-defined, versioned skills validated, canonicalised and kept as immutable content-addressed
-  files (`<data>/skills/<sha256>.md`) with append-only ledger rows (migration `0021`, `src/skills/`). Operator CLI,
-  configuration, admission, delivery and the MCP tools are still `Planned`. Design:
+  files (`<data>/skills/<sha256>.md`) with append-only ledger rows (migration `0021`, `src/skills/`). The
+  configuration is built (T16.3, Delegated, not owner-approved): `skills.*`, `projects[].skills` and
+  `mcp_clients[].skills` in the schema and loader (`src/config/`, `src/skills/limits.ts`,
+  `src/skills/configured.ts`), off by default. Operator CLI,
+  admission, delivery and the MCP tools are still `Planned`. Design:
   [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
   [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
