@@ -5,18 +5,26 @@ import Database from "better-sqlite3";
 import {
   AdapterRegistry,
   type AuthResult,
+  acceptsReportedModel,
+  adapterIdForConfigId,
   configIdForAdapterId,
   createProbeRunner,
   emptyVersionCanaryStore,
   evaluateVersionCanary,
   type ProbeResult,
+  type ProviderId,
   providerEntries,
   providerEntry,
   readVersionCanaryStore,
   recordAdapterVersion,
 } from "../adapters/index.js";
 import type { CapacityProjection } from "../capacity/index.js";
-import { loadConfig, type ResolvedConfig } from "../config/index.js";
+import {
+  loadConfig,
+  type ResolvedConfig,
+  type ResolvedModelGroupMember,
+  readModelGroupsFromConfigPath,
+} from "../config/index.js";
 import {
   describeOuterSandbox,
   detectOuterSandbox,
@@ -25,6 +33,7 @@ import {
 } from "../exec/outer-sandbox.js";
 import { currentSchemaVersion, LEDGER_FILE_NAME, MIGRATIONS } from "../ledger/index.js";
 import { inspectDataDirLock } from "../lock/index.js";
+import { type ModelConfig, ModelRegistry } from "../models/index.js";
 import { type AppliedOverride, validateProfileOverrides } from "../policy/index.js";
 import { gitText, parseGitVersion, versionAtLeast } from "../workspace/git.js";
 import {
@@ -82,6 +91,22 @@ export interface DoctorAdapterReport {
   readonly status: CheckStatus;
 }
 
+export interface DoctorModelGroupMemberReport {
+  readonly provider: string;
+  readonly model: string;
+  readonly status: "resolved" | "alias" | "unresolvable";
+  readonly resolved_id: string | null;
+  readonly alias?: string;
+  readonly code: string | null;
+  readonly detail?: string;
+  readonly resolution: string;
+}
+
+export interface DoctorModelGroupReport {
+  readonly name: string;
+  readonly members: readonly DoctorModelGroupMemberReport[];
+}
+
 export interface DoctorReport {
   readonly schema_version: number;
   readonly ok: boolean;
@@ -99,6 +124,11 @@ export interface DoctorReport {
   readonly retrieval?: RagDoctorSection;
   /** T6.3 (LLD §16.3): the `get_capacity` projection for the probed adapters; absent when the config is invalid. */
   readonly capacity?: CapacityProjection;
+  /**
+   * T7.13 (FR-RTE-10): model groups with each member's current resolution. Present only when model groups are configured,
+   * so the report for a configuration without any is unchanged.
+   */
+  readonly model_groups?: DoctorModelGroupReport[];
 }
 
 const fmtValue = (v: AppliedOverride["to"]): string => (Array.isArray(v) ? `[${v.join(", ")}]` : String(v));
@@ -384,7 +414,7 @@ export function isDisabledInConfig(cfg: ResolvedConfig | undefined, adapterId: s
 async function probeAdapters(
   registry: AdapterRegistry,
   cfg?: ResolvedConfig,
-  opts?: { now?: () => Date },
+  opts?: { now?: () => Date; models?: ModelRegistry },
 ): Promise<DoctorAdapterReport[]> {
   const runner = createProbeRunner(PROBE_ENV_ALLOWLIST);
   const versionStore = cfg?.dataDir !== undefined ? readVersionCanaryStore(cfg.dataDir) : emptyVersionCanaryStore();
@@ -410,6 +440,9 @@ async function probeAdapters(
     let probeError: string | undefined;
     try {
       probe = await a.probe(runner);
+      if (probe !== undefined && opts?.models !== undefined) {
+        opts.models.refresh(a.id, probe.modelsListed);
+      }
     } catch (err) {
       probeError = (err as Error).message;
     }
@@ -540,7 +573,15 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
   checks.push(checkOuterSandbox(cfg, io.outerSandbox ?? (await detectOuterSandbox({ path: io.env.PATH ?? "" }))));
 
   const registry = io.adapters ?? defaultAdapters();
-  const adapters = await probeAdapters(registry, cfg, { now: io.now ?? (() => new Date()) });
+  const byAdapter = new Map<string, ModelConfig>();
+  if (cfg) {
+    for (const [configId, modelCfg] of cfg.providerModels) {
+      const aId = adapterIdForConfigId(configId);
+      if (aId !== undefined) byAdapter.set(aId, modelCfg);
+    }
+  }
+  const models = new ModelRegistry(byAdapter);
+  const adapters = await probeAdapters(registry, cfg, { now: io.now ?? (() => new Date()), models });
   const innerAgent = cfg ? await innerDoctorSection(io, cfg) : undefined;
   let retrieval: RagDoctorSection | undefined;
   try {
@@ -549,6 +590,7 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
     retrieval = undefined; // informational: an unreadable ledger or store never fails doctor
   }
   const capacity = cfg ? capacitySection(cfg, registry, (io.now ?? (() => new Date()))()) : undefined;
+  const modelGroups = cfg ? modelGroupsSection(cfg, registry, models) : undefined;
   const ok = checks.every((c) => c.status !== "fail") && adapters.every((a) => a.status !== "fail");
   return {
     schema_version: JSON_SCHEMA_VERSION,
@@ -558,6 +600,113 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
     ...(innerAgent !== undefined ? { inner_agent: innerAgent } : {}),
     ...(retrieval !== undefined ? { retrieval } : {}),
     ...(capacity !== undefined ? { capacity } : {}),
+    ...(modelGroups !== undefined ? { model_groups: modelGroups } : {}),
+  };
+}
+
+/**
+ * T7.13 (FR-RTE-10, LLD §17.7): lists configured model groups with each member's current resolution.
+ * Informational: it never changes `ok`. Absent when no `model_groups` section is configured.
+ */
+function modelGroupsSection(
+  cfg: ResolvedConfig,
+  adapters: AdapterRegistry,
+  models: ModelRegistry,
+): DoctorModelGroupReport[] | undefined {
+  const groups = readModelGroupsFromConfigPath(cfg.configPath);
+  const entries = Object.entries(groups);
+  if (entries.length === 0) return undefined;
+  return entries.map(([name, group]) => ({
+    name,
+    members: group.members.map((m) => resolveGroupMemberForDoctor(m, cfg, adapters, models)),
+  }));
+}
+
+export function resolveGroupMemberForDoctor(
+  member: ResolvedModelGroupMember,
+  cfg: ResolvedConfig,
+  adapters: AdapterRegistry,
+  models: ModelRegistry,
+): DoctorModelGroupMemberReport {
+  // 1. Is provider disabled in config?
+  if (cfg.providers.get(member.provider)?.enabled === false) {
+    return {
+      provider: member.provider,
+      model: member.model,
+      status: "unresolvable",
+      resolved_id: null,
+      code: "PROVIDER_DISABLED",
+      detail: "provider is disabled in config",
+      resolution: "PROVIDER_DISABLED",
+    };
+  }
+
+  // 2. Is adapter registered?
+  const adapterId = adapterIdForConfigId(member.provider);
+  const adapter =
+    adapterId !== undefined && adapters.has(adapterId as ProviderId)
+      ? adapters.get(adapterId as ProviderId)
+      : undefined;
+  if (adapter === undefined) {
+    return {
+      provider: member.provider,
+      model: member.model,
+      status: "unresolvable",
+      resolved_id: null,
+      code: "ADAPTER_NOT_REGISTERED",
+      detail: `adapter for provider ${member.provider} is not registered`,
+      resolution: "ADAPTER_NOT_REGISTERED",
+    };
+  }
+
+  // 3. Does adapter accept models?
+  if (adapter.reportedModelFlag !== undefined && !acceptsReportedModel(adapter)) {
+    const detail = adapter.reportedModelFlag.detail;
+    return {
+      provider: member.provider,
+      model: member.model,
+      status: "unresolvable",
+      resolved_id: null,
+      code: "CAPABILITY_MISSING",
+      detail,
+      resolution: `CAPABILITY_MISSING (${detail})`,
+    };
+  }
+
+  // 4. Resolve in model registry:
+  const resolved = models.resolve(adapter.id, member.model);
+  if (!resolved.ok) {
+    return {
+      provider: member.provider,
+      model: member.model,
+      status: "unresolvable",
+      resolved_id: null,
+      code: "CAPABILITY_MISSING",
+      detail: resolved.detail,
+      resolution: `CAPABILITY_MISSING (${resolved.detail})`,
+    };
+  }
+
+  // 5. Resolved:
+  if (resolved.source === "alias") {
+    return {
+      provider: member.provider,
+      model: member.model,
+      status: "alias",
+      resolved_id: resolved.model,
+      alias: member.model,
+      code: null,
+      resolution: `alias -> ${resolved.model}`,
+    };
+  }
+
+  return {
+    provider: member.provider,
+    model: member.model,
+    status: "resolved",
+    resolved_id: resolved.model,
+    code: null,
+    resolution: resolved.model,
   };
 }
 
@@ -621,6 +770,15 @@ export function renderDoctor(r: DoctorReport): string {
       `       projects: ${r.capacity.affinity.projects.length}, runs that kept provider and model ${kept}, ` +
         `switched ${switched}`,
     );
+  }
+  if (r.model_groups !== undefined && r.model_groups.length > 0) {
+    lines.push("", "Model groups:");
+    for (const g of r.model_groups) {
+      lines.push(`       ${g.name}:`);
+      for (const m of g.members) {
+        lines.push(`         ${m.provider}/${m.model}: ${m.resolution}`);
+      }
+    }
   }
   lines.push("", r.ok ? "Result: OK" : "Result: FAILED");
   return `${lines.join("\n")}\n`;

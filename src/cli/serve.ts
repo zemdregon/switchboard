@@ -813,6 +813,8 @@ async function runDaemon(
     confinedVerification,
     outerSandboxRequiredProfiles: outerSandboxRequired,
     ...(outerSandbox ? { outerSandbox } : {}),
+    // T3.22 (FR-EXE-09): host-wide verification slots; absent unless a `limits.verification_*` key is set.
+    ...(config.verificationLimits ? { verificationLimits: config.verificationLimits } : {}),
     // T12.5 (FR-RAG-05, FR-RAG-08): retrieval at dispatch; no pack when retrieval is inert or fails.
     contextPack: {
       timeoutMs: config.rag.retrieval.admissionTimeoutMs,

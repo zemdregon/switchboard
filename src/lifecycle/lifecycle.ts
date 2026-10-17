@@ -260,6 +260,8 @@ import {
   startVerification,
   VERIFICATION_COMMAND_EVENT,
   VERIFICATION_STARTED_EVENT,
+  VERIFICATION_WAIT_EVENT,
+  type VerificationLimits,
   type VerificationResult,
   verificationCommandsProblem,
   verificationEnvAllowlist,
@@ -628,6 +630,11 @@ export interface RunLifecycleOptions {
   readonly outerSandboxRequiredProfiles?: readonly string[] | undefined;
   /** Outer sandbox availability detection result. */
   readonly outerSandbox?: OuterSandboxAvailability | undefined;
+  /**
+   * T3.22 (FR-EXE-09, LLD §8.1): host-wide verification slots, lower priority and parallelism variables. Unset (no
+   * `limits.verification_*` key): verification is exactly the T3.10 stage.
+   */
+  readonly verificationLimits?: VerificationLimits | undefined;
   /**
    * T3.23 (FR-WS-11, BR-51, LLD §5): the free-disk floor (`limits.min_free_disk_mb`). Unset (the default): no probe is
    * ever made and dispatch is unchanged. Set: `pump()` probes once per dispatch pass while runs are queued; under the
@@ -2158,6 +2165,14 @@ export class RunLifecycle {
       killGraceMs,
       confined,
       ...(this.opts.outerSandbox ? { outerSandbox: this.opts.outerSandbox } : {}),
+      ...(this.opts.verificationLimits
+        ? {
+            limits: this.opts.verificationLimits,
+            // T3.22: the run stays VERIFYING while it waits; the wait is part of the stage's wall clock.
+            onSlotWait: ({ slots }: { slots: number }) =>
+              this.ledger.appendRunEvent({ runId, type: VERIFICATION_WAIT_EVENT, payload: { slots } }),
+          }
+        : {}),
       onSpawn: (index, { pid, pgid }) => {
         // LLD §8: pid, pgid and start ticks persisted before any output is read, so a restart can kill an orphan.
         this.ledger.updateRunFields(
@@ -2194,6 +2209,10 @@ export class RunLifecycle {
     if (result.outcome === "cancelled" || exec.cancelRequested) pending = { kind: "cancelled" };
     else if (result.internalError) {
       pending = { kind: "failure", code: "TOOL_FAILURE", detail: "controller error during verification" };
+    } else if (result.outcome === "timeout") {
+      // T3.22: the slot wait used up the run's wall clock; a timeout like any other, not a limiter error.
+      const detail = "verification slot wait exceeded the run's wall-clock limit";
+      pending = { kind: "failure", code: "PROCESS_TIMEOUT", detail };
     } else if (result.outcome === "failed") {
       const first = result.commands.find((c) => c.outcome !== "passed");
       const what = first ? `command ${first.index} ${first.outcome}` : "a command failed";

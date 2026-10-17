@@ -111,11 +111,21 @@ export interface SwitchboardConfig {
     /** T14.11 (FR-CTL-11): `orchestrator` (default) or `console`. */
     tool_profile?: ToolProfile;
   }[];
-  /**
-   * `min_free_disk_mb` (T3.23, FR-WS-11): the free-disk floor in whole megabytes, off when absent. Below it new runs
-   * are held in `QUEUED` (never failed) and an early GC sweep runs; `doctor` reports free space against it.
-   */
-  limits?: { global_concurrency?: number; per_provider_concurrency?: number; min_free_disk_mb?: number };
+  limits?: {
+    global_concurrency?: number;
+    per_provider_concurrency?: number;
+    /**
+     * `min_free_disk_mb` (T3.23, FR-WS-11): the free-disk floor in whole megabytes, off when absent. Below it new runs
+     * are held in `QUEUED` (never failed) and an early GC sweep runs; `doctor` reports free space against it.
+     */
+    min_free_disk_mb?: number;
+    /** T3.22 (FR-EXE-09): host-wide verification slots. Any `verification_*` key turns the limiter on. */
+    verification_slots?: number;
+    /** T3.22: niceness added to verification commands; 0 leaves their priority unchanged. */
+    verification_nice?: number;
+    /** T3.22: parallelism variables (for example `VITEST_MAX_WORKERS`) given to verification commands only. */
+    verification_env?: Record<string, string>;
+  };
   providers?: Partial<
     Record<
       ProviderId,
@@ -167,11 +177,16 @@ export interface SwitchboardConfig {
    * it can run inside the outer sandbox; absent or empty means nothing changes. `privileged` cannot be listed.
    */
   outer_sandbox?: { required_profiles?: Exclude<TrustProfile, "privileged">[] };
+  /**
+   * Model groups across providers (M7, T7.13; FR-RTE-10, LLD §17.7, ADR-0055).
+   * Ordered lists of `{ provider, model }` pairs under operator-named groups.
+   */
+  model_groups?: ModelGroupsConfigInput;
 }
 
 /** `routing` as written in the config file (LLD §17.1). */
 export interface RoutingConfigInput {
-  weights?: Partial<Record<"success" | "latency" | "capacity" | "security" | "handoff" | "cost", number>>;
+  weights?: Partial<Record<"success" | "latency" | "capacity" | "security" | "handoff" | "cost" | "pacing", number>>;
   /** T7.4 (LLD §3.2, §17.1): `idle_ttl` accepts only null until expiry is built (Q-52). */
   affinity?: { enabled?: boolean; low_water_mark?: number | null; min_confidence?: number | null; idle_ttl?: null };
 }
@@ -378,6 +393,52 @@ const stringList = {
   type: "array",
   items: { type: "string", minLength: 1 },
 } as const;
+
+/** LLD §17.7 name pattern for operator-configured model groups. */
+export const MODEL_GROUP_NAME_PATTERN = "^[a-z][a-z0-9_-]{0,31}$";
+export const MAX_MODEL_GROUPS = 32;
+export const MAX_GROUP_MEMBERS = 32;
+
+export interface ModelGroupMemberInput {
+  provider: ProviderId;
+  model: string;
+}
+
+export interface ModelGroupInput {
+  members: ModelGroupMemberInput[];
+}
+
+export type ModelGroupsConfigInput = Record<string, ModelGroupInput>;
+
+/** `model_groups` schema (T7.13; FR-RTE-10, LLD §17.7, ADR-0055). */
+const modelGroupsSchemaFor = (ids: readonly string[]) =>
+  ({
+    type: "object",
+    maxProperties: MAX_MODEL_GROUPS,
+    propertyNames: { pattern: MODEL_GROUP_NAME_PATTERN },
+    additionalProperties: {
+      type: "object",
+      additionalProperties: false,
+      required: ["members"],
+      properties: {
+        members: {
+          type: "array",
+          minItems: 1,
+          maxItems: MAX_GROUP_MEMBERS,
+          uniqueItems: true,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["provider", "model"],
+            properties: {
+              provider: { enum: [...ids] },
+              model: { type: "string", pattern: MODEL_ID_PATTERN },
+            },
+          },
+        },
+      },
+    },
+  }) as const;
 const profileOverrideSchema = {
   type: "object",
   additionalProperties: false,
@@ -543,6 +604,19 @@ export const configSchema = {
         per_provider_concurrency: { type: "integer", minimum: 1, maximum: 64 },
         // T3.23 (FR-WS-11): whole megabytes; the upper bound (about 1 PB) is a typo guard (Assumption, Delegated).
         min_free_disk_mb: { type: "integer", minimum: 1, maximum: 1_000_000_000 },
+        // T3.22 (FR-EXE-09, LLD §8.1). Bounds are Proposed sanity limits (Delegated).
+        verification_slots: { type: "integer", minimum: 1, maximum: 64 },
+        verification_nice: { type: "integer", minimum: 0, maximum: 19 },
+        verification_env: {
+          type: "object",
+          maxProperties: 16,
+          // Upper-case names only; never Git, loader, signing/agent or the allowlist's own PATH/HOME (defence in depth).
+          propertyNames: {
+            pattern: "^[A-Z][A-Z0-9_]{0,63}$",
+            not: { pattern: "^(GIT_|LD_|DYLD_|PATH$|HOME$|GNUPGHOME$|GPG_AGENT_INFO$|SSH_AUTH_SOCK$|NODE_OPTIONS$)" },
+          },
+          additionalProperties: { type: "string", maxLength: 256, pattern: "^[^\\u0000]*$" },
+        },
       },
     },
     providers: {
@@ -718,7 +792,7 @@ export const configSchema = {
           type: "object",
           additionalProperties: false,
           properties: Object.fromEntries(
-            ["success", "latency", "capacity", "security", "handoff", "cost"].map((t) => [
+            ["success", "latency", "capacity", "security", "handoff", "cost", "pacing"].map((t) => [
               t,
               { type: "number", minimum: 0, maximum: MAX_ROUTING_WEIGHT },
             ]),
@@ -736,6 +810,7 @@ export const configSchema = {
         },
       },
     },
+    model_groups: modelGroupsSchemaFor(PROVIDER_IDS),
     notification_sinks: notificationSinksSchema,
     ci_trigger: ciTriggerSchema,
     telemetry: {
@@ -774,6 +849,7 @@ export function configSchemaFor(ids: readonly string[]): Record<string, unknown>
   const schema = structuredClone(configSchema) as any;
   schema.properties.providers.properties = providerPropsFor(ids);
   schema.properties.projects.items.properties.allowed_providers.items.enum = [...ids];
+  schema.properties.model_groups = modelGroupsSchemaFor(ids);
   return schema as Record<string, unknown>;
 }
 
