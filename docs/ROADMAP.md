@@ -758,7 +758,8 @@ and existing logs."
     [LLD §16.9](design/LLD.md#169-usage-windows-and-pacing-fr-cap-09-fr-cap-10); requirements FR-RTE-10, FR-RTE-11 and
     FR-CAP-09 to FR-CAP-11, with dated notes on FR-CAP-07 and FR-RTE-07; tasks T6.8 (reframed),
     T6.16 and T7.13 to T7.17, all `Planned` (T6.11, generalised, T6.13, the usage-window model, T6.14,
-    the pacing projection, and T6.15, the limit-signal mapping, are `Done` 2026-10-17). "Use all subscriptions fully" is read as
+    the pacing projection, and T6.15, the limit-signal mapping, are `Done` 2026-10-17).
+    "Use all subscriptions fully" is read as
     scheduling the work the orchestrator submits, never creating runs or load to spend a subscription. Affinity
     (decision 40) still holds until a subscription's pacing gate fires (Q-97). Nothing here changes what a bypass run
     may do.
