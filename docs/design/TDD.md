@@ -1427,8 +1427,10 @@ T7.17 (T6.8, T6.13, T6.14, T7.13, T7.14 and T7.15 Done, the rest Planned).
 ### 3.16 Switchboard-controlled skills (Proposed)
 
 *Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); partly built: T16.1
-implemented the store module below and T16.3 the configuration keys and loader, both Delegated, not owner-approved;
-the renderer, writer, exclusions, CLI and import-boundary test are still Proposed).
+implemented the store module below, T16.3 the configuration keys and loader, T16.2 the operator CLI, T16.9 the
+read-only MCP tools with the §19.5 steps 2 to 4 resolver, and T16.4 admission (`src/skills/admission.ts`) with the
+import-boundary test, all Delegated, not owner-approved;
+the renderer, writer and exclusions are still Proposed).
 Delegated, not owner-approved beyond the direction.* Contract: [LLD §19](LLD.md#19-switchboard-controlled-skills-m16-proposed).
 Tasks: ROADMAP T16.0 to T16.12.
 

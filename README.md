@@ -168,7 +168,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   skills line and skills in `runs show` (`src/cli/skills.ts`, `src/skills/read.ts`, `src/skills/diff.ts`).
   The MCP tools are built (T16.9, Delegated, not owner-approved): read-only `list_skills` and `get_skill`
   for the orchestrator profile when skills are enabled (`src/mcp/`, the §19.5 steps 2 to 4 resolver in
-  `src/skills/resolve.ts`). Admission and delivery are still `Planned`. Design:
+  `src/skills/resolve.ts`). Admission is built (T16.4, Delegated, not owner-approved): `skills`, `role` and
+  `skill_defaults` on `delegate_task`, `continue_task` and `enqueue_work`, ordered resolution with gates and caps in
+  the admission transaction (`src/skills/admission.ts`), `run_skill` rows, the `skill_resolved` event and skill
+  metadata in `get_run`. Delivery is still `Planned`. Design:
   [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
   [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP

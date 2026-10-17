@@ -175,6 +175,7 @@ import {
   type RunLifecycle,
   type RunPriority,
   requestHash,
+  type SkillAdmissionPort,
   verificationCommandsProblem,
 } from "../lifecycle/index.js";
 import type { ModelCapability, ModelRegistry } from "../models/registry.js";
@@ -210,6 +211,13 @@ import {
   TRUST_PROFILE_ORDER,
   withModelPin,
 } from "../routing/index.js";
+import {
+  hasSkillFields,
+  runSkillMetadata,
+  type SkillRequestFields,
+  skillAdmissionPort,
+  skillRequestFields,
+} from "../skills/admission.js";
 import {
   canonicalBody,
   getSkillVersion,
@@ -385,6 +393,30 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
   const { lifecycle, ledger } = deps;
   const scrub = createScrubber(deps.config.allowedRoots);
   const validators = compileValidators();
+
+  // T16.4 (FR-SKL-03, LLD §19.4, FRD V15, C8): request skill fields resolve only while the store is wired and enabled.
+  const skillsOn = deps.skills?.settings.enabled === true;
+  const skillFieldsOf = (a: Args, prefix = ""): SkillRequestFields => {
+    const fields = skillRequestFields(a);
+    if (hasSkillFields(fields) && !skillsOn) {
+      const field = (["skills", "role", "skill_defaults"] as const).find((f) => a[f] !== undefined) as string;
+      throw invalid("skills, role and skill_defaults need skills.enabled", {
+        reason: "SKILLS_DISABLED",
+        field: `${prefix}${field}`,
+      });
+    }
+    return fields;
+  };
+  const skillAdmission = (fields: SkillRequestFields, project?: ResolvedProject): SkillAdmissionPort | undefined =>
+    skillsOn && deps.skills !== undefined
+      ? skillAdmissionPort({
+          db: deps.skills.db,
+          settings: deps.skills.settings,
+          ...(project?.skills !== undefined ? { project: project.skills } : {}),
+          ...(client.skills !== undefined ? { clientSkills: client.skills } : {}),
+          fields,
+        })
+      : undefined;
 
   // T7.14: resolved model groups and model registry for routing validation.
   const modelGroups: ResolvedModelGroups =
@@ -919,6 +951,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     const verificationProblem = verificationCommandsProblem(verification);
     if (verificationProblem !== undefined) throw invalid(verificationProblem, { field: "verification_commands" }); // V7
     checkRouting(routing); // V8
+    const skillFields = skillFieldsOf(a); // V15 (SKILLS_DISABLED); the rest is resolved in the admission transaction
 
     const canonical = {
       tool: "delegate_task",
@@ -931,6 +964,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       routing: routing ?? {},
       priority: a.priority,
       ...(scope?.ok ? { privileged_scope: scope.scope } : {}),
+      ...skillFields, // T16.4: part of request_hash (FR-MCP-08)
     };
     const hash = requestHash(canonical);
     const key = a.idempotency_key as string | undefined;
@@ -1014,6 +1048,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
             capModel,
           );
     const provider = routed.provider;
+    const skills = skillAdmission(skillFields, resolved?.project);
 
     const submitted = await lifecycle.submit({
       clientId: deps.clientId,
@@ -1029,6 +1064,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       ...(resolved ? { project: resolved.snapshot } : {}),
       ...(key !== undefined ? { idempotencyKey: key } : {}),
       ...(verification.length > 0 ? { verificationCommands: verification } : {}),
+      ...(skills !== undefined ? { skills } : {}),
       ...(scope?.ok
         ? {
             privileged: {
@@ -1083,6 +1119,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
 
     const routing = a.routing as Routing | undefined;
     checkRouting(routing, true); // C5 (as V8), Q-99
+    const skillFields = skillFieldsOf(a); // C8: absent, the lifecycle reuses the previous run's set (LLD §19.5 step 1)
     const approvedScope = approval ? parsePrivilegedScope(approval.scope) : undefined;
     if (approvedScope && !approvedScope.ok) throw invalid(`meta-session ${sessionId} approval holds an invalid scope`);
     const privileged = approval !== undefined;
@@ -1241,6 +1278,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       continuation: { mode, reason: reasonCode, from_provider: p0, ...(problem !== undefined ? { problem } : {}) },
     });
     const target = routed.provider;
+    const skills = skillAdmission(skillFields, resolved?.project);
     const submitted = await lifecycle.submit({
       clientId: deps.clientId,
       objective: a.instruction as string,
@@ -1255,6 +1293,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       routeDecision: routed.record,
       ...(approval ? { privileged: { approvalId: approval.id } } : {}),
       ...(resolved ? { project: resolved.snapshot } : {}),
+      ...(skills !== undefined ? { skills } : {}),
     });
     await waitBounded(submitted.runId, a.wait_seconds as number);
     return envelopeOf(submitted.runId);
@@ -1263,8 +1302,11 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
   const getRun = async (a: Args): Promise<Envelope> => {
     const run = ownRun(a.run_id as string);
     const inc = a.include_events as { after_seq: number; limit: number } | undefined;
+    // T16.4 (FR-SKL-07): the pinned skills' metadata, never their text; absent for a run without skills.
+    const skills = deps.skills === undefined ? [] : runSkillMetadata(deps.skills.db, run.id);
     return {
       ...buildEnvelope(ledger, run, scrub, attentionAt()),
+      ...(skills.length > 0 ? { skills } : {}),
       ...(inc ? { events: compactEvents(ledger, run.id, inc.after_seq, inc.limit, scrub) } : {}),
     };
   };
@@ -1433,6 +1475,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       throw invalid(verificationProblem, { field: "request.verification_commands" });
     }
     checkRouting(request.routing as Routing | undefined);
+    skillFieldsOf(request, "request."); // V15 at enqueue; the fields are stored and resolve at the item's admission
 
     const predecessors = [...((a.depends_on as string[] | undefined) ?? [])].sort();
     for (const id of predecessors) ownWorkItem(id);
