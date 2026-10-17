@@ -1391,7 +1391,7 @@ Version ranges come from compliance manifests, not this table (FR-ADP-03, FR-POL
 | --- | --- |
 | Automation surface | `claude -p` ([R2]) |
 | Structured output | `--output-format json` or `stream-json`; partial deltas with `--verbose --include-partial-messages`; final result carries `session_id` |
-| Resume | `--resume <session>` and `--continue`; read `session_id` from structured output, never regex (FR-ADP-04) |
+| Resume | `--resume <session>` and `--continue`; read `session_id` from structured output, never regex (FR-ADP-04); the live T5.12 resume findings for 2.1.294 are in [§4.10](#410-native-resume-inventory-t50) |
 | Auth preflight | `claude auth status` returns structured JSON and exit codes; on failure return `AUTH_REQUIRED` naming the native login (FR-AUTH-02) |
 | Trust profile compilation (Proposed) | Untrusted profiles: `--safe-mode --restricted --strict-mcp-config` (disable `CLAUDE.md`, skills, plugins, hooks and MCP servers, ignore settings files and confine file tools to the working directory; FR-POL-04), fail-closed `dontAsk` with `--permission-prompts none`, explicit `--tools`/`--allowedTools` rules; never `--allowedTools "*"` (skipped by Claude). **Not `--bare`:** the installed help says it makes auth strictly API-key based, which [ADR-0003](../adr/0003-no-credential-handling.md) and the Claude manifest forbid ([ADR-0015](../adr/0015-claude-untrusted-isolation-flags.md)). Verified against `claude --help` 2.1.296 text only; tool names beyond `Read`, `Edit` and `Bash(...)` rule syntax are Assumptions |
 | Sandbox controls | None documented in [R2], and none in the installed help (T3.0, [§4.1.1](#411-claude-code-native-controls-per-profile-and-platform-t30)); `--safe-mode`/`--restricted` are not a sandbox and Bash/read/edit remain. Credential confinement unproven, so `inspect-untrusted` and `edit-untrusted` compile with no arbitrary shell (only `edit-untrusted`'s narrow allowlist), and `test-sandboxed` is ineligible for Claude until confinement is shown (FR-POL-06; M3 evaluation) |
@@ -1466,7 +1466,7 @@ R-41). Every remaining `Unknown: live check in T3.9` cell is still unknown ([ROA
 | --- | --- |
 | Automation surface | `codex exec` |
 | Structured output | `--json` emits JSONL (thread, turn, item, error and token-usage events) |
-| Resume | `codex exec resume <SESSION_ID>` or `--last` (prefer explicit ID) |
+| Resume | `codex exec resume <SESSION_ID>` or `--last` (prefer explicit ID); the T5.12 live checks (cells 1 to 5) are `NOT_CHECKED`, blocked by a provider quota stop (see [ROADMAP §6.9](../ROADMAP.md#69-m5-continuity-tasks) T5.12 and [§4.10](#410-native-resume-inventory-t50)) |
 | Auth preflight | Saved ChatGPT or API-key auth is reused. [R2] states no status command; `codex login status` was observed on codex-cli 0.162.1 (`docs/research/live-checks-2026-10-13.md` (PR #41), not a link: the file is not on this branch): exit 0 logged in, exit 1 not logged in, output format undocumented. The adapter keys on the exit code only; any other exit code, a timeout or a spawn failure is `UNKNOWN` (fail closed). `~/.codex/auth.json` is sensitive and never read |
 | Trust profile compilation (Proposed) | `--sandbox workspace-write` or stricter, plus `--ignore-user-config` and `--ignore-rules` for full harness control. Read-only sandbox value spelling: to be verified in M4 |
 | Sandbox controls | Native: Seatbelt (macOS), bubblewrap (Linux/WSL2); explicit `--sandbox`. Per profile and platform: [§4.2.1](#421-codex-native-controls-per-profile-and-platform-t30) |
@@ -2792,17 +2792,19 @@ checklist it automates:
 
 ### 4.10 Native-resume inventory (T5.0)
 
-*Documentation only, Delegated agent work (not owner-approved), 2026-10-14.* Nothing below was run: no provider CLI was
-invoked and no network was used. Each cell is either **sourced** (a tag in the right-hand column, a TDD §4 subsection, or
-a line of a research document, with the CLI version where a source records one) or reads exactly `Unverified: <task>`,
-naming the operator checklist item that will verify it. Task T5.12 is the Claude Code and Codex operator task
-([ROADMAP §6.9](../ROADMAP.md#69-m5-continuity-tasks)); the other ids are the M4 operator tasks. This table
-exists because each continuation runs in a new worktree path (ROADMAP §6.9 facts; the FRD WF-2 working-directory
-Assumption), so "is a native session tied to the directory it was created in" decides T5.1 question (6) and T5.7.
+*Documentation only, Delegated agent work (not owner-approved), 2026-10-14; the Claude Code cells were observed live on
+2026-10-17 (T5.12, 2.1.294).* Apart from the cells that name a CLI version and a dated note under `docs/research/`,
+nothing below was run: no other provider CLI was invoked and no network was used. Each cell is either **sourced** (a tag
+in the right-hand column, a TDD §4 subsection, or a line of a research document, with the CLI version where a source
+records one) or reads exactly `Unverified: <task>`, naming the operator checklist item that will verify it. Task T5.12
+is the Claude Code and Codex operator task ([ROADMAP §6.9](../ROADMAP.md#69-m5-continuity-tasks)); the other ids are the
+M4 operator tasks. This table exists because each continuation runs in a new worktree path (ROADMAP §6.9 facts; the FRD
+WF-2 working-directory Assumption), so "is a native session tied to the directory it was created in" decides T5.1
+question (6) and T5.7.
 
 | Provider | Resume form (how the native id is passed) | Tied to the working directory | Sandbox flags on resume | Permission flags on resume | Sources |
 | --- | --- | --- | --- | --- | --- |
-| Claude Code | `--resume <session>`; `--continue` also exists; the id is `session_id` from structured output ([§4.1](#41-claude-code-m2) Resume row; [R2] L72, L90) | Unverified: T5.12 | Unverified: T5.12 | Unverified: T5.12 | [§4.1](#41-claude-code-m2); [R2] L72, L90 (research of 2026-10-12, which records no CLI version); `--help` of 2.1.296 is recorded in [§4.1.1](#411-claude-code-native-controls-per-profile-and-platform-t30) and names no resume text |
+| Claude Code | `--resume <session>`; `--continue` also exists; the id is `session_id` from structured output ([§4.1](#41-claude-code-m2) Resume row; [R2] L72, L90); same id returned on resume (T5.12 cell 1, 2.1.294) | **No** (2.1.294: found from a second worktree and from an unrelated empty directory, T5.12 cell 2) | Not applicable (no sandbox flag in the Claude argv, [§4.1](#41-claude-code-m2)) | **Not kept** (2.1.294: each invocation's flags apply; omitting them gives `default` mode, T5.12 cells 3 and 4), so re-send on every resume | [§4.1](#41-claude-code-m2); [R2] L72, L90 (research of 2026-10-12, which records no CLI version); `--help` of 2.1.296 is recorded in [§4.1.1](#411-claude-code-native-controls-per-profile-and-platform-t30) and names no resume text; live 2026-10-17 [live-checks-2026-10-17-claude.md](../research/live-checks-2026-10-17-claude.md) (unknown id: exit 1, `error_during_execution`, "No conversation found with session ID: …") |
 | Codex | `codex exec resume <SESSION_ID>` or `--last`; an explicit id is preferred ([§4.2](#42-codex-m2) Resume row; [R2] L75) | Unverified: T5.12 | Unverified: T5.12 | Unverified: T5.12 | [§4.2](#42-codex-m2); [R2] L75 (no CLI version recorded for the resume form; codex-cli 0.162.1 was observed only for `codex login status`) |
 | Grok Build | `-r, --resume [<ID>]`; `-c, --continue` is the most recent session for the directory; `-s, --session-id <UUID>` names a new session and does not resume (the adapter plans `-r <id>` from `.sessionId`, never `-c` or `-s`) [CLI], [SESS], [R2 L287]; [HL] contradicts on `-s` | Unverified: T4.21 | Preserved on resume (changelog entry 0.2.56) [CL] | Unverified: T4.21 | [§4.3.1](#431-grok-build-native-controls-per-profile-and-platform-t420) Resume and Resume contradiction rows and its source table ([CLI] last updated 2026-07-21, [HL] 2026-06-10, [SESS] undated, [CL] "Grok Build 1.0.52", 2026-10-11; all retrieved 2026-10-13; no binary version validated) |
 | Antigravity | `--conversation <id>` (explicit; preferred) or `-c, --continue`; the id is `conversation_id` in the `json` envelope [H, RS] | Histories are scoped to the working directory; `--continue` resolves the workspace through a local cache keyed by it [RS] | Unverified: T4.31 | Unverified: T4.31 | [§4.4](#44-antigravity-agy-m4) Resume row and its source list ([H], [RS]; retrieved 2026-10-13; no `agy` version validated) |
@@ -2836,7 +2838,7 @@ the resume statement only and T4.61 item 17 checks both.
 
 | Provider | Cells | Checklist item |
 | --- | --- | --- |
-| Claude Code, Codex | cwd, sandbox, permission | T5.12, checks 1 to 4 ([ROADMAP §6.9](../ROADMAP.md#69-m5-continuity-tasks)) |
+| Codex | cwd, sandbox, permission | T5.12, checks 1 to 4 ([ROADMAP §6.9](../ROADMAP.md#69-m5-continuity-tasks)); the Claude Code cells were recorded 2026-10-17 (T5.12 Partial) |
 | Grok Build | cwd, permission | [§4.3.2](#432-t421-operator-checklist-grok-build) step 14 |
 | Antigravity | sandbox, permission (and the cross-directory case of the cwd cell) | [§4.4.3](#443-t431-operator-checklist-antigravity) C18 (and C9) |
 | Cursor | cwd, sandbox, permission | [§4.5.3](#453-t441-operator-checklist) item 16 |

@@ -5100,8 +5100,10 @@ Tests: `src/continuity/render.test.ts`, `src/continuity/render-lifecycle.test.ts
 
 Adapter declaration (static data on the adapter, like `gitWriteControl`, T5.7): `resumeCwd: 'bound' | 'independent' |
 'unverified'`. Values from [TDD §4.10](TDD.md#410-native-resume-inventory-t50): Antigravity and Muse Code `bound`
-(sourced); Claude Code, Codex, Grok Build, Cursor, OpenCode and Kimi Code `unverified`; the fakes set either for tests.
-`unverified` is handled as `bound` (NFR-SEC-06).
+(sourced); Codex, Grok Build, Cursor, OpenCode and Kimi Code `unverified`; the fakes set either for tests.
+Claude Code was observed `independent`-like on 2.1.294 (T5.12 Partial, 2026-10-17: the session was found from a second
+worktree and from an unrelated directory), but its adapter still declares `unverified` until the separate code task
+flips it ([ROADMAP §6.9](../ROADMAP.md#69-m5-continuity-tasks) T5.12). `unverified` is handled as `bound` (NFR-SEC-06).
 
 For a resume (`resumeCwd` not `independent`):
 
