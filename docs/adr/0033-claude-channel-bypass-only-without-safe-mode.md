@@ -1,7 +1,9 @@
 # ADR-0033: The Claude Code tool channel is offered only to approved bypass runs, which omit `--safe-mode`
 
-- Status: Accepted (decision); implementation present behind the unsupported operator opt-in
-  `providers.claude-code.git_channel` (T9.4b, 2026-10-13, Delegated) and **unproven end to end** through Switchboard
+- Status: Accepted (decision); implementation **supported** behind the operator opt-in
+  `providers.claude-code.git_channel`, bypass-only (T9.4b; owner decision 2026-10-16, zemdregon: mark T9.4b supported,
+  Claude tool channel, bypass-only per this ADR). The 2026-10-14 operator run through Switchboard's own shim is the live
+  evidence; item 6 records the change
 - Date: 2026-10-13
 - Decided by: zemdregon (owner decision 41: of the options put to him after the live check, he chose option A, "offer
   the channel only for an approved bypass run"; the wording here is Delegated, not his words). The mechanism (where
@@ -63,8 +65,11 @@ zemdregon chose option A.
    or `enabled`) or the argv carries the channel definition.
 5. **Environment.** The stdio server sees the claude process environment, which is the adapter's child environment:
    only `PATH`, `HOME` (the adapter's allowlist) and the token. The controller always sets the token.
-6. **Still unsupported.** The opt-in stays documented as UNSUPPORTED until a live run through Switchboard with a real
-   Claude Code shows the shim starting, serving `commit` over the socket, and the Git deny rules holding with it.
+6. **Supported, bypass-only (owner decision 2026-10-16).** The opt-in was documented as UNSUPPORTED until a live run
+   through Switchboard with a real Claude Code showed the shim starting, serving `commit` over the socket, and the Git
+   deny rules holding with it. The 2026-10-14 operator run did that (ROADMAP §6.3), and on 2026-10-16 zemdregon marked
+   the channel supported, for approved bypass runs only. Git-write denial (FR-GIT-01) and the bypass-only gating in
+   items 1 to 5 are unchanged.
 
 ## Alternatives considered
 

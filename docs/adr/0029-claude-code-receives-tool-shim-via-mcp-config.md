@@ -1,7 +1,9 @@
 # ADR-0029: Claude Code receives the controller-generated tool shim via `--mcp-config`
 
-- Status: Accepted (decision); implementation present behind an unsupported operator opt-in (T9.4b, 2026-10-13,
-  Delegated) and **unverified live** (no live check run). Amends [ADR-0015](0015-claude-untrusted-isolation-flags.md)'s
+- Status: Accepted (decision); implementation **supported** behind the operator opt-in, for approved bypass runs only
+  (T9.4b; owner decision 2026-10-16, zemdregon: mark T9.4b supported, Claude tool channel, bypass-only per
+  [ADR-0033](0033-claude-channel-bypass-only-without-safe-mode.md)). Live evidence: the 2026-10-14 operator run through
+  Switchboard's own shim ([ROADMAP §6.3](../ROADMAP.md#63-m9-projects-and-controlled-commits-tasks)). Amends [ADR-0015](0015-claude-untrusted-isolation-flags.md)'s
   ban on `--mcp-config` for the injected channel only. Partly superseded by
   [ADR-0033](0033-claude-channel-bypass-only-without-safe-mode.md) (2026-10-13, owner decision 41): the channel is
   offered only to approved bypass runs, which omit `--safe-mode`
@@ -91,8 +93,9 @@ A live check contradicts items 3 to 5, Claude Code adds a flag that supplies a d
 ## Implementation note (2026-10-13, T9.4b; Delegated, not owner-approved)
 
 The decision text above is unchanged. Items 1 to 6 are implemented behind the operator opt-in
-`providers.claude-code.git_channel` (default `false`), which is documented as unsupported until the item 7 live checks
-pass; without it the adapter declares `none` and its argv is byte-identical. The server name chosen for item 2 is
+`providers.claude-code.git_channel` (default `false`), which was documented as unsupported until the item 7 live checks
+passed; on 2026-10-16 the owner marked it supported for approved bypass runs only (status line above); without it
+the adapter declares `none` and its argv is byte-identical. The server name chosen for item 2 is
 `switchboard-git` and the file is `mcp-config.json` in the run's private channel directory, written by the channel
 service (not the adapter) and removed on close and by the startup sweep. Item 5 needs no extra flag: the compiled argv
 already carries `--strict-mcp-config` everywhere except decision 26's case. Item 3: the file carries the `env` reference

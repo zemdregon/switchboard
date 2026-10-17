@@ -164,7 +164,8 @@ describe("opt-in on, approved bypass run: the channel fragment (ADR-0029 items 1
   it("declares injected and emits one --mcp-config file, exact-name allow rules and the token in env only", () => {
     expect(on.gitCapabilities).toBe(CLAUDE_GIT_CHANNEL_CAPABILITIES);
     expect(on.gitCapabilities.commitChannel).toBe("injected");
-    expect(on.gitCapabilities.detail).toMatch(/UNSUPPORTED/);
+    expect(on.gitCapabilities.detail).toMatch(/bypass-only/);
+    expect(on.gitCapabilities.detail).not.toMatch(/UNSUPPORTED/);
     expect(on.gitCapabilities.offersChannel?.(approvedReq, BYPASS)).toBe(true);
     const dir = privateDir();
     const extra = channelArgs(shimFor(dir));

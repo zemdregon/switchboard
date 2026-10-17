@@ -2891,7 +2891,7 @@ the run's policy snapshot as `project.finalize_commit: true` (absent when off) a
 `providers.claude-code.git_channel` (boolean, default `false`; accepted under `claude-code` only, so the key on any
 other provider aborts startup) is the operator opt-in for the Claude Code tool channel (§12.2). `ResolvedConfig` gains
 `claudeCodeGitChannel`; `serve` passes it to the Claude adapter and logs a warning when it is on. It does not change
-`providers.<id>.enabled`. **UNSUPPORTED** until the ADR-0029 live checks pass (ROADMAP T9.4b). Example:
+`providers.<id>.enabled`. Supported, bypass-only (owner decision 2026-10-16; ROADMAP T9.4b). Example:
 `"providers": { "claude-code": { "git_channel": true } }`. *Note 2026-10-13 (owner decision 41,
 [ADR-0033](../adr/0033-claude-channel-bypass-only-without-safe-mode.md)):* even with the key on, only an approved
 `privileged` bypass run gets the channel (and runs without `--safe-mode`); every other run is as with the key off.
@@ -3128,7 +3128,8 @@ validation in §12.3. Whether provider sandboxes permit the connect is verified 
 
 *Note 2026-10-13 (decision 36).* For Claude Code the per-run definition is now decided: a `0600` file passed with
 `--mcp-config`, one server, token in the environment, exact-name allow rules ([ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md),
-T9.4b; unverified live). How other projects pass a per-run tool definition to each provider (leads only, not
+T9.4b; supported for approved bypass runs, owner decision 2026-10-16). How other projects pass a per-run tool
+definition to each provider (leads only, not
 verified here) is listed in [TDD §3.10](TDD.md#310-git-commits-attribution-and-publication) under "External reference
 (T3 Code, MIT, studied not copied)". Switchboard implements from provider documentation and `--help`, not from that
 project's code.
@@ -4549,7 +4550,7 @@ description says so, and a client must treat it as such. The call is recorded as
 `src/git/` never imports `src/retrieval/` (FR-RAG-07 import-boundary test unchanged). When a channel opens, the tool
 `search_project_context` is added to its tools only if the port reports retrieval on for the run's project; the shim then
 lists it (`--tools commit[,push],search_project_context`) and an adapter that passes tools by exact name allows it as
-`mcp__switchboard-git__search_project_context`. Today only Claude Code injects a channel, behind the unsupported
+`mcp__switchboard-git__search_project_context`. Today only Claude Code injects a channel, behind the bypass-only
 opt-in `providers.claude-code.git_channel` and only in an approved `privileged` bypass run
 ([ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md),
 [ADR-0033](../adr/0033-claude-channel-bypass-only-without-safe-mode.md)); the fake test adapter also injects one. The

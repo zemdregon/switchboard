@@ -67,7 +67,7 @@ export interface ResolvedConfig {
   retentionEnabled: boolean;
   /**
    * `providers.claude-code.git_channel` (T9.4b, ADR-0029 item 7): true only when the config sets it to true. Default
-   * false. UNSUPPORTED until the ADR-0029 live checks pass; `serve` logs a warning when it is on.
+   * false. Supported, bypass-only (owner decision 2026-10-16, ADR-0033); `serve` logs a warning when it is on.
    */
   claudeCodeGitChannel: boolean;
   /** Adapter preflight cache TTL in milliseconds (NFR-PERF-02, T3.21); 0 disables the cache. */

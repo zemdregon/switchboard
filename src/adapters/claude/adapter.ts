@@ -227,7 +227,7 @@ export interface ClaudeAdapterOptions {
   /**
    * T9.4b (ADR-0029 item 7): the operator opt-in `providers.claude-code.git_channel`. Default false: the adapter
    * declares {@link CLAUDE_GIT_CAPABILITIES} (`none`) and every argv is unchanged. True: it declares
-   * {@link CLAUDE_GIT_CHANNEL_CAPABILITIES} (`injected`). UNSUPPORTED until the ADR-0029 live checks pass.
+   * {@link CLAUDE_GIT_CHANNEL_CAPABILITIES} (`injected`). Supported, bypass-only (owner decision 2026-10-16, ADR-0033).
    */
   gitChannel?: boolean;
 }
@@ -504,8 +504,8 @@ export function privilegedPlan(request: CompileRequest, profile: ResolvedProfile
  * FR-GIT-02 declaration without the operator opt-in (T9.4, ADR-0026; Delegated): no injected channel, and the compiled
  * argv is unchanged. Q-40 is decided (ADR-0029) and the channel exists behind `providers.claude-code.git_channel`
  * (T9.4b, {@link CLAUDE_GIT_CHANNEL_CAPABILITIES}), for approved bypass runs only (ADR-0033); this default stays
- * because the channel is unproven end to end through Switchboard (TDD §3.10, R-18). The detail text is kept as it
- * was.
+ * because the channel is supported only in that bypass scope (owner decision 2026-10-16), so it stays an explicit
+ * operator choice. The detail text is kept as it was.
  */
 export const CLAUDE_GIT_CAPABILITIES: GitCapabilities = {
   commitChannel: "none",
@@ -612,18 +612,18 @@ export function claudeChannelArgs(
  * FR-GIT-02 declaration with the operator opt-in (T9.4b, ADR-0029, ADR-0033; Delegated mechanism, owner decisions 36
  * and 41). `injected` through {@link claudeChannelArgs}, and only for an approved bypass run
  * ({@link claudeChannelOffered} as `offersChannel`); every other run is treated as `none`. No bypass flag is ever added
- * (FR-POL-03). UNSUPPORTED: the channel has not run end to end through Switchboard with a real Claude Code (the live
- * check used a hand-made server), so this is offered only behind the opt-in.
+ * (FR-POL-03). Supported for approved bypass runs only (owner decision 2026-10-16; ADR-0029, ADR-0033); Git-write
+ * denial (FR-GIT-01) is unchanged, and the channel is still offered only behind the opt-in.
  */
 export const CLAUDE_GIT_CHANNEL_CAPABILITIES: GitCapabilities = {
   commitChannel: "injected",
   detail:
-    "UNSUPPORTED operator opt-in (providers.claude-code.git_channel, ADR-0029, ADR-0033): offered only to an " +
-    "approved privileged bypass run, which then omits --safe-mode (it stops the server from starting) and so loads " +
-    "repository CLAUDE.md and hooks; every other run has no channel and keeps --safe-mode. The shim is one stdio MCP " +
-    `server "${TOOL_SHIM_MCP_SERVER}" in a controller-written 0600 --mcp-config file in the run's private channel ` +
-    "directory, pre-approved by exact name with --allowedTools, token only in the environment. Unverified end to end " +
-    "through Switchboard: socket reach from the real provider and Git deny rules with the server present.",
+    "Supported, bypass-only operator opt-in (providers.claude-code.git_channel, ADR-0029, ADR-0033; owner decision " +
+    "2026-10-16): offered only to an approved privileged bypass run, which then omits --safe-mode (it stops the " +
+    "server from starting) and so loads repository CLAUDE.md and hooks; every other run has no channel and keeps " +
+    `--safe-mode. The shim is one stdio MCP server "${TOOL_SHIM_MCP_SERVER}" in a controller-written 0600 ` +
+    "--mcp-config file in the run's private channel directory, pre-approved by exact name with --allowedTools, token " +
+    "only in the environment. Git-write denial (FR-GIT-01) still applies with the server present.",
   channelArgs: (shim, request, profile) => claudeChannelArgs(shim, request, profile),
   offersChannel: (request, profile) => claudeChannelOffered(request, profile),
 };

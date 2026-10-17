@@ -31,7 +31,7 @@
  * `providers.claude-code.git_channel` (T9.4b; ADR-0029 item 7, owner decision 36; key and default Delegated): the
  * operator opt-in that lets the Claude Code adapter receive the injected tool channel through a controller-written
  * `--mcp-config` file. Default false (argv unchanged, `commitChannel: "none"`). Accepted only under `claude-code`.
- * UNSUPPORTED until the ADR-0029 live checks pass.
+ * Supported for approved privileged bypass runs only (owner decision 2026-10-16, ADR-0033).
  */
 import {
   BUILTIN_CONFIG_PROVIDER_IDS,
