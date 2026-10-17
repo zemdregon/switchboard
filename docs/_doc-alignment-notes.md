@@ -120,3 +120,15 @@ block, the 2026-10-14 live checks and owner decision 56, all cited directly).
   and does not touch the wave notes). Left unchanged: the notes are planning history, and reconciling them means
   restating other tasks' sequencing, which is the roadmap owner's call. It does not block PR #645 (T7.13's own
   evidence is the T7.13 status block, cited directly).
+
+## 11. LLD §18.3 `CANCELLED` predecessor: Proposed fail-closed vs implemented unblock (pre-existing, not from PR #660)
+
+- [LLD §18.3](design/LLD.md#183-priority-and-dependencies-fr-que-01) says a predecessor in `CANCELLED` or
+  `FAILED_ADMISSION` blocks the successor until the operator removes the edge or cancels the successor
+  (**Proposed** fail-closed behaviour).
+- The code (`isBlockingPredecessor` in `src/ledger/work-queue.ts`) treats `CANCELLED` like `DONE`: only a
+  predecessor outside `DONE`/`CANCELLED` blocks, so `FAILED_ADMISSION` blocks but `CANCELLED` unblocks.
+- PR #660 refactors that check into a shared helper and reuses it for the enqueue-time initial state, preserving the
+  `CANCELLED`-unblocks semantics; it neither introduces nor worsens the divergence. Left unchanged: adopting the
+  Proposed fail-closed behaviour for `CANCELLED` is the LLD owner's call. It does not block PR #660 (the fix's own
+  evidence is the `src/queue/work-queue.test.ts` T15.1 tests, cited in LLD §18.3).
