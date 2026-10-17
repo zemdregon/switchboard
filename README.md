@@ -597,7 +597,8 @@ Control-plane knobs live in `config.json` (no duplicate schema here):
 - `mcp_clients[]`: per client, `tool_profile` (`orchestrator` default or `console`), `approval_proxy` and
   `approval_proxy_targets` for the proxy client (ADR-0047).
 - `control_plane.budgets` and `control_plane.loop_breaker` (T14.4–T14.5).
-- `notification_sinks[]`: webhook and ntfy kinds, filters and rate limits, plus an optional webhook `authorization` value sent as the `Authorization` header (FR-CTL-12, T14.14, ADR-0048); off by default.
+- `notification_sinks[]`: webhook and ntfy kinds, filters and rate limits, plus an optional webhook `authorization`
+  value sent as the `Authorization` header (FR-CTL-12, T14.14, ADR-0048); off by default.
 
 See [TDD §3.1](docs/design/TDD.md#31-configuration) and [LLD §3.4](docs/design/LLD.md#34-control-plane-m14-proposed-t140).
 
@@ -620,7 +621,8 @@ Global pause and resume use `switchboard pause` and `switchboard resume` (applie
 
 ### `doctor`
 
-Today `doctor` lists configured sinks showing `set`/`unset` for the webhook `authorization` and ntfy token without echoing values (T14.14), but adds no sink reachability checks yet (optional, T14.13 README outline). Budget validity
+Today `doctor` lists configured sinks showing `set`/`unset` for the webhook `authorization` and ntfy token without
+echoing values (T14.14), but adds no sink reachability checks yet (optional, T14.13 README outline). Budget validity
 and ADR-0047/0048 acceptance follow owner review of those ADRs.
 
 ### Status and tests
@@ -631,7 +633,8 @@ Fixtures only; no live provider CLI:
 - Pause (T14.6): `src/mcp/pause.test.ts`, `src/control/pause.test.ts`, `src/cli/pause.test.ts`.
 - Approval proxy (T14.8): `test/malicious/approval-proxy.test.ts`.
 - Notification sinks (T14.9): `src/control/sinks.test.ts`.
-- Webhook authorization (T14.14, FR-CTL-12): `src/config/notification-sinks.test.ts`, `src/cli/cli.test.ts` (doctor `set`/`unset` suite); header-delivery and canary scans in `src/control/sinks.test.ts`.
+- Webhook authorization (T14.14, FR-CTL-12): `src/config/notification-sinks.test.ts`, `src/cli/cli.test.ts` (doctor
+  `set`/`unset` suite); header-delivery and canary scans in `src/control/sinks.test.ts`.
 - Digest and envelopes: `src/mcp/digest.test.ts`, `src/mcp/list-runs.test.ts`, `src/mcp/needs-attention.test.ts`.
 
 ### Known limitations
