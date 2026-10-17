@@ -5488,7 +5488,8 @@ every project. `doctor` prints one summary line, and `switchboard capacity` one 
 
 ### 16.9 Usage windows and pacing (FR-CAP-09, FR-CAP-10)
 
-**Proposed** (2026-10-17, owner decision 57, Delegated mechanism; T6.13 built 2026-10-17, rest not built). Design for T6.13 (built; see "As built (T6.13)" below), T6.14 and T6.8 under
+**Proposed** (2026-10-17, owner decision 57, Delegated mechanism; T6.13 built 2026-10-17, rest not built).
+Design for T6.13 (built; see "As built (T6.13)" below), T6.14 and T6.8 under
 [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md). Every default is an **Assumption** (Q-98). No migration:
 pacing is computed on read from configuration, `usage_observation`, `run`, `run_event` and the clock, like the estimate
 (§16.2). Nothing here names a provider's window, budget or reset: each comes from the provider (a declared key) or from
