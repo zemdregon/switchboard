@@ -51,6 +51,7 @@ import { pacingDoctorLine, projectCapacity } from "./capacity.js";
 import { type InnerDoctorSection, innerDoctorSection, renderInnerDoctor } from "./inner.js";
 import { type CliIo, JSON_SCHEMA_VERSION, PROBE_ENV_ALLOWLIST } from "./io.js";
 import { type RagDoctorSection, ragDoctorSection, renderRagDoctor } from "./rag-index.js";
+import { skillsDoctorCheck } from "./skills.js";
 import { checkUnprivileged } from "./unprivileged.js";
 
 /** Minimum Node major from package.json `engines` (>=22). */
@@ -578,6 +579,7 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
     checks.push(...(await checkRetentionAndOrphans(cfg, (io.now ?? (() => new Date()))())));
     const disk = checkDiskFloor(cfg, io.diskProbe ?? statfsDiskProbe);
     if (disk) checks.push(disk);
+    checks.push(skillsDoctorCheck(cfg)); // T16.2 (LLD §19.10)
   } else {
     for (const [id, label] of [
       ["data_dir", "Data directory"],
@@ -585,6 +587,7 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
       ["lock", "Data-dir lock"],
       ["gc", "Retention GC"],
       ["orphans", "Orphan sweep"],
+      ["skills", "Skills"],
     ] as const) {
       checks.push(check(id, label, "skip", "skipped: config is not valid"));
     }
