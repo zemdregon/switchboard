@@ -344,8 +344,10 @@ involved.
 
 *Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); the journey as a
 whole is not built, but its store step is (T16.1: validation, canonicalisation, content storage, migration
-0021 and state derivation in `src/skills/`) and its configuration step is (T16.3: `skills.*`, `projects[].skills`
-and `mcp_clients[].skills` in the schema and loader).*
+0021 and state derivation in `src/skills/`), its operator-CLI step is (T16.2: `switchboard skills` in
+`src/cli/skills.ts`), its configuration step is (T16.3: `skills.*`, `projects[].skills`
+and `mcp_clients[].skills` in the schema and loader) and its MCP-tools step is (T16.9: read-only `list_skills`
+and `get_skill` in `src/mcp/` with the §19.5 steps 2 to 4 resolver in `src/skills/resolve.ts`).*
 
 - Actor: Operator (defines and approves skills); Orchestrator (injects them).
 - Trigger: the operator wants every steward run to follow a merge playbook, and an orchestrator wants one review run to

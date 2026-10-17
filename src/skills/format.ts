@@ -237,3 +237,14 @@ export function validateSkillSource(
     sizeBytes: Buffer.byteLength(canonical, "utf8"),
   };
 }
+
+/**
+ * The body of a stored canonical text (T16.9, `get_skill`): everything after the closing `---` of the front matter.
+ * The canonical front matter never holds a `---` line, so the first one after line 1 closes it.
+ */
+export function canonicalBody(text: string): string {
+  const lines = text.split("\n");
+  const close = lines[0] === "---" ? lines.indexOf("---", 1) : -1;
+  if (close < 0) throw new Error("stored skill text has no front matter block");
+  return lines.slice(close + 1).join("\n");
+}

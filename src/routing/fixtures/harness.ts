@@ -160,6 +160,8 @@ export interface HarnessOptions {
   lifecycle?: Record<string, unknown> | ((deps: { ledger: Ledger }) => Record<string, unknown>);
   /** Extra MCP server config (for example `routing`). */
   config?: Record<string, unknown>;
+  /** Extra MCP server deps, given the harness ledger handle and data directory (T16.9: the skill store). */
+  deps?: (h: { db: Database.Database; dataDir: string }) => Record<string, unknown>;
   /** T7.8: model registry for minimum_capability tests. */
   models?: ModelRegistry;
   /** T6.8: one injected clock for the ledger, the lifecycle and the MCP servers. Absent: the system clock. */
@@ -237,6 +239,7 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
         limits: { perProviderConcurrency: 1 },
         ...(opts.config ?? {}),
       },
+      ...(opts.deps?.({ db, dataDir }) ?? {}),
       clientId,
       ...(opts.now !== undefined ? { now: opts.now } : {}),
     });
