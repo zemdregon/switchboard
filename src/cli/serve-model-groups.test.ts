@@ -1,7 +1,9 @@
 /**
  * T7.14 (FR-RTE-10, FR-RTE-11, LLD §17.7): `switchboard serve` passes the configured `model_groups` to the MCP server
  * and to queue admission, so a group in config.json is accepted on `delegate_task` and `enqueue_work`. Each test spawns
- * the real `serve` over stdio (the test-only fake adapter, no provider CLI on PATH).
+ * the real `serve` over stdio (the test-only fake adapter, no provider CLI on PATH). With no member's CLI installed, an
+ * accepted group request goes on to member-level eligibility (T7.15) and is refused there as ELIGIBILITY_NONE, naming
+ * each configured member it considered; an unknown group would instead be INVALID_REQUEST before eligibility.
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -109,18 +111,27 @@ const TASK = { objective: "Fix bug", trust_profile: "edit-untrusted" };
 describe("serve wires configured model_groups (T7.14; FR-RTE-11, LLD §17.7)", () => {
   it("delegate_task accepts a configured group, narrowed by an adapter id; a group narrowed to no member is refused", async () => {
     const c = await connect();
+    const considered = (body: { error: { code: string; details?: { eligibility?: { provider: string }[] } } }) => ({
+      code: body.error.code,
+      members: (body.error.details?.eligibility ?? []).map((e) => e.provider),
+    });
 
     const plain = await call(c, "delegate_task", { ...TASK, workspace_path: repo, routing: { model_group: "cheap" } });
-    expect(plain.isError, JSON.stringify(plain.body)).toBe(false);
-    expect(plain.body.run_id).toMatch(/^run_/);
+    expect(considered(plain.body), JSON.stringify(plain.body)).toEqual({
+      code: "ELIGIBILITY_NONE",
+      members: ["claude/haiku-x", "opencode/oc-flash"],
+    });
 
+    // `claude` (adapter id) narrows to the `claude-code` (config id) member.
     const claude = await call(c, "delegate_task", {
       ...TASK,
       workspace_path: repo,
       routing: { model_group: "cheap", provider_preference: "claude" },
     });
-    expect(JSON.stringify(claude.body)).not.toContain("model_group");
-    expect(claude.isError, JSON.stringify(claude.body)).toBe(false);
+    expect(considered(claude.body), JSON.stringify(claude.body)).toEqual({
+      code: "ELIGIBILITY_NONE",
+      members: ["claude/haiku-x"],
+    });
 
     const codex = await call(c, "delegate_task", {
       ...TASK,
@@ -137,7 +148,7 @@ describe("serve wires configured model_groups (T7.14; FR-RTE-11, LLD §17.7)", (
     expect(unknown.body.error).toMatchObject({ code: "INVALID_REQUEST", message: "unknown model_group nope" });
   }, 60_000);
 
-  it("enqueue_work accepts a configured group and queue admission admits it", async () => {
+  it("enqueue_work accepts a configured group and queue admission resolves it from the same table", async () => {
     const c = await connect();
 
     const queued = await call(c, "enqueue_work", {
@@ -145,6 +156,7 @@ describe("serve wires configured model_groups (T7.14; FR-RTE-11, LLD §17.7)", (
       request: { ...TASK, routing: { model_group: "cheap", provider_preference: "claude" } },
     });
     expect(queued.isError, JSON.stringify(queued.body)).toBe(false);
+    expect(queued.body.state).toBe("READY");
     const id = queued.body.work_item_id as string;
 
     const narrowed = await call(c, "enqueue_work", {
@@ -156,7 +168,8 @@ describe("serve wires configured model_groups (T7.14; FR-RTE-11, LLD §17.7)", (
       message: "model_group cheap has no members for provider codex",
     });
 
-    // The serve scheduler ticks every second; admission re-checks the group against the same table.
+    // The serve scheduler ticks every second. Admission without the group table would record INVALID_REQUEST
+    // (unknown model_group); with it, the request reaches member eligibility and no member's CLI is installed.
     const deadline = Date.now() + 30_000;
     // biome-ignore lint/suspicious/noExplicitAny: tool results are untyped JSON
     let item: any;
@@ -165,6 +178,6 @@ describe("serve wires configured model_groups (T7.14; FR-RTE-11, LLD §17.7)", (
       if (item.admitted_run_id !== null || item.terminal_at !== null) break;
       await new Promise((r) => setTimeout(r, 200));
     }
-    expect(item.admitted_run_id, JSON.stringify(item)).toMatch(/^run_/);
+    expect(item, JSON.stringify(item)).toMatchObject({ admitted_run_id: null, last_error_code: "ELIGIBILITY_NONE" });
   }, 60_000);
 });
