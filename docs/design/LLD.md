@@ -5607,7 +5607,9 @@ ranking, quality score or sandbox-strength order is used: none is sourced.
 Unknown keys and type errors abort startup (NFR-SEC-06). The estimate trigger for `capacity_exhausted` is on only when
 both `low_water_mark` and `min_confidence` are set (§3.2); the default leaves it off (Q-81), so only positive evidence of
 exhaustion switches. A value for `idle_ttl` is refused rather than ignored until expiry is built. Absent section: the
-defaults above.
+defaults above. *As built (T7.13, Done 2026-10-17):* the schema also accepts a seventh weight
+`routing.weights.pacing` (0 to 100, default 1, Q-80; `src/config/schema.ts`, resolved by `resolveRouting` in
+`src/config/routing.ts`). The scorer in §17.3 still sums the six terms above; the `pacing` term is T7.15 (§17.7).
 
 ### 17.2 Heuristic features (FR-RTE-04)
 
@@ -5782,8 +5784,14 @@ helper, the quota failover's forced `capacity_exhausted`, and `recordAffinity` a
 
 ### 17.7 Model groups (FR-RTE-10, FR-RTE-11)
 
-**Proposed** (2026-10-17, owner decision 57, Delegated mechanism; not built). Design for T7.13 to T7.15 under
+**Proposed** (2026-10-17, owner decision 57, Delegated mechanism) under
 [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md). Defaults are **Assumptions** (Q-98, Q-99).
+*As built (T7.13, Done 2026-10-17, `src/config/model-groups.test.ts`):* the **Configuration** subsection below
+(`model_groups` schema, startup refusals, routing-time resolution, the seventh weight `routing.weights.pacing`) and
+the `doctor` listing of each group with each member's resolution (resolved id, alias, or the stage-1 code it would
+get; `src/cli/doctor.ts`, informational, present only when groups are configured). The **Request**, **Candidates**,
+**Score** (`pacing` term), **Affinity**, **Decision record, version 3** and **Run fields** subsections below remain
+Proposed (T7.14, T7.15; not built). Design for T7.13 to T7.15.
 
 **Configuration** (strict keys, NFR-SEC-06). Placeholders only: neither this document nor code names a model.
 
