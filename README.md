@@ -20,8 +20,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   Claude Code 2.1.294 **14 HELD, 0 FAILED, 2 NOT_CHECKED** (C-12, C-G2); Codex 0.162.0 after `adapters validate codex`
   **10 HELD, 0 FAILED, 3 NOT_CHECKED** (X-4, X-9, X-G1). Earlier checks on another host are in
   [`docs/research/live-checks-2026-10-13.md`](docs/research/live-checks-2026-10-13.md). `Done` waits on those residual
-  operator cells and on `doctor` with a provider installed. The §6.2 "Blocks Done" narrative matches the 2026-10-14 live
-  smoke on main ([PR #570](https://github.com/zemdregon/switchboard/pull/570)). See
+  operator cells; `doctor` with both providers installed and logged in passed on 2026-10-17
+  ([`docs/research/live-checks-2026-10-17-claude-codex.md`](docs/research/live-checks-2026-10-17-claude-codex.md)). The
+  §6.2 "Blocks Done" narrative matches the 2026-10-14 live smoke on main
+  ([PR #570](https://github.com/zemdregon/switchboard/pull/570)). See
   [ROADMAP §6.2](docs/ROADMAP.md#62-m2-claude-code-adapter-and-mcp-slice-tasks).
 - **Milestone 3 (isolation) is `Partial`.** Trust profiles and overrides, approvals (`approve`, `deny`), privileged
   runs, verification commands (optionally confined in bubblewrap), outer-sandbox detection and retention (`gc`) are
