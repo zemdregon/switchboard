@@ -1464,7 +1464,7 @@ R-41). Every remaining `Unknown: live check in T3.9` cell is still unknown ([ROA
 | --- | --- |
 | Automation surface | `codex exec` |
 | Structured output | `--json` emits JSONL (thread, turn, item, error and token-usage events) |
-| Resume | `codex exec resume <SESSION_ID>` or `--last` (prefer explicit ID) |
+| Resume | `codex exec resume <SESSION_ID>` or `--last` (prefer explicit ID); the T5.12 live checks (cells 1 to 5) are `NOT_CHECKED`, blocked by a provider quota stop (see [ROADMAP §6.9](../ROADMAP.md#69-m5-continuity-tasks) T5.12 and [§4.10](#410-native-resume-inventory-t50)) |
 | Auth preflight | Saved ChatGPT or API-key auth is reused. [R2] states no status command; `codex login status` was observed on codex-cli 0.162.1 (`docs/research/live-checks-2026-10-13.md` (PR #41), not a link: the file is not on this branch): exit 0 logged in, exit 1 not logged in, output format undocumented. The adapter keys on the exit code only; any other exit code, a timeout or a spawn failure is `UNKNOWN` (fail closed). `~/.codex/auth.json` is sensitive and never read |
 | Trust profile compilation (Proposed) | `--sandbox workspace-write` or stricter, plus `--ignore-user-config` and `--ignore-rules` for full harness control. Read-only sandbox value spelling: to be verified in M4 |
 | Sandbox controls | Native: Seatbelt (macOS), bubblewrap (Linux/WSL2); explicit `--sandbox`. Per profile and platform: [§4.2.1](#421-codex-native-controls-per-profile-and-platform-t30) |
