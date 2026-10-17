@@ -1607,7 +1607,9 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
    * provider in candidate order or for the one named. Read-only; it never probes or calls a provider.
    */
   const getCapacity = async (args: Args) => {
-    const ids: string[] = candidates();
+    const registered = deps.registry.list().map((a) => a.id);
+    const cand = candidates();
+    const ids: string[] = [...cand, ...registered.filter((id) => !cand.includes(id))];
     const named = args.provider as string | undefined;
     if (named !== undefined && !ids.includes(named)) {
       throw invalid(`unknown provider ${JSON.stringify(named)}`, { providers: ids });
