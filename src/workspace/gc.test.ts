@@ -18,7 +18,17 @@ import { containerName, probeContainerName, SWITCHBOARD_RUN_LABEL } from "../env
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger } from "../ledger/index.js";
 import { fileRuntime, plantContainer } from "../reconcile/fixtures/file-runtime.js";
-import { collectOrphans, findOrphans, type GcStep, type OrphanGcStep, runRetentionGc } from "./gc.js";
+import { MB } from "./disk.js";
+import {
+  collectOrphans,
+  type DiskReclaimer,
+  earlySweepReclaimers,
+  findOrphans,
+  type GcStep,
+  type OrphanGcStep,
+  runEarlySweep,
+  runRetentionGc,
+} from "./gc.js";
 import { WorkspaceManager } from "./index.js";
 
 const GIT_ENV = {
@@ -613,3 +623,142 @@ describe("orphan collection after the retention period (T3.12, LLD §5, ADR-0054
 function RECENT_PLUS(days: number): Date {
   return new Date(NOW.getTime() + days * 24 * 60 * 60 * 1000);
 }
+
+describe("early disk sweep (T3.23, FR-WS-11)", () => {
+  const FLOOR = 100 * MB;
+  const floorOf = (free: () => number) => ({ minFreeBytes: FLOOR, paths: [dataDir], probe: { freeBytes: free } });
+  const reclaimers = (enabled = true, seeds?: DiskReclaimer) =>
+    earlySweepReclaimers({
+      gc: { db, artifacts: store, dataDir, days: 30 },
+      enabled,
+      ...(seeds !== undefined ? { seeds } : {}),
+    });
+  const sweep = (free: () => number, list: DiskReclaimer[] = reclaimers()) =>
+    runEarlySweep({ db, floor: floorOf(free), reclaimers: list, now: NOW });
+
+  it("does nothing when free space is at or above the floor", async () => {
+    const old = await unit(OLD);
+    const r = await sweep(() => FLOOR);
+    expect(r.satisfied).toBe(true);
+    expect(r.steps).toEqual([]);
+    expect(existsSync(old.wt)).toBe(true);
+    expect(status(old.sess)).toBe("ACTIVE");
+  });
+
+  it("collects retention-eligible meta-sessions and stops as soon as free space is back above the floor", async () => {
+    const a = await unit(OLD);
+    const b = await unit(new Date(OLD.getTime() + 60_000));
+    // Space is reclaimed as soon as one worktree is gone.
+    const free = () => (existsSync(a.wt) && existsSync(b.wt) ? 10 * MB : 500 * MB);
+    const r = await sweep(free);
+    expect(r.before).toMatchObject({ below: true, freeBytes: 10 * MB, path: dataDir });
+    expect(r.after).toMatchObject({ below: false, freeBytes: 500 * MB });
+    expect(r.satisfied).toBe(true);
+    expect(r.steps).toEqual([{ name: "meta_sessions", outcome: { reclaimed: 1, notes: [] } }]);
+    // Oldest first; the newer unit is left for retention.
+    expect(status(a.sess)).toBe("ARCHIVED");
+    expect(existsSync(a.wt)).toBe(false);
+    expect(status(b.sess)).toBe("ACTIVE");
+    expect(existsSync(b.wt)).toBe(true);
+  });
+
+  it("never touches a leased worktree, a non-terminal run or a recent session, and names the leased worktrees to every reclaimer", async () => {
+    const recent = await unit(RECENT);
+    const running = await unit(OLD, "RUNNING");
+    const leased = await unit(OLD);
+    db.prepare("UPDATE meta_session SET lease_run_id = ?, lease_expires_at = ? WHERE id = ?").run(
+      leased.run,
+      "2099-01-01T00:00:00.000Z",
+      leased.sess,
+    );
+    const expired = await unit(OLD);
+    const seen: string[][] = [];
+    const seeds: DiskReclaimer = {
+      name: "dependency_seeds",
+      reclaim: async (ctx) => {
+        seen.push([...ctx.leasedWorktrees]);
+        return { reclaimed: 0, notes: ["no seed store"] };
+      },
+    };
+    const r = await sweep(() => 10 * MB, reclaimers(true, seeds));
+    expect(r.satisfied).toBe(false);
+    expect(r.leasedWorktrees).toEqual([leased.wt]);
+    expect(seen).toEqual([[leased.wt]]);
+    expect(r.steps.map((s) => s.name)).toEqual(["dependency_seeds", "meta_sessions"]);
+    expect(r.steps[1]?.outcome).toEqual({ reclaimed: 1, notes: [] });
+    expect(status(expired.sess)).toBe("ARCHIVED");
+    expect(existsSync(expired.wt)).toBe(false);
+    for (const u of [recent, running, leased]) {
+      expect(existsSync(u.wt)).toBe(true);
+      expect(branches()).toContain(u.branch);
+      expect(status(u.sess)).toBe("ACTIVE");
+      expect(artifacts(u.sess).every((a) => a.deleted_at === null && existsSync(store.pathFor(a.sha256)))).toBe(true);
+    }
+  });
+
+  it("with retention.days unset the meta-session reclaimer collects nothing and says why", async () => {
+    const old = await unit(OLD);
+    const r = await sweep(() => 10 * MB, reclaimers(false));
+    expect(r.satisfied).toBe(false);
+    expect(r.steps).toEqual([
+      {
+        name: "meta_sessions",
+        outcome: { reclaimed: 0, notes: ["retention.days is not set, so no meta-session is collected"] },
+      },
+    ]);
+    expect(existsSync(old.wt)).toBe(true);
+    expect(status(old.sess)).toBe("ACTIVE");
+  });
+
+  it("runs the reclaimers in order, re-probes between them, records one that throws and skips the rest once satisfied", async () => {
+    let free = 10 * MB;
+    const order: string[] = [];
+    const mk = (name: string, work: () => void | Promise<void>): DiskReclaimer => ({
+      name,
+      reclaim: async () => {
+        order.push(name);
+        await work();
+        return { reclaimed: 1, notes: [] };
+      },
+    });
+    const r = await sweep(
+      () => free,
+      [
+        mk("first", () => {
+          throw new Error("store unavailable");
+        }),
+        mk("second", () => {
+          free = 500 * MB;
+        }),
+        mk("third", () => undefined),
+      ],
+    );
+    expect(order).toEqual(["first", "second"]);
+    expect(r.steps).toEqual([
+      { name: "first", outcome: { error: "store unavailable" } },
+      { name: "second", outcome: { reclaimed: 1, notes: [] } },
+    ]);
+    expect(r.satisfied).toBe(true);
+  });
+
+  it("runRetentionGc with stopWhen leaves the remaining candidates uncollected; without it every unit is collected", async () => {
+    const a = await unit(OLD);
+    const b = await unit(new Date(OLD.getTime() + 60_000));
+    let collected = 0;
+    const first = await runRetentionGc({
+      db,
+      artifacts: store,
+      dataDir,
+      days: 30,
+      now: NOW,
+      stopWhen: () => collected >= 1,
+      onStep: (s) => {
+        if (s === "ledger") collected++;
+      },
+    });
+    expect(first.collected.map((c) => c.sessionId)).toEqual([a.sess]);
+    expect(status(b.sess)).toBe("ACTIVE");
+    const rest = await gc();
+    expect(rest.collected.map((c) => c.sessionId)).toEqual([b.sess]);
+  });
+});

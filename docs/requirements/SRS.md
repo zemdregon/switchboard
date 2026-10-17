@@ -146,7 +146,7 @@ The five trust profiles and their intended semantics are:
 | FR-WS-08 | Concurrent runs of one project shall each execute in their own controller-created Git worktree and hold their own write lease. No two concurrent runs of a project, in different meta-sessions, may share a worktree, and a `container` environment (FR-PRJ-05) mounts each run's worktree alone. *(Added 2026-10-13, Delegated under owner decision 42; see [ROADMAP §4.2](../ROADMAP.md#42-owner-decisions).)* *(Note 2026-10-13, T9.11: verified for `host` environments; the `container` clause can be tested only when container environments exist (M10). Status in [ROADMAP §6.3](../ROADMAP.md#63-m9-projects-and-controlled-commits-tasks).)* | Must | CAP-4, owner decision 42 | T | M9 (`host`), M10 (`container`) |
 | FR-WS-09 | Worktrees created for concurrent runs of a project shall be removed when the run's changes are merged or its meta-session is abandoned, whichever happens first. The controller branch and diff artifact stay until retention GC (FR-WS-07). *(Proposed 2026-10-13, Delegated under owner decision 42, not accepted: until it is, [FRD §4.4](FRD.md#44-worktree-disposition-per-terminal-state) applies unchanged. Open question Q-55 asks how a merge is detected.)* | Should | CAP-4, owner decision 42 | T | M9 |
 | FR-WS-10 | A project may declare dependency seeds: a lockfile path, the ignored directory it produces and an install command. When the controller creates a run worktree, it shall populate each declared directory from a controller-owned store keyed by the lockfile's content hash, building a store entry once by running the install command like a verification command (FR-EXE-08) under the project's trust profile. Population shall be a copy-on-write clone or a private copy: a write in one worktree shall never change the store or another worktree (no hardlinks across worktrees, Q-103). A missing or failed seed degrades to an unseeded worktree with a recorded event and never fails admission. *(Proposed 2026-10-17, Delegated agent work, not owner-approved; from the operator's cross-examination of its own build setup.)* | Should | CAP-4, BO-1 | T | M9 |
-| FR-WS-11 | When free space on the filesystem holding the data directory or the worktrees is below an operator-configured floor (off by default), the controller shall hold new runs in `QUEUED` with a recorded reason instead of starting them, shall run an early garbage-collection sweep that removes dependency seeds (FR-WS-10) of idle worktrees before retention-eligible meta-sessions and never touches a leased worktree, and `doctor` shall report free space against the floor. The floor never fails a run or a request. *(Proposed 2026-10-17, Delegated agent work, not owner-approved; from the operator's cross-examination of its own build setup.)* | Should | CAP-4, NFR-DATA-01, R-8 | T | M3 |
+| FR-WS-11 | When free space on the filesystem holding the data directory or the worktrees is below an operator-configured floor (off by default), the controller shall hold new runs in `QUEUED` with a recorded reason instead of starting them, shall run an early garbage-collection sweep that removes dependency seeds (FR-WS-10) of idle worktrees before retention-eligible meta-sessions and never touches a leased worktree, and `doctor` shall report free space against the floor. The floor never fails a run or a request. *(Note 2026-10-17, T3.23, Delegated agent work, not owner-approved: implemented on this basis; the dependency-seed sweep step is an empty slot until T9.13 implements FR-WS-10. Proposed 2026-10-17 from the operator's cross-examination of its own build setup.)* | Should | CAP-4, NFR-DATA-01, R-8 | T | M3 |
 
 ### 3.6 Meta-sessions and continuity (`FR-SES`)
 
@@ -425,6 +425,28 @@ FR-QUE-03 reads CI through the operator's logged-in `gh` CLI (owner decision 54)
 | FR-QUE-04 | A project may set a low-water mark for its queue (off by default). When the number of admissible items (`READY`, or `PENDING` whose dependencies can still be met) falls below the mark, the controller shall emit one `queue_low` notification (FR-CTL-10) and shall not emit another until the count has risen to the mark again. The payload keeps the closed shape of [ADR-0048](../adr/0048-notification-sinks.md). *(Proposed 2026-10-17, Delegated agent work, not owner-approved; from the operator's cross-examination of its own build setup.)* | Could | CAP-16, BO-5 | T | M15 |
 | FR-QUE-05 | The CI trigger (FR-QUE-03) shall enqueue at most an operator-configured number of consecutive fix-up items per published ref whose runs were followed by another failing conclusion on that ref. Further failures on the ref are recorded but not enqueued, and the project is flagged needs-attention (FR-CTL-03) until CI passes on the ref or the operator resets the counter. *(Proposed 2026-10-17, Delegated agent work, not owner-approved; from the operator's cross-examination of its own build setup.)* | Should | CAP-16, BO-3 | T | M15 |
 
+### 3.19 Switchboard-controlled skills (`FR-SKL`)
+
+Owner decision 58 (2026-10-17, [ROADMAP §4.2](../ROADMAP.md#42-owner-decisions)) asks for operator-defined named skills
+(instruction packs) that Switchboard stores and versions, that the operator or orchestrator injects into a run by name,
+and that each provider receives in its native way, with a prompt prefix as fallback, without leaking into the
+repository. Everything below is **Proposed** and **Delegated** (mechanism in
+[ADR-0056](../adr/0056-switchboard-controlled-skills.md), contract in [LLD
+§19](../design/LLD.md#19-switchboard-controlled-skills-m16-proposed)); every limit is an Assumption.
+
+| ID | Requirement | Priority | Source | Verify | Milestone |
+| --- | --- | --- | --- | --- | --- |
+| FR-SKL-01 | The operator shall be able to define named skills, each a single text-only Markdown document with a closed front matter. Switchboard shall store each distinct content as a new immutable version addressed by its SHA-256 in the data directory, and never in a repository. | Should | CAP-17, owner decision 58 | T | M16 |
+| FR-SKL-02 | Adding a skill version shall refuse, without storing anything: a body or description over the configured limit, invalid encoding or control characters, a front matter key outside the closed set, any of Switchboard's own prompt delimiters, and any match of the secret patterns. A run's resolved skills shall not exceed the configured count and total size. | Should | CAP-17, NFR-SEC-05 | T | M16 |
+| FR-SKL-03 | `delegate_task`, `continue_task` and `enqueue_work` shall accept skill names (optionally pinned to a version), an operator-defined `role` and a switch to omit defaults. The controller shall resolve global, per-role, per-project and requested skills in a fixed order once at admission, pin the versions for that run, and reuse them on a `continue_task` that names none. | Should | CAP-17, UJ-13 | T | M16 |
+| FR-SKL-04 | Runs under `inspect-untrusted`, `edit-untrusted` and `test-sandboxed` shall receive only operator-approved skill versions, never a version imported from a repository path, and never skills supplied by the repository. A skill, a role or its delivery shall not change any run's trust profile, compiled controls, argv, environment, tools, routing or approval. | Should | CAP-17, CAP-3, FR-POL-04 | T, I | M16 |
+| FR-SKL-05 | Each adapter shall declare per compiled cell whether skills are delivered natively (a fresh file in a provider-native location inside the run worktree, declared only after a live check) or as a labelled prompt prefix in the stable part of the prompt, which is the default. Native delivery shall never edit an existing file, write outside the worktree or under the home directory, or require a flag the cell does not already compile. | Should | CAP-17, CAP-2 | T, I | M16 |
+| FR-SKL-06 | Native skill files shall be excluded from injected commits, checkpoints, diff and patch artifacts and handoff diffs; publication shall be refused while one exists; and they shall be removed and the removal verified before verification commands run, at every terminal state, at startup reconciliation and by retention GC. A failed removal shall flag the run for attention. | Should | CAP-17, CAP-11, FR-GIT-02 | T | M16 |
+| FR-SKL-07 | Every run shall record, in the ledger, each resolved skill's name, version, hash, resolution source and delivery mode, and for native delivery the path and the removal outcome; `get_run` and `runs show` shall show them without the skill text. | Should | CAP-17, CAP-8 | T | M16 |
+| FR-SKL-08 | The MCP server shall offer `list_skills` and `get_skill` (read-only) to orchestrator-profile clients when skills are enabled, limited per client by an optional allowlist of skill names; no MCP tool shall create, edit or approve a skill. | Should | CAP-17, CAP-1 | T | M16 |
+| FR-SKL-09 | The operator CLI shall list, show, add, approve, revoke, retire and diff skills, writing only operator records and skill content; `doctor` shall report skill state and unresolvable configured names. | Should | CAP-17, CAP-9 | T | M16 |
+| FR-SKL-10 | Every skill change shall be an append-only operator audit record, and every resolution, delivery, removal, tampering and failed removal a run event. No event, span, log, artifact or notification shall contain skill text. | Should | CAP-17, CAP-8, NFR-PRIV-01 | T | M16 |
+
 ## 4. Nonfunctional requirements
 
 ### 4.1 Security (`NFR-SEC`)
@@ -499,7 +521,9 @@ FR-QUE-03 reads CI through the operator's logged-in `gh` CLI (owner decision 54)
 
 Persistent entities (schema owned by [LLD §1](../design/LLD.md#1-data-model)): `meta_session`, `provider_binding`,
 `run`, `run_event`, `decision`, `artifact`, `workspace_checkpoint`, `usage_observation`, `provider_health`,
-`route_decision`, `adapter_version`, `approval`, plus (M11) `inner_call` (FR-INN-15) and (M9) `git_commit`
+`route_decision`, `adapter_version`, `approval`, plus (M16, Proposed) `skill_version`, `skill_event` and
+`run_skill` (FR-SKL-01, FR-SKL-07, FR-SKL-10; skill content is a file addressed by SHA-256 under the data
+directory), plus (M11) `inner_call` (FR-INN-15) and (M9) `git_commit`
 (provenance, FR-GIT-07) and `project_revision`
 (FR-PRJ-10). Project definitions
 live in the configuration file, or, for projects an orchestrator created (FR-PRJ-10), in the ledger as append-only
@@ -515,10 +539,10 @@ Requirement → milestone mapping is in the tables above; milestone → requirem
 
 | Capability | Requirements |
 | --- | --- |
-| CAP-1 Task delegation | FR-MCP-01, 03–10, FR-EXE-01–02, 05–08 |
+| CAP-1 Task delegation | FR-MCP-01, 03–10, FR-EXE-01–02, 05–09 |
 | CAP-2 Provider adapters | FR-ADP-01–11, FR-AUTH-02 |
 | CAP-3 Policy and trust profiles | FR-POL-01–10, FR-MCP-06, FR-PRJ-06 |
-| CAP-4 Workspace isolation | FR-WS-01–09 |
+| CAP-4 Workspace isolation | FR-WS-01–11 |
 | CAP-5 Continuity | FR-SES-01–06 |
 | CAP-6 Routing | FR-RTE-01–11, FR-MCP-02, 05 |
 | CAP-7 Capacity and backpressure | FR-CAP-01–11, FR-MCP-02, FR-ADP-10 |
@@ -529,5 +553,6 @@ Requirement → milestone mapping is in the tables above; milestone → requirem
 | CAP-12 Inner agent | FR-INN-01–18 |
 | CAP-13 Retrieval index | FR-RAG-01–14 |
 | CAP-14 Agent subscriptions to PR and merge events (deferred) | FR-SUB-01 |
-| CAP-15 Control plane for one chat client | FR-CTL-01–11 |
-| CAP-16 Project queue, schedules and CI triggers | FR-QUE-01–03 |
+| CAP-15 Control plane for one chat client | FR-CTL-01–12 |
+| CAP-16 Project queue, schedules and CI triggers | FR-QUE-01–05 |
+| CAP-17 Switchboard-controlled skills | FR-SKL-01–10 |

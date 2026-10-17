@@ -145,6 +145,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   are done on fakes: off by default, UTC cron, fired by `serve` before the CI poll, and listed or disabled with
   `switchboard schedule`. See
   [ROADMAP §6.14](docs/ROADMAP.md#614-m15-project-queue-schedules-and-ci-triggers-tasks).
+- **Milestone 16 (Switchboard-controlled skills) is `Planned`; nothing is built.** Operator-defined, versioned skills
+  injected into runs by name, delivered as a labelled prompt prefix (or natively once a live check verifies a
+  provider's location), never committed. Design only: [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
+  [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
   client and a macOS CI leg are done; Grok Build, Antigravity, Cursor and OpenCode each have a module, compile matrix
   and parser work on synthetic fixtures. Grok Build has module, compile-matrix, parser (partial: T4.23; every Done-when
@@ -338,6 +342,7 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `limits.verification_slots` | no | Integer 1 to 64. How many verification commands may run at once across every run on this host (ROADMAP T3.22, FR-EXE-09). Off unless you set a `limits.verification_*` key; then unset keys take the defaults (slots 2, nice 10, no extra variables). |
 | `limits.verification_nice` | no | Integer 0 to 19. Niceness added to each verification command (default 10); 0 leaves their priority unchanged. Same off-unless-set rule as `limits.verification_slots`. |
 | `limits.verification_env` | no | Up to 16 upper-case variable names with string values (at most 256 characters each), for example `VITEST_MAX_WORKERS`. Given to verification commands only, through the environment allowlist; `PATH`, `HOME`, `GIT_*`, `LD_*`, `DYLD_*`, `NODE_OPTIONS` and signing/agent variables are refused. Same off-unless-set rule as `limits.verification_slots`. |
+| `limits.min_free_disk_mb` | no | Integer, whole megabytes; **off when absent** (nothing probes the disk and nothing changes). When set, `serve` checks the free space of the data directory and its `worktrees` root before dispatching: under the floor every queued run waits in `QUEUED` with a `disk_hold` event (it is never failed or refused; `delegate_task` still accepts), the free space is re-probed every 30 seconds, and an early clean-up sweep runs, which collects idle meta-sessions older than `retention.days` **only if you set `retention.days`** (the same switch as above) and never a worktree whose run holds a write lease. `doctor` adds a `Free disk` line with the free space and the floor. See [ROADMAP T3.23](docs/ROADMAP.md#65-m3-isolation-tasks). |
 | `providers.<id>.enabled` | no | Boolean. A provider you do not list is enabled. |
 | `providers.<id>.weight` | no | Number from 0 to 1. Accepted by the schema. |
 | `providers.claude-code.git_channel` | no | Boolean, default `false`. **Supported, bypass-only** (owner decision 2026-10-16, ADR-0033): gives Claude Code the injected `commit` (and `push`) tool through a Switchboard-written `--mcp-config` file in the run's private directory, **only in an approved `privileged` run whose scope sets `bypass`**. Such a run then omits `--safe-mode` (it stops the tool server from starting), so the repository's `CLAUDE.md` and hooks load in it. Every other run is unaffected and can use `finalize_commit`. With `rag.embedding` set and retrieval on for the project, the same run also gets the read-only `search_project_context` tool for its own project (ROADMAP T12.9). Git-write denial still applies in that run (ROADMAP T9.4b); `serve` logs a warning when it is on. Only `claude-code` accepts the key. |
@@ -368,7 +373,8 @@ switchboard doctor --config /path/to/config.json
 ```
 
 `doctor` checks Node, Git, the config, the data directory, the ledger and the data-directory lock, reports what
-retention would collect and any orphans (read-only), then probes each
+retention would collect and any orphans (read-only), reports free disk space against `limits.min_free_disk_mb` when
+that key is set (`[warn]` under the floor: `serve` holds new runs; never `[FAIL]`), then probes each
 adapter (Claude Code, Codex and a fake test adapter that is not a real provider). It exits 0 when no check failed and 1
 otherwise. Markers:
 
@@ -2313,6 +2319,44 @@ repository, for each direction (`SWITCHBOARD_LIVE_PAIR=claude:codex` runs one). 
 no bypass flag, prints no prompt or transcript, and records statuses, bindings (without native session ids) and the
 bundle hash. A provider that is not installed or not logged in makes its checks `NOT_CHECKED`. It has not been run
 against real providers yet (ROADMAP T5.12 is the operator task).
+
+### Live-test budget guard
+
+Both live scripts accept an operator budget file kept outside the repository (T8.9, NFR-MAINT-05). Point
+`SWITCHBOARD_LIVE_BUDGET_FILE` at it (an absolute path) and name the run's purpose in `SWITCHBOARD_LIVE_PURPOSE`:
+
+```sh
+SWITCHBOARD_LIVE_BUDGET_FILE=$HOME/.config/switchboard-live/budget.json SWITCHBOARD_LIVE_PURPOSE=pre-check \
+  SWITCHBOARD_LIVE_TESTS=1 SWITCHBOARD_LIVE_PROVIDER=claude npm run test:live
+```
+
+The file is JSON (every key is required except `audit_log`; unknown keys are errors; the values are an example):
+
+```json
+{
+  "schema_version": 1,
+  "window_hours": 24,
+  "global_max_runs": 4,
+  "min_gap_seconds": 900,
+  "purposes": ["pre-check", "final-verify"],
+  "providers": { "claude": { "max_runs": 2, "model": "<model id>" }, "codex": { "max_runs": 2, "model": "<model id>" } },
+  "audit_log": "/absolute/path/outside/the/repository/live-runs.jsonl"
+}
+```
+
+Before any provider process starts, the script refuses the run and exits **75** when the purpose is not on `purposes`, a
+provider is not listed, the previous admitted run started less than `min_gap_seconds` ago, or the run would take a
+provider past its `max_runs` or all providers past `global_max_runs` within the last `window_hours`. A provider run is
+one task on one provider: the smoke test is one, each direction of the live pair is one on each of its two providers. A
+missing, unreadable or malformed file, a relative path, or a file or audit log inside the repository is refused the same
+way. An admitted run uses the file's model for each provider (it replaces `SWITCHBOARD_LIVE_MODEL`, which the smoke test
+otherwise passes as asked): the throwaway `serve` config lists only that model and the run asks for
+`minimum_capability: "low"`, so no new flag is passed. Every run appends JSON lines to `audit_log` (default: the budget
+file's path plus `.jsonl`): `start` and `finish` (with the exit code) for an admitted run, `denied` (with the reason) for
+a refused one. Only `start` records count. Records hold the script, a run id, the purpose, provider ids, run counts and
+models; never a prompt, output, account or credential. Without `SWITCHBOARD_LIVE_BUDGET_FILE` the scripts behave as
+before and print one warning on stderr. CI never sets the variable (`test/live-budget.test.ts`). The format and the
+checks are in [TDD §3.6](docs/design/TDD.md#36-testing-strategy).
 
 ## Troubleshooting
 

@@ -80,6 +80,7 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | `git.sanitize_patterns[]` | Operator additions to the built-in attribution patterns ([LLD §12.4](LLD.md#124-message-sanitisation)). *Note (2026-10-13, Delegated, T9.3, [ADR-0025](../adr/0025-git-commit-provenance-and-sanitiser.md)):* implemented as `git.sanitize_patterns` in the schema, at most 16 strings of at most 200 characters, each validated at load against a restricted regular-expression subset (`src/git/safe-pattern.ts`); an invalid pattern aborts startup naming its index. No RE2 dependency | FR-GIT-04 |
 | `limits.global_concurrency`, `limits.per_provider_concurrency` | Defaults 4 and 1 (proposed target) | NFR-PERF-03 |
 | `limits.verification_slots`, `limits.verification_nice`, `limits.verification_env` | Host-wide verification slots (integer 1 to 64, default 2), niceness added to verification commands (integer 0 to 19, default 10) and up to 16 upper-case parallelism variables given to verification commands through the allowlist; off unless any of the three keys is set, then unset keys take the defaults (T3.22, [LLD §8.1](LLD.md#81-verification-stage-m3-t310)) | FR-EXE-09, NFR-PERF-03 |
+| `limits.min_free_disk_mb` | Free-disk floor in whole megabytes, off when absent (T3.23, Delegated). Under it `pump()` holds queued runs with a `disk_hold` event and the early GC sweep runs ([LLD §5](LLD.md#5-workspace-and-lease-algorithm)); `doctor` adds a `Free disk` line. `ResolvedConfig.limits.minFreeDiskMb` exists only when the key is set | FR-WS-11, BR-51 |
 | `timeouts.*` | Wall-clock, idle, grace (proposed targets in [LLD §8](LLD.md#8-run-supervisor-details)); only `timeouts.preflight_ttl_seconds` exists in the schema today: integer 0 to 3600, default 60 (**Assumption**), 0 disables the preflight cache; unknown keys are rejected. *Note (2026-10-13, Delegated, [decision 29](../ROADMAP.md#42-owner-decisions), T3.21):* it bounds how long a successful `probe` or `authPreflight` is reused; failures are never cached | FR-EXE-01, NFR-PERF-02 |
 | `retention.days`, `retention.interval` | Retention in days (default 30, proposed target) and the GC pass period (`<n>m`, `<n>h` or `<n>d`, default `24h`). Collection is on only when `retention.days` is set in the file: the default is a value, not a switch (`ResolvedConfig.retentionEnabled`, T3.12, Proposed, Delegated). A period above about 24.8 days is capped by the timer | NFR-DATA-01, FR-WS-07 |
 | `profiles.<name>` | Overrides of the [SRS §3.3](../requirements/SRS.md#33-policy-and-trust-profiles-fr-pol) defaults. They may tighten or loosen a default ([owner decision 12](../ROADMAP.md#42-owner-decisions)); a loosening must be explicit in the config, is validated, and is recorded in the run's policy snapshot and listed by `doctor` (M3, T3.2). *Known limit ([owner decision 20](../ROADMAP.md#42-owner-decisions), 2026-10-13):* a `profiles.edit-untrusted` override that loosens `network` or `repo_config` is not enforced: the Claude adapter compiles `edit-untrusted` with the strict settings (network off at the tool level, repository configuration disabled) whatever the override says, and the Codex adapter makes the run `Ineligible: CAPABILITY_MISSING` | FR-POL-01 |
@@ -89,6 +90,7 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | `capacity.window_seconds`, `capacity.confidence_runs`, `capacity.queue_horizon_seconds`, `capacity.breaker.{failure_threshold, open_seconds}`, `capacity.retry.{max_attempts, base_ms, cap_ms}`, `providers.<id>.concurrency` | Estimator window and confidence scale, the BR-9 wait for a known reset (default 0: never wait), breaker thresholds, retry backoff, per-provider slot limit; defaults are Assumptions (Q-69 to Q-72). Shape and ranges in [LLD §16.1](LLD.md#161-configuration) (T6.1; the earlier placeholder name was `capacity.queue_horizon`) | FR-CAP-02, 04 to 06, NFR-PERF-03 |
 | `model_groups.<name>.members[{provider, model}]`, `routing.weights.pacing` | Operator-named groups of models across providers and the seventh score weight (0 to 100, default 1); **Proposed, not built** (T7.13, owner decision 57). Names and members are configuration only. Shape in [LLD §17.7](LLD.md#177-model-groups-fr-rte-10-fr-rte-11) | FR-RTE-10, 11 |
 | `capacity.subscriptions.<name>.{providers, windows[{id, length_seconds, reset, budget}]}`, `capacity.pacing.{mode, target_fraction, burst_fraction, min_confidence}` | Subscription windows (reset `provider_reported`, `fixed` or `rolling`; optional operator-declared budget) and the pacing gate (default `gate`, 0.95, 0.10, 0.5; Assumptions, Q-98); **Proposed, not built** (T6.13, T6.8). No window, reset or budget is ever supplied by Switchboard. Shape in [LLD §16.9](LLD.md#169-usage-windows-and-pacing-fr-cap-09-fr-cap-10) | FR-CAP-09, 10 |
+| `skills.enabled`, `skills.defaults[]`, `skills.roles.<role>[]`, `skills.delivery`, `skills.allow_draft_in_trusted`, `skills.max_body_bytes`, `skills.max_per_run`, `skills.max_run_bytes`, `skills.max_names`, `projects[].skills.{defaults, roles}`, `mcp_clients[].skills` | Switchboard-controlled skills: off by default; global, per-role and per-project default skill names, delivery mode, the draft switch, limits and per-client visibility; **Proposed, not built** (T16.3, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md), [LLD §19.3](LLD.md#193-configuration-fr-skl-03-fr-skl-04-fr-skl-08)) | FR-SKL-03, FR-SKL-04, FR-SKL-08 |
 | `telemetry.otlp_endpoint` | Optional export target | FR-TEL-02, NFR-PRIV-01 |
 | `log.level` | Logging threshold | §3.3 |
 | `inner_agent.enabled`, `inner_agent.backend{kind, base_url or provider, model, timeout_ms, max_concurrency, allow_remote, shares_subscription_with}` | Optional inner agent: one backend, no default backend or model, no credential field (Proposed shape; [LLD §13.1](LLD.md#131-configuration-shape)) | FR-INN-01, 03, 04, 15, 16 |
@@ -250,7 +252,7 @@ startup reconciliation applies them. Run state transitions use an optimistic ver
 | `serve` process tests (M2) | Spawn `switchboard serve` as a child with a temp config and data dir, drive it with an MCP stdio client: delegate → SUCCEEDED, stdout carries only MCP framing, a second `serve` on the same data dir fails, `SIGKILL` mid-run then restart ends the run `FAILED/PROCESS_CRASH` with no orphan (`src/cli/serve.test.ts`). The fake adapter is reachable only through the test-only switch below | No | FR-OPS-01, FR-EXE-06, NFR-REL-01 |
 | Git boundary (M9) | Fake adapter with scripted tool calls and scripted attempts to `git commit`, move refs or push, against real Git repos and a local bare remote; fixtures of typical attribution trailers, footers and session IDs through the sanitiser; assertion that no published commit contains them and that checkpoint commits never reach the remote | No | FR-GIT-01..09 |
 | Project and environment (M9, M10) | Configuration validation (unknown context kind, path outside allowed roots), ceiling arithmetic, `host` runs through a project; container tests need a container runtime and are opt-in (skipped in CI until Q-6 is settled) | No for `host`; runtime for `container` | FR-PRJ-01..09 |
-| Live provider smoke | Opt-in only: `scripts/live-smoke.mjs` (`npm run test:live`) is skipped unless `SWITCHBOARD_LIVE_TESTS=1`; not part of `npm test`, never runs in CI (see below) | Yes | [AGENTS.md](../../AGENTS.md) |
+| Live provider smoke | Opt-in only: `scripts/live-smoke.mjs` (`npm run test:live`) is skipped unless `SWITCHBOARD_LIVE_TESTS=1`; not part of `npm test`, never runs in CI; an operator budget file caps it (T8.9, see below) | Yes | [AGENTS.md](../../AGENTS.md), NFR-MAINT-05 |
 | Controller-overhead benchmark | `scripts/bench-perf.mjs` (`npm run bench`) times the real MCP server over the in-memory transport with the fake adapter; not part of `npm test` (see [§3.6.1](#361-controller-overhead-benchmark-t27)) | No | NFR-PERF-01, NFR-PERF-02 |
 | Inner agent (M11) | Scripted fake backend as a local HTTP server, hostile-output fixtures, planted-secret prompt capture, import-boundary test; details in [§3.12](#312-inner-agent) (as built: an in-process scripted fake plus a loopback fake HTTP server; the §3.12 as-built note maps each item to its test file) | No | FR-INN-01..17 |
 | Affinity replay (M7) | Table-driven and property tests over stored `route_decision` rows and a scripted fake adapter set: for any sequence of runs in a project, the provider and model change only when the decision carries an `affinity_switch_reason` from the closed list; a better score, lower cost or lower load never moves a project; no return after recovery; `require_provider`, `affinity reset`, `QUOTA_EXHAUSTED`, breaker open and exhausted retry each produce exactly their reason. Details in [§3.13.3](#3133-testing-affinity-and-retrieval) | No | FR-RTE-06..09, FR-CAP-08 |
@@ -275,6 +277,28 @@ by default (`SWITCHBOARD_LIVE_PAIR=<first>:<second>` for one direction), under t
 no credential read, no prompt or transcript printed). It records statuses, failure codes, bindings without native
 session ids, and the bundle's artifact id and SHA-256. A provider that is not installed, not in its validated range or
 not logged in makes its checks `NOT_CHECKED`, and the script exits 1. Running it is the operator task T5.12.
+
+**Live-test budget guard (T8.9, NFR-MAINT-05).** Both live scripts call `admitLiveRun` in `scripts/live/budget.mjs`
+after choosing their provider plug-ins and before `dist/` is loaded or any provider process is spawned (probe, auth
+status, `switchboard serve`). `SWITCHBOARD_LIVE_BUDGET_FILE` names the operator's budget file; unset, the scripts behave
+as on `main` and print one stderr warning. The file format is owned by the header of `scripts/live/budget.mjs` and shown
+in the [README](../../README.md#live-test-budget-guard): `schema_version` 1, `window_hours`, `global_max_runs`,
+`min_gap_seconds`, `purposes`, `providers.<id>.max_runs` and `.model`, optional `audit_log`. Unknown keys, a malformed
+file, a relative path or a path inside the repository refuse (fail closed). The decision (`decide`, pure, clock
+injected) refuses, in this order, a purpose (`SWITCHBOARD_LIVE_PURPOSE`) not on the allowlist, a provider not listed, a
+start inside the minimum gap after the last `start` record, and a request that would pass the global or a per-provider
+cap of provider runs counted from `start` records inside the rolling window (a smoke run is one provider run, a pair
+direction one per provider). A refusal appends a `denied` record and exits 75 (`EX_TEMPFAIL`); an admission appends
+`start` and, on process exit, `finish` with the exit code. The file's model reaches the run without a new flag: the
+in-script compile (flag audit) carries it, the throwaway `serve` config lists only that model in `providers.<id>.models`
+with capability `low`, and the delegation asks for `minimum_capability: "low"` (T7.8 stage 1). Delegated choices: the
+exit code, the file format, counting only `start` records, and a required model per provider. Pacing
+([ADR-0055](../adr/0055-model-groups-and-usage-pacing.md)) is not involved. Tests (`test/live-budget.test.ts`) use the
+fake plug-in `scripts/live/providers/fake.mjs` (`fixture: true`: selectable, not listed in the scripts' messages; the
+scripts stop right after admission and hand it the compile request, which it records) and an injected clock: the run
+past the cap is refused with exit 75 and a `denied` record and the fake is never reached, a run inside the gap and an
+unknown purpose are refused, the fake receives the file's model whatever `SWITCHBOARD_LIVE_MODEL` asked for,
+unconfigured messages are byte-identical to `main`, and no workflow or npm script sets the variable.
 
 Principles: tests pass with no provider CLI installed or logged in; secret-pattern scan over all test outputs
 (NFR-SEC-01); coverage targets are not set until M1 measurement (no number proposed).
@@ -1384,6 +1408,59 @@ T7.17.
   note. T6.15 turns them into synthetic fixtures, labelled as such, one per provider.
 - **Known risks.** Estimates see only Switchboard's own usage (R-67). A member whose adapter accepts no model is never
   chosen (R-68).
+
+### 3.16 Switchboard-controlled skills (Proposed)
+
+*Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); not built).
+Delegated, not owner-approved beyond the direction.* Contract: [LLD §19](LLD.md#19-switchboard-controlled-skills-m16-proposed).
+Tasks: ROADMAP T16.0 to T16.12.
+
+- **Where it lives.** A store module `src/skills/` (Proposed): format validator, canonicaliser, content store, ledger
+  helpers and the pure resolver. The prompt-prefix renderer extends `src/adapters/prompt.ts`. The native writer and
+  cleaner live in the workspace manager beside checkpoints, because they share the base-checkpoint and path rules.
+  Exclusions are added to the commit tool, checkpoint and artifact code in `src/git/` and `src/workspace/`. The CLI group
+  is `src/cli/skills.ts`. Nothing under `src/policy/`, `src/routing/` or `src/capacity/` imports `src/skills/`
+  (import-boundary test).
+- **Configuration keys.** `skills.enabled` (default `false`), `skills.defaults[]`, `skills.roles.<role>[]`,
+  `skills.delivery` (`native_preferred` or `prefix_only`), `skills.allow_draft_in_trusted` (default `false`), the four
+  limits, `projects[].skills.{defaults, roles}` and `mcp_clients[].skills` ([LLD
+  §19.3](LLD.md#193-configuration-fr-skl-03-fr-skl-04-fr-skl-08)). Unknown keys abort startup as for every section.
+
+#### 3.16.1 Per-provider delivery table
+
+The rule (ADR-0056 items 5, 6 and 8): a cell may deliver natively only where the compiled cell *already* loads that
+location with no change to the argv or environment, and only after an operator live check (T16.8) shows a file there
+reaches the model. Every cell is `prompt_prefix` until then. "Candidate native location" is where a native file would go
+once verified; it is always a fresh `switchboard-` path inside the worktree, never a tracked file, never `HOME`.
+
+| Provider | Cells today (non-bypass / approved bypass) | What the cell loads from the worktree | Candidate native location | Delivery on 2026-10-17 | Why |
+| --- | --- | --- | --- | --- | --- |
+| Claude Code | All profiles; non-bypass cells run `--safe-mode` ([§4.1](#41-claude-code-m2)) | Nothing under `--safe-mode` (`CLAUDE.md`, skills, plugins disabled); with `repository_config` `approved`/`enabled` in an approved bypass run or the tool channel, `CLAUDE.md` loads (live check 15); project skills presumably load too (Unverified) | `.claude/skills/switchboard-<name>/SKILL.md` (Unverified: skill file format and discovery not in a repository source) | `prompt_prefix` | Native only in bypass cells that already omit `--safe-mode`; needs T16.8 |
+| Codex | All non-bypass profiles; bypass `Ineligible` ([§4.2](#42-codex-m2)) | `--ignore-rules` (Assumption: suppresses repository `AGENTS.md`) | none | `prompt_prefix` | No cell loads repository instructions; native would need dropping `--ignore-rules` (forbidden by ADR-0056 item 5) |
+| Grok Build | Approved bypass with `repository_config: enabled` only ([§4.3](#43-grok-build-m4)) | `AGENTS.md`/`CLAUDE.md` in full; compatibility scanners for `.claude` and `.cursor` skills and rules | `.claude/skills/switchboard-<name>/SKILL.md` through the scanner (Unverified) | `prompt_prefix` | Loading of these files "was not tested"; editing `AGENTS.md` is forbidden; needs T16.8 |
+| Antigravity | Approved bypass only ([§4.4](#44-antigravity-agy-m4)) | `GEMINI.md`, `AGENTS.md`, `.agents/*` (live) | none verified (`.agents` skills directory is a third-party report) | `prompt_prefix` | The only documented locations are tracked instruction files or config the ADR-0039 guard refuses in `disabled` cells |
+| Cursor | Approved bypass only, `--trust` ([§4.5](#45-cursor-cli-m4)) | `AGENTS.md`, `CLAUDE.md`, `.cursor/rules` (live: `AGENTS.md` and `.cursor/rules` reach the model) | `.cursor/rules/switchboard-<name>.mdc` (Unverified: rule file front matter) | `prompt_prefix` | Strongest candidate; the rule file format needs T16.8 |
+| OpenCode | Approved bypass with `enabled` only ([§4.6](#46-opencode-m4)) | `AGENTS.md`; `CLAUDE.md` fallback; `opencode.json` `instructions` | none | `prompt_prefix` | Native would mean editing `AGENTS.md` or writing `opencode.json` (repository config); both are forbidden |
+| Kimi Code | Approved bypass (`-p`) and restricted ACP cells ([§4.7](#47-kimi-code-m4-blocked-by-b-1)) | `.kimi-code/*` agent files once trusted; `AGENTS.md` unknown | `--skills-dir <data_dir>/runs/<run_id>/skills` outside the worktree (Q-108) | `prompt_prefix` | `--skills-dir` is never emitted today; using it changes the argv and needs ADR-0035/0037 registry work and a live check |
+| Muse Code | Approved bypass with `enabled` (`--trust-workspace`) ([§4.8](#48-muse-code-m4)) | `AGENTS.md` (first found), `.agents/skills`, `.codex/skills`, `.claude/skills` in a trusted workspace | `.agents/skills/switchboard-<name>/SKILL.md` (Unverified) | `prompt_prefix` | Workspace skills load only in the trusted cell; needs T16.8 |
+| Fake | Every cell | Test-declared | `.fake/skills/switchboard-<name>.md` | `native` in tests only | Exercises the native path, exclusions and cleanup in CI (T16.6) |
+
+User-level locations (`~/.claude/skills`, `~/.agents/skills`, `$XDG_CONFIG_HOME/muse/skills`, `~/.cursor`) are never
+used, even though several providers load them in every cell: they are shared by all runs and by the operator.
+
+#### 3.16.2 Testing
+
+All on fakes; no provider CLI, no login. Asserted properties: (1) with `skills.enabled` false, or with no skills
+resolved, prompts, argv, environment, ledger rows and artifacts are byte-identical to `main`; (2) with skills, argv and
+environment are still byte-identical (only the prompt or the worktree differs); (3) a run under an untrusted profile
+never receives a draft or `repository_path` version, over generated requests; (4) no commit, checkpoint, diff, patch,
+handoff diff or `changed_files` includes a recorded native path, including after the fake agent edits, renames or
+`git add`s it; (5) after every terminal state, a restart in each non-terminal state, and a GC pass, no recorded path
+exists (fault injection on unlink sets `removal = 'failed'` and needs-attention); (6) no event, span, log, artifact or
+sink capture contains a planted canary string from a skill body; (7) `add` refuses each fixture in the LLD §19.1
+refusal table; (8) the resolver is deterministic: same config, store and request give the same ordered set. The
+malicious-fixture leg (T16.11) adds a repository with its own `.claude/skills`, `.cursor/rules`, `AGENTS.md` and a
+pre-existing `switchboard-` path.
 
 ## 4. Provider adapter strategy
 

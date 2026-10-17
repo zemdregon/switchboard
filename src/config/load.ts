@@ -78,7 +78,11 @@ export interface ResolvedConfig {
   /** Canonical allowed workspace roots (FR-POL-10). */
   allowedRoots: string[];
   mcpClients: ReadonlyMap<string, ResolvedMcpClient>;
-  limits: { globalConcurrency: number; perProviderConcurrency: number };
+  /**
+   * `minFreeDiskMb` (T3.23, FR-WS-11) is present only when the config sets `limits.min_free_disk_mb`: the floor is off
+   * by default and an unset key leaves `limits` exactly as before.
+   */
+  limits: { globalConcurrency: number; perProviderConcurrency: number; minFreeDiskMb?: number };
   /**
    * T3.22 (FR-EXE-09, LLD §8.1): the verification limiter; undefined unless the config sets a `limits.verification_*`
    * key, so an unconfigured controller verifies exactly as before. Unset keys take the Assumption defaults.
@@ -522,6 +526,7 @@ export function loadConfig(
     limits: {
       globalConcurrency: cfg.limits?.global_concurrency ?? DEFAULT_GLOBAL_CONCURRENCY,
       perProviderConcurrency: cfg.limits?.per_provider_concurrency ?? DEFAULT_PER_PROVIDER_CONCURRENCY,
+      ...(cfg.limits?.min_free_disk_mb !== undefined ? { minFreeDiskMb: cfg.limits.min_free_disk_mb } : {}),
     },
     ...resolveVerificationLimits(cfg.limits),
     retention: {

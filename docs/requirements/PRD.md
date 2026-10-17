@@ -3,7 +3,7 @@
 | Field | Value |
 | --- | --- |
 | Status | Draft, baseline for milestone M1 |
-| Owns | Target users, use cases, user journeys UJ-1..UJ-11, capabilities CAP-1..CAP-16 and their priorities, the product surface, non-goals, and product-level acceptance criteria per capability. |
+| Owns | Target users, use cases, user journeys UJ-1..UJ-13, capabilities CAP-1..CAP-17 and their priorities, the product surface, non-goals, and product-level acceptance criteria per capability. |
 | Does not own | Business outcomes ([BRD](BRD.md)); requirements ([SRS](SRS.md)); workflows and business rules ([FRD](FRD.md)); milestone scope and status ([ROADMAP](../ROADMAP.md)); components ([HLD](../design/HLD.md)). |
 | Last reconciled | 2026-10-14 |
 
@@ -63,6 +63,7 @@ Priorities are MoSCoW as in [SRS §1](SRS.md#1-conventions). Milestones are defi
 | CAP-14 | Agent subscriptions to PR and merge events | Optional, later. An agent subscribes to a pull request or merge and is notified when CI passes or fails, when another agent commits to that PR, or when it merges or closes, so it can make the change it needs. Not scheduled; it needs this entry and its SRS requirements (FR-SUB-01) before any build. *(Note 2026-10-15, owner decision 51: the narrowed form, fixing CI on branches a project published, is CAP-16 and milestone M15; this entry stays Deferred.)* | Deferred | Not scheduled ([ROADMAP §8](../ROADMAP.md#8-deferred-and-excluded-work)) | None yet (no business outcome in BRD) | FR-SUB-01 |
 | CAP-15 | Control plane for one chat client | One MCP client can keep watch over several unattended projects: a digest and `list_runs` with a `needs_attention` flag, operator budgets and a loop breaker, pause, and approvals by a client the operator marks as an approval proxy under fixed controls, with the consent page as a secondary method. Steering, notification sinks, the consent-page link and a `console` tool profile are Should. An approval is decided only through the controls of FR-CTL-08 or the consent page, never by a model's text alone. Owner decisions 49 and 50. | Must (inbox and digest, needs-attention, budgets and loop breaker, pause, approval proxy); Should (steering, notification sinks, consent-page link, `console` tool profile) | M14 | BO-1, BO-3, BO-5 | FR-CTL-01–12 |
 | CAP-16 | Project queue, schedules and CI triggers | Work for a project waits in a durable queue and runs on schedules, or when CI fails on a branch the project published. Each item is admitted under the ceiling of the client that created it. The general PR and merge subscription of CAP-14 stays Deferred. Owner decision 51. | Should | M15 (after M14); the CI trigger reads CI through the operator's `gh` CLI (owner decision 54) | BO-1, BO-4 | FR-QUE-01–05 |
+| CAP-17 | Switchboard-controlled skills | The operator defines named skills (instruction packs such as a security review or a merge-steward playbook) that Switchboard stores and versions. The orchestrator, project defaults and per-role defaults inject them into a run by name; each provider receives them in its native way where that is verified, otherwise as a labelled prompt prefix. Skills never enter the repository or a commit and are removed after the run; untrusted runs get only operator-approved skills. *Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md)); not built.* | Should | M16 | BO-1, BO-3 | FR-SKL |
 
 Deferred capabilities, tracked in [ROADMAP §8](../ROADMAP.md#8-deferred-and-excluded-work): read-only usage dashboard
 (FR-TEL-04), upstream ACP server, learned routing (FR-RTE-05), OpenCode persistent service transport (FR-EXE-04), native
@@ -183,10 +184,11 @@ says the inner model draws on the same subscription as a routed provider, in whi
 | Ask for a group of models (for example "flagship") and get whichever member has headroom, while every subscription is used fully by its reset | Orchestrator, Operator | CAP-6, CAP-7 |
 | Give agents relevant project context from an index instead of re-sending large amounts of it | Operator | CAP-13 |
 | Let an agent follow a pull request or merge and react when CI or another agent changes it (deferred) | Orchestrator | CAP-14 |
+| Give every coder or steward run the same operator playbook by naming a skill, without pasting it into the task or the repository | Operator, Orchestrator | CAP-17 |
 
 ### 4.2 User journeys
 
-Workflows behind these journeys are specified in the [FRD](FRD.md) (WF-1 to WF-14); journeys only name the requirements
+Workflows behind these journeys are specified in the [FRD](FRD.md) (WF-1 to WF-16); journeys only name the requirements
 involved.
 
 #### UJ-1 First-time setup
@@ -338,6 +340,25 @@ involved.
   only. Switchboard never starts work on its own to use up a subscription.
 - CAP: CAP-6, CAP-7. FR: FR-RTE-10, FR-RTE-11, FR-CAP-09, FR-CAP-10, FR-RTE-06, FR-RTE-07.
 
+#### UJ-13 Operator defines a skill; runs receive it by name
+
+*Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); not built).*
+
+- Actor: Operator (defines and approves skills); Orchestrator (injects them).
+- Trigger: the operator wants every steward run to follow a merge playbook, and an orchestrator wants one review run to
+  follow a security-review checklist.
+- Flow: the operator adds the two skills with `switchboard skills add`, reads them back and approves the versions, and
+  sets `skills.roles.steward` to the playbook. The orchestrator calls `list_skills`, then `delegate_task` with `role:
+  "steward"` for the steward run and `skills: ["security-review"]` for the review run. Switchboard resolves and pins the
+  versions, records them on each run and gives them to each provider natively where verified, otherwise as a labelled
+  block at the start of the prompt. When a run ends the delivered files are gone; nothing from the skill is in the
+  branch, the diff or any commit.
+- Alternate: an `edit-untrusted` run that names a draft or repository-imported skill is refused with a reason; a
+  `continue_task` keeps the same versions; a handoff to another provider re-delivers them there.
+- Outcome: the playbook is maintained once, every run that used it is traceable to the exact version and hash, and
+  untrusted runs never receive instructions the operator did not approve.
+- CAP: CAP-17, CAP-3, CAP-9. FR: FR-SKL-01–10, FR-POL-04.
+
 **Implementation note (partial M12).** UJ-11 is the target operator and orchestrator experience for CAP-13. On `main`,
 T12.4–T12.5 deliver background indexing, `doctor`/`index` visibility and labelled per-project snippets at admission on
 fakes; the alternate path with `use_global: true` and deployment-wide snippets is T12.7 ([§3 implementation
@@ -460,3 +481,6 @@ Each criterion is observable and is checked when the named milestone delivers. D
 | CAP-15 | A notification sink receives metadata-only payloads and never a planted secret or agent text. | M14 |
 | CAP-16 | A queued item is admitted only under its creating client's ceiling, and a schedule does nothing until it is enabled. | M15 |
 | CAP-16 | A CI-failure trigger admits work only for branches the project published, and its event text is treated as untrusted. | M15 |
+| CAP-17 | With skills disabled or none resolved, prompts, argv, environment and records are unchanged; with skills, a fake run's prompt carries the labelled block in resolved order, and argv and environment are still unchanged. | M16 |
+| CAP-17 | An untrusted run never receives a draft or repository-imported skill; a skill with a secret, a prompt delimiter or an unknown front matter key is refused at `add`. | M16 |
+| CAP-17 | A fake adapter's native skill file never appears in a commit, checkpoint, diff or handoff, blocks publication while present, and is gone after every terminal state, a restart and GC; no event, span, log or sink contains skill text. | M16 |

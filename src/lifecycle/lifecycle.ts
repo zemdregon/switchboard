@@ -210,7 +210,14 @@ import type { Telemetry } from "../telemetry/index.js";
 import { type DelegateSpanFacts, SpanTracker } from "../telemetry/spans.js";
 import { usageObservationsFromEvents } from "../usage/index.js";
 import { gitText } from "../workspace/git.js";
-import { type PreparedWorkspace, ResumeDirectoryUnavailableError, type WorkspaceManager } from "../workspace/index.js";
+import {
+  assessDiskFloor,
+  type DiskFloor,
+  type DiskFloorStatus,
+  type PreparedWorkspace,
+  ResumeDirectoryUnavailableError,
+  type WorkspaceManager,
+} from "../workspace/index.js";
 import {
   APPROVAL_DECIDED_EVENT,
   applyApprovalDecision,
@@ -628,7 +635,29 @@ export interface RunLifecycleOptions {
    * `limits.verification_*` key): verification is exactly the T3.10 stage.
    */
   readonly verificationLimits?: VerificationLimits | undefined;
+  /**
+   * T3.23 (FR-WS-11, BR-51, LLD §5): the free-disk floor (`limits.min_free_disk_mb`). Unset (the default): no probe is
+   * ever made and dispatch is unchanged. Set: `pump()` probes once per dispatch pass while runs are queued; under the
+   * floor every queued run is held in `QUEUED` with one `disk_hold` event per hold episode, the wake timer re-probes
+   * every `recheckMs`, and `sweep` (the early GC sweep, at most one in flight and one per `recheckMs`) runs. Admission
+   * (`submit`) is unaffected: the floor never fails or refuses a run.
+   */
+  readonly diskFloor?: DiskFloorGate;
 }
+
+/** T3.23: the lifecycle's view of the free-disk floor; `serve` composes it from the config and `src/workspace/gc.ts`. */
+export interface DiskFloorGate extends DiskFloor {
+  /** The early GC sweep (FR-WS-11). Its result is the caller's to log; a rejection only ends this sweep. Unset: none. */
+  readonly sweep?: (status: DiskFloorStatus) => Promise<unknown>;
+  /** Re-probe period while runs are held; default {@link DEFAULT_DISK_RECHECK_MS}. */
+  readonly recheckMs?: number;
+}
+
+/** T3.23: how often a disk hold re-probes free space (Assumption, Delegated: free space changes slowly). */
+export const DEFAULT_DISK_RECHECK_MS = 30_000;
+
+/** T3.23: the `run_event` type recorded when the floor holds a run (payload: free, floor and path in bytes). */
+export const DISK_HOLD_EVENT = "disk_hold";
 
 /** T10.1: where a run is placed (LLD §11.3). `serve` composes it from the configuration and the container backend. */
 export interface EnvironmentPlacement {
@@ -761,6 +790,11 @@ export class RunLifecycle {
   /** T6.4: one timer for the earliest moment a held run may become dispatchable (breaker cool-down). */
   private wakeTimer: ReturnType<typeof setTimeout> | undefined;
   private wakeAt: number | undefined;
+  /** T3.23: runs that already carry a `disk_hold` event in the current hold episode (cleared when the floor is met). */
+  private readonly diskHeld = new Set<string>();
+  /** T3.23: the early sweep in flight, and when the last one started (at most one per `recheckMs`). */
+  private diskSweep: Promise<void> | undefined;
+  private diskSweepAt: number | undefined;
   /** T8.2: wrapper-boundary span tracker; inert when no telemetry sink is configured. */
   private readonly spans: SpanTracker;
 
@@ -807,6 +841,8 @@ export class RunLifecycle {
       void exec.handle?.cancel();
     }
     await this.drain();
+    // T3.23: an early sweep still working on the ledger finishes before the caller closes the database.
+    if (this.diskSweep !== undefined) await this.diskSweep;
   }
 
   /** Resolve once no run is executing in this process. */
@@ -1413,10 +1449,24 @@ export class RunLifecycle {
     if (!this.started || this.stopped) return;
     this.releaseDueWaiting();
     for (;;) {
+      let held: DiskFloorStatus | undefined;
       const picked = this.ledger.immediate((): RunRecord | undefined => {
         if (this.ledger.countRunsInStates(SLOT_STATES) >= this.opts.globalConcurrency) return undefined;
         const now = this.now();
-        for (const run of this.ledger.listRunsInState("QUEUED")) {
+        const queued = this.ledger.listRunsInState("QUEUED");
+        // T3.23 (FR-WS-11, BR-51): under the free-disk floor every queued run is held here, with one `disk_hold` event
+        // per run and hold episode; nothing fails. The hold lifts when a later pass (wake timer, sweep end, any other
+        // dispatch trigger) probes free space at or above the floor. No floor configured: no probe, same path as before.
+        if (queued.length > 0 && this.opts.diskFloor !== undefined) {
+          const status = assessDiskFloor(this.opts.diskFloor);
+          if (status.below) {
+            for (const run of queued) this.recordDiskHold(run, status);
+            held = status;
+            return undefined;
+          }
+          this.diskHeld.clear();
+        }
+        for (const run of queued) {
           const limit =
             run.provider === null
               ? undefined
@@ -1429,9 +1479,56 @@ export class RunLifecycle {
         }
         return undefined;
       });
+      if (held !== undefined) {
+        this.onDiskHold(held);
+        return;
+      }
       if (!picked) return;
       this.launch(picked.id);
     }
+  }
+
+  /** T3.23: one `disk_hold` event per run per hold episode, inside the dispatch transaction. */
+  private recordDiskHold(run: RunRecord, status: DiskFloorStatus): void {
+    if (this.diskHeld.has(run.id)) return;
+    this.diskHeld.add(run.id);
+    this.ledger.appendRunEvent({
+      runId: run.id,
+      type: DISK_HOLD_EVENT,
+      payload: {
+        reason: "FREE_DISK_BELOW_FLOOR",
+        free_bytes: status.freeBytes,
+        min_free_bytes: status.minFreeBytes,
+        path: status.path,
+      },
+    });
+  }
+
+  /**
+   * T3.23: after a pass that held runs, arm the re-probe and start the early sweep (FR-WS-11) unless one is in flight
+   * or one started less than `recheckMs` ago, so a floor nothing can reclaim costs one sweep per period, not a loop.
+   * The sweep's end re-runs `pump()`, which lifts the hold as soon as the probe says so.
+   */
+  private onDiskHold(status: DiskFloorStatus): void {
+    const floor = this.opts.diskFloor;
+    if (floor === undefined || this.stopped) return;
+    const recheckMs = floor.recheckMs ?? DEFAULT_DISK_RECHECK_MS;
+    const nowMs = this.now().getTime();
+    this.scheduleWake(nowMs + recheckMs);
+    if (floor.sweep === undefined || this.diskSweep !== undefined) return;
+    if (this.diskSweepAt !== undefined && nowMs - this.diskSweepAt < recheckMs) return;
+    this.diskSweepAt = nowMs;
+    const sweep = floor.sweep;
+    this.diskSweep = Promise.resolve()
+      .then(() => sweep(status))
+      .then(
+        () => undefined,
+        () => undefined, // the caller logs its own sweep; a failure here only means the hold waits for the re-probe
+      )
+      .finally(() => {
+        this.diskSweep = undefined;
+        this.pump();
+      });
   }
 
   private launch(runId: string): void {
