@@ -261,8 +261,13 @@ every profile and binding).
   a denial, denial over envelope error and non-zero exit, guard over all). Sourcing: [TDD
   §4.4.7](TDD.md#447-antigravity-parser-implementation-evidence-m4-t433).
 
-**Gaps (remain `Partial`, not `Done`).** Resume is not compiled (Q-86). Rate-limit and sandbox-violation shapes were not observed in the live check, so those failures end `TOOL_FAILURE` rather
-than dedicated taxonomy codes. The stderr `AGY_ERROR` shape has since been observed for real (seven quota stops at exit 3, T6.11 [limit captures](../research/limit-captures-2026-10-17.md)) and mapped in `classifyFailure` to `QUOTA_EXHAUSTED` (T6.15, [ROADMAP T6.15](../ROADMAP.md#611-m6-capacity-and-resilience-tasks)); the `extractResult` path still ends `TOOL_FAILURE` because the adapter contract gives it no stderr (pinned in `src/adapters/antigravity/limit-signals.test.ts`). Tool-step parameter key names (`command`, path fields) are Assumptions where the capture
+**Gaps (remain `Partial`, not `Done`).** Resume is not compiled (Q-86). Rate-limit and sandbox-violation shapes were not
+observed in the live check, so those failures end `TOOL_FAILURE` rather than dedicated taxonomy codes. The stderr
+`AGY_ERROR` shape has since been observed for real (seven quota stops at exit 3, T6.11
+[limit captures](../research/limit-captures-2026-10-17.md)) and mapped in `classifyFailure` to `QUOTA_EXHAUSTED` (T6.15,
+[ROADMAP T6.15](../ROADMAP.md#611-m6-capacity-and-resilience-tasks)); the `extractResult` path still ends `TOOL_FAILURE`
+because the adapter contract gives it no stderr (pinned in `src/adapters/antigravity/limit-signals.test.ts`). Tool-step
+parameter key names (`command`, path fields) are Assumptions where the capture
 did not record them. Operator extension of T4.31 is still needed for resume with a known conversation id, rate limits
 and full tool-parameter shapes.
 
