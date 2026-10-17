@@ -19,6 +19,8 @@ const EXPECTED_TABLES = [
   "adapter_version",
   "approval",
   "artifact",
+  "ci_trigger_event",
+  "ci_trigger_ref_state",
   "control_plane_event",
   "control_plane_state",
   "decision",
@@ -112,7 +114,13 @@ describe("ledger migrations", () => {
         sizeBytes: 1,
         mediaType: "text/x-diff",
       });
-      expect(migrate(d, undefined, MIGRATIONS)).toEqual([22]);
+      expect(
+        migrate(
+          d,
+          undefined,
+          MIGRATIONS.filter((m) => m.version <= 22),
+        ),
+      ).toEqual([22]);
       expect(d.prepare("SELECT kind FROM artifact").all()).toEqual([{ kind: "diff" }]);
       ledger.insertArtifact({
         runId: run.id,
@@ -539,6 +547,54 @@ describe("ledger migrations", () => {
         template: {},
       }),
     ).toThrow();
+  });
+
+  it("0023 adds ci_trigger_event and ci_trigger_ref_state on a version 22 database (T15.5, FR-QUE-05, LLD §18.6)", () => {
+    db = new Database(path.join(dir, LEDGER_FILE_NAME));
+    db.pragma("foreign_keys = ON");
+    const d = db;
+    const upTo22 = MIGRATIONS.filter((m) => m.version <= 22);
+    expect(migrate(d, undefined, upTo22)).toEqual(upTo22.map((m) => m.version));
+
+    // Migrate to 23
+    expect(
+      migrate(
+        d,
+        undefined,
+        MIGRATIONS.filter((m) => m.version <= 23),
+      ),
+    ).toEqual([23]);
+
+    // Table constraints on ci_trigger_ref_state
+    expect(() =>
+      d
+        .prepare(
+          `INSERT INTO ci_trigger_ref_state (project_id, publish_ref, consecutive_fixes, stuck, updated_at)
+           VALUES ('p','refs/heads/b',0,2,'2026-10-17T00:00:00Z')`,
+        )
+        .run(),
+    ).toThrow(/CHECK/u);
+
+    // Can insert and query state and events
+    d.prepare(
+      `INSERT INTO ci_trigger_ref_state (project_id, publish_ref, consecutive_fixes, stuck, updated_at)
+       VALUES ('p','refs/heads/b',1,0,'2026-10-17T00:00:00Z')`,
+    ).run();
+
+    d.prepare(
+      `INSERT INTO ci_trigger_event (id, project_id, publish_ref, external_id, conclusion, untrusted_summary, observed_at, work_item_id)
+       VALUES ('cie_1','p','refs/heads/b','101','failure',NULL,'2026-10-17T00:00:00Z',NULL)`,
+    ).run();
+
+    // Unique constraint on (project_id, external_id)
+    expect(() =>
+      d
+        .prepare(
+          `INSERT INTO ci_trigger_event (id, project_id, publish_ref, external_id, conclusion, untrusted_summary, observed_at, work_item_id)
+           VALUES ('cie_2','p','refs/heads/b','101','failure',NULL,'2026-10-17T00:00:00Z',NULL)`,
+        )
+        .run(),
+    ).toThrow(/UNIQUE/u);
   });
 
   it("git_commit and git_push are append-only and enforce their foreign keys and checks (LLD §1)", () => {

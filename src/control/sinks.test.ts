@@ -173,6 +173,7 @@ describe("closed payload (ADR-0048 item 3)", () => {
       "failed_after_retry",
       "stalled",
       "budget_exhausted",
+      "ci_fix_stuck",
     ]);
     expect(SINK_REASON_CODES.approval_decided).toEqual(["privileged_scope", "dynamic_project", "push_revision"]);
   });

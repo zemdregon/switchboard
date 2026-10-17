@@ -22,6 +22,7 @@
  *   operator has to look at that meta-session.
  */
 
+import type Database from "better-sqlite3";
 import type { Ledger, RunRecord, RunState } from "../ledger/index.js";
 import { isTerminal } from "../lifecycle/index.js";
 
@@ -29,6 +30,7 @@ import { isTerminal } from "../lifecycle/index.js";
 export const NEEDS_ATTENTION_PRIORITY = [
   "budget_exhausted",
   "parked_loop",
+  "ci_fix_stuck",
   "awaiting_approval",
   "stalled",
   "failed_after_retry",
@@ -61,6 +63,8 @@ export interface NeedsAttentionFacts {
   newestInMetaSession: boolean;
   /** An admission budget refusal is active for the run's project or globally (T14.4). */
   budgetExhausted: boolean;
+  /** CI fix-up cap reached on a publish ref for the run's project (T15.5). */
+  ciFixStuck: boolean;
 }
 
 export interface NeedsAttentionOptions {
@@ -75,6 +79,7 @@ export function matchingReasons(f: NeedsAttentionFacts, o: NeedsAttentionOptions
   const matches: Record<NeedsAttentionReason, boolean> = {
     budget_exhausted: f.budgetExhausted && !terminal,
     parked_loop: f.metaSessionParked && f.newestInMetaSession,
+    ci_fix_stuck: f.ciFixStuck && (!terminal || f.newestInMetaSession),
     awaiting_approval: f.state === "AWAITING_APPROVAL" || f.pendingApproval,
     stalled: STALL_STATES.has(f.state) && isStale(f.lastActivityAt, o),
     failed_after_retry:
@@ -103,11 +108,14 @@ export interface ControlPlaneFacts {
   metaSessionParked(metaSessionId: string): boolean;
   /** An active refusal in `control_plane_state.budget_flags_json` for this project id, or `'*'` for global (T14.4). */
   budgetExhausted(projectId: string): boolean;
+  /** CI fix-up cap reached on a publish ref for this project (T15.5). */
+  ciFixStuck?(projectId: string): boolean;
 }
 
 export const NO_CONTROL_PLANE_FACTS: ControlPlaneFacts = {
   metaSessionParked: () => false,
   budgetExhausted: () => false,
+  ciFixStuck: () => false,
 };
 
 /** Gather {@link NeedsAttentionFacts} for one run from the ledger. Read-only. */
@@ -126,6 +134,7 @@ export function readNeedsAttentionFacts(
     newestInMetaSession: newest?.id === run.id,
     budgetExhausted:
       run.project_id !== null && (control.budgetExhausted(run.project_id) || control.budgetExhausted("*")),
+    ciFixStuck: run.project_id !== null && (control.ciFixStuck?.(run.project_id) ?? false),
   };
 }
 
@@ -145,4 +154,28 @@ function pendingApproval(ledger: Ledger, run: RunRecord): boolean {
   } catch {
     return true; // invariant violation (more than one approval row): surface it rather than hide it
   }
+}
+
+/** Returns true if any publish ref for this project is currently flagged stuck under FR-QUE-05. */
+export function isCiFixStuck(db: Database.Database, projectId: string): boolean {
+  try {
+    const row = db
+      .prepare("SELECT 1 FROM ci_trigger_ref_state WHERE project_id = ? AND stuck = 1 LIMIT 1")
+      .get(projectId);
+    return row !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+/** Extends {@link ControlPlaneFacts} with `ciFixStuck` reading from `ci_trigger_ref_state`. */
+export function ciFixControlFacts(
+  db: Database.Database,
+  base: ControlPlaneFacts = NO_CONTROL_PLANE_FACTS,
+): ControlPlaneFacts {
+  return {
+    metaSessionParked: (id) => base.metaSessionParked(id),
+    budgetExhausted: (id) => base.budgetExhausted(id),
+    ciFixStuck: (projectId) => isCiFixStuck(db, projectId) || (base.ciFixStuck?.(projectId) ?? false),
+  };
 }

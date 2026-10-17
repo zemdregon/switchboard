@@ -4,10 +4,16 @@
  * Proposed `project_ci_trigger` ledger table, so no migration is needed; dedup lives on the T15.1 work item. A template
  * cannot name `privileged` (no privileged scope can be frozen into an unattended trigger), and the named client must
  * already list the project, so the trigger never reaches a project its client cannot.
+ *
+ * T15.5 (FR-QUE-05): `ci_trigger.max_consecutive_fixes` per publish ref (Assumption default 2); further failures
+ * on that ref are recorded in `ci_trigger_event` with no work item, and the project is flagged needs-attention
+ * with `ci_fix_stuck` (FR-CTL-03).
  */
 import type { TrustProfile } from "./schema.js";
 
 export const DEFAULT_CI_POLL_INTERVAL_SECONDS = 120;
+/** Assumption default: max consecutive fix-up work items per publish ref before flagging ci_fix_stuck (FR-QUE-05). */
+export const DEFAULT_MAX_CONSECUTIVE_FIXES = 2;
 export type CiTemplateProfile = Exclude<TrustProfile, "privileged">;
 
 /** `ci_trigger` as written in the config file. */
@@ -16,10 +22,12 @@ export interface CiTriggerConfigInput {
   poll_interval_seconds?: number;
   gh_binary?: string;
   use_check_runs_fallback?: boolean;
+  max_consecutive_fixes?: number;
   projects?: {
     project: string;
     client: string;
     enabled?: boolean;
+    max_consecutive_fixes?: number;
     template: { objective: string; trust_profile: CiTemplateProfile; constraints?: string[] };
   }[];
 }
@@ -29,6 +37,7 @@ export interface CiTriggerProjectSettings {
   readonly projectId: string;
   readonly creatorClientId: string;
   readonly enabled: boolean;
+  readonly maxConsecutiveFixes: number;
   readonly template: {
     readonly objective: string;
     readonly trustProfile: CiTemplateProfile;
@@ -42,6 +51,7 @@ export interface CiTriggerSettings {
   readonly pollIntervalSeconds: number;
   readonly ghBinary: string;
   readonly useCheckRunsFallback: boolean;
+  readonly maxConsecutiveFixes: number;
   readonly projects: readonly CiTriggerProjectSettings[];
 }
 
@@ -70,15 +80,18 @@ export function checkCiTrigger(
 }
 
 export function resolveCiTrigger(input: CiTriggerConfigInput | undefined): CiTriggerSettings {
+  const defaultMaxFixes = input?.max_consecutive_fixes ?? DEFAULT_MAX_CONSECUTIVE_FIXES;
   return {
     enabled: input?.enabled === true,
     pollIntervalSeconds: input?.poll_interval_seconds ?? DEFAULT_CI_POLL_INTERVAL_SECONDS,
     ghBinary: input?.gh_binary ?? "gh",
     useCheckRunsFallback: input?.use_check_runs_fallback === true,
+    maxConsecutiveFixes: defaultMaxFixes,
     projects: (input?.projects ?? []).map((p) => ({
       projectId: p.project,
       creatorClientId: p.client,
       enabled: p.enabled !== false,
+      maxConsecutiveFixes: p.max_consecutive_fixes ?? defaultMaxFixes,
       template: {
         objective: p.template.objective,
         trustProfile: p.template.trust_profile,

@@ -1856,19 +1856,20 @@ request and daemon application), `src/ledger/control-plane.ts` (migration 0018 r
 
 #### 3.4.5 Needs-attention derivation (FR-CTL-03)
 
-Closed reason list (exactly these five values):
+Closed reason list (FR-CTL-03, LLD §3.4.1; six values):
 
 | Reason | Derived when (ledger facts only) |
 | --- | --- |
 | `awaiting_approval` | Run `status` is `AWAITING_APPROVAL`, or a `PENDING` approval row exists for a run of this meta-session the caller may see |
 | `parked_loop` | Meta-session flag `parked_loop` is set (§3.4.6); the newest run shows this reason |
+| `ci_fix_stuck` | Consecutive CI fix-ups reached cap (`ci_trigger.max_consecutive_fixes`) on a published ref for this project (FR-QUE-05; T15.5) |
 | `failed_after_retry` | Run `FAILED` and `attempt` equals `control_plane.loop_breaker.max_successors_per_meta_session` or the meta-session is parked |
 | `stalled` | Run non-terminal, `RUNNING` or `LEASED`, and no `run_event` for this run in the last *T* minutes (§3.4.6); run is **not** cancelled |
 | `budget_exhausted` | Project (or global) budget refusal is active for admission (§3.4.6) |
 
-Multiple reasons may apply; the envelope and digest expose the highest-priority reason only (proposed order:
-`budget_exhausted`, `parked_loop`, `awaiting_approval`, `stalled`, `failed_after_retry`). Priority is **Proposed** for
-stable UI; T14.2 may adjust with tests.
+Multiple reasons may apply; the envelope and digest expose the highest-priority reason only (order:
+`budget_exhausted`, `parked_loop`, `ci_fix_stuck`, `awaiting_approval`, `stalled`, `failed_after_retry`).
+Priority is **Proposed** for stable UI; T14.2 may adjust with tests.
 
 **Implemented (T14.2, Delegated, not owner-approved).** `src/control/needs-attention.ts` derives the flag on read and
 keeps the order above (`NEEDS_ATTENTION_PRIORITY`); `get_run` and `list_runs` attach it to the envelope, and the digest
@@ -6433,6 +6434,15 @@ published tip SHA (else nothing applies). The G3 jq filter emits one object per 
 because `--paginate` applies `--jq` per page; the latest by `completed_at` is chosen in code. Poll errors are reason codes
 on `CiTriggerPoller.lastErrors` and in the `serve` log; a `doctor` check is not built. Tests: `src/ci/ci-trigger.test.ts`
 (matrix C1–C18 on a fake port, a fake `gh` runner and a fake `gh` script).
+
+**CI-fix cap (T15.5, FR-QUE-05; Delegated, not owner-approved).** Consecutive fix-up work items for a published ref are
+capped by `ci_trigger.max_consecutive_fixes` (Assumption default 2). Forward ledger migration **0023**
+(`src/ledger/migrations/0023_ci_fix_cap.ts`) adds `ci_trigger_event` (`id`, `project_id`, `publish_ref`, `external_id`,
+`conclusion`, `untrusted_summary`, `observed_at`, `work_item_id`) and `ci_trigger_ref_state` (`project_id`, `publish_ref`,
+`consecutive_fixes`, `stuck`, `last_external_id`, `last_conclusion`, `reset_at`, `updated_at`). When `consecutive_fixes`
+reaches the cap, further failures on that ref are recorded in `ci_trigger_event` with `work_item_id = NULL` without enqueuing
+work, and `ci_trigger_ref_state.stuck` is set to 1, raising the `ci_fix_stuck` needs-attention flag (FR-CTL-03; §3.4.5).
+A passing conclusion or an operator reset (`resetCiFixCounter`) resets `consecutive_fixes` and `stuck` to 0.
 
 ### 18.7 Scheduler integration (COMP-RTE)
 
