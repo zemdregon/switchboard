@@ -73,3 +73,13 @@ PR #635 did not touch the figure). `npx vitest list` on this branch collects 3,4
 passing total cannot be verified without running the full suite. Left unchanged: fixing it needs either a scoped
 re-count with a stated scope or a full test run, both outside a docs-only alignment pass. It does not block PR #635
 (T2.8's own evidence is the live `doctor` note and the `sameVersion` tests, which the T2.8 row cites directly).
+
+## 8. T12.9 "remains Planned" summary vs "Done on fakes" row (pre-existing, not from PR #633)
+
+The "Current milestone" summary at the top of [ROADMAP §6](ROADMAP.md#6-milestones) says "T12.9 (Could) remains
+Planned", while the M12 milestone row in the same table and the T12.9 row in §6.7 both say T12.9 is "Done on fakes
+(2026-10-16, Delegated ...)". Both wordings are present on `origin/main`, so the contradiction predates PR #633 (which
+only reworded the T12.9 row's channel clause from "stays UNSUPPORTED per T9.4b" to "supported, bypass-only since owner
+decision 56"). Left unchanged: reconciling the summary with the row means endorsing another task's Done claim, which
+is that task's status decision, not this PR's. It does not block PR #633 (T9.4b's own evidence is the T9.4b status
+block, the 2026-10-14 live checks and owner decision 56, all cited directly).

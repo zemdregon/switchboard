@@ -607,8 +607,8 @@ async function runDaemon(
   }
   if (config.claudeCodeGitChannel) {
     log.warn(
-      "UNSUPPORTED opt-in providers.claude-code.git_channel is on: offered only to approved bypass runs, which then " +
-        "omit --safe-mode and load repository CLAUDE.md and hooks; not yet proven end to end",
+      "opt-in providers.claude-code.git_channel is on (bypass-only): offered only to approved bypass runs, which then " +
+        "omit --safe-mode and load repository CLAUDE.md and hooks",
       { adr: "ADR-0033" },
     );
   }

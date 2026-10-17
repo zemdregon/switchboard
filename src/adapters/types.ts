@@ -303,9 +303,9 @@ export interface ShimSpec {
  * FR-GIT-02 declaration (LLD §2 "M9 additions"; T9.4). `injected`: the adapter can pass the per-run channel to its
  * provider without a permission-bypass flag (FR-POL-03), through `channelArgs`. `finalize-only`: it cannot, and the
  * controller commits at FINALIZING when the operator opts in (FR-GIT-09, T9.7). `none`: no channel is declared; `detail`
- * says why (Codex: unverified provider behaviour; Claude Code: the same unless the operator sets the unsupported opt-in
- * `providers.claude-code.git_channel`, T9.4b, ADR-0029). `detail` is an addition to the LLD shape so the reason is
- * recorded with the declaration.
+ * says why (Codex: unverified provider behaviour; Claude Code: the same unless the operator sets the bypass-only opt-in
+ * `providers.claude-code.git_channel`, T9.4b, ADR-0029, ADR-0033). `detail` is an addition to the LLD shape so the
+ * reason is recorded with the declaration.
  */
 export interface GitCapabilities {
   readonly commitChannel: "injected" | "finalize-only" | "none";
