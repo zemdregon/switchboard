@@ -6760,6 +6760,17 @@ The commands are short-lived and write only operator records and the content fil
 skills enabled or not, counts of approved and draft versions, configured names that do not resolve, and any run with
 `removal = 'failed'`. `runs show` lists a run's skills (name, version, hash prefix, mode, removal).
 
+*Implementation (T16.2, 2026-10-17, Delegated, not owner-approved):* `src/cli/skills.ts`, read helpers in
+`src/skills/read.ts` and `src/skills/diff.ts`. The commands take no data-directory lock: both tables are append-only
+and a running daemon only reads them. `list`, `show` and `diff` open the ledger read-only and never create it; a ledger
+without the 0021 tables reads as an empty store. An unknown name or version is `NOT_FOUND` (exit 1); a malformed
+`<name>@<n>`, a note over 280 characters and a flag on the wrong subcommand are usage errors (exit 2). `show --body`
+prints the body without the front matter (the metadata already shows it), of the named version or else the newest;
+`diff` is a unified diff with three context lines, which falls back to all-removed then all-added when the changed
+middle exceeds 4,000,000 comparison cells. The `doctor` line (`skills` check) counts versions by state over every name,
+adds the retired-name count, and is a warning, never a failure, when a configured name does not resolve or a removal
+failed; with no ledger every configured name is reported `unknown`.
+
 ### 19.11 Run events and telemetry (FR-SKL-10)
 
 | Event | Payload |

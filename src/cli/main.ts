@@ -1,6 +1,6 @@
 /**
  * Operator CLI entry (COMP-OPS, FR-OPS-01, FR-OPS-03). `main` returns the exit code and writes through injected
- * streams so tests call it directly. Exit codes (Proposed): 0 ok, 1 failure, 2 usage error.
+ * streams so tests call it directly. Exit codes (Proposed): 0 ok, 1 failure, 2 usage error; `skills add` refusals are 65 (LLD §19.1).
  * There is deliberately no `login`/`auth` command (FR-OPS-03, ADR-0003). `consent` (T13.8) manages only Switchboard's own
  * consent-page passphrase hash and pairing codes for the HTTP transport, never a provider sign-in. `serve` (T2.6) is the long-lived daemon: it
  * never writes to stdout itself (MCP framing only, TDD §3.3), so it rejects `--json` and reports every error on stderr.
@@ -65,6 +65,7 @@ import {
   UnknownScheduleError,
 } from "./schedule.js";
 import { serve } from "./serve.js";
+import { runSkillsCommand, UnknownSkillError } from "./skills.js";
 
 export const HELP = `Usage: switchboard <command> [options]
 
@@ -140,14 +141,30 @@ Commands:
                       Reject a widening schedule
   schedule create <cron> <project> <template_json>
                       Create a new schedule (off by default)
+  skills list [--all] Skill names with newest version, state, origin, size and hash prefix; --all adds retired names
+  skills show <name>[@n] [--body]
+                      Metadata and event history; the body only with --body
+  skills add <name> --file <path> [--from-repository] [--note <text>]
+                      Validate and store a new version (draft) and print <name>@<n>; a source inside a project
+                      context or allowed root needs --from-repository and is marked repository_path. A refusal
+                      exits 65 with one reason; unchanged content adds no version (exit 0)
+  skills approve <name>@<n> [--note <text>]
+                      Approve a version for new runs
+  skills revoke <name>@<n> [--note <text>]
+                      Revoke a version; runs already admitted keep their delivery
+  skills retire <name> / skills unretire <name>
+                      Retire a name (resolves to nothing for new runs) or lift that
+  skills diff <name>@<a> <name>@<b>
+                      Line diff of two versions' canonical text
 
 Options:
   --json              Machine-readable output (not for serve)
   --client <id>       serve only: the mcp_clients entry this stdio session is bound to
+  --note <text>       skills add, approve and revoke: an operator note of at most 280 characters
   --config <path>     Config file (default: $SWITCHBOARD_CONFIG, then $XDG_CONFIG_HOME/switchboard/config.json)
   -h, --help          Show this help
 
-Exit codes: 0 success, 1 failure, 2 usage error.
+Exit codes: 0 success, 1 failure, 2 usage error, 65 skills add refused.
 `;
 
 const OPTIONS = {
@@ -162,6 +179,11 @@ const OPTIONS = {
   reject: { type: "boolean" },
   limit: { type: "string" },
   provider: { type: "string" },
+  all: { type: "boolean" },
+  body: { type: "boolean" },
+  file: { type: "string" },
+  "from-repository": { type: "boolean" },
+  note: { type: "string" },
   help: { type: "boolean", short: "h" },
 } as const;
 
@@ -198,6 +220,13 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
     }
     if (!(cmd === "projects" && sub === "approve") && (values.revision !== undefined || values.reject)) {
       throw new UsageError("--revision and --reject are only valid with projects approve");
+    }
+
+    if (
+      cmd !== "skills" &&
+      (values.all || values.body || values.file !== undefined || values["from-repository"] || values.note !== undefined)
+    ) {
+      throw new UsageError("--all, --body, --file, --from-repository and --note are only valid with skills");
     }
 
     if (values.help) {
@@ -501,6 +530,19 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
           `unknown schedule subcommand ${JSON.stringify(sub ?? "")}; expected list, show, enable, disable, approve, deny or create`,
         );
       }
+      case "skills": {
+        // T16.2 (FR-SKL-09, LLD §19.10): operator records and the content file only (ADR-0005).
+        const r = runSkillsCommand(io, loaderArgv, sub, rest, {
+          all: values.all === true,
+          body: values.body === true,
+          fromRepository: values["from-repository"] === true,
+          ...(values.file !== undefined ? { file: values.file } : {}),
+          ...(values.note !== undefined ? { note: values.note } : {}),
+        });
+        if (json) io.stdout.write(`${JSON.stringify(r.data, null, 2)}\n`);
+        else (r.code === 0 ? io.stdout : io.stderr).write(r.text);
+        return r.code;
+      }
       default:
         throw new UsageError(`unknown command ${JSON.stringify(cmd)}`);
     }
@@ -513,7 +555,10 @@ function fail(err: unknown, io: CliIo, json: boolean): number {
   const usage = err instanceof UsageError || isParseArgsError(err);
   const code = usage
     ? "USAGE"
-    : err instanceof UnknownRunError || err instanceof UnknownProjectError || err instanceof UnknownScheduleError
+    : err instanceof UnknownRunError ||
+        err instanceof UnknownProjectError ||
+        err instanceof UnknownScheduleError ||
+        err instanceof UnknownSkillError
       ? "NOT_FOUND"
       : err instanceof ApprovalRefusedError
         ? "REFUSED"
