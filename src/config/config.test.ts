@@ -640,6 +640,43 @@ describe("projects[] (T9.1, FR-PRJ-01, 02, 04)", () => {
       ]),
     ).toThrow(/\$\.projects\[0\]\.contexts\[1\]\.finalize_commit: only the primary, writable context/);
   });
+
+  it("projects[].queue.low_water (T15.4, FR-QUE-04): off by default, accepts integer >= 1, rejects invalid", () => {
+    const off = loadConfig({ configPath: withProjects({ id: "web-app", name: "W", contexts: [repoCtx] }) });
+    expect(off.projects[0]?.queue?.lowWater).toBeUndefined();
+
+    const on = loadConfig({
+      configPath: withProjects({
+        id: "web-app",
+        name: "W",
+        contexts: [repoCtx],
+        queue: { low_water: 5 },
+      }),
+    });
+    expect(on.projects[0]?.queue?.lowWater).toBe(5);
+
+    expect(() =>
+      loadConfig({
+        configPath: withProjects({
+          id: "web-app",
+          name: "W",
+          contexts: [repoCtx],
+          queue: { low_water: 0 },
+        }),
+      }),
+    ).toThrow(/\$\.projects\[0\]\.queue\.low_water/);
+
+    expect(() =>
+      loadConfig({
+        configPath: withProjects({
+          id: "web-app",
+          name: "W",
+          contexts: [repoCtx],
+          queue: { low_water: "three" },
+        }),
+      }),
+    ).toThrow(/\$\.projects\[0\]\.queue\.low_water/);
+  });
 });
 
 describe("mcp_clients[].projects and the lower-of-two ceiling (T9.2, FR-PRJ-06)", () => {

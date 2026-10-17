@@ -100,6 +100,16 @@ export interface ResolvedProject {
    * default names. Lists are copies in configuration order.
    */
   readonly skills?: ResolvedSkillAssignment;
+  /**
+   * T15.4 (FR-QUE-04, LLD §18.8): present only when the project sets `queue`. Absent means no low-water mark is configured.
+   */
+  readonly queue?: ProjectQueueConfig;
+}
+
+/** T15.4 (FR-QUE-04, LLD §18.8): project work queue settings. */
+export interface ProjectQueueConfig {
+  /** Low-water mark for the project work queue; absent means unset (no event emitted). */
+  readonly lowWater?: number;
 }
 
 /** Global or per-project skill name lists (LLD §19.3), with defaults filled in as empty. */
@@ -283,6 +293,7 @@ export function resolveProjects(cfg: SwitchboardConfig): ResolvedProject[] {
           }
         : {}),
       ...(p.skills !== undefined ? { skills: resolveSkillAssignment(p.skills) } : {}),
+      ...(p.queue?.low_water !== undefined ? { queue: { lowWater: p.queue.low_water } } : {}),
     };
   });
 }

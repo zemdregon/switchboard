@@ -25,6 +25,7 @@ export const SINK_EVENT_KINDS = [
   "approval_decided",
   "budget_exhausted",
   "project_paused",
+  "queue_low",
 ] as const;
 export type SinkEventKind = (typeof SINK_EVENT_KINDS)[number];
 

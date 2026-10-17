@@ -7,7 +7,7 @@
   answering discovery question 4: "Grok Bot"). Owner decision 53 (2026-10-15) settles that the Grok bot generates its
   own webhook at deployment, so the generic webhook is pointed at it with no Grok-specific code, and adds ntfy. The
   realisation below is Delegated and not owner-approved.
-- Related: FR-CTL-10, FR-CTL-12, FR-CTL-08, NFR-PRIV-01, NFR-SEC-01, FR-TEL-03, FR-INN-16, [ADR-0003](0003-no-credential-handling.md),
+- Related: FR-CTL-10, FR-CTL-12, FR-CTL-08, FR-QUE-04, NFR-PRIV-01, NFR-SEC-01, FR-TEL-03, FR-INN-16, [ADR-0003](0003-no-credential-handling.md),
   [ADR-0041](0041-http-transport-with-oauth-2-1.md), [ADR-0047](0047-approval-proxy-over-mcp.md), R-66,
   owner decisions 52, 53 and 55.
 
@@ -32,9 +32,11 @@ built, and the discovery note recommended this one for the same reason.
    its own review. Email is not first because it needs mail credentials, which
    Switchboard does not handle (ADR-0003).
 3. **Closed payload.** A payload carries only: the project ID, one event kind from a closed list, one reason code from
-   the closed list of FR-CTL-03 (or the approval kind for ADR-0047 events), the run ID and a link. It never carries code,
-   prompts, diffs, objectives, repository content, log lines or agent-written text, of any length. The payload is built
-   from fields, not by filtering a free-text message, so there is no text to redact.
+   the closed list of FR-CTL-03 (or the approval kind for ADR-0047 events, or `queue_low` for FR-QUE-04), the run ID
+   and a link. It never carries code, prompts, diffs, objectives, repository content, log lines or agent-written text,
+   of any length. The payload is built from fields, not by filtering a free-text message, so there is no text to redact.
+   The closed event-kind list is: `run_terminal`, `needs_attention`, `approval_pending`, `approval_decided`,
+   `budget_exhausted`, `project_paused`, and `queue_low` (T15.4, FR-QUE-04; reason code `queue_low`, `run_id` null).
 4. **Filter and rate limit.** Each sink names the event kinds it receives and a maximum rate. Events beyond the rate
    are dropped and counted, not queued without bound.
 5. **Links carry no secret.** A link points to the digest or the consent page. It holds no token, no approval

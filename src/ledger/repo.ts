@@ -998,6 +998,9 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice {
   reconcileAdmittingWorkItems(): number;
   countWorkItemsForProject(projectId: string): number;
   listDistinctProjectIdsWithReadyWork(): string[];
+  // ---- T15.4 additions (queue low-water event, FR-QUE-04, LLD §18.8) -----------------------------------------
+  countAdmissibleWorkItems(projectId: string): number;
+  setQueueChangeListener(listener?: (projectId: string) => void): void;
 }
 
 export {

@@ -11,8 +11,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ResolvedMcpClient, ResolvedProject } from "../config/index.js";
+import { resolveNotificationSinks } from "../config/notification-sinks.js";
+import { SinkDispatcher, type SinkPost } from "../control/sinks.js";
 import type { TrustProfile } from "../ledger/index.js";
 import type { AdmitWorkDeps } from "../queue/admission.js";
+import { attachQueueLowWater } from "../queue/low-water.js";
 import { runProjectWorkQueueTick } from "../queue/scheduler.js";
 import { type Harness, type Json, startHarness } from "../routing/fixtures/harness.js";
 import { inputSchema, outputSchema, TOOL_NAMES, WORK_QUEUE_TOOL_NAMES } from "./schemas.js";
@@ -38,12 +41,18 @@ function gitRepo(dir: string): string {
   return dir;
 }
 
-function project(id: string, repo: string, maxTrustProfile?: TrustProfile): ResolvedProject {
+function project(
+  id: string,
+  repo: string,
+  maxTrustProfile?: TrustProfile,
+  queue?: { lowWater?: number },
+): ResolvedProject {
   return {
     id,
     name: id,
     environment: { kind: "host" },
     ...(maxTrustProfile !== undefined ? { maxTrustProfile } : {}),
+    ...(queue !== undefined ? { queue } : {}),
     contexts: [
       {
         id: "main",
@@ -66,11 +75,15 @@ let projectRoot: string;
 let projects: ResolvedProject[];
 let mcpClients: Map<string, ResolvedMcpClient>;
 
-async function start(queue?: { maxItemsPerProject: number }): Promise<void> {
+async function start(queue?: { maxItemsPerProject: number }, webQueue?: { lowWater?: number }): Promise<void> {
   projectRoot = realpathSync(mkdtempSync(path.join(tmpdir(), "sb-work-queue-")));
   const web = gitRepo(path.join(projectRoot, "web"));
   const api = gitRepo(path.join(projectRoot, "api"));
-  projects = [project("web", web), project("api", api), project("locked", web, "inspect-untrusted")];
+  projects = [
+    project("web", web, undefined, webQueue),
+    project("api", api),
+    project("locked", web, "inspect-untrusted"),
+  ];
   mcpClients = new Map([
     ["orch", { id: "orch", maxTrustProfile: edit, projects: ["web", "locked"] }],
     ["other", { id: "other", maxTrustProfile: edit, projects: ["web", "api"] }],
@@ -279,5 +292,133 @@ describe("project work queue limit (T15.1, LLD §18.1)", () => {
     expect(over.body.error.code).toBe("INVALID_REQUEST");
     expect(over.body.error.details).toMatchObject({ max_items_per_project: 1 });
     expect(itemCount()).toBe(1);
+  });
+});
+
+describe("project work queue low-water mark (T15.4, FR-QUE-04)", () => {
+  beforeEach(async () => start(undefined, { lowWater: 3 }));
+
+  it("Tests through the MCP server on fakes with a capturing sink: draining a queue from 4 to 1 items with mark 3 emits exactly one event; refilling to 3 and draining again emits a second; the payload has only the ADR-0048 fields; an unset mark emits nothing", async () => {
+    const posted: { url: string; headers: Record<string, string>; body: string }[] = [];
+    const post: SinkPost = async (req) => {
+      posted.push({ url: req.url, headers: req.headers, body: req.body });
+      return 200;
+    };
+    const dispatcher = new SinkDispatcher({
+      sinks: resolveNotificationSinks([
+        { id: "test-sink", kind: "webhook", url: "https://127.0.0.1/sink", events: ["queue_low"] },
+      ]),
+      post,
+    });
+    attachQueueLowWater({
+      ledger: h.ledger,
+      getLowWaterMark: (pid) => projects.find((p) => p.id === pid)?.queue?.lowWater,
+      dispatcher,
+    });
+
+    // 1. Enqueue 4 items into "web" (mark 3) through MCP
+    await enqueueOk({ project_id: "web", request: REQUEST });
+    const item2 = await enqueueOk({ project_id: "web", request: REQUEST });
+    const item3 = await enqueueOk({ project_id: "web", request: REQUEST });
+    const item4 = await enqueueOk({ project_id: "web", request: REQUEST });
+
+    // Mark 3: starting at 0, rising 1 -> 2 -> 3 (arms) -> 4. No drop below mark, so 0 events emitted.
+    expect(posted).toHaveLength(0);
+
+    // 2. Draining from 4 to 1 items:
+    // Cancel item 4: count goes 4 -> 3 (3 >= 3: stays armed, no emit)
+    await h.ok("cancel_work", { work_item_id: item4.work_item_id });
+    await dispatcher.drain();
+    expect(posted).toHaveLength(0);
+
+    // Cancel item 3: count goes 3 -> 2 (2 < 3: drops below mark, emits exactly one event, disarms)
+    await h.ok("cancel_work", { work_item_id: item3.work_item_id });
+    await dispatcher.drain();
+    expect(posted).toHaveLength(1);
+
+    // Cancel item 2: count goes 2 -> 1 (1 < 3: stays disarmed, no second event)
+    await h.ok("cancel_work", { work_item_id: item2.work_item_id });
+    await dispatcher.drain();
+    expect(posted).toHaveLength(1);
+
+    // 3. Payload has only the ADR-0048 fields:
+    // project_id, event_kind, reason_code, run_id, link
+    const firstSent = posted[0];
+    expect(firstSent).toBeDefined();
+    const payload = JSON.parse(firstSent?.body ?? "{}");
+    expect(Object.keys(payload).sort()).toEqual(["event_kind", "link", "project_id", "reason_code", "run_id"]);
+    expect(payload).toEqual({
+      project_id: "web",
+      event_kind: "queue_low",
+      reason_code: "queue_low",
+      run_id: null,
+      link: "switchboard://digest",
+    });
+
+    // 4. Refilling to 3 items and draining again emits a second event:
+    // Currently item 1 is in queue (count = 1).
+    // Enqueue item 5: count goes 1 -> 2 (< 3: stays disarmed, no emit)
+    const item5 = await enqueueOk({ project_id: "web", request: REQUEST });
+    await dispatcher.drain();
+    expect(posted).toHaveLength(1);
+
+    // Enqueue item 6: count goes 2 -> 3 (3 >= 3: re-arms!, no emit)
+    const item6 = await enqueueOk({ project_id: "web", request: REQUEST });
+    await dispatcher.drain();
+    expect(posted).toHaveLength(1);
+
+    // Drain again:
+    // Cancel item 6: count goes 3 -> 2 (2 < 3: drops below mark, emits second event!)
+    await h.ok("cancel_work", { work_item_id: item6.work_item_id });
+    await dispatcher.drain();
+    expect(posted).toHaveLength(2);
+
+    // Cancel item 5: count goes 2 -> 1 (1 < 3: stays disarmed, no third event)
+    await h.ok("cancel_work", { work_item_id: item5.work_item_id });
+    await dispatcher.drain();
+    expect(posted).toHaveLength(2);
+
+    const secondSent = posted[1];
+    expect(secondSent).toBeDefined();
+    const payload2 = JSON.parse(secondSent?.body ?? "{}");
+    expect(Object.keys(payload2).sort()).toEqual(["event_kind", "link", "project_id", "reason_code", "run_id"]);
+    expect(payload2).toEqual({
+      project_id: "web",
+      event_kind: "queue_low",
+      reason_code: "queue_low",
+      run_id: null,
+      link: "switchboard://digest",
+    });
+
+    // 5. An unset mark emits nothing:
+    // Project "api" has no queue.low_water configured
+    await enqueueOk({ project_id: "api", request: REQUEST }, "other");
+    const api2 = await enqueueOk({ project_id: "api", request: REQUEST }, "other");
+    const api3 = await enqueueOk({ project_id: "api", request: REQUEST }, "other");
+    const api4 = await enqueueOk({ project_id: "api", request: REQUEST }, "other");
+    await h.ok("cancel_work", { work_item_id: api4.work_item_id }, "other");
+    await h.ok("cancel_work", { work_item_id: api3.work_item_id }, "other");
+    await h.ok("cancel_work", { work_item_id: api2.work_item_id }, "other");
+    await dispatcher.drain();
+    // Still exactly 2 events (all from "web", none from "api")
+    expect(posted).toHaveLength(2);
+
+    await dispatcher.close();
+  });
+
+  it("everything not configured stays byte-identical to main", async () => {
+    // When queue.low_water is not set on a project, its resolved representation has no lowWater
+    const apiProject = projects.find((p) => p.id === "api");
+    expect(apiProject?.queue?.lowWater).toBeUndefined();
+
+    // Standard work item lifecycle on unconfigured project behaves unchanged
+    const item = await enqueueOk({ project_id: "api", request: REQUEST }, "other");
+    expect(item).toMatchObject({
+      project_id: "api",
+      state: "READY",
+      admitted_run_id: null,
+    });
+    const cancelled = await h.ok("cancel_work", { work_item_id: item.work_item_id }, "other");
+    expect(cancelled.state).toBe("CANCELLED");
   });
 });

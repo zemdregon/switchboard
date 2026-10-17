@@ -402,6 +402,12 @@ export interface ProjectConfig {
    * (not a dynamic project definition). Absent means this project adds no defaults.
    */
   skills?: SkillAssignmentConfig;
+  /**
+   * T15.4 (FR-QUE-04, LLD §18.8): low-water mark for the project work queue (off by default).
+   */
+  queue?: {
+    low_water?: number;
+  };
 }
 
 /** One `projects[].dependency_seeds[]` entry (LLD §5.1). Paths are relative to the primary context. */
@@ -599,6 +605,13 @@ export const projectSchema = {
     allowed_providers: { type: "array", uniqueItems: true, items: { enum: [...PROVIDER_IDS] } },
     inner_agent: { enum: [...PROJECT_INNER_SETTINGS] },
     rag: projectRagSchema,
+    queue: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        low_water: { type: "integer", minimum: 1 },
+      },
+    },
     contexts: { type: "array", minItems: 1, items: contextSchema },
   },
 } as const;
