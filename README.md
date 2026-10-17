@@ -51,7 +51,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   providers with the remaining cells `NOT_CHECKED` (operator task T6.11, `Done` 2026-10-17;
   [limit captures](docs/research/limit-captures-2026-10-17.md)), and no provider is known to publish an
   enforceable rate limit, so there is no token-bucket gate; the planned pacing gate paces usage per subscription window
-  from observed usage instead (ROADMAP T6.8, Planned; not built). See [ROADMAP §6.11](docs/ROADMAP.md#611-m6-capacity-and-resilience-tasks).
+  from observed usage instead (ROADMAP T6.8, Planned; not built). The subscription/pacing configuration keys and the
+  per-window figure computation exist (ROADMAP T6.13, `Done` 2026-10-17) but nothing reads them yet: capacity output
+  shows no `pacing` block. See [ROADMAP §6.11](docs/ROADMAP.md#611-m6-capacity-and-resilience-tasks).
 - **Milestone 7 (routing) is `Partial`.** Eligible providers are scored from Switchboard's own records, every route
   decision is stored and replays exactly, `explain_route` shows why a run went where it did, a project stays on its
   provider until a listed reason moves it (`switchboard affinity list|reset`), and `minimum_capability` is enforced

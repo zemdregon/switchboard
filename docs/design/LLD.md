@@ -5513,7 +5513,8 @@ every project. `doctor` prints one summary line, and `switchboard capacity` one 
 
 ### 16.9 Usage windows and pacing (FR-CAP-09, FR-CAP-10)
 
-**Proposed** (2026-10-17, owner decision 57, Delegated mechanism; not built). Design for T6.13, T6.14 and T6.8 under
+**Proposed** (2026-10-17, owner decision 57, Delegated mechanism; T6.13 built 2026-10-17, rest not built).
+Design for T6.13 (built; see "As built (T6.13)" below), T6.14 and T6.8 under
 [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md). Every default is an **Assumption** (Q-98). No migration:
 pacing is computed on read from configuration, `usage_observation`, `run`, `run_event` and the clock, like the estimate
 (§16.2). Nothing here names a provider's window, budget or reset: each comes from the provider (a declared key) or from
@@ -5602,6 +5603,22 @@ new observation arrives; usage that Switchboard dispatches in the meantime only 
 The FR-CAP-03 wording rule applies: "remaining" only next to `provider_reported`; an estimate is never shown as a
 percentage of a plan, and the text view prints "used (estimate, Switchboard-observed only)" for `controller_estimated`.
 `doctor` prints one pacing line per subscription: `pace`, `deferred_until` and the source.
+
+*As built (T6.13, 2026-10-17, Delegated):* the configuration keys and the per-window figures; nothing consumes them yet
+(the `pacing` block is T6.14, the gate T6.8, the score term T7.15). `capacity.subscriptions` and `capacity.pacing` are
+strict in `src/config/schema.ts`; `src/config/capacity.ts` refuses a provider id that is not configured, a provider in
+two subscriptions, a window id repeated in a subscription, a `fixed` reset without an ISO instant with an offset as
+`anchor`, and an `anchor` on any other reset. Subscriptions resolve in name order with the adapter id of each provider,
+and only when the file sets `subscriptions` or `pacing`, so a configuration without them resolves exactly as before.
+`usageWindows` in `src/capacity/usage-window.ts` computes the table above and returns nothing when no subscription is
+configured. Points this section left open, each an Assumption: an unknown figure is `{ "value": null, "source":
+"unknown", "confidence": 0 }` rather than `null`; with an unknown reset, `window_start` and `elapsed_fraction` are
+`null`, so a `provider_reported` window without a declared reset key has no estimate either; a reported share in a
+`rolling` window has confidence 0.5; a declared reset is read only as an ISO string; `reported_tokens` uses the
+`usage_per_window` token rule of `src/control/budgets.ts` (`total_tokens`, else every `*_tokens` key);
+`reported_cost_usd` sums the first of `total_cost_usd` (Claude Code) and `cost_usd` (OpenCode) in each row; figures are
+rounded to six decimals. `USAGE_KEYS` entries name `origin` (`usage_observation` or `rate_limit`), `key`, `carries`
+and `source`.
 
 ## 17. Routing (M7)
 
