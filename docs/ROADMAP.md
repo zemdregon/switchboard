@@ -1686,7 +1686,7 @@ the lifecycle's compile-time `Ineligible` ends `PERMISSION_BLOCKED` (`src/lifecy
   `src/policy/types.ts` (T3.2, T3.3, which narrows `PrivilegedScope`). Tasks sharing a hot file run one after another,
   never in parallel (AGENTS.md); T3.3 goes before T3.10 in the lifecycle and MCP code.
 - No code that emits a bypass flag merges before T3.16 and T3.17.
-- **Wave E (Planned 2026-10-17, Delegated proposals from PR #638; agents, on fakes):** T3.22 after T3.10; T3.23 after
+- **Wave E (proposed 2026-10-17, Delegated proposals from PR #638; agents, on fakes; T3.22 and T3.23 Done 2026-10-17):** T3.22 after T3.10; T3.23 after
   T3.12, and its seed part after T9.13. Both touch `src/lifecycle/lifecycle.ts` (T3.22: the verification stage; T3.23:
   admission) and run one after the other.
 
@@ -1701,7 +1701,7 @@ items Q-10 (auth status) and Q-12 (version range) first:
 - FR-GIT-01 live checks C-G2 and X-G1.
 - Bypass behaviour under an approved `privileged` scope (decision 13).
 
-FR-POL-09, FR-OPS-02 (`approve`, `deny`), FR-EXE-08, FR-WS-07 and NFR-DATA-01 can be shown on fakes.
+FR-POL-09, FR-OPS-02 (`approve`, `deny`), FR-EXE-08, FR-EXE-09 (T3.22, verification slots on fakes), FR-WS-07 and NFR-DATA-01 can be shown on fakes.
 
 *Update 2026-10-16 (T3.13, Delegated).* Live-leg limits as they stand:
 
