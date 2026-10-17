@@ -1386,21 +1386,23 @@ not on `origin/main`).
 ### 3.15 Model groups and usage pacing (Partly built)
 
 *Proposed (2026-10-17, owner decision 57, [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md); partly built:
-the usage-window model T6.13, the pacing projection T6.14, the pacing gate T6.8 and the model-groups configuration
-T7.13 are `Done` 2026-10-17; the score term T7.15 and the rest are not built).
+the usage-window model T6.13, the pacing projection T6.14, the pacing gate T6.8, the model-groups configuration
+T7.13 and the request fields T7.14 are `Done` 2026-10-17; the score term T7.15 and the rest are not built).
 T7.13 (`src/config/model-groups.test.ts`) built the `model_groups` configuration, the seventh weight
 `routing.weights.pacing`, and the `doctor` listing of each member's resolution (`src/config/schema.ts`,
 `src/config/routing.ts`, `src/cli/doctor.ts`).*
 Contracts: [LLD §16.9](LLD.md#169-usage-windows-and-pacing-fr-cap-09-fr-cap-10) and
 [LLD §17.7](LLD.md#177-model-groups-fr-rte-10-fr-rte-11). Tasks: ROADMAP T6.8, T6.11, T6.13 to T6.16 and T7.13 to
-T7.17 (T6.8, T6.13, T6.14 and T7.13 Done, the rest Planned).
+T7.17 (T6.8, T6.13, T6.14, T7.13 and T7.14 Done, the rest Planned).
 
 - **Where it lives.** Pacing is a pure module beside the estimator in `src/capacity/` (built T6.13:
   `src/capacity/usage-window.ts`; the projection consumer is T6.14, `Done` 2026-10-17, `src/capacity/projection.ts`;
   the gate T6.8 is `Done` 2026-10-17, `src/capacity/pacing-gate.ts`; the score term T7.15 is not wired), computed on
   read from
-  configuration, `usage_observation`, `run` and an injected clock, with no table. Group expansion and the `pacing` term
-  (T7.14, T7.15) live in `src/routing/`; the T7.13 configuration resolution lives in `src/config/routing.ts`. The hold
+  configuration, `usage_observation`, `run` and an injected clock, with no table. The request-field validation
+  (T7.14, `Done` 2026-10-17) lives in `src/mcp/schemas.ts` (closed `DELEGATE_ROUTING`), `src/mcp/server.ts`
+  (`checkRouting`) and `src/queue/admission.ts` (the queued request carries the fields to admission); group expansion
+  and the `pacing` term (T7.15, Planned) will live in `src/routing/`; the T7.13 configuration resolution lives in `src/config/routing.ts`. The hold
   reuses the breaker's single wake timer in the lifecycle. Adapters change only in
   T6.15, to map a structured limit signal or declare a sourced usage key.
 - **Fake adapters, injected clock.** Every test drives scripted fake providers placed in operator-declared subscriptions

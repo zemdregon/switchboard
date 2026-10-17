@@ -6173,8 +6173,8 @@ changes with each probe (§2.1).
 2. `model` without `provider_preference` or `require_provider`: it must resolve in exactly one enabled provider's
    registry (an alias or a configured or listed id; §2.1). None, several, or an unrestricted registry (which would
    accept anything) give `INVALID_REQUEST` with "name a provider for this model".
-3. `model_group` with `provider_preference` or `require_provider`: the members are narrowed to that provider. If none
-   remains, the result is `INVALID_REQUEST`.
+3. `model_group` with `provider_preference` (which `require_provider` also carries): the members are narrowed to that provider. If none
+   remains, the result is `INVALID_REQUEST`. `require_provider` alone names no provider, so it narrows nothing.
 4. `continue_task` takes neither field. Continuations stay governed by FR-SES-03 and BR-18 (Q-99).
 
 **Candidates.** Without either field, candidates are providers, as in §17.3. With a group, a candidate is a member,
