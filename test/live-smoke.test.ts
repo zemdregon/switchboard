@@ -66,9 +66,9 @@ describe("live smoke provider plug-ins (T4.3)", () => {
     }
   });
 
-  it("the skip message lists the plug-ins found", () => {
+  it("the skip message lists the plug-ins found, except the fake fixture (T8.9)", () => {
     const out = execFileSync(process.execPath, [SCRIPT], { env: { PATH: "/nonexistent" }, encoding: "utf8" });
-    expect(out).toContain(`SWITCHBOARD_LIVE_PROVIDER=${ids.join("|")}`);
+    expect(out).toContain(`SWITCHBOARD_LIVE_PROVIDER=${ids.filter((id) => !id.startsWith("fake")).join("|")} `);
   });
 });
 

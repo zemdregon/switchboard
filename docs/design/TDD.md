@@ -245,7 +245,7 @@ startup reconciliation applies them. Run state transitions use an optimistic ver
 | `serve` process tests (M2) | Spawn `switchboard serve` as a child with a temp config and data dir, drive it with an MCP stdio client: delegate → SUCCEEDED, stdout carries only MCP framing, a second `serve` on the same data dir fails, `SIGKILL` mid-run then restart ends the run `FAILED/PROCESS_CRASH` with no orphan (`src/cli/serve.test.ts`). The fake adapter is reachable only through the test-only switch below | No | FR-OPS-01, FR-EXE-06, NFR-REL-01 |
 | Git boundary (M9) | Fake adapter with scripted tool calls and scripted attempts to `git commit`, move refs or push, against real Git repos and a local bare remote; fixtures of typical attribution trailers, footers and session IDs through the sanitiser; assertion that no published commit contains them and that checkpoint commits never reach the remote | No | FR-GIT-01..09 |
 | Project and environment (M9, M10) | Configuration validation (unknown context kind, path outside allowed roots), ceiling arithmetic, `host` runs through a project; container tests need a container runtime and are opt-in (skipped in CI until Q-6 is settled) | No for `host`; runtime for `container` | FR-PRJ-01..09 |
-| Live provider smoke | Opt-in only: `scripts/live-smoke.mjs` (`npm run test:live`) is skipped unless `SWITCHBOARD_LIVE_TESTS=1`; not part of `npm test`, never runs in CI (see below) | Yes | [AGENTS.md](../../AGENTS.md) |
+| Live provider smoke | Opt-in only: `scripts/live-smoke.mjs` (`npm run test:live`) is skipped unless `SWITCHBOARD_LIVE_TESTS=1`; not part of `npm test`, never runs in CI; an operator budget file caps it (T8.9, see below) | Yes | [AGENTS.md](../../AGENTS.md), NFR-MAINT-05 |
 | Controller-overhead benchmark | `scripts/bench-perf.mjs` (`npm run bench`) times the real MCP server over the in-memory transport with the fake adapter; not part of `npm test` (see [§3.6.1](#361-controller-overhead-benchmark-t27)) | No | NFR-PERF-01, NFR-PERF-02 |
 | Inner agent (M11) | Scripted fake backend as a local HTTP server, hostile-output fixtures, planted-secret prompt capture, import-boundary test; details in [§3.12](#312-inner-agent) (as built: an in-process scripted fake plus a loopback fake HTTP server; the §3.12 as-built note maps each item to its test file) | No | FR-INN-01..17 |
 | Affinity replay (M7) | Table-driven and property tests over stored `route_decision` rows and a scripted fake adapter set: for any sequence of runs in a project, the provider and model change only when the decision carries an `affinity_switch_reason` from the closed list; a better score, lower cost or lower load never moves a project; no return after recovery; `require_provider`, `affinity reset`, `QUOTA_EXHAUSTED`, breaker open and exhausted retry each produce exactly their reason. Details in [§3.13.3](#3133-testing-affinity-and-retrieval) | No | FR-RTE-06..09, FR-CAP-08 |
@@ -270,6 +270,28 @@ by default (`SWITCHBOARD_LIVE_PAIR=<first>:<second>` for one direction), under t
 no credential read, no prompt or transcript printed). It records statuses, failure codes, bindings without native
 session ids, and the bundle's artifact id and SHA-256. A provider that is not installed, not in its validated range or
 not logged in makes its checks `NOT_CHECKED`, and the script exits 1. Running it is the operator task T5.12.
+
+**Live-test budget guard (T8.9, NFR-MAINT-05).** Both live scripts call `admitLiveRun` in `scripts/live/budget.mjs`
+after choosing their provider plug-ins and before `dist/` is loaded or any provider process is spawned (probe, auth
+status, `switchboard serve`). `SWITCHBOARD_LIVE_BUDGET_FILE` names the operator's budget file; unset, the scripts behave
+as on `main` and print one stderr warning. The file format is owned by the header of `scripts/live/budget.mjs` and shown
+in the [README](../../README.md#live-test-budget-guard): `schema_version` 1, `window_hours`, `global_max_runs`,
+`min_gap_seconds`, `purposes`, `providers.<id>.max_runs` and `.model`, optional `audit_log`. Unknown keys, a malformed
+file, a relative path or a path inside the repository refuse (fail closed). The decision (`decide`, pure, clock
+injected) refuses, in this order, a purpose (`SWITCHBOARD_LIVE_PURPOSE`) not on the allowlist, a provider not listed, a
+start inside the minimum gap after the last `start` record, and a request that would pass the global or a per-provider
+cap of provider runs counted from `start` records inside the rolling window (a smoke run is one provider run, a pair
+direction one per provider). A refusal appends a `denied` record and exits 75 (`EX_TEMPFAIL`); an admission appends
+`start` and, on process exit, `finish` with the exit code. The file's model reaches the run without a new flag: the
+in-script compile (flag audit) carries it, the throwaway `serve` config lists only that model in `providers.<id>.models`
+with capability `low`, and the delegation asks for `minimum_capability: "low"` (T7.8 stage 1). Delegated choices: the
+exit code, the file format, counting only `start` records, and a required model per provider. Pacing
+([ADR-0055](../adr/0055-model-groups-and-usage-pacing.md)) is not involved. Tests (`test/live-budget.test.ts`) use the
+fake plug-in `scripts/live/providers/fake.mjs` (`fixture: true`: selectable, not listed in the scripts' messages; the
+scripts stop right after admission and hand it the compile request, which it records) and an injected clock: the run
+past the cap is refused with exit 75 and a `denied` record and the fake is never reached, a run inside the gap and an
+unknown purpose are refused, the fake receives the file's model whatever `SWITCHBOARD_LIVE_MODEL` asked for,
+unconfigured messages are byte-identical to `main`, and no workflow or npm script sets the variable.
 
 Principles: tests pass with no provider CLI installed or logged in; secret-pattern scan over all test outputs
 (NFR-SEC-01); coverage targets are not set until M1 measurement (no number proposed).
