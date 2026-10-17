@@ -39,6 +39,7 @@ import { primaryContext, type ResolvedProject } from "../config/projects.js";
 import { defaultIds, type IdGenerator } from "../ids/index.js";
 import { createLedger, type GitPushRow, type Ledger } from "../ledger/index.js";
 import { git, gitText } from "../workspace/git.js";
+import { nativeSkillPresent } from "../workspace/native-skills.js";
 import type { CredentialReach } from "./credential-reach.js";
 import { DEFAULT_PUBLISH_PREFIX, isRunBranchRef, publishRefFor } from "./publish-ref.js";
 import { isBranchPrefix, isRemoteName } from "./push-names.js";
@@ -54,6 +55,7 @@ export type PushReason =
   | "POLICY_NONE"
   | "CREDENTIAL_REACH"
   | "GIT_POLICY_VIOLATION"
+  | "SKILL_PATH_PRESENT"
   | "REMOTE_INVALID"
   | "PREFIX_INVALID"
   | "CONTEXT_MISMATCH"
@@ -386,6 +388,9 @@ export class GitPusher {
     }
     // Q-44 (Delegated, fail closed): any recorded Git policy violation in the meta-session refuses publication.
     if (this.hasViolation(session.id)) throw new Refusal("GIT_POLICY_VIOLATION");
+    // T16.6 (LLD §19.8, FR-SKL-06): publication is refused while a recorded native skill file of any run of the
+    // meta-session exists in its worktree (a failed removal stays a refusal until a later removal point clears it).
+    if (await nativeSkillPresent(this.options.db, session.id)) throw new Refusal("SKILL_PATH_PRESENT");
     if (!isRemoteName(ctx.remote)) throw new Refusal("REMOTE_INVALID");
     att.remote = ctx.remote;
     if (!isBranchPrefix(ctx.branchPrefix)) throw new Refusal("PREFIX_INVALID");

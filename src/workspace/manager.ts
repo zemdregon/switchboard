@@ -1,12 +1,26 @@
 import { lstat, mkdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import type Database from "better-sqlite3";
+import type { PromptSkill } from "../adapters/prompt.js";
+import type { NativeSkillLocation } from "../adapters/types.js";
 import type { ArtifactStore } from "../artifacts/index.js";
 import { isUnderAllowedRoot } from "../config/index.js";
 import { defaultIds, type IdGenerator } from "../ids/index.js";
 import type { TrustProfile } from "../ledger/index.js";
 import { git, gitText, MIN_GIT_VERSION, parseGitVersion, versionAtLeast } from "./git.js";
 import { ensureWorktreeGitLink } from "./git-link.js";
+import {
+  markNativeDelivered,
+  type NativeDeliveryEntry,
+  type NativeRemovalResult,
+  type NativeSkillFs,
+  nativeExcludePathspecs,
+  pendingNativeSkills,
+  recordedNativePaths,
+  removeNativeSkills,
+  type SkillRemovalPoint,
+  writeNativeSkills,
+} from "./native-skills.js";
 import { findNestedRepositories, nestedPathspecArgs } from "./nested.js";
 import { type SeedEnvironment, type SeedSpec, type SeedStore, seedWorktree } from "./seeds.js";
 
@@ -95,6 +109,8 @@ export interface WorkspaceManagerOptions {
       projectId: string,
     ) => { readonly specs: readonly SeedSpec[]; readonly environment: SeedEnvironment } | undefined;
   };
+  /** T16.6 test seam: the unlink the native-skill cleaner uses (fault injection, TDD §3.16.2 property 5). */
+  readonly nativeSkillFs?: NativeSkillFs;
 }
 
 export interface PrepareInput {
@@ -357,7 +373,7 @@ export class WorkspaceManager {
       await this.ensureGitLink(ws);
       const nested = await findNestedRepositories(ws.worktreePath);
       nestedRepositories = nested.paths;
-      const scope = nestedPathspecArgs(nested);
+      const scope = this.scanScope(runId, nested);
       const head = await gitText(["rev-parse", "HEAD"], { cwd: ws.worktreePath });
       if (head !== ws.preCommit) reasons.push("HEAD differs from the pre-run checkpoint");
       const status = await git(
@@ -385,8 +401,9 @@ export class WorkspaceManager {
     const ws = this.runWorkspace(runId);
     await this.ensureGitLink(ws);
     const nested = await findNestedRepositories(ws.worktreePath);
-    const scope = nestedPathspecArgs(nested);
+    const scope = this.scanScope(runId, nested);
     await git(["add", "-A", ...scope], { cwd: ws.worktreePath });
+    await this.unstageNativeSkills(runId, ws.worktreePath, "HEAD");
     const clean =
       (await git(["diff", "--cached", "--quiet", "HEAD", ...scope], { cwd: ws.worktreePath, okCodes: [1] })).code === 0;
     let committed = false;
@@ -402,6 +419,7 @@ export class WorkspaceManager {
       ws,
       ws.preCommit,
       postCommit,
+      nativeExcludePathspecs(recordedNativePaths(this.db, runId)),
     );
     const postCheckpointId = this.insertCheckpoint(ws.metaSessionId, runId, "post", postCommit, ws.branch);
     const now = this.now().toISOString();
@@ -433,8 +451,9 @@ export class WorkspaceManager {
   async rollback(runId: string): Promise<RollbackResult> {
     const ws = this.runWorkspace(runId);
     await this.ensureGitLink(ws);
-    const scope = nestedPathspecArgs(await findNestedRepositories(ws.worktreePath));
+    const scope = this.scanScope(runId, await findNestedRepositories(ws.worktreePath));
     await git(["add", "-A", ...scope], { cwd: ws.worktreePath });
+    await this.unstageNativeSkills(runId, ws.worktreePath, "HEAD");
     const diff = await git(["diff", "--cached", "--binary", "--no-ext-diff", "--no-color", ws.preCommit, ...scope], {
       cwd: ws.worktreePath,
     });
@@ -447,7 +466,69 @@ export class WorkspaceManager {
     return { diffArtifactId, restoredTo: ws.preCommit };
   }
 
+  /**
+   * T16.6 (LLD §19.6 step 2): write each skill's native file under `location` in the run's worktree, falling back to the
+   * prompt prefix per entry (`path_taken`, `write_failed`). Never throws for an entry; see `./native-skills.ts`.
+   */
+  async writeNativeSkills(
+    runId: string,
+    location: NativeSkillLocation,
+    skills: readonly PromptSkill[],
+  ): Promise<NativeDeliveryEntry[]> {
+    const ws = this.runWorkspace(runId);
+    return writeNativeSkills({
+      db: this.db,
+      runId,
+      worktreePath: ws.worktreePath,
+      baseCommit: ws.preCommit,
+      location,
+      skills,
+    });
+  }
+
+  /** T16.6: `delivery = 'native'` and `delivered_at` on the written rows; call inside the dispatch transaction. */
+  markNativeDelivered(runId: string, at: string): void {
+    markNativeDelivered(this.db, runId, at);
+  }
+
+  /** T16.6: whether the run has a recorded native path that is not verified removed (synchronous ledger read). */
+  hasPendingNativeSkills(runId: string): boolean {
+    return pendingNativeSkills(this.db, runId).length > 0;
+  }
+
+  /** T16.6 (LLD §19.8): one idempotent removal pass at `point`; never throws. */
+  removeNativeSkills(runId: string, point: SkillRemovalPoint): Promise<NativeRemovalResult> {
+    return removeNativeSkills({
+      db: this.db,
+      runId,
+      point,
+      ids: this.ids,
+      now: this.now,
+      ...(this.options.nativeSkillFs ? { fs: this.options.nativeSkillFs } : {}),
+    });
+  }
+
   // ---- internals ----------------------------------------------------------------------------------------------
+
+  /**
+   * Pathspec arguments for a scan of the worktree: the nested repositories (Q-31) and, T16.6 (LLD §19.8), the run's
+   * recorded native skill paths. Empty when there is nothing to exclude, exactly as before.
+   */
+  private scanScope(runId: string, nested: Awaited<ReturnType<typeof findNestedRepositories>>): string[] {
+    const skill = nativeExcludePathspecs(recordedNativePaths(this.db, runId));
+    if (skill.length === 0) return nestedPathspecArgs(nested);
+    return ["--", ".", ...nested.excludes, ...skill];
+  }
+
+  /**
+   * T16.6 (LLD §19.8): an agent may have `git add`ed its skill file, and `add -A` with an exclusion does not unstage it.
+   * Reset the index entries of the recorded paths to `rev`, so the checkpoint never contains one.
+   */
+  private async unstageNativeSkills(runId: string, cwd: string, rev: string): Promise<void> {
+    const paths = recordedNativePaths(this.db, runId);
+    if (paths.length === 0) return;
+    await git(["--literal-pathspecs", "reset", "-q", rev, "--", ...paths], { cwd });
+  }
 
   /** T9.13: the run's project seeds, if any (the store records `seed_applied` or `seed_failed`; never throws). */
   private async seed(
@@ -686,11 +767,16 @@ export class WorkspaceManager {
     };
   }
 
-  private async storeDiff(runId: string, ws: RunWorkspace, pre: string, post: string) {
-    const diff = await git(["diff", "--binary", "--no-ext-diff", "--no-color", "--no-renames", pre, post], {
+  private async storeDiff(runId: string, ws: RunWorkspace, pre: string, post: string, excludes: readonly string[]) {
+    // T16.6 (LLD §19.8): the checkpoint already leaves recorded native paths out; excluding them here as well keeps the
+    // `diff` and `changed_files` artifacts free of them even if a commit did carry one.
+    const scope = excludes.length > 0 ? ["--", ".", ...excludes] : [];
+    const diff = await git(["diff", "--binary", "--no-ext-diff", "--no-color", "--no-renames", pre, post, ...scope], {
       cwd: ws.worktreePath,
     });
-    const names = await git(["diff", "--name-status", "-z", "--no-renames", pre, post], { cwd: ws.worktreePath });
+    const names = await git(["diff", "--name-status", "-z", "--no-renames", pre, post, ...scope], {
+      cwd: ws.worktreePath,
+    });
     const changedFiles = parseNameStatus(names.stdout.toString("utf8"));
     const diffArtifactId = await this.putArtifact(runId, ws.metaSessionId, "diff", "text/x-diff", diff.stdout);
     const changedFilesArtifactId = await this.putArtifact(

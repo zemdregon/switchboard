@@ -851,6 +851,8 @@ async function runDaemon(
     // T16.5 (LLD §19.6): wired whatever `skills.enabled` says, so a run admitted with skills before the operator turned
     // them off still gets exactly the versions it was admitted with; a run without `run_skill` rows reads nothing.
     skillDelivery: skillDeliveryPort(db, config.dataDir),
+    // T16.6 (LLD §19.6 step 1): `prefix_only` forces the prompt prefix even for a cell that declares `native`.
+    skillDeliveryMode: config.skills.delivery,
     // T8.2 (FR-TEL-02, LLD §7): wrapper-boundary span export; inert when no OTLP endpoint is configured.
     telemetry,
     allowedRoots: config.allowedRoots,

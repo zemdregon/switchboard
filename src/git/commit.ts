@@ -4,6 +4,7 @@ import type Database from "better-sqlite3";
 import { defaultIds, type IdGenerator } from "../ids/index.js";
 import { createLedger, type GitCommitRow, type Ledger } from "../ledger/index.js";
 import { CONTROLLER_IDENTITY, GitError, git, gitText } from "../workspace/git.js";
+import { nativeExcludePathspecs, recordedNativePaths } from "../workspace/native-skills.js";
 import { findNestedRepositories, nestedPathspecArgs } from "../workspace/nested.js";
 import type { CredentialReach } from "./credential-reach.js";
 import { DEFAULT_PUBLISH_PREFIX, PublishRefError, publishRefFor } from "./publish-ref.js";
@@ -92,6 +93,11 @@ export class CommitError extends Error {
     readonly refused: readonly PathRefusal[] = [],
     /** Set for `PROVENANCE_PENDING`: the commit that is published but not yet recorded. */
     readonly commitSha?: string,
+    /**
+     * T16.6 (LLD §19.8 `details.reason`): `SKILL_PATH_IN_COMMIT` when the tree would contain a recorded native skill
+     * path (with code `PATH_REFUSED`). The tool line protocol carries a code and a message only, so the message names it.
+     */
+    readonly detailReason?: "SKILL_PATH_IN_COMMIT",
   ) {
     super(message);
   }
@@ -550,9 +556,14 @@ export class GitPublisher {
     try {
       const env = { GIT_INDEX_FILE: path.join(tmp, "index") };
       await git(["read-tree", parent], { cwd, env });
+      // T16.6 (LLD §19.8): the run's recorded native skill paths, while not verified removed.
+      const skillPaths = recordedNativePaths(this.options.db, ctx.runId);
       if (input.paths === undefined) {
         const nested = await findNestedRepositories(cwd);
-        await git(["add", "-A", "--", ".", ...nestedPathspecArgs(nested).slice(2)], { cwd, env });
+        await git(
+          ["add", "-A", "--", ".", ...nestedPathspecArgs(nested).slice(2), ...nativeExcludePathspecs(skillPaths)],
+          { cwd, env },
+        );
       } else {
         const accepted = await this.classifyPaths(ctx, parentTree, input.paths);
         // Pathspecs on stdin (NUL separated), so a large finalize-only path list cannot exceed the argument limit.
@@ -562,7 +573,29 @@ export class GitPublisher {
           input: `${accepted.join("\0")}\0`,
         });
       }
+      if (skillPaths.length > 0) {
+        // An explicitly named path (or a directory holding one) was added literally: put those entries back to the
+        // parent's, so the commit never changes a recorded path.
+        await git(["--literal-pathspecs", "reset", "-q", parent, "--", ...skillPaths], { cwd, env });
+      }
       tree = await gitText(["write-tree"], { cwd, env });
+      if (skillPaths.length > 0) {
+        const inTree = await git(
+          ["--literal-pathspecs", "ls-tree", "-r", "-z", "--name-only", tree, "--", ...skillPaths],
+          {
+            cwd,
+          },
+        );
+        if (inTree.stdout.length > 0) {
+          throw new CommitError(
+            "PATH_REFUSED",
+            "the commit would contain a Switchboard skill file (SKILL_PATH_IN_COMMIT); nothing was committed",
+            [],
+            undefined,
+            "SKILL_PATH_IN_COMMIT",
+          );
+        }
+      }
       if (tree === parentTree) throw new CommitError("NOTHING_TO_COMMIT", "nothing to commit");
       const names = await git(["diff-tree", "-r", "--name-only", "-z", "--no-renames", parentTree, tree], { cwd });
       filesChanged = names.stdout

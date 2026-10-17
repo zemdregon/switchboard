@@ -7,6 +7,7 @@ import { DEFAULT_PUBLISH_PREFIX } from "../git/publish-ref.js";
 import { createLedger, type Ledger } from "../ledger/index.js";
 import { assessDiskFloor, type DiskFloor, type DiskFloorStatus } from "./disk.js";
 import { git } from "./git.js";
+import { type NativeSkillFs, pendingNativeSkills, removeNativeSkills } from "./native-skills.js";
 
 /**
  * Retention GC core (T3.12; FR-WS-07, NFR-DATA-01, BR-12, LLD §5, ADR-0006). Q-18 (Delegated, owner decision 25): the
@@ -48,6 +49,8 @@ export interface GcOptions {
    * disk sweep stops as soon as free space is back above the floor. Unset (every retention pass): collect every unit.
    */
   readonly stopWhen?: () => boolean;
+  /** T16.6 test seam: the unlink the native-skill cleaner uses before the worktrees are removed. */
+  readonly nativeSkillFs?: NativeSkillFs;
 }
 
 export interface GcUnitResult {
@@ -127,9 +130,12 @@ async function collectUnit(
     o.containerRuntime !== undefined ? await removeRunContainers(o.containerRuntime, targets.runIds) : [];
   await hook("containers");
 
-  // 3. Worktrees.
+  // 3. Worktrees. T16.6 (LLD §19.8 removal point 4, FR-SKL-06): each run's recorded native skill files are removed and
+  // verified first; a path whose removal fails there goes with its worktree, and a second pass records it verified.
   entering("worktrees");
+  await removeUnitNativeSkills(o, targets.runIds);
   const worktreesRemoved = await removeWorktrees(o.dataDir, sessionId, c.repo_root, targets.worktreePaths, warnings);
+  await removeUnitNativeSkills({ db: o.db }, targets.runIds);
   await hook("worktrees");
 
   // 4. Branches (only `switchboard/<sess>/`).
@@ -168,6 +174,17 @@ async function collectUnit(
     artifactFilesKept: plan.keptHashes.length,
     warnings,
   };
+}
+
+/** T16.6: one removal pass for each run of the unit that still has a recorded native skill path. Never throws. */
+async function removeUnitNativeSkills(
+  o: Pick<GcOptions, "db" | "nativeSkillFs">,
+  runIds: readonly string[],
+): Promise<void> {
+  for (const runId of runIds) {
+    if (pendingNativeSkills(o.db, runId).length === 0) continue;
+    await removeNativeSkills({ db: o.db, runId, point: "gc", ...(o.nativeSkillFs ? { fs: o.nativeSkillFs } : {}) });
+  }
 }
 
 async function exists(p: string): Promise<boolean> {
