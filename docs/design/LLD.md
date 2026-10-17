@@ -5578,6 +5578,22 @@ The FR-CAP-03 wording rule applies: "remaining" only next to `provider_reported`
 percentage of a plan, and the text view prints "used (estimate, Switchboard-observed only)" for `controller_estimated`.
 `doctor` prints one pacing line per subscription: `pace`, `deferred_until` and the source.
 
+*As built (T6.13, 2026-10-17, Delegated):* the configuration keys and the per-window figures; nothing consumes them yet
+(the `pacing` block is T6.14, the gate T6.8, the score term T7.15). `capacity.subscriptions` and `capacity.pacing` are
+strict in `src/config/schema.ts`; `src/config/capacity.ts` refuses a provider id that is not configured, a provider in
+two subscriptions, a window id repeated in a subscription, a `fixed` reset without an ISO instant with an offset as
+`anchor`, and an `anchor` on any other reset. Subscriptions resolve in name order with the adapter id of each provider,
+and only when the file sets `subscriptions` or `pacing`, so a configuration without them resolves exactly as before.
+`usageWindows` in `src/capacity/usage-window.ts` computes the table above and returns nothing when no subscription is
+configured. Points this section left open, each an Assumption: an unknown figure is `{ "value": null, "source":
+"unknown", "confidence": 0 }` rather than `null`; with an unknown reset, `window_start` and `elapsed_fraction` are
+`null`, so a `provider_reported` window without a declared reset key has no estimate either; a reported share in a
+`rolling` window has confidence 0.5; a declared reset is read only as an ISO string; `reported_tokens` uses the
+`usage_per_window` token rule of `src/control/budgets.ts` (`total_tokens`, else every `*_tokens` key);
+`reported_cost_usd` sums the first of `total_cost_usd` (Claude Code) and `cost_usd` (OpenCode) in each row; figures are
+rounded to six decimals. `USAGE_KEYS` entries name `origin` (`usage_observation` or `rate_limit`), `key`, `carries`
+and `source`.
+
 ## 17. Routing (M7)
 
 Implements FR-RTE-01 (full) to FR-RTE-04, FR-RTE-06 to FR-RTE-08 and FR-MCP-02 (`explain_route`) under

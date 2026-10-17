@@ -192,7 +192,42 @@ export interface CapacityConfigInput {
   queue_horizon_seconds?: number;
   breaker?: { failure_threshold?: number; open_seconds?: number };
   retry?: { max_attempts?: number; base_ms?: number; cap_ms?: number };
+  /** T6.13 (FR-CAP-09, LLD §16.9, ADR-0055 item 5): operator-declared subscriptions keyed by the operator's label. */
+  subscriptions?: Record<string, SubscriptionConfigInput>;
+  /** T6.13 (FR-CAP-10, LLD §16.9): pacing parameters; every key defaults to its LLD value (Assumptions, Q-98). */
+  pacing?: { mode?: PacingMode; target_fraction?: number; burst_fraction?: number; min_confidence?: number };
 }
+
+/** A `capacity.subscriptions.<name>` entry (LLD §16.9): config provider ids sharing 1..4 usage windows. */
+export interface SubscriptionConfigInput {
+  providers: string[];
+  windows: UsageWindowConfigInput[];
+}
+
+export interface UsageWindowConfigInput {
+  id: string;
+  length_seconds: number;
+  /** `anchor` (an ISO instant) is required with `fixed` and refused otherwise (checked in `capacity.ts`). */
+  reset: { kind: UsageWindowResetKind; anchor?: string };
+  budget?: { unit: UsageBudgetUnit; value: number };
+}
+
+export const PACING_MODES = ["gate", "score", "off"] as const;
+export type PacingMode = (typeof PACING_MODES)[number];
+export const USAGE_WINDOW_RESET_KINDS = ["provider_reported", "fixed", "rolling"] as const;
+export type UsageWindowResetKind = (typeof USAGE_WINDOW_RESET_KINDS)[number];
+export const USAGE_BUDGET_UNITS = ["runs", "reported_tokens", "reported_cost_usd"] as const;
+export type UsageBudgetUnit = (typeof USAGE_BUDGET_UNITS)[number];
+/** LLD §16.9 name and id shapes and bounds. */
+export const SUBSCRIPTION_NAME_PATTERN = "^[a-z][a-z0-9_-]{0,31}$";
+export const USAGE_WINDOW_ID_PATTERN = "^[a-z0-9_-]{1,32}$";
+export const MIN_SUBSCRIPTION_WINDOW_SECONDS = 60;
+export const MAX_SUBSCRIPTION_WINDOW_SECONDS = 2678400;
+/** LLD §16.9 pacing defaults (**Assumptions**, Q-98): T, B and the lowest estimate confidence the gate acts on. */
+export const DEFAULT_PACING_MODE: PacingMode = "gate";
+export const DEFAULT_PACING_TARGET_FRACTION = 0.95;
+export const DEFAULT_PACING_BURST_FRACTION = 0.1;
+export const DEFAULT_PACING_MIN_CONFIDENCE = 0.5;
 
 /**
  * LLD §16.1 defaults (T6.1; **Assumptions**, no measurement; Q-69 to Q-72). The retry values are LLD §9's proposed
@@ -570,6 +605,72 @@ export const configSchema = {
             max_attempts: { type: "integer", minimum: 1, maximum: 10 },
             base_ms: { type: "integer", minimum: 1, maximum: 600000 },
             cap_ms: { type: "integer", minimum: 1, maximum: 3600000 },
+          },
+        },
+        // T6.13 (LLD §16.9): provider ids, the one-subscription rule and the `fixed` anchor are checked in `capacity.ts`.
+        subscriptions: {
+          type: "object",
+          maxProperties: 64,
+          propertyNames: { pattern: SUBSCRIPTION_NAME_PATTERN },
+          additionalProperties: {
+            type: "object",
+            additionalProperties: false,
+            required: ["providers", "windows"],
+            properties: {
+              providers: {
+                type: "array",
+                minItems: 1,
+                maxItems: 16,
+                uniqueItems: true,
+                items: { type: "string", minLength: 1 },
+              },
+              windows: {
+                type: "array",
+                minItems: 1,
+                maxItems: 4,
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["id", "length_seconds", "reset"],
+                  properties: {
+                    id: { type: "string", pattern: USAGE_WINDOW_ID_PATTERN },
+                    length_seconds: {
+                      type: "integer",
+                      minimum: MIN_SUBSCRIPTION_WINDOW_SECONDS,
+                      maximum: MAX_SUBSCRIPTION_WINDOW_SECONDS,
+                    },
+                    reset: {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["kind"],
+                      properties: {
+                        kind: { enum: [...USAGE_WINDOW_RESET_KINDS] },
+                        anchor: { type: "string", minLength: 1, maxLength: 64 },
+                      },
+                    },
+                    budget: {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["unit", "value"],
+                      properties: {
+                        unit: { enum: [...USAGE_BUDGET_UNITS] },
+                        value: { type: "number", exclusiveMinimum: 0 },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        pacing: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            mode: { enum: [...PACING_MODES] },
+            target_fraction: { type: "number", minimum: 0.5, maximum: 1 },
+            burst_fraction: { type: "number", minimum: 0, maximum: 0.5 },
+            min_confidence: { type: "number", minimum: 0, maximum: 1 },
           },
         },
       },
