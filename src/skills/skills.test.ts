@@ -171,6 +171,21 @@ describe("skill source validation (LLD §19.1 refusals)", () => {
     const again = validateSkillSource(Buffer.from(r.text));
     expect(again.ok && again.sha256).toBe(r.sha256);
   });
+
+  it("canonical front matter is a fixed point for quoted descriptions", () => {
+    for (const description of [
+      '"  Check: #1 risk  "',
+      "'say \"no\" #2'",
+      '"it\'s fine"',
+      '"  padded  "',
+      "plain: value#x",
+    ]) {
+      const r = validateSkillSource(Buffer.from(source("body\n", { description })));
+      if (!r.ok) throw new Error(`${description}: ${r.reason}`);
+      const again = validateSkillSource(Buffer.from(r.text));
+      expect(again.ok && again.text, description).toBe(r.text);
+    }
+  });
 });
 
 describe("canonicalisation (LLD §19.1)", () => {

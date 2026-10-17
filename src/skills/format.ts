@@ -103,7 +103,8 @@ function unquote(raw: string): string | undefined {
   if (raw.length >= 2 && ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'")))) {
     const inner = raw.slice(1, -1);
     // No escapes: a quote character of the same kind inside is refused rather than interpreted.
-    return inner.includes(raw[0] as string) ? undefined : inner;
+    // Trimmed so the re-serialised (possibly plain) value parses back to itself.
+    return inner.includes(raw[0] as string) ? undefined : inner.trim();
   }
   if (/^["']/u.test(raw)) return undefined;
   // YAML: " #" starts a comment in a plain scalar.
@@ -134,7 +135,8 @@ function secretMatched(text: string, sanitizePatterns: readonly string[]): boole
   }
   if (sanitizePatterns.length === 0) return false;
   const compiled = sanitizePatterns.map((p) => compileOperatorPattern(p));
-  // Operator patterns run on bounded windows only (safe-pattern.ts); windows overlap by half so no match straddles two.
+  // Operator patterns run on bounded windows only (safe-pattern.ts); windows overlap by half, so any match up to
+  // half a window long falls wholly inside one.
   const half = PATTERN_WINDOW / 2;
   for (const line of text.split("\n")) {
     for (let start = 0; start === 0 || start + half < line.length; start += half) {
