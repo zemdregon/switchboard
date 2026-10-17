@@ -33,7 +33,13 @@ import {
   resolveSkillAssignment,
 } from "./projects.js";
 import { checkRag, type RagSettings, resolveRag } from "./rag.js";
-import { checkRouting, type RoutingSettings, resolveRouting } from "./routing.js";
+import {
+  checkRouting,
+  type ResolvedModelGroups,
+  type RoutingSettings,
+  resolveModelGroups,
+  resolveRouting,
+} from "./routing.js";
 import {
   currentConfigSchema,
   DEFAULT_CONTINUITY_MAX_BUNDLE_BYTES,
@@ -164,6 +170,8 @@ export interface ResolvedConfig {
   capacity: CapacitySettings;
   /** Routing settings (M7, T7.1; LLD §17.1), always set, defaulted per key. */
   routing: RoutingSettings;
+  /** Configured model groups (T7.13, T7.14; LLD §17.7), keyed by name; empty when `model_groups` is absent. */
+  modelGroups: ResolvedModelGroups;
   /**
    * Control-plane settings (M14; LLD §3.4.6), always set, defaulted per key. T14.4: every unset budget cap is
    * unlimited; T14.5: unset loop-breaker keys take the LLD defaults.
@@ -620,6 +628,7 @@ export function loadConfig(
     capacity: resolveCapacity(cfg.capacity),
     rag: resolveRag(cfg.rag),
     routing: resolveRouting(cfg.routing),
+    modelGroups: resolveModelGroups(cfg.model_groups),
     controlPlane: resolveControlPlane(cfg.control_plane),
     notificationSinks: resolveNotificationSinks(cfg.notification_sinks),
     ciTrigger: resolveCiTrigger(cfg.ci_trigger),
