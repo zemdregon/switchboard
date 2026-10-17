@@ -434,7 +434,9 @@ repository. Everything below is **Proposed** and **Delegated** (mechanism in
 [ADR-0056](../adr/0056-switchboard-controlled-skills.md), contract in [LLD
 §19](../design/LLD.md#19-switchboard-controlled-skills-m16-proposed)), except the FR-SKL-01, FR-SKL-02 and FR-SKL-10
 store aspects that T16.1 built (validator, canonicaliser, content store, migration `0021`, state derivation;
-`src/skills/`); every limit is an Assumption.
+`src/skills/`) and the FR-SKL-03, FR-SKL-04 and FR-SKL-08 configuration aspects that T16.3 built (`skills.*`,
+`projects[].skills`, `mcp_clients[].skills` in the schema and loader; `src/config/`, `src/skills/limits.ts`,
+`src/skills/configured.ts`); the four limit defaults stay Assumptions and their ranges are Delegated (LLD §19.3).
 
 | ID | Requirement | Priority | Source | Verify | Milestone |
 | --- | --- | --- | --- | --- | --- |
