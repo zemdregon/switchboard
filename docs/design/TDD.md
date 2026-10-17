@@ -1387,14 +1387,15 @@ not on `origin/main`).
 
 *Proposed (2026-10-17, owner decision 57, [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md); partly built:
 the usage-window model T6.13, the pacing projection T6.14, the pacing gate T6.8, the model-groups configuration
-T7.13, the request fields T7.14 and group-aware selection with the `pacing` term T7.15 are `Done` 2026-10-17; the
-acceptance test T6.16 is `Done` 2026-10-17; the acceptance test T7.16 and the README pass T7.17 are not built).
+T7.13, the request fields T7.14, group-aware selection with the `pacing` term T7.15 and the model-group acceptance
+test T7.16 (`src/mcp/m7-group-acceptance.test.ts`) are `Done` 2026-10-17; the pacing acceptance test T6.16 is `Done`
+2026-10-17; the README pass T7.17 is not built).
 T7.13 (`src/config/model-groups.test.ts`) built the `model_groups` configuration, the seventh weight
 `routing.weights.pacing`, and the `doctor` listing of each member's resolution (`src/config/schema.ts`,
 `src/config/routing.ts`, `src/cli/doctor.ts`).*
 Contracts: [LLD §16.9](LLD.md#169-usage-windows-and-pacing-fr-cap-09-fr-cap-10) and
 [LLD §17.7](LLD.md#177-model-groups-fr-rte-10-fr-rte-11). Tasks: ROADMAP T6.8, T6.11, T6.13 to T6.16 and T7.13 to
-T7.17 (T6.8, T6.13, T6.14, T6.16, T7.13, T7.14 and T7.15 Done, the rest Planned).
+T7.17 (T6.8, T6.13, T6.14, T6.16, T7.13, T7.14, T7.15 and T7.16 Done, the rest Planned).
 
 - **Where it lives.** Pacing is a pure module beside the estimator in `src/capacity/` (built T6.13:
   `src/capacity/usage-window.ts`; the projection consumer is T6.14, `Done` 2026-10-17, `src/capacity/projection.ts`;
@@ -1427,8 +1428,10 @@ T7.17 (T6.8, T6.13, T6.14, T6.16, T7.13, T7.14 and T7.15 Done, the rest Planned)
 ### 3.16 Switchboard-controlled skills (Proposed)
 
 *Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); partly built: T16.1
-implemented the store module below and T16.3 the configuration keys and loader, both Delegated, not owner-approved;
-the renderer, writer, exclusions, CLI and import-boundary test are still Proposed).
+implemented the store module below, T16.3 the configuration keys and loader, T16.2 the operator CLI, T16.9 the
+read-only MCP tools with the §19.5 steps 2 to 4 resolver, and T16.4 admission (`src/skills/admission.ts`) with the
+import-boundary test, all Delegated, not owner-approved;
+the renderer, writer and exclusions are still Proposed).
 Delegated, not owner-approved beyond the direction.* Contract: [LLD §19](LLD.md#19-switchboard-controlled-skills-m16-proposed).
 Tasks: ROADMAP T16.0 to T16.12.
 
@@ -2979,7 +2982,7 @@ approach only.
 | M4 Adapters | macOS CI leg (NFR-PORT-02); one adapter module + manifest + fixtures + registry entry each (NFR-MAINT-01); ACP stdio client in the supervisor; model registry combining operator config and listing commands where available. Task breakdown: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (Proposed). |
 | M5 Continuity | Native resume per adapter via `resumeArgs`; handoff bundle builder from ledger rows and Git evidence only (FR-SES-04), regenerable from events and decisions (FR-SES-05). |
 | M6 Capacity | Usage observation writers; estimator (rolling windows over `usage_observation` and `run`); per-provider breakers persisted in `provider_health`; retry scheduler using [LLD §9](LLD.md#9-retryback-off-algorithm); queue with `WAITING_CAPACITY` timers; `get_capacity`. Cache read and creation token counts and per-project kept/switched counts (FR-CAP-08) where adapters report them. Owner decision 57 (Proposed; partly built: the subscription-window model T6.13, the pacing projection T6.14 and the pacing gate T6.8 are `Done` 2026-10-17, and the `pacing` score term is built by T7.15, `Done` 2026-10-17; acceptance T6.16 is `Done` 2026-10-17): subscription windows and pacing computed on read like the estimate, the pacing gate as a `QUEUED` hold on the breaker's wake timer, limit capture for every provider ([§3.15](#315-model-groups-and-usage-pacing-partly-built)). |
-| M7 Routing | Feature extraction and heuristic classifier; static weighted scoring; persist `route_decision` rows; `explain_route` reads them. Scores deterministic for a given stored input (FR-RTE-03). Provider and model affinity: `project_affinity` table, the selection step before scoring, the `affinity_switch_reason` field, `affinity reset`, the cache-friendly prompt assembly order, and the replay property test ([§3.13.3](#3133-testing-affinity-and-retrieval), [LLD §3.2](LLD.md#32-provider-and-model-affinity-m7)). Owner decision 57 (Proposed; partly built: model groups expanded into member candidates, the seventh `pacing` term and version 3 decisions are built by T7.15, `Done` 2026-10-17; acceptance T7.16 and README T7.17 remain Planned) ([§3.15](#315-model-groups-and-usage-pacing-partly-built)). |
+| M7 Routing | Feature extraction and heuristic classifier; static weighted scoring; persist `route_decision` rows; `explain_route` reads them. Scores deterministic for a given stored input (FR-RTE-03). Provider and model affinity: `project_affinity` table, the selection step before scoring, the `affinity_switch_reason` field, `affinity reset`, the cache-friendly prompt assembly order, and the replay property test ([§3.13.3](#3133-testing-affinity-and-retrieval), [LLD §3.2](LLD.md#32-provider-and-model-affinity-m7)). Owner decision 57 (Proposed; partly built: model groups expanded into member candidates, the seventh `pacing` term and version 3 decisions are built by T7.15, `Done` 2026-10-17, and the model-group acceptance test T7.16 is `Done` 2026-10-17 (`src/mcp/m7-group-acceptance.test.ts`); README T7.17 remains Planned) ([§3.15](#315-model-groups-and-usage-pacing-partly-built)). |
 | M8 Hardening | OTel exporter fed by wrapper-boundary span builders in the run lifecycle, not by replaying `run_event` rows (as built, [LLD §7](LLD.md#7-telemetry-spans)); version canaries (`adapters validate` ships in M4; the canary store and operator command in T8.5). |
 | M9 Projects and controlled commits | Project and context schema in the config loader; `COMP-PRJ` resolution and ceilings; `project_id` columns and the `git_commit` table; per-adapter Git-write denial and channel-support declarations; the shim subcommand and per-run socket; `COMP-GIT` (commit, sanitiser, publish ref, ref snapshots, push with policy); `projects` CLI; fake-adapter fixtures for every attempt in §3.6. Starts with a spike that settles §3.10's open mechanisms (per-run Git config, plumbing commands, socket access under sandboxes). |
 | M10 Container environments | After M9 (Q-6 settled by delegation, Proposed): runtime port, mounts, limits, labels and orphan sweep, container leg of the malicious-fixture suite, answer to the provider-login question ([§3.11](#311-container-environments)). |

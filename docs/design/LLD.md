@@ -5631,12 +5631,13 @@ is configured, so an unconfigured projection stays byte-identical. `doctor` prin
 The gate verdict is shown; the projection holds nothing. The hold is T6.8 (§16.9), applied at admission and in
 `pump()`.
 
-*As built (T6.3, 2026-10-14, Delegated):* `get_capacity` is the eighth tool, after `list_projects`; its input reuses
-the provider-id pattern of `delegate_task` and the handler refuses an id that is not registered. The listed providers are
-the server's routing candidates. `switchboard capacity` and `doctor` list the adapters `doctor` probes. `capacity
---json` adds `schema_version` as every CLI `--json` does. With no ledger file, the CLI computes over an empty in-memory
-ledger and creates nothing. The `doctor` JSON gains a `capacity` key, and its text gains one line per adapter. The
-section never changes `ok`, and an unreadable ledger leaves it out.
+*As built (T6.3, 2026-10-14, Delegated):* `get_capacity` is the eighth tool, after `list_projects`; its input reuses the
+provider-id pattern of `delegate_task` and the handler refuses an id that is not registered. The listed providers are
+every registered provider, in candidate order first (fixed 2026-10-17: the `provider` filter accepts any registered id,
+including `fake`, even when `candidateOrder` omits it). `switchboard capacity` and `doctor` list the adapters `doctor`
+probes. `capacity --json` adds `schema_version` as every CLI `--json` does. With no ledger file, the CLI computes over
+an empty in-memory ledger and creates nothing. The `doctor` JSON gains a `capacity` key, and its text gains one line per
+adapter. The section never changes `ok`, and an unreadable ledger leaves it out.
 
 ### 16.4 Per-provider circuit breaker
 
@@ -6731,10 +6732,12 @@ change):
 "skills": { "type": "array", "maxItems": 8, "uniqueItems": true,
             "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,47}(@[1-9][0-9]{0,5})?$" } },
 "role": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,31}$" },
-"skill_defaults": { "enum": ["apply", "omit"], "default": "apply" }
+"skill_defaults": { "enum": ["apply", "omit"] }
 ```
 
-The fields are part of `request_hash` (idempotency, FR-MCP-08). A queued item stores them and resolves at its own
+The fields are part of `request_hash` (idempotency, FR-MCP-08). `skill_defaults` carries no schema `default`:
+an absent field stays absent (so step 1 tells "no fields" from "apply", C8) and means `apply` at resolution.
+A queued item stores them and resolves at its own
 admission, not at enqueue time.
 
 ### 19.5 Resolution at admission (FR-SKL-03, FR-SKL-04)
@@ -6764,6 +6767,19 @@ Inside the admission transaction, after profile and ceiling checks and before th
 
 Skills are resolved once per run. They are not read by eligibility, scoring, affinity, the profile compiler, approval
 or any other policy component (import-boundary test, as for `src/retrieval/**`).
+
+*Implementation (T16.4, 2026-10-17, Delegated, not owner-approved):* `src/skills/admission.ts`. Steps 2 to 4 are the
+T16.9 `resolveSkills`; `resolveRunSkills` adds steps 1 and 5 and is pure. The lifecycle calls it through a structurally
+typed `SkillAdmissionPort` (it does not import `src/skills/`, because `src/capacity/` reaches the lifecycle), after the
+meta-session and privileged checks and before the `run` row; a refusal rolls the transaction back. Delegated readings:
+`skill_defaults` has no schema `default`, so an absent field stays absent for step 1 and means `apply`; the fields are
+stored in `request_json` when given and are part of `request_hash`. A step 1 entry that fails the re-check (or whose
+stored hash changed) is skipped with an event, not refused, as it was not requested by this request. The byte cap sums
+`skill_version.size_bytes` (front matter and body, so at least the body). `run_skill.delivery` is NOT NULL, so
+admission writes `prompt_prefix` with `delivered_at` NULL; `get_run` returns `skills` entries
+`{name, version, sha256, source, delivery}` with `delivery` null until dispatch sets `delivered_at`. A run with no
+entry and no skipped default gets no `skill_resolved` event. The import-boundary test exempts `src/skills/limits.ts`,
+the constants-only leaf `src/config/` imports (T16.3).
 
 ### 19.6 Delivery at dispatch (FR-SKL-05)
 

@@ -2,8 +2,9 @@
 
 - Status: Proposed (partly built: the usage-window model T6.13, the pacing projection T6.14, the limit-signal
   mapping T6.15, the model-groups configuration T7.13, the request fields T7.14, the pacing gate T6.8,
-  group-aware selection with the `pacing` term T7.15 and the pacing acceptance test T6.16 are Done
-  2026-10-17; the acceptance test T7.16 and the README pass T7.17 are not built; every default is an Assumption)
+  group-aware selection with the `pacing` term T7.15, the model-group acceptance test T7.16
+  (`src/mcp/m7-group-acceptance.test.ts`) and the pacing acceptance test T6.16 are Done
+  2026-10-17; the README pass T7.17 is not built; every default is an Assumption)
 - Date: 2026-10-17
 - Decided by: zemdregon (the product direction, [owner decision 57](../ROADMAP.md#42-owner-decisions), 2026-10-16:
   model groups across providers, pacing usage so that every subscription is used fully by the time its window resets,

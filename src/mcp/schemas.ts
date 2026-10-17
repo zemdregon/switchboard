@@ -53,6 +53,11 @@
  *
  * T7.14 (FR-RTE-11, LLD §3.0, §17.7): `delegate_task` and `enqueue_work` routing block gains optional `model_group`
  * and `model`; `continue_task` takes neither (Q-99); closed schemas.
+ *
+ * T16.4 (FR-SKL-03, LLD §19.4, FRD V15, C8): `delegate_task`, `continue_task` and `enqueue_work.request` gain optional
+ * `skills`, `role` and `skill_defaults`; the envelope gains `skills` (FR-SKL-07: metadata only, `get_run`). Delegated:
+ * `skill_defaults` has no schema `default`, so an absent field stays absent (C8 tells "no fields" from "apply"), and
+ * absent means `apply` at resolution.
  */
 
 import { FAILURE_CODES } from "../adapters/failure.js";
@@ -61,6 +66,7 @@ import {
   PROJECT_ID_PATTERN,
   projectSchema,
   SKILL_NAME_PATTERN,
+  SKILL_REF_PATTERN,
   SKILL_ROLE_PATTERN,
 } from "../config/schema.js";
 import { NEEDS_ATTENTION_PRIORITY } from "../control/needs-attention.js";
@@ -194,6 +200,12 @@ const DELEGATE_ROUTING = {
   },
 } as const;
 const NULLABLE_STRING = { type: ["string", "null"] } as const;
+/** T16.4 (LLD §19.4): the three request fields, shared by delegate_task, continue_task and enqueue_work. */
+const SKILL_FIELDS = {
+  skills: { type: "array", maxItems: 8, uniqueItems: true, items: { type: "string", pattern: SKILL_REF_PATTERN } },
+  role: { type: "string", pattern: SKILL_ROLE_PATTERN },
+  skill_defaults: { enum: ["apply", "omit"] },
+} as const;
 /** T14.1: an ISO-8601 date-time with seconds and a zone; the handler also rejects one that is not a real instant. */
 const ISO_INSTANT = {
   type: "string",
@@ -288,6 +300,24 @@ const ENVELOPE = {
       ],
     },
     replayed: { type: "boolean" },
+    // T16.4 (FR-SKL-07, LLD §19.2): `get_run` only, a run's pinned skills; never text. `delivery` is null until dispatch.
+    skills: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name", "version", "sha256", "source", "delivery"],
+        properties: {
+          name: { type: "string" },
+          version: { type: "integer", minimum: 1 },
+          sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
+          source: {
+            enum: ["global_default", "global_role", "project_default", "project_role", "request", "continued"],
+          },
+          delivery: { enum: ["prompt_prefix", "native", "skipped", null] },
+        },
+      },
+    },
     events: {
       type: "array",
       items: {
@@ -480,6 +510,7 @@ const INPUTS = {
       idempotency_key: { type: "string", minLength: 8, maxLength: 128 },
       // Required exactly when trust_profile is privileged (FRD V13, checked after the ceiling, V5); LLD §3.1.
       privileged_scope: PRIVILEGED_SCOPE_SCHEMA,
+      ...SKILL_FIELDS,
     },
   },
   continue_task: {
@@ -492,6 +523,7 @@ const INPUTS = {
       routing: ROUTING,
       trust_profile: TRUST_PROFILE,
       wait_seconds: WAIT_SECONDS,
+      ...SKILL_FIELDS,
     },
   },
   get_run: {
@@ -602,6 +634,9 @@ const WORK_INPUTS = {
           routing: DELEGATE.routing,
           priority: DELEGATE.priority,
           privileged_scope: DELEGATE.privileged_scope,
+          skills: DELEGATE.skills,
+          role: DELEGATE.role,
+          skill_defaults: DELEGATE.skill_defaults,
         },
       },
       // LLD §18.3: queue priority, independent of request.priority.
