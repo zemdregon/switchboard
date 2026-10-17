@@ -4,7 +4,7 @@
  * Real Git in temporary directories; no provider CLI, login, network or credential. The crash/restart case lives in
  * `src/reconcile/reconcile.test.ts` ("controller crash during VERIFYING").
  */
-import { execFileSync } from "node:child_process";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -15,7 +15,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { getPriority, tmpdir } from "node:os";
 import path from "node:path";
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -32,8 +32,16 @@ import { detectOuterSandbox, findOnPath, groupAlive, type OuterSandboxAvailabili
 import { GIT_POLICY_VIOLATION_EVENT, type ViolationEntry } from "../git/index.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger, type TrustProfile } from "../ledger/index.js";
+import { slotAddress, tryAcquireSlot } from "../lock/index.js";
 import { WorkspaceManager } from "../workspace/index.js";
-import { LifecycleError, RunLifecycle, startVerification, VERIFICATION_OUTPUT_CAP_BYTES } from "./index.js";
+import {
+  LifecycleError,
+  RunLifecycle,
+  startVerification,
+  VERIFICATION_OUTPUT_CAP_BYTES,
+  VERIFICATION_WAIT_EVENT,
+  type VerificationLimits,
+} from "./index.js";
 
 const GIT_ENV = {
   PATH: process.env.PATH ?? "",
@@ -93,6 +101,8 @@ function makeLifecycle(
     confinedVerification?: boolean;
     outerSandboxRequiredProfiles?: readonly string[];
     outerSandbox?: OuterSandboxAvailability | undefined;
+    globalConcurrency?: number;
+    verificationLimits?: VerificationLimits;
   } = {},
 ): RunLifecycle {
   const ids = createIdGenerator();
@@ -104,12 +114,13 @@ function makeLifecycle(
     artifacts,
     adapters: new AdapterRegistry().register(adapter),
     allowedRoots: [root],
-    globalConcurrency: 2,
+    globalConcurrency: opts.globalConcurrency ?? 2,
     resolveProfile: profileFor,
     ...(opts.baseEnv ? { baseEnv: opts.baseEnv } : {}),
     ...(opts.confinedVerification !== undefined ? { confinedVerification: opts.confinedVerification } : {}),
     ...(opts.outerSandboxRequiredProfiles ? { outerSandboxRequiredProfiles: opts.outerSandboxRequiredProfiles } : {}),
     ...(opts.outerSandbox ? { outerSandbox: opts.outerSandbox } : {}),
+    ...(opts.verificationLimits ? { verificationLimits: opts.verificationLimits } : {}),
   });
   lc.start();
   lifecycle = lc;
@@ -549,4 +560,181 @@ describe("confined verification (T3.11, FR-EXE-08, FR-POL-06, decision 11)", () 
       expect(rep.commands[0]?.outcome).toBe("failed");
     }, 60_000);
   });
+});
+
+describe("verification slots (T3.22, FR-EXE-09, LLD §8.1)", () => {
+  /** A slot set private to this test (unique scope), so nothing touches the host-wide `default` slots. */
+  const limitsFor = (slots: number, extra: Partial<VerificationLimits> = {}): VerificationLimits => ({
+    slots,
+    nice: 0,
+    env: {},
+    lock: { scope: `t${process.pid}${Math.random().toString(36).slice(2, 8)}` },
+    ...extra,
+  });
+  /** A fake verification command that records its start and end times (epoch ms) in `<name>.json` under the root. */
+  const timed = (name: string, ms: number): string[] => [
+    NODE,
+    "-e",
+    `const s = Date.now(); setTimeout(() => require('fs').writeFileSync(${JSON.stringify(
+      path.join(root, `${name}.json`),
+    )}, JSON.stringify({ s, e: Date.now() })), ${ms})`,
+  ];
+  const maxOverlap = (spans: { s: number; e: number }[]) => {
+    const edges = spans.flatMap((x) => [
+      [x.s, 1],
+      [x.e, -1],
+    ]) as [number, number][];
+    edges.sort((a, b) => a[0] - b[0] || a[1] - b[1]); // an end before a start at the same instant
+    let now = 0;
+    let max = 0;
+    for (const [, d] of edges) {
+      now += d;
+      max = Math.max(max, now);
+    }
+    return max;
+  };
+  const waits = (runId: string) => events(runId).filter((e) => e.type === VERIFICATION_WAIT_EVENT);
+  /** The command's variable names, without the one macOS adds to every process (T4.10). */
+  const envNames = (env: Record<string, string>) =>
+    Object.keys(env)
+      .filter((k) => k !== "__CF_USER_TEXT_ENCODING")
+      .sort();
+  const holders: ChildProcess[] = [];
+  afterEach(() => {
+    for (const c of holders.splice(0)) c.kill("SIGKILL");
+  });
+  /** Another process holding slot 0 until it is killed. */
+  async function holdSlot(limits: VerificationLimits): Promise<ChildProcess> {
+    const address = slotAddress({ ...limits.lock, slots: limits.slots }, 0);
+    const child = spawn(
+      NODE,
+      ["-e", `require('net').createServer().listen(${JSON.stringify(address)}, () => process.stdout.write('ready'))`],
+      { stdio: ["ignore", "pipe", "inherit"] },
+    );
+    holders.push(child);
+    await new Promise<void>((resolve, reject) => {
+      child.stdout?.once("data", () => resolve());
+      child.once("exit", (code) => reject(new Error(`holder exited early (${code})`)));
+    });
+    return child;
+  }
+
+  it("three runs with two slots never overlap more than two commands; the third records verification_wait", async () => {
+    const lc = makeLifecycle({ globalConcurrency: 3, verificationLimits: limitsFor(2) });
+    const runs = await Promise.all(["a", "b", "c"].map((n) => submit(lc, [timed(n, 1_500)])));
+    const done = await Promise.all(runs.map((r) => lc.waitForTerminal(r.runId)));
+    expect(done.map((d) => d.state)).toEqual(["SUCCEEDED", "SUCCEEDED", "SUCCEEDED"]);
+    const spans = ["a", "b", "c"].map(
+      (n) => JSON.parse(readFileSync(path.join(root, `${n}.json`), "utf8")) as { s: number; e: number },
+    );
+    expect(maxOverlap(spans)).toBeLessThanOrEqual(2);
+    const waited = runs.filter((r) => waits(r.runId).length > 0);
+    expect(waited.length).toBeGreaterThanOrEqual(1);
+    for (const r of waited) {
+      expect(waits(r.runId)).toEqual([{ type: VERIFICATION_WAIT_EVENT, p: { slots: 2 } }]);
+      // The wait is inside VERIFYING: after T11, before any command started.
+      const types = events(r.runId).map((e) => (e.type === "state_transition" ? `to:${String(e.p.to)}` : e.type));
+      const at = types.indexOf(VERIFICATION_WAIT_EVENT);
+      expect(types.lastIndexOf("to:VERIFYING", at)).toBeGreaterThanOrEqual(0);
+      expect(types.slice(0, at)).not.toContain("verification_command_started");
+    }
+  }, 60_000);
+
+  it("SIGKILL of a slot holder frees the slot: the waiting run then verifies and succeeds", async () => {
+    const limits = limitsFor(1);
+    const holder = await holdSlot(limits);
+    const lc = makeLifecycle({ verificationLimits: limits });
+    const { runId } = await submit(lc, [timed("after-kill", 10)]);
+    await until(() => waits(runId).length === 1);
+    expect(ledger.getRunRecord(runId)?.state).toBe("VERIFYING");
+    expect(existsSync(path.join(root, "after-kill.json"))).toBe(false);
+    holder.kill("SIGKILL");
+    const done = await lc.waitForTerminal(runId);
+    expect(done.state).toBe("SUCCEEDED");
+    expect(existsSync(path.join(root, "after-kill.json"))).toBe(true);
+  }, 60_000);
+
+  it("a wait longer than the wall-clock limit ends the run TIMEOUT (PROCESS_TIMEOUT), not a limiter error", async () => {
+    const limits = limitsFor(1);
+    const held = await tryAcquireSlot({ ...limits.lock, slots: 1 });
+    expect(held).toBeDefined();
+    try {
+      const lc = makeLifecycle({
+        fake: { timeouts: { wallClockMs: 1_500, idleMs: 1_500, killGraceMs: 200 } },
+        verificationLimits: limits,
+      });
+      const { runId } = await submit(lc, [timed("never", 10)]);
+      const done = await lc.waitForTerminal(runId);
+      expect(done.state).toBe("FAILED");
+      expect(done.failure_code).toBe("PROCESS_TIMEOUT");
+      expect(waits(runId)).toHaveLength(1);
+      expect(transitions(runId).slice(-3)).toEqual(["VERIFYING:T11", "FINALIZING:T14", "FAILED:T16"]);
+      const rep = await report(runId);
+      expect(rep.outcome).toBe("timeout");
+      expect(rep.commands.map((c) => c.outcome)).toEqual(["not_run"]);
+      expect(existsSync(path.join(root, "never.json"))).toBe(false);
+    } finally {
+      await held?.release();
+    }
+  }, 60_000);
+
+  it("cancel while waiting for a slot ends CANCELLED without running a command", async () => {
+    const limits = limitsFor(1);
+    const held = await tryAcquireSlot({ ...limits.lock, slots: 1 });
+    try {
+      const lc = makeLifecycle({ verificationLimits: limits });
+      const { runId } = await submit(lc, [timed("cancelled", 10)]);
+      await until(() => waits(runId).length === 1);
+      await lc.cancel(runId);
+      const done = await lc.waitForTerminal(runId);
+      expect(done.state).toBe("CANCELLED");
+      expect(existsSync(path.join(root, "cancelled.json"))).toBe(false);
+    } finally {
+      await held?.release();
+    }
+  }, 60_000);
+
+  it("commands run at the configured lower priority and get the declared parallelism variables", async () => {
+    const out = path.join(root, "prio.json");
+    const lc = makeLifecycle({
+      baseEnv: { PATH: process.env.PATH ?? "", VITEST_MAX_WORKERS: "from-controller-env" },
+      verificationLimits: limitsFor(2, { nice: 5, env: { VITEST_MAX_WORKERS: "1" } }),
+    });
+    const { runId } = await submit(lc, [
+      [
+        NODE,
+        "-e",
+        `require('fs').writeFileSync(${JSON.stringify(out)}, JSON.stringify({ p: require('os').getPriority(), env: process.env }))`,
+      ],
+    ]);
+    expect((await lc.waitForTerminal(runId)).state).toBe("SUCCEEDED");
+    const got = JSON.parse(readFileSync(out, "utf8")) as { p: number; env: Record<string, string> };
+    expect(got.p).toBe(Math.min(19, getPriority() + 5));
+    expect(got.env.VITEST_MAX_WORKERS).toBe("1"); // the declared value, not the controller's
+    expect(envNames(got.env)).toEqual(["PATH", "VITEST_MAX_WORKERS"]);
+    expect(waits(runId)).toEqual([]); // a free slot is taken without any record
+  }, 60_000);
+
+  it("no configuration: no slot, no priority change, no extra variable, the same records as before", async () => {
+    const out = path.join(root, "plain.json");
+    const lc = makeLifecycle({ baseEnv: { PATH: process.env.PATH ?? "", VITEST_MAX_WORKERS: "8" } });
+    const { runId } = await submit(lc, [
+      [
+        NODE,
+        "-e",
+        `require('fs').writeFileSync(${JSON.stringify(out)}, JSON.stringify({ p: require('os').getPriority(), env: process.env }))`,
+      ],
+    ]);
+    expect((await lc.waitForTerminal(runId)).state).toBe("SUCCEEDED");
+    const got = JSON.parse(readFileSync(out, "utf8")) as { p: number; env: Record<string, string> };
+    expect(got.p).toBe(getPriority());
+    expect(envNames(got.env)).toEqual(["PATH"]);
+    const types = events(runId).map((e) => e.type);
+    expect(types).not.toContain(VERIFICATION_WAIT_EVENT);
+    expect(types.filter((t) => t.startsWith("verification"))).toEqual([
+      "verification_command_started",
+      "verification_command",
+    ]);
+    expect((await report(runId)).outcome).toBe("passed");
+  }, 60_000);
 });

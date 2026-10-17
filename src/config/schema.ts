@@ -111,11 +111,21 @@ export interface SwitchboardConfig {
     /** T14.11 (FR-CTL-11): `orchestrator` (default) or `console`. */
     tool_profile?: ToolProfile;
   }[];
-  /**
-   * `min_free_disk_mb` (T3.23, FR-WS-11): the free-disk floor in whole megabytes, off when absent. Below it new runs
-   * are held in `QUEUED` (never failed) and an early GC sweep runs; `doctor` reports free space against it.
-   */
-  limits?: { global_concurrency?: number; per_provider_concurrency?: number; min_free_disk_mb?: number };
+  limits?: {
+    global_concurrency?: number;
+    per_provider_concurrency?: number;
+    /**
+     * `min_free_disk_mb` (T3.23, FR-WS-11): the free-disk floor in whole megabytes, off when absent. Below it new runs
+     * are held in `QUEUED` (never failed) and an early GC sweep runs; `doctor` reports free space against it.
+     */
+    min_free_disk_mb?: number;
+    /** T3.22 (FR-EXE-09): host-wide verification slots. Any `verification_*` key turns the limiter on. */
+    verification_slots?: number;
+    /** T3.22: niceness added to verification commands; 0 leaves their priority unchanged. */
+    verification_nice?: number;
+    /** T3.22: parallelism variables (for example `VITEST_MAX_WORKERS`) given to verification commands only. */
+    verification_env?: Record<string, string>;
+  };
   providers?: Partial<
     Record<
       ProviderId,
@@ -594,6 +604,19 @@ export const configSchema = {
         per_provider_concurrency: { type: "integer", minimum: 1, maximum: 64 },
         // T3.23 (FR-WS-11): whole megabytes; the upper bound (about 1 PB) is a typo guard (Assumption, Delegated).
         min_free_disk_mb: { type: "integer", minimum: 1, maximum: 1_000_000_000 },
+        // T3.22 (FR-EXE-09, LLD §8.1). Bounds are Proposed sanity limits (Delegated).
+        verification_slots: { type: "integer", minimum: 1, maximum: 64 },
+        verification_nice: { type: "integer", minimum: 0, maximum: 19 },
+        verification_env: {
+          type: "object",
+          maxProperties: 16,
+          // Upper-case names only; never Git, loader, signing/agent or the allowlist's own PATH/HOME (defence in depth).
+          propertyNames: {
+            pattern: "^[A-Z][A-Z0-9_]{0,63}$",
+            not: { pattern: "^(GIT_|LD_|DYLD_|PATH$|HOME$|GNUPGHOME$|GPG_AGENT_INFO$|SSH_AUTH_SOCK$|NODE_OPTIONS$)" },
+          },
+          additionalProperties: { type: "string", maxLength: 256, pattern: "^[^\\u0000]*$" },
+        },
       },
     },
     providers: {
