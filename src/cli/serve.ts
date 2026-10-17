@@ -87,6 +87,7 @@ import {
 } from "../control/index.js";
 import {
   type ContainerRuntime,
+  containerSeedCommand,
   createContainerEnvironment,
   createDockerRuntime,
   createProjectEnvironmentResolver,
@@ -128,12 +129,20 @@ import { fireDueSchedules } from "../schedule/index.js";
 import { createTelemetry } from "../telemetry/index.js";
 import {
   collectOrphans,
+  createSeedStore,
+  DEFAULT_SEED_ENTRIES_PER_SEED,
+  DEFAULT_SEED_STORE_MB,
   type DiskFloor,
   diskFloorPaths,
   earlySweepReclaimers,
+  hostSeedEnvironment,
   MB,
   runEarlySweep,
   runRetentionGc,
+  type SeedEnvironment,
+  type SeedSpec,
+  type SeedStore,
+  seedReclaimer,
   statfsDiskProbe,
   WorkspaceManager,
 } from "../workspace/index.js";
@@ -382,13 +391,21 @@ export function runEnvironments(
   ledger: ReturnType<typeof createLedger>,
   log: Logger,
   makeRuntime: () => ContainerRuntime = createDockerRuntime,
+  seeds?: ServeSeeds,
 ): EnvironmentResolver | undefined {
   if (!config.projects.some((p) => p.environment.kind === "container")) return undefined;
   const onEvent = environmentEventSink(ledger, (event, why) =>
     log.warn("environment event not recorded", { step: event.payload.step, container: event.payload.container, why }),
   );
   return createProjectEnvironmentResolver({
-    container: createContainerEnvironment({ runtime: makeRuntime(), onEvent }),
+    // T9.13 (FR-WS-10): a container run's seed entries become read-only bind mounts; none without a declared seed.
+    container: createContainerEnvironment({
+      runtime: makeRuntime(),
+      onEvent,
+      ...(seeds !== undefined
+        ? { seeds: { root: seeds.root, mounts: (runId: string) => seeds.store.containerMounts(runId) } }
+        : {}),
+    }),
     lookup: (id) => {
       const configured = config.projects.find((p) => p.id === id);
       if (configured !== undefined) return configured;
@@ -396,6 +413,74 @@ export function runEnvironments(
       return dynamic !== undefined ? toResolved(dynamic) : undefined;
     },
   });
+}
+
+/** T9.13 (FR-WS-10, LLD §5.1, ADR-0057): the dependency seed store and the per-project plan `serve` composes. */
+export interface ServeSeeds {
+  readonly store: SeedStore;
+  /** `<data_dir>/seeds`. */
+  readonly root: string;
+  readonly plan: (
+    projectId: string,
+  ) => { readonly specs: readonly SeedSpec[]; readonly environment: SeedEnvironment } | undefined;
+}
+
+/**
+ * T9.13: the seed store, only when a configured project declares `dependency_seeds` (none: no store, no directory, no
+ * call, and every worktree is exactly as before). Builds run like verification commands: the verification limiter and
+ * confinement apply (bubblewrap is looked up on PATH when confined); a `container` project's builds run in its image.
+ * Dynamic projects cannot declare seeds (their definition schema has no such key), so only configured ones are planned.
+ */
+export function serveSeeds(
+  config: Pick<
+    ResolvedConfig,
+    "projects" | "dataDir" | "limits" | "verificationLimits" | "confinedVerification" | "profileOverrides"
+  >,
+  db: ReturnType<typeof openLedger>,
+  artifacts: ArtifactStore,
+  ids: ReturnType<typeof createIdGenerator>,
+  baseEnv: Readonly<Record<string, string | undefined>>,
+  makeRuntime: () => ContainerRuntime = createDockerRuntime,
+  now?: () => Date,
+): ServeSeeds | undefined {
+  const seeded = config.projects.filter((p) => (p.dependencySeeds ?? []).length > 0);
+  if (seeded.length === 0) return undefined;
+  const needsContainer = seeded.some((p) => p.environment.kind === "container");
+  const store = createSeedStore({
+    db,
+    artifacts,
+    dataDir: config.dataDir,
+    maxBytes: (config.limits.seedStoreMb ?? DEFAULT_SEED_STORE_MB) * MB,
+    entriesPerSeed: config.limits.seedEntriesPerSeed ?? DEFAULT_SEED_ENTRIES_PER_SEED,
+    ...(config.verificationLimits !== undefined ? { verificationLimits: config.verificationLimits } : {}),
+    confined: config.confinedVerification,
+    baseEnv,
+    ids,
+    ...(now ? { now } : {}),
+    ...(needsContainer
+      ? {
+          commands: {
+            container: containerSeedCommand({
+              runtime: makeRuntime(),
+              profileFor: createProfileResolver(config.profileOverrides),
+            }),
+          },
+        }
+      : {}),
+  });
+  return {
+    store,
+    root: path.join(config.dataDir, "seeds"),
+    plan: (projectId) => {
+      const p = seeded.find((x) => x.id === projectId);
+      if (p?.dependencySeeds === undefined) return undefined;
+      const environment: SeedEnvironment =
+        p.environment.kind === "container"
+          ? { kind: "container", imageDigest: p.environment.imageDigest ?? "" }
+          : hostSeedEnvironment();
+      return { specs: p.dependencySeeds, environment };
+    },
+  };
 }
 
 async function runDaemon(
@@ -410,12 +495,14 @@ async function runDaemon(
   const now = io.now;
   const ledger = createLedger(db, { ids, ...(now ? { now } : {}) });
   const artifacts = new ArtifactStore(`${config.dataDir}/artifacts`);
+  const seeds = serveSeeds(config, db, artifacts, ids, io.env, createDockerRuntime, now);
   const workspace = new WorkspaceManager({
     db,
     artifacts,
     dataDir: config.dataDir,
     allowedRoots: config.allowedRoots,
     ids,
+    ...(seeds !== undefined ? { seeding: { store: seeds.store, plan: seeds.plan } } : {}),
   });
 
   try {
@@ -438,6 +525,8 @@ async function runDaemon(
       decisions_applied: report.decisionsApplied.length,
       containers_removed: report.containersRemoved.length,
     });
+    // T9.13 (LLD §5.1): orphaned seed builds killed, interrupted evictions rolled forward, scratch entries removed.
+    if (seeds !== undefined) await seeds.store.reconcile();
     const admittingReset = ledger.reconcileAdmittingWorkItems();
     if (admittingReset > 0) {
       log.info("project work queue: reset ADMITTING items to READY", { count: admittingReset });
@@ -619,7 +708,7 @@ async function runDaemon(
 
   // T3.23 (FR-WS-11, BR-51): the free-disk floor, off unless `limits.min_free_disk_mb` is set. The lifecycle holds
   // queued runs under it (`disk_hold`) and asks for this early sweep, which takes the same GC slot as the retention
-  // pass. Reclaimers in order: dependency seeds (none until T9.13 registers its reclaimer), then meta-sessions idle
+  // pass. Reclaimers in order: dependency seeds (T9.13; only when a project declares one), then meta-sessions idle
   // longer than `retention.days`, only when `retention.days` is set (the one switch for every collection, T3.12).
   const floorMb = config.limits.minFreeDiskMb;
   const diskFloorBase: DiskFloor | undefined =
@@ -635,6 +724,7 @@ async function runDaemon(
           reclaimers: earlySweepReclaimers({
             gc: { db, artifacts, dataDir: config.dataDir, days: config.retention.days },
             enabled: config.retentionEnabled,
+            ...(seeds !== undefined ? { seeds: seedReclaimer(seeds.store) } : {}),
           }),
           ...(now ? { now: now() } : {}),
         });
@@ -749,6 +839,8 @@ async function runDaemon(
     new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
     ledger,
     log,
+    createDockerRuntime,
+    seeds,
   );
   const lifecycle = new RunLifecycle({
     ledger,

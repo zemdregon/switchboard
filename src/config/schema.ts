@@ -125,6 +125,10 @@ export interface SwitchboardConfig {
     verification_nice?: number;
     /** T3.22: parallelism variables (for example `VITEST_MAX_WORKERS`) given to verification commands only. */
     verification_env?: Record<string, string>;
+    /** T9.13 (FR-WS-10): total dependency seed store bound in megabytes; default 10240 (Assumption). */
+    seed_store_mb?: number;
+    /** T9.13 (FR-WS-10): store entries kept per (project, seed); default 3 (Assumption). */
+    seed_entries_per_seed?: number;
   };
   providers?: Partial<
     Record<
@@ -330,6 +334,22 @@ export interface ProjectConfig {
   /** T12.1 (LLD §14.1, FR-RAG-01, 09, 10): narrowing-only retrieval settings; sharing flags default false. */
   rag?: ProjectRagConfig;
   contexts: ContextConfig[];
+  /**
+   * T9.13 (FR-WS-10, LLD §5.1, ADR-0057): ignored directories the controller fills into each fresh worktree from its
+   * seed store. Configuration only: a dynamic project definition (FR-PRJ-10) cannot carry the key (Delegated).
+   */
+  dependency_seeds?: DependencySeedConfig[];
+}
+
+/** One `projects[].dependency_seeds[]` entry (LLD §5.1). Paths are relative to the primary context. */
+export interface DependencySeedConfig {
+  id: string;
+  lockfile: string;
+  directory: string;
+  /** argv, no shell; the same shape rules as `verification_commands`. */
+  install: string[];
+  /** Default 600 (Assumption). */
+  timeout_seconds?: number;
 }
 
 export interface ProfileOverrideConfig {
@@ -520,6 +540,38 @@ export const projectSchema = {
   },
 } as const;
 
+/**
+ * `projects[].dependency_seeds` (T9.13, FR-WS-10, LLD §5.1). Bounds are Assumptions (Delegated); the path rules that a
+ * schema cannot say (normalised, not under `.git`, no nesting) are `checkProjects`'.
+ */
+const dependencySeedsSchema = {
+  type: "array",
+  maxItems: 8,
+  items: {
+    type: "object",
+    additionalProperties: false,
+    required: ["id", "lockfile", "directory", "install"],
+    properties: {
+      id: { type: "string", pattern: "^[a-z][a-z0-9-]{0,40}$" },
+      lockfile: { type: "string", minLength: 1, maxLength: 1024 },
+      directory: { type: "string", minLength: 1, maxLength: 1024 },
+      install: {
+        type: "array",
+        minItems: 1,
+        maxItems: 64,
+        items: { type: "string", maxLength: 4096, pattern: "^[^\\u0000]*$" },
+      },
+      timeout_seconds: { type: "integer", minimum: 1, maximum: 3600 },
+    },
+  },
+} as const;
+
+/** A `projects[]` entry of the configuration file: {@link projectSchema} plus `dependency_seeds` (T9.13). */
+const configProjectSchema = {
+  ...projectSchema,
+  properties: { ...projectSchema.properties, dependency_seeds: dependencySeedsSchema },
+} as const;
+
 /** Defaults (Proposed): 30 days (NFR-DATA-01), GC pass every 24 hours. */
 /** `ci_trigger` (T15.3; FR-QUE-03, LLD §18.1, §18.6; types and resolution in `ci-trigger.ts`). */
 const ciTriggerSchema = {
@@ -617,6 +669,9 @@ export const configSchema = {
           },
           additionalProperties: { type: "string", maxLength: 256, pattern: "^[^\\u0000]*$" },
         },
+        // T9.13 (FR-WS-10, LLD §5.1). Bounds are Proposed sanity limits (Delegated).
+        seed_store_mb: { type: "integer", minimum: 1, maximum: 1_000_000_000 },
+        seed_entries_per_seed: { type: "integer", minimum: 1, maximum: 100 },
       },
     },
     providers: {
@@ -639,7 +694,7 @@ export const configSchema = {
         preflight_ttl_seconds: { type: "integer", minimum: 0, maximum: 3600 },
       },
     },
-    projects: { type: "array", items: projectSchema },
+    projects: { type: "array", items: configProjectSchema },
     inner_agent: innerAgentSchema,
     rag: ragSchema,
     continuity: {

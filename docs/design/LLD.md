@@ -2349,8 +2349,26 @@ and repaired by remove-and-recreate before the pre-state is used.
 
 ### 5.1 Dependency seeds (FR-WS-10, Proposed, T9.12)
 
-*Design only (2026-10-17, Delegated agent work, not owner-approved; every choice below is Proposed and nothing is
-built; implementation is T9.13).* Decision and trade-offs: [ADR-0057](../adr/0057-dependency-seed-store.md). It sits
+*Designed by T9.12 and built by T9.13 (2026-10-17, Delegated agent work, not owner-approved; every choice below stays
+Proposed).* Decision and trade-offs: [ADR-0057](../adr/0057-dependency-seed-store.md). **As built (T9.13):** the store is
+`src/workspace/seeds.ts` (`createSeedStore`, `seedWorktree`, `seedReclaimer`); the workspace manager seeds a fresh
+worktree in `prepare` right after the `pre` checkpoint (`WorkspaceManagerOptions.seeding`), so the lifecycle is
+unchanged; `serve` composes the store only when a configured project declares a seed (`serveSeeds`), reconciles it at
+startup and registers `dependency_seeds` first in the early disk sweep; the `container` environment reads a run's mounts
+from the store (`ContainerEnvironmentOptions.seeds`, `seedMountPlan`) and `containerSeedCommand`
+(`src/environment/seed-build.ts`) builds a container project's seed in its image. Ledger migration 0022 adds the two
+tables below and the `seed_log` artifact kind. Differences from the design, all Delegated: (1) a dynamic project
+definition (FR-PRJ-10) cannot declare `dependency_seeds` (the key exists only in the configuration file's project
+schema), so no `projects approve` path is needed yet; (2) `dependency_seed_use` also records `directory`, so the early
+sweep removes a private copy without the configuration; (3) the use row is written when the entry is resolved, before
+populate, so a post-build eviction can never take the entry a run is about to copy; (4) a directory tracked at the base
+checkpoint counts as `not_ignored`; (5) stale `.build/`, `.tmp/` and unknown entry directories are removed by the
+store's startup `reconcile`, not by the T3.12 orphan pass; (6) the manager passes no cancel signal, so a cancel during
+seeding takes effect when `prepare` returns (the seed's own time bound still applies); (7) `projects validate` does not
+yet check the lockfile and the ignore rule (not built). The copy-on-write attempt was checked on ext4 on the
+operator host: `COPYFILE_FICLONE_FORCE` fails with `ENOTSUP` and the seed falls back to a private copy, as
+designed. The empty mount point a container run leaves in the host worktree is treated as absent on a later seed; that
+Docker creates it is an Assumption not run on rootless Docker by T9.13 (tests use a scripted runtime). It sits
 between the pre-run checkpoint and spawn above: the worktree is created from the base checkpoint (FR-WS-01,
 [ADR-0006](../adr/0006-worktree-checkpoints-no-blind-replay.md)), each declared seed is populated, and only then is the
 provider process prepared and started. The seeded directory is Git-ignored, so the `pre` checkpoint, mutation detection,

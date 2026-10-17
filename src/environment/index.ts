@@ -4,5 +4,6 @@ export * from "./host.js";
 export * from "./ledger-events.js";
 export * from "./resolver.js";
 export * from "./runtime.js";
+export * from "./seed-build.js";
 export * from "./select.js";
 export * from "./types.js";
