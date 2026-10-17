@@ -55,14 +55,20 @@ Pre-release. The package is private and is not published to any registry; you bu
   per-window figure computation exist (ROADMAP T6.13, `Done` 2026-10-17), and capacity output shows one `pacing` entry
   per subscription with each window's figures and source, `deferred_until` and the gate verdict (ROADMAP T6.14, `Done`
   2026-10-17); a deferred candidate is left out when an undeferred eligible one remains, otherwise the run waits in
-  `QUEUED` with a `pacing_hold` event until the gate-open time. See [ROADMAP §6.11](docs/ROADMAP.md#611-m6-capacity-and-resilience-tasks).
+  `QUEUED` with a `pacing_hold` event until the gate-open time. The pacing acceptance test on fakes passes
+  (ROADMAP T6.16, `Done` 2026-10-17, `src/mcp/m6-pacing-acceptance.test.ts`). Pacing estimates are lower bounds from
+  Switchboard's own dispatches, and pacing never creates a run (see [Model groups and pacing](#model-groups-and-pacing)).
+  See [ROADMAP §6.11](docs/ROADMAP.md#611-m6-capacity-and-resilience-tasks).
 - **Milestone 7 (routing) is `Partial`.** Eligible providers are scored from Switchboard's own records, every route
   decision is stored and replays exactly, `explain_route` shows why a run went where it did, a project stays on its
   provider until a listed reason moves it (`switchboard affinity list|reset`), and `minimum_capability` is enforced
   against operator-declared model capabilities in the model registry (`src/routing/minimum-capability.test.ts`). All
   of this is tested on fake providers. The cache-friendly prompt order is built (ROADMAP T7.9, Could; no cache
-  benefit is claimed). Real-provider model flags wait for adapter work. See
-  [Routing and affinity](#routing-and-affinity) and [ROADMAP §6.12](docs/ROADMAP.md#612-m7-routing-tasks).
+  benefit is claimed). Operator-configured model groups (`routing.model_group`) and explicit models (`routing.model`)
+  route over their members with the `pacing` score term, tested on fakes (ROADMAP T7.13 to T7.16, `Done` 2026-10-17,
+  `src/mcp/m7-group-acceptance.test.ts`; README T7.17, `Done` 2026-10-17); a group is configuration, never a quality
+  claim. Real-provider model flags wait for adapter work. See [Routing and affinity](#routing-and-affinity),
+  [Model groups and pacing](#model-groups-and-pacing) and [ROADMAP §6.12](docs/ROADMAP.md#612-m7-routing-tasks).
 - **Milestone 8 (hardening) is `Partial`.** Optional OTLP trace export (`telemetry.otlp_endpoint`, off by default),
   lazy exporter load (T8.1), wrapper-boundary span emission for `controller.delegate` and `provider.spawn` (T8.2), the
   collector integration test with parent links and the forbidden-attribute scan (T8.3,
@@ -780,7 +786,7 @@ Switchboard's own records when you ask:
   `operator_declared`, `controller_estimated` or `unknown`), `deferred_until` and the gate verdict (`deferred`,
   `clear` or `inactive`). A deferred candidate is left out when an undeferred eligible one remains; otherwise the run
   waits in `QUEUED` with a `pacing_hold` event until the gate-open time (the pacing gate, ROADMAP T6.8, `Done`
-  2026-10-17). Pacing never refuses a request or fails a run. The wording rule applies: no "remaining" without
+  2026-10-17). Pacing never refuses a request, fails a run or creates one. The wording rule applies: no "remaining" without
   `provider_reported`, no plan percentage, and every `controller_estimated` line reads "estimate, Switchboard-observed
   only". `doctor` prints one pacing line per
   subscription. With no subscriptions configured the block is omitted and the output is unchanged.
@@ -841,6 +847,66 @@ only its own runs. `switchboard affinity list` and `affinity reset` are under [O
 
 The rules and the record format are in [LLD §17](docs/design/LLD.md#17-routing-m7) and
 [ADR-0044](docs/adr/0044-deterministic-route-scoring-and-replayable-decisions.md).
+
+### Model groups and pacing
+
+Model groups (milestone 7) and usage pacing (milestone 6) are built and tested on fake providers only
+(`src/mcp/m7-group-acceptance.test.ts`, `src/mcp/m6-pacing-acceptance.test.ts`). With neither `model_groups` nor
+`capacity.subscriptions` configured, routing decisions, outcomes and capacity output are byte-identical to a build
+without them (`src/routing/group-selection.test.ts`, `src/capacity/pacing-projection.test.ts`,
+`src/lifecycle/pacing-gate.test.ts`).
+
+**What a group is.** A model group is a name you choose for an ordered list of `{ provider, model }` pairs in
+`model_groups` (see [Configure](#configure)). It is configuration only. Switchboard ships no group, tier or model name,
+and a group's name or a member's place in it is never a claim about quality, capability or price: a group called
+`flagship` is just a label. `minimum_capability` still uses only the capabilities you declared for each model, and
+member order is used only as the last tie-break.
+
+**How to request one.** `delegate_task` and `enqueue_work` accept two optional routing fields; give at most one:
+
+- `routing.model_group: "<name>"` makes each member a candidate, keyed `<provider>/<model>`. Each member passes the
+  usual eligibility checks with its own model; a member whose model the registry cannot resolve, or whose adapter
+  accepts no model request, is left out with `CAPABILITY_MISSING`, and a group with no eligible member returns
+  `ELIGIBILITY_NONE`. With `provider_preference` (and `require_provider`) only that provider's members are considered.
+  The chosen member's model is the model compiled into the run.
+- `routing.model: "<model id or alias>"` asks for one model. Name its provider with `provider_preference`, or leave the
+  provider out and the model must resolve in exactly one enabled provider's registry.
+
+Refused with `INVALID_REQUEST` before anything runs: both fields, an unknown group, a group with no member for the named
+provider, and a model that resolves in no provider's registry or in several (the message says "name a provider for
+this model"). `continue_task` accepts neither field; a continuation follows its meta-session. Affinity still applies:
+a project whose provider and model are an eligible member keeps them; a group that does not contain them moves the
+project with `user_request`. `explain_route` names the group, the chosen member, each excluded member's code and one
+pacing line per subscribed provider.
+
+**What pacing shows.** `capacity.subscriptions` describes your own subscriptions: which providers share one, each
+window's length and reset (`fixed`, `rolling` or `provider_reported`) and an optional budget (`runs`,
+`reported_tokens` or `reported_cost_usd`). `get_capacity`, `switchboard capacity` and `doctor` then show, per
+subscription and window, the used share, the reset and time left, and the source of each figure. No provider is known
+to report a used or remaining share in a key Switchboard reads, so today a used share is either
+`controller_estimated` (your budget against Switchboard's own dispatches) or `unknown`.
+
+**What pacing never claims.**
+
+- A `controller_estimated` figure is a lower bound: it counts only what Switchboard dispatched, and use of the same
+  subscription from anywhere else is not seen. Every such figure carries `lower_bound: true` and reads "estimate,
+  Switchboard-observed only".
+- "Remaining" appears only next to a `provider_reported` figure, never next to an estimate, and no figure is a
+  percentage of your plan. An `unknown` window is never treated as headroom.
+- Switchboard never supplies a window, reset or budget; each comes from you or from a declared provider key.
+
+**What the pacing gate does.** With `capacity.pacing.mode: gate` (the default), a subscription whose estimated use is
+ahead of its pace line plus a burst allowance is deferred until a computed time no later than the window's reset; once
+use reaches the target (`target_fraction`, default 0.95) it stays deferred until the reset. A deferred candidate is
+left out while another eligible one remains (an affine project then moves with `capacity_exhausted`), otherwise the run
+waits in `QUEUED` with one `pacing_hold` event and starts at the gate-open time. A `rolling` window, an `unknown`
+figure and an estimate below `min_confidence` never defer; `mode: score` only adds the `pacing` score term and
+`mode: off` makes it neutral. Pacing never refuses a request or fails a run, and it never creates a run, a probe or a
+provider call to use up a subscription: it only delays or redirects work you submitted.
+
+The design is in [LLD §16.9](docs/design/LLD.md#169-usage-windows-and-pacing-fr-cap-09-fr-cap-10),
+[LLD §17.7](docs/design/LLD.md#177-model-groups-fr-rte-10-fr-rte-11) and
+[ADR-0055](docs/adr/0055-model-groups-and-usage-pacing.md). Every default is an Assumption (ROADMAP Q-98, Q-99).
 
 ### How commits reach Git
 
