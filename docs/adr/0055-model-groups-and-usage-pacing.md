@@ -1,6 +1,8 @@
 # ADR-0055: Operator-configured model groups and usage pacing per subscription window
 
-- Status: Proposed (nothing is implemented; every default is an Assumption)
+- Status: Proposed (partly built: the usage-window model T6.13 and the model-groups configuration T7.13 are
+  Done 2026-10-17; the request fields, group-aware selection, pacing gate and limit mapping are not built; every
+  default is an Assumption)
 - Date: 2026-10-17
 - Decided by: zemdregon (the product direction, [owner decision 57](../ROADMAP.md#42-owner-decisions), 2026-10-16:
   model groups across providers, pacing usage so that every subscription is used fully by the time its window resets,

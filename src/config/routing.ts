@@ -3,8 +3,15 @@
  * ranges; this module adds the one cross-field rule (the two estimate thresholds are set together or not at all) and
  * resolves defaults. Every default is an Assumption with no source behind it (Q-80, Q-81).
  */
+import { readFileSync } from "node:fs";
 import { DEFAULT_WEIGHTS, SCORE_TERMS, type Weights } from "../routing/score.js";
-import type { RoutingConfigInput } from "./schema.js";
+import type { ModelGroupsConfigInput, RoutingConfigInput, SwitchboardConfig } from "./schema.js";
+
+/** LLD §17.7 default for the seventh weight `routing.weights.pacing` (Assumption, Q-80). */
+export const DEFAULT_PACING_WEIGHT = 1;
+
+/** Weights including the optional seventh weight `pacing` (LLD §17.7). Compatible with `Weights`. */
+export type RoutingWeights = Weights & { pacing?: number };
 
 /** Resolved `routing.affinity` (LLD §3.2): the estimate trigger is on only when both thresholds are set. */
 export interface AffinitySettings {
@@ -15,14 +22,15 @@ export interface AffinitySettings {
 
 /** Resolved `routing` section; every key set. */
 export interface RoutingSettings {
-  weights: Weights;
+  weights: RoutingWeights;
   affinity: AffinitySettings;
 }
 
 export function resolveRouting(input: RoutingConfigInput | undefined): RoutingSettings {
   const weights = Object.fromEntries(SCORE_TERMS.map((t) => [t, input?.weights?.[t] ?? DEFAULT_WEIGHTS[t]])) as Weights;
+  const pacing = input?.weights?.pacing;
   return {
-    weights,
+    weights: pacing !== undefined ? { ...weights, pacing } : weights,
     affinity: {
       enabled: input?.affinity?.enabled ?? true,
       lowWaterMark: input?.affinity?.low_water_mark ?? null,
@@ -39,4 +47,48 @@ export function checkRouting(input: RoutingConfigInput | undefined): string[] {
   return (low === null) !== (conf === null)
     ? ["$.routing.affinity: low_water_mark and min_confidence must be set together (LLD §3.2), or both left null"]
     : [];
+}
+
+/** One configured model group member (LLD §17.7). */
+export interface ResolvedModelGroupMember {
+  readonly provider: string;
+  readonly model: string;
+}
+
+/** One configured model group (LLD §17.7). */
+export interface ResolvedModelGroup {
+  readonly members: readonly ResolvedModelGroupMember[];
+}
+
+/** Configured model groups keyed by group name. */
+export type ResolvedModelGroups = Readonly<Record<string, ResolvedModelGroup>>;
+
+/**
+ * Resolves raw `model_groups` configuration into `ResolvedModelGroups`.
+ * Absent or empty returns an empty record.
+ */
+export function resolveModelGroups(input: ModelGroupsConfigInput | undefined): ResolvedModelGroups {
+  if (!input) return {};
+  return Object.fromEntries(
+    Object.entries(input).map(([name, group]) => [
+      name,
+      {
+        members: group.members.map((m) => ({ provider: m.provider, model: m.model })),
+      },
+    ]),
+  );
+}
+
+/**
+ * Reads model groups from a config file path.
+ * Returns an empty record if the file cannot be read or parsed.
+ */
+export function readModelGroupsFromConfigPath(configPath: string): ResolvedModelGroups {
+  try {
+    const text = readFileSync(configPath, "utf8");
+    const parsed = JSON.parse(text) as SwitchboardConfig;
+    return resolveModelGroups(parsed.model_groups);
+  } catch {
+    return {};
+  }
 }
