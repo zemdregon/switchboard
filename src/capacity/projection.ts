@@ -222,7 +222,7 @@ function collectUsageInputs(
  * `min(T, T × elapsed + B)`. The instant is the earlier of `reset_at` and `window_start + length × (used − B) / T`,
  * rounded to the millisecond.
  */
-function gateOpenMs(w: UsageWindowFigures, pacing: PacingSettings): number | null {
+export function gateOpenMs(w: UsageWindowFigures, pacing: PacingSettings): number | null {
   if (pacing.mode !== "gate") return null;
   const used = w.used_fraction.value;
   const elapsed = w.elapsed_fraction;
@@ -260,7 +260,11 @@ function toView(usage: SubscriptionUsage, pacing: PacingSettings): PacingSubscri
   };
 }
 
-function pacingViews(ledger: Ledger, settings: ProjectionSettings, now: Date): PacingSubscriptionView[] | undefined {
+export function pacingViews(
+  ledger: Ledger,
+  settings: ProjectionSettings,
+  now: Date,
+): PacingSubscriptionView[] | undefined {
   const { subscriptions, pacing } = settings;
   if (subscriptions === undefined || subscriptions.length === 0 || pacing === undefined) return undefined;
   const usage = usageWindows(subscriptions, pacing, collectUsageInputs(ledger, subscriptions, now), now);

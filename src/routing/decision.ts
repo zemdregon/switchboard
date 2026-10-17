@@ -18,7 +18,7 @@ import {
   type ModelPinRecord,
   planAffinity,
 } from "./affinity.js";
-import type { EligibilityDecision, EligibilityInput } from "./eligibility.js";
+import { type EligibilityDecision, type EligibilityInput, pacingAdmission } from "./eligibility.js";
 import type { RouteFeatures } from "./features.js";
 import {
   DEFAULT_WEIGHTS,
@@ -202,9 +202,14 @@ export function buildRouteDecision(req: RouteDecisionRequest): RouteDecisionResu
   const { input, decision } = req;
   const required = input.requiredProvider ?? null;
   const plan = req.affinity !== undefined ? planAffinity(req.affinity) : null;
+  // T6.8 (LLD §16.9): the pacing admission rule narrows what selection may pick. The narrowed set is stored as
+  // `admissible`, so replay recomputes the same selection from the row alone. Undefined: built exactly as before.
+  const pacing = pacingAdmission(input, req.admissible, plan?.affinityProvider ?? null);
+  const admissible = pacing?.pool ?? req.admissible;
+  const deferredOf = new Map((pacing?.deferred ?? []).map((d) => [d.provider, d]));
   const selection = selectRoute({
     candidateOrder: input.candidates,
-    eligible: req.admissible,
+    eligible: admissible,
     requiredProvider: required,
     preference: req.preference,
     affinityProvider: plan?.affinityProvider ?? null,
@@ -222,9 +227,7 @@ export function buildRouteDecision(req: RouteDecisionRequest): RouteDecisionResu
     selection.basis === "required_provider" && req.preference === required ? "provider_preference" : selection.basis;
   const selected = `${label ?? "none"}${req.basisSuffix ?? ""}`;
   const basis = req.basis ? req.basis(selected) : selected;
-  const scoreInputs = Object.fromEntries(
-    [...new Set(req.admissible)].sort().map((p) => [p, req.scoreInputs[p] ?? null]),
-  );
+  const scoreInputs = Object.fromEntries([...new Set(admissible)].sort().map((p) => [p, req.scoreInputs[p] ?? null]));
   const features_json = JSON.stringify({
     schema_version: ROUTE_DECISION_SCHEMA_VERSION,
     trust_profile: input.trustProfile,
@@ -234,13 +237,28 @@ export function buildRouteDecision(req: RouteDecisionRequest): RouteDecisionResu
     provider_preference: req.preference,
     requirements: input.requirements,
     candidate_order: [...input.candidates],
-    admissible: [...req.admissible],
+    admissible: [...admissible],
     route_features: req.features,
     score_inputs: scoreInputs,
   });
   const entry = (provider: string) => {
     const s = scoreOf.get(provider);
-    return { score: s?.score ?? null, terms: s?.terms ?? null };
+    const d = deferredOf.get(provider);
+    return {
+      score: s?.score ?? null,
+      terms: s?.terms ?? null,
+      ...(d !== undefined
+        ? {
+            pacing: {
+              verdict: d.verdict,
+              until: d.until,
+              subscription: d.subscription,
+              window: d.window,
+              source: d.source,
+            },
+          }
+        : {}),
+    };
   };
   const candidates_json = JSON.stringify([
     ...decision.eligible.map((provider) => ({ provider, eligible: true, reasons: [], ...entry(provider) })),
@@ -259,6 +277,14 @@ export function buildRouteDecision(req: RouteDecisionRequest): RouteDecisionResu
       : {}),
     ...(req.continuation !== undefined ? { continuation: req.continuation } : {}),
     ...(affinity !== null ? { affinity } : {}),
+    ...(pacing !== undefined
+      ? {
+          pacing: {
+            deferred: pacing.deferred.map((d) => ({ provider: d.provider, verdict: d.verdict, until: d.until })),
+            hold_until: pacing.holdUntil,
+          },
+        }
+      : {}),
     ...(req.project !== undefined
       ? {
           project: {

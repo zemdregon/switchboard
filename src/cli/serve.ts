@@ -872,6 +872,10 @@ async function runDaemon(
           },
         }
       : {}),
+    // T6.8 (FR-CAP-10, LLD §16.9): the pacing gate; absent unless the file sets `capacity.subscriptions` or `pacing`.
+    ...(config.capacity.subscriptions !== undefined && config.capacity.pacing !== undefined
+      ? { pacing: { subscriptions: config.capacity.subscriptions, pacing: config.capacity.pacing } }
+      : {}),
     // T6.5: automatic retry parameters and the reset wait bound (`capacity.retry`, `capacity.queue_horizon_seconds`).
     retry: { ...config.capacity.retry, queueHorizonSeconds: config.capacity.queueHorizonSeconds },
     // T14.5: loop breaker N, T and successor cap (`control_plane.loop_breaker`, LLD §3.4.6).
