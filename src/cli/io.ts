@@ -3,6 +3,7 @@ import type { ContainerRuntime } from "../environment/runtime.js";
 import type { OuterSandboxAvailability } from "../exec/outer-sandbox.js";
 import type { InnerBackend } from "../inner/port.js";
 import type { EmbeddingBackend } from "../retrieval/embedding.js";
+import type { DiskProbe } from "../workspace/disk.js";
 
 /** Injectable process surface so tests call `main` directly (no spawn). */
 export interface CliIo {
@@ -31,6 +32,8 @@ export interface CliIo {
   readonly outerSandbox?: OuterSandboxAvailability;
   /** Test seam (T10.3): the container runtime `projects validate` and `gc --apply` use instead of rootless Docker. */
   readonly containerRuntime?: () => ContainerRuntime;
+  /** Test seam (T3.23): the free-space probe `doctor` and `serve` use for `limits.min_free_disk_mb` instead of `statfs`. */
+  readonly diskProbe?: DiskProbe;
 }
 
 /** Stable `--json` schema version for every command (Proposed). */

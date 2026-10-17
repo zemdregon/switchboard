@@ -205,6 +205,96 @@ describe("doctor", () => {
     expect(text.out).toContain("Result: FAILED");
   });
 
+  describe("free-disk floor line (T3.23, FR-WS-11)", () => {
+    const MB = 1024 * 1024;
+    const withFloor = (mb: number) =>
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          ...(JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>),
+          limits: { min_free_disk_mb: mb },
+        }),
+      );
+    const ids = (out: string) => (JSON.parse(out).checks as { id: string }[]).map((c) => c.id);
+
+    it("is absent when limits.min_free_disk_mb is not set, whatever the probe says (byte-identical to main)", async () => {
+      let probes = 0;
+      const r = await run(["doctor", "--json", ...cfg()], {
+        adapters: fakeOnly(),
+        diskProbe: {
+          freeBytes: () => {
+            probes++;
+            return 0;
+          },
+        },
+      });
+      expect(r.code).toBe(0);
+      expect(ids(r.out)).not.toContain("disk");
+      expect(probes).toBe(0);
+    });
+
+    it("prints the floor and the free space, [ok] above it and [warn] (exit 0) under it, naming the hold", async () => {
+      withFloor(100);
+      const probe = (free: number) => ({ freeBytes: () => free });
+      const ok = await run(["doctor", ...cfg()], { adapters: fakeOnly(), diskProbe: probe(250 * MB) });
+      expect(ok.code).toBe(0);
+      expect(ok.out).toContain(`[ok]   Free disk: free 250 MB on ${tmp}; floor 100 MB (limits.min_free_disk_mb)`);
+
+      const low = await run(["doctor", "--json", ...cfg()], { adapters: fakeOnly(), diskProbe: probe(42 * MB) });
+      expect(low.code).toBe(0);
+      const j = JSON.parse(low.out);
+      expect(j.ok).toBe(true);
+      expect(ids(low.out)).toEqual([
+        "node",
+        "unprivileged",
+        "git",
+        "config",
+        "data_dir",
+        "ledger",
+        "lock",
+        "gc",
+        "orphans",
+        "disk",
+        "outer_sandbox",
+      ]);
+      const disk = j.checks.find((c: { id: string }) => c.id === "disk");
+      expect(disk).toMatchObject({ id: "disk", label: "Free disk", status: "warn" });
+      expect(disk.detail).toBe(
+        `free 42 MB on ${tmp} is under the floor 100 MB (limits.min_free_disk_mb): serve holds new runs in QUEUED (disk_hold) and runs the early GC sweep, which collects nothing until retention.days is set`,
+      );
+    });
+
+    it("says the sweep collects when retention.days is set, and warns when no path can be probed", async () => {
+      withFloor(100);
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          ...(JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>),
+          retention: { days: 7 },
+        }),
+      );
+      const low = await run(["doctor", ...cfg()], {
+        adapters: fakeOnly(),
+        diskProbe: { freeBytes: () => 1 * MB },
+      });
+      expect(low.code).toBe(0);
+      expect(low.out).toContain("[warn] Free disk: free 1 MB on");
+      expect(low.out).toContain("and runs the early GC sweep\n");
+      const unreadable = await run(["doctor", ...cfg()], {
+        adapters: fakeOnly(),
+        diskProbe: {
+          freeBytes: () => {
+            throw new Error("EIO");
+          },
+        },
+      });
+      expect(unreadable.code).toBe(0);
+      expect(unreadable.out).toContain(
+        `[warn] Free disk: cannot read free space of ${tmp}; floor 100 MB (limits.min_free_disk_mb) is not enforced`,
+      );
+    });
+  });
+
   it("registers the fake, Claude Code and Codex adapters by default", () => {
     expect(
       defaultAdapters()

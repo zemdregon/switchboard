@@ -973,6 +973,11 @@ it never holds a DB transaction and returns the current non-terminal envelope on
 published schema (`src/mcp/schemas.ts`) has no key, so a key is rejected as an unknown property (`INVALID_REQUEST`).
 Adding it back needs an SRS change first.
 
+*Proposed (2026-10-17, owner decision 58, FR-SKL-03; not built):* `delegate_task`, `continue_task` and `enqueue_work`
+gain the optional `skills`, `role` and `skill_defaults` fields, and the `orchestrator` tool profile gains `list_skills`
+and `get_skill`. The contract is [§19](#19-switchboard-controlled-skills-m16-proposed); until T16.4 lands the published
+schemas refuse these fields as unknown properties.
+
 Fails `INVALID_REQUEST` if the session has a non-terminal run holding the lease.
 
 *M5 (Proposed, Delegated, [ADR-0038](../adr/0038-handoff-bundle-and-continuity.md)):* the input schema above does not
@@ -2311,6 +2316,26 @@ meta-session `ARCHIVED` and appends the intent event, and admission refuses an `
 `INVALID_REQUEST`; a marked, unfinished session is a candidate again and rolls forward. *Not built (no claim):* a test
 of the `serve` interval timer itself (each pass runs the same function as the tested startup pass); a process-level
 `SIGKILL` mid-GC test (in-process crash injection after every step, for sessions and orphans, covers the order).
+
+*Free-disk floor (T3.23, FR-WS-11, BR-51; Delegated under owner decision 25, not owner-approved).* `limits.min_free_disk_mb`
+is off when absent: no probe, no new event, `limits` resolved as before. When set, the disk-probe port
+(`src/workspace/disk.ts`: `DiskProbe.freeBytes(path)`, synchronous; production `statfsDiskProbe` reads `bavail × bsize`)
+is asked by `pump()` once per dispatch pass while runs are queued, for the data directory and its `worktrees` root
+(`assessDiskFloor`: the lowest readable value counts; a path the probe cannot read is skipped, and when none can be read
+the floor is not assessable and nothing is held). Under the floor every `QUEUED` run stays `QUEUED` and gets one
+`disk_hold` run event per hold episode (`reason: FREE_DISK_BELOW_FLOOR`, `free_bytes`, `min_free_bytes`, `path`);
+admission (`submit`, `delegate_task`) is unchanged and no run is ever failed or refused by the floor. The wake timer
+re-probes every `DEFAULT_DISK_RECHECK_MS` (30 s, Assumption), and the early sweep (`runEarlySweep`, `src/workspace/gc.ts`)
+starts at most once per period and once at a time; its end re-probes at once. The sweep is an **ordered reclaimer
+list** (`earlySweepReclaimers`): the dependency-seed reclaimer for idle worktrees (FR-WS-10) comes first and is
+registered by T9.13 (`seeds`; the list has none until then), then `meta_sessions`, which is `runRetentionGc` with the
+`stopWhen` seam bound to the floor (oldest idle meta-session first, stop once free space is back above the floor) and
+runs only when `retention.days` is set, the one switch for every collection. Every reclaimer receives
+`ReclaimContext.leasedWorktrees` (worktree paths of the runs holding `meta_session.lease_run_id`) and must never touch
+one; the retention reclaimer cannot, because its candidate query and `beginGc` both require no lease. `serve` runs the
+sweep behind the same in-flight slot as the retention pass (never two collecting passes at once). `doctor` adds a
+`Free disk` check only when the key is set: `[ok]` with the free space and the floor, `[warn]` under it (naming the
+hold and whether the sweep collects), `[warn]` when no path can be probed; never `[FAIL]`.
 
 **Crash safety.** Order is intent row (with the `ARCHIVED` mark, one transaction), then Git action, then outcome
 row. On startup reconciliation (WF-8) a run in
@@ -6141,3 +6166,271 @@ One **Proposed** scheduler loop in `serve` (after retrieval build, before or aft
 
 The loop respects project pause and holds when FR-CAP-04 admission queue is full. It does not run inside an MCP tool
 handler.
+
+## 19. Switchboard-controlled skills (M16, Proposed)
+
+*Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); not built).
+Delegated mechanism, not owner-approved beyond the direction. Every limit is an Assumption.* Requirements: FR-SKL-01 to
+FR-SKL-10. Business rules: [FRD](../requirements/FRD.md#3-business-rules) BR-52 to BR-56, V15, C8, WF-16. Tasks:
+ROADMAP T16.0 to T16.12. Per-provider delivery: [TDD §3.16](TDD.md#316-switchboard-controlled-skills-proposed).
+
+### 19.1 Skill source format (FR-SKL-01, FR-SKL-02)
+
+A skill source is one UTF-8 file. It starts with a front matter block between two `---` lines, then a Markdown body.
+
+```markdown
+---
+name: security-review
+description: Review the change for injection, authz and secret handling before it is published.
+applies_to_providers: [claude-code, codex]   # optional; absent means every provider
+---
+# Security review
+...
+```
+
+| Field | Rule |
+| --- | --- |
+| `name` | Required; `^[a-z][a-z0-9-]{1,47}$`; must equal the CLI `<name>` argument |
+| `description` | Required; 1 to 280 characters, one line |
+| `applies_to_providers` | Optional list of config provider ids; a skill that does not apply to the run's provider is skipped for that run with `skill_resolved.skipped = "provider"` (not an error) |
+| any other key | Refused (`SKILL_FRONT_MATTER_KEY`); this includes provider keys such as `allowed-tools`, `hooks`, `mcp`, `model` |
+| body | Required; 1 byte to `skills.max_body_bytes` (default 32768) after canonicalisation |
+
+Canonicalisation before hashing: strip a UTF-8 BOM, convert CRLF and CR to LF, strip trailing whitespace on each line,
+end with exactly one LF. The version's `sha256` is over the canonical front matter (re-serialised in the order above)
+plus the canonical body, so the same text always gives the same hash.
+
+Refusals at `add` (nothing is stored; exit code 65 and one reason):
+
+| Reason | Check |
+| --- | --- |
+| `SKILL_ENCODING` | Not valid UTF-8, a NUL byte, or a control character other than tab and LF |
+| `SKILL_SIZE` | Body or description over its limit |
+| `SKILL_FRONT_MATTER_KEY` | A key outside the closed set, or a missing required key |
+| `SKILL_MARKER` | The body contains `[operator skills:`, `[end of operator skills]`, `[skill <name>@<n>`, `[untrusted data:`, `[end of untrusted data]` or `[instruction from the orchestrator]` (case-insensitive) |
+| `SKILL_SECRET` | A match of the ADR-0042 secret patterns or `git.sanitize_patterns` secret classes; the match is not echoed |
+| `SKILL_REPOSITORY_SOURCE` | The source path resolves (after symlinks) inside a configured project context root or an `allowed_roots` entry, without `--from-repository` |
+| `SKILL_UNCHANGED` | The canonical hash equals the newest version's; no new version is added (exit 0, message only) |
+| `SKILL_LIMIT` | Adding the name would exceed `skills.max_names` (default 64) |
+
+### 19.2 Store and ledger tables (FR-SKL-01, FR-SKL-07, FR-SKL-10)
+
+Content lives in `<data_dir>/skills/<sha256>.md` (0600, directory 0700), written to a temporary file, `fsync`ed and
+renamed; it is never edited or deleted while a `skill_version` row names it. One forward-only migration (next free
+number at implementation; 0021 on 2026-10-17) adds:
+
+```sql
+CREATE TABLE skill_version (               -- append-only
+  name        TEXT NOT NULL,
+  version     INTEGER NOT NULL CHECK (version >= 1),
+  sha256      TEXT NOT NULL CHECK (length(sha256) = 64),
+  size_bytes  INTEGER NOT NULL,
+  description TEXT NOT NULL,
+  applies_to  TEXT,                        -- JSON array of provider ids, or NULL
+  origin      TEXT NOT NULL CHECK (origin IN ('operator_file','repository_path')),
+  created_at  TEXT NOT NULL,
+  PRIMARY KEY (name, version)
+);
+CREATE TABLE skill_event (                 -- append-only operator audit
+  id          INTEGER PRIMARY KEY,
+  name        TEXT NOT NULL,
+  version     INTEGER,                     -- NULL for name-level events (retire)
+  kind        TEXT NOT NULL CHECK (kind IN ('added','approved','revoked','retired','unretired')),
+  actor       TEXT NOT NULL,               -- 'operator_cli'
+  note        TEXT,                        -- optional, at most 280 characters, operator text
+  at          TEXT NOT NULL
+);
+CREATE TABLE run_skill (
+  run_id        TEXT NOT NULL REFERENCES run(id),
+  position      INTEGER NOT NULL,          -- order in the resolved set
+  name          TEXT NOT NULL,
+  version       INTEGER NOT NULL,
+  sha256        TEXT NOT NULL,
+  source        TEXT NOT NULL CHECK (source IN ('global_default','global_role','project_default','project_role',
+                                                'request','continued')),
+  delivery      TEXT NOT NULL CHECK (delivery IN ('prompt_prefix','native','skipped')),
+  native_path   TEXT,                      -- worktree-relative, only for 'native'
+  written_sha256 TEXT,                     -- hash of the bytes written, only for 'native'
+  delivered_at  TEXT,
+  removed_at    TEXT,
+  removal       TEXT CHECK (removal IN ('verified','failed','not_needed')),
+  PRIMARY KEY (run_id, position)
+);
+```
+
+A version's state is derived from its newest `approved`/`revoked` event (`draft` when there is none) and the name's
+newest `retired`/`unretired` event. A retired name resolves to nothing for new runs; runs already admitted keep their
+pinned version.
+
+### 19.3 Configuration (FR-SKL-03, FR-SKL-04, FR-SKL-08)
+
+| Key | Meaning |
+| --- | --- |
+| `skills.enabled` | Boolean, default `false`. When false, the `skills` and `role` request fields are refused as `INVALID_REQUEST` with `details.reason = "SKILLS_DISABLED"`, the tools are not offered, and nothing else changes |
+| `skills.defaults[]` | Names (`name` or `name@n`) applied to every run |
+| `skills.roles.<role>[]` | Names applied when the request's `role` is `<role>`; `<role>` matches `^[a-z][a-z0-9_-]{0,31}$` |
+| `skills.delivery` | `native_preferred` (default) or `prefix_only` |
+| `skills.allow_draft_in_trusted` | Boolean, default `false` (Q-105) |
+| `skills.max_body_bytes`, `skills.max_per_run`, `skills.max_run_bytes`, `skills.max_names` | Defaults 32768, 8, 65536, 64 (Assumptions) |
+| `projects[].skills.defaults[]`, `projects[].skills.roles.<role>[]` | Project-level defaults, applied after the global ones |
+| `mcp_clients[].skills` | Optional array of names the client may see and inject; absent means every approved name |
+
+Names in configuration are checked at `serve` start and by `doctor`: an unknown or unapproved name is a warning, not a
+startup failure (the CLI adds skills after the config exists). At admission an unresolvable configured default is
+skipped with a `skill_resolved` event (`skipped = "unresolved_default"`); an unresolvable *requested* name is an error
+(§19.5).
+
+### 19.4 Request fields (FR-SKL-03)
+
+Added to `delegate_task`, `continue_task` and `enqueue_work` (all `additionalProperties: false`, so this is a schema
+change):
+
+```jsonc
+"skills": { "type": "array", "maxItems": 8, "uniqueItems": true,
+            "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,47}(@[1-9][0-9]{0,5})?$" } },
+"role": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,31}$" },
+"skill_defaults": { "enum": ["apply", "omit"], "default": "apply" }
+```
+
+The fields are part of `request_hash` (idempotency, FR-MCP-08). A queued item stores them and resolves at its own
+admission, not at enqueue time.
+
+### 19.5 Resolution at admission (FR-SKL-03, FR-SKL-04)
+
+Inside the admission transaction, after profile and ceiling checks and before the `run` row is inserted:
+
+1. If `continue_task` has no `skills`, `role` or `skill_defaults`, copy the previous run's `run_skill` rows (same name,
+   version, hash) with `source = 'continued'`, re-check step 4 for the new run's profile, and go to step 6.
+2. Build the candidate list in this order: `skills.defaults`, `skills.roles.<role>`, `projects[].skills.defaults`,
+   `projects[].skills.roles.<role>` (all four only when `skill_defaults` is `apply`), then the request's `skills`.
+   An unknown `role` with no configured entry is not an error; it selects nothing.
+3. De-duplicate by name: the first occurrence keeps its position; an explicit `@n` anywhere wins over an unpinned
+   entry. Resolve each unpinned name to its newest `approved` version (or newest version at all when step 4 allows a
+   draft).
+4. Gate each entry:
+   - requested name unknown, retired or with no usable version: `INVALID_REQUEST`, `details.reason = "SKILL_UNKNOWN"`;
+   - name outside `mcp_clients[].skills`: `PERMISSION_BLOCKED`, `details.reason = "SKILL_NOT_PERMITTED"`;
+   - version not `approved` and (profile is `inspect-untrusted`, `edit-untrusted` or `test-sandboxed`, or
+     `skills.allow_draft_in_trusted` is false): `PERMISSION_BLOCKED`, `details.reason = "SKILL_NOT_APPROVED"`;
+   - `origin = 'repository_path'` under one of the three untrusted profiles: `PERMISSION_BLOCKED`,
+     `details.reason = "SKILL_REPOSITORY_ORIGIN"`.
+   A configured default that fails a gate is skipped with an event instead; only requested names fail the request.
+5. Apply the caps: more than `skills.max_per_run` entries, or more than `skills.max_run_bytes` of bodies, is
+   `INVALID_REQUEST`, `details.reason = "SKILL_RUN_LIMIT"`.
+6. Insert one `run_skill` row per entry (`delivery` is filled at dispatch, §19.6) and one `skill_resolved` run event
+   listing names, versions, hashes, sources and any skipped defaults.
+
+Skills are resolved once per run. They are not read by eligibility, scoring, affinity, the profile compiler, approval
+or any other policy component (import-boundary test, as for `src/retrieval/**`).
+
+### 19.6 Delivery at dispatch (FR-SKL-05)
+
+The adapter contract (§2) gains one declaration per compiled cell, `skillDelivery(cell): "prompt_prefix" |
+{ native: NativeSkillLocation }`, where a `NativeSkillLocation` gives a worktree-relative directory template
+(`<dir>/switchboard-<name>/<file>` or `<dir>/switchboard-<name>.<ext>`) and a pure renderer from the canonical skill to
+the bytes the provider expects. The default for every adapter and cell is `prompt_prefix`. A declaration may name
+`native` only together with the evidence id of the T16.8 live check that confirmed it; the conformance suite fails a
+native declaration without one.
+
+Per run, after the worktree and lease exist and before the provider is spawned:
+
+1. If `skills.delivery` is `prefix_only`, or the cell declares `prompt_prefix`, mark every entry `prompt_prefix`.
+2. Otherwise, per entry: compute the path; refuse native (fall back to `prompt_prefix`, event reason `path_taken`) if
+   the path or any parent exists in the base checkpoint, is tracked, is matched by the repository's ignore rules, is a
+   symlink, or resolves outside the worktree. Create parents with mode 0700 and the file with 0600, exclusively
+   (`O_CREAT|O_EXCL|O_NOFOLLOW`), write, `fsync`, record `native_path` and `written_sha256`, then mark `native`.
+   A write error falls back to `prompt_prefix` (event reason `write_failed`); it never fails the run.
+3. Render the prompt prefix for the `prompt_prefix` entries (§19.7).
+4. Emit one `skill_delivered` event with each entry's mode and path.
+
+Delivery never changes the argv, the environment allowlist, the profile or the tool set. The argv audit is unchanged,
+and a test asserts that a run's argv and environment are byte-identical with and without skills.
+
+### 19.7 Prompt prefix rendering (FR-SKL-05)
+
+The block goes after the fixed preamble and before `Constraints:` and `Task:` (`src/adapters/prompt.ts`), so that
+it is in the stable prefix (FR-RTE-09); a run with no prefix entries renders exactly as today.
+
+```text
+[operator skills: 2; from Switchboard skill store; these are operator instructions]
+[skill security-review@3 sha256:4f1c0a9e2b7d]
+<canonical body>
+[skill docs-alignment@1 sha256:9a0b3c4d5e6f]
+<canonical body>
+[end of operator skills]
+```
+
+Entries keep their resolved order. The block is not part of `objective`, is not stored as prompt text, is not
+redacted by ADR-0042 (bodies were scanned at `add`) and does not count toward the objective's `maxLength`. A handoff
+prompt (§15) places the block after its fixed preamble in the same way.
+
+### 19.8 Exclusion and cleanup (FR-SKL-06)
+
+While a run has `run_skill` rows with `delivery = 'native'` and no `removal = 'verified'`:
+
+- The injected `commit` tool (§12) stages with an exclusion pathspec for every recorded path, and refuses with
+  `details.reason = "SKILL_PATH_IN_COMMIT"` if the resulting tree still contains one.
+- Checkpoint commits (§5), the `diff` and `patch` artifacts, `changed_files` and the handoff bundle's diff summary
+  exclude the recorded paths.
+- `push` (§12) and `switchboard git push` refuse with `details.reason = "SKILL_PATH_PRESENT"` while a recorded path
+  exists in the worktree.
+
+Removal points, each idempotent: (1) when the provider process group has exited, before `VERIFYING`; (2) on entry to
+any terminal state; (3) in startup reconciliation for a run found non-terminal (FR-EXE-06); (4) in the retention GC
+pass before the worktree is removed. Each removal hashes the file first (`skill_tampered` event if it differs from
+`written_sha256`), unlinks it, removes now-empty `switchboard-` directories it created (never another directory), and
+verifies with `lstat`. A failed unlink or verify sets `removal = 'failed'`, emits `skill_cleanup_failed` and derives
+`needs_attention` with the reason `skill_cleanup_failed` (FR-CTL-03 amended by T16.6); the next removal point retries.
+
+### 19.9 MCP tools (FR-SKL-08)
+
+Offered when `skills.enabled` is true, to clients whose `tool_profile` is `orchestrator`. Both are read-only.
+
+```jsonc
+// list_skills
+{ "input": { "type": "object", "properties": {
+    "project": { "type": "string" }, "role": { "type": "string" }, "trust_profile": { "$ref": "#/$defs/trust_profile" } } },
+  "output": { "skills": [ { "name": "", "description": "", "version": 3, "sha256": "", "size_bytes": 0,
+                            "approved": true, "origin": "operator_file", "applies_to_providers": [] } ],
+              "defaults": [ { "name": "", "version": 3, "source": "project_role" } ] } }   // only when project given
+
+// get_skill
+{ "input": { "type": "object", "required": ["name"], "properties": {
+    "name": { "type": "string" }, "version": { "type": "integer", "minimum": 1 } } },
+  "output": { "name": "", "version": 3, "sha256": "", "description": "", "approved": true, "body": "" } }
+```
+
+`list_skills` returns only names visible to the client (`mcp_clients[].skills`) and, per name, the newest version the
+client could inject under `trust_profile` (default: the client's maximum). `defaults` shows what §19.5 steps 2 to 4
+would add for `project` and `role`. `get_skill` returns a visible version's text; an invisible or unknown name is
+`INVALID_REQUEST` with no hint that it exists. Neither tool writes a ledger row other than the existing tool-call
+record.
+
+### 19.10 Operator CLI (FR-SKL-09)
+
+| Command | Effect |
+| --- | --- |
+| `switchboard skills list [--all]` | Names with newest version, state, origin, size and hash prefix; `--all` adds retired names |
+| `switchboard skills show <name>[@n] [--body]` | Metadata and event history; the body only with `--body` |
+| `switchboard skills add <name> --file <path> [--from-repository] [--note <text>]` | Validates (§19.1), stores and records `added`; prints `<name>@<n>` |
+| `switchboard skills approve <name>@<n> [--note <text>]` | Records `approved` |
+| `switchboard skills revoke <name>@<n> [--note <text>]` | Records `revoked`; runs already admitted keep their delivery |
+| `switchboard skills retire <name>` / `unretire <name>` | Name-level state |
+| `switchboard skills diff <name>@<a> <name>@<b>` | Line diff of two versions' canonical text |
+
+The commands are short-lived and write only operator records and the content file (ADR-0005). `doctor` gains one line:
+skills enabled or not, counts of approved and draft versions, configured names that do not resolve, and any run with
+`removal = 'failed'`. `runs show` lists a run's skills (name, version, hash prefix, mode, removal).
+
+### 19.11 Run events and telemetry (FR-SKL-10)
+
+| Event | Payload |
+| --- | --- |
+| `skill_resolved` | entries `{name, version, sha256, source}`, skipped `{name, reason}` |
+| `skill_delivered` | entries `{name, version, delivery, native_path?, fallback_reason?}` |
+| `skill_removed` | entries `{name, native_path, removal}` |
+| `skill_tampered` | `{name, native_path, written_sha256, found_sha256}` |
+| `skill_cleanup_failed` | `{name, native_path, errno}` |
+
+No event, span, log line, artifact or sink payload contains a skill body or description. Spans gain
+`switchboard.skills.count` and `switchboard.skills.hashes` (12-hex prefixes). The ADR-0048 payload is unchanged.

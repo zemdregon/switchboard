@@ -76,6 +76,18 @@ re-count with a stated scope or a full test run, both outside a docs-only alignm
 
 ## 8. T12.9 "remains Planned" summary vs "Done on fakes" row (pre-existing, not from PR #633)
 
+- The [SRS §5](requirements/SRS.md) capability→requirements mapping (extended by PR #641 to match each
+  requirement's own Source column) now includes FR-EXE-09 (CAP-1), FR-WS-10–11 (CAP-4), FR-CTL-12 (CAP-15) and
+  FR-QUE-04–05 (CAP-16).
+- The [HLD §2](design/HLD.md) component rows still cite the narrower ranges: COMP-MCP `FR-CTL-01..11`, COMP-WS
+  `FR-WS-01..07`, COMP-EXE `FR-EXE-01..08`, COMP-RTE `FR-QUE-01..02` (with COMP-PRJ `FR-QUE-03`). Those
+  requirements entered the SRS with PR #638, so the gap predates PR #641, which only extended the SRS mapping
+  rows (correctly) and added the COMP-SKL row.
+- Left unchanged: re-attributing the newer requirements to HLD components is the HLD owner's call (for example
+  the SDD puts FR-CTL-12, webhook sink authorization, under COMP-OPS, not COMP-MCP), and the HLD rows are loose
+  summaries rather than the traceability owner (the SDD covers every one of these IDs, and
+  `node scripts/check-docs.mjs` passes). It does not block PR #641.
+
 The "Current milestone" summary at the top of [ROADMAP §6](ROADMAP.md#6-milestones) says "T12.9 (Could) remains
 Planned", while the M12 milestone row in the same table and the T12.9 row in §6.7 both say T12.9 is "Done on fakes
 (2026-10-16, Delegated ...)". Both wordings are present on `origin/main`, so the contradiction predates PR #633 (which
@@ -83,3 +95,17 @@ only reworded the T12.9 row's channel clause from "stays UNSUPPORTED per T9.4b" 
 decision 56"). Left unchanged: reconciling the summary with the row means endorsing another task's Done claim, which
 is that task's status decision, not this PR's. It does not block PR #633 (T9.4b's own evidence is the T9.4b status
 block, the 2026-10-14 live checks and owner decision 56, all cited directly).
+
+## 9. HLD component rows cite pre-#638 requirement ranges (pre-existing, not from PR #641)
+
+- The [SRS §5](requirements/SRS.md) capability→requirements mapping (extended by PR #641 to match each
+  requirement's own Source column) now includes FR-EXE-09 (CAP-1), FR-WS-10–11 (CAP-4), FR-CTL-12 (CAP-15) and
+  FR-QUE-04–05 (CAP-16).
+- The [HLD §2](design/HLD.md) component rows still cite the narrower ranges: COMP-MCP `FR-CTL-01..11`, COMP-WS
+  `FR-WS-01..07`, COMP-EXE `FR-EXE-01..08`, COMP-RTE `FR-QUE-01..02` (with COMP-PRJ `FR-QUE-03`). Those
+  requirements entered the SRS with PR #638, so the gap predates PR #641, which only extended the SRS mapping
+  rows (correctly) and added the COMP-SKL row.
+- Left unchanged: re-attributing the newer requirements to HLD components is the HLD owner's call (for example
+  the SDD puts FR-CTL-12, webhook sink authorization, under COMP-OPS, not COMP-MCP), and the HLD rows are loose
+  summaries rather than the traceability owner (the SDD covers every one of these IDs, and
+  `node scripts/check-docs.mjs` passes). It does not block PR #641.

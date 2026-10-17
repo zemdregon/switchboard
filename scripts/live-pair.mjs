@@ -12,6 +12,9 @@
  *                                the Claude Code and Codex plug-ins, so each direction is run
  *   SWITCHBOARD_LIVE_TIMEOUT_MS  how long to wait for each run (default 600000)
  *   SWITCHBOARD_LIVE_KEEP=1      keep the temp directories (ledger, artifacts, serve log) for inspection
+ *   SWITCHBOARD_LIVE_BUDGET_FILE, SWITCHBOARD_LIVE_PURPOSE  the live-test budget guard (T8.9; scripts/live/budget.mjs):
+ *                                caps, minimum gap, purpose allowlist and model per provider; exit 75 on refusal. Each
+ *                                pair direction is one provider run on each of its two providers.
  *
  * It uses the provider plug-ins of `scripts/live/providers/` (T4.3) for the adapter and probe, and the same rules as
  * `scripts/live-smoke.mjs`: it never reads, copies or prints credential files, tokens or keys, and passes no bypass flag
@@ -26,12 +29,15 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { admitLiveRun, EXIT_REFUSED, modelHandoff, withBudgetModel } from "./live/budget.mjs";
 
 const PLUGIN_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "live", "providers");
 const PROVIDERS = readdirSync(PLUGIN_DIR)
   .filter((f) => f.endsWith(".mjs"))
   .map((f) => f.slice(0, -".mjs".length))
   .sort();
+/** Fixture plug-ins (`fake`, T8.9) are selectable but not advertised, so the messages read as before. */
+const listed = (ids) => ids.filter((id) => !id.startsWith("fake"));
 /** The pair this milestone is verified with (M5 row): Claude Code and Codex, each direction. */
 const DEFAULT_PAIRS = [
   ["claude", "codex"],
@@ -47,7 +53,7 @@ export function parsePairs(spec, known = PROVIDERS) {
   if (a === b) return { ok: false, reason: "the two providers of a pair must differ (a handoff is across providers)" };
   for (const id of [a, b]) {
     if (!known.includes(id))
-      return { ok: false, reason: `unknown provider plug-in ${id}; expected one of ${known.join(", ")}` };
+      return { ok: false, reason: `unknown provider plug-in ${id}; expected one of ${listed(known).join(", ")}` };
   }
   return { ok: true, pairs: [[a, b]] };
 }
@@ -58,7 +64,7 @@ if (isMain) await run();
 async function run() {
   if (process.env.SWITCHBOARD_LIVE_TESTS !== "1") {
     process.stdout.write(
-      `live-pair: SKIPPED (opt-in). Set SWITCHBOARD_LIVE_TESTS=1 (and optionally SWITCHBOARD_LIVE_PAIR=<first>:<second> from ${PROVIDERS.join("|")}) to run it.\n`,
+      `live-pair: SKIPPED (opt-in). Set SWITCHBOARD_LIVE_TESTS=1 (and optionally SWITCHBOARD_LIVE_PAIR=<first>:<second> from ${listed(PROVIDERS).join("|")}) to run it.\n`,
     );
     process.exit(0);
   }
@@ -75,6 +81,37 @@ async function run() {
   const timeoutMs = Number(process.env.SWITCHBOARD_LIVE_TIMEOUT_MS ?? 600_000);
   const keep = process.env.SWITCHBOARD_LIVE_KEEP === "1";
   const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  // T8.9 (NFR-MAINT-05): the live-test budget guard runs before dist/ is loaded and before any provider process.
+  const runs = {};
+  for (const id of parsed.pairs.flat()) runs[id] = (runs[id] ?? 0) + 1;
+  const budget = admitLiveRun({ script: "live-pair", runs, repoRoot: ROOT });
+  if (budget.configured && !budget.allowed) {
+    process.stderr.write(`live-pair: REFUSED by the live-test budget: ${budget.reason}\n`);
+    process.exit(EXIT_REFUSED);
+  }
+  const models = budget.configured ? budget.models : {};
+  if (budget.configured) {
+    const named = Object.entries(models).map(([id, m]) => `${id} ${m}`);
+    process.stderr.write(`live-pair: admitted by the live-test budget; models ${named.join(", ")}\n`);
+  }
+  const pairRequest = (id) =>
+    withBudgetModel(
+      { runId: "run_pair", objective: "x", constraints: [], workspace: { cwd: ROOT, writable: true } },
+      models[id],
+    );
+  const fixtures = [];
+  for (const id of Object.keys(runs)) {
+    const p = (await import(pathToFileURL(path.join(PLUGIN_DIR, `${id}.mjs`)).href)).default;
+    if (p.fixture === true) fixtures.push([id, p]);
+  }
+  if (fixtures.length > 0) {
+    // A fixture plug-in stops the run here: it receives the compile request runPair audits, and nothing is spawned.
+    for (const [id, p] of fixtures) p.createAdapter(undefined).compile(pairRequest(id), undefined);
+    process.stdout.write(
+      `live-pair: fixture plug-in ${fixtures.map(([id]) => id).join(", ")} stopped after the budget guard\n`,
+    );
+    process.exit(0);
+  }
   const BIN = path.join(ROOT, "dist", "cli", "bin.js");
   if (!existsSync(BIN)) {
     process.stderr.write("live-pair: dist/ is missing; run `npm run build` (npm run test:live:pair does this)\n");
@@ -110,10 +147,7 @@ async function run() {
       const probe = await adapter.probe(runner);
       const gate = new adapters.AdapterRegistry().register(adapter).gate(id, probe.binaryVersion);
       const auth = probe.steps.every((s) => s.ok) ? await adapter.authPreflight(runner) : { state: "UNKNOWN" };
-      const compiled = adapter.compile(
-        { runId: "run_pair", objective: "x", constraints: [], workspace: { cwd: ROOT, writable: true } },
-        resolveProfile("edit-untrusted"),
-      );
+      const compiled = adapter.compile(pairRequest(id), resolveProfile("edit-untrusted"));
       const bypass = adapters.isIneligible(compiled) ? [] : adapters.auditInvocation(compiled);
       out(
         `${id}: version ${probe.binaryVersion ?? "(none)"}, gate ${gate.eligible ? "eligible" : gate.code}, auth ${auth.state}, bypass flags ${bypass.length === 0 ? "none" : `FOUND ${bypass.join(", ")}`}`,
@@ -164,6 +198,9 @@ async function run() {
         data_dir: dataDir,
         allowed_roots: [tmp],
         mcp_clients: [{ id: "live-pair", max_trust_profile: "edit-untrusted" }],
+        ...(budget.configured
+          ? { providers: Object.fromEntries([first, second].map((id) => [id, modelHandoff(models[id]).provider])) }
+          : {}),
       }),
     );
     out(`temp directory: ${tmp}${keep ? " (kept)" : " (removed at the end; SWITCHBOARD_LIVE_KEEP=1 keeps it)"}`);
@@ -215,7 +252,7 @@ async function run() {
           "Do not modify, create or delete any other file.",
         workspace_path: repo,
         trust_profile: "edit-untrusted",
-        routing: { provider_preference: first, require_provider: true },
+        routing: { provider_preference: first, require_provider: true, ...modelHandoff(models[first]).routing },
         idempotency_key: `live-pair-${first}-${Date.now()}`,
       });
       if (d.isError) {
@@ -244,7 +281,7 @@ async function run() {
         instruction:
           "Create a new file named PAIR-B.md in the repository root containing exactly one line: switchboard pair b. " +
           "Do not modify, create or delete any other file.",
-        routing: { provider_preference: second, require_provider: true },
+        routing: { provider_preference: second, require_provider: true, ...modelHandoff(models[second]).routing },
       });
       if (c.isError) {
         record(

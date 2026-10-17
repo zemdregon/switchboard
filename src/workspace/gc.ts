@@ -5,6 +5,7 @@ import type { ArtifactStore } from "../artifacts/index.js";
 import { type ContainerRuntime, removeRunContainers } from "../environment/index.js";
 import { DEFAULT_PUBLISH_PREFIX } from "../git/publish-ref.js";
 import { createLedger, type Ledger } from "../ledger/index.js";
+import { assessDiskFloor, type DiskFloor, type DiskFloorStatus } from "./disk.js";
 import { git } from "./git.js";
 
 /**
@@ -42,6 +43,11 @@ export interface GcOptions {
    * is reported in `errors` and the pass continues with other units.
    */
   readonly onStep?: (step: GcStep, sessionId: string) => void | Promise<void>;
+  /**
+   * T3.23 (FR-WS-11): asked before each candidate unit; `true` leaves the remaining candidates uncollected. The early
+   * disk sweep stops as soon as free space is back above the floor. Unset (every retention pass): collect every unit.
+   */
+  readonly stopWhen?: () => boolean;
 }
 
 export interface GcUnitResult {
@@ -72,6 +78,7 @@ export async function runRetentionGc(options: GcOptions): Promise<GcResult> {
   const collected: GcUnitResult[] = [];
   const errors: GcResult["errors"] = [];
   for (const candidate of ledger.listGcCandidates(cutoff)) {
+    if (options.stopWhen?.() === true) break;
     let step: GcStep | "unknown" = "unknown";
     try {
       const unit = await collectUnit(ledger, options, candidate, now.toISOString(), cutoff, (s) => {
@@ -605,4 +612,140 @@ async function removeOrphanBranch(repoRoot: string, branch: string): Promise<voi
   if (!(await isRepo(repoRoot))) throw new Error(`repository unavailable: ${repoRoot}`);
   if (!(await branchExists(repoRoot, branch))) return;
   await git(["branch", "-D", branch], { cwd: repoRoot });
+}
+
+// ---- Early disk sweep (T3.23; FR-WS-11, BR-51): an ordered list of reclaimers, run only while under the floor. ----
+
+/** What a reclaimer may ask while it works. */
+export interface ReclaimContext {
+  /** True once free space is back at or above the floor; a reclaimer stops at its next unit boundary. */
+  readonly enough: () => boolean;
+  /**
+   * Worktree paths of the runs that hold a write lease right now (`meta_session.lease_run_id`). A reclaimer never
+   * touches one of them, nor the meta-session that holds it (FR-WS-11); the retention reclaimer below never sees them
+   * because its candidate query and its intent transaction both require no lease.
+   */
+  readonly leasedWorktrees: ReadonlySet<string>;
+  readonly now: Date;
+}
+
+export interface ReclaimOutcome {
+  /** Units this reclaimer removed (meta-sessions; seed directories once T9.13 registers its reclaimer). */
+  readonly reclaimed: number;
+  /** Why nothing or less was done (`retention.days` not set, a repository unavailable, a unit that failed, ...). */
+  readonly notes: string[];
+}
+
+/**
+ * One step of the early sweep. The order of the list is the order of reclaiming: dependency seeds of idle worktrees
+ * (FR-WS-10, registered by T9.13 as `dependency_seeds`; absent until then) before retention-eligible meta-sessions
+ * (`meta_sessions`). A reclaimer stops as soon as `enough()` is true and never touches a leased worktree.
+ */
+export interface DiskReclaimer {
+  readonly name: string;
+  reclaim(ctx: ReclaimContext): Promise<ReclaimOutcome>;
+}
+
+export interface EarlySweepOptions {
+  readonly db: Database.Database;
+  readonly floor: DiskFloor;
+  /** Ordered; see {@link earlySweepReclaimers}. */
+  readonly reclaimers: readonly DiskReclaimer[];
+  readonly now?: Date;
+}
+
+export interface EarlySweepStep {
+  readonly name: string;
+  readonly outcome: ReclaimOutcome | { readonly error: string };
+}
+
+export interface EarlySweepResult {
+  readonly before: DiskFloorStatus;
+  readonly after: DiskFloorStatus;
+  /** True when free space is at or above the floor at the end, or the floor could not be assessed. */
+  readonly satisfied: boolean;
+  /** Reclaimers that ran, in order; empty when the sweep found free space already above the floor. */
+  readonly steps: EarlySweepStep[];
+  /** The leased worktrees the sweep told every reclaimer to leave alone. */
+  readonly leasedWorktrees: string[];
+}
+
+/** Worktree paths of the runs holding a write lease. Read-only. */
+export function leasedWorktrees(db: Database.Database): string[] {
+  return (
+    db
+      .prepare(
+        `SELECT r.worktree_path AS p FROM meta_session m JOIN run r ON r.id = m.lease_run_id
+         WHERE m.lease_run_id IS NOT NULL AND r.worktree_path IS NOT NULL ORDER BY p`,
+      )
+      .all() as { p: string }[]
+  ).map((r) => r.p);
+}
+
+/**
+ * Run the reclaimers in order while free space is under the floor, re-probing between them. A reclaimer that throws
+ * is recorded and the next one runs. Nothing runs when the floor is already met, and nothing here ever holds, fails or
+ * refuses a run: the lifecycle's hold is separate and lifts on its own re-probe.
+ */
+export async function runEarlySweep(o: EarlySweepOptions): Promise<EarlySweepResult> {
+  const now = o.now ?? new Date();
+  const before = assessDiskFloor(o.floor);
+  const leased = leasedWorktrees(o.db);
+  const steps: EarlySweepStep[] = [];
+  if (before.below) {
+    const enough = (): boolean => !assessDiskFloor(o.floor).below;
+    const ctx: ReclaimContext = { enough, leasedWorktrees: new Set(leased), now };
+    for (const r of o.reclaimers) {
+      if (enough()) break;
+      try {
+        steps.push({ name: r.name, outcome: await r.reclaim(ctx) });
+      } catch (err) {
+        steps.push({ name: r.name, outcome: { error: err instanceof Error ? err.message : String(err) } });
+      }
+    }
+  }
+  const after = assessDiskFloor(o.floor);
+  return { before, after, satisfied: !after.below, steps, leasedWorktrees: leased };
+}
+
+export interface MetaSessionReclaimerOptions {
+  /** The retention pass settings (`days` is `retention.days`, default 30). */
+  readonly gc: Omit<GcOptions, "now" | "stopWhen">;
+  /**
+   * `ResolvedConfig.retentionEnabled`: collection happens only when the config sets `retention.days` itself, the same
+   * switch as every other collecting pass (T3.12). False: the reclaimer removes nothing and says why.
+   */
+  readonly enabled: boolean;
+}
+
+/**
+ * The `meta_sessions` reclaimer: {@link runRetentionGc} with `stopWhen` bound to the floor, so it collects idle,
+ * retention-eligible meta-sessions oldest first and stops once free space is back above the floor. Leased sessions are
+ * never candidates (ledger `listGcCandidates`, re-checked by `beginGc`).
+ */
+export function metaSessionReclaimer(o: MetaSessionReclaimerOptions): DiskReclaimer {
+  return {
+    name: "meta_sessions",
+    async reclaim(ctx) {
+      if (!o.enabled) {
+        return { reclaimed: 0, notes: ["retention.days is not set, so no meta-session is collected"] };
+      }
+      const r = await runRetentionGc({ ...o.gc, now: ctx.now, stopWhen: ctx.enough });
+      const notes = [
+        ...r.errors.map((e) => `meta-session ${e.sessionId} failed at ${e.step}: ${e.message}`),
+        ...r.collected.flatMap((c) => c.warnings.map((w) => `meta-session ${c.sessionId}: ${w}`)),
+      ];
+      return { reclaimed: r.collected.length, notes };
+    },
+  };
+}
+
+/**
+ * The ordered reclaimer list of the early sweep (FR-WS-11): dependency seeds of idle worktrees first (`seeds`, the
+ * FR-WS-10 reclaimer T9.13 registers; the list has none until then), then retention-eligible meta-sessions.
+ */
+export function earlySweepReclaimers(
+  o: MetaSessionReclaimerOptions & { readonly seeds?: DiskReclaimer },
+): DiskReclaimer[] {
+  return [...(o.seeds !== undefined ? [o.seeds] : []), metaSessionReclaimer(o)];
 }

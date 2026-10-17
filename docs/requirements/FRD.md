@@ -117,6 +117,11 @@ Each rule elaborates the cited requirement and does not add to it.
 | BR-49 | **Model groups are requests, not claims.** A request may name a configured model group or one model, never both. Each member is checked by the hard constraints (BR-1) with its model, and only eligible members are ranked; a member's place in a group says nothing about its quality or capability (`minimum_capability` still uses the operator's declared capabilities). A group that does not contain a project's affine provider and model is a `user_request` (BR-45); a group request with no eligible member returns the BR-3 code. | FR-RTE-10, FR-RTE-11, [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md) | Delegated, Proposed |
 | BR-50 | **Usage figures carry their source.** A subscription window's used share and reset time are `provider_reported` only from a declared, sourced key, `operator_declared` for a fixed reset or a budget, `controller_estimated` for a budget against Switchboard-observed usage (always marked a lower bound), or `unknown`. An unknown window is never headroom. The word "remaining" is used only for a `provider_reported` figure (FR-CAP-03). | FR-CAP-09, FR-CAP-03, [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md) | Delegated, Proposed |
 | BR-51 | **Pacing delays, never refuses.** With the pacing gate on, a subscription ahead of its pace line (plus a burst allowance) in a window whose reset is known is deferred until a computable time no later than that reset. A deferred candidate is skipped when another eligible candidate remains, and otherwise the run waits in `QUEUED`. Pacing never returns an error, fails a run, or creates a run, probe or provider call to use up a subscription. | FR-CAP-10, FR-CAP-07, [ADR-0055](../adr/0055-model-groups-and-usage-pacing.md) | Delegated, Proposed |
+| BR-52 | **Skills are operator text, chosen by name.** A skill exists only after the operator adds it through the CLI; requests carry names (optionally `name@n`), never skill text, and no MCP tool creates, edits or approves a skill. Each run resolves its skills once at admission, in the fixed order global defaults, global role, project defaults, project role, request, and keeps those versions for its lifetime. | FR-SKL-01, FR-SKL-03, FR-SKL-08, [ADR-0056](../adr/0056-switchboard-controlled-skills.md) | Delegated, Proposed |
+| BR-53 | **Untrusted runs get approved operator skills only.** Under `inspect-untrusted`, `edit-untrusted` and `test-sandboxed` only `approved` versions are delivered, never a version imported from a repository path; a requested skill that fails this is refused (`PERMISSION_BLOCKED`), a configured default that fails it is skipped with an event. Draft versions reach the other profiles only with `skills.allow_draft_in_trusted`. | FR-SKL-04, FR-POL-04, [ADR-0056](../adr/0056-switchboard-controlled-skills.md) | Delegated, Proposed |
+| BR-54 | **A skill changes no control.** Skills, roles and their delivery are never an input to profile choice or compilation, eligibility, scoring, affinity, approval or the argv audit; the argv and environment of a run are identical with and without skills. | FR-SKL-04, FR-SKL-05, BR-1, BR-5, [ADR-0056](../adr/0056-switchboard-controlled-skills.md) | Delegated, Proposed |
+| BR-55 | **Native only where already loaded and verified; never in a tracked file or the home directory.** A native skill file is written only at a fresh `switchboard-` path inside the run worktree in a location the compiled cell already loads, and only for cells whose native delivery a live check confirmed; otherwise the skill is a labelled block in the stable prompt prefix. | FR-SKL-05, FR-RTE-09, [ADR-0056](../adr/0056-switchboard-controlled-skills.md) | Delegated, Proposed |
+| BR-56 | **Skill files never reach Git and do not outlive the run.** Recorded native paths are excluded from commits, checkpoints, diff artifacts and handoff diffs; publication is refused while one exists; they are removed before `VERIFYING`, at every terminal state, at reconciliation and by GC, and a failed removal flags the run for attention. | FR-SKL-06, FR-GIT-02, BR-25, [ADR-0056](../adr/0056-switchboard-controlled-skills.md) | Delegated, Proposed |
 
 *Note 2026-10-13 (owner decision 36, Q-43; BR-30's wording above unchanged).* zemdregon chose finalize-only for adapters
 with no injected channel ("Finalize-only."): such an adapter is **not** made ineligible for write-capable profiles. It runs
@@ -357,6 +362,7 @@ FR-MCP-09).
 | V11 | Routing | At least one provider passes BR-1 (or the required one does). **Proposed (T3.3):** for `privileged` (here and for a C7 continuation), a provider excluded only because its adapter cannot compile the profile (`PROFILE_UNSUPPORTED`, `CAPABILITY_MISSING`) still counts; the compile check moves to dispatch, where `bypassApproved` is known. *Changed 2026-10-13 (T3.18):* dispatch no longer refuses every `privileged` run; the adapter's compile there decides, and an `Ineligible` ends the run with its BR-3 code ([LLD §3.1](../design/LLD.md#31-privileged-scope-m3)) | per BR-3 / `ELIGIBILITY_NONE` | FR-RTE-01, FR-MCP-05 |
 | V12 | `project` | Names a project in configuration that the calling client may use; mutually exclusive with `workspace`; the project's repository context resolves under an allowed root and its base ref exists | `INVALID_REQUEST` if unknown or malformed; `PERMISSION_BLOCKED` if not in the client's list or the profile exceeds the project's ceiling (BR-23) | FR-PRJ-03, FR-PRJ-06 |
 | V14 | `routing.model_group`, `routing.model` (Proposed, T7.14) | At most one of them; the group is configured; an explicit model names a provider (`provider_preference` or `require_provider`) or resolves in exactly one enabled provider's registry; a group narrowed by a provider keeps at least one member. `continue_task` accepts neither (Q-99) | `INVALID_REQUEST` | FR-RTE-11, FR-MCP-05, FR-MCP-09 |
+| V15 | `skills`, `role`, `skill_defaults` (Proposed, T16.4) | Skills disabled: `INVALID_REQUEST` (`SKILLS_DISABLED`); each requested name exists, is not retired and has a usable version (`SKILL_UNKNOWN`); the client may use it (`PERMISSION_BLOCKED`, `SKILL_NOT_PERMITTED`); BR-53 for the resolved profile (`SKILL_NOT_APPROVED`, `SKILL_REPOSITORY_ORIGIN`); the resolved set is within the per-run count and size caps (`SKILL_RUN_LIMIT`). An unknown `role` selects nothing and is not an error | `INVALID_REQUEST` or `PERMISSION_BLOCKED` | FR-SKL-03, FR-SKL-04 |
 
 ### 7.2 `continue_task`
 
@@ -369,6 +375,7 @@ FR-MCP-09).
 | C5 | Provider hints as V8; BR-18 selects native resume vs handoff | per BR-2/BR-3 | FR-SES-03, FR-SES-04, FR-MCP-05 |
 | C6 | Idempotency key: the SRS defines it only for `delegate_task`; `continue_task` accepts none (SRS silent) | n/a | FR-MCP-08 |
 | C7 | **M3 (owner decision 17; reverses the earlier Proposed refusal, ROADMAP Q-29):** `continue_task` accepts no `privileged_scope`. A continuation whose resolved profile is `privileged` (requested, or defaulted from a `privileged` run) is admitted only if the meta-session has an `APPROVED` approval for the calling client; it then takes the approved scope as is (no widening or other change) and needs no new approval ([LLD §3.1](../design/LLD.md#31-privileged-scope-m3)). An approval that is `PENDING`, `DENIED` or absent, or a different client, is refused. A different scope needs `delegate_task` and a new approval. Checked after C4 | `INVALID_REQUEST` | FR-POL-09 |
+| C8 | `skills`, `role`, `skill_defaults` (Proposed, T16.4): absent, the previous run's resolved skills are reused at the same versions and re-checked against BR-53 for the new run's profile; present, they are resolved as V15 | as V15 | FR-SKL-03, FR-SKL-04 |
 
 ### 7.3 Other tools
 
@@ -817,6 +824,31 @@ sequenceDiagram
 - **Postconditions:** one route decision per run naming the group, the chosen member and the pacing verdicts; no run,
   probe or provider call was created to consume a subscription.
 
+### WF-16 Run with Switchboard-controlled skills
+
+*Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); not built).*
+
+- **Actors:** Operator, Orchestrator, COMP-OPS, COMP-MCP, COMP-SKL, COMP-WS, COMP-GIT, COMP-EXE, COMP-LED.
+- **Preconditions:** `skills.enabled`; the operator added and approved the skills (`switchboard skills add`, `approve`)
+  and, optionally, configured global, role and project defaults.
+- **Realizes:** FR-SKL-01 to FR-SKL-10; BR-52 to BR-56; V15, C8.
+- **Normal path:** the orchestrator calls `delegate_task` with `skills` and or `role` (V15). In the admission
+  transaction COMP-SKL resolves and pins the set (BR-52, BR-53) and COMP-LED records it. At dispatch COMP-WS writes a
+  native file for each skill whose cell declares a verified native location, at a fresh path, and records path and
+  hash; the rest are rendered as the labelled prompt-prefix block (BR-55). The provider runs with its usual argv and
+  environment (BR-54). When the provider exits, COMP-WS removes and verifies the native files before `VERIFYING`;
+  COMP-GIT's commit tool and the diff artifacts exclude the recorded paths throughout (BR-56).
+- **Alternate paths:** `continue_task` without skill fields reuses the pinned versions (C8); a handoff re-delivers the
+  same versions to the new provider and lists them in the bundle as controller facts; a native path already taken
+  falls back to the prompt prefix; `skills.delivery: prefix_only` uses the prefix everywhere.
+- **Failure paths:** an unknown, retired, unpermitted or unapproved requested skill, or a set over the caps, refuses
+  the request with the V15 code before any run exists; a failed native write falls back to the prefix; a failed
+  removal records `skill_cleanup_failed`, flags the run needs-attention and keeps publication refused until GC or the
+  operator removes the file.
+- **Postconditions:** the run's `run_skill` rows name every skill, version, hash and mode; no recorded path exists in
+  the worktree; no commit, checkpoint or artifact contains a recorded path; no event, span, log or sink carries skill
+  text.
+
 ## 9. Traceability summary
 
 | Workflow | User journey | Capabilities | Primary requirements |
@@ -836,6 +868,7 @@ sequenceDiagram
 | WF-13 | UJ-10 | CAP-12 | FR-INN-01..17 |
 | WF-14 | UJ-11 | CAP-13 | FR-RAG-01..14 |
 | WF-15 | UJ-12 | CAP-6, 7 | FR-RTE-10, 11, FR-CAP-09, 10 |
+| WF-16 | UJ-13 | CAP-17, 3 | FR-SKL-01..10 |
 
 Milestone availability follows the SRS milestone column (for example WF-7 from M3, WF-5 automatic retry and failover
 from M6, WF-3 from M5, WF-9 `adapters validate` from M4, WF-10 to WF-12 from M9 with containers in M10, WF-13 from

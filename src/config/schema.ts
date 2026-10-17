@@ -111,7 +111,11 @@ export interface SwitchboardConfig {
     /** T14.11 (FR-CTL-11): `orchestrator` (default) or `console`. */
     tool_profile?: ToolProfile;
   }[];
-  limits?: { global_concurrency?: number; per_provider_concurrency?: number };
+  /**
+   * `min_free_disk_mb` (T3.23, FR-WS-11): the free-disk floor in whole megabytes, off when absent. Below it new runs
+   * are held in `QUEUED` (never failed) and an early GC sweep runs; `doctor` reports free space against it.
+   */
+  limits?: { global_concurrency?: number; per_provider_concurrency?: number; min_free_disk_mb?: number };
   providers?: Partial<
     Record<
       ProviderId,
@@ -553,6 +557,8 @@ export const configSchema = {
       properties: {
         global_concurrency: { type: "integer", minimum: 1, maximum: 64 },
         per_provider_concurrency: { type: "integer", minimum: 1, maximum: 64 },
+        // T3.23 (FR-WS-11): whole megabytes; the upper bound (about 1 PB) is a typo guard (Assumption, Delegated).
+        min_free_disk_mb: { type: "integer", minimum: 1, maximum: 1_000_000_000 },
       },
     },
     providers: {

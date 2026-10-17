@@ -1,5 +1,20 @@
 export {
+  assessDiskFloor,
+  type DiskFloor,
+  type DiskFloorStatus,
+  type DiskProbe,
+  diskFloorPaths,
+  formatMb,
+  MB,
+  statfsDiskProbe,
+} from "./disk.js";
+export {
   collectOrphans,
+  type DiskReclaimer,
+  type EarlySweepOptions,
+  type EarlySweepResult,
+  type EarlySweepStep,
+  earlySweepReclaimers,
   findOrphans,
   type GcOptions,
   type GcPlan,
@@ -7,11 +22,17 @@ export {
   type GcResult,
   type GcStep,
   type GcUnitResult,
+  leasedWorktrees,
+  type MetaSessionReclaimerOptions,
+  metaSessionReclaimer,
   type OrphanGcOptions,
   type OrphanGcResult,
   type OrphanGcStep,
   type OrphanReport,
   planRetentionGc,
+  type ReclaimContext,
+  type ReclaimOutcome,
+  runEarlySweep,
   runRetentionGc,
 } from "./gc.js";
 export { CONTROLLER_IDENTITY, GitError, MIN_GIT_VERSION } from "./git.js";

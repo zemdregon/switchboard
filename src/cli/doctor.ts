@@ -36,7 +36,17 @@ import { inspectDataDirLock } from "../lock/index.js";
 import { type ModelConfig, ModelRegistry } from "../models/index.js";
 import { type AppliedOverride, validateProfileOverrides } from "../policy/index.js";
 import { gitText, parseGitVersion, versionAtLeast } from "../workspace/git.js";
-import { findOrphans, MIN_GIT_VERSION, planRetentionGc } from "../workspace/index.js";
+import {
+  assessDiskFloor,
+  type DiskProbe,
+  diskFloorPaths,
+  findOrphans,
+  formatMb,
+  MB,
+  MIN_GIT_VERSION,
+  planRetentionGc,
+  statfsDiskProbe,
+} from "../workspace/index.js";
 import { projectCapacity } from "./capacity.js";
 import { type InnerDoctorSection, innerDoctorSection, renderInnerDoctor } from "./inner.js";
 import { type CliIo, JSON_SCHEMA_VERSION, PROBE_ENV_ALLOWLIST } from "./io.js";
@@ -336,6 +346,50 @@ async function checkRetentionAndOrphans(cfg: ResolvedConfig, now: Date): Promise
 }
 
 /**
+ * Free-disk floor (T3.23; FR-WS-11). Present only when the config sets `limits.min_free_disk_mb`, so the check list of a
+ * configuration without it is unchanged. Probes the nearest existing ancestor of each FR-WS-11 path (the data directory
+ * and its worktree root may not exist before the first `serve`). Under the floor: `warn`, never `fail` (the floor
+ * holds runs, it does not fail anything, and `doctor` exits 0 for it). Unreadable paths: `warn`, the floor is not
+ * enforced for them.
+ */
+function checkDiskFloor(cfg: ResolvedConfig, probe: DiskProbe): DoctorCheck | undefined {
+  const floorMb = cfg.limits.minFreeDiskMb;
+  if (floorMb === undefined) return undefined;
+  const status = assessDiskFloor({
+    minFreeBytes: floorMb * MB,
+    paths: [...new Set(diskFloorPaths(cfg.dataDir).map(nearestExisting))],
+    probe,
+  });
+  const floor = `floor ${floorMb} MB (limits.min_free_disk_mb)`;
+  if (status.freeBytes === null || status.path === null) {
+    return check(
+      "disk",
+      "Free disk",
+      "warn",
+      `cannot read free space of ${status.unreadable.join(", ")}; ${floor} is not enforced`,
+    );
+  }
+  const unreadable = status.unreadable.length ? `; unreadable: ${status.unreadable.join(", ")}` : "";
+  if (status.below) {
+    const sweep = cfg.retentionEnabled
+      ? "runs the early GC sweep"
+      : "runs the early GC sweep, which collects nothing until retention.days is set";
+    return check(
+      "disk",
+      "Free disk",
+      "warn",
+      `free ${formatMb(status.freeBytes)} on ${status.path} is under the ${floor}: serve holds new runs in QUEUED (disk_hold) and ${sweep}${unreadable}`,
+    );
+  }
+  return check(
+    "disk",
+    "Free disk",
+    "ok",
+    `free ${formatMb(status.freeBytes)} on ${status.path}; ${floor}${unreadable}`,
+  );
+}
+
+/**
  * Every provider registry entry with an adapter (`src/adapters/providers.ts`, T4.1): test-only entries first (the
  * fake), then the real providers in table order.
  */
@@ -502,6 +556,8 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
   if (cfg) {
     checks.push(checkDataDir(cfg.dataDir), checkLedger(cfg.dataDir), checkLock(cfg.dataDir));
     checks.push(...(await checkRetentionAndOrphans(cfg, (io.now ?? (() => new Date()))())));
+    const disk = checkDiskFloor(cfg, io.diskProbe ?? statfsDiskProbe);
+    if (disk) checks.push(disk);
   } else {
     for (const [id, label] of [
       ["data_dir", "Data directory"],
