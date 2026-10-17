@@ -21,7 +21,10 @@
  *   and `SUCCESS` with no reported tokens is not a success (Q-86); a `denied_actions` or `error` value of an unrecorded
  *   shape, a second `result`, a changed conversation id and one that is not a safe token fail the run too; resume is not compiled (Q-86). The auth
  *   preflight (T4.34) is `agy models`, keyed on the observed exit codes and stderr. The manifest range admits no version, so none of this runs before `adapters validate` passes a
- *   version.
+ *   version;
+ * - the limit mapping (T6.15, FR-CAP-11): `classifyFailure` reads the structured `AGY_ERROR: {...}` stderr line of an
+ *   exit-3 run (the 2026-10-17 T6.11 capture) and maps `status` `RESOURCE_EXHAUSTED` to `QUOTA_EXHAUSTED`; it reaches
+ *   the mapping only through `FailureEvidence.stderrTail`, which `extractResult` cannot supply (see there).
  */
 import {
   DEFAULT_IDLE_MS,
@@ -55,6 +58,9 @@ import type {
 } from "../types.js";
 import {
   AGY_BINARY,
+  AGY_ERROR_EXIT,
+  AGY_ERROR_PREFIX,
+  AGY_ERROR_STATUS_CATEGORIES,
   AGY_LOGIN_COMMAND,
   AUTH_LOGGED_OUT_EXIT,
   AUTH_LOGGED_OUT_PREFIX,
@@ -634,6 +640,10 @@ export class AntigravityAdapter implements ProviderAdapter {
           (e.kind === "tool_call" && e.violation !== undefined),
       );
     if (clean) return { ok: true, ...base };
+    // The adapter contract gives `extractResult` the events and the exit only (LLD §2), so the stderr tail is empty
+    // here and the T6.15 `AGY_ERROR` mapping is not reached on this path: a live exit-3 quota stop stays `TOOL_FAILURE`
+    // `exit code 3` until `startAdapterRun` (`src/adapters/run.ts`) passes the tail it already captures. Pinned by
+    // `limit-signals.test.ts`.
     const c = this.classifyFailure({
       events,
       exit,
@@ -645,7 +655,52 @@ export class AntigravityAdapter implements ProviderAdapter {
     return { ok: false, failureCode: c.code, failureDetail: detail, ...base };
   }
 
+  /**
+   * The shared precedence (`classifyCommon`), then the T6.15 limit mapping: when nothing more specific than
+   * `TOOL_FAILURE` was found and the run exited {@link AGY_ERROR_EXIT} with a structured `AGY_ERROR: {...}` line in the
+   * stderr tail, its `status` selects the category ({@link AGY_ERROR_STATUS_CATEGORIES}). Every more specific verdict
+   * (cancel, timeout, crash, the tool-call guard, a denial, an auth or model error, a protocol anomaly) stands.
+   */
   classifyFailure(evidence: FailureEvidence): FailureClassification {
-    return classifyCommon(evidence, CATEGORY_CODES);
+    const common = classifyCommon(evidence, CATEGORY_CODES);
+    if (common.code !== "TOOL_FAILURE") return common;
+    return agyErrorClassification(evidence) ?? common;
   }
+}
+
+/**
+ * T6.15 (FR-CAP-11, FR-ADP-04): the last stderr line that starts with {@link AGY_ERROR_PREFIX}, parsed as one JSON
+ * object; only the own properties `status`, `error_code` and `retryable` are read (never `short_error` or `error_id`).
+ * Requires the documented exit code (TDD §4.4: exit 3 comes with the line), so a line printed by something else in an
+ * otherwise normal exit changes nothing. Anything that is not exactly that shape (another exit code, a truncated tail,
+ * a non-object, an unmapped or non-string status) is `undefined`: fail closed to the common verdict.
+ */
+export function agyErrorClassification(evidence: FailureEvidence): FailureClassification | undefined {
+  const { exit } = evidence;
+  if (exit.outcome !== "exited" || exit.exitCode !== AGY_ERROR_EXIT) return undefined;
+  const line = evidence.stderrTail
+    .split("\n")
+    .map((l) => (l.endsWith("\r") ? l.slice(0, -1) : l))
+    .findLast((l) => l.startsWith(AGY_ERROR_PREFIX));
+  if (line === undefined) return undefined;
+  let doc: unknown;
+  try {
+    doc = JSON.parse(line.slice(AGY_ERROR_PREFIX.length));
+  } catch {
+    return undefined;
+  }
+  const o = obj(doc);
+  const status = str(ownProp(o, "status"));
+  if (status === undefined) return undefined;
+  const category = Object.hasOwn(AGY_ERROR_STATUS_CATEGORIES, status) ? AGY_ERROR_STATUS_CATEGORIES[status] : undefined;
+  const code = category === undefined ? undefined : CATEGORY_CODES[category as keyof typeof CATEGORY_CODES];
+  if (category === undefined || code === undefined) return undefined;
+  const errorCode = ownProp(o, "error_code");
+  const retryable = ownProp(o, "retryable");
+  const parts = [
+    `AGY_ERROR status ${clip(status, 64)}`,
+    ...(typeof errorCode === "number" && Number.isFinite(errorCode) ? [`error_code ${errorCode}`] : []),
+    ...(typeof retryable === "boolean" ? [`retryable ${retryable}`] : []),
+  ];
+  return { code, detail: `${category}: ${parts.join(", ")}` };
 }

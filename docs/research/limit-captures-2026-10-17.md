@@ -92,6 +92,12 @@ Not candidates, because they are free text only:
 If Q-100 allows a free-text reset, Codex's absolute date and Antigravity's relative duration are the only parseable
 ones. Codex's has no time zone. Claude Code's names an hour but no date.
 
+*Outcome (T6.15, 2026-10-17):* the Antigravity `status` is mapped to `QUOTA_EXHAUSTED` in the adapter's
+`classifyFailure` from the stderr tail (`src/adapters/antigravity/protocol.ts`, tests in
+`src/adapters/antigravity/limit-signals.test.ts`, synthetic fixture `agy_error_quota.jsonl` from the key names above).
+No `USAGE_KEYS` entry was declared: no capture carries a structured used or remaining figure or reset time
+([ROADMAP T6.15](../ROADMAP.md#611-m6-capacity-and-resilience-tasks)).
+
 ## Checks
 
 | Check | Result |

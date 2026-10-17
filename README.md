@@ -1364,11 +1364,15 @@ denials over provider errors, a provider error over a `rate_limit` event, a fail
 recorded run showed `request-review`, and whether a value that disagrees with the compiled bypass flag should fail the
 run is not decided, so the outcome rests on the `result` envelope alone.
 
-The supervisor replays `agy_error_exit3.jsonl` and `usage_unrecorded.jsonl` to `TOOL_FAILURE`.
+The supervisor replays `agy_error_exit3.jsonl`, `agy_error_quota.jsonl` and `usage_unrecorded.jsonl` to `TOOL_FAILURE`
+(`agy_error_quota.jsonl` carries a stderr `AGY_ERROR` quota line in the T6.11 capture shape; the supervisor path has no
+stderr, so it stays `TOOL_FAILURE` there, while `classifyFailure` over the run's stderr tail maps it to
+`QUOTA_EXHAUSTED`, T6.15, [`limit-signals.test.ts`](src/adapters/antigravity/limit-signals.test.ts)).
 `sandbox_violation_unrecorded.jsonl` deliberately pins a gap: a tool-output error beneath a successful envelope
 still ends `ok`, because the parser does not interpret that error as a native sandbox-violation event. These are
-synthetic checks, not captures of native rate limiting, sandbox enforcement or `AGY_ERROR` stderr
-([#272](https://github.com/zemdregon/switchboard/pull/272)). Tool parameter aliases remain **Assumptions** until
+synthetic checks, not native captures of rate limiting, sandbox enforcement or `AGY_ERROR` stderr
+(the quota line shape follows the T6.11 capture key names, but the fixture is hand-written;
+[#272](https://github.com/zemdregon/switchboard/pull/272)). Tool parameter aliases remain **Assumptions** until
 operator captures confirm their native shapes. Later updates that supply or change a command or path reach the
 guard again; commands under unrecorded parameter keys remain unseen. Native resume, blocked outcomes and provider
 validation stay open under ROADMAP T4.33, T4.35, T4.36 and T4.38.

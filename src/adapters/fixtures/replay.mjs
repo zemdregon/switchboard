@@ -16,7 +16,9 @@
 // about a real CLI.
 //
 // Run metadata comes from the flags above or, when a flag is absent, from an object-valued `_fixture` on the first
-// line: { synthetic: true, exit, write: { path, content }, hang: true | "ignore_term", requireResume }.
+// line: { synthetic: true, exit, write: { path, content }, hang: true | "ignore_term", requireResume, stderr }.
+// `stderr` (T6.15) is an array of lines written verbatim to stderr after the stdout lines, for a provider whose
+// structured limit signal is on stderr (Antigravity's `AGY_ERROR: {...}` line at exit 3); anything else is ignored.
 //
 // --mcp-commit (T9.4b, ADR-0029; Claude only) stands in for what Claude Code is ASSUMED to do with `--mcp-config <file>`
 // (unverified, live check): it reads the one definition file named in the argv, records evidence (argv, file text,
@@ -107,6 +109,9 @@ async function replay(prompt, from) {
       // malformed lines are part of some fixtures and are replayed verbatim
     }
     process.stdout.write(`${session.value === undefined ? line : line.replaceAll(session.token, session.value)}\n`);
+  }
+  if (Array.isArray(meta.stderr)) {
+    for (const line of meta.stderr) if (typeof line === "string") process.stderr.write(`${line}\n`);
   }
   const hang = own.includes("--hang") ? (own.includes("--ignore-term") ? "ignore_term" : true) : meta.hang;
   if (hang) {

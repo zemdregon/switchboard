@@ -704,9 +704,12 @@ line records no second `usage` row, [#227](https://github.com/zemdregon/switchbo
 step never binds the session. Invalid model and failed login map to `MODEL_UNAVAILABLE` and `AUTH_REQUIRED`; malformed
 and unknown lines become `unknown` events. `extractResult` precedence: cancel and timeout over a denial, denial over
 envelope error and non-zero exit, ADR-0039 guard over all ([#227](https://github.com/zemdregon/switchboard/pull/227)).
-Resume is not compiled: `resumeArgs` is always `Ineligible` and `--conversation` never appears in argv (Q-86). Shapes
-that stayed on stderr in the live check (for example `AGY_ERROR`) are outside `FailureEvidence` here, so those runs end
-`TOOL_FAILURE` until a capture shows them on the stdout stream the supervisor parses.
+Resume is not compiled: `resumeArgs` is always `Ineligible` and `--conversation` never appears in argv (Q-86).
+The stderr-only `AGY_ERROR` line has since been captured for real (seven quota stops at exit 3, T6.11
+[limit captures](../research/limit-captures-2026-10-17.md)) and mapped in `classifyFailure` from the stderr tail
+(T6.15, [ROADMAP T6.15](../ROADMAP.md#611-m6-capacity-and-resilience-tasks)): the `extractResult` path still ends
+`TOOL_FAILURE` because the adapter contract gives it the events and the exit only (§2), not the tail the supervisor
+captures (pinned in `src/adapters/antigravity/limit-signals.test.ts`).
 
 - **Tests:** `src/adapters/antigravity/antigravity.test.ts` (`antigravity parser and result (T4.33)`,
   `antigravity parser hardening (T4.33, synthetic shapes)`).
@@ -5578,6 +5581,16 @@ no reset: its used share is taken over the last `length_seconds`. Without a `bud
 field, and what it carries (`used_fraction`, `remaining_fraction` or `reset_at`), with the source document. Candidates
 named by T6.0, none wired: Antigravity's `/usage` `remaining_fraction` and `reset_time` per bucket (a separate call,
 Q-101), and Claude Code's `rate_limit_event` `resetsAt` (a synthetic fixture shape, T6.11).
+
+*As built (T6.15, 2026-10-17, Delegated):* still none wired. The T6.11 captures
+([limit captures 2026-10-17](../research/limit-captures-2026-10-17.md)) hold one structured limit signal that was not
+already mapped, Antigravity's stderr line `AGY_ERROR: {...}` at exit 3. Its `status` `RESOURCE_EXHAUSTED` maps to
+`QUOTA_EXHAUSTED` in the adapter's `classifyFailure` from the stderr tail (`src/adapters/antigravity/protocol.ts`,
+`AGY_ERROR_STATUS_CATEGORIES`; the structured fields only, FR-ADP-04), and its reset is free text inside `short_error`,
+so no reset key is declared (Q-100). Every other captured limit was free text. `USAGE_KEYS` stays empty and frozen until
+a capture shows a structured used or remaining fraction or reset time. The adapter contract gives `extractResult` no
+stderr (§2), so the mapping is reached only by a caller that passes the tail `startAdapterRun` captures; the lifecycle
+does not yet (pinned in `src/adapters/antigravity/limit-signals.test.ts`).
 
 **Per window, at time `now`** (pure function, injected clock):
 
