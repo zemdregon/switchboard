@@ -6812,8 +6812,9 @@ unknown one, as `search_project_context` does; every `get_skill` miss (unknown, 
 injectable) is one `INVALID_REQUEST` that never names the skill; `applies_to_providers` is `null` for every provider;
 a duplicated name takes its position from the first occurrence and its version and source from the first `@n`, and is
 a requested name if any occurrence is; a stored file that fails its hash is `TOOL_FAILURE` with `details.reason =
-"SKILL_CONTENT_UNAVAILABLE"`. `switchboard serve` does not pass the `skills` dependency yet (`src/cli/**` was outside
-T16.9), so a running installation offers the tools only once the serve wiring lands.
+"SKILL_CONTENT_UNAVAILABLE"`. `switchboard serve` passes the `skills` dependency only while `skills.enabled`
+is true (`src/cli/serve.ts`; `src/cli/serve-skills.test.ts`), so a running installation offers the tools when skills
+are enabled and none when disabled.
 
 ### 19.10 Operator CLI (FR-SKL-09)
 
