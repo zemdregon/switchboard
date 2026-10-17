@@ -6683,10 +6683,12 @@ change):
 "skills": { "type": "array", "maxItems": 8, "uniqueItems": true,
             "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,47}(@[1-9][0-9]{0,5})?$" } },
 "role": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,31}$" },
-"skill_defaults": { "enum": ["apply", "omit"], "default": "apply" }
+"skill_defaults": { "enum": ["apply", "omit"] }
 ```
 
-The fields are part of `request_hash` (idempotency, FR-MCP-08). A queued item stores them and resolves at its own
+The fields are part of `request_hash` (idempotency, FR-MCP-08). `skill_defaults` carries no schema `default`:
+an absent field stays absent (so step 1 tells "no fields" from "apply", C8) and means `apply` at resolution.
+A queued item stores them and resolves at its own
 admission, not at enqueue time.
 
 ### 19.5 Resolution at admission (FR-SKL-03, FR-SKL-04)
